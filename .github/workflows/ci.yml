@@ -99,6 +99,14 @@ jobs:
         with:
           node-version: '22'
       - run: node --test "scripts/lanes/tests/**/*.test.mjs"
+      # HIMMEL-1529: same shape — a zero-dependency node:test suite outside any
+      # package.json. Listed explicitly because nothing globs for it; an
+      # unlisted suite is a suite nobody runs.
+      #
+      # `ls` first because `node --test` reports zero tests and exits 0 when the
+      # glob matches nothing: a renamed or deleted suite would go green with
+      # nothing executed. `ls` on an unexpanded pattern fails, so the step does.
+      - run: ls scripts/trust/tests/*.test.mjs && node --test "scripts/trust/tests/*.test.mjs"
 
   bun-suites:
     runs-on: ubuntu-latest
