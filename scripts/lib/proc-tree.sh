@@ -30,8 +30,10 @@
 #   wait "$pid" 2>/dev/null    # caller reaps; this helper never does
 #
 # proc_tree_terminate returns 0 when the group is gone by the time it returns,
-# 1 when something survived every verified escalation, and 2 when a supplied
-# expected identity is empty or cannot be confirmed before the next signal.
+# 1 when something survived every verified escalation, 2 when a supplied
+# expected identity is empty or the probe cannot confirm it either way before
+# the next signal, and 3 when the probe CONFIRMS the leader already
+# exited/was recycled before any signal was sent (HIMMEL-1501).
 # proc_tree_group_terminate is the leader-exited variant: it signals only
 # identity-verified observed member pids, never an unowned numeric group id.
 #
@@ -171,16 +173,27 @@ proc_tree_group_alive() {
 # anything is left. When expected-identity is supplied, the leader identity is
 # revalidated immediately before every group signal, and a failed group signal
 # never falls back to the bare pid. Windows fallback targets only survivors
-# whose current identity can be captured and immediately revalidated.
+# whose current identity can be captured and immediately revalidated. The
+# initial guard splits a CONFIRMED exit/recycle (rc 3, no signal sent) from a
+# probe that could not confirm anything either way (rc 2) -- callers must not
+# treat them the same (HIMMEL-1501).
 proc_tree_terminate() {
     local pid="$1" grace="${2:-3}" expected_identity="${3:-}" survivor survivor_identity w guarded=0 identity_unverified=0
-    local member member_identity i leader_identity_rc survivor_verified=0
+    local member member_identity i leader_identity_rc survivor_verified=0 identity_rc=0
     local -a member_pids=() member_identities=()
     [ -n "$pid" ] || return 0
     [ "$#" -ge 3 ] && guarded=1
 
     if [ "$guarded" -eq 1 ]; then
-        proc_tree_process_identity_matches "$pid" "$expected_identity" || return 2
+        identity_rc=0
+        proc_tree_process_identity_matches "$pid" "$expected_identity" || identity_rc=$?
+        if [ "$identity_rc" -ne 0 ]; then
+            # rc 1 = identity_matches CONFIRMED the leader already
+            # exited/was recycled; rc 2 = the probe itself was unavailable.
+            # These demand opposite handling downstream (HIMMEL-1501).
+            [ "$identity_rc" -eq 1 ] && return 3
+            return 2
+        fi
         # The leader can honor TERM while a descendant ignores it. Snapshot every
         # observable member identity before TERM so an exited/recycled leader does
         # not strand survivors or authorize signals to newly-reused numeric pids.

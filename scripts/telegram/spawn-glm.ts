@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync, renameSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { runSession, BASH_BIN, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow, type RunObserver } from "./run";
 import { checkGlmGuards } from "./glm-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, glmContextPreset, type SettingsConflict, type GlmUsage } from "./glm-env";
@@ -573,6 +573,68 @@ function isHimmelCheckout(d: string): boolean {
   return existsSync(join(d, "scripts", "claude-glm"));
 }
 
+// ── HIMMEL-1503: primary-checkout cwd guard ─────────────────────────────
+//
+// Live incident (2026-08-03 ~13:15 WEST): the orchestrator's session cwd had
+// persisted inside a WORKTREE (.claude/worktrees/claudex+himmel-1474-render-
+// liveness) from an earlier command, and this wrapper happily minted its
+// fresh worktree/branch NESTED inside it, based off that worktree's branch
+// HEAD instead of main — any diff-vs-main gate on the result would have
+// carried the whole unrelated delta. The "spawn from the PRIMARY checkout"
+// rule was prose in the orchestrator handover for 12+ legs and still bit
+// live; per CLAUDE.md's structural>instructional doctrine (second drift =
+// escalate to structural), this is a HARD REFUSE — the ticket's smaller,
+// safer option (a). Transparent re-anchoring (option (b)) is deliberately
+// NOT built.
+//
+// Detection: a linked worktree's --git-dir (per-worktree, under
+// <primary>/.git/worktrees/<name>) differs from its --git-common-dir
+// (always the PRIMARY repo's .git) — the primary checkout's own git-dir and
+// git-common-dir are identical (verified live against this very repo). The
+// /.claude/worktrees/ substring is a second, git-independent signal —
+// defense in depth: still refuses a cwd that names a worktree path even
+// when the git probe itself can't run (e.g. a since-removed worktree
+// directory). Either signal alone refuses.
+function gitDirs(cwd: string): { gitDir: string; commonDir: string } | null {
+  const gd = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-dir"], { stdout: "pipe", stderr: "pipe" });
+  const cd = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], { stdout: "pipe", stderr: "pipe" });
+  if (gd.exitCode !== 0 || cd.exitCode !== 0) return null;
+  return { gitDir: gd.stdout.toString().trim(), commonDir: cd.stdout.toString().trim() };
+}
+
+// Pure decision fn — `probe` injected so this is testable without real git.
+// primaryPath: --git-common-dir's PARENT is always the primary checkout root
+// (the common dir is <primary>/.git in both the primary checkout and every
+// linked worktree); resolve(cwd, ...) makes a relative probe result (the
+// not-a-worktree case, where git prints a bare ".git") absolute without
+// changing an already-absolute one (the worktree case).
+export function detectNonPrimaryCwd(cwd: string, probe: (cwd: string) => { gitDir: string; commonDir: string } | null = gitDirs): { ok: true } | { ok: false; primaryPath?: string } {
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const pathLooksLikeWorktree = norm(cwd).includes("/.claude/worktrees/");
+  const dirs = probe(cwd);
+  const gitSaysWorktree = dirs !== null && norm(dirs.gitDir) !== norm(dirs.commonDir);
+  if (!pathLooksLikeWorktree && !gitSaysWorktree) return { ok: true };
+  const primary = dirs ? dirname(resolve(cwd, dirs.commonDir)) : undefined;
+  // Only name a primary that is somewhere ELSE. A standalone repo nested under
+  // .claude/worktrees/ trips the path signal while git reports
+  // gitDir === commonDir, so this resolves to the very cwd being refused —
+  // telling the caller to cd where they already are. Drop it and let the
+  // path-only diagnostic speak instead (codex-1, CR round 1).
+  const usable = primary !== undefined && norm(resolve(primary)) !== norm(resolve(cwd));
+  return { ok: false, primaryPath: usable ? primary : undefined };
+}
+
+// Message composer for main()'s call site — names the primary path so the
+// operator can `cd` there and retry immediately; a bare "refused" would
+// waste the recovery. `probe` is threaded through for tests only.
+export function refuseNonPrimaryCwd(cwd: string, probe?: (cwd: string) => { gitDir: string; commonDir: string } | null): string | undefined {
+  const r = probe ? detectNonPrimaryCwd(cwd, probe) : detectNonPrimaryCwd(cwd);
+  if (r.ok) return undefined;
+  return r.primaryPath
+    ? `spawn-glm: refusing to dispatch from ${cwd} — this is not the PRIMARY checkout (resolved primary: ${r.primaryPath}); cd there and retry (HIMMEL-1503).`
+    : `spawn-glm: refusing to dispatch from ${cwd} — this looks like a worktree cwd (path contains /.claude/worktrees/), not the PRIMARY checkout; cd to the primary checkout and retry (HIMMEL-1503).`;
+}
+
 // ── HIMMEL-800: real git probes for planSharedSpawn's injected deps ─────────
 export function gitBranchExists(cwd: string, branch: string): boolean {
   const r = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { stdout: "pipe", stderr: "pipe" });
@@ -984,6 +1046,11 @@ async function main(): Promise<void> {
   // ~/.claude/settings.json's permissions.defaultMode happens to be".
   const permMode: PermissionMode = permModeArg ?? "dontAsk";
   const absCwd = resolve(cwd);
+  // HIMMEL-1503: refuse BEFORE any worktree/branch side-effect if this
+  // dispatch is not running from the PRIMARY checkout — see
+  // detectNonPrimaryCwd above for the incident + detection rationale.
+  const nonPrimaryRefusal = refuseNonPrimaryCwd(absCwd);
+  if (nonPrimaryRefusal) { console.error(nonPrimaryRefusal); process.exit(2); }
   // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —
   // an unknown --profile / malformed --add-plugins id is a clean usage refusal
   // (exit 2), never an orphan worktree/branch. `installed: []` keeps this to pure

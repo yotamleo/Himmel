@@ -577,6 +577,56 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# Case 4b2 -- HIMMEL-1501: the initial guard must not collapse a CONFIRMED
+# exit/recycle (identity_matches rc 1) and a merely unavailable probe
+# (identity_matches rc 2) into the same outcome. Confirmed-gone gets its own
+# rc 3; unavailable keeps rc 2. Neither sends a signal.
+# --------------------------------------------------------------------------
+echo "== Case 4b2: confirmed-gone identity before any signal -> rc 3, no signal sent =="
+confirmed_gone_result=$(
+  # shellcheck source=scripts/lib/proc-tree.sh
+  # shellcheck disable=SC1091  # runtime path; library is checked separately
+  . "$CI_DIR/../lib/proc-tree.sh"
+  signal_calls=0
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_process_identity_matches() { return 1; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  kill() { signal_calls=$((signal_calls + 1)); }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  taskkill() { signal_calls=$((signal_calls + 1)); }
+  terminate_rc=0
+  proc_tree_terminate 4242 0 test-identity || terminate_rc=$?
+  printf '%s:%s\n' "$terminate_rc" "$signal_calls"
+)
+if [ "$confirmed_gone_result" = "3:0" ]; then
+  pass "confirmed-gone identity -> rc 3, no signal sent"
+else
+  fail "confirmed-gone identity -> expected rc 3 and zero signals, got $confirmed_gone_result"
+fi
+
+echo "== Case 4b3: unavailable identity probe (non-empty identity) before any signal -> rc 2, no signal sent =="
+unavailable_identity_result=$(
+  # shellcheck source=scripts/lib/proc-tree.sh
+  # shellcheck disable=SC1091  # runtime path; library is checked separately
+  . "$CI_DIR/../lib/proc-tree.sh"
+  signal_calls=0
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  proc_tree_process_identity_matches() { return 2; }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  kill() { signal_calls=$((signal_calls + 1)); }
+  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  taskkill() { signal_calls=$((signal_calls + 1)); }
+  terminate_rc=0
+  proc_tree_terminate 4242 0 test-identity || terminate_rc=$?
+  printf '%s:%s\n' "$terminate_rc" "$signal_calls"
+)
+if [ "$unavailable_identity_result" = "2:0" ]; then
+  pass "unavailable identity probe -> rc 2, no signal sent"
+else
+  fail "unavailable identity probe -> expected rc 2 and zero signals, got $unavailable_identity_result"
+fi
+
+# --------------------------------------------------------------------------
 # Case 4c -- a guarded leader recycled during TERM grace is never targeted.
 #
 # The first identity check authorizes TERM for the original group. Before KILL,

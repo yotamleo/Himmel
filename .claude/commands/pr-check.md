@@ -217,37 +217,42 @@ Steps:
        state_identity=$(cat "$state_identity_file")
        identity_rc=0
        proc_tree_process_identity_matches "$state_pid" "$state_identity" || identity_rc=$?
-       if [ "$identity_rc" -eq 1 ]; then
-           case "$state_cleanup_rc" in
-               1|2) ;;
-               *)
-                   echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc and launch identity no longer matches; no signal sent; preserve recovery sidecars" >&2
-                   return 1
-                   ;;
-           esac
-           if [ ! -e "$state_survivors_file" ]; then
-               echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc has a dead leader but no survivors sidecar (legacy pre-r14 record); manual recovery required before removing $state_pid_file / $state_identity_file / $state_cleanup_rc_file" >&2
+       if [ "$identity_rc" -ne 1 ]; then
+           if [ "$identity_rc" -ne 0 ]; then
+               echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc and launch identity cannot be verified (identity rc=$identity_rc); no signal sent; preserve recovery sidecars" >&2
                return 1
            fi
-           while IFS=$'\t' read -r survivor_pid survivor_identity || [ -n "$survivor_pid$survivor_identity" ]; do
-               recover_codex_survivor "$state_label" "$survivor_pid" "$survivor_identity" || return 1
-           done < "$state_survivors_file"
-           rm -f "$state_pid_file" "$state_identity_file" "$state_cleanup_rc_file" "$state_survivors_file"
-           echo "codex adversarial kickoff recovered prior $state_label render through survivor anchors" >&2
-           return 0
+           recovery_rc=0
+           proc_tree_terminate "$state_pid" 1 "$state_identity" || recovery_rc=$?
+           if [ "$recovery_rc" -eq 0 ]; then
+               rm -f "$state_pid_file" "$state_identity_file" "$state_cleanup_rc_file" "$state_survivors_file"
+               echo "codex adversarial kickoff recovered prior $state_label render pid/group $state_pid" >&2
+               return 0
+           fi
+           if [ "$recovery_rc" -ne 3 ]; then
+               echo "codex adversarial kickoff BLOCKED: $state_label recovery cleanup rc=$recovery_rc; preserve recovery sidecars" >&2
+               return 1
+           fi
        fi
-       if [ "$identity_rc" -ne 0 ]; then
-           echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc and launch identity cannot be verified (identity rc=$identity_rc); no signal sent; preserve recovery sidecars" >&2
+       # HIMMEL-1501: either the identity probe or proc_tree_terminate can
+       # confirm the leader exited/recycled. In both races the survivors
+       # sidecar is the remaining recovery authority.
+       case "$state_cleanup_rc" in
+           1|2|3) ;;
+           *)
+               echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc cannot use survivor-anchor recovery; preserve recovery sidecars" >&2
+               return 1
+               ;;
+       esac
+       if [ ! -e "$state_survivors_file" ]; then
+           echo "codex adversarial kickoff BLOCKED: $state_label cleanup rc=$state_cleanup_rc has a dead leader but no survivors sidecar (legacy pre-r14 record); manual recovery required before removing $state_pid_file / $state_identity_file / $state_cleanup_rc_file" >&2
            return 1
        fi
-       recovery_rc=0
-       proc_tree_terminate "$state_pid" 1 "$state_identity" || recovery_rc=$?
-       if [ "$recovery_rc" -ne 0 ]; then
-           echo "codex adversarial kickoff BLOCKED: $state_label recovery cleanup rc=$recovery_rc; preserve recovery sidecars" >&2
-           return 1
-       fi
+       while IFS=$'\t' read -r survivor_pid survivor_identity || [ -n "$survivor_pid$survivor_identity" ]; do
+           recover_codex_survivor "$state_label" "$survivor_pid" "$survivor_identity" || return 1
+       done < "$state_survivors_file"
        rm -f "$state_pid_file" "$state_identity_file" "$state_cleanup_rc_file" "$state_survivors_file"
-       echo "codex adversarial kickoff recovered prior $state_label render pid/group $state_pid" >&2
+       echo "codex adversarial kickoff recovered prior $state_label render through survivor anchors" >&2
        return 0
    }
    recover_codex_state "primary" "$codex_pid_file" || exit 1
@@ -464,17 +469,56 @@ Steps:
        harvest_live_unreaped=0
        harvest_survivors=0
        harvest_cleanup_unverified=0
+       harvest_recover_survivor() {
+           local survivor_pid="$1" survivor_identity="$2" identity_rc
+           if [ -z "$survivor_pid" ] || [ -z "$survivor_identity" ]; then
+               echo "codex adversarial pass cleanup unverified: survivor record is malformed" >&2
+               return 1
+           fi
+           identity_rc=0
+           proc_tree_process_identity_matches "$survivor_pid" "$survivor_identity" || identity_rc=$?
+           if [ "$identity_rc" -eq 1 ]; then
+               if proc_tree_process_alive "$survivor_pid"; then
+                   echo "codex adversarial pass cleanup unverified: survivor pid $survivor_pid has an identity mismatch; no signal sent" >&2
+                   return 1
+               fi
+               return 0
+           fi
+           if [ "$identity_rc" -ne 0 ]; then
+               echo "codex adversarial pass cleanup unverified: survivor pid $survivor_pid cannot be identity-verified (identity rc=$identity_rc); no signal sent" >&2
+               return 1
+           fi
+           kill -TERM "$survivor_pid" 2>/dev/null || true
+           sleep 1
+           identity_rc=0
+           proc_tree_process_identity_matches "$survivor_pid" "$survivor_identity" || identity_rc=$?
+           if [ "$identity_rc" -eq 0 ]; then
+               kill -KILL "$survivor_pid" 2>/dev/null || true
+               sleep 1
+               identity_rc=0
+               proc_tree_process_identity_matches "$survivor_pid" "$survivor_identity" || identity_rc=$?
+           fi
+           if [ "$identity_rc" -eq 1 ]; then
+               proc_tree_process_alive "$survivor_pid" || return 0
+           fi
+           echo "codex adversarial pass cleanup unverified: survivor pid $survivor_pid remains live or unverifiable after recovery (identity rc=$identity_rc)" >&2
+           return 1
+       }
        if [ ! -s "$codex_rc_file" ] && [ "$waited" -ge "$codex_to" ]; then
            # Re-check rc FIRST immediately before the identity-guarded signal.
-           # proc_tree_terminate returns 2 without signaling when identity cannot
-           # be confirmed; rc 1 means escalated cleanup left survivors. Either
-           # outcome may still be live and needs its recovery sidecars.
+           # proc_tree_terminate returns 2 without signaling when the identity
+           # probe cannot confirm anything either way (still may be live —
+           # needs its recovery sidecars); 3 when the probe CONFIRMS the
+           # leader already exited/was recycled before any signal was sent
+           # (HIMMEL-1501: fall through to the ordinary exited path below
+           # instead of the live-but-unreaped one); rc 1 means escalated
+           # cleanup left survivors.
            if [ ! -s "$codex_rc_file" ]; then
                proc_tree_terminate "$codex_pid" 1 "$codex_identity"
                terminate_rc=$?
                if [ "$terminate_rc" -eq 2 ]; then
                    harvest_live_unreaped=1
-               else
+               elif [ "$terminate_rc" -ne 3 ]; then
                    harvest_timed_out=1
                    [ "$terminate_rc" -eq 1 ] && harvest_survivors=1
                fi
@@ -596,8 +640,21 @@ Steps:
            if [ -s "$codex_cleanup_rc_file" ]; then
                harvest_cleanup_rc=$(cat "$codex_cleanup_rc_file")
            fi
-           if [ "$harvest_cleanup_rc" != "0" ]; then
+           if [ "$harvest_cleanup_rc" = "3" ]; then
+               if [ ! -e "$codex_survivors_file" ]; then
+                   harvest_cleanup_unverified=1
+               else
+                   while IFS=$'\t' read -r survivor_pid survivor_identity || [ -n "$survivor_pid$survivor_identity" ]; do
+                       if ! harvest_recover_survivor "$survivor_pid" "$survivor_identity"; then
+                           harvest_cleanup_unverified=1
+                           break
+                       fi
+                   done < "$codex_survivors_file"
+               fi
+           elif [ "$harvest_cleanup_rc" != "0" ]; then
                harvest_cleanup_unverified=1
+           fi
+           if [ "$harvest_cleanup_unverified" -eq 1 ]; then
                echo "codex adversarial pass cleanup unverified (rc=${harvest_cleanup_rc:-missing}) — preserving recovery sidecars: $codex_pid_file, $codex_identity_file, and $codex_survivors_file" >&2
            fi
        fi

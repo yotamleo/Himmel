@@ -24,6 +24,10 @@ assert_contains() {
     local label="$1" needle="$2" haystack="$3"
     case "$haystack" in *"$needle"*) pass "$label" ;; *) fail "$label (missing: $needle)" ;; esac
 }
+assert_not_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    case "$haystack" in *"$needle"*) fail "$label (unexpected: $needle)" ;; *) pass "$label" ;; esac
+}
 assert_file_contains() {
     local label="$1" needle="$2" file="$3"
     if grep -qF "$needle" "$file" 2>/dev/null; then pass "$label"; else fail "$label ($file missing: $needle)"; fi
@@ -92,6 +96,16 @@ chmod +x "$SCHED_STUB/at" "$SCHED_STUB/claude"
 
 NEAR_HHMM=$(node -e 'const d = new Date(Date.now() + 5 * 60 * 1000); process.stdout.write(String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"))')
 
+# _set_mtime_seconds_ago <path> <secs> -- portable mtime override (HIMMEL-1511
+# ceiling tests need a controlled session-dir age without waiting real hours).
+_set_mtime_seconds_ago() {
+    node -e '
+const fs = require("fs");
+const t = (Date.now() - Number(process.argv[2]) * 1000) / 1000;
+fs.utimesSync(process.argv[1], t, t);
+' "$1" "$2"
+}
+
 # T1: a running row with a stub-live pid blocks and is listed.
 LIVE_DIR="$WORKER_BRIDGE_ROOT/glm-sessions/glm-live"
 mkdir -p "$LIVE_DIR"
@@ -110,6 +124,32 @@ assert_rc "T1 live worker blocks arm" 10 "$rc"
 assert_contains "T1 refusal lists task" "task=live-guard pid=111" "$out"
 assert_contains "T1 refusal names override" "ARM_WITH_LIVE_WORKERS=1" "$out"
 assert_file_contains "T1 live metadata remains running" '"status": "running"' "$LIVE_DIR/meta.json"
+
+# T1a: the old predictable census-stderr path is irrelevant even when already
+# occupied. The exec preserves the wrapper pid, so the seeded path is exactly
+# the /tmp/arm-resume.census-err.$$ name the vulnerable redirect would use.
+OLD_CENSUS_PATH_FILE="$TMP/old-census-path"
+SECURE_STDERR_TMP="$TMP/secure-stderr"
+mkdir -p "$SECURE_STDERR_TMP"
+out=$(OLD_CENSUS_PATH_FILE="$OLD_CENSUS_PATH_FILE" TMPDIR="$SECURE_STDERR_TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS=111 bash -c '
+old="/tmp/arm-resume.census-err.$$"
+printf "%s\n" "$old" > "$OLD_CENSUS_PATH_FILE"
+printf "old-path-sentinel\n" > "$old"
+exec bash "$@"
+' _ "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
+rc=$?
+OLD_CENSUS_PATH=$(<"$OLD_CENSUS_PATH_FILE")
+assert_rc "T1a occupied old census path does not break census" 10 "$rc"
+assert_contains "T1a census still lists live worker" "task=live-guard pid=111" "$out"
+assert_file_contains "T1a old census path is not clobbered" "old-path-sentinel" "$OLD_CENSUS_PATH"
+if [ -z "$(ls -A "$SECURE_STDERR_TMP" 2>/dev/null)" ]; then pass "T1a secure stderr files cleaned on refusal"; else fail "T1a secure stderr files leaked"; fi
+rm -f "$OLD_CENSUS_PATH"
+
+# T1b: mktemp failure is validated and refuses before either census command.
+out=$(TMPDIR="$TMP/missing-tmpdir" PATH="$SCHED_STUB:$PATH" LIVE_PIDS=111 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
+rc=$?
+assert_rc "T1b mktemp failure refuses arm" 2 "$rc"
+assert_contains "T1b mktemp failure is diagnosable" "mktemp failed for worker reconcile stderr" "$out"
 rm -rf "$LIVE_DIR"
 
 # T2: a dead running row is reconciled before the guard, then the arm proceeds.
@@ -236,6 +276,132 @@ assert_contains "T6 bypass warning is loud" "WARN arm-resume: ARM_WITH_LIVE_WORK
 assert_contains "T6 bypass warning lists worker" "task=bypass-live pid=777" "$out"
 assert_contains "T6 bypass reaches scheduler success" "RESUME ARMED" "$out"
 assert_file_contains "T6 live bypass metadata remains running" '"status":"running"' "$BYPASS_DIR/meta.json"
+
+# T7: HIMMEL-1511 -- an unprobeable row whose pid was NEVER written (the
+# writeLiveWorkerMeta fallback marker shape: pid=0 or the field deleted
+# entirely) ages out past the absolute ceiling backstop even though
+# liveness stays unprobeable forever.
+CEIL_OLD_DIR="$WORKER_BRIDGE_ROOT/claudex-sessions/claudex-ceil-old"
+mkdir -p "$CEIL_OLD_DIR"
+cat > "$CEIL_OLD_DIR/meta.json" <<'EOF'
+{"status":"running","pid":0,"lane":"codex","task_name":"relic-old"}
+EOF
+_set_mtime_seconds_ago "$CEIL_OLD_DIR" 10
+out=$(LIVE_PIDS='' UNPROBEABLE_PIDS='' RECONCILE_UNPROBEABLE_CEILING_SECS=5 bash "$RECONCILE" 2>&1)
+rc=$?
+assert_rc "T7 ceiling-exceeded relic reconciliation succeeds" 0 "$rc"
+assert_contains "T7 relic past ceiling is orphaned" "orphaned codex/relic-old pid=never-written" "$out"
+assert_file_contains "T7 relic metadata marked orphaned" '"status": "orphaned"' "$CEIL_OLD_DIR/meta.json"
+rm -rf "$CEIL_OLD_DIR"
+
+# T8: same relic shape, but the session directory is still within the
+# ceiling window -- it stays running/unprobeable, NOT terminal-marked.
+CEIL_NEW_DIR="$WORKER_BRIDGE_ROOT/claudex-sessions/claudex-ceil-new"
+mkdir -p "$CEIL_NEW_DIR"
+cat > "$CEIL_NEW_DIR/meta.json" <<'EOF'
+{"status":"running","pid":0,"lane":"codex","task_name":"relic-new"}
+EOF
+_set_mtime_seconds_ago "$CEIL_NEW_DIR" 1
+out=$(LIVE_PIDS='' UNPROBEABLE_PIDS='' RECONCILE_UNPROBEABLE_CEILING_SECS=5 bash "$RECONCILE" 2>&1)
+rc=$?
+assert_rc "T8 within-ceiling relic reconciliation succeeds" 0 "$rc"
+assert_contains "T8 relic within ceiling warns unprobeable" "unprobeable codex/relic-new pid=0" "$out"
+assert_file_contains "T8 relic metadata remains running" '"status":"running"' "$CEIL_NEW_DIR/meta.json"
+rm -rf "$CEIL_NEW_DIR"
+
+# T8a: if a row acquires its first real pid after the ceiling census but before
+# compare-and-rewrite, the marker exits 3 and leaves the live worker untouched.
+REAL_NODE=$(command -v node)
+RACE_NODE_DIR="$TMP/race-node"
+RACE_DIR="$WORKER_BRIDGE_ROOT/claudex-sessions/claudex-race"
+RACE_MARK_RC="$TMP/race-mark-rc"
+mkdir -p "$RACE_NODE_DIR" "$RACE_DIR"
+cat > "$RACE_DIR/meta.json" <<'EOF'
+{"status":"running","pid":0,"lane":"codex","task_name":"pid-arrived"}
+EOF
+_set_mtime_seconds_ago "$RACE_DIR" 10
+cat > "$RACE_NODE_DIR/node" <<'EOF'
+#!/usr/bin/env bash
+"$REAL_NODE" "$@"
+rc=$?
+case "${2:-}" in
+    *'fs.statSync(path.dirname(p))'*)
+        if [ "$rc" -eq 0 ]; then
+            "$REAL_NODE" -e '
+const fs = require("fs");
+const p = process.argv[1];
+const o = JSON.parse(fs.readFileSync(p, "utf8"));
+o.pid = 4242;
+fs.writeFileSync(p, JSON.stringify(o, null, 2) + "\n");
+' "$RACE_META"
+        fi
+        ;;
+    *'o.status !== "running" ||'*)
+        printf '%s\n' "$rc" > "$RACE_MARK_RC"
+        ;;
+esac
+exit "$rc"
+EOF
+chmod +x "$RACE_NODE_DIR/node"
+out=$(REAL_NODE="$REAL_NODE" RACE_META="$RACE_DIR/meta.json" RACE_MARK_RC="$RACE_MARK_RC" PATH="$RACE_NODE_DIR:$PATH" LIVE_PIDS='' UNPROBEABLE_PIDS='' RECONCILE_UNPROBEABLE_CEILING_SECS=5 bash "$RECONCILE" 2>&1)
+rc=$?
+assert_rc "T8a pid-arrival race remains fail-safe" 0 "$rc"
+assert_file_contains "T8a compare-and-rewrite exits 3" "3" "$RACE_MARK_RC"
+assert_file_contains "T8a metadata remains running" '"status": "running"' "$RACE_DIR/meta.json"
+assert_file_contains "T8a newly written pid is preserved" '"pid": 4242' "$RACE_DIR/meta.json"
+assert_contains "T8a row remains guard-visible" "unprobeable codex/pid-arrived" "$out"
+rm -rf "$RACE_DIR"
+
+# T8b: a session-dir stat failure remains fail-open (no orphaning) but now
+# emits a diagnostic instead of being indistinguishable from not-exceeded.
+STAT_NODE_DIR="$TMP/stat-node"
+STAT_DIR="$WORKER_BRIDGE_ROOT/claudex-sessions/claudex-stat-failure"
+mkdir -p "$STAT_NODE_DIR" "$STAT_DIR"
+cat > "$STAT_DIR/meta.json" <<'EOF'
+{"status":"running","pid":0,"lane":"codex","task_name":"stat-failure"}
+EOF
+cat > "$STAT_NODE_DIR/node" <<'EOF'
+#!/usr/bin/env bash
+"$REAL_NODE" "$@"
+rc=$?
+case "${2:-}" in
+    *'const vals = [o.status, o.pid'*)
+        if [ "$rc" -eq 0 ] && [ "${3:-}" = "$STAT_META_DIR/meta.json" ]; then rm -rf "$STAT_META_DIR"; fi
+        ;;
+esac
+exit "$rc"
+EOF
+chmod +x "$STAT_NODE_DIR/node"
+out=$(REAL_NODE="$REAL_NODE" STAT_META_DIR="$STAT_DIR" PATH="$STAT_NODE_DIR:$PATH" LIVE_PIDS='' UNPROBEABLE_PIDS='' RECONCILE_UNPROBEABLE_CEILING_SECS=5 bash "$RECONCILE" 2>&1)
+rc=$?
+assert_rc "T8b ceiling stat failure fails open" 0 "$rc"
+assert_contains "T8b ceiling stat failure is diagnosable" "ERR reconcile-workers: cannot stat" "$out"
+assert_contains "T8b stat-failed row remains unprobeable" "unprobeable codex/stat-failure" "$out"
+assert_not_contains "T8b stat failure does not authorize orphaning" "orphaned codex/stat-failure" "$out"
+
+# T9: HIMMEL-1511 -- a malformed meta.json makes the reconciler return rc=2
+# (parse failure), which used to refuse arm-resume unconditionally BEFORE
+# ARM_WITH_LIVE_WORKERS was ever evaluated -- the documented emergency
+# override could not reach this branch. Now ARM_WITH_LIVE_WORKERS=1
+# downgrades it to a loud warning (naming the offending meta path) and the
+# arm proceeds; without the override it still refuses (rc=2).
+MALFORMED_DIR="$WORKER_BRIDGE_ROOT/glm-sessions/glm-malformed"
+mkdir -p "$MALFORMED_DIR"
+printf '{not valid json' > "$MALFORMED_DIR/meta.json"
+# NOTE: MSYS mangles a POSIX-looking argv path into its Windows spelling
+# before node ever sees it, so match the distinctive tail rather than the
+# full $MALFORMED_DIR string (windows-git-bash-traps).
+out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS='' bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
+rc=$?
+assert_rc "T9 malformed meta refuses without override" 2 "$rc"
+assert_contains "T9 refusal names the offending meta path" "glm-malformed/meta.json" "$out"
+out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS='' ARM_WITH_LIVE_WORKERS=1 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
+rc=$?
+assert_rc "T9 override warns and proceeds" 0 "$rc"
+assert_contains "T9 override warning is loud" "WARN arm-resume: ARM_WITH_LIVE_WORKERS=1" "$out"
+assert_contains "T9 override still names the offending meta path" "glm-malformed/meta.json" "$out"
+assert_contains "T9 override reaches scheduler success" "RESUME ARMED" "$out"
+rm -rf "$MALFORMED_DIR"
 
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"

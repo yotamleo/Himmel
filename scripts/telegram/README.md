@@ -24,7 +24,8 @@ goes deaf. Run exactly one. `restart-bridge.ps1` enforces this.
 
 ```powershell
 # Start (or restart) the bridge — kills any stale bridge procs, starts ONE
-# supervisor, settles 12s, verifies no 409. This is the canonical launcher.
+# supervisor, settles 35s, verifies no 409 AND real progress (offset advanced
+# or a poll heartbeat logged — HIMMEL-1510). This is the canonical launcher.
 pwsh -File scripts/telegram/restart-bridge.ps1
 
 # Status only — report procs + 409 count, touch nothing.

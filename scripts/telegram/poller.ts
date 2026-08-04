@@ -457,7 +457,7 @@ export type RestartFn = (rung: string) => Promise<{ rc: number; message: string 
 // operator is left holding a confirmation that never came true, which is the same
 // false-success this op already guards against on the fire path.
 export type ScheduleWatchdogFn = (afterMs: number, fire: () => void) => void;
-export const RESTART_WATCHDOG_MS = 90_000;   // restart-bridge.ps1 settles ~12s; 90s is comfortably past a slow-but-working relaunch
+export const RESTART_WATCHDOG_MS = 90_000;   // restart-bridge.ps1 settles ~35s (HIMMEL-1510); 90s is comfortably past a slow-but-working relaunch
 
 export type AutoCommandDeps = {
   runScript: RunScriptFn;
@@ -1637,6 +1637,14 @@ export async function main(): Promise<void> {
         const downSec = Math.round((Date.now() - outageStartedAt) / 1000);
         console.error(`[poller] getUpdates recovered after ${pollFails} consecutive failure(s) — outage ran ~${downSec}s (started ${new Date(outageStartedAt).toISOString()})`);
       }
+      // HIMMEL-1510: a poll-loop heartbeat, printed on EVERY successful getUpdates —
+      // including a quiet one with zero new updates, which never touches the offset
+      // file (ingestUpdates only rewrites it when maxId advances). Without this,
+      // "poller alive but neither appending nor advancing the offset" is invisible:
+      // bridgeProcs>=1 and conflictLines==0 were BOTH true for the entire 2026-08-03
+      // ~16h wedge. restart-bridge.ps1's verify step and watchdog treat this line (or
+      // the offset file actually advancing) as the real liveness proof.
+      console.error(`[poller] heartbeat: getUpdates ok (offset=${offset}, updates=${updates.length})`);
       pollFails = 0; outageStartedAt = null; lastOutageAlertAt = null;
     } catch (e) {
       pollFails++;

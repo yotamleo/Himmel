@@ -22,7 +22,7 @@
 // disable here; nothing to implement for that requirement.
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { spawn } from "bun";
 import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
 import { transcriptDirFor, poisonPushUrl, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta } from "./spawn-glm";
@@ -151,6 +151,43 @@ export function planClaudexSharedSpawn(
 // isHimmelCheckout real impl: a himmel checkout carries the codex launcher.
 function isHimmelCheckout(d: string): boolean {
   return existsSync(join(d, "scripts", "claude-codex"));
+}
+
+// ── HIMMEL-1503: primary-checkout cwd guard ─────────────────────────────
+//
+// Twinned (not imported — deliberately duplicated per the ticket's brief:
+// a small guard duplicated across the two lane wrappers, not a new shared
+// layer) from spawn-glm.ts's own detectNonPrimaryCwd/refuseNonPrimaryCwd —
+// see that file's comment for the full incident + detection rationale.
+// Same detection, same message shape, only the "spawn-claudex:" prefix
+// differs.
+function gitDirs(cwd: string): { gitDir: string; commonDir: string } | null {
+  const gd = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-dir"], { stdout: "pipe", stderr: "pipe" });
+  const cd = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], { stdout: "pipe", stderr: "pipe" });
+  if (gd.exitCode !== 0 || cd.exitCode !== 0) return null;
+  return { gitDir: gd.stdout.toString().trim(), commonDir: cd.stdout.toString().trim() };
+}
+
+export function detectNonPrimaryCwd(cwd: string, probe: (cwd: string) => { gitDir: string; commonDir: string } | null = gitDirs): { ok: true } | { ok: false; primaryPath?: string } {
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const pathLooksLikeWorktree = norm(cwd).includes("/.claude/worktrees/");
+  const dirs = probe(cwd);
+  const gitSaysWorktree = dirs !== null && norm(dirs.gitDir) !== norm(dirs.commonDir);
+  if (!pathLooksLikeWorktree && !gitSaysWorktree) return { ok: true };
+  const primary = dirs ? dirname(resolve(cwd, dirs.commonDir)) : undefined;
+  // Only name a primary that is somewhere ELSE — see spawn-glm.ts's twin for
+  // the full rationale (a standalone repo nested under .claude/worktrees/
+  // resolves to the very cwd being refused).
+  const usable = primary !== undefined && norm(resolve(primary)) !== norm(resolve(cwd));
+  return { ok: false, primaryPath: usable ? primary : undefined };
+}
+
+export function refuseNonPrimaryCwd(cwd: string, probe?: (cwd: string) => { gitDir: string; commonDir: string } | null): string | undefined {
+  const r = probe ? detectNonPrimaryCwd(cwd, probe) : detectNonPrimaryCwd(cwd);
+  if (r.ok) return undefined;
+  return r.primaryPath
+    ? `spawn-claudex: refusing to dispatch from ${cwd} — this is not the PRIMARY checkout (resolved primary: ${r.primaryPath}); cd there and retry (HIMMEL-1503).`
+    : `spawn-claudex: refusing to dispatch from ${cwd} — this looks like a worktree cwd (path contains /.claude/worktrees/), not the PRIMARY checkout; cd to the primary checkout and retry (HIMMEL-1503).`;
 }
 
 // ── real git probes for planClaudexSharedSpawn's injected deps ──────────────
@@ -766,6 +803,11 @@ async function main(): Promise<void> {
   if (unknownModeRefusal) { console.error(`spawn-claudex: ${unknownModeRefusal}`); console.error(usage); process.exit(2); }
   const permMode: PermissionMode = permModeArg ?? "dontAsk";
   const absCwd = resolve(cwd);
+  // HIMMEL-1503: refuse BEFORE any worktree/branch side-effect if this
+  // dispatch is not running from the PRIMARY checkout — see
+  // detectNonPrimaryCwd above for the incident + detection rationale.
+  const nonPrimaryRefusal = refuseNonPrimaryCwd(absCwd);
+  if (nonPrimaryRefusal) { console.error(nonPrimaryRefusal); process.exit(2); }
   // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —
   // an unknown --profile / malformed --add-plugins id is a clean usage refusal
   // (exit 2), never an orphan worktree/branch. `installed: []` keeps this to pure

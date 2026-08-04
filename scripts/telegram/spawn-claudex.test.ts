@@ -32,6 +32,8 @@ import {
   claudexChildEnv,
   writeClaudexLiveMeta,
   executeClaudexRun,
+  detectNonPrimaryCwd,
+  refuseNonPrimaryCwd,
 } from "./spawn-claudex";
 import { BASH_BIN } from "./run";
 
@@ -276,6 +278,132 @@ test("gitBranchExists: real repo — existing branch true, missing branch false"
     expect(gitBranchExists(repo, "feat/does-not-exist")).toBe(false);
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
+
+// --- HIMMEL-1503: primary-checkout cwd guard (twin of spawn-glm's own suite) --
+
+test("detectNonPrimaryCwd: ok when cwd is the primary checkout (git-dir === git-common-dir, no worktree path segment)", () => {
+  const probe = () => ({ gitDir: "/repo/.git", commonDir: "/repo/.git" });
+  expect(detectNonPrimaryCwd("/repo", probe)).toEqual({ ok: true });
+});
+
+test("detectNonPrimaryCwd: refuses when git-dir !== git-common-dir (linked worktree), naming the primary path (parent of common-dir)", () => {
+  const probe = () => ({ gitDir: "/repo/.git/worktrees/wt1", commonDir: "/repo/.git" });
+  const r = detectNonPrimaryCwd("/repo/.claude/worktrees/claudex+t1", probe);
+  expect(r).toEqual({ ok: false, primaryPath: resolve("/repo") });
+});
+
+test("detectNonPrimaryCwd: refuses on the /.claude/worktrees/ path substring ALONE, even if the git probe fails (defense in depth)", () => {
+  const probe = () => null;
+  const r = detectNonPrimaryCwd("/some/repo/.claude/worktrees/claudex+t1", probe);
+  expect(r.ok).toBe(false);
+  expect((r as { primaryPath?: string }).primaryPath).toBeUndefined();
+});
+
+test("refuseNonPrimaryCwd: undefined (no refusal) on the primary checkout", () => {
+  const probe = () => ({ gitDir: "/repo/.git", commonDir: "/repo/.git" });
+  expect(refuseNonPrimaryCwd("/repo", probe)).toBeUndefined();
+});
+
+test("refuseNonPrimaryCwd: names the primary path + HIMMEL-1503 + the spawn-claudex prefix", () => {
+  const probe = () => ({ gitDir: "/repo/.git/worktrees/wt1", commonDir: "/repo/.git" });
+  const msg = refuseNonPrimaryCwd("/repo/.claude/worktrees/claudex+t1", probe);
+  expect(msg).toContain("spawn-claudex:");
+  expect(msg).toContain("HIMMEL-1503");
+  expect(msg).toContain(resolve("/repo"));
+  expect(msg).toMatch(/cd there and retry/);
+});
+
+test("refuseNonPrimaryCwd: falls back to a path-only diagnostic when the primary path could not be resolved", () => {
+  const probe = () => null;
+  const msg = refuseNonPrimaryCwd("/some/repo/.claude/worktrees/claudex+t1", probe);
+  expect(msg).toContain("spawn-claudex:");
+  expect(msg).toContain("HIMMEL-1503");
+  expect(msg).toMatch(/looks like a worktree cwd/);
+});
+
+test("detectNonPrimaryCwd: drops primaryPath when it would resolve to the refused cwd itself (standalone repo nested under .claude/worktrees)", () => {
+  // A plain nested clone reports a RELATIVE common-dir, so the "primary"
+  // resolves back to the very cwd being refused — naming it would tell the
+  // caller to cd where they already are (codex-1, CR round 1).
+  const probe = () => ({ gitDir: ".git", commonDir: ".git" });
+  const r = detectNonPrimaryCwd("/x/.claude/worktrees/nested-clone", probe);
+  expect(r.ok).toBe(false);
+  expect((r as { primaryPath?: string }).primaryPath).toBeUndefined();
+  expect(refuseNonPrimaryCwd("/x/.claude/worktrees/nested-clone", probe)).toMatch(/looks like a worktree cwd/);
+});
+
+// Local helper (mirrors spawn-glm.test.ts's initHermeticRepo) — the REAL git
+// tests below run `git worktree add`, which needs the host's global
+// core.hooksPath switched off (a global tokensave post-checkout hook fires on
+// ANY `worktree add`, backgrounding a ~30s index into the temp repo) and a
+// raised timeout (real `worktree add` observed at 6-16s on Windows, over
+// bun's 5000ms default).
+const CX_GIT_TEST_TIMEOUT_MS = 60_000;
+function initHermeticCxRepo(prefix: string): { repo: string; run: (args: string[]) => void } {
+  const repo = mkdtempSync(join(tmpdir(), prefix));
+  const run = (args: string[]) => {
+    const r = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed (rc=${r.exitCode}): ${r.stderr.toString().trim()}`);
+  };
+  run(["init", "-b", "main"]);
+  const noHooks = join(repo, "no-hooks");
+  mkdirSync(noHooks, { recursive: true });
+  run(["config", "core.hooksPath", noHooks]);
+  run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"]);
+  return { repo, run };
+}
+
+test("detectNonPrimaryCwd (real git): primary checkout -> ok; its linked worktree -> refused naming the primary as primaryPath", () => {
+  const { repo, run } = initHermeticCxRepo("cx-pcwd-");
+  try {
+    expect(detectNonPrimaryCwd(repo)).toEqual({ ok: true });
+
+    const wt = join(repo, "wt-nonprimary");
+    run(["worktree", "add", wt, "-b", "claudex/nonprimary"]);
+    const r = detectNonPrimaryCwd(wt);
+    expect(r.ok).toBe(false);
+    expect((r as { primaryPath?: string }).primaryPath).toBe(resolve(repo));
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, CX_GIT_TEST_TIMEOUT_MS);
+
+// --- HIMMEL-1503: real CLI end-to-end — the guard fires from the actual
+// entrypoint, before any worktree/branch side-effect, against a REAL
+// `git worktree add`. ---
+
+test("spawn-claudex real CLI: dispatch from inside a linked worktree cwd is REFUSED (exit 2), naming the primary path — no dispatch, no nested worktree minted", () => {
+  const { repo, run } = initHermeticCxRepo("cxcli-pcwd-");
+  try {
+    const wt = join(repo, "wt-orchestrator-stale-cwd");
+    run(["worktree", "add", wt, "-b", "some/other-branch"]);
+
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-claudex.ts", "do the task", "--cwd", wt], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+    });
+    expect(r.exitCode).toBe(2);
+    const err = r.stderr.toString();
+    expect(err).toContain("HIMMEL-1503");
+    expect(err).toContain(resolve(repo));
+    expect(r.stdout.toString()).not.toContain("session-dir:");
+    expect(existsSync(join(wt, ".claude", "worktrees"))).toBe(false);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, CX_GIT_TEST_TIMEOUT_MS);
+
+test("spawn-claudex real CLI: dispatch from the PRIMARY checkout is NOT caught by the HIMMEL-1503 guard (happy path — proceeds to the next, unrelated check)", () => {
+  const { repo } = initHermeticCxRepo("cxcli-pcwd-ok-");
+  try {
+    // --force bypasses the codex-weekly-bank preflight (which reads the REAL
+    // operator ~/.codex/logs_2.sqlite and could otherwise flake this test on
+    // whatever the live quota happens to be) — irrelevant to what this test
+    // proves: that the HIMMEL-1503 guard itself does not fire from a primary cwd.
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-claudex.ts", "do the task", "--cwd", repo, "--force"], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+    });
+    expect(r.exitCode).toBe(2);
+    const err = r.stderr.toString();
+    expect(err).not.toContain("HIMMEL-1503");
+    expect(err).toMatch(/is not a himmel checkout/);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, CX_GIT_TEST_TIMEOUT_MS);
 
 // --- runClaudexSharedDispatch (mirrors spawn-glm's I6/I7 suite, lane="codex") --
 

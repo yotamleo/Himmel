@@ -79,7 +79,11 @@
 #                           composition. See _compose_arm_name.
 #   ARM_WITH_LIVE_WORKERS   Exact value 1 bypasses the live lane-worker guard
 #                           with a loud warning. Use only when intentionally
-#                           killing in-flight workers at session exit.
+#                           killing in-flight workers at session exit. Also
+#                           downgrades a reconcile/census tool FAILURE (e.g. a
+#                           malformed meta.json) from a hard refusal to a loud
+#                           warning naming the offending path (HIMMEL-1511) --
+#                           without it, that failure exits 2 unconditionally.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -236,6 +240,11 @@ Env:
   ARM_WITH_LIVE_WORKERS   Exact value 1 bypasses the live lane-worker refusal
                           with a loud warning. The armed session exit may kill
                           those in-flight workers; wait for them by default.
+                          Also downgrades a reconcile/census tool FAILURE
+                          (e.g. a malformed meta.json) from a hard refusal to
+                          a loud warning naming the offending path
+                          (HIMMEL-1511) -- without it, that failure exits 2
+                          unconditionally.
 EOF
 }
 
@@ -305,21 +314,64 @@ if [ "$DRY_RUN" -eq 0 ]; then
         echo "ERR arm-resume: worker reconciler missing: $_WORKER_RECONCILER — refusing because live-worker state cannot be checked" >&2
         exit 2
     fi
+    _arm_worker_stderr_file() {
+        local label="$1" tmp
+        tmp=$(mktemp "${TMPDIR:-/tmp}/arm-resume.${label}-err.XXXXXX") || tmp=""
+        if [ -z "$tmp" ] || [ ! -f "$tmp" ]; then
+            echo "ERR arm-resume: mktemp failed for worker ${label} stderr; refusing because live-worker state cannot be checked" >&2
+            return 1
+        fi
+        printf '%s\n' "$tmp"
+    }
+    # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
+    _arm_worker_stderr_cleanup() {
+        # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+        [ -z "${_worker_reconcile_err:-}" ] || rm -f "$_worker_reconcile_err"
+        # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+        [ -z "${_worker_census_err:-}" ] || rm -f "$_worker_census_err"
+    }
+    _worker_reconcile_err=$(_arm_worker_stderr_file reconcile) || exit 2
+    _worker_census_err=""
+    trap _arm_worker_stderr_cleanup EXIT
+    _worker_census_err=$(_arm_worker_stderr_file census) || exit 2
+
     set +e
-    bash "$_WORKER_RECONCILER"
+    bash "$_WORKER_RECONCILER" 2>"$_worker_reconcile_err"
     _worker_reconcile_rc=$?
     set -e
     if [ "$_worker_reconcile_rc" -ne 0 ]; then
-        echo "ERR arm-resume: worker reconciliation failed (rc=$_worker_reconcile_rc) — refusing because live-worker state is uncertain" >&2
-        exit 2
+        if [ "${ARM_WITH_LIVE_WORKERS:-}" = "1" ]; then
+            echo "WARN arm-resume: ARM_WITH_LIVE_WORKERS=1 — worker reconciliation failed (rc=$_worker_reconcile_rc); live-worker state is uncertain but arming anyway:" >&2
+            sed 's/^/    /' "$_worker_reconcile_err" >&2
+        else
+            echo "ERR arm-resume: worker reconciliation failed (rc=$_worker_reconcile_rc) — refusing because live-worker state is uncertain:" >&2
+            sed 's/^/    /' "$_worker_reconcile_err" >&2
+            echo "    Emergency override: ARM_WITH_LIVE_WORKERS=1 (accepts the uncertainty and arms anyway)." >&2
+            exit 2
+        fi
+    else
+        # Relay the reconciler's own (non-fatal) stderr -- e.g. "settling" /
+        # "unprobeable" WARN lines -- exactly as the prior unredirected
+        # pass-through did.
+        cat "$_worker_reconcile_err" >&2
     fi
     set +e
-    _live_workers=$(bash "$_WORKER_RECONCILER" --list-live)
+    _live_workers=$(bash "$_WORKER_RECONCILER" --list-live 2>"$_worker_census_err")
     _worker_list_rc=$?
     set -e
     if [ "$_worker_list_rc" -ne 0 ]; then
-        echo "ERR arm-resume: live-worker census failed (rc=$_worker_list_rc) — refusing to arm" >&2
-        exit 2
+        if [ "${ARM_WITH_LIVE_WORKERS:-}" = "1" ]; then
+            echo "WARN arm-resume: ARM_WITH_LIVE_WORKERS=1 — live-worker census failed (rc=$_worker_list_rc); live-worker state is uncertain but arming anyway:" >&2
+            sed 's/^/    /' "$_worker_census_err" >&2
+        else
+            echo "ERR arm-resume: live-worker census failed (rc=$_worker_list_rc) — refusing to arm:" >&2
+            sed 's/^/    /' "$_worker_census_err" >&2
+            echo "    Emergency override: ARM_WITH_LIVE_WORKERS=1 (accepts the uncertainty and arms anyway)." >&2
+            exit 2
+        fi
+    else
+        # Relay the reconciler's own (non-fatal) stderr, same as above.
+        cat "$_worker_census_err" >&2
     fi
     if [ -n "$_live_workers" ]; then
         if [ "${ARM_WITH_LIVE_WORKERS:-}" = "1" ]; then
