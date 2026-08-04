@@ -16,8 +16,9 @@ import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
-  append, canonical, chainHash, classify, isApprovalInterrupt, lastRecord,
-  readAll, readLedger, refFor, shadowVerdict, summarize, RECORDED_TOOLS,
+  append, canonical, chainHash, classify, healthPath, isApprovalInterrupt,
+  lastRecord, readAll, readDrops, readLedger, refFor, shadowVerdict, summarize,
+  RECORDED_TOOLS,
 } from '../shadow-ledger.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -290,7 +291,7 @@ describe('hash chain', () => {
   // publishing a confident rate is the failure: the number comes out plausible
   // but understated, with nothing to signal it.
   describe('a damaged ledger cannot publish a rate', () => {
-    test('an interior torn row is counted, a torn FINAL row is not', () => {
+    test('an interior torn row is counted as malformed', () => {
       const dir = freshDir();
       process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
       fs.mkdirSync(dir, { recursive: true });
@@ -298,19 +299,88 @@ describe('hash chain', () => {
       append({ ts: 'a', kind: 'request' });
       fs.appendFileSync(f, '{"torn":\n');          // interior damage
       append({ ts: 'b', kind: 'request' });
-      let led = readLedger(f);
+      const led = readLedger(f);
       assert.equal(led.malformed, 1);
       assert.equal(led.intact, false);
+      process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+    });
 
-      const dir2 = freshDir();
-      process.env.HIMMEL_TRUST_LEDGER_DIR = dir2;
-      fs.mkdirSync(dir2, { recursive: true });
-      const f2 = path.join(dir2, 'ledger.jsonl');
+    // [HIMMEL-1539] A torn FINAL line used to be exempted UNCONDITIONALLY as a
+    // normal in-flight append. That is true only while a writer is alive to heal
+    // it. Abandoned — a killed hook, a power loss — nothing ever heals it, the
+    // event is permanently lost, and the ledger read `intact` forever. On a
+    // quiet ledger, where one lost event moves the rate most, it could stay
+    // missing indefinitely under a confidently published number.
+    // [codex-adv round 1] A live writer buys the fragment a bounded WAIT, never
+    // forgiveness. Liveness of some lock holder does not tie that holder to
+    // THIS fragment — a later writer would briefly absolve an abandoned one it
+    // never created — and a report racing an incomplete append must not publish
+    // before the row lands. So after the wait, a tail that still does not parse
+    // is damage no matter who holds the lock.
+    test('a live writer does NOT make a torn tail intact — it only buys a wait', () => {
+      const dir = freshDir();
+      process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+      fs.mkdirSync(dir, { recursive: true });
+      const f = path.join(dir, 'ledger.jsonl');
       append({ ts: 'a', kind: 'request' });
-      fs.appendFileSync(f2, '{"in-flight":');      // torn FINAL line: expected
-      led = readLedger(f2);
-      assert.equal(led.malformed, 0, 'an unterminated last line is a normal in-flight append');
-      assert.equal(led.intact, true);
+      fs.appendFileSync(f, '{"never-completed":');
+      // A lock owned by THIS process, freshly stamped: a genuinely live writer
+      // that nonetheless never completes the fragment.
+      fs.writeFileSync(path.join(dir, '.ledger.lock'), `${process.pid} ${Date.now()}`);
+      const led = readLedger(f);
+      assert.equal(led.torn, 1, 'the wait expired and the fragment still does not parse');
+      assert.equal(led.intact, false);
+      process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+    });
+
+    test('a fragment healed into an interior line is still counted', () => {
+      const dir = freshDir();
+      process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+      fs.mkdirSync(dir, { recursive: true });
+      const f = path.join(dir, 'ledger.jsonl');
+      append({ ts: 'a', kind: 'request' });
+      fs.appendFileSync(f, '{"torn":');
+      // A completing append heals the file by prefixing a newline to its OWN
+      // record — that does not recover the lost event, it just stops the damage
+      // swallowing the next one. The fragment becomes INTERIOR, so it must
+      // still show up, as `malformed` rather than `torn`.
+      append({ ts: 'b', kind: 'request' });
+      const led = readLedger(f);
+      assert.equal(led.torn, 0);
+      assert.equal(led.malformed, 1, 'healing is not recovery — the event stays lost and counted');
+      assert.equal(led.intact, false);
+      process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+    });
+
+    test('an ABANDONED torn FINAL row is damage and suppresses the rate', () => {
+      const dir = freshDir();
+      process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+      fs.mkdirSync(dir, { recursive: true });
+      const f = path.join(dir, 'ledger.jsonl');
+      append({ ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' });
+      fs.appendFileSync(f, '{"abandoned":');       // no lock file => no live writer
+      const led = readLedger(f);
+      assert.equal(led.torn, 1, 'nothing will ever heal this fragment');
+      assert.equal(led.intact, false);
+      const s = summarize(led.records, null, '2026-08-04T00:00:00.000Z', led);
+      assert.equal(s.interrupts, 1, 'the raw count is still shown');
+      assert.equal(s.interrupts_per_week, null, 'but a ledger missing an event publishes no rate');
+      process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+    });
+
+    test('a torn FINAL row under a STALE lock is still damage', () => {
+      const dir = freshDir();
+      process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+      fs.mkdirSync(dir, { recursive: true });
+      const f = path.join(dir, 'ledger.jsonl');
+      append({ ts: 'a', kind: 'request' });
+      fs.appendFileSync(f, '{"abandoned":');
+      // Our own pid — alive — but stamped long ago. Liveness of the PID is not
+      // evidence the LOCK is held; a recycled pid must not exempt the fragment.
+      fs.writeFileSync(path.join(dir, '.ledger.lock'), `${process.pid} ${Date.now() - 600000}`);
+      const led = readLedger(f);
+      assert.equal(led.torn, 1, 'a stale stamp means the holder is long gone');
+      assert.equal(led.intact, false);
       process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
     });
 
@@ -702,7 +772,7 @@ describe('outcome + report', () => {
     const rows = [
       { ts: '2026-07-28T00:00:00.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
       { ts: '2026-07-28T00:00:01.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
-      { ts: '2026-07-28T00:00:02.000Z', kind: 'outcome', ref: 'd:same' },
+      { ts: '2026-07-28T00:00:02.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'executed' },
     ];
     const s = summarize(rows, null, '2026-08-04T00:00:00.000Z');
     assert.equal(s.requests, 2);
@@ -714,8 +784,8 @@ describe('outcome + report', () => {
     const rows = [
       { ts: '2026-07-28T00:00:00.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
       { ts: '2026-07-28T00:00:01.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
-      { ts: '2026-07-28T00:00:02.000Z', kind: 'outcome', ref: 'd:same' },
-      { ts: '2026-07-28T00:00:03.000Z', kind: 'outcome', ref: 'd:same' },
+      { ts: '2026-07-28T00:00:02.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'executed' },
+      { ts: '2026-07-28T00:00:03.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'executed' },
     ];
     const s = summarize(rows, null, '2026-08-04T00:00:00.000Z');
     assert.equal(s.executed, 2);
@@ -738,7 +808,7 @@ describe('outcome + report', () => {
 
   const WEEK_ROWS = [
     { ts: '2026-07-28T00:00:00.000Z', kind: 'request', ref: 'a', class: 'bash:ls', shadow_verdict: 'allow' },
-    { ts: '2026-07-28T00:00:01.000Z', kind: 'outcome', ref: 'a' },
+    { ts: '2026-07-28T00:00:01.000Z', kind: 'outcome', ref: 'a', actual_verdict: 'executed' },
     { ts: '2026-07-29T00:00:00.000Z', kind: 'request', ref: 'b', class: 'bash:node x', shadow_verdict: 'abstain' },
     { ts: '2026-07-29T00:00:02.000Z', kind: 'notification', notification_type: 'permission_prompt' },
     { ts: '2026-08-04T00:00:00.000Z', kind: 'request', ref: 'c', class: 'bash:ls', shadow_verdict: 'allow' },
@@ -862,5 +932,527 @@ describe('outcome + report', () => {
     const r = runHook(['report', '--json'], '', dir);
     assert.equal(r.status, 0);
     assert.equal(JSON.parse(r.stdout).requests, 1);
+  });
+});
+
+// --- HIMMEL-1539: the recorder can say when it recorded NOTHING ---------------
+//
+// All three gaps this block covers failed in the SAME direction — the gate
+// number came out understated with nothing to signal it — which is the one
+// failure mode HIMMEL-1529's own README argues is worse than having no
+// instrument at all, because the number still looks like a number.
+
+describe('dropped writes are visible, not silent', () => {
+  test('lock exhaustion records a drop instead of losing the event silently', () => {
+    const dir = freshDir();
+    process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+    fs.mkdirSync(dir, { recursive: true });
+    // A lock held by a LIVE pid with a FRESH stamp: breakStaleLock must not
+    // reclaim it, so withLock burns its retries and gives the record up.
+    fs.writeFileSync(path.join(dir, '.ledger.lock'), `${process.pid} ${Date.now()}`);
+
+    const result = append({ ts: 'a', kind: 'request' });
+    assert.equal(result, null, 'the append is given up — fail-open, never block');
+
+    const drops = readDrops(path.join(dir, 'drops.jsonl'));
+    assert.equal(drops.length, 1, 'and the loss is RECORDED');
+    assert.equal(drops[0].reason, 'lock_exhausted');
+    process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+  });
+
+  test('a failed append records a drop rather than being swallowed by fail-open', () => {
+    const dir = freshDir();
+    process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+    fs.mkdirSync(dir, { recursive: true });
+    // A directory where the ledger file belongs: every write to it throws.
+    // Previously the exception reached the top-level fail-open handler, which
+    // exited 0 and said nothing — correct for the tool call, silent for the
+    // measurement.
+    fs.mkdirSync(path.join(dir, 'ledger.jsonl'), { recursive: true });
+
+    const result = append({ ts: 'a', kind: 'request' });
+    assert.equal(result, null);
+
+    const drops = readDrops(path.join(dir, 'drops.jsonl'));
+    assert.equal(drops.length, 1);
+    assert.equal(drops[0].reason, 'append_failed');
+    process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+  });
+
+  test('a window with dropped writes publishes NO rate', () => {
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+    ];
+    const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
+    const clean = summarize(rows, null, '2026-08-04T00:00:00.000Z', intact, []);
+    assert.equal(clean.interrupts_per_week, 1, 'a clean window still reports a rate');
+
+    const dropped = summarize(rows, null, '2026-08-04T00:00:00.000Z', intact, [
+      { ts: '2026-07-30T00:00:00.000Z', reason: 'lock_exhausted' },
+    ]);
+    assert.equal(dropped.interrupts, 1, 'the raw count is still shown');
+    assert.equal(dropped.dropped_writes, 1);
+    assert.equal(
+      dropped.interrupts_per_week, null,
+      'the chain validates the rows that LANDED; it cannot attest the ones that never did',
+    );
+  });
+
+  test('an unparseable drop row still counts as a drop', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, 'drops.jsonl');
+    fs.writeFileSync(f, '{"ts":"2026-08-01T00:00:00.000Z","reason":"lock_exhausted"}\n{"tor\n');
+    const drops = readDrops(f);
+    assert.equal(drops.length, 2, 'discarding it would restore the exact blindness this removes');
+    assert.equal(drops[1].ts, null);
+    // Drops are not expired by timestamp at all (round 6), so BOTH count —
+    // the readable one and the one whose row could not be parsed.
+    const s = summarize([], '2026-08-04T00:00:00.000Z', '2026-08-05T00:00:00.000Z', null, drops);
+    assert.equal(s.dropped_writes, 2, 'a recorded loss counts regardless of what its ts claims');
+  });
+
+  // [codex-adv round 5] A truthy-but-unusable `ts` defeated the window filter:
+  // {"ts":123} is valid JSON, so readDrops kept it verbatim, `!d.ts` was false,
+  // and `123 >= "2026-..."` compared false — excluding a KNOWN recorder failure
+  // and restoring the rate it was supposed to suppress.
+  test('a malformed drop timestamp cannot restore a suppressed rate', () => {
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+    ];
+    const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
+    for (const badTs of [123, null, undefined, {}, 'not-a-date', '']) {
+      const s = summarize(rows, '2026-07-01T00:00:00.000Z', '2026-08-04T00:00:00.000Z', intact,
+        [{ ts: badTs, reason: 'append_failed' }]);
+      assert.equal(s.dropped_writes, 1, `ts=${JSON.stringify(badTs)} must still count`);
+      assert.equal(s.interrupts_per_week, null, `ts=${JSON.stringify(badTs)} must suppress the rate`);
+    }
+  });
+
+  // [codex-adv round 6] `null`, `42` and `"x"` are all valid JSON. Every
+  // consumer dereferences `.kind`, so an unvalidated row threw a TypeError that
+  // the fail-open handler turned into exit 0 with EMPTY stdout — corruption
+  // producing neither a report nor a warning.
+  test('a valid-JSON non-object row is damage, not a crash', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, 'ledger.jsonl');
+    fs.writeFileSync(f, 'null\n42\n"x"\n[1,2]\n');
+    const led = readLedger(f);
+    assert.equal(led.records.length, 0);
+    assert.equal(led.malformed, 4, 'each unusable shape is counted');
+    assert.equal(led.intact, false);
+  });
+
+  test('report still produces output over a corrupted ledger', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'ledger.jsonl'), 'null\n');
+    const r = runHook(['report'], '', dir);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /shadow ledger/, 'corruption must not yield silent empty output');
+    assert.match(r.stdout, /INTEGRITY/);
+  });
+
+  // [CodeRabbit App] process.exit() can truncate a pending stdout write when
+  // stdout is a pipe — which is how report is always read. A truncated report
+  // is the same silence rounds 6 and 7 closed, reached by another route.
+  test('a LARGE report survives the pipe intact', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    // Enough distinct classes to push the report well past a pipe buffer's
+    // first chunk, so a truncating exit would visibly cut the tail off.
+    for (let i = 0; i < 400; i++) {
+      runHook(['pre'], JSON.stringify({
+        session_id: 's1', tool_use_id: `t${i}`, tool_name: 'Bash',
+        tool_input: { command: `echo case-${i}` },
+      }), dir);
+    }
+    const r = runHook(['report'], '', dir);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /shadow ledger/, 'the head is present');
+    // The NOTE block is the last thing printed before the class table, so its
+    // presence proves the tail was not cut off.
+    assert.match(r.stdout, /gate number is APPROVAL INTERRUPTS per week/, 'the tail survived');
+    assert.match(r.stdout, /requests recorded 400/);
+  });
+
+  test('report FAILS LOUDLY rather than exiting 0 with nothing', () => {
+    // Fail-open is a HOOK contract; `report` is the operator reading the
+    // instrument. A directory where the ledger belongs makes readLedger flag
+    // it unreadable, which must still print — never a silent exit 0.
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'ledger.jsonl'), { recursive: true });
+    const r = runHook(['report'], '', dir);
+    assert.equal(r.status, 0);
+    assert.notEqual(r.stdout.trim(), '', 'silence is the one answer this file must not give');
+  });
+
+  // [codex-adv round 6] Drops are no longer expired by timestamp AT ALL. A
+  // backward clock step across the cutoff re-dated an in-window failure as old,
+  // producing dropped_writes=0 and a confident rate over known-missing events.
+  // There is no durable proof a drop predates a window, so a recorded drop
+  // suppresses until an operator acknowledges it by rotating drops.jsonl.
+  test('a drop does not expire on wall-clock, however old it looks', () => {
+    const rows = [
+      { ts: '2026-08-02T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+    ];
+    const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
+    const s = summarize(rows, '2026-08-01T00:00:00.000Z', '2026-08-04T00:00:00.000Z', intact,
+      [{ ts: '2026-07-01T00:00:00.000Z', reason: 'append_failed' }]);
+    assert.equal(s.dropped_writes, 1);
+    assert.equal(s.interrupts_per_week, null, 'a clock cannot be trusted to expire a known loss');
+  });
+
+  // [codex-adv round 7] Round 6 documented "rotate drops.jsonl to acknowledge",
+  // which LAUNDERS the loss: the missing event is still absent from the window,
+  // but the rate returns. Reproduced — null with a drop, 0/week immediately
+  // after rotation. There is now deliberately no acknowledgement path that
+  // restores a rate; doing it honestly needs HIMMEL-1547's checkpoint.
+  test('the report does not offer a recovery that launders the loss', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'drops.jsonl'),
+      '{"ts":"2026-08-01T00:00:00.000Z","reason":"append_failed"}\n');
+    const r = runHook(['report'], '', dir);
+    assert.match(r.stdout, /Drops do NOT/);
+    assert.match(r.stdout, /HIMMEL-1547/);
+    assert.doesNotMatch(r.stdout, /acknowledge them by rotating/);
+  });
+
+  test('report names the drop channel instead of implying a floor is a measurement', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, 'drops.jsonl'),
+      '{"ts":"2026-08-01T00:00:00.000Z","reason":"append_failed"}\n',
+    );
+    const r = runHook(['report'], '', dir);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /DROPPED WRITES/);
+    assert.match(r.stdout, /no rate published/);
+  });
+
+  // [codex-adv round 1, high] recordDrop writes beside the ledger, so a
+  // volume-wide failure can lose the ledger event AND its drop row together.
+  // That residual is documented, not claimed away. What IS fixed: a health
+  // channel that exists but cannot be READ must not read as "no drops".
+  test('an UNREADABLE health channel counts as a drop, never as clean', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    // A directory where drops.jsonl belongs: readFileSync throws EISDIR, not
+    // ENOENT — i.e. the channel exists but cannot be read.
+    fs.mkdirSync(path.join(dir, 'drops.jsonl'), { recursive: true });
+    const drops = readDrops(path.join(dir, 'drops.jsonl'));
+    assert.equal(drops.length, 1);
+    assert.equal(drops[0].reason, 'health_channel_unreadable');
+
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+    ];
+    const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z', intact, drops);
+    assert.equal(s.interrupts_per_week, null, 'unknown must not present as clean');
+    assert.equal(s.health_channel_unreadable, true);
+  });
+
+  test('a MISSING health channel is the ordinary healthy case', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    // ENOENT means no drop has ever been recorded — that is genuinely clean,
+    // and must NOT suppress the rate or the gate becomes unusable.
+    assert.deepEqual(readDrops(path.join(dir, 'drops.jsonl')), []);
+  });
+
+  test('an unreadable LEDGER does not read as an empty intact one', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'ledger.jsonl'), { recursive: true });
+    const led = readLedger(path.join(dir, 'ledger.jsonl'));
+    assert.equal(led.intact, false, 'cannot-read is unknown, not clean');
+    // [glm round 4] An unopenable FILE is not an unparseable ROW. Counting it
+    // as malformed suppressed the rate correctly but printed "1 unreadable
+    // row(s)" over a file with zero rows — a true verdict via a false claim.
+    assert.equal(led.unreadable, true);
+    assert.equal(led.malformed, 0, 'there are no rows to be malformed');
+  });
+
+  test('the report distinguishes an unreadable FILE from unparseable ROWS', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(path.join(dir, 'ledger.jsonl'), { recursive: true });
+    const r = runHook(['report'], '', dir);
+    assert.equal(r.status, 0);
+    assert.match(r.stdout, /could not be read/);
+    assert.doesNotMatch(r.stdout, /unparseable row/);
+  });
+
+  test('a ledger that does not exist yet IS intact', () => {
+    const dir = freshDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const led = readLedger(path.join(dir, 'ledger.jsonl'));
+    assert.equal(led.intact, true);
+    assert.deepEqual(led.records, []);
+  });
+
+  test('healthPath is a different file from the ledger', () => {
+    const dir = freshDir();
+    process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+    // The drop channel must not share the ledger's lock or its chain: the events
+    // it records are precisely the ones the ledger could not record.
+    assert.notEqual(healthPath(), path.join(dir, 'ledger.jsonl'));
+    process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+  });
+});
+
+describe('failed and denied calls get a terminal outcome', () => {
+  const CALL = JSON.stringify({
+    session_id: 's1',
+    tool_use_id: 'toolu_x',
+    tool_name: 'Bash',
+    tool_input: { command: 'ls' },
+  });
+
+  test('PostToolUseFailure records executed_failed, not a silent unresolved', () => {
+    const dir = freshDir();
+    runHook(['pre'], CALL, dir);
+    runHook(['postfail'], CALL, dir);
+    const rows = readAll(path.join(dir, 'ledger.jsonl'));
+    assert.equal(rows.length, 2);
+    assert.equal(rows[1].actual_verdict, 'executed_failed');
+    assert.equal(rows[1].prev_hash, rows[0].hash, 'the outcome extends the chain');
+
+    const s = summarize(rows);
+    assert.equal(s.executed_failed, 1);
+    assert.equal(s.unresolved, 0, 'a call that ran and failed is RESOLVED');
+    assert.equal(s.executed, 0, 'and it is not counted as a success');
+  });
+
+  test('PermissionDenied records an AUTO-CLASSIFIER-scoped denial', () => {
+    const dir = freshDir();
+    runHook(['pre'], CALL, dir);
+    runHook(['denied'], CALL, dir);
+    const rows = readAll(path.join(dir, 'ledger.jsonl'));
+    // [codex-adv round 1] The hook reference is explicit that PermissionDenied
+    // fires only "when a tool call is denied by the auto mode classifier" —
+    // manual denials, deny rules and PreToolUse blocks do NOT raise it. The
+    // verdict is named for what it actually observes; a plain `denied` would
+    // read as complete denial coverage, which is the exact failure class this
+    // ticket exists to remove.
+    assert.equal(rows[1].actual_verdict, 'denied_auto_classifier');
+    const s = summarize(rows);
+    assert.equal(s.denied_auto_classifier, 1);
+    assert.equal(s.unresolved, 0);
+  });
+
+  test('the report does not claim denial coverage it does not have', () => {
+    const dir = freshDir();
+    runHook(['pre'], CALL, dir);
+    runHook(['denied'], CALL, dir);
+    const r = runHook(['report'], '', dir);
+    assert.match(r.stdout, /AUTO-MODE CLASSIFIER denials ONLY/);
+    assert.match(r.stdout, /manual denials, deny rules and PreToolUse blocks do NOT appear here/);
+  });
+
+  test('failures and denials no longer collapse into one bucket', () => {
+    // The defect: with only PostToolUse wired, BOTH of these landed in
+    // `unresolved` alongside genuine strands, so actual_verdict data was
+    // corrupted by construction — a failure is not an approval interrupt and a
+    // denial is.
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'request', ref: 'a', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-07-28T00:00:01.000Z', kind: 'request', ref: 'b', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-07-28T00:00:02.000Z', kind: 'request', ref: 'c', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-07-28T00:00:03.000Z', kind: 'outcome', ref: 'a', actual_verdict: 'executed' },
+      { ts: '2026-07-28T00:00:04.000Z', kind: 'outcome', ref: 'b', actual_verdict: 'executed_failed' },
+      { ts: '2026-07-28T00:00:05.000Z', kind: 'outcome', ref: 'c', actual_verdict: 'denied_auto_classifier' },
+    ];
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z');
+    assert.deepEqual(
+      { e: s.executed, f: s.executed_failed, d: s.denied_auto_classifier, u: s.unresolved },
+      { e: 1, f: 1, d: 1, u: 0 },
+    );
+  });
+
+  test('an UNRECOGNISED verdict surfaces as other, never as executed', () => {
+    // Same rule as uncounted_notification_types: a vocabulary this file does not
+    // control must show up by name rather than vanish into the flattering bucket.
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'request', ref: 'a', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-07-28T00:00:01.000Z', kind: 'outcome', ref: 'a', actual_verdict: 'teleported' },
+    ];
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z');
+    assert.equal(s.executed, 0);
+    assert.equal(s.outcome_other, 1);
+    assert.equal(s.unresolved, 0, 'it IS resolved — just not by a verdict we know');
+  });
+
+  test('the outcome verdict is consumed per request, not shared across a ref', () => {
+    // The per-ref budget still holds under verdict-bearing outcomes: two
+    // same-ref requests with one denial are one denied and one unresolved.
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-07-28T00:00:01.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-07-28T00:00:02.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'denied_auto_classifier' },
+    ];
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z');
+    assert.equal(s.denied_auto_classifier, 1);
+    assert.equal(s.unresolved, 1);
+  });
+
+  // [codex-adv round 2] A `--days` cutoff that slices between a request and its
+  // outcome leaves an ORPHAN outcome inside the window. Before this fix a later
+  // request sharing the derived `d:` ref consumed it — codex's reproduction
+  // returned executed=1/unresolved=0 for a request that never ran.
+  test('an orphan outcome cannot resolve a LATER request', () => {
+    const rows = [
+      // The earlier call's request is outside the window; only its outcome is in.
+      { ts: '2026-07-30T00:00:00.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'executed' },
+      // A later, identical call that never produced an outcome of its own.
+      { ts: '2026-07-31T00:00:00.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+    ];
+    const s = summarize(rows, '2026-07-29T00:00:00.000Z', '2026-08-05T00:00:00.000Z');
+    assert.equal(s.requests, 1);
+    assert.equal(s.executed, 0, 'an outcome that PRECEDES a request is not its outcome');
+    assert.equal(s.unresolved, 1, 'the un-executed request must stay visible');
+  });
+
+  // [codex-adv round 3] Wall-clock does not prove ordering. Row position does —
+  // the ledger is append-only and hash-chained. These are the two boundaries
+  // where a `ts` comparison broke, both measured on the previous fix.
+  test('an EQUAL timestamp does not let an orphan outcome be consumed', () => {
+    const rows = [
+      { ts: '2026-07-31T00:00:00.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'executed' },
+      { ts: '2026-07-31T00:00:00.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+    ];
+    const s = summarize(rows, null, '2026-08-05T00:00:00.000Z');
+    assert.equal(s.executed, 0, 'the outcome sits EARLIER in the ledger; it cannot be this request\'s');
+    assert.equal(s.unresolved, 1);
+  });
+
+  test('a BACKWARD clock adjustment does not lose a real outcome', () => {
+    const rows = [
+      { ts: '2026-07-31T00:00:00.002Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+      // Physically after the request, but stamped 1 ms earlier by a clock step.
+      { ts: '2026-07-31T00:00:00.001Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'executed' },
+    ];
+    const s = summarize(rows, null, '2026-08-05T00:00:00.000Z');
+    assert.equal(s.executed, 1, 'row position says it followed, and row position is the truth');
+    assert.equal(s.unresolved, 0);
+  });
+
+  // [codex-adv round 4] Correlation must run over the FULL history, with the
+  // window applied to the RESULTS. Filtering requests first left the pre-cutoff
+  // request's outcome unclaimed, and the in-window request sharing its derived
+  // ref consumed it — reporting an execution that request never had.
+  test('an outcome belonging to a PRE-CUTOFF request cannot be stolen', () => {
+    const rows = [
+      // Owner, before the cutoff.
+      { ts: '2026-07-20T00:00:00.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+      // A new request after the cutoff, sharing the derived ref.
+      { ts: '2026-08-01T00:00:00.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+      // The FIRST request's outcome, landing after the second request started.
+      { ts: '2026-08-02T00:00:00.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'executed' },
+    ];
+    const s = summarize(rows, '2026-07-30T00:00:00.000Z', '2026-08-05T00:00:00.000Z');
+    assert.equal(s.requests, 1, 'only the post-cutoff request is counted');
+    assert.equal(s.executed, 0, 'its predecessor claimed that outcome');
+    assert.equal(s.unresolved, 1);
+  });
+
+  test('an outcome outside the window still resolves an in-window request', () => {
+    // Outcomes are deliberately NOT window-filtered: a request just inside the
+    // cutoff must still be resolvable by its own outcome.
+    const rows = [
+      { ts: '2026-07-31T00:00:00.000Z', kind: 'request', ref: 'r1', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-08-01T00:00:00.000Z', kind: 'outcome', ref: 'r1', actual_verdict: 'executed' },
+    ];
+    const s = summarize(rows, '2026-07-30T00:00:00.000Z', '2026-08-05T00:00:00.000Z');
+    assert.equal(s.executed, 1);
+    assert.equal(s.unresolved, 0);
+  });
+
+  test('an outcome that follows its request still resolves it', () => {
+    // The guard must not over-correct: ordinary same-ref pairs still match.
+    const rows = [
+      { ts: '2026-07-31T00:00:00.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-07-31T00:00:01.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'executed' },
+      { ts: '2026-07-31T00:00:02.000Z', kind: 'request', ref: 'd:same', class: 'bash:ls', shadow_verdict: 'allow' },
+      { ts: '2026-07-31T00:00:03.000Z', kind: 'outcome', ref: 'd:same', actual_verdict: 'denied_auto_classifier' },
+    ];
+    const s = summarize(rows, null, '2026-08-05T00:00:00.000Z');
+    assert.equal(s.executed, 1);
+    assert.equal(s.denied_auto_classifier, 1);
+    assert.equal(s.unresolved, 0);
+  });
+
+  test('the failure and denial hooks still never emit a permission decision', () => {
+    const dir = freshDir();
+    for (const verb of ['postfail', 'denied', 'permreq']) {
+      const r = runHook([verb], CALL, dir);
+      assert.equal(r.status, 0, `${verb} exits 0`);
+      assert.equal(r.stdout.trim(), '', `${verb} writes nothing to stdout`);
+    }
+  });
+});
+
+describe('PermissionRequest is an EVENT count, not an interrupt count', () => {
+  test('it is recorded and counted separately from the Notification proxy', () => {
+    const dir = freshDir();
+    runHook(['permreq'], JSON.stringify({ session_id: 's1', tool_name: 'Bash' }), dir);
+    runHook(['notify'], JSON.stringify({ session_id: 's1', notification_type: 'permission_prompt' }), dir);
+    const s = summarize(readAll(path.join(dir, 'ledger.jsonl')));
+    assert.equal(s.permission_request_events, 1, 'the event count');
+    assert.equal(s.interrupts, 1, 'the Notification-derived count, kept independent');
+  });
+
+  // [codex-adv round 2] The event fires when a decision is NEEDED, which is not
+  // the same as a human being interrupted — W0 probe P5 measured an `ask`
+  // hanging 902 s in an armed session with nobody present to answer. Labelling
+  // the count a direct interrupt observation would inflate the gate number
+  // precisely in the unattended runs this harness does most.
+  test('the report does not claim these are human interruptions', () => {
+    const dir = freshDir();
+    runHook(['permreq'], JSON.stringify({ session_id: 's1', tool_name: 'Bash' }), dir);
+    const r = runHook(['report'], '', dir);
+    assert.match(r.stdout, /permission-request events/);
+    assert.match(r.stdout, /NOT proof anyone was interrupted/);
+  });
+
+  test('permission_mode is persisted but not interpreted', () => {
+    const dir = freshDir();
+    runHook(['permreq'], JSON.stringify({
+      session_id: 's1', tool_name: 'Bash', permission_mode: 'auto',
+    }), dir);
+    const rows = readAll(path.join(dir, 'ledger.jsonl'));
+    // Stored as the only interactivity-adjacent signal on the payload. No count
+    // splits on it yet — that would claim a distinction not yet demonstrated.
+    assert.equal(rows[0].permission_mode, 'auto');
+  });
+
+  test('it does NOT silently become the gate number', () => {
+    // Two independent estimators of one quantity are how you find out which is
+    // right. Swapping the gate metric onto the new surface would replace a
+    // measured number with an unvalidated one and destroy the comparison.
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'permission_request', tool: 'Bash' },
+      { ts: '2026-07-29T00:00:00.000Z', kind: 'permission_request', tool: 'Bash' },
+    ];
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z');
+    assert.equal(s.permission_request_events, 2);
+    assert.equal(s.interrupts, 0, 'interrupts still counts Notification rows only');
+    assert.equal(s.interrupts_per_week, 0);
+  });
+
+  test('an interrupt on a non-recorded tool is still an interrupt', () => {
+    // No RECORDED_TOOLS filter: the row carries no request payload to classify,
+    // and an approval interrupt counts whatever tool raised it.
+    const dir = freshDir();
+    runHook(['permreq'], JSON.stringify({ session_id: 's1', tool_name: 'WebFetch' }), dir);
+    const rows = readAll(path.join(dir, 'ledger.jsonl'));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].kind, 'permission_request');
+    assert.equal(rows[0].tool, 'WebFetch');
   });
 });

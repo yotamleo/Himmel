@@ -23,9 +23,11 @@ artefact, and this is the one figure the programme is gated on.
 ## Wiring (operator action — `.claude/settings.json` is deny-listed to agents)
 
 `Edit(**/.claude/settings.json)` is an explicit deny rule, so an agent cannot
-wire this itself. Add these three entries by hand. Nothing else changes, and
-each is a new array element rather than an edit to an existing one, so it
-merges cleanly against in-flight hook-wiring branches.
+wire this itself. Add these **six** entries by hand — three appended to existing
+arrays (`PreToolUse`, `PostToolUse`) or added as `Notification`, plus the three
+outcome/permission keys HIMMEL-1539 added. Nothing else changes, and each is a
+new array element or a new top-level key rather than an edit to an existing one,
+so it merges cleanly against in-flight hook-wiring branches.
 
 `PreToolUse` — append at the end of the array:
 
@@ -62,6 +64,73 @@ himmel-ops plugin owns the existing Notification hook and is untouched):
 ]
 ```
 
+`PostToolUseFailure`, `PermissionDenied`, `PermissionRequest` — three more new
+top-level keys (HIMMEL-1539). Without them a failed call and a denied call both
+land in `unresolved`, which corrupts the outcome data by construction:
+
+```json
+"PostToolUseFailure": [
+  {
+    "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+    "hooks": [
+      { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" postfail", "timeout": 10 }
+    ]
+  }
+],
+"PermissionDenied": [
+  {
+    "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+    "hooks": [
+      { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" denied", "timeout": 10 }
+    ]
+  }
+],
+"PermissionRequest": [
+  {
+    "hooks": [
+      { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" permreq", "timeout": 10 }
+    ]
+  }
+]
+```
+
+**Matchers: two of the three carry one, `PermissionRequest` deliberately does
+not.** Verified against the Claude Code hook reference — `PostToolUseFailure`,
+`PermissionRequest` and `PermissionDenied` are all tool events whose matcher
+filters on tool name, exactly like `PreToolUse`/`PostToolUse`. So `postfail` and
+`denied` carry the same matcher as the `PostToolUse` block above. `permreq` is
+left unmatched ON PURPOSE: an approval interrupt counts whatever tool raised it,
+and that row carries no request payload to classify. The recorder also filters
+internally (`postfail`/`denied` record only `RECORDED_TOOLS`), so the matcher is
+belt-and-braces there rather than the only guard.
+
+**`PermissionDenied` does NOT mean "every denial".** The hook reference is
+explicit that it fires *when a tool call is denied by the auto mode classifier*.
+A manual operator denial, a `deny` permission rule, and a `PreToolUse` block do
+**not** raise it. The recorded verdict is therefore named
+`denied_auto_classifier`, and `report` labels it *AUTO-MODE CLASSIFIER denials
+ONLY* — those other denial sources still land in `unresolved`. Naming it plain
+`denied` would have been the same mistake this whole ticket is about: a partial
+signal wearing a name that reads as complete coverage.
+
+`PermissionRequest` fires when a tool call **needs a permission decision** — and
+that is not the same as a human being interrupted. In an armed or otherwise
+unattended session the event still fires with nobody present; this programme
+measured that directly (W0 probe P5: a hook returning `ask` hung for 902 s on a
+dialog no one could answer). So `report` calls the figure permission-request
+**events**, never a direct interrupt count — labelling it otherwise would
+inflate the gate number exactly in the unattended runs this harness does most.
+
+It is recorded and reported **alongside** the Notification-derived count, not
+swapped in as the gate number: two independent estimators of one quantity are
+how you find out which is right, and silently switching would replace a measured
+figure with an unvalidated one while destroying the comparison that would have
+settled it. HIMMEL-1539 raised this as a design input for HIMMEL-1530;
+collecting both is what makes that decision evidence-based. `permission_mode` is
+persisted on the row as the only interactivity-adjacent signal available — it is
+**stored, not interpreted**, and no count splits on it until that distinction
+can actually be shown.
+
 The commands invoke `node` directly rather than `bash`, so they are not exposed
 to the Windows bash-resolution failure behind HIMMEL-1516/1526 (bare `bash`
 resolving to the system32 WSL stub or the zero-byte WindowsApps alias).
@@ -78,12 +147,40 @@ and the whole claim of the ticket is that it is not one. Ten seconds is well
 above the bounded lock budget and well below anything an operator would sit
 through.
 
-**One thing this wiring does NOT observe.** `PostToolUseFailure` and
-`PermissionDenied` are real hook events carrying `tool_use_id`, and they are not
-wired here, so a failed call and a denied call both land in `unresolved` rather
-than as distinct outcomes. That is a known limitation of R0, not an oversight —
-tracked in HIMMEL-1539, together with the recorder-health gaps. Read the
-`unresolved` count with that in mind.
+**What `unresolved` still means.** With all six blocks wired it is a call with no
+terminal outcome observed — stranded or crashed. If the failure/denial keys are
+NOT pasted, denials and failures fall back into it. The report cannot tell a
+wired-and-quiet harness from an unwired one, so its wording keeps both readings.
+
+**When the recorder loses an event, `report` says so.** Lock exhaustion and
+failed appends are recorded to `drops.jsonl`, a file deliberately outside the
+ledger's lock and hash chain — the events it holds are exactly the ones the
+ledger could not hold. **Any recorded drop suppresses the weekly rate**, and
+drops are deliberately NOT expired by timestamp — two review rounds showed a
+clock cannot be trusted to expire a known loss (a non-string `ts` escaped the
+window, and a backward clock step re-dated an in-window failure as old, both
+restoring a confident rate over missing events). An abandoned torn tail
+suppresses it too.
+
+There is deliberately **no acknowledgement path that restores the rate**.
+Deleting `drops.jsonl` does not make the lost event exist: the window still
+covers a gap, so the rate would return over data known to be incomplete.
+Restoring one honestly requires a durable `valid_since` checkpoint that moves
+the observation window past the loss — tracked in **HIMMEL-1547**, together with
+the collector-liveness heartbeat it shares machinery with. The hash chain can only attest rows that landed; it
+is structurally blind to rows that never did, and before HIMMEL-1539 that
+blindness produced an understated rate that looked exactly like a quiet week.
+
+**The residual blind spot, stated rather than papered over.** `drops.jsonl`
+lives on the same volume as the ledger, so a volume-wide failure — ENOSPC, inode
+exhaustion, a directory permission change — can lose the ledger event *and* its
+drop row together. Recovery then leaves a chain that validates cleanly over an
+incomplete history. This is not fully solvable by a second file on the same
+disk, so it is documented instead of claimed away. What IS handled: a health
+channel that exists but cannot be READ (EACCES/EIO) counts as a drop and
+suppresses the rate, rather than reading as "no drops" — unknown must never
+present as clean. Set `HIMMEL_TRUST_LEDGER_DIR` to a volume you monitor if this
+residual matters for your deployment.
 
 ## Where the ledger lives
 

@@ -56,6 +56,9 @@
 // USAGE (hooks wire these; see scripts/trust/README.md)
 //   node shadow-ledger.mjs pre      < PreToolUse payload
 //   node shadow-ledger.mjs post     < PostToolUse payload
+//   node shadow-ledger.mjs postfail < PostToolUseFailure payload
+//   node shadow-ledger.mjs denied   < PermissionDenied payload
+//   node shadow-ledger.mjs permreq  < PermissionRequest payload
 //   node shadow-ledger.mjs notify   < Notification payload
 //   node shadow-ledger.mjs report [--days N] [--json]
 
@@ -85,6 +88,14 @@ export function ledgerDir() {
 
 export function ledgerPath() {
   return path.join(ledgerDir(), 'ledger.jsonl');
+}
+
+// Recorder health, kept in a SEPARATE file from the ledger on purpose. The
+// events it records are the ones the ledger could not record, so anything that
+// shares the ledger's lock or its hash chain would be silent in exactly the
+// case it exists to report.
+export function healthPath() {
+  return path.join(ledgerDir(), 'drops.jsonl');
 }
 
 // --- hashing -----------------------------------------------------------------
@@ -199,6 +210,56 @@ function breakStaleLock(lock) {
   }
 }
 
+// A write this recorder could not perform. Fail-open stays the contract — the
+// caller still gets null and the tool call still proceeds — but the loss stops
+// being INVISIBLE. Without this the hash chain still validates (it validates the
+// rows that landed, never the rows that never did), so a contention spike or an
+// ENOSPC produces an understated rate that looks exactly like a quiet week.
+//
+// Deliberately reason CODES only, never the exception text: an error message can
+// carry a path or a command fragment, and this file does not store those.
+export function recordDrop(reason) {
+  try {
+    fs.mkdirSync(ledgerDir(), { recursive: true });
+    fs.appendFileSync(
+      healthPath(),
+      `${JSON.stringify({ ts: new Date().toISOString(), reason })}\n`,
+      'utf8',
+    );
+  } catch {
+    /* nothing further to try; the counter is a floor, and fail-open still holds */
+  }
+}
+
+// Is somebody mid-append RIGHT NOW? Only a live lock holder can be, and only
+// that case makes an unterminated final line innocent — see readLedger.
+//
+// Every uncertain branch answers NO (no lock, unreadable lock, unparseable
+// owner, stale stamp). That direction is deliberate: answering NO turns a torn
+// tail into declared damage, which SUPPRESSES the rate. The failure it avoids is
+// publishing a confident number over a missing row, and between "refuse to
+// publish" and "publish short" a measurement tool must pick the first.
+// The lock is derived from the LEDGER FILE's own directory, not from
+// ledgerDir(). readLedger accepts an arbitrary path, and asking the default
+// directory about some other ledger's writer would answer a question nobody
+// asked — innocently exempting a torn tail because an unrelated ledger happened
+// to be mid-append.
+function liveWriterPresent(file = ledgerPath()) {
+  const lock = path.join(path.dirname(file), '.ledger.lock');
+  let raw;
+  try {
+    raw = fs.readFileSync(lock, 'utf8');
+  } catch {
+    return false; // no lock file at all — nobody is writing
+  }
+  const [pidStr, tsStr] = raw.split(/\s+/);
+  const stamped = Number(tsStr);
+  // A stale stamp means the holder is long gone even if the pid got recycled.
+  if (!Number.isFinite(stamped) || Date.now() - stamped > STALE_LOCK_MS) return false;
+  const pid = Number(pidStr);
+  return Number.isFinite(pid) && pid > 0 ? pidAlive(pid) : false;
+}
+
 function withLock(fn) {
   const lock = path.join(ledgerDir(), '.ledger.lock');
   for (let i = 0; i < LOCK_TRIES; i++) {
@@ -219,6 +280,13 @@ function withLock(fn) {
     }
     try {
       return fn();
+    } catch {
+      // The write itself failed (ENOSPC, a transient permission fault, a full
+      // inode table). Previously this propagated to the top-level fail-open
+      // handler, which swallowed it and exited 0 — correct for the tool call,
+      // silent for the measurement. Record the loss, then keep failing open.
+      recordDrop('append_failed');
+      return null;
     } finally {
       try {
         fs.closeSync(fd);
@@ -236,6 +304,8 @@ function withLock(fn) {
       }
     }
   }
+  // Retries exhausted under sustained contention. The record is gone; say so.
+  recordDrop('lock_exhausted');
   return null;
 }
 
@@ -678,19 +748,84 @@ export function cmdPre(payload, now) {
   });
 }
 
-export function cmdPost(payload, now) {
+// The DECISION, recorded alongside the event. `actual_verdict` is asserted only
+// where it is OBSERVED; the absence of an outcome row is never read as "denied".
+//
+// One recorder for all three terminal outcomes rather than three near-copies.
+// The lesson this file already paid for twice (HIMMEL-1529 CR rounds 3 and 4):
+// when several call sites make the same structural read, converting them one at
+// a time moves the defect down a layer instead of fixing it, and every move
+// looks like a fix because the test just written passes.
+function recordOutcome(payload, now, verdict) {
   const tool = payload.tool_name ?? '';
   if (!RECORDED_TOOLS.includes(tool)) return null;
   const cls = classify(tool, payload.tool_input ?? {});
-  // The DECISION, recorded alongside the event. A Pre/Post pair alone cannot
-  // tell denied from stranded from crashed, so `executed` is asserted only
-  // where it is observed; the absence of this row is never read as "denied".
   return append({
     ts: now,
     kind: 'outcome',
     ref: refFor(payload, cls),
     session_id: payload.session_id ?? null,
-    actual_verdict: 'executed',
+    actual_verdict: verdict,
+  });
+}
+
+export function cmdPost(payload, now) {
+  return recordOutcome(payload, now, 'executed');
+}
+
+// PostToolUseFailure — the call RAN and failed. Distinct from a denial: the
+// harness let it through, so it is not an approval interrupt and must not be
+// counted as one. Before this was wired it landed in `unresolved` alongside
+// genuine denials, which corrupted the agreement data by construction.
+export function cmdPostFailure(payload, now) {
+  return recordOutcome(payload, now, 'executed_failed');
+}
+
+// PermissionDenied — the call was REFUSED by the AUTO-MODE CLASSIFIER, and
+// only by it. Verified against the Claude Code hook reference: the event fires
+// "when a tool call is denied by the auto mode classifier". A manual operator
+// denial, a `deny` permission rule, and a PreToolUse block do NOT raise it, so
+// those requests still land in `unresolved`.
+//
+// The verdict is named for what it actually observes rather than for
+// "denied" in general. A short name that overstates its own scope is how a
+// partial signal gets read as complete coverage — the same failure class as a
+// weekly rate computed over rows that silently went missing.
+export function cmdDenied(payload, now) {
+  return recordOutcome(payload, now, 'denied_auto_classifier');
+}
+
+// PermissionRequest — fires when a tool call NEEDS a permission decision.
+//
+// Read that literally, because the tempting reading is wrong: "a decision was
+// needed" is NOT "a human was interrupted". In an armed or otherwise unattended
+// session the event still fires and nobody is there to be interrupted — this
+// programme measured that directly (W0 probe P5: a hook returning `ask` hung
+// for 902 s on a dialog no one could answer). Counting these as operator
+// interrupts would inflate the one number the whole thing is gated on, with the
+// inflation concentrated in exactly the unattended runs this harness does most.
+//
+// So the count is reported as permission-request EVENTS, beside the
+// Notification-derived figure rather than as a replacement for it. Two
+// independent estimators of one quantity are how you find out which is right;
+// silently switching to the new surface would replace a measured number with an
+// unvalidated one and destroy the comparison. HIMMEL-1539 raised the choice as
+// a design input for HIMMEL-1530 — collecting both is what makes that decision
+// evidence-based instead of another round of argument.
+//
+// `permission_mode` is persisted because it is the only interactivity-adjacent
+// signal on the payload. It is stored, NOT interpreted: no count here claims to
+// separate a real dialog from an unattended one until that can be shown.
+//
+// No RECORDED_TOOLS filter, on purpose: a permission decision counts whatever
+// tool raised it, and this row carries no request payload to classify.
+export function cmdPermissionRequest(payload, now) {
+  return append({
+    ts: now,
+    kind: 'permission_request',
+    session_id: payload.session_id ?? null,
+    tool: payload.tool_name ?? null,
+    permission_mode: payload.permission_mode ?? null,
   });
 }
 
@@ -738,26 +873,92 @@ export function readAll(file = ledgerPath()) {
 // the read path checks it — this is not the standalone verification tooling the
 // ticket defers, it is the report refusing to publish a number it cannot stand
 // behind.
-export function readLedger(file = ledgerPath()) {
-  let text;
-  try {
-    text = fs.readFileSync(file, 'utf8');
-  } catch {
-    return { records: [], malformed: 0, brokenLinks: 0, intact: true };
-  }
+// One parse of the ledger text. Split out so the torn-tail path can re-read a
+// stable snapshot and run the IDENTICAL classification over it — re-deriving
+// the parse for the retry is how the two copies drift apart.
+function parseLedgerText(text) {
   const lines = text.split('\n');
   const records = [];
   let malformed = 0;
+  let torn = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line.trim()) continue;
     try {
-      records.push(JSON.parse(line));
+      const parsed = JSON.parse(line);
+      // A successfully PARSED value is not necessarily a usable ROW. `null`,
+      // `42` and `"x"` are all valid JSON, and every consumer downstream
+      // dereferences `.kind` — so an unvalidated row threw a TypeError that the
+      // fail-open handler turned into exit 0 with empty stdout. Corruption
+      // produced neither a report nor a warning. Shape is damage, not a crash.
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        malformed += 1;
+        continue;
+      }
+      records.push(parsed);
     } catch {
-      // An unterminated FINAL line is a torn in-flight append and is expected.
-      // Anywhere else it is real damage and must be counted, not swallowed.
-      if (i !== lines.length - 1) malformed += 1;
+      // An unterminated FINAL line MAY be a torn in-flight append. Anywhere
+      // else it is unambiguous damage.
+      if (i === lines.length - 1) torn += 1;
+      else malformed += 1;
     }
+  }
+  return { records, malformed, torn };
+}
+
+// Bounded wait for the writer lock to be released, so the retry above reads a
+// snapshot nobody is mid-append into. Bounded because a reader must never hang
+// on a wedged writer: if the budget runs out we simply re-read and judge what
+// is there, which fails toward declaring damage.
+function waitForLockToClear(file) {
+  const idle = new Int32Array(new SharedArrayBuffer(4)); // hoisted: one buffer, not one per retry
+  for (let i = 0; i < LOCK_TRIES; i++) {
+    if (!liveWriterPresent(file)) return;
+    Atomics.wait(idle, 0, 0, LOCK_WAIT_MS);
+  }
+}
+
+export function readLedger(file = ledgerPath()) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    // Same rule as readDrops: a ledger that does not exist yet is genuinely
+    // empty and intact. A ledger that exists but cannot be READ is unknown,
+    // and unknown must not present as clean.
+    if (e && e.code === 'ENOENT') {
+      return { records: [], malformed: 0, torn: 0, brokenLinks: 0, unreadable: false, intact: true };
+    }
+    // [glm round 4] A file that cannot be OPENED is not a row that failed to
+    // parse. Reporting it as `malformed: 1` suppressed the rate correctly but
+    // printed "1 unreadable row(s)" over a file with zero rows — a true verdict
+    // reached through a false statement, in the one surface this ticket exists
+    // to make honest.
+    return { records: [], malformed: 0, torn: 0, brokenLinks: 0, unreadable: true, intact: false };
+  }
+  let { records, malformed, torn } = parseLedgerText(text);
+  // A torn tail MAY be an append that is in flight right now and about to
+  // complete. Liveness decides whether to WAIT for it — never whether to
+  // forgive it. Forgiving on liveness alone was wrong twice over: a live lock
+  // does not tie its holder to THIS fragment (a later writer would briefly
+  // absolve an abandoned one it never created), and a report racing an
+  // incomplete append could publish before that row landed.
+  //
+  // So: give the writer a bounded chance to finish, re-read a stable snapshot,
+  // and then judge what is actually on disk. After the wait there is no
+  // exemption at all — a tail that still does not parse is damage, whoever
+  // holds the lock. A completing append heals the file by prefixing a newline
+  // to its own record, which turns an abandoned fragment into an INTERIOR
+  // line, so it is still counted, just as `malformed` instead of `torn`.
+  if (torn > 0 && liveWriterPresent(file)) {
+    waitForLockToClear(file);
+    let retext;
+    try {
+      retext = fs.readFileSync(file, 'utf8');
+    } catch {
+      retext = null;
+    }
+    if (retext !== null) ({ records, malformed, torn } = parseLedgerText(retext));
   }
   let brokenLinks = 0;
   let prev = GENESIS;
@@ -765,34 +966,161 @@ export function readLedger(file = ledgerPath()) {
     if (r.prev_hash !== prev || r.hash !== chainHash(r.prev_hash, r)) brokenLinks += 1;
     prev = r.hash;
   }
-  return { records, malformed, brokenLinks, intact: malformed === 0 && brokenLinks === 0 };
+  return {
+    records,
+    malformed,
+    torn,
+    brokenLinks,
+    unreadable: false,
+    intact: malformed === 0 && brokenLinks === 0 && torn === 0,
+  };
 }
 
-export function summarize(records, sinceIso, nowIso = new Date().toISOString(), integrity = null) {
+// Drops recorded by `recordDrop`. A line that does not parse still COUNTS as a
+// drop: it is evidence the recorder was in trouble, and discarding it would
+// restore the exact blindness this channel exists to remove. Such a line has no
+// usable timestamp, so it is treated as in-window by `summarize`.
+export function readDrops(file = healthPath()) {
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (e) {
+    // ENOENT is the ordinary healthy case: no drops have ever been recorded.
+    // ANY OTHER error (EACCES, EIO, a directory in the way) means the health
+    // channel cannot be read, and "cannot read" must never present as "no
+    // drops" — that is fail-OPEN on the one channel whose whole job is to
+    // report losses. Surface it as a drop so the rate is suppressed.
+    if (e && e.code === 'ENOENT') return [];
+    return [{ ts: null, reason: 'health_channel_unreadable' }];
+  }
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      out.push({ ts: null, reason: 'unparseable_drop_row' });
+    }
+  }
+  return out;
+}
+
+export function summarize(
+  records,
+  sinceIso,
+  nowIso = new Date().toISOString(),
+  integrity = null,
+  drops = [],
+) {
   const rows = sinceIso ? records.filter((r) => (r.ts ?? '') >= sinceIso) : records;
-  const requests = rows.filter((r) => r.kind === 'request');
+  // Correlation runs over the FULL history; the window is applied to the
+  // RESULTS. Filtering requests first was wrong: an outcome belonging to a
+  // pre-cutoff request would be left unclaimed, and the first in-window request
+  // sharing its derived ref would consume it — reporting an execution that
+  // request never had. Its rightful owner has to be present to claim it.
+  const allRequests = [];
+  records.forEach((r, idx) => {
+    if (r.kind === 'request') allRequests.push({ ...r, __idx: idx });
+  });
   const notifications = rows.filter((r) => r.kind === 'notification');
   const interrupts = notifications.filter((r) => isApprovalInterrupt(r.notification_type));
+  const permissionRequests = rows.filter((r) => r.kind === 'permission_request');
+
+  // A drop with no USABLE timestamp counts as in-window: it cannot be ruled
+  // out, and the whole point of this channel is to stop unprovable losses
+  // reading as zero. Same direction as everything else here — when unsure,
+  // suppress.
+  //
+  // A recorded drop suppresses the rate for as long as the drop row exists.
+  // Drops are deliberately NOT expired by timestamp.
+  //
+  // There is deliberately NO acknowledgement path that restores the rate.
+  // Rotating `drops.jsonl` was briefly documented as one and is not: the lost
+  // event is still missing from the window afterwards, so the rate would come
+  // back over data known to be incomplete — laundering the loss instead of
+  // resolving it. Restoring a rate honestly needs a durable `valid_since`
+  // checkpoint that moves the window PAST the loss, which is tracked in
+  // HIMMEL-1547 along with the collector-liveness heartbeat it shares
+  // machinery with.
+  //
+  // Two rounds of review taught this the expensive way. Expiring on wall-clock
+  // first let a truthy-but-non-string `ts` escape the window, then let a
+  // BACKWARD CLOCK STEP across the cutoff re-date an in-window failure as old —
+  // both producing dropped_writes=0 and a confident rate over a ledger with
+  // known missing events, which is precisely the false-clean this channel
+  // exists to prevent. There is no durable proof a drop predates the window
+  // (that is what HIMMEL-1547's checkpoint would provide), so the honest
+  // options are "suppress until acknowledged" or "trust a clock we have twice
+  // shown we cannot trust". Deleting the comparison also deletes the boundary,
+  // which is the lesson this subsystem keeps re-teaching.
+  const droppedWrites = drops.length;
 
   // COUNT outcomes per ref rather than testing set membership. Membership lets
-  // ONE outcome mark every request sharing that ref as executed, which silently
+  // ONE outcome mark every request sharing that ref as resolved, which silently
   // undercounts unresolved prompts — and refs are shared whenever the harness
   // gives us no `tool_use_id` and we fall back to a derived (`d:`) hash. Two
   // identical calls with one success are one executed and one unresolved, and
   // this is the field whose whole job is to keep that distinction.
+  //
+  // Outcomes are now VERDICT-BEARING, so the per-ref budget holds the verdicts
+  // in arrival order and each request consumes the next one, rather than
+  // decrementing an anonymous counter.
+  // Built from ALL records, keyed by ref, carrying row position — see the
+  // ordering note in the match loop for why position and not `ts`.
   const outcomesByRef = new Map();
-  for (const r of rows) {
-    if (r.kind === 'outcome') outcomesByRef.set(r.ref, (outcomesByRef.get(r.ref) ?? 0) + 1);
+  records.forEach((r, idx) => {
+    if (r.kind !== 'outcome') return;
+    const entry = { idx, verdict: r.actual_verdict };
+    const q = outcomesByRef.get(r.ref);
+    if (q) q.push(entry);
+    else outcomesByRef.set(r.ref, [entry]);
+  });
+  const cursor = new Map();
+  const outcomes = { executed: 0, executed_failed: 0, denied_auto_classifier: 0, other: 0 };
+  // Pass 1 — assign outcomes across ALL requests, in ledger order.
+  const verdictFor = new Map();
+  for (const r of allRequests) {
+    const q = outcomesByRef.get(r.ref);
+    if (!q) continue;
+    let i = cursor.get(r.ref) ?? 0;
+    // An outcome must FOLLOW the request it resolves, and "follows" means
+    // LEDGER ROW POSITION — never wall-clock. The ledger is append-only and
+    // hash-chained, so position IS causal order; `ts` only approximates it and
+    // fails at both boundaries. Equal timestamps (millisecond precision, and
+    // a hook pair can share a millisecond) made an orphan outcome consumable
+    // by a later request, re-creating the very bug this guard was added for;
+    // and a backward clock adjustment of 1 ms made a genuine outcome look
+    // like it preceded its own request, losing it. Both were measured.
+    //
+    // Without any ordering guard at all, a `--days` cutoff slicing between a
+    // request and its outcome leaves an orphan outcome that a later request
+    // sharing the ref consumes — inventing an execution and hiding a real
+    // unresolved. Refs are shared exactly when the harness gives no
+    // `tool_use_id` and the derived `d:` fallback applies, which is the same
+    // population `unresolved` exists to keep honest.
+    while (i < q.length && q[i].idx <= r.__idx) i += 1;
+    cursor.set(r.ref, i);
+    if (i >= q.length) continue;
+    cursor.set(r.ref, i + 1);
+    verdictFor.set(r.__idx, q[i].verdict);
   }
-  const budget = new Map(outcomesByRef);
-  let executedCount = 0;
+  // Pass 2 — count only the requests inside the reporting window.
+  const requests = sinceIso
+    ? allRequests.filter((r) => (r.ts ?? '') >= sinceIso)
+    : allRequests;
   for (const r of requests) {
-    const left = budget.get(r.ref) ?? 0;
-    if (left > 0) {
-      budget.set(r.ref, left - 1);
-      executedCount += 1;
-    }
+    const v = verdictFor.get(r.__idx);
+    if (v === undefined) continue;
+    // An unrecognised verdict is surfaced as `other`, never folded into
+    // `executed`. Same rule as uncounted_notification_types: a vocabulary this
+    // file does not control must show up by name rather than vanish into the
+    // most flattering bucket.
+    if (v === 'executed' || v === 'executed_failed' || v === 'denied_auto_classifier') outcomes[v] += 1;
+    else outcomes.other += 1;
   }
+  const resolved = outcomes.executed + outcomes.executed_failed
+    + outcomes.denied_auto_classifier + outcomes.other;
+  const executedCount = outcomes.executed;
 
   // Every notification type NOT counted as an interrupt, by name. This is the
   // safety net on the loose match above: if the harness's vocabulary changes,
@@ -820,17 +1148,38 @@ export function summarize(records, sinceIso, nowIso = new Date().toISOString(), 
     // pure artefact — and this is the one figure the whole programme is gated
     // on, so it has to be null until it is real. The same refusal applies when
     // the ledger is damaged: missing rows understate the rate invisibly, so an
-    // unproven chain publishes no rate at all.
-    interrupts_per_week: span >= MIN_EXTRAPOLATION_DAYS && (integrity?.intact ?? true)
-      ? +(interrupts.length * 7 / span).toFixed(1)
-      : null,
+    // unproven chain publishes no rate at all. And the same again for a window
+    // with KNOWN dropped writes — the events are gone, the surviving chain still
+    // validates, and a rate computed over it would be short by an unknown amount.
+    interrupts_per_week:
+      span >= MIN_EXTRAPOLATION_DAYS && (integrity?.intact ?? true) && droppedWrites === 0
+        ? +(interrupts.length * 7 / span).toFixed(1)
+        : null,
     integrity: integrity
-      ? { intact: integrity.intact, malformed: integrity.malformed, broken_links: integrity.brokenLinks }
+      ? {
+        intact: integrity.intact,
+        malformed: integrity.malformed,
+        torn: integrity.torn ?? 0,
+        broken_links: integrity.brokenLinks,
+        unreadable: integrity.unreadable ?? false,
+      }
       : null,
+    dropped_writes: droppedWrites,
+    health_channel_unreadable: drops.some((d) => d && d.reason === 'health_channel_unreadable'),
     notifications: notifications.length,
     uncounted_notification_types: uncounted,
+    // Permission-request EVENTS, from PermissionRequest. NOT a count of human
+    // interruptions: the event fires whenever a decision is needed, including
+    // in unattended sessions where nobody is present to be interrupted.
+    // Reported beside the Notification-derived `interrupts` so the two
+    // estimators can be compared on real data; neither is the gate number by
+    // fiat.
+    permission_request_events: permissionRequests.length,
     executed: executedCount,
-    unresolved: requests.length - executedCount,
+    executed_failed: outcomes.executed_failed,
+    denied_auto_classifier: outcomes.denied_auto_classifier,
+    outcome_other: outcomes.other,
+    unresolved: requests.length - resolved,
     shadow_verdicts: byVerdict,
     top_classes: Object.entries(byClass).sort((a, b) => b[1] - a[1]).slice(0, 10),
   };
@@ -860,23 +1209,56 @@ function printReport(summary) {
   l.push(`  window            ${summary.span_days.toFixed(1)} days`);
   l.push(`  requests recorded ${summary.requests}`);
   const damaged = summary.integrity && !summary.integrity.intact;
+  const dropped = (summary.dropped_writes ?? 0) > 0;
   l.push(`  APPROVAL INTERRUPTS ${summary.interrupts}` +
     (summary.interrupts_per_week !== null
       ? `  (${summary.interrupts_per_week}/week)`
-      : damaged
-        ? '  (LEDGER DAMAGED — no rate published)'
-        : '  (window under a day — no weekly rate yet)'));
-  if (damaged) {
-    l.push(`  ⚠ INTEGRITY  ${summary.integrity.malformed} unreadable row(s), ` +
-      `${summary.integrity.broken_links} broken chain link(s) — rows are MISSING, so every`);
-    l.push('               count below is a floor, not a measurement.');
+      : dropped
+        ? '  (WRITES DROPPED — no rate published)'
+        : damaged
+          ? '  (LEDGER DAMAGED — no rate published)'
+          : '  (window under a day — no weekly rate yet)'));
+  if (damaged && summary.integrity.unreadable) {
+    l.push('  ⚠ INTEGRITY  the ledger file EXISTS but could not be read (permissions, I/O, or a');
+    l.push('               directory in its place). Nothing below was measured — no rate is published.');
+  } else if (damaged) {
+    l.push(`  ⚠ INTEGRITY  ${summary.integrity.malformed} unparseable row(s), ` +
+      `${summary.integrity.torn} abandoned torn tail(s), ` +
+      `${summary.integrity.broken_links} broken chain link(s) —`);
+    l.push('               rows are MISSING, so every count below is a floor, not a measurement.');
+  }
+  if (dropped) {
+    l.push(`  ⚠ DROPPED WRITES  ${summary.dropped_writes} event(s) the recorder could not write`);
+    l.push('               (see drops.jsonl). The surviving chain still validates — it can only');
+    l.push('               attest rows that landed — so these counts are a floor. Drops do NOT');
+    l.push('               expire, and deleting drops.jsonl does not make the lost event exist —');
+    l.push('               restoring a rate honestly needs the checkpoint in HIMMEL-1547.');
+    if (summary.health_channel_unreadable) {
+      l.push('               The health channel itself could not be READ, so the drop count is');
+      l.push('               a floor on the floor.');
+    }
   }
   const un = Object.entries(summary.uncounted_notification_types ?? {});
   if (un.length) {
     l.push(`  other notifications ${un.map(([k, v]) => `${k}=${v}`).join(' ')}   (NOT counted as interrupts)`);
   }
+  if (summary.permission_request_events !== undefined) {
+    l.push(`  permission-request events ${summary.permission_request_events}   (a decision was NEEDED —`);
+    l.push('                        NOT proof anyone was interrupted; unattended sessions fire this too)');
+  }
   l.push(`  executed          ${summary.executed}`);
-  l.push(`  unresolved        ${summary.unresolved}   (denied OR stranded OR crashed — not distinguishable)`);
+  l.push(`  executed (failed) ${summary.executed_failed ?? 0}   (ran and failed — NOT an approval interrupt)`);
+  l.push(`  denied (auto)     ${summary.denied_auto_classifier ?? 0}   (AUTO-MODE CLASSIFIER denials ONLY —`);
+  l.push('                        manual denials, deny rules and PreToolUse blocks do NOT appear here)');
+  if ((summary.outcome_other ?? 0) > 0) {
+    l.push(`  outcome (other)   ${summary.outcome_other}   (UNRECOGNISED verdict — vocabulary changed?)`);
+  }
+  // Denials and failures are only observed if their hooks are wired, and even
+  // wired, PermissionDenied covers ONE denial source. This file cannot tell a
+  // wired-and-quiet harness from an unwired one, so the caveat stays rather
+  // than claiming a completeness the events do not provide.
+  l.push(`  unresolved        ${summary.unresolved}   (no terminal outcome seen — stranded, crashed,`);
+  l.push('                        a non-auto-classifier denial, or an unwired failure/denial hook)');
   l.push(`  shadow verdicts   allow=${summary.shadow_verdicts.allow} deny=${summary.shadow_verdicts.deny} abstain=${summary.shadow_verdicts.abstain}`);
   l.push('  NOTE: agreement rate is dominated by the abstain class and is NOT the');
   l.push('        gate number. The gate number is APPROVAL INTERRUPTS per week.');
@@ -899,7 +1281,7 @@ function main(argv) {
       ? new Date(Date.now() - days * 86400000).toISOString()
       : null;
     const led = readLedger();
-    const summary = summarize(led.records, since, new Date().toISOString(), led);
+    const summary = summarize(led.records, since, new Date().toISOString(), led, readDrops());
     process.stdout.write(argv.includes('--json')
       ? `${JSON.stringify(summary, null, 2)}\n`
       : `${printReport(summary)}\n`);
@@ -916,6 +1298,9 @@ function main(argv) {
   }
   if (cmd === 'pre') cmdPre(payload, now);
   else if (cmd === 'post') cmdPost(payload, now);
+  else if (cmd === 'postfail') cmdPostFailure(payload, now);
+  else if (cmd === 'denied') cmdDenied(payload, now);
+  else if (cmd === 'permreq') cmdPermissionRequest(payload, now);
   else if (cmd === 'notify') cmdNotify(payload, now);
   return 0;
 }
@@ -924,11 +1309,28 @@ function main(argv) {
 // BLOCKS the tool call, which is the one thing this file must never do.
 if (import.meta.url === `file://${process.argv[1]}` ||
     process.argv[1]?.endsWith('shadow-ledger.mjs')) {
+  const argv = process.argv.slice(2);
   let code = 0;
   try {
-    code = main(process.argv.slice(2));
-  } catch {
-    code = 0;
+    code = main(argv);
+  } catch (e) {
+    // Fail-open is a HOOK contract: a non-zero PreToolUse exit blocks the tool
+    // call. `report` is not a hook — it is the operator reading the instrument,
+    // and swallowing its exceptions turned ledger corruption into exit 0 with
+    // empty stdout, which reads as "nothing to report" rather than "could not
+    // report". Silence is the one answer this file must never give about
+    // itself.
+    if (argv[0] === 'report') {
+      process.stderr.write(`shadow-ledger report FAILED: ${e && e.message ? e.message : e}\n`);
+      code = 1;
+    } else {
+      code = 0;
+    }
   }
-  process.exit(code);
+  // `process.exitCode`, NOT `process.exit()`. `report` writes its output to
+  // stdout, and process.exit() can truncate a pending write when stdout is a
+  // pipe — which is how this is always read in practice. Truncating the report
+  // would reintroduce exactly the silence rounds 6 and 7 closed, by a different
+  // mechanism. Setting the code and letting Node exit naturally flushes first.
+  process.exitCode = code;
 }
