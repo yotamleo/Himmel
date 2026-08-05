@@ -917,8 +917,30 @@ describe('the capability handshake (HIMMEL-1560)', () => {
   // programme worried about, not a shape we invented for the test. `git show`
   // is asserted, not silently substituted: if it ever fails in this environment
   // that is a fact to surface, not a stub to hide behind.
-  test('the historical recorder at c49716d5 is refused (real skew, not a stub)', () => {
+  //
+  // ONE exception, and only one (HIMMEL-1588): the commit must be REACHABLE.
+  // The public mirror carries squashed per-wave history, so no private SHA
+  // exists there and this assertion is not failing — it is meaningless, because
+  // the object it reasons about cannot be present. Probe reachability first and
+  // separate the two cases: "not in THIS history" skips with the reason stated
+  // out loud, while a git failure in a repo that DOES have the object still
+  // fails loudly, exactly as the rule above demands.
+  test('the historical recorder at c49716d5 is refused (real skew, not a stub)', (t) => {
     const repoRoot = path.resolve(HERE, '..', '..', '..');
+    const have = spawnSync('git', ['cat-file', '-e', 'c49716d5^{commit}'], { cwd: repoRoot });
+    // Only a probe that actually RAN may authorise the skip. spawnSync reports
+    // status `null` when git could not be spawned at all (ENOENT) or was killed
+    // by a signal, and `null !== 0` would otherwise take the skip branch and
+    // blame "not in this history" for what is really a broken environment —
+    // precisely the stub-to-hide-behind this case forbids ([glm-1]). A probe
+    // that ran and found nothing exits 128; that, and only that, is absence.
+    assert.equal(typeof have.status, 'number',
+      `git cat-file could not be run: ${have.error ?? 'terminated by signal'}`);
+    if (have.status !== 0) {
+      t.skip('c49716d5 is not in this repository history (the public mirror squashes per wave) '
+           + '— the real-skew assertion only has meaning where that commit exists');
+      return;
+    }
     const show = spawnSync('git', ['show', 'c49716d5:scripts/trust/shadow-ledger.mjs'], {
       encoding: 'utf8', cwd: repoRoot,
     });
