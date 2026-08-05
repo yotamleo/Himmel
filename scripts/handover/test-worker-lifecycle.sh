@@ -336,7 +336,11 @@ cat > "$CEIL_EXACT_DIR/meta.json" <<'EOF'
 EOF
 _set_mtime_seconds_ago "$CEIL_EXACT_DIR" 10
 CEIL_EXACT_MTIME_MS=$(_stat_mtime_ms "$CEIL_EXACT_DIR")
-CEIL_EXACT_NOW_MS=$((CEIL_EXACT_MTIME_MS + 5000))
+# bash `$(( ))` is integer-only and syntax-errors on the fractional mtimeMs a
+# sub-millisecond filesystem (ext4) returns (HIMMEL-1567). Do the add in node
+# instead of truncating -- truncating here would defeat the exact-tie this
+# test is built to pin (see _stat_mtime_ms's doc comment above).
+CEIL_EXACT_NOW_MS=$(node -e 'process.stdout.write(String(Number(process.argv[1]) + 5000))' "$CEIL_EXACT_MTIME_MS")
 out=$(LIVE_PIDS='' UNPROBEABLE_PIDS='' RECONCILE_UNPROBEABLE_CEILING_SECS=5 RECONCILE_TEST_NOW_MS="$CEIL_EXACT_NOW_MS" bash "$RECONCILE" 2>&1)
 rc=$?
 assert_rc "T8x exact-boundary relic reconciliation succeeds" 0 "$rc"

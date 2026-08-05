@@ -60,6 +60,7 @@
 //   node shadow-ledger.mjs denied   < PermissionDenied payload
 //   node shadow-ledger.mjs permreq  < PermissionRequest payload
 //   node shadow-ledger.mjs notify   < Notification payload
+//   node shadow-ledger.mjs heartbeat < SessionStart payload
 //   node shadow-ledger.mjs report [--days N] [--json]
 
 import { createHash } from 'node:crypto';
@@ -72,6 +73,58 @@ const LOCK_TRIES = 40;
 const LOCK_WAIT_MS = 5;
 // Below this, `report` shows the raw count and refuses to state a weekly rate.
 const MIN_EXTRAPOLATION_DAYS = 1;
+// The longest stretch of the reporting window that may pass with NO collector
+// heartbeat before the weekly rate is withheld (HIMMEL-1547).
+//
+// This constant is a stated choice, not a derived truth, so it is named after
+// the thing it is tied to rather than picked round: the published figure is a
+// rate PER WEEK, and a per-week rate must not be computed over a window in
+// which the collector went a full week unproven. Anything shorter starts
+// refusing on ordinary operator idleness; anything longer lets a stopped
+// recorder hide for more than one unit of the very quantity being reported.
+// Revisit it with evidence about real session cadence, not by feel.
+const HEARTBEAT_MAX_GAP_DAYS = 7;
+// The absolute cap above is not sufficient by itself (HIMMEL-1547 CR round):
+// it lets ONE heartbeat anywhere within the allowance certify an ENTIRELY
+// unobserved window shorter than the allowance — a heartbeat on day 7 of a
+// 7-day window satisfies `maxGapDays <= HEARTBEAT_MAX_GAP_DAYS` while the
+// whole week behind it went unrecorded, and the 1-to-7-day range is exactly
+// where this instrument lives during its first week of operation.
+//
+// So the allowance is also bounded RELATIVE to the window's own length: no
+// more than half of a reporting window may go unaccounted for, because a rule
+// that lets the MAJORITY of the window go unproven cannot tell a collecting
+// window apart from a stopped one.
+//
+// Residual, stated honestly rather than claimed away: even sitting exactly at
+// this limit, a rate can still be understated by up to 2x — the unproven half
+// could hide events the proven half does not. `collection.proven` therefore
+// means "not obviously stopped", NOT "fully covered", and the README states
+// the same caveat on the operator-facing surface.
+const MAX_UNPROVEN_WINDOW_FRACTION = 0.5;
+// Every hook event this recorder relies on, paired with the verb it feeds and
+// the matcher it must carry — the ONE definition wire-trust-hooks.mjs installs
+// from, so the two can never disagree on what "wired" means (HIMMEL-1547: a
+// settings file with all seven canonical-looking commands parked under
+// SessionStart used to read as a complete inventory, because wiredVerbs below
+// never checked WHICH event a verb was attached to).
+const TOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit';
+export const EXPECTED_HOOKS = Object.freeze([
+  { event: 'PreToolUse', verb: 'pre', matcher: TOOL_MATCHER },
+  { event: 'PostToolUse', verb: 'post', matcher: TOOL_MATCHER },
+  { event: 'PostToolUseFailure', verb: 'postfail', matcher: TOOL_MATCHER },
+  { event: 'PermissionDenied', verb: 'denied', matcher: TOOL_MATCHER },
+  { event: 'PermissionRequest', verb: 'permreq', matcher: null },
+  { event: 'Notification', verb: 'notify', matcher: null },
+  { event: 'SessionStart', verb: 'heartbeat', matcher: null },
+]);
+// The hook verbs whose rows the report depends on. The heartbeat carries the
+// subset actually WIRED at session start, and `report` refuses the rate when
+// any of these was missing — because five live hooks are enough to grow a
+// healthy-looking observation window while the sixth, the only producer of
+// approval-interrupt rows, records nothing. Derived from EXPECTED_HOOKS so the
+// two vocabularies cannot drift apart.
+export const EXPECTED_VERBS = Object.freeze(EXPECTED_HOOKS.map((h) => h.verb));
 // A lock older than this cannot be held by a live writer (the critical section
 // is sub-millisecond) — see breakStaleLock.
 const STALE_LOCK_MS = 5000;
@@ -851,6 +904,120 @@ export function cmdNotify(payload, now) {
   });
 }
 
+// --- collector heartbeat (HIMMEL-1547) ---------------------------------------
+
+// Every settings file the harness merges for a session, cheapest first. A verb
+// wired at USER scope is as live as one wired at project scope, so reading only
+// the project file would report a complete inventory as incomplete and withhold
+// a rate that was in fact fully observed. Missing files are not an error —
+// most projects have only one of these.
+function settingsCandidates(projectDir = process.env.CLAUDE_PROJECT_DIR) {
+  const out = [];
+  if (projectDir) {
+    out.push(path.join(projectDir, '.claude', 'settings.json'));
+    out.push(path.join(projectDir, '.claude', 'settings.local.json'));
+  }
+  out.push(path.join(os.homedir(), '.claude', 'settings.json'));
+  return out;
+}
+
+// Which ledger verbs are WIRED, read off the settings files on disk.
+//
+// Read what this proves, and nothing more. It proves the CONFIGURATION named
+// these verbs at the moment the session started — a necessary condition for
+// their rows to exist, and not a sufficient one: a wired hook can still fail to
+// spawn. That is exactly why the heartbeat row and the inventory are separate
+// signals. The row proves a recorder RAN; the inventory proves the config it
+// ran under was complete. Neither alone protects the gate number, and calling
+// either of them "the hook works" would be this subsystem's own recurring
+// mistake — an observation reported as a claim.
+//
+// Failure is silent and yields null, distinguished from an empty array: "could
+// not read the config" and "the config wires nothing" are different facts, and
+// `summarize` refuses the rate on either rather than guessing which.
+//
+// A verb counts only under its OWN canonical event, with the canonical
+// matcher, from a SINGLE `type: 'command'` hook naming it as the last
+// whitespace token (HIMMEL-1547 CR round). Before this, the loop walked every
+// entry under every event and accepted any ledger-shaped command whose last
+// token was a known verb — so a settings file with all seven canonical-looking
+// commands parked under `SessionStart` returned the complete inventory while
+// `notify` never actually ran for `Notification` events. That is the exact
+// failure class this subsystem exists to remove: a check that CLAIMS more than
+// it verifies.
+export function wiredVerbs(candidates = settingsCandidates()) {
+  const byEvent = new Map(EXPECTED_HOOKS.map((spec) => [spec.event, spec]));
+  const found = new Set();
+  let readAny = false;
+  for (const file of candidates) {
+    let parsed;
+    try {
+      parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      continue; // absent or unparseable — not this recorder's business to fix
+    }
+    readAny = true;
+    const hooks = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed.hooks
+      : null;
+    if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) continue;
+    for (const [event, list] of Object.entries(hooks)) {
+      // An event this recorder does not depend on proves nothing about any
+      // verb, no matter what a command under it happens to be named.
+      const spec = byEvent.get(event);
+      if (!spec || !Array.isArray(list)) continue;
+      for (const entry of list) {
+        const inner = Array.isArray(entry?.hooks) ? entry.hooks : [];
+        // Exactly ONE hook, same requirement wire-trust-hooks.mjs's `isOurs`
+        // enforces: a ledger command sharing an entry with somebody else's
+        // hook is not safely attributable to this event alone.
+        if (inner.length !== 1) continue;
+        const [h] = inner;
+        if (!h || h.type !== 'command') continue;
+        const cmd = typeof h.command === 'string' ? h.command : '';
+        if (!cmd.includes('shadow-ledger.mjs')) continue;
+        // The verb is the last token. An invocation carrying extra arguments
+        // is NOT counted: wire-trust-hooks refuses non-canonical ledger
+        // commands outright, so anything shaped differently is a stray this
+        // file must not vouch for.
+        const tokens = cmd.trim().split(/\s+/);
+        const verb = tokens[tokens.length - 1];
+        if (verb !== spec.verb) continue;
+        // `matcher: null` means the canonical entry carries NO matcher key at
+        // all (see EXPECTED_HOOKS); a string matcher must equal it exactly.
+        const matcherOk = spec.matcher === null
+          ? entry.matcher === undefined
+          : entry.matcher === spec.matcher;
+        if (!matcherOk) continue;
+        found.add(spec.verb);
+      }
+    }
+  }
+  if (!readAny) return null;
+  return [...found].sort();
+}
+
+// SessionStart — the collector proving it was loaded and could write.
+//
+// This is the ONE row in the ledger that is not evidence of activity, and that
+// is its whole purpose. Every other kind here fires because something happened,
+// so their absence is ambiguous: a week with no notification rows is either a
+// quiet week or a dead hook, and the published rate is the same number either
+// way (HIMMEL-1547). A heartbeat separates those two, because it fires whether
+// or not anything else did.
+//
+// SessionStart is the cheapest possible carrier — no timer, no daemon, no new
+// process, and one row per session is plenty of resolution for a weekly figure.
+export function cmdHeartbeat(payload, now) {
+  return append({
+    ts: now,
+    kind: 'heartbeat',
+    session_id: payload.session_id ?? null,
+    source: payload.source ?? null,
+    hook_inventory: wiredVerbs(),
+  });
+}
+
 // Which notification types count as an approval interrupt. Deliberately a loose
 // substring match, not an exact string: undercounting the gate metric is the
 // expensive error, and anything it does NOT match is still surfaced by name in
@@ -1133,6 +1300,7 @@ export function summarize(
   }
 
   const span = observedDays(records, sinceIso, nowIso);
+  const collection = collectionHealth(records, sinceIso, nowIso, span);
   const byClass = {};
   const byVerdict = { allow: 0, deny: 0, abstain: 0 };
   for (const r of requests) {
@@ -1151,10 +1319,17 @@ export function summarize(
     // unproven chain publishes no rate at all. And the same again for a window
     // with KNOWN dropped writes — the events are gone, the surviving chain still
     // validates, and a rate computed over it would be short by an unknown amount.
+    // And the same again when collection itself is unproven for the window
+    // (HIMMEL-1547): every condition above stays TRUE while the recorder is
+    // simply not running, so without this the instrument publishes its most
+    // consequential number — a low one, the one that ends the programme — over
+    // a window it never observed.
     interrupts_per_week:
       span >= MIN_EXTRAPOLATION_DAYS && (integrity?.intact ?? true) && droppedWrites === 0
+        && collection.proven
         ? +(interrupts.length * 7 / span).toFixed(1)
         : null,
+    collection,
     integrity: integrity
       ? {
         intact: integrity.intact,
@@ -1193,14 +1368,109 @@ export function summarize(
 // figure the trust programme is gated on. The window runs from `since` (when
 // the caller asked for one) or the first record ever seen (the best available
 // proxy for install time) through to now.
-function observedDays(allRecords, sinceIso, nowIso) {
+function windowStartMs(allRecords, sinceIso) {
   const first = allRecords.map((r) => r.ts).filter(Boolean).sort()[0];
   const startIso = sinceIso ?? first;
-  if (!startIso) return 0;
+  if (!startIso) return null;
   // A `--days N` window that predates the ledger is not N days of observation.
   const start = Math.max(Date.parse(startIso), first ? Date.parse(first) : -Infinity);
+  return Number.isFinite(start) ? start : null;
+}
+
+function observedDays(allRecords, sinceIso, nowIso) {
+  const start = windowStartMs(allRecords, sinceIso);
+  if (start === null) return 0;
   const ms = Date.parse(nowIso) - start;
   return Number.isFinite(ms) ? Math.max(ms / 86400000, 0) : 0;
+}
+
+// Was the collector demonstrably RUNNING, with a COMPLETE hook inventory, for
+// the whole reporting window? (HIMMEL-1547)
+//
+// Two separate questions, because they fail separately and only both together
+// protect the number:
+//
+//   liveness  — heartbeat rows exist, spaced closely enough that no stretch of
+//               the window is unaccounted for. A recorder that stops writing
+//               stops producing these, while `observedDays` keeps running to
+//               NOW and the rate decays smoothly toward zero with nothing to
+//               indicate it.
+//   inventory — every heartbeat carried ALL the verbs. Five live hooks are
+//               enough to grow an intact, healthy-looking window; only `notify`
+//               produces approval-interrupt rows. Unwire that one and the
+//               instrument publishes a confident 0/week with every integrity
+//               signal it owns reading clean.
+//
+// Note what is deliberately NOT done here: the window is not shortened to the
+// last heartbeat. HIMMEL-1529 CR round 1 removed spread-based windows because
+// they are biased short at both ends and push the rate UP, and re-introducing
+// that bias through a different door would be worse than the defect this
+// closes. A window with unproven stretches is refused whole, not trimmed.
+//
+// `span` defaults to a fresh `observedDays` call so every existing direct
+// caller (this file's own tests included) keeps working unchanged, but
+// `summarize` — the one caller that also needs the SAME number for
+// `span_days` — passes its already-computed value in rather than deriving a
+// second copy. Two independent derivations of one window have already drifted
+// apart once in this file (see the comment on `windowStartMs`); sharing the
+// value is how that stops being possible here too.
+export function collectionHealth(allRecords, sinceIso, nowIso, span = observedDays(allRecords, sinceIso, nowIso)) {
+  const start = windowStartMs(allRecords, sinceIso);
+  const nowMs = Date.parse(nowIso);
+  const beats = allRecords
+    .filter((r) => r.kind === 'heartbeat' && typeof r.ts === 'string')
+    .map((r) => ({ ms: Date.parse(r.ts), inventory: r.hook_inventory }))
+    .filter((b) => Number.isFinite(b.ms) && (start === null || b.ms >= start))
+    .sort((a, b) => a.ms - b.ms);
+
+  // Union of everything any in-window heartbeat failed to report as wired. A
+  // heartbeat whose inventory could not be READ (null) is not evidence of a
+  // complete inventory, so it counts as missing everything — same
+  // when-unsure-suppress direction as the drops channel.
+  const missing = new Set();
+  for (const b of beats) {
+    const have = Array.isArray(b.inventory) ? b.inventory : [];
+    for (const v of EXPECTED_VERBS) if (!have.includes(v)) missing.add(v);
+  }
+
+  // Largest unproven stretch, measured across the window's own edges as well as
+  // between beats: a fresh heartbeat says nothing about a hole in the middle,
+  // and a run of beats early in the window says nothing about right now.
+  let maxGapDays = null;
+  if (start !== null && Number.isFinite(nowMs) && beats.length > 0) {
+    const points = [start, ...beats.map((b) => b.ms), nowMs];
+    let widest = 0;
+    for (let i = 1; i < points.length; i += 1) {
+      widest = Math.max(widest, points[i] - points[i - 1]);
+    }
+    maxGapDays = Math.max(widest / 86400000, 0);
+  }
+
+  // The EFFECTIVE allowance: the absolute cap, or half the window, whichever
+  // is smaller. For a window shorter than 14 days this is tighter than
+  // HEARTBEAT_MAX_GAP_DAYS — a 7-day window allows only 3.5 unproven days, not
+  // 7 — which is exactly what stops one end-of-window heartbeat from
+  // certifying the week behind it. See MAX_UNPROVEN_WINDOW_FRACTION above.
+  const allowedGapDays = Math.min(HEARTBEAT_MAX_GAP_DAYS, span * MAX_UNPROVEN_WINDOW_FRACTION);
+
+  return {
+    heartbeats: beats.length,
+    last_heartbeat: beats.length ? new Date(beats[beats.length - 1].ms).toISOString() : null,
+    max_gap_days: maxGapDays === null ? null : +maxGapDays.toFixed(2),
+    max_gap_allowed_days: HEARTBEAT_MAX_GAP_DAYS,
+    // The allowance actually applied to THIS window, distinct from the
+    // absolute cap above whenever the window is under 14 days. An operator
+    // told "allowed 7d" while the real bound was 3.5d cannot act on the
+    // message, so both numbers are reported.
+    allowed_gap_days: +allowedGapDays.toFixed(2),
+    missing_verbs: [...missing].sort(),
+    // NO heartbeat at all is the loudest version of this failure, not the
+    // quietest: it is what an unwired collector, a removed settings entry and a
+    // recorder that cannot spawn all look like. It must never pass by default
+    // just because a short window happens to fit inside the gap allowance.
+    proven: beats.length > 0 && missing.size === 0
+      && maxGapDays !== null && maxGapDays <= allowedGapDays,
+  };
 }
 
 function printReport(summary) {
@@ -1210,14 +1480,19 @@ function printReport(summary) {
   l.push(`  requests recorded ${summary.requests}`);
   const damaged = summary.integrity && !summary.integrity.intact;
   const dropped = (summary.dropped_writes ?? 0) > 0;
+  const coll = summary.collection ?? null;
+  // Every reason the rate is withheld, not just the first one found. One label
+  // reads as one problem, and an operator who fixes it and sees the rate stay
+  // null learns only that the report is opaque.
+  const withheld = [];
+  if (dropped) withheld.push('WRITES DROPPED');
+  if (damaged) withheld.push('LEDGER DAMAGED');
+  if (coll && !coll.proven) withheld.push('COLLECTION UNPROVEN');
+  if (summary.span_days < MIN_EXTRAPOLATION_DAYS) withheld.push('window under a day — no weekly rate yet');
   l.push(`  APPROVAL INTERRUPTS ${summary.interrupts}` +
     (summary.interrupts_per_week !== null
       ? `  (${summary.interrupts_per_week}/week)`
-      : dropped
-        ? '  (WRITES DROPPED — no rate published)'
-        : damaged
-          ? '  (LEDGER DAMAGED — no rate published)'
-          : '  (window under a day — no weekly rate yet)'));
+      : `  (no rate published: ${withheld.join('; ') || 'reason unknown'})`));
   if (damaged && summary.integrity.unreadable) {
     l.push('  ⚠ INTEGRITY  the ledger file EXISTS but could not be read (permissions, I/O, or a');
     l.push('               directory in its place). Nothing below was measured — no rate is published.');
@@ -1236,6 +1511,31 @@ function printReport(summary) {
     if (summary.health_channel_unreadable) {
       l.push('               The health channel itself could not be READ, so the drop count is');
       l.push('               a floor on the floor.');
+    }
+  }
+  if (coll) {
+    l.push(`  collection        ${coll.heartbeats} heartbeat(s)` +
+      (coll.last_heartbeat ? `, last ${coll.last_heartbeat}` : '') +
+      (coll.max_gap_days === null ? '' : `, widest unproven gap ${coll.max_gap_days}d`) +
+      `  (${coll.proven ? 'PROVEN' : 'UNPROVEN'})`);
+    if (!coll.proven) {
+      if (coll.heartbeats === 0) {
+        l.push('  ⚠ COLLECTION  NO collector heartbeat in this window. The recorder cannot be shown to');
+        l.push('               have been running, and the five other hooks would grow an intact,');
+        l.push('               healthy-looking window regardless — so no rate is published. Wire the');
+        l.push('               SessionStart entry (`himmelctl trust on`) and start a session.');
+      } else if (coll.missing_verbs.length) {
+        l.push(`  ⚠ COLLECTION  hook(s) NOT wired at heartbeat time: ${coll.missing_verbs.join(', ')} —`);
+        l.push('               part of this window was recorded by an incomplete collector. `notify` is');
+        l.push('               the ONLY producer of approval-interrupt rows: without it the count is 0');
+        l.push('               by construction, not by observation.');
+      } else {
+        l.push(`  ⚠ COLLECTION  ${coll.max_gap_days}d of this window has no heartbeat behind it ` +
+          `(allowed ${coll.allowed_gap_days}d) —`);
+        l.push('               the collector either stopped or was never loaded for that stretch. The');
+        l.push('               window is NOT trimmed to fit (that bias inflates the rate); the rate is');
+        l.push('               refused whole instead.');
+      }
     }
   }
   const un = Object.entries(summary.uncounted_notification_types ?? {});
@@ -1302,6 +1602,7 @@ function main(argv) {
   else if (cmd === 'denied') cmdDenied(payload, now);
   else if (cmd === 'permreq') cmdPermissionRequest(payload, now);
   else if (cmd === 'notify') cmdNotify(payload, now);
+  else if (cmd === 'heartbeat') cmdHeartbeat(payload, now);
   return 0;
 }
 

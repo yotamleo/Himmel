@@ -20,10 +20,80 @@ node scripts/trust/shadow-ledger.mjs report --days 7 --json
 twenty-minute sample scaled up yields a confident six-figure number that is pure
 artefact, and this is the one figure the programme is gated on.
 
+### It also refuses when it cannot prove it was COLLECTING (HIMMEL-1547)
+
+The observation window runs from the first record to **now**, deliberately —
+measuring the spread between the first and last event is biased short at both
+ends and inflates the rate. But that means every integrity signal the ledger
+owns stays green while the recorder is simply **not running**: the window keeps
+growing, the chain stays intact, no drops are recorded, and the published rate
+decays smoothly toward zero. A dead collector does not look like a broken
+instrument. It looks like good news — and "below ten per week" is the answer
+that ends the programme.
+
+So the collector asserts its own liveness. A seventh hook on `SessionStart`
+writes one `heartbeat` row per session, carrying the **hook inventory** it found
+wired at that moment. Two separate claims, because they fail separately:
+
+| signal | proves | fails when |
+|---|---|---|
+| the heartbeat row exists | a recorder ran and could write | the hook is unwired, or node cannot spawn |
+| `hook_inventory` is complete | the configuration named every verb | `notify` is removed — the ONLY producer of interrupt rows |
+
+`report` publishes a rate only when at least one heartbeat falls inside the
+window, every in-window heartbeat carried the full inventory, and no stretch of
+the window — including from its start edge, and from the last heartbeat to now —
+exceeds the **effective allowance** (below). Otherwise it prints `COLLECTION
+UNPROVEN` and publishes nothing.
+
+Two things it deliberately does **not** do:
+
+- **It does not trim the window to fit.** An unproven window is refused whole.
+  Capping at the last heartbeat would reintroduce the short-window bias by a
+  different door, and that bias pushes the rate up.
+- **It does not infer liveness from events.** A quiet week and a dead hook
+  produce the same silence; that is the whole defect. A heartbeat proves
+  liveness *without* implying activity, which is why it is a distinct row kind.
+
+`HEARTBEAT_MAX_GAP_DAYS` is **7**, and it is a stated choice rather than a
+derived one: the published figure is a rate per *week*, so a per-week rate must
+not be computed over a window in which the collector went a full week unproven.
+Shorter starts refusing on ordinary operator idleness; longer lets a stopped
+recorder hide for more than one unit of the quantity being reported. Revisit it
+with evidence about real session cadence.
+
+### The allowance is bounded to the window, not just to seven days
+
+The absolute cap above is not sufficient by itself. Adversarial review found —
+and a direct probe confirmed — that it lets **one heartbeat anywhere in the
+window** certify the whole window, as long as the window is no longer than the
+cap: a collector dead for the entire week, with a single full-inventory
+heartbeat in its last minute, satisfied `maxGapDays(7) <= HEARTBEAT_MAX_GAP_DAYS(7)`
+and published a confident rate — the exact false-low number this instrument
+exists to prevent, and the 1-to-7-day range is exactly where it lives during its
+first week of operation.
+
+So the allowance actually applied to a window is
+`min(HEARTBEAT_MAX_GAP_DAYS, span_days × 0.5)` — no more than **half** the
+window may go unaccounted for. A rule that lets the majority of the window go
+unproven cannot tell a collecting window apart from a stopped one. For a 7-day
+window that means 3.5 unproven days, not 7; the absolute cap only becomes the
+binding constraint once the window is 14 days or wider. `report` prints the
+effective figure (`allowed_gap_days` in `--json`), not the flat cap, in its
+`⚠ COLLECTION` message — an operator told "allowed 7d" while the real bound was
+3.5d cannot act on the message.
+
+**`PROVEN` means "not obviously stopped", not "fully covered".** Even sitting
+exactly at the limit, a published rate can still be understated by up to **2×**:
+the unproven half of the window could hide events the proven half does not. That
+residual is inherent to any gap-based liveness check and is stated here rather
+than claimed away — treat a proven rate as a floor with a known, bounded error,
+not as an exact count.
+
 ## Wiring
 
 ```sh
-himmelctl trust on       # install the six hook entries
+himmelctl trust on       # install the hook entries (seven, incl. the heartbeat)
 himmelctl trust status   # report what is wired, change nothing
 himmelctl trust off      # remove them
 ```
@@ -55,9 +125,10 @@ own-only validation plus a lock shared by both writers, tracked in HIMMEL-1552.
 ### By hand, if you would rather not run the command
 
 `Edit(**/.claude/settings.json)` is an explicit deny rule, so an agent cannot
-wire this itself. Add these **six** entries by hand — three appended to existing
-arrays (`PreToolUse`, `PostToolUse`) or added as `Notification`, plus the three
-outcome/permission keys HIMMEL-1539 added. Nothing else changes, and each is a
+wire this itself. Add these **seven** entries by hand — three appended to
+existing arrays (`PreToolUse`, `PostToolUse`) or added as `Notification`, the
+three outcome/permission keys HIMMEL-1539 added, and the `SessionStart`
+heartbeat HIMMEL-1547 added. Nothing else changes, and each is a
 new array element or a new top-level key rather than an edit to an existing one,
 so it merges cleanly against in-flight hook-wiring branches.
 
@@ -125,6 +196,25 @@ land in `unresolved`, which corrupts the outcome data by construction:
   }
 ]
 ```
+
+`SessionStart` — the collector heartbeat (HIMMEL-1547). **No matcher**, so it
+fires on every session source (`startup`, `resume`, `clear`, `compact`); a
+matcher that misses one produces a gap the report then refuses a rate over.
+Append to the array if the key already exists:
+
+```json
+"SessionStart": [
+  {
+    "hooks": [
+      { "type": "command", "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" heartbeat", "timeout": 10 }
+    ]
+  }
+]
+```
+
+Skip this one and everything still records — but `report` will publish no
+weekly rate at all, on purpose. It is the entry whose absence would otherwise be
+silent.
 
 **Matchers: two of the three carry one, `PermissionRequest` deliberately does
 not.** Verified against the Claude Code hook reference — `PostToolUseFailure`,
@@ -225,7 +315,7 @@ measurement, not source.
 | field | meaning |
 |---|---|
 | `ts` | ISO timestamp |
-| `kind` | `request` (PreToolUse) · `outcome` (PostToolUse) · `notification` (Notification) |
+| `kind` | `request` (PreToolUse) · `outcome` (PostToolUse) · `notification` (Notification) · `permission_request` (PermissionRequest) · `heartbeat` (SessionStart) |
 | `ref` | joins a request to its outcome — the harness's `tool_use_id`, or a `d:`-prefixed derived hash when absent |
 | `class` | verb × target-pattern, e.g. `bash:git push`, `write:.sh` |
 | `target` / `target_hash` | coarse handle + sha256 of the full request |
@@ -233,6 +323,7 @@ measurement, not source.
 | `shadow_verdict` | the blind verdict — `allow` · `deny` · `abstain` |
 | `actual_verdict` | `executed`, stamped by the later event |
 | `notification_type` | recorded verbatim; classified at report time, not here |
+| `hook_inventory` | heartbeat only — which ledger verbs were WIRED at session start; `null` when no settings file could be read |
 | `prev_hash` / `hash` | the chain |
 
 Commands and file contents are **not** stored — only the coarse class and a

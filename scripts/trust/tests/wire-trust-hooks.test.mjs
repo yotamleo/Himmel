@@ -15,8 +15,9 @@ import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
-  install, remove, statusOf, writeAtomic,
+  ENTRIES, install, remove, statusOf, writeAtomic,
 } from '../wire-trust-hooks.mjs';
+import { EXPECTED_HOOKS } from '../shadow-ledger.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(HERE, '..', 'wire-trust-hooks.mjs');
@@ -62,6 +63,21 @@ function fixture(name, obj = BASE, { withRecorder = true } = {}) {
 }
 
 const run = (args, file) => spawnSync(process.execPath, [SCRIPT, ...args, file], { encoding: 'utf8' });
+
+// HIMMEL-1547 CR round — Bug 2's fix moved the wiring table into
+// shadow-ledger.mjs (`EXPECTED_HOOKS`) as the ONE definition, with this
+// script importing it rather than keeping its own copy. Before that, the two
+// tables were free to disagree on which event/matcher a verb belongs to — and
+// they did: `wiredVerbs()` in shadow-ledger.mjs used to accept a verb wired
+// under ANY event, so a settings file with all seven commands parked under
+// `SessionStart` read as fully wired. Asserting SAME OBJECT, not just equal
+// content, is what stops a future edit from quietly re-forking the table into
+// two copies that drift apart again.
+describe('the wiring table has exactly ONE definition', () => {
+  test('ENTRIES here IS shadow-ledger.mjs\'s EXPECTED_HOOKS — not a copy of it', () => {
+    assert.strictEqual(ENTRIES, EXPECTED_HOOKS, 'same object reference: they cannot disagree because there is only one');
+  });
+});
 
 describe('reversibility — the zero-behaviour-change claim', () => {
   test('install then remove restores the file BYTE FOR BYTE', () => {
@@ -122,7 +138,7 @@ describe('reversibility — the zero-behaviour-change claim', () => {
     const f = fixture('nohooks-roundtrip', { permissions: { defaultMode: 'auto' } });
     const original = fs.readFileSync(f, 'utf8');
     run([], f);
-    assert.equal(statusOf(JSON.parse(fs.readFileSync(f, 'utf8'))).wired, 6);
+    assert.equal(statusOf(JSON.parse(fs.readFileSync(f, 'utf8'))).wired, 7);
     run(['--off'], f);
     assert.equal(fs.readFileSync(f, 'utf8'), original);
   });
@@ -161,7 +177,7 @@ describe('a hand-pasted entry is REPAIRED, not reported wired', () => {
     const s = handPasted({});
     assert.equal(statusOf(s).wired, 0, 'present is not the same as canonical');
     const { settings, changed } = install(s);
-    assert.equal(changed, 6, 'the malformed entry is repaired, not skipped');
+    assert.equal(changed, 7, 'the malformed entry is repaired, not skipped');
     assert.equal(settings.hooks.PreToolUse[0].hooks[0].timeout, 10);
     assert.equal(settings.hooks.PreToolUse.length, 1, 'repaired in place, not duplicated');
   });
@@ -188,7 +204,7 @@ describe('a hand-pasted entry is REPAIRED, not reported wired', () => {
     const { settings, changed } = install(on);
     assert.equal(changed, 1, 'the extra is removed and counted');
     assert.equal(settings.hooks.PermissionRequest.length, 1);
-    assert.equal(statusOf(settings).wired, 6);
+    assert.equal(statusOf(settings).wired, 7);
   });
 
   test('a duplicate is collapsed even when the survivor also needs repair', () => {
@@ -286,14 +302,20 @@ describe('what it must never touch', () => {
 });
 
 describe('the wiring it produces', () => {
-  test('all six entries, with PermissionRequest deliberately matcher-less', () => {
+  test('all seven entries, with PermissionRequest and SessionStart deliberately matcher-less', () => {
     const { settings } = install(BASE);
     const { wired, total } = statusOf(settings);
-    assert.equal(total, 6);
-    assert.equal(wired, 6);
+    assert.equal(total, 7);
+    assert.equal(wired, 7);
 
     const permreq = settings.hooks.PermissionRequest[0];
     assert.equal('matcher' in permreq, false, 'an interrupt counts whatever tool raised it');
+
+    // HIMMEL-1547: the heartbeat must fire on EVERY session source (startup,
+    // resume, clear, compact) — a matcher key here would narrow it and open a
+    // gap `collection.proven` would then refuse a rate over.
+    const heartbeat = settings.hooks.SessionStart.at(-1);
+    assert.equal('matcher' in heartbeat, false, 'must fire on every session source, not a filtered subset');
 
     const pre = settings.hooks.PreToolUse.at(-1);
     assert.equal(pre.matcher, 'Bash|Edit|Write|MultiEdit|NotebookEdit');
@@ -333,7 +355,7 @@ describe('the wiring it produces', () => {
     const cmds = Object.values(settings.hooks).flat()
       .flatMap((e) => e.hooks.map((h) => h.command))
       .filter((c) => c.includes('shadow-ledger.mjs'));
-    assert.equal(cmds.length, 6);
+    assert.equal(cmds.length, 7);
     for (const c of cmds) assert.match(c, /^node "/);
   });
 });
@@ -344,7 +366,7 @@ describe('--check writes nothing', () => {
     const original = fs.readFileSync(f, 'utf8');
     const r = run(['--check'], f);
     assert.equal(r.status, 0);
-    assert.match(r.stdout, /0\/6 entries wired/);
+    assert.match(r.stdout, /0\/7 entries wired/);
     assert.match(r.stdout, /wrote nothing/);
     assert.equal(fs.readFileSync(f, 'utf8'), original);
   });
@@ -353,7 +375,7 @@ describe('--check writes nothing', () => {
     const f = fixture('check-after');
     run([], f);
     const r = run(['--check'], f);
-    assert.match(r.stdout, /6\/6 entries wired/);
+    assert.match(r.stdout, /7\/7 entries wired/);
   });
 });
 
@@ -482,6 +504,51 @@ describe('it refuses rather than guessing', () => {
     }
   });
 
+  // [codex-1, HIMMEL-1547 round] One layer further out again: the settings
+  // ROOT. Filed as a suggestion; reproducing it showed it is worse than that.
+  // An array root is valid JSON, `{ ...settings }` turns it into an index-keyed
+  // object, and `JSON.stringify` then serializes an ARRAY — dropping every named
+  // property including the `hooks` just added. Measured on the pre-fix script:
+  // it printed "added 6 entries ... permissions unchanged" and exited 0 over a
+  // file that was still `[]`. A wiring tool reporting six hooks it did not write
+  // is this programme's own failure mode, in the tool built to prevent it.
+  test('an ARRAY settings root is refused, not silently serialized away', () => {
+    for (const bad of [[], [{ hooks: {} }]]) {
+      // A whole fake PROJECT, so the recorder precondition passes and this test
+      // reaches the assertion it is actually about.
+      const f = fixture(`array-root-${bad.length}`, bad);
+      const original = fs.readFileSync(f, 'utf8');
+      const r = run([], f);
+      assert.equal(r.status, 1, `root=${JSON.stringify(bad)} must be refused`);
+      assert.match(r.stderr, /settings root is not a JSON object/);
+      assert.doesNotMatch(r.stdout, /added/, 'and must not claim it added anything');
+      assert.equal(fs.readFileSync(f, 'utf8'), original, 'the original survives');
+    }
+  });
+
+  // [codex-2, HIMMEL-1547 round] The bare-script targeting surface. With no path
+  // argument and no CLAUDE_PROJECT_DIR, the old default was the SCRIPT's own
+  // checkout — so standing in another project and running `--check` reported on
+  // himmel's settings.json, cheerfully, with rc=0. `himmelctl trust` always
+  // passes an explicit target, which is why this survived; it is the same
+  // targeting defect HIMMEL-1551 round 3 only appeared to fix, and
+  // assertRecorderPresent does NOT catch it (the himmel checkout HAS a recorder,
+  // so the wrong answer passes every check). Refuse the ambiguity, do not
+  // resolve it by precedence.
+  test('an ambiguous default target is refused, not resolved silently', () => {
+    const elsewhere = path.join(TMP, 'other-project');
+    fs.mkdirSync(path.join(elsewhere, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, '.claude', 'settings.json'), '{}\n', 'utf8');
+    const env = { ...process.env };
+    delete env.CLAUDE_PROJECT_DIR;
+    const r = spawnSync(process.execPath, [SCRIPT, '--check'], {
+      encoding: 'utf8', cwd: elsewhere, env,
+    });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /ambiguous target/);
+    assert.doesNotMatch(r.stdout, /entries wired/, 'and reports on NO project rather than the wrong one');
+  });
+
   // [codex-adv round 3] A ledger command sharing an entry with a foreign hook
   // was INVISIBLE to isOurs: install appended a second ledger entry beside it
   // (seven live invocations reported as 6/6, zero duplicates) and remove
@@ -521,7 +588,7 @@ describe('it refuses rather than guessing', () => {
     };
     const f = fixture('foreign-multi', multi);
     assert.equal(run([], f).status, 0);
-    assert.equal(statusOf(JSON.parse(fs.readFileSync(f, 'utf8'))).wired, 6);
+    assert.equal(statusOf(JSON.parse(fs.readFileSync(f, 'utf8'))).wired, 7);
   });
 
   test('remove() refuses the same shape rather than mangling it', () => {
@@ -550,7 +617,7 @@ describe('it refuses rather than guessing', () => {
     const r = run([], f);
     assert.equal(r.status, 0, r.stderr);
     const s = JSON.parse(fs.readFileSync(f, 'utf8'));
-    assert.equal(statusOf(s).wired, 6);
+    assert.equal(statusOf(s).wired, 7);
   });
 });
 
@@ -563,15 +630,30 @@ describe('the report is not confused with the wiring', () => {
     const r = run([], f);
     assert.match(r.stdout, /shadow-ledger\.mjs report/);
     assert.match(r.stdout, /non-zero rows/);
-    assert.match(r.stdout, /SESSION START/);
+    // HIMMEL-1547: "wired" now also requires a PROVEN collection line, not
+    // just a non-zero row count — five live hooks can still grow a healthy-
+    // looking window while the collector itself is dead.
+    assert.match(r.stdout, /PROVEN collection line/);
+  });
+
+  // HIMMEL-1561 measured the previous "restart claude" claim FALSE: the ledger
+  // recorded within seconds of the settings file changing, in the very session
+  // that had just asserted it could not. An unverified claim in a success
+  // message is this subsystem's own recurring defect — pin the correction so
+  // it cannot silently regress back to the disproven claim.
+  test('the success message no longer claims a restart is needed', () => {
+    const f = fixture('says-no-restart');
+    const r = run([], f);
+    assert.match(r.stdout, /no restart needed/);
+    assert.doesNotMatch(r.stdout, /restart claude/i);
   });
 });
 
 describe('remove() is exact', () => {
-  test('it removes only our six, counted', () => {
+  test('it removes only our seven, counted', () => {
     const { settings: on } = install(BASE);
     const { settings: off, changed } = remove(on);
-    assert.equal(changed, 6);
+    assert.equal(changed, 7);
     assert.deepEqual(off, BASE);
   });
 });

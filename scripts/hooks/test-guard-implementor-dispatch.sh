@@ -57,6 +57,33 @@ fi
 # a substring of every line — that is NOT what this uses.)
 STUB_PATH_NO_BUN=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$BUN_DIR" | tr '\n' ':')
 
+# Resolve bash ONCE from the suite's own unmodified PATH, before any test
+# hands `env` a narrowed one (HIMMEL-1567). run_hook invokes this absolute
+# path so a PATH override decides what the HOOK sees, never whether the hook
+# can be started at all.
+BASH_ABS=$(command -v bash)
+if [ -z "$BASH_ABS" ]; then
+    echo "FATAL: cannot resolve bash on PATH" >&2
+    exit 1
+fi
+
+# HIMMEL-1567: the suite is not hermetic to whether the real `bun` binary is
+# on the runner's PATH -- it isn't on the CI (ubuntu-latest) box, so every
+# assertion below that expects the guard to treat claudex/glm as runnable
+# silently degraded to the "bun is not on PATH — skipping it" branch and
+# never reached the refusal it was asserting. Force runnability by default: a
+# stub `bun` (the guard only ever does `command -v bun`, never executes it)
+# on a directory prepended to PATH. The one test that must see a REAL absence
+# of bun (RC31 below) overrides PATH wholesale via run_hook's env seam, which
+# wins over this default.
+STUB_BUN_DIR="$TMP/stub-bun-bin"
+mkdir -p "$STUB_BUN_DIR"
+cat > "$STUB_BUN_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$STUB_BUN_DIR/bun"
+
 pass=0
 fail=0
 
@@ -114,7 +141,17 @@ mkcache() {
 
 run_hook() {
     local name="$1" registry="$2" json="$3"; shift 3
-    printf '%s' "$json" | env CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" "$@" bash "$HOOK" \
+    # PATH default (stub bun prepended) comes before "$@" so a caller-supplied
+    # PATH override (e.g. the bun-missing negative test) wins -- env applies
+    # repeated assignments in order, last one takes effect.
+    # Invoke bash by ABSOLUTE path (HIMMEL-1567): `env` resolves the command
+    # name using the PATH it was just handed, so a caller-supplied override
+    # decides whether `bash` is findable at all. STUB_PATH_NO_BUN strips bun's
+    # WHOLE directory, and on a runner where bash lives in that same directory
+    # env would fail 127 before the hook ever ran -- RC31 would then be a
+    # platform-dependent false RED that says nothing about the guard. BASH_ABS
+    # is resolved once, above, from the suite's own unmodified PATH.
+    printf '%s' "$json" | env CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" PATH="$STUB_BUN_DIR:$PATH" "$@" "$BASH_ABS" "$HOOK" \
         >"$TMP/out-$name" 2>"$TMP/err-$name"
     echo "$?"
 }

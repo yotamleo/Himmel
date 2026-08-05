@@ -16,9 +16,10 @@ import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
-  append, canonical, chainHash, classify, healthPath, isApprovalInterrupt,
-  lastRecord, readAll, readDrops, readLedger, refFor, shadowVerdict, summarize,
-  RECORDED_TOOLS,
+  append, canonical, chainHash, classify, collectionHealth, healthPath,
+  isApprovalInterrupt, lastRecord, readAll, readDrops, readLedger, refFor,
+  shadowVerdict, summarize, wiredVerbs,
+  EXPECTED_HOOKS, EXPECTED_VERBS, RECORDED_TOOLS,
 } from '../shadow-ledger.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -58,6 +59,22 @@ const PRE_BASH = JSON.stringify({
   tool_input: { command: 'git push --force origin main' },
   permission_mode: 'auto',
 });
+
+// HIMMEL-1547: a COMPLETE heartbeat row — full inventory, valid kind — so a
+// fixture states its own collection premise explicitly rather than
+// accidentally reading UNPROVEN. Every fixture below that needs
+// `interrupts_per_week` to publish uses this instead of repeating the shape.
+const beat = (ts) => ({
+  ts, kind: 'heartbeat', session_id: 's-fixture', source: 'startup',
+  hook_inventory: [...EXPECTED_VERBS],
+});
+
+// Relative-to-now ISO timestamp, for the report-CLI tests below: `report`
+// with no `--days` windows from the first record to REAL wall-clock now, so
+// a fixed 2026 date would silently stop exercising the "no rate" branches
+// once the calendar moves past it.
+const DAY_MS = 86400000;
+const agoIso = (days) => new Date(Date.now() - days * DAY_MS).toISOString();
 
 // --- 1. the hard constraint --------------------------------------------------
 
@@ -812,6 +829,17 @@ describe('outcome + report', () => {
     { ts: '2026-07-29T00:00:00.000Z', kind: 'request', ref: 'b', class: 'bash:node x', shadow_verdict: 'abstain' },
     { ts: '2026-07-29T00:00:02.000Z', kind: 'notification', notification_type: 'permission_prompt' },
     { ts: '2026-08-04T00:00:00.000Z', kind: 'request', ref: 'c', class: 'bash:ls', shadow_verdict: 'allow' },
+    // HIMMEL-1547: this fixture is reused with `now` at both 2026-08-04 (a
+    // 7-day window, allowance min(7, 3.5)=3.5d) and 2026-08-07 (a 10-day
+    // window, allowance min(7, 5)=5d, see below) — three beats spaced so no
+    // stretch of EITHER window exceeds ITS OWN allowance. Two beats used to be
+    // enough here; the round that added the relative-fraction cap (a bare
+    // 7d/10d cap alone lets one end-of-window heartbeat certify most of the
+    // window as unproven) tightened it below what two beats 4 days apart could
+    // satisfy on the 7-day case.
+    beat('2026-07-29T00:00:00.000Z'),
+    beat('2026-07-31T00:00:00.000Z'),
+    beat('2026-08-02T00:00:00.000Z'),
   ];
 
   test('the report counts interrupts per week and refuses to guess the rest', () => {
@@ -853,9 +881,14 @@ describe('outcome + report', () => {
   test('a quiet window with clustered events does not report an inflated rate', () => {
     // Two events a minute apart, a week of observation. Spread-based span was
     // ~0.0007 days → 10,080/week. The observation window is what is real.
+    // Two heartbeats (not one — HIMMEL-1547's fractional allowance caps an
+    // unproven stretch at half a 7-day window, 3.5d, so a single midweek beat
+    // leaving a 4d gap to `now` would refuse the rate this test is pinning).
     const s = summarize([
       { ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
       { ts: '2026-07-28T00:01:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+      beat('2026-07-31T00:00:00.000Z'),
+      beat('2026-08-02T00:00:00.000Z'),
     ], null, '2026-08-04T00:00:00.000Z');
     assert.equal(s.span_days, 7);
     assert.equal(s.interrupts_per_week, 2);
@@ -891,6 +924,9 @@ describe('outcome + report', () => {
         { ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
         { ts: '2026-07-30T00:00:00.000Z', kind: 'notification', notification_type: 'idle_prompt' },
         { ts: '2026-08-01T00:00:00.000Z', kind: 'notification', notification_type: 'auth_success' },
+        beat('2026-07-29T00:00:00.000Z'),
+        beat('2026-07-31T00:00:00.000Z'),
+        beat('2026-08-02T00:00:00.000Z'),
       ], null, '2026-08-04T00:00:00.000Z');
       assert.equal(s.notifications, 3);
       assert.equal(s.interrupts, 1, 'idle + auth are not approval pressure');
@@ -982,6 +1018,8 @@ describe('dropped writes are visible, not silent', () => {
   test('a window with dropped writes publishes NO rate', () => {
     const rows = [
       { ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+      beat('2026-07-30T00:00:00.000Z'),
+      beat('2026-08-02T00:00:00.000Z'),
     ];
     const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
     const clean = summarize(rows, null, '2026-08-04T00:00:00.000Z', intact, []);
@@ -1438,6 +1476,8 @@ describe('PermissionRequest is an EVENT count, not an interrupt count', () => {
     const rows = [
       { ts: '2026-07-28T00:00:00.000Z', kind: 'permission_request', tool: 'Bash' },
       { ts: '2026-07-29T00:00:00.000Z', kind: 'permission_request', tool: 'Bash' },
+      beat('2026-07-30T00:00:00.000Z'),
+      beat('2026-08-02T00:00:00.000Z'),
     ];
     const s = summarize(rows, null, '2026-08-04T00:00:00.000Z');
     assert.equal(s.permission_request_events, 2);
@@ -1454,5 +1494,497 @@ describe('PermissionRequest is an EVENT count, not an interrupt count', () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].kind, 'permission_request');
     assert.equal(rows[0].tool, 'WebFetch');
+  });
+});
+
+// --- HIMMEL-1547: a quiet week and a STOPPED collector must not read alike ---
+//
+// The defect: `observedDays` runs from the first record to NOW regardless of
+// whether the recorder is still alive. Five hooks other than `notify` keep
+// growing an intact, healthy-looking window even after the collector dies, so
+// the instrument published a confident, LOW interrupts/week — the exact
+// number that would end the HIMMEL-1531 programme — with every integrity
+// signal it already owned reading clean. `collection.proven` closes that gap;
+// these tests pin its two halves (liveness, inventory) and the one thing it
+// must NEVER do in the process (shrink the window to fit).
+
+describe('HIMMEL-1547 — collector liveness and inventory gate the rate', () => {
+  // HIMMEL-1547 CR round — adversarial review found the gate ITSELF could
+  // certify collection it never observed. Confirmed by direct probe before
+  // this fix: a collector dead (or never wired) for a full week, with ONE
+  // full-inventory heartbeat in the last minute of the window, satisfied
+  // `maxGapDays(7) <= HEARTBEAT_MAX_GAP_DAYS(7)` and published a confident
+  // rate — the exact false-low number this whole subsystem exists to prevent.
+  // Generalised: any window no longer than the gap allowance could be
+  // certified by ONE heartbeat anywhere in it, and 1-to-7 days is exactly
+  // where this instrument lives during its first week of operation.
+  test('one heartbeat at the end of the window does not certify the week before it', () => {
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+      beat('2026-08-03T23:59:00.000Z'),
+    ];
+    const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z', intact, []);
+    assert.equal(s.span_days, 7);
+    assert.equal(s.collection.heartbeats, 1, 'the collector DID beat once — that is exactly what makes this dangerous');
+    assert.equal(s.collection.proven, false, 'a heartbeat at the very end cannot vouch for the week behind it');
+    assert.equal(s.interrupts_per_week, null, 'the raw interrupt row is real, but no rate is published over it');
+  });
+
+  test('zero heartbeats in a long, otherwise-clean window is the headline defect: no rate, UNPROVEN', () => {
+    // This is what a never-wired or crashed collector looks like: one live
+    // hook (notify) still growing an intact window over a full week. Before
+    // this ticket that published a confident rate.
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+    ];
+    const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z', intact, []);
+    assert.equal(s.interrupts, 1, 'the raw count is still shown');
+    assert.equal(s.interrupts_per_week, null, 'but no rate is published without a proven collector');
+    assert.equal(s.collection.proven, false);
+    assert.equal(s.collection.heartbeats, 0);
+  });
+
+  test('heartbeats present and dense, everything else clean — the rate IS published', () => {
+    // The gate must not read as permanently off; this proves it opens too.
+    // Three beats, not two: the fractional allowance caps an unproven stretch
+    // at half the 7-day window (3.5d), so 07-28 → 08-01 alone (a 4d gap) would
+    // now refuse the rate this test exists to show CAN publish.
+    const rows = [
+      beat('2026-07-28T00:00:00.000Z'),
+      { ts: '2026-07-30T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+      beat('2026-07-30T12:00:00.000Z'),
+      beat('2026-08-01T00:00:00.000Z'),
+    ];
+    const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z', intact, []);
+    assert.equal(s.collection.proven, true);
+    assert.equal(s.interrupts_per_week, 1);
+  });
+
+  test('a heartbeat missing `notify` refuses the rate — interrupts read 0 BY CONSTRUCTION, not by observation', () => {
+    const incomplete = EXPECTED_VERBS.filter((v) => v !== 'notify');
+    const rows = [
+      { ts: '2026-07-28T00:00:00.000Z', kind: 'heartbeat', session_id: 's', source: 'startup', hook_inventory: incomplete },
+      { ts: '2026-08-01T00:00:00.000Z', kind: 'heartbeat', session_id: 's', source: 'startup', hook_inventory: incomplete },
+    ];
+    const intact = { intact: true, malformed: 0, torn: 0, brokenLinks: 0 };
+    const s = summarize(rows, null, '2026-08-04T00:00:00.000Z', intact, []);
+    assert.equal(s.interrupts, 0, 'zero because notify was never wired — NOT because the week was quiet');
+    assert.equal(s.interrupts_per_week, null);
+    assert.deepEqual(s.collection.missing_verbs, ['notify']);
+  });
+
+  test('hook_inventory: null is treated as missing every verb, not as a complete one', () => {
+    const h = collectionHealth(
+      [{ ts: '2026-07-28T00:00:00.000Z', kind: 'heartbeat', hook_inventory: null }],
+      null, '2026-08-01T00:00:00.000Z',
+    );
+    assert.equal(h.proven, false);
+    assert.deepEqual(h.missing_verbs, [...EXPECTED_VERBS].sort());
+  });
+
+  test('hook_inventory: undefined (field simply absent) is also treated as missing every verb', () => {
+    const h = collectionHealth(
+      [{ ts: '2026-07-28T00:00:00.000Z', kind: 'heartbeat' }],
+      null, '2026-08-01T00:00:00.000Z',
+    );
+    assert.equal(h.proven, false);
+    assert.deepEqual(h.missing_verbs, [...EXPECTED_VERBS].sort());
+  });
+
+  test('a hole in the MIDDLE of the window refuses the rate even though the last heartbeat is fresh', () => {
+    // A fresh heartbeat only proves the collector is alive NOW — it says
+    // nothing about a stretch behind it the collector could have been down
+    // for the whole time.
+    const s = collectionHealth(
+      [beat('2026-07-20T00:00:00.000Z'), beat('2026-08-03T23:00:00.000Z')],
+      '2026-07-20T00:00:00.000Z', '2026-08-04T00:00:00.000Z',
+    );
+    assert.equal(s.proven, false, 'a fresh last heartbeat cannot vouch for a stale stretch behind it');
+    assert.ok(s.max_gap_days > 7, `expected a gap over 7 days, got ${s.max_gap_days}`);
+  });
+
+  // HIMMEL-1547 CR round — the headline defect of Bug 1: with ONLY the
+  // absolute 7-day cap, two heartbeats bracketing a 7-day window (one at each
+  // edge) satisfied `maxGapDays(7) <= HEARTBEAT_MAX_GAP_DAYS(7)` and certified
+  // the WHOLE week between them, even though nothing was observed in between.
+  // Confirmed by direct probe before this fix landed. The allowance is now
+  // also bounded to half the window's own length, so this exact shape must
+  // refuse — and denser heartbeats across the same window must still publish.
+  describe('the allowance is bounded RELATIVE to the window, not just absolutely', () => {
+    test('two heartbeats bracketing a 7-day window still refuse — the gap equals the whole window', () => {
+      const b1 = '2026-07-28T00:00:00.000Z';
+      const b2 = '2026-08-04T00:00:00.000Z'; // exactly 7 days after b1
+      const s = collectionHealth([beat(b1), beat(b2)], b1, b2);
+      assert.equal(s.max_gap_days, 7);
+      assert.equal(s.allowed_gap_days, 3.5, 'half of a 7-day window, not the flat 7-day cap');
+      assert.equal(s.proven, false, 'one heartbeat at each edge does not prove the week between them');
+    });
+
+    test('heartbeats roughly every 3 days across the SAME window are proven, and the rate publishes', () => {
+      const since = '2026-07-28T00:00:00.000Z';
+      const now = '2026-08-04T00:00:00.000Z'; // same 7-day window as above
+      const rows = [
+        beat(since),
+        beat('2026-07-31T00:00:00.000Z'),
+        beat('2026-08-03T00:00:00.000Z'),
+        { ts: '2026-07-29T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+      ];
+      const s = summarize(rows, since, now);
+      assert.equal(s.span_days, 7);
+      assert.equal(s.collection.proven, true);
+      assert.equal(s.interrupts_per_week, 1);
+    });
+
+    // A hair over the relative allowance still refuses — the boundary holds
+    // in both directions, same as the (now-superseded) flat-7-day version did.
+    test('a hair over the relative allowance refuses — the boundary pinned both directions', () => {
+      const b1 = '2026-07-28T00:00:00.000Z';
+      const mid = '2026-07-31T12:00:00.000Z'; // exactly 3.5 days after b1
+      const now = '2026-08-04T00:00:00.000Z'; // 7-day window, allowance 3.5d
+      const atBoundary = collectionHealth([beat(b1), beat(mid), beat(now)], b1, now);
+      assert.equal(atBoundary.max_gap_days, 3.5);
+      assert.equal(atBoundary.proven, true, 'exactly at the allowance must be ALLOWED, not refused');
+
+      const midLate = '2026-07-31T12:15:00.000Z'; // 15 minutes past the 3.5d allowance
+      const overBoundary = collectionHealth([beat(b1), beat(midLate), beat(now)], b1, now);
+      assert.ok(overBoundary.max_gap_days > 3.5, `expected > 3.5, got ${overBoundary.max_gap_days}`);
+      assert.equal(overBoundary.proven, false, 'a hair over the allowance must be REFUSED');
+    });
+
+    // The absolute cap is still what binds on a LONG window: the fraction
+    // alone would allow a 15-day gap here (half of 30), but no unproven
+    // stretch may ever exceed HEARTBEAT_MAX_GAP_DAYS regardless of how wide
+    // the window is.
+    test('a 30-day window with heartbeats every ~6 days is proven by the ABSOLUTE cap, not the looser fraction', () => {
+      const since = '2026-07-05T00:00:00.000Z';
+      const now = '2026-08-04T00:00:00.000Z'; // 30 days
+      const rows = [
+        beat('2026-07-05T00:00:00.000Z'),
+        beat('2026-07-11T00:00:00.000Z'),
+        beat('2026-07-17T00:00:00.000Z'),
+        beat('2026-07-23T00:00:00.000Z'),
+        beat('2026-07-29T00:00:00.000Z'),
+        { ts: '2026-07-10T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+      ];
+      const s = summarize(rows, since, now);
+      assert.equal(s.span_days, 30);
+      assert.equal(
+        s.collection.allowed_gap_days, 7,
+        'the fraction would allow 15d here (half of 30); the 7-day absolute cap is what actually binds',
+      );
+      assert.equal(s.collection.proven, true);
+      assert.equal(s.interrupts_per_week, 0.2);
+    });
+  });
+
+  // The design constraint that matters most: HIMMEL-1529 CR round 1 removed
+  // spread-between-first-and-last-event windows because they are biased short
+  // at BOTH ends, which pushes the rate UP — on the one number the programme
+  // is gated on. Capping the window at the last heartbeat would reintroduce
+  // exactly that bias through a different door. An unproven window is
+  // REFUSED WHOLE here, never trimmed to fit — pinned so a future "just cap
+  // it at the last heartbeat" shortcut fails this test.
+  test('span_days is UNCHANGED by the presence, absence, or staleness of heartbeats', () => {
+    const since = '2026-07-28T00:00:00.000Z';
+    const now = '2026-08-07T00:00:00.000Z'; // 10 days
+    // An anchor record AT `since`, present in every case: `windowStartMs`
+    // takes the ledger's own first-ever record as a floor on `since` (a
+    // `--days N` window cannot claim more than the ledger holds), so without
+    // this a lone LATE heartbeat would itself become "first record" and
+    // shrink the window — measuring that unrelated mechanic instead of the
+    // one this test exists to pin.
+    const anchor = { ts: since, kind: 'notification', notification_type: 'idle_prompt' };
+    const noHeartbeats = summarize([anchor], since, now);
+    const staleHeartbeat = summarize([anchor, beat('2026-07-28T00:00:00.000Z')], since, now);
+    const freshHeartbeat = summarize([anchor, beat('2026-08-06T23:00:00.000Z')], since, now);
+    assert.equal(noHeartbeats.span_days, 10);
+    assert.equal(staleHeartbeat.span_days, 10);
+    assert.equal(freshHeartbeat.span_days, 10);
+    // All three fail to PROVE collection (a lone heartbeat cannot cover a
+    // 10-day window by itself) — the invariant is that span_days does not
+    // move regardless, not that these particular fixtures publish a rate.
+    assert.equal(staleHeartbeat.collection.proven, false);
+    assert.equal(freshHeartbeat.collection.proven, false);
+  });
+
+  test('heartbeats OUTSIDE the --days window do not prove collection inside it', () => {
+    const rows = [beat('2026-06-01T00:00:00.000Z')]; // long before the window
+    const s = collectionHealth(rows, '2026-07-28T00:00:00.000Z', '2026-08-04T00:00:00.000Z');
+    assert.equal(s.heartbeats, 0, 'an out-of-window heartbeat is not in-window evidence');
+    assert.equal(s.proven, false);
+  });
+
+  describe('wiredVerbs — reads the settings files named, never the real ones on this machine', () => {
+    const writeSettings = (dir, obj) => {
+      const f = path.join(dir, 'settings.json');
+      fs.writeFileSync(f, JSON.stringify(obj), 'utf8');
+      return f;
+    };
+    const PRE_MATCHER = EXPECTED_HOOKS.find((h) => h.verb === 'pre').matcher;
+
+    test('parses the wired verb off a canonical hook entry', () => {
+      const f = writeSettings(freshDir(), {
+        hooks: {
+          PreToolUse: [{
+            matcher: PRE_MATCHER,
+            hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs" pre' }],
+          }],
+        },
+      });
+      assert.deepEqual(wiredVerbs([f]), ['pre']);
+    });
+
+    test('unions verbs across multiple candidate files', () => {
+      const dir = freshDir();
+      const a = writeSettings(dir, {
+        hooks: {
+          PreToolUse: [{
+            matcher: PRE_MATCHER,
+            hooks: [{ type: 'command', command: 'node x/scripts/trust/shadow-ledger.mjs pre' }],
+          }],
+        },
+      });
+      const b = path.join(dir, 'user-settings.json');
+      fs.writeFileSync(b, JSON.stringify({
+        hooks: { Notification: [{ hooks: [{ type: 'command', command: 'node x/scripts/trust/shadow-ledger.mjs notify' }] }] },
+      }), 'utf8');
+      assert.deepEqual(wiredVerbs([a, b]), ['notify', 'pre']);
+    });
+
+    test('a hook command unrelated to the ledger is ignored', () => {
+      const f = writeSettings(freshDir(), {
+        hooks: { PreToolUse: [{ hooks: [{ command: 'bash some-other-hook.sh pre' }] }] },
+      });
+      assert.deepEqual(wiredVerbs([f]), []);
+    });
+
+    test('a ledger command with EXTRA trailing arguments is not counted — only an exact known verb counts', () => {
+      const f = writeSettings(freshDir(), {
+        hooks: {
+          PreToolUse: [{
+            matcher: PRE_MATCHER,
+            hooks: [{ type: 'command', command: 'node x/scripts/trust/shadow-ledger.mjs pre --extra' }],
+          }],
+        },
+      });
+      assert.deepEqual(wiredVerbs([f]), [], 'the trailing token is "--extra", not a recognised verb');
+    });
+
+    test('returns null — NOT an empty array — when no candidate file could be read at all', () => {
+      const dir = freshDir();
+      assert.equal(
+        wiredVerbs([path.join(dir, 'nope.json'), path.join(dir, 'also-nope.json')]),
+        null,
+        '"could not read" and "read fine, wires nothing" must stay distinguishable',
+      );
+    });
+
+    test('a settings ROOT that is an array does not throw — it just proves nothing', () => {
+      const f = writeSettings(freshDir(), []);
+      assert.deepEqual(wiredVerbs([f]), []);
+    });
+
+    test('a `hooks` value that is an array does not throw — it just proves nothing', () => {
+      const f = writeSettings(freshDir(), { hooks: [] });
+      assert.deepEqual(wiredVerbs([f]), []);
+    });
+
+    // HIMMEL-1547 CR round — Bug 2's exact probe. Before this fix, `wiredVerbs`
+    // accepted any ledger-shaped command anywhere, regardless of which event key
+    // it sat under. A settings file carrying all seven canonical-looking
+    // commands parked under `SessionStart` returned the COMPLETE inventory
+    // (`['denied','heartbeat','notify','permreq','post','postfail','pre']`),
+    // even though `notify` never runs for a real `Notification` event — so
+    // approval interrupts were missed entirely while the heartbeat certified a
+    // complete collector and the rate published. Confirmed by direct probe.
+    describe('a verb counts only under its OWN canonical event', () => {
+      const allSevenUnderSessionStart = () => ({
+        hooks: {
+          SessionStart: EXPECTED_HOOKS.map((spec) => {
+            const entry = {};
+            if (spec.matcher !== null) entry.matcher = spec.matcher;
+            entry.hooks = [{
+              type: 'command',
+              command: `node "$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs" ${spec.verb}`,
+            }];
+            return entry;
+          }),
+        },
+      });
+
+      test('all seven canonical-looking commands parked under SessionStart wire only heartbeat', () => {
+        const f = writeSettings(freshDir(), allSevenUnderSessionStart());
+        assert.deepEqual(
+          wiredVerbs([f]), ['heartbeat'],
+          'six of these commands are recognisably ours but sit under the wrong event — none of them count',
+        );
+      });
+
+      test('the consequence: a heartbeat carrying that inventory still refuses the rate — notify is missing', () => {
+        // What SessionStart would actually observe and write, verbatim: the
+        // hook_inventory a real session would record against that settings file.
+        const rows = [
+          { ts: '2026-07-28T00:00:00.000Z', kind: 'heartbeat', session_id: 's', source: 'startup', hook_inventory: ['heartbeat'] },
+          { ts: '2026-08-01T00:00:00.000Z', kind: 'heartbeat', session_id: 's', source: 'startup', hook_inventory: ['heartbeat'] },
+          { ts: '2026-07-29T00:00:00.000Z', kind: 'notification', notification_type: 'permission_prompt' },
+        ];
+        const s = summarize(rows, null, '2026-08-04T00:00:00.000Z');
+        assert.equal(s.interrupts, 1, 'the approval interrupt genuinely happened');
+        assert.ok(s.collection.missing_verbs.includes('notify'), 'notify never actually ran under Notification');
+        assert.equal(s.interrupts_per_week, null, 'a notify-blind collector must not publish a rate, even though it fired once');
+      });
+    });
+
+    test('a canonical command under the WRONG event does not count', () => {
+      const f = writeSettings(freshDir(), {
+        hooks: {
+          SessionStart: [{ hooks: [{ type: 'command', command: 'node x/scripts/trust/shadow-ledger.mjs pre' }] }],
+        },
+      });
+      assert.deepEqual(wiredVerbs([f]), [], '`pre` only counts under PreToolUse, not wherever it happens to be parked');
+    });
+
+    test('a WRONG matcher does not count, even under the right event', () => {
+      const f = writeSettings(freshDir(), {
+        hooks: {
+          PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node x/scripts/trust/shadow-ledger.mjs pre' }] }],
+        },
+      });
+      assert.deepEqual(wiredVerbs([f]), [], 'a narrowed matcher silently narrows what is observed');
+    });
+
+    test('a MISSING matcher does not count when the canonical entry requires one', () => {
+      const f = writeSettings(freshDir(), {
+        hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'node x/scripts/trust/shadow-ledger.mjs pre' }] }] },
+      });
+      assert.deepEqual(wiredVerbs([f]), []);
+    });
+
+    test('a matcher present where the canonical entry has NONE does not count', () => {
+      const f = writeSettings(freshDir(), {
+        hooks: {
+          Notification: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node x/scripts/trust/shadow-ledger.mjs notify' }] }],
+        },
+      });
+      assert.deepEqual(wiredVerbs([f]), [], 'PermissionRequest/Notification/SessionStart deliberately carry no matcher');
+    });
+
+    test('a WRONG type does not count', () => {
+      const f = writeSettings(freshDir(), {
+        hooks: { Notification: [{ hooks: [{ type: 'script', command: 'node x/scripts/trust/shadow-ledger.mjs notify' }] }] },
+      });
+      assert.deepEqual(wiredVerbs([f]), []);
+    });
+
+    test('a lookalike entry sharing its hook array with a foreign hook does not count', () => {
+      // The same requirement wire-trust-hooks.mjs's `isOurs` enforces: a ledger
+      // command riding alongside a foreign hook in one entry is not safely
+      // attributable to this event.
+      const f = writeSettings(freshDir(), {
+        hooks: {
+          Notification: [{
+            hooks: [
+              { type: 'command', command: 'node x/scripts/trust/shadow-ledger.mjs notify' },
+              { type: 'command', command: 'bash something-else.sh' },
+            ],
+          }],
+        },
+      });
+      assert.deepEqual(wiredVerbs([f]), []);
+    });
+  });
+
+  describe('the heartbeat verb, end to end', () => {
+    test('a SessionStart-shaped payload on stdin lands a chain-valid heartbeat row on disk', () => {
+      const dir = freshDir();
+      const r = runHook(['heartbeat'], JSON.stringify({ session_id: 's1', source: 'startup' }), dir);
+      assert.equal(r.status, 0);
+      assert.equal(r.stdout, '');
+      const led = readLedger(path.join(dir, 'ledger.jsonl'));
+      assert.equal(led.intact, true, 'the chain the heartbeat wrote must validate');
+      assert.equal(led.records.length, 1);
+      assert.equal(led.records[0].kind, 'heartbeat');
+      assert.equal(led.records[0].session_id, 's1');
+      assert.equal(led.records[0].source, 'startup');
+      assert.ok('hook_inventory' in led.records[0]);
+    });
+
+    // Fail-open is a hook contract: a non-zero PreToolUse exit BLOCKS the tool
+    // call, and SessionStart is on the same contract. Same pattern as the
+    // "fail-open" describe block above, for the seventh verb.
+    test('garbage stdin still exits 0, silently', () => {
+      const r = runHook(['heartbeat'], 'this is not json', freshDir());
+      assert.equal(r.status, 0);
+      assert.equal(r.stdout, '');
+    });
+
+    test('an unwritable ledger dir still exits 0, silently', () => {
+      const r = runHook(
+        ['heartbeat'],
+        JSON.stringify({ session_id: 's1', source: 'startup' }),
+        path.join(os.devNull, 'nope', 'nested'),
+      );
+      assert.equal(r.status, 0);
+      assert.equal(r.stdout, '');
+    });
+  });
+
+  describe('the report names each ⚠ COLLECTION branch, and lists every withheld reason together', () => {
+    // `report` with no `--days` windows from the first record to REAL
+    // wall-clock now, so these use `agoIso()` rather than fixed 2026 dates —
+    // a fixed date would silently stop exercising the "no rate" branches once
+    // the calendar moves past it.
+    test('branch 1 — NO collector heartbeat in this window', () => {
+      const dir = freshDir();
+      fs.mkdirSync(dir, { recursive: true });
+      process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+      append({ ts: agoIso(8), kind: 'notification', notification_type: 'permission_prompt' });
+      process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+      const r = runHook(['report'], '', dir);
+      assert.equal(r.status, 0);
+      assert.match(r.stdout, /NO collector heartbeat in this window/);
+      assert.match(r.stdout, /COLLECTION UNPROVEN/);
+    });
+
+    test('branch 2 — hook(s) NOT wired at heartbeat time (a missing verb)', () => {
+      const dir = freshDir();
+      fs.mkdirSync(dir, { recursive: true });
+      process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+      const incomplete = EXPECTED_VERBS.filter((v) => v !== 'notify');
+      append({ ts: agoIso(8), kind: 'heartbeat', session_id: 's', source: 'startup', hook_inventory: incomplete });
+      append({ ts: agoIso(1), kind: 'heartbeat', session_id: 's', source: 'startup', hook_inventory: incomplete });
+      process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+      const r = runHook(['report'], '', dir);
+      assert.equal(r.status, 0);
+      assert.match(r.stdout, /hook\(s\) NOT wired at heartbeat time: notify/);
+    });
+
+    test('branch 3 — a gap in the middle with no heartbeat behind it, allowance stated', () => {
+      const dir = freshDir();
+      fs.mkdirSync(dir, { recursive: true });
+      process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+      append(beat(agoIso(20)));
+      append(beat(agoIso(1))); // ~19 days between beats — wider than the 7-day allowance
+      process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+      const r = runHook(['report'], '', dir);
+      assert.equal(r.status, 0);
+      assert.match(r.stdout, /of this window has no heartbeat behind it/);
+    });
+
+    test('the multi-reason line lists MORE THAN ONE withheld reason when more than one applies', () => {
+      // 20 minutes of history, no heartbeat: both "window under a day" AND
+      // "COLLECTION UNPROVEN" apply — the report must not stop at the first.
+      const dir = freshDir();
+      fs.mkdirSync(dir, { recursive: true });
+      process.env.HIMMEL_TRUST_LEDGER_DIR = dir;
+      append({ ts: new Date(Date.now() - 20 * 60000).toISOString(), kind: 'notification', notification_type: 'permission_prompt' });
+      process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
+      const r = runHook(['report'], '', dir);
+      assert.equal(r.status, 0);
+      assert.match(r.stdout, /no rate published: COLLECTION UNPROVEN; window under a day/);
+    });
   });
 });

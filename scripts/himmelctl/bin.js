@@ -77,17 +77,21 @@ commands:
                           wired in BOTH scopes (fail-closed)
   trust on|off|status     wire, unwire, or report the trust shadow ledger's hook
                           entries in this project's .claude/settings.json
-                          (HIMMEL-1529/1539). Idempotent, and 'off' removes only
+                          (HIMMEL-1551; recorder HIMMEL-1529/1539/1547).
+                          Idempotent, and 'off' removes only
                           what it added — the recorder's whole claim is that
                           adding it and removing it are both zero behaviour
                           change. (Exactly byte-for-byte for any file with
                           existing hooks; an event array that was EMPTY and then
                           wired into normalizes to absent, which is invisible to
-                          every consumer.) Hooks load at SESSION START, so restart claude
-                          and confirm with
+                          every consumer.) Hooks take effect on the next matching
+                          event — no restart needed (measured, HIMMEL-1561).
+                          Confirm with
                           'node scripts/trust/shadow-ledger.mjs report':
-                          it must show non-zero rows. "It is wired" is a
-                          different claim from "it is recording"
+                          it must show non-zero rows AND a PROVEN collection
+                          line. "It is wired" is a different claim from "it is
+                          recording", and both are different from "the rate can
+                          be trusted"
   deps status             read-only version/presence check of the declared
                           toolchain (scripts/install/deps.json)
   deps ensure             install MISSING declared toolchain deps via their
@@ -3314,7 +3318,9 @@ async function cmdScope(args) {
 // ── trust ledger wiring (HIMMEL-1551) ───────────────────────────────────────
 //
 // `himmelctl trust on|off|status` — install, remove, or report the HIMMEL-1529
-// shadow ledger's six hook entries in the project's .claude/settings.json.
+// shadow ledger's hook entries in the project's .claude/settings.json. The
+// count lives in the wiring script's ENTRIES table, not here — HIMMEL-1547
+// made it seven, and a number repeated in a comment is a number that drifts.
 //
 // Why this is a command at all: the recorder shipped behind a MANUAL PASTE of
 // six JSON blocks, and three consecutive chain legs then measured

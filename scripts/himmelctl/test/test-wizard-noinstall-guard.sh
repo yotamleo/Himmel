@@ -50,6 +50,11 @@ trap cleanup EXIT
 # writes/removes in the user's binDir. Listed here only because
 # extract_script_targets()'s conservative quoted-*.ps1 scan catches the
 # literal — the trip-wire still fires on any genuinely-new shell-out script.
+#
+# HIMMEL-1551: wire-trust-hooks.mjs — the `trust on|off|status` verb's
+# existing-primitive shell-out (cmdTrust -> scripts/trust/wire-trust-hooks.mjs
+# via spawnSync), same class as set-lane-override.mjs above, not a
+# reimplementation of the trust-wiring logic inline in bin.js.
 allow_full="$work/allow-full.txt"
 cat > "$allow_full" <<'NAMES'
 preflight-adopter.sh
@@ -65,6 +70,7 @@ himmel-update.sh
 himmelctl.ps1
 set-env-var.sh
 set-lane-override.mjs
+wire-trust-hooks.mjs
 NAMES
 
 # extract_script_targets — every 'name.sh' / "name.sh" / 'name.ps1' /

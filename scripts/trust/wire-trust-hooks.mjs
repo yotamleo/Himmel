@@ -51,6 +51,8 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { EXPECTED_HOOKS } from './shadow-ledger.mjs';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 // The recorder is invoked through `node` directly rather than `bash`, so it is
@@ -60,7 +62,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // would then fail open, losing observations silently, which is the one failure
 // mode a measurement tool must not have.
 const LEDGER = '"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs"';
-const TOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit';
 
 // `"timeout": 10` is not decoration. A command hook defaults to 600 SECONDS, so
 // a stalled syscall in the PreToolUse hook would hold every matching tool call
@@ -68,20 +69,24 @@ const TOOL_MATCHER = 'Bash|Edit|Write|MultiEdit|NotebookEdit';
 // claim of the ticket is that it is not one.
 const TIMEOUT = 10;
 
-// The one place the wiring is defined. HIMMEL-1547 will add a seventh entry;
-// that should be one row here, not a new paste.
+// The wiring table itself lives in shadow-ledger.mjs, as `EXPECTED_HOOKS` —
+// the recorder OWNS the contract of which verb belongs to which event and
+// matcher, and this script CONSUMES it (HIMMEL-1547 CR round). Two independent
+// copies of that mapping is exactly how `wiredVerbs()` there used to certify a
+// verb wired under the wrong event: a settings file with all seven
+// canonical-looking commands parked under `SessionStart` read as a complete
+// inventory because nothing checked the event key against a shared source of
+// truth. The recorder is the hot path (it runs on every tool call) and gains
+// nothing from importing this file; this script runs rarely and pays the
+// import instead. Kept as the local name `ENTRIES` to minimise the diff below.
 //
 // `matcher: null` means NO matcher key is emitted. For PermissionRequest that
 // is deliberate: an approval interrupt counts whatever tool raised it, and the
-// row carries no request payload to classify.
-const ENTRIES = Object.freeze([
-  { event: 'PreToolUse', verb: 'pre', matcher: TOOL_MATCHER },
-  { event: 'PostToolUse', verb: 'post', matcher: TOOL_MATCHER },
-  { event: 'PostToolUseFailure', verb: 'postfail', matcher: TOOL_MATCHER },
-  { event: 'PermissionDenied', verb: 'denied', matcher: TOOL_MATCHER },
-  { event: 'PermissionRequest', verb: 'permreq', matcher: null },
-  { event: 'Notification', verb: 'notify', matcher: null },
-]);
+// row carries no request payload to classify. For SessionStart it is load-
+// bearing in a different way: the heartbeat must fire on EVERY session source
+// (startup, resume, clear, compact), because a matcher that misses one produces
+// a gap the report then refuses a rate over.
+export const ENTRIES = EXPECTED_HOOKS;
 
 const commandFor = (verb) => `node ${LEDGER} ${verb}`;
 
@@ -160,7 +165,7 @@ function assertNoEmbeddedLedgerHooks(settings) {
           + `  ${ledger[0].command}\n`
           + 'Refusing. It is close enough to be recognisable and different enough that '
           + 'install would append a SECOND entry beside it — both would fire, every event '
-          + 'would be recorded twice, and status would still report 6/6. '
+          + `would be recorded twice, and status would still report ${ENTRIES.length}/${ENTRIES.length}. `
           + 'Remove or correct that entry first.',
         );
       }
@@ -195,8 +200,20 @@ function fail(message) {
 // Validating the entries but not the thing that holds them is the same
 // one-layer-short mistake this subsystem keeps making; refuse-not-guess has to
 // hold at every level it claims to.
+// [glm/codex-1, sug] And one layer above THAT: the settings root itself. An
+// array root is valid JSON, survives `{ ...settings }` (which produces an
+// index-keyed object), and `JSON.stringify` then serializes an ARRAY — dropping
+// every named property, including the `hooks` this script just added. The old
+// code reported "added 7 entries" over a file that gained none.
+//
+// This is the same one-layer-short mistake the `hooks` check was written for,
+// found one layer further out. Recording it that way rather than as a
+// standalone bug: the pattern is the finding.
 function assertHooksContainer(settings) {
-  const h = settings?.hooks;
+  if (settings === null || typeof settings !== 'object' || Array.isArray(settings)) {
+    fail('settings root is not a JSON object — refusing to overwrite an unrecognised shape');
+  }
+  const h = settings.hooks;
   if (h === undefined) return;
   if (h === null || typeof h !== 'object' || Array.isArray(h)) {
     fail('hooks is not an object — refusing to overwrite an unrecognised shape');
@@ -365,9 +382,31 @@ function parseArgs(argv) {
   return { off, check, settingsPath: paths[0] };
 }
 
+// [codex-2, sug] With no path argument and no `CLAUDE_PROJECT_DIR`, this used to
+// wire the SCRIPT's own checkout wherever it was run from. `himmelctl trust`
+// always passes an explicit target, so this is the bare-script surface — but
+// silently wiring a different project than the one the operator is standing in
+// is the same targeting defect HIMMEL-1551 round 3 only appeared to fix, and it
+// is not made safe by `assertRecorderPresent` (the himmel checkout DOES have a
+// recorder, so the wrong answer passes every check).
+//
+// Refuse the ambiguity rather than resolve it by precedence. Standing in a
+// project that has its own `.claude/` and typing no argument has two plausible
+// meanings, and picking one silently is how the operator ends up reading a
+// status for a file they never meant to touch.
 function defaultSettingsPath() {
-  const projectDir = process.env.CLAUDE_PROJECT_DIR || resolve(HERE, '..', '..');
-  return join(projectDir, '.claude', 'settings.json');
+  const fromEnv = process.env.CLAUDE_PROJECT_DIR;
+  if (fromEnv) return join(fromEnv, '.claude', 'settings.json');
+  const own = resolve(HERE, '..', '..');
+  const cwdProject = resolve(process.cwd());
+  if (cwdProject !== own && existsSync(join(cwdProject, '.claude'))) {
+    fail(
+      `ambiguous target: you are in ${cwdProject}, which has its own .claude/, but this `
+      + `script lives in ${own}. Refusing to guess which one you meant — pass the settings `
+      + 'path explicitly, or set CLAUDE_PROJECT_DIR. (`himmelctl trust` always passes one.)',
+    );
+  }
+  return join(own, '.claude', 'settings.json');
 }
 
 // The hooks resolve `$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs` AT
@@ -440,15 +479,29 @@ function main() {
     // suite is built around. So prove the round-trip on the UNCHANGED input
     // before writing, and refuse rather than reformat.
     if (!args.check && serialize(before) !== input) {
+      // [glm-3, sug] Name the mismatch that ACTUALLY tripped. `serialize`
+      // emits LF, so a CRLF settings.json fails this guard — and on Windows,
+      // the one platform this project targets, that is the likeliest way to hit
+      // it. The old message named only the indent, sending the operator to
+      // reformat something that was already correct. Fails closed either way;
+      // the defect was the diagnosis, not the decision.
+      const crlf = input.includes('\r\n');
       fail(
         `${settingsPath} is formatted differently from how this script serializes JSON `
-        + '(2-space indent, trailing newline), so writing it would reformat the whole file '
-        + 'and `--off` could not restore it byte-for-byte. Refusing: the reversibility '
-        + 'guarantee is the point. Reformat the file to 2-space indent first, or wire by hand.',
+        + `(${crlf ? 'CRLF line endings; this script writes LF' : '2-space indent, trailing newline'}), `
+        + 'so writing it would reformat the whole file and `--off` could not restore it '
+        + 'byte-for-byte. Refusing: the reversibility guarantee is the point. '
+        + (crlf
+          ? 'Convert it to LF line endings first, or wire by hand.'
+          : 'Reformat the file to 2-space indent first, or wire by hand.'),
       );
     }
 
-    const { wired, total } = statusOf(before);
+    // [glm-4, sug] One read of the status, used by both branches below. The
+    // `--check` path called `statusOf(before)` a second time purely to reach
+    // `duplicates`, which is a second chance for the two reads to disagree.
+    const status = statusOf(before);
+    const { wired, total } = status;
     const { settings: after, changed } = args.off ? remove(before) : install(before);
 
     assertPermissionsUnchanged(before, after);
@@ -456,7 +509,7 @@ function main() {
 
     const verb = args.off ? 'removed' : 'added';
     if (args.check) {
-      const dupes = statusOf(before).duplicates;
+      const dupes = status.duplicates;
       process.stdout.write(
         `wire-trust-hooks: ${wired}/${total} entries wired in ${settingsPath}; `
         + `would have ${verb} ${changed}; wrote nothing\n`
@@ -492,10 +545,18 @@ function main() {
     if (!args.off) {
       // The number is the product; saying "wired" without it is the exact
       // conflation this programme exists to stop.
+      // This used to say "Hooks load at SESSION START — restart claude". That
+      // was inherited from the harness docs, repeated into a commit message, a
+      // status artifact and a handover, and never once tested — and it is
+      // FALSE: HIMMEL-1561 measured the ledger recording within seconds of the
+      // settings file changing, in the very session that had just asserted it
+      // could not. An unverified claim in a success message is this subsystem's
+      // own recurring defect, printed by the tool built to prevent it.
       process.stdout.write(
-        '  Hooks load at SESSION START — restart claude, then verify with:\n'
+        '  Hooks take effect on the next matching event — no restart needed. Verify with:\n'
         + '    node scripts/trust/shadow-ledger.mjs report\n'
-        + '  It must show non-zero rows. "It is wired" is not the same claim.\n',
+        + '  It must show non-zero rows AND a PROVEN collection line. "It is wired" is not\n'
+        + '  the same claim as "it is recording", and neither is "the rate can be trusted".\n',
       );
     }
   } catch (error) {

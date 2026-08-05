@@ -152,6 +152,12 @@ count_slots() {
     case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         msys*|cygwin*|win32*|MINGW*)
             if [ -f "$1" ]; then local c; c=$(grep -c . "$1" 2>/dev/null); echo "${c:-0}"; else echo 0; fi ;;
+        darwin*)
+            # macOS uses crontab ONLY (arm-resume.sh PLATFORM=macos), whose stub
+            # store is $dir/crontab.fixture -- NOT $db (schtasks) or job-*
+            # (at). Counting either of those here would always read 0 on Darwin
+            # and make every slot-survival assertion vacuously pass.
+            if [ -f "$2/crontab.fixture" ]; then local c; c=$(grep -c . "$2/crontab.fixture" 2>/dev/null); echo "${c:-0}"; else echo 0; fi ;;
         *)
             find "$2" -maxdepth 1 -name 'job-*' 2>/dev/null | wc -l | tr -d ' ' ;;
     esac
@@ -293,7 +299,62 @@ echo 'HKEY_CURRENT_USER\Control Panel\International'
 echo '    sShortDate    REG_SZ    M/d/yyyy'
 exit 0
 EOF
-    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude" "$dir/powershell" "$dir/reg"
+    cat > "$dir/crontab" <<'EOF'
+#!/usr/bin/env bash
+# Stateful crontab stub (HIMMEL-1567). arm-resume.sh routes macOS (Darwin)
+# through crontab ONLY -- list_existing()'s macos arm calls _crontab_list, which
+# is `crontab -l | grep`, and _crontab_schedule/_crontab_delete rewrite via
+# `| crontab -` (arm-resume.sh ~:1415-1629). Without a stub here, a local
+# Darwin run resolves the REAL crontab binary and reads -- and via
+# _crontab_delete's rewrite, WRITES -- the operator's machine-wide crontab
+# outside this suite's fixture. That is a fixture escape; this stub closes it.
+# State lives in a fixture file inside $SCHED_DB_DIR -- `:?` so an unset var is
+# a LOUD failure, never a silent fall-through to the real binary (mirrors the
+# at/atq/atrm guard). PATH="$STUB:$PATH" puts this ahead of any real crontab,
+# and the `:?` is the belt-and-suspenders: there is no code path where an unset
+# var degrades into touching $HOME's crontab.
+d="${SCHED_DB_DIR:?SCHED_DB_DIR unset}"; mkdir -p "$d"
+db="$d/crontab.fixture"
+case "${1:-}" in
+    -l)
+        # Real `crontab -l` exits 1 ("no crontab for user"), no output, when the
+        # crontab is empty. _crontab_list/_crontab_delete/_crontab_schedule all
+        # guard that (`2>/dev/null || true` / `if ! crontab -l; then : > snap`),
+        # so model it honestly rather than always exiting 0.
+        if [ -s "$db" ]; then cat "$db"; exit 0; else exit 1; fi ;;
+    -)
+        # Install from stdin (REPLACE the whole fixture) -- the verb both
+        # _crontab_schedule (append entry) and _crontab_delete (drop one line)
+        # rewrite through. SCHED_CREATE_FAIL=1 makes the install path exit
+        # nonzero so G3.3/G3.4's "fails inside schedule_arm" failure injection
+        # works on Darwin exactly as schtasks /create and `at -t` do on the
+        # other two platforms. Fail BEFORE writing so the fixture is untouched.
+        if [ "${SCHED_CREATE_FAIL:-0}" = "1" ]; then
+            echo "stub: crontab install deliberately failing (SCHED_CREATE_FAIL=1)" >&2
+            exit 9
+        fi
+        cat > "$db"; exit 0 ;;
+    -r)
+        : > "$db"; exit 0 ;;
+    "")
+        # Piped stdin with no flag = replace (some call sites `printf ... | crontab`).
+        if [ "${SCHED_CREATE_FAIL:-0}" = "1" ]; then exit 9; fi
+        cat > "$db"; exit 0 ;;
+    -*)
+        # Unknown flag (-e editor, -u user): NEVER touch real state. Drain any
+        # piped stdin so a writer does not see a spurious SIGPIPE, exit 0 so a
+        # probe-by-existence sees a present binary.
+        cat > /dev/null 2>&1 || true; exit 0 ;;
+    *)
+        # A bare file arg = install from that file (real `crontab <file>`).
+        if [ -f "$1" ]; then
+            if [ "${SCHED_CREATE_FAIL:-0}" = "1" ]; then exit 9; fi
+            cat "$1" > "$db"; exit 0
+        fi
+        cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
+EOF
+    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude" "$dir/powershell" "$dir/reg" "$dir/crontab"
 }
 
 STUB="$TMP/stub-bin"
@@ -504,6 +565,14 @@ seed_unrelated_victim() {  # <sched-db> <sched-dir>
     case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         msys*|cygwin*|win32*|MINGW*)
             printf '%s\n' "$marker" >> "$db" ;;
+        darwin*)
+            # macOS: seed the victim as a crontab LINE in _crontab_schedule's
+            # own shape -- a command line with a trailing `# <TASK_NAME>` marker
+            # (arm-resume.sh ~:2423: "<mm> <hh> * * * ... # $TASK_NAME"), which
+            # is exactly what _crontab_list greps back. NOT $db or job-N: the
+            # Darwin path writes neither store.
+            mkdir -p "$dir"
+            printf '0 9 * * * cd /nonexistent && claude fixture # %s\n' "$marker" > "$dir/crontab.fixture" ;;
         *)
             mkdir -p "$dir"
             printf '1' > "$dir/.counter"
@@ -519,7 +588,31 @@ out=$(SCHED_CREATE_FAIL=1 SCHED_DB="$DB10" SCHED_DB_DIR="${DB10}.atdir" PATH="$S
     bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3X" --dedup-any --force 2>&1)
 rc=$?
 assert_rc "G3.4 failing arm exits rc=4 (schedule_arm create failed)" 4 "$rc" "$out"
-assert_contains "G3.4 reaches unrelated victim replacement path" "HIMMEL-Resume-G3-4-unrelated-victim" "$out"
+# Platform-appropriate reachability evidence (HIMMEL-1567). The --force path
+# echoes each marker from list_existing() into stderr (arm-resume.sh ~:1936-1939),
+# which $out captures -- but WHAT that marker is differs by platform:
+#   windows -- list_existing returns the self-descriptive schtasks task NAME
+#     (`HIMMEL-Resume-...`), so the marker text reaches $out directly.
+#   darwin  -- list_existing's macos arm calls _crontab_list (arm-resume.sh
+#     ~:1415-1434), which `grep`s `crontab -l` and returns the FULL crontab
+#     LINE -- and _crontab_schedule (~:2423) writes that line with a trailing
+#     `# $TASK_NAME`. So, unlike the at path below, the marker text IS echoed
+#     back on Darwin. Verified by reading the code, not by guessing: assert the
+#     SAME `HIMMEL-Resume-G3-4-unrelated-victim` text as on Windows.
+#   linux/other -- list_existing inspects each at-job's body and returns an
+#     OPAQUE `at-job-<id>` (arm-resume.sh ~:1536/1540); the marker text in the
+#     job body never reaches the --force log. The seeded victim is the ONLY job
+#     in this test's fresh queue, so it is always id 1 -- "at-job-1" is exactly
+#     as specific a proof that THIS job was found as the marker-text check is
+#     on the other two platforms.
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_contains "G3.4 reaches unrelated victim replacement path" "HIMMEL-Resume-G3-4-unrelated-victim" "$out" ;;
+    darwin*)
+        assert_contains "G3.4 reaches unrelated victim replacement path" "HIMMEL-Resume-G3-4-unrelated-victim" "$out" ;;
+    *)
+        assert_contains "G3.4 reaches unrelated victim replacement path" "at-job-1" "$out" ;;
+esac
 assert_slots "G3.4 UNRELATED victim slot is NOT destroyed by a failed --dedup-any --force" 1 "$DB10" "${DB10}.atdir" "$out"
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
