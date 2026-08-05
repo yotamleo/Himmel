@@ -1018,9 +1018,13 @@ assert_contains "T28a dedup ERR text preserved" "already scheduled" "$out"
 # per-handover scope, so it must not claim the slot is the same handover's.
 assert_contains "T28a refusal names the --dedup-any scope" "--dedup-any safety-arm semantics" "$out"
 assert_not_contains "T28a refusal does not claim same-handover" "for the SAME handover" "$out"
-# The refusal must warn that --force in THIS scope is multi-delete (T28d proves
-# it actually is) — reading it as "replace that one job" costs sibling arms.
-assert_contains "T28a refusal warns --force here is multi-delete" "deletes EVERY" "$out"
+# HIMMEL-1563: --force in THIS scope is NO LONGER multi-delete — it replaces
+# only THIS handover's own job(s), so the refusal must say so rather than warn
+# of a sibling-endangering wipe. (T28d proves the foreign siblings in fact
+# survive.) Pre-1563 this asserted the opposite ("deletes EVERY") and T28d
+# proved that was real; both flip together here.
+assert_contains "T28a refusal says --force is own-only (HIMMEL-1563)" "replaces only THIS" "$out"
+assert_not_contains "T28a no stale multi-delete warning (HIMMEL-1563)" "deletes EVERY" "$out"
 # Sanity: WITHOUT --dedup-any the same distinct arm would succeed (T25 proves
 # this), so the rc 3 here is the flag's doing, not a stuck scheduler.
 if [ "$(count_slots "$DB28" "$DB28D")" = "1" ]; then
@@ -1037,34 +1041,27 @@ out=$(TMPDIR="$TMP" SCHED_DB="$DB28E" SCHED_DB_DIR="$DB28ED" PATH="$STATEFUL_STU
 rc=$?
 assert_rc "T28c --dedup-any on empty scheduler arms (rc 0)" 0 "$rc"
 
-# T28d (HIMMEL-1297): --dedup-any --force is the one genuinely DESTRUCTIVE
-# combination. Its dedup scope matches EVERY resume job, so the --force replace
-# loop deletes them all — two queued sibling arms collapse to the single new
-# one. Pin that here so the refusal message's multi-delete warning (T28a) stays
-# tied to real behaviour, and so a future scoping change to the --force path
-# can't silently pass. Contrast T30: WITHOUT --dedup-any, --force is scoped to
-# the arming handover and sibling slots survive.
+# T28d (HIMMEL-1297, re-pointed by HIMMEL-1563): --dedup-any --force is NO
+# LONGER destructive to foreign chains. Pre-1563 its broad dedup scope matched
+# EVERY resume job, so the --force replace loop reaped every HIMMEL-Resume-*
+# task on the box — two queued FOREIGN sibling arms (distinct handovers, not
+# this one) collapsed into the single new arm, and on a multi-chain box that
+# collateral-deleted another chain's armed resume (leg 44 deleted
+# HIMMEL-Resume-trust-envelope-chain-06). HIMMEL-1563 narrows the --force reap
+# to THIS invocation's own identity only, so a cancel/replace can never touch a
+# task it did not create. The broad scope still governs the rc=3 refusal
+# (T28a/T28c) — read-only — but the DELETE is own-identity.
 #
-# RE-POINTED AT THE TRANSACTIONAL CONTRACT (HIMMEL-1304). This was written as a
-# CHARACTERIZATION test, pinning an ordering that was a known defect: the
-# deletion used to happen BEFORE the rc 7 queue-lock check, the rc 8 cross-host
-# registry check, and schedule_arm itself, so an arm that deleted and THEN
-# exited 7/8 (or failed to schedule) left the siblings destroyed with no
-# replacement and no rollback.
+# So under --dedup-any --force the two foreign sibling arms SURVIVE alongside
+# the new arm (3 slots). Contrast T30: WITHOUT --dedup-any, --force was always
+# scoped to the arming handover and siblings survived; HIMMEL-1563 makes the
+# --dedup-any path agree.
 #
-# That ordering is now fixed. The multi-delete SCOPE is unchanged and still
-# worth pinning — `--dedup-any --force` genuinely matches every resume job, so
-# the T28a warning text must stay tied to real behaviour — but the deletion is
-# now TRANSACTIONAL: it runs only AFTER the new job is registered and its
-# post-arm verify passes. What this test asserts is therefore the SUCCESS path
-# of that contract (a successful arm still collapses both siblings into the one
-# new slot), which is unchanged and is now an endorsement rather than a
-# characterization.
-#
-# The FAILURE half of the contract — that the siblings SURVIVE when the arm
-# refuses rc 7 / rc 8 or fails inside schedule_arm — is covered by G3.1-G3.4 in
-# test-arm-resume-identity.sh rather than duplicated here, because it needs a
-# create-failure injection seam this suite's stub does not carry.
+# The TRANSACTIONAL contract (HIMMEL-1304: the replace runs only AFTER the new
+# job is registered + verified, so the FAILURE half — slots survive when the
+# arm refuses rc 7 / rc 8 or fails inside schedule_arm — holds for the
+# own-identity markers) is covered by G3.1-G3.4 in test-arm-resume-identity.sh,
+# which carries the create-failure injection seam this suite's stub lacks.
 DB28F="$TMP/db28f.tasks"; DB28FD="$TMP/db28f.atdir"; : > "$DB28F"; mkdir -p "$DB28FD"
 HO_F1=$(make_handover "$WORK_REPO")
 HO_F2=$(make_handover "$WORK_REPO")
@@ -1097,25 +1094,37 @@ out=$(TMPDIR="$TMP" SCHED_DB="$DB28F" SCHED_DB_DIR="$DB28FD" PATH="$STATEFUL_STU
     bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_F3" --dedup-any --force 2>&1)
 rc=$?
 assert_rc "T28d --dedup-any --force arms (rc 0)" 0 "$rc"
-if [ "$(count_slots "$DB28F" "$DB28FD")" = "1" ]; then
-    echo "PASS T28d --dedup-any --force deleted BOTH siblings (1 slot remains)"
+# HIMMEL-1563: the foreign sibling arms SURVIVE. Pre-1563 the broad scope made
+# --force reap every HIMMEL-Resume-* job, collapsing both siblings into the one
+# new arm (1 slot). Now the force replace is scoped to THIS handover's own
+# job(s), so the two FOREIGN siblings are untouched and coexist with the new
+# arm: 3 slots. (On main this is 1 → FAIL; the headline 1563 regression.)
+if [ "$(count_slots "$DB28F" "$DB28FD")" = "3" ]; then
+    echo "PASS T28d --dedup-any --force leaves both foreign siblings + the new arm (3 slots, HIMMEL-1563)"
 else
-    echo "FAIL T28d expected 1 slot after --dedup-any --force, got $(count_slots "$DB28F" "$DB28FD")"
+    echo "FAIL T28d expected 3 slots after --dedup-any --force (2 siblings + new arm), got $(count_slots "$DB28F" "$DB28FD")"
     FAILED=$((FAILED + 1))
 fi
-# Cardinality alone is not enough: a regression that deleted ONE sibling and then
-# failed to create the replacement also leaves exactly one slot. Assert the
-# surviving slot is the NEW one — its identity must differ from both siblings'
-# (captured above, before the force). Compares the recorded HIMMEL-Resume-*
+# Cardinality alone is not enough: assert every sibling identity captured
+# BEFORE the force is STILL present (foreign arms survived), AND exactly one
+# NEW identity (the HO_F3 arm) joined them. Compares recorded HIMMEL-Resume-*
 # identities rather than re-deriving the task name here, so this stays correct
 # if the name composition ever changes.
 _ids_after=$(_slot_ids | sort -u)
-_surviving=$(printf '%s\n' "$_ids_after" | grep -c . || true)
-if [ "$_surviving" = "1" ] && [ -n "$_ids_before" ] \
-   && ! grepq "$_ids_before" -xF "$_ids_after"; then
-    echo "PASS T28d the surviving slot is the NEW arm, not a leftover sibling"
+_missing=0
+while IFS= read -r _id; do
+    [ -z "$_id" ] && continue
+    grepq "$_ids_after" -xF "$_id" || _missing=$((_missing + 1))
+done <<< "$_ids_before"
+_new=0
+while IFS= read -r _id; do
+    [ -z "$_id" ] && continue
+    grepq "$_ids_before" -xF "$_id" || _new=$((_new + 1))
+done <<< "$_ids_after"
+if [ "$_missing" = "0" ] && [ "$_new" = "1" ]; then
+    echo "PASS T28d both sibling identities survived + 1 new arm identity (HIMMEL-1563)"
 else
-    echo "FAIL T28d surviving slot identity wrong (before='$(printf '%s' "$_ids_before" | tr '\n' ',')' after='$(printf '%s' "$_ids_after" | tr '\n' ',')')"
+    echo "FAIL T28d identity check: missing=$_missing new=$_new (before='$(printf '%s' "$_ids_before" | tr '\n' ',')' after='$(printf '%s' "$_ids_after" | tr '\n' ',')')"
     FAILED=$((FAILED + 1))
 fi
 

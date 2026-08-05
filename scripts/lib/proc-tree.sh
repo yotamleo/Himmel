@@ -30,8 +30,10 @@
 #   wait "$pid" 2>/dev/null    # caller reaps; this helper never does
 #
 # proc_tree_terminate returns 0 when the group is gone by the time it returns,
-# 1 when something survived every verified escalation, and 2 when a supplied
-# expected identity is empty or cannot be confirmed before the next signal.
+# 1 when something survived every verified escalation, 2 when a supplied
+# expected identity is empty or the probe cannot confirm it either way before
+# the next signal, and 3 when the probe CONFIRMS the leader already
+# exited/was recycled before any signal was sent (HIMMEL-1501).
 # proc_tree_group_terminate is the leader-exited variant: it signals only
 # identity-verified observed member pids, never an unowned numeric group id.
 #
@@ -88,17 +90,52 @@ proc_tree_process_identity() {
     printf 'posix:%s\n' "$value"
 }
 
+# _PROC_TREE_PROC_ROOT -- the /proc mount this file probes on Windows/MSYS.
+# Overridable so a test can point it at an unreadable/absent directory to
+# exercise the "probe unavailable" arm without needing a genuinely-unreadable
+# real /proc.
+_PROC_TREE_PROC_ROOT="${_PROC_TREE_PROC_ROOT:-/proc}"
+
 # proc_tree_process_alive <pid> -- 0 when the numeric pid currently names a
-# live process. This is deliberately identity-free so callers can distinguish a
-# confirmed exit from a live process whose identity no longer matches.
+# live process, 1 when the process is CONFIRMED absent (POSIX: kill -0 failed
+# with ESRCH; Windows/MSYS: the proc root is readable but this pid's entry is
+# genuinely missing from it), and 2 when the probe itself could not answer
+# (POSIX: kill -0 failed with EPERM or anything else; Windows/MSYS: the proc
+# root itself is unreadable/absent, so a missing pid entry proves nothing).
+# This is deliberately identity-free so callers can distinguish a confirmed
+# exit from a live process whose identity no longer matches. Callers MUST
+# treat 2 as unknown, never as confirmed absence -- see
+# proc_tree_process_identity_matches below.
 proc_tree_process_alive() {
-    local pid="$1"
+    local pid="$1" err=""
     [ -n "$pid" ] || return 1
     if proc_tree_is_windows; then
-        [ -d "/proc/$pid" ]
-    else
-        kill -0 "$pid" 2>/dev/null
+        [ -d "$_PROC_TREE_PROC_ROOT/$pid" ] && return 0
+        # The pid entry is missing. That is confirmed absence ONLY if the
+        # proc root itself is readable -- otherwise the probe cannot tell an
+        # exited process from an unreadable mount, and the honest answer is
+        # "unknown", not "gone".
+        # -r alone is NOT enough: on POSIX the SEARCH (execute) bit is what
+        # permits traversing into the directory to stat "$root/$pid". Without
+        # it the probe above fails for a pid that is genuinely THERE, so
+        # treating a readable-but-unsearchable root as confirmed absence is
+        # the same false-confirmation this function exists to remove.
+        [ -d "$_PROC_TREE_PROC_ROOT" ] &&
+            [ -r "$_PROC_TREE_PROC_ROOT" ] &&
+            [ -x "$_PROC_TREE_PROC_ROOT" ] &&
+            return 1
+        return 2
     fi
+    kill -0 "$pid" 2>/dev/null && return 0
+    # kill -0's exit status collapses ESRCH (confirmed gone) and EPERM (probe
+    # refused, e.g. a foreign-owned pid) into the same nonzero rc. Re-run under
+    # LC_ALL=C for a stable, parseable stderr message instead of discarding it
+    # with 2>/dev/null, and tell them apart from that.
+    err=$(LC_ALL=C kill -0 "$pid" 2>&1 >/dev/null)
+    case "$err" in
+        *"No such process"*) return 1 ;;
+        *) return 2 ;;
+    esac
 }
 
 # proc_tree_process_identity_matches <pid> <identity> -- 0 when the live
@@ -106,9 +143,16 @@ proc_tree_process_alive() {
 # when the identity probe is unavailable. Callers may wait through rc 2, but
 # must never signal unless they received rc 0.
 proc_tree_process_identity_matches() {
-    local pid="$1" expected="$2" actual=""
+    local pid="$1" expected="$2" actual="" alive_rc=0
     [ -n "$expected" ] || return 2
-    proc_tree_process_alive "$pid" || return 1
+    proc_tree_process_alive "$pid" || alive_rc=$?
+    if [ "$alive_rc" -ne 0 ]; then
+        # rc 1 from proc_tree_process_alive is confirmed absence; anything
+        # else (rc 2) is a probe that could not answer either way and must
+        # never be reported as a confirmed mismatch/exit.
+        [ "$alive_rc" -eq 1 ] && return 1
+        return 2
+    fi
     actual=$(proc_tree_process_identity "$pid") || return 2
     [ "$actual" = "$expected" ]
 }
@@ -171,16 +215,27 @@ proc_tree_group_alive() {
 # anything is left. When expected-identity is supplied, the leader identity is
 # revalidated immediately before every group signal, and a failed group signal
 # never falls back to the bare pid. Windows fallback targets only survivors
-# whose current identity can be captured and immediately revalidated.
+# whose current identity can be captured and immediately revalidated. The
+# initial guard splits a CONFIRMED exit/recycle (rc 3, no signal sent) from a
+# probe that could not confirm anything either way (rc 2) -- callers must not
+# treat them the same (HIMMEL-1501).
 proc_tree_terminate() {
     local pid="$1" grace="${2:-3}" expected_identity="${3:-}" survivor survivor_identity w guarded=0 identity_unverified=0
-    local member member_identity i leader_identity_rc survivor_verified=0
+    local member member_identity i leader_identity_rc survivor_verified=0 identity_rc=0
     local -a member_pids=() member_identities=()
     [ -n "$pid" ] || return 0
     [ "$#" -ge 3 ] && guarded=1
 
     if [ "$guarded" -eq 1 ]; then
-        proc_tree_process_identity_matches "$pid" "$expected_identity" || return 2
+        identity_rc=0
+        proc_tree_process_identity_matches "$pid" "$expected_identity" || identity_rc=$?
+        if [ "$identity_rc" -ne 0 ]; then
+            # rc 1 = identity_matches CONFIRMED the leader already
+            # exited/was recycled; rc 2 = the probe itself was unavailable.
+            # These demand opposite handling downstream (HIMMEL-1501).
+            [ "$identity_rc" -eq 1 ] && return 3
+            return 2
+        fi
         # The leader can honor TERM while a descendant ignores it. Snapshot every
         # observable member identity before TERM so an exited/recycled leader does
         # not strand survivors or authorize signals to newly-reused numeric pids.

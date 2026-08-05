@@ -1,120 +1,213 @@
 #!/usr/bin/env bash
-# guard-implementor-dispatch.sh — PreToolUse hook (matcher "Agent"): bank-aware
-# cost guard on implementor-shaped subagent dispatches (HIMMEL-920).
+# guard-implementor-dispatch.sh — PreToolUse hook (matcher "Agent"): compose
+# lane routing (HIMMEL-1513) with the bank-aware cost guard (HIMMEL-920).
 #
-# WHY: structural enforcement of the HIMMEL-195 second-drift rule. s40 burned
-# 86% of a 5-hour bank routing four CR-fix rounds to a Sonnet subagent while
-# the GLM lane sat available (CLAUDE.md subagent policy: "every dispatch
-# names an explicit model... raise effort before tier... route by lane").
-# Prose didn't stop the drift twice, so this hook makes the expensive shape
-# structurally visible/blockable at dispatch time instead of after the fact.
+# The policies answer independent questions:
+#   1. If an external implementation lane is available, refuse an
+#      implementation-shaped in-process Agent dispatch and name that lane.
+#   2. If no lane is available but the live 5-hour bank is near exhaustion,
+#      retain HIMMEL-920's HARD refusal / WARN advisory policy.
 #
-# THIS IS A COST GUARD, NOT A SECURITY GUARD — it fails OPEN everywhere
-# (opposite of the block-*.sh security siblings, which fail CLOSED on a
-# missing dependency). A bug in this hook must never brick a legitimate
-# Agent dispatch; worst case it silently allows. The fail-open sibling
-# precedent is the auto-arm watchdog family (auto-arm-on-cap.sh,
-# auto-arm-on-subagent-cap.sh), not block-edit-on-main.sh.
+# Both policies fail open when their own evidence is unavailable. Lane routing
+# never blocks without a positively resolved lane. A bank HARD refusal requires
+# a fresh numeric utilization and a provably live five_hour resets_at window.
+# Missing/unparseable resets_at downgrades HARD to the visible WARN advisory.
 #
-# Decision order (first hit wins — see the critic-hardened plan
-# 2026-07-12-himmel-920-impl-dispatch-guard.md for the full derivation):
-#   1. IMPL_GUARD_DISABLE=1 / IMPL_GUARD_OK=1 (session bypass, launching-shell
-#      convention, same as EDIT_ON_MAIN_OK etc.) → allow silently.
-#   2. jq missing / stdin unparseable / not an Agent call → allow (fail-open).
-#   3. Parse subagent_type / model / prompt from tool_input.
-#   4. model == haiku → always allow (cheap lane, never worth gating).
-#   5. DENY-tier eligibility is an ALLOW-LIST of known-expensive implementor
-#      shapes (critic Q2 — a deny-list would false-block future reviewer
-#      agent types): subagent_type in {general-purpose, claude,
-#      Plan} AND model in {sonnet, opus, fable, absent/
-#      empty}. An absent/empty model IS DENY-eligible (HIMMEL-972 operator
-#      ruling 2026-07-12: an unnamed dispatch inherits the parent loop — the
-#      exact expensive shape this guard exists for; supersedes the original
-#      critic call).
-#   6. Impl-shaped prompt classifier (case-insensitive ERE, de-greeded per
-#      critic Q1 — dropped `patch` (substring of "dispatch"), bare `commit`,
-#      bare `refactor`: all high false-positive). No match → allow.
-#   7. Read the 5-hour bank utilization from the claude-statusline cache
-#      (IMPL_GUARD_CACHE_PATH, default /tmp/claude/statusline-usage-cache.json).
-#      Missing cache, unstatable, stale (mtime older than
-#      IMPL_GUARD_CACHE_MAX_AGE_SECS, default 300s), or an unusable value
-#      (null / non-numeric / out of [0,100] range — the documented
-#      leaked-epoch corruption, see auto-arm-on-cap.sh) → allow + a plain
-#      stderr WARN. Never brick on a cold statusline.
-#   8. Policy on a confirmed numeric utilization (float-safe: jq validates
-#      the value and awk performs the threshold compares — never bash
-#      `[ -ge ]` against a float, the HIMMEL-392 no-stderr hook death):
-#        util >= IMPL_GUARD_HARD (default 80) AND DENY-tier-eligible →
-#          exit 2 (block), naming util%, the dispatch shape, and the
-#          cheaper-lane redirect.
-#        util >= IMPL_GUARD_WARN (default 65) [either DENY-eligible but
-#          under HARD, or capped to WARN by step 5] → allow, but emit the
-#          hookSpecificOutput permissionDecision:"allow" JSON idiom
-#          (auto-approve-safe-bash.sh:432 precedent) so the advisory
-#          actually reaches the model — an exit-0 stderr line is INVISIBLE
-#          to the model in PreToolUse.
-#        else → allow silently.
+# Haiku always allows: it is already the cheap bulk-mechanical tier. Known
+# read-only helpers and external-lane wrappers also allow. Plan remains exempt
+# from lane routing, but retains HIMMEL-920's bank eligibility.
 #
-# Env knobs (all optional, read from the LAUNCHING shell):
-#   IMPL_GUARD_DISABLE=1           kill switch
-#   IMPL_GUARD_OK=1                per-call deliberate override (session-sticky)
-#   IMPL_GUARD_CACHE_PATH          cache file (default /tmp/claude/statusline-usage-cache.json)
-#   IMPL_GUARD_CACHE_MAX_AGE_SECS  staleness bound in seconds (default 300)
-#   IMPL_GUARD_HARD                block threshold, percent (default 80)
-#   IMPL_GUARD_WARN                advisory threshold, percent (default 65)
+# Escape hatches (set in the shell that LAUNCHED Claude Code; session-sticky):
+#   IMPL_GUARD_OK=1       deliberate one-session carve-out
+#   IMPL_GUARD_DISABLE=1  emergency kill switch
+# Every use is warned and appended to IMPL_GUARD_LOG (default
+# ~/.claude/lane-routing-guard/overrides.jsonl), best-effort.
 #
-# Non-goals (v1, per plan): no GLM-bank preflight, no prompt-length/token
-# estimation, threshold *calibration* beyond the defaults above (HIMMEL-774).
+# Test seams:
+#   LANES_REGISTRY                 consumed by scripts/lanes/resolve.mjs
+#   IMPL_GUARD_LOG                 override audit-log path
+#   IMPL_GUARD_CACHE_PATH          statusline usage cache
+#   IMPL_GUARD_CACHE_MAX_AGE_SECS  cache staleness bound (default 300)
+#   IMPL_GUARD_HARD                bank refusal threshold (default 80)
+#   IMPL_GUARD_WARN                bank advisory threshold (default 65)
 #
-# Known limitations (chosen tradeoffs, NOT bugs — adjudicated against the
-# codex adversarial round that proposed the opposite):
-# - WORDING-DEPENDENT CLASSIFICATION: prompts phrased without the marker set
-#   ("update the hook", "create the handler") bypass the guard. Widening to
-#   generic verbs (add/update/create/modify/build) was REJECTED by the plan
-#   critic as high-false-positive (research/planning briefs use those verbs
-#   constantly); the parent authoring the prompt is not adversarial, and the
-#   incident class this guard exists for (s40 CR-fix rounds) uses the marker
-#   vocabulary. Same accepted-limitation family as the wrapper-displacement
-#   gaps documented in block-glm-external-writes.sh.
-# - ABSENT MODEL IS DENY-ELIGIBLE (HIMMEL-972): an unnamed dispatch inherits
-#   the parent loop, so it is treated as a known-expensive shape at the hard
-#   threshold. Originally WARN-only (plan-critic call); superseded by the
-#   2026-07-12 operator ruling on the HIMMEL-920 cross-model conflict.
-#   Residual edge (adjudicated, NOT a bug): a HAIKU parent's unnamed dispatch
-#   inherits cheap Haiku yet still denies — accepted because Haiku does not
-#   spawn (CLAUDE.md invariant), naming `haiku` explicitly hits the early
-#   always-allow, and IMPL_GUARD_OK=1 covers the exotic remainder.
-#
-# bash 3.2-compatible (no ${var,,}, no mapfile, no associative arrays).
+# Exit codes: 0 allow; 2 refuse. Bash 3.2-compatible.
 set -uo pipefail
 
 warn() { echo "guard-implementor-dispatch: $*" >&2; }
 
-[ "${IMPL_GUARD_DISABLE:-0}" = "1" ] && exit 0
-[ "${IMPL_GUARD_OK:-0}" = "1" ] && exit 0
-
-hook_dir=$(cd "$(dirname "$0")" && pwd)
-
-# --- Fail open on anything we cannot evaluate (cost guard, not a security boundary) ---
-command -v jq >/dev/null 2>&1 || { warn "jq not on PATH — allowing (fail-open)"; exit 0; }
+# grepq <text> [grep-args...] — never use printf|grep -q under pipefail. grep -q
+# can exit on an early match, SIGPIPE the producer, and turn a true match into a
+# nondeterministic pipeline failure on large input (HIMMEL-1430).
+grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 input=$(cat 2>/dev/null || true)
+
+log_override() {
+    local override="$1" log now session subagent model log_dir
+    log="${IMPL_GUARD_LOG:-${HOME:-}/.claude/lane-routing-guard/overrides.jsonl}"
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf 'unknown')
+    session=""
+    subagent=""
+    model=""
+    log_dir=$(dirname "$log" 2>/dev/null || true)
+    if [ -n "$log_dir" ]; then
+        mkdir -p "$log_dir" 2>/dev/null || true
+    fi
+    if command -v jq >/dev/null 2>&1; then
+        session=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
+        subagent=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null || true)
+        model=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null || true)
+        jq -nc --arg ts "$now" --arg o "$override" --arg s "$session" --arg a "$subagent" --arg m "$model" \
+            '{ts:$ts,override:$o,session:$s,subagent_type:$a,model:$m}' >> "$log" 2>/dev/null || true
+    else
+        printf '{"ts":"%s","override":"%s","session":"","subagent_type":"","model":""}\n' \
+            "$now" "$override" >> "$log" 2>/dev/null || true
+    fi
+    warn "$override=1 — allowing by explicit session override; audit log: $log"
+}
+
+if [ "${IMPL_GUARD_OK:-0}" = "1" ]; then
+    log_override IMPL_GUARD_OK
+    exit 0
+fi
+if [ "${IMPL_GUARD_DISABLE:-0}" = "1" ]; then
+    log_override IMPL_GUARD_DISABLE
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { warn "jq not on PATH — allowing (fail-open)"; exit 0; }
 [ -n "$input" ] || exit 0
 
-tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
-[ "$tool" = "Agent" ] || exit 0   # matcher already scopes to Agent; defensive for direct invocation
+if ! tool=$(printf '%s' "$input" | jq -r '.tool_name | select(type == "string") // empty' 2>/dev/null); then
+    warn "cannot parse hook input — allowing (fail-open)"
+    exit 0
+fi
+[ "$tool" = "Agent" ] || exit 0
 
-subagent_type=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null || true)
-model=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null || true)
-prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null || true)
+subagent_type=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type | select(type == "string") // empty' 2>/dev/null || true)
+model=$(printf '%s' "$input" | jq -r '.tool_input.model | select(type == "string") // empty' 2>/dev/null || true)
+text=$(printf '%s' "$input" | jq -r '[.tool_input.description, .tool_input.prompt] | map(select(type == "string")) | join("\n")' 2>/dev/null || true)
+[ -n "$text" ] || exit 0
 
 model_lc=$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')
+# Haiku is always cheap — never worth gating regardless of shape, lane, or
+# bank. The Agent tool's model param accepts both the bare alias ("haiku")
+# and a full model identifier ("claude-haiku-4-5-20251001"); match either.
+case "$model_lc" in
+    *haiku*) exit 0 ;;
+esac
 
-# Haiku is always cheap — never worth gating regardless of shape/prompt/bank.
-[ "$model_lc" = "haiku" ] && exit 0
+# Known read-only helpers and external-lane wrappers are not in-process
+# implementation workers. Plan is lane-exempt, but HIMMEL-920 still applies if
+# a Plan prompt is genuinely implementation-shaped.
+lane_exempt=0
+case "$subagent_type" in
+    Explore|gemini-subagent|statusline-setup|pr-review-toolkit-himmel:code-reviewer|himmel-ops:claudex-subagent|himmel-ops:glm-subagent|codex:codex-rescue)
+        exit 0
+        ;;
+    Plan)
+        lane_exempt=1
+        ;;
+esac
 
-# --- DENY-tier eligibility: ALLOW-LIST of known-expensive implementor shapes ---
-# (critic Q2: a deny-list would false-block future reviewer agent types).
+implementation=0
+operational_context=0
+research=0
+followed_by_action=0
+
+# Direct action words and commit/trailer instructions are strong signals. Strip
+# "how to <verb>" research framing before checking bare action verbs.
+implementation_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E 's/how[[:space:]]+to[[:space:]]+(implement|fix|land)/ /g')
+if grepq "$implementation_text" -Eq '(^|[^[:alnum:]_])(implement|fix|land)([^[:alnum:]_]|$)|apply (the |a )?(fix|change)|write (the )?(code|implementation)|make (the )?(change|changes|test(s)? pass)|address (the |all |every )?((coderabbit|cr|review(er)?) )?(comment(s)?|finding(s)?|feedback)|resolve (the |all |every )?((coderabbit|cr|review(er)?) )?(comment(s)?|finding(s)?|feedback)|git commit|commit (the |these )?changes|commit message|attestation trailer|platforms tested:|security reviewed:'; then
+    implementation=1
+fi
+
+# A ticket ID alone is context, not implementation intent. Research wins only
+# without a direct action signal, action transition, or worktree/commit instructions.
+if grepq "$text" -Eqi '(^|[^[:alnum:]_])(research|explore|investigate|analy[sz]e|review|audit|plan|design|locate|trace|explain|read-only)([^[:alnum:]_]|$)'; then
+    research=1
+fi
+if grepq "$text" -Eqi '(^|[^[:alnum:]_])(then|and)([[:space:][:punct:]]+)(implement|fix|land|apply|write|edit|modify|commit)([^[:alnum:]_]|$)'; then
+    followed_by_action=1
+fi
+if grepq "$text" -Eqi '(\.claude[/\\]worktrees[/\\]|--worktree([=[:space:]]|$)|platforms tested:|security reviewed:|attestation trailer|git commit|commit (the |these )?changes)'; then
+    operational_context=1
+fi
+
+[ "$implementation" = "1" ] || [ "$operational_context" = "1" ] || exit 0
+if [ "$research" = "1" ] && [ "$implementation" = "0" ] && [ "$followed_by_action" = "0" ] && [ "$operational_context" = "0" ]; then
+    exit 0
+fi
+
+hook_dir=$(cd "$(dirname "$0")" && pwd)
+repo_root="${CLAUDE_PROJECT_DIR:-}"
+[ -n "$repo_root" ] || repo_root=$(cd "$hook_dir/../.." && pwd)
+
+# --- HIMMEL-1513: refuse when a concrete external lane is available AND
+# actually runnable. The registry marks a lane available by API-key presence
+# alone — it never checks that bun is installed or that the lane's dispatcher
+# script exists on disk. Refusing toward a registry-available-but-unrunnable
+# lane would strand the caller on a command that cannot execute, which is the
+# one path this guard's fail-open invariant forbids. Verify runnability before
+# refusing; an unrunnable preferred lane falls through to the other lane
+# (preference order claudex-before-glm stays intact) rather than straight to
+# a refusal.
+lane_runnable() {
+    local id="$1" script="$2"
+    if ! command -v bun >/dev/null 2>&1; then
+        warn "lane '$id' is registry-available but bun is not on PATH — skipping it, not refusing toward it"
+        return 1
+    fi
+    if [ ! -f "$script" ]; then
+        warn "lane '$id' is registry-available but its dispatcher is missing ($script) — skipping it, not refusing toward it"
+        return 1
+    fi
+    return 0
+}
+
+lane=""
+reg_claudex=0
+reg_glm=0
+if [ "$lane_exempt" != "1" ]; then
+    resolver="$repo_root/scripts/lanes/resolve.mjs"
+    if ! command -v node >/dev/null 2>&1; then
+        warn "node not on PATH — cannot resolve implementation lanes; continuing to bank guard"
+    elif [ ! -f "$resolver" ]; then
+        warn "lane resolver missing ($resolver) — continuing to bank guard"
+    elif ! lanes=$(node "$resolver" --json 2>/dev/null); then
+        warn "lane resolver failed — continuing to bank guard"
+    elif ! printf '%s' "$lanes" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        warn "lane resolver returned invalid JSON — continuing to bank guard"
+    else
+        reg_claudex=$(printf '%s' "$lanes" | jq -r 'if any(.[]; .id == "claudex") then "1" else "0" end' 2>/dev/null || echo 0)
+        reg_glm=$(printf '%s' "$lanes" | jq -r 'if any(.[]; .id == "glm") then "1" else "0" end' 2>/dev/null || echo 0)
+        if [ "$reg_claudex" = "1" ] && lane_runnable claudex "$repo_root/scripts/telegram/spawn-claudex.ts"; then
+            lane="claudex"
+        elif [ "$reg_glm" = "1" ] && lane_runnable glm "$repo_root/scripts/telegram/spawn-glm.ts"; then
+            lane="glm"
+        fi
+    fi
+fi
+
+case "$lane" in
+    claudex)
+        replacement="bun scripts/telegram/spawn-claudex.ts '<prompt>' --name <slug> --timeout-mins <n> --effort high"
+        ;;
+    glm)
+        replacement="bun scripts/telegram/spawn-glm.ts '<prompt>' --name <slug> --timeout-mins <n>"
+        ;;
+    *)
+        replacement=""
+        ;;
+esac
+
+if [ -n "$replacement" ]; then
+    printf 'guard-implementor-dispatch: refusing implementation-shaped Agent dispatch while %s is available; use: %s (override: relaunch with IMPL_GUARD_OK=1)\n' "$lane" "$replacement" >&2
+    exit 2
+fi
+
+# --- HIMMEL-920: independently protect a nearly exhausted parent bank. ---
 subagent_in_set=0
 case "$subagent_type" in
     general-purpose|claude|Plan) subagent_in_set=1 ;;
@@ -126,13 +219,7 @@ esac
 eligible_deny=0
 [ "$subagent_in_set" = "1" ] && [ "$model_in_set" = "1" ] && eligible_deny=1
 
-# --- Impl-shaped prompt classifier (case-insensitive ERE, de-greeded) ---
-printf '%s' "$prompt" | grep -Eqi 'implement|apply the fix|write the code|make it pass|fix (the |all )?(bug|finding|test)s?|(address|resolve|remediate) (the |all |every )?((coderabbit|cr|review(er)?) )?(comments?|findings?|feedback)' \
-    || exit 0
-
 shape="${subagent_type:-<no-subagent_type>}/${model:-<no-model>}"
-
-# --- Read the 5-hour bank utilization ---
 CACHE_PATH="${IMPL_GUARD_CACHE_PATH:-/tmp/claude/statusline-usage-cache.json}"
 MAX_AGE="${IMPL_GUARD_CACHE_MAX_AGE_SECS:-300}"
 HARD="${IMPL_GUARD_HARD:-80}"
@@ -155,8 +242,6 @@ fi
 cache_mtime=$(py_armor_mtime "$CACHE_PATH")
 case "$cache_mtime" in
     ''|*[!0-9]*)
-        # Empty OR non-integer: garbage here would error the age arithmetic
-        # under set -u — same fail-open answer as an unavailable timestamp.
         warn "cannot stat usage cache ($CACHE_PATH) — cannot verify bank utilization for $shape; allowing"
         exit 0
         ;;
@@ -168,10 +253,7 @@ if [ "$age" -gt "$MAX_AGE" ]; then
     exit 0
 fi
 
-# Numeric handling (float-safe, clamp to [0,100]): jq owns the whole compare
-# so bash never runs `[ -ge ]` against a float (kills the hook under set -e —
-# HIMMEL-392). null / non-numeric / out-of-range (e.g. the documented
-# leaked-epoch corruption, auto-arm-on-cap.sh) → UNKNOWN, never coerced to 0.
+# jq validates the value; awk owns every float-safe threshold comparison.
 util=$(jq -r '
     (.five_hour.utilization) as $u
     | if ($u == null) then "UNKNOWN"
@@ -187,20 +269,9 @@ if [ "$util" = "UNKNOWN" ]; then
     exit 0
 fi
 
-# Per-window freshness (codex-adv): the cache producer preserves the previous
-# five_hour object when a seven_day-only payload arrives, rewriting the file
-# (fresh mtime) around a STALE five_hour value — so file mtime alone does not
-# establish five-hour freshness. The window's own resets_at bounds the worst
-# case: a utilization whose reset time has PASSED describes an expired window
-# (the bank has reset since) → UNKNOWN, never a spurious DENY. A stale-low
-# value inside a still-live window can only under-warn — the fail-open
-# direction this cost guard already accepts.
-# resets_at appears as an epoch string in the live cache; tolerate ISO forms
-# too (fractional seconds normalized away — fromdateiso8601 rejects .000Z).
-# A HARD deny must be backed by a provably-LIVE window: missing/unparseable
-# resets_at means the value cannot be tied to the current 5h window, so deny
-# authority downgrades to the WARN advisory instead of falsely blocking
-# (codex-adv r3).
+# A fresh file can still contain an expired preserved five_hour object. HARD
+# authority therefore requires a future resets_at. Missing/unparseable values
+# downgrade to WARN; a past reset proves the utilization is expired and allows.
 resets_at=$(jq -r '
     (.five_hour.resets_at // empty) as $r
     | ($r | tostring) as $s
@@ -223,7 +294,6 @@ is_warn=$(awk -v v="$util" -v t="$WARN_T" 'BEGIN{print (v>=t)?1:0}')
 util_disp=$(awk -v v="$util" 'BEGIN{printf "%.0f", v}')
 
 if [ "$is_hard" = "1" ] && [ "$eligible_deny" = "1" ] && [ "$resets_live" != "1" ]; then
-    # HARD-worthy but the window cannot be proven live — advisory only.
     is_warn=1
 fi
 if [ "$is_hard" = "1" ] && [ "$eligible_deny" = "1" ] && [ "$resets_live" = "1" ]; then
@@ -248,7 +318,6 @@ if [ "$is_warn" = "1" ]; then
     reason=$(printf '%s' "guard-implementor-dispatch: 5-hour bank at ${util_disp}% (>= WARN ${WARN_T}%) — this $shape implementor dispatch is costly; consider himmel-ops:glm-subagent / codex:codex-rescue / /lanes instead. (IMPL_GUARD_OK=1 to silence)" | jq -Rs . 2>/dev/null) \
         || reason='"guard-implementor-dispatch: costly implementor dispatch — consider a cheaper lane"'
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":%s}}\n' "$reason"
-    exit 0
 fi
 
 exit 0

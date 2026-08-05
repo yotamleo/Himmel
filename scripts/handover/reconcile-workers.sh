@@ -24,6 +24,21 @@
 #                        Windows pid namespaces.
 #   RECONCILE_GRACE_SECS Minimum meta.json age before a confirmed-dead worker
 #                        may be orphaned (default: 120).
+#   RECONCILE_UNPROBEABLE_CEILING_SECS Absolute backstop (default: 172800 =
+#                        48h) for rows whose pid was never written (the
+#                        writeLiveWorkerMeta fallback marker shape, HIMMEL-
+#                        1511): once the session directory is older than
+#                        this ceiling, the row is terminal-marked even
+#                        though liveness stays unprobeable. Deliberately far
+#                        larger than RECONCILE_GRACE_SECS -- a backstop, not
+#                        a grace replacement.
+#   RECONCILE_TEST_NOW_MS Test seam: epoch-ms override for "now" in the
+#                        ceiling check, so an exact-boundary case can be
+#                        tested without racing the wall clock (real elapsed
+#                        time between an mtime write and the check always
+#                        makes the observed age strictly greater than any
+#                        nominal ceiling, which can never expose a `>` vs
+#                        `>=` off-by-one). Unset in production.
 #
 # Exit: 0 success/nothing to do; 2 malformed metadata or reconciliation error.
 
@@ -33,6 +48,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE="${WORKER_BRIDGE_ROOT:-${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}}"
 MODE="${1:-reconcile}"
 RECONCILE_GRACE_SECS="${RECONCILE_GRACE_SECS:-120}"
+RECONCILE_UNPROBEABLE_CEILING_SECS="${RECONCILE_UNPROBEABLE_CEILING_SECS:-172800}"
 
 case "$MODE" in
     reconcile|--list-live) : ;;
@@ -49,6 +65,13 @@ esac
 case "$RECONCILE_GRACE_SECS" in
     ''|*[!0-9]*)
         echo "ERR reconcile-workers: RECONCILE_GRACE_SECS must be a non-negative integer" >&2
+        exit 2
+        ;;
+esac
+
+case "$RECONCILE_UNPROBEABLE_CEILING_SECS" in
+    ''|*[!0-9]*)
+        echo "ERR reconcile-workers: RECONCILE_UNPROBEABLE_CEILING_SECS must be a non-negative integer" >&2
         exit 2
         ;;
 esac
@@ -124,7 +147,7 @@ _worker_meta_is_fresh() {
 const fs = require("fs");
 const p = process.argv[1];
 const graceMs = Number(process.argv[2]) * 1000;
-try { process.exit(Date.now() - fs.statSync(p).mtimeMs <= graceMs ? 0 : 1); }
+try { process.exit(Date.now() - fs.statSync(p).mtimeMs < graceMs ? 0 : 1); }
 catch (e) { console.error(`ERR reconcile-workers: cannot stat ${p}: ${e.message}`); process.exit(2); }
 ' "$1" "$RECONCILE_GRACE_SECS"
 }
@@ -146,6 +169,46 @@ const tmp = `${p}.tmp-reconcile-${process.pid}`;
 fs.writeFileSync(tmp, JSON.stringify(o, null, 2) + "\n");
 fs.renameSync(tmp, p);
 ' "$1" "$2"
+}
+
+# _worker_unprobeable_ceiling_exceeded <meta.json> -- rc 0 once the session
+# directory (the meta.json's parent dir) is older than the absolute
+# RECONCILE_UNPROBEABLE_CEILING_SECS backstop, rc 1 while still within it,
+# rc 2 on a stat error (fail open toward NOT exceeded -- a stat failure must
+# never authorize cleanup, same contract as worker_pid_alive above).
+_worker_unprobeable_ceiling_exceeded() {
+    # shellcheck disable=SC2016  # JavaScript template literal, not shell expansion.
+    node -e '
+const fs = require("fs");
+const path = require("path");
+const p = process.argv[1];
+const ceilingMs = Number(process.argv[2]) * 1000;
+const now = process.argv[3] ? Number(process.argv[3]) : Date.now();
+try { process.exit(now - fs.statSync(path.dirname(p)).mtimeMs >= ceilingMs ? 0 : 1); }
+catch (e) { console.error(`ERR reconcile-workers: cannot stat ${path.dirname(p)}: ${e.message}`); process.exit(2); }
+' "$1" "$RECONCILE_UNPROBEABLE_CEILING_SECS" "${RECONCILE_TEST_NOW_MS:-}"
+}
+
+# _worker_mark_orphaned_unprobeable <meta.json> -- terminal-mark a row whose
+# pid was never written (HIMMEL-1511) once it exceeds the unprobeable ceiling
+# backstop. Re-read both status and pid so a worker that acquired its first real
+# pid after census wins the race and exits 3, same convention as
+# _worker_mark_orphaned above.
+_worker_mark_orphaned_unprobeable() {
+    # shellcheck disable=SC2016  # JavaScript template literals, not shell expansion.
+    node -e '
+const fs = require("fs");
+const p = process.argv[1];
+let o;
+try { o = JSON.parse(fs.readFileSync(p, "utf8")); }
+catch (e) { console.error(`ERR reconcile-workers: cannot re-read ${p}: ${e.message}`); process.exit(2); }
+const pid = o.pid == null ? "" : String(o.pid);
+if (o.status !== "running" || /^[1-9][0-9]*$/.test(pid)) process.exit(3);
+o.status = "orphaned";
+const tmp = `${p}.tmp-reconcile-${process.pid}`;
+fs.writeFileSync(tmp, JSON.stringify(o, null, 2) + "\n");
+fs.renameSync(tmp, p);
+' "$1"
 }
 
 _worker_common_dir() {
@@ -237,6 +300,36 @@ for lane_dir in "$BRIDGE/glm-sessions" "$BRIDGE/claudex-sessions"; do
             probe_rc=$?
         fi
         if [ "$probe_rc" -ne 1 ]; then
+            # HIMMEL-1511: a pid that was NEVER written (empty, 0, or junk --
+            # the same set worker_pid_alive itself short-circuits on above,
+            # matching writeLiveWorkerMeta's fallback marker shape) gets an
+            # absolute-ceiling backstop so it cannot block arming forever.
+            # A pid that failed to PROBE (tasklist/probe-command failure)
+            # keeps a real recorded pid here and is deliberately excluded --
+            # that stays a pure grace-based case, not the relic shape.
+            case "$pid" in
+                ''|*[!0-9]*|0)
+                    if [ "$MODE" = "reconcile" ] && _worker_unprobeable_ceiling_exceeded "$meta"; then
+                        _worker_mark_orphaned_unprobeable "$meta"
+                        rc=$?
+                        if [ "$rc" -eq 0 ]; then
+                            summary="reconcile-workers: orphaned ${lane:-unknown}/${task_name:-unknown} pid=never-written (unprobeable past ${RECONCILE_UNPROBEABLE_CEILING_SECS}s ceiling)"
+                            if [ -n "$branch" ]; then
+                                [ -n "$repo_dir" ] || repo_dir="$SCRIPT_DIR/../.."
+                                if _worker_release_dead_lock "$repo_dir" "$branch"; then
+                                    summary="$summary; released shared lock $branch"
+                                fi
+                            fi
+                            echo "$summary"
+                            continue
+                        fi
+                        if [ "$rc" -ne 3 ]; then
+                            FAILED=1
+                            continue
+                        fi
+                    fi
+                    ;;
+            esac
             echo "WARN reconcile-workers: unprobeable ${lane:-unknown}/${task_name:-unknown} pid=${pid:-absent}; treating as possibly alive, leaving metadata and any shared lock untouched" >&2
             if [ "$MODE" = "--list-live" ]; then
                 printf '%s task=%s pid=%s state=unprobeable meta=%s\n' "${lane:-unknown}" "${task_name:-unknown}" "${pid:-absent}" "$meta"

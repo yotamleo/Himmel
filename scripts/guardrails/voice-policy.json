@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "jira": "HIMMEL-1522",
+  "updated": "2026-08-04",
+  "doc": "What the VOICE channel may act on. Distinct from egress-matrix.json, which governs what leaves the machine.",
+  "why": [
+    "Voice input is unauthenticated. Whisper transcribes whoever speaks — the operator, a guest, the TV, a video playing nearby. Typing proves it was you; audio proves nothing.",
+    "So a voice-originated request runs under its OWN envelope, narrower than the typed session's. Same shape as the Telegram bridge classifying a message before it reaches a session, and as the RETASK rule that a revision may direct work but never widen the tool-permission envelope."
+  ],
+  "semantics": {
+    "evaluation": "first-match-wins over `rules`, then `default`. '*' matches any action.",
+    "verdicts": {
+      "allow": "perform it; no confirmation",
+      "confirm": "perform ONLY after an explicit confirmation turn. Confirmation may be spoken — it guards against accident and misheard intent, NOT against a hostile speaker, because the confirming voice is just as unauthenticated as the first one",
+      "deny": "refuse over voice. The operator can still do it by typing — denial narrows the CHANNEL, it does not remove the capability"
+    },
+    "default": "unmatched actions evaluate as `confirm`, never `allow`. Fail-safe rather than fail-closed: an unknown action asks instead of silently acting, while still leaving the assistant usable when a new capability appears."
+  },
+  "evolution": {
+    "note": "These tiers are expected to move as trust grows — that is why this is versioned data and not conditionals in code.",
+    "how_to_change": "Edit a rule, bump `updated`, and extend test-voice-policy.mjs so the new posture is asserted. Bump `schema_version` only when the RULE SHAPE changes (new field, different matching), not when a verdict moves.",
+    "flip_requires": "Every `deny` rule carries its own `flip_requires` naming what would have to be true first. A rule marked `hard: true` is not on that path — see below."
+  },
+  "actions": {
+    "read": "read a file, show a diff, open a log",
+    "search": "grep, qmd, graphify, ticket lookup",
+    "status": "CI state, PR state, worktree state, queue depth",
+    "explain": "summarise or reason about what was read",
+    "task-readonly": "start a long-running task that only reads",
+    "edit": "modify a file in the working tree",
+    "commit": "create a commit",
+    "install": "add a dependency or run a package manager",
+    "message-outbound": "send a Telegram/email/chat message on the operator's behalf",
+    "push": "push a branch to a remote",
+    "merge": "merge a PR, private or public",
+    "deploy": "release, publish, or propagate to a public surface",
+    "secrets": "read or echo credentials, tokens, or key material",
+    "salus": "read or act on anything in the salus (PHI) corpus",
+    "policy-edit": "modify this policy, the egress matrix, or the hooks that enforce them"
+  },
+  "rules": [
+    {
+      "action": "policy-edit",
+      "verdict": "deny",
+      "hard": true,
+      "why": "A channel must never be able to widen its own envelope. Voice is the weakest-authenticated input in the system, so letting it edit the rules that bound it would make every other rule here advisory. No growth in trust changes this — the whole premise is that the speaker is unverified.",
+      "flip_requires": "nothing; this rule is not on the evolution path"
+    },
+    {
+      "action": "secrets",
+      "verdict": "deny",
+      "hard": true,
+      "why": "Speaking a credential aloud puts it in the room, and into any recording being made there. The exposure is the ROOM, not the requester, so a more trusted speaker does not make it safe.",
+      "flip_requires": "nothing; this rule is not on the evolution path"
+    },
+    {
+      "action": "salus",
+      "verdict": "deny",
+      "why": "PHI is the highest-consequence corpus and voice is the weakest-authenticated channel. Note this is about ACTING on salus locally — separate from the egress matrix's hard PHI deny, which is absolute and unaffected by anything here.",
+      "flip_requires": "speaker verification that distinguishes the operator from any other voice in the room, plus an explicit operator decision recorded on the ticket. Local salus reads do not egress, so this is legitimately reachable — unlike the egress cell."
+    },
+    {
+      "action": "deploy",
+      "verdict": "deny",
+      "why": "Public propagation is irreversible once it lands and is already human-authorised elsewhere in the harness; a spoken sentence is not the right authority for it.",
+      "flip_requires": "speaker verification, and even then likely stays denied — the public merge is deliberately a human action"
+    },
+    {
+      "action": "push",
+      "verdict": "deny",
+      "why": "Pushes are visible to others and hard to retract cleanly.",
+      "flip_requires": "speaker verification, or scoping the allowance to branches the session already owns"
+    },
+    {
+      "action": "merge",
+      "verdict": "deny",
+      "why": "Merging closes review; a misheard sentence should not be able to do that.",
+      "flip_requires": "speaker verification, plus gating on an already-green PR"
+    },
+    {
+      "action": "edit",
+      "verdict": "confirm",
+      "why": "Recoverable via git, but surprising if unintended. Confirmation catches the misheard case, which is the realistic failure here."
+    },
+    { "action": "commit", "verdict": "confirm", "why": "Local and revertible; confirmation is enough." },
+    { "action": "install", "verdict": "confirm", "why": "Mutates the environment and can be slow; worth an explicit yes." },
+    {
+      "action": "message-outbound",
+      "verdict": "confirm",
+      "why": "Reaches another person and cannot be unsent. Confirmation must repeat the recipient AND the message, so a mistranscription is caught before it is delivered rather than after."
+    },
+    { "action": "read", "verdict": "allow", "why": "No side effects." },
+    { "action": "search", "verdict": "allow", "why": "No side effects." },
+    { "action": "status", "verdict": "allow", "why": "No side effects; the most common voice request by far." },
+    { "action": "explain", "verdict": "allow", "why": "No side effects." },
+    { "action": "task-readonly", "verdict": "allow", "why": "Long-running but read-only; cancellable." }
+  ],
+  "default": "confirm"
+}

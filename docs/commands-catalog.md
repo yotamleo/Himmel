@@ -79,6 +79,7 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 | /drift-fix | Resolve upstream fork-drift end-to-end — run the drift guard, mechanically bump every auto-bumpable pin, land it on PRIVATE main, then open a PUBLIC PR and STOP for the operator to merge. The payload of the nightly drift-fix cadence (HIMMEL-1323). |
 | /fork-resync | Re-sync a carried FORK onto a newer upstream base — rebase the fork's additive delta and audit that it is still additive. An operator-run invocation may continue on to push the fork and move the pin; the nightly fork-resync cadence (HIMMEL-1323) runs unattended and STOPS after the audit — it never pushes and never moves the pin. |
 | /end-session-wiki-setup | Configure which Obsidian vault the end-session-wiki hook captures sessions into — writes env.LUNA_VAULT_PATH into ~/.claude/settings.json (global) or the .claude/end-session-wiki.json vault or vault_path key (this repo only). |
+| /speak | **BETA** — speak text aloud through the local voice daemon; the last reply by default, or whatever you pass. Detached and on demand, needs no hook and no always-on state, and is NOT a `himmelctl` install item. Needs a local runtime that is not in the repo — see [`docs/voice.md`](voice.md) (HIMMEL-1522). |
 | /stop | Graceful-halt marker for in-progress /overnight-shift sessions (HIMMEL-137). |
 
 ## Prompt / discovery

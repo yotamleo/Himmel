@@ -21,6 +21,21 @@ if [ -f "$bugs" ]; then
   fi
 fi
 
+# Pending CR markers for this item's ticket (HIMMEL-1553): re-derive the
+# machine classification EVERY resume, so an inherited "blocked/unopenable"
+# claim in the handover prose always sits next to what the marker + ledger
+# actually say (HIMMEL-1519 stayed falsely "blocked" for four legs because the
+# claim propagated leg-to-leg unchallenged). Ticket key comes from the item
+# dir name (KEY-N-slug); #N items have no key and are skipped. Best-effort:
+# an audit failure never breaks the panel.
+key="$(basename "$item" | grep -oE '^[A-Za-z][A-Za-z0-9]*-[0-9]+' || true)"
+if [ -n "$key" ] && [ -f "$HERE/../cr/cr-pending-audit.sh" ]; then
+  audit_out="$(bash "$HERE/../cr/cr-pending-audit.sh" --ticket "$key" 2>/dev/null)" || true
+  if [ -n "$audit_out" ]; then
+    printf '### Pending CR markers (machine-classified — trust this over inherited prose)\n%s\n\n' "$audit_out"
+  fi
+fi
+
 # Latest CR-findings block: the LAST "### " header under "## CR Findings" and
 # its bullets (append-cr-findings.sh appends newest blocks at EOF). awk resets
 # `blk` on each "### " so only the final block survives to END.

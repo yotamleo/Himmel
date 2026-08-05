@@ -44,6 +44,8 @@ import {
   refuseBypassPermissions,
   WORKER_BASH_ALLOW,
   isHelpFlag,
+  detectNonPrimaryCwd,
+  refuseNonPrimaryCwd,
   type CapGuardDeps,
 } from "./spawn-glm";
 import { BASH_BIN } from "./run";
@@ -212,6 +214,22 @@ test("GLM guard check runs BEFORE git worktree add — a refusal leaves no orpha
   expect(wtIdx).toBeGreaterThan(-1);
   expect(guardIdx).toBeLessThan(wtIdx);
   expect(guardIdx).toBeLessThan(poisonIdx);
+});
+
+test("HIMMEL-1503: refuseNonPrimaryCwd runs IMMEDIATELY after absCwd is resolved — before every other preflight and any worktree side-effect (wiring pin)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  const absCwdIdx = src.indexOf("const absCwd = resolve(cwd);");
+  const guardIdx = src.indexOf("refuseNonPrimaryCwd(absCwd)");
+  const profileIdx = src.indexOf("resolveProfileSettings(profile, addPlugins, absCwd, [])");
+  const planIdx = src.indexOf("planSpawn(absCwd");
+  const wtIdx = src.indexOf('"worktree", "add"');
+  expect(absCwdIdx).toBeGreaterThan(-1);
+  expect(guardIdx).toBeGreaterThan(-1);
+  expect(absCwdIdx).toBeLessThan(guardIdx);   // cwd resolved before the guard runs
+  expect(guardIdx).toBeLessThan(profileIdx);  // guard fires before the next existing preflight
+  expect(guardIdx).toBeLessThan(planIdx);
+  expect(guardIdx).toBeLessThan(wtIdx);
+  expect(/if \(nonPrimaryRefusal\) \{ console\.error\(nonPrimaryRefusal\); process\.exit\(2\); \}/.test(src)).toBe(true);
 });
 
 // --- HIMMEL-800: shared-branch mode wiring pins (main() source-text checks,
@@ -619,6 +637,90 @@ test("gitBranchExists (F1): real repo — existing branch true, missing branch f
   } finally { rmSync(repo, { recursive: true, force: true }); }
 });
 
+// --- HIMMEL-1503: primary-checkout cwd guard ---
+
+test("detectNonPrimaryCwd: ok when cwd is the primary checkout (git-dir === git-common-dir, no worktree path segment)", () => {
+  const probe = () => ({ gitDir: "/repo/.git", commonDir: "/repo/.git" });
+  expect(detectNonPrimaryCwd("/repo", probe)).toEqual({ ok: true });
+});
+
+test("detectNonPrimaryCwd: refuses when git-dir !== git-common-dir (linked worktree), naming the primary path (parent of common-dir)", () => {
+  const probe = () => ({ gitDir: "/repo/.git/worktrees/wt1", commonDir: "/repo/.git" });
+  const r = detectNonPrimaryCwd("/repo/.claude/worktrees/glm+t1", probe);
+  expect(r).toEqual({ ok: false, primaryPath: resolve("/repo") });
+});
+
+test("detectNonPrimaryCwd: refuses on the /.claude/worktrees/ path substring ALONE, even if the git probe fails (defense in depth)", () => {
+  const probe = () => null; // simulates a failed/unavailable git probe
+  const r = detectNonPrimaryCwd("/some/repo/.claude/worktrees/glm+t1", probe);
+  expect(r.ok).toBe(false);
+  expect((r as { primaryPath?: string }).primaryPath).toBeUndefined();
+});
+
+test("detectNonPrimaryCwd: refuses on the /.claude/worktrees/ path substring even when git reports git-dir === common-dir", () => {
+  // a cwd string that happens to name a worktree path but whose git probe
+  // (e.g. a stale/removed worktree, or a plain nested clone) reports no
+  // git-level worktree signal — the path signal alone still refuses.
+  const probe = () => ({ gitDir: "/x/.git", commonDir: "/x/.git" });
+  const r = detectNonPrimaryCwd("/x/.claude/worktrees/glm+stale", probe);
+  expect(r.ok).toBe(false);
+});
+
+test("detectNonPrimaryCwd: drops primaryPath when it would resolve to the refused cwd itself (standalone repo nested under .claude/worktrees)", () => {
+  // A plain nested clone reports a RELATIVE common-dir ("."/".git"), so the
+  // "primary" resolves back to the very cwd being refused. Naming it would
+  // tell the caller to cd where they already are; the path-only diagnostic is
+  // the correct message here (codex-1, CR round 1).
+  const probe = () => ({ gitDir: ".git", commonDir: ".git" });
+  const r = detectNonPrimaryCwd("/x/.claude/worktrees/nested-clone", probe);
+  expect(r.ok).toBe(false);
+  expect((r as { primaryPath?: string }).primaryPath).toBeUndefined();
+  expect(refuseNonPrimaryCwd("/x/.claude/worktrees/nested-clone", probe)).toContain("looks like a worktree cwd");
+});
+
+test("detectNonPrimaryCwd: normalizes backslashes before the path-substring check (Windows)", () => {
+  const probe = () => ({ gitDir: "C:\\repo\\.git", commonDir: "C:\\repo\\.git" });
+  const r = detectNonPrimaryCwd("C:\\repo\\.claude\\worktrees\\glm+t1", probe);
+  expect(r.ok).toBe(false);
+});
+
+test("refuseNonPrimaryCwd: undefined (no refusal) on the primary checkout", () => {
+  const probe = () => ({ gitDir: "/repo/.git", commonDir: "/repo/.git" });
+  expect(refuseNonPrimaryCwd("/repo", probe)).toBeUndefined();
+});
+
+test("refuseNonPrimaryCwd: names the primary path + HIMMEL-1503 + the spawn-glm prefix", () => {
+  const probe = () => ({ gitDir: "/repo/.git/worktrees/wt1", commonDir: "/repo/.git" });
+  const msg = refuseNonPrimaryCwd("/repo/.claude/worktrees/glm+t1", probe);
+  expect(msg).toContain("spawn-glm:");
+  expect(msg).toContain("HIMMEL-1503");
+  expect(msg).toContain(resolve("/repo")); // the named primary path
+  expect(msg).toMatch(/cd there and retry/);
+});
+
+test("refuseNonPrimaryCwd: falls back to a path-only diagnostic when the primary path could not be resolved", () => {
+  const probe = () => null;
+  const msg = refuseNonPrimaryCwd("/some/repo/.claude/worktrees/glm+t1", probe);
+  expect(msg).toContain("spawn-glm:");
+  expect(msg).toContain("HIMMEL-1503");
+  expect(msg).toMatch(/looks like a worktree cwd/);
+});
+
+// REAL git — a primary checkout vs. a genuine `git worktree add` linked
+// worktree (mirrors the gitIsDirty/gitBranchExists real-repo tests above).
+test("detectNonPrimaryCwd (real git): primary checkout -> ok; its linked worktree -> refused naming the primary as primaryPath", () => {
+  const { repo, run } = initHermeticRepo("pcwd-");
+  try {
+    expect(detectNonPrimaryCwd(repo)).toEqual({ ok: true });
+
+    const wt = join(repo, "wt-nonprimary");
+    run(["worktree", "add", wt, "-b", "glm/nonprimary"]);
+    const r = detectNonPrimaryCwd(wt);
+    expect(r.ok).toBe(false);
+    expect((r as { primaryPath?: string }).primaryPath).toBe(resolve(repo));
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
 // --- planSpawn / finalMeta (pure decision logic) ---
 
 const okDeps = (overrides: Partial<Parameters<typeof planSpawn>[2]> = {}) => ({
@@ -868,6 +970,42 @@ test("spawn-glm with only --help as the sole arg does NOT fall through to the mi
   expect(r.exitCode).toBe(0);
   expect(r.stderr.toString()).toBe("");
 });
+
+// --- HIMMEL-1503: real CLI end-to-end — the guard fires from the actual
+// entrypoint (not just the exported pure functions above), before any
+// worktree/branch side-effect, against a REAL `git worktree add`. ---
+
+test("spawn-glm real CLI: dispatch from inside a linked worktree cwd is REFUSED (exit 2), naming the primary path — no dispatch, no nested worktree minted", () => {
+  const { repo, run } = initHermeticRepo("cli-pcwd-");
+  try {
+    const wt = join(repo, "wt-orchestrator-stale-cwd");
+    run(["worktree", "add", wt, "-b", "some/other-branch"]);
+
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-glm.ts", "do the task", "--cwd", wt], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+    });
+    expect(r.exitCode).toBe(2);
+    const err = r.stderr.toString();
+    expect(err).toContain("HIMMEL-1503");
+    expect(err).toContain(resolve(repo)); // names the primary checkout
+    expect(r.stdout.toString()).not.toContain("session-dir:"); // no dispatch happened
+    // the exact incident shape: no worktree minted NESTED inside the stale worktree cwd
+    expect(existsSync(join(wt, ".claude", "worktrees"))).toBe(false);
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
+test("spawn-glm real CLI: dispatch from the PRIMARY checkout is NOT caught by the HIMMEL-1503 guard (happy path — proceeds to the next, unrelated check)", () => {
+  const { repo } = initHermeticRepo("cli-pcwd-ok-");
+  try {
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-glm.ts", "do the task", "--cwd", repo], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+    });
+    expect(r.exitCode).toBe(2);
+    const err = r.stderr.toString();
+    expect(err).not.toContain("HIMMEL-1503"); // the guard did not fire
+    expect(err).toMatch(/is not a himmel checkout/); // fell through to the next existing refusal
+  } finally { rmSync(repo, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
 
 test("parseArgs: a bare unrecognized flag is a usage refusal, not swallowed as the task (HIMMEL-1225)", () => {
   const typo = parseArgs(["--tiemout-mins", "45", "real task"]);
@@ -1279,6 +1417,13 @@ test("F2 (CR round 2): a capped SHARED run's respawn-handover.md carries --branc
   const snap = readFileSync(join(sd, "respawn-handover.md"), "utf8");
   expect(snap).toContain("--branch feat/live-pr");
   expect(snap).not.toMatch(/--name /);
+});
+
+test("round override survives cap recovery into the safely quoted respawn command (HIMMEL-1553)", async () => {
+  const why = "mechanical 'batch' $(must-not-expand), no open design question";
+  await executeRun({ runSession: cappedRun(T5H) as any, prompt: "p", worktree: wt, sessionDir: sd, metaPath: mp, runningMeta: rm, capGuard: guardDeps({ roundsOverride: why }) });
+  const snap = readFileSync(join(sd, "respawn-handover.md"), "utf8");
+  expect(snap).toContain(`--rounds-override 'mechanical '"'"'batch'"'"' $(must-not-expand), no open design question'`);
 });
 
 test("generic cap arms like 5h with cap_window generic", async () => {

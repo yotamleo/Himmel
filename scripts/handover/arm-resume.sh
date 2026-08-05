@@ -47,7 +47,8 @@
 #
 # Optional:
 #   --force            Replace the existing same-handover HIMMEL-Resume job
-#                      (with --dedup-any, any existing HIMMEL-Resume job).
+#                      (always THIS handover's own job only — never a sibling
+#                      chain's, even under --dedup-any; HIMMEL-1563).
 #                      Default refuses (rc=3) — explicit opt-in only.
 #                      Also bypasses the time-collision check (HIMMEL-407).
 #   --long-gap         Sanction an explicit HH:MM more than 60 min out
@@ -79,7 +80,11 @@
 #                           composition. See _compose_arm_name.
 #   ARM_WITH_LIVE_WORKERS   Exact value 1 bypasses the live lane-worker guard
 #                           with a loud warning. Use only when intentionally
-#                           killing in-flight workers at session exit.
+#                           killing in-flight workers at session exit. Also
+#                           downgrades a reconcile/census tool FAILURE (e.g. a
+#                           malformed meta.json) from a hard refusal to a loud
+#                           warning naming the offending path (HIMMEL-1511) --
+#                           without it, that failure exits 2 unconditionally.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -236,6 +241,11 @@ Env:
   ARM_WITH_LIVE_WORKERS   Exact value 1 bypasses the live lane-worker refusal
                           with a loud warning. The armed session exit may kill
                           those in-flight workers; wait for them by default.
+                          Also downgrades a reconcile/census tool FAILURE
+                          (e.g. a malformed meta.json) from a hard refusal to
+                          a loud warning naming the offending path
+                          (HIMMEL-1511) -- without it, that failure exits 2
+                          unconditionally.
 EOF
 }
 
@@ -305,21 +315,64 @@ if [ "$DRY_RUN" -eq 0 ]; then
         echo "ERR arm-resume: worker reconciler missing: $_WORKER_RECONCILER — refusing because live-worker state cannot be checked" >&2
         exit 2
     fi
+    _arm_worker_stderr_file() {
+        local label="$1" tmp
+        tmp=$(mktemp "${TMPDIR:-/tmp}/arm-resume.${label}-err.XXXXXX") || tmp=""
+        if [ -z "$tmp" ] || [ ! -f "$tmp" ]; then
+            echo "ERR arm-resume: mktemp failed for worker ${label} stderr; refusing because live-worker state cannot be checked" >&2
+            return 1
+        fi
+        printf '%s\n' "$tmp"
+    }
+    # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
+    _arm_worker_stderr_cleanup() {
+        # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+        [ -z "${_worker_reconcile_err:-}" ] || rm -f "$_worker_reconcile_err"
+        # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+        [ -z "${_worker_census_err:-}" ] || rm -f "$_worker_census_err"
+    }
+    _worker_reconcile_err=$(_arm_worker_stderr_file reconcile) || exit 2
+    _worker_census_err=""
+    trap _arm_worker_stderr_cleanup EXIT
+    _worker_census_err=$(_arm_worker_stderr_file census) || exit 2
+
     set +e
-    bash "$_WORKER_RECONCILER"
+    bash "$_WORKER_RECONCILER" 2>"$_worker_reconcile_err"
     _worker_reconcile_rc=$?
     set -e
     if [ "$_worker_reconcile_rc" -ne 0 ]; then
-        echo "ERR arm-resume: worker reconciliation failed (rc=$_worker_reconcile_rc) — refusing because live-worker state is uncertain" >&2
-        exit 2
+        if [ "${ARM_WITH_LIVE_WORKERS:-}" = "1" ]; then
+            echo "WARN arm-resume: ARM_WITH_LIVE_WORKERS=1 — worker reconciliation failed (rc=$_worker_reconcile_rc); live-worker state is uncertain but arming anyway:" >&2
+            sed 's/^/    /' "$_worker_reconcile_err" >&2
+        else
+            echo "ERR arm-resume: worker reconciliation failed (rc=$_worker_reconcile_rc) — refusing because live-worker state is uncertain:" >&2
+            sed 's/^/    /' "$_worker_reconcile_err" >&2
+            echo "    Emergency override: ARM_WITH_LIVE_WORKERS=1 (accepts the uncertainty and arms anyway)." >&2
+            exit 2
+        fi
+    else
+        # Relay the reconciler's own (non-fatal) stderr -- e.g. "settling" /
+        # "unprobeable" WARN lines -- exactly as the prior unredirected
+        # pass-through did.
+        cat "$_worker_reconcile_err" >&2
     fi
     set +e
-    _live_workers=$(bash "$_WORKER_RECONCILER" --list-live)
+    _live_workers=$(bash "$_WORKER_RECONCILER" --list-live 2>"$_worker_census_err")
     _worker_list_rc=$?
     set -e
     if [ "$_worker_list_rc" -ne 0 ]; then
-        echo "ERR arm-resume: live-worker census failed (rc=$_worker_list_rc) — refusing to arm" >&2
-        exit 2
+        if [ "${ARM_WITH_LIVE_WORKERS:-}" = "1" ]; then
+            echo "WARN arm-resume: ARM_WITH_LIVE_WORKERS=1 — live-worker census failed (rc=$_worker_list_rc); live-worker state is uncertain but arming anyway:" >&2
+            sed 's/^/    /' "$_worker_census_err" >&2
+        else
+            echo "ERR arm-resume: live-worker census failed (rc=$_worker_list_rc) — refusing to arm:" >&2
+            sed 's/^/    /' "$_worker_census_err" >&2
+            echo "    Emergency override: ARM_WITH_LIVE_WORKERS=1 (accepts the uncertainty and arms anyway)." >&2
+            exit 2
+        fi
+    else
+        # Relay the reconciler's own (non-fatal) stderr, same as above.
+        cat "$_worker_census_err" >&2
     fi
     if [ -n "$_live_workers" ]; then
         if [ "${ARM_WITH_LIVE_WORKERS:-}" = "1" ]; then
@@ -1353,8 +1406,11 @@ fi
 # Scope ($1, HIMMEL-340):
 #   task — only the CURRENT $TASK_NAME (per-handover dedup; the default for
 #          an explicit arm, so N distinct handovers each get their own slot).
+#          This is the ONLY scope a --force replace ever reaps from (HIMMEL-1563).
 #   all  — every HIMMEL-Resume-* job (the legacy broad behavior; used by the
-#          --dedup-any safety arms and by the soft slot-cap count).
+#          --dedup-any safety arms and by the soft slot-cap count). READ-ONLY
+#          only post-1563: the rc=3 refusal message and the cap count, never a
+#          delete — a prefix-wide reap cancelled foreign chains' arms.
 # Defaults to "all" so any unscoped caller keeps the pre-340 semantics.
 
 # _crontab_list <scope> — grep the crontab for our HIMMEL-Resume markers
@@ -1873,24 +1929,48 @@ existing=$(list_existing "$DEDUP_SCOPE")
 # BEFORE the rc-7 queue-lock refusal, the rc-8 cross-host refusal, and
 # schedule_arm itself — so an arm that deleted and then refused (or failed
 # inside schedule_arm, or failed partway through a multi-job deletion) left the
-# previous slot(s) destroyed with no replacement and no rollback. Worst under
-# `--dedup-any --force`, whose scope matches EVERY resume job on the machine:
-# one failed arm could wipe every queued relaunch. Deferring the deletion makes
-# the replace transactional in the direction that matters — the old arm is only
-# given up once a new one demonstrably exists.
+# previous slot(s) destroyed with no replacement and no rollback. Deferring the
+# deletion makes the replace transactional in the direction that matters — the
+# old arm is only given up once a new one demonstrably exists.
+#
+# HIMMEL-1563: the reap list is THIS invocation's OWN identity only (the
+# current $TASK_NAME + the pre-1304 legacy one) — NEVER the broad --dedup-any
+# enumeration in $existing. Pre-1563 the force loop reaped straight out of
+# $existing, so under `--dedup-any --force` (scope = every HIMMEL-Resume-* job)
+# a single arm cancelled EVERY parallel chain's armed resume by prefix
+# wildcard — a foreign chain's task this invocation did not create, destroyed
+# as collateral (leg 44 deleted HIMMEL-Resume-trust-envelope-chain-06). This
+# box routinely runs four+ autonomous chains under the same HIMMEL-Resume-
+# prefix, so a prefix match is never safe for a delete. $existing (the broad
+# list) is still used for the rc=3 refusal below and the soft-cap count — both
+# READ-ONLY — but a DELETE/replace may never reach beyond the caller's own
+# task(s). Read-only enumeration (the refusal message, the cap count) is fine;
+# the invariant is about DELETE/Unregister/replace.
 ARM_REPLACE_MARKERS=""
 if [ -n "$existing" ]; then
     if [ "$FORCE" -eq 1 ]; then
-        echo "arm-resume: --force set; replacing existing job(s) AFTER the new one is registered:" >&2
-        while IFS= read -r marker; do
-            [ -z "$marker" ] && continue
-            echo "  $marker" >&2
-            if [ "$DRY_RUN" -eq 0 ]; then
-                ARM_REPLACE_MARKERS="${ARM_REPLACE_MARKERS}${marker}"$'\n'
-            else
-                echo "DRY arm-resume: would delete $marker (after the new job is registered)"
-            fi
-        done <<< "$existing"
+        # HIMMEL-1563: reap only THIS handover's own job(s). list_existing task
+        # is the exact-identity match (current + legacy); the broad $existing
+        # above is deliberately NOT the reap source.
+        _force_reap_list=$(list_existing task)
+        if [ -n "$_force_reap_list" ]; then
+            echo "arm-resume: --force set; replacing THIS handover's own job(s) AFTER the new one is registered:" >&2
+            while IFS= read -r marker; do
+                [ -z "$marker" ] && continue
+                echo "  $marker" >&2
+                if [ "$DRY_RUN" -eq 0 ]; then
+                    ARM_REPLACE_MARKERS="${ARM_REPLACE_MARKERS}${marker}"$'\n'
+                else
+                    echo "DRY arm-resume: would delete $marker (after the new job is registered)"
+                fi
+            done <<< "$_force_reap_list"
+        elif [ "$DEDUP_SCOPE" = all ]; then
+            # Own-identity list empty but broad list non-empty: every queued
+            # resume job belongs to a DIFFERENT chain. Say so explicitly so the
+            # rc=0 silence is not read as "nothing else was queued" — foreign
+            # arms are left untouched (HIMMEL-1563).
+            echo "arm-resume: --force set; no job of THIS handover to replace — leaving other chains' resume job(s) untouched (HIMMEL-1563)." >&2
+        fi
     else
         {
             if [ "$DEDUP_SCOPE" = task ]; then
@@ -1919,9 +1999,9 @@ if [ -n "$existing" ]; then
             else
                 echo "--dedup-any safety-arm semantics — defer to whatever resume slot is"
                 echo "already queued, whichever handover it points at. To arm this handover"
-                echo "alongside it, drop --dedup-any. Adding --force in THIS scope"
-                echo "deletes EVERY job listed above, not just one — sibling"
-                echo "relaunches included. Since HIMMEL-1304 that deletion is"
+                echo "alongside it, drop --dedup-any. Adding --force replaces only THIS"
+                echo "handover's own job(s) (HIMMEL-1563) — sibling chains' arms are never"
+                echo "touched by a force replace. Since HIMMEL-1304 that deletion is"
                 echo "TRANSACTIONAL: it happens only AFTER the new job is registered and"
                 echo "verified, so a later refusal or failure leaves the existing slot(s)"
                 echo "untouched rather than wiping them with no replacement. Inspect:"

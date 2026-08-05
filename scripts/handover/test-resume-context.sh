@@ -43,4 +43,23 @@ out_c="$(bash "$R" --item "$cronly")"
 check "cr-only: CR header"           "$(printf '%s' "$out_c" | grep -c 'Latest CR findings')" "1"
 check "cr-only: no open-bugs header" "$(printf '%s' "$out_c" | grep -c 'Open bugs')" "0"
 
+# HIMMEL-1553: pending-CR-marker audit panel. A KEY-N item whose ticket has a
+# stale marker in the repo the panel runs from -> the machine classification
+# surfaces next to the inherited prose. Hermetic: its own temp git repo is the
+# cwd, so the real repo's markers never leak in.
+repo="$tmp/repo"; mkdir -p "$repo"
+( cd "$repo" && git init -q -b main . && git config user.email t@t.t && git config user.name t \
+  && echo hi > f.txt && git add f.txt && git commit -qm base \
+  && git checkout -qb fix/test-77-x && echo x >> f.txt && git commit -qam w ) >/dev/null 2>&1
+mkdir -p "$repo/.git/cr-pending/fix"
+printf '2026-08-04T10:00:00+02:00 | 0000000000000000000000000000000000000000 | full\n' > "$repo/.git/cr-pending/fix/test-77-x"
+kitem="$tmp/TEST-77-slug"; mkdir -p "$kitem"
+out_k="$(cd "$repo" && bash "$R" --item "$kitem")"
+check "marker panel: header"     "$(printf '%s' "$out_k" | grep -c 'Pending CR markers')" "1"
+check "marker panel: stale line" "$(printf '%s' "$out_k" | grep -c 'reason=stale-marker')" "1"
+check "marker panel: remedy"     "$(printf '%s' "$out_k" | grep -c 're-run /pr-check')" "1"
+# an unkeyed item in the same repo stays clean/empty (audit skipped, no key)
+out_u="$(cd "$repo" && bash "$R" --item "$clean")"
+check "marker panel: unkeyed item skipped" "$out_u" ""
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

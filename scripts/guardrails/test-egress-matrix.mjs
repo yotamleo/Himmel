@@ -89,6 +89,47 @@ for (const p of providers) {
   }
 }
 
+// 3b. voice-audio: every NON-LOCAL provider x every purpose = hard deny;
+//     local-speech = allow (HIMMEL-1522).
+//
+// Held at the salus tier deliberately. The salus deny keys on file paths and
+// speech has none, so a mic streaming to a cloud API would bypass the PHI
+// perimeter with nothing to inspect. Audio cannot be classified before it is
+// heard, so all of it is treated as maximally sensitive. Asserted the same way
+// as salus — rule existence AND hardness, not just the outcome — so a later
+// rule reordering that shadows the deny fails loudly instead of silently
+// opening a mic to the network.
+for (const p of providers) {
+  for (const u of purposes) {
+    const { effective, rule } = evaluate("voice-audio", p, u);
+    if (p === "local-speech") {
+      // Allowed for SPEECH purposes only. The original rule granted
+      // purpose "*", which also permitted inference/extraction/embedding on a
+      // provider documented as STT/TTS-only — a wider grant than the provider
+      // can justify, and this test asserted that width as if it were intended.
+      if (u === "stt" || u === "tts") {
+        assert(effective === "allow", `voice-audio x ${p} x ${u} must be allow (on-machine speech), got ${effective}`);
+      } else {
+        assert(effective === "deny", `voice-audio x ${p} x ${u} must be deny — local-speech is STT/TTS only, got ${effective}`);
+      }
+    } else {
+      assert(effective === "deny", `voice-audio x ${p} x ${u} must be deny, got ${effective}`);
+      assert(rule && rule.hard === true, `voice-audio x ${p} x ${u} deny must be hard`);
+    }
+  }
+}
+// An unlisted provider must not reach the mic either (default fail-closed).
+assert(evaluate("voice-audio", "brand-new-provider", "stt").effective === "deny",
+  "voice-audio must deny an unlisted provider");
+// local-speech is scoped to audio ONLY — it must not become a backdoor that
+// reads the vaults or PHI just because it is marked local.
+assert(evaluate("salus", "local-speech", "stt").effective === "deny",
+  "local-speech must NOT reach salus");
+for (const c of ["luna-personal", "luna-clippings", "handover-state"]) {
+  assert(evaluate(c, "local-speech", "stt").effective === "deny",
+    `local-speech must not reach ${c} — it is an audio-only provider`);
+}
+
 // 4. google-gemini denied everywhere, via the HARD rule (pins rule existence,
 //    not just the outcome — mirrors the salus pattern)
 for (const c of corpora) for (const u of purposes) {

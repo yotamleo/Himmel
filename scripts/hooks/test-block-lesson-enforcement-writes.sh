@@ -18,7 +18,7 @@ GUARDRAILS="$HOOKS/../guardrails"
 POLICY="$GUARDRAILS/enforcement-paths.json"
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
 
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+T="$(mktemp -d "${TMPDIR:-/tmp}/himmel-lesson-hook.XXXXXX")"; trap 'rm -rf "$T"' EXIT
 cp "$POLICY" "$T/enforcement-paths.json"
 
 pass=0; fail=0
@@ -72,14 +72,15 @@ check "inactive + malformed JSON -> allow (fast-exit before parse)" allow \
     '{not json' "$HOOK"
 
 echo "== plugin hooks.json fail-closed under stale checkout (round-3 CR fix, HIMMEL-767) =="
-HOOKS_JSON="$HOOKS/../../marketplace/plugins/himmel-ops/hooks/hooks.json"
+PLUGIN_ROOT="$HOOKS/../../marketplace/plugins/himmel-ops"
+HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 if [ -f "$HOOKS_JSON" ]; then
     PLUGIN_CMD="$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | test("block-lesson-enforcement-writes")) | .hooks[0].command' "$HOOKS_JSON" 2>/dev/null)"
     if [ -n "$PLUGIN_CMD" ]; then
-        EMPTY_PROJECT="$(mktemp -d)"
-        env CLAUDE_PROJECT_DIR="$EMPTY_PROJECT" HIMMEL_LESSON_LOOP=1 bash -c "$PLUGIN_CMD" >/dev/null 2>&1
+        EMPTY_PROJECT="$(mktemp -d "${TMPDIR:-/tmp}/himmel-lesson-empty-project.XXXXXX")"
+        env CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_PROJECT_DIR="$EMPTY_PROJECT" HIMMEL_LESSON_LOOP=1 bash -c "$PLUGIN_CMD" >/dev/null 2>&1
         rc_loop=$?
-        env CLAUDE_PROJECT_DIR="$EMPTY_PROJECT" bash -c "$PLUGIN_CMD" >/dev/null 2>&1
+        env CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" CLAUDE_PROJECT_DIR="$EMPTY_PROJECT" bash -c "$PLUGIN_CMD" >/dev/null 2>&1
         rc_normal=$?
         rm -rf "$EMPTY_PROJECT"
         if [ "$rc_loop" -eq 2 ]; then
