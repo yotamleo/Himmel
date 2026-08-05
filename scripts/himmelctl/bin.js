@@ -75,6 +75,19 @@ commands:
                           the old scope (interactive confirm; --yes skips it;
                           --dry-run prints the plan); refuses to leave any item
                           wired in BOTH scopes (fail-closed)
+  trust on|off|status     wire, unwire, or report the trust shadow ledger's hook
+                          entries in this project's .claude/settings.json
+                          (HIMMEL-1529/1539). Idempotent, and 'off' removes only
+                          what it added — the recorder's whole claim is that
+                          adding it and removing it are both zero behaviour
+                          change. (Exactly byte-for-byte for any file with
+                          existing hooks; an event array that was EMPTY and then
+                          wired into normalizes to absent, which is invisible to
+                          every consumer.) Hooks load at SESSION START, so restart claude
+                          and confirm with
+                          'node scripts/trust/shadow-ledger.mjs report':
+                          it must show non-zero rows. "It is wired" is a
+                          different claim from "it is recording"
   deps status             read-only version/presence check of the declared
                           toolchain (scripts/install/deps.json)
   deps ensure             install MISSING declared toolchain deps via their
@@ -173,6 +186,7 @@ function parseArgs(argv) {
     profile: null,     // ensure: --profile (null = keep the target's stored profile)
     yes: false,        // ensure/scope/deps ensure/deps upgrade: --yes
     scopeVerb: null,   // scope: 'set' | 'get' | 'status' (null = none given)
+    trustVerb: null,   // trust: 'on' | 'off' | 'status' (null = none given, HIMMEL-1551)
     targetScope: null, // scope set: 'project' | 'user' (null = none given)
     depsVerb: null,    // deps: status|ensure|upgrade (consumed positionally, see the 'deps' case)
     withModels: false, // deps upgrade: --with-models
@@ -224,6 +238,18 @@ function parseArgs(argv) {
           args.scopeVerb = 'status';
           break;
         }
+        // Same shape under `trust` (HIMMEL-1551): a positional verb, not the
+        // read-only `status` subcommand.
+        if (args.subcommand === 'trust') {
+          if (args.trustVerb !== null) {
+            console.error(`himmelctl: trust takes exactly one verb (on|off|status) — saw '${args.trustVerb}' and 'status'`);
+            console.error("Run 'himmelctl --help' for usage.");
+            process.exitCode = 2;
+            return args;
+          }
+          args.trustVerb = 'status';
+          break;
+        }
         if (!setSubcommand('status')) return args;
         break;
       case 'ensure':
@@ -231,6 +257,32 @@ function parseArgs(argv) {
         break;
       case 'scope':
         if (!setSubcommand('scope')) return args;
+        break;
+      // HIMMEL-1551: the trust ledger's hook wiring. It exists as a command
+      // because the recorder previously shipped behind a manual paste of six
+      // JSON blocks, and three consecutive chain legs measured zero rows as a
+      // result. A capability behind a manual paste is a capability that does
+      // not ship.
+      case 'trust':
+        if (!setSubcommand('trust')) return args;
+        break;
+      case 'on':
+      case 'off':
+        // ONLY meaningful under `trust`; anywhere else these fall through to
+        // the unknown-argument error, exactly as `set`/`get` do under `scope`.
+        if (args.subcommand !== 'trust') {
+          console.error(`himmelctl: unknown argument: ${a}`);
+          console.error("Run 'himmelctl --help' for usage.");
+          process.exitCode = 2;
+          return args;
+        }
+        if (args.trustVerb !== null) {
+          console.error(`himmelctl: trust takes exactly one verb (on|off|status) — saw '${args.trustVerb}' and '${a}'`);
+          console.error("Run 'himmelctl --help' for usage.");
+          process.exitCode = 2;
+          return args;
+        }
+        args.trustVerb = a;
         break;
       // `scope` positionals (verb then, for set, target). These tokens are
       // ONLY meaningful under `scope`; under any other (or no) subcommand
@@ -3259,6 +3311,86 @@ async function cmdScope(args) {
   return cmdScopeSet(args);
 }
 
+// ── trust ledger wiring (HIMMEL-1551) ───────────────────────────────────────
+//
+// `himmelctl trust on|off|status` — install, remove, or report the HIMMEL-1529
+// shadow ledger's six hook entries in the project's .claude/settings.json.
+//
+// Why this is a command at all: the recorder shipped behind a MANUAL PASTE of
+// six JSON blocks, and three consecutive chain legs then measured
+// `requests recorded 0`. A capability that ships behind a manual paste is a
+// capability that does not ship.
+//
+// Kept THIN on purpose, matching the `config` pattern above: every assertion
+// that makes writing a deny-listed file safe (permissions unchanged, nothing
+// but `hooks` touched, idempotent, byte-reversible) lives in the wiring script,
+// which is what the test suite exercises. This function only resolves the path
+// and forwards a verb — so the guarantees cannot drift between two callers.
+// The project `trust` acts on. Routed through `bash -c` for the same reason
+// detectRole() is: a hermetic test can stub `git` with a plain bash script on
+// the stub PATH, which direct spawnSync cannot exec on win32. The git line is a
+// fixed string, never user input. Any git failure (absent git, not a repo)
+// falls through to the working directory, which is still the directory the
+// operator is standing in — never this CLI's own checkout.
+function trustTargetDir() {
+  if (process.env.CLAUDE_PROJECT_DIR) return process.env.CLAUDE_PROJECT_DIR;
+  const t = spawnSync(resolveBash(), ['-c', 'git rev-parse --show-toplevel'], { encoding: 'utf8' });
+  const top = (!t.error && t.status === 0 && t.stdout) ? t.stdout.trim() : '';
+  return top || process.cwd();
+}
+
+async function cmdTrust(args) {
+  if (args.trustVerb === null) {
+    console.error('himmelctl: trust requires a verb: on|off|status');
+    console.error("Run 'himmelctl --help' for usage.");
+    return 2;
+  }
+  const script = path.join(repoRoot(), 'scripts', 'trust', 'wire-trust-hooks.mjs');
+  if (!fs.existsSync(script)) {
+    console.error(`himmelctl: trust wiring script not found at ${script}`);
+    return 1;
+  }
+  // Pass the target EXPLICITLY — and resolve it from the project the operator
+  // is STANDING IN, never from this CLI's own location.
+  //
+  // `repoRoot()` is correct for locating himmel's own wiring script above, and
+  // WRONG for the target: it is `resolve(__dirname, '..', '..')`, so it names
+  // the himmel checkout whatever directory you ran from. An earlier round tried
+  // to fix ambient resolution by printing the path — which made the wrong
+  // target visible without making it correct, and additionally suppressed the
+  // script's own `CLAUDE_PROJECT_DIR` fallback by passing an explicit path that
+  // overrode it. Printing a path is not targeting it.
+  //
+  // Order is CLAUDE_PROJECT_DIR, then the working directory's git root, then
+  // the working directory itself. It deliberately does NOT match the wiring
+  // script's own `defaultSettingsPath()`, whose second step is
+  // `resolve(HERE,'..','..')` — the script checkout — because that fallback is
+  // the very ambient resolution this fixes. They agree on the step that
+  // matters (CLAUDE_PROJECT_DIR wins) and diverge where the CLI knows more:
+  // the CLI has a meaningful cwd, a script invoked directly may not. Wiring a
+  // project that has no
+  // recorder is still refused by the script's own precondition — that refusal
+  // is the safety net this resolution order makes reachable again.
+  const settingsPath = path.join(trustTargetDir(), '.claude', 'settings.json');
+  if (!fs.existsSync(settingsPath)) {
+    console.error(`himmelctl: no .claude/settings.json at ${settingsPath}`);
+    console.error('  trust configures the project you are standing in — cd to that project,');
+    console.error('  or set CLAUDE_PROJECT_DIR to name it explicitly.');
+    return 1;
+  }
+  console.log(`himmelctl trust: target ${settingsPath}`);
+  const flags = [...{ on: [], off: ['--off'], status: ['--check'] }[args.trustVerb], settingsPath];
+  // `node` directly, not via bash: the wiring script is a .mjs and this avoids
+  // the Windows bare-`bash` resolution failure the hook commands themselves are
+  // written to dodge (HIMMEL-1516/1526).
+  const r = spawnSync(process.execPath, [script, ...flags], { stdio: 'inherit' });
+  if (r.error) {
+    console.error(`himmelctl: could not run the trust wiring script: ${r.error.message}`);
+    return 1;
+  }
+  return typeof r.status === 'number' ? r.status : 1;
+}
+
 // ── config (HIMMEL-758, epic HIMMEL-755 sub-ticket D) ───────────────────────
 //
 // `himmelctl config` — an interactive TUI (reuses the T2 question engine's
@@ -4079,6 +4211,9 @@ async function main() {
   }
   if (args.subcommand === 'scope') {
     return await cmdScope(args);
+  }
+  if (args.subcommand === 'trust') {
+    return await cmdTrust(args);
   }
   if (args.subcommand === 'deps') {
     return await cmdDeps(args);

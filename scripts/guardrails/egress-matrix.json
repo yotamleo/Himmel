@@ -19,10 +19,12 @@
     "luna-personal": "the luna vault root EXCLUDING Clippings/ (journals, maps, sessions, notes)",
     "luna-clippings": "<luna-root>/Clippings/ (clipped public web content)",
     "handover-state": "the handover state repo root (HANDOVER_DIR; work artifacts, specs, session notes). Kept for Mode-B EXTERNAL state repos after the HIMMEL-343 fold: a HANDOVER_DIR nested INSIDE a vault classifies as that vault's corpus instead (fence precedence checks vault roots first — more restrictive; pinned by test, HIMMEL-817)",
-    "himmel-code": "himmel checkout(s), worktrees, and the public mirror (code + docs; public-propagated)"
+    "himmel-code": "himmel checkout(s), worktrees, and the public mirror (code + docs; public-propagated)",
+    "voice-audio": "CAPTURED AUDIO: microphone recordings and any audio file derived from them (reference clips, TTS output). UNLIKE every other corpus this one is NOT path-keyed — speech has no file location, so it cannot be scoped by directory and the path-keyed salus deny cannot reach it (HIMMEL-1522). SCOPE NOTE: an utterance the operator DELIBERATELY addressed to the assistant (wake-word gated, or an explicit push-to-talk take) becomes an ordinary prompt once transcribed, governed by the same rules as typed input — it is not held here. The hazard this corpus exists for is AMBIENT audio: sound captured without the speaker addressing the system, which no path-keyed rule can protect. An earlier draft held transcripts here too, which forbade the product itself — a rule that outlaws its own use case is one that gets ignored, so the boundary is drawn at capture instead. Residual risk (unclosed, ticketed): a wake-gated utterance can still contain PHI, and nothing classifies it before it is sent"
   },
   "providers": {
     "local-ollama": { "region": "local", "note": "zero egress; includes qmd local GGUF embeddings" },
+    "local-speech": { "region": "local", "note": "on-machine speech only — STT via whisper.cpp (push-to-talk) and faster-whisper/CTranslate2 (the always-listening jarvis loop), TTS via chatterbox, all under ~/.himmel. Zero egress; named as a real provider so the voice-audio allow cell is an explicit decision rather than a wildcard gap" },
     "anthropic": { "region": "US", "note": "the operating harness itself (Claude sessions natively read the vaults); recording status quo, not a widening" },
     "openai-codex": { "region": "US", "note": "codex via hermes, paid usage bank" },
     "deepseek": { "region": "CN", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): dropped from vault + handover-state egress — bad extraction/enrichment results. Prior ratifications (2026-07-05, HIMMEL-343, HIMMEL-833) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code)." },
@@ -30,7 +32,7 @@
     "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): not pursuing the HIMMEL-765 pilot — bad results. Vault/handover cells demoted to explicit deny; himmel-code wildcard unaffected (public code)." },
     "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" }
   },
-  "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding", "enrichment"],
+  "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding", "enrichment", "stt", "tts"],
   "rules": [
     {
       "corpus": "salus", "provider": "local-ollama", "purpose": "*",
@@ -42,6 +44,21 @@
       "corpus": "salus", "provider": "*", "purpose": "*",
       "verdict": "deny", "hard": true,
       "why": "PHI never leaves the machine. No override exists; no operator decision can be recorded here that flips this row"
+    },
+    {
+      "corpus": "voice-audio", "provider": "local-speech", "purpose": "stt",
+      "verdict": "allow",
+      "why": "on-machine transcription (whisper.cpp / faster-whisper) — the audio never becomes network-reachable, so there is nothing to protect it from"
+    },
+    {
+      "corpus": "voice-audio", "provider": "local-speech", "purpose": "tts",
+      "verdict": "allow",
+      "why": "on-machine synthesis (chatterbox) — same reasoning as stt"
+    },
+    {
+      "corpus": "voice-audio", "provider": "*", "purpose": "*",
+      "verdict": "deny", "hard": true,
+      "why": "HIMMEL-1522: the salus PHI deny keys on FILE PATHS, and speech has none — a mic streaming to a cloud API bypasses the PHI perimeter entirely, because there is no path for the guard to inspect. Audio cannot be classified before it is heard, so ALL captured audio is held at the salus tier. Flipping this needs a mechanism that can prove PHI is absent from speech BEFORE it is sent; no such mechanism exists, so no operator decision can be recorded here that opens it"
     },
     {
       "corpus": "*", "provider": "google-gemini", "purpose": "*",

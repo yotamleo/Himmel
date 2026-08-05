@@ -82,6 +82,8 @@ mkdir -p "$HANDOVER_DIR"
 export HANDOVER_DIR
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
+export WORKER_BRIDGE_ROOT="$TMP/bridge"
+mkdir -p "$WORKER_BRIDGE_ROOT/glm-sessions" "$WORKER_BRIDGE_ROOT/claudex-sessions"
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK SCHED_CREATE_FAIL 2>/dev/null || true
 
 # A real git repo to pin resume_cwd against (so RESUME_CWD is deterministic
@@ -91,8 +93,17 @@ WORK_REPO="$TMP/work-repo"
 mkdir -p "$WORK_REPO"
 git init -q "$WORK_REPO"
 
-# A near future time keeps these identity/transaction fixtures inside the
-# HIMMEL-1475 explicit-HH:MM long-gap limit.
+# HIMMEL-1543: FUTURE_TIME is captured ONCE (every alias/dedup pair in Groups 1-2
+# must share ONE target time, else two arms for the same handover park at
+# different minutes and the aliasing assertions lose their meaning). But this
+# suite runs 40+ min, so by Group 3 the wall clock has passed FUTURE_TIME,
+# arm-resume.sh resolves it to ~tomorrow (>60 min out), and the HIMMEL-1475
+# long-gap guard refuses rc=9 before the injected condition is ever reached.
+# So EVERY arm below carries --long-gap: this suite's subject is identity,
+# dedup and transactionality, NOT the long-gap guard, and --long-gap is a no-op
+# for an arm already inside the 60-min window (so it cannot regress a fast run).
+# The guard itself stays covered by the dedicated Group 4 case. FUTURE_TIME is a
+# near-future value only so the asserted rc/slot shape is realistic.
 FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
 FAILED=0
 
@@ -303,13 +314,13 @@ echo "== Group 1: aliasing must collapse to ONE slot (defect A false-negative) =
 G1A_DIR="$HANDOVER_DIR/g1a"
 HO_ABS="$G1A_DIR/x.md"; mk_ho "$HO_ABS"
 DB1=$(new_db "$TMP/db1.tasks")
-out=$(SCHED_DB="$DB1" SCHED_DB_DIR="${DB1}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_ABS" 2>&1)
+out=$(SCHED_DB="$DB1" SCHED_DB_DIR="${DB1}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_ABS" 2>&1)
 rc=$?
 assert_rc "G1.1a canonical absolute arm succeeds" 0 "$rc" "$out"
 # Run the alias arm from INSIDE the handover dir so ./x.md resolves to the file
 # (cd runs in the command-substitution subshell; env prefixes apply to bash).
 out=$( cd "$G1A_DIR" && SCHED_DB="$DB1" SCHED_DB_DIR="${DB1}.atdir" PATH="$STUB:$PATH" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover ./x.md 2>&1 )
+    bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover ./x.md 2>&1 )
 rc=$?
 assert_rc "G1.1b alias ./x.md is RECOGNIZED as the same handover (rc 3)" 3 "$rc" "$out"
 assert_slots "G1.1c ONE slot for ./x.md == absolute" 1 "$DB1" "${DB1}.atdir" "$out"
@@ -321,10 +332,10 @@ G1B_DIR="$HANDOVER_DIR/g1b"; mkdir -p "$G1B_DIR/sub"
 HO_DOT="$G1B_DIR/x.md"; mk_ho "$HO_DOT"
 HO_DOT_ALIAS="$G1B_DIR/sub/../x.md"
 DB2=$(new_db "$TMP/db2.tasks")
-out=$(SCHED_DB="$DB2" SCHED_DB_DIR="${DB2}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_DOT" 2>&1)
+out=$(SCHED_DB="$DB2" SCHED_DB_DIR="${DB2}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_DOT" 2>&1)
 rc=$?
 assert_rc "G1.2a canonical arm succeeds" 0 "$rc" "$out"
-out=$(SCHED_DB="$DB2" SCHED_DB_DIR="${DB2}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_DOT_ALIAS" 2>&1)
+out=$(SCHED_DB="$DB2" SCHED_DB_DIR="${DB2}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_DOT_ALIAS" 2>&1)
 rc=$?
 assert_rc "G1.2b redundant-.. alias is RECOGNIZED as the same handover (rc 3)" 3 "$rc" "$out"
 assert_slots "G1.2c ONE slot for x.md == sub/../x.md" 1 "$DB2" "${DB2}.atdir" "$out"
@@ -341,10 +352,10 @@ HO_LINK="$G1C_DIR/link.md"
 if MSYS=winsymlinks:nativestrict ln -s "$HO_REAL" "$HO_LINK" 2>/dev/null \
     && [ "$(realpath "$HO_LINK" 2>/dev/null)" = "$HO_REAL_ABS" ]; then
     DB3=$(new_db "$TMP/db3.tasks")
-    out=$(SCHED_DB="$DB3" SCHED_DB_DIR="${DB3}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_REAL" 2>&1)
+    out=$(SCHED_DB="$DB3" SCHED_DB_DIR="${DB3}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_REAL" 2>&1)
     rc=$?
     assert_rc "G1.3a canonical (real path) arm succeeds" 0 "$rc" "$out"
-    out=$(SCHED_DB="$DB3" SCHED_DB_DIR="${DB3}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_LINK" 2>&1)
+    out=$(SCHED_DB="$DB3" SCHED_DB_DIR="${DB3}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_LINK" 2>&1)
     rc=$?
     assert_rc "G1.3b symlink alias is RECOGNIZED as the same handover (rc 3)" 3 "$rc" "$out"
     assert_slots "G1.3c ONE slot for real.md == symlink link.md" 1 "$DB3" "${DB3}.atdir" "$out"
@@ -361,10 +372,10 @@ HO_CC="$G1D_DIR/HandoverCase.md"; mk_ho "$HO_CC"
 if [ -f "$G1D_DIR/handovercase.md" ]; then
     HO_CC_ALIAS="$G1D_DIR/handovercase.md"
     DB4=$(new_db "$TMP/db4.tasks")
-    out=$(SCHED_DB="$DB4" SCHED_DB_DIR="${DB4}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_CC" 2>&1)
+    out=$(SCHED_DB="$DB4" SCHED_DB_DIR="${DB4}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_CC" 2>&1)
     rc=$?
     assert_rc "G1.4a canonical (mixed-case) arm succeeds" 0 "$rc" "$out"
-    out=$(SCHED_DB="$DB4" SCHED_DB_DIR="${DB4}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_CC_ALIAS" 2>&1)
+    out=$(SCHED_DB="$DB4" SCHED_DB_DIR="${DB4}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_CC_ALIAS" 2>&1)
     rc=$?
     assert_rc "G1.4b lower-case variant is RECOGNIZED as the same handover (rc 3)" 3 "$rc" "$out"
     assert_slots "G1.4c ONE slot for HandoverCase.md == handovercase.md" 1 "$DB4" "${DB4}.atdir" "$out"
@@ -384,11 +395,11 @@ test_collision_pair() {
     local label="$1" name_a="$2" name_b="$3" db="$4"
     mk_ho "$HANDOVER_DIR/g2/$label/$name_a"
     mk_ho "$HANDOVER_DIR/g2/$label/$name_b"
-    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" \
+    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap \
         --handover "$HANDOVER_DIR/g2/$label/$name_a" 2>&1)
     rc=$?
     assert_rc "$label a: first distinct handover arms" 0 "$rc" "$out"
-    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" \
+    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap \
         --handover "$HANDOVER_DIR/g2/$label/$name_b" 2>&1)
     rc=$?
     assert_ne_rc "$label b: second DISTINCT handover is NOT a dedup block (rc!=3)" 3 "$rc" "$out"
@@ -413,7 +424,7 @@ echo "== Group 3: --force replace must be transactional (defect B) =="
 SEED_OUT=""
 seed_slot() {  # <handover-path> <sched-db>   -- one clean real arm
     local ho="$1" db="$2"
-    SEED_OUT=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$ho" 2>&1)
+    SEED_OUT=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$ho" 2>&1)
 }
 # assert_seeded <label> <db> <dir> -- exactly 1 slot after a seed arm (a failed
 # seed makes every downstream slot-survival assertion meaningless, so it is its
@@ -435,7 +446,7 @@ DB7=$(new_db "$TMP/db7.tasks")
 seed_slot "$G3A" "$DB7"
 assert_seeded "G3.1 seed: pre-existing slot armed" "$DB7" "${DB7}.atdir"
 bash "$QL" acquire "$G3A" "live-session-7" >/dev/null 2>&1
-out=$(SCHED_DB="$DB7" SCHED_DB_DIR="${DB7}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$G3A" --force 2>&1)
+out=$(SCHED_DB="$DB7" SCHED_DB_DIR="${DB7}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3A" --force 2>&1)
 rc=$?
 assert_rc "G3.1 failing arm exits rc=7 (FRESH queue lock)" 7 "$rc" "$out"
 assert_slots "G3.1 pre-existing slot SURVIVES a force that fails at rc 7" 1 "$DB7" "${DB7}.atdir" "$out"
@@ -459,7 +470,7 @@ mkdir -p "$HANDOVER_DIR/.locks"
 G3B_FIRE_AT="$(date -d '+2 hours' +%Y%m%d%H%M 2>/dev/null || date -v+2H +%Y%m%d%H%M)"
 printf '{"host":"other-host","handover":"%s","fire-at":"%s","task-name":"HIMMEL-Resume-g3b-other"}\n' \
     "$G3B" "$G3B_FIRE_AT" > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(SCHED_DB="$DB8" SCHED_DB_DIR="${DB8}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$G3B" --force 2>&1)
+out=$(SCHED_DB="$DB8" SCHED_DB_DIR="${DB8}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3B" --force 2>&1)
 rc=$?
 assert_rc "G3.2 failing arm exits rc=8 (pending arm on another host)" 8 "$rc" "$out"
 assert_slots "G3.2 pre-existing slot SURVIVES a force that fails at rc 8" 1 "$DB8" "${DB8}.atdir" "$out"
@@ -473,26 +484,65 @@ DB9=$(new_db "$TMP/db9.tasks")
 seed_slot "$G3C" "$DB9"
 assert_seeded "G3.3 seed: pre-existing slot armed" "$DB9" "${DB9}.atdir"
 out=$(SCHED_CREATE_FAIL=1 SCHED_DB="$DB9" SCHED_DB_DIR="${DB9}.atdir" PATH="$STUB:$PATH" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$G3C" --force 2>&1)
+    bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3C" --force 2>&1)
 rc=$?
-assert_ne_rc "G3.3 failing arm does NOT exit rc=0 (schedule_arm create failed)" 0 "$rc" "$out"
+assert_rc "G3.3 failing arm exits rc=4 (schedule_arm create failed)" 4 "$rc" "$out"
+assert_contains "G3.3 reaches transactional replacement path" "replacing existing job(s) AFTER the new one is registered" "$out"
 assert_slots "G3.3 pre-existing slot SURVIVES a force that fails in schedule_arm" 1 "$DB9" "${DB9}.atdir" "$out"
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
 # G3.4 -- worst case: --dedup-any --force. Scope = EVERY HIMMEL-Resume-* job,
 # so a single failed arm can wipe every queued relaunch on the machine. Seed an
-# UNRELATED victim (a different handover), force-arm X with a failing create,
-# and assert the victim is NOT destroyed.
+# UNRELATED victim slot, force-arm X with a failing create,
+# and assert the victim is NOT destroyed. The victim is fixture scaffolding,
+# not an arm-resume behavior under test, so write the stateful scheduler stub's
+# successful-arm shape directly. Invoking the real arm here makes the fixture
+# depend on the machine-wide live-worker guard and turns unrelated lane work
+# into a false failure (HIMMEL-1543).
+seed_unrelated_victim() {  # <sched-db> <sched-dir>
+    local db="$1" dir="$2" marker="HIMMEL-Resume-G3-4-unrelated-victim"
+    case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+        msys*|cygwin*|win32*|MINGW*)
+            printf '%s\n' "$marker" >> "$db" ;;
+        *)
+            mkdir -p "$dir"
+            printf '1' > "$dir/.counter"
+            printf '# %s\nexit 0\n' "$marker" > "$dir/job-1" ;;
+    esac
+    SEED_OUT="direct scheduler fixture: $marker"
+}
 G3X="$HANDOVER_DIR/g3/t4x.md"; mk_ho "$G3X"
-G3Y="$HANDOVER_DIR/g3/t4y.md"; mk_ho "$G3Y"
 DB10=$(new_db "$TMP/db10.tasks")
-seed_slot "$G3Y" "$DB10"   # the unrelated victim
+seed_unrelated_victim "$DB10" "${DB10}.atdir"
 assert_seeded "G3.4 seed: unrelated victim slot armed" "$DB10" "${DB10}.atdir"
 out=$(SCHED_CREATE_FAIL=1 SCHED_DB="$DB10" SCHED_DB_DIR="${DB10}.atdir" PATH="$STUB:$PATH" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$G3X" --dedup-any --force 2>&1)
+    bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3X" --dedup-any --force 2>&1)
 rc=$?
-assert_ne_rc "G3.4 failing arm does NOT exit rc=0 (schedule_arm create failed)" 0 "$rc" "$out"
+assert_rc "G3.4 failing arm exits rc=4 (schedule_arm create failed)" 4 "$rc" "$out"
+assert_contains "G3.4 reaches unrelated victim replacement path" "HIMMEL-Resume-G3-4-unrelated-victim" "$out"
 assert_slots "G3.4 UNRELATED victim slot is NOT destroyed by a failed --dedup-any --force" 1 "$DB10" "${DB10}.atdir" "$out"
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
+echo
+echo "== Group 4: HIMMEL-1475 long-gap guard still fires (regression coverage) =="
+# Every other arm in this suite carries --long-gap (HIMMEL-1543), so the guard is
+# deliberately bypassed there. This group is the dedicated coverage that it STILL
+# fires: an explicit --time HH:MM more than 60 min out must REFUSE rc=9 without
+# --long-gap, and --long-gap must sanction it. FAR_TIME is computed HERE, not the
+# once-captured FUTURE_TIME, so it is genuinely >60 min out however long the run
+# took to get here -- a single arm, so no aliasing/shared-time constraint.
+G4_DIR="$HANDOVER_DIR/g4"; HO_FAR="$G4_DIR/far.md"; mk_ho "$HO_FAR"
+FAR_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(hours=2)).strftime("%H:%M"))')
+DB11=$(new_db "$TMP/db11.tasks")
+out=$(SCHED_DB="$DB11" SCHED_DB_DIR="${DB11}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FAR_TIME" --handover "$HO_FAR" 2>&1)
+rc=$?
+assert_rc "G4.1 long-gap guard REFUSES a >60min arm without --long-gap (rc=9)" 9 "$rc" "$out"
+assert_contains "G4.1 refused by the long-gap guard specifically (not another rc=9 path)" "Refusing without --long-gap" "$out"
+assert_slots "G4.1 refused arm armed NO slot" 0 "$DB11" "${DB11}.atdir" "$out"
+out=$(SCHED_DB="$DB11" SCHED_DB_DIR="${DB11}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FAR_TIME" --long-gap --handover "$HO_FAR" 2>&1)
+rc=$?
+assert_rc "G4.2 --long-gap SANCTIONS the >60min arm (rc=0)" 0 "$rc" "$out"
+assert_slots "G4.2 sanctioned far arm armed ONE slot" 1 "$DB11" "${DB11}.atdir" "$out"
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
 echo "---"

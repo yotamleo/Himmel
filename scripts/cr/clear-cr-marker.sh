@@ -16,9 +16,14 @@
 #
 # Gates (ALL must hold):
 #   1. A marker exists for the branch (absent => nothing to do, exit 0).
-#   2. The marker's certified SHA is STILL the branch tip. A commit after the
-#      review means the reviewed code is not the code you would open a PR on.
-#   3. The CR ledger records a critic that actually RESPONDED at that SHA
+#   2. The marker binds a pushed remote, destination ref, push ENDPOINT URL and
+#      diff-base SHA; the endpoint ref's ACTUAL head (resolved via the endpoint,
+#      never the mutable alias) must equal the branch tip the ledger certifies.
+#      An unpushed or failed push must never let local evidence clear a marker
+#      for older remote code. If the marker SHA is stale, gates 3-4 certify the
+#      current tip; a stale docs-audit marker is still refused until a push
+#      remints its lane.
+#   3. The CR ledger records a critic that actually RESPONDED at the branch tip
 #      (>=1 `avail ... status=ok`). Zero responders is a MISSING signal, not a
 #      clean one (the CodeRabbit CLI rate-limit shape) — refuse.
 #   3b. OPT-IN (CR_REQUIRE_CROSS_MODEL, HIMMEL-1237): >=1 responder must be
@@ -31,7 +36,7 @@
 #      `deferred` verdict clears ONLY with a ticket key AND a reason, so a bare
 #      "deferred" is still blocking (HIMMEL-1294).
 #   5. POST-PR ONLY: when a PR already exists for the branch, its head commit
-#      must BE the certified SHA, and check-ci.sh must also return 0 (CI green +
+#      must BE the branch tip certified by the ledger, and check-ci.sh must also return 0 (CI green +
 #      all review threads resolved + no changes-requested). check-ci evaluates
 #      the PR HEAD, so without the head binding a green PR at a DIFFERENT commit
 #      would satisfy this gate for code the review never covered. Pre-PR there is
@@ -47,12 +52,15 @@
 #   10  usage error
 #   11  required tool missing (git / node)
 #   12  cannot resolve the branch, its tip, or the marker path — refused
-#   13  marker SHA is not the branch tip (stale review) — re-run /pr-check
+#   13  the branch tip or marker changed while the gates ran — re-run /pr-check
 #   14  no critic responded at that SHA — no evidence /pr-check ran; refused.
-#       Also: CR_REQUIRE_CROSS_MODEL set but no NON-claude critic responded (3b).
+#       Also: CR_REQUIRE_CROSS_MODEL set but no NON-claude critic responded (3b),
+#       or a stale docs-audit marker must be reminted before lane selection.
 #   15  blocking finding(s) recorded at that SHA — address them, re-run /pr-check
-#   16  a PR exists but its head is not the certified SHA, or its check-ci gate
-#       is not green — refused
+#   16  the marker is unbound (no endpoint/base recorded — pre-HIMMEL-1540
+#       format), the marker-bound endpoint head is unreadable/different, a PR
+#       exists but its head is not the certified SHA, or its check-ci gate is
+#       not green
 #
 # GATE INTEGRITY (mirrors merge-on-green.sh): the ledger path, `check-ci.sh`,
 # and `gh` are NOT environment-overridable here. ledger-append.sh honors a
@@ -152,19 +160,85 @@ fi
 # gate's own resolve-then-compare reads above; the DISPLAY lines use ${tip:0:8}.)
 tip_short=$(git rev-parse --short "$tip" 2>/dev/null || true)
 
-# Marker format (check-cr-before-push.sh): "<iso-ts> | <full-sha> | <lane>".
+# Marker format (check-cr-before-push.sh — see its identity-contract header):
+# "<iso-ts> | <full-sha> | <lane> | <remote> | <remote-ref> | <endpoint> | <base-sha>".
+# <endpoint> is the credential-scrubbed URL git actually pushed to; clearance
+# resolves the remote head via IT, never via the alias in field 4 — the alias
+# is mutable (remote.<name>.url / pushurl can be repointed after the push, and
+# this repo's lane tooling does exactly that as a quarantine mechanism).
+# <base-sha> is the immutable diff base the lane classification used.
 marker_sha=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$marker" 2>/dev/null)
+marker_lane=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$3); print $3; exit}' "$marker" 2>/dev/null)
+marker_remote=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4; exit}' "$marker" 2>/dev/null)
+marker_remote_ref=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); print $5; exit}' "$marker" 2>/dev/null)
+marker_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$marker" 2>/dev/null)
+marker_base=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$7); print $7; exit}' "$marker" 2>/dev/null)
 if [ -z "$marker_sha" ]; then
     echo "clear-cr-marker: cannot read the certified SHA from $marker — refusing." >&2
     audit "REFUSED reason=unreadable-marker branch=$branch"
     exit 12
 fi
+if [ -z "$marker_remote" ] || [ "$marker_remote_ref" != "refs/heads/$branch" ]; then
+    echo "clear-cr-marker: marker has no valid pushed remote binding for '$branch' — refusing. Push the branch again to remint the marker before clearing it." >&2
+    audit "REFUSED reason=unbound-marker-remote branch=$branch marker_remote=${marker_remote:-none} marker_ref=${marker_remote_ref:-none}"
+    exit 16
+fi
+if [ -z "$marker_endpoint" ] || [ -z "$marker_base" ]; then
+    echo "clear-cr-marker: marker for '$branch' predates the endpoint+base binding (no pushed endpoint URL / diff-base SHA recorded) — refusing. Push the branch again to remint the marker before clearing it." >&2
+    audit "REFUSED reason=unbound-marker-endpoint branch=$branch marker_endpoint=${marker_endpoint:-none} marker_base=${marker_base:-none}"
+    exit 16
+fi
 
-# 2. Stale-review gate — the reviewed commit must still be the branch tip.
+resolve_marker_remote_head() {
+    local lookup rc=0 remote_head remote_ref extra
+    # The ENDPOINT, never the alias: `git ls-remote <alias>` resolves through
+    # current fetch config, which can name a different repository than the one
+    # the push actually targeted (pushurl, or set-url after the push).
+    lookup=$(git ls-remote --heads "$marker_endpoint" "$marker_remote_ref" 2>/dev/null) || rc=$?
+    if [ "$rc" -ne 0 ] || [ -z "$lookup" ]; then
+        return 1
+    fi
+    case "$lookup" in *$'\n'*) return 1 ;; esac
+    IFS=$'\t' read -r remote_head remote_ref extra <<< "$lookup"
+    if [ -z "$remote_head" ] || [ "$remote_ref" != "$marker_remote_ref" ] || [ -n "$extra" ]; then
+        return 1
+    fi
+    case "$remote_head" in *[!0-9a-f]*) return 1 ;; esac
+    printf '%s\n' "$remote_head"
+}
+
+remote_head=$(resolve_marker_remote_head) || {
+    echo "clear-cr-marker: cannot resolve the actual head of push endpoint '$marker_endpoint' ('$marker_remote') '$marker_remote_ref' — refusing. An unreadable remote must not certify PR code." >&2
+    audit "REFUSED reason=remote-head-unreadable branch=$branch remote=$marker_remote endpoint=$marker_endpoint remote_ref=$marker_remote_ref"
+    exit 16
+}
+if [ "$remote_head" != "$tip" ]; then
+    echo "clear-cr-marker: push endpoint '$marker_endpoint' ('$marker_remote') '$marker_remote_ref' is at ${remote_head:0:8}, but the ledger-certified local tip is ${tip:0:8} — refusing. Push this tip successfully, then re-run /pr-check." >&2
+    audit "REFUSED reason=remote-head-mismatch branch=$branch remote=$marker_remote endpoint=$marker_endpoint remote_ref=$marker_remote_ref remote_head=$remote_head tip=$tip marker_sha=$marker_sha"
+    exit 16
+fi
+
+# 2. A fresh marker is the normal certificate. A stale marker is not itself
+# sufficient, but the ledger gates below inspect the branch tip directly and are
+# stronger evidence that /pr-check covered the code currently proposed.
+stale_marker=0
 if [ "$marker_sha" != "$tip" ]; then
-    echo "clear-cr-marker: marker certifies ${marker_sha:0:8} but '$branch' is now at ${tip:0:8} — the review does not cover the current code. Re-run /pr-check on this HEAD." >&2
-    audit "REFUSED reason=stale-marker branch=$branch marker_sha=$marker_sha tip=$tip"
-    exit 13
+    stale_marker=1
+    echo "clear-cr-marker: WARNING: marker certifies ${marker_sha:0:8} but '$branch' is now at ${tip:0:8}. The marker is stale; full/legacy lanes now depend entirely on clean ledger evidence at the current tip, while a docs-audit lane must be reminted. /pr-check records ledger evidence at this HEAD; it does not remint the marker." >&2
+    audit "WARNING reason=stale-marker-ledger-fallback branch=$branch marker_sha=$marker_sha tip=$tip"
+
+    # The marker lane selected which review /pr-check ran BEFORE this gate. A
+    # docs-audit lane from the old SHA cannot certify the new tip: code may have
+    # been added since that marker was written, and avail ledger rows do not bind
+    # the lane. Refuse until the current branch is pushed again, which remints the
+    # marker SHA and reclassifies the lane from the current diff. Conservatively
+    # refusing every stale docs marker is smaller and safer than duplicating the
+    # hook's diff classifier here.
+    if [ "$marker_lane" = "docs-audit" ]; then
+        echo "clear-cr-marker: stale docs-audit marker cannot certify the current tip — refusing. Push '$branch' again to remint the marker and recompute its lane, then re-run /pr-check (code changes will take the full lane)." >&2
+        audit "REFUSED reason=stale-docs-lane-untrusted branch=$branch marker_sha=$marker_sha tip=$tip"
+        exit 14
+    fi
 fi
 
 # HIMMEL-1237 — resolve the opt-in cross-model floor flag. Default unset => the
@@ -495,7 +569,11 @@ if [ -n "$pr_num" ]; then
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
-    audit "DRYRUN would-clear branch=$branch sha=$tip responders=$responders${pr_num:+ pr=#$pr_num}"
+    if [ "$stale_marker" -eq 1 ]; then
+        audit "DRYRUN would-clear reason=stale-marker-superseded-by-ledger-at-tip branch=$branch marker_sha=$marker_sha tip=$tip responders=$responders${pr_num:+ pr=#$pr_num}"
+    else
+        audit "DRYRUN would-clear branch=$branch sha=$tip responders=$responders${pr_num:+ pr=#$pr_num}"
+    fi
     echo "clear-cr-marker: [dry-run] gates passed — would clear the marker for $branch (${tip:0:8}). Not clearing."
     exit 0
 fi
@@ -518,9 +596,25 @@ fi
 # as a follow-up rather than half-done here.
 now_sha=$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null || true)
 now_marker=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$2); print $2; exit}' "$marker" 2>/dev/null || true)
-if [ "$now_sha" != "$tip" ] || [ "$now_marker" != "$marker_sha" ]; then
+now_marker_remote=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4; exit}' "$marker" 2>/dev/null || true)
+now_marker_remote_ref=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); print $5; exit}' "$marker" 2>/dev/null || true)
+now_marker_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$marker" 2>/dev/null || true)
+now_marker_base=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$7); print $7; exit}' "$marker" 2>/dev/null || true)
+if [ "$now_sha" != "$tip" ] || [ "$now_marker" != "$marker_sha" ] ||
+   [ "$now_marker_remote" != "$marker_remote" ] || [ "$now_marker_remote_ref" != "$marker_remote_ref" ] ||
+   [ "$now_marker_endpoint" != "$marker_endpoint" ] || [ "$now_marker_base" != "$marker_base" ]; then
     echo "clear-cr-marker: the branch or its marker changed while the gates ran (tip ${tip:0:8}->${now_sha:0:8}, marker ${marker_sha:0:8}->${now_marker:0:8}) — refusing to clear a marker this run did not certify. Re-run /pr-check on the new HEAD." >&2
     audit "REFUSED reason=raced-during-gate branch=$branch validated_sha=$tip now_sha=$now_sha now_marker=$now_marker"
+    exit 13
+fi
+now_remote_head=$(resolve_marker_remote_head) || {
+    echo "clear-cr-marker: the marker-bound remote became unreadable while the gates ran — refusing to clear. Re-run /pr-check when the remote is available." >&2
+    audit "REFUSED reason=remote-raced-unreadable branch=$branch remote=$marker_remote remote_ref=$marker_remote_ref"
+    exit 13
+}
+if [ "$now_remote_head" != "$tip" ]; then
+    echo "clear-cr-marker: the marker-bound remote changed while the gates ran (${remote_head:0:8}->${now_remote_head:0:8}) — refusing to clear. Re-run /pr-check on the new remote head." >&2
+    audit "REFUSED reason=remote-raced-during-gate branch=$branch validated_sha=$tip remote_head=$now_remote_head"
     exit 13
 fi
 
@@ -529,6 +623,11 @@ if ! rm -f "$marker"; then
     audit "REFUSED reason=rm-failed branch=$branch sha=$tip"
     exit 12
 fi
-audit "CLEARED branch=$branch sha=$tip responders=$responders${pr_num:+ pr=#$pr_num}"
+if [ "$stale_marker" -eq 1 ]; then
+    echo "clear-cr-marker: WARNING: stale marker ${marker_sha:0:8} cleared only because the ledger gates certified the current tip ${tip:0:8}." >&2
+    audit "CLEARED reason=stale-marker-superseded-by-ledger-at-tip branch=$branch marker_sha=$marker_sha tip=$tip responders=$responders${pr_num:+ pr=#$pr_num}"
+else
+    audit "CLEARED branch=$branch sha=$tip responders=$responders${pr_num:+ pr=#$pr_num}"
+fi
 echo "clear-cr-marker: CR clean — marker cleared for $branch (${tip:0:8}). Safe to gh pr create."
 exit 0

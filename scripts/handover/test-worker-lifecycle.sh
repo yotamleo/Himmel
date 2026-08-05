@@ -106,6 +106,14 @@ fs.utimesSync(process.argv[1], t, t);
 ' "$1" "$2"
 }
 
+# _stat_mtime_ms <path> -- print the actual on-disk mtime in epoch ms (HIMMEL-
+# 1520 exact-boundary case: fs.utimesSync's precision can be coarser than the
+# ms requested, so the boundary test reads back what was really stored rather
+# than assuming it).
+_stat_mtime_ms() {
+    node -e 'process.stdout.write(String(require("fs").statSync(process.argv[1]).mtimeMs))' "$1"
+}
+
 # T1: a running row with a stub-live pid blocks and is listed.
 LIVE_DIR="$WORKER_BRIDGE_ROOT/glm-sessions/glm-live"
 mkdir -p "$LIVE_DIR"
@@ -134,7 +142,14 @@ mkdir -p "$SECURE_STDERR_TMP"
 out=$(OLD_CENSUS_PATH_FILE="$OLD_CENSUS_PATH_FILE" TMPDIR="$SECURE_STDERR_TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS=111 bash -c '
 old="/tmp/arm-resume.census-err.$$"
 printf "%s\n" "$old" > "$OLD_CENSUS_PATH_FILE"
-printf "old-path-sentinel\n" > "$old"
+# HIMMEL-1520: this plants the sentinel at the same predictable shared /tmp
+# path a symlink-planting attacker would target, so guard the write itself
+# with noclobber -- an existing path (planted or otherwise) fails the setup
+# loudly instead of a blind `>` silently following a symlink onto it.
+if ! (set -o noclobber; printf "old-path-sentinel\n" > "$old"); then
+    echo "T1a setup: $old already exists and noclobber refused the write" >&2
+    exit 1
+fi
 exec bash "$@"
 ' _ "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
@@ -308,6 +323,26 @@ assert_rc "T8 within-ceiling relic reconciliation succeeds" 0 "$rc"
 assert_contains "T8 relic within ceiling warns unprobeable" "unprobeable codex/relic-new pid=0" "$out"
 assert_file_contains "T8 relic metadata remains running" '"status":"running"' "$CEIL_NEW_DIR/meta.json"
 rm -rf "$CEIL_NEW_DIR"
+
+# T8x: HIMMEL-1520 -- a row sitting EXACTLY at RECONCILE_UNPROBEABLE_CEILING_SECS
+# must count as exceeded (>=), not survive one more cycle (the prior `>` bug).
+# Real elapsed time between an mtime write and the check always makes the
+# observed age strictly greater than any nominal ceiling, so this pins the
+# tie precisely via RECONCILE_TEST_NOW_MS instead of racing the wall clock.
+CEIL_EXACT_DIR="$WORKER_BRIDGE_ROOT/claudex-sessions/claudex-ceil-exact"
+mkdir -p "$CEIL_EXACT_DIR"
+cat > "$CEIL_EXACT_DIR/meta.json" <<'EOF'
+{"status":"running","pid":0,"lane":"codex","task_name":"relic-exact"}
+EOF
+_set_mtime_seconds_ago "$CEIL_EXACT_DIR" 10
+CEIL_EXACT_MTIME_MS=$(_stat_mtime_ms "$CEIL_EXACT_DIR")
+CEIL_EXACT_NOW_MS=$((CEIL_EXACT_MTIME_MS + 5000))
+out=$(LIVE_PIDS='' UNPROBEABLE_PIDS='' RECONCILE_UNPROBEABLE_CEILING_SECS=5 RECONCILE_TEST_NOW_MS="$CEIL_EXACT_NOW_MS" bash "$RECONCILE" 2>&1)
+rc=$?
+assert_rc "T8x exact-boundary relic reconciliation succeeds" 0 "$rc"
+assert_contains "T8x relic exactly at ceiling is orphaned" "orphaned codex/relic-exact pid=never-written" "$out"
+assert_file_contains "T8x relic metadata marked orphaned" '"status": "orphaned"' "$CEIL_EXACT_DIR/meta.json"
+rm -rf "$CEIL_EXACT_DIR"
 
 # T8a: if a row acquires its first real pid after the ceiling census but before
 # compare-and-rewrite, the marker exits 3 and leaves the live worker untouched.

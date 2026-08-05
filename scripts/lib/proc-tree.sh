@@ -90,17 +90,52 @@ proc_tree_process_identity() {
     printf 'posix:%s\n' "$value"
 }
 
+# _PROC_TREE_PROC_ROOT -- the /proc mount this file probes on Windows/MSYS.
+# Overridable so a test can point it at an unreadable/absent directory to
+# exercise the "probe unavailable" arm without needing a genuinely-unreadable
+# real /proc.
+_PROC_TREE_PROC_ROOT="${_PROC_TREE_PROC_ROOT:-/proc}"
+
 # proc_tree_process_alive <pid> -- 0 when the numeric pid currently names a
-# live process. This is deliberately identity-free so callers can distinguish a
-# confirmed exit from a live process whose identity no longer matches.
+# live process, 1 when the process is CONFIRMED absent (POSIX: kill -0 failed
+# with ESRCH; Windows/MSYS: the proc root is readable but this pid's entry is
+# genuinely missing from it), and 2 when the probe itself could not answer
+# (POSIX: kill -0 failed with EPERM or anything else; Windows/MSYS: the proc
+# root itself is unreadable/absent, so a missing pid entry proves nothing).
+# This is deliberately identity-free so callers can distinguish a confirmed
+# exit from a live process whose identity no longer matches. Callers MUST
+# treat 2 as unknown, never as confirmed absence -- see
+# proc_tree_process_identity_matches below.
 proc_tree_process_alive() {
-    local pid="$1"
+    local pid="$1" err=""
     [ -n "$pid" ] || return 1
     if proc_tree_is_windows; then
-        [ -d "/proc/$pid" ]
-    else
-        kill -0 "$pid" 2>/dev/null
+        [ -d "$_PROC_TREE_PROC_ROOT/$pid" ] && return 0
+        # The pid entry is missing. That is confirmed absence ONLY if the
+        # proc root itself is readable -- otherwise the probe cannot tell an
+        # exited process from an unreadable mount, and the honest answer is
+        # "unknown", not "gone".
+        # -r alone is NOT enough: on POSIX the SEARCH (execute) bit is what
+        # permits traversing into the directory to stat "$root/$pid". Without
+        # it the probe above fails for a pid that is genuinely THERE, so
+        # treating a readable-but-unsearchable root as confirmed absence is
+        # the same false-confirmation this function exists to remove.
+        [ -d "$_PROC_TREE_PROC_ROOT" ] &&
+            [ -r "$_PROC_TREE_PROC_ROOT" ] &&
+            [ -x "$_PROC_TREE_PROC_ROOT" ] &&
+            return 1
+        return 2
     fi
+    kill -0 "$pid" 2>/dev/null && return 0
+    # kill -0's exit status collapses ESRCH (confirmed gone) and EPERM (probe
+    # refused, e.g. a foreign-owned pid) into the same nonzero rc. Re-run under
+    # LC_ALL=C for a stable, parseable stderr message instead of discarding it
+    # with 2>/dev/null, and tell them apart from that.
+    err=$(LC_ALL=C kill -0 "$pid" 2>&1 >/dev/null)
+    case "$err" in
+        *"No such process"*) return 1 ;;
+        *) return 2 ;;
+    esac
 }
 
 # proc_tree_process_identity_matches <pid> <identity> -- 0 when the live
@@ -108,9 +143,16 @@ proc_tree_process_alive() {
 # when the identity probe is unavailable. Callers may wait through rc 2, but
 # must never signal unless they received rc 0.
 proc_tree_process_identity_matches() {
-    local pid="$1" expected="$2" actual=""
+    local pid="$1" expected="$2" actual="" alive_rc=0
     [ -n "$expected" ] || return 2
-    proc_tree_process_alive "$pid" || return 1
+    proc_tree_process_alive "$pid" || alive_rc=$?
+    if [ "$alive_rc" -ne 0 ]; then
+        # rc 1 from proc_tree_process_alive is confirmed absence; anything
+        # else (rc 2) is a probe that could not answer either way and must
+        # never be reported as a confirmed mismatch/exit.
+        [ "$alive_rc" -eq 1 ] && return 1
+        return 2
+    fi
     actual=$(proc_tree_process_identity "$pid") || return 2
     [ "$actual" = "$expected" ]
 }

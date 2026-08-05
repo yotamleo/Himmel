@@ -223,6 +223,7 @@ fi
 echo "[2/9] Installing git hooks (pre-commit, pre-push, commit-msg)..."
 pre-commit install
 pre-commit install --hook-type pre-push
+bash "$REPO_ROOT/scripts/hooks/install-cr-pre-push-legacy.sh"
 pre-commit install --hook-type commit-msg
 
 echo "[3/9] Installing Jira + Bitbucket CLIs..."

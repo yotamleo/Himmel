@@ -95,8 +95,43 @@ _suite_num() {
   printf '%s' "$_v"
 }
 
-# Per-suite wall-clock cap so a hung suite can't stall the whole job.
+# Per-suite wall-clock cap so a hung suite can't stall the whole job. An
+# explicit value remains a global override; otherwise the small table below
+# gives only measured slow suites more room while the default stays tight.
+# Explicit means SUPPLIED AND VALID, not merely present. `${SUITE_TIMEOUT+x}`
+# marks presence, so an empty / zero / non-numeric value used to count as an
+# explicit global override while _suite_num quietly fell back to 180 -- pinning
+# every slow suite to 180s and recreating the exact rc=124 failures this table
+# exists to prevent (the 1363s identity suite would get 180s, not 1800s). A
+# malformed knob must fall back to the path-specific defaults, matching the
+# malformed-knob invariant _suite_num already implements.
+SUITE_TIMEOUT_EXPLICIT=''
+case "${SUITE_TIMEOUT:-}" in
+  ''|*[!0-9]*) ;;                                        # unset, empty, or non-numeric
+  *) [ "$SUITE_TIMEOUT" -ge 1 ] && SUITE_TIMEOUT_EXPLICIT=x ;;
+esac
 SUITE_TIMEOUT=$(_suite_num SUITE_TIMEOUT "${SUITE_TIMEOUT:-180}" 180)
+_suite_timeout_for() {
+  if [ -n "$SUITE_TIMEOUT_EXPLICIT" ]; then
+    printf '%s' "$SUITE_TIMEOUT"
+    return 0
+  fi
+
+  case "${1#./}" in
+    scripts/handover/test-arm-resume-identity.sh|*/scripts/handover/test-arm-resume-identity.sh)
+      printf '1800' ;; # measured 1363s after the original HIMMEL-1542 ticket
+    scripts/cr/test-clear-cr-marker.sh|*/scripts/cr/test-clear-cr-marker.sh)
+      printf '900' ;;  # measured 554s
+    scripts/guardrails/test-graphify-fence.sh|*/scripts/guardrails/test-graphify-fence.sh)
+      printf '600' ;;  # measured 344s
+    scripts/guardrails/test-lesson-write-fence.sh|*/scripts/guardrails/test-lesson-write-fence.sh)
+      printf '600' ;;  # measured 304s
+    scripts/cr/test-critic-panel.sh|*/scripts/cr/test-critic-panel.sh)
+      printf '450' ;;  # measured 251s
+    *)
+      printf '%s' "$SUITE_TIMEOUT" ;;
+  esac
+}
 # Whole-run cap. A run that overruns this stops cleanly and reports, so an
 # unattended session cannot leave one grinding for hours.
 #
@@ -708,19 +743,20 @@ while IFS= read -r suite <&3; do
   # watchdog that fires as the suite completes finds the file already written
   # and stands down, so that race resolves in favour of the real result.
   : > "$rcfile"
+  suite_timeout=$(_suite_timeout_for "$suite")
   set -m
   { bash "$suite" >"$log" 2>&1 </dev/null; printf '%s\n' "$?" > "$rcfile"; } &
   suite_pid=$!
   # Its own group as well, so cancelling it below takes its `sleep` too —
   # a watchdog that leaked one sleeper per suite would be its own churn bug.
-  ( sleep "$SUITE_TIMEOUT"
+  ( sleep "$suite_timeout"
     [ -s "$rcfile" ] && exit 0
     if proc_tree_terminate "$suite_pid"; then
       printf '[TIME] %s — exceeded %ss; suite and its descendants terminated\n' \
-        "$suite" "$SUITE_TIMEOUT"
+        "$suite" "$suite_timeout"
     else
       printf '[TIME] %s — exceeded %ss; WARNING: descendants survived termination\n' \
-        "$suite" "$SUITE_TIMEOUT"
+        "$suite" "$suite_timeout"
     fi ) &
   watch_pid=$!
   set +m

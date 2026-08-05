@@ -32,6 +32,13 @@
 #                        though liveness stays unprobeable. Deliberately far
 #                        larger than RECONCILE_GRACE_SECS -- a backstop, not
 #                        a grace replacement.
+#   RECONCILE_TEST_NOW_MS Test seam: epoch-ms override for "now" in the
+#                        ceiling check, so an exact-boundary case can be
+#                        tested without racing the wall clock (real elapsed
+#                        time between an mtime write and the check always
+#                        makes the observed age strictly greater than any
+#                        nominal ceiling, which can never expose a `>` vs
+#                        `>=` off-by-one). Unset in production.
 #
 # Exit: 0 success/nothing to do; 2 malformed metadata or reconciliation error.
 
@@ -176,9 +183,10 @@ const fs = require("fs");
 const path = require("path");
 const p = process.argv[1];
 const ceilingMs = Number(process.argv[2]) * 1000;
-try { process.exit(Date.now() - fs.statSync(path.dirname(p)).mtimeMs > ceilingMs ? 0 : 1); }
+const now = process.argv[3] ? Number(process.argv[3]) : Date.now();
+try { process.exit(now - fs.statSync(path.dirname(p)).mtimeMs >= ceilingMs ? 0 : 1); }
 catch (e) { console.error(`ERR reconcile-workers: cannot stat ${path.dirname(p)}: ${e.message}`); process.exit(2); }
-' "$1" "$RECONCILE_UNPROBEABLE_CEILING_SECS"
+' "$1" "$RECONCILE_UNPROBEABLE_CEILING_SECS" "${RECONCILE_TEST_NOW_MS:-}"
 }
 
 # _worker_mark_orphaned_unprobeable <meta.json> -- terminal-mark a row whose

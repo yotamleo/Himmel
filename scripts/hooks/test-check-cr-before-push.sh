@@ -56,7 +56,15 @@ git init -q --initial-branch=main "$REPO" 2>/dev/null || {
 run_hook() {
     (
         cd "$REPO"
-        bash "$HOOK" 2>&1
+        bash "$HOOK" </dev/null 2>&1
+    )
+}
+
+run_hook_refs() {
+    local refs="$1"
+    (
+        cd "$REPO"
+        bash "$HOOK" origin https://example.com/repo.git <<< "$refs" 2>&1
     )
 }
 
@@ -155,6 +163,153 @@ if [ -f "$m_main" ]; then
 else
     pass "main branch wrote no marker"
 fi
+
+# HIMMEL-1540: marker identity follows pushed refs, not worktree HEAD --------
+
+echo "TEST: refspec push from main writes marker for pushed branch + local_sha"
+git -C "$REPO" checkout -q -b feat/refspec-1540
+printf 'function pushed() {}\n' > "$REPO/pushed.sh"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add pushed.sh
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "refspec code"
+refspec_sha=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" checkout -q main
+refspec_line="refs/heads/feat/refspec-1540 $refspec_sha refs/heads/feat/refspec-1540 0000000000000000000000000000000000000000"
+out=$(run_hook_refs "$refspec_line")
+m_refspec=$(marker_path feat/refspec-1540)
+if [ -f "$m_refspec" ]; then
+    pass "refspec push from main wrote marker for the pushed branch"
+    marker_sha=$(awk -F' [|] ' '{print $2; exit}' "$m_refspec" 2>/dev/null || true)
+    marker_lane=$(awk -F' [|] ' '{print $3; exit}' "$m_refspec" 2>/dev/null || true)
+    marker_remote=$(awk -F' [|] ' '{print $4; exit}' "$m_refspec" 2>/dev/null || true)
+    marker_remote_ref=$(awk -F' [|] ' '{print $5; exit}' "$m_refspec" 2>/dev/null || true)
+    if [ "$marker_sha" = "$refspec_sha" ]; then
+        pass "refspec marker certifies pushed local_sha, not worktree HEAD"
+    else
+        fail "refspec marker SHA '$marker_sha' != pushed SHA '$refspec_sha'" "out: $out"
+    fi
+    if [ "$marker_lane" = "full" ] && [ "$marker_remote" = "origin" ] &&
+       [ "$marker_remote_ref" = "refs/heads/feat/refspec-1540" ]; then
+        pass "refspec marker classifies code full and binds origin destination ref"
+    else
+        fail "refspec marker lane/remote binding is wrong ('$marker_lane' '$marker_remote' '$marker_remote_ref')" "out: $out"
+    fi
+else
+    fail "refspec push from main should write pushed-branch marker" "out: $out"
+fi
+
+zero_sha=0000000000000000000000000000000000000000
+
+echo "TEST: renamed refspec with absent local destination fails closed"
+missing_branch=feat/refspec-absent
+m_missing=$(marker_path "$missing_branch")
+rm -f "$m_missing"
+rc=0
+out=$(run_hook_refs "refs/heads/feat/refspec-1540 $refspec_sha refs/heads/$missing_branch $zero_sha") || rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "absent local destination -> exit 2 (marker identity cannot be cleared safely)"
+else
+    fail "absent local destination -> expected exit 2 got $rc" "out: $out"
+fi
+if [ -f "$m_missing" ]; then
+    fail "absent local destination must not write an uncleared marker" "marker at $m_missing"
+else
+    pass "absent local destination wrote no marker"
+fi
+
+echo "TEST: renamed refspec with divergent local destination fails closed"
+divergent_branch=feat/refspec-divergent
+git -C "$REPO" branch "$divergent_branch" main
+divergent_sha=$(git -C "$REPO" rev-parse "refs/heads/$divergent_branch")
+m_divergent=$(marker_path "$divergent_branch")
+rm -f "$m_divergent"
+rc=0
+out=$(run_hook_refs "refs/heads/feat/refspec-1540 $refspec_sha refs/heads/$divergent_branch $divergent_sha") || rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "divergent local destination -> exit 2 (unreviewed pushed SHA not certified)"
+else
+    fail "divergent local destination -> expected exit 2 got $rc" "out: $out"
+fi
+if [ -f "$m_divergent" ]; then
+    fail "divergent local destination must not write a destination-keyed marker" "marker at $m_divergent"
+else
+    pass "divergent local destination wrote no marker, so the unsafe chain cannot clear one"
+fi
+
+echo "TEST: delete push writes no marker"
+rm -f "$m_refspec"
+out=$(run_hook_refs "(delete) $zero_sha refs/heads/feat/refspec-1540 $refspec_sha")
+if [ -f "$m_refspec" ]; then
+    fail "delete push should not write marker" "out: $out"
+else
+    pass "delete push wrote no marker"
+fi
+
+echo "TEST: pushed default branch writes no marker"
+main_sha=$(git -C "$REPO" rev-parse main)
+rm -f "$m_main"
+out=$(run_hook_refs "refs/heads/main $main_sha refs/heads/main $zero_sha")
+if [ -f "$m_main" ]; then
+    fail "pushed default branch should not write marker" "out: $out"
+else
+    pass "pushed default branch wrote no marker"
+fi
+
+echo "TEST: multiple pushed refs write one marker per destination branch"
+git -C "$REPO" checkout -q -b feat/ref-one main
+printf 'one\n' > "$REPO/one.sh"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add one.sh
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "ref one"
+ref_one_sha=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" checkout -q -b feat/ref-two main
+mkdir -p "$REPO/docs"
+printf '# two\n' > "$REPO/docs/two.md"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add docs/two.md
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "ref two"
+ref_two_sha=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" checkout -q main
+git -C "$REPO" branch feat/destination-one "$ref_one_sha"
+git -C "$REPO" branch feat/destination-two "$ref_two_sha"
+multi_refs="refs/heads/feat/ref-one $ref_one_sha refs/heads/feat/destination-one $zero_sha
+refs/heads/feat/ref-two $ref_two_sha refs/heads/feat/destination-two $zero_sha"
+out=$(run_hook_refs "$multi_refs")
+m_one=$(marker_path feat/destination-one)
+m_two=$(marker_path feat/destination-two)
+if [ -f "$m_one" ] && [ -f "$m_two" ]; then
+    pass "multiple pushed refs wrote one marker each"
+else
+    fail "multiple pushed refs should write both destination markers" "out: $out"
+fi
+if [ "$(awk -F' [|] ' '{print $2; exit}' "$m_one" 2>/dev/null || true)" = "$ref_one_sha" ] &&
+   [ "$(awk -F' [|] ' '{print $2; exit}' "$m_two" 2>/dev/null || true)" = "$ref_two_sha" ]; then
+    pass "multiple markers preserve each pushed local_sha"
+else
+    fail "multiple markers did not preserve their pushed SHAs" "out: $out"
+fi
+
+echo "TEST: non-head remote ref is ignored"
+m_tag=$(marker_path refs/tags/release-1540)
+rm -f "$m_tag"
+out=$(run_hook_refs "refs/tags/release-1540 $refspec_sha refs/tags/release-1540 $zero_sha")
+if [ -f "$m_tag" ]; then
+    fail "tag push should not write a CR marker" "out: $out"
+else
+    pass "tag push was ignored"
+fi
+
+echo "TEST: empty stdin preserves worktree-HEAD fallback"
+git -C "$REPO" checkout -q -b feat/empty-stdin main
+printf 'fallback\n' > "$REPO/fallback.sh"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add fallback.sh
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "fallback code"
+fallback_sha=$(git -C "$REPO" rev-parse HEAD)
+m_fallback=$(marker_path feat/empty-stdin)
+out=$(run_hook)
+if [ -f "$m_fallback" ] && [ "$(awk -F' [|] ' '{print $2; exit}' "$m_fallback" 2>/dev/null || true)" = "$fallback_sha" ]; then
+    pass "empty stdin used legacy worktree-HEAD marker path"
+else
+    fail "empty stdin should preserve worktree-HEAD marker path" "out: $out"
+fi
+git -C "$REPO" checkout -q main
 
 # Test 5: feature branch with reviewable-docs-only diff -> docs-audit marker (HIMMEL-303)
 
@@ -420,6 +575,89 @@ rc=0; out=$(cd "$OB" && bash "$HOOK" 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then pass "orphan branch -> exit 2 (fail closed)"; else fail "orphan branch -> expected exit 2 got $rc" "out: $out"; fi
 rc=0; out=$(cd "$OB" && SKIP_CR=1 bash "$HOOK" 2>&1) || rc=$?
 if [ "$rc" -eq 0 ]; then pass "orphan branch + SKIP_CR=1 -> exit 0 (bypass)"; else fail "orphan SKIP_CR bypass -> expected exit 0 got $rc" "out: $out"; fi
+
+# ── HIMMEL-1540 R5: identity completion — endpoint E + base B ───────────────
+# Per HIMMEL-1554 every case asserts the specific refusal REASON or marker
+# binding, never rc alone.
+
+Z40="0000000000000000000000000000000000000000"
+
+# Divergent remotes: the branch's content is ALREADY in origin/main (diff vs
+# origin empty — the old base choice would skip the marker entirely), but NOT
+# in the pushed remote's main. The pushed remote's base must be chosen, the
+# marker written, and field 7 must pin that base's immutable SHA.
+echo "TEST: push to non-origin remote diffs against THAT remote's base (divergent histories)"
+PB="$TMP_ROOT/pubbase"
+git init -q -b main "$PB"
+(
+    cd "$PB"
+    git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+    echo 'function shared(){}' > shared.sh
+    git -c user.email=t@t -c user.name=t add shared.sh
+    git -c user.email=t@t -c user.name=t commit -q -m "shared code"
+)
+pb_tip=$(git -C "$PB" rev-parse --verify refs/heads/main)
+pb_init=$(git -C "$PB" rev-parse --verify "refs/heads/main^")
+git -C "$PB" update-ref refs/remotes/origin/main "$pb_tip"
+git -C "$PB" update-ref refs/remotes/pubremote/main "$pb_init"
+git -C "$PB" checkout -q -b feat/pub
+rc=0; out=$(cd "$PB" && bash "$HOOK" pubremote "file:///pubdest.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+pm="$PB/.git/cr-pending/feat/pub"
+if [ "$rc" -eq 0 ] && [ -f "$pm" ]; then
+    pass "pubremote push: marker written (old origin-based diff was empty and would have skipped)"
+    pm_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$pm" 2>/dev/null || true)
+    pm_base=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$7); print $7; exit}' "$pm" 2>/dev/null || true)
+    if [ "$pm_base" = "$pb_init" ]; then
+        pass "pubremote push: marker base B pins refs/remotes/pubremote/main's SHA, not origin's"
+    else
+        fail "pubremote push: marker base '$pm_base' != pubremote/main ($pb_init)" "out: $out"
+    fi
+    if [ "$pm_endpoint" = "file:///pubdest.git" ]; then
+        pass "pubremote push: marker endpoint E carries the pushed URL"
+    else
+        fail "pubremote push: marker endpoint '$pm_endpoint' != file:///pubdest.git" "out: $out"
+    fi
+else
+    fail "pubremote push: expected exit 0 + marker at $pm (got rc=$rc)" "out: $out"
+fi
+
+echo "TEST: push to a remote with NO local tracking ref -> fail CLOSED naming the missing ref"
+rc=0; out=$(cd "$PB" && bash "$HOOK" nowhere "file:///nowhere.git" <<< "refs/heads/feat/pub $pb_tip refs/heads/feat/pub $Z40" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then pass "unfetched pushed remote -> exit 2 (fail closed)"; else fail "unfetched pushed remote -> expected exit 2 got $rc" "out: $out"; fi
+case "$out" in
+    *"no tracking ref refs/remotes/nowhere/main for pushed remote 'nowhere'"*)
+        pass "refusal names the missing tracking ref (reason-specific, HIMMEL-1554)" ;;
+    *)
+        fail "refusal must name refs/remotes/nowhere/main" "out: $out" ;;
+esac
+
+echo "TEST: http(s) credentials are scrubbed from the marker endpoint"
+git -C "$REPO" checkout -q -b feat/scrub main
+echo 'function s(){}' > "$REPO/scrub.sh"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add scrub.sh
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "code"
+scrub_sha=$(git -C "$REPO" rev-parse --verify refs/heads/feat/scrub)
+rc=0; out=$(cd "$REPO" && bash "$HOOK" origin "https://x-access-token:sekrit123@example.com/repo.git" <<< "refs/heads/feat/scrub $scrub_sha refs/heads/feat/scrub $Z40" 2>&1) || rc=$?
+sm=$(marker_path feat/scrub)
+sm_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$sm" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && [ "$sm_endpoint" = "https://example.com/repo.git" ]; then
+    pass "userinfo stripped: endpoint is https://example.com/repo.git"
+else
+    fail "expected scrubbed endpoint, got '$sm_endpoint' (rc=$rc)" "out: $out"
+fi
+if [ -f "$sm" ] && grep -q "sekrit123" "$sm"; then
+    fail "marker leaks the credential into plaintext under .git"
+else
+    pass "marker carries no credential material"
+fi
+
+echo "TEST: ref push without an endpoint URL -> fail CLOSED naming the missing binding"
+rc=0; out=$(cd "$REPO" && bash "$HOOK" origin <<< "refs/heads/feat/scrub $scrub_sha refs/heads/feat/scrub $Z40" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then pass "missing endpoint URL -> exit 2 (fail closed)"; else fail "missing endpoint URL -> expected exit 2 got $rc" "out: $out"; fi
+case "$out" in
+    *"no push endpoint URL"*) pass "refusal names the missing endpoint binding (reason-specific)" ;;
+    *) fail "refusal must say 'no push endpoint URL'" "out: $out" ;;
+esac
 
 # Summary ------------------------------------------------------------
 

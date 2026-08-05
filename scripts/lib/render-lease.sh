@@ -125,11 +125,16 @@ _render_lease_delay() {
 }
 
 # _render_lease_pid_alive <pid> -- rc 0 alive, 1 confirmed dead,
-# 2 unverifiable (helper missing). Never treats "cannot check" as dead.
+# 2 unverifiable (helper missing/probe unavailable). Never treats "cannot check" as dead.
 _render_lease_pid_alive() {
+    local rc=0
     command -v proc_tree_process_alive >/dev/null 2>&1 || return 2
-    if proc_tree_process_alive "$1"; then return 0; fi
-    return 1
+    proc_tree_process_alive "$1" || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *) return 2 ;;
+    esac
 }
 
 # render_lease_lock_acquire -- rc 0 acquired, 1 contended (held by a live or
