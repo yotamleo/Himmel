@@ -102,7 +102,10 @@ publish_survivors() {
 
 publish_cleanup_rc() {
     case "$1" in
-        1|2) publish_survivors || true ;;
+        # HIMMEL-1501: 3 (proc_tree_terminate confirmed the leader already
+        # exited/recycled before any signal) joins 1|2 here -- the group may
+        # still have unreaped descendants the leader-only check never saw.
+        1|2|3) publish_survivors || true ;;
         0) [ -z "$survivors_file" ] || rm -f "$survivors_file" "$survivors_tmp" ;;
     esac
     # HIMMEL-1509: cleanup rc 0 is the ONLY verified-clean signal, so it is the

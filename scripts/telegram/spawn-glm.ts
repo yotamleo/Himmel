@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync, renameSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { runSession, BASH_BIN, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow, type RunObserver } from "./run";
 import { checkGlmGuards } from "./glm-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, glmContextPreset, type SettingsConflict, type GlmUsage } from "./glm-env";
@@ -17,6 +17,14 @@ import { parseGrantFlag, composeGrantLine, nextGrantId, authorityGate, classifyS
 // lane-impl) into a `--settings` payload, injected per-dispatch so the worker
 // runs lean while the operator's shared ~/.claude stays full.
 import { resolveProfileByName, parseAddPlugins, readEnabledPluginIds } from "../lanes/plugin-profiles.mjs";
+// HIMMEL-1553: symptom-brief loop breaker, two-stage — at 2 reviewed rounds
+// the brief must carry an INVARIANT section; at 3+ this cheap lane is refused
+// outright (judgment-tier lane or recorded --rounds-override). Thresholds live
+// in round-guard.ts (ROUND_WARN_THRESHOLD / ROUND_ESCALATE_THRESHOLD) — this
+// comment deliberately names no number twice (glm-3, CR round 2: a stated
+// threshold that drifts from the code is the exact prose-vs-mechanism failure
+// this guard exists to end).
+import { checkRoundGuard } from "./round-guard";
 
 // HIMMEL-1040: the default lane profile for an impl worker — the lean set (floor
 // + pr-review-toolkit). Override per-dispatch with --profile; `operator` opts out
@@ -573,6 +581,68 @@ function isHimmelCheckout(d: string): boolean {
   return existsSync(join(d, "scripts", "claude-glm"));
 }
 
+// ── HIMMEL-1503: primary-checkout cwd guard ─────────────────────────────
+//
+// Live incident (2026-08-03 ~13:15 WEST): the orchestrator's session cwd had
+// persisted inside a WORKTREE (.claude/worktrees/claudex+himmel-1474-render-
+// liveness) from an earlier command, and this wrapper happily minted its
+// fresh worktree/branch NESTED inside it, based off that worktree's branch
+// HEAD instead of main — any diff-vs-main gate on the result would have
+// carried the whole unrelated delta. The "spawn from the PRIMARY checkout"
+// rule was prose in the orchestrator handover for 12+ legs and still bit
+// live; per CLAUDE.md's structural>instructional doctrine (second drift =
+// escalate to structural), this is a HARD REFUSE — the ticket's smaller,
+// safer option (a). Transparent re-anchoring (option (b)) is deliberately
+// NOT built.
+//
+// Detection: a linked worktree's --git-dir (per-worktree, under
+// <primary>/.git/worktrees/<name>) differs from its --git-common-dir
+// (always the PRIMARY repo's .git) — the primary checkout's own git-dir and
+// git-common-dir are identical (verified live against this very repo). The
+// /.claude/worktrees/ substring is a second, git-independent signal —
+// defense in depth: still refuses a cwd that names a worktree path even
+// when the git probe itself can't run (e.g. a since-removed worktree
+// directory). Either signal alone refuses.
+function gitDirs(cwd: string): { gitDir: string; commonDir: string } | null {
+  const gd = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-dir"], { stdout: "pipe", stderr: "pipe" });
+  const cd = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], { stdout: "pipe", stderr: "pipe" });
+  if (gd.exitCode !== 0 || cd.exitCode !== 0) return null;
+  return { gitDir: gd.stdout.toString().trim(), commonDir: cd.stdout.toString().trim() };
+}
+
+// Pure decision fn — `probe` injected so this is testable without real git.
+// primaryPath: --git-common-dir's PARENT is always the primary checkout root
+// (the common dir is <primary>/.git in both the primary checkout and every
+// linked worktree); resolve(cwd, ...) makes a relative probe result (the
+// not-a-worktree case, where git prints a bare ".git") absolute without
+// changing an already-absolute one (the worktree case).
+export function detectNonPrimaryCwd(cwd: string, probe: (cwd: string) => { gitDir: string; commonDir: string } | null = gitDirs): { ok: true } | { ok: false; primaryPath?: string } {
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const pathLooksLikeWorktree = norm(cwd).includes("/.claude/worktrees/");
+  const dirs = probe(cwd);
+  const gitSaysWorktree = dirs !== null && norm(dirs.gitDir) !== norm(dirs.commonDir);
+  if (!pathLooksLikeWorktree && !gitSaysWorktree) return { ok: true };
+  const primary = dirs ? dirname(resolve(cwd, dirs.commonDir)) : undefined;
+  // Only name a primary that is somewhere ELSE. A standalone repo nested under
+  // .claude/worktrees/ trips the path signal while git reports
+  // gitDir === commonDir, so this resolves to the very cwd being refused —
+  // telling the caller to cd where they already are. Drop it and let the
+  // path-only diagnostic speak instead (codex-1, CR round 1).
+  const usable = primary !== undefined && norm(resolve(primary)) !== norm(resolve(cwd));
+  return { ok: false, primaryPath: usable ? primary : undefined };
+}
+
+// Message composer for main()'s call site — names the primary path so the
+// operator can `cd` there and retry immediately; a bare "refused" would
+// waste the recovery. `probe` is threaded through for tests only.
+export function refuseNonPrimaryCwd(cwd: string, probe?: (cwd: string) => { gitDir: string; commonDir: string } | null): string | undefined {
+  const r = probe ? detectNonPrimaryCwd(cwd, probe) : detectNonPrimaryCwd(cwd);
+  if (r.ok) return undefined;
+  return r.primaryPath
+    ? `spawn-glm: refusing to dispatch from ${cwd} — this is not the PRIMARY checkout (resolved primary: ${r.primaryPath}); cd there and retry (HIMMEL-1503).`
+    : `spawn-glm: refusing to dispatch from ${cwd} — this looks like a worktree cwd (path contains /.claude/worktrees/), not the PRIMARY checkout; cd to the primary checkout and retry (HIMMEL-1503).`;
+}
+
 // ── HIMMEL-800: real git probes for planSharedSpawn's injected deps ─────────
 export function gitBranchExists(cwd: string, branch: string): boolean {
   const r = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], { stdout: "pipe", stderr: "pipe" });
@@ -623,7 +693,7 @@ export function isHelpFlag(argv: string[]): boolean {
   return argv.includes("--help") || argv.includes("-h");
 }
 
-export type ParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small"; profile: string; addPlugins: string[] };
+export type ParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small"; profile: string; addPlugins: string[]; roundsOverride?: string };
 // Pure + validated: a value-taking flag with no value, or a non-positive /
 // non-finite --timeout-mins, is a USAGE REFUSAL (main → exit 2) — NOT a silent
 // NaN that setTimeout(NaN)≈0 turns into an instant kill, and NOT a bare
@@ -646,6 +716,7 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
   // clean pre-side-effect refusal.
   let profile = DEFAULT_LANE_PROFILE;
   const addPlugins: string[] = [];
+  let roundsOverride: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
@@ -669,6 +740,10 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
     else if (a === "--context") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--context requires a value" }; if (v !== "big" && v !== "small") return { ok: false, error: `--context must be big or small (got "${v}")` }; context = v; }
     else if (a === "--profile") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--profile requires a value" }; profile = v; }
     else if (a === "--add-plugins") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--add-plugins requires a value" }; addPlugins.push(...parseAddPlugins(v)); }
+    // HIMMEL-1553: recorded operator override for the round guard's cheap-lane
+    // refusal at ROUND_ESCALATE_THRESHOLD. Reason substance is enforced by the
+    // guard itself (checkRoundGuard), so the refusal can explain the floor.
+    else if (a === "--rounds-override") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--rounds-override requires a value (why another cheap-lane round is justified)" }; roundsOverride = v; }
     // HIMMEL-1225: a bare unrecognized flag (--help/-h already short-circuit in
     // main) is a mistyped/unsupported option, NOT a task — fail closed rather
     // than dispatch a real worker to reason about the literal flag string.
@@ -679,7 +754,7 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok
   // derives its slug from the branch name, so a co-supplied --name would be
   // silently ignored (or ambiguous about which name wins). Refuse instead.
   if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
-  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins } };
+  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins, roundsOverride } };
 }
 
 // HIMMEL-682 (Task L1): read a capped session's grants.jsonl and compute the
@@ -852,7 +927,7 @@ export async function executeRun(deps: {
         writeFileSync(deps.metaPath, JSON.stringify({ ...base, resume_at: resumeAt.toISOString(), cap_source: capSource }, null, 2)); // meta FIRST (base layer)
         if (g.armOnCap) {
           const snap = join(deps.sessionDir, "respawn-handover.md");
-          writeFileSync(snap, composeRespawnHandover({ task: g.task, cwd: g.cwd, slug: g.slug, timeoutMins: g.timeoutMins, permMode: g.permMode, sessionDir: deps.sessionDir, branch: g.branch, resumeAtIso: resumeAt.toISOString(), shared: g.shared, profile: g.profile, addPlugins: g.addPlugins }));
+          writeFileSync(snap, composeRespawnHandover({ task: g.task, cwd: g.cwd, slug: g.slug, timeoutMins: g.timeoutMins, permMode: g.permMode, sessionDir: deps.sessionDir, branch: g.branch, resumeAtIso: resumeAt.toISOString(), shared: g.shared, profile: g.profile, addPlugins: g.addPlugins, roundsOverride: g.roundsOverride }));
           const rc = g.arm(toArmHHMM(resumeAt), snap);
           // rc=3 honesty (CR round): --dedup-any defers to ANY queued resume job,
           // possibly an UNRELATED handover — this task's respawn handover is then
@@ -962,13 +1037,13 @@ export async function runSharedDispatch(p: {
 }
 
 async function main(): Promise<void> {
-  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--context big|small] [--profile <name>] [--add-plugins a@m,b@m] (default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
+  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--context big|small] [--profile <name>] [--add-plugins a@m,b@m] [--rounds-override <why>] (default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
   const rawArgv = process.argv.slice(2);
   // HIMMEL-1225: help short-circuit — before parseArgs, before any side effect.
   if (isHelpFlag(rawArgv)) { console.log(usage); process.exit(0); }
   const parsed = parseArgs(rawArgv);
   if (!parsed.ok) { console.error(`spawn-glm: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins } = parsed.args;
+  const { task, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins, roundsOverride } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
   // HIMMEL-1378: structural forbid, before any side effect. Never a silent
   // downgrade — a caller asking for bypassPermissions gets a clean usage
@@ -984,6 +1059,18 @@ async function main(): Promise<void> {
   // ~/.claude/settings.json's permissions.defaultMode happens to be".
   const permMode: PermissionMode = permModeArg ?? "dontAsk";
   const absCwd = resolve(cwd);
+  // HIMMEL-1503: refuse BEFORE any worktree/branch side-effect if this
+  // dispatch is not running from the PRIMARY checkout — see
+  // detectNonPrimaryCwd above for the incident + detection rationale.
+  const nonPrimaryRefusal = refuseNonPrimaryCwd(absCwd);
+  if (nonPrimaryRefusal) { console.error(nonPrimaryRefusal); process.exit(2); }
+  // HIMMEL-1553: refuse a symptom-loop dispatch BEFORE any side effect — at 2
+  // reviewed rounds the brief must state the invariant the fix preserves; at 3
+  // this cheap lane is refused outright (judgment-tier lane or recorded
+  // --rounds-override). round-guard.ts has the incident + fail-open rationale.
+  const roundGuard = checkRoundGuard("spawn-glm", { task, branch: branchArg, name, cwd: absCwd, roundsOverride });
+  if (roundGuard.refusal) { console.error(roundGuard.refusal); process.exit(2); }
+  if (roundGuard.note) console.error(roundGuard.note);
   // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —
   // an unknown --profile / malformed --add-plugins id is a clean usage refusal
   // (exit 2), never an orphan worktree/branch. `installed: []` keeps this to pure
@@ -1153,6 +1240,9 @@ async function main(): Promise<void> {
       // HIMMEL-1040: carry the profile + overlay so a capped-run respawn
       // re-dispatches on the SAME lane profile (not the lane-impl default).
       profile, addPlugins,
+      // A cap-respawn is a continuation of this dispatch, so it inherits the
+      // same recorded round-guard authority instead of deterministically dying.
+      roundsOverride,
       fetchUsage: () => fetchGlmUsage(readZaiKey(REPO_ROOT).key),
       arm: (hhmm, snap) => Bun.spawnSync(buildArmArgv(REPO_ROOT, hhmm, snap), { stdout: "inherit", stderr: "inherit", env: buildArmEnv() }).exitCode ?? 1,
     };
@@ -1231,7 +1321,8 @@ export function nextRetrySlug(slug: string): string {
 
 // Self-contained cold-start respawn handover (spec (b) 3): the armed session
 // may be a fresh cold start — everything needed to re-dispatch is inline.
-export function composeRespawnHandover(p: { task: string; cwd: string; slug: string; timeoutMins?: number; permMode?: string; sessionDir: string; branch: string; resumeAtIso: string; shared?: boolean; profile?: string; addPlugins?: string[] }): string {
+const shellSingleQuote = (value: string): string => `'${value.replace(/'/g, `'"'"'`)}'`;
+export function composeRespawnHandover(p: { task: string; cwd: string; slug: string; timeoutMins?: number; permMode?: string; sessionDir: string; branch: string; resumeAtIso: string; shared?: boolean; profile?: string; addPlugins?: string[]; roundsOverride?: string }): string {
   const respawnName = nextRetrySlug(p.slug);
   // HIMMEL-800: a shared-mode respawn carries --branch (the caller-named
   // branch, unchanged across retries) instead of --name <slug>-rN — shared
@@ -1241,7 +1332,11 @@ export function composeRespawnHandover(p: { task: string; cwd: string; slug: str
   // the same lean profile the original dispatch selected.
   const profileFlag = p.profile && p.profile !== DEFAULT_LANE_PROFILE ? `--profile ${p.profile}` : "";
   const addPluginsFlag = p.addPlugins && p.addPlugins.length ? `--add-plugins ${p.addPlugins.join(",")}` : "";
-  const flags = [`--cwd ${p.cwd}`, p.shared ? `--branch ${p.branch}` : `--name ${respawnName}`, p.timeoutMins !== undefined ? `--timeout-mins ${p.timeoutMins}` : "", p.permMode ? `--permission-mode ${p.permMode}` : "", profileFlag, addPluginsFlag, `--carry-from ${p.sessionDir}`].filter(Boolean).join(" ");
+  // A cap is a continuation of the SAME authorized dispatch, not a new round.
+  // Preserve the recorded authority and single-quote it so spaces/metacharacters
+  // remain data when the markdown command is executed by a shell.
+  const roundsOverrideFlag = p.roundsOverride ? `--rounds-override ${shellSingleQuote(p.roundsOverride)}` : "";
+  const flags = [`--cwd ${p.cwd}`, p.shared ? `--branch ${p.branch}` : `--name ${respawnName}`, p.timeoutMins !== undefined ? `--timeout-mins ${p.timeoutMins}` : "", p.permMode ? `--permission-mode ${p.permMode}` : "", profileFlag, addPluginsFlag, roundsOverrideFlag, `--carry-from ${p.sessionDir}`].filter(Boolean).join(" ");
   return [
     "---",
     "type: handover",
@@ -1279,6 +1374,8 @@ export type CapGuardDeps = {
   // HIMMEL-1040: the lane plugin profile + overlay, carried into the respawn
   // handover so a capped run re-dispatches on the same lean profile.
   profile?: string; addPlugins?: string[];
+  // HIMMEL-1553: a cap-respawn continues the already-authorized round.
+  roundsOverride?: string;
   fetchUsage: () => Promise<GlmUsage | null>;
   arm: (hhmm: string, handoverPath: string) => number;   // rc of arm-resume.sh
   now?: () => Date;

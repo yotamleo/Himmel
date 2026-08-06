@@ -330,6 +330,25 @@ check "timeout keeps rc 124 when cleanup fails" "$runner_rc" "124"
 timeout_cleanup_diagnostic=$(grep -Fc "codex adversarial cleanup failed for pid/group" "$tmp/cleanup-timeout-runner.stderr" 2>/dev/null)
 check "timeout cleanup failure still emits diagnostic" "$timeout_cleanup_diagnostic" "1"
 
+# HIMMEL-1501: proc_tree_terminate rc 3 (confirmed-gone before any signal) is
+# distinct from rc 1/2 but must still be treated as "cleanup unverified" by
+# publish_cleanup_rc -- the leader-only check never saw the group, so a
+# survivors sidecar is still published for recovery.
+rm -f "$tmp/cleanup-confirmed-gone.pid" "$tmp/cleanup-confirmed-gone.pid.identity" "$tmp/cleanup-confirmed-gone.pid.survivors"
+runner_rc=0
+HIMMEL_R6_TERMINATE_RC=3 \
+    bash "$tmp/lease-fixture/cr/run-codex-adversarial.sh" "$tmp/lease-fixture/companion-delayed.mjs" main "$tmp/cleanup-confirmed-gone.stdout" "$tmp/cleanup-confirmed-gone.stderr" "$tmp/cleanup-confirmed-gone.pid" 1 2>"$tmp/cleanup-confirmed-gone-runner.stderr" || runner_rc=$?
+check "confirmed-gone (rc 3) timeout keeps rc 124" "$runner_rc" "124"
+check "confirmed-gone (rc 3) preserves ownership pid sidecar" "$(test -s "$tmp/cleanup-confirmed-gone.pid" && echo preserved || echo missing)" "preserved"
+check "confirmed-gone (rc 3) publishes a survivors sidecar" "$(test -e "$tmp/cleanup-confirmed-gone.pid.survivors" && echo published || echo absent)" "published"
+confirmed_gone_pid=$(cat "$tmp/cleanup-confirmed-gone.pid" 2>/dev/null)
+if [ -n "$confirmed_gone_pid" ]; then
+    kill -9 "$confirmed_gone_pid" 2>/dev/null || true
+    if command -v taskkill >/dev/null 2>&1; then
+        MSYS_NO_PATHCONV=1 taskkill /PID "$confirmed_gone_pid" /T /F >/dev/null 2>&1 || true
+    fi
+fi
+
 runner_rc=0
 HIMMEL_R2_CHILD_SCRIPT="$tmp/stubborn-child.mjs" \
 HIMMEL_R2_CHILD_PID_FILE="$tmp/child.pid" \
@@ -417,6 +436,10 @@ fi
 
 # HIMMEL-1474 r4: model the recycled-pid harvest case against the same guarded
 # primitive wired into pr-check. A mismatched anchor must return before signal.
+# HIMMEL-1501: identity_matches confirms this mismatch (rc 1, not the probe
+# being merely unavailable), so proc_tree_terminate now returns the distinct
+# rc 3 rather than the collapsed rc 2 -- the safety property under test
+# (no signal reaches the unrelated live process) is unchanged.
 set -m
 sleep 30 &
 unrelated_pid=$!
@@ -424,7 +447,7 @@ set +m
 unrelated_identity=$(proc_tree_process_identity "$unrelated_pid") || unrelated_identity=''
 guard_rc=0
 proc_tree_terminate "$unrelated_pid" 0 "${unrelated_identity}-recycled" || guard_rc=$?
-check "identity mismatch refuses to signal recycled pid" "$guard_rc" "2"
+check "identity mismatch refuses to signal recycled pid" "$guard_rc" "3"
 check "identity-mismatched unrelated process remains alive" "$(kill -0 "$unrelated_pid" 2>/dev/null && echo alive || echo dead)" "alive"
 kill -9 "$unrelated_pid" 2>/dev/null || true
 wait "$unrelated_pid" 2>/dev/null || true
@@ -687,6 +710,65 @@ survivors_gone_rc=0
 check "exited leader with all survivor anchors gone proceeds" "$survivors_gone_rc" "0"
 check "all-gone survivor recovery clears ownership record" "$(test -e "$tmp/survivors-gone.pid" && echo preserved || echo cleared)" "cleared"
 
+# HIMMEL-1501: a preserved cleanup rc of 3 (confirmed-gone before any signal
+# was sent) must be recovered the same way as 1/2 -- the survivors sidecar
+# stays the authority regardless of which rc the prior run left behind.
+printf '%s\n' 424254 > "$tmp/confirmed-gone-record.pid"
+printf '%s\n' leader-identity > "$tmp/confirmed-gone-record.pid.identity"
+printf '%s\n' 3 > "$tmp/confirmed-gone-record.pid.cleanup-rc"
+printf '5154\ttest-identity\n' > "$tmp/confirmed-gone-record.pid.survivors"
+confirmed_gone_record_rc=0
+# shellcheck disable=SC2034,SC2317,SC2329
+(
+    codex_pid_file="$tmp/confirmed-gone-record.pid"
+    codex_retry_pid_file="$tmp/confirmed-gone-record-retry.pid"
+    proc_tree_process_identity_matches() { return 1; }
+    proc_tree_process_alive() { return 1; }
+    proc_tree_process_identity() { return 1; }
+    proc_tree_terminate() { return 9; }
+    kill() { return 9; }
+    eval "$kickoff_recovery_block"
+) 2>"$tmp/confirmed-gone-record.stderr" || confirmed_gone_record_rc=$?
+check "state cleanup rc=3 with all survivor anchors gone proceeds" "$confirmed_gone_record_rc" "0"
+check "rc=3 survivor recovery clears ownership record" "$(test -e "$tmp/confirmed-gone-record.pid" && echo preserved || echo cleared)" "cleared"
+
+# The leader can match at the first probe and then exit before the guarded
+# terminate call. Confirmed-gone rc 3 must join the same survivor recovery path
+# rather than blocking the next kickoff.
+printf '%s\n' 424255 > "$tmp/terminate-confirmed-gone.pid"
+printf '%s\n' leader-identity > "$tmp/terminate-confirmed-gone.pid.identity"
+printf '%s\n' 1 > "$tmp/terminate-confirmed-gone.pid.cleanup-rc"
+printf '5156\ttest-identity\n' > "$tmp/terminate-confirmed-gone.pid.survivors"
+rm -f "$tmp/terminate-confirmed-gone-killed" "$tmp/terminate-confirmed-gone-signals" "$tmp/terminate-confirmed-gone-called"
+terminate_confirmed_gone_rc=0
+# shellcheck disable=SC2034,SC2317,SC2329
+(
+    codex_pid_file="$tmp/terminate-confirmed-gone.pid"
+    codex_retry_pid_file="$tmp/terminate-confirmed-gone-retry.pid"
+    proc_tree_process_identity_matches() {
+        if [ "$1" = "424255" ]; then
+            return 0
+        fi
+        if [ "$1" = "5156" ] && [ "$2" = "test-identity" ] && [ ! -e "$tmp/terminate-confirmed-gone-killed" ]; then
+            return 0
+        fi
+        return 1
+    }
+    proc_tree_process_alive() { [ "$1" = "5156" ] && [ ! -e "$tmp/terminate-confirmed-gone-killed" ]; }
+    proc_tree_terminate() { : > "$tmp/terminate-confirmed-gone-called"; return 3; }
+    kill() {
+        printf '%s:%s\n' "$1" "$2" >> "$tmp/terminate-confirmed-gone-signals"
+        [ "$1" != "-TERM" ] || : > "$tmp/terminate-confirmed-gone-killed"
+        return 0
+    }
+    sleep() { :; }
+    eval "$kickoff_recovery_block"
+) 2>"$tmp/terminate-confirmed-gone.stderr" || terminate_confirmed_gone_rc=$?
+check "identity match followed by terminate rc 3 recovers through survivor anchor" "$terminate_confirmed_gone_rc" "0"
+check "terminate rc 3 recovery attempted guarded leader cleanup" "$(test -e "$tmp/terminate-confirmed-gone-called" && echo called || echo missed)" "called"
+check "terminate rc 3 recovery signals verified survivor" "$(grep -Fc -- '-TERM:5156' "$tmp/terminate-confirmed-gone-signals" 2>/dev/null)" "1"
+check "terminate rc 3 recovery clears ownership record" "$(test -e "$tmp/terminate-confirmed-gone.pid" && echo preserved || echo cleared)" "cleared"
+
 # A live pid with a different identity is not the recorded survivor and cannot
 # be signaled or silently treated as absence.
 printf '%s\n' 424251 > "$tmp/survivor-mismatch.pid"
@@ -806,6 +888,59 @@ check "terminate-rc-1 harvest preserves pid sidecar" "$(test -s "$tmp/harvest-su
 check "terminate-rc-1 harvest preserves identity sidecar" "$(test -s "$tmp/harvest-survivors.pid.identity" && echo preserved || echo missing)" "preserved"
 harvest_survivors_diagnostic=$(grep -Fc "survivors after escalated cleanup — sidecars preserved for recovery" "$tmp/harvest-survivors.stderr" 2>/dev/null)
 check "terminate-rc-1 harvest reports preserved recovery sidecars" "$harvest_survivors_diagnostic" "1"
+
+# HIMMEL-1501: terminate rc 3 means the leader was CONFIRMED already
+# exited/recycled before any signal was sent. Unlike rc 2, this must NOT be
+# classified as live-but-unreaped -- it falls through to the ordinary
+# "exited" harvest path below, and once the launcher's own rc/cleanup status
+# lands (simulated here via the rc_wait poll, same as the real "a beat
+# later" race the production code documents), sidecars are removed rather
+# than preserved.
+printf '%s\n' 424244 > "$tmp/harvest-confirmed-gone.pid"
+printf '%s\n' test-identity > "$tmp/harvest-confirmed-gone.pid.identity"
+rm -f "$tmp/harvest-confirmed-gone.rc" "$tmp/harvest-confirmed-gone.pid.cleanup-rc" "$tmp/harvest-confirmed-gone.pid.survivors" "$tmp/harvest-confirmed-gone-killed" "$tmp/harvest-confirmed-gone-signals"
+# shellcheck disable=SC2034,SC2154,SC2317,SC2329
+harvest_confirmed_gone_result=$(
+    codex_pid=424244
+    codex_identity=test-identity
+    codex_pid_file="$tmp/harvest-confirmed-gone.pid"
+    codex_identity_file="$tmp/harvest-confirmed-gone.pid.identity"
+    codex_survivors_file="$tmp/harvest-confirmed-gone.pid.survivors"
+    codex_rc_file="$tmp/harvest-confirmed-gone.rc"
+    codex_cleanup_rc_file="$tmp/harvest-confirmed-gone.pid.cleanup-rc"
+    codex_err_file="$tmp/harvest-confirmed-gone.err"
+    codex_out="$tmp/harvest-confirmed-gone.out"
+    codex_to=5
+    waited=5
+    codex_findings=stale
+    codex_rc=0
+    codex_avail_status=''
+    proc_tree_terminate() { return 3; }
+    proc_tree_process_identity_matches() {
+        [ "$1" = "5155" ] && [ "$2" = "test-identity" ] && [ ! -e "$tmp/harvest-confirmed-gone-killed" ]
+    }
+    proc_tree_process_alive() { [ "$1" = "5155" ] && [ ! -e "$tmp/harvest-confirmed-gone-killed" ]; }
+    kill() {
+        printf '%s:%s\n' "$1" "$2" >> "$tmp/harvest-confirmed-gone-signals"
+        [ "$1" != "-TERM" ] || : > "$tmp/harvest-confirmed-gone-killed"
+        return 0
+    }
+    # shellcheck disable=SC2329  # invoked indirectly by the harvest's rc_wait poll
+    sleep() {
+        printf '%s\n' 1 > "$codex_rc_file"
+        printf '5155\ttest-identity\n' > "$codex_survivors_file"
+        printf '%s\n' 3 > "$codex_cleanup_rc_file"
+    }
+    eval "$harvest_timeout_block" 2>"$tmp/harvest-confirmed-gone.stderr"
+    printf '%s:%s:%s:%s\n' "$harvest_live_unreaped" "$harvest_timed_out" "$codex_rc" "$codex_avail_status"
+)
+check "terminate-rc-3 harvest is NOT live-but-unreaped" "$harvest_confirmed_gone_result" "0:0:1:unavailable"
+check "confirmed-gone harvest resolves survivor anchor" "$(grep -Fc -- '-TERM:5155' "$tmp/harvest-confirmed-gone-signals" 2>/dev/null)" "1"
+check "confirmed-gone harvest removes pid sidecar" "$(test -e "$tmp/harvest-confirmed-gone.pid" && echo preserved || echo cleared)" "cleared"
+check "confirmed-gone harvest removes identity sidecar" "$(test -e "$tmp/harvest-confirmed-gone.pid.identity" && echo preserved || echo cleared)" "cleared"
+check "confirmed-gone harvest removes survivor sidecar" "$(test -e "$tmp/harvest-confirmed-gone.pid.survivors" && echo preserved || echo cleared)" "cleared"
+harvest_confirmed_gone_diagnostic=$(grep -Fc "live but unreaped" "$tmp/harvest-confirmed-gone.stderr" 2>/dev/null)
+check "confirmed-gone harvest never reports live-but-unreaped" "$harvest_confirmed_gone_diagnostic" "0"
 
 # HIMMEL-1474 r12: cleanup is removable only after BOTH launcher status and a
 # zero cleanup status exist. A killed-pre-write launcher and a late cleanup

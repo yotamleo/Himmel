@@ -14,7 +14,7 @@ set -uo pipefail
 # generalized). clear-cr-marker.sh does not consult either var today, so this
 # is defense-in-depth for the day a sourced lib reads one — the canary case
 # below pins today's insensitivity.
-unset ARMAUTOMERGE CR_MERGE_GATE_OK
+unset ARMAUTOMERGE CR_MERGE_GATE_OK CR_REQUIRE_CROSS_MODEL
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
@@ -33,6 +33,7 @@ CODEX_SKILL="$ROOT/.agents/skills/pr-check/SKILL.md"
 
 PASS=0
 FAIL=0
+LAST_CLEAR_OUT=""
 pass() { PASS=$((PASS + 1)); }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 
@@ -53,6 +54,9 @@ make_repo() {
         git checkout -qb feat/x
         echo more >> f.txt
         git commit -qam "work"
+        git init -q --bare .git/test-origin.git
+        git remote add origin .git/test-origin.git
+        git push -q -u origin feat/x
     ) >/dev/null 2>&1
     sha=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
     mkdir -p "$tmp/scripts/cr" "$tmp/bin"
@@ -60,11 +64,17 @@ make_repo() {
     cp "$LEDGER_APPEND" "$tmp/scripts/cr/ledger-append.sh"
 }
 
-# write_marker <tmp> <sha> [lane]
+# write_marker <tmp> <sha> [lane] [endpoint] [base]
+# 7-field format (HIMMEL-1540 identity contract): endpoint defaults to the
+# repo-relative URL of make_repo's real test-origin bare (clear-cr-marker runs
+# with cwd=$tmp, so ls-remote resolves it); base defaults to the repo's main.
 write_marker() {
-    local tmp="$1" sha="$2" lane="${3:-full}"
+    local tmp="$1" sha="$2" lane="${3:-full}" endpoint="${4:-.git/test-origin.git}" base="${5:-}"
+    if [ -z "$base" ]; then
+        base=$(git -C "$tmp" rev-parse --verify refs/heads/main 2>/dev/null || echo deadbeef)
+    fi
     mkdir -p "$tmp/.git/cr-pending/feat"
-    printf '2026-07-16T10:00:00+02:00 | %s | %s\n' "$sha" "$lane" > "$tmp/.git/cr-pending/feat/x"
+    printf '2026-07-16T10:00:00+02:00 | %s | %s | origin | refs/heads/feat/x | %s | %s\n' "$sha" "$lane" "$endpoint" "$base" > "$tmp/.git/cr-pending/feat/x"
 }
 
 # write_ledger <tmp> <jsonl-lines...>
@@ -137,6 +147,7 @@ run_clear() {
     local tmp="$1" expected="$2" name="$3"; shift 3
     local rc=0 out
     out=$(cd "$tmp" && PATH="$tmp/bin:$PATH" bash "$tmp/scripts/cr/clear-cr-marker.sh" "$@" 2>&1) || rc=$?
+    LAST_CLEAR_OUT="$out"
     if [ "$rc" -eq "$expected" ]; then pass; else
         fail "$name (expected rc=$expected, got $rc)"; echo "    out: $out" >&2
     fi
@@ -240,6 +251,11 @@ write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "pre-PR clean → exit 0"
 if marker_exists "$tmp"; then fail "pre-PR clean: marker should be GONE"; else pass; fi
+if grepq "$LAST_CLEAR_OUT" 'stale-marker-superseded-by-ledger-at-tip'; then
+    fail "fresh marker clear must use the ordinary audit path"
+else
+    pass
+fi
 rm -rf "$tmp"
 
 # 2b. The ledger's SHORT head must match the full tip (prefix match).
@@ -296,13 +312,132 @@ run_clear "$tmp" 14 "garbage 1-char ledger head does not match → exit 14"
 if marker_exists "$tmp"; then pass; else fail "garbage head: marker must REMAIN"; fi
 rm -rf "$tmp"
 
-# 3. Stale marker: a commit landed after the review → refuse, keep the marker.
+# 3. Remote at A + local/ledger at B must refuse. `gh pr create --head feat/x`
+# opens from the REMOTE ref and does not push, so local evidence for B must never
+# clear a marker while origin still proposes A.
+make_repo
+write_marker "$tmp" "$sha"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "later reviewed work") >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_ledger "$tmp" "$(avail_ok "${_tip:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 16 "remote at A + local reviewed B → exit 16"
+if marker_exists "$tmp"; then pass; else fail "remote/local mismatch: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'REFUSED reason=remote-head-mismatch'; then
+    pass
+else
+    fail "remote/local mismatch refusal must identify the remote head binding"
+fi
+rm -rf "$tmp"
+
+# 3b. Pre-endpoint 5-field marker (older writer) → refuse with the SPECIFIC
+# unbound-endpoint reason, never rc alone (HIMMEL-1554): remint by re-push.
+make_repo
+mkdir -p "$tmp/.git/cr-pending/feat"
+printf '2026-07-16T10:00:00+02:00 | %s | full | origin | refs/heads/feat/x\n' "$sha" > "$tmp/.git/cr-pending/feat/x"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 16 "5-field marker without endpoint+base → exit 16"
+if marker_exists "$tmp"; then pass; else fail "unbound-endpoint marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'REFUSED reason=unbound-marker-endpoint'; then
+    pass
+else
+    fail "5-field marker refusal must carry reason=unbound-marker-endpoint, not a generic failure"
+fi
+rm -rf "$tmp"
+
+# 3c. Alias mutated AFTER the push (this repo's lane tooling repoints
+# remote.origin.url/pushurl as a quarantine mechanism): the marker's recorded
+# ENDPOINT must be consulted, so clearance still SUCCEEDS while the alias is
+# dead. The pre-HIMMEL-1540 alias-resolving code fails remote-head-unreadable
+# here — the discriminating direction for finding B.
 make_repo
 write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
-(cd "$tmp" && echo x >> f.txt && git commit -qam "later work") >/dev/null 2>&1
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
-run_clear "$tmp" 13 "stale marker (HEAD moved) → exit 13"
-if marker_exists "$tmp"; then pass; else fail "stale marker: marker must REMAIN"; fi
+git -C "$tmp" remote set-url origin "$tmp/nonexistent.git"
+run_clear "$tmp" 0 "mutated alias + intact endpoint → exit 0 (endpoint consulted, not alias)"
+if marker_exists "$tmp"; then fail "endpoint-verified clear: marker should be GONE despite dead alias"; else pass; fi
+rm -rf "$tmp"
+
+# 3d. Fetch/push divergence: the marker's endpoint names the repo the push
+# actually targeted, whose head is OLDER than the tip; the alias still resolves
+# to the up-to-date test-origin. Alias-resolving code would clear; the endpoint
+# head must refuse with remote-head-mismatch naming the endpoint.
+make_repo
+_old=$(git -C "$tmp" rev-parse --verify "refs/heads/feat/x^")
+(cd "$tmp" && git init -q --bare .git/test-pushdest.git && git push -q .git/test-pushdest.git "$_old:refs/heads/feat/x") >/dev/null 2>&1
+write_marker "$tmp" "$sha" full .git/test-pushdest.git
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 16 "endpoint head differs though alias head matches → exit 16"
+if marker_exists "$tmp"; then pass; else fail "endpoint-mismatch marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'reason=remote-head-mismatch' &&
+   grepq "$LAST_CLEAR_OUT" 'test-pushdest'; then
+    pass
+else
+    fail "endpoint-mismatch refusal must name the ENDPOINT it checked (not the alias)"
+fi
+rm -rf "$tmp"
+
+# 3a. Once the actual remote is at the ledger-certified current tip, a stale
+# full-lane marker may still clear through the explicit ledger-backed fallback.
+make_repo
+write_marker "$tmp" "$sha"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "later reviewed work" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_ledger "$tmp" "$(avail_ok "${_tip:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "stale marker + pushed clean ledger tip → exit 0"
+if marker_exists "$tmp"; then fail "stale marker + pushed clean tip: marker should be GONE"; else pass; fi
+if grepq "$LAST_CLEAR_OUT" 'WARNING: marker certifies' &&
+   grepq "$LAST_CLEAR_OUT" 'CLEARED reason=stale-marker-superseded-by-ledger-at-tip'; then
+    pass
+else
+    fail "stale-marker clearance must warn and audit the ledger-backed fallback" "$LAST_CLEAR_OUT"
+fi
+rm -rf "$tmp"
+
+# 3a. A stale docs-audit marker must never clear on lane-less ledger evidence at
+# the newer tip. The docs lane was selected from the old marker BEFORE this gate,
+# and avail rows do not record which lane reviewed the code. Refuse repeatedly
+# until a new push remints the marker and reclassifies the current diff.
+make_repo
+write_marker "$tmp" "$sha" docs-audit
+(cd "$tmp" && printf 'code\n' > code.sh && git add code.sh && git commit -qm "later code work" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_ledger "$tmp" "$(avail_ok "${_tip:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "stale docs-audit marker + code at tip cannot clear through docs lane → exit 14"
+if marker_exists "$tmp"; then pass; else fail "stale docs lane: marker must REMAIN"; fi
+if grepq "$LAST_CLEAR_OUT" 'REFUSED reason=stale-docs-lane-untrusted'; then
+    pass
+else
+    fail "stale docs lane refusal must identify the untrusted lane"
+fi
+run_clear "$tmp" 14 "repeating clear without a remint still refuses stale docs lane → exit 14"
+if marker_exists "$tmp"; then pass; else fail "repeated stale docs clear: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 3b. Stale marker + NO responders at the current tip still refuses. Evidence at
+# the old marker SHA must not certify the new code.
+make_repo
+write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "later unreviewed work" && git push -q origin feat/x) >/dev/null 2>&1
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 14 "stale marker + no responders at tip → exit 14"
+if marker_exists "$tmp"; then pass; else fail "stale marker without tip evidence: marker must REMAIN"; fi
+rm -rf "$tmp"
+
+# 3c. Stale marker + a responder AND an unresolved blocker at the current tip
+# still refuses at gate 4; the fallback is not a bypass.
+make_repo
+write_marker "$tmp" "$sha"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "later blocked work" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_ledger "$tmp" "$(avail_ok "${_tip:0:8}")" "$(finding "${_tip:0:8}" imp agreed)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 15 "stale marker + blocking finding at tip → exit 15"
+if marker_exists "$tmp"; then pass; else fail "stale marker with tip blocker: marker must REMAIN"; fi
 rm -rf "$tmp"
 
 # 4. Zero responders = MISSING signal, not clean (the CodeRabbit rate-limit
@@ -845,10 +980,11 @@ rm -rf "$tmp"
 # `gh pr view 42` would return PR #42 — a different PR whose CI would then
 # certify this branch. The --head query is unambiguous; assert we pass --head.
 make_repo
-(cd "$tmp" && git branch -m feat/x 42) >/dev/null 2>&1
+(cd "$tmp" && git branch -m feat/x 42 && git push -q origin refs/heads/42:refs/heads/42) >/dev/null 2>&1
 _numsha=$(git -C "$tmp" rev-parse --verify refs/heads/42)
 mkdir -p "$tmp/.git/cr-pending"
-printf '2026-07-16T10:00:00+02:00 | %s | full\n' "$_numsha" > "$tmp/.git/cr-pending/42"
+_numbase=$(git -C "$tmp" rev-parse --verify refs/heads/main)
+printf '2026-07-16T10:00:00+02:00 | %s | full | origin | refs/heads/42 | .git/test-origin.git | %s\n' "$_numsha" "$_numbase" > "$tmp/.git/cr-pending/42"
 write_ledger "$tmp" "$(avail_ok "${_numsha:0:8}")"
 cat > "$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -916,7 +1052,7 @@ write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
 cat > "$tmp/bin/gh" <<STUB
 #!/usr/bin/env bash
 # Simulate a push landing during the gate: marker now certifies a NEWER sha.
-printf '2026-07-16T10:05:00+02:00 | %s | full\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > "$tmp/.git/cr-pending/feat/x"
+printf '2026-07-16T10:05:00+02:00 | %s | full | origin | refs/heads/feat/x\n' "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" > "$tmp/.git/cr-pending/feat/x"
 echo ""
 exit 0
 STUB
@@ -970,16 +1106,16 @@ fi
 
 # HIMMEL-1495 hermeticity canary. clear-cr-marker.sh does not consult the
 # armed-session bypass env (ARMAUTOMERGE/CR_MERGE_GATE_OK), so a block fixture
-# STILL blocks (exit 13, stale marker) with both exported into the suite's env
-# — pinning that insensitivity so a future change wiring either var into the
-# clear chokepoint fails HERE (clears an unreviewed marker) rather than failing
-# open. The startup unset above is the matching defense-in-depth.
+# STILL blocks (exit 14, no responders at the current tip) with both exported
+# into the suite's env — pinning that insensitivity so a future change wiring
+# either var into the clear chokepoint fails HERE (clears an unreviewed marker)
+# rather than failing open. The startup unset above is the matching defense-in-depth.
 export ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1
 make_repo
 write_marker "$tmp" "$sha"; write_ledger "$tmp" "$(avail_ok "${sha:0:8}")"
-(cd "$tmp" && echo x >> f.txt && git commit -qam "later work") >/dev/null 2>&1
+(cd "$tmp" && echo x >> f.txt && git commit -qam "later work" && git push -q origin feat/x) >/dev/null 2>&1
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
-run_clear "$tmp" 13 "armed bypass env does not clear a stale marker (HIMMEL-1495)"
+run_clear "$tmp" 14 "armed bypass env does not clear stale marker without tip evidence (HIMMEL-1495)"
 if marker_exists "$tmp"; then pass; else fail "armed-env stale marker: marker must REMAIN"; fi
 rm -rf "$tmp"
 unset ARMAUTOMERGE CR_MERGE_GATE_OK

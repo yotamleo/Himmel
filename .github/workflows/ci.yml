@@ -95,10 +95,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          # HIMMEL-1560: the trust suite's skew regression reads the REAL
+          # historical recorder out of git (`git show c49716d5:…`) rather than a
+          # synthetic stub, because the thing under test is that an OLD
+          # recorder answers `capabilities` with exit 0 and empty stdout. The
+          # default checkout is shallow (depth 1), so that object is absent and
+          # the test — which ASSERTS the `git show` succeeds rather than
+          # silently substituting a stub — would fail here. Full history is the
+          # fix; degrading the test to a stub in CI would delete exactly the
+          # evidence it exists to provide.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - run: node --test "scripts/lanes/tests/**/*.test.mjs"
+      # HIMMEL-1529: same shape — a zero-dependency node:test suite outside any
+      # package.json. Listed explicitly because nothing globs for it; an
+      # unlisted suite is a suite nobody runs.
+      #
+      # `ls` first because `node --test` reports zero tests and exits 0 when the
+      # glob matches nothing: a renamed or deleted suite would go green with
+      # nothing executed. `ls` on an unexpanded pattern fails, so the step does.
+      - run: ls scripts/trust/tests/*.test.mjs && node --test "scripts/trust/tests/*.test.mjs"
+
+  guardrail-matrices:
+    # HIMMEL-1522: the egress matrix decides whether a corpus may leave the
+    # machine and the voice policy decides what a spoken request may do. Both
+    # were standalone scripts that only ran when someone remembered to type
+    # them. Also wired into pre-commit, which is the layer that matters most
+    # here — Actions is OFF on the private repo, so a green private PR is not
+    # evidence either suite ran.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # This is a pull_request workflow, so it checks out and executes
+          # contributor code. The default persists the GITHUB_TOKEN into
+          # .git/config, where that code can read it.
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - run: bash scripts/hooks/check-guardrail-matrices.sh
 
   bun-suites:
     runs-on: ubuntu-latest

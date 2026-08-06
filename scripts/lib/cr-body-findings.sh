@@ -50,11 +50,11 @@
 #     right there, but the parser could not make sense of it — POSITIVE
 #     evidence of an unparseable finding, not an absence of one. Two
 #     independent canaries both land here:
-#     1. A head-review body contains the literal phrase (e.g. "Outside diff")
-#        but the count regex does NOT match a `(N)` on it -> format drifted
-#        out from under the count regex.
+#     1. The chosen head-review body contains the literal phrase (e.g.
+#        "Outside diff") but the count regex does NOT match a `(N)` on it ->
+#        format drifted out from under the count regex.
 #     2. `markers>0` (i.e. CodeRabbit's own `cr-comment:v1:<id>` markers are
-#        present in a head body) while EVERY section count parsed to 0 ->
+#        present in the chosen body) while EVERY section count parsed to 0 ->
 #        CodeRabbit said something, this reader parsed nothing: drift, not an
 #        empty review.
 # Callers must not treat EITHER rc 1 or rc 2 as green — the two-way split
@@ -64,15 +64,48 @@
 # cr-merge-gate.sh (fails OPEN on rc 1, BLOCKS on rc 2 — spec §4).
 #
 # WHAT COUNTS AS "AT HEAD": a review's `.commit_id` is the SHA it reviewed.
-# Only reviews at the CALLER's head SHA feed outside/nitpick/additional/
-# markers/head_reviews. Reviews at any OTHER commit_id (a prior head, before
-# a force-push or fixup) feed only `prior_outside` — enough for a caller to
-# apply the HIMMEL-1126 addendum A2 "stale head" rule (prior_outside>0 with
-# head_reviews==0 ⇒ cannot certify — an older head had unaddressed
-# outside-diff findings, but no review exists yet at the current head)
-# without this reader making that policy call itself. Zero reviews AT HEAD is
-# not an error: it is reported (all head counts 0, rc 0) with a stderr note,
-# and left to the caller to combine with prior_outside / cr-signal's verdict.
+# outside/nitpick/additional/markers are derived from the LATEST SUBSTANTIVE
+# review at the CALLER's head SHA — NOT summed across every head review
+# (HIMMEL-1582). `head_reviews` still counts ALL bot reviews at the head
+# (callers rely on head_reviews==0 meaning "no review at head yet"). Reviews
+# at any OTHER commit_id (a prior head, before a force-push or fixup) feed
+# only `prior_outside` — enough for a caller to apply the HIMMEL-1126
+# addendum A2 "stale head" rule (prior_outside>0 with head_reviews==0 ⇒
+# cannot certify — an older head had unaddressed outside-diff findings, but
+# no review exists yet at the current head) without this reader making that
+# policy call itself.
+#
+# WHY LATEST-SUBSTANTIVE-WINS — not a sum, and not naive latest-wins
+# (HIMMEL-1582). The old derivation SUMMED outside/nitpick/additional/markers
+# across every review at the head. A sum is monotonically non-decreasing at a
+# fixed head SHA, so once a finding enters it a later, cleaner review can never
+# clear it — a disproved finding BLOCKS forever unless the head moves. That is
+# a false-BLOCK, which this project's Phase 0 exit criterion forbids by name
+# alongside false-green. Two measurements settled the shape of the fix:
+#   1. Sibling splits do not happen. A census over 60 PRs (16 head-groups with
+#      >=2 reviews at one head) found ZERO groups where two reviews at the same
+#      head both carry a nonzero section count, and zero where the sum exceeded
+#      the max — a synthetic split pushed through the classifier was reported
+#      correctly, so the zero is a measurement, not a blind instrument. The
+#      sum is therefore never load-bearing: dropping it loses no finding.
+#   2. But naive "latest review wins" is UNSAFE. On PR #1583 at head 0b464884
+#      the two bot reviews were a substantive one (outside=1) followed by a
+#      LATER review with an EMPTY body. A plain latest-wins would read the
+#      empty body and report outside=0 — a false-GREEN produced by an empty
+#      payload, the worst outcome (a silent 0 reads exactly like "CodeRabbit
+#      found nothing", a false ALLOW on the HIMMEL-1126 blocking path).
+# So: SUBSTANTIVE = the body is non-empty after trimming whitespace (a review
+# object with no body is skipped). LATEST = greatest `.submitted_at`, ties
+# broken by greatest `.id` (both present on every review in this payload).
+# outside/nitpick/additional/markers come from that ONE review, and the
+# anti-drift canaries below are scoped to it too — a stale drifted body at an
+# old-but-same-head review is the identical defect shape and must not block
+# forever either. If there are head reviews but NONE is substantive (all empty
+# bodies), the counts are reported as 0 with a stderr note (NOT silently
+# green); the existing markers>0/all-zero canary still governs. prior_outside
+# stays a SUM across non-head commits and is untouched. Zero reviews AT HEAD
+# is not an error: it is reported (all head counts 0, rc 0) with a stderr
+# note, and left to the caller to combine with prior_outside / cr-signal.
 #
 # cr_body_findings <owner> <name> <pr-number> <head-sha>
 #   stdout (rc 0): one line —
@@ -120,21 +153,28 @@ def sum_matches(re):
   ( [ scan(re) ] | map( (if type=="array" then .[0] else . end) | tonumber ) | add ) // 0;
 def count_matches(re):
   ( [ scan(re) ] | length );
+def has_content: test("\\S");
 ( [ .[] | select(.user.id == $uid) ] ) as $bot
 | ( [ $bot[] | select(.commit_id == $head) ] ) as $headr
 | ( [ $bot[] | select(.commit_id != $head) ] ) as $priorr
-| ( [ $headr[] | (.body // "") ] ) as $hb
+# HIMMEL-1582: derive at-head counts from the LATEST SUBSTANTIVE head review,
+# not a sum over every head review. $sub = head reviews whose body has any
+# non-whitespace; $chosen = the latest such body (greatest submitted_at, ties
+# by greatest id), or "" when none is substantive. See header for the why.
+| ( [ $headr[] | select((.body // "") | has_content) ] ) as $sub
+| ( $sub | sort_by(.submitted_at, .id) | .[-1] | (.body // "") ) as $chosen
 | ( [ $priorr[] | (.body // "") ] ) as $pb
 | {
-    outside:       ( [ $hb[] | sum_matches(outside_re) ]    | add // 0 ),
-    nitpick:       ( [ $hb[] | sum_matches(nitpick_re) ]    | add // 0 ),
-    additional:    ( [ $hb[] | sum_matches(additional_re) ] | add // 0 ),
+    outside:       ( $chosen | sum_matches(outside_re) ),
+    nitpick:       ( $chosen | sum_matches(nitpick_re) ),
+    additional:    ( $chosen | sum_matches(additional_re) ),
     prior_outside: ( [ $pb[] | sum_matches(outside_re) ]    | add // 0 ),
-    markers:       ( [ $hb[] | count_matches(marker_re) ]   | add // 0 ),
-    outside_drift:    ( [ $hb[] | (test(loose_outside_re) and (test(outside_re)|not)) ]    | any ),
-    nitpick_drift:    ( [ $hb[] | (test(loose_nitpick_re) and (test(nitpick_re)|not)) ]    | any ),
-    additional_drift: ( [ $hb[] | (test(loose_additional_re) and (test(additional_re)|not)) ] | any ),
-    head_count: ($hb | length)
+    markers:       ( $chosen | count_matches(marker_re) ),
+    outside_drift:    ( $chosen | (test(loose_outside_re)    and (test(outside_re)|not)) ),
+    nitpick_drift:    ( $chosen | (test(loose_nitpick_re)    and (test(nitpick_re)|not)) ),
+    additional_drift: ( $chosen | (test(loose_additional_re) and (test(additional_re)|not)) ),
+    head_count:  ($headr | length),
+    substantive: ($sub | length)
   }
 '
 
@@ -176,14 +216,14 @@ cr_body_findings() {
         "$_CBF_JQ_PROGRAM" 2>/dev/null || true)
     [ -n "$result" ] || return 1
 
-    local line outside nitpick additional prior_outside markers head_count outside_drift nitpick_drift additional_drift
+    local line outside nitpick additional prior_outside markers head_count substantive outside_drift nitpick_drift additional_drift
     line=$(printf '%s' "$result" | jq -r \
-        '[.outside,.nitpick,.additional,.prior_outside,.markers,.head_count,(.outside_drift|tostring),(.nitpick_drift|tostring),(.additional_drift|tostring)] | @tsv' \
+        '[.outside,.nitpick,.additional,.prior_outside,.markers,.head_count,.substantive,(.outside_drift|tostring),(.nitpick_drift|tostring),(.additional_drift|tostring)] | @tsv' \
         2>/dev/null || true)
     [ -n "$line" ] || return 1
-    IFS=$'\t' read -r outside nitpick additional prior_outside markers head_count outside_drift nitpick_drift additional_drift <<<"$line"
+    IFS=$'\t' read -r outside nitpick additional prior_outside markers head_count substantive outside_drift nitpick_drift additional_drift <<<"$line"
 
-    case "$outside$nitpick$additional$prior_outside$markers$head_count" in
+    case "$outside$nitpick$additional$prior_outside$markers$head_count$substantive" in
         *[!0-9]*|'') return 1 ;;
     esac
 
@@ -199,6 +239,10 @@ cr_body_findings() {
 
     if [ "$head_count" -eq 0 ]; then
         echo "cr-body-findings: no CodeRabbit review at head $head for PR #$num (owner=$owner name=$name)" >&2
+    elif [ "$substantive" -eq 0 ]; then
+        # HIMMEL-1582: head reviews exist but NONE is substantive (all empty
+        # bodies). Counts are 0, but this is NOT silently green — flag it.
+        echo "cr-body-findings: $head_count CodeRabbit review(s) at head $head but none carried a substantive body (all empty) for PR #$num (owner=$owner name=$name)" >&2
     fi
 
     printf 'outside=%s nitpick=%s additional=%s prior_outside=%s markers=%s head_reviews=%s\n' \

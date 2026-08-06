@@ -1,31 +1,95 @@
 #!/usr/bin/env bash
-# Tests for scripts/hooks/guard-implementor-dispatch.sh (HIMMEL-920). Hermetic.
+# Tests for the composed HIMMEL-1513 lane-routing and HIMMEL-920 bank policies.
+# Hermetic: lane availability, usage caches, and override logs use fixtures.
 #
 # Usage: bash scripts/hooks/test-guard-implementor-dispatch.sh
 set -uo pipefail
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
-# `set -o pipefail`: grep -q exits the instant it matches, the producer
-# then takes SIGPIPE writing the remainder, and pipefail reports the
-# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
-# the match lands early in a large input. A here-string is not a pipeline,
-# so the status is grep's own verdict alone. (HIMMEL-1430.)
+# `set -o pipefail`: grep -q exits as soon as it matches, the producer takes
+# SIGPIPE writing the remainder, and a successful match reports failure on
+# sufficiently large input. A here-string exposes grep's verdict. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOOK="$SCRIPT_DIR/guard-implementor-dispatch.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK" 2>/dev/null || true
 
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/himmel-impl-guard.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+
+REG_CLAUDEX="$TMP/claudex.json"
+REG_GLM="$TMP/glm.json"
+REG_NONE="$TMP/none.json"
+REG_BOTH="$TMP/both.json"
+printf '%s\n' '{"lanes":[{"id":"claudex","class":"impl","probe":{"kind":"always"}}]}' > "$REG_CLAUDEX"
+printf '%s\n' '{"lanes":[{"id":"glm","class":"impl","probe":{"kind":"always"}}]}' > "$REG_GLM"
+printf '%s\n' '{"lanes":[{"id":"sonnet","class":"claude-tier","probe":{"kind":"always"}}]}' > "$REG_NONE"
+printf '%s\n' '{"lanes":[{"id":"claudex","class":"impl","probe":{"kind":"always"}},{"id":"glm","class":"impl","probe":{"kind":"always"}}]}' > "$REG_BOTH"
+
+# HIMMEL-1513 runnability fixtures. A fake project root carrying a real,
+# working lane resolver (copied, not symlinked — Windows worktrees can't rely
+# on symlink privileges) but a scripts/telegram/ that is missing the claudex
+# dispatcher and only has the glm one. Used to prove the guard checks
+# runnability (bun + dispatcher-file-on-disk), not just registry presence.
+FAKE_REPO_NO_CLAUDEX="$TMP/fake-repo-no-claudex"
+mkdir -p "$FAKE_REPO_NO_CLAUDEX/scripts/lanes" "$FAKE_REPO_NO_CLAUDEX/scripts/telegram"
+cp "$REPO_ROOT/scripts/lanes/resolve.mjs" "$FAKE_REPO_NO_CLAUDEX/scripts/lanes/resolve.mjs"
+cp "$REPO_ROOT/scripts/lanes/probe.mjs" "$FAKE_REPO_NO_CLAUDEX/scripts/lanes/probe.mjs"
+: > "$FAKE_REPO_NO_CLAUDEX/scripts/telegram/spawn-glm.ts"
+
+# PATH stub with bun's directory removed (mandatory negative test — a live
+# credential but no Bun runtime). Stubbing PATH rather than mutating the real
+# environment; jq/node/bash stay reachable since only bun's dir is dropped.
+if BUN_PATH=$(command -v bun 2>/dev/null); then
+    BUN_DIR=$(dirname "$BUN_PATH")
+else
+    BUN_DIR=""
+fi
+# grep -x anchors the pattern to the WHOLE line, so an empty BUN_DIR (bun
+# already absent from this machine's PATH) matches nothing — no PATH entry is
+# ever the literal empty string — and every line survives -v unchanged. That
+# is exactly the desired no-op: PATH already lacks bun in that case, so
+# nothing needs stripping and jq/node/bash stay reachable. (A plain `grep -v`
+# without `-x` would collapse the whole PATH here, since an empty pattern is
+# a substring of every line — that is NOT what this uses.)
+STUB_PATH_NO_BUN=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$BUN_DIR" | tr '\n' ':')
+
+# Resolve bash ONCE from the suite's own unmodified PATH, before any test
+# hands `env` a narrowed one (HIMMEL-1567). run_hook invokes this absolute
+# path so a PATH override decides what the HOOK sees, never whether the hook
+# can be started at all.
+BASH_ABS=$(command -v bash)
+if [ -z "$BASH_ABS" ]; then
+    echo "FATAL: cannot resolve bash on PATH" >&2
+    exit 1
+fi
+
+# HIMMEL-1567: the suite is not hermetic to whether the real `bun` binary is
+# on the runner's PATH -- it isn't on the CI (ubuntu-latest) box, so every
+# assertion below that expects the guard to treat claudex/glm as runnable
+# silently degraded to the "bun is not on PATH — skipping it" branch and
+# never reached the refusal it was asserting. Force runnability by default: a
+# stub `bun` (the guard only ever does `command -v bun`, never executes it)
+# on a directory prepended to PATH. The one test that must see a REAL absence
+# of bun (RC31 below) overrides PATH wholesale via run_hook's env seam, which
+# wins over this default.
+STUB_BUN_DIR="$TMP/stub-bun-bin"
+mkdir -p "$STUB_BUN_DIR"
+cat > "$STUB_BUN_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$STUB_BUN_DIR/bun"
 
 pass=0
 fail=0
 
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
-    if [ "$actual" = "$expected" ]; then
+    if [ "$expected" = "$actual" ]; then
         echo "ok   $label (rc=$actual)"
         pass=$((pass + 1))
     else
@@ -37,10 +101,10 @@ assert_rc() {
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
     if grepq "$haystack" -F "$needle"; then
-        echo "ok   $label (contains '$needle')"
+        echo "ok   $label"
         pass=$((pass + 1))
     else
-        echo "FAIL $label — did not contain '$needle'"
+        echo "FAIL $label — missing '$needle'"
         echo "  actual: $haystack"
         fail=$((fail + 1))
     fi
@@ -49,7 +113,7 @@ assert_contains() {
 assert_empty() {
     local label="$1" actual="$2"
     if [ -z "$actual" ]; then
-        echo "ok   $label (empty)"
+        echo "ok   $label"
         pass=$((pass + 1))
     else
         echo "FAIL $label — expected empty, got: $actual"
@@ -57,201 +121,248 @@ assert_empty() {
     fi
 }
 
-# payload_full <subagent_type> <model> <prompt> — all three fields present.
-payload_full() {
-    jq -n --arg st "$1" --arg m "$2" --arg p "$3" \
-        '{"tool_name":"Agent","tool_input":{"subagent_type":$st,"model":$m,"prompt":$p}}'
+payload() {
+    jq -nc --arg st "$1" --arg m "$2" --arg d "$3" --arg p "$4" \
+        '{tool_name:"Agent",session_id:"sess-test",tool_input:{subagent_type:$st,description:$d,prompt:$p,model:$m}}'
 }
 
-# payload_no_model <subagent_type> <prompt> — model key OMITTED entirely.
 payload_no_model() {
-    jq -n --arg st "$1" --arg p "$2" \
-        '{"tool_name":"Agent","tool_input":{"subagent_type":$st,"prompt":$p}}'
+    jq -nc --arg st "$1" --arg d "$2" --arg p "$3" \
+        '{tool_name:"Agent",session_id:"sess-test",tool_input:{subagent_type:$st,description:$d,prompt:$p}}'
 }
 
-# mkcache <path> <utilization-literal>
+large_payload() {
+    jq -nc '{tool_name:"Agent",session_id:"sess-test",tool_input:{subagent_type:"general-purpose",description:"large classifier fixture",prompt:("implement the fix "+("padding "*20000)),model:"sonnet"}}'
+}
+
 mkcache() {
-    # resets_at = a FUTURE epoch (live window) — the guard treats an expired
-    # window as UNKNOWN (see T14), so deny/warn fixtures must stay live.
     printf '{"five_hour":{"utilization":%s,"resets_at":"%s"}}' "$2" "$(( $(date +%s) + 3600 ))" > "$1"
 }
 
-# run_hook <name> <json> [env KEY=VAL ...] — writes stdout/stderr to
-# $TMP/out-<name> / $TMP/err-<name>, returns rc via echo.
 run_hook() {
-    local name="$1" json="$2"; shift 2
-    printf '%s' "$json" | env "$@" bash "$HOOK" >"$TMP/out-$name" 2>"$TMP/err-$name"
+    local name="$1" registry="$2" json="$3"; shift 3
+    # PATH default (stub bun prepended) comes before "$@" so a caller-supplied
+    # PATH override (e.g. the bun-missing negative test) wins -- env applies
+    # repeated assignments in order, last one takes effect.
+    # Invoke bash by ABSOLUTE path (HIMMEL-1567): `env` resolves the command
+    # name using the PATH it was just handed, so a caller-supplied override
+    # decides whether `bash` is findable at all. STUB_PATH_NO_BUN strips bun's
+    # WHOLE directory, and on a runner where bash lives in that same directory
+    # env would fail 127 before the hook ever ran -- RC31 would then be a
+    # platform-dependent false RED that says nothing about the guard. BASH_ABS
+    # is resolved once, above, from the suite's own unmodified PATH.
+    printf '%s' "$json" | env CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" PATH="$STUB_BUN_DIR:$PATH" "$@" "$BASH_ABS" "$HOOK" \
+        >"$TMP/out-$name" 2>"$TMP/err-$name"
     echo "$?"
 }
 
-echo "=== guard-implementor-dispatch smoke tests ==="
+combined_output() {
+    cat "$TMP/out-$1" "$TMP/err-$1" 2>/dev/null
+}
 
-# T1: Impl-shaped general-purpose+sonnet, util=85 → rc=2, stderr names glm-subagent.
-CACHE1="$TMP/cache1.json"; mkcache "$CACHE1" 85
-RC1=$(run_hook t1 "$(payload_full general-purpose sonnet 'please implement the fix for the failing test')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE1")
-assert_rc "T1 hard-deny rc" 2 "$RC1"
-assert_contains "T1 stderr names glm-subagent" "glm-subagent" "$(cat "$TMP/err-t1")"
+echo "=== lane-routing policy ==="
 
-# T2: Reviewer dispatch (pr-review-toolkit:code-reviewer), reviewer-shaped prompt,
-# util=85 → allow, silent (prompt classifier rejects before the bank check runs).
-CACHE2="$TMP/cache2.json"; mkcache "$CACHE2" 85
-RC2=$(run_hook t2 "$(payload_full pr-review-toolkit:code-reviewer sonnet 'review this PR for quality issues and report findings')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE2")
-assert_rc "T2 reviewer dispatch rc" 0 "$RC2"
-assert_empty "T2 reviewer dispatch stdout" "$(cat "$TMP/out-t2")"
+RC1=$(run_hook impl-claudex "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the guard and commit the changes.')")
+assert_rc "implementation + claudex available refuses" 2 "$RC1"
+ERR1=$(cat "$TMP/err-impl-claudex")
+assert_contains "claudex refusal names dispatcher" "bun scripts/telegram/spawn-claudex.ts '<prompt>' --name <slug> --timeout-mins <n> --effort high" "$ERR1"
+assert_rc "claudex refusal is one line" 1 "$(wc -l < "$TMP/err-impl-claudex" | tr -d ' ')"
 
-# T3: Impl-shaped, util=70 → allow + permissionDecisionReason advisory JSON.
-CACHE3="$TMP/cache3.json"; mkcache "$CACHE3" 70
-RC3=$(run_hook t3 "$(payload_full general-purpose sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE3")
-assert_rc "T3 warn-tier rc" 0 "$RC3"
-assert_contains "T3 warn-tier advisory JSON" "permissionDecisionReason" "$(cat "$TMP/out-t3")"
+RC2=$(run_hook impl-glm "$REG_GLM" "$(payload claude sonnet 'Fix the failing shell test' 'Land the fix.')")
+assert_rc "implementation + glm available refuses" 2 "$RC2"
+assert_contains "glm refusal names dispatcher" "bun scripts/telegram/spawn-glm.ts '<prompt>' --name <slug> --timeout-mins <n>" "$(cat "$TMP/err-impl-glm")"
 
-# T4: Impl-shaped, util=20 → allow, silent.
-CACHE4="$TMP/cache4.json"; mkcache "$CACHE4" 20
-RC4=$(run_hook t4 "$(payload_full general-purpose sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE4")
-assert_rc "T4 low-util rc" 0 "$RC4"
-assert_empty "T4 low-util stdout" "$(cat "$TMP/out-t4")"
+RC3=$(run_hook research "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Research HIMMEL-1513' 'Investigate how to fix the routing drift; report findings only, read-only.')")
+assert_rc "research-shaped dispatch allowed" 0 "$RC3"
+assert_empty "research-shaped dispatch silent" "$(combined_output research)"
 
-# T5: Missing cache → allow + WARN.
-RC5=$(run_hook t5 "$(payload_full general-purpose sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json")
-assert_rc "T5 missing-cache rc" 0 "$RC5"
-assert_contains "T5 missing-cache stderr WARN" "cache not found" "$(cat "$TMP/err-t5")"
+RC4=$(run_hook research-then-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Investigate and fix HIMMEL-1513' 'Research the cause and then implement the fix.')")
+assert_rc "research followed by implementation refuses" 2 "$RC4"
 
-# T6: Stale cache (touch -t, >300s) → allow + WARN.
-CACHE6="$TMP/cache6.json"; mkcache "$CACHE6" 85
-touch -d "1 hour ago" "$CACHE6" 2>/dev/null \
-    || touch -t "$(date -v -1H +%Y%m%d%H%M.%S 2>/dev/null)" "$CACHE6" 2>/dev/null \
-    || true
-RC6=$(run_hook t6 "$(payload_full general-purpose sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE6")
-assert_rc "T6 stale-cache rc" 0 "$RC6"
-assert_contains "T6 stale-cache stderr WARN" "stale" "$(cat "$TMP/err-t6")"
+RC4A=$(run_hook resolve-review-findings "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Resolve review findings' 'Resolve the review findings.')")
+assert_rc "resolve review findings refuses" 2 "$RC4A"
 
-# T7: IMPL_GUARD_OK=1, util=85 → allow, silent (bypass short-circuits before parsing).
-CACHE7="$TMP/cache7.json"; mkcache "$CACHE7" 85
-RC7=$(run_hook t7 "$(payload_full general-purpose sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE7" IMPL_GUARD_OK=1)
-assert_rc "T7 IMPL_GUARD_OK bypass rc" 0 "$RC7"
-assert_empty "T7 IMPL_GUARD_OK bypass stdout" "$(cat "$TMP/out-t7")"
+RC4B=$(run_hook review-address-findings "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Review and address findings' 'Review and address findings.')")
+assert_rc "review and address findings refuses" 2 "$RC4B"
 
-# T7b: IMPL_GUARD_DISABLE=1 → allow, silent.
-RC7B=$(run_hook t7b "$(payload_full general-purpose sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE7" IMPL_GUARD_DISABLE=1)
-assert_rc "T7b IMPL_GUARD_DISABLE bypass rc" 0 "$RC7B"
-assert_empty "T7b IMPL_GUARD_DISABLE bypass stdout" "$(cat "$TMP/out-t7b")"
+RC4C=$(run_hook review-then-resolve "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Review then resolve feedback' 'Review, then resolve feedback.')")
+assert_rc "review then resolve feedback refuses" 2 "$RC4C"
 
-# T8: Absent model + impl prompt, util=85 → deny per HIMMEL-972.
-CACHE8="$TMP/cache8.json"; mkcache "$CACHE8" 85
-RC8=$(run_hook t8 "$(payload_no_model general-purpose 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE8")
-assert_rc "T8 absent-model rc" 2 "$RC8"
-assert_contains "T8 absent-model deny stderr" "glm-subagent" "$(cat "$TMP/err-t8")"
+RC4D=$(run_hook pure-research "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Research lane routing' 'Research how the lane router picks a model.')")
+assert_rc "pure lane-router research remains allowed" 0 "$RC4D"
+assert_empty "pure lane-router research remains silent" "$(combined_output pure-research)"
 
-# T8b: Absent model + impl prompt, util=70 → allow + advisory (WARN tier).
-CACHE8B="$TMP/cache8b.json"; mkcache "$CACHE8B" 70
-RC8B=$(run_hook t8b "$(payload_no_model general-purpose 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE8B")
-assert_rc "T8b absent-model WARN rc" 0 "$RC8B"
-assert_contains "T8b absent-model allow decision" '"permissionDecision":"allow"' "$(cat "$TMP/out-t8b")"
-assert_contains "T8b absent-model advisory JSON" "permissionDecisionReason" "$(cat "$TMP/out-t8b")"
+RC5=$(run_hook worktree "$REG_CLAUDEX" "$(payload general-purpose sonnet 'HIMMEL-1513 worker' 'C:/repo/.claude/worktrees/fix-lane; Platforms tested: windows')")
+assert_rc "worktree/trailer-shaped dispatch refuses" 2 "$RC5"
 
-# T8c: Absent model + non-allow-listed subagent, util=85 → WARN, never deny.
-CACHE8C="$TMP/cache8c.json"; mkcache "$CACHE8C" 85
-RC8C=$(run_hook t8c "$(payload_no_model caveman:cavecrew-builder 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE8C")
-assert_rc "T8c absent-model non-allow-listed rc" 0 "$RC8C"
-assert_contains "T8c absent-model allow decision" '"permissionDecision":"allow"' "$(cat "$TMP/out-t8c")"
-assert_contains "T8c absent-model advisory JSON" "permissionDecisionReason" "$(cat "$TMP/out-t8c")"
+RC6=$(run_hook ticket-only "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Summarize HIMMEL-1513' 'Summarize HIMMEL-1513 for the handover.')")
+assert_rc "bare ticket ID does not imply implementation" 0 "$RC6"
+assert_empty "bare ticket summary silent" "$(combined_output ticket-only)"
 
-# T9: Haiku impl dispatch, util=85 → allow, silent.
-CACHE9="$TMP/cache9.json"; mkcache "$CACHE9" 85
-RC9=$(run_hook t9 "$(payload_full general-purpose haiku 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE9")
-assert_rc "T9 haiku rc" 0 "$RC9"
-assert_empty "T9 haiku stdout" "$(cat "$TMP/out-t9")"
+RC7=$(run_hook large "$REG_CLAUDEX" "$(large_payload)")
+assert_rc "large early-match prompt still classifies" 2 "$RC7"
 
-# T10: Malformed JSON → allow.
-RC10=$(run_hook t10 'not-json{{{')
-assert_rc "T10a malformed-JSON rc" 0 "$RC10"
+CACHE_LOW="$TMP/cache-low.json"; mkcache "$CACHE_LOW" 20
+RC8=$(run_hook unavailable-low "$REG_NONE" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "lane unavailable + low bank allows" 0 "$RC8"
+assert_empty "lane unavailable + low bank silent" "$(combined_output unavailable-low)"
 
-# T10b: missing jq (empty PATH; hook exits before touching stdin/other binaries).
+RC9=$(run_hook explore "$REG_CLAUDEX" "$(payload Explore sonnet 'Find implementation sites' 'Explore where to implement the fix; do not edit.')")
+assert_rc "Explore agent allowed" 0 "$RC9"
+RC10=$(run_hook lane-wrapper "$REG_CLAUDEX" "$(payload himmel-ops:claudex-subagent sonnet 'Implement HIMMEL-1513' 'Implement and commit the guard.')")
+assert_rc "claudex lane wrapper allowed" 0 "$RC10"
+
+# Plan remains exempt from lane routing, while the independent bank policy can
+# still act. At low utilization, a Plan implementation prompt is allowed.
+RC11=$(run_hook plan-low "$REG_CLAUDEX" "$(payload Plan sonnet 'Implementation worker' 'Write the implementation.')" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "Plan is lane-exempt at low bank" 0 "$RC11"
+assert_empty "Plan lane exemption is silent at low bank" "$(combined_output plan-low)"
+
+echo ""
+echo "=== overrides and fail-open seams ==="
+
+OVERRIDE_LOG="$TMP/override.jsonl"
+RC12=$(run_hook override "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write and commit the fix.')" IMPL_GUARD_OK=1 IMPL_GUARD_LOG="$OVERRIDE_LOG")
+assert_rc "override allows" 0 "$RC12"
+assert_contains "override warns" "explicit session override" "$(cat "$TMP/err-override")"
+assert_contains "override audit log records env" '"override":"IMPL_GUARD_OK"' "$(cat "$OVERRIDE_LOG" 2>/dev/null || true)"
+assert_contains "override audit log records model" '"model":"sonnet"' "$(cat "$OVERRIDE_LOG" 2>/dev/null || true)"
+
+DISABLE_LOG="$TMP/disable.jsonl"
+RC13=$(run_hook disable "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write and commit the fix.')" IMPL_GUARD_DISABLE=1 IMPL_GUARD_LOG="$DISABLE_LOG")
+assert_rc "kill switch allows" 0 "$RC13"
+assert_contains "kill switch audit log records env" '"override":"IMPL_GUARD_DISABLE"' "$(cat "$DISABLE_LOG" 2>/dev/null || true)"
+
+RC14=$(run_hook malformed "$REG_CLAUDEX" 'not-json{{{')
+assert_rc "malformed input allows" 0 "$RC14"
+
+MISSING_ROOT="$TMP/no-repo"
+mkdir -p "$MISSING_ROOT"
+printf '%s' "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code.')" \
+    | env CLAUDE_PROJECT_DIR="$MISSING_ROOT" LANES_REGISTRY="$REG_CLAUDEX" IMPL_GUARD_CACHE_PATH="$CACHE_LOW" bash "$HOOK" \
+        >"$TMP/out-missing" 2>"$TMP/err-missing"
+RC15=$?
+assert_rc "missing resolver allows when bank cannot be checked" 0 "$RC15"
+assert_contains "missing resolver reports lane fail-open" "lane resolver missing" "$(cat "$TMP/err-missing")"
+
 BASH_ABS=$(command -v bash)
 EMPTY_DIR="$TMP/empty-path"
 mkdir -p "$EMPTY_DIR"
-printf '%s' "$(payload_full general-purpose sonnet 'implement the fix')" \
-    | env PATH="$EMPTY_DIR" "$BASH_ABS" "$HOOK" >"$TMP/out-t10b" 2>"$TMP/err-t10b"
-RC10B=$?
-assert_rc "T10b missing-jq rc" 0 "$RC10B"
+printf '%s' "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code.')" \
+    | env PATH="$EMPTY_DIR" "$BASH_ABS" "$HOOK" >"$TMP/out-no-jq" 2>"$TMP/err-no-jq"
+RC16=$?
+assert_rc "missing jq allows" 0 "$RC16"
+assert_contains "missing jq reports fail-open" "jq not on PATH" "$(cat "$TMP/err-no-jq")"
 
-# T11: Float utilization "84.5" → correct numeric compare (rc=2 at HARD=80).
-CACHE11="$TMP/cache11.json"; mkcache "$CACHE11" 84.5
-RC11=$(run_hook t11 "$(payload_full general-purpose sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE11")
-assert_rc "T11 float-util hard-deny rc" 2 "$RC11"
+echo ""
+echo "=== bank-aware policy when no lane is available ==="
 
-# T12: Leaked-epoch utilization (1783836000) → clamped → UNKNOWN → allow + WARN.
-CACHE12="$TMP/cache12.json"; mkcache "$CACHE12" 1783836000
-RC12=$(run_hook t12 "$(payload_full general-purpose sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE12")
-assert_rc "T12 leaked-epoch rc" 0 "$RC12"
-assert_contains "T12 leaked-epoch stderr WARN" "unusable" "$(cat "$TMP/err-t12")"
+CACHE_HARD="$TMP/cache-hard.json"; mkcache "$CACHE_HARD" 85
+RC17=$(run_hook bank-hard "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
+assert_rc "no lane + live HARD bank refuses" 2 "$RC17"
+assert_contains "bank refusal keeps HIMMEL-920 message" "5-hour bank at 85%" "$(cat "$TMP/err-bank-hard")"
+assert_contains "bank refusal names cheaper-lane choices" "himmel-ops:glm-subagent" "$(cat "$TMP/err-bank-hard")"
 
-# T13: Prompt containing "dispatch" but no marker → allow (the `patch` substring
-# FP — "dispatch" contains "patch" — is dead because `patch` was dropped).
-CACHE13="$TMP/cache13.json"; mkcache "$CACHE13" 85
-RC13=$(run_hook t13 "$(payload_full general-purpose sonnet 'dispatch this task to the subagent')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE13")
-assert_rc "T13 dispatch-no-marker rc" 0 "$RC13"
-assert_empty "T13 dispatch-no-marker stdout" "$(cat "$TMP/out-t13")"
+CACHE_WARN="$TMP/cache-warn.json"; mkcache "$CACHE_WARN" 70
+RC18=$(run_hook bank-warn "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_WARN")
+assert_rc "WARN bank allows" 0 "$RC18"
+assert_contains "WARN bank emits visible allow decision" '"permissionDecision":"allow"' "$(cat "$TMP/out-bank-warn")"
+assert_contains "WARN bank emits permissionDecisionReason" "permissionDecisionReason" "$(cat "$TMP/out-bank-warn")"
 
-# T14: expired five_hour window (resets_at in the past) → the value predates
-# a bank reset (the producer preserves stale five_hour under a fresh mtime on
-# seven_day-only payloads) → UNKNOWN → allow + WARN, never a spurious DENY.
-CACHE14="$TMP/cache14.json"
-printf '{"five_hour":{"utilization":%s,"resets_at":"%s"}}' 85 "$(( $(date +%s) - 100 ))" > "$CACHE14"
-RC14=$(run_hook t14 "$(payload_full general-purpose sonnet 'implement the fix')"     IMPL_GUARD_CACHE_PATH="$CACHE14")
-assert_rc "T14 expired-window rc (allow)" 0 "$RC14"
-assert_contains "T14 expired-window WARN" "window expired" "$(cat "$TMP/err-t14")"
+RC19=$(run_hook bank-low "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "low bank allows" 0 "$RC19"
+assert_empty "low bank silent" "$(combined_output bank-low)"
 
-# T15/T16 (codex-adv round 2): realistic CR-fix dispatch wording — the exact
-# s40 pattern this guard exists for — must classify as impl-shaped.
-CACHE15="$TMP/cache15.json"; mkcache "$CACHE15" 85
-RC15=$(run_hook t15 "$(payload_full general-purpose sonnet 'address the CodeRabbit comments on this PR and push')"     IMPL_GUARD_CACHE_PATH="$CACHE15")
-assert_rc "T15 address-coderabbit-comments rc (deny)" 2 "$RC15"
-RC16=$(run_hook t16 "$(payload_full general-purpose sonnet 'resolve all review findings from the panel')"     IMPL_GUARD_CACHE_PATH="$CACHE15")
-assert_rc "T16 resolve-review-findings rc (deny)" 2 "$RC16"
+RC20=$(run_hook bank-missing "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$TMP/does-not-exist.json")
+assert_rc "missing cache allows" 0 "$RC20"
+assert_contains "missing cache warns" "cache not found" "$(cat "$TMP/err-bank-missing")"
 
-# T17/T18 (codex-adv r3): HARD deny requires a provably-live window.
-# Absent resets_at -> downgrade to the advisory JSON (never a false block);
-# a fractional-second ISO future resets_at parses and still denies.
-CACHE17="$TMP/cache17.json"
-printf '{"five_hour":{"utilization":85}}' > "$CACHE17"
-RC17=$(run_hook t17 "$(payload_full general-purpose sonnet 'implement the fix')"     IMPL_GUARD_CACHE_PATH="$CACHE17")
-assert_rc "T17 no-resets_at at HARD rc (allow, downgraded)" 0 "$RC17"
-assert_contains "T17 downgraded advisory JSON" "permissionDecisionReason" "$(cat "$TMP/out-t17")"
-CACHE18="$TMP/cache18.json"
-printf '{"five_hour":{"utilization":85,"resets_at":"%s"}}' "$(date -u -d "@$(( $(date +%s) + 3600 ))" '+%Y-%m-%dT%H:%M:%S.000Z' 2>/dev/null || python3 -c "import datetime,time;print(datetime.datetime.utcfromtimestamp(time.time()+3600).strftime('%Y-%m-%dT%H:%M:%S.000Z'))")" > "$CACHE18"
-RC18=$(run_hook t18 "$(payload_full general-purpose sonnet 'implement the fix')"     IMPL_GUARD_CACHE_PATH="$CACHE18")
-assert_rc "T18 fractional-ISO future resets_at rc (deny)" 2 "$RC18"
+CACHE_STALE="$TMP/cache-stale.json"; mkcache "$CACHE_STALE" 85
+touch -d "1 hour ago" "$CACHE_STALE" 2>/dev/null \
+    || touch -t "$(date -v -1H +%Y%m%d%H%M.%S 2>/dev/null)" "$CACHE_STALE" 2>/dev/null \
+    || true
+RC21=$(run_hook bank-stale "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_STALE")
+assert_rc "stale cache allows" 0 "$RC21"
+assert_contains "stale cache warns" "stale" "$(cat "$TMP/err-bank-stale")"
 
-# T19/T20 (HIMMEL-1045): the DENY allow-list swapped feature-dev:code-architect
-# → the built-in Plan agent. At util=85 + sonnet + impl prompt:
-#   - feature-dev:code-architect is NO LONGER in-set → not hard-deny (rc=0).
-#   - Plan IS in-set → hard-deny (rc=2), same shape as T1's general-purpose.
-CACHE19="$TMP/cache19.json"; mkcache "$CACHE19" 85
-RC19=$(run_hook t19 "$(payload_full feature-dev:code-architect sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE19")
-assert_rc "T19 feature-dev:code-architect removed-from-set rc (allow)" 0 "$RC19"
+CACHE_UNKNOWN="$TMP/cache-unknown.json"; mkcache "$CACHE_UNKNOWN" 1783836000
+RC22=$(run_hook bank-unknown "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_UNKNOWN")
+assert_rc "unusable utilization allows" 0 "$RC22"
+assert_contains "unusable utilization warns" "unusable" "$(cat "$TMP/err-bank-unknown")"
 
-CACHE20="$TMP/cache20.json"; mkcache "$CACHE20" 85
-RC20=$(run_hook t20 "$(payload_full Plan sonnet 'implement the fix')" \
-    IMPL_GUARD_CACHE_PATH="$CACHE20")
-assert_rc "T20 Plan in-set hard-deny rc" 2 "$RC20"
-assert_contains "T20 Plan in-set deny stderr names glm-subagent" "glm-subagent" "$(cat "$TMP/err-t20")"
+CACHE_EXPIRED="$TMP/cache-expired.json"
+printf '{"five_hour":{"utilization":85,"resets_at":"%s"}}' "$(( $(date +%s) - 100 ))" > "$CACHE_EXPIRED"
+RC23=$(run_hook bank-expired "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_EXPIRED")
+assert_rc "expired five_hour window allows" 0 "$RC23"
+assert_contains "expired five_hour window warns" "window expired" "$(cat "$TMP/err-bank-expired")"
+
+CACHE_NO_RESET="$TMP/cache-no-reset.json"
+printf '%s' '{"five_hour":{"utilization":85}}' > "$CACHE_NO_RESET"
+RC24=$(run_hook bank-no-reset "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_NO_RESET")
+assert_rc "HARD without resets_at downgrades to allow" 0 "$RC24"
+assert_contains "missing resets_at downgrade is visible allow" '"permissionDecision":"allow"' "$(cat "$TMP/out-bank-no-reset")"
+assert_contains "missing resets_at downgrade carries reason" "permissionDecisionReason" "$(cat "$TMP/out-bank-no-reset")"
+
+CACHE_FLOAT="$TMP/cache-float.json"; mkcache "$CACHE_FLOAT" 84.5
+RC25=$(run_hook bank-float "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_FLOAT")
+assert_rc "float utilization compares safely at HARD" 2 "$RC25"
+
+RC26=$(run_hook bank-absent-model "$REG_NONE" "$(payload_no_model general-purpose 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
+assert_rc "absent model remains HARD-eligible" 2 "$RC26"
+assert_contains "absent-model bank refusal names shape" "general-purpose/<no-model>" "$(cat "$TMP/err-bank-absent-model")"
+
+RC27=$(run_hook bank-noneligible "$REG_NONE" "$(payload custom-worker sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
+assert_rc "non-allow-listed worker warns, never HARD-refuses" 0 "$RC27"
+assert_contains "non-allow-listed HARD utilization gets advisory" '"permissionDecision":"allow"' "$(cat "$TMP/out-bank-noneligible")"
+
+RC28=$(run_hook plan-hard "$REG_CLAUDEX" "$(payload Plan sonnet 'Implementation worker' 'Write the implementation.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
+assert_rc "Plan lane exemption still retains bank HARD guard" 2 "$RC28"
+assert_contains "Plan bank refusal names Plan shape" "Plan/sonnet" "$(cat "$TMP/err-plan-hard")"
+
+RC29=$(run_hook haiku "$REG_CLAUDEX" "$(payload general-purpose HaIkU 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
+assert_rc "Haiku always allows despite lane and HARD bank" 0 "$RC29"
+assert_empty "Haiku always-allow is silent" "$(combined_output haiku)"
+
+RC29B=$(run_hook haiku-full-id "$REG_CLAUDEX" "$(payload general-purpose claude-haiku-4-5-20251001 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
+assert_rc "full Haiku model identifier also always allows" 0 "$RC29B"
+assert_empty "full Haiku identifier always-allow is silent" "$(combined_output haiku-full-id)"
+
+CACHE_ISO="$TMP/cache-iso.json"
+ISO_FUTURE=$(node -e "console.log(new Date(Date.now()+3600000).toISOString())")
+printf '{"five_hour":{"utilization":85,"resets_at":"%s"}}' "$ISO_FUTURE" > "$CACHE_ISO"
+RC30=$(run_hook bank-iso "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_ISO")
+assert_rc "fractional ISO future resets_at authorizes HARD" 2 "$RC30"
+
+echo ""
+echo "=== HIMMEL-1513: a registry-available lane must also be runnable ==="
+
+# 1. MANDATORY negative test — credential present (registry says claudex is
+# available) but bun is NOT resolvable on PATH. The caller must not be
+# stranded on a refusal toward a command that cannot execute.
+RC31=$(run_hook bun-missing "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" PATH="$STUB_PATH_NO_BUN" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "credential present but bun missing does not strand the caller" 0 "$RC31"
+assert_contains "bun-missing warns why claudex was skipped" "bun is not on PATH" "$(cat "$TMP/err-bun-missing")"
+
+# 2. Dispatcher script missing — registry reports claudex, bun exists, but
+# scripts/telegram/spawn-claudex.ts is absent from the (fake) checkout.
+RC32=$(run_hook dispatcher-missing "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" CLAUDE_PROJECT_DIR="$FAKE_REPO_NO_CLAUDEX" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "missing dispatcher script does not strand the caller" 0 "$RC32"
+assert_contains "dispatcher-missing warns why claudex was skipped" "dispatcher is missing" "$(cat "$TMP/err-dispatcher-missing")"
+
+# 3. Fallback to the runnable lane — claudex is registry-available but not
+# runnable (its dispatcher is missing), glm is registry-available AND fully
+# runnable. The guard must refuse toward glm, not strand the caller.
+RC33=$(run_hook fallback-to-glm "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" CLAUDE_PROJECT_DIR="$FAKE_REPO_NO_CLAUDEX" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "unrunnable claudex falls back to runnable glm, refuses" 2 "$RC33"
+assert_contains "fallback refusal names the glm dispatcher" "bun scripts/telegram/spawn-glm.ts '<prompt>' --name <slug> --timeout-mins <n>" "$(cat "$TMP/err-fallback-to-glm")"
+
+# 4. Unchanged happy path — when BOTH lanes are registry-available AND
+# actually runnable (real checkout, real bun), the guard still refuses and
+# still prefers claudex over glm. Proves the runnability check does not
+# defeat the guard or disturb the resolver-preference order.
+RC34=$(run_hook both-runnable "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "both lanes runnable still refuses, prefers claudex" 2 "$RC34"
+assert_contains "preference-order refusal names the claudex dispatcher" "bun scripts/telegram/spawn-claudex.ts '<prompt>' --name <slug> --timeout-mins <n> --effort high" "$(cat "$TMP/err-both-runnable")"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

@@ -22,6 +22,7 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 - [commands-catalog.md](commands-catalog.md) — every project-local slash command.
 - [tooling-catalog.md](tooling-catalog.md) — every tool, script, and plugin in active use.
 - [jarvis-subsystems.md](jarvis-subsystems.md) — adopter usage map of the optional agentic-OS subsystems (GLM lane, quota-gauge, escalation channel, statusline, clipper pipeline).
+- [voice.md](voice.md) — **BETA.** Local speech I/O: `/speak`, the off-by-default `Stop` hook, the daemon, wake word and push-to-talk. Detached and hand-launched — not a `himmelctl` install item, not in the adopter template, and it needs a local runtime that is not in the repo.
 - [operator-conventions.md](operator-conventions.md) — durable operator working-habits.
 - [contributing.md](contributing.md) — the contribution workflow.
 - [glm-offload.md](glm-offload.md) — the GLM-lane offload loop (spawn a GLM worker from the main session, review its diff through the normal CR loop).

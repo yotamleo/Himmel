@@ -89,6 +89,43 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: guardrail-matrices
+        name: guardrail matrix invariants (egress + voice policy, HIMMEL-1522)
+        entry: bash scripts/hooks/check-guardrail-matrices.sh
+        language: system
+        # Also fires on the voice enforcement profile (codex-4): scoping this to
+        # scripts/guardrails/ alone meant voice-permissions.json — the file that
+        # actually carries the read-side denies — could be weakened without the
+        # guardrail suites ever running. The guard must cover every file it guards.
+        # Covers the profile AND the runtime files that pass --permission-mode
+        # / --settings (codex-1). Guarding the profile alone still let the code
+        # that applies it stop applying it.
+        # The guard SCRIPT itself must be covered too (codex-2): it lives under
+        # scripts/hooks/, which the other two alternatives do not reach, so an
+        # edit that broke the guard would not have run the guard.
+        files: ^(scripts/guardrails/|scripts/hooks/check-guardrail-matrices\.sh$|scripts/voice/(voice-permissions\.json|jarvis\.py|voice-loop\.ps1)$)
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: hook-lib-node-suites
+        name: scripts/hooks + scripts/lib node suites (HIMMEL-1578)
+        entry: bash scripts/hooks/check-hook-lib-suites.sh
+        language: system
+        # Scoped to the suites, the code they cover, AND the two files they
+        # build their fixtures FROM. The breakage that motivated this hook
+        # (wire-hook-bash.test.mjs, 6-of-7 RED on main for a day) was introduced
+        # by an edit to .claude/settings.json — commit 7c938836 added a Stop
+        # hook — NOT by an edit under scripts/hooks/. A guard scoped to the code
+        # alone would have missed the exact regression it exists to catch.
+        # Same lesson as guardrail-matrices above: the guard must cover every
+        # file it guards, and here that includes its fixture sources AND this
+        # guard's own script — a .sh under scripts/hooks/, which the .mjs
+        # alternative does not reach, so an edit that broke the guard would
+        # otherwise not have run the guard.
+        files: ^(scripts/(hooks|lib)/.*\.mjs$|scripts/hooks/check-hook-lib-suites\.sh$|\.claude/settings\.json$|marketplace/plugins/himmel-ops/hooks/hooks\.json$)
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: hud-drift
         name: vendored claude-hud drift guard (himmel-dev only, HIMMEL-718)
         language: system

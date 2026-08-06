@@ -387,6 +387,61 @@ fi
 rm -rf "$sb10"
 
 # --------------------------------------------------------------------------
+# Case 11 — known slow suites get path-specific budgets unless the operator
+# supplies an explicit global SUITE_TIMEOUT (HIMMEL-1542). A sleep stub records
+# the watchdog delay without waiting for it; the suite exits before the stub's
+# real sleep completes, so the runner cancels the watchdog normally.
+# --------------------------------------------------------------------------
+echo "== Case 11: known slow suite budget and explicit override =="
+sb11=$(mktemp -d -t himmel-suite-budget.XXXXXX)
+mkdir -p "$sb11/scripts/handover" "$sb11/bin"
+cat > "$sb11/scripts/handover/test-arm-resume-identity.sh" <<'SHEOF'
+#!/usr/bin/env bash
+command -p sleep 1
+exit 0
+SHEOF
+cat > "$sb11/bin/sleep" <<'SHEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$SLEEP_LOG"
+command -p sleep 5
+SHEOF
+chmod +x "$sb11/scripts/handover/test-arm-resume-identity.sh" "$sb11/bin/sleep"
+
+SLEEP_LOG="$sb11/default-timeout.log" PATH="$sb11/bin:$PATH" \
+  env -u SUITE_TIMEOUT bash "$RUNNER" "$sb11/scripts" >/dev/null 2>&1
+rc11a=$?
+if [ "$rc11a" -eq 0 ] && [ "$(cat "$sb11/default-timeout.log" 2>/dev/null)" = "1800" ]; then
+  pass "known slow suite receives its 1800s path-specific budget"
+else
+  fail "known slow suite budget: rc=$rc11a recorded=$(cat "$sb11/default-timeout.log" 2>/dev/null) (want rc=0, 1800)"
+fi
+
+SLEEP_LOG="$sb11/explicit-timeout.log" PATH="$sb11/bin:$PATH" SUITE_TIMEOUT=7 \
+  bash "$RUNNER" "$sb11/scripts" >/dev/null 2>&1
+rc11b=$?
+if [ "$rc11b" -eq 0 ] && [ "$(cat "$sb11/explicit-timeout.log" 2>/dev/null)" = "7" ]; then
+  pass "explicit SUITE_TIMEOUT overrides the path-specific budget"
+else
+  fail "explicit timeout override: rc=$rc11b recorded=$(cat "$sb11/explicit-timeout.log" 2>/dev/null) (want rc=0, 7)"
+fi
+# A MALFORMED SUITE_TIMEOUT must not count as an explicit global override
+# (HIMMEL-1542 CR round 1). Presence-only detection let an empty / zero /
+# non-numeric value pin every suite to the 180s fallback, which is precisely
+# the rc=124 failure the path-specific budgets exist to prevent.
+for bad in '' '0' 'abc'; do
+  log11="$sb11/bad-${bad:-empty}.log"
+  SLEEP_LOG="$log11" PATH="$sb11/bin:$PATH" SUITE_TIMEOUT="$bad" \
+    bash "$RUNNER" "$sb11/scripts" >/dev/null 2>&1
+  rc11c=$?
+  if [ "$rc11c" -eq 0 ] && [ "$(cat "$log11" 2>/dev/null)" = "1800" ]; then
+    pass "malformed SUITE_TIMEOUT='$bad' falls back to the path-specific budget"
+  else
+    fail "malformed SUITE_TIMEOUT='$bad': rc=$rc11c recorded=$(cat "$log11" 2>/dev/null) (want rc=0, 1800)"
+  fi
+done
+rm -rf "$sb11"
+
+# --------------------------------------------------------------------------
 # Final tally
 # --------------------------------------------------------------------------
 echo

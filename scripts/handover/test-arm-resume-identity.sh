@@ -82,6 +82,8 @@ mkdir -p "$HANDOVER_DIR"
 export HANDOVER_DIR
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
+export WORKER_BRIDGE_ROOT="$TMP/bridge"
+mkdir -p "$WORKER_BRIDGE_ROOT/glm-sessions" "$WORKER_BRIDGE_ROOT/claudex-sessions"
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK SCHED_CREATE_FAIL 2>/dev/null || true
 
 # A real git repo to pin resume_cwd against (so RESUME_CWD is deterministic
@@ -91,8 +93,17 @@ WORK_REPO="$TMP/work-repo"
 mkdir -p "$WORK_REPO"
 git init -q "$WORK_REPO"
 
-# A near future time keeps these identity/transaction fixtures inside the
-# HIMMEL-1475 explicit-HH:MM long-gap limit.
+# HIMMEL-1543: FUTURE_TIME is captured ONCE (every alias/dedup pair in Groups 1-2
+# must share ONE target time, else two arms for the same handover park at
+# different minutes and the aliasing assertions lose their meaning). But this
+# suite runs 40+ min, so by Group 3 the wall clock has passed FUTURE_TIME,
+# arm-resume.sh resolves it to ~tomorrow (>60 min out), and the HIMMEL-1475
+# long-gap guard refuses rc=9 before the injected condition is ever reached.
+# So EVERY arm below carries --long-gap: this suite's subject is identity,
+# dedup and transactionality, NOT the long-gap guard, and --long-gap is a no-op
+# for an arm already inside the 60-min window (so it cannot regress a fast run).
+# The guard itself stays covered by the dedicated Group 4 case. FUTURE_TIME is a
+# near-future value only so the asserted rc/slot shape is realistic.
 FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
 FAILED=0
 
@@ -141,6 +152,12 @@ count_slots() {
     case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         msys*|cygwin*|win32*|MINGW*)
             if [ -f "$1" ]; then local c; c=$(grep -c . "$1" 2>/dev/null); echo "${c:-0}"; else echo 0; fi ;;
+        darwin*)
+            # macOS uses crontab ONLY (arm-resume.sh PLATFORM=macos), whose stub
+            # store is $dir/crontab.fixture -- NOT $db (schtasks) or job-*
+            # (at). Counting either of those here would always read 0 on Darwin
+            # and make every slot-survival assertion vacuously pass.
+            if [ -f "$2/crontab.fixture" ]; then local c; c=$(grep -c . "$2/crontab.fixture" 2>/dev/null); echo "${c:-0}"; else echo 0; fi ;;
         *)
             find "$2" -maxdepth 1 -name 'job-*' 2>/dev/null | wc -l | tr -d ' ' ;;
     esac
@@ -282,7 +299,62 @@ echo 'HKEY_CURRENT_USER\Control Panel\International'
 echo '    sShortDate    REG_SZ    M/d/yyyy'
 exit 0
 EOF
-    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude" "$dir/powershell" "$dir/reg"
+    cat > "$dir/crontab" <<'EOF'
+#!/usr/bin/env bash
+# Stateful crontab stub (HIMMEL-1567). arm-resume.sh routes macOS (Darwin)
+# through crontab ONLY -- list_existing()'s macos arm calls _crontab_list, which
+# is `crontab -l | grep`, and _crontab_schedule/_crontab_delete rewrite via
+# `| crontab -` (arm-resume.sh ~:1415-1629). Without a stub here, a local
+# Darwin run resolves the REAL crontab binary and reads -- and via
+# _crontab_delete's rewrite, WRITES -- the operator's machine-wide crontab
+# outside this suite's fixture. That is a fixture escape; this stub closes it.
+# State lives in a fixture file inside $SCHED_DB_DIR -- `:?` so an unset var is
+# a LOUD failure, never a silent fall-through to the real binary (mirrors the
+# at/atq/atrm guard). PATH="$STUB:$PATH" puts this ahead of any real crontab,
+# and the `:?` is the belt-and-suspenders: there is no code path where an unset
+# var degrades into touching $HOME's crontab.
+d="${SCHED_DB_DIR:?SCHED_DB_DIR unset}"; mkdir -p "$d"
+db="$d/crontab.fixture"
+case "${1:-}" in
+    -l)
+        # Real `crontab -l` exits 1 ("no crontab for user"), no output, when the
+        # crontab is empty. _crontab_list/_crontab_delete/_crontab_schedule all
+        # guard that (`2>/dev/null || true` / `if ! crontab -l; then : > snap`),
+        # so model it honestly rather than always exiting 0.
+        if [ -s "$db" ]; then cat "$db"; exit 0; else exit 1; fi ;;
+    -)
+        # Install from stdin (REPLACE the whole fixture) -- the verb both
+        # _crontab_schedule (append entry) and _crontab_delete (drop one line)
+        # rewrite through. SCHED_CREATE_FAIL=1 makes the install path exit
+        # nonzero so G3.3/G3.4's "fails inside schedule_arm" failure injection
+        # works on Darwin exactly as schtasks /create and `at -t` do on the
+        # other two platforms. Fail BEFORE writing so the fixture is untouched.
+        if [ "${SCHED_CREATE_FAIL:-0}" = "1" ]; then
+            echo "stub: crontab install deliberately failing (SCHED_CREATE_FAIL=1)" >&2
+            exit 9
+        fi
+        cat > "$db"; exit 0 ;;
+    -r)
+        : > "$db"; exit 0 ;;
+    "")
+        # Piped stdin with no flag = replace (some call sites `printf ... | crontab`).
+        if [ "${SCHED_CREATE_FAIL:-0}" = "1" ]; then exit 9; fi
+        cat > "$db"; exit 0 ;;
+    -*)
+        # Unknown flag (-e editor, -u user): NEVER touch real state. Drain any
+        # piped stdin so a writer does not see a spurious SIGPIPE, exit 0 so a
+        # probe-by-existence sees a present binary.
+        cat > /dev/null 2>&1 || true; exit 0 ;;
+    *)
+        # A bare file arg = install from that file (real `crontab <file>`).
+        if [ -f "$1" ]; then
+            if [ "${SCHED_CREATE_FAIL:-0}" = "1" ]; then exit 9; fi
+            cat "$1" > "$db"; exit 0
+        fi
+        cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
+EOF
+    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude" "$dir/powershell" "$dir/reg" "$dir/crontab"
 }
 
 STUB="$TMP/stub-bin"
@@ -303,13 +375,13 @@ echo "== Group 1: aliasing must collapse to ONE slot (defect A false-negative) =
 G1A_DIR="$HANDOVER_DIR/g1a"
 HO_ABS="$G1A_DIR/x.md"; mk_ho "$HO_ABS"
 DB1=$(new_db "$TMP/db1.tasks")
-out=$(SCHED_DB="$DB1" SCHED_DB_DIR="${DB1}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_ABS" 2>&1)
+out=$(SCHED_DB="$DB1" SCHED_DB_DIR="${DB1}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_ABS" 2>&1)
 rc=$?
 assert_rc "G1.1a canonical absolute arm succeeds" 0 "$rc" "$out"
 # Run the alias arm from INSIDE the handover dir so ./x.md resolves to the file
 # (cd runs in the command-substitution subshell; env prefixes apply to bash).
 out=$( cd "$G1A_DIR" && SCHED_DB="$DB1" SCHED_DB_DIR="${DB1}.atdir" PATH="$STUB:$PATH" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover ./x.md 2>&1 )
+    bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover ./x.md 2>&1 )
 rc=$?
 assert_rc "G1.1b alias ./x.md is RECOGNIZED as the same handover (rc 3)" 3 "$rc" "$out"
 assert_slots "G1.1c ONE slot for ./x.md == absolute" 1 "$DB1" "${DB1}.atdir" "$out"
@@ -321,10 +393,10 @@ G1B_DIR="$HANDOVER_DIR/g1b"; mkdir -p "$G1B_DIR/sub"
 HO_DOT="$G1B_DIR/x.md"; mk_ho "$HO_DOT"
 HO_DOT_ALIAS="$G1B_DIR/sub/../x.md"
 DB2=$(new_db "$TMP/db2.tasks")
-out=$(SCHED_DB="$DB2" SCHED_DB_DIR="${DB2}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_DOT" 2>&1)
+out=$(SCHED_DB="$DB2" SCHED_DB_DIR="${DB2}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_DOT" 2>&1)
 rc=$?
 assert_rc "G1.2a canonical arm succeeds" 0 "$rc" "$out"
-out=$(SCHED_DB="$DB2" SCHED_DB_DIR="${DB2}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_DOT_ALIAS" 2>&1)
+out=$(SCHED_DB="$DB2" SCHED_DB_DIR="${DB2}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_DOT_ALIAS" 2>&1)
 rc=$?
 assert_rc "G1.2b redundant-.. alias is RECOGNIZED as the same handover (rc 3)" 3 "$rc" "$out"
 assert_slots "G1.2c ONE slot for x.md == sub/../x.md" 1 "$DB2" "${DB2}.atdir" "$out"
@@ -341,10 +413,10 @@ HO_LINK="$G1C_DIR/link.md"
 if MSYS=winsymlinks:nativestrict ln -s "$HO_REAL" "$HO_LINK" 2>/dev/null \
     && [ "$(realpath "$HO_LINK" 2>/dev/null)" = "$HO_REAL_ABS" ]; then
     DB3=$(new_db "$TMP/db3.tasks")
-    out=$(SCHED_DB="$DB3" SCHED_DB_DIR="${DB3}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_REAL" 2>&1)
+    out=$(SCHED_DB="$DB3" SCHED_DB_DIR="${DB3}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_REAL" 2>&1)
     rc=$?
     assert_rc "G1.3a canonical (real path) arm succeeds" 0 "$rc" "$out"
-    out=$(SCHED_DB="$DB3" SCHED_DB_DIR="${DB3}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_LINK" 2>&1)
+    out=$(SCHED_DB="$DB3" SCHED_DB_DIR="${DB3}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_LINK" 2>&1)
     rc=$?
     assert_rc "G1.3b symlink alias is RECOGNIZED as the same handover (rc 3)" 3 "$rc" "$out"
     assert_slots "G1.3c ONE slot for real.md == symlink link.md" 1 "$DB3" "${DB3}.atdir" "$out"
@@ -361,10 +433,10 @@ HO_CC="$G1D_DIR/HandoverCase.md"; mk_ho "$HO_CC"
 if [ -f "$G1D_DIR/handovercase.md" ]; then
     HO_CC_ALIAS="$G1D_DIR/handovercase.md"
     DB4=$(new_db "$TMP/db4.tasks")
-    out=$(SCHED_DB="$DB4" SCHED_DB_DIR="${DB4}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_CC" 2>&1)
+    out=$(SCHED_DB="$DB4" SCHED_DB_DIR="${DB4}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_CC" 2>&1)
     rc=$?
     assert_rc "G1.4a canonical (mixed-case) arm succeeds" 0 "$rc" "$out"
-    out=$(SCHED_DB="$DB4" SCHED_DB_DIR="${DB4}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO_CC_ALIAS" 2>&1)
+    out=$(SCHED_DB="$DB4" SCHED_DB_DIR="${DB4}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$HO_CC_ALIAS" 2>&1)
     rc=$?
     assert_rc "G1.4b lower-case variant is RECOGNIZED as the same handover (rc 3)" 3 "$rc" "$out"
     assert_slots "G1.4c ONE slot for HandoverCase.md == handovercase.md" 1 "$DB4" "${DB4}.atdir" "$out"
@@ -384,11 +456,11 @@ test_collision_pair() {
     local label="$1" name_a="$2" name_b="$3" db="$4"
     mk_ho "$HANDOVER_DIR/g2/$label/$name_a"
     mk_ho "$HANDOVER_DIR/g2/$label/$name_b"
-    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" \
+    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap \
         --handover "$HANDOVER_DIR/g2/$label/$name_a" 2>&1)
     rc=$?
     assert_rc "$label a: first distinct handover arms" 0 "$rc" "$out"
-    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" \
+    out=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap \
         --handover "$HANDOVER_DIR/g2/$label/$name_b" 2>&1)
     rc=$?
     assert_ne_rc "$label b: second DISTINCT handover is NOT a dedup block (rc!=3)" 3 "$rc" "$out"
@@ -413,7 +485,7 @@ echo "== Group 3: --force replace must be transactional (defect B) =="
 SEED_OUT=""
 seed_slot() {  # <handover-path> <sched-db>   -- one clean real arm
     local ho="$1" db="$2"
-    SEED_OUT=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$ho" 2>&1)
+    SEED_OUT=$(SCHED_DB="$db" SCHED_DB_DIR="${db}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$ho" 2>&1)
 }
 # assert_seeded <label> <db> <dir> -- exactly 1 slot after a seed arm (a failed
 # seed makes every downstream slot-survival assertion meaningless, so it is its
@@ -435,7 +507,7 @@ DB7=$(new_db "$TMP/db7.tasks")
 seed_slot "$G3A" "$DB7"
 assert_seeded "G3.1 seed: pre-existing slot armed" "$DB7" "${DB7}.atdir"
 bash "$QL" acquire "$G3A" "live-session-7" >/dev/null 2>&1
-out=$(SCHED_DB="$DB7" SCHED_DB_DIR="${DB7}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$G3A" --force 2>&1)
+out=$(SCHED_DB="$DB7" SCHED_DB_DIR="${DB7}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3A" --force 2>&1)
 rc=$?
 assert_rc "G3.1 failing arm exits rc=7 (FRESH queue lock)" 7 "$rc" "$out"
 assert_slots "G3.1 pre-existing slot SURVIVES a force that fails at rc 7" 1 "$DB7" "${DB7}.atdir" "$out"
@@ -459,7 +531,7 @@ mkdir -p "$HANDOVER_DIR/.locks"
 G3B_FIRE_AT="$(date -d '+2 hours' +%Y%m%d%H%M 2>/dev/null || date -v+2H +%Y%m%d%H%M)"
 printf '{"host":"other-host","handover":"%s","fire-at":"%s","task-name":"HIMMEL-Resume-g3b-other"}\n' \
     "$G3B" "$G3B_FIRE_AT" > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(SCHED_DB="$DB8" SCHED_DB_DIR="${DB8}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$G3B" --force 2>&1)
+out=$(SCHED_DB="$DB8" SCHED_DB_DIR="${DB8}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3B" --force 2>&1)
 rc=$?
 assert_rc "G3.2 failing arm exits rc=8 (pending arm on another host)" 8 "$rc" "$out"
 assert_slots "G3.2 pre-existing slot SURVIVES a force that fails at rc 8" 1 "$DB8" "${DB8}.atdir" "$out"
@@ -473,26 +545,219 @@ DB9=$(new_db "$TMP/db9.tasks")
 seed_slot "$G3C" "$DB9"
 assert_seeded "G3.3 seed: pre-existing slot armed" "$DB9" "${DB9}.atdir"
 out=$(SCHED_CREATE_FAIL=1 SCHED_DB="$DB9" SCHED_DB_DIR="${DB9}.atdir" PATH="$STUB:$PATH" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$G3C" --force 2>&1)
+    bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3C" --force 2>&1)
 rc=$?
-assert_ne_rc "G3.3 failing arm does NOT exit rc=0 (schedule_arm create failed)" 0 "$rc" "$out"
+assert_rc "G3.3 failing arm exits rc=4 (schedule_arm create failed)" 4 "$rc" "$out"
+# HIMMEL-1563 re-worded this line ("existing" -> "THIS handover's own") when it
+# narrowed the reap scope. G3.3 arms the SAME handover with a plain --force, so
+# the own-identity reap list is non-empty and the replace branch still fires --
+# only the wording moved. Asserting the substring that is INVARIANT across the
+# rescope ("AFTER the new one is registered") would have been quieter, but the
+# own-scope wording is the thing 1563 is FOR, so pin it explicitly.
+assert_contains "G3.3 reaches transactional replacement path" "replacing THIS handover's own job(s) AFTER the new one is registered" "$out"
 assert_slots "G3.3 pre-existing slot SURVIVES a force that fails in schedule_arm" 1 "$DB9" "${DB9}.atdir" "$out"
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
-# G3.4 -- worst case: --dedup-any --force. Scope = EVERY HIMMEL-Resume-* job,
-# so a single failed arm can wipe every queued relaunch on the machine. Seed an
-# UNRELATED victim (a different handover), force-arm X with a failing create,
-# and assert the victim is NOT destroyed.
+# G3.4 -- worst case: --dedup-any --force with a failing create. HIMMEL-1563
+# narrowed the --force reap to THIS handover's own identity, so the unrelated
+# victim is never even TARGETED for replacement (the broad scope is read-only).
+# Seed an UNRELATED victim slot, force-arm X with a failing create, and assert
+# the victim is NOT destroyed AND that arm-resume says so (the "leaving other
+# chains' resume job(s) untouched" note) rather than listing the victim for a
+# replace it would never perform. The success-path companion (foreign victim
+# survives a --dedup-any --force whose create SUCCEEDS) is G5 below. The victim
+# is fixture scaffolding, not an arm-resume behavior under test, so write the
+# stateful scheduler stub's successful-arm shape directly. Invoking the real arm
+# here makes the fixture depend on the machine-wide live-worker guard and turns
+# unrelated lane work into a false failure (HIMMEL-1543).
+# <sched-db> <sched-dir> [marker]. The marker is parameterised (HIMMEL-1563) so
+# Group 5 can seed its own foreign-chain name through the SAME platform-aware
+# writer instead of appending to $db directly -- a raw append is the schtasks
+# shape only, and on linux/darwin count_slots reads job-*/crontab.fixture, so a
+# direct append would seed nothing those platforms can see.
+seed_unrelated_victim() {  # <sched-db> <sched-dir> [marker]
+    local db="$1" dir="$2" marker="${3:-HIMMEL-Resume-G3-4-unrelated-victim}"
+    case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+        msys*|cygwin*|win32*|MINGW*)
+            printf '%s\n' "$marker" >> "$db" ;;
+        darwin*)
+            # macOS: seed the victim as a crontab LINE in _crontab_schedule's
+            # own shape -- a command line with a trailing `# <TASK_NAME>` marker
+            # (arm-resume.sh ~:2423: "<mm> <hh> * * * ... # $TASK_NAME"), which
+            # is exactly what _crontab_list greps back. NOT $db or job-N: the
+            # Darwin path writes neither store.
+            mkdir -p "$dir"
+            printf '0 9 * * * cd /nonexistent && claude fixture # %s\n' "$marker" > "$dir/crontab.fixture" ;;
+        *)
+            mkdir -p "$dir"
+            printf '1' > "$dir/.counter"
+            printf '# %s\nexit 0\n' "$marker" > "$dir/job-1" ;;
+    esac
+    SEED_OUT="direct scheduler fixture: $marker"
+}
 G3X="$HANDOVER_DIR/g3/t4x.md"; mk_ho "$G3X"
-G3Y="$HANDOVER_DIR/g3/t4y.md"; mk_ho "$G3Y"
 DB10=$(new_db "$TMP/db10.tasks")
-seed_slot "$G3Y" "$DB10"   # the unrelated victim
+seed_unrelated_victim "$DB10" "${DB10}.atdir"
 assert_seeded "G3.4 seed: unrelated victim slot armed" "$DB10" "${DB10}.atdir"
 out=$(SCHED_CREATE_FAIL=1 SCHED_DB="$DB10" SCHED_DB_DIR="${DB10}.atdir" PATH="$STUB:$PATH" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$G3X" --dedup-any --force 2>&1)
+    bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G3X" --dedup-any --force 2>&1)
 rc=$?
-assert_ne_rc "G3.4 failing arm does NOT exit rc=0 (schedule_arm create failed)" 0 "$rc" "$out"
+assert_rc "G3.4 failing arm exits rc=4 (schedule_arm create failed)" 4 "$rc" "$out"
+# HIMMEL-1563 x HIMMEL-1567 -- these two changes MET here, and the resolution is
+# not "keep both": they assert OPPOSITE things about the same line, and 1563 is
+# the one that is now true.
+#
+# 1567 asserted the foreign victim IS reached by the --force replacement path,
+# keyed per platform because the token that proves it differs (below). 1563
+# NARROWS the --force reap to this invocation's own identity, so the foreign
+# victim is no longer targeted at all -- 1567's assertion describes pre-1563
+# behaviour and would now fail. The assertion therefore FLIPS from "is reached"
+# to "is NOT named".
+#
+# But 1567's platform keying MUST survive the flip, and this is the whole point:
+# WHICH token would have appeared differs by platform (arm-resume.sh ~:1936-1939
+# echoes each marker from list_existing() to stderr, which $out captures):
+#   windows -- list_existing returns the self-descriptive schtasks task NAME
+#     (`HIMMEL-Resume-...`), so the marker text would reach $out directly.
+#   darwin  -- list_existing's macos arm calls _crontab_list (arm-resume.sh
+#     ~:1415-1434), which `grep`s `crontab -l` and returns the FULL crontab
+#     LINE -- and _crontab_schedule (~:2423) writes that line with a trailing
+#     `# $TASK_NAME`. So the marker text would be echoed back on Darwin too.
+#   linux/other -- list_existing inspects each at-job's body and returns an
+#     OPAQUE `at-job-<id>` (arm-resume.sh ~:1536/1540); the marker text in the
+#     job body NEVER reaches the --force log on this platform. The seeded victim
+#     is the only job in this fresh queue, so it is always id 1.
+#
+# *** Why an unkeyed assert_not_contains would have been a false green: on
+# linux/other the string `HIMMEL-Resume-G3-4-unrelated-victim` cannot appear in
+# $out on ANY code path, fixed or broken. Asserting its absence there passes
+# vacuously -- it would have gone green against the very pre-1563 code it is
+# meant to catch. The negative must name the token that WOULD have appeared on
+# THIS platform, which is exactly the mapping 1567 established. ***
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_not_contains "G3.4 foreign victim NOT named for replacement (HIMMEL-1563)" "HIMMEL-Resume-G3-4-unrelated-victim" "$out" ;;
+    darwin*)
+        assert_not_contains "G3.4 foreign victim NOT named for replacement (HIMMEL-1563)" "HIMMEL-Resume-G3-4-unrelated-victim" "$out" ;;
+    *)
+        assert_not_contains "G3.4 foreign victim NOT named for replacement (HIMMEL-1563)" "at-job-1" "$out" ;;
+esac
+# The POSITIVE control that keeps the negatives above honest. This string is
+# arm-resume's own stderr on the own-identity-empty branch, so it is identical
+# on all three platforms and it can only appear if the --force path actually ran
+# and actually declined to reap. Without it, a change that made arm-resume exit
+# before the force block would satisfy every assert_not_contains above.
+assert_contains "G3.4 says it leaves other chains' arms untouched (HIMMEL-1563)" "leaving other chains' resume job(s) untouched" "$out"
 assert_slots "G3.4 UNRELATED victim slot is NOT destroyed by a failed --dedup-any --force" 1 "$DB10" "${DB10}.atdir" "$out"
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
+echo
+echo "== Group 4: HIMMEL-1475 long-gap guard still fires (regression coverage) =="
+# Every other arm in this suite carries --long-gap (HIMMEL-1543), so the guard is
+# deliberately bypassed there. This group is the dedicated coverage that it STILL
+# fires: an explicit --time HH:MM more than 60 min out must REFUSE rc=9 without
+# --long-gap, and --long-gap must sanction it. FAR_TIME is computed HERE, not the
+# once-captured FUTURE_TIME, so it is genuinely >60 min out however long the run
+# took to get here -- a single arm, so no aliasing/shared-time constraint.
+G4_DIR="$HANDOVER_DIR/g4"; HO_FAR="$G4_DIR/far.md"; mk_ho "$HO_FAR"
+FAR_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(hours=2)).strftime("%H:%M"))')
+DB11=$(new_db "$TMP/db11.tasks")
+out=$(SCHED_DB="$DB11" SCHED_DB_DIR="${DB11}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FAR_TIME" --handover "$HO_FAR" 2>&1)
+rc=$?
+assert_rc "G4.1 long-gap guard REFUSES a >60min arm without --long-gap (rc=9)" 9 "$rc" "$out"
+assert_contains "G4.1 refused by the long-gap guard specifically (not another rc=9 path)" "Refusing without --long-gap" "$out"
+assert_slots "G4.1 refused arm armed NO slot" 0 "$DB11" "${DB11}.atdir" "$out"
+out=$(SCHED_DB="$DB11" SCHED_DB_DIR="${DB11}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FAR_TIME" --long-gap --handover "$HO_FAR" 2>&1)
+rc=$?
+assert_rc "G4.2 --long-gap SANCTIONS the >60min arm (rc=0)" 0 "$rc" "$out"
+assert_slots "G4.2 sanctioned far arm armed ONE slot" 1 "$DB11" "${DB11}.atdir" "$out"
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
+echo
+echo "== Group 5: a foreign chain's arm SURVIVES a cancel/replace (HIMMEL-1563) =="
+# The bug (reproduced live by orchestrator leg 44): cancelling/replacing an
+# armed resume by the HIMMEL-Resume- prefix reaped EVERY parallel chain's
+# scheduled task. This box runs four+ autonomous chains under that prefix
+# (himmel overnight, trust-envelope, ggs/HA, jarvis_voice), so a prefix/wildcard
+# match on a delete is never safe. arm-resume's in-repo cancel/replace is the
+# --force path; under --dedup-any its dedup CHECK scope was every HIMMEL-Resume-*
+# job, and pre-1563 the --force REPLACE reaped that whole broad list -- so one
+# arm deleted a foreign chain's task as collateral. HIMMEL-1563 narrows the
+# --force reap to THIS invocation's own identity; the broad list stays read-only
+# (the rc=3 refusal + the soft-cap count). These cases prove a foreign task
+# survives a cancel/replace of our own. The fixture foreign name mimics the
+# real leg-44 victim. NEVER touch a real scheduled task here -- the stateful
+# schtasks stub behind PATH (SCHED_DB) is the only scheduler exercised.
+
+G5_FOREIGN="HIMMEL-Resume-trust-envelope-chain-06"
+
+# marker_recorded <sched-db> <sched-dir> <marker> -- is this identity STILL in
+# the stub scheduler's store? Cardinality (count_slots) cannot tell "the foreign
+# arm survived" from "the foreign arm was reaped and ours took its place", so
+# every G5 case pairs a count with this identity check. Mirrors count_slots'
+# and seed_unrelated_victim's platform split exactly -- read the store each
+# platform actually writes, never $db unconditionally.
+marker_recorded() {  # <sched-db> <sched-dir> <marker>
+    local db="$1" dir="$2" marker="$3"
+    case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+        msys*|cygwin*|win32*|MINGW*)
+            grep -qxF "$marker" "$db" 2>/dev/null ;;
+        darwin*)
+            # crontab line carries the identity as a trailing `# <TASK_NAME>`,
+            # so this is a substring match, not a whole-line one.
+            grep -qF "$marker" "$dir/crontab.fixture" 2>/dev/null ;;
+        *)
+            # at-job bodies carry `# <marker>`; the id is opaque, so scan them.
+            grep -qF -- "$marker" "$dir"/job-* 2>/dev/null ;;
+    esac
+}
+
+# G5.1 -- HEADLINE REGRESSION: --dedup-any --force, create SUCCEEDS. On main the
+# broad reap list deletes the foreign victim (1 slot: only ours); on the 1563
+# fix the foreign arm is untouched and coexists with ours (2 slots). This is the
+# case that FAILS without the fix.
+G5X="$HANDOVER_DIR/g5/t5x.md"; mk_ho "$G5X"
+DB12=$(new_db "$TMP/db12.tasks")
+# Platform-aware seed (HIMMEL-1563 x HIMMEL-1567): a direct `>> "$DB12"` append
+# is the schtasks store only, so on linux/darwin it seeds a store nothing reads
+# and assert_seeded fails -- the exact linux-shell-suite regression class 1567
+# was filed to close. Route through the shared writer instead.
+seed_unrelated_victim "$DB12" "${DB12}.atdir" "$G5_FOREIGN"
+assert_seeded "G5.1 seed: foreign chain arm present" "$DB12" "${DB12}.atdir"
+out=$(SCHED_DB="$DB12" SCHED_DB_DIR="${DB12}.atdir" PATH="$STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G5X" --dedup-any --force 2>&1)
+rc=$?
+assert_rc "G5.1 --dedup-any --force arms alongside a foreign chain arm (rc 0)" 0 "$rc" "$out"
+assert_slots "G5.1 foreign chain arm SURVIVES a --dedup-any --force of our own (HIMMEL-1563)" 2 "$DB12" "${DB12}.atdir" "$out"
+# Cardinality alone is not enough: prove the survivor IS the foreign victim
+# (recorded verbatim), not merely that two slots exist.
+if marker_recorded "$DB12" "${DB12}.atdir" "$G5_FOREIGN"; then
+    echo "PASS G5.1 foreign victim name still recorded verbatim after the force"
+else
+    echo "FAIL G5.1 foreign victim was reaped by --dedup-any --force (HIMMEL-1563 regression): $G5_FOREIGN not in scheduler"
+    FAILED=$((FAILED + 1))
+fi
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
+# G5.2 -- defense-in-depth: plain --force (no --dedup-any) was ALWAYS scoped to
+# the arming handover, so a foreign arm survived it even pre-1563. Pin that the
+# 1563 narrowing did not regress the plain path. (Passes on both main and the
+# fix -- it is the sanity guard around the headline case, not the regression.)
+G5Y="$HANDOVER_DIR/g5/t5y.md"; mk_ho "$G5Y"
+DB13=$(new_db "$TMP/db13.tasks")
+seed_unrelated_victim "$DB13" "${DB13}.atdir" "$G5_FOREIGN"
+assert_seeded "G5.2 seed: foreign chain arm present" "$DB13" "${DB13}.atdir"
+out=$(SCHED_DB="$DB13" SCHED_DB_DIR="${DB13}.atdir" PATH="$STUB:$PATH" \
+    bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G5Y" --force 2>&1)
+rc=$?
+assert_rc "G5.2 plain --force arms alongside a foreign chain arm (rc 0)" 0 "$rc" "$out"
+assert_slots "G5.2 foreign chain arm SURVIVES a plain --force (always own-scoped)" 2 "$DB13" "${DB13}.atdir" "$out"
+if marker_recorded "$DB13" "${DB13}.atdir" "$G5_FOREIGN"; then
+    echo "PASS G5.2 foreign victim name still recorded verbatim after plain --force"
+else
+    echo "FAIL G5.2 foreign victim deleted by plain --force"
+    FAILED=$((FAILED + 1))
+fi
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
 echo "---"

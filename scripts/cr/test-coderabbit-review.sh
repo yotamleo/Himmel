@@ -152,6 +152,11 @@ chmod +x "$stubs/wslpath"
 cat > "$tmp/fake-wsl" <<'FAKEWSLEOF'
 #!/usr/bin/env bash
 [ "${1:-}" = "-e" ] && shift
+# The real wsl.exe call needs MSYS conversion disabled while Git Bash hands it
+# the inner script. This shell seam is not that native boundary: if it keeps
+# those flags, the inner Git-for-Windows clone leaves /tmp/... unconverted and
+# creates the checkout somewhere other than the fixture's $tmp/repo path.
+unset MSYS_NO_PATHCONV MSYS2_ARG_CONV_EXCL
 exec "$@"
 FAKEWSLEOF
 chmod +x "$tmp/fake-wsl"

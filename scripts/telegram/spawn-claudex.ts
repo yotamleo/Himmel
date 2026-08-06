@@ -22,10 +22,16 @@
 // disable here; nothing to implement for that requirement.
 import { existsSync, mkdirSync, writeFileSync, appendFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { spawn } from "bun";
 import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
 import { transcriptDirFor, poisonPushUrl, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta } from "./spawn-glm";
+// HIMMEL-1553: symptom-brief loop breaker, two-stage — shared with spawn-glm
+// so both worker lanes carry one decision table: invariant required at the
+// warn stage, cheap lane refused at the escalate stage. Thresholds live in
+// round-guard.ts (ROUND_WARN_THRESHOLD / ROUND_ESCALATE_THRESHOLD) — not
+// restated here, so this comment cannot drift off the code (glm-4, CR round 2).
+import { checkRoundGuard } from "./round-guard";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
@@ -153,6 +159,43 @@ function isHimmelCheckout(d: string): boolean {
   return existsSync(join(d, "scripts", "claude-codex"));
 }
 
+// ── HIMMEL-1503: primary-checkout cwd guard ─────────────────────────────
+//
+// Twinned (not imported — deliberately duplicated per the ticket's brief:
+// a small guard duplicated across the two lane wrappers, not a new shared
+// layer) from spawn-glm.ts's own detectNonPrimaryCwd/refuseNonPrimaryCwd —
+// see that file's comment for the full incident + detection rationale.
+// Same detection, same message shape, only the "spawn-claudex:" prefix
+// differs.
+function gitDirs(cwd: string): { gitDir: string; commonDir: string } | null {
+  const gd = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-dir"], { stdout: "pipe", stderr: "pipe" });
+  const cd = Bun.spawnSync(["git", "-C", cwd, "rev-parse", "--git-common-dir"], { stdout: "pipe", stderr: "pipe" });
+  if (gd.exitCode !== 0 || cd.exitCode !== 0) return null;
+  return { gitDir: gd.stdout.toString().trim(), commonDir: cd.stdout.toString().trim() };
+}
+
+export function detectNonPrimaryCwd(cwd: string, probe: (cwd: string) => { gitDir: string; commonDir: string } | null = gitDirs): { ok: true } | { ok: false; primaryPath?: string } {
+  const norm = (p: string) => p.replace(/\\/g, "/");
+  const pathLooksLikeWorktree = norm(cwd).includes("/.claude/worktrees/");
+  const dirs = probe(cwd);
+  const gitSaysWorktree = dirs !== null && norm(dirs.gitDir) !== norm(dirs.commonDir);
+  if (!pathLooksLikeWorktree && !gitSaysWorktree) return { ok: true };
+  const primary = dirs ? dirname(resolve(cwd, dirs.commonDir)) : undefined;
+  // Only name a primary that is somewhere ELSE — see spawn-glm.ts's twin for
+  // the full rationale (a standalone repo nested under .claude/worktrees/
+  // resolves to the very cwd being refused).
+  const usable = primary !== undefined && norm(resolve(primary)) !== norm(resolve(cwd));
+  return { ok: false, primaryPath: usable ? primary : undefined };
+}
+
+export function refuseNonPrimaryCwd(cwd: string, probe?: (cwd: string) => { gitDir: string; commonDir: string } | null): string | undefined {
+  const r = probe ? detectNonPrimaryCwd(cwd, probe) : detectNonPrimaryCwd(cwd);
+  if (r.ok) return undefined;
+  return r.primaryPath
+    ? `spawn-claudex: refusing to dispatch from ${cwd} — this is not the PRIMARY checkout (resolved primary: ${r.primaryPath}); cd there and retry (HIMMEL-1503).`
+    : `spawn-claudex: refusing to dispatch from ${cwd} — this looks like a worktree cwd (path contains /.claude/worktrees/), not the PRIMARY checkout; cd to the primary checkout and retry (HIMMEL-1503).`;
+}
+
 // ── real git probes for planClaudexSharedSpawn's injected deps ──────────────
 // Twinned (not imported) from spawn-glm.ts's gitBranchExists/gitWorktreeOf/
 // gitIsDirty — those exist purely to feed planSharedSpawn's deps and are not
@@ -225,7 +268,7 @@ export function revalidateSharedWorktree(deps: {
 // ── args parsing ──────────────────────────────────────────────────────────
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh";
-export type ClaudexParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; effort?: EffortLevel; force: boolean; skipAuthPreflight: boolean; profile: string; addPlugins: string[] };
+export type ClaudexParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; effort?: EffortLevel; force: boolean; skipAuthPreflight: boolean; profile: string; addPlugins: string[]; roundsOverride?: string };
 
 // Pure + validated, mirrors spawn-glm's parseArgs (a value-taking flag with no
 // value, or a non-positive/non-finite --timeout-mins, is a usage refusal).
@@ -246,6 +289,7 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
   // in main() so a bad name/id is a clean pre-side-effect refusal (mirrors spawn-glm).
   let profile = DEFAULT_LANE_PROFILE;
   const addPlugins: string[] = [];
+  let roundsOverride: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
@@ -273,6 +317,9 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
     else if (a === "--skip-auth-preflight") skipAuthPreflight = true;
     else if (a === "--profile") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--profile requires a value" }; profile = v; }
     else if (a === "--add-plugins") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--add-plugins requires a value" }; addPlugins.push(...parseAddPlugins(v)); }
+    // HIMMEL-1553: recorded operator override for the round guard's cheap-lane
+    // refusal — same contract as spawn-glm (substance enforced by the guard).
+    else if (a === "--rounds-override") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--rounds-override requires a value (why another cheap-lane round is justified)" }; roundsOverride = v; }
     // HIMMEL-1225: a bare unrecognized flag (--help/-h already short-circuit in
     // main) is a mistyped/unsupported option, NOT a task — fail closed rather
     // than dispatch a real worker to reason about the literal flag string.
@@ -280,7 +327,7 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
     else if (task === undefined) task = a;
   }
   if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
-  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, effort, force, skipAuthPreflight, profile, addPlugins } };
+  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, effort, force, skipAuthPreflight, profile, addPlugins, roundsOverride } };
 }
 
 // ── codex weekly bank preflight (HIMMEL-1003 D4) ────────────────────────────
@@ -749,13 +796,13 @@ export async function runClaudexSharedDispatch(p: {
 // there is no exit-3 GLM-guard equivalent here — claude-codex owns PHI/egress
 // guarding itself, D1).
 async function main(): Promise<void> {
-  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--effort low|medium|high|xhigh] [--profile <name>] [--add-plugins a@m,b@m] [--force] [--skip-auth-preflight] (default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
+  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--effort low|medium|high|xhigh] [--profile <name>] [--add-plugins a@m,b@m] [--rounds-override <why>] [--force] [--skip-auth-preflight] (default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
   const rawArgv = process.argv.slice(2);
   // HIMMEL-1225: help short-circuit — before parseClaudexArgs, before any side effect.
   if (isHelpFlag(rawArgv)) { console.log(usage); process.exit(0); }
   const parsed = parseClaudexArgs(rawArgv);
   if (!parsed.ok) { console.error(`spawn-claudex: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, effort, force, skipAuthPreflight, profile, addPlugins } = parsed.args;
+  const { task, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, effort, force, skipAuthPreflight, profile, addPlugins, roundsOverride } = parsed.args;
   if (!task) { console.error(usage); process.exit(2); }
   // HIMMEL-1378: same structural forbid + worker default as spawn-glm.ts — see
   // its composeWorkerSettings/refuseBypassPermissions comment for the full
@@ -766,6 +813,17 @@ async function main(): Promise<void> {
   if (unknownModeRefusal) { console.error(`spawn-claudex: ${unknownModeRefusal}`); console.error(usage); process.exit(2); }
   const permMode: PermissionMode = permModeArg ?? "dontAsk";
   const absCwd = resolve(cwd);
+  // HIMMEL-1503: refuse BEFORE any worktree/branch side-effect if this
+  // dispatch is not running from the PRIMARY checkout — see
+  // detectNonPrimaryCwd above for the incident + detection rationale.
+  const nonPrimaryRefusal = refuseNonPrimaryCwd(absCwd);
+  if (nonPrimaryRefusal) { console.error(nonPrimaryRefusal); process.exit(2); }
+  // HIMMEL-1553: refuse a symptom-loop dispatch BEFORE any side effect — same
+  // two-stage guard + rationale as spawn-glm.ts (round-guard.ts has the
+  // incident): invariant required at 2 reviewed rounds, cheap lane refused at 3.
+  const roundGuard = checkRoundGuard("spawn-claudex", { task, branch: branchArg, name, cwd: absCwd, roundsOverride });
+  if (roundGuard.refusal) { console.error(roundGuard.refusal); process.exit(2); }
+  if (roundGuard.note) console.error(roundGuard.note);
   // HIMMEL-1040: validate the profile NAME + overlay ids BEFORE any side effect —
   // an unknown --profile / malformed --add-plugins id is a clean usage refusal
   // (exit 2), never an orphan worktree/branch. `installed: []` keeps this to pure

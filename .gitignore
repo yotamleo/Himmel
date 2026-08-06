@@ -85,6 +85,10 @@ handovers/overnight-recovery-*.md
 # Runtime artifacts that pollute primary-worktree git status
 .claire/
 /.claude/scheduled_tasks.lock
+# HIMMEL-1552: the settings writers' exclusive lock. Transient, but it sits
+# beside a TRACKED file, so a crash-orphaned one would otherwise be swept up by
+# `git add -A`.
+/.claude/settings.json.lock
 /.playwright-mcp
 # /improve disk artifacts — Mode A inline path. Mode B writes under HANDOVER_DIR.
 /.improve/

@@ -905,68 +905,68 @@ own precondition check), so it needed no change.
 Paired artifacts: `scripts/guardrails/test-lesson-write-fence.sh` (111
 checks), `scripts/hooks/test-block-lesson-enforcement-writes.sh` (9 checks).
 
-### `guard-implementor-dispatch.sh` — bank-aware implementor-dispatch cost guard (HIMMEL-920)
+### `guard-implementor-dispatch.sh` — lane-routing dispatcher guard (HIMMEL-1513; composed with the HIMMEL-920 bank guard)
 
-Fires on `Agent`. Structural enforcement of the HIMMEL-195 second-drift rule:
-s40 burned 86% of a 5-hour bank routing four CR-fix rounds to a Sonnet
-subagent while the GLM lane sat available (CLAUDE.md subagent policy: "every
-dispatch names an explicit model... route by lane") — prose didn't stop the
-drift twice.
+Fires on `Agent`. Structural enforcement of the second-drift lane-routing
+rule: leg 31 routed four implementation workers through ordinary Agent-tool
+Claude subagents while the claudex/GLM entry points were available, consuming
+the scarce Claude bank and bypassing the flow-run ledger.
 
-**THIS IS A COST GUARD, NOT A SECURITY GUARD — it fails OPEN on every
-infrastructure, cache, or unknown-input error** (missing jq, malformed JSON,
-missing/stale/corrupt usage cache), the opposite of the fail-CLOSED block-*
-siblings above; the fail-open precedent is the auto-arm watchdog family, not
-`block-edit-on-main.sh`. When its inputs ARE readable and the policy
-thresholds are met it does deny: an eligible dispatch at HARD utilization
-exits 2.
+**Policy decision: HARD BLOCK, not advisory.** This matches
+`block-backend-tier.sh`: after two recorded prose drifts, another warning is
+not enforcement. The guard refuses only when it can positively establish BOTH
+that the dispatch is implementation-shaped and that a suitable external lane
+is currently available. The refusal is one line and names the concrete command
+(`bun scripts/telegram/spawn-claudex.ts ...`, falling back to
+`spawn-glm.ts`) because the original failure was not knowing the dispatcher
+entry point; a bare "use a lane" refusal would reproduce the stall.
 
-**Decision shape:** a dispatch is only DENY-eligible when BOTH
-`subagent_type` is in the allow-list {`general-purpose`, `claude`,
-`Plan`} AND `model` is in {`sonnet`, `opus`, `fable`,
-absent/empty}. An absent/empty `model` is DENY-eligible per the HIMMEL-972
-operator ruling: an unnamed dispatch inherits the parent loop.
-`model == haiku` always allows regardless of shape. Beyond the allow-list
-check, the dispatch `prompt` must also match a narrow impl-shaped ERE
-(`implement|apply the fix|write the code|make it pass|fix the
-(bug|finding|test)` — de-greeded: `patch` (a substring of "dispatch"), bare
-`commit`, and bare `refactor` were all dropped as high-false-positive)
-before the bank check runs at all.
+**Classification:** the hook reads both Agent `description` and `prompt`.
+Direct implementation words (`implement|fix|land`), worktree paths, ticket IDs,
+and commit/attestation instructions are signals. Explicit read-only
+research/exploration/investigation/review/planning remains allowed, including a
+ticket or "how to fix" mention, unless the brief transitions to action (for
+example "investigate and then implement") or includes worktree/commit/trailer
+instructions. Read-only agent types and the claudex/GLM/Codex lane-wrapper
+agents are exempt. This conservative posture is intentional: over-blocking an
+orchestrator is worse than missing a cost-routing nudge.
 
-**Bank check:** reads `.five_hour.utilization` from the claude-statusline
-usage cache (`IMPL_GUARD_CACHE_PATH`, default
-`/tmp/claude/statusline-usage-cache.json`); the numeric handling never runs
-bash `[ -ge ]` against a float (the HIMMEL-392 no-stderr hook death) — jq
-validates the value and awk performs the threshold compares. A null /
-non-numeric / out-of-`[0,100]` value (the documented leaked-epoch
-corruption, see `auto-arm-on-cap.sh`) is treated as UNKNOWN, not clamped.
-Missing cache, unstatable, stale (mtime older than
-`IMPL_GUARD_CACHE_MAX_AGE_SECS`, default 300s), an expired `resets_at`
-window, or UNKNOWN → allow + a stderr WARN, never a block; a HARD deny
-additionally requires a provably-live `resets_at` window (else it downgrades
-to the advisory).
+**Availability:** the hook invokes the existing
+`scripts/lanes/resolve.mjs --json` resolver, so `lanes.json`, machine probes,
+local profile suppression, and `LANES_REGISTRY` test overrides remain the
+single source of truth for registry availability. A registry-available lane
+must also be RUNNABLE before the guard refuses toward it: `bun` must be on
+`PATH` and the lane's `scripts/telegram/spawn-<lane>.ts` dispatcher must exist
+on disk. An unrunnable lane is skipped with a warning, so `claudex` is still
+preferred and `glm` is still the fallback. No suitable lane, an unrunnable
+lane, missing bun/jq/node/resolver, a missing dispatcher script, malformed
+hook input, resolver failure, or invalid resolver output all fail OPEN and
+allow the Agent dispatch — the orchestrator is never stranded on a command
+that cannot execute.
 
-**Policy:** util `>= IMPL_GUARD_HARD` (default 80) AND DENY-eligible → exit
-2, naming the utilization, the dispatch shape, and a cheaper-lane redirect
-(`himmel-ops:glm-subagent` shared-branch mode, `codex:codex-rescue`,
-`/lanes`). util `>= IMPL_GUARD_WARN` (default 65) → allow, but via the
-`hookSpecificOutput` `permissionDecision:"allow"` JSON idiom
-(`auto-approve-safe-bash.sh:432` precedent) so the advisory actually reaches
-the model — an exit-0 stderr line is invisible to the model in PreToolUse.
-Below WARN → allow silently.
+**Retained bank policy (HIMMEL-920):** when no lane is available (registry-
+absent or unrunnable), the guard falls through to the pre-existing bank-aware
+cost guard instead of allowing unconditionally. `IMPL_GUARD_HARD` (default 80)
+refuses an eligible implementor-shaped dispatch outright; `IMPL_GUARD_WARN`
+(default 65) attaches a visible advisory instead of blocking. Both require a
+fresh `IMPL_GUARD_CACHE_PATH` usage cache (default max age 300s) and a
+provably live `five_hour.resets_at` window — a missing/unparseable
+`resets_at` downgrades a HARD hit to the WARN advisory, and an expired window
+allows outright. See the "bank-aware policy when no lane is available"
+section of `test-guard-implementor-dispatch.sh` for the full matrix.
 
-**Bypass:** `IMPL_GUARD_OK=1` (explicit session override) or
-`IMPL_GUARD_DISABLE=1` (kill switch), both set in the LAUNCHING shell and
-session-sticky (same convention as the other block-* hooks — a per-call env
-prefix does not reach the hook process).
+**Audited bypass:** `IMPL_GUARD_OK=1` (deliberate carve-out) or
+`IMPL_GUARD_DISABLE=1` (kill switch), set in the LAUNCHING shell and
+session-sticky. Every use warns and appends a JSONL audit row to
+`~/.claude/lane-routing-guard/overrides.jsonl` (`IMPL_GUARD_LOG` is the test
+seam). A per-call env prefix does not reach the hook process.
 
 **Delivery:** shipped via the **himmel-ops plugin `hooks.json`** (matcher
 `Agent`, same exec-if-exists `$CLAUDE_PROJECT_DIR` pattern as
 `block-docker-privesc`); live only after `/himmel-update` (marketplace
 re-sync) + a fresh session.
 
-Spec: `scripts/hooks/test-guard-implementor-dispatch.sh` (24 test cases, 43
-assertions).
+Spec: `scripts/hooks/test-guard-implementor-dispatch.sh`.
 
 ### `block-glm-external-writes.sh` — GLM-lane external-write deny (HIMMEL-654)
 

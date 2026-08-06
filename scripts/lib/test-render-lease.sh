@@ -29,6 +29,7 @@ STUB_IDENTITY_RC=1
 proc_tree_process_alive() {
     [ "$1" = "$$" ] && return 0
     [ "$1" = "424242" ] && return 0
+    [ "$1" = "434343" ] && return 2
     return 1
 }
 proc_tree_process_identity_matches() {
@@ -135,6 +136,15 @@ printf 'branch\tfeat/alive\nworktree\t%s\nacquired_by\t424242\nstarted_at\t2020-
 touch -t 202001010000 "$RENDER_LEASE_DIR/feat+2Falive/lease.record"
 rc=0; render_lease_probe 'feat/alive' || rc=$?
 check "stale launching record with live wrapper stays held" "$rc" "1"
+mkdir -p "$RENDER_LEASE_DIR/feat+2Funknown"
+printf 'branch\tfeat/unknown\nworktree\t%s\nacquired_by\t434343\nstarted_at\t2020-01-01T00:00:00Z\nleader_pid\t\nleader_winpid\t\nleader_identity\t\nstatus\tlaunching\n' \
+    "$tmp/wt" > "$RENDER_LEASE_DIR/feat+2Funknown/lease.record"
+touch -t 202001010000 "$RENDER_LEASE_DIR/feat+2Funknown/lease.record"
+rc=0; render_lease_probe 'feat/unknown' || rc=$?
+check "stale launching record with unverifiable wrapper stays held" "$rc" "1"
+rc=0; render_lease_claim 'feat/unknown' "$tmp/wt" 2>/dev/null || rc=$?
+check "claim refuses an unverifiable launching holder" "$rc" "1"
+check "unverifiable launching lease is preserved" "$(render_lease_field "$RENDER_LEASE_DIR/feat+2Funknown" status)" "launching"
 
 # --- heartbeat freshness ------------------------------------------------------
 mkdir -p "$tmp/hb-lease"
@@ -157,6 +167,13 @@ printf 'msys:%s\n' "$$" > "$RENDER_LEASE_DIR/.registry.lock/owner.pid"
 rc=0; render_lease_claim 'feat/x' "$tmp/wt" 2>/dev/null || rc=$?
 check "live-owner lock contention refuses with rc 1" "$rc" "1"
 check "contended lock is preserved" "$(test -d "$RENDER_LEASE_DIR/.registry.lock" && echo held || echo broken)" "held"
+
+export RENDER_LEASE_DIR="$tmp/reg-lock-unverifiable"
+mkdir -p "$RENDER_LEASE_DIR/.registry.lock"
+printf 'msys:434343\n' > "$RENDER_LEASE_DIR/.registry.lock/owner.pid"
+rc=0; render_lease_claim 'feat/x' "$tmp/wt" 2>/dev/null || rc=$?
+check "unverifiable-owner lock contention refuses with rc 1" "$rc" "1"
+check "unverifiable-owner lock is preserved" "$(test -d "$RENDER_LEASE_DIR/.registry.lock" && echo held || echo broken)" "held"
 
 export RENDER_LEASE_DIR="$tmp/reg-lock-dead"
 mkdir -p "$RENDER_LEASE_DIR/.registry.lock"

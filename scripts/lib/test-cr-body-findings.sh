@@ -24,6 +24,12 @@ DRIFT_BODY='Something changed. Outside diff range comments were noted but the se
 # with NO section header at all — second canary (format drift: CodeRabbit
 # said something, this reader parsed nothing).
 MARKERS_NO_SECTION_BODY='All good. <!-- cr-comment:v1:deadbeef01 --> nothing else to report.'
+# HIMMEL-1582: a substantive head body carrying ONE outside-diff finding + one
+# marker (outside=1, markers=1, no drift). Seeds the "older review had a
+# finding" side of the latest-substantive-wins cases below.
+BODY_OUTSIDE1='**⚠️ Outside diff range comments (1)**
+
+- <!-- cr-comment:v1:out1abc --> this finding is outside the diff hunk.'
 
 UID_OK=136622811
 UID_WRONG=999999
@@ -50,11 +56,24 @@ mk_json_from_str() {
 # one page (>30): each page is its own array on the stream, NOT one
 # pre-merged array. Regression fixture for the codex CR finding that the
 # reader's `type=="array"` canary read a multi-page stream as cannot-evaluate.
+# submitted_at/id are seeded (page 2 LATER than page 1) so the latest-wins
+# derivation (HIMMEL-1582) is deterministic, the way a real payload always
+# carries both fields.
 mk_two_page_reviews() {
     jq -n --argjson uid "$2" --arg commit "$3" --rawfile body "$4" \
-        '[{user:{id:$uid,login:"coderabbitai[bot]"}, commit_id:$commit, body:$body}]' > "$1"
+        '[{user:{id:$uid,login:"coderabbitai[bot]"}, commit_id:$commit, submitted_at:"2024-01-01T00:00:00Z", id:1001, body:$body}]' > "$1"
     jq -n --argjson uid "$2" --arg commit "$5" --rawfile body "$6" \
-        '[{user:{id:$uid,login:"coderabbitai[bot]"}, commit_id:$commit, body:$body}]' >> "$1"
+        '[{user:{id:$uid,login:"coderabbitai[bot]"}, commit_id:$commit, submitted_at:"2024-01-01T00:00:01Z", id:1002, body:$body}]' >> "$1"
+}
+# mk_two_head_reviews <out> <uid> <commit> <body1> <body2> — TWO bot reviews at
+# the SAME head in ONE array (review 1 earlier id 2001, review 2 LATER id 2002,
+# so review 2 is the "latest"). Inline body STRINGS (not files). Exercises the
+# latest-SUBSTANTIVE-wins derivation (HIMMEL-1582): the older review's findings
+# must NOT bleed into the chosen review's counts.
+mk_two_head_reviews() {
+    jq -n --argjson uid "$2" --arg commit "$3" --arg b1 "$4" --arg b2 "$5" \
+        '[{user:{id:$uid,login:"coderabbitai[bot]"},commit_id:$commit,submitted_at:"2024-01-01T00:00:00Z",id:2001,body:$b1},
+          {user:{id:$uid,login:"coderabbitai[bot]"},commit_id:$commit,submitted_at:"2024-01-01T00:00:01Z",id:2002,body:$b2}]' > "$1"
 }
 
 mk_json_from_file "$RESP_DIR/outside-1261.json"       "$UID_OK"    "$HEAD"  "$OUTSIDE_BODY"
@@ -74,6 +93,28 @@ mk_json_from_file "$RESP_DIR/identity-wrong-id.json"  "$UID_WRONG" "$HEAD"  "$OU
 # both at HEAD -> the flatten must combine them into one review set, not
 # read the multi-document stream as cannot-evaluate.
 mk_two_page_reviews "$RESP_DIR/two-page.json" "$UID_OK" "$HEAD" "$NITPICK_BODY" "$HEAD" "$OUTSIDE_BODY"
+# ── HIMMEL-1582 latest-substantive-wins fixtures ───────────────────────────
+# (1) two head reviews: OLDER carries outside(1)+marker, LATER is substantive
+#     but clean -> latest SUBSTANTIVE (the clean one) wins -> outside=0. This
+#     is the false-BLOCK fix: the old SUM gave outside=1 and could never clear.
+mk_two_head_reviews "$RESP_DIR/two-head-clean-latest.json" "$UID_OK" "$HEAD" "$BODY_OUTSIDE1" "$CLEAN_BODY"
+# (2) two head reviews: OLDER carries outside(1)+marker, LATER has an EMPTY
+#     body (the PR #1583 shape) -> the empty LATER review is NOT substantive,
+#     so the OLDER substantive one wins -> outside=1. Naive latest-wins would
+#     read the empty body and false-GREEN to outside=0; the filter stops that.
+mk_two_head_reviews "$RESP_DIR/two-head-empty-latest.json" "$UID_OK" "$HEAD" "$BODY_OUTSIDE1" ""
+# (3) all head reviews empty (NONE substantive) -> counts 0 but a stderr NOTE
+#     flags it (NOT silently green). head_reviews still counts the reviews.
+mk_two_head_reviews "$RESP_DIR/two-head-all-empty.json" "$UID_OK" "$HEAD" "" ""
+# (4) prior_outside unchanged alongside the new head derivation: an OLDER-head
+#     outside-diff review (outside=2) + a clean substantive review AT head ->
+#     outside=0 (head clean), prior_outside=2 (summed across non-head commits,
+#     untouched by the head change).
+jq -n --argjson uid "$UID_OK" --arg head "$HEAD" --arg prior "$PRIOR" \
+    --rawfile pbody "$OUTSIDE_BODY" --arg hbody "$CLEAN_BODY" \
+    '[{user:{id:$uid,login:"coderabbitai[bot]"},commit_id:$prior,submitted_at:"2024-01-01T00:00:00Z",id:3001,body:$pbody},
+      {user:{id:$uid,login:"coderabbitai[bot]"},commit_id:$head,submitted_at:"2024-01-01T00:00:01Z",id:3002,body:$hbody}]' \
+    > "$RESP_DIR/prior-plus-clean-head.json"
 
 # ── stub gh ──────────────────────────────────────────────────────────────────
 mkdir -p "$TMP/bin"
@@ -136,8 +177,24 @@ t identity-wrong-user-id-treated-as-no-review identity-wrong-id   0 "outside=0 n
 # codex CR: `--paginate` on a >30-review PR emits TWO top-level arrays on the
 # stream, not one merged array — the flatten (`jq -s 'add // []'`) must
 # combine both pages' reviews into one result, not read the multi-document
-# stream as cannot-evaluate.
-t two-page-reviews-flatten-and-sum            two-page            0 "outside=2 nitpick=1 additional=0 prior_outside=0 markers=3 head_reviews=2"
+# stream as cannot-evaluate. Both reviews here are at HEAD and substantive, so
+# under HIMMEL-1582 the LATER page (the outside-diff review, id 1002) is the
+# chosen one; head_reviews=2 still proves both pages were flattened in.
+t two-page-reviews-flatten-and-pick-latest    two-page            0 "outside=2 nitpick=0 additional=0 prior_outside=0 markers=2 head_reviews=2"
+# HIMMEL-1582: latest SUBSTANTIVE head review wins, not the sum.
+# (1) false-BLOCK fix: older review outside(1), later substantive+clean ->
+#     outside=0 (the old SUM gave 1 and could never clear without moving head).
+t two-head-clean-latest-wins                  two-head-clean-latest   0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=2"
+# (2) false-GREEN guard (PR #1583 shape): older outside(1), later EMPTY body ->
+#     the empty later review is skipped, the older substantive one wins ->
+#     outside=1. Naive latest-wins on the empty body would false-GREEN to 0.
+t two-head-empty-latest-keeps-finding         two-head-empty-latest  0 "outside=1 nitpick=0 additional=0 prior_outside=0 markers=1 head_reviews=2"
+# (3) prior_outside unchanged alongside the new head derivation: older-head
+#     outside=2 + a clean substantive review at head -> outside=0, prior_outside=2.
+t prior-plus-clean-head-prior-outside         prior-plus-clean-head  0 "outside=0 nitpick=0 additional=0 prior_outside=2 markers=0 head_reviews=1"
+# (4) all head reviews empty (none substantive) -> counts 0, head_reviews counts
+#     them, rc 0 — NOT silently green (a stderr note flags it; checked below).
+t two-head-all-empty-note                     two-head-all-empty     0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=2"
 
 # zero-head-reviews note lands on stderr (both the truly-empty and the
 # prior-only-no-head-review cases).
@@ -145,6 +202,10 @@ grep -qi "no CodeRabbit review at head" "$TMP/err-zero-reviews-at-head-allows" \
     || { echo "FAIL missing zero-head-review stderr note (zero-reviews)"; fail=$((fail+1)); }
 grep -qi "no CodeRabbit review at head" "$TMP/err-prior-head-only-outside-not-counted-at-head" \
     || { echo "FAIL missing zero-head-review stderr note (prior-only)"; fail=$((fail+1)); }
+# HIMMEL-1582: head reviews existed but NONE was substantive (all empty bodies)
+# -> a stderr note must flag it so the all-zero output is not silently green.
+grep -qi "none carried a substantive body" "$TMP/err-two-head-all-empty-note" \
+    || { echo "FAIL missing all-empty-substantive stderr note"; fail=$((fail+1)); }
 
 echo "pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]
