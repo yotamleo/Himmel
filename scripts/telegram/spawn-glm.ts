@@ -818,6 +818,141 @@ export function writeLiveWorkerMeta(
   }
 }
 
+// ── HIMMEL-1596: the spawner owns durability ────────────────────────────────
+// Measured 2026-08-06: FOUR of four GLM dispatches produced substantive,
+// in-scope work and committed NONE of it; the parent harvested all four by
+// hand. "Commit early" is already in every brief (composeWorkerPrompt) and
+// already allowed by WORKER_BASH_ALLOW — it failed 4/4. Per the
+// structural>instructional rule, durability therefore moves OUT of the brief
+// and INTO the spawner.
+//
+// The declared checkpoint scope. spawn-glm has no per-dispatch file-scope
+// declaration today, so this is the standing default: an EXTENSION allow-list.
+// git pathspec globs match across `/` (no FNM_PATHNAME), so `*.ts` reaches
+// `scripts/telegram/x.ts` — the list captures source written anywhere in the
+// tree, including files the worker newly created, while excluding the run
+// logs, transcripts and binaries a worktree accumulates.
+//
+// NOT `git add -A`. .gitignore is the primary defense against generated
+// artifacts and makes -A *mostly* safe, but a checkpoint is harvested with
+// `git restore --source`, which writes every captured path back into the
+// operator's tree — so the blast radius of a stray capture is a dirtied
+// checkout, not just an ugly diff. An allow-list keeps that bounded, and
+// leaves no `-A` precedent in a spawner a worker's own scripts run beside.
+export const CHECKPOINT_GLOBS = [
+  "*.ts", "*.tsx", "*.js", "*.mjs", "*.cjs", "*.sh", "*.ps1", "*.py",
+  "*.md", "*.json", "*.jsonc", "*.yml", "*.yaml", "*.toml", "*.txt", "*.sql",
+];
+
+export type CheckpointRun = (cmd: string[], cwd: string, env?: Record<string, string>) => { code: number; stdout: string };
+
+// The only git runner in this file that CAPTURES stdout and returns a code
+// instead of throwing. `g()` in main() (~:1151) and runSharedDispatch's helpers
+// all throw on a nonzero rc — correct for setup steps that must abort the
+// dispatch, wrong for a checkpoint, which is best-effort armor bolted onto a
+// run that has already ended and whose exit code must survive unchanged.
+export function gitCapture(cmd: string[], cwd: string, env?: Record<string, string>): { code: number; stdout: string } {
+  const r = Bun.spawnSync(["git", "-C", cwd, ...cmd], {
+    stdout: "pipe", stderr: "pipe",
+    env: env ? { ...process.env, ...env } : process.env,
+  });
+  return { code: r.exitCode ?? -1, stdout: r.stdout.toString() };
+}
+
+// PLUMBING, deliberately. write-tree/commit-tree/update-ref run NO hooks at
+// all, so there is nothing to bypass and no `--no-verify` precedent for a later
+// agent to cite. The ref sits at refs/checkpoints/<slug>, OUTSIDE refs/heads/,
+// so no branch push (`git push origin <b>`, `--all`, `--tags`, `--follow-tags`)
+// can carry it — the containment a wip-commit approach could only assert. A
+// private GIT_INDEX_FILE leaves the worker's own index untouched.
+//
+// Callers must treat this as advisory: it never throws and never changes the
+// run's exit code.
+export function checkpointWorktree(
+  worktree: string,
+  slug: string,
+  sessionDir: string,
+  globs: string[],
+  run: CheckpointRun,
+): { committed: boolean; ref?: string; reason: string } {
+  const safe = (cmd: string[], env?: Record<string, string>) => {
+    try { return run(cmd, worktree, env); }
+    catch { return { code: -1, stdout: "" }; }   // never throw into runBody's finally
+  };
+  const st = safe(["status", "--porcelain"]);
+  if (st.code === -1) return { committed: false, reason: "git unavailable" };
+  if (st.code !== 0) return { committed: false, reason: `status rc=${st.code}` };
+  if (st.stdout.trim() === "") return { committed: false, reason: "clean" };
+
+  // The private index lives in the SESSION DIR, not the worktree: an index file
+  // inside the worktree is itself untracked, so it would dirty
+  // `status --porcelain` and corrupt the next checkpoint's "clean" check.
+  const env = { GIT_INDEX_FILE: join(sessionDir, "checkpoint-index") };
+  // SEED THE INDEX FROM HEAD FIRST. A fresh GIT_INDEX_FILE is EMPTY, so
+  // write-tree over it yields a tree containing ONLY the globbed files — i.e. a
+  // commit whose diff vs HEAD DELETES the entire rest of the repo. Any
+  // cherry-pick, merge or restore from that ref would be destructive.
+  // read-tree makes the snapshot HEAD-plus-changes, which is what "checkpoint"
+  // means. The mock suite cannot catch this (canned SHAs) — the real-git test
+  // asserting no `D` lines is the gate.
+  if (safe(["read-tree", "HEAD"], env).code !== 0) return { committed: false, reason: "read-tree failed" };
+  // Per-glob and TOLERANT: `git add -- <glob>` is FATAL when a glob matches
+  // nothing on disk, so a single unmatched declared glob would otherwise throw
+  // the whole checkpoint away.
+  let staged = 0;
+  for (const g of globs) {
+    if (safe(["add", "--", g], env).code === 0) staged++;
+  }
+  if (staged === 0) return { committed: false, reason: "no declared glob matched" };
+  const tree = safe(["write-tree"], env);
+  if (tree.code !== 0 || !tree.stdout.trim()) return { committed: false, reason: "write-tree failed" };
+  // `git add` exits 0 on a pathspec MATCH, not on a CHANGE: a worktree dirty
+  // only in an EXCLUDED path (run.log) passes the status guard above, a declared
+  // glob then matches tracked UNCHANGED files, and write-tree yields HEAD's OWN
+  // tree. Committing that empty delta would report `committed: true` and print
+  // the recovery line — telling the operator uncommitted work was captured when
+  // NOTHING in scope changed. That is worse than reporting nothing, because it
+  // is trusted. Compare the written tree to HEAD's tree and refuse if identical.
+  // An unborn HEAD (no commits yet) has no HEAD^{tree}: there a non-empty tree
+  // is genuinely new work and must still checkpoint.
+  const headTree = safe(["rev-parse", "HEAD^{tree}"]);
+  if (headTree.code === 0 && headTree.stdout.trim() === tree.stdout.trim()) {
+    return { committed: false, reason: "no in-scope change" };
+  }
+  const head = safe(["rev-parse", "HEAD"]);
+  const msg = `checkpoint(${slug}): spawner snapshot — UNREVIEWED, not a commit`;
+  const args = ["commit-tree", tree.stdout.trim(), "-m", msg];
+  // Parented on HEAD when there is one (an unborn branch has none), so the ref
+  // is diffable against the branch instead of being a rootless orphan.
+  if (head.code === 0 && head.stdout.trim()) args.splice(2, 0, "-p", head.stdout.trim());
+  const commit = safe(args, env);
+  if (commit.code !== 0 || !commit.stdout.trim()) return { committed: false, reason: "commit-tree failed" };
+  const ref = `refs/checkpoints/${slug}`;
+  if (safe(["update-ref", ref, commit.stdout.trim()]).code !== 0) {
+    return { committed: false, reason: "update-ref failed" };
+  }
+  return { committed: true, ref, reason: "checkpointed" };
+}
+
+// READ-MERGE-WRITE, never a blind write. executeRun records the run's terminal
+// state at five sites (:885 final, :891 prompt-too-long, :908 long-window cap,
+// :927 cap+resume, and the outer catch's failed-meta), and the checkpoint lands
+// AFTER all of them — a `writeFileSync(metaPath, {...runningMeta, checkpoint})`
+// would clobber whichever one just fired and flip the run back to "running".
+// Fail-open on every branch: a meta that cannot be read or written must not
+// change the run's outcome, so the worst case is a checkpoint that exists on
+// disk but is not advertised in meta.json (the console line below still names it).
+export function mergeMetaCheckpoint(metaPath: string, checkpoint: Record<string, unknown>): boolean {
+  try {
+    const prior = JSON.parse(readFileSync(metaPath, "utf8"));
+    writeFileSync(metaPath, JSON.stringify({ ...prior, checkpoint }, null, 2));
+    return true;
+  } catch (e) {
+    console.error(`spawn-glm: checkpoint recorded on disk but meta.json merge failed (non-fatal): ${String((e as any)?.message ?? e)}`);
+    return false;
+  }
+}
+
 // The run-and-record step, extracted so the meta-transition contract is
 // testable with an injected runSession. meta.json ALWAYS leaves "running": the
 // success path writes finalMeta (done/failed/capped/blocked), and a thrown
@@ -1216,7 +1351,23 @@ async function main(): Promise<void> {
     }
     const metaPath = join(sessionDir, "meta.json");
     const started_at = new Date().toISOString();
-    const baseMeta = { status: "running", pid: 0, started_at, lane: "glm", task_name: slug };
+    // HIMMEL-1596 Task 1.2 (Step 2b): record the worktree path and branch.
+    // The liveness check in await-glm-worker.sh can only read meta.json, and
+    // without these two fields its only staleness signal is last_output_at --
+    // which reads 0 for a worker that commits early and leaves a clean tree,
+    // so the BETTER-BEHAVED the worker, the more it looks STALLED. Both extra
+    // signals (newest worktree mtime, branch HEAD commit time) are unreachable
+    // until they are written here.
+    // HIMMEL-1616: `worktree` records the DISPATCH CWD (kept as-is for
+    // existing readers); worker_worktree is the worker's OWN minted/reused
+    // worktree — the correct root for the liveness mtime walk. Walking the
+    // dispatch CWD sweeps every sibling worktree in the checkout, so a
+    // SIBLING worker's writes read as THIS worker's liveness (a false ALIVE,
+    // the dangerous direction) — and costs a full-checkout find each verge.
+    const baseMeta = {
+      status: "running", pid: 0, started_at, lane: "glm", task_name: slug,
+      worktree: absCwd, branch, worker_worktree: worktree,
+    };
     // HIMMEL-800: shared_branch marks a shared-mode run in meta.json so a
     // reader can tell it apart from an own-branch run at a glance. Typed
     // construction (I8): a ternary builds the object with-or-without the field,
@@ -1246,7 +1397,26 @@ async function main(): Promise<void> {
       fetchUsage: () => fetchGlmUsage(readZaiKey(REPO_ROOT).key),
       arm: (hhmm, snap) => Bun.spawnSync(buildArmArgv(REPO_ROOT, hhmm, snap), { stdout: "inherit", stderr: "inherit", env: buildArmEnv() }).exitCode ?? 1,
     };
-    const { code } = await executeRun({ runSession, prompt, worktree, permMode, sessionDir, metaPath, runningMeta, capGuard, settings });
+    // HIMMEL-1596: checkpoint in a FINALLY, not "after executeRun returns".
+    // executeRun's outer catch writes failed-meta and RETHROWS, so a thrown
+    // runSession — a spawner-side crash mid-run, precisely when uncommitted
+    // work is stranded — would otherwise skip the checkpoint entirely. That is
+    // the exact hole moving this call out of executeRun was meant to avoid.
+    let code: number;
+    try {
+      ({ code } = await executeRun({ runSession, prompt, worktree, permMode, sessionDir, metaPath, runningMeta, capGuard, settings }));
+    } finally {
+      const cp = checkpointWorktree(worktree, slug, sessionDir, CHECKPOINT_GLOBS, gitCapture);
+      mergeMetaCheckpoint(metaPath, { ...cp, at: new Date().toISOString() });
+      if (cp.committed) {
+        // Harvest ergonomics: the recovery line, printed every time. A ref
+        // nobody knows how to read is the same as no checkpoint.
+        console.error(`spawn-glm: checkpointed uncommitted work to ${cp.ref} (UNREVIEWED — not a commit, not pushable)`);
+        console.error(`spawn-glm: recover with: git -C ${worktree} restore --source ${cp.ref} -- .`);
+      } else {
+        console.error(`spawn-glm: no checkpoint (${cp.reason})`);
+      }
+    }
     return code;
   };
 

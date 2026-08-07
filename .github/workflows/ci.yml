@@ -88,7 +88,7 @@ jobs:
       - run: npm test
         working-directory: scripts/${{ matrix.pkg }}
 
-  lanes-suite:
+  lanes-and-trust-suites:
     # HIMMEL-689: scripts/lanes is a zero-dependency ESM test package — no
     # package.json (a committed one under scripts/ trips the npm-audit gates for a
     # package with nothing to install). Run its node:test suites directly.

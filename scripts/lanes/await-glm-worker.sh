@@ -24,8 +24,10 @@
 #   0  worker reached a terminal status (meta.json + outbox tail printed)
 #   2  no session dir / meta.json found
 #   3  worker still running when the window closed (caller loops: re-invoke)
-#   4  STALLED (HIMMEL-1378): status is "running", the recorded pid is alive
-#      (or unknown), but no stdout/stderr byte has arrived for >= --stall-mins.
+#   4  STALLED (HIMMEL-1378): status is "running", the recorded pid CANNOT be
+#      probed (absent, 0, or the probe cannot answer), and no liveness signal
+#      has moved for >= --stall-mins. A pid CONFIRMED alive never reads
+#      STALLED (HIMMEL-1573) — see the fourth-signal comment in the loop.
 #      Exits the poll loop EARLY (before --max-mins) instead of burning the
 #      full window blind — the caller decides whether to keep waiting
 #      (re-invoke) or escalate/retry. Never kills the worker.
@@ -84,7 +86,18 @@ pid_alive() {
             return 2
             ;;
         *)
-            if kill -0 "$pid" 2>/dev/null; then return 0; else return 1; fi
+            kill -0 "$pid" 2>/dev/null && return 0
+            # kill -0's exit status collapses ESRCH (confirmed gone) and EPERM
+            # (probe refused — the pid EXISTS but cannot be signalled) into the
+            # same nonzero rc. Only ESRCH is confirmed death; EPERM must read
+            # as unknown (rc 2), or an active-but-unprobeable worker gets
+            # declared PHANTOM. Same message-parse as proc-tree.sh's
+            # proc_tree_process_alive (CR round 1, PR #1603).
+            err=$(LC_ALL=C kill -0 "$pid" 2>&1 >/dev/null)
+            case "$err" in
+                *"No such process"*) return 1 ;;
+                *) return 2 ;;
+            esac
             ;;
     esac
 }
@@ -105,20 +118,91 @@ iso_to_epoch() {
     date -d "$1" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%S" "${1%%.*}" +%s 2>/dev/null
 }
 
+# Newest regular-file mtime under $1 as whole epoch seconds, .git excluded.
+#
+# HIMMEL-1614: `find -printf` is a GNU findutils extension. On BSD/macOS find
+# it is an unknown primary, so the leg used to error into 2>/dev/null, return
+# nothing, and the watchdog SILENTLY degraded to two liveness signals with no
+# indication. newest_mtime runs whichever path matches MTIME_TOOL (detected
+# once at startup): the GNU fast path that is verified working here, or a
+# BSD/macOS `stat -f %m` equivalent that ships on every macOS box.
+#
+# `stat` was chosen over perl as the fallback: stat is already present
+# wherever BSD find is, perl is an extra dependency, and a single perl form
+# would drop the verified GNU path. This mirrors iso_to_epoch's GNU-first /
+# BSD-second shape. Empty output (tool missing at runtime, or an empty tree)
+# is rejected by the caller's digit-guard, so a transient miss fails safe --
+# it merely fails to widen ALIVE.
+newest_mtime() {
+    case "$MTIME_TOOL" in
+        gnu)
+            find "$1" -path "$1/.git" -prune -o -type f -printf '%T@\n' 2>/dev/null |
+                cut -d. -f1 | sort -n | tail -1
+            ;;
+        bsd)
+            # BSD/macOS `stat -f %m` prints st_mtime as whole epoch seconds, so
+            # the GNU pipeline's `cut -d. -f1` (dropping fractional seconds) is
+            # not needed here; same max-of-mtimes via sort -n | tail -1.
+            find "$1" -path "$1/.git" -prune -o -type f -exec stat -f %m {} + 2>/dev/null |
+                sort -n | tail -1
+            ;;
+    esac
+}
+
 if [ -z "$session_dir" ] && [ -z "$slug" ]; then
     echo "await-glm-worker: need --session-dir or --slug" >&2
     exit 2
 fi
 
 resolve_session_dir() {
-    # newest glm-<slug>-* dir; the trailing component is a millisecond epoch,
-    # so lexical sort of equal-length stamps orders by recency
-    find "$GLM_SESSIONS_ROOT" -maxdepth 1 -type d -name "glm-${slug}-*" 2>/dev/null | sort | tail -1
+    # newest glm-<slug>-<epoch> dir, where <epoch> is a millisecond stamp.
+    #
+    # HIMMEL-1347: the `*` in the find -name pattern also matches any LONGER
+    # slug sharing this one as a prefix, so `--slug foo` matched
+    # `glm-foo-signal-<epoch>` (a different dispatch) as well as `glm-foo-<epoch>`.
+    # In the C locale 's' > '1', so the prefix-sibling sorted LAST and won the
+    # `tail -1` — the watchdog then reported a prior FAILED dispatch's terminal
+    # status for a worker that was mid-run. The parent reads that as "worker
+    # dead" and either abandons live work or re-dispatches a duplicate racing
+    # the original on the same branch, which is a single-writer violation.
+    #
+    # find's -name cannot express "digits only", so the glob stays broad and
+    # the remainder after "glm-<slug>-" is checked here: anything that is not
+    # ALL DIGITS is a different slug, not an older run of this one. Ordering is
+    # numeric on that epoch rather than lexical over the whole path — the old
+    # comment's "equal-length stamps" assumption held only while every stamp
+    # had the same width, which is exactly what the sibling broke.
+    find "$GLM_SESSIONS_ROOT" -maxdepth 1 -type d -name "glm-${slug}-*" 2>/dev/null |
+    while IFS= read -r _cand; do
+        _stamp="${_cand##*/}"
+        _stamp="${_stamp#"glm-${slug}-"}"
+        case "$_stamp" in
+            '' | *[!0-9]*) continue ;;
+        esac
+        printf '%s\t%s\n' "$_stamp" "$_cand"
+    done | sort -n | tail -1 | cut -f2-
 }
 
 GLM_SESSIONS_ROOT="${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/glm-sessions"
 
 deadline=$(( $(date +%s) + max_mins * 60 ))
+
+# HIMMEL-1614: detect the mtime-leg toolchain ONCE (not per-poll). `find
+# -printf` is a GNU findutils extension; on BSD/macOS find it is an unknown
+# primary, so the leg used to error into 2>/dev/null and silently degrade the
+# watchdog to two liveness signals. Probe the REAL capability (not
+# `find --version`, whose flags also differ by platform) and remember it:
+#   gnu  -> GNU find -printf (the verified fast path on Linux / Git Bash)
+#   bsd  -> BSD/macOS `stat -f %m` (ships on every macOS box)
+#   none -> neither; newest_mtime is skipped and a single notice is emitted
+# -maxdepth 0 keeps the find probe to one stat of / rather than a walk.
+if find / -maxdepth 0 -printf '%T@\n' >/dev/null 2>&1; then
+    MTIME_TOOL=gnu
+elif stat -f %m / >/dev/null 2>&1; then
+    MTIME_TOOL=bsd
+else
+    MTIME_TOOL=none
+fi
 while :; do
     d="$session_dir"
     if [ -z "$d" ]; then
@@ -164,8 +248,83 @@ while :; do
                 fi
                 elapsed=$(( $(date +%s) - last_epoch ))
                 stall_secs=$(( stall_mins * 60 ))
-                if [ "$elapsed" -ge "$stall_secs" ]; then
-                    echo "await-glm-worker: STALLED: $d (no output for ${elapsed}s >= --stall-mins ${stall_mins}m; last activity $last_out; pid ${pid:-<none>})"
+                # HIMMEL-1596 Task 1.2: last_output_at ALONE lies in one
+                # direction. A worker that commits early and leaves a clean
+                # tree emits nothing further, so the better-behaved it is, the
+                # more it reads STALLED -- the same false-positive class this
+                # watchdog exists to remove. Widen to the MAXIMUM of three
+                # signals: recorded output, newest worktree mtime, and branch
+                # HEAD commit time.
+                #
+                # Computed ONLY here, on the verge of declaring STALLED, not
+                # every poll: a max can only ever widen ALIVE, so consulting
+                # the expensive signals early cannot change a live verdict --
+                # it would just walk the worktree every POLL_SECS for nothing.
+                #
+                # refs/checkpoints/<slug> is deliberately NOT a signal. Task
+                # 1.1 writes the checkpoint only after the run ENDS, so during
+                # the await window it is either absent or -- on a re-dispatch
+                # reusing the slug -- a stale ref from the PREVIOUS dispatch,
+                # which would read as a false ALIVE. Revisit only if
+                # checkpointing ever becomes periodic.
+                #
+                # Accepted false-negative: a wedged worker that keeps writing
+                # files still reads alive. A max cannot distinguish "busy" from
+                # "progressing"; the hard deadline (rc 3) is the backstop.
+                #
+                # HIMMEL-1573: process liveness is the FOURTH signal, and it
+                # short-circuits. The three signals above/below are all
+                # WRITE-side (recorded output, worktree mtime, HEAD commit),
+                # so none can see a worker in its READ/PLAN phase — measured
+                # 2026-08-07: a verifiably-alive worker (pid running per
+                # ps -W) was declared STALLED at the default window while it
+                # was reading. A pid CONFIRMED alive is not stalled, full
+                # stop — keep polling; the hard --max-mins window (rc 3)
+                # remains the backstop for an alive-but-wedged worker. rc 4
+                # is reserved for a pid that cannot be probed (absent, 0, or
+                # probe failure) with every write-side signal stale.
+                if [ "$palive" -ne 0 ] && [ "$elapsed" -ge "$stall_secs" ]; then
+                    # HIMMEL-1616: prefer the worker's own minted worktree.
+                    # The legacy `worktree` key records the DISPATCH CWD, so
+                    # walking it sweeps every sibling worktree in the checkout
+                    # and a SIBLING worker's writes read as THIS worker's
+                    # liveness — a false ALIVE, the dangerous direction. The
+                    # fallback keeps a meta.json written by an older spawner
+                    # working (same optional-fields contract as HIMMEL-1596).
+                    wt=$(extract_json_str "$d/meta.json" worker_worktree)
+                    [ -n "$wt" ] || wt=$(extract_json_str "$d/meta.json" worktree)
+                    br=$(extract_json_str "$d/meta.json" branch)
+                    if [ -n "$wt" ] && [ -d "$wt" ]; then
+                        # .git is excluded on purpose: it churns for reasons
+                        # that are not worker progress, and the commit signal
+                        # below covers real git activity precisely.
+                        #
+                        # HIMMEL-1614: newest_mtime runs the portable path for
+                        # this host (MTIME_TOOL, detected once at startup). When
+                        # the leg has NO usable toolchain it emits ONE stderr
+                        # note (mt_warned) and contributes nothing, rather than
+                        # the old silent degrade to two signals. The digit-guard
+                        # still handles an empty value at runtime either way.
+                        if [ "$MTIME_TOOL" != none ]; then
+                            mt=$(newest_mtime "$wt")
+                            case "$mt" in
+                                ''|*[!0-9]*) ;;
+                                *) [ "$mt" -gt "$last_epoch" ] && last_epoch="$mt" ;;
+                            esac
+                        elif [ -z "${mt_warned:-}" ]; then
+                            echo "await-glm-worker: mtime liveness leg unavailable on this host (no GNU 'find -printf' and no BSD 'stat -f %m'); degrading to output + commit signals" >&2
+                            mt_warned=1
+                        fi
+                        ct=$(git -C "$wt" log -1 --format=%ct "${br:-HEAD}" 2>/dev/null)
+                        case "$ct" in
+                            ''|*[!0-9]*) ;;
+                            *) [ "$ct" -gt "$last_epoch" ] && last_epoch="$ct" ;;
+                        esac
+                    fi
+                    elapsed=$(( $(date +%s) - last_epoch ))
+                fi
+                if [ "$palive" -ne 0 ] && [ "$elapsed" -ge "$stall_secs" ]; then
+                    echo "await-glm-worker: STALLED: $d (no output for ${elapsed}s >= --stall-mins ${stall_mins}m; last activity $last_out; pid ${pid:-<none>} unprobeable)"
                     cat "$d/meta.json"
                     echo
                     exit 4

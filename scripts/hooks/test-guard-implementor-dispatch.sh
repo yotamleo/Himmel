@@ -40,6 +40,17 @@ cp "$REPO_ROOT/scripts/lanes/resolve.mjs" "$FAKE_REPO_NO_CLAUDEX/scripts/lanes/r
 cp "$REPO_ROOT/scripts/lanes/probe.mjs" "$FAKE_REPO_NO_CLAUDEX/scripts/lanes/probe.mjs"
 : > "$FAKE_REPO_NO_CLAUDEX/scripts/telegram/spawn-glm.ts"
 
+# HIMMEL-1513 funded-bank fixtures. A fake project root carrying BOTH dispatchers
+# (so claudex AND glm pass lane_runnable) but NO bank-status.ts — proves the
+# default-path helper-missing branch fail-opens (lane treated as funded) rather
+# than stranding the caller.
+FAKE_REPO_NO_BANK="$TMP/fake-repo-no-bank"
+mkdir -p "$FAKE_REPO_NO_BANK/scripts/lanes" "$FAKE_REPO_NO_BANK/scripts/telegram"
+cp "$REPO_ROOT/scripts/lanes/resolve.mjs" "$FAKE_REPO_NO_BANK/scripts/lanes/resolve.mjs"
+cp "$REPO_ROOT/scripts/lanes/probe.mjs" "$FAKE_REPO_NO_BANK/scripts/lanes/probe.mjs"
+: > "$FAKE_REPO_NO_BANK/scripts/telegram/spawn-claudex.ts"
+: > "$FAKE_REPO_NO_BANK/scripts/telegram/spawn-glm.ts"
+
 # PATH stub with bun's directory removed (mandatory negative test — a live
 # credential but no Bun runtime). Stubbing PATH rather than mutating the real
 # environment; jq/node/bash stay reachable since only bun's dir is dropped.
@@ -84,6 +95,21 @@ exit 0
 EOF
 chmod +x "$STUB_BUN_DIR/bun"
 
+# HIMMEL-1513 funded-bank fixtures. The guard's lane_funded() runs the
+# bank-status probe under IMPL_GUARD_BANK_STATUS_CMD; stubbing it (rather than
+# building live codex-rollout / glm-ledger fixtures) keeps the suite hermetic
+# and independent of the operator's actual bank state (the codex weekly bank is
+# spent on the operator's station right now — without this stub, RC34 and the
+# claudex-refusal cases would flip to a glm/no-refusal verdict). run_hook
+# injects a default ALL-FUNDED stub so the existing runnability cases behave
+# unchanged; each funded-scenario test overrides it. The \\n stays literal
+# through the env assignment and is interpreted by printf inside `bash -c`.
+BANK_FUNDED_CMD="printf 'claudex funded\\nglm funded\\n'"
+BANK_CLAUDEX_SPENT_CMD="printf 'claudex spent\\nglm funded\\n'"
+BANK_BOTH_SPENT_CMD="printf 'claudex spent\\nglm spent\\n'"
+BANK_GARBAGE_CMD="printf 'claudex ???\\nglm ???\\n'"
+BANK_HANG_CMD="sleep 30"
+
 pass=0
 fail=0
 
@@ -121,6 +147,18 @@ assert_empty() {
     fi
 }
 
+assert_not_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    if grepq "$haystack" -F "$needle"; then
+        echo "FAIL $label — unexpectedly contains '$needle'"
+        echo "  actual: $haystack"
+        fail=$((fail + 1))
+    else
+        echo "ok   $label"
+        pass=$((pass + 1))
+    fi
+}
+
 payload() {
     jq -nc --arg st "$1" --arg m "$2" --arg d "$3" --arg p "$4" \
         '{tool_name:"Agent",session_id:"sess-test",tool_input:{subagent_type:$st,description:$d,prompt:$p,model:$m}}'
@@ -151,7 +189,7 @@ run_hook() {
     # env would fail 127 before the hook ever ran -- RC31 would then be a
     # platform-dependent false RED that says nothing about the guard. BASH_ABS
     # is resolved once, above, from the suite's own unmodified PATH.
-    printf '%s' "$json" | env CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" PATH="$STUB_BUN_DIR:$PATH" "$@" "$BASH_ABS" "$HOOK" \
+    printf '%s' "$json" | env CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" PATH="$STUB_BUN_DIR:$PATH" IMPL_GUARD_BANK_STATUS_CMD="$BANK_FUNDED_CMD" "$@" "$BASH_ABS" "$HOOK" \
         >"$TMP/out-$name" 2>"$TMP/err-$name"
     echo "$?"
 }
@@ -363,6 +401,184 @@ assert_contains "fallback refusal names the glm dispatcher" "bun scripts/telegra
 RC34=$(run_hook both-runnable "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
 assert_rc "both lanes runnable still refuses, prefers claudex" 2 "$RC34"
 assert_contains "preference-order refusal names the claudex dispatcher" "bun scripts/telegram/spawn-claudex.ts '<prompt>' --name <slug> --timeout-mins <n> --effort high" "$(cat "$TMP/err-both-runnable")"
+
+echo ""
+echo "=== HIMMEL-1513: a runnable lane must also be FUNDED ==="
+
+# Default (all-funded) baseline — RC34 above already proves both runnable +
+# funded still prefers claudex; these cases override the funded verdict.
+
+# 1. claudex runnable + bank SPENT, glm runnable + funded -> the preferred lane
+# falls through to the funded one. The refusal must name GLM, not claudex, and
+# must not strand the caller toward the spent claudex lane.
+RC35=$(run_hook claudex-spent-glm-funded "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="$BANK_CLAUDEX_SPENT_CMD" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "spent claudex falls through to funded glm, refuses" 2 "$RC35"
+assert_contains "spent-claudex refusal names the glm dispatcher" "bun scripts/telegram/spawn-glm.ts '<prompt>' --name <slug> --timeout-mins <n>" "$(cat "$TMP/err-claudex-spent-glm-funded")"
+assert_contains "spent-claudex warns why claudex was skipped" "bank is spent" "$(cat "$TMP/err-claudex-spent-glm-funded")"
+assert_not_contains "spent-claudex does NOT name the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-claudex-spent-glm-funded")"
+
+# 2. BOTH lanes spent -> NO lane refusal is emitted; control falls through to
+# the independent HIMMEL-920 bank guard (low bank here -> allow). This is the
+# intended behaviour: an unfunded lane never produces a new hard-block.
+RC36=$(run_hook both-spent "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="$BANK_BOTH_SPENT_CMD" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "both lanes spent falls through to the bank guard (low bank -> allow)" 0 "$RC36"
+assert_contains "both-spent warns claudex spent" "lane 'claudex' is runnable but its bank is spent" "$(cat "$TMP/err-both-spent")"
+assert_contains "both-spent warns glm spent" "lane 'glm' is runnable but its bank is spent" "$(cat "$TMP/err-both-spent")"
+assert_not_contains "both-spent emits NO lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-both-spent")"
+
+# 2b. A probe that emits `spent` AND exits NON-ZERO must be treated as FUNDED.
+# `spent` is the one arm that refuses a lane, and a timed-out or crashed probe
+# can still have written a partial `<lane> spent` line — so accepting it would
+# skip a lane on evidence the probe never finished producing. rc is checked
+# BEFORE the output is parsed: non-zero means "no verdict", which is fail-OPEN.
+# Without that ordering this case reports "bank is spent" and skips claudex.
+RC35B=$(run_hook spent-but-rc-nonzero "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="printf 'claudex spent\\nglm spent\\n'; exit 3" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "spent+rc!=0 fails OPEN: claudex stays eligible, hook refuses toward it" 2 "$RC35B"
+assert_contains "spent+rc!=0 warns the probe did not finish cleanly" "did not finish cleanly (rc=3)" "$(cat "$TMP/err-spent-but-rc-nonzero")"
+assert_contains "spent+rc!=0 treats the lane as funded" "treating it as funded (fail-open)" "$(cat "$TMP/err-spent-but-rc-nonzero")"
+assert_not_contains "spent+rc!=0 does NOT accept the partial spent verdict" "bank is spent" "$(cat "$TMP/err-spent-but-rc-nonzero")"
+
+# 3. A spent preferred lane with NO other lane available also falls through
+# (no claudex in the registry, glm spent) — no refusal, just the bank guard.
+RC37=$(run_hook glm-spent-no-claudex "$REG_GLM" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="printf 'glm spent\\n'" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "spent glm with no claudex falls through (low bank -> allow)" 0 "$RC37"
+assert_not_contains "spent-glm emits NO lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-glm-spent-no-claudex")"
+
+# 4. Fail-open: every probe failure treats the lane as FUNDED, so the refusal is
+# unchanged from the funded behaviour (still refuses toward claudex, never
+# strands the caller). Covers helper-missing (default path: bank-status.ts
+# absent from a fake checkout), helper times out, and garbage output.
+RC38=$(run_hook bank-helper-missing "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" CLAUDE_PROJECT_DIR="$FAKE_REPO_NO_BANK" IMPL_GUARD_BANK_STATUS_CMD="" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "missing probe helper fail-opens to claudex refusal" 2 "$RC38"
+assert_contains "missing-helper fail-open warns" "bank-status probe is missing" "$(cat "$TMP/err-bank-helper-missing")"
+assert_contains "missing-helper still names the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-bank-helper-missing")"
+
+RC39=$(run_hook bank-timeout "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="$BANK_HANG_CMD" IMPL_GUARD_BANK_BUDGET_SECS=1 IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "timed-out probe fail-opens to claudex refusal" 2 "$RC39"
+assert_contains "timeout fail-open warns" "did not finish cleanly" "$(cat "$TMP/err-bank-timeout")"
+assert_contains "timeout still names the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-bank-timeout")"
+
+RC40=$(run_hook bank-garbage "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="$BANK_GARBAGE_CMD" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "garbage probe output fail-opens to claudex refusal" 2 "$RC40"
+assert_contains "garbage fail-open warns" "unrecognised state" "$(cat "$TMP/err-bank-garbage")"
+assert_contains "garbage still names the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-bank-garbage")"
+
+# RC1 above (general-purpose + claudex available refuses) is the regression guard
+# proving a general-purpose implementation dispatch is still REFUSED — it runs
+# under the default all-funded stub, so it must keep passing unchanged.
+
+echo ""
+echo "=== HIMMEL-1617: descriptive fix mentions and plan-shaped briefs ==="
+
+# A read-only / analysis-only judgment brief must reach its lane even though it
+# is judgment/taste-shaped (the sanctioned escalation this guard otherwise
+# strands mid-session). claudex is available + funded here, so the ONLY thing
+# that can refuse is the classifier reading the brief as implementation.
+RC41=$(run_hook judgment-no-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Judge doc placement' 'Analysis only. Do not edit any file. Decide whether this doc section belongs in the always-loaded file or a reference. Return a recommendation as text.')")
+assert_rc "analysis-only judgment brief with no fix word allows" 0 "$RC41"
+assert_empty "analysis-only judgment brief is silent" "$(combined_output judgment-no-fix)"
+
+# The reproduction: the identical brief blocked (rc=2) purely for describing
+# prior work with the noun "fix" ("committed a fix"). The descriptive strip
+# (and the read-only declaration gate) must let it through.
+RC42=$(run_hook judgment-committed-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Judge doc placement' 'Analysis only. Do not edit any file. The parent already committed a fix that expanded the bullet. Return a recommendation as text.')")
+assert_rc "judgment brief describing a committed fix allows" 0 "$RC42"
+assert_empty "judgment brief describing a committed fix is silent" "$(combined_output judgment-committed-fix)"
+
+# "fix" as past-tense context ("fixed") is description, not an imperative.
+RC43=$(run_hook judgment-past-tense-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Judge doc placement' 'Analysis only. Do not edit any file. The earlier work fixed the routing drift. Return a recommendation as text.')")
+assert_rc "judgment brief with past-tense fixed allows" 0 "$RC43"
+assert_empty "judgment brief with past-tense fixed is silent" "$(combined_output judgment-past-tense-fix)"
+
+# A plan-shaped dispatch that declares no edits is categorically not
+# implementation, even though it asks for a plan to FIX something. "to fix the
+# flaky suite" sets implementation=1 (bare verb survives the strip), so this
+# exercises the HIMMEL-1617 declaration gate — the earlier phrasing never
+# tripped implementation and passed trivially (CR round 1, glm-3).
+RC44=$(run_hook plan-shaped "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Plan the X subsystem' 'Plan only. Do not edit, create, or commit any file. Produce an implementation plan to fix the flaky X suite and return it as text.')")
+assert_rc "plan-shaped brief allows" 0 "$RC44"
+assert_empty "plan-shaped brief is silent" "$(combined_output plan-shaped)"
+
+# The read-only declaration gate rescues a descriptive "fix" noun the strip does
+# not enumerate ("proposed fix") — proving the HIMMEL-1617 override gate, not
+# just the strip. implementation trips on "fix", but the declaration + no action
+# transition + no operational context still allows.
+RC49=$(run_hook judgment-proposed-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Judge doc placement' 'Read-only. Do not edit any file. The proposed fix is large. Return a recommendation as text.')")
+assert_rc "read-only declaration rescues a non-enumerated fix noun" 0 "$RC49"
+assert_empty "read-only declaration rescue is silent" "$(combined_output judgment-proposed-fix)"
+
+# Genuine implementation dispatches still refuse. claudex available + funded.
+RC45=$(run_hook bare-implement "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'implement this')")
+assert_rc "bare 'implement this' still refuses" 2 "$RC45"
+
+RC46=$(run_hook imperative-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'fix the bug in X')")
+assert_rc "imperative 'fix the bug in X' still refuses" 2 "$RC46"
+
+# "apply the fix" is imperative and must keep matching despite the descriptive
+# "fix" strip (it is masked then restored).
+RC47=$(run_hook apply-fix-commit "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'apply the fix and commit')")
+assert_rc "imperative 'apply the fix and commit' still refuses" 2 "$RC47"
+
+# A read-only declaration does NOT rescue a prompt that then transitions to
+# action — followed_by_action stays a veto.
+RC48=$(run_hook readonly-then-implement "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Read-only first. Do not edit any file. then implement it')")
+assert_rc "read-only declaration followed by 'then implement it' still refuses" 2 "$RC48"
+
+# CR round 1 regressions (glm-1, glm-2): the descriptive strip and the loose
+# read-only match must not launder genuine imperatives.
+# "commit the fix" is imperative — the action-verb mask must protect it from
+# the article strip (the apply-only mask let it classify as non-implementation).
+RC50=$(run_hook commit-the-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'commit the fix')")
+assert_rc "imperative 'commit the fix' still refuses" 2 "$RC50"
+
+RC51=$(run_hook push-the-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'push the fix to the branch')")
+assert_rc "imperative 'push the fix to the branch' still refuses" 2 "$RC51"
+
+# "readonly"/"read-only" as an ADJECTIVE on a noun is not a declaration — the
+# imperative "fix" must still refuse (the loose match rescued both of these).
+RC52=$(run_hook readonly-adjective "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'fix the readonly field in the config parser')")
+assert_rc "imperative 'fix the readonly field' still refuses" 2 "$RC52"
+
+RC53=$(run_hook read-only-adjective "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'fix the read-only field in the config parser')")
+assert_rc "imperative 'fix the read-only field' still refuses" 2 "$RC53"
+
+# CR round 2 (CodeRabbit, PR #1605): a standalone imperative at a clause head
+# is genuine implementation intent — the read-only declaration must NOT rescue
+# it (imperative_verb vetoes the override, like followed_by_action).
+RC54=$(run_hook readonly-then-imperative "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Read-only. Do not edit any file. Fix the bug in X.')")
+assert_rc "read-only declaration with a clause-head imperative still refuses" 2 "$RC54"
+
+RC55=$(run_hook imperative-at-start "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Fix the flaky retry loop. Return a summary as text.')")
+assert_rc "text-initial imperative with a trailing return-as-text still refuses" 2 "$RC55"
+
+# CR round 3 (glm, PR #1605): an adverb-prefixed imperative ("Please fix",
+# "Now implement") defeated the bare clause-head anchor; the verb+determiner
+# shape and the adverb run must both veto the read-only override.
+RC56=$(run_hook readonly-please-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Read-only. Do not edit any file. Please fix the bug in X.')")
+assert_rc "read-only declaration with 'Please fix the bug' still refuses" 2 "$RC56"
+
+RC57=$(run_hook readonly-now-implement "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Read-only. Do not edit any file. Now implement the retry logic.')")
+assert_rc "read-only declaration with 'Now implement the retry logic' still refuses" 2 "$RC57"
+
+# The masked action-verb restore ("commit the fix" -> "apply the fix") must
+# also read as imperative under a declaration.
+RC58=$(run_hook readonly-commit-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Read-only. Do not edit any file. Commit the fix.')")
+assert_rc "read-only declaration with 'Commit the fix' still refuses" 2 "$RC58"
+
+# CR round 2 (HIMMEL-1617): the descriptive strip carries the original ALLOW
+# cases (no clause-initial bare verb survives), so they keep allowing. Probe (a)
+# is the full descriptive brief — it must stay allowed even though "committed a
+# fix" appears, because the strip removes the noun and no imperative remains.
+RC56=$(run_hook probe-descriptive-allows "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Judge doc placement' 'Analysis only. Do not edit any file. Decide whether this doc section belongs in the always-loaded file or a reference. The parent already committed a fix that expanded the bullet. Return a recommendation as text.')")
+assert_rc "descriptive analysis brief with a committed fix allows" 0 "$RC56"
+assert_empty "descriptive analysis brief is silent" "$(combined_output probe-descriptive-allows)"
+
+# imperative_verb covers (implement|fix|land), not just "fix": a clause-initial
+# "implement" under an analysis-only declaration refuses via the new veto alone
+# (followed_by_action and operational_context are both 0 here, so this isolates
+# imperative_verb as the only thing blocking the override).
+RC57=$(run_hook standalone-implement-blocks "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Analysis only. Do not edit any file. Implement the new handler and report.')")
+assert_rc "analysis-only declaration does not rescue a standalone implement" 2 "$RC57"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

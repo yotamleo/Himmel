@@ -3,8 +3,10 @@
 # lane routing (HIMMEL-1513) with the bank-aware cost guard (HIMMEL-920).
 #
 # The policies answer independent questions:
-#   1. If an external implementation lane is available, refuse an
-#      implementation-shaped in-process Agent dispatch and name that lane.
+#   1. If an external implementation lane is registry-available, runnable, AND
+#      bank-funded, refuse an implementation-shaped in-process Agent dispatch
+#      and name that lane. An unfunded preferred lane falls through to the other
+#      lane (or the HIMMEL-920 bank guard) rather than refusing toward it.
 #   2. If no lane is available but the live 5-hour bank is near exhaustion,
 #      retain HIMMEL-920's HARD refusal / WARN advisory policy.
 #
@@ -30,6 +32,8 @@
 #   IMPL_GUARD_CACHE_MAX_AGE_SECS  cache staleness bound (default 300)
 #   IMPL_GUARD_HARD                bank refusal threshold (default 80)
 #   IMPL_GUARD_WARN                bank advisory threshold (default 65)
+#   IMPL_GUARD_BANK_STATUS_CMD     override the funded-bank probe command (tests stub it; default `bun scripts/lanes/bank-status.ts`)
+#   IMPL_GUARD_BANK_BUDGET_SECS    funded-bank probe wall-clock budget (default 4)
 #
 # Exit codes: 0 allow; 2 refuse. Bash 3.2-compatible.
 set -uo pipefail
@@ -115,12 +119,46 @@ implementation=0
 operational_context=0
 research=0
 followed_by_action=0
+read_only_declared=0
+imperative_verb=0
 
 # Direct action words and commit/trailer instructions are strong signals. Strip
-# "how to <verb>" research framing before checking bare action verbs.
-implementation_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E 's/how[[:space:]]+to[[:space:]]+(implement|fix|land)/ /g')
+# two kinds of non-imperative framing BEFORE the bare-verb check, so a noun or
+# past-tense use of "fix" cannot alone set implementation=1 and veto every
+# read-only override (HIMMEL-1617):
+#   1. "how to <verb>" research framing (HIMMEL-1513).
+#   2. A descriptive/past-tense "fix" — "a/the fix", "this/that/its/prior/
+#      previous/earlier/existing fix", "committed a fix that", "fixed" — which
+#      refers to prior work, not an imperative to act. Imperatives survive:
+#      "fix the X" keeps "fix" as the head word, and action-verb+fix phrases
+#      ("apply/commit/push/land/merge/ship the fix") are masked then restored
+#      so the bare-verb clause below still matches them (CR round 1: the
+#      apply-only mask let "commit the fix" slip through the article strip).
+implementation_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
+    s/how[[:space:]]+to[[:space:]]+(implement|fix|land)/ /g
+    s/(apply|commit|push|land|merge|ship)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?fix/applyprotected/g
+    s/((this|that|its|prior|previous|earlier|existing)[[:space:]]+|committed[[:space:]]+(a|the)[[:space:]]+|(a|an|the)[[:space:]]+)fix(ed)?/ /g
+    s/fixed/ /g
+    s/applyprotected/apply the fix/g
+')
 if grepq "$implementation_text" -Eq '(^|[^[:alnum:]_])(implement|fix|land)([^[:alnum:]_]|$)|apply (the |a )?(fix|change)|write (the )?(code|implementation)|make (the )?(change|changes|test(s)? pass)|address (the |all |every )?((coderabbit|cr|review(er)?) )?(comment(s)?|finding(s)?|feedback)|resolve (the |all |every )?((coderabbit|cr|review(er)?) )?(comment(s)?|finding(s)?|feedback)|git commit|commit (the |these )?changes|commit message|attestation trailer|platforms tested:|security reviewed:'; then
     implementation=1
+fi
+
+# CR rounds 2+3 (HIMMEL-1617): a standalone imperative is genuine
+# implementation intent and must veto the read-only/plan override below. Two
+# shapes count: a bare verb heading its own clause — text start or right after
+# a sentence boundary, tolerating an adverb run ("Please fix", "Now implement";
+# round 3: a single leading word defeated the bare clause-head anchor) — or a
+# verb taking a determiner object ("fix the bug"), which no noun or past-tense
+# survivor of the strip can form. Infinitives are stripped first so a plan or
+# judgment brief describing WHAT the plan is for ("plan to fix the flaky
+# suite") does not read as an order to do it. Computed on the post-strip text
+# so an enumerated noun ("the fix") cannot pose as one; "apply" is in the verb
+# set because every masked action-verb+fix phrase restores to "apply the fix".
+imperative_text=$(printf '%s' "$implementation_text" | sed -E 's/to[[:space:]]+(implement|fix|land|apply)/ /g')
+if grepq "$imperative_text" -Eq '(^|[.!?;][[:space:]]*)((please|now|just|kindly|first|then)[[:space:]]+)*(implement|fix|land|apply)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(implement|fix|land|apply)[[:space:]]+(the|a|an|this|that|it|its)([^[:alnum:]_]|$)'; then
+    imperative_verb=1
 fi
 
 # A ticket ID alone is context, not implementation intent. Research wins only
@@ -135,8 +173,31 @@ if grepq "$text" -Eqi '(\.claude[/\\]worktrees[/\\]|--worktree([=[:space:]]|$)|p
     operational_context=1
 fi
 
+# An explicit read-only / analysis-only / plan-only declaration outranks an
+# incidental bare "fix" noun: a judgment or plan brief that merely describes
+# prior work must still reach its lane (HIMMEL-1617). The declaration never
+# rescues a prompt that then transitions to action or carries worktree/commit/
+# trailer instructions — followed_by_action and operational_context stay vetoes
+# at the allow gate below. "read-only" must be a DECLARATION — standalone
+# ("Read-only.") or naming the dispatch (read-only analysis/task/...) — not an
+# adjective on a noun ("fix the readonly field" is imperative implementation;
+# CR round 1: the loose read[-[:space:]]*only matched "readonly" anywhere).
+if grepq "$text" -Eqi 'do[[:space:]]+not[[:space:]]+edit|analysis[[:space:]]+only|read[-[:space:]]+only[[:space:]]*([.,;:!]|$)|read[-[:space:]]+only[[:space:]]+(task|review|analysis|audit|brief|mode|dispatch|pass)|plan[[:space:]]+only|return[[:space:]]+[^.!?;]*((as[[:space:]]+text)|recommendation)|produce[[:space:]]+[^.!?;]*(plan|recommendation)'; then
+    read_only_declared=1
+fi
+
 [ "$implementation" = "1" ] || [ "$operational_context" = "1" ] || exit 0
 if [ "$research" = "1" ] && [ "$implementation" = "0" ] && [ "$followed_by_action" = "0" ] && [ "$operational_context" = "0" ]; then
+    exit 0
+fi
+
+# HIMMEL-1617: a declared read-only / analysis-only / plan-only brief is
+# categorically not implementation, even when an incidental "fix" noun tripped
+# implementation. A standalone imperative (imperative_verb), an action
+# transition (then/and <verb>), or worktree/commit/trailer context still vetoes
+# — those reveal genuine implementation intent (CR round 2: the declaration
+# alone rescued "Read-only. ... Fix the bug in X").
+if [ "$read_only_declared" = "1" ] && [ "$imperative_verb" = "0" ] && [ "$followed_by_action" = "0" ] && [ "$operational_context" = "0" ]; then
     exit 0
 fi
 
@@ -144,15 +205,17 @@ hook_dir=$(cd "$(dirname "$0")" && pwd)
 repo_root="${CLAUDE_PROJECT_DIR:-}"
 [ -n "$repo_root" ] || repo_root=$(cd "$hook_dir/../.." && pwd)
 
-# --- HIMMEL-1513: refuse when a concrete external lane is available AND
-# actually runnable. The registry marks a lane available by API-key presence
-# alone — it never checks that bun is installed or that the lane's dispatcher
-# script exists on disk. Refusing toward a registry-available-but-unrunnable
-# lane would strand the caller on a command that cannot execute, which is the
-# one path this guard's fail-open invariant forbids. Verify runnability before
-# refusing; an unrunnable preferred lane falls through to the other lane
-# (preference order claudex-before-glm stays intact) rather than straight to
-# a refusal.
+# --- HIMMEL-1513: refuse only when a concrete external lane is
+# registry-available AND actually runnable AND bank-funded. The registry marks
+# a lane available by API-key presence alone — it never checks that bun is
+# installed, that the lane's dispatcher script exists on disk, or that the
+# lane's bank still has quota. Refusing toward an available-but-unrunnable or
+# available-but-unfunded lane would strand the caller on a command that cannot
+# answer, which is the one path this guard's fail-open invariant forbids.
+# Verify runnability AND funding before refusing; a preferred lane that fails
+# either falls through to the other lane (preference order claudex-before-glm
+# stays intact) rather than straight to a refusal. If neither lane qualifies,
+# no refusal is emitted and control falls through to the HIMMEL-920 bank guard.
 lane_runnable() {
     local id="$1" script="$2"
     if ! command -v bun >/dev/null 2>&1; then
@@ -164,6 +227,104 @@ lane_runnable() {
         return 1
     fi
     return 0
+}
+
+# Run a command under a hard wall-clock budget; echo its combined stdout/stderr
+# and return 124 on overrun, else the command's own exit. Portable bash 3.2: a
+# background job under `set -m` polled on the $SECONDS builtin, then
+# process-group-killed on overrun. GNU coreutils `timeout` is intentionally NOT
+# used — Windows ships a SLEEP named timeout.exe and stock macOS lacks
+# coreutils, so `command -v timeout` is a trap (see qmd-staleness-notice.sh for
+# the full lesson). $SECONDS keeps the bound working under the narrowed PATH
+# this hook sometimes runs under, and the process-group kill reaps the helper's
+# children so a wedged reader leaves nothing behind.
+_run_bounded() {
+    local budget_secs="$1" cmd="$2"
+    local cap pid start rc
+    cap=$(mktemp "${TMPDIR:-/tmp}/himmel-bank-status.XXXXXX" 2>/dev/null) || cap=""
+    set -m
+    bash -c "$cmd" >"${cap:-/dev/null}" 2>&1 &
+    pid=$!
+    set +m
+    start=$SECONDS
+    while [ $((SECONDS - start)) -lt "$budget_secs" ] && kill -0 "$pid" 2>/dev/null; do
+        sleep 1
+    done
+    rc=0
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+        rc=124
+    else
+        wait "$pid" 2>/dev/null || rc=$?
+    fi
+    [ -n "$cap" ] && cat "$cap" 2>/dev/null
+    [ -n "$cap" ] && rm -f "$cap"
+    return "$rc"
+}
+
+# lane_funded <lane-id> — return 0 iff the lane's bank is FUNDED. FAIL-OPEN by
+# design: a missing helper, missing bun, a timeout, a non-zero exit, unparseable
+# output, or an explicit `unknown` state ALL resolve to FUNDED with one warning.
+# ONLY a live `spent` state returns non-zero. This guard never invents a new
+# hard-block — `spent` makes the caller SKIP this lane toward the other lane (or
+# the HIMMEL-920 fall-through); it never refuses toward the caller.
+lane_funded() {
+    local id="$1" cmd budget out rc state lid lstate
+    budget="${IMPL_GUARD_BANK_BUDGET_SECS:-4}"
+    if [ -n "${IMPL_GUARD_BANK_STATUS_CMD:-}" ]; then
+        cmd="$IMPL_GUARD_BANK_STATUS_CMD"
+    else
+        if ! command -v bun >/dev/null 2>&1; then
+            warn "lane '$id' bank-status probe needs bun, which is not on PATH — treating it as funded (fail-open)"
+            return 0
+        fi
+        if [ ! -f "$repo_root/scripts/lanes/bank-status.ts" ]; then
+            warn "lane '$id' bank-status probe is missing ($repo_root/scripts/lanes/bank-status.ts) — treating it as funded (fail-open)"
+            return 0
+        fi
+        cmd="bun \"$repo_root/scripts/lanes/bank-status.ts\""
+    fi
+    rc=0
+    out=$(_run_bounded "$budget" "$cmd") || rc=$?
+    # rc FIRST, before the output is even parsed. A probe that timed out or
+    # crashed can still have written a partial `<lane> spent` line, and the
+    # `spent` arm below is the ONE arm that refuses a lane — so parsing first
+    # let a half-dead probe skip a lane on evidence it never finished
+    # producing. Non-zero rc means "no verdict", which is fail-OPEN by this
+    # function's documented contract, whatever bytes landed on stdout.
+    if [ "$rc" -ne 0 ]; then
+        warn "lane '$id' bank-status probe did not finish cleanly (rc=$rc) — treating it as funded (fail-open)"
+        return 0
+    fi
+    # Parse `<lane-id> <state>` for this lane. A here-string (no pipeline) keeps
+    # this pipefail-safe (HIMMEL-1430).
+    state=""
+    while IFS=' ' read -r lid lstate; do
+        [ -n "$lid" ] || continue
+        if [ "$lid" = "$id" ]; then
+            state="$lstate"
+            break
+        fi
+    done <<< "$out"
+    case "$state" in
+        spent)
+            warn "lane '$id' is runnable but its bank is spent — skipping it, not refusing toward it"
+            return 1
+            ;;
+        funded)
+            return 0
+            ;;
+        *)
+            # No rc branch here — a non-zero rc already returned above.
+            if [ -z "$state" ]; then
+                warn "lane '$id' bank-status probe returned no '$id' line — treating it as funded (fail-open)"
+            else
+                warn "lane '$id' bank-status probe returned an unrecognised state ('$state') — treating it as funded (fail-open)"
+            fi
+            return 0
+            ;;
+    esac
 }
 
 lane=""
@@ -182,9 +343,9 @@ if [ "$lane_exempt" != "1" ]; then
     else
         reg_claudex=$(printf '%s' "$lanes" | jq -r 'if any(.[]; .id == "claudex") then "1" else "0" end' 2>/dev/null || echo 0)
         reg_glm=$(printf '%s' "$lanes" | jq -r 'if any(.[]; .id == "glm") then "1" else "0" end' 2>/dev/null || echo 0)
-        if [ "$reg_claudex" = "1" ] && lane_runnable claudex "$repo_root/scripts/telegram/spawn-claudex.ts"; then
+        if [ "$reg_claudex" = "1" ] && lane_runnable claudex "$repo_root/scripts/telegram/spawn-claudex.ts" && lane_funded claudex; then
             lane="claudex"
-        elif [ "$reg_glm" = "1" ] && lane_runnable glm "$repo_root/scripts/telegram/spawn-glm.ts"; then
+        elif [ "$reg_glm" = "1" ] && lane_runnable glm "$repo_root/scripts/telegram/spawn-glm.ts" && lane_funded glm; then
             lane="glm"
         fi
     fi

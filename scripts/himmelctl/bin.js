@@ -4167,6 +4167,28 @@ async function main() {
     console.log(USAGE);
     return 0;
   }
+  // --version (anywhere) → `himmel <semver>`, exit 0. Special-cased here for
+  // the same reason -h/--help is: parseArgs below only understands the shared
+  // flag grammar, and this must answer before any subcommand dispatch.
+  //
+  // HIMMEL-1599: himmel had no version, so no measurement we take — gate
+  // false-positive rates, dispatch-completion rates, suite timings — could be
+  // attributed to a build. Reads VERSION rather than embedding a constant, so
+  // there is exactly one place to bump.
+  //
+  // NEVER throws: an unreadable or absent VERSION prints `himmel unknown` and
+  // still exits 0. `--version` failing loudly would make a diagnostic command
+  // the thing that breaks the diagnosis.
+  if (argv.indexOf('--version') !== -1) {
+    let version = 'unknown';
+    try {
+      version = fs.readFileSync(path.join(repoRoot(), 'VERSION'), 'utf8').trim() || 'unknown';
+    } catch {
+      // fall through to 'unknown'
+    }
+    console.log(`himmel ${version}`);
+    return 0;
+  }
   // `config` owns its OWN positional grammar (get/set <path> [<value>]) that
   // the shared flag-only parseArgs()/ALLOWED_OPTIONS machinery below has no
   // notion of (every other subcommand takes flags only) — special-cased here

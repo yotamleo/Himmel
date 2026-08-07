@@ -223,7 +223,15 @@ fi
 echo "[2/9] Installing git hooks (pre-commit, pre-push, commit-msg)..."
 pre-commit install
 pre-commit install --hook-type pre-push
-bash "$REPO_ROOT/scripts/hooks/install-cr-pre-push-legacy.sh"
+# Non-fatal (HIMMEL-1586): the installer refuses (exit 2) to overwrite a
+# foreign pre-push hook that the `pre-commit install --hook-type pre-push`
+# above may have just left behind. That refusal must not abort the remaining
+# setup steps [3/9]..[9/9] — the push-time self-heal
+# (scripts/hooks/check-cr-before-push.sh) reinstalls a missing legacy hook on
+# demand, so nothing is lost by continuing.
+if ! bash "$REPO_ROOT/scripts/hooks/install-cr-pre-push-legacy.sh"; then
+  echo "  WARNING: CR pre-push legacy hook not installed (see above). Setup continues; the push-time self-heal retries this install on first push." >&2
+fi
 pre-commit install --hook-type commit-msg
 
 echo "[3/9] Installing Jira + Bitbucket CLIs..."

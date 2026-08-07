@@ -50,10 +50,12 @@ assert_contains() {
 # every checkout/commit these throwaway fixtures make — each spawning a real
 # background process, which is slow and leaves locked .tokensave files behind
 # that then fail this script's own `rm -rf` cleanup. Pointing hooksPath back
-# at the repo's actual .git/hooks (a fresh `git init`/`git clone` populates it
-# with only inert *.sample files) restores git's real default. Called BEFORE
-# the first checkout in a freshly cloned repo (not just alongside git_id)
-# because post-checkout is exactly one of the hooks in question.
+# at the repo's actual .git/hooks (a fresh `git init`/`git clone` leaves it
+# holding only inert *.sample files — or empty when init.templateDir is pinned
+# empty, which the test-env perf pins do; empty is strictly more inert)
+# restores git's real default. Called BEFORE the first checkout in a freshly
+# cloned repo (not just alongside git_id) because post-checkout is exactly one
+# of the hooks in question.
 de_hook() {
   git -C "$1" config core.hooksPath .git/hooks
 }

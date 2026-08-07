@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { test as baseTest } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -11,6 +11,17 @@ import { assertPermissionsUnchanged } from './wire-hook-bash.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WIRER = join(HERE, 'wire-hook-bash.mjs');
 const SETTINGS = join(HERE, '..', '..', '.claude', 'settings.json');
+
+// Public/adopter clones lack .claude/settings.json (it is in PRIVATE_PATHS and
+// redacted on the public mirror), so the live file this suite exercises is
+// absent there. Every case below is a spec FOR that real file; none can run
+// without it, so skip them — naming the reason — rather than fail on the
+// missing private fixture (HIMMEL-1590). The one case that does not touch
+// settings.json (the permission-gate unit test) stays a plain baseTest.
+const SETTINGS_SKIP = existsSync(SETTINGS)
+  ? undefined
+  : '.claude/settings.json (PRIVATE_PATHS) is absent — public mirror / adopter checkout lacks the private fixture this suite is the spec for';
+const test = (name, fn) => baseTest(name, SETTINGS_SKIP ? { skip: SETTINGS_SKIP } : {}, fn);
 
 // The live settings.json is the fixture SOURCE (it carries the real 16-script
 // inventory the wirer asserts against), but the fixture must not inherit its
@@ -131,7 +142,7 @@ test('refuses a missing owned hook script without writing', () => {
   });
 });
 
-test('permission gate refuses an injected permissions mutation', () => {
+baseTest('permission gate refuses an injected permissions mutation', () => {
   const before = { permissions: { allow: ['Bash(git *)'], deny: [], ask: ['Read(*)'] } };
   const after = structuredClone(before);
   after.permissions.allow.push('Bash(everything *)');
