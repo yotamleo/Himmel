@@ -150,7 +150,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "router-for-me/CLIProxyAPI",
-      "synced_base": "7.2.115",
+      "synced_base": "7.2.122",
       "version_pin": { "file": "scripts/setup/cli-proxy-lane.ps1", "template": "$Version = '{version}'" },
       "tier": "A",
       "note": "CLIProxyAPI codex-lane proxy (HOST process on 127.0.0.1:8317; installed + run by scripts/setup/cli-proxy-lane.ps1). Added to the nightly drift machinery (HIMMEL-1451) so a new upstream release SURFACES as a drift finding instead of needing manual surgery: v7.2.77 threw ~3-min bursts of instant upstream 502s every ~25 min that killed codex-adv renders (Claude Code retries 502s but the companion's render turn does not), and the validated fix was a manual swap to v7.2.113 -- both legs completed clean that night. AUTO-BUMP policy is deliberately SURFACE-ONLY and matches the existing rows' conservatism: apply-drift-bump.sh moves the in-repo pin literal ($Version in cli-proxy-lane.ps1) and synced_base TOGETHER, but NOTHING here restarts the running proxy -- bumping the pin does NOT swap a live instance. The drift leg lands the pin bump as a PR, and the operator runs cli-proxy-lane.ps1 -Install + -Restart (HIMMEL-1451 lifecycle verbs) to actually roll the host. Default tag-mode (highest stable tag, prereleases excluded -- CLIProxyAPI tags are monotonic, so no latest_source override is needed); synced_base lacks the leading 'v' but the guard normalizes both sides before comparing (v7.2.115 tag == 7.2.115 base). tracked_repo is the TRUE upstream (router-for-me/CLIProxyAPI)."

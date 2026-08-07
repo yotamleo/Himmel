@@ -1,0 +1,215 @@
+# HIMMEL-924 — promtool unit tests over recorded series for
+# alerts.rules.yml. Run with:
+#   promtool test rules scripts/observability/alerts.rules.test.yml
+# (promtool ships inside the Prometheus release install-stack.ps1 downloads;
+# no separate install needed on a station that has already run the stack
+# installer once.)
+rule_files:
+  - alerts.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # HimmelFlowRunTruncated: fires the evaluation after a truncated row lands,
+  # stays silent while the counter is flat.
+  - interval: 1m
+    input_series:
+      - series: 'flow_run_outcome_total{flow="pipeline-harvest",outcome="truncated"}'
+        values: '0x4 1x4'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HimmelFlowRunTruncated
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: HimmelFlowRunTruncated
+        exp_alerts:
+          - exp_labels:
+              flow: pipeline-harvest
+              outcome: truncated
+              severity: page
+            exp_annotations:
+              summary: 'Flow pipeline-harvest run truncated in the last 15m'
+
+  # HimmelFlowRunError: same shape, outcome=error.
+  - interval: 1m
+    input_series:
+      - series: 'flow_run_outcome_total{flow="pipeline-synthesize",outcome="error"}'
+        values: '0x4 1x4'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HimmelFlowRunError
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: HimmelFlowRunError
+        exp_alerts:
+          - exp_labels:
+              flow: pipeline-synthesize
+              outcome: error
+              severity: page
+            exp_annotations:
+              summary: 'Flow pipeline-synthesize run errored in the last 15m'
+
+  # HimmelFlowRunStalled: the exporter-inferred stalled outcome, level-based
+  # (not increase()) — present from minute 0 in this fixture.
+  - interval: 1m
+    input_series:
+      - series: 'flow_run_outcome_total{flow="armed-resume",outcome="stalled"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HimmelFlowRunStalled
+        exp_alerts:
+          - exp_labels:
+              flow: armed-resume
+              outcome: stalled
+              severity: page
+            exp_annotations:
+              summary: 'Flow armed-resume has a run stalled past its deadline'
+
+  # HimmelFlowLastSuccessAgeExceeded: last_success_timestamp held at a fixed
+  # value far enough in the past (relative to promtool's own synthetic
+  # clock, which starts near zero — not wall-clock time) that
+  # `time() - timestamp` is already deep past 2x the 3600s cadence
+  # (7200s) by the first evaluation.
+  - interval: 1m
+    input_series:
+      - series: 'flow_run_last_success_timestamp{flow="pipeline-vitals"}'
+        values: '-100000x10'
+      - series: 'flow_cadence_seconds{flow="pipeline-vitals"}'
+        values: '3600x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HimmelFlowLastSuccessAgeExceeded
+        exp_alerts:
+          - exp_labels:
+              flow: pipeline-vitals
+              severity: page
+            exp_annotations:
+              summary: 'Flow pipeline-vitals last success is older than 2x its cadence'
+
+  # A flow with no declared flow_cadence_seconds never fires this rule, no
+  # matter how stale — the join drops it (dark, not alerting; design §1.3).
+  - interval: 1m
+    input_series:
+      - series: 'flow_run_last_success_timestamp{flow="pipeline-uncadenced"}'
+        values: '-100000x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HimmelFlowLastSuccessAgeExceeded
+        exp_alerts: []
+
+  # HimmelScheduledTaskDisabled: exists=1 but enabled=0.
+  - interval: 1m
+    input_series:
+      - series: 'scheduled_task_exists{task="himmel-pipeline-harvest"}'
+        values: '1x5'
+      - series: 'scheduled_task_enabled{task="himmel-pipeline-harvest"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HimmelScheduledTaskDisabled
+        exp_alerts:
+          - exp_labels:
+              task: himmel-pipeline-harvest
+              severity: page
+            exp_annotations:
+              summary: 'Scheduled task himmel-pipeline-harvest is disabled or missing'
+
+  # ... and the exists=0 arm of the same rule, task missing entirely.
+  - interval: 1m
+    input_series:
+      - series: 'scheduled_task_exists{task="himmel-pipeline-vitals"}'
+        values: '0x5'
+      - series: 'scheduled_task_enabled{task="himmel-pipeline-vitals"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HimmelScheduledTaskDisabled
+        exp_alerts:
+          - exp_labels:
+              task: himmel-pipeline-vitals
+              severity: page
+            exp_annotations:
+              summary: 'Scheduled task himmel-pipeline-vitals is disabled or missing'
+
+  # HimmelAgentTreeRamRunaway: needs to hold true for 10m before firing.
+  - interval: 1m
+    input_series:
+      - series: 'agent_tree_rss_bytes{class="codex-app-server"}'
+        values: '7000000000x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HimmelAgentTreeRamRunaway
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: HimmelAgentTreeRamRunaway
+        exp_alerts:
+          - exp_labels:
+              class: codex-app-server
+              severity: warn
+            exp_annotations:
+              summary: 'Agent tree class codex-app-server RSS exceeds 6 GiB'
+
+  # HimmelOrphanProcesses: mcp-dead-parent-unattributed is deliberately
+  # excluded from the class regex (dashboard-visible, not paged).
+  - interval: 1m
+    input_series:
+      - series: 'orphan_process_count{class="codex-fleet"}'
+        values: '2x35'
+      - series: 'orphan_process_count{class="mcp-dead-parent-unattributed"}'
+        values: '2x35'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: HimmelOrphanProcesses
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: HimmelOrphanProcesses
+        exp_alerts:
+          - exp_labels:
+              class: codex-fleet
+              severity: warn
+            exp_annotations:
+              summary: 'codex-fleet orphan count is 2'
+
+  # HimmelWatcherDown: flow-exporter job goes to 0 (down) and stays down past
+  # the 5m grace.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="flow-exporter"}'
+        values: '1x5 0x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: HimmelWatcherDown
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: HimmelWatcherDown
+        exp_alerts:
+          - exp_labels:
+              job: flow-exporter
+              severity: page
+            exp_annotations:
+              summary: 'Exporter job flow-exporter is down'
+
+  # HimmelLunaInboxBacklogRising: backlog holds at 5 for exactly 3 days
+  # (4320 one-minute samples, index 0..4319) then jumps to 40. The series
+  # interval matches the global evaluation_interval (1m) so the `for: 1h`
+  # duration has continuous data to accumulate against — a coarser series
+  # interval than the evaluation interval starves the `for` timer between
+  # samples (Prometheus's default 5m staleness window drops it to no-data).
+  # offset 3d at t=4320m (day 3) looks up t=0m, still in the value=5 block.
+  - interval: 1m
+    input_series:
+      - series: 'luna_inbox_backlog{stage="unprocessed"}'
+        values: '5x4319 40x100'
+    alert_rule_test:
+      - eval_time: 4350m
+        alertname: HimmelLunaInboxBacklogRising
+        exp_alerts: []
+      - eval_time: 4381m
+        alertname: HimmelLunaInboxBacklogRising
+        exp_alerts:
+          - exp_labels:
+              stage: unprocessed
+              severity: warn
+            exp_annotations:
+              summary: 'Luna inbox backlog stage unprocessed has risen over the last 3 days'

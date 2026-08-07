@@ -37,6 +37,20 @@ echo "$*" >> "${GH_STUB_LOG:?}"
 case "${GH_STUB_MODE:?}" in
   error) exit 1 ;;
 esac
+# CodeRabbit's review-FRESHNESS query (HIMMEL-1181) — a SEPARATE GraphQL
+# query from the reviewThreads one below (both are `gh api graphql`), so this
+# is intercepted on QUERY TEXT first. Default 'fresh' (anchored to abc123, the
+# fixed head every case here resolves to) so every UNRELATED case is
+# unaffected.
+case "$*" in
+  *"reviews(last:"*)
+    case "${GH_STUB_FRESHNESS:-fresh}" in
+      fresh) echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"abc123"},"state":"COMMENTED"}]}}}}}' ;;
+      stale) echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"shaOLD"},"state":"COMMENTED"}]}}}}}' ;;
+      fail)  echo "reviews boom" >&2; exit 1 ;;
+    esac
+    exit 0 ;;
+esac
 case "$1 $2" in
   "pr view")
     # deadbeef simulates a mis-extracted selector (a value-taking flag's
@@ -120,6 +134,13 @@ GH_STUB_MODE=cr-absent  t absent-review-blocks           2 Bash "gh pr merge 42 
 # Identity over display name (HIMMEL-1058).
 GH_STUB_MODE=cr-spoofed t spoofed-creator-id-blocks      2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=other-author t other-author-thread-allows 0 Bash "gh pr merge 42 --squash"
+# ── HIMMEL-1181 (B2): review-freshness — the latest bot review's commit
+# anchor must match the head SHA, or the merge blocks even though the status
+# + thread gates above both already passed (the PR #1273 shape). ──
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-blocks       2 Bash "gh pr merge 42 --squash"
+# a broken freshness query is not evidence — fails OPEN, same posture as the
+# status/thread/body degrades above.
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=fail  t freshness-infra-fails-open   0 Bash "gh pr merge 42 --squash"
 # ── HIMMEL-1043: CI-green gate runs SECOND (after the CR gate) ──
 # ci-red: CR gate passes (resolved CodeRabbit thread + a success CodeRabbit
 # STATUS), but a non-CodeRabbit check-run ("tests") failed -> CI gate
@@ -164,6 +185,11 @@ grep -q "block-red-ci-merge" "$TMP/err-merge-over-red-ci-blocks" || { echo "FAIL
 # HIMMEL-1072: an absent review must say so — "no CodeRabbit status" is the
 # actionable half; a bare "blocked" would read as a false-block and get bypassed.
 grep -qi "has not reviewed" "$TMP/err-absent-review-blocks" || { echo "FAIL absent-review reason missing"; fail=$((fail+1)); }
+# HIMMEL-1181: a stale review's block must name the stale anchor (actionable),
+# distinct wording from "has not reviewed" (absent) above.
+grep -qi "shaOLD" "$TMP/err-freshness-stale-blocks" || { echo "FAIL freshness-stale reason missing stale anchor"; fail=$((fail+1)); }
+grep -qi "never re-reviewed" "$TMP/err-freshness-stale-blocks" || { echo "FAIL freshness-stale reason missing remedy"; fail=$((fail+1)); }
+grep -q "block-unresolved-cr-merge" "$TMP/err-freshness-stale-blocks" || { echo "FAIL freshness-stale missing hook prefix"; fail=$((fail+1)); }
 
 # HIMMEL-1495 hermeticity guard — prove the startup scrub holds. Re-run this
 # suite in a subprocess EXPORTING the exact armed bypass env an

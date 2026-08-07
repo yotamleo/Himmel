@@ -23,6 +23,25 @@ echo "$*" >> "${GH_STUB_LOG:?}"
 case "${GH_STUB_MODE:?}" in
   error) exit 1 ;;
 esac
+# CodeRabbit's review-FRESHNESS query (HIMMEL-1181) — a SEPARATE GraphQL query
+# from the reviewThreads one below (both are `gh api graphql`), so this is
+# intercepted on QUERY TEXT, before the "$1 $2" dispatch (which would
+# otherwise route every graphql call through the reviewThreads fixtures keyed
+# on GH_STUB_MODE). Driven by GH_STUB_FRESHNESS, default 'fresh' (anchored to
+# abc123, this suite's head) so every UNRELATED case below is unaffected —
+# same "default keeps old assertions" convention cr-body-findings.sh's tests
+# use for the reviews REST endpoint.
+case "$*" in
+  *"reviews(last:"*)
+    case "${GH_STUB_FRESHNESS:-fresh}" in
+      fresh)   echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"abc123"},"state":"COMMENTED"}]}}}}}' ;;
+      stale)   echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"shaOLD"},"state":"COMMENTED"}]}}}}}' ;;
+      none)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"human","__typename":"User"},"commit":{"oid":"abc123"},"state":"COMMENTED"}]}}}}}' ;;
+      paged)   echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":150,"nodes":[]}}}}}' ;;
+      fail)    echo "reviews boom" >&2; exit 1 ;;
+    esac
+    exit 0 ;;
+esac
 case "$1 $2" in
   "pr view")
     # A malformed --repo value (quotes survived tokenization) is what real gh
@@ -372,6 +391,48 @@ grep -qi "nitpick=1" "$TMP/err-body-nitpick-allows-with-note" || { echo "FAIL bo
 [ -s "$TMP/out-body-nitpick-allows-with-note" ] && { echo "FAIL body-nitpick note leaked onto stdout"; fail=$((fail+1)); }
 grep -qi "format drift\|cannot count" "$TMP/out-body-drift-canary-blocks" || { echo "FAIL body-drift block reason missing"; fail=$((fail+1)); }
 grep -qi "degraded" "$TMP/err-body-infra-error-fails-open" || { echo "FAIL body-infra degradation note missing"; fail=$((fail+1)); }
+
+# ── HIMMEL-1181: review-FRESHNESS (B2) — checks/threads/body all clean
+# (GH_STUB_MODE=clean), so these exercise the freshness gate in isolation ───
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-blocks 2
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=paged t freshness-paged-blocks 2
+# none = zero bot reviews on the PR at all (self-skip: absence of a bot
+# review is not evidence of staleness) — allow.
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=none  t freshness-none-allows 0
+# rc 1 infrastructure failure (the reviews query itself errors) fails OPEN,
+# mirroring cr_degraded/body_degraded — a broken query is not evidence.
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=fail  t freshness-infra-error-fails-open 0
+
+grep -qi "anchored to shaOLD" "$TMP/out-freshness-stale-blocks" || { echo "FAIL freshness-stale block reason missing anchor"; fail=$((fail+1)); }
+grep -qi "never re-reviewed" "$TMP/out-freshness-stale-blocks" || { echo "FAIL freshness-stale block reason missing remediation"; fail=$((fail+1)); }
+grep -qi "one query window" "$TMP/out-freshness-paged-blocks" || { echo "FAIL freshness-paged block reason missing"; fail=$((fail+1)); }
+grep -qi "degraded" "$TMP/err-freshness-infra-error-fails-open" || { echo "FAIL freshness-infra degradation note missing"; fail=$((fail+1)); }
+
+# Regression guard for the ordering fix this gate required: an INDEPENDENT
+# freshness-reader failure must NOT suppress the body-findings reader's own
+# valid nitpick ALLOW note (they are two separate readers — see
+# cr-review-freshness.sh header). Before the fix, folding fr_degraded into
+# the SAME early-return as cr_degraded/body_degraded made this note vanish
+# whenever the (unrelated) freshness query failed.
+GH_STUB_MODE=body-nitpick GH_STUB_FRESHNESS=fail t freshness-degrade-does-not-suppress-nitpick-note 0
+grep -qi "nitpick=1" "$TMP/err-freshness-degrade-does-not-suppress-nitpick-note" || { echo "FAIL nitpick note suppressed by an unrelated freshness degrade"; fail=$((fail+1)); }
+
+# order: verdict -> freshness -> threads (1.5 sits between the two, per spec)
+# — a stale freshness call still resolves the CodeRabbit status first
+# (coderabbit-10's ordering rationale extends to this new step).
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-order-probe 2
+fr_statuses_ln=$(grep -n 'commits/abc123/statuses' "$TMP/calls-freshness-order-probe.log" | head -1 | cut -d: -f1)
+fr_reviews_ln=$(grep -n 'reviews(last:' "$TMP/calls-freshness-order-probe.log" | head -1 | cut -d: -f1)
+if [ -n "$fr_statuses_ln" ] && [ -n "$fr_reviews_ln" ] && [ "$fr_statuses_ln" -lt "$fr_reviews_ln" ]; then
+  pass=$((pass+1)); echo "ok   freshness-read-after-verdict"
+else
+  fail=$((fail+1)); echo "FAIL freshness-read-after-verdict (statuses@${fr_statuses_ln:-none} reviews@${fr_reviews_ln:-none})"
+fi
+
+# bypass short-circuits BEFORE any gh call, so a stale freshness never runs
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale CR_MERGE_GATE_OK=1 t freshness-bypass-env-allows 0
+[ -s "$TMP/calls-freshness-bypass-env-allows.log" ] && { echo "FAIL freshness bypass called gh"; fail=$((fail+1)); }
+unset CR_MERGE_GATE_OK
 
 # block reason lands on stdout
 grep -qi "unresolved" "$TMP/out-unresolved-cr-thread-blocks" || { echo "FAIL block reason missing"; fail=$((fail+1)); }

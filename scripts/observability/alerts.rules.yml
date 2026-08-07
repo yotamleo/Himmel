@@ -1,0 +1,136 @@
+# HIMMEL-924 — alert rule definitions, Prometheus-native rule-file format.
+#
+# This file is the SOURCE OF TRUTH for every rule's PromQL expression: it is
+# loaded by the live Prometheus (see prometheus.yml's rule_files) so the
+# rules are visible + self-testable via `promtool test rules` even though no
+# Alertmanager is installed in this stack (Prometheus evaluates and exposes
+# them at /rules and /alerts, but delivers nothing — no receiver is
+# configured, so there is no double-delivery risk).
+#
+# Telegram DELIVERY is exclusively Grafana's unified alerting, ratified F3 —
+# see provisioning/alerting/rules.yaml, which re-implements each rule below
+# as a Grafana-managed rule against the same PromQL expression string (kept
+# byte-identical by convention; Grafana's provisioning YAML dialect cannot
+# `expr:`-reference this file directly). If you change an expression here,
+# change it there too — grep both files for the rule name.
+#
+# Metric provenance: scripts/observability/flow-exporter.ts (README.md
+# documents every family). Coverage table + design rationale:
+# scripts/observability/README.md#alerting-himmel-924.
+groups:
+  - name: himmel-observability
+    rules:
+      # HIMMEL-918 failure mode: the 600s background-wait ceiling truncating
+      # a run mid-batch. Fires within one evaluation cycle of the end row
+      # landing (short window, no `for` grace — a truncated run is already a
+      # completed, terminal fact by the time it's observed).
+      - alert: HimmelFlowRunTruncated
+        expr: increase(flow_run_outcome_total{outcome="truncated"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Flow {{ $labels.flow }} run truncated in the last 15m'
+
+      # HIMMEL-918 failure mode: transient CLI/API death reporting a nonzero
+      # exit.
+      - alert: HimmelFlowRunError
+        expr: increase(flow_run_outcome_total{outcome="error"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Flow {{ $labels.flow }} run errored in the last 15m'
+
+      # HIMMEL-918 failure mode: permission-prompt stall / SIGKILL with no
+      # exit code — a start row with no matching end row past the flow's
+      # stall deadline. The exporter already does this inference (design
+      # §1.2/§4); this rule just alerts on its output.
+      - alert: HimmelFlowRunStalled
+        expr: flow_run_outcome_total{outcome="stalled"} > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Flow {{ $labels.flow }} has a run stalled past its deadline'
+
+      # HIMMEL-918 failure mode (backstop): the 4-day silently-disabled
+      # harvest task — covered directly by HimmelScheduledTaskDisabled below,
+      # but last-success age is a backstop that pages even for a flow with no
+      # scheduled_task_* coverage at all (e.g. armed-resume flows). Per-flow
+      # threshold is 2x the declared cadence_seconds (design §5), joined by
+      # the `flow` label entirely in PromQL — a flow missing EITHER series
+      # (no completed run ever, or no declared cadence) is silently absent
+      # from the join, never a fabricated firing (dark tile, not alerting;
+      # design §1.3).
+      - alert: HimmelFlowLastSuccessAgeExceeded
+        expr: (time() - flow_run_last_success_timestamp) > on (flow) (2 * flow_cadence_seconds)
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Flow {{ $labels.flow }} last success is older than 2x its cadence'
+
+      # HIMMEL-918 failure mode: the harvest task sat disabled for 4 days
+      # with nothing noticing. `on (task)` keeps the two families' identical
+      # `task` label sets joined explicitly rather than relying on default
+      # vector matching.
+      - alert: HimmelScheduledTaskDisabled
+        expr: (scheduled_task_enabled == 0) or on (task) (scheduled_task_exists == 0)
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Scheduled task {{ $labels.task }} is disabled or missing'
+
+      # Host RAM runaway per agent process tree (design §4.1). Threshold is a
+      # single conservative default across every class, NOT the per-class
+      # config the design sketches — no per-class threshold config surface
+      # exists yet in observability.json/flow-exporter.ts (that is
+      # host-detector config plumbing, out of this ticket's scope). Tune by
+      # editing this expression and its Grafana-provisioned twin.
+      - alert: HimmelAgentTreeRamRunaway
+        expr: agent_tree_rss_bytes > 6442450944
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'Agent tree class {{ $labels.class }} RSS exceeds 6 GiB'
+
+      # Orphan-shaped processes (design §4.2/§5): the default sketch is
+      # specifically "any codex-fleet/registry orphan" — the two classes with
+      # a direct 918/840 failure-mode lineage. mcp-dead-parent-unattributed
+      # and the gateway/app-server orphan classes stay dashboard-visible but
+      # unalerted by default per the design's "counted, never reaped ...
+      # unless investigated" framing for the ambiguous class.
+      - alert: HimmelOrphanProcesses
+        expr: orphan_process_count{class=~"codex-fleet|codex-exec-registry"} > 0
+        for: 30m
+        labels:
+          severity: warn
+        annotations:
+          summary: '{{ $labels.class }} orphan count is {{ $value }}'
+
+      # Watcher-down (design §5): the collector itself dying must not be
+      # single-covered by rules that depend on it. Scoped to the two
+      # himmel-owned exporters (flow-exporter, windows_exporter) — Prometheus
+      # dying is not expressible as a metric Prometheus itself evaluates.
+      - alert: HimmelWatcherDown
+        expr: up{job=~"flow-exporter|windows_exporter"} == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Exporter job {{ $labels.job }} is down'
+
+      # Inbox backlog rising monotonically for 3 days (design §5) —
+      # approximated as "higher now than 3 days ago", the standard PromQL
+      # idiom for a sustained-rise check; a `for: 1h` grace absorbs a single
+      # noisy scrape either side of the 3d boundary.
+      - alert: HimmelLunaInboxBacklogRising
+        expr: luna_inbox_backlog - (luna_inbox_backlog offset 3d) > 0
+        for: 1h
+        labels:
+          severity: warn
+        annotations:
+          summary: 'Luna inbox backlog stage {{ $labels.stage }} has risen over the last 3 days'

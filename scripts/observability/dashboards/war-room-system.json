@@ -317,6 +317,116 @@
       ],
       "title": "Lane quota used (real banks)",
       "type": "bargauge"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 37 },
+      "id": 24,
+      "panels": [],
+      "title": "Sessions",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 38 },
+      "id": 25,
+      "description": "Claude Code sessions with an unpaired start row whose transcript is still advancing (HIMMEL-1052). Interactive/foreground sessions only — pipeline legs are the Flows row, dispatched GLM/claudex workers keep their own per-session meta.json.",
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "expr": "sum(session_active_total)", "legendFormat": "live", "refId": "A" }
+      ],
+      "title": "Live sessions",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 38 },
+      "id": 26,
+      "description": "Sessions whose transcript went stale with no session_end row — crashed, killed, or wedged. SessionEnd never fires for these, so this is the number a start/end-paired ledger structurally cannot show. Anything above 0 wants a look.",
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "expr": "sum(session_dead_total)", "legendFormat": "dead", "refId": "A" }
+      ],
+      "title": "Dead / orphaned sessions",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 38 },
+      "id": 27,
+      "description": "Task-tool subagent fan-out by agent type, counted only under a still-running parent session.",
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "expr": "sum by (subagent_type) (subagent_active_total)", "legendFormat": "{{subagent_type}}", "refId": "A" }
+      ],
+      "title": "Live subagents by type",
+      "type": "stat"
+    },
+    {
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 38 },
+      "id": 28,
+      "options": { "code": { "language": "plaintext", "showLineNumbers": false, "showMiniMap": false }, "content": "**Per-session detail** lives at `http://127.0.0.1:9877/sessions.json` — session id, cwd, status, age, last transcript activity, subagent counts.\n\nIt is deliberately NOT a Prometheus family: `session_id` is unique per occurrence and unbounded, and a per-session label set is a cardinality explosion. To render it as a table here, add a Grafana Infinity/JSON datasource pointed at that URL.", "mode": "markdown" },
+      "title": "Per-session detail (JSON)",
+      "type": "text"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 40, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 43 },
+      "id": 29,
+      "description": "Graceful session exits by reason over 7d. A crash leaves NO end row at all, so it shows up in Dead/orphaned sessions instead of here.",
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [
+        { "expr": "increase(session_end_outcome_total[7d])", "legendFormat": "{{reason}}", "refId": "A" }
+      ],
+      "title": "Session end reasons 7d",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 40, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 43 },
+      "id": 30,
+      "description": "Subagent completions by coarse outcome over 7d. `unknown` means the tool response could not be classified — never an assumed success.",
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "none" } },
+      "targets": [
+        { "expr": "increase(subagent_outcome_total[7d])", "legendFormat": "{{subagent_type}} {{outcome}}", "refId": "A" }
+      ],
+      "title": "Subagent outcomes 7d",
+      "type": "timeseries"
     }
   ],
   "refresh": "1m",

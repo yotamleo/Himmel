@@ -213,6 +213,27 @@ if [ "$cmd" = "api" ]; then
             esac
             exit 0 ;;
     esac
+    # CodeRabbit's review-FRESHNESS query (HIMMEL-1181) — a separate GraphQL
+    # query from the reviewThreads one below (both are `gh api graphql`, so
+    # this MUST be intercepted first on query text, before the GH_STUB_THREADS
+    # fallthrough — the reviews query must not consume the GH_STUB_API
+    # counters the thread-pagination modes use). Default 'fresh' (anchored to
+    # sha1) keeps every UNRELATED case above reaching this point unaffected —
+    # same "default keeps old assertions" convention as the body-findings
+    # gate's default '[]'.
+    case "$*" in
+        *"reviews(last:"*)
+            case "${GH_STUB_FRESHNESS:-fresh}" in
+                fresh)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"sha1"},"state":"COMMENTED"}]}}}}}' ;;
+                stale)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"shaOLD"},"state":"COMMENTED"}]}}}}}' ;;
+                none)     echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"human","__typename":"User"},"commit":{"oid":"sha1"},"state":"COMMENTED"}]}}}}}' ;;
+                paged)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":150,"nodes":[]}}}}}' ;;
+                mybot)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"mybot","__typename":"Bot"},"commit":{"oid":"sha1"},"state":"COMMENTED"}]}}}}}' ;;
+                nulloid)  echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":null},"state":"COMMENTED"}]}}}}}' ;;
+                fail)     echo "reviews boom" >&2; exit 1 ;;
+            esac
+            exit 0 ;;
+    esac
     if [ "${GH_STUB_THREADS:-0}" = "fail" ]; then echo "graphql boom" >&2; exit 1; fi
     if [ "${GH_STUB_THREADS:-0}" = "badnext" ]; then echo "0 banana cursor1"; exit 0; fi
     if [ "${GH_STUB_THREADS:-0}" = "nullcursor" ]; then echo "0 true null"; exit 0; fi
@@ -361,6 +382,10 @@ OUT=""; ERR=""; RC=0
 # Per-case opt-in overrides, reset after every run:
 SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
 ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0
+# FRESHNESS_OVERRIDE drives GH_STUB_FRESHNESS (HIMMEL-1181). Default 'fresh'
+# matches every case that doesn't care about the review-freshness gate.
+FRESHNESS_OVERRIDE=fresh
+CR_BOT_LOGINS_OVERRIDE=""
 # CR_PROFILE_OVERRIDE=none exercises the CodeRabbit-less-repo opt-out
 # (HIMMEL-1072); empty = a normal repo where the signal is required.
 CR_PROFILE_OVERRIDE=""
@@ -401,12 +426,14 @@ run() {
         GH_STUB_HEAD="$HEAD_OVERRIDE" \
         GH_STUB_DECISION="$DECISION_OVERRIDE" \
         GH_STUB_THREADS="$THREADS_OVERRIDE" \
+        GH_STUB_FRESHNESS="$FRESHNESS_OVERRIDE" \
         CHECK_CI_POLL_INTERVAL="$POLL_OVERRIDE" \
         CHECK_CI_SETTLE="$SETTLE_OVERRIDE" \
         CR_ESCALATE_WAIT="$ESCALATE_WAIT_OVERRIDE" \
         CR_ESCALATE_POLL="$ESCALATE_POLL_OVERRIDE" \
         CR_PROFILE="$CR_PROFILE_OVERRIDE" \
         CR_APP="$CR_APP_OVERRIDE" \
+        CR_BOT_LOGINS="$CR_BOT_LOGINS_OVERRIDE" \
         bash "$SCRIPT" "$@" >"$of" 2>"$ef"
     RC=$?
     OUT=$(cat "$of"); ERR=$(cat "$ef")
@@ -414,6 +441,7 @@ run() {
     SETTLE_OVERRIDE=0; THREADS_OVERRIDE=0; POLL_OVERRIDE=0; HEAD_OVERRIDE=stable; DECISION_OVERRIDE=null
     ESCALATE_WAIT_OVERRIDE=0; ESCALATE_POLL_OVERRIDE=0
     CR_PROFILE_OVERRIDE=""; CR_APP_OVERRIDE=1
+    FRESHNESS_OVERRIDE=fresh; CR_BOT_LOGINS_OVERRIDE=""
 }
 
 run_in_repo() {
@@ -1094,7 +1122,94 @@ run cr-absent
 assert_rc 2 "58 armed bypass env does not open a block-case (HIMMEL-1495)"
 unset ARMAUTOMERGE CR_MERGE_GATE_OK
 
+# ── HIMMEL-1181 (B2): review-freshness gate — checks/threads/body all clean
+# on every mode below (body-empty: watch green, CR status success, 0
+# unresolved threads, no body findings), so these exercise the freshness
+# gate in isolation. Base mode is body-empty rather than the earlier cr-*
+# modes because the freshness READER itself is driven by GH_STUB_FRESHNESS,
+# independent of GH_STUB_MODE — any clean base mode works. ──────────────────
+
+# 59 — threads-only, fresh: rc 0, success line names the anchored review.
+FRESHNESS_OVERRIDE=fresh
+run body-empty --threads-only
+assert_rc 0 "59 threads-only fresh review: rc 0"
+assert_out_has "fresh coderabbitai review @ sha1" "59 success line names the fresh anchor"
+
+# 60 — threads-only, stale: rc 4, remedy names both the stale and head SHAs
+# and is DISTINCT wording from rc 3 (no thread to resolve here).
+FRESHNESS_OVERRIDE=stale
+run body-empty --threads-only
+assert_rc 4 "60 threads-only stale review: rc 4"
+assert_err_has "shaOLD" "60 stale reason names the stale anchor"
+assert_err_has "sha1" "60 stale reason names the head"
+assert_err_has "never re-reviewed" "60 stale reason names the remedy"
+
+# 61 — full mode: freshness blocks even when the checks + CR status gates
+# both already passed (the exact PR #1273 shape — "green" was not enough).
+FRESHNESS_OVERRIDE=stale
+run body-empty
+assert_rc 4 "61 full mode stale review blocks after checks+status pass"
+
+# 62 — threads-only, none (zero bot reviews on the whole PR): self-skip, rc 0.
+FRESHNESS_OVERRIDE=none
+run body-empty --threads-only
+assert_rc 0 "62 threads-only no bot review: self-skip rc 0"
+assert_out_has "freshness self-skipped" "62 self-skip note present"
+
+# 63 — threads-only, the freshness query itself fails: fail CLOSED, rc 2.
+FRESHNESS_OVERRIDE=fail
+run body-empty --threads-only
+assert_rc 2 "63 threads-only freshness query failure: rc 2 (fail-closed)"
+
+# 64 — threads-only, paged (>100 reviews, no bot match in the newest 100):
+# indeterminate, fail CLOSED, rc 2 — never silently "none".
+FRESHNESS_OVERRIDE=paged
+run body-empty --threads-only
+assert_rc 2 "64 threads-only paged freshness window: rc 2 (fail-closed)"
+
+# 65 — CR_PROFILE=none skips the freshness gate together with the other
+# CodeRabbit gates: a stale fixture must not block, and no reviews(last:)
+# call should even be made (fully skipped, not merely tolerated).
+FRESHNESS_OVERRIDE=stale
+CR_PROFILE_OVERRIDE=none
+run body-empty --threads-only
+assert_rc 0 "65 CR_PROFILE=none skips the freshness gate too"
+if grep -q "reviews(last:" "$STUBDIR/args.log" 2>/dev/null; then
+    fail "65 CR_PROFILE=none still queried review freshness"
+else
+    pass "65 CR_PROFILE=none made no reviews(last:) call"
+fi
+
+# 66 — CR_BOT_LOGINS honors a configured non-default bot login.
+FRESHNESS_OVERRIDE=mybot
+CR_BOT_LOGINS_OVERRIDE=mybot
+run body-empty --threads-only
+assert_rc 0 "66 CR_BOT_LOGINS=mybot: configured bot recognized as fresh"
+
+# 67 — CR_BOT_LOGINS normalizes case AND a trailing [bot] suffix: the fixture
+# itself is unchanged (still the default 'coderabbitai' fresh shape); only
+# the configured spelling varies.
+FRESHNESS_OVERRIDE=fresh
+CR_BOT_LOGINS_OVERRIDE="CodeRabbitAI[bot]"
+run body-empty --threads-only
+assert_rc 0 "67 CR_BOT_LOGINS normalizes case + [bot] suffix"
+
+# 68 — a review with a null/empty commit anchor cannot be certified fresh OR
+# stale: fail CLOSED, rc 2 (distinct from 'none' — a review object EXISTS,
+# it just cannot be anchored).
+FRESHNESS_OVERRIDE=nulloid
+run body-empty --threads-only
+assert_rc 2 "68 threads-only unanchored (null oid) review: rc 2 (fail-closed)"
+
+# 69 — thread gate wins over freshness: unresolved threads AND a stale
+# review both hold, but rc 3 (fix the thread) is the reported remedy, not
+# rc 4 (the thread gate runs before the freshness gate in both modes).
+FRESHNESS_OVERRIDE=stale
+THREADS_OVERRIDE=2
+run body-empty --threads-only
+assert_rc 3 "69 unresolved threads + stale review: rc 3 (thread gate first)"
+
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 76 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 76"; exit 1; fi
+if [ "$COUNT" -ne 87 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 87"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

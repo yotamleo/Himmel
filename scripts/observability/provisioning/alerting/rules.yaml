@@ -1,0 +1,283 @@
+# HIMMEL-924 — Grafana-managed alert rules, file-provisioning format
+# (apiVersion 1). This is Grafana's own rule dialect (query `data` + a
+# `__expr__` threshold condition), structurally different from Prometheus's
+# native rule-file format — it cannot `expr:`-include alerts.rules.yml, so
+# every expression below is a hand-kept copy of that file's PromQL string.
+# KEEP THEM IN SYNC: alerts.rules.yml is promtool-tested; this file is what
+# actually evaluates and delivers to Telegram (RATIFIED F3). If you change
+# one, change the other, and re-run
+# `promtool test rules scripts/observability/alerts.rules.test.yml`.
+#
+# noDataState: NoData (default) is deliberate everywhere — an
+# uninstrumented or unconfigured flow renders as a dark dashboard tile, not
+# a false alert (design §1.3's "dark tile, not healthy or unhealthy").
+# execErrState: Alerting — a genuine query execution failure (e.g. the
+# Prometheus datasource unreachable) pages rather than silently going quiet,
+# distinct from a query that legitimately returns nothing.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: himmel-observability
+    folder: himmel-observability
+    interval: 1m
+    rules:
+      - uid: himmel_flow_truncated
+        title: "Flow run truncated"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: increase(flow_run_outcome_total{outcome="truncated"}[15m])
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Flow {{ $labels.flow }} run truncated in the last 15m'
+
+      - uid: himmel_flow_error
+        title: "Flow run error"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: increase(flow_run_outcome_total{outcome="error"}[15m])
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Flow {{ $labels.flow }} run errored in the last 15m'
+
+      - uid: himmel_flow_stalled
+        title: "Flow run stalled"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: flow_run_outcome_total{outcome="stalled"}
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Flow {{ $labels.flow }} has a run stalled past its deadline'
+
+      - uid: himmel_flow_last_success_age
+        title: "Flow last-success age exceeded"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: (time() - flow_run_last_success_timestamp) > on (flow) (2 * flow_cadence_seconds)
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Flow {{ $labels.flow }} last success is older than 2x its cadence'
+
+      - uid: himmel_scheduled_task_disabled
+        title: "Scheduled task disabled or missing"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: (scheduled_task_enabled == 0) or on (task) (scheduled_task_exists == 0)
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Scheduled task {{ $labels.task }} is disabled or missing'
+
+      - uid: himmel_agent_tree_ram_runaway
+        title: "Agent tree RAM runaway"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              # Single conservative default across every class (6 GiB) — no
+              # per-class threshold config surface exists yet in
+              # observability.json/flow-exporter.ts (host-detector config
+              # plumbing, out of HIMMEL-924's scope). Tune here and in
+              # alerts.rules.yml.
+              expr: agent_tree_rss_bytes > 6442450944
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'Agent tree class {{ $labels.class }} RSS exceeds 6 GiB'
+
+      - uid: himmel_orphan_processes
+        title: "Orphan-shaped agent processes"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              # codex-fleet/codex-exec-registry only, per design's default
+              # sketch — mcp-dead-parent-unattributed and the gateway/
+              # app-server orphan classes stay dashboard-visible, unalerted.
+              expr: orphan_process_count{class=~"codex-fleet|codex-exec-registry"}
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 30m
+        labels:
+          severity: warn
+        annotations:
+          summary: '{{ $labels.class }} orphan count is {{ $values.A }}'
+
+      - uid: himmel_watcher_down
+        title: "Watcher down"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: up{job=~"flow-exporter|windows_exporter"} == 0
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Exporter job {{ $labels.job }} is down'
+
+      - uid: himmel_luna_inbox_backlog_rising
+        title: "Luna inbox backlog rising"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 266400, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: luna_inbox_backlog - (luna_inbox_backlog offset 3d) > 0
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 1h
+        labels:
+          severity: warn
+        annotations:
+          summary: 'Luna inbox backlog stage {{ $labels.stage }} has risen over the last 3 days'

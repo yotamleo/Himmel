@@ -1,22 +1,31 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderMetrics, createExporterCache, parseHostDetectorJson, runGitDivergence, readShippedGraphCommitTime } from "./flow-exporter";
+import { renderMetrics, createExporterCache, parseHostDetectorJson, runGitDivergence, readShippedGraphCommitTime, renderSessionsJson } from "./flow-exporter";
+import { serializeSessionRun, type SessionEndReason, type SessionRunRow, type SubagentOutcome } from "./session-run-ledger";
 import { serializeFlowRunEnd, serializeFlowRunStart, type FlowRunEnd, type FlowRunStart } from "../telegram/flow-run-ledger";
 import { serializeQuotaGauge, type QuotaGaugeRecord } from "../telegram/quota-gauge";
 
 let tmp: string;
 let previousFetchHealthState: string | undefined;
+let previousSessionLedger: string | undefined;
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "flow-exporter-"));
   previousFetchHealthState = process.env.HIMMEL_FETCH_HEALTH_STATE;
   process.env.HIMMEL_FETCH_HEALTH_STATE = join(tmp, "missing-fetch-health.json");
+  // HIMMEL-1052: point the session ledger at a missing tmp path for every test
+  // that does not exercise it, so a scrape under test never reads (or depends
+  // on) the developer's REAL ~/.himmel/session-runs.jsonl.
+  previousSessionLedger = process.env.HIMMEL_SESSION_RUNS_LEDGER;
+  process.env.HIMMEL_SESSION_RUNS_LEDGER = join(tmp, "missing-session-runs.jsonl");
 });
 afterEach(() => {
   if (previousFetchHealthState === undefined) delete process.env.HIMMEL_FETCH_HEALTH_STATE;
   else process.env.HIMMEL_FETCH_HEALTH_STATE = previousFetchHealthState;
+  if (previousSessionLedger === undefined) delete process.env.HIMMEL_SESSION_RUNS_LEDGER;
+  else process.env.HIMMEL_SESSION_RUNS_LEDGER = previousSessionLedger;
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -135,6 +144,11 @@ flow_run_items_processed_total{flow="pipeline-harvest"} 20
 flow_run_in_flight{flow="pipeline-harvest"} 1
 flow_run_in_flight{flow="pipeline-silent"} 0
 flow_run_in_flight{flow="pipeline-synthesize"} 0
+# HELP flow_cadence_seconds Declared cadence_seconds from observability.json, verbatim.
+# TYPE flow_cadence_seconds gauge
+flow_cadence_seconds{flow="pipeline-harvest"} 86400
+flow_cadence_seconds{flow="pipeline-silent"} 60
+flow_cadence_seconds{flow="pipeline-synthesize"} 3600
 # agent_tree_*/orphan_* omitted: platform has no Windows process tree API
 # HELP flow_exporter_scrape_duration_seconds Wall-clock duration of this exporter scrape.
 # TYPE flow_exporter_scrape_duration_seconds gauge
@@ -142,9 +156,36 @@ flow_exporter_scrape_duration_seconds 0
 # HELP flow_exporter_ledger_rows Parsed flow-run ledger rows inside the 14d window.
 # TYPE flow_exporter_ledger_rows gauge
 flow_exporter_ledger_rows 7
+# HELP session_runs_ledger_rows Parsed session-run ledger rows inside the 14d window; exporter self-health parity with flow_exporter_ledger_rows.
+# TYPE session_runs_ledger_rows gauge
+session_runs_ledger_rows 0
 `);
   expect(body).not.toContain('flow_run_last_success_timestamp{flow="pipeline-silent"');
   expect(body).not.toContain('flow_run_items_processed{flow="pipeline-synthesize"');
+});
+
+test("flow_cadence_seconds omits flows with no declared cadence_seconds, never fabricates one (HIMMEL-924)", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, JSON.stringify({
+    flows: [
+      { name: "has-cadence", cadence_seconds: 43200 },
+      { name: "no-cadence" },
+    ],
+  }));
+  writeLines(ledger, [
+    serializeFlowRunStart(flowStart("has-cadence", "a1", "2026-07-13T11:00:00Z")),
+    serializeFlowRunEnd(flowEnd("has-cadence", "a1", "2026-07-13T11:05:00Z", "complete", 1)),
+  ]);
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: config,
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+  });
+  expect(body).toContain('flow_cadence_seconds{flow="has-cadence"} 43200');
+  expect(body).not.toContain('flow_cadence_seconds{flow="no-cadence"}');
 });
 
 test("fetch-health probe runner state roundtrips through exporter metrics", async () => {
@@ -972,4 +1013,207 @@ test("host detector scrape uses TTL cache and drops cache on refresh failure", a
   expect(second).toContain('agent_tree_process_count{class="claude"} 1');
   expect(third).toContain("# agent_tree_*/orphan_* omitted: expired refresh failed");
   expect(third).not.toContain("agent_tree_rss_bytes");
+});
+
+// ---------------------------------------------------------------------------
+// HIMMEL-1052 — session + subagent families
+// ---------------------------------------------------------------------------
+
+function sessionStart(sessionId: string, startedAt: string, transcriptPath: string | null, host = "test-host"): SessionRunRow {
+  return { v: 1, kind: "session", ev: "start", session_id: sessionId, cwd: "C:\\repo", transcript_path: transcriptPath, host, started_at: startedAt, pid: null };
+}
+
+function sessionEndRow(sessionId: string, endedAt: string, reason: SessionEndReason): SessionRunRow {
+  return { v: 1, kind: "session", ev: "end", session_id: sessionId, ended_at: endedAt, reason };
+}
+
+function subagentStart(subagentId: string, parent: string, subagentType: string | null, startedAt: string): SessionRunRow {
+  return { v: 1, kind: "subagent", ev: "start", subagent_id: subagentId, parent_session_id: parent, subagent_type: subagentType, description: "a task", started_at: startedAt };
+}
+
+function subagentEndRow(subagentId: string, parent: string, endedAt: string, outcome: SubagentOutcome): SessionRunRow {
+  return { v: 1, kind: "subagent", ev: "end", subagent_id: subagentId, parent_session_id: parent, ended_at: endedAt, outcome };
+}
+
+// A transcript whose mtime is set explicitly: mtime IS the liveness oracle, so
+// every session fixture below states its last activity rather than inheriting
+// whatever wall clock the test host happens to have.
+function transcriptWithMtime(name: string, mtimeIso: string): string {
+  const path = join(tmp, name);
+  writeFileSync(path, "{}\n");
+  const when = new Date(Date.parse(mtimeIso));
+  utimesSync(path, when, when);
+  return path;
+}
+
+function sessionScrape(ledger: string, config: string): Promise<string> {
+  return renderMetrics({
+    nowMs: NOW,
+    configPath: config,
+    flowLedgerPath: join(tmp, "missing-flow-runs.jsonl"),
+    quotaLedgerPath: join(tmp, "missing-quota.jsonl"),
+    lanesPath: join(tmp, "empty-lanes.json"),
+    sessionLedgerPath: ledger,
+    platform: "linux",
+  });
+}
+
+test("session liveness: a stale transcript makes an unpaired start DEAD, a fresh one keeps it RUNNING, an end row makes it ENDED", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  // NOW is 12:00:00Z and the default staleness window is 15 minutes, so the
+  // cutoff for "still running" is 11:45:00Z.
+  const live = transcriptWithMtime("live.jsonl", "2026-07-13T11:55:00Z");
+  const dead = transcriptWithMtime("dead.jsonl", "2026-07-13T09:00:00Z");
+  const ended = transcriptWithMtime("ended.jsonl", "2026-07-13T10:30:00Z");
+  writeLines(ledger, [
+    sessionStart("live-1", "2026-07-13T09:00:00Z", live),
+    sessionStart("dead-1", "2026-07-13T08:00:00Z", dead),
+    sessionStart("ended-1", "2026-07-13T07:00:00Z", ended),
+    sessionEndRow("ended-1", "2026-07-13T10:30:00Z", "prompt_input_exit"),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_active_total{host="test-host"} 1');
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+  expect(body).toContain('session_end_outcome_total{reason="clear"} 0');
+  expect(body).toContain('session_end_outcome_total{reason="prompt_input_exit"} 1');
+  expect(body).toContain("session_runs_ledger_rows 4");
+  // Per-session identity must never reach a Prometheus label (cardinality).
+  expect(body).not.toContain("live-1");
+  expect(body).not.toContain("session_id=");
+});
+
+test("a session whose transcript cannot be read ages into dead rather than counting as live forever", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  writeLines(ledger, [
+    // Transcript path points nowhere: fall back to the session's OWN age.
+    sessionStart("young-1", "2026-07-13T11:58:00Z", join(tmp, "gone-young.jsonl")),
+    sessionStart("old-1", "2026-07-13T06:00:00Z", null),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_active_total{host="test-host"} 1');
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+});
+
+test("staleness threshold is operator-tunable via sessions.stale_after_seconds", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, JSON.stringify({ sessions: { stale_after_seconds: 4 * 60 * 60 } }));
+  const idle = transcriptWithMtime("idle.jsonl", "2026-07-13T09:00:00Z");
+  writeLines(ledger, [sessionStart("idle-1", "2026-07-13T08:00:00Z", idle)].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  // 3h of transcript silence is dead at the 15m default, alive at a 4h setting.
+  expect(body).toContain('session_active_total{host="test-host"} 1');
+  expect(body).toContain('session_dead_total{host="test-host"} 0');
+});
+
+test("subagents count as active only under a running parent; outcomes fold by subagent_type", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  const live = transcriptWithMtime("live.jsonl", "2026-07-13T11:55:00Z");
+  const dead = transcriptWithMtime("dead.jsonl", "2026-07-13T09:00:00Z");
+  writeLines(ledger, [
+    sessionStart("live-1", "2026-07-13T09:00:00Z", live),
+    sessionStart("dead-1", "2026-07-13T08:00:00Z", dead),
+    subagentStart("sub-a", "live-1", "explorer", "2026-07-13T11:50:00Z"),
+    subagentStart("sub-b", "live-1", "explorer", "2026-07-13T10:00:00Z"),
+    subagentEndRow("sub-b", "live-1", "2026-07-13T10:05:00Z", "success"),
+    // Parent crashed: this start row can NEVER get its end row, and must not
+    // be pinned live for the whole 14d window.
+    subagentStart("sub-c", "dead-1", "planner", "2026-07-13T08:30:00Z"),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('subagent_active_total{host="test-host",subagent_type="explorer"} 1');
+  expect(body).toContain('subagent_active_total{host="test-host",subagent_type="planner"} 0');
+  expect(body).toContain('subagent_outcome_total{outcome="success",subagent_type="explorer"} 1');
+  expect(body).toContain('subagent_outcome_total{outcome="error",subagent_type="explorer"} 0');
+  expect(body).toContain('subagent_outcome_total{outcome="unknown",subagent_type="explorer"} 0');
+});
+
+test("session families are omitted entirely when no ledger exists (missing data stays missing)", async () => {
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+
+  const body = await sessionScrape(join(tmp, "no-such-session-runs.jsonl"), config);
+
+  expect(body).not.toContain("session_active_total");
+  expect(body).not.toContain("subagent_active_total");
+  expect(body).toContain("session_runs_ledger_rows 0");
+});
+
+test("malformed and out-of-window session rows are skipped without failing the scrape", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  const live = transcriptWithMtime("live.jsonl", "2026-07-13T11:55:00Z");
+  writeLines(ledger, [
+    "not json at all",
+    JSON.stringify({ v: 2, kind: "session", ev: "start", session_id: "wrong-version", started_at: "2026-07-13T11:00:00Z" }),
+    JSON.stringify({ v: 1, kind: "session", ev: "start", started_at: "2026-07-13T11:00:00Z" }),
+    serializeSessionRun(sessionStart("ancient-1", "2026-06-01T00:00:00Z", live)),
+    serializeSessionRun(sessionStart("live-1", "2026-07-13T09:00:00Z", live)),
+  ]);
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_active_total{host="test-host"} 1');
+  expect(body).toContain("session_runs_ledger_rows 1");
+});
+
+test("hostile host / subagent_type values cannot inject an exposition line", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  const live = transcriptWithMtime("live.jsonl", "2026-07-13T11:55:00Z");
+  writeLines(ledger, [
+    sessionStart("live-1", "2026-07-13T09:00:00Z", live, "evil\r\nsession_active_total 999"),
+    subagentStart("sub-a", "live-1", "bad\ntype", "2026-07-13T11:50:00Z"),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).not.toMatch(/^session_active_total 999$/m);
+  expect(body).toContain('session_active_total{host="evil session_active_total 999"} 1');
+  expect(body).toContain('subagent_type="bad type"');
+});
+
+test("renderSessionsJson serves per-session detail Prometheus labels cannot carry", () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  const live = transcriptWithMtime("live.jsonl", "2026-07-13T11:55:00Z");
+  const dead = transcriptWithMtime("dead.jsonl", "2026-07-13T09:00:00Z");
+  writeLines(ledger, [
+    sessionStart("live-1", "2026-07-13T09:00:00Z", live),
+    sessionStart("dead-1", "2026-07-13T08:00:00Z", dead),
+    subagentStart("sub-a", "live-1", "explorer", "2026-07-13T11:50:00Z"),
+    subagentStart("sub-b", "live-1", "explorer", "2026-07-13T10:00:00Z"),
+    subagentEndRow("sub-b", "live-1", "2026-07-13T10:05:00Z", "success"),
+  ].map(serializeSessionRun));
+
+  const view = JSON.parse(renderSessionsJson({ nowMs: NOW, configPath: config, sessionLedgerPath: ledger }));
+
+  expect(view.v).toBe(1);
+  expect(view.stale_after_seconds).toBe(900);
+  expect(view.ledger_rows).toBe(5);
+  const live1 = view.sessions.find((s: { session_id: string }) => s.session_id === "live-1");
+  expect(live1.status).toBe("running");
+  expect(live1.subagents_started).toBe(2);
+  expect(live1.subagents_active).toBe(1);
+  expect(live1.last_activity_seconds).toBe(300);
+  const dead1 = view.sessions.find((s: { session_id: string }) => s.session_id === "dead-1");
+  expect(dead1.status).toBe("dead");
+  expect(dead1.end_reason).toBeNull();
 });

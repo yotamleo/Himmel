@@ -668,6 +668,29 @@ thread query still runs and its evidence still blocks, because an unresolved
 thread is evidence even when the status endpoint is down (observed live — GitHub
 503'd `/commits/<sha>/statuses` on 2026-07-17).
 
+**Review freshness (HIMMEL-1181, B2) — deny on a stale review anchor.**
+Between the verdict check and the thread query, the gate also reads
+`cr_review_freshness` (`scripts/lib/cr-review-freshness.sh`, GraphQL, one
+extra call): is the *latest bot review* anchored to the head SHA, or was it
+posted on an OLDER commit? A concluded commit STATUS (the check above) is not
+the same claim — CodeRabbit can conclude an incremental run without posting a
+new review object at all, leaving the last real review sitting on a stale
+commit while GitHub auto-resolves (outdates) its threads on the intervening
+commits. That combination reads "0 unresolved threads + status success" —
+App-clean — over a head nobody actually reviewed (live instance: PR #1273).
+Deny on `stale` (names the stale commit in the block reason) and on `paged`
+(>100 reviews on the PR with no bot match in the newest 100 — indeterminate,
+not absent). `none` (zero bot reviews on the whole PR) self-skips — absence
+of a bot review is not evidence of staleness. `CR_BOT_LOGINS` (default
+`coderabbitai`, trailing `[bot]` optional) configures which review-author
+logins count as the bot for this gate specifically; it is a SEPARATE identity
+mechanism from `CR_BOT_USER_ID` (the status/body readers' REST `creator.id` —
+this gate reads GraphQL `author.login` + `author.__typename == "Bot"`
+instead, HIMMEL-1058's spoof-resistance stance). An infrastructure failure
+(query/parse error) is remembered and only fails OPEN at the very end,
+alongside the verdict and body-findings degrades — a broken query is not
+evidence.
+
 ### CodeRabbit availability — arm it per repo (HIMMEL-1125)
 
 **⚠️ Setup step. On a repo that HAS the CodeRabbit App, run this once:**
@@ -748,7 +771,9 @@ re-sync) + a fresh session.
 Paired artifacts: `scripts/lib/cr-merge-gate.sh` (predicate),
 `scripts/lib/cr-signal.sh` (the ONE reader for CodeRabbit's verdict — shared with
 `ci-green-gate.sh` and `check-ci.sh`, so all three agree on the bot's identity by
-construction), `scripts/lib/test-cr-merge-gate.sh` and
+construction), `scripts/lib/cr-review-freshness.sh` (the ONE reader for review
+anchor freshness — shared with `check-ci.sh`, HIMMEL-1181),
+`scripts/lib/test-cr-merge-gate.sh` and
 `scripts/hooks/test-block-unresolved-cr-merge.sh` (smoke suites).
 
 ### CodeRabbit pre-CI path — App-present vs App-absent (HIMMEL-1164)

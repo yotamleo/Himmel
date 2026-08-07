@@ -744,8 +744,60 @@ BACKSLASH_SALUS="${BACKSLASH_SALUS//\//\\}"
 run_fence deny no "$HIMMEL" "backslash-form absolute salus path -> deny" \
     "graphify update $BACKSLASH_SALUS --backend deepseek"
 
-run_fence allow no "$HIMMEL" "drive-relative C:scripts/thing.sh anchors to cwd -> allow" \
+echo "== HIMMEL-845: cross-drive drive-relative fail-open =="
+
+# HIMMEL-808 anchored a drive-RELATIVE `X:tail` token to the tool-call cwd,
+# which is exact ONLY when that cwd is on drive X. Windows keeps a SEPARATE cwd
+# PER DRIVE (the hidden `=C:`/`=D:` env vars), so `Z:tail` from a C: cwd
+# resolves under Z:'s own current directory - one this fence cannot read.
+# Anchoring it to the C: cwd anyway yielded a synthetic path that classified as
+# the benign himmel-code corpus and ALLOWED, while the real target could sit
+# inside the salus PHI vault. Must now fail closed.
+
+# (X1) THE fail-open regression: pre-fix this anchored to $HIMMEL/doc.md ->
+# himmel-code -> ALLOW. The cwd here is the MSYS-mount fixture root, whose
+# backing drive is not lexically derivable, so the fence cannot prove the
+# same-drive case either way -> deny.
+run_fence deny no "$HIMMEL" "845: cross-drive Z:doc.md (was fail-OPEN as himmel-code) -> deny" \
+    "graphify update Z:doc.md --backend deepseek"
+
+# (X2) The pre-845 case this replaces: `C:scripts/thing.sh` under the MSYS-form
+# fixture cwd. It used to anchor to the cwd and allow; with no determinable cwd
+# drive the anchor is unprovable, so it now denies (was: "drive-relative
+# C:scripts/thing.sh anchors to cwd -> allow").
+run_fence deny no "$HIMMEL" "845: drive-relative under an undeterminable-drive cwd -> deny" \
     "graphify update C:scripts/thing.sh --backend deepseek"
+
+# (X3) A drive-ROOTED absolute (`C:/...`) is cwd-INDEPENDENT and must NOT be
+# swept up by the cross-drive deny - it still classifies against the roots
+# exactly as before. Pure lexical (drive-lettered root + drive-lettered
+# candidate), so it exercises on any OS.
+run_fence allow no "$HIMMEL" "845: drive-ROOTED C:/... is cwd-independent, not cross-drive -> allow" \
+    "graphify update C:/fake/himmel/doc.md --backend deepseek" GRAPHIFY_HIMMEL_ROOT="C:/fake/himmel"
+
+# (X4/X5) With a drive-lettered cwd the fence can PROVE the drive relation, so
+# same-drive must still anchor (allow) and a genuine mismatch must deny. Needs a
+# genuinely drive-lettered form of the fixture root: `drive_form`/$ROOT_DRIVE
+# above only rewrites an MSYS `/c/...` path, and the mktemp fixture lives under
+# Git-Bash's virtual `/tmp` mount, which has no such form. `pwd -W` is the MSYS
+# builtin that yields the real Windows view; it fails on POSIX -> skip there.
+HIMMEL_WIN=""
+if HIMMEL_WIN_TRY=$( cd "$HIMMEL" && pwd -W 2>/dev/null ); then
+    HIMMEL_WIN="$HIMMEL_WIN_TRY"
+fi
+case "$HIMMEL_WIN" in
+    [A-Za-z]:/*)
+        CWD_DRIVE="${HIMMEL_WIN%%:*}"
+        run_fence allow no "$HIMMEL" "845: SAME-drive drive-relative still anchors to cwd -> allow" \
+            "graphify update ${CWD_DRIVE}:scripts/thing.sh --backend deepseek" \
+            GRAPHIFY_TOOL_CWD="$HIMMEL_WIN" GRAPHIFY_HIMMEL_ROOT="$HIMMEL_WIN"
+        run_fence deny no "$HIMMEL" "845: genuine cross-drive mismatch vs a drive-lettered cwd -> deny" \
+            "graphify update Z:scripts/thing.sh --backend deepseek" \
+            GRAPHIFY_TOOL_CWD="$HIMMEL_WIN" GRAPHIFY_HIMMEL_ROOT="$HIMMEL_WIN"
+        ;;
+    *)
+        printf '  SKIP  845: same-drive / mismatch pair (no drive-lettered cwd on this host)\n' ;;
+esac
 
 echo "== HIMMEL-778: .graphify-corpus staged-copy declaration =="
 

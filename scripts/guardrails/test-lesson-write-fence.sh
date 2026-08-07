@@ -269,6 +269,66 @@ run_hook deny "11: drive-relative backslash form -> deny" \
 run_hook deny "11: drive-relative slash form -> deny" \
     "$(write_json 'C:scripts/hooks/y.sh' "$REPO")" 1
 
+# --- HIMMEL-845: CROSS-drive drive-relative fail-open -----------------------
+# The HIMMEL-808 anchor above is exact ONLY when the payload cwd is on the
+# token's drive. Windows keeps a SEPARATE cwd PER DRIVE (the hidden `=C:`/`=D:`
+# env vars), so `Z:tail` from a C: cwd resolves under Z:'s own current
+# directory - which this fence cannot read. Anchoring it to the C: cwd anyway
+# produced a synthetic path that normalized to a NON-enforcement location and
+# ALLOWED, while the real target could be an enforcement file. Must now fail
+# closed on every host.
+repo_drive() { case "$1" in [A-Za-z]:/*) printf '%s' "${1%%:*}" ;; *) printf '' ;; esac; }
+REPO_DRIVE="$(repo_drive "$REPO")"
+# A drive letter that is definitely NOT the repo's.
+case "$(printf '%s' "$REPO_DRIVE" | tr '[:upper:]' '[:lower:]')" in
+    z) OTHER_DRIVE=Y ;;
+    *) OTHER_DRIVE=Z ;;
+esac
+
+# (845-1) THE fail-open regression. cwd is <repo>/docs, so the old cwd anchor
+# yielded <repo>/docs/hooks/y.sh -> repo-relative `docs/hooks/y.sh`, which
+# matches NO enforcement prefix -> ALLOW. The real Windows resolution is
+# whatever Z:'s per-drive cwd is - e.g. <repo>/scripts, giving the enforcement
+# file <repo>/scripts/hooks/y.sh. Unprovable -> deny.
+run_hook deny "845: cross-drive drive-relative (was fail-OPEN) -> deny" \
+    "$(write_json "${OTHER_DRIVE}:hooks/y.sh" "$REPO/docs")" 1
+run_hook deny "845: cross-drive drive-relative, backslash form -> deny" \
+    "$(write_json "${OTHER_DRIVE}:hooks\\y.sh" "$REPO/docs")" 1
+# (845-2) Bash-mode parity: the same shape reached through a command operand.
+run_hook deny "845: cross-drive drive-relative in a Bash operand -> deny" \
+    "$(bash_json "cp /tmp/payload ${OTHER_DRIVE}:hooks/y.sh" "$REPO/docs")" 1
+
+# (845-3) A drive-ROOTED absolute (`Z:/...`) is cwd-INDEPENDENT and must NOT be
+# swept up by the cross-drive deny - it still classifies normally (this one
+# resolves inside no git repo, so it allows exactly as before the fix).
+run_hook allow "845: drive-ROOTED other-drive absolute is not cross-drive -> allow" \
+    "$(write_json "${OTHER_DRIVE}:/elsewhere/scripts/hooks/y.sh" "$REPO")" 1
+
+# (845-4) SAME-drive drive-relative must keep anchoring exactly as before (the
+# deny half is covered by the two `11:` cases above; this is the ALLOW half,
+# proving the fix did not over-close). Only meaningful where the cwd's drive is
+# lexically determinable - i.e. a Windows/drive-lettered host.
+if [ -n "$REPO_DRIVE" ]; then
+    run_hook allow "845: same-drive drive-relative non-enforcement -> allow" \
+        "$(write_json "${REPO_DRIVE}:README.md" "$REPO")" 1
+    run_hook deny "845: same-drive drive-relative enforcement path -> deny" \
+        "$(write_json "${REPO_DRIVE}:scripts/hooks/y.sh" "$REPO")" 1
+else
+    printf '  SKIP  845: same-drive drive-relative (no drive-lettered cwd on this host)\n'
+fi
+
+# (845-5) check mode reports the cross-drive class per-path AND keeps scanning
+# the rest of the argument list (the deny is a classification, not an abort).
+out=$(cd "$REPO" && env LESSON_FENCE_POLICY="$POLICY_COPY" "$BASH_BIN" "$FENCE" check \
+    "${OTHER_DRIVE}:hooks/y.sh" "$REPO/README.md" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] \
+    && grepq "$out" -E '^deny[[:space:]]+cross-drive[[:space:]]' \
+    && grepq "$out" -E '^allow[[:space:]]+-[[:space:]]'; then
+    pass "845: check mode -> cross-drive verdict + scan continues + exit 2"
+else
+    fail "845: check mode cross-drive rc=$rc out=$out"
+fi
+
 run_hook deny "11: mixed case final component -> deny" \
     "$(write_json "$REPO/scripts/guardrails/X.SH" "$REPO")" 1
 

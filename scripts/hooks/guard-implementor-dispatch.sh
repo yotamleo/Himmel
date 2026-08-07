@@ -3,10 +3,15 @@
 # lane routing (HIMMEL-1513) with the bank-aware cost guard (HIMMEL-920).
 #
 # The policies answer independent questions:
-#   1. If an external implementation lane is registry-available, runnable, AND
-#      bank-funded, refuse an implementation-shaped in-process Agent dispatch
-#      and name that lane. An unfunded preferred lane falls through to the other
-#      lane (or the HIMMEL-920 bank guard) rather than refusing toward it.
+#   1. If an external implementation lane is registry-available, runnable,
+#      READY (HIMMEL-1626), AND bank-funded, refuse an implementation-shaped
+#      in-process Agent dispatch and name that lane. A lane failing any leg
+#      falls through to the other lane (or the HIMMEL-920 bank guard) rather
+#      than refusing toward it. Readiness is MEASURED, not asserted: a lane
+#      under a readiness gate (lanes.json readiness.passesRequired) must show
+#      that many trailing consecutive verify-return PASSes in the flow-runs
+#      ledger (HIMMEL-1621) — so a ruled-down lane is skipped like a spent
+#      bank instead of stranding the sanctioned in-process Claude-tier path.
 #   2. If no lane is available but the live 5-hour bank is near exhaustion,
 #      retain HIMMEL-920's HARD refusal / WARN advisory policy.
 #
@@ -34,6 +39,8 @@
 #   IMPL_GUARD_WARN                bank advisory threshold (default 65)
 #   IMPL_GUARD_BANK_STATUS_CMD     override the funded-bank probe command (tests stub it; default `bun scripts/lanes/bank-status.ts`)
 #   IMPL_GUARD_BANK_BUDGET_SECS    funded-bank probe wall-clock budget (default 4)
+#   IMPL_GUARD_READINESS_CMD       override the lane-readiness probe command (tests stub it; default `node scripts/lanes/lane-readiness.mjs`)
+#   IMPL_GUARD_READINESS_BUDGET_SECS  lane-readiness probe wall-clock budget (default 4)
 #
 # Exit codes: 0 allow; 2 refuse. Bash 3.2-compatible.
 set -uo pipefail
@@ -335,6 +342,70 @@ lane_funded() {
     esac
 }
 
+# lane_ready <lane-id> — return 0 iff the lane is READY (HIMMEL-1626). A lane
+# under a readiness gate (lanes.json readiness.passesRequired) is ready only
+# when the verify-return flow-runs ledger (HIMMEL-1621) shows that many
+# trailing consecutive PASS rows for the lane's branches — readiness is
+# measured, not asserted. FAIL-OPEN at the probe level, mirroring
+# lane_funded(): missing node/helper, a timeout, a non-zero exit, garbage
+# output, or a missing lane line ALL resolve to READY with one warning
+# (pre-1626 behaviour). ONLY a clean `down` verdict skips the lane — toward
+# the other lane or the HIMMEL-920 fall-through, never a refusal toward the
+# caller ("skipping it, not refusing toward it"). The probe honours
+# LANES_REGISTRY, so gated fixtures and the live registry read the same way.
+lane_ready() {
+    local id="$1" cmd budget out rc state lid lstate
+    budget="${IMPL_GUARD_READINESS_BUDGET_SECS:-4}"
+    if [ -n "${IMPL_GUARD_READINESS_CMD:-}" ]; then
+        cmd="$IMPL_GUARD_READINESS_CMD"
+    else
+        if ! command -v node >/dev/null 2>&1; then
+            warn "lane '$id' readiness probe needs node, which is not on PATH — treating it as ready (fail-open)"
+            return 0
+        fi
+        if [ ! -f "$repo_root/scripts/lanes/lane-readiness.mjs" ]; then
+            warn "lane '$id' readiness probe is missing ($repo_root/scripts/lanes/lane-readiness.mjs) — treating it as ready (fail-open)"
+            return 0
+        fi
+        cmd="node \"$repo_root/scripts/lanes/lane-readiness.mjs\""
+    fi
+    rc=0
+    out=$(_run_bounded "$budget" "$cmd") || rc=$?
+    # rc FIRST, before the output is parsed — the same ordering lesson as
+    # lane_funded(): `down` is the one arm that skips a lane, and a crashed or
+    # timed-out probe can still have written a partial `<lane> down` line.
+    # Non-zero rc means "no verdict", which fail-opens to READY.
+    if [ "$rc" -ne 0 ]; then
+        warn "lane '$id' readiness probe did not finish cleanly (rc=$rc) — treating it as ready (fail-open)"
+        return 0
+    fi
+    state=""
+    while IFS=' ' read -r lid lstate; do
+        [ -n "$lid" ] || continue
+        if [ "$lid" = "$id" ]; then
+            state="$lstate"
+            break
+        fi
+    done <<< "$out"
+    case "$state" in
+        down)
+            warn "lane '$id' is runnable but its readiness gate is unmet (verify-return ledger) — skipping it, not refusing toward it"
+            return 1
+            ;;
+        ready)
+            return 0
+            ;;
+        *)
+            if [ -z "$state" ]; then
+                warn "lane '$id' readiness probe returned no '$id' line — treating it as ready (fail-open)"
+            else
+                warn "lane '$id' readiness probe returned an unrecognised state ('$state') — treating it as ready (fail-open)"
+            fi
+            return 0
+            ;;
+    esac
+}
+
 lane=""
 reg_claudex=0
 reg_glm=0
@@ -351,9 +422,12 @@ if [ "$lane_exempt" != "1" ]; then
     else
         reg_claudex=$(printf '%s' "$lanes" | jq -r 'if any(.[]; .id == "claudex") then "1" else "0" end' 2>/dev/null || echo 0)
         reg_glm=$(printf '%s' "$lanes" | jq -r 'if any(.[]; .id == "glm") then "1" else "0" end' 2>/dev/null || echo 0)
-        if [ "$reg_claudex" = "1" ] && lane_runnable claudex "$repo_root/scripts/telegram/spawn-claudex.ts" && lane_funded claudex; then
+        # Readiness before funding: a down-listed lane is skipped before its
+        # bank probe is paid for (both probes share the fail-open contract, so
+        # the order cannot change a verdict — only the wall-clock).
+        if [ "$reg_claudex" = "1" ] && lane_runnable claudex "$repo_root/scripts/telegram/spawn-claudex.ts" && lane_ready claudex && lane_funded claudex; then
             lane="claudex"
-        elif [ "$reg_glm" = "1" ] && lane_runnable glm "$repo_root/scripts/telegram/spawn-glm.ts" && lane_funded glm; then
+        elif [ "$reg_glm" = "1" ] && lane_runnable glm "$repo_root/scripts/telegram/spawn-glm.ts" && lane_ready glm && lane_funded glm; then
             lane="glm"
         fi
     fi

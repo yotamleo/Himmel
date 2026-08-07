@@ -12,6 +12,11 @@ data stays missing: metric families are omitted when their substrate is absent.
 The only explicit zero for a silent configured flow is
 `flow_run_in_flight{flow} 0`.
 
+The session substrate (HIMMEL-1052) keeps that boundary intact: the ledger is
+written by a separate hook-side script (`session-run-hook.ts`) riding existing
+hook chokepoints, and the exporter only reads it. `GET /sessions.json` is a
+second read shape, not a second responsibility.
+
 Flow outcome counters are folded from the sliding 14 day ledger window at scrape
 time, reading both `flow-runs.jsonl` and `flow-runs.jsonl.1`. The
 `flow_run_outcome_total` family keeps the counter name and type the ratified
@@ -55,6 +60,9 @@ Shape:
   ],
   "vault_path": "C:/Users/you/Documents/luna",
   "host_detectors_ttl_seconds": 60,
+  "sessions": {
+    "stale_after_seconds": 900
+  },
   "quota_sources": {
     "claude_cache_path": "/tmp/claude/statusline-usage-cache.json",
     "codex_sessions_dir": "C:/Users/you/.codex/sessions",
@@ -75,6 +83,8 @@ Rules:
 - `vault_path` is optional. Without it, Luna backlog metrics are omitted.
 - `host_detectors_ttl_seconds` controls the Windows host detector cache. It
   defaults to 60 seconds.
+- `sessions.stale_after_seconds` is the transcript-inactivity threshold that
+  flips a live session to dead (HIMMEL-1052). It defaults to 900.
 - `quota_sources` is optional; every key has a derived default (claude:
   `$CLAUDE_USAGE_CACHE`, else `<tmp>/claude/statusline-usage-cache.json`;
   codex: `~/.codex/sessions`; glm: the quota-gauge ledger path).
@@ -149,6 +159,173 @@ alongside the Luna backlog walk:
 Any git error, missing repo, or timeout omits the whole family with an
 explanatory `# luna_git_* omitted: ...` comment, same fail-soft contract as
 the scheduled-task and host-detector families.
+
+## Live sessions and subagents (HIMMEL-1052)
+
+Three session populations exist in this harness, with three different owners:
+
+1. **Pipeline-cadence legs** (harvest/synthesize/health/armed-resume/vitals) —
+   `flow-runs.jsonl`, the Flows row above (HIMMEL-919/921).
+2. **Dispatched lane workers** (GLM/claudex) — their own per-session
+   `meta.json`/`outbox.jsonl` under the bridge root.
+3. **Interactive/foreground Claude Code sessions and the Task-tool subagents
+   fanned out inside them** — this section. Nothing tracked these before: a
+   host-detector `class="claude"` reading is a *sum* over every process wearing
+   that class and cannot say how many distinct sessions are alive, which have
+   subagents under them, or which one died three hours ago instead of
+   finishing.
+
+### The ledger
+
+```text
+~/.himmel/session-runs.jsonl            (override: HIMMEL_SESSION_RUNS_LEDGER)
+```
+
+Same shape discipline as `flow-runs.jsonl`: append-only JSONL, a fixed field
+list in a fixed order, rotation at 10MB into `.jsonl.1` (both files are read).
+Written by `session-run-hook.ts` (below); read by the exporter. Four row kinds:
+
+| kind / ev | fields |
+|---|---|
+| `session` / `start` | `v`, `kind`, `ev`, `session_id`, `cwd`, `transcript_path`, `host`, `started_at`, `pid` |
+| `session` / `end` | `v`, `kind`, `ev`, `session_id`, `ended_at`, `reason` |
+| `subagent` / `start` | `v`, `kind`, `ev`, `subagent_id`, `parent_session_id`, `subagent_type`, `description`, `started_at` |
+| `subagent` / `end` | `v`, `kind`, `ev`, `subagent_id`, `parent_session_id`, `ended_at`, `outcome` |
+
+- `reason` is normalized into a closed enum: `clear`, `logout`,
+  `prompt_input_exit`, `other`. Anything else becomes `other` — it is a
+  Prometheus label downstream, and an open label is a cardinality explosion.
+- `outcome` is `success` / `error` / `unknown`, classified coarsely from the
+  Agent tool response (an `is_error` flag). Unclassifiable is `unknown`, never
+  an assumed success.
+- `subagent_id` is the payload's native `tool_use_id` when present — the exact
+  correlator shared by the Pre and Post hook events. Without it, the writer
+  falls back to a 12-hex sha256 of `session_id` + `tool_input`, which pairs
+  deterministically but collides for two identical dispatches from one session
+  (the live *count* stays right; only per-instance identity blurs).
+- `pid` is best-effort and nullable: a SessionStart hook is a grandchild of the
+  Claude Code process and is not handed its parent's pid. Nothing depends on it.
+- `description` is truncated to 200 characters — the ledger wants a handle, not
+  a copy of every dispatch brief.
+
+### Wiring the writer
+
+`session-run-hook.ts` is a pure writer: it appends one line and exits. It is
+fail-open on every path (exit 0, empty stdout, no `permissionDecision`), so a
+telemetry gap can never block or slow the tool call it rides on. Four hook
+entries, all additive to chokepoints that already exist:
+
+```jsonc
+// SessionStart array (.claude/settings.json)
+"bun \"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts\" session-start"
+// SessionEnd array
+"bun \"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts\" session-end"
+// PreToolUse, matcher "Agent"
+"bun \"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts\" subagent-start"
+// PostToolUse, matcher "Agent"
+"bun \"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts\" subagent-end"
+```
+
+Until those entries are wired, the ledger stays empty, every session family is
+omitted, and `session_runs_ledger_rows` reads 0 — the exporter degrades to
+silent, never to a fabricated reading.
+
+### Liveness: transcript mtime, not wall clock
+
+**The record that never gets written is the important one.** SessionEnd is a
+graceful-exit hook: a crash, an OOM, a SIGKILL, or a wedged session the
+operator eventually closes the window on emits `session_start` and *no*
+`session_end`, ever. A purely start/end-paired ledger cannot express that, and
+only recording clean completions would be useless.
+
+The flow fold's rule (unpaired start past `cadence*2` = stalled) does not
+transfer: an interactive session has no cadence and can legitimately sit idle
+waiting on the operator — thinking, on a permission prompt, at lunch. Wall
+clock alone cannot tell that from a crash. The transcript file can: it advances
+exactly while, and only while, the session is doing something, independent of
+whether any hook fires cleanly at exit.
+
+- unpaired start, transcript mtime **fresh** → `running`
+- unpaired start, transcript mtime **stale** → `dead`
+- start with a matching end row → `ended`, tagged by `reason`
+
+Freshness defaults to 15 minutes and is operator-tunable:
+
+```json
+{ "sessions": { "stale_after_seconds": 900 } }
+```
+
+Too short flags a thinking session as dead; too long delays real-crash
+detection. A transcript that cannot be read at all is not evidence of life —
+the session's own age is measured against the same threshold instead, so a
+session whose transcript never appeared ages into `dead` rather than counting
+as live forever.
+
+### Metric families
+
+Aggregated only. `session_id` and `subagent_id` are unique per occurrence and
+unbounded over time, so they are **never** Prometheus labels.
+
+- `session_active_total{host}` — sessions running per the rule above.
+- `session_dead_total{host}` — crashed/orphaned/wedged sessions. The number
+  that should alarm.
+- `session_end_outcome_total{reason}` — graceful exits in the sliding 14d
+  window (same window-fold caveat as `flow_run_outcome_total`).
+- `subagent_active_total{host,subagent_type}` — subagents with an unpaired
+  start row **under a still-running parent**. The parent qualifier is
+  deliberate: a subagent whose parent crashed can never emit its end row, and
+  an unqualified reading would pin phantom subagents live for the whole window.
+  `host` is joined through the parent session's start row; the subagent rows
+  carry no host of their own.
+- `subagent_outcome_total{subagent_type,outcome}` — subagent completions in
+  the window.
+- `session_runs_ledger_rows` — parsed rows in the window, exporter self-health
+  parity with `flow_exporter_ledger_rows`.
+
+Hosts observed in the window keep a zeroed sample, so a dead-session alert
+stays evaluable after the last live session on that host goes away. Label
+values that originate in hook payloads (a hostname, a `subagent_type`) are
+stripped of control characters and bounded at 64 chars before rendering —
+`escLabel` does not escape carriage returns, which would otherwise inject a new
+exposition line.
+
+### Per-session detail: `GET /sessions.json`
+
+The exporter serves the per-session view the metric families deliberately
+cannot carry:
+
+```text
+http://127.0.0.1:9877/sessions.json
+```
+
+```json
+{
+  "v": 1,
+  "generated_at": "2026-08-07T09:00:00.000Z",
+  "stale_after_seconds": 900,
+  "ledger_rows": 42,
+  "sessions": [
+    {
+      "session_id": "a1b2c3d4-...",
+      "cwd": "C:\\Users\\you\\Documents\\github\\himmel",
+      "host": "OVERLORD8",
+      "started_at": "2026-08-07T06:00:03Z",
+      "status": "running",
+      "end_reason": null,
+      "age_seconds": 10797,
+      "last_activity_seconds": 42,
+      "subagents_started": 3,
+      "subagents_active": 1
+    }
+  ]
+}
+```
+
+Same passive read, same ledger, same liveness rule — one reader, so the table
+and the gauges can never disagree. `last_activity_seconds` is `null` when the
+transcript is unreadable, never 0. To render this as a Grafana table, add an
+Infinity/JSON datasource pointed at that URL; the dashboard ships the stat
+tiles (Prometheus-backed) plus a text panel naming this endpoint.
 
 ## Install on Windows
 
@@ -295,8 +472,10 @@ URLs after the tasks are running:
 - Flow exporter: `http://127.0.0.1:9877/metrics`
 - windows_exporter: `http://127.0.0.1:9182/metrics`
 
-Import `dashboards/war-room-system.json` into Grafana and bind the
-`${DS_PROMETHEUS}` variable to the local Prometheus datasource.
+Import `dashboards/war-room-system.json` into Grafana. As of HIMMEL-924 the
+`${DS_PROMETHEUS}` variable auto-binds to the provisioned Prometheus
+datasource (`provisioning/datasources/prometheus.yaml`, fixed `uid:
+prometheus`) — no manual bind step.
 
 ## Alerting (HIMMEL-1199 — a boundary change)
 
@@ -317,11 +496,120 @@ from the bridge's own allowlist (`access.json`'s `allowFrom[0]`, override via
 `LUNA_SYNC_ALERT_CHAT_ID`). It never runs `git fetch`, same passivity
 invariant as the exporter.
 
-## Deliberately not here
+## Alert rules + Telegram delivery (HIMMEL-924)
 
-- Alert rules and Telegram alerting for the wider stack (flows, quota,
-  scheduled tasks, host) — `luna-sync-alert.ts` above is the one narrow
-  exception, and it is deliberately outside the exporter's passivity
-  boundary, not a precedent for adding more alerting inside it.
-- Loki or log ingestion.
+Design doc: `observability-live-system-check.md` §5. Same passivity
+invariant as everything above — no alerting logic lives inside
+`flow-exporter.ts` or its request path. The rules themselves live in two
+places that must be kept in sync (grep both for a rule name before changing
+one):
+
+- `alerts.rules.yml` — Prometheus-native rule-file format, the source of
+  truth for every expression, loaded via `prometheus.yml`'s `rule_files` so
+  Prometheus's own `/rules`/`/alerts` UI shows them and
+  `promtool test rules alerts.rules.test.yml` unit-tests them against
+  recorded series. **No Alertmanager is installed in this stack**, so
+  nothing here is ever delivered from Prometheus's side — purely
+  self-visibility + testability.
+- `provisioning/alerting/rules.yaml` — the same 9 rules re-implemented in
+  Grafana's file-provisioning dialect (query `data` + a `__expr__` threshold
+  condition; structurally different from Prometheus's `expr:`/`for:` rule
+  format, so it can't just include the file above). **This is what actually
+  evaluates and delivers to Telegram** — RATIFIED F3.
+
+`install-stack.ps1` copies `provisioning/` into
+`%LOCALAPPDATA%\himmel\observability\grafana-provisioning` and points
+Grafana's `[paths] provisioning` at it, alongside the datasource
+(`provisioning/datasources/prometheus.yaml`, fixed `uid: prometheus`) and
+the notification policy (`provisioning/alerting/policies.yaml`, one flat
+route to the Telegram contact point).
+
+### Failure-mode coverage
+
+Every HIMMEL-918 failure mode maps to a rule whose evaluation does not
+depend on the failing component itself (the design's acceptance test, §5):
+
+| HIMMEL-918 mode | Rule(s) | Depends on the failing component? |
+|---|---|---|
+| 600s background-wait truncation | `HimmelFlowRunTruncated` (+ `HimmelFlowLastSuccessAgeExceeded` backstop) | No — reads the ledger's end row, written by the wrapper, not the model |
+| Permission-prompt stall / SIGKILL, no exit code | `HimmelFlowRunStalled` | No — exporter-inferred from an unpaired start row past deadline |
+| Transient CLI/API death | `HimmelFlowRunError` (or `HimmelFlowRunStalled` if it never writes an end row) | No |
+| 4-day silently-disabled scheduled task | `HimmelScheduledTaskDisabled` + `HimmelFlowLastSuccessAgeExceeded` | No — `Get-ScheduledTask`, independent of the flow itself |
+| The exporter/collector itself dying | `HimmelWatcherDown` (`up == 0`) | No — Prometheus's own scrape health, not the exporter's output |
+
+Two more rules extend coverage past the 918 postmortem: `HimmelAgentTreeRamRunaway`
+and `HimmelOrphanProcesses` (host-level, design §4) and
+`HimmelLunaInboxBacklogRising` (pipeline-level, design §3).
+
+### Delivery choice — F3, reusing the bridge's bot token
+
+The design offers two sanctioned options: a separate Grafana-only bot
+token, or proving sendMessage-only calls on the existing token can't
+collide with the bridge's poller. This ships with the **second** option —
+`contact-points.yaml` interpolates `$GRAFANA_TELEGRAM_BOT_TOKEN`/
+`$GRAFANA_TELEGRAM_CHAT_ID` from the Grafana process's environment, and
+`install-stack.ps1` seeds both (non-fatally, never overwriting an
+operator-set value) from the exact same sources `luna-sync-alert.ts` above
+already reads: `~/.claude/channels/telegram/.env`'s `TELEGRAM_BOT_TOKEN` and
+`access.json`'s `allowFrom[0]`.
+
+Evidence: Telegram's "one poller per bot token" constraint is specific to
+long-polling (`getUpdates`) and webhook registration — `sendMessage` has no
+exclusivity semantics and any number of processes may call it concurrently
+on the same token. `luna-sync-alert.ts` has shipped exactly this
+reuse-for-sendMessage-only pattern since HIMMEL-1199 without incident.
+Verified live for this ticket: a Grafana 13.1.0 instance was started
+against this exact `provisioning/` tree with a fake token/chat_id in its
+environment; `starting to provision alerting` / `finished to provision
+alerting` logged with no error, and the provisioning API confirmed all 9
+rules, the datasource, the contact point (token redacted, present), and the
+notification policy loaded correctly. No real Telegram send was exercised
+(fake token) — that step is for the operator to confirm on first real run.
+An operator who prefers a separate bot can set both env vars to a different
+token/chat before running the installer; a pre-set value is left alone.
+
+### Fixed-field content only
+
+Every rule's `summary` annotation renders only `$labels`/`$value` —
+`flow`/`task`/`class`/`stage`/`job`/`outcome`, all exporter-derived from
+`observability.json` config or fixed enums, plus numeric values. None of
+these can carry ledger `note` free text; `flow-exporter.ts` never turns
+`note` into a label or annotation value anywhere in the exporter (design
+§6.6's injection-carry guard).
+
+### Tuning
+
+- `HimmelAgentTreeRamRunaway`'s 6 GiB threshold and
+  `HimmelLunaInboxBacklogRising`'s 3-day/1h grace are literal defaults in
+  both rule files — no per-class RAM threshold config surface exists yet in
+  `observability.json`/`flow-exporter.ts` (that's host-detector config
+  plumbing, out of this ticket's scope). Edit both files together.
+- `HimmelOrphanProcesses` only watches `codex-fleet`/`codex-exec-registry`
+  (the design's literal default). `mcp-dead-parent-unattributed` and the
+  gateway/app-server orphan classes stay dashboard-visible, unalerted.
+- `HimmelFlowLastSuccessAgeExceeded` needs a flow's `cadence_seconds`
+  declared in `observability.json` (`flow_cadence_seconds{flow}`,
+  HIMMEL-924) — a flow with no declared cadence never fires it, matching
+  the "dark tile, not a fabricated healthy/unhealthy state" rule for
+  uninstrumented flows (design §1.3).
+
+### Deliberately not here
+
+- Loki or log ingestion, and the two §7 log-based rules (error burst, log
+  silence) that depend on it — Loki/Alloy are HIMMEL-927's build, not yet
+  shipped.
+- A second delivery channel split by `severity` (`page` vs `warn`) — one
+  flat policy today; the labels are there if an operator wants to add a
+  nested route later.
+- A `session_dead_total > 0` rule — the HIMMEL-1052 session families landed
+  with the alert deliberately left to this rule set; placing it is a small
+  follow-up on top of the 9 rules above.
+- In-loop subagent *step* counting. The session substrate gives
+  start/running/end + outcome, not "3rd of 5 planned steps": there is no
+  existing signal for that, and producing one would need subagents to
+  self-report over an outbox-style progress channel.
+- Reconciling the `armed-resume` double coverage — the scheduler's own
+  `flow-runs.jsonl` row and this ledger's `session_start` row for the same
+  launch are genuinely different moments (arm event vs. process lifecycle)
+  and both are kept.
 - Docker, brew, apt, or other Phase B packaging.

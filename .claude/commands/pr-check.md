@@ -1208,7 +1208,7 @@ Steps:
    ```
    The bridge is idempotent (dedups by finding-id), reopens a `resolved` bug whose finding reappears (regression), and resolves a vanished finding ONLY when its critic was `panel-availability: ok` that HEAD (a flaky critic drop-out must not falsely resolve a still-open bug). Best-effort — it always exits 0 and never blocks steps 5/6.
 
-4.8. **Unresolved-review-thread gate (HIMMEL-949) — blocking, skipped only when no PR exists yet.** All PR review comments must be resolved before the gate clears — an unresolved thread (e.g. a CodeRabbit App comment) is a merge blocker exactly like a Critical finding. One implementation serves both enforcement points: this step delegates to `scripts/check-ci.sh --threads-only` (paginated reviewThreads query, fail-closed on query errors), the same gate `/check-ci` runs at merge time.
+4.8. **Unresolved-thread + review-freshness gate (HIMMEL-949 / HIMMEL-1181) — blocking, skipped only when no PR exists yet.** All PR review comments must be resolved before the gate clears — an unresolved thread (e.g. a CodeRabbit App comment) is a merge blocker exactly like a Critical finding. This gate ALSO certifies the latest bot review is anchored to the head SHA (HIMMEL-1181, B2): GitHub auto-resolves a thread when a later commit changes its lines, so "0 unresolved threads" alone is not proof the head was ever reviewed. One implementation serves both enforcement points: this step delegates to `scripts/check-ci.sh --threads-only` (paginated reviewThreads query + review-freshness query + review-body-findings query, fail-closed on query errors), the same gate `/check-ci` runs at merge time.
    ```bash
    threads_rc=2  # default: unknown = blocking; every path below overwrites it
    pr_rc=0
@@ -1220,14 +1220,15 @@ Steps:
        threads_rc=0
    else
        threads_rc=0
-       bash scripts/check-ci.sh --threads-only || threads_rc=$?
+       threads_out=$(bash scripts/check-ci.sh --threads-only 2>&1) || threads_rc=$?
+       printf '%s\n' "$threads_out"
    fi
    echo "4.8: threads_rc=$threads_rc"
    ```
    `threads_rc` is the single status steps 5/6 consume — the no-PR skip sets it to 0 (pass) explicitly, so no path leaves it undefined:
-   - `threads_rc = 0` → gate passed (zero unresolved threads, or no PR yet).
+   - `threads_rc = 0` → gate passed (zero unresolved threads + an anchored review, or no PR yet). Relay any `check-ci: … (CodeRabbit body: nitpick=… additional=…, non-blocking)` / `; fresh …` suffix on the printed output into the `/pr-check` report VERBATIM — a non-zero body-finding count is surfaced, never silenced (HIMMEL-1147/1148 disposition contract: fix it, file a ticket, or a one-line "declined, reason" in the PR body).
    > **A clean `/pr-check` is NOT a clean thread state** (HIMMEL-1125) — different signals at different times. This gate runs at PRE-PUSH; the CodeRabbit App reviews only after `gh pr create`. On PR #1262 the CLI returned 0 findings and the panel 0/0/0, the marker cleared, the PR opened — and *then* `check-ci` returned `exit=3`: one unresolved App thread carrying a real finding. Nothing in the pre-push flow can catch that. So after opening or refreshing a PR, **loop `scripts/check-ci.sh` until it exits 0** before any merge, handover, or "the PR is done" claim. Operator directive 2026-07-17: *"keep pulling until PRs are green and no unresolved comments from CodeRabbit."* Zero-token watcher: the `check-ci` skill.
-   - ANY other `threads_rc` → BLOCKING in step 6 — 3 = unresolved threads or changes requested, 2 = lookup/query failed (fail-closed), and any unexpected code is treated the same: address each comment, resolve its thread (always resolve the thread when fixing a CR finding), then re-run.
+   - ANY other `threads_rc` → BLOCKING in step 6 — 3 = unresolved threads, changes requested, or an outside-diff-range body finding; 4 = the latest bot review is anchored to a NON-head commit (HIMMEL-1181 — the head was never re-reviewed; wait for / re-trigger a fresh review, DISTINCT remedy from 3: there is no thread to resolve here); 2 = lookup/query failed or the review window is indeterminate (fail-closed); and any unexpected code is treated the same: address each comment, resolve its thread (always resolve the thread when fixing a CR finding), then re-run.
 
 5. If both `N == 0` AND step 4.8 reported `threads_rc = 0`, clear the marker via
    the chokepoint — **never a bare `rm -f "$marker"`** (HIMMEL-1064):

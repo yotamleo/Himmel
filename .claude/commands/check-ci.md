@@ -1,15 +1,19 @@
 ---
-description: Token-free PR merge-gate watcher — one process loops inside gh pr checks --watch --fail-fast, then verifies zero unresolved review threads and no changes-requested review, and returns a single exit code (0=green+resolved, 1=red, 2=cannot evaluate/no PR/usage error, 3=unresolved threads or changes requested), so merge-on-green costs ~zero tokens (HIMMEL-949).
-argument-hint: [pr-number|branch|url] [--grace <sec>] [--settle <sec>] [--threads-only]
+description: Token-free PR merge-gate watcher — one process loops inside gh pr checks --watch --fail-fast, then verifies zero unresolved review threads, no changes-requested review, and (when CodeRabbit is armed) that its latest review is anchored to the head SHA, and returns a single exit code (0=green+resolved, 1=red, 2=cannot evaluate/no PR/usage error/indeterminate, 3=unresolved threads/changes requested/outside-diff body finding, 4=stale bot review or an incremental-silent review object), so merge-on-green costs ~zero tokens (HIMMEL-949 / HIMMEL-1181).
+argument-hint: [pr-number|branch|url] [--grace <sec>] [--settle <sec>] [--threads-only] [--escalate]
 ---
 
 Watch the current branch's PR merge gate without an agent poll loop. All the
 waiting happens inside ONE `gh pr checks --watch --fail-fast` process (plus a
 settle re-watch for late-registering check runs and a review-thread query);
 the session spends tokens only on launching the script and reading its exit
-code. Green means all three: every check passed, every PR review thread
-resolved, and no review requesting changes — an unresolved CR comment or a
-CHANGES_REQUESTED review is a merge blocker, same as a red check.
+code. Green means: every check passed, every PR review thread resolved, no
+review requesting changes, zero outside-diff-range CodeRabbit body findings,
+and — when CodeRabbit is armed (HIMMEL-1125) — the latest bot review is
+anchored to the head SHA (HIMMEL-1181, B2). An unresolved CR comment, a
+CHANGES_REQUESTED review, or a stale (never re-reviewed) head is a merge
+blocker, same as a red check. Non-blocking nitpick/additional body findings
+are surfaced in the success line, never silenced (HIMMEL-1147/1148).
 
 Run it in a **background** Bash so work continues while checks run:
 
@@ -60,6 +64,21 @@ Act on the exit code:
   usage error. Cannot-evaluate always blocks certification even if the
   checks themselves look green — re-run.
 - `3` — checks green but the review state blocks the merge: unresolved
-  review threads remain, or a review requests changes. Address each comment,
-  resolve its thread (always resolve the thread when fixing a CR finding),
-  then re-run.
+  review threads remain, a review requests changes, or (when CodeRabbit is
+  armed) its review body reports an outside-diff-range finding. Address each
+  comment, resolve its thread (always resolve the thread when fixing a CR
+  finding), then re-run.
+- `4` — (when CodeRabbit is armed) either the latest bot review is anchored
+  to a commit OTHER than the head SHA — the head was never re-reviewed, and
+  GitHub auto-resolving threads on a later commit can mask this
+  (HIMMEL-1181, B2: wait for / re-trigger a fresh review, then re-run) — or
+  CodeRabbit concluded incrementally but posted no review object at the head
+  while a prior head had outside-diff findings (request `@coderabbitai full
+  review`, or opt in with `--escalate`). Distinct remedy from `3`: there is
+  no thread to resolve here.
+
+`CR_BOT_LOGINS` (default `coderabbitai`, a trailing `[bot]` suffix optional)
+sets the review-author logins the freshness gate (`4`, stale case) treats as
+the bot — for a repo whose review bot isn't CodeRabbit. `CR_PROFILE=none` /
+`CR_APP=0` skip the freshness + body-findings + status gates together (see
+`scripts/lib/cr-available.sh`).

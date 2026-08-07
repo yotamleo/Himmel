@@ -1,0 +1,18 @@
+# HIMMEL-924: provisions the local Prometheus datasource with a FIXED uid
+# ("prometheus") so provisioning/alerting/rules.yaml can reference it by a
+# stable datasourceUid instead of relying on the operator manually binding
+# the war-room-system.json dashboard's ${DS_PROMETHEUS} template variable to
+# whatever random uid a manually-added datasource gets (README.md's prior
+# "Install on Windows" instructions covered that manual bind step; a
+# provisioned datasource with an explicit uid works for both the dashboard
+# import and alert rules without any manual step).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    editable: false
