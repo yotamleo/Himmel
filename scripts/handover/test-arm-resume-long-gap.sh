@@ -31,6 +31,11 @@ unset ARM_NAME_TEMPLATE 2>/dev/null || true
 unset RESUME_SLOT_THRESHOLD 2>/dev/null || true
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
 export HIMMEL_FLOW_RUNS_LEDGER="$TMP/flow-runs.jsonl"
+# Temp-target shield (HIMMEL-1365/1622): fixtures live under $TMP, the exact
+# shape arm-resume now refuses (exit 12). Scheduler is stubbed — no real task
+# is ever created. Same declared opt-out as test-arm-resume.sh; missing it
+# cost 7 failures first caught by the public wave-2k CI.
+export ARM_TEMP_CWD_OK=1
 
 # ---------------------------------------------------------------------------
 # Helpers
