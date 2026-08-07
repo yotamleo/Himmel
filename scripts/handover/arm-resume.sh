@@ -2888,8 +2888,15 @@ schedule_arm() {
             # Both the prefix AND the .bat suffix are required in the match so
             # this can never widen into an unrelated temp file.
             # Best-effort throughout: a prune failure must never fail an arm.
-            find "$(dirname "$bat_path")" -maxdepth 1 -type f \
-                -name 'himmel-resume.*.bat' -mtime +7 -delete 2>/dev/null || true
+            # HIMMEL-1624: skip the prune under --dry-run. This block runs
+            # before the DRY_RUN early-return below, so without the gate a
+            # dry-run arm would delete leaked .bat siblings -- a real side
+            # effect that breaks the side-effect-free contract a dry run
+            # promises (see the --dry-run note above the shipped-preflight).
+            if [ "$DRY_RUN" -ne 1 ]; then
+                find "$(dirname "$bat_path")" -maxdepth 1 -type f \
+                    -name 'himmel-resume.*.bat' -mtime +7 -delete 2>/dev/null || true
+            fi
             # bash mktemp on gitbash returns POSIX path; schtasks wants a
             # Windows path. cygpath converts. cygpath must exist here (Linux
             # would already have failed the platform check above).

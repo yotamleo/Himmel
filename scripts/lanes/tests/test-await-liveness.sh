@@ -42,7 +42,10 @@ mk() {
       && GIT_COMMITTER_DATE="$STALE_ISO" GIT_AUTHOR_DATE="$STALE_ISO" \
          git commit -q -m seed ) >/dev/null 2>&1
     # Backdate every file so no fixture is accidentally "live" via mtime.
-    find "$wt" -exec touch -d "$STALE_ISO" {} + 2>/dev/null || true
+    # POSIX `touch -t` (not GNU-only `touch -d`): on BSD/macOS `-d` is absent
+    # and the failure was suppressed, so fixtures stayed fresh and every idle
+    # case silently read LIVE. Unsuppressed so a real backdate failure surfaces.
+    find "$wt" -exec touch -t 202001010000.00 {} +
     # NO "pid" field, deliberately. On Git Bash pid_alive probes with
     # `tasklist /FI "PID eq N"`, i.e. WINDOWS pids — an MSYS shell's own $$
     # never matches one, so a fixture that records it reads PHANTOM (rc 5)

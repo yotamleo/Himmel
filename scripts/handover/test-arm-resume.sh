@@ -2994,6 +2994,44 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# T_PRUNE (HIMMEL-1624): the .bat age-prune lives in the .bat-builder, BEFORE
+#       the DRY_RUN early-return, so without the DRY_RUN gate a --dry-run arm
+#       would delete leaked himmel-resume.*.bat siblings -- a real side effect
+#       that breaks the side-effect-free dry-run contract. arm-resume's
+#       `mktemp -t` honors TMPDIR (and never overrides it), so pointing TMPDIR
+#       at a sandbox places its own .bat next to a stale fixture and makes the
+#       prune observable. TMPDIR is an env-prefix on the arm call only (never
+#       exported), so it cannot leak into any other case. OSTYPE=msys + WINBIN
+#       force the Windows/schtasks branch on any host (POSIX arms use `at`,
+#       never a .bat) -- the same shape T_SEAM uses. The real-arm counterpart
+#       (the prune STILL runs on the non-dry-run path) is verified by the
+#       focused probe transcript; it is not asserted here because the post-arm
+#       verify differs across hosts and is not what this regression is about.
+# ---------------------------------------------------------------------------
+HO=$(make_handover "$WORK_REPO")
+PRUNE_DIR="$TMP/prune-sandbox-$RANDOM"
+mkdir -p "$PRUNE_DIR"
+FIX="$PRUNE_DIR/himmel-resume.leaked.bat"
+printf '@echo off\nrem stale leaked sibling\n' > "$FIX"
+touch -t 200001010000 "$FIX"   # >7 days old so -mtime +7 would match it
+out=$(TMPDIR="$PRUNE_DIR" SCHTASKS_CMD="$WINBIN/schtasks" \
+    GH_CMD=/no/such/gh-binary PATH="$WINBIN:$PATH" OSTYPE=msys \
+    bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "T_PRUNE dry-run exits 0" 0 "$rc"
+# The fixture survival check only means something on the Windows/.bat path —
+# assert the scheduler marker so a run that fell through to the POSIX arm
+# (where no .bat prune exists at all) cannot pass vacuously (CR round 2).
+assert_contains "T_PRUNE exercised the schtasks path" "would schtasks" "$out"
+if [ -f "$FIX" ]; then
+    echo "PASS T_PRUNE dry-run leaves a stale leaked .bat in place (no side effect)"
+else
+    echo "FAIL T_PRUNE dry-run pruned a stale .bat -- side effect under --dry-run"
+    echo "     output: $out"
+    FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 if [ "$FAILED" -gt 0 ]; then

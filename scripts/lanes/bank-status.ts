@@ -48,17 +48,17 @@ import {
   type BankResult,
 } from "../observability/quota-sources";
 import { ledgerPath as quotaGaugeLedgerPath } from "../telegram/quota-gauge";
+import { parseFundedMaxPct } from "./funded-max-pct.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const LANES_PATH = process.env.LANES_REGISTRY || join(SCRIPT_DIR, "lanes.json");
 
 // spent threshold on a live usedPct. Default 99: a lane is only "spent" when a
 // live window is at or beyond near-exhaustion. Lowering it makes the guard skip
-// a preferred lane earlier (fail toward the cheaper fall-through).
-const MAX_PCT = (() => {
-  const raw = Number.parseFloat(process.env.LANE_FUNDED_MAX_PCT ?? "");
-  return Number.isFinite(raw) ? raw : 99;
-})();
+// a preferred lane earlier (fail toward the cheaper fall-through). The clamp
+// (0..100, else 99) lives in funded-max-pct.mjs so it is unit-tested — a bare
+// Number.isFinite accepted negatives and read every bank as spent (HIMMEL-1624).
+const MAX_PCT = parseFundedMaxPct(process.env.LANE_FUNDED_MAX_PCT);
 
 const nowMs = Date.now();
 const env = process.env;

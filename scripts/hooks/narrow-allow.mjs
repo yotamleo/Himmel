@@ -11,7 +11,7 @@
 // subset of the wildcard it replaces is a separate, non-trivial claim, so
 // this chokepoint only ever removes.
 
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -213,9 +213,35 @@ export function tempPathFor(settingsPath) {
 // write turns the test red.
 export function writeSettingsAtomic(settingsPath, output, tmpPath = tempPathFor(settingsPath)) {
   let staged = false;
+  // Preserve the target's existing mode across the temp+rename swap. A fresh
+  // temp is created with umask-default permissions (0o666 & ~umask), so
+  // renaming it over settings.json would silently loosen a restrictive mode
+  // (e.g. 0o600 -> 0o644 on a typical 022 umask). Stat the target first, then
+  // chmod the staged temp to match before the rename. POSIX-only in effect;
+  // on Windows mode bits are a no-op (ACLs govern), so the chmod is harmlessly
+  // best-effort there. A missing target (first-time write) leaves the temp's
+  // default mode in place. FAIL-CLOSED on POSIX (CR round 2, HIMMEL-1624):
+  // only ENOENT is a sanctioned stat miss; any other stat error, or a POSIX
+  // chmod failure, aborts BEFORE the rename — silently proceeding is exactly
+  // the 0o600 -> 0o644 loosening this block exists to prevent. Windows keeps
+  // best-effort (mode bits are a no-op there; ACLs govern).
+  let targetMode;
+  try {
+    targetMode = statSync(settingsPath).mode & 0o777;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    targetMode = undefined;
+  }
   try {
     writeFileSync(tmpPath, output, { encoding: 'utf8', flag: 'wx' });
     staged = true;
+    if (targetMode !== undefined) {
+      try {
+        chmodSync(tmpPath, targetMode);
+      } catch (error) {
+        if (process.platform !== 'win32') throw error;
+      }
+    }
     renameSync(tmpPath, settingsPath);
   } catch (error) {
     if (staged) { try { unlinkSync(tmpPath); } catch { /* best-effort cleanup of our own staged temp */ } }

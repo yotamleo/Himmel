@@ -134,11 +134,15 @@ imperative_verb=0
 #      ("apply/commit/push/land/merge/ship the fix") are masked then restored
 #      so the bare-verb clause below still matches them (CR round 1: the
 #      apply-only mask let "commit the fix" slip through the article strip).
+#      The catch-all "fixed" strip is word-boundary anchored (^|[^[:alnum:]_]
+#      ... [^[:alnum:]_]|$) so it cannot eat the "fixed" inside "prefixed",
+#      "affixed", or "unfixed" — an unbounded s/fixed/ /g garbles those words
+#      and removes signal (HIMMEL-1624).
 implementation_text=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | sed -E '
     s/how[[:space:]]+to[[:space:]]+(implement|fix|land)/ /g
     s/(apply|commit|push|land|merge|ship)[[:space:]]+(the[[:space:]]+|a[[:space:]]+)?fix/applyprotected/g
     s/((this|that|its|prior|previous|earlier|existing)[[:space:]]+|committed[[:space:]]+(a|the)[[:space:]]+|(a|an|the)[[:space:]]+)fix(ed)?/ /g
-    s/fixed/ /g
+    s/(^|[^[:alnum:]_])fixed([^[:alnum:]_]|$)/\1 \2/g
     s/applyprotected/apply the fix/g
 ')
 if grepq "$implementation_text" -Eq '(^|[^[:alnum:]_])(implement|fix|land)([^[:alnum:]_]|$)|apply (the |a )?(fix|change)|write (the )?(code|implementation)|make (the )?(change|changes|test(s)? pass)|address (the |all |every )?((coderabbit|cr|review(er)?) )?(comment(s)?|finding(s)?|feedback)|resolve (the |all |every )?((coderabbit|cr|review(er)?) )?(comment(s)?|finding(s)?|feedback)|git commit|commit (the |these )?changes|commit message|attestation trailer|platforms tested:|security reviewed:'; then
@@ -156,7 +160,11 @@ fi
 # suite") does not read as an order to do it. Computed on the post-strip text
 # so an enumerated noun ("the fix") cannot pose as one; "apply" is in the verb
 # set because every masked action-verb+fix phrase restores to "apply the fix".
-imperative_text=$(printf '%s' "$implementation_text" | sed -E 's/to[[:space:]]+(implement|fix|land|apply)/ /g')
+# The "to" of the infinitive is left-boundary anchored (^|[^[:alnum:]_]) so the
+# strip hits only the standalone word "to": without it, the "to " inside "auto
+# fix" or "into fix" is eaten, destroying a genuine imperative and pushing the
+# verdict toward ALLOW (HIMMEL-1624: "Auto fix the parser" must still refuse).
+imperative_text=$(printf '%s' "$implementation_text" | sed -E 's/(^|[^[:alnum:]_])to[[:space:]]+(implement|fix|land|apply)/\1 /g')
 if grepq "$imperative_text" -Eq '(^|[.!?;][[:space:]]*)((please|now|just|kindly|first|then)[[:space:]]+)*(implement|fix|land|apply)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(implement|fix|land|apply)[[:space:]]+(the|a|an|this|that|it|its)([^[:alnum:]_]|$)'; then
     imperative_verb=1
 fi

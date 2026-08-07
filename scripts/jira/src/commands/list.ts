@@ -98,8 +98,21 @@ export async function searchAllIssues(
 
   const issues: JiraIssue[] = [];
   let token: string | undefined;
+  // Guard against a Jira cursor that does not advance: a repeated nextPageToken
+  // paired with non-empty pages would otherwise loop forever, pushing duplicate
+  // issues until `target`. Track consumed tokens and fail loud on a repeat
+  // (HIMMEL-1624).
+  const seenTokens = new Set<string>();
 
   do {
+    if (token !== undefined) {
+      if (seenTokens.has(token)) {
+        throw new Error(
+          `jira list: pagination loop detected — nextPageToken "${token}" repeated by the API`,
+        );
+      }
+      seenTokens.add(token);
+    }
     const page = Math.min(PAGE_MAX, target - issues.length);
     const cursor = token === undefined ? '' : `&nextPageToken=${encodeURIComponent(token)}`;
     const result = await req<JiraSearchResult>(

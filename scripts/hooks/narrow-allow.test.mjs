@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -231,3 +231,26 @@ test('a concurrent process\'s temp at the shared name survives a narrow-allow ru
     assert.equal(readFileSync(sharedTmp, 'utf8'), sentinel);
   });
 });
+
+test(
+  'writeSettingsAtomic preserves a restrictive target mode across the temp+rename swap (HIMMEL-1624)',
+  { skip: process.platform === 'win32' && 'mode bits are a no-op on Windows (ACLs govern); run on POSIX CI' },
+  () => {
+    withFixture((fixture) => {
+      // A fresh temp is created with umask-default permissions (0o666 &
+      // ~umask), so without mode preservation the rename would loosen a
+      // restrictive file (0o600 -> 0o644 on a typical 022 umask). chmod the
+      // fixture restrictive, then confirm the mode survives the swap.
+      chmodSync(fixture, 0o600);
+      assert.equal(statSync(fixture).mode & 0o777, 0o600);
+
+      writeSettingsAtomic(fixture, '{}\n');
+
+      assert.equal(
+        statSync(fixture).mode & 0o777,
+        0o600,
+        'target mode was not preserved across the temp+rename swap',
+      );
+    });
+  },
+);

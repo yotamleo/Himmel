@@ -580,6 +580,24 @@ assert_empty "descriptive analysis brief is silent" "$(combined_output probe-des
 RC57=$(run_hook standalone-implement-blocks "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Analysis only. Do not edit any file. Implement the new handler and report.')")
 assert_rc "analysis-only declaration does not rescue a standalone implement" 2 "$RC57"
 
+# CR round (HIMMEL-1624): the catch-all "fixed" descriptive strip is now
+# word-boundary anchored, so "prefixed"/"unfixed"/"affixed" survive intact.
+# As descriptive context under a read-only declaration they must still ALLOW
+# (the "fix" inside them never trips the bounded implementation grep), and a
+# genuine imperative must not be laundered by a descriptive neighbour.
+RC59=$(run_hook descriptive-prefixed-unfixed "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Review the diff' 'Read-only. Do not edit any file. Review the prefixed log lines and the unfixed test cases. Return a recommendation as text.')")
+assert_rc "descriptive prefixed/unfixed brief allows" 0 "$RC59"
+assert_empty "descriptive prefixed/unfixed brief is silent" "$(combined_output descriptive-prefixed-unfixed)"
+
+RC60=$(run_hook imperative-fix-prefixed-field "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'fix the prefixed field in the parser')")
+assert_rc "imperative 'fix the prefixed field' still refuses" 2 "$RC60"
+
+# The infinitive strip's "to" is left-boundary anchored, so the "to " inside
+# "auto fix"/"into fix" is no longer eaten — a genuine imperative under a
+# read-only declaration must still refuse (an unbounded s/to fix/ let this ALLOW).
+RC61=$(run_hook readonly-auto-fix "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Do the work' 'Read-only. Do not edit any file. Auto fix the parser.')")
+assert_rc "read-only declaration with 'Auto fix the parser' still refuses" 2 "$RC61"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

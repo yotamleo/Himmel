@@ -33,6 +33,9 @@ printf '%s' "$out" | grep -Fq "$v" \
 # --version must not cannibalise --help: both are pre-parseArgs special cases,
 # and an over-broad match would swallow the other.
 help_out=$(HIMMELCTL_REPO_ROOT="$root" node "$root/scripts/himmelctl/bin.js" --help 2>&1)
+rc=$?
+[ "$rc" -eq 0 ] \
+  || { echo "FAIL - himmelctl --help exits $rc (got: $help_out)"; exit 1; }
 printf '%s' "$help_out" | grep -q 'usage' \
   || { echo "FAIL - --help no longer prints usage"; exit 1; }
 

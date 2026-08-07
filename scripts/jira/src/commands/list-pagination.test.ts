@@ -82,6 +82,22 @@ describe('searchAllIssues', () => {
     expect(req).toHaveBeenCalledTimes(1);
   });
 
+  it('throws on a repeated nextPageToken with non-empty pages', async () => {
+    // HIMMEL-1624: the empty-page guard cannot catch a cursor that does not
+    // advance — a non-empty page repeating the same token would loop forever,
+    // pushing duplicates until `target`. Fail loud instead.
+    const req = vi
+      .fn()
+      .mockResolvedValueOnce({ issues: pageOf(100, 0), total: 500, nextPageToken: 't1' })
+      .mockResolvedValueOnce({ issues: pageOf(100, 100), total: 500, nextPageToken: 't1' });
+
+    await expect(searchAllIssues('x', '1000', req as never)).rejects.toThrow(
+      /pagination loop detected/,
+    );
+    // consumed t1 once, then refused to re-request it
+    expect(req).toHaveBeenCalledTimes(2);
+  });
+
   it('falls back to the default for a non-numeric or non-positive limit', async () => {
     const req = vi.fn().mockResolvedValue({ issues: pageOf(25), total: 25 });
     for (const bad of ['abc', '0', '-5', '']) {
