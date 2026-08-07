@@ -11,9 +11,12 @@
 // subset of the wildcard it replaces is a separate, non-trivial claim, so
 // this chokepoint only ever removes.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { withSettingsLock } from '../lib/settings-lock.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ALLOW_ARRAY = /"allow"\s*:\s*\[([\s\S]*?)\]/;
@@ -181,29 +184,102 @@ function defaultSettingsPath() {
   return join(projectDir, '.claude', 'settings.json');
 }
 
-function main() {
+// Per-process unique temp path (HIMMEL-1586). A FIXED name (.narrow-allow.tmp)
+// would collide between concurrent narrow-allow runs: one truncates the
+// other's staged output mid-write, and a catch-path cleanup would delete a
+// temp the winner is about to rename — defeating the atomicity this PR added.
+// The pid + randomUUID suffix makes a collision essentially impossible, and
+// the exclusive open (flag 'wx' in writeSettingsAtomic) turns the residual
+// impossibility into a loud EEXIST instead of silent corruption.
+export function tempPathFor(settingsPath) {
+  return join(dirname(settingsPath), `.narrow-allow.tmp.${process.pid}.${randomUUID()}`);
+}
+
+// Atomic settings write (HIMMEL-1586): stage a UNIQUE sibling temp in the
+// same directory, then rename it over the target. rename is atomic within a
+// directory on every platform this repo targets, so an interruption between
+// stage and swap can never leave settings.json truncated or empty —
+// permissions.deny/ask cannot be dropped mid-write.
+//
+// `wx` opens with O_CREAT|O_EXCL: it FAILS (EEXIST) if the path already
+// exists, so a staged temp can never silently clobber another's. Cleanup
+// removes ONLY a temp THIS process staged (the `staged` flag): if the
+// exclusive open failed, staged is false and a foreign temp at that path is
+// left untouched; only a rename failure after a successful stage cleans up,
+// so one process never deletes another's temp.
+//
+// tmpPath is optional so the test can pin an exact path and prove the
+// exclusive-open semantics — a regression to a shared name + clobbering
+// write turns the test red.
+export function writeSettingsAtomic(settingsPath, output, tmpPath = tempPathFor(settingsPath)) {
+  let staged = false;
+  // Preserve the target's existing mode across the temp+rename swap. A fresh
+  // temp is created with umask-default permissions (0o666 & ~umask), so
+  // renaming it over settings.json would silently loosen a restrictive mode
+  // (e.g. 0o600 -> 0o644 on a typical 022 umask). Stat the target first, then
+  // chmod the staged temp to match before the rename. POSIX-only in effect;
+  // on Windows mode bits are a no-op (ACLs govern), so the chmod is harmlessly
+  // best-effort there. A missing target (first-time write) leaves the temp's
+  // default mode in place. FAIL-CLOSED on POSIX (CR round 2, HIMMEL-1624):
+  // only ENOENT is a sanctioned stat miss; any other stat error, or a POSIX
+  // chmod failure, aborts BEFORE the rename — silently proceeding is exactly
+  // the 0o600 -> 0o644 loosening this block exists to prevent. Windows keeps
+  // best-effort (mode bits are a no-op there; ACLs govern).
+  let targetMode;
+  try {
+    targetMode = statSync(settingsPath).mode & 0o777;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    targetMode = undefined;
+  }
+  try {
+    writeFileSync(tmpPath, output, { encoding: 'utf8', flag: 'wx' });
+    staged = true;
+    if (targetMode !== undefined) {
+      try {
+        chmodSync(tmpPath, targetMode);
+      } catch (error) {
+        if (process.platform !== 'win32') throw error;
+      }
+    }
+    renameSync(tmpPath, settingsPath);
+  } catch (error) {
+    if (staged) { try { unlinkSync(tmpPath); } catch { /* best-effort cleanup of our own staged temp */ } }
+    throw error;
+  }
+}
+
+async function main() {
   try {
     const args = parseArgs(process.argv.slice(2));
     if (args.removals.length === 0) fail('at least one --remove <entry> is required');
     const settingsPath = resolve(args.settingsPath || defaultSettingsPath());
-    const input = readFileSync(settingsPath, 'utf8');
-    const { output, removed, alreadyNarrowed } = rewriteSettingsText(input, args.removals);
+    // HIMMEL-1552: hold the shared settings lock across the whole read ->
+    // transform -> write/rename, so the three sanctioned settings writers
+    // (wire-hook-bash, wire-trust-hooks, narrow-allow) serialise rather than
+    // race. Without it, a concurrent writer's change that lands AFTER this
+    // read but BEFORE this rename is silently reverted — last-writer-wins on
+    // stale input.
+    await withSettingsLock(settingsPath, () => {
+      const input = readFileSync(settingsPath, 'utf8');
+      const { output, removed, alreadyNarrowed } = rewriteSettingsText(input, args.removals);
 
-    if (args.check) {
-      const action = alreadyNarrowed
-        ? 'already narrowed; no change needed'
-        : `would remove ${removed} allow entr${removed === 1 ? 'y' : 'ies'}`;
-      process.stdout.write(`narrow-allow: check passed for ${settingsPath} — ${action}; wrote nothing\n`);
-      return;
-    }
+      if (args.check) {
+        const action = alreadyNarrowed
+          ? 'already narrowed; no change needed'
+          : `would remove ${removed} allow entr${removed === 1 ? 'y' : 'ies'}`;
+        process.stdout.write(`narrow-allow: check passed for ${settingsPath} — ${action}; wrote nothing\n`);
+        return;
+      }
 
-    if (alreadyNarrowed) {
-      process.stdout.write(`narrow-allow: ${settingsPath} is already narrowed; no change made\n`);
-      return;
-    }
+      if (alreadyNarrowed) {
+        process.stdout.write(`narrow-allow: ${settingsPath} is already narrowed; no change made\n`);
+        return;
+      }
 
-    writeFileSync(settingsPath, output, 'utf8');
-    process.stdout.write(`narrow-allow: removed ${removed} allow entr${removed === 1 ? 'y' : 'ies'} from ${settingsPath}; deny/ask unchanged\n`);
+      writeSettingsAtomic(settingsPath, output);
+      process.stdout.write(`narrow-allow: removed ${removed} allow entr${removed === 1 ? 'y' : 'ies'} from ${settingsPath}; deny/ask unchanged\n`);
+    });
   } catch (error) {
     process.stderr.write(`narrow-allow: REFUSED — ${error.message}\n`);
     process.exitCode = 1;

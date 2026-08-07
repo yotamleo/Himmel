@@ -121,7 +121,12 @@ $PYTHON -m pip install pre-commit --quiet
 echo "==> Installing git hooks..."
 $PYTHON -m pre_commit install
 $PYTHON -m pre_commit install --hook-type pre-push
-bash "$SCRIPT_DIR/hooks/install-cr-pre-push-legacy.sh"
+# Non-fatal (HIMMEL-1586): see setup.sh — a foreign pre-push hook left by
+# pre-commit makes the installer refuse (exit 2); that must not abort the
+# remaining steps. The push-time self-heal retries this install on first push.
+if ! bash "$SCRIPT_DIR/hooks/install-cr-pre-push-legacy.sh"; then
+  echo "  WARNING: CR pre-push legacy hook not installed (see above). Setup continues; the push-time self-heal retries this install on first push." >&2
+fi
 $PYTHON -m pre_commit install --hook-type commit-msg
 
 echo "==> Done. Run '$PYTHON -m pre_commit run --all-files' to validate all hooks now."

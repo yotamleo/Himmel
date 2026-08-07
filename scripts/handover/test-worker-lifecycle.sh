@@ -73,6 +73,12 @@ export HIMMEL_FLOW_RUNS_LEDGER="$TMP/flow-runs.jsonl"
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export ARM_BRIDGE_LIVE=0
 export ARM_MAX_SLOTS=0
+# This suite deliberately arms a $TMP fixture (resume_cwd is $WORK_REPO,
+# under $TMP) -- declare it, or every T2/T6/T9 arm that reaches arm-resume.sh
+# hits the HIMMEL-1365 temp-target refusal (rc=12). Same shield
+# test-arm-resume.sh / test-arm-resume-identity.sh / test-arm-resume-long-gap.sh
+# / test-arm-resume-queue-lock.sh carry (HIMMEL-1622/1623).
+export ARM_TEMP_CWD_OK=1
 
 SCHED_STUB="$TMP/sched-stub"
 mkdir -p "$SCHED_STUB"

@@ -36,7 +36,7 @@ _scheduler_atd_live() {
 
 scheduler_backend_status() {
     case "$(scheduler_backend_os)" in
-        windows) command -v schtasks >/dev/null 2>&1 && echo ok || echo missing ;;
+        windows) command -v "${SCHTASKS_CMD:-schtasks}" >/dev/null 2>&1 && echo ok || echo missing ;;
         linux)
             if command -v at >/dev/null 2>&1; then
                 if _scheduler_atd_live; then echo ok; else echo disabled; fi

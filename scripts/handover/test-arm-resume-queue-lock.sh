@@ -29,6 +29,10 @@ export HANDOVER_DIR
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK 2>/dev/null || true
+# This suite deliberately arms $TMP fixtures — declare it, or every arming case
+# hits the HIMMEL-1365 temp-target refusal (rc=12). Same shield
+# test-arm-resume.sh carries (HIMMEL-1623).
+export ARM_TEMP_CWD_OK=1
 
 # A near future time keeps these queue-lock fixtures inside the HIMMEL-1475
 # explicit-HH:MM long-gap limit.

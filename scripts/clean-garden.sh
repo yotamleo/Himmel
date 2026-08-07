@@ -838,6 +838,80 @@ if [ "$NO_PRUNE" -eq 0 ]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# HIMMEL-1596 — reap stale worker checkpoints.
+#
+# The spawner snapshots a worker's uncommitted work to refs/checkpoints/<slug>
+# so a worker that dies mid-run does not take its work with it. Those refs live
+# OUTSIDE refs/heads/ deliberately — no branch push can carry them — but that
+# also means nothing has ever removed them, and an unreferenced-but-reachable
+# ref PINS ITS WHOLE OBJECT GRAPH AGAINST gc. A checkpoint is a safety net with
+# a short useful life: once the work is harvested (or the run is long dead) it
+# is pure ballast, and shared-branch mode reuses the slug, so the pile grows
+# with dispatch volume — the direction wave 1 is pushing.
+#
+# Age is the right predicate, and the only honest one available. "Was it
+# harvested?" cannot be answered from here: a harvest is `git restore --source`
+# into someone's tree, which leaves no mark on the ref. So this reaps by the
+# checkpoint COMMIT's own date, generously, rather than guessing at intent.
+# Deliberately NOT tied to whether the worktree or branch still exists — a
+# checkpoint outliving its worktree is precisely the case worth keeping.
+CHECKPOINT_TTL_DAYS="${CHECKPOINT_TTL_DAYS:-14}"
+# Validate BEFORE the arithmetic: a leading-zero value like 08 is read as OCTAL
+# by `$(( ))` and dies "value too great for base" (under this script's `set -e`,
+# aborting the whole reap); a negative value makes the cutoff a FUTURE time, so
+# every checkpoint reads as stale and FRESH work is deleted. Accept only a
+# non-negative decimal, else fall back to the 14 default with a warning — the
+# same shape critic-panel.sh / pr-check.md use for their timeout knobs.
+# (`*[!0-9]*` rejects a leading `-` too, since `-` is not a digit.)
+case "$CHECKPOINT_TTL_DAYS" in
+    ''|*[!0-9]*)
+        echo "WARN clean-garden: CHECKPOINT_TTL_DAYS=\"$CHECKPOINT_TTL_DAYS\" is not a non-negative decimal — using 14" >&2
+        CHECKPOINT_TTL_DAYS=14
+        ;;
+esac
+prune_checkpoint_refs() {
+    local cutoff now ref ts oid pruned=0 kept=0
+    now=$(date +%s)
+    # 10# forces base 10 so a (now-valid) leading-zero value like 08 reads as
+    # decimal 8, not octal — belt-and-braces alongside the case guard above.
+    cutoff=$(( now - 10#$CHECKPOINT_TTL_DAYS * 86400 ))
+    # Capture the object ID in the SAME for-each-ref that lists the ref, and pass
+    # it as the expected old value to `update-ref -d`: a worker can REPLACE
+    # refs/checkpoints/<slug> between this enumerate and the delete (shared-branch
+    # mode reuses the slug), so a plain `update-ref -d` would destroy a FRESH
+    # checkpoint. With the expected value, git refuses the delete if the ref
+    # moved under us — the same compare-and-swap shape update-ref accepts.
+    while IFS="$(printf '\t')" read -r ref ts oid; do
+        if [ -z "$ref" ] || [ -z "$ts" ] || [ -z "$oid" ]; then continue; fi
+        if [ "$ts" -ge "$cutoff" ]; then
+            kept=$((kept + 1)); continue
+        fi
+        if [ "$DRY_RUN" -eq 1 ]; then
+            echo "DRY clean-garden: would delete $ref (checkpoint older than ${CHECKPOINT_TTL_DAYS}d)"
+            pruned=$((pruned + 1))
+        elif git -C "$PRIMARY_WORKTREE" update-ref -d "$ref" "$oid" 2>/dev/null; then
+            [ "$VERBOSE" -eq 1 ] && echo "clean-garden: deleted $ref (older than ${CHECKPOINT_TTL_DAYS}d)"
+            pruned=$((pruned + 1))
+        else
+            # A refused delete is the live race worth warning about: the ref
+            # moved between enumerate and delete (a fresh checkpoint replaced the
+            # stale one we judged eligible), or the delete otherwise failed —
+            # either way the ref is left in place rather than destroyed blindly.
+            echo "WARN clean-garden: could not delete stale checkpoint $ref (moved or failed — left in place)" >&2
+        fi
+    done < <(git -C "$PRIMARY_WORKTREE" for-each-ref \
+                --format="%(refname)$(printf '\t')%(committerdate:unix)$(printf '\t')%(objectname)" \
+                refs/checkpoints/ 2>/dev/null)
+    if [ "$pruned" -gt 0 ] || [ "$kept" -gt 0 ]; then
+        echo "clean-garden: checkpoints — $pruned pruned (>${CHECKPOINT_TTL_DAYS}d), $kept kept"
+    fi
+}
+
+if [ "$NO_PRUNE" -eq 0 ]; then
+    prune_checkpoint_refs
+fi
+
 if [ "$PRUNE_ONLY" -eq 1 ] || [ -z "$BRANCH" ]; then
     exit 0
 fi

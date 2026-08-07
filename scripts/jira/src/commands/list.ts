@@ -1,7 +1,7 @@
 import type { Command } from 'commander';
 import { request, projectKey } from '../client.js';
 import { formatIssue } from '../output.js';
-import type { JiraSearchResult } from '../types.js';
+import type { JiraIssue, JiraSearchResult } from '../types.js';
 
 const DEFAULT_STATUSES = ['To Do', 'In Progress'];
 
@@ -74,6 +74,61 @@ export function resolveListJql(options: ListJqlOptions): string {
   return jql;
 }
 
+/** Jira Cloud `/search/jql` hard-caps a single page at 100 (HIMMEL-1602). */
+const PAGE_MAX = 100;
+
+/**
+ * Fetch up to `limit` issues, following `nextPageToken` as needed.
+ *
+ * Why this exists: the endpoint SILENTLY clamps `maxResults` to 100 — asking
+ * for 999 returned exactly 100 with no error and no indication more existed,
+ * so every count taken through this CLI was quietly truncated. A consolidation
+ * pass read "100 open tickets" when the real figure was 389.
+ *
+ * A non-numeric or non-positive `--limit` falls back to the default rather
+ * than sending garbage to Jira or looping forever.
+ */
+export async function searchAllIssues(
+  jql: string,
+  limit: string,
+  req: typeof request,
+): Promise<JiraIssue[]> {
+  const want = Number.parseInt(limit, 10);
+  const target = Number.isFinite(want) && want > 0 ? want : 25;
+
+  const issues: JiraIssue[] = [];
+  let token: string | undefined;
+  // Guard against a Jira cursor that does not advance: a repeated nextPageToken
+  // paired with non-empty pages would otherwise loop forever, pushing duplicate
+  // issues until `target`. Track consumed tokens and fail loud on a repeat
+  // (HIMMEL-1624).
+  const seenTokens = new Set<string>();
+
+  do {
+    if (token !== undefined) {
+      if (seenTokens.has(token)) {
+        throw new Error(
+          `jira list: pagination loop detected — nextPageToken "${token}" repeated by the API`,
+        );
+      }
+      seenTokens.add(token);
+    }
+    const page = Math.min(PAGE_MAX, target - issues.length);
+    const cursor = token === undefined ? '' : `&nextPageToken=${encodeURIComponent(token)}`;
+    const result = await req<JiraSearchResult>(
+      'GET',
+      `/search/jql?jql=${encodeURIComponent(jql)}&fields=summary,status,issuetype&maxResults=${page}${cursor}`,
+    );
+    issues.push(...result.issues);
+    token = result.nextPageToken;
+    // A page that returns nothing ends the walk even if a token came back —
+    // without this an empty-but-tokened page would spin forever.
+    if (result.issues.length === 0) break;
+  } while (token !== undefined && issues.length < target);
+
+  return issues.slice(0, target);
+}
+
 export function registerList(program: Command): void {
   program
     .command('list')
@@ -89,16 +144,11 @@ export function registerList(program: Command): void {
       '--jql <jql>',
       'Raw JQL passthrough (overrides --project/--type/--status/--label)',
     )
-    .option('--limit <n>', 'Max results', '25')
+    .option('--limit <n>', 'Max results (paged automatically above 100)', '25')
     .action(
       async (options: ListJqlOptions & { limit: string }) => {
         const jql = resolveListJql(options);
-
-        const result = await request<JiraSearchResult>(
-          'GET',
-          `/search/jql?jql=${encodeURIComponent(jql)}&fields=summary,status,issuetype&maxResults=${options.limit}`,
-        );
-        for (const issue of result.issues) {
+        for (const issue of await searchAllIssues(jql, options.limit, request)) {
           console.log(formatIssue(issue));
         }
       },

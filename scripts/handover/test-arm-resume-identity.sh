@@ -83,6 +83,12 @@ export HANDOVER_DIR
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
 export WORKER_BRIDGE_ROOT="$TMP/bridge"
+# Temp-target shield (HIMMEL-1365/1622): every fixture here lives under $TMP,
+# exactly the shape arm-resume now refuses (exit 12). This suite means it —
+# its scheduler is stubbed, so no real task is ever created. Same declared
+# opt-out as test-arm-resume.sh; missing it cost 30 failures first caught by
+# the public wave-2k CI (the private repo runs no Actions by design).
+export ARM_TEMP_CWD_OK=1
 mkdir -p "$WORKER_BRIDGE_ROOT/glm-sessions" "$WORKER_BRIDGE_ROOT/claudex-sessions"
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK SCHED_CREATE_FAIL 2>/dev/null || true
 

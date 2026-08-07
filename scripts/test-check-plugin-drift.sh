@@ -97,7 +97,12 @@ fi
 #     same-version prerelease must NOT be picked as latest over the stable tag
 #     (would be a phantom BEHIND), and a genuinely-newer stable IS picked.
 TAG_RE='^v?[0-9]+\.[0-9]+(\.[0-9]+)?$'
-pick() { printf '%s\n' "$1" | grep -E "$TAG_RE" | sort -V | tail -1; }
+# Run the PRODUCTION highest_version helper, not a mirror (HIMMEL-1054 CR
+# round): the function body is extracted verbatim from the script under test,
+# so a divergence in the real selector cannot pass silently here. (The script
+# executes on source, so a plain `source` is not an option.)
+eval "$(sed -n '/^highest_version() {/,/^}/p' "$SCRIPT")"
+pick() { printf '%s\n' "$1" | grep -E "$TAG_RE" | highest_version; }
 if [ "$(pick "$(printf 'v1.9.1\nv1.9.2\nv1.9.2-alpha\nv1.8.1\n')")" = "v1.9.2" ]; then ok "stable-tag select: prerelease of current version ignored"; else bad "prerelease leaked into latest"; fi
 if [ "$(pick "$(printf 'v1.9.2\nv1.9.3\n')")" = "v1.9.3" ]; then ok "stable-tag select: newer stable wins"; else bad "newer stable not selected"; fi
 if [ -z "$(pick "$(printf 'v1.9.2-alpha\nv1.9.3-rc1\n')")" ]; then ok "stable-tag select: all-prerelease -> empty (drives the UNCHECKED path)"; else bad "all-prerelease should select nothing, got '$(pick "$(printf 'v1.9.2-alpha\nv1.9.3-rc1\n')")'"; fi

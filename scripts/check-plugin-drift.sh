@@ -184,10 +184,12 @@ PY
         fi
         # Consider STABLE version tags only (vMAJOR.MINOR[.PATCH], no -suffix).
         # synced_base is a stable release; including prereleases would let a stale
-        # same-version prerelease (e.g. v1.9.2-alpha, which `sort -V` ranks AFTER
-        # v1.9.2) be picked as "latest" and read as a phantom BEHIND against a
-        # current base. A real new stable release still trips the BEHIND path.
-        latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | sort -V | tail -1)"
+        # same-version prerelease (e.g. v1.9.2-alpha, which keys equal to v1.9.2
+        # under highest_version) be picked as "latest" and read as a phantom
+        # BEHIND against a current base. A real new stable release still trips
+        # the BEHIND path. highest_version, not `sort -V | tail -1`: BSD sort
+        # has no -V, and this was the last live GNU-only site (HIMMEL-1054).
+        latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
         if [ -z "$latest" ]; then
           echo "  $name: ? no stable version tags found on $up_repo — UNCHECKED"
           incomplete=1

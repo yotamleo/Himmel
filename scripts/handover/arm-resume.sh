@@ -85,6 +85,11 @@
 #                           malformed meta.json) from a hard refusal to a loud
 #                           warning naming the offending path (HIMMEL-1511) --
 #                           without it, that failure exits 2 unconditionally.
+#   SCHTASKS_CMD            Windows scheduler binary. Default `schtasks`; tests
+#                           pin it to a stub path so the suite drives the stub
+#                           through this seam instead of relying on PATH
+#                           resolution order (HIMMEL-1610). Same shape as the
+#                           GH_CMD seam in graph-publish / the forge backends.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -119,6 +124,17 @@
 #      overnight/idle wait, or pick a nearer --time. Automated safety arms
 #      (ARM_RESUME_SAFETY_ARM=1) are exempt; smart/auto sentinels are exempt
 #      by design.
+#   12 temp-target refused — the resolved work directory lives under a
+#      TEMP/scratch root (HIMMEL-1365), so arming would create a REAL
+#      scheduled task launching an UNATTENDED session against a throwaway
+#      path. Set ARM_TEMP_CWD_OK=1 when that is genuinely intended (a test
+#      harness arming its own fixture). --dry-run is exempt.
+#   11 shipped-work refused — the work this handover re-arms already looks
+#      landed (HIMMEL-1331): its ticket is Done/Closed, or its branch has a
+#      MERGED PR, or an OPEN+MERGEABLE one. The ERR names which check tripped.
+#      Only POSITIVE evidence refuses — a missing gh/Jira CLI, no network or a
+#      detached HEAD skip the probe. Pass --force or set ARM_SHIPPED_OK=1 for a
+#      deliberate follow-up leg on the same ticket.
 #   10 live workers refused — one or more GLM/claudex bridge rows are running
 #      with a live or unprobeable pid (HIMMEL-1463). Unprobeable fails closed as
 #      possibly alive. Wait for them or explicitly set ARM_WITH_LIVE_WORKERS=1
@@ -835,8 +851,12 @@ fi
 # Tool detection per platform.
 case "$PLATFORM" in
     windows)
-        command -v schtasks >/dev/null 2>&1 || {
-            echo "ERR arm-resume: 'schtasks' not on PATH (required on Windows)" >&2
+        command -v "${SCHTASKS_CMD:-schtasks}" >/dev/null 2>&1 || {
+            # Name what was actually probed. Since the seam landed, this check
+            # resolves ${SCHTASKS_CMD:-schtasks}, which may be an absolute path
+            # — "not on PATH" would then point the reader at PATH when the real
+            # fault is a bad SCHTASKS_CMD.
+            echo "ERR arm-resume: scheduler binary '${SCHTASKS_CMD:-schtasks}' not found${SCHTASKS_CMD:+ (from SCHTASKS_CMD)} (required on Windows)" >&2
             exit 2
         }
         ;;
@@ -1464,7 +1484,7 @@ _ensure_schtasks_cache() {
     [ -n "$_SCHTASKS_CACHE_DONE" ] && return 0
     local err_file
     err_file=$(mktemp -t arm-resume.err.XXXXXX)
-    _SCHTASKS_CSV=$(MSYS_NO_PATHCONV=1 schtasks /query /fo CSV /nh 2>"$err_file")
+    _SCHTASKS_CSV=$(MSYS_NO_PATHCONV=1 "${SCHTASKS_CMD:-schtasks}" /query /fo CSV /nh 2>"$err_file")
     _SCHTASKS_RC=$?
     if [ "$_SCHTASKS_RC" -ne 0 ]; then
         # schtasks returns rc=1 when there are NO scheduled tasks at all
@@ -1646,7 +1666,7 @@ delete_existing() {
     case "$PLATFORM" in
         windows)
             # MSYS_NO_PATHCONV=1: see HIMMEL-125 note in list_existing.
-            if MSYS_NO_PATHCONV=1 schtasks /delete /tn "$marker" /f >/dev/null 2>&1; then
+            if MSYS_NO_PATHCONV=1 "${SCHTASKS_CMD:-schtasks}" /delete /tn "$marker" /f >/dev/null 2>&1; then
                 echo "arm-resume: deleted scheduled task: $marker"
             elif [ "$mode" = soft ]; then
                 echo "WARN arm-resume: the new arm is registered, but the superseded task '$marker' could NOT be deleted -- it is STILL SCHEDULED and will fire alongside the new one. Remove it manually: schtasks /delete /tn \"$marker\" /f" >&2
@@ -2301,10 +2321,239 @@ _arm_hostname() {
     printf '%s' "$_h"
 }
 
+# ---------------------------------------------------------------------------
+# HIMMEL-1365 -- do not arm a REAL scheduled task against a throwaway path.
+#
+# A hand-run HIMMEL-1304 repro created a real schtasks entry pointing at a
+# scratchpad fixture, set to fire at 23:59, launching an unattended
+# `claude.exe ... OVERNITE MODE` session mid-chain. It was found still armed
+# days later. The blast radius was small only because that fixture repo had no
+# remotes -- nothing confines an overnight session to its starting cwd, so the
+# next one need not be so lucky.
+#
+# The identity suite is NOT the culprit and never was: it stubs the scheduler
+# (SCHED_DB + a PATH stub) so no real task is ever created. The exposure is the
+# hand-run repro, which uses the real scheduler with a temp target.
+#
+# So the guard keys on the TARGET, not on the caller. Arming a temp path is a
+# legitimate thing for a test harness to do and an almost-certainly-wrong thing
+# for a human to do at a prompt, which is why the opt-out is an explicit env
+# var rather than a silent heuristic: the suite DECLARES that it means it,
+# alongside its existing WORKSPACE_TRUST_CONFIG / SCHED_DB / BRIDGE_ROOT shields.
+_arm_is_temp_path() { # <path> -> rc 0 when it lives under a temp/scratch root
+    local _p="$1" _root
+    [ -n "$_p" ] || return 1
+    # Lowercase + forward slashes so Windows drive-letter and backslash forms
+    # compare the same as the MSYS view of the same directory.
+    _p="${_p//\\//}"
+    _p=$(printf '%s' "$_p" | tr '[:upper:]' '[:lower:]')
+    case "$_p" in
+        /tmp/*|/tmp|/var/tmp/*|/var/folders/*) return 0 ;;
+        */appdata/local/temp/*) return 0 ;;
+    esac
+    # Whatever THIS shell calls temp, too -- covers a relocated TMPDIR.
+    for _root in "${TMPDIR:-}" "${TEMP:-}" "${TMP:-}"; do
+        [ -n "$_root" ] || continue
+        _root="${_root//\\//}"
+        _root=$(printf '%s' "$_root" | tr '[:upper:]' '[:lower:]')
+        _root="${_root%/}"
+        case "$_p" in "$_root"/*) return 0 ;; esac
+    done
+    return 1
+}
+
+# Sits after the dedup check (rc=3) rather than before it. That ordering costs
+# nothing in safety: when dedup blocks, NOTHING is armed either, so a real task
+# against a temp target is prevented on both paths -- only the diagnostic code
+# differs in the rare overlap. --force skips dedup but NOT this: a forced arm at
+# a throwaway target is precisely the incident shape.
+if [ "${ARM_TEMP_CWD_OK:-}" != "1" ] && [ "${DRY_RUN:-0}" -ne 1 ] \
+   && _arm_is_temp_path "${RESUME_CWD:-}"; then
+    {
+        echo "ERR arm-resume: refusing to arm -- the target work directory is under a TEMP/scratch path (HIMMEL-1365):"
+        echo "    $RESUME_CWD"
+        echo "This creates a REAL scheduled task that will launch an UNATTENDED session"
+        echo "against a throwaway directory, and nothing confines that session to it."
+        echo "The 2026-07 incident armed exactly this shape from a hand-run repro."
+        echo "If you mean it (a test harness arming its own fixture), set ARM_TEMP_CWD_OK=1."
+    } >&2
+    exit 12
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-1331 -- shipped-work preflight.
+#
+# arm-resume had NO notion of whether the work it is re-arming still exists as
+# work. Confirmed by grep against this script at 3386 lines: zero references to
+# a ticket status, a merge state, or a PR. It armed on the clock and nothing
+# else. Two real instances on 2026-07-28: HIMMEL-1296 re-armed at 23:40 after
+# shipping and merging at 21:25, and HIMMEL-1286 re-armed while PR #1428 was
+# open and mergeable. Each burns a full autonomous session and produces rework
+# -- the same loss class as a worker that loses its commit, arriving through
+# the scheduler instead of the spawner.
+#
+# ONLY POSITIVE EVIDENCE REFUSES. Every probe here is best-effort: a missing
+# gh, a missing Jira CLI, no network, a detached HEAD, an unparseable answer --
+# all of those SKIP the check with a WARN. An arm that fails because the
+# machine is offline would be a worse failure than the one this prevents, and
+# fail-open is the house contract for every other optional probe in this file
+# (telemetry, handover_root, queue-lock).
+#
+# --force is the documented escape hatch per the ticket; ARM_SHIPPED_OK=1 is
+# the env twin, matching ARM_DUP_OK / QUEUE_LOCK_TAKEOVER / ARM_WITH_LIVE_WORKERS.
+_ARM_SHIPPED_REASONS=""
+_arm_shipped_note() {
+    _ARM_SHIPPED_REASONS="${_ARM_SHIPPED_REASONS}${_ARM_SHIPPED_REASONS:+
+}    - $1"
+}
+
+# _arm_branch_for_preflight -- the branch whose ship-state we should ask about.
+# --worktree/resume_worktree wins (it names the branch the session works on);
+# otherwise HEAD in the resume cwd. Empty on a detached HEAD or a non-repo,
+# which simply skips the branch-side checks.
+_arm_branch_for_preflight() {
+    local _b=""
+    if [ -n "${WORKTREE_BRANCH:-}" ]; then printf '%s' "$WORKTREE_BRANCH"; return 0; fi
+    [ -n "${RESUME_CWD:-}" ] && [ -d "${RESUME_CWD:-}" ] || return 0
+    _b=$(git -C "$RESUME_CWD" symbolic-ref --quiet --short HEAD 2>/dev/null) || _b=""
+    printf '%s' "$_b"
+}
+
+# _arm_probe -- run a preflight probe under a hard wall-clock bound.
+#
+# Both probes below reach the NETWORK, and this preflight sits on the arm path,
+# which is TIME-SENSITIVE: --time takes an HH:MM, so any second spent here eats
+# into the lead, and an arm whose target minute passes mid-flight gets rolled to
+# TOMORROW by the past-time rule -- turning a 30-second lead into a 24-hour one.
+# Caught by V6 (which arms at the next whole minute) failing rc=9 once this
+# preflight started calling a real gh.
+#
+# So every probe is bounded and fails OPEN on timeout, which costs nothing: an
+# unanswered probe was already treated as "no evidence" by design. `timeout` is
+# absent on some hosts; there the call runs unbounded rather than not at all.
+_arm_probe() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${ARM_PREFLIGHT_TIMEOUT:-5}" "$@" 2>/dev/null
+    else
+        "$@" 2>/dev/null
+    fi
+}
+
+_arm_shipped_preflight() {
+    local _ticket="$1" _branch _jira _status _prs _num _state _mergeable
+
+    # (a) TICKET STATUS. The Jira CLI is an untracked build artifact
+    # (scripts/jira/dist/index.js), so it is routinely absent in a worktree --
+    # skip quietly rather than nag on every arm.
+    _jira="$SCRIPT_DIR/../jira/dist/index.js"
+    if [ -n "$_ticket" ] && [ -f "$_jira" ] && command -v node >/dev/null 2>&1; then
+        _status=$(_arm_probe node "$_jira" get "$_ticket" | head -1 | awk -F'\t' '{print $3}') || _status=""
+        case "$_status" in
+            Done|Closed|"wont do"|"wont fix")
+                _arm_shipped_note "ticket $_ticket is '$_status'" ;;
+        esac
+    fi
+
+    # (b) PR / MERGE STATE. Asked from inside the resume cwd so gh resolves the
+    # right repo. `--state all` deliberately: a MERGED pr is the strongest
+    # signal, and an OPEN+MERGEABLE one means the work is finished and waiting
+    # on a human, which is the HIMMEL-1286 shape.
+    # GH_CMD is the house seam for this (scripts/graphify/graph-publish.sh,
+    # scripts/cr/*): invoked DIRECTLY rather than found on PATH, because a
+    # PATH-shadowing stub does not work on Windows -- an extensionless `gh`
+    # script loses to gh.exe even when its directory comes first, so a test
+    # that stubs via PATH silently exercises the REAL gh. Verified here.
+    _branch=$(_arm_branch_for_preflight)
+    if [ -n "$_branch" ] && [ -n "${RESUME_CWD:-}" ] && [ -d "${RESUME_CWD:-}" ] \
+       && command -v "${GH_CMD:-gh}" >/dev/null 2>&1; then
+        _prs=$(cd "$RESUME_CWD" && _arm_probe "${GH_CMD:-gh}" pr list --head "$_branch" --state all \
+                 --json number,state,mergeable \
+                 --jq '.[] | [(.number|tostring), .state, (.mergeable // "UNKNOWN")] | @tsv') || _prs=""
+        while IFS=$'\t' read -r _num _state _mergeable; do
+            [ -n "$_state" ] || continue
+            case "$_state" in
+                MERGED) _arm_shipped_note "PR #$_num for branch '$_branch' is MERGED" ;;
+                OPEN)
+                    [ "$_mergeable" = "MERGEABLE" ] && \
+                        _arm_shipped_note "PR #$_num for branch '$_branch' is OPEN and MERGEABLE" ;;
+            esac
+        done <<EOF
+$_prs
+EOF
+    fi
+}
+
+if [ "${FORCE:-0}" -eq 1 ] || [ "${ARM_SHIPPED_OK:-}" = "1" ]; then
+    :   # explicitly sanctioned -- re-arming shipped work is sometimes right
+        # (a follow-up leg on the same ticket), so the override is first-class.
+elif [ "${DRY_RUN:-0}" -eq 1 ]; then
+    :   # --dry-run touches nothing and must stay side-effect-free + fast;
+        # the network probes above are neither.
+else
+    _arm_shipped_preflight "${_ho_ticket:-}"
+    if [ -n "$_ARM_SHIPPED_REASONS" ]; then
+        {
+            echo "ERR arm-resume: refusing to arm -- this work looks ALREADY SHIPPED (HIMMEL-1331):"
+            printf '%s\n' "$_ARM_SHIPPED_REASONS"
+            echo "Re-arming shipped work burns a full autonomous session and produces rework."
+            echo "If this is a deliberate follow-up leg, pass --force or set ARM_SHIPPED_OK=1."
+        } >&2
+        exit 11
+    fi
+fi
+
+# _arm_root_from_handover_path <handover-file> -- HIMMEL-1603 fallback root
+# resolver. handover_root() answers from HANDOVER_DIR or <cwd's git root>
+# /handovers -- i.e. from WHERE WE ARE, never from WHAT WE ARE ARMING. Arm from
+# a cwd that maps to neither and it returns nothing, and the caller below used
+# to skip the queue-lock check, the cross-host dedup AND the registry write, so
+# the arm existed only in the scheduler. Observed live 2026-08-06: an arm fired
+# at 08:12 whose handover has no arms.jsonl record and never did (`git log -S`
+# over the registry: no commit, ever), while two arms that fired the same minute
+# were recorded normally.
+#
+# The handover path itself carries the answer. Both modes put handovers under a
+# directory literally named `handovers` (Mode A `<repo>/handovers`, Mode B
+# HANDOVER_DIR pointing at one), so walk the file's ancestors and take the first
+# such directory. Prints nothing and returns 1 when there is none -- a handover
+# kept outside that layout (e.g. a repo-root HANDOVER.md) is a real, supported
+# shape, so "no match" is not an error here, just no fallback available.
+_arm_root_from_handover_path() {
+    local _d
+    _d=$(dirname "$1" 2>/dev/null) || return 1
+    while [ -n "$_d" ] && [ "$_d" != "/" ] && [ "$_d" != "." ]; do
+        case "$_d" in
+            */handovers)
+                [ -d "$_d" ] || return 1
+                ( cd "$_d" && pwd ) && return 0
+                return 1
+                ;;
+        esac
+        case "$_d" in
+            */*) _d=${_d%/*} ;;
+            *)   return 1 ;;
+        esac
+    done
+    return 1
+}
+
 HIMMEL_856_HR_ROOT=""
 HIMMEL_856_HR_ROOT=$(handover_root 2>/dev/null) || HIMMEL_856_HR_ROOT=""
 if [ -z "$HIMMEL_856_HR_ROOT" ]; then
-    echo "WARN arm-resume: could not resolve the handover root -- skipping queue-lock + arms-registry checks (HIMMEL-856)" >&2
+    # HIMMEL-1603: before giving up (and silently arming unregistered), derive
+    # the root from the handover being armed.
+    HIMMEL_856_HR_ROOT=$(_arm_root_from_handover_path "$HANDOVER_PATH" 2>/dev/null) || HIMMEL_856_HR_ROOT=""
+    [ -n "$HIMMEL_856_HR_ROOT" ] && \
+        echo "WARN arm-resume: handover_root did not resolve from the cwd/HANDOVER_DIR -- using the root derived from the handover path instead: $HIMMEL_856_HR_ROOT (HIMMEL-1603)" >&2
+fi
+if [ -z "$HIMMEL_856_HR_ROOT" ]; then
+    # HIMMEL-1603: this branch arms WITHOUT a registry record, so every later
+    # reader -- the census, the double-arm detector, any staleness guard -- is
+    # blind to this arm. A WARN on a session's stderr does not survive that
+    # session, which is why the gap went unnoticed until an unrecorded arm was
+    # caught firing. Emit it to telemetry too, so the trail outlives the shell.
+    telemetry_emit handover-arm-resume unregistered-arm "handover=$HANDOVER_PATH" "reason=handover-root-unresolved"
+    echo "WARN arm-resume: could not resolve the handover root -- skipping queue-lock + arms-registry checks (HIMMEL-856). This arm will NOT appear in arms.jsonl and is invisible to the census + double-arm detection (HIMMEL-1603); set HANDOVER_DIR or arm from inside the state repo to record it." >&2
 else
     QUEUE_LOCK_SH="$SCRIPT_DIR/queue-lock.sh"
     if [ -f "$QUEUE_LOCK_SH" ]; then
@@ -2313,7 +2562,13 @@ else
         # normal outcome, not a script error) would otherwise abort the
         # whole arm right here instead of reaching the rc-7 refusal below.
         _ql_status_rc=0
-        _ql_status_out=$(bash "$QUEUE_LOCK_SH" status "$HANDOVER_PATH" 2>&1) || _ql_status_rc=$?
+        # HIMMEL-1603: hand the resolved root DOWN. queue-lock.sh re-resolves
+        # via its own handover_root, i.e. from the same cwd that just failed us,
+        # so without this it answers "could not resolve handover root" and the
+        # check degrades to a WARN even though we know exactly which root to
+        # look in. Scoped to this one invocation -- the parent's own
+        # HANDOVER_DIR (set or unset) is deliberately left alone.
+        _ql_status_out=$(HANDOVER_DIR="$HIMMEL_856_HR_ROOT" bash "$QUEUE_LOCK_SH" status "$HANDOVER_PATH" 2>&1) || _ql_status_rc=$?
         if [ "$_ql_status_rc" -eq 11 ]; then
             if [ "${QUEUE_LOCK_TAKEOVER:-}" = "1" ]; then
                 {
@@ -2511,7 +2766,7 @@ _win_short_date_pattern() {
 # while the ERR above implied it was cleaned up. Callers exit 2 either way;
 # this only controls what the operator is told.
 _win_delete_bad_task() {
-    if MSYS_NO_PATHCONV=1 schtasks /delete /tn "$1" /f >/dev/null 2>&1; then
+    if MSYS_NO_PATHCONV=1 "${SCHTASKS_CMD:-schtasks}" /delete /tn "$1" /f >/dev/null 2>&1; then
         return 0
     fi
     echo "ERR arm-resume: FAILED to delete the rejected task '$1' -- a known-mistimed task is STILL SCHEDULED. Remove it manually: schtasks /delete /tn \"$1\" /f" >&2
@@ -2531,7 +2786,7 @@ _win_delete_bad_task() {
 _win_restore_backup_task() {
     local _tn="$1" _xml="$2"
     [ -n "$_xml" ] && [ -s "$_xml" ] || return 0
-    if MSYS_NO_PATHCONV=1 schtasks /create /tn "$_tn" /xml "$_xml" /f >/dev/null 2>&1; then
+    if MSYS_NO_PATHCONV=1 "${SCHTASKS_CMD:-schtasks}" /create /tn "$_tn" /xml "$_xml" /f >/dev/null 2>&1; then
         echo "arm-resume: restored the previous arm for '$_tn' after the new registration was rejected." >&2
         return 0
     fi
@@ -2615,6 +2870,33 @@ schedule_arm() {
             # of $TEMP-resolved.
             local bat_path
             bat_path=$(mktemp -t himmel-resume.XXXXXX.bat)
+            # HIMMEL-1606: prune our own leaked siblings. The .bat deletes its
+            # own scheduled task on its first line but never removes ITSELF, so
+            # every arm since 2026-06-28 left one behind -- 1665 files / 2.1 MB
+            # measured 2026-08-06, growing with the arming cadence, i.e. in the
+            # direction fan-out is pushing. Each also contains the full resume
+            # command line (handover path, session name, repo path), so this is
+            # a retention question as much as a disk one.
+            #
+            # Pruning HERE rather than in the .bat: a script cannot reliably
+            # delete itself while cmd is still reading it, and arm-resume is the
+            # only writer to this directory, so no new cadence or scheduled task
+            # is needed. AGE-GATED at 7 days, never "every other file" -- an arm
+            # can legitimately be parked hours ahead, and deleting a sibling a
+            # PENDING arm still points at would break that arm. 7 days is far
+            # beyond the longest legitimate park while still bounding the pile.
+            # Both the prefix AND the .bat suffix are required in the match so
+            # this can never widen into an unrelated temp file.
+            # Best-effort throughout: a prune failure must never fail an arm.
+            # HIMMEL-1624: skip the prune under --dry-run. This block runs
+            # before the DRY_RUN early-return below, so without the gate a
+            # dry-run arm would delete leaked .bat siblings -- a real side
+            # effect that breaks the side-effect-free contract a dry run
+            # promises (see the --dry-run note above the shipped-preflight).
+            if [ "$DRY_RUN" -ne 1 ]; then
+                find "$(dirname "$bat_path")" -maxdepth 1 -type f \
+                    -name 'himmel-resume.*.bat' -mtime +7 -delete 2>/dev/null || true
+            fi
             # bash mktemp on gitbash returns POSIX path; schtasks wants a
             # Windows path. cygpath converts. cygpath must exist here (Linux
             # would already have failed the platform check above).
@@ -2958,7 +3240,7 @@ schedule_arm() {
             # first-arm case, not an error.
             local _backup_xml
             _backup_xml=$(mktemp -t arm-resume.task-backup.XXXXXX.xml)
-            if ! MSYS_NO_PATHCONV=1 schtasks /query /tn "$TASK_NAME" /xml ONE > "$_backup_xml" 2>/dev/null; then
+            if ! MSYS_NO_PATHCONV=1 "${SCHTASKS_CMD:-schtasks}" /query /tn "$TASK_NAME" /xml ONE > "$_backup_xml" 2>/dev/null; then
                 rm -f "$_backup_xml"
                 _backup_xml=""
             fi
@@ -2966,7 +3248,7 @@ schedule_arm() {
             local err_file
             err_file=$(mktemp -t arm-resume.err.XXXXXX)
             # MSYS_NO_PATHCONV=1: see HIMMEL-125 note in list_existing.
-            if ! MSYS_NO_PATHCONV=1 schtasks /create /tn "$TASK_NAME" /tr "$bat_path_win" /sc ONCE /st "$RESUME_TIME" /sd "$_win_sd" /f 2>"$err_file"; then
+            if ! MSYS_NO_PATHCONV=1 "${SCHTASKS_CMD:-schtasks}" /create /tn "$TASK_NAME" /tr "$bat_path_win" /sc ONCE /st "$RESUME_TIME" /sd "$_win_sd" /f 2>"$err_file"; then
                 echo "ERR arm-resume: schtasks /create failed:" >&2
                 cat "$err_file" >&2
                 rm -f "$err_file" "$bat_path" "$_backup_xml"
