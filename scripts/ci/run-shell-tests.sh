@@ -17,9 +17,19 @@
 #   scripts/ci/run-shell-tests.sh [scan-root]            # run under a different root
 #   scripts/ci/run-shell-tests.sh --list [scan-root]     # print run/skip plan, run nothing
 #   scripts/ci/run-shell-tests.sh --skip-extra <relpath> # add an ad-hoc skip (repeatable)
+#   scripts/ci/run-shell-tests.sh --changed-since <ref>  # additionally skip conditional suites
+#                                                        # whose scope is unchanged since <ref>
 #
 #   Flags may appear before or after the scan-root.
 #   scan-root defaults to "scripts" when omitted.
+#
+#   --changed-since <ref> (or env SUITE_CHANGED_SINCE) is OPT-IN: without it,
+#   every suite runs exactly as today. With it, a suite listed in
+#   SUITE_CONDITIONAL runs only if a changed path (git diff --name-only <ref>
+#   plus untracked) matches its ERE; a non-matching conditional suite is SKIPped
+#   with a reason. A default-on filter would silently drop a leak-barrier suite
+#   from a clean CI checkout, and silently reduced coverage is worse than a slow
+#   run. Not a git repo / unresolvable ref / failing diff -> fail-open: run all.
 #
 # Exit codes: 0 — one or more suites ran and all passed; 1 — at least one suite
 #             failed, OR zero suites ran (a resolved-to-nothing scan root is a
@@ -59,6 +69,14 @@ cd "$REPO_ROOT" || exit 1
 # shellcheck source=../lib/proc-tree.sh
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/proc-tree.sh"
+
+# Pin git fsync/template settings for the throwaway repos the suites build, so
+# the exports flow to EVERY suite subprocess the loop below spawns. Sourced here
+# (not in each suite) so a single pin covers the whole tree; idempotent via its
+# own marker, so a suite that re-sources the lib inherits without duplicating.
+# shellcheck source=../lib/git-test-env.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/git-test-env.sh"
 
 # _suite_num <name> <value> <default> — a POSITIVE integer, or the default with
 # a warning. Every knob below feeds arithmetic or `sleep`, where a bad value
@@ -192,6 +210,20 @@ test-plugin-test.sh                  # integration: self-bootstraps a plugin's d
 test-adopt.sh                        # timing-heavy full adoption matrix exceeds the 180s hermetic runner cap on Windows; runnable individually, no VM e2e coverage
 "
 
+# Conditional suites (HIMMEL-1589). Unlike SKIP_LIST (always skipped), a
+# conditional suite runs by default and is only held back when --changed-since
+# is active AND no changed path matches its ERE. One entry per line:
+#   <scan-root-relative suite path>  <ERE over repo-relative changed paths>  # <reason>
+# The ERE is matched (grep -E, unanchored unless you anchor it) against each
+# repo-relative changed path from `git diff --name-only <ref>` + untracked.
+# test-propagate-public.sh is a LEAK-BARRIER suite: it must NOT move into
+# SKIP_LIST (that would drop it from every full run); it is conditional instead,
+# so a change unrelated to the propagation path skips it under --changed-since
+# while a full run still always exercises it.
+SUITE_CONDITIONAL="
+test-propagate-public.sh  ^scripts/(propagate-public|lib/public-clone-paths|test-propagate-public)\.sh$  # leak-barrier suite; only the propagation path can break it
+"
+
 # extra_skips accumulates paths added via --skip-extra flags.
 # Each entry is a newline-terminated scan-root-relative path.
 extra_skips=""
@@ -228,6 +260,48 @@ EOF
 $extra_skips
 EOF2
   fi
+  return 1
+}
+
+# --------------------------------------------------------------------------
+# Conditional-suite helpers (HIMMEL-1589). See SUITE_CONDITIONAL above. These
+# are inert unless --changed-since resolved a changed set (conditional_filter_active=1).
+# --------------------------------------------------------------------------
+
+# conditional_ere <relpath> -> echoes the ERE for that suite and returns 0;
+# returns 1 when the suite is not in SUITE_CONDITIONAL. Parses one table line
+# "<relpath>  <ERE>  # <reason>" via `read` (bash 3.2-safe; collapses the
+# whitespace between the fields and strips the trailing comment).
+conditional_ere() {
+  local needle="$1" _line _path _ere
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _line=${_line%%#*}                 # drop trailing "# reason" -> "<relpath>  <ERE>"
+    read -r _path _ere <<< "$_line"    # first token = relpath, rest = ERE
+    [ -n "$_path" ] || continue
+    if [ "$_path" = "$needle" ]; then
+      printf '%s' "$_ere"
+      return 0
+    fi
+  done <<EOF
+$SUITE_CONDITIONAL
+EOF
+  return 1
+}
+
+# conditional_matches <ERE> -> 0 if any path in the global $changed_set matches
+# the ERE, 1 otherwise. Here-string (not a pipeline) so a grep -q match can't
+# take SIGPIPE under `set -o pipefail` — the same trap grepq elsewhere documents.
+conditional_matches() {
+  local ere="$1" _p
+  while IFS= read -r _p; do
+    [ -n "$_p" ] || continue
+    if grep -Eq "$ere" <<< "$_p"; then
+      return 0
+    fi
+  done <<EOF
+$changed_set
+EOF
   return 1
 }
 
@@ -571,10 +645,13 @@ suite_lock_release() {
 # Arg parsing — single-pass, position-independent:
 #   --list               set list-mode
 #   --skip-extra <val>   append to extra_skips
+#   --changed-since <ref> enable the conditional-suite filter against <ref>
 #   first non-flag       scan-root (default: scripts)
 # --------------------------------------------------------------------------
 list_only=0
 scan=""
+# OPT-IN conditional filter (HIMMEL-1589). Env is the default; the flag overrides.
+changed_since="${SUITE_CHANGED_SINCE:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -589,6 +666,14 @@ while [ "$#" -gt 0 ]; do
       fi
       extra_skips="${extra_skips}${2}
 "
+      shift 2
+      ;;
+    --changed-since)
+      if [ "$#" -lt 2 ]; then
+        echo "run-shell-tests.sh: --changed-since requires an argument" >&2
+        exit 1
+      fi
+      changed_since="$2"
       shift 2
       ;;
     -*)
@@ -688,6 +773,40 @@ budget_expired=0
 # a change whose point is that these runs take too long.
 run_start=$SECONDS
 
+# Pin git fsync/template settings for the throwaway repos the suites build.
+# Called once here so the exports flow to every suite subprocess the loop below
+# spawns; idempotent via its marker, so a suite that re-sources the lib inherits
+# without appending a duplicate. (HIMMEL-1589.)
+git_test_env_pin_perf
+
+# Resolve the conditional-suite filter (HIMMEL-1589). FAIL-OPEN: if this is not
+# a git repo, the ref does not resolve, or either git command fails, run EVERY
+# suite and say why. Silently filtering on a broken diff would be the same
+# false-green class the discovery guards above close one level up.
+conditional_filter_active=0
+changed_set=""
+if [ -n "$changed_since" ]; then
+  # Resolve the ref to a concrete commit BEFORE handing it to `git diff`. A raw
+  # --changed-since value is interpolated straight into `git diff`, where git
+  # parses an OPTION-shaped value as an OPTION, not a ref: `git diff --name-only
+  # --exit-code` on a clean tree SUCCEEDS with EMPTY output, so this block would
+  # set conditional_filter_active=1 over an empty changed_set and SILENTLY skip
+  # every conditional suite — a false green, the exact inverse of the fail-open
+  # contract this else-branch exists to enforce. --end-of-options makes git treat
+  # the value as a ref literal; ^{commit} forces a commit-ish. Anything that does
+  # not resolve still falls through to fail-open below, unchanged. (HIMMEL-1589.)
+  if resolved=$(git rev-parse --verify --quiet --end-of-options "${changed_since}^{commit}" 2>/dev/null) && \
+     changed_tracked=$(git diff --name-only "$resolved" 2>/dev/null) && \
+     changed_untracked=$(git ls-files --others --exclude-standard 2>/dev/null); then
+    changed_set="${changed_tracked}
+${changed_untracked}"
+    conditional_filter_active=1
+  else
+    printf 'NOTE: --changed-since "%s" did not resolve (not a git repo, bad ref, or git failed) — running every suite.\n' \
+      "$changed_since" >&2
+  fi
+fi
+
 # fd 3, not stdin. With `done < "$suites_file"` the loop BODY inherits the
 # suite list as its stdin, so any suite that read from stdin consumed the
 # remaining suite paths — the runner then reported OK over a list it had
@@ -704,6 +823,18 @@ while IFS= read -r suite <&3; do
     skip=$((skip + 1))
     printf '[SKIP] %s — %s\n' "$suite" "$reason"
     continue
+  fi
+
+  # Conditional suites (HIMMEL-1589): when --changed-since is active, a suite in
+  # SUITE_CONDITIONAL runs only if a changed path matches its ERE. Inert without
+  # the flag (conditional_filter_active=0), so a full run behaves exactly as
+  # before. Runs through --list too, so the skip plan reflects the filter.
+  if [ "$conditional_filter_active" -eq 1 ] && ere=$(conditional_ere "$relpath"); then
+    if ! conditional_matches "$ere"; then
+      skip=$((skip + 1))
+      printf '[SKIP] %s — conditional: no changed path matches %s\n' "$suite" "$ere"
+      continue
+    fi
   fi
 
   if [ "$list_only" -eq 1 ]; then

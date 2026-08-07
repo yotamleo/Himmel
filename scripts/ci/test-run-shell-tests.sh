@@ -442,6 +442,137 @@ done
 rm -rf "$sb11"
 
 # --------------------------------------------------------------------------
+# Case 12 — conditional-suite filter (HIMMEL-1589).
+#   a. flag absent           -> conditional suite RUNS (filter inert)
+#   b. flag + matching change-> conditional suite RUNS
+#   c. flag + no match       -> conditional suite SKIPped with the reason
+#   d. bad ref               -> fail-open: NOTE printed, every suite runs
+# The changed-set the runner diffs against is the REAL repo (it cds to its own
+# REPO_ROOT), so b/c drive it through a fake `git` on PATH that emits a
+# controlled `diff --name-only` -- the same faking idiom cases 8/9/11 use for
+# find/sort/sleep. Only the runner's two changed-set calls hit it; the stub
+# suites call no git. The conditional suite under test is test-propagate-public.sh
+# (the one real entry in the runner's SUITE_CONDITIONAL table), so a sandbox
+# stub of that name exercises the real table, not a hand-rolled one.
+# --------------------------------------------------------------------------
+echo "== Case 12: conditional-suite filter (--changed-since) =="
+
+mk_cond_sandbox() {  # $1 = sandbox dir; lays down test-pass.sh + the prop stub
+  mkdir -p "$1"
+  cat > "$1/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+  cat > "$1/test-propagate-public.sh" <<'SHEOF'
+#!/usr/bin/env bash
+touch "$(dirname "$0")/prop-ran.sentinel"
+exit 0
+SHEOF
+  chmod +x "$1/test-pass.sh" "$1/test-propagate-public.sh"
+}
+
+# Fake `git`: emits a controlled `diff --name-only` (contents of $GIT_FAKE_DIFF)
+# and an empty untracked set, so the runner's changed_set is deterministic
+# regardless of the real worktree's dirty state. Exits 0 for both so the
+# runner's fail-open `&&` chain resolves to "filter active".
+fakebin12=$(mktemp -d)
+cat > "$fakebin12/git" <<'SHEOF'
+#!/usr/bin/env bash
+case "$1" in
+  rev-parse)
+    # The runner resolves the ref via `rev-parse --end-of-options "<ref>^{commit}"`
+    # BEFORE diffing (HIMMEL-1589). Mimic real git: an OPTION-shaped value
+    # (--exit-code, etc.) is not a commit and does not resolve -> exit 1, which
+    # drives the runner's fail-open path; anything else resolves to a stable
+    # pseudo-SHA so the runner feeds `git diff` a non-empty commit.
+    _ref=
+    for _a in "$@"; do _ref="$_a"; done   # last arg, e.g. "HEAD^{commit}"
+    case "$_ref" in
+      -*) exit 1 ;;                       # option-shaped: not a commit
+      *) printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n'; exit 0 ;;
+    esac
+    ;;
+  diff)
+    [ -f "${GIT_FAKE_DIFF:-}" ] && cat "${GIT_FAKE_DIFF:-}"
+    ;;
+  ls-files)
+    [ -f "${GIT_FAKE_UNTRACKED:-}" ] && cat "${GIT_FAKE_UNTRACKED:-}"
+    ;;
+esac
+exit 0
+SHEOF
+chmod +x "$fakebin12/git"
+
+# 12a — flag absent: conditional suite RUNS (filter is inert without the flag).
+sb12a=$(mktemp -d); mk_cond_sandbox "$sb12a"
+sentinel12a="$sb12a/prop-ran.sentinel"
+out12a=$(bash "$RUNNER" "$sb12a" 2>&1); rc12a=$?
+if [ "$rc12a" -eq 0 ] && [ -f "$sentinel12a" ]; then
+  pass "12a: flag absent -> conditional suite runs"
+else
+  fail "12a: flag absent expected run (rc=0, sentinel); rc=$rc12a sentinel=$([ -f "$sentinel12a" ] && echo yes || echo no); out: $out12a"
+fi
+rm -rf "$sb12a"
+
+# 12b — flag + matching change (a propagation path): conditional suite RUNS.
+sb12b=$(mktemp -d); mk_cond_sandbox "$sb12b"
+sentinel12b="$sb12b/prop-ran.sentinel"
+diff12b="$sb12b/diff.txt"; printf 'scripts/propagate-public.sh\n' > "$diff12b"
+out12b=$(GIT_FAKE_DIFF="$diff12b" PATH="$fakebin12:$PATH" bash "$RUNNER" "$sb12b" --changed-since HEAD 2>&1); rc12b=$?
+if [ "$rc12b" -eq 0 ] && [ -f "$sentinel12b" ] && ! grepq "$out12b" "conditional: no changed path matches"; then
+  pass "12b: flag + matching change -> conditional suite runs"
+else
+  fail "12b: expected run on matching change; rc=$rc12b sentinel=$([ -f "$sentinel12b" ] && echo yes || echo no); out: $out12b"
+fi
+rm -rf "$sb12b"
+
+# 12c — flag + NO matching change: conditional suite SKIPped with the reason.
+# A real path that does NOT match the propagation ERE.
+sb12c=$(mktemp -d); mk_cond_sandbox "$sb12c"
+sentinel12c="$sb12c/prop-ran.sentinel"
+diff12c="$sb12c/diff.txt"; printf 'scripts/ci/run-shell-tests.sh\n' > "$diff12c"
+out12c=$(GIT_FAKE_DIFF="$diff12c" PATH="$fakebin12:$PATH" bash "$RUNNER" "$sb12c" --changed-since HEAD 2>&1); rc12c=$?
+if [ "$rc12c" -eq 0 ] && [ ! -f "$sentinel12c" ] && grepq "$out12c" "conditional: no changed path matches"; then
+  pass "12c: flag + no matching change -> conditional suite SKIPped with reason"
+else
+  fail "12c: expected SKIP with reason; rc=$rc12c sentinel=$([ -f "$sentinel12c" ] && echo yes || echo no); out: $out12c"
+fi
+rm -rf "$sb12c"
+
+# 12d — bad ref: fail-open (REAL git, no fake). NOTE printed, every suite runs.
+sb12d=$(mktemp -d); mk_cond_sandbox "$sb12d"
+sentinel12d="$sb12d/prop-ran.sentinel"
+out12d=$(bash "$RUNNER" "$sb12d" --changed-since definitely-not-a-ref-xyz-1589 2>&1); rc12d=$?
+if [ "$rc12d" -eq 0 ] && [ -f "$sentinel12d" ] && grepq "$out12d" "running every suite"; then
+  pass "12d: bad ref -> fail-open runs every suite (NOTE printed)"
+else
+  fail "12d: expected fail-open run-all; rc=$rc12d sentinel=$([ -f "$sentinel12d" ] && echo yes || echo no); out: $out12d"
+fi
+rm -rf "$sb12d"
+
+# 12e — option-shaped value (--changed-since --exit-code): MUST fail-open, never
+# silently skip. A raw --changed-since value interpolated into `git diff` is
+# parsed by git as an OPTION, not a ref: `git diff --name-only --exit-code` on a
+# clean tree SUCCEEDS with EMPTY output, which (pre-fix) set
+# conditional_filter_active=1 over an empty changed_set and skipped every
+# conditional suite — a false green, the inverse of the fail-open contract.
+# The fake `git` makes that clean-tree condition deterministic: rev-parse fails
+# (an option is not a commit) so the FIXED runner fails-open, while `diff` with
+# no GIT_FAKE_DIFF returns empty+success, the exact state that fooled the
+# UNFIXED runner. No GIT_FAKE_DIFF is set on purpose.
+sb12e=$(mktemp -d); mk_cond_sandbox "$sb12e"
+sentinel12e="$sb12e/prop-ran.sentinel"
+out12e=$(PATH="$fakebin12:$PATH" bash "$RUNNER" "$sb12e" --changed-since --exit-code 2>&1); rc12e=$?
+if [ "$rc12e" -eq 0 ] && [ -f "$sentinel12e" ] && grepq "$out12e" "running every suite"; then
+  pass "12e: option-shaped --changed-since value -> fail-open runs every suite (NOTE printed)"
+else
+  fail "12e: expected fail-open run-all for option-shaped value; rc=$rc12e sentinel=$([ -f "$sentinel12e" ] && echo yes || echo no); out: $out12e"
+fi
+rm -rf "$sb12e"
+
+rm -rf "$fakebin12"
+
+# --------------------------------------------------------------------------
 # Final tally
 # --------------------------------------------------------------------------
 echo

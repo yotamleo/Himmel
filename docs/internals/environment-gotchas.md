@@ -296,6 +296,30 @@ fresh-machine adopt run in public issue #276 (G6, HIMMEL-752); the message
 is emitted by qmd's upstream node-llama-cpp, so himmel documents it rather
 than suppressing stderr (a blanket filter would hide real errors).
 
+## The bun test cwd is per-suite — `scripts/telegram` runs from the repo root
+
+`cd <suite-dir> && bun test` is correct for `scripts/luna-vitals` (172 pass, 0
+fail from its own directory) and **wrong** for the `scripts/telegram` suites.
+Those pin their fixtures repo-root-relative through `_rf(...)`, so running them
+from their own directory fails every wired case:
+
+```console
+$ cd scripts/telegram && bun test spawn-glm.test.ts
+error: ENOENT: no such file or directory, open 'scripts/telegram/spawn-glm.ts'   (x8)
+```
+
+From the repo root the same suite runs normally (158 pass; the only failures are
+the two pre-existing `pushurl poison` cases, which fail on untouched `main` too
+and are a Windows EBUSY-on-temp-cleanup issue, not a cwd one).
+
+Why it costs time rather than just failing: the errors name the *source* file the
+wiring points at, not the cwd, so it reads as a broken import or a missing build
+artifact. The instinct is to go looking for a wiring bug that does not exist.
+CLAUDE.md's Tests section carries the one-line rule; this is the reproduction.
+
+Found by the wave-1 orchestration-MVP session (HIMMEL-1615), which recorded it as
+a trap after the generalisation bit it.
+
 ## Anthropic output content-filter trips on policy text and minified blobs
 
 The 400 "Output blocked by content filtering policy" error scans the model's

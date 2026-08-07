@@ -39,7 +39,18 @@ fi
 # Build the JSON body with python rather than string interpolation: a reply
 # containing a double quote, a backslash or a newline would otherwise produce
 # invalid JSON and the daemon would 400 on perfectly ordinary text.
-body="$(VOICE_TEXT="$text" python -c '
+# Resolve a JSON-capable interpreter once: prefer python3 (macOS/Linux ship
+# only python3 in many cases), fall back to the legacy `python` alias. A bare
+# `python` is frequently absent, which made the encode below silently fail.
+if command -v python3 >/dev/null 2>&1; then
+    py="python3"
+elif command -v python >/dev/null 2>&1; then
+    py="python"
+else
+    echo "speak: no python interpreter found (install python3) - cannot encode JSON" >&2
+    exit 0
+fi
+body="$(VOICE_TEXT="$text" "$py" -c '
 import json, os
 t = os.environ["VOICE_TEXT"]
 payload = {"text": t}

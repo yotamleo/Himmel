@@ -11,7 +11,11 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 det="$here/detect-hook-dup.sh"
 fails=0
+skips=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
+# A skip is neither pass nor fail: it prints SKIP (not ok) and never touches the
+# fails counter, so a missing-fixture case is reported distinctly (HIMMEL-1590).
+skip(){ echo "SKIP - $1"; skips=$((skips+1)); }
 td="$(mktemp -d)"
 
 UJSON='{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash /user/scripts/hooks/auto-approve-safe-bash.sh"}]}],"SessionStart":[{"hooks":[{"type":"command","command":"bash /user/scripts/hooks/inject-initiative.sh"}]}]}}'
@@ -26,8 +30,20 @@ printf '%s' "$out" | grep -q "auto-approve-safe-bash" && check "SC5 lists the du
 printf '%s' "$out" | grep -q "unwire-pretooluse-hooks.sh --scope project --target $td/proj" && check "SC5 prints remediation target" yes yes || check "SC5 remediation" no yes
 
 # ── SC5b: in-repo (project == himmel's own settings) → SILENT ───────────────
-out=$(bash "$det" "$user" "$repo_root/.claude/settings.json" "$repo_root" 2>&1)
-check "SC5 silent in-repo" "$(printf '%s' "$out" | grep -c 'BOTH user and project')" "0"
+# This case exercises the REAL project settings.json. That file is in
+# PRIVATE_PATHS and is redacted on the public mirror (HIMMEL-1590), so on an
+# adopter checkout of the public copy it is absent — and detect-hook-dup.sh
+# then exits rc=0 and prints nothing (its in-repo suppression is a path-string
+# compare, so it fires whether or not the file exists). The SILENT assertion
+# would therefore pass for the wrong reason there (a false green). Gate it: run
+# the hard assertion only where the private fixture actually exists; otherwise
+# SKIP with the reason stated out loud — and do NOT count that skip as a pass.
+if [ -f "$repo_root/.claude/settings.json" ]; then
+  out=$(bash "$det" "$user" "$repo_root/.claude/settings.json" "$repo_root" 2>&1)
+  check "SC5 silent in-repo" "$(printf '%s' "$out" | grep -c 'BOTH user and project')" "0"
+else
+  skip "SC5b silent-in-repo: $repo_root/.claude/settings.json absent (PRIVATE_PATHS, public mirror) — cannot exercise the in-repo SILENT case"
+fi
 
 # ── SC5c: project does NOT share any UNIVERSAL hook → SILENT ────────────────
 mkdir -p "$td/proj2/.claude"
@@ -61,4 +77,8 @@ check "SC11 block-case rc stable" "$b1" "$b2"
 check "SC11 block-case actually blocks (exit 2)" "$b1" "2"
 
 rm -rf "$td"
-[ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
+if [ "$fails" -eq 0 ]; then
+  if [ "$skips" -gt 0 ]; then echo "ALL PASS ($skips skipped)"; else echo "ALL PASS"; fi
+else
+  echo "$fails FAILED"; exit 1
+fi

@@ -126,6 +126,19 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      - id: trust-node-suites
+        name: scripts/trust node suites (HIMMEL-1589)
+        entry: bash scripts/hooks/check-trust-suites.sh
+        language: system
+        # Scoped to the trust suites AND this guard’s own script — same lesson
+        # as hook-lib-node-suites / guardrail-matrices above: the guard must
+        # cover every file it guards, and a .sh under scripts/hooks/ is not
+        # reached by the .mjs alternative, so an edit that broke the guard
+        # would otherwise not have run the guard.
+        files: ^(scripts/trust/|scripts/hooks/check-trust-suites\.sh$)
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: hud-drift
         name: vendored claude-hud drift guard (himmel-dev only, HIMMEL-718)
         language: system

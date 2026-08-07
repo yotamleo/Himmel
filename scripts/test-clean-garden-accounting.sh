@@ -139,6 +139,10 @@ chmod +x "$STUB_DIR/gh"
 
 run_clean() {
     (
+        # Subshell-local PATH is the POINT: the gh stub must be visible to this
+        # one invocation and to nothing else in the suite. The pre-commit lint
+        # runs at INFO, where SC2030/SC2031 flag exactly this deliberate idiom.
+        # shellcheck disable=SC2030,SC2031
         export PATH="${STUB_DIR}:${PATH}"
         export GH_ROWS_ORIGIN GH_ROWS_PUBLIC GH_CALLS
         cd "$REPO" || exit 1
@@ -216,6 +220,178 @@ if [ "$pub_calls" -eq 1 ]; then
 else
     fail "expected one puborigin PR API call, got $pub_calls" "$pub_out"
 fi
+
+# --- HIMMEL-1596 checkpoint reap (F1/F2) --------------------------------------
+# prune_checkpoint_refs reads %(committerdate:unix), so a checkpoint's age is
+# its COMMIT date; stamp that via env on commit-tree (no host clock-warping).
+# days_old>0 = past (stale under a small TTL), 0 = now (fresh).
+mk_checkpoint() {
+    local slug="$1" days_old="$2" tree ts oid
+    ts=$(( $(date +%s) - days_old * 86400 ))
+    tree=$(git -C "$REPO" rev-parse "main^{tree}")
+    oid=$(GIT_COMMITTER_DATE="@$ts" GIT_AUTHOR_DATE="@$ts" \
+          git -C "$REPO" commit-tree "$tree" -m "ckpt $slug")
+    git -C "$REPO" update-ref "refs/checkpoints/$slug" "$oid"
+    printf '%s' "$oid"
+}
+clear_checkpoints() {
+    git -C "$REPO" for-each-ref --format='%(refname)' refs/checkpoints/ 2>/dev/null \
+        | while IFS= read -r r; do [ -n "$r" ] && git -C "$REPO" update-ref -d "$r" 2>/dev/null; done
+}
+ckpt_exists() { git -C "$REPO" rev-parse --quiet --verify "$1" >/dev/null 2>&1; }
+# ckpt_exists returns only an exit code (no stdout), so $(ckpt_exists ...) would
+# always be empty — this echoes a status word for diagnostics.
+ckpt_status() { ckpt_exists "$1" && printf kept || printf gone; }
+
+# Run clean-garden --prune-only with a given CHECKPOINT_TTL_DAYS (empty arg =
+# unset → the script's 14 default). Captures combined output + exit code, with
+# the same gh-stub PATH the accounting runs above use.
+run_clean_ttl() {
+    local ttl="$1"
+    (
+        # Subshell-local PATH is the POINT: the gh stub must be visible to this
+        # one invocation and to nothing else in the suite. The pre-commit lint
+        # runs at INFO, where SC2030/SC2031 flag exactly this deliberate idiom.
+        # shellcheck disable=SC2030,SC2031
+        export PATH="${STUB_DIR}:${PATH}"
+        export GH_ROWS_ORIGIN GH_ROWS_PUBLIC GH_CALLS
+        if [ -n "$ttl" ]; then export CHECKPOINT_TTL_DAYS="$ttl"; else unset CHECKPOINT_TTL_DAYS; fi
+        cd "$REPO" || exit 1
+        bash "$CLEAN_GARDEN" --prune-only 2>&1
+    )
+}
+
+echo "RUN C: HIMMEL-1596 checkpoint TTL validation (F1)"
+
+# Leading-zero 08: all digits, so the fix ACCEPTS it (via 10#) as decimal 8 — no
+# warn, no error. Under TTL=8 a 3-day-old ref is kept and a 30-day-old ref is
+# reaped. Unfixed, `$(( 08 * 86400 ))` is an invalid octal: clean-garden prints
+# "value too great for base" and the reap silently no-ops (the error does not
+# propagate out of the function under this shell's `set -e`), so NOTHING is
+# reaped and the 30d ref wrongly survives.
+clear_checkpoints
+mk_checkpoint ttl-octal-keep 3 >/dev/null      # <8d  -> kept under TTL=8
+mk_checkpoint ttl-octal-reap 30 >/dev/null     # >8d  -> reaped under TTL=8
+out=$(run_clean_ttl 08); rc=$?
+if [ "$rc" -eq 0 ] && ckpt_exists refs/checkpoints/ttl-octal-keep \
+   && ! ckpt_exists refs/checkpoints/ttl-octal-reap \
+   && ! grepq "$out" -F "value too great for base"; then
+    pass "F1: leading-zero TTL 08 normalizes to decimal 8 (3d kept, 30d reaped, no octal error)"
+else
+    fail "F1 octal TTL: rc=$rc keep=$(ckpt_status refs/checkpoints/ttl-octal-keep) reap=$(ckpt_status refs/checkpoints/ttl-octal-reap)" "$out"
+fi
+
+# Negative TTL: the fix rejects it (warn + 14 default) so a FRESH ref survives.
+# Unfixed, the cutoff swings to a FUTURE time and EVERY checkpoint — including a
+# fresh one — reads as stale and is deleted (data loss on a typo).
+clear_checkpoints
+mk_checkpoint ttl-neg 0 >/dev/null
+out=$(run_clean_ttl -5); rc=$?
+if [ "$rc" -eq 0 ] && ckpt_exists refs/checkpoints/ttl-neg; then
+    pass "F1: negative TTL rejected — fresh ref survives"
+else
+    fail "F1 negative TTL: rc=$rc kept=$(ckpt_status refs/checkpoints/ttl-neg)" "$out"
+fi
+if grepq "$out" -F 'CHECKPOINT_TTL_DAYS'; then
+    pass "F1: negative TTL warns on stderr and falls back"
+else
+    fail "F1: expected a CHECKPOINT_TTL_DAYS warning on stderr" "$out"
+fi
+
+# Non-numeric: the fix rejects it (warn + 14). Unfixed, bash treats the bare
+# word as an unset variable (0), collapsing the cutoff to ~now and reaping a
+# 3-day-old ref.
+clear_checkpoints
+mk_checkpoint ttl-abc 3 >/dev/null
+out=$(run_clean_ttl abc); rc=$?
+if [ "$rc" -eq 0 ] && ckpt_exists refs/checkpoints/ttl-abc; then
+    pass "F1: non-numeric TTL rejected — 3d ref survives"
+else
+    fail "F1 non-numeric TTL: rc=$rc kept=$(ckpt_status refs/checkpoints/ttl-abc)" "$out"
+fi
+
+# Positive control (not a discriminator): the default-14 path still reaps a
+# genuinely-stale ref and keeps a fresh one — i.e. the validation did not break
+# the happy path, and the F2 oid-threaded delete still fires on a matching ref.
+clear_checkpoints
+mk_checkpoint ttl-stale 30 >/dev/null
+mk_checkpoint ttl-fresh 0 >/dev/null
+out=$(run_clean_ttl ""); rc=$?
+if [ "$rc" -eq 0 ] && ! ckpt_exists refs/checkpoints/ttl-stale && ckpt_exists refs/checkpoints/ttl-fresh; then
+    pass "F1 positive control: default TTL reaps 30d ref, keeps fresh ref"
+else
+    fail "F1 positive control: rc=$rc stale=$(ckpt_status refs/checkpoints/ttl-stale) fresh=$(ckpt_status refs/checkpoints/ttl-fresh)" "$out"
+fi
+clear_checkpoints
+
+echo "RUN D: HIMMEL-1596 checkpoint compare-and-swap delete (F2)"
+
+# A `git` proxy that simulates a worker REPLACING one checkpoint ref between
+# clean-garden's enumerate and its delete — the live race shared-branch mode
+# creates (it reuses the slug). Every other git call passes straight through to
+# the real git. RACE_REAL_GIT is resolved BEFORE this wrapper shadows `git` on
+# PATH, and the quoted heredoc + env mirrors the gh-stub idiom above.
+RACE_REF="refs/checkpoints/race-slug"
+RACE_REAL_GIT="$(command -v git)"
+RACE_STUB_DIR="$TMP_ROOT_UNIX/race-bin"
+mkdir -p "$RACE_STUB_DIR"
+clear_checkpoints
+mk_checkpoint race-slug 30 >/dev/null          # stale → eligible to reap
+RACE_TREE=$(git -C "$REPO" rev-parse "main^{tree}")
+RACE_FRESH_OID=$(GIT_COMMITTER_DATE="@$(date +%s)" GIT_AUTHOR_DATE="@$(date +%s)" \
+                 git -C "$REPO" commit-tree "$RACE_TREE" -m "fresh worker ckpt")
+cat > "$RACE_STUB_DIR/git" <<'STUB'
+#!/usr/bin/env bash
+# Transparent git proxy (F2 race test). Delegates every call to the real git
+# verbatim, EXCEPT it intercepts clean-garden's "update-ref -d refs/checkpoints/race-slug"
+# and first REPLACES that checkpoint with a fresh commit — the concurrent-replace
+# the compare-and-swap delete exists to survive. Real git then honours the
+# expected oid the fixed code passes (refuse -> ref survives + WARN) or, on the
+# unfixed code that passes no expected value, deletes the fresh ref blindly.
+case " $* " in
+  *" update-ref -d refs/checkpoints/race-slug"*)
+    "$RACE_REAL_GIT" -C "$RACE_WT" update-ref refs/checkpoints/race-slug "$RACE_FRESH_OID" >/dev/null 2>&1 ;;
+esac
+exec "$RACE_REAL_GIT" "$@"
+STUB
+chmod +x "$RACE_STUB_DIR/git"
+RACE_WT="$REPO"
+export RACE_REAL_GIT RACE_WT RACE_FRESH_OID
+
+run_clean_race() {
+    (
+        # Subshell-local by design, same as run_clean above (SC2030/SC2031).
+        # shellcheck disable=SC2030,SC2031
+        export PATH="${RACE_STUB_DIR}:${STUB_DIR}:${PATH}"
+        export GH_ROWS_ORIGIN GH_ROWS_PUBLIC GH_CALLS
+        export RACE_REAL_GIT RACE_WT RACE_FRESH_OID
+        cd "$REPO" || exit 1
+        bash "$CLEAN_GARDEN" --prune-only 2>&1
+    )
+}
+
+out=$(run_clean_race); rc=$?
+# Fixed: the stale ref was replaced mid-reap; the CAS delete sees the mismatch
+# and refuses, so the (now-fresh) ref SURVIVES with a WARN. Unfixed: a plain
+# update-ref -d destroys the fresh ref.
+if [ "$rc" -eq 0 ] && ckpt_exists "$RACE_REF"; then
+    pass "F2: a ref replaced mid-reap survives (CAS refuses the moved ref)"
+else
+    fail "F2 CAS: rc=$rc kept=$(ckpt_status "$RACE_REF")" "$out"
+fi
+if grepq "$out" -F "could not delete stale checkpoint $RACE_REF"; then
+    pass "F2: the moved/failed delete is WARNED"
+else
+    fail "F2: expected a WARN for the moved checkpoint ref" "$out"
+fi
+# The survivor holds the worker's FRESH commit, not the stale one we judged.
+cur=$(git -C "$REPO" rev-parse "$RACE_REF" 2>/dev/null)
+if [ "$cur" = "$RACE_FRESH_OID" ]; then
+    pass "F2: surviving ref holds the worker's fresh commit"
+else
+    fail "F2: ref value not fresh (got ${cur:-<gone>})" "$out"
+fi
+clear_checkpoints
 
 echo
 echo "===================================="

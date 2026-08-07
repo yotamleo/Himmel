@@ -46,6 +46,9 @@ import {
   isHelpFlag,
   detectNonPrimaryCwd,
   refuseNonPrimaryCwd,
+  checkpointWorktree,
+  gitCapture,
+  CHECKPOINT_GLOBS,
   type CapGuardDeps,
 } from "./spawn-glm";
 import { BASH_BIN } from "./run";
@@ -240,6 +243,15 @@ test("HIMMEL-1503: refuseNonPrimaryCwd runs IMMEDIATELY after absCwd is resolved
 test("main() writes shared_branch into runningMeta only in shared mode (wiring pin, I8 typed construction)", () => {
   const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
   expect(/const runningMeta = sharedMode \? \{ \.\.\.baseMeta, shared_branch: branch \} : baseMeta;/.test(src)).toBe(true);
+});
+
+// HIMMEL-1616: worker_worktree must record the MINTED worktree, distinct from
+// the legacy `worktree` key (the dispatch CWD, kept for existing readers).
+// Without it the liveness mtime walk in await-glm-worker.sh sweeps every
+// sibling worktree, so a sibling's writes read as this worker's liveness.
+test("baseMeta records worker_worktree (the minted worktree), distinct from the dispatch cwd (HIMMEL-1616 wiring pin)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  expect(/worktree: absCwd, branch, worker_worktree: worktree,/.test(src)).toBe(true);
 });
 
 test("shared-branch lock is acquired BEFORE any worktree mutation, and main() guards before dispatching (wiring pin)", () => {
@@ -1813,4 +1825,271 @@ test("spawn-claudex main() carries the identical bypassPermissions refusal + don
   const src = _rf("scripts/telegram/spawn-claudex.ts", "utf8");
   expect(src).toMatch(/const bypassRefusal = refuseBypassPermissions\(permModeArg\);/);
   expect(src).toMatch(/const permMode: PermissionMode = permModeArg \?\? "dontAsk";/);
+});
+
+// ── HIMMEL-1596: the spawner-owned checkpoint ────────────────────────────────
+// Measured 2026-08-06: 4 of 4 GLM dispatches produced substantive in-scope work
+// and committed NONE of it. "Commit early" is already in every brief and already
+// allowed by WORKER_BASH_ALLOW; it failed 4/4, so per structural>instructional
+// durability moves to the SPAWNER.
+//
+// These mock tests pin the SHAPE (plumbing not porcelain; no bypass flag; scoped
+// add; ref outside refs/heads/). They CANNOT catch a wrong tree, because a mock
+// returns a canned SHA for write-tree no matter what was staged. The real-git
+// tests below are the actual gate.
+const mkCheckpointRun = (status: string, fail?: (cmd: string[]) => boolean) => {
+  const calls: string[][] = [];
+  const run = (cmd: string[]) => {
+    calls.push(cmd);
+    if (fail?.(cmd)) return { code: 1, stdout: "" };
+    if (cmd[0] === "status") return { code: 0, stdout: status };
+    if (cmd[0] === "write-tree") return { code: 0, stdout: "TREESHA\n" };
+    if (cmd[0] === "commit-tree") return { code: 0, stdout: "COMMITSHA\n" };
+    if (cmd[0] === "rev-parse") return { code: 0, stdout: "HEADSHA\n" };
+    return { code: 0, stdout: "" };
+  };
+  return { calls, run };
+};
+
+test("checkpoint: snapshots a dirty worktree to an unpushable ref, via plumbing only", () => {
+  const { calls, run } = mkCheckpointRun(" M scripts/x.sh\n");
+  const r = checkpointWorktree("/wt", "slug", "/sess", ["*.sh"], run as any);
+  expect(r.committed).toBe(true);
+  expect(r.ref).toBe("refs/checkpoints/slug");
+  // never a porcelain commit -> no hooks run at all, so there is nothing to
+  // bypass and no --no-verify precedent for a later agent to cite.
+  expect(calls.some((c) => c[0] === "commit")).toBe(false);
+  expect(calls.some((c) => c.includes("--no-verify"))).toBe(false);
+  expect(calls.some((c) => c[0] === "update-ref")).toBe(true);
+  // OUTSIDE refs/heads/ — `git push origin <branch>` cannot carry it.
+  expect(calls.find((c) => c[0] === "update-ref")![1]).not.toContain("refs/heads/");
+});
+
+test("checkpoint: seeds the index from HEAD before write-tree (else the ref DELETES the repo)", () => {
+  // A fresh GIT_INDEX_FILE is EMPTY, so write-tree over it yields a tree holding
+  // ONLY the globbed files — a commit whose diff vs HEAD deletes everything else.
+  const { calls, run } = mkCheckpointRun(" M scripts/x.sh\n");
+  checkpointWorktree("/wt", "s", "/sess", ["*.sh"], run as any);
+  const readTree = calls.findIndex((c) => c[0] === "read-tree");
+  const writeTree = calls.findIndex((c) => c[0] === "write-tree");
+  expect(readTree).toBeGreaterThanOrEqual(0);
+  expect(calls[readTree]).toContain("HEAD");
+  expect(readTree).toBeLessThan(writeTree);
+});
+
+test("checkpoint: scopes the add to declared globs, never -A, and parents the commit on HEAD", () => {
+  const { calls, run } = mkCheckpointRun(" M scripts/x.sh\n");
+  checkpointWorktree("/wt", "s", "/sess", ["*.sh"], run as any);
+  const add = calls.find((c) => c[0] === "add")!;
+  expect(add).toContain("*.sh");
+  expect(add).not.toContain("-A");
+  const ct = calls.find((c) => c[0] === "commit-tree")!;
+  expect(ct).toContain("-p");
+  expect(ct).toContain("HEADSHA");
+});
+
+test("checkpoint: the private index is passed via GIT_INDEX_FILE on the staging commands only", () => {
+  // An index file inside the worktree is itself untracked, so it would dirty
+  // `status --porcelain` and corrupt the next checkpoint's clean check — hence
+  // the sessionDir path, asserted for real in the REAL GIT test below.
+  const envs: Array<Record<string, string> | undefined> = [];
+  const seen: string[][] = [];
+  const run = (cmd: string[], _cwd: string, env?: Record<string, string>) => {
+    seen.push(cmd); envs.push(env);
+    if (cmd[0] === "status") return { code: 0, stdout: " M scripts/x.sh\n" };
+    if (cmd[0] === "write-tree") return { code: 0, stdout: "TREESHA\n" };
+    if (cmd[0] === "commit-tree") return { code: 0, stdout: "COMMITSHA\n" };
+    if (cmd[0] === "rev-parse") return { code: 0, stdout: "HEADSHA\n" };
+    return { code: 0, stdout: "" };
+  };
+  checkpointWorktree("/wt", "s", "/sess", ["*.sh"], run as any);
+  const idxOf = (name: string) => envs[seen.findIndex((c) => c[0] === name)];
+  // the index-scoped commands carry it…
+  for (const cmd of ["read-tree", "add", "write-tree"]) {
+    expect(idxOf(cmd)?.GIT_INDEX_FILE).toBeDefined();
+    expect(idxOf(cmd)!.GIT_INDEX_FILE).toContain("checkpoint-index");
+  }
+  // …and the initial dirty-check does NOT, so it reads the worker's real state.
+  expect(idxOf("status")).toBeUndefined();
+});
+
+test("checkpoint: a glob matching nothing is skipped, not fatal — one bad glob must not lose the snapshot", () => {
+  // `git add -- <glob>` is FATAL when a glob matches nothing on disk, so one
+  // unmatched declared glob would otherwise throw the whole checkpoint away.
+  const { calls, run } = mkCheckpointRun(" M scripts/x.sh\n", (c) => c[0] === "add" && c[2] === "*.nope");
+  const r = checkpointWorktree("/wt", "s", "/sess", ["*.nope", "*.sh"], run as any);
+  expect(r.committed).toBe(true);
+  expect(calls.filter((c) => c[0] === "add").length).toBe(2);
+});
+
+test("checkpoint: no declared glob matched -> no checkpoint, and says so", () => {
+  const { run } = mkCheckpointRun(" M x\n", (c) => c[0] === "add");
+  const r = checkpointWorktree("/wt", "s", "/sess", ["*.sh"], run as any);
+  expect(r.committed).toBe(false);
+  expect(r.reason).toContain("glob");
+});
+
+test("checkpoint: no-op on a clean worktree", () => {
+  const { run } = mkCheckpointRun("");
+  const r = checkpointWorktree("/wt", "s", "/sess", ["*"], run as any);
+  expect(r.committed).toBe(false);
+  expect(r.reason).toBe("clean");
+});
+
+test("checkpoint: never throws when git is unavailable", () => {
+  // Bun.spawnSync THROWS (not rc!=0) on an unspawnable binary. This runs in a
+  // finally around executeRun, so a throw here would replace the run's real
+  // outcome with a checkpoint error.
+  const run = () => { throw new Error("ENOENT"); };
+  const r = checkpointWorktree("/wt", "s", "/sess", ["*"], run as any);
+  expect(r.committed).toBe(false);
+  expect(r.reason).toContain("unavailable");
+});
+
+// ── the real gate: mocks return canned SHAs and pass a mass-deletion bug ─────
+// Windows holds git's pack/index handles briefly after the process exits, so a
+// temp-dir teardown can EBUSY on a test that otherwise passed. Cleanup failure
+// is not a result — only the assertions above it are.
+const rmQuiet = (p: string) => { try { rmSync(p, { recursive: true, force: true }); } catch (_) {} };
+
+test("checkpoint (REAL GIT): the ref is HEAD-plus-changes, NOT a mass deletion", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "himmel-1596-"));
+  const sess = mkdtempSync(join(tmpdir(), "himmel-1596-sess-"));
+  try {
+    const git = (...a: string[]) => {
+      const r = Bun.spawnSync(["git", "-C", tmp, ...a], { stdout: "pipe", stderr: "pipe" });
+      if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+      return r.stdout.toString();
+    };
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "t");
+    git("config", "user.email", "t@t");
+    // Several tracked files, so a tree containing ONLY the globbed one shows up
+    // as D lines against HEAD.
+    writeFileSync(join(tmp, "kept-a.sh"), "a\n");
+    writeFileSync(join(tmp, "kept-b.md"), "b\n");
+    mkdirSync(join(tmp, "scripts"));
+    writeFileSync(join(tmp, "scripts", "globbed.sh"), "old\n");
+    git("add", "-A");
+    git("commit", "-qm", "base");
+
+    // dirty one globbed file, add a NEW one, and drop a log the declared globs
+    // must NOT scoop.
+    writeFileSync(join(tmp, "scripts", "globbed.sh"), "new\n");
+    writeFileSync(join(tmp, "scripts", "fresh.sh"), "fresh\n");
+    writeFileSync(join(tmp, "run.log"), "noise\n");
+
+    const r = checkpointWorktree(tmp, "slug", sess, ["*.sh"], gitCapture);
+    expect(r.committed).toBe(true);
+    expect(r.ref).toBe("refs/checkpoints/slug");
+
+    const out = git("diff", "--name-status", "HEAD", "refs/checkpoints/slug");
+    const lines = out.split("\n").map((l) => l.trim()).filter(Boolean);
+    // THE assertion. Without `read-tree HEAD` this fails with D lines for
+    // kept-a.sh / kept-b.md — the bug the entire mock suite passes unchanged.
+    expect(lines.filter((l) => l.startsWith("D"))).toEqual([]);
+    expect(lines.some((l) => /^M\s+scripts\/globbed\.sh$/.test(l))).toBe(true);
+    expect(lines.some((l) => /^A\s+scripts\/fresh\.sh$/.test(l))).toBe(true);
+    expect(lines.some((l) => l.includes("run.log"))).toBe(false);
+
+    // the worker's own index is untouched
+    expect(git("diff", "--cached", "--name-only").trim()).toBe("");
+    // and the checkpoint did not dirty the worktree with its own index file
+    expect(existsSync(join(tmp, "checkpoint-index"))).toBe(false);
+    expect(existsSync(join(sess, "checkpoint-index"))).toBe(true);
+  } finally {
+    rmQuiet(tmp); rmQuiet(sess);
+  }
+}, 30_000);
+
+test("checkpoint (REAL GIT): re-checkpointing a slug moves the ref forward; the ref is never a branch", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "himmel-1596b-"));
+  const sess = mkdtempSync(join(tmpdir(), "himmel-1596b-sess-"));
+  try {
+    const git = (...a: string[]) => Bun.spawnSync(["git", "-C", tmp, ...a], { stdout: "pipe", stderr: "pipe" }).stdout.toString();
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "t");
+    git("config", "user.email", "t@t");
+    writeFileSync(join(tmp, "a.sh"), "1\n");
+    git("add", "-A");
+    git("commit", "-qm", "base");
+
+    writeFileSync(join(tmp, "a.sh"), "2\n");
+    expect(checkpointWorktree(tmp, "s", sess, ["*.sh"], gitCapture).committed).toBe(true);
+    const sha1 = git("rev-parse", "refs/checkpoints/s").trim();
+
+    writeFileSync(join(tmp, "a.sh"), "3\n");
+    expect(checkpointWorktree(tmp, "s", sess, ["*.sh"], gitCapture).committed).toBe(true);
+    const sha2 = git("rev-parse", "refs/checkpoints/s").trim();
+    // Shared-branch mode REUSES the slug, so this overwrite is by design (plan
+    // v2 solidification note) — pinned so a reader does not mistake it for a bug.
+    expect(sha2).not.toBe(sha1);
+
+    // containment: not a branch, so no branch push and no `--all` can carry it
+    expect(git("branch", "--list")).not.toContain("checkpoints");
+    expect(git("for-each-ref", "--format=%(refname)", "refs/heads/")).not.toContain("checkpoints");
+  } finally {
+    rmQuiet(tmp); rmQuiet(sess);
+  }
+}, 30_000);
+
+// F3 (CR): `git add` exits 0 on a pathspec MATCH, not on a CHANGE — so a worktree
+// dirty only in an EXCLUDED path passes the status guard, a declared glob then
+// matches tracked UNCHANGED files, and write-tree yields HEAD's OWN tree. The
+// unfixed code committed that empty delta and reported `committed: true`:
+// the operator is told uncommitted work was captured when NOTHING in scope
+// changed. This proves the written-tree == HEAD-tree refusal on a REAL repo.
+// Mutation-verified: drop the headTree comparison and committed flips to true
+// with the ref advanced (the bug).
+test("checkpoint (REAL GIT): an empty in-scope delta is NOT committed (F3)", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "himmel-1596-f3-"));
+  const sess = mkdtempSync(join(tmpdir(), "himmel-1596-f3-sess-"));
+  try {
+    const git = (...a: string[]) => {
+      const r = Bun.spawnSync(["git", "-C", tmp, ...a], { stdout: "pipe", stderr: "pipe" });
+      if (r.exitCode !== 0) throw new Error(`git ${a.join(" ")}: ${r.stderr.toString()}`);
+      return r.stdout.toString();
+    };
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "t");
+    git("config", "user.email", "t@t");
+    // A tracked file matching the declared glob, left UNCHANGED: `git add -- *.sh`
+    // matches it (exit 0) yet stages nothing.
+    writeFileSync(join(tmp, "tracked.sh"), "unchanged\n");
+    git("add", "-A");
+    git("commit", "-qm", "base");
+    // Dirty ONLY in an excluded path: passes the `status --porcelain` guard, but
+    // no declared glob reaches it, so nothing in scope changes.
+    writeFileSync(join(tmp, "run.log"), "noise\n");
+
+    const headTreeBefore = git("rev-parse", "HEAD^{tree}").trim();
+    const r = checkpointWorktree(tmp, "f3", sess, ["*.sh"], gitCapture);
+    expect(r.committed).toBe(false);
+    expect(r.reason).toContain("in-scope");
+    // No checkpoint commit was made and no ref advanced.
+    expect(() => git("rev-parse", "refs/checkpoints/f3")).toThrow();
+    expect(git("rev-parse", "HEAD^{tree}").trim()).toBe(headTreeBefore);
+  } finally {
+    rmQuiet(tmp); rmQuiet(sess);
+  }
+}, 30_000);
+
+test("CHECKPOINT_GLOBS: an extension allow-list — captures source anywhere, excludes run logs", () => {
+  expect(CHECKPOINT_GLOBS).toContain("*.sh");
+  expect(CHECKPOINT_GLOBS).toContain("*.ts");
+  expect(CHECKPOINT_GLOBS).toContain("*.md");
+  expect(CHECKPOINT_GLOBS.some((g) => g.endsWith(".log"))).toBe(false);
+  expect(CHECKPOINT_GLOBS).not.toContain("-A");
+});
+
+test("checkpoint is wired into runBody in a FINALLY around executeRun (wiring pin)", () => {
+  // executeRun's outer catch (:945) writes failed-meta and RETHROWS, so a
+  // spawner-side crash mid-run — precisely when uncommitted work is stranded —
+  // would skip a checkpoint placed "after executeRun returns".
+  const src = _rf("scripts/telegram/spawn-glm.ts", "utf8");
+  expect(src).toMatch(/try \{[\s\S]{0,600}await executeRun\(\{[\s\S]{0,600}\} finally \{/);
+  expect(src).toMatch(/checkpointWorktree\(worktree, slug, sessionDir, CHECKPOINT_GLOBS, gitCapture\)/);
+  // The meta write must READ-MERGE-WRITE: executeRun has terminal-meta writes
+  // at :885/:891/:908/:927/:946 and a blind write here would clobber them.
+  expect(src).toMatch(/mergeMetaCheckpoint/);
 });

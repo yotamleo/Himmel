@@ -642,6 +642,86 @@ printf '%s' "$DIFF" | CRITICS_JSON="$JSON_NR" CRITIC_FIRST_PASS="$STUB_NR"     b
 check "19: name-routed fallback keeps an EMPTY provider (no row inheritance)"     "$(grep -cF -- "$FB provider=openrouter" "$tmp/cap19")" "0"
 check "19: name-routed fallback WAS attempted"     "$(grep -cF -- "$FB provider=" "$tmp/cap19")" "1"
 
+# --- Cases 20-22 (HIMMEL-1569/1500): a TIMEOUT must be retryable.
+#
+# WHY: process_member short-circuits rc 124/137 to `unavailable (timeout)`
+# UNLESS a fallback chain is configured AND fires. The glm row had no chain, so
+# a timeout was terminal — and glm's observed failure mode is a TRANSIENT
+# timeout: measured 2026-08-06, a 21KB diff timed out at 450s while a 90KB diff
+# on the same lane, same session, passed. Re-running the identical head then
+# succeeded immediately. So the remedy is a RETRY, not a bigger constant.
+#
+# The shipped fix gives glm a SELF chain (fallback_models: ["glm-5.2"]) with
+# fallback_trigger "any", i.e. "on any failure including a timeout, try the same
+# healthy model once more". Case 20 pins exactly that shape: the stub hangs on
+# the FIRST attempt (-> real rc 124 via `timeout`) and answers on the SECOND.
+SELF_TO=2
+STUB_SELF="$tmp/stub-self.sh"
+cat > "$STUB_SELF" <<EOS
+#!/usr/bin/env bash
+set -uo pipefail
+model=""; slug=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        --model) model="\$2"; shift 2 ;;
+        --slug)  slug="\$2";  shift 2 ;;
+        --perspective-file) shift 2 ;;
+        *) shift ;;
+    esac
+done
+cat >/dev/null
+n=\$(cat "\$SELF_COUNT" 2>/dev/null || echo 0)
+n=\$((n + 1)); printf '%s' "\$n" > "\$SELF_COUNT"
+if [ "\$n" -eq 1 ]; then
+    # exec, so \`timeout\` signals sleep ITSELF. Without it the signal lands on
+    # this stub shell and its sleep child outlives the suite as an orphan.
+    exec sleep 30     # outlives CRITIC_TIMEOUT_SECS -> timeout kills it, rc 124
+fi
+printf '# %s First-Pass Review\\n\\n' "\$slug"
+printf '## Critical Issues (0 found)\\n\\n'
+printf '## Important Issues (0 found)\\n\\n'
+printf '## Suggestions (0 found)\\n'
+exit 0
+EOS
+chmod +x "$STUB_SELF"
+
+JSON_SELF="$tmp/critics-self.json"
+printf '{"panel":[{"slug":"glm","model":"%s","provider":"zai","route_provider":"glm","tier":"free","timeout_secs":%s,"fallback_models":["%s"],"fallback_trigger":"any","fallback_provider":"glm"}]}' \
+    "$PRI" "$SELF_TO" "$PRI" > "$JSON_SELF"
+
+: > "$tmp/selfcount20"
+printf '%s' "$DIFF" | SELF_COUNT="$tmp/selfcount20" CRITICS_JSON="$JSON_SELF" \
+    CRITIC_FIRST_PASS="$STUB_SELF" bash "$PANEL" >"$tmp/out20" 2>"$tmp/err20"
+check "20: a timed-out critic with trigger=any is RETRIED (2 attempts)" \
+    "$(cat "$tmp/selfcount20")" "2"
+check_not_contains "20: the member is NOT reported unavailable(timeout)" \
+    "$(cat "$tmp/err20")" "panel-availability: glm unavailable (timeout"
+check_contains "20: the retry is recorded as a responder" \
+    "$(cat "$tmp/err20")" "panel-availability: glm fallback($PRI)"
+
+# Case 21 (control): the SAME hang WITHOUT fallback_trigger must still be
+# terminal — the default contract (HIMMEL-729/737: only a quota signature on a
+# NON-timeout failure retries) is not widened for every other row.
+JSON_NOTRIG="$tmp/critics-self-notrigger.json"
+printf '{"panel":[{"slug":"glm","model":"%s","provider":"zai","route_provider":"glm","tier":"free","timeout_secs":%s,"fallback_models":["%s"],"fallback_provider":"glm"}]}' \
+    "$PRI" "$SELF_TO" "$PRI" > "$JSON_NOTRIG"
+: > "$tmp/selfcount21"
+printf '%s' "$DIFF" | SELF_COUNT="$tmp/selfcount21" CRITICS_JSON="$JSON_NOTRIG" \
+    CRITIC_FIRST_PASS="$STUB_SELF" bash "$PANEL" >"$tmp/out21" 2>"$tmp/err21"
+check "21: without trigger=any a timeout is NOT retried (1 attempt)" \
+    "$(cat "$tmp/selfcount21")" "1"
+check_contains "21: and it is reported unavailable(timeout)" \
+    "$(cat "$tmp/err21")" "panel-availability: glm unavailable (timeout"
+
+# Case 22: the SHIPPED registry actually carries the retry config. Case 20
+# proves the mechanism against a fixture; without this, critics.json could lose
+# the chain and every fixture test would still pass.
+SHIPPED="$(cd "$(dirname "$0")" && pwd)/critics.json"
+check "22: shipped glm row declares a fallback chain" \
+    "$(node -e 'const r=require(process.argv[1]).panel.find(x=>x.slug==="glm");process.stdout.write(String(!!(r&&r.fallback_models&&r.fallback_models.length)))' "$SHIPPED")" "true"
+check "22: shipped glm row sets fallback_trigger=any (timeouts retry)" \
+    "$(node -e 'const r=require(process.argv[1]).panel.find(x=>x.slug==="glm");process.stdout.write(String(r&&r.fallback_trigger))' "$SHIPPED")" "any"
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

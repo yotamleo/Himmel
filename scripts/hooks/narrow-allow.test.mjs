@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { assertDenyAskUnchanged, assertStrictNarrowing } from './narrow-allow.mjs';
+import { assertDenyAskUnchanged, assertStrictNarrowing, tempPathFor, writeSettingsAtomic } from './narrow-allow.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const NARROWER = join(HERE, 'narrow-allow.mjs');
@@ -168,4 +168,66 @@ test('assertDenyAskUnchanged refuses an injected deny mutation', () => {
     () => assertDenyAskUnchanged(before, after),
     /permissions\.deny changed; refusing to write/
   );
+});
+
+test('tempPathFor yields a unique, per-process temp name — not the shared fixed name (F1)', () => {
+  withFixture((fixture) => {
+    const sharedName = join(dirname(fixture), '.narrow-allow.tmp');
+    const a = tempPathFor(fixture);
+    const b = tempPathFor(fixture);
+
+    // Two calls must not collide: a FIXED name would return the same path
+    // every time, so concurrent runs would stage into and clobber one file.
+    assert.notEqual(a, b);
+    // A sibling of settings.json (same directory), so the rename stays
+    // intra-directory and atomic.
+    assert.equal(dirname(a), dirname(fixture));
+    // NOT the shared fixed name whose collision is the F1 bug.
+    assert.notEqual(a, sharedName);
+    assert.notEqual(b, sharedName);
+    // Carries the per-process pid + uuid suffix so a collision is impossible.
+    assert.match(basename(a), /^\.narrow-allow\.tmp\.\d+\.[0-9a-f-]{36}$/);
+  });
+});
+
+test('writeSettingsAtomic opens the temp exclusively: a pre-existing temp is refused (EEXIST), never clobbered (F1)', () => {
+  withFixture((fixture) => {
+    // A foreign temp already staged at this path (a concurrent run). The
+    // exclusive open MUST refuse rather than truncate it, and the failed
+    // write MUST NOT delete it — it is not this process's temp.
+    const foreignTmp = join(dirname(fixture), '.narrow-allow.foreign.tmp');
+    const sentinel = 'CONCURRENT-PROCESS-STAGED-OUTPUT';
+    writeFileSync(foreignTmp, sentinel, 'utf8');
+
+    assert.throws(
+      () => writeSettingsAtomic(fixture, '{}\n', foreignTmp),
+      (error) => error.code === 'EEXIST',
+    );
+
+    // Untouched: not clobbered by the write, not deleted by the cleanup
+    // (staged stayed false, so no unlink ran).
+    assert.equal(readFileSync(foreignTmp, 'utf8'), sentinel);
+  });
+});
+
+test('a concurrent process\'s temp at the shared name survives a narrow-allow run (F1, revert-differential)', () => {
+  withFixture((fixture) => {
+    // Plant the FIXED shared temp name a concurrent narrow-allow would have
+    // used pre-F1. The unfixed code stages into this exact path, truncating
+    // (and on a failure, deleting) a concurrent run's staged output; the F1
+    // code uses a per-process name and never touches it.
+    const sharedTmp = join(dirname(fixture), '.narrow-allow.tmp');
+    const sentinel = 'CONCURRENT-PROCESS-STAGED-OUTPUT';
+    writeFileSync(sharedTmp, sentinel, 'utf8');
+
+    const result = invoke(fixture, '--remove', 'Bash(bun run *)');
+
+    // The narrowing still happened (sanity — the run is otherwise correct).
+    assert.equal(result.status, 0, result.stderr);
+    const after = JSON.parse(readFileSync(fixture, 'utf8'));
+    assert.equal(after.permissions.allow.includes('Bash(bun run *)'), false);
+
+    // The core F1 assertion: the concurrent process's staged temp is intact.
+    assert.equal(readFileSync(sharedTmp, 'utf8'), sentinel);
+  });
 });

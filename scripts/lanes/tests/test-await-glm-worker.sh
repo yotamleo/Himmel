@@ -110,6 +110,39 @@ d=$(mk_session "glm-t11-1000000000001" "partial-write-xyz")
 bash "$SUT" --session-dir "$d" --max-mins 0 >/dev/null 2>&1
 check "unknown-status-not-terminal rc" 3 $?
 
+# 12. HIMMEL-1347: --slug must NOT resolve to a prefix-SIBLING slug. A prior
+# failed dispatch under a longer slug (glm-t12-signal-<epoch>) sorts AFTER the
+# live run lexically ('s' > '1' in the C locale) even though its epoch is
+# OLDER, so the pre-fix `-name "glm-<slug>-*" | sort | tail -1` returned the
+# sibling's stale terminal status for a worker that is still running. Asserted
+# rc 3 (still-running), not rc 0: rc 0 here IS the bug.
+mk_session "glm-t12-signal-1000000000001" "timeout" >/dev/null
+mk_session "glm-t12-1000000000002" running >/dev/null
+out=$(bash "$SUT" --slug t12 --max-mins 0 2>&1)
+check "prefix-sibling-not-resolved rc" 3 $?
+case "$out" in
+    *'glm-t12-signal-'*) echo "FAIL prefix-sibling-not-resolved: resolved the sibling: $out"; fails=$((fails + 1)) ;;
+    *) echo "ok   prefix-sibling-not-resolved output" ;;
+esac
+
+# 13. HIMMEL-1347: with only the sibling present, --slug must find NOTHING
+# rather than falling back to it (rc 2 = no session resolved, not rc 3).
+mk_session "glm-t13-signal-1000000000001" "done" >/dev/null
+bash "$SUT" --slug t13 --max-mins 0 >/dev/null 2>&1
+check "sibling-only-resolves-nothing rc" 2 $?
+
+# 14. HIMMEL-1347: ordering among genuine same-slug runs is NUMERIC on the
+# epoch, so a shorter (older) stamp never beats a longer (newer) one the way
+# lexical sort would. 999999999999 (12 digits) < 1000000000003 (13 digits).
+mk_session "glm-t14-999999999999" "done" >/dev/null
+mk_session "glm-t14-1000000000003" running >/dev/null
+out=$(bash "$SUT" --slug t14 --max-mins 0 2>&1)
+check "numeric-epoch-ordering rc" 3 $?
+case "$out" in
+    *'glm-t14-999999999999'*) echo "FAIL numeric-epoch-ordering: picked the older stamp: $out"; fails=$((fails + 1)) ;;
+    *) echo "ok   numeric-epoch-ordering output" ;;
+esac
+
 echo
 if [ "$fails" -gt 0 ]; then
     echo "test-await-glm-worker: $fails FAILURE(S)"
