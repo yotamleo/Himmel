@@ -738,6 +738,11 @@ $bunExe = Resolve-RequiredCommand -DisplayName 'Bun' -Names @('bun.exe', 'bun')
 
 $prometheusConfig = Join-Path $stateRoot 'prometheus.yml'
 Copy-Item -LiteralPath (Join-Path $scriptDir 'prometheus.yml') -Destination $prometheusConfig -Force
+# HIMMEL-1633: prometheus.yml's rule_files entry is RELATIVE to the config's
+# location, so the rule file must travel with it — without this copy the
+# installed Prometheus references a missing alerts.rules.yml and refuses its
+# config (the HIMMEL-924 rules were inert after install).
+Copy-Item -LiteralPath (Join-Path $scriptDir 'alerts.rules.yml') -Destination (Join-Path $stateRoot 'alerts.rules.yml') -Force
 
 $grafanaIni = Join-Path $stateRoot 'grafana.ini'
 # HIMMEL-924: grafana-provisioning holds a machine-local COPY of
