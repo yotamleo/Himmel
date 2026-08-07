@@ -1,6 +1,15 @@
 global:
   scrape_interval: 60s
 
+# HIMMEL-924: loaded for self-visibility (Prometheus's own /rules, /alerts
+# UI) and promtool testability only. No Alertmanager is installed in this
+# stack, so nothing here is ever delivered — Telegram delivery is
+# exclusively Grafana's unified alerting (provisioning/alerting/rules.yaml,
+# a separate re-implementation of the same expressions; see
+# alerts.rules.yml's header comment for why there are two copies).
+rule_files:
+  - alerts.rules.yml
+
 scrape_configs:
   - job_name: prometheus
     static_configs:

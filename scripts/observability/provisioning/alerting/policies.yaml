@@ -1,0 +1,14 @@
+# HIMMEL-924: one flat policy, every himmel-observability rule routes to the
+# single Telegram contact point. `page` vs `warn` (rules.yaml labels) is
+# informational only in this design — a second delivery channel per
+# severity is not in scope; add a nested route matching `severity = page`
+# if/when the operator wants to split them.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: himmel-telegram
+    group_by: ['alertname', 'flow', 'task', 'class', 'stage', 'job']
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h

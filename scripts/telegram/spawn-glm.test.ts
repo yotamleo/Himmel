@@ -2,7 +2,7 @@
 import { expect, test, beforeEach, spyOn } from "bun:test";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import {
   composeWorkerPrompt,
   composePointerPrompt,
@@ -1244,6 +1244,86 @@ test("executeRun: a plain failed run (no prompt-too-long tail) has NO failure_cl
     expect(meta.status).toBe("failed");
     expect(meta.failure_class).toBeUndefined();
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- HIMMEL-1575: startup-hang fail-fast watchdog ---
+// The transcript (~/.claude/projects/<mangled-cwd>/*.jsonl) is the discriminator:
+// it grows on every model response regardless of stdout buffering. Absent/frozen
+// transcript + banner-only stdout past the window = never-started -> kill +
+// failure_class=startup-hang. Growth or real output disarms permanently.
+
+const mangle = (p: string) => p.replace(/[^A-Za-z0-9]/g, "-");
+
+test("executeRun: startup watchdog kills a banner-only worker with no transcript and classifies startup-hang (HIMMEL-1575)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "glmwatch-"));
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const killed: number[] = [];
+    let releaseHang: () => void = () => {};
+    const hang = (async (_p: string, _c: string, _pm: unknown, _l: unknown, _m: unknown, _s: unknown, observe: any) => {
+      observe?.onSpawn?.(77);
+      observe?.onChunk?.("x".repeat(192)); // the banner — under the 512 B disarm floor
+      await new Promise<void>((r) => { releaseHang = r; });
+      return { code: 143, capped: false, blocked: false, timedOut: false, pid: 77, tail: "" };
+    }) as any;
+    await executeRun({
+      runSession: hang, prompt: "p", worktree: dir, sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs: 120, pollMs: 30, kill: (pid) => { killed.push(pid); releaseHang(); } },
+    });
+    expect(killed).toEqual([77]);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("failed");
+    expect(meta.failure_class).toBe("startup-hang");
+  } finally { stderr.mockRestore(); rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true }); }
+});
+
+test("executeRun: transcript growth DISARMS the watchdog — a quiet-but-healthy worker is never killed (HIMMEL-1575)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "glmwatch-"));
+  try {
+    const projDir = join(watchRoot, mangle(resolve(dir)));
+    mkdirSync(projDir, { recursive: true });
+    const transcript = join(projDir, "s.jsonl");
+    writeFileSync(transcript, "{\"role\":\"user\"}\n");
+    const killed: number[] = [];
+    const quiet = (async (_p: string, _c: string, _pm: unknown, _l: unknown, _m: unknown, _s: unknown, observe: any) => {
+      observe?.onSpawn?.(78);
+      observe?.onChunk?.("x".repeat(192)); // banner only on stdout the whole run
+      // the model responds — the transcript grows even though stdout stays quiet
+      await new Promise((r) => setTimeout(r, 60));
+      appendFileSync(transcript, "{\"role\":\"assistant\"}\n");
+      await new Promise((r) => setTimeout(r, 200)); // outlive the window
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 78, tail: "" };
+    }) as any;
+    const { code } = await executeRun({
+      runSession: quiet, prompt: "p", worktree: dir, sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs: 150, pollMs: 30, kill: (pid) => { killed.push(pid); } },
+    });
+    expect(killed).toEqual([]); // disarmed by growth — never killed despite silence past the window
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(metaPath, "utf8")).status).toBe("done");
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true }); }
+});
+
+test("executeRun: real output beyond the banner DISARMS the watchdog (HIMMEL-1575)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  const watchRoot = mkdtempSync(join(tmpdir(), "glmwatch-"));
+  try {
+    const killed: number[] = [];
+    const chatty = (async (_p: string, _c: string, _pm: unknown, _l: unknown, _m: unknown, _s: unknown, observe: any) => {
+      observe?.onSpawn?.(79);
+      observe?.onChunk?.("x".repeat(1024)); // well past the 512 B floor
+      await new Promise((r) => setTimeout(r, 220)); // outlive the window
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 79, tail: "" };
+    }) as any;
+    await executeRun({
+      runSession: chatty, prompt: "p", worktree: dir, sessionDir: dir, metaPath, runningMeta,
+      startupWatch: { rootDir: watchRoot, windowMs: 150, pollMs: 30, kill: (pid) => { killed.push(pid); } },
+    });
+    expect(killed).toEqual([]);
+    expect(JSON.parse(readFileSync(metaPath, "utf8")).status).toBe("done");
+  } finally { rmSync(dir, { recursive: true, force: true }); rmSync(watchRoot, { recursive: true, force: true }); }
 });
 
 test("executeRun: a run.log append failure does NOT flip a successful run to failed (#849)", async () => {

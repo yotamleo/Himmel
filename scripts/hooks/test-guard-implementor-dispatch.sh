@@ -110,6 +110,27 @@ BANK_BOTH_SPENT_CMD="printf 'claudex spent\\nglm spent\\n'"
 BANK_GARBAGE_CMD="printf 'claudex ???\\nglm ???\\n'"
 BANK_HANG_CMD="sleep 30"
 
+# HIMMEL-1626 lane-readiness fixtures. Same stub pattern as the bank probe:
+# run_hook injects a default ALL-READY stub via IMPL_GUARD_READINESS_CMD so
+# every pre-1626 case behaves unchanged (and the suite never spawns node per
+# case); each readiness-scenario test overrides it. The two end-to-end cases
+# (RC69/RC70) clear the stub to exercise the REAL scripts/lanes/
+# lane-readiness.mjs against a gated registry fixture + a ledger fixture.
+READY_ALL_CMD="printf 'claudex ready\\nglm ready\\n'"
+READY_CLAUDEX_DOWN_CMD="printf 'claudex down\\nglm ready\\n'"
+READY_BOTH_DOWN_CMD="printf 'claudex down\\nglm down\\n'"
+READY_GARBAGE_CMD="printf 'claudex ???\\nglm ???\\n'"
+READY_HANG_CMD="sleep 30"
+
+# Gated registry + ledger fixtures for the end-to-end (default-path) cases.
+REG_BOTH_GATED="$TMP/both-gated.json"
+printf '%s\n' '{"lanes":[{"id":"claudex","class":"impl","probe":{"kind":"always"},"readiness":{"passesRequired":2}},{"id":"glm","class":"impl","probe":{"kind":"always"},"readiness":{"passesRequired":2}}]}' > "$REG_BOTH_GATED"
+LEDGER_CLAUDEX_READY="$TMP/ledger-claudex-ready.jsonl"
+printf '%s\n' \
+    '{"v":1,"ev":"end","flow":"verify-return","note":"PASS HIMMEL-1 claudex/w1"}' \
+    '{"v":1,"ev":"end","flow":"verify-return","note":"PASS HIMMEL-1 claudex/w2"}' \
+    > "$LEDGER_CLAUDEX_READY"
+
 pass=0
 fail=0
 
@@ -189,7 +210,7 @@ run_hook() {
     # env would fail 127 before the hook ever ran -- RC31 would then be a
     # platform-dependent false RED that says nothing about the guard. BASH_ABS
     # is resolved once, above, from the suite's own unmodified PATH.
-    printf '%s' "$json" | env CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" PATH="$STUB_BUN_DIR:$PATH" IMPL_GUARD_BANK_STATUS_CMD="$BANK_FUNDED_CMD" "$@" "$BASH_ABS" "$HOOK" \
+    printf '%s' "$json" | env CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" PATH="$STUB_BUN_DIR:$PATH" IMPL_GUARD_BANK_STATUS_CMD="$BANK_FUNDED_CMD" IMPL_GUARD_READINESS_CMD="$READY_ALL_CMD" "$@" "$BASH_ABS" "$HOOK" \
         >"$TMP/out-$name" 2>"$TMP/err-$name"
     echo "$?"
 }
@@ -466,6 +487,70 @@ assert_contains "garbage still names the claudex dispatcher" "spawn-claudex" "$(
 # RC1 above (general-purpose + claudex available refuses) is the regression guard
 # proving a general-purpose implementation dispatch is still REFUSED — it runs
 # under the default all-funded stub, so it must keep passing unchanged.
+
+echo ""
+echo "=== HIMMEL-1626: a runnable+funded lane must also be READY ==="
+
+# 1. claudex down-listed, glm ready (both runnable + funded) -> the preferred
+# lane is skipped toward the ready one. The refusal must name GLM and must not
+# strand the caller toward the down-listed claudex lane.
+RC62=$(run_hook claudex-down-glm-ready "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" IMPL_GUARD_READINESS_CMD="$READY_CLAUDEX_DOWN_CMD" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "down-listed claudex falls through to ready glm, refuses" 2 "$RC62"
+assert_contains "down-claudex refusal names the glm dispatcher" "bun scripts/telegram/spawn-glm.ts '<prompt>' --name <slug> --timeout-mins <n>" "$(cat "$TMP/err-claudex-down-glm-ready")"
+assert_contains "down-claudex warns why claudex was skipped" "readiness gate is unmet" "$(cat "$TMP/err-claudex-down-glm-ready")"
+assert_not_contains "down-claudex does NOT name the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-claudex-down-glm-ready")"
+
+# 2. THE ticket case: BOTH lanes runnable AND funded but down-listed -> NO lane
+# refusal; control falls through to the independent HIMMEL-920 bank guard (low
+# bank here -> allow). A down-listed lane must not veto the in-process
+# Claude-tier dispatch.
+RC63=$(run_hook both-down "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" IMPL_GUARD_READINESS_CMD="$READY_BOTH_DOWN_CMD" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "runnable+funded but down-listed lanes do not veto (low bank -> allow)" 0 "$RC63"
+assert_contains "both-down warns claudex gate unmet" "lane 'claudex' is runnable but its readiness gate is unmet" "$(cat "$TMP/err-both-down")"
+assert_contains "both-down warns glm gate unmet" "lane 'glm' is runnable but its readiness gate is unmet" "$(cat "$TMP/err-both-down")"
+assert_not_contains "both-down emits NO lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-both-down")"
+
+# 2b. A probe that emits `down` AND exits NON-ZERO must be treated as READY —
+# `down` is the one arm that skips a lane, and a crashed probe can still have
+# written a partial `<lane> down` line. rc is checked BEFORE parsing.
+RC64=$(run_hook down-but-rc-nonzero "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" IMPL_GUARD_READINESS_CMD="printf 'claudex down\\nglm down\\n'; exit 3" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "down+rc!=0 fails OPEN: claudex stays eligible, hook refuses toward it" 2 "$RC64"
+assert_contains "down+rc!=0 warns the probe did not finish cleanly" "did not finish cleanly (rc=3)" "$(cat "$TMP/err-down-but-rc-nonzero")"
+assert_contains "down+rc!=0 treats the lane as ready" "treating it as ready (fail-open)" "$(cat "$TMP/err-down-but-rc-nonzero")"
+assert_not_contains "down+rc!=0 does NOT accept the partial down verdict" "readiness gate is unmet" "$(cat "$TMP/err-down-but-rc-nonzero")"
+
+# 3. Fail-open: garbage output, a timed-out probe, a missing helper (default
+# path), and a missing lane line all treat the lane as READY — the refusal is
+# unchanged from pre-1626 behaviour (still refuses toward claudex).
+RC65=$(run_hook ready-garbage "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" IMPL_GUARD_READINESS_CMD="$READY_GARBAGE_CMD" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "garbage readiness output fail-opens to claudex refusal" 2 "$RC65"
+assert_contains "garbage readiness fail-open warns" "unrecognised state" "$(cat "$TMP/err-ready-garbage")"
+
+RC66=$(run_hook ready-timeout "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" IMPL_GUARD_READINESS_CMD="$READY_HANG_CMD" IMPL_GUARD_READINESS_BUDGET_SECS=1 IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "timed-out readiness probe fail-opens to claudex refusal" 2 "$RC66"
+assert_contains "readiness timeout fail-open warns" "did not finish cleanly" "$(cat "$TMP/err-ready-timeout")"
+
+RC67=$(run_hook ready-helper-missing "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" CLAUDE_PROJECT_DIR="$FAKE_REPO_NO_BANK" IMPL_GUARD_READINESS_CMD="" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "missing readiness helper fail-opens to claudex refusal" 2 "$RC67"
+assert_contains "missing readiness helper warns" "readiness probe is missing" "$(cat "$TMP/err-ready-helper-missing")"
+
+RC68=$(run_hook ready-no-line "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" IMPL_GUARD_READINESS_CMD="printf 'glm ready\\n'" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "readiness output without the lane's line fail-opens to refusal" 2 "$RC68"
+assert_contains "missing lane line warns" "returned no 'claudex' line" "$(cat "$TMP/err-ready-no-line")"
+
+# 4. End-to-end through the REAL probe (IMPL_GUARD_READINESS_CMD cleared ->
+# default path runs scripts/lanes/lane-readiness.mjs against a GATED registry
+# fixture): a measured 2-pass ledger graduates claudex -> refusal; a missing
+# ledger keeps both gated lanes down -> no veto. Proves the default wiring,
+# LANES_REGISTRY plumbing, and the ledger measurement, not just the stub seam.
+RC69=$(run_hook e2e-measured-ready "$REG_BOTH_GATED" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" IMPL_GUARD_READINESS_CMD="" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_CLAUDEX_READY" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "measured 2-pass ledger graduates claudex, refuses toward it" 2 "$RC69"
+assert_contains "measured-ready refusal names the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-e2e-measured-ready")"
+
+RC70=$(run_hook e2e-measured-down "$REG_BOTH_GATED" "$(payload general-purpose sonnet 'Implement HIMMEL-1626' 'Write the code and commit it.')" IMPL_GUARD_READINESS_CMD="" HIMMEL_FLOW_RUNS_LEDGER="$TMP/no-such-ledger.jsonl" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "no ledger evidence keeps gated lanes down, does not veto" 0 "$RC70"
+assert_contains "measured-down warns the gate is unmet" "readiness gate is unmet" "$(cat "$TMP/err-e2e-measured-down")"
+assert_not_contains "measured-down emits NO lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-e2e-measured-down")"
 
 echo ""
 echo "=== HIMMEL-1617: descriptive fix mentions and plan-shaped briefs ==="

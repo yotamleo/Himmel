@@ -740,6 +740,12 @@ $prometheusConfig = Join-Path $stateRoot 'prometheus.yml'
 Copy-Item -LiteralPath (Join-Path $scriptDir 'prometheus.yml') -Destination $prometheusConfig -Force
 
 $grafanaIni = Join-Path $stateRoot 'grafana.ini'
+# HIMMEL-924: grafana-provisioning holds a machine-local COPY of
+# scripts/observability/provisioning/ (copied below, same pattern as
+# prometheus.yml) -- Grafana reads its provisioning tree from [paths]
+# provisioning, so alert rules/contact points/the Prometheus datasource all
+# load without a manual step.
+$grafanaProvisioning = Join-Path $stateRoot 'grafana-provisioning'
 @"
 [server]
 http_addr = 127.0.0.1
@@ -749,7 +755,68 @@ http_port = 3000
 data = $($grafanaData.Replace('\', '/'))
 logs = $($grafanaLogs.Replace('\', '/'))
 plugins = $($grafanaPlugins.Replace('\', '/'))
+provisioning = $($grafanaProvisioning.Replace('\', '/'))
 "@ | Set-Content -LiteralPath $grafanaIni -Encoding utf8
+
+# Copy scripts/observability/provisioning/'s CONTENTS into the state root,
+# mirroring the prometheus.yml copy above -- none of these files hold
+# machine paths, so a plain recursive copy (no templating) is enough. Source
+# uses a trailing \* so a re-run merges into an existing $grafanaProvisioning
+# instead of nesting a second "provisioning" folder inside it (Copy-Item
+# -Recurse copies a directory ARGUMENT into an already-existing destination
+# rather than overwriting its contents; globbing the source's contents is
+# the idempotent form).
+New-Item -ItemType Directory -Path $grafanaProvisioning -Force | Out-Null
+Copy-Item -Path (Join-Path $scriptDir 'provisioning\*') -Destination $grafanaProvisioning -Recurse -Force
+
+# HIMMEL-924 -- RATIFIED F3: seed the two env vars contact-points.yaml
+# interpolates ($GRAFANA_TELEGRAM_BOT_TOKEN / $GRAFANA_TELEGRAM_CHAT_ID),
+# persisted at User scope so the logon-triggered Grafana task inherits them.
+# Reuses the Telegram bridge's already-provisioned bot token and chat_id --
+# the exact same sources luna-sync-alert.ts reads (HIMMEL-1199 precedent) --
+# because Telegram's "one poller per bot token" constraint is specific to
+# long-polling (getUpdates)/webhook registration; a sendMessage-only caller,
+# which is all Grafana's Telegram notifier ever does, cannot collide with
+# the bridge's poller regardless of how many processes hold the token. See
+# README.md's "Alerting" section for the full writeup. This step is
+# NON-FATAL and never overwrites an operator-set value: an operator who
+# wants a SEPARATE bot token (the design's other sanctioned option) can set
+# both variables themselves before running the installer.
+if (-not [Environment]::GetEnvironmentVariable('GRAFANA_TELEGRAM_BOT_TOKEN', 'User')) {
+  try {
+    $bridgeEnvPath = Join-Path $env:USERPROFILE '.claude\channels\telegram\.env'
+    $tokenLine = Get-Content -LiteralPath $bridgeEnvPath -ErrorAction Stop | Where-Object { $_ -match '^\s*TELEGRAM_BOT_TOKEN\s*=\s*(.+)$' } | Select-Object -First 1
+    if ($tokenLine -match '^\s*TELEGRAM_BOT_TOKEN\s*=\s*(.+)$') {
+      [Environment]::SetEnvironmentVariable('GRAFANA_TELEGRAM_BOT_TOKEN', $Matches[1].Trim(), 'User')
+      Write-Step 'Seeded GRAFANA_TELEGRAM_BOT_TOKEN from the Telegram bridge .env (reused token, sendMessage-only use).'
+    } else {
+      Write-Warning "TELEGRAM_BOT_TOKEN not found in $bridgeEnvPath -- Grafana's Telegram contact point will not send until GRAFANA_TELEGRAM_BOT_TOKEN is set manually (see README.md)."
+    }
+  } catch {
+    Write-Warning "Could not read the Telegram bridge .env to seed GRAFANA_TELEGRAM_BOT_TOKEN ($($_.Exception.Message)) -- set it manually (see README.md)."
+  }
+}
+if (-not [Environment]::GetEnvironmentVariable('GRAFANA_TELEGRAM_CHAT_ID', 'User')) {
+  try {
+    $accessJsonPath = Join-Path $env:USERPROFILE '.claude\channels\telegram\access.json'
+    $access = Get-Content -LiteralPath $accessJsonPath -ErrorAction Stop -Raw | ConvertFrom-Json
+    $chatId = $access.allowFrom | Select-Object -First 1
+    if ($chatId) {
+      [Environment]::SetEnvironmentVariable('GRAFANA_TELEGRAM_CHAT_ID', "$chatId", 'User')
+      Write-Step 'Seeded GRAFANA_TELEGRAM_CHAT_ID from the Telegram bridge access.json (allowFrom[0]).'
+    } else {
+      Write-Warning "access.json's allowFrom is empty at $accessJsonPath -- Grafana's Telegram contact point will not send until GRAFANA_TELEGRAM_CHAT_ID is set manually (see README.md)."
+    }
+  } catch {
+    Write-Warning "Could not read the Telegram bridge access.json to seed GRAFANA_TELEGRAM_CHAT_ID ($($_.Exception.Message)) -- set it manually (see README.md)."
+  }
+}
+# A logon-triggered task inherits the User-scope environment block computed
+# at the TASK's own logon, not this installer's already-running session --
+# refresh this process's view too so a same-session Grafana restart (rare,
+# but harmless to cover) also picks up a freshly-seeded value.
+$env:GRAFANA_TELEGRAM_BOT_TOKEN = [Environment]::GetEnvironmentVariable('GRAFANA_TELEGRAM_BOT_TOKEN', 'User')
+$env:GRAFANA_TELEGRAM_CHAT_ID = [Environment]::GetEnvironmentVariable('GRAFANA_TELEGRAM_CHAT_ID', 'User')
 
 $grafanaBin = Split-Path -Parent $grafanaExe
 if ($grafanaBin -like '*\scoop\shims*') {

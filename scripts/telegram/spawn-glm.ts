@@ -4,11 +4,11 @@
 // paths), run.log persistence from the returned tail, meta.json transitions.
 // Sessions live under <BRIDGE_ROOT>/glm-sessions/ — the live poller scans ONLY
 // <root>/sessions/, so nothing here can be double-spawned or Telegram-flushed.
-import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, statSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, statSync, renameSync, unlinkSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
-import { runSession, BASH_BIN, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow, type RunObserver } from "./run";
+import { runSession, killTree, BASH_BIN, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow, type RunObserver } from "./run";
 import { checkGlmGuards } from "./glm-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, glmContextPreset, type SettingsConflict, type GlmUsage } from "./glm-env";
 import { appendQuotaGauge, buildGlmRow, isGlmPeak } from "./quota-gauge";
@@ -966,6 +966,9 @@ export async function executeRun(deps: {
   // HIMMEL-1040: the resolved `--settings` plugin-profile payload (undefined =
   // operator profile / no injection). Threaded to runSession's 6th arg.
   settings?: string;
+  // HIMMEL-1575 test seams for the startup-hang watchdog (all optional; prod
+  // callers pass nothing and get the env-tunable defaults below).
+  startupWatch?: { rootDir?: string; windowMs?: number; pollMs?: number; kill?: (pid: number) => void };
 }): Promise<{ code: number }> {
   // HIMMEL-1378: live observability. A worker that hangs at its very first
   // tool call (the documented HIMMEL-203 shape — a native permission prompt
@@ -986,6 +989,64 @@ export async function executeRun(deps: {
   let liveChunksSeen = false;
   let livePid: number | undefined;
   const runLogPath = join(deps.sessionDir, "run.log");
+  // HIMMEL-1575: startup-hang fail-fast. ~30% of dispatches die having written
+  // NOTHING beyond the 192-byte banner — the worker process is alive for the
+  // whole RUN_TIMEOUT window but the model never responds (72 of 73 timeouts in
+  // the measured history; 30h of wall-clock burned waiting). stdout is NOT the
+  // discriminator (a healthy interactive worker also sits at 192 B and flushes
+  // at the end — the 1560 case), so the watchdog reads the session TRANSCRIPT
+  // (~/.claude/projects/<mangled-cwd>/*.jsonl): Claude Code appends it on every
+  // model response, independent of stdout buffering. Growth = the model
+  // answered = permanently disarm. SIZE, never mtime — mtime advances on a
+  // frozen file (the 3h-dead-session trap). Fires only inside the startup
+  // window and only when the transcript never grew AND stdout stayed at the
+  // banner; every error path disarms (fail-open — this must never kill a
+  // healthy worker on the watchdog's own bugs). Killed runs are classified
+  // failure_class="startup-hang" so the lane's accounting finally separates
+  // never-started from ran-then-timed-out (the ticket's step 1).
+  let startupHang = false;
+  let outputBytes = 0;
+  let watchTimer: ReturnType<typeof setInterval> | undefined;
+  const disarmWatch = () => { if (watchTimer !== undefined) { clearInterval(watchTimer); watchTimer = undefined; } };
+  const failfastMins = Number(process.env.GLM_STARTUP_FAILFAST_MINS ?? 10);
+  const watchWindowMs = deps.startupWatch?.windowMs ?? (Number.isFinite(failfastMins) && failfastMins > 0 ? failfastMins * 60_000 : 0);
+  if (watchWindowMs > 0) {
+    const rootDir = deps.startupWatch?.rootDir ?? join(homedir(), ".claude", "projects");
+    const projDir = join(rootDir, resolve(deps.worktree).replace(/[^A-Za-z0-9]/g, "-"));
+    const killWorker = deps.startupWatch?.kill
+      ?? ((pid: number) => killTree(pid, (sig) => { try { process.kill(pid, sig as NodeJS.Signals); } catch { /* already gone */ } }));
+    const watchStart = Date.now();
+    let baseline: number | undefined;
+    watchTimer = setInterval(() => {
+      try {
+        // Newest session transcript born around/after spawn (60s clock slack).
+        let size = -1;
+        if (existsSync(projDir)) {
+          let newest = -1;
+          for (const f of readdirSync(projDir)) {
+            if (!f.endsWith(".jsonl")) continue;
+            const st = statSync(join(projDir, f));
+            if (st.mtimeMs >= watchStart - 60_000 && st.mtimeMs > newest) { newest = st.mtimeMs; size = st.size; }
+          }
+        }
+        if (size >= 0) {
+          if (baseline === undefined) { baseline = size; }
+          else if (size > baseline) { disarmWatch(); return; } // model responded — healthy, stand down for good
+        }
+        if (Date.now() - watchStart >= watchWindowMs) {
+          disarmWatch();
+          if (livePid !== undefined && outputBytes <= 512) {
+            startupHang = true;
+            console.error(`spawn-glm: STARTUP HANG (HIMMEL-1575) — no transcript growth and no output beyond the banner within ${Math.round(watchWindowMs / 60_000)} min; killing pid ${livePid} instead of burning the full run window (disable/tune: GLM_STARTUP_FAILFAST_MINS, 0=off)`);
+            killWorker(livePid);
+          }
+        }
+      } catch (e) {
+        disarmWatch(); // fail-open: a watchdog error must never decide a worker's fate
+        console.error(`spawn-glm: startup watchdog disabled after error (non-fatal): ${String((e as any)?.message ?? e)}`);
+      }
+    }, deps.startupWatch?.pollMs ?? 45_000);
+  }
   const writeRunningMeta = (extra: Record<string, unknown>) => {
     // HIMMEL-1404 CR/T14: write-then-rename, not a truncating in-place write —
     // await-glm-worker.sh polls this same file every POLL_SECS, and a read
@@ -998,6 +1059,8 @@ export async function executeRun(deps: {
     onSpawn: (pid) => { livePid = pid; writeRunningMeta({ pid, last_output_at: new Date().toISOString() }); },
     onChunk: (chunk) => {
       liveChunksSeen = true;
+      outputBytes += chunk.length;
+      if (outputBytes > 512) disarmWatch(); // real output beyond the banner — not the 1575 class
       try { appendFileSync(runLogPath, chunk); }
       catch (e) { console.error(`spawn-glm: live run.log append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
       writeRunningMeta({ pid: livePid ?? 0, last_output_at: new Date().toISOString() });
@@ -1005,6 +1068,7 @@ export async function executeRun(deps: {
   };
   try {
     const res = await deps.runSession(deps.prompt, deps.worktree, deps.permMode, "glm", undefined, deps.settings, observe);
+    disarmWatch(); // the run is over either way — never let the interval outlive it
     // run.log append is COSMETIC persistence (the debug tail). Isolate it (#849):
     // an I/O failure here (EACCES/EISDIR/ENOSPC) must NOT throw into the outer
     // catch — that writes status:failed + rethrows, flipping a successful run to
@@ -1018,6 +1082,14 @@ export async function executeRun(deps: {
     }
     const fm = finalMeta(res.code, res.pid, res.capped, res.blocked, res.timedOut);
     writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm }, null, 2));
+    // HIMMEL-1575: a watchdog-killed run is a classified startup hang, not a
+    // generic failure — the lane's accounting must separate never-started
+    // (clean tree, banner-only log) from ran-then-timed-out (dirty tree,
+    // >192 B). Mirrors the prompt-too-long classification below.
+    if (startupHang && (fm.status === "failed" || fm.status === "timeout")) {
+      writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm, failure_class: "startup-hang" }, null, 2));
+      console.error("spawn-glm: run classified startup-hang (HIMMEL-1575) — the model never responded; killed at the fail-fast window instead of the full run cap. Do NOT blind-retry as primary mitigation; the base rate is ~30%.");
+    }
     // HIMMEL-740: an honest failure_class for the submit-reject. ONLY on a bare
     // `failed` (a capped/blocked/timeout run is a distinct terminal state, handled
     // below/elsewhere) whose tail carries the reject. Base status stays "failed" —
@@ -1078,6 +1150,7 @@ export async function executeRun(deps: {
     }
     return { code: res.code };
   } catch (e) {
+    disarmWatch(); // a thrown run must not leave the interval holding the event loop
     writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, status: "failed", exit_code: -1, pid: 0 }, null, 2));
     throw e;
   }

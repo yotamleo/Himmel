@@ -5,10 +5,27 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { ledgerPath as flowRunLedgerPath, type FlowRunEnd, type FlowRunRow, type FlowRunStart } from "../telegram/flow-run-ledger";
 import { ledgerPath as quotaGaugeLedgerPath } from "../telegram/quota-gauge";
+import {
+  ledgerPath as sessionRunLedgerPath,
+  SESSION_END_REASONS,
+  SUBAGENT_OUTCOMES,
+  type SessionEndRow,
+  type SessionRunRow,
+  type SessionStartRow,
+  type SubagentEndRow,
+  type SubagentStartRow,
+} from "./session-run-ledger";
 import { defaultClaudeCachePath, readClaudeBank, readCodexBank, readGlmBank, readLaneQuotaTargets, type BankId, type BankResult } from "./quota-sources";
 
 const LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_STALL_DEADLINE_SECONDS = 6 * 60 * 60;
+// HIMMEL-1052: transcript inactivity that flips an unpaired session_start from
+// `running` to `dead`. Deliberately generous — an interactive session waiting
+// on the operator (mid-thought, on a permission prompt, at lunch) writes
+// nothing to its transcript either, and calling that dead would be worse than
+// a late crash detection. Operator-tunable via
+// `observability.json` -> `sessions.stale_after_seconds`.
+const DEFAULT_SESSION_STALE_AFTER_SECONDS = 15 * 60;
 const CACHE_TTL_MS = 60 * 1000;
 const SCHEDULER_QUERY_TIMEOUT_MS = 10 * 1000;
 const HOST_DETECTOR_TIMEOUT_MS = 10 * 1000;
@@ -40,6 +57,10 @@ export type ObservabilityConfig = {
   // consumers runtime-validate it (validateGraphifyRepos) rather than trusting
   // this static type at the JSON.parse boundary.
   graphify_repos?: Array<{ corpus: string; repo_path: string; default_branch?: string }>;
+  // HIMMEL-1052: session/subagent liveness tuning. Same shape discipline as
+  // flows[].stall_deadline_seconds — one number, operator-edited, validated at
+  // read time rather than trusted from this static type.
+  sessions?: { stale_after_seconds?: number };
 };
 
 type ScheduledTaskSample = {
@@ -98,6 +119,7 @@ export type RenderMetricsOptions = {
   configPath?: string;
   flowLedgerPath?: string;
   quotaLedgerPath?: string;
+  sessionLedgerPath?: string;
   lanesPath?: string;
   fetchHealthStatePath?: string;
   platform?: NodeJS.Platform;
@@ -301,7 +323,319 @@ function buildFlowMetrics(path: string, config: ObservabilityConfig, nowMs: numb
   addFamily(lines, "flow_run_in_flight", "Unpaired start rows still within the flow stall deadline.", "gauge",
     stats.map((s) => sample("flow_run_in_flight", { flow: s.flow }, s.inFlight)));
 
+  // HIMMEL-924: the declared cadence_seconds, verbatim from observability.json,
+  // for the last-success-age alert rule's "2x cadence period (per-flow from
+  // config)" threshold (design §5). Omitted for flows with no declared
+  // cadence_seconds — an alert rule joining on this series never fires for
+  // them, matching the "dark tile, not a fabricated healthy/unhealthy state"
+  // rule for uninstrumented flows (design §1.3).
+  addFamily(lines, "flow_cadence_seconds", "Declared cadence_seconds from observability.json, verbatim.", "gauge",
+    [...(config.flows ?? [])]
+      .filter((f) => f.name && f.cadence_seconds && f.cadence_seconds > 0)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((f) => sample("flow_cadence_seconds", { flow: f.name }, f.cadence_seconds!)));
+
   return { lines, ledgerRows };
+}
+
+// ===========================================================================
+// HIMMEL-1052 — live session + subagent tracking
+// ===========================================================================
+// Sibling of the flow fold above, NOT a replacement: flows are the five
+// pipeline-cadence legs, this is the operator's interactive/foreground Claude
+// Code sessions and the Task-tool subagents fanned out inside them. Same
+// passive-reader charter — this half only reads `session-runs.jsonl` (written
+// by scripts/observability/session-run-hook.ts from existing hook
+// chokepoints) plus the transcript files' mtimes.
+//
+// LIVENESS IS THE LOAD-BEARING DECISION, and it is why this cannot reuse
+// foldFlowLedger unmodified. A flow has a known cadence, so an unpaired start
+// past `cadence*2` is stalled. An interactive session has no cadence and can
+// legitimately sit idle for a long time waiting on the operator. Wall-clock
+// age alone therefore cannot tell "thinking" from "died three hours ago".
+// The transcript file can: it advances exactly while, and only while, the
+// session is doing something — independent of whether any hook fired cleanly
+// at exit. So an unpaired `session_start` is `running` while its transcript
+// mtime is fresh and `dead` once it goes stale, and a session with a matching
+// `session_end` row is `ended`, tagged by reason.
+
+export type SessionStatus = "running" | "dead" | "ended";
+
+// The per-session detail view. This is served as JSON (GET /sessions.json),
+// NOT as Prometheus labels: `session_id` is unique per occurrence and
+// unbounded over time, and putting it in a label set is the textbook
+// cardinality explosion. Metrics below stay aggregated; detail lives here.
+export type SessionView = {
+  session_id: string;
+  cwd: string | null;
+  host: string;
+  started_at: string;
+  status: SessionStatus;
+  end_reason: string | null;
+  age_seconds: number;
+  // Seconds since the transcript last advanced. null = the transcript path is
+  // absent or unreadable, which is reported as unknown, never as 0.
+  last_activity_seconds: number | null;
+  subagents_started: number;
+  subagents_active: number;
+};
+
+const SESSION_LABEL_MAX_CHARS = 64;
+
+// Label values here originate in hook payloads (a hostname, an Agent tool's
+// `subagent_type`) rather than a fixed in-repo enum, so they are sanitized
+// before rendering: control characters — carriage return in particular, which
+// escLabel does NOT escape — would inject a new exposition line, and an
+// unbounded string would bloat every series name it appears in.
+function sanitizeLabelValue(raw: unknown, fallback = "unknown"): string {
+  if (typeof raw !== "string") return fallback;
+  const cleaned = raw.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  if (!cleaned) return fallback;
+  return cleaned.length > SESSION_LABEL_MAX_CHARS ? cleaned.slice(0, SESSION_LABEL_MAX_CHARS) : cleaned;
+}
+
+function sessionStaleAfterSeconds(config: ObservabilityConfig): number {
+  const declared = config.sessions?.stale_after_seconds;
+  return typeof declared === "number" && Number.isFinite(declared) && declared > 0
+    ? declared
+    : DEFAULT_SESSION_STALE_AFTER_SECONDS;
+}
+
+function sessionRowTimestampMs(row: SessionRunRow): number {
+  const ts = row.ev === "start"
+    ? (row as SessionStartRow | SubagentStartRow).started_at
+    : (row as SessionEndRow | SubagentEndRow).ended_at;
+  const ms = typeof ts === "string" ? Date.parse(ts) : NaN;
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function isSessionRunRow(raw: unknown): raw is SessionRunRow {
+  if (!raw || typeof raw !== "object") return false;
+  const r = raw as Record<string, unknown>;
+  if (r.v !== 1) return false;
+  if (r.kind !== "session" && r.kind !== "subagent") return false;
+  if (r.ev !== "start" && r.ev !== "end") return false;
+  if (r.kind === "session") return typeof r.session_id === "string" && r.session_id.length > 0;
+  return typeof r.subagent_id === "string" && r.subagent_id.length > 0
+    && typeof r.parent_session_id === "string" && r.parent_session_id.length > 0;
+}
+
+export function parseSessionLedgerRows(path: string, nowMs: number): { rows: SessionRunRow[]; ledgerRows: number } {
+  const cutoff = nowMs - LOOKBACK_MS;
+  const rows: SessionRunRow[] = [];
+  for (const p of [path + ".1", path]) {
+    if (!existsSync(p)) continue;
+    let text: string;
+    try {
+      text = readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isSessionRunRow(parsed)) continue;
+      const ms = sessionRowTimestampMs(parsed);
+      if (!Number.isFinite(ms) || ms < cutoff || ms > nowMs + 60_000) continue;
+      rows.push(parsed);
+    }
+  }
+  return { rows, ledgerRows: rows.length };
+}
+
+// Seconds since the transcript last advanced, or null when it cannot be read.
+// Clamped at 0: a clock skew that puts the mtime slightly in the future must
+// read as "just now", not as a negative age.
+function transcriptIdleSeconds(path: string | null, nowMs: number): number | null {
+  if (!path) return null;
+  try {
+    const mtimeMs = statSync(path).mtimeMs;
+    if (!Number.isFinite(mtimeMs)) return null;
+    return Math.max(0, (nowMs - mtimeMs) / 1000);
+  } catch {
+    return null;
+  }
+}
+
+type SessionFold = {
+  sessions: SessionView[];
+  endRows: SessionEndRow[];
+  subagentStarts: SubagentStartRow[];
+  subagentEndIds: Set<string>;
+  subagentEnds: SubagentEndRow[];
+};
+
+export function foldSessionLedger(rows: SessionRunRow[], nowMs: number, staleAfterSeconds: number): SessionFold {
+  const starts = new Map<string, SessionStartRow>();
+  const ends = new Map<string, SessionEndRow>();
+  const subagentStarts = new Map<string, SubagentStartRow>();
+  const subagentEnds = new Map<string, SubagentEndRow>();
+
+  for (const row of rows) {
+    if (row.kind === "session") {
+      if (row.ev === "start") starts.set(row.session_id, row);
+      else ends.set(row.session_id, row);
+      continue;
+    }
+    if (row.ev === "start") subagentStarts.set(row.subagent_id, row);
+    else subagentEnds.set(row.subagent_id, row);
+  }
+
+  const statuses = new Map<string, SessionStatus>();
+  const views: SessionView[] = [];
+  for (const start of starts.values()) {
+    const end = ends.get(start.session_id);
+    const idle = transcriptIdleSeconds(start.transcript_path, nowMs);
+    const startedMs = Date.parse(start.started_at);
+    const ageSeconds = Number.isFinite(startedMs) ? Math.max(0, (nowMs - startedMs) / 1000) : 0;
+    // A transcript we cannot read is NOT evidence of life: fall back to the
+    // session's own age against the same threshold, so a session whose
+    // transcript never appeared (or was cleaned up) ages into `dead` instead
+    // of being counted as running forever.
+    const activitySeconds = idle ?? ageSeconds;
+    const status: SessionStatus = end ? "ended" : activitySeconds <= staleAfterSeconds ? "running" : "dead";
+    statuses.set(start.session_id, status);
+    views.push({
+      session_id: start.session_id,
+      cwd: start.cwd,
+      host: sanitizeLabelValue(start.host),
+      started_at: start.started_at,
+      status,
+      end_reason: end ? sanitizeLabelValue(end.reason, "other") : null,
+      age_seconds: ageSeconds,
+      last_activity_seconds: idle,
+      subagents_started: 0,
+      subagents_active: 0,
+    });
+  }
+
+  const viewById = new Map(views.map((v) => [v.session_id, v]));
+  for (const sub of subagentStarts.values()) {
+    const view = viewById.get(sub.parent_session_id);
+    if (!view) continue;
+    view.subagents_started++;
+    // A subagent counts as ACTIVE only while its parent session is running.
+    // Deliberate narrowing of the design draft's plain "start row with no end
+    // row": a subagent whose parent crashed can never emit its end row, so an
+    // unqualified reading would leave phantom subagents pinned live for the
+    // whole 14d window — the exact false-positive this ticket exists to kill.
+    if (!subagentEnds.has(sub.subagent_id) && statuses.get(sub.parent_session_id) === "running") {
+      view.subagents_active++;
+    }
+  }
+
+  views.sort((a, b) => (b.started_at.localeCompare(a.started_at)) || a.session_id.localeCompare(b.session_id));
+  return {
+    sessions: views,
+    endRows: [...ends.values()],
+    subagentStarts: [...subagentStarts.values()],
+    subagentEndIds: new Set(subagentEnds.keys()),
+    subagentEnds: [...subagentEnds.values()],
+  };
+}
+
+function buildSessionMetrics(path: string, config: ObservabilityConfig, nowMs: number): { lines: string[]; ledgerRows: number } {
+  const { rows, ledgerRows } = parseSessionLedgerRows(path, nowMs);
+  const staleAfterSeconds = sessionStaleAfterSeconds(config);
+  const fold = foldSessionLedger(rows, nowMs, staleAfterSeconds);
+  const lines: string[] = [];
+
+  // Per host: a zeroed entry for every host observed in the window, so the
+  // gauges stay present (and a dead-session alert stays evaluable) once the
+  // last live session on that host goes away.
+  const byHost = new Map<string, { active: number; dead: number }>();
+  for (const view of fold.sessions) {
+    const bucket = byHost.get(view.host) ?? { active: 0, dead: 0 };
+    if (view.status === "running") bucket.active++;
+    if (view.status === "dead") bucket.dead++;
+    byHost.set(view.host, bucket);
+  }
+  const hosts = [...byHost.keys()].sort((a, b) => a.localeCompare(b));
+
+  addFamily(lines, "session_active_total", "Claude Code sessions with an unpaired start row whose transcript is still advancing (HIMMEL-1052).", "gauge",
+    hosts.map((host) => sample("session_active_total", { host }, byHost.get(host)!.active)));
+  addFamily(lines, "session_dead_total", "Sessions with an unpaired start row whose transcript went stale — crashed, killed, or wedged. SessionEnd never fires for these, so a purely start/end-paired ledger cannot see them.", "gauge",
+    hosts.map((host) => sample("session_dead_total", { host }, byHost.get(host)!.dead)));
+
+  const reasonCounts = new Map<string, number>();
+  for (const reason of SESSION_END_REASONS) reasonCounts.set(reason, 0);
+  for (const end of fold.endRows) {
+    const reason = sanitizeLabelValue(end.reason, "other");
+    // Closed enum: the writer already normalizes, but a hand-edited or
+    // foreign row must not open an unbounded label.
+    const key = reasonCounts.has(reason) ? reason : "other";
+    reasonCounts.set(key, (reasonCounts.get(key) ?? 0) + 1);
+  }
+  addFamily(lines, "session_end_outcome_total", "Graceful session_end rows by reason in the sliding 14d ledger window; window slides read as counter resets, same caveat as flow_run_outcome_total.", "counter",
+    fold.endRows.length > 0 ? SESSION_END_REASONS.map((reason) => sample("session_end_outcome_total", { reason }, reasonCounts.get(reason) ?? 0)) : []);
+
+  // (host, subagent_type) pairs: host is resolved through the PARENT session's
+  // start row — the subagent rows deliberately carry no host of their own
+  // rather than duplicating a field that can be joined.
+  const viewBySession = new Map(fold.sessions.map((v) => [v.session_id, v]));
+  const typeBySubagent = new Map(fold.subagentStarts.map((s) => [s.subagent_id, sanitizeLabelValue(s.subagent_type)]));
+  const activeByPair = new Map<string, number>();
+  for (const sub of fold.subagentStarts) {
+    const parent = viewBySession.get(sub.parent_session_id);
+    const host = parent?.host ?? "unknown";
+    const subagentType = typeBySubagent.get(sub.subagent_id) ?? "unknown";
+    const key = `${host}\u0000${subagentType}`;
+    const current = activeByPair.get(key) ?? 0;
+    const active = !fold.subagentEndIds.has(sub.subagent_id) && parent?.status === "running";
+    activeByPair.set(key, current + (active ? 1 : 0));
+  }
+  addFamily(lines, "subagent_active_total", "Task-tool subagents with an unpaired start row under a still-running parent session (HIMMEL-1052).", "gauge",
+    [...activeByPair.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, count]) => {
+        const [host, subagent_type] = key.split("\u0000");
+        return sample("subagent_active_total", { host, subagent_type }, count);
+      }));
+
+  const outcomeByType = new Map<string, Map<string, number>>();
+  for (const end of fold.subagentEnds) {
+    const subagentType = typeBySubagent.get(end.subagent_id) ?? "unknown";
+    const outcome = sanitizeLabelValue(end.outcome, "unknown");
+    const key = (SUBAGENT_OUTCOMES as readonly string[]).includes(outcome) ? outcome : "unknown";
+    let byOutcome = outcomeByType.get(subagentType);
+    if (!byOutcome) {
+      byOutcome = new Map(SUBAGENT_OUTCOMES.map((o) => [o as string, 0]));
+      outcomeByType.set(subagentType, byOutcome);
+    }
+    byOutcome.set(key, (byOutcome.get(key) ?? 0) + 1);
+  }
+  addFamily(lines, "subagent_outcome_total", "Subagent end rows by coarse outcome in the sliding 14d ledger window. `unknown` means the tool response could not be classified, never an assumed success.", "counter",
+    [...outcomeByType.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .flatMap(([subagent_type, byOutcome]) => SUBAGENT_OUTCOMES.map((outcome) => sample("subagent_outcome_total", { subagent_type, outcome }, byOutcome.get(outcome) ?? 0))));
+
+  return { lines, ledgerRows };
+}
+
+// GET /sessions.json — the per-session table panel's data path (the design
+// draft's Open Question 3, answered as "an endpoint on the existing exporter"
+// rather than a second script + datasource, so there is one reader and one
+// liveness rule). Still a pure read: same ledger, same fold, no writes.
+export function renderSessionsJson(options: RenderMetricsOptions = {}): string {
+  const env = options.env ?? process.env;
+  const nowMs = options.nowMs ?? Date.now();
+  const cfg = readConfig(options.configPath ?? configPath(env));
+  const staleAfterSeconds = sessionStaleAfterSeconds(cfg);
+  const path = options.sessionLedgerPath ?? sessionRunLedgerPath(env);
+  const { rows, ledgerRows } = parseSessionLedgerRows(path, nowMs);
+  const fold = foldSessionLedger(rows, nowMs, staleAfterSeconds);
+  return JSON.stringify({
+    v: 1,
+    generated_at: new Date(nowMs).toISOString(),
+    stale_after_seconds: staleAfterSeconds,
+    ledger_rows: ledgerRows,
+    sessions: fold.sessions,
+  });
 }
 
 const FETCH_HEALTH_STATUSES = [
@@ -1017,6 +1351,10 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   const flow = buildFlowMetrics(flowPath, cfg, nowMs);
   lines.push(...flow.lines);
 
+  const sessionPath = options.sessionLedgerPath ?? sessionRunLedgerPath(env);
+  const sessions = buildSessionMetrics(sessionPath, cfg, nowMs);
+  lines.push(...sessions.lines);
+
   const fetchHealth = fetchHealthMetrics(options.fetchHealthStatePath ?? defaultFetchHealthStatePath(env));
   lines.push(...fetchHealth.comments);
   lines.push(...fetchHealth.lines);
@@ -1059,6 +1397,9 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   addFamily(lines, "flow_exporter_ledger_rows", "Parsed flow-run ledger rows inside the 14d window.", "gauge", [
     sample("flow_exporter_ledger_rows", {}, flow.ledgerRows),
   ]);
+  addFamily(lines, "session_runs_ledger_rows", "Parsed session-run ledger rows inside the 14d window; exporter self-health parity with flow_exporter_ledger_rows.", "gauge", [
+    sample("session_runs_ledger_rows", {}, sessions.ledgerRows),
+  ]);
 
   return lines.join("\n") + "\n";
 }
@@ -1073,10 +1414,18 @@ export function startFlowExporter(options: RenderMetricsOptions = {}): { stop: (
     port,
     async fetch(req) {
       const url = new URL(req.url);
-      if (req.method !== "GET" || url.pathname !== "/metrics") {
+      if (req.method !== "GET" || (url.pathname !== "/metrics" && url.pathname !== "/sessions.json")) {
         return new Response("not found\n", { status: 404 });
       }
       try {
+        // HIMMEL-1052: the per-session table panel's data path. Same passive
+        // read, same fold, just a shape Prometheus labels cannot carry
+        // (session_id is unbounded cardinality). Still no writes anywhere.
+        if (url.pathname === "/sessions.json") {
+          return new Response(renderSessionsJson({ ...options, env }) + "\n", {
+            headers: { "content-type": "application/json; charset=utf-8" },
+          });
+        }
         const body = await renderMetrics({ ...options, env, cache });
         return new Response(body, {
           headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },

@@ -226,6 +226,21 @@
 #     path listed beside it); mixed staged+real invocations need --backend or
 #     the launching-shell env var.
 #
+# NOW HANDLED (HIMMEL-845):
+#   - Cross-drive drive-relative target: HIMMEL-808 anchored a Windows
+#     drive-RELATIVE `X:tail` token to the tool-call cwd, which is exact ONLY
+#     when that cwd is on drive X. Windows keeps a SEPARATE cwd PER DRIVE (the
+#     hidden `=C:`/`=D:` env vars), so `D:tail` from a C: cwd really resolves
+#     under D:'s own current directory - a path this fence never sees, while the
+#     synthetic C:-anchored form classified as a benign corpus (or nothing):
+#     a live fail-open on a fence that enforces the salus PHI hard-deny.
+#     `classify` now consults `_cross_drive_relative` FIRST and echoes the
+#     `__cross_drive__` sentinel (-> deny) unless the token's drive letter is
+#     provably the cwd's drive letter. Same-drive `X:tail` still anchors
+#     exactly as before; drive-ROOTED `X:/tail` is cwd-independent and
+#     untouched. See _cross_drive_relative for the accepted POSIX collateral.
+#     Maintained in lockstep with the twin in lesson-write-fence.sh.
+#
 # Accepted static-analysis limitations (the load-bearing PHI guard is the
 # file-tool fence parity_guard, not this command-text guard):
 #   (a) quoted-separator mis-split - a path with embedded spaces, or a quoted
@@ -414,6 +429,13 @@ _abs() {
                      # (the attack shape), and a fail-closed lexical
                      # approximation otherwise. HIMMEL-779: anchor to the
                      # TOOL-CALL cwd (GRAPHIFY_TOOL_CWD), not the hook $PWD.
+                     # HIMMEL-845: "fail-closed lexical approximation" was NOT
+                     # fail-closed - a CROSS-drive token anchored here produced
+                     # a benign-classifying synthetic path. This arm is now only
+                     # ever reached for a token whose drive is PROVEN to be the
+                     # cwd's drive (where the anchor is exact); `classify`
+                     # rejects the cross-drive case up front via
+                     # _cross_drive_relative.
         *)           p="$TOOL_CWD/$p" ;;   # relative -> anchor to tool-call cwd
     esac
     printf '%s' "$p"
@@ -482,6 +504,65 @@ _normalize() {
         esac
     done
     printf '%s%s' "$prefix" "${result:-/}"
+}
+
+# _drive_of <path> -> echoes the LOWER-CASE drive letter of a path that is (or
+# lexically normalizes to) drive-rooted (`C:/x`, MSYS `/c/x`), or "" when the
+# path carries no determinable drive (a genuine POSIX root, or an MSYS MOUNT
+# form like `/tmp/...` whose backing drive is not lexically derivable).
+_drive_of() {
+    local p; p="$(_normalize "$1")"
+    case "$p" in
+        [A-Za-z]:/*) _lc "${p%%:*}" ;;
+        *)           printf '' ;;
+    esac
+}
+
+# _cross_drive_relative <token> <base> -> 0 (CROSS-DRIVE, caller must fail
+# closed) iff <token> is a Windows DRIVE-RELATIVE token (`X:tail`, a drive
+# letter + colon with NO slash after it) that cannot be PROVEN to resolve
+# against <base>.
+#
+# HIMMEL-845 (LIVE FAIL-OPEN, found empirically during the HIMMEL-809 CR):
+# HIMMEL-808 closed the drive-relative hole by ANCHORING `X:tail` to the cwd
+# (`_abs`'s `[A-Za-z]:*` arm). That anchor is exact ONLY when the cwd is itself
+# on drive X. Windows keeps a SEPARATE current directory PER DRIVE (the hidden
+# `=C:`/`=D:` environment variables), so `D:tail` from a process whose cwd is on
+# C: resolves against D:'s own per-drive cwd - a directory this fence never
+# sees. Anchoring it to the C: cwd produced a synthetic path that classified as
+# a benign corpus (or nothing) while the REAL target could sit inside a PHI
+# vault: a fail-open in a fence that enforces the salus hard-deny.
+#
+# Fail CLOSED rather than resolve: reading the per-drive cwd is not portable,
+# not available to a bash 3.2 fence, and is exactly the kind of ambiguous
+# evidence a guardrail must deny on. Three cases:
+#   token drive == base drive  -> NOT cross-drive; `_abs`'s anchor is exact
+#                                 (the process cwd IS that drive's cwd).
+#   token drive != base drive  -> cross-drive; deny.
+#   base drive undeterminable  -> cross-drive; deny. The fence cannot prove the
+#                                 same-drive case, and "unprovable" is a deny
+#                                 for a guardrail.
+# ACCEPTED collateral (same safe-direction posture as every other over-block in
+# this file): on a genuine POSIX host `X:tail` is a plain relative FILENAME and
+# anchoring it to the cwd is correct, but the base there carries no drive letter
+# so it lands in the third case and denies. A single-letter-plus-colon operand
+# is vanishingly rare, the deny is loud, and the recovery is one absolute path;
+# the other misread is silent PHI egress. A drive-ROOTED token (`C:/x`) is
+# cwd-INDEPENDENT and is never cross-drive.
+_cross_drive_relative() {
+    local t tdrive bdrive
+    t="$(_strip_wrap "${1:-}")"
+    t="${t//\\//}"
+    case "$t" in
+        [A-Za-z]:/*) return 1 ;;   # drive-ROOTED absolute - cwd-independent
+        [A-Za-z]:*)  : ;;          # drive-RELATIVE - the shape at issue
+        *)           return 1 ;;
+    esac
+    tdrive="$(_lc "${t%%:*}")"
+    bdrive="$(_drive_of "${2:-}")"
+    [ -n "$bdrive" ] || return 0
+    [ "$tdrive" = "$bdrive" ] && return 1
+    return 0
 }
 
 # _under_root <path> <root> -> 0 if path == root or a descendant of root.
@@ -605,9 +686,18 @@ _under_any_list() {
     echo miss
 }
 
-# classify <target-path> -> echoes corpus, "__unreadable__", or "" (unclassifiable).
+# classify <target-path> -> echoes corpus, a fail-closed sentinel
+# ("__cross_drive__", "__unreadable__", "__marker_*__"), or "" (unclassifiable).
 classify() {
     local apfs ap name rc mk rest mcorpus mdir
+    # HIMMEL-845, FIRST (before _abs ever anchors): a drive-RELATIVE `X:tail`
+    # token whose drive is not provably the TOOL_CWD's drive resolves against
+    # Windows' per-drive cwd for X, which this fence cannot see. _abs would
+    # anchor it to TOOL_CWD and hand back a synthetic path that classifies as a
+    # benign corpus - fail-open. See _cross_drive_relative.
+    if _cross_drive_relative "$1" "$TOOL_CWD"; then
+        printf '__cross_drive__\t%s' "$1"; return
+    fi
     # Two forms of the same path: apfs = the ORIGINAL absolute form, used for
     # every FILESYSTEM check (.salus / .graphify-corpus ancestor stat-walks -
     # on a POSIX box a real `/c/...` path only exists in this form; the
@@ -1139,6 +1229,8 @@ apply_verdict() {
 _deny_on_classify_sentinel() {
     local rest mkpath mkcontent
     case "$1" in
+        __cross_drive__$'\t'*)
+            deny "drive-relative target '${1#__cross_drive__$'\t'}' resolves against Windows' per-drive current directory, which this fence cannot read - use an absolute path (fail-closed, HIMMEL-845)" ;;
         __unreadable__)
             deny "a PHI root list under $PHI_CONFIG_DIR exists but is not readable (fail-closed)" ;;
         __marker_unreadable__$'\t'*)

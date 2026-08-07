@@ -13,6 +13,10 @@
 #     - an unresolved PR review thread whose first comment is by coderabbitai
 #     - a CodeRabbit commit status on the head SHA that is pending/failure/error
 #     - NO CodeRabbit status on the head SHA at all ("absent")
+#     - the latest bot REVIEW is anchored to a commit other than the head SHA
+#       ("stale" — HIMMEL-1181, B2: a concluded STATUS does not mean a new
+#       review OBJECT was posted; see cr-review-freshness.sh) or the review
+#       window is indeterminate ("paged", >100 reviews with no bot match)
 #   That last one is a deliberate break from the old "deny ONLY on positive
 #   evidence" stance (HIMMEL-1072, operator call 2026-07-16): an unreviewed head
 #   reading as green is what merged #1243 with 6 unresolved threads. Absence of a
@@ -45,6 +49,13 @@ _cmg_degrade() { echo "cr-merge-gate: degraded ($*) - failing open" >&2; }
 # shellcheck source=scripts/lib/cr-signal.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-signal.sh"
+
+# The ONE reader for "is the latest bot REVIEW OBJECT anchored to the head
+# SHA?" (HIMMEL-1181, B2) — independent of the status verdict above and the
+# body-findings reader below; see cr-review-freshness.sh header.
+# shellcheck source=scripts/lib/cr-review-freshness.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-review-freshness.sh"
 
 # The ONE reader for CodeRabbit's review-BODY findings (HIMMEL-1126/1147) —
 # outside-diff-range / nitpick / additional comments the thread gate below
@@ -333,6 +344,32 @@ cr_merge_gate() {
         esac
     fi
 
+    # 1.5) Review freshness (HIMMEL-1181, B2 / PR #1273): the status above
+    # says the bot CONCLUDED on this head; this says the review OBJECT is
+    # anchored to it. Those are different claims — CodeRabbit can conclude an
+    # incremental status without posting a new review object at all — and
+    # auto-resolved threads on a moved head make "zero unresolved" below
+    # meaningless without this anchor check. Same remembered-degrade pattern
+    # as `cr_degraded` above: an infra failure here is not evidence, so it is
+    # remembered and only fails OPEN at the very end, after every independent
+    # positive-evidence check (threads, body findings) has had its say.
+    local fr_state fr_degraded=0
+    fr_state=$(cr_review_freshness "$owner" "$name" "$num" "$head") || fr_degraded=1
+    if [ "$fr_degraded" -eq 0 ]; then
+        case "${fr_state%% *}" in
+            stale)
+                echo "BLOCK: the latest bot review on PR #$num is anchored to ${fr_state##* }, not head $head — this head was never re-reviewed (auto-resolved threads mask it). Wait for a fresh review, or bypass with CR_MERGE_GATE_OK=1."
+                return 2 ;;
+            paged)
+                echo "BLOCK: PR #$num has more reviews than one query window (100) and none of the newest 100 is the bot's — cannot certify review freshness. Check manually, or bypass with CR_MERGE_GATE_OK=1."
+                return 2 ;;
+            none|fresh) : ;;   # none = adopter self-skip (no bot review yet); fresh = anchored, proceed
+            *)
+                echo "BLOCK: unrecognized review-freshness state '${fr_state%% *}' on head $head of PR #$num — cannot certify the review anchor. Check manually, or bypass with CR_MERGE_GATE_OK=1."
+                return 2 ;;
+        esac
+    fi
+
     # 2) unresolved coderabbitai review threads — read only now that CodeRabbit
     # has concluded, so the set is complete. Still read when the verdict query
     # degraded (see above): its evidence is independent and blocks on its own.
@@ -447,10 +484,16 @@ cr_merge_gate() {
     # Nothing blocked. If the verdict query or the body-findings reader
     # degraded, THIS is where we fail open (codex-1 / HIMMEL-1126) — only
     # after the independent evidence above had its say. A broken query is not
-    # evidence; unresolved threads and outside-diff findings are.
+    # evidence; unresolved threads and outside-diff findings are. Freshness
+    # (fr_degraded) is intentionally NOT folded into this same early return
+    # (HIMMEL-1181): it is an independent reader from the body-findings one
+    # (see cr-review-freshness.sh header), so its own infra failure must not
+    # suppress a body_nitpick note the OTHER reader already read validly —
+    # checked separately below, after the note.
     if [ "$cr_degraded" -eq 1 ] || [ "$body_degraded" -eq 1 ]; then
         [ "$cr_degraded" -eq 1 ] && _cmg_degrade "CodeRabbit status query failed"
         [ "$body_degraded" -eq 1 ] && _cmg_degrade "cr-body-findings query/parse failed"
+        [ "$fr_degraded" -eq 1 ] && _cmg_degrade "review-freshness query failed"
         return 0
     fi
 
@@ -461,6 +504,11 @@ cr_merge_gate() {
     # what the caller does with stdout, same as every _cmg_degrade note above.
     if [ "$body_nitpick" -gt 0 ]; then
         echo "ALLOW: PR #$num — CodeRabbit's review body also reports nitpick=$body_nitpick (non-blocking)." >&2
+    fi
+
+    if [ "$fr_degraded" -eq 1 ]; then
+        _cmg_degrade "review-freshness query failed"
+        return 0
     fi
 
     return 0

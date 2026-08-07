@@ -269,6 +269,15 @@
 #     unusual quoting, or a wrapper this fence does not recognize, remains a
 #     gap.)
 #
+# Cross-drive fail-closed (HIMMEL-845): a Windows drive-RELATIVE `X:tail` token
+# resolves against Windows' PER-DRIVE current directory for X, not the process
+# cwd, so HIMMEL-808's cwd anchor is exact only when the cwd is itself on drive
+# X. `classify_target` now consults `_cross_drive_relative` FIRST and classifies
+# the token as a `cross-drive` DENY unless its drive letter is provably the
+# cwd's. Same-drive `X:tail` anchors exactly as before; drive-ROOTED `X:/tail`
+# is cwd-independent and untouched. Maintained in lockstep with the twin in
+# graphify-fence.sh.
+#
 # Path normalization: `_abs` / `_normalize` / `_lc` are the graphify-fence.sh
 # helpers (`_abs` gains an explicit cwd-override 2nd arg here, since a hook
 # payload's cwd - `.tool_input.cwd // .cwd // $PWD` - is not always the
@@ -370,6 +379,12 @@ _abs() {
                      # -> allow. Anchor to the payload cwd instead — exact
                      # when cwd is on that drive (the attack shape), and a
                      # fail-closed lexical approximation otherwise.
+                     # HIMMEL-845: that "approximation" was NOT fail-closed - a
+                     # CROSS-drive token anchored here normalized outside the
+                     # repo and ALLOWED. This arm is now only ever reached for a
+                     # token whose drive is PROVEN to be the cwd's drive (where
+                     # the anchor is exact); `classify_target` rejects the
+                     # cross-drive case up front via _cross_drive_relative.
         *)           p="$base/$p" ;;  # relative -> anchor to base
     esac
     printf '%s' "$p"
@@ -402,6 +417,68 @@ _normalize() {
         esac
     done
     printf '%s%s' "$prefix" "${result:-/}"
+}
+
+# _drive_of <path> -> echoes the LOWER-CASE drive letter of a path that is (or
+# lexically normalizes to) drive-rooted (`C:/x`, MSYS `/c/x`), or "" when the
+# path carries no determinable drive (a genuine POSIX root, or an MSYS MOUNT
+# form like `/tmp/...` whose backing drive is not lexically derivable).
+# Parity twin of graphify-fence.sh's _drive_of.
+_drive_of() {
+    local p; p="$(_normalize "$1")"
+    case "$p" in
+        [A-Za-z]:/*) _lc "${p%%:*}" ;;
+        *)           printf '' ;;
+    esac
+}
+
+# _cross_drive_relative <token> <base> -> 0 (CROSS-DRIVE, caller must fail
+# closed) iff <token> is a Windows DRIVE-RELATIVE token (`X:tail`, a drive
+# letter + colon with NO slash after it) that cannot be PROVEN to resolve
+# against <base>. Parity twin of graphify-fence.sh's _cross_drive_relative -
+# keep the two in lockstep.
+#
+# HIMMEL-845 (LIVE FAIL-OPEN, found empirically during the HIMMEL-809 CR):
+# HIMMEL-808 closed the drive-relative hole by ANCHORING `X:tail` to the payload
+# cwd (`_abs`'s `[A-Za-z]:*` arm). That anchor is exact ONLY when the cwd is
+# itself on drive X. Windows keeps a SEPARATE current directory PER DRIVE (the
+# hidden `=C:`/`=D:` environment variables), so `D:tail` from a process whose
+# cwd is on C: resolves against D:'s own per-drive cwd - a directory this fence
+# never sees. Anchoring it to the C: cwd produced a synthetic path that
+# normalized to a non-enforcement location -> ALLOW, while the REAL target could
+# be an enforcement-path file.
+#
+# Fail CLOSED rather than resolve: reading the per-drive cwd is not portable,
+# not available to a bash 3.2 fence, and is exactly the kind of ambiguous
+# evidence a guardrail must deny on. Three cases:
+#   token drive == base drive  -> NOT cross-drive; `_abs`'s anchor is exact
+#                                 (the process cwd IS that drive's cwd).
+#   token drive != base drive  -> cross-drive; deny.
+#   base drive undeterminable  -> cross-drive; deny. The fence cannot prove the
+#                                 same-drive case, and "unprovable" is a deny
+#                                 for a guardrail.
+# ACCEPTED collateral (same safe-direction posture as `<`-denies-like-`>` and
+# every other over-block in this file): on a genuine POSIX host `X:tail` is a
+# plain relative FILENAME and anchoring it to the cwd is correct, but the base
+# there carries no drive letter so it lands in the third case and denies. A
+# single-letter-plus-colon operand is vanishingly rare, the deny is loud, and
+# the recovery is one absolute path; the other misread is a silent
+# enforcement-path write. A drive-ROOTED token (`C:/x`) is cwd-INDEPENDENT and
+# is never cross-drive.
+_cross_drive_relative() {
+    local t tdrive bdrive
+    t="$(_strip_wrap "${1:-}")"
+    t="${t//\\//}"
+    case "$t" in
+        [A-Za-z]:/*) return 1 ;;   # drive-ROOTED absolute - cwd-independent
+        [A-Za-z]:*)  : ;;          # drive-RELATIVE - the shape at issue
+        *)           return 1 ;;
+    esac
+    tdrive="$(_lc "${t%%:*}")"
+    bdrive="$(_drive_of "${2:-}")"
+    [ -n "$bdrive" ] || return 0
+    [ "$tdrive" = "$bdrive" ] && return 1
+    return 0
 }
 
 # is_path_like <stripped-token> -> 0 if the token looks like a filesystem
@@ -474,6 +551,19 @@ load_policy() {
 classify_target() {
     local raw="$1" cwd="${2:-$PWD}"
     local ap ap_lc base_lc i v_lc
+    # HIMMEL-845, FIRST (before _abs ever anchors): a drive-RELATIVE `X:tail`
+    # token whose drive is not provably the cwd's drive resolves against
+    # Windows' per-drive cwd for X, which this fence cannot see. _abs would
+    # anchor it to the payload cwd and hand back a synthetic path that
+    # normalizes outside the repo -> allow (fail-open). Classify it as a DENY
+    # instead - a return-0 hit rather than a bare `deny` call, so `check` mode
+    # still prints its per-path verdict line and keeps scanning the rest of the
+    # argument list. See _cross_drive_relative.
+    if _cross_drive_relative "$raw" "$cwd"; then
+        _MATCH_CLASS="cross-drive"
+        _MATCH_WHY="drive-relative path resolves against Windows' per-drive current directory, which this fence cannot read; use an absolute path"
+        return 0
+    fi
     ap="$(_normalize "$(_abs "$raw" "$cwd")")"
     ap_lc="$(_lc "$ap")"
     base_lc="$(_lc "${ap##*/}")"

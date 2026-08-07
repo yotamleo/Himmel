@@ -1,0 +1,36 @@
+# HIMMEL-924 — RATIFIED F3: Grafana's native Telegram notifier. No new
+# bridge code; the notifier's outbound call is api.telegram.org sendMessage
+# only (never getUpdates/webhook registration), so it cannot collide with
+# the Telegram bridge's single poller — see README.md's "Alerting" section
+# for the full evidence trail (this reuses the same bot token and chat_id
+# resolution `luna-sync-alert.ts` already ships with, HIMMEL-1199 precedent).
+#
+# No secret is committed here. bottoken/chatid come from the Grafana
+# process's OWN environment via Grafana's alerting file-provisioning
+# variable interpolation ($NAME, plain, no braces — confirmed against the
+# Grafana 13.1 docs; a different `$__env{}` syntax exists for datasource
+# provisioning, not used here). install-stack.ps1 sets
+# GRAFANA_TELEGRAM_BOT_TOKEN / GRAFANA_TELEGRAM_CHAT_ID as persistent
+# user-scope environment variables at install time, non-fatally, by reading
+# the bridge's already-established runtime locations (never by writing to
+# them) — see its "Grafana alerting secrets" step. An operator who wants a
+# SEPARATE bot token instead (the design's other sanctioned option) can set
+# both variables manually before running the installer; a pre-set value is
+# left untouched.
+#
+# message is omitted deliberately: Grafana's built-in default template
+# renders alertname/labels/annotations only — the same fixed-field set this
+# whole alerting layer is built on (design §6.6) — never ledger `note` text
+# (the exporter never turns `note` into a label or annotation value; see
+# flow-exporter.ts).
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: himmel-telegram
+    receivers:
+      - uid: himmel_telegram_receiver
+        type: telegram
+        settings:
+          bottoken: $GRAFANA_TELEGRAM_BOT_TOKEN
+          chatid: $GRAFANA_TELEGRAM_CHAT_ID

@@ -46,6 +46,14 @@
 # See cr_body_gate (in scripts/lib/cr-body-findings.sh). Runs on BOTH the full
 # path and --threads-only (the latter now binds its own head to do so).
 #
+# A green verdict ALSO requires the latest bot REVIEW OBJECT to be anchored to
+# the head SHA (HIMMEL-1181, B2): GitHub auto-resolves (outdates) a review
+# thread when a later commit changes its lines, so "0 unresolved threads" is
+# NOT proof the head was ever reviewed — a concluded STATUS (cr_signal_gate)
+# is a different claim than an anchored REVIEW (this reader). See
+# review_freshness_gate (in scripts/lib/cr-review-freshness.sh). Runs on BOTH
+# the full path and --threads-only, same as the body-findings gate.
+#
 # That CodeRabbit requirement is AVAILABILITY-GATED (HIMMEL-1125): it arms only
 # on a repo that declares CodeRabbit (scripts/lib/cr-available.sh). On a repo
 # without it, "absent" is the permanent steady state, so the armed gate exited 2
@@ -58,8 +66,9 @@
 # fire, and the checks + thread verdicts stand on their own):
 #   0 — all checks green AND all review threads resolved AND, WHEN ARMED,
 #       CodeRabbit concluded success on the head SHA AND zero outside-diff-range
-#       body findings (safe to merge; nitpick/additional body findings are
-#       surfaced, non-blocking)
+#       body findings AND the latest bot review is anchored to the head SHA
+#       (safe to merge; nitpick/additional body findings are surfaced,
+#       non-blocking)
 #   1 — at least one check failed (--fail-fast: returns on the first red), or —
 #       when armed — CodeRabbit's own status is failure/error
 #   2 — cannot evaluate: usage error / no PR found / no checks registered
@@ -68,12 +77,17 @@
 #       / (when armed) CodeRabbit's status is absent or still pending on the head
 #       SHA / the review-body-findings reader could not evaluate (infra failure
 #       or an anti-drift canary — both fail closed here, see cr-body-findings.sh)
+#       / the review-freshness query failed, or the review window is
+#       indeterminate ("paged" — see cr-review-freshness.sh)
 #   3 — checks green but the review state blocks the merge: unresolved review
 #       threads remain, a review requests changes, or CodeRabbit's review body
 #       reports an outside-diff-range finding — address, resolve, re-run
-#   4 — CodeRabbit concluded incrementally on the head but posted no review
-#       object there while a prior head had outside-diff findings; request
-#       @coderabbitai full review (or opt in with --escalate), then re-run
+#   4 — (when armed) either: CodeRabbit concluded incrementally on the head but
+#       posted no review object there while a prior head had outside-diff
+#       findings (request @coderabbitai full review, or opt in with --escalate);
+#       or the latest bot review is anchored to a NON-head commit — the head
+#       was NEVER re-reviewed, and auto-resolved threads can mask this
+#       (HIMMEL-1181, B2 — wait for / re-trigger a fresh review, then re-run)
 #
 # Env:
 #   CHECK_CI_POLL_INTERVAL — seconds between grace-window probes (default 10;
@@ -87,7 +101,12 @@
 #                            below.
 #   CR_APP=1|0             — force the required-signal gate on/off, overriding
 #                            the probe (see scripts/lib/cr-available.sh)
-#   CR_BOT_USER_ID         — creator.id to trust as CodeRabbit (see cr-signal.sh)
+#   CR_BOT_USER_ID         — creator.id to trust as CodeRabbit (see cr-signal.sh
+#                            and cr-body-findings.sh; REST identity)
+#   CR_BOT_LOGINS          — review-author logins that count as the bot for the
+#                            review-freshness gate only (default coderabbitai;
+#                            a trailing "[bot]" suffix is optional — see
+#                            cr-review-freshness.sh; GraphQL identity)
 #
 # The HIMMEL-980 zombie-check-run override is GONE: it keyed off a CodeRabbit
 # CHECK-RUN, which CodeRabbit never posts (it posts a commit STATUS), so it had
@@ -105,20 +124,25 @@ usage() {
 usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--threads-only] [--escalate]
 exit codes: 0 = checks green + all review threads resolved
                 + (if CodeRabbit is armed) CodeRabbit concluded success on the head SHA
-                + zero outside-diff-range body findings,
+                + zero outside-diff-range body findings
+                + the latest bot review is anchored to the head SHA,
             1 = a check failed, or (if armed) CodeRabbit's status is failure/error,
             2 = cannot evaluate (usage / no PR / no checks within --grace / thread query failed / PR head moved
                 / (if armed) CodeRabbit's status absent or still pending on the head SHA / body-findings
-                reader failed),
+                reader failed / review-freshness query failed or indeterminate "paged"),
             3 = checks green but unresolved review threads remain, a review requests changes, or (if armed)
                 CodeRabbit's review body reports an outside-diff-range finding,
             4 = (if armed) CodeRabbit concluded incrementally but posted no review object at the head while a
-                prior head had outside-diff findings; request @coderabbitai full review or use --escalate
-env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings gates (repos without CodeRabbit)
+                prior head had outside-diff findings (request @coderabbitai full review or use --escalate); or
+                the latest bot review is anchored to a NON-head commit — the head was never re-reviewed
+                (HIMMEL-1181, B2 — wait for / re-trigger a fresh review, then re-run)
+env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings + review-freshness gates (repos
+     without CodeRabbit)
      CR_APP=1|0 forces those same gates on/off, overriding the automatic probe (see scripts/lib/cr-available.sh)
+     CR_BOT_LOGINS sets the review-author logins the freshness gate treats as the bot (default coderabbitai)
      CR_ESCALATE_WAIT / CR_ESCALATE_POLL tune --escalate (defaults 600 / 120 seconds)
-note: "armed" above means the required-CodeRabbit-signal + body-findings gates are active — DISARMED
-      by default. On a repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
+note: "armed" above means the required-CodeRabbit-signal + body-findings + review-freshness gates are active —
+      DISARMED by default. On a repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
       CR_APP=1|0 overrides; CR_PROFILE=none outranks both. On a disarmed repo the CodeRabbit-conditional
       clauses above simply do not apply, and exit 0 requires no CodeRabbit status at all. The
       unresolved-review-thread requirement (exit 3) is NOT keyed on this and applies to everyone.
@@ -208,17 +232,19 @@ if ! command -v gh >/dev/null 2>&1; then
     echo "check-ci: gh CLI not found on PATH" >&2
     exit 2
 fi
-# jq is needed to read CodeRabbit's status + review-body findings, so require
-# it only when the CodeRabbit signal gate is ARMED (coderabbit-7, extended by
-# HIMMEL-1126/HIMMEL-1125): --threads-only USED to be a pure GraphQL+gh path,
-# but it now also runs cr_signal_gate + cr_body_gate (S1 — a body-only finding
-# is exactly as invisible to /pr-check step 4.8's threads-only call as it is to
-# the full run), so it needs jq too whenever CodeRabbit is in play.
+# jq is needed to read CodeRabbit's status + review-body findings + review
+# freshness, so require it only when the CodeRabbit signal gate is ARMED
+# (coderabbit-7, extended by HIMMEL-1126/HIMMEL-1125, and again by
+# HIMMEL-1181): --threads-only USED to be a pure GraphQL+gh path, but it now
+# also runs cr_signal_gate + cr_body_gate + review_freshness_gate (S1/B2 — a
+# body-only finding or a stale review anchor is exactly as invisible to
+# /pr-check step 4.8's threads-only call as it is to the full run), so it
+# needs jq too whenever CodeRabbit is in play.
 # Is the CodeRabbit App configured for this repo at all (HIMMEL-1125)? The
-# signal + body gates below are armed ONLY when it is: on a repo without
-# CodeRabbit, "absent" is the permanent steady state, so an armed gate exits 2
-# on every merge forever. Probed once here; cr_signal_gate/cr_body_gate read
-# the result.
+# signal + body + freshness gates below are armed ONLY when it is: on a repo
+# without CodeRabbit, "absent" is the permanent steady state, so an armed
+# gate exits 2 on every merge forever. Probed once here; cr_signal_gate/
+# cr_body_gate/review_freshness_gate read the result.
 # shellcheck source=scripts/lib/cr-available.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "$0")" && pwd)/lib/cr-available.sh"
@@ -234,6 +260,12 @@ if [ "$CR_ARMED" -eq 1 ]; then
     # shellcheck source=scripts/lib/cr-signal.sh
     # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
     . "$(cd "$(dirname "$0")" && pwd)/lib/cr-signal.sh"
+    # The ONE reader for "is the latest bot REVIEW OBJECT anchored to the head
+    # SHA?" (HIMMEL-1181, B2) — independent of both the status verdict above
+    # and the body-findings reader below; see cr-review-freshness.sh header.
+    # shellcheck source=scripts/lib/cr-review-freshness.sh
+    # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+    . "$(cd "$(dirname "$0")" && pwd)/lib/cr-review-freshness.sh"
     # The ONE reader for CodeRabbit's review-BODY findings (HIMMEL-1126/1147) —
     # outside-diff-range / nitpick / additional comments the thread gate below
     # cannot see (S1: no thread, no isResolved, unresolvable by construction).
@@ -568,6 +600,60 @@ cr_signal_gate() {
     esac
 }
 
+# review_freshness_gate — HIMMEL-1181 (B2 / PR #1273): bind the latest bot
+# REVIEW's commit anchor to the head SHA. "0 unresolved threads" is not proof
+# of review — GitHub auto-resolves a thread when a later commit changes its
+# lines, so a head CodeRabbit never re-reviewed can read App-clean. This is
+# INDEPENDENT of cr_signal_gate above (which certifies the bot's commit
+# STATUS concluded on this SHA) — a concluded incremental status does not
+# imply a new review OBJECT was posted.
+#
+# Runs AFTER cr_body_gate (called below) on purpose: cr_body_gate's own A2
+# case (prior_outside>0 && zero reviews AT head, HIMMEL-1126) already exits 4
+# with an escalate-eligible message for the subset it covers, and that
+# subset is a STRICT SUBSET of "stale" here (a prior outside-diff finding
+# with no head review implies the latest review is anchored elsewhere).
+# Running freshness second means A2's own message and --escalate path stay
+# reachable for that case; this gate only fires for the genuinely uncovered
+# remainder — a stale latest review that never had an outside-diff finding
+# recorded (e.g. only ordinary thread comments, later auto-resolved), the
+# exact PR #1273 shape.
+review_freshness_gate() {
+    [ "$CR_ARMED" -eq 1 ] || return 0
+    local fr state login oid
+    fr=$(cr_review_freshness "$owner" "$repo" "$num" "$head0") || {
+        echo "check-ci: ${ctx}the review-freshness query failed on PR #$num — cannot certify the review anchor; re-run" >&2
+        exit 2
+    }
+    state=${fr%% *}
+    case "$state" in
+        none)
+            # Absence of a bot review is not evidence of staleness (a repo
+            # where cr_signal_gate above required a concluded status should
+            # already be past "no review at all" in practice) — self-skip.
+            FRESHNESS_NOTE="no bot review — freshness self-skipped" ;;
+        paged)
+            echo "check-ci: ${ctx}PR #$num has more reviews than one query window (100) and none of the newest 100 is the bot's — cannot certify freshness; check manually" >&2
+            exit 2 ;;
+        stale)
+            # fr = "stale <login> <oid>" — word-split is safe: the lib's
+            # output is a controlled single line (cr-review-freshness.sh).
+            # shellcheck disable=SC2086
+            set -- $fr; login=$2; oid=$3
+            echo "check-ci: ${ctx}the latest $login review on PR #$num is anchored to ${oid}, not head ${head0} — this head was NEVER re-reviewed (auto-resolved threads can mask this). Wait for / re-trigger a fresh review, then re-run." >&2
+            exit 4 ;;
+        fresh)
+            # fr = "fresh <login> <oid>"
+            # shellcheck disable=SC2086
+            set -- $fr; login=$2
+            FRESHNESS_NOTE="fresh $login review @ $head0" ;;
+        *)
+            echo "check-ci: ${ctx}unrecognized freshness state '$state' — cannot evaluate; re-run" >&2
+            exit 2 ;;
+    esac
+    return 0
+}
+
 # cr_body_gate — HIMMEL-1126/1147 (S1, see cr-body-findings.sh header):
 # CodeRabbit posts findings the thread gate above cannot see at all — outside-
 # diff-range / nitpick / additional comments living only in the review BODY
@@ -729,6 +815,16 @@ _cbg_note() {
     fi
 }
 
+# _frn_note — appended to the success line so a "fresh" or self-skipped
+# ("none") certification is visible in the output, not just its absence of a
+# block (HIMMEL-1181). Set by review_freshness_gate; unset on every path that
+# never reached it (CR_ARMED=0), hence the default expansion.
+FRESHNESS_NOTE=""
+_frn_note() {
+    [ -n "${FRESHNESS_NOTE:-}" ] && printf '; %s' "$FRESHNESS_NOTE"
+    return 0
+}
+
 if [ "$THREADS_ONLY" -eq 1 ]; then
     # Bind + certify this path's own head (previously skipped entirely — S1
     # was invisible here too): cr_signal_gate/cr_body_gate both need a head0,
@@ -750,22 +846,26 @@ if [ "$THREADS_ONLY" -eq 1 ]; then
         # (before this if) must not be the one that gets certified.
         review_state_gate
 
-        # Body findings LAST — after concluded + threads (spec order
-        # concluded -> threads -> bodies -> head, mirroring the full path,
-        # CR #1297): a body becoming visible during the thread re-verification
-        # must not slip past on a pre-refresh read.
+        # Body findings, THEN freshness (HIMMEL-1181 — see review_freshness_gate's
+        # own header for why this order, not the reverse): a body becoming
+        # visible during the thread re-verification must not slip past on a
+        # pre-refresh read, and cr_body_gate's own A2 exit-4 case must stay
+        # reachable before the broader freshness check would otherwise
+        # preempt it.
         cr_body_gate
+        review_freshness_gate
 
         # Re-read the head: the verdict this path just certified (threads +
-        # CodeRabbit concluded + body findings) only holds for the SHA it
-        # queried — mirrors the full path's post-watch head1 re-bind below.
+        # CodeRabbit concluded + body findings + review freshness) only holds
+        # for the SHA it queried — mirrors the full path's post-watch head1
+        # re-bind below.
         head1=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
         if [ "$head1" != "$head0" ]; then
             echo "check-ci: PR head moved during the run (${head0} → ${head1:-unreadable}) — checks certified a different commit; re-run" >&2
             exit 2
         fi
     fi
-    echo "check-ci: all review threads resolved (PR #$num)$(_cbg_note)"
+    echo "check-ci: all review threads resolved (PR #$num)$(_cbg_note)$(_frn_note)"
     exit 0
 fi
 
@@ -794,12 +894,17 @@ cr_signal_gate
 # snapshot would let merge-on-green proceed over fresh blocking feedback.
 review_state_gate
 
-# Body findings (HIMMEL-1126/1147, S1): runs after the concluded + threads
-# re-verification above, before the final head re-bind (spec-ordered
-# concluded -> threads -> bodies -> head re-bind) — a body posted in the
-# same post-watch window the other two gates already re-check must not slip
-# past on a stale pre-watch read.
+# Body findings, THEN review freshness (HIMMEL-1126/1147, S1 + HIMMEL-1181,
+# B2): runs after the concluded + threads re-verification above, before the
+# final head re-bind (spec-ordered concluded -> threads -> bodies ->
+# freshness -> head re-bind) — a body or a stale review anchor becoming
+# visible in the same post-watch window the other gates already re-check
+# must not slip past on a stale pre-watch read. Body findings run first so
+# cr_body_gate's own A2 exit-4 case (see review_freshness_gate's header)
+# stays reachable before the broader freshness check would otherwise
+# preempt it.
 cr_body_gate
+review_freshness_gate
 
 # Re-read the head: the green verdict only holds for the SHA we watched.
 head1=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
@@ -808,5 +913,5 @@ if [ "$head1" != "$head0" ]; then
     exit 2
 fi
 
-echo "check-ci: all checks green + all review threads resolved (PR #$num @ $head0)$(_cbg_note)"
+echo "check-ci: all checks green + all review threads resolved (PR #$num @ $head0)$(_cbg_note)$(_frn_note)"
 exit 0
