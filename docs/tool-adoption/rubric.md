@@ -4,7 +4,9 @@
 > optimizers, memory layers, PreToolUse hooks, MCP servers, skills).
 > Part of the HIMMEL-199 framework: this rubric decides; the registry
 > (`registry.md`, HIMMEL-201) records the decision so it
-> isn't re-litigated.
+> isn't re-litigated. Onboarding a model **lane** instead of a tool (GLM,
+> claudex, a future frontier model)? See the sibling
+> [`lane-adoption-playbook.md`](lane-adoption-playbook.md) (HIMMEL-1246).
 
 ## Why
 

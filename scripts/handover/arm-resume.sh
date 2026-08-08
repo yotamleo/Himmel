@@ -90,6 +90,17 @@
 #                           through this seam instead of relying on PATH
 #                           resolution order (HIMMEL-1610). Same shape as the
 #                           GH_CMD seam in graph-publish / the forge backends.
+#                           Left at its default, arm-resume also tries a fast
+#                           PowerShell wildcard listing first (HIMMEL-1337)
+#                           before falling back to a full `schtasks /query`.
+#   ARM_TICKET_DUP_OK       Exact value 1 overrides the HIMMEL-1329 ticket-level
+#                           mutex refusal (rc 13) -- arms anyway when this
+#                           ticket already has another slot under a different
+#                           handover. Env twin of --force for this check.
+#   ARM_VAULT_CWD_OK        Exact value 1 overrides the HIMMEL-1330 single-writer
+#                           auto-detected-cwd refusal (rc 14) -- arms anyway
+#                           into a vault/state repo with no explicit
+#                           --cwd/--worktree/resume_cwd:.
 #
 # Exit codes:
 #   0  scheduler armed (or printed under --dry-run)
@@ -139,6 +150,19 @@
 #      with a live or unprobeable pid (HIMMEL-1463). Unprobeable fails closed as
 #      possibly alive. Wait for them or explicitly set ARM_WITH_LIVE_WORKERS=1
 #      to accept that session exit may kill them.
+#   13 ticket-dup refused — this ticket already has another armed resume slot
+#      under a DIFFERENT handover file (HIMMEL-1329). The identity dedup (rc 3)
+#      only catches the SAME handover armed twice; this catches two handovers
+#      naming the same ticket. Pass --force or set ARM_TICKET_DUP_OK=1 for a
+#      deliberate parallel leg on the same ticket.
+#   14 vault-cwd refused — no --cwd/--worktree/resume_cwd: named a work repo,
+#      so the auto-detected cwd (the handover's own git toplevel) would be
+#      used, and that directory is a SINGLE-WRITER repo (HIMMEL-1330) — e.g. a
+#      himmel/code handover parked in the luna vault, about to arm INSIDE the
+#      vault and inherit its direct-to-main commit behavior. Set
+#      'resume_cwd: <work-repo>' in the handover frontmatter, pass
+#      --cwd/--worktree, or set ARM_VAULT_CWD_OK=1 if arming into the vault is
+#      genuinely intended. --dry-run is exempt.
 set -euo pipefail
 
 RESUME_TIME=""
@@ -1021,6 +1045,37 @@ _validate_key() {
 # Each `grep` is `|| true`-guarded — grep exits 1 on no-match and `set -o
 # pipefail` would otherwise abort the assignment. The last command (src-4's
 # `if`, rc 0 whether or not it fires) keeps the function errexit-safe.
+# _infer_ticket_strict <handover_path> -- HIMMEL-1329: sets the global
+# $_ho_ticket_strict to _infer_ticket's src-1 (frontmatter `ticket:`) match
+# ONLY, or empty on a miss. A dedicated function rather than a side-channel
+# variable set from inside _infer_ticket: _infer_ticket is always invoked as
+# `$(_infer_ticket ...)` (command substitution), which forks a SUBSHELL --
+# any variable a subshell sets is invisible to the caller once it exits, so a
+# first attempt at this that had _infer_ticket set a side-channel global
+# internally silently never worked (verified: _ho_ticket_strict read back
+# empty on every call). This function must therefore be invoked as a PLAIN
+# statement, never via `$(...)`, so it runs in the current shell.
+#
+# src-2/3/4 (worktree branch, H1 title, chain-dir name) are documented as
+# best-effort cosmetic naming heuristics -- "a non-conventional slug that
+# merely looks keyed yields a cosmetically-wrong row name only" -- never
+# meant to carry semantic weight for a BLOCKING check. The ticket-level mutex
+# reads $_ho_ticket_strict, not _infer_ticket's combined return value, so a
+# handover whose H1 merely MENTIONS a ticket for documentation (e.g. this
+# suite's own "# HIMMEL-1304 test handover" fixtures) can't false-positive a
+# refusal against an unrelated handover.
+_ho_ticket_strict=""
+_infer_ticket_strict() {
+    local _ho="$1" _raw _key
+    _raw=$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$_ho" \
+        | sed -n 's/^ticket:[[:space:]]*//p' | head -1) || true
+    _raw="${_raw%"${_raw##*[![:space:]]}"}"   # rtrim (incl trailing \r)
+    _raw="${_raw#\'}" ; _raw="${_raw%\'}"
+    _raw="${_raw#\"}" ; _raw="${_raw%\"}"
+    _key=$(_validate_key "$_raw")
+    _ho_ticket_strict="$_key"
+}
+
 _infer_ticket() {
     local _ho="$1" _raw _key _stem
     # src-1: ticket: frontmatter (same awk/sed/rtrim/unquote idiom as resume_cwd:).
@@ -1310,6 +1365,35 @@ else
         if [ "$_fm_cwd_found" -eq 0 ]; then
             echo "WARN arm-resume: no --cwd and no 'resume_cwd:' in handover frontmatter — defaulting cwd to '$RESUME_CWD'. For cross-repo handovers (handover in one repo, work in another) set 'resume_cwd: <work-repo>' in the handover frontmatter or pass --cwd." >&2
         fi
+        # HIMMEL-1330: a handover parked inside a SINGLE-WRITER repo (the luna
+        # vault, or any other repo that commits straight to main by design --
+        # see the repo-root `.single-writer` marker) and carrying no explicit
+        # --cwd/--worktree/resume_cwd: auto-detects its cwd as THAT repo. A
+        # WARN alone is not enough here: nothing reads an unattended arm's
+        # stderr until after the fact, so this has silently armed himmel work
+        # INSIDE the luna vault, picking up its direct-to-main commit
+        # behavior for work that was never meant to land there. Refuse
+        # outright unless the operator opts in -- an explicit --cwd/--worktree/
+        # resume_cwd: already skips this whole fallback block (see above), and
+        # ARM_VAULT_CWD_OK=1 is the escape hatch for a genuine vault arm.
+        # --dry-run stays side-effect-free (preview only, matches the
+        # HIMMEL-1365 temp-path guard's own --dry-run exemption).
+        if [ -f "$RESUME_CWD/.single-writer" ] && [ "${ARM_VAULT_CWD_OK:-}" != "1" ]; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                echo "DRY arm-resume: would REFUSE to arm -- auto-detected cwd '$RESUME_CWD' is a single-writer repo with no explicit --cwd/--worktree/resume_cwd: (HIMMEL-1330); a real arm exits 14 unless ARM_VAULT_CWD_OK=1 is set." >&2
+            else
+                {
+                    echo "ERR arm-resume: refusing to arm -- the auto-detected cwd is a SINGLE-WRITER repo (HIMMEL-1330):"
+                    echo "    $RESUME_CWD"
+                    echo "No --cwd, --worktree, or 'resume_cwd:' frontmatter named a work repo, so this"
+                    echo "arm would default INSIDE the vault/state repo -- picking up its direct-to-main"
+                    echo "commit behavior for work that likely belongs in a different repo."
+                    echo "Set 'resume_cwd: <work-repo>' in the handover frontmatter, pass --cwd/--worktree,"
+                    echo "or set ARM_VAULT_CWD_OK=1 if arming INTO the vault is genuinely intended."
+                } >&2
+                exit 14
+            fi
+        fi
     fi
     unset _fm_cwd _fm_cwd_found
 fi
@@ -1340,6 +1424,12 @@ fi
 # convention so broad cross-route dedup (the HIMMEL-Resume- prefix grep)
 # still matches between routes.
 _ho_ticket=$(_infer_ticket "$HANDOVER_PATH")
+# HIMMEL-1329: the strict, frontmatter-only ticket (see _infer_ticket_strict
+# above) -- what the ticket-level mutex keys on, deliberately narrower than
+# $_ho_ticket (which also feeds the best-effort naming/HIMMEL-1331
+# ticket-status paths). Called as a PLAIN statement, NOT `$(...)` -- see the
+# function's own comment for why a subshell would silently lose this.
+_infer_ticket_strict "$HANDOVER_PATH"
 # HIMMEL-1304: derive the identity from the CANONICAL path, not the path as
 # typed, and make the suffix injective. Pre-1304 this read $HANDOVER_PATH
 # directly, which broke dedup in BOTH directions at once:
@@ -1406,7 +1496,13 @@ fi
 # and the session/tab title can never disagree.
 SESSION_NAME=$(_compose_arm_name "$_ho_ticket" "$HANDOVER_PATH" title)
 FLOW_RUN_NOTE=$(_infer_slug "$HANDOVER_PATH")
-unset _ho_ticket _path_suffix _name_seg _ho_ident _path_hash _path_readable _path_suffix_legacy _name_seg_legacy
+# HIMMEL-1329/1331 fix: _ho_ticket is kept alive (NOT unset here) -- it is
+# read again below by the HIMMEL-1329 ticket-level mutex and by the
+# HIMMEL-1331 shipped-work preflight's ticket-status probe. Pre-fix this was
+# unset right here and both later readers silently saw an empty string
+# (`${_ho_ticket:-}`), so the shipped-preflight's Jira ticket-status check
+# was permanently dead code — confirmed by grep: no test exercised it.
+unset _path_suffix _name_seg _ho_ident _path_hash _path_readable _path_suffix_legacy _name_seg_legacy
 
 # Pre-trust the resolved cwd (HIMMEL-386) so the fired relaunch doesn't stall
 # on Claude Code's interactive workspace-trust prompt ("Is this a project you
@@ -1452,6 +1548,16 @@ _crontab_list() {
         else
             crontab -l 2>/dev/null | grep -E "# ${TASK_NAME}$" || true
         fi
+    elif [ "$scope" = ticket ]; then
+        # HIMMEL-1329: any OTHER handover's slot for this same ticket. Reads
+        # the STRICT (frontmatter-only) ticket, not the best-effort combined
+        # one -- see _infer_ticket_strict. Ticket keys are validated by
+        # _validate_key to [A-Z][A-Z0-9]*-[0-9]+ — no BRE specials, so it's
+        # safe to interpolate directly. Matches the marker mid-line (not
+        # anchored to EOL like the `task` case above) because this scans for
+        # a SUBSTRING of the identity, not an exact one.
+        [ -n "${_ho_ticket_strict:-}" ] || return 0
+        crontab -l 2>/dev/null | grep -E "# HIMMEL-Resume-${_ho_ticket_strict}(-|\$)" || true
     else
         crontab -l 2>/dev/null | grep -F 'HIMMEL-Resume-' || true
     fi
@@ -1476,12 +1582,71 @@ _crontab_list() {
 # MSYS_NO_PATHCONV=1 is per-call (HIMMEL-125): without it gitbash mangles each
 # /flag into a Windows-rooted path and schtasks rejects the call; scoping it to
 # this one command keeps it off the later git -C in RESUME_CWD resolution.
+# HIMMEL-1337: `schtasks /query` enumerates the operator's ENTIRE Task
+# Scheduler library, not just the ~9 HIMMEL-Resume-* jobs this script cares
+# about. Reported live: 219 real scheduled tasks on the machine turned a
+# single --dry-run into a 5+ minute wait -- schtasks.exe's per-task overhead
+# scales with the TOTAL task count (a well-documented Windows quirk), and
+# `/tn` does not accept a wildcard, so schtasks itself cannot filter
+# server-side. `Get-ScheduledTask -TaskName 'HIMMEL-*'` CAN: it is COM-backed
+# (not the legacy schtasks.exe path) and resolves the wildcard before
+# returning anything, so the ~9 matches come back fast regardless of how many
+# unrelated tasks share the machine. Emits lines shaped exactly like schtasks'
+# own `/fo CSV /nh` output ("\Name","NextRunTime","Ready") so every downstream
+# parser (list_existing / list_collision_candidates) needs no change at all.
+#
+# Gated on SCHTASKS_CMD being the untouched default: every existing test that
+# fabricates scheduler state pins SCHTASKS_CMD to its own stub path
+# (HIMMEL-1610), so this fast path never intercepts a test's simulated CSV --
+# it only activates for a real, unstubbed arm. Bounded by `timeout` and
+# fail-open on any error/timeout/absence: a slow or missing `powershell`
+# falls straight through to the pre-1337 full schtasks scan below, never
+# blocks an arm.
+_win_fast_task_csv() {
+    [ "${SCHTASKS_CMD:-schtasks}" = "schtasks" ] || return 1
+    command -v powershell >/dev/null 2>&1 || return 1
+    local _script _out _rc
+    # Backtick-escaped double-quotes inside a PS double-quoted string + -f
+    # formatting (no PS single-quotes anywhere): a bash single-quoted wrapper
+    # cannot contain a literal `'`, and char+string concatenation semantics in
+    # PowerShell are ambiguous enough to not rely on -- this sidesteps both.
+    # shellcheck disable=SC2016  # single-quoted on purpose -- this is PowerShell source, not bash; $ must NOT expand here
+    _script='
+Get-ScheduledTask -TaskName "HIMMEL-*" -ErrorAction SilentlyContinue | ForEach-Object {
+    $nrt = "N/A"
+    try {
+        $info = $_ | Get-ScheduledTaskInfo -ErrorAction Stop
+        if ($info.NextRunTime) { $nrt = $info.NextRunTime.ToString("M/d/yyyy h:mm:ss tt") }
+    } catch {}
+    Write-Output ("`"\{0}`",`"{1}`",`"Ready`"" -f $_.TaskName, $nrt)
+}
+'
+    if command -v timeout >/dev/null 2>&1; then
+        _out=$(timeout "${ARM_PREFLIGHT_TIMEOUT:-5}" powershell -NoProfile -NonInteractive -Command "$_script" 2>/dev/null)
+    else
+        _out=$(powershell -NoProfile -NonInteractive -Command "$_script" 2>/dev/null)
+    fi
+    _rc=$?
+    [ "$_rc" -eq 0 ] || return 1
+    printf '%s\n' "$_out"
+}
+
 _SCHTASKS_CACHE_DONE=""
 _SCHTASKS_CSV=""
 _SCHTASKS_RC=0
 _SCHTASKS_NAMES=""
 _ensure_schtasks_cache() {
     [ -n "$_SCHTASKS_CACHE_DONE" ] && return 0
+    if _SCHTASKS_CSV=$(_win_fast_task_csv); then
+        _SCHTASKS_RC=0
+        # shellcheck disable=SC1003  # `"\\'` strips both quote and literal backslash from the path-prefixed task names (same construct as the schtasks-CSV branch below)
+        _SCHTASKS_NAMES=$(printf '%s\n' "$_SCHTASKS_CSV" \
+            | grep -o '"\\\?HIMMEL-Resume-[^"]*"' 2>/dev/null \
+            | tr -d '"\\' \
+            | sort -u || true)
+        _SCHTASKS_CACHE_DONE=1
+        return 0
+    fi
     local err_file
     err_file=$(mktemp -t arm-resume.err.XXXXXX)
     _SCHTASKS_CSV=$(MSYS_NO_PATHCONV=1 "${SCHTASKS_CMD:-schtasks}" /query /fo CSV /nh 2>"$err_file")
@@ -1516,6 +1681,17 @@ list_existing() {
                 # Matches the current identity OR the pre-HIMMEL-1304 one, so an
                 # already-armed slot survives the upgrade as a dedup hit.
                 printf '%s\n' "$_SCHTASKS_NAMES" | _arm_own_identity_match
+            elif [ "$scope" = ticket ]; then
+                # HIMMEL-1329: any OTHER handover's slot for this same ticket,
+                # keyed on the STRICT frontmatter-only ticket (see
+                # _infer_ticket_strict). _compose_arm_name always puts a
+                # present ticket FIRST in the task-name segment
+                # (HIMMEL-Resume-<TICKET>-...), so a prefix match right after
+                # the HIMMEL-Resume- marker finds it regardless of which
+                # slug/session/path-hash follows.
+                if [ -n "${_ho_ticket_strict:-}" ]; then
+                    printf '%s\n' "$_SCHTASKS_NAMES" | grep -E "^HIMMEL-Resume-${_ho_ticket_strict}(-|\$)" || true
+                fi
             else
                 printf '%s\n' "$_SCHTASKS_NAMES"
             fi
@@ -1557,6 +1733,13 @@ list_existing() {
                         # lockstep — including the legacy-name migration arm.
                         if at -c "$job_id" 2>/dev/null \
                             | _arm_own_identity_match '# ' | grep -q .; then
+                            printf 'at-job-%s\n' "$job_id"
+                        fi
+                    elif [ "$scope" = ticket ]; then
+                        # HIMMEL-1329: same STRICT ticket-prefix scan as the
+                        # crontab/windows cases above, applied to the at-job body.
+                        if [ -n "${_ho_ticket_strict:-}" ] && at -c "$job_id" 2>/dev/null \
+                            | grep -qE "# HIMMEL-Resume-${_ho_ticket_strict}(-|\$)"; then
                             printf 'at-job-%s\n' "$job_id"
                         fi
                     else
@@ -2041,6 +2224,60 @@ if [ -n "$existing" ]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# HIMMEL-1329 -- ticket-level mutex.
+#
+# The dedup block above matches on the DERIVED task name, which folds in the
+# handover's own slug and a hash of its canonical path (HIMMEL-1304). Two
+# DIFFERENT handover files naming the SAME ticket -- a worktree handover and a
+# state-repo handover both for HIMMEL-999, say -- therefore produce two
+# DIFFERENT task names and sail straight past the check above: each arms its
+# own slot for work that, underneath, is the same ticket. Since
+# _compose_arm_name always places a present ticket FIRST in the task-name
+# segment, a broader "does any OTHER slot's name start with this ticket"
+# scan catches it regardless of which slug/session/path-hash follows.
+#
+# Own-identity matches (this handover's own prior slot, on a --force re-arm)
+# are excluded here -- those were already resolved by the dedup/--force block
+# above; this check only fires on a slot belonging to a genuinely DIFFERENT
+# handover.
+#
+# Keyed on the STRICT frontmatter-only ticket ($_ho_ticket_strict), not the
+# best-effort combined one ($_ho_ticket also used for naming/HIMMEL-1331):
+# _infer_ticket's other sources (worktree branch, H1 title, chain-dir name)
+# are documented as cosmetic-only best-effort guesses, and a handover whose
+# H1 merely MENTIONS a ticket for documentation purposes (not as a real work
+# association) must not false-positive a blocking refusal against an
+# unrelated handover that happens to share the same mention.
+if [ -n "${_ho_ticket_strict:-}" ]; then
+    _ticket_hits=""
+    while IFS= read -r _tmarker; do
+        [ -z "$_tmarker" ] && continue
+        [ "$_tmarker" = "$TASK_NAME" ] && continue
+        [ -n "${TASK_NAME_LEGACY:-}" ] && [ "$_tmarker" = "$TASK_NAME_LEGACY" ] && continue
+        _ticket_hits="${_ticket_hits:+$_ticket_hits
+}    $_tmarker"
+    done <<< "$(list_existing ticket)"
+    if [ -n "$_ticket_hits" ]; then
+        if [ "$FORCE" -eq 1 ] || [ "${ARM_TICKET_DUP_OK:-}" = "1" ]; then
+            {
+                echo "WARN arm-resume: ticket $_ho_ticket_strict already has another armed resume slot under a DIFFERENT handover -- arming anyway:"
+                printf '%s\n' "$_ticket_hits"
+            } >&2
+        else
+            {
+                echo "ERR arm-resume: refusing to arm -- ticket $_ho_ticket_strict already has another armed resume slot under a DIFFERENT handover (HIMMEL-1329):"
+                printf '%s\n' "$_ticket_hits"
+                echo "Arming the same ticket twice from two handover files risks two concurrent"
+                echo "sessions racing the same work. If this is a deliberate second leg (e.g. a"
+                echo "parallel sub-task on the same ticket), pass --force or set ARM_TICKET_DUP_OK=1."
+            } >&2
+            exit 13
+        fi
+    fi
+    unset _ticket_hits _tmarker
+fi
+
 # Soft slot cap (HIMMEL-340): WARN — never block — when arming would push the
 # machine past ARM_MAX_SLOTS concurrent resume slots. Each fired slot is
 # another concurrent claude process + API spend, so the operator gets a
@@ -2444,8 +2681,11 @@ _arm_shipped_preflight() {
 
     # (a) TICKET STATUS. The Jira CLI is an untracked build artifact
     # (scripts/jira/dist/index.js), so it is routinely absent in a worktree --
-    # skip quietly rather than nag on every arm.
-    _jira="$SCRIPT_DIR/../jira/dist/index.js"
+    # skip quietly rather than nag on every arm. ARM_JIRA_CLI is a test seam
+    # (same shape as SCHTASKS_CMD/GH_CMD elsewhere in this file): a worktree
+    # never has dist/ built, so a test exercising this branch has no other way
+    # to point it at a fixture CLI.
+    _jira="${ARM_JIRA_CLI:-$SCRIPT_DIR/../jira/dist/index.js}"
     if [ -n "$_ticket" ] && [ -f "$_jira" ] && command -v node >/dev/null 2>&1; then
         _status=$(_arm_probe node "$_jira" get "$_ticket" | head -1 | awk -F'\t' '{print $3}') || _status=""
         case "$_status" in

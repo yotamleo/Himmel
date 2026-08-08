@@ -499,6 +499,39 @@ run_clear "$tmp" 14 "Codex no avail-ok evidence → exit 14"
 if marker_exists "$tmp"; then pass; else fail "Codex no-responder path: marker must REMAIN"; fi
 rm -rf "$tmp"
 
+# 4f-1/4f-2. HIMMEL-1613 incident fixture: a critic (glm) that TIMED OUT on
+# run 1 and SUCCEEDED on run 2 at the SAME head used to have its run-2
+# avail-ok silently dropped by ledger-append.sh's flat (head,model) dedup,
+# permanently wedging this gate at that SHA. ledger-append.sh now
+# monotone-supersedes (unavailable -> ok appends); this exercises the real
+# writer via append_ledger, then asserts the chokepoint reads the resulting
+# ledger correctly.
+make_repo
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "glm times out on run 1" avail \
+    --branch feat/x --head "$sha" --model glm --status unavailable
+append_ledger "$tmp" "glm succeeds on run 2 at the SAME head" avail \
+    --branch feat/x --head "$sha" --model glm --status ok
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "HIMMEL-1613: avail unavailable-then-ok at the same head clears"
+if marker_exists "$tmp"; then fail "HIMMEL-1613 fixture: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
+# Negative: once a critic has recorded ok, a LATER unavailable attempt for the
+# same head must never un-clear the gate — ledger-append.sh refuses to write
+# the downgrade, so a branch that already cleared cannot be wedged retroactively
+# by a subsequent flaky/rate-limited re-run.
+make_repo
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "glm succeeds first" avail \
+    --branch feat/x --head "$sha" --model glm --status ok
+append_ledger "$tmp" "glm later attempt times out (must not downgrade)" avail \
+    --branch feat/x --head "$sha" --model glm --status unavailable
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "HIMMEL-1613: a later ok->unavailable attempt does not un-clear"
+if marker_exists "$tmp"; then fail "HIMMEL-1613 negative: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
 # 4g-4j. Claude-only floor / availability escape hatch (HIMMEL-1224). The gate
 # must be adopter-portable: a config with ZERO external critics (no codex / glm /
 # CodeRabbit) still clears on the session's own diff review, recorded as

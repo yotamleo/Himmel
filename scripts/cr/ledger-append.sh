@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # scripts/cr/ledger-append.sh — deduped JSONL writer for the CR critic ledger
-# (HIMMEL-415). Findings dedup on (head,finding_id); avail + usage dedup on
-# (head,model). The `usage` kind (HIMMEL-485) records an ESTIMATED token count
+# (HIMMEL-415). Findings dedup on (head,finding_id); usage dedups on
+# (head,model). `avail` dedups on (head,model) too, but MONOTONE-SUPERSEDES
+# rather than flatly deduping (HIMMEL-1613): a critic that times out on run 1
+# and succeeds on run 2 at the same head used to have its run-2 `ok` silently
+# dropped by the dedup, permanently wedging clear-cr-marker's gate 3 at that
+# SHA. unavailable -> ok is now appended as a real improvement; an identical
+# repeat stays a quiet no-op; ok -> unavailable (a downgrade that could dodge a
+# real blocker) is refused/dropped, same as a plain duplicate. See the avail
+# branch below for the transition logic. The `usage` kind (HIMMEL-485) records an ESTIMATED token count
 # (chars/4 of the prompt+response) for the paid codex critic — hermes does not
 # expose real usage through the one-shot chokepoint, so this is a cost SIGNAL,
 # not a billed figure (every usage record carries "estimated":true).
@@ -266,7 +273,31 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" SET_PAIRS="$set_pai
     if(e.RESPONDING_MODEL) rec.responding_model=e.RESPONDING_MODEL;
     if(e.REASON) rec.reason=e.REASON;
     if(e.DETAIL) rec.detail=e.DETAIL;
-    dup=existing.some(l=>{try{const o=JSON.parse(l);return o.kind==="avail"&&o.head===e.HEAD_&&o.model===e.MODEL&&(o.artifact||"diff")===e.ARTIFACT&&(o.perspective||"off")===e.PERSPECTIVE;}catch{return false;}});
+    // Monotone supersede (HIMMEL-1613). The dedup key is still (head,model,
+    // artifact,perspective), but the STATUS transition decides the outcome:
+    // the ledger is append-only, so the LAST matching line is the current
+    // effective record. Only an EXACT-status repeat is a quiet no-op (the
+    // pre-existing idempotent-rerun contract). unavailable -> ok is a genuine
+    // improvement (the fix this ticket exists for) and gets appended.
+    // ok -> unavailable is a downgrade - a later transient failure must never
+    // erase an earlier success, since that could dodge a real blocker - so it
+    // is refused/dropped with its own message, same as the plain dedup above.
+    const priorAvail=existing.map(l=>{try{return JSON.parse(l);}catch{return null;}})
+        .filter(o=>o&&o.kind==="avail"&&o.head===e.HEAD_&&o.model===e.MODEL
+            &&(o.artifact||"diff")===e.ARTIFACT&&(o.perspective||"off")===e.PERSPECTIVE)
+        .pop();
+    if(!priorAvail){
+      dup=false;
+    } else if(priorAvail.status===e.STATUS){
+      dup=true;
+    } else if(priorAvail.status==="unavailable"&&e.STATUS==="ok"){
+      dup=false;
+    } else {
+      process.stderr.write("ledger-append.sh: avail record for "+e.MODEL+" at head "
+        +String(e.HEAD_).slice(0,8)+" would DOWNGRADE status "+priorAvail.status+"->"+e.STATUS
+        +" - refusing (an avail record may only improve unavailable->ok, never regress; HIMMEL-1613). Nothing written.\n");
+      process.exit(0);
+    }
   }
   // avail/usage keep the quiet-dedup contract: /pr-check re-runs them on the
   // same head as a matter of course, and turning that into an error would
