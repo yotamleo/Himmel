@@ -2912,6 +2912,216 @@ mk_gh_stub '1428	MERGED	UNKNOWN'
 _a1331 --dry-run; assert_not_11 "1331 --dry-run skips the shipped preflight" "$?"
 
 # ---------------------------------------------------------------------------
+# HIMMEL-1331 (bug fix, part of the 1329/1330/1331 trio) — the TICKET-STATUS
+# half of the shipped preflight ((a) in _arm_shipped_preflight) was dead code:
+# _ho_ticket was `unset` right after TASK_NAME derivation but read again later
+# via `${_ho_ticket:-}`, so it was always empty and the Done/Closed/wont-do/
+# wont-fix check never ran. Confirmed before this fix: none of the (a)-(h)
+# cases above exercise it — every one only drives the PR/branch half. Fixed
+# by keeping _ho_ticket alive. ARM_JIRA_CLI is a new test seam (added
+# alongside the fix, same shape as GH_CMD/SCHTASKS_CMD) pointing the probe at
+# a fixture CLI — this worktree has no built scripts/jira/dist/index.js to
+# test against otherwise.
+# ---------------------------------------------------------------------------
+if command -v node >/dev/null 2>&1; then
+    R1331B="$TMP/h1331b"
+    mkdir -p "$R1331B/repo"
+    ( cd "$R1331B/repo" && git init -q -b feat/ticket-status-thing . \
+        && git config user.email t@t.t && git config user.name t \
+        && git config commit.gpgsign false \
+        && git commit -q --allow-empty -m seed ) >/dev/null 2>&1
+    JIRA_FAKE="$TMP/h1331b/jira-fake.js"
+    cat > "$JIRA_FAKE" <<'EOF'
+#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'get') {
+    console.log(args[1] + '\tsome summary\t' + (process.env.FAKE_JIRA_STATUS || 'Open'));
+}
+EOF
+    HO_1331B="$R1331B/repo-handover.md"
+    printf -- '---\nticket: HIMMEL-9002\nresume_cwd: %s\n---\n\n# HIMMEL-9002 ticket-status thing\n' \
+        "$R1331B/repo" > "$HO_1331B"
+
+    _a1331b() {
+        local status="$1"; shift
+        out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh ARM_JIRA_CLI="$JIRA_FAKE" \
+            FAKE_JIRA_STATUS="$status" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+            bash "$ARM" --time "$(future_time)" --handover "$HO_1331B" "$@" 2>&1)
+    }
+
+    _a1331b Done; rc=$?
+    assert_rc "1331b Done ticket status refuses (rc=11)" 11 "$rc"
+    assert_contains "1331b ERR names the ticket" "HIMMEL-9002" "$out"
+
+    _a1331b "In Progress"; assert_not_11 "1331b In-Progress ticket does not trip the preflight" "$?"
+
+    _a1331b Done --force; assert_not_11 "1331b --force overrides the ticket-status refusal" "$?"
+
+    ARM_SHIPPED_OK=1 _a1331b Done; assert_not_11 "1331b ARM_SHIPPED_OK=1 overrides the ticket-status refusal" "$?"
+else
+    echo "PASS 1331b skipped — node not available on this host"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-1329 — ticket-level mutex: the SAME ticket armed twice via TWO
+# DIFFERENT handover files must be refused, even though each handover's own
+# derived TASK_NAME differs (so the per-handover dedup above, rc 3, never
+# sees it).
+# ---------------------------------------------------------------------------
+R1329="$TMP/h1329"
+mkdir -p "$R1329/repo"
+( cd "$R1329/repo" && git init -q . \
+    && git config user.email t@t.t && git config user.name t \
+    && git config commit.gpgsign false \
+    && git commit -q --allow-empty -m seed ) >/dev/null 2>&1
+SCHED_DB_1329="$TMP/h1329-sched.db"; SCHED_DB_DIR_1329="$TMP/h1329-sched.atdir"
+: > "$SCHED_DB_1329"; mkdir -p "$SCHED_DB_DIR_1329"
+# Each sub-case below gets its OWN handover file for the SAME ticket: re-
+# arming the SAME file would hit the per-handover dedup (rc 3) first and
+# never reach the ticket-level check this section is testing.
+HO_1329_A="$R1329/leg-a.md"
+HO_1329_B="$R1329/leg-b.md"
+HO_1329_D="$R1329/leg-d-force.md"
+HO_1329_E="$R1329/leg-e-env-override.md"
+HO_1329_C="$R1329/leg-c-unrelated.md"
+printf -- '---\nticket: HIMMEL-9003\nresume_cwd: %s\n---\n\n# HIMMEL-9003 leg A\n' "$R1329/repo" > "$HO_1329_A"
+printf -- '---\nticket: HIMMEL-9003\nresume_cwd: %s\n---\n\n# HIMMEL-9003 leg B\n' "$R1329/repo" > "$HO_1329_B"
+printf -- '---\nticket: HIMMEL-9003\nresume_cwd: %s\n---\n\n# HIMMEL-9003 leg D\n' "$R1329/repo" > "$HO_1329_D"
+printf -- '---\nticket: HIMMEL-9003\nresume_cwd: %s\n---\n\n# HIMMEL-9003 leg E\n' "$R1329/repo" > "$HO_1329_E"
+printf -- '---\nticket: HIMMEL-9004\nresume_cwd: %s\n---\n\n# HIMMEL-9004 unrelated\n' "$R1329/repo" > "$HO_1329_C"
+
+_a1329() {
+    local ho="$1"; shift
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh SCHED_DB="$SCHED_DB_1329" SCHED_DB_DIR="$SCHED_DB_DIR_1329" \
+        SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
+        bash "$ARM" --time "$(future_time)" --handover "$ho" "$@" 2>&1)
+}
+
+_a1329 "$HO_1329_A"; rc=$?
+assert_rc "1329 first leg (handover A) arms cleanly (rc=0)" 0 "$rc"
+
+_a1329 "$HO_1329_B"; rc=$?
+assert_rc "1329 second leg (handover B, SAME ticket) refuses (rc=13)" 13 "$rc"
+assert_contains "1329 ERR names the ticket" "HIMMEL-9003" "$out"
+assert_contains "1329 ERR points at the override" "ARM_TICKET_DUP_OK=1" "$out"
+
+_a1329 "$HO_1329_D" --force; rc=$?
+assert_rc "1329 --force overrides the ticket-dup refusal" 0 "$rc"
+
+out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh SCHED_DB="$SCHED_DB_1329" SCHED_DB_DIR="$SCHED_DB_DIR_1329" \
+    ARM_TICKET_DUP_OK=1 SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1329_E" 2>&1)
+rc=$?
+assert_rc "1329 ARM_TICKET_DUP_OK=1 overrides the ticket-dup refusal" 0 "$rc"
+
+_a1329 "$HO_1329_C"; rc=$?
+assert_rc "1329 leaves an unrelated ticket alone" 0 "$rc"
+
+# ---------------------------------------------------------------------------
+# HIMMEL-1330 — refuse to auto-detect a SINGLE-WRITER repo as the launch cwd.
+# A handover with no --cwd/--worktree/resume_cwd:, sitting inside a repo
+# marked `.single-writer` (the luna vault shape), must not silently arm
+# INSIDE that repo.
+# ---------------------------------------------------------------------------
+R1330="$TMP/h1330"
+mkdir -p "$R1330/vault/handovers"
+git init -q "$R1330/vault" >/dev/null 2>&1
+touch "$R1330/vault/.single-writer"
+HO_1330="$R1330/vault/handovers/no-resume-cwd.md"
+printf -- '---\nsession_kind: test\n---\n\n# no resume_cwd handover\n' > "$HO_1330"
+
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO_1330" --dry-run 2>&1)
+rc=$?
+assert_rc "1330 dry-run does not hard-fail (preview only)" 0 "$rc"
+assert_contains "1330 dry-run warns about the vault refusal" "would REFUSE to arm" "$out"
+
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO_1330" 2>&1)
+rc=$?
+assert_rc "1330 real arm refuses into a single-writer repo (rc=14)" 14 "$rc"
+# The ERR text names the cwd as the script resolved it, which on Git-Bash is
+# the Windows form (C:/Users/.../AppData/Local/Temp/tmp.X/h1330/vault) while
+# $R1330 holds the MSYS form (/tmp/tmp.X/h1330/vault) -- and `realpath -m`
+# here converts NEITHER into the other, so reconstructing the expected string
+# is host-specific either way. Assert the distinctive tail instead: it is
+# present verbatim in both spellings, on any host.
+assert_contains "1330 ERR names the vault path" "h1330/vault" "$out"
+assert_contains "1330 ERR points at the override" "ARM_VAULT_CWD_OK=1" "$out"
+
+out=$(ARM_VAULT_CWD_OK=1 GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1330" 2>&1)
+rc=$?
+assert_rc "1330 ARM_VAULT_CWD_OK=1 overrides the vault refusal" 0 "$rc"
+
+out=$(GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1330" --cwd "$WORK_REPO" 2>&1)
+rc=$?
+assert_rc "1330 explicit --cwd bypasses the vault guard" 0 "$rc"
+
+HO_1330B="$R1330/vault/handovers/with-resume-cwd.md"
+printf -- '---\nsession_kind: test\nresume_cwd: %s\n---\n\n# has resume_cwd\n' "$WORK_REPO" > "$HO_1330B"
+out=$(GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1330B" 2>&1)
+rc=$?
+assert_rc "1330 resume_cwd: frontmatter bypasses the vault guard" 0 "$rc"
+
+NORMAL_HO_1330=$(make_handover)
+out=$(GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$NORMAL_HO_1330" 2>&1)
+rc=$?
+assert_rc "1330 leaves a normal auto-detected cwd alone" 0 "$rc"
+
+# ---------------------------------------------------------------------------
+# HIMMEL-1337 — dedup/listing must not enumerate the ENTIRE Task Scheduler
+# library. On Windows, arm-resume now tries a wildcard-filtered PowerShell
+# listing FIRST (when SCHTASKS_CMD is left at its untouched default) and only
+# falls back to the full `schtasks /query` scan if that is unavailable.
+# Proven here by fabricating a job through the PowerShell stub ONLY — if the
+# fast path is not wired up, the dedup-any check below would see an EMPTY
+# scheduler (the trap schtasks stub, invoked only as a fallback, returns
+# nothing) and rc would be 0, not 3.
+# ---------------------------------------------------------------------------
+FAST1337="$TMP/fast1337-bin"
+mkdir -p "$FAST1337"
+SCHTASKS_CALL_LOG_1337="$TMP/fast1337-schtasks.log"; rm -f "$SCHTASKS_CALL_LOG_1337"
+cat > "$FAST1337/schtasks" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$SCHTASKS_CALL_LOG_1337"
+exit 0
+EOF
+cat > "$FAST1337/powershell" <<'EOF'
+#!/usr/bin/env bash
+printf '"\\HIMMEL-Resume-fast1337-marker","1/1/2026 12:00:00 AM","Ready"\n'
+EOF
+chmod +x "$FAST1337/schtasks" "$FAST1337/powershell"
+
+HO_1337=$(make_handover "$WORK_REPO")
+out=$(env -u SCHTASKS_CMD PATH="$FAST1337:$PATH" OSTYPE=msys \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1337" --dedup-any --dry-run 2>&1)
+rc=$?
+assert_rc "1337 dedup-any dry-run sees the powershell-sourced job (rc=3)" 3 "$rc"
+assert_contains "1337 ERR names the powershell-sourced job" "HIMMEL-Resume-fast1337-marker" "$out"
+if [ -s "$SCHTASKS_CALL_LOG_1337" ]; then
+    echo "FAIL 1337 the slow full schtasks /query path was still invoked"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS 1337 the slow full schtasks /query path was bypassed (fast PowerShell path used)"
+fi
+
+# Regression: with SCHTASKS_CMD explicitly pinned (the pattern every OTHER
+# test in this suite uses), the fast path must NOT intercept — the schtasks
+# stub's own CSV is what gets read, byte-identical to pre-1337 behavior.
+out=$(SCHTASKS_CMD="$FAST1337/schtasks" PATH="$FAST1337:$PATH" OSTYPE=msys \
+    bash "$ARM" --time "$(future_time)" --handover "$(make_handover "$WORK_REPO")" --dedup-any --dry-run 2>&1)
+rc=$?
+assert_rc "1337 pinned SCHTASKS_CMD arms cleanly (its stub CSV is empty)" 0 "$rc"
+if [ -s "$SCHTASKS_CALL_LOG_1337" ]; then
+    echo "PASS 1337 pinned SCHTASKS_CMD still routes through the schtasks stub"
+else
+    echo "FAIL 1337 pinned SCHTASKS_CMD unexpectedly bypassed its own stub"
+    FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # HIMMEL-1603 — an arm must never be created without a registry record just
 # because the CWD does not map to a handover root.
 #

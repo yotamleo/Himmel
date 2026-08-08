@@ -134,3 +134,18 @@ groups:
           severity: warn
         annotations:
           summary: 'Luna inbox backlog stage {{ $labels.stage }} has risen over the last 3 days'
+
+      # HIMMEL-1635 follow-up to the HIMMEL-1052 session families: a session
+      # with an unpaired start row whose transcript went stale — crashed,
+      # killed, or wedged. `session_dead_total` is a plain per-host GAUGE
+      # (flow-exporter.ts), so this is a level check, not increase() — same
+      # shape as HimmelFlowRunStalled: the exporter's own staleness threshold
+      # has already elapsed by the time this fires, a completed terminal fact
+      # observed after the fact, not a rate.
+      - alert: HimmelSessionDead
+        expr: session_dead_total > 0
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Host {{ $labels.host }} has {{ $value }} dead session(s)'

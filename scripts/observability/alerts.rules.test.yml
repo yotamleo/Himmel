@@ -213,3 +213,20 @@ tests:
               severity: warn
             exp_annotations:
               summary: 'Luna inbox backlog stage unprocessed has risen over the last 3 days'
+
+  # HimmelSessionDead: a stale-transcript unpaired-start session, gauge-based
+  # (no increase()) — present from minute 0 in this fixture, same shape as
+  # HimmelFlowRunStalled.
+  - interval: 1m
+    input_series:
+      - series: 'session_dead_total{host="workstation1"}'
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HimmelSessionDead
+        exp_alerts:
+          - exp_labels:
+              host: workstation1
+              severity: page
+            exp_annotations:
+              summary: 'Host workstation1 has 1 dead session(s)'

@@ -106,7 +106,19 @@ cat > "$SCHED_STUB/at" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at"
+# HIMMEL-1337: arm-resume now tries a fast PowerShell wildcard listing before
+# `schtasks /query`, whenever SCHTASKS_CMD is left at its default -- exactly
+# the shape every call in this suite uses (no test here sets SCHTASKS_CMD).
+# Without this stub, `command -v powershell` would fall through this dir to
+# the REAL system powershell.exe, making these dry-run assertions depend on
+# whatever is ACTUALLY scheduled on the host. Same "unavailable" fail-open
+# stub the sibling suites (test-arm-resume.sh, -identity.sh, -long-gap.sh,
+# -queue-lock.sh) already use for this exact reason.
+cat > "$SCHED_STUB/powershell" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/powershell"
 
 # ---------------------------------------------------------------------------
 # T1: flag OFF (env unset, no repo-root .env signal) -- Windows dry-run .bat

@@ -281,3 +281,33 @@ groups:
           severity: warn
         annotations:
           summary: 'Luna inbox backlog stage {{ $labels.stage }} has risen over the last 3 days'
+
+      # HIMMEL-1635 follow-up to the HIMMEL-1052 session families — kept
+      # byte-identical in PromQL to alerts.rules.yml's HimmelSessionDead.
+      - uid: himmel_session_dead
+        title: "Session dead"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: session_dead_total
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 0m
+        labels:
+          severity: page
+        annotations:
+          summary: 'Host {{ $labels.host }} has {{ $values.A }} dead session(s)'

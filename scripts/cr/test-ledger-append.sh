@@ -24,6 +24,27 @@ CR_LEDGER="$L" bash "$LA" avail --branch b --head H5 --model qwen3coder --respon
 check "avail responding_model does not change dedup key" "$(grep -c '"kind":"avail".*"head":"H5"' "$L")" "1"
 check "avail stores first responding_model" "$(L="$L" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="avail"&&r.head==="H5");console.log(o.model+","+o.responding_model)')" "qwen3coder,qwen-flash"
 
+# ── HIMMEL-1613: avail monotone supersede — a timeout on run 1 followed by a
+# success on run 2 at the SAME (head,model) used to hit the flat dedup above
+# and get silently dropped, permanently wedging clear-cr-marker at that SHA.
+AV="$tmp/avail-supersede.jsonl"
+CR_LEDGER="$AV" bash "$LA" avail --branch b --head SH1 --model glm --status unavailable --reason quota-5h
+CR_LEDGER="$AV" bash "$LA" avail --branch b --head SH1 --model glm --status ok
+check "avail unavailable->ok appends (not dropped)" "$(grep -c '"kind":"avail".*"head":"SH1"' "$AV")" "2"
+check "avail unavailable->ok: the ok row is the effective (last) record" "$(L="$AV" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="avail"&&r.head==="SH1");console.log(rs[rs.length-1].status)')" "ok"
+
+# A downgrade (ok -> unavailable) must be refused/dropped: a later transient
+# failure must never erase an earlier success (that could dodge a blocker).
+CR_LEDGER="$AV" bash "$LA" avail --branch b --head SH1 --model glm --status unavailable --reason later-failure 2>"$tmp/downgrade.err"
+check "avail ok->unavailable downgrade exits 0 (quiet refusal, not an error)" "$?" "0"
+check "avail ok->unavailable downgrade writes NOTHING" "$(grep -c '"kind":"avail".*"head":"SH1"' "$AV")" "2"
+check "avail ok->unavailable downgrade names the reason" "$(grep -c 'DOWNGRADE' "$tmp/downgrade.err")" "1"
+check "avail downgrade leaves the ok row as the last record" "$(L="$AV" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="avail"&&r.head==="SH1");console.log(rs[rs.length-1].status)')" "ok"
+
+# An identical repeat is still a quiet no-op (idempotent /pr-check re-runs).
+CR_LEDGER="$AV" bash "$LA" avail --branch b --head SH1 --model glm --status ok
+check "avail identical repeat after supersede still dedups" "$(grep -c '"kind":"avail".*"head":"SH1"' "$AV")" "2"
+
 # ── usage kind (HIMMEL-485): chars/4 token estimate, dedup on (head,model) ──
 CR_LEDGER="$L" bash "$LA" usage --branch b --head H1 --model codex --prompt-chars 4000 --response-chars 800
 CR_LEDGER="$L" bash "$LA" usage --branch b --head H1 --model codex --prompt-chars 4000 --response-chars 800

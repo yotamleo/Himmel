@@ -511,7 +511,7 @@ one):
   recorded series. **No Alertmanager is installed in this stack**, so
   nothing here is ever delivered from Prometheus's side — purely
   self-visibility + testability.
-- `provisioning/alerting/rules.yaml` — the same 9 rules re-implemented in
+- `provisioning/alerting/rules.yaml` — the same 10 rules re-implemented in
   Grafana's file-provisioning dialect (query `data` + a `__expr__` threshold
   condition; structurally different from Prometheus's `expr:`/`for:` rule
   format, so it can't just include the file above). **This is what actually
@@ -537,9 +537,9 @@ depend on the failing component itself (the design's acceptance test, §5):
 | 4-day silently-disabled scheduled task | `HimmelScheduledTaskDisabled` + `HimmelFlowLastSuccessAgeExceeded` | No — `Get-ScheduledTask`, independent of the flow itself |
 | The exporter/collector itself dying | `HimmelWatcherDown` (`up == 0`) | No — Prometheus's own scrape health, not the exporter's output |
 
-Two more rules extend coverage past the 918 postmortem: `HimmelAgentTreeRamRunaway`
-and `HimmelOrphanProcesses` (host-level, design §4) and
-`HimmelLunaInboxBacklogRising` (pipeline-level, design §3).
+Four more rules extend coverage past the 918 postmortem: `HimmelAgentTreeRamRunaway`
+and `HimmelOrphanProcesses` (host-level, design §4), `HimmelLunaInboxBacklogRising`
+(pipeline-level, design §3), and `HimmelSessionDead` (session-level, HIMMEL-1052/1635).
 
 ### Delivery choice — F3, reusing the bridge's bot token
 
@@ -565,6 +565,9 @@ alerting` logged with no error, and the provisioning API confirmed all 9
 rules, the datasource, the contact point (token redacted, present), and the
 notification policy loaded correctly. No real Telegram send was exercised
 (fake token) — that step is for the operator to confirm on first real run.
+(That live check predates the 10th rule: HIMMEL-1635 later added
+`HimmelSessionDead`, verified by promtool and the both-dialect suites — the
+live provisioning check above has not been rerun since.)
 An operator who prefers a separate bot can set both env vars to a different
 token/chat before running the installer; a pre-set value is left alone.
 
@@ -601,9 +604,6 @@ these can carry ledger `note` free text; `flow-exporter.ts` never turns
 - A second delivery channel split by `severity` (`page` vs `warn`) — one
   flat policy today; the labels are there if an operator wants to add a
   nested route later.
-- A `session_dead_total > 0` rule — the HIMMEL-1052 session families landed
-  with the alert deliberately left to this rule set; placing it is a small
-  follow-up on top of the 9 rules above.
 - In-loop subagent *step* counting. The session substrate gives
   start/running/end + outcome, not "3rd of 5 planned steps": there is no
   existing signal for that, and producing one would need subagents to

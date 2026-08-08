@@ -129,7 +129,14 @@ test('refuses a known hook script in the wrong inventory entry', () => {
 test('refuses a missing owned hook script without writing', () => {
   withFixture((fixture) => {
     const settings = JSON.parse(readFileSync(fixture, 'utf8'));
-    settings.hooks.PostToolUse[0].hooks.pop();
+    // Remove the OWNED hook specifically, not just the last array element:
+    // HIMMEL-1635 coexists in this same PostToolUse "Agent" group by
+    // appending its own foreign hook after auto-arm-on-subagent-cap.sh, so a
+    // blind .pop() would remove that coexisting foreign hook instead of
+    // simulating the missing-owned-script case this test is about.
+    const hooks = settings.hooks.PostToolUse[0].hooks;
+    const ownedIndex = hooks.findIndex((h) => h.command.includes('/scripts/hooks/'));
+    hooks.splice(ownedIndex, 1);
     writeFileSync(fixture, `${JSON.stringify(settings, null, 2)}\n`);
     const before = readFileSync(fixture, 'utf8');
 

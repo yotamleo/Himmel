@@ -62,7 +62,7 @@ $Exe     = Join-Path $Dir 'cli-proxy-api.exe'
 $Cfg     = Join-Path $Dir 'config.yaml'
 $ApiKey  = 'himmel-local-claudex'   # local proxy token; must match config.yaml api-keys
 $Port    = 8317
-$Version = '7.2.122'
+$Version = '7.2.123'
 $Release = "https://github.com/router-for-me/CLIProxyAPI/releases/download/v$Version/CLIProxyAPI_${Version}_windows_amd64.zip"
 
 function Test-OAuth {
