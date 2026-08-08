@@ -517,6 +517,23 @@ run_clear "$tmp" 0 "HIMMEL-1613: avail unavailable-then-ok at the same head clea
 if marker_exists "$tmp"; then fail "HIMMEL-1613 fixture: marker should be GONE"; else pass; fi
 rm -rf "$tmp"
 
+# HIMMEL-1640 variant: the supersession identity is (head, model) ONLY, so an
+# unavailable -> ok recovery supersedes even when the two readings came back on
+# DIFFERENT artifacts (a critic timed out probing the diff, then succeeded
+# probing the spec at the same head). The writer appends the ok across the
+# artifact change and the chokepoint reads the effective ok -> marker clears.
+# Stale unavailable evidence must not survive a recovery that merely changed arms.
+make_repo
+write_marker "$tmp" "$sha"
+append_ledger "$tmp" "glm unavailable probing the diff arm" avail \
+    --branch feat/x --head "$sha" --model glm --status unavailable --artifact diff
+append_ledger "$tmp" "glm ok probing the spec arm at the SAME head" avail \
+    --branch feat/x --head "$sha" --model glm --status ok --artifact spec
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "HIMMEL-1640: avail unavailable-then-ok across artifacts clears"
+if marker_exists "$tmp"; then fail "HIMMEL-1640 fixture: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
 # Negative: once a critic has recorded ok, a LATER unavailable attempt for the
 # same head must never un-clear the gate — ledger-append.sh refuses to write
 # the downgrade, so a branch that already cleared cannot be wedged retroactively

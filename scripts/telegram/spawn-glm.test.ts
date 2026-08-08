@@ -49,6 +49,10 @@ import {
   checkpointWorktree,
   gitCapture,
   CHECKPOINT_GLOBS,
+  hasGitPushEscalation,
+  armSigtermFinalize,
+  disarmSigtermFinalize,
+  sigtermFinalize,
   type CapGuardDeps,
 } from "./spawn-glm";
 import { BASH_BIN } from "./run";
@@ -1336,6 +1340,104 @@ test("executeRun: a run.log append failure does NOT flip a successful run to fai
     const ok = (async () => ({ code: 0, capped: false, blocked: false, timedOut: false, pid: 5, tail: "done tail" })) as any;
     const { code } = await executeRun({ runSession: ok, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta });
     expect(code).toBe(0);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("done");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- HIMMEL-1641 F1: done_escalated — a timeout whose worktree is clean and
+// whose outbox carries a git-push escalation is not an unfinished run; it is
+// a finished worker hitting the lane's structural push-block. ---
+
+test("hasGitPushEscalation: finds a git-push escalation row, ignores other arms and blank/torn lines", () => {
+  const good = JSON.stringify({ type: "escalation", arm: "git-push", capability: "git push origin glm/x", reason: "blocked", step: "final", ts: "t" });
+  expect(hasGitPushEscalation(`${good}\n`)).toBe(true);
+  expect(hasGitPushEscalation("")).toBe(false);
+  expect(hasGitPushEscalation('{"type":"escalation","arm":"gh"}\n')).toBe(false);
+  expect(hasGitPushEscalation('not json\n{"type":"escalation","arm":"git-push"}\n{torn')).toBe(true);
+});
+
+test("executeRun: a timeout with a clean tree + a git-push escalation reclassifies done_escalated (HIMMEL-1641 F1)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    appendFileSync(join(dir, "outbox.jsonl"), JSON.stringify({ type: "escalation", arm: "git-push", capability: "git push origin glm/x", reason: "push blocked by lane guard", step: "final", ts: new Date().toISOString() }) + "\n");
+    const timedOut = (async () => ({ code: 143, capped: false, blocked: false, timedOut: true, pid: 11, tail: "" })) as any;
+    const { code } = await executeRun({ runSession: timedOut, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta, checkTreeClean: () => true });
+    expect(code).toBe(143);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("done_escalated");
+    expect(meta.escalation).toBe("git-push");
+    expect(meta.timed_out).toBe(true); // the underlying finalMeta fields are preserved
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun: a timeout with a clean tree but NO git-push escalation stays timeout (HIMMEL-1641 F1)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    const timedOut = (async () => ({ code: 143, capped: false, blocked: false, timedOut: true, pid: 12, tail: "" })) as any;
+    const { code } = await executeRun({ runSession: timedOut, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta, checkTreeClean: () => true });
+    expect(code).toBe(143);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("timeout");
+    expect(meta.escalation).toBeUndefined();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun: a timeout with a git-push escalation but a DIRTY tree stays timeout (HIMMEL-1641 F1)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    appendFileSync(join(dir, "outbox.jsonl"), JSON.stringify({ type: "escalation", arm: "git-push" }) + "\n");
+    const timedOut = (async () => ({ code: 143, capped: false, blocked: false, timedOut: true, pid: 13, tail: "" })) as any;
+    const { code } = await executeRun({ runSession: timedOut, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta, checkTreeClean: () => false });
+    expect(code).toBe(143);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("timeout");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- HIMMEL-1641 F2: dispatcher SIGTERM finalize — a caller-side kill must
+// write a distinct terminal status BEFORE the process dies, so it can never
+// masquerade as orphaned/startup-hang. ---
+
+test("armSigtermFinalize + sigtermFinalize: a SIGTERM during a live run finalizes meta as killed-by-caller (HIMMEL-1641 F2)", () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    armSigtermFinalize(metaPath, runningMeta);
+    sigtermFinalize();
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("killed-by-caller");
+    expect(meta.exit_code).toBe(-1);
+    expect(meta.pid).toBe(0);
+  } finally { disarmSigtermFinalize(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("sigtermFinalize: a no-op when unarmed — does not touch meta.json", () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    disarmSigtermFinalize(); // ensure unarmed regardless of test order
+    const before = readFileSync(metaPath, "utf8");
+    sigtermFinalize();
+    expect(readFileSync(metaPath, "utf8")).toBe(before);
+    expect(runningMeta.status).toBe("running"); // sanity: unrelated to the write
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun arms the SIGTERM finalize for the live run window and disarms once it returns (HIMMEL-1641 F2)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    let statusDuringRun: string | undefined;
+    const probe = (async () => {
+      // Simulate a SIGTERM landing mid-run: this is exactly what the real
+      // process.on("SIGTERM") listener calls before process.exit().
+      sigtermFinalize();
+      statusDuringRun = JSON.parse(readFileSync(metaPath, "utf8")).status;
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 1, tail: "" };
+    }) as any;
+    await executeRun({ runSession: probe, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta });
+    expect(statusDuringRun).toBe("killed-by-caller"); // armed during the run — a mid-run SIGTERM lands
+    // A SIGTERM arriving AFTER executeRun returns must be a no-op: the finally
+    // disarmed it, so this must NOT clobber the real "done" terminal meta.
+    sigtermFinalize();
     const meta = JSON.parse(readFileSync(metaPath, "utf8"));
     expect(meta.status).toBe("done");
   } finally { rmSync(dir, { recursive: true, force: true }); }

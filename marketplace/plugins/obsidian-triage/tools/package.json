@@ -21,7 +21,7 @@
     "score:judge-prep": "bun follow-list-score.mjs judge-prep"
   },
   "dependencies": {
-    "js-yaml": "5.2.2",
+    "js-yaml": "5.2.3",
     "playwright": "1.62.1"
   }
 }

@@ -132,6 +132,37 @@ unanchored push grant that could smuggle a refspec to `main`; the worker forging
 attestation trailers). Moving the push to the trusted main checkout, gated on
 `external_cr_verdict:pass` + reviewed-SHA==tip, is the adopted design.
 
+## Parent-finish protocol (HIMMEL-1641)
+
+`verify-return.mjs` (`node scripts/lanes/verify-return.mjs <branch>`) checks
+upstream + PR + a test-receipt trailer — a contract the GLM lane structurally
+CANNOT satisfy on its own, because the worker can never push (§Honest
+enforcement inventory below). Briefing a worker to "push your branch" burns
+its window on a hard-blocked capability; the correct split is:
+
+- **Worker** — commit early, attestation trailers in the first commit, an
+  outbox `DONE` line. Never push, never open a PR (the standing worker
+  contract above). If it hits a genuinely blocked capability (a `git push`
+  the tripwire refused) it appends one `{"type":"escalation","arm":"git-push",...}`
+  outbox row and moves on — see §Escalation channel. A worker that finishes
+  and only has that one blocked step left terminates with `meta.status:
+  "done_escalated"` (HIMMEL-1641) instead of burning the rest of its window —
+  read that status the same as `done`.
+- **Parent** — push `glm/<slug>` **from the PRIMARY checkout**, not the
+  worker's worktree: its `remote.origin.pushurl` is
+  `DISABLED-glm-quarantine` by design (the poisoned-pushurl tripwire), so a
+  push attempted there fails on purpose. Open the PR, then run
+  `node scripts/lanes/verify-return.mjs glm/<slug> --ticket <TICKET>` — only
+  AFTER the push, never before. A `FAILED ... no-upstream` line with a
+  `verify-return: branch has local commits but no upstream — GLM lane
+  push-block? …` stderr hint means exactly this: the parent hasn't pushed yet,
+  not that the work is missing.
+
+`meta.status` also gains `killed-by-caller` (HIMMEL-1641): a dispatcher-side
+kill (e.g. a bounded foreground call SIGTERMing the whole `spawn-glm` tree)
+now finalizes meta before the process dies, so that shape reads distinctly
+from `orphaned`/`failed` instead of masquerading as either.
+
 ## CLI synopsis + three-line output contract
 
 ```
@@ -156,7 +187,11 @@ bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--br
 the poller's `<root>/sessions/` tree, so the live poller never scans, adopts,
 or Telegram-flushes it. The dir holds a minimal `meta.json`
 (`{status, pid, started_at, exit_code, lane: "glm", task_name}`, transitioned
-`running → done|failed|capped|blocked` by spawn-glm) and the spawn-glm-written
+`running → done|failed|capped|blocked|timeout|done_escalated|killed-by-caller`
+by spawn-glm — the last two are HIMMEL-1641: `done_escalated` is a finished,
+committed run whose only remaining step was a structurally-blocked git push
+(§Parent-finish protocol); `killed-by-caller` is a dispatcher-side SIGTERM
+finalize) and the spawn-glm-written
 `run.log` (the stdout/stderr tail, persisted post-exit — NOT worker-written),
 plus the worker-appended `outbox.jsonl` and `context.md`.
 

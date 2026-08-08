@@ -15,6 +15,185 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
+# ---------------------------------------------------------------------------
+# --only <section> / --list (HIMMEL-1637): a targeted-section filter so
+# verifying one change doesn't cost the full 35-50 minute / ~380-assertion
+# run. Every named section below (T1, V4, 1329, ...) is individually gated
+# by `if _sec_selected "<alias>" ...; then ... fi`. Default (no flag): every
+# gate sees an empty $ONLY_FILTERS and _sec_selected returns true
+# unconditionally, so the full run's output/exit-code semantics are
+# BYTE-IDENTICAL to before this flag existed — CI and the pre-push gate
+# (which invoke this script with no args) are unaffected.
+#
+# --list matches the run-shell-tests.sh --list convention: print the plan,
+# execute nothing. It exits before $TMP/$ARM are even touched.
+#
+# Some sections share setup fixtures that live outside any single section's
+# gate (e.g. the multislot STATEFUL_STUB scheduler, the WINBIN/win_env
+# Windows stubs, the ARMED_STUB/STUB_BIN telemetry stubs) — those helpers are
+# deliberately left UNGATED so a filtered run of a downstream section stays
+# self-contained; see the ticket for the list of sections with this coupling.
+# ---------------------------------------------------------------------------
+ONLY_FILTERS=""
+LIST_ONLY=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --only)
+            # Empty is refused like absent (panel glm-2, PR CR): "" would make
+            # ONLY_FILTERS a bare newline — non-empty, so every section gate
+            # deselects and the run exits 0 having tested NOTHING, the exact
+            # vacuous-green shape the unknown-section validation fails closed on.
+            if [ $# -lt 2 ] || [ -z "$2" ]; then
+                echo "test-arm-resume.sh: --only requires a non-empty argument" >&2
+                exit 1
+            fi
+            ONLY_FILTERS="${ONLY_FILTERS}${2}
+"
+            shift 2
+            ;;
+        --list)
+            LIST_ONLY=1
+            shift
+            ;;
+        *)
+            echo "test-arm-resume.sh: unknown argument: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Canonical section plan: <listed name>|<accepted aliases>. Both --list and
+# --only validation consume this table so a displayed family name cannot drift
+# into a silently vacuous filter again. Keep aliases whitespace-free.
+SECTION_DEFINITIONS='T1|T1
+T2|T2
+T3|T3
+T4|T4
+T5|T5
+T6|T6
+T7|T7
+T8|T8
+T9|T9 T9b T9c
+T10|T10
+T11|T11
+T12|T12
+T13|T13
+T14|T14
+T15|T15
+T16|T16
+T17|T17
+T18|T18
+T19|T19
+T20|T20
+T21|T21
+T22|T22
+T23|T23
+T23b|T23b
+T24|T24
+T25|T25
+T26|T26
+T27|T27
+T28|T28
+T29|T29
+T30|T30
+T31|T31
+T32|T32
+T33|T33
+T33c|T33c
+T38|T38
+W1-W8|W1-W8 W1 W2 W3 W4 W5 W6 W7 W8
+T33-collision|T33-collision
+T34|T34
+T35|T35
+T36|T36
+T37|T37
+N1-N8|N1-N8 N1 N2 N3 N4 N5 N6 N7 N8
+S1-S5|S1-S5 S1 S2 S3 S4 S5
+N9-N13|N9-N13 N9 N10 N11 N12 N13 S6 S7 S8 S9 S10 S11 S12
+macOS|macOS
+T-awkfail|T-awkfail
+T-wsl|T-wsl
+V1|V1
+V2|V2 V2b
+V3|V3
+V4|V4 V4b
+V5|V5
+V6|V6
+V6b|V6b
+V6c|V6c
+V7|V7
+V8|V8
+V8b|V8b
+V9|V9
+FIND2|FIND2 FIND2b
+1365|1365 HIMMEL-1365
+1331|1331 HIMMEL-1331
+1331b|1331b
+1329|1329 HIMMEL-1329
+1330|1330 HIMMEL-1330
+1337|1337 HIMMEL-1337
+1603|1603 HIMMEL-1603
+T_SEAM|T_SEAM
+T_PRUNE|T_PRUNE
+T_PRUNE_REAL|T_PRUNE_REAL
+T1287|T1287
+1640|1640 HIMMEL-1640'
+
+_section_alias_known() {
+    local _candidate="$1" _label _aliases _alias
+    while IFS='|' read -r _label _aliases; do
+        for _alias in $_aliases; do
+            [ "$_candidate" = "$_alias" ] && return 0
+        done
+    done <<EOF
+$SECTION_DEFINITIONS
+EOF
+    return 1
+}
+
+_list_sections() {
+    local _label _aliases
+    while IFS='|' read -r _label _aliases; do
+        printf '%s\n' "$_label"
+    done <<EOF
+$SECTION_DEFINITIONS
+EOF
+}
+
+if [ -n "$ONLY_FILTERS" ]; then
+    while IFS= read -r _filter; do
+        [ -n "$_filter" ] || continue
+        if ! _section_alias_known "$_filter"; then
+            echo "test-arm-resume.sh: unknown --only section: $_filter (see --list)" >&2
+            exit 1
+        fi
+    done <<EOF
+$ONLY_FILTERS
+EOF
+fi
+
+# _sec_selected <alias> [<alias> ...] — true (rc 0) when this section should
+# run this pass: no --only filter was given (default full run), or at least
+# one of the section's own aliases exact-matches a requested --only value.
+_sec_selected() {
+    [ -z "$ONLY_FILTERS" ] && return 0
+    local _want _f
+    for _want in "$@"; do
+        while IFS= read -r _f; do
+            [ -n "$_f" ] || continue
+            [ "$_f" = "$_want" ] && return 0
+        done <<EOF
+$ONLY_FILTERS
+EOF
+    done
+    return 1
+}
+
+if [ "$LIST_ONLY" -eq 1 ]; then
+    _list_sections
+    exit 0
+fi
+
 ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 [ -x "$ARM" ] || chmod +x "$ARM"
 
@@ -41,6 +220,19 @@ unset ARM_NAME_TEMPLATE 2>/dev/null || true
 # RESUME_SLOT_THRESHOLD reaches resume-slot.sh through this script. T9c sets
 # it per-call.
 unset RESUME_SLOT_THRESHOLD 2>/dev/null || true
+# Worker-census shield (HIMMEL-1637): arm-resume's live-lane-worker guard
+# (HIMMEL-1622, rc=10) censuses reconcile-workers.sh's bridge root — default
+# ~/.claude/handover/bridge — so a REAL live or unprobeable GLM/claudex worker
+# meta on the MACHINE turns every non-dry-run arm below into a spurious rc=10
+# (observed 2026-08-08: 27 FAILs across T25b–W8 in a gate run that overlapped
+# live lane dispatches; the window closed mid-run and later sections passed).
+# Point the census at an isolated, empty root under $TMP. Scope note: the
+# telegram-bridge tests (T13–T19) drive supervisor.pid detection via per-call
+# BRIDGE_ROOT / BRIDGE_PIDFILE, which the census does NOT read when
+# WORKER_BRIDGE_ROOT is set (reconcile-workers.sh resolution:
+# WORKER_BRIDGE_ROOT > BRIDGE_ROOT > default), so this shield cannot leak
+# into their bridge-detection assertions.
+export WORKER_BRIDGE_ROOT="$TMP/worker-bridge-shield"
 # Global workspace-trust shield (HIMMEL-386): arm-resume now pre-trusts the
 # resolved cwd in ~/.claude.json. The non-dry-run arm cases below (T14-T20
 # bridge/channel checks, dedup-any) would otherwise write the operator's real
@@ -222,6 +414,7 @@ chmod +x "$SCHED_STUB_T17/schtasks" "$SCHED_STUB_T17/atq" "$SCHED_STUB_T17/at" "
 # ---------------------------------------------------------------------------
 # T1: --cwd <dir> overrides everything, even when resume_cwd is set
 # ---------------------------------------------------------------------------
+if _sec_selected "T1"; then
 HO=$(make_handover "$HANDOVER_DIR")   # resume_cwd set to $HANDOVER_DIR itself
 # $WORK_REPO is the explicit --cwd; it should win.
 out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO" --cwd "$WORK_REPO" --dry-run 2>&1)
@@ -231,11 +424,13 @@ assert_contains "T1 RESUME_CWD matches --cwd arg" "RESUME_CWD=$WORK_REPO" "$out"
 assert_not_contains "T1 --cwd does not resolve to statedocs" "RESUME_CWD=$HANDOVER_DIR" "$out"
 # HIMMEL-386: the arm pre-trusts the resolved cwd (dry-run reports, doesn't mutate).
 assert_contains "T1 dry-run pre-trusts resolved cwd" "would pre-trust workspace '$WORK_REPO'" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T2: handover WITH resume_cwd pointing to a valid dir, NO --cwd
 #     → resolved cwd is that dir
 # ---------------------------------------------------------------------------
+if _sec_selected "T2"; then
 HO=$(make_handover "$WORK_REPO")
 out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
@@ -243,11 +438,13 @@ assert_rc "T2 resume_cwd frontmatter exits 0" 0 "$rc"
 assert_contains "T2 RESUME_CWD matches frontmatter value" "RESUME_CWD=$WORK_REPO" "$out"
 # Must NOT emit the discoverability warning (resume_cwd was found).
 assert_not_contains "T2 no discoverability warning when resume_cwd set" "no --cwd and no 'resume_cwd:'" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T3: handover with resume_cwd pointing to a NON-EXISTENT dir, no --cwd
 #     → emits WARN and falls back (cwd != the bogus path)
 # ---------------------------------------------------------------------------
+if _sec_selected "T3"; then
 BOGUS="$TMP/does-not-exist-$(date +%s)"
 HO=$(make_handover "$BOGUS")
 out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
@@ -257,11 +454,13 @@ assert_contains "T3 emits WARN for bad resume_cwd" "WARN arm-resume: handover re
 assert_not_contains "T3 RESUME_CWD is not the bogus path" "RESUME_CWD=$BOGUS" "$out"
 # resume_cwd was present (just invalid) — must NOT emit the "no resume_cwd" discoverability WARN.
 assert_not_contains "T3 no spurious discoverability warning when key was present" "no --cwd and no 'resume_cwd:'" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T4: handover with NO resume_cwd, no --cwd
 #     → falls back to git-toplevel / handover dir AND emits discoverability warning
 # ---------------------------------------------------------------------------
+if _sec_selected "T4"; then
 HO=$(make_handover "")   # no resume_cwd line
 out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
@@ -271,10 +470,12 @@ assert_contains "T4 emits discoverability warning" "no --cwd and no 'resume_cwd:
 # Compute the expected value the same way arm-resume does (git rev-parse).
 EXPECTED_T4=$(git -C "$TMP/statedocs" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$TMP/statedocs")
 assert_contains "T4 RESUME_CWD resolves to statedocs git-toplevel" "RESUME_CWD=$EXPECTED_T4" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T5: resume_cwd value with surrounding double quotes is handled correctly
 # ---------------------------------------------------------------------------
+if _sec_selected "T5"; then
 HO_QUOTED="$HANDOVER_DIR/handover-quoted-$RANDOM.md"
 {
     printf -- '---\n'
@@ -287,10 +488,12 @@ out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash 
 rc=$?
 assert_rc "T5 double-quoted resume_cwd exits 0" 0 "$rc"
 assert_contains "T5 double-quoted resume_cwd resolves correctly" "RESUME_CWD=$WORK_REPO" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T6: resume_cwd value with surrounding single quotes is handled correctly
 # ---------------------------------------------------------------------------
+if _sec_selected "T6"; then
 HO_SQ="$HANDOVER_DIR/handover-sq-$RANDOM.md"
 {
     printf -- '---\n'
@@ -303,6 +506,7 @@ out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash 
 rc=$?
 assert_rc "T6 single-quoted resume_cwd exits 0" 0 "$rc"
 assert_contains "T6 single-quoted resume_cwd resolves correctly" "RESUME_CWD=$WORK_REPO" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T7: CRLF + double-quoted resume_cwd regression guard
@@ -311,6 +515,7 @@ assert_contains "T6 single-quoted resume_cwd resolves correctly" "RESUME_CWD=$WO
 #     rtrim leaves trailing quote → `[ -d ]` fails → wrong-repo fallback.
 #     New code: rtrim first → \r gone → quote-strip works → resolves correctly.
 # ---------------------------------------------------------------------------
+if _sec_selected "T7"; then
 HO_CRLF="$HANDOVER_DIR/handover-crlf-$RANDOM.md"
 # Write every line with explicit CRLF (\r\n) to simulate Windows-authored YAML.
 printf -- '---\r\nsession_kind: test\r\nresume_cwd: "%s"\r\n---\r\n# CRLF test handover\r\n' \
@@ -323,6 +528,7 @@ assert_contains "T7 CRLF+quoted resume_cwd resolves correctly" "RESUME_CWD=$WORK
 assert_not_contains "T7 no trailing quote in RESUME_CWD" "RESUME_CWD=${WORK_REPO}\"" "$out"
 # Must NOT fall back to the discoverability warning (resume_cwd WAS present).
 assert_not_contains "T7 no discoverability warning for CRLF handover" "no --cwd and no 'resume_cwd:'" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T8: a past --time HH:MM rolls the scheduled DATE to tomorrow (HIMMEL-204).
@@ -330,6 +536,7 @@ assert_not_contains "T7 no discoverability warning for CRLF handover" "no --cwd 
 #     past time gave "Next Run Time: N/A" and never fired. --force --dry-run
 #     isolates from the live-scheduler dedup so this is deterministic.
 # ---------------------------------------------------------------------------
+if _sec_selected "T8"; then
 HO=$(make_handover "$WORK_REPO")
 PAST_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
 # HIMMEL-966: host `at` must not be a dependency; pin the posix backend with the stub.
@@ -346,6 +553,7 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         assert_contains "T8 at -t stamp is tomorrow" "at -t $TOM" "$out"
         ;;
 esac
+fi
 
 # ---------------------------------------------------------------------------
 # T9: --time smart end-to-end through arm-resume (HIMMEL-204). A bank-free
@@ -354,6 +562,7 @@ esac
 #     skips the freshness guard; --force --dry-run isolates from the live
 #     scheduler dedup and touches nothing.
 # ---------------------------------------------------------------------------
+if _sec_selected "T9" "T9b" "T9c"; then
 HO=$(make_handover "$WORK_REPO")
 SLOT_CACHE="$TMP/usage-free.json"
 FIVE_RESET=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')
@@ -398,11 +607,13 @@ rc=$?
 assert_rc "T9c env-97 wall exits 0" 0 "$rc"
 assert_contains "T9c RESUME_SLOT_THRESHOLD=97 reaches the child -> ASAP" "bank free" "$out"
 assert_contains "T9c child applied the env threshold, not 90" "< 97%" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T10: --time smart with an exhausted-but-null-reset cache fails loud (rc 1
 #      from arm-resume, surfacing resume-slot's rc 2) — never arms a bad job.
 # ---------------------------------------------------------------------------
+if _sec_selected "T10"; then
 HO=$(make_handover "$WORK_REPO")
 BAD_CACHE="$TMP/usage-nullreset.json"
 printf '{"five_hour":{"utilization":99.0,"resets_at":null},"seven_day":{"utilization":10.0,"resets_at":"%s"}}' \
@@ -411,6 +622,7 @@ out=$(RESUME_SLOT_CACHE="$BAD_CACHE" SLOT_MAX_AGE=0 bash "$ARM" --time smart --h
 rc=$?
 assert_rc "T10 smart with unsafe cache exits 1 (no arm)" 1 "$rc"
 assert_contains "T10 surfaces the slot error" "could not resolve a slot" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T11: --channels while the bun bridge is LIVE is REFUSED (rc 5). HIMMEL-225.
@@ -418,6 +630,7 @@ assert_contains "T10 surfaces the slot error" "could not resolve a slot" "$out"
 #      --force --dry-run isolates from the live scheduler; the guard fires
 #      before any scheduler touch, so nothing is created.
 # ---------------------------------------------------------------------------
+if _sec_selected "T11"; then
 HO=$(make_handover "$WORK_REPO")
 out=$(ARM_BRIDGE_LIVE=1 bash "$ARM" --time "$(future_time)" --handover "$HO" \
         --channels 'plugin:telegram@himmel' --force --dry-run 2>&1)
@@ -425,11 +638,13 @@ rc=$?
 assert_rc "T11 --channels + live bridge refused (rc 5)" 5 "$rc"
 assert_contains "T11 explains the refusal" "refusing --channels" "$out"
 assert_contains "T11 names the 409 hazard" "409 Conflict" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T12: ARM_CHANNELS_OK=1 overrides the guard even with a live bridge → the arm
 #      proceeds (rc 0) and the --channels passthrough flows into the dry-run.
 # ---------------------------------------------------------------------------
+if _sec_selected "T12"; then
 HO=$(make_handover "$WORK_REPO")
 out=$(ARM_CHANNELS_OK=1 ARM_BRIDGE_LIVE=1 bash "$ARM" --time "$(future_time)" --handover "$HO" \
         --channels 'plugin:telegram@himmel' --force --dry-run 2>&1)
@@ -437,12 +652,14 @@ rc=$?
 assert_rc "T12 ARM_CHANNELS_OK override exits 0" 0 "$rc"
 assert_contains "T12 channels passthrough survives override" "--channels" "$out"
 assert_not_contains "T12 no refusal under override" "refusing --channels" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T13: real detection path — BRIDGE_ROOT points at a dir with NO supervisor.pid
 #      (bridge not running), ARM_BRIDGE_LIVE unset → the guard does NOT fire and
 #      a --channels arm proceeds (rc 0), passthrough intact.
 # ---------------------------------------------------------------------------
+if _sec_selected "T13"; then
 NO_BRIDGE="$TMP/no-bridge"
 mkdir -p "$NO_BRIDGE"
 HO=$(make_handover "$WORK_REPO")
@@ -452,16 +669,19 @@ rc=$?
 assert_rc "T13 --channels + no live bridge proceeds (rc 0)" 0 "$rc"
 assert_contains "T13 channels passthrough flows into dry-run" "--channels" "$out"
 assert_not_contains "T13 no spurious refusal when bridge absent" "refusing --channels" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T14: the guard is --channels-only — a PLAIN arm with a live bridge is
 #      UNAFFECTED (rc 0). Confirms the default relaunch path never regresses.
 # ---------------------------------------------------------------------------
+if _sec_selected "T14"; then
 HO=$(make_handover "$WORK_REPO")
 out=$(ARM_BRIDGE_LIVE=1 bash "$ARM" --time "$(future_time)" --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T14 plain arm + live bridge unaffected (rc 0)" 0 "$rc"
 assert_not_contains "T14 no refusal on a plain arm" "refusing --channels" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T15: REAL detection — pidfile names a LIVE pid → guard fires (rc 5). Exercises
@@ -472,6 +692,7 @@ assert_not_contains "T14 no refusal on a plain arm" "refusing --channels" "$out"
 #      cannot see. Requires python3 + (tasklist|kill) — a failure here is env,
 #      not guard logic.
 # ---------------------------------------------------------------------------
+if _sec_selected "T15"; then
 LIVE_BRIDGE="$TMP/live-bridge"
 mkdir -p "$LIVE_BRIDGE"
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
@@ -485,12 +706,14 @@ out=$(BRIDGE_ROOT="$LIVE_BRIDGE" bash "$ARM" --time "$(future_time)" --handover 
 rc=$?
 assert_rc "T15 real pidfile + live pid refuses (rc 5)" 5 "$rc"
 assert_contains "T15 explains the refusal" "refusing --channels" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T16: stale pidfile names a DEAD pid → guard does NOT fire (rc 0). A crashed
 #      bridge leaves a pidfile; a legit --channels arm must still proceed.
 #      999999 is absent on every platform (`kill -0` fails / tasklist "No tasks").
 # ---------------------------------------------------------------------------
+if _sec_selected "T16"; then
 STALE_BRIDGE="$TMP/stale-bridge"
 mkdir -p "$STALE_BRIDGE"
 printf '{"supervisor": 999999, "poller": 0}\n' > "$STALE_BRIDGE/supervisor.pid"
@@ -500,6 +723,7 @@ out=$(BRIDGE_ROOT="$STALE_BRIDGE" bash "$ARM" --time "$(future_time)" --handover
 rc=$?
 assert_rc "T16 stale (dead-pid) pidfile proceeds (rc 0)" 0 "$rc"
 assert_not_contains "T16 no refusal on a dead-pid pidfile" "refusing --channels" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T17: malformed pidfile (present but unparseable) → FAIL CLOSED: treat the
@@ -507,6 +731,7 @@ assert_not_contains "T16 no refusal on a dead-pid pidfile" "refusing --channels"
 #      likely means the bridge is up, so refusing is the safe direction (the
 #      ARM_CHANNELS_OK=1 escape covers a genuinely corrupt file).
 # ---------------------------------------------------------------------------
+if _sec_selected "T17"; then
 BAD_BRIDGE="$TMP/bad-bridge"
 mkdir -p "$BAD_BRIDGE"
 printf 'not json at all {{{\n' > "$BAD_BRIDGE/supervisor.pid"
@@ -517,6 +742,7 @@ rc=$?
 assert_rc "T17 malformed pidfile fails closed (rc 5)" 5 "$rc"
 assert_contains "T17 warns about the unreadable pidfile" "present but unreadable/empty" "$out"
 assert_contains "T17 still refuses --channels" "refusing --channels" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T18: REAL detection via the POLLER key — pidfile is {"supervisor":0,"poller":<live>}
@@ -525,6 +751,7 @@ assert_contains "T17 still refuses --channels" "refusing --channels" "$out"
 #      live pid under supervisor, so this is the complementary key). Guard fires
 #      (rc 5). Live pid is platform-honest (see T15).
 # ---------------------------------------------------------------------------
+if _sec_selected "T18"; then
 POLLER_BRIDGE="$TMP/poller-bridge"
 mkdir -p "$POLLER_BRIDGE"
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
@@ -544,6 +771,7 @@ assert_contains "T18 explains the refusal" "refusing --channels" "$out"
 # "present but unreadable/empty" — its ABSENCE here proves liveness was decided
 # by the parsed poller pid, not by the unreadable-pidfile fallback (HIMMEL-228).
 assert_not_contains "T18 did NOT take the fail-closed path" "present but unreadable/empty" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T19: BRIDGE_PIDFILE direct override WINS over BRIDGE_ROOT/supervisor.pid. The
@@ -552,6 +780,7 @@ assert_not_contains "T18 did NOT take the fail-closed path" "present but unreada
 #      whose supervisor.pid is DEAD — if the override wins the guard fires (rc 5),
 #      proving BRIDGE_PIDFILE took precedence over the (dead) BRIDGE_ROOT file.
 # ---------------------------------------------------------------------------
+if _sec_selected "T19"; then
 OVERRIDE_LIVE="$TMP/override-live.pid"
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
     msys*|cygwin*|win32*|MINGW*) OVERRIDE_PID=4 ;;
@@ -568,6 +797,7 @@ out=$(BRIDGE_PIDFILE="$OVERRIDE_LIVE" BRIDGE_ROOT="$OVERRIDE_ROOT" bash "$ARM" \
 rc=$?
 assert_rc "T19 BRIDGE_PIDFILE override (live) wins over dead BRIDGE_ROOT (rc 5)" 5 "$rc"
 assert_contains "T19 explains the refusal" "refusing --channels" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T20: wedged python3 stub (HIMMEL-249) — the --time HH:MM epoch resolution
@@ -575,6 +805,7 @@ assert_contains "T19 explains the refusal" "refusing --channels" "$out"
 #      watchdog (auto-arm-on-cap) calls this script, so a hang here would
 #      wedge the whole armor chain.
 # ---------------------------------------------------------------------------
+if _sec_selected "T20"; then
 if timeout --version 2>/dev/null | grep -qi coreutils; then
     mkdir -p "$TMP/wedged-bin"
     cat > "$TMP/wedged-bin/python3" <<'EOF'
@@ -600,6 +831,7 @@ EOF
 else
     echo "SKIP T20 (no GNU coreutils timeout on this runner)"
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T21: telemetry seam (HIMMEL-236) — the dedup block (rc 3) emits ONE
@@ -624,6 +856,7 @@ printf '# HIMMEL-Resume-stub\n'
 EOF
 chmod +x "$STUB_BIN/schtasks" "$STUB_BIN/atq" "$STUB_BIN/at"
 
+if _sec_selected "T21"; then
 # --dedup-any (HIMMEL-340): STUB_BIN fabricates a job named HIMMEL-Resume-stub
 # whose name will not match this random handover's $TASK_NAME under the new
 # per-handover dedup. --dedup-any restores the broad "any slot blocks" match
@@ -651,11 +884,13 @@ else
     echo "FAIL T21 expected exactly one telemetry line"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T22: telemetry honors --dry-run's "touch nothing" contract AND the
 #      kill switch — neither run may append a record.
 # ---------------------------------------------------------------------------
+if _sec_selected "T22"; then
 TELEMETRY_T22="$TMP/telemetry-t22"
 HO=$(make_handover "$WORK_REPO")
 out=$(SKILL_TELEMETRY_DIR="$TELEMETRY_T22" \
@@ -691,6 +926,7 @@ else
     echo "PASS T22 no run appended telemetry (dry-run x2 + kill switch)"
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # T23: telemetry seam (HIMMEL-236) — a SUCCESSFUL arm (the primary
 #      measure-during signal) emits exactly ONE "armed" record with the
@@ -730,6 +966,7 @@ exit 1
 EOF
 chmod +x "$ARMED_STUB/schtasks" "$ARMED_STUB/atq" "$ARMED_STUB/at" "$ARMED_STUB/claude" "$ARMED_STUB/powershell"
 
+if _sec_selected "T23"; then
 TELEMETRY_T23="$TMP/telemetry-t23"
 HO=$(make_handover "$WORK_REPO")
 # HIMMEL-1579: capture ONCE. This is the only test that arms at a time and then
@@ -773,6 +1010,7 @@ case "$_t23_gap" in
         ;;
 esac
 unset _t23_gap
+fi
 
 # ---------------------------------------------------------------------------
 # T23b: scheduler-create FAILURE emits NO record (HIMMEL-236) — the
@@ -782,6 +1020,7 @@ unset _t23_gap
 #       report an empty scheduler so the arm proceeds past dedup,
 #       /create (and at) fail.
 # ---------------------------------------------------------------------------
+if _sec_selected "T23b"; then
 CREATEFAIL_STUB="$TMP/createfail-stub-bin"
 mkdir -p "$CREATEFAIL_STUB"
 cat > "$CREATEFAIL_STUB/schtasks" <<'EOF'
@@ -821,6 +1060,7 @@ if [ -s "$TELEMETRY_T23B/skill-usage.jsonl" ]; then
 else
     echo "PASS T23b failed create appends no telemetry"
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T24: caller-side fail-open (HIMMEL-236) — arm-resume must behave
@@ -829,6 +1069,7 @@ fi
 #      the call site). The script is copied into an isolated tree so
 #      the real lib is never touched.
 # ---------------------------------------------------------------------------
+if _sec_selected "T24"; then
 FAILOPEN="$TMP/failopen"
 mkdir -p "$FAILOPEN/handover" "$FAILOPEN/lib"
 # HIMMEL-1607: copy the WHOLE handover + lib pair, not just arm-resume.sh.
@@ -868,6 +1109,7 @@ out=$(TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH"
 rc=$?
 assert_rc "T24 broken lib: successful arm still completes (rc 0)" 0 "$rc"
 assert_contains "T24 broken lib: arm banner printed" "RESUME ARMED" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # Multislot (HIMMEL-340): per-handover dedup lets N distinct handovers each
@@ -991,6 +1233,7 @@ make_stateful_sched "$STATEFUL_STUB"
 #      HIMMEL-Resume-* wildcard dedup the second arm was refused (rc 3); with
 #      per-$TASK_NAME dedup both succeed and TWO distinct jobs exist.
 # ---------------------------------------------------------------------------
+if _sec_selected "T25"; then
 DB25="$TMP/db25.tasks"; DB25D="$TMP/db25.atdir"; : > "$DB25"; mkdir -p "$DB25D"
 HO_A=$(make_handover "$WORK_REPO")
 HO_B=$(make_handover "$WORK_REPO")
@@ -1011,12 +1254,14 @@ else
     echo "FAIL T25c expected 2 slots, got $(count_slots "$DB25" "$DB25D")"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T26: the SAME handover armed twice still dedups — second arm refused (rc 3),
 #      one slot only. Preserves the "never two sessions for one handover"
 #      invariant the original wildcard dedup enforced too broadly.
 # ---------------------------------------------------------------------------
+if _sec_selected "T26"; then
 DB26="$TMP/db26.tasks"; DB26D="$TMP/db26.atdir"; : > "$DB26"; mkdir -p "$DB26D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB26" SCHED_DB_DIR="$DB26D" SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
@@ -1038,11 +1283,13 @@ else
     echo "FAIL T26c expected 1 slot, got $(count_slots "$DB26" "$DB26D")"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T27: --force replaces ONLY the same-handover job — one slot before, one
 #      after (delete + recreate), never a duplicate.
 # ---------------------------------------------------------------------------
+if _sec_selected "T27"; then
 DB27="$TMP/db27.tasks"; DB27D="$TMP/db27.atdir"; : > "$DB27"; mkdir -p "$DB27D"
 HO=$(make_handover "$WORK_REPO")
 TMPDIR="$TMP" SCHED_DB="$DB27" SCHED_DB_DIR="$DB27D" SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
@@ -1057,12 +1304,14 @@ else
     echo "FAIL T27b expected 1 slot after --force, got $(count_slots "$DB27" "$DB27D")"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T28: --dedup-any restores the broad "defer to ANY existing slot" semantics
 #      the auto-arm watchdogs rely on — a DISTINCT handover is refused (rc 3)
 #      when any HIMMEL-Resume job already exists, so safety arms never fan out.
 # ---------------------------------------------------------------------------
+if _sec_selected "T28"; then
 DB28="$TMP/db28.tasks"; DB28D="$TMP/db28.atdir"; : > "$DB28"; mkdir -p "$DB28D"
 HO_A=$(make_handover "$WORK_REPO")
 HO_B=$(make_handover "$WORK_REPO")
@@ -1186,6 +1435,7 @@ else
     echo "FAIL T28d identity check: missing=$_missing new=$_new (before='$(printf '%s' "$_ids_before" | tr '\n' ',')' after='$(printf '%s' "$_ids_after" | tr '\n' ',')')"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T29: soft slot cap (HIMMEL-340 decision: WARN, never block). With
@@ -1193,6 +1443,7 @@ fi
 #      (rc 0) but emits a soft-cap WARN naming the count; arms below the cap
 #      stay silent.
 # ---------------------------------------------------------------------------
+if _sec_selected "T29"; then
 DB29="$TMP/db29.tasks"; DB29D="$TMP/db29.atdir"; : > "$DB29"; mkdir -p "$DB29D"
 HO1=$(make_handover "$WORK_REPO")
 HO2=$(make_handover "$WORK_REPO")
@@ -1215,6 +1466,7 @@ else
     echo "FAIL T29d expected 3 slots after over-cap arm, got $(count_slots "$DB29" "$DB29D")"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T30: --force on a GENUINE multislot scenario replaces ONLY the targeted
@@ -1222,6 +1474,7 @@ fi
 #      regression to the legacy broad-scope delete (wiping siblings) would
 #      pass T27 (single slot) but fail here — the precise wipe HIMMEL-340 kills.
 # ---------------------------------------------------------------------------
+if _sec_selected "T30"; then
 DB30="$TMP/db30.tasks"; DB30D="$TMP/db30.atdir"; : > "$DB30"; mkdir -p "$DB30D"
 HO_A=$(make_handover "$WORK_REPO")
 HO_B=$(make_handover "$WORK_REPO")
@@ -1239,6 +1492,7 @@ else
     echo "FAIL T30b expected 2 slots (sibling preserved), got $(count_slots "$DB30" "$DB30D")"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T31: prefix-named task collision — the dedup match is whole-line/exact, so a
@@ -1252,6 +1506,7 @@ fi
 #      that breaks the prefix relationship (e.g. job.md→jobmd vs jobx.md→jobxmd
 #      is NOT a prefix pair — the spurious-green trap a prior version fell into).
 # ---------------------------------------------------------------------------
+if _sec_selected "T31"; then
 DB31="$TMP/db31.tasks"; DB31D="$TMP/db31.atdir"; : > "$DB31"; mkdir -p "$DB31D"
 # Sanitized task names: ...pfxcollide_jobcollide  (prefix)
 #                       ...pfxcollide_jobcollidex (strict superset — extra 'x')
@@ -1280,6 +1535,7 @@ fi
 out=$(TMPDIR="$TMP" SCHED_DB="$DB31" SCHED_DB_DIR="$DB31D" SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
     bash "$ARM" --time "$(future_time)" --handover "$HO_SHORT" 2>&1)
 assert_rc "T31d re-arm 'jobcollide' dedups exactly itself (rc 3)" 3 "$?"
+fi
 
 # ---------------------------------------------------------------------------
 # T32: the relaunch is SELF-CLEANING — the spawned launcher deletes its own
@@ -1290,6 +1546,7 @@ assert_rc "T31d re-arm 'jobcollide' dedups exactly itself (rc 3)" 3 "$?"
 #      self-/delete; the crontab fallback entry self-removes its marker line;
 #      the at path needs nothing (atd auto-removes one-shot jobs).
 # ---------------------------------------------------------------------------
+if _sec_selected "T32"; then
 HO=$(make_handover "$WORK_REPO")
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --force --dry-run 2>&1)
 rc=$?
@@ -1321,6 +1578,7 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         fi
         ;;
 esac
+fi
 
 # ---------------------------------------------------------------------------
 # T33: --automerge (HIMMEL-1382) wires ARMAUTOMERGE=1 + CR_MERGE_GATE_OK=1 into
@@ -1332,6 +1590,7 @@ esac
 #      --automerge) body now contains the CLEAR form but never the GRANT
 #      ("=1") form.
 # ---------------------------------------------------------------------------
+if _sec_selected "T33"; then
 HO=$(make_handover "$WORK_REPO")
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --automerge --force --dry-run 2>&1)
 rc=$?
@@ -1362,6 +1621,7 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         assert_contains "T33b default still CLEARS both vars (defense-in-depth)" "unset ARMAUTOMERGE CR_MERGE_GATE_OK" "$out"
         ;;
 esac
+fi
 
 # ---------------------------------------------------------------------------
 # T33c: two-hop cap re-arm (HIMMEL-1382 fix round). Hop 1 arms WITH
@@ -1373,6 +1633,7 @@ esac
 #       and must NOT set either to "1" — the grant must not leak across the
 #       automatic re-arm, regardless of what hop 1's ambient env carried.
 # ---------------------------------------------------------------------------
+if _sec_selected "T33c"; then
 HO1=$(make_handover "$WORK_REPO")
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO1" --automerge --force --dry-run 2>&1)
 rc=$?
@@ -1393,6 +1654,7 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         assert_contains "T33c hop-2 CLEARS both vars" "unset ARMAUTOMERGE CR_MERGE_GATE_OK" "$out"
         ;;
 esac
+fi
 
 # ---------------------------------------------------------------------------
 # T38: ARM_RESUME_SAFETY_ARM sticky-exemption clear (HIMMEL-1475 CR-fix). The
@@ -1406,6 +1668,7 @@ esac
 #      safety arm only, never a property the resumed session keeps. Mirrors how
 #      the ARMAUTOMERGE unset is tested (T33b/c).
 # ---------------------------------------------------------------------------
+if _sec_selected "T38"; then
 HO=$(make_handover "$WORK_REPO")
 out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" ARM_RESUME_SAFETY_ARM=1 \
     bash "$ARM" --time "$(future_time)" --handover "$HO" --dedup-any --dry-run 2>&1)
@@ -1421,10 +1684,12 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
 esac
 # The exemption VALUE is never granted to the resumed session — only cleared.
 assert_not_contains "T38 body does not grant ARM_RESUME_SAFETY_ARM=1" "ARM_RESUME_SAFETY_ARM=1" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # W1-W5: --worktree isolation for code arms (HIMMEL-387)
 # ---------------------------------------------------------------------------
+if _sec_selected "W1-W8" "W1" "W2" "W3" "W4" "W5" "W6" "W7" "W8"; then
 # W1: --worktree dry-run computes the type+slug path, resumes there, pre-trusts it.
 HO=$(make_handover "")
 out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO" --worktree feat/wt-test --dry-run 2>&1)
@@ -1501,6 +1766,7 @@ rc=$?
 assert_rc "W8 reuse existing worktree exits 0 (cmd not called)" 0 "$rc"
 assert_contains "W8 announces reuse" "reusing existing worktree" "$out"
 rm -rf "$W8_DIR"
+fi
 
 # ---------------------------------------------------------------------------
 # T33-T37: time-collision check (HIMMEL-407)
@@ -1522,6 +1788,7 @@ _collision_dbdir() { printf '%s' "$TMP/coll-dbdir-$RANDOM"; }
 # T33: EXACT collision → rc=6 + ERR text + free-slot suggestion.
 #      The stateful scheduler has an EMPTY db so the dedup block doesn't fire.
 # ---------------------------------------------------------------------------
+if _sec_selected "T33" "T33-collision"; then
 DB33=$(_collision_db); DB33D=$(_collision_dbdir); : > "$DB33"; mkdir -p "$DB33D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB33" SCHED_DB_DIR="$DB33D" SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
@@ -1534,11 +1801,13 @@ assert_contains "T33 ERR names the colliding task" "HIMMEL-Pipeline-Harvest" "$o
 assert_contains "T33 ERR mentions concurrent claude sessions" "claude sessions" "$out"
 assert_contains "T33 free-slot suggestion printed" "Suggested free slots:" "$out"
 assert_contains "T33 --force note printed" "--force" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T34: NEAR collision (within window, not exact) → rc=0 + WARN.
 #      Request 02:03, candidate at 02:00 (3 min away, within default 5-min window).
 # ---------------------------------------------------------------------------
+if _sec_selected "T34"; then
 DB34=$(_collision_db); DB34D=$(_collision_dbdir); : > "$DB34"; mkdir -p "$DB34D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB34" SCHED_DB_DIR="$DB34D" SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
@@ -1549,11 +1818,13 @@ assert_rc "T34 near collision still exits 0 (warn-only)" 0 "$rc"
 assert_contains "T34 WARN printed for near collision" "WARN arm-resume: near time collision" "$out"
 assert_contains "T34 WARN names the colliding task" "HIMMEL-Pipeline-Harvest" "$out"
 assert_not_contains "T34 no ERR text on near collision" "ERR arm-resume: time collision" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T35: OUTSIDE window → rc=0, no warn, no ERR.
 #      Request 02:10, candidate at 02:00 (10 min away, outside default 5-min window).
 # ---------------------------------------------------------------------------
+if _sec_selected "T35"; then
 DB35=$(_collision_db); DB35D=$(_collision_dbdir); : > "$DB35"; mkdir -p "$DB35D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB35" SCHED_DB_DIR="$DB35D" SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
@@ -1562,10 +1833,12 @@ out=$(TMPDIR="$TMP" SCHED_DB="$DB35" SCHED_DB_DIR="$DB35D" SCHTASKS_CMD="$STATEF
 rc=$?
 assert_rc "T35 outside window exits 0 silently" 0 "$rc"
 assert_not_contains "T35 no collision warn outside window" "collision" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T36: --force bypasses EXACT collision → rc=0 + override WARN (not ERR).
 # ---------------------------------------------------------------------------
+if _sec_selected "T36"; then
 DB36=$(_collision_db); DB36D=$(_collision_dbdir); : > "$DB36"; mkdir -p "$DB36D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB36" SCHED_DB_DIR="$DB36D" SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
@@ -1575,6 +1848,7 @@ rc=$?
 assert_rc "T36 --force bypasses exact collision (rc 0)" 0 "$rc"
 assert_not_contains "T36 no ERR on --force collision bypass" "ERR arm-resume: time collision" "$out"
 assert_contains "T36 --force emits override WARN" "WARN arm-resume: --force: ignoring exact time collision" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T37: --dedup-any (unattended watchdog) exact collision → WARN-ONLY (rc=0),
@@ -1586,6 +1860,7 @@ assert_contains "T36 --force emits override WARN" "WARN arm-resume: --force: ign
 #      mirrors it). The collision check's own --dedup-any warn-only behavior is
 #      what T37 actually asserts; the env var just gets it past the guard.
 # ---------------------------------------------------------------------------
+if _sec_selected "T37"; then
 DB37=$(_collision_db); DB37D=$(_collision_dbdir); : > "$DB37"; mkdir -p "$DB37D"
 HO=$(make_handover "$WORK_REPO")
 out=$(TMPDIR="$TMP" SCHED_DB="$DB37" SCHED_DB_DIR="$DB37D" SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
@@ -1596,6 +1871,7 @@ rc=$?
 assert_rc "T37 --dedup-any exact collision is warn-only (rc 0)" 0 "$rc"
 assert_not_contains "T37 no ERR on --dedup-any collision" "ERR arm-resume: time collision" "$out"
 assert_contains "T37 --dedup-any emits WARN for exact collision" "WARN arm-resume: exact time collision" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # N1-N6: ticket-in-name + ticket-aware dedup/collision (HIMMEL-540)
@@ -1610,6 +1886,7 @@ assert_contains "T37 --dedup-any emits WARN for exact collision" "WARN arm-resum
 # is interpolated whole into the dry-run scheduler line on every platform.
 # make_handover STAYS ticketless — these positive cases use make_handover_titled.
 # ---------------------------------------------------------------------------
+if _sec_selected "N1-N8" "N1" "N2" "N3" "N4" "N5" "N6" "N7" "N8"; then
 
 # N1: ticket: front-matter (src-1) → exact HIMMEL-Resume-HIMMEL-540- segment.
 HO=$(make_handover_titled "Test handover" "HIMMEL-540")
@@ -1695,6 +1972,7 @@ rc=$?
 assert_rc "N8 malformed multi-dash ticket: arm exits 0" 0 "$rc"
 assert_not_contains "N8 malformed key is not welded into the name" "HIMMEL-Resume-ABC-123" "$out"
 assert_contains "N8 falls back to the HIMMEL-Resume- path-only prefix" "HIMMEL-Resume-" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # S1-S3 (HIMMEL-702): the relaunch bakes `claude -n "<TICKET> <name>"` so an
@@ -1704,6 +1982,7 @@ assert_contains "N8 falls back to the HIMMEL-Resume- path-only prefix" "HIMMEL-R
 # Windows .bat launch line on MSYS, the crontab/at line elsewhere; -n is quoted
 # for CMD on Windows and printf %q-escaped (space -> '\ ') for /bin/sh.
 # ---------------------------------------------------------------------------
+if _sec_selected "S1-S5" "S1" "S2" "S3" "S5"; then
 
 # S1: worktree arm -> ticket (src-2, uppercased) + name-half from the slug.
 HO=$(make_handover "")
@@ -1761,6 +2040,7 @@ case "$(uname -s)" in
     *)
         assert_contains "S5 cron/at bakes -n <name>" '-n cleanup ' "$out" ;;
 esac
+fi
 
 # ---------------------------------------------------------------------------
 # N9-N10 / S6-S10 (HIMMEL-716): derived naming - chain position, slug
@@ -1769,6 +2049,7 @@ esac
 # which the existing helpers don't produce - make_handover_chained supplies
 # them. Same stub/dry-run discipline as N1-N8 / S1-S5.
 # ---------------------------------------------------------------------------
+if _sec_selected "N9-N13" "N9" "N10" "S6" "S7" "S8" "S9" "S10" "S11" "N11" "N12" "S12" "N13"; then
 # Helper: a CHAINED handover. $1 = epic dir name, $2 = session number,
 # $3 = optional ticket: frontmatter value (empty = key-less chain file).
 make_handover_chained() {
@@ -1924,10 +2205,12 @@ case "$(uname -s)" in
     *)
         assert_contains "S12 cron/at bakes the mixed template title" '-n HIMMEL-654-s5 ' "$out" ;;
 esac
+fi
 
 # ---------------------------------------------------------------------------
 # macOS backend: crontab for schedule + dedup + --force (HIMMEL-594)
 # ---------------------------------------------------------------------------
+if _sec_selected "macOS" "S1-S5" "S4"; then
 # at/atq present but must NOT be used on macOS — arm-resume picks crontab there
 # (atrun is off-by-default / SIP-fragile). Shim at/atq present so the
 # at-vs-crontab mismatch is actually exercised, plus a file-backed crontab.
@@ -1987,6 +2270,7 @@ mac_env bash "$ARM" --time "$(future_time)" --handover "$MAC_HO" --force >/dev/n
 n="$(grep -c 'HIMMEL-Resume-' "$CRON_STORE" 2>/dev/null)" || n=0
 if [ "$n" -eq 2 ]; then echo "PASS macOS --force on A leaves sibling B (2 slots)"; else echo "FAIL macOS sibling preserve entries=$n"; FAILED=$((FAILED+1)); fi
 if [ -n "$b_line" ] && grep -qF "$b_line" "$CRON_STORE" 2>/dev/null; then echo "PASS macOS sibling B line survived --force on A"; else echo "FAIL macOS sibling B line wiped"; FAILED=$((FAILED+1)); fi
+fi
 
 # ---------------------------------------------------------------------------
 # T-awkfail (HIMMEL-1304 CR): _crontab_delete must never fall through to
@@ -2014,6 +2298,7 @@ if [ -n "$b_line" ] && grep -qF "$b_line" "$CRON_STORE" 2>/dev/null; then echo "
 # ignored the soft flag and always hard-exited here, which is what this case
 # used to assert (rc=2) before the fix landed.
 # ---------------------------------------------------------------------------
+if _sec_selected "T-awkfail"; then
 AWKFAIL_REAL_AWK="$(command -v awk)"
 AWKFAIL_DIR="$TMP/awkfail-bin"; mkdir -p "$AWKFAIL_DIR"
 cat > "$AWKFAIL_DIR/awk" <<AWKEOF
@@ -2064,6 +2349,7 @@ else
     FAILED=$((FAILED+1))
 fi
 
+fi
 # ---------------------------------------------------------------------------
 # V1-V5 (HIMMEL-938): Windows /sd locale-aware render + post-arm NextRunTime
 # verify. arm-resume selects PLATFORM from OSTYPE (falling back to uname -s),
@@ -2122,6 +2408,7 @@ win_env() {
 # Forced through win_env on every host; wsl.exe distinguishes the two arm-time
 # login-shell preflights via WSL_STUB_MODE.
 # ---------------------------------------------------------------------------
+if _sec_selected "T-wsl"; then
 echo "--- T-wsl ---"
 WSLBIN="$TMP/wsl-stub-bin"
 mkdir -p "$WSLBIN"
@@ -2251,12 +2538,14 @@ assert_contains "T-wsl headroom skip warns" "proxy gate skipped for a WSL-statio
 assert_contains "T-wsl headroom skip emits plain launch" 'wsl.exe -d ubuntu -e bash -lc' "$out"
 assert_not_contains "T-wsl headroom skip omits proxy gate" "livez" "$out"
 
+fi
 # V1: DD/MM locale render. `reg` reports a dd/MM/yyyy short-date pattern;
 # --dry-run so no real scheduler is touched. The expected /sd is computed
 # independently here (mirroring arm-resume's own HH:MM -> today/tomorrow
 # rule), so the assertion is an exact full-string match that's correct
 # regardless of what day the suite happens to run on (no reliance on
 # today's day-of-month differing from today's month).
+if _sec_selected "V1"; then
 V1BIN="$TMP/v1-stub-bin"; mkdir -p "$V1BIN"
 cat > "$V1BIN/reg" <<'EOF'
 #!/usr/bin/env bash
@@ -2279,10 +2568,12 @@ out=$(win_env "$V1BIN" bash "$ARM" --time "$(future_time)" --handover "$V1_HO" -
 rc=$?
 assert_rc "V1 dd/MM/yyyy locale dry-run exits 0" 0 "$rc"
 assert_contains "V1 /sd rendered day-first per machine locale" "/sd $V1_EXPECT " "$out"
+fi
 
 # V2: registry read fails -> falls back to the pre-HIMMEL-938 MM/dd/yyyy
 # (byte-identical to the old hardcoded behavior). `reg` here mimics a
 # missing/inaccessible key: nonzero exit, nothing useful on stdout.
+if _sec_selected "V2" "V2b"; then
 V2BIN="$TMP/v2-stub-bin"; mkdir -p "$V2BIN"
 cat > "$V2BIN/reg" <<'EOF'
 #!/usr/bin/env bash
@@ -2322,6 +2613,7 @@ out=$(win_env "$V2B_BIN" bash "$ARM" --time "$(future_time)" --handover "$V2B_HO
 rc=$?
 assert_rc "V2b month-name pattern dry-run still exits 0" 0 "$rc"
 assert_contains "V2b /sd falls back to MM/dd/yyyy on MMM pattern" "/sd $V2_EXPECT " "$out"
+fi
 
 # V3-V5 share a stateless create-ok schtasks stub (with a logged /delete) and
 # an empty-scheduler /query — these are REAL (non-dry-run) arms so the
@@ -2353,6 +2645,7 @@ EOF
 # moments after arm-resume derived TARGET_EPOCH from the same wall clock, so
 # the two land on the same calendar day and the ~180d gap is unambiguous
 # (far past the 24h OK/ERR threshold either way).
+if _sec_selected "V3"; then
 V3="$TMP/v3-stub-bin"
 make_verify_stub "$V3" 'python3 -c "import time; print(int(time.time()) + 180*86400)"'
 V3_HO="$(make_handover "$WORK_REPO")"
@@ -2366,12 +2659,14 @@ else
     echo "FAIL V3 expected schtasks /delete to be called"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # V4: registered NextRunTime matches the requested time exactly -> verify
 # passes, arm stands (rc=0). The stub can't independently derive
 # TARGET_EPOCH either, so the test computes it FIRST (mirroring arm-resume's
 # own HH:MM -> epoch rule) and threads it straight into the stub script --
 # simulating a scheduler that registered exactly what was asked.
+if _sec_selected "V4" "V4b"; then
 V4_EPOCH=$(python3 -c '
 import datetime, sys
 hh, mm = (int(x) for x in sys.argv[1].split(":"))
@@ -2413,6 +2708,7 @@ else
     echo "FAIL V4b expected schtasks /delete to be called"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # V5: the verify PROBE itself fails (powershell exits nonzero, no output)
 # while locale detection WORKS -> fail-OPEN: a WARN, but the arm still
@@ -2421,6 +2717,7 @@ fi
 # reg stub matters (codex-adv-8): with locale detection ALSO down this
 # would be the V8 dual-failure refuse, and on Linux CI there is no real
 # reg to fall back on.
+if _sec_selected "V5"; then
 V5="$TMP/v5-stub-bin"
 make_verify_stub "$V5" 'echo "stub: powershell unavailable" >&2; exit 1'
 cat > "$V5/reg" <<'EOF'
@@ -2441,6 +2738,7 @@ if [ -s "$V5/delete.log" ]; then
 else
     echo "PASS V5 infra failure leaves the task in place"
 fi
+fi
 
 # V6: NEXTRUN-NONE with a target that PASSED during the create->verify
 # window -> the race guard (codex-adv-1/-2): the .bat self-deletes its task
@@ -2450,6 +2748,7 @@ fi
 # answering NEXTRUN-NONE. Target = next whole minute (lead 1-60s); if that
 # crosses midnight the HH:MM -> today/tomorrow rule inflates the lead to
 # ~24h -- skip rather than flake (this suite runs overnight).
+if _sec_selected "V6"; then
 V6_PROBE=$(python3 -c '
 import datetime
 now = datetime.datetime.now().astimezone()
@@ -2483,11 +2782,13 @@ echo NEXTRUN-NONE"
         echo "PASS V6 consumed arm leaves scheduler state alone"
     fi
 fi
+fi
 
 # V6b (codex-adv-2 negative): NEXTRUN-NONE while the target is STILL FUTURE
 # (~2min lead) -> a scheduler never fires early, so the task cannot have
 # been consumed; this is a bad registration (e.g. a past-date /sd misparse
 # also registers with no NextRunTime) -> loud refuse (rc=2) + delete.
+if _sec_selected "V6b"; then
 V6B_PROBE=$(python3 -c '
 import datetime
 now = datetime.datetime.now().astimezone()
@@ -2515,12 +2816,14 @@ else
         FAILED=$((FAILED + 1))
     fi
 fi
+fi
 
 # V6c (codex-adv-3): /create itself completed AFTER the target passed (slow
 # setup on a tight lead) -> the ONCE task registered already-expired and can
 # NEVER fire; NEXTRUN-NONE here must refuse (rc=2), never report consumed.
 # The schtasks stub sleeps past the target inside /create to simulate the
 # slow path; the probe answers NEXTRUN-NONE immediately.
+if _sec_selected "V6c"; then
 V6C_PROBE=$(python3 -c '
 import datetime
 now = datetime.datetime.now().astimezone()
@@ -2562,12 +2865,14 @@ EOF
         FAILED=$((FAILED + 1))
     fi
 fi
+fi
 
 # V7: NEXTRUN-NONE with a FAR target (lead > 180s) -> still the loud-refuse
 # path: a task that vanished long before its fire time was never registered
 # right (the original HIMMEL-938/HIMMEL-204 silent-misarm class). Skip in
 # the last ~10 minutes before midnight, where FUTURE_TIME (23:59) stops
 # being "far".
+if _sec_selected "V7"; then
 V7_LEAD=$(python3 -c '
 import datetime
 now = datetime.datetime.now().astimezone()
@@ -2593,11 +2898,13 @@ else
         FAILED=$((FAILED + 1))
     fi
 fi
+fi
 
 # V8 (codex-adv-8): BOTH safeguards down -- locale detection fails (reg
 # errors -> MM/dd/yyyy fallback) AND the verify probe fails -> on a
 # day-first machine this is the original silent-misarm class again, so the
 # arm must fail CLOSED: delete + rc=2, never a silent success.
+if _sec_selected "V8"; then
 V8="$TMP/v8-stub-bin"
 make_verify_stub "$V8" 'echo "stub: powershell unavailable" >&2; exit 1'
 cat > "$V8/reg" <<'EOF'
@@ -2617,9 +2924,11 @@ else
     echo "FAIL V8 expected schtasks /delete to be called"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # V8b (codex-adv-9): locale fallback + probe that SUCCEEDS (rc=0) but emits
 # garbage -- no usable confirmation either -> same dual-failure refuse.
+if _sec_selected "V8b"; then
 V8B="$TMP/v8b-stub-bin"
 make_verify_stub "$V8B" 'echo "PS banner noise: not a number"'
 cat > "$V8B/reg" <<'EOF'
@@ -2638,10 +2947,12 @@ else
     echo "FAIL V8b expected schtasks /delete to be called"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # V9 (codex-adv-11): the verify rejects (months-out answer) but the cleanup
 # /delete FAILS -> the refusal must still exit 2 AND loudly surface that the
 # known-bad task is STILL SCHEDULED (not silently claim cleanup).
+if _sec_selected "V9"; then
 V9="$TMP/v9-stub-bin"
 mkdir -p "$V9"
 cat > "$V9/schtasks" <<EOF
@@ -2663,6 +2974,7 @@ out=$(TMPDIR="$TMP" win_env "$V9" bash "$ARM" --time "$(future_time)" --handover
 rc=$?
 assert_rc "V9 rejection with failed delete still refuses (rc=2)" 2 "$rc"
 assert_contains "V9 residual-task risk surfaced loudly" "STILL SCHEDULED" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # FIND2 (HIMMEL-1304 round-4 finding 2): `schtasks /create /f` overwrites a
@@ -2680,6 +2992,7 @@ assert_contains "V9 residual-task risk surfaced loudly" "STILL SCHEDULED" "$out"
 # overwrite) reports a mismatched epoch, forcing the HIMMEL-938 fail-closed
 # delete.
 # ---------------------------------------------------------------------------
+if _sec_selected "FIND2" "FIND2b"; then
 FIND2_EPOCH=$(python3 -c '
 import datetime, sys
 hh, mm = (int(x) for x in sys.argv[1].split(":"))
@@ -2754,6 +3067,7 @@ else
     echo "FAIL FIND2b failed restore lost the named backup XML (path='$FIND2_BACKUP')"
     FAILED=$((FAILED+1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # HIMMEL-1365 — refuse to arm a REAL task against a TEMP/scratch target.
@@ -2763,6 +3077,7 @@ fi
 # suite arms $TMP fixtures deliberately (see the ARM_TEMP_CWD_OK shield above),
 # so these cases unset it to exercise the guard itself.
 # ---------------------------------------------------------------------------
+if _sec_selected "1365" "HIMMEL-1365"; then
 R1365="$TMP/h1365"
 mkdir -p "$R1365/handovers"
 printf -- '---\nresume_cwd: %s\n---\n\n# temp target\n' "$WORK_REPO" \
@@ -2812,6 +3127,7 @@ if [ "$rc" -eq 12 ]; then
 else
     echo "PASS 1365 leaves a non-temp work dir alone (rc=$rc)"
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # HIMMEL-1331 — refuse to re-arm work that already shipped.
@@ -2824,6 +3140,19 @@ fi
 # reaches the network. The stub also stands in for "gh is present" — its
 # ABSENCE is what the fail-open case exercises.
 # ---------------------------------------------------------------------------
+# assert_not_11 <label> <rc> -- the invariant for every non-refusing case.
+# Downstream codes vary (0/1/3) as scheduler + registry state accumulates
+# across these reruns; what each case pins is that the SHIPPED preflight did
+# not fire.
+assert_not_11() {
+    if [ "$2" -eq 11 ]; then
+        echo "FAIL $1 — shipped preflight fired (rc=11)"; FAILED=$((FAILED + 1))
+    else
+        echo "PASS $1 (rc=$2)"
+    fi
+}
+
+if _sec_selected "1331" "HIMMEL-1331"; then
 R1331="$TMP/h1331"
 mkdir -p "$R1331/bin" "$R1331/repo" "$R1331/state/handovers"
 ( cd "$R1331/repo" && git init -q -b feat/shipped-thing . \
@@ -2845,17 +3174,6 @@ mk_gh_stub() { # <tsv-payload: number \t state \t mergeable>
         printf 'case "$*" in *"pr list"*) printf "%%s\\n" "%s";; *) exit 0;; esac\n' "$1"
     } > "$GH_FAKE"
     chmod +x "$GH_FAKE"
-}
-# assert_not_11 <label> <rc> -- the invariant for every non-refusing case.
-# Downstream codes vary (0/1/3) as scheduler + registry state accumulates
-# across these reruns; what each case pins is that the SHIPPED preflight did
-# not fire.
-assert_not_11() {
-    if [ "$2" -eq 11 ]; then
-        echo "FAIL $1 — shipped preflight fired (rc=11)"; FAILED=$((FAILED + 1))
-    else
-        echo "PASS $1 (rc=$2)"
-    fi
 }
 
 # Sets $out and RETURNS the rc. Deliberately NOT `rc=$(_a1331)`: command
@@ -2910,6 +3228,7 @@ assert_not_11 "1331 fails open when gh is unavailable" "$?"
 # (h) --dry-run must stay side-effect-free: it skips the network probes.
 mk_gh_stub '1428	MERGED	UNKNOWN'
 _a1331 --dry-run; assert_not_11 "1331 --dry-run skips the shipped preflight" "$?"
+fi
 
 # ---------------------------------------------------------------------------
 # HIMMEL-1331 (bug fix, part of the 1329/1330/1331 trio) — the TICKET-STATUS
@@ -2923,6 +3242,7 @@ _a1331 --dry-run; assert_not_11 "1331 --dry-run skips the shipped preflight" "$?
 # a fixture CLI — this worktree has no built scripts/jira/dist/index.js to
 # test against otherwise.
 # ---------------------------------------------------------------------------
+if _sec_selected "1331b" "1331" "HIMMEL-1331"; then
 if command -v node >/dev/null 2>&1; then
     R1331B="$TMP/h1331b"
     mkdir -p "$R1331B/repo"
@@ -2961,6 +3281,7 @@ EOF
 else
     echo "PASS 1331b skipped — node not available on this host"
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # HIMMEL-1329 — ticket-level mutex: the SAME ticket armed twice via TWO
@@ -2968,6 +3289,7 @@ fi
 # derived TASK_NAME differs (so the per-handover dedup above, rc 3, never
 # sees it).
 # ---------------------------------------------------------------------------
+if _sec_selected "1329" "HIMMEL-1329"; then
 R1329="$TMP/h1329"
 mkdir -p "$R1329/repo"
 ( cd "$R1329/repo" && git init -q . \
@@ -3016,6 +3338,108 @@ assert_rc "1329 ARM_TICKET_DUP_OK=1 overrides the ticket-dup refusal" 0 "$rc"
 
 _a1329 "$HO_1329_C"; rc=$?
 assert_rc "1329 leaves an unrelated ticket alone" 0 "$rc"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-1640 (item 2) — inferticketstrict frontmatter window must CLOSE. A
+# handover whose YAML frontmatter never closes (only the opening `---`, no
+# trailing `---`) must yield NO frontmatter ticket, so a `ticket:` line that
+# lives in the BODY of that file is not parsed as frontmatter. Under the old
+# one-pass `c==1` filter the unclosed block swallowed the whole body as
+# frontmatter, so a body `ticket:` keyed the ticket mutex (HIMMEL-1329) and
+# could spuriously refuse (rc 13) an unrelated handover that armed the same
+# ticket for real. Failure direction is spurious refusal only; --force /
+# ARM_TICKET_DUP_OK override still exists. This fix removes the noise.
+# Leg C (codex-adv r2): OPENED-but-UNTERMINATED frontmatter is a hard parse
+# error (rc 1, no arm) — silently yielding no ticket would let a REAL
+# frontmatter ticket whose closing `---` was lost bypass the mutex (fail-open),
+# the exact duplicate-resume race the mutex prevents.
+# ---------------------------------------------------------------------------
+if _sec_selected "1640" "HIMMEL-1640"; then
+R1640="$TMP/h1640"
+mkdir -p "$R1640/repo"
+( cd "$R1640/repo" && git init -q . \
+    && git config user.email t@t.t && git config user.name t \
+    && git config commit.gpgsign false \
+    && git commit -q --allow-empty -m seed ) >/dev/null 2>&1
+SCHED_DB_1640="$TMP/h1640-sched.db"; SCHED_DB_DIR_1640="$TMP/h1640-sched.atdir"
+: > "$SCHED_DB_1640"; mkdir -p "$SCHED_DB_DIR_1640"
+# Leg A: a WELL-FORMED (closed) frontmatter that really carries the ticket —
+# arms HIMMEL-9999 for real, so the ticket mutex records an armed slot for it.
+HO_1640_A="$R1640/leg-a-closed.md"
+printf -- '---\nticket: HIMMEL-9999\nresume_cwd: %s\n---\n\n# HIMMEL-9999 leg A (closed frontmatter)\n' \
+    "$R1640/repo" > "$HO_1640_A"
+# Leg B: an UNCLOSED frontmatter block (only the opening `---`) whose BODY —
+# not frontmatter — mentions the SAME ticket. With the bug this body line was
+# treated as frontmatter and the mutex keyed HIMMEL-9999 onto leg B too (rc 13).
+# --cwd is passed because an unclosed frontmatter also defeats resume_cwd:
+# parsing (out of scope for item 2); it isolates this test to ticket inference.
+HO_1640_B="$R1640/leg-b-unclosed.md"
+printf -- '---\nsession_kind: test\nresume_cwd: %s\n\n# leg B (frontmatter never closes)\n\nticket: HIMMEL-9999\nsome unrelated body line\n' \
+    "$R1640/repo" > "$HO_1640_B"
+
+_a1640() {
+    local ho="$1"; shift
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh SCHED_DB="$SCHED_DB_1640" SCHED_DB_DIR="$SCHED_DB_DIR_1640" \
+        SCHTASKS_CMD="$STATEFUL_STUB/schtasks" PATH="$STATEFUL_STUB:$PATH" \
+        bash "$ARM" --time "$(future_time)" --handover "$ho" "$@" 2>&1)
+}
+
+_a1640 "$HO_1640_A"; rc=$?
+assert_rc "1640 leg A (closed frontmatter, real ticket) arms cleanly (rc=0)" 0 "$rc"
+assert_contains "1640 leg A arm banner printed" "RESUME ARMED" "$out"
+
+_a1640 "$HO_1640_B" --cwd "$R1640/repo"; rc=$?
+assert_rc "1640 leg B (unclosed frontmatter) refuses with a parse error (rc=1), not a ticket-dup" 1 "$rc"
+assert_contains "1640 leg B names the unclosed frontmatter" "unclosed YAML frontmatter" "$out"
+assert_not_contains "1640 leg B is not refused as a ticket dup" "already has another armed resume slot" "$out"
+assert_not_contains "1640 leg B did not arm" "RESUME ARMED" "$out"
+
+# Leg C (codex-adv r2): a REAL frontmatter ticket whose closing `---` was
+# truncated. Silently yielding no strict ticket here would bypass the
+# HIMMEL-1329 mutex (leg A already holds an armed slot for HIMMEL-9999) and
+# schedule a duplicate resume — the fail-open direction. Must hard-refuse
+# (rc 1) with the parse error, before any scheduler mutation.
+HO_1640_C="$R1640/leg-c-truncated.md"
+printf -- '---\nticket: HIMMEL-9999\nresume_cwd: %s\n\n# HIMMEL-9999 leg C (closer lost)\n' \
+    "$R1640/repo" > "$HO_1640_C"
+_a1640 "$HO_1640_C" --cwd "$R1640/repo"; rc=$?
+assert_rc "1640 leg C (truncated REAL frontmatter ticket) hard-refuses (rc=1), never silently bypasses the mutex" 1 "$rc"
+assert_contains "1640 leg C names the unclosed frontmatter" "unclosed YAML frontmatter" "$out"
+assert_not_contains "1640 leg C did not arm" "RESUME ARMED" "$out"
+
+# Leg D (codex-adv r3): a frontmatter-LESS handover (first line is a `#`
+# heading, not a `---` opener) whose BODY contains exactly ONE `---`
+# horizontal rule. Under the pre-r3 code the unanchored opener entered
+# frontmatter mode at that lone body rule and, never closing, tripped the
+# round-2 unclosed-frontmatter hard error (rc 1) -- a REGRESSION that blocked
+# perfectly valid plain-markdown handovers. With the line-1 anchor the body
+# rule is ordinary text: no frontmatter is entered, so no parse error.
+HO_1640_D="$R1640/leg-d-no-frontmatter-one-rule.md"
+printf -- '# leg D (no frontmatter, one body rule)\n\nIntro before the rule.\n\n---\n\nBody after the rule.\n' \
+    > "$HO_1640_D"
+_a1640 "$HO_1640_D" --cwd "$R1640/repo"; rc=$?
+assert_rc "1640 leg D (no frontmatter, one body --- rule) arms cleanly (rc=0), no false unclosed-block error" 0 "$rc"
+assert_contains "1640 leg D arm banner printed" "RESUME ARMED" "$out"
+assert_not_contains "1640 leg D not refused as unclosed frontmatter" "unclosed YAML frontmatter" "$out"
+
+# Leg E (codex-adv r3): a frontmatter-LESS handover whose BODY carries TWO
+# `---` horizontal rules surrounding `ticket: HIMMEL-9999` -- the SAME ticket
+# leg A armed for real. Under the pre-r3 code the unanchored opener parsed
+# these two body rules as a CLOSED frontmatter, inferred HIMMEL-9999 as a
+# STRICT ticket, and the mutex (HIMMEL-1329) refused leg E as a duplicate of
+# leg A's slot (rc 13). With the line-1 anchor no frontmatter is inferred,
+# _ho_ticket_strict stays empty, the mutex gate is skipped, and leg E arms its
+# own slot. --cwd isolates cwd resolution (there is no resume_cwd: to parse).
+HO_1640_E="$R1640/leg-e-no-frontmatter-two-rules.md"
+printf -- '# leg E (no frontmatter, two body rules)\n\nIntro.\n\n---\n\nticket: HIMMEL-9999\n\n---\n\nTrailer.\n' \
+    > "$HO_1640_E"
+_a1640 "$HO_1640_E" --cwd "$R1640/repo"; rc=$?
+assert_rc "1640 leg E (no frontmatter, two body --- rules around a ticket) arms cleanly (rc=0), not a ticket dup" 0 "$rc"
+assert_contains "1640 leg E arm banner printed" "RESUME ARMED" "$out"
+assert_not_contains "1640 leg E not refused as a ticket dup" "already has another armed resume slot" "$out"
+assert_not_contains "1640 leg E not refused as unclosed frontmatter" "unclosed YAML frontmatter" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # HIMMEL-1330 — refuse to auto-detect a SINGLE-WRITER repo as the launch cwd.
@@ -3023,6 +3447,7 @@ assert_rc "1329 leaves an unrelated ticket alone" 0 "$rc"
 # marked `.single-writer` (the luna vault shape), must not silently arm
 # INSIDE that repo.
 # ---------------------------------------------------------------------------
+if _sec_selected "1330" "HIMMEL-1330"; then
 R1330="$TMP/h1330"
 mkdir -p "$R1330/vault/handovers"
 git init -q "$R1330/vault" >/dev/null 2>&1
@@ -3069,6 +3494,7 @@ out=$(GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" P
     bash "$ARM" --time "$(future_time)" --handover "$NORMAL_HO_1330" 2>&1)
 rc=$?
 assert_rc "1330 leaves a normal auto-detected cwd alone" 0 "$rc"
+fi
 
 # ---------------------------------------------------------------------------
 # HIMMEL-1337 — dedup/listing must not enumerate the ENTIRE Task Scheduler
@@ -3080,6 +3506,7 @@ assert_rc "1330 leaves a normal auto-detected cwd alone" 0 "$rc"
 # scheduler (the trap schtasks stub, invoked only as a fallback, returns
 # nothing) and rc would be 0, not 3.
 # ---------------------------------------------------------------------------
+if _sec_selected "1337" "HIMMEL-1337"; then
 FAST1337="$TMP/fast1337-bin"
 mkdir -p "$FAST1337"
 SCHTASKS_CALL_LOG_1337="$TMP/fast1337-schtasks.log"; rm -f "$SCHTASKS_CALL_LOG_1337"
@@ -3120,6 +3547,7 @@ else
     echo "FAIL 1337 pinned SCHTASKS_CMD unexpectedly bypassed its own stub"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # HIMMEL-1603 — an arm must never be created without a registry record just
@@ -3134,6 +3562,7 @@ fi
 # All three cases run --dry-run (no scheduler job) from a NON-git cwd with
 # HANDOVER_DIR unset — the exact shape that used to fail open.
 # ---------------------------------------------------------------------------
+if _sec_selected "1603" "HIMMEL-1603"; then
 R1603="$TMP/h1603"
 mkdir -p "$R1603/state/handovers/yotamleo/himmel" "$R1603/notgit" "$R1603/loose"
 printf -- '---\nresume_cwd: %s\n---\n\n# t\n' "$R1603/notgit" \
@@ -3164,6 +3593,7 @@ out=$(cd "$R1603/notgit" && env -u HANDOVER_DIR SKILL_TELEMETRY_DIR="$T1603" bas
 assert_contains "1603 unresolvable root warns that the arm is unregistered" \
     "invisible to the census" "$out"
 assert_contains "1603 unresolvable root names the remedy" "set HANDOVER_DIR" "$out"
+fi
 
 # ---------------------------------------------------------------------------
 # T_SEAM (HIMMEL-1610): the SCHTASKS_CMD seam. arm-resume must route its
@@ -3180,6 +3610,7 @@ assert_contains "1603 unresolvable root names the remedy" "set HANDOVER_DIR" "$o
 #       scheduler, /query is read-only, and /create is only printed -- nothing
 #       is ever created.
 # ---------------------------------------------------------------------------
+if _sec_selected "T_SEAM"; then
 SEAM_STUB_DIR="$TMP/seam-stub"          # recording stub -- deliberately NOT on PATH
 mkdir -p "$SEAM_STUB_DIR"
 cat > "$SEAM_STUB_DIR/schtasks" <<'EOF'
@@ -3202,6 +3633,7 @@ else
     echo "FAIL T_SEAM SCHTASKS_CMD stub did NOT run -- seam not honoured"
     FAILED=$((FAILED + 1))
 fi
+fi
 
 # ---------------------------------------------------------------------------
 # T_PRUNE (HIMMEL-1624): the .bat age-prune lives in the .bat-builder, BEFORE
@@ -3218,6 +3650,7 @@ fi
 #       focused probe transcript; it is not asserted here because the post-arm
 #       verify differs across hosts and is not what this regression is about.
 # ---------------------------------------------------------------------------
+if _sec_selected "T_PRUNE"; then
 HO=$(make_handover "$WORK_REPO")
 PRUNE_DIR="$TMP/prune-sandbox-$RANDOM"
 mkdir -p "$PRUNE_DIR"
@@ -3239,6 +3672,124 @@ else
     echo "FAIL T_PRUNE dry-run pruned a stale .bat -- side effect under --dry-run"
     echo "     output: $out"
     FAILED=$((FAILED + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# T_PRUNE_REAL (HIMMEL-1606): the age-prune T_PRUNE above only exercises the
+# --dry-run no-op path (the prune must NOT run there). This exercises the
+# REAL prune on a real (non-dry-run) arm: a stale (>7d) sibling is deleted,
+# a recent (1d) sibling and this arm's own freshly-minted .bat both survive.
+# Reuses the ARMED_STUB scheduler stub (T23) so the arm completes without
+# touching the real scheduler, and points TMPDIR at a sandbox (same seam
+# T_PRUNE uses) so arm-resume's own `mktemp -t himmel-resume.XXXXXX.bat`
+# lands next to the fixtures and the prune actually sees them.
+# ---------------------------------------------------------------------------
+if _sec_selected "T_PRUNE_REAL"; then
+PRUNE1606_DIR="$TMP/prune1606-sandbox-$RANDOM"
+mkdir -p "$PRUNE1606_DIR"
+SIB_STALE_1606="$PRUNE1606_DIR/himmel-resume.stale1606.bat"
+SIB_RECENT_1606="$PRUNE1606_DIR/himmel-resume.recent1606.bat"
+printf '@echo off\nrem stale leaked sibling\n' > "$SIB_STALE_1606"
+printf '@echo off\nrem recent leaked sibling\n' > "$SIB_RECENT_1606"
+touch -t 200001010000 "$SIB_STALE_1606"   # >7 days old -- must be pruned
+touch -d '1 day ago' "$SIB_RECENT_1606"   # 1 day old -- must survive
+
+HO=$(make_handover "$WORK_REPO")
+# win_env forces the WINDOWS arm path (OSTYPE=msys + WINBIN stubs): the .bat
+# mint + prune under test are Windows-only code, so a bare invocation on a
+# POSIX host would take the at/crontab path and fail the stale-pruned
+# assertion without ever exercising the prune (codex-adv, 1606 CR round).
+# win_env prefers $ARMED_STUB's schtasks, so the arm still completes.
+out=$(TMPDIR="$PRUNE1606_DIR" win_env "$ARMED_STUB" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO" 2>&1)
+rc=$?
+assert_rc "T_PRUNE_REAL real arm succeeds (rc 0)" 0 "$rc"
+
+if [ -f "$SIB_STALE_1606" ]; then
+    echo "FAIL T_PRUNE_REAL stale (>7d) sibling survived a real arm"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS T_PRUNE_REAL stale (>7d) sibling was pruned"
+fi
+
+if [ -f "$SIB_RECENT_1606" ]; then
+    echo "PASS T_PRUNE_REAL recent (1d) sibling survived"
+else
+    echo "FAIL T_PRUNE_REAL recent (1d) sibling was wrongly pruned"
+    FAILED=$((FAILED + 1))
+fi
+
+_fresh_1606=$(find "$PRUNE1606_DIR" -maxdepth 1 -type f -name 'himmel-resume.*.bat' \
+    ! -name "$(basename "$SIB_RECENT_1606")" 2>/dev/null)
+if [ -n "$_fresh_1606" ]; then
+    echo "PASS T_PRUNE_REAL this arm's own fresh .bat survives"
+else
+    echo "FAIL T_PRUNE_REAL this arm's own fresh .bat is missing after the arm"
+    FAILED=$((FAILED + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# --- HIMMEL-1287 ---
+# arm-resume.sh carried a FIFTH copy of the HIMMEL-1281 cmd.exe
+# over-escaping bug: _cmd_metachar_escape() and two inlined copies (the
+# prompt/cd-path pair, and the --channels spec) all caret-escaped
+# ^ & < > | before HIMMEL-1281's shared cadence_cmd_escape existed. Every
+# one of these sites interpolates INSIDE the double quotes the generated
+# .bat wraps the value in, where cmd.exe treats ^ as a LITERAL character —
+# caret-escaping there corrupts the value instead of protecting it
+# (C:\some&dir becomes C:\some^&dir, a path that does not exist). The fix
+# routes all of them through cadence_cmd_escape (scripts/lib/cadence-format.sh)
+# and removes the now-orphaned _cmd_metachar_escape. These cases assert the
+# generated .bat names the REAL value: % doubled, and & ^ < > | left
+# completely alone (no inserted carets).
+# ---------------------------------------------------------------------------
+
+if _sec_selected "T1287"; then
+# T1287a: cd-path site (`c`, --cwd) — the Windows-legal subset of hostile
+# characters (%, &, ^; <>|"?* are illegal in real path components, the same
+# constraint documented above the escape calls in arm-resume.sh).
+HOSTILE_DIR="$TMP/hostile-cwd-$RANDOM/some&dir^100%"
+mkdir -p "$HOSTILE_DIR"
+HO=$(make_handover "$WORK_REPO")
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO" --cwd "$HOSTILE_DIR" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T1287a hostile --cwd dry-run exits 0" 0 "$rc"
+assert_contains "T1287a cd /d names the real value (% doubled, & ^ literal)" 'some&dir^100%%' "$out"
+assert_not_contains "T1287a no caret inserted before &" '^&dir' "$out"
+assert_not_contains "T1287a no caret doubled for literal ^" '^^100' "$out"
+
+# T1287b: prompt site (`p`) — RESUME_PROMPT is derived from the handover
+# PATH ("load $HANDOVER_PATH overnight mode"), so a handover FILENAME
+# carrying the same Windows-legal hostile subset exercises the prompt escape.
+HOSTILE_HO="$HANDOVER_DIR/note&caret^100%.md"
+printf -- '---\nsession_kind: test\n---\n# hostile prompt handover\n' > "$HOSTILE_HO"
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HOSTILE_HO" --cwd "$WORK_REPO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T1287b hostile prompt dry-run exits 0" 0 "$rc"
+assert_contains "T1287b prompt names the real value (% doubled, & ^ literal)" 'note&caret^100%%.md overnight mode' "$out"
+assert_not_contains "T1287b no caret inserted before &" '^&caret' "$out"
+assert_not_contains "T1287b no caret doubled for literal ^" '^^100' "$out"
+
+# T1287c: --channels free-text site (`cs`) — unlike a filesystem path, the
+# --channels spec is unconstrained operator text and can carry the FULL
+# hostile set, including < > | (illegal in real Windows path components).
+# ARM_BRIDGE_LIVE=0 is the existing test seam that keeps the unrelated
+# live-Telegram-bridge refusal (HIMMEL-225) out of the way.
+HO=$(make_handover "$WORK_REPO")
+out=$(ARM_BRIDGE_LIVE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO" --channels 'a%b&c^d<e>f|g' --force --dry-run 2>&1)
+rc=$?
+assert_rc "T1287c hostile --channels dry-run exits 0" 0 "$rc"
+assert_contains "T1287c channels spec names the real value (% doubled, rest literal)" '--channels "a%%b&c^d<e>f|g"' "$out"
+assert_not_contains "T1287c no caret inserted before &" '^&c' "$out"
+assert_not_contains "T1287c no caret doubled for literal ^" '^^d' "$out"
+assert_not_contains "T1287c no caret inserted before <" '^<e' "$out"
+assert_not_contains "T1287c no caret inserted before >" '^>f' "$out"
+assert_not_contains "T1287c no caret inserted before |" '^|g' "$out"
 fi
 
 # ---------------------------------------------------------------------------

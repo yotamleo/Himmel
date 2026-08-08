@@ -63,6 +63,46 @@ test('a Tests: trailer also satisfies the receipt check', () => {
   assert.equal(r.verdict, 'PASS');
 });
 
+// HIMMEL-1641: a no-upstream failure whose branch has local commits ahead of
+// origin/main gets a push-block hint — the GLM lane cannot push by design, so
+// this is often "the parent hasn't pushed yet", not "the work is missing".
+
+test('no-upstream + branch exists with commits ahead of origin/main: push-block hint (HIMMEL-1641)', () => {
+  const r = verifyReturn('glm/himmel-1640-x', {
+    exec: stubExec({ 'for-each-ref': '\n', 'rev-parse --verify': 'abc123\n', 'rev-list': '2\n' }),
+  });
+  assert.equal(r.verdict, 'FAILED');
+  assert.equal(r.failedCheck, 'no-upstream');
+  assert.match(r.hint, /GLM lane push-block/);
+  assert.match(r.hint, /HIMMEL-1641/);
+});
+
+test('no-upstream + branch does NOT exist locally: no hint (the plain no-upstream case)', () => {
+  const r = verifyReturn('glm/nonexistent', {
+    exec: stubExec({ 'for-each-ref': '\n', 'rev-parse --verify': new Error('fatal: not a valid ref') }),
+  });
+  assert.equal(r.failedCheck, 'no-upstream');
+  assert.equal(r.hint, undefined);
+});
+
+test('no-upstream + branch exists but zero commits ahead: no hint (nothing to push)', () => {
+  const r = verifyReturn('glm/empty', {
+    exec: stubExec({ 'for-each-ref': '\n', 'rev-parse --verify': 'abc\n', 'rev-list': '0\n' }),
+  });
+  assert.equal(r.hint, undefined);
+});
+
+test('a PASS never carries a hint', () => {
+  const r = verifyReturn('feat/himmel-1-x', { exec: stubExec(HEALTHY) });
+  assert.equal(r.hint, undefined);
+});
+
+test('a non-no-upstream FAILED (e.g. empty-diff) never carries a hint', () => {
+  const r = verifyReturn('feat/himmel-1-x', { exec: stubExec({ ...HEALTHY, 'rev-list': '0\n' }) });
+  assert.equal(r.failedCheck, 'empty-diff');
+  assert.equal(r.hint, undefined);
+});
+
 test('first failure wins: upstream missing masks the later empty diff', () => {
   const r = verifyReturn('feat/himmel-1-x', {
     exec: stubExec({ ...HEALTHY, 'for-each-ref': '', 'rev-list': '0\n' }),

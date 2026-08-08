@@ -86,17 +86,28 @@ function hookFor(spec) {
   return { type: 'command', command: commandFor(spec.verb), timeout: TIMEOUT };
 }
 
-// Deliberately QUOTE-INSENSITIVE and argument-insensitive at the recognition
-// stage (mirrors wire-trust-hooks' isLedgerCommand): a command that merely
-// INVOKES this writer, in any shape, is enough to be treated as "ours" for
-// walking purposes. Exact-match against the canonical string decides
-// wired-vs-not; this decides who a hook object belongs to at all.
+// Two recognition layers, deliberately separate (mirrors wire-trust-hooks'
+// isLedgerCommand + the per-spec canonical command it pairs with):
+//   - WRITER-level (isWriterCommand): quote- and argument-insensitive. A
+//     command that merely INVOKES this writer, in ANY shape — an unquoted
+//     $CLAUDE_PROJECT_DIR, a `bun run` form, a stray extra flag — is "ours"
+//     generically: enough to walk, repair, or strip it.
+//   - SPEC-level (isOurs): our writer AND carrying THIS spec's verb as one of
+//     its arguments, so a session-start hook never reads as a session-end one.
+// Exact canonical match is a THIRD question (matchesCanonical / statusOf): it
+// decides wired-vs-not and NEVER who owns the object. Keeping "owned" broader
+// than "canonical" is exactly what lets install converge a near-variant IN
+// PLACE instead of appending a duplicate (both would fire, every event twice),
+// and lets --off strip the variant too instead of stranding it.
 const isWriterCommand = (cmd) => typeof cmd === 'string' && cmd.includes('/scripts/observability/session-run-hook.ts');
 
-// Does this hook object carry OUR exact canonical command for this spec
-// (verb-specific, not just "any session-run-hook.ts invocation")?
+// Does this hook object belong to THIS spec — our writer, invoked with this
+// spec's verb? The verb is the writer's argument and is matched as a
+// whitespace-delimited token, so the four verbs never cross-match. This is NOT
+// a canonical check: a near-variant shape still counts as ours.
 function isOurs(hook, spec) {
-  return !!hook && isWriterCommand(hook.command) && hook.command === commandFor(spec.verb);
+  if (!hook || !isWriterCommand(hook.command)) return false;
+  return hook.command.trim().split(/\s+/).includes(spec.verb);
 }
 
 // Does this hook object match the canonical wiring EXACTLY — command AND
@@ -292,6 +303,7 @@ export function remove(settings) {
     const list = next.hooks[spec.event];
     if (!Array.isArray(list)) continue;
     const nextList = [];
+    let removedFromEvent = 0;
     for (const group of list) {
       if (!matcherMatches(group, spec)) {
         nextList.push(group);
@@ -303,6 +315,7 @@ export function remove(settings) {
         nextList.push(group);
         continue;
       }
+      removedFromEvent += removedHere;
       removed += removedHere;
       const kept = hooks.filter((h) => !isOurs(h, spec));
       // Drop the whole group only if OUR removal emptied it — a group that
@@ -314,14 +327,17 @@ export function remove(settings) {
       }
       // else: drop the group entirely (it was ours alone).
     }
-    if (nextList.length > 0) {
-      next.hooks[spec.event] = nextList;
-    } else {
-      // Documented normalization (same as wire-trust-hooks): an event array
-      // that ends up empty after our removal is dropped entirely rather than
-      // left as `[]`. Equivalent to every consumer; harmless for an event key
-      // (SessionEnd) this script itself created.
+    // Delete the event key ONLY when OUR removal emptied it (same guard as
+    // wire-trust-hooks' `removedHere > 0 && kept.length === 0`). An array this
+    // script never touched — a pre-existing `[]` under an owned event, or one
+    // holding only foreign groups — is not ours to delete: doing so destroys a
+    // key we did not create and breaks the byte-reversibility the serialize
+    // guard (below in main) exists to protect. Snapshotting "did we remove
+    // anything here" (removedFromEvent) is the byte-reversibility boundary.
+    if (removedFromEvent > 0 && nextList.length === 0) {
       delete next.hooks[spec.event];
+    } else {
+      next.hooks[spec.event] = nextList;
     }
   }
 

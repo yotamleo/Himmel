@@ -1174,6 +1174,53 @@ PATH="$tmp/bin:$PATH" TO_LOG="$_to_floor" bash -c 'printf "%s" "$1" | CRITICS_JS
 check "W7c: the clamp never emits a 0 or negative timeout" \
     "$(cat "$tmp"/to-*.log 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(index($i,"secs=")==1){v=$i; sub(/^secs=/,"",v); if(v+0 < 1) n++}} END{print n+0}')" "0"
 
+# --- HIMMEL-1648: panel credential load_dotenv is pinned to script-root ---------
+# resolution (load_dotenv --root "$(_load_dotenv_primary_for "$SCRIPT_DIR/../..")"),
+# so a panel invoked from an UNRELATED git repo reads himmel's .env, not THAT
+# repo's. The fixture copies the panel + load-dotenv.sh into a fake himmel root
+# (so $SCRIPT_DIR/../.. resolves THERE) carrying GLM_API_KEY ONLY in its .env; the
+# process cwd is a DIFFERENT git repo whose .env holds a DECOY value. A registry
+# with a zai/glm row trips the load gate; the glm member (stubbed) must observe
+# the himmel-root key, never the cwd decoy — pre-fix CWD-anchored resolution read
+# the decoy. A live process value still wins (only-when-unset).
+P1648_ROOT="$tmp/p1648-root"; mkdir -p "$P1648_ROOT/scripts/cr" "$P1648_ROOT/scripts/lib"
+cp "$PANEL" "$P1648_ROOT/scripts/cr/critic-panel.sh"
+cp "$HERE/../lib/load-dotenv.sh" "$P1648_ROOT/scripts/lib/load-dotenv.sh"
+printf 'GLM_API_KEY=zk-himmel-root\n' > "$P1648_ROOT/.env"
+P1648_CWX="$tmp/p1648-cwd"; mkdir -p "$P1648_CWX"; git init -q "$P1648_CWX"
+git -C "$P1648_CWX" config user.name test
+git -C "$P1648_CWX" config user.email t@e.invalid
+printf 'x\n' > "$P1648_CWX/README"; git -C "$P1648_CWX" add README; git -C "$P1648_CWX" commit -q -m init
+printf 'GLM_API_KEY=DECOY-cwd-value\n' > "$P1648_CWX/.env"
+P1648_JSON="$tmp/p1648-glm.json"
+printf '%s' '{"panel":[{"slug":"glm","model":"glm/glm-5.2","provider":"zai","tier":"free"}]}' > "$P1648_JSON"
+P1648_KEY="$tmp/p1648-key"
+P1648_STUB="$tmp/p1648-cfp.sh"
+cat > "$P1648_STUB" <<EOS
+#!/usr/bin/env bash
+printf '%s' "\${GLM_API_KEY:-}" > "$P1648_KEY"
+echo "# glm First-Pass Review"
+echo ""
+echo "## Critical Issues (0 found)"
+echo ""
+echo "## Important Issues (0 found)"
+echo ""
+echo "## Suggestions (0 found)"
+EOS
+chmod +x "$P1648_STUB"
+# glm panel from an UNRELATED cwd repo: the himmel-root key wins over the cwd decoy.
+: > "$P1648_KEY"
+( cd "$P1648_CWX" && unset GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY \
+    && printf '%s' "$DIFF" | CRITICS_JSON="$P1648_JSON" CRITIC_FIRST_PASS="$P1648_STUB" \
+       bash "$P1648_ROOT/scripts/cr/critic-panel.sh" >/dev/null 2>&1 )
+check "HIMMEL-1648: panel loads the himmel-root .env key (not the cwd repo's decoy)" "$(cat "$P1648_KEY" 2>/dev/null)" "zk-himmel-root"
+# A live process value still wins (only-when-unset): the .env value must NOT overwrite it.
+: > "$P1648_KEY"
+( cd "$P1648_CWX" && export GLM_API_KEY=process-key \
+    && printf '%s' "$DIFF" | CRITICS_JSON="$P1648_JSON" CRITIC_FIRST_PASS="$P1648_STUB" \
+       bash "$P1648_ROOT/scripts/cr/critic-panel.sh" >/dev/null 2>&1 )
+check "HIMMEL-1648: panel preserves the live process env key over .env" "$(cat "$P1648_KEY" 2>/dev/null)" "process-key"
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

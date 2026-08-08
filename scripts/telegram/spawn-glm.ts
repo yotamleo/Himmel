@@ -571,6 +571,11 @@ export function planSharedSpawn(
 // A capped/blocked/timed-out run must NEVER surface as `done` or a bare
 // `failed`: each is a distinct terminal state the caller inspects. Precedence:
 // capped (there is a reset to arm at — the actionable fact) > blocked > timeout.
+// HIMMEL-1641: executeRun may further reclassify a bare "timeout" result to
+// "done_escalated" (the worker finished + committed but hit the lane's
+// structural git-push block) — that override lives in executeRun, AFTER this
+// function returns, since it needs I/O (outbox.jsonl + a worktree git-status
+// probe) this pure function deliberately does not perform.
 export function finalMeta(code: number, pid: number, capped?: boolean, blocked?: boolean, timedOut?: boolean): { status: "done" | "failed" | "capped" | "blocked" | "timeout"; exit_code: number; pid: number; timed_out: boolean } {
   const status = capped ? "capped" : blocked ? "blocked" : timedOut ? "timeout" : code === 0 ? "done" : "failed";
   return { status, exit_code: code, pid, timed_out: !!timedOut };
@@ -953,6 +958,77 @@ export function mergeMetaCheckpoint(metaPath: string, checkpoint: Record<string,
   }
 }
 
+// ── HIMMEL-1641 (F1): done_escalated — a timeout is not the same shape as an
+// unfinished run when the worker actually finished. The observed shape (GLM
+// probation, 2026-08-08): a worker commits its work, trailers, tests all
+// green, checkpoint reason=clean — then spends the REST of its window
+// escalating a git push, which block-glm-external-writes.sh hard-blocks by
+// design (the GLM lane cannot push; the parent must). The worker's own
+// outbox contract already names the block precisely
+// ({"type":"escalation","arm":"git-push",...}, see composeWorkerPrompt's
+// escalation line); this only checks for that one arm — the shape a
+// structurally-blocked (not failed) push produces. Tolerant of a torn/partial
+// last line (a mid-write outbox at kill time): only whole, parseable JSON
+// lines are considered, and a corrupt tail fails CLOSED (not an escalation)
+// rather than throwing.
+export function hasGitPushEscalation(outboxText: string): boolean {
+  return outboxText.split("\n").some((line) => {
+    const t = line.trim();
+    if (!t) return false;
+    try {
+      const row = JSON.parse(t);
+      return row && row.type === "escalation" && row.arm === "git-push";
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Real worktree-cleanliness probe for the done_escalated check in executeRun:
+// a clean `git status --porcelain` means nothing is left uncommitted, i.e.
+// the worker's own commits already captured everything (mirrors
+// checkpointWorktree's "clean" classification above). A git failure fails
+// CLOSED (not clean) — an unreadable worktree state must never manufacture a
+// false success.
+function defaultCheckTreeClean(worktree: string): boolean {
+  const r = gitCapture(["status", "--porcelain"], worktree);
+  return r.code === 0 && r.stdout.trim() === "";
+}
+
+// ── HIMMEL-1641 (F2): dispatcher-SIGTERM finalize ───────────────────────────
+// A caller-side kill (the documented shape: a bounded foreground Bash-tool
+// call caps at 10 min and SIGTERMs the whole spawn-glm tree) used to leave
+// meta.json stuck at "running" forever — reconcile-workers.sh then reads a
+// CONFIRMED-dead pid past its grace window and marks the row "orphaned",
+// indistinguishable from a genuinely wedged/never-started worker. A
+// synchronous SIGTERM handler (wired at the bottom, import.meta.main ONLY —
+// never on a test import, which must not have a stray SIGTERM exit the test
+// runner) writes a distinct terminal status BEFORE the process dies, so a
+// caller-killed tree can never masquerade as orphaned or as an HIMMEL-1575
+// startup-hang. Armed/disarmed around executeRun's live runSession window
+// (module-level state — there is exactly one dispatch per process).
+let liveTermState: { metaPath: string; runningMeta: Record<string, unknown> } | undefined;
+
+export function armSigtermFinalize(metaPath: string, runningMeta: Record<string, unknown>): void {
+  liveTermState = { metaPath, runningMeta };
+}
+
+export function disarmSigtermFinalize(): void {
+  liveTermState = undefined;
+}
+
+// Exported (not inlined in the process.on listener below) so a test can drive
+// the write directly — calling the real listener would call process.exit()
+// and kill the test runner.
+export function sigtermFinalize(): void {
+  if (!liveTermState) return;
+  try {
+    writeFileSync(liveTermState.metaPath, JSON.stringify({ ...liveTermState.runningMeta, status: "killed-by-caller", exit_code: -1, pid: 0, timed_out: false }, null, 2));
+  } catch (e) {
+    console.error(`spawn-glm: SIGTERM finalize failed (best-effort, process is exiting anyway): ${String((e as any)?.message ?? e)}`);
+  }
+}
+
 // The run-and-record step, extracted so the meta-transition contract is
 // testable with an injected runSession. meta.json ALWAYS leaves "running": the
 // success path writes finalMeta (done/failed/capped/blocked), and a thrown
@@ -969,6 +1045,9 @@ export async function executeRun(deps: {
   // HIMMEL-1575 test seams for the startup-hang watchdog (all optional; prod
   // callers pass nothing and get the env-tunable defaults below).
   startupWatch?: { rootDir?: string; windowMs?: number; pollMs?: number; kill?: (pid: number) => void };
+  // HIMMEL-1641 (F1) test seam: override the real git worktree-cleanliness
+  // probe used by the done_escalated reclassification below.
+  checkTreeClean?: (worktree: string) => boolean;
 }): Promise<{ code: number }> {
   // HIMMEL-1378: live observability. A worker that hangs at its very first
   // tool call (the documented HIMMEL-203 shape — a native permission prompt
@@ -1066,6 +1145,11 @@ export async function executeRun(deps: {
       writeRunningMeta({ pid: livePid ?? 0, last_output_at: new Date().toISOString() });
     },
   };
+  // HIMMEL-1641 (F2): arm the SIGTERM finalize for exactly the live run
+  // window below; the finally at the bottom of this try/catch disarms it on
+  // every exit path (success, capped/blocked/timeout/failed, or a thrown
+  // runSession).
+  armSigtermFinalize(deps.metaPath, deps.runningMeta);
   try {
     const res = await deps.runSession(deps.prompt, deps.worktree, deps.permMode, "glm", undefined, deps.settings, observe);
     disarmWatch(); // the run is over either way — never let the interval outlive it
@@ -1082,11 +1166,34 @@ export async function executeRun(deps: {
     }
     const fm = finalMeta(res.code, res.pid, res.capped, res.blocked, res.timedOut);
     writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm }, null, 2));
+    // HIMMEL-1641 (F1): a bare timeout is not the same shape as an unfinished
+    // run when the worker actually finished — committed its work, left a
+    // clean tree — and only kept spinning because the LAST remaining step
+    // (git push) is a structurally hard-blocked capability. Reclassify so
+    // await-glm-worker/reconcile-workers/verify-return read a finished
+    // dispatch as SUCCESS-shaped, not a failure. Scoped to a bare timeout
+    // ONLY: capped/blocked/failed stay their own honest terminal state, and a
+    // code===0 run is already "done" and needs no relabeling. doneEscalated
+    // gates the startup-hang/prompt-too-long reclassifications below so a
+    // done_escalated run is never further relabeled.
+    let doneEscalated = false;
+    if (fm.status === "timeout") {
+      const outboxPath = join(deps.sessionDir, "outbox.jsonl");
+      let outboxText = "";
+      try { outboxText = existsSync(outboxPath) ? readFileSync(outboxPath, "utf8") : ""; }
+      catch { /* fail-open: an unreadable outbox reads as no escalation */ }
+      const treeClean = (deps.checkTreeClean ?? defaultCheckTreeClean)(deps.worktree);
+      if (treeClean && hasGitPushEscalation(outboxText)) {
+        doneEscalated = true;
+        writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm, status: "done_escalated", escalation: "git-push" }, null, 2));
+        console.error("spawn-glm: run hit the timeout but the worktree is clean with a git-push escalation on record — reclassified done_escalated (HIMMEL-1641): the worker finished, block-glm-external-writes.sh stopped the push by design; the parent must push from the primary checkout and run verify-return.");
+      }
+    }
     // HIMMEL-1575: a watchdog-killed run is a classified startup hang, not a
     // generic failure — the lane's accounting must separate never-started
     // (clean tree, banner-only log) from ran-then-timed-out (dirty tree,
     // >192 B). Mirrors the prompt-too-long classification below.
-    if (startupHang && (fm.status === "failed" || fm.status === "timeout")) {
+    if (!doneEscalated && startupHang && (fm.status === "failed" || fm.status === "timeout")) {
       writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm, failure_class: "startup-hang" }, null, 2));
       console.error("spawn-glm: run classified startup-hang (HIMMEL-1575) — the model never responded; killed at the fail-fast window instead of the full run cap. Do NOT blind-retry as primary mitigation; the base rate is ~30%.");
     }
@@ -1094,7 +1201,7 @@ export async function executeRun(deps: {
     // `failed` (a capped/blocked/timeout run is a distinct terminal state, handled
     // below/elsewhere) whose tail carries the reject. Base status stays "failed" —
     // no new status union member, downstream consumers switch on the existing set.
-    if (fm.status === "failed" && detectPromptTooLong(res.tail ?? "")) {
+    if (!doneEscalated && fm.status === "failed" && detectPromptTooLong(res.tail ?? "")) {
       writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm, failure_class: "prompt-too-long" }, null, 2));
       console.error("spawn-glm: run FAILED — classified prompt-too-long (the model rejected the request as too large). run.log holds the raw API error tail. NOTE: a quota-side reject can masquerade as this — cross-check the preflight usage line above.");
     }
@@ -1153,6 +1260,11 @@ export async function executeRun(deps: {
     disarmWatch(); // a thrown run must not leave the interval holding the event loop
     writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, status: "failed", exit_code: -1, pid: 0 }, null, 2));
     throw e;
+  } finally {
+    // HIMMEL-1641 (F2): every exit path from the live run window disarms —
+    // a SIGTERM arriving AFTER this function has already written its own
+    // terminal meta must never overwrite it with killed-by-caller.
+    disarmSigtermFinalize();
   }
 }
 
@@ -1523,6 +1635,13 @@ async function main(): Promise<void> {
 }
 
 if (import.meta.main) {
+  // HIMMEL-1641 (F2): registered ONLY for the real CLI process — never on a
+  // test import, which must not have a stray SIGTERM exit the test runner.
+  // sigtermFinalize() is a no-op unless executeRun has armed a live run.
+  process.on("SIGTERM", () => {
+    sigtermFinalize();
+    process.exit(143);
+  });
   main().catch((e) => { console.error(`spawn-glm: ${String(e?.message ?? e)}`); process.exit(1); });
 }
 
