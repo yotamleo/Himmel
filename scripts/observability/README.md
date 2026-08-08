@@ -565,6 +565,9 @@ alerting` logged with no error, and the provisioning API confirmed all 9
 rules, the datasource, the contact point (token redacted, present), and the
 notification policy loaded correctly. No real Telegram send was exercised
 (fake token) — that step is for the operator to confirm on first real run.
+(That live check predates the 10th rule: HIMMEL-1635 later added
+`HimmelSessionDead`, verified by promtool and the both-dialect suites — the
+live provisioning check above has not been rerun since.)
 An operator who prefers a separate bot can set both env vars to a different
 token/chat before running the installer; a pre-set value is left alone.
 
