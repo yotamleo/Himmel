@@ -77,6 +77,19 @@ export function buildGlmEnv(repoRoot: string, context?: "big" | "small"): Record
   const ctx = context ?? (process.env.GLM_CONTEXT === "small" ? "small" : "big");
   const { model, window } = glmContextPreset(ctx);
   return {
+    // HIMMEL-1649 round 7 — WORKER-NESS marker, not a provider marker. It
+    // asserts: this session is a DISPATCHED WORKER running in a himmel
+    // worktree, where scripts/hooks/block-glm-external-writes.sh is guaranteed
+    // present. Its ABSENCE is the NORMAL state for an interactive GLM session.
+    // The guard is registered --fail-closed-when on THIS key (hooks.json), so a
+    // missing hook is treated as tampering here and as ordinary optional
+    // semantics everywhere else. Keying that on ANTHROPIC_BASE_URL instead
+    // (round 5) bricked the interactive launcher, whose documented primary
+    // workload runs with cwd in the luna vault — not a himmel checkout, so the
+    // hook legitimately does not exist there. This function is the orchestrator
+    // path ONLY (spawn-glm / run.ts); claude-glm{,.ps1} never touches it, which
+    // is exactly why the marker separates the two populations.
+    HIMMEL_GLM_WORKER: "1",
     ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic",
     ANTHROPIC_AUTH_TOKEN: key,
     ANTHROPIC_MODEL: model,

@@ -45,6 +45,29 @@ check "avail downgrade leaves the ok row as the last record" "$(L="$AV" node -e 
 CR_LEDGER="$AV" bash "$LA" avail --branch b --head SH1 --model glm --status ok
 check "avail identical repeat after supersede still dedups" "$(grep -c '"kind":"avail".*"head":"SH1"' "$AV")" "2"
 
+# ── HIMMEL-1640: avail supersession identity is (head, model) ONLY ──────────
+# The prior-record matcher ignores artifact/perspective. A recovery (unavailable
+# -> ok) supersedes even across DIFFERENT review arms, and an ok -> unavailable
+# downgrade is refused even across arms. Availability is a property of the
+# (head, model) pair, not of the arm that probed it.
+AVI="$tmp/avail-supersede-id.jsonl"
+# (a) recovery across a DIFFERENT artifact: unavailable recorded on diff, then
+# ok recorded on spec at the same (head, model) -> the ok APPENDS (supersedes
+# the stale unavailable). (artifact must be diff|spec|plan; pr-body is not a
+# valid artifact, so the two readings use diff then spec.)
+CR_LEDGER="$AVI" bash "$LA" avail --branch b --head SH2 --model glm --status unavailable --reason quota-5h --artifact diff
+CR_LEDGER="$AVI" bash "$LA" avail --branch b --head SH2 --model glm --status ok --artifact spec
+check "avail recovery across different artifact appends (supersedes on head+model)" "$(grep -c '"kind":"avail".*"head":"SH2"' "$AVI")" "2"
+check "avail recovery across artifact: ok is the effective (last) record" "$(L="$AVI" node -e 'const rs=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).filter(r=>r.kind==="avail"&&r.head==="SH2");console.log(rs[rs.length-1].status)')" "ok"
+# (b) downgrade across a DIFFERENT perspective: ok then unavailable at the same
+# (head, model) -> REFUSED. A later transient failure on another arm must never
+# erase an earlier success.
+CR_LEDGER="$AVI" bash "$LA" avail --branch b --head SH3 --model glm --status ok --perspective off
+CR_LEDGER="$AVI" bash "$LA" avail --branch b --head SH3 --model glm --status unavailable --reason later-failure --perspective on 2>"$tmp/downgrade-arm.err"
+check "avail downgrade across perspective exits 0 (quiet refusal)" "$?" "0"
+check "avail downgrade across perspective writes NOTHING" "$(grep -c '"kind":"avail".*"head":"SH3"' "$AVI")" "1"
+check "avail downgrade across perspective names the reason" "$(grep -c 'DOWNGRADE' "$tmp/downgrade-arm.err")" "1"
+
 # ── usage kind (HIMMEL-485): chars/4 token estimate, dedup on (head,model) ──
 CR_LEDGER="$L" bash "$LA" usage --branch b --head H1 --model codex --prompt-chars 4000 --response-chars 800
 CR_LEDGER="$L" bash "$LA" usage --branch b --head H1 --model codex --prompt-chars 4000 --response-chars 800
@@ -79,12 +102,15 @@ check "perspective off+on both recorded (no silent drop)" "$(grep -c '"kind":"fi
 # (b) same head+id+artifact+perspective twice → ONE line (dedup still works)
 CR_LEDGER="$LP" bash "$LA" finding --branch b --head HP --model m --id p-1 --severity major --file f --line 1 --verdict agreed --perspective on
 check "same head+id+artifact+perspective dedups" "$(grep -c '"kind":"finding"' "$LP")" "2"
-# avail: same head+model across two perspective arms → BOTH (one avail per row per arm)
+# avail: same head+model across two perspective arms. Unlike finding/usage
+# above, avail's supersession identity is (head, model) ONLY (HIMMEL-1640) — a
+# critic's availability is global to the commit, not per-arm — so a second ok
+# on a different perspective arm dedups as a quiet no-op, NOT one row per arm.
 CR_LEDGER="$LP" bash "$LA" avail --branch b --head HP --model m --status ok --perspective off
 CR_LEDGER="$LP" bash "$LA" avail --branch b --head HP --model m --status ok --perspective on
-check "avail two perspective arms both recorded" "$(grep -c '"kind":"avail"' "$LP")" "2"
+check "avail across perspective arms dedups on (head,model)" "$(grep -c '"kind":"avail"' "$LP")" "1"
 CR_LEDGER="$LP" bash "$LA" avail --branch b --head HP --model m --status ok --perspective on
-check "avail same head+model+perspective dedups" "$(grep -c '"kind":"avail"' "$LP")" "2"
+check "avail same head+model+perspective still dedups" "$(grep -c '"kind":"avail"' "$LP")" "1"
 # artifact segmentation: same head+id, artifact diff then spec → BOTH lines
 LArt="$tmp/artifact.jsonl"
 CR_LEDGER="$LArt" bash "$LA" finding --branch b --head HA --model m --id a-1 --severity major --file f --line 1 --verdict agreed --artifact diff

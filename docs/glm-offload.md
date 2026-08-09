@@ -132,6 +132,37 @@ unanchored push grant that could smuggle a refspec to `main`; the worker forging
 attestation trailers). Moving the push to the trusted main checkout, gated on
 `external_cr_verdict:pass` + reviewed-SHA==tip, is the adopted design.
 
+## Parent-finish protocol (HIMMEL-1641)
+
+`verify-return.mjs` (`node scripts/lanes/verify-return.mjs <branch>`) checks
+upstream + PR + a test-receipt trailer — a contract the GLM lane structurally
+CANNOT satisfy on its own, because the worker can never push (§Honest
+enforcement inventory below). Briefing a worker to "push your branch" burns
+its window on a hard-blocked capability; the correct split is:
+
+- **Worker** — commit early, attestation trailers in the first commit, an
+  outbox `DONE` line. Never push, never open a PR (the standing worker
+  contract above). If it hits a genuinely blocked capability (a `git push`
+  the tripwire refused) it appends one `{"type":"escalation","arm":"git-push",...}`
+  outbox row and moves on — see §Escalation channel. A worker that finishes
+  and only has that one blocked step left terminates with `meta.status:
+  "done_escalated"` (HIMMEL-1641) instead of burning the rest of its window —
+  read that status the same as `done`.
+- **Parent** — push `glm/<slug>` **from the PRIMARY checkout**, not the
+  worker's worktree: its `remote.origin.pushurl` is
+  `DISABLED-glm-quarantine` by design (the poisoned-pushurl tripwire), so a
+  push attempted there fails on purpose. Open the PR, then run
+  `node scripts/lanes/verify-return.mjs glm/<slug> --ticket <TICKET>` — only
+  AFTER the push, never before. A `FAILED ... no-upstream` line with a
+  `verify-return: branch has local commits but no upstream — GLM lane
+  push-block? …` stderr hint means exactly this: the parent hasn't pushed yet,
+  not that the work is missing.
+
+`meta.status` also gains `killed-by-caller` (HIMMEL-1641): a dispatcher-side
+kill (e.g. a bounded foreground call SIGTERMing the whole `spawn-glm` tree)
+now finalizes meta before the process dies, so that shape reads distinctly
+from `orphaned`/`failed` instead of masquerading as either.
+
 ## CLI synopsis + three-line output contract
 
 ```
@@ -156,9 +187,73 @@ bun scripts/telegram/spawn-glm.ts "<prompt>" [--cwd <dir>] [--name <slug>] [--br
 the poller's `<root>/sessions/` tree, so the live poller never scans, adopts,
 or Telegram-flushes it. The dir holds a minimal `meta.json`
 (`{status, pid, started_at, exit_code, lane: "glm", task_name}`, transitioned
-`running → done|failed|capped|blocked` by spawn-glm) and the spawn-glm-written
+`running → done|failed|capped|blocked|timeout|done_escalated|killed-by-caller`
+by spawn-glm — the last two are HIMMEL-1641: `done_escalated` is a finished,
+committed run whose only remaining step was a structurally-blocked git push
+(§Parent-finish protocol); `killed-by-caller` is a dispatcher-side SIGTERM
+finalize) and the spawn-glm-written
 `run.log` (the stdout/stderr tail, persisted post-exit — NOT worker-written),
-plus the worker-appended `outbox.jsonl` and `context.md`.
+plus the dispatcher-copied `append-outbox.sh`, worker-appended `outbox.jsonl`,
+and `context.md`. The report verb is executed by the HOOK, never by any on-disk
+content: `block-glm-external-writes.sh` intercepts the fixed report command,
+decodes and schema-validates the payload, appends the outbox record itself, and
+then DENIES the Bash call (that denial is the success signal). The interceptor
+is a SERVICE that sits ABOVE the `GLM_EXTERNAL_WRITES_OK` bypass — the bypass
+disables ENFORCEMENT (the near-miss denies and the push/gh/network classifiers),
+never the reporting service — so no session shape can silently downgrade a
+structured escalation. Under enforcement, every helper-mentioning near-miss
+still fails closed — on Bash and PowerShell alike (HIMMEL-1649 round 9); the
+paragraph below states what changes under the bypass. The
+dispatcher-minted `append-outbox.sh` is therefore NOT a trust boundary and its
+writability is irrelevant on-lane, because it never executes there; it is kept
+as the OFF-LANE implementation of the same payload contract, for sessions where
+this hook is absent.
+
+Be precise about where that no-execution property holds: **it is an
+ENFORCEMENT-mode property.** Under `GLM_EXTERNAL_WRITES_OK=1` the near-miss
+denies are skipped, so a *malformed* helper command falls through to ordinary
+Bash handling and does execute the on-disk helper. That is the designed
+contract, not a gap — bypass mode IS the no-hook environment
+`scripts/glm/append-outbox.sh` exists for, and that helper is the LOCKSTEP
+implementation of the same fail-closed schema the hook enforces. So the
+guarantee that survives the mode switch is the one that matters: **a malformed
+payload appends nothing in either mode**; only the executor differs — the hook
+on-lane, the lockstep helper under operator bypass. Hoisting the near-miss deny
+above the bypass would block operator debugging in a mode the operator
+explicitly opted into, in order to guard against a worker who under bypass can
+already do strictly more. Both halves are pinned by the `R4` cases in
+`scripts/hooks/test-block-glm-external-writes.sh`, including an assertion that
+the helper writes a byte-identical record to the one the hook writes.
+
+**And be equally precise about what the hook is a trust root FOR** (HIMMEL-1649
+round 5). Everything above is a claim about the *helper* — that on-disk helper
+content does not execute under enforcement. It was never a claim about the hook
+file itself, and the earlier wording invited that reading. The honest invariant:
+
+- Under enforcement the report verb is executed by the hook, not by helper
+  content on disk.
+- The hook's **absence** now fails closed **in a dispatched worker** — it is
+  registered `--optional --fail-closed-when "HIMMEL_GLM_WORKER=1"`, and that
+  marker is minted only by `buildGlmEnv` (the orchestrator path; `claude-glm`
+  never calls it). It asserts the session is a worker running in a himmel
+  worktree where the hook is guaranteed present, so deleting it there no longer
+  silently exits 0 — and a worker cannot strip the marker, since a tool-call
+  child cannot edit the harness process env. Note the marker is **worker-ness,
+  not the provider**: an interactive GLM session legitimately has no himmel
+  `scripts/` tree (its documented primary workload runs with cwd in the luna
+  vault), so a missing hook there is the NORMAL state and keeps the ordinary
+  optional semantics.
+- The hook's **content** is still worker-reachable. The plugin registers it at
+  `$CLAUDE_PROJECT_DIR/scripts/hooks/`, which in a worker session is the
+  worker's own worktree, and `composeWorkerSettings` grants
+  `Edit(<worktree>/**)` plus `Bash(node *)`/`Bash(bash *)`. A worker that
+  rewrites the file to `exit 0` neuters the guard for every later tool call.
+
+That last one is an architecture problem, not a hook edit — the guard has to run
+from a dispatcher-owned path outside worker Edit roots, or be hash-verified at
+invocation against a dispatcher-recorded digest. Tracked in **HIMMEL-1666**. The
+exposure is pre-existing lane architecture; what this ticket owned was the
+overstated claim, now scoped.
 
 On exit the CLI prints exactly three machine-readable lines — the inspect
 contract for the caller:
@@ -201,7 +296,7 @@ know these paths, they are minted at spawn time:
 You are an unattended GLM-lane worker session (himmel offload spike).
 Work ONLY inside your current directory (a dedicated git worktree). Commit your work on the branch <branch> which is already checked out.
 HARD RULES: never push, never open a PR — a validating session reviews your branch and owns the git/PR surface. Jira updates (status, comments, followup tickets) ARE allowed via node scripts/jira/dist/index.js (audited + recoverable).
-Report progress by APPENDING one JSON line {"text":"<note>"} per update to <sessionDir>/outbox.jsonl. That is the only channel to the operator.
+Report progress only with `bash "$GLM_SESSION_DIR/append-outbox.sh" <base64url-token>`; on the GLM lane the guard hook intercepts that exact command and appends the record itself, then denies the Bash call — the denial IS the success signal, and the helper on disk is not what runs. The payload is parsed as JSON: an object must be `{"type":"note","text":…}` or `{"type":"escalation","capability":…,"arm":…,"reason":…,"step":…}` (`ts` optional, stamped when absent), and anything that is not a JSON object is wrapped verbatim as a note. The token is unpadded base64url (`[A-Za-z0-9_-]+`, max 16384 characters). Portable encoder example: `node -e "process.stdout.write(Buffer.from(process.argv[1], 'utf8').toString('base64url'))" "progress note"`; copy its output into the fixed helper command.
 THE TASK: <task>
 As your FINAL action, append a one-line summary of what you did to <sessionDir>/context.md, then stop.
 ```
@@ -597,10 +692,26 @@ only. All state is a per-session append-only ledger
   use. The hook never rewrites an existing line; a grant is exhausted when its
   consumption count reaches `max_uses`.
 - **`escalation`** — `{type,capability,arm,reason,step,ts}`, appended by the
-  worker (to its `outbox.jsonl`) when a step is hard-blocked: it records the
-  request, SKIPS the step, continues the rest of the task, and notes the skip in
-  its final summary (the record-and-degrade contract, taught in the worker
-  preamble).
+  dispatcher/adjudicator when a requested grant is refused. A worker whose step
+  is hard-blocked reports the SAME structured shape itself: it base64url-encodes
+  `{"type":"escalation","capability":…,"arm":…,"reason":…,"step":…}` and passes
+  that as the report token, then SKIPS the step, continues the rest of the task,
+  and notes the skip in its final summary. `ts` may be omitted — the hook stamps
+  it. A plain-text note does NOT reach adjudication: `adjudicate list` only
+  recognises records whose `type` is `escalation`.
+
+  Worker text is never spliced into shell — it travels as base64url argv data
+  and the hook, not the worker, performs the append. It DOES become a structured
+  ledger record, but only through a fail-closed schema gate (HIMMEL-1649):
+  `type` must be `note` or `escalation`; an escalation's capability/arm/reason/
+  step must all be strings; unknown keys, non-string whitelisted fields, and an
+  over-cap payload are all refused with nothing appended. A payload that is not
+  a JSON object (including a bare scalar) is wrapped verbatim as
+  `{"type":"note","text":<decoded>}` rather than refused. Records also carry an
+  internal `_sig` digest of the raw payload, which the hook uses to suppress a
+  CONSECUTIVE duplicate — the append-then-deny shape looks like a retryable
+  failure, so a retry storm converges to one row while the same note sent again
+  later, after any different record, still lands.
 
 **Pre-seed (`spawn-glm`):** `--grant '<arm>|<pattern>|<ttl_mins?>|<max_uses?>'`
 (repeatable; `ttl` default 60, `uses` default 1) writes grant lines before the

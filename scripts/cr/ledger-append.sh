@@ -273,18 +273,23 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" SET_PAIRS="$set_pai
     if(e.RESPONDING_MODEL) rec.responding_model=e.RESPONDING_MODEL;
     if(e.REASON) rec.reason=e.REASON;
     if(e.DETAIL) rec.detail=e.DETAIL;
-    // Monotone supersede (HIMMEL-1613). The dedup key is still (head,model,
-    // artifact,perspective), but the STATUS transition decides the outcome:
-    // the ledger is append-only, so the LAST matching line is the current
-    // effective record. Only an EXACT-status repeat is a quiet no-op (the
-    // pre-existing idempotent-rerun contract). unavailable -> ok is a genuine
-    // improvement (the fix this ticket exists for) and gets appended.
+    // Monotone supersede (HIMMEL-1613). The supersession identity is
+    // (head, model) ONLY — availability is a property of the critic+commit
+    // pair, so a critic down at one head is down regardless of which review
+    // arm (artifact/perspective) probed it. An unavailable -> ok recovery at
+    // the same (head, model) therefore supersedes EVEN WHEN the two readings
+    // came back on different artifact/perspective arms (HIMMEL-1640); matching
+    // on those conjuncts left stale unavailable evidence alive when the ok
+    // returned on a different arm. The STATUS transition then decides the
+    // outcome: the ledger is append-only, so the LAST matching line is the
+    // current effective record. Only an EXACT-status repeat is a quiet no-op
+    // (the pre-existing idempotent-rerun contract). unavailable -> ok is a
+    // genuine improvement (the fix this ticket exists for) and gets appended.
     // ok -> unavailable is a downgrade - a later transient failure must never
     // erase an earlier success, since that could dodge a real blocker - so it
     // is refused/dropped with its own message, same as the plain dedup above.
     const priorAvail=existing.map(l=>{try{return JSON.parse(l);}catch{return null;}})
-        .filter(o=>o&&o.kind==="avail"&&o.head===e.HEAD_&&o.model===e.MODEL
-            &&(o.artifact||"diff")===e.ARTIFACT&&(o.perspective||"off")===e.PERSPECTIVE)
+        .filter(o=>o&&o.kind==="avail"&&o.head===e.HEAD_&&o.model===e.MODEL)
         .pop();
     if(!priorAvail){
       dup=false;

@@ -63,21 +63,28 @@ index 0000000..1111111 100644
 
 # ---------------------------------------------------------------------------
 # T1 — credential path: .env ZAI_API_KEY reaches the dispatched critic, with NO
-# manual export and CWD inside a throwaway git repo (load_dotenv resolves .env
-# via `git rev-parse --git-common-dir` of CWD). The sentinel value proves the
-# panel read THIS .env, not himmel's.
+# manual export. HIMMEL-1648 pinned critic-panel.sh's credential load_dotenv to
+# SCRIPT-ROOT resolution (`load_dotenv --root "$(_load_dotenv_primary_for
+# "$SCRIPT_DIR/../..")"`), so the loader reads the .env at the PANEL's own
+# himmel root, NOT the process cwd's. This block therefore plants its .env
+# where the pinned loader actually resolves: a fake himmel-root tree with the
+# panel (and scripts/lib/load-dotenv.sh) copied in so $SCRIPT_DIR/../.. lands on
+# the fixture root, and the .env planted THERE (mirrors test-critic-panel.sh's
+# HIMMEL-1648 block; failure-classify.sh / triviality-gate.sh are [ -r ]-guarded
+# fail-open sources, so they degrade when absent and the panel still runs). The
+# sentinel value proves the panel read THIS .env, not himmel's.
 # ---------------------------------------------------------------------------
-repo="$tmp/repo"
-mkdir -p "$repo"
-( cd "$repo" && git init -q && git -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m init )
+T1_ROOT="$tmp/t1-root"; mkdir -p "$T1_ROOT/scripts/cr" "$T1_ROOT/scripts/lib"
+cp "$PANEL" "$T1_ROOT/scripts/cr/critic-panel.sh"
+cp "$HERE/../lib/load-dotenv.sh" "$T1_ROOT/scripts/lib/load-dotenv.sh"
 SENTINEL="sentinel-zai-9f3a7c"
-printf 'ZAI_API_KEY=%s\n' "$SENTINEL" > "$repo/.env"
+printf 'ZAI_API_KEY=%s\n' "$SENTINEL" > "$T1_ROOT/.env"
 printf '%s' '{"panel":[{"slug":"glm","model":"glm-5.2","provider":"zai","tier":"free","route_provider":"glm"}]}' > "$tmp/t1-reg.json"
 LOG1="$tmp/t1.log"; : > "$LOG1"
 # Unset every alias so load_dotenv actually loads from the temp .env.
-( cd "$repo" && env -u ZAI_API_KEY -u GLM_API_KEY -u Z_AI_API_KEY -u CR_PROFILE -u CRITIC_PANEL_TIERS \
+( env -u ZAI_API_KEY -u GLM_API_KEY -u Z_AI_API_KEY -u CR_PROFILE -u CRITIC_PANEL_TIERS \
     PANEL_TEST_LOG="$LOG1" CRITICS_JSON="$tmp/t1-reg.json" CRITIC_FIRST_PASS="$STUB" \
-    bash "$PANEL" >/dev/null 2>&1 <<< "$DIFF" )
+    bash "$T1_ROOT/scripts/cr/critic-panel.sh" >/dev/null 2>&1 <<< "$DIFF" )
 check "T1: glm critic was dispatched"                 "$(grep -c 'slug=glm ' "$LOG1")" "1"
 check "T1: .env ZAI_API_KEY reached the critic env"   "$(grep -c "zai=$SENTINEL" "$LOG1")" "1"
 check "T1: credential was NOT missing"                "$(grep -c 'zai=MISSING' "$LOG1")" "0"

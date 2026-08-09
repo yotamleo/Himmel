@@ -50,6 +50,7 @@ const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'check-update-available.sh',
   'inject-initiative.sh',
   'qmd-staleness-notice.sh',
+  'graphify-freshness-advisory.sh',
 ]);
 const KNOWN_HOOK_SCRIPTS = new Set(EXPECTED_SCRIPT_ORDER);
 const COMMAND_FIELD = /("command")(\s*:\s*)("(?:\\.|[^"\\])*")/g;
@@ -148,6 +149,119 @@ function wiredCommand(script) {
   return `node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js" "$CLAUDE_PROJECT_DIR/scripts/hooks/${script}"`;
 }
 
+function bareCommand(script) {
+  return `bash "$CLAUDE_PROJECT_DIR/scripts/hooks/${script}"`;
+}
+
+// EXPECTED_SCRIPT_ORDER scripts with zero present entries (HIMMEL-1643:
+// install-when-missing). Order-preserving so installMissingEntries() can
+// process them in EXPECTED_SCRIPT_ORDER order and chain anchors correctly.
+function missingOwnedScripts(entries) {
+  const present = new Set(entries.map((e) => e.classified.script));
+  return EXPECTED_SCRIPT_ORDER.filter((s) => !present.has(s));
+}
+
+// Index of the bracket matching text[openIdx] ('[' or '{'), skipping over
+// string literals (respecting backslash escapes) so a brace/bracket inside a
+// command string can't confuse the depth count. Tracks ONLY the one bracket
+// type given at openIdx — correct for valid JSON, where '[' / ']' and
+// '{' / '}' each nest independently of the other type.
+function matchingBracket(text, openIdx) {
+  const open = text[openIdx];
+  const close = open === '[' ? ']' : '}';
+  let depth = 0;
+  let inString = false;
+  for (let i = openIdx; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+// Install-when-missing (HIMMEL-1643). Inserts exactly one BARE (unwired) hook
+// object per script in `missing` --
+//   {"type":"command","command":"bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/<script>.sh\"","timeout":30}
+// -- under hooks.SessionStart, immediately after that script's nearest
+// PRECEDING EXPECTED_SCRIPT_ORDER script that is currently present (an entry
+// installed earlier in the same call counts as present for anchoring a LATER
+// missing script, so several new tail entries chain correctly in one pass).
+// Inserted BARE rather than pre-wired so the existing textual command-rewrite
+// pass below treats it like any other unwired command and folds it into the
+// same `changed` count -- no separate "installed" bookkeeping needed.
+//
+// SessionStart ONLY (own-only invariant, minimally extended): this tool has
+// no general "which event does script X belong to" table, so it only knows
+// how to install into the one event its current inventory tail lives in. A
+// missing script with NO preceding present SessionStart entry to anchor on
+// (e.g. a PostToolUse/PreToolUse script that vanished) is refused rather than
+// guessed at -- see the fail() below.
+//
+// Confines the reformatting blast radius to the hooks.SessionStart array's
+// OWN text span (located via matchingBracket): every other byte in the file
+// is untouched, matching the rest of this tool's minimal-diff philosophy.
+function installMissingEntries(text, missing) {
+  const keyMatch = text.match(/"SessionStart"\s*:\s*\[/);
+  if (!keyMatch) fail('cannot install: hooks.SessionStart array not found in settings text');
+  const openIdx = keyMatch.index + keyMatch[0].length - 1; // index of '['
+  const closeIdx = matchingBracket(text, openIdx);
+  if (closeIdx === -1) fail('cannot install: hooks.SessionStart array is not balanced');
+
+  const lineStart = text.lastIndexOf('\n', keyMatch.index) + 1;
+  const baseIndent = text.slice(lineStart, keyMatch.index).match(/^\s*/)[0];
+
+  const groups = parseJson(text.slice(openIdx, closeIdx + 1), 'hooks.SessionStart array');
+
+  // Flat, anchorable list of {group, hookIndex, script} for OWNED entries
+  // currently in this array, in document order. Only classification is
+  // needed here (not impostor-refusal) -- an impostor anywhere under an
+  // owned event was already refused by the caller's hookEntries(before) walk
+  // over the WHOLE file before installMissingEntries is ever reached.
+  const scoped = [];
+  groups.forEach((group) => {
+    (group.hooks || []).forEach((hook, hookIndex) => {
+      const c = classifyCommand(hook && hook.command);
+      if (c.kind === 'owned') scoped.push({ group, hookIndex, script: c.script });
+    });
+  });
+
+  for (const script of missing) {
+    const pos = EXPECTED_SCRIPT_ORDER.indexOf(script);
+    let anchor = null;
+    for (let i = pos - 1; i >= 0; i--) {
+      const candidate = scoped.find((e) => e.script === EXPECTED_SCRIPT_ORDER[i]);
+      if (candidate) { anchor = candidate; break; }
+    }
+    if (!anchor) {
+      fail(`cannot install ${script}: no preceding EXPECTED_SCRIPT_ORDER script is present in hooks.SessionStart to anchor after`);
+    }
+    // timeout: 30 (codex-adv-3): every hand-wired SessionStart sibling carries
+    // an explicit, bounded timeout (10/15/30 here). An installed entry WITHOUT
+    // one defaults to the harness's 600s, so a hung advisory could block session
+    // startup for ten minutes. Bound it like its siblings.
+    anchor.group.hooks.splice(anchor.hookIndex + 1, 0, { type: 'command', command: bareCommand(script), timeout: 30 });
+    // Later entries in the SAME group shift by one; register the new entry
+    // itself so a SECOND missing script (processed next) can anchor on it.
+    scoped.forEach((e) => { if (e.group === anchor.group && e.hookIndex > anchor.hookIndex) e.hookIndex += 1; });
+    scoped.push({ group: anchor.group, hookIndex: anchor.hookIndex + 1, script });
+  }
+
+  const reindented = JSON.stringify(groups, null, 2)
+    .split('\n')
+    .map((line, i) => (i === 0 ? line : baseIndent + line))
+    .join('\n');
+  return text.slice(0, openIdx) + reindented + text.slice(closeIdx + 1);
+}
+
 function serialized(value) {
   return JSON.stringify(value);
 }
@@ -168,24 +282,82 @@ function scrubHookCommands(settings) {
   return copy;
 }
 
-export function assertOnlyHookCommandsChanged(before, after) {
+// Remove exactly the hook objects for `insertedScripts` from a CLONE of
+// `settings`, classifying by their CURRENT (real, unscrubbed) command value —
+// must run BEFORE scrubHookCommands, whose sentinel overwrite would erase the
+// script name this needs to match on. Any OTHER structural change (an extra
+// entry not in `insertedScripts`, a removed field, ...) survives pruning and
+// is caught by the scrubbed-comparison below, exactly as before HIMMEL-1643 —
+// this only widens the gate for the SPECIFIC entries this tool itself just
+// installed, nothing else.
+function pruneInsertedEntries(settings, insertedScripts) {
+  const copy = parseJson(JSON.stringify(settings), 'settings clone (prune)');
+  const toPrune = new Set(insertedScripts);
+  for (const event of Object.keys(copy.hooks || {})) {
+    if (!OWNED_EVENTS.has(event)) continue;
+    for (const group of copy.hooks[event]) {
+      if (!Array.isArray(group.hooks)) continue;
+      group.hooks = group.hooks.filter((hook) => {
+        const c = classifyCommand(hook && hook.command);
+        return !(c.kind === 'owned' && toPrune.has(c.script));
+      });
+    }
+  }
+  return copy;
+}
+
+// insertedScripts (HIMMEL-1643): the scripts installMissingEntries() legally
+// added this run. When non-empty, `after` is pruned of exactly those entries
+// BEFORE the scrub-and-compare — the ONLY tolerance this security gate grants
+// beyond command-value changes. An unauthorized structural change (anything
+// NOT in insertedScripts) still fails the comparison and refuses, unchanged
+// from the pre-HIMMEL-1643 behaviour.
+export function assertOnlyHookCommandsChanged(before, after, insertedScripts = []) {
+  const comparableAfter = insertedScripts.length > 0 ? pruneInsertedEntries(after, insertedScripts) : after;
   const scrubbedBefore = scrubHookCommands(before);
-  const scrubbedAfter = scrubHookCommands(after);
+  const scrubbedAfter = scrubHookCommands(comparableAfter);
   if (serialized(scrubbedBefore) !== serialized(scrubbedAfter)) {
     fail('a parsed field outside hook commands changed; refusing to write');
   }
 }
 
 export function rewriteSettingsText(text) {
-  const before = parseJson(text, 'settings input');
-  const entries = hookEntries(before);
+  const originalBefore = parseJson(text, 'settings input');
+  const originalEntries = hookEntries(originalBefore);
 
-  // The owned scripts, in the document order they appear, must be exactly this
-  // tool's inventory in its frozen order and count. Foreign entries and events
-  // are invisible to this assertion, so the file may grow around the owned set
-  // without tripping it — that is the point of own-only validation.
+  // The owned scripts, in the document order they appear, must reconcile
+  // EXACTLY to this tool's inventory: every FOUND entry plus every MISSING
+  // one (HIMMEL-1643: install-when-missing) must together equal
+  // EXPECTED_SCRIPT_ORDER's frozen count. A mismatch beyond that — an extra
+  // entry, a duplicate — is still refused; a shortfall that is fully
+  // explained by known-missing scripts is not.
+  const missing = missingOwnedScripts(originalEntries);
+  if (originalEntries.length + missing.length !== EXPECTED_SCRIPT_ORDER.length) {
+    fail(`owned hook inventory size mismatch: expected ${EXPECTED_SCRIPT_ORDER.length}, found ${originalEntries.length}`);
+  }
+  // FOUND entries (document order) must be exactly EXPECTED_SCRIPT_ORDER with
+  // the missing scripts removed — a subsequence match, so mis-ordering among
+  // the PRESENT entries is still refused even when something is also missing.
+  const expectedPresentOrder = EXPECTED_SCRIPT_ORDER.filter((s) => !missing.includes(s));
+  originalEntries.forEach((entry, i) => {
+    if (entry.classified.script !== expectedPresentOrder[i]) {
+      fail(`${entry.path} script inventory mismatch: expected ${expectedPresentOrder[i]}, found ${entry.classified.script}`);
+    }
+  });
+
+  // Install missing owned SessionStart entries (bare/unwired) BEFORE the
+  // normal command-rewrite pass below, so they flow through it like any other
+  // unwired command and land in the SAME `changed` count — no separate
+  // "installed N" message needed. text/before/entries are re-derived from the
+  // post-install text for everything that follows.
+  const workingText = missing.length > 0 ? installMissingEntries(text, missing) : text;
+  const before = parseJson(workingText, 'settings input (post-install)');
+  const entries = hookEntries(before);
+  // Defensive re-check: install must have produced EXACTLY the full inventory,
+  // in order — a sanity net on installMissingEntries itself, not a case a
+  // caller can reach differently (mirrors the "ALIGNMENT" net further below).
   if (entries.length !== EXPECTED_SCRIPT_ORDER.length) {
-    fail(`owned hook inventory size mismatch: expected ${EXPECTED_SCRIPT_ORDER.length}, found ${entries.length}`);
+    fail(`post-install owned hook inventory size mismatch: expected ${EXPECTED_SCRIPT_ORDER.length}, found ${entries.length}`);
   }
   entries.forEach((entry, i) => {
     if (entry.classified.script !== EXPECTED_SCRIPT_ORDER[i]) {
@@ -226,7 +398,7 @@ export function rewriteSettingsText(text) {
 
   let slotIndex = 0;
   let changed = 0;
-  const output = text.replace(COMMAND_FIELD, (whole, key, separator, literal) => {
+  const output = workingText.replace(COMMAND_FIELD, (whole, key, separator, literal) => {
     if (slotIndex >= commandSlots.length) {
       // The regex visited a "command" field the structural walk did not — the
       // two have diverged. Refuse rather than risk mis-slotting a write.
@@ -267,11 +439,14 @@ export function rewriteSettingsText(text) {
 
   const after = parseJson(output, 'rewritten settings');
 
-  // SECURITY GATE: this comparison is unconditional. The chokepoint is trusted
-  // only because it refuses any widening or other mutation of the permission
-  // policy, including an absent/present change to permissions.ask.
-  assertPermissionsUnchanged(before, after);
-  assertOnlyHookCommandsChanged(before, after);
+  // SECURITY GATE: this comparison is unconditional, and runs against
+  // originalBefore (the TRUE pre-install/pre-rewrite state), not the
+  // post-install `before` — proving the whole operation, install included,
+  // widened nothing except the declared `missing` entries. The chokepoint is
+  // trusted only because it refuses any widening or other mutation of the
+  // permission policy, including an absent/present change to permissions.ask.
+  assertPermissionsUnchanged(originalBefore, after);
+  assertOnlyHookCommandsChanged(originalBefore, after, missing);
 
   return { output, changed };
 }

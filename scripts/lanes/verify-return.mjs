@@ -22,6 +22,10 @@
 //   FAILED <ticket> <branch> <first-failed-check>
 // Exit 0 = PASS, 1 = FAILED, 2 = cannot evaluate (git/gh errored — a gh
 // network failure must NOT read as "no PR"; fail closed, never a verdict).
+// HIMMEL-1641: a no-upstream FAILED whose branch has local commits ahead of
+// origin/main gets an EXTRA stderr hint line (never stdout — the one-line
+// contract above is load-bearing) naming the GLM lane's push-block as a
+// likely cause — see the "Parent-finish protocol" in docs/glm-offload.md.
 // Contract-failing dispatches are counted, never silently absorbed: every
 // evaluated run appends one end-row to the flow-runs ledger (best-effort — a
 // ledger write failure warns on stderr but never flips the verdict).
@@ -73,15 +77,47 @@ export function deriveTicket(branch, explicit) {
   return m ? m[1].toUpperCase() : '-';
 }
 
+// HIMMEL-1641: the no-upstream failure has two very different causes — a
+// branch that plain doesn't exist, and a branch that exists WITH commits but
+// was never pushed. The GLM lane's structural push-block
+// (block-glm-external-writes.sh) makes the second shape common and
+// non-obvious: a worker cannot push by design, so "no upstream" here often
+// just means the parent hasn't finished the push yet, not that the work is
+// missing. Best-effort: any exec failure (branch genuinely absent, no
+// commits ahead, a git error) yields no hint, never a thrown error — this
+// must never change the verdict, only optionally annotate it.
+function computeNoUpstreamHint(branch, exec) {
+  try {
+    exec('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
+  } catch {
+    return undefined; // branch doesn't exist locally — the plain no-upstream case
+  }
+  try {
+    const n = parseInt(exec('git', ['rev-list', '--count', `origin/main..${branch}`]).trim(), 10);
+    if (!Number.isFinite(n) || n <= 0) return undefined; // nothing to push either
+  } catch {
+    return undefined;
+  }
+  return 'branch has local commits but no upstream — GLM lane push-block? the parent must push before verifying (HIMMEL-1641)';
+}
+
 // Pure core. `exec(cmd, args)` returns stdout or throws — injected by tests.
-// Returns { verdict: 'PASS'|'FAILED', failedCheck: slug|null, line }.
+// Returns { verdict: 'PASS'|'FAILED', failedCheck: slug|null, line, hint? }.
+// `hint` is set ONLY for a no-upstream failure whose branch has local
+// commits ahead of origin/main (HIMMEL-1641) — the caller prints it to
+// STDERR, never folding it into the one-line stdout contract.
 // Throws on an exec error: the caller maps that to exit 2 (cannot evaluate),
 // which is a DIFFERENT outcome from a FAILED verdict.
 export function verifyReturn(branch, { exec, ticket } = {}) {
   const t = deriveTicket(branch, ticket);
   for (const check of CHECKS) {
     if (!check.run(branch, exec)) {
-      return { verdict: 'FAILED', failedCheck: check.slug, line: `FAILED ${t} ${branch} ${check.slug}` };
+      const result = { verdict: 'FAILED', failedCheck: check.slug, line: `FAILED ${t} ${branch} ${check.slug}` };
+      if (check.slug === 'no-upstream') {
+        const hint = computeNoUpstreamHint(branch, exec);
+        if (hint) result.hint = hint;
+      }
+      return result;
     }
   }
   return { verdict: 'PASS', failedCheck: null, line: `PASS ${t} ${branch}` };
@@ -156,6 +192,9 @@ function main() {
   }
   if (ledger) appendLedger(result);
   process.stdout.write(result.line + '\n');
+  // HIMMEL-1641: the hint is STDERR-only — the one-line stdout contract above
+  // is load-bearing for callers that parse it.
+  if (result.hint) process.stderr.write(`verify-return: ${result.hint}\n`);
   process.exitCode = result.verdict === 'PASS' ? 0 : 1;
 }
 

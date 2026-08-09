@@ -86,22 +86,39 @@ describe('reversibility — install then remove round-trips byte for byte', () =
   test('a settings file with no hooks section round-trips exactly', () => {
     const f = fixture('nohooks-roundtrip', { permissions: { defaultMode: 'auto' } });
     const original = fs.readFileSync(f, 'utf8');
-    run([], f);
+    const on = run([], f);
+    assert.equal(on.status, 0, on.stderr);
     assert.equal(statusOf(JSON.parse(fs.readFileSync(f, 'utf8'))).wired, 4);
-    run(['--off'], f);
+    const off = run(['--off'], f);
+    assert.equal(off.status, 0, off.stderr);
     assert.equal(fs.readFileSync(f, 'utf8'), original);
   });
 
   test('removal leaves no empty event keys behind (SessionEnd is our own new key)', () => {
     const f = fixture('nokeys');
-    run([], f);
+    const on = run([], f);
+    assert.equal(on.status, 0, on.stderr);
     assert.equal('SessionEnd' in JSON.parse(fs.readFileSync(f, 'utf8')).hooks, true);
-    run(['--off'], f);
+    const off = run(['--off'], f);
+    assert.equal(off.status, 0, off.stderr);
     const s = JSON.parse(fs.readFileSync(f, 'utf8'));
     assert.equal('SessionEnd' in s.hooks, false, 'SessionEnd must be gone, not left as []');
     assert.equal(Array.isArray(s.hooks.PreToolUse), true);
     assert.equal(Array.isArray(s.hooks.PostToolUse), true);
     assert.equal(Array.isArray(s.hooks.SessionStart), true);
+  });
+
+  test('--off leaves a pre-existing empty owned-event array as [] (it deletes only what it filled)', () => {
+    // The other three specs are fully wired, so --off performs a real write
+    // (changed > 0); SessionEnd is a pre-existing [] this script never filled.
+    // The deletion guard must keep it as [] rather than dropping the key.
+    const wired = install(BASE).settings;
+    wired.hooks.SessionEnd = [];
+    const f = fixture('empty-restore', wired);
+    const off = run(['--off'], f);
+    assert.equal(off.status, 0, off.stderr);
+    const after = JSON.parse(fs.readFileSync(f, 'utf8'));
+    assert.deepEqual(after.hooks.SessionEnd, [], 'an empty array this script did not fill is kept, not deleted');
   });
 });
 
@@ -139,6 +156,66 @@ describe('coexistence — the PostToolUse "Agent" group is shared, not replaced'
     assert.deepEqual(settings.hooks.SessionStart[1], BASE.hooks.SessionStart[1]);
     assert.match(settings.hooks.SessionStart[2].hooks[0].command, /session-start/);
     assert.equal('matcher' in settings.hooks.SessionStart[2], false);
+  });
+});
+
+describe('near-variant recognition — ownership is by writer+verb, not exact command', () => {
+  // Near-variants of the writer invocation: each is recognisably ours (same
+  // writer, same verb) but NOT the canonical string. Old isOurs used exact
+  // equality, so it did not recognise any of them — install appended a SECOND
+  // hook beside the variant (both fired, every event twice), --off stranded
+  // the variant, and status reported 0 duplicates over a double-count. The
+  // three shapes the L65-68 comment names as paste mistakes:
+  const VARIANTS = [
+    'bun $CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts session-start',
+    'bun run "$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts" session-start',
+    'bun "$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts" session-start --extra',
+  ];
+  const canonical = (verb) => `bun "$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts" ${verb}`;
+  const withVariantCommand = (cmd) => ({
+    ...BASE,
+    hooks: {
+      ...BASE.hooks,
+      SessionStart: [...BASE.hooks.SessionStart, { hooks: [{ type: 'command', command: cmd }] }],
+    },
+  });
+
+  test('install converges each near-variant in place instead of appending a second hook', () => {
+    for (const cmd of VARIANTS) {
+      const { settings } = install(withVariantCommand(cmd));
+      const ours = settings.hooks.SessionStart
+        .flatMap((g) => g.hooks)
+        .filter((h) => h.command.includes('session-run-hook.ts'));
+      assert.equal(ours.length, 1, `variant converged, not duplicated: ${cmd}`);
+      assert.equal(ours[0].command, canonical('session-start'), `repaired to canonical: ${cmd}`);
+      assert.equal(ours[0].timeout, 10, `timeout repaired: ${cmd}`);
+    }
+  });
+
+  test('--off strips a near-variant, not just the exact canonical command', () => {
+    const { settings } = remove(withVariantCommand(VARIANTS[0]));
+    const remaining = settings.hooks.SessionStart
+      .flatMap((g) => g.hooks)
+      .filter((h) => h.command.includes('session-run-hook.ts'));
+    assert.equal(remaining.length, 0, 'the variant is stripped on --off');
+    assert.equal(settings.hooks.SessionStart.length, 2, 'foreign SessionStart hooks survive');
+  });
+
+  test('status counts a near-variant as owned (a variant beside a canonical is a duplicate)', () => {
+    const both = {
+      ...BASE,
+      hooks: {
+        ...BASE.hooks,
+        SessionStart: [
+          ...BASE.hooks.SessionStart,
+          { hooks: [{ type: 'command', command: canonical('session-start'), timeout: 10 }] },
+          { hooks: [{ type: 'command', command: VARIANTS[0], timeout: 10 }] },
+        ],
+      },
+    };
+    const status = statusOf(both);
+    assert.equal(status.wired, 1, 'session-start is present (canonically)');
+    assert.equal(status.duplicates, 1, 'the variant beside the canonical is reported as a duplicate');
   });
 });
 
@@ -194,7 +271,8 @@ describe('what it must never touch', () => {
   test('permissions are unchanged by install and by remove', () => {
     const f = fixture('perms');
     for (const args of [[], ['--off']]) {
-      run(args, f);
+      const r = run(args, f);
+      assert.equal(r.status, 0, r.stderr);
       const s = JSON.parse(fs.readFileSync(f, 'utf8'));
       assert.deepEqual(s.permissions, BASE.permissions);
     }
@@ -202,8 +280,10 @@ describe('what it must never touch', () => {
 
   test('foreign hooks under events we own survive install and remove', () => {
     const f = fixture('foreign');
-    run([], f);
-    run(['--off'], f);
+    const on = run([], f);
+    assert.equal(on.status, 0, on.stderr);
+    const off = run(['--off'], f);
+    assert.equal(off.status, 0, off.stderr);
     const s = JSON.parse(fs.readFileSync(f, 'utf8'));
     assert.deepEqual(s.hooks.PreToolUse[0], BASE.hooks.PreToolUse[0]);
     assert.deepEqual(s.hooks.PreToolUse[1], BASE.hooks.PreToolUse[1]);
@@ -271,6 +351,33 @@ describe('--check writes nothing', () => {
     const r = run(['--check'], f);
     assert.match(r.stdout, /4\/4 entries wired/);
   });
+
+  test('it reports a DUPLICATE when one spec has two owned hooks', () => {
+    // Two canonical session-start hooks under SessionStart: both are ours, so
+    // --check must flag the duplicate (each would fire the writer twice).
+    const canonical = (verb) => ({
+      type: 'command',
+      command: `bun "$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts" ${verb}`,
+      timeout: 10,
+    });
+    const twoOwned = {
+      ...BASE,
+      hooks: {
+        ...BASE.hooks,
+        SessionStart: [
+          ...BASE.hooks.SessionStart,
+          { hooks: [canonical('session-start')] },
+          { hooks: [canonical('session-start')] },
+        ],
+      },
+    };
+    const f = fixture('dupe-check', twoOwned);
+    const original = fs.readFileSync(f, 'utf8');
+    const r = run(['--check'], f);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /1 DUPLICATE owned entry/);
+    assert.equal(fs.readFileSync(f, 'utf8'), original, '--check writes nothing');
+  });
 });
 
 describe('it will not wire hooks that point at a writer that is not there', () => {
@@ -316,6 +423,18 @@ describe('the write is atomic and concurrency-checked', () => {
 });
 
 describe('it refuses rather than guessing', () => {
+  test('a CRLF-formatted settings file is refused with the CRLF hint', () => {
+    const f = fixture('crlf');
+    // Rewrite the fixture with CRLF line endings: serialize() emits LF, so the
+    // round-trip guard refuses — --off could not restore a CRLF file byte-for-byte.
+    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace(/\n/g, '\r\n'), 'utf8');
+    const original = fs.readFileSync(f, 'utf8');
+    const r = run([], f);
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /CRLF line endings; this script writes LF/);
+    assert.equal(fs.readFileSync(f, 'utf8'), original, 'a refusal writes nothing');
+  });
+
   test('invalid JSON is refused, not rewritten', () => {
     const f = path.join(TMP, 'broken.json');
     fs.writeFileSync(f, '{ not json', 'utf8');
@@ -343,7 +462,7 @@ describe('it refuses rather than guessing', () => {
     assert.match(r.stderr, /unknown option/);
   });
 
-  test('a non-array hook value is REFUSED, not silently replaced', () => {
+  test('a non-array hook value under an event we do NOT own is left untouched (scope)', () => {
     const weird = { ...BASE, hooks: { ...BASE.hooks, Notification: { legacy: 'shape' } } };
     const f = fixture('weird-shape', weird);
     const original = fs.readFileSync(f, 'utf8');

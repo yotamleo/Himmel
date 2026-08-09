@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { assertPermissionsUnchanged } from './wire-hook-bash.mjs';
+import { assertOnlyHookCommandsChanged, assertPermissionsUnchanged } from './wire-hook-bash.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WIRER = join(HERE, 'wire-hook-bash.mjs');
@@ -23,10 +23,10 @@ const SETTINGS_SKIP = existsSync(SETTINGS)
   : '.claude/settings.json (PRIVATE_PATHS) is absent — public mirror / adopter checkout lacks the private fixture this suite is the spec for';
 const test = (name, fn) => baseTest(name, SETTINGS_SKIP ? { skip: SETTINGS_SKIP } : {}, fn);
 
-// The live settings.json is the fixture SOURCE (it carries the real 16-script
+// The live settings.json is the fixture SOURCE (it carries the real 17-script
 // inventory the wirer asserts against), but the fixture must not inherit its
 // current wiring state: once the tree is wired, a fixture copied verbatim makes
-// every "rewrote 16" expectation read "already wired" and the suite fails on a
+// every "rewrote 17" expectation read "already wired" and the suite fails on a
 // correctly-wired repo. Normalize each hook command back to the bare-bash form
 // so the rewrite tests always start unwired, whatever the tree looks like.
 function unwire(text) {
@@ -65,12 +65,12 @@ test('rewrites the known hook inventory through the Bash resolver', () => {
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 16 hook command\(s\)/);
+    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
 
     const all = commands(after);
-    // The 16 OWNED scripts are routed through the Bash resolver.
+    // The 17 OWNED scripts are routed through the Bash resolver.
     const wired = all.filter((c) => c.startsWith('node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js"'));
-    assert.equal(wired.length, 16);
+    assert.equal(wired.length, 17);
     for (const command of wired) {
       assert.match(command, /^node "\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/run-hook-with-bash\.js" /);
     }
@@ -135,18 +135,150 @@ test('refuses a missing owned hook script without writing', () => {
     // blind .pop() would remove that coexisting foreign hook instead of
     // simulating the missing-owned-script case this test is about.
     const hooks = settings.hooks.PostToolUse[0].hooks;
-    const ownedIndex = hooks.findIndex((h) => h.command.includes('/scripts/hooks/'));
+    // Defensive read (h.command ?? '') so a malformed entry without a command
+    // field fails as the ownedIndex assertion below, not a TypeError. The guard
+    // stops findIndex's -1 from splice(-1, 1), which would drop the coexisting
+    // HIMMEL-1635 foreign hook (the array's last element) instead of the owned
+    // entry this test means to remove.
+    const ownedIndex = hooks.findIndex((h) => (h.command ?? '').includes('/scripts/hooks/'));
+    assert.ok(ownedIndex >= 0, 'expected an OWNED scripts/hooks/*.sh entry to splice out');
     hooks.splice(ownedIndex, 1);
     writeFileSync(fixture, `${JSON.stringify(settings, null, 2)}\n`);
     const before = readFileSync(fixture, 'utf8');
 
     const result = invoke(fixture);
     assert.equal(result.status, 1);
-    // Foreign entries are no longer counted, so a missing OWNED script is caught
-    // by the owned-set size assertion (HIMMEL-1552), not a per-event count.
-    assert.match(result.stderr, /owned hook inventory size mismatch: expected 16, found 15/);
+    // HIMMEL-1643: install-when-missing makes the wirer TOLERANT of a missing
+    // owned script (the size check alone no longer refuses this fixture — the
+    // shortfall is fully explained by the one script removed above). It is
+    // still refused, but via a DIFFERENT gate: auto-arm-on-subagent-cap.sh is
+    // a PostToolUse script, and install only knows how to insert into
+    // hooks.SessionStart, so there is no preceding SessionStart entry to
+    // anchor it after — installMissingEntries refuses rather than guessing a
+    // location. See the dedicated install tests below for the case this
+    // capability DOES handle (a missing SessionStart script with a present
+    // anchor).
+    assert.match(result.stderr, /cannot install auto-arm-on-subagent-cap\.sh: no preceding EXPECTED_SCRIPT_ORDER script is present in hooks\.SessionStart to anchor after/);
     assert.equal(readFileSync(fixture, 'utf8'), before);
   });
+});
+
+// HIMMEL-1643: install-when-missing. wire-hook-bash.mjs is REWRITE-ONLY
+// before this (plan-critic r1 F1, settled) — any owned script with zero
+// present entries was an unconditional refusal. These tests pin the
+// extended behaviour: a missing SessionStart script (one with a preceding
+// SessionStart anchor already present) is INSTALLED, not refused; an
+// unrelated foreign SessionStart hook survives untouched; and an impostor
+// present alongside a legitimately-missing script still refuses the whole
+// write (the security gate is widened ONLY for the scripts this tool itself
+// installs, nothing else). Uses 'qmd-staleness-notice.sh' — the current
+// inventory's own last SessionStart entry — as the "missing script" fixture,
+// so this suite does not depend on graphify-freshness-advisory.sh existing in
+// EXPECTED_SCRIPT_ORDER yet (that inventory bump is a separate commit; the
+// repo's own pre-commit gate requires every commit's node --test run green,
+// so the install CAPABILITY has to land, and be provable, before the
+// inventory grows to need it).
+
+function withoutScript(source, script) {
+  const settings = JSON.parse(source);
+  for (const group of settings.hooks.SessionStart) {
+    const idx = group.hooks.findIndex((h) => (h.command ?? '').includes(`/scripts/hooks/${script}`));
+    if (idx !== -1) {
+      group.hooks.splice(idx, 1);
+      return settings;
+    }
+  }
+  throw new Error(`fixture setup: ${script} not found in hooks.SessionStart to remove`);
+}
+
+test('installs a missing owned SessionStart entry back into place', () => {
+  withFixture((fixture) => {
+    const settings = withoutScript(readFileSync(fixture, 'utf8'), 'qmd-staleness-notice.sh');
+    writeFileSync(fixture, `${JSON.stringify(settings, null, 2)}\n`);
+    const beforePermissions = settings.permissions;
+
+    const result = invoke(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
+
+    const after = JSON.parse(readFileSync(fixture, 'utf8'));
+    assert.deepEqual(after.permissions, beforePermissions);
+
+    // Reinstalled, wired, and positioned immediately after its preceding
+    // inventory script (inject-initiative.sh) — i.e. right where it started.
+    const sessionHooks = after.hooks.SessionStart[0].hooks;
+    const idx = sessionHooks.findIndex((h) => (h.command ?? '').includes('qmd-staleness-notice.sh'));
+    assert.ok(idx > 0, 'qmd-staleness-notice.sh entry was reinstalled');
+    assert.match(sessionHooks[idx].command, /^node "\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/run-hook-with-bash\.js" /);
+    assert.match(sessionHooks[idx - 1].command, /inject-initiative\.sh/);
+    // HIMMEL-1643 (codex-adv-3): an installer-produced SessionStart entry must
+    // carry a bounded timeout so a hung advisory can never block session startup
+    // for the 600s default. The installed entry is indistinguishable from its
+    // hand-wired siblings, which all carry an explicit timeout.
+    assert.equal(sessionHooks[idx].timeout, 30, 'installed entry carries a bounded 30s timeout');
+  });
+});
+
+test('installs a missing entry without disturbing an unrelated foreign SessionStart hook', () => {
+  withFixture((fixture) => {
+    const settings = withoutScript(readFileSync(fixture, 'utf8'), 'qmd-staleness-notice.sh');
+    const planted = 'node "$CLAUDE_PROJECT_DIR/scripts/some-other-tool.mjs" hello';
+    settings.hooks.SessionStart[0].hooks.push({ type: 'command', command: planted });
+    writeFileSync(fixture, `${JSON.stringify(settings, null, 2)}\n`);
+
+    const result = invoke(fixture);
+    assert.equal(result.status, 0, result.stderr);
+
+    const after = JSON.parse(readFileSync(fixture, 'utf8'));
+    const sessionCommands = after.hooks.SessionStart[0].hooks.map((h) => h.command);
+    assert.ok(sessionCommands.includes(planted), 'the unrelated foreign SessionStart hook was left untouched');
+    assert.ok(sessionCommands.some((c) => c.includes('qmd-staleness-notice.sh')), 'the missing entry was reinstalled');
+  });
+});
+
+test('still refuses the whole write when an impostor accompanies a legitimately-missing script', () => {
+  withFixture((fixture) => {
+    const settings = withoutScript(readFileSync(fixture, 'utf8'), 'qmd-staleness-notice.sh');
+    settings.hooks.SessionStart[0].hooks.push({
+      type: 'command',
+      command: 'bash $CLAUDE_PROJECT_DIR/scripts/hooks/totally-rogue.sh',
+    });
+    writeFileSync(fixture, `${JSON.stringify(settings, null, 2)}\n`);
+    const before = readFileSync(fixture, 'utf8');
+
+    const result = invoke(fixture);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /invokes unrecognised hook script: totally-rogue\.sh/);
+    assert.equal(readFileSync(fixture, 'utf8'), before);
+  });
+});
+
+baseTest('assertOnlyHookCommandsChanged tolerates ONLY the declared inserted scripts', () => {
+  const before = {
+    permissions: { allow: [], deny: [], ask: [] },
+    hooks: {
+      SessionStart: [{ hooks: [
+        { type: 'command', command: 'bash $CLAUDE_PROJECT_DIR/scripts/hooks/inject-initiative.sh' },
+      ] }],
+    },
+  };
+  const afterLegit = structuredClone(before);
+  afterLegit.hooks.SessionStart[0].hooks.push({
+    type: 'command', command: 'bash $CLAUDE_PROJECT_DIR/scripts/hooks/qmd-staleness-notice.sh',
+  });
+  // Declaring exactly the one legitimately-inserted script is accepted.
+  assert.doesNotThrow(() => assertOnlyHookCommandsChanged(before, afterLegit, ['qmd-staleness-notice.sh']));
+
+  const afterExtra = structuredClone(afterLegit);
+  afterExtra.hooks.SessionStart[0].hooks.push({
+    type: 'command', command: 'bash $CLAUDE_PROJECT_DIR/scripts/hooks/check-update-available.sh',
+  });
+  // A SECOND addition beyond the declared list must still refuse — the gate
+  // tolerates exactly the N declared entries, not "however many appeared".
+  assert.throws(
+    () => assertOnlyHookCommandsChanged(before, afterExtra, ['qmd-staleness-notice.sh']),
+    /a parsed field outside hook commands changed; refusing to write/
+  );
 });
 
 baseTest('permission gate refuses an injected permissions mutation', () => {
@@ -166,7 +298,7 @@ test('--check reports the rewrite and writes nothing', () => {
     const result = invoke('--check', fixture);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /would rewrite 16 hook command\(s\).*wrote nothing/);
+    assert.match(result.stdout, /would rewrite 17 hook command\(s\).*wrote nothing/);
     assert.equal(readFileSync(fixture, 'utf8'), before);
   });
 });
@@ -193,7 +325,7 @@ test('accepts the live repo settings shape (foreign event keys + interleaved for
   withFixture((fixture) => {
     const result = invoke('--check', fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /would rewrite 16 hook command\(s\)/);
+    assert.match(result.stdout, /would rewrite 17 hook command\(s\)/);
   });
 });
 
@@ -230,7 +362,7 @@ test('rewrites the correct slots when a foreign event key precedes an owned one'
 
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 16 hook command\(s\)/);
+    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
     const preCommands = after.hooks.PreToolUse.flatMap((g) => g.hooks).map((h) => h.command);
@@ -261,13 +393,13 @@ test('accepts a known hook script under a foreign event key (appended)', () => {
 
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 16 hook command\(s\)/);
+    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
-    // The 16 OWNED scripts still route through the resolver.
+    // The 17 OWNED scripts still route through the resolver.
     const wired = commands(after).filter((c) =>
       c.startsWith('node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js"'));
-    assert.equal(wired.length, 16);
+    assert.equal(wired.length, 17);
     // The known script planted under the FOREIGN Stop key is left untouched —
     // it is not this tool's hook, so neither its routing nor its text is owned.
     const stopCommands = after.hooks.Stop.flatMap((g) => g.hooks).map((h) => h.command);
@@ -294,7 +426,7 @@ test('accepts a known hook script under a foreign event key ordered first', () =
 
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 16 hook command\(s\)/);
+    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
     // The first OWNED command (the real PreToolUse[0]) is still rewritten to its
@@ -321,7 +453,7 @@ test('an unrecognised .sh under a foreign event key is left untouched (isolation
 
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 16 hook command\(s\)/);
+    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
     const stopCommands = after.hooks.Stop.flatMap((g) => g.hooks).map((h) => h.command);

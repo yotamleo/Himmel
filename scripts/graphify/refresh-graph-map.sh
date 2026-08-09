@@ -153,6 +153,48 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   [ "$GRAPHIFY_MAX_CONCURRENCY" -ge 1 ] || { echo "refresh-graph-map: GRAPHIFY_MAX_CONCURRENCY must be >= 1 (got '$GRAPHIFY_MAX_CONCURRENCY')" >&2; exit 1; }
 fi
 
+# Per-chunk API timeout (HIMMEL-1645). graphify's DEFAULT API timeout is 300s; under
+# the default GRAPHIFY_MAX_CONCURRENCY=6 the claude-cli backend shells up to 6
+# concurrent headless claude invocations contending for the same local CLI/subscription,
+# and a chunk's wall time blows past 300s — observed live 2026-08-08, a 399-doc
+# incremental (claude-cli) produced 13 chunks and >=5 died "timed out after 300.0
+# seconds". graphify honors GRAPHIFY_API_TIMEOUT (seconds) as an override, so without
+# this both manual runs AND the armed daily cadence ride the 300s default and re-pay
+# every timed-out chunk on every fire. This raises the CEILING only (a timeout is a
+# max-wait bound, not a duration — a fast chunk still returns as fast as ever) so a
+# contending chunk that simply needs longer gets headroom; graphify still kills a
+# genuinely wedged call at the bound, just a higher one (300s -> 900s = 3x, the
+# observed worst case + margin). Backend-scoped (codex-adv-1): the contention is
+# claude-cli ONLY — `claude` is graphify's Anthropic API backend (ANTHROPIC_API_KEY,
+# pay-as-you-go HTTP, no local-CLI contention), and `--backend glm`/`zai-glm` remaps
+# to `claude` (the Z.ai Anthropic-compatible API endpoint, above). So 900 ONLY for
+# claude-cli (the sole backend with the observed failure); every other backend —
+# including `claude` and the glm remap — stays at 300 = graphify's OWN default, so its
+# behavior is unchanged (an API worker that needs longer takes its own caller-set
+# GRAPHIFY_API_TIMEOUT; the default is not raised on its behalf). `-900`/`-300`
+# (unset-only), NOT `:-900`/`:-300`: an explicitly-empty value stays empty and is caught
+# by the validation below instead of silently becoming the default. Exported ONLY on
+# the claude-cli branch (the one with a raised ceiling) so the env var (graphify's
+# override channel) lets the cluster-only call below — which takes no --api-timeout
+# flag — inherit the raised ceiling too; the 300 else-branch is graphify's own default
+# (no export needed there — an unset env already means 300 to graphify). On the
+# extraction path ONLY (DO_UPDATE=1): the timeout feeds the --update + cluster-only
+# graphify calls a --no-update publish-only run never makes, so an invalid value is
+# irrelevant there and must not fail an unrelated republish (same DO_UPDATE gating as
+# GRAPHIFY_MAX_CONCURRENCY).
+if [ "$DO_UPDATE" -eq 1 ]; then
+  if [ "$BACKEND" = "claude-cli" ]; then
+    GRAPHIFY_API_TIMEOUT="${GRAPHIFY_API_TIMEOUT-900}"
+    export GRAPHIFY_API_TIMEOUT
+  else
+    GRAPHIFY_API_TIMEOUT="${GRAPHIFY_API_TIMEOUT-300}"
+  fi
+  case "$GRAPHIFY_API_TIMEOUT" in
+    ''|*[!0-9]*) echo "refresh-graph-map: GRAPHIFY_API_TIMEOUT must be a positive integer (got '$GRAPHIFY_API_TIMEOUT')" >&2; exit 1 ;;
+  esac
+  [ "$GRAPHIFY_API_TIMEOUT" -ge 1 ] || { echo "refresh-graph-map: GRAPHIFY_API_TIMEOUT must be >= 1 (got '$GRAPHIFY_API_TIMEOUT')" >&2; exit 1; }
+fi
+
 # Off-peak advisory (DeepSeek peak-valley UTC 1-4 + 6-10 = 2x). Advisory only —
 # a scheduler should aim off-peak; we never hard-refuse (an operator may run ad hoc).
 if [ "$BACKEND" = "deepseek" ]; then
@@ -1000,7 +1042,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # tripped the gate by containing the literal flag, so the marker would only
   # have been suppressing itself.) The real control for what those nested calls
   # can reach is the reroute-selector clearing above + the egress fence.
-  "$GRAPHIFY_MAP" "$SCRATCH" --update --backend "$BACKEND" --max-concurrency "$GRAPHIFY_MAX_CONCURRENCY" --api-timeout 300 >&2 || { echo "refresh-graph-map: graphify --update failed" >&2; exit 2; }
+  "$GRAPHIFY_MAP" "$SCRATCH" --update --backend "$BACKEND" --max-concurrency "$GRAPHIFY_MAX_CONCURRENCY" --api-timeout "$GRAPHIFY_API_TIMEOUT" >&2 || { echo "refresh-graph-map: graphify --update failed" >&2; exit 2; }
   "$GRAPHIFY_MAP" cluster-only "$SCRATCH" --backend "$BACKEND" --max-concurrency "$GRAPHIFY_MAX_CONCURRENCY" >&2 || { echo "refresh-graph-map: cluster-only failed" >&2; exit 2; }
   # HIMMEL-907: stamp freshness artifacts so the companion guard
   # check-graph-freshness.sh can VERIFY this graph (not "fresh by age" only).

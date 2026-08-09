@@ -180,7 +180,9 @@ if grep -Eq '"(zai|glm)"' "$REG" 2>/dev/null; then
     # shellcheck disable=SC1091
     . "$SCRIPT_DIR/../lib/load-dotenv.sh" 2>/dev/null || true
     if command -v load_dotenv >/dev/null 2>&1; then
-        load_dotenv GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY 2>/dev/null || true
+        # HIMMEL-1648: pin to SCRIPT-ROOT resolution so a panel run from an
+        # unrelated git repo still reads himmel's .env, not THAT repo's.
+        load_dotenv --root "$(_load_dotenv_primary_for "$SCRIPT_DIR/../..")" GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY 2>/dev/null || true
     fi
 fi
 

@@ -283,7 +283,7 @@ groups:
           summary: 'Luna inbox backlog stage {{ $labels.stage }} has risen over the last 3 days'
 
       # HIMMEL-1635 follow-up to the HIMMEL-1052 session families — kept
-      # byte-identical in PromQL to alerts.rules.yml's HimmelSessionDead.
+      # semantically equivalent to alerts.rules.yml's HimmelSessionDead.
       - uid: himmel_session_dead
         title: "Session dead"
         condition: B

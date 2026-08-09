@@ -19,7 +19,21 @@ const EXPECTED_HOOKS = Object.freeze([
   { event: 'PreToolUse', script: 'block-docker-privesc.sh' },
   { event: 'PreToolUse', script: 'block-merged-pr-commit.sh' },
   { event: 'PreToolUse', script: 'block-unresolved-cr-merge.sh' },
-  { event: 'PreToolUse', script: 'block-glm-external-writes.sh' },
+  // HIMMEL-1649 [codex-adv-1]: fail CLOSED when this hook is missing AND the
+  // session is a DISPATCHED WORKER. `--optional` alone exits 0 on a missing
+  // script, so a worker holding Edit(<worktree>/**) + Bash(node *)/Bash(bash *)
+  // could DELETE this file — one command — and silently disable the guard for
+  // every later tool call.
+  // The marker is WORKER-NESS, not the provider. HIMMEL_GLM_WORKER=1 is minted
+  // by buildGlmEnv (scripts/telegram/glm-env.ts), which only the orchestrator
+  // path reaches, and it asserts the session runs in a himmel worktree where
+  // this hook is guaranteed present. Its absence is the NORMAL state for an
+  // interactive GLM session. Round 5 keyed this on ANTHROPIC_BASE_URL and
+  // BRICKED the interactive launcher: its documented primary workload runs with
+  // cwd in the luna vault, where the hook legitimately does not exist, so every
+  // Bash/PowerShell/MCP call exited 2 before running — and the wrapper refuses
+  // before the hook that reads GLM_EXTERNAL_WRITES_OK can bypass it.
+  { event: 'PreToolUse', script: 'block-glm-external-writes.sh', failClosedWhen: 'HIMMEL_GLM_WORKER=1' },
   { event: 'PreToolUse', script: 'block-graphify-egress.sh' },
   { event: 'PreToolUse', script: 'block-rogue-codex-wsl.sh' },
   { event: 'PreToolUse', script: 'block-lesson-enforcement-writes.sh', failClosedWhen: 'HIMMEL_LESSON_LOOP=1' },
@@ -93,7 +107,18 @@ function unwiredCommand(expected) {
     return `bash "\${CLAUDE_PLUGIN_ROOT}/hooks/${expected.script}"`;
   }
   if (expected.failClosedWhen) {
-    return `bash -c 'h="$CLAUDE_PROJECT_DIR/scripts/hooks/${expected.script}"; if [ -f "$h" ]; then exec bash "$h"; elif [ "\${HIMMEL_LESSON_LOOP:-0}" = "1" ]; then echo "block-lesson-enforcement-writes: hook script missing while HIMMEL_LESSON_LOOP=1 (stale checkout?) - failing closed" >&2; exit 2; fi'`;
+    // Derived from the entry, not hardcoded (HIMMEL-1649 round 5): a SECOND
+    // fail-closed hook would otherwise generate a recognizer that probes
+    // HIMMEL_LESSON_LOOP and names the lesson hook. Split on the FIRST '='
+    // only — the value can itself contain '=' (a URL query, say). The `:-0`
+    // default is kept verbatim so this entry's existing output stays
+    // byte-identical; it is also correct generically, since an unset var
+    // collapses to "0" and no real marker value is "0".
+    const eq = expected.failClosedWhen.indexOf('=');
+    const name = expected.failClosedWhen.slice(0, eq);
+    const value = expected.failClosedWhen.slice(eq + 1);
+    const hookName = expected.script.replace(/\.sh$/, '');
+    return `bash -c 'h="$CLAUDE_PROJECT_DIR/scripts/hooks/${expected.script}"; if [ -f "$h" ]; then exec bash "$h"; elif [ "\${${name}:-0}" = "${value}" ]; then echo "${hookName}: hook script missing while ${expected.failClosedWhen} (stale checkout?) - failing closed" >&2; exit 2; fi'`;
   }
   return `bash -c 'h="$CLAUDE_PROJECT_DIR/scripts/hooks/${expected.script}"; if [ -f "$h" ]; then exec bash "$h"; fi'`;
 }

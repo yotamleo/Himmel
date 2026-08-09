@@ -217,7 +217,12 @@ while :; do
         # exact strand (premature terminal) the watchdog exists to prevent.
         # Whitespace-tolerant because a producer reformat must not silently
         # break detection (producer currently emits JSON.stringify(...,null,2)).
-        if grep -qE '"status"[[:space:]]*:[[:space:]]*"(done|failed|capped|blocked|timeout)"' "$d/meta.json"; then
+        # HIMMEL-1641: done_escalated (F1, a finished worker hitting the
+        # lane's structural git-push block) and killed-by-caller (F2, a
+        # dispatcher-side SIGTERM finalize) are both terminal — without them
+        # here a healthy/correctly-finalized worker reads as still-running and
+        # burns the rest of this poll's window instead of completing at once.
+        if grep -qE '"status"[[:space:]]*:[[:space:]]*"(done|failed|capped|blocked|timeout|done_escalated|killed-by-caller)"' "$d/meta.json"; then
             echo "await-glm-worker: TERMINAL: $d"
             cat "$d/meta.json"
             echo

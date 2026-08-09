@@ -477,6 +477,55 @@ command -v handover_root >/dev/null 2>&1 || handover_root() { return 2; }
     || echo "WARN arm-resume: headroom-proxy lib failed to load -- .env HIMMEL_HEADROOM_PROXY fallback disabled (process env still honored)" >&2
 command -v _headroom_proxy_env_file_active >/dev/null 2>&1 || _headroom_proxy_env_file_active() { return 1; }
 
+# cadence_cmd_escape (HIMMEL-1281/HIMMEL-1287): the shared CMD-metachar
+# escape for interpolating a value into a generated .bat INSIDE DOUBLE
+# QUOTES -- % -> %% plus best-effort " handling, and deliberately NO caret
+# escapes (cmd.exe treats ^ as a LITERAL character inside double quotes, so
+# caret-escaping corrupts the value instead of protecting it). Same lib the
+# four HIMMEL-1281 cadence emitters use; arm-resume.sh carried a fifth,
+# independently-buggy copy of the over-escaping mistake until this fix.
+# Sourced fail-open (matches headroom-proxy.sh above): an absent or
+# syntactically broken lib WARNs but never aborts the arm -- the inline
+# fallback below restores the single-parse escape so a missing dep cannot
+# turn a healthy arm into rc=1 (proxy-suite T7a/T7b/T7c).
+# shellcheck source=../lib/cadence-format.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/cadence-format.sh" 2>/dev/null \
+    || echo "WARN arm-resume: cadence-format lib failed to load -- cadence_cmd_escape falls back inline (caret-free single-parse escape)" >&2
+# Minimal single-parse fallback mirroring the lib's contract (% -> %% plus
+# best-effort " -> \"). Used only if the source above failed; matches the
+# guard idiom on handover_root / _headroom_proxy_env_file_active above.
+command -v cadence_cmd_escape >/dev/null 2>&1 || cadence_cmd_escape() {
+    local s="$1"
+    s="${s//\"/\\\"}"
+    s="${s//%/%%}"
+    printf '%s' "$s"
+}
+
+# _arm_nested_cmd_escape <value> -- the ONE double-parse escape, for the
+# headroom-proxy detached-start site (schedule_arm's `start "" /b cmd /c
+# ""%s" ..."` ~line 3393). That line hands its argument to a NESTED cmd /c,
+# which RE-PARSES the string a SECOND time, so unlike the single-parse
+# cadence_cmd_escape (where carets corrupt the value), THIS site ALSO needs
+# caret escapes on ^ & < > | -- an unescaped & in the proxy-bin path splits
+# into a second command at task-fire time (command injection). It is the
+# cadence_cmd_escape single-parse base (% -> %%, " -> \") PLUS the caret
+# escapes for the inner cmd /c parse. cadence_cmd_escape is guaranteed
+# defined here (lib OR the inline fallback above), so this composes safely.
+# This distinction IS the HIMMEL-1281/HIMMEL-1287 bug class: 1281 over-
+# escaped the single-parse sites (cd path, prompt, --channels, the curl
+# livez checks -- those keep cadence_cmd_escape); do NOT route them here.
+_arm_nested_cmd_escape() {
+    local v
+    v=$(cadence_cmd_escape "$1")
+    v="${v//^/^^}"
+    v="${v//&/^&}"
+    v="${v//</^<}"
+    v="${v//>/^>}"
+    v="${v//|/^|}"
+    printf '%s' "$v"
+}
+
 # Canonicalise a path, tolerating non-existent ones: GNU realpath -m, else
 # armored python3 pathlib, else the input unchanged (best effort — matches
 # the prior inline fallback chains).
@@ -600,23 +649,6 @@ _arm_marker_is_new_arm() {
             return 1
             ;;
     esac
-}
-
-# _cmd_metachar_escape <value> — echo <value> with the same CMD-metachar
-# escaping schedule_arm's Windows .bat generator applies inline to the cd
-# path / prompt / --channels spec below (HIMMEL-901: reused for the headroom
-# proxy binary path so a fourth copy of the same six-substitution block
-# isn't pasted in). % & ^ < > | can inject commands at .bat fire time.
-_cmd_metachar_escape() {
-    local v="$1"
-    v="${v//\"/\\\"}"
-    v="${v//%/%%}"
-    v="${v//^/^^}"
-    v="${v//&/^&}"
-    v="${v//</^<}"
-    v="${v//>/^>}"
-    v="${v//|/^|}"
-    printf '%s' "$v"
 }
 
 # _bash_single_quote <value> — quote one value for the in-distro bash -lc
@@ -1066,9 +1098,37 @@ _validate_key() {
 # refusal against an unrelated handover.
 _ho_ticket_strict=""
 _infer_ticket_strict() {
-    local _ho="$1" _raw _key
-    _raw=$(awk '/^---[[:space:]]*$/{c++; next} c==1' "$_ho" \
-        | sed -n 's/^ticket:[[:space:]]*//p' | head -1) || true
+    local _ho="$1" _raw _key _fm _fm_rc
+    # HIMMEL-1640: honor a frontmatter `ticket:` ONLY from lines strictly inside
+    # a well-formed YAML block -- one that OPENS at line 1 of the document
+    # (optionally after a UTF-8 BOM) and CLOSES at a later `---`. The opening
+    # delimiter is anchored to the document start (codex-adv r3): only NR==1
+    # matching `^---[[:space:]]*$` -- after `sub(/^\xef\xbb\xbf/,"")` strips an
+    # optional leading BOM -- enters frontmatter mode (c==1). A file whose first
+    # line is anything else NEVER enters frontmatter mode, so a `---` horizontal
+    # rule in the BODY of a plain-markdown handover is ordinary text: it can
+    # neither masquerade as an opener (false ticket mutex, HIMMEL-1329) nor as a
+    # lone unclosed block (false hard error on a valid handover). CRLF is
+    # tolerated by the existing `[[:space:]]`. Lines buffer while c==1 and emit
+    # on the close; the old one-pass `c==1` filter never closed, so an unclosed
+    # block swallowed the whole body as frontmatter.
+    # OPENED-but-UNTERMINATED frontmatter is a hard PARSE ERROR, not an empty
+    # result (codex-adv r2): silently yielding no ticket here would let a
+    # handover whose REAL frontmatter ticket lost its closing `---` bypass the
+    # mutex entirely — converting malformed metadata into the exact
+    # duplicate-resume race the mutex exists to prevent. The awk distinguishes
+    # the three shapes by exit code: no frontmatter at all (c==0) and a closed
+    # block (c==2, set before `exit` so END's c==1 check is false) are fine;
+    # EOF with c==1 (opened, never closed) exits 3 and the arm refuses loudly
+    # BEFORE any scheduler mutation. POSIX awk (string concat, printf,
+    # exit-to-END).
+    _fm_rc=0
+    _fm=$(awk 'NR==1{sub(/^\xef\xbb\xbf/,"")} NR==1 && /^---[[:space:]]*$/{c=1; next} c==1 && /^---[[:space:]]*$/{printf "%s",b; c=2; exit} c==1{b=b $0 "\n"} END{if(c==1) exit 3}' "$_ho") || _fm_rc=$?
+    if [ "$_fm_rc" -eq 3 ]; then
+        echo "ERR arm-resume: unclosed YAML frontmatter in $_ho -- an opening --- with no closing ---. Refusing to arm: a truncated frontmatter ticket would silently bypass the ticket mutex (HIMMEL-1329/HIMMEL-1640). Close the frontmatter block (or remove the stray opening ---) and re-arm." >&2
+        exit 1
+    fi
+    _raw=$(printf '%s' "$_fm" | sed -n 's/^ticket:[[:space:]]*//p' | head -1) || true
     _raw="${_raw%"${_raw##*[![:space:]]}"}"   # rtrim (incl trailing \r)
     _raw="${_raw#\'}" ; _raw="${_raw%\'}"
     _raw="${_raw#\"}" ; _raw="${_raw%\"}"
@@ -3250,43 +3310,27 @@ schedule_arm() {
                 exit 4
             fi
 
-            # .bat content: escape CMD metacharacters in BOTH the prompt
-            # AND the cd path. % & ^ < > | can inject commands at fire
-            # time if a directory or handover path contains them. (Windows
-            # forbids <>"|?* in actual path components, but %, &, ^ are
-            # legal in directory names — and the prompt arg can carry
-            # arbitrary text.) Same escape both places; bash assoc-array
-            # would be cleaner but not worth the dep for two values.
+            # .bat content: escape for interpolation INSIDE DOUBLE QUOTES via
+            # cadence_cmd_escape (HIMMEL-1281/HIMMEL-1287) — % -> %% plus
+            # best-effort " handling, deliberately NO caret escapes (cmd.exe
+            # treats ^ as a LITERAL character inside double quotes, so
+            # caret-escaping corrupts the value instead of protecting it).
+            # Applied to the prompt, the cd path, and the bash/flow-run-ledger
+            # paths — every one lands inside a quoted "%s" below.
             local p="$RESUME_PROMPT" c="$resume_cwd_win" bw="$bash_win" fl="$flow_lib_m" fr_note="$FLOW_RUN_NOTE"
-            p="${p//\"/\\\"}"   # escape "
-            p="${p//%/%%}"      # double % for CMD literal
-            p="${p//^/^^}"
-            p="${p//&/^&}"
-            p="${p//</^<}"
-            p="${p//>/^>}"
-            p="${p//|/^|}"
-            c="${c//\"/\\\"}"
-            c="${c//%/%%}"
-            c="${c//^/^^}"
-            c="${c//&/^&}"
-            c="${c//</^<}"
-            c="${c//>/^>}"
-            c="${c//|/^|}"
-            bw=$(_cmd_metachar_escape "$bw")
-            fl=$(_cmd_metachar_escape "$fl")
-            fr_note=$(_cmd_metachar_escape "$fr_note")
-            # Optional --channels passthrough. Same CMD-metachar escape as
-            # the prompt — the spec is operator-supplied (could carry % & ^).
+            p=$(cadence_cmd_escape "$p")
+            c=$(cadence_cmd_escape "$c")
+            bw=$(cadence_cmd_escape "$bw")
+            fl=$(cadence_cmd_escape "$fl")
+            fr_note=$(cadence_cmd_escape "$fr_note")
+            # Optional --channels passthrough. Same cadence_cmd_escape as the
+            # prompt — the spec is operator-supplied (could carry % & ^) and
+            # lands inside its own embedded double quotes (` --channels
+            # "$cs"`) below.
             local ch=""
             if [ -n "$CHANNELS" ]; then
                 local cs="$CHANNELS"
-                cs="${cs//\"/\\\"}"
-                cs="${cs//%/%%}"
-                cs="${cs//^/^^}"
-                cs="${cs//&/^&}"
-                cs="${cs//</^<}"
-                cs="${cs//>/^>}"
-                cs="${cs//|/^|}"
+                cs=$(cadence_cmd_escape "$cs")
                 ch=" --channels \"$cs\""
             fi
             # -n <session name> (HIMMEL-702). SESSION_NAME is sanitized to
@@ -3321,8 +3365,17 @@ schedule_arm() {
                     rm -f "$bat_path"
                     exit 4
                 fi
-                hb=$(_cmd_metachar_escape "$headroom_bin_win")
-                cu=$(_cmd_metachar_escape "$curl_bin_win")
+                # hb is interpolated into the NESTED `cmd /c` detached-start
+                # line below (a SECOND cmd parse), so it needs the double-
+                # parse escape (_arm_nested_cmd_escape: cadence base + caret
+                # escapes on ^ & < > |). cu (the curl livez checks) is a
+                # single-parse top-level .bat line, so it keeps
+                # cadence_cmd_escape. Do NOT unify them -- the two-parse
+                # distinction is the HIMMEL-1287 contract (proxy-suite T4b
+                # pins ^& on hb's line; T1287a/b/c pin NO carets on the
+                # single-parse sites).
+                hb=$(_arm_nested_cmd_escape "$headroom_bin_win")
+                cu=$(cadence_cmd_escape "$curl_bin_win")
             fi
             # Self-clean FIRST: a /sc ONCE task lingers in Task Scheduler
             # after it fires (Ready/completed), accumulating stale jobs and

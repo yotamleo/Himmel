@@ -14,11 +14,29 @@ CASES=0
 GLM_URL="https://api.z.ai/api/anthropic"
 BASH_ABS=$(command -v bash)
 EMPTY_PATH=$(mktemp -d)
+OUTBOX_FIXTURE=$(mktemp -d -t glm-outbox.XXXXXX)
+OWN_SESSION="$OUTBOX_FIXTURE/glm-sessions/glm-own-1"
+SIBLING_SESSION="$OUTBOX_FIXTURE/glm-sessions/glm-sibling-2"
+mkdir -p "$OWN_SESSION" "$SIBLING_SESSION"
+native_dir() {
+    (cd "$1" && pwd -W 2>/dev/null) || (cd "$1" && pwd -P)
+}
+OWN_SESSION_NATIVE=$(native_dir "$OWN_SESSION")
+SIBLING_SESSION_NATIVE=$(native_dir "$SIBLING_SESSION")
+REPO_ROOT=$(cd "$(dirname "$HOOK")/../.." && pwd -P)
+REPO_ROOT_NATIVE=$(native_dir "$REPO_ROOT")
+HELPER="$REPO_ROOT/scripts/glm/append-outbox.sh"
+HELPER_NATIVE="$REPO_ROOT_NATIVE/scripts/glm/append-outbox.sh"
+cp "$HELPER" "$OWN_SESSION/append-outbox.sh"
+cp "$HELPER" "$SIBLING_SESSION/append-outbox.sh"
+OWN_HELPER="$OWN_SESSION/append-outbox.sh"
+OWN_HELPER_NATIVE="$OWN_SESSION_NATIVE/append-outbox.sh"
+SIBLING_HELPER_NATIVE="$SIBLING_SESSION_NATIVE/append-outbox.sh"
 
 # run_case <json> [VAR=val ...] — extra args become env assignments.
 run_case() {
     local input="$1"; shift
-    printf '%s' "$input" | env -u ANTHROPIC_BASE_URL -u GLM_EXTERNAL_WRITES_OK "$@" bash "$HOOK" >/dev/null 2>&1
+    printf '%s' "$input" | env -u ANTHROPIC_BASE_URL -u GLM_EXTERNAL_WRITES_OK -u GLM_SESSION_DIR "$@" bash "$HOOK" >/dev/null 2>&1
     echo "$?"
 }
 
@@ -32,6 +50,57 @@ assert_rc() {
         FAILED=$((FAILED + 1))
     fi
 }
+
+# HIMMEL-1649 round 3: the hook is the EXECUTOR. A valid report is recorded by
+# the hook and the Bash call is then DENIED (rc=2) with a success message. There
+# is no explicit-allow path any more — an `allow` decision here would be a
+# regression back to executing worker-reachable content, so assert it is absent.
+assert_recorded() {
+    local label="$1" input="$2" outbox="$3" before after out err rc decision; shift 3
+    local outf errf
+    outf=$(mktemp); errf=$(mktemp)
+    before=$( [ -f "$outbox" ] && wc -l < "$outbox" || echo 0 )
+    printf '%s' "$input" | env -u ANTHROPIC_BASE_URL -u GLM_EXTERNAL_WRITES_OK -u GLM_SESSION_DIR "$@" bash "$HOOK" >"$outf" 2>"$errf"
+    rc=$?
+    out=$(cat "$outf"); err=$(cat "$errf"); rm -f "$outf" "$errf"
+    # Round 4 [glm-3]: this guard used to read the decision off the capture of
+    # `2>&1 >/dev/null` — i.e. STDERR — so it could never fire. A structured
+    # permissionDecision arrives on STDOUT (where Claude Code reads it, and where
+    # it would OVERRIDE the exit code), and the old capture threw stdout away.
+    # Today the hook has no explicit-allow path at all: it allows by a bare
+    # `exit 0` with no output, so an `allow` object appearing here at all would
+    # be the regression back to executing worker-reachable content.
+    decision=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null || true)
+    after=$( [ -f "$outbox" ] && wc -l < "$outbox" || echo 0 )
+    CASES=$((CASES + 1))
+    if [ "$rc" = 2 ] && [ "$decision" != "allow" ] \
+       && printf '%s' "$err" | grep -q "guard recorded your report" \
+       && [ "$after" -eq $((before + 1)) ]; then
+        echo "PASS $label (recorded by hook, command denied)"
+    else
+        echo "FAIL $label — expected rc=2 + success message + 1 appended row, got rc=$rc rows=$before->$after"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+# A rejected payload must append NOTHING and deny with a non-success reason.
+assert_rejected_no_append() {
+    local label="$1" input="$2" outbox="$3" before after err rc; shift 3
+    before=$( [ -f "$outbox" ] && wc -l < "$outbox" || echo 0 )
+    err=$(printf '%s' "$input" | env -u ANTHROPIC_BASE_URL -u GLM_EXTERNAL_WRITES_OK -u GLM_SESSION_DIR "$@" bash "$HOOK" 2>&1 >/dev/null)
+    rc=$?
+    after=$( [ -f "$outbox" ] && wc -l < "$outbox" || echo 0 )
+    CASES=$((CASES + 1))
+    if [ "$rc" = 2 ] && [ "$after" -eq "$before" ] \
+       && ! printf '%s' "$err" | grep -q "guard recorded your report"; then
+        echo "PASS $label (fail-closed, nothing appended)"
+    else
+        echo "FAIL $label — expected rc=2 + no append + no success message, got rc=$rc rows=$before->$after"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+b64url() { node -e 'process.stdout.write(Buffer.from(process.argv[1],"utf8").toString("base64url"))' "$1"; }
 
 j_bash() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
 j_pwsh() { printf '{"tool_name":"PowerShell","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
@@ -48,6 +117,315 @@ assert_rc "off-lane git push"            0 "$(run_case "$(j_bash 'git push origi
 assert_rc "off-lane gh pr create"        0 "$(run_case "$(j_bash 'gh pr create --title x')")"
 assert_rc "off-lane mcp tool"            0 "$(run_case '{"tool_name":"mcp__plugin_github_github__merge_pull_request","tool_input":{}}')"
 assert_rc "anthropic-url non-glm"        0 "$(run_case "$(j_bash 'git push')" "ANTHROPIC_BASE_URL=https://api.anthropic.com")"
+
+# --- HIMMEL-1649: fixed own-session outbox helper carve-out ---
+# GLM_SESSION_DIR is the dispatcher-owned inherited-env seam. The hook emits an
+# EXPLICIT allow only for an exact helper invocation carrying one strict
+# base64url token. Write/Edit stay native-denied and the old interpolated node -e
+# append is now always denied.
+OUTBOX_TOKEN="bGFuZSBlMmU"
+# shellcheck disable=SC2016  # literal inherited variable spelling is command text under test
+VAR_APPEND='bash "$GLM_SESSION_DIR/append-outbox.sh" bGFuZSBlMmU'
+# DISTINCT payloads per shape variant (HIMMEL-1649 round 3): all three go to the
+# SAME outbox back-to-back, and the F2 consecutive-duplicate suppression would
+# (correctly) swallow the 2nd and 3rd if they repeated the first one's payload.
+NATIVE_TOKEN=$(b64url 'lane e2e native')
+POSIX_TOKEN=$(b64url 'lane e2e posix')
+NATIVE_APPEND="bash $OWN_HELPER_NATIVE $NATIVE_TOKEN"
+POSIX_APPEND="bash $OWN_HELPER $POSIX_TOKEN"
+OWN_OUTBOX="$OWN_SESSION/outbox.jsonl"
+assert_recorded "glm inherited session report recorded by hook" "$(j_bash "$VAR_APPEND")" "$OWN_OUTBOX" \
+    "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+assert_recorded "glm native absolute session report recorded by hook" "$(j_bash "$NATIVE_APPEND")" "$OWN_OUTBOX" \
+    "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+assert_recorded "glm POSIX absolute session report recorded by hook" "$(j_bash "$POSIX_APPEND")" "$OWN_OUTBOX" \
+    "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+# Field-wise, not exact-line: records also carry the _sig dedup digest (F2).
+assert_last_record() {
+    local label="$1" filter="$2" file="$3"
+    CASES=$((CASES + 1))
+    if [ -f "$file" ] && tail -1 "$file" | jq -e "$filter" >/dev/null 2>&1; then
+        echo "PASS $label"
+    else
+        echo "FAIL $label — last record in $file does not satisfy: $filter"
+        FAILED=$((FAILED + 1))
+    fi
+}
+assert_last_record "glm hook-written note is note-wrapped" '.type == "note" and .text == "lane e2e posix"' "$OWN_OUTBOX"
+
+# (i) HIMMEL-1649 round 3 — THE regression test for codex-adv-1. A booby-trapped
+# helper that would drop a canary must NEVER execute: the hook records the row
+# itself and denies the command, so the canary cannot appear. This is the exact
+# attack the round-2 pathname-trust ALLOW permitted (worker holds Edit on its
+# session dir plus Bash(node *), so it could overwrite the helper).
+CANARY="$OUTBOX_FIXTURE/canary-executed"
+BOOBY_SESSION="$OUTBOX_FIXTURE/glm-sessions/glm-booby-3"
+mkdir -p "$BOOBY_SESSION"
+BOOBY_SESSION_NATIVE=$(native_dir "$BOOBY_SESSION")
+printf '#!/usr/bin/env bash\ntouch "%s"\n' "$CANARY" > "$BOOBY_SESSION/append-outbox.sh"
+chmod +x "$BOOBY_SESSION/append-outbox.sh"
+# shellcheck disable=SC2016  # literal inherited variable spelling is command text under test
+assert_recorded "booby-trapped helper is never executed" "$(j_bash 'bash "$GLM_SESSION_DIR/append-outbox.sh" bGFuZSBlMmU')" \
+    "$BOOBY_SESSION/outbox.jsonl" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$BOOBY_SESSION_NATIVE"
+CASES=$((CASES + 1))
+if [ ! -e "$CANARY" ]; then
+    echo "PASS booby-trap canary absent (helper content never ran)"
+else
+    echo "FAIL booby-trap canary present — worker-writable helper EXECUTED (codex-adv-1 regression)"
+    FAILED=$((FAILED + 1))
+fi
+
+# (ii) escalation JSON round-trips as type:"escalation" so adjudicate list sees it.
+ESC_JSON='{"type":"escalation","capability":"git push origin x","arm":"git-push","reason":"no push arm","step":"7 push"}'
+ESC_TOKEN=$(b64url "$ESC_JSON")
+assert_recorded "structured escalation recorded" "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $ESC_TOKEN")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+CASES=$((CASES + 1))
+if tail -1 "$OWN_OUTBOX" | jq -e '.type == "escalation" and .capability == "git push origin x" and (.ts | type) == "string"' >/dev/null 2>&1; then
+    echo "PASS escalation keeps type/capability and gains a stamped ts"
+else
+    echo "FAIL escalation record did not round-trip as a stamped escalation"
+    FAILED=$((FAILED + 1))
+fi
+
+# (iii) non-JSON payload is note-wrapped verbatim.
+PLAIN_TOKEN=$(b64url 'not json { at all')
+assert_recorded "non-JSON payload note-wrapped" "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $PLAIN_TOKEN")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+assert_last_record "note-wrap preserves the text verbatim" '.type == "note" and .text == "not json { at all"' "$OWN_OUTBOX"
+
+# --- HIMMEL-1649 round 3 (F2): consecutive-duplicate suppression -------------
+# The hook appends then denies, which looks like a retryable failure. A retry
+# storm must converge to ONE row, while the same note sent again LATER (after a
+# different record) must still land.
+DUP_TOKEN=$(b64url 'retry me')
+DUP_CMD="bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $DUP_TOKEN"
+assert_recorded "F2 first send of a report is recorded" "$(j_bash "$DUP_CMD")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+dup_before=$(wc -l < "$OWN_OUTBOX")
+dup_err=$(printf '%s' "$(j_bash "$DUP_CMD")" | env -u ANTHROPIC_BASE_URL -u GLM_EXTERNAL_WRITES_OK -u GLM_SESSION_DIR \
+    "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE" bash "$HOOK" 2>&1 >/dev/null)
+dup_rc=$?
+dup_after=$(wc -l < "$OWN_OUTBOX")
+CASES=$((CASES + 1))
+if [ "$dup_rc" = 2 ] && [ "$dup_after" -eq "$dup_before" ] && printf '%s' "$dup_err" | grep -q "guard recorded your report"; then
+    echo "PASS F2 immediate retry appends nothing and still reports success"
+else
+    echo "FAIL F2 retry — expected rc=2 + no new row + success message, got rc=$dup_rc rows=$dup_before->$dup_after"
+    FAILED=$((FAILED + 1))
+fi
+# A DIFFERENT record breaks the streak, so the same payload lands again after it.
+OTHER_TOKEN=$(b64url 'something else')
+assert_recorded "F2 a different report still lands" "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $OTHER_TOKEN")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+assert_recorded "F2 the earlier payload lands again after a different one" "$(j_bash "$DUP_CMD")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+
+# --- HIMMEL-1649 round 3 (F1): the interceptor is a SERVICE above the bypass --
+# GLM_EXTERNAL_WRITES_OK disables ENFORCEMENT only. Under bypass the report must
+# STILL be hook-recorded with identical semantics, and the booby-trapped helper
+# must STILL never execute — otherwise a bypass session silently downgrades
+# structured escalations to text notes the adjudicator cannot see.
+BYPASS_SESSION="$OUTBOX_FIXTURE/glm-sessions/glm-bypass-4"
+mkdir -p "$BYPASS_SESSION"
+BYPASS_SESSION_NATIVE=$(native_dir "$BYPASS_SESSION")
+BYPASS_CANARY="$OUTBOX_FIXTURE/canary-bypass"
+printf '#!/usr/bin/env bash\ntouch "%s"\n' "$BYPASS_CANARY" > "$BYPASS_SESSION/append-outbox.sh"
+chmod +x "$BYPASS_SESSION/append-outbox.sh"
+BYPASS_ESC=$(b64url '{"type":"escalation","capability":"gh pr merge","arm":"gh","reason":"bypass","step":"9"}')
+# shellcheck disable=SC2016  # literal inherited variable spelling is command text under test
+assert_recorded "F1 bypass session still gets its report hook-recorded" \
+    "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $BYPASS_ESC")" "$BYPASS_SESSION/outbox.jsonl" \
+    "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$BYPASS_SESSION_NATIVE" "GLM_EXTERNAL_WRITES_OK=1"
+assert_last_record "F1 bypass escalation keeps its structured type" '.type == "escalation" and .arm == "gh"' "$BYPASS_SESSION/outbox.jsonl"
+CASES=$((CASES + 1))
+if [ ! -e "$BYPASS_CANARY" ]; then
+    echo "PASS F1 bypass canary absent (helper still never executed under bypass)"
+else
+    echo "FAIL F1 bypass canary present — bypass executed the on-disk helper"
+    FAILED=$((FAILED + 1))
+fi
+# ENFORCEMENT really is off under bypass: a push still sails through.
+assert_rc "F1 bypass still disables enforcement (git push allowed)" 0 \
+    "$(run_case "$(j_bash 'git push origin main')" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_EXTERNAL_WRITES_OK=1")"
+
+# --- HIMMEL-1649 round 4 [codex-1]: WHERE the no-execution property holds -----
+# "No on-disk content executes" is an ENFORCEMENT-mode property. The F1 cases
+# above pin the CONTRACT-SHAPED command under bypass (still hook-recorded, still
+# no execution). These pin the other half honestly: a NEAR-MISS command shape is
+# denied under enforcement, but under operator bypass it falls through and the
+# on-disk helper IS the executor — by design, because that helper is the
+# lockstep implementation of the same fail-closed schema. So the guarantee that
+# survives the mode switch is the one that matters: a malformed payload appends
+# nothing either way; only the executor differs.
+R4_SESSION="$OUTBOX_FIXTURE/glm-sessions/glm-r4-6"
+mkdir -p "$R4_SESSION"
+R4_SESSION_NATIVE=$(native_dir "$R4_SESSION")
+cp "$HELPER" "$R4_SESSION/append-outbox.sh"
+R4_OUTBOX="$R4_SESSION/outbox.jsonl"
+# Schema-invalid payload (escalation missing arm/reason/step) carried by a
+# near-miss command shape (a trailing extra argument).
+R4_BAD=$(b64url '{"type":"escalation","capability":"only-capability"}')
+# shellcheck disable=SC2016  # literal inherited variable spelling is command text under test
+R4_NEARMISS="bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $R4_BAD extra"
+assert_rc "R4 enforcement denies the near-miss helper command" 2 \
+    "$(run_case "$(j_bash "$R4_NEARMISS")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$R4_SESSION_NATIVE")"
+assert_rc "R4 bypass lets the near-miss through to the on-disk helper" 0 \
+    "$(run_case "$(j_bash "$R4_NEARMISS")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$R4_SESSION_NATIVE" "GLM_EXTERNAL_WRITES_OK=1")"
+CASES=$((CASES + 1))
+if [ ! -s "$R4_OUTBOX" ]; then
+    echo "PASS R4 bypass hook appended nothing (the helper, not the hook, is the executor)"
+else
+    echo "FAIL R4 bypass hook appended a row for a command it did not service"
+    FAILED=$((FAILED + 1))
+fi
+# The bypass-mode executor fail-closes exactly what the hook would have rejected.
+env -u GLM_SESSION_DIR "GLM_SESSION_DIR=$R4_SESSION_NATIVE" bash "$R4_SESSION/append-outbox.sh" "$R4_BAD" >/dev/null 2>&1
+r4_rc=$?
+CASES=$((CASES + 1))
+if [ "$r4_rc" = 2 ] && [ ! -s "$R4_OUTBOX" ]; then
+    echo "PASS R4 the lockstep helper fail-closes the malformed payload, appending nothing"
+else
+    echo "FAIL R4 helper did not fail closed under bypass — rc=$r4_rc, outbox non-empty=$([ -s "$R4_OUTBOX" ] && echo yes || echo no)"
+    FAILED=$((FAILED + 1))
+fi
+# Well-formed under bypass: the helper writes the SAME record the hook writes.
+# An explicit ts makes the two byte-comparable (both stamp only when absent).
+R4_GOOD_JSON='{"type":"escalation","capability":"git push origin x","arm":"git-push","reason":"lockstep check","step":"11","ts":"2026-08-09T00:00:00.000Z"}'
+R4_GOOD=$(b64url "$R4_GOOD_JSON")
+R4_HOOK_SESSION="$OUTBOX_FIXTURE/glm-sessions/glm-r4-hook-7"
+mkdir -p "$R4_HOOK_SESSION"
+R4_HOOK_SESSION_NATIVE=$(native_dir "$R4_HOOK_SESSION")
+assert_recorded "R4 hook records the well-formed report" \
+    "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $R4_GOOD")" "$R4_HOOK_SESSION/outbox.jsonl" \
+    "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$R4_HOOK_SESSION_NATIVE"
+env -u GLM_SESSION_DIR "GLM_SESSION_DIR=$R4_SESSION_NATIVE" bash "$R4_SESSION/append-outbox.sh" "$R4_GOOD" >/dev/null 2>&1
+CASES=$((CASES + 1))
+r4_hook_rec=$(tail -1 "$R4_HOOK_SESSION/outbox.jsonl" | jq -S -c . 2>/dev/null || true)
+r4_helper_rec=$(tail -1 "$R4_OUTBOX" | jq -S -c . 2>/dev/null || true)
+if [ -n "$r4_hook_rec" ] && [ "$r4_hook_rec" = "$r4_helper_rec" ]; then
+    echo "PASS R4 bypass helper writes the identical record shape the hook writes"
+else
+    echo "FAIL R4 lockstep divergence — hook=$r4_hook_rec helper=$r4_helper_rec"
+    FAILED=$((FAILED + 1))
+fi
+
+# --- HIMMEL-1649 round 9 (CodeRabbit, Major): PowerShell is a MEDIATED shell --
+# hooks.json registers this hook for "Bash|PowerShell|mcp__.*", but the report
+# interceptor and the near-miss deny were gated on tool=="Bash" alone. A
+# PowerShell helper invocation was therefore neither hook-executed nor denied:
+# it fell through to the generic classifiers, which do not match
+# append-outbox.sh, and EXECUTED the on-disk helper in ENFORCEMENT mode —
+# contradicting the branch invariant that under enforcement the report verb is
+# run by the hook, never by on-disk content. Both directions are now pinned.
+# The canary proves execution, not just exit codes: a booby-trapped helper that
+# would touch a file must stay untouched, which is the property that actually
+# distinguishes "hook serviced it" from "the shell ran the script".
+PWSH_SESSION="$OUTBOX_FIXTURE/glm-sessions/glm-pwsh-9"
+mkdir -p "$PWSH_SESSION"
+PWSH_SESSION_NATIVE=$(native_dir "$PWSH_SESSION")
+PWSH_CANARY="$OUTBOX_FIXTURE/pwsh-canary-9"
+printf '#!/usr/bin/env bash\ntouch "%s"\n' "$PWSH_CANARY" > "$PWSH_SESSION/append-outbox.sh"
+chmod +x "$PWSH_SESSION/append-outbox.sh"
+PWSH_TOKEN=$(b64url '{"type":"note","text":"powershell lane parity"}')
+assert_recorded "R9 PowerShell helper report is recorded by the hook" \
+    "$(j_pwsh "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $PWSH_TOKEN")" "$PWSH_SESSION/outbox.jsonl" \
+    "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$PWSH_SESSION_NATIVE"
+CASES=$((CASES + 1))
+if [ ! -e "$PWSH_CANARY" ]; then
+    echo "PASS R9 PowerShell path never executed the on-disk helper (canary untouched)"
+else
+    echo "FAIL R9 PowerShell path EXECUTED the on-disk helper — canary fired"
+    FAILED=$((FAILED + 1))
+fi
+# A malformed PowerShell helper mention must fail closed, exactly like Bash.
+PWSH_NEARMISS="bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $PWSH_TOKEN extra"
+assert_rejected_no_append "R9 PowerShell near-miss fails closed" \
+    "$(j_pwsh "$PWSH_NEARMISS")" "$PWSH_SESSION/outbox.jsonl" \
+    "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$PWSH_SESSION_NATIVE"
+CASES=$((CASES + 1))
+if [ ! -e "$PWSH_CANARY" ]; then
+    echo "PASS R9 PowerShell near-miss did not execute the on-disk helper"
+else
+    echo "FAIL R9 PowerShell near-miss EXECUTED the on-disk helper — canary fired"
+    FAILED=$((FAILED + 1))
+fi
+
+# --- HIMMEL-1649 round 4 [codex-adv-r4-1]: a torn JSONL tail ------------------
+# An interrupted earlier append leaves the file ending mid-line. Appending onto
+# it would concatenate the new JSON into that partial line — consumers
+# (fleet-control/aggregator/escalations.ts jsonl()) skip the combined invalid
+# line, while deny_recorded still tells the worker the report was saved. The new
+# record must land as its own independently parseable line.
+TORN_SESSION="$OUTBOX_FIXTURE/glm-sessions/glm-torn-8"
+mkdir -p "$TORN_SESSION"
+TORN_SESSION_NATIVE=$(native_dir "$TORN_SESSION")
+TORN_OUTBOX="$TORN_SESSION/outbox.jsonl"
+printf '{"type":"note","text":"interrupted mid-write"' > "$TORN_OUTBOX"
+TORN_TOKEN=$(b64url 'after the torn tail')
+torn_err=$(printf '%s' "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $TORN_TOKEN")" \
+    | env -u ANTHROPIC_BASE_URL -u GLM_EXTERNAL_WRITES_OK -u GLM_SESSION_DIR \
+      "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$TORN_SESSION_NATIVE" bash "$HOOK" 2>&1 >/dev/null)
+torn_rc=$?
+CASES=$((CASES + 1))
+if [ "$torn_rc" = 2 ] && printf '%s' "$torn_err" | grep -q "guard recorded your report" \
+   && tail -1 "$TORN_OUTBOX" | jq -e '.type == "note" and .text == "after the torn tail"' >/dev/null 2>&1; then
+    echo "PASS torn tail did not swallow the next acknowledged report"
+else
+    echo "FAIL torn tail — expected rc=2 + success message + an independently parseable last line, got rc=$torn_rc"
+    FAILED=$((FAILED + 1))
+fi
+
+# (iv) schema violations fail CLOSED and append nothing.
+BAD_TYPE=$(b64url '{"type":"grant","text":"x"}')
+assert_rejected_no_append "unknown type rejected" "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $BAD_TYPE")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+BAD_KEY=$(b64url '{"type":"note","text":"x","evil":1}')
+assert_rejected_no_append "unknown key rejected" "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $BAD_KEY")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+BAD_FIELD=$(b64url '{"type":"escalation","capability":1,"arm":"gh","reason":"r","step":"s"}')
+assert_rejected_no_append "non-string escalation field rejected" "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $BAD_FIELD")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+MISSING_FIELD=$(b64url '{"type":"escalation","capability":"c","arm":"gh","reason":"r"}')
+assert_rejected_no_append "escalation missing step rejected" "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $MISSING_FIELD")" \
+    "$OWN_OUTBOX" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE"
+
+OLD_REPO_REL="bash scripts/glm/append-outbox.sh $OUTBOX_TOKEN"
+OLD_REPO_NATIVE="bash $HELPER_NATIVE $OUTBOX_TOKEN"
+OLD_REPO_POSIX="bash $HELPER $OUTBOX_TOKEN"
+ENV_PREFIX_APPEND="GLM_SESSION_DIR=$SIBLING_SESSION_NATIVE bash $OWN_HELPER_NATIVE $OUTBOX_TOKEN"
+SIBLING_HELPER_APPEND="bash $SIBLING_HELPER_NATIVE $OUTBOX_TOKEN"
+WRITE_HELPER="printf hacked > $OWN_HELPER_NATIVE"
+assert_rc "glm old relative repo helper denied" 2 "$(run_case "$(j_bash "$OLD_REPO_REL")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm old native repo helper denied" 2 "$(run_case "$(j_bash "$OLD_REPO_NATIVE")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm old POSIX repo helper denied" 2 "$(run_case "$(j_bash "$OLD_REPO_POSIX")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm env-prefixed helper near-miss denied" 2 "$(run_case "$(j_bash "$ENV_PREFIX_APPEND")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm sibling session helper denied" 2 "$(run_case "$(j_bash "$SIBLING_HELPER_APPEND")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm write to minted session helper denied" 2 "$(run_case "$(j_bash "$WRITE_HELPER")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+
+OLD_APPEND="node -e \"require('fs').appendFileSync('$OWN_SESSION_NATIVE/outbox.jsonl', JSON.stringify({text:'lane e2e'})+'\\n')\""
+# shellcheck disable=SC2016  # literal command substitution is hostile command text under test
+OLD_INJECT="node -e \"require('fs').appendFileSync('$OWN_SESSION_NATIVE/outbox.jsonl', JSON.stringify({text:'\$(gh pr merge 1)'})+'\\n')\""
+SIBLING_APPEND="node -e \"require('fs').appendFileSync('$SIBLING_SESSION_NATIVE/outbox.jsonl', JSON.stringify({text:'sibling'})+'\\n')\""
+assert_rc "glm old node append denied" 2 "$(run_case "$(j_bash "$OLD_APPEND")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm old node command-substitution tunnel denied" 2 "$(run_case "$(j_bash "$OLD_INJECT")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm old node sibling session outbox denied" 2 "$(run_case "$(j_bash "$SIBLING_APPEND")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm helper metadata absent denied" 2 "$(run_case "$(j_bash "$VAR_APPEND")" "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm helper metadata malformed denied" 2 "$(run_case "$(j_bash "$VAR_APPEND")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=relative/glm-sessions/glm-forged")"
+# shellcheck disable=SC2016  # hostile substitutions/backticks are literal command text under test
+assert_rc "glm helper command substitution denied" 2 "$(run_case "$(j_bash 'bash "$GLM_SESSION_DIR/append-outbox.sh" $(gh pr merge 1)')" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+# shellcheck disable=SC2016  # hostile backticks are literal command text under test
+assert_rc "glm helper backticks denied" 2 "$(run_case "$(j_bash 'bash "$GLM_SESSION_DIR/append-outbox.sh" `gh pr merge 1`')" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+# shellcheck disable=SC2016  # literal inherited variable spelling is command text under test
+assert_rc "glm helper quoted payload denied" 2 "$(run_case "$(j_bash 'bash "$GLM_SESSION_DIR/append-outbox.sh" "bGFuZSBlMmU"')" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm helper newline denied" 2 "$(run_case "$(j_bash "$(printf 'bash %s bGFuZSBlMmU\ngh pr merge 1' "$OWN_HELPER_NATIVE")")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm helper semicolon denied" 2 "$(run_case "$(j_bash "bash $OWN_HELPER_NATIVE bGFuZSBlMmU; gh pr merge 1")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm helper redirect denied" 2 "$(run_case "$(j_bash "bash $OWN_HELPER_NATIVE bGFuZSBlMmU > /tmp/x")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm helper extra argument denied" 2 "$(run_case "$(j_bash "bash $OWN_HELPER_NATIVE bGFuZSBlMmU extra")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm helper non-base64url token denied" 2 "$(run_case "$(j_bash "bash $OWN_HELPER_NATIVE abc=")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+OVERSIZE_TOKEN=$(node -e 'process.stdout.write("a".repeat(16385))')
+assert_rc "glm helper oversize token denied" 2 "$(run_case "$(j_bash "bash $OWN_HELPER_NATIVE $OVERSIZE_TOKEN")" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
+assert_rc "glm valid metadata leaves git-push denial unchanged" 2 "$(run_case "$(j_bash 'git push origin feat/x')" "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$OWN_SESSION_NATIVE")"
 
 # --- ON-LANE BLOCK cases (expect rc=2) ---
 assert_rc "glm git push"                 2 "$(run_case "$(j_bash 'git push origin feat/x')" "ANTHROPIC_BASE_URL=$GLM_URL")"
@@ -255,7 +633,7 @@ fi
 # Total-count guard: every assert_rc increments CASES; a drift here means a case
 # was silently dropped (or an early exit skipped the tail) even though nothing
 # FAILED. Update EXPECTED_CASES deliberately when adding/removing a case.
-EXPECTED_CASES=104
+EXPECTED_CASES=158
 if [ "$CASES" -ne "$EXPECTED_CASES" ]; then
     echo "CASE-COUNT MISMATCH — ran $CASES, expected $EXPECTED_CASES"
     exit 1

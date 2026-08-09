@@ -12,6 +12,7 @@ import {
   detectPromptTooLong,
   transcriptDirFor,
   glmSessionRoot,
+  mintGlmOutboxHelper,
   poisonPushUrl,
   ensureWorkspaceTrust,
   planSpawn,
@@ -39,6 +40,7 @@ import {
   composeRetaskBlock,
   composeBashShapeWarning,
   composeOutboxWriteHint,
+  composeGlmOutboxWriteHint,
   toPermissionPath,
   composeWorkerSettings,
   refuseBypassPermissions,
@@ -49,6 +51,10 @@ import {
   checkpointWorktree,
   gitCapture,
   CHECKPOINT_GLOBS,
+  hasGitPushEscalation,
+  armSigtermFinalize,
+  disarmSigtermFinalize,
+  sigtermFinalize,
   type CapGuardDeps,
 } from "./spawn-glm";
 import { BASH_BIN } from "./run";
@@ -78,6 +84,17 @@ test("session root is OUTSIDE the poller's sessions/ tree", () => {
   expect(root).not.toContain(`${join("bridge", "sessions")}`);
 });
 
+test("mintGlmOutboxHelper copies the dispatcher helper byte-for-byte into the session dir (HIMMEL-1649)", () => {
+  const sessionDir = mkdtempSync(join(tmpdir(), "glm-helper-session-"));
+  const source = resolve("scripts/glm/append-outbox.sh");
+  try {
+    const minted = mintGlmOutboxHelper(sessionDir, source);
+    expect(minted).toBe(join(sessionDir, "append-outbox.sh"));
+    expect(existsSync(minted)).toBe(true);
+    expect(readFileSync(minted)).toEqual(readFileSync(source));
+  } finally { rmSync(sessionDir, { recursive: true, force: true }); }
+});
+
 test("worker prompt embeds minted session paths + contract", () => {
   const p = composeWorkerPrompt("Summarize X", "/tmp/gs/glm-a-1", "glm/a");
   expect(p).toContain(join("/tmp/gs/glm-a-1", "outbox.jsonl"));
@@ -85,6 +102,8 @@ test("worker prompt embeds minted session paths + contract", () => {
   expect(p).toContain("glm/a");
   expect(p).toMatch(/never push/i);
   expect(p).toMatch(/never open a PR/i);
+  expect(p).toContain('bash "$GLM_SESSION_DIR/append-outbox.sh" <base64url-token>');
+  expect(p).not.toContain("appendFileSync");
   expect(p).toContain("Summarize X");
 });
 
@@ -195,6 +214,8 @@ test("main() writes the composeWorkerPrompt brief to brief.md and submits a POIN
   // the FULL brief = composeWorkerPrompt output, written to brief.md
   expect(/const briefText = composeWorkerPrompt\(/.test(src)).toBe(true);
   expect(/writeFileSync\(briefPath, briefText\)/.test(src)).toBe(true);
+  // The dispatcher mints the trusted helper immediately after creating the dir.
+  expect(/mkdirSync\(sessionDir, \{ recursive: true \}\);\s*mintGlmOutboxHelper\(sessionDir\);/.test(src)).toBe(true);
   // the SUBMITTED prompt is the pointer, NOT the inlined brief
   expect(/const prompt = composePointerPrompt\(briefPath\)/.test(src)).toBe(true);
 });
@@ -1341,6 +1362,104 @@ test("executeRun: a run.log append failure does NOT flip a successful run to fai
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+// --- HIMMEL-1641 F1: done_escalated — a timeout whose worktree is clean and
+// whose outbox carries a git-push escalation is not an unfinished run; it is
+// a finished worker hitting the lane's structural push-block. ---
+
+test("hasGitPushEscalation: finds a git-push escalation row, ignores other arms and blank/torn lines", () => {
+  const good = JSON.stringify({ type: "escalation", arm: "git-push", capability: "git push origin glm/x", reason: "blocked", step: "final", ts: "t" });
+  expect(hasGitPushEscalation(`${good}\n`)).toBe(true);
+  expect(hasGitPushEscalation("")).toBe(false);
+  expect(hasGitPushEscalation('{"type":"escalation","arm":"gh"}\n')).toBe(false);
+  expect(hasGitPushEscalation('not json\n{"type":"escalation","arm":"git-push"}\n{torn')).toBe(true);
+});
+
+test("executeRun: a timeout with a clean tree + a git-push escalation reclassifies done_escalated (HIMMEL-1641 F1)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    appendFileSync(join(dir, "outbox.jsonl"), JSON.stringify({ type: "escalation", arm: "git-push", capability: "git push origin glm/x", reason: "push blocked by lane guard", step: "final", ts: new Date().toISOString() }) + "\n");
+    const timedOut = (async () => ({ code: 143, capped: false, blocked: false, timedOut: true, pid: 11, tail: "" })) as any;
+    const { code } = await executeRun({ runSession: timedOut, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta, checkTreeClean: () => true });
+    expect(code).toBe(143);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("done_escalated");
+    expect(meta.escalation).toBe("git-push");
+    expect(meta.timed_out).toBe(true); // the underlying finalMeta fields are preserved
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun: a timeout with a clean tree but NO git-push escalation stays timeout (HIMMEL-1641 F1)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    const timedOut = (async () => ({ code: 143, capped: false, blocked: false, timedOut: true, pid: 12, tail: "" })) as any;
+    const { code } = await executeRun({ runSession: timedOut, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta, checkTreeClean: () => true });
+    expect(code).toBe(143);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("timeout");
+    expect(meta.escalation).toBeUndefined();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun: a timeout with a git-push escalation but a DIRTY tree stays timeout (HIMMEL-1641 F1)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    appendFileSync(join(dir, "outbox.jsonl"), JSON.stringify({ type: "escalation", arm: "git-push" }) + "\n");
+    const timedOut = (async () => ({ code: 143, capped: false, blocked: false, timedOut: true, pid: 13, tail: "" })) as any;
+    const { code } = await executeRun({ runSession: timedOut, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta, checkTreeClean: () => false });
+    expect(code).toBe(143);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("timeout");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// --- HIMMEL-1641 F2: dispatcher SIGTERM finalize — a caller-side kill must
+// write a distinct terminal status BEFORE the process dies, so it can never
+// masquerade as orphaned/startup-hang. ---
+
+test("armSigtermFinalize + sigtermFinalize: a SIGTERM during a live run finalizes meta as killed-by-caller (HIMMEL-1641 F2)", () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    armSigtermFinalize(metaPath, runningMeta);
+    sigtermFinalize();
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("killed-by-caller");
+    expect(meta.exit_code).toBe(-1);
+    expect(meta.pid).toBe(0);
+  } finally { disarmSigtermFinalize(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("sigtermFinalize: a no-op when unarmed — does not touch meta.json", () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    disarmSigtermFinalize(); // ensure unarmed regardless of test order
+    const before = readFileSync(metaPath, "utf8");
+    sigtermFinalize();
+    expect(readFileSync(metaPath, "utf8")).toBe(before);
+    expect(runningMeta.status).toBe("running"); // sanity: unrelated to the write
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("executeRun arms the SIGTERM finalize for the live run window and disarms once it returns (HIMMEL-1641 F2)", async () => {
+  const { dir, metaPath, runningMeta } = seedRunningMeta();
+  try {
+    let statusDuringRun: string | undefined;
+    const probe = (async () => {
+      // Simulate a SIGTERM landing mid-run: this is exactly what the real
+      // process.on("SIGTERM") listener calls before process.exit().
+      sigtermFinalize();
+      statusDuringRun = JSON.parse(readFileSync(metaPath, "utf8")).status;
+      return { code: 0, capped: false, blocked: false, timedOut: false, pid: 1, tail: "" };
+    }) as any;
+    await executeRun({ runSession: probe, prompt: "p", worktree: "/wt", sessionDir: dir, metaPath, runningMeta });
+    expect(statusDuringRun).toBe("killed-by-caller"); // armed during the run — a mid-run SIGTERM lands
+    // A SIGTERM arriving AFTER executeRun returns must be a no-op: the finally
+    // disarmed it, so this must NOT clobber the real "done" terminal meta.
+    sigtermFinalize();
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    expect(meta.status).toBe("done");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // --- poisonPushUrl scope (CR finding F1: tripwire must be worktree-scoped, not
 // repo-global). The poison sets remote.origin.pushurl via `--worktree`, which
 // only lands in the worktree's private config when extensions.worktreeConfig is
@@ -1774,13 +1893,25 @@ test("grant_id accumulates across repeated pre-seed grants (distinct g1/g2)", ()
   expect(JSON.parse(l2).grant_id).toBe("g2");
 });
 
-test("T5 composeWorkerPrompt teaches the escalation contract", () => {
+test("T5 composeWorkerPrompt teaches the hard-block reporting contract", () => {
   const p = composeWorkerPrompt("do X", "/tmp/gs/glm-a-1", "glm/a");
-  expect(p).toMatch(/escalation/i);
-  expect(p).toContain('"type":"escalation"');
-  expect(p).toMatch(/git-push.*git-url.*gh.*network|arm/i);   // the arm enum is named
+  expect(p).toMatch(/capability.*arm.*reason.*step/i);
+  // Alternation is the LOWEST-precedence regex operator, so the previous
+  // /git-push.*git-url.*gh.*network|arm/i parsed as (git-push…network)|(arm)
+  // and any prompt containing "arm" satisfied it — the enum was never asserted
+  // (HIMMEL-1649 round 9, CodeRabbit). [\s\S] because the prompt is multi-line.
+  expect(p).toMatch(/git-push[\s\S]*git-url[\s\S]*gh[\s\S]*network/i);   // the arm enum is named
   expect(p).toMatch(/skip/i);                                  // skip the gated step
   expect(p).toMatch(/continue|context\.md/i);                  // continue + note it
+  // HIMMEL-1649 round 3: the STRUCTURED escalation is restored. The hook (not
+  // the helper) validates the schema and appends, so adjudicate list — which
+  // only recognises type:"escalation" — sees a blocked worker again. A
+  // plain-text note does NOT reach adjudication, and the prompt must say so.
+  expect(p).toContain('"type":"escalation"');
+  expect(p).toMatch(/adjudicate list/i);
+  // The worker must be told the guard's DENIAL of the report command is success,
+  // or it will retry a report that already landed.
+  expect(p).toMatch(/denial means SUCCESS/i);
 });
 
 // --- HIMMEL-1218: RETASK channel ---
@@ -1833,6 +1964,16 @@ test("composeOutboxWriteHint: gives a ready-to-use node -e fallback with a forwa
   expect(hint).not.toContain("/c/sess"); // never the MSYS form that broke the live probe
   expect(hint).toMatch(/node -e/);
   expect(hint).toMatch(/appendFileSync/);
+});
+
+test("composeGlmOutboxWriteHint: documents only the fixed base64url helper contract (HIMMEL-1649)", () => {
+  const hint = composeGlmOutboxWriteHint("C:\\sess\\glm-a-1\\outbox.jsonl");
+  expect(hint).toContain('bash "$GLM_SESSION_DIR/append-outbox.sh" <base64url-token>');
+  expect(hint).toContain("GLM_SESSION_DIR");
+  expect(hint).toContain("[A-Za-z0-9_-]+");
+  expect(hint).toContain("16384");
+  expect(hint).toMatch(/Buffer\.from.*base64url/);
+  expect(hint).not.toMatch(/appendFileSync/);
 });
 
 test("toPermissionPath: Windows absolute path -> POSIX //<drive>/... form", () => {

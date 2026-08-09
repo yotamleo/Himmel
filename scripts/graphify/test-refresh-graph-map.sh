@@ -1178,6 +1178,156 @@ echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be" \
   && fail "T21d --no-update wrongly validated the irrelevant throttle value: $out" \
   || pass "T21d --no-update skips throttle validation (invalid value tolerated on publish-only path)"
 
+# --- T23 (HIMMEL-1645): GRAPHIFY_API_TIMEOUT knob — backend-scoped default
+# (900 for claude-cli ONLY; 300 = graphify's own default otherwise, incl. claude/glm),
+# unset-only, validated on the extraction path only (mirrors GRAPHIFY_MAX_CONCURRENCY / T21).
+# The logging stub records (a) the GRAPHIFY_API_TIMEOUT env var visible to the
+# graphify subprocess — graphify's override channel — AND (b) its full argv one
+# token per line, so we can assert BOTH the exported env var and the --api-timeout
+# CLI flag wiring. Required cases: unset -> worker-exported 900 default visible +
+# --api-timeout 900; caller-set value preserved (env + flag); invalid fails loud
+# before any extraction call. Plus zero/explicitly-empty (the unset-only `-` default
+# preserves them for the validation instead of silently becoming 900/300) and
+# --no-update (publish-only must not validate the irrelevant timeout), matching T21. ---
+T23BIN="$WS/t23bin"; mkdir -p "$T23BIN"
+cat > "$T23BIN/graphify" <<STUB
+#!/usr/bin/env bash
+# Capture the GRAPHIFY_API_TIMEOUT env var visible to the graphify subprocess
+# (one record per invocation: --update then cluster-only) and the full argv
+# (one token per line, so the --api-timeout value is assertable arg-boundary-robust).
+[ -n "\$GRAPHIFY_T23_ENVLOG" ] && printf 'GRAPHIFY_API_TIMEOUT=%s\n' "\${GRAPHIFY_API_TIMEOUT:-}" >> "\$GRAPHIFY_T23_ENVLOG"
+[ -n "\$GRAPHIFY_CALL_LOG" ] && printf '%s\n' "\$@" >> "\$GRAPHIFY_CALL_LOG"
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+printf '{"nodes":[],"links":[]}' > "\$target/graphify-out/graph.json"
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$T23BIN/graphify"
+T23CORPUS="$WS/t23corpus"; mkdir -p "$T23CORPUS/notes"
+printf '# t23\ncontent\n' > "$T23CORPUS/notes/a.md"
+T23MAPS="$WS/t23maps"; mkdir -p "$T23MAPS"
+
+# (a) unset GRAPHIFY_API_TIMEOUT -> default backend (claude-cli) exports the 900
+# default, visible to the stub's env AND wired into --api-timeout.
+t23env="$WS/t23-env.log"; t23calls="$WS/t23-calls.log"
+: > "$t23env"; : > "$t23calls"
+out=$( env -u GRAPHIFY_API_TIMEOUT \
+  GRAPHIFY_T23_ENVLOG="$t23env" GRAPHIFY_CALL_LOG="$t23calls" \
+  GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
+  bash "$SCRIPT" --name t23a --corpus-root "$T23CORPUS" \
+  --maps-dir "$T23MAPS" --title "T23" --slug t23a-map --corpus-tag t23a 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T23a unset-timeout run exit 0 (got $rc): $out"
+# env var visible to the graphify subprocess == the worker-exported 900 default.
+got_env=$(sed -n 's/^GRAPHIFY_API_TIMEOUT=//p' "$t23env" | head -n 1)
+[ "$got_env" = "900" ] && pass "T23a unset -> worker-exported GRAPHIFY_API_TIMEOUT=900 visible to graphify env" \
+  || fail "T23a unset should export GRAPHIFY_API_TIMEOUT=900 to the graphify env (got: '$got_env')"
+# --api-timeout CLI flag carries the same value (arg-boundary-robust: the token
+# immediately after --api-timeout in the one-per-line call log).
+got_flag=$(awk 'prev=="--api-timeout"{print; exit} {prev=$0}' "$t23calls")
+[ "$got_flag" = "900" ] && pass "T23a --api-timeout flag wired to 900" \
+  || fail "T23a --api-timeout should be 900 (got: '$got_flag')"
+
+# (b) caller-set GRAPHIFY_API_TIMEOUT is preserved (env + flag), not clobbered.
+: > "$t23env"; : > "$t23calls"
+out=$( GRAPHIFY_API_TIMEOUT=600 \
+  GRAPHIFY_T23_ENVLOG="$t23env" GRAPHIFY_CALL_LOG="$t23calls" \
+  GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
+  bash "$SCRIPT" --name t23b --corpus-root "$T23CORPUS" \
+  --maps-dir "$T23MAPS" --title "T23" --slug t23b-map --corpus-tag t23b 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T23b caller-set timeout run exit 0 (got $rc): $out"
+got_env=$(sed -n 's/^GRAPHIFY_API_TIMEOUT=//p' "$t23env" | head -n 1)
+[ "$got_env" = "600" ] && pass "T23b caller-set GRAPHIFY_API_TIMEOUT=600 preserved in graphify env" \
+  || fail "T23b caller-set 600 should be preserved (got: '$got_env')"
+got_flag=$(awk 'prev=="--api-timeout"{print; exit} {prev=$0}' "$t23calls")
+[ "$got_flag" = "600" ] && pass "T23b --api-timeout flag wired to the caller's 600" \
+  || fail "T23b --api-timeout should be 600 (got: '$got_flag')"
+
+# (c) invalid GRAPHIFY_API_TIMEOUT fails LOUD (rc=1) before any extraction call.
+: > "$t23env"; : > "$t23calls"
+out=$( GRAPHIFY_API_TIMEOUT=abc \
+  GRAPHIFY_T23_ENVLOG="$t23env" GRAPHIFY_CALL_LOG="$t23calls" \
+  GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
+  bash "$SCRIPT" --name t23c --corpus-root "$T23CORPUS" \
+  --maps-dir "$T23MAPS" --title "T23" --slug t23c-map --corpus-tag t23c 2>&1 ); rc=$?
+[ "$rc" -eq 1 ] && pass "T23c non-numeric GRAPHIFY_API_TIMEOUT rejected (rc=1)" \
+  || fail "T23c non-numeric GRAPHIFY_API_TIMEOUT should fail rc=1 (got $rc): $out"
+echo "$out" | grep -q "GRAPHIFY_API_TIMEOUT must be a positive integer" \
+  && pass "T23c error names the invalid knob" \
+  || fail "T23c error should name GRAPHIFY_API_TIMEOUT: $out"
+[ ! -s "$t23calls" ] && pass "T23c invalid value fails before any extraction call" \
+  || fail "T23c extraction ran on an invalid value: $(cat "$t23calls")"
+# Zero and explicitly-empty also fail loud (unset-only `-` default preserves them for
+# the validation instead of silently becoming 900/300), matching T21's contract.
+: > "$t23calls"
+out=$( GRAPHIFY_API_TIMEOUT=0 \
+  GRAPHIFY_CALL_LOG="$t23calls" GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
+  bash "$SCRIPT" --name t23c0 --corpus-root "$T23CORPUS" \
+  --maps-dir "$T23MAPS" --title "T23" --slug t23c0-map --corpus-tag t23c0 2>&1 ); rc=$?
+{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_API_TIMEOUT must be"; } \
+  && pass "T23c2 zero GRAPHIFY_API_TIMEOUT rejected (rc=1 + validation msg)" \
+  || fail "T23c2 zero GRAPHIFY_API_TIMEOUT should fail rc=1 with the validation msg (got $rc): $out"
+: > "$t23calls"
+out=$( env GRAPHIFY_API_TIMEOUT='' \
+  GRAPHIFY_CALL_LOG="$t23calls" GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
+  bash "$SCRIPT" --name t23c3 --corpus-root "$T23CORPUS" \
+  --maps-dir "$T23MAPS" --title "T23" --slug t23c3-map --corpus-tag t23c3 2>&1 ); rc=$?
+{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_API_TIMEOUT must be"; } \
+  && pass "T23c3 explicitly-empty GRAPHIFY_API_TIMEOUT rejected (rc=1 + validation msg, not silently defaulted)" \
+  || fail "T23c3 explicitly-empty GRAPHIFY_API_TIMEOUT should fail rc=1 with the validation msg (got $rc): $out"
+# --no-update (publish-only) never makes the extraction call, so an invalid timeout is
+# irrelevant and must NOT trip the validation (mirrors T21d). T23a/t23b already promoted
+# a GRAPH_REPORT.md into this corpus, so the publish-only read succeeds.
+out=$( GRAPHIFY_API_TIMEOUT=abc \
+  GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
+  bash "$SCRIPT" --name t23d --corpus-root "$T23CORPUS" \
+  --maps-dir "$T23MAPS" --title "T23" --slug t23d-map --corpus-tag t23d --no-update 2>&1 ); rc=$?
+echo "$out" | grep -q "GRAPHIFY_API_TIMEOUT must be" \
+  && fail "T23d --no-update wrongly validated the irrelevant timeout value: $out" \
+  || pass "T23d --no-update skips timeout validation (invalid value tolerated on publish-only path)"
+
+# Backend-matrix (codex-adv-1): the 900 default is claude-cli ONLY. The claude
+# (Anthropic API) backend and the glm remap (-> claude, the Z.ai API endpoint) are
+# NOT contending-headless backends, so they stay at graphify's own 300 default on the
+# --api-timeout flag. The else-branch does NOT export (300 is graphify's own default;
+# an unset env already means 300 to graphify), so the env var visible to the subprocess
+# is EMPTY for these backends (unlike the worker-exported 900 in T23a).
+
+# (e) --backend claude with GRAPHIFY_API_TIMEOUT unset -> 300 flag, no export (env empty).
+: > "$t23env"; : > "$t23calls"
+out=$( env -u GRAPHIFY_API_TIMEOUT \
+  GRAPHIFY_T23_ENVLOG="$t23env" GRAPHIFY_CALL_LOG="$t23calls" \
+  GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
+  bash "$SCRIPT" --name t23e --corpus-root "$T23CORPUS" \
+  --maps-dir "$T23MAPS" --title "T23" --slug t23e-map --corpus-tag t23e --backend claude 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T23e --backend claude run exit 0 (got $rc): $out"
+got_env=$(sed -n 's/^GRAPHIFY_API_TIMEOUT=//p' "$t23env" | head -n 1)
+[ "$got_env" = "" ] && pass "T23e --backend claude does NOT export a raised timeout (env unset = graphify's own 300 default)" \
+  || fail "T23e --backend claude should NOT export GRAPHIFY_API_TIMEOUT (got: '$got_env')"
+got_flag=$(awk 'prev=="--api-timeout"{print; exit} {prev=$0}' "$t23calls")
+[ "$got_flag" = "300" ] && pass "T23e --backend claude --api-timeout flag wired to 300 (graphify's own default)" \
+  || fail "T23e --backend claude --api-timeout should be 300 (got: '$got_flag')"
+
+# (f) --backend glm (-> claude remap) with GRAPHIFY_API_TIMEOUT unset + ANTHROPIC_API_KEY
+# set (so the remap's key check passes; the graphify binary is the T23 stub, no real
+# calls) -> reaches claude, so it stays at 300 too, NOT the claude-cli 900.
+: > "$t23env"; : > "$t23calls"
+out=$( env -u GRAPHIFY_API_TIMEOUT ANTHROPIC_API_KEY=dummy-test-key \
+  GRAPHIFY_T23_ENVLOG="$t23env" GRAPHIFY_CALL_LOG="$t23calls" \
+  GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
+  bash "$SCRIPT" --name t23f --corpus-root "$T23CORPUS" \
+  --maps-dir "$T23MAPS" --title "T23" --slug t23f-map --corpus-tag t23f --backend glm 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T23f --backend glm run exit 0 (got $rc): $out"
+got_env=$(sed -n 's/^GRAPHIFY_API_TIMEOUT=//p' "$t23env" | head -n 1)
+[ "$got_env" = "" ] && pass "T23f --backend glm (-> claude) does NOT export a raised timeout (env unset = graphify's own 300 default)" \
+  || fail "T23f --backend glm should NOT export GRAPHIFY_API_TIMEOUT (got: '$got_env')"
+got_flag=$(awk 'prev=="--api-timeout"{print; exit} {prev=$0}' "$t23calls")
+[ "$got_flag" = "300" ] && pass "T23f --backend glm --api-timeout flag wired to 300 (graphify's own default)" \
+  || fail "T23f --backend glm --api-timeout should be 300 (got: '$got_flag')"
+
 # --- T22 (HIMMEL-1097): semantic cache continuity. graphify keeps its
 # content-keyed cache inside graphify-out/, while refresh extracts from a fresh
 # scratch path. Seed only the live cache artifacts (never derived reports); the
