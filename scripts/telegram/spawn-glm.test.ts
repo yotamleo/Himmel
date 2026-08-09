@@ -12,6 +12,7 @@ import {
   detectPromptTooLong,
   transcriptDirFor,
   glmSessionRoot,
+  mintGlmOutboxHelper,
   poisonPushUrl,
   ensureWorkspaceTrust,
   planSpawn,
@@ -39,6 +40,7 @@ import {
   composeRetaskBlock,
   composeBashShapeWarning,
   composeOutboxWriteHint,
+  composeGlmOutboxWriteHint,
   toPermissionPath,
   composeWorkerSettings,
   refuseBypassPermissions,
@@ -82,6 +84,17 @@ test("session root is OUTSIDE the poller's sessions/ tree", () => {
   expect(root).not.toContain(`${join("bridge", "sessions")}`);
 });
 
+test("mintGlmOutboxHelper copies the dispatcher helper byte-for-byte into the session dir (HIMMEL-1649)", () => {
+  const sessionDir = mkdtempSync(join(tmpdir(), "glm-helper-session-"));
+  const source = resolve("scripts/glm/append-outbox.sh");
+  try {
+    const minted = mintGlmOutboxHelper(sessionDir, source);
+    expect(minted).toBe(join(sessionDir, "append-outbox.sh"));
+    expect(existsSync(minted)).toBe(true);
+    expect(readFileSync(minted)).toEqual(readFileSync(source));
+  } finally { rmSync(sessionDir, { recursive: true, force: true }); }
+});
+
 test("worker prompt embeds minted session paths + contract", () => {
   const p = composeWorkerPrompt("Summarize X", "/tmp/gs/glm-a-1", "glm/a");
   expect(p).toContain(join("/tmp/gs/glm-a-1", "outbox.jsonl"));
@@ -89,6 +102,8 @@ test("worker prompt embeds minted session paths + contract", () => {
   expect(p).toContain("glm/a");
   expect(p).toMatch(/never push/i);
   expect(p).toMatch(/never open a PR/i);
+  expect(p).toContain('bash "$GLM_SESSION_DIR/append-outbox.sh" <base64url-token>');
+  expect(p).not.toContain("appendFileSync");
   expect(p).toContain("Summarize X");
 });
 
@@ -199,6 +214,8 @@ test("main() writes the composeWorkerPrompt brief to brief.md and submits a POIN
   // the FULL brief = composeWorkerPrompt output, written to brief.md
   expect(/const briefText = composeWorkerPrompt\(/.test(src)).toBe(true);
   expect(/writeFileSync\(briefPath, briefText\)/.test(src)).toBe(true);
+  // The dispatcher mints the trusted helper immediately after creating the dir.
+  expect(/mkdirSync\(sessionDir, \{ recursive: true \}\);\s*mintGlmOutboxHelper\(sessionDir\);/.test(src)).toBe(true);
   // the SUBMITTED prompt is the pointer, NOT the inlined brief
   expect(/const prompt = composePointerPrompt\(briefPath\)/.test(src)).toBe(true);
 });
@@ -1876,13 +1893,25 @@ test("grant_id accumulates across repeated pre-seed grants (distinct g1/g2)", ()
   expect(JSON.parse(l2).grant_id).toBe("g2");
 });
 
-test("T5 composeWorkerPrompt teaches the escalation contract", () => {
+test("T5 composeWorkerPrompt teaches the hard-block reporting contract", () => {
   const p = composeWorkerPrompt("do X", "/tmp/gs/glm-a-1", "glm/a");
-  expect(p).toMatch(/escalation/i);
-  expect(p).toContain('"type":"escalation"');
-  expect(p).toMatch(/git-push.*git-url.*gh.*network|arm/i);   // the arm enum is named
+  expect(p).toMatch(/capability.*arm.*reason.*step/i);
+  // Alternation is the LOWEST-precedence regex operator, so the previous
+  // /git-push.*git-url.*gh.*network|arm/i parsed as (git-push…network)|(arm)
+  // and any prompt containing "arm" satisfied it — the enum was never asserted
+  // (HIMMEL-1649 round 9, CodeRabbit). [\s\S] because the prompt is multi-line.
+  expect(p).toMatch(/git-push[\s\S]*git-url[\s\S]*gh[\s\S]*network/i);   // the arm enum is named
   expect(p).toMatch(/skip/i);                                  // skip the gated step
   expect(p).toMatch(/continue|context\.md/i);                  // continue + note it
+  // HIMMEL-1649 round 3: the STRUCTURED escalation is restored. The hook (not
+  // the helper) validates the schema and appends, so adjudicate list — which
+  // only recognises type:"escalation" — sees a blocked worker again. A
+  // plain-text note does NOT reach adjudication, and the prompt must say so.
+  expect(p).toContain('"type":"escalation"');
+  expect(p).toMatch(/adjudicate list/i);
+  // The worker must be told the guard's DENIAL of the report command is success,
+  // or it will retry a report that already landed.
+  expect(p).toMatch(/denial means SUCCESS/i);
 });
 
 // --- HIMMEL-1218: RETASK channel ---
@@ -1935,6 +1964,16 @@ test("composeOutboxWriteHint: gives a ready-to-use node -e fallback with a forwa
   expect(hint).not.toContain("/c/sess"); // never the MSYS form that broke the live probe
   expect(hint).toMatch(/node -e/);
   expect(hint).toMatch(/appendFileSync/);
+});
+
+test("composeGlmOutboxWriteHint: documents only the fixed base64url helper contract (HIMMEL-1649)", () => {
+  const hint = composeGlmOutboxWriteHint("C:\\sess\\glm-a-1\\outbox.jsonl");
+  expect(hint).toContain('bash "$GLM_SESSION_DIR/append-outbox.sh" <base64url-token>');
+  expect(hint).toContain("GLM_SESSION_DIR");
+  expect(hint).toContain("[A-Za-z0-9_-]+");
+  expect(hint).toContain("16384");
+  expect(hint).toMatch(/Buffer\.from.*base64url/);
+  expect(hint).not.toMatch(/appendFileSync/);
 });
 
 test("toPermissionPath: Windows absolute path -> POSIX //<drive>/... form", () => {

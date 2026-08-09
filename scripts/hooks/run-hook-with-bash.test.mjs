@@ -94,6 +94,43 @@ test('--optional exits zero before Bash resolution when the hook is absent', () 
   assert.equal(result.status, 0, result.stderr);
 });
 
+// HIMMEL-1649 [codex-adv-1]: a DELETED guard must not silently pass in a
+// DISPATCHED WORKER. `--optional` alone exits 0 on a missing script, so a worker
+// holding Edit(<worktree>/**) + Bash(node *) could remove the guard in one
+// command and disable it for every later tool call. A worker cannot strip the
+// marker either — a tool-call child cannot edit the harness process env — so
+// under the marker a deleted hook bricks the worker, which is the correct
+// outcome for tampering.
+test('a missing guard fails closed in a dispatched worker', () => {
+  const missing = join(tmpdir(), 'block-glm-external-writes.sh');
+  const result = spawnSync(
+    process.execPath,
+    [LAUNCHER, '--optional', '--fail-closed-when', 'HIMMEL_GLM_WORKER=1', missing],
+    { encoding: 'utf8', env: { HIMMEL_GLM_WORKER: '1' } }
+  );
+  assert.equal(result.status, 2);
+  assert.equal(
+    result.stderr,
+    'block-glm-external-writes: hook script missing while HIMMEL_GLM_WORKER=1 (stale checkout?) - failing closed\n'
+  );
+});
+
+// The other half, and the round-6 regression this keying exists to prevent: an
+// INTERACTIVE GLM session (claude-glm, whose documented primary workload runs
+// with cwd in the luna vault) has no himmel scripts/ tree, so the hook is
+// legitimately absent. Keying on the provider instead of worker-ness denied
+// every Bash/PowerShell/MCP call there. The marker is absent, so it must pass —
+// even with the GLM provider env set.
+test('a missing guard still passes in an interactive GLM session', () => {
+  const missing = join(tmpdir(), 'block-glm-external-writes.sh');
+  const result = spawnSync(
+    process.execPath,
+    [LAUNCHER, '--optional', '--fail-closed-when', 'HIMMEL_GLM_WORKER=1', missing],
+    { encoding: 'utf8', env: { ANTHROPIC_BASE_URL: 'https://api.z.ai/api/anthropic' } }
+  );
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('--fail-closed-when preserves the lesson-loop missing-hook refusal', () => {
   const missing = join(tmpdir(), 'block-lesson-enforcement-writes.sh');
   const result = spawnSync(

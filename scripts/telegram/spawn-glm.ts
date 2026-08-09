@@ -4,7 +4,7 @@
 // paths), run.log persistence from the returned tail, meta.json transitions.
 // Sessions live under <BRIDGE_ROOT>/glm-sessions/ — the live poller scans ONLY
 // <root>/sessions/, so nothing here can be double-spawned or Telegram-flushed.
-import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, statSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, statSync, renameSync, unlinkSync, copyFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -134,6 +134,25 @@ export function glmSessionRoot(): string {
   return join(process.env.BRIDGE_ROOT ?? join(homedir(), ".claude", "handover", "bridge"), "glm-sessions");
 }
 
+// HIMMEL-1649: mint the reporting helper beside the session metadata from the
+// dispatcher's trusted checkout.
+//
+// Its writability is IRRELEVANT on the GLM lane, because it is never executed
+// there: block-glm-external-writes.sh intercepts the report command, performs
+// the decode/validate/append ITSELF, and then denies the Bash call. (An earlier
+// revision of this comment claimed "the worker cannot write this directory" —
+// that was false: composeWorkerSettings grants Edit on the session dir and the
+// worker holds Bash(node *)/Bash(bash *). Trusting a worker-reachable file by
+// pathname was the bug; the hook is now the executor, so the file is not a
+// trust boundary.) It is kept as a working fallback for the non-GLM case where
+// that hook is absent, and as the reference implementation of the payload
+// contract.
+export function mintGlmOutboxHelper(sessionDir: string, source = join(REPO_ROOT, "scripts", "glm", "append-outbox.sh")): string {
+  const destination = join(sessionDir, "append-outbox.sh");
+  copyFileSync(source, destination);
+  return destination;
+}
+
 // Claude Code keys transcript dirs by the ESCAPED CWD — EVERY non-alphanumeric
 // char → "-" (ground truth: real project dirs escape "_" and "." too, e.g.
 // my_docs → my-docs). Not keyed by any name/slug.
@@ -216,6 +235,14 @@ export function composeBashShapeWarning(outbox: string): string {
 export function composeOutboxWriteHint(outbox: string): string {
   const posix = outbox.replace(/\\/g, "/");
   return `OUTBOX WRITE (HIMMEL-1378): the Write/Edit tool is OFTEN DENIED for ${outbox} (a Claude Code safety boundary on dot-directory paths outside your worktree — no permission rule can override it). If Write/Edit there is denied, use this literal Bash command instead (a forward-slash path, exactly as shown — NEVER an MSYS "/c/..." form, which Node's fs rejects): node -e "require('fs').appendFileSync('${posix}', JSON.stringify({text:'<note>'})+'\\n')"`;
+}
+
+// GLM's external-write hook must never explicitly allow a command containing
+// model-controlled report text. The fixed helper accepts only one strict
+// base64url argv token and derives the destination from inherited
+// GLM_SESSION_DIR; decoded text never becomes shell source (HIMMEL-1649).
+export function composeGlmOutboxWriteHint(outbox: string): string {
+  return `OUTBOX WRITE (HIMMEL-1378/1649): Write/Edit stays denied for ${outbox} by the native safety layer. The ONLY GLM reporting path is: bash "$GLM_SESSION_DIR/append-outbox.sh" <base64url-token>. The token must be unpadded base64url ([A-Za-z0-9_-]+, at most 16384 characters). EXPECTED BEHAVIOUR: the guard hook records your report itself and then DENIES that Bash call with a "guard recorded your report" message — that denial means SUCCESS, so do not retry or reword it. A denial naming a different reason (bad payload, schema, session dir) means nothing was recorded. Portable encoding example (copy its output into the fixed command): node -e "process.stdout.write(Buffer.from(process.argv[1], 'utf8').toString('base64url'))" "progress note"`;
 }
 
 // ── HIMMEL-1378: permission hardening (prevention, not just detection) ─────
@@ -369,10 +396,10 @@ export function composeWorkerPrompt(task: string, sessionDir: string, branch: st
     `ATTESTATION (HIMMEL-1210): the pre-push gate needs two trailers on that first commit, and they must be TRUE — actually do the work they claim, then attest it, never paste them by rote. If you touched a shell/script file, run/exercise it, then add \`Platforms tested: <os>\` naming the OS you actually tested on. On any non-docs code change, actually read back your own diff, then add \`Security reviewed: <token>\` with whichever of these matches what you did: manual, claude-code-security-review, pr-review-toolkit, ad-hoc.`,
     composeRetaskBlock(mintRetaskNonce()),
     composeBashShapeWarning(outbox),
-    composeOutboxWriteHint(outbox),
-    `Report progress by APPENDING one JSON line {"text":"<note>"} per update to ${outbox}. That is the only channel to the operator.`,
+    composeGlmOutboxWriteHint(outbox),
+    `Report progress through bash "$GLM_SESSION_DIR/append-outbox.sh" <base64url-token>; one JSON line is appended to ${outbox} and the Bash call is then DENIED — that denial is the SUCCESS signal, not a failure to retry. Encode plain text for a progress note; it is recorded as {"type":"note","text":"<decoded note>"}. If you encode a JSON OBJECT it must carry a "type" of "note" or "escalation" (see the escalation shape below) — an object without "type" is rejected by the schema and nothing is recorded. That is the only channel to the operator.`,
     `THE TASK: ${task}`,
-    `If a step is hard-blocked by the GLM-lane guard, do NOT retry or give up: APPEND one escalation line {"type":"escalation","capability":"<the command>","arm":"<git-push|git-url|gh|network>","reason":"<why>","step":"<which step>","ts":"<ISO>"} to ${outbox}, SKIP that step, continue the rest of the task, and note the skipped step in your final ${context} summary.`,
+    `If a step is hard-blocked by the GLM-lane guard, do NOT retry or give up: send a STRUCTURED escalation through the same report command — base64url-encode the JSON {"type":"escalation","capability":"<the command>","arm":"<git-push|git-url|gh|network>","reason":"<why>","step":"<which step>"} and pass that as the token. The guard validates the schema and records it so \`adjudicate list\` surfaces it to the operator; a plain-text note does NOT reach adjudication. Then SKIP that step, continue the rest of the task, and note the skipped step in your final ${context} summary.`,
     `As your FINAL action, append a one-line summary of what you did to ${context}, then stop.`,
   ].join("\n");
 }
@@ -1500,6 +1527,7 @@ async function main(): Promise<void> {
       throw e;
     }
     mkdirSync(sessionDir, { recursive: true });
+    mintGlmOutboxHelper(sessionDir);
     // GLM_SESSION_DIR (spec D5): the deny hook (running inside the worker child)
     // reads ${GLM_SESSION_DIR}/grants.jsonl. sessionEnv('glm') spreads process.env
     // into the child, so setting it here propagates; unset => hook skips grants.

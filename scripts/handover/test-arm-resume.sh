@@ -3693,7 +3693,8 @@ SIB_RECENT_1606="$PRUNE1606_DIR/himmel-resume.recent1606.bat"
 printf '@echo off\nrem stale leaked sibling\n' > "$SIB_STALE_1606"
 printf '@echo off\nrem recent leaked sibling\n' > "$SIB_RECENT_1606"
 touch -t 200001010000 "$SIB_STALE_1606"   # >7 days old -- must be pruned
-touch -d '1 day ago' "$SIB_RECENT_1606"   # 1 day old -- must survive
+touch -t "$(python3 -c 'import datetime;print((datetime.datetime.now()-datetime.timedelta(days=1)).strftime("%Y%m%d%H%M"))')" \
+    "$SIB_RECENT_1606"   # 1 day old -- must survive (portable: touch -d is GNU-only, BSD/macOS touch rejects it)
 
 HO=$(make_handover "$WORK_REPO")
 # win_env forces the WINDOWS arm path (OSTYPE=msys + WINBIN stubs): the .bat

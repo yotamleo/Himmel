@@ -30,7 +30,7 @@ Common invocations:
 - `/graph-refresh luna` — refresh only the luna graph.
 - `/graph-refresh himmel` — refresh only the himmel graph.
 - `/graph-refresh both --dry-run` — preview the exact `refresh-graph-map.sh` invocations without running them.
-- `/graph-refresh --vault /path/to/vault` — override the vault root (default: `$LUNA_VAULT_PATH` if set, else `<user-profile>/Documents/luna`).
+- `/graph-refresh --vault /path/to/vault` — override the vault root (default: `$LUNA_VAULT_PATH` if set, else `<user-profile>/Documents/luna`). On the luna leg the override must resolve at/under the configured luna root; set `LUNA_VAULT_PATH` to ratify a different location.
 
 After the refresh legs, the command prints `graphmap-cadence.sh status` so
 cadence drift is visible alongside the ad-hoc refresh (advisory — a cadence
@@ -43,7 +43,7 @@ Timeout calibration lives in `refresh-graph-map.sh` (HIMMEL-1645); this command
 forwards the caller's environment verbatim and does not set `GRAPHIFY_API_TIMEOUT`.
 
 Environment:
-- `LUNA_VAULT_PATH=<path>` — default vault root when `--vault` is not passed.
+- `LUNA_VAULT_PATH=<path>` — default vault root when `--vault` is not passed, and the configured root the luna leg's `--vault` must sit at/under.
 - `GRAPH_REFRESH_RUNNER=<path>` — override the `refresh-graph-map.sh` path (tests use a fake).
 - `GRAPH_REFRESH_CADENCE_SCRIPT=<path>` — override the `graphmap-cadence.sh` path whose `status` is appended.
 

@@ -43,6 +43,12 @@ REPO_ROOT="${GRAPHIFY_ADVISORY_REPO:-$_default_root}"
 # 2 days = tolerate one missed daily run (pairs with the qmd advisory's 36h
 # philosophy on the checker's day-granular interface).
 budget="${GRAPHIFY_STALENESS_MAX_AGE_DAYS:-2}"
+# check-graph-freshness.sh exits 1 for BOTH "stale" AND "usage error", so a
+# non-integer budget would surface as a false STALE banner every session.
+# Validate it: empty or non-numeric -> our own default, never a false banner.
+case "$budget" in
+    ''|*[!0-9]*) budget=2 ;;
+esac
 
 # Adopter exemption — PORTABLE + STRUCTURAL (plan-critic r1 F3/F4 replaced the
 # schtasks probe, which was Windows-only dead code): a repo that VERSION-TRACKS

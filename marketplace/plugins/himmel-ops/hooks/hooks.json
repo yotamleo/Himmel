@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-glm-external-writes.sh\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional --fail-closed-when \"HIMMEL_GLM_WORKER=1\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-glm-external-writes.sh\""
           }
         ]
       },

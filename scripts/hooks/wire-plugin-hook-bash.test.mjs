@@ -31,6 +31,12 @@ function unwire(text) {
     const script = match[1];
     if (script === 'block-lesson-enforcement-writes.sh') {
       commandHook.command = 'bash -c \'h="$CLAUDE_PROJECT_DIR/scripts/hooks/block-lesson-enforcement-writes.sh"; if [ -f "$h" ]; then exec bash "$h"; elif [ "${HIMMEL_LESSON_LOOP:-0}" = "1" ]; then echo "block-lesson-enforcement-writes: hook script missing while HIMMEL_LESSON_LOOP=1 (stale checkout?) - failing closed" >&2; exit 2; fi\'';
+    } else if (script === 'block-glm-external-writes.sh') {
+      // HIMMEL-1649 round 5 [codex-adv-1] — second fail-closed entry. Spelled
+      // out here rather than derived from the wirer, so this stays an
+      // INDEPENDENT restatement of the expected output instead of a circular
+      // re-run of the generator it is meant to pin.
+      commandHook.command = 'bash -c \'h="$CLAUDE_PROJECT_DIR/scripts/hooks/block-glm-external-writes.sh"; if [ -f "$h" ]; then exec bash "$h"; elif [ "${HIMMEL_GLM_WORKER:-0}" = "1" ]; then echo "block-glm-external-writes: hook script missing while HIMMEL_GLM_WORKER=1 (stale checkout?) - failing closed" >&2; exit 2; fi\'';
     } else {
       commandHook.command = `bash -c 'h="$CLAUDE_PROJECT_DIR/scripts/hooks/${script}"; if [ -f "$h" ]; then exec bash "$h"; fi'`;
     }

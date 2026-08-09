@@ -19,6 +19,13 @@ test("env block from process.env key", () => {
   expect(e.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe("glm-5.2[1m]");
   expect(e.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe("glm-5.2[1m]");
   expect(e.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("1000000");
+  // HIMMEL-1649: worker-ness marker. The guard hook is registered
+  // --fail-closed-when on this exact key/value, so a DISPATCHED worker treats a
+  // missing hook as tampering. Only this orchestrator path mints it —
+  // claude-glm{,.ps1} never calls buildGlmEnv — which is what keeps an
+  // interactive GLM session (cwd in the luna vault, no himmel scripts/ tree)
+  // out of the fail-closed population.
+  expect(e.HIMMEL_GLM_WORKER).toBe("1");
   expect(Object.keys(e)).not.toContain("CLAUDE_CONFIG_DIR");
 });
 

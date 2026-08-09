@@ -82,4 +82,11 @@ fi
 out=$(GRAPHIFY_ADVISORY_CHECKER="$HERE/../graphify/check-graph-freshness.sh" bash "$tmp/wt-linked/scripts/hooks/graphify-freshness-advisory.sh"); rc=$?
 [ "$rc" -eq 0 ] && [ -z "$out" ] && pass "T6 linked worktree silent (primary-anchored)" || fail "T6: rc=$rc out='$out'"
 
+# T7 non-integer GRAPHIFY_STALENESS_MAX_AGE_DAYS on a FRESH graph -> still
+# silent rc0. check-graph-freshness.sh exits 1 for BOTH "stale" and "usage
+# error", so a bad budget would otherwise false-banner STALE every session;
+# the hook validates it (HIMMEL-1643).
+out=$(GRAPHIFY_ADVISORY_OUT="$tmp/fresh/graphify-out" GRAPHIFY_STALENESS_MAX_AGE_DAYS="not-a-number" bash "$HOOK"); rc=$?
+[ "$rc" -eq 0 ] && [ -z "$out" ] && pass "T7 non-integer budget silent on fresh graph" || fail "T7 non-integer budget: rc=$rc out='$out'"
+
 echo "---"; echo "$PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

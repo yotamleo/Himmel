@@ -266,7 +266,7 @@ preflight_refuse() {
 # (a) canonicalize, (b) refuse roots + HOME, (c) hard-refuse PHI/denylisted,
 # (d) luna-vault sentinel (luna leg only).
 preflight_vault() {
-    local canon ap home_canon name rc resolved class_path configured_root resolved_root
+    local canon ap home_canon home_resolved name rc resolved class_path configured_root resolved_root
     canon="$(_abs "$VAULT")"
     # Resolve symlinks so EVERY check below classifies the tree the extraction
     # will ACTUALLY read (the canonical target), not the symlink's lexical
@@ -298,8 +298,18 @@ preflight_vault() {
     case "$ap" in
         "/"|[A-Za-z]:/) preflight_refuse "vault is a filesystem root ($ap)" ;;
     esac
+    # Resolve the operator HOME through the SAME symlink chain used for the
+    # vault above (HIMMEL-1655 item 1): a HOME that is itself -- or traverses
+    # -- a symlink must be classified by its TARGET, not the link, or a vault
+    # living under that symlinked HOME bypasses this refuse. Graceful-degrade
+    # to the lexical form if the resolver fails (do not block the run on it).
+    # Compare case-insensitively on BOTH sides via _lc, matching every other
+    # classification in this preflight (Windows C:/Users/x vs c:/Users/x).
     home_canon="$(_normalize "$(_abs "$(resolve_user_home)")")"
-    if [ "$ap" = "$home_canon" ]; then
+    if home_resolved="$(_resolve_symlinks "$home_canon")"; then
+        home_canon="$home_resolved"
+    fi
+    if [ "$(_lc "$ap")" = "$(_lc "$home_canon")" ]; then
         preflight_refuse "vault is the operator HOME ($ap)"
     fi
     # (c) HARD-refuse PHI/denylisted paths, mirroring graphify-fence.sh's
