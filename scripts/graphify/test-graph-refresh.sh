@@ -443,7 +443,16 @@ mkdir -p "$GOOD_REAL/60-Maps" "$GOOD_REAL/.obsidian"
 GOOD_LINK="$TMP_ROOT/good-link"
 if ln -s "$GOOD_REAL" "$GOOD_LINK" 2>/dev/null && [ -L "$GOOD_LINK" ]; then
     reset_runner_log
-    rc=0; out=$(run_refresh luna --vault "$GOOD_LINK" 2>&1) || rc=$?
+    # Ratify the symlinked vault as the configured luna root (HIMMEL-1644
+    # codex-adv-1 r3 containment). The default TEST_LUNA_ROOT pins the
+    # configured root to the ordinary $VAULT stub, so passing the SYMLINK as
+    # --vault while the configured root stays the stub makes the resolved target
+    # ($GOOD_REAL) != the resolved configured root -> rc 2, which is containment
+    # refusing an unratified vault, NOT the symlink being followed. Setting
+    # TEST_LUNA_ROOT="$GOOD_LINK" makes the configured root resolve through the
+    # SAME symlink to $GOOD_REAL, so containment passes and this test again
+    # exercises the symlink-follow acceptance (mirrors Test 8's ratify prefix).
+    rc=0; out=$(TEST_LUNA_ROOT="$GOOD_LINK" run_refresh luna --vault "$GOOD_LINK" 2>&1) || rc=$?
     assert_rc "symlinked legit vault -> rc 0" 0 "$rc"
     assert_contains "symlinked legit vault ran the luna leg" "--name luna" "$(sed -n '1p' "$RUNNER_LOG")"
     assert_eq "symlinked legit vault fired exactly one leg" "1" "$(wc -l < "$RUNNER_LOG" | tr -d ' ')"
