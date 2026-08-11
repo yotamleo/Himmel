@@ -103,6 +103,135 @@ handover_mode() {
     fi
 }
 
+# Canonicalise a path, tolerating non-existent ones: GNU realpath -m, else
+# armored python3 pathlib, else the input unchanged (best effort). Shared by
+# arm-resume.sh's scheduler identity and the arms-registry contract so those
+# two keys cannot drift (HIMMEL-1304/HIMMEL-1344).
+_arm_realpath() {
+    local _p=""
+    _p=$(realpath -m "$1" 2>/dev/null) || _p=""
+    if [ -z "$_p" ] && command -v py_armor_capture >/dev/null 2>&1; then
+        if py_armor_capture -c 'import sys,pathlib;print(pathlib.Path(sys.argv[1]).resolve(strict=False))' "$1" 2>/dev/null; then
+            _p="$PY_ARMOR_OUT"
+        fi
+    fi
+    [ -n "$_p" ] || _p="$1"
+    printf '%s\n' "$_p"
+}
+
+# _hp_ascii_lower <value> -- fold ASCII into $_HP_LOWER without a subprocess.
+# bash 3.2 has no ${value,,}; arms-registry rewrites cannot afford a `tr` fork
+# for every row that reaches the migration matcher.
+_HP_LOWER=""
+_hp_ascii_lower() {
+    local _hp_s="$1" _hp_i=0 _hp_ch _hp_prefix
+    local _hp_upper=ABCDEFGHIJKLMNOPQRSTUVWXYZ _hp_lower=abcdefghijklmnopqrstuvwxyz
+    _HP_LOWER=""
+    while [ "$_hp_i" -lt "${#_hp_s}" ]; do
+        _hp_ch="${_hp_s:$_hp_i:1}"
+        case "$_hp_ch" in
+            [A-Z])
+                _hp_prefix="${_hp_upper%%"$_hp_ch"*}"
+                _hp_ch="${_hp_lower:${#_hp_prefix}:1}"
+                ;;
+        esac
+        _HP_LOWER="$_HP_LOWER$_hp_ch"
+        _hp_i=$((_hp_i + 1))
+    done
+}
+
+# _arm_identity_path <path> -- the canonical handover identity first shipped
+# in arm-resume.sh for scheduler-row dedup (HIMMEL-1304). It lives in this
+# shared library now because queue-lock.sh must consume the exact same identity
+# from arms.jsonl (HIMMEL-1344). On Windows, cygpath folds C:/, C:\ and /c/
+# spellings together, then case-folding matches NTFS semantics; POSIX paths
+# retain case because it can distinguish real files there.
+_arm_identity_path() {
+    local _p _platform="${PLATFORM:-}" _os
+    _p=$(_arm_realpath "$1")
+    if [ -z "$_platform" ]; then
+        _os="${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}"
+        case "$_os" in
+            msys*|cygwin*|win32*|MINGW*) _platform=windows ;;
+            linux*|Linux*)               _platform=linux ;;
+            darwin*|Darwin*)             _platform=macos ;;
+        esac
+    fi
+    if [ "$_platform" = windows ]; then
+        if command -v cygpath >/dev/null 2>&1; then
+            _p=$(cygpath -u "$_p" 2>/dev/null) || _p=$(_arm_realpath "$1")
+        fi
+        _hp_ascii_lower "$_p"; _p="$_HP_LOWER"
+    fi
+    printf '%s' "$_p"
+}
+
+# _arm_registry_identity_root <handover-root> -- canonicalize the loop-invariant
+# root once before an arms-registry scan/rewrite.
+_arm_registry_identity_root() {
+    _arm_identity_path "$1"
+}
+
+# _arm_registry_identity_from_canonical <canonical-handover> <canonical-root>
+# -- format the durable cross-machine key without re-canonicalizing either path.
+_arm_registry_identity_from_canonical() {
+    local _ho="$1" _root="$2" _key
+    case "$_ho" in
+        "$_root"/*)
+            # Root-relative keys ARE folded on every platform: this is the
+            # cross-machine dedup key, and a Windows peer can legitimately spell
+            # the same in-root handover with different case. Both sides must
+            # fold or they disagree. State the cost of that collision at full
+            # strength rather than at its mildest (CR round, [glm-2]): across
+            # hosts it is a refusal, overridable with --force, but a SAME-HOST
+            # re-arm goes through _arm_registry_replace_and_append, which
+            # retires the colliding record — so on a case-sensitive filesystem
+            # two in-root handovers differing only by case would silently cost
+            # one of them its pending row, not merely earn a refusal. That is
+            # accepted because the line above is a real precondition, not a
+            # hope: case-distinct sibling handovers do not legitimately coexist
+            # inside one handover root. Folding is still right for the branch
+            # that must survive a Windows peer spelling the same file
+            # differently; NOT folding here would trade this bounded,
+            # out-of-contract collision for the unbounded in-contract failure
+            # the ticket exists to prevent (two machines disagreeing on the key
+            # and both firing). The absolute branch below folds nothing,
+            # precisely because it makes no cross-machine promise to keep.
+            _key="root-relative:${_ho#"$_root"/}"
+            _hp_ascii_lower "$_key"
+            printf '%s' "$_HP_LOWER"
+            ;;
+        *)
+            # Absolute (outside-root) keys keep their case. This branch already
+            # carries the documented cross-layout limitation — it makes no
+            # cross-machine promise — so folding buys nothing here, while on a
+            # case-sensitive filesystem it would ERASE a distinction that really
+            # exists: /work/Foo.md and /work/foo.md are two different files with
+            # two different scheduler identities, and one folded key would let
+            # a re-arm prune or a queue-lock consume retire the OTHER handover's
+            # pending record (HIMMEL-1344 codex-adv round).
+            printf 'absolute:%s' "$_ho"
+            ;;
+    esac
+}
+
+# _arm_registry_identity_path_from_root <handover-path> <canonical-root> --
+# canonicalize only the row path; callers hoist the root out of hot loops.
+_arm_registry_identity_path_from_root() {
+    local _ho
+    _ho=$(_arm_identity_path "$1")
+    _arm_registry_identity_from_canonical "$_ho" "$2"
+}
+
+# _arm_registry_identity_path <handover-path> <handover-root> -- durable
+# cross-machine arms-registry key (HIMMEL-1344). Paths under the handover root
+# are stored ROOT-RELATIVE; outside-root paths retain a canonical absolute key.
+_arm_registry_identity_path() {
+    local _root
+    _root=$(_arm_registry_identity_root "$2")
+    _arm_registry_identity_path_from_root "$1" "$_root"
+}
+
 # --- flat-JSON helpers for the handover lock/registry files (HIMMEL-882) ---
 # Shared by scripts/handover/queue-lock.sh and scripts/handover/arm-resume.sh
 # (both already source this lib) for owner.json and the cross-machine arms
@@ -158,4 +287,103 @@ _hp_json_field() {
         fi
         _HP_FIELD="$_HP_FIELD\""   # odd parity: escaped quote, keep scanning
     done
+}
+
+# _hp_json_unescape <escaped-value> -- inverse of _hp_json_escape into
+# $_HP_UNESC. The writer emits only \\ and \" escapes, so a small pure-bash
+# scanner is sufficient and avoids a process per legacy registry line.
+_HP_UNESC=""
+_hp_json_unescape() {
+    local _hp_s="$1" _hp_i=0 _hp_ch
+    _HP_UNESC=""
+    while [ "$_hp_i" -lt "${#_hp_s}" ]; do
+        _hp_ch="${_hp_s:$_hp_i:1}"
+        if [ "$_hp_ch" = "\\" ] && [ $((_hp_i + 1)) -lt "${#_hp_s}" ]; then
+            _hp_i=$((_hp_i + 1))
+            _hp_ch="${_hp_s:$_hp_i:1}"
+        fi
+        _HP_UNESC="$_HP_UNESC$_hp_ch"
+        _hp_i=$((_hp_i + 1))
+    done
+}
+
+# _hp_path_quick_normalize <path> <fold-case> <windows-separators> -- cheap
+# legacy-row filter into $_HP_PATH_NORM. It deliberately does not resolve the
+# filesystem; false positives only spend one rare canonicalization, while the
+# basename/symlink gate below rejects ordinary unrelated rows without a fork.
+_HP_PATH_NORM=""
+_hp_path_quick_normalize() {
+    _HP_PATH_NORM="$1"
+    if [ "$3" -eq 1 ]; then
+        _HP_PATH_NORM="${_HP_PATH_NORM//\\//}"
+    fi
+    if [ "$2" -eq 1 ]; then
+        _hp_ascii_lower "$_HP_PATH_NORM"; _HP_PATH_NORM="$_HP_LOWER"
+    fi
+}
+
+# _hp_arms_record_matches_path <json-line> <raw-path> <registry-key>
+# <canonical-root> -- set $_HP_ARMS_MATCH to 1 when an arms.jsonl record
+# identifies this handover. New records match the canonical handover-key.
+# Legacy raw-only records first take a fork-free normalized path/basename gate;
+# only plausible aliases fall back to filesystem canonicalization. A
+# nonmatching key also falls through for partial-deployment compatibility.
+_HP_ARMS_MATCH=0
+_hp_arms_record_matches_path() {
+    local _hp_line="$1" _hp_raw="$2" _hp_key="$3" _hp_root="$4"
+    local _hp_stored_key _hp_stored_raw _hp_key_esc _hp_raw_esc _hp_legacy_key
+    local _hp_stored_norm _hp_raw_norm _hp_stored_leaf _hp_raw_leaf
+    local _hp_fold=0 _hp_windows=0
+    _HP_ARMS_MATCH=0
+
+    _hp_json_escape "$_hp_key"; _hp_key_esc="$_HP_ESC"
+    _hp_json_field "$_hp_line" handover-key; _hp_stored_key="$_HP_FIELD"
+    if [ -n "$_hp_stored_key" ] && [ "$_hp_stored_key" = "$_hp_key_esc" ]; then
+        _HP_ARMS_MATCH=1
+        return 0
+    fi
+
+    _hp_json_field "$_hp_line" handover; _hp_stored_raw="$_HP_FIELD"
+    [ -n "$_hp_stored_raw" ] || return 0
+    _hp_json_escape "$_hp_raw"; _hp_raw_esc="$_HP_ESC"
+    if [ "$_hp_stored_raw" = "$_hp_raw_esc" ]; then
+        _HP_ARMS_MATCH=1
+        return 0
+    fi
+
+    _hp_json_unescape "$_hp_stored_raw"
+    case "${PLATFORM:-}:${OSTYPE:-}" in
+        windows:*|*:msys*|*:cygwin*|*:win32*|*:MINGW*) _hp_windows=1 ;;
+    esac
+    case "$_hp_key" in
+        root-relative:*) _hp_fold=1 ;;
+        *) _hp_fold="$_hp_windows" ;;
+    esac
+    _hp_path_quick_normalize "$_HP_UNESC" "$_hp_fold" "$_hp_windows"
+    _hp_stored_norm="$_HP_PATH_NORM"
+    _hp_path_quick_normalize "$_hp_raw" "$_hp_fold" "$_hp_windows"
+    _hp_raw_norm="$_HP_PATH_NORM"
+    if [ "$_hp_stored_norm" = "$_hp_raw_norm" ]; then
+        _HP_ARMS_MATCH=1
+        return 0
+    fi
+
+    _hp_stored_leaf="${_hp_stored_norm##*/}"
+    _hp_raw_leaf="${_hp_raw_norm##*/}"
+    # Probe BOTH sides for a symlink, not just the stored one. The gate exists to
+    # reject unrelated rows without a fork, and differing leaf names are the cheap
+    # signal for that -- but a symlink on EITHER side can legitimately make two
+    # different leaf names denote one file. Testing only the stored path made the
+    # gate asymmetric: a queried handover that is itself a symlink to a
+    # differently-named target, whose target spelling is what the registry stored,
+    # was rejected here even though the canonical keys below would have matched --
+    # a missed duplicate-arm on the foreign scan and a stale same-host record that
+    # survives the rewrite. (CR round 1: panel [codex-1] + CodeRabbit, agreed.)
+    if [ "$_hp_stored_leaf" != "$_hp_raw_leaf" ] \
+        && [ ! -L "$_HP_UNESC" ] && [ ! -L "$_hp_raw" ]; then
+        return 0
+    fi
+    _hp_legacy_key=$(_arm_registry_identity_path_from_root "$_HP_UNESC" "$_hp_root")
+    [ "$_hp_legacy_key" = "$_hp_key" ] && _HP_ARMS_MATCH=1
+    return 0
 }

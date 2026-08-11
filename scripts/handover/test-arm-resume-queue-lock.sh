@@ -17,6 +17,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ARM="$SCRIPT_DIR/arm-resume.sh"
 QL="$SCRIPT_DIR/queue-lock.sh"
+# shellcheck source=../lib/py-armor.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/py-armor.sh"
+# shellcheck source=../lib/handover-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/handover-path.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -33,13 +39,24 @@ unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK 2>/dev/null || true
 # hits the HIMMEL-1365 temp-target refusal (rc=12). Same shield
 # test-arm-resume.sh carries (HIMMEL-1623).
 export ARM_TEMP_CWD_OK=1
+# Worker-census shield (HIMMEL-1622/#1635, same as test-arm-resume.sh): point
+# the live-lane-worker census at an isolated empty root under $TMP, or every
+# REAL-arm case here refuses rc=10 whenever a GLM/claudex lane worker (or a
+# codex render) is live on the machine — the exact suites-reading-machine-wide-
+# state class that produced this suite's shifting 8/13/18-fail reds under
+# parallel lane load (leg 7, 2026-08-09).
+export WORKER_BRIDGE_ROOT="$TMP/worker-bridge-shield"
 
 # A near future time keeps these queue-lock fixtures inside the HIMMEL-1475
-# explicit-HH:MM long-gap limit.
-FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
+# explicit-HH:MM long-gap limit. Computed LAZILY at each use, never once at
+# suite start: a compute-once value goes STALE when earlier sections run long
+# (observed: >30 min under parallel lane load), and a stale HH:MM parses as
+# TOMORROW -> ~24h gap -> spurious long-gap rc=9 across every arm fixture.
+future_time() { python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))'; }
 HO="$HANDOVER_DIR/HIMMEL-856-test/next-session-1.md"
 mkdir -p "$(dirname "$HO")"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 test handover\n' > "$HO"
+HO_KEY=$(_arm_registry_identity_path "$HO" "$HANDOVER_DIR")
 
 FAILED=0
 # On a mismatch, dump the arm's captured combined output (every call site
@@ -136,33 +153,33 @@ chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" \
 export PATH="$SCHED_STUB:$PATH"
 
 # --- T1: no lock, no registry -> plain dry-run arm succeeds -----------------
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T1: no lock/registry, dry-run arm" 0 "$rc"
 
 # --- T2: queue lock FRESH -> arm refused rc=7 --------------------------------
 bash "$QL" acquire "$HO" "live-session" >/dev/null 2>&1
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T2: FRESH queue lock refuses arm" 7 "$rc"
 assert_contains "T2: stderr names the live holder" "live-session" "$out"
 assert_contains "T2: stderr names the override" "QUEUE_LOCK_TAKEOVER" "$out"
 
 # --- T3: QUEUE_LOCK_TAKEOVER=1 overrides the FRESH refusal -> rc=0, WARN ----
-out=$(QUEUE_LOCK_TAKEOVER=1 bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(QUEUE_LOCK_TAKEOVER=1 bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T3: QUEUE_LOCK_TAKEOVER=1 overrides FRESH refusal" 0 "$rc"
 assert_contains "T3: WARN present on override" "WARN arm-resume: queue lock is FRESH" "$out"
 
 # --- T4: release -> arm succeeds again without any override -----------------
 bash "$QL" release "$HO" "live-session" >/dev/null 2>&1
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T4: arm succeeds after release" 0 "$rc"
 
 # --- T5: STALE queue lock (TTL=0) does NOT refuse the arm --------------------
 bash "$QL" acquire "$HO" "old-session" >/dev/null 2>&1
-out=$(QUEUE_LOCK_TTL_SECONDS=0 bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(QUEUE_LOCK_TTL_SECONDS=0 bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T5: STALE lock (TTL=0) does not block arming" 0 "$rc"
 bash "$QL" release "$HO" "old-session" >/dev/null 2>&1
@@ -172,21 +189,81 @@ mkdir -p "$HANDOVER_DIR/.locks"
 THIS_HOST=$(hostname 2>/dev/null || echo "${COMPUTERNAME:-${HOSTNAME:-unknown-host}}")
 printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-same-host"}\n' \
     "$THIS_HOST" "$HO" > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T6: same-host registry entry is not a cross-machine dup" 0 "$rc"
 
-# --- T7: arms.jsonl entry for a DIFFERENT host, SAME handover -> rc=8 -------
-printf '{"host":"other-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-other-host"}\n' \
-    "$HO" > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+# --- T7: a foreign-host NEW-FORMAT record written under another spelling ----
+# still refuses rc=8. The raw field remains for old readers, but the canonical
+# root-relative key is the cross-script/cross-layout identity (HIMMEL-1344).
+HO_ALT="$HANDOVER_DIR/HIMMEL-856-test/../HIMMEL-856-test/next-session-1.md"
+printf '{"host":"other-host","handover":"%s","handover-key":"%s","ticket":"HIMMEL-856","fire-at":"202601010000","task-name":"HIMMEL-Resume-other-host"}\n' \
+    "$HO_ALT" "$HO_KEY" > "$HANDOVER_DIR/.locks/arms.jsonl"
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
-assert_rc "T7: cross-host pending arm refuses (rc=8)" 8 "$rc"
+assert_rc "T7: cross-host pending arm under another spelling refuses (rc=8)" 8 "$rc"
 assert_contains "T7: stderr names the other host" "other-host" "$out"
 assert_contains "T7: stderr names the override" "ARM_DUP_OK" "$out"
 
+# --- T7b: a legacy raw-only record already on disk gets migration matching --
+printf '{"host":"legacy-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-legacy-host"}\n' \
+    "$HO_ALT" > "$HANDOVER_DIR/.locks/arms.jsonl"
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "T7b: legacy alternate-spelling record still refuses during migration" 8 "$rc"
+assert_contains "T7b: refusal names the legacy host" "legacy-host" "$out"
+
+# --- T7c: OLD-library fallback key remains visible to CURRENT readers -------
+# A partial deployment writes absolute:<raw> even for an in-root handover. Once
+# the shared library upgrades, its preferred key becomes root-relative:<path>.
+# A mismatching stored key must therefore fall through to the raw-path rule for
+# every current consumer: foreign scan, same-host prune, and queue consumption.
+HO7C="$HANDOVER_DIR/HIMMEL-856-test/next-session-7c.md"
+printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t7c handover\n' > "$HO7C"
+HO7C_FALLBACK_KEY="absolute:$HO7C"
+printf '{"host":"fallback-foreign-host","handover":"%s","handover-key":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t7c-scan"}\n' \
+    "$HO7C" "$HO7C_FALLBACK_KEY" > "$HANDOVER_DIR/.locks/arms.jsonl"
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO7C" --dry-run 2>&1)
+rc=$?
+assert_rc "T7c: current scan sees a pending old-library fallback-key record" 8 "$rc"
+assert_contains "T7c: fallback-key scan names the foreign host" "fallback-foreign-host" "$out"
+
+THIS_HOST=$(hostname 2>/dev/null || echo "${COMPUTERNAME:-${HOSTNAME:-unknown-host}}")
+printf '{"host":"%s","handover":"%s","handover-key":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t7c-prune-old"}\n' \
+    "$THIS_HOST" "$HO7C" "$HO7C_FALLBACK_KEY" > "$HANDOVER_DIR/.locks/arms.jsonl"
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO7C" 2>&1)
+rc=$?
+assert_rc "T7c: current re-arm prunes an old-library fallback-key record" 0 "$rc"
+HO7C_KEY=$(_arm_registry_identity_path "$HO7C" "$HANDOVER_DIR")
+if ! grep -q 'HIMMEL-Resume-t7c-prune-old' "$HANDOVER_DIR/.locks/arms.jsonl" \
+    && grep -qF "\"handover-key\":\"$HO7C_KEY\"" "$HANDOVER_DIR/.locks/arms.jsonl" \
+    && [ "$(wc -l < "$HANDOVER_DIR/.locks/arms.jsonl")" -eq 1 ]; then
+    echo "PASS T7c: current prune replaced the fallback-key record exactly once"
+else
+    echo "FAIL T7c: current prune left or duplicated the fallback-key record ($(cat "$HANDOVER_DIR/.locks/arms.jsonl" 2>/dev/null))"
+    FAILED=$((FAILED + 1))
+fi
+
+printf '{"host":"%s","handover":"%s","handover-key":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t7c-consume-old"}\n' \
+    "$THIS_HOST" "$HO7C" "$HO7C_FALLBACK_KEY" > "$HANDOVER_DIR/.locks/arms.jsonl"
+out=$(bash "$QL" acquire "$HO7C" "t7c-consumer" 2>&1)
+rc=$?
+assert_rc "T7c: current queue-lock acquire consumes a fallback-key record" 0 "$rc"
+if [ ! -s "$HANDOVER_DIR/.locks/arms.jsonl" ]; then
+    echo "PASS T7c: queue-lock consumption retired the fallback-key record"
+else
+    echo "FAIL T7c: queue-lock consumption left the fallback-key record ($(cat "$HANDOVER_DIR/.locks/arms.jsonl" 2>/dev/null))"
+    FAILED=$((FAILED + 1))
+fi
+bash "$QL" release "$HO7C" "t7c-consumer" >/dev/null 2>&1
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
+# Restore the new-format row for the override case below.
+printf '{"host":"other-host","handover":"%s","handover-key":"%s","ticket":"HIMMEL-856","fire-at":"202601010000","task-name":"HIMMEL-Resume-other-host"}\n' \
+    "$HO_ALT" "$HO_KEY" > "$HANDOVER_DIR/.locks/arms.jsonl"
+
 # --- T8: ARM_DUP_OK=1 overrides the cross-host refusal -> rc=0, WARN --------
-out=$(ARM_DUP_OK=1 bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(ARM_DUP_OK=1 bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T8: ARM_DUP_OK=1 overrides cross-host refusal" 0 "$rc"
 assert_contains "T8: WARN present on override" "WARN arm-resume: this handover already has a PENDING arm" "$out"
@@ -196,20 +273,22 @@ OTHER_HO="$HANDOVER_DIR/HIMMEL-856-test/next-session-2.md"
 : > "$OTHER_HO"
 printf '{"host":"other-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-unrelated"}\n' \
     "$OTHER_HO" > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T9: registry entry for a DIFFERENT handover is not a false-positive dup" 0 "$rc"
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
 # --- T10: a REAL (non-dry-run) arm against the stubbed scheduler appends a
 #          well-formed line to arms.jsonl ------------------------------------
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" 2>&1)
 rc=$?
 assert_rc "T10: stubbed real arm succeeds" 0 "$rc"
 if [ -f "$HANDOVER_DIR/.locks/arms.jsonl" ] \
     && grep -q "\"handover\":\"$HO\"" "$HANDOVER_DIR/.locks/arms.jsonl" \
+    && grep -qF "\"handover-key\":\"$HO_KEY\"" "$HANDOVER_DIR/.locks/arms.jsonl" \
+    && grep -qF '"ticket":"HIMMEL-856"' "$HANDOVER_DIR/.locks/arms.jsonl" \
     && grep -q '"task-name":"HIMMEL-Resume-' "$HANDOVER_DIR/.locks/arms.jsonl"; then
-    echo "PASS T10: arms.jsonl gained a well-formed record for this arm"
+    echo "PASS T10: arms.jsonl gained raw+canonical+ticket fields for this arm"
 else
     echo "FAIL T10: arms.jsonl missing/malformed after a real arm ($(cat "$HANDOVER_DIR/.locks/arms.jsonl" 2>/dev/null || echo MISSING))"
     FAILED=$((FAILED + 1))
@@ -229,7 +308,7 @@ HO11="$HANDOVER_DIR/HIMMEL-856-test/next-session-11.md"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t11 handover\n' > "$HO11"
 printf '{"host":"rival-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-rival"}\n' \
     "$HO11" > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(ARM_DUP_OK=1 bash "$ARM" --time "$FUTURE_TIME" --handover "$HO11" 2>&1)
+out=$(ARM_DUP_OK=1 bash "$ARM" --time "$(future_time)" --handover "$HO11" 2>&1)
 rc=$?
 assert_rc "T11: double-armed arm still succeeds (warning is advisory)" 0 "$rc"
 assert_contains "T11: post-append DOUBLE-ARM warning fires" "DOUBLE-ARM DETECTED" "$out"
@@ -247,7 +326,7 @@ rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 # --- T12: no false post-append warning on a clean single-host arm -----------
 HO12="$HANDOVER_DIR/HIMMEL-856-test/next-session-12.md"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t12 handover\n' > "$HO12"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO12" 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO12" 2>&1)
 rc=$?
 assert_rc "T12: clean single-host arm succeeds" 0 "$rc"
 assert_not_contains "T12: no DOUBLE-ARM warning on a clean arm" "DOUBLE-ARM DETECTED" "$out"
@@ -264,17 +343,50 @@ cp "$SCRIPT_DIR/../lib/handover-path.sh" "$FAKE/lib/handover-path.sh"
 cp "$SCRIPT_DIR/../lib/telemetry.sh" "$FAKE/lib/telemetry.sh" 2>/dev/null || true
 HO13="$HANDOVER_DIR/HIMMEL-856-test/next-session-13.md"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t13 handover\n' > "$HO13"
-out=$(bash "$FAKE/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO13" --dry-run 2>&1)
+out=$(bash "$FAKE/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO13" --dry-run 2>&1)
 rc=$?
 assert_rc "T13: arm proceeds with queue-lock.sh missing" 0 "$rc"
 assert_contains "T13: WARN names the missing queue-lock.sh" "queue-lock.sh not found" "$out"
+
+# --- T13b: missing handover-path.sh degrades to raw identity, never aborts ---
+# The library is fail-open, but its identity helpers are used before the
+# optional registry write. Remove it from the doctored tree and keep the
+# registry absent so this focused dry-run exercises the fallback definitions.
+rm -f "$FAKE/lib/handover-path.sh" "$HANDOVER_DIR/.locks/arms.jsonl"
+out=$(bash "$FAKE/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO13" --dry-run 2>&1)
+rc=$?
+assert_rc "T13b: arm proceeds with handover-path.sh absent" 0 "$rc"
+assert_contains "T13b: dry-run reaches the completion banner" "dry-run complete" "$out"
+
+# --- T13c: PARTIAL deployment — library present but PRE-HIMMEL-1344 ----------
+# The gap T13b cannot see (codex-adv round): removing the whole library makes
+# the registry path skip entirely, so it never exercises the scan helpers. The
+# real skew is a library that resolves handover_root fine and exports the JSON
+# globals/helpers, but deliberately lacks the HIMMEL-1344 identity + matcher.
+# This test-owned fixture pins that exact old-library property; deriving it
+# from main would silently stop exercising the fallback after this branch merges.
+PRE_1344_LIB="$SCRIPT_DIR/fixtures/handover-path-pre-himmel-1344.sh"
+if cp "$PRE_1344_LIB" "$FAKE/lib/handover-path.sh" \
+    && ! grep -q '^_arm_registry_identity_path()' "$FAKE/lib/handover-path.sh" \
+    && ! grep -q '^_hp_arms_record_matches_path()' "$FAKE/lib/handover-path.sh"; then
+    mkdir -p "$HANDOVER_DIR/.locks"
+    printf '{"handover":"%s","state":"PENDING"}\n' "$HO13" > "$HANDOVER_DIR/.locks/arms.jsonl"
+    out=$(bash "$FAKE/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO13" --dry-run 2>&1)
+    rc=$?
+    assert_rc "T13c: arm proceeds against a pre-1344 handover-path.sh" 0 "$rc"
+    assert_contains "T13c: dry-run reaches the completion banner" "dry-run complete" "$out"
+else
+    echo "FAIL T13c: pre-1344 fixture missing or unexpectedly defines HIMMEL-1344 helpers"
+    FAILED=$((FAILED + 1))
+fi
+rm -f "$FAKE/lib/handover-path.sh" "$HANDOVER_DIR/.locks/arms.jsonl"
 
 # --- T14: unexpected queue-lock status rc -> WARN + arm proceeds (imp-b) ----
 # Same isolated tree, now with a stub queue-lock.sh that exits rc=5 (not
 # 0/11/12): the check must WARN 'proceeding' instead of silently treating
 # a broken status probe as a verified-free queue.
 printf '#!/usr/bin/env bash\necho "stub queue-lock exploded" >&2\nexit 5\n' > "$FAKE/handover/queue-lock.sh"
-out=$(bash "$FAKE/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO13" --dry-run 2>&1)
+out=$(bash "$FAKE/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO13" --dry-run 2>&1)
 rc=$?
 assert_rc "T14: arm proceeds despite a broken status probe" 0 "$rc"
 assert_contains "T14: WARN reports the unexpected status rc" "queue-lock status failed (rc=5)" "$out"
@@ -287,17 +399,25 @@ assert_contains "T14: WARN reports the unexpected status rc" "queue-lock status 
 # for the NEXT host that tries to arm this same handover.
 HO15="$HANDOVER_DIR/HIMMEL-856-test/next-session-15.md"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t15 handover\n' > "$HO15"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO15" 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO15" 2>&1)
 rc=$?
 assert_rc "T15: first real arm succeeds" 0 "$rc"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO15" 2>&1)
+HO15_ALT="$HANDOVER_DIR/HIMMEL-856-test/../HIMMEL-856-test/next-session-15.md"
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO15_ALT" 2>&1)
 rc=$?
-assert_rc "T15: second real arm (re-arm, same host) succeeds" 0 "$rc"
-n=$(grep -c "\"handover\":\"$HO15\"" "$HANDOVER_DIR/.locks/arms.jsonl" 2>/dev/null || echo 0)
+assert_rc "T15: second real arm under another spelling succeeds" 0 "$rc"
+HO15_KEY=$(_arm_registry_identity_path "$HO15" "$HANDOVER_DIR")
+# No `|| echo 0`: on a no-match `grep -c` ALREADY prints 0 and then exits 1, so
+# the fallback would append a SECOND line and make n="0\n0" -- which turns the
+# `-eq` below into a bash integer-expression error and swallows the FAIL T15
+# diagnostic exactly when it is needed. Tolerate the nonzero rc instead, and
+# default only when grep printed nothing at all (missing file, rc=2).
+n=$(grep -cF "\"handover-key\":\"$HO15_KEY\"" "$HANDOVER_DIR/.locks/arms.jsonl" 2>/dev/null) || true
+[ -n "$n" ] || n=0
 if [ "$n" -eq 1 ]; then
-    echo "PASS T15: exactly one record survives repeated same-host re-arms (got $n)"
+    echo "PASS T15: canonical same-host re-arm leaves exactly one registry record (got $n)"
 else
-    echo "FAIL T15: expected exactly 1 record after 2 same-host re-arms, got $n ($(cat "$HANDOVER_DIR/.locks/arms.jsonl" 2>/dev/null))"
+    echo "FAIL T15: expected exactly 1 canonical record after alternate-spelling re-arm, got $n ($(cat "$HANDOVER_DIR/.locks/arms.jsonl" 2>/dev/null))"
     FAILED=$((FAILED + 1))
 fi
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
@@ -310,7 +430,7 @@ HO16="$HANDOVER_DIR/HIMMEL-856-test/next-session-16.md"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t16 handover\n' > "$HO16"
 printf '{"host":"other-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-fired","fired":"true"}\n' \
     "$HO16" > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO16" --dry-run 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO16" --dry-run 2>&1)
 rc=$?
 assert_rc "T16: fired foreign-host record no longer blocks re-arm" 0 "$rc"
 assert_not_contains "T16: no rc=8 PENDING-arm refusal for a fired record" "already has a PENDING arm" "$out"
@@ -324,7 +444,7 @@ HO17="$HANDOVER_DIR/HIMMEL-856-test/next-session-17b.md"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t17 handover\n' > "$HO17"
 printf '{"host":"other-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-still-live"}\n' \
     "$HO17" > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO17" --dry-run 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO17" --dry-run 2>&1)
 rc=$?
 assert_rc "T17: still-live (unfired) foreign-host record still refuses rc=8" 8 "$rc"
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
@@ -338,7 +458,7 @@ printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t18 handover\n' > "$HO18"
     printf '{"host":"fired-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t18-fired","fired":"true"}\n' "$HO18"
     printf '{"host":"pending-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t18-pending"}\n' "$HO18"
 } > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO18" --dry-run 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO18" --dry-run 2>&1)
 rc=$?
 assert_rc "T18: mixed registry still refuses on the PENDING record" 8 "$rc"
 assert_contains "T18: refusal names the pending host" "pending-host" "$out"
@@ -361,10 +481,10 @@ else
     printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t19 handover\n' > "$HO19"
 fi
 HO19_ESC=$(printf '%s' "$HO19" | sed -e 's/\\/\\\\/g')
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO19" 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO19" 2>&1)
 rc=$?
 assert_rc "T19: first arm with a backslash path succeeds" 0 "$rc"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO19" 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO19" 2>&1)
 rc=$?
 assert_rc "T19: second arm (re-arm) with a backslash path succeeds" 0 "$rc"
 n=$(grep -cF "\"handover\":\"$HO19_ESC\"" "$HANDOVER_DIR/.locks/arms.jsonl" 2>/dev/null || echo 0)
@@ -386,7 +506,7 @@ mkdir -p "$HD20/HIMMEL-856-test"
 : > "$HD20/.locks"   # a FILE squatting on the .locks DIR path
 HO20="$HD20/HIMMEL-856-test/next-session-20.md"
 printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t20 handover\n' > "$HO20"
-out=$(HANDOVER_DIR="$HD20" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO20" 2>&1)
+out=$(HANDOVER_DIR="$HD20" bash "$ARM" --time "$(future_time)" --handover "$HO20" 2>&1)
 rc=$?
 assert_rc "T20: arm still succeeds when the registry root is unwritable" 0 "$rc"
 assert_contains "T20: WARN names the failed registry append" "failed to append the arms.jsonl registry record" "$out"
@@ -407,7 +527,7 @@ while [ "$t21_i" -lt 6 ]; do
     THIS_HOST=$(hostname 2>/dev/null || echo "${COMPUTERNAME:-${HOSTNAME:-unknown-host}}")
     printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t21-acq"}\n' \
         "$THIS_HOST" "$HOB" > "$HANDOVER_DIR/.locks/arms.jsonl"
-    ( bash "$ARM" --time "$FUTURE_TIME" --handover "$HOA" >/dev/null 2>&1 ) &
+    ( bash "$ARM" --time "$(future_time)" --handover "$HOA" >/dev/null 2>&1 ) &
     ( bash "$QL" acquire "$HOB" "t21-acq-$t21_i" >/dev/null 2>&1 ) &
     wait
     if ! grep -qF "\"handover\":\"$HOA\"" "$HANDOVER_DIR/.locks/arms.jsonl" \
@@ -438,7 +558,7 @@ printf -- '---\nsession_kind: test\n---\n# HIMMEL-856 t22 handover\n' > "$HO22"
     printf '{"host":"other-host","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t22-legacy-fired","fired":"true"}\n' "$HO22"
     printf '{"host":"other-host","handover":"t22-unrelated.md","fire-at":"202601010000","task-name":"HIMMEL-Resume-t22-pending-bystander"}\n'
 } > "$HANDOVER_DIR/.locks/arms.jsonl"
-out=$(bash "$ARM" --time "$FUTURE_TIME" --handover "$HO22" 2>&1)
+out=$(bash "$ARM" --time "$(future_time)" --handover "$HO22" 2>&1)
 rc=$?
 assert_rc "T22: real arm succeeds over a legacy fired record" 0 "$rc"
 if ! grep -q 'HIMMEL-Resume-t22-legacy-fired' "$HANDOVER_DIR/.locks/arms.jsonl" \

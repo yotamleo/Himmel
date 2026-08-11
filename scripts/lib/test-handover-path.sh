@@ -154,6 +154,48 @@ line7d='{"other":"value"}'
 _hp_json_field "$line7d" key
 assert_eq "T7d absent key resets _HP_FIELD to empty (miss branch)" "" "$_HP_FIELD"
 
+# T7e: the inverse used by legacy arms-registry migration preserves adjacent
+# backslashes and quotes exactly.
+_hp_json_unescape "$esc7b"
+assert_eq "T7e escaped registry value decodes to the original raw value" "$raw7b" "$_HP_UNESC"
+
+# T8 (HIMMEL-1344): registry identity is canonical, root-relative, and
+# uniformly case-folded. The scheduler canonicalizer remains platform-specific,
+# while the durable registry key must compare identically across machines.
+ROOT8A="$TMP/layout-a/handovers"
+ROOT8B="$TMP/layout-b/handovers"
+mkdir -p "$ROOT8A/HIMMEL-1344-test" "$ROOT8B/HIMMEL-1344-test"
+HO8A="$ROOT8A/HIMMEL-1344-test/next-session-1.md"
+HO8B="$ROOT8B/HIMMEL-1344-test/next-session-1.md"
+: > "$HO8A"
+: > "$HO8B"
+key8a=$(_arm_registry_identity_path "$ROOT8A/HIMMEL-1344-test/../HIMMEL-1344-test/next-session-1.md" "$ROOT8A")
+key8b=$(_arm_registry_identity_path "$HO8B" "$ROOT8B")
+expected8="root-relative:himmel-1344-test/next-session-1.md"
+assert_eq "T8a alternate spelling canonicalizes to the folded root-relative key" "$expected8" "$key8a"
+assert_eq "T8b different absolute layouts share one registry key" "$key8a" "$key8b"
+MIXED8="$ROOT8A/HiMmEl-1344-TeSt/NeXt-SeSsIoN-1.Md"
+key8_linux=$(PLATFORM=linux _arm_registry_identity_path "$MIXED8" "$ROOT8A")
+key8_windows=$(PLATFORM=windows _arm_registry_identity_path "$MIXED8" "$ROOT8A")
+assert_eq "T8c mixed-case registry key is equal across simulated platforms" "$key8_linux" "$key8_windows"
+assert_eq "T8d mixed-case root-relative remainder is uniformly folded" "$expected8" "$key8_linux"
+# T8e/T8f (HIMMEL-1344 codex-adv round): the outside-root `absolute:` branch
+# PRESERVES case. It makes no cross-machine promise (documented cross-layout
+# limitation), so folding buys nothing there — while on a case-sensitive
+# filesystem it would collapse two genuinely distinct files onto one registry
+# key and let one handover's re-arm retire the other's pending record.
+outside8=$(PLATFORM=linux _arm_registry_identity_path "$TMP/Outside.MD" "$ROOT8A")
+outside8_expected=$(PLATFORM=linux _arm_identity_path "$TMP/Outside.MD")
+outside8_expected=$(printf 'absolute:%s' "$outside8_expected")
+assert_eq "T8e outside-root absolute fallback preserves case" "$outside8_expected" "$outside8"
+outside8_lower=$(PLATFORM=linux _arm_registry_identity_path "$TMP/outside.md" "$ROOT8A")
+if [ "$outside8" != "$outside8_lower" ]; then
+    echo "PASS T8f case-distinct outside-root handovers keep distinct registry keys"
+else
+    echo "FAIL T8f outside-root Foo.md and foo.md collapsed to one key '$outside8'"
+    FAILED=$((FAILED + 1))
+fi
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"
