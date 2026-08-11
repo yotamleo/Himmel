@@ -26,6 +26,10 @@ export LUNA_VAULT_PATH=""
 # inherited value from the launching shell leak into the default test runs.
 unset OLLAMA_NO_CLOUD
 
+# C19 performs local HTTP probes and reads the installed observability tree.
+# Keep every unrelated case hermetic; dedicated C19 cases opt back in.
+export DOCTOR_OBSERVABILITY_SKIP=1
+
 # Hermeticity (HIMMEL-969): C8's runner-home defaults resolve via
 # cadence_user_home (USERPROFILE via cygpath on Windows) — per-case HOME
 # redirection does NOT cover that, so pin all four seams to empty dirs
@@ -53,6 +57,11 @@ TOOLS_PATH="$(tool_dirs)"
 # fake uname=Linux (to exercise the non-Windows --fix path on this MINGW box)
 FAKEROOT="$(mktemp -d)"; FAKEBIN="$FAKEROOT/bin"; mkdir -p "$FAKEBIN"
 printf '#!/bin/sh\necho Linux\n' > "$FAKEBIN/uname"; chmod +x "$FAKEBIN/uname"
+
+# Keep unrelated cases from scanning the operator's real worktree garden (and
+# making live forge calls). Dedicated C7 cases override this seam per invocation.
+DOCTOR_WT_EMPTY="$FAKEROOT/doctor-wt-empty"; mkdir -p "$DOCTOR_WT_EMPTY"
+export DOCTOR_WORKTREE_ROOT="$DOCTOR_WT_EMPTY"
 
 # A fake node so "node resolvable" cases are deterministic regardless of whether
 # the host actually has node (a node-less Linux box would otherwise FAIL them).
@@ -808,6 +817,140 @@ else
     fail "C18 cheap-mid-age -> rc=$rc; $(printf '%s' "$out" | grep C18)"
 fi
 rm -rf "$t"
+
+# ── C19: installed observability drift + local endpoint readiness ──────────────
+# The rule-group assertions below depend on check_c19 successfully parsing the
+# stub Prometheus response with jq (codex-1 CR finding, HIMMEL-1676) — on a
+# jq-less host check_c19 takes its own "jq unavailable" fallback path instead,
+# so both C19 cases branch their expectation on the SAME probe check_c19 itself
+# uses, rather than assuming jq is present.
+have_jq_c19=0
+command -v jq >/dev/null 2>&1 && have_jq_c19=1
+
+echo "== C19: stale assets + empty rules + unset delivery + dead exporter -> WARNs, rc0 =="
+t="$(mktemp -d -t himmel-doctor-c19.XXXXXX)"; mkdir -p "$t/claude" "$t/install/grafana-provisioning" "$t/bin"; write_settings "$t/claude" "$WRAPPER"
+printf 'stale prometheus\n' > "$t/install/prometheus.yml"
+printf 'stale rules\n' > "$t/install/alerts.rules.yml"
+printf 'stale provisioning\n' > "$t/install/grafana-provisioning/stale.yaml"
+cat > "$t/bin/curl" <<'EOF'
+#!/bin/sh
+url=''
+for arg in "$@"; do url="$arg"; done
+case "$url" in
+  */api/v1/rules) printf '%s\n' '{"status":"success","data":{"groups":[]}}' ;;
+  *:9877/metrics) exit 7 ;;
+  *) exit 22 ;;
+esac
+EOF
+chmod +x "$t/bin/curl"
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+    GRAFANA_TELEGRAM_BOT_TOKEN="" GRAFANA_TELEGRAM_CHAT_ID="" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if [ "$have_jq_c19" -eq 1 ]; then
+    rules_expect='Prometheus has zero rule groups'
+else
+    rules_expect='jq unavailable'
+fi
+if [ "$rc" -eq 0 ] \
+    && grepq "$out" 'observability stack stale — re-run install-stack.ps1' \
+    && grepq "$out" "$rules_expect" \
+    && grepq "$out" 'Grafana Telegram delivery variable(s) unset' \
+    && grepq "$out" 'flow exporter on http://127.0.0.1:9877/metrics is not answering' \
+    && grepq "$out" 'Grafana on http://127.0.0.1:3000/api/health is not answering'; then
+    pass "C19 -> all five observability drift/readiness WARNs, never-fatal"
+else
+    fail "C19 unhealthy -> rc=$rc; $(printf '%s' "$out" | grep C19)"
+fi
+rm -rf "$t"
+
+echo "== C19: matching assets + nonempty rules + delivery vars + live exporter -> all OK =="
+t="$(mktemp -d -t himmel-doctor-c19.XXXXXX)"; mkdir -p "$t/claude" "$t/install/grafana-provisioning" "$t/bin"; write_settings "$t/claude" "$WRAPPER"
+cp "$REPO_ROOT/scripts/observability/prometheus.yml" "$t/install/prometheus.yml"
+cp "$REPO_ROOT/scripts/observability/alerts.rules.yml" "$t/install/alerts.rules.yml"
+cp -R "$REPO_ROOT/scripts/observability/provisioning/." "$t/install/grafana-provisioning/"
+cat > "$t/bin/curl" <<'EOF'
+#!/bin/sh
+url=''
+for arg in "$@"; do url="$arg"; done
+case "$url" in
+  */api/v1/rules) printf '%s\n' '{"status":"success","data":{"groups":[{"name":"himmel-observability"}]}}' ;;
+  *:9877/metrics) printf '%s\n' 'flow_run_outcome_total 1' ;;
+  *:3000/api/health) printf '%s\n' '{"database":"ok","version":"test"}' ;;
+  *) exit 22 ;;
+esac
+EOF
+chmod +x "$t/bin/curl"
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+    GRAFANA_TELEGRAM_BOT_TOKEN="test-token" GRAFANA_TELEGRAM_CHAT_ID="123" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if [ "$have_jq_c19" -eq 1 ]; then
+    rules_expect='Prometheus reports 1 rule group(s)'
+else
+    rules_expect='jq unavailable'
+fi
+if [ "$rc" -eq 0 ] \
+    && ! grepq "$out" 'WARN C19-observability' \
+    && grepq "$out" 'installed observability assets match the repo copies' \
+    && grepq "$out" "$rules_expect" \
+    && grepq "$out" 'flow exporter answers on http://127.0.0.1:9877/metrics' \
+    && grepq "$out" 'Grafana answers on http://127.0.0.1:3000/api/health'; then
+    pass "C19 -> matching stack and live endpoints report OK"
+else
+    fail "C19 healthy -> rc=$rc; $(printf '%s' "$out" | grep C19)"
+fi
+rm -rf "$t"
+
+echo "== C19: cmp/diff unavailable -> INFO, never claims assets match (HIMMEL-1676 regression) =="
+# A curated symlink PATH (NOGH's trick) doesn't run on Windows Git Bash (its
+# .exe symlinks don't execute — see the gh-absent case above), and copying just
+# the named tools leaves their MSYS/mingw DLL deps unresolved (colocated-DLL
+# search fails once the tool is copied out of its own dir). Copy the whole
+# /usr/bin + /mingw64/bin trees (DLLs travel with their tools) minus cmp/diff/
+# diff3, plus jq (installed outside those trees on this box), so the doctor's
+# OTHER checks still run normally while cmp/diff are genuinely absent from PATH.
+NOCMPDIFF="$FAKEROOT/nocmpdiff"
+if [ ! -d "$NOCMPDIFF" ]; then
+    mkdir -p "$NOCMPDIFF"
+    for _d in /usr/bin /mingw64/bin; do
+        [ -d "$_d" ] && cp -r "$_d/." "$NOCMPDIFF/" 2>/dev/null
+    done
+    rm -f "$NOCMPDIFF/cmp" "$NOCMPDIFF/cmp.exe" "$NOCMPDIFF/diff" "$NOCMPDIFF/diff.exe" "$NOCMPDIFF/diff3" "$NOCMPDIFF/diff3.exe"
+    _jq_src="$(command -v jq 2>/dev/null)" && cp "$_jq_src" "$NOCMPDIFF/jq.exe" 2>/dev/null
+fi
+if PATH="$NOCMPDIFF" bash -c 'git --version >/dev/null 2>&1 && ! command -v cmp >/dev/null 2>&1 && ! command -v diff >/dev/null 2>&1' 2>/dev/null; then
+    t="$(mktemp -d -t himmel-doctor-c19.XXXXXX)"; mkdir -p "$t/claude" "$t/install/grafana-provisioning" "$t/bin"; write_settings "$t/claude" "$WRAPPER"
+    cp "$REPO_ROOT/scripts/observability/prometheus.yml" "$t/install/prometheus.yml"
+    cp "$REPO_ROOT/scripts/observability/alerts.rules.yml" "$t/install/alerts.rules.yml"
+    cp -R "$REPO_ROOT/scripts/observability/provisioning/." "$t/install/grafana-provisioning/"
+    cat > "$t/bin/curl" <<'EOF'
+#!/bin/sh
+url=''
+for arg in "$@"; do url="$arg"; done
+case "$url" in
+  */api/v1/rules) printf '%s\n' '{"status":"success","data":{"groups":[{"name":"himmel-observability"}]}}' ;;
+  *:9877/metrics) printf '%s\n' 'flow_run_outcome_total 1' ;;
+  *:3000/api/health) printf '%s\n' '{"database":"ok","version":"test"}' ;;
+  *) exit 22 ;;
+esac
+EOF
+    chmod +x "$t/bin/curl"
+    out="$(PATH="$NOCMPDIFF" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+        GRAFANA_TELEGRAM_BOT_TOKEN="test-token" GRAFANA_TELEGRAM_CHAT_ID="123" \
+        DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+        CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ] \
+        && grepq "$out" 'cmp/diff unavailable — installed observability assets not compared' \
+        && ! grepq "$out" 'installed observability assets match the repo copies'; then
+        pass "C19 -> cmp/diff unavailable emits INFO, never claims a match it never checked"
+    else
+        fail "C19 cmp/diff-unavailable -> rc=$rc; $(printf '%s' "$out" | grep C19)"
+    fi
+    rm -rf "$t"
+else
+    pass "C19 cmp/diff-unavailable -> (skipped: could not build a cmp/diff-less PATH on this host)"
+fi
 
 rm -rf "$FAKEROOT"
 echo

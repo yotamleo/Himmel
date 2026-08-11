@@ -1,9 +1,17 @@
 # HIMMEL-924 — promtool unit tests over recorded series for
-# alerts.rules.yml. Run with:
-#   promtool test rules scripts/observability/alerts.rules.test.yml
-# (promtool ships inside the Prometheus release install-stack.ps1 downloads;
-# no separate install needed on a station that has already run the stack
-# installer once.)
+# alerts.rules.yml. Run from THIS directory (rule_files is relative to this
+# file), with the FULL PATH to promtool:
+#   cd scripts/observability
+#   "$LOCALAPPDATA/himmel/observability/prometheus-<ver>/promtool.exe" \
+#       test rules alerts.rules.test.yml
+#
+# promtool ships inside the Prometheus release install-stack.ps1 downloads, so
+# no separate install is needed on a station that has run the stack installer
+# once — but it is NOT placed on PATH. `command -v promtool` therefore returns
+# nothing on a station where it is present and working. Three separate legs
+# concluded "promtool is absent, this file has never been executable here" from
+# exactly that check and skipped validation; it was installed the whole time.
+# Probe the install path above, never PATH.
 rule_files:
   - alerts.rules.yml
 
@@ -49,22 +57,46 @@ tests:
             exp_annotations:
               summary: 'Flow pipeline-synthesize run errored in the last 15m'
 
-  # HimmelFlowRunStalled: the exporter-inferred stalled outcome, level-based
-  # (not increase()) — present from minute 0 in this fixture.
+  # HimmelFlowRunStalled is a LEVEL check, not increase() (HIMMEL-1695), so a
+  # persistent stall is NOT silent: any non-zero stalled series pages on the
+  # next evaluation and keeps paging while it stays non-zero. pipeline-vitals
+  # is stalled from t=0 and therefore fires at 3m AND 5m; pipeline-harvest only
+  # goes non-zero at 5m. armed-resume rises identically to harvest and is
+  # excluded at both times by the rule's flow!="armed-resume" matcher — its
+  # absence from the 5m expectations is what pins the alert-fatigue fix.
   - interval: 1m
     input_series:
-      - series: 'flow_run_outcome_total{flow="armed-resume",outcome="stalled"}'
+      - series: 'flow_run_outcome_total{flow="pipeline-vitals",outcome="stalled"}'
         values: '1x10'
+      - series: 'flow_run_outcome_total{flow="pipeline-harvest",outcome="stalled"}'
+        values: '0x4 1x4'
+      - series: 'flow_run_outcome_total{flow="armed-resume",outcome="stalled"}'
+        values: '0x4 1x4'
     alert_rule_test:
-      - eval_time: 1m
+      - eval_time: 3m
         alertname: HimmelFlowRunStalled
         exp_alerts:
           - exp_labels:
-              flow: armed-resume
+              flow: pipeline-vitals
               outcome: stalled
               severity: page
             exp_annotations:
-              summary: 'Flow armed-resume has a run stalled past its deadline'
+              summary: 'Flow pipeline-vitals has a run stalled past its deadline'
+      - eval_time: 5m
+        alertname: HimmelFlowRunStalled
+        exp_alerts:
+          - exp_labels:
+              flow: pipeline-harvest
+              outcome: stalled
+              severity: page
+            exp_annotations:
+              summary: 'Flow pipeline-harvest has a run stalled past its deadline'
+          - exp_labels:
+              flow: pipeline-vitals
+              outcome: stalled
+              severity: page
+            exp_annotations:
+              summary: 'Flow pipeline-vitals has a run stalled past its deadline'
 
   # HimmelFlowLastSuccessAgeExceeded: last_success_timestamp held at a fixed
   # value far enough in the past (relative to promtool's own synthetic
