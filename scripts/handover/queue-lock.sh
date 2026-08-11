@@ -124,6 +124,41 @@ _QL_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/handover-path.sh
 # shellcheck disable=SC1091
 . "$_QL_SCRIPT_DIR/../lib/handover-path.sh"
+# _arm_registry_identity_path / _hp_arms_record_matches_path are NEW in
+# HIMMEL-1344 (see the registry-lifecycle comment above
+# _ql_arms_registry_retire_fired). The source above is NOT fail-open --
+# a missing/broken lib still aborts queue-lock.sh outright -- but a
+# partially-deployed lib (an OLDER pre-HIMMEL-1344 handover-path.sh that
+# still parses and exports handover_root + the JSON helpers, just not
+# these two identity helpers) sources cleanly and would otherwise let the
+# CONSUME path (_ql_arms_registry_retire_fired, called from every
+# `acquire`) call an undefined function under `set -uo pipefail`: the
+# empty $key from a missing `_arm_registry_identity_path` is harmless, but
+# `_HP_ARMS_MATCH` would stay completely unset and the `-u` reference to
+# it below aborts the whole acquire -- an irreversible action (the lock
+# dir may already be created) reported as a failure. Mirrors the
+# arm-resume.sh fallback for the exact same partial-deployment scenario
+# (scripts/handover/arm-resume.sh, near its own `_arm_registry_identity_path`
+# guard) so both the write and consume sides degrade the same way instead
+# of one surviving and the other aborting.
+command -v _arm_registry_identity_root >/dev/null 2>&1 || _arm_registry_identity_root() { printf '%s' "$1"; }
+command -v _arm_registry_identity_path >/dev/null 2>&1 || _arm_registry_identity_path() { printf 'absolute:%s' "$1"; }
+# Mirrors the real contract: the result is returned in the global
+# $_HP_ARMS_MATCH (1 = this record identifies the handover), NOT the exit
+# status, which is always 0. A miss just degrades duplicate-record
+# retirement to a no-op for that record (it stays PENDING and gets
+# retired later, same fail-open posture as every other branch in
+# _ql_arms_registry_retire_fired), never a wrong abort.
+_HP_ARMS_MATCH=0
+command -v _hp_arms_record_matches_path >/dev/null 2>&1 || _hp_arms_record_matches_path() {
+    local _hp_raw_marker
+    _HP_ARMS_MATCH=0
+    _hp_json_escape "$2"; _hp_raw_marker="\"handover\":\"$_HP_ESC\""
+    case "$1" in
+        *"$_hp_raw_marker"*) _HP_ARMS_MATCH=1 ;;
+    esac
+    return 0
+}
 # shellcheck source=../lib/py-armor.sh
 # shellcheck disable=SC1091
 . "$_QL_SCRIPT_DIR/../lib/py-armor.sh"
@@ -280,8 +315,9 @@ _ql_lockdir() {
 # mutex-expiry hazard -- consumed records are DROPPED, and any legacy
 # '"fired":"true"'-marked line (written by the earlier marking revision) is
 # garbage-collected in passing. Both rewriters GC this way, so the file
-# stays O(active arms). Matches by host+handover only (not task-name/
-# fire-at) so it also clears earlier SAME-host records left by a re-arm/
+# stays O(active arms). Matches by host+canonical handover identity only (not
+# task-name/fire-at), with raw-field fallback for pre-HIMMEL-1344 records, so
+# it also clears earlier SAME-host records left by a re-arm/
 # --force replace that never itself fired (arm-resume.sh additionally
 # prunes those at re-schedule time -- see its own HIMMEL-882 comment).
 #
@@ -300,7 +336,7 @@ _ql_lockdir() {
 # 60s staleness expiry gets reclaimed; its snapshot is then stale and its
 # blind mv/rmdir would corrupt the reclaimer's generation).
 _ql_arms_registry_retire_fired() {
-    local ho="$1" root reg host tmp tok cur line l_host l_ho host_esc ho_esc changed=0 failed=0 stolen=0 wfail_err=""
+    local ho="$1" root registry_root reg key host tmp tok cur line l_host host_esc changed=0 failed=0 stolen=0 wfail_err=""
     # handover_root failure here would require an external race (the root
     # deleted out from under us mid-acquire): _ql_lockdir already resolved
     # this same root moments earlier via handover_root_ensure, so this is
@@ -311,16 +347,18 @@ _ql_arms_registry_retire_fired() {
     [ -n "$root" ] || return 0
     reg="$root/.locks/arms.jsonl"
     [ -f "$reg" ] || return 0
+    registry_root=$(_arm_registry_identity_root "$root")
+    key=$(_arm_registry_identity_path "$ho" "$root")
     if ! _ql_arms_mutex_acquire "$reg"; then
         echo "WARN queue-lock: could not lock the arms registry ($reg.lock) -- skipping the consume; this host's arm record stays PENDING (a later acquire or same-host re-arm clears it; a mutex stuck from a crashed writer self-expires after 60s)" >&2
         return 0
     fi
     tok="$_QL_ARMS_MUTEX_TOKEN"
-    # Compare ESCAPED-vs-ESCAPED (round-2): the registry stores JSON-escaped
-    # values, so the needles get the same transform before comparing.
+    # Host stays escaped-vs-escaped. Path identity delegates to the shared
+    # dual-format matcher: canonical root-relative handover-key for new records,
+    # exact/canonicalized raw fallback for records already on disk (HIMMEL-1344).
     host=$(_ql_hostname)
     _hp_json_escape "$host"; host_esc="$_HP_ESC"
-    _hp_json_escape "$ho";   ho_esc="$_HP_ESC"
     tmp="$reg.tmp.$$"
     # round-4 (sfh-2): capture stderr instead of discarding it, so a real
     # write failure (disk full / permission denied / RO-fs / AV lock) folds
@@ -339,11 +377,13 @@ _ql_arms_registry_retire_fired() {
             case "$line" in
                 *'"fired":"true"'*) changed=1; continue ;;   # GC legacy fired-marked line
             esac
-            _hp_json_field "$line" host;     l_host="$_HP_FIELD"
-            _hp_json_field "$line" handover; l_ho="$_HP_FIELD"
-            if [ "$l_host" = "$host_esc" ] && [ "$l_ho" = "$ho_esc" ]; then
-                changed=1
-                continue   # consumed: this acquire IS the arm's session start
+            _hp_json_field "$line" host; l_host="$_HP_FIELD"
+            if [ "$l_host" = "$host_esc" ]; then
+                _hp_arms_record_matches_path "$line" "$ho" "$key" "$registry_root"
+                if [ "$_HP_ARMS_MATCH" -eq 1 ]; then
+                    changed=1
+                    continue   # consumed: this acquire IS the arm's session start
+                fi
             fi
             printf '%s\n' "$line" >> "$tmp" || failed=1
             [ "$failed" -eq 1 ] && break
@@ -401,6 +441,11 @@ _ql_arms_registry_retire_fired() {
 # was, say, 56s old when this contender started is not yet stale at
 # tries==0 but would previously never be re-checked, burning the whole
 # retry budget instead of reclaiming it; a failed probe never clears).
+# The staleness threshold is NAMED so the stress test can assert against the
+# real lease instead of duplicating a magic 60 (HIMMEL-1344 CR round). Keep the
+# `_QL_ARMS_MUTEX_STALE_SECS=<n>` spelling on one line: test-queue-lock.sh reads
+# this value straight out of the source and fails loudly if it stops matching.
+_QL_ARMS_MUTEX_STALE_SECS=60
 _QL_ARMS_MUTEX_TOKEN=""
 _ql_arms_mutex_acquire() {
     local reg="$1" lockd tries=0 m now tok
@@ -435,7 +480,7 @@ _ql_arms_mutex_acquire() {
         if [ $(( tries % 10 )) -eq 0 ]; then
             m=$(py_armor_mtime "$lockd") || m=""
             now=$(_ql_now_epoch)
-            if [ -n "$m" ] && [ -n "$now" ] && [ $(( now - m )) -ge 60 ]; then
+            if [ -n "$m" ] && [ -n "$now" ] && [ $(( now - m )) -ge "$_QL_ARMS_MUTEX_STALE_SECS" ]; then
                 rm -rf "$lockd" 2>/dev/null
             fi
         fi

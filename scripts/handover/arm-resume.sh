@@ -464,6 +464,38 @@ command -v telemetry_emit >/dev/null 2>&1 || telemetry_emit() { return 0; }
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null || true
 command -v handover_root >/dev/null 2>&1 || handover_root() { return 2; }
+# Identity helpers are optional under the same fail-open contract. If this lib
+# is absent or only partially deployed, degrade to the pre-HIMMEL-1304 raw-path
+# identity instead of aborting under set -e; registry probes then use an
+# absolute raw key and retain their existing WARN-and-skip behaviour.
+command -v _arm_realpath >/dev/null 2>&1 || _arm_realpath() { printf '%s\n' "$1"; }
+command -v _arm_identity_path >/dev/null 2>&1 || _arm_identity_path() { printf '%s' "$1"; }
+command -v _arm_registry_identity_root >/dev/null 2>&1 || _arm_registry_identity_root() { printf '%s' "$1"; }
+command -v _arm_registry_identity_path >/dev/null 2>&1 || _arm_registry_identity_path() { printf 'absolute:%s' "$1"; }
+# The registry SCAN helper needs a fallback too (HIMMEL-1344 codex-adv round).
+# The scans below call it unconditionally, and a partially-deployed
+# handover-path.sh that predates HIMMEL-1344 exports handover_root + the JSON
+# helpers but NOT this matcher — so without this the scan aborts under set -e,
+# and with an initially empty registry that abort lands AFTER the scheduler has
+# already been written: an irreversible action reported as a failure, inviting a
+# duplicate retry. Degrade to a raw exact-match instead: a miss only weakens
+# duplicate detection back to the pre-HIMMEL-1304 behaviour, which is strictly
+# safer than aborting post-schedule.
+# Mirrors the real contract: the result is returned in the global
+# $_HP_ARMS_MATCH (1 = this record identifies the handover), NOT the exit
+# status, which is always 0. A miss degrades duplicate detection to the
+# pre-HIMMEL-1304 behaviour; escaped (e.g. backslash) spellings simply do not
+# match here, which is a weaker probe, never a wrong abort.
+_HP_ARMS_MATCH=0
+command -v _hp_arms_record_matches_path >/dev/null 2>&1 || _hp_arms_record_matches_path() {
+    local _hp_raw_marker
+    _HP_ARMS_MATCH=0
+    _hp_json_escape "$2"; _hp_raw_marker="\"handover\":\"$_HP_ESC\""
+    case "$1" in
+        *"$_hp_raw_marker"*) _HP_ARMS_MATCH=1 ;;
+    esac
+    return 0
+}
 
 # HIMMEL_HEADROOM_PROXY flag parser (HIMMEL-901): same fail-open contract as
 # the two libs above — an absent/broken lib just means the .env fallback
@@ -526,47 +558,9 @@ _arm_nested_cmd_escape() {
     printf '%s' "$v"
 }
 
-# Canonicalise a path, tolerating non-existent ones: GNU realpath -m, else
-# armored python3 pathlib, else the input unchanged (best effort — matches
-# the prior inline fallback chains).
-_arm_realpath() {
-    local _p=""
-    _p=$(realpath -m "$1" 2>/dev/null) || _p=""
-    if [ -z "$_p" ]; then
-        if py_armor_capture -c 'import sys,pathlib;print(pathlib.Path(sys.argv[1]).resolve(strict=False))' "$1" 2>/dev/null; then
-            _p="$PY_ARMOR_OUT"
-        fi
-    fi
-    [ -n "$_p" ] || _p="$1"
-    printf '%s\n' "$_p"
-}
-
-# _arm_identity_path <path> — the CANONICAL identity of a handover: the single
-# value every dedup key is derived from (HIMMEL-1304). The scheduler row name
-# IS the dedup key, so two spellings of one handover that produce two names arm
-# TWO slots for the same file — the double-fire this guard exists to prevent.
-#
-# _arm_realpath alone is NOT enough on Windows, verified on the operator's box:
-# it collapses relative / ./ / .. / symlink spellings, but PRESERVES whichever
-# drive form was typed, so `C:/x`, `C:\x` and `/c/x` stay three distinct
-# strings for one file. cygpath -u folds all three onto the /c/... form. Then
-# case-fold, because NTFS is case-insensitive and `C:/Users` vs `C:/users` name
-# the same file. Case-folding is scoped to Windows deliberately: on Linux two
-# spellings differing only in case are genuinely two different files, so
-# folding there would MERGE distinct handovers into one slot — the opposite bug.
-# (macOS is case-insensitive by default but can be formatted case-sensitive;
-# left unfolded rather than guessed, so macOS keeps its pre-1304 behaviour.)
-_arm_identity_path() {
-    local _p
-    _p=$(_arm_realpath "$1")
-    if [ "$PLATFORM" = windows ]; then
-        if command -v cygpath >/dev/null 2>&1; then
-            _p=$(cygpath -u "$_p" 2>/dev/null) || _p=$(_arm_realpath "$1")
-        fi
-        _p=$(printf '%s' "$_p" | tr '[:upper:]' '[:lower:]')
-    fi
-    printf '%s' "$_p"
-}
+# _arm_realpath / _arm_identity_path live in ../lib/handover-path.sh so the
+# scheduler-row identity and the cross-script arms-registry key share one
+# canonicalizer (HIMMEL-1304/HIMMEL-1344).
 
 # _arm_path_hash <canonical-path> — a short stable digest of the canonical
 # identity: the collision-proof half of the task name (HIMMEL-1304). The
@@ -2399,41 +2393,29 @@ fi
 # naming the hosts (no non-zero exit -- the arm already happened; the
 # warning is the value). Do not re-raise this as a race bug.
 
-# _arm_registry_foreign_hits <registry-file> <handover-path> <this-host> --
-# print a "; "-joined summary of every registry line recording an arm for
-# <handover-path> on a host OTHER than <this-host> (empty = none). Always
-# rc 0 (errexit-safe: the loop ends in string ops, nothing unguarded).
-# HIMMEL-882: a consumed arm no longer has a record at all (queue-lock.sh's
-# acquire DROPS this host's record(s) at session start -- retention, round
-# 3), and any legacy '"fired":"true"'-marked line from the earlier marking
-# revision is skipped here (and GC'd by the next locked rewrite) -- this is
-# what lets a re-arm from another host stop hard-refusing (rc=8) once the
-# original arm has actually fired, instead of forever.
+# _arm_registry_foreign_hits <registry-file> <handover-path> <handover-key>
+# <handover-root> <this-host> -- print a "; "-joined summary of every registry
+# line recording an arm for this canonical handover on a host OTHER than
+# <this-host> (empty = none). HIMMEL-1344: new lines match the durable
+# root-relative handover-key; legacy raw-only lines match exact raw or a
+# best-effort canonicalized raw path through the shared migration helper.
+# HIMMEL-882: consumed records are dropped, and legacy fired-marked lines are
+# skipped here until the next locked rewrite garbage-collects them.
 _arm_registry_foreign_hits() {
-    local _reg="$1" _ho="$2" _this_host="$3"
-    local _needle _this_esc _hits="" _line _rhost _rfire _rtask
-    # Both needles are JSON-escaped with the shared writer-side escape so an
-    # escaped stored value (e.g. a backslash Windows path, doubled on write)
-    # compares equal (round-2 -- raw-vs-escaped never matches).
-    _hp_json_escape "$_ho"
-    _needle="\"handover\":\"$_HP_ESC\""
+    local _reg="$1" _ho="$2" _key="$3" _root="$4" _this_host="$5"
+    local _this_esc _hits="" _line _rhost _rfire _rtask
     _hp_json_escape "$_this_host"; _this_esc="$_HP_ESC"
     [ -f "$_reg" ] || { printf '%s' ""; return 0; }
     # `|| [ -n "$_line" ]`: read returns 1 at EOF-without-newline while
     # still filling the variable -- without the guard a final record
     # lacking a trailing newline would be invisible to this scan.
-    # Field extraction is the shared pure-bash _hp_json_field (round-3:
-    # zero forks per line; the grep|head|sed pipelines this replaces cost
-    # ~185-200ms/LINE on Windows/Git-Bash).
     while IFS= read -r _line || [ -n "$_line" ]; do
         [ -z "$_line" ] && continue
         case "$_line" in
-            *"$_needle"*) ;;
-            *) continue ;;
-        esac
-        case "$_line" in
             *'"fired":"true"'*) continue ;;
         esac
+        _hp_arms_record_matches_path "$_line" "$_ho" "$_key" "$_root"
+        [ "$_HP_ARMS_MATCH" -eq 1 ] || continue
         _hp_json_field "$_line" host; _rhost="$_HP_FIELD"
         [ -z "$_rhost" ] && continue
         [ "$_rhost" = "$_this_esc" ] && continue
@@ -2524,8 +2506,9 @@ _arm_registry_mutex_release() {
 }
 
 # _arm_registry_replace_and_append <registry-file> <host> <handover-path>
-# <new-record-line> -- HIMMEL-882: drop any existing line whose host AND
-# handover match (this host's own prior record(s) for this same handover),
+# <handover-key> <handover-root> <new-record-line> -- HIMMEL-882/HIMMEL-1344:
+# drop any existing line whose host AND canonical handover identity match
+# (this host's own prior record(s) for this same handover),
 # GC any legacy '"fired":"true"'-marked line in passing (retention, round
 # 3 -- fired records are inert; both rewriters drop them so the registry
 # stays O(active arms)), then append <new-record-line>. Without the prune,
@@ -2538,9 +2521,10 @@ _arm_registry_mutex_release() {
 # cover a CONCURRENT rewriter, so the whole read-filter-rewrite runs under
 # the OWNER-TOKENED _arm_registry_mutex_acquire mkdir-CAS mutex shared with
 # queue-lock.sh's consume, and the mv happens only while the owner token
-# still names us. Needles are escaped with the shared _hp_json_escape
-# (round-2 -- the stored values are JSON-escaped; raw-vs-escaped never
-# matches). rc 1 on mutex timeout, mid-rewrite theft, or any write failure
+# still names us. Path matching delegates to the shared dual-format helper:
+# canonical handover-key for new lines, exact/canonicalized raw fallback for
+# legacy lines already on disk. rc 1 on mutex timeout, mid-rewrite theft, or
+# any write failure
 # (caller WARNs and moves on); rc 0 on success. Single unlock point:
 # failures only set _rc and fall through to the token-checked release
 # (which WARNs about a theft). round-4 (sfh-2): on a write failure (not a
@@ -2550,8 +2534,8 @@ _arm_registry_mutex_release() {
 # timeout; empty on success or on a mutex-timeout/theft failure.
 _ARM_REGISTRY_REPLACE_ERR=""
 _arm_registry_replace_and_append() {
-    local _reg="$1" _host="$2" _ho="$3" _new="$4"
-    local _tmp="$_reg.tmp.$$" _tok _cur _line _l_host _l_ho _host_esc _ho_esc _rc=0 _werr=""
+    local _reg="$1" _host="$2" _ho="$3" _key="$4" _root="$5" _new="$6"
+    local _tmp="$_reg.tmp.$$" _tok _cur _line _l_host _host_esc _rc=0 _werr=""
     _ARM_REGISTRY_REPLACE_ERR=""
     if ! _arm_registry_mutex_acquire "$_reg"; then
         echo "WARN arm-resume: could not lock the arms registry ($_reg.lock) -- skipping the registry rewrite for this arm (a mutex stuck from a crashed writer self-expires after 60s)" >&2
@@ -2559,7 +2543,6 @@ _arm_registry_replace_and_append() {
     fi
     _tok="$_ARM_REGISTRY_MUTEX_TOKEN"
     _hp_json_escape "$_host"; _host_esc="$_HP_ESC"
-    _hp_json_escape "$_ho";   _ho_esc="$_HP_ESC"
     # round-4 (sfh-2): capture stderr instead of discarding it -- see
     # queue-lock.sh's twin for the rationale (2>/dev/null made a real write
     # failure read identically to a mutex timeout/theft).
@@ -2576,10 +2559,12 @@ _arm_registry_replace_and_append() {
                 case "$_line" in
                     *'"fired":"true"'*) continue ;;   # GC legacy fired-marked line
                 esac
-                _hp_json_field "$_line" host;     _l_host="$_HP_FIELD"
-                _hp_json_field "$_line" handover; _l_ho="$_HP_FIELD"
-                if [ "$_l_host" = "$_host_esc" ] && [ "$_l_ho" = "$_ho_esc" ]; then
-                    continue   # superseded by $_new -- drop
+                _hp_json_field "$_line" host; _l_host="$_HP_FIELD"
+                if [ "$_l_host" = "$_host_esc" ]; then
+                    _hp_arms_record_matches_path "$_line" "$_ho" "$_key" "$_root"
+                    if [ "$_HP_ARMS_MATCH" -eq 1 ]; then
+                        continue   # superseded by $_new -- drop
+                    fi
                 fi
                 printf '%s\n' "$_line" >> "$_tmp" || { _rc=1; break; }
             done < "$_reg"
@@ -2900,8 +2885,10 @@ else
     fi
 
     HIMMEL_856_ARMS_REGISTRY="$HIMMEL_856_HR_ROOT/.locks/arms.jsonl"
+    _arm_registry_root=$(_arm_registry_identity_root "$HIMMEL_856_HR_ROOT")
+    _arm_registry_key=$(_arm_registry_identity_path "$HANDOVER_PATH" "$HIMMEL_856_HR_ROOT")
     if [ -f "$HIMMEL_856_ARMS_REGISTRY" ]; then
-        _arm_dup_hits=$(_arm_registry_foreign_hits "$HIMMEL_856_ARMS_REGISTRY" "$HANDOVER_PATH" "$(_arm_hostname)")
+        _arm_dup_hits=$(_arm_registry_foreign_hits "$HIMMEL_856_ARMS_REGISTRY" "$HANDOVER_PATH" "$_arm_registry_key" "$_arm_registry_root" "$(_arm_hostname)")
         if [ -n "$_arm_dup_hits" ]; then
             if [ "${ARM_DUP_OK:-}" = "1" ]; then
                 echo "WARN arm-resume: this handover already has a PENDING arm on another host ($_arm_dup_hits) -- arming anyway (ARM_DUP_OK=1)" >&2
@@ -3899,14 +3886,16 @@ if [ -n "${HIMMEL_856_HR_ROOT:-}" ]; then
     # Values are escaped with the shared _hp_json_escape (round-3) -- the
     # SAME transform every reader's needle uses, so escaped-vs-escaped
     # comparisons hold by construction.
-    _hp_json_escape "$_arm_host";     _arm_rec_host="$_HP_ESC"
-    _hp_json_escape "$HANDOVER_PATH"; _arm_rec_ho="$_HP_ESC"
-    _hp_json_escape "$AT_STAMP";      _arm_rec_fire="$_HP_ESC"
-    _hp_json_escape "$TASK_NAME";     _arm_rec_task="$_HP_ESC"
-    _arm_new_record=$(printf '{"host":"%s","handover":"%s","fire-at":"%s","task-name":"%s"}' \
-        "$_arm_rec_host" "$_arm_rec_ho" "$_arm_rec_fire" "$_arm_rec_task")
-    unset _arm_rec_host _arm_rec_ho _arm_rec_fire _arm_rec_task
-    if ! _arm_registry_replace_and_append "$HIMMEL_856_HR_ROOT/.locks/arms.jsonl" "$_arm_host" "$HANDOVER_PATH" "$_arm_new_record"; then
+    _hp_json_escape "$_arm_host";         _arm_rec_host="$_HP_ESC"
+    _hp_json_escape "$HANDOVER_PATH";      _arm_rec_ho="$_HP_ESC"
+    _hp_json_escape "$_arm_registry_key"; _arm_rec_key="$_HP_ESC"
+    _hp_json_escape "${_ho_ticket:-}";   _arm_rec_ticket="$_HP_ESC"
+    _hp_json_escape "$AT_STAMP";         _arm_rec_fire="$_HP_ESC"
+    _hp_json_escape "$TASK_NAME";        _arm_rec_task="$_HP_ESC"
+    _arm_new_record=$(printf '{"host":"%s","handover":"%s","handover-key":"%s","ticket":"%s","fire-at":"%s","task-name":"%s"}' \
+        "$_arm_rec_host" "$_arm_rec_ho" "$_arm_rec_key" "$_arm_rec_ticket" "$_arm_rec_fire" "$_arm_rec_task")
+    unset _arm_rec_host _arm_rec_ho _arm_rec_key _arm_rec_ticket _arm_rec_fire _arm_rec_task
+    if ! _arm_registry_replace_and_append "$HIMMEL_856_HR_ROOT/.locks/arms.jsonl" "$_arm_host" "$HANDOVER_PATH" "$_arm_registry_key" "$_arm_registry_root" "$_arm_new_record"; then
         # round-4 (sfh-2): fold the first line of the captured write error
         # (if any -- empty on a mutex timeout/theft) so this WARN reads
         # differently from those cases.
@@ -3922,7 +3911,7 @@ if [ -n "${HIMMEL_856_HR_ROOT:-}" ]; then
     # hosts double-armed. No non-zero exit -- the arm already happened;
     # the queue lock at session start is the layer that serializes the
     # actual double-fire.
-    _arm_post_hits=$(_arm_registry_foreign_hits "$HIMMEL_856_HR_ROOT/.locks/arms.jsonl" "$HANDOVER_PATH" "$_arm_host")
+    _arm_post_hits=$(_arm_registry_foreign_hits "$HIMMEL_856_HR_ROOT/.locks/arms.jsonl" "$HANDOVER_PATH" "$_arm_registry_key" "$_arm_registry_root" "$_arm_host")
     if [ -n "$_arm_post_hits" ]; then
         {
             echo "=================================================================="
@@ -3936,7 +3925,7 @@ if [ -n "${HIMMEL_856_HR_ROOT:-}" ]; then
             echo "=================================================================="
         } >&2
     fi
-    unset _arm_host _arm_post_hits
+    unset _arm_host _arm_post_hits _arm_registry_key _arm_registry_root
 fi
 
 cat <<EOF

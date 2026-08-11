@@ -23,6 +23,12 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/queue-lock.sh"
+# shellcheck source=../lib/py-armor.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/py-armor.sh"
+# shellcheck source=../lib/handover-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/handover-path.sh"
 
 PASSED=0
 FAILED=0
@@ -590,6 +596,52 @@ else
 fi
 QUEUE_LOCK_FORCE_RELEASE=1 bash "$LIB" release "$HO23" >/dev/null 2>&1
 
+# --- T31: new-format canonical key consumes the RIGHT record (HIMMEL-1344) --
+# The record's raw handover spelling deliberately differs from the acquire
+# argument. Matching must use handover-key, drop only this host's target row,
+# and leave the sibling key untouched. Fired records are retained by deletion
+# in the current format, so disappearance is the consume-on-fire proof.
+HO31="$HANDOVER_DIR/HIMMEL-856-test/next-session-31.md"
+HO31_ALT="$HANDOVER_DIR/HIMMEL-856-test/../HIMMEL-856-test/next-session-31.md"
+HO31_SIB="$HANDOVER_DIR/HIMMEL-856-test/next-session-31b.md"
+: > "$HO31"
+: > "$HO31_SIB"
+HO31_KEY=$(_arm_registry_identity_path "$HO31" "$HANDOVER_DIR")
+HO31_SIB_KEY=$(_arm_registry_identity_path "$HO31_SIB" "$HANDOVER_DIR")
+{
+    printf '{"host":"%s","handover":"%s","handover-key":"%s","ticket":"HIMMEL-1344","fire-at":"202601010000","task-name":"HIMMEL-Resume-t31-target"}\n' \
+        "$THIS_HOST" "$HO31_ALT" "$HO31_KEY"
+    printf '{"host":"%s","handover":"%s","handover-key":"%s","ticket":"HIMMEL-1344","fire-at":"202601010000","task-name":"HIMMEL-Resume-t31-sibling"}\n' \
+        "$THIS_HOST" "$HO31_SIB" "$HO31_SIB_KEY"
+} > "$ARMS_REGISTRY"
+err="$(bash "$LIB" acquire "$HO31" "session-t31" 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q 'HIMMEL-Resume-t31-target' "$ARMS_REGISTRY"; then
+    pass "T31: canonical key consumes alternate-spelling target record"
+else
+    fail "T31: canonical target was not consumed (rc=$rc err=$err reg=$(cat "$ARMS_REGISTRY" 2>/dev/null))"
+fi
+if grep -q 'HIMMEL-Resume-t31-sibling' "$ARMS_REGISTRY" && [ "$(wc -l < "$ARMS_REGISTRY")" -eq 1 ]; then
+    pass "T31: sibling canonical key survives untouched"
+else
+    fail "T31: wrong record consumed or sibling corrupted ($(cat "$ARMS_REGISTRY" 2>/dev/null))"
+fi
+bash "$LIB" release "$HO31" "session-t31" >/dev/null 2>&1
+
+# --- T31b: legacy raw-only alternate spelling is still consumed -----------
+# Migration coverage for records written before HIMMEL-1344: no handover-key
+# exists, so acquire must canonicalize the stored raw spelling and retire it.
+printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t31b-legacy"}\n' \
+    "$THIS_HOST" "$HO31_ALT" > "$ARMS_REGISTRY"
+err="$(bash "$LIB" acquire "$HO31" "session-t31b" 2>&1 1>/dev/null)"
+rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q 'HIMMEL-Resume-t31b-legacy' "$ARMS_REGISTRY"; then
+    pass "T31b: legacy raw-only alternate spelling is consumed during migration"
+else
+    fail "T31b: legacy alternate-spelling record was not consumed (rc=$rc err=$err reg=$(cat "$ARMS_REGISTRY" 2>/dev/null))"
+fi
+bash "$LIB" release "$HO31" "session-t31b" >/dev/null 2>&1
+
 # --- T24: the TAKEOVER acquire path also consumes (round-2 addendum) -------
 # T19 covered the fresh-mkdir path only; the stale-takeover branch has its
 # own retire call. Stale fixture per T9/T14: hand-crafted owner.json with
@@ -814,6 +866,62 @@ fi
 bash "$LIB" release "$HO28" "session-t28" >/dev/null 2>&1
 rm -f "$ARMS_REGISTRY"
 
+# --- T28b: SAME-HOST legacy rewrite against the real mutex lease -----------
+# T28 above measures the fork-FREE path only: its 299 bystanders are
+# other-host, and queue-lock.sh calls _hp_arms_record_matches_path exclusively
+# for rows whose host matches this one, so those bystanders never reach the
+# matcher at all. The expensive path is same-host legacy rows: each one that
+# does not match exactly falls through to the canonical-migration fallback,
+# which spends a command substitution on _arm_registry_identity_path, and that
+# forks realpath plus cygpath/tr on Windows -- per record, INSIDE the arms
+# mutex. Blowing the mutex lease is not a slow test, it is a discarded rewrite:
+# the arm stays pending-but-unregistered, or a fired record never clears.
+#
+# So this case is deliberately pinned to the LEASE, not to an ambition
+# (HIMMEL-1344 CR round). It ALWAYS prints the measurement, WARNs at the
+# halfway mark so a slow drift is visible before it bites, and FAILs only when
+# the rewrite approaches the lease itself -- the point at which the behaviour
+# under test genuinely breaks. That is why a wall-clock bound is legitimate
+# here and is not a second T28 (see HIMMEL-1661): crossing it IS the failure
+# mode, and the budget is an order of magnitude above the noise.
+t28b_lease=$(sed -n 's/^_QL_ARMS_MUTEX_STALE_SECS=\([0-9][0-9]*\).*/\1/p' "$LIB" | head -1)
+if [ -z "$t28b_lease" ]; then
+    fail "T28b: cannot read _QL_ARMS_MUTEX_STALE_SECS from $LIB -- the lease constant moved or was renamed; re-point this test at it"
+else
+    HO28B="$HANDOVER_DIR/HIMMEL-856-test/next-session-28b.md"
+    : > "$HO28B"
+    {
+        printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t28b-mine"}\n' "$THIS_HOST" "$HO28B"
+        t28b_i=0
+        while [ "$t28b_i" -lt 299 ]; do
+            # SAME host, legacy shape (no handover-key) -> every one of these
+            # reaches the canonicalizing fallback.
+            printf '{"host":"%s","handover":"%s/bystander-%s.md","fire-at":"202601010000","task-name":"HIMMEL-Resume-t28b-b%s"}\n' "$THIS_HOST" "$HANDOVER_DIR" "$t28b_i" "$t28b_i"
+            t28b_i=$((t28b_i + 1))
+        done
+    } > "$ARMS_REGISTRY"
+    t28b_start=$(date +%s)
+    bash "$LIB" acquire "$HO28B" "session-t28b" >/dev/null 2>&1
+    t28b_elapsed=$(( $(date +%s) - t28b_start ))
+    t28b_warn=$(( t28b_lease / 2 ))
+    echo "MEASURE T28b: 300-row SAME-HOST legacy rewrite took ${t28b_elapsed}s (mutex lease ${t28b_lease}s, warn >${t28b_warn}s)"
+    if [ "$t28b_elapsed" -ge "$t28b_lease" ]; then
+        fail "T28b: same-host legacy rewrite took ${t28b_elapsed}s, at/over the ${t28b_lease}s mutex lease -- the rewrite can be discarded and an arm left pending-but-unregistered"
+    else
+        if [ "$t28b_elapsed" -gt "$t28b_warn" ]; then
+            echo "WARN T28b: ${t28b_elapsed}s is past half the ${t28b_lease}s lease -- per-record forking is trending toward the lease; see the hoist/memoize follow-up"
+        fi
+        pass "T28b: same-host legacy rewrite stayed under the ${t28b_lease}s mutex lease (${t28b_elapsed}s)"
+    fi
+    if [ "$(wc -l < "$ARMS_REGISTRY")" -eq 299 ] && ! grep -q 't28b-mine' "$ARMS_REGISTRY"; then
+        pass "T28b: all 299 same-host bystanders survive, the matching record was consumed"
+    else
+        fail "T28b: registry wrong after same-host rewrite ($(wc -l < "$ARMS_REGISTRY") lines)"
+    fi
+    bash "$LIB" release "$HO28B" "session-t28b" >/dev/null 2>&1
+    rm -f "$ARMS_REGISTRY"
+fi
+
 # --- T29: escaped-quote + backslash values round-trip (round-3: the -------
 # parity-aware _hp_json_field replaces the round-2 extractor whose values
 # mis-truncated at an escaped quote -- macOS/Linux paths may legally
@@ -927,6 +1035,36 @@ else
     fail "T33: post-rm arbiter loser damaged winner state (out=$t33_out)"
 fi
 rm -rf "$LOCKDIR33" "${LOCKDIR33}.claim"
+
+# --- T34: consume path survives a pre-HIMMEL-1344 handover-path.sh ---------
+# queue-lock.sh's fallbacks must let `acquire` survive a partially-deployed
+# library that still exports handover_root + JSON helpers but deliberately
+# lacks the HIMMEL-1344 identity + matcher. The test-owned fixture pins that
+# property; deriving it from main would silently stop testing skew after merge.
+FAKE_QL="$TMPDIR_ROOT/fake-ql-pre1344"
+PRE_1344_LIB="$SCRIPT_DIR/fixtures/handover-path-pre-himmel-1344.sh"
+mkdir -p "$FAKE_QL/handover" "$FAKE_QL/lib"
+cp "$SCRIPT_DIR/queue-lock.sh" "$FAKE_QL/handover/queue-lock.sh"
+cp "$SCRIPT_DIR/../lib/py-armor.sh" "$FAKE_QL/lib/py-armor.sh"
+if cp "$PRE_1344_LIB" "$FAKE_QL/lib/handover-path.sh" \
+    && ! grep -q '^_arm_registry_identity_path()' "$FAKE_QL/lib/handover-path.sh" \
+    && ! grep -q '^_hp_arms_record_matches_path()' "$FAKE_QL/lib/handover-path.sh"; then
+    HO34="$HANDOVER_DIR/HIMMEL-856-test/next-session-34.md"
+    : > "$HO34"
+    printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t34"}\n' \
+        "$THIS_HOST" "$HO34" > "$ARMS_REGISTRY"
+    err="$(bash "$FAKE_QL/handover/queue-lock.sh" acquire "$HO34" "session-t34" 2>&1 1>/dev/null)"
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        pass "T34: acquire against a pre-1344 handover-path.sh does not abort"
+    else
+        fail "T34: acquire against a pre-1344 handover-path.sh aborted (rc=$rc: $err)"
+    fi
+    bash "$FAKE_QL/handover/queue-lock.sh" release "$HO34" "session-t34" >/dev/null 2>&1
+else
+    fail "T34: pre-1344 fixture missing or unexpectedly defines HIMMEL-1344 helpers"
+fi
+rm -f "$ARMS_REGISTRY"
 
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
