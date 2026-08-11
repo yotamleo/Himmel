@@ -874,11 +874,11 @@ Plugins live at `~/.claude/plugins/`. Different install methods per plugin — r
 
 ### Lean profile — disabled by default, enable on need (HIMMEL-816)
 
-`docs/setup/settings-template.json` ships **lean**: 13 re-enableable
+`docs/setup/settings-template.json` ships **lean**: 15 re-enableable
 `@claude-plugins-official` plugins (the table below), `obsidian@obsidian-skills`,
 and `caveman@caveman` (HIMMEL-701) are `false` in `enabledPlugins` — every adopter
 and every re-provisioned operator machine gets the minimal set by default instead
-of re-creating the maximal 31-plugin install every time. (A 14th
+of re-creating the maximal 31-plugin install every time. (A 16th
 `@claude-plugins-official` entry, `pr-review-toolkit`, is also `false` but is not
 listed for re-enable — himmel ships its own `pr-review-toolkit-himmel` fork.)
 Turn any of these back on with one command
@@ -899,6 +899,8 @@ Turn any of these back on with one command
 | `playground@claude-plugins-official` | `claude plugin install playground@claude-plugins-official --scope user` | |
 | `skill-creator@claude-plugins-official` | `claude plugin install skill-creator@claude-plugins-official --scope user` | |
 | `atlassian@claude-plugins-official` | `claude plugin install atlassian@claude-plugins-official --scope user` | **enable-on-need:** Jira is CLI-first per project rules (`scripts/jira/dist/index.js`) — enable only when a session needs interactive Confluence/Atlassian skills. The optional atlassian **MCP** integration is separate (see [Optional integrations](#optional-integrations)) |
+| `claude-md-management@claude-plugins-official` | `claude plugin install claude-md-management@claude-plugins-official --scope user` | **powers `/claude-md-audit`:** that command degrades to a one-line re-enable hint while this is off (HIMMEL-1044); re-enable to run CLAUDE.md audits via the `claude-md-improver` skill |
+| `hookify@claude-plugins-official` | `claude plugin install hookify@claude-plugins-official --scope user` | Scaffold hooks from a prompt — dev-authoring only |
 | `obsidian@obsidian-skills` | `claude plugin marketplace add kepano/obsidian-skills` then `claude plugin install obsidian@obsidian-skills --scope user` | `obsidian-triage` falls back to plain markdown when this isn't enabled (documented in the command body) — enable if you need proper OFM parity |
 | `caveman@caveman` | `claude plugin marketplace add JuliusBrussee/caveman` then `claude plugin install caveman@caveman --scope user` | Caveman compression mode + cavecrew subagents (HIMMEL-701) |
 

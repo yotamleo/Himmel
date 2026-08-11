@@ -50,7 +50,8 @@
 #   --dry-run  run every gate, print the intended merge, then STOP (no merge)
 #
 # Exit codes:
-#   0   merged (or --dry-run passed, or no PR — nothing to merge)
+#   0   merged (including a confirmed remote merge where gh only failed local
+#       branch cleanup), or --dry-run passed, or no PR — nothing to merge
 #   10  not opted in (ARMAUTOMERGE unset/false) — refused
 #   11  required tool missing (gh / git)
 #   12  not a private github repo (public or undeterminable), or the PR's base
@@ -60,8 +61,13 @@
 #   13  cannot resolve the PR or its head SHA — refused
 #   14  check-ci gate not green (unresolved threads / red CI / changes requested)
 #   15  merge failed (gh error, incl. a --match-head-commit head-moved abort, a
-#       branch-delete error where the PR did NOT reach MERGED, or a gh-accepted
-#       merge the PR never confirmed as MERGED)
+#       branch-delete error where the PR did NOT reach MERGED, an indeterminate
+#       post-merge PR-state query, a MERGED state whose head does not match the
+#       certified sha (a different commit merged concurrently — either after
+#       gh's own merge call failed, or while a gh-accepted merge sat queued), a
+#       MERGED state at the certified sha but a different base (a concurrent
+#       retarget — same two windows), or a gh-accepted merge the PR never
+#       confirmed as MERGED)
 #   16  audit sink not writable, or the MERGING record could not be written —
 #       refused (an unauditable merge must not proceed)
 #
@@ -357,13 +363,35 @@ if ! audit "MERGING repo=$nwo pr=#$pr_num sha=$sha gate=check-ci:0"; then
     exit 16
 fi
 
-# Re-query the PR's state, scoped to the selector. Used by both post-merge
-# confirmations below — an unreadable state prints empty (treated as unconfirmed).
-pr_state_now() {
+# Re-query state TOGETHER with headRefOid + baseRefName (codex-adv review,
+# HIMMEL-1394): shared by BOTH the failure-recovery path AND the success-path
+# confirmation poll below. Callers decide whether an API failure means
+# unconfirmed or indeterminate; do not collapse it into an empty state,
+# because that would turn an unreadable result into a false conclusion.
+#
+# Failure-recovery use: when `gh pr merge --match-head-commit` itself FAILS,
+# gh never confirmed which commit matched OR which base it landed on — a
+# MERGED state read afterward could belong to a DIFFERENT commit a concurrent
+# actor merged in the gap between gh's failure and this re-query (headRefOid),
+# or the SAME certified sha merged after a concurrent retarget (baseRefName) —
+# the exact staleness class the pre-merge guard above (3b, HIMMEL-1080)
+# re-verifies for the primary merge attempt; the recovery path needs the same
+# check on ITS OWN re-query, since --match-head-commit pins only the head,
+# never the base.
+#
+# Success-path use (codex-adv review, HIMMEL-1394): a zero `gh pr merge` exit
+# means --match-head-commit confirmed $sha at ACCEPTANCE time, but under a
+# merge queue that acceptance is not the merge itself — the PR can sit queued
+# (see the poll comment further down), and a concurrent retarget or a
+# different commit merging into the queue in that window can land a MERGED
+# state that does not actually belong to the certified sha/base. The poll
+# needs the SAME head/base confirmation the failure-recovery path already
+# does, not just a bare `state` read.
+pr_state_and_head_now() {
     if [ -n "$selector" ]; then
-        "$GH" pr view "$selector" --json state --jq .state 2>/dev/null || true
+        "$GH" pr view "$selector" --json state,headRefOid,baseRefName --jq '"\(.state) \(.headRefOid) \(.baseRefName)"'
     else
-        "$GH" pr view --json state --jq .state 2>/dev/null || true
+        "$GH" pr view --json state,headRefOid,baseRefName --jq '"\(.state) \(.headRefOid) \(.baseRefName)"'
     fi
 }
 
@@ -374,23 +402,55 @@ if [ -n "$selector" ]; then
 else
     merge_out=$("$GH" pr merge --squash --delete-branch --match-head-commit "$sha" 2>&1) || merge_rc=$?
 fi
-# Cosmetic held-worktree local branch-delete failure — the REMOTE PR merged
-# anyway (deleteBranchOnMerge also removes the remote head branch). An armed
-# chain merges from INSIDE its own worktree, so this is the expected shape here.
-# But "branch cleanup failed" does NOT by itself prove the merge landed
-# (coderabbit): CONFIRM the remote reached MERGED before accepting success —
-# never infer a merge from the cleanup error alone. A real merge failure (e.g. a
-# --match-head-commit head-moved abort) errors BEFORE the branch-delete, so its
-# output never matches this phrase.
-if [ "$merge_rc" -ne 0 ] && printf '%s' "$merge_out" | grep -qE "is already used by worktree"; then
-    post_state=$(pr_state_now)
-    if [ "$post_state" = "MERGED" ]; then
-        merge_rc=0
-        merge_out="$merge_out [local branch-delete cosmetic-fail; PR confirmed MERGED]"
-    else
-        echo "merge-on-green: branch-delete error but PR state is '${post_state:-<unreadable>}' (not MERGED) — treating as FAILED." >&2
-        merge_out="$merge_out [PR state '${post_state:-<unreadable>}' != MERGED after branch-delete error]"
+# A non-zero gh status is not authoritative: gh can merge remotely and then fail
+# while deleting the local branch held by this worktree. Re-read the remote PR
+# state for EVERY non-zero status rather than keying correctness to one gh error
+# phrase. MERGED is success because the requested operation landed; local cleanup
+# is actionable follow-up, not a failed merge. An unreadable state is explicitly
+# indeterminate — never reinterpret an API failure as evidence that no merge ran.
+if [ "$merge_rc" -ne 0 ]; then
+    post_state=""
+    post_head=""
+    post_base=""
+    post_state_rc=0
+    post_line=$(pr_state_and_head_now 2>/dev/null) || post_state_rc=$?
+    if [ "$post_state_rc" -ne 0 ]; then
+        echo "merge-on-green: gh exited $merge_rc and the PR state re-query failed (exit $post_state_rc) — merge outcome is INDETERMINATE. Check the PR; do NOT retry until its state is known." >&2
+        audit "INDETERMINATE reason=merge-state-query-failed gh_rc=$merge_rc state_query_rc=$post_state_rc repo=$nwo pr=#$pr_num sha=$sha"
+        exit 15
     fi
+    post_state=${post_line%% *}
+    post_rest=${post_line#* }
+    post_head=${post_rest%% *}
+    post_base=${post_rest#* }
+    if [ "$post_state" = "MERGED" ] && [ "$post_head" != "$sha" ]; then
+        # gh's own merge call FAILED, so --match-head-commit never confirmed
+        # $sha — the MERGED state belongs to a commit a concurrent actor
+        # merged in the gap before this re-query. Do not attribute it to $sha.
+        echo "merge-on-green: PR is MERGED but the merged head ($post_head) does not match the certified sha ($sha) — a different commit merged concurrently; NOT crediting this run. Check the PR manually." >&2
+        audit "REFUSED reason=merge-state-head-mismatch repo=$nwo pr=#$pr_num sha=$sha merged_head=$post_head gh_rc=$merge_rc"
+        exit 15
+    fi
+    if [ "$post_state" = "MERGED" ] && [ "$post_base" != "$pr_base" ]; then
+        # Same certified sha, but it landed on a DIFFERENT base than the one
+        # guard 3b re-verified right before this merge attempt — a concurrent
+        # retarget-then-merge (`gh pr edit --base` does not move the head).
+        # --match-head-commit only pins the head, never the base, so this
+        # recovery path needs its own base check exactly like guard 3b's.
+        echo "merge-on-green: PR is MERGED at the certified sha but landed on base '$post_base', not the authorized '$pr_base' — a concurrent retarget-then-merge; NOT crediting this run. Check the PR manually." >&2
+        audit "REFUSED reason=merge-state-base-mismatch repo=$nwo pr=#$pr_num sha=$sha authorized_base=$pr_base merged_base=$post_base gh_rc=$merge_rc"
+        exit 15
+    fi
+    if [ "$post_state" = "MERGED" ]; then
+        cleanup_worktree=$(printf '%s\n' "$merge_out" | sed -n "s/.*worktree at ['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}.*/\1/p" | sed -n '1p')
+        cleanup_worktree=${cleanup_worktree%/}
+        cleanup_worktree=${cleanup_worktree##*/}
+        [ -n "$cleanup_worktree" ] || cleanup_worktree="not-reported"
+        audit "MERGED repo=$nwo pr=#$pr_num sha=$sha gate=check-ci:0 cleanup-failed=gh-exit-$merge_rc worktree=$cleanup_worktree"
+        echo "merge-on-green: merged PR #$pr_num @ $sha (repo $nwo, squash); MERGED (cleanup-failed: gh exit $merge_rc, worktree $cleanup_worktree). ${merge_out:-}"
+        exit 0
+    fi
+    merge_out="$merge_out [PR confirmed ${post_state:-<empty>}, not MERGED]"
 fi
 # CONFIRM the merge landed before reporting it (coderabbit): a zero rc from
 # `gh pr merge` means "accepted", which under a merge queue can still be a PR
@@ -398,19 +458,67 @@ fi
 # the remote until it reports MERGED, and refuse to claim success otherwise.
 # (The cosmetic path above already confirmed MERGED; this re-query returns it
 # immediately in that case.)
+#
+# Poll head+base too (codex-adv review, HIMMEL-1394), not just state: while
+# queued, --match-head-commit's acceptance-time confirmation is no longer
+# proof of what actually lands — a concurrent retarget or a different commit
+# merging into the queue in that window must not be credited to this run,
+# exactly like the failure-recovery path above.
 if [ "$merge_rc" -eq 0 ]; then
     final_state=""
+    final_head=""
+    final_base=""
+    # Track the LAST poll attempt's query status separately from final_state
+    # (critic-panel codex-1, HIMMEL-1394): a query failure must not collapse
+    # into the same "OPEN/not yet reflected" bucket as a genuine read, or a
+    # persistent post-acceptance API failure gets misreported as merely
+    # "unconfirmed" below instead of INDETERMINATE — the same distinction the
+    # failure-recovery path above already makes on ITS OWN re-query failure.
+    # A single transient failure mid-poll still just retries (final_state
+    # stays empty, same as an OPEN/not-yet-reflected read); only the LAST
+    # attempt's status decides indeterminate-vs-unconfirmed after the loop.
+    final_query_rc=0
     tries=0
     while [ "$tries" -lt 30 ]; do
-        final_state=$(pr_state_now)
+        final_line=$(pr_state_and_head_now 2>/dev/null); final_query_rc=$?
+        if [ "$final_query_rc" -ne 0 ]; then
+            final_state=""
+        else
+            final_state=${final_line%% *}
+            final_rest=${final_line#* }
+            final_head=${final_rest%% *}
+            final_base=${final_rest#* }
+        fi
         case "$final_state" in
             MERGED) break ;;
-            OPEN|'') ;;   # queued / not yet reflected — keep waiting
+            OPEN|'') ;;   # queued / not yet reflected, or a failed query — keep waiting
             *) break ;;   # CLOSED or unexpected — stop; handled below
         esac
         tries=$((tries + 1))
         [ "$tries" -lt 30 ] && sleep 2
     done
+    if [ "$final_state" != "MERGED" ] && [ "$final_query_rc" -ne 0 ]; then
+        echo "merge-on-green: gh accepted the merge but the post-merge state re-query failed (exit $final_query_rc) after polling — merge outcome is INDETERMINATE. Check the PR; do NOT retry until its state is known." >&2
+        audit "INDETERMINATE reason=merge-state-query-failed repo=$nwo pr=#$pr_num sha=$sha"
+        exit 15
+    fi
+    if [ "$final_state" = "MERGED" ] && [ "$final_head" != "$sha" ]; then
+        # gh's own merge call ACCEPTED $sha (queue admission), but the queue's
+        # actual merge landed a different head — a concurrent actor merged in
+        # the gap while this run was queued. Do not attribute it to $sha.
+        echo "merge-on-green: PR #$pr_num reached MERGED but the merged head ($final_head) does not match the certified sha ($sha) — a different commit merged concurrently while queued; NOT crediting this run. Check the PR manually." >&2
+        audit "REFUSED reason=merge-state-head-mismatch repo=$nwo pr=#$pr_num sha=$sha merged_head=$final_head"
+        exit 15
+    fi
+    if [ "$final_state" = "MERGED" ] && [ "$final_base" != "$pr_base" ]; then
+        # Same certified sha, but it landed on a DIFFERENT base than guard 3b
+        # re-verified right before the merge attempt — a concurrent
+        # retarget-then-merge while queued (`gh pr edit --base` does not move
+        # the head, so --match-head-commit alone cannot catch this).
+        echo "merge-on-green: PR #$pr_num reached MERGED at the certified sha but landed on base '$final_base', not the authorized '$pr_base' — a concurrent retarget while queued; NOT crediting this run. Check the PR manually." >&2
+        audit "REFUSED reason=merge-state-base-mismatch repo=$nwo pr=#$pr_num sha=$sha authorized_base=$pr_base merged_base=$final_base"
+        exit 15
+    fi
     if [ "$final_state" = "MERGED" ]; then
         audit "MERGED repo=$nwo pr=#$pr_num sha=$sha gate=check-ci:0"
         echo "merge-on-green: merged PR #$pr_num @ $sha (repo $nwo, squash). ${merge_out:-}"

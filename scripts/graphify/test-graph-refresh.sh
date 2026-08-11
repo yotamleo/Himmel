@@ -460,4 +460,123 @@ else
     skip "symlink creation unavailable on this platform (ln -s made a copy or failed) -- symlink-accept preflight not exercised"
 fi
 
+# ============================================================================
+# Test 16: HOME-guard filesystem identity (HIMMEL-1670). The HOME guard must
+# identify "this root IS home" by filesystem IDENTITY (device+inode), not
+# case-folded path text, so the refusal set only GROWS (a symlink / trailing
+# slash / `.` / `..` / 8.3-short-path spelling of HOME is still REFUSED) while
+# a genuinely-different case-distinct directory on a case-SENSITIVE FS is
+# ALLOWED (the false refusal the old lowercase-fold text compare produced).
+# Fail CLOSED: an identity probe that cannot resolve REFUSES. Covers the five
+# brief cases + the case-sensitivity dimension (asserted by source inspection,
+# since a case-sensitive FS cannot be faked on this Windows box -- realpath and
+# pwd -P do NOT normalize case here, so two case spellings of one dir are one
+# inode, never two different dirs).
+# ============================================================================
+echo "TEST: HOME guard refuses HOME by filesystem identity (HIMMEL-1670)"
+DV_HOME="$(bash -c "$DV_SRC"$'\n'"resolve_user_home")"
+
+# 16a (case 1): HOME itself -> REFUSED.
+reset_runner_log
+rc=0; out=$(run_refresh himmel --vault "$DV_HOME" 2>&1) || rc=$?
+assert_rc "16a HOME itself -> rc 2" 2 "$rc"
+assert_contains "16a HOME refuse names HOME" "HOME" "$out"
+assert_eq "16a HOME refusal fired no runner leg" "" "$(cat "$RUNNER_LOG")"
+
+# 16b (case 2): a symlink pointing at HOME -> REFUSED (the new coverage over a
+# pure-text guard). Build a SMALL temp stand-in HOME and symlink THAT -- never
+# symlink the operator's real home: on MSYS without the symlink privilege ln -s
+# falls back to a recursive COPY, which against the real home would copy
+# gigabytes and hang the suite. Set HOME to the stand-in and point --vault at
+# the symlink; stat follows the link so its inode == HOME's -> refused. Loud-
+# skip where the platform cannot create a real symlink (MSYS ln -s makes a COPY,
+# a different file -- matches Tests 14/15); the LOGIC is also asserted by 16f.
+FAKE_HOME16="$TMP_ROOT/fake-home-16"
+mkdir -p "$FAKE_HOME16"
+HOME_LINK16="$TMP_ROOT/home-link-16"
+if ln -s "$FAKE_HOME16" "$HOME_LINK16" 2>/dev/null && [ -L "$HOME_LINK16" ]; then
+    rc=0; out=$(
+        HOME="$FAKE_HOME16" USERPROFILE=""
+        export HOME USERPROFILE
+        GRAPH_REFRESH_RUNNER="$FAKE_RUNNER" GRAPH_REFRESH_CADENCE_SCRIPT="$FAKE_CADENCE" \
+        LUNA_VAULT_PATH="$VAULT" "$REAL_BASH" "$SCRIPT" himmel --vault "$HOME_LINK16" 2>&1
+    ) || rc=$?
+    assert_rc "16b symlink-to-HOME -> rc 2" 2 "$rc"
+    assert_contains "16b symlink-HOME refuse names HOME" "HOME" "$out"
+else
+    skip "16b symlink creation unavailable on this platform (ln -s made a copy or failed) -- symlink-to-HOME identity refusal not exercised"
+fi
+
+# 16c (case 3): trailing-slash and `.`-segment spellings of HOME -> REFUSED.
+# Identity (inode) collapses these to HOME regardless of spelling.
+for spelling in "$DV_HOME/" "$DV_HOME/."; do
+    reset_runner_log
+    rc=0; out=$(run_refresh himmel --vault "$spelling" 2>&1) || rc=$?
+    assert_rc "16c HOME spelling -> rc 2 ($spelling)" 2 "$rc"
+    assert_contains "16c HOME spelling refuse names HOME" "HOME" "$out"
+done
+
+# 16d (case 4): a normal corpus root that is NOT HOME -> ALLOWED.
+NORMAL_ROOT="$TMP_ROOT/normal-root"
+mkdir -p "$NORMAL_ROOT"
+reset_runner_log
+rc=0; out=$(run_refresh himmel --vault "$NORMAL_ROOT" 2>&1) || rc=$?
+assert_rc "16d non-HOME root -> rc 0 (allowed)" 0 "$rc"
+assert_contains "16d non-HOME root ran the himmel leg" "--name himmel" "$(sed -n '1p' "$RUNNER_LOG")"
+
+# 16e (case 5): the identity probe failing -> REFUSED (fail-closed). Force the
+# operator HOME to a non-existent path and clear USERPROFILE so resolve_user_home
+# takes the $HOME branch: stat on a missing dir fails, so _fs_id returns 1 and
+# the guard REFUSES rather than allow. A text compare (the old lowercase-fold
+# path) would have ALLOWED this -- so a refusal here is also the behavioral
+# proof the HOME check uses the identity probe, not case-folded text. Invoke the
+# wrapper directly (not via run_refresh) with HOME/USERPROFILE exported in the
+# command-substitution subshell so the child bash inherits them.
+BOGUS_HOME="$TMP_ROOT/does-not-exist-home"
+rc=0; out=$(
+    HOME="$BOGUS_HOME" USERPROFILE=""
+    export HOME USERPROFILE
+    GRAPH_REFRESH_RUNNER="$FAKE_RUNNER" GRAPH_REFRESH_CADENCE_SCRIPT="$FAKE_CADENCE" \
+    LUNA_VAULT_PATH="$VAULT" "$REAL_BASH" "$SCRIPT" himmel --vault "$NORMAL_ROOT" 2>&1
+) || rc=$?
+assert_rc "16e unprovable HOME identity -> rc 2 (fail-closed)" 2 "$rc"
+assert_contains "16e fail-closed message names fail-closed" "fail-closed" "$out"
+
+# 16f (case-sensitivity logic dimension): a case-SENSITIVE FS cannot be faked
+# on this Windows box, so assert the LOGIC -- the HOME-comparison region uses
+# device+inode identity (_fs_id) and no longer case-folds path text. TDD shape:
+# red on pre-fix source (marker absent), green after.
+region="$(sed -n '/HOME identity guard (HIMMEL-1670)/,/HARD-refuse PHI/p' "$SCRIPT")"
+if [ -z "$region" ]; then
+    fail "16f HOME identity-guard region not found in source (HIMMEL-1670 marker absent)"
+else
+    assert_contains "16f HOME guard uses filesystem identity (_fs_id)" "_fs_id" "$region"
+    assert_not_contains "16f HOME guard dropped the lowercase-fold mechanism (_lc gone)" "_lc" "$region"
+fi
+
+# 16g (symlink-dereference logic dimension, HIMMEL-1670 CR codex-adv-1): the
+# symlink-to-HOME bypass is exercised behaviourally by 16b, but 16b SKIPS on
+# every platform without symlink support -- including this Windows box, where
+# `ln -s` copies. A skipped test is not a passing one, so a green suite here is
+# no evidence the bypass is closed. Pin the two mechanisms in the SOURCE
+# instead, the same shape as 16f, so the regression is caught on any platform.
+#
+# Both are required. stat defaults to LSTAT, so without -L a symlinked vault
+# reports the LINK's inode, which never equals HOME's -> guard passes.
+fsid_region="$(sed -n '/^_fs_id()/,/^}/p' "$SCRIPT")"
+if [ -z "$fsid_region" ]; then
+    fail "16g _fs_id definition not found in source"
+else
+    assert_contains "16g _fs_id dereferences symlinks via stat -L (GNU)" "stat -L -c" "$fsid_region"
+    assert_contains "16g _fs_id dereferences symlinks via stat -L (BSD)" "stat -L -f" "$fsid_region"
+fi
+if [ -z "$region" ]; then
+    fail "16g HOME identity-guard region not found in source"
+else
+    # shellcheck disable=SC2016 # these are literal SOURCE-TEXT needles to match, not expansions
+    assert_contains "16g HOME guard probes the symlink-RESOLVED vault path" '_fs_id "$class_path"' "$region"
+    # shellcheck disable=SC2016 # ditto -- expanding would defeat the assertion
+    assert_not_contains "16g HOME guard no longer probes the lexical \$canon" '_fs_id "$canon"' "$region"
+fi
+
 summary

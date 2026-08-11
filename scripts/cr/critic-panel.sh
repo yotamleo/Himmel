@@ -175,14 +175,34 @@ fi
 # HIMMEL-1096 Z.ai-key compliance note; deliberately NOT loaded at the hermes
 # chokepoint (invoke.sh stays auth-agnostic, HIMMEL-278). load_dotenv exports each
 # key it sets, so the child critic-first-pass.sh -> invoke.sh processes inherit it.
+# HIMMEL-1065: CLIPROXY_API_KEY is the codex critic's auth credential. The codex
+# member runs via critic-first-pass.sh -> hermes/invoke.sh, whose openai-codex
+# provider defers auth to the INHERITED env (invoke.sh loads no dotenv itself),
+# so it must be exported here. Without this load a worktree run (no .env of its
+# own) leaves it unset, the codex critic dies rc=2, critic-first-pass.sh fails
+# OPEN, and the panel prints a 0/0/0 "clean" review. It is gated on its OWN
+# provider probe, NOT on the Z.ai one: a codex-only registry (CRITICS_JSON, or a
+# local overlay that drops the GLM row) is a supported shape, and folding the key
+# into the zai/glm gate would leave exactly that shape unauthenticated — the same
+# fail-open this ticket exists to close. Both probes read the FULL registry (set
+# before tier filtering), so each fires whenever its critic is present at all.
+_CRED_KEYS=""
 if grep -Eq '"(zai|glm)"' "$REG" 2>/dev/null; then
+    _CRED_KEYS="$_CRED_KEYS GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY"
+fi
+if grep -Eq '"(openai-codex|codex)"' "$REG" 2>/dev/null; then
+    _CRED_KEYS="$_CRED_KEYS CLIPROXY_API_KEY"
+fi
+if [ -n "$_CRED_KEYS" ]; then
     # shellcheck source=../lib/load-dotenv.sh
     # shellcheck disable=SC1091
     . "$SCRIPT_DIR/../lib/load-dotenv.sh" 2>/dev/null || true
     if command -v load_dotenv >/dev/null 2>&1; then
         # HIMMEL-1648: pin to SCRIPT-ROOT resolution so a panel run from an
         # unrelated git repo still reads himmel's .env, not THAT repo's.
-        load_dotenv --root "$(_load_dotenv_primary_for "$SCRIPT_DIR/../..")" GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY 2>/dev/null || true
+        # Unquoted on purpose — $_CRED_KEYS is a word-split list of KEY names.
+        # shellcheck disable=SC2086
+        load_dotenv --root "$(_load_dotenv_primary_for "$SCRIPT_DIR/../..")" $_CRED_KEYS 2>/dev/null || true
     fi
 fi
 
@@ -791,6 +811,26 @@ _append_panel_ledger() {
     [ "$_apl_failed" -eq 0 ]
 }
 
+# HIMMEL-1065: emit the per-critic unavailability list for the zero-responder
+# fail-closed block. Reads the SAME per-member avail spool _append_panel_ledger
+# globs (one terminal record per member: slug, status, responding-model, reason,
+# detail), so the stdout block and the ledger rows agree. Bash 3.2 safe (no
+# arrays / mapfile).
+_emit_unavailable_critics() {
+    _uc_spool=""
+    for _uc_spool in "$PANEL_SPOOL_DIR"/avail.*; do
+        [ -f "$_uc_spool" ] || continue
+        while IFS=$'\034' read -r _uc_slug _uc_status _uc_resp _uc_reason _uc_detail; do
+            [ -n "$_uc_slug" ] || continue
+            [ "$_uc_status" = "unavailable" ] || continue
+            _uc_line="- $_uc_slug: unavailable"
+            [ -n "$_uc_reason" ] && _uc_line="$_uc_line reason=$_uc_reason"
+            [ -n "$_uc_detail" ] && _uc_line="$_uc_line ($_uc_detail)"
+            printf '%s\n' "$_uc_line"
+        done < "$_uc_spool"
+    done
+}
+
 # ---------------------------------------------------------------------------
 # _is_quota_exhaustion <out_file> <err_file> (HIMMEL-729)
 # Return 0 (true) if the member's captured stdout OR stderr matches a
@@ -1323,14 +1363,35 @@ nc=0; ni=0; ns=0
 # Emit merged block in heading contract format
 printf '# Critic Panel Review (%d/%d critics responded)\n' "$responded" "$total"
 printf '\n'
-printf '## Critical Issues (%d found)\n' "$nc"
-[ -n "$agg_crit" ] && printf '%s\n' "$agg_crit"
-printf '\n'
-printf '## Important Issues (%d found)\n' "$ni"
-[ -n "$agg_imp" ] && printf '%s\n' "$agg_imp"
-printf '\n'
-printf '## Suggestions (%d found)\n' "$ns"
-[ -n "$agg_sug" ] && printf '%s\n' "$agg_sug"
+if [ "$responded" -ge 1 ]; then
+    printf '## Critical Issues (%d found)\n' "$nc"
+    [ -n "$agg_crit" ] && printf '%s\n' "$agg_crit"
+    printf '\n'
+    printf '## Important Issues (%d found)\n' "$ni"
+    [ -n "$agg_imp" ] && printf '%s\n' "$agg_imp"
+    printf '\n'
+    printf '## Suggestions (%d found)\n' "$ns"
+    [ -n "$agg_sug" ] && printf '%s\n' "$agg_sug"
+else
+    # HIMMEL-1065: fail CLOSED on zero responders. The three "(0 found)"
+    # sections are byte-identical to a genuinely clean review, so a
+    # stdout-capturing caller (or a human reading a log) could conclude the PR
+    # passed. Emit NO findings section; print an unmistakable unavailability
+    # block naming which critics were unreachable and why, reusing the tracked
+    # avail reasons (_emit_unavailable_critics reads the same spool as the
+    # ledger). The ledger append + non-zero exit below STILL run — the
+    # unavailable rows are what cr-scores.sh reports on, and the exit code is
+    # the hard fail-closed signal.
+    printf '## REVIEW NOT PERFORMED (0 of %d critics responded)\n' "$total"
+    printf '\n'
+    printf 'This is NOT a clean review. The panel reached no critic, so no\n'
+    printf 'findings were collected. Do NOT treat this output as a passed review.\n'
+    printf '\n'
+    printf 'Unavailable critics:\n'
+    _emit_unavailable_critics
+    printf '\n'
+    printf 'Resolve the unavailability above and re-run the review.\n'
+fi
 
 # The stdin-outside-worktree path skips certification (HIMMEL-1494): the review
 # was emitted, but with no worktree there is nothing to stamp, so a failed (or

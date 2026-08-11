@@ -80,6 +80,53 @@ run_in_with_path() {
     echo "$?"
 }
 
+# Run the hook capturing its stderr (every refusal message is written >&2)
+# into the global LAST_MSG, and echo the exit code. `2>&1 >/dev/null` dups
+# stderr onto the captured pipe BEFORE stdout is sent to /dev/null, so only
+# stderr is captured. One invocation yields both rc and message (HIMMEL-1562
+# reason-string assertions need the message, not just the return code).
+#
+# Both results come back as GLOBALS, and callers MUST invoke this directly —
+# never as `rc=$(run_capture ...)`. A command substitution runs the function in
+# a SUBSHELL, so the LAST_MSG assignment is discarded and every message
+# assertion silently compares against an empty string. That is exactly how this
+# was first written, and all 13 reason-string cases "failed" for text the hook
+# was in fact emitting. `LAST_MSG=$(...)` sets `$?` to the substitution's exit
+# status, so LAST_RC still captures the hook's real return code.
+LAST_MSG=""
+LAST_RC=""
+run_capture() {
+    local dir="$1" env_assign="${2:-}"
+    if [ -n "$env_assign" ]; then
+        LAST_MSG=$( cd "$dir" && env "$env_assign" bash "$HOOK" 2>&1 >/dev/null )
+    else
+        LAST_MSG=$( cd "$dir" && bash "$HOOK" 2>&1 >/dev/null )
+    fi
+    LAST_RC=$?
+}
+
+assert_msg_contains() {
+    local label="$1" haystack="$2" needle="$3"
+    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+        echo "PASS $label"
+    else
+        echo "FAIL $label — message missing expected text: $needle"
+        echo "     message was: $haystack"
+        FAILED=$((FAILED + 1))
+    fi
+}
+
+assert_msg_absent() {
+    local label="$1" haystack="$2" needle="$3"
+    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+        echo "FAIL $label — message unexpectedly contains: $needle"
+        echo "     message was: $haystack"
+        FAILED=$((FAILED + 1))
+    else
+        echo "PASS $label"
+    fi
+}
+
 # --- BLOCK cases (rc=1) ---
 d=$(make_repo "src/foo.ts" "feat: add foo")
 assert_rc "code change + no attestation"             1 "$(run_in "$d")"
@@ -148,6 +195,53 @@ rm -rf "$d"
 # Empty value does NOT count
 d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed:\n')")
 assert_rc "code + empty value = block"               1 "$(run_in "$d")"
+rm -rf "$d"
+
+# --- HIMMEL-1562: refusal distinguishes MISSING (case a) from NONCONFORMING (case b) ---
+#
+# Regression. The refusal used to always say "no attestation was found" —
+# which misdirects the operator when the trailer EXISTS but its value failed
+# to match an accepted token. Two live 2026-08-05 overnight instances: pure
+# prose after the colon (burned an empty restatement commit) and a near-miss
+# (`manually` vs `manual`) that passed only because an earlier commit in the
+# range carried a bare conforming token. The fix splits the block message;
+# these cases pin the SPECIFIC refusal text (reason-string assertions, not rc
+# alone — rc alone cannot tell case a from case b, which is the whole bug).
+
+# Case (a): no `Security reviewed:` trailer anywhere.
+d=$(make_repo "src/foo.ts" "feat: no attestation at all")
+run_capture "$d"; rc=$LAST_RC
+assert_rc           "1562 case(a): no trailer -> block rc=1"            1 "$rc"
+assert_msg_contains "1562 case(a): says attestation missing"            "$LAST_MSG" "no"
+assert_msg_contains "1562 case(a): says 'attestation was found' wording" "$LAST_MSG" "attestation was found"
+assert_msg_contains "1562 case(a): names accepted tokens"               "$LAST_MSG" "claude-code-security-review"
+assert_msg_contains "1562 case(a): shows required shape"                "$LAST_MSG" "token first, prose after"
+assert_msg_absent   "1562 case(a): NOT the nonconforming wording"       "$LAST_MSG" "NONE matched"
+rm -rf "$d"
+
+# Case (b): trailer present, pure prose, no leading token (the instance-1 shape).
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: round guard only ever refuses on a missing trailer\n')")
+offend_sha=$(git -C "$d" rev-parse --short HEAD)
+run_capture "$d"; rc=$LAST_RC
+assert_rc           "1562 case(b): prose trailer -> block rc=1"         1 "$rc"
+assert_msg_contains "1562 case(b): says present-but-nonconforming"      "$LAST_MSG" "NONE matched"
+assert_msg_contains "1562 case(b): quotes the offending line"           "$LAST_MSG" "round guard only ever refuses"
+assert_msg_contains "1562 case(b): quotes the source sha"               "$LAST_MSG" "$offend_sha"
+assert_msg_contains "1562 case(b): names accepted tokens"               "$LAST_MSG" "claude-code-security-review"
+assert_msg_absent   "1562 case(b): NOT the missing-attestation wording" "$LAST_MSG" "attestation was found"
+assert_msg_absent   "1562 case(b): pure prose -> NO near-miss hint"     "$LAST_MSG" "STARTS with an accepted token"
+rm -rf "$d"
+
+# Case (b) + near-miss: value STARTS with an accepted token but fails the
+# end-anchor — `manually` vs `manual` (the instance-2 shape).
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manually reviewed the diff\n')")
+run_capture "$d"; rc=$LAST_RC
+assert_rc           "1562 case(b) near-miss: manually -> block rc=1"    1 "$rc"
+assert_msg_contains "1562 near-miss: says present-but-nonconforming"    "$LAST_MSG" "NONE matched"
+assert_msg_contains "1562 near-miss: quotes offending line"             "$LAST_MSG" "manually reviewed the diff"
+assert_msg_contains "1562 near-miss: near-miss hint present"            "$LAST_MSG" "STARTS with an accepted token"
+assert_msg_contains "1562 near-miss: names the token/anchor rule"        "$LAST_MSG" "manually"
+assert_msg_contains "1562 near-miss: explains the end-anchor"           "$LAST_MSG" "end-of-line"
 rm -rf "$d"
 
 # Skip marker

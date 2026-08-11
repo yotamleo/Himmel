@@ -1221,6 +1221,118 @@ check "HIMMEL-1648: panel loads the himmel-root .env key (not the cwd repo's dec
        bash "$P1648_ROOT/scripts/cr/critic-panel.sh" >/dev/null 2>&1 )
 check "HIMMEL-1648: panel preserves the live process env key over .env" "$(cat "$P1648_KEY" 2>/dev/null)" "process-key"
 
+# --- HIMMEL-1065 residual 1: codex critic credential (CLIPROXY_API_KEY) ---------
+# resolves from the PRIMARY checkout's .env via the same script-root-pinned
+# load_dotenv as the Z.ai keys, so a worktree run (no .env of its own) still
+# authenticates the codex critic (which runs critic-first-pass.sh ->
+# hermes/invoke.sh, whose openai-codex provider defers auth to the inherited env).
+# Same fixture shape as HIMMEL-1648: a fake himmel root carries the key ONLY in
+# its .env; the process cwd is a DIFFERENT git repo with a DECOY. The registry is
+# the default codex+glm shape (the glm row's "zai"/"glm" trips the load gate,
+# which reads the FULL registry before tier filtering); a stubbed member captures
+# the inherited CLIPROXY_API_KEY. A live process value still wins (only-when-unset).
+P1065_ROOT="$tmp/p1065-root"; mkdir -p "$P1065_ROOT/scripts/cr" "$P1065_ROOT/scripts/lib"
+cp "$PANEL" "$P1065_ROOT/scripts/cr/critic-panel.sh"
+cp "$HERE/../lib/load-dotenv.sh" "$P1065_ROOT/scripts/lib/load-dotenv.sh"
+printf 'CLIPROXY_API_KEY=cpx-himmel-root\n' > "$P1065_ROOT/.env"
+P1065_CWX="$tmp/p1065-cwd"; mkdir -p "$P1065_CWX"; git init -q "$P1065_CWX"
+git -C "$P1065_CWX" config user.name test
+git -C "$P1065_CWX" config user.email t@e.invalid
+printf 'x\n' > "$P1065_CWX/README"; git -C "$P1065_CWX" add README; git -C "$P1065_CWX" commit -q -m init
+printf 'CLIPROXY_API_KEY=DECOY-cwd-value\n' > "$P1065_CWX/.env"
+P1065_JSON="$tmp/p1065-reg.json"
+printf '%s' '{"panel":[{"slug":"codex","model":"gpt-5.5","provider":"openai-codex","tier":"paid"},{"slug":"glm","model":"glm-5.2","provider":"zai","tier":"paid"}]}' > "$P1065_JSON"
+P1065_KEY="$tmp/p1065-key"
+P1065_STUB="$tmp/p1065-cfp.sh"
+cat > "$P1065_STUB" <<EOS
+#!/usr/bin/env bash
+printf '%s' "\${CLIPROXY_API_KEY:-}" > "$P1065_KEY"
+echo "# codex First-Pass Review"
+echo ""
+echo "## Critical Issues (0 found)"
+echo ""
+echo "## Important Issues (0 found)"
+echo ""
+echo "## Suggestions (0 found)"
+EOS
+chmod +x "$P1065_STUB"
+# Worktree-equivalent: run from the UNRELATED cwd repo with the key absent from
+# the process env. The codex critic must inherit the himmel-root key, never the
+# cwd decoy (pre-fix the key was never loaded at all -> codex died rc=2).
+: > "$P1065_KEY"
+( cd "$P1065_CWX" && unset CLIPROXY_API_KEY GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY \
+    && printf '%s' "$DIFF" | CRITICS_JSON="$P1065_JSON" CRITIC_FIRST_PASS="$P1065_STUB" \
+       bash "$P1065_ROOT/scripts/cr/critic-panel.sh" >/dev/null 2>&1 )
+check "HIMMEL-1065: codex credential resolves from the primary .env (not the cwd repo's decoy)" "$(cat "$P1065_KEY" 2>/dev/null)" "cpx-himmel-root"
+# A live process value still wins (load_dotenv only-when-unset).
+: > "$P1065_KEY"
+( cd "$P1065_CWX" && export CLIPROXY_API_KEY=process-key \
+    && printf '%s' "$DIFF" | CRITICS_JSON="$P1065_JSON" CRITIC_FIRST_PASS="$P1065_STUB" \
+       bash "$P1065_ROOT/scripts/cr/critic-panel.sh" >/dev/null 2>&1 )
+check "HIMMEL-1065: live process CLIPROXY_API_KEY wins over the .env value" "$(cat "$P1065_KEY" 2>/dev/null)" "process-key"
+# ...and on a codex-ONLY registry. The fixture above carries a glm row, which
+# trips the Z.ai load gate — so it CANNOT distinguish "the codex key is loaded
+# because a codex critic is present" from "because a Z.ai critic happens to be
+# present too". A codex-only registry is a supported shape (CRITICS_JSON, or a
+# local overlay that drops the GLM row); folding the codex key into the Z.ai gate
+# left exactly that shape unauthenticated -> codex rc=2 -> the fail-open 0/0/0
+# this ticket closes. This fixture removes the mask: no zai/glm row anywhere.
+P1065_CODEX_ONLY="$tmp/p1065-codex-only.json"
+printf '%s' '{"panel":[{"slug":"codex","model":"gpt-5.5","provider":"openai-codex","tier":"paid"}]}' > "$P1065_CODEX_ONLY"
+: > "$P1065_KEY"
+( cd "$P1065_CWX" && unset CLIPROXY_API_KEY GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY \
+    && printf '%s' "$DIFF" | CR_PROFILE=paid CRITICS_JSON="$P1065_CODEX_ONLY" CRITIC_FIRST_PASS="$P1065_STUB" \
+       bash "$P1065_ROOT/scripts/cr/critic-panel.sh" >/dev/null 2>&1 )
+check "HIMMEL-1065: codex-ONLY registry still loads the codex credential (no zai/glm row to trip the gate)" "$(cat "$P1065_KEY" 2>/dev/null)" "cpx-himmel-root"
+# Converse: a registry with NO codex critic must not need the codex key to load
+# for the Z.ai keys to resolve — the two probes are independent, not coupled.
+P1065_GLM_ONLY="$tmp/p1065-glm-only.json"
+printf '%s' '{"panel":[{"slug":"glm","model":"glm-5.2","provider":"zai","tier":"paid"}]}' > "$P1065_GLM_ONLY"
+printf 'GLM_API_KEY=glm-himmel-root\n' >> "$P1065_ROOT/.env"
+P1065_GKEY="$tmp/p1065-glm-key"
+P1065_GSTUB="$tmp/p1065-glm-stub.sh"
+cat > "$P1065_GSTUB" <<EOS
+#!/usr/bin/env bash
+printf '%s' "\${GLM_API_KEY:-}" > "$P1065_GKEY"
+echo "# glm First-Pass Review"
+echo ""
+echo "## Critical Issues (0 found)"
+echo ""
+echo "## Important Issues (0 found)"
+echo ""
+echo "## Suggestions (0 found)"
+EOS
+chmod +x "$P1065_GSTUB"
+: > "$P1065_GKEY"
+( cd "$P1065_CWX" && unset CLIPROXY_API_KEY GLM_API_KEY ZAI_API_KEY Z_AI_API_KEY \
+    && printf '%s' "$DIFF" | CR_PROFILE=paid CRITICS_JSON="$P1065_GLM_ONLY" CRITIC_FIRST_PASS="$P1065_GSTUB" \
+       bash "$P1065_ROOT/scripts/cr/critic-panel.sh" >/dev/null 2>&1 )
+check "HIMMEL-1065: glm-ONLY registry still loads the Z.ai credential (codex probe does not gate it)" "$(cat "$P1065_GKEY" 2>/dev/null)" "glm-himmel-root"
+
+# --- HIMMEL-1065 residual 2: zero-responder fail-closed output ------------------
+# When EVERY critic is unavailable, the panel must emit NO "(N found)" findings
+# section (byte-identical to a clean review) and instead print an unmistakable
+# unavailability block naming the unreachable critics. Exit stays non-zero. A
+# stub that always fails makes the single paid codex member unavailable (0/1).
+P1065_ZJSON="$tmp/p1065-zero-reg.json"
+printf '%s' '{"panel":[{"slug":"codex","model":"gpt-5.5","provider":"openai-codex","tier":"paid"}]}' > "$P1065_ZJSON"
+P1065_FAIL_STUB="$tmp/p1065-fail.sh"
+cat > "$P1065_FAIL_STUB" <<'EOS'
+#!/usr/bin/env bash
+echo "stub: critic unreachable" >&2
+exit 1
+EOS
+chmod +x "$P1065_FAIL_STUB"
+P1065_ZRC=0
+P1065_ZOUT="$(printf '%s' "$DIFF" | CR_PROFILE=paid CRITICS_JSON="$P1065_ZJSON" CRITIC_FIRST_PASS="$P1065_FAIL_STUB" bash "$PANEL" 2>/dev/null)" || P1065_ZRC=$?
+check "HIMMEL-1065: zero responders -> non-zero exit (regression)" "$([ "$P1065_ZRC" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+check "HIMMEL-1065: zero responders -> NO '## Critical Issues' section" "$(printf '%s\n' "$P1065_ZOUT" | grep -cF '## Critical Issues')" "0"
+check "HIMMEL-1065: zero responders -> NO '## Important Issues' section" "$(printf '%s\n' "$P1065_ZOUT" | grep -cF '## Important Issues')" "0"
+check "HIMMEL-1065: zero responders -> NO '## Suggestions' section" "$(printf '%s\n' "$P1065_ZOUT" | grep -cF '## Suggestions')" "0"
+check_contains "HIMMEL-1065: zero responders -> unmistakable REVIEW NOT PERFORMED block" "$P1065_ZOUT" "REVIEW NOT PERFORMED"
+check_contains "HIMMEL-1065: zero responders -> names the unavailable critic" "$P1065_ZOUT" "- codex: unavailable"
+check_contains "HIMMEL-1065: zero responders -> header reports 0/1" "$P1065_ZOUT" "(0/1 critics responded)"
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

@@ -445,12 +445,19 @@ emit_bat() {
     # value left sitting among escaped ones, which is exactly how an unescaped
     # path gets used by accident later. Dropped rather than fed an escaped
     # value nothing reads.
-    local himmel_win_esc="$1" payload="$2" log_win_esc="$3" claude_dir_win_esc="${4:-}"
+    local himmel_win_esc="$1" payload="$2" log_win_esc="$3" claude_dir_win_esc="${4:-}" git_bin_esc="${5:-}"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
-    # schtasks fires with a minimal PATH that need not carry the npm-global bin
-    # dir, so pin the `claude` CLI the claude-cli backend shells (HIMMEL-1070).
-    if [ -n "$claude_dir_win_esc" ]; then
-        printf 'set "PATH=%s;%%PATH%%"\r\n' "$claude_dir_win_esc"
+    # Prepend Git's usr\bin + bin so a NON-LOGIN bash.exe finds GNU coreutils
+    # ahead of their System32 namesakes (HIMMEL-1672); then the npm-global bin
+    # dir pins the `claude` CLI the claude-cli backend shells (HIMMEL-1070).
+    # schtasks fires with a minimal PATH that carries neither by default. Git's
+    # dirs come FIRST (GNU tools must win over System32); claude_dir is appended
+    # when present.
+    local path_prefix="$git_bin_esc"
+    [ -n "$path_prefix" ] && [ -n "$claude_dir_win_esc" ] && path_prefix="$path_prefix;$claude_dir_win_esc"
+    [ -n "$path_prefix" ] || path_prefix="$claude_dir_win_esc"
+    if [ -n "$path_prefix" ]; then
+        printf 'set "PATH=%s;%%PATH%%"\r\n' "$path_prefix"
     fi
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
@@ -713,6 +720,11 @@ cmd_arm() {
     bash_win_esc=$(cadence_cmd_escape "$bash_win")
     payload_luna="\"$bash_win_esc\" $payload_luna"
     payload_himmel="\"$bash_win_esc\" $payload_himmel"
+    # Git's usr\bin + bin, derived from the bash.exe path above (HIMMEL-1672):
+    # prepended to PATH in emit_bat so the non-login bash.exe finds GNU coreutils
+    # ahead of System32. Empty for a non-Git bash → emit_bat then omits the line.
+    local git_bin_esc
+    git_bin_esc=$(cadence_cmd_escape "$(cadence_git_bin_path_win "$bash_win")")
 
     local bat_luna="$BAT_DIR/graphmap-luna.bat"
     local bat_himmel="$BAT_DIR/graphmap-himmel.bat"
@@ -744,9 +756,9 @@ cmd_arm() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY graphmap-cadence: would write $bat_luna:"
-        emit_bat "$himmel_win_esc" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" | sed 's/^/    /'
+        emit_bat "$himmel_win_esc" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" "$git_bin_esc" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would write $bat_himmel:"
-        emit_bat "$himmel_win_esc" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" | sed 's/^/    /'
+        emit_bat "$himmel_win_esc" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" "$git_bin_esc" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_LUNA /xml <daily $LUNA_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_luna_win" "$LUNA_TIME" "$sched" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_HIMMEL /xml <daily $HIMMEL_TIME, StartWhenAvailable=true> /f"
@@ -756,8 +768,8 @@ cmd_arm() {
     fi
 
     mkdir -p "$BAT_DIR"
-    emit_bat "$himmel_win_esc" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" > "$bat_luna"
-    emit_bat "$himmel_win_esc" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" > "$bat_himmel"
+    emit_bat "$himmel_win_esc" "$payload_luna" "$log_luna_esc" "$claude_dir_win_esc" "$git_bin_esc" > "$bat_luna"
+    emit_bat "$himmel_win_esc" "$payload_himmel" "$log_himmel_esc" "$claude_dir_win_esc" "$git_bin_esc" > "$bat_himmel"
 
     local err_file
     err_file=$(mktemp -t graphmap-cadence.err.XXXXXX)

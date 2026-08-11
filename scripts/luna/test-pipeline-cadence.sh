@@ -427,7 +427,7 @@ fetch_health_sh=$(cat "$CRON_DIR/pipeline-fetch-health.sh" 2>/dev/null || echo M
 harvest_sh=$(cat "$CRON_DIR/pipeline-harvest.sh" 2>/dev/null || echo MISSING)
 synth_sh=$(cat "$CRON_DIR/pipeline-synthesize.sh" 2>/dev/null || echo MISSING)
 health_sh=$(cat "$CRON_DIR/pipeline-health.sh" 2>/dev/null || echo MISSING)
-assert_contains "fetch-health runner stamps the format version" "# himmel-cadence-runner-format: 7" "$fetch_health_sh"
+assert_contains "fetch-health runner stamps the format version" "# himmel-cadence-runner-format: 9" "$fetch_health_sh"
 assert_contains "fetch-health runner invokes the plain probe script" "fetch-health.py" "$fetch_health_sh"
 assert_not_contains "fetch-health runner invokes no claude" "claude --model" "$fetch_health_sh"
 assert_contains "fetch-health runner restores arming PATH (HIMMEL-1449 r2)" '; export PATH' "$fetch_health_sh"
@@ -475,9 +475,9 @@ if command -v env >/dev/null 2>&1 && [ -x /bin/sh ]; then
 else
     pass "fetch-health runner env -i execution skipped (host lacks env -i / /bin/sh)"
 fi
-assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 7" "$harvest_sh"
-assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 7" "$synth_sh"
-assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 7" "$health_sh"
+assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 9" "$harvest_sh"
+assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: 9" "$synth_sh"
+assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: 9" "$health_sh"
 assert_contains "harvest runner cds into vault" "cd $VAULT || exit 1" "$harvest_sh"
 assert_contains "harvest runner runs /harvest-clips" "/harvest-clips" "$harvest_sh"
 assert_contains "harvest runner chains /triage-clips" "/triage-clips" "$harvest_sh"
@@ -498,6 +498,12 @@ assert_contains "synth runner stamps every fire" '[fired' "$synth_sh"
 assert_contains "synth runner captures output to log" '>> "$log" 2>&1' "$synth_sh"
 assert_contains "health runner runs vault-lint" "obsidian-triage:vault-lint" "$health_sh"
 assert_contains "health runner bounded run"           "< /dev/null"      "$health_sh"
+for what in harvest synth health; do
+    body=$(eval "printf '%s' \"\$${what}_sh\"")
+    body_plain=${body//\\/}
+    assert_contains "$what runner requires foreground execution" "Run every command in the foreground. Never background a command or wait for a notification." "$body_plain"
+    assert_contains "$what runner carries the fail-closed bare marker instruction" "Only if this cadence leg genuinely completed all of its work, print exactly PIPELINE-LEG-DONE as the final line of your output, on its own line with no prefix, suffix, or punctuation." "$body_plain"
+done
 for what in harvest synth health; do
     body=$(eval "printf '%s' \"\$${what}_sh\"")
     if printf '%s\n' "$body" | grep -E "$HEADLESS_RE" >/dev/null 2>&1; then
@@ -1223,14 +1229,14 @@ fetch_health_bat=$(cat "$BAT_DIR/pipeline-fetch-health.bat" 2>/dev/null || echo 
 harvest_bat=$(cat "$BAT_DIR/pipeline-harvest.bat" 2>/dev/null || echo MISSING)
 synth_bat=$(cat "$BAT_DIR/pipeline-synthesize.bat" 2>/dev/null || echo MISSING)
 health_bat=$(cat "$BAT_DIR/pipeline-health.bat" 2>/dev/null || echo MISSING)
-assert_contains "fetch-health bat stamps the format version" "rem himmel-cadence-runner-format: 7" "$fetch_health_bat"
+assert_contains "fetch-health bat stamps the format version" "rem himmel-cadence-runner-format: 9" "$fetch_health_bat"
 assert_contains "fetch-health bat invokes the plain probe script" "fetch-health.py" "$fetch_health_bat"
 assert_not_contains "fetch-health bat invokes no claude" "claude --model" "$fetch_health_bat"
 assert_contains "fetch-health bat loads repo .env via for /f at fire time (HIMMEL-1470)" 'for /f' "$fetch_health_bat"
 assert_contains "fetch-health bat .env load targets the repo env file (HIMMEL-1470)" '.env"' "$fetch_health_bat"
-assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 7" "$harvest_bat"
-assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 7" "$synth_bat"
-assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 7" "$health_bat"
+assert_contains "harvest bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 9" "$harvest_bat"
+assert_contains "synth bat stamps the format version (HIMMEL-588)"   "rem himmel-cadence-runner-format: 9" "$synth_bat"
+assert_contains "health bat stamps the format version (HIMMEL-588)"  "rem himmel-cadence-runner-format: 9" "$health_bat"
 assert_contains "harvest bat cds into vault" 'cd /d "' "$harvest_bat"
 assert_contains "harvest bat runs /harvest-clips" "/harvest-clips" "$harvest_bat"
 assert_contains "harvest bat chains /triage-clips" "/triage-clips" "$harvest_bat"
@@ -1255,6 +1261,11 @@ fi
 assert_contains "health bat runs vault-lint" "obsidian-triage:vault-lint"  "$health_bat"
 assert_contains "health bat bounded run"           "< NUL"             "$health_bat"
 assert_contains "health bat appends run log" 'pipeline-health.log" 2>&1'     "$health_bat"
+for what in harvest synth health; do
+    body=$(eval "printf '%s' \"\$${what}_bat\"")
+    assert_contains "$what bat requires foreground execution" "Run every command in the foreground. Never background a command or wait for a notification." "$body"
+    assert_contains "$what bat carries the fail-closed bare marker instruction" "Only if this cadence leg genuinely completed all of its work, print exactly PIPELINE-LEG-DONE as the final line of your output, on its own line with no prefix, suffix, or punctuation." "$body"
+done
 for what in harvest synth health; do
     body=$(eval "printf '%s' \"\$${what}_bat\"")
     if printf '%s\n' "$body" | grep -E "$HEADLESS_RE" >/dev/null 2>&1; then

@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join, delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evalProbe } from './probe.mjs';
+import { formatBankAnnotation, parseBankStatusOutput } from './bank-status-core.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT  = join(SCRIPT_DIR, '..', '..');           // scripts/lanes -> repo (or worktree) root
@@ -77,6 +78,28 @@ export function mergeLocalOverlay(base, local) {
     if (local && Object.prototype.hasOwnProperty.call(local, key)) out[key] = local[key];
   }
   return out;
+}
+
+// resolveBankTargets(base, local, bankIds) -> { withBank, without } (HIMMEL-1690).
+// The bank probe (bank-status.ts) and /lanes must resolve quota-bank lanes
+// through the SAME overlay-aware merge the rest of the lane system uses, so a
+// lane that exists ONLY in lanes.local.json (an overlay-only quota bank)
+// reaches the probe and gets a real status instead of "no status returned".
+// Reuses mergeLocalOverlay — there is no second merge here to drift from it.
+// Pure (no I/O); bankIds is passed in because BANK_IDS lives in
+// scripts/observability/quota-sources.ts, which this module does not import.
+export function resolveBankTargets(base, local, bankIds) {
+  const merged = local ? mergeLocalOverlay(base, local) : base;
+  const ids = Array.isArray(bankIds) ? bankIds : [];
+  const withBank = [];
+  const without = [];
+  for (const lane of (merged && merged.lanes) || []) {
+    if (!lane || typeof lane.id !== 'string' || !lane.id) continue;
+    const bank = lane.quota && lane.quota.bank;
+    if (typeof bank === 'string' && ids.includes(bank)) withBank.push({ lane: lane.id, bank });
+    else without.push(lane.id);
+  }
+  return { withBank, without };
 }
 
 // Parse a KEY=VALUE from a .env line (one surrounding quote-pair stripped), matching glm-env.ts semantics.
@@ -190,10 +213,11 @@ export function fmtCtx(n) {
   return String(n);
 }
 
-function renderText(lanes, suppressed) {
+function renderText(lanes, suppressed, bankStatuses = new Map()) {
   const rows = lanes.map((l) => {
     const ctx = fmtCtx(l.contextWindow);
-    return `- ${l.label} — ${l.bestFor} (${l.effort})` + (ctx ? ` [ctx: ${ctx}]` : '');
+    const bank = l.quota?.bank ? ` ${formatBankAnnotation(bankStatuses.get(l.id))}` : '';
+    return `- ${l.label} — ${l.bestFor} (${l.effort})` + (ctx ? ` [ctx: ${ctx}]` : '') + bank;
   });
   let out = `Available delegation lanes on this machine (${lanes.length}):\n` + rows.join('\n');
   if (suppressed.length > 0) {
@@ -240,6 +264,27 @@ function runCodexHealth(repoRoot, env) {
   }
 }
 
+function runBankStatus(repoRoot, env, registry) {
+  const statuses = new Map();
+  try {
+    const out = execFileSync('bun', [join(repoRoot, 'scripts', 'lanes', 'bank-status.ts')], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10000,
+      env,
+    });
+    return parseBankStatusOutput(out);
+  } catch (e) {
+    const reason = e?.code === 'ETIMEDOUT'
+      ? 'bank probe timed out'
+      : `bank probe failed${typeof e?.status === 'number' ? ` (rc=${e.status})` : ''}`;
+    for (const lane of registry.lanes ?? []) {
+      if (lane.quota?.bank) statuses.set(lane.id, { guardState: 'unknown', detail: `unmeasurable reason=${JSON.stringify(reason)}` });
+    }
+    return statuses;
+  }
+}
+
 // --- CLI (no --check here; the drift guard is Task 6's check.mjs + bash hook) ---
 const mode = process.argv[2];
 if (process.argv[1]?.endsWith('resolve.mjs')) {
@@ -249,8 +294,9 @@ if (process.argv[1]?.endsWith('resolve.mjs')) {
   const suppressed = inventory.filter((row) => row.suppressedByProfile).map((row) => row.lane);
   if (mode === '--json') process.stdout.write(JSON.stringify(lanes, null, 2) + '\n');
   else {
+    const bankStatuses = runBankStatus(REPO_ROOT, process.env, registry);
     const { rc, out } = runCodexHealth(REPO_ROOT, process.env);
-    process.stdout.write(renderText(lanes, suppressed) + formatCodexHealth(rc, out));
+    process.stdout.write(renderText(lanes, suppressed, bankStatuses) + formatCodexHealth(rc, out));
   }
   process.exit(0);
 }

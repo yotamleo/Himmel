@@ -153,7 +153,7 @@ README's fork-delta section).
 | `claude-obsidian:autoresearch` | "research and save", "research into vault" | Research + auto-save to vault |
 | `claude-obsidian:wiki-query` | "query the wiki", "search vault" | Search across vault |
 
-**MCP server:** `obsidian-vault` (uvx mcp-obsidian) — tools: `list_files_in_vault`, `get_file_contents`, `append_content`, `patch_content`, `simple_search`, `complex_search`, `delete_file`, `get_periodic_note`, `get_recent_changes`
+**MCP server:** `obsidian-vault` (uvx mcp-obsidian) — tools: `list_files_in_vault`, `get_file_contents`, `append_content`, `patch_content`, `simple_search`, `complex_search`, `delete_file`, `get_recent_changes`
 
 ---
 
@@ -506,10 +506,14 @@ changing which config dir loads, so hooks are unaffected).
 
 **Registry (`plugin-profiles.json`):**
 - `floor` — the inviolable operational set present in every INJECTED profile:
-  `handover@himmel`, `himmel-ops@himmel`, `qmd@himmel`, `codex@openai-codex`
+  `handover@himmel`, `himmel-ops@himmel`, `qmd@himmel`
   (a lane that can't dispatch/search/handover is broken). `operator` is the
   exception — it's a `null` sentinel that injects nothing at all, so the floor
-  doesn't apply to it.
+  doesn't apply to it. `codex@openai-codex` is deliberately NOT in the floor
+  (HIMMEL-1677) — it stays catalogued and enabled for the `user` profile, but
+  every `lane-*` worker disables it: lane workers reach codex through provider
+  env overrides, so the plugin only added a redundant, unreaped app-server
+  process stack.
 - `catalog` — the known plugin universe; the resolver sets `false` for anything a
   profile doesn't enable, so the injected map is **complete** (correct whether
   Claude Code merges or replaces `enabledPlugins`). Beyond the catalog the

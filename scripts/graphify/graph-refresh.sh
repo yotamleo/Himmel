@@ -254,6 +254,37 @@ _resolve_symlinks() {
     return 1
 }
 
+# _fs_id <path> -> "device:inode" of the path on stdout; returns 1 if no stat
+# variant could read it (the caller FAILS CLOSED). This is the filesystem-
+# IDENTITY primitive (HIMMEL-1670): the same directory reached via different
+# case, a trailing slash, a `.`/`..` segment, an 8.3 short path, or a symlink
+# all collapse to ONE id, and two genuinely-different directories -- even two
+# that differ only by case on a case-SENSITIVE FS -- keep distinct ids.
+#
+# -L IS LOAD-BEARING, NOT DECORATION (HIMMEL-1670 CR, codex-adv-1). Both GNU
+# and BSD stat default to LSTAT: without -L a symlink reports the LINK's own
+# inode, not its target's. That is a guard BYPASS, not a cosmetic difference --
+# a vault symlinked at HOME would produce a link inode that never equals HOME's
+# directory inode, the identity comparison would pass, and the run would
+# proceed on the operator HOME. The earlier version of this comment asserted
+# the opposite ("stat follows symlinks for the final component by default");
+# that was FALSE and is what allowed the bypass. Do not drop -L, and do not
+# restore that claim. Callers additionally pass the already symlink-RESOLVED
+# path where one is available, so intermediate components are covered too (-L
+# only dereferences the final component).
+#
+# GNU stat (-c) first (Linux, MSYS2/Git-Bash -- busybox mimics it), BSD stat
+# (-f) second (macOS); the RESULT is checked, not just the exit (a stat that
+# exits 0 on empty output is not an identity).
+_fs_id() {
+    local p="$1" id
+    id=$(stat -L -c '%d:%i' "$p" 2>/dev/null) || id=""
+    case "$id" in *:*) printf '%s' "$id"; return 0 ;; esac
+    id=$(stat -L -f '%d:%i' "$p" 2>/dev/null) || id=""
+    case "$id" in *:*) printf '%s' "$id"; return 0 ;; esac
+    return 1
+}
+
 # preflight_refuse <reason> — uniform refusal: stderr message naming the
 # override, exit 2 (same "vault not usable" code as the not-a-directory check).
 preflight_refuse() {
@@ -266,7 +297,7 @@ preflight_refuse() {
 # (a) canonicalize, (b) refuse roots + HOME, (c) hard-refuse PHI/denylisted,
 # (d) luna-vault sentinel (luna leg only).
 preflight_vault() {
-    local canon ap home_canon home_resolved name rc resolved class_path configured_root resolved_root
+    local canon ap home_canon name rc resolved class_path configured_root resolved_root vault_id home_id
     canon="$(_abs "$VAULT")"
     # Resolve symlinks so EVERY check below classifies the tree the extraction
     # will ACTUALLY read (the canonical target), not the symlink's lexical
@@ -298,19 +329,38 @@ preflight_vault() {
     case "$ap" in
         "/"|[A-Za-z]:/) preflight_refuse "vault is a filesystem root ($ap)" ;;
     esac
-    # Resolve the operator HOME through the SAME symlink chain used for the
-    # vault above (HIMMEL-1655 item 1): a HOME that is itself -- or traverses
-    # -- a symlink must be classified by its TARGET, not the link, or a vault
-    # living under that symlinked HOME bypasses this refuse. Graceful-degrade
-    # to the lexical form if the resolver fails (do not block the run on it).
-    # Compare case-insensitively on BOTH sides via _lc, matching every other
-    # classification in this preflight (Windows C:/Users/x vs c:/Users/x).
-    home_canon="$(_normalize "$(_abs "$(resolve_user_home)")")"
-    if home_resolved="$(_resolve_symlinks "$home_canon")"; then
-        home_canon="$home_resolved"
-    fi
-    if [ "$(_lc "$ap")" = "$(_lc "$home_canon")" ]; then
-        preflight_refuse "vault is the operator HOME ($ap)"
+    # --- HOME identity guard (HIMMEL-1670) -----------------------------------
+    # Refuse when the vault IS the operator HOME by FILESYSTEM IDENTITY
+    # (device+inode via _fs_id), not case-folded path text. The previous text
+    # compare (a lowercase-fold of both sides) was a defect in BOTH directions:
+    # on a case-SENSITIVE FS (Linux, case-sensitive macOS) it folded two
+    # genuinely-different dirs that differ only by case into a match (a false
+    # refusal); and a text compare cannot see a symlink / trailing slash / `.`
+    # / `..` / 8.3 short path that names the SAME dir with DIFFERENT text.
+    # device+inode is case-AGNOSTIC, so it is correct on a case-insensitive FS
+    # (Windows NTFS: the same dir via any case spelling is one id -- realpath
+    # and pwd -P do NOT normalize case on MSYS/Git-Bash, so the old fold was
+    # load-bearing there; inode replaces it correctly) AND on a case-sensitive
+    # FS (two case-distinct dirs keep distinct ids -> the false refusal is
+    # gone). Both sides are probed as their REAL TARGET, and that takes two
+    # things, not one (CR codex-adv-1): _fs_id passes stat -L (stat defaults to
+    # LSTAT -- see _fs_id), AND the vault is probed via the symlink-RESOLVED
+    # $class_path rather than the lexical $canon, with HOME resolved the same
+    # way. Probing $canon alone was the bypass: a vault symlinked at HOME
+    # yielded the LINK's inode, which never equals HOME's, so the guard passed.
+    # Fail CLOSED: if either identity cannot be probed (stat absent or path
+    # missing), REFUSE -- an unresolvable comparison is not permission for a
+    # safety control (replaces the old graceful-degrade, which allowed on a
+    # failed resolve).
+    home_canon="$(_abs "$(resolve_user_home)")"
+    home_canon="$(_resolve_symlinks "$home_canon")" || \
+        preflight_refuse "operator HOME could not be symlink-resolved ($(_abs "$(resolve_user_home)")) -- fail-closed, cannot prove vault is not HOME (HIMMEL-1670)"
+    vault_id="$(_fs_id "$class_path")" || \
+        preflight_refuse "vault identity could not be probed via stat ($VAULT -> $class_path) -- fail-closed (HIMMEL-1670)"
+    home_id="$(_fs_id "$home_canon")" || \
+        preflight_refuse "operator HOME identity could not be probed via stat ($home_canon) -- fail-closed, cannot prove vault is not HOME (HIMMEL-1670)"
+    if [ "$vault_id" = "$home_id" ]; then
+        preflight_refuse "vault is the operator HOME ($VAULT -> $class_path)"
     fi
     # (c) HARD-refuse PHI/denylisted paths, mirroring graphify-fence.sh's
     # classify() PHI branch: a `.salus` marker on any ancestor, OR the vault
