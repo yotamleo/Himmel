@@ -78,15 +78,31 @@ groups:
         annotations:
           summary: 'Flow {{ $labels.flow }} run errored in the last 15m'
 
+      # Pages while any non-armed-resume flow sits in the "stalled" outcome
+      # (a level check, not edge-triggered on newly inferred stalls — it keeps
+      # firing every re-evaluation until that count returns to zero);
+      # armed-resume stalls are semi-expected operator behavior and remain
+      # dashboard-only.
+      # Deliberately silent: successful runs, in_flight runs within deadline,
+      # small luna_inbox_backlog oscillations (the 3-day-rise rule is the
+      # backstop), and ambiguous orphan classes. HimmelSessionDead stays page
+      # unless it proves noisy; the flat 4h Telegram route intentionally has no
+      # severity routing.
       - uid: himmel_flow_stalled
         title: "Flow run stalled"
         condition: B
         data:
           - refId: A
-            relativeTimeRange: { from: 300, to: 0 }
+            relativeTimeRange: { from: 1800, to: 0 }
             datasourceUid: prometheus
             model:
-              expr: flow_run_outcome_total{outcome="stalled"}
+              # HIMMEL-1695: LEVEL check, not increase() — must stay in lockstep
+              # with alerts.rules.yml's HimmelFlowRunStalled. The alert-fatigue
+              # fix is the `flow!="armed-resume"` exclusion; increase() over
+              # flow_run_outcome_total is unsound because that series is rebuilt
+              # from a sliding 14d ledger window and decreases as rows age out,
+              # which Prometheus reads as a counter reset.
+              expr: flow_run_outcome_total{outcome="stalled",flow!="armed-resume"}
               instant: true
               refId: A
           - refId: B

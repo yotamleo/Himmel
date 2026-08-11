@@ -44,10 +44,31 @@ groups:
 
       # HIMMEL-918 failure mode: permission-prompt stall / SIGKILL with no
       # exit code — a start row with no matching end row past the flow's
-      # stall deadline. The exporter already does this inference (design
-      # §1.2/§4); this rule just alerts on its output.
+      # stall deadline. armed-resume stalls are semi-expected operator behavior
+      # and are excluded here — they remain dashboard-only. That exclusion IS
+      # the alert-fatigue fix (it is what stops the 11 standing armed-resume
+      # stalls paging every 4h).
+      #
+      # Deliberately silent: successful runs, in_flight runs within deadline,
+      # small luna_inbox_backlog oscillations (the 3-day-rise rule is the
+      # backstop), and ambiguous orphan classes. HimmelSessionDead stays page
+      # unless it proves noisy; the flat 4h Telegram route intentionally has no
+      # severity routing.
+      # HIMMEL-1695: this stays a LEVEL check, NOT increase(). The alert-fatigue
+      # fix is the `flow!="armed-resume"` exclusion above — that alone stops the
+      # 11 standing armed-resume stalls from paging. Switching to increase() is a
+      # SEPARABLE change and is unsound here: flow_run_outcome_total is declared
+      # a counter but is rebuilt from a sliding 14d ledger window
+      # (flow-exporter.ts:305-339), so its value DECREASES when rows age out or
+      # the exporter restarts. Prometheus reads that decrease as a counter reset,
+      # which can page with no new stall AND can hide a new stall when an
+      # expiration offsets the increment. Same reasoning HimmelSessionDead states
+      # below for its own gauge: a terminal fact observed after the fact is a
+      # level, not a rate. Revisit only once HIMMEL-1695 lands a durable
+      # monotonic stall-event counter — and do not substitute delta() without
+      # testing simultaneous expiration and new-stall cases.
       - alert: HimmelFlowRunStalled
-        expr: flow_run_outcome_total{outcome="stalled"} > 0
+        expr: flow_run_outcome_total{outcome="stalled",flow!="armed-resume"} > 0
         for: 0m
         labels:
           severity: page
@@ -138,10 +159,9 @@ groups:
       # HIMMEL-1635 follow-up to the HIMMEL-1052 session families: a session
       # with an unpaired start row whose transcript went stale — crashed,
       # killed, or wedged. `session_dead_total` is a plain per-host GAUGE
-      # (flow-exporter.ts), so this is a level check, not increase() — same
-      # shape as HimmelFlowRunStalled: the exporter's own staleness threshold
-      # has already elapsed by the time this fires, a completed terminal fact
-      # observed after the fact, not a rate.
+      # (flow-exporter.ts), so this is a level check, same reasoning as
+      # HimmelFlowRunStalled above: the exporter's own staleness threshold has
+      # already elapsed, a terminal fact observed after the fact, not a rate.
       - alert: HimmelSessionDead
         expr: session_dead_total > 0
         for: 0m

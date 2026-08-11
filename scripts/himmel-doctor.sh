@@ -815,6 +815,95 @@ EOF
     printf '%s' "$hits" | sed '/^$/d' | sed 's/^/       · /'
 }
 
+# --- C19: observability stack drift + endpoint readiness (read-only advisory) ---
+# HIMMEL-1676: the alerting assets existed in-repo while the installed stack had
+# no rule groups. Compare the installed copies and query the two local endpoints;
+# every branch is WARN/INFO-only and no --fix path mutates the stack.
+check_c19() {
+    if [ "${DOCTOR_OBSERVABILITY_SKIP:-0}" = 1 ]; then
+        emit OK C19-observability "observability drift checks skipped by test seam"
+        return
+    fi
+
+    local install_dir="${DOCTOR_OBSERVABILITY_INSTALL_DIR:-${LOCALAPPDATA:-${HOME:-}/AppData/Local}/himmel/observability}"
+    local source_dir="$REPO_ROOT/scripts/observability"
+    local drift=""
+    # compared=1 only on the branch that actually ran cmp/diff (glm-2 CR
+    # finding, HIMMEL-1676): cmp/diff-unavailable already emits its own INFO
+    # here, so it must not ALSO fall through to the "match the repo copies" OK
+    # below — that would claim a verification that never happened.
+    local compared=0
+    if [ ! -d "$install_dir" ]; then
+        drift=" stack-not-installed"
+    elif ! command -v cmp >/dev/null 2>&1 || ! command -v diff >/dev/null 2>&1; then
+        emit INFO C19-observability "cmp/diff unavailable — installed observability assets not compared" "install cmp + diff, then re-run"
+    else
+        compared=1
+        cmp -s "$source_dir/prometheus.yml" "$install_dir/prometheus.yml" 2>/dev/null || drift="$drift prometheus.yml"
+        cmp -s "$source_dir/alerts.rules.yml" "$install_dir/alerts.rules.yml" 2>/dev/null || drift="$drift alerts.rules.yml"
+        diff -qr "$source_dir/provisioning" "$install_dir/grafana-provisioning" >/dev/null 2>&1 || drift="$drift provisioning/"
+    fi
+    if [ -n "$drift" ]; then
+        emit WARN C19-observability "observability stack stale — re-run install-stack.ps1 (drift:$drift)" "powershell -ExecutionPolicy Bypass -File scripts/observability/install-stack.ps1"
+    elif [ "$compared" -eq 1 ]; then
+        emit OK C19-observability "installed observability assets match the repo copies"
+    fi
+
+    local missing=""
+    [ -n "${GRAFANA_TELEGRAM_BOT_TOKEN:-}" ] || missing="$missing GRAFANA_TELEGRAM_BOT_TOKEN"
+    [ -n "${GRAFANA_TELEGRAM_CHAT_ID:-}" ] || missing="$missing GRAFANA_TELEGRAM_CHAT_ID"
+    if [ -n "$missing" ]; then
+        emit WARN C19-observability "Grafana Telegram delivery variable(s) unset:$missing" "set the user-scoped variables, then re-run install-stack.ps1"
+    else
+        emit OK C19-observability "Grafana Telegram delivery variables are set"
+    fi
+
+    local curl_bin="${DOCTOR_CURL_BIN:-curl}"
+    if [ ! -x "$curl_bin" ] && ! command -v "$curl_bin" >/dev/null 2>&1; then
+        emit INFO C19-observability "curl unavailable — Prometheus rules and flow exporter not probed" "install curl, then re-run"
+        return
+    fi
+
+    local rules_url="${DOCTOR_PROMETHEUS_RULES_URL:-http://127.0.0.1:9090/api/v1/rules}"
+    local exporter_url="${DOCTOR_FLOW_EXPORTER_URL:-http://127.0.0.1:9877/metrics}"
+    local rules_json rules_rc groups
+    rules_json="$("$curl_bin" -fsS --max-time 2 "$rules_url" 2>/dev/null)"; rules_rc=$?
+    if [ "$rules_rc" -ne 0 ]; then
+        emit INFO C19-observability "Prometheus rules endpoint unavailable — rule groups not checked" "start Prometheus, then re-run"
+    elif ! command -v jq >/dev/null 2>&1; then
+        emit INFO C19-observability "jq unavailable — Prometheus rule-group response not parsed" "install jq, then re-run"
+    elif ! groups="$(printf '%s' "$rules_json" | jq -er 'select(.status == "success") | .data.groups | length' 2>/dev/null)"; then
+        emit INFO C19-observability "Prometheus rules endpoint returned an unexpected response — rule groups not checked" "inspect $rules_url"
+    elif [ "$groups" -eq 0 ]; then
+        emit WARN C19-observability "Prometheus has zero rule groups — no alert rule has evaluated" "re-run install-stack.ps1, restart Prometheus, then inspect $rules_url"
+    else
+        emit OK C19-observability "Prometheus reports $groups rule group(s)"
+    fi
+
+    if "$curl_bin" -fsS --max-time 2 "$exporter_url" >/dev/null 2>&1; then
+        emit OK C19-observability "flow exporter answers on $exporter_url"
+    else
+        emit WARN C19-observability "flow exporter on $exporter_url is not answering" "start himmel-observability-flow-exporter, then re-run"
+    fi
+
+    # Grafana liveness (codex-adv CR finding, HIMMEL-1676): the checks above
+    # (Prometheus rule-group count, Telegram vars set) can all read OK while
+    # the component that actually evaluates + delivers alerts is down —
+    # README.md's Alert rules section is explicit that "No Alertmanager is
+    # installed in this stack" and Grafana's provisioning/alerting/rules.yaml
+    # "is what actually evaluates and delivers to Telegram" (RATIFIED F3).
+    # This is a liveness probe only (Grafana up/down), not a verification of
+    # its provisioned alert-rule/contact-point state — narrower than the full
+    # readiness check codex recommended, but it closes the "Do not ship" case
+    # the finding raised: Grafana's task stopped, everything else reports OK.
+    local grafana_url="${DOCTOR_GRAFANA_HEALTH_URL:-http://127.0.0.1:3000/api/health}"
+    if "$curl_bin" -fsS --max-time 2 "$grafana_url" >/dev/null 2>&1; then
+        emit OK C19-observability "Grafana answers on $grafana_url (the actual alert evaluator/delivery path)"
+    else
+        emit WARN C19-observability "Grafana on $grafana_url is not answering — no alert can evaluate or deliver even if Prometheus/exporter are healthy" "start the Grafana service, then re-run"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -836,6 +925,7 @@ check_c15
 check_c16
 check_c17
 check_c18
+check_c19
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
