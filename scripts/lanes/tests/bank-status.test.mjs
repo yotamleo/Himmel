@@ -19,6 +19,21 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const BANK_STATUS = join(TEST_DIR, '..', 'bank-status.ts');
 const RESOLVER = join(TEST_DIR, '..', 'resolve.mjs');
 
+// HIMMEL-1737: the public CI job `lanes-and-trust-suites` runs this suite with
+// plain `node --test`, no bun on PATH. The CLI tests below spawn bun directly
+// (or, for the resolve.mjs test, transitively via runBankStatus), so on a
+// bun-less box they'd either ENOENT or fall through to resolve.mjs's own
+// unmeasurable-fallback branch and fail their assertions. Probe once and skip
+// just those tests, named, so pure-function tests above keep running.
+const BUN_SKIP = (() => {
+  try {
+    execFileSync('bun', ['--version'], { stdio: 'ignore' });
+    return undefined;
+  } catch {
+    return 'bun not installed — CLI tests need it; pure-function tests still run';
+  }
+})();
+
 function fixtureRegistry(dir) {
   const path = join(dir, 'lanes.json');
   writeFileSync(path, JSON.stringify({ lanes: [
@@ -96,7 +111,7 @@ test('bank annotation keeps "free" attached to its window across MULTI-reading d
   );
 });
 
-test('bank-status CLI reports real Codex headroom and GLM as flat-rate', () => {
+test('bank-status CLI reports real Codex headroom and GLM as flat-rate', { skip: BUN_SKIP }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'lane-bank-'));
   const registry = fixtureRegistry(dir);
   const log = join(dir, 'logs_2.sqlite');
@@ -109,7 +124,7 @@ test('bank-status CLI reports real Codex headroom and GLM as flat-rate', () => {
   assert.match(out, /^claudex funded measured weekly used=14% free=86%$/m);
 });
 
-test('bank-status CLI names an unreadable Codex bank instead of silently reporting unknown', () => {
+test('bank-status CLI names an unreadable Codex bank instead of silently reporting unknown', { skip: BUN_SKIP }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'lane-bank-missing-'));
   const registry = fixtureRegistry(dir);
   const out = execFileSync('bun', [BANK_STATUS], {
@@ -138,7 +153,7 @@ function glmLedgerLine({ usedPct, resetAt }) {
   });
 }
 
-test('bank-status CLI reports an exhausted GLM lane as spent, not funded', () => {
+test('bank-status CLI reports an exhausted GLM lane as spent, not funded', { skip: BUN_SKIP }, () => {
   // Regression (HIMMEL-1678): when the GLM read was deleted, an exhausted GLM
   // lane could never surface as spent — guardState mapped flat-rate to funded
   // unconditionally. A LIVE ledger reading at/over the threshold must be spent.
@@ -160,7 +175,7 @@ test('bank-status CLI reports an exhausted GLM lane as spent, not funded', () =>
   assert.doesNotMatch(out, /^glm funded /m);
 });
 
-test('bank-status CLI drops an expired GLM resets_at window (never fabricates spent)', () => {
+test('bank-status CLI drops an expired GLM resets_at window (never fabricates spent)', { skip: BUN_SKIP }, () => {
   // The resets_at live-window validation: a row whose window already reset is
   // stale — its used_pct no longer describes the current cycle, so emitting it
   // would fabricate. A high-but-expired reading must NOT report spent.
@@ -182,7 +197,7 @@ test('bank-status CLI drops an expired GLM resets_at window (never fabricates sp
   assert.doesNotMatch(out, /^glm spent /m);
 });
 
-test('/lanes output surfaces measured headroom and flat-rate state', () => {
+test('/lanes output surfaces measured headroom and flat-rate state', { skip: BUN_SKIP }, () => {
   const dir = mkdtempSync(join(tmpdir(), 'lane-output-'));
   const registry = fixtureRegistry(dir);
   const log = join(dir, 'logs_2.sqlite');
