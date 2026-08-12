@@ -282,3 +282,36 @@ test('user profile keeps content plugins but drops dev-authoring (HIMMEL-1044 sh
   assert.equal(p['claude-md-management@claude-plugins-official'], false);
   assert.equal(p['hookify@claude-plugins-official'], false);
 });
+
+test('settings-template enabledPlugins mirrors the registry `user` profile (HIMMEL-1044 wiring)', () => {
+  // The adopter-facing docs/setup/settings-template.json is the human-readable
+  // mirror of the registry's `user` profile (HIMMEL-1040/1044). They are
+  // hand-maintained and MUST NOT silently drift: if the template re-enables a
+  // dev plugin the registry keeps off (or drops one it expects on) an adopter
+  // gets the wrong set. This locks the two together so the drift that made
+  // HIMMEL-1044 necessary cannot recur. ONE justified carve-out:
+  // `codex@openai-codex` is enabled by the registry's `user` profile
+  // explicitly (HIMMEL-1677 took it OUT of the floor so `lane-*` workers
+  // disable it), but no adopter machine carries the codex marketplace — the
+  // adopter template legitimately omits it. The lane spawn scripts only ever
+  // resolve `lane-*` profiles (never `user`), so the `user` profile exists
+  // purely as this template's source of truth.
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const tmpl = JSON.parse(readFileSync(join(REPO_ROOT, 'docs', 'setup', 'settings-template.json'), 'utf8'));
+  const user = resolveProfile(REG, 'user').enabledPlugins;
+  const LANE_ONLY = new Set(['codex@openai-codex']);
+  // Forward: every plugin the adopter template has an opinion on must agree with
+  // the registry's user profile (catches the template re-enabling a dev plugin).
+  for (const [id, on] of Object.entries(tmpl.enabledPlugins)) {
+    if (LANE_ONLY.has(id) || !Object.hasOwn(user, id)) continue;
+    assert.equal(on, user[id], `template/registry drift on ${id}: template=${on} registry-user=${user[id]}`);
+  }
+  // Reverse: every plugin the registry enables for a user must also be enabled
+  // in the adopter template (catches the template dropping a user plugin),
+  // except lane-dispatch-only ids an adopter machine lacks.
+  const tmplTrue = new Set(Object.entries(tmpl.enabledPlugins).filter(([, v]) => v).map(([k]) => k));
+  for (const id of Object.keys(user).filter((k) => user[k])) {
+    if (LANE_ONLY.has(id)) continue;
+    assert.ok(tmplTrue.has(id), `registry user enables ${id} but the adopter template does not — drift`);
+  }
+});

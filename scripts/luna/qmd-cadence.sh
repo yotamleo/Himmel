@@ -544,11 +544,16 @@ cmd_disarm() {
 # kept as .log.prev), stamp the fire time, cd into the himmel root (a failing cd
 # aborts + is logged instead of firing from the wrong CWD), then fire bash +
 # qmd-reindex.sh with stdout+stderr captured to the rotating log. NO claude
-# SESSION, NO stdin redirect: the runner IS the payload. No PATH surgery either —
-# the qmd path is passed to the runner explicitly (see the header).
+# SESSION, NO stdin redirect: the runner IS the payload. The qmd BINARY path is
+# still passed to the runner explicitly (see the header) — but Git's usr\bin + bin
+# are prepended to PATH (HIMMEL-1672) so the NON-LOGIN bash.exe finds the GNU
+# coreutils qmd-reindex.sh itself calls (sed/grep/date) ahead of System32.
 emit_bat() {
-    local himmel_win_esc="$1" payload="$2" log_win_esc="$3"
+    local himmel_win_esc="$1" payload="$2" log_win_esc="$3" git_bin_esc="${4:-}"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
+    if [ -n "$git_bin_esc" ]; then
+        printf 'set "PATH=%s;%%PATH%%"\r\n' "$git_bin_esc"
+    fi
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$himmel_win_esc" "$log_win_esc"
@@ -877,8 +882,12 @@ cmd_arm() {
     # reads as intentional later. (The graphmap sibling used to leave its bash
     # path raw — HIMMEL-1281 closed that divergence in graphmap's favour of
     # this one, so all four emitters now escape every interpolated value.)
-    local bash_win_esc script_esc qmd_esc himmel_win_esc qmd_js_esc=""
+    local bash_win_esc script_esc qmd_esc himmel_win_esc qmd_js_esc="" git_bin_esc
     bash_win_esc=$(cadence_cmd_escape "$bash_win")
+    # Git's usr\bin + bin, derived from the bash.exe path above (HIMMEL-1672):
+    # prepended to PATH in emit_bat so the non-login bash.exe finds GNU coreutils
+    # ahead of System32. Empty for a non-Git bash → emit_bat then omits the line.
+    git_bin_esc=$(cadence_cmd_escape "$(cadence_git_bin_path_win "$bash_win")")
     script_esc=$(cadence_cmd_escape "$script_mixed")
     qmd_esc=$(cadence_cmd_escape "$qmd_mixed")
     himmel_win_esc=$(cadence_cmd_escape "$himmel_win")
@@ -925,7 +934,7 @@ cmd_arm() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY qmd-cadence: would write $bat:"
-        emit_bat "$himmel_win_esc" "$payload" "$log_esc" | sed 's/^/    /'
+        emit_bat "$himmel_win_esc" "$payload" "$log_esc" "$git_bin_esc" | sed 's/^/    /'
         echo "DRY qmd-cadence: would schtasks /create /tn $TASK_REINDEX /xml <daily $REINDEX_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_win" "$REINDEX_TIME" "$sched" | sed 's/^/    /'
         echo "qmd-cadence: dry-run complete (no changes made)"
@@ -941,7 +950,7 @@ cmd_arm() {
     # then. The task XML still references the FINAL $bat path, so promotion is
     # what makes the pair consistent. Staged file is cleaned on both paths.
     local tmp_bat="$bat.tmp.$$"
-    emit_bat "$himmel_win_esc" "$payload" "$log_esc" > "$tmp_bat"
+    emit_bat "$himmel_win_esc" "$payload" "$log_esc" "$git_bin_esc" > "$tmp_bat"
 
     local err_file
     err_file=$(mktemp -t qmd-cadence.err.XXXXXX)

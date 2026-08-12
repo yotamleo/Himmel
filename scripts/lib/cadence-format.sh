@@ -54,8 +54,21 @@
 # an operator running the cadence on POSIX must `arm --force` to pick it up.
 # Windows runners are unaffected (the scheduler already serialized them) but
 # stamp v7 too, so one version answers "is this runner current".
+# v8 (HIMMEL-1672): every emitted .bat prepends Git's usr\bin + bin to PATH so a
+# NON-LOGIN bash.exe (the interpreter the Windows runners bake in) resolves GNU
+# coreutils ahead of their System32 namesakes. A non-login Git-Bash does not
+# source the MSYS profile that prepends /usr/bin, so it inherits the bare Windows
+# PATH: unqualified `find` hits System32 find.exe (a string search), `timeout`
+# hits timeout.exe (no GNU -k), and `sed`/`grep`/`date` are missing entirely —
+# which silently broke the graphify refresh cadence for days. The Git root is
+# DERIVED from the baked-in bash.exe path (cadence_git_bin_path_win), never
+# hardcoded, so adopters who install Git outside C:\Program Files get the right
+# path. An armed v7 runner keeps firing under the bare Windows PATH, so an
+# operator must `arm --force` to pick up the prepend. Affects the bash-emitters
+# (graphmap/qmd/pipeline); drift-fix (claude-direct) and codex-sweep (pwsh) bake
+# no bash.exe into their runner and are unaffected. POSIX cron runners unaffected.
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=7
+CADENCE_RUNNER_FORMAT_VERSION=9
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).
@@ -115,6 +128,36 @@ cadence_cmd_escape() {
     s="${s//\"/\\\"}"
     s="${s//%/%%}"
     printf '%s' "$s"
+}
+
+# cadence_git_bin_path_win <bash_win>
+# Derive the cmd-PATH fragment that puts Git's GNU coreutils ahead of System32
+# for a NON-LOGIN bash.exe (HIMMEL-1672). A non-login Git-Bash does NOT source
+# the MSYS profile that prepends /usr/bin, so it inherits the bare Windows PATH
+# and unqualified `find`/`timeout`/`sed`/`grep` resolve to System32 namesakes
+# (find.exe is a string search; timeout.exe lacks -k) or are missing entirely.
+#
+# <bash_win> is the Windows bash.exe path a runner already bakes in (resolved by
+# the emitters as `cygpath -w "$(command -v bash)"`). The Git install root is
+# DERIVED from it — never hardcoded — so adopters who install Git outside
+# C:\Program Files get the right path. `command -v bash` under Git-Bash resolves
+# to /usr/bin/bash -> <root>\usr\bin\bash.exe; Git for Windows also ships a
+# wrapper at <root>\bin\bash.exe. Both layouts are handled (the usr arm is tested
+# first so the bin arm never mis-trims it).
+#
+# Echoes "<root>\usr\bin;<root>\bin" (usr\bin FIRST) and returns 0. Echoes
+# nothing for a path that is not a recognized Git-Bash layout (e.g. the WSL
+# System32 stub) — the caller then emits no PATH line and the runner is no worse
+# than before. bash 3.2-safe; the backslash idiom mirrors the trailing-separator
+# strip in graphmap-cadence.sh's cmd_arm (`${var%\\}`).
+cadence_git_bin_path_win() {
+    local bash_win="$1" root
+    case "$bash_win" in
+        *\\usr\\bin\\bash.exe) root="${bash_win%\\usr\\bin\\bash.exe}" ;;
+        *\\bin\\bash.exe)      root="${bash_win%\\bin\\bash.exe}" ;;
+        *)                     return 0 ;;
+    esac
+    printf '%s\\usr\\bin;%s\\bin' "$root" "$root"
 }
 
 # cadence_runner_stamp <bat_dir>

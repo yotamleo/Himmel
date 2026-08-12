@@ -165,9 +165,10 @@ DRY_RUN=0
 # Prompts are ASCII-only on purpose: the .bat is parsed by cmd.exe under
 # the OEM codepage, where UTF-8 punctuation mojibakes into the prompt.
 DAILY_CHAIN="/harvest-clips + /triage-clips + /ig-media-enrich"
+COMPLETION_INSTRUCTIONS="Run every command in the foreground. Never background a command or wait for a notification. Only if this cadence leg genuinely completed all of its work, print exactly PIPELINE-LEG-DONE as the final line of your output, on its own line with no prefix, suffix, or punctuation. If it was blocked, parked, or bailed early, do not print the marker."
 HARVEST_PROMPT=""
-SYNTH_PROMPT="Run /synthesize-clips to completion, then run /archive-clips. This is the scheduled daily pipeline cadence run (HIMMEL-255) - fully autonomous, no user prompts; report results and exit."
-HEALTH_PROMPT="Use the Skill tool to run the obsidian-triage:vault-lint skill (not /obsidian-health) against this vault to completion. This is the scheduled daily pipeline cadence run (HIMMEL-255/HIMMEL-1386) - fully autonomous, no user prompts; report results and exit."
+SYNTH_PROMPT="Run /synthesize-clips to completion, then run /archive-clips. This is the scheduled daily pipeline cadence run (HIMMEL-255) - fully autonomous, no user prompts; report results and exit. $COMPLETION_INSTRUCTIONS"
+HEALTH_PROMPT="Use the Skill tool to run the obsidian-triage:vault-lint skill (not /obsidian-health) against this vault to completion. This is the scheduled daily pipeline cadence run (HIMMEL-255/HIMMEL-1386) - fully autonomous, no user prompts; report results and exit. $COMPLETION_INSTRUCTIONS"
 
 usage() {
     cat <<'EOF'
@@ -265,7 +266,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-HARVEST_PROMPT="Run /harvest-clips to completion, then run /triage-clips, then run /ig-media-enrich --limit $IG_LIMIT. The /ig-media-enrich step uses --limit $IG_LIMIT; 0 means unlimited, otherwise one night's batch is bounded and the ig_media_pending backlog drains across nights. If /ig-media-enrich fails due to missing ffmpeg/whisper, expired IG cookies, or media download errors, report the failure but it must not abort or fail the harvest+triage leg; finish the session normally. This is the scheduled daily pipeline cadence run (HIMMEL-357/HIMMEL-798) - fully autonomous, no user prompts; report results and exit."
+HARVEST_PROMPT="Run /harvest-clips to completion, then run /triage-clips, then run /ig-media-enrich --limit $IG_LIMIT. The /ig-media-enrich step uses --limit $IG_LIMIT; 0 means unlimited, otherwise one night's batch is bounded and the ig_media_pending backlog drains across nights. If /ig-media-enrich fails due to missing ffmpeg/whisper, expired IG cookies, or media download errors, report the failure but it must not abort or fail the harvest+triage leg; finish the session normally. This is the scheduled daily pipeline cadence run (HIMMEL-357/HIMMEL-798) - fully autonomous, no user prompts; report results and exit. $COMPLETION_INSTRUCTIONS"
 
 # Platform detect (same matrix as arm-resume.sh).
 case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
@@ -591,8 +592,15 @@ cmd_disarm() {
 # preview and the real write share one set of locals), and validate_arm_inputs
 # still rejects metacharacters at the gate.
 emit_bat() {
-    local vault_win_esc="$1" claude_win_esc="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5" model_esc="$6" flow_esc="$7" task_name_esc="$8" bash_win_esc="$9" flow_lib_m_esc="${10}"
+    local vault_win_esc="$1" claude_win_esc="$2" prompt_esc="$3" log_win_esc="$4" settings_esc="$5" model_esc="$6" flow_esc="$7" task_name_esc="$8" bash_win_esc="$9" flow_lib_m_esc="${10}" git_bin_esc="${11:-}"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
+    # Prepend Git's usr\bin + bin so the NON-LOGIN bash.exe the flow-run-ledger
+    # legs fire finds GNU coreutils (dirname/date/tail/grep/wc/tr) ahead of
+    # System32 (HIMMEL-1672). claude/bash/flow-lib are all absolute paths below;
+    # this fixes their unqualified coreutils, not those resolutions.
+    if [ -n "$git_bin_esc" ]; then
+        printf 'set "PATH=%s;%%PATH%%"\r\n' "$git_bin_esc"
+    fi
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_win_esc" "$log_win_esc" "$log_win_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_win_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$vault_win_esc" "$log_win_esc"
@@ -991,9 +999,13 @@ cmd_arm() {
     # emitter (public-PR CR — see emit_bat's header). Escaped once and reused by
     # both the dry-run preview and the real write below, so the two can never
     # disagree about what lands in the .bat.
-    local claude_win_esc bash_win_esc flow_lib_m_esc python_win_esc fetch_script_win_esc env_file_win_esc
+    local claude_win_esc bash_win_esc flow_lib_m_esc python_win_esc fetch_script_win_esc env_file_win_esc git_bin_esc
     claude_win_esc=$(cadence_cmd_escape "$claude_win")
     bash_win_esc=$(cadence_cmd_escape "$bash_win")
+    # Git's usr\bin + bin, derived from the bash.exe path above (HIMMEL-1672):
+    # prepended to PATH in emit_bat so the non-login bash.exe finds GNU coreutils
+    # ahead of System32. Empty for a non-Git bash → emit_bat then omits the line.
+    git_bin_esc=$(cadence_cmd_escape "$(cadence_git_bin_path_win "$bash_win")")
     flow_lib_m_esc=$(cadence_cmd_escape "$flow_lib_m")
     python_win_esc=$(cadence_cmd_escape "$python_win")
     fetch_script_win_esc=$(cadence_cmd_escape "$fetch_script_win")
@@ -1081,11 +1093,11 @@ cmd_arm() {
         echo "DRY pipeline-cadence: would write $bat_fetch_health:"
         emit_fetch_health_bat "$python_win_esc" "$fetch_script_win_esc" "$log_fetch_health_esc" "$env_file_win_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_harvest:"
-        emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" "$git_bin_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_synth:"
-        emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc" "$log_synth_esc" "$settings_esc" "$synth_model_esc" "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc" "$log_synth_esc" "$settings_esc" "$synth_model_esc" "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" "$git_bin_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $bat_health:"
-        emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc" "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" | sed 's/^/    /'
+        emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc" "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" "$git_bin_esc" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_FETCH_HEALTH /xml <daily $FETCH_HEALTH_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_fetch_health_win" "$FETCH_HEALTH_TIME" "$sched_fetch_health" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would schtasks /create /tn $TASK_HARVEST /xml <daily $HARVEST_TIME, StartWhenAvailable=true> /f"
@@ -1101,9 +1113,9 @@ cmd_arm() {
     mkdir -p "$BAT_DIR"
     emit_settings_fragment "$hook_path_m" > "$SETTINGS_FRAGMENT"
     emit_fetch_health_bat "$python_win_esc" "$fetch_script_win_esc" "$log_fetch_health_esc" "$env_file_win_esc" > "$bat_fetch_health"
-    emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_harvest"
-    emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$synth_model_esc"   "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_synth"
-    emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc"  "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" > "$bat_health"
+    emit_bat "$vault_esc" "$claude_win_esc" "$harvest_esc" "$log_harvest_esc" "$settings_esc" "$harvest_model_esc" "$flow_harvest_esc" "$task_harvest_esc" "$bash_win_esc" "$flow_lib_m_esc" "$git_bin_esc" > "$bat_harvest"
+    emit_bat "$vault_esc" "$claude_win_esc" "$synth_esc"  "$log_synth_esc"  "$settings_esc" "$synth_model_esc"   "$flow_synth_esc" "$task_synth_esc" "$bash_win_esc" "$flow_lib_m_esc" "$git_bin_esc" > "$bat_synth"
+    emit_bat "$vault_esc" "$claude_win_esc" "$health_esc" "$log_health_esc" "$settings_esc" "$health_model_esc"  "$flow_health_esc" "$task_health_esc" "$bash_win_esc" "$flow_lib_m_esc" "$git_bin_esc" > "$bat_health"
 
     local err_file
     err_file=$(mktemp -t pipeline-cadence.err.XXXXXX)

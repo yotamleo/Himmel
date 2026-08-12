@@ -94,9 +94,9 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "blacksmithgu/obsidian-dataview",
-      "synced_base": "0.5.68",
+      "synced_base": "0.5.70",
       "tier": "A",
-      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/dataview. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor of the complete licensed asset set."
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/dataview. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor of the complete licensed asset set. UPSTREAM MANIFEST QUIRK (HIMMEL-1652): the 0.5.69/0.5.70 releases ship a manifest.json still reading 0.5.68 — upstream tagged and rebuilt main.js but never bumped the manifest (versions.json also stops at 0.5.68). The vendored manifest therefore carries a one-field local correction to the real release version, because scripts/test-check-plugin-drift.sh asserts synced_base == manifest.json version: honouring the stale upstream field instead would pin synced_base at 0.5.68 and make the drift guard report BEHIND forever while we actually carry 0.5.70 code. Self-correcting — once upstream ships a release with a bumped manifest, the correction disappears."
     },
     {
       "name": "luna-github-sync",
@@ -121,16 +121,16 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "coddingtonbear/obsidian-local-rest-api",
-      "synced_base": "4.0.1",
+      "synced_base": "5.1.0",
       "tier": "A",
-      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/obsidian-local-rest-api. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json is intentionally never shipped."
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/obsidian-local-rest-api. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json is intentionally never shipped. MAJOR 4.x -> 5.x re-vendored under HIMMEL-1652: markdown-patch 1.x targeting is deprecated (old Operation/Target-Type/Target header requests now 400 without `Markdown-Patch-Version: 1`, sunset in 6.0) and the /periodic/ endpoints were removed in 5.0.2. himmel's only first-party consumer, scripts/hooks/end-session-wiki.sh, does a whole-file PUT /vault/<path> and is unaffected; the third-party `uvx mcp-obsidian` server IS affected — see HIMMEL-1660. minAppVersion rises to 1.13.1 (public Obsidian is 1.13.4)."
     },
     {
       "name": "luna-qmd-as-md-obsidian",
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "danieltomasz/qmd-as-md-obsidian",
-      "synced_base": "0.3.4",
+      "synced_base": "0.4.3",
       "tier": "A",
       "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/qmd-as-md-obsidian. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor of the complete licensed asset set."
     },

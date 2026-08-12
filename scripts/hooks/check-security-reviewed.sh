@@ -211,15 +211,112 @@ if [ -n "$pr_body" ] && grep -qiE "$ATTEST_RE" <<<"$pr_body"; then
     exit 0
 fi
 
+# HIMMEL-1562: the refusal must distinguish a MISSING attestation (case a)
+# from a PRESENT-but-nonconforming one (case b). The generic "no attestation
+# was found" misdirects the operator when the trailer EXISTS but its value
+# failed to match — which is the more common and more confusing failure (a
+# 2026-08-05 overnight push burned an empty restatement commit on exactly
+# this). A "trailer line" mirrors ATTEST_RE's line-start notion: leading
+# whitespace then the literal `Security reviewed:`. A mid-line occurrence is
+# prose, not a trailer, and stays case (a) — consistent with how ATTEST_RE's
+# ^ anchor treats it.
+TRAILER_RE='^[[:space:]]*Security reviewed:'
+
+# Truncate a pathologically long trailer line so the gate refusal stays
+# readable. bash 3.2-safe substring expansion; ASCII "..." marker (no
+# multibyte ellipsis, which risks encoding ambiguity in a gate message).
+truncate_attestation_line() {
+    local text="$1" max="${2:-160}"
+    if [ "${#text}" -gt "$max" ]; then
+        printf '%s...' "${text:0:$max}"
+    else
+        printf '%s' "$text"
+    fi
+}
+
+# Scan the push range per-commit (so each offending trailer can be quoted
+# with the sha it came from) and the PR body (a single blob). Collect
+# rendered, truncated offender lines and flag a near-miss: a value that
+# STARTS with an accepted token but fails the end-anchor (e.g. `manually`
+# vs `manual`) — the single most likely operator error. bash 3.2-safe:
+# while-read over here-strings and process substitution; no mapfile or
+# associative arrays. Every command-substitution pipeline is `|| true`-guarded
+# so a non-match never aborts the hook (which would change the exit code).
+offenders_block=""
+near_miss=0
+while IFS= read -r sha; do
+    [ -n "$sha" ] || continue
+    cbody=$(git log -1 --format='%B' "$sha" 2>/dev/null || true)
+    tl_lines=$(printf '%s\n' "$cbody" | grep -iE "$TRAILER_RE" || true)
+    [ -z "$tl_lines" ] && continue
+    short=$(git rev-parse --short "$sha" 2>/dev/null || printf '%s' "$sha")
+    while IFS= read -r tl; do
+        [ -n "$tl" ] || continue
+        trunc=$(truncate_attestation_line "$tl" 160 || true)
+        offenders_block="${offenders_block}     ${short}  ${trunc}
+"
+        val_lc=$(printf '%s' "$tl" | tr '[:upper:]' '[:lower:]' | sed 's/.*security reviewed://' | sed 's/^[[:space:]]*//' || true)
+        case "$val_lc" in
+            manual*|claude-code-security-review*|pr-review-toolkit*|ad-hoc*) near_miss=1 ;;
+        esac
+    done <<<"$tl_lines"
+done < <(git log --format='%H' "${diff_base}..HEAD" 2>/dev/null || true)
+
+if [ -n "$pr_body" ]; then
+    tl_lines=$(printf '%s\n' "$pr_body" | grep -iE "$TRAILER_RE" || true)
+    if [ -n "$tl_lines" ]; then
+        while IFS= read -r tl; do
+            [ -n "$tl" ] || continue
+            trunc=$(truncate_attestation_line "$tl" 160 || true)
+            offenders_block="${offenders_block}     (PR body)  ${trunc}
+"
+            val_lc=$(printf '%s' "$tl" | tr '[:upper:]' '[:lower:]' | sed 's/.*security reviewed://' | sed 's/^[[:space:]]*//' || true)
+            case "$val_lc" in
+                manual*|claude-code-security-review*|pr-review-toolkit*|ad-hoc*) near_miss=1 ;;
+            esac
+        done <<<"$tl_lines"
+    fi
+fi
+
+if [ -n "$offenders_block" ]; then
+    # Case (b): at least one trailer is present but none matched a token.
+    case_intro="⛔ security-review: this push touches non-docs code and carries
+   'Security reviewed:' trailer(s) in commit messages or the PR body,
+   but NONE matched an accepted method token — the trailer is present
+   but its value did not conform."
+    offenders_part="   Offending trailer line(s) — none matched an accepted token:
+${offenders_block}
+"
+    if [ "$near_miss" = "1" ]; then
+        near_part="   Hint: a value that STARTS with an accepted token but fails the
+   end-anchor is the most likely cause — e.g. 'manually' is NOT 'manual'.
+   The token must be followed by whitespace, end-of-line, or one of .,;
+"
+    else
+        near_part=""
+    fi
+else
+    # Case (a): no trailer anywhere in the range or the PR body.
+    case_intro="⛔ security-review: this push touches non-docs code but no
+   'Security reviewed:' attestation was found in commit messages or
+   the PR body."
+    offenders_part=""
+    near_part=""
+fi
+
 # Block.
 cat >&2 <<EOF
-⛔ security-review: this push touches non-docs code but no
-   \`Security reviewed:\` attestation was found in commit messages or
-   the PR body.
+${case_intro}
 
-   Non-docs files changed vs ${diff_base}:
+${offenders_part}   Non-docs files changed vs ${diff_base}:
 $(printf '%s\n' "$non_docs" | sed 's/^/     /')
 
+   Accepted shape — token first, prose after:
+       Security reviewed: manual — <what you actually did>
+   where the token is one of:
+       manual, claude-code-security-review, pr-review-toolkit, ad-hoc
+   The token must be followed by whitespace, end-of-line, or one of .,;
+${near_part}
    Fix one of:
    1. Run a security review (one of):
         - operator manual read of the diff for security-class issues
@@ -227,10 +324,8 @@ $(printf '%s\n' "$non_docs" | sed 's/^/     /')
           GitHub Action)
         - /pr-check or /pr-review-toolkit:review-pr (a reviewer in the
           fanout covers the security lens)
-      Then add a line to a commit body (or amend):
+      Then add the attestation line to a commit body (or amend):
           Security reviewed: <token>
-      where <token> is one of:
-        manual, claude-code-security-review, pr-review-toolkit, ad-hoc
    2. Add the same line to the PR description, then re-push.
    3. Bypass for an unattested push:
           SKIP_SECURITY_REVIEW=1 git push ...

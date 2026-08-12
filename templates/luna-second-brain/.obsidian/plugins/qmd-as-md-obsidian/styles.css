@@ -16,14 +16,48 @@
 }
 
 .qmd-outline-item {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-1);
   padding: var(--size-2-1) var(--size-4-3);
   border-radius: var(--radius-s);
   color: var(--text-muted);
   font-size: var(--font-ui-small);
+  cursor: pointer;
+}
+
+/* Chevron slot — always present so leaf and parent headings align. */
+.qmd-outline-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--size-4-4);
+  height: var(--size-4-4);
+  color: var(--text-faint);
+  transition: transform 100ms ease-in-out;
+}
+
+.qmd-outline-toggle .svg-icon {
+  width: var(--icon-xs, 14px);
+  height: var(--icon-xs, 14px);
+}
+
+/* Collapsed: chevron points right, sub-tree hidden. */
+.qmd-outline-item.is-collapsed .qmd-outline-toggle {
+  transform: rotate(-90deg);
+}
+
+.qmd-outline-children.is-collapsed {
+  display: none;
+}
+
+.qmd-outline-item-text {
+  flex: 1 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
 }
 
 .qmd-outline-item:hover {

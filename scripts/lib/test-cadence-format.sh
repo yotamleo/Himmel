@@ -37,6 +37,20 @@ assert_esc() {
   fi
 }
 
+# assert_eq <desc> <got> <expected>
+assert_eq() {
+  local desc="$1" got="$2" want="$3"
+  if [ "$got" = "$want" ]; then
+    pass=$((pass + 1))
+    echo "  ok: $desc"
+  else
+    fail=$((fail + 1))
+    echo "  FAIL: $desc"
+    echo "        want: [$want]"
+    echo "        got:  [$got]"
+  fi
+}
+
 echo "[test-cadence-format] cadence_cmd_escape — what it MUST transform"
 assert_esc "percent is doubled (batch expansion is live inside quotes)" \
   'C:\a%X%b' 'C:\a%%X%%b'
@@ -68,16 +82,50 @@ assert_esc "backslashes are never touched (no path mangling)" \
   'C:\a\\b' 'C:\a\\b'
 assert_esc "trailing percent is doubled" 'x%' 'x%%'
 
+# printf, not echo: these lines carry a literal `\b` (usr\bin), which echo is
+# allowed to eat as a backspace escape (SC2028).
+printf '%s\n' "[test-cadence-format] cadence_git_bin_path_win — Git usr\\bin ahead of bin, derived (HIMMEL-1672)"
+# A non-login bash.exe inherits the bare Windows PATH, so the emitted .bat must
+# prepend Git's usr\bin + bin (GNU coreutils) ahead of System32. The fragment is
+# DERIVED from the baked-in bash.exe path — never hardcoded — so these pin both
+# the ordering (usr\bin FIRST) and the derivation (a non-default install root
+# comes through verbatim, a non-Git bash yields nothing).
+assert_eq "usr\\bin layout yields <root>\\usr\\bin;<root>\\bin (usr\\bin FIRST)" \
+  "$(cadence_git_bin_path_win 'C:\Program Files\Git\usr\bin\bash.exe')" \
+  'C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin'
+assert_eq "non-default Git install root is derived, not hardcoded" \
+  "$(cadence_git_bin_path_win 'D:\dev tools\Git\usr\bin\bash.exe')" \
+  'D:\dev tools\Git\usr\bin;D:\dev tools\Git\bin'
+assert_eq "bin\\bash.exe wrapper form resolves the SAME root (usr\\bin still first)" \
+  "$(cadence_git_bin_path_win 'C:\Program Files\Git\bin\bash.exe')" \
+  'C:\Program Files\Git\usr\bin;C:\Program Files\Git\bin'
+assert_eq "a non-Git bash (WSL System32 stub) yields nothing, not a wrong path" \
+  "$(cadence_git_bin_path_win 'C:\Windows\System32\bash.exe')" ''
+
+# Tie the derivation to the line an emitted runner actually carries: escape the
+# fragment (cadence_cmd_escape, as every bash-emitter's emit_bat does) and wrap
+# it as the `set "PATH=...;%PATH%"` line a generated .bat stamps. Git's usr\bin
+# must land AHEAD of %PATH% — i.e. ahead of the inherited Windows PATH where
+# System32's find.exe/timeout.exe live — so a non-login bash.exe resolves GNU
+# coreutils first. (The consumer suites can't assert this directly: their fake
+# bash stub is deliberately non-Git-shaped for hermeticity, so the derivation
+# returns empty there. This is the deterministic home for that contract.)
+_emitted="set \"PATH=$(cadence_cmd_escape "$(cadence_git_bin_path_win 'C:\Program Files\Git\usr\bin\bash.exe')");%PATH%\""
+case "$_emitted" in
+  *\\usr\\bin*%PATH%*) pass=$((pass + 1)); printf '%s\n' "  ok: emitted PATH line puts Git usr\\bin ahead of %PATH%" ;;
+  *) fail=$((fail + 1)); printf '%s\n' "  FAIL: emitted PATH line does NOT put Git usr\\bin ahead of %PATH%: [$_emitted]" ;;
+esac
+
 echo "[test-cadence-format] runner format stamp"
 # Pinned to the exact current value, not merely "is an integer" — an
 # any-integer assertion can never fail, so it pinned nothing. The point of a
 # literal here is the tripwire: a version bump is a deliberate act (it nudges
 # every armed operator to `arm --force`), so it should require touching this
 # line. Bump it in the same commit that bumps cadence-format.sh.
-if [ "$CADENCE_RUNNER_FORMAT_VERSION" = 7 ]; then
-  pass=$((pass + 1)); echo "  ok: CADENCE_RUNNER_FORMAT_VERSION is the expected 7"
+if [ "$CADENCE_RUNNER_FORMAT_VERSION" = 9 ]; then
+  pass=$((pass + 1)); echo "  ok: CADENCE_RUNNER_FORMAT_VERSION is the expected 9"
 else
-  fail=$((fail + 1)); echo "  FAIL: expected CADENCE_RUNNER_FORMAT_VERSION=7, got '$CADENCE_RUNNER_FORMAT_VERSION'"
+  fail=$((fail + 1)); echo "  FAIL: expected CADENCE_RUNNER_FORMAT_VERSION=9, got '$CADENCE_RUNNER_FORMAT_VERSION'"
 fi
 
 echo

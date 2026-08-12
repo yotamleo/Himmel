@@ -66,6 +66,16 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #   STUB_MERGE_FAIL=1   `gh pr merge` exits 1 (generic failure).
 #   STUB_MERGE_COSMETIC=1  `gh pr merge` exits 1 with the held-worktree message.
 #   STUB_POST_STATE     PR state the post-merge re-query returns. Default MERGED.
+#   STUB_POST_STATE_FAIL=1  the post-merge state re-query fails (indeterminate).
+#   STUB_POST_HEAD      headRefOid the failure-recovery re-query
+#                        (state,headRefOid,baseRefName) returns. Default =
+#                        STUB_SHA (matches the certified sha, so existing tests
+#                        see an unchanged head). Set it to a different value to
+#                        simulate a concurrently-merged commit.
+#   STUB_POST_BASE       baseRefName the failure-recovery re-query returns.
+#                        Default = STUB_BASE (matches the authorized base, so
+#                        existing tests see an unchanged base). Set it to a
+#                        different value to simulate a concurrent retarget.
 #   NO_CHECK_CI=1       omit the stub check-ci (sibling path absent).
 #   STUB_AUDIT_UNWRITABLE=1  point the audit sink at an unwritable path.
 # After the run: $LAST_GH_LOG = stub gh argv log, $LAST_AUDIT = audit log.
@@ -119,10 +129,18 @@ case "$verb" in
                 # preserved, letting a test simulate an empty pre-merge base
                 # (fail-closed path) rather than silently defaulting (coderabbit).
                 printf '%s' "${STUB_BASE_PREMERGE-${STUB_BASE-main}}" ;;
-            "state")
-                # Post-merge re-query: the cosmetic branch-delete path AND the
-                # merge-confirmation poll on the success path (coderabbit).
-                printf '%s' "${STUB_POST_STATE:-MERGED}" ;;
+            "state,headRefOid,baseRefName")
+                # Post-merge re-query — shared by BOTH the failure-recovery
+                # path AND the success-path confirmation poll (codex-adv,
+                # HIMMEL-1394): state PLUS the merged head and base, so either
+                # path can tell "this run's sha merged onto the authorized
+                # base" apart from both "a different commit merged
+                # concurrently" and "the same sha merged onto a different
+                # (retargeted) base". The plain "state"-only query this used
+                # to be (pre-HIMMEL-1394 success-path fix) has no caller left
+                # in merge-on-green.sh; removed rather than left dead.
+                [ "${STUB_POST_STATE_FAIL:-0}" = "1" ] && { echo "gh: state query failed" >&2; exit 1; }
+                printf '%s %s %s' "${STUB_POST_STATE:-MERGED}" "${STUB_POST_HEAD:-${STUB_SHA-abc123def456}}" "${STUB_POST_BASE:-${STUB_BASE-main}}" ;;
             *) echo "gh stub: unhandled 'pr view' query: --json '$json'" >&2; exit 90 ;;
         esac
         ;;
@@ -183,7 +201,7 @@ case "$verb" in
     "pr merge")
         [ "${STUB_MERGE_FAIL:-0}" = "1" ] && { echo "merge conflict / head moved" >&2; exit 1; }
         if [ "${STUB_MERGE_COSMETIC:-0}" = "1" ]; then
-            echo "failed to run git: fatal: 'main' is already used by worktree at '/x'" >&2
+            echo "cannot delete branch 'fix/himmel-1386-vault-lint-reroute' used by worktree at '.claude/worktrees/fix+himmel-1386-vault-lint-reroute'" >&2
             exit 1
         fi
         echo "merged"
@@ -217,6 +235,9 @@ assert_gh_lacks() {
 assert_audit_has() {
     if grep -qF -- "$2" "$LAST_AUDIT" 2>/dev/null; then pass; else fail "$1 (audit log lacks '$2')"; fi
 }
+assert_audit_lacks() {
+    if grep -qF -- "$2" "$LAST_AUDIT" 2>/dev/null; then fail "$1 (audit log unexpectedly has '$2')"; else pass; fi
+}
 # Scope merge-flag assertions to the `pr merge` invocation itself (coderabbit-1).
 # Searching the whole GH_LOG would let a flag appearing in ANY other gh call
 # satisfy an assertion about how the MERGE was invoked — which is the one thing
@@ -231,10 +252,14 @@ assert_merge_has() {
 # (`--json state,url,number,headRefOid`) as a substring, so the assertion would
 # pass even with post-merge confirmation removed entirely — vacuously guarding
 # the one behavior it exists to prove. Anchor on a word boundary after `state`
-# so only the state-ONLY query matches.
+# so only the state-ONLY or state+headRefOid re-queries match — never the
+# initial metadata query (which lists FOUR more fields after `state,`).
+# `state,headRefOid,baseRefName` is the failure-recovery re-query (codex-adv,
+# HIMMEL-1394); `state` alone is the success-path confirmation poll — both are
+# legitimate post-merge re-queries this assertion accepts.
 assert_state_requery() {
-    if grep -Eq '^pr view( .*)? --json state( |$)' "$LAST_GH_LOG"; then pass
-    else fail "$1 (no post-merge 'pr view --json state' re-query found)"; fi
+    if grep -Eq '^pr view( .*)? --json state(,headRefOid,baseRefName)?( |$)' "$LAST_GH_LOG"; then pass
+    else fail "$1 (no post-merge 'pr view --json state[,headRefOid,baseRefName]' re-query found)"; fi
 }
 
 echo "== merge-on-green.sh tests =="
@@ -397,18 +422,53 @@ run_mog 0 "dry-run passes gates, no merge" -- --dry-run
 assert_gh_lacks  "dry-run does not merge"   "pr merge"
 assert_audit_has "dry-run audits DRYRUN"    "DRYRUN"
 
-# 11. gh pr merge fails (head moved / conflict) → exit 15.
-STUB_MERGE_FAIL=1 run_mog 15 "merge failure → exit 15"
+# 11. gh pr merge fails (head moved / conflict), and the PR is confirmed OPEN →
+# genuinely not merged, so exit 15 remains the fail-closed result.
+STUB_MERGE_FAIL=1 STUB_POST_STATE=OPEN run_mog 15 "merge failure + PR OPEN → exit 15"
+assert_state_requery "failed merge re-queries PR state"
+assert_audit_has "genuine merge failure remains REFUSED" "REFUSED reason=merge-failed"
 
-# 11b. Cosmetic branch-delete fail + PR confirmed MERGED → success (exit 0).
-STUB_SHA="cafe01" STUB_MERGE_COSMETIC=1 STUB_POST_STATE=MERGED run_mog 0 "cosmetic fail + PR MERGED → exit 0"
-assert_state_requery "cosmetic path re-queries PR state"
-assert_audit_has "cosmetic-merged path records MERGED" "MERGED"
+# 11b. gh merged remotely but failed deleting the worktree-held local branch →
+# success (exit 0). This is the exact error shape observed on PR #1466.
+STUB_SHA="cafe01" STUB_MERGE_COSMETIC=1 STUB_POST_STATE=MERGED run_mog 0 "cleanup fail + PR MERGED → exit 0"
+assert_state_requery "cleanup-failed path re-queries PR state"
+assert_audit_has "cleanup-failed path records MERGED" "MERGED"
+assert_audit_has "cleanup-failed audit names the failure" "cleanup-failed=gh-exit-1"
+assert_audit_has "cleanup-failed audit names the holding worktree" "worktree=fix+himmel-1386-vault-lint-reroute"
+assert_audit_lacks "cleanup-failed merge is not recorded as refused" "REFUSED"
 
-# 11c. Cosmetic branch-delete fail but PR still OPEN → NOT merged (exit 15).
-# The 'used by worktree' phrase must NOT be inferred as a completed merge
-# (coderabbit): the merge did not land, so fail.
-STUB_MERGE_COSMETIC=1 STUB_POST_STATE=OPEN run_mog 15 "cosmetic fail + PR still OPEN → exit 15"
+# 11c. The same branch-delete failure with a confirmed OPEN PR is genuinely not
+# merged and must remain exit 15; the error phrase alone proves nothing.
+STUB_MERGE_COSMETIC=1 STUB_POST_STATE=OPEN run_mog 15 "cleanup fail + PR still OPEN → exit 15"
+assert_audit_has "unmerged cleanup failure remains REFUSED" "REFUSED reason=merge-failed"
+
+# 11c2. If the state re-query itself fails, the outcome is indeterminate rather
+# than falsely classified as either MERGED or REFUSED.
+STUB_MERGE_FAIL=1 STUB_POST_STATE_FAIL=1 run_mog 15 "merge failure + state query failure → indeterminate exit 15"
+assert_audit_has "state-query failure records indeterminate outcome" "INDETERMINATE reason=merge-state-query-failed"
+assert_audit_lacks "indeterminate outcome is not recorded as refused" "REFUSED"
+
+# 11c3. gh's own merge call failed (so --match-head-commit never confirmed
+# $sha) but the PR reports MERGED at a DIFFERENT head — a concurrent actor
+# merged a different commit in the gap. Must NOT be credited to this run
+# (codex-adv review, HIMMEL-1394).
+STUB_SHA="cafe01" STUB_MERGE_FAIL=1 STUB_POST_STATE=MERGED STUB_POST_HEAD="deadbeef" \
+    run_mog 15 "merge failure + PR MERGED at a different head → exit 15, not credited"
+assert_audit_has "head-mismatch records the mismatch reason" "REFUSED reason=merge-state-head-mismatch"
+assert_audit_has "head-mismatch audit names the certified sha" "sha=cafe01"
+assert_audit_has "head-mismatch audit names the merged head" "merged_head=deadbeef"
+assert_audit_lacks "head-mismatch is not recorded as MERGED" "MERGED repo="
+
+# 11c4. gh's own merge call failed, and the PR reports MERGED with the SAME
+# certified head — but landed on a DIFFERENT base than the one guard 3b
+# re-verified (a concurrent `gh pr edit --base` retarget, which does not move
+# the head). Must NOT be credited to this run (codex-adv review, HIMMEL-1394).
+STUB_MERGE_FAIL=1 STUB_POST_STATE=MERGED STUB_POST_BASE="side-branch" \
+    run_mog 15 "merge failure + PR MERGED at the certified sha but a different base → exit 15, not credited"
+assert_audit_has "base-mismatch records the mismatch reason" "REFUSED reason=merge-state-base-mismatch"
+assert_audit_has "base-mismatch audit names the authorized base" "authorized_base=main"
+assert_audit_has "base-mismatch audit names the merged base" "merged_base=side-branch"
+assert_audit_lacks "base-mismatch is not recorded as MERGED" "MERGED repo="
 
 # 11d. Audit sink not writable → refuse BEFORE merging (exit 16), no merge.
 STUB_AUDIT_UNWRITABLE=1 run_mog 16 "unwritable audit sink → exit 16"
@@ -422,6 +482,28 @@ assert_gh_lacks "unwritable-audit: no merge attempted" "pr merge"
 STUB_POST_STATE=CLOSED run_mog 15 "merge accepted but PR not MERGED → exit 15"
 assert_audit_has "unconfirmed merge audits the refusal" "reason=merge-unconfirmed"
 assert_state_requery "success path confirms PR state"
+
+# 11f. gh ACCEPTS the merge (rc 0, e.g. queue admission), and the PR reports
+# MERGED — but at a DIFFERENT head than the certified sha. A concurrent actor
+# merged a different commit while this run's admission sat queued. Must NOT
+# be credited (codex-adv review, HIMMEL-1394 — the success-path analog of 11c3).
+STUB_SHA="cafe01" STUB_POST_STATE=MERGED STUB_POST_HEAD="deadbeef" \
+    run_mog 15 "merge accepted + PR MERGED at a different head → exit 15, not credited"
+assert_audit_has "success-path head-mismatch records the mismatch reason" "REFUSED reason=merge-state-head-mismatch"
+assert_audit_has "success-path head-mismatch audit names the certified sha" "sha=cafe01"
+assert_audit_has "success-path head-mismatch audit names the merged head" "merged_head=deadbeef"
+assert_audit_lacks "success-path head-mismatch is not recorded as MERGED" "MERGED repo="
+
+# 11g. gh ACCEPTS the merge (rc 0), and the PR reports MERGED at the certified
+# head — but on a DIFFERENT base than guard 3b re-verified. A concurrent
+# `gh pr edit --base` retarget while queued. Must NOT be credited (codex-adv
+# review, HIMMEL-1394 — the success-path analog of 11c4).
+STUB_POST_STATE=MERGED STUB_POST_BASE="side-branch" \
+    run_mog 15 "merge accepted + PR MERGED at the certified sha but a different base → exit 15, not credited"
+assert_audit_has "success-path base-mismatch records the mismatch reason" "REFUSED reason=merge-state-base-mismatch"
+assert_audit_has "success-path base-mismatch audit names the authorized base" "authorized_base=main"
+assert_audit_has "success-path base-mismatch audit names the merged base" "merged_base=side-branch"
+assert_audit_lacks "success-path base-mismatch is not recorded as MERGED" "MERGED repo="
 
 # 12. A truthy-but-not-1 opt-in also enables (yes/on/true).
 ARMAUTOMERGE=yes run_mog 0 "ARMAUTOMERGE=yes also enables"

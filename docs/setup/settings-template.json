@@ -96,7 +96,6 @@
     "playground@claude-plugins-official": false,
     "atlassian@claude-plugins-official": false,
     "obsidian@obsidian-skills": false,
-    "qmd@qmd": false,
     "qmd@himmel": true,
     "caveman@caveman": false,
     "claude-obsidian@himmel": true,
@@ -110,10 +109,6 @@
   "extraKnownMarketplaces": {
     "obsidian-skills": {
       "source": { "source": "github", "repo": "kepano/obsidian-skills" },
-      "autoUpdate": true
-    },
-    "qmd": {
-      "source": { "source": "github", "repo": "tobi/qmd" },
       "autoUpdate": true
     },
     "caveman": {

@@ -15,6 +15,19 @@ commit, so this is on-demand, not a hook. It is also why there is no operational
 rule about it in root `CLAUDE.md` (see the operator convention on keeping
 CLAUDE.md free of prunable operational guidance).
 
+**Prerequisite — `claude-md-management` plugin (HIMMEL-1044).** Step 3 drives
+the `claude-md-management:claude-md-improver` skill. That plugin is a
+Claude-tooling dev plugin and is intentionally `false` in the adopter lean
+profile (`docs/setup/settings-template.json`), so on a lean/adopter machine the
+skill is simply not available. If it is not enabled in your active settings, do
+NOT attempt the step-3 invocation — it fails with an opaque plugin-not-found
+error. Report this one line and stop instead:
+
+> `claude-md-audit: needs the claude-md-management plugin, which is disabled in the lean profile — re-enable it (claude plugin install claude-md-management@claude-plugins-official --scope user) to run this audit.`
+
+The operator's full set keeps the plugin on, so this only affects lean/adopter
+machines.
+
 Steps:
 
 1. List the CLAUDE.md files this branch changes vs main:
