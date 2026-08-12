@@ -57,6 +57,7 @@ repo_root=$(git rev-parse --show-toplevel)
 wizard="$repo_root/scripts/himmelctl/bin.js"
 resolve_mjs="$repo_root/scripts/lanes/resolve.mjs"
 probe_mjs="$repo_root/scripts/lanes/probe.mjs"
+bank_status_core_mjs="$repo_root/scripts/lanes/bank-status-core.mjs"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
 
@@ -366,6 +367,7 @@ echo "ok: caseI interactive config with closed stdin quits immediately (rc=0), n
 fxJ="$work/fixtureJ"; mkdir -p "$fxJ"
 cp "$resolve_mjs" "$fxJ/resolve.mjs"
 cp "$probe_mjs" "$fxJ/probe.mjs"
+cp "$bank_status_core_mjs" "$fxJ/bank-status-core.mjs"
 cat > "$fxJ/lanes.json" <<'JSON'
 { "lanes": [
   { "id": "always-on", "label": "AlwaysOn", "class": "test", "probe": { "kind": "always" } },
