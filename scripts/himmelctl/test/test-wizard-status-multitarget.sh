@@ -45,6 +45,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -60,15 +61,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # write_cache <path> <role> <scope> <vault-mode> <vault-path> <handover-mode>
 #             <handover-path> <plugin-set> — a minimal valid Draft-A profile
@@ -102,7 +94,7 @@ cacheDir_w="$(winpath "$cacheDir")"
 # dir — the profile records whichever scope a real adopter answered last).
 runA() {
   write_cache "$cacheDir/install-profile.json" adopter project none "" inline "" lean
-  ( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HOME="$homeDir" \
+  ( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HIMMEL_LUNA_CONFIG_PATH="$cacheDir_w-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
       "$node_bin" "$wizard" status --json --items "$1" )
 }
 
@@ -111,7 +103,7 @@ runA() {
 # here, so no `cd` is needed).
 runB() {
   write_cache "$cacheDir/install-profile.json" adopter user none "" inline "" lean
-  ( HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HOME="$homeDir" \
+  ( HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HIMMEL_LUNA_CONFIG_PATH="$cacheDir_w-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
       "$node_bin" "$wizard" status --json --items "$1" )
 }
 

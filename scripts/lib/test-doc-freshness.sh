@@ -5,6 +5,9 @@
 set -uo pipefail
 LIBDIR="$(cd "$(dirname "$0")" && pwd)"
 LIB="$LIBDIR/doc-freshness.sh"
+# shellcheck source=fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$LIBDIR/fixture-tempdir.sh"
 _fail=0
 run_test() { local name="$1" body="$2" rc=0; ( eval "$body" ) || rc=$?; if [ "$rc" -eq 0 ]; then printf '  PASS  %s\n' "$name"; else printf '  FAIL  %s (rc=%s)\n' "$name" "$rc"; _fail=$((_fail+1)); fi; }
 
@@ -12,7 +15,7 @@ run_test() { local name="$1" body="$2" rc=0; ( eval "$body" ) || rc=$?; if [ "$r
 # scripts/hooks/doc-guard-map.tsv and the mapped advise docs, so project-relative
 # resolution works. init -b main for portability (critic #6).
 setup_repo() {
-  R=$(mktemp -d); git -C "$R" init -q -b main
+  R=$(fixture_mktemp_dir) || return 1; git -C "$R" init -q -b main
   git -C "$R" config user.email t@t; git -C "$R" config user.name t
   mkdir -p "$R/scripts/hooks" "$R/scripts/jira" "$R/docs/internals"
   printf '# strength\ttrigger\tpath-regex\trequired-doc\n'                        >  "$R/scripts/hooks/doc-guard-map.tsv"
@@ -27,7 +30,7 @@ setup_repo() {
 detect() { ( . "$LIB"; df_detect "$@" ); }
 
 run_test "drift-catch: feat touches mapped source, doc untouched → finding" '
-  setup_repo
+  setup_repo || exit 1
   echo x >> "$R/scripts/hooks/some-hook.sh"
   git -C "$R" add -A; git -C "$R" commit -q -m "feat: add hook"
   out=$(cd "$R" && detect "$BASE..HEAD"); rc=$?
@@ -36,7 +39,7 @@ run_test "drift-catch: feat touches mapped source, doc untouched → finding" '
 '
 
 run_test "doc-presence suppression: doc ALSO touched → no finding" '
-  setup_repo
+  setup_repo || exit 1
   echo x >> "$R/scripts/hooks/some-hook.sh"
   echo y >> "$R/docs/internals/enforcement.md"
   git -C "$R" add -A; git -C "$R" commit -q -m "feat: add hook + doc"
@@ -45,7 +48,7 @@ run_test "doc-presence suppression: doc ALSO touched → no finding" '
 '
 
 run_test "changelog scoping: chore-only change → no finding" '
-  setup_repo
+  setup_repo || exit 1
   echo x >> "$R/scripts/hooks/some-hook.sh"
   git -C "$R" add -A; git -C "$R" commit -q -m "chore: tweak hook"
   out=$(cd "$R" && detect "$BASE..HEAD")
@@ -53,7 +56,7 @@ run_test "changelog scoping: chore-only change → no finding" '
 '
 
 run_test "mixed feat+chore on same file → shippable wins → finding" '
-  setup_repo
+  setup_repo || exit 1
   echo a >> "$R/scripts/hooks/some-hook.sh"
   git -C "$R" add -A; git -C "$R" commit -q -m "chore: tweak"
   echo b >> "$R/scripts/hooks/some-hook.sh"
@@ -63,7 +66,7 @@ run_test "mixed feat+chore on same file → shippable wins → finding" '
 '
 
 run_test "SECOND advise row fires under set -e (critic #1): jira change → jira-plugin.md" '
-  setup_repo
+  setup_repo || exit 1
   echo x >> "$R/scripts/jira/thing.ts"
   git -C "$R" add -A; git -C "$R" commit -q -m "feat: jira thing"
   # Run the detect under set -e exactly like the real consumers, to prove the
@@ -91,7 +94,7 @@ run_test "all-rows-inert (target docs absent) → warn once on stderr, no findin
 '
 
 run_test "range parameterization: three-dot range works" '
-  setup_repo
+  setup_repo || exit 1
   git -C "$R" checkout -q -b feat/x
   echo x >> "$R/scripts/hooks/some-hook.sh"
   git -C "$R" add -A; git -C "$R" commit -q -m "feat: add hook"
@@ -100,7 +103,7 @@ run_test "range parameterization: three-dot range works" '
 '
 
 run_test "three-dot range: main-side feat commit is NOT a false positive (critic #3)" '
-  setup_repo
+  setup_repo || exit 1
   # Branch off BASE (behind the main-only feat commit below).
   git -C "$R" checkout -q -b feat/x
   echo b >> "$R/scripts/hooks/branch.sh"

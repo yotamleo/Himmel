@@ -20,7 +20,7 @@ set -uo pipefail
 repo_root=$(git rev-parse --show-toplevel)
 script="$repo_root/scripts/machine-setup/install-plugins.sh"
 [ -f "$script" ] || { echo "FAIL: $script not found" >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "PASS (skipped)"; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename "$0"): SKIPPED — 0 cases ran (jq not on PATH)"; exit 0; }
 
 FAILED=0
 TMP=$(mktemp -d)
@@ -56,6 +56,12 @@ cat > "$TEMPLATE" <<'JSON'
 }
 JSON
 
+# HIMMEL-2292: --settings pins install-plugins.sh's force-enable step (and
+# the pre-existing autoUpdate patch) to a path that's never created here —
+# without it both default to the real $HOME/.claude/settings.json (scope
+# user), which this suite must never touch.
+SETTINGS="$TMP/settings-not-created.json"
+
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
     if [ "$actual" = "$expected" ]; then
@@ -75,13 +81,13 @@ assert_has() {
 
 # 1. all present → exit 0 + summary
 out=$(PATH="$STUB_DIR:$PATH" STUB_PRESENT="good-a@mp good-b@mp bogus@nowhere" \
-      bash "$script" --template "$TEMPLATE" 2>&1); rc=$?
+      bash "$script" --template "$TEMPLATE" --settings "$SETTINGS" 2>&1); rc=$?
 assert_rc "all-present exits 0" 0 "$rc"
 assert_has "all-present prints summary" "All 3 enabled plugins present" "$out"
 
 # 2. one absent → exit 1, names it (the present two must NOT be flagged)
 out=$(PATH="$STUB_DIR:$PATH" STUB_PRESENT="good-a@mp good-b@mp" \
-      bash "$script" --template "$TEMPLATE" 2>&1); rc=$?
+      bash "$script" --template "$TEMPLATE" --settings "$SETTINGS" 2>&1); rc=$?
 assert_rc "missing exits 1" 1 "$rc"
 assert_has "missing names the absent plugin" "bogus@nowhere" "$out"
 assert_has "missing reports a failure count" "1 plugin(s) not present" "$out"
@@ -91,14 +97,17 @@ case "$out" in
 esac
 
 # 3. --dry-run → exit 0, verify skipped (no plugin list call)
+# --settings pin: harmless here (dry-run only echoes, never writes), but keep
+# it for consistency with every other call site in this file (HIMMEL-2353) —
+# the same latent shape, just not currently reachable via this flag.
 out=$(PATH="$STUB_DIR:$PATH" STUB_PRESENT="" \
-      bash "$script" --template "$TEMPLATE" --dry-run 2>&1); rc=$?
+      bash "$script" --template "$TEMPLATE" --settings "$SETTINGS" --dry-run 2>&1); rc=$?
 assert_rc "dry-run exits 0" 0 "$rc"
 assert_has "dry-run skips verify" "verify skipped" "$out"
 
 # 4. `claude plugin list` fails → fail closed (exit 1) + surface the error
 out=$(PATH="$STUB_DIR:$PATH" STUB_LIST_FAIL=1 \
-      bash "$script" --template "$TEMPLATE" 2>&1); rc=$?
+      bash "$script" --template "$TEMPLATE" --settings "$SETTINGS" 2>&1); rc=$?
 assert_rc "list-failure fails closed (exit 1)" 1 "$rc"
 assert_has "list-failure surfaces claude stderr" "stub: list boom" "$out"
 
@@ -117,7 +126,7 @@ cat > "$TEMPLATE_LEAN" <<'JSON'
 JSON
 
 out=$(PATH="$STUB_DIR:$PATH" STUB_PRESENT="enabled@mp" \
-      bash "$script" --template "$TEMPLATE_LEAN" 2>&1); rc=$?
+      bash "$script" --template "$TEMPLATE_LEAN" --settings "$SETTINGS" 2>&1); rc=$?
 assert_rc "lean template exits 0" 0 "$rc"
 assert_has "lean template installs the true-flagged plugin" "install: enabled@mp" "$out"
 assert_has "lean template verify summary counts only the true entry" "All 1 enabled plugins present" "$out"

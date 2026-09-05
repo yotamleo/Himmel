@@ -27,7 +27,7 @@
     { "match": "prefix", "value": ".gitleaks.toml", "class": "pre-commit",
       "why": "secret-scan rule source the gitleaks gate consumes — relaxing it lets a secret past the gate" },
     { "match": "prefix", "value": ".codex/", "class": "hooks",
-      "why": "codex-lane hook wiring + the exit-2→deny-JSON adapter chokepoint (codex-hook-adapter.sh / run-hook.cmd) — rewiring it neutralizes every codex-lane guard" },
+      "why": "codex-lane hook wiring + the exit-2→deny-JSON adapter chokepoint (codex-hook-adapter.sh / run-hook.{sh,cmd}) — rewiring it neutralizes every codex-lane guard" },
     { "match": "prefix", "value": "scripts/backends.json", "class": "routing",
       "why": "block-backend-tier registry — guard-consumed policy" },
     { "match": "basename", "value": "hooks.json", "class": "hooks",

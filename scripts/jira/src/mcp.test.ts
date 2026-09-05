@@ -84,6 +84,7 @@ describe('MCP server wiring', () => {
   it('CallTool error path: non-Error throwable yields String() text (HIMMEL-292)', async () => {
     // Make the `get` tool's request throw a plain string — not an Error instance.
     const throwingRequest = vi.fn(async () => {
+      // oxlint-disable-next-line no-throw-literal -- deliberate non-Error throw; the test verifies String() fallback (HIMMEL-2163)
       throw 'plain string error';
     });
     const deps = { request: throwingRequest, uploadAttachment: vi.fn() } as unknown as ToolDeps;

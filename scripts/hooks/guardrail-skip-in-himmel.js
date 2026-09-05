@@ -32,8 +32,8 @@
 //   a WSL System32 stub on PATH cannot fail the guardrail closed machine-wide).
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const norm = (p) =>
   (p || '').replace(/\\/g, '/').replace(/\/+$/, '');
@@ -78,7 +78,7 @@ if (projectDeclaresGuardrail()) {
 
 // Not covered by a project layer: run the real guardrail. Forward the hook
 // payload on stdin. Use the installer-resolved bash; fall back to bare `bash`.
-const { execFileSync } = require('child_process');
+const { execFileSync } = require('node:child_process');
 const bash = process.env.GUARDRAIL_BASH || 'bash';
 
 let input = '';

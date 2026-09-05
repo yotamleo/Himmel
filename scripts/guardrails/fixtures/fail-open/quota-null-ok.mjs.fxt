@@ -1,0 +1,13 @@
+// The PRESCRIBED shape, which the lint must leave alone: the unknown is
+// preserved (`?? null` / explicit null checks) and the caller refuses on it.
+// A missing reading is a missing reading — never zero.
+//
+// Expected: lint-fail-open.sh passes this file clean.
+export function spentSoFar(readings) {
+  let spent = null;
+  for (const r of readings) {
+    if (r.usage == null) return null; // preserve the unknown; caller refuses
+    spent += r.usage;
+  }
+  return spent;
+}

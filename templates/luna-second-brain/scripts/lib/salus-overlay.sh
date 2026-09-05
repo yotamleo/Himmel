@@ -8,7 +8,8 @@
 #   - _-root scaffolds (_skin-photo-archive.md, _derm-visit-prep.template.md,
 #     _media/skin/) → scaffold-new ONLY; never overwrites operator content.
 #   - appends the medical posture block to _CLAUDE.md once (idempotent).
-#   - drops the .salus-profile marker (upgrade.sh gates on it).
+#   - drops the .salus-profile marker (upgrade.sh gates on it) AND the .salus
+#     PHI guard marker (HIMMEL-2173) — never overwrites an existing .salus.
 # Returns non-zero only on a missing overlay dir. bash 3.2-safe.
 apply_salus_overlay() {
   local repo_root="$1"
@@ -42,5 +43,15 @@ apply_salus_overlay() {
     cat "$ov/_CLAUDE.salus.md" >> "$repo_root/_CLAUDE.md"
   fi
   printf 'salus medical-vault profile - managed by setup --medical / upgrade\n' > "$repo_root/.salus-profile"
+  # PHI guard marker (HIMMEL-2173): the 7 PHI launcher guards (claude-glm/
+  # claude-codex/claude-routed + their .ps1 twins + the hermes parity guard)
+  # were written to test for .salus, not .salus-profile — without this, a
+  # fresh salus deployment shipped an inert guard (marker present, but the
+  # wrong one). The guards now accept .salus-profile too (part 2 of this
+  # ticket), but that is a defense for pre-existing deployments; keep
+  # shipping the real .salus marker here so a fresh deployment never relies
+  # on it. Never overwrite an existing .salus (an operator may have
+  # customized it).
+  [ -e "$repo_root/.salus" ] || : > "$repo_root/.salus"
   return 0
 }

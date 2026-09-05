@@ -78,10 +78,78 @@ for (const r of records) {
     findings[b] = (findings[b] || 0) + 1;
   }
 }
+
+// HIMMEL-2067: unadjudicated[branch] = # findings at the LATEST head of that
+// branch (the head of the row with the max ts for that branch, across any
+// record kind) with no EFFECTIVE verdict. Mirrors clear-cr-marker.sh gate 4b:
+// amend supersede records are applied before a finding verdict is judged.
+const lastRow = {};
+for (const r of records) {
+  const b = r.branch;
+  if (!b || !r.head) continue;
+  if (only && b !== only) continue;
+  if (!lastRow[b] || r.ts > lastRow[b].ts) lastRow[b] = { ts: r.ts, head: r.head };
+}
+const SEP = String.fromCharCode(31);
+const amendsMap = new Map();
+for (const r of records) {
+  if (r.kind !== "amend" || !r.set || typeof r.set !== "object") continue;
+  const k = [r.target_head, r.finding_id, r.artifact || "diff", r.perspective || "off"].join(SEP);
+  amendsMap.set(k, Object.assign({}, amendsMap.get(k) || {}, r.set));
+}
+// Coalesced by (branch, finding_id, artifact, perspective) — NOT counted per
+// raw row. A legacy ledger can carry more than one raw finding row for the
+// same logical finding (pre-dedup-guard duplicates); every row considered
+// here already matched the latest head for its branch, so the LAST one
+// written is the current state. Counting rows independently let an old
+// empty-verdict row still count as unadjudicated after a newer row recorded
+// the decision.
+const unadjByKey = new Map();
+for (const r of records) {
+  if (r.kind !== "finding") continue;
+  const b = r.branch;
+  if (!b || (only && b !== only)) continue;
+  const latest = lastRow[b];
+  if (!latest) continue;
+  const k = [r.head, r.finding_id, r.artifact || "diff", r.perspective || "off"].join(SEP);
+  const eff = amendsMap.has(k) ? Object.assign({}, r, amendsMap.get(k)) : r;
+  if (eff.head !== latest.head) continue;
+  const k2 = [b, r.finding_id, r.artifact || "diff", r.perspective || "off"].join(SEP);
+  unadjByKey.set(k2, { b, verdict: typeof eff.verdict === "string" ? eff.verdict.trim() : eff.verdict });
+}
+const unadjudicated = {};
+for (const v of unadjByKey.values()) {
+  if (v.verdict === undefined || v.verdict === null || v.verdict === "") {
+    unadjudicated[v.b] = (unadjudicated[v.b] || 0) + 1;
+  }
+}
+
 const branches = Object.keys(calls).sort();
+// Union of `branches` (from avail/usage CALL records) and the keys of
+// unadjudicated itself (HIMMEL-2067 CR round 3): branches alone would
+// silently drop a branch that has finding records but no recorded call from
+// both the count and the denominator, even though it has real unadjudicated
+// findings — and this ticket exists precisely to backfill legacy ledger
+// data, where a finding-only branch (no matching avail row) is plausible.
+const allUnadjBranches = Array.from(new Set(branches.concat(Object.keys(unadjudicated))));
+const totalUnadjudicated = allUnadjBranches.reduce((s, b) => s + (unadjudicated[b] || 0), 0);
 if (!branches.length) {
-  console.log(only ? ("no review spend recorded for branch " + only)
-                   : "no branch-attributed review spend recorded yet");
+  // The empty-`branches` early return must not also swallow a real
+  // unadjudicated count for a finding-only branch (codex-1, round 3) — it
+  // ran BEFORE the union above previously, so this case never reached it.
+  if (only) {
+    console.log(unadjudicated[only]
+      ? ("no review spend recorded for branch " + only + ", but "
+         + unadjudicated[only] + " unadjudicated finding(s) at its latest head")
+      : ("no review spend recorded for branch " + only));
+  } else if (totalUnadjudicated) {
+    console.log("no branch-attributed review spend recorded yet");
+    console.log("");
+    console.log("Unadjudicated at latest head (HIMMEL-2067): " + totalUnadjudicated
+                + " finding(s) across " + allUnadjBranches.length + " branch(es).");
+  } else {
+    console.log("no branch-attributed review spend recorded yet");
+  }
   process.exit(0);
 }
 const W = [34, 16, 7, 7, 8, 11];
@@ -106,13 +174,19 @@ for (const b of branches) {
   // Per-branch summary as prose, not a table row: findings and rounds are
   // branch-level facts and would sit under the wrong column headers.
   console.log("    -> " + rounds + " round(s), " + branchCalls + " critic call(s), "
-              + (findings[b] || 0) + " finding(s) recorded");
+              + (findings[b] || 0) + " finding(s) recorded, "
+              + (unadjudicated[b] || 0) + " unadjudicated at latest head");
   if (!worst || branchCalls > worst.calls) worst = { b, calls: branchCalls, rounds };
 }
 if (!only && worst) {
   console.log("");
   console.log("Most expensive branch: " + worst.b + " — " + worst.calls
               + " critic call(s) across " + worst.rounds + " round(s).");
+}
+if (!only) {
+  console.log("");
+  console.log("Unadjudicated at latest head (HIMMEL-2067): " + totalUnadjudicated
+              + " finding(s) across " + allUnadjBranches.length + " branch(es).");
 }
 '
   exit 0

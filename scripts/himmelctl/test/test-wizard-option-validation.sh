@@ -41,6 +41,12 @@
 #      (`--profile core status`, --profile is ensure-only) is rejected with
 #      the SAME exit 2 + message as its post-subcommand form (case a) —
 #      position never bypasses the per-subcommand whitelist.
+#   k. (HIMMEL-2308) `status --contribute` -> exit 2, message names
+#      --contribute + 'status' (--contribute is install-only).
+#   l. (HIMMEL-2308) `install --advanced` -> exit 2, the "unknown argument"
+#      message — --advanced was parsed-but-inert (reserved, never honored) and
+#      is now DELETED outright: the honest contract is rejection, not a
+#      silently accepted no-op flag.
 
 set -euo pipefail
 
@@ -54,6 +60,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
@@ -65,15 +72,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # CR fix (hermeticity): every rejected-combo case (a-f, h, j) depends on
 # parseArgs's own no-I/O invariant — the validation runs and exits BEFORE
@@ -91,7 +89,7 @@ noopCacheW="$(winpath "$noopCache")"
 
 # ── case a: status --profile core -> rejected ───────────────────────────────
 set +e
-outA=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" status --profile core </dev/null 2>&1); rcA=$?
+outA=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" status --profile core </dev/null 2>&1); rcA=$?
 set -e
 [ "$rcA" -eq 2 ] || fail "case a: 'status --profile core' should exit 2 (got rc=$rcA): $outA"
 grepq "$outA" -F -- "--profile is not valid with 'status'" \
@@ -100,7 +98,7 @@ echo "ok: case a — 'status --profile' is rejected with exit 2"
 
 # ── case b: status --yes -> rejected ────────────────────────────────────────
 set +e
-outB=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" status --yes </dev/null 2>&1); rcB=$?
+outB=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" status --yes </dev/null 2>&1); rcB=$?
 set -e
 [ "$rcB" -eq 2 ] || fail "case b: 'status --yes' should exit 2 (got rc=$rcB): $outB"
 grepq "$outB" -F -- "--yes is not valid with 'status'" \
@@ -109,7 +107,7 @@ echo "ok: case b — 'status --yes' is rejected with exit 2"
 
 # ── case c: ensure --json -> rejected ───────────────────────────────────────
 set +e
-outC=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" ensure --json </dev/null 2>&1); rcC=$?
+outC=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" ensure --json </dev/null 2>&1); rcC=$?
 set -e
 [ "$rcC" -eq 2 ] || fail "case c: 'ensure --json' should exit 2 (got rc=$rcC): $outC"
 grepq "$outC" -F -- "--json is not valid with 'ensure'" \
@@ -118,7 +116,7 @@ echo "ok: case c — 'ensure --json' is rejected with exit 2"
 
 # ── case d: install --items a,b -> rejected ─────────────────────────────────
 set +e
-outD=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" install --items a,b </dev/null 2>&1); rcD=$?
+outD=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" install --items a,b </dev/null 2>&1); rcD=$?
 set -e
 [ "$rcD" -eq 2 ] || fail "case d: 'install --items a,b' should exit 2 (got rc=$rcD): $outD"
 grepq "$outD" -F -- "--items is not valid with 'install'" \
@@ -127,7 +125,7 @@ echo "ok: case d — 'install --items' is rejected with exit 2"
 
 # ── case e: uninstall --profile core -> rejected ────────────────────────────
 set +e
-outE=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" uninstall --profile core </dev/null 2>&1); rcE=$?
+outE=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" uninstall --profile core </dev/null 2>&1); rcE=$?
 set -e
 [ "$rcE" -eq 2 ] || fail "case e: 'uninstall --profile core' should exit 2 (got rc=$rcE): $outE"
 grepq "$outE" -F -- "--profile is not valid with 'uninstall'" \
@@ -136,12 +134,22 @@ echo "ok: case e — 'uninstall --profile' is rejected with exit 2"
 
 # ── case f: uninstall --items a -> rejected ─────────────────────────────────
 set +e
-outF=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" uninstall --items a </dev/null 2>&1); rcF=$?
+outF=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" uninstall --items a </dev/null 2>&1); rcF=$?
 set -e
 [ "$rcF" -eq 2 ] || fail "case f: 'uninstall --items a' should exit 2 (got rc=$rcF): $outF"
 grepq "$outF" -F -- "--items is not valid with 'uninstall'" \
   || fail "case f: expected a message naming --items + 'uninstall' (got: $outF)"
 echo "ok: case f — 'uninstall --items' is rejected with exit 2"
+
+# ── case k (HIMMEL-2308): status --contribute -> rejected ──────────────────
+# --contribute is install-only (it sets devOverlay — see bin.js's parseArgs).
+set +e
+outK=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" status --contribute </dev/null 2>&1); rcK=$?
+set -e
+[ "$rcK" -eq 2 ] || fail "case k: 'status --contribute' should exit 2 (got rc=$rcK): $outK"
+grepq "$outK" -F -- "--contribute is not valid with 'status'" \
+  || fail "case k: expected a message naming --contribute + 'status' (got: $outK)"
+echo "ok: case k — 'status --contribute' is rejected with exit 2"
 
 # ── case g: valid combos pass validation and reach their handler ───────────
 # HIMMELCTL_CACHE_DIR -> an empty scratch dir, so cachePath() never resolves
@@ -155,7 +163,7 @@ cacheG="$work/cache-g"; mkdir -p "$cacheG"
 # HOME-derived fallback path in cmdStatus/cmdEnsure could touch real user state.
 homeG="$work/home-g"; mkdir -p "$homeG"
 set +e
-outG1=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HOME="$homeG" \
+outG1=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheG")-luna-config.json" HOME="$homeG" USERPROFILE="$(winpath "$homeG")" \
   "$node_bin" "$wizard" status --items x --json </dev/null 2>&1); rcG1=$?
 set -e
 [ "$rcG1" -eq 2 ] || fail "case g: 'status --items x --json' should reach cmdStatus and exit 2 for no profile (got rc=$rcG1): $outG1"
@@ -166,7 +174,7 @@ if grepq "$outG1" -F 'is not valid with'; then
 fi
 
 set +e
-outG2=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HOME="$homeG" \
+outG2=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheG")-luna-config.json" HOME="$homeG" USERPROFILE="$(winpath "$homeG")" \
   "$node_bin" "$wizard" ensure --items x --profile core --yes --dry-run </dev/null 2>&1); rcG2=$?
 set -e
 [ "$rcG2" -eq 2 ] || fail "case g: the full valid ensure combo should reach cmdEnsure and exit 2 for no profile (got rc=$rcG2): $outG2"
@@ -181,7 +189,7 @@ echo "ok: case g — 'status --items --json' and every ensure flag together both
 # process.exitCode + return (not process.exit()), so BOTH diagnostic lines
 # flush before exit under piped output — never a truncated single line. ────
 set +e
-outH=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" status --bogus-flag </dev/null 2>&1); rcH=$?
+outH=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" status --bogus-flag </dev/null 2>&1); rcH=$?
 set -e
 [ "$rcH" -eq 2 ] || fail "case h: an unrecognized flag should exit 2 (got rc=$rcH): $outH"
 grepq "$outH" -F 'unknown argument: --bogus-flag' \
@@ -201,7 +209,7 @@ echo "ok: case h — an unrecognized flag exits 2 with BOTH diagnostic lines flu
 cacheI="$work/cache-i"; mkdir -p "$cacheI"
 homeI="$work/home-i"; mkdir -p "$homeI"
 set +e
-outI=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheI")" HOME="$homeI" \
+outI=$(HIMMELCTL_CACHE_DIR="$(winpath "$cacheI")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheI")-luna-config.json" HOME="$homeI" USERPROFILE="$(winpath "$homeI")" \
   "$node_bin" "$wizard" --items x --json status </dev/null 2>&1); rcI=$?
 set -e
 [ "$rcI" -eq 2 ] || fail "case i: '--items x --json status' should reach cmdStatus and exit 2 for no profile (got rc=$rcI): $outI"
@@ -217,11 +225,20 @@ echo "ok: case i — valid flags placed BEFORE the subcommand ('--items x --json
 # SAME exit 2 + message as its post-subcommand form (case a) — position
 # never bypasses the per-subcommand whitelist. ─────────────────────────────
 set +e
-outJ=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HOME="$noopHome" "$node_bin" "$wizard" --profile core status </dev/null 2>&1); rcJ=$?
+outJ=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" --profile core status </dev/null 2>&1); rcJ=$?
 set -e
 [ "$rcJ" -eq 2 ] || fail "case j: '--profile core status' should exit 2 (got rc=$rcJ): $outJ"
 grepq "$outJ" -F -- "--profile is not valid with 'status'" \
   || fail "case j: expected the same rejection message as the post-subcommand form (got: $outJ)"
 echo "ok: case j — an invalid flag placed BEFORE the subcommand ('--profile core status') is rejected exactly like its post-subcommand form"
+
+# ── case l (HIMMEL-2308): --advanced is DELETED — now an unknown argument ──
+set +e
+outL=$(HIMMELCTL_CACHE_DIR="$noopCacheW" HIMMEL_LUNA_CONFIG_PATH="$noopCacheW-luna-config.json" HOME="$noopHome" USERPROFILE="$(winpath "$noopHome")" "$node_bin" "$wizard" install --advanced </dev/null 2>&1); rcL=$?
+set -e
+[ "$rcL" -eq 2 ] || fail "case l: 'install --advanced' should exit 2 (got rc=$rcL): $outL"
+grepq "$outL" -F 'unknown argument: --advanced' \
+  || fail "case l: expected the 'unknown argument' line for the now-deleted --advanced flag (got: $outL)"
+echo "ok: case l — 'install --advanced' is rejected as an unknown argument (the flag was deleted, not just left inert)"
 
 echo "PASS"

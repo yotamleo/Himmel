@@ -7,7 +7,11 @@
 # Usage: bash scripts/hooks/test-check-security-reviewed.sh
 set -uo pipefail
 
-HOOK="$(cd "$(dirname "$0")" && pwd)/check-security-reviewed.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOOK="$SCRIPT_DIR/check-security-reviewed.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK"
 
 FAILED=0
@@ -27,9 +31,9 @@ assert_rc() {
 make_repo() {
     local files="$1" msg="$2"
     local dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b main
         git config user.email t@t
         git config user.name t
@@ -45,9 +49,44 @@ make_repo() {
         git add -A
         # shellcheck disable=SC2086 # files is space-separated
         git -c commit.gpgsign=false commit -q -m "$msg"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
+
+# Regression: an empty mktemp result must fail before fixture git writes can
+# fall through to the caller's repository (HIMMEL-1673).
+empty_mktemp_caller=$(fixture_mktemp_dir) || exit 1
+(
+    fixture_enter_git_init_dir "$empty_mktemp_caller" || exit 1
+    git init -q -b main
+    git config user.email t@t
+    git config user.name t
+    echo safe > README.md
+    git add README.md
+    git -c commit.gpgsign=false commit -q -m "baseline"
+) || exit 1
+empty_mktemp_stub=$(fixture_mktemp_dir) || exit 1
+cat > "$empty_mktemp_stub/mktemp" <<'STUB'
+#!/usr/bin/env bash
+printf '\n'
+exit 0
+STUB
+chmod +x "$empty_mktemp_stub/mktemp"
+empty_mktemp_before=$(git -C "$empty_mktemp_caller" rev-parse HEAD)
+empty_mktemp_rc=0
+(
+    cd "$empty_mktemp_caller" || exit 99
+    PATH="$empty_mktemp_stub:$PATH" make_repo "src/other.ts" "fixture must not commit"
+) >/dev/null 2>&1 || empty_mktemp_rc=$?
+empty_mktemp_after=$(git -C "$empty_mktemp_caller" rev-parse HEAD)
+if [ "$empty_mktemp_rc" -ne 0 ] && [ "$empty_mktemp_before" = "$empty_mktemp_after" ] &&
+        [ -z "$(git -C "$empty_mktemp_caller" status --porcelain)" ]; then
+    echo "PASS HIMMEL-1673 empty mktemp fails closed without committing in cwd"
+else
+    echo "FAIL HIMMEL-1673 empty mktemp guard (rc=$empty_mktemp_rc before=$empty_mktemp_before after=$empty_mktemp_after)"
+    FAILED=$((FAILED + 1))
+fi
+rm -rf "$empty_mktemp_caller" "$empty_mktemp_stub"
 
 run_in() {
     local dir="$1" env_assign="${2:-}"
@@ -65,7 +104,7 @@ run_in() {
 make_gh_stub() {
     local body="$1"
     local d
-    d=$(mktemp -d)
+    d=$(fixture_mktemp_dir) || return 1
     cat > "$d/gh" <<STUB_EOF
 #!/usr/bin/env bash
 printf '%s\n' "$body"
@@ -128,73 +167,112 @@ assert_msg_absent() {
 }
 
 # --- BLOCK cases (rc=1) ---
-d=$(make_repo "src/foo.ts" "feat: add foo")
+d=$(make_repo "src/foo.ts" "feat: add foo") || exit 1
 assert_rc "code change + no attestation"             1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "scripts/foo.sh" "feat: add shell")
+d=$(make_repo "scripts/foo.sh" "feat: add shell") || exit 1
 assert_rc "scripts/ change + no attestation"         1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "src/api/handler.py" "feat: add handler")
+d=$(make_repo "src/api/handler.py" "feat: add handler") || exit 1
 assert_rc "python code + no attestation"             1 "$(run_in "$d")"
 rm -rf "$d"
 
 # --- ALLOW cases (rc=0) ---
-d=$(make_repo "README.md" "docs: readme")
+d=$(make_repo "README.md" "docs: readme") || exit 1
 assert_rc "docs-only (.md)"                          0 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "docs/setup.md notes.txt" "docs: notes")
+d=$(make_repo "docs/setup.md notes.txt" "docs: notes") || exit 1
 assert_rc "docs/ + .txt only"                        0 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "handovers/foo.md" "docs: handover")
+d=$(make_repo "handovers/foo.md" "docs: handover") || exit 1
 assert_rc "handovers/ only"                          0 "$(run_in "$d")"
 rm -rf "$d"
 
 # Recognised tokens
 for token in manual claude-code-security-review pr-review-toolkit ad-hoc; do
-    d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: %s\n' "$token")")
+    d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: %s\n' "$token")") || exit 1
     assert_rc "code + attestation token='$token'"    0 "$(run_in "$d")"
     rm -rf "$d"
 done
 
 # Token followed by acceptable end-anchors (whitespace, EOL, . , ;)
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manual.\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manual.\n')") || exit 1
 assert_rc "code + 'manual.' (period end-anchor)"     0 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manual, fixed regex.\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manual, fixed regex.\n')") || exit 1
 assert_rc "code + 'manual, ...' (comma end-anchor)"  0 "$(run_in "$d")"
 rm -rf "$d"
 
 # Anti-gaming: substring of a recognised token should NOT pass
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manualish\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manualish\n')") || exit 1
 assert_rc "code + 'manualish' substring = block"     1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: please-manual-do-it\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: please-manual-do-it\n')") || exit 1
 assert_rc "code + 'please-manual-do-it' = block"     1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: cat /etc/n/a.txt\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: cat /etc/n/a.txt\n')") || exit 1
 assert_rc "code + 'n/a' inside path = block (n/a token removed)" 1 "$(run_in "$d")"
 rm -rf "$d"
 
 # `n/a` itself is no longer a recognised token
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: n/a\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: n/a\n')") || exit 1
 assert_rc "code + 'n/a' alone = block (token removed)" 1 "$(run_in "$d")"
 rm -rf "$d"
 
 # Unrecognised value does NOT count
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: yes\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: yes\n')") || exit 1
 assert_rc "code + unrecognised value = block"        1 "$(run_in "$d")"
 rm -rf "$d"
 
 # Empty value does NOT count
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed:\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed:\n')") || exit 1
 assert_rc "code + empty value = block"               1 "$(run_in "$d")"
+rm -rf "$d"
+
+# --- HIMMEL-1681: the token must sit IMMEDIATELY after the colon ---
+# ATTEST_RE used to be `Security reviewed:.*${TOKEN_RE}`, so the token could
+# appear anywhere later on the line — a trailer that explicitly NEGATES the
+# attestation satisfied the gate. These pin token-first, both on the
+# commit-message path and on the PR-body path (the same ATTEST_RE runs twice).
+
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: after review, manual\n')") || exit 1
+assert_rc "1681 prose-before-token = block"          1 "$(run_in "$d")"
+rm -rf "$d"
+
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: no manual review was performed\n')") || exit 1
+assert_rc "1681 NEGATED attestation = block"         1 "$(run_in "$d")"
+rm -rf "$d"
+
+d=$(make_repo "src/foo.ts" "feat: foo no attestation") || exit 1
+stub=$(make_gh_stub "$(printf 'PR body line.\nSecurity reviewed: after review, manual\n')") || exit 1
+assert_rc "1681 PR-body prose-before-token = block"  1 "$(run_in_with_path "$d" "$stub")"
+rm -rf "$d" "$stub"
+
+d=$(make_repo "src/foo.ts" "feat: foo no attestation") || exit 1
+stub=$(make_gh_stub "$(printf 'PR body line.\nSecurity reviewed: no manual review was performed\n')") || exit 1
+assert_rc "1681 PR-body NEGATED attestation = block" 1 "$(run_in_with_path "$d" "$stub")"
+rm -rf "$d" "$stub"
+
+# Token-first forms the tightening must NOT break. The `manual — <free text>`
+# shape is what this repo writes daily; TOKEN_RE's whitespace end-anchor keeps
+# arbitrary prose AFTER the token legal.
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manual — read the diff for injection/secrets\n')") || exit 1
+assert_rc "1681 'manual — <prose>' still passes"     0 "$(run_in "$d")"
+rm -rf "$d"
+
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manual; no new surface\n')") || exit 1
+assert_rc "1681 'manual;' (semicolon end-anchor) passes" 0 "$(run_in "$d")"
+rm -rf "$d"
+
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\n  Security reviewed: manual\n')") || exit 1
+assert_rc "1681 indented trailer still passes"       0 "$(run_in "$d")"
 rm -rf "$d"
 
 # --- HIMMEL-1562: refusal distinguishes MISSING (case a) from NONCONFORMING (case b) ---
@@ -209,7 +287,7 @@ rm -rf "$d"
 # alone — rc alone cannot tell case a from case b, which is the whole bug).
 
 # Case (a): no `Security reviewed:` trailer anywhere.
-d=$(make_repo "src/foo.ts" "feat: no attestation at all")
+d=$(make_repo "src/foo.ts" "feat: no attestation at all") || exit 1
 run_capture "$d"; rc=$LAST_RC
 assert_rc           "1562 case(a): no trailer -> block rc=1"            1 "$rc"
 assert_msg_contains "1562 case(a): says attestation missing"            "$LAST_MSG" "no"
@@ -220,7 +298,7 @@ assert_msg_absent   "1562 case(a): NOT the nonconforming wording"       "$LAST_M
 rm -rf "$d"
 
 # Case (b): trailer present, pure prose, no leading token (the instance-1 shape).
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: round guard only ever refuses on a missing trailer\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: round guard only ever refuses on a missing trailer\n')") || exit 1
 offend_sha=$(git -C "$d" rev-parse --short HEAD)
 run_capture "$d"; rc=$LAST_RC
 assert_rc           "1562 case(b): prose trailer -> block rc=1"         1 "$rc"
@@ -234,7 +312,7 @@ rm -rf "$d"
 
 # Case (b) + near-miss: value STARTS with an accepted token but fails the
 # end-anchor — `manually` vs `manual` (the instance-2 shape).
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manually reviewed the diff\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\nSecurity reviewed: manually reviewed the diff\n')") || exit 1
 run_capture "$d"; rc=$LAST_RC
 assert_rc           "1562 case(b) near-miss: manually -> block rc=1"    1 "$rc"
 assert_msg_contains "1562 near-miss: says present-but-nonconforming"    "$LAST_MSG" "NONE matched"
@@ -250,16 +328,16 @@ rm -rf "$d"
 # a literal 's', so an indented marker silently failed to match on macOS while
 # an unindented one kept working. Same honest caveat: this cannot fail on a
 # GNU-grep box, so it pins the contract rather than proving the fix red.
-d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\n    [skip security-review]\n')")
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\n    [skip security-review]\n')") || exit 1
 assert_rc "non-docs + INDENTED skip marker (BSD-grep safe)" 0 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\n[skip security-review]\n')")
+d=$(make_repo "src/foo.ts" "$(printf 'feat: foo\n\n[skip security-review]\n')") || exit 1
 assert_rc "code + skip marker"                       0 "$(run_in "$d")"
 rm -rf "$d"
 
 # Env bypass
-d=$(make_repo "src/foo.ts" "feat: foo")
+d=$(make_repo "src/foo.ts" "feat: foo") || exit 1
 assert_rc "code + env bypass"                        0 "$(run_in "$d" "SKIP_SECURITY_REVIEW=1")"
 rm -rf "$d"
 
@@ -280,9 +358,9 @@ rm -rf "$d"
 # The fixture mirrors that exact shape: bulk in the older commit, the
 # attestation in the newest. It FAILS against the pre-fix hook (rc=1) — that
 # is the point of it.
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git init -q -b main
     git config user.email t@t
     git config user.name t
@@ -350,20 +428,20 @@ rm -rf "$d"
 # (the ATTEST_RE anchors to start-of-line, so prose preceding the
 # attestation line is fine but the token must NOT share its line with
 # unrelated prose). -> pass.
-d=$(make_repo "src/foo.ts" "feat: foo no attestation")
-stub=$(make_gh_stub "$(printf '## Summary\nSome PR description prose.\n\n## Security review\n\nSecurity reviewed: manual\n')")
+d=$(make_repo "src/foo.ts" "feat: foo no attestation") || exit 1
+stub=$(make_gh_stub "$(printf '## Summary\nSome PR description prose.\n\n## Security review\n\nSecurity reviewed: manual\n')") || exit 1
 assert_rc "code + PR-body has 'manual' via gh stub"  0 "$(run_in_with_path "$d" "$stub")"
 rm -rf "$d" "$stub"
 
 # Stub gh returns a body WITHOUT the token -> block.
-d=$(make_repo "src/foo.ts" "feat: foo no attestation")
-stub=$(make_gh_stub "$(printf '## Summary\nSome PR description with no security attestation anywhere.\n')")
+d=$(make_repo "src/foo.ts" "feat: foo no attestation") || exit 1
+stub=$(make_gh_stub "$(printf '## Summary\nSome PR description with no security attestation anywhere.\n')") || exit 1
 assert_rc "code + PR-body has no token via gh stub = block" 1 "$(run_in_with_path "$d" "$stub")"
 rm -rf "$d" "$stub"
 
 # Stub gh returns a body with a substring-gaming attempt -> block.
-d=$(make_repo "src/foo.ts" "feat: foo no attestation")
-stub=$(make_gh_stub "$(printf 'PR body line.\nSecurity reviewed: manualish\n')")
+d=$(make_repo "src/foo.ts" "feat: foo no attestation") || exit 1
+stub=$(make_gh_stub "$(printf 'PR body line.\nSecurity reviewed: manualish\n')") || exit 1
 assert_rc "code + PR-body substring-gaming via gh stub = block" 1 "$(run_in_with_path "$d" "$stub")"
 rm -rf "$d" "$stub"
 
@@ -371,24 +449,24 @@ rm -rf "$d" "$stub"
 # ^ anchor in ATTEST_RE requires it at line start (modulo leading space).
 # This is correct behaviour but worth pinning so a future ATTEST_RE relax
 # doesn't accidentally weaken it.
-d=$(make_repo "src/foo.ts" "feat: foo no attestation")
-stub=$(make_gh_stub "Inline prose: Security reviewed: manual. Inline continues.")
+d=$(make_repo "src/foo.ts" "feat: foo no attestation") || exit 1
+stub=$(make_gh_stub "Inline prose: Security reviewed: manual. Inline continues.") || exit 1
 assert_rc "code + PR-body inline-prose 'Security reviewed:' mid-line = block (anchor protected)" 1 "$(run_in_with_path "$d" "$stub")"
 rm -rf "$d" "$stub"
 
 # Mixed docs + code requires attestation (code presence is the trigger)
-d=$(make_repo "src/foo.ts README.md" "feat: mixed")
+d=$(make_repo "src/foo.ts README.md" "feat: mixed") || exit 1
 assert_rc "mixed code+docs + no attestation = block" 1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "src/foo.ts README.md" "$(printf 'feat: mixed\n\nSecurity reviewed: manual\n')")
+d=$(make_repo "src/foo.ts README.md" "$(printf 'feat: mixed\n\nSecurity reviewed: manual\n')") || exit 1
 assert_rc "mixed code+docs + attestation"            0 "$(run_in "$d")"
 rm -rf "$d"
 
 # Main-branch push: skip.
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git init -q -b main
     git config user.email t@t
     git config user.name t
@@ -396,21 +474,21 @@ d=$(mktemp -d)
     echo r > src/foo.ts
     git add -A
     git -c commit.gpgsign=false commit -q -m "feat: foo"
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 assert_rc "on main branch — skip"                    0 "$(run_in "$d")"
 rm -rf "$d"
 
 # Linked-worktree behaviour: feature touches only docs but origin/main
 # touches non-docs code (simulating another PR landed). Hook should NOT
 # fire because the feature branch diff itself is docs-only.
-d=$(mktemp -d)
-origin=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
+origin=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$origin" || exit 1
+    fixture_enter_git_init_dir "$origin" || exit 1
     git init -q --bare -b main
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git clone -q "$origin" . >/dev/null 2>&1
     git config user.email t@t
     git config user.name t
@@ -431,7 +509,7 @@ origin=$(mktemp -d)
     git reset -q --hard HEAD~1
     git checkout -q feat/x
     git fetch -q origin main >/dev/null 2>&1
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 assert_rc "linked-worktree: docs-only feat, ignore origin-only code" 0 "$(run_in "$d" "SECURITY_REVIEW_NO_FETCH=1")"
 rm -rf "$d" "$origin"
 
@@ -442,9 +520,9 @@ rm -rf "$d" "$origin"
 # and a push while sitting on master is skipped.
 make_master_repo() {
     local files="$1" msg="$2" dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b master
         git config user.email t@t
         git config user.name t
@@ -459,17 +537,17 @@ make_master_repo() {
         done
         git add -A
         git -c commit.gpgsign=false commit -q -m "$msg"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
-d=$(make_master_repo "src/foo.ts" "feat: add foo")
+d=$(make_master_repo "src/foo.ts" "feat: add foo") || exit 1
 assert_rc "master-default: code + no attestation = block (base resolved to master)" 1 "$(run_in "$d" "SECURITY_REVIEW_NO_FETCH=1")"
 rm -rf "$d"
 
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git init -q -b master
     git config user.email t@t
     git config user.name t
@@ -477,7 +555,7 @@ d=$(mktemp -d)
     echo r > src/foo.ts
     git add -A
     git -c commit.gpgsign=false commit -q -m "feat: foo"
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 assert_rc "on master branch — skip"                  0 "$(run_in "$d")"
 rm -rf "$d"
 
@@ -489,9 +567,9 @@ rm -rf "$d"
 # offline/shallow workflows are preserved.
 make_no_default_repo() {
     local files="$1" msg="$2" dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b feat/x   # HEAD on a feature branch; no main/master ref ever created
         git config user.email t@t
         git config user.name t
@@ -499,11 +577,11 @@ make_no_default_repo() {
         for f in $files; do mkdir -p "$(dirname "$f")"; echo x > "$f"; done
         git add -A
         git -c commit.gpgsign=false commit -q -m "$msg"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
-d=$(make_no_default_repo "src/foo.ts" "feat: add foo")
+d=$(make_no_default_repo "src/foo.ts" "feat: add foo") || exit 1
 assert_rc "unresolvable base, online -> fail CLOSED (exit 2)"         2 "$(run_in "$d")"
 assert_rc "unresolvable base, NO_FETCH -> skip + warn (exit 0)"       0 "$(run_in "$d" "SECURITY_REVIEW_NO_FETCH=1")"
 rm -rf "$d"
@@ -511,7 +589,7 @@ rm -rf "$d"
 # --- HIMMEL-323 item 2: branch resolved via lib.sh::_branch (worktree-correct) ---
 # Non-git dir: _branch returns rc=2 -> hook fails CLOSED (exit 2) with a clear
 # diagnostic, rather than letting `set -e` abort on git's opaque exit 128.
-ngd=$(mktemp -d)
+ngd=$(fixture_mktemp_dir) || exit 1
 assert_rc "non-git dir -> rc=2 fail-closed (cannot read branch)"     2 "$(run_in "$ngd")"
 rm -rf "$ngd"
 
@@ -523,10 +601,10 @@ rm -rf "$ngd"
 # is already worktree-correct in the natural env, so this passes on old code too.
 # The genuine new-behaviour prover for the _branch switch is the non-git-dir
 # rc=2 case above (old code aborted via set -e with git's opaque exit 128).
-origin=$(mktemp -d); base=$(mktemp -d)
-( cd "$origin" || exit 1; git init -q --bare -b main ) >/dev/null 2>&1
+origin=$(fixture_mktemp_dir) || exit 1; base=$(fixture_mktemp_dir) || exit 1
+( fixture_enter_git_init_dir "$origin" || exit 1; git init -q --bare -b main ) >/dev/null 2>&1 || exit 1
 (
-    cd "$base" || exit 1
+    fixture_enter_git_init_dir "$base" || exit 1
     git clone -q "$origin" . >/dev/null 2>&1
     git config user.email t@t
     git config user.name t
@@ -536,7 +614,7 @@ origin=$(mktemp -d); base=$(mktemp -d)
     mkdir -p "${base}-wt/src"; echo 'export const x = 1' > "${base}-wt/src/new.ts"
     git -C "${base}-wt" add -A
     git -C "${base}-wt" -c commit.gpgsign=false commit -q -m "feat: code, no attestation"
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 wtgd="${base}/.git/worktrees/$(basename "${base}-wt")"
 rc_wt=$( cd "${base}-wt" && env GIT_DIR="$wtgd" SECURITY_REVIEW_NO_FETCH=1 bash "$HOOK" >/dev/null 2>&1; echo $? )
 assert_rc "linked worktree (primary on main): reads worktree branch + blocks" 1 "$rc_wt"
@@ -547,7 +625,7 @@ rm -rf "$origin" "$base" "${base}-wt"
 # A repo with a resolvable LOCAL base + code + no attestation, run with
 # SECURITY_REVIEW_NO_FETCH=1, must still BLOCK (rc=1) — NO_FETCH skips only the
 # network refresh, it must never short-circuit the gate when a base resolves.
-d=$(make_repo "src/foo.ts" "feat: code, no attestation")
+d=$(make_repo "src/foo.ts" "feat: code, no attestation") || exit 1
 assert_rc "NO_FETCH with a resolvable base still gates (block rc=1)"  1 "$(run_in "$d" "SECURITY_REVIEW_NO_FETCH=1")"
 rm -rf "$d"
 
@@ -555,9 +633,9 @@ rm -rf "$d"
 # An orphan/unrelated-history branch has no merge base, so `git diff base...HEAD`
 # exits non-zero. The old `|| true` swallowed that to an empty changed-set -> a
 # silent PASS on code never inspected. Now it fails CLOSED (exit 2).
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git init -q -b main
     git config user.email t@t
     git config user.name t
@@ -566,7 +644,7 @@ d=$(mktemp -d)
     git rm -rfq . 2>/dev/null || true
     mkdir -p src; echo 'export const x = 1' > src/foo.ts
     git add -A; git -c commit.gpgsign=false commit -q -m "feat: orphan code"
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 assert_rc "orphan branch (no merge base) -> fail CLOSED (exit 2)"    2 "$(run_in "$d" "SECURITY_REVIEW_NO_FETCH=1")"
 rm -rf "$d"
 

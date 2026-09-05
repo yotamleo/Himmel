@@ -1,6 +1,6 @@
 ---
 name: vm
-description: Use when bringing up, stopping, snapshotting, provisioning, running e2e probes against, or triggering/arming a claude session ON the himmel test VMs (ubuntu_new / win11_base_himmel). Trigger on "start/stop/snapshot a VM", "run the VM e2e", "provision the VM", "trigger/arm a session on the VM", or "/vm". Front door to the central VM-control SDK (scripts/lib/vmsdk.py, HIMMEL-491/493/835).
+description: Use to start/stop/snapshot/provision the himmel test VMs, run the VM e2e, or arm a claude session on them. Or /vm.
 ---
 
 # vm — VM lifecycle + e2e runbook (HIMMEL-491/493)

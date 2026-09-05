@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read
-description: SYNTHESIZE stub mode (LUNA-87) — the GENERATIVE path that compounds the evidence pool into early `status: stub` subject pages. Fires a stub only when >=2 `Clippings/_evidence/` clips share a topical tag AFTER canonical-URL dedup AND span >=2 distinct domains/authors. Separate from the `_synthesis/` proposal path (which stays for structural proposals). Every creation is recorded in a generation-ledger with a sha256 so `--revert` can undo it — but REFUSES any page the operator has touched. Driven by `tools/synthesize-stubs.mjs`.
+description: SYNTHESIZE stub mode — compound the evidence pool into early stub subject pages; ledgered, --revert undoes it.
 argument-hint: "[vault-path] [--dry-run | --apply | --revert <ledger.jsonl>]"
 ---
 

@@ -43,6 +43,14 @@ else
   fi
 fi
 CONFIG_DIR="${HOME}/.claude-codex"
+# Seed-content generation, stamped into the .seeded sentinel (twin: claude-glm's
+# SEED_VERSION). BUMP whenever seed_config_dir's OWN logic changes what gets
+# written (e.g. a new CLAUDE.md stanza) — such a change touches no SOURCE file
+# under ~/.claude, so the mtime-based staleness checks below never fire and an
+# already-seeded machine would silently keep the old seeded content forever. A
+# mismatch forces exactly one re-seed.
+# v1 = initial version (HIMMEL-1927: the claudex model-identity stanza).
+SEED_VERSION="1"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/load-dotenv.sh
@@ -192,14 +200,17 @@ guard_workspace() { # $1 dir-as-given, $2 label for messages
   _d="$_gw"
   _salus_hit=1
   while :; do
-    if [ -e "$_d/.salus" ]; then _salus_hit=0; break; fi
+    # HIMMEL-2173: also accept .salus-profile (template machinery dropped by
+    # the salus profile installer) — a defense for deployments that predate
+    # the installer shipping the real .salus guard marker alongside it.
+    if [ -e "$_d/.salus" ] || [ -e "$_d/.salus-profile" ]; then _salus_hit=0; break; fi
     _parent=$(dirname "$_d")
     [ "$_parent" = "$_d" ] && break
     _d="$_parent"
   done
   guard_hit_any "$_gw" phi-roots; _phi_rc=$?
   if [ "$_salus_hit" -eq 0 ] || [ "$_phi_rc" -eq 0 ]; then
-    echo "claude-codex: REFUSED - $2 is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to a cloud codex backend." >&2
+    echo "claude-codex: REFUSED - $2 is PHI-marked (.salus / .salus-profile / phi-roots). No override exists; PHI never goes to a cloud codex backend." >&2
     exit 3
   fi
   guard_hit_any "$_gw" egress-denylist; _deny_rc=$?
@@ -319,6 +330,19 @@ seed_fail() { # $1 = failing-operation detail — abort seeding, never mark it s
   exit 4
 }
 
+# codex_stanza_model (HIMMEL-1927): the SANITIZED model value, shared by
+# seed_config_dir (what actually lands in the CLAUDE.md stanza) and
+# config_seed_stale (what the .seeded stamp is compared against) — so the
+# staleness check always tracks what was WRITTEN, not the raw ambient
+# CODEX_MODEL (a degraded value must still read as "unchanged" on a later
+# launch with the same still-unrecognized slug, not force a reseed loop).
+codex_stanza_model() {
+  case "$CODEX_MODEL" in
+    *[!A-Za-z0-9._-]*) printf '%s' "an unrecognized codex slug" ;;
+    *) printf '%s' "$CODEX_MODEL" ;;
+  esac
+}
+
 seed_config_dir() {
   # Transactional: the .seeded sentinel is removed FIRST and (re)written LAST, so
   # ANY failure — first seed OR --reseed — leaves no sentinel and the next launch
@@ -348,6 +372,22 @@ seed_config_dir() {
       rm -f "$CONFIG_DIR/$f" || seed_fail "remove stale $f"
     fi
   done
+  # Source-absent CLAUDE.md stays absent: a stanza-only lane copy would make config_seed_stale reseed on every launch.
+  if [ -f "$CONFIG_DIR/CLAUDE.md" ]; then
+    # CR (HIMMEL-1927): CODEX_MODEL is an ordinary ambient env var, deliberately
+    # left unvalidated (see comment near its default above) and not swept by
+    # this launcher the way ANTHROPIC_*/CLAUDE_CODE_USE_* are — so a
+    # newline-bearing value must not land verbatim in agent instructions.
+    # Degrade to a generic phrase outside a plain slug shape; the common case
+    # (gpt-5.6-sol) is unaffected.
+    stanza_model="$(codex_stanza_model)"
+    cat >> "$CONFIG_DIR/CLAUDE.md" <<EOF || seed_fail "append the claudex model-identity stanza to CLAUDE.md"
+
+## Claudex lane model identity (HIMMEL-1927)
+
+Your backend model is $stanza_model (OpenAI, via the local CLIProxyAPI codex proxy). Claude Code does not recognize that slug, so it asserts 'You are powered by the model named Opus 4.8' in your system prompt — that is a slug-recognition artifact, not your identity. You are NOT an Anthropic model and NOT an orchestrator tier; do not reason about your own capabilities or delegation tier from that line.
+EOF
+  fi
   # Clean re-mirror + deletion mirror (HIMMEL-828/819): rm the destination subtree FIRST
   # — drops files deleted from the source, avoids BSD cp -R nesting (commands/commands),
   # AND mirrors a whole-subtree deletion so a removed command/hook does not linger
@@ -376,7 +416,12 @@ seed_config_dir() {
   else
     rm -f "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
   fi
-  : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
+  # HIMMEL-1927: the stamp is SEED_VERSION + the sanitized model, '|'-separated —
+  # codex_stanza_model()'s output never contains '|' (it's either a plain
+  # A-Za-z0-9._- slug or the fixed degraded phrase), so a single-line split on
+  # the first '|' is always unambiguous. A model change (not just a version
+  # bump) now makes the stamp stale too, forcing exactly one reseed.
+  printf '%s|%s\n' "$SEED_VERSION" "$(codex_stanza_model)" > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
 }
 
 # Staleness-aware reseed (HIMMEL-819): a once-only seed strands lane workers on
@@ -392,6 +437,18 @@ seed_config_dir() {
 # explicit --reseed only) — the escape hatch if auto-reseed ever blocks a
 # launch in your setup (e.g. seed re-runs surfacing a broken node).
 config_seed_stale() { # rc=0 when any tracked source is newer than the sentinel, or gone but still mirrored
+  # Seed-content generation migration — checked BEFORE the freshness opt-out (CR,
+  # twin: claude-glm). A launcher-logic change (e.g. a new CLAUDE.md stanza) touches
+  # no SOURCE file, so it would otherwise never trigger a reseed on an already-seeded
+  # machine. CLAUDE_LANE_AUTO_RESEED=0 is an escape hatch for freshness CHURN — it
+  # must NOT keep stale seeded content loaded forever, so a generation mismatch
+  # always re-seeds regardless. Fail-closed by construction: a failed reseed exits 4
+  # via seed_fail rather than launching on the stale seed. An empty/legacy sentinel
+  # (every machine seeded before this generation existed) reads as a mismatch too.
+  # HIMMEL-1927: the stamp is the composite SEED_VERSION|model — a model change
+  # alone (no version bump) must ALSO read as stale, or a stale stanza keeps
+  # asserting the previous backend's identity until an unrelated reseed occurs.
+  [ "$(cat "$CONFIG_DIR/.seeded" 2>/dev/null)" = "${SEED_VERSION}|$(codex_stanza_model)" ] || return 0
   [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
   for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json; do
     if [ -f "${HOME}/.claude/$s" ]; then
@@ -653,6 +710,21 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="$CODEX_HAIKU"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="$CODEX_MODEL"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="$CODEX_MODEL"
 export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CODEX_CONTEXT_WINDOW"
+# HIMMEL-1887: AUTO_COMPACT_WINDOW sets the compaction THRESHOLD; it does not
+# declare the model's window. Claude Code resolves the effective compact window
+# as min(modelWindow, configured), and for a model absent from its catalog the
+# modelWindow falls back to a hardcoded 200000 — so this launcher's 272000 was
+# silently clamped to 200000 and CODEX_CONTEXT_WINDOW never took effect.
+# CLAUDE_CODE_MAX_CONTEXT_TOKENS is the documented lever that declares the
+# window (honored precisely for a non-`claude-` slug like gpt-5.6-sol), and it
+# is fed the SAME value on purpose: min(o,c) with o == c is c for every value a
+# caller picks, so the clamp becomes structurally unreachable rather than merely
+# unlikely. Deliberately NOT setting
+# CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1 — that restores the old
+# wait-for-the-API-to-reject behaviour, the opposite of the fix. No extra
+# validation here: this inherits the CODEX_CONTEXT_WINDOW ladder above.
+# Keep in sync with the .ps1 twin (scripts/parity/test-launcher-context-env-parity.sh).
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CODEX_CONTEXT_WINDOW"
 export CLAUDE_CODE_SUBAGENT_MODEL="$CODEX_SUBAGENT_MODEL"
 export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
 export CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=3

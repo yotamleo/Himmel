@@ -1,5 +1,5 @@
 ---
-description: Backfill old Claude session transcripts into the luna vault as structured session notes. TOKEN-INTENSIVE — warns before running and recommends --dry-run first.
+description: Backfill old Claude session transcripts into the luna vault as session notes. TOKEN-INTENSIVE — --dry-run first.
 argument-hint: [--all | --project <path>] [--reheal | --recrystallize [--limit N]] [--dry-run] [--include-orphaned] [--only <glob>] [--exclude <glob>] [--projects-dir <dir>] [--state-file <path>] [--vault-registry <path>] [--luna-vault-path <dir>]
 ---
 

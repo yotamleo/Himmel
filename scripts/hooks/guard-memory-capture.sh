@@ -15,8 +15,10 @@
 #
 # Scope: only files under */.claude/projects/*/memory/*.
 #   MEMORY.md  -> line rule + ~60-line ceiling + growth cap + tripwire log;
-#                 Edit/MultiEdit/NotebookEdit denied (force whole-file Write —
-#                 their payloads don't reveal the resulting line count/length).
+#                 Edit/MultiEdit are simulated against the on-disk file (via
+#                 simulate-memory-edit.js) and the RESULT runs the same checks
+#                 as Write; NotebookEdit still denied (payload doesn't reveal
+#                 the resulting content).
 #   topic file -> tier-2 landing spot; UNRESTRICTED (no body cap, Edit allowed).
 #   *.bak      -> exempt (compound writes a ~25KB backup by design).
 #
@@ -28,6 +30,18 @@
 # retry contract on stderr (shown to the model). deny != ask — `ask` hangs
 # unattended sessions.
 set -uo pipefail
+
+# Pin the BYTE locale, then count characters explicitly (see the line rule
+# below). The contract counts chars, not bytes (header above, deny text below),
+# but this env has no LANG/LC_ALL — Windows Git Bash sets it only in login
+# shells — so awk's `length()` byte-counts and a multibyte char (an em-dash is
+# 3 bytes) tripped the line-too-long deny ~40 chars early. Verified under
+# `env -i`. Asking for a UTF-8 locale instead is a bet on two things that are
+# not portable: that the locale EXISTS (glibc lists `C.utf8`, macOS/BSD have
+# no C.UTF-8 at all) and that awk is UTF-8-aware (mawk and older BSD awk
+# byte-count regardless). Pinning C makes both irrelevant — the count below is
+# then exact on every platform.
+export LC_ALL=C
 
 LINE_MAX="${MEMORY_LINE_MAX:-200}"
 LINE_CEIL="${MEMORY_LINE_CEIL:-60}"
@@ -93,12 +107,30 @@ deny() { # $1=rule $2=message
 base="$(basename "$fp")"
 
 if [ "$base" = "MEMORY.md" ]; then
-    # Edit/MultiEdit/NotebookEdit payloads don't reveal the resulting line count
-    # or length -> force a whole-file Write we CAN inspect. (Topic files, below,
-    # keep Edit — there is nothing to inspect there under the tier-2 design.)
+    # NotebookEdit payloads don't reveal the resulting content -> force a
+    # whole-file Write we CAN inspect. Edit/MultiEdit ARE decidable: simulate
+    # the replacement(s) against the on-disk file and validate the RESULT
+    # below via the same $content the Write path checks (one code path, so
+    # the rules cannot drift between Write and Edit).
     case "$tool" in
-        Edit|MultiEdit|NotebookEdit)
+        NotebookEdit)
             deny "undecidable-payload" "$tool payloads do not reveal MEMORY.md's resulting line length or count. Write the whole file with Write instead." ;;
+        Edit|MultiEdit)
+            hookdir="$(cd "$(dirname "$0")" && pwd)"
+            sim="$(printf '%s' "$payload" | node "$hookdir/simulate-memory-edit.js")"
+            sim_rc=$?
+            case "$sim_rc" in
+                # The simulator terminates its output with an EOT sentinel so
+                # this `$( )` capture has no trailing newline to strip: without
+                # it the growth cap below undercounts an edit that appends
+                # them, and the simulated content is not byte-exact.
+                0) content="${sim%$'\004'}" ;;
+                3) exit 0 ;; # old_string not found; the Edit tool itself errors on this
+                # simulation crashed: keep $content at its .new_string fallback (set
+                # above) so the deny log still records an excerpt, not an empty one.
+                *) deny "undecidable-payload" "$tool payload could not be simulated against MEMORY.md. Write the whole file with Write instead." ;;
+            esac
+            ;;
     esac
 
     # awk, NOT `grep -c ... || echo 0`: grep -c PRINTS 0 AND EXITS 1 on zero
@@ -106,14 +138,68 @@ if [ "$base" = "MEMORY.md" ]; then
     # dies -> the hook exits 1 -> PreToolUse treats exit 1 as a NON-BLOCKING
     # error -> the write PROCEEDS ungated and unlogged (fail-open on exactly the
     # writes this hook exists to gate). awk has no exit-status trap.
-    old_lines=0; [ -f "$fp" ] && old_lines="$(awk '/^- /{n++} END{print n+0}' "$fp")"
+    old_lines=0; [ -f "$fp" ] && old_lines="$(awk '/^- /{n++} END{print n+0}' "$fp")"  # fail-open-ok: unreadable index reads as an empty awk sum → 0 baseline → the growth/ceiling caps get STRICTER, not looser
     new_lines="$(printf '%s\n' "$content" | awk '/^- /{n++} END{print n+0}')"
     lines_delta="$((new_lines - old_lines))"
 
-    # a. Any pointer line over the length budget -> deny (whole-file Write; diffing
-    #    to find only the NEW line is YAGNI for this small file).
-    if printf '%s\n' "$content" | awk -v m="$LINE_MAX" '/^- /{if (length($0)>m) exit 1}'; then :; else
-        deny "line-too-long" "A pointer line exceeds ${LINE_MAX} chars. The index routes; it does not store — split the fact into its theme topic file."
+    # a. Any ADDED/CHANGED pointer line over the length budget -> deny.
+    #    Char count, not byte count: under the pinned C locale `length()` is
+    #    bytes, and a UTF-8 char is 1 lead byte + N continuation bytes (\200-\277)
+    #    -> dropping the continuation bytes leaves exactly the character count.
+    #
+    #    Diff-scoped (HIMMEL-2074): checking the WHOLE resulting file re-validates
+    #    every PRE-EXISTING line on every write. A legacy line that already
+    #    exceeds the cap (grandfathered before this rule existed, or before the
+    #    cap was lowered) then denies EVERY future write to the file forever —
+    #    including one that only appends an unrelated, fully-compliant line.
+    #
+    #    MULTISET (bag) difference, not a plain set difference (codex-1, CR
+    #    round 1): a naive "is this new line present anywhere in old?" check
+    #    (e.g. `grep -Fxvf`) is fooled by DUPLICATION — pasting a second,
+    #    genuinely NEW copy of an already-grandfathered over-length line reads
+    #    as "already existed" and skips the check entirely, since the text
+    #    matches an old line even though this occurrence did not exist before.
+    #    The awk pass below counts each OLD line's occurrences, then for each
+    #    NEW line consumes one unit of that count if any remains (an
+    #    unchanged, pre-existing occurrence) or else emits it as ADDED (a
+    #    occurrence beyond what was already there) — the standard per-value
+    #    bag-difference algorithm, so duplicate-count changes are caught. A
+    #    pre-existing violation with no matching COUNT change is untouched by
+    #    THIS write and must not re-trip the gate; a line (or an extra
+    #    occurrence of one) this write adds or edits is still checked in
+    #    full. `$fp` is read here (not `$content`), same on-disk pre-edit
+    #    state `old_lines` above already reads for both the Write and the
+    #    simulated Edit/MultiEdit paths (the guard runs BEFORE the write
+    #    lands).
+    #
+    #    CRLF-normalized before comparison (codex-1, CR round 2): an on-disk
+    #    MEMORY.md with CRLF endings leaves a trailing \r on every OLD line
+    #    (awk splits records on \n only), while an LF-only Write/Edit payload
+    #    never carries one — so every untouched line would byte-mismatch its
+    #    own old self and read as "added", resurrecting the exact
+    #    re-validate-everything bug this fix exists to close. `sub(/\r$/,"")`
+    #    runs before the `/^- /` match in both extractions.
+    old_pointer_lines=""
+    if [ -f "$fp" ]; then
+        old_pointer_lines="$(awk '{sub(/\r$/,"")} /^- /' "$fp")" ||
+            deny "diff-failed" "Could not extract existing pointer lines from $fp — denying rather than silently skipping the line-length check."
+    fi
+    # codex-1, CR round on HIMMEL-2074: a failure INSIDE a process-substituted
+    # producer (`<(...)`) does not propagate to the consuming awk's exit
+    # status — bash never waits on that subshell as part of the pipeline it
+    # feeds, so the earlier `||` here only caught the outer awk's own
+    # failure, not a producer's. Extract both pointer-line lists as their own
+    # checked commands FIRST, then feed them to the diff via plain `printf`
+    # process substitution (which cannot itself fail on valid string input).
+    new_pointer_lines="$(printf '%s\n' "$content" | awk '{sub(/\r$/,"")} /^- /')" ||
+        deny "diff-failed" "Could not extract proposed pointer lines from the write payload — denying rather than silently skipping the line-length check."
+    added_lines="$(awk '
+        FNR==NR { count[$0]++; next }
+        { if (count[$0] > 0) { count[$0]--; } else { print } }
+    ' <(printf '%s\n' "$old_pointer_lines") <(printf '%s\n' "$new_pointer_lines") 2>/dev/null)" ||
+        deny "diff-failed" "The multiset diff between old and new pointer lines failed to compute — denying rather than silently skipping the line-length check."
+    if printf '%s\n' "$added_lines" | awk -v m="$LINE_MAX" '/^- /{s=$0; gsub(/[\200-\277]/,"",s); if (length(s)>m) exit 1}'; then :; else
+        deny "line-too-long" "An added/changed pointer line exceeds ${LINE_MAX} chars. The index routes; it does not store — split the fact into its theme topic file."
     fi
 
     # b. Hard pointer-line ceiling (Rev2 D4) — the structural bound on n. Judgement

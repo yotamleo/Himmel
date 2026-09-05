@@ -9,11 +9,15 @@ repos:
       # them fights graphify's own output byte-for-byte and would leave the
       # graph-generating station perpetually dirty against the committed copy.
       - id: trailing-whitespace
-        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/)'
+        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: end-of-file-fixer
-        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/)'
+        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: check-yaml
       - id: check-json
+      # HIMMEL-2508: 516 tracked scripts reached main as mode 100644 because
+      # Windows never tracks +x; on Linux every direct invocation then fails
+      # rc=126 "Permission denied". A shebang'd file must be executable.
+      - id: check-shebang-scripts-are-executable
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1
@@ -22,7 +26,7 @@ repos:
       # nilbuild/claude-statusline; the yotamleo fork is archived, HIMMEL-1233)
       # — don't lint it.
       - id: shellcheck
-        exclude: '^scripts/statusline/'
+        exclude: '^(scripts/statusline/|scripts/lanes/bench/(fixtures|runs)/)'
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
@@ -61,7 +65,8 @@ repos:
         pass_filenames: false
 
       - id: template-version
-        name: template content change requires metadata.version bump (himmel-dev only, HIMMEL-524)
+        name: template content change requires metadata.version bump (himmel-dev only)
+        # HIMMEL-524
         entry: bash scripts/hooks/check-template-version.sh
         language: system
         always_run: true
@@ -83,14 +88,32 @@ repos:
         pass_filenames: false
 
       - id: lanes-inventory-guard
-        name: lane inventory stays out of CLAUDE.md prose (HIMMEL-689, himmel-dev only)
+        name: lane inventory stays out of CLAUDE.md prose (himmel-dev only)
+        # HIMMEL-689
         entry: bash scripts/hooks/check-lanes-inventory.sh
         language: system
         always_run: true
         pass_filenames: false
 
+      - id: claude-md-budget
+        name: CLAUDE.md stays under its always-on byte budget (himmel-dev only)
+        # HIMMEL-2038
+        entry: bash scripts/ci/check-claude-md-budget.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+
+      - id: no-ticket-id-in-user-strings
+        name: adopter-facing strings stay free of raw ticket IDs (himmel-dev only)
+        # HIMMEL-2371
+        entry: bash scripts/hooks/check-no-ticket-id-in-user-strings.sh
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: guardrail-matrices
-        name: guardrail matrix invariants (egress + voice policy, HIMMEL-1522)
+        name: guardrail matrix invariants (egress + voice policy)
+        # HIMMEL-1522
         entry: bash scripts/hooks/check-guardrail-matrices.sh
         language: system
         # Also fires on the voice enforcement profile (codex-4): scoping this to
@@ -107,8 +130,22 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      - id: fail-open-lint
+        name: fails-open-on-unknown shape lint
+        # HIMMEL-1776
+        entry: bash scripts/hooks/check-fail-open-lint.sh
+        language: system
+        # Scoped to the guard surfaces the lint scans (guardrails/hooks/lanes),
+        # the graphify + claude-glm/codex/routed + telegram spawn-glm entry
+        # points it also covers, and this gate's own config — same lesson as
+        # guardrail-matrices above: the guard must cover every file it guards.
+        files: ^(scripts/(guardrails|hooks|lanes)/|scripts/graphify/refresh-graph-map\.sh$|scripts/claude-(codex|glm|routed)$|scripts/telegram/spawn-glm\.ts$|\.pre-commit-config\.yaml$)
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: hook-lib-node-suites
-        name: scripts/hooks + scripts/lib node suites (HIMMEL-1578)
+        name: scripts/hooks + scripts/lib node suites
+        # HIMMEL-1578
         entry: bash scripts/hooks/check-hook-lib-suites.sh
         language: system
         # Scoped to the suites, the code they cover, AND the two files they
@@ -126,8 +163,22 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      - id: profile-manifest-diff
+        name: plugin-profile manifest stays pinned
+        # HIMMEL-2189
+        entry: node --test scripts/lanes/tests/profile-manifest.test.mjs
+        language: system
+        # Scoped to the registry, its resolver, the test, and the fixture the
+        # test diffs against — an edit to any of the four is exactly what can
+        # move a profile's enabled-id set or contextBudget out from under the
+        # pinned fixture.
+        files: ^scripts/lanes/(plugin-profiles\.(json|mjs)|tests/(profile-manifest\.test\.mjs|fixtures/profile-manifests\.json))$
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: trust-node-suites
-        name: scripts/trust node suites (HIMMEL-1589)
+        name: scripts/trust node suites
+        # HIMMEL-1589
         entry: bash scripts/hooks/check-trust-suites.sh
         language: system
         # Scoped to the trust suites AND this guard’s own script — same lesson
@@ -140,7 +191,8 @@ repos:
         stages: [pre-commit]
 
       - id: hud-drift
-        name: vendored claude-hud drift guard (himmel-dev only, HIMMEL-718)
+        name: vendored claude-hud drift guard (himmel-dev only)
+        # HIMMEL-718
         language: system
         entry: bash scripts/statusline/check-hud-drift.sh
         pass_filenames: false
@@ -162,8 +214,22 @@ repos:
         pass_filenames: true
         stages: [pre-commit]
 
+      - id: settings-portability
+        name: tracked settings/hooks files carry no machine-absolute path
+        # HIMMEL-2156
+        language: system
+        entry: bash scripts/hooks/check-settings-portability.sh
+        pass_filenames: true
+        # `graphify install` rewrites its own hook block in BOTH of these with
+        # an absolute C:/Users/<me>/...graphify.EXE command every time it runs,
+        # so this gate is what catches the re-add on the next commit that
+        # stages either file.
+        files: '(^|/)(\.claude/settings(\.local)?\.json|\.codex/hooks\.json)$'
+        stages: [pre-commit]
+
       - id: gh-json-fields
-        name: Validate gh --json field names against gh's own list (HIMMEL-1288)
+        name: Validate gh --json field names against gh's own list
+        # HIMMEL-1288
         language: system
         entry: bash scripts/hooks/check-gh-json-fields.sh
         pass_filenames: true
@@ -172,7 +238,8 @@ repos:
         stages: [pre-commit]
 
       - id: no-headless-claude
-        name: Block headless claude (-p / --print / --bg) introductions (HIMMEL-128)
+        name: Block headless claude (-p / --print / --bg) introductions
+        # HIMMEL-128
         language: system
         entry: bash scripts/hooks/check-no-headless-claude.sh
         pass_filenames: true
@@ -182,7 +249,8 @@ repos:
         stages: [pre-commit]
 
       - id: no-headless-gemini
-        name: Block headless gemini (-p / --prompt / --bg) introductions (HIMMEL-157)
+        name: Block headless gemini (-p / --prompt / --bg) introductions
+        # HIMMEL-157
         language: system
         entry: bash scripts/hooks/check-no-headless-gemini.sh
         pass_filenames: true
@@ -206,11 +274,22 @@ repos:
         stages: [pre-commit]
 
       - id: artifact-leakage
-        name: block stray generated artifacts from being committed (HIMMEL-371)
+        name: block stray generated artifacts from being committed
+        # HIMMEL-371
         language: system
         entry: bash scripts/hooks/check-artifact-leakage.sh
         pass_filenames: false
         always_run: true
+        stages: [pre-commit]
+
+      - id: graph-artifact-branch
+        name: block graphify-out/ commits off the /graph-publish flow
+        # HIMMEL-2167
+        language: system
+        entry: bash scripts/hooks/check-graph-artifact-branch.sh
+        pass_filenames: false
+        always_run: true
+        files: ^graphify-out/
         stages: [pre-commit]
 
       - id: no-push-to-main
@@ -254,7 +333,8 @@ repos:
         stages: [pre-push]
 
       - id: pr-mergeable-gate
-        name: Refuse push when PR is CONFLICTING (HIMMEL-136)
+        name: Refuse push when PR is CONFLICTING
+        # HIMMEL-136
         language: system
         entry: bash scripts/hooks/check-pr-mergeable.sh
         pass_filenames: false
@@ -262,7 +342,8 @@ repos:
         stages: [pre-push]
 
       - id: no-force-push
-        name: Refuse force-push to protected refs (HIMMEL-136)
+        name: Refuse force-push to protected refs
+        # HIMMEL-136
         language: system
         entry: bash scripts/hooks/check-no-force-push.sh
         pass_filenames: false
@@ -286,7 +367,8 @@ repos:
         stages: [pre-push]
 
       - id: template-version-push
-        name: template content change requires metadata.version bump (pre-push range, HIMMEL-524)
+        name: template content change requires metadata.version bump (pre-push range)
+        # HIMMEL-524
         entry: bash scripts/hooks/check-template-version.sh --pre-push
         language: system
         always_run: true
@@ -294,7 +376,8 @@ repos:
         stages: [pre-push]
 
       - id: security-reviewed
-        name: Security-review attestation for non-docs code changes (HIMMEL-176)
+        name: Security-review attestation for non-docs code changes
+        # HIMMEL-176
         language: system
         entry: bash scripts/hooks/check-security-reviewed.sh
         pass_filenames: false
@@ -302,10 +385,16 @@ repos:
         stages: [pre-push]
 
       - id: conventional-commit-msg
-        name: Conventional commit message + ticket ID (strict when TICKET_ID_REQUIRED=1, HIMMEL-1483)
+        name: Conventional commit message + ticket ID (TICKET_ID_REQUIRED=0 opts out)
+        # HIMMEL-1483, default-on HIMMEL-2442.
+        # HIMMEL-2461: pass_filenames MUST stay true here. At the commit-msg
+        # stage the one filename pre-commit passes IS the commit-message file,
+        # and the hook reads it from $1. With `pass_filenames: false` the hook
+        # got nothing, `cat ""` failed under a "Passed" line and it exited 0 —
+        # the gate certified every commit, including non-conventional ones,
+        # for the whole life of the entry.
         language: system
         entry: bash scripts/hooks/check-commit-msg.sh
-        pass_filenames: false
         always_run: true
         stages: [commit-msg]
 
@@ -322,4 +411,74 @@ repos:
         language: system
         entry: bash scripts/hooks/check-pip-hashes.sh
         files: '(^|/)requirements.*\.txt$'
+        stages: [pre-commit]
+
+      - id: skill-description-cap
+        name: skill/command description stays within 120 chars
+        # HIMMEL-2037
+        language: system
+        entry: node scripts/lanes/skill-cost.mjs --max-desc 120
+        files: '^(\.claude/commands/[^/]+\.md|\.claude/skills/[^/]+/SKILL\.md|\.agents/skills/[^/]+/SKILL\.md|marketplace/plugins/[^/]+/commands/[^/]+\.md|marketplace/plugins/[^/]+/skills/[^/]+/SKILL\.md)$'
+        stages: [pre-commit]
+
+      - id: command-positional-args
+        name: no bare $<digit> in a command's fenced code
+        # HIMMEL-2051
+        language: system
+        entry: node scripts/lanes/skill-cost.mjs --check-positional-args
+        files: '^(\.claude/commands/[^/]+\.md|marketplace/plugins/[^/]+/commands/[^/]+\.md)$'
+        # claude-hud is pinned byte-for-byte (HIMMEL-718) — its own drift
+        # guard above is the gate for that tree, not this lint.
+        exclude: '^marketplace/plugins/claude-hud/'
+        stages: [pre-commit]
+
+      - id: oxlint-complexity-ratchet
+        name: oxlint complexity ratchet — no NEW function above the audited max
+        # HIMMEL-2154
+        entry: bash scripts/hooks/check-oxlint-complexity.sh
+        language: system
+        # Same lesson as guardrail-matrices / fail-open-lint above: the guard
+        # must cover every file it guards, including its OWN script (a .sh
+        # under scripts/hooks/, not reached by the mjs/js patterns above it)
+        # and this config file, so an edit that broke the gate would still
+        # run the gate.
+        files: ^(scripts/(lanes|jira/src|telegram|luna-vitals|himmel-run)/|scripts/(hooks|observability)/[^/]+\.(mjs|js)$|scripts/hooks/check-oxlint-complexity\.sh$|\.pre-commit-config\.yaml$)
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: oxlint-hardening-zero-violations
+        name: oxlint bug-class hardening — zero violations
+        # HIMMEL-2163
+        entry: bash scripts/hooks/check-oxlint-hardening.sh
+        language: system
+        # Same lesson as the complexity ratchet above: the guard must cover
+        # every file it guards, including its OWN script and this config file.
+        files: ^(scripts/(lanes|jira/src|telegram|luna-vitals|himmel-run)/|scripts/(hooks|observability)/[^/]+\.(mjs|js)$|scripts/hooks/check-oxlint-hardening\.sh$|\.pre-commit-config\.yaml$)
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: commands-catalog-drift
+        name: commands-catalog.md Description column matches command frontmatter
+        # HIMMEL-2064
+        language: system
+        # --staged (CR round 2): reads the STAGED git blobs, not the working
+        # tree, so an unrelated unstaged edit to a command file can't trip
+        # this commit — same staged-vs-working convention check-doc-guard.sh
+        # uses (`git diff --cached`).
+        entry: node scripts/lib/gen-commands-catalog.mjs check --staged
+        files: '^(\.claude/commands/[^/]+\.md|docs/commands-catalog\.md)$'
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: secrets-doc-drift
+        name: .env.example's generated secrets block matches secrets-manifest.json
+        # HIMMEL-2176
+        language: system
+        # --staged, same rationale as commands-catalog-drift above: reads the
+        # STAGED git blobs (gen-secrets-doc.mjs's own --staged mode), not the
+        # working tree, so an unrelated unstaged edit to either file can't
+        # trip this commit.
+        entry: node scripts/lib/gen-secrets-doc.mjs check --staged
+        files: '^(scripts/himmelctl/lib/secrets-manifest\.json|\.env\.example)$'
+        pass_filenames: false
         stages: [pre-commit]

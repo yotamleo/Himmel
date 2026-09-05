@@ -234,10 +234,10 @@ class TestClone(unittest.TestCase):
             dest = vm.clone_himmel(ref="main", depth=1)
         self.assertEqual(dest, "~/himmel")
         joined = "\n".join(calls)
-        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel-private.git", joined)
+        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel.git", joined)
         self.assertIn("--depth 1", joined)
         self.assertIn("--branch main", joined)
-        self.assertIn("set-url origin https://github.com/yotamleo/himmel-private.git", joined)
+        self.assertIn("set-url origin https://github.com/yotamleo/himmel.git", joined)
 
     def test_clone_refuses_existing_dest(self):
         vm = self._vm()
@@ -271,8 +271,8 @@ class TestClone(unittest.TestCase):
         joined = "\n".join(calls)
         self.assertIn(r"if exist C:\himmel", joined)
         self.assertIn(r'"C:\Program Files\Git\bin\bash.exe" -lc', joined)
-        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel-private.git", joined)
-        self.assertIn("set-url origin https://github.com/yotamleo/himmel-private.git", joined)
+        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel.git", joined)
+        self.assertIn("set-url origin https://github.com/yotamleo/himmel.git", joined)
 
 
 class TestProvisionE2E(unittest.TestCase):
@@ -877,7 +877,7 @@ class TestTriggerClaude(unittest.TestCase):
         prompt = dc.call_args[0][0]
         self.assertIn(guest, prompt)
         self.assertEqual(dc.call_args.kwargs.get("cwd"),
-                         "~/Documents/github/himmel-private")
+                         "~/Documents/github/himmel")
 
     def test_same_basename_different_sources_distinct_guest_paths(self):
         """codex-adv CR: next-session-N.md exists in many buckets — two
@@ -991,7 +991,7 @@ class TestTriggerClaude(unittest.TestCase):
              mock.patch.object(vm, "run", side_effect=fake_run):
             vm.trigger_claude(str(self.local), when="22:30")
         joined = "\n".join(cmds)
-        self.assertIn("cd ~/Documents/github/himmel-private", joined)
+        self.assertIn("cd ~/Documents/github/himmel", joined)
         self.assertNotIn("--cwd", joined)
 
     def test_scheduled_with_explicit_cwd_includes_cwd_flag(self):

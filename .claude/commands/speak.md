@@ -1,5 +1,5 @@
 ---
-description: "BETA — speak text aloud through the local voice daemon: the last reply by default, or whatever you pass. Detached, on demand, zero token cost."
+description: BETA — speak text aloud through the local voice daemon; the last reply by default, or whatever you pass. Detached.
 argument-hint: [text to speak]
 ---
 

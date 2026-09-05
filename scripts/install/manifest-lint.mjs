@@ -37,7 +37,12 @@
 //   file-exists       | path: string
 //   git-hooks         | hooks: non-empty string[]
 //   settings-key      | file: string; EXACTLY ONE of key: string XOR
-//                     | keys: non-empty string[]
+//                     | keys: non-empty string[]; OPTIONAL expect: boolean
+//                     | (HIMMEL-2292 — requires singular 'key', not 'keys':
+//                     | asserts that key's value EQUALS expect exactly,
+//                     | catching a boolean flag set to the wrong value, not
+//                     | just present/absent — e.g. enabledPlugins["<spec>"]
+//                     | explicitly false must probe 'absent', not 'present')
 //   settings-hooks    | file: string; key: string
 //   cmd:has_qmd       | resolver: string
 //   qmd-index         | collections: non-empty string[]
@@ -83,6 +88,67 @@
 //                            | proves the CHECKOUT (update_hermes()'s own
 //                            | precondition), distinct from cmd:has_hermes
 //                            | (a usable venv python, kept on hermes-lanes).
+//   cmd:telegram_getme       | envFile: string; tokenKey: string; apiModule:
+//                            | string (HIMMEL-2176 Task 6) — shells out to
+//                            | `bun -e` to call the REAL getMe() at
+//                            | scripts/telegram/telegram-api.ts, validating
+//                            | the bridge token actually authenticates
+//                            | (distinct from telegram-access, which only
+//                            | proves the token/allow-rule SHAPE).
+//   cmd:whisper_ready        | (no fields — HIMMEL-2176 Task 6) mirrors
+//                            | scripts/telegram/transcribe.ts's own
+//                            | WHISPER_DIR/WHISPER_CLI/WHISPER_MODEL
+//                            | resolution convention; platform-branches the
+//                            | default binary name (transcribe.ts's own
+//                            | default is win32-only).
+//   cmd:python_interpreter   | OPTIONAL cmd: string (HIMMEL-2176 Task 6) —
+//                            | spawns the candidate interpreter and asserts
+//                            | it runs a trivial script, catching the
+//                            | "resolves on PATH but is actually a stub"
+//                            | class (Windows Store app-execution aliases,
+//                            | broken WSL/venv shims).
+//   distinct-tokens          | envFileA/tokenKeyA/envFileB/tokenKeyB: string
+//                            | (HIMMEL-2176 Task 6) — fails when two
+//                            | configured tokens are IDENTICAL (e.g. the
+//                            | telegram bridge and the jira-nudge relay
+//                            | sharing one bot token); either side
+//                            | unconfigured is not a failure.
+//   luna-sources             | script: string; sources: non-empty string[];
+//                            | OPTIONAL pythonCmd: string (HIMMEL-2176 Task
+//                            | 6) — folds scripts/luna/fetch-health.py
+//                            | --probe <source> results across every
+//                            | configured luna clip-source into one verdict;
+//                            | a source name fetch-health.py's own registry
+//                            | doesn't recognize (argparse exit code 2)
+//                            | degrades the result — both alongside at least
+//                            | one recognized source, and (CR round 3) when
+//                            | EVERY named source is unrecognized.
+//   bridge-persistence       | (no fields — HIMMEL-2176 Stage-1 PR-C, status
+//                            | item S6) logon task (win) / systemd unit +
+//                            | linger (linux) present when bridge.enabled;
+//                            | reads ~/.himmel/config.json + the pinned
+//                            | artifact names/helpers from
+//                            | scripts/himmelctl/lib/bridge-persistence.js.
+//                            | NOTE: cadence-coherence/phi-coherence/
+//                            | engine-allowlist/bridge-health above were
+//                            | shipped without a row in this table
+//                            | (HIMMEL-2263, pre-existing backlog, not fixed
+//                            | here) — this row is added so bridge-persistence
+//                            | does not add to that gap.
+//   observability-stack      | (no fields — HIMMEL-2326) queries the FOUR
+//                            | himmel-observability-* scheduled tasks
+//                            | (restart-stack.sh's own hard allowlist is the
+//                            | authoritative task-name family — this probe
+//                            | mirrors it, not a second source of truth) via
+//                            | Get-ScheduledTask on win32; all four
+//                            | Ready/Running/Queued -> present, none
+//                            | registered -> absent, anything in between
+//                            | (partial install, a disabled task, or an
+//                            | inconclusive query) -> degraded naming which.
+//                            | Phase A (HIMMEL-922) ships a win32-only
+//                            | installer — non-win32 always reads absent
+//                            | naming that gap (tracked as HIMMEL-2333), never
+//                            | present or a repairable-looking degraded.
 //
 // HIMMEL-1100 coverage decisions (deliberate, not oversights):
 //   - claude CLI is NOT a manifest item. It is the substrate himmelctl itself
@@ -127,13 +193,37 @@ const KINDS = ['hook', 'plugin', 'dep', 'wiring', 'vault', 'scheduler', 'lane', 
 // cmd:guardrail_block_status / cmd:hermes_checkout (round 3) added for
 // subsystems the harness actively installs/updates that the manifest had
 // never heard of.
-const PROBE_TYPES = ['file-exists', 'git-hooks', 'settings-key', 'settings-hooks', 'cmd:has_qmd', 'qmd-index', 'mcp-registered', 'handover-dir', 'dep', 'cmd:has_hermes', 'cmd:is_himmel_dev', 'telegram-access', 'cmd:codex_provisioned', 'cmd:cadence_armed', 'cmd:guardrail_block_status', 'cmd:hermes_checkout'];
+// HIMMEL-2176 Task 6: cmd:telegram_getme / cmd:whisper_ready /
+// cmd:python_interpreter / distinct-tokens / luna-sources added for
+// externalization Stage 1's bridge + toolchain probes (see probes.js's
+// module header). telegram-access itself is unchanged here — it grew a
+// formal JSON-schema check in the same ticket, but that's a deepening of the
+// EXISTING probe.type, not a new one, so it needs no vocabulary/shape change.
+// HIMMEL-2176 Task 7: cadence-coherence / phi-coherence / engine-allowlist /
+// bridge-health added — composite status-item probes folding config-store
+// state, generated runner files, a live allow-list, or several existing
+// single-source probes into one tri-state result (probes.js's module header
+// documents each).
+// HIMMEL-2326: observability-stack added — a tri-state probe over the four
+// himmel-observability-* scheduled tasks (probes.js's module header
+// documents it); 'observability'/'stack' added to INSTALL_TYPES/
+// INSTALL_TARGETS so its install descriptor can dispatch to install-stack.ps1
+// (win32-only in Phase A — install-engine.js's buildEntry() 'observability'
+// case).
+// HIMMEL-2547: 'tokensave' added to INSTALL_TYPES — tokensave-mcp's
+// initMarker probe (HIMMEL-1093) already reports 'degraded' for a
+// registered-but-uninitialized checkout; this install descriptor gives
+// `ensure` something to run to actually converge it (install-engine.js's
+// buildEntry() 'tokensave' case: `tokensave init <targetPath> --no-git-hook`,
+// guarded idempotent). No new target vocabulary — this type takes no
+// `target` field.
+const PROBE_TYPES = ['file-exists', 'git-hooks', 'settings-key', 'settings-hooks', 'cmd:has_qmd', 'qmd-index', 'mcp-registered', 'handover-dir', 'dep', 'cmd:has_hermes', 'cmd:is_himmel_dev', 'telegram-access', 'cmd:codex_provisioned', 'cmd:cadence_armed', 'cmd:guardrail_block_status', 'cmd:hermes_checkout', 'cmd:telegram_getme', 'cmd:whisper_ready', 'cmd:python_interpreter', 'distinct-tokens', 'luna-sources', 'cadence-coherence', 'phi-coherence', 'engine-allowlist', 'bridge-health', 'bridge-persistence', 'observability-stack'];
 const ITEM_KEYS = ['id', 'kind', 'scopes', 'profiles', 'deps', 'probe'];
 // Optional schema-v2 consumer keys (HIMMEL-755 A1). Permitted by the
 // exact-key check but not required — items authored under schemaVersion:1
 // stay valid; items that DO carry them are shape-checked below.
 const OPTIONAL_ITEM_KEYS = ['install', 'unwire', 'removable', 'offboard'];
-const INSTALL_TYPES = ['adopt', 'setup', 'wire', 'plugins', 'qmd', 'dep', 'build', 'config'];
+const INSTALL_TYPES = ['adopt', 'setup', 'wire', 'plugins', 'qmd', 'dep', 'build', 'config', 'observability', 'tokensave'];
 const UNWIRE_TYPES = ['wire'];
 const SCOPES_ENUM = ['project', 'user'];
 const PROFILES_ENUM = ['core', 'luna', 'all'];
@@ -190,7 +280,20 @@ function checkProbeShape(probe, label, errors) {
       } else if (hasKeys && !isNonEmptyStringArray(probe.keys)) {
         errors.push(`${label}: probe type 'settings-key' field 'keys' must be a non-empty array of strings`);
       }
-      reportExtra(['file', 'key', 'keys']);
+      // HIMMEL-2292: optional 'expect' (boolean) — value-equality check on
+      // the SINGLE key, not a mere presence/non-empty check. Requires 'key'
+      // (singular): a multi-key expected-value map isn't a case any current
+      // item needs, so the shape stays closed to the one-key case instead of
+      // growing that surface speculatively.
+      if (Object.prototype.hasOwnProperty.call(probe, 'expect')) {
+        if (typeof probe.expect !== 'boolean') {
+          errors.push(`${label}: probe type 'settings-key' field 'expect', when present, must be a boolean`);
+        }
+        if (hasKeys) {
+          errors.push(`${label}: probe type 'settings-key' field 'expect' requires singular 'key', not 'keys'`);
+        }
+      }
+      reportExtra(['file', 'key', 'keys', 'expect']);
       break;
     }
     case 'settings-hooks': {
@@ -267,6 +370,106 @@ function checkProbeShape(probe, label, errors) {
       // No fields — HIMMEL-1100 round 3. HERMES_HOME/LOCALAPPDATA resolution
       // is a fixed convention mirroring update_hermes()'s own resolution
       // (himmel-update.sh), not per-item configuration.
+      reportExtra([]);
+      break;
+    }
+    case 'cmd:telegram_getme': {
+      if (typeof probe.envFile !== 'string') errors.push(`${label}: probe type 'cmd:telegram_getme' requires 'envFile' (string)`);
+      if (typeof probe.tokenKey !== 'string') errors.push(`${label}: probe type 'cmd:telegram_getme' requires 'tokenKey' (string)`);
+      if (typeof probe.apiModule !== 'string') errors.push(`${label}: probe type 'cmd:telegram_getme' requires 'apiModule' (string)`);
+      reportExtra(['envFile', 'tokenKey', 'apiModule']);
+      break;
+    }
+    case 'cmd:whisper_ready': {
+      // No fields — HIMMEL-2176 Task 6. WHISPER_DIR/WHISPER_CLI/WHISPER_MODEL
+      // resolution mirrors transcribe.ts's own fixed convention, not
+      // per-item configuration.
+      reportExtra([]);
+      break;
+    }
+    case 'cmd:python_interpreter': {
+      // 'cmd' is OPTIONAL — HIMMEL-2176 Task 6: absent means the
+      // platform-branched default (python on win32, python3 elsewhere).
+      if (Object.prototype.hasOwnProperty.call(probe, 'cmd') && typeof probe.cmd !== 'string') {
+        errors.push(`${label}: probe type 'cmd:python_interpreter' field 'cmd', when present, must be a string`);
+      }
+      reportExtra(['cmd']);
+      break;
+    }
+    case 'distinct-tokens': {
+      if (typeof probe.envFileA !== 'string') errors.push(`${label}: probe type 'distinct-tokens' requires 'envFileA' (string)`);
+      if (typeof probe.tokenKeyA !== 'string') errors.push(`${label}: probe type 'distinct-tokens' requires 'tokenKeyA' (string)`);
+      if (typeof probe.envFileB !== 'string') errors.push(`${label}: probe type 'distinct-tokens' requires 'envFileB' (string)`);
+      if (typeof probe.tokenKeyB !== 'string') errors.push(`${label}: probe type 'distinct-tokens' requires 'tokenKeyB' (string)`);
+      reportExtra(['envFileA', 'tokenKeyA', 'envFileB', 'tokenKeyB']);
+      break;
+    }
+    case 'luna-sources': {
+      if (typeof probe.script !== 'string') errors.push(`${label}: probe type 'luna-sources' requires 'script' (string)`);
+      if (!isNonEmptyStringArray(probe.sources)) errors.push(`${label}: probe type 'luna-sources' requires 'sources' (non-empty string[])`);
+      // 'pythonCmd' is OPTIONAL — absent means the platform-branched default
+      // (python on win32, python3 elsewhere), same convention as
+      // cmd:python_interpreter's 'cmd'.
+      if (Object.prototype.hasOwnProperty.call(probe, 'pythonCmd') && typeof probe.pythonCmd !== 'string') {
+        errors.push(`${label}: probe type 'luna-sources' field 'pythonCmd', when present, must be a string`);
+      }
+      reportExtra(['script', 'sources', 'pythonCmd']);
+      break;
+    }
+    case 'cadence-coherence': {
+      if (typeof probe.envVar !== 'string') errors.push(`${label}: probe type 'cadence-coherence' requires 'envVar' (string)`);
+      if (typeof probe.defaultSubdir !== 'string') errors.push(`${label}: probe type 'cadence-coherence' requires 'defaultSubdir' (string)`);
+      reportExtra(['envVar', 'defaultSubdir']);
+      break;
+    }
+    case 'phi-coherence': {
+      // No fields — HIMMEL-2176 Task 7. Reads luna.vaultPath from
+      // ~/.himmel/config.json and ~/.config/claude-glm/phi-roots directly,
+      // fixed conventions, not per-item configuration.
+      reportExtra([]);
+      break;
+    }
+    case 'engine-allowlist': {
+      if (typeof probe.script !== 'string') errors.push(`${label}: probe type 'engine-allowlist' requires 'script' (string)`);
+      if (typeof probe.envVar !== 'string') errors.push(`${label}: probe type 'engine-allowlist' requires 'envVar' (string)`);
+      if (typeof probe.defaultSubdir !== 'string') errors.push(`${label}: probe type 'engine-allowlist' requires 'defaultSubdir' (string)`);
+      if (!Array.isArray(probe.legs) || probe.legs.length === 0) {
+        errors.push(`${label}: probe type 'engine-allowlist' requires 'legs' (non-empty array)`);
+      } else {
+        probe.legs.forEach((leg, i) => {
+          if (!leg || typeof leg !== 'object' || typeof leg.schedule !== 'string' || !isNonEmptyStringArray(leg.requiredSuffixes)) {
+            errors.push(`${label}: probe type 'engine-allowlist' legs[${i}] must be {schedule: string, requiredSuffixes: non-empty string[]}`);
+          } else {
+            const extraLegKeys = Object.keys(leg).filter((k) => k !== 'schedule' && k !== 'requiredSuffixes');
+            if (extraLegKeys.length > 0) errors.push(`${label}: probe type 'engine-allowlist' legs[${i}] has unexpected field(s) [${extraLegKeys.join(', ')}]`);
+          }
+        });
+      }
+      reportExtra(['script', 'envVar', 'defaultSubdir', 'legs']);
+      break;
+    }
+    case 'bridge-health': {
+      if (typeof probe.envFile !== 'string') errors.push(`${label}: probe type 'bridge-health' requires 'envFile' (string)`);
+      if (typeof probe.tokenKey !== 'string') errors.push(`${label}: probe type 'bridge-health' requires 'tokenKey' (string)`);
+      if (typeof probe.accessFile !== 'string') errors.push(`${label}: probe type 'bridge-health' requires 'accessFile' (string)`);
+      if (typeof probe.apiModule !== 'string') errors.push(`${label}: probe type 'bridge-health' requires 'apiModule' (string)`);
+      reportExtra(['envFile', 'tokenKey', 'accessFile', 'apiModule']);
+      break;
+    }
+    case 'bridge-persistence': {
+      // No fields — HIMMEL-2176 Stage-1 PR-C, status item S6. Reads
+      // bridge.enabled from ~/.himmel/config.json and the pinned artifact
+      // names/helpers from scripts/himmelctl/lib/bridge-persistence.js
+      // directly, fixed conventions, not per-item configuration (same shape
+      // as phi-coherence above).
+      reportExtra([]);
+      break;
+    }
+    case 'observability-stack': {
+      // No fields — HIMMEL-2326. The four himmel-observability-* task names
+      // are a fixed convention (restart-stack.sh's own hard allowlist),
+      // not per-item configuration — same posture as cmd:codex_provisioned/
+      // phi-coherence/bridge-persistence above.
       reportExtra([]);
       break;
     }
@@ -390,11 +593,24 @@ function checkInstallShape(install, probe, label, errors) {
       reportExtra(['key', 'keys']);
       break;
     }
+    case 'observability':
+      // HIMMEL-2326: same target-vocabulary treatment as 'wire'/'build'
+      // above — installEngine.INSTALL_TARGETS is the single source of
+      // truth so a typo'd target can't lint clean and silently dispatch
+      // nothing (buildEntry()'s 'observability' case is the only consumer).
+      if (typeof install.target !== 'string') {
+        errors.push(`${label}: install type 'observability' requires 'target' (string)`);
+      } else if (!installEngine.INSTALL_TARGETS.observability.includes(install.target)) {
+        errors.push(`${label}: install type 'observability' target '${install.target}' not in [${installEngine.INSTALL_TARGETS.observability.join(', ')}]`);
+      }
+      reportExtra(['target']);
+      break;
     case 'adopt':
     case 'setup':
     case 'plugins':
     case 'qmd':
     case 'dep':
+    case 'tokensave':
       reportExtra([]);
       break;
   }

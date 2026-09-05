@@ -42,11 +42,20 @@ esac
 # is intercepted on QUERY TEXT first. Default 'fresh' (anchored to abc123, the
 # fixed head every case here resolves to) so every UNRELATED case is
 # unaffected.
+#
+# Every BOT node carries a non-empty `body` and a non-zero `comments.totalCount`
+# on purpose: HIMMEL-1824 taught the reader to DROP empty review shells
+# (`chat.auto_reply` and incremental passes mint COMMENTED objects with neither),
+# so a bodyless fixture classifies as `none` no matter which oid it names — which
+# silently disarmed BOTH arms here (the default `fresh` turned every allow-case
+# into a HIMMEL-1374 zero-reviews-ever BLOCK, and `stale` stopped reaching the
+# stale-anchor arm at all). Same repair as test-cr-merge-gate.sh in #1763
+# (HIMMEL-1974, found 2026-08-20).
 case "$*" in
   *"reviews(last:"*)
     case "${GH_STUB_FRESHNESS:-fresh}" in
-      fresh) echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"abc123"},"state":"COMMENTED"}]}}}}}' ;;
-      stale) echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"shaOLD"},"state":"COMMENTED"}]}}}}}' ;;
+      fresh) echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"abc123"},"state":"COMMENTED","body":"looks fine","comments":{"totalCount":1}}]}}}}}' ;;
+      stale) echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"shaOLD"},"state":"COMMENTED","body":"found something earlier","comments":{"totalCount":2}}]}}}}}' ;;
       fail)  echo "reviews boom" >&2; exit 1 ;;
     esac
     exit 0 ;;

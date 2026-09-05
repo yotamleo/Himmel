@@ -216,14 +216,16 @@ def canonicalize(url: str):
             return f"https://youtube.com/watch?v={vid}"
         return url
 
-    # github.com — strip /tree/<branch>, /blob/<branch>/<path>, trailing /, lowercase owner/repo.
+    # github.com — strip /tree/<branch>, KEEP /blob/<branch>/<path>, trailing /, lowercase owner/repo.
     if host in {"github.com", "www.github.com"}:
         parts = [p for p in path.split("/") if p]
         if len(parts) >= 2:
             owner, repo = parts[0].lower(), parts[1].lower()
             rest = parts[2:]
-            # Strip /tree/<branch> or /blob/<branch>
-            if rest and rest[0] in {"tree", "blob"} and len(rest) >= 2:
+            # Strip /tree/<branch> — a branch/subtree view of the same repo.
+            # /blob/<branch>/<path> is kept: it is one specific FILE, a distinct
+            # document from the repo root (HIMMEL-1735).
+            if rest and rest[0] == "tree" and len(rest) >= 2:
                 rest = []
             new_path = "/" + "/".join([owner, repo] + rest)
             return urlunparse(("https", "github.com", new_path.rstrip("/"), "", "", ""))

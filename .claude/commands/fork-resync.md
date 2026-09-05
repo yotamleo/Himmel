@@ -1,5 +1,5 @@
 ---
-description: Re-sync a carried FORK onto a newer upstream base — rebase the fork's additive delta and audit that it is still additive. An OPERATOR-run invocation may continue on to push the fork and move the pin; the nightly fork-resync cadence (HIMMEL-1323) runs unattended and STOPS after the audit, reporting the result — it never pushes and never moves the pin.
+description: Re-sync a carried FORK onto a newer upstream base — rebase + audit the additive delta; pushing is operator-only.
 argument-hint: [name] [--dry-run] [--no-public]
 ---
 
@@ -78,13 +78,18 @@ remote without `--push`.
 | 4 | rebase CONFLICTED, the delta is NOT additive, OR a pin-literal failure (`PIN_FILE_MISSING`/`PIN_NOT_FOUND`/`PIN_AMBIGUOUS`) | **stop and escalate** — see below; expected-non-additive entries are the exception |
 
 **Expected-non-additive entries (HIMMEL-1435).** An entry whose `fork.note`
-declares the delta non-additive BY DESIGN (`claude-obsidian`: it modifies
-upstream files — removed hooks, locking patches) reports rc 4 NON-ADDITIVE on
-every healthy audit. For such an entry that outcome IS the report — record the
-drift + rebase-feasibility result and **continue with the remaining forks**; do
-not escalate it and do not let it terminate an unattended sweep. A CONFLICTED
-rebase or a pin-literal failure on the SAME entry is still a real stop-and-
-escalate — only the declared non-additive shape is expected.
+declares the delta non-additive BY DESIGN (`qmd` since HIMMEL-2136: a small
+reviewed set of real bugfixes against existing upstream files) reports rc 4
+NON-ADDITIVE on every healthy audit. For such an entry that outcome IS the
+report — record the drift + rebase-feasibility result and **continue with the
+remaining forks**; do not escalate it and do not let it terminate an
+unattended sweep. A CONFLICTED rebase or a pin-literal failure on the SAME
+entry is still a real stop-and-escalate — only the declared non-additive shape
+is expected. **`claude-obsidian` is NOT such an entry (HIMMEL-2153):** its
+carried delta is strictly additive at v2.1.1-himmel.1 (+10 −0), so the healthy
+audit result is ADDITIVE and a NON-ADDITIVE result there is a regression to
+report, not a designed exception; its collapse trigger is upstream merging
+#178 and tagging past v2.1.1.
 
 **On rc 4, do not resolve the conflict yourself in an unattended run.** For a
 CONFLICTED/non-additive rebase, report: the conflicting paths (or the upstream

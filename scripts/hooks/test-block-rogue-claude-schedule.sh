@@ -41,7 +41,7 @@ j_pwsh()  { printf '{"tool_name":"PowerShell","tool_input":{"command":%s}}' "$(p
 # launcher .bat AND registered it with schtasks /create — no cd, fires from
 # System32. (Literal PowerShell text — the $claude is intentionally unexpanded.)
 # shellcheck disable=SC2016
-INCIDENT='$claude = "C:\Users\yotam\.local\bin\claude.exe"
+INCIDENT='$claude = "C:\Users\u\.local\bin\claude.exe"
 Set-Content -Path $bat640 -Value "`"$claude`" `"load /c/.../next-session.md overnight mode`"" -Encoding ASCII
 schtasks /create /tn "HIMMEL-Arm-640-detector" /tr "$bat640" /sc ONCE /st 04:30 /f'
 
@@ -73,6 +73,41 @@ assert_rc "multi-line commit claude+at (prose)"   0 "$(run_case "$(j_bash "$(pri
 assert_rc "schtasks /create backup of .claude"    0 "$(run_case "$(j_bash 'schtasks /create /tn Backup /tr "robocopy C:\\Users\\u\\.claude C:\\backup" /sc DAILY /st 01:00 /f')")"
 assert_rc "sanctioned schedule-resume.sh"         0 "$(run_case "$(j_bash 'bash scripts/handover/schedule-resume.sh --time 04:30 --handover /c/h.md')")"
 assert_rc "non-Bash/PS tool ignored"              0 "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"x"}}')"
+
+# --- HIMMEL-1741 per-check equivalence corpus ---
+# The `printf | grep -qE` fork pairs in the allow short-circuit,
+# is_scheduler_create() and launches_claude() moved to the bash builtin
+# `[[ =~ ]]` / `[[ == *glob* ]]`. Both engines are POSIX ERE, but they are
+# compiled by different call sites, so each check gets an explicit matching +
+# near-miss pair pinned on the construct it leans on (the literal `\.`, the
+# `[/\]` bracket containing a BACKSLASH, the command-position separator class,
+# the `$` end-anchor, the `(exe|cmd|ps1)` alternation).
+#
+# Allow short-circuit: `arm-resume\.sh` needs a LITERAL dot — an underscore in
+# its place must NOT short-circuit, so the rogue arm still blocks.
+assert_rc "short-circuit literal-dot pin"         2 "$(run_case "$(j_bash 'schtasks /create /tn X /tr "C:/tmp/arm-resume_sh claude.exe" /sc ONCE /st 04:30 /f')")"
+# crontab must sit at a command position; `mycrontab` must not arm the gate.
+assert_rc "mycrontab (no command position)"       0 "$(run_case "$(j_bash 'mycrontab claude.exe --version')")"
+# crontab at end-of-command exercises the `([[:space:]]|$)` end-anchor.
+assert_rc "crontab at end anchor + claude.exe"    2 "$(run_case "$(j_bash 'claude.exe --version; echo "0 4 * * * x" | crontab')")"
+# `at <timespec>` at a command position after `;`.
+assert_rc "; at 0430 claude.exe"                  2 "$(run_case "$(j_bash 'echo hi; at 0430 /usr/bin/claude.exe')")"
+# `at` needs a real timespec: a following word is prose, not a schedule.
+assert_rc "at the end (no timespec)"              0 "$(run_case "$(j_bash 'echo claude.exe at the end')")"
+# `at` inside `cat` is not at a command position.
+assert_rc "cat 0430.txt (at inside cat)"          0 "$(run_case "$(j_bash 'cat 0430.txt claude.exe')")"
+# claude.ps1 completes the (exe|cmd|ps1) alternation (exe/cmd covered above).
+assert_rc "schtasks /create /tr claude.ps1"       2 "$(run_case "$(j_bash 'schtasks /create /tn X /tr "C:/bin/claude.ps1 load h" /sc ONCE /st 04:30 /f')")"
+# …and a NON-listed extension is a near-miss: `claude.bat` is neither an
+# exe/cmd/ps1 match, nor `[/\]claude`, nor bare `claude` + space/quote.
+assert_rc "schtasks /create /tr claude.bat"       0 "$(run_case "$(j_bash 'schtasks /create /tn X /tr "claude.bat load h" /sc ONCE /st 04:30 /f')")"
+# `[/\]claude` with a real BACKSLASH separator — the bracket-with-backslash is
+# the single construct most likely to diverge between regex call sites.
+assert_rc "backslash-path \\claude + space"       2 "$(run_case "$(j_bash 'schtasks /create /tn X /tr "C:\bin\claude load h" /sc ONCE /st 04:30 /f')")"
+# …and the same arm's `$` end-anchor (command ends right after /claude).
+assert_rc "/claude at end anchor"                 2 "$(run_case "$(j_bash 'schtasks /create /tn X /tr /usr/local/bin/claude')")"
+# Bare-claude arm needs a following space/quote — `claudette` must not trip it.
+assert_rc "schtasks /create claudette (near-miss)" 0 "$(run_case "$(j_bash 'schtasks /create /tn X /tr "claudette run" /sc ONCE /st 04:30 /f')")"
 
 # --- Escape hatch (expect rc=0 even on an otherwise-blocked command) ---
 assert_rc "incident + ROGUE_SCHEDULE_OK=1"        0 "$(run_case "$(j_pwsh "$INCIDENT")" "ROGUE_SCHEDULE_OK=1")"

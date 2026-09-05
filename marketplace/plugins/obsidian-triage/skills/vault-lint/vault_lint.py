@@ -2,7 +2,7 @@
 """vault_lint.py — deterministic, vault-agnostic Obsidian vault linter (HIMMEL-402).
 Filesystem-only. stdlib-only. UTF-8 safe. See docs/specs/2026-06-19-vault-lint-design.md."""
 from __future__ import annotations
-import os, re, sys, json, fnmatch, argparse, datetime
+import os, re, sys, json, fnmatch, argparse, datetime, pathlib
 
 _WIKILINK = re.compile(r"\[\[([^\]\n]+?)\]\]")
 _FENCE = re.compile(r"```.*?```", re.DOTALL)
@@ -172,6 +172,17 @@ def main(argv=None) -> int:
     res = lint(a.vault, cfg, today)
     if not a.no_report:
         rp = os.path.join(a.vault, cfg["report_path"].replace("{date}", today))
+        # HIMMEL-1762: prove the report stays inside the vault before any write
+        # (makedirs would already escape). Resolve BOTH sides to real paths —
+        # symlinks/junctions followed — and require ancestor-or-equal; a
+        # `..`-free report_path can still escape via a symlinked directory, so
+        # a string-shape check proves nothing. Refuse, don't clamp: a
+        # report-only linter should fail loudly, not write somewhere unasked.
+        try:
+            pathlib.Path(rp).resolve().relative_to(pathlib.Path(a.vault).resolve())
+        except ValueError:
+            sys.stderr.write(f"vault-lint: report_path {cfg['report_path']!r} resolves outside the vault; refusing to write\n")
+            return 2
         os.makedirs(os.path.dirname(rp) or ".", exist_ok=True)
         with open(rp, "w", encoding="utf-8") as fh:
             fh.write(render_report(res, cfg))

@@ -1,0 +1,57 @@
+# telegram-bridge.service — systemd USER unit for the Telegram bun bridge
+# (HIMMEL-2176 Task 9, A12). POSIX Linux persistence twin of
+# install-logon-task.ps1's HimmelTelegramBridge scheduled task.
+#
+# Installed to ~/.config/systemd/user/telegram-bridge.service by
+# scripts/himmelctl/lib/bridge-persistence.js's installSystemdUnit() — that
+# installer substitutes every @HIMMEL_REPO@ placeholder below with the
+# operator's himmel checkout path. Do not edit an installed copy by hand;
+# re-run the installer instead.
+#
+# SHAPE (changed in HIMMEL-2551 — was Type=oneshot + RemainAfterExit=yes):
+# ExecStart runs `restart-bridge.sh run`, which takes the launcher lock, does
+# the instance-scoped stale sweep, and then EXECs the bun supervisor in the
+# FOREGROUND — so the supervisor itself is the unit's MAINPID and Type=simple
+# is the honest model. The old oneshot shape was correct only while ExecStart
+# *detached* (nohup) and exited: it made systemd blind to the supervisor's
+# lifetime, which is exactly why the bridge sat there reporting
+# `active (exited)` through both of the silent process deaths HIMMEL-2551 was
+# filed for. With the supervisor as MAINPID, Restart=on-failure also covers
+# signal-termination (systemd counts a signal death as a failure), so the unit
+# self-heals from an out-of-band SIGKILL — defence in depth that still earns
+# its place after the kill bug itself is fixed.
+#
+# START LIMIT — this is what keeps Restart=on-failure from OVERRIDING
+# supervisor.ts's own circuit breaker. That breaker exists to STOP: after
+# MAX_FAILS immediate poller crashes it logs "circuit breaker TRIPPED …
+# halting" and calls process.exit(1) (supervisor.ts). Under the old oneshot
+# shape systemd never saw that. Under Type=simple, exit 1 IS a failure, so
+# Restart=on-failure + RestartSec=10 would relaunch it every 10s forever —
+# and systemd's DEFAULT limit (5 starts per 10s) is never tripped by
+# 10s-spaced restarts, so a bad token or dead network would become an
+# infinite relaunch loop hammering Telegram, with the breaker silently
+# neutralised. StartLimitIntervalSec=600 + StartLimitBurst=5 means five
+# restarts inside ten minutes put the unit in `failed` and leave it there for
+# a human — which is exactly what the breaker was asking for — while a one-off
+# out-of-band SIGKILL still self-heals on the first restart. (Both are [Unit]
+# settings, not [Service].)
+#
+# No ExecStop= is needed any more: with the supervisor as the main process,
+# systemd's default KillMode=control-group stops it and its poller child.
+[Unit]
+Description=Himmel Telegram bridge (bun supervisor, via restart-bridge.sh)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@HIMMEL_REPO@/scripts/telegram
+Environment=HIMMEL_REPO=@HIMMEL_REPO@
+ExecStart=/usr/bin/env bash @HIMMEL_REPO@/scripts/telegram/restart-bridge.sh run --repo @HIMMEL_REPO@
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

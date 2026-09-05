@@ -31,6 +31,7 @@ try {
     Check "posture appended to _CLAUDE"   ([bool](Select-String -Path (Join-Path $Vault '_CLAUDE.md') -Pattern 'salus-posture-block' -SimpleMatch -Quiet))
     Check "base _CLAUDE preserved"        ([bool](Select-String -Path (Join-Path $Vault '_CLAUDE.md') -Pattern 'base rules here' -SimpleMatch -Quiet))
     Check ".salus-profile marker dropped" (Test-Path (Join-Path $Vault '.salus-profile'))
+    Check ".salus PHI guard marker dropped (HIMMEL-2173)" (Test-Path (Join-Path $Vault '.salus'))
 
     $dataRows = @(Select-String -Path (Join-Path $Vault '_skin-photo-archive.md') -Pattern '^\| 20[0-9][0-9]-').Count
     Check "skin archive has ZERO data rows" ($dataRows -eq 0)
@@ -57,11 +58,13 @@ try {
     Write-Host "== idempotency: re-apply must NOT overwrite operator content =="
     Add-Content -Path (Join-Path $Vault '_skin-photo-archive.md') -Value '| 2026-01-02 | hands | active | x | **eczema** | note |'
     Set-Content -Path (Join-Path $Vault '.claude/settings.json') -Value '{"_sentinel":"do-not-clobber"}'
+    Set-Content -Path (Join-Path $Vault '.salus') -Value 'operator-customized'
     Invoke-SalusOverlay -RepoRoot $Vault | Out-Null
     Check "operator data row preserved"   ([bool](Select-String -Path (Join-Path $Vault '_skin-photo-archive.md') -Pattern '2026-01-02 | hands' -SimpleMatch -Quiet))
     Check "existing settings NOT clobbered" ([bool](Select-String -Path (Join-Path $Vault '.claude/settings.json') -Pattern 'do-not-clobber' -SimpleMatch -Quiet))
     $postureCount = @(Select-String -Path (Join-Path $Vault '_CLAUDE.md') -Pattern 'salus-posture-block' -SimpleMatch).Count
     Check "posture appended ONCE (idempotent)" ($postureCount -eq 1)
+    Check "existing .salus NOT clobbered (HIMMEL-2173)" ([bool](Select-String -Path (Join-Path $Vault '.salus') -Pattern 'operator-customized' -SimpleMatch -Quiet))
 
     Write-Host "== error path: apply against a dir with no overlay must fail =="
     $noov = Join-Path ([System.IO.Path]::GetTempPath()) ("salus-noov-" + [System.IO.Path]::GetRandomFileName())

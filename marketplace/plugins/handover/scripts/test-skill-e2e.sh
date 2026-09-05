@@ -67,5 +67,25 @@ done
 v1_items=$(find "$ROOT/handovers/$SLUG" -type f -name '*.md' -exec grep -lE '^template_version: 1$' {} \; 2>/dev/null | wc -l)
 if [ "$v1_items" -eq 0 ]; then ok "no v1 frontmatter in items"; else ko "$v1_items items still v1"; fi
 
+# 9. Every next-session template declares resume_cwd: frontmatter (HIMMEL-2147) --
+# arm-resume.sh reads this key to resolve which repo an unattended resume runs
+# in; a template missing it is the source of the auto-detect-into-single-writer
+# failure mode item 1b's registry fallback exists to catch.
+missing_rc=0
+for t in "$ROOT/marketplace/plugins/handover/templates/"*-next-session.md; do
+  [ -f "$t" ] || continue
+  # key must sit inside the FIRST frontmatter block with a non-empty value —
+  # a body-text match or an empty value would still hit the runtime fallback.
+  # Capture first, then grep a here-string (not a pipe): under `set -o
+  # pipefail`, grep -q exits on first match and can SIGPIPE a producer on the
+  # other end of any pipe, turning a genuine match into a non-zero pipeline
+  # (HIMMEL-1430 grep-q-pipe-under-pipefail class). Frontmatter is tiny, well
+  # under the 64KiB here-string limit.
+  fm=$(awk '/^---$/{n++;next} n==1' "$t")
+  grep -qE '^resume_cwd:[[:space:]]*[^[:space:]]' <<< "$fm" \
+    || { missing_rc=$((missing_rc+1)); echo "  miss: non-empty resume_cwd: in frontmatter of $t"; }
+done
+if [ "$missing_rc" -eq 0 ]; then ok "all next-session templates declare resume_cwd:"; else ko "$missing_rc next-session templates missing resume_cwd:"; fi
+
 echo "Total: pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -29,10 +29,17 @@ DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
   names only, derived from all vault markdown) sent with each request as the
   allowed-tags list. Its `luna-personal × deepseek` cell was ratified 2026-07-10
   (HIMMEL-833) then **REVERSED 2026-07-22 (HIMMEL-1257): now `deny`** — DeepSeek
-  de-listed (bad results). Enrichment on the sanctioned GLM lane
-  (`luna-personal × zai-glm × enrichment`, HIMMEL-1167) stays `allow+log`.
+  de-listed (bad results). The GLM enrichment cell that replaced it
+  (`luna-personal × zai-glm × enrichment`, HIMMEL-1167) was itself **REVERSED
+  2026-08-29 (HIMMEL-2224): now `deny`** — see the GLM de-listing below. No
+  sanctioned CN enrichment lane remains; `enrich-chat-notes.py` ships
+  `--provider claude`.
 - **`luna-personal × zai-glm × extraction`** was **ratified 2026-07-17**
-  (operator, HIMMEL-1122): `allow+log`. **This WIDENS the permitted provider
+  (operator, HIMMEL-1122) as `allow+log`, and **REVERSED 2026-08-29
+  (HIMMEL-2224): now `deny`** — the GLM lane was dropped (below). The
+  ratification reasoning is kept here because the matrix records *why a vendor
+  was ever permitted*, not only its current verdict; read the rest of this
+  bullet as history. **This WIDENS the permitted provider
   set** — full luna non-Clippings note bodies may now leave the machine to a
   second, additional vendor (Z.ai) that could not receive them before. What it
   does *not* change is the corpus, purpose, region (CN), or content scope: those
@@ -45,7 +52,9 @@ DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
   flat-rate Coding-Plan cost, against $3.14 per full-vault DeepSeek run — the
   vault was paying for the weaker backend purely because the matrix had no GLM
   cell. Scope is deliberately narrow:
-  - `luna-personal × zai-glm × inference` stays **deny** — extraction only.
+  - `luna-personal × zai-glm × inference` stayed **deny** — extraction only,
+    and it still denies by *default* (HIMMEL-2224 added explicit deny rows only
+    for the four cells that were open, it did not invent new rows).
   - `salus × * × *` stays **deny, hard** — untouched, and no override can flip it.
   - **Not a default.** `refresh-graph-map.sh` keeps `BACKEND=claude-cli`
     (HIMMEL-1049, the claude-only adopter story). GLM is a per-run opt-in for an
@@ -63,6 +72,38 @@ DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
   `hard:true` is NOT used (that stays reserved for salus + gemini-keys-unset).
   The reversal is legible (each cell's `why` records it) and reversible (a
   future operator decision could re-add a cell). Salus PHI egress is untouched.
+- **Provider policy — GLM (zai-glm) de-listed (HIMMEL-2224, 2026-08-29).**
+  HIMMEL-1749 resolved the GLM lane as **DROP** (Coding Plan auto-renew
+  cancelled 2026-08-12; the plan lapsed 2026-08-17) but its reversal branch
+  never landed, leaving four cells live for 12 days. They are now explicit
+  `deny` on the same HIMMEL-1257 pattern: `luna-personal × zai-glm ×
+  extraction` (HIMMEL-1122), `luna-personal × zai-glm × enrichment`
+  (HIMMEL-1167), `luna-clippings × zai-glm × extraction` (the narrow G2.3
+  ladder exception) and `handover-state × zai-glm × inference` (the
+  brief-scoped worker cell). **Kimi (`moonshot`, HIMMEL-1748) is the
+  replacement CN extraction lane.** Resist the urge to compress what remains
+  into one provider list: the matrix is keyed by corpus x provider x
+  **purpose**, and after this reversal no provider is broadly authorized
+  across both corpora. Cell by cell, what stays open is:
+  `luna-personal` and `luna-clippings` **extraction** — `moonshot` (allow+log)
+  plus `anthropic`/`local-ollama`; **enrichment** on either corpus —
+  `anthropic`/`local-ollama` only, no CN lane at all; `handover-state`
+  **inference** — `openai-codex` (conditional, brief-scoped) and `openrouter`
+  (HIMMEL-1774) plus `anthropic`/`local-ollama`. Kimi holds NO handover-state
+  cell and no enrichment cell; Codex holds NO vault cell. This was
+  a *record-integrity* fix, not an incident: nothing routed to GLM — no GLM
+  lane appears in `scripts/lanes/resolve.mjs` and `graphmap-cadence.sh` runs
+  `BACKEND="kimi"` — but a live `allow+log` cell is exactly what a later leg
+  would cite as pre-existing authorization. As with DeepSeek/Alibaba the rows
+  are `deny`, **not deleted** (a deleted row falls through to `default: deny`
+  and loses the history), **not `hard`**, and `himmel-code × zai-glm` stays
+  **allow** via the wildcard — public code, not private content, so
+  `refresh-graph-map.sh`'s `--backend glm` remap still legitimately serves it.
+  Consumer sweep: `graphify-fence.sh` loses the `luna-clippings × zai-glm`
+  conditional branch and its `GRAPHIFY_CLIPPINGS_GLM_OK` opt-in (the cell it
+  opened is now deny, so the flag opened nothing); `enrich-chat-notes.py`
+  keeps its `glm` provider entry but its egress gate now refuses it, exactly
+  as it already refuses `deepseek`.
 
 ## Corpus resolution (shared primitives, not new ones)
 

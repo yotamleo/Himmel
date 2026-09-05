@@ -13,6 +13,12 @@
 # test-codex-run-hook.ps1, and its firing is asserted by the .sh twin.
 
 $ErrorActionPreference = 'Continue'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $HOOKS     = $PSScriptRoot
 $REPO_ROOT = (Resolve-Path (Join-Path $HOOKS '..' | Join-Path -ChildPath '..')).Path
 $HOOKS_JSON = Join-Path $REPO_ROOT '.codex\hooks.json'
@@ -27,23 +33,25 @@ if (-not (Test-Path -LiteralPath $HOOKS_JSON)) { Write-Host ".codex/hooks.json n
 $cfg = Get-Content -Raw -LiteralPath $HOOKS_JSON | ConvertFrom-Json
 $pre = @($cfg.hooks.PreToolUse)
 
-function Wired-Block([string]$guard) {
+function Wired-Blocks([string]$guard) {
+    $found = @()
     foreach ($b in $pre) {
         foreach ($h in @($b.hooks)) {
-            if ($h.command -like "*$guard*") { return $b }
+            if ($h.commandWindows -like "*$guard*") { $found += $b; break }
         }
     }
-    return $null
+    return $found
 }
 
 # ── 1) Static wiring ────────────────────────────────────────────────────────
 foreach ($g in @('block-docker-privesc.sh', 'block-merged-pr-commit.sh')) {
-    $b = Wired-Block $g
-    Check "$g wired into .codex/hooks.json" ($null -ne $b)
-    if ($null -ne $b) {
-        $cmds = (@($b.hooks) | ForEach-Object { $_.command }) -join ' '
+    $blocks = @(Wired-Blocks $g)
+    Check "$g wired into .codex/hooks.json" ($blocks.Count -gt 0)
+    if ($blocks.Count -gt 0) {
+        $cmds = (@($blocks.hooks) | ForEach-Object { $_.commandWindows }) -join ' '
+        $matchers = (@($blocks) | ForEach-Object { $_.matcher }) -join '|'
         Check "$g routed through run-hook.cmd" ($cmds -like '*run-hook.cmd*')
-        Check "$g matches both Bash and PowerShell" (($b.matcher -like '*Bash*') -and ($b.matcher -like '*PowerShell*'))
+        Check "$g matches both Bash and PowerShell" (($matchers -like '*Bash*') -and ($matchers -like '*PowerShell*'))
     }
 }
 

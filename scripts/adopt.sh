@@ -36,6 +36,10 @@
 #                       default — the adoption verdict stays open (HIMMEL-621);
 #                       this flag only installs the CLI (never over an
 #                       existing foreign install — see scripts/lib/graphify-bin.sh).
+#   --skip-hooks        Opt out of placing the git gate hooks (pre-commit,
+#                       commit-msg, pre-push) in --target. On by default
+#                       (HIMMEL-2441) so a fresh adopt is gated from its first
+#                       commit; mirrors uninstall.sh's own --skip-hooks.
 #
 # Idempotent: re-running adds nothing already present.
 set -euo pipefail
@@ -72,6 +76,14 @@ HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/preflight-adopter.sh"
 
+# wire_user_claude_md (HIMMEL-2038): appends the "working principles" block
+# from docs/setup/user-scope-claude-md-template.md into the user-scope rule
+# files (~/.claude/CLAUDE.md + ~/.codex/AGENTS.md). Consumed by do_core() in
+# BOTH scopes — the principles live at user scope whichever way core installs.
+# shellcheck source=scripts/lib/user-claude-md.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/user-claude-md.sh"
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 PROFILE="core"
 SCOPE="project"
@@ -81,6 +93,7 @@ LUNA_TARGET_SET=0
 DRY_RUN=0
 FILL_ENV=0
 WITH_GRAPHIFY=0
+SKIP_HOOKS=0
 
 # ── Parse args ───────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -92,6 +105,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)        DRY_RUN=1; shift ;;
     --fill-env)       FILL_ENV=1; shift ;;
     --with-graphify)  WITH_GRAPHIFY=1; shift ;;
+    --skip-hooks)     SKIP_HOOKS=1; shift ;;
     -h|--help)        sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
     *) echo "ERROR: unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -166,6 +180,21 @@ require_tools() {
 }
 
 copy_portable() {
+  # HIMMEL-2435: an adopter cloning himmel itself and running `adopt.sh
+  # --scope project` (or the wizard deriving scope=project) from inside that
+  # clone has TARGET == HIMMEL_ROOT — the portable core is already in place,
+  # so `cp src dest` on the same file aborts with "are the same file". Compare
+  # by inode (-ef), not string: a trailing slash, a symlinked path segment, or
+  # drive-letter casing can make TARGET and HIMMEL_ROOT differ textually while
+  # naming the same directory. Both are real directories by this point, so -ef
+  # is safe. This is the single place BOTH the wizard-derived route and a
+  # by-hand `adopt.sh --scope project --target <checkout>` invocation pass
+  # through, so guarding here (not at the call site or in scope derivation)
+  # covers both.
+  if [ "$TARGET" -ef "$HIMMEL_ROOT" ]; then
+    echo "──── Portable core already in place (target is the himmel clone) — skipping copy ────"
+    return 0
+  fi
   echo "──── Copying portable core into $TARGET ────"
   local f
   for f in "${PORTABLE_FILES[@]}"; do
@@ -381,6 +410,7 @@ wire_graphify_core() {
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "DRY: graphify_install"
     echo "DRY: claude mcp add -s $SCOPE graphify -- <graphify-mcp: absolute path for user/local, bare name for project>"
+    echo "DRY: graphify_price_hooks \"$TARGET\""
     return 0
   fi
   # Install the CLI first; a failed install returns before we try to register
@@ -395,6 +425,9 @@ wire_graphify_core() {
   else
     graphify_register_mcp "$SCOPE"
   fi
+  # HIMMEL-2480: price the hooks in the ADOPTED repo, not himmel's own — adopt
+  # targets $TARGET, so the root must be passed explicitly.
+  graphify_price_hooks "$TARGET"
 }
 
 # build_jira_cli — build scripts/jira/dist/index.js (HIMMEL-842 gap 3). dist/ is
@@ -451,6 +484,91 @@ build_jira_cli() {
   fi
 }
 
+install_precommit_hooks() {
+  # HIMMEL-2441: place the git gate hooks by default so an adopter's FIRST
+  # commit is actually gated -- mirrors setup.sh's own [1/9]/[2/9] steps
+  # (install pre-commit if missing, then wire all three hook types), against
+  # $TARGET. --allow-missing-config keeps this safe for a genuine external
+  # adopt target with no .pre-commit-config.yaml of its own: the hook wires
+  # in but no-ops on every commit until the adopter's own config exists,
+  # rather than hard-failing every commit (measured: a bare `pre-commit
+  # install` + commit with zero config exits 1; --allow-missing-config exits
+  # 0 and starts gating the moment a config is added, no re-install needed).
+  if [[ $SKIP_HOOKS -eq 1 ]]; then
+    echo "  git hooks: skipped (--skip-hooks)"
+    return 0
+  fi
+  if [[ ! -e "$TARGET/.git" ]]; then
+    echo "  git hooks: skipping ($TARGET is not a git repo)"
+    return 0
+  fi
+  local precommit_bin="pre-commit"
+  if ! command -v pre-commit >/dev/null 2>&1; then
+    # Guarded: this file runs under `set -e`, so a bare `run uv ...` that
+    # fails would abort the whole adopt — the opposite of this step's
+    # WARN-not-fail contract (CR: codex-1 @ c10471a6).
+    if command -v uv >/dev/null 2>&1; then
+      if ! run uv tool install pre-commit --quiet; then
+        echo "  WARNING: git hooks: 'uv tool install pre-commit' failed — skipping. Install pre-commit by hand, then re-run." >&2
+        return 0
+      fi
+    elif command -v pipx >/dev/null 2>&1; then
+      if ! run pipx install pre-commit; then
+        echo "  WARNING: git hooks: 'pipx install pre-commit' failed — skipping. Install pre-commit by hand, then re-run." >&2
+        return 0
+      fi
+    else
+      echo "  WARNING: git hooks: 'pre-commit' not found and neither uv nor pipx is available — skipping. Install uv (curl -LsSf https://astral.sh/uv/install.sh | sh), then re-run." >&2
+      # --dry-run still wants the planned DRY: line below, WARNING and all --
+      # only fall through to the resolver (which is a DRY_RUN no-op that
+      # lands on the literal "pre-commit" name); a real run bails here.
+      [[ $DRY_RUN -eq 1 ]] || return 0
+    fi
+    # HIMMEL-2441/2483 [codex-1, CR round 2]: the bootstrap above can report
+    # success while its bin dir (~/.local/bin, or a $UV_TOOL_BIN_DIR /
+    # $PIPX_BIN_DIR override) is not yet on THIS shell's PATH -- a bare
+    # `pre-commit` call below would then silently fail even though the
+    # install just worked. Re-check PATH first (DRY_RUN's bootstrap was
+    # itself a no-op, so pre-commit may already be resolvable from
+    # elsewhere), then fall back to the known uv/pipx install-dir candidates.
+    precommit_bin="$(command -v pre-commit || true)"
+    if [[ -z "$precommit_bin" ]]; then
+      local candidate
+      for candidate in \
+        "${UV_TOOL_BIN_DIR:-$HOME/.local/bin}/pre-commit" \
+        "${PIPX_BIN_DIR:-$HOME/.local/bin}/pre-commit" \
+        "$HOME/.local/pipx/venvs/pre-commit/bin/pre-commit"; do
+        if [[ -x "$candidate" ]]; then
+          precommit_bin="$candidate"
+          break
+        fi
+      done
+    fi
+    if [[ -z "$precommit_bin" ]]; then
+      # --dry-run never actually ran the bootstrap above (`run` just printed
+      # its DRY: line), so resolution failing here is expected, not an error
+      # -- the plan is what matters, so fall through and describe it with the
+      # literal name rather than WARN-and-bail on a real install we never did.
+      if [[ $DRY_RUN -eq 1 ]]; then
+        precommit_bin="pre-commit"
+      else
+        echo "  WARNING: git hooks: pre-commit was installed but still can't be found on PATH, in \$UV_TOOL_BIN_DIR/\$HOME/.local/bin, \$PIPX_BIN_DIR/\$HOME/.local/bin, or \$HOME/.local/pipx/venvs/pre-commit/bin — skipping. Add its install dir to PATH, then re-run." >&2
+        return 0
+      fi
+    fi
+  fi
+  echo "──── Installing git gate hooks ($TARGET) ────"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: (cd $TARGET && $precommit_bin install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push)"
+    return 0
+  fi
+  if ( cd "$TARGET" && "$precommit_bin" install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push ); then
+    echo "  git hooks installed (pre-commit, commit-msg, pre-push)."
+  else
+    echo "  WARNING: git hook install failed — continuing. Manual: (cd $TARGET && $precommit_bin install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push)" >&2
+  fi
+}
+
 do_core() {
   require_tools
   if [[ "$SCOPE" == "project" ]]; then
@@ -467,6 +585,22 @@ do_core() {
     wire_sessionstart_hook "$HOME/.claude/settings.json" "$HIMMEL_ROOT" "inject-initiative.sh" "$DRY_RUN"
     echo "  worktree commands run from the himmel clone: bash $HIMMEL_ROOT/scripts/worktree.sh feat/slug"
   fi
+  # HIMMEL-2038: the "working principles" defaults were demoted out of himmel's
+  # always-on project CLAUDE.md (general engineering defaults, not himmel
+  # invariants) -- adopters get them via this user-scope append instead. Runs in
+  # BOTH scopes on purpose: the principles live at user scope whichever way core
+  # was installed, so a project-scope adopter would otherwise pull the shortened
+  # CLAUDE.md and silently lose them. Idempotent, so re-running adopt is also the
+  # migration path for an install that predates this. WARN-not-fail: never let
+  # this abort the rest of adopt.
+  #
+  # TWO targets, same call, same semantics: Claude Code reads
+  # ~/.claude/CLAUDE.md, Codex reads ~/.codex/AGENTS.md -- installing only into
+  # the Claude-only file would leave a Codex adopter with the principles
+  # nowhere. Hermes is not a target: its himmel_agent profile SOUL
+  # (scripts/hermes/assets/himmel-agent.SOUL.md) already states the same four.
+  wire_user_claude_md "$HIMMEL_ROOT/docs/setup/user-scope-claude-md-template.md" "$HOME/.claude/CLAUDE.md" || true
+  wire_user_claude_md "$HIMMEL_ROOT/docs/setup/user-scope-claude-md-template.md" "$HOME/.codex/AGENTS.md" || true
   install_plugins
   build_jira_cli
   wire_qmd_core
@@ -474,7 +608,7 @@ do_core() {
   wire_statusline_core
   wire_himmel_repo_core
   [[ $FILL_ENV -eq 1 ]] && fill_env_core
-  echo "  (optional) pre-commit gates: see $HIMMEL_ROOT/docs/setup/use-on-your-project.md (Pre-commit hooks)"
+  install_precommit_hooks
 }
 
 do_luna() {

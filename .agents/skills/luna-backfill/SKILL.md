@@ -1,6 +1,6 @@
 ---
 name: luna-backfill
-description: Backfill old Claude session transcripts into the luna vault as structured session notes. TOKEN-INTENSIVE — recommend --dry-run first. Use when the user asks to backfill sessions into luna or runs /luna-backfill.
+description: Backfill old Claude session transcripts into luna as session notes. TOKEN-INTENSIVE. Use for /luna-backfill.
 ---
 
 # luna-backfill

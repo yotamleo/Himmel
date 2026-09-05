@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # himmel-doctor.sh — diagnose common himmel-harness health problems, print a
 # severity-grouped report with remediation, and (on request) file ONE
-# consolidated GitHub issue. Read-only except `--fix` (heals C1 node wiring).
+# consolidated GitHub issue. Read-only except `--fix` (heals C1-guardrail wiring).
 #
 #   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color]
 #
@@ -13,9 +13,17 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/himmel-doctor.sh" ] || REPO_ROOT="${HIMMEL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/scripts/lib/resolve-node.sh"
+# shellcheck source=/dev/null
+. "$REPO_ROOT/scripts/lib/resolve-powershell.sh"
 # shellcheck source=lib/cadence-format.sh
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/cadence-format.sh"
+# shellcheck source=lib/runtime-preflight.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/runtime-preflight.sh"
+# shellcheck source=lib/observability-registry.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/observability-registry.sh"
 
 CLAUDE_DIR_R="${CLAUDE_DIR:-${HOME:-}/.claude}"
 SETTINGS="$CLAUDE_DIR_R/settings.json"
@@ -60,73 +68,56 @@ emit() {
 
 is_windows() { case "$(uname -s 2>/dev/null || echo x)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; *) return 1 ;; esac; }
 
-# --- C1: node / caveman SessionStart wiring -------------------------------------
-classify_caveman_cmd() {
-    # echoes: ok-wrapper | ok-bin | fail-dangling | fail-missing | warn-bare
-    local cmd="$1" bin bin_unix
-    case "$cmd" in
-        *run-node.sh*) echo ok-wrapper; return ;;
-        *'<node-path>'*) echo fail-dangling; return ;;
-    esac
-    bin="$(printf '%s' "$cmd" | sed -E 's/^"([^"]*)".*/\1/; t; s/^([^ ]+).*/\1/')"
-    bin_unix="$(printf '%s' "$bin" | sed 's#\\#/#g')"
-    if [ "$bin" = node ] || [ "$bin" = node.exe ]; then
-        if command -v node >/dev/null 2>&1; then echo ok-bin; else echo warn-bare; fi
-        return
-    fi
-    if [ -x "$bin_unix" ]; then echo ok-bin; else echo fail-missing; fi
-}
+# --- C1-node: RETIRED (HIMMEL-2033) --------------------------------------------
+# The response-compression plugin whose SessionStart/UserPromptSubmit node hooks
+# this check classified and healed is gone, so there is nothing left to check.
+# Check ids are NOT renumbered: C1-guardrail below and C2..C21 keep their ids.
 
-check_c1() {
-    if [ ! -f "$SETTINGS" ]; then
-        emit INFO C1-node "no ~/.claude/settings.json — node hook wiring not checked" "run himmel setup if this is a himmel machine"
-        return
-    fi
-    local cmds worst="ok" has_wrapper=0 line cl
-    cmds="$(jq -r '[.hooks.SessionStart[]?.hooks[]?, .hooks.UserPromptSubmit[]?.hooks[]?] | .[]? | .command? // empty | select(test("caveman-(activate|mode-tracker)\\.js"))' "$SETTINGS" 2>/dev/null || true)"
-    if [ -z "$cmds" ]; then
-        if resolve_node >/dev/null 2>&1; then emit OK C1-node "node resolvable; no caveman node hooks wired"; else emit WARN C1-node "no node found on this machine" "install Node.js"; fi
-        return
-    fi
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        cl="$(classify_caveman_cmd "$line")"
-        case "$cl" in
-            ok-wrapper) has_wrapper=1 ;;
-            fail-dangling|fail-missing) worst="fail" ;;
-            warn-bare) [ "$worst" = fail ] || worst="warn" ;;
-        esac
-    done <<EOF
-$cmds
-EOF
-    # A wrapper-form command resolves node at runtime — but if NO node exists
-    # anywhere, the wrapper silently no-ops (fail-open). C1 is the only surface
-    # for that, so flag it (R4/P5).
-    if [ "$worst" = ok ] && [ "$has_wrapper" = 1 ] && ! resolve_node >/dev/null 2>&1; then
-        emit FAIL C1-node "no node found anywhere — the caveman runtime wrapper will silently skip every session" "install Node.js (or fix PATH/nvm); then re-run"
-        return
-    fi
-    case "$worst" in
-        fail)
-            if is_windows; then
-                emit FAIL C1-node "caveman SessionStart hook points at a missing node — session-start error every launch" "re-run himmel setup / win11.ps1 to re-resolve the node path"
-            else
-                emit FAIL C1-node "caveman SessionStart hook points at a dangling/missing node (the 'node: command not found' error)" "himmel-doctor --fix"
-            fi ;;
-        warn) emit WARN C1-node "caveman hook uses a bare 'node' (works only if node is on the GUI launch PATH)" "himmel-doctor --fix" ;;
-        *)    emit OK C1-node "caveman node hooks resolve to a working node" ;;
-    esac
-}
-
-fix_c1() {
-    if is_windows; then
-        printf '%sWindows: node path is stable — nothing to wire (win11.ps1 owns Windows).%s\n' "$C_DIM" "$C_0"
+# --- C1-guardrail: user-level guardrail block's baked node path -----------------
+# scripts/setup-hooks.sh|.ps1 --guardrail-mode global bakes the setup-time
+# ABSOLUTE node path into the 3 user-level guardrail hooks. If node moves
+# (e.g. a switch from a winget MSI to nvm-windows, HIMMEL-2013) every tool
+# call errors and the guardrails fail OPEN.
+check_c1_guardrail() {
+    [ -f "$SETTINGS" ] || return 0
+    local gb="$REPO_ROOT/scripts/hooks/guardrail-block.mjs"
+    [ -f "$gb" ] || return 0
+    local node_bin
+    node_bin="$(resolve_node 2>/dev/null)" || return 0
+    local js
+    js="$(CLAUDE_USER_SETTINGS="$SETTINGS" "$node_bin" "$gb" status --json 2>/dev/null)" || {
+        emit WARN C1-guardrail "guardrail-block status --json failed" "run: node scripts/hooks/guardrail-block.mjs status --json"
+        return 0
+    }
+    local mode
+    mode="$(printf '%s' "$js" | jq -r '.mode')"
+    if [ "$mode" != global ]; then
+        emit OK C1-guardrail "no user-level guardrail block (mode=$mode)"
         return 0
     fi
-    [ -f "$SETTINGS" ] || { echo "no settings.json to fix"; return 0; }
-    bash "$REPO_ROOT/scripts/lib/wire-caveman-node.sh" "$SETTINGS" "$REPO_ROOT" "$CLAUDE_DIR_R"
-    echo "  re-checking C1 after --fix:"
-    check_c1
+    local stale
+    stale="$(printf '%s' "$js" | jq -r '[.hooks[] | select(.present and (.nodeResolves|not)) | .basename] | join(", ")')"
+    if [ -n "$stale" ]; then
+        local stale_node
+        stale_node="$(printf '%s' "$js" | jq -r '[.hooks[] | select(.present and (.nodeResolves|not)) | .nodePath] | .[0] // empty')"
+        emit FAIL C1-guardrail "user-level guardrail hooks point at a missing node ($stale; nodePath=$stale_node) — every tool call errors and the guardrails fail OPEN" "himmel-doctor --fix (re-bakes via setup-hooks --guardrail-mode global)"
+        return 1
+    fi
+    emit OK C1-guardrail "user-level guardrail block node path resolves"
+    return 0
+}
+
+fix_c1_guardrail() {
+    if check_c1_guardrail; then return 0; fi
+    if is_windows; then
+        local ps_bin
+        ps_bin="$(resolve_powershell)" || { echo "  fix_c1_guardrail: no PowerShell interpreter found" >&2; return 1; }
+        CLAUDE_USER_SETTINGS="$SETTINGS" "$ps_bin" -NoProfile -ExecutionPolicy Bypass -File "$REPO_ROOT/scripts/setup-hooks.ps1" -GuardrailMode global -Yes
+    else
+        CLAUDE_USER_SETTINGS="$SETTINGS" bash "$REPO_ROOT/scripts/setup-hooks.sh" --guardrail-mode global --yes
+    fi
+    echo "  re-checking C1-guardrail after --fix:"
+    check_c1_guardrail
 }
 
 # --- C2: claude-obsidian shadow (prompt-type-hook risk) -------------------------
@@ -187,7 +178,7 @@ check_c5() {
 }
 
 # --- C6: PATH-fragile bare-interpreter MCP servers + hooks ----------------------
-# Same failure class as C1 node: a macOS GUI launch has a minimal PATH, so an MCP
+# Same failure class as C1-guardrail: a macOS GUI launch has a minimal PATH, so an MCP
 # server wired as a bare interpreter name (uvx/bun/deno/python/pwsh) silently fails
 # to start and all its tools vanish. Scans user settings + the himmel plugins.
 #
@@ -273,9 +264,43 @@ check_c7() {
         branch_has_merged_pr "$wt_branch" "$wt_root"
         local brc=$?
         if [ "$brc" -eq 0 ]; then
+            # HIMMEL-1692: /clean already refuses to prune a worktree with
+            # TRACKED modifications, so "prune with /clean" is misleading
+            # advice for one that is dirty — it will just skip it.
+            # THREE states, not two (codex CR round 4). Tracked modifications
+            # are a definite refusal. Untracked files are the AMBIGUOUS case —
+            # clean-garden force-prunes its is_ignorable_stray() allowlist and
+            # refuses everything else as forgotten work — but "ambiguous" is not
+            # a reason to fall back to the flat "prune with /clean", which is
+            # exactly wrong for the shape this ticket was filed over (a 502-line
+            # untracked spec sitting in a merged worktree). Say what is actually
+            # known and point at --dry-run, rather than asserting either verdict.
+            # Deliberately does NOT re-enumerate the allowlist here: duplicating
+            # it in the doctor is what would drift out of sync with the sweep.
+            #
+            # Do NOT advise "just commit it" (codex adversarial round 2). On a
+            # NON-GITHUB forge, clean-garden's is_branch_mergeable_for_prune()
+            # falls back to a per-branch merged-PR COUNT with no tip match, so a
+            # fresh commit on this already-merged branch does not protect it:
+            # the prune still fires and takes the branch with it, leaving that
+            # commit reachable only through the reflog. (On github the exact
+            # PR_HEAD_MATCH check does stop the prune — but the remedy must be
+            # safe on both forges, not just the one this box happens to use.)
+            # Moving the work OFF the merged branch is correct on every forge.
+            local c7_remedy="verify, then prune with /clean (dry-runs first); do NOT reuse this branch name"
+            if [ -n "$(git -C "$wt_path" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+                c7_remedy="worktree has uncommitted changes — /clean refuses to prune it; move them OFF this merged branch (git switch -c <new-branch>, or stash) then re-run /clean — do NOT just commit in place, a non-github prune ignores the moved tip and would delete the commit with the branch"
+            elif [ -n "$(git -C "$wt_path" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+                # Phrasing note: write "dry-run /clean", not the double-dash
+                # flag spelling. The C7 STATIC guard in test-himmel-doctor.sh
+                # scans this entire function body — comments included — for
+                # destructive-git substrings, and the flag spelling collides
+                # with one of them even inside a quoted advisory string.
+                c7_remedy="worktree has UNTRACKED files — /clean prunes it only if they are known-disposable tool strays, and refuses them as forgotten work otherwise; dry-run /clean first, and move anything worth keeping OFF this merged branch before pruning"
+            fi
             emit WARN C7-shipped \
                 "worktree $wt_path (branch $wt_branch) maps to a MERGED PR — shipped work lingering" \
-                "verify, then prune with /clean (dry-runs first); do NOT reuse this branch name"
+                "$c7_remedy"
             warned=$((warned+1))
         elif [ "$brc" -eq 2 ]; then
             if [ "$info_emitted" -eq 0 ]; then
@@ -904,10 +929,735 @@ check_c19() {
     fi
 }
 
+# --- C20: running node major vs .nvmrc (HIMMEL-1986 / HIMMEL-2010) --------------
+# FAILS on drift. It shipped advisory (HIMMEL-1986) because the drift was TRUE
+# on the box it landed on — on OVERLORD8 (2026-08-20/21) .nvmrc pinned 24 while
+# every hook, the Jira CLI, run-hook-with-bash.js and the lanes suites ran on
+# v26.7.0, and a default-fail check would have been an outage, not a gate. That
+# machine is now aligned (HIMMEL-2010), so the ladder's second rung applies: a
+# rediscovered-every-session drift becomes structural, not a louder warning.
+# The doctor still never edits .nvmrc and never switches a runtime — WHICH major
+# to converge on stays the operator's call, the FAIL only refuses to let the two
+# disagree silently.
+#
+# Two exits, both still visible as a WARN:
+#   $CI / $GITHUB_ACTIONS  — a runner installs the pin itself; its node is not
+#                            this operator's machine to fix.
+#   NODE_MAJOR_DRIFT_OK=1  — the documented bypass (deliberately exercising an
+#                            unpinned major), same *_OK=1 shape as the hooks.
+#
+# PATH's node, not resolve_node's fallback chain: the question is what the next
+# hook/CLI invocation will ACTUALLY run, and that is `command -v node`.
+# Test seam: DOCTOR_NVMRC overrides the pin file.
+check_c20() {
+    local nvmrc pin node_bin cur cur_major sev=FAIL why=""
+    nvmrc="${DOCTOR_NVMRC:-$REPO_ROOT/.nvmrc}"
+    if [ ! -f "$nvmrc" ]; then emit OK C20-node "no .nvmrc in this checkout (skipped)"; return; fi
+    # The pin is parsed by the shared runtime policy (HIMMEL-1991), not a second
+    # copy here: `24`, `v24`, `24.1.0` -> 24; `lts/iron` -> empty (nothing to
+    # compare, which is a skip and never a drift).
+    pin="$(RUNTIME_PREFLIGHT_NVMRC="$nvmrc" runtime_preflight_pin)"
+    if [ -z "$pin" ]; then
+        emit INFO C20-node "$nvmrc does not pin a numeric major — nothing to compare" "pin a major (e.g. 24) if this checkout should hold one"
+        return
+    fi
+    node_bin="$(command -v node 2>/dev/null || true)"
+    if [ -z "$node_bin" ]; then
+        emit INFO C20-node "no node on PATH — cannot compare against the .nvmrc pin ($pin)"
+        return
+    fi
+    cur="$("$node_bin" --version 2>/dev/null | tr -d '\r')"
+    # Same anchored parser as the pin above (HIMMEL-1991): a prefix-only read
+    # would report `v24-corrupt` as ALIGNED with a pin of 24 instead of saying
+    # it could not read the version at all.
+    cur_major="$(_runtime_preflight_major "$cur")"
+    if [ -z "$cur_major" ]; then
+        emit INFO C20-node "node --version returned '$cur' — cannot read a major to compare against the pin ($pin)"
+        return
+    fi
+    if [ "$cur_major" = "$pin" ]; then
+        emit OK C20-node "node $cur matches the .nvmrc pin ($pin)"
+        return
+    fi
+    if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then sev=WARN; why=" [CI — advisory here]"; fi
+    if [ "${NODE_MAJOR_DRIFT_OK:-0}" = 1 ]; then sev=WARN; why=" [NODE_MAJOR_DRIFT_OK=1]"; fi
+    emit "$sev" C20-node "node major drift: running $cur, .nvmrc pins $pin — hooks, the Jira CLI, run-hook-with-bash.js and the lanes suites all run on the UNPINNED major here, while CI and adopters run $pin$why" \
+        "align this box (nvm-windows/volta: install + use $pin), or bump .nvmrc to $cur_major once run-shell-tests.sh and the lanes suite are green on it — the pin bump is an operator decision, the doctor never makes it (HIMMEL-1986); NODE_MAJOR_DRIFT_OK=1 downgrades this to a warning (HIMMEL-2010)"
+}
+
+# --- C21: hermes himmel_agent profile default vs lanes.json record (advisory) ---
+# HIMMEL-2024: hermes-critic.sh and hermes-oneshot both defer to whichever
+# model the himmel_agent hermes profile currently defaults to (deliberately
+# NOT pinned in this repo — that is the point of HIMMEL-2017/#1811), so a
+# silent hermes-side profile-default swap changes their behaviour with
+# nothing here to notice it. Advisory only (WARN, never FAIL): this never
+# edits the hermes profile or lanes.json, and never invokes the hermes CLI —
+# a plain offline read of the active profile's config.yaml. The expected
+# model is READ from lanes.json (`profileDefaultModel` on the hermes rows),
+# never hardcoded here, so a future profile move only needs a lanes.json edit.
+# Test seams: DOCTOR_HERMES_HOME overrides the resolved hermes install root;
+# DOCTOR_LANES_JSON overrides the lanes.json path read for profileDefaultModel.
+check_c21() {
+    local lanes_json expected oneshot_model critics_model hermes_home active_profile cfg cur_model
+    lanes_json="${DOCTOR_LANES_JSON:-$REPO_ROOT/scripts/lanes/lanes.json}"
+    if ! command -v jq >/dev/null 2>&1; then
+        emit INFO C21-hermes-profile "jq not on PATH — hermes profile-default drift not checked"
+        return
+    fi
+    if [ ! -f "$lanes_json" ] || ! jq -e . "$lanes_json" >/dev/null 2>&1; then
+        emit INFO C21-hermes-profile "lanes.json not found/parseable — hermes profile-default drift not checked"
+        return
+    fi
+    # Both hermes-oneshot and hermes-critics are expected to carry
+    # profileDefaultModel. Read each SEPARATELY (not merged via `// empty` +
+    # sort -u) so a row that silently DROPPED the field is distinguishable
+    # from the two rows genuinely agreeing — merging first would let one
+    # undeclared row hide behind the other's value and still read as OK.
+    oneshot_model="$(jq -r '.lanes[] | select(.id=="hermes-oneshot") | .profileDefaultModel // empty' "$lanes_json" 2>/dev/null)"
+    critics_model="$(jq -r '.lanes[] | select(.id=="hermes-critics") | .profileDefaultModel // empty' "$lanes_json" 2>/dev/null)"
+    if [ -z "$oneshot_model" ] && [ -z "$critics_model" ]; then
+        emit INFO C21-hermes-profile "lanes.json hermes-oneshot/hermes-critics rows have no profileDefaultModel recorded — nothing to compare"
+        return
+    fi
+    if [ -z "$oneshot_model" ] || [ -z "$critics_model" ]; then
+        emit WARN C21-hermes-profile "only one of lanes.json's hermes-oneshot/hermes-critics rows declares profileDefaultModel (hermes-oneshot='${oneshot_model:-<none>}' hermes-critics='${critics_model:-<none>}') — the undeclared row's model isn't checked" \
+            "add profileDefaultModel to the row that's missing it in scripts/lanes/lanes.json"
+        return
+    fi
+    if [ "$oneshot_model" != "$critics_model" ]; then
+        emit WARN C21-hermes-profile "lanes.json's hermes-oneshot and hermes-critics rows disagree on profileDefaultModel ('$oneshot_model' vs '$critics_model')" \
+            "reconcile the two rows in scripts/lanes/lanes.json before this check can compare against the live hermes install"
+        return
+    fi
+    expected="$oneshot_model"
+    # Resolution order: DOCTOR_HERMES_HOME (test-only override) > HERMES_HOME
+    # (explicit override) > $LOCALAPPDATA/hermes (Windows, when set) >
+    # $HOME/.hermes (Linux/macOS default — upstream hermes' own default
+    # config home).
+    if [ -n "${DOCTOR_HERMES_HOME:-}" ]; then hermes_home="$DOCTOR_HERMES_HOME"
+    elif [ -n "${HERMES_HOME:-}" ]; then hermes_home="$HERMES_HOME"
+    elif [ -n "${LOCALAPPDATA:-}" ]; then hermes_home="$LOCALAPPDATA/hermes"
+    else hermes_home="$HOME/.hermes"
+    fi
+    if [ ! -d "$hermes_home" ]; then
+        emit INFO C21-hermes-profile "no hermes install found ($hermes_home) — hermes profile-default drift not checked"
+        return
+    fi
+    active_profile="$(tr -d '\r\n' < "$hermes_home/active_profile" 2>/dev/null)"
+    [ -n "$active_profile" ] || active_profile="himmel_agent"
+    cfg="$hermes_home/profiles/$active_profile/config.yaml"
+    if [ ! -f "$cfg" ]; then
+        emit INFO C21-hermes-profile "no config.yaml for the active hermes profile ($active_profile) — drift not checked"
+        return
+    fi
+    # Strip a trailing \r (CRLF config), a trailing "# comment", and
+    # surrounding quotes — a hermes-side re-dump of this YAML is free to
+    # quote/comment the scalar and this is advisory-only: a false WARN from
+    # a cosmetic re-dump is exactly the noise this check must not add.
+    cur_model="$(awk "
+        /^model:/ { f=1; next }
+        f && /^[^ ]/ { f=0 }
+        f && /^[[:space:]]*default:/ {
+            sub(/^[[:space:]]*default:[[:space:]]*/, \"\")
+            sub(/\r\$/, \"\")
+            sub(/[[:space:]]+#.*\$/, \"\")
+            gsub(/^[\"']|[\"']\$/, \"\")
+            print; exit
+        }
+    " "$cfg")"
+    if [ -z "$cur_model" ]; then
+        emit INFO C21-hermes-profile "could not read model.default from $cfg — drift not checked"
+        return
+    fi
+    if [ "$cur_model" = "$expected" ]; then
+        emit OK C21-hermes-profile "hermes '$active_profile' profile default ($cur_model) matches lanes.json"
+        return
+    fi
+    emit WARN C21-hermes-profile "hermes '$active_profile' profile default is now '$cur_model' — lanes.json still records '$expected' for hermes-oneshot/hermes-critics" \
+        "if the swap is real and lasting: update profileDefaultModel on the hermes-oneshot/hermes-critics rows in scripts/lanes/lanes.json and re-profile (docs/internals/lane-calibration.md, ox-alpha section); if temporary, no action needed"
+}
+
+# --- C22: hook chain budget skips/denies (read-only advisory, HIMMEL-2060) ------
+# run-hook-with-bash.js --chain durably logs every member the shared chain
+# budget starved to .claude/logs/hook-chain-skips.jsonl (one JSON row per
+# skip/deny). Counts per member so a member starved often enough to matter is
+# visible without grepping session transcripts. No log = nothing has been
+# starved yet — OK, not a finding.
+check_c22() {
+    local log="$REPO_ROOT/.claude/logs/hook-chain-skips.jsonl"
+    [ -f "$log" ] || { emit OK C22-chain-skips "no hook-chain-skips.jsonl — no starved chain member recorded"; return; }
+    command -v jq >/dev/null 2>&1 || { emit INFO C22-chain-skips "hook-chain-skips.jsonl present but jq missing — counts not checked"; return; }
+    local summary jq_rc=0
+    # Grouped by reason too (HIMMEL-2060 CR round 5, codex-2): an ENOBUFS row
+    # is an output-buffer overflow (a chatty hook), not budget starvation —
+    # folding both into one "starved" label made the remedy text below
+    # misleading for a box that is only seeing chatty-hook overflows.
+    summary="$(jq -rs 'group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
+    # A malformed/partially-written row makes the WHOLE `jq -s` slurp fail
+    # (HIMMEL-2060 CR round 1, codex-2) — distinguish that from a genuinely
+    # empty log rather than reporting both as the same clean OK.
+    if [ "$jq_rc" -ne 0 ]; then
+        emit INFO C22-chain-skips "hook-chain-skips.jsonl present but could not be parsed (a malformed row?) — counts not checked"
+        return
+    fi
+    if [ -z "$summary" ]; then
+        emit OK C22-chain-skips "hook-chain-skips.jsonl present but empty"
+        return
+    fi
+    emit WARN C22-chain-skips "chain member event(s) recorded: $(printf '%s' "$summary" | tr '\n' ';' | sed 's/;/; /g')" \
+        "reason=ETIMEDOUT is budget starvation (see HIMMEL-2060 / DEFAULT_CHAIN_BUDGET_MS in scripts/hooks/run-hook-with-bash.js); reason=ENOBUFS is an output-buffer overflow (a chatty hook), not a budget problem; a 'deny' action means a must-run security guard hit either one and the chain failed closed"
+}
+
+# --- C23: unlanded local work (read-only advisory, HIMMEL-2070) -----------------
+# scripts/unlanded-work.sh finds local branches ahead of origin/main that
+# never became a PR — the gap /clean's patch-id rail can't see (a squash
+# rewrites the patch-id) and never looked for in the first place (it only
+# prunes a branch whose PR already MERGED). Delegates entirely to that
+# script's --tsv classification; never re-derives it here. WARN only when
+# there is AGED live work worth a nudge; INFO for everything else that isn't
+# a clean bill of health; never FAIL — this is a nudge, not a break.
+check_c23() {
+    local script="$REPO_ROOT/scripts/unlanded-work.sh"
+    [ -f "$script" ] || { emit OK C23-unlanded "scripts/unlanded-work.sh not found (skipped)"; return; }
+    # Test seam (mirrors DOCTOR_WORKTREE_ROOT on C7): scan a different repo dir
+    # instead of this checkout, so the suite can hermetically fixture branches.
+    local scan_dir="${DOCTOR_UNLANDED_DIR:-$REPO_ROOT}"
+    # Capture stderr separately (codex-3, HIMMEL-2070 CR round 1): unlanded-work.sh
+    # always exits 0 by contract even when it could not scan at all (e.g. an
+    # unresolvable --base) — it writes the diagnostic to stderr instead. A
+    # discarded stderr made an operational failure and a genuinely clean repo
+    # both print "no unlanded work", so an unresolvable base on some other
+    # operator's machine would read as OK here. When the TSV is empty AND the
+    # scan printed a diagnostic, surface it as INFO rather than a false-clean OK.
+    local stderr_tmp; stderr_tmp="$(mktemp)"
+    local tsv sub_rc
+    tsv="$(cd "$scan_dir" 2>/dev/null && bash "$script" --tsv 2>"$stderr_tmp")"; sub_rc=$?
+    local scan_stderr; scan_stderr="$(cat "$stderr_tmp" 2>/dev/null)"; rm -f "$stderr_tmp"
+    # A `cd` failure (codex-3, HIMMEL-2070 CR round 7) short-circuits the `&&`
+    # before the script ever runs, so nothing lands in stderr_tmp — the
+    # non-zero $sub_rc is the ONLY signal that distinguishes "cd into
+    # scan_dir failed" from "the scan genuinely found nothing", so it must be
+    # checked alongside scan_stderr, not instead of it.
+    if [ -z "$tsv" ] && { [ -n "$scan_stderr" ] || [ "$sub_rc" -ne 0 ]; }; then
+        emit INFO C23-unlanded "unlanded-work scan produced no data: $(printf '%s' "${scan_stderr:-cd into $scan_dir failed (rc=$sub_rc)}" | head -1)" "bash scripts/unlanded-work.sh   # investigate directly"
+        return
+    fi
+    local n_unlanded n_aged n_landed n_stale
+    n_unlanded="$(printf '%s\n' "$tsv" | awk -F'\t' '$1=="UNLANDED-LIVE"' | grep -c . || true)"
+    n_aged="$(printf '%s\n' "$tsv" | awk -F'\t' '$1=="UNLANDED-LIVE" && $5=="1"' | grep -c . || true)"
+    n_landed="$(printf '%s\n' "$tsv" | awk -F'\t' '$1=="LANDED-ELSEWHERE"' | grep -c . || true)"
+    n_stale="$(printf '%s\n' "$tsv" | awk -F'\t' '$1=="STALE"' | grep -c . || true)"
+    if [ "${n_aged:-0}" -gt 0 ]; then
+        emit WARN C23-unlanded \
+            "$n_aged aged unlanded local branch(es) (of $n_unlanded unlanded, ${n_landed:-0} landed-elsewhere, ${n_stale:-0} stale) — work committed but never opened as a PR, sitting past the age threshold" \
+            "bash scripts/unlanded-work.sh   # review, then open PRs or drop"
+        return
+    fi
+    if [ "${n_unlanded:-0}" -gt 0 ] || [ "${n_landed:-0}" -gt 0 ] || [ "${n_stale:-0}" -gt 0 ]; then
+        emit INFO C23-unlanded \
+            "$n_unlanded unlanded (none aged), ${n_landed:-0} landed-elsewhere, ${n_stale:-0} stale local branch(es) — nothing urgent" \
+            "bash scripts/unlanded-work.sh   # full report"
+        return
+    fi
+    emit OK C23-unlanded "no unlanded work"
+}
+
+# --- C24: expected-but-absent cadence tasks (read-only advisory, HIMMEL-1680) ---
+# The cadence scripts (codex-sweep-cadence.sh, graphmap-cadence.sh, ...)
+# self-register every task they arm into observability_registry_path()'s
+# .expected_tasks[] (and unregister it on disarm). An operator-armed cadence
+# that silently stops existing — deleted, never armed, wiped by the OS
+# scheduler — is otherwise indistinguishable from one that is working and just
+# hasn't fired yet. This is that detector. Read-only: only queries the live
+# scheduler, never mutates the registry or any task. WARN-only (never FAIL),
+# mirroring the read-only advisory stance of C7-C9: a missing cadence is a
+# nudge to re-arm, not a guardrail break.
+check_c24() {
+    local registry; registry="$(observability_registry_path)"
+    if [ ! -f "$registry" ]; then
+        emit OK C24-cadence-registry "no cadence observability registry yet (nothing expected)"
+        return
+    fi
+    if ! command -v jq >/dev/null 2>&1; then
+        emit INFO C24-cadence-registry "jq not on PATH — expected-cadence check skipped"
+        return
+    fi
+    local expected
+    if ! expected="$(jq -r '.expected_tasks[]? // empty' "$registry" 2>/dev/null)"; then
+        emit INFO C24-cadence-registry "registry ($registry) could not be parsed — expected-cadence check skipped" "inspect/repair $registry (invalid JSON?)"
+        return
+    fi
+    if [ -z "$expected" ]; then
+        emit OK C24-cadence-registry "registry present but no cadence tasks expected"
+        return
+    fi
+    # codex-1 (CR round 3): probe the scheduler ITSELF once before looping --
+    # without this, an access-denied/transient schtasks or crontab error
+    # reads identically to "every expected task is gone" and WARNs on all of
+    # them, a false alarm distinct from a genuinely absent task.
+    local sched_unavailable=0 crontab_err=""
+    if is_windows; then
+        if ! command -v schtasks >/dev/null 2>&1 || ! MSYS_NO_PATHCONV=1 schtasks /query >/dev/null 2>&1; then
+            sched_unavailable=1
+        fi
+    else
+        if ! command -v crontab >/dev/null 2>&1; then
+            sched_unavailable=1
+        else
+            crontab_err="$(crontab -l 2>&1 >/dev/null)"
+            # Mirrors graphmap-cadence.sh's cron_read classification: "no
+            # crontab for this user" is the normal empty case, not a failure.
+            if ! crontab -l >/dev/null 2>/dev/null && ! printf '%s' "$crontab_err" | grep -qi 'no crontab'; then
+                sched_unavailable=1
+            fi
+        fi
+    fi
+    if [ "$sched_unavailable" -eq 1 ]; then
+        emit INFO C24-cadence-registry "the live scheduler ($(is_windows && echo schtasks || echo crontab)) is unreachable -- expected-cadence check skipped (not a false-clean OK)" "verify manually: $(is_windows && echo 'schtasks /query' || echo 'crontab -l')"
+        return
+    fi
+
+    local missing="" task
+    while IFS= read -r task; do
+        [ -n "$task" ] || continue
+        if is_windows; then
+            MSYS_NO_PATHCONV=1 schtasks /query /tn "$task" >/dev/null 2>&1 || missing="$missing $task"
+        else
+            crontab -l 2>/dev/null | grep -qE "# ${task}\$" || missing="$missing $task"
+        fi
+    done <<EOF
+$expected
+EOF
+    if [ -n "$missing" ]; then
+        emit WARN C24-cadence-registry "expected-but-absent cadence task(s):$missing — registered as owned but not found on the live scheduler" \
+            "re-arm the missing cadence (its script's 'arm' subcommand), or if intentionally retired, run its 'disarm' to unregister"
+    else
+        emit OK C24-cadence-registry "all $(printf '%s\n' "$expected" | grep -c .) expected cadence task(s) present on the live scheduler"
+    fi
+}
+
+# --- C25: orphaned scratchpad watcher processes (HIMMEL-1820) -------------------
+# On 2026-08-16 a watch-branches.sh poll loop written into a Claude session's
+# scratchpad was found still running ~10 hours after its session had died --
+# orphaned, spinning off children, and helping make the box unresponsive.
+# Scratchpad watcher loops have no TTL, never check whether the session they
+# serve still exists, and nothing swept for them (scripts/lib/watch-loop.sh is
+# how loops bound themselves going forward; this check sweeps for the ones
+# already running). Reports processes whose COMMAND LINE (or, on Linux via
+# /proc, CWD) references a Claude per-session area -- .claude*/projects/
+# session dirs or the himmel handover bridge session dirs, either separator
+# style -- AND whose parent process is dead, NAMING the dead parent.
+# Windows-first: Windows has no reparenting, so an orphan's ParentProcessId
+# still names the DEAD pid (modulo pid reuse). POSIX degrade via ps: a dead
+# parent has usually been reparented to init, so ppid 1 is flagged as such
+# there. REPORT and OFFER the kill only -- this check never terminates
+# anything itself. Never a FAIL: like C7-C19 it is advisory, so scripted
+# doctor runs stay usable while an operator decides.
+#
+# Test seams: DOCTOR_ORPHAN_SCAN_SKIP=1 skips (hermeticity for unrelated
+# cases); DOCTOR_ORPHAN_SCAN_SHIM=<exe> replaces the platform producer with
+# a fixture emitter of pid|ppid|cmdline lines.
+check_c25() {
+    if [ "${DOCTOR_ORPHAN_SCAN_SKIP:-0}" = 1 ]; then
+        emit OK C25-orphans "orphaned scratchpad watcher scan skipped by test seam"
+        return
+    fi
+    # A scratchpad reference: a per-session Claude path, either separator
+    # style (Windows cmdlines are backslashed, MSYS ones forward-slashed),
+    # any CLAUDE_DIR suffix (e.g. the glm lane's ~/.claude-glm).
+    local c25_pattern='\.claude([A-Za-z0-9_-]*)[/\\](projects[/\\]|handover[/\\]bridge[/\\])'
+    local c25_windows=0
+    is_windows && c25_windows=1
+    local scan="" rc=0
+    if [ -n "${DOCTOR_ORPHAN_SCAN_SHIM:-}" ]; then
+        scan="$("$DOCTOR_ORPHAN_SCAN_SHIM" 2>/dev/null)" || rc=$?
+    elif [ "$c25_windows" -eq 1 ]; then
+        local c25_ps=""
+        c25_ps="$(resolve_powershell)" || c25_ps=""
+        if [ -z "$c25_ps" ]; then
+            emit WARN C25-orphans "cannot evaluate orphaned scratchpad watchers on this platform (no PowerShell for the Win32_Process scan) -- this is NOT a clean bill of health" "install PowerShell, then re-run"
+            return
+        fi
+        # Dumb dump only -- every decision (pattern match, parent liveness,
+        # naming) lives in THIS script where it is testable. Newlines in a
+        # CommandLine are flattened so one process stays one line.
+        #
+        # The single quotes are LOAD-BEARING: the payload is PowerShell, and
+        # its $_ / $c must reach powershell unexpanded. Double-quoting it would
+        # let bash eat them first -- MSYS mangles a bare $_ into the literal
+        # "unsetenv", which is a real failure mode seen on this box.
+        # shellcheck disable=SC2016
+        scan="$("$c25_ps" -NoProfile -NonInteractive -Command 'Get-CimInstance Win32_Process | ForEach-Object { $c = $_.CommandLine; if ($null -eq $c) { $c = "" }; $c = $c -replace "\r"," " -replace "\n"," "; "{0}|{1}|{2}" -f $_.ProcessId, $_.ParentProcessId, $c }' 2>/dev/null)" || rc=$?
+    else
+        # POSIX: normalise pid/ppid/command into the same pid|ppid|cmdline
+        # shape (the command column is last, so a | inside it survives the
+        # field split below).
+        scan="$(ps -e -o pid=,ppid=,command= 2>/dev/null | sed -E 's/^ *([0-9]+) +([0-9]+) /\1|\2|/')" || rc=$?
+    fi
+    if [ "$rc" -ne 0 ] || [ -z "$scan" ]; then
+        # An empty table is a failed scan, not an empty machine -- never a
+        # false clean.
+        emit WARN C25-orphans "cannot evaluate orphaned scratchpad watchers (process scan unavailable, rc=$rc) -- this is NOT a clean bill of health" "inspect the platform scan command, then re-run"
+        return
+    fi
+    # Linux cwd add-on: /proc exposes each process's working directory, so a
+    # watcher whose cmdline no longer names the scratchpad but which still
+    # RUNS from one is caught too. (Windows CIM and macOS expose no cheap
+    # per-process cwd; the cmdline scan is the whole story there.) Skipped
+    # under the shim so fixtures stay host-independent.
+    if [ -z "${DOCTOR_ORPHAN_SCAN_SHIM:-}" ] && [ -r /proc/self/cwd ]; then
+        local c25_dir c25_p c25_link c25_pp
+        for c25_dir in /proc/[0-9]*; do
+            [ -d "$c25_dir" ] || continue
+            c25_p="${c25_dir#/proc/}"
+            c25_link="$(readlink "$c25_dir/cwd" 2>/dev/null)" || continue
+            [ -n "$c25_link" ] || continue
+            printf '%s\n' "$c25_link" | grep -Eiq "$c25_pattern" || continue
+            c25_pp="$(printf '%s\n' "$scan" | awk -F'|' -v p="$c25_p" '$1==p {print $2; exit}')"
+            case "$c25_pp" in ''|*[!0-9]*) continue ;; esac
+            scan="$c25_p|$c25_pp|(cwd) $c25_link
+$scan"
+        done
+    fi
+    local live_pids="" cands=""
+    live_pids="$(printf '%s\n' "$scan" | awk -F'|' '{print $1}')"
+    cands="$(printf '%s\n' "$scan" | grep -Ei "$c25_pattern" || true)"
+    # Candidate rows are ARBITRARY process command lines, so the loop reads
+    # them from a temp file, not an unquoted heredoc -- a cmdline containing
+    # $(...) or backticks must never be expanded by this script.
+    local c25_tmp="" line pid pppid cmd parent_note rows="" n=0 seen=""
+    c25_tmp="$(mktemp)"
+    printf '%s\n' "$cands" > "$c25_tmp"
+    while IFS='|' read -r pid pppid cmd; do
+        case "$pid" in ''|*[!0-9]*) continue ;; esac
+        case "$pppid" in ''|*[!0-9]*) continue ;; esac
+        printf '%s\n' "$seen" | grep -qx "$pid" && continue
+        seen="$pid
+$seen"
+        parent_note=""
+        if printf '%s\n' "$live_pids" | grep -qx "$pppid"; then
+            # Parent alive. On POSIX an orphan is usually REPARENTED to init,
+            # which hides the dead parent -- flag that shape there (never on
+            # Windows, where no reparenting exists and ppid 1 means init
+            # itself spawned it).
+            if [ "$pppid" = 1 ] && [ "$c25_windows" -eq 0 ]; then
+                parent_note="reparented to init (pid 1) -- original parent exited"
+            else
+                continue
+            fi
+        else
+            parent_note="parent pid $pppid is dead"
+        fi
+        n=$((n+1))
+        if [ "$n" -le 8 ]; then
+            rows="$rows$(printf '       · pid %s (%s): %.120s\n' "$pid" "$parent_note" "$cmd")"
+        fi
+    done < "$c25_tmp"
+    rm -f "$c25_tmp"
+    if [ "$n" -eq 0 ]; then
+        emit OK C25-orphans "no orphaned Claude-scratchpad watcher processes"
+        return
+    fi
+    emit WARN C25-orphans \
+        "$n orphaned Claude-scratchpad watcher process(es) -- parent dead, still running (HIMMEL-1820 class)" \
+        "inspect each line, then terminate the ones that are not yours: taskkill /PID <pid> /T /F (Windows) or kill <pid> (POSIX) -- this check never terminates anything itself"
+    printf '%s' "$rows"
+    if [ "$n" -gt 8 ]; then
+        printf '       · ...and %d more\n' "$((n-8))"
+    fi
+}
+
+# --- C26: salus profile marker present but PHI guard marker absent (advisory, HIMMEL-2173) ---
+# The salus medical-vault profile installer/upgrade drops `.salus-profile`
+# (template machinery) at the vault root; the PHI launcher guards (claude-glm/
+# claude-codex/claude-routed + their .ps1 twins + the hermes parity guard, and
+# scripts/telegram/glm-guard.ts) test for `.salus` before refusing a cloud/
+# codex launch there (now `.salus-profile` too, as a defense — HIMMEL-2173
+# part 2). A vault that carries the profile marker but no `.salus` looks
+# PHI-protected to the operator (it opted into the medical profile) yet had no
+# armed guard before part 2 shipped. Kept as a standing detectability layer
+# even after the guards were widened — it still catches future marker drift
+# (a hand-rolled vault, a guard that regresses to a single-marker test, or a
+# guard this ticket missed). Scans SALUS_VAULT_PATH if set, else the
+# documented ~/Documents/salus convention (docs/setup/new-machine.md #4d),
+# guarded by existence — doctor has no general vault-discovery mechanism to
+# delegate to (mirrors C3's LUNA_VAULT_PATH pattern). NON-fatal (WARN, never
+# FAIL), matching the read-only advisory stance of C3/C7-C12.
+check_c26() {
+    local v=""
+    for c in "${SALUS_VAULT_PATH:-}" "${HOME:-}/Documents/salus"; do
+        [ -n "$c" ] && [ -d "$c" ] && { v="$c"; break; }
+    done
+    [ -n "$v" ] || { emit OK C26-salus-marker "no salus vault found (skipped)"; return; }
+    if [ ! -f "$v/.salus-profile" ]; then
+        emit OK C26-salus-marker "salus vault ($v) has no .salus-profile (not a salus-profile deployment — skipped)"
+        return
+    fi
+    if [ -f "$v/.salus" ]; then
+        emit OK C26-salus-marker "salus vault ($v) carries both .salus-profile and .salus — PHI guards are armed"
+        return
+    fi
+    emit WARN C26-salus-marker \
+        "salus vault ($v) carries .salus-profile but NOT .salus — armed-but-inert against any guard that still tests only .salus" \
+        "touch '$v/.salus' (or re-run the salus profile installer/upgrade — HIMMEL-2173 part 1 ships it automatically going forward)"
+}
+
+# --- C27: PHI/egress guard signal readability (HIMMEL-1776 ask 5) ---------------
+# graphify-fence.sh (interactive) honors $CLAUDE_GLM_CONFIG_DIR (default
+# ~/.config/claude-glm) for its phi-roots/egress-denylist lookup.
+# refresh-graph-map.sh's scheduled salus guard deliberately does NOT: it
+# hard-codes ~/.config/claude-glm regardless of the override (CR codex-adv
+# r4 — a caller-controllable env var must not steer a fail-closed check).
+# BOTH fail CLOSED (deny every corpus) when a listed file exists but is not
+# a readable regular file — the shared _guard_file_readable predicate,
+# scripts/guardrails/phi-egress-lib.sh (HIMMEL-1776 ask 3). Denying is the
+# safe outcome, but an operator who never sees that deny message still has
+# an armed guard whose SALUS-classification signal is silently broken (the
+# HIMMEL-1773 inert-guard shape). This check surfaces the same readability
+# signal read-only, before it ever blocks a real extraction. Checking only
+# $CLAUDE_GLM_CONFIG_DIR would falsely certify config the scheduled guard
+# never reads when the override is set and differs — check the scheduled
+# guard's hard-coded location too whenever it diverges. Neither directory
+# declared here is a normal skip, same stance as C3/C26.
+check_c27() {
+    local cfgdir="${CLAUDE_GLM_CONFIG_DIR:-${HOME:-}/.config/claude-glm}"
+    local sched_cfgdir="${HOME:-}/.config/claude-glm"
+    local lib="$REPO_ROOT/scripts/guardrails/phi-egress-lib.sh"
+    local -a dirs=("$cfgdir")
+    [ "$sched_cfgdir" != "$cfgdir" ] && dirs+=("$sched_cfgdir")
+    local d any_dir=0
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] && any_dir=1
+    done
+    if [ "$any_dir" -eq 0 ]; then
+        emit OK C27-guard-signals "no ${dirs[*]} (no phi-roots/egress-denylist declared here — skipped)"
+        return
+    fi
+    if [ ! -f "$lib" ]; then
+        emit WARN C27-guard-signals "$lib not found — cannot verify phi-roots/egress-denylist readability" "restore scripts/guardrails/phi-egress-lib.sh"
+        return
+    fi
+    # shellcheck source=guardrails/phi-egress-lib.sh
+    # shellcheck disable=SC1091
+    . "$lib"
+    local name path bad=""
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        for name in phi-roots egress-denylist; do
+            path="$d/$name"
+            [ -e "$path" ] || continue
+            _guard_file_readable "$path" || bad="$bad $path"
+        done
+    done
+    if [ -n "$bad" ]; then
+        emit WARN C27-guard-signals \
+            "PHI guard signal exists but is not a readable regular file:$bad — the guard fails closed on this (denies every corpus), but is inert as a SALUS-classification signal until fixed" \
+            "make the listed path(s) a readable regular file (e.g. chmod +r, or replace a directory/special file with a plain text file)"
+        return
+    fi
+    emit OK C27-guard-signals "phi-roots/egress-denylist under ${dirs[*]} (where present) are readable regular files"
+}
+
+# --- C28: guardrail-block-global armed-but-inert (HIMMEL-2176) ------------------
+# HIMMEL-2176 gave guardrail-block-global (this operator's GLOBAL guardrail
+# hooks, distinct from a per-project guardrail-scope item) a REAL install
+# path — `himmelctl ensure` can now wire it, via install-engine.js's
+# 'guardrail-block-global' wire target — but its round-3 ruling forbids ever
+# doing so without an explicit, RECORDED consent (himmelctl's own state.json
+# target.items['guardrail-block-global'].overrides.consent). C1-guardrail
+# above already covers "wired and healthy" (OK) vs "wired but degraded"
+# (FAIL, a baked node path that rotted) and deliberately reads mode=project
+# as OK (never-wired is a legitimate, longstanding choice — see its own
+# header). This check adds the THIRD distinction C1-guardrail does not make:
+# among the never-wired case, "declined on purpose" (consent recorded 'no' —
+# still OK, the operator already decided) is not the same as "never even
+# asked" (no recorded consent at all) — the latter IS the honest gap this
+# ticket exists to close, and stays silent nowhere else in this script.
+# Read-only; no --fix (the whole point of the ask-first gate is that this
+# is never auto-wired without the operator's own explicit answer).
+#
+# HIMMEL-2176 panel finding: this used to also early-return OK when
+# $SETTINGS itself was absent. That conflated "nothing to check" ($gb
+# absent — this checkout has no guardrail-block.mjs, genuinely nothing to
+# probe) with "guardrails available but never wired at all" (no user-level
+# settings.json), which is exactly the never-asked gap this check exists
+# to report — a fresh machine with $gb present and no settings.json has
+# never recorded consent either way. Only $gb absence short-circuits now;
+# a missing $SETTINGS falls through into guardrail-block.mjs status --json,
+# which reads a missing settings path as `{}` (readSettings) and reports
+# mode=project cleanly (verified empirically — no throw, rc=0) — so the
+# existing mode/consent logic below already does the right thing without
+# any special-casing here.
+check_c28_guardrail_consent() {
+    local gb="$REPO_ROOT/scripts/hooks/guardrail-block.mjs"
+    if [ ! -f "$gb" ]; then
+        emit OK C28-guardrail-consent "no guardrail-block.mjs in this checkout — nothing to check"
+        return
+    fi
+    local node_bin
+    node_bin="$(resolve_node 2>/dev/null)" || { emit OK C28-guardrail-consent "no node resolvable — C1-guardrail already reports this"; return; }
+    local js
+    js="$(CLAUDE_USER_SETTINGS="$SETTINGS" "$node_bin" "$gb" status --json 2>/dev/null)" || {
+        emit OK C28-guardrail-consent "guardrail-block status --json failed — C1-guardrail already reports this"
+        return
+    }
+    local mode
+    mode="$(printf '%s' "$js" | jq -r '.mode')"
+    if [ "$mode" = global ]; then
+        emit OK C28-guardrail-consent "guardrail-block-global is wired (C1-guardrail covers its health)"
+        return
+    fi
+    # mode=project (never wired). Consult himmelctl's OWN recorded consent —
+    # the exact same override status-report.js's n/a-unless-'yes' logic reads
+    # — to tell "declined on purpose" apart from "never even asked".
+    local state_file="${HIMMELCTL_CACHE_DIR:-${HOME:-}/.claude/himmel}/state.json"
+    local consent=""
+    [ -f "$state_file" ] && consent="$(jq -r '.targets.user.items["guardrail-block-global"].overrides.consent // empty' "$state_file" 2>/dev/null)"
+    case "$consent" in
+        no)
+            emit OK C28-guardrail-consent "guardrail-block-global not wired — recorded decline (run 'himmelctl ensure' interactively to reconsider)"
+            ;;
+        yes)
+            emit WARN C28-guardrail-consent \
+                "guardrail-block-global consent is recorded 'yes' but it is still NOT wired — a prior 'himmelctl ensure' may have failed partway" \
+                "run: himmelctl ensure --items guardrail-block-global"
+            ;;
+        *)
+            emit WARN C28-guardrail-consent \
+                "guardrail-block-global is available in this checkout but never wired into your global settings, and never asked about — nothing enforces it" \
+                "run: himmelctl ensure  (or directly: node scripts/hooks/guardrail-block.mjs install --node <ABS_NODE> --bash <ABS_BASH>)"
+            ;;
+    esac
+}
+
+# --- C29: claude child-session launchers running without persistence (advisory, HIMMEL-2545) ---
+# claude exports CLAUDE_CODE_CHILD_SESSION=1 and CLAUDE_PID into every process
+# it spawns. A claude session launched from inside another claude session's
+# Bash tool therefore inherits a "throwaway child" marker: claude saves NO
+# transcript for it, scripts/context-fill.sh reads it blind (rc=4), and
+# /handover-resume-armed has nothing to read. The fix (headed-arm.sh,
+# arm-resume.sh) launches through
+# `env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 ...`.
+# This check sweeps for a NAMED session (a `-n HIMMEL-...` claude process)
+# that inherited the marker anyway — a launcher that forgot the clears.
+#
+# THE TRAP (verified this session): reading $CLAUDE_CODE_CHILD_SESSION from
+# THIS SCRIPT's own environment tells us nothing — claude sets it in every
+# subprocess, doctor included, so a self-env check would WARN on every
+# healthy run. The honest source is each candidate PROCESS's own /proc
+# environ, read directly — never our own env.
+#
+# A SECOND trap (HIMMEL-2545 panel finding, from a live false positive):
+# headed-arm.sh's konsole launcher process ALSO has a cmdline that names
+# `claude ... -n HIMMEL-...` (that is the command it was told to run) and
+# ALSO inherited CLAUDE_CODE_CHILD_SESSION=1 from whatever armed it — but
+# konsole is not claude, and the claude process it actually spawns is a
+# SEPARATE pid that (when correctly launched) carries only
+# CLAUDE_CODE_FORCE_SESSION_PERSISTENCE. Without a comm==claude gate, every
+# headed launch double-counts (launcher + claude) and a healthy session gets
+# reported broken via its own launcher's stale marker. Same comm guard as
+# context-fill.sh's own launched_as_child_session().
+#
+# procfs-only (Linux). Where /proc is absent (macOS, Git Bash) this is a
+# clean skip, never a false WARN — same procfs-or-silence contract as
+# context-fill.sh's own launched_as_child_session().
+#
+# r11-codex-3 (accuracy, not a false-WARN risk - the WARN itself is already
+# gated below on comm==claude PLUS the environ check, both exact; this can
+# only ever affect the DISPLAYED name for a pid already correctly flagged):
+# the name used to come from grep -Eo against the FLATTENED cmdline
+# (`-n HIMMEL-[^ ]*`), the same weakness round 9 fixed in headed-arm.sh's
+# own dedup match - a flattened string cannot tell an actual `-n` OPTION
+# from the same text sitting inside a PROMPT argument. A session whose
+# prompt happens to contain "-n HIMMEL-decoy" ahead of its genuine
+# "-n HIMMEL-real" option would have this check print the WRONG name for a
+# correctly-flagged pid - a mislabeled diagnostic (sends an operator to the
+# wrong window), not a false alarm. Fixed the same way headed-arm.sh reads
+# argv: walk /proc/<pid>/cmdline's real NUL-separated elements positionally
+# and take the value immediately following a literal "-n" element, rather
+# than matching a pattern against space-joined text. Two checks in this PR
+# disagreeing about how to read a command line is the same inconsistency
+# round 6's codex-4 fixed for the persistence-variable contract - C29 and
+# headed-arm.sh now read argv the same way.
+_c29_argv_n_value() { # _c29_argv_n_value <cmdline-file> - echoes the value
+                       # immediately following the FIRST element that
+                       # equals "-n" exactly, walking the real NUL-separated
+                       # argv (positional and exact, never a substring or
+                       # regex match against flattened text). Empty output
+                       # if there is no such pair or the file is unreadable.
+    local f="$1" prev="" cur
+    [ -r "$f" ] || return 0
+    while IFS= read -r -d '' cur; do
+        if [ "$prev" = "-n" ]; then
+            printf '%s' "$cur"
+            return 0
+        fi
+        prev="$cur"
+    done < "$f"
+}
+
+# Test seam: HIMMEL_DOCTOR_PROC overrides the proc root (default /proc) so
+# the suite can point this at a stubbed tree.
+check_c29() {
+    local proc_root="${HIMMEL_DOCTOR_PROC:-/proc}"
+    if [ ! -d "$proc_root" ]; then
+        emit OK C29-child-session "no procfs on this platform — child-session launcher scan skipped"
+        return
+    fi
+    local c29_dir c29_pid c29_comm c29_cmdline c29_environ c29_name rows="" n=0
+    for c29_dir in "$proc_root"/[0-9]*; do
+        [ -d "$c29_dir" ] || continue
+        c29_pid="${c29_dir##*/}"
+        # The process must actually BE claude, not merely a launcher whose
+        # cmdline happens to quote a claude invocation (e.g. konsole's own
+        # `-e env ... claude ... -n HIMMEL-...` argv, which also inherits the
+        # CLAUDE_CODE_CHILD_SESSION marker from whatever armed it). Same comm
+        # guard as context-fill.sh's own launched_as_child_session() — see
+        # HIMMEL-2545 panel finding: without it, every headed-arm.sh launch
+        # double-counts (the konsole launcher AND the claude it spawns), and
+        # a correctly-launched session (claude carries ONLY
+        # CLAUDE_CODE_FORCE_SESSION_PERSISTENCE) gets falsely reported broken
+        # via its own launcher's stale marker.
+        [ -r "$c29_dir/comm" ] || continue
+        c29_comm="$(cat "$c29_dir/comm" 2>/dev/null)" || continue
+        [ "$c29_comm" = "claude" ] || continue
+        [ -r "$c29_dir/cmdline" ] || continue
+        c29_cmdline="$(tr '\0' ' ' < "$c29_dir/cmdline" 2>/dev/null)" || continue
+        [ -n "$c29_cmdline" ] || continue
+        grep -Eq 'claude ' <<< "$c29_cmdline" || continue
+        grep -Eq -- '-n HIMMEL-' <<< "$c29_cmdline" || continue
+        [ -r "$c29_dir/environ" ] || continue
+        c29_environ="$(tr '\0' '\n' < "$c29_dir/environ" 2>/dev/null)" || continue
+        grep -q '^CLAUDE_CODE_CHILD_SESSION=1$' <<< "$c29_environ" || continue
+        # r3-codex-4: an EMPTY value is absent, not present - matches
+        # context-fill.sh's launched_as_child_session() contract exactly
+        # (same asymmetry: any NON-EMPTY value still counts as
+        # persistence-on, never require exactly "=1"). Two checks in this
+        # PR disagreeing about the same variable would be worse than either
+        # rule alone.
+        grep -q '^CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=.' <<< "$c29_environ" && continue
+        c29_name="$(_c29_argv_n_value "$c29_dir/cmdline")"
+        n=$((n+1))
+        # A plain $(...) here would swallow the trailing newline (each
+        # appended row then runs into the next on one line) -- keep the
+        # newline OUTSIDE the substitution.
+        rows="$rows$(printf '       · pid %s (%s)' "$c29_pid" "$c29_name")
+"
+    done
+    if [ "$n" -eq 0 ]; then
+        emit OK C29-child-session "no claude child-session launchers missing persistence"
+        return
+    fi
+    emit WARN C29-child-session \
+        "$n running claude session(s) launched as a child session; transcript not saved (HIMMEL-2545)" \
+        "relaunch through: env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ..."
+    printf '%s' "$rows"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
-if [ "$DO_FIX" = 1 ]; then fix_c1; else check_c1; fi
+if [ "$DO_FIX" = 1 ]; then fix_c1_guardrail; else check_c1_guardrail; fi
 check_c2
 check_c3
 check_c4
@@ -926,6 +1676,16 @@ check_c16
 check_c17
 check_c18
 check_c19
+check_c20
+check_c21
+check_c22
+check_c23
+check_c24
+check_c25
+check_c26
+check_c27
+check_c28_guardrail_consent
+check_c29
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

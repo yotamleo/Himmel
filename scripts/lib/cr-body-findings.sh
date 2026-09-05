@@ -109,7 +109,12 @@
 #
 # cr_body_findings <owner> <name> <pr-number> <head-sha>
 #   stdout (rc 0): one line —
-#     outside=<n> nitpick=<n> additional=<n> prior_outside=<n> markers=<n> head_reviews=<n>
+#     outside=<n> nitpick=<n> additional=<n> prior_outside=<n> markers=<n> head_reviews=<n> substantive=<n>
+#   `head_reviews` counts EVERY bot review at the head; `substantive` counts
+#   only those with a non-empty body. A caller asking "did the review I
+#   requested actually arrive?" must read `substantive` — CodeRabbit posts
+#   empty review objects on incremental passes, so head_reviews>0 alone is
+#   satisfied by a review that says nothing (HIMMEL-1959).
 #   rc 0 = determined (incl. zero head reviews); rc 1 = INFRASTRUCTURE
 #   cannot-evaluate (query failure, non-array payload); rc 2 = an anti-drift
 #   canary fired (positive evidence of an unparseable finding).
@@ -245,7 +250,7 @@ cr_body_findings() {
         echo "cr-body-findings: $head_count CodeRabbit review(s) at head $head but none carried a substantive body (all empty) for PR #$num (owner=$owner name=$name)" >&2
     fi
 
-    printf 'outside=%s nitpick=%s additional=%s prior_outside=%s markers=%s head_reviews=%s\n' \
-        "$outside" "$nitpick" "$additional" "$prior_outside" "$markers" "$head_count"
+    printf 'outside=%s nitpick=%s additional=%s prior_outside=%s markers=%s head_reviews=%s substantive=%s\n' \
+        "$outside" "$nitpick" "$additional" "$prior_outside" "$markers" "$head_count" "$substantive"
     return 0
 }

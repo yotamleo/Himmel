@@ -25,6 +25,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 $InitPayload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ensure-qmd-daemon","version":"1"}}}'
 
 function Resolve-QmdInvocation {
@@ -97,6 +103,8 @@ if ($PSCmdlet.ShouldProcess($Url, 'start qmd mcp --http --daemon')) {
     # qmd/bun start must not stall the caller indefinitely.
     $startOut = @()
     $job = Start-Job -ScriptBlock {
+        # Separate runspace: the file-scope UTF-8 setting does not reach here (HIMMEL-2256).
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $argv = @($using:qmd) + @('mcp', '--http', '--daemon')
         & $argv[0] @($argv | Select-Object -Skip 1) 2>&1
     }

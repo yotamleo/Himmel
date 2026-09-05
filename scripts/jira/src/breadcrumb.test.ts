@@ -13,7 +13,7 @@ import {
 
 describe('sanitizeBreadcrumbToken', () => {
   it('keeps safe filename chars', () => {
-    expect(sanitizeBreadcrumbToken('himmel-private_1.0')).toBe('himmel-private_1.0');
+    expect(sanitizeBreadcrumbToken('himmel_1.0')).toBe('himmel_1.0');
   });
   it('replaces slashes (branch names) with dashes', () => {
     expect(sanitizeBreadcrumbToken('feat/jira-nudge')).toBe('feat-jira-nudge');
@@ -25,19 +25,19 @@ describe('sanitizeBreadcrumbToken', () => {
 
 describe('deriveRepoKey', () => {
   it('handles https remotes', () => {
-    expect(deriveRepoKey('https://github.com/yotamleo/himmel-private.git')).toBe('himmel-private');
+    expect(deriveRepoKey('https://github.com/yotamleo/himmel.git')).toBe('himmel');
   });
   it('handles ssh remotes', () => {
-    expect(deriveRepoKey('git@github.com:yotamleo/himmel-private.git')).toBe('himmel-private');
+    expect(deriveRepoKey('git@github.com:yotamleo/himmel.git')).toBe('himmel');
   });
   it('handles a remote with no .git suffix', () => {
-    expect(deriveRepoKey('https://github.com/yotamleo/himmel-private')).toBe('himmel-private');
+    expect(deriveRepoKey('https://github.com/yotamleo/himmel')).toBe('himmel');
   });
 });
 
 describe('breadcrumbFileName', () => {
   it('joins sanitized repo key and branch', () => {
-    expect(breadcrumbFileName('himmel-private', 'feat/x')).toBe('himmel-private__feat-x.log');
+    expect(breadcrumbFileName('himmel', 'feat/x')).toBe('himmel__feat-x.log');
   });
 });
 

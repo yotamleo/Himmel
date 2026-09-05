@@ -14,7 +14,15 @@ export interface AuthInfo {
  * Pure so it can be tested without touching the filesystem.
  */
 export declare function deriveAuthInfo(claudeJson: unknown, env?: NodeJS.ProcessEnv): AuthInfo;
-/** Reads auth info for the current login. Never throws. */
+/**
+ * Reads auth info for the current login. Never throws.
+ *
+ * claude.json is the user's entire CLI config and grows with project history —
+ * 73 KB on the host this was measured on. The status line runs on every
+ * interaction, so parsing it per tick is not free. The two derived fields are
+ * cached against the file's (mtimeMs, ctimeMs, size, dev, ino) identity instead,
+ * making the steady-state cost a stat plus a ~100-byte read.
+ */
 export declare function readAuthInfo(): AuthInfo;
 export declare function truncateUser(user: string, maxLength: number): string;
 /**

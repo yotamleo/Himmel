@@ -21,9 +21,11 @@ import type { ReactionTypeEmoji } from 'grammy/types'
 import { randomBytes } from 'crypto'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
 import { homedir } from 'os'
+import { execFileSync } from 'child_process'
 import { join, extname, sep } from 'path'
 
-const STATE_DIR = process.env.TELEGRAM_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'telegram')
+const STATE_DIR = process.env.TELEGRAM_STATE_DIR
+  ?? join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'channels', 'telegram')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
 const APPROVED_DIR = join(STATE_DIR, 'approved')
 const ENV_FILE = join(STATE_DIR, '.env')
@@ -69,8 +71,28 @@ if (OWN_POLLER) {
     const stale = parseInt(readFileSync(PID_FILE, 'utf8'), 10)
     if (stale > 1 && stale !== process.pid) {
       process.kill(stale, 0)
-      process.stderr.write(`telegram channel: replacing stale poller pid=${stale}\n`)
-      process.kill(stale, 'SIGTERM')
+      // PID files race with OS PID recycling — verify the holder is actually a
+      // server.ts process before SIGTERM. Otherwise a recycled PID can point at
+      // our own bun-run wrapper (kills our stdin → immediate self-shutdown) or
+      // an unrelated user process.
+      // [telegram-himmel fork] `ps` does not exist on Windows, and Git Bash's
+      // MSYS ps cannot see native PIDs — execFileSync THROWS there (verified:
+      // it throws even for the caller's own live pid). Upstream's single
+      // try/catch swallows that and skips the kill entirely while bot.pid is
+      // still overwritten below, leaving the stale poller alive: two getUpdates
+      // consumers and the 409 storm this fork exists to prevent. So separate
+      // "ps disagreed" from "ps could not run" — only a ps that actually RAN
+      // may suppress the kill; an unusable ps falls back to the pre-0.0.7
+      // unconditional SIGTERM.
+      let looksLikeServer = true
+      try {
+        const cmd = execFileSync('ps', ['-p', String(stale), '-o', 'args='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+        looksLikeServer = cmd.includes('server.ts')
+      } catch {}
+      if (looksLikeServer) {
+        process.stderr.write(`telegram channel: replacing stale poller pid=${stale}\n`)
+        process.kill(stale, 'SIGTERM')
+      }
     }
   } catch {}
   writeFileSync(PID_FILE, String(process.pid))
@@ -405,7 +427,7 @@ const mcp = new Server(
     instructions: [
       'The sender reads Telegram, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
       '',
-      'Messages from Telegram arrive as <channel source="telegram" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_file_id, call download_attachment with that file_id to fetch the file, then Read the returned path (photos, documents, voice, and all other media arrive this way). Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
+      'Messages from Telegram arrive as <channel source="telegram" chat_id="..." message_id="..." user="..." ts="...">. If the tag has an image_path attribute, Read that file — it is a photo the sender attached. If the tag has attachment_file_id, call download_attachment with that file_id to fetch the file, then Read the returned path. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
       '',
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, and edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
@@ -672,16 +694,14 @@ process.on('SIGTERM', shutdown)
 process.on('SIGINT', shutdown)
 process.on('SIGHUP', shutdown)
 
-// Orphan watchdog: stdin events above don't reliably fire when the parent
-// chain (`bun run` wrapper → shell → us) is severed by a crash. Poll for
-// reparenting (POSIX) or a dead stdin pipe and self-terminate.
-const bootPpid = process.ppid
+// Orphan watchdog: belt-and-suspenders for the stdin 'end'/'close' handlers
+// above. Stdin is the MCP transport pipe inherited straight from the CLI; the
+// kernel closes it on any CLI death (clean, crash, SIGKILL, OOM) regardless of
+// intermediate wrappers. A ppid-change check used to live here but it
+// false-fires when the bun-run/shell wrapper exits or execs during normal
+// startup and we get reparented to init.
 setInterval(() => {
-  const orphaned =
-    (process.platform !== 'win32' && process.ppid !== bootPpid) ||
-    process.stdin.destroyed ||
-    process.stdin.readableEnded
-  if (orphaned) shutdown()
+  if (process.stdin.destroyed || process.stdin.readableEnded) shutdown()
 }, 5000).unref()
 
 // Commands are DM-only. Responding in groups would: (1) leak pairing codes via
@@ -793,22 +813,32 @@ bot.on('callback_query:data', async ctx => {
 })
 
 bot.on('message:text', async ctx => {
-  await handleInbound(ctx, ctx.message.text)
+  await handleInbound(ctx, ctx.message.text, undefined)
 })
 
 bot.on('message:photo', async ctx => {
   const caption = ctx.message.caption ?? '(photo)'
-  // Largest size is last in the array.
-  const photos = ctx.message.photo
-  const best = photos[photos.length - 1]
-  // Record file_id for lazy download at dispatch time (via download_attachment).
-  // Previously, photos were downloaded eagerly inside the ingest handler, which
-  // caused the grammy polling loop to stall for up to N×60s on a batch of N
-  // photos (getFile + fetch, each with a 30s timeout). HIMMEL-266.
-  await handleInbound(ctx, caption, {
-    kind: 'photo',
-    file_id: best.file_id,
-    size: best.file_size,
+  // Defer download until after the gate approves — any user can send photos,
+  // and we don't want to burn API quota or fill the inbox for dropped messages.
+  await handleInbound(ctx, caption, async () => {
+    // Largest size is last in the array.
+    const photos = ctx.message.photo
+    const best = photos[photos.length - 1]
+    try {
+      const file = await ctx.api.getFile(best.file_id)
+      if (!file.file_path) return undefined
+      const url = `https://api.telegram.org/file/bot${TOKEN}/${file.file_path}`
+      const res = await fetch(url)
+      const buf = Buffer.from(await res.arrayBuffer())
+      const ext = file.file_path.split('.').pop() ?? 'jpg'
+      const path = join(INBOX_DIR, `${Date.now()}-${best.file_unique_id}.${ext}`)
+      mkdirSync(INBOX_DIR, { recursive: true })
+      writeFileSync(path, buf)
+      return path
+    } catch (err) {
+      process.stderr.write(`telegram channel: photo download failed: ${err}\n`)
+      return undefined
+    }
   })
 })
 
@@ -816,7 +846,7 @@ bot.on('message:document', async ctx => {
   const doc = ctx.message.document
   const name = safeName(doc.file_name)
   const text = ctx.message.caption ?? `(document: ${name ?? 'file'})`
-  await handleInbound(ctx, text, {
+  await handleInbound(ctx, text, undefined, {
     kind: 'document',
     file_id: doc.file_id,
     size: doc.file_size,
@@ -828,7 +858,7 @@ bot.on('message:document', async ctx => {
 bot.on('message:voice', async ctx => {
   const voice = ctx.message.voice
   const text = ctx.message.caption ?? '(voice message)'
-  await handleInbound(ctx, text, {
+  await handleInbound(ctx, text, undefined, {
     kind: 'voice',
     file_id: voice.file_id,
     size: voice.file_size,
@@ -840,7 +870,7 @@ bot.on('message:audio', async ctx => {
   const audio = ctx.message.audio
   const name = safeName(audio.file_name)
   const text = ctx.message.caption ?? `(audio: ${safeName(audio.title) ?? name ?? 'audio'})`
-  await handleInbound(ctx, text, {
+  await handleInbound(ctx, text, undefined, {
     kind: 'audio',
     file_id: audio.file_id,
     size: audio.file_size,
@@ -852,7 +882,7 @@ bot.on('message:audio', async ctx => {
 bot.on('message:video', async ctx => {
   const video = ctx.message.video
   const text = ctx.message.caption ?? '(video)'
-  await handleInbound(ctx, text, {
+  await handleInbound(ctx, text, undefined, {
     kind: 'video',
     file_id: video.file_id,
     size: video.file_size,
@@ -863,7 +893,7 @@ bot.on('message:video', async ctx => {
 
 bot.on('message:video_note', async ctx => {
   const vn = ctx.message.video_note
-  await handleInbound(ctx, '(video note)', {
+  await handleInbound(ctx, '(video note)', undefined, {
     kind: 'video_note',
     file_id: vn.file_id,
     size: vn.file_size,
@@ -873,7 +903,7 @@ bot.on('message:video_note', async ctx => {
 bot.on('message:sticker', async ctx => {
   const sticker = ctx.message.sticker
   const emoji = sticker.emoji ? ` ${sticker.emoji}` : ''
-  await handleInbound(ctx, `(sticker${emoji})`, {
+  await handleInbound(ctx, `(sticker${emoji})`, undefined, {
     kind: 'sticker',
     file_id: sticker.file_id,
     size: sticker.file_size,
@@ -898,6 +928,7 @@ function safeName(s: string | undefined): string | undefined {
 async function handleInbound(
   ctx: Context,
   text: string,
+  downloadImage: (() => Promise<string | undefined>) | undefined,
   attachment?: AttachmentMeta,
 ): Promise<void> {
   const result = gate(ctx)
@@ -953,8 +984,10 @@ async function handleInbound(
       .catch(() => {})
   }
 
-  // All media types (photo, document, voice, audio, video, sticker) carry
-  // attachment_file_id for lazy download at dispatch time via download_attachment.
+  const imagePath = downloadImage ? await downloadImage() : undefined
+
+  // image_path goes in meta only — an in-content "[image attached — read: PATH]"
+  // annotation is forgeable by any allowlisted sender typing that string.
   mcp.notification({
     method: 'notifications/claude/channel',
     params: {
@@ -965,6 +998,7 @@ async function handleInbound(
         user: from.username ?? String(from.id),
         user_id: String(from.id),
         ts: new Date((ctx.message?.date ?? 0) * 1000).toISOString(),
+        ...(imagePath ? { image_path: imagePath } : {}),
         ...(attachment ? {
           attachment_kind: attachment.kind,
           attachment_file_id: attachment.file_id,

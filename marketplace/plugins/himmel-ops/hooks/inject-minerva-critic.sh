@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # inject-minerva-critic.sh — PreToolUse(Skill) hook (HIMMEL-429).
 #
-# Closes the no-/minerva bypass: when superpowers:brainstorming or
-# superpowers:writing-plans is invoked by ANY path (auto-trigger, direct
-# /skill, or a sub-skill handoff) WITHOUT going through /minerva, inject a
+# Closes the no-/minerva bypass: when superpowers:brainstorming,
+# superpowers:writing-plans, or mattpocock-skills:grilling (HIMMEL-2039, one
+# front door for grill/stress-test/brainstorm) is invoked by ANY path
+# (auto-trigger, direct /skill, or a sub-skill handoff) WITHOUT /minerva, inject a
 # scoped directive so the model still runs the matching minerva adversarial
 # critic loop (himmel-ops:minerva). This is ADVISORY context, not a permission
 # change — it cannot widen what any hook allows.
@@ -53,6 +54,15 @@ inject() {
 }
 
 case "$skill" in
+  # Namespace-agnostic ON PURPOSE (same as the two cases below): HIMMEL-2039
+  # wants ONE front door for the grill trigger, so ANY plugin's `grilling`
+  # skill routes into minerva Stage 1a, not just mattpocock's. Pinning the
+  # vendor prefix would break on a rename/fork and re-open the second-front-door
+  # this ticket closed. The hook only injects advisory context, so a
+  # false-positive costs one sentence, never a block.
+  *:grilling|grilling)
+    inject "minerva (HIMMEL-2039): grilling is minerva Stage 1a, not a separate skill: run the design-tree frontier rounds from himmel-ops:minerva, then CONTINUE that pipeline (brainstorm, spec-critic, plan, plan-critic) instead of stopping at a shared understanding."
+    ;;
   *brainstorming*)
     inject "minerva (HIMMEL-428): after this brainstorming writes the spec, do NOT auto-handoff to writing-plans — run the minerva SPEC-CRITIC loop first (himmel-ops:minerva, Stage 2 charter), then proceed."
     ;;

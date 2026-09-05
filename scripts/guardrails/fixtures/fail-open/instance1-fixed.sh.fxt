@@ -1,0 +1,19 @@
+# Post-fix twin of instance1-unreadable-denylist.sh.fxt — the shape that
+# shipped as the HIMMEL-1776 instance-1 fix: the config is -r-tested in the
+# same expression as the -f test, and an exists-but-unreadable file is a
+# hard deny instead of an empty read.
+#
+# Expected: lint-fail-open.sh passes this file clean.
+canon="$(cd "$1" 2>/dev/null && pwd -P)" || exit 1
+for cfg in "$HOME/.config/claude-glm/phi-roots" "$HOME/.config/claude-glm/egress-denylist"; do
+    [ -e "$cfg" ] || continue
+    if ! { [ -f "$cfg" ] && [ -r "$cfg" ]; }; then
+        echo "a PHI root list exists but is not readable (fail-closed)" >&2
+        exit 2
+    fi
+    while IFS= read -r p || [ -n "$p" ]; do
+        [ -n "$p" ] || continue
+        case "$canon/" in "$p"/*) echo SALUS; exit 0 ;; esac
+    done < "$cfg"
+done
+echo NOT-SALUS

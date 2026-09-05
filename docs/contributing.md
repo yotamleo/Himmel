@@ -34,9 +34,10 @@ keep that working at any team size.
    ```
 
    `scripts/hooks/check-commit-msg.sh` validates the format on `commit-msg`;
-   CI rechecks every PR commit with `TICKET_ID_REQUIRED=1`. Adopters default to
-   ticket-optional and can opt in via `.env` using `JIRA_PROJECT_KEY`, or set a
-   custom `TICKET_ID_PATTERN` for another tracker.
+   CI rechecks every PR commit. A ticket reference is required by default: set
+   `JIRA_PROJECT_KEY` in `.env` for `PROJECT-123`, or `TICKET_ID_PATTERN` for
+   another tracker; with neither, the gate accepts himmel's own `#N`
+   enumeration (`#123`). `TICKET_ID_REQUIRED=0` opts out.
 
    The `Co-Authored-By: Claude` trailer is emitted by Claude Code itself, not
    by any himmel script. To turn it off, set the `attribution` key in your
@@ -91,9 +92,10 @@ this doc. Highlights:
 
 ## Cross-platform conventions
 
-- bash 3.2 is the floor (macOS default). Eight scripts use `mapfile` and
-  require bash 4+ — documented in CLAUDE.md.
-- Five scripts use `realpath -m` with a `python3` fallback so macOS works
+- bash 3.2 is the floor (macOS default). Scripts that use `mapfile` require
+  bash 4+ — re-derive the set with
+  `grep -rl mapfile scripts --include='*.sh'` rather than trusting a count here.
+- Some scripts use `realpath -m` with a `python3` fallback so macOS works
   without `coreutils`.
 - Windows operators run via Git Bash. `cygpath -m` normalizes paths when
   needed.

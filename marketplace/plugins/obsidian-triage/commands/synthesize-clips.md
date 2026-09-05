@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Glob, Grep, Read, Write
-description: Cross-clip synthesis pass. Reads processed clips in Clippings/, finds recurring themes (concepts hit 3+ times across unrelated clips, repeated authors, emerging entity clusters), then writes synthesis pages to Clippings/_synthesis/ and proposes vault restructuring (new MOCs, new folders, missing concept pages). Autonomous — no user prompts. Designed to run weekly or after a batch of clips lands.
+description: Cross-clip synthesis pass — find recurring themes in processed clips, write Clippings/_synthesis/ pages, propose MOCs.
 argument-hint: "[vault-path] [--dry-run] [--since YYYY-MM-DD]"
 ---
 
@@ -35,7 +35,7 @@ Same as `/triage-clips`. Look at `$1`, then `$OBSIDIAN_VAULT_PATH`, then `~/Docu
 
 Only consider clips with `processed: true` in frontmatter. Reason: unprocessed clips lack inferred tags and Related Notes, so synthesis would over-fit on raw author wording. Run `/triage-clips` first if needed.
 
-**Inbox-internal exclusions (LUNA-53 + LUNA-55).** When enumerating clips, exclude the three names under `Clippings/` that are NEVER source clips: `_synthesis/` (this command's own output — naturally filtered since proposal pages lack `processed: true`, but exclude by path too so a stray marker can't pull them in), `_done/` (`/archive-clips` archive — those clips already fed synthesis once; re-walking them every run is wasted work and would double-count evidence), and `_deferred.md`. Use:
+**Inbox-internal exclusions.** When enumerating clips, exclude the three names under `Clippings/` that are never source clips: `_synthesis/` (this command's own output — naturally filtered since proposal pages lack `processed: true`, but exclude by path too so a stray marker can't pull them in), `_done/` (`/archive-clips` archive — those clips already fed synthesis once; re-walking them every run is wasted work and would double-count evidence), and `_deferred.md`. Use:
 ```bash
 find "<vault>/Clippings" -maxdepth 3 -type f -name '*.md' \
   -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' -print0

@@ -144,7 +144,7 @@ LEG_RESYNC="HIMMEL-ForkResync"
 # reason. The real runbooks live in .claude/commands/{drift-fix,fork-resync}.md
 # — these are only the invocations.
 PROMPT_DRIFT="Run /drift-fix to completion. This is the scheduled nightly upstream-drift repair cadence (HIMMEL-1323) - fully autonomous, no user prompts; follow the runbook exactly, STOP at the public PR, and report what landed."
-PROMPT_RESYNC="Run /fork-resync to completion. This is the scheduled nightly carried-fork re-sync cadence (HIMMEL-1323/HIMMEL-1435) - fully autonomous, no user prompts; audit every BEHIND scripts/upstreams.json entry with a fork block, including claude-obsidian (its non-additive delta is expected), then STOP at the end of step 3; NEVER run resync-fork.sh --push and do not open a branch or PR; report every result."
+PROMPT_RESYNC="Run /fork-resync to completion. This is the scheduled nightly carried-fork re-sync cadence (HIMMEL-1323/HIMMEL-1435) - fully autonomous, no user prompts; audit every BEHIND scripts/upstreams.json entry with a fork block, including claude-obsidian (its carried delta is strictly additive; a non-additive result is a regression to report), then STOP at the end of step 3; NEVER run resync-fork.sh --push and do not open a branch or PR; report every result."
 
 # leg_prompt / leg_log / leg_runner <task-name> — the per-leg lookups, kept as
 # functions rather than an associative array (bash 3.2 has none; macOS ships 3.2).
@@ -405,6 +405,9 @@ emit_bat() {
     printf '@echo off\r\n'
     printf 'rem drift-fix-cadence runner (HIMMEL-1323)\r\n'
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
+    # Pin editor hooks to the no-op `true` so a cadence child (stdin closed under
+    # schtasks) can never block on an editor prompt (HIMMEL-1753).
+    cadence_bat_editor_set
     printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_esc" "$log_esc" "$log_esc"
     printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_esc"
     printf 'cd /d "%s" >> "%s" 2>&1 || exit /b 1\r\n' "$root_esc" "$log_esc"
@@ -439,8 +442,20 @@ xml_escape() {
 # would genuinely require a real UTF-16LE encode to match the declaration —
 # which is why every interpolated value above is ASCII-only by construction.
 emit_task_xml() {
-    local command_raw="$1" start_time="$2" command
-    command=$(xml_escape "$command_raw")
+    local bat_win="$1" start_time="$2" vbs_win vbs_args
+    # HIMMEL-1753: Exec is a `wscript //B <shim>.vbs` wrapper around the .bat.
+    # The earlier hidden-powershell wrapper (-WindowStyle Hidden) was MEASURED to
+    # still allocate visible consoles; wscript //B hosting the .vbs shim (which
+    # runs the .bat hidden via WScript.Shell.Run and forwards its exit code via
+    # WScript.Quit) allocates zero consoles. The shim path is derived from the
+    # .bat path through cadence_vbs_path — the SAME helper cmd_arm writes the
+    # file with — so the referenced path and the written file can never disagree.
+    # //B is the WSH batch-mode flag (no error/prompt UI); the path is quoted so
+    # a BAT_DIR with spaces survives, then xml_escaped like any element text.
+    # WScript.Quit in the shim preserves HIMMEL-1706 exit-code fidelity (rc=42
+    # re-arm survives — proven in test-cadence-format.sh).
+    vbs_win=$(cadence_vbs_path "$bat_win")
+    vbs_args=$(xml_escape "//B \"${vbs_win}\"")
     cat <<XML
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -469,7 +484,8 @@ emit_task_xml() {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${command}</Command>
+      <Command>wscript.exe</Command>
+      <Arguments>${vbs_args}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -526,9 +542,24 @@ query_task() {
 # Roll back BOTH legs, best-effort (a leg that was never created simply errors
 # on /delete, which is ignored) — arm is all-or-nothing, so any failure past
 # the dedup gate rolls back whatever the run may have already created.
+# HIMMEL-1753 round 2 (glm-2): rollback also removes the $slug.vbs shims this
+# arm may have published — a failed arm must not leave orphaned shims behind
+# for a later disarm to trip over. Only once the leg's task is confirmed GONE,
+# though (query_task rc 1, trusted not-found): if the /delete itself failed,
+# that task is still armed and pointing at its shim, and removing the shim
+# THEN would leave an armed task referencing nothing — the exact state this
+# file's publish/registration ordering exists to prevent. A query error
+# (rc 2) keeps the shim for the same fail-safe reason; disarm removes both.
 win_rollback_both() {
-    run_schtasks /delete /tn "$LEG_DRIFT" /f >/dev/null 2>&1 || true
-    run_schtasks /delete /tn "$LEG_RESYNC" /f >/dev/null 2>&1 || true
+    local leg rc
+    for leg in "$LEG_DRIFT" "$LEG_RESYNC"; do
+        run_schtasks /delete /tn "$leg" /f >/dev/null 2>&1 || true
+        rc=0
+        query_task "$leg" 2>/dev/null || rc=$?
+        if [ "$rc" -eq 1 ]; then
+            rm -f "$BAT_DIR/$(leg_slug "$leg").vbs"
+        fi
+    done
 }
 
 win_arm() {
@@ -540,6 +571,7 @@ win_arm() {
         echo "ERR drift-fix-cadence: '$SCHTASKS_BIN' not on PATH (required on Windows)" >&2
         exit 2
     }
+    cadence_require_wsh "drift-fix-cadence" || exit 2
     require_payload
     local claude_bin
     if ! claude_bin=$(resolve_claude) || [ -z "$claude_bin" ]; then
@@ -629,11 +661,15 @@ win_arm() {
     # One iteration per leg. Dry-run only previews; the real path writes the
     # .bat, creates the task, and verifies it — rolling back BOTH legs on any
     # failure so arm never leaves one leg live and the other missing.
-    local slug time bat_file bat_win log_file log_win prompt_esc log_esc err_file verify_rc
+    local slug time bat_file vbs_file bat_win log_file log_win prompt_esc log_esc err_file verify_rc
     for leg in "$LEG_DRIFT" "$LEG_RESYNC"; do
         slug=$(leg_slug "$leg")
         time=$(leg_time "$leg")
         bat_file="$BAT_DIR/$slug.bat"
+        # wscript //B shim (HIMMEL-1753) lives beside the .bat; rollback + disarm
+        # remove both. The Windows path cadence_vbs_path derives from $bat_win is
+        # the same one emit_task_xml references, so write + reference agree.
+        vbs_file="$BAT_DIR/$slug.vbs"
         log_file="$BAT_DIR/$slug.log"
         if ! bat_win=$(cygpath -w "$bat_file" 2>&1); then
             echo "ERR drift-fix-cadence: cygpath -w failed for $slug bat file: $bat_win" >&2
@@ -649,13 +685,53 @@ win_arm() {
         if [ "$DRY_RUN" -eq 1 ]; then
             echo "DRY drift-fix-cadence: would write $bat_file:"
             emit_bat "$root_esc" "$claude_esc" "$prompt_esc" "$log_esc" "$model_esc" | sed 's/^/    /'
+            echo "DRY drift-fix-cadence: would write $vbs_file:"
+            cadence_vbs_wrapper "$bat_win" | sed 's/^/    /'
             echo "DRY drift-fix-cadence: would schtasks /create /tn $leg /xml <daily $time, StartWhenAvailable=true, InteractiveToken/LeastPrivilege> /f"
             emit_task_xml "$bat_win" "$time" | sed 's/^/    /'
             continue
         fi
 
-        if ! emit_bat "$root_esc" "$claude_esc" "$prompt_esc" "$log_esc" "$model_esc" > "$bat_file"; then
-            echo "ERR drift-fix-cadence: could not write $bat_file" >&2
+        # Atomic runner publication (HIMMEL-1753 round 2, glm-2/3 class): emit
+        # to a staged temp BESIDE the final path (same dir -> same filesystem
+        # -> `mv` is an atomic rename, not a copy; mirrors codex-sweep's
+        # publish discipline). Redirecting straight onto the final path let a
+        # task firing concurrently with a re-arm read a half-written
+        # .bat/.vbs; after the rename the final path only ever holds a
+        # complete file (old or new). A non-regular final path is refused up
+        # front: `mv` onto a directory squatting on a runner name "succeeds"
+        # by moving the staged file INSIDE it, so a checked rename alone
+        # cannot catch a target the task could never run. The shim promotes
+        # FIRST — an already-armed task can safely run a new shim against the
+        # still-current .bat while the pair is replaced.
+        local bat_tmp vbs_tmp
+        bat_tmp=$(mktemp "$BAT_DIR/.$slug.bat.XXXXXX")
+        vbs_tmp=$(mktemp "$BAT_DIR/.$slug.vbs.XXXXXX")
+        if ! emit_bat "$root_esc" "$claude_esc" "$prompt_esc" "$log_esc" "$model_esc" > "$bat_tmp"; then
+            echo "ERR drift-fix-cadence: could not write staged runner for $slug" >&2
+            rm -f "$bat_tmp" "$vbs_tmp"
+            win_rollback_both; exit 4
+        fi
+        if ! cadence_vbs_wrapper "$bat_win" > "$vbs_tmp"; then
+            echo "ERR drift-fix-cadence: could not write staged shim for $slug" >&2
+            rm -f "$bat_tmp" "$vbs_tmp"
+            win_rollback_both; exit 4
+        fi
+        for final_to_check in "$bat_file" "$vbs_file"; do
+            if [ -e "$final_to_check" ] && [ ! -f "$final_to_check" ]; then
+                echo "ERR drift-fix-cadence: $final_to_check exists and is not a regular file — refusing to publish" >&2
+                rm -f "$bat_tmp" "$vbs_tmp"
+                win_rollback_both; exit 4
+            fi
+        done
+        if ! mv -f "$vbs_tmp" "$vbs_file"; then
+            echo "ERR drift-fix-cadence: failed to publish shim to $vbs_file" >&2
+            rm -f "$bat_tmp" "$vbs_tmp"
+            win_rollback_both; exit 4
+        fi
+        if ! mv -f "$bat_tmp" "$bat_file"; then
+            echo "ERR drift-fix-cadence: failed to publish runner to $bat_file" >&2
+            rm -f "$bat_tmp"
             win_rollback_both; exit 4
         fi
 
@@ -695,7 +771,7 @@ win_status() {
         exit 2
     }
     echo "drift-fix-cadence status:"
-    local leg slug rc next
+    local leg slug rc next status_rc=0
     for leg in "$LEG_DRIFT" "$LEG_RESYNC"; do
         slug=$(leg_slug "$leg")
         rc=0
@@ -703,7 +779,7 @@ win_status() {
         case "$rc" in
             0)
                 next=$(printf '%s' "$QUERY_OUT" | grep -i 'Next Run Time' | head -1 | sed 's/^[^:]*: *//' | tr -d '\r') || true
-                echo "ARMED      $leg (next run: ${next:-?})"
+                cadence_registered_status "$leg" " (next run: ${next:-?})" || status_rc=2
                 ;;
             1) echo "not armed  $leg" ;;
             *) exit 2 ;;
@@ -711,6 +787,7 @@ win_status() {
         echo "  runner     $BAT_DIR/$slug.bat"
         status_log "$BAT_DIR/$slug.log"
     done
+    return "$status_rc"
 }
 
 win_disarm() {
@@ -725,7 +802,7 @@ win_disarm() {
         query_task "$leg" || rc=$?
         case "$rc" in
             1)
-                if [ "$DRY_RUN" -eq 0 ]; then rm -f "$BAT_DIR/$slug.bat"; fi
+                if [ "$DRY_RUN" -eq 0 ]; then rm -f "$BAT_DIR/$slug.bat" "$BAT_DIR/$slug.vbs"; fi
                 continue
                 ;;
             2) exit 2 ;;
@@ -733,7 +810,7 @@ win_disarm() {
         any_armed=1
         if [ "$DRY_RUN" -eq 1 ]; then
             echo "DRY drift-fix-cadence: would schtasks /delete /tn $leg /f"
-            echo "DRY drift-fix-cadence: would remove $BAT_DIR/$slug.bat"
+            echo "DRY drift-fix-cadence: would remove $BAT_DIR/$slug.bat + $BAT_DIR/$slug.vbs"
             continue
         fi
         err_file=$(mktemp -t drift-fix-cadence.err.XXXXXX)
@@ -743,7 +820,7 @@ win_disarm() {
             rm -f "$err_file"
             exit 4
         fi
-        rm -f "$err_file" "$BAT_DIR/$slug.bat"
+        rm -f "$err_file" "$BAT_DIR/$slug.bat" "$BAT_DIR/$slug.vbs"
     done
     if [ "$any_armed" -eq 0 ]; then
         echo "drift-fix-cadence: nothing armed — disarm is a no-op"

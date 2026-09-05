@@ -67,6 +67,32 @@ rc_of() {
     echo "$?"
 }
 
+# patch_rc_of PATCH_TEXT [EXTRA_ENV...] — HIMMEL-2170: run the hook with a
+# tool_name=apply_patch payload (Codex's create/edit envelope — no file_path
+# field, the target(s) live inside the patch text itself) and echo the exit
+# code. jq builds the JSON so newlines in PATCH_TEXT are escaped correctly.
+patch_rc_of() {
+    local patch="$1"; shift
+    jq -n --arg cmd "$patch" '{tool_name:"apply_patch", tool_input:{command:$cmd}}' \
+        | env "$@" bash "$HOOK" >/dev/null 2>&1
+    echo "$?"
+}
+
+# patch_rc_of_cwd PATCH_TEXT CWD [EXTRA_ENV...] — HIMMEL-2170 CR round 2: same
+# as patch_rc_of but also sets tool_input.cwd, for RELATIVE apply_patch
+# targets that must be joined against the tool's own cwd (not the hook
+# process's $PWD) before canon().
+patch_rc_of_cwd() {
+    local patch="$1" cwd="$2"; shift 2
+    jq -n --arg cmd "$patch" --arg cwd "$cwd" '{tool_name:"apply_patch", tool_input:{command:$cmd,cwd:$cwd}}' \
+        | env "$@" bash "$HOOK" >/dev/null 2>&1
+    echo "$?"
+}
+
+patch_add()    { printf '*** Begin Patch\n*** Add File: %s\n+hello\n*** End Patch\n' "$1"; }
+patch_update() { printf '*** Begin Patch\n*** Update File: %s\n@@\n-old\n+new\n*** End Patch\n' "$1"; }
+patch_delete() { printf '*** Begin Patch\n*** Delete File: %s\n*** End Patch\n' "$1"; }
+
 # Repos under the sandbox.
 mkrepo "$SANDBOX/mainrepo" main
 mkrepo "$SANDBOX/featrepo" feat/x
@@ -490,6 +516,83 @@ assert_rc "T37c untracked '.env ' (trailing space) on main blocks (HIMMEL-879)" 
     "$(rc_of "$SANDBOX/casesecretrepo/.env ")"
 assert_rc "T37d untracked '.env.' (trailing dot) on main blocks (HIMMEL-879)" 2 \
     "$(rc_of "$SANDBOX/casesecretrepo/.env.")"
+
+# --- HIMMEL-2170: apply_patch (Codex create/edit envelope) coverage ---
+# Codex ships every create/edit as tool_name=apply_patch with the patch text
+# in tool_input.command and NO tool_input.file_path — the targets live inside
+# "*** Add/Update/Delete File:" lines in that text instead. See
+# docs/internals/harness-compat.md's empirical event/tool-name matrix.
+
+# T38/T39/T40: each patch verb targeting a file in a main-branch repo -> BLOCK.
+assert_rc "T38 apply_patch Add File on main blocks" 2 \
+    "$(patch_rc_of "$(patch_add "$SANDBOX/mainrepo/src/newfile.js")")"
+assert_rc "T39 apply_patch Update File on main blocks" 2 \
+    "$(patch_rc_of "$(patch_update "$SANDBOX/mainrepo/src/foo.js")")"
+assert_rc "T40 apply_patch Delete File on main blocks" 2 \
+    "$(patch_rc_of "$(patch_delete "$SANDBOX/mainrepo/src/foo.js")")"
+
+# T41: apply_patch targeting a file inside a real git worktree -> ALLOW
+# (mirrors T5 — a linked worktree is where feature work belongs).
+assert_rc "T41 apply_patch Add File in worktree allows" 0 \
+    "$(patch_rc_of "$(patch_add "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/foo.js")")"
+
+# T42: apply_patch whose command carries no Add/Update/Delete File line at all
+# (malformed/unparseable patch text) -> ALLOW. This mirrors T10 (missing
+# file_path allows silently): block-edit-on-main already treats an
+# unresolvable target as fail-open (it is defense-in-depth; the pre-commit
+# check-worktree-isolation.sh gate is the fail-closed backstop) — a
+# non-security-fence "workflow nudge" per scripts/hooks/CLAUDE.md's fail-open/
+# fail-closed posture guide, unlike the always-active
+# scripts/guardrails/lesson-write-fence.sh security fence, which DOES fail
+# closed on the same malformed-apply_patch shape (see its own test suite).
+assert_rc "T42 apply_patch malformed command allows (fail-open, mirrors T10)" 0 \
+    "$(patch_rc_of "not a patch at all, no File: lines here")"
+
+# T43: multi-target apply_patch where only ONE target is fenced (main repo);
+# the other resolves inside the worktree -> BLOCK (any fenced target denies
+# the whole call).
+multi_patch=$(printf '*** Begin Patch\n*** Add File: %s\n+ok\n*** Update File: %s\n@@\n-old\n+new\n*** End Patch\n' \
+    "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/ok.js" "$SANDBOX/mainrepo/src/foo.js")
+assert_rc "T43 apply_patch multi-target, one fenced, blocks" 2 "$(patch_rc_of "$multi_patch")"
+
+# T44: multi-target apply_patch where EVERY target resolves inside the
+# worktree -> ALLOW (the loop must not spuriously deny on an unrelated target).
+multi_patch_ok=$(printf '*** Begin Patch\n*** Add File: %s\n+ok\n*** Add File: %s\n+ok2\n*** End Patch\n' \
+    "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/ok.js" "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/ok2.js")
+assert_rc "T44 apply_patch multi-target all in worktree allows" 0 "$(patch_rc_of "$multi_patch_ok")"
+
+# T45/T46 (HIMMEL-2170 CR round 1): "*** Move to: " is an OPTIONAL line
+# immediately following "*** Update File: " (verified against codex-rs/
+# apply-patch/src/parser.rs, openai/codex@18b9e7fd9e3f6670cc4f300338e44050b2c301e4
+# - MOVE_TO_MARKER + the update_hunk/change_move grammar). An Update whose
+# SOURCE resolves fine (inside a worktree) must still block if the MOVE
+# DESTINATION lands in the primary checkout on main.
+patch_move=$(printf '*** Begin Patch\n*** Update File: %s\n*** Move to: %s\n@@\n-old\n+new\n*** End Patch\n' \
+    "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/old.js" "$SANDBOX/mainrepo/src/moved.js")
+assert_rc "T45 apply_patch Update allowed-source + Move to fenced (main) destination blocks" 2 "$(patch_rc_of "$patch_move")"
+
+patch_move_ok=$(printf '*** Begin Patch\n*** Update File: %s\n*** Move to: %s\n@@\n-old\n+new\n*** End Patch\n' \
+    "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/old.js" "$SANDBOX/wtrepo/.claude/worktrees/feat+x/src/moved.js")
+assert_rc "T46 apply_patch Update allowed-source + Move to allowed (worktree) destination allows" 0 "$(patch_rc_of "$patch_move_ok")"
+
+# T47/T48 (HIMMEL-2170 CR round 2): a RELATIVE apply_patch target must be
+# joined against tool_input.cwd (the TOOL's cwd), not the hook PROCESS's
+# $PWD — canon() has no cwd parameter of its own. Same relative target
+# ("src/rel.js"), different tool_input.cwd: pointing into the primary
+# checkout on main -> BLOCK; pointing into the worktree -> ALLOW.
+assert_rc "T47 apply_patch relative target + cwd=main-repo blocks" 2 \
+    "$(patch_rc_of_cwd "$(patch_add "src/rel.js")" "$SANDBOX/mainrepo")"
+assert_rc "T48 apply_patch relative target + cwd=worktree allows" 0 \
+    "$(patch_rc_of_cwd "$(patch_add "src/rel.js")" "$SANDBOX/wtrepo/.claude/worktrees/feat+x")"
+
+# T49 (CodeRabbit round, HIMMEL-2170): a standalone Move-to (no preceding
+# Update File line) contributes NO target under this hook's fail-open
+# posture (see block-edit-on-main.sh's comment on the Move-to case arm) -
+# zero extracted targets -> ALLOW, same as any other malformed apply_patch
+# command here (mirrors T42's malformed-command allow).
+patch_standalone_move=$(printf '*** Begin Patch\n*** Move to: %s/src/foo.js\n*** End Patch\n' "$SANDBOX/mainrepo")
+assert_rc "T49 apply_patch standalone Move-to allows (fail-open, no target extracted)" 0 \
+    "$(patch_rc_of "$patch_standalone_move")"
 
 # Clean up the worktree registration before removing the sandbox (avoids a
 # dangling `git worktree` admin record under SANDBOX/wtrepo).

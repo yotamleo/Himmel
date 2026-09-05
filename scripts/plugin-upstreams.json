@@ -3,6 +3,6 @@
   "claude-obsidian": {
     "upstream_repo": "AgriciDaniel/claude-obsidian",
     "track": "release",
-    "synced_base": "v2.1.0"
+    "synced_base": "v2.1.1"
   }
 }

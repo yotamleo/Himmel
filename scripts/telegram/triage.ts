@@ -1,6 +1,7 @@
 import { spawn } from "bun";
 import { join } from "node:path";
 import { BASH_BIN, REPO_ROOT, killTree } from "./run";
+import { SPAWN_OWN_GROUP } from "../lib/kill-tree.mjs";
 
 export type TriageVerdict = "ignore" | "ack" | "spawn-low" | "spawn-high";
 // The only model the triage seam ever injects is the spawn-low haiku override
@@ -8,6 +9,12 @@ export type TriageVerdict = "ignore" | "ack" | "spawn-low" | "spawn-high";
 // mints a different override is a compile error at the producer, not a silent
 // fall-through to the default model.
 export type TriageModelOverride = "haiku";
+// The models the RUN path can be pinned to. Wider than TriageModelOverride on
+// purpose: triage still only ever emits "haiku", but the operator's explicit
+// `model:` tag (LUNA-101) can name any of these. Keeping the two types distinct
+// preserves the compile-time guarantee above at the triage producer while
+// letting the run path carry an operator choice.
+export type ModelOverride = "haiku" | "sonnet" | "opus";
 export type TriageInvokeFn = (args: string[], prompt: string) => Promise<string>;
 // fromOperator (HIMMEL-1296 CR codex-adv-1): the sender's ROLE, which selects
 // the prompt framing. Defaults false — the conservative side: an unwired caller
@@ -93,7 +100,10 @@ function triagePrompt(text: string, fromOperator: boolean): string {
 }
 
 async function defaultInvoke(args: string[], prompt: string, timeoutMs: number): Promise<string> {
-  const p = spawn([...args, prompt], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  // SPAWN_OWN_GROUP (HIMMEL-1956): the timeout path below calls killTree,
+  // whose POSIX half signals the group -- the hermes python grandchild this
+  // comment already worries about on Windows survives on POSIX without it.
+  const p = spawn([...args, prompt], { ...SPAWN_OWN_GROUP, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   let timedOut = false;
   return await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {

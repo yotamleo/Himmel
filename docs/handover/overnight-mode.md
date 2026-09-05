@@ -43,10 +43,10 @@ Do **not** use overnight mode when:
    The Mode B path collocates the plan with the per-ticket session notes (`<state-root>/<repo>/{epics,standalones}/<TICKET>/next-session-N.md`), so a reviewer auditing the work can grep one root for plan + decisions + outcomes. Mode A keeps plans inside the code repo for solo-operator no-env-var setups.
 2. **Worktree** — `/clean_garden feat/himmel-<N>-<slug>`.
 3. **Impl** — `superpowers:subagent-driven-development`. Sequential per task: implementer subagent → spec-compliance reviewer → code-quality reviewer → fix-on-finding → next task. **Verifier cadence (HIMMEL-281, Fable-5 scaffolding):** every 3 completed tasks, dispatch one fresh-context verifier subagent that re-checks the accumulated branch diff against the Phase-1 plan. Fresh-context verification beats self-critique, and the per-task reviewers see one task at a time — this is the layer that catches cross-task drift before Phase 4. **Stop-check (HIMMEL-137):** before EACH subagent dispatch in this loop, run `bash scripts/overnight/stop-marker.sh check` (silent; rc=0 = stop marker present, rc=1 = clear). When rc=0, finish the in-flight subagent if one is running, then halt the loop gracefully (write a `next-session-N.md` snapshot at the partial-completion point, file followup tickets for remaining tasks, and exit Phase 3). Operator-triggered via `/stop` (soft) or `/stop --hard` (also `TaskStop`s in-flight). `/stop --reset` clears the marker.
-4. **Final review** — one holistic `code-reviewer` subagent across the full diff vs main. Any solo/holistic review pass uses the `pr-review-toolkit(-himmel)` `code-reviewer` — NEVER `caveman:cavecrew-reviewer` as the sole reviewer (solo cavecrew produced 2 false Criticals of 4 findings on the HIMMEL-292–296 fix batch, while the 4-reviewer toolkit round on #453 was clean — HIMMEL-299). **Never zero CR (HIMMEL-299, 2026-06-13):** a docs-only diff still gets ONE **docs-audit** `code-reviewer` subagent scoped to the docs charter — repo-claim accuracy (hooks/gates/flags/paths/commands vs actual code), dead links, stale file/flag/ticket refs, example correctness, internal consistency; NOT prose nitpicks (`CLAUDE.md` → `/claude-md-audit`). Review is never skipped outright.
-5. **Heavy CR** — dispatch 6 reviewers IN PARALLEL: 5 from `pr-review-toolkit` (`code-reviewer`, `pr-test-analyzer`, `comment-analyzer`, `silent-failure-hunter`, `type-design-analyzer`) + `caveman:cavecrew-reviewer`. `cavecrew-reviewer` is the heavy-CR sixth opinion ONLY — never a solo/holistic reviewer (HIMMEL-299: 2 false Criticals when run solo). Aggregate Critical/Important/Minor findings by file. For docs-only or test-free PRs, skip reviewers that don't apply (e.g. `pr-test-analyzer`, `type-design-analyzer`, `silent-failure-hunter` are no-ops on a pure-markdown PR) and dispatch only the relevant subset. **`/code-review ultra` sits ABOVE this tier (HIMMEL-299 eval — ADOPT):** it is the MOST expensive lane — more than this 6-reviewer heavy CR — so it is the top/last-resort escalation for the biggest/riskiest PRs, run AFTER heavy CR, never as a cheaper first reach. It is operator-triggered + billed; the agent cannot launch it — record an `ultra` pass as a one-action operator step.
+4. **Final review** — one holistic `code-reviewer` subagent across the full diff vs main. Any solo/holistic review pass uses the `pr-review-toolkit(-himmel)` `code-reviewer` (HIMMEL-299). **Never zero CR (HIMMEL-299, 2026-06-13):** a docs-only diff still gets ONE **docs-audit** `code-reviewer` subagent scoped to the docs charter — repo-claim accuracy (hooks/gates/flags/paths/commands vs actual code), dead links, stale file/flag/ticket refs, example correctness, internal consistency; NOT prose nitpicks (`CLAUDE.md` → `/claude-md-audit`). Review is never skipped outright.
+5. **Heavy CR** — dispatch 5 reviewers IN PARALLEL from `pr-review-toolkit` (`code-reviewer`, `pr-test-analyzer`, `comment-analyzer`, `silent-failure-hunter`, `type-design-analyzer`). Aggregate Critical/Important/Minor findings by file. For docs-only or test-free PRs, skip reviewers that don't apply (e.g. `pr-test-analyzer`, `type-design-analyzer`, `silent-failure-hunter` are no-ops on a pure-markdown PR) and dispatch only the relevant subset. **`/code-review ultra` sits ABOVE this tier (HIMMEL-299 eval — ADOPT):** it is the MOST expensive lane — more than this 5-reviewer heavy CR — so it is the top/last-resort escalation for the biggest/riskiest PRs, run AFTER heavy CR, never as a cheaper first reach. It is operator-triggered + billed; the agent cannot launch it — record an `ultra` pass as a one-action operator step.
 6. **Fix batch** — dispatch fix subagent(s) for ALL Critical + Important findings. Run tests after each batch.
-7. **Re-CR** — re-dispatch the same 6 reviewers. Loop fix → re-CR until 0 Critical remain.
+7. **Re-CR** — re-dispatch the same 5 reviewers. Loop fix → re-CR until 0 Critical remain.
 8. **PR open + push** — `gh pr create --body-file <path>`. Write the body to a file first to avoid shell-interpretation surprises (heredocs, `$()` substitutions, multi-line content with quotes). **Attestation trailers go in the FIRST commit, never a reactive amend** — see "Auto-mode classifier & attestation" below. Before the first `git commit` of any shippable change, after you have genuinely run tests + the heavy CR, write the gate trailers directly into that commit body:
    ```
    Platforms tested: <linux|windows|gitbash|…>   # only when the diff touches shell/scripts
@@ -57,20 +57,25 @@ Do **not** use overnight mode when:
 10. **Jira** — invoke the CLI as `node scripts/jira/dist/index.js transition <KEY> "<state>"` (NOT the global `jira` shim — it points at an unrelated, often-broken `jira-cli` package). This runs autonomously **provided the specific standing allow-rule `Bash(node scripts/jira/dist/index.js:*)` is present** — a generic `Bash(node *)` is NOT enough to authorize an external write (see § Auto-mode classifier). If the rule is missing, a transition is classifier-blocked; do NOT retry via a different path (evasion) — record it as an operator action in Phase 11 and have the operator add the rule once (it then works for all future runs).
 11. **Handover** — write `next-session-<N+1>.md` (or whichever increment) in the right dir, file followup tickets for non-blocking findings, record any classifier-blocked Jira transitions as explicit operator actions, update `status.md` + `roadmap.md`, commit + push (trailers in the first commit per Phase 8). **Release the step-0 queue lock** (`bash scripts/handover/queue-lock.sh release <handover-path> <release-token>` — the token captured from the step-0 acquire output; if it was lost, `QUEUE_LOCK_FORCE_RELEASE=1 bash scripts/handover/queue-lock.sh release <handover-path>` force-releases loudly and logs the override) as part of this phase — the TTL is a safety net for a crashed session, not a substitute for releasing on a clean wrap.
 
-## Fable-5 launch preamble (HIMMEL-281)
+## Launch preamble
 
-Any prompt that launches an overnight/armed run (the next-session
-`Overnight Mode Trigger` block — also reached by `arm-resume.sh`
-relaunches, whose prompt loads a next-session file carrying this block —
-and manual "overnight mode" invocations) carries these two standing
-instructions, verbatim from the [official Fable-5 prompting guide](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5):
-
-**Caveman has no model-tier exemption (HIMMEL-699):** if the caveman plugin
-is ever toggled on (it defaults `off`), its hooks apply uniformly — an
-`arm-resume.sh` relaunch has no `CAVEMAN_DEFAULT_MODE` override, so a
-Fable-5 overnight session would get compressed like any other model. See
-[`docs/token-economy.md`](../token-economy.md) before enabling caveman
-globally or repo-locally.
+Any prompt that launches an overnight/armed run carries the standing
+instructions below. Delivery paths (HIMMEL-281, HIMMEL-1719): the
+`arm-resume.sh` / `schedule-resume.sh` relaunch prompt names this section
+explicitly; the next-session `## Overnight Mode Trigger` block points here;
+and manual "overnight mode" invocations reach it because executing the
+pipeline requires reading this doc. This section is the SINGLE copy of the
+text — the next-session templates deliberately do not inline it (the
+previous 4-copy duplication silently drifted: the seeded `_templates/` hop
+dropped the preamble from essentially every autonomously emitted session
+for ~2 months — HIMMEL-1719). It is model-neutral by design: overnight
+impl runs on Sonnet (§ Budget), the chain parent may be Fable-5 or
+Opus-class (HIMMEL-1480), and no reliable model-identity seam exists at
+launch time. Snippets are selected, not pasted, from the official
+[Fable-5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5)
+and
+[Opus-5](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-opus-5)
+prompting guides:
 
 > When you have enough information to act, act. Do not re-derive facts
 > already established in the conversation, re-litigate a decision the
@@ -82,12 +87,38 @@ globally or repo-locally.
 > You have ample context remaining. Do not stop, summarize, or suggest a
 > new session on account of context limits. Continue the work.
 
+> Match the length of written documents to what the task needs: cover the substance, but do not pad with filler sections, redundant summaries, or boilerplate.
+
 The first counters overplanning on long autonomous turns; the second
 counters context-budget anxiety (Fable 5 occasionally wraps up early when
-it believes context is short). The guide's grounded-progress-claims and
+it believes context is short — and the same instruction is directly
+relevant to known Opus 1M autocompact behaviour); the third counters
+written-deliverable padding (Opus 5 pads documents by default, and this
+harness writes `next-session-N.md`, `status.md`, `roadmap.md`, specs and
+morning reports on every run). The guides' grounded-progress-claims and
 early-stopping snippets are NOT duplicated here — the attestation
 discipline (§ Auto-mode classifier) and the block-only criteria already
 cover them.
+
+**"Ample context remaining" is now checkable, not a reassurance to take on
+faith (HIMMEL-2212).** `bash scripts/context-fill.sh` prints this session's
+own context-window fill; `--percent` gives a bare integer. It exits 3 (STALE)
+or 4 (UNKNOWN) with an EMPTY stdout rather than guessing, so a wrap check must
+branch on the exit status — a bare `[ "$(…)" -ge 65 ]` turns a missing reading
+into a false comparison that reads exactly like "below threshold":
+
+```bash
+if fill=$(bash scripts/context-fill.sh --percent); then
+  [ "$fill" -ge 65 ] && echo "wrap: ${fill}% of the context window used"
+else
+  echo "fill is STALE or UNKNOWN — arm a successor on other evidence"
+fi
+```
+
+A console deciding whether to arm a successor for a leg should ask the leg
+for this number instead of an estimate. It measures context-window FILL — not
+the `<total_tokens>` spend budget, which is a different, much larger
+allowance and was routinely conflated with fill before this ticket.
 
 **Safety-classifier reroute is not a failure.** ~5% of Fable sessions trip
 a (trigger-happy) safety classifier and route to Opus 4.8 **with a
@@ -95,6 +126,132 @@ notification** (community-measured, @PawelHuryn). This is a different
 layer from the auto-mode classifier below: nothing was blocked, the floor
 is Opus 4.8, and the run should simply continue — do not halt, retry, or
 escalate to the operator over a reroute notice.
+
+**A zero is not evidence without a positive control (HIMMEL-2320).** Any
+count feeding a ruling — an unresolved-thread sweep, a grep count, a diff
+stat — first proves its instrument on a known-match pattern; read a tool's
+header contract before invoking it. A wrong repo slug, an MSYS-mangled
+path, or a bare tool run against the wrong input can all render as a clean
+"0" indistinguishable from a genuine pass.
+
+**A read outside the working directory can still hang an unattended leg
+(HIMMEL-2381).** Auto mode does not cover this class — a Read/Grep/Glob
+target outside cwd/`additionalDirectories` prompts interactively regardless
+of mode, and nobody is there to answer it. Pre-listing the known-safe
+outside paths in `permissions.additionalDirectories` closes the common
+cases; `queue-lock.sh status`'s idle-warn line flags the rest ("possibly
+stuck on a prompt" once a FRESH lock's heartbeat exceeds
+`QUEUE_LOCK_IDLE_WARN_SECONDS`, default 45m) so a stalled leg is visible
+well before the hours-scale TTL/aging thresholds fire. See
+[`environment-gotchas.md`](../internals/environment-gotchas.md) for the
+operator recovery.
+
+## Suite evidence — scope the run, and never wait invisibly (HIMMEL-2215)
+
+**A leg opens its PR on the SCOPED suite covering its diff, and reports the
+full run afterwards as a PR comment.** This is the default, not a
+time-pressure concession — it was re-derived per-leg per-shift for months
+before being written down here.
+
+Why it has to be the default: `scripts/ci/run-shell-tests.sh` takes a
+machine-wide advisory lock (HIMMEL-1338) keyed by **scan root**, so exactly
+one full-tree run happens at a time on the box. On the 2026-08-29 shift six
+concurrent legs each needed that run; the holder was measured at **2h20m and
+still going** — genuinely alive, just slow, because seven sessions were
+loading the machine. Six legs × a serialized 2h+ run is a wall the parallel
+dispatch pattern cannot cross.
+
+Because the lock is keyed by scan root, a scoped run takes a **different lock**
+and does not queue behind a full-tree one at all:
+
+```bash
+bash scripts/ci/run-shell-tests.sh scripts/<subtree-that-EXERCISES-your-change>
+```
+
+**Scope by what the change is exercised BY, not by where the diff lives.** A
+scoped run covers the suites under that scan root — which is not the same set
+as "every test that touches my change". Edit `scripts/lib/foo.sh` and run only
+`scripts/lib` and you have missed every `scripts/hooks` suite that sources it;
+the diff's own directory is the wrong default whenever the changed code is
+shared. Pick the root that contains the suites which actually exercise the
+change (grep for who sources or invokes it), and when that spans several
+roots, run each — several scoped runs still finish in minutes and still take
+different locks.
+
+So scoped evidence is **narrower** than a full run, deliberately. That is the
+trade the default makes: it covers what the change is exercised by, in
+minutes, instead of covering everything in hours behind a fleet-wide queue.
+It is not a claim that the full run would have found nothing — which is
+exactly why the full run is still reported afterwards as a PR comment rather
+than skipped, and why a leg that cannot identify the suites exercising its
+change should run the full tree (with `SUITE_LOCK_WAIT`, below) instead of
+guessing at a subtree.
+
+**When you do need the full tree, never hand-roll a retry loop.** An rc=2
+refusal used to send legs into their own invisible wait — and a queued leg is
+then indistinguishable from a **parked** one: both present as a leg that has
+stopped reporting, and the remedies are opposite (a queued run needs
+patience, a parked worker needs a nudge). Getting it backwards is how a
+coordinator nudges a healthy worker and creates a second-writer race on its
+branch; a near-miss of exactly that shape occurred on the same shift.
+
+Use the runner's own wait instead, so the waiting shows up in the log the
+coordinator is already polling:
+
+```bash
+SUITE_LOCK_WAIT=7200 bash scripts/ci/run-shell-tests.sh scripts
+```
+
+It queues for up to that many seconds and prints a repeating line every
+`SUITE_LOCK_WAIT_INTERVAL` seconds (default 60) naming the **current** holder:
+
+```text
+WAITING: queued behind the machine lock of scan root "scripts" — holder
+pid=3221699 host=overlord8 held=2h14m (8040s); this run has waited 5m00s
+(300s) of its 7200s budget. lock: /tmp/himmel-shell-suite-scripts.lock
+```
+
+On acquiring it says so (`ACQUIRED: … after waiting …`); if the budget runs
+out it emits the full `REFUSED` verdict and still exits 2. Default is `0` —
+refuse on sight, the historical behaviour — so this is opt-in per run.
+
+**For a coordinator:** a leg reporting a `WAITING:` line is *queued*, and the
+holder pid + elapsed are right there — no `ps`, no reading
+`/tmp/himmel-shell-suite-*.lock/owner` by hand. A leg reporting nothing at all
+is *parked*. That distinction is the point of the knob; a leg that hand-rolls
+its own sleep loop throws it away.
+
+## Base verification — arming on a fence, and syncing across legs (HIMMEL-2383)
+
+Console ruling 66 (prompted by #2080 merging while its own after-report suite
+was still running, and a dependent leg arming minutes later on that
+unverified base): **arm a leg on a fence only once every merged PR that
+touched it carries its after-report SUMMARY.**
+`scripts/console/base-status.sh <fence-path>...` lists the merged PRs on a
+fence that are still PENDING (no after-report comment yet) or RED (a red
+one); `arm-resume.sh` reads the handover's own `fence:` frontmatter key and
+calls it before arming, refusing (rc=21) on a non-clean fence — or when the
+certification itself fails (missing script, `gh` query error, truncated
+merged-PR list), because "cannot verify" refuses exactly like "verified
+dirty" — unless `--provisional-base-ok` is passed, which WARNS loudly and
+prints the warning text for the leg's first message instead of refusing.
+`scripts/handover/merge-on-green.sh` records its own local
+after-report-pending marker at merge time (best-effort, mirrors the
+cr-pending marker dir), and `scripts/ci/run-shell-tests.sh --pr <N>` (or
+`SUITE_REPORT_PR=N`) posts the SUMMARY block as a PR comment from the RUNNER
+PROCESS itself, so a closed parent session can never lose the report
+(HIMMEL-2215 lineage).
+
+**How legs sync**, since there is no shared live state beyond the above:
+direct messages between sessions (`SendMessage`/`ListAgents`), the
+handover/ledger files each leg already writes, and PR comments themselves
+(the after-report SUMMARY, `MERGED`/marker audit lines) — legs coordinate by
+reading each other's durable artifacts, not by a shared process. A **red**
+after-report routes to the console, which hands it to the **current owner of
+that fence** as a follow-up PR + ticket — never to whichever leg happens to
+notice first. A **dependent leg holds its fence conclusions** (does not
+build further on that fence, does not report it clean) until the fix lands
+and a fresh after-report replaces the red one.
 
 ## Artifacts to keep in sync
 
@@ -165,6 +322,44 @@ Block for human input ONLY when:
 - A plain Phase-9 `--squash` merge is blocked by *real* branch protection (not the no-op case HIMMEL-224 removed) and `--admin` would be needed but is not authorized (`GH_ADMIN_MERGE_OK` unset) — bypassing a genuine approval gate is exactly the kind of "destructive op outside the worktree" overnight mode should NOT do unattended. Defer the merge to the operator.
 
 Everything else proceeds without confirmation.
+
+## Park protocol (HIMMEL-2128)
+
+Every controllable hang class in an armed/overnight chain resolves to one of
+two policies: **fallback** (an opt-in knob lets the gate accept a weaker-but-
+verified floor and keep going) or **park** (the gate stays closed and the item
+is set aside). Park is never a retry-loop — a leg that hits a park-policy
+gate does this, and only this:
+
+1. **Write the pending item into the handover's Pending block**: the PR#, the
+   head SHA, which gate blocked it and why (its refusal reason), and the exact
+   command to resume once the blocking condition clears. For a cross-model
+   floor exhaustion, that is **`/pr-check` on the branch, not a bare
+   `clear-cr-marker.sh` recheck** — the exhausted critic's `avail` row is
+   already on the ledger, so re-running only `clear-cr-marker.sh` reads that
+   same stale row and refuses again; `/pr-check` re-invokes the panel and
+   records a FRESH row (`ok` once the bank has actually reset, or a new
+   `unavailable` if it has not) before the marker is re-checked. Enabling
+   `CR_FLOOR_FALLBACK=claude-only` is the other resume path — it ships on the
+   Claude-only floor without waiting for the reset at all. For other park
+   classes, the resume command is the gate itself, e.g. re-running
+   `check-ci.sh <pr>` once a stale review refreshes.
+2. **Continue with other queue items.** A park on one branch never idles the
+   rest of the chain while independent work is ready to ship.
+3. **Never re-run the same blocked gate in a loop** hoping it resolves on its
+   own — park records the item once and moves on; it does not poll.
+4. **At wrap, the leg pends for cold restart** — a fresh arm/handover once the
+   blocking condition is confirmed cleared, not an in-leg retry.
+
+### The five hang classes
+
+| # | Hang class | Disposition |
+|---|---|---|
+| 1 | Cross-model floor exhaustion — `CR_REQUIRE_CROSS_MODEL` set, every non-Claude critic down | `CR_FLOOR_FALLBACK=claude-only` (opt-in, HIMMEL-2128) when the exhaustion is VERIFIED quota/rate-limit — otherwise **park** the branch and continue |
+| 2 | Plugin-tool permission wall (HIMMEL-2124) | Operator allow-rules close it; **park** the blocked item if hit |
+| 3 | CodeRabbit rate-limit vs. stale review | A pure rate-limit already skips structurally (an `unavailable` avail row; freshness self-skips with no bot review posted — no action needed). A stale review anchor now exits 0 instead of 4 when a clean exact-head critic panel carries the gate (HIMMEL-2162) — no park, no retry needed. **`check-ci.sh` exit-4 itself is unchanged and still means fail-closed: it fires precisely when no such panel row exists at that head — that case still needs a park, never a blind retry** |
+| 4 | Live-worker rc=10 at arm | Wrap discipline (finish/reconcile the worker before arming) closes it in-leg; **park** if it cannot be resolved before the leg ends |
+| 5 | `ARMAUTOMERGE` unset | Pre-arm WARN only (`arm-resume.sh`, HIMMEL-2128) — the chain still deliberately stops at every green PR instead of merging; not itself a park |
 
 ## Telegram relaunch — always PLAIN, never `--channels` (HIMMEL-225)
 

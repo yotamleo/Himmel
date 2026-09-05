@@ -20,13 +20,16 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HOOK_DIR/jira-nudge-on-end.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HOOK_DIR/../lib/fixture-tempdir.sh"
 
 FAILED=0
 PASSED=0
 pass() { echo "PASS $1"; PASSED=$((PASSED + 1)); }
 fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 
-ROOT_TMP="$(mktemp -d)"
+ROOT_TMP="$(fixture_mktemp_dir)" || exit 1
 trap 'rm -rf "$ROOT_TMP"' EXIT
 
 # PATH stub: a `node` that, if ever invoked, trips the wire. The hook must never
@@ -34,9 +37,18 @@ trap 'rm -rf "$ROOT_TMP"' EXIT
 STUB_DIR="$ROOT_TMP/stubs"
 mkdir -p "$STUB_DIR"
 TRIPWIRE="$ROOT_TMP/node-was-called"
+REAL_NODE="$(command -v node 2>/dev/null || true)"
+# HIMMEL-2004: the hook now legitimately runs node — it enqueues its detached
+# body on the bounded Stop queue instead of spawning its own tree. The wire this
+# stub exists to trip is the JIRA CLI (`node .../scripts/jira/dist/index.js`),
+# so only a jira invocation is recorded; every other call is handed to the real
+# interpreter, captured here before the stub shadows it on PATH.
 cat > "$STUB_DIR/node" <<EOF
 #!/usr/bin/env bash
-echo called >> "$TRIPWIRE"
+case " \$* " in
+    *scripts/jira/*) echo called >> "$TRIPWIRE"; exit 0 ;;
+esac
+[ -x "$REAL_NODE" ] && exec "$REAL_NODE" "\$@"
 exit 0
 EOF
 chmod +x "$STUB_DIR/node"
@@ -56,8 +68,8 @@ build_case() {
     # args: <first_ts> <branch> <commit_subject> <env_key:0|1> <breadcrumb:0|1> [commit_date]
     # commit_date (optional): GIT_*_DATE for the commit; defaults to "now".
     local first_ts="$1" branch="$2" subject="$3" with_key="$4" with_bc="$5" commit_date="${6:-}"
-    CASE_HOME="$(mktemp -d "$ROOT_TMP/home.XXXXXX")"
-    CASE_REPO="$(mktemp -d "$ROOT_TMP/repo.XXXXXX")"
+    CASE_HOME="$(mktemp -d "$ROOT_TMP/home.XXXXXX")" || return 1
+    CASE_REPO="$(mktemp -d "$ROOT_TMP/repo.XXXXXX")" || return 1
 
     git -C "$CASE_REPO" init -q
     # Isolate from the operator's global git config: no inherited hooksPath
@@ -133,7 +145,7 @@ assert_no_nudge() {   # <label> <stdout>
 }
 
 # 1. Happy path: gate on, commit in-window, ticket in branch, key set, no breadcrumb → NUDGE.
-build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
 OUT="$(run_hook 1 "")"
 assert_nudge "happy-path nudges" "$OUT"
 # exactly one nudge line
@@ -142,13 +154,13 @@ if [ "$(printf '%s\n' "$OUT" | grep -c '\[jira-nudge\]')" = "1" ]; then pass "ex
 if [ -f "$RELAY_LOG" ] && [ "$(grep -c . "$RELAY_LOG")" = "1" ]; then pass "relay invoked once"; else fail "relay invoked once"; fi
 
 # 2. Gate OFF (default) → no nudge, no relay.
-build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
 OUT="$(run_hook 0 "")"
 assert_no_nudge "gate-off suppresses" "$OUT"
 if [ ! -f "$RELAY_LOG" ] || [ "$(grep -c . "$RELAY_LOG" 2>/dev/null || echo 0)" = "0" ]; then pass "relay not invoked (gate off)"; else fail "relay not invoked (gate off)"; fi
 
 # 3. ticket leg active → suppress.
-build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
 OUT="$(run_hook 1 "ticket")"
 assert_no_nudge "ticket-leg suppresses" "$OUT"
 
@@ -157,32 +169,32 @@ assert_no_nudge "ticket-leg suppresses" "$OUT"
 # sentinel: `git log --since=@<far-future-epoch>` is parsed inconsistently across
 # git/platform builds, but a plain past `--since` excluding an older commit is
 # uniform everywhere.
-build_case "2015-01-01T00:00:00Z" "feat/HIMMEL-123" "did work" 1 0 "2010-01-01T00:00:00Z"
+build_case "2015-01-01T00:00:00Z" "feat/HIMMEL-123" "did work" 1 0 "2010-01-01T00:00:00Z" || exit 1
 OUT="$(run_hook 1 "")"
 assert_no_nudge "no-in-window-commit suppresses" "$OUT"
 
 # 5. No ticket reference (branch + subject lack KEY-N) → no nudge.
-build_case "$PAST" "feat/cleanup" "tidy things" 1 0
+build_case "$PAST" "feat/cleanup" "tidy things" 1 0 || exit 1
 OUT="$(run_hook 1 "")"
 assert_no_nudge "no-ticket-ref suppresses" "$OUT"
 
 # 5b. Ticket only in the commit subject (not the branch) → NUDGE.
-build_case "$PAST" "feat/cleanup" "HIMMEL-456 fix it" 1 0
+build_case "$PAST" "feat/cleanup" "HIMMEL-456 fix it" 1 0 || exit 1
 OUT="$(run_hook 1 "")"
 assert_nudge "ticket-in-commit nudges" "$OUT"
 
 # 6. Breadcrumb present (mutation happened in window) → suppress.
-build_case "$PAST" "feat/HIMMEL-123" "did work" 1 1
+build_case "$PAST" "feat/HIMMEL-123" "did work" 1 1 || exit 1
 OUT="$(run_hook 1 "")"
 assert_no_nudge "breadcrumb suppresses" "$OUT"
 
 # 7. Empty FIRST_TS (transcript has no timestamp) → no nudge.
-build_case "" "feat/HIMMEL-123" "did work" 1 0
+build_case "" "feat/HIMMEL-123" "did work" 1 0 || exit 1
 OUT="$(run_hook 1 "")"
 assert_no_nudge "empty-first-ts suppresses" "$OUT"
 
 # 8. Unresolved KEY (no .env) → no nudge.
-build_case "$PAST" "feat/HIMMEL-123" "did work" 0 0
+build_case "$PAST" "feat/HIMMEL-123" "did work" 0 0 || exit 1
 OUT="$(run_hook 1 "")"
 assert_no_nudge "unresolved-key suppresses" "$OUT"
 
@@ -197,7 +209,7 @@ assert_no_nudge "unresolved-key suppresses" "$OUT"
 #     absent (stock macOS); the detach primitive's setsid+disown branches are
 #     covered portably by scripts/lib/test-detach.sh.
 if command -v timeout >/dev/null 2>&1; then
-    build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+    build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
     CURL_MARK="$ROOT_TMP/curl-fired"
     CURL_ARGS="$ROOT_TMP/curl-args"
     rm -f "$CURL_MARK" "$CURL_ARGS"
@@ -217,10 +229,17 @@ CURLEOF
     TMPDIR_8B="$ROOT_TMP/tmpdir-8b"
     mkdir -p "$TMPDIR_8B"
     _t0=$(date +%s)
+    # HIMMEL_STOP_QUEUE_OFF: this case times the hook's own relay through a PATH
+    # stub, and since HIMMEL-2004 the production parent hands that child to the
+    # bounded Stop queue — a node worker whose spawn does not reproduce this
+    # fixture's stubbed PATH faithfully enough to time. The relay contract is
+    # what is under test here, so exercise it on the legacy detach path; the
+    # queued path is owned by scripts/hooks/stop-queue.test.mjs and
+    # scripts/lib/test-detach.sh (which assert enqueue, drain and fallback).
     printf '%s' "$CASE_PAYLOAD" | timeout 15 env -u JIRA_PROJECT_KEY \
         -u HIMMEL_INITIATIVE -u HIMMEL_INITIATIVE_OVERNIGHT -u HIMMEL_OVERNIGHT \
         HOME="$CASE_HOME" USERPROFILE="$CASE_HOME" PATH="$STUB_DIR:$PATH" \
-        TMPDIR="$TMPDIR_8B" \
+        TMPDIR="$TMPDIR_8B" HIMMEL_STOP_QUEUE_OFF=1 \
         HIMMEL_JIRA_NUDGE=1 TELEGRAM_BOT_TOKEN=t TELEGRAM_CHAT_ID=c \
         bash "$HOOK" >/dev/null 2>&1
     _rc=$?
@@ -259,7 +278,7 @@ fi
 #     production posture. Child mode must still emit the stdout nudge (direct-
 #     invocation contract), exit 0, and DELETE the payload temp file it was
 #     handed (temp hygiene — the parent never cleans up after the child).
-build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
 PF_8C="$(mktemp "$ROOT_TMP/payload.XXXXXX")"
 printf '%s' "$CASE_PAYLOAD" > "$PF_8C"
 OUT="$(env -u JIRA_PROJECT_KEY \
@@ -276,13 +295,16 @@ if [ ! -f "$PF_8C" ]; then pass "child deletes its payload temp file"; else fail
 #     block the parent for 12s and fail the fast-return assertion. Gate is OFF
 #     here on purpose: even the gate-off path must not run in the foreground.
 #     Skipped where GNU coreutils `timeout` is absent (stock macOS).
+#     HIMMEL_STOP_QUEUE_OFF for the same reason as the relay case above: with
+#     the queue on, this leaves a detached worker sleeping out the 12s delay
+#     under $CASE_HOME while the suite's EXIT trap deletes $ROOT_TMP under it.
 if command -v timeout >/dev/null 2>&1; then
-    build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+    build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
     _t0=$(date +%s)
     printf '%s' "$CASE_PAYLOAD" | timeout 15 env -u JIRA_PROJECT_KEY \
         -u HIMMEL_INITIATIVE -u HIMMEL_INITIATIVE_OVERNIGHT -u HIMMEL_OVERNIGHT \
         HOME="$CASE_HOME" USERPROFILE="$CASE_HOME" PATH="$STUB_DIR:$PATH" \
-        HIMMEL_JIRA_NUDGE=0 JIRA_NUDGE_TEST_DELAY=12 \
+        HIMMEL_JIRA_NUDGE=0 JIRA_NUDGE_TEST_DELAY=12 HIMMEL_STOP_QUEUE_OFF=1 \
         bash "$HOOK" >/dev/null 2>&1
     _rc=$?
     _elapsed=$(( $(date +%s) - _t0 ))
@@ -300,7 +322,7 @@ fi
 #     dir and JIRA_NUDGE_TEST_DELAY holds any (wrongly) spawned child asleep
 #     BEFORE it can read+delete its payload file, so a regression of the
 #     `[ -n "$PAYLOAD" ]` guard leaves the parked temp file visible here.
-build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0
+build_case "$PAST" "feat/HIMMEL-123" "did work" 1 0 || exit 1
 EMPTY_TMPDIR="$ROOT_TMP/empty-tmpdir"
 mkdir -p "$EMPTY_TMPDIR"
 printf '' | env -u JIRA_PROJECT_KEY \

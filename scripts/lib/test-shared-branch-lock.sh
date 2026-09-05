@@ -208,6 +208,86 @@ else
     fail "T10: release of absent lock rc=0 (got $rc)"
 fi
 
+# --- T11: acquire-wait reclaims a lock older than the TTL -------------------
+# The CLI contract: a holder that died without releasing must not wedge the
+# branch forever, and the reclaim must leave a loud trail.
+lockdir="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/himmel-shared-branch/feat-t11.lock"
+bash "$LIB" acquire "$REPO" "feat/t11" "dead-lane" >/dev/null 2>&1
+printf '{"pid":1,"lane":"dead-lane","branch":"feat/t11","acquired_at":"2026-01-01T00:00:00Z","acquired_epoch":%s}\n' \
+    "$(( $(date +%s) - 4000 ))" > "$lockdir/owner.json"
+out="$(bash "$LIB" acquire-wait "$REPO" "feat/t11" "new-lane" 2 300 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -F 'RECLAIMING a stale lock' &&
+   grep -q '"lane":"new-lane"' "$lockdir/owner.json"; then
+    pass "T11: acquire-wait reclaims a lock past its TTL and says so"
+else
+    fail "T11: stale reclaim (rc=$rc, out=$out, owner=$(cat "$lockdir/owner.json" 2>/dev/null))"
+fi
+
+# --- T12: reclamation never steals a lock that changed hands ---------------
+# HIMMEL-1558 CR (codex-1): between judging a lock stale and taking it away,
+# the holder can release and another writer acquire — an unconditional rm
+# would delete that LIVE lock and put two writers on the resource. This case
+# sources the library instead of driving the CLI, because the window is INSIDE
+# a single acquire-wait call and no sequence of CLI invocations can open it.
+# shellcheck source=scripts/lib/shared-branch-lock.sh
+# shellcheck disable=SC1090,SC1091
+. "$LIB"
+lockdir="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/himmel-shared-branch/feat-t12.lock"
+bash "$LIB" acquire "$REPO" "feat/t12" "live-lane" >/dev/null 2>&1
+if _sbl_reclaim "$lockdir" '{"pid":999,"lane":"someone-else","acquired_epoch":1}'; then
+    fail "T12: reclaim must REFUSE when the holder record is not the one judged stale"
+else
+    pass "T12: reclaim refuses when the lock changed hands"
+fi
+if [ -d "$lockdir" ] && grep -q '"lane":"live-lane"' "$lockdir/owner.json" 2>/dev/null; then
+    pass "T12: the live holder's lock survives the refused reclaim intact"
+else
+    fail "T12: a refused reclaim deleted or replaced the live lock ($(cat "$lockdir/owner.json" 2>/dev/null || echo MISSING))"
+fi
+
+# --- T13: release-if-owner is conditional AND has no check-then-act window --
+# HIMMEL-1558 CR round 2 (codex-3): a holder that reads the owner record and
+# then calls plain `release` can have the lock reclaimed in between and delete
+# the NEW holder's lock. release-if-owner compares the record while the
+# directory is exclusively its own, so a stranger's lock is refused (rc 3) and
+# left intact, while the true owner's release still succeeds.
+lockdir="$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/himmel-shared-branch/feat-t13.lock"
+bash "$LIB" acquire "$REPO" "feat/t13" "holder-lane" >/dev/null 2>&1
+out="$(bash "$LIB" release-if-owner "$REPO" "feat/t13" '{"pid":999,"lane":"someone-else"}' 2>&1)"
+rc=$?
+if [ "$rc" -eq 3 ] && grepq "$out" -F 'NOT releasing'; then
+    pass "T13: release-if-owner refuses (rc=3) when the record is not ours"
+else
+    fail "T13: release-if-owner should refuse rc=3 (got rc=$rc, out=$out)"
+fi
+if [ -d "$lockdir" ]; then
+    pass "T13: the other holder's lock survives the refused release"
+else
+    fail "T13: a refused release deleted the lock"
+fi
+owner="$(cat "$lockdir/owner.json" 2>/dev/null)"
+rc=0
+bash "$LIB" release-if-owner "$REPO" "feat/t13" "$owner" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$lockdir" ]; then
+    pass "T13: release-if-owner releases when the record IS ours"
+else
+    fail "T13: owner-matched release should free the lock (rc=$rc, dir=$([ -d "$lockdir" ] && echo present || echo gone))"
+fi
+# CR round 8 (codex-1): rc 0 is the caller's PROOF that its critical section
+# was mutually excluded, so an ABSENT lock must NOT report success. A run that
+# still held the lock would find the directory present; absence means it was
+# TTL-reclaimed and the reclaimer already released, i.e. the caller's work was
+# NOT excluded. rc 0 there let a starved marker writer's push proceed after
+# clobbering a newer certificate.
+rc=0
+bash "$LIB" release-if-owner "$REPO" "feat/t13" "$owner" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 3 ]; then
+    pass "T13: release-if-owner on an absent lock is rc=3, not a false proof of exclusion"
+else
+    fail "T13: release-if-owner on an absent lock should be rc=3 (got $rc)"
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

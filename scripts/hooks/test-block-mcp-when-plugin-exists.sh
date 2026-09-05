@@ -7,6 +7,19 @@
 # verb list, so adding/removing a verb in the fixture changes the
 # blocked-set with NO hook edit. That is the property under test.
 #
+# HIMMEL-2232: the underlying hook (block-backend-tier.sh) ALSO drives a
+# confluence backend that shares the Atlassian mcp_prefix, and its CLI
+# defaults to the real scripts/jira/dist/confluence.js when no CONFLUENCE_CLI
+# override is set. That path is an untracked build artifact — present in
+# the primary checkout, absent in every linked worktree. Before this suite
+# stubbed CONFLUENCE_CLI too, the five getConfluence*/createConfluence*/
+# updateConfluence*/searchConfluence* "allow" cases were GREEN-BY-VACUUM
+# almost everywhere (fail-open on the missing CLI asserted nothing) and RED
+# from the primary (the real CLI is present, so the hook correctly BLOCKS
+# them now that a plugin equivalent exists — the "allow" expectation itself
+# had gone stale). Both are fixed by stubbing CONFLUENCE_CLI the same way
+# JIRA_CLI already was, and asserting the five methods as BLOCKED.
+#
 # Usage: bash scripts/hooks/test-block-mcp-when-plugin-exists.sh
 #
 # Exit codes:
@@ -72,14 +85,32 @@ STUB_EMPTY="$TMPDIR_TEST/cli-empty.js"
 STUB_TRANS_ONLY="$TMPDIR_TEST/cli-transitions-only.js"
 make_stub "$STUB_TRANS_ONLY" get transitions
 
+# HIMMEL-2232: confluence stubs, same shape as the jira ones above, so the
+# confluence cases below never depend on the real (untracked, worktree-
+# absent) scripts/jira/dist/confluence.js. Verb strings have internal
+# spaces ("page get"); make_stub already handles that — each "$@" element
+# is one verb line, quoting keeps the space intact.
+CONFLUENCE_STUB_FULL="$TMPDIR_TEST/confluence-full.js"
+make_stub "$CONFLUENCE_STUB_FULL" "page get" "page create" "page update" \
+    search spaces comments comment
+
+# Reduced confluence verb set: 'page get' and 'search' REMOVED — proves
+# removing a verb from the introspected confluence list removes the
+# corresponding MCP method from the blocked-set with NO hook edit (the same
+# anti-vacuous property STUB_REDUCED proves for jira).
+CONFLUENCE_STUB_REDUCED="$TMPDIR_TEST/confluence-reduced.js"
+make_stub "$CONFLUENCE_STUB_REDUCED" "page create" "page update" spaces \
+    comments comment
+
 run_case() {
     local input="$1"
     local cli="${2:-$STUB_FULL}"
     local extra_env="${3:-}"
+    local confluence_cli="${4:-$CONFLUENCE_STUB_FULL}"
     if [ -n "$extra_env" ]; then
-        printf '%s' "$input" | env "JIRA_CLI=$cli" "$extra_env" bash "$HOOK" >/dev/null 2>&1
+        printf '%s' "$input" | env "JIRA_CLI=$cli" "CONFLUENCE_CLI=$confluence_cli" "$extra_env" bash "$HOOK" >/dev/null 2>&1
     else
-        printf '%s' "$input" | env "JIRA_CLI=$cli" bash "$HOOK" >/dev/null 2>&1
+        printf '%s' "$input" | env "JIRA_CLI=$cli" "CONFLUENCE_CLI=$confluence_cli" bash "$HOOK" >/dev/null 2>&1
     fi
     echo "$?"
 }
@@ -97,8 +128,10 @@ assert_rc() {
 # Assert the rendered stderr block contains the expected plugin command.
 assert_stderr_contains() {
     local label="$1" input="$2" needle="$3"
+    local jira_cli="${4:-$STUB_FULL}"
+    local confluence_cli="${5:-$CONFLUENCE_STUB_FULL}"
     local out
-    out=$(printf '%s' "$input" | env "JIRA_CLI=$STUB_FULL" bash "$HOOK" 2>&1 >/dev/null || true)
+    out=$(printf '%s' "$input" | env "JIRA_CLI=$jira_cli" "CONFLUENCE_CLI=$confluence_cli" bash "$HOOK" 2>&1 >/dev/null || true)
     case "$out" in
         *"$needle"*) echo "PASS $label" ;;
         *)
@@ -164,12 +197,50 @@ for tool in lookupJiraAccountId getJiraIssueTypeMetaWithFields \
             getJiraProjectIssueTypesMetadata getIssueLinkTypes \
             addWorklogToJiraIssue atlassianUserInfo \
             getAccessibleAtlassianResources fetch search \
-            getJiraIssueRemoteIssueLinks \
-            getConfluencePage createConfluencePage updateConfluencePage \
-            getConfluenceSpaces searchConfluenceUsingCql; do
+            getJiraIssueRemoteIssueLinks; do
     rc=$(run_case "{\"tool_name\":\"mcp__plugin_atlassian_atlassian__${tool}\",\"tool_input\":{}}")
     assert_rc "allow $tool" 0 "$rc"
 done
+
+# --- Confluence: blocked tools (mapped verb present in FULL introspected
+# confluence set) [HIMMEL-2232]. These five WERE in the "allow" loop above;
+# the confluence plugin has an equivalent for each, so the hook correctly
+# blocking them is the current, correct "prefer plugin over MCP" routing —
+# the old "allow" expectation was stale. Driven via CONFLUENCE_STUB_FULL
+# (run_case's default), so the verdict never depends on whether the real
+# scripts/jira/dist/confluence.js build artifact happens to exist. All seven
+# mapped methods are asserted so a regression in any verb-to-method binding
+# fails the suite. ---
+for tool in getConfluencePage createConfluencePage updateConfluencePage \
+            getConfluenceSpaces searchConfluenceUsingCql \
+            getConfluencePageFooterComments createConfluenceFooterComment; do
+    rc=$(run_case "{\"tool_name\":\"mcp__plugin_atlassian_atlassian__${tool}\",\"tool_input\":{}}")
+    assert_rc "block $tool (confluence verb present)" 2 "$rc"
+done
+
+# --- Confluence autogeneration property: REMOVE verbs from the confluence
+# fixture, blocked-set shrinks with NO hook edit. With 'page get' and
+# 'search' gone, getConfluencePage and searchConfluenceUsingCql must now be
+# ALLOWED; still-present verbs stay blocked. This is the anti-vacuous guard:
+# without CONFLUENCE_CLI actually driving the confluence introspection, a
+# regression to fail-open here would still read green. ---
+rc=$(run_case '{"tool_name":"mcp__plugin_atlassian_atlassian__getConfluencePage","tool_input":{}}' "$STUB_FULL" "" "$CONFLUENCE_STUB_REDUCED")
+assert_rc "allow getConfluencePage when 'page get' verb absent" 0 "$rc"
+rc=$(run_case '{"tool_name":"mcp__plugin_atlassian_atlassian__searchConfluenceUsingCql","tool_input":{}}' "$STUB_FULL" "" "$CONFLUENCE_STUB_REDUCED")
+assert_rc "allow searchConfluenceUsingCql when 'search' verb absent" 0 "$rc"
+rc=$(run_case '{"tool_name":"mcp__plugin_atlassian_atlassian__createConfluencePage","tool_input":{}}' "$STUB_FULL" "" "$CONFLUENCE_STUB_REDUCED")
+assert_rc "block createConfluencePage when 'page create' verb still present" 2 "$rc"
+rc=$(run_case '{"tool_name":"mcp__plugin_atlassian_atlassian__getConfluenceSpaces","tool_input":{}}' "$STUB_FULL" "" "$CONFLUENCE_STUB_REDUCED")
+assert_rc "block getConfluenceSpaces when 'spaces' verb still present" 2 "$rc"
+
+# --- Confluence stderr quality: each refusal must name the confluence CLI
+# invocation, mirroring the jira assert_stderr_contains cases above. ---
+assert_stderr_contains "stderr names confluence 'page get' verb" \
+    '{"tool_name":"mcp__plugin_atlassian_atlassian__getConfluencePage","tool_input":{}}' \
+    'confluence.js page get' "$STUB_FULL" "$CONFLUENCE_STUB_FULL"
+assert_stderr_contains "stderr names confluence 'search' verb" \
+    '{"tool_name":"mcp__plugin_atlassian_atlassian__searchConfluenceUsingCql","tool_input":{}}' \
+    'confluence.js search' "$STUB_FULL" "$CONFLUENCE_STUB_FULL"
 
 # --- Fail OPEN on introspection failure ---
 # CLI errors (non-zero exit) → must NOT block a mapped method.

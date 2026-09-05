@@ -1,5 +1,5 @@
 ---
-description: Session-end consolidation sweep across handover/* branches (HIMMEL-143).
+description: Session-end consolidation sweep across handover/* branches.
 argument-hint: [--dry-run] [--cleanup] [--no-pr-open]
 ---
 

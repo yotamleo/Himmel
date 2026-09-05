@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "himmel://telegram/access.schema.json",
+  "title": "Telegram bridge access.json (HIMMEL-2176 Task 6)",
+  "description": "Formal shape check for the telegram bridge's access.json, mirroring scripts/telegram/gate.ts's Access/GroupPolicy types exactly. Deliberately permissive at every object boundary (additionalProperties: true at the top level and per-group) -- known fields are type-checked; an unrecognized field (e.g. the fork's own 'pending' key, see gate.ts's module comment) is left alone rather than rejected. probes.js's probeTelegramAccess (scripts/himmelctl/lib/probes.js) consumes this via a small hand-rolled validator (this repo is zero-dep by convention); a future gate-layer consumer can import this same file directly.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "dmPolicy": { "type": "string" },
+    "allowFrom": { "type": "array", "items": { "type": "string" } },
+    "defaultVault": { "type": "string" },
+    "groups": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "requireMention": { "type": "boolean" },
+          "allowFrom": { "type": "array", "items": { "type": "string" } },
+          "vault": { "type": "string" },
+          "cwd": { "type": "string" },
+          "trustAnonymousAdmins": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

@@ -50,10 +50,12 @@
 # (HIMMEL-891) -- without carrying a fork. A pin bump is a reviewed change to this
 # line, paired with `synced_base` in scripts/upstreams.json so the nightly
 # fork-drift guard stays truthful.
-_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.36}"; }
+_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.53}"; }
 _graphify_pypi_name() { printf '%s\n' "graphifyy"; }
-# The `uv tool install` package spec: `graphifyy==<version>`.
-_graphify_pinned_source() { printf '%s==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
+# The default `uv tool install` package spec includes the native Kimi backend's
+# runtime dependencies (openai + tiktoken). Recorded non-empty extras are still
+# preserved verbatim by graphify_update below.
+_graphify_pinned_source() { printf '%s[kimi]==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
 _graphify_bin_name() { printf '%s\n' "graphify"; }
 
 # Prints the manual install recipe (best-effort documentation text embedded
@@ -170,6 +172,11 @@ graphify_install() {
             echo "  NOTE: could not validate the adopted install's mcp import (unrecognized install layout) -- if graphify-mcp crashes at startup, reinstall: $(graphify_install_hint)"
             ;;
         esac
+        # The native-Kimi dep probe runs on the FRESH-install path below (:211);
+        # the much more common ADOPT path (scripts/adopt.sh -- existing resolvable
+        # install) must surface the same warning, not skip it via this early
+        # return (CR r5, finding 7).
+        _graphify_kimi_import_warn
         graphify_wsl_share_store
         return 0
       fi
@@ -206,6 +213,7 @@ graphify_install() {
         echo "  NOTE: could not validate the mcp import (unrecognized install layout) -- if graphify-mcp crashes at startup, reinstall: $(graphify_install_hint)"
         ;;
     esac
+    _graphify_kimi_import_warn
     echo "  graphify installed and verified (source=himmel-pin)."
     graphify_wsl_share_store
     return 0
@@ -249,6 +257,51 @@ _graphify_mcp_import_ok() {
   fi
   [ -n "$py" ] || return 2
   "$py" -c 'import mcp' >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# Best-effort native-Kimi dependency probe (HIMMEL-1748). uv's graphify shim
+# lives in the tool BIN dir, but the interpreter that owns its imports lives in
+# the graphifyy tool venv. Resolve that real venv through `uv tool dir` across
+# Windows and POSIX layouts. An unrecognized layout silently skips validation
+# (WARN-not-fail contract); a resolved interpreter returns the import's truth.
+#
+# HIMMEL-1787 CR follow-up (PR #1680 round 4, codex-adv, previously
+# inconclusive): the interpreter this spawns lives UNDER the same tool-dir
+# path _graphify_mcp_holders() matches processes against (pat_dir, above),
+# so this subprocess's own command line satisfies that same needle while it
+# runs. It cannot race ITSELF within one graphify_update() call (this is a
+# blocking, sequential invocation that exits well before any later
+# _graphify_mcp_holders() call in the same run), but a SEPARATE, concurrent
+# himmel-update invocation's holder probe landing in the narrow window while
+# this short-lived `import` subprocess is alive would count it as a holder.
+# Accepted residual, not fixed here: the only possible effect is one extra
+# safe SKIP (the exact fail-closed outcome HIMMEL-1274 wants on ANY
+# uncertainty) — never a false "clear", never corruption — and it self-heals
+# on the very next run once the subprocess (import completes in well under a
+# second) is gone. Same accepted-residual class as the stale-but-alive
+# promote-lock window documented elsewhere in this codebase.
+_graphify_kimi_deps_ok() {
+  local tool_venv py="" c
+  tool_venv="$(_graphify_uv_tool_dir)/$(_graphify_pypi_name)"
+  for c in "$tool_venv/Scripts/python.exe" "$tool_venv/Scripts/python" "$tool_venv/bin/python"; do
+    [ -f "$c" ] && { py="$c"; break; }
+  done
+  [ -n "$py" ] || return 0
+  "$py" -c 'import openai, tiktoken' >/dev/null 2>&1
+}
+
+_graphify_kimi_import_warn() {
+  if ! _graphify_kimi_deps_ok; then
+    # NEVER print a bare copy-paste `--force` reinstall (CR codex-adv r3):
+    # a live graphify-mcp holds the tool dir on Windows and that command then
+    # removes the entry points before failing the replace, leaving graphify
+    # BROKEN (HIMMEL-1274 — the exact hazard graphify_update's holder
+    # preflight exists for). Mirror that skip message's guidance instead.
+    echo "  WARNING: graphify's native Kimi backend dependencies (openai, tiktoken) are not importable -- '--backend kimi' will fail at runtime." >&2
+    echo "  Repair: close the Claude Code sessions holding graphify-mcp (each live session spawns one), then run:" >&2
+    echo "      uv tool install --force --with mcp '$(_graphify_pinned_source)'" >&2
+  fi
   return 0
 }
 
@@ -638,19 +691,239 @@ _graphify_binary_ok() {
   graphify --version >/dev/null 2>&1
 }
 
+# _graphify_skill_refresh (HIMMEL-1750) -- keep the Claude skill in step with
+# the installed package by copying the skill files DIRECTLY from the package,
+# never via `graphify install`. Five CR rounds established that the broad
+# installer is not a safe primitive to wrap: it writes the DEFAULT profile's
+# CLAUDE.md even under CLAUDE_CONFIG_DIR, and it rewrites .graphify_version
+# for every OTHER installed platform (including nested roots like
+# ~/.config/opencode and LOCALAPPDATA/hermes, and it creates markers where
+# none existed) without refreshing their content — falsifying exactly the
+# staleness warnings this helper exists to serve (upstream issue drafted via
+# this ticket). The direct copy has NO side effects outside the target skill
+# dir; it works for ROUTED profiles (writes ${CLAUDE_CONFIG_DIR:-$HOME/.claude});
+# and it derives version, package path, and content from the SAME venv
+# interpreter, so the validated version and the copied files cannot come from
+# different installs (a PATH-shadowing pipx/brew graphify never gets involved).
+# Copy fidelity is proven: the real installer's claude output is byte-identical
+# to pkg/skill.md + pkg/skills/claude/references (verified 0.9.40, 2026-08-12).
+# The CLAUDE.md always-on registration is deliberately NOT touched — skills
+# are directory-discovered; the registration is a one-time nudge the full
+# installer performs on fresh setups. Best-effort by contract (WARN-not-fail);
+# _graphify_pin_skip_track / _graphify_pin_skip_reset (HIMMEL-1601)
+#
+# The reinstall-guard SKIP (holders>0, or an unprobeable platform without
+# GRAPHIFY_UNPROBED_OK) is the ROUTINE outcome on any workstation with a live
+# Claude Code session -- every session spawns a graphify-mcp holding the uv
+# tool dir, so "no holders" is a precondition that is almost never true while
+# himmel-update itself typically runs FROM inside such a session. Left as a
+# single routine-looking advisory line, a skip that can never clear itself is
+# indistinguishable in the logs from a step that is always up to date (the
+# same silent-no-op class as HIMMEL-1154's cadence-run finding).
+#
+# Minimum acceptable fix (per the ticket, not the deeper reap/stage-swap/
+# scheduled-slot options): escalate the skip so it cannot be mistaken for
+# success, and make "skipped N runs in a row" visible WITHOUT reading logs --
+# a persisted counter (survives across separate himmel-update invocations,
+# co-located with the skill marker so it needs no new top-level state dir)
+# that increments on every skip and resets on any non-skip outcome, printed
+# loudly on every skip. This does not touch the `uv tool install --force`
+# path at all -- HIMMEL-1274's fail-closed refusal is untouched.
+_graphify_pin_skip_marker() {
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/graphify/.graphify_pin_skip_count"
+}
+
+_graphify_pin_skip_track() {  # $1 = short reason (e.g. "N holders" / "unprobeable")
+  local marker n write_rc=0
+  marker="$(_graphify_pin_skip_marker)"
+  mkdir -p "$(dirname "$marker")" 2>/dev/null || true
+  # ponytail: unlocked read-modify-write, no lock file. himmel-update is a
+  # lean-invoke operator/scheduler tool, not a multi-writer daemon -- two
+  # concurrent invocations racing this exact line is rare, and the cost of
+  # losing a race is a slightly-off ADVISORY count (never a wrong SKIP/
+  # non-skip decision, which is decided elsewhere). Add a mkdir-based lock
+  # (same pattern as refresh-graph-map.sh's own locks) if this ever needs
+  # to be exact.
+  n=$(cat "$marker" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  # 10# forces base 10 (CR follow-up, codex-2 @ paid panel): a digit-only
+  # value like "08" passes the case-pattern validation above (all chars are
+  # 0-9) but bash arithmetic reads a leading zero as an octal prefix, and
+  # "08" is not valid octal -- `$((n + 1))` would itself error. Same fix
+  # class critic-panel.sh already applies to its own timeout env var.
+  n=$((10#$n + 1))
+  # Write via mktemp + mv, NOT a predictable "$marker.tmp.$$" name (CR
+  # follow-up, codex-1 @ paid panel, round 2): a plain redirect FOLLOWS a
+  # symlink, and a $$-based name is guessable/racy -- another local process
+  # could pre-create a symlink AT that exact predictable path before this
+  # write runs, and the write would still follow it and truncate an
+  # arbitrary file, defeating the mv-based protection below entirely.
+  # mktemp's O_EXCL creation is itself symlink-safe (fails rather than
+  # following a pre-existing entry, planted or not), and its name is
+  # unpredictable. `mv` then replaces the destination directory entry
+  # itself (never dereferences an existing symlink there), closing the
+  # ORIGINAL $marker-write concern regardless of what currently occupies it.
+  local marker_tmp
+  marker_tmp="$(mktemp "$marker.XXXXXX" 2>/dev/null)" || marker_tmp=""
+  if [ -n "$marker_tmp" ] && printf '%s\n' "$n" > "$marker_tmp" 2>/dev/null && mv -f "$marker_tmp" "$marker" 2>/dev/null; then
+    :
+  else
+    write_rc=1
+    if [ -n "$marker_tmp" ]; then rm -f "$marker_tmp" 2>/dev/null || true; fi
+  fi
+  # ponytail: a write failure (read-only/unavailable config dir) still
+  # reports the in-memory $n below rather than silently reporting "1" --
+  # the count is best-effort advisory, not a correctness signal, so a
+  # transient write failure degrading to "the number I would have written"
+  # is preferable to hiding the SKIP escalation entirely. Flag it once here.
+  [ "$write_rc" -eq 0 ] || echo "  (note: could not persist the skip counter to $marker -- next run may not know this happened)" >&2
+  {
+    echo "  STANDING OPERATOR ACTION: graphify pin sync has SKIPPED $n consecutive himmel-update run(s) in a row ($1)."
+    echo "        This cannot clear itself while every himmel-update runs from inside a live Claude Code session --"
+    echo "        each one spawns a graphify-mcp that holds the guard closed. Close every session and install by"
+    echo "        hand (command above), or run himmel-update from a slot with none live (e.g. a scheduled cadence)."
+  } >&2
+}
+
+_graphify_pin_skip_reset() {
+  rm -f "$(_graphify_pin_skip_marker)" 2>/dev/null || true
+}
+
+# the common already-current case costs one file read after the version probe.
+_graphify_skill_refresh() {
+  local root marker skill_ver py pkg inst dst stage backup tool_dir skill_src refs_src _cand
+  local had_skill=0 had_refs=0
+  root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+  dst="$root/skills/graphify"
+  marker="$dst/.graphify_version"
+  tool_dir="$(_graphify_uv_tool_dir)"
+  py=""
+  for _cand in "$tool_dir/graphifyy/Scripts/python.exe" \
+               "$tool_dir/graphifyy/Scripts/python" \
+               "$tool_dir/graphifyy/bin/python"; do
+    [ -x "$_cand" ] && { py="$_cand"; break; }
+  done
+  # No uv-managed venv -> nothing to refresh (foreign installs stay untouched,
+  # matching the file-wide adopt-don't-clobber contract).
+  [ -n "$py" ] || return 0
+  pkg="$("$py" -c 'import graphify, os; print(os.path.dirname(os.path.abspath(graphify.__file__)))' 2>/dev/null)" || pkg=""
+  if [ -z "$pkg" ]; then
+    echo "  WARNING: graphify skill refresh SKIPPED -- the uv-managed Python cannot resolve the installed graphify package path." >&2
+    return 0
+  fi
+  inst="$("$py" -c 'from importlib.metadata import version; print(version("graphifyy"))' 2>/dev/null)" || inst=""
+  inst="${inst%$'\r'}"
+  if [ -z "$inst" ]; then
+    echo "  WARNING: graphify skill refresh SKIPPED -- the uv-managed Python cannot resolve graphifyy package metadata." >&2
+    return 0
+  fi
+  skill_ver="$(cat "$marker" 2>/dev/null || true)"
+  [ "$skill_ver" = "$inst" ] && [ -f "$dst/SKILL.md" ] && [ -d "$dst/references" ] && return 0
+  case "$(uname -s 2>/dev/null || echo)" in
+    MINGW*|MSYS*|CYGWIN*)
+      skill_src="$pkg/skill-windows.md"
+      refs_src="$pkg/skills/windows/references"
+      ;;
+    *)
+      skill_src="$pkg/skill.md"
+      refs_src="$pkg/skills/claude/references"
+      ;;
+  esac
+  if [ ! -f "$skill_src" ] || [ ! -d "$refs_src" ]; then
+    echo "  WARNING: graphify skill refresh SKIPPED -- packaged skill layout not found under the installed package (upstream layout change?); skill stays at ${skill_ver:-absent} (package $inst). Run by hand: graphify install --platform claude" >&2
+    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+    return 0
+  fi
+  if ! mkdir -p "$dst"; then
+    echo "  WARNING: graphify skill refresh failed (cannot create $dst); skill stays at ${skill_ver:-absent} (package $inst)." >&2
+    return 0
+  fi
+  # Clear staging names used by older himmel releases, then fail closed if
+  # they survived or SKILL.md is a directory (mv would nest a staged file).
+  rm -rf "$dst/references.tmp" "$dst/SKILL.md.tmp" 2>/dev/null
+  if [ -e "$dst/references.tmp" ] || [ -L "$dst/references.tmp" ] \
+     || [ -e "$dst/SKILL.md.tmp" ] || [ -L "$dst/SKILL.md.tmp" ] \
+     || [ -d "$dst/SKILL.md" ]; then
+    rm -rf "$dst/references.tmp" "$dst/SKILL.md.tmp" 2>/dev/null
+    echo "  WARNING: graphify skill refresh SKIPPED -- unsafe staging target under $dst could not be cleared; skill stays at ${skill_ver:-absent} (package $inst). Close sessions holding it and re-run." >&2
+    return 0
+  fi
+  stage="$(mktemp -d "$dst.refresh.XXXXXX" 2>/dev/null)" || stage=""
+  backup="$(mktemp -d "$dst.backup.XXXXXX" 2>/dev/null)" || backup=""
+  if [ -z "$stage" ] || [ -z "$backup" ]; then
+    [ -n "$stage" ] && rm -rf "$stage" 2>/dev/null
+    [ -n "$backup" ] && rm -rf "$backup" 2>/dev/null
+    echo "  WARNING: graphify skill refresh failed (cannot create unique staging paths); skill stays at ${skill_ver:-absent} (package $inst)." >&2
+    return 0
+  fi
+  # Stage both artifacts before touching live content. Unique sibling paths keep
+  # concurrent refreshes from deleting or overwriting each other's copies.
+  if ! cp "$skill_src" "$stage/SKILL.md" 2>/dev/null \
+     || ! cp -R "$refs_src" "$stage/references" 2>/dev/null; then
+    rm -rf "$stage" "$backup" 2>/dev/null
+    echo "  WARNING: graphify skill refresh failed (copy from the installed package); skill stays at ${skill_ver:-absent} (package $inst). Run by hand: graphify install --platform claude" >&2
+    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+    return 0
+  fi
+  # Move the old pair aside before landing either replacement. If any move or
+  # marker write fails, remove the new pair and restore the old pair so a failed
+  # refresh cannot leave mixed-version content behind.
+  if [ -e "$dst/SKILL.md" ] || [ -L "$dst/SKILL.md" ]; then
+    if ! mv "$dst/SKILL.md" "$backup/SKILL.md"; then
+      rm -rf "$stage" "$backup" 2>/dev/null
+      echo "  WARNING: graphify skill refresh partially failed during the swap; marker NOT advanced; run by hand: graphify install --platform claude" >&2
+      echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+      return 0
+    fi
+    had_skill=1
+  fi
+  if [ -e "$dst/references" ] || [ -L "$dst/references" ]; then
+    if ! mv "$dst/references" "$backup/references"; then
+      [ "$had_skill" -eq 1 ] && mv "$backup/SKILL.md" "$dst/SKILL.md" 2>/dev/null
+      rm -rf "$stage" "$backup" 2>/dev/null
+      echo "  WARNING: graphify skill refresh SKIPPED -- the existing references/ could not be moved (a file may be locked); skill stays at ${skill_ver:-absent} (package $inst). Close sessions holding it and re-run." >&2
+      return 0
+    fi
+    had_refs=1
+  fi
+  if mv "$stage/references" "$dst/references" \
+     && mv "$stage/SKILL.md" "$dst/SKILL.md" \
+     && printf '%s' "$inst" > "$marker"; then
+    rm -rf "$stage" "$backup" 2>/dev/null
+    echo "  graphify skill refreshed to $inst (was ${skill_ver:-absent}) by direct copy from the package (no installer side effects)."
+  else
+    rm -rf "$dst/references" "$dst/SKILL.md" 2>/dev/null
+    [ "$had_refs" -eq 1 ] && mv "$backup/references" "$dst/references" 2>/dev/null
+    [ "$had_skill" -eq 1 ] && mv "$backup/SKILL.md" "$dst/SKILL.md" 2>/dev/null
+    rm -rf "$stage" "$backup" 2>/dev/null
+    echo "  WARNING: graphify skill refresh partially failed during the swap; marker NOT advanced; run by hand: graphify install --platform claude" >&2
+    echo "  Then re-price the hooks: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+  fi
+  return 0
+}
+
 # Idempotent + WARN-not-fail by contract (a best-effort himmel-update step).
 graphify_update() {
   local src installed pin extras spec holders
   src="$(graphify_source)" || true
   if [ -z "$src" ]; then
-    graphify_install
-    return $?
+    # Fresh install: graphify_install installs only the PACKAGE — without the
+    # refresh call the first `himmelctl update` on a new machine would leave
+    # the Claude skill absent until a SECOND update reaches the already-at-pin
+    # path above (CR codex-adv, HIMMEL-1750). Refresh only on success; the
+    # install's own rc is preserved either way.
+    local install_rc=0
+    graphify_install || install_rc=$?
+    [ "$install_rc" -eq 0 ] && _graphify_skill_refresh
+    return "$install_rc"
   fi
   pin="$(_graphify_version)"
   installed="$(_graphify_installed_version)"
   if [ -n "$installed" ] && [ "$installed" = "$pin" ]; then
     echo "  graphify already at pinned version $pin -- up to date."
+    _graphify_kimi_import_warn
+    _graphify_skill_refresh
     graphify_wsl_share_store
+    _graphify_pin_skip_reset
     return 0
   fi
   if ! _graphify_uv_has_package; then
@@ -669,11 +942,22 @@ graphify_update() {
   # from ahead/unknown (leave). Extras are still preserved on the upgrade path.
   if ! _graphify_version_lt "$installed" "$pin"; then
     echo "  graphify installed v${installed:-?} is not behind the pin $pin (equal / ahead / unparseable) -- leaving as-is (himmel-update never downgrades or clobbers a non-behind install)."
+    # The PACKAGE is left alone, but the SKILL must still track the installed
+    # version (CR codex-adv, HIMMEL-1750): the motivating case — operator
+    # manually upgraded ahead of the pin — lands exactly here, and skipping the
+    # refresh kept the stale skill emitting per-run version warnings. The
+    # refresh keys on the INSTALLED version, so it never downgrades anything.
+    _graphify_skill_refresh
     graphify_wsl_share_store
+    _graphify_pin_skip_reset
     return 0
   fi
   extras="$(_graphify_installed_extras)"
-  spec="$(_graphify_pypi_name)${extras}==${pin}"
+  if [ -n "$extras" ]; then
+    spec="$(_graphify_pypi_name)${extras}==${pin}"
+  else
+    spec="$(_graphify_pypi_name)[kimi]==${pin}"
+  fi
   # Every place this spec is PRINTED as a copy-paste repair command single-quotes
   # it (public-PR CR). With extras recorded it reads `graphifyy[all]==0.9.31`, and
   # zsh — the macOS default — globs the brackets: pasting the unquoted form dies
@@ -713,6 +997,18 @@ graphify_update() {
       # a WSL operator would have silently lost the store link on most updates
       # (HIMMEL-1289, public-PR CR outside-diff finding).
       graphify_wsl_share_store
+      # HIMMEL-1601: the PACKAGE reinstall is refused (correctly -- see
+      # HIMMEL-1274 above), but the SKILL is a completely separate,
+      # non-locked target (~/.claude/skills/graphify, refreshed FROM the
+      # currently-installed package, never touches the held uv tool dir) --
+      # refresh it here too, closing the skill-vs-package drift this skip
+      # used to leave open (the skill only advanced on the OTHER, non-skip
+      # return paths above). Then escalate: this skip is routine on a busy
+      # workstation and can persist indefinitely (HIMMEL-1601) -- count and
+      # loudly report consecutive occurrences instead of one advisory line
+      # that looks identical whether this is the 1st skip or the 400th.
+      _graphify_skill_refresh
+      _graphify_pin_skip_track "$holders holders"
       # rc 0: nothing failed and nothing is broken — this is a deliberate,
       # healthy skip. A nonzero here would print himmel-update's generic
       # "failed (non-fatal)" warning on top, which is the misleading wording
@@ -766,6 +1062,12 @@ graphify_update() {
       # Same as the holders>0 skip: a working uv-managed install is left in
       # place and we return 0, so the WSL store link must be shared here too.
       graphify_wsl_share_store
+      # HIMMEL-1601: same two follow-ups as the holders>0 skip above -- the
+      # skill is a separate, non-locked target so refresh it regardless of
+      # whether the package reinstall could run, and escalate the skip with
+      # a persisted consecutive-run counter instead of one advisory line.
+      _graphify_skill_refresh
+      _graphify_pin_skip_track "unprobeable platform"
       # rc 0 for the same reason as that skip — nothing failed and nothing is
       # broken. A nonzero would draw himmel-update's generic "failed
       # (non-fatal)" warning on top of a deliberate, healthy decline.
@@ -784,13 +1086,24 @@ graphify_update() {
       } >&2
       return 1
     fi
+    _graphify_kimi_import_warn
     echo "  graphify updated to $pin (source=himmel-pin)."
+    _graphify_skill_refresh
     graphify_wsl_share_store
+    _graphify_pin_skip_reset
     return 0
   fi
 
-  # The install FAILED. Whether that was harmless depends entirely on whether
-  # the binary survived — report the state instead of a blanket "non-fatal",
+  # The install FAILED. This is a DIFFERENT event class than a SKIP (a
+  # skip means "refused to even attempt"; this means "attempted, and uv
+  # itself failed") -- reset the consecutive-skip streak regardless of this
+  # outcome (CR follow-up, codex-1): the specific "holders/unprobeable"
+  # obstacle the streak tracks was NOT what blocked this run, so counting a
+  # later skip as a continuation of the same streak across an intervening
+  # attempt would overstate it.
+  _graphify_pin_skip_reset
+  # Whether that failure was harmless depends entirely on whether the
+  # binary survived — report the state instead of a blanket "non-fatal",
   # which was actively wrong in the reported case.
   if _graphify_binary_ok; then
     echo "  WARNING: graphify update to $pin failed; the existing install still RUNS (v${installed:-?}) — pin not advanced." >&2
@@ -806,6 +1119,589 @@ graphify_update() {
   return 1
 }
 
+# graphify_price_hooks [<project-dir>] -- keep the graphify PreToolUse hook-guard
+# PRICED in this repo's harness configs (HIMMEL-2480). Idempotent; safe to re-run.
+#
+# WHY. Upstream `graphify install` writes two Claude PreToolUse entries
+# (install.py::_claude_pretooluse_hooks -- matchers "Bash|Grep" and "Read|Glob",
+# NO timeout, absolute exe path) plus one Codex entry (matcher "Bash",
+# `graphify hook-check`), and exposes no matcher/timeout knob (only
+# GRAPHIFY_HOOK_STRICT). Nothing in himmel runs that installer -- graphify_install
+# above is a plain `uv tool install`, and _graphify_skill_refresh copies the skill
+# DIRECTLY out of the installed package precisely to avoid it (HIMMEL-1750) -- but
+# the operator IS told to run it by hand in several places (the skill-refresh
+# WARNs above, docs/token-economy.md, scripts/ci/check-claude-md-budget.sh), and
+# every such run re-adds the stock entries. This is the re-apply step that follows.
+#
+# Measured cost of the stock entries (graphify 0.9.53, 2026-09-03): ~170 ms idle
+# per call, fired on Bash, Grep, Read AND Glob -- the four highest-frequency
+# tools. himmel already spawns ~25 processes per Bash call, so on Bash the guard
+# is noise; on Read/Glob it is the ONLY extra spawn, and with 7 concurrent
+# sessions Windows process creation is the bottleneck that trips the 15 s hook
+# budget (HIMMEL-2480). The nudge is a feature, so it is PRICED, not dropped:
+#   - Claude: ONE entry, matcher "Grep|Glob", timeout 3, PATH-resolved command
+#     that exits 0 when graphify is absent -- advisory by construction, so its
+#     absence can never block a tool call.
+#   - Codex: DROPPED. `graphify hook-check` is an intentional upstream NO-OP
+#     (cli.py: bare `sys.exit(0)`, because Codex Desktop rejects
+#     hookSpecificOutput.additionalContext on PreToolUse) -- it spawned a python
+#     per Codex Bash call to do literally nothing.
+#
+# Best-effort by contract: a missing file or unparseable JSON WARNs and returns
+# 0 -- this never aborts setup / adopt / himmel-update.
+#
+# node resolution (HIMMEL-2480 follow-up): a bare `command -v node` check here
+# previously no-op'd this entire function -- with a soft NOTE, not a WARNING --
+# on exactly the shell class it exists to serve (a pwsh-launched Git Bash,
+# where node is genuinely installed but absent from THAT shell's minimal
+# PATH). Route through resolve-node.sh's `resolve_node` instead (same runtime
+# resolver run-node.sh uses for hook commands: nvm-windows, PATH, and other
+# well-known install locations, in that order -- see its own WHY). When no
+# node resolves at all, fall back to python3: already a hard dep of two other
+# helpers in this file (_graphify_installed_extras, _graphify_version_lt), so
+# it is reuse, not a third implementation of the same rewrite (jq would be
+# that). The two engines are kept behaviorally identical -- same PRICED entry,
+# same isGuard predicate, same first-match-in-place replacement, same 2-space
+# indent + trailing newline, same verdict strings, and the python engine's
+# json.dumps is called with ensure_ascii=False so it writes non-ASCII raw
+# like JS JSON.stringify instead of \uXXXX-escaping it -- and proven byte-
+# identical by scripts/lib/test-graphify-bin.sh's node-vs-python identity
+# assertions (stock-shape fixture plus a non-ASCII value, both engines'
+# output diffed with cmp -s) and its forced-python idempotence check. If
+# NEITHER resolves, this is a loud WARNING (not the old soft NOTE), so an
+# operator can never mistake a skip for a completed reprice.
+# _graphify_price_hooks_warn_disagreement <engine_stdout> <settings_seen>
+# <hooks_seen> <root> <native_root> -- bash-side guard for the path-
+# translation silent-no-op class (HIMMEL-2480 follow-up; see the banner
+# comment above graphify_price_hooks). <settings_seen>/<hooks_seen> are
+# bash's OWN `[ -f ]` view of the two files, recorded BEFORE the engine ran --
+# bash's path view is the one the operator actually typed, so it is the
+# authority on whether a file exists. If bash saw a file but the engine's own
+# verdict line for that same file says "absent", that is a path-translation
+# (or permission) failure, NOT an absent file: WARN loudly so the operator
+# never mistakes it for a quiet, correct "nothing to price". <engine_stdout>
+# is always exactly two lines, settings then codex (graphify_price_hooks
+# calls reprice() in that fixed order), so line 1 / line 2 map 1:1 to the two
+# seen-flags.
+_graphify_price_hooks_warn_disagreement() {
+  local out="$1" settings_seen="$2" hooks_seen="$3" root="$4" native_root="$5"
+  local line1 line2
+  line1="$(sed -n '1p' <<< "$out")"
+  line2="$(sed -n '2p' <<< "$out")"
+  if [ "$settings_seen" = 1 ] && grep -qE 'absent \(nothing to price\)' <<< "$line1"; then
+    echo "  WARNING: bash can see $root/.claude/settings.json but the pricing engine (given root=$native_root) reported it absent -- this looks like a path-translation failure, not a missing file." >&2
+    echo "  Usual cause: MSYS_NO_PATHCONV=1 or MSYS2_ARG_CONV_EXCL set in this shell -- unset them and re-run, or verify the file directly." >&2
+  fi
+  if [ "$hooks_seen" = 1 ] && grep -qE 'absent \(nothing to price\)' <<< "$line2"; then
+    echo "  WARNING: bash can see $root/.codex/hooks.json but the pricing engine (given root=$native_root) reported it absent -- this looks like a path-translation failure, not a missing file." >&2
+    echo "  Usual cause: MSYS_NO_PATHCONV=1 or MSYS2_ARG_CONV_EXCL set in this shell -- unset them and re-run, or verify the file directly." >&2
+  fi
+}
+
+graphify_price_hooks() {
+  local root="${1:-}"
+  if [ -z "$root" ]; then
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || return 0
+  fi
+
+  # Defensive source: a caller (setup.sh/adopt.sh) may already have sourced
+  # resolve-node.sh, so resolve_node can already be defined -- re-sourcing is
+  # harmless. A missing resolve-node.sh here must not break this best-effort
+  # function; it just falls through to the python3 fallback below.
+  if ! command -v resolve_node >/dev/null 2>&1; then
+    local _pgh_dir=""
+    _pgh_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || _pgh_dir=""
+    if [ -n "$_pgh_dir" ] && [ -f "$_pgh_dir/resolve-node.sh" ]; then
+      # shellcheck source=scripts/lib/resolve-node.sh
+      # shellcheck disable=SC1091
+      . "$_pgh_dir/resolve-node.sh"
+    fi
+  fi
+  local _node=""
+  if command -v resolve_node >/dev/null 2>&1; then
+    _node="$(resolve_node)" || _node=""
+  fi
+
+  # HIMMEL-2480 follow-up (path-translation silent no-op). $root is bash's
+  # own POSIX/MSYS view of the path -- handed straight to a NATIVE Windows
+  # node/python. MSYS normally rewrites a POSIX argv into Windows form on the
+  # way into a real .exe, but that rewrite is OFF under MSYS_NO_PATHCONV=1 /
+  # MSYS2_ARG_CONV_EXCL='*' (both real himmel scripts and operator shells set
+  # for git operations) -- the engine then looks for the untranslated path,
+  # finds nothing, and reports "absent" at rc 0: a silent no-op. Translate
+  # explicitly instead of relying on that implicit rewrite: cygpath exists
+  # only on MSYS/Cygwin, where the translation is needed; elsewhere (Linux/
+  # macOS) $root is already native and cygpath is absent, so this is a no-op.
+  local _pgh_native_root="$root"
+  if command -v cygpath >/dev/null 2>&1; then
+    _pgh_native_root="$(cygpath -w "$root" 2>/dev/null)" || _pgh_native_root="$root"
+  fi
+
+  # BASH -- not the engine -- is the authority on whether these files exist:
+  # see _graphify_price_hooks_warn_disagreement above for why. Recorded
+  # before either engine runs.
+  local _pgh_settings_seen=0 _pgh_hooks_seen=0
+  [ -f "$root/.claude/settings.json" ] && _pgh_settings_seen=1
+  [ -f "$root/.codex/hooks.json" ] && _pgh_hooks_seen=1
+
+  if [ -n "$_node" ]; then
+    local _pgh_out _pgh_rc=0
+    _pgh_out="$("$_node" - "$_pgh_native_root" <<'PRICE_JS'
+const fs = require('fs');
+const path = require('path');
+const root = process.argv[2];
+
+// The ONE priced Claude entry (HIMMEL-2480 operator ruling). The PATH-resolved
+// command shape is deliberately the same one PR #2120 uses on these lines, so a
+// later rebase there resolves by taking main.
+const PRICED = {
+  matcher: 'Grep|Glob',
+  hooks: [
+    {
+      type: 'command',
+      command: 'command -v graphify >/dev/null 2>&1 && exec graphify hook-guard search; exit 0',
+      timeout: 3,
+    },
+  ],
+};
+
+// Match ONLY individual guard hooks, not the whole PreToolUse entry (HIMMEL-2480
+// CR finding 1). An entry may legitimately bundle several hooks under one
+// matcher, so entry-level deletion would silently drop an unrelated hook that
+// happens to share an entry with a graphify guard. Upstream's own installer
+// filters at entry level -- this is us deliberately being safer than upstream;
+// do not "simplify" it back. The subcommand name is the discriminator that
+// survives an absolute-path, quoted or bare `graphify`.
+//
+// Match against hook.command SPECIFICALLY, not the whole serialized hook
+// object (HIMMEL-2480 follow-up, CR finding): an object-wide match lets an
+// unrelated hook get deleted just because "graphify" and "hook-guard"/
+// "hook-check" each happen to appear somewhere else on the hook (metadata,
+// an env var, a path) while the actual command is unrelated.
+// Anchored to the EXECUTABLE token, not two free-floating substrings
+// (HIMMEL-2480 CR round 3, finding 1 -- third and final narrowing of this
+// matcher: whole-entry -> whole-hook-object -> command field -> this). The
+// regex requires "graphify" (optionally ".exe"/".EXE", optionally quoted)
+// to sit at a genuine argv-token boundary (string start, whitespace, a
+// quote, or a path separator right before it) and the subcommand
+// (hook-guard/hook-check) to be the VERY NEXT token. That rejects a
+// filename that merely CONTAINS both words -- e.g.
+// "scripts/hooks/my-graphify-hook-guard-shim.sh": the "-" right after
+// "graphify" is not a token boundary, so the pattern never starts a match
+// there.
+//
+// LOAD-BEARING for idempotence -- do not "tidy" this into an anchored
+// (^...$) or single-match form: our OWN priced entry is
+// `command -v graphify >/dev/null 2>&1 && exec graphify hook-guard search; exit 0`,
+// which contains "graphify" TWICE -- once as a `command -v` probe argument
+// (not followed by hook-guard) and once after `exec` (immediately followed
+// by hook-guard). The regex is deliberately unanchored to the string START
+// so `.test()` can find that second occurrence anywhere in the command;
+// anchoring it would make this function fail to recognize its own output
+// and re-add the priced entry forever.
+//
+// The subcommand's trailing boundary says the subcommand must END THE
+// TOKEN: the next character, if there is one, must be ASCII whitespace.
+// It replaced a \b (HIMMEL-2489), which was a word boundary -- and "-" is
+// a non-word char, so \b read "hook-guard-wrapper" as "hook-guard"
+// plus a boundary and an operator hook for a DIFFERENT subcommand was
+// silently deleted on reprice. Same for a non-ASCII suffix: the shell
+// passes `hook-guard<non-ascii>` as one argument naming a different
+// subcommand, so it must SURVIVE too (#2125 CR round 2).
+//
+// Spelled as an explicit negated ASCII class rather than the shorter
+// (?!\S) or (?=\s|$). Both of those read \s, and the two engines do
+// not agree on what \s IS: measured over the live patterns, each of
+// those spellings diverges on exactly three inputs -- U+FEFF (JS \s
+// matches, Python's does not) and U+0085 / U+001C (Python matches, JS
+// does not). So `graphify hook-guard<U+FEFF>` would be a guard in node
+// and not in python: one engine deleting a hook the other keeps, the
+// same data-loss class this whole matcher exists to close. The ASCII
+// literals agree exactly -- 0 mismatches over the same inputs. The
+// neg7-bom row in test-graphify-bin.sh pins this.
+//
+// The LEADING boundary's character class is spelled the same way, with
+// explicit ASCII whitespace (` \t\n`) rather than \s, for the identical
+// cross-engine reason (#2489 follow-up, CR round 2 approved fix): a leading
+// \s lets JS treat a stray U+FEFF glued onto the front of an unrelated
+// command as a token boundary -- and Python treats U+0085/U+001C the same
+// way -- so `<U+FEFF>graphify hook-guard search` would start a match (and
+// get wrongly recognized as a guard) in one engine but not the other. BOM/
+// NEL/FS are not real shell token separators, so the correct answer is NOT
+// a guard in either engine. The neg8-lead-bom, neg9-lead-nel and
+// neg10-lead-fs rows in test-graphify-bin.sh pin this. The MIDDLE separator
+// (between the executable and the subcommand) carries the same rule for the
+// same reason -- `graphify<U+FEFF>hook-guard` is one unrelated argv token,
+// not two, so it must survive in both engines too (neg11-mid-bom,
+// neg12-mid-nel, neg13-mid-fs).
+//
+// Deliberately NOT treating `;`/`&`/`|` as boundaries: missing one would
+// only leave an operator's guard hook uncollapsed (a stale duplicate),
+// whereas a too-wide boundary DELETES a hook. Idempotence is unaffected --
+// our own priced entry has a space after the subcommand.
+//
+// \r is deliberately excluded from all three classes (HIMMEL-2489 panel
+// finding, post-merge follow-up): a raw carriage return is NOT a shell
+// token separator. `<CR>graphify hook-guard search`, `graphify<CR>hook-guard`
+// and `hook-guard<CR>-wrapper` are each ONE argv token -- the shell never
+// splits on a bare CR the way it does on space/tab/newline. Including \r
+// in the leading or middle class would start/continue a match across a
+// non-boundary and wrongly recognize an unrelated command as a guard; in
+// the trailing class it would wrongly REJECT a legitimate longer
+// subcommand as ending at the CR. Both are the "too-wide" direction the
+// comment above explicitly forbids -- a too-wide boundary DELETES an
+// unrelated operator hook on reprice. The neg14-lead-cr, neg15-mid-cr and
+// neg16-trail-cr rows in test-graphify-bin.sh pin this.
+const GUARD_RE = /(?:^|[ \t\n"'/\\])graphify(?:\.exe)?["']?[ \t\n]+(?:hook-guard|hook-check)(?![^ \t\n])/i;
+const isGuard = (hook) => {
+  const cmd = hook && typeof hook.command === 'string' ? hook.command : '';
+  return GUARD_RE.test(cmd);
+};
+
+function atomicWrite(file, content) {
+  // Finding 2 (HIMMEL-2480 CR round 3): resolve THROUGH any symlink before
+  // writing. A dotfile manager (stow, chezmoi, a personal dotfiles repo)
+  // routinely makes settings.json/hooks.json a symlink; renaming a temp
+  // file straight onto that path REPLACES the symlink itself with a
+  // regular file -- the link is destroyed and the real target it pointed
+  // at is left stale. Resolving first and writing/renaming onto the
+  // RESOLVED path keeps the symlink intact and updates what it points at
+  // instead. A non-symlink file resolves to itself (no behavior change); a
+  // not-yet-existing path throws ENOENT, in which case there is nothing to
+  // resolve through and the original path is used, matching prior behavior.
+  let target = file;
+  try {
+    target = fs.realpathSync(file);
+  } catch {
+    // Doesn't exist yet (or a dangling symlink) -- nothing to resolve.
+  }
+  const tmp = target + '.' + process.pid + '.tmp';
+  // Finding 3 (Suggestion): best-effort mode preservation. The temp file
+  // is created with default permissions (0666 & ~umask), so without this a
+  // config that was mode 0600 comes back 0644 after every reprice --
+  // access silently broadened on a file that can carry environment values.
+  // Stat the EXISTING resolved target (before it is replaced) and apply
+  // its mode to the temp file; a target that doesn't exist yet keeps
+  // current (OS-default) behavior. Best-effort: a chmod failure is noted
+  // on stderr but never aborts the reprice (WARN-not-fail, like the rest
+  // of this function).
+  let mode = null;
+  try {
+    mode = fs.statSync(target).mode;
+  } catch {
+    // Target doesn't exist yet -- nothing to preserve.
+  }
+  try {
+    fs.writeFileSync(tmp, content);
+    if (mode !== null) {
+      try {
+        fs.chmodSync(tmp, mode);
+      } catch (e) {
+        console.error('  NOTE: could not preserve file mode on ' + target + ': ' + e.message);
+      }
+    }
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw e;
+  }
+}
+
+// Replace IN PLACE at the position of the FIRST entry containing a guard hook,
+// so an already-priced file is byte-identical on a re-run (appending instead
+// would reorder the array every time). Within each entry, drop only the guard
+// hooks; keep the entry (with its remaining hooks) if any survive, drop the
+// entry entirely only when it becomes empty.
+function reprice(file, replacement) {
+  let raw;
+  try {
+    raw = fs.readFileSync(file, 'utf8');
+  } catch {
+    return 'absent (nothing to price): ' + file;
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return 'UNPARSEABLE, left untouched: ' + file;
+  }
+  const pre = data && data.hooks && data.hooks.PreToolUse;
+  if (!Array.isArray(pre)) return 'no hooks.PreToolUse array, left untouched: ' + file;
+  const entryHasGuard = (entry) => Array.isArray(entry && entry.hooks) && entry.hooks.some(isGuard);
+  const at = pre.findIndex(entryHasGuard);
+  const next = [];
+  for (const entry of pre) {
+    if (!entryHasGuard(entry)) {
+      next.push(entry);
+      continue;
+    }
+    const remaining = entry.hooks.filter((h) => !isGuard(h));
+    if (remaining.length > 0) next.push({ ...entry, hooks: remaining });
+  }
+  if (replacement) next.splice(at < 0 ? next.length : at, 0, replacement);
+  if (JSON.stringify(next) === JSON.stringify(pre)) return 'already priced: ' + file;
+  data.hooks.PreToolUse = next;
+  atomicWrite(file, JSON.stringify(data, null, 2) + '\n');
+  return 'repriced: ' + file;
+}
+
+for (const line of [
+  reprice(path.join(root, '.claude', 'settings.json'), PRICED),
+  reprice(path.join(root, '.codex', 'hooks.json'), null),
+]) {
+  console.log('  graphify hook pricing -- ' + line);
+}
+PRICE_JS
+)" || _pgh_rc=$?
+    printf '%s\n' "$_pgh_out"
+    # A non-zero exit here (e.g. atomicWrite rethrowing on EACCES/ENOSPC, an
+    # unremovable rename) must NOT reach the caller: this function is
+    # best-effort by contract (see its header) and `local _pgh_out; _pgh_out=$(...)`
+    # on separate lines -- unlike `local x=$(...)` -- propagates the command
+    # substitution's exit status, which would abort adopt.sh/setup.sh under
+    # their `set -euo pipefail`. WARN loudly instead of swallowing silently
+    # (three prior silent-no-op bugs in this function already taught that
+    # lesson) and still return 0.
+    if [ "$_pgh_rc" -ne 0 ]; then
+      echo "  WARNING: graphify hook pricing (node engine) exited $_pgh_rc for root '$root' -- pricing may be incomplete or unapplied; see output above for detail." >&2
+    fi
+    _graphify_price_hooks_warn_disagreement "$_pgh_out" "$_pgh_settings_seen" "$_pgh_hooks_seen" "$root" "$_pgh_native_root"
+    return 0
+  fi
+
+  # No node resolvable anywhere -- fall back to python3 (behaviorally
+  # identical port of the JS above; see the function-level comment for why
+  # python3 and not jq).
+  if command -v python3 >/dev/null 2>&1; then
+    local _pgh_out _pgh_rc=0
+    _pgh_out="$(python3 - "$_pgh_native_root" <<'PRICE_PY'
+import json
+import os
+import re
+import sys
+
+root = sys.argv[1]
+
+# The ONE priced Claude entry (HIMMEL-2480 operator ruling) -- same shape,
+# same key order, as the node engine's PRICED object.
+PRICED = {
+    'matcher': 'Grep|Glob',
+    'hooks': [
+        {
+            'type': 'command',
+            'command': 'command -v graphify >/dev/null 2>&1 && exec graphify hook-guard search; exit 0',
+            'timeout': 3,
+        }
+    ],
+}
+
+# Anchored to the EXECUTABLE token, not two free-floating substrings
+# (HIMMEL-2480 CR round 3, finding 1 -- third and final narrowing of this
+# matcher: whole-entry -> whole-hook-object -> command field -> this).
+# Mirrors the node engine's GUARD_RE exactly (see its comment for the full
+# rationale): "graphify" (optionally ".exe"/".EXE", optionally quoted) must
+# sit at a genuine argv-token boundary (string start, whitespace, a quote,
+# or a path separator right before it), with the subcommand
+# (hook-guard/hook-check) as the VERY NEXT token. \x22/\x27 spell " and '
+# so the character class needs no string-quoting gymnastics inside this
+# raw string.
+#
+# LOAD-BEARING for idempotence -- our OWN priced entry is
+# `command -v graphify >/dev/null 2>&1 && exec graphify hook-guard search; exit 0`,
+# which contains "graphify" TWICE (a `command -v` probe argument, not
+# followed by hook-guard; and the one after `exec`, which is). re.search
+# (not re.match/fullmatch) finds that second occurrence anywhere in the
+# string -- do not anchor this to the string start.
+#
+# The subcommand's trailing boundary says the subcommand must END THE
+# TOKEN: the next character, if there is one, must be ASCII whitespace.
+# It replaced a \b (HIMMEL-2489), which was a word boundary -- and "-" is
+# a non-word char, so \b read "hook-guard-wrapper" as "hook-guard"
+# plus a boundary and an operator hook for a DIFFERENT subcommand was
+# silently deleted on reprice. Same for a non-ASCII suffix: the shell
+# passes `hook-guard<non-ascii>` as one argument naming a different
+# subcommand, so it must SURVIVE too (#2125 CR round 2).
+#
+# Spelled as an explicit negated ASCII class rather than the shorter
+# (?!\S) or (?=\s|$). Both of those read \s, and the two engines do
+# not agree on what \s IS: measured over the live patterns, each of
+# those spellings diverges on exactly three inputs -- U+FEFF (JS \s
+# matches, Python's does not) and U+0085 / U+001C (Python matches, JS
+# does not). So `graphify hook-guard<U+FEFF>` would be a guard in node
+# and not in python: one engine deleting a hook the other keeps, the
+# same data-loss class this whole matcher exists to close. The ASCII
+# literals agree exactly -- 0 mismatches over the same inputs. The
+# neg7-bom row in test-graphify-bin.sh pins this.
+#
+# The LEADING boundary's character class is spelled the same way, with
+# explicit ASCII whitespace (` \t\n`) rather than \s, for the identical
+# cross-engine reason (see the node engine's GUARD_RE comment for the full
+# rationale): a leading \s would let one engine treat a stray BOM/NEL/FS
+# character glued onto the front of an unrelated command as a token
+# boundary, wrongly recognizing it as a guard in one engine and not the
+# other. The neg8-lead-bom, neg9-lead-nel and neg10-lead-fs rows in
+# test-graphify-bin.sh pin this. The MIDDLE separator (between the
+# executable and the subcommand) carries the same rule for the same reason
+# -- `graphify<U+FEFF>hook-guard` is one unrelated argv token, not two, so
+# it must survive in both engines too (neg11-mid-bom, neg12-mid-nel,
+# neg13-mid-fs).
+#
+# Deliberately NOT treating `;`/`&`/`|` as boundaries: missing one would
+# only leave an operator's guard hook uncollapsed (a stale duplicate),
+# whereas a too-wide boundary DELETES a hook. Idempotence is unaffected --
+# our own priced entry has a space after the subcommand.
+#
+# \r is deliberately excluded from all three classes (HIMMEL-2489 panel
+# finding, post-merge follow-up): a raw carriage return is NOT a shell
+# token separator. `<CR>graphify hook-guard search`, `graphify<CR>hook-guard`
+# and `hook-guard<CR>-wrapper` are each ONE argv token -- the shell never
+# splits on a bare CR the way it does on space/tab/newline. Including \r
+# in the leading or middle class would start/continue a match across a
+# non-boundary and wrongly recognize an unrelated command as a guard; in
+# the trailing class it would wrongly REJECT a legitimate longer
+# subcommand as ending at the CR. Both are the "too-wide" direction the
+# comment above explicitly forbids -- a too-wide boundary DELETES an
+# unrelated operator hook on reprice. The neg14-lead-cr, neg15-mid-cr and
+# neg16-trail-cr rows in test-graphify-bin.sh pin this (py-neg14/15/16
+# under the forced-python engine).
+_GUARD_RE = re.compile(
+    r'(?:^|[ \t\n\x22\x27/\\])graphify(?:\.exe)?[\x22\x27]?[ \t\n]+(?:hook-guard|hook-check)(?![^ \t\n])',
+    re.IGNORECASE,
+)
+
+
+# Match against the hook's `command` field SPECIFICALLY, not the whole
+# serialized hook object (HIMMEL-2480 follow-up, CR finding): an object-wide
+# match lets an unrelated hook get deleted just because "graphify" and
+# "hook-guard"/"hook-check" each happen to appear somewhere else on the hook
+# (metadata, an env var, a path) while the actual command is unrelated.
+def is_guard(hook):
+    cmd = hook.get('command') if isinstance(hook, dict) else None
+    if not isinstance(cmd, str):
+        return False
+    return bool(_GUARD_RE.search(cmd))
+
+
+def entry_has_guard(entry):
+    hooks = entry.get('hooks') if isinstance(entry, dict) else None
+    return isinstance(hooks, list) and any(is_guard(h) for h in hooks)
+
+
+def atomic_write(file_path, content):
+    # Finding 2 (HIMMEL-2480 CR round 3): resolve THROUGH any symlink before
+    # writing -- see the node engine's atomicWrite for the full rationale
+    # (dotfile managers routinely make settings.json/hooks.json a symlink;
+    # replacing it via rename destroys the link and leaves its real target
+    # stale). os.path.realpath resolves a symlink to its real target and,
+    # unlike Node's realpathSync, does not raise on a not-yet-existing
+    # path -- it simply returns the path unchanged, which already matches
+    # prior behavior (write beside the given path) for that case.
+    target = os.path.realpath(file_path)
+    tmp = target + '.' + str(os.getpid()) + '.tmp'
+    # Finding 3 (Suggestion): best-effort mode preservation -- see the node
+    # engine's atomicWrite for the full rationale. Stat the EXISTING
+    # resolved target before it's replaced; a target that doesn't exist yet
+    # keeps current (OS-default) behavior.
+    mode = None
+    try:
+        mode = os.stat(target).st_mode
+    except OSError:
+        pass
+    try:
+        with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(content)
+        if mode is not None:
+            try:
+                os.chmod(tmp, mode)
+            except OSError as e:
+                print('  NOTE: could not preserve file mode on ' + target + ': ' + str(e), file=sys.stderr)
+        os.replace(tmp, target)  # os.replace, not os.rename: rename fails on Windows when the destination exists.
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# Replace IN PLACE at the position of the FIRST entry containing a guard hook,
+# so an already-priced file is byte-identical on a re-run (appending instead
+# would reorder the array every time) -- mirrors the node engine's reprice()
+# exactly, including hook-level (not entry-level) filtering: an entry may
+# bundle several hooks under one matcher, so entry-level deletion would
+# silently drop an unrelated hook sharing an entry with a graphify guard.
+# Upstream's own installer filters at entry level -- this is us deliberately
+# being safer than upstream; do not "simplify" it back.
+def reprice(file_path, replacement):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            raw = f.read()
+    except OSError:
+        return 'absent (nothing to price): ' + file_path
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return 'UNPARSEABLE, left untouched: ' + file_path
+    hooks = data.get('hooks') if isinstance(data, dict) else None
+    pre = hooks.get('PreToolUse') if isinstance(hooks, dict) else None
+    if not isinstance(pre, list):
+        return 'no hooks.PreToolUse array, left untouched: ' + file_path
+    at = -1
+    for i, e in enumerate(pre):
+        if entry_has_guard(e):
+            at = i
+            break
+    next_list = []
+    for entry in pre:
+        if not entry_has_guard(entry):
+            next_list.append(entry)
+            continue
+        remaining = [h for h in entry['hooks'] if not is_guard(h)]
+        if remaining:
+            new_entry = dict(entry)
+            new_entry['hooks'] = remaining
+            next_list.append(new_entry)
+        # else: entry becomes empty -> drop entirely
+    if replacement is not None:
+        next_list.insert(len(next_list) if at < 0 else at, replacement)
+    if next_list == pre:
+        return 'already priced: ' + file_path
+    data['hooks']['PreToolUse'] = next_list
+    # ensure_ascii=False (HIMMEL-2480 follow-up): json.dumps defaults to
+    # ensure_ascii=True and \uXXXX-escapes non-ASCII, while the node
+    # engine's JSON.stringify writes it raw -- on an adopter's settings.json
+    # containing non-ASCII (an operator's $TARGET, not a file himmel
+    # controls), that divergence made "did the content change" flip on
+    # every run that alternated engines: node writes it raw, a later
+    # python-engine run re-escapes it -> reports repriced even though
+    # nothing meaningful changed, then flips back under node.
+    atomic_write(file_path, json.dumps(data, ensure_ascii=False, indent=2, separators=(',', ': ')) + '\n')
+    return 'repriced: ' + file_path
+
+
+for line in (
+    reprice(os.path.join(root, '.claude', 'settings.json'), PRICED),
+    reprice(os.path.join(root, '.codex', 'hooks.json'), None),
+):
+    print('  graphify hook pricing -- ' + line)
+PRICE_PY
+)" || _pgh_rc=$?
+    printf '%s\n' "$_pgh_out"
+    # See the node engine's matching comment above: a non-zero exit here must
+    # not propagate through this `set -e`-sensitive assignment shape and abort
+    # a caller under `set -euo pipefail`. WARN loudly, still return 0.
+    if [ "$_pgh_rc" -ne 0 ]; then
+      echo "  WARNING: graphify hook pricing (python3 engine) exited $_pgh_rc for root '$root' -- pricing may be incomplete or unapplied; see output above for detail." >&2
+    fi
+    _graphify_price_hooks_warn_disagreement "$_pgh_out" "$_pgh_settings_seen" "$_pgh_hooks_seen" "$root" "$_pgh_native_root"
+    return 0
+  fi
+
+  echo "  WARNING: graphify hook pricing SKIPPED -- neither node nor python3 could be found (checked resolve-node.sh's nvm-windows/PATH/well-known-location probes, plus PATH for python3)." >&2
+  echo "  Install one, then re-apply: bash scripts/lib/graphify-bin.sh price-hooks" >&2
+  return 0
+}
+
 # CLI entry -- only when EXECUTED (not sourced). Lets the pwsh mirrors
 # (scripts/setup.ps1, scripts/adopt.ps1) delegate to this ONE implementation
 # (`bash scripts/lib/graphify-bin.sh install`) instead of duplicating the
@@ -817,6 +1713,7 @@ if [ "${BASH_SOURCE[0]:-}" = "${0:-}" ]; then
     source)  graphify_source ;;
     share-store) graphify_wsl_share_store ;;
     register-mcp) graphify_register_mcp "${2:-user}" ;;
-    *) echo "Usage: bash scripts/lib/graphify-bin.sh install|update|source|share-store|register-mcp [scope]" >&2; exit 2 ;;
+    price-hooks) graphify_price_hooks "${2:-}" ;;
+    *) echo "Usage: bash scripts/lib/graphify-bin.sh install|update|source|share-store|register-mcp [scope]|price-hooks [project-dir]" >&2; exit 2 ;;
   esac
 fi

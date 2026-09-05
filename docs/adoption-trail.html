@@ -1,0 +1,907 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Himmel Adoption Trail</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600&family=Source+Sans+3:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* dark-first: bare :root = the night-trail palette */
+  :root {
+    --bg: #12141c; --bg-glow: #191d29; --surface: #1c2130; --line: #303950;
+    --ink: #f0ead9; --muted: #a89f8c; --faint: #6d6a63;
+    --path: #e2a54c; --path-soft: rgba(226,165,76,.28);
+    --done: #7fb069; --lock: #4a5268;
+    --chip-bg: rgba(226,165,76,.12); --chip-ink: #e2b36b;
+    --note-bg: rgba(127,176,105,.10); --note-ink: #9ec48b;
+    --scrim: rgba(8,10,15,.62);
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f7f2e7; --bg-glow: #efe7d5; --surface: #fffdf7; --line: #ddd2bc;
+      --ink: #2a2620; --muted: #6b6355; --faint: #9a9182;
+      --path: #b07514; --path-soft: rgba(176,117,20,.22);
+      --done: #4c7a3d; --lock: #a8a090;
+      --chip-bg: rgba(176,117,20,.10); --chip-ink: #8a5c10;
+      --note-bg: rgba(76,122,61,.09); --note-ink: #44662f;
+      --scrim: rgba(42,38,32,.45);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f7f2e7; --bg-glow: #efe7d5; --surface: #fffdf7; --line: #ddd2bc;
+    --ink: #2a2620; --muted: #6b6355; --faint: #9a9182;
+    --path: #b07514; --path-soft: rgba(176,117,20,.22);
+    --done: #4c7a3d; --lock: #a8a090;
+    --chip-bg: rgba(176,117,20,.10); --chip-ink: #8a5c10;
+    --note-bg: rgba(76,122,61,.09); --note-ink: #44662f;
+    --scrim: rgba(42,38,32,.45);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg);
+    background-image: radial-gradient(ellipse 80% 40% at 50% 0%, var(--bg-glow), transparent);
+    color: var(--ink); font-family: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+    font-size: 16px; line-height: 1.55;
+  }
+  ::selection { background: var(--path); color: var(--bg); }
+  a { color: var(--chip-ink); }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 56px 24px 80px; }
+
+  header.top { text-align: center; max-width: 60ch; margin: 0 auto 12px; }
+  h1 { font-family: "Zilla Slab", Georgia, serif; font-weight: 600; font-size: 42px;
+       letter-spacing: -.01em; margin: 0 0 10px; text-wrap: balance; }
+  .lede { color: var(--muted); font-size: 17px; margin: 0; }
+  .mono { font-family: "IBM Plex Mono", monospace; font-size: .88em; }
+
+  .progress { display: flex; justify-content: center; align-items: center; gap: 10px;
+    margin: 26px 0 8px; color: var(--muted); font-size: 14px; }
+  .progress b { color: var(--path); font-weight: 600; }
+
+  /* trail */
+  .trail { position: relative; margin-top: 26px; }
+  .rail { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+    transform: translateX(-50%);
+    background: linear-gradient(var(--path-soft), var(--path-soft));
+  }
+  .level { position: relative; display: grid; grid-template-columns: 1fr 88px 1fr;
+    align-items: start; margin: 0 0 34px; }
+  .level:last-child { margin-bottom: 0; }
+  .knot { grid-column: 2; justify-self: center; position: relative; z-index: 2;
+    width: 58px; height: 58px; border-radius: 50%; border: 2px solid var(--line);
+    background: var(--surface); color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: border-color .25s, box-shadow .25s, color .25s;
+    padding: 0; font: inherit;
+  }
+  .knot:hover { border-color: var(--path); }
+  .knot:focus-visible { outline: 2px solid var(--path); outline-offset: 3px; }
+  .knot svg { width: 24px; height: 24px; stroke: currentColor; fill: none;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .level.done .knot { border-color: var(--done); color: var(--done); }
+  .level.here .knot { border-color: var(--path); color: var(--path);
+    box-shadow: 0 0 0 5px var(--path-soft), 0 6px 22px -6px var(--path-soft); }
+
+  .card { grid-column: 3; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px 20px 16px; margin-left: 4px;
+    box-shadow: 0 10px 28px -18px rgba(0,0,0,.5); }
+  .level:nth-child(even) .card { grid-column: 1; grid-row: 1; margin-left: 0; margin-right: 4px; }
+  .lvl-tag { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--faint); }
+  .level.here .lvl-tag::after { content: " — you are here"; color: var(--path); }
+  .level.done .lvl-tag::after { content: " — done"; color: var(--done); }
+  .card h2 { font-family: "Zilla Slab", Georgia, serif; font-weight: 600; font-size: 22px;
+    margin: 2px 0 8px; letter-spacing: -.005em; }
+  .card p { margin: 0 0 10px; color: var(--ink); font-size: 15px; }
+  .card p.impact { color: var(--muted); }
+  .card p.impact b { color: var(--ink); font-weight: 600; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 12px; padding: 0; list-style: none; }
+  .chipgroup { margin: 0 0 10px; }
+  .chipgroup .glabel { display: block; font-size: 11.5px; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+  .chipgroup .chips { margin-bottom: 0; }
+  .chip { background: var(--chip-bg); color: var(--chip-ink); border: 1px solid transparent;
+    border-radius: 99px; padding: 2px 11px 3px; font-size: 12.5px; font-weight: 600;
+    letter-spacing: .015em; cursor: pointer; font-family: inherit; }
+  button.chip:hover { border-color: var(--chip-ink); }
+  button.chip:focus-visible { outline: 2px solid var(--path); outline-offset: 2px; }
+  .chip.roadmap { background: transparent; border: 1.4px dashed var(--faint); color: var(--muted); }
+  .chip.roadmap::after { content: "roadmap"; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .07em; text-transform: uppercase; margin-left: 7px; color: var(--faint); }
+  button.chip.roadmap:hover { border-color: var(--muted); }
+  .textlink { background: none; border: none; padding: 0; font: inherit; color: var(--chip-ink);
+    text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .textlink:focus-visible { outline: 2px solid var(--path); outline-offset: 2px; }
+
+  .guard { margin: 0 0 12px; padding: 0 0 0 2px; list-style: none; font-size: 13.5px; color: var(--muted); }
+  .guard li { padding: 3px 0 3px 18px; position: relative; }
+  .guard li::before { content: ""; position: absolute; left: 2px; top: .62em; width: 8px; height: 8px;
+    border: 1.6px solid var(--path); border-radius: 2px; }
+  .guard li b { color: var(--ink); font-weight: 600; }
+  .hint { font-size: 12.5px; color: var(--faint); border-top: 1px solid var(--line);
+    padding-top: 9px; margin-top: 2px; }
+  .note { background: var(--note-bg); color: var(--note-ink); border-radius: 8px;
+    padding: 7px 11px; font-size: 13px; margin: 0 0 10px; }
+
+  /* off-trail experimental camp */
+  .camp { margin-top: 40px; border: 1.6px dashed var(--faint); border-radius: 12px;
+    padding: 18px 20px 14px; background: transparent; }
+  .camp h2 { font-family: "Zilla Slab", Georgia, serif; font-weight: 600; font-size: 20px; margin: 0 0 6px; }
+  .camp .lvl-tag { color: var(--faint); }
+  .camp p { color: var(--muted); font-size: 14.5px; margin: 6px 0 10px; }
+
+  footer.tips { margin-top: 44px; text-align: center; color: var(--muted); font-size: 14px;
+    max-width: 62ch; margin-left: auto; margin-right: auto; }
+  footer.tips .mono { color: var(--chip-ink); }
+
+  /* slide-in detail panel */
+  .scrim { position: fixed; inset: 0; background: var(--scrim); opacity: 0;
+    pointer-events: none; transition: opacity .25s; z-index: 8; }
+  .scrim.open { opacity: 1; pointer-events: auto; }
+  .panel { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 92vw);
+    background: var(--surface); border-left: 1px solid var(--line); z-index: 9;
+    transform: translateX(102%); transition: transform .3s cubic-bezier(.16,1,.3,1);
+    padding: 22px 24px; overflow-y: auto; }
+  .panel.open { transform: none; }
+  .panel h3 { font-family: "Zilla Slab", Georgia, serif; font-weight: 600; font-size: 20px;
+    margin: 0 42px 4px 0; }
+  .panel .ptag { font-size: 11px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--faint); }
+  .panel .ptag.ship { color: var(--done); }
+  .panel .ptag.road { color: var(--chip-ink); }
+  .panel .body { color: var(--muted); font-size: 14.5px; }
+  .panel .body p { margin: 10px 0; }
+  .panel .body b { color: var(--ink); }
+  .panel .body ul { margin: 8px 0; padding-left: 18px; }
+  .panel .body li { margin: 5px 0; }
+  .panel .body .mono { color: var(--chip-ink); }
+  .panel .body ul.roster { columns: 2; column-gap: 18px; padding-left: 16px; }
+  .panel .body ul.roster li { break-inside: avoid; margin: 2px 0; font-size: 13px; }
+  .panel .ontag { display: inline-block; background: var(--note-bg); color: var(--note-ink);
+    border-radius: 4px; font-size: 9.5px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; padding: 0 5px 1px; margin-left: 5px; vertical-align: 1px; }
+  .panel .listhead { display: block; font-size: 11.5px; font-weight: 700; letter-spacing: .07em;
+    text-transform: uppercase; color: var(--chip-ink); margin: 14px 0 4px; }
+  .pclose { position: absolute; top: 16px; right: 16px; width: 34px; height: 34px;
+    border-radius: 8px; border: 1px solid var(--line); background: none; color: var(--muted);
+    cursor: pointer; font-size: 17px; line-height: 1; }
+  .pclose:hover { border-color: var(--path); color: var(--ink); }
+  .pclose:focus-visible { outline: 2px solid var(--path); outline-offset: 2px; }
+
+  @media (max-width: 720px) {
+    .level, .level:nth-child(even) { grid-template-columns: 64px 1fr; }
+    .rail { left: 31px; transform: none; }
+    .knot { grid-column: 1; grid-row: 1; width: 50px; height: 50px; }
+    .card, .level:nth-child(even) .card { grid-column: 2; grid-row: auto; margin: 0 0 0 6px; }
+    h1 { font-size: 32px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .panel, .scrim { transition: none; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .level { opacity: 0; transform: translateY(16px);
+      animation: arrive .55s cubic-bezier(.16,1,.3,1) forwards; }
+    /* count levels, not children - the .rail div is .trail's first child, so
+       :nth-child would shift every delay by one and leave the last level with
+       none. The :nth-child(even) card rule above is deliberately NOT changed:
+       it counts the rail too, which is what puts level 0 on the left. */
+    .level:nth-of-type(1) { animation-delay: .08s } .level:nth-of-type(2) { animation-delay: .18s }
+    .level:nth-of-type(3) { animation-delay: .28s } .level:nth-of-type(4) { animation-delay: .38s }
+    .level:nth-of-type(5) { animation-delay: .48s } .level:nth-of-type(6) { animation-delay: .58s }
+    .level:nth-of-type(7) { animation-delay: .68s } .level:nth-of-type(8) { animation-delay: .78s }
+    @keyframes arrive { to { opacity: 1; transform: none; } }
+    .rail { transform-origin: top; transform: translateX(-50%) scaleY(0);
+      animation: grow 1.1s ease-out .1s forwards; }
+    @media (max-width: 720px) {
+      /* the mobile rail is left-anchored, so it must not pick up the
+         centred rail's translate when the grow animation settles */
+      .rail { transform: scaleY(0); animation-name: grow-left; }
+    }
+    @keyframes grow { to { transform: translateX(-50%) scaleY(1); } }
+    @keyframes grow-left { to { transform: scaleY(1); } }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>The Himmel Adoption Trail</h1>
+    <p class="lede">Eight levels from a fresh machine to a fleet that
+    ships while you sleep. Climb as far as suits you — every level is
+    optional, honest about what it changes, and reversible. Click any chip
+    for its detail.</p>
+  </header>
+
+  <div class="progress" id="progress" aria-live="polite"></div>
+
+  <div class="trail" id="trail">
+    <div class="rail" aria-hidden="true"></div>
+
+    <section class="level" data-level="0">
+      <button class="knot" aria-label="Mark level 0, install, as your current level">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0l-4.5-4.5M12 15l4.5-4.5M4 20h16"/></svg>
+      </button>
+      <div class="card">
+        <span class="lvl-tag">LEVEL 0</span>
+        <h2>Install &amp; stay current</h2>
+        <p>Clone <span class="mono">github.com/yotamleo/himmel</span>,
+        <em>then run the installer from inside the clone</em> —
+        <span class="mono">himmelctl</span> only lands on your PATH once the
+        install has run, so the first invocation is
+        <span class="mono">node scripts/himmelctl/bin.js install</span>. It
+        reads your machine first, asks
+        <button class="textlink" data-detail="questions">a handful of
+        questions</button> — Enter always takes the safe default — and
+        shows the full plan with <span class="mono">--dry-run</span>
+        before touching anything. Later,
+        <span class="mono">/himmel-update</span> keeps everything current,
+        including the pinned tools it manages for you. One manifest covers
+        the whole install: dependencies, wiring, schedulers, lanes,
+        plugins, vault and hooks.</p>
+        <p class="note">Before you clone: install
+        <span class="mono">git</span>, <span class="mono">node</span> <em>and</em>
+        <span class="mono">npm</span>, <span class="mono">jq</span>,
+        <span class="mono">gh</span>, <span class="mono">bun</span>,
+        <span class="mono">pre-commit</span> and the
+        <span class="mono">claude</span> CLI. The installer checks for them and
+        stops on the ones it needs, but it does not install them for you. On
+        Debian/Ubuntu note that the <span class="mono">nodejs</span> package
+        ships <em>without</em> npm. Exact per-platform commands, and a verified
+        end-to-end Linux walkthrough, are in
+        <a href="setup/new-machine.md">setup/new-machine.md</a>; the narrative
+        version is <a href="getting-started.md">getting-started.md</a>.</p>
+        <p class="note">This page lives in the private himmel repo and is not
+        part of what the public clone gives you, which also trails private main
+        by however long the current propagation batch has been open. Read the
+        trail here; expect the clone to be a little behind it.</p>
+        <div class="chipgroup"><span class="glabel">himmel brings</span>
+          <ul class="chips">
+            <li><button class="chip" data-detail="himmel-ops">himmel-ops</button></li>
+            <li><button class="chip" data-detail="handover">handover</button></li>
+            <li><button class="chip" data-detail="review-toolkit">pr-review-toolkit</button></li>
+            <li><button class="chip" data-detail="bridge">telegram-himmel</button></li>
+            <li><button class="chip" data-detail="jira-cli">Jira
+            CLI</button></li>
+            <li><button class="chip" data-detail="bitbucket">Bitbucket
+            plugin</button></li>
+            <li><button class="chip" data-detail="hud">claude-hud</button></li>
+            <li><button class="chip" data-detail="doctor">himmel-doctor</button></li>
+          </ul></div>
+        <div class="chipgroup"><span class="glabel">installs from
+        elsewhere</span>
+          <ul class="chips">
+            <li><button class="chip" data-detail="gh">gh CLI
+            (required)</button></li>
+            <li><button class="chip" data-detail="superpowers">superpowers</button></li>
+            <li><button class="chip" data-detail="graphify">graphify
+            (pinned)</button></li>
+            <li><button class="chip" data-detail="plugins">Official Claude
+            plugins</button></li>
+            <li><button class="chip" data-detail="plugins">Community
+            plugins</button></li>
+          </ul></div>
+        <div class="chipgroup"><span class="glabel">coming</span>
+          <ul class="chips">
+            <li><button class="chip roadmap" data-detail="rm-identity">Identity
+            setup</button></li>
+            <li><button class="chip roadmap" data-detail="rm-profiles">Skill
+            &amp; agent profiles</button></li>
+          </ul></div>
+        <p class="impact"><b>Impact:</b> from minute one,
+        <span class="mono">himmelctl status</span> reads your <b>real
+        machine</b> — what is actually installed, armed and working, never
+        what a config file merely claims.</p>
+        <div class="hint">Answers are cached; <span class="mono">himmelctl
+        ensure</span> replays them.</div>
+      </div>
+    </section>
+
+    <section class="level" data-level="1">
+      <button class="knot" aria-label="Mark level 1, guardrails, as your current level">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4.5"/></svg>
+      </button>
+      <div class="card">
+        <span class="lvl-tag">LEVEL 1</span>
+        <h2>Ship with guardrails</h2>
+        <p>Turn on the development overlay: commit gates, ticket
+        discipline, attested pushes and a review loop that runs before
+        anything merges — on GitHub via the required
+        <span class="mono">gh</span> CLI, or Bitbucket via the bundled
+        plugin.</p>
+        <ul class="guard">
+          <li><b>Worktree isolation</b> — feature work never edits your
+          main branch directly</li>
+          <li><b>Dangerous-command blocking</b> — destructive shell
+          operations are refused, not regretted</li>
+          <li><b>Secret egress fences</b> — credentials and private data
+          are stopped before they reach any outside service</li>
+          <li><b>Corpus routing</b> — a ratified matrix decides which body
+          of data may reach which backend at all; health data fails
+          closed</li>
+          <li><b>Attested pushes</b> — a push carries proof of testing and
+          review, or it doesn't leave</li>
+          <li><b>Review gates</b> — a merge needs a clean review verdict
+          at the exact commit being merged, not at some earlier one</li>
+          <li><b>Git-flow discipline</b> — conventional commits with
+          ticket refs, feature work only in worktrees, and a runbook that
+          drives execute → review → PR → ticket → merge → handover
+          end-to-end</li>
+          <li><b>Spend guards</b> — unattended runs draw the same
+          subscription bank as you do; they are gated, never silent</li>
+          <li><b>Scheduler safety</b> — raw scheduled-task mutation is
+          blocked; only vetted scripts arm or disarm</li>
+        </ul>
+        <p>None of this is advice. Each guard above is wiring — hooks and
+        gates that fire whether or not anyone remembers them.</p>
+        <p class="note">The Claude-session guards (worktree isolation,
+        dangerous-command blocking, the egress fences) and the <em>git</em>
+        gates (pre-commit, commit-msg, pre-push) are both wired by the
+        install &mdash; opt out with
+        <span class="mono">--skip-hooks</span>/<span class="mono">-SkipHooks</span>
+        if you manage git hooks yourself. Ticket discipline is <em>on by
+        default</em> once they are placed: the commit-msg gate wants a
+        <span class="mono">PROJECT-123</span> reference when you set
+        <span class="mono">JIRA_PROJECT_KEY</span> (or your own
+        <span class="mono">TICKET_ID_PATTERN</span>), and himmel's own
+        <span class="mono">#123</span> numbering when you have no Jira at all.
+        <span class="mono">TICKET_ID_REQUIRED=0</span> opts out of the ticket
+        half; the conventional-commit shape check stays on either way. See
+        <a href="setup/new-machine.md">setup/new-machine.md</a>.</p>
+        <p>Today the git flow is structurally <b>PR-only</b>: no direct
+        push to main, one sanctioned merge path, auto-merge only where you
+        opt in.</p>
+        <ul class="chips">
+          <li><button class="chip" data-detail="git-flow">PR-only git
+          flow</button></li>
+          <li><button class="chip roadmap" data-detail="rm-autonomy">Git
+          autonomy ceiling</button></li>
+          <li><button class="chip roadmap" data-detail="rm-gates">Gates
+          for every profile</button></li>
+        </ul>
+        <p class="impact"><b>Impact:</b> nothing lands unreviewed or
+        unattested. The workflow enforces itself, so discipline stops
+        depending on memory at 2am.</p>
+      </div>
+    </section>
+
+    <section class="level" data-level="2">
+      <button class="knot" aria-label="Mark level 2, second brain, as your current level">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 016.5 3H12v18H6.5A2.5 2.5 0 014 18.5z"/><path d="M20 5.5A2.5 2.5 0 0017.5 3H12v18h5.5a2.5 2.5 0 002.5-2.5z"/></svg>
+      </button>
+      <div class="card">
+        <span class="lvl-tag">LEVEL 2</span>
+        <h2>Second brain</h2>
+        <p>Connect a vault — start from the bundled
+        <button class="textlink" data-detail="luna-template">luna-second-brain
+        template</button> or point at the notes you already have — and
+        pick which of the four <b>cadences</b> to arm: the content
+        pipeline (harvest, synthesize, health), the search reindex, the
+        knowledge-graph refresh, and (if you took the codex lane) a
+        cleanup sweep. <b>The search reindex is its own cadence with its
+        own arming</b> — arm only the pipeline and your search goes
+        stale.</p>
+        <div class="chipgroup"><span class="glabel">himmel brings</span>
+          <ul class="chips">
+            <li><button class="chip" data-detail="obsidian-triage">obsidian-triage
+            skills</button></li>
+            <li><button class="chip" data-detail="cadences">Cadences (4,
+            pick-list)</button></li>
+            <li><button class="chip" data-detail="cadence-graphmap">Graph
+            refresh cadence</button></li>
+            <li><button class="chip" data-detail="cadence-codex-sweep">Codex
+            sweep cadence</button></li>
+            <li><button class="chip" data-detail="qmd">qmd vault
+            search</button></li>
+            <li><button class="chip" data-detail="claude-obsidian">claude-obsidian</button></li>
+            <li><button class="chip" data-detail="luna-correlate">luna-correlate</button></li>
+            <li><button class="chip" data-detail="graphify">graphify
+            knowledge graph</button></li>
+            <li><button class="chip" data-detail="luna-sources">Source
+            connectors</button></li>
+          </ul></div>
+        <div class="chipgroup"><span class="glabel">you provide</span>
+          <ul class="chips"><li><button class="chip" data-detail="vault">Your
+          Obsidian vault</button></li></ul></div>
+        <p class="impact"><b>Impact:</b> knowledge compounds while you
+        sleep. A link you toss in at midnight is a connected, summarized
+        note by morning.</p>
+        <div class="hint">Asked during install once a vault exists.
+        Anything you decline is recorded as declined — never switched on
+        behind your back.</div>
+      </div>
+    </section>
+
+    <section class="level" data-level="3">
+      <button class="knot" aria-label="Mark level 3, reach, as your current level">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="2.5" width="8" height="19" rx="2"/><path d="M11 18.5h2"/></svg>
+      </button>
+      <div class="card">
+        <span class="lvl-tag">LEVEL 3</span>
+        <h2>Reach: your phone joins</h2>
+        <p>Wire the Telegram bridge. The installer also asks — explicitly,
+        by name — whether the bridge should survive reboots on your
+        platform.</p>
+        <ul class="chips">
+          <li><button class="chip" data-detail="bridge">Telegram
+          bridge</button></li>
+          <li><button class="chip" data-detail="bridge-health">Bridge
+          health checks</button></li>
+          <li><button class="chip" data-detail="capture">Capture from
+          chat</button></li>
+          <li><button class="chip" data-detail="alerts">Alerts in your
+          pocket</button></li>
+          <li><button class="chip" data-detail="voice">Voice notes
+          in</button></li>
+        </ul>
+        <p class="impact"><b>Impact:</b> ideas and alerts meet you where
+        you are. The vault fills itself from your phone; the system can
+        tap your shoulder when something needs you.</p>
+        <div class="hint">Needs a bot token; the wizard walks you through
+        it and never echoes secrets.</div>
+      </div>
+    </section>
+
+    <section class="level" data-level="4">
+      <button class="knot" aria-label="Mark level 4, review depth, as your current level">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="4.5"/><circle cx="16" cy="12" r="4.5"/></svg>
+      </button>
+      <div class="card">
+        <span class="lvl-tag">LEVEL 4</span>
+        <h2>Review depth</h2>
+        <p>Add the optional <b>review</b> lanes — codex and hermes —
+        beside Claude's built-in review. They are offered as review lanes:
+        a second opinion on your diff before it merges. Each is its own
+        explicit opt-in, with its own login.</p>
+        <ul class="chips">
+          <li><button class="chip" data-detail="codex">codex lane
+          (review)</button></li>
+          <li><button class="chip" data-detail="hermes">hermes lane
+          (review)</button></li>
+          <li><button class="chip" data-detail="local-lanes">Other lanes
+          on the menu</button></li>
+        </ul>
+        <p class="impact"><b>Impact:</b> two model families argue over
+        your diff before it merges. The trade, plainly: <b>without these
+        lanes, review runs Claude-only</b> — one reviewer, however
+        good.</p>
+        <div class="hint">Skippable forever — and the wizard tells you at
+        the question itself what skipping costs you.</div>
+      </div>
+    </section>
+
+    <section class="level" data-level="5">
+      <button class="knot" aria-label="Mark level 5, spend and context, as your current level">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+      </button>
+      <div class="card">
+        <span class="lvl-tag">LEVEL 5</span>
+        <h2>Spend &amp; context, under control</h2>
+        <p>See and steer what agent work costs — tokens, quota windows,
+        context — before it surprises you.</p>
+        <div class="chipgroup"><span class="glabel">himmel brings</span>
+          <ul class="chips">
+            <li><button class="chip" data-detail="hud">claude-hud
+            statusline</button></li>
+            <li><button class="chip" data-detail="bank">Budget
+            preflight</button></li>
+            <li><button class="chip" data-detail="fill">Self-read context
+            fill</button></li>
+            <li><button class="chip" data-detail="rtk">rtk output
+            trimming</button></li>
+            <li><button class="chip" data-detail="tokensave">tokensave</button></li>
+            <li><button class="chip" data-detail="gemini-cli">gemini-cli</button></li>
+          </ul></div>
+        <div class="chipgroup"><span class="glabel">coming</span>
+          <ul class="chips">
+            <li><button class="chip roadmap" data-detail="rm-headless">Headless
+            runs with budget guard</button></li>
+          </ul></div>
+        <p class="impact"><b>Impact:</b> quota exhaustion stops being a
+        3pm surprise. Heavy work checks the bank first; every session can
+        read its own context fill instead of guessing.</p>
+      </div>
+    </section>
+
+    <section class="level" data-level="6">
+      <button class="knot" aria-label="Mark level 6, always-on, as your current level">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 119.5 4a7 7 0 1010.5 10.5z"/></svg>
+      </button>
+      <div class="card">
+        <span class="lvl-tag">LEVEL 6</span>
+        <h2>Always-on operations</h2>
+        <p>Harden for unattended work: always-on hardening, handover state
+        so work survives any single session, overnight runs, and a real
+        monitoring stack — <b>Grafana, Prometheus and himmel's own
+        exporters, installed on your machine</b> — feeding alerts to your
+        bridge.</p>
+        <ul class="chips">
+          <li><button class="chip" data-detail="overnight">Overnight
+          shifts</button></li>
+          <li><button class="chip" data-detail="handover-sessions">Session
+          handover</button></li>
+          <li><button class="chip" data-detail="morning">Morning
+          report</button></li>
+          <li><button class="chip" data-detail="monitoring">Grafana +
+          Prometheus + exporters</button></li>
+          <li><button class="chip roadmap" data-detail="rm-mondeps">Monitoring
+          deps sorted</button></li>
+          <li><button class="chip roadmap" data-detail="rm-report">Templatable
+          report</button></li>
+        </ul>
+        <p class="impact"><b>Impact:</b> work continues while you're away.
+        Instead of reconstructing the night, you read <b>one morning
+        report</b> and make the decisions only you can make.</p>
+        <div class="note">Partly guided-manual today: the installer wires
+        the monitoring stack up on Windows, but reports it as not yet
+        runnable elsewhere, and a few schedules are still armed by
+        hand.</div>
+      </div>
+    </section>
+
+    <section class="level" data-level="7">
+      <button class="knot" aria-label="Mark level 7, command a fleet, as your current level">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 21V4"/><path d="M6 4h11l-2.5 3.5L17 11H6"/></svg>
+      </button>
+      <div class="card">
+        <span class="lvl-tag">LEVEL 7</span>
+        <h2>Command a fleet</h2>
+        <p>Two words first, because the rest of this level uses them. A
+        <b>lane</b> is one work session that owns exactly one ticket, in
+        its own worktree. The <b>console</b> is the one session you keep
+        in front of you: it reviews lanes at their stop points, holds the
+        sole authority to merge, and escalates to you only what genuinely
+        needs you.</p>
+        <p>The summit is many lanes running at once under one console.
+        They coordinate through a <b>written layer</b> — mission briefs
+        plus handover and roadmap documents every lane reads and appends —
+        and by direct messages to the console when something is
+        urgent.</p>
+        <p>A read-only console for watching it happen ships today: a local
+        web UI showing lane state, escalations and a live event stream.
+        <b>Dispatch and adjudication are not built yet</b> — the console's
+        own UI says so.</p>
+        <ul class="chips">
+          <li><button class="chip" data-detail="briefs">Mission
+          briefs</button></li>
+          <li><button class="chip" data-detail="legs">Parallel
+          lanes</button></li>
+          <li><button class="chip" data-detail="comms">Written comms
+          layer</button></li>
+          <li><button class="chip" data-detail="stops">Stop-point
+          reviews</button></li>
+          <li><button class="chip" data-detail="merge-auth">Sole merge
+          authority</button></li>
+          <li><button class="chip" data-detail="fleet-control">Fleet
+          console (read-only)</button></li>
+          <li><button class="chip roadmap" data-detail="rm-judge">Installable
+          console module</button></li>
+        </ul>
+        <p class="impact"><b>Impact:</b> you stop being the bottleneck of
+        one session. A night's work is many tickets shipped in parallel —
+        and the morning report stays your single human surface.</p>
+      </div>
+    </section>
+  </div>
+
+  <section class="camp">
+    <span class="lvl-tag">OFF-TRAIL</span>
+    <h2>Self-evolving — testing in progress</h2>
+    <p>The experimental tier: capabilities that run daily here but are not
+    proven enough to promise. Listed as work in progress, not as
+    features.</p>
+    <ul class="chips">
+      <li><button class="chip roadmap" data-detail="xp-memory">Memory
+      compounding</button></li>
+      <li><button class="chip roadmap" data-detail="xp-skill-eval">Skill
+      eval &amp; optimization loops</button></li>
+      <li><button class="chip roadmap" data-detail="xp-workflows">Self-evolving
+      workflows</button></li>
+    </ul>
+  </section>
+
+  <footer class="tips">
+    Your answers are cached: <span class="mono">himmelctl ensure</span>
+    replays them, the wizard can be
+    rerun any time, and <span class="mono">--dry-run</span> always shows
+    the plan first.
+    Click any level marker to track where you are — it's remembered on
+    this device only.
+  </footer>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="ptitle" hidden>
+  <button class="pclose" id="pclose" aria-label="Close detail panel">&#215;</button>
+  <span class="ptag" id="ptag"></span>
+  <h3 id="ptitle"></h3>
+  <div class="body" id="pbody"></div>
+</aside>
+
+<script>
+(function () {
+  /* ---------- progress ---------- */
+  var KEY = 'himmel-adoption-level';
+  var levels = Array.prototype.slice.call(document.querySelectorAll('.level'));
+  var progress = document.getElementById('progress');
+  var names = ['Install', 'Guardrails', 'Second brain', 'Reach', 'Review depth',
+               'Spend & context', 'Always-on', 'Command a fleet'];
+
+  function readLevel() {
+    try {
+      var v = localStorage.getItem(KEY);
+      var n = parseInt(v, 10);
+      return (v === null || isNaN(n)) ? -1 : Math.max(-1, Math.min(7, n));
+    }
+    catch (e) { return -1; }
+  }
+  function writeLevel(n) { try { localStorage.setItem(KEY, String(n)); } catch (e) {} }
+
+  function render(current) {
+    levels.forEach(function (el) {
+      var n = parseInt(el.getAttribute('data-level'), 10);
+      el.classList.toggle('here', n === current);
+      el.classList.toggle('done', current > -1 && n < current);
+    });
+    if (current === -1) {
+      progress.textContent = 'Click a level marker to set where you are.';
+    } else {
+      progress.innerHTML = 'You are at <b>Level ' + current + ' — ' + names[current] + '</b>' +
+        (current === 7 ? '. Summit.' : ' · next: ' + names[current + 1]);
+    }
+  }
+
+  levels.forEach(function (el) {
+    el.querySelector('.knot').addEventListener('click', function () {
+      var n = parseInt(el.getAttribute('data-level'), 10);
+      var cur = readLevel();
+      var next = (cur === n) ? -1 : n;   /* click again to clear */
+      writeLevel(next);
+      render(next);
+    });
+  });
+
+  render(readLevel());
+
+  /* the "roadmap" tag on a roadmap chip is CSS ::after content, which not
+     every screen reader folds into the accessible name — state it outright */
+  Array.prototype.slice.call(document.querySelectorAll('.chip.roadmap'))
+    .forEach(function (el) {
+      el.setAttribute('aria-label',
+        el.textContent.replace(/\s+/g, ' ').trim() + ' — roadmap');
+    });
+
+  /* ---------- detail panel ---------- */
+  /* status: 'ship' = installed/working today · 'road' = roadmap · 'wip' = testing in progress */
+  var PLUGINS =
+    '<p>himmel ships its own plugin marketplace and installs a further set from elsewhere.</p>' +
+    '<span class="listhead">himmel’s own plugins</span>' +
+    '<ul>' +
+    '<li><b>himmel-ops · handover · qmd · obsidian-triage · pr-review-toolkit-himmel · ' +
+    'telegram-himmel · luna-correlate · claude-obsidian</b></li>' +
+    '<li><b>claude-hud</b>, vendored in-repo rather than marketplace-registered</li>' +
+    '<li>Bundled tooling: <b>Jira CLI · Bitbucket scripts · guard hooks</b></li>' +
+    '</ul>' +
+    '<span class="listhead">From elsewhere</span>' +
+    '<p>Official Claude Code plugins and a selection of community ones — the review, ' +
+    'documentation and editor helpers the workflow leans on. The installer names each one ' +
+    'in its plan, and <span class="mono">--dry-run</span> shows you that plan first.</p>' +
+    '<p><b>Installed is not the same as enabled.</b> A reconciler keeps only a lean set ' +
+    'enabled, so your context window stays small even when the roster grows.</p>' +
+    '<p><b>Off is not gone.</b> Several capabilities reach your sessions through other doors ' +
+    'entirely: context7, graphify and your vault connect as MCP servers, gh is a CLI, ' +
+    'CodeRabbit reviews through its GitHub App, and the HUD renders as your statusline. ' +
+    'Turning a plugin off removes its skills from your context, not the capability’s other routes.</p>';
+
+  var D = {
+    'questions': { t: 'What the wizard asks', s: 'ship', h:
+      '<p><b>Seven questions are always asked, and up to eighteen in total, depending on your earlier answers.</b></p>' +
+      '<p><b>Always asked:</b></p><ul>' +
+      '<li><b>profile</b> — starter | luna | operator | custom, default starter. A preset only <i>seeds</i> the default answer at each question below — it never skips one.</li>' +
+      '<li><b>scope</b> — this project, or your user account</li>' +
+      '<li><b>vault</b> — none | the bundled template | your existing vault</li>' +
+      '<li><b>handover</b> — inline, or an external state directory</li>' +
+      '<li><b>pluginSet</b> — <span class="mono">lean</span>, currently the only option</li>' +
+      '<li><b>lanes</b> — pick from ollama, copilot, codex, hermes, or none</li>' +
+      '<li><b>alwaysOn</b> — unattended-machine hardening, yes or no</li></ul>' +
+      '<p><b>Conditional</b>, up to eleven more: vault and handover paths, the per-cadence pick-list and a follow-up asking whether to tear down any cadence you declined, a PHI declaration, an optional secrets walk, the Telegram bridge on or off with its env path, whisper CLI and model paths, and bridge reboot persistence.</p>' +
+      '<p>The secrets walk and the later status nags filter by what you actually selected, so a feature you declined never nags you again.</p>' +
+      '<p>Every question has a safe default. <span class="mono">--dry-run</span> shows the whole plan first.</p>' },
+    'jira-cli': { t: 'Jira CLI', s: 'ship', h:
+      '<p>A bundled command-line Jira client himmel <b>brings</b> — tickets are created, read, commented and transitioned from the terminal, so agents and humans share one audited path.</p>' +
+      '<p>It is the sanctioned chokepoint: the guard hooks route agent ticket-writes through it.</p>' },
+    'handover': { t: 'Handover system', s: 'ship', h:
+      '<p>Work state that survives any single session: per-ticket handover notes, a state directory (inline or an external repo), and a registry. Set up interactively with <span class="mono">/handover-setup</span>.</p>' +
+      '<p>This is what lets a session stop mid-task and a successor resume cold without losing decisions.</p>' },
+    'review-toolkit': { t: 'pr-review-toolkit-himmel', s: 'ship', h:
+      '<p>himmel’s <b>fork of Anthropic’s pr-review-toolkit</b> plugin: review agents plus the <span class="mono">/pr-check</span> flow — a multi-reviewer pass over your branch whose verdict gates the merge at the exact commit reviewed.</p>' },
+    'himmel-ops': { t: 'himmel-ops', s: 'ship', h:
+      '<p>himmel’s core ops plugin: the <b>guard hooks</b> behind Level 1 plus the operational commands the workflow runs on — worktree management, review gating, update and doctor flows.</p>' },
+    'superpowers': { t: 'superpowers', s: 'ship', h:
+      '<p>A community plugin himmel installs and builds on: it powers the <b>overnight planning and subagent-driven implementation</b> flows — the plan-then-implement-with-reviews pipeline that autonomous runs execute.</p>' },
+    'claude-obsidian': { t: 'claude-obsidian', s: 'ship', h:
+      '<p>himmel’s <b>fork of AgriciDaniel’s claude-obsidian</b> plugin: the vault connection layer Claude uses to read and write your Obsidian notes.</p>' },
+    'luna-correlate': { t: 'luna-correlate', s: 'ship', h:
+      '<p>A bundled plugin for correlating vault content — surfacing connections across notes that the nightly synthesis builds on.</p>' },
+    'bitbucket': { t: 'Bitbucket plugin', s: 'ship', h:
+      '<p>himmel <b>brings</b> a Bitbucket integration plugin, so teams on Bitbucket get the same ticket/PR flow. GitHub goes through the required <span class="mono">gh</span> CLI instead.</p>' },
+    'doctor': { t: 'himmel-doctor', s: 'ship', h:
+      '<p>The environment doctor: probes your tools, config and wiring, and reports honest per-item verdicts. A check that cannot run reports as unknown — never as a pass.</p>' },
+    'gh': { t: 'gh CLI', s: 'ship', h:
+      '<p>GitHub’s official CLI — a <b>required</b> toolchain dependency; the installer probes it before anything else. All GitHub operations (PRs, checks, merges) route through it.</p>' },
+    'graphify': { t: 'graphify', s: 'ship', h:
+      '<p>A knowledge-graph tool himmel <b>installs from upstream, version-pinned</b> — not a fork. It builds a queryable graph of your codebase (<span class="mono">graphify query</span>, <span class="mono">graphify explain</span>) and refreshes on a schedule. <span class="mono">/himmel-update</span> rolls the pin.</p>' },
+    'plugins': { t: 'The plugin roster', s: 'ship', h: PLUGINS },
+    'rm-identity': { t: 'Identity setup', s: 'road', h:
+      '<p><b>Roadmap.</b> First-run identity: your user slug and per-user paths collected once by the installer instead of via environment variables.</p>' },
+    'rm-profiles': { t: 'Skill & agent profiles', s: 'road', h:
+      '<p><b>Roadmap.</b> Choose which skills and agents your machine carries as named profiles, instead of inheriting one fixed set.</p>' },
+    'git-flow': { t: 'PR-only git flow', s: 'ship', h:
+      '<p>Structural, not advisory: no direct pushes to main (a gate refuses them), every change lands via a pull request, one sanctioned merge path verifies the review verdict at the exact head being merged, and auto-merge exists only where you opt in per repository.</p>' +
+      '<p>The workflow itself is a <b>configurable step list</b> — execute, review, PR, ticket, merge, publish, handover. Drop the merge step and the agent <b>stops at open, review-clean PRs</b>: push-without-merge exists today.</p>' +
+      '<p>Even with merge active, merging is <b>double-gated</b>: it only happens through the sanctioned merge script, and that script refuses unless an explicit opt-in was set when the session launched.</p>' +
+      '<p>Pre-commit gates are a separate, orthogonal layer: git hooks that fire on <b>every</b> commit, agent or human alike. They arrive with the developer setup today; bringing them to every profile from the installer is the roadmap gates item.</p>' },
+    'rm-autonomy': { t: 'Git autonomy ceiling', s: 'road', h:
+      '<p><b>Roadmap.</b> Declare how much git autonomy the agent gets — e.g. never-push, never-merge, or no-agent-commits — as a per-user ceiling the harness enforces, below the structural PR-only floor that exists today.</p>' +
+      '<p>The pieces exist now, but live in environment configuration set at launch. The roadmap item is exactly this promotion: from environment knobs to a <b>profile-declared ceiling</b> the installer records and every session honors.</p>' },
+    'rm-gates': { t: 'Gates for every profile', s: 'road', h:
+      '<p><b>Roadmap.</b> Today the commit/push gates install with the developer setup script; offering them to every profile from the installer is planned work.</p>' },
+    'luna-template': { t: 'luna-second-brain template', s: 'ship', h:
+      '<p>The bundled vault template — notes structure, a clipper inbox, maps of content, and a daily flow — also published as a standalone repository. Start from it, or keep your own vault and let himmel work inside it.</p>' },
+    'obsidian-triage': { t: 'obsidian-triage skills', s: 'ship', h:
+      '<p>Bundled vault skills: triage new clippings, harvest links, synthesize themes across notes, run vault health checks. They are what the nightly cadences execute.</p>' },
+    'cadences': { t: 'Cadences (4, pick-list)', s: 'ship', h:
+      '<p>The wizard offers a <b>per-cadence pick-list</b> read from the real registry — four rows:</p><ul>' +
+      '<li><b>pipeline</b> — harvest, synthesize, health and fetch-health are all <b>legs of this one cadence</b>, armed together by a single call</li>' +
+      '<li><b>qmd</b> — the nightly search reindex, armed separately</li>' +
+      '<li><b>graphmap</b> — the graphify graph refresh</li>' +
+      '<li><b>codex-sweep</b> — a cleanup sweep, offered only if you took the codex lane</li></ul>' +
+      '<p>Rows that need a vault are offered only once a vault exists. Declining any is recorded as declined, and you are then asked whether to disarm anything already running — a no leaves it armed and the summary says so, per unit.</p>' },
+    'cadence-graphmap': { t: 'Graph refresh cadence', s: 'ship', h:
+      '<p>One of the four cadences: it keeps the graphify graph current on a schedule, instead of only when you run <span class="mono">graphify update</span> by hand.</p>' },
+    'cadence-codex-sweep': { t: 'Codex sweep cadence', s: 'ship', h:
+      '<p>One of the four cadences: a cleanup sweep for the codex lane’s leftovers. It is offered only if you selected the codex lane.</p>' },
+    'qmd': { t: 'qmd vault search', s: 'ship', h:
+      '<p>himmel’s <b>fork of tobi’s qmd</b> search tool. <b>Installed by setup</b>: the CLI is installed and your vault registered as a collection, so semantic search works immediately. The <b>nightly reindex</b> is its own cadence in the pick-list — arm it separately from the pipeline, or search goes stale.</p>' },
+    'luna-sources': { t: 'Source connectors', s: 'ship', h:
+      '<p>Offered alongside the vault question: connectors the installer can wire up so sources feed the pipeline, rather than being copy-pasted in by hand.</p>' },
+    'vault': { t: 'Your Obsidian vault', s: 'ship', h:
+      '<p>Any Obsidian vault works — point the wizard at it. himmel adds notes and structure through its skills; extraction runs on copies, never destructively on your live notes.</p>' },
+    'bridge': { t: 'telegram-himmel bridge', s: 'ship', h:
+      '<p>himmel’s <b>fork of Anthropic’s Telegram plugin</b>: a small always-on service connecting your Telegram to the system — messages in, alerts and reports out. The wizard collects the bot token and env path, and asks — naming the exact artifact it would create (a Windows scheduled task or a Linux systemd unit) — whether to install reboot persistence.</p>' },
+    'bridge-health': { t: 'Bridge health checks', s: 'ship', h:
+      '<p>A separate item from bridge persistence: health probes for the running Telegram bridge, so a dead bridge is a detected fact, not a silent gap.</p>' },
+    'capture': { t: 'Capture from chat', s: 'ship', h:
+      '<p>Send a link, a thought, or a forward to your bot and it lands in the vault’s clipper inbox, ready for the nightly harvest.</p>' },
+    'alerts': { t: 'Alerts in your pocket', s: 'ship', h:
+      '<p>Monitoring alerts and session notifications are routed to your Telegram, so the system can reach you when something genuinely needs a human.</p>' },
+    'voice': { t: 'Voice notes in', s: 'ship', h:
+      '<p>Voice messages are transcribed locally (whisper) and filed like any other capture. The wizard asks for your whisper CLI and model paths.</p>' },
+    'codex': { t: 'codex lane (review)', s: 'ship', h:
+      '<p>OpenAI’s codex CLI as an optional <b>review</b> lane — a second-opinion critic on your diff. It never takes implementation work of its own. Its own explicit opt-in with its own login; never installed behind your back.</p>' },
+    'hermes': { t: 'hermes lane (review)', s: 'ship', h:
+      '<p>A gateway lane reaching additional models for <b>review</b> second opinions only. Own opt-in, own install profile, own credentials.</p>' },
+    'local-lanes': { t: 'Other lanes on the menu', s: 'ship', h:
+      '<p>The lanes question offers four: <b>ollama</b> (local models), <b>copilot</b>, <b>codex</b> and <b>hermes</b> — or none.</p>' +
+      '<p>ollama and copilot are useful helpers, but neither puts a second model family in front of your diff. If a cross-model review floor is what you are after, codex or hermes is the answer — and the wizard says exactly that at the question, before you choose.</p>' },
+    'hud': { t: 'claude-hud statusline', s: 'ship', h:
+      '<p>A heads-up statusline himmel <b>brings, vendored in-repo</b>: context-fill bar, usage and quota windows, model badge, and a prompt-cache expiry clock — the live dashboard of every session.</p>' },
+    'bank': { t: 'Budget preflight', s: 'ship', h:
+      '<p>Before heavy or unattended work, a preflight reads your quota windows and refuses to launch what the bank cannot afford. Anything that dispatches a batch of work checks it first.</p>' },
+    'fill': { t: 'Self-read context fill', s: 'ship', h:
+      '<p>A session can read its <b>own</b> context-window fill as a number instead of guessing. It also distinguishes a stale or unknown reading: rather than serving a frozen snapshot as though it were current, it refuses and says so — so a decision to wrap up is never made on a number that quietly stopped updating.</p>' },
+    'tokensave': { t: 'tokensave', s: 'ship', h:
+      '<p>A code-graph server — a single binary that indexes your repo into a symbol-level graph stored per project. It installs as <b>both</b> a binary and an MCP server.</p>' +
+      '<p>A <b>context</b> tool, not a spend control — unrelated to rtk, also on this level. Targeted symbol-level retrieval means less of a repo has to be pulled into a session at all.</p>' },
+    'gemini-cli': { t: 'gemini-cli', s: 'ship', h:
+      '<p>Google’s gemini-cli, installed as a dependency and dispatched through a single chokepoint. Its win is a large context window for big-input reads and parallel triage.</p>' +
+      '<p>A <b>context</b> tool, not a spend control — and not a review or implementation lane.</p>' },
+    'rtk': { t: 'rtk output trimming', s: 'ship', h:
+      '<p>A token-optimizing command proxy in the stack: it trims verbose command output before it reaches the model, cutting cost on chatty tools.</p>' },
+    'rm-headless': { t: 'Headless runs with budget guard', s: 'road', h:
+      '<p><b>Roadmap.</b> One-shot headless agent runs wired through the budget preflight, so scripted invocations can’t drain your interactive quota.</p>' },
+    'overnight': { t: 'Overnight shifts', s: 'ship', h:
+      '<p>A documented autonomous pipeline: plan, implement with reviews, heavy review rounds, PR, and a handover — run overnight on a well-scoped ticket, with clear rules for the few things that must stop and wait for a human.</p>' },
+    'handover-sessions': { t: 'Session handover', s: 'ship', h:
+      '<p>Sessions write resumable state and can arm their own successors on a schedule, so work chains across sessions without a human re-briefing each one.</p>' },
+    'morning': { t: 'Morning report', s: 'ship', h:
+      '<p>One consolidated report per overnight run: a row per ticket, decisions-needed grouped at the top. You review one artifact, not N branches.</p>' },
+    'monitoring': { t: 'Grafana + Prometheus + exporters', s: 'ship', h:
+      '<p>A real monitoring stack installed on your machine: Prometheus scraping himmel’s own '
+      + 'exporters for session and flow health, Grafana dashboards, and alerts routed to your bridge.</p>' +
+      '<p>The installer owns it through its own install script — but only on Windows today. On macOS '
+      + 'and Linux that step reports as not yet runnable, and you would stand the stack up by hand.</p>' },
+    'rm-mondeps': { t: 'Monitoring deps sorted', s: 'road', h:
+      '<p><b>Roadmap.</b> Full dependency handling for the monitoring stack, and the platforms the '
+      + 'installer does not cover yet — today it wires the stack on Windows only.</p>' },
+    'rm-report': { t: 'Templatable report', s: 'road', h:
+      '<p><b>Roadmap.</b> The morning report becomes a template you shape to your needs, instead of one fixed layout.</p>' },
+    'briefs': { t: 'Mission briefs', s: 'ship', h:
+      '<p>Every lane starts from a written brief: scope, constraints, verified context, and what to do at a stop point. A lane inherits nothing implicitly, so the brief has to carry everything.</p>' },
+    'legs': { t: 'Parallel lanes', s: 'ship', h:
+      '<p>Independent work sessions, each owning one ticket in its own isolated worktree — many tickets progress at once without stepping on each other.</p>' },
+    'comms': { t: 'Written comms layer', s: 'ship', h:
+      '<p>Lanes coordinate through <b>writing, not shared memory</b>: briefs carry everything a lane needs, and handover and roadmap documents are read and appended by every lane as work progresses. Anything urgent goes to the console as a direct message. The written layer is why work survives any single session dying.</p>' },
+    'stops': { t: 'Stop-point reviews', s: 'ship', h:
+      '<p>A lane drives its PR to a clean review verdict, then <b>stops</b> and reports. The console reviews the evidence — never a lane’s own word for it — before anything merges.</p>' },
+    'merge-auth': { t: 'One merge authority', s: 'ship', h:
+      '<p>Only the console merges, through the sanctioned gate that verifies checks, resolved threads and the reviewed head. Lanes structurally cannot merge their own work.</p>' },
+    'fleet-control': { t: 'Fleet console (read-only)', s: 'ship', h:
+      '<p>A local web console bound to <span class="mono">127.0.0.1:7350</span>, with routes for <span class="mono">/fleet</span>, <span class="mono">/escalations</span> and a live <span class="mono">/events</span> stream.</p>' +
+      '<p>It states its own scope plainly: “Read-only Phase 1 pane. Dispatch and adjudication controls remain disabled until Phase 2.”</p>' },
+    'rm-judge': { t: 'Installable console module', s: 'road', h:
+      '<p><b>Roadmap.</b> The read-only console already runs, and so do the pieces around it — briefs, the written comms layer, stop-point reviews, one merge authority, the morning report. Making the console an installable module, and building the dispatch and adjudication controls it does not yet have, is the roadmap.</p>' },
+    'xp-memory': { t: 'Memory compounding', s: 'wip', h:
+      '<p><b>Testing in progress.</b> Persistent agent memory plus vault synthesis feeding each other, so lessons learned tonight change behavior tomorrow. Running daily; not yet proven enough to promise.</p>' },
+    'xp-skill-eval': { t: 'Skill eval & optimization loops', s: 'wip', h:
+      '<p><b>Testing in progress.</b> Evaluating and tuning the skill and prompt surface from real usage — which skills earn their context, which get trimmed.</p>' },
+    'xp-workflows': { t: 'Self-evolving workflows', s: 'wip', h:
+      '<p><b>Testing in progress.</b> Workflows that observe their own failure patterns and propose their own structural fixes.</p>' }
+  };
+
+  var panel = document.getElementById('panel');
+  var scrim = document.getElementById('scrim');
+  var ptitle = document.getElementById('ptitle');
+  var ptag = document.getElementById('ptag');
+  var pbody = document.getElementById('pbody');
+  var pclose = document.getElementById('pclose');
+  var wrap = document.querySelector('.wrap');
+  var opener = null;
+  var closeTimer = null;
+
+  function openDetail(id, btn) {
+    var d = D[id];
+    if (!d) return;
+    opener = btn;
+    ptitle.textContent = d.t;
+    ptag.textContent = d.s === 'ship' ? 'installed & working today' : d.s === 'road' ? 'roadmap' : 'testing in progress';
+    ptag.className = 'ptag ' + (d.s === 'ship' ? 'ship' : 'road');
+    pbody.innerHTML = d.h;
+    /* a close still fading out owns a timer that would hide THIS panel and
+       pull focus back to the previous chip - cancel it before reopening */
+    if (closeTimer !== null) { clearTimeout(closeTimer); closeTimer = null; }
+    panel.hidden = false;
+    /* the panel declares aria-modal, so take the page behind it out of the
+       tab order to match; inert is a no-op on browsers that lack it */
+    wrap.inert = true;
+    scrim.classList.add('open');
+    /* force layout so the transition runs from the hidden state */
+    void panel.offsetWidth;
+    panel.classList.add('open');
+    pclose.focus();
+  }
+  function closeDetail() {
+    /* a close already in flight owns both the timer and the saved opener; a
+       second call (Escape auto-repeat - panel.hidden is not set until the
+       timer fires, so the keydown guard still passes) would capture a null
+       opener and leave focus nowhere */
+    if (closeTimer !== null) return;
+    panel.classList.remove('open');
+    scrim.classList.remove('open');
+    wrap.inert = false;
+    var restore = opener; opener = null;
+    var done = function () {
+      closeTimer = null;
+      /* the page is interactive again the moment closing starts, so focus may
+         already have moved on - only take it back if the panel still holds it
+         (or nothing does), never off whatever the reader just picked */
+      var a = document.activeElement;
+      var ours = !a || a === document.body || panel.contains(a);
+      panel.hidden = true;
+      if (restore && ours) restore.focus();
+    };
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) done();
+    else closeTimer = setTimeout(done, 300);
+  }
+
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-detail]') : null;
+    if (b) openDetail(b.getAttribute('data-detail'), b);
+  });
+  scrim.addEventListener('click', closeDetail);
+  pclose.addEventListener('click', closeDetail);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && !panel.hidden) closeDetail();
+  });
+})();
+</script>
+</body>
+</html>

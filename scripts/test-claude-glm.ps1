@@ -8,6 +8,12 @@
   cannot terminate this harness. Never touches the real user profile or ~/.claude.
 #>
 $ErrorActionPreference = 'Stop'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ScriptDir = $PSScriptRoot
 $Launcher  = Join-Path $ScriptDir 'claude-glm.ps1'
 # Directory holding pwsh itself — a PATH that keeps pwsh (needed to spawn the
@@ -28,7 +34,7 @@ New-Item -ItemType Directory -Force -Path $TMP | Out-Null
 
 # snapshot env we mutate per-invocation; restored in the outer finally
 $OrigEnv = @{}
-foreach ($n in 'USERPROFILE', 'ZAI_API_KEY', 'CLAUDE_GLM_DOTENV_ROOT', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH', 'CLAUDE_LANE_AUTO_RESEED', 'CLAUDE_LANE_SEED_LOCK_TIMEOUT') {
+foreach ($n in 'USERPROFILE', 'ZAI_API_KEY', 'CLAUDE_GLM_DOTENV_ROOT', 'MOCK_ENV_OUT', 'MOCK_ARGV_OUT', 'PATH', 'CLAUDE_LANE_AUTO_RESEED', 'CLAUDE_LANE_SEED_LOCK_TIMEOUT', 'CLAUDE_LANE_SEED_LOCK_STALE') {
   $OrigEnv[$n] = [Environment]::GetEnvironmentVariable($n)
 }
 
@@ -248,6 +254,13 @@ try {
   New-Item -ItemType File -Force -Path (Join-Path $WORK '.salus') | Out-Null
   Assert-Exit (Invoke-Launcher) 3 'salus refuses'
   Assert-Exit (Invoke-Launcher -LArgs @('-Force')) 3 'salus refuses despite -Force'
+
+  # --- T8b: .salus-profile marker ALONE (no .salus) -> refuse exit 3 (HIMMEL-2173
+  # part 2 — a defense for salus deployments that predate part 1 shipping .salus).
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  New-Item -ItemType File -Force -Path (Join-Path $WORK '.salus-profile') | Out-Null
+  Assert-Exit (Invoke-Launcher) 3 'salus-profile-only refuses'
+  Assert-Exit (Invoke-Launcher -LArgs @('-Force')) 3 'salus-profile-only refuses despite -Force'
 
   # --- T9: denylisted cwd -> refuse without -Force, proceed with it ---
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
@@ -564,29 +577,43 @@ try {
   Assert-Exit (Invoke-Launcher) 0 'deleted source CLAUDE.md triggers a mirror reseed'
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\CLAUDE.md')) { Fail 'stale CLAUDE.md survived source deletion' } else { Pass 'stale CLAUDE.md removed (leaf deletion mirrored)' }
 
-  # --- T27 (HIMMEL-830): a FRESH held seed lock makes a launch that needs seeding
+  # --- T27 (HIMMEL-1918): invalid seed-lock tuning falls back to the documented
+  # defaults rather than throwing during startup. PowerShell already treats leading
+  # zeros as decimal; garbage/non-positive values need the same fallback as bash. ---
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  $env:CLAUDE_LANE_SEED_LOCK_TIMEOUT = 'garbage'
+  $env:CLAUDE_LANE_SEED_LOCK_STALE = '0'
+  Assert-Exit (Invoke-Launcher) 0 'invalid seed-lock values fall back to defaults'
+  Remove-Item Env:CLAUDE_LANE_SEED_LOCK_TIMEOUT
+  Remove-Item Env:CLAUDE_LANE_SEED_LOCK_STALE
+
+  # --- T28 (HIMMEL-830): a FRESH held seed lock makes a launch that needs seeding
   # time out with exit 4, a message naming the lock path, and the held lock LEFT
   # intact (we must not delete a fresh holder's lock on timeout). Lock is a SIBLING
   # of the config dir. TIMEOUT=1 keeps the deterministic wait ~1s. ---
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
-  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.claude-glm.seed-lock') | Out-Null
+  $lockDir = Join-Path $FAKEHOME '.claude-glm.seed-lock'
+  New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
+  'foreign-fresh-owner' | Set-Content -LiteralPath (Join-Path $lockDir 'owner') -NoNewline
   $env:CLAUDE_LANE_SEED_LOCK_TIMEOUT = '1'
   Assert-Exit (Invoke-Launcher) 4 'held fresh seed lock times out (exit 4)'
   Remove-Item Env:CLAUDE_LANE_SEED_LOCK_TIMEOUT
   if (FileHas $OutTxt '.claude-glm.seed-lock') { Pass 'timeout message names the lock path' } else { Fail 'timeout message does not name the lock path' }
-  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm.seed-lock')) { Pass 'fresh held lock left intact on timeout' } else { Fail 'fresh held lock removed on timeout' }
+  if ((Test-Path -LiteralPath $lockDir) -and ((Get-Content -LiteralPath (Join-Path $lockDir 'owner') -Raw) -eq 'foreign-fresh-owner')) { Pass 'fresh foreign-owned lock left intact on timeout' } else { Fail 'fresh foreign-owned lock changed on timeout' }
 
-  # --- T28 (HIMMEL-830): a STALE held lock (mtime far in the past) is stolen, the
+  # --- T29 (HIMMEL-830): a STALE held lock (mtime far in the past) is stolen, the
   # seed proceeds, the launch exits 0, and the lock is released (no residue). ---
   New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
   $lockDir = Join-Path $FAKEHOME '.claude-glm.seed-lock'
   New-Item -ItemType Directory -Force -Path $lockDir | Out-Null
+  'foreign-stale-owner' | Set-Content -LiteralPath (Join-Path $lockDir 'owner') -NoNewline
   (Get-Item -LiteralPath $lockDir).LastWriteTimeUtc = [datetime]'2020-01-01'   # older than the 120s default stale window
   Assert-Exit (Invoke-Launcher) 0 'stale seed lock is stolen and seed proceeds'
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\.seeded')) { Pass 'seed completed after stealing stale lock' } else { Fail 'seed did not complete after stealing stale lock' }
-  if (Test-Path -LiteralPath $lockDir) { Fail 'stale lock not released after seed' } else { Pass 'stale lock released after seed' }
+  $staleOrphans = @(Get-ChildItem -LiteralPath $FAKEHOME -Directory -Filter '.claude-glm.seed-lock.stale.*' -ErrorAction SilentlyContinue)
+  if ((-not (Test-Path -LiteralPath $lockDir)) -and $staleOrphans.Count -eq 0) { Pass 'non-empty stale lock and renamed orphan are cleaned' } else { Fail 'stale lock or renamed orphan remained after seed' }
 
-  # --- T29 (HIMMEL-830, best-effort concurrency smoke): two simultaneous first-launch
+  # --- T30 (HIMMEL-830, best-effort concurrency smoke): two simultaneous first-launch
   # seeders of the same lane both exit 0, leave a consistent config (sentinel present),
   # and leave no lock residue. The lock serializes them; the loser's recheck skips. This
   # also exercises the double-checked recheck path (the second acquirer finds a fresh
@@ -603,19 +630,45 @@ try {
   # back to ShellExecute bare-name resolution (the "how do you want to open
   # this file?" picker). Same idiom as the $PwshDir line at the top of the file.
   $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
-  $pa = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
-  $pb = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
+  $pa = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -NoNewWindow -PassThru
+  $pb = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -NoNewWindow -PassThru
   $pa.WaitForExit(); $pb.WaitForExit()
   if ($pa.ExitCode -eq 0 -and $pb.ExitCode -eq 0) { Pass 'both concurrent launches exit 0' } else { Fail "concurrent launches exit A=$($pa.ExitCode) B=$($pb.ExitCode)" }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm\.seeded')) { Pass 'concurrent seed left a sentinel' } else { Fail 'concurrent seed left no sentinel' }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-glm.seed-lock')) { Fail 'concurrent launch left lock residue' } else { Pass 'no lock residue after concurrent launches' }
 
-  # DEVIATION (HIMMEL-830 CR r1): the bash suites' release-failure test (intruder file
-  # planted inside the held lock -> non-fatal WARNING, lock left intact) is bash-only.
-  # The honest construction needs a slow-but-SUCCEEDING node shim, and a node.cmd batch
-  # shim cannot receive the launcher's multi-line `-e <script>` argument (cmd mangles
-  # embedded newlines); the .ps1-shim precedence workaround is fragile. The release
-  # code path itself is shared and covered by the bash twins.
+  # --- T31 (HIMMEL-1918): if another owner replaces our token while seeding, release
+  # must leave that replacement lock intact and return silently. A ready background
+  # job watches the real lock path and swaps the owner as soon as acquisition records it.
+  New-Sandbox; $script:KEY = 'zai-test-123'  # gitleaks:allow
+  $lockDir = Join-Path $FAKEHOME '.claude-glm.seed-lock'
+  $ownerPath = Join-Path $lockDir 'owner'
+  $watcherReady = Join-Path $WORK 'owner-watcher-ready'
+  $ownerWatcher = Start-Job -ScriptBlock {
+    param($LockDir, $OwnerPath, $ReadyPath)
+    [System.IO.File]::WriteAllText($ReadyPath, 'ready')
+    while (-not (Test-Path -LiteralPath $LockDir -PathType Container)) { Start-Sleep -Milliseconds 2 }
+    for ($i = 0; $i -lt 500; $i++) {
+      if (Test-Path -LiteralPath $OwnerPath -PathType Leaf) { break }
+      if (-not (Test-Path -LiteralPath $LockDir -PathType Container)) { return }
+      Start-Sleep -Milliseconds 2
+    }
+    if (Test-Path -LiteralPath $LockDir -PathType Container) {
+      [System.IO.File]::WriteAllText($OwnerPath, 'replacement-owner')
+    }
+  } -ArgumentList $lockDir, $ownerPath, $watcherReady
+  while (-not (Test-Path -LiteralPath $watcherReady -PathType Leaf)) { Start-Sleep -Milliseconds 10 }
+  Assert-Exit (Invoke-Launcher) 0 'mismatched owner release stays non-fatal'
+  Wait-Job -Job $ownerWatcher -Timeout 10 | Out-Null
+  if ($ownerWatcher.State -notin @('Completed', 'Failed')) { Stop-Job -Job $ownerWatcher }
+  Receive-Job -Job $ownerWatcher -ErrorAction SilentlyContinue | Out-Null
+  Remove-Job -Job $ownerWatcher -Force
+  $replacementIntact = (Test-Path -LiteralPath $ownerPath -PathType Leaf) -and ((Get-Content -LiteralPath $ownerPath -Raw) -eq 'replacement-owner')
+  if ($replacementIntact -and -not (FileHas $OutTxt 'WARNING - failed to release seed lock')) {
+    Pass 'mismatched owner release leaves the replacement lock intact and silent'
+  } else {
+    Fail 'mismatched owner release changed or warned about the replacement lock'
+  }
 
   Write-Host ''
   if ($script:fails -eq 0) { Write-Host 'ALL PASS' } else { Write-Host "$($script:fails) failure(s)" -ForegroundColor Red; exit 1 }

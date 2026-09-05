@@ -32,8 +32,14 @@
 #   a. `status --json --items <six-csv>` reports EXACTLY those six, all
 #      severity=="red", summary.red==6 (and, as a bonus over the literal
 #      --items-scoped requirement: a --items-less run root-to-tip proves
-#      the STATE itself — not just the query — carries only six reds
-#      against the full manifest: summary.red==6, na==manifestCount-6).
+#      the STATE itself, not just the query, carries the six golden reds
+#      PLUS (HIMMEL-2349) the additive overlay's own recorded-install-profile
+#      coverage of 8 more manifest items: summary is
+#      {red:13,degraded:1,green:0,na:manifestCount-14} (pre-commit is
+#      actively scrubbed from PATH, so this holds regardless of whether the
+#      host running the suite has pre-commit installed) - see the bonus
+#      check's own comment, right where it's asserted, for the
+#      fully-verified per-item breakdown of those 8).
 #   b. DISCRIMINATION: six flip cases. Each flips ONE condition to present
 #      via a hermetic-env change scoped to that ONE invocation (extra PATH
 #      entry, an env var, or a file edit — never a permanent fixture
@@ -53,6 +59,8 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
 lint_script="$repo_root/scripts/install/manifest-lint.mjs"
@@ -78,15 +86,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # snapshot_dir <dir> — sorted "relpath sha256" pairs, for a before/after
 # byte-identity check that doesn't depend on tar's metadata quirks. Portable
@@ -141,13 +140,17 @@ cacheDir_w="$(winpath "$cacheDir")"
 write_cache "$cacheDir/install-profile.json" adopter project none "" inline "" lean
 
 # ── control 1/2: hermetic PATH — bash (+ git, for handover_root's `git
-# rev-parse`) present via link_hermetic_tool, bun + qmd scrubbed via
-# scrub_path (never assumed absent by luck — actively excluded even though
-# the suite runner's own real PATH may carry either or both). ────────────
+# rev-parse`) present via link_hermetic_tool, bun + qmd + pre-commit
+# scrubbed via scrub_path (never assumed absent by luck — actively excluded
+# even though the suite runner's own real PATH may carry any of them).
+# pre-commit in particular must be scrubbed: the case (a) bonus check below
+# reads the "pre-commit" manifest item's probe, and letting that read
+# whatever this host happens to have on PATH would make the golden's
+# expected counts machine-dependent (HIMMEL-2349, codex-3). ────────────────
 baseStub="$work/stub-base"; mkdir -p "$baseStub"
 link_hermetic_tool bash "$baseStub"
 link_hermetic_tool git "$baseStub"
-scrubbedBase=$(scrub_path "$PATH" bun qmd)
+scrubbedBase=$(scrub_path "$PATH" bun qmd pre-commit)
 basePath="$baseStub:$scrubbedBase"
 
 # ── flip fixtures, created ONCE up front (never mutated in place) so they
@@ -181,10 +184,10 @@ run_status() {
   local extra="$1" handoverDir="$2" pathVal="$basePath"
   [ -n "$extra" ] && pathVal="$extra:$basePath"
   if [ -n "$handoverDir" ]; then
-    ( cd "$targetGolden" && HANDOVER_DIR="$(winpath "$handoverDir")" HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HOME="$homeDir" PATH="$pathVal" \
+    ( cd "$targetGolden" && HANDOVER_DIR="$(winpath "$handoverDir")" HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HIMMEL_LUNA_CONFIG_PATH="$cacheDir_w-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" PATH="$pathVal" \
         "$node_bin" "$wizard" status --json --items "$SIX_IDS_CSV" )
   else
-    ( cd "$targetGolden" && unset HANDOVER_DIR && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HOME="$homeDir" PATH="$pathVal" \
+    ( cd "$targetGolden" && unset HANDOVER_DIR && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HIMMEL_LUNA_CONFIG_PATH="$cacheDir_w-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" PATH="$pathVal" \
         "$node_bin" "$wizard" status --json --items "$SIX_IDS_CSV" )
   fi
 }
@@ -192,7 +195,7 @@ run_status() {
 # run_status_full — same as run_status but WITHOUT --items (the bonus
 # whole-manifest check in case a).
 run_status_full() {
-  ( cd "$targetGolden" && unset HANDOVER_DIR && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HOME="$homeDir" PATH="$basePath" \
+  ( cd "$targetGolden" && unset HANDOVER_DIR && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HIMMEL_LUNA_CONFIG_PATH="$cacheDir_w-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" PATH="$basePath" \
       "$node_bin" "$wizard" status --json )
 }
 
@@ -213,7 +216,7 @@ assert_items_severity() {
 # first-write), then patch the saved items map to the exact six-true/
 # rest-false split. A cheap, spawn-free item (pre-commit-hooks) is used for
 # the seed run's own --items so this step never shells out to bash. ───────
-( cd "$targetGolden" && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HOME="$homeDir" PATH="$basePath" \
+( cd "$targetGolden" && HIMMELCTL_REPO_ROOT="$fixtureRepo_w" HIMMELCTL_CACHE_DIR="$cacheDir_w" HIMMEL_LUNA_CONFIG_PATH="$cacheDir_w-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" PATH="$basePath" \
     "$node_bin" "$wizard" status --json --items pre-commit-hooks >/dev/null ) \
   || fail "setup: seed status run failed"
 
@@ -253,10 +256,39 @@ echo "ok: case a — status --json --items <the-six> reports exactly those six, 
 # six reds against the FULL manifest.
 manifestCount=$(jq '.items | length' "$manifest_path")
 outAFull=$(run_status_full)
+# HIMMEL-2349 (retask 01S-A-2349-b73d): the additive overlay (status-report.js)
+# now ALSO marks desired:true any of the remaining 42 items the recorded
+# install-profile (v1/legacy here -> profileForVault(cachedAnswers) ->
+# category 'core', scope 'project') covers by manifest membership, on top of
+# the six the persisted state.json entry already enables - verified by hand
+# against the real manifest before pinning these numbers (never accepted on
+# faith): exactly 8 of the 42 have profiles.includes('core') &&
+# scopes.includes('project') - bitbucket-cli-build, claude-plugins-pluginSet,
+# doc-guard-map, guardrail-scope, himmel-ops-plugin, jira-env-keys,
+# pre-commit, pre-commit-hooks. Their PROBE results in this hermetic fixture
+# (re-confirmed via the actual run's per-item output, not assumed): 7 read
+# absent -> red (bitbucket-cli-build, claude-plugins-pluginSet,
+# guardrail-scope, himmel-ops-plugin, jira-env-keys, pre-commit-hooks, and
+# -- since scrub_path above actively excludes pre-commit from basePath,
+# regardless of whether this host has pre-commit on its own real PATH --
+# pre-commit too); doc-guard-map's resolver genuinely cannot be sourced in
+# this sandbox -> degraded (a REAL probe failure, not the opt-in/absent n/a
+# downgrade - that downgrade only applies to a 'red' probe.actual, and
+# 'degraded' is a different actual entirely, so it never re-suppresses back
+# to n/a here). Net: red 6->13, degraded 0->1, green 0->0, na 42->34 - items
+# moving FROM n/a TO a real severity is exactly the additive overlay's
+# intended direction (an item the record covers but the persisted
+# state.json hadn't enabled is no longer silently invisible), and every one
+# of the 8 items' own detail names the reason directly (desired via the
+# recorded install-profile), so this is not a fixture regression. Scrubbing
+# pre-commit (rather than letting it read whatever this host's PATH
+# happens to carry) is what makes these counts host-independent -
+# HIMMEL-2349 codex-3: previously this assertion held green==1 ONLY because
+# the machine running the suite happened to have pre-commit.exe on PATH.
 echo "$outAFull" | jq -e --argjson n "$manifestCount" \
-  '(.items | length) == $n and .summary.red == 6 and .summary.degraded == 0 and .summary.green == 0 and .summary.na == ($n - 6)' >/dev/null \
-  || fail "case a (bonus): expected the full $manifestCount-item run to read {red:6, na:$((manifestCount - 6))} (got: $(echo "$outAFull" | jq -c '.summary'))"
-echo "ok: case a (bonus) — a --items-less run against the same state confirms only six reds against the whole manifest"
+  '(.items | length) == $n and .summary.red == 13 and .summary.degraded == 1 and .summary.green == 0 and .summary.na == ($n - 14)' >/dev/null \
+  || fail "case a (bonus): expected the full $manifestCount-item run to read {red:13, degraded:1, green:0, na:$((manifestCount - 14))} - the six golden reds PLUS the 8 items the recorded install-profile additively covers (got: $(echo "$outAFull" | jq -c '.summary'))"
+echo "ok: case a (bonus) - a --items-less run against the same state confirms six golden reds PLUS the additive overlay's 8 recorded-profile-covered items (7 red, 1 degraded, 0 green), against the whole manifest"
 
 # ── case (b): six discrimination flips, each restored after ────────────────
 

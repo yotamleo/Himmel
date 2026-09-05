@@ -22,10 +22,14 @@ SCRIPT="$HOOKS/check-debrand-coverage.sh"
 REAL_CLAUDE="$HOOKS/../../CLAUDE.md"
 REAL_DEBRAND="$HOOKS/../agents-md/debrand.json"
 
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HOOKS/../lib/fixture-tempdir.sh"
+
 # A throwaway repo whose CLAUDE.md is a COPY of the real one, so the real
 # debrand table's live rules genuinely match — the baseline must be green.
 setup_repo() {
-  R=$(mktemp -d); git -C "$R" init -q
+  R=$(fixture_mktemp_dir) || return 1; git -C "$R" init -q
   git -C "$R" config user.email t@t; git -C "$R" config user.name t
   : > "$R/.himmel-dev"
   mkdir -p "$R/scripts/agents-md"
@@ -51,25 +55,25 @@ run_test() {
 }
 
 run_test "no-op without .himmel-dev marker (rc=0)" '
-  setup_repo; cd "$R"; rm -f .himmel-dev;
+  setup_repo && cd "$R" || exit 1; rm -f .himmel-dev;
   printf "\nx\n" >> CLAUDE.md; git add CLAUDE.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "no-op when neither input is staged (rc=0)" '
-  setup_repo; cd "$R"; echo hi > other.txt; git add other.txt;
+  setup_repo && cd "$R" || exit 1; echo hi > other.txt; git add other.txt;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "no-op for unrelated path containing CLAUDE.md (rc=0)" '
-  setup_repo; cd "$R"; mkdir -p templates/luna-second-brain;
+  setup_repo && cd "$R" || exit 1; mkdir -p templates/luna-second-brain;
   echo hi > templates/luna-second-brain/_CLAUDE.md;
   git add templates/luna-second-brain/_CLAUDE.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "green: staged CLAUDE.md keeps every live rule matching (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "\nAn unrelated new rule.\n" >> CLAUDE.md; git add CLAUDE.md;
   expect_rc 0 bash "$SCRIPT"
 '
@@ -77,7 +81,7 @@ run_test "green: staged CLAUDE.md keeps every live rule matching (rc=0)" '
 # THE regression case for the fail-open inversion: break a LIVE rule and require
 # a nonzero exit. With `if ! cmd; then rc=$?` this returned 0.
 run_test "blocks when a live debrand rule is orphaned (rc=1)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   # No sed -i: that is GNU-only and this suite must run on macOS bash 3.2 too.
   sed "s/spawns a Fable child/spawns a Fable offspring/" CLAUDE.md > CLAUDE.tmp;
   mv CLAUDE.tmp CLAUDE.md;
@@ -88,7 +92,7 @@ run_test "blocks when a live debrand rule is orphaned (rc=1)" '
 # A dormant rule whose phrase reappears must fail closed under enforcement:
 # leaving the flag on exempts that rule from orphan detection forever after.
 run_test "blocks a revived dormant rule (rc=2)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "%s\n" "[{\"from\":\"spawns a Fable child\",\"to\":\"spawns a top-model child\",\"dormant\":true,\"note\":\"deliberately stale flag\"}]" \
     > scripts/agents-md/debrand.json;
   git add scripts/agents-md/debrand.json;
@@ -98,31 +102,31 @@ run_test "blocks a revived dormant rule (rc=2)" '
 # The hook must judge COMMITTED state — an unstaged debrand.json edit must not
 # change the verdict.
 run_test "ignores an unstaged debrand.json edit (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "\nAn unrelated new rule.\n" >> CLAUDE.md; git add CLAUDE.md;
   printf "%s\n" "[{\"from\":\"zzz-never-present\",\"to\":\"x\"}]" > scripts/agents-md/debrand.json;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "blocks a staged DELETION of CLAUDE.md (rc=2)" '
-  setup_repo; cd "$R"; git rm --cached -q CLAUDE.md;
+  setup_repo && cd "$R" || exit 1; git rm --cached -q CLAUDE.md;
   expect_rc 2 bash "$SCRIPT"
 '
 
 run_test "blocks a staged RENAME of CLAUDE.md (rc=2)" '
-  setup_repo; cd "$R"; git mv CLAUDE.md CLAUDE.renamed.md;
+  setup_repo && cd "$R" || exit 1; git mv CLAUDE.md CLAUDE.renamed.md;
   expect_rc 2 bash "$SCRIPT"
 '
 
 run_test "malformed staged debrand.json is fatal (rc=2)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "[{\"to\":\"x\"}]\n" > scripts/agents-md/debrand.json;
   git add scripts/agents-md/debrand.json;
   expect_rc 2 bash "$SCRIPT"
 '
 
 run_test "staged no-op debrand mapping is fatal (rc=2)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "%s\n" "[{\"from\":\"spawns a Fable child\",\"to\":\"spawns a Fable child\"}]" \
     > scripts/agents-md/debrand.json;
   git add scripts/agents-md/debrand.json;
@@ -130,7 +134,7 @@ run_test "staged no-op debrand mapping is fatal (rc=2)" '
 '
 
 run_test "staged duplicate-from debrand mapping is fatal (rc=2)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "%s\n" "[{\"from\":\"duplicate-phrase\",\"to\":\"x\"},{\"from\":\"duplicate-phrase\",\"to\":\"y\"}]" \
     > scripts/agents-md/debrand.json;
   git add scripts/agents-md/debrand.json;
@@ -138,7 +142,7 @@ run_test "staged duplicate-from debrand mapping is fatal (rc=2)" '
 '
 
 run_test "non-array staged debrand.json is fatal (rc=2)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "{\"from\":\"a\",\"to\":\"b\"}\n" > scripts/agents-md/debrand.json;
   git add scripts/agents-md/debrand.json;
   expect_rc 2 bash "$SCRIPT"

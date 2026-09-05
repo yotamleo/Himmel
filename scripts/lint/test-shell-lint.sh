@@ -21,6 +21,13 @@
 #        non-UTF-8 no-BOM .ps1 = [PS1-ENCODING] (never an automated BOM add).
 # 16g. CR r4 (HIMMEL-1432, [codex-r3p-1]): a UTF-16LE-BOM'd SHELL script is a
 #        [BOM] error (breaks the shebang) — r3 over-broadly blessed UTF-16/32.
+#  19. [parse] + [quote-break] (HIMMEL-2230): an apostrophe in prose inside a
+#      single-quoted awk program; includes the parses-but-truncated shape
+#      that `bash -n` cannot see, a clean negative control, and a sweep of
+#      the real scripts/hooks/ corpus. 19i-19k (HIMMEL-2362, private #2017 /
+#      #2018): a valid `sed '...'file` concatenation must NOT fire, and a
+#      truncated program past an earlier complete invocation on the same
+#      line MUST fire.
 #  18. self-check (HIMMEL-1355): shell-lint reports no findings against this
 #      suite's own file (its fixtures/assertions are exempted from advisory
 #      checks the same way shell-lint.sh exempts its own source).
@@ -74,7 +81,8 @@ command -v shellcheck >/dev/null 2>&1 && HAVE_SHELLCHECK=1
 HAVE_ICONV=0
 command -v iconv >/dev/null 2>&1 && HAVE_ICONV=1
 
-TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/shell-lint.XXXXXX")" || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
+[ -n "$TMP_ROOT" ] || { echo "FATAL: mktemp -d returned empty" >&2; exit 1; }
 
 # Write a UTF-8 BOM (EF BB BF) then the given body to $1.
 _write_bom_file() {
@@ -510,6 +518,480 @@ if grepq "$OUT18" -E '\[(regex-class|mktemp|bash32|gnu-flag|echo-e)\]'; then
 else
     pass "no advisory findings on test-shell-lint.sh"
 fi
+
+# ---------------------------------------------------------------------------
+# Case 19 (HIMMEL-2230): [parse] + [quote-break] — an apostrophe in prose inside
+# a single-quoted awk program ends the shell string early. The motivating
+# incident broke a live hook in the WORKTREE (it then denied every command
+# fleet-wide) and never reached a commit, so no commit-time gate ever saw it;
+# only the leg's probe harness NEGATIVE controls went red. Both broken fixtures
+# below are BUILT with printf from a $Q apostrophe rather than written
+# literally, so this suite's own source stays parseable and Case 18's
+# self-check stays clean.
+# ---------------------------------------------------------------------------
+printf '\nCase 19: apostrophe inside a single-quoted awk program\n'
+
+Q="$(printf '\047')"
+
+# 19a POSITIVE CONTROL — the incident shape: the stray apostrophe leaves the
+# file unparseable, so [parse] fires and [quote-break] names the line.
+BROKEN19="$TMP_ROOT/broken-awk.sh"
+# SC2016: these printf format strings carry LITERAL $1/$cmd on purpose —
+# they are the fixture source being written to disk, not expansions here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'cmd="$1"\n'
+    printf 'verdict=$(printf %s%%s\n%s "$cmd" | awk %s\n' "$Q" "$Q" "$Q"
+    printf '    # the scanner walks each record; it%ss the entry point\n' "$Q"
+    printf '    /danger/ { print "BLOCK"; exit }\n'
+    printf '    { print "ALLOW" }\n'
+    printf '%s)\n' "$Q"
+    printf 'printf %sverdict=%%s\n%s "$verdict"\n' "$Q" "$Q"
+} > "$BROKEN19"
+
+OUT19A="$(bash "$LINT" "$BROKEN19" 2>&1)"; EC19A=$?
+if [ "$EC19A" -eq 1 ]; then pass "19a broken awk program exits 1"; else fail "19a expected exit 1, got $EC19A" "$OUT19A"; fi
+assert_contains "19a [parse] fires"       "[parse]"       "$OUT19A"
+assert_contains "19a [quote-break] fires" "[quote-break]" "$OUT19A"
+
+# 19b THE SHAPE `bash -n` CANNOT SEE — two prose apostrophes re-balance the
+# file, so it parses cleanly while awk receives a TRUNCATED program. This is
+# exactly what [quote-break] buys over [parse] (and over shellcheck on a host
+# that does not have it installed).
+TRUNC19="$TMP_ROOT/truncated-awk.sh"
+# SC2016: these printf format strings carry LITERAL $1/$cmd on purpose —
+# they are the fixture source being written to disk, not expansions here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'awk %sBEGIN { x = 1 }  # it%ss the parser%ss job\n' "$Q" "$Q" "$Q"
+    printf '%s /dev/null\n' "$Q"
+} > "$TRUNC19"
+
+if bash -n "$TRUNC19" 2>/dev/null; then
+    pass "19b fixture parses (bash -n is blind to this shape)"
+else
+    fail "19b fixture must PARSE, else it does not prove [quote-break] adds anything over [parse]"
+fi
+OUT19B="$(bash "$LINT" "$TRUNC19" 2>&1)"
+assert_contains     "19b [quote-break] fires on the parseable-but-truncated program" "[quote-break]" "$OUT19B"
+assert_not_contains "19b [parse] stays silent (the file parses)"                     "[parse]"       "$OUT19B"
+
+# 19c NEGATIVE CONTROL — the same script with no stray apostrophe. A lint that
+# cannot be shown to ACCEPT is as useless as one that cannot be shown to reject.
+CLEAN19="$TMP_ROOT/clean-awk.sh"
+# SC2016: these printf format strings carry LITERAL $1/$cmd on purpose —
+# they are the fixture source being written to disk, not expansions here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'cmd="$1"\n'
+    printf 'verdict=$(printf %s%%s\n%s "$cmd" | awk %s\n' "$Q" "$Q" "$Q"
+    printf '    # the scanner walks each record; this is the entry point\n'
+    printf '    /danger/ { print "BLOCK"; exit }\n'
+    printf '    { print "ALLOW" }\n'
+    printf '%s)\n' "$Q"
+    printf 'printf %sverdict=%%s\n%s "$verdict"\n' "$Q" "$Q"
+} > "$CLEAN19"
+
+OUT19C="$(bash "$LINT" "$CLEAN19" 2>&1)"; EC19C=$?
+if [ "$EC19C" -eq 0 ]; then pass "19c clean awk program exits 0"; else fail "19c expected exit 0, got $EC19C" "$OUT19C"; fi
+assert_not_contains "19c no [parse] on a clean file"       "[parse]"       "$OUT19C"
+assert_not_contains "19c no [quote-break] on a clean file" "[quote-break]" "$OUT19C"
+
+# 19d the checks must stay silent across the REAL hook corpus — a lint that
+# fires on healthy production files is unshippable, and scripts/hooks/ is the
+# deny-level surface this ticket names. Assert it directly, not by sampling.
+HOOKS19="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)/scripts/hooks"
+if [ -d "$HOOKS19" ]; then
+    FP19=""
+    for _hf in "$HOOKS19"/*.sh; do
+        [ -f "$_hf" ] || continue
+        bash -n "$_hf" 2>/dev/null || FP19="$FP19 $(basename "$_hf")"
+    done
+    if [ -z "$FP19" ]; then pass "19d every scripts/hooks/*.sh parses"; else fail "19d hook files do not parse:$FP19"; fi
+else
+    printf '  SKIP: scripts/hooks not found — Case 19d skipped\n'
+fi
+
+# 19e (HIMMEL-2230 panel round 1, codex-3) — the false-NEGATIVE regression: a
+# completely ordinary `awk -v` invocation. The old opener only traversed
+# `-flag` tokens between the command and the program, so the `n=1` ASSIGNMENT
+# broke the chain and the whole line was skipped — a miss on an entirely
+# healthy shape. Two prose apostrophes re-balance the file (bash -n is blind,
+# same construction as 19b) so this proves the detector, not bash -n.
+FN19E="$TMP_ROOT/awk-v-flag.sh"
+# SC2016: these printf format strings carry LITERAL $1/$cmd on purpose —
+# they are the fixture source being written to disk, not expansions here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'awk -v n=1 %sBEGIN { x = n }  # it%ss the parser%ss job\n' "$Q" "$Q" "$Q"
+    printf '%s /dev/null\n' "$Q"
+} > "$FN19E"
+
+if bash -n "$FN19E" 2>/dev/null; then
+    pass "19e fixture parses (bash -n is blind to this shape)"
+else
+    fail "19e fixture must PARSE, else it does not prove [quote-break] adds anything over [parse]"
+fi
+OUT19E="$(bash "$LINT" "$FN19E" 2>&1)"
+assert_contains     "19e [quote-break] fires past an awk -v flag/assignment" "[quote-break]" "$OUT19E"
+assert_not_contains "19e [parse] stays silent (the file parses)"            "[parse]"       "$OUT19E"
+
+# 19f (HIMMEL-2230 panel round 1, codex-2) — the false-POSITIVE regression: a
+# shell comment that merely MENTIONS an awk program with an apostrophe is
+# inert prose, not a program opener, and must not fire. The scanner only
+# skips a `#`-led line when it is not already mid-program (19a/19b's own
+# incident shape puts the stray apostrophe in a comment INSIDE the program,
+# where that skip must NOT apply — this case is the other side of that line).
+FP19F="$TMP_ROOT/comment-mention.sh"
+# SC2016: these printf format strings carry LITERAL $1/$cmd on purpose —
+# they are the fixture source being written to disk, not expansions here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf '# example: awk %sBEGIN { print 1 } # it%ss only a comment%s\n' "$Q" "$Q" "$Q"
+    printf 'echo ok\n'
+} > "$FP19F"
+
+OUT19F="$(bash "$LINT" "$FP19F" 2>&1)"; EC19F=$?
+if [ "$EC19F" -eq 0 ]; then pass "19f comment-only mention exits 0"; else fail "19f expected exit 0, got $EC19F" "$OUT19F"; fi
+assert_not_contains "19f no [quote-break] on a comment merely mentioning awk" "[quote-break]" "$OUT19F"
+
+CHECKER19="$SCRIPT_DIR/hook-parse-check.sh"
+
+# 19g (HIMMEL-2230 panel round 2, codex-2) — the LINE-CONTINUATION false-
+# NEGATIVE regression: the command ends its physical line with a `\`, and the
+# quoted program opens on the NEXT one. The walk used to give up the instant
+# it ran off the end of the first physical line without finding the opener.
+# Octal escapes (\134=backslash \012=LF) build the REAL continuation bytes —
+# a textual `\` + `\n` in a printf format string does not reliably survive
+# this shell's own quoting layers (verified empirically: it can silently
+# collapse to the literal two characters backslash-n). Two prose apostrophes
+# re-balance the file (bash -n is blind, same construction as 19b/19e).
+CONT19G="$TMP_ROOT/awk-continuation.sh"
+# SC2016: these printf format strings carry LITERAL $1/$cmd on purpose —
+# they are the fixture source being written to disk, not expansions here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'awk \134\012'
+    printf '  %sBEGIN { x = 1 }  # it%ss the parser%ss job\n' "$Q" "$Q" "$Q"
+    printf '%s /dev/null\n' "$Q"
+} > "$CONT19G"
+
+if bash -n "$CONT19G" 2>/dev/null; then
+    pass "19g fixture parses (bash -n is blind to this shape)"
+else
+    fail "19g fixture must PARSE, else it does not prove [quote-break] adds anything over [parse]"
+fi
+OUT19G="$(bash "$LINT" "$CONT19G" 2>&1)"
+assert_contains     "19g [quote-break] fires across a line continuation" "[quote-break]" "$OUT19G"
+assert_not_contains "19g [parse] stays silent (the file parses)"        "[parse]"       "$OUT19G"
+
+# 19h (HIMMEL-2230 panel round 2, codex-1) — a non-shell file handed DIRECTLY
+# to hook-parse-check.sh (not through shell-lint.sh's own _is_shell_file gate)
+# must be skipped outright: no output, exit 0. Both current callers already
+# gate by file type, but the checker is a standalone tool with two consumers
+# already — a THIRD caller must not get a bogus `bash -n` [parse] finding
+# back for handing it a script in another language.
+PS19H="$TMP_ROOT/example.ps1"
+# SC2016: this printf format string carries LITERAL PowerShell $x on purpose —
+# it is fixture source being written to disk, not an expansion here.
+# shellcheck disable=SC2016
+{
+    printf 'param($x)\n'
+    printf 'if ($x -eq 1) {\n'
+    printf '    Write-Host "hi"\n'
+    printf '}\n'
+} > "$PS19H"
+
+OUT19H="$(bash "$CHECKER19" "$PS19H" 2>&1)"; EC19H=$?
+if [ "$EC19H" -eq 0 ]; then pass "19h .ps1 direct call exits 0"; else fail "19h expected exit 0, got $EC19H" "$OUT19H"; fi
+if [ -z "$OUT19H" ]; then pass "19h .ps1 direct call prints nothing"; else fail "19h expected no output" "$OUT19H"; fi
+
+# 19i (HIMMEL-2362, private-repo #2018) — FALSE POSITIVE regression:
+# `sed 's/x/y/'file` is ordinary, correct shell — the single-quoted program
+# is complete and `file` is concatenated onto the same shell word as the
+# operand. The old next-char test alone (closing quote immediately followed
+# by a word character) cannot tell this apart from a genuine truncation and
+# fired anyway. It must PARSE (it is valid shell, not a broken hook) and
+# [quote-break] must stay silent.
+FALSEPOS19I="$TMP_ROOT/concat-sed.sh"
+# SC2016: this printf format string carries a LITERAL sed program on purpose —
+# it is fixture source being written to disk, not an expansion here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'sed %ss/x/y/%sfile\n' "$Q" "$Q"
+} > "$FALSEPOS19I"
+
+if bash -n "$FALSEPOS19I" 2>/dev/null; then
+    pass "19i fixture parses (ordinary shell concatenation, not a broken hook)"
+else
+    fail "19i fixture must PARSE — it is valid shell"
+fi
+OUT19I="$(bash "$CHECKER19" "$FALSEPOS19I" 2>&1)"; EC19I=$?
+if [ "$EC19I" -eq 0 ]; then pass "19i exits 0 on ordinary sed-then-concatenated-word"; else fail "19i expected exit 0, got $EC19I" "$OUT19I"; fi
+assert_not_contains "19i no [quote-break] on ordinary sed-then-concatenated-word (#2018)" "[quote-break]" "$OUT19I"
+
+# 19j (HIMMEL-2362, private-repo #2017) — NEGATIVE CONTROL for the false-
+# NEGATIVE regression below: the SAME truncated awk program, but FIRST on its
+# physical line (same shape as 19b/19e/19g). This must already fire —
+# without this control, 19k passing would not prove anything: a test that
+# stopped exercising the scanner at all would still pass.
+TRUNCFIRST19J="$TMP_ROOT/truncated-first.sh"
+# SC2016: this printf format string carries a LITERAL awk program on purpose —
+# it is fixture source being written to disk, not an expansion here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'awk %sBEGIN{ x = 1 } # user%ss own%ss note%s bar\n' "$Q" "$Q" "$Q" "$Q"
+} > "$TRUNCFIRST19J"
+
+if bash -n "$TRUNCFIRST19J" 2>/dev/null; then
+    pass "19j fixture parses (bash -n is blind to this shape)"
+else
+    fail "19j fixture must PARSE, else it does not prove [quote-break] adds anything over [parse]"
+fi
+OUT19J="$(bash "$CHECKER19" "$TRUNCFIRST19J" 2>&1)"
+assert_contains "19j [quote-break] fires when the truncated program is FIRST on the line (negative control)" "[quote-break]" "$OUT19J"
+
+# 19k (HIMMEL-2362, private-repo #2017) — the FALSE NEGATIVE itself: the
+# identical truncated awk program from 19j, now preceded on the SAME physical
+# line by a complete, unrelated `sed '...' foo;` invocation. The old rule
+# found the closing quote of the awk program's opener, set inprog = 0, and
+# fell off the end of the rule — the remainder of the line was never
+# re-scanned, so this truncated program (the exact shape [quote-break] exists
+# to catch) went unflagged.
+MISSED19K="$TMP_ROOT/sed-then-truncated-awk.sh"
+# SC2016: this printf format string carries a LITERAL sed+awk program on
+# purpose — it is fixture source being written to disk, not an expansion here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'sed %ss/a/b/%s foo; awk %sBEGIN{ x = 1 } # user%ss own%ss note%s bar\n' \
+        "$Q" "$Q" "$Q" "$Q" "$Q" "$Q"
+} > "$MISSED19K"
+
+if bash -n "$MISSED19K" 2>/dev/null; then
+    pass "19k fixture parses (bash -n is blind to this shape)"
+else
+    fail "19k fixture must PARSE, else it does not prove [quote-break] adds anything over [parse]"
+fi
+OUT19K="$(bash "$CHECKER19" "$MISSED19K" 2>&1)"
+assert_contains "19k [quote-break] fires past a complete sed invocation earlier on the same line (#2017)" "[quote-break]" "$OUT19K"
+
+# 19l (HIMMEL-2362, CR round 1 codex-1 finding on this PR) — a single-line
+# truncation whose trailing prose is more than one word, but carries NO
+# further apostrophe anywhere else on that physical line. A discriminator
+# keyed only on "does another apostrophe reopen later on the line" (an
+# earlier draft of the #2018 fix) misses this: nothing reopens, so it read
+# as ordinary concatenation. The file globally re-balances via a SEPARATE,
+# unrelated quoted string on the NEXT line (an ordinary `echo 'ok'`) — the
+# same "bash -n is blind" shape as 19b, just spread across two lines instead
+# of re-balancing within one.
+TRUNCWORDS19L="$TMP_ROOT/truncated-multiword.sh"
+# SC2016: this printf format string carries a LITERAL awk program on purpose —
+# it is fixture source being written to disk, not an expansion here.
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'awk %sBEGIN{ x = 1 } # user%ss note\n' "$Q" "$Q"
+    printf 'echo %sok%s\n' "$Q" "$Q"
+} > "$TRUNCWORDS19L"
+
+if bash -n "$TRUNCWORDS19L" 2>/dev/null; then
+    pass "19l fixture parses (bash -n is blind to this shape)"
+else
+    fail "19l fixture must PARSE, else it does not prove [quote-break] adds anything over [parse]"
+fi
+OUT19L="$(bash "$CHECKER19" "$TRUNCWORDS19L" 2>&1)"
+assert_contains "19l [quote-break] fires on a multi-word single-line truncation with no further apostrophe on that line" "[quote-break]" "$OUT19L"
+
+# 19m (HIMMEL-2362, CR round 1 codex-2 finding on this PR) — the MULTI-LINE
+# mirror of #2018: a program opened on an earlier line and closed on ITS OWN
+# line as `'file` (the closing quote immediately followed by a concatenated
+# bareword, nothing else on that line) is ordinary shell concatenation
+# spanning multiple lines, not a truncation — it must not fire.
+CONCATMULTILINE19M="$TMP_ROOT/concat-multiline.sh"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'awk %s\n' "$Q"
+    printf '    BEGIN { x = 1 }\n'
+    printf '%sfile\n' "$Q"
+} > "$CONCATMULTILINE19M"
+
+if bash -n "$CONCATMULTILINE19M" 2>/dev/null; then
+    pass "19m fixture parses (ordinary multi-line shell concatenation, not a broken hook)"
+else
+    fail "19m fixture must PARSE — it is valid shell"
+fi
+OUT19M="$(bash "$CHECKER19" "$CONCATMULTILINE19M" 2>&1)"; EC19M=$?
+if [ "$EC19M" -eq 0 ]; then pass "19m exits 0 on a multi-line program closed as 'file"; else fail "19m expected exit 0, got $EC19M" "$OUT19M"; fi
+assert_not_contains "19m no [quote-break] on multi-line concatenation" "[quote-break]" "$OUT19M"
+
+# 19n (HIMMEL-2362, CR round 2 codex-1 finding on this PR) — the word-count
+# discriminator (19i) fixed a BARE concatenated operand (`sed '...'file`
+# alone on the line) but a later variant regressed the moment ordinary shell
+# syntax followed the operand: redirection or a semicolon-chained command
+# both count as "more than one word remains" under a pure word-count test,
+# so `sed '...'file > out` / `sed '...'file; echo done` were flagged even
+# though both are entirely valid, complete shell. Peeling off just the
+# concatenated operand and checking whether a shell metacharacter follows
+# (rather than counting words over the whole remainder) fixes this without
+# reopening #2018 (19i stays green).
+FALSEPOS19N_REDIR="$TMP_ROOT/concat-sed-redir.sh"
+# SC2016: literal sed program on purpose (fixture source to disk).
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'sed %ss/x/y/%sfile > out\n' "$Q" "$Q"
+} > "$FALSEPOS19N_REDIR"
+if bash -n "$FALSEPOS19N_REDIR" 2>/dev/null; then
+    pass "19n(redir) fixture parses (ordinary shell concatenation + redirection)"
+else
+    fail "19n(redir) fixture must PARSE — it is valid shell"
+fi
+OUT19N_REDIR="$(bash "$CHECKER19" "$FALSEPOS19N_REDIR" 2>&1)"; EC19N_REDIR=$?
+if [ "$EC19N_REDIR" -eq 0 ]; then pass "19n(redir) exits 0 on concatenated-operand + redirection"; else fail "19n(redir) expected exit 0, got $EC19N_REDIR" "$OUT19N_REDIR"; fi
+assert_not_contains "19n(redir) no [quote-break] past a concatenated operand + redirection (codex-1)" "[quote-break]" "$OUT19N_REDIR"
+
+FALSEPOS19N_SEMI="$TMP_ROOT/concat-sed-semi.sh"
+# SC2016: literal sed program on purpose (fixture source to disk).
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'sed %ss/x/y/%sfile; echo done\n' "$Q" "$Q"
+} > "$FALSEPOS19N_SEMI"
+if bash -n "$FALSEPOS19N_SEMI" 2>/dev/null; then
+    pass "19n(semi) fixture parses (ordinary shell concatenation + command chaining)"
+else
+    fail "19n(semi) fixture must PARSE — it is valid shell"
+fi
+OUT19N_SEMI="$(bash "$CHECKER19" "$FALSEPOS19N_SEMI" 2>&1)"; EC19N_SEMI=$?
+if [ "$EC19N_SEMI" -eq 0 ]; then pass "19n(semi) exits 0 on concatenated-operand + semicolon chaining"; else fail "19n(semi) expected exit 0, got $EC19N_SEMI" "$OUT19N_SEMI"; fi
+assert_not_contains "19n(semi) no [quote-break] past a concatenated operand + semicolon chaining (codex-1)" "[quote-break]" "$OUT19N_SEMI"
+
+# 19o (HIMMEL-2362, CR round 2 codex-2 finding on this PR) — the multi-word
+# test (19l) catches a truncation whose trailing prose is SEVERAL words, but
+# a truncation whose trailing fragment is exactly ONE word (e.g. a
+# contraction split by the closing quote into two pieces, like the second
+# half of a word ending in "-n't") is indistinguishable from a bare
+# concatenated operand (19i/19m) by word count alone, and went unflagged.
+# The fix: once a `#` comment marker has opened INSIDE the program on this
+# physical line before the close, flag on ANY word character after the
+# close, regardless of word count — the motivating incident (see this
+# script's own header) is exactly a stray apostrophe inside an in-body
+# comment. Re-balances via an unrelated quote on the NEXT line (bash -n
+# blind, same shape as 19b/19l).
+TRUNCONEWORD19O="$TMP_ROOT/truncated-oneword.sh"
+# SC2016: literal awk program on purpose (fixture source to disk).
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'awk %sBEGIN{ x = 1 } # this program can%st\n' "$Q" "$Q"
+    printf 'echo %sok%s\n' "$Q" "$Q"
+} > "$TRUNCONEWORD19O"
+if bash -n "$TRUNCONEWORD19O" 2>/dev/null; then
+    pass "19o fixture parses (bash -n is blind to this shape)"
+else
+    fail "19o fixture must PARSE, else it does not prove [quote-break] adds anything over [parse]"
+fi
+OUT19O="$(bash "$CHECKER19" "$TRUNCONEWORD19O" 2>&1)"
+assert_contains "19o [quote-break] fires on a single-trailing-word truncation past an in-body comment marker (codex-2)" "[quote-break]" "$OUT19O"
+
+# 19p (HIMMEL-2362, CR round 3 codex-1 finding on this PR) — the peel-one-
+# operand-then-check-for-a-shell-metacharacter discriminator (19n) fixed
+# redirection/chaining after a concatenated operand, but a SECOND,
+# space-separated bareword operand (an entirely ordinary multi-file
+# invocation) still isn't a shell metacharacter, so it was still flagged.
+# There is no upper bound on how many further bareword arguments can
+# legally follow a shell command, so no word-count-based test can be made
+# reliable here -- this is the finding that forced the switch to the
+# contraction-suffix discriminator, which does not look at word count at
+# all.
+FALSEPOS19P="$TMP_ROOT/concat-sed-twofiles.sh"
+# SC2016: literal sed program on purpose (fixture source to disk).
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'sed %ss/x/y/%sfile1 file2\n' "$Q" "$Q"
+} > "$FALSEPOS19P"
+if bash -n "$FALSEPOS19P" 2>/dev/null; then
+    pass "19p fixture parses (ordinary shell concatenation + a second bareword operand)"
+else
+    fail "19p fixture must PARSE — it is valid shell"
+fi
+OUT19P="$(bash "$CHECKER19" "$FALSEPOS19P" 2>&1)"; EC19P=$?
+if [ "$EC19P" -eq 0 ]; then pass "19p exits 0 on concatenated-operand + a second space-separated operand"; else fail "19p expected exit 0, got $EC19P" "$OUT19P"; fi
+assert_not_contains "19p no [quote-break] past a concatenated operand + a second operand (codex-1 round 3)" "[quote-break]" "$OUT19P"
+
+# 19q (HIMMEL-2362, CR round 3 codex-2 finding on this PR) — the comment-
+# marker discriminator (19o) required a space or start-of-program before the
+# `#`, so a comment with NO gap before it (program syntax ending directly
+# against the `#`, e.g. a closing brace) was not recognized as a comment at
+# all, and a single-trailing-word truncation past it went unflagged again.
+# The contraction-suffix discriminator does not look for a `#` at all, so it
+# is unaffected by whether or how a comment was introduced.
+TRUNCNOGAP19Q="$TMP_ROOT/truncated-nogap-comment.sh"
+# SC2016: literal awk program on purpose (fixture source to disk).
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'awk %sBEGIN{}# this program can%st\n' "$Q" "$Q"
+    printf 'echo %sok%s\n' "$Q" "$Q"
+} > "$TRUNCNOGAP19Q"
+if bash -n "$TRUNCNOGAP19Q" 2>/dev/null; then
+    pass "19q fixture parses (bash -n is blind to this shape)"
+else
+    fail "19q fixture must PARSE, else it does not prove [quote-break] adds anything over [parse]"
+fi
+OUT19Q="$(bash "$CHECKER19" "$TRUNCNOGAP19Q" 2>&1)"
+assert_contains "19q [quote-break] fires on a truncation past a comment marker with no preceding whitespace (codex-2 round 3)" "[quote-break]" "$OUT19Q"
+
+# 19r (HIMMEL-2362, CR round 3 codex-3 finding on this PR) — the comment-
+# marker discriminator (19o) treated ANY `#` preceded by whitespace as a
+# comment opener, but a `#` can also be ordinary PROGRAM syntax (a sed
+# pattern character, here literally " #" inside a regex) with no comment
+# involved at all -- text alone cannot tell a real awk/sed/perl comment from
+# `#` used as program content without actually parsing that language. The
+# contraction-suffix discriminator sidesteps the question entirely: it never
+# looks for a `#` anywhere, so this ordinary concatenation is not flagged.
+FALSEPOS19R="$TMP_ROOT/concat-sed-hash-in-pattern.sh"
+# SC2016: literal sed program on purpose (fixture source to disk).
+# shellcheck disable=SC2016
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -uo pipefail\n'
+    printf 'sed %ss/ #/x/%sfile\n' "$Q" "$Q"
+} > "$FALSEPOS19R"
+if bash -n "$FALSEPOS19R" 2>/dev/null; then
+    pass "19r fixture parses (ordinary shell concatenation, # is program syntax not a comment)"
+else
+    fail "19r fixture must PARSE — it is valid shell"
+fi
+OUT19R="$(bash "$CHECKER19" "$FALSEPOS19R" 2>&1)"; EC19R=$?
+if [ "$EC19R" -eq 0 ]; then pass "19r exits 0 on a concatenated operand past a program-syntax # (not a comment)"; else fail "19r expected exit 0, got $EC19R" "$OUT19R"; fi
+assert_not_contains "19r no [quote-break] past a program-syntax # mistaken for a comment (codex-3 round 3)" "[quote-break]" "$OUT19R"
 
 # ---------------------------------------------------------------------------
 printf '\n====================================\n'

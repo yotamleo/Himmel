@@ -75,18 +75,20 @@ observation, not as something you can `grep` and confirm today.
 
 **Profile:** the lane's real backend context ceiling AND its **cost-optimal**
 operating window — these are not the same number. `scripts/lanes/lanes.json`'s
-`$context-note` states the distinction explicitly: `contextWindow` is "the
+`$context-note` states the distinction explicitly: `context.windowTokens` is "the
 lane's cost-optimal default operating window... don't route work that won't
 fit" — codex lanes default to 272k even though the real backend window is
 ~372k, because 272k is the 2x-pricing cliff, not a hard ceiling.
 
 **Tailor:** two separate config points, not one — there's no automatic
 projection from one to the other:
-- `lanes.json`'s per-lane `contextWindow` field (`glm`: 1000000, `claudex`:
-  272000, `haiku`: 200000 — see the registry) feeds the lane **resolver**
-  (`scripts/lanes/resolve.mjs`), which uses it for display/routing decisions
-  (the `/lanes` `[ctx: N]` annotation, dispatch-guard fit checks) — it does
-  not set any env var itself.
+- `lanes.json`'s per-lane `context.windowTokens` field (`glm`: 1000000, `claudex`:
+  900000 — HIMMEL-1833 operator ruling, 2026-08-17, launcher default
+  unchanged — see the registry, `haiku`: 200000) feeds the lane **resolver**
+  (`scripts/lanes/resolve.mjs`), which uses it for the `/lanes` `[ctx: N]`
+  **display annotation only** — no dispatch guard reads it; the dispatch-side
+  window preflight is configured separately (`spawn-claudex.ts` hardcodes its
+  own 272000 constant) — and it does not set any env var itself.
 - `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (the Claude Code env var that actually
   controls when the harness starts compacting) is set by the **launcher**
   from its own env knob: the GLM launcher's `GLM_CONTEXT_WINDOW` and
@@ -185,7 +187,9 @@ per-dispatch model control — don't default to whichever is easiest to wire.
 
 **Tailor:** two structurally different spawn shapes exist:
 - **Hermes one-shot** (`scripts/hermes/invoke.sh` / `dispatch-trusted.sh`) —
-  no worktree, no internal timeout by design (the caller wraps it), `-z`
+  no worktree; `invoke.sh` wall-clock timeboxes + Nth-identical-deny aborts
+  it (HIMMEL-2025 — a parity_guard DENY is not terminal to hermes upstream),
+  `-z`
   auto-approval with a `todo`-only default toolset. Cheapest to dispatch,
   weakest isolation.
 - **Full-session `cc-<lane>`** (`scripts/claude-glm`, `scripts/claude-codex`)
@@ -233,13 +237,20 @@ new lane's backend is already a declared provider:
 3. Nothing at all, if the lane should stay denied everywhere for now — the
    file's own `"default": "deny"` already covers that.
 
-**GLM evidence:** `zai-glm` is declared (`"region": "CN", "note": "GLM Coding
-Plan impl lanes"`) with narrow, dated, ticketed rules — e.g.
-`luna-personal` × `zai-glm` × `extraction` is `allow+log`, ratified
-2026-07-17 (HIMMEL-1122) with a measured comparison against the prior
-incumbent recorded directly in the `why` field. `handover-state` ×
-`zai-glm` × `inference` is `conditional` on "brief-scoped... never bulk
-corpus runs." **PHI (`salus` corpus) is hard-denied for every provider with
+**GLM evidence — a full ratify-then-reverse cycle.** `zai-glm` was declared
+(`"region": "CN"`) with narrow, dated, ticketed rules — `luna-personal` ×
+`zai-glm` × `extraction` was `allow+log`, ratified 2026-07-17 (HIMMEL-1122)
+with a measured comparison against the prior incumbent recorded directly in
+the `why` field, and `handover-state` × `zai-glm` × `inference` was
+`conditional` on "brief-scoped... never bulk corpus runs." When the lane was
+dropped (HIMMEL-1749; Coding Plan lapsed 2026-08-17) all four cells were
+**reversed to explicit `deny` with the reversal recorded in each `why`**
+(HIMMEL-2224), and the `providers` note was annotated `DE-LISTED` — the same
+shape HIMMEL-1257 used for DeepSeek/Alibaba. **This is the pattern to copy
+when a lane you onboarded goes away: reverse the rows, never delete them.** A
+deleted row falls through to `"default": "deny"` and reads identically to a
+provider that was never permitted, destroying the audit trail of what was
+once open and why. **PHI (`salus` corpus) is hard-denied for every provider with
 no override, structurally** — this doesn't change per lane.
 
 **Action:** before a new lane touches any vault or handover corpus, check
@@ -307,7 +318,7 @@ Run in order; each row's "tailor" artifact is where the fix lands.
 | # | Axis | Profile (measure) | Tailor (config/code) |
 |---|------|--------------------|-----------------------|
 | 1 | Latency budget | Real wall-clock + payload size on representative work | `CRITIC_TIMEOUT_SECS` / per-row override in `scripts/cr/critic-panel.sh` |
-| 2 | Context window | Real backend ceiling vs cost-optimal operating point | `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `lanes.json` `contextWindow`, lane-specific `*_CONTEXT_WINDOW` env |
+| 2 | Context window | Real backend ceiling vs cost-optimal operating point | `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `lanes.json` `context.windowTokens`, lane-specific `*_CONTEXT_WINDOW` env |
 | 3 | SOUL/persona | Capability tier the lane actually has | A per-lane senior SOUL cloned from `himmel-agent.SOUL.md`'s structure, provider line swapped |
 | 4 | Prompt family | Which family bucket the model name resolves to | `family_for_model()` in `scripts/cr/critic-first-pass.sh` |
 | 5 | Harness choice | Isolation/durability the task actually needs | Hermes one-shot vs full-session `cc-<lane>` launcher — see `docs/internals/worker-spawn-matrix.md` |

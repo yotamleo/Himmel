@@ -1,0 +1,18 @@
+# Repo-wide shellcheck configuration.
+#
+# disable=SC1091 ("Not following: <file> was not specified as input").
+#
+# HIMMEL-2350 gave every scripts/himmelctl/test/*.sh suite a shared helper,
+# sourced as `. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"`. The
+# path is built from a runtime variable, so shellcheck cannot resolve it
+# without -x, and pre-commit lints file-by-file -- so the helper is only ever
+# in the input set when the helper ITSELF is part of the same commit. That
+# made the pre-commit shellcheck hook fail on any commit touching one of
+# those suites alone: measured 30 of 41 suites failing standalone, on 60
+# SC1091 occurrences and ZERO findings of any other code.
+#
+# SC1091 is informational -- it reports what shellcheck did not follow, never
+# a defect in the code under test -- so nothing is lost by disabling it, and
+# every other check stays on. This is deliberately the narrowest possible
+# fix: one code, repo-wide, instead of ~30 per-file directives.
+disable=SC1091

@@ -30,11 +30,24 @@ Paths are resolved from the environment so this ships to any machine:
 HERMES_HOME (else %LOCALAPPDATA%\\hermes, else ~/.local/share/hermes) and
 ~/.claude. Wire protocol: JSON on stdin; '{}' = allow,
 '{"decision":"block","reason":...}' = block. Fail-CLOSED on any internal error.
+
+Deny-escalation (HIMMEL-2025): a block() verdict here is NOT terminal to
+hermes — tool_executor.py feeds it back to the model as an ordinary tool
+result and the agent may retry the same/an adjacent action indefinitely. When
+PARITY_GUARD_STATE_DIR is set (scripts/hermes/invoke.sh creates it per-run and
+exports it down to this subprocess), block() counts identical
+(tool, args-hash) denies in a row and, at PARITY_GUARD_DENY_ESCALATE_N
+(default 3), writes "$PARITY_GUARD_STATE_DIR/abort" — the marker invoke.sh's
+watchdog polls to kill the run. Without the state dir (e.g. hermes launched
+directly, outside invoke.sh) this is a no-op — the normal block/allow verdict
+is unaffected either way.
 """
 
+import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -60,6 +73,19 @@ def _hermes_home() -> str:
 HERMES_HOME = norm(_hermes_home())
 CLAUDE_HOME = norm(os.path.join(os.path.expanduser("~"), ".claude"))
 GUARD_HOME = HERMES_HOME + "/agent-hooks"
+
+# Deny-escalation (HIMMEL-2025) — see module docstring.
+DENY_STATE_DIR = os.environ.get("PARITY_GUARD_STATE_DIR", "")
+try:
+    DENY_ESCALATE_N = int(os.environ.get("PARITY_GUARD_DENY_ESCALATE_N", "3"))
+except ValueError:
+    DENY_ESCALATE_N = 3
+if DENY_ESCALATE_N < 1:
+    DENY_ESCALATE_N = 1
+# Set by main() before any block() call, read by _maybe_escalate() — avoids
+# threading tool/args through every one of the ~15 block() call sites below.
+_CUR_TOOL = ""
+_CUR_ARGS = {}
 
 WRITE_TOOLS = ("write_file", "patch")
 DELETE_TOOLS = ("delete_file", "remove_file", "move_file", "rename_file")
@@ -146,6 +172,10 @@ _CMDPOS_DESTRUCTIVE = (
     + _EXE_PREFIX
 )
 
+# ScheduledTasks module WRITE verbs (HIMMEL-1821). Shared by the two anchors
+# the rule below applies it under; mirrors the .sh hook's SCHEDVERBS.
+_SCHED_VERBS = r"(?:register|unregister|set|start|stop|disable|enable)-scheduledtask(?:[^A-Za-z0-9_.-]|$)"
+
 # Catastrophic / shared-machine / irreversible classes only.
 # Routine git, gh, mv, cp, and non-recursive rm are intentionally NOT here.
 TERMINAL_DESTRUCTIVE = re.compile(
@@ -157,6 +187,47 @@ TERMINAL_DESTRUCTIVE = re.compile(
     # HIMMEL-1141 verb split: schtasks /query is read-only (cadence diagnostic),
     # so only the mutating verbs are refused. Mirrors the .sh hook schtasks line.
     + r"|" + _CMDPOS_DESTRUCTIVE + r"schtasks(?:\.exe)?\s+(/create|/change|/delete|/end|/run|/config)(?:[^A-Za-z0-9_.-]|$)"    # protects scheduled jobs (mutations only)
+    # HIMMEL-1821: same capability, other spellings — the PowerShell
+    # ScheduledTasks module drives the Task Scheduler COM API and never
+    # launches schtasks.exe, so the CLI line alone guards one spelling out of
+    # several. Read/write split preserved by omission: get-/export-scheduledtask
+    # are absent and stay allowed (HIMMEL-1141), and the trailing boundary keeps
+    # the object-builder cmdlets (new-scheduledtask itself, plus
+    # -trigger/-action/-principal) allowed — they construct an in-memory
+    # definition and the register/set that consumes it is refused here.
+    # The module-qualified form (scheduledtasks\register-scheduledtask) is
+    # absorbed by _EXE_PREFIX after norm() folds "\" to "/" (CR r1).
+    # Second alternative is the raw COM route, anchored to the -ComObject
+    # ARGUMENT because its idiomatic form is an assignment ($svc = New-Object …)
+    # that no command-position anchor sees; PowerShell binds unambiguous
+    # parameter prefixes and New-Object has no other -c* parameter, so the flag
+    # is matched as -c<word> — scoped to a preceding new-object on the same
+    # command so `grep -c Schedule.Service docs/` stays allowed (CR r2), and
+    # new-object itself takes the command-position anchor WIDENED by "=" (the
+    # assignment form the shared prefix does not recognise), so a grep for the
+    # full literal phrase stays allowed too (CR r3). CR r7 tuned both ends: no
+    # quote between the anchor and new-object (a string assignment is not an
+    # invocation), and the progid tolerates leading (/quotes so the
+    # parenthesised -ComObject ('Schedule.Service') form is refused.
+    # Both scheduled-task rules also take a LOCAL script-block anchor "{"
+    # (CR r8) so ForEach-Object { Register-ScheduledTask … } is refused; "{"
+    # cannot go into the shared _CMDPOS_DESTRUCTIVE without refusing
+    # jq '{format: .x}', but no JSON key is spelled <verb>-scheduledtask.
+    # RESIDUAL (CR r3/r4/r5), the shared no-general-parser limit of
+    # _CMDPOS_DESTRUCTIVE rather than anything these rules introduced —
+    # measured: brace script blocks for the SHARED atoms (ForEach-Object
+    # { schtasks /create … }, { shutdown … }, { taskkill … } are all allowed
+    # today, exactly as before this change), string indirection
+    # ($p = "Schedule.Service"; New-Object -ComObject $p), backtick line
+    # continuation, and the reflective [Type]::GetTypeFromProgID route (a
+    # literal-spelling match for that was tried and REMOVED in r5: one variable
+    # assignment defeats it, while it denied a plain grep for the API name).
+    # A tokenizer closes these, a wider regex does not (HIMMEL-912). Mirrors
+    # the .sh hook's ScheduledTasks + Schedule.Service lines
+    # (lockstep, HIMMEL-754).
+    + r"|" + _CMDPOS_DESTRUCTIVE + _SCHED_VERBS
+    + r"|(?:^|[{])\s*[\"']?" + _SCHED_VERBS
+    + r"|(?:^|[|;&(={`\n])\s*new-object[^|;&\n]*-c[a-z0-9]*\s*[:=]?\s*[(\"']*schedule\.service(?:[^A-Za-z0-9_.-]|$)"
     + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:taskkill|stop-process|pskill)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r"|\bkill\s+-9"
     + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:shutdown|reboot|logoff)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
@@ -194,12 +265,84 @@ DOCKER_PRIVESC = re.compile(
 )
 
 
+def _deny_key(tool: str, args: dict) -> str:
+    """Stable identity for "this exact call" — same tool + same args."""
+    try:
+        canon = json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        canon = str(args)
+    return tool + ":" + hashlib.sha256(canon.encode("utf-8", "replace")).hexdigest()
+
+
+def _maybe_escalate(reason: str) -> str:
+    """Nth identical deny in a row -> write the abort marker invoke.sh polls.
+
+    Best-effort: any filesystem trouble here must not break the normal
+    block/allow verdict this guard exists to give, so it falls back to the
+    original reason on error rather than raising."""
+    if not DENY_STATE_DIR:
+        return reason
+    key_path = os.path.join(DENY_STATE_DIR, "deny-key.txt")
+    count_path = os.path.join(DENY_STATE_DIR, "deny-count.txt")
+    try:
+        os.makedirs(DENY_STATE_DIR, exist_ok=True)
+        key = _deny_key(_CUR_TOOL, _CUR_ARGS)
+        prev_key = ""
+        if os.path.exists(key_path):
+            # errors="replace": a torn write from a prior crash must not raise
+            # UnicodeDecodeError here — that would break the block() verdict
+            # this guard exists to give, worse than under-counting a streak.
+            with open(key_path, "r", encoding="utf-8", errors="replace") as f:
+                prev_key = f.read().strip()
+        count = 1
+        if prev_key == key and os.path.exists(count_path):
+            try:
+                with open(count_path, "r", encoding="utf-8", errors="replace") as f:
+                    count = int(f.read().strip()) + 1
+            except (ValueError, OSError):
+                count = 1
+        with open(key_path, "w", encoding="utf-8") as f:
+            f.write(key)
+        with open(count_path, "w", encoding="utf-8") as f:
+            f.write(str(count))
+        if count >= DENY_ESCALATE_N:
+            escalated = (
+                f"ESCALATED after {count} identical denies in a row for "
+                f"tool '{_CUR_TOOL}' — aborting the run ({reason})"
+            )
+            with open(os.path.join(DENY_STATE_DIR, "abort"), "w", encoding="utf-8") as f:
+                f.write(escalated)
+            return escalated
+    except OSError:
+        return reason
+    return reason
+
+
 def block(reason: str) -> None:
+    reason = _maybe_escalate(reason)
     print(json.dumps({"decision": "block", "reason": reason}))
     sys.exit(0)
 
 
+def _reset_deny_streak() -> None:
+    """An ALLOW breaks any in-progress identical-deny streak (HIMMEL-2025 CR
+    round 1, codex-2): the escalation counts denies IN A ROW, not total
+    occurrences scattered across the run — an intervening successful call
+    means the run is making progress, not spinning. Best-effort, matching
+    _maybe_escalate's error handling."""
+    if not DENY_STATE_DIR:
+        return
+    try:
+        for fname in ("deny-key.txt", "deny-count.txt"):
+            p = os.path.join(DENY_STATE_DIR, fname)
+            if os.path.exists(p):
+                os.remove(p)
+    except OSError:
+        pass
+
+
 def allow() -> None:
+    _reset_deny_streak()
     print("{}")
     sys.exit(0)
 
@@ -239,14 +382,95 @@ def check_write_path(path: str) -> None:
 # (detached HEAD / corrupt ref) so a mid-rebase state does not block every write
 # — the default-branch check specifically targets main/master, and a detached
 # HEAD is neither.
+#
+# WHICH DIRECTORY IS JUDGED (cwd contract, HIMMEL-2008). The guard runs as a
+# child of the hermes AGENT process, so its own cwd is the session's LAUNCH dir
+# (the primary checkout, usually on main) — never evidence about the worktree
+# the agent is working in. Judging that dir refused legitimate worktree writes
+# and commits. The agent cwd is therefore taken from `_agent_cwd()` (explicit
+# `workdir`/`cwd` tool arg -> $TERMINAL_CWD -> payload `cwd` when it is not
+# merely this process's own cwd), a commit additionally honouring whichever
+# literal `git -C <dir>` / `cd <dir> &&` / `pushd <dir>` sits NEAREST the commit
+# verb. That command-text parse is best-effort and unwrapped-only: a `cd` inside
+# a quoted wrapper payload (`sh -c "cd <dir> && git commit"`) is NOT parsed —
+# the same limitation terminal_phi_egress_reason carries — so base_cwd is judged
+# instead (fail-open, never a stricter refusal). When NONE of those is available
+# the target dir is UNDETERMINABLE and the check is SKIPPED (fail-open, same
+# stance as a detached HEAD) — os.getcwd() is never substituted. An absolute
+# path arg is judged exactly as before, and the PHI fence never fails open: it
+# keeps the raw path when the cwd is undeterminable.
+# RESIDUAL: $TERMINAL_CWD is a session-START signal, not a live one — after a
+# manual `cd` back into the primary checkout the guard still judges the
+# worktree, so an on-main write can pass. Undetectable here (hermes keeps the
+# live cwd in an in-process registry no hook can read); the CC-side
+# block-edit-on-main hook remains the enforcing layer for Claude sessions.
 DEFAULT_BRANCHES = ("main", "master")
 
 # git commit at command position (start / after a separator), flag-tolerant, with
-# `commit` as the verb (so `commit-graph` / `commit-tree` do NOT match).
+# `commit` as the verb (so `commit-graph` / `commit-tree` do NOT match). An
+# option VALUE may be quoted-with-spaces (HIMMEL-2008): a bare `\S+` stopped at
+# the first space, so `git -C "C:/main repo" commit` did not match this pattern
+# AT ALL and the commit locks were never entered.
+_QUOTED_OR_BARE = r"\"[^\"]+\"|'[^']+'|\S+"
 _GIT_COMMIT = re.compile(
-    r"(?:^|[;&|(\n])\s*git(?:\s+-\S+(?:\s+\S+)?)*\s+commit(?:\s|$)", re.IGNORECASE)
-# `git -C <dir>` change-dir (case-SENSITIVE: -C is chdir, -c is config).
-_GIT_C_DIR = re.compile(r"(?:^|[;&|(\n])\s*git\s+-C\s+(\S+)")
+    r"(?:^|[;&|(\n])\s*git(?:\s+-\S+(?:\s+(?:" + _QUOTED_OR_BARE + r"))?)*"
+    r"\s+commit(?:\s|$)", re.IGNORECASE)
+# Git-level options that move the commit's REPO — the thing the branch lock
+# asks about, since HEAD (and so the branch committed to) lives in the git dir
+# (HIMMEL-2008). `-C` chdirs, which moves repo DISCOVERY; `--git-dir` names the
+# repo outright and OUTRANKS the cwd, so `git --git-dir=<main>/.git commit` run
+# from a worker really does land on main's branch. `_git_dir_for` walks UP from
+# whatever it is handed, so a `.git` dir resolves to its checkout. Valued
+# (`--git-dir <p>`) and attached (`--git-dir=<p>`, `-C<p>`) spellings both.
+#
+# `--work-tree` is deliberately NOT here: it selects the FILE TREE, not the
+# repo. Without `--git-dir` the git dir is still discovered from the cwd, so
+# `git --work-tree=<worker> commit` run on main commits to MAIN's branch —
+# treating it as the target judged the worker and allowed exactly that.
+_GIT_REDIRECTS = ("-C", "--git-dir")
+_GIT_REDIRECT_PREFIXES = ("-C", "--git-dir=")
+# `git -C <dir>` change-dir options are read TOKEN-WISE by `_commit_dir`, not
+# by a regex: a pattern scanning raw text cannot tell a real `-C` from one
+# sitting INSIDE a quoted value (`git -c core.pager="less -C <worker>" commit`)
+# and chdir'd to it, dropping the branch lock (HIMMEL-2008).
+
+
+def _shell_tokens(text: str):
+    """`text` whitespace-split with QUOTES respected but backslash escaping
+    OFF. Neither `shlex.split` default does both: posix=True eats `\\` so a
+    Windows `C:\\repo` arrives mangled, and posix=False does not group a quote
+    that opens mid-token (`-c core.pager="less -C <x>"`) — which is precisely
+    the shape this exists to read. Unbalanced quotes -> no reliable tokens ->
+    [] (the caller then judges the cwd the walk already resolved)."""
+    lex = shlex.shlex(text, posix=True)
+    lex.whitespace_split = True
+    lex.commenters = ""
+    lex.escape = ""
+    try:
+        return list(lex)
+    except ValueError:
+        return []
+# `cd <dir>` / `pushd <dir>` / `popd` at command position — how a worker runs a
+# command in its worktree. Quoted or bare dir; `cd /d X` (cmd.exe) tolerated. A
+# BARE dir stops at the first space, so an unquoted path with spaces
+# (`cd C:/Program Files/x && git commit`) truncates -> the truncated parent is
+# judged, or nothing resolves -> base_cwd. Quote the path (both quote styles are
+# parsed) for the exact dir. `popd` carries no dir: it pops a level `pushd`
+# pushed, so `pushd <main> && popd && git commit` does not pin the commit to
+# <main> — but it canNOT undo a bare `cd` (see `_commit_dir`).
+_CD_OR_POPD = re.compile(
+    r"(?:^|[;&|(\n])\s*(?:(popd)|(cd|pushd)\s+(?:/d\s+)?"
+    r"(\"[^\"]+\"|'[^']+'|[^\s;&|]+))",
+    re.IGNORECASE)
+# A subshell's cwd never leaks to its parent — `(cd <main> && git log)` leaves
+# the caller where it was. The `(` must be at COMMAND POSITION (start, or after
+# a separator), the same convention every matcher above uses: a `(` mid-token
+# belongs to a PATH, not a subshell, and blanking it corrupted the dir before
+# the walk ever saw it (`cd "C:/Program Files (x86)/repo"`, `cd C:/t(x86)/r`)
+# -> an unresolvable dir -> fail-open (HIMMEL-2008). Groups 1-2 re-emit the
+# separator so the stripped text still parses; `_commit_dir` loops to a
+# fixpoint, so nesting needs no arithmetic here.
+_SUBSHELL = re.compile(r"(^|[;&|(\n])(\s*)\([^()]*\)")
 
 
 def _git_dir_for(start: str):
@@ -309,14 +533,171 @@ def _edit_on_main_reason(start: str):
     return None
 
 
-def _commit_dir(raw_cmd: str, base_cwd: str) -> str:
-    """Dir a terminal `git commit` runs in: a literal `git -C <dir>` if present
-    (resolved against base_cwd), else base_cwd."""
-    m = _GIT_C_DIR.search(raw_cmd)
-    if m:
-        d = m.group(1).strip().strip('"').strip("'")
-        return d if os.path.isabs(d) else os.path.join(base_cwd, d)
-    return base_cwd
+def _usable_dir(cand) -> str:
+    """An absolute, existing directory from `cand`, else "" (unusable)."""
+    if not isinstance(cand, str):
+        return ""
+    d = os.path.expanduser(cand.strip().strip('"').strip("'"))
+    return d if d and os.path.isabs(d) and os.path.isdir(d) else ""
+
+
+def _agent_cwd(payload: dict, args: dict) -> str:
+    """The dir the AGENT works in, or "" when undeterminable (HIMMEL-2008).
+
+    Ladder, mirroring hermes' own tools/file_tools.py `_resolve_base_dir`:
+      1. an explicit per-call `workdir` / `cwd` tool arg;
+      2. $TERMINAL_CWD — the session workspace hermes exports to child
+         processes (set by `hermes -w`, `/worktree new`, kanban workers);
+      3. the payload `cwd`, but ONLY when it is not simply this guard process's
+         own cwd: hermes fills that field with `Path.cwd()` of the AGENT
+         process (agent/shell_hooks.py `_serialize_payload`), i.e. the session
+         launch dir, which says nothing about where a `cd`-ed agent is working.
+    The live per-session terminal cwd hermes tracks for `cd`/`pushd` lives in
+    an in-process registry (tools/terminal_tool.py `_session_cwd`) and is not
+    exposed to hooks — hence the command-text `cd`/`pushd` parse in
+    `_commit_dir` and the fail-open "" here. A RELATIVE explicit arg is
+    anchored to rung 2/3 (hermes resolves it the same way) rather than dropped;
+    everywhere else only absolute dirs count."""
+    # Rungs 2-3 first — they are also what a relative rung-1 arg anchors to.
+    base = _usable_dir(os.environ.get("TERMINAL_CWD"))
+    if not base:
+        d = _usable_dir(payload.get("cwd"))
+        if d and os.path.realpath(d) != os.path.realpath(os.getcwd()):
+            base = d
+    for cand in (args.get("workdir"), args.get("cwd")):
+        if not isinstance(cand, str) or not cand.strip():
+            continue
+        d = _usable_dir(cand) or _usable_dir(_resolve_target(cand, base))
+        if d:
+            return d
+    return base
+
+
+def _resolve_target(path: str, base_cwd: str) -> str:
+    """Absolute form of a path arg, or "" when it is relative and the agent's
+    cwd is unknown (undeterminable -> caller skips the branch check)."""
+    p = os.path.expanduser(path.strip().strip('"').strip("'"))
+    if os.path.isabs(p):
+        return p
+    return os.path.join(base_cwd, p) if base_cwd else ""
+
+
+def _commit_dir(raw_cmd: str, base_cwd: str, gc) -> str:
+    """Dir the terminal `git commit` matched by `gc` runs in: a `git -C <dir>` on the
+    COMMIT INVOCATION itself, else the running cwd left by the command's
+    `cd`/`pushd`/`popd`, else base_cwd. A `git -C` scopes only its own git
+    call and does not move the shell, so an earlier `git -C <other> status &&`
+    never pins the later commit. Relative forms resolve against the dir in
+    effect where they appear; "" = undeterminable.
+
+    A HEURISTIC over command text, not a shell. It models three things and
+    nothing else: command-position `cd`/`pushd` (they set the dir), `popd` (it
+    pops a `pushd`ed level, so `pushd <x> && popd` pins nothing), and `( … )`
+    groups at COMMAND POSITION (a subshell's cwd never leaks out, so they are
+    dropped before the walk; a `(` mid-token is a path, left alone).
+    NOT modelled — each leaves base_cwd judged instead, so the verdict
+    is the agent's own cwd rather than a stricter refusal: `cd` inside a quoted
+    wrapper payload (`sh -c "cd <x> && git commit"`, the same command-text
+    limit terminal_phi_egress_reason carries), `cd -`, and variables.
+
+    QUOTING is not modelled in the `cd` walk, and unlike the cases above it can
+    point the OTHER way: a separator inside a quoted ARGUMENT still reads as a
+    separator, so `echo "; cd <x>" && git commit` follows a `cd` the shell
+    never ran and judges <x> rather than base_cwd. That needs crafted text —
+    and this is a HYGIENE guard over command text, not a shell, so a caller
+    deliberately shaping input to fool the parser is out of its threat model
+    (the CC-side block-edit-on-main hook is the enforcing layer). The `git -C`
+    option run IS read quote-aware, via `_shell_tokens` — the walk is not,
+    because a token stream cannot tell `( … )` grouping from a path containing
+    parens, which the raw-text `_SUBSHELL` pass handles today.
+
+    NOT modelled the other way — a `cd` the walk FOLLOWS that the shell would
+    not. Two shapes, both pinned by characterization cases in the suite:
+    BRANCHING — no short-circuit or conditional semantics, so a
+    command-position `cd` counts as EXECUTED even where the shell skips it
+    (`true || cd <x>`, an `if`/loop body). It misjudges either way
+    (`… || cd <worker>` allows, `… || cd <main>` refuses) and is statically
+    undecidable, turning on the left-hand exit status. PIPELINES — every
+    element of `a | b` runs in its own subshell, so `cd <x> | cat` never moves
+    the parent, yet the walk follows it. Both are documented rather than
+    guessed: closing them needs a quote-aware shell parser, and this is a
+    command-text heuristic, not a shell."""
+    # Drop `( … )` groups to a FIXPOINT (HIMMEL-2008): one `sub` pass strips
+    # only the innermost level, so an outer `(cd <x> && (git log))` kept its
+    # `cd` in the walk and REFUSED a commit the subshell never moved. Every
+    # pass strictly shortens the text, so this terminates.
+    pre = raw_cmd[:gc.start()] if gc else raw_cmd
+    while True:
+        stripped = _SUBSHELL.sub(r"\1\2 ", pre)
+        if stripped == pre:
+            break
+        pre = stripped
+    # A dir STACK walked IN ORDER, so it tracks a running cwd rather than a
+    # bag of candidates (HIMMEL-2008). Two shell facts the old
+    # nearest-entry-wins walk got wrong, both fail-OPEN (they judged base_cwd
+    # while the commit really ran elsewhere): every hop resolves against the
+    # hop before it, so a relative chain (`cd ..` then `cd <x>`) lands where
+    # the shell lands; and only `pushd` pushes a level, so `popd` cannot undo
+    # a bare `cd` — on a 1-deep stack bash errors and leaves the cwd alone.
+    st = [base_cwd]  # st[-1] = running cwd ("" once undeterminable)
+    for m in _CD_OR_POPD.finditer(pre):
+        if m.group(1):  # popd — only pops what a pushd pushed
+            if len(st) > 1:
+                st.pop()
+        else:
+            tgt = _resolve_target(m.group(3), st[-1])
+            # A `cd`/`pushd` to a dir that is not there FAILS in the shell and
+            # leaves the cwd ALONE (HIMMEL-2008). Following it anyway judged a
+            # path nothing runs in, and when that path had no repo ancestor the
+            # branch lock fell OPEN on a commit still running in the base
+            # checkout (`cd <missing>; git commit` on main).
+            if not tgt or not os.path.isdir(tgt):
+                continue
+            if m.group(2).lower() == "pushd":
+                st.append(tgt)
+            else:
+                st[-1] = tgt
+    # The commit invocation's OWN redirections (HIMMEL-2008): `-C <dir>` plus
+    # `--git-dir` / `--work-tree`, which aim a commit at another checkout
+    # entirely. They count only on the commit itself — it scopes that one git
+    # call and never moves the shell, so an earlier `git -C <other> status`
+    # must not pin the later commit to <other>. Only the PRE-VERB option run is
+    # scanned, so every `-C` here is a chdir: `git commit -C <commit-ish>`
+    # (--reuse-message) sits AFTER the verb and is never seen. git applies
+    # multiple in order, each relative one against the last, so they CHAIN
+    # rather than first-wins.
+    cur = st[-1]
+    gd = ""         # --git-dir, kept APART from the -C cwd it outranks
+    toks = _shell_tokens(raw_cmd[gc.start():gc.end()]) if gc else []
+    i = 0
+    while i < len(toks):
+        opt, val, adv = toks[i], "", 1
+        if opt in _GIT_REDIRECTS and i + 1 < len(toks):
+            val, adv = toks[i + 1], 2
+        else:
+            for pfx in _GIT_REDIRECT_PREFIXES:              # attached `-C<dir>`
+                if opt.startswith(pfx) and len(opt) > len(pfx):
+                    opt, val = pfx.rstrip("="), opt[len(pfx):]
+                    break
+        if val:
+            if opt == "--git-dir":
+                gd = _resolve_target(val, cur)
+            else:                                           # -C chains the cwd
+                cur = _resolve_target(val, cur)
+        i += adv
+    # Precedence, not last-wins: a named repo beats the cwd it was found from.
+    return gd or cur
+
+
+def _commit_dirs(raw_cmd: str, base_cwd: str):
+    """The dir EVERY terminal `git commit` in `raw_cmd` runs in — one per
+    occurrence, not just the first (HIMMEL-2008). `cd <worker> && git commit &&
+    cd <main> && git commit` ran its SECOND commit on main entirely unchecked,
+    because only the text before the FIRST commit was ever walked. Each match
+    re-walks from the start, so every commit is judged at its own point in the
+    command."""
+    for gc in _GIT_COMMIT.finditer(raw_cmd):
+        yield _commit_dir(raw_cmd, base_cwd, gc)
 
 
 # --- Merged-PR commit lock (block-merged-pr-commit parity, HIMMEL-731) --------
@@ -414,12 +795,15 @@ def _abs(p: str) -> str:
 
 def _salus_marked(ap: str) -> bool:
     """True if `ap` (an absolute path) or any ancestor directory holds a
-    `.salus` marker — a path anywhere inside a PHI vault is PHI."""
+    `.salus` marker — a path anywhere inside a PHI vault is PHI. Also accepts
+    `.salus-profile` (HIMMEL-2173: template machinery dropped by the salus
+    profile installer) — a defense for deployments that predate the installer
+    shipping the real `.salus` guard marker alongside it."""
     d = ap if os.path.isdir(ap) else os.path.dirname(ap)
     prev = None
     while d and d != prev:
         try:
-            if os.path.exists(os.path.join(d, ".salus")):
+            if os.path.exists(os.path.join(d, ".salus")) or os.path.exists(os.path.join(d, ".salus-profile")):
                 return True
         except OSError:
             pass
@@ -655,9 +1039,11 @@ def qmd_scope_reason(tool: str, args: dict):
 
 
 def main() -> None:
+    global _CUR_TOOL, _CUR_ARGS
     payload = json.load(sys.stdin)
     tool = payload.get("tool_name", "")
     args = payload.get("tool_input") or payload.get("args") or {}
+    _CUR_TOOL, _CUR_ARGS = tool, args if isinstance(args, dict) else {}
 
     # MCP fence (block-backend-tier / block-glm-external-writes parity, HIMMEL-
     # 731). himmel's CC PreToolUse hooks do NOT load under hermes, so an MCP tool
@@ -680,17 +1066,34 @@ def main() -> None:
               "(block-backend-tier / MCP-fence parity).")
 
     if tool in WRITE_TOOLS or tool in DELETE_TOOLS:
+        base_cwd = _agent_cwd(payload, args)
         # Check EVERY non-content string arg as a candidate path, regardless of
         # key name — a path under a non-standard key must not slip the fence.
         for k, v in args.items():
             if isinstance(v, str) and k not in CONTENT_KEYS:
                 check_write_path(norm(v))
-                reason = phi_egress_reason(v)  # raw v — real path for fs checks
+                # The REAL target: a relative path belongs to the agent's cwd,
+                # not this guard's (HIMMEL-2008). "" = undeterminable.
+                target = _resolve_target(v, base_cwd)
+                # PHI fence gets the resolved target when known, else raw v —
+                # it is never SKIPPED the way the branch check below is. Be
+                # exact about what the fallback buys, though: `_abs` resolves a
+                # relative v against this guard PROCESS's cwd, which is the
+                # session launch dir, so it is a best-effort base and not a
+                # guarantee. A relative write whose real cwd is a PHI workspace
+                # the launch dir is outside of still slips it — the same
+                # unknown-cwd root cause the branch check discloses, with the
+                # same remedy (`hermes -w <dir>`). PHI egress is additionally
+                # governed by scripts/guardrails/egress-matrix.json and the
+                # salus vault guard; this fence is one layer, not the only one.
+                reason = phi_egress_reason(target or v)
                 if reason:
                     block(reason)
-                reason = _edit_on_main_reason(v)  # raw v — real path for branch
-                if reason:
-                    block(reason)
+                # Branch check is the fail-OPEN half: skipped when undeterminable.
+                if target:
+                    reason = _edit_on_main_reason(target)
+                    if reason:
+                        block(reason)
         allow()
 
     if tool in READ_TOOLS:
@@ -727,17 +1130,21 @@ def main() -> None:
         # Main-branch commit lock (block-edit-on-main parity): a `git commit`
         # in a repo checked out on the default branch is refused; a worker's own
         # type/slug branch commits freely.
-        if _GIT_COMMIT.search(raw_cmd):
-            base_cwd = str(payload.get("cwd") or args.get("cwd") or os.getcwd())
-            commit_dir = _commit_dir(raw_cmd, base_cwd)
-            reason = _edit_on_main_reason(commit_dir)
-            if reason:
-                block(reason)
-            # Merged-PR commit lock (block-merged-pr-commit parity): refuse a
-            # commit onto a branch whose PR is already MERGED (fail-open).
-            reason = _merged_pr_reason(commit_dir)
-            if reason:
-                block(reason)
+        # EVERY `git commit` in the command is judged, not just the first
+        # (HIMMEL-2008) — one refusal is enough to block the whole command.
+        for commit_dir in _commit_dirs(raw_cmd, _agent_cwd(payload, args)):
+            # "" = that commit's dir is undeterminable (no -C, no cd/pushd, no
+            # agent cwd) -> skip both locks rather than judge this guard
+            # process's own cwd, which is the session launch dir (HIMMEL-2008).
+            if commit_dir:
+                reason = _edit_on_main_reason(commit_dir)
+                if reason:
+                    block(reason)
+                # Merged-PR commit lock (block-merged-pr-commit parity): refuse
+                # a commit onto a branch whose PR is already MERGED (fail-open).
+                reason = _merged_pr_reason(commit_dir)
+                if reason:
+                    block(reason)
         # Engine-specific external-write fence: block push / remote-URL / gh
         # PR-mutation / network CLIs unless the engine is an affirmed trusted
         # main tier (fail-closed on an unknown engine).

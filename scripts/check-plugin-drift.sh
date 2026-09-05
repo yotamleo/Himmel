@@ -45,7 +45,7 @@
 #           API instead of the highest semver tag — for upstreams whose tags are
 #           NON-MONOTONIC (a stale higher-semver tag would otherwise be a phantom
 #           "latest"; graphify's months-old v1.0.0 vs its current v0.9.x line).
-#      Installed marketplaces (caveman, obsidian-skills, openai-codex,
+#      Installed marketplaces (obsidian-skills, openai-codex,
 #      claude-video, claude-plugins-official, …) are NOT listed in the registry:
 #      they are discovered dynamically from ~/.claude/plugins/known_marketplaces.json
 #      (DRIFT_KNOWN_MARKETPLACES-overridable) so the guard auto-covers any future
@@ -57,9 +57,12 @@
 #
 # Fork-delta audit is split by storage shape. Registry forks (qmd and
 # claude-obsidian) are mechanically rebased + classified by
-# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence. A
-# NON-ADDITIVE claude-obsidian result is expected — it deliberately modifies
-# upstream files — and the unattended cadence stops at that report, never pushes.
+# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence. The
+# claude-obsidian carried delta is verified strictly additive at v2.1.1-himmel.1
+# (+10 -0: PR-#178 test UTF-8 guards + a README fork-attribution banner), so an
+# ADDITIVE result is expected — a NON-ADDITIVE result would be a genuine
+# regression worth investigating — and the unattended cadence stops after
+# reporting (it still audits every eligible fork), never pushes.
 # Vendored single-file forks (telegram-himmel, pr-review-toolkit-himmel) still
 # require a manual file-level delta judgment when their UPSTREAM_PIN changes.
 #

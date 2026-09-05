@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
-import { join } from "path";
-import { mkdtempSync } from "fs";
-import { tmpdir } from "os";
+import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { parseStructured } from "../src/parse";
 import { mergeRows } from "../src/merge";
 import { writeSeries } from "../src/writeSeries";

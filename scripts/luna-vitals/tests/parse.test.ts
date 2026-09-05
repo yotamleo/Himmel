@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { join } from "path";
+import { join } from "node:path";
 import { parseStructured } from "../src/parse";
 
 const FX = join(import.meta.dir, "fixtures");

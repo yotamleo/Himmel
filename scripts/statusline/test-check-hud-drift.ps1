@@ -5,6 +5,12 @@
 # the spec); same subprocess pattern as test-doc-guard.ps1.
 # Usage: pwsh -File scripts/statusline/test-check-hud-drift.ps1
 $ErrorActionPreference = 'Stop'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $SCRIPT = Join-Path $PSScriptRoot 'check-hud-drift.ps1'
 $HUD_REL = 'marketplace/plugins/claude-hud'
 $script:fails = 0

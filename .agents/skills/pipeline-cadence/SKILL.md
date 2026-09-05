@@ -1,6 +1,6 @@
 ---
 name: pipeline-cadence
-description: Arm/inspect/remove the recurring luna clip-pipeline cadence (daily harvest+triage, daily synthesize+archive, daily health) via schtasks/cron, each leg pinned to a cheap --model. Dedup-guarded. Use when the user asks to arm/check/disarm the clip-pipeline cadence or runs /pipeline-cadence.
+description: Arm/inspect/remove the recurring luna clip-pipeline cadence via schtasks or cron. Use for /pipeline-cadence.
 ---
 
 # pipeline-cadence

@@ -4,6 +4,11 @@
 
 > 🚀 **New here? → [Getting Started](docs/getting-started.md)** — clone to your
 > first PR-gated loop in ~15 minutes.
+>
+> Deciding whether it is worth it? → [**Why himmel**](docs/why-himmel.md) — the
+> failure modes it exists for, and what each one costs. Want the wiring? →
+> [**Architecture**](docs/architecture.md) — the enforcement layers, handover,
+> fleet, Jira seam, and observability chain as diagrams.
 
 A solo-operator / small-team development engine. Ships CLIs, hooks, plugins,
 and Claude Code wiring designed for a worktree-isolated, PR-gated, Jira-tracked

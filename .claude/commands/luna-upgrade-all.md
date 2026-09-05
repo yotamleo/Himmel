@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, Skill
-description: Multi-vault upgrade sweep — discover all luna-second-brain vaults, dry-run-first, per-vault operator-confirmed apply, backup/restore safety net, and conflict-brainstorm on _CLAUDE.md conflicts. Thin wrapper that delegates to the obsidian-triage:luna-upgrade-all skill (HIMMEL-462 — see marketplace/plugins/obsidian-triage/skills/luna-upgrade-all/SKILL.md for the runbook).
+description: Multi-vault luna upgrade sweep — dry-run first, per-vault confirmed apply, backup/restore, conflict-brainstorm.
 argument-hint: [--roots <dir[,dir]>] [--registry <path>] [--template-dir <path>] [--porcelain]
 ---
 

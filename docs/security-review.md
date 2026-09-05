@@ -1,6 +1,6 @@
 # Security-review playbook (HIMMEL-176)
 
-The `security-reviewed` pre-push hook (`scripts/hooks/check-security-reviewed.sh`) gates pushes on a `Security reviewed: <token>` attestation in a commit body or PR description whenever the diff vs `origin/main` touches non-docs code. The hook does NOT run the review itself — that would introduce a new headless-Claude call and conflict with [HIMMEL-128](../CLAUDE.md#claude-invocation-billing-himmel-128). The operator runs the review on demand using whichever mechanism fits the change, then attests the result.
+The `security-reviewed` pre-push hook (`scripts/hooks/check-security-reviewed.sh`) gates pushes on a `Security reviewed: <token>` attestation in a commit body or PR description whenever the diff vs `origin/main` touches non-docs code. The hook does NOT run the review itself — that would introduce a new headless-Claude call against the same usage bank [HIMMEL-128](../CLAUDE.md#claude-invocation-billing) governs. The operator runs the review on demand using whichever mechanism fits the change, then attests the result.
 
 This file is the recommended playbook for picking a review method and writing the attestation line. For *after* something sensitive has already been committed/pushed (token, bot username, chat/user id, PII), see the [leak-scrub runbook](leak-scrub-runbook.md).
 
@@ -91,6 +91,6 @@ If any answer is "yes, and I'm not 100% sure the fix is right", file a follow-up
 
 ## Why this pattern (and not a literal upstream-action wrapper)?
 
-[HIMMEL-128](../CLAUDE.md#claude-invocation-billing-himmel-128) splits headless Claude calls onto a separate Agent SDK credit bucket (announced for 2026-06-15; **currently PAUSED by Anthropic as of 2026-06-21** — the preference is kept because the split is volatile and may re-activate). Wrapping `anthropics/claude-code-security-review` as a literal pre-push hook would fire a headless Claude call on every push, against the same bucket — at scale, that bucket would be the bottleneck.
+[HIMMEL-128](../CLAUDE.md#claude-invocation-billing): a split of headless Claude calls onto a separate Agent SDK credit bucket was announced for 2026-06-15 but PAUSED at cutover (observed 2026-06-21) and is not what this guidance rests on today. HIMMEL-1748 measured (2026-08-11/12) that subscription-authenticated `claude -p` draws from the **same** 5-hour/weekly usage bank as interactive sessions — a 48-chunk run exhausted that bank about 2.9 hours in. Wrapping `anthropics/claude-code-security-review` as a literal pre-push hook would fire a headless Claude call on every push against that same shared bank — at scale, that bank (also needed for the operator's own interactive work) would be the bottleneck.
 
 Lean-invoke (operator runs review on demand) + structural attestation gate (push blocked without the line) gives the same enforcement strength without the headless cost. The trade-off: the operator owns picking the right review method per diff. The recommended-tokens table above is the playbook.

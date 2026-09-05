@@ -1,5 +1,5 @@
 ---
-description: Run the brainstorm→critic→spec→critic→plan pipeline — one idea to a critic-hardened implementation plan
+description: Grill / stress-test / brainstorm an idea, or design/build a feature, into a critic-hardened spec + plan
 ---
 
 Invoke the `himmel-ops:minerva` skill and follow its runbook for: $ARGUMENTS

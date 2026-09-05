@@ -80,38 +80,79 @@
 # Sourceable from hooks and scripts: uses only `return`, never `exit`; does not
 # toggle set -e. bash 3.2-safe.
 
-cr_app_configured() {
-    # The explicit opt-out wins over every signal below — an operator who set it
-    # is telling us the answer, and HIMMEL-1072 documents it as THE switch for a
-    # CodeRabbit-less repo.
-    [ "${CR_PROFILE:-}" = "none" ] && return 1
+# cr_app_state [<dir>] (HIMMEL-2380)
+#   Echoes ONE word on stdout — WHY the gates above are armed or not — and
+#   always returns 0. Nothing is ever written to stderr.
+#
+#     armed           -> CodeRabbit's App is configured here; gates ARE armed.
+#     not-configured  -> nothing was ever set. THE adopter. Nothing is missing,
+#                        because nothing was expected: callers stay SILENT here.
+#     disabled        -> a deliberate act — CR_PROFILE=none, CR_APP=0, or
+#                        `himmel.coderabbit false`. Someone chose this.
+#     broken          -> the marker IS set, to a value `git config --bool`
+#                        cannot parse.
+#
+# WHY `broken` is a separate word, and the only one that is a defect:
+# cr_app_configured returns 1 for `broken` exactly as it does for the adopter
+# (test-cr-available.sh case 5 pins that, and it stays pinned — default-disarmed
+# is the posture). Those two rc-1s mean opposite things. The adopter has no
+# CodeRabbit and is correctly never blocked. The `broken` repo HAS CodeRabbit,
+# lost its gate to a typo, and every green it certifies afterwards asserts a
+# review that never ran — the one genuinely VACUOUS pass in this design, and
+# invisible today because the parse error is swallowed. This file's own header
+# predicted it and parked it as a /himmel-doctor follow-up; naming the state is
+# what lets a caller speak up.
+#
+# What callers must NOT do with it: narrate `not-configured`. "An adopter must
+# not notice it exists" is a tested invariant (case 15 here, and
+# scripts/test-check-ci.sh case 57 greps a whole clean adopter run for the word
+# "CodeRabbit"). HIMMEL-2380 asked for an unconditional "CodeRabbit: not
+# configured" line; console ruling 88 narrowed it to the states where a review
+# was actually EXPECTED — a pass is only vacuous when something was missing.
+#
+# Separating `broken` from unset needs a SECOND read, because --bool collapses
+# them: it exits 128 on a bad boolean and 1 on an unset key, but both leave the
+# capture empty. A plain --local --get succeeds only when the key exists. Both
+# reads are --local, so a value in ~/.gitconfig is no more this repo's state
+# here than it is above (case 14 / case 24).
+cr_app_state() {
+    # Precedence is cr_app_configured's, unchanged and deliberately so: the
+    # explicit opt-out is read BEFORE the marker, so it names the state even
+    # over a broken marker. An operator who set CR_PROFILE=none is not waiting
+    # to hear about a typo in a marker their own setting already overrides.
+    [ "${CR_PROFILE:-}" = "none" ] && { printf 'disabled\n'; return 0; }
 
     case "${CR_APP:-}" in
-        1) return 0 ;;
-        0) return 1 ;;
+        1) printf 'armed\n'; return 0 ;;
+        0) printf 'disabled\n'; return 0 ;;
     esac
 
     local dir="${1:-$PWD}" val
-    # --local, not plain --get: a value in ~/.gitconfig would arm EVERY repo on
-    # the machine, which is the same over-reach as the inherited config file.
-    # Availability is per-repo. In a worktree this reads the shared .git/config,
-    # so arming the primary checkout arms its worktrees too — which is right:
-    # they are the same repo.
-    # --bool lets git normalize its OWN boolean spellings (true/1/yes/on ->
-    # "true"; false/0/no/off/"" -> "false") and, importantly, ERROR on a
-    # non-boolean value (coderabbit-14) — so a typo is a hard "not armed" rather
-    # than a silent maybe. On error/unset the substitution is empty; only a
-    # normalized "true" arms.
-    # `|| val=""` (codex-1, PR #1470 round 2): git config exits nonzero on an
-    # unset key, and a failing `val=$(...)` ASSIGNMENT propagates that status —
-    # under a caller's `set -e` a bare `cr_app_configured` call would abort the
-    # caller right here instead of returning rc 1 as the header promises.
-    # Current callers are condition-context (`|| return 0`), which suspends
-    # set -e, but the sourceable contract must hold for bare calls too.
     val=$(cd "$dir" 2>/dev/null && git config --bool --local --get himmel.coderabbit 2>/dev/null) || val=""
-    [ "$val" = "true" ] && return 0
-    # Anything else — unset, false, a non-boolean, or not a repo at all — is NOT
-    # an armed gate. Default-disarmed is the whole posture: the adopter who has no
-    # CodeRabbit does nothing and is never blocked.
-    return 1
+    case "$val" in
+        true)  printf 'armed\n'; return 0 ;;
+        false) printf 'disabled\n'; return 0 ;;
+    esac
+
+    # --bool yielded nothing: the key is either unset or unparseable. Only this
+    # second, non---bool read tells them apart. stdout is discarded — its
+    # SUCCESS is the whole signal — and stderr with it, so a caller capturing
+    # our stdout never also catches git's "bad boolean config value" complaint.
+    if ( cd "$dir" 2>/dev/null && git config --local --get himmel.coderabbit ) >/dev/null 2>&1; then
+        printf 'broken\n'
+    else
+        printf 'not-configured\n'
+    fi
+    return 0
+}
+
+# cr_app_configured is now the yes/no VIEW of cr_app_state — one probe, one
+# place the git config is read, exactly as this file's header argues. Its
+# contract is unchanged and pinned by cases 1-15 + the case-26 negative
+# controls: rc 0 only for `armed`, rc 1 for every other state, silent on both.
+# (The old `|| val=""` note about set -e no longer applies here — there is no
+# assignment left to propagate a nonzero status — but it still guards the read
+# inside cr_app_state above, for the same reason it always did.)
+cr_app_configured() {
+    [ "$(cr_app_state "${1:-$PWD}")" = "armed" ]
 }

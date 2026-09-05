@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, AskUserQuestion
-description: Resume a tracked handover item to continue the chain — surface its cold-start (brief/context, latest session, open bugs, CR findings). No arg → pick from active items. Read-only (no worktree gate). Script-driven — calls scripts/handover/resume.sh directly, does NOT load the 47KB handover skill (HIMMEL-1038). The token-lean equivalent of "load <ID>". To recover an interrupted/armed session, use /handover-resume-armed instead. HIMMEL-1034.
+description: Resume a tracked handover item — cold-start brief, latest session, open bugs, CR findings. No arg picks from active.
 argument-hint: "[#N | HIMMEL-N | <ID>]  (omit → pick from active items; append 'overnight' for overnight mode)"
 ---
 

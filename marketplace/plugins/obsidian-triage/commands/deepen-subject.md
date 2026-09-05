@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, Edit, Skill
-description: github source fan-out on promotion (LUNA-89). Fills the `## References` scaffold of a `deepen_pending: true` Tech subject by re-running luna-ingest at a higher `--limit` to crawl the repo's one-hop references (classify integrate / take-parts / inspire / skip). The corresponding `Clippings/_deferred.md` tail-skipped row is already CLAIMED by synthesize-stubs at promotion time; this command does the actual crawl and flips `deepen_pending: false`.
+description: github source fan-out on promotion — crawl a deepen_pending Tech subject's one-hop references and fill References.
 argument-hint: "<subject-path> [--limit N] [vault-path]"
 ---
 

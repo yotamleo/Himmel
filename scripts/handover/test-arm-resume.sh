@@ -72,8 +72,8 @@ T4|T4
 T5|T5
 T6|T6
 T7|T7
-T8|T8
-T9|T9 T9b T9c
+T8|T8 T8b
+T9|T9 T9b T9b2 T9c T9d
 T10|T10
 T11|T11
 T12|T12
@@ -89,11 +89,11 @@ T21|T21
 T22|T22
 T23|T23
 T23b|T23b
-T24|T24
+T24|T24 T24c
 T25|T25
 T26|T26
 T27|T27
-T28|T28
+T28|T28 T28d T28e
 T29|T29
 T30|T30
 T31|T31
@@ -116,7 +116,7 @@ T-wsl|T-wsl
 V1|V1
 V2|V2 V2b
 V3|V3
-V4|V4 V4b
+V4|V4 V4b V4c
 V5|V5
 V6|V6
 V6b|V6b
@@ -137,7 +137,25 @@ T_SEAM|T_SEAM
 T_PRUNE|T_PRUNE
 T_PRUNE_REAL|T_PRUNE_REAL
 T1287|T1287
-1640|1640 HIMMEL-1640'
+1640|1640 HIMMEL-1640
+1719|1719 HIMMEL-1719
+1674|1674 HIMMEL-1674
+1879|1879 HIMMEL-1879 1999 HIMMEL-1999
+1879-1365|1879-1365 1998 HIMMEL-1998
+812|812 HIMMEL-812
+1830|1830 HIMMEL-1830
+1636|1636 HIMMEL-1636
+2113c|2113c HIMMEL-2113
+2113d|2113d HIMMEL-2113
+2113e|2113e HIMMEL-2113
+2113f|2113f HIMMEL-2113
+2113g|2113g HIMMEL-2113
+2128|2128 HIMMEL-2128
+2147|2147 HIMMEL-2147
+2192|2192 HIMMEL-2192
+2199|2199 HIMMEL-2199
+2177|2177 HIMMEL-2177
+2545|2545 HIMMEL-2545'
 
 _section_alias_known() {
     local _candidate="$1" _label _aliases _alias
@@ -220,6 +238,11 @@ unset ARM_NAME_TEMPLATE 2>/dev/null || true
 # RESUME_SLOT_THRESHOLD reaches resume-slot.sh through this script. T9c sets
 # it per-call.
 unset RESUME_SLOT_THRESHOLD 2>/dev/null || true
+# CR-floor-fallback advisory shield (HIMMEL-2128): 2128b/2128b2 assert on
+# whether the pre-arm WARN fires for CR_REQUIRE_CROSS_MODEL/CR_FLOOR_FALLBACK;
+# an operator shell exporting either would make those assertions depend on
+# ambient state instead of the per-call value each case sets.
+unset CR_REQUIRE_CROSS_MODEL CR_FLOOR_FALLBACK 2>/dev/null || true
 # Worker-census shield (HIMMEL-1637): arm-resume's live-lane-worker guard
 # (HIMMEL-1622, rc=10) censuses reconcile-workers.sh's bridge root — default
 # ~/.claude/handover/bridge — so a REAL live or unprobeable GLM/claudex worker
@@ -247,6 +270,25 @@ export HIMMEL_FLOW_RUNS_LEDGER="$TMP/flow-runs.jsonl"
 # intent explicit rather than letting a heuristic silently exempt us. The
 # refusal itself is exercised below with the variable unset.
 export ARM_TEMP_CWD_OK=1
+
+# Dotenv-read shield (HIMMEL-2254). arm-resume load_dotenv's ARMAUTOMERGE /
+# CR_REQUIRE_CROSS_MODEL / CR_FLOOR_FALLBACK out of a `.env` FILE, falling back
+# to the PRIMARY checkout when the candidate root has none -- so the `unset`s
+# above are NOT enough on their own: a host whose own .env carries the
+# HIMMEL-2147 ARMAUTOMERGE=1 default re-fills the key from disk, and every
+# "a default arm does not GRANT ARMAUTOMERGE" assertion below (T33b, T33c, and
+# T-wsl's in-distro `&& claude` body, which grows an `ARMAUTOMERGE=1
+# CR_MERGE_GATE_OK=1 ` prefix the moment the default applies) fails on exactly
+# the hosts that adopted the feature and passes everywhere else. The shield
+# must therefore defeat a FILE READ, not an env var. ARM_RESUME_DOTENV_ROOT
+# points that read at a suite-owned directory: EMPTY by default, so every key
+# is genuinely absent; the 2128/2147 cases below write a `.env` into it to
+# drive the value they are actually testing.
+export ARM_RESUME_DOTENV_ROOT="$TMP/dotenv-shield"
+mkdir -p "$ARM_RESUME_DOTENV_ROOT"
+# Defense-in-depth against ambient PROCESS env, which wins over any .env via
+# load_dotenv's non-clobber contract before the file is ever consulted.
+unset ARMAUTOMERGE CR_MERGE_GATE_OK 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -315,19 +357,38 @@ git init -q "$TMP/statedocs"
 # between those two calls is exactly the mismatch they are written to detect.
 # Caching keeps the value STABLE across the calls within a test and refreshes
 # only when the target is about to go stale.
-_FT_VALUE=""
-_FT_TARGET=0
+#
+# The cache lives in a FILE, not in shell variables (panel r3 codex-1). Every
+# one of the 118 call sites spells this `$(future_time)`, and a command
+# substitution runs in a SUBSHELL: variables the function assigns die with it,
+# so a variable-backed cache was write-only and each call silently recomputed
+# from scratch. That is not cosmetic — V4b feeds one call's HH:MM into the
+# expected epoch and another's into the arm, so a minute rolling between them
+# shifted the requested target 60s and turned its deliberate 121s mistime into
+# a 61s one, inside the tolerance: the case would have gone red for a fixture
+# reason, intermittently, on exactly the boundary HIMMEL-1609 is settling. A
+# file survives the subshell, so the cache the comment above describes is now
+# the cache that actually runs.
+_FT_FILE="$TMP/future-time.cache"      # "<target-epoch> <HH:MM>"
+_FT_STALE_FILE="$TMP/future-time.stale"
 future_time() {
-    local _now
+    local _now _target _value
     _now=$(date +%s)
+    _target=0; _value=""
+    [ -s "$_FT_FILE" ] && read -r _target _value < "$_FT_FILE"
     # Refresh when unset, or when fewer than 10 minutes remain before the
     # cached target -- comfortably before it can expire mid-test, and far
     # enough from the 60-min long-gap ceiling to stay silent.
-    if [ -z "$_FT_VALUE" ] || [ "$(( _FT_TARGET - _now ))" -lt 600 ]; then
-        _FT_TARGET=$(( _now + 1800 ))
-        _FT_VALUE=$(python3 -c "import datetime,sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%H:%M'))" "$_FT_TARGET")
+    if [ -z "$_value" ] || [ "$(( _target - _now ))" -lt 600 ]; then
+        # Latch BEFORE overwriting: a target found already past is the only
+        # evidence the run outlived its fixture, and the refresh erases it.
+        # The teardown WARN (HIMMEL-1579 item 3) reads this marker.
+        if [ -n "$_value" ] && [ "$_now" -ge "$_target" ]; then : > "$_FT_STALE_FILE"; fi
+        _target=$(( _now + 1800 ))
+        _value=$(python3 -c "import datetime,sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%H:%M'))" "$_target")
+        printf '%s %s\n' "$_target" "$_value" > "$_FT_FILE"
     fi
-    printf '%s' "$_FT_VALUE"
+    printf '%s' "$_value"
 }
 # Crossing midnight needs no special case: at 23:45 this yields "00:15", which
 # arm-resume reads as past-for-today and rolls to the next calendar day --
@@ -379,9 +440,40 @@ make_handover_titled() {
 # ---------------------------------------------------------------------------
 SCHED_STUB_T17="$TMP/sched-stub-t17"
 mkdir -p "$SCHED_STUB_T17"
-cat > "$SCHED_STUB_T17/schtasks" <<'EOF'
+# HIMMEL-1879: /create REGISTERS what it was given, /query reports it back. The
+# old stateless "always exit 0, never list anything" fake is internally
+# inconsistent, and the post-arm EXISTENCE verify reads it (correctly) as a
+# create that armed nothing -> rc 2 on every non-dry-run arm through this stub
+# (W5, W8). Same treatment ARMED_STUB gets below; own state file so the two
+# cannot see each other's tasks, and it still starts EMPTY.
+cat > "$SCHED_STUB_T17/schtasks" <<EOF
 #!/usr/bin/env bash
-exit 0
+db="$TMP/sched-stub-t17.tasks"
+cmd="\${1:-}"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create|/delete)
+        if [ -f "\$db" ]; then
+            grep -vFx "\$tn" "\$db" > "\$db.tmp" 2>/dev/null || : > "\$db.tmp"
+            mv "\$db.tmp" "\$db"
+        fi
+        [ "\$cmd" = /create ] && printf '%s\\n' "\$tn" >> "\$db"
+        exit 0 ;;
+    *) exit 0 ;;
+esac
 EOF
 cat > "$SCHED_STUB_T17/atq" <<'EOF'
 #!/usr/bin/env bash
@@ -537,6 +629,44 @@ fi
 #     isolates from the live-scheduler dedup so this is deterministic.
 # ---------------------------------------------------------------------------
 if _sec_selected "T8"; then
+# HIMMEL-1277: arm-resume renders /sd in the MACHINE's own Windows short-date
+# pattern (_win_short_date_pattern + _win_render_short_date — the HIMMEL-938
+# fix), so T8's old hardcoded "%m/%d/%Y" expectation was a false FAIL on every
+# day-first box (win2 is dd/MM/yyyy; observed 2026-07-25 — the PRODUCT was
+# right and the ASSERTION was wrong). T8's subject is the DATE ROLL, not the
+# locale ORDER (V1/V2/V2b pin the order against a stubbed registry), so compare
+# the /sd token's numeric groups as a SET against tomorrow's day/month/year:
+# order-agnostic, still exact — a wrong date changes the set. A `y` run of <=2
+# renders a 2-digit year, hence the two accepted spellings.
+#
+# Two couplings, both deliberate, both raised in review (panel r1):
+#   - Zero-padding. The expected groups are padded (%d/%m), which is correct
+#     because _win_render_short_date pads every d/M run with
+#     `width = max(run_len, 2)` — a single-width `M/d/yyyy` locale (the real
+#     Windows en-US default, and this box's actual registry value) still
+#     renders 08/22/2026, never 8/22/2026.
+#   - Transposition. A sorted set cannot tell Aug 9 from Sep 8. Accepted:
+#     ORDER is not T8's subject, and V1/V2/V2b pin it exactly against stubbed
+#     locales. T8 asks only whether the date ROLLED.
+#
+# _digit_set <string> — the string's runs of digits, sorted, space-joined.
+# Also the CR scrubber: python3 under Git-Bash prints CRLF, so a \r would ride
+# along into any expected value built from it; `tr -cs '0-9'` drops it as a
+# non-digit, which is why BOTH sides go through here.
+_digit_set() { printf '%s' "$1" | tr -cs '0-9' '\n' | grep -v '^$' | sort | tr '\n' ' '; }
+_assert_sd_is_tomorrow() {   # <label> <arm-output>
+    local label="$1" text="$2" sd sd_set set4 set2
+    sd=$(printf '%s\n' "$text" | sed -n 's|.* /sd \(.*\)|\1|p' | head -n 1 | sed 's| /.*||')
+    sd_set=$(_digit_set "$sd")
+    set4=$(_digit_set "$(python3 -c 'import datetime; d=datetime.datetime.now()+datetime.timedelta(days=1); print(d.strftime("%d %m %Y"))')")
+    set2=$(_digit_set "$(python3 -c 'import datetime; d=datetime.datetime.now()+datetime.timedelta(days=1); print(d.strftime("%d %m %y"))')")
+    if [ "$sd_set" = "$set4" ] || [ "$sd_set" = "$set2" ]; then
+        echo "PASS $label (/sd $sd)"
+    else
+        echo "FAIL $label -- /sd '$sd' has digit groups [$sd_set], expected [$set4] or [$set2]"
+        FAILED=$((FAILED + 1))
+    fi
+}
 HO=$(make_handover "$WORK_REPO")
 PAST_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
 # HIMMEL-966: host `at` must not be a dependency; pin the posix backend with the stub.
@@ -545,8 +675,28 @@ rc=$?
 assert_rc "T8 past --time exits 0 (force+dry)" 0 "$rc"
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
     msys*|cygwin*|win32*|MINGW*)
-        TOM=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(days=1)).strftime("%m/%d/%Y"))')
-        assert_contains "T8 schtasks /sd is tomorrow" "/sd $TOM" "$out"
+        _assert_sd_is_tomorrow "T8 schtasks /sd is tomorrow" "$out"
+
+        # T8b (HIMMEL-1277 regression guard): the same roll on a DAY-FIRST
+        # machine. This box is month-first, so T8 alone can never catch a
+        # re-hardcoded US expectation — win2 would keep eating the false red.
+        # Forcing `reg` to report dd/MM/yyyy makes the day-first render happen
+        # HERE, so a revert to a locale-pinned assertion goes red on the box
+        # that runs the suite.
+        T8B_BIN="$TMP/t8b-stub-bin"; mkdir -p "$T8B_BIN"
+        cp "$SCHED_STUB_T17/schtasks" "$SCHED_STUB_T17/at" "$SCHED_STUB_T17/atq" "$SCHED_STUB_T17/powershell" "$T8B_BIN/"
+        cat > "$T8B_BIN/reg" <<'EOF'
+#!/usr/bin/env bash
+echo 'HKEY_CURRENT_USER\Control Panel\International'
+echo '    sShortDate    REG_SZ    dd/MM/yyyy'
+exit 0
+EOF
+        chmod +x "$T8B_BIN/reg"
+        HO_T8B=$(make_handover "$WORK_REPO")
+        out=$(SCHTASKS_CMD="$T8B_BIN/schtasks" PATH="$T8B_BIN:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO_T8B" --long-gap --force --dry-run 2>&1)
+        rc=$?
+        assert_rc "T8b day-first locale past --time exits 0 (force+dry)" 0 "$rc"
+        _assert_sd_is_tomorrow "T8b schtasks /sd is tomorrow under dd/MM/yyyy" "$out"
         ;;
     *)
         TOM=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(days=1)).strftime("%Y%m%d"))')
@@ -562,7 +712,7 @@ fi
 #     skips the freshness guard; --force --dry-run isolates from the live
 #     scheduler dedup and touches nothing.
 # ---------------------------------------------------------------------------
-if _sec_selected "T9" "T9b" "T9c"; then
+if _sec_selected "T9" "T9b" "T9b2" "T9c" "T9d"; then
 HO=$(make_handover "$WORK_REPO")
 SLOT_CACHE="$TMP/usage-free.json"
 FIVE_RESET=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')
@@ -589,6 +739,13 @@ esac
 #     end-to-end proof of that contract. One 95% seven_day fixture: EXHAUSTED
 #     under the shipped 90 default (park at the reset), HEADROOM under an
 #     operator-set 97 (ASAP).
+#
+# HIMMEL-2113 Ask A: a 6-day-out seven-day-reset park now refuses FAST
+# (rc=19) instead of silently arming into it -- exactly the incident shape
+# (a multi-hour/day park chosen silently deep inside a slow script). --force
+# alone does NOT override this (it only sanctions the shipped-work preflight);
+# --long-gap is the dedicated override, reusing the explicit-HH:MM long-gap
+# guard's own flag/semantics.
 # ---------------------------------------------------------------------------
 HO=$(make_handover "$WORK_REPO")
 BUSY_CACHE="$TMP/usage-95.json"
@@ -597,8 +754,29 @@ printf '{"five_hour":{"utilization":10.0,"resets_at":"%s"},"seven_day":{"utiliza
 out=$(RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
     bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
 rc=$?
-assert_rc "T9b default wall exits 0" 0 "$rc"
-assert_contains "T9b 95% is exhausted under the shipped 90 default" "wait for seven-day reset" "$out"
+assert_rc "T9b default-wall park refuses fast (rc=19, HIMMEL-2113)" 19 "$rc"
+assert_contains "T9b ERR names the park time + reason" "wait for seven-day reset" "$out"
+assert_contains "T9b ERR names the --long-gap override" "--long-gap" "$out"
+
+HO=$(make_handover "$WORK_REPO")
+out=$(RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time smart --handover "$HO" --force --long-gap --dry-run 2>&1)
+rc=$?
+assert_rc "T9b1 --long-gap overrides the park refusal (rc=0)" 0 "$rc"
+assert_contains "T9b1 95% is exhausted under the shipped 90 default" "wait for seven-day reset" "$out"
+
+# T9b2 (review fix): the OTHER rc=19 exemption -- ARM_RESUME_SAFETY_ARM=1 alone,
+# with NEITHER --long-gap NOR --force, must also arm cleanly. This is the
+# auto-arm-on-cap.sh/spawn-glm cap-respawn shape (HIMMEL-856): those automated
+# callers set ARM_RESUME_SAFETY_ARM=1 in their child env and cannot pass
+# --long-gap, so a future edit that dropped this exemption from the rc=19
+# guard (while keeping it on rc=9) would silently strand them parked.
+HO=$(make_handover "$WORK_REPO")
+out=$(ARM_RESUME_SAFETY_ARM=1 RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time smart --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "T9b2 ARM_RESUME_SAFETY_ARM=1 exempts the park refusal, no --long-gap/--force (rc=0)" 0 "$rc"
+assert_contains "T9b2 95% is exhausted under the shipped 90 default" "wait for seven-day reset" "$out"
 
 HO=$(make_handover "$WORK_REPO")
 out=$(RESUME_SLOT_THRESHOLD=97 RESUME_SLOT_CACHE="$BUSY_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
@@ -607,6 +785,20 @@ rc=$?
 assert_rc "T9c env-97 wall exits 0" 0 "$rc"
 assert_contains "T9c RESUME_SLOT_THRESHOLD=97 reaches the child -> ASAP" "bank free" "$out"
 assert_contains "T9c child applied the env threshold, not 90" "< 97%" "$out"
+
+# T9d (HIMMEL-1968): the 2026-08-19 19:37 shape — 96% weekly under an
+# operator-raised 97 threshold resolves ASAP (correct by the rule), but the
+# child's near-wall WARN must REACH the operator through arm-resume. A
+# successful resolve used to discard the child's stderr, so the warning was
+# silent exactly when it mattered.
+HO=$(make_handover "$WORK_REPO")
+NEAR_CACHE="$TMP/usage-96.json"
+printf '{"five_hour":{"utilization":6.0,"resets_at":"%s"},"seven_day":{"utilization":96.0,"resets_at":"%s"}}'     "$FIVE_RESET" "$SEVEN_RESET" > "$NEAR_CACHE"
+out=$(RESUME_SLOT_THRESHOLD=97 RESUME_SLOT_CACHE="$NEAR_CACHE" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH"     bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T9d 96% under env-97 still arms ASAP (rc 0)" 0 "$rc"
+assert_contains "T9d slot is ASAP by the rule" "bank free" "$out"
+assert_contains "T9d the child's near-wall WARN is relayed by arm-resume" "WARN resume-slot: seven-day=96%" "$out"
 fi
 
 # ---------------------------------------------------------------------------
@@ -622,6 +814,67 @@ out=$(RESUME_SLOT_CACHE="$BAD_CACHE" SLOT_MAX_AGE=0 bash "$ARM" --time smart --h
 rc=$?
 assert_rc "T10 smart with unsafe cache exits 1 (no arm)" 1 "$rc"
 assert_contains "T10 surfaces the slot error" "could not resolve a slot" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# T_1674_STALE (HIMMEL-1674 Part A): --time smart with a STRUCTURALLY-VALID
+#     cache whose mtime is STALE must fail CLOSED. This is the operator's
+#     exact 2026-08-10 scenario (cache 13058s old against a 3600s max): a stale
+#     cache is a NORMAL expected state (idle machine / statusline not run
+#     recently), NOT malformed data. resume-slot.sh exits 2 on a stale cache and
+#     arm-resume relays that as rc 1 -- never rc 0 with no task. This locks the
+#     closed behaviour; a regression that re-opens the fail-open (rc 0, no task)
+#     fails this assertion. Distinct from T10 (a structurally-bad cache: null
+#     reset, also rc 2 -> rc 1).
+# ---------------------------------------------------------------------------
+if _sec_selected "1674"; then
+HO=$(make_handover "$WORK_REPO")
+STALE_CACHE="$TMP/usage-stale.json"
+# Self-contained resets_at (staleness is checked BEFORE the cache is parsed, so
+# the values do not matter -- but keep them valid so a future reorder of
+# resume-slot's checks does not make this test pass for the wrong reason).
+printf '{"five_hour":{"utilization":10.0,"resets_at":"1785000000"},"seven_day":{"utilization":20.0,"resets_at":"1785000000"}}' > "$STALE_CACHE"
+# Age the fixture far past the 3600s freshness ceiling (operator saw 13058s).
+# `touch -d` runs as a child of this harness, so it is NOT subject to the
+# caller's command-shape allow-list the way a direct tool invocation is.
+touch -d "2020-01-01 00:00:00" "$STALE_CACHE"
+out=$(RESUME_SLOT_CACHE="$STALE_CACHE" SLOT_MAX_AGE=3600 bash "$ARM" --time smart --handover "$HO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T_1674 stale cache -> smart fails CLOSED (rc 1, no arm)" 1 "$rc"
+assert_contains "T_1674 stale surfaces the arm-resume relay error" "could not resolve a slot" "$out"
+assert_contains "T_1674 stale names the staleness reason" "stale" "$out"
+
+# ---------------------------------------------------------------------------
+# T_1674_TOMORROW (HIMMEL-1674 Part B): an explicit --time HH:MM already past
+#     for today rolls to TOMORROW. The roll must be reported LOUDLY when it is a
+#     FAR park (the "resume in 10 min silently became resume in 24h" class), not
+#     land on tomorrow with no mention. A 2-minutes-ago HH:MM rolls ~24h out, so
+#     the WARN must fire. --long-gap sanctions the far park (else the long-gap
+#     guard refuses rc=9); --force --dry-run isolate from the live scheduler.
+#     Distinct from T8, which asserts the /sd-is-tomorrow mechanics; this
+#     asserts the operator-facing roll WARN.
+# ---------------------------------------------------------------------------
+HO=$(make_handover "$WORK_REPO")
+PAST_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=2)).strftime("%H:%M"))')
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$PAST_HHMM" --handover "$HO" --long-gap --force --dry-run 2>&1)
+rc=$?
+assert_rc "T_1674 past-time far roll still arms (force+long-gap+dry)" 0 "$rc"
+assert_contains "T_1674 past-time roll warns LOUDLY about tomorrow" "rolled the arm to TOMORROW" "$out"
+assert_contains "T_1674 past-time roll names the rolled time" "$PAST_HHMM" "$out"
+
+# ---------------------------------------------------------------------------
+# T_1674_NEAR (HIMMEL-1674 Part B negative): a NEAR arm must NOT trip the
+#     far-roll WARN. A ~25-minutes-out HH:MM is either a same-day future arm
+#     (no roll at all) or, across midnight, a near roll whose gap is < 3600s --
+#     either way the WARN stays silent. Guards against the WARN being over-broad
+#     and noising up every ordinary / midnight-crossing arm.
+# ---------------------------------------------------------------------------
+HO=$(make_handover "$WORK_REPO")
+NEAR_HHMM=$(python3 -c 'import datetime; n=datetime.datetime.now(); t=n.replace(second=0,microsecond=0)+datetime.timedelta(minutes=25); print(t.strftime("%H:%M"))')
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --time "$NEAR_HHMM" --handover "$HO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "T_1674 near arm arms cleanly (rc 0, no long-gap refusal)" 0 "$rc"
+assert_not_contains "T_1674 near arm emits no spurious roll WARN" "rolled the arm to TOMORROW" "$out"
 fi
 
 # ---------------------------------------------------------------------------
@@ -937,19 +1190,64 @@ fi
 # ---------------------------------------------------------------------------
 ARMED_STUB="$TMP/armed-stub-bin"
 mkdir -p "$ARMED_STUB"
-cat > "$ARMED_STUB/schtasks" <<'EOF'
+# HIMMEL-1879: this stub used to answer EVERY /query with an empty scheduler
+# while reporting /create success -- internally inconsistent, and the arm's new
+# post-arm existence verify (correctly) reads that as "the create armed
+# nothing" and refuses rc=2. Same class the HIMMEL-938 note below already
+# handled for `powershell`. State is a per-$TMP file (no SCHED_DB env needed,
+# unlike make_stateful_sched), with real `/create /f` overwrite-in-place
+# semantics, so the scheduler still starts EMPTY for every section and only
+# ever holds what this suite actually armed.
+cat > "$ARMED_STUB/schtasks" <<EOF
 #!/usr/bin/env bash
-# /query → empty scheduler (rc 0, no output); /create → success
+db="$TMP/armed-stub.tasks"
+cmd="\${1:-}"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create|/delete)
+        if [ -f "\$db" ]; then
+            grep -vFx "\$tn" "\$db" > "\$db.tmp" 2>/dev/null || : > "\$db.tmp"
+            mv "\$db.tmp" "\$db"
+        fi
+        [ "\$cmd" = /create ] && printf '%s\\n' "\$tn" >> "\$db"
+        exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+cat > "$ARMED_STUB/atq" <<EOF
+#!/usr/bin/env bash
+d="$TMP/armed-stub.atdir"; [ -d "\$d" ] || exit 0
+for f in "\$d"/job-*; do
+    [ -f "\$f" ] || continue
+    printf '%s\\tThu Jun 11 09:00:00 2026 a user\\n' "\${f##*/job-}"
+done
 exit 0
 EOF
-cat > "$ARMED_STUB/atq" <<'EOF'
+cat > "$ARMED_STUB/at" <<EOF
 #!/usr/bin/env bash
-exit 0
-EOF
-cat > "$ARMED_STUB/at" <<'EOF'
-#!/usr/bin/env bash
-cat > /dev/null   # consume the heredoc job body
-exit 0
+d="$TMP/armed-stub.atdir"; mkdir -p "\$d"
+case "\${1:-}" in
+    -c) cat "\$d/job-\${2:-}" 2>/dev/null; exit 0 ;;
+    -t)
+        n=\$(cat "\$d/.counter" 2>/dev/null || echo 0); n=\$((n + 1))
+        printf '%s' "\$n" > "\$d/.counter"
+        cat > "\$d/job-\$n"
+        exit 0 ;;
+    *) cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
 EOF
 cat > "$ARMED_STUB/claude" <<'EOF'
 #!/usr/bin/env bash
@@ -1109,6 +1407,53 @@ out=$(TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH"
 rc=$?
 assert_rc "T24 broken lib: successful arm still completes (rc 0)" 0 "$rc"
 assert_contains "T24 broken lib: arm banner printed" "RESUME ARMED" "$out"
+# The fail-open is `. lib 2>/dev/null || true` — BOTH halves. Nothing pinned
+# the redirect, so bash's parse error from the broken lib could start leaking
+# into the operator's arm output with every rc assertion still green.
+assert_not_contains "T24 broken lib: the parse error is not leaked to the operator" "syntax error" "$out"
+
+# T24c (HIMMEL-1576): the NEGATIVE CONTROL. Turning six FAILs into six PASSes
+# does not demonstrate the test works — T24 spent months exiting 2 on a missing
+# sibling while reporting as "the HIMMEL-236 fail-open contract is broken", and
+# a repaired fixture that still cannot fail for its intended reason is the same
+# defect wearing green. So: break the fail-open deliberately, in a SECOND copy
+# tree, and assert the arm dies. If this passes while T24(b) also passes, the
+# `|| true` is genuinely what is holding the arm up.
+FAILOPEN_NEG="$TMP/failopen-neg"
+rm -rf "$FAILOPEN_NEG"
+mkdir -p "$FAILOPEN_NEG"
+cp -R "$FAILOPEN/handover" "$FAILOPEN/lib" "$FAILOPEN_NEG/"
+sed '\#lib/telemetry\.sh#s# 2>/dev/null || true##' "$FAILOPEN/handover/arm-resume.sh" \
+    > "$FAILOPEN_NEG/handover/arm-resume.sh"
+# A no-op sed would make this control vacuous — the exact class of bug the
+# ticket is about — so prove the edit landed before trusting the result.
+if grep -qF 'lib/telemetry.sh" 2>/dev/null || true' "$FAILOPEN_NEG/handover/arm-resume.sh"; then
+    echo "FAIL T24c negative control did not strip the fail-open (sed matched nothing) — the control below is vacuous"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS T24c negative control stripped the caller-side fail-open"
+fi
+# A FRESH handover, not the $HO that T24(b) just armed: if the fail-open were
+# ever restored, a second arm of the same handover could return rc=3 (dedup)
+# instead of rc=0, and the "rc != 0" below would read as PASS for a reason that
+# has nothing to do with the fail-open — a control whose green can come from a
+# second cause is the vacuous shape this whole case exists to remove.
+HO_T24C=$(make_handover "$WORK_REPO")
+out=$(TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$FAILOPEN_NEG/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO_T24C" 2>&1)
+rc=$?
+# "Nonzero" alone is not proof of CAUSE (panel r3 codex-2): an unrelated
+# fixture or scheduler error would satisfy it and the control would pass
+# without testing anything. So require the positive evidence too — with the
+# 2>/dev/null gone, bash's own parse error from the broken lib must now reach
+# the output, which is the same string T24(b) asserts is ABSENT while the
+# fail-open stands. The pair is the control: same input, opposite verdicts.
+if [ "$rc" != "0" ] && grepq "$out" -F 'syntax error'; then
+    echo "PASS T24c without the fail-open the broken telemetry.sh breaks the arm and surfaces its parse error (rc=$rc) — T24 can still fail for its intended reason"
+else
+    echo "FAIL T24c expected a nonzero rc AND a leaked parse error with the fail-open REMOVED (got rc=$rc) — the control is not proving its cause"
+    FAILED=$((FAILED + 1))
+fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1211,7 +1556,44 @@ EOF
 # Probe "unavailable" -> verify fail-opens (see SCHED_STUB_T17 note).
 exit 1
 EOF
-    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude" "$dir/powershell"
+    cat > "$dir/crontab" <<'EOF'
+#!/usr/bin/env bash
+# Stateful crontab stub (HIMMEL-1581, lifted from test-arm-resume-identity.sh's
+# HIMMEL-1567 stub). arm-resume.sh routes macOS (Darwin) through crontab ONLY:
+# list_existing()'s macos arm calls _crontab_list (`crontab -l | grep`), and
+# _crontab_schedule/_crontab_delete rewrite via `| crontab -`. Without a stub
+# here a Darwin run of the multislot section resolves the REAL crontab binary
+# and reads -- and through _crontab_delete's rewrite, WRITES -- the operator's
+# machine-wide crontab outside this suite's fixture. State lives in a fixture
+# file inside $SCHED_DB_DIR; `:?` so an unset var is a LOUD failure rather than
+# a silent fall-through to the real binary (mirrors the at/atq/atrm guard).
+d="${SCHED_DB_DIR:?SCHED_DB_DIR unset}"; mkdir -p "$d"
+db="$d/crontab.fixture"
+case "${1:-}" in
+    -l)
+        # Real `crontab -l` exits 1 ("no crontab for user") with no output when
+        # the crontab is empty; the arm-resume callers all guard that, so model
+        # it honestly rather than always exiting 0.
+        if [ -s "$db" ]; then cat "$db"; exit 0; else exit 1; fi ;;
+    -)
+        cat > "$db"; exit 0 ;;
+    -r)
+        : > "$db"; exit 0 ;;
+    "")
+        # Piped stdin with no flag = replace.
+        cat > "$db"; exit 0 ;;
+    -*)
+        # Unknown flag (-e editor, -u user): NEVER touch real state. Drain any
+        # piped stdin so the writer sees no spurious SIGPIPE; exit 0 so a
+        # probe-by-existence sees a present binary.
+        cat > /dev/null 2>&1 || true; exit 0 ;;
+    *)
+        # A bare file arg = install from that file (real `crontab <file>`).
+        if [ -f "$1" ]; then cat "$1" > "$db"; exit 0; fi
+        cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
+EOF
+    chmod +x "$dir/schtasks" "$dir/at" "$dir/atq" "$dir/atrm" "$dir/claude" "$dir/powershell" "$dir/crontab"
 }
 
 # Count armed slots in the platform's state location.
@@ -1219,7 +1601,17 @@ EOF
 count_slots() {
     case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         msys*|cygwin*|win32*|MINGW*)
-            if [ -f "$1" ]; then grep -c . "$1" 2>/dev/null || echo 0; else echo 0; fi ;;
+            # `|| true`, NOT `|| echo 0`: grep -c ALREADY prints its count (0)
+            # and exits 1 on no-match, so an `echo 0` fallback emits a SECOND
+            # line and an empty DB reports "0\n0" — which no `= 1` comparison
+            # ever noticed, but a `= 0` one fails on (HIMMEL-1879).
+            if [ -f "$1" ]; then grep -c . "$1" 2>/dev/null || true; else echo 0; fi ;;
+        darwin*)
+            # macOS uses crontab ONLY (arm-resume.sh PLATFORM=macos), whose stub
+            # store is $dir/crontab.fixture -- NOT $db (schtasks) or job-* (at).
+            # Counting either of those here would always read 0 on Darwin and
+            # make every slot assertion below vacuously pass (HIMMEL-1581).
+            if [ -f "$2/crontab.fixture" ]; then grep -c . "$2/crontab.fixture" 2>/dev/null || true; else echo 0; fi ;;
         *)
             find "$2" -maxdepth 1 -name 'job-*' 2>/dev/null | wc -l | tr -d ' ' ;;
     esac
@@ -1392,6 +1784,11 @@ fi
 _slot_ids() {   # echo one HIMMEL-Resume-* identity per recorded slot
     case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         msys*|cygwin*|win32*|MINGW*) grep -ho 'HIMMEL-Resume-[^[:space:]"]*' "$DB28F" 2>/dev/null || true ;;
+        # Darwin: crontab, not at — same store as count_slots reads. Without
+        # this branch the recursive grep below sweeps $DB28FD and would happen
+        # to find crontab.fixture too, but only by accident; naming the store
+        # keeps the two helpers reading the SAME place (HIMMEL-1581).
+        darwin*) grep -ho 'HIMMEL-Resume-[^[:space:]"]*' "$DB28FD/crontab.fixture" 2>/dev/null || true ;;
         *) grep -rho 'HIMMEL-Resume-[^[:space:]"]*' "$DB28FD" 2>/dev/null || true ;;
     esac
 }
@@ -1433,6 +1830,42 @@ if [ "$_missing" = "0" ] && [ "$_new" = "1" ]; then
     echo "PASS T28d both sibling identities survived + 1 new arm identity (HIMMEL-1563)"
 else
     echo "FAIL T28d identity check: missing=$_missing new=$_new (before='$(printf '%s' "$_ids_before" | tr '\n' ',')' after='$(printf '%s' "$_ids_after" | tr '\n' ',')')"
+    FAILED=$((FAILED + 1))
+fi
+
+# T28e (HIMMEL-1581): a Darwin CANARY for the two helpers above, not a Darwin
+# run of T28d. On macOS arm-resume schedules through crontab ONLY, so before
+# this ticket count_slots/_slot_ids — which knew about the schtasks db and the
+# `at` job-* store and nothing else — read 0/empty there and every slot
+# assertion in this section passed VACUOUSLY. The real acceptance test is a
+# macOS run, which this box cannot perform; what CAN be proven here is that the
+# darwin* branches read the crontab fixture the stub actually writes. OSTYPE is
+# set per-call (bash restores it after), and DB28F/DB28FD are re-pointed at
+# throwaway paths — safe because every T28 assertion above is already done.
+DB28F="$TMP/db28e.tasks"; DB28FD="$TMP/db28e.atdir"; mkdir -p "$DB28FD"
+printf '%s\n%s\n' \
+    '57 23 * * * cmd HIMMEL-Resume-canary-one' \
+    '58 23 * * * cmd HIMMEL-Resume-canary-two' > "$DB28FD/crontab.fixture"
+_darwin_slots=$(OSTYPE=darwin23 count_slots "$DB28F" "$DB28FD")
+if [ "$_darwin_slots" = "2" ]; then
+    echo "PASS T28e count_slots reads the crontab fixture on Darwin (2 slots)"
+else
+    echo "FAIL T28e count_slots on Darwin: expected 2 slots, got '$_darwin_slots' (vacuous-pass gap)"
+    FAILED=$((FAILED + 1))
+fi
+_darwin_ids=$(OSTYPE=darwin23 _slot_ids | sort -u | tr '\n' ' ')
+if [ "$_darwin_ids" = "HIMMEL-Resume-canary-one HIMMEL-Resume-canary-two " ]; then
+    echo "PASS T28e _slot_ids reads the crontab fixture on Darwin"
+else
+    echo "FAIL T28e _slot_ids on Darwin: got '$_darwin_ids'"
+    FAILED=$((FAILED + 1))
+fi
+# The stub itself must exist, or a Darwin run escapes the fixture into the
+# operator's machine-wide crontab (the HIMMEL-1567 hazard, in this suite).
+if [ -x "$STATEFUL_STUB/crontab" ]; then
+    echo "PASS T28e make_stateful_sched installs a crontab stub"
+else
+    echo "FAIL T28e make_stateful_sched has no executable crontab stub — a Darwin run would touch the real crontab"
     FAILED=$((FAILED + 1))
 fi
 fi
@@ -1610,14 +2043,21 @@ HO=$(make_handover "$WORK_REPO")
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T33b default (no --automerge) dry-run exits 0" 0 "$rc"
-assert_not_contains "T33b default does not GRANT ARMAUTOMERGE=1" "ARMAUTOMERGE=1" "$out"
-assert_not_contains "T33b default does not GRANT CR_MERGE_GATE_OK=1" "CR_MERGE_GATE_OK=1" "$out"
+# HIMMEL-2254: assert the GRANT FORM, not the bare substring. The
+# HIMMEL-2128 advisory WARN ("will NOT set ARMAUTOMERGE=1") is printed on
+# stderr on exactly this path and 2>&1 folds it into "$out", so a bare
+# not-contains on "ARMAUTOMERGE=1" fails on the very behaviour it is
+# supposed to confirm. What must be absent is the grant the ARMED SESSION
+# would receive.
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
     msys*|cygwin*|win32*|MINGW*)
+        assert_not_contains "T33b default does not GRANT ARMAUTOMERGE=1" 'set "ARMAUTOMERGE=1"' "$out"
+        assert_not_contains "T33b default does not GRANT CR_MERGE_GATE_OK=1" 'set "CR_MERGE_GATE_OK=1"' "$out"
         assert_contains "T33b default still CLEARS ARMAUTOMERGE (defense-in-depth)" 'set "ARMAUTOMERGE="' "$out"
         assert_contains "T33b default still CLEARS CR_MERGE_GATE_OK (defense-in-depth)" 'set "CR_MERGE_GATE_OK="' "$out"
         ;;
     *)
+        assert_not_contains "T33b default does not GRANT ARMAUTOMERGE/CR_MERGE_GATE_OK" "ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 claude" "$out"
         assert_contains "T33b default still CLEARS both vars (defense-in-depth)" "unset ARMAUTOMERGE CR_MERGE_GATE_OK" "$out"
         ;;
 esac
@@ -1643,14 +2083,17 @@ HO2=$(make_handover "$WORK_REPO")
 out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" bash "$ARM" --dedup-any --time "$(future_time)" --handover "$HO2" --dry-run 2>&1)
 rc=$?
 assert_rc "T33c hop-2 (simulated auto-arm-on-cap re-arm, no --automerge) dry-run exits 0" 0 "$rc"
-assert_not_contains "T33c hop-2 does not GRANT ARMAUTOMERGE=1" "ARMAUTOMERGE=1" "$out"
-assert_not_contains "T33c hop-2 does not GRANT CR_MERGE_GATE_OK=1" "CR_MERGE_GATE_OK=1" "$out"
+# HIMMEL-2254: grant-form assertions, not bare substrings — see the T33b
+# comment above for why.
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
     msys*|cygwin*|win32*|MINGW*)
+        assert_not_contains "T33c hop-2 does not GRANT ARMAUTOMERGE=1" 'set "ARMAUTOMERGE=1"' "$out"
+        assert_not_contains "T33c hop-2 does not GRANT CR_MERGE_GATE_OK=1" 'set "CR_MERGE_GATE_OK=1"' "$out"
         assert_contains "T33c hop-2 CLEARS ARMAUTOMERGE" 'set "ARMAUTOMERGE="' "$out"
         assert_contains "T33c hop-2 CLEARS CR_MERGE_GATE_OK" 'set "CR_MERGE_GATE_OK="' "$out"
         ;;
     *)
+        assert_not_contains "T33c hop-2 does not GRANT ARMAUTOMERGE/CR_MERGE_GATE_OK" "ARMAUTOMERGE=1 CR_MERGE_GATE_OK=1 claude" "$out"
         assert_contains "T33c hop-2 CLEARS both vars" "unset ARMAUTOMERGE CR_MERGE_GATE_OK" "$out"
         ;;
 esac
@@ -2442,10 +2885,17 @@ assert_not_contains "T-wsl body never quotes the -d value" 'wsl.exe -d "' "$out"
 # CR_MERGE_GATE_OK unconditionally between cd and claude (always-clear
 # contract — see arm-resume.sh's schedule_arm WSL branch comment). HIMMEL-1475:
 # the same unset also drops ARM_RESUME_SAFETY_ARM so a resumed in-distro session
-# does not inherit a leaked long-gap exemption.
-assert_contains "T-wsl body has in-distro cd+unset+claude" "cd '$WSL_CWD' && unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM && claude" "$out"
+# does not inherit a leaked long-gap exemption. HIMMEL-812: AUTO_ARM_SAFETY_CHILD
+# joins the same list — a .bat `set` cannot cross into the distro, so the
+# in-distro command is the only place the safety-child mark can be cleared.
+# HIMMEL-2545 round-6: the in-distro unset list now also clears
+# CLAUDE_CODE_SESSION_ID (the arming session's id must not leak into the
+# relaunched claude process's own environ) — this literal-string assertion
+# is genuinely invalidated by that addition, so it is updated in place
+# rather than left to assert a launch line arm-resume.sh no longer emits.
+assert_contains "T-wsl body has in-distro cd+unset+claude" "cd '$WSL_CWD' && unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM AUTO_ARM_SAFETY_CHILD CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID && export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 && claude" "$out"
 assert_not_contains "T-wsl no caret escapes inside CMD quotes" '^&' "$out"
-assert_contains "T-wsl prompt precedes channels" "'load $WSL_HO overnight mode' --channels 'plugin:test@local'" "$out"
+assert_contains "T-wsl prompt precedes channels" "'load $WSL_HO overnight mode. Apply the Launch preamble standing instructions in docs/handover/overnight-mode.md before Phase 1.' --channels 'plugin:test@local'" "$out"
 assert_not_contains "T-wsl body drops Windows cd" "cd /d" "$out"
 # Regression (s52/s53 live fire): the flow-run tmp path must carry a LITERAL
 # backslash-f — a mangled printf escape (\f form feed) makes an invalid
@@ -2623,13 +3073,41 @@ fi
 make_verify_stub() {
     local dir="$1" ps_body="$2"
     mkdir -p "$dir"
+    # HIMMEL-1879: /query must report back what /create registered. These stubs
+    # exist to drive the NextRunTime verify (the powershell body above), but the
+    # EXISTENCE verify runs too, and an always-empty /query reads as "the create
+    # armed nothing" -> rc 2 on the cases that expect a clean arm (V4, V5).
+    # /delete still logs, and still removes, so the delete-log assertions and
+    # the "verify pass leaves the task in place" checks both stay honest.
     cat > "$dir/schtasks" <<EOF
 #!/usr/bin/env bash
-case "\$1" in
-    /query)  exit 0 ;;
-    /create) exit 0 ;;
-    /delete) printf '%s\n' "\$*" >> "$dir/delete.log"; exit 0 ;;
-    *)       exit 0 ;;
+db="$dir/tasks"
+cmd="\$1"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create)
+        printf '%s\\n' "\$tn" >> "\$db"; exit 0 ;;
+    /delete)
+        printf '%s\\n' "\$tn" >> "$dir/delete.log"
+        if [ -f "\$db" ]; then
+            grep -vFx "\$tn" "\$db" > "\$db.tmp" 2>/dev/null || : > "\$db.tmp"
+            mv "\$db.tmp" "\$db"
+        fi
+        exit 0 ;;
+    *) exit 0 ;;
 esac
 EOF
     cat > "$dir/powershell" <<EOF
@@ -2708,6 +3186,27 @@ else
     echo "FAIL V4b expected schtasks /delete to be called"
     FAILED=$((FAILED + 1))
 fi
+
+# V4c (HIMMEL-1609): the ACCEPT side of the same boundary. V4 pins an exact
+# match and V4b pins 121s -> refuse, but until now nothing pinned the last
+# value the advertised tolerance is supposed to ACCEPT — so a comparison that
+# had quietly tightened (>=120, or a smaller constant) would have kept both
+# neighbours green while refusing arms the ERR text promises are fine. The
+# contract is arm-resume.sh's `[ "$_diff" -gt 120 ]` and the "120s tolerance"
+# it names: 120 stands, 121 does not. This case is the 120.
+V4C="$TMP/v4c-stub-bin"
+make_verify_stub "$V4C" "echo $((V4_EPOCH + 120))"
+V4C_HO="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" win_env "$V4C" bash "$ARM" --time "$(future_time)" --handover "$V4C_HO" 2>&1)
+rc=$?
+assert_rc "V4c 120s NextRunTime diff is inside the tolerance (rc=0)" 0 "$rc"
+assert_contains "V4c arm banner printed" "RESUME ARMED" "$out"
+if [ -s "$V4C/delete.log" ]; then
+    echo "FAIL V4c a within-tolerance arm must NOT be deleted"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS V4c within-tolerance arm leaves the task in place"
+fi
 fi
 
 # V5: the verify PROBE itself fails (powershell exits nonzero, no output)
@@ -2732,6 +3231,11 @@ out=$(TMPDIR="$TMP" win_env "$V5" bash "$ARM" --time "$(future_time)" --handover
 rc=$?
 assert_rc "V5 verify-infra-failure still arms (rc=0)" 0 "$rc"
 assert_contains "V5 WARN surfaced for the failed probe" "WARN arm-resume: post-arm NextRunTime verify could not run" "$out"
+# HIMMEL-1879 (r5): the fail-open stands -- an unreachable probe is not evidence
+# of a bad arm -- but the banner must not then claim an EARNED success. Plain
+# "RESUME ARMED" is reserved for an arm that was queried back and confirmed.
+assert_contains "V5 the arm is still reported (rc unchanged, banner printed)" "RESUME ARMED" "$out"
+assert_contains "V5 but the banner does NOT claim a verified arm (HIMMEL-1879)" "UNVERIFIED" "$out"
 if [ -s "$V5/delete.log" ]; then
     echo "FAIL V5 infra failure must NOT delete the task"
     FAILED=$((FAILED + 1))
@@ -2766,20 +3270,80 @@ if [ "$NEAR_LEAD" -gt 60 ] || [ "$NEAR_LEAD" -lt 10 ]; then
     echo "SKIP V6 consumed-arm race guard (lead ${NEAR_LEAD}s outside the 10-60s reliable window)"
 else
     V6="$TMP/v6-stub-bin"
-    # Sleep past the target (lead + small margin), then report the task gone
-    # -- simulating a probe that ran after the task fired and self-deleted.
-    make_verify_stub "$V6" "sleep $((NEAR_LEAD + 3))
-echo NEXTRUN-NONE"
+    # A first, trivial stub -- just enough for the --dry-run probe below to
+    # yield the derived task name. The real body is written once that name is
+    # known (the stub has to embed it).
+    make_verify_stub "$V6" 'echo NEXTRUN-NONE'
     V6_HO="$(make_handover "$WORK_REPO")"
-    out=$(TMPDIR="$TMP" win_env "$V6" bash "$ARM" --time "$NEAR_TIME" --handover "$V6_HO" 2>&1)
-    rc=$?
-    assert_rc "V6 NEXTRUN-NONE after target passed = consumed (rc=0)" 0 "$rc"
-    assert_contains "V6 WARN says consumed, not failed" "treating the arm as consumed" "$out"
-    if [ -s "$V6/delete.log" ]; then
-        echo "FAIL V6 consumed arm must NOT trigger a delete"
+    # HIMMEL-1879 made CONSUMED evidence-based: the banner is only earned when
+    # the flow-run ledger holds THIS task's own `armed-resume` start row,
+    # stamped at or after this arm began (_arm_fired_evidence). "No task and
+    # the target has passed" otherwise means the create registered NOTHING,
+    # which must refuse rc=2 -- telling an operator CONSUMED when nothing fired
+    # leaves them waiting forever for a session that never started.
+    #
+    # The task name comes from the HANDOVER, not the time, so a --dry-run probe
+    # is enough to learn it -- and unlike 1879f's throwaway arm it registers
+    # nothing, leaving no scheduler row or arms-registry record behind for the
+    # real arm below to trip over.
+    V6_DRY=$(TMPDIR="$TMP" win_env "$V6" bash "$ARM" --time "$(future_time)"         --handover "$V6_HO" --force --dry-run 2>&1)
+    V6_TASK=$(printf '%s\n' "$V6_DRY" | awk -F' /tn ' 'NF>1{split($2,a," "); print a[1]; exit}' | tr -d '\r')
+    V6_TARGET_EPOCH=$(python3 -c '
+import datetime, sys
+hh, mm = (int(x) for x in sys.argv[1].split(":"))
+now = datetime.datetime.now().astimezone()
+cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(int(cand.timestamp()))
+' "$NEAR_TIME")
+    # fired_at = the TARGET minute, not "now": a real runner stamps its start
+    # row when the task FIRES, necessarily after the arm that scheduled it
+    # began. Stamping "now" would land a second or two BEFORE the arm starts
+    # and lose the recency test on a second boundary (1879f says the same).
+    V6_FIRED_AT=$(python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$V6_TARGET_EPOCH")
+    LEDGER_V6="$TMP/v6.jsonl"; : > "$LEDGER_V6"
+    if [ -z "$V6_TASK" ]; then
+        echo "FAIL V6 could not read the task name from the dry-run probe -- the evidence row below would be seeded under the wrong name"
         FAILED=$((FAILED + 1))
     else
-        echo "PASS V6 consumed arm leaves scheduler state alone"
+        echo "PASS V6 dry-run probe yielded the task name to seed ($V6_TASK)"
+        # HIMMEL-2254: the evidence row is appended BY THE STUB, mid-arm --
+        # NOT written to the ledger before arm-resume is invoked. HIMMEL-1999
+        # item 2 snapshots this task's newest armed-resume row into
+        # _ARM_PRIOR_FIRED_ROW immediately BEFORE schedule_arm and then refuses
+        # to read that exact row as this arm's fire, so a row seeded up front is
+        # discarded by construction and the case refused rc=2 on every host.
+        # Appending it here, from the same stub call that reports the task gone,
+        # reproduces production's real sequence: the task fires, deletes its own
+        # registration, appends its start row, and only then does the probe
+        # answer NEXTRUN-NONE.
+        make_verify_stub "$V6" "sleep $((NEAR_LEAD + 3))
+HIMMEL_FLOW_RUNS_LEDGER='$LEDGER_V6' bash '$(dirname "$ARM")/../lib/flow-run-ledger.sh' --append-start 'armed-resume' '$V6_FIRED_AT' 'testhost' 'claude' '' '$V6_TASK' '' 4247 >/dev/null 2>&1
+echo NEXTRUN-NONE"
+        # --force for the same reason 1879f/f2 needs it: the row the stub
+        # appends is exactly what the rc 15 already-fired guard refuses on, and
+        # that refusal would fire before the post-arm verify this case is about.
+        out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_V6" win_env "$V6"         bash "$ARM" --time "$NEAR_TIME" --handover "$V6_HO" --force 2>&1)
+        rc=$?
+        # ONE defect, not three (HIMMEL-2254). The WARN text and the
+        # leave-the-scheduler-alone check are both CONSEQUENCES of the consumed
+        # verdict on this single invocation -- reported separately they
+        # triple-counted one failure and made the suite's red count read as
+        # three independent regressions.
+        if [ "$rc" -ne 0 ]; then
+            echo "FAIL V6 NEXTRUN-NONE after target passed = consumed -- expected rc=0, got rc=$rc (its WARN-text and no-delete consequences were not evaluated)"
+            FAILED=$((FAILED + 1))
+        else
+            echo "PASS V6 NEXTRUN-NONE after target passed = consumed (rc=0)"
+            assert_contains "V6 WARN says consumed, not failed" "treating the arm as consumed" "$out"
+            if [ -s "$V6/delete.log" ]; then
+                echo "FAIL V6 consumed arm must NOT trigger a delete"
+                FAILED=$((FAILED + 1))
+            else
+                echo "PASS V6 consumed arm leaves scheduler state alone"
+            fi
+        fi
     fi
 fi
 fi
@@ -3118,15 +3682,19 @@ R1365_REAL="$TMP/h1365-real"   # under $TMP, but the RESUME_CWD below is not
 mkdir -p "$R1365_REAL"
 printf -- '---\nresume_cwd: %s\n---\n\n# real target\n' "$PWD" \
     > "$R1365_REAL/real-target.md"
-out=$(env -u ARM_TEMP_CWD_OK TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" bash "$ARM" \
+out=$(env -u ARM_TEMP_CWD_OK -u ARM_FIXTURE_OK TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" bash "$ARM" \
     --time "$(future_time)" --handover "$R1365_REAL/real-target.md" 2>&1)
 rc=$?
-if [ "$rc" -eq 12 ]; then
-    echo "FAIL 1365 refused a NON-temp work dir ($PWD)"
-    FAILED=$((FAILED + 1))
-else
-    echo "PASS 1365 leaves a non-temp work dir alone (rc=$rc)"
-fi
+# HIMMEL-1879 widened the guard from cwd-only to BOTH halves of the fired
+# session's identity, so this fixture (temp HANDOVER, real cwd) now refuses --
+# and it should: arming a REAL unattended session that loads throwaway
+# instructions INTO a real repo is the worse half of the 2026-07 incident
+# shape, not the safe half. What still has to hold is that the guard stays
+# DISCRIMINATING rather than blanket, which the ERR proves by naming which half
+# tripped: the handover file, and NOT the (real) work directory.
+assert_rc "1365 a temp HANDOVER refuses even with a real work dir (rc=12)" 12 "$rc"
+assert_contains "1365 the ERR names the handover half" "handover file:" "$out"
+assert_not_contains "1365 the ERR does NOT blame the real work dir" "target work directory:" "$out"
 fi
 
 # ---------------------------------------------------------------------------
@@ -3281,6 +3849,405 @@ EOF
 else
     echo "PASS 1331b skipped — node not available on this host"
 fi
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2113c — leg-header false positive: a chained handover's H1 follows
+# the epic's own "# Next Session — <leg-header>" convention (see
+# make_handover_chained / N9-N13 above), and when a project happens to have
+# an unrelated Done ticket numbered like the leg, _infer_ticket's src-3 (H1
+# scan) used to weld THAT ticket into $_ho_ticket, false-tripping the
+# HIMMEL-1331 shipped-work preflight (rc=11) against a handover that never
+# referenced the real ticket at all. Fix: (1) the preflight now reads
+# $_ho_ticket_strict (frontmatter-only), never the loose $_ho_ticket; (2)
+# src-3 itself now skips H1 scanning for chain files (basename
+# next-session-<N>.md) as defense-in-depth, so the loose ticket inference
+# doesn't carry the leg-header key either. Both effects are asserted below.
+# ---------------------------------------------------------------------------
+if _sec_selected "2113c" "HIMMEL-2113"; then
+if command -v node >/dev/null 2>&1; then
+    R2113C="$TMP/h2113c"
+    mkdir -p "$R2113C/repo"
+    ( cd "$R2113C/repo" && git init -q -b feat/leg-header-thing . \
+        && git config user.email t@t.t && git config user.name t \
+        && git config commit.gpgsign false \
+        && git commit -q --allow-empty -m seed ) >/dev/null 2>&1
+    JIRA_FAKE_2113C="$R2113C/jira-fake.js"
+    cat > "$JIRA_FAKE_2113C" <<'EOF'
+#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'get') {
+    console.log(args[1] + '\tsome summary\tDone');
+}
+EOF
+    # Chain file whose H1 is a leg header, NOT a ticket reference -- no
+    # frontmatter ticket, generic (non-ticket-prefixed) epic dir so src-4
+    # cannot supply a key either. LUNA-64 here stands in for the incident's
+    # unrelated Done ticket that happens to share the leg number.
+    mkdir -p "$R2113C/epic-notes"
+    HO_2113C="$R2113C/epic-notes/next-session-64.md"
+    printf -- '---\nresume_cwd: %s\n---\n\n# Next Session — LUNA-64\n' "$R2113C/repo" > "$HO_2113C"
+
+    # ARM_PROFILE=1 (HIMMEL-2113 Ask B seam, reused here per codex-2): this
+    # fixture's ticket resolves to EMPTY (that's the whole point -- the
+    # leg-header must NOT supply one), so the preflight's own Jira-status
+    # branch never prints anything either way, refusal or not. Without an
+    # independent "the preflight code path actually ran" signal, a rc=10
+    # live-worker-census refusal upstream of the preflight would still read
+    # as rc!=11 and pass VACUOUSLY. The "shipped-work-preflight=" phase-timing
+    # line is emitted unconditionally the instant _arm_shipped_preflight
+    # returns (see the call site), regardless of what it found -- exactly the
+    # deterministic-under-these-stubs marker this needs.
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh ARM_JIRA_CLI="$JIRA_FAKE_2113C" ARM_PROFILE=1 \
+        SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+        bash "$ARM" --time "$(future_time)" --handover "$HO_2113C" 2>&1)
+    rc=$?
+    if printf '%s' "$out" | grep -q "shipped-work-preflight="; then
+        # codex-3: deliberately not tightened to `assert_rc 0` -- this is a
+        # REAL (non-dry-run) arm, so it runs the UNSTUBBED live worker census
+        # (reconcile-workers.sh against this actual host's real lane workers,
+        # same as the sibling 1331/1331b real-arm cases above). A live/
+        # unprobeable worker on the box would legitimately rc=10 BEFORE
+        # reaching the preflight -- caught by the branch below, not here. The
+        # one invariant this case actually pins, now that we KNOW the
+        # preflight ran, is "never rc=11" (the leg-header false positive).
+        assert_not_11 "2113c leg-header false positive no longer refuses (rc!=11)" "$rc"
+        assert_not_contains "2113c leg-header key not welded into the task name" "LUNA-64" "$out"
+    else
+        echo "PASS 2113c skipped — shipped-work preflight never ran (blocked upstream, e.g. a live/unprobeable worker on this host, rc=$rc); host state, not a fixture bug"
+    fi
+else
+    echo "PASS 2113c skipped — node not available on this host"
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2113d — explicit-time outrun WARN, printed at PARSE time (right
+# after the --time HH:MM python resolve, before any slow phase runs) instead
+# of only being discoverable via the end-of-script rollover guard. Purely
+# advisory: rc stays 0 either way; --dry-run is fine since the check is one
+# arithmetic compare against already-computed values.
+# ---------------------------------------------------------------------------
+if _sec_selected "2113d" "HIMMEL-2113"; then
+NEAR_2113D=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=2)).strftime("%H:%M"))')
+HO_2113D=$(make_handover "$WORK_REPO")
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$NEAR_2113D" --handover "$HO_2113D" --dry-run 2>&1)
+rc=$?
+assert_rc "2113d near --time still arms (rc=0, advisory only)" 0 "$rc"
+assert_contains "2113d WARN fires early for a near --time" "outrun that lead" "$out"
+
+HO_2113D2=$(make_handover "$WORK_REPO")
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2113D2" --dry-run 2>&1)
+rc=$?
+assert_rc "2113d far --time arms (rc=0)" 0 "$rc"
+assert_not_contains "2113d no outrun WARN for a far --time" "outrun that lead" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2113e — ARM_PROFILE=1 emits a "PROFILE arm-resume: ..." line naming a
+# known phase, on a plain success/dry-run exit AND on a REFUSAL exit. The
+# refusal case pins the review-round EXIT-trap fix: the profile reporter is
+# registered on a `trap ... EXIT` at the top of the script (not a hand-picked
+# print before each success exit), so a mid-script refusal (rc=19 here, the
+# Ask A quota-park guard) must still print it. Without that fix a refusal
+# printed no PROFILE line at all.
+# ---------------------------------------------------------------------------
+if _sec_selected "2113e" "HIMMEL-2113"; then
+HO_2113E=$(make_handover "$WORK_REPO")
+out=$(ARM_PROFILE=1 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2113E" --dry-run 2>&1)
+rc=$?
+assert_rc "2113e ARM_PROFILE dry-run still arms (rc=0)" 0 "$rc"
+assert_contains "2113e PROFILE line names a known phase" "PROFILE arm-resume: queue-lock-probe" "$out"
+
+FIVE_RESET_2113E=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')
+SEVEN_RESET_2113E=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')
+BUSY_CACHE_2113E="$TMP/usage-95-2113e.json"
+printf '{"five_hour":{"utilization":10.0,"resets_at":"%s"},"seven_day":{"utilization":95.0,"resets_at":"%s"}}' \
+    "$FIVE_RESET_2113E" "$SEVEN_RESET_2113E" > "$BUSY_CACHE_2113E"
+HO_2113E2=$(make_handover "$WORK_REPO")
+out=$(ARM_PROFILE=1 RESUME_SLOT_CACHE="$BUSY_CACHE_2113E" SLOT_MAX_AGE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time smart --handover "$HO_2113E2" --force --dry-run 2>&1)
+rc=$?
+assert_rc "2113e refusal path still exits 19" 19 "$rc"
+assert_contains "2113e PROFILE line fires on the EXIT-trap refusal path too" "PROFILE arm-resume: usage-cache-slot-resolve" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2113f (codex-1 CONFIRMED fix) — a chain handover with NO frontmatter
+# `ticket:` must still resolve its ticket from the PARENT DIR name (src-4) for
+# the shipped-work preflight. The strict frontmatter-only narrowing (2113c)
+# over-corrected: it closed the H1 leg-header false positive but also dropped
+# this UNAMBIGUOUS signal, silently disabling the Jira-status half of the
+# preflight for every no-frontmatter chain handover. Parent dir here IS
+# ticket-shaped (HIMMEL-9004-slug) -- the opposite of 2113c's deliberately
+# generic "epic-notes" dir -- so this pins the fallback without reopening the
+# leg-header false positive (2113c already pins that H1 stays ignored).
+# ---------------------------------------------------------------------------
+if _sec_selected "2113f" "HIMMEL-2113"; then
+if command -v node >/dev/null 2>&1; then
+    R2113F="$TMP/h2113f"
+    mkdir -p "$R2113F/repo"
+    ( cd "$R2113F/repo" && git init -q -b feat/parent-dir-ticket-thing . \
+        && git config user.email t@t.t && git config user.name t \
+        && git config commit.gpgsign false \
+        && git commit -q --allow-empty -m seed ) >/dev/null 2>&1
+    JIRA_FAKE_2113F="$R2113F/jira-fake.js"
+    cat > "$JIRA_FAKE_2113F" <<'EOF'
+#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'get') {
+    console.log(args[1] + '\tsome summary\tDone');
+}
+EOF
+    # No `ticket:` frontmatter -- only the ticket-shaped parent dir name
+    # (src-4) names HIMMEL-9004. H1 is a plain leg header, same convention as
+    # 2113c, to prove this is the parent-dir fallback firing, not a stray H1
+    # match (src-3 already skips H1 for chain files regardless).
+    mkdir -p "$R2113F/HIMMEL-9004-parent-dir-thing"
+    HO_2113F="$R2113F/HIMMEL-9004-parent-dir-thing/next-session-1.md"
+    printf -- '---\nresume_cwd: %s\n---\n\n# Next Session — leg 1\n' "$R2113F/repo" > "$HO_2113F"
+
+    # ARM_PROFILE=1 + a marker check (codex-1, same guard 2113c got): closes
+    # the vacuous-pass hole where a live/unprobeable host worker rc=10s the
+    # UNSTUBBED census before the preflight ever runs, and "rc=11" (or "not
+    # 11") would otherwise be asserted against a run that never reached it.
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh ARM_JIRA_CLI="$JIRA_FAKE_2113F" ARM_PROFILE=1 \
+        SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+        bash "$ARM" --time "$(future_time)" --handover "$HO_2113F" 2>&1)
+    rc=$?
+    if printf '%s' "$out" | grep -q "shipped-work-preflight="; then
+        assert_rc "2113f parent-dir ticket (no frontmatter) still trips the Done refusal (rc=11)" 11 "$rc"
+        assert_contains "2113f ERR names the parent-dir ticket" "HIMMEL-9004" "$out"
+    else
+        echo "PASS 2113f skipped — shipped-work preflight never ran (blocked upstream, e.g. a live/unprobeable worker on this host, rc=$rc); host state, not a fixture bug"
+    fi
+
+    # Second case: ARM_SHIPPED_OK=1 takes arm-resume's FIRST if-branch (a
+    # no-op ":"), so _arm_shipped_preflight is NEVER called here even on a
+    # correctly-working override -- "shipped-work-preflight=" would never
+    # appear and would wrongly skip every run. The marker that instead proves
+    # this run reached that decision point (regardless of which branch fires)
+    # is "arms-registry-cross-host=", the phase immediately BEFORE it and
+    # common to every branch.
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh ARM_JIRA_CLI="$JIRA_FAKE_2113F" ARM_SHIPPED_OK=1 ARM_PROFILE=1 \
+        SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+        bash "$ARM" --time "$(future_time)" --handover "$HO_2113F" 2>&1)
+    rc=$?
+    if printf '%s' "$out" | grep -q "arms-registry-cross-host="; then
+        assert_not_11 "2113f ARM_SHIPPED_OK=1 overrides the parent-dir ticket-status refusal" "$rc"
+    else
+        echo "PASS 2113f (ARM_SHIPPED_OK case) skipped — run never reached the shipped-work decision point (blocked upstream, e.g. a live/unprobeable worker on this host, rc=$rc); host state, not a fixture bug"
+    fi
+else
+    echo "PASS 2113f skipped — node not available on this host"
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2113g (codex-3) — the parent-dir fallback must NOT prefix-match: a
+# dir named HIMMEL-9004foo is NOT the ticket HIMMEL-9004 (no delimiter after
+# the digit run), even though a fake Jira would report HIMMEL-9004 as Done.
+# The old bare `grep -oiE '^KEY-[0-9]+'` welded the prefix out regardless of
+# what followed; this must resolve to NO ticket at all, so the preflight has
+# nothing to check and the arm proceeds (rc != 11).
+# ---------------------------------------------------------------------------
+if _sec_selected "2113g" "HIMMEL-2113"; then
+if command -v node >/dev/null 2>&1; then
+    R2113G="$TMP/h2113g"
+    mkdir -p "$R2113G/repo"
+    ( cd "$R2113G/repo" && git init -q -b feat/parent-dir-prefix-thing . \
+        && git config user.email t@t.t && git config user.name t \
+        && git config commit.gpgsign false \
+        && git commit -q --allow-empty -m seed ) >/dev/null 2>&1
+    JIRA_FAKE_2113G="$R2113G/jira-fake.js"
+    cat > "$JIRA_FAKE_2113G" <<'EOF'
+#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'get') {
+    console.log(args[1] + '\tsome summary\tDone');
+}
+EOF
+    # Parent dir is HIMMEL-9004foo -- NOT delimited after the digits, so this
+    # must NOT resolve to ticket HIMMEL-9004 even though the fake Jira would
+    # report it Done.
+    mkdir -p "$R2113G/HIMMEL-9004foo"
+    HO_2113G="$R2113G/HIMMEL-9004foo/next-session-1.md"
+    printf -- '---\nresume_cwd: %s\n---\n\n# Next Session — leg 1\n' "$R2113G/repo" > "$HO_2113G"
+
+    # ARM_PROFILE=1 + marker check (codex-1, same guard 2113c/2113f got): no
+    # --force/ARM_SHIPPED_OK here, so this always takes the preflight-calling
+    # branch on a clean run -- but a live/unprobeable host worker still rc=10s
+    # the UNSTUBBED census first, which would make "rc!=11" pass vacuously.
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh ARM_JIRA_CLI="$JIRA_FAKE_2113G" ARM_PROFILE=1 \
+        SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+        bash "$ARM" --time "$(future_time)" --handover "$HO_2113G" 2>&1)
+    rc=$?
+    if printf '%s' "$out" | grep -q "shipped-work-preflight="; then
+        assert_not_11 "2113g undelimited parent-dir prefix does not false-trip the preflight (rc!=11)" "$rc"
+        assert_not_contains "2113g HIMMEL-9004 never gets welded out of HIMMEL-9004foo" "HIMMEL-9004 is 'Done'" "$out"
+    else
+        echo "PASS 2113g skipped — shipped-work preflight never ran (blocked upstream, e.g. a live/unprobeable worker on this host, rc=$rc); host state, not a fixture bug"
+    fi
+else
+    echo "PASS 2113g skipped — node not available on this host"
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2128 — two ADVISORY pre-arm WARNs, printed at PARSE time (same
+# "before any slow phase" placement as the 2113d outrun WARN above). Purely
+# advisory: rc stays 0 (or whatever it already was) either way, so --dry-run
+# is fine — the cheapest honest pin, same shape as 2113d.
+# ---------------------------------------------------------------------------
+if _sec_selected "2128" "HIMMEL-2128"; then
+# (a) --automerge NOT passed -> WARN that the chain stops at green PRs.
+# HIMMEL-2168: ambient ARMAUTOMERGE=1 (e.g. an armed himmel session's own
+# exported env) would otherwise win over the absent .env value via
+# load_dotenv's non-clobber contract and suppress the WARN. `env -u` alone
+# handles the ambient-PROCESS-env case; the .env FILE half is handled by the
+# top-of-suite ARM_RESUME_DOTENV_ROOT shield (HIMMEL-2254) -- on a host whose
+# own .env sets ARMAUTOMERGE=1 (the HIMMEL-2147 default) `env -u` alone is
+# NOT enough, because the key is re-read from disk.
+#
+# (a2) --automerge passed -> no WARN. Explicit --automerge always wins over
+# both ambient env and .env (arm-resume.sh:955), so this case needs no
+# shield.
+HO_2128A2=$(make_handover "$WORK_REPO")
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2128A2" --dry-run --automerge 2>&1)
+rc=$?
+assert_rc "2128a2 --automerge passed still arms (rc=0)" 0 "$rc"
+assert_not_contains "2128a2 no WARN when --automerge is passed" "will NOT set ARMAUTOMERGE" "$out"
+
+# (b) CR_REQUIRE_CROSS_MODEL truthy + CR_FLOOR_FALLBACK unset -> WARN that a
+# mid-chain bank exhaustion parks the whole armed chain. Process env is
+# authoritative over any .env for CR_REQUIRE_CROSS_MODEL=1 here — but
+# CR_FLOOR_FALLBACK is NOT: load_dotenv treats an empty value as absent and
+# reloads it from .env (HIMMEL-1922's own documented contract), so a bare
+# `CR_FLOOR_FALLBACK=` on the invocation does NOT force genuine absence when
+# the PRIMARY checkout's own .env already sets this key (this host's does).
+# codex-4 (HIMMEL-2128): the previous version of this test SKIPPED the
+# assertion whenever ambient .env set the key, which would let the WARN path
+# regress unnoticed on exactly such a host and never exercised the typo case
+# at all. So this suite controls CR_FLOOR_FALLBACK itself (and, per
+# HIMMEL-2168 above, ARMAUTOMERGE for case (a)).
+# HIMMEL-2254: ARM_RESUME_DOTENV_ROOT (top-of-suite shield) already points the
+# dotenv READ at an EMPTY suite-owned dir, so ARMAUTOMERGE and CR_FLOOR_FALLBACK
+# are genuinely absent here with no repo write and no skip branch -- the old
+# worktree-`.env` trick skipped this whole group whenever the checkout it ran
+# from already had a `.env`, i.e. always on a primary checkout.
+
+# `env -u` is defense-in-depth against ambient PROCESS env on top of the
+# .env shield above (load_dotenv's non-clobber contract would otherwise
+# let a live ambient ARMAUTOMERGE win before .env is ever consulted).
+HO_2128A=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2128A" --dry-run 2>&1)
+rc=$?
+assert_rc "2128a no --automerge still arms (rc=0, advisory only)" 0 "$rc"
+assert_contains "2128a WARN fires when --automerge is not passed" "will NOT set ARMAUTOMERGE" "$out"
+
+HO_2128B=$(make_handover "$WORK_REPO")
+out=$(CR_REQUIRE_CROSS_MODEL=1 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2128B" --dry-run 2>&1)
+rc=$?
+assert_rc "2128b cross-model + no fallback still arms (rc=0, advisory only)" 0 "$rc"
+assert_contains "2128b WARN fires when CR_REQUIRE_CROSS_MODEL is on and CR_FLOOR_FALLBACK is unset" "PARKING the whole armed chain" "$out"
+
+# (b3) CR_FLOOR_FALLBACK set to an UNRECOGNIZED value ("claude_only" typo,
+# underscore not hyphen) -> WARN still fires. It never actually enables the
+# fallback (clear-cr-marker.sh only recognizes the exact "claude-only"
+# string), so production SHOULD warn here too. Non-empty process env wins
+# over any .env regardless of which .env is in play, so this case needs no
+# worktree-.env trick.
+HO_2128B3=$(make_handover "$WORK_REPO")
+out=$(CR_REQUIRE_CROSS_MODEL=1 CR_FLOOR_FALLBACK=claude_only SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2128B3" --dry-run 2>&1)
+rc=$?
+assert_rc "2128b3 cross-model + typo'd fallback value still arms (rc=0)" 0 "$rc"
+assert_contains "2128b3 WARN fires when CR_FLOOR_FALLBACK does not match the recognized claude-only value" "PARKING the whole armed chain" "$out"
+
+# (b2) CR_FLOOR_FALLBACK set to the recognized value -> no WARN. Non-empty
+# process env wins over any .env, so this case is deterministic with no
+# worktree-.env trick needed.
+HO_2128B2=$(make_handover "$WORK_REPO")
+out=$(CR_REQUIRE_CROSS_MODEL=1 CR_FLOOR_FALLBACK=claude-only SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2128B2" --dry-run 2>&1)
+rc=$?
+assert_rc "2128b2 cross-model + fallback set still arms (rc=0)" 0 "$rc"
+assert_not_contains "2128b2 no WARN when CR_FLOOR_FALLBACK is set" "PARKING the whole armed chain" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2147 — ARMAUTOMERGE .env default. When --automerge is not passed on
+# this invocation, arm-resume.sh reads ARMAUTOMERGE from the PRIMARY
+# checkout's .env (accepted truthy values: 1/true/on/yes, case-insensitive,
+# arm-resume.sh:965) and treats it as if --automerge had been passed. An
+# explicit --automerge on the invocation always wins regardless of .env
+# (arm-resume.sh:955). Same worktree-local `.env` trick as 2128b above, so
+# this suite controls the value with no change to the actual resolution code.
+# ---------------------------------------------------------------------------
+if _sec_selected "2147" "HIMMEL-2147"; then
+# HIMMEL-2254: this section drives the .env value through the suite-owned
+# ARM_RESUME_DOTENV_ROOT dir (declared with the other shields at the top),
+# not through a throwaway `.env` written at the repo root. The old trick
+# short-circuited `_load_dotenv_primary_for` on the FIRST dir that has a
+# `.env` -- which meant it SKIPPED itself entirely whenever the checkout it
+# ran from already had one (always, on a primary checkout), so the whole
+# section was a vacuous PASS on exactly the hosts running it. The seam needs
+# no repo write, no EXIT-trap backstop, and no skip branch.
+
+# Ambient ARMAUTOMERGE (e.g. an operator shell that exports it for its own
+# overnight-arm convenience) would otherwise win over the .env value under
+# test via load_dotenv's own non-clobber contract (a live non-empty value
+# is never overwritten, HIMMEL-1922) -- `env -u` makes every sub-case below
+# hermetic to that ambient state, matching what it is actually testing.
+
+# (a) .env ARMAUTOMERGE=1, no --automerge flag -> default applies: no WARN,
+# launch text carries the grant.
+printf 'ARMAUTOMERGE=1\n' > "$ARM_RESUME_DOTENV_ROOT/.env"
+HO_2147A=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2147A" --dry-run 2>&1)
+rc=$?
+assert_rc "2147a .env ARMAUTOMERGE=1 (no --automerge flag) still arms (rc=0)" 0 "$rc"
+assert_not_contains "2147a no WARN -- .env default applied" "will NOT set ARMAUTOMERGE" "$out"
+assert_contains "2147a launch carries ARMAUTOMERGE=1 from the .env default" "ARMAUTOMERGE=1" "$out"
+
+# (b) .env ARMAUTOMERGE=TRUE (mixed-case truthy) -> same as (a).
+printf 'ARMAUTOMERGE=TRUE\n' > "$ARM_RESUME_DOTENV_ROOT/.env"
+HO_2147B=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2147B" --dry-run 2>&1)
+rc=$?
+assert_rc "2147b .env ARMAUTOMERGE=TRUE still arms (rc=0)" 0 "$rc"
+assert_not_contains "2147b no WARN -- truthy .env value is case-insensitive" "will NOT set ARMAUTOMERGE" "$out"
+
+# (c) .env ARMAUTOMERGE=nope (unrecognized value) -> WARN still fires, no
+# default applied.
+printf 'ARMAUTOMERGE=nope\n' > "$ARM_RESUME_DOTENV_ROOT/.env"
+HO_2147C=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2147C" --dry-run 2>&1)
+rc=$?
+assert_rc "2147c .env ARMAUTOMERGE=nope still arms (rc=0)" 0 "$rc"
+assert_contains "2147c WARN fires -- unrecognized .env value is not truthy" "will NOT set ARMAUTOMERGE" "$out"
+
+# (d) explicit --automerge flag wins even when .env holds a falsy value.
+printf 'ARMAUTOMERGE=0\n' > "$ARM_RESUME_DOTENV_ROOT/.env"
+HO_2147D=$(make_handover "$WORK_REPO")
+out=$(env -u ARMAUTOMERGE SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2147D" --dry-run --automerge 2>&1)
+rc=$?
+assert_rc "2147d --automerge flag wins over a falsy .env value (rc=0)" 0 "$rc"
+assert_not_contains "2147d no WARN when --automerge is explicit" "will NOT set ARMAUTOMERGE" "$out"
+assert_contains "2147d launch carries ARMAUTOMERGE=1 from the explicit flag" "ARMAUTOMERGE=1" "$out"
+
+# Restore the shield dir to its EMPTY default for any later section.
+rm -f "$ARM_RESUME_DOTENV_ROOT/.env"
 fi
 
 # ---------------------------------------------------------------------------
@@ -3477,6 +4444,13 @@ out=$(ARM_VAULT_CWD_OK=1 GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARM
 rc=$?
 assert_rc "1330 ARM_VAULT_CWD_OK=1 overrides the vault refusal" 0 "$rc"
 
+# The arm above registered THIS handover's task in the (now stateful,
+# HIMMEL-1879) stub scheduler, and --cwd does not change the derived task name,
+# so without a reset the next arm of the SAME handover is a legitimate rc 3
+# dedup hit rather than the vault-guard bypass under test. Clear the stub's
+# scheduler, which is what "a fresh box" meant back when /create registered
+# nothing.
+: > "$TMP/armed-stub.tasks"
 out=$(GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
     bash "$ARM" --time "$(future_time)" --handover "$HO_1330" --cwd "$WORK_REPO" 2>&1)
 rc=$?
@@ -3494,6 +4468,69 @@ out=$(GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" P
     bash "$ARM" --time "$(future_time)" --handover "$NORMAL_HO_1330" 2>&1)
 rc=$?
 assert_rc "1330 leaves a normal auto-detected cwd alone" 0 "$rc"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2147 — registry-bucket cwd fallback (arm-resume.sh ~2048), a
+# pre-refusal fallback inside the same HIMMEL-1330 single-writer guard above
+# (own section gate so `--only 2147` and `--only 1330` each pull exactly what
+# they name). A handover parked under the bucket layout
+# (handovers/<user>/<repo-bucket>/...) with no --cwd/--worktree/resume_cwd:,
+# sitting inside a single-writer repo, looks up <repo-bucket> in the handover
+# registry BEFORE refusing. Fail-closed by construction: no match, no
+# registry file, or the resolved repo is ITSELF single-writer all fall
+# through to the unchanged HIMMEL-1330 refusal.
+# ---------------------------------------------------------------------------
+if _sec_selected "2147" "HIMMEL-2147"; then
+R2147="$TMP/h2147"
+mkdir -p "$R2147/vault/handovers/testuser/myrepo-bucket"
+git init -q "$R2147/vault" >/dev/null 2>&1
+touch "$R2147/vault/.single-writer"
+HO_2147_FB="$R2147/vault/handovers/testuser/myrepo-bucket/leg.md"
+printf -- '---\nsession_kind: test\n---\n\n# bucket-shaped handover, no resume_cwd\n' > "$HO_2147_FB"
+
+mkdir -p "$R2147/regwork"
+git init -q "$R2147/regwork" >/dev/null 2>&1
+
+REG_2147="$TMP/registry-2147.json"
+printf '{"repos":{"himmel":{"bucket_name":"myrepo-bucket","path":"%s"}}}\n' "$R2147/regwork" > "$REG_2147"
+
+# (e) success: bucket matches a registry entry whose path is NOT single-writer
+# -> WARN names the fallback, real arm succeeds (rc=0) using that cwd.
+out=$(HANDOVER_REGISTRY="$REG_2147" GH_CMD=/nonexistent/gh TMPDIR="$TMP" \
+    SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2147_FB" 2>&1)
+rc=$?
+assert_rc "2147e registry-bucket fallback resolves and arms (rc=0)" 0 "$rc"
+assert_contains "2147e WARN names the bucket fallback" "falling back to the handover registry" "$out"
+assert_contains "2147e WARN names the matched bucket" "myrepo-bucket" "$out"
+: > "$TMP/armed-stub.tasks"
+
+# (f) fail-closed: the registry-resolved path is ITSELF single-writer -> never
+# resolves into it, falls through to the unchanged refusal (rc=14).
+touch "$R2147/regwork/.single-writer"
+out=$(HANDOVER_REGISTRY="$REG_2147" GH_CMD=/nonexistent/gh TMPDIR="$TMP" \
+    SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2147_FB" 2>&1)
+rc=$?
+assert_rc "2147f resolved-but-single-writer bucket falls through to refusal (rc=14)" 14 "$rc"
+rm -f "$R2147/regwork/.single-writer"
+
+# (g) fail-closed: registry file exists but has no matching bucket entry.
+REG_2147_NOMATCH="$TMP/registry-2147-nomatch.json"
+printf '{"repos":{"other":{"bucket_name":"unrelated-bucket","path":"%s"}}}\n' "$R2147/regwork" > "$REG_2147_NOMATCH"
+out=$(HANDOVER_REGISTRY="$REG_2147_NOMATCH" GH_CMD=/nonexistent/gh TMPDIR="$TMP" \
+    SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2147_FB" 2>&1)
+rc=$?
+assert_rc "2147g no matching bucket in registry falls through to refusal (rc=14)" 14 "$rc"
+
+# (h) fail-closed: no registry file at the resolved HANDOVER_REGISTRY path.
+out=$(HANDOVER_REGISTRY="$TMP/registry-2147-missing.json" GH_CMD=/nonexistent/gh TMPDIR="$TMP" \
+    SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2147_FB" 2>&1)
+rc=$?
+assert_rc "2147h missing registry file falls through to refusal (rc=14)" 14 "$rc"
 fi
 
 # ---------------------------------------------------------------------------
@@ -3794,8 +4831,1254 @@ assert_not_contains "T1287c no caret inserted before |" '^|g' "$out"
 fi
 
 # ---------------------------------------------------------------------------
+# --- HIMMEL-1719 ---
+# C1 delivery fix: RESUME_PROMPT carries a single-line pointer clause naming
+# § Launch preamble in docs/handover/overnight-mode.md, so every armed
+# relaunch names the standing instructions (the template preamble copies are
+# retired — the doc is the single source). Guards: exactly one line (the
+# prompt is re-quoted via printf %q / _bash_single_quote into schtasks .bat
+# and cron lines, where an embedded newline is the documented Windows
+# quoting-mangling trap), no double quote (the WSL branch refuses those,
+# rc 2), and printf %q round-trip fidelity.
+# ---------------------------------------------------------------------------
+
+if _sec_selected "1719" "HIMMEL-1719"; then
+echo "--- 1719 ---"
+HO=$(make_handover "$WORK_REPO")
+EXPECTED_1719="load $HO overnight mode. Apply the Launch preamble standing instructions in docs/handover/overnight-mode.md before Phase 1."
+
+# Single-line + charset invariants on the fixture itself (pins the contract
+# any future rewording must keep).
+case "$EXPECTED_1719" in
+    *$'\n'*) echo "FAIL 1719a expected prompt contains a newline"; FAILED=$((FAILED + 1)) ;;
+    *) echo "PASS 1719a expected prompt is a single line" ;;
+esac
+case "$EXPECTED_1719" in
+    *[\"\'%\&^\<\>\|\$\`]*) echo "FAIL 1719b expected prompt carries a quoting-hostile character"; FAILED=$((FAILED + 1)) ;;
+    *) echo "PASS 1719b expected prompt is quoting-safe (no \" ' % & ^ < > | \$ \`)" ;;
+esac
+
+# printf %q round-trip (the cron/at path re-quotes the prompt exactly so).
+q_1719=$(printf '%q' "$EXPECTED_1719")
+rt_1719=""
+eval "rt_1719=$q_1719"
+if [ "$rt_1719" = "$EXPECTED_1719" ]; then
+    echo "PASS 1719c prompt survives printf %q round-trip"
+else
+    echo "FAIL 1719c printf %q round-trip mangled the prompt"
+    FAILED=$((FAILED + 1))
+fi
+
+# The built artifact: a Windows dry-run .bat must carry the full prompt —
+# trigger phrase AND pointer clause — as ONE line.
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO" --cwd "$WORK_REPO" --force --dry-run 2>&1)
+rc=$?
+assert_rc "1719d pointer-clause dry-run exits 0" 0 "$rc"
+assert_contains "1719d .bat carries the full prompt incl. pointer clause" "$EXPECTED_1719" "$out"
+if grepq "$out" -E 'overnight mode\. Apply the Launch preamble standing instructions in docs/handover/overnight-mode\.md before Phase 1\.'; then
+    echo "PASS 1719e trigger phrase and pointer clause share one line"
+else
+    echo "FAIL 1719e pointer clause split from the trigger phrase (embedded newline?)"
+    FAILED=$((FAILED + 1))
+fi
+
+# Parity: both prompt builders (arm-resume.sh + schedule-resume.sh) carry
+# the identical clause — a divergent pair is the drift class this retires.
+# Count each builder SEPARATELY: a summed count over both files passes when
+# one file carries both matches and the other carries none — the exact
+# divergence this check exists to catch. Per-file also sidesteps `grep -c`'s
+# `file:count` prefix, which an `awk -F:` split mis-parses on a Windows
+# `C:/...` path. -F keeps the literal dots literal.
+_clause_1719="overnight mode. Apply the Launch preamble standing instructions in docs/handover/overnight-mode.md before Phase 1."
+# `|| true`, NOT `|| echo 0`: grep -c ALREADY prints its count (0) and exits 1
+# on no-match, so an `echo 0` fallback appends a SECOND line and the numeric
+# test below dies with "integer expected" instead of failing cleanly. The
+# empty-guard covers a missing file (grep prints nothing, exits 2).
+n_arm_1719=$(grep -cF "$_clause_1719" "$ARM" 2>/dev/null || true)
+[ -n "$n_arm_1719" ] || n_arm_1719=0
+n_sched_1719=$(grep -cF "$_clause_1719" "$(dirname "$ARM")/schedule-resume.sh" 2>/dev/null || true)
+[ -n "$n_sched_1719" ] || n_sched_1719=0
+if [ "$n_arm_1719" -ge 1 ] && [ "$n_sched_1719" -ge 1 ]; then
+    echo "PASS 1719f arm-resume.sh and schedule-resume.sh build the identical clause"
+else
+    echo "FAIL 1719f prompt-builder parity broken (arm-resume=$n_arm_1719 schedule-resume=$n_sched_1719; each must be >=1)"
+    FAILED=$((FAILED + 1))
+fi
+fi
+
+# ---------------------------------------------------------------------------
+# 1879 (HIMMEL-1879): the SUCCESS line must be EARNED.
+#
+# Three failures the ticket measured, each with its own case below:
+#   a/b  --time smart picks ASAP (+4 min) but ARMING ITSELF can take longer than
+#        that, so the task registers already-expired and the past-fire guard
+#        deletes it -- net zero arms after an encouraging trail. Fixed by an
+#        elapsed-aware lead floor applied at the LAST moment before /create.
+#   c    schtasks /create rc=0 is not proof anything is scheduled. The arm is
+#        queried BACK before the banner; nothing there = FAILURE, never SUCCESS.
+#   d    a FIRED arm deletes its own registration, so the scheduler-based dedup
+#        reads clean and a second invocation double-fires. The flow-run ledger
+#        remembers the fire; it is consulted before arming.
+#
+# NOT covered here, deliberately: the "target lapsed mid-arm" branch of the
+# post-arm verify. Reaching it needs wall-clock to cross a target during the
+# run, and the only honest seam for that would be a fake `date` on PATH -- which
+# every other helper in this suite also calls. It shares its refusal block (and
+# its assertions) with case c; the elapsed-aware floor in a/b is what actually
+# prevents it.
+# ---------------------------------------------------------------------------
+if _sec_selected "1879" "HIMMEL-1879" "1999" "HIMMEL-1999"; then
+echo "--- 1879 ---"
+
+# --- 1879a/b: elapsed-aware lead floor on a SENTINEL slot -------------------
+# The bank-free fixture resolves --time smart to ASAP = now + 4 min (240s).
+# ARM_MIN_LEAD_SEC=900 > 240 forces the bump deterministically without having to
+# make the arm genuinely slow; =60 < 240 proves a comfortable lead is untouched.
+S1879="$TMP/s1879-stub-bin"
+make_stateful_sched "$S1879"
+DB_1879="$TMP/s1879.tasks"; DBD_1879="$TMP/s1879.atdir"
+SLOT_FREE_1879="$TMP/usage-free-1879.json"
+printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":5.0,"resets_at":"%s"}}' \
+    "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')" \
+    "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')" \
+    > "$SLOT_FREE_1879"
+
+: > "$DB_1879"; mkdir -p "$DBD_1879"
+HO_1879A="$(make_handover "$WORK_REPO")"
+out=$(ARM_MIN_LEAD_SEC=900 RESUME_SLOT_CACHE="$SLOT_FREE_1879" SLOT_MAX_AGE=0 \
+    HIMMEL_FLOW_RUNS_LEDGER="$TMP/1879a.jsonl" TMPDIR="$TMP" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time smart --handover "$HO_1879A" 2>&1)
+rc=$?
+assert_rc "1879a smart arm under a raised lead floor still succeeds (rc=0)" 0 "$rc"
+assert_contains "1879a the sentinel target was pushed past the floor" "pushed the target forward" "$out"
+assert_contains "1879a the WARN names the never-fires consequence" "never fires" "$out"
+assert_contains "1879a it still reports an armed slot" "RESUME ARMED" "$out"
+
+# The negative twin. Deliberately NOT the bank-free (ASAP, +4 min) cache: an arm
+# on a loaded box can eat most of a 4-minute lead, so "no push happened" would be
+# asserting about this machine's speed rather than about the guard. An EXHAUSTED
+# seven_day window makes smart resolve to that window's RESET instead -- days
+# out, still a SENTINEL, and far beyond any floor however slow the run.
+: > "$DB_1879"
+SLOT_BUSY_1879="$TMP/usage-busy-1879.json"
+printf '{"five_hour":{"utilization":10.0,"resets_at":"%s"},"seven_day":{"utilization":95.0,"resets_at":"%s"}}' \
+    "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')" \
+    "$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')" \
+    > "$SLOT_BUSY_1879"
+# HIMMEL-2254: --long-gap is REQUIRED here, and says nothing about the lead
+# floor this case is pinning. The exhausted-seven_day fixture above is what
+# makes the target far out; HIMMEL-2113 later taught the `--time smart`
+# branch to refuse a >1h park up front (rc=19) unless the operator accepts it
+# with --long-gap. Without the flag this case died at that refusal and never
+# reached the "no needless push" assertion it exists for -- a stale fixture,
+# not a live-cap-state flake: TARGET_EPOCH comes from RESUME_SLOT_CACHE, so
+# the ~6-day park is deterministic on every host.
+HO_1879B="$(make_handover "$WORK_REPO")"
+out=$(ARM_MIN_LEAD_SEC=120 RESUME_SLOT_CACHE="$SLOT_BUSY_1879" SLOT_MAX_AGE=0 \
+    HIMMEL_FLOW_RUNS_LEDGER="$TMP/1879b.jsonl" TMPDIR="$TMP" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time smart --handover "$HO_1879B" --long-gap 2>&1)
+rc=$?
+assert_rc "1879b a comfortable sentinel lead arms untouched (rc=0)" 0 "$rc"
+assert_not_contains "1879b no needless push when the lead is fine" "pushed the target forward" "$out"
+
+# --- 1879c: a reported-successful create that armed NOTHING -----------------
+# /create returns 0 and records nothing; /query is therefore empty. Pre-fix the
+# banner printed RESUME ARMED over an empty scheduler.
+LIAR="$TMP/liar-stub-bin"
+mkdir -p "$LIAR"
+cat > "$LIAR/schtasks" <<'EOF'
+#!/usr/bin/env bash
+# /create claims success but registers nothing; every /query is empty.
+case "${1:-}" in
+    /create) exit 0 ;;
+    *)       exit 0 ;;
+esac
+EOF
+cat > "$LIAR/at" <<'EOF'
+#!/usr/bin/env bash
+cat > /dev/null 2>&1 || true
+exit 0
+EOF
+cat > "$LIAR/atq" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$LIAR/powershell" <<'EOF'
+#!/usr/bin/env bash
+# Probe unavailable -> the HIMMEL-938 NextRunTime verify fail-opens, so this
+# case exercises the HIMMEL-1879 existence verify specifically.
+exit 1
+EOF
+cat > "$LIAR/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$LIAR/schtasks" "$LIAR/at" "$LIAR/atq" "$LIAR/powershell" "$LIAR/claude"
+HO_1879C="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$TMP/1879c.jsonl" win_env "$LIAR" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879C" 2>&1)
+rc=$?
+assert_rc "1879c create-said-yes but nothing is scheduled -> FAILURE (rc=2)" 2 "$rc"
+assert_contains "1879c the ERR names the missing entry" "post-arm verify found NO scheduler entry" "$out"
+assert_not_contains "1879c no SUCCESS banner over an empty scheduler" "RESUME ARMED" "$out"
+
+# --- 1879d: idempotency against an arm that already FIRED -------------------
+# Arm for real, then reproduce the fired state exactly: the runner deletes its
+# own registration (empty SCHED_DB) and appends its `armed-resume` start row to
+# the flow-run ledger. The scheduler now reads clean; only the ledger remembers.
+LEDGER_1879="$TMP/1879d.jsonl"
+: > "$DB_1879"; : > "$LEDGER_1879"
+HO_1879D="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879D" 2>&1)
+rc=$?
+assert_rc "1879d first arm of this handover succeeds (rc=0)" 0 "$rc"
+TASK_1879=$(printf '%s\n' "$out" | sed -n 's/^ *Task name: //p' | head -1 | tr -d '\r')
+if [ -n "$TASK_1879" ]; then
+    echo "PASS 1879d the arm reported a task name ($TASK_1879)"
+else
+    echo "FAIL 1879d could not read the derived task name from the banner"
+    FAILED=$((FAILED + 1))
+fi
+# Fire it: self-delete + the ledger row the emitted runner writes.
+: > "$DB_1879"
+HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879" bash "$(dirname "$ARM")/../lib/flow-run-ledger.sh" \
+    --append-start "armed-resume" "" "testhost" "claude" "" "$TASK_1879" "" 4242 >/dev/null
+
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879D" 2>&1)
+rc=$?
+assert_rc "1879d re-arming a FIRED, still-unfinished handover is refused (rc=15)" 15 "$rc"
+assert_contains "1879d the ERR names the already-fired state" "ALREADY FIRED" "$out"
+assert_contains "1879d the ERR explains why the scheduler looks clean" "deletes its own" "$out"
+if [ "$(OSTYPE=msys count_slots "$DB_1879" "$DBD_1879")" = "0" ]; then
+    echo "PASS 1879d the refusal armed nothing (0 slots)"
+else
+    echo "FAIL 1879d the refusal still armed something ($(OSTYPE=msys count_slots "$DB_1879" "$DBD_1879") slots)"
+    FAILED=$((FAILED + 1))
+fi
+
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879D" --force 2>&1)
+rc=$?
+assert_rc "1879d --force overrides the fired-arm refusal (rc=0)" 0 "$rc"
+
+# An automated safety arm is exempt (same carve-out as the HIMMEL-1475 long-gap
+# guard): auto-arm-on-cap.sh cannot pass --force, and a watchdog that parks the
+# machine is worse than the double-fire it is guarding against.
+: > "$DB_1879"
+out=$(ARM_RESUME_SAFETY_ARM=1 TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879D" 2>&1)
+rc=$?
+assert_rc "1879d ARM_RESUME_SAFETY_ARM=1 is exempt from the fired-arm refusal (rc=0)" 0 "$rc"
+
+# A run that ENDED is not a held seat. This is what keeps every stable-handover
+# caller working -- auto-arm-on-cap.sh re-arms the operator's same status.md all
+# day, and "fired once, refuse forever" would escalate it to MALFUNCTION.
+LEDGER_1879B="$TMP/1879d-ended.jsonl"
+: > "$DB_1879"; : > "$LEDGER_1879B"
+HO_1879D3="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879B" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879D3" 2>&1)
+rc=$?
+assert_rc "1879d seed: first arm of the completed-run fixture (rc=0)" 0 "$rc"
+TASK_1879B=$(printf '%s\n' "$out" | sed -n 's/^ *Task name: //p' | head -1 | tr -d '\r')
+: > "$DB_1879"
+FR_LIB="$(dirname "$ARM")/../lib/flow-run-ledger.sh"
+RUN_1879B=$(HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879B" bash "$FR_LIB" \
+    --append-start "armed-resume" "" "testhost" "claude" "" "$TASK_1879B" "" 4243)
+HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879B" bash "$FR_LIB" \
+    --append-end "armed-resume" "$RUN_1879B" "" 0 "complete" "" "session finished" >/dev/null
+
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879B" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879D3" 2>&1)
+rc=$?
+assert_rc "1879d a fired run that COMPLETED re-arms freely (rc=0)" 0 "$rc"
+assert_not_contains "1879d no refusal once the run ended" "ALREADY FIRED" "$out"
+
+# A DIFFERENT handover is untouched by another handover's fire -- the normal
+# chain (leg N arms handover N+1) must never trip this guard.
+: > "$DB_1879"
+HO_1879D2="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879D2" 2>&1)
+rc=$?
+assert_rc "1879d a different handover still arms freely (rc=0)" 0 "$rc"
+assert_not_contains "1879d no cross-handover fired-block" "ALREADY FIRED" "$out"
+
+# --- 1879e: the post-arm existence verify on the POSIX at backend -----------
+# The verify asks list_existing, which is per-platform. Windows is covered by
+# every case above (win_env); force the `at` backend once so a POSIX host is not
+# discovering this path for the first time in CI. Both directions: a real at-job
+# is FOUND (arms clean), and an at queue that swallowed the job REFUSES.
+: > "$DB_1879"; rm -rf "$DBD_1879"; mkdir -p "$DBD_1879"
+HO_1879E="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$TMP/1879e.jsonl" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" \
+    PATH="$S1879:$PATH" OSTYPE=linux-gnu bash "$ARM" \
+    --time "$(future_time)" --handover "$HO_1879E" 2>&1)
+rc=$?
+assert_rc "1879e a real at-job passes the existence verify (rc=0)" 0 "$rc"
+assert_contains "1879e the at arm reports armed" "RESUME ARMED" "$out"
+
+: > "$DB_1879"; rm -rf "$DBD_1879"; mkdir -p "$DBD_1879"
+HO_1879E2="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$TMP/1879e2.jsonl" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" \
+    PATH="$LIAR:$PATH" OSTYPE=linux-gnu bash "$ARM" \
+    --time "$(future_time)" --handover "$HO_1879E2" 2>&1)
+rc=$?
+assert_rc "1879e an at queue that swallowed the job -> FAILURE (rc=2)" 2 "$rc"
+assert_contains "1879e the POSIX ERR names the missing entry" "post-arm verify found NO scheduler entry" "$out"
+
+# --- 1879f: "no task + the target has passed" is AMBIGUOUS -------------------
+# Two causes produce that identical scheduler picture: the arm FIRED and deleted
+# its own registration, or the create registered nothing and the clock ran out
+# while we armed. Calling the second one CONSUMED tells the operator a session
+# is already running -- they wait forever and nobody re-arms, which is the exact
+# silent death this ticket exists to end. Only a fire leaves evidence: the
+# runner's own `armed-resume` start row for this task name. Both directions are
+# pinned below.
+#
+# Determinism without a fake clock: the stub's /create BLOCKS until a
+# pre-computed absolute epoch (the requested minute, plus a margin) has gone
+# past, then reports success having registered nothing. An explicit --time HH:MM
+# is never pushed forward by the lead floor, so the target stays where the case
+# put it however slow the box is. Each direction gets its OWN minute -- a spent
+# one would re-resolve to TOMORROW and never lapse.
+make_lapse_stub() { # <dir> <deadline-epoch> [<ledger> <task-name> <row-delay-sec>]
+    local _d="$1" _deadline="$2" _ledger="${3:-}" _task="${4:-}" _delay="${5:-0}"
+    local _fire=""
+    # With the optional trailing args the stub also plays the FIRED RUNNER: it
+    # appends that runner's own armed-resume start row <row-delay-sec> after
+    # /create returns. That is the real ordering (HIMMEL-1999) -- the runner
+    # deletes its registration first and writes its start row afterwards -- and
+    # it is why these fixtures no longer pre-seed the row: a row that already
+    # existed when the arm began is a PREVIOUS run's, and the verify must not
+    # read it as this arm's fire.
+    if [ -n "$_ledger" ]; then
+        _fire="( sleep $_delay; HIMMEL_FLOW_RUNS_LEDGER='$_ledger' bash '$(dirname "$ARM")/../lib/flow-run-ledger.sh' --append-start 'armed-resume' '' 'testhost' 'claude' '' '$_task' '' 4247 >/dev/null 2>&1 ) &"
+    fi
+    mkdir -p "$_d"
+    cat > "$_d/schtasks" <<EOF
+#!/usr/bin/env bash
+# /create: wait out the requested minute, then claim success having registered
+# NOTHING. /query: always empty. Net picture at verify time = no task, target
+# passed -- the ambiguous state, with (only when armed with a ledger above) the
+# runner's own start row landing behind it.
+case "\${1:-}" in
+    /create) while [ "\$(date +%s)" -le $_deadline ]; do sleep 1; done; $_fire exit 0 ;;
+    *)       exit 0 ;;
+esac
+EOF
+    # Probe unavailable -> the HIMMEL-938 NextRunTime verify fail-opens, so the
+    # EXISTENCE verify is what these cases exercise.
+    printf '#!/usr/bin/env bash\nexit 1\n' > "$_d/powershell"
+    chmod +x "$_d/schtasks" "$_d/powershell"
+}
+lapse_hhmm() { python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=2)).strftime("%H:%M"))'; }
+lapse_epoch() { python3 -c '
+import datetime, sys
+hh, mm = (int(x) for x in sys.argv[1].split(":"))
+now = datetime.datetime.now().astimezone()
+cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(int(cand.timestamp()))
+' "$1"; }
+
+# The task name is derived from the handover, not the time, so a throwaway arm
+# through the honest stub is the cheapest way to learn it (same trick as 1879d).
+: > "$DB_1879"
+HO_1879F="$(make_handover "$WORK_REPO")"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$TMP/1879f-seed.jsonl" \
+    SCHED_DB="$DB_1879" SCHED_DB_DIR="$DBD_1879" win_env "$S1879" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_1879F" 2>&1)
+TASK_1879F=$(printf '%s\n' "$out" | sed -n 's/^ *Task name: //p' | head -1 | tr -d '\r')
+
+# f1 (the regression this round is about): NO start row -> nothing fired.
+LAPSE_HHMM=$(lapse_hhmm); LAPSE_EPOCH=$(lapse_epoch "$LAPSE_HHMM")
+make_lapse_stub "$TMP/lapse1-stub-bin" "$((LAPSE_EPOCH + 3))"
+LEDGER_1879F="$TMP/1879f.jsonl"; : > "$LEDGER_1879F"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" \
+    win_env "$TMP/lapse1-stub-bin" \
+    bash "$ARM" --time "$LAPSE_HHMM" --handover "$HO_1879F" 2>&1)
+rc=$?
+assert_rc "1879f no task + lapsed target + NO ledger row -> FAILURE (rc=2)" 2 "$rc"
+assert_contains "1879f the ERR says the create registered nothing" "REGISTERED NOTHING" "$out"
+assert_not_contains "1879f an arm that never fired is NEVER reported consumed" "RESUME CONSUMED" "$out"
+assert_not_contains "1879f and never reported armed" "RESUME ARMED" "$out"
+
+# f2: the SAME scheduler picture with the runner's own start row present -> it
+# really did fire. --force skips the rc 15 already-fired refusal (which the row
+# would otherwise trip before arming), leaving the post-arm verify as the thing
+# under test.
+LAPSE_HHMM2=$(lapse_hhmm); LAPSE_EPOCH2=$(lapse_epoch "$LAPSE_HHMM2")
+# The start row is written BY THE STUB, after /create returns -- not pre-seeded.
+# A row that already existed when the arm began belongs to a PREVIOUS run of the
+# same task name (HIMMEL-1999 item 2), so pre-seeding would now describe the
+# wrong scenario as well as failing.
+make_lapse_stub "$TMP/lapse2-stub-bin" "$((LAPSE_EPOCH2 + 3))" "$LEDGER_1879F" "$TASK_1879F" 0
+: > "$LEDGER_1879F"
+utc_of() { python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))' "$1"; }
+# HIMMEL-1879 (r5): a consumed arm must exit BEFORE the arms-registry
+# publication. The task already fired, and queue-lock's HIMMEL-882 consume
+# dropped its record when that session started -- republishing an "armed" row
+# resurrects a stale PENDING entry that no fire will ever clear, i.e. a
+# permanent rc 8 cross-host refusal for the next host to try this handover.
+find "$TMP" -name arms.jsonl -delete 2>/dev/null || true
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" \
+    win_env "$TMP/lapse2-stub-bin" \
+    bash "$ARM" --time "$LAPSE_HHMM2" --handover "$HO_1879F" --force 2>&1)
+rc=$?
+assert_rc "1879f the same picture WITH a start row is CONSUMED, not failed (rc=0)" 0 "$rc"
+assert_contains "1879f the CONSUMED banner is printed" "RESUME CONSUMED" "$out"
+assert_not_contains "1879f a consumed arm never claims to be armed" "RESUME ARMED" "$out"
+REG_1879F=$(find "$TMP" -name arms.jsonl -exec grep -lF "$TASK_1879F" {} + 2>/dev/null || true)
+if [ -z "$REG_1879F" ]; then
+    echo "PASS 1879f a consumed arm publishes NO arms-registry record"
+else
+    echo "FAIL 1879f a consumed arm left a stale armed record in: $REG_1879F"
+    FAILED=$((FAILED + 1))
+fi
+
+# --- 1879g: schedule_arm's OWN consumed branch needs the same evidence ------
+# The Windows NextRunTime probe reaches the identical ambiguity one layer
+# earlier: NEXTRUN-NONE, the create finished BEFORE the target, and the target
+# passed before the probe answered. Timing alone still cannot tell a
+# self-deleted fire from a create that registered nothing, so with no ledger row
+# this must refuse -- a CONSUMED banner here reports a session that never began.
+# Determinism: /create returns instantly (so create-done < target, the branch's
+# own precondition) and the POWERSHELL probe is what blocks past the minute --
+# exactly the create->verify window the branch describes.
+LAPSE_HHMM3=$(lapse_hhmm); LAPSE_EPOCH3=$(lapse_epoch "$LAPSE_HHMM3")
+G1879="$TMP/lapse3-stub-bin"; mkdir -p "$G1879"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$G1879/schtasks"   # creates nothing, lists nothing
+cat > "$G1879/powershell" <<EOF
+#!/usr/bin/env bash
+# Only the NextRunTime probe blocks; any other powershell use stays instant, or
+# it could eat the lead BEFORE /create and land in the wrong branch.
+case "\$*" in
+    *NextRunTime*)
+        while [ "\$(date +%s)" -le $((LAPSE_EPOCH3 + 3)) ]; do sleep 1; done
+        echo NEXTRUN-NONE ;;
+    *) exit 0 ;;
+esac
+EOF
+chmod +x "$G1879/schtasks" "$G1879/powershell"
+: > "$LEDGER_1879F"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" win_env "$G1879" \
+    bash "$ARM" --time "$LAPSE_HHMM3" --handover "$HO_1879F" 2>&1)
+rc=$?
+assert_rc "1879g NEXTRUN-NONE + lapsed target + NO ledger row -> FAILURE (rc=2)" 2 "$rc"
+assert_contains "1879g the ERR names the missing NextRunTime" "found NO NextRunTime" "$out"
+assert_not_contains "1879g timing alone never buys a CONSUMED banner" "RESUME CONSUMED" "$out"
+assert_not_contains "1879g and never an ARMED one" "RESUME ARMED" "$out"
+
+# --- 1879h: an OLD completed run is not evidence of THIS arm's fire ---------
+# rc 15 deliberately lets a handover whose previous run ENDED re-arm (that is
+# what keeps auto-arm-on-cap re-arming one status.md all day), so a stale start
+# row for the same task name is the NORMAL steady state, not an anomaly.
+# Without correlating the row to this arm's own start, that ancient row would be
+# read as proof that a brand-new no-op create had fired.
+LAPSE_HHMM4=$(lapse_hhmm); LAPSE_EPOCH4=$(lapse_epoch "$LAPSE_HHMM4")
+make_lapse_stub "$TMP/lapse4-stub-bin" "$((LAPSE_EPOCH4 + 3))"
+: > "$LEDGER_1879F"
+RUN_1879OLD=$(HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" bash "$FR_LIB" \
+    --append-start "armed-resume" "2020-01-01T00:00:00Z" "testhost" "claude" "" "$TASK_1879F" "" 4245)
+HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" bash "$FR_LIB" \
+    --append-end "armed-resume" "$RUN_1879OLD" "" 0 "complete" "" "old run finished" >/dev/null
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" \
+    win_env "$TMP/lapse4-stub-bin" \
+    bash "$ARM" --time "$LAPSE_HHMM4" --handover "$HO_1879F" 2>&1)
+rc=$?
+assert_rc "1879h an OLD completed start row is not THIS arm's fire (rc=2)" 2 "$rc"
+assert_contains "1879h the ERR still says the create registered nothing" "REGISTERED NOTHING" "$out"
+assert_not_contains "1879h a stale row never buys a CONSUMED banner" "RESUME CONSUMED" "$out"
+
+# --- 1879j: the query's listing is a SNAPSHOT ------------------------------
+# A scheduler read can list a task that then fires DURING the query, leaving
+# found=non-empty AND the target passed. That used to read as a dead
+# registered-but-expired entry: reap it and refuse -- sending the operator to
+# re-arm a seat a live session already holds. With this arm's own start row
+# present it is CONSUMED, and the registration is left alone, because the fired
+# runner deletes its own as its first action.
+LAPSE_HHMM5=$(lapse_hhmm); LAPSE_EPOCH5=$(lapse_epoch "$LAPSE_HHMM5")
+J1879="$TMP/lapse5-stub-bin"; mkdir -p "$J1879"
+J1879_DB="$TMP/lapse5.tasks"; : > "$J1879_DB"
+cat > "$J1879/schtasks" <<EOF
+#!/usr/bin/env bash
+# /create REGISTERS and then blocks past the requested minute, so the target has
+# lapsed by verify time; /query keeps listing it -- the stale snapshot a real
+# query returns when the task fires mid-read. /delete only LOGS, so the case can
+# prove the consumed path reaped nothing.
+db="$J1879_DB"
+cmd="\${1:-}"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create)
+        printf '%s\\n' "\$tn" >> "\$db"
+        while [ "\$(date +%s)" -le $((LAPSE_EPOCH5 + 3)) ]; do sleep 1; done
+        # The fired runner's OWN start row, written after /create returns --
+        # never pre-seeded (HIMMEL-1999 item 2: a row that predates the arm is
+        # a previous run's and is not this arm's fire).
+        ( HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" bash "$FR_LIB" \\
+            --append-start "armed-resume" "" "testhost" "claude" "" "$TASK_1879F" "" 4246 >/dev/null 2>&1 ) &
+        exit 0 ;;
+    /delete) printf '%s\\n' "\$tn" >> "$J1879/delete.log"; exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+printf '#!/usr/bin/env bash\nexit 1\n' > "$J1879/powershell"
+chmod +x "$J1879/schtasks" "$J1879/powershell"
+: > "$LEDGER_1879F"
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" win_env "$J1879" \
+    bash "$ARM" --time "$LAPSE_HHMM5" --handover "$HO_1879F" --force 2>&1)
+rc=$?
+assert_rc "1879j a listing that fired mid-query is CONSUMED, not expired (rc=0)" 0 "$rc"
+assert_contains "1879j the CONSUMED banner is printed" "RESUME CONSUMED" "$out"
+assert_not_contains "1879j and never an ARMED banner" "RESUME ARMED" "$out"
+if [ ! -s "$J1879/delete.log" ]; then
+    echo "PASS 1879j the consumed path left the task's own registration alone"
+else
+    echo "FAIL 1879j the consumed path reaped a registration it should not have ($(tr '\n' ' ' < "$J1879/delete.log"))"
+    FAILED=$((FAILED + 1))
+fi
+
+# --- 1999a: the evidence read is a WINDOW, not one look ---------------------
+# The fired runner deletes its own registration as its FIRST action and appends
+# its armed-resume start row only afterwards. A verify landing in that gap sees
+# no task AND no row -- pre-fix it concluded REGISTERED NOTHING (rc 2) and sent
+# the operator to re-arm a seat the session starting right then already held.
+# The stub reproduces exactly that ordering: /create registers nothing and the
+# row lands a second after it returns.
+LAPSE_HHMM6=$(lapse_hhmm); LAPSE_EPOCH6=$(lapse_epoch "$LAPSE_HHMM6")
+make_lapse_stub "$TMP/lapse6-stub-bin" "$((LAPSE_EPOCH6 + 3))" "$LEDGER_1879F" "$TASK_1879F" 1
+: > "$LEDGER_1879F"
+find "$TMP" -name arms.jsonl -delete 2>/dev/null || true
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" \
+    win_env "$TMP/lapse6-stub-bin" \
+    bash "$ARM" --time "$LAPSE_HHMM6" --handover "$HO_1879F" 2>&1)
+rc=$?
+assert_rc "1999a a start row that lands after the verify's FIRST look is still this arm's fire (rc=0)" 0 "$rc"
+assert_contains "1999a the CONSUMED banner is printed" "RESUME CONSUMED" "$out"
+assert_not_contains "1999a no REGISTERED NOTHING inside the runner's own start-row gap" "REGISTERED NOTHING" "$out"
+assert_not_contains "1999a a consumed arm never claims to be armed" "RESUME ARMED" "$out"
+
+# --- 1999b: a PRIOR run's row is never this arm's fire, whatever it stamps --
+# The recency test compares second-resolution stamps INCLUSIVELY, so a completed
+# earlier run whose start row is stamped at or after this arm's start second
+# passed it -- and rc 15 deliberately lets a handover whose previous run ENDED
+# re-arm all day, which makes such a row the steady state, not an anomaly. 1879h
+# pins the same rule for an OLD row; this is the one an inclusive compare cannot
+# reject on timing, so it is settled by the pre-arm snapshot instead: the row was
+# already there before anything of ours was registered.
+LAPSE_HHMM7=$(lapse_hhmm); LAPSE_EPOCH7=$(lapse_epoch "$LAPSE_HHMM7")
+make_lapse_stub "$TMP/lapse7-stub-bin" "$((LAPSE_EPOCH7 + 3))"
+: > "$LEDGER_1879F"
+RUN_1999B=$(HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" bash "$FR_LIB" \
+    --append-start "armed-resume" "$(utc_of "$LAPSE_EPOCH7")" "testhost" "claude" "" "$TASK_1879F" "" 4248)
+HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" bash "$FR_LIB" \
+    --append-end "armed-resume" "$RUN_1999B" "" 0 "complete" "" "prior run finished" >/dev/null
+out=$(TMPDIR="$TMP" HIMMEL_FLOW_RUNS_LEDGER="$LEDGER_1879F" \
+    win_env "$TMP/lapse7-stub-bin" \
+    bash "$ARM" --time "$LAPSE_HHMM7" --handover "$HO_1879F" 2>&1)
+rc=$?
+assert_rc "1999b a completed PRIOR run stamped after this arm's start is not its fire (rc=2)" 2 "$rc"
+assert_contains "1999b the ERR still says the create registered nothing" "REGISTERED NOTHING" "$out"
+assert_not_contains "1999b a pre-existing row never buys a CONSUMED banner" "RESUME CONSUMED" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# 1879-1365: the HIMMEL-1365 guard now keys on BOTH halves of the fired
+# session's identity (cwd AND handover), and answers a read-only sweep.
+# ---------------------------------------------------------------------------
+if _sec_selected "1879-1365" "1365" "HIMMEL-1365" "1998" "HIMMEL-1998"; then
+echo "--- 1879-1365 ---"
+HO_T1365="$(make_handover "$WORK_REPO")"
+out=$(env -u ARM_TEMP_CWD_OK -u ARM_FIXTURE_OK TMPDIR="$TMP" \
+    SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" bash "$ARM" \
+    --time "$(future_time)" --handover "$HO_T1365" 2>&1)
+rc=$?
+assert_rc "1879-1365 a temp-rooted fixture is refused (rc=12)" 12 "$rc"
+assert_contains "1879-1365 the ERR names the handover file, not just the cwd" "handover file:" "$out"
+assert_contains "1879-1365 the ERR names the ticket's opt-in spelling" "ARM_FIXTURE_OK=1" "$out"
+
+out=$(env -u ARM_TEMP_CWD_OK ARM_FIXTURE_OK=1 TMPDIR="$TMP" \
+    SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" bash "$ARM" \
+    --time "$(future_time)" --handover "$HO_T1365" --dry-run 2>&1)
+rc=$?
+assert_rc "1879-1365 ARM_FIXTURE_OK=1 opts in (rc=0)" 0 "$rc"
+
+# --- --list-temp-arms: read-only sweep --------------------------------------
+LTA="$TMP/lta-stub-bin"
+mkdir -p "$LTA"
+LTA_BAT="$TMP/lta-runner.bat"
+printf 'cd /d "C:\\Users\\test\\AppData\\Local\\Temp\\scratchpad\\work2"\r\n' > "$LTA_BAT"
+# HIMMEL-1998: the stub answers `/fo LIST /v` with a NON-ENGLISH label
+# ("Tarea a ejecutar:" — the localized spelling of "Task To Run:"), and carries
+# the runner path only in the locale-invariant `/xml` <Command> element. A
+# sweep that regresses to label parsing therefore reads an EMPTY runner path
+# and reports this temp-targeted arm as clean, which is what the cases below
+# fail on. LTA_NO_XML=1 makes the XML query itself fail (access denied / task
+# vanished) to pin the degraded-not-clean report.
+cat > "$LTA/schtasks" <<EOF
+#!/usr/bin/env bash
+# /query /fo CSV /nh -> the armed roster; /query /tn .. /xml ONE -> its runner.
+case "\$*" in
+    *"/xml"*)
+        # The second roster entry (LTA_TWO=1) is the one the scheduler refuses
+        # to describe, so a sweep can carry a hit AND a blind spot at once.
+        if [ "\${LTA_NO_XML:-0}" = "1" ]; then exit 1; fi
+        case "\$*" in *unreadable*) exit 1 ;; esac
+        printf '<?xml version="1.0" encoding="UTF-16"?>\r\n<Task version="1.4">\r\n  <Actions Context="Author">\r\n    <Exec>\r\n      <Command>%s</Command>\r\n    </Exec>\r\n  </Actions>\r\n</Task>\r\n' "\${LTA_RUNNER:-$LTA_BAT}"
+        exit 0 ;;
+    *"/fo LIST"*) printf 'Tarea a ejecutar:   %s\r\n' "\${LTA_RUNNER:-$LTA_BAT}"; exit 0 ;;
+esac
+if [ "\${LTA_EMPTY:-0}" = "1" ]; then exit 0; fi
+printf '"\\\\HIMMEL-Resume-fixture-repro","2026-01-01","Ready"\n'
+[ "\${LTA_TWO:-0}" = "1" ] && printf '"\\\\HIMMEL-Resume-unreadable-one","2026-01-01","Ready"\n'
+exit 0
+EOF
+chmod +x "$LTA/schtasks"
+
+out=$(TMPDIR="$TMP" win_env "$LTA" bash "$ARM" --list-temp-arms 2>&1)
+rc=$?
+assert_rc "1879-1365 --list-temp-arms reports a temp-targeted arm on a NON-ENGLISH Windows (rc=16)" 16 "$rc"
+assert_contains "1879-1365 the sweep names the offending task" "HIMMEL-Resume-fixture-repro" "$out"
+assert_contains "1879-1365 the sweep names the temp target" "scratchpad" "$out"
+assert_contains "1879-1365 the sweep is report-only" "REPORT ONLY" "$out"
+
+out=$(LTA_EMPTY=1 TMPDIR="$TMP" win_env "$LTA" bash "$ARM" --list-temp-arms 2>&1)
+rc=$?
+assert_rc "1879-1365 a clean scheduler sweeps clean (rc=0)" 0 "$rc"
+assert_contains "1879-1365 clean sweep says so" "none" "$out"
+
+# HIMMEL-1998: an entry the scheduler refuses to describe is NOT a clean bill
+# of health. Pre-fix the loop `continue`d past it and the sweep printed the
+# same "none" line as a genuinely empty scheduler.
+out=$(LTA_NO_XML=1 TMPDIR="$TMP" win_env "$LTA" bash "$ARM" --list-temp-arms 2>&1)
+rc=$?
+assert_rc "1998 a degraded sweep gets its OWN exit code, never the clean 0 (rc=18)" 18 "$rc"
+assert_contains "1998 an uninspectable entry is named" "UNREADABLE" "$out"
+assert_contains "1998 and the summary refuses to call the sweep clean" "NOT a clean sweep" "$out"
+assert_not_contains "1998 no bare clean line over an uninspectable entry" "none — no armed resume entry" "$out"
+
+# A sweep can carry BOTH a hit and a blind spot. 16 outranks 18 there -- the hit
+# is the actionable half -- but the report still has to say it was not
+# exhaustive, or the operator reads a partial sweep as a complete one.
+out=$(LTA_TWO=1 TMPDIR="$TMP" win_env "$LTA" bash "$ARM" --list-temp-arms 2>&1)
+rc=$?
+assert_rc "1998 hit + uninspectable entry keeps the louder rc 16" 16 "$rc"
+assert_contains "1998 the hit is still reported" "TEMP-ARM" "$out"
+assert_contains "1998 and the blind spot is named too" "NOT exhaustive" "$out"
+
+# The bare scratch ROOTS count, not just their children (r6 round). `/tmp`
+# always carried both forms; `/var/tmp` and `/var/folders` matched only
+# descendants, so either as a literal target walked past a guard that catches
+# every directory beneath it. Pinned through the SWEEP rather than through an
+# arm: _arm_is_temp_path is the shared predicate for both, and the sweep feeds
+# it the runner's path verbatim, whereas an arm resolves resume_cwd first --
+# on Git-Bash `/var/tmp` resolves to a Windows path, so an arm-shaped case
+# would assert about this host's path mapping instead of about the guard.
+for _root_1365 in /var/tmp /var/folders 'C:\Users\otheruser\AppData\Local\Temp'; do
+    LTA_BAT_ROOT="$TMP/lta-runner-bare-root.bat"
+    printf 'cd /d "%s"\r\n' "$_root_1365" > "$LTA_BAT_ROOT"
+    out=$(LTA_RUNNER="$LTA_BAT_ROOT" TMPDIR="$TMP" win_env "$LTA" bash "$ARM" --list-temp-arms 2>&1)
+    rc=$?
+    assert_rc "1879-1365 the bare scratch root $_root_1365 is a sweep hit (rc=16)" 16 "$rc"
+    assert_contains "1879-1365 the sweep names the bare root $_root_1365" "target: $_root_1365" "$out"
+done
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-1830 — one file per leg: arming the second half of a split leg is
+# refused (rc 17).
+#
+# The 2026-08-17 incident: one leg wrote session-25 (state) AND session-26
+# (orders) and armed on 26, so the relaunch loaded the orders half and the
+# state was orphaned. Refusal needs BOTH conditions — a sibling written inside
+# this leg window AND no relaunch ever made from it — so the allow cases below
+# pin one condition each; without them the check would refuse every short leg.
+# ---------------------------------------------------------------------------
+if _sec_selected "1830" "HIMMEL-1830"; then
+echo "--- 1830 ---"
+R1830="$TMP/h1830"
+mkdir -p "$R1830/repo" "$R1830/chain"
+( cd "$R1830/repo" && git init -q . \
+    && git config user.email t@t.t && git config user.name t \
+    && git config commit.gpgsign false \
+    && git commit -q --allow-empty -m seed ) >/dev/null 2>&1
+_mk1830() {  # <path> <title>
+    printf -- '---\nticket: HIMMEL-9830\nresume_cwd: %s\n---\n\n# %s\n' "$R1830/repo" "$2" > "$1"
+}
+HO_1830_A="$R1830/chain/EPIC-9830-dispatch-session-4.md"
+HO_1830_B="$R1830/chain/EPIC-9830-dispatch-session-5.md"
+_mk1830 "$HO_1830_A" "leg state half"
+_mk1830 "$HO_1830_B" "leg orders half"
+_a1830() {  # <ledger> <handover>
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh HIMMEL_FLOW_RUNS_LEDGER="$1" \
+        win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$2" --dry-run 2>&1)
+}
+# An EXISTING but empty ledger. A ledger that is absent entirely proves nothing
+# about the sibling, so the guard fails open there — the refusal needs a ledger
+# that could have carried the evidence and does not.
+E1830="$TMP/1830-empty.jsonl"; : > "$E1830"
+
+# (a) REFUSAL: both files just written, nothing ever relaunched from session-4.
+_a1830 "$E1830" "$HO_1830_B"; rc=$?
+assert_rc "1830 arming the second half of a split leg refuses (rc=17)" 17 "$rc"
+assert_contains "1830 the ERR names the sibling it would orphan" "EPIC-9830-dispatch-session-4.md" "$out"
+assert_contains "1830 the ERR names the opt-out" "ARM_SPLIT_LEG_OK=1" "$out"
+
+# (b) ALLOW: same pair, but a relaunch WAS made from session-4 — i.e. it was a
+# real leg's file, and this is a normal chain that simply moved fast. The
+# ledger row carries session-4's REAL arm identity, taken from arm-resume's own
+# banner: the evidence is matched on the sibling's canonical-path hash, so a
+# hand-written task name would prove nothing about this fixture.
+_a1830 "$E1830" "$HO_1830_A"; rc=$?
+assert_rc "1830 seed: the sibling itself arms cleanly (rc=0)" 0 "$rc"
+TASK_1830_A=$(printf '%s\n' "$out" | sed -n 's|.*would schtasks /create /tn \([^ ]*\) .*|\1|p' | head -1 | tr -d '\r')
+L1830="$TMP/1830-launched.jsonl"
+printf '{"flow":"armed-resume","ev":"start","run_id":"r1","task_name":"%s"}\n' "$TASK_1830_A" > "$L1830"
+_a1830 "$L1830" "$HO_1830_B"; rc=$?
+assert_rc "1830 a sibling that WAS a relaunch point still arms (rc=0)" 0 "$rc"
+
+# (b2) …but ANOTHER chain's row must not clear it (panel r1 [codex-1]): same
+# ticket, same leg number, different handover file. Evidence is per-path.
+L1830F="$TMP/1830-foreign.jsonl"
+printf '{"flow":"armed-resume","ev":"start","run_id":"r1","task_name":"HIMMEL-Resume-HIMMEL-9830-other-chain-s4-other_chain_session_4-h0123456789ab"}\n' > "$L1830F"
+_a1830 "$L1830F" "$HO_1830_B"; rc=$?
+assert_rc "1830 a DIFFERENT chain's leg-4 row does not clear the refusal (rc=17)" 17 "$rc"
+
+# (c) ALLOW: no ledger evidence either, but the sibling is old — a previous
+# leg's file, not something this session just wrote.
+touch -t 202601010000 "$HO_1830_A"
+_a1830 "$E1830" "$HO_1830_B"; rc=$?
+assert_rc "1830 an OLD sibling is a previous leg, not a split (rc=0)" 0 "$rc"
+
+# (d) The escape hatch is real: re-make the sibling fresh, opt out explicitly.
+_mk1830 "$HO_1830_A" "leg state half"
+out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh HIMMEL_FLOW_RUNS_LEDGER="$E1830" \
+    ARM_SPLIT_LEG_OK=1 win_env "$SCHED_STUB_T17" bash "$ARM" \
+    --time "$(future_time)" --handover "$HO_1830_B" --dry-run 2>&1)
+rc=$?
+assert_rc "1830 ARM_SPLIT_LEG_OK=1 opts out of the refusal (rc=0)" 0 "$rc"
+
+# (e) A ZERO-PADDED chain (panel r3 [codex-1]): `session-08.md` is a legal
+# filename but octal to bash arithmetic — `$((08 - 1))` is a fatal "value too
+# great for base" that aborted the whole arm under set -e. The sibling lookup
+# must also find the same-width `-07.md`, not only a bare `-7.md`.
+HO_1830_P7="$R1830/chain/EPIC-9830-dispatch-session-07.md"
+HO_1830_P8="$R1830/chain/EPIC-9830-dispatch-session-08.md"
+_mk1830 "$HO_1830_P7" "padded state half"
+_mk1830 "$HO_1830_P8" "padded orders half"
+_a1830 "$E1830" "$HO_1830_P8"; rc=$?
+assert_rc "1830 a zero-padded split leg refuses cleanly (rc=17, not an arithmetic abort)" 17 "$rc"
+assert_contains "1830 the padded sibling is the one named" "EPIC-9830-dispatch-session-07.md" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-812 — --safety-child marks the RELAUNCH env, on every runner.
+#
+# auto-arm-on-cap.sh's stale escalation passes this flag; the relaunched
+# session reads AUTO_ARM_SAFETY_CHILD out of its own env and refuses to
+# escalate again, which is what bounds the self-sustaining +5h chain. If the
+# mark never reaches the child the whole depth limit is inert, so each runner's
+# emitted text is asserted here — with the flag AND without it (the negative is
+# what makes the injection conditional rather than always-on).
+# ---------------------------------------------------------------------------
+if _sec_selected "812" "HIMMEL-812"; then
+echo "--- 812 ---"
+HO_812="$(make_handover "$WORK_REPO")"
+_SC812='AUTO_ARM_SAFETY_CHILD=1'
+
+# windows: the schtasks runner is a .bat, so the mark is a `set` line.
+out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_812" --safety-child --dry-run 2>&1)
+rc=$?
+assert_rc "812 win: --safety-child dry-run exits 0" 0 "$rc"
+assert_contains "812 win: the .bat sets the mark" "set \"$_SC812\"" "$out"
+out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_812" --dry-run 2>&1)
+assert_not_contains "812 win: no mark without the flag" "$_SC812" "$out"
+assert_contains "812 win: the .bat CLEARS an ambient mark first" 'set "AUTO_ARM_SAFETY_CHILD="' "$out"
+
+# macOS/crontab: one line, so the mark is an export ahead of the launch body.
+MACBIN_812="$TMP/macbin-812"; mkdir -p "$MACBIN_812"
+CRON_STORE_812="$TMP/cron-812.store"; : > "$CRON_STORE_812"
+printf '#!/bin/sh\nexit 1\n' > "$MACBIN_812/at"; chmod +x "$MACBIN_812/at"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN_812/atq"; chmod +x "$MACBIN_812/atq"
+cat > "$MACBIN_812/crontab" <<CRONEOF812
+#!/bin/sh
+case "\$1" in
+  -l) cat "$CRON_STORE_812" 2>/dev/null ;;
+  -) cat > "$CRON_STORE_812" ;;
+  *) exit 0 ;;
+esac
+CRONEOF812
+chmod +x "$MACBIN_812/crontab"
+out=$(env PATH="$MACBIN_812:$PATH" OSTYPE=darwin23 bash "$ARM" --time "$(future_time)" --handover "$HO_812" --safety-child --dry-run 2>&1)
+rc=$?
+assert_rc "812 cron: --safety-child dry-run exits 0" 0 "$rc"
+assert_contains "812 cron: the crontab entry exports the mark" "export $_SC812" "$out"
+out=$(env PATH="$MACBIN_812:$PATH" OSTYPE=darwin23 bash "$ARM" --time "$(future_time)" --handover "$HO_812" --dry-run 2>&1)
+assert_not_contains "812 cron: no mark without the flag" "$_SC812" "$out"
+assert_contains "812 cron: the entry CLEARS an ambient mark" "unset AUTO_ARM_SAFETY_CHILD" "$out"
+
+# linux/at: the job body is a script, so the mark is its own export line.
+DBD_812="$TMP/h812.atdir"; rm -rf "$DBD_812"; mkdir -p "$DBD_812"
+out=$(SCHED_DB="$TMP/h812-sched.db" SCHED_DB_DIR="$DBD_812" PATH="$STATEFUL_STUB:$PATH" OSTYPE=linux-gnu \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_812" --safety-child --dry-run 2>&1)
+rc=$?
+assert_rc "812 at: --safety-child dry-run exits 0" 0 "$rc"
+assert_contains "812 at: the at job body exports the mark" "export $_SC812" "$out"
+out=$(SCHED_DB="$TMP/h812-sched.db" SCHED_DB_DIR="$DBD_812" PATH="$STATEFUL_STUB:$PATH" OSTYPE=linux-gnu \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_812" --dry-run 2>&1)
+assert_not_contains "812 at: no mark without the flag" "$_SC812" "$out"
+# `at` snapshots the SUBMITTING env, so the clear is load-bearing here, not
+# cosmetic: an ordinary arm made from a safety-child session must not relaunch
+# still carrying the mark (panel r3 [codex-2]).
+assert_contains "812 at: the job body CLEARS an ambient mark" "unset AUTO_ARM_SAFETY_CHILD" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-1636 — own-identity exclusion in the ticket-mutex scan is per-backend.
+#
+# list_existing returns a task NAME on schtasks, a whole crontab LINE on cron
+# and an opaque `at-job-N` on at. The mutex's exclusion compared the marker to
+# $TASK_NAME, which can only ever be true on schtasks — so on POSIX a --force
+# re-arm of the SAME handover saw its own slot and WARNed that a DIFFERENT
+# handover holds the ticket. Both POSIX backends are forced from any host
+# (OSTYPE + a PATH stub), exactly as the macOS/1879e sections do: a
+# Windows-green says nothing about the two branches this fixes.
+# ---------------------------------------------------------------------------
+if _sec_selected "1636" "HIMMEL-1636"; then
+echo "--- 1636 ---"
+R1636="$TMP/h1636"
+mkdir -p "$R1636/repo"
+( cd "$R1636/repo" && git init -q . \
+    && git config user.email t@t.t && git config user.name t \
+    && git config commit.gpgsign false \
+    && git commit -q --allow-empty -m seed ) >/dev/null 2>&1
+# Leg B is a SECOND file for the same ticket: it is the positive control that
+# keeps every assert_not_contains below honest (the scan does find genuinely
+# foreign slots on this backend), and re-arming leg A would hit the rc-3
+# per-handover dedup before the ticket scan is ever reached.
+HO_1636_A="$R1636/leg-a.md"
+HO_1636_B="$R1636/leg-b.md"
+printf -- '---\nticket: HIMMEL-9636\nresume_cwd: %s\n---\n\n# HIMMEL-9636 leg A\n' "$R1636/repo" > "$HO_1636_A"
+printf -- '---\nticket: HIMMEL-9636\nresume_cwd: %s\n---\n\n# HIMMEL-9636 leg B\n' "$R1636/repo" > "$HO_1636_B"
+_1636_WARN="already has another armed resume slot"
+
+# --- at backend (linux): list_existing returns `at-job-N` -------------------
+DBD_1636="$TMP/h1636.atdir"; rm -rf "$DBD_1636"; mkdir -p "$DBD_1636"
+_a1636_at() {
+    local ho="$1"; shift
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh HIMMEL_FLOW_RUNS_LEDGER="$TMP/1636-at.jsonl" \
+        SCHED_DB="$TMP/h1636-sched.db" SCHED_DB_DIR="$DBD_1636" \
+        PATH="$STATEFUL_STUB:$PATH" OSTYPE=linux-gnu \
+        bash "$ARM" --time "$(future_time)" --handover "$ho" "$@" 2>&1)
+}
+_a1636_at "$HO_1636_A"; rc=$?
+assert_rc "1636 at: leg A arms cleanly (rc=0)" 0 "$rc"
+_a1636_at "$HO_1636_A" --force; rc=$?
+assert_rc "1636 at: --force re-arm of the SAME handover succeeds (rc=0)" 0 "$rc"
+assert_not_contains "1636 at: own at-job is NOT misread as a DIFFERENT handover" "$_1636_WARN" "$out"
+_a1636_at "$HO_1636_B"; rc=$?
+assert_rc "1636 at: a genuinely DIFFERENT handover on the same ticket still refuses (rc=13)" 13 "$rc"
+assert_contains "1636 at: that refusal is the ticket mutex" "$_1636_WARN" "$out"
+
+# --- crontab backend (macOS): list_existing returns the whole LINE ----------
+MACBIN_1636="$TMP/macbin-1636"; mkdir -p "$MACBIN_1636"
+CRON_STORE_1636="$TMP/cron-1636.store"; : > "$CRON_STORE_1636"
+# at/atq must never be reached on macOS (arm-resume picks crontab there); a
+# loud-failing `at` proves it, exactly as the macOS section's stub does.
+printf '#!/bin/sh\necho "at MUST NOT be called on macOS" >&2; exit 1\n' > "$MACBIN_1636/at"; chmod +x "$MACBIN_1636/at"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN_1636/atq"; chmod +x "$MACBIN_1636/atq"
+cat > "$MACBIN_1636/crontab" <<CRONEOF1636
+#!/bin/sh
+case "\$1" in
+  -l) cat "$CRON_STORE_1636" 2>/dev/null ;;
+  -) cat > "$CRON_STORE_1636" ;;
+  *) exit 0 ;;
+esac
+CRONEOF1636
+chmod +x "$MACBIN_1636/crontab"
+_a1636_cron() {
+    local ho="$1"; shift
+    out=$(TMPDIR="$TMP" GH_CMD=/nonexistent/gh HIMMEL_FLOW_RUNS_LEDGER="$TMP/1636-cron.jsonl" \
+        PATH="$MACBIN_1636:$PATH" OSTYPE=darwin23 \
+        bash "$ARM" --time "$(future_time)" --handover "$ho" "$@" 2>&1)
+}
+_a1636_cron "$HO_1636_A"; rc=$?
+assert_rc "1636 cron: leg A arms cleanly (rc=0)" 0 "$rc"
+_a1636_cron "$HO_1636_A" --force; rc=$?
+assert_rc "1636 cron: --force re-arm of the SAME handover succeeds (rc=0)" 0 "$rc"
+assert_not_contains "1636 cron: own crontab LINE is NOT misread as a DIFFERENT handover" "$_1636_WARN" "$out"
+_a1636_cron "$HO_1636_B"; rc=$?
+assert_rc "1636 cron: a genuinely DIFFERENT handover on the same ticket still refuses (rc=13)" 13 "$rc"
+assert_contains "1636 cron: that refusal is the ticket mutex" "$_1636_WARN" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2192 — optional --model passthrough into the relaunch payload.
+#   Present -> flows into the generated .bat as `--model "<name>"`, right
+#   after the prompt/--channels, mirroring the --channels passthrough shape
+#   (T12/T13 above). Absent -> no --model token anywhere in the output, i.e.
+#   byte-identical to the pre-2192 launch line (operator default model).
+# ---------------------------------------------------------------------------
+if _sec_selected "2192" "HIMMEL-2192"; then
+HO_2192=$(make_handover "$WORK_REPO")
+out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --model opus --dry-run 2>&1)
+rc=$?
+assert_rc "2192 --model dry-run exits 0" 0 "$rc"
+assert_contains "2192 --model flows into the .bat payload" '--model "opus"' "$out"
+
+out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --force --dry-run 2>&1)
+rc=$?
+assert_rc "2192 no-flag dry-run exits 0" 0 "$rc"
+assert_not_contains "2192 no --model token when the flag is omitted" "--model" "$out"
+
+# CR round 2 finding: crontab treats an unescaped % as end-of-command +
+# stdin even inside %q-quoting, so a MODEL containing % must be \%-escaped
+# in the emitted crontab entry. Forced through the crontab backend the same
+# way the "macOS backend" section above does (OSTYPE=darwin23 + a stub
+# crontab binary) -- a proven pattern in this suite for deterministic
+# crontab coverage.
+CRONBIN2192="$TMP/cronbin2192"; mkdir -p "$CRONBIN2192"
+CRON_STORE_2192="$TMP/cron2192.store"; : > "$CRON_STORE_2192"
+cat > "$CRONBIN2192/crontab" <<CRONEOF
+#!/bin/sh
+case "\$1" in
+  -l) cat "$CRON_STORE_2192" 2>/dev/null ;;
+  -) cat > "$CRON_STORE_2192" ;;
+  *) exit 0 ;;
+esac
+CRONEOF
+chmod +x "$CRONBIN2192/crontab"
+HO_2192_PCT=$(make_handover "$WORK_REPO")
+out=$(env PATH="$CRONBIN2192:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_PCT" --model 'a%b' --dry-run 2>&1)
+rc=$?
+assert_rc "2192 crontab --model with percent dry-run exits 0" 0 "$rc"
+assert_contains "2192 crontab entry escapes percent in --model" '--model a\%b' "$out"
+
+# Value-less --model must ERROR, not consume the next option as the model
+# name (CR finding codex-1: `--model --dry-run` would otherwise swallow
+# --dry-run and arm the real scheduler).
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --model --dry-run 2>&1)
+rc=$?
+assert_rc "2192 --model followed by an option exits 2" 2 "$rc"
+assert_contains "2192 value-less --model error names the flag" "--model requires a non-empty" "$out"
+
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --model= --dry-run 2>&1)
+rc=$?
+assert_rc "2192 empty --model= exits 2" 2 "$rc"
+
+# --model=--dry-run must ERROR too (same option-like-value gap as the
+# space-separated form above, CR round 2 finding).
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --model=--dry-run 2>&1)
+rc=$?
+assert_rc "2192 --model=--dry-run exits 2" 2 "$rc"
+assert_contains "2192 --model= option-like value error names the flag" "--model requires a non-empty" "$out"
+
+# A MODEL containing a double quote must ERROR: cmd.exe treats " as a
+# delimiter even through cadence_cmd_escape's backslash-escaping, so it
+# could split the generated .bat command (CR round 2 finding).
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --model 'op"us' --dry-run 2>&1)
+rc=$?
+assert_rc "2192 --model with a double quote exits 2" 2 "$rc"
+assert_contains "2192 double-quote --model error names the reason" "--model must not contain a double quote" "$out"
+
+# A MODEL containing a CR/LF must ERROR: embedded verbatim into the .bat
+# launch line, a CR/LF could inject an extra batch command (CR round 3
+# finding). LF, not CR: a lone CR does not survive the command-substitution
+# subshell boundary under this MSYS bash (silently stripped en route), which
+# would make a CR-based test pass for the wrong reason.
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --model $'opus\necho-x' --dry-run 2>&1)
+rc=$?
+assert_rc "2192 --model with an LF exits 2" 2 "$rc"
+assert_contains "2192 control-char --model error names the reason" "--model must contain only printable, non-whitespace characters" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2199 — crontab tails: q_prompt/q_channels lack %-escaping.
+# _crontab_schedule() %q-quotes q_prompt/q_channels but (pre-fix) never
+# followed up with the \%-escape 2192 already applies to q_model -- crontab
+# (unlike /bin/sh) reads an unescaped % as end-of-command + stdin even inside
+# %q-quoting, so a handover path or --channels value containing % silently
+# truncated the scheduled command at fire time. Forced through the crontab
+# backend the same way 2192's own %-in---model test above does (OSTYPE=darwin23
+# + a stub crontab); RESUME_PROMPT always embeds the handover PATH verbatim
+# ("load $HANDOVER_PATH overnight mode. ..."), so a %-bearing handover path is
+# the natural vector for q_prompt specifically.
+# ---------------------------------------------------------------------------
+if _sec_selected "2199" "HIMMEL-2199"; then
+CRONBIN2199="$TMP/cronbin2199"; mkdir -p "$CRONBIN2199"
+CRON_STORE_2199="$TMP/cron2199.store"; : > "$CRON_STORE_2199"
+cat > "$CRONBIN2199/crontab" <<CRONEOF
+#!/bin/sh
+case "\$1" in
+  -l) cat "$CRON_STORE_2199" 2>/dev/null ;;
+  -) cat > "$CRON_STORE_2199" ;;
+  *) exit 0 ;;
+esac
+CRONEOF
+chmod +x "$CRONBIN2199/crontab"
+
+HO_2199_PCT="$HANDOVER_DIR/handover-100%.md"
+{
+    printf -- '---\n'
+    printf 'session_kind: test\n'
+    printf 'resume_cwd: %s\n' "$WORK_REPO"
+    printf -- '---\n'
+    printf '# Test handover\n'
+} > "$HO_2199_PCT"
+
+out=$(env PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_PCT" --channels 'a%b' --long-gap --dry-run 2>&1)
+rc=$?
+assert_rc "2199 crontab %-in-prompt/channels dry-run exits 0" 0 "$rc"
+# Content AFTER the escaped % in each field proves the entry was not
+# truncated there -- a bare (unescaped) % would have dropped everything
+# past it when crontab actually parsed the real entry.
+assert_contains "2199 crontab entry escapes percent in the prompt (from the %-bearing handover path)" 'handover-100\%.md\ overnight\ mode' "$out"
+assert_contains "2199 crontab entry escapes percent in --channels" '--channels a\%b' "$out"
+assert_contains "2199 crontab entry's trailing marker survives past both escapes (nothing truncated)" '# HIMMEL-Resume-handover-100' "$out"
+
+# CR round on this ticket (critic-panel [codex-1]): q_cwd sits in the SAME
+# crontab entry (`cd $q_cwd && ...`) as q_prompt/q_channels but was missed by
+# the first pass -- a % in RESUME_CWD (the git-toplevel-derived working
+# directory) truncates the entry exactly the same way.
+CWD_PCT="$TMP/work%repo"; mkdir -p "$CWD_PCT"
+HO_2199_CWD=$(make_handover "$CWD_PCT")
+out=$(env PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_CWD" --long-gap --dry-run 2>&1)
+rc=$?
+assert_rc "2199 crontab %-in-cwd dry-run exits 0" 0 "$rc"
+assert_contains "2199 crontab entry escapes percent in cwd" 'work\%repo && unset' "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2177 — arithmetic syntax error spam from _minutes_from_midnight().
+# Root cause (NOT an empty comparand, despite the ticket's original hunch):
+# py_armor_capture's python round-trip writes through a Windows-native
+# python.exe to a redirected FILE (not a console), which text-mode-translates
+# \n to \r\n; cat reads those bytes back raw, so a trailing \r rides along on
+# each HH:MM line list_collision_candidates()'s windows branch reads out of
+# $PY_ARMOR_OUT. _minutes_from_midnight() then glues that \r onto `mm`
+# (t="00:40\r" -> mm="40\r"), and `$(( hh * 60 + mm ))` chokes on the embedded
+# CR. Repro needs >=1 OTHER HIMMEL-* scheduled task so check_collision()'s
+# candidate loop actually runs; win_env forces the windows/schtasks branch
+# (the real CSV-parsing + python round-trip path -- NOT the ARM_COLLISION_
+# CANDIDATES test seam, which bypasses that parsing entirely and would not
+# have caught this). Covers BOTH --time smart and an explicit --time HH:MM
+# (the mission's corrected repro note: this is not smart-only).
+# ---------------------------------------------------------------------------
+if _sec_selected "2177" "HIMMEL-2177"; then
+STUB2177="$TMP/stub2177"; mkdir -p "$STUB2177"
+cat > "$STUB2177/schtasks" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+    /query)
+        printf '"\\HIMMEL-Resume-other-x","N/A","Ready"\n'
+        printf '"\\HIMMEL-A","1/1/2027 12:40:00 AM","Ready"\n'
+        printf '"\\HIMMEL-B","1/1/2027 12:20:00 AM","Ready"\n'
+        printf '"\\HIMMEL-C","1/1/2027 12:00:00 AM","Ready"\n'
+        printf '"\\HIMMEL-D","1/1/2027 12:15:00 AM","Ready"\n'
+        printf '"\\HIMMEL-E","1/1/2027 12:05:00 AM","Ready"\n'
+        exit 0 ;;
+    /create|/delete) exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+chmod +x "$STUB2177/schtasks"
+
+HO_2177=$(make_handover "$WORK_REPO")
+SLOT_CACHE_2177="$TMP/usage-free-2177.json"
+FIVE_RESET_2177=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(hours=2)).isoformat())')
+SEVEN_RESET_2177=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(days=6)).isoformat())')
+printf '{"five_hour":{"utilization":0.0,"resets_at":"%s"},"seven_day":{"utilization":15.0,"resets_at":"%s"}}' \
+    "$FIVE_RESET_2177" "$SEVEN_RESET_2177" > "$SLOT_CACHE_2177"
+
+# (a) --time smart
+out=$(RESUME_SLOT_CACHE="$SLOT_CACHE_2177" SLOT_MAX_AGE=0 win_env "$STUB2177" bash "$ARM" --time smart --handover "$HO_2177" --dry-run 2>&1)
+rc=$?
+assert_rc "2177a --time smart with near-midnight candidates exits 0" 0 "$rc"
+assert_not_contains "2177a no arithmetic syntax error on --time smart" "arithmetic syntax error" "$out"
+
+# (b) explicit --time HH:MM -- the mission's corrected repro: this is NOT
+# smart-only, so the regression case must cover both paths.
+HO_2177B=$(make_handover "$WORK_REPO")
+out=$(win_env "$STUB2177" bash "$ARM" --time "$(future_time)" --handover "$HO_2177B" --dry-run 2>&1)
+rc=$?
+assert_rc "2177b explicit --time with near-midnight candidates exits 0" 0 "$rc"
+assert_not_contains "2177b no arithmetic syntax error on explicit --time" "arithmetic syntax error" "$out"
+fi
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2545 — a relaunched session must NOT inherit CLAUDE_CODE_CHILD_SESSION.
+#   claude exports CLAUDE_CODE_CHILD_SESSION=1 (and CLAUDE_PID) into every
+#   process it spawns, so a claude started from inside a claude tool call is
+#   treated as a throwaway child: transcript saving OFF, context-fill rc=4
+#   ("blind fill"), nothing for /handover-resume-armed or the luna
+#   session-capture hook. An ARMED resume is the opposite of a throwaway — it
+#   is the session that most needs its transcript. Every generated launch body
+#   must therefore CLEAR both vars and FORCE persistence on, on the same
+#   always-clear contract as ARMAUTOMERGE/ARM_RESUME_SAFETY_ARM (T33b/c, T38).
+#   Asserted on each backend separately because each builds its own launch
+#   body: the POSIX `at` body, the crontab entry, and the Windows .bat.
+#   CLAUDE_PID is the HIMMEL-2514 sibling — the relaunch must not inherit the
+#   arming session's pid either.
+#   Round-6 addition: CLAUDE_CODE_SESSION_ID joins the same clear. claude
+#   generates its own id and exports the CORRECT one to its own tool
+#   subprocesses regardless, so context-fill.sh and anything reading its own
+#   env are unaffected — the impact is narrower than it looks. What is
+#   polluted without this clear is the relaunched claude PROCESS's own
+#   environ, which is exactly the surface this ticket taught people to
+#   inspect (/proc/<claude pid>/environ): a stale id there actively misleads
+#   the diagnostics HIMMEL-2545 introduced. Asserted on the plain AND the
+#   headroom-proxy variant of every backend that has one (cron, at) — the
+#   headroom branch builds a completely separate launch string, so a fix
+#   proven only against the plain string would leave the proxied path still
+#   leaking the arming session's id.
+# ---------------------------------------------------------------------------
+if _sec_selected "2545" "HIMMEL-2545"; then
+_2545_UNSET='unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID'
+_2545_EXPORT='export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1'
+
+# (a) the default POSIX backend (`at` on Linux; the .bat on a Windows host).
+HO_2545=$(make_handover "$WORK_REPO")
+out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2545" --dedup-any --dry-run 2>&1)
+rc=$?
+assert_rc "2545a default-backend dry-run exits 0" 0 "$rc"
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_contains "2545a .bat CLEARS CLAUDE_CODE_CHILD_SESSION" 'set "CLAUDE_CODE_CHILD_SESSION="' "$out"
+        assert_contains "2545a .bat CLEARS CLAUDE_PID" 'set "CLAUDE_PID="' "$out"
+        assert_contains "2545a .bat CLEARS CLAUDE_CODE_SESSION_ID" 'set "CLAUDE_CODE_SESSION_ID="' "$out"
+        assert_contains "2545a .bat FORCES session persistence" 'set "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"' "$out"
+        ;;
+    *)
+        assert_contains "2545a at body clears the child-session marker + CLAUDE_PID" "$_2545_UNSET" "$out"
+        assert_contains "2545a at body forces session persistence" "$_2545_EXPORT" "$out"
+        ;;
+esac
+# The marker is only ever CLEARED, never granted to the relaunched session.
+assert_not_contains "2545a body never grants CLAUDE_CODE_CHILD_SESSION=1" "CLAUDE_CODE_CHILD_SESSION=1" "$out"
+
+# (b) the cron backend builds its own single-LINE $tail — forced the way the
+# "macOS backend" and 2192 sections do it (OSTYPE=darwin23 + a stub scheduler
+# binary), because a one-line entry could easily have been patched only on
+# the multi-line POSIX twin.
+CRONBIN2545="$TMP/cronbin2545"; mkdir -p "$CRONBIN2545"
+CRON_STORE_2545="$TMP/cron2545.store"; : > "$CRON_STORE_2545"
+cat > "$CRONBIN2545/crontab" <<CRONEOF
+#!/bin/sh
+case "\$1" in
+  -l) cat "$CRON_STORE_2545" 2>/dev/null ;;
+  -) cat > "$CRON_STORE_2545" ;;
+  *) exit 0 ;;
+esac
+CRONEOF
+chmod +x "$CRONBIN2545/crontab"
+HO_2545_CRON=$(make_handover "$WORK_REPO")
+out=$(env PATH="$CRONBIN2545:$PATH" OSTYPE="darwin23" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2545_CRON" --dry-run 2>&1)
+rc=$?
+assert_rc "2545b cron dry-run exits 0" 0 "$rc"
+assert_contains "2545b cron entry clears the child-session marker + CLAUDE_PID" "$_2545_UNSET" "$out"
+assert_contains "2545b cron entry forces session persistence" "$_2545_EXPORT" "$out"
+
+# (c) the Windows .bat backend — a separate emitter (CMD `set "VAR="`), so a
+# POSIX-only patch would leave the schtasks path still launching children.
+HO_2545_WIN=$(make_handover "$WORK_REPO")
+out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_2545_WIN" --dry-run 2>&1)
+rc=$?
+assert_rc "2545c .bat dry-run exits 0" 0 "$rc"
+assert_contains "2545c .bat CLEARS CLAUDE_CODE_CHILD_SESSION" 'set "CLAUDE_CODE_CHILD_SESSION="' "$out"
+assert_contains "2545c .bat CLEARS CLAUDE_PID" 'set "CLAUDE_PID="' "$out"
+assert_contains "2545c .bat CLEARS CLAUDE_CODE_SESSION_ID" 'set "CLAUDE_CODE_SESSION_ID="' "$out"
+assert_contains "2545c .bat FORCES session persistence" 'set "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"' "$out"
+
+# (d) the cron backend's HEADROOM-PROXY variant — a completely separate
+# launch string (HIMMEL-901), built only when HIMMEL_HEADROOM_PROXY=1 is
+# active. A fix proven only against the plain $tail (case b) would leave
+# this branch still handing the relaunch the arming session's stale id.
+HO_2545_CRON_HP=$(make_handover "$WORK_REPO")
+: > "$CRON_STORE_2545"
+out=$(HIMMEL_HEADROOM_PROXY=1 env PATH="$CRONBIN2545:$PATH" OSTYPE="darwin23" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2545_CRON_HP" --dry-run 2>&1)
+rc=$?
+assert_rc "2545d cron headroom-proxy dry-run exits 0" 0 "$rc"
+assert_contains "2545d cron headroom-proxy entry clears the child-session marker + CLAUDE_PID + CLAUDE_CODE_SESSION_ID" "$_2545_UNSET" "$out"
+assert_contains "2545d cron headroom-proxy entry forces session persistence" "$_2545_EXPORT" "$out"
+
+# (e) the `at` backend's HEADROOM-PROXY variant — same rationale as (d), for
+# the other plain-vs-proxied pair of launch strings (HIMMEL-901).
+HO_2545_AT_HP=$(make_handover "$WORK_REPO")
+out=$(HIMMEL_HEADROOM_PROXY=1 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+    bash "$ARM" --time "$(future_time)" --handover "$HO_2545_AT_HP" --dedup-any --dry-run 2>&1)
+rc=$?
+assert_rc "2545e at headroom-proxy dry-run exits 0" 0 "$rc"
+case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        assert_contains "2545e .bat headroom-proxy CLEARS CLAUDE_CODE_SESSION_ID" 'set "CLAUDE_CODE_SESSION_ID="' "$out"
+        ;;
+    *)
+        assert_contains "2545e at headroom-proxy body clears the child-session marker + CLAUDE_PID + CLAUDE_CODE_SESSION_ID" "$_2545_UNSET" "$out"
+        assert_contains "2545e at headroom-proxy body forces session persistence" "$_2545_EXPORT" "$out"
+        ;;
+esac
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
+# HIMMEL-1579 (3): a stale-fixture run must ANNOUNCE ITSELF rather than hand
+# back a plausible failure list. future_time() refreshes with >=600s of its
+# target left, so this is unreachable in a healthy run — the last value it
+# handed out is still in the future. If wall-clock HAS passed it, some late arm
+# asked for a time already in the past, arm-resume rolled it to TOMORROW, and
+# the long-gap guard refused it rc=9: every "expected rc=N, got rc=9" above is
+# then fixture rot, not a defect in the code under test. Deliberately not a
+# FAIL — the run's real verdict stands; this only labels it.
+# Two conditions, because neither alone covers the whole run: a target that
+# expired MID-run is erased by the next refresh, so future_time() latches a
+# marker file at that moment (panel r2 codex-2), while the second half catches
+# a target that expired after the LAST handout and so was never refreshed away.
+# Both read the cache FILE — the function runs in a command-substitution
+# subshell, so nothing it assigns to a variable is visible here (r3 codex-1).
+_ft_last_target=0; _ft_last_value=""
+[ -s "$_FT_FILE" ] && read -r _ft_last_target _ft_last_value < "$_FT_FILE"
+if [ -f "$_FT_STALE_FILE" ] || { [ -n "$_ft_last_value" ] && [ "$(date +%s)" -ge "$_ft_last_target" ]; }; then
+    echo "WARN test-arm-resume.sh: the run outlived its own fixture window -- a future_time() target (last: $_ft_last_value) went PAST during the run, so any rc=9 above is suite shelf life (HIMMEL-1579), not a code defect. Re-run on an idle box before believing this list."
+fi
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

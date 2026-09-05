@@ -1,0 +1,34 @@
+{
+  "alwaysOn": true,
+  "bridge": {
+    "enabled": true,
+    "envPath": "~/.claude/channels/telegram/.env",
+    "installPersistence": true,
+    "whisperCli": "<WHISPER_CLI>",
+    "whisperModel": "ggml-large-v3-turbo.bin"
+  },
+  "cadences": {
+    "codex-sweep": "armed",
+    "graphmap": "off",
+    "pipeline": "armed",
+    "qmd": "armed"
+  },
+  "devOverlay": true,
+  "handover": {
+    "mode": "external",
+    "path": "<HANDOVER_DIR>"
+  },
+  "lanes": [
+    "codex",
+    "hermes"
+  ],
+  "lanesMeaningful": true,
+  "pluginSet": "lean",
+  "profile": "operator",
+  "schemaVersion": 2,
+  "scope": "user",
+  "vault": {
+    "mode": "existing",
+    "path": "<LUNA_VAULT_PATH>"
+  }
+}

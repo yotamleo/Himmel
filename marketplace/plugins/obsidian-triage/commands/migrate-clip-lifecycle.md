@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read
-description: One-time, reversible backfill (LUNA-86). Migrates the historical top-level `processed: true` clips out of the `Clippings/` inbox into the flat evidence pool `Clippings/_evidence/` — stamping `evidence_kind:` and rewriting every inbound wikilink (SIX literal forms — 3 plain + 3 `.md`-suffixed — so nothing dangles) with a fully reversible manifest. Deterministic, idempotent, resumable, folder-keyed. Driven by `tools/migrate-clip-lifecycle.mjs`. NOT a steady-state stage — run ONCE, behind a mandatory staging gate.
+description: One-time reversible backfill — move historical processed clips into Clippings/_evidence/ and rewrite wikilinks.
 argument-hint: "[vault-path] [--dry-run | --apply [--month YYYY-MM] | --rollback <manifest.json>]"
 ---
 

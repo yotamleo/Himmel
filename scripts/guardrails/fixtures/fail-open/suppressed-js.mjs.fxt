@@ -1,0 +1,7 @@
+// The JS suppression path: the quota-zero shape with an inline, reasoned
+// `// fail-open-ok:` marker.
+//
+// Expected: lint-fail-open.sh passes this file clean.
+export function spent(readings) {
+  return readings.totalSpent ?? 0; // fail-open-ok: fixture — proves the JS suppression path
+}

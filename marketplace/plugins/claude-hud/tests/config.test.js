@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   loadConfig,
   getConfigPath,
+  getConfigOverridePath,
   mergeConfig,
   DEFAULT_CONFIG,
   DEFAULT_ELEMENT_ORDER,
@@ -11,7 +12,7 @@ import {
 } from '../dist/config.js';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 function restoreEnvVar(name, value) {
@@ -72,7 +73,6 @@ test('loadConfig returns valid config structure', async () => {
   assert.equal(typeof config.display.showClaudeCodeVersion, 'boolean');
   assert.equal(typeof config.display.showMemoryUsage, 'boolean');
   assert.equal(typeof config.display.showPromptCache, 'boolean');
-  assert.equal(typeof config.display.promptCacheTtlSeconds, 'number');
   assert.equal(typeof config.display.showCost, 'boolean');
   assert.equal(typeof config.display.showRoutedCost, 'boolean');
   assert.equal(typeof config.display.showOutputStyle, 'boolean');
@@ -186,21 +186,12 @@ test('mergeConfig preserves explicit showPromptCache=true', () => {
   assert.equal(config.display.showPromptCache, true);
 });
 
-test('mergeConfig defaults promptCacheTtlSeconds to 300', () => {
-  const config = mergeConfig({});
-  assert.equal(config.display.promptCacheTtlSeconds, 300);
+test('mergeConfig preserves promptCacheTtlSeconds as a validated fallback', () => {
   assert.equal(DEFAULT_CONFIG.display.promptCacheTtlSeconds, 300);
-});
-
-test('mergeConfig preserves valid promptCacheTtlSeconds values', () => {
   const config = mergeConfig({ display: { promptCacheTtlSeconds: 3600 } });
   assert.equal(config.display.promptCacheTtlSeconds, 3600);
-});
-
-test('mergeConfig falls back to default promptCacheTtlSeconds for invalid values', () => {
+  assert.equal(config.display.showPromptCache, false);
   assert.equal(mergeConfig({ display: { promptCacheTtlSeconds: 0 } }).display.promptCacheTtlSeconds, 300);
-  assert.equal(mergeConfig({ display: { promptCacheTtlSeconds: -1 } }).display.promptCacheTtlSeconds, 300);
-  assert.equal(mergeConfig({ display: { promptCacheTtlSeconds: 'fast' } }).display.promptCacheTtlSeconds, 300);
 });
 
 test('mergeConfig defaults showCost to false', () => {
@@ -212,6 +203,23 @@ test('mergeConfig defaults showCost to false', () => {
 test('mergeConfig preserves explicit showCost=true', () => {
   const config = mergeConfig({ display: { showCost: true } });
   assert.equal(config.display.showCost, true);
+});
+
+test('mergeConfig defaults showDailyCost to false', () => {
+  const config = mergeConfig({});
+  assert.equal(config.display.showDailyCost, false);
+  assert.equal(DEFAULT_CONFIG.display.showDailyCost, false);
+});
+
+test('mergeConfig preserves explicit showDailyCost=true', () => {
+  const config = mergeConfig({ display: { showDailyCost: true } });
+  assert.equal(config.display.showDailyCost, true);
+});
+
+test('mergeConfig falls back to false for non-boolean showDailyCost', () => {
+  assert.equal(mergeConfig({ display: { showDailyCost: 'yes' } }).display.showDailyCost, false);
+  assert.equal(mergeConfig({ display: { showDailyCost: 1 } }).display.showDailyCost, false);
+  assert.equal(mergeConfig({ display: { showDailyCost: null } }).display.showDailyCost, false);
 });
 
 test('mergeConfig defaults git push thresholds to disabled', () => {
@@ -374,6 +382,24 @@ test('mergeConfig falls back to full for invalid modelFormat', () => {
   assert.equal(mergeConfig({ display: { modelFormat: null } }).display.modelFormat, 'full');
 });
 
+test('mergeConfig defaults effortFormat to full', () => {
+  const config = mergeConfig({});
+  assert.equal(config.display.effortFormat, 'full');
+  assert.equal(DEFAULT_CONFIG.display.effortFormat, 'full');
+});
+
+test('mergeConfig preserves valid effortFormat values', () => {
+  assert.equal(mergeConfig({ display: { effortFormat: 'symbol' } }).display.effortFormat, 'symbol');
+  assert.equal(mergeConfig({ display: { effortFormat: 'text' } }).display.effortFormat, 'text');
+  assert.equal(mergeConfig({ display: { effortFormat: 'full' } }).display.effortFormat, 'full');
+});
+
+test('mergeConfig falls back to full for invalid effortFormat', () => {
+  assert.equal(mergeConfig({ display: { effortFormat: 'invalid' } }).display.effortFormat, 'full');
+  assert.equal(mergeConfig({ display: { effortFormat: 123 } }).display.effortFormat, 'full');
+  assert.equal(mergeConfig({ display: { effortFormat: null } }).display.effortFormat, 'full');
+});
+
 test('mergeConfig defaults modelOverride to empty string', () => {
   const config = mergeConfig({});
   assert.equal(config.display.modelOverride, '');
@@ -496,6 +522,285 @@ test('loadConfig reads user config from CLAUDE_CONFIG_DIR', async () => {
     restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
     await rm(customConfigDir, { recursive: true, force: true });
   }
+});
+
+test('getConfigOverridePath sits outside the symlink-prone plugins directory', async () => {
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const customConfigDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-override-path-'));
+
+  try {
+    process.env.CLAUDE_CONFIG_DIR = customConfigDir;
+    assert.equal(getConfigOverridePath(), path.join(customConfigDir, 'claude-hud.json'));
+
+    delete process.env.CLAUDE_CONFIG_DIR;
+    assert.equal(getConfigOverridePath(), path.join(os.homedir(), '.claude', 'claude-hud.json'));
+  } finally {
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
+    await rm(customConfigDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig layers claude-hud.json over the shared config', async () => {
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const customConfigDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-override-load-'));
+
+  try {
+    process.env.CLAUDE_CONFIG_DIR = customConfigDir;
+    const pluginDir = path.join(customConfigDir, 'plugins', 'claude-hud');
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(
+      path.join(pluginDir, 'config.json'),
+      JSON.stringify({
+        lineLayout: 'compact',
+        elementOrder: ['project', 'context'],
+        display: { customLine: 'shared', showSpeed: true },
+      }),
+      'utf8'
+    );
+    await writeFile(
+      path.join(customConfigDir, 'claude-hud.json'),
+      JSON.stringify({
+        elementOrder: ['project'],
+        display: { customLine: 'Work Team' },
+      }),
+      'utf8'
+    );
+
+    const config = await loadConfig();
+    assert.equal(config.display.customLine, 'Work Team');
+    // Sibling keys of an overridden section survive.
+    assert.equal(config.display.showSpeed, true);
+    // Untouched top-level keys survive.
+    assert.equal(config.lineLayout, 'compact');
+    // Arrays replace wholesale rather than concatenating.
+    assert.deepEqual(config.elementOrder, ['project']);
+  } finally {
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
+    await rm(customConfigDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig applies claude-hud.json when there is no shared config', async () => {
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const customConfigDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-override-only-'));
+
+  try {
+    process.env.CLAUDE_CONFIG_DIR = customConfigDir;
+    await writeFile(
+      path.join(customConfigDir, 'claude-hud.json'),
+      JSON.stringify({ display: { customLine: 'Work Team' } }),
+      'utf8'
+    );
+
+    const config = await loadConfig();
+    assert.equal(config.display.customLine, 'Work Team');
+  } finally {
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
+    await rm(customConfigDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig ignores malformed or non-object claude-hud.json and keeps the shared config', async () => {
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const customConfigDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-override-bad-'));
+
+  try {
+    process.env.CLAUDE_CONFIG_DIR = customConfigDir;
+    const pluginDir = path.join(customConfigDir, 'plugins', 'claude-hud');
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(
+      path.join(pluginDir, 'config.json'),
+      JSON.stringify({ display: { customLine: 'shared' } }),
+      'utf8'
+    );
+
+    const overridePath = path.join(customConfigDir, 'claude-hud.json');
+    await writeFile(overridePath, '{ not json', 'utf8');
+    assert.equal((await loadConfig()).display.customLine, 'shared');
+
+    // A valid JSON document that is not an object is ignored too.
+    await writeFile(overridePath, '["Work Team"]', 'utf8');
+    assert.equal((await loadConfig()).display.customLine, 'shared');
+  } finally {
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
+    await rm(customConfigDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig rejects unsafe keys and excessive nesting in claude-hud.json', async () => {
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const customConfigDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-override-shape-'));
+
+  try {
+    process.env.CLAUDE_CONFIG_DIR = customConfigDir;
+    const pluginDir = path.join(customConfigDir, 'plugins', 'claude-hud');
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(
+      path.join(pluginDir, 'config.json'),
+      JSON.stringify({ display: { customLine: 'shared' } }),
+      'utf8'
+    );
+
+    const overridePath = path.join(customConfigDir, 'claude-hud.json');
+    await writeFile(overridePath, '{"display":{"__proto__":{"customLine":"poison"}}}', 'utf8');
+    assert.equal((await loadConfig()).display.customLine, 'shared');
+
+    let nested = { display: { customLine: 'poison' } };
+    for (let depth = 0; depth < 10; depth += 1) {
+      nested = { nested };
+    }
+    await writeFile(overridePath, JSON.stringify(nested), 'utf8');
+    assert.equal((await loadConfig()).display.customLine, 'shared');
+  } finally {
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
+    await rm(customConfigDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig rejects oversized and symlinked claude-hud.json files', async (t) => {
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const customConfigDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-override-file-'));
+
+  try {
+    process.env.CLAUDE_CONFIG_DIR = customConfigDir;
+    const pluginDir = path.join(customConfigDir, 'plugins', 'claude-hud');
+    await mkdir(pluginDir, { recursive: true });
+    await writeFile(
+      path.join(pluginDir, 'config.json'),
+      JSON.stringify({ display: { customLine: 'shared' } }),
+      'utf8'
+    );
+
+    const overridePath = path.join(customConfigDir, 'claude-hud.json');
+    await writeFile(overridePath, JSON.stringify({ padding: 'x'.repeat(70 * 1024) }), 'utf8');
+    assert.equal((await loadConfig()).display.customLine, 'shared');
+
+    const targetPath = path.join(customConfigDir, 'override-target.json');
+    await writeFile(targetPath, JSON.stringify({ display: { customLine: 'poison' } }), 'utf8');
+    await rm(overridePath, { force: true });
+    try {
+      await symlink(targetPath, overridePath, 'file');
+    } catch (err) {
+      if (err?.code === 'EPERM' || err?.code === 'EACCES') {
+        t.skip('file symlinks are unavailable on this platform');
+        return;
+      }
+      throw err;
+    }
+    assert.equal((await loadConfig()).display.customLine, 'shared');
+  } finally {
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
+    await rm(customConfigDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig rejects an oversized or symlinked shared config.json (TOCTOU-safe read)', async (t) => {
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const customConfigDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-config-file-'));
+
+  try {
+    process.env.CLAUDE_CONFIG_DIR = customConfigDir;
+    const pluginDir = path.join(customConfigDir, 'plugins', 'claude-hud');
+    await mkdir(pluginDir, { recursive: true });
+    const configPath = path.join(pluginDir, 'config.json');
+
+    // A normal, small config still loads.
+    await writeFile(configPath, JSON.stringify({ display: { customLine: 'ok' } }), 'utf8');
+    assert.equal((await loadConfig()).display.customLine, 'ok');
+
+    // A config over MAX_CONFIG_FILE_BYTES is rejected; loadConfig falls back to defaults.
+    await writeFile(configPath, JSON.stringify({ padding: 'x'.repeat(70 * 1024) }), 'utf8');
+    assert.equal((await loadConfig()).display.customLine, '');
+
+    // A symlinked config.json is rejected (O_NOFOLLOW on open, not a post-hoc lstat check).
+    const targetPath = path.join(customConfigDir, 'config-target.json');
+    await writeFile(targetPath, JSON.stringify({ display: { customLine: 'poison' } }), 'utf8');
+    await rm(configPath, { force: true });
+    try {
+      await symlink(targetPath, configPath, 'file');
+    } catch (err) {
+      if (err?.code === 'EPERM' || err?.code === 'EACCES') {
+        t.skip('file symlinks are unavailable on this platform');
+        return;
+      }
+      throw err;
+    }
+    assert.equal((await loadConfig()).display.customLine, '');
+  } finally {
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
+    await rm(customConfigDir, { recursive: true, force: true });
+  }
+});
+
+test('loadConfig keeps overrides isolated when config directories share plugins', async (t) => {
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const root = await mkdtemp(path.join(tmpdir(), 'claude-hud-shared-plugins-'));
+
+  try {
+    const sharedPlugins = path.join(root, 'shared', 'plugins');
+    const sharedHudDir = path.join(sharedPlugins, 'claude-hud');
+    const workDir = path.join(root, 'work');
+    const personalDir = path.join(root, 'personal');
+    await mkdir(sharedHudDir, { recursive: true });
+    await mkdir(workDir, { recursive: true });
+    await mkdir(personalDir, { recursive: true });
+    await writeFile(
+      path.join(sharedHudDir, 'config.json'),
+      JSON.stringify({ lineLayout: 'compact', display: { showSpeed: true } }),
+      'utf8'
+    );
+
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+    try {
+      await symlink(sharedPlugins, path.join(workDir, 'plugins'), linkType);
+      await symlink(sharedPlugins, path.join(personalDir, 'plugins'), linkType);
+    } catch (err) {
+      if (err?.code === 'EPERM' || err?.code === 'EACCES') {
+        t.skip('directory links are unavailable on this platform');
+        return;
+      }
+      throw err;
+    }
+    await writeFile(
+      path.join(workDir, 'claude-hud.json'),
+      JSON.stringify({ display: { customLine: 'Work' } }),
+      'utf8'
+    );
+    await writeFile(
+      path.join(personalDir, 'claude-hud.json'),
+      JSON.stringify({ display: { customLine: 'Personal' } }),
+      'utf8'
+    );
+
+    process.env.CLAUDE_CONFIG_DIR = workDir;
+    const workConfig = await loadConfig();
+    process.env.CLAUDE_CONFIG_DIR = personalDir;
+    const personalConfig = await loadConfig();
+
+    assert.equal(workConfig.display.customLine, 'Work');
+    assert.equal(personalConfig.display.customLine, 'Personal');
+    assert.equal(workConfig.display.showSpeed, true);
+    assert.equal(personalConfig.lineLayout, 'compact');
+  } finally {
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('mergeConfig strips terminal control sequences from display labels', () => {
+  const config = mergeConfig({
+    display: {
+      customLine: '\u001b]8;;https://evil.invalid\u0007click\u001b]8;;\u0007',
+      providerName: '\u001b[31mProvider\u001b[0m',
+      modelOverride: 'Model\u202e spoof',
+      advisorOverride: 'Advisor\nspoof',
+    },
+  });
+
+  assert.equal(config.display.customLine, 'click');
+  assert.equal(config.display.providerName, 'Provider');
+  assert.equal(config.display.modelOverride, 'Model spoof');
+  assert.equal(config.display.advisorOverride, 'Advisorspoof');
 });
 
 test('mergeConfig accepts pathLevels: "full"', () => {
@@ -964,6 +1269,24 @@ test('mergeConfig rejects non-boolean showCompactions', () => {
   assert.equal(config.display.showCompactions, false);
 });
 
+test('mergeConfig defaults showModelScopedUsage to true', () => {
+  const config = mergeConfig({});
+  assert.equal(config.display.showModelScopedUsage, true);
+  assert.equal(DEFAULT_CONFIG.display.showModelScopedUsage, true);
+});
+
+test('mergeConfig preserves explicit showModelScopedUsage=false', () => {
+  const config = mergeConfig({ display: { showModelScopedUsage: false } });
+  assert.equal(config.display.showModelScopedUsage, false);
+});
+
+test('mergeConfig rejects non-boolean showModelScopedUsage', () => {
+  // A falsy probe is the load-bearing one: against a `true` default, a truthy
+  // probe alone would still pass under a Boolean()-coercing implementation.
+  assert.equal(mergeConfig({ display: { showModelScopedUsage: 0 } }).display.showModelScopedUsage, true);
+  assert.equal(mergeConfig({ display: { showModelScopedUsage: 'no' } }).display.showModelScopedUsage, true);
+});
+
 test('mergeConfig preserves explicit showAdvisor=true', () => {
   const config = mergeConfig({ display: { showAdvisor: true } });
   assert.equal(config.display.showAdvisor, true);
@@ -1024,4 +1347,29 @@ test('mergeConfig filters unknown entries and de-duplicates projectLineOrder', (
     'model',
     'cost',
   ]);
+});
+
+test('mergeConfig defaults rightAlign to empty', () => {
+  const config = mergeConfig({});
+  assert.deepEqual(config.display.rightAlign, []);
+  assert.deepEqual(DEFAULT_CONFIG.display.rightAlign, []);
+});
+
+test('mergeConfig caps maxWidth to a safe terminal width', () => {
+  assert.equal(mergeConfig({ maxWidth: 600_000_000 }).maxWidth, 1000);
+});
+
+test('mergeConfig accepts valid rightAlign entries and filters invalid ones', () => {
+  const config = mergeConfig({
+    display: {
+      rightAlign: ['context', 'unknown', 42, null, 'usage', 'context'],
+    },
+  });
+
+  assert.deepEqual(config.display.rightAlign, ['context', 'usage']);
+});
+
+test('mergeConfig falls back to empty rightAlign when value is not an array', () => {
+  assert.deepEqual(mergeConfig({ display: { rightAlign: 'context' } }).display.rightAlign, []);
+  assert.deepEqual(mergeConfig({ display: { rightAlign: null } }).display.rightAlign, []);
 });

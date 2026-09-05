@@ -17,6 +17,12 @@
 # Run: pwsh -NoProfile -File scripts/test-uninstall.ps1
 
 $ErrorActionPreference = 'Continue'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $script:Failed = 0
 $Cli = Join-Path $PSScriptRoot 'uninstall.ps1'
 
@@ -65,7 +71,7 @@ $SavedChannelDir = $env:TELEGRAM_CHANNEL_DIR
 $SavedBridgeRoot = $env:BRIDGE_ROOT
 $SavedUserSettings = $env:HIMMEL_USER_SETTINGS
 
-# Redirect the [6/6] settings-unwire target away from the operator's REAL
+# Redirect the [6/7] settings-unwire target away from the operator's REAL
 # ~/.claude/settings.json for the whole suite (HIMMEL-460). SC6 cases re-seed it.
 $UserSettingsFile = Join-Path $Tmp 'user-settings.json'
 $env:HIMMEL_USER_SETTINGS = $UserSettingsFile
@@ -115,8 +121,8 @@ try {
     $env:BRIDGE_ROOT = $Bridge
     $out = Invoke-Uninstall @('-DryRun', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
     Assert-Rc 'dry-run exits 0' 0 $script:Rc
-    Assert-Has 'dry-run prints DRY rm for channel dir' "DRY: Remove-Item -Recurse -Force $Channel" $out
-    Assert-Has 'dry-run prints DRY rm for bridge root' "DRY: Remove-Item -Recurse -Force $Bridge" $out
+    Assert-Has 'dry-run prints DRY rm for channel dir' "DRY: Remove-Item -Recurse -Force -LiteralPath $Channel" $out
+    Assert-Has 'dry-run prints DRY rm for bridge root' "DRY: Remove-Item -Recurse -Force -LiteralPath $Bridge" $out
     if ((Test-Path (Join-Path $Channel 'access.json')) -and (Test-Path (Join-Path $Bridge 'sessions\S1\inbox.jsonl'))) {
         Write-Host 'PASS dry-run removed nothing'
     } else {
@@ -344,7 +350,7 @@ function Unregister-ScheduledTask {
     }
     }
 
-    # ── SC6 (HIMMEL-460): [6/6] settings unwire ─────────────────────────────
+    # ── SC6 (HIMMEL-460): [6/7] settings unwire ─────────────────────────────
     $SeedSettings = {
         @'
 {
@@ -371,14 +377,14 @@ function Unregister-ScheduledTask {
     }
     function JqU($expr) { Get-Content $UserSettingsFile -Raw | jq -r $expr }
 
-    # 11. [6/6] clears the wiring, preserves non-himmel keys.
+    # 11. [6/7] clears the wiring, preserves non-himmel keys.
     New-State
     $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n1'
     $env:BRIDGE_ROOT = Join-Path $Tmp 'n1b'
     & $SeedSettings
     $out = Invoke-Uninstall @('-Yes', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
-    Assert-Rc '[6/6] run exits 0' 0 $script:Rc
-    Assert-Has '[6/6] banner present' '[6/6] Unwiring' $out
+    Assert-Rc '[6/7] run exits 0' 0 $script:Rc
+    Assert-Has '[6/7] banner present' '[6/7] Unwiring' $out
     Assert-Rc 'statusLine removed'      'null' (JqU '.statusLine // "null"')
     Assert-Rc 'HIMMEL_REPO removed'     'null' (JqU '.env.HIMMEL_REPO // "null"')
     Assert-Rc 'LUNA_VAULT_PATH removed' 'null' (JqU '.env.LUNA_VAULT_PATH // "null"')
@@ -408,13 +414,192 @@ function Unregister-ScheduledTask {
     & $SeedSettings
     $before = Get-Content $UserSettingsFile -Raw
     $out = Invoke-Uninstall @('-DryRun', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
-    Assert-Rc 'dry-run [6/6] exits 0' 0 $script:Rc
-    Assert-Has 'dry-run prints [6/6] DRY' 'DRY: unwire statusLine' $out
+    Assert-Rc 'dry-run [6/7] exits 0' 0 $script:Rc
+    Assert-Has 'dry-run prints [6/7] DRY' 'DRY: unwire statusLine' $out
     Assert-Rc 'dry-run leaves settings unchanged' $before (Get-Content $UserSettingsFile -Raw)
+
+    # ── SC7 (HIMMEL-2458): steps 4+5 must never SILENTLY skip ───────────────
+    # The PATH-layer cause is Linux-only, but the failure it produced is not:
+    # a `claude` or `python` the run cannot find used to print "skipping",
+    # then "Uninstall complete." at rc=0, leaving every plugin installed and
+    # every git hook firing. These cases redirect $HOME (USERPROFILE + HOME,
+    # which is what the child's $HOME follows) at a temp dir and strip PATH,
+    # so the resolver has only the planted stubs to find — nothing real is
+    # ever uninstalled, and every case runs -DryRun.
+    $FakeHome = Join-Path $Tmp 'fakehome'
+    New-Item -ItemType Directory -Force (Join-Path $FakeHome '.local\bin') | Out-Null
+    foreach ($t in @('claude', 'python')) {
+        Set-Content -Path (Join-Path $FakeHome ".local\bin\$t.cmd") -Value "@echo STUB $t %*"
+    }
+    $EmptyHome = Join-Path $Tmp 'emptyhome'
+    New-Item -ItemType Directory -Force $EmptyHome | Out-Null
+
+    $SavedUserProfile = $env:USERPROFILE
+    $SavedHome = $env:HOME
+    $SavedPath = $env:PATH
+    $MinimalPath = Split-Path -Parent $PwshExe
+    try {
+        # 14. POSITIVE control: both tools are off PATH but present where the
+        #     installers put them — both steps run against the resolved binaries.
+        $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n7'
+        $env:BRIDGE_ROOT = Join-Path $Tmp 'n7b'
+        $env:HIMMELCTL_CACHE_DIR = Join-Path $Tmp 'n7c'
+        $env:USERPROFILE = $FakeHome; $env:HOME = $FakeHome; $env:PATH = $MinimalPath
+        $out = Invoke-Uninstall @('-DryRun', '-SkipTasks')
+        $env:PATH = $SavedPath
+        Assert-Rc 'off-PATH tools resolved: exits 0' 0 $script:Rc
+        Assert-Has 'resolved claude named' (Join-Path $FakeHome '.local\bin\claude.cmd') $out
+        Assert-Has 'resolved python named' (Join-Path $FakeHome '.local\bin\python.cmd') $out
+        Assert-NotHas 'no incomplete verdict when both resolved' 'Uninstall INCOMPLETE' $out
+        Assert-Has 'completion reported when nothing was skipped' 'Uninstall complete.' $out
+
+        # 15. NEGATIVE control: neither tool exists anywhere. The run must not
+        #     claim completion, must name both steps, and must exit 2.
+        $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n8'
+        $env:BRIDGE_ROOT = Join-Path $Tmp 'n8b'
+        $env:HIMMELCTL_CACHE_DIR = Join-Path $Tmp 'n8c'
+        $env:USERPROFILE = $EmptyHome; $env:HOME = $EmptyHome; $env:PATH = $MinimalPath
+        $out = Invoke-Uninstall @('-DryRun', '-SkipTasks')
+        $env:PATH = $SavedPath
+        Assert-Rc 'unresolvable tools exit 2' 2 $script:Rc
+        Assert-NotHas 'no false completion claim' 'Uninstall complete.' $out
+        Assert-Has 'incomplete verdict named' 'Uninstall INCOMPLETE' $out
+        Assert-Has 'skipped plugin step named' '[4/7] Claude plugins + marketplaces' $out
+        Assert-Has 'skipped hook step named' '[5/7] git hooks' $out
+        Assert-Has 'search locations printed' 'looked in:' $out
+
+        # 16. an EXPLICIT opt-out is not a silent skip.
+        $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n9'
+        $env:BRIDGE_ROOT = Join-Path $Tmp 'n9b'
+        $env:HIMMELCTL_CACHE_DIR = Join-Path $Tmp 'n9c'
+        $env:USERPROFILE = $EmptyHome; $env:HOME = $EmptyHome; $env:PATH = $MinimalPath
+        $out = Invoke-Uninstall @('-DryRun', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+        $env:PATH = $SavedPath
+        Assert-Rc 'explicit -SkipPlugins/-SkipHooks exits 0' 0 $script:Rc
+        Assert-Has 'explicit skip still completes' 'Uninstall complete.' $out
+    } finally {
+        $env:USERPROFILE = $SavedUserProfile
+        $env:HOME = $SavedHome
+        $env:PATH = $SavedPath
+    }
+
+    # ── SC8 (HIMMEL-2459): the himmelctl cache + state dir is removed ───────
+    $Cache = Join-Path $Tmp 'himmel-cache'
+    $NewCache = {
+        Remove-Item -Recurse -Force $Cache -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force $Cache | Out-Null
+        Set-Content -Path (Join-Path $Cache 'install-profile.json') -Value '{"profile":"starter"}'
+        Set-Content -Path (Join-Path $Cache 'state.json') -Value '{"items":{}}'
+    }
+
+    # 17. -DryRun names what it would remove and leaves the cache in place.
+    & $NewCache
+    $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n10'
+    $env:BRIDGE_ROOT = Join-Path $Tmp 'n10b'
+    $env:HIMMELCTL_CACHE_DIR = $Cache
+    $out = Invoke-Uninstall @('-DryRun', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+    Assert-Rc 'cache dry-run exits 0' 0 $script:Rc
+    Assert-Has 'dry-run previews the cache removal' "DRY: Remove-Item -Recurse -Force -LiteralPath $Cache" $out
+    Assert-Has 'dry-run names the install profile' 'install-profile.json' $out
+    if ((Test-Path (Join-Path $Cache 'install-profile.json')) -and (Test-Path (Join-Path $Cache 'state.json'))) {
+        Write-Host 'PASS dry-run left the himmelctl cache in place'
+    } else {
+        Write-Host 'FAIL dry-run removed the himmelctl cache'; $script:Failed++
+    }
+
+    # 18. a wet run removes it, honouring HIMMELCTL_CACHE_DIR.
+    & $NewCache
+    $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n11'
+    $env:BRIDGE_ROOT = Join-Path $Tmp 'n11b'
+    $env:HIMMELCTL_CACHE_DIR = $Cache
+    $out = Invoke-Uninstall @('-Yes', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+    Assert-Rc 'cache removal run exits 0' 0 $script:Rc
+    Assert-Has 'cache removal reported' "removed: $Cache" $out
+    if (Test-Path $Cache) {
+        Write-Host 'FAIL himmelctl cache survived uninstall'; $script:Failed++
+    } else {
+        Write-Host 'PASS himmelctl cache removed'
+    }
+
+    # 19. an absent cache is not an error.
+    $AbsentCache = Join-Path $Tmp 'no-such-cache'
+    $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n12'
+    $env:BRIDGE_ROOT = Join-Path $Tmp 'n12b'
+    $env:HIMMELCTL_CACHE_DIR = $AbsentCache
+    $out = Invoke-Uninstall @('-Yes', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+    Assert-Rc 'absent cache exits 0' 0 $script:Rc
+    Assert-Has 'absent cache reported, not removed' "absent, skipping: $AbsentCache" $out
+
+    # 20. the suspicious-path guard covers the cache target too — pointing
+    #     HIMMELCTL_CACHE_DIR at $HOME must refuse, not wipe the home directory.
+    $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n13'
+    $env:BRIDGE_ROOT = Join-Path $Tmp 'n13b'
+    $env:HIMMELCTL_CACHE_DIR = $FakeHome
+    $SavedUserProfile2 = $env:USERPROFILE; $SavedHome2 = $env:HOME
+    try {
+        $env:USERPROFILE = $FakeHome; $env:HOME = $FakeHome
+        $out = Invoke-Uninstall @('-Yes', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+    } finally {
+        $env:USERPROFILE = $SavedUserProfile2; $env:HOME = $SavedHome2
+    }
+    Assert-Has 'suspicious cache path refused' 'refusing to remove suspicious path' $out
+    if (Test-Path (Join-Path $FakeHome '.local\bin\claude.cmd')) {
+        Write-Host 'PASS suspicious cache path left $HOME intact'
+    } else {
+        Write-Host 'FAIL suspicious cache path removed $HOME contents'; $script:Failed++
+    }
+
+    # 20b. the guard must survive an ALIAS of $HOME, not just the literal
+    #      string. "$HOME\." resolves to $HOME but is not equal to it as text,
+    #      so a plain string compare would let it through and take the home
+    #      directory with it.
+    $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n14'
+    $env:BRIDGE_ROOT = Join-Path $Tmp 'n14b'
+    $env:HIMMELCTL_CACHE_DIR = (Join-Path $FakeHome '.')
+    $SavedUserProfile3 = $env:USERPROFILE; $SavedHome3 = $env:HOME
+    try {
+        $env:USERPROFILE = $FakeHome; $env:HOME = $FakeHome
+        $out = Invoke-Uninstall @('-Yes', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+    } finally {
+        $env:USERPROFILE = $SavedUserProfile3; $env:HOME = $SavedHome3
+    }
+    Assert-Has '$HOME\. alias refused as suspicious' 'refusing to remove suspicious path' $out
+    if (Test-Path (Join-Path $FakeHome '.local\bin\claude.cmd')) {
+        Write-Host 'PASS $HOME\. alias left $HOME intact'
+    } else {
+        Write-Host 'FAIL $HOME\. alias removed $HOME contents'; $script:Failed++
+    }
+    # A refusal is not a teardown — the cache is still there, so the run must
+    # NOT claim completion. Same rule steps [4/7]/[5/7] follow.
+    Assert-Rc 'refused cache path exits 2, not 0' 2 $script:Rc
+    Assert-NotHas 'refused cache path claims no completion' 'Uninstall complete.' $out
+
+    # 20c. HIMMEL-2505/HIMMEL-2459: a wildcard is not a path -- -Path on
+    #      Remove-Item/Test-Path expands it, so 'C:\*' passes every root/home
+    #      comparison above (GetFullPath('C:\*') is 'C:\*', not a root, not
+    #      $HOME). Refuse the wildcard characters outright: a directory-
+    #      relative wildcard, a bare drive-root wildcard, and a single-char
+    #      '?' wildcard.
+    foreach ($wild in @((Join-Path $FakeHome '*'), 'C:\*', (Join-Path $FakeHome 'himmel?'))) {
+        $env:TELEGRAM_CHANNEL_DIR = Join-Path $Tmp 'n15'
+        $env:BRIDGE_ROOT = Join-Path $Tmp 'n15b'
+        $env:HIMMELCTL_CACHE_DIR = $wild
+        $out = Invoke-Uninstall @('-Yes', '-SkipTasks', '-SkipPlugins', '-SkipHooks')
+        Assert-Has "wildcard cache path refused: $wild" 'refusing to remove suspicious path' $out
+        Assert-Rc "refused wildcard '$wild' exits 2, not 0" 2 $script:Rc
+        Assert-NotHas "refused wildcard '$wild' claims no completion" 'Uninstall complete.' $out
+    }
+    if (Test-Path (Join-Path $FakeHome '.local\bin\claude.cmd')) {
+        Write-Host 'PASS wildcard cache targets left $FakeHome intact'
+    } else {
+        Write-Host 'FAIL wildcard cache target removed $FakeHome contents'; $script:Failed++
+    }
+    $env:HIMMELCTL_CACHE_DIR = $null
 } finally {
     $env:TELEGRAM_CHANNEL_DIR = $SavedChannelDir
     $env:BRIDGE_ROOT = $SavedBridgeRoot
     $env:HIMMEL_USER_SETTINGS = $SavedUserSettings
+    $env:HIMMELCTL_CACHE_DIR = $null
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }
 

@@ -24,6 +24,14 @@
 # Exit codes:
 #   0 — clean (no headless calls in non-exempt staged files)
 #   1 — headless call(s) found without opt-in marker
+#
+# ADVISORY (HIMMEL-1867), never blocking: a staged file carrying the opt-in
+# marker that never references the native-auth pin gets a stderr WARNING — a
+# marked headless site that inherits an ambient ANTHROPIC_BASE_URL is silently
+# proxied off native auth (operator ruling 2026-08-17). Advisory because a
+# blocking check would gate every pre-existing marked site, including
+# graphify's vendored headless calls, which are out of scope for epic
+# HIMMEL-1859.
 set -uo pipefail
 
 # Pattern: `claude` followed by whitespace and `-p` (word-bounded) or
@@ -49,14 +57,19 @@ fi
 #   - this hook + its smoke test (talk about the pattern)
 #   - docs/ + handovers/ + CLAUDE.md + AGENTS.md (documentation/anti-recommendations;
 #     AGENTS.md is generated from CLAUDE.md, HIMMEL-471)
-#   - .agents/ (vendored caveman skills — upstream code, can't modify)
+#   - .agents/ (harness-neutral skill wrappers — docs, same as .claude/commands)
 #   - .claude/commands/*.md (slash-command docs, often anti-recommend)
+#   - root CHANGELOG.md (generated from immutable commit subjects by
+#     scripts/gen-changelog.sh — it records that a headless call was once
+#     discussed/shipped, it can never introduce one, and the opt-in marker
+#     can't survive regeneration, HIMMEL-2250)
 is_exempt() {
     case "$1" in
         scripts/hooks/check-no-headless-claude.sh) return 0 ;;
         scripts/hooks/test-check-no-headless-claude.sh) return 0 ;;
         CLAUDE.md) return 0 ;;
         AGENTS.md) return 0 ;;
+        CHANGELOG.md) return 0 ;;
         docs/*) return 0 ;;
         handovers/*) return 0 ;;
         .agents/*) return 0 ;;
@@ -97,6 +110,10 @@ fi
 violations=()
 for f in "${files[@]}"; do
     [ -f "$f" ] || continue
+    if [ ! -r "$f" ]; then
+        violations+=("$f:unreadable")
+        continue
+    fi
     is_exempt "$f" && continue
 
     # grep -n prints lineno:line; iterate matches to check opt-in marker
@@ -109,6 +126,32 @@ for f in "${files[@]}"; do
     done < <(grep -En "$PATTERN" -- "$f" 2>/dev/null)
 done
 
+# ADVISORY (HIMMEL-1867): warn when a staged file carrying the opt-in marker
+# never references the native-auth pin (bash lib or PowerShell twin). Warn
+# only — the exit code is decided solely by the violations above, so this can
+# never gate a pre-existing marked site (graphify's vendored headless calls
+# are out of scope for epic HIMMEL-1859).
+native_auth_pin_advisory() {
+    local f blob
+    for f in "${files[@]}"; do
+        is_exempt "$f" && continue
+        if blob=$(git show ":$f" 2>/dev/null); then
+            grep -q 'headless-claude-ok' <<<"$blob" || continue
+            # Any reference counts — sourcing the bash lib, dot-sourcing the .ps1
+            # twin, or naming either in a comment that says why the site is safe.
+            grep -q 'native-auth-pin' <<<"$blob" && continue
+        else
+            # Direct self-test inputs are real files outside the index.
+            [ -f "$f" ] || continue
+            grep -q 'headless-claude-ok' -- "$f" 2>/dev/null || continue
+            grep -q 'native-auth-pin' -- "$f" 2>/dev/null && continue
+        fi
+        echo "check-no-headless-claude: ADVISORY - $f carries a '# headless-claude-ok:' marker but never references native-auth-pin; a marked headless site that inherits an ambient ANTHROPIC_BASE_URL is silently proxied off native auth (operator ruling 2026-08-17). Source scripts/lib/native-auth-pin.sh and call native_auth_pin_env before the launch (PowerShell sites: scripts/lib/native-auth-pin.ps1). Advisory only, not blocking." >&2
+    done
+    return 0
+}
+native_auth_pin_advisory
+
 if [ "${#violations[@]}" -gt 0 ]; then
     {
         echo "check-no-headless-claude: headless 'claude -p' / '--print' / '--bg' call(s) without opt-in marker:"
@@ -116,20 +159,30 @@ if [ "${#violations[@]}" -gt 0 ]; then
             echo "    $v"
         done
         echo ""
-        echo "From 2026-06-15 onward, headless Claude Code invocations bill on a"
-        echo "separate Agent SDK credit bucket (Max subscriptions). Interactive"
-        echo "  claude \"\$prompt\""
-        echo "still bills on the regular Max quota — prefer that when launching"
-        echo "from cron/at/schtasks (arm-resume pattern) or any script."
+        echo "Headless Claude Code is permitted. Subscription-authenticated"
+        echo "'claude -p' draws the SAME 5-hour/weekly bank as interactive use"
+        echo "(HIMMEL-1748, measured 2026-08-11/12), so shape is not the cost"
+        echo "question."
         echo ""
-        echo "If this call is intentional (Agent SDK billing accepted, or you"
-        echo "need stdout for the response), add an opt-in marker on the same"
-        echo "line or the line immediately above:"
+        echo "For scheduled or unattended use, route through"
+        echo "scripts/lib/bank-preflight.sh before spending; parse the outcome"
+        echo "with '--output-format json' instead of sniffing prose; and declare"
+        echo "an explicit '--permission-mode' (never 'bypassPermissions')."
+        echo ""
+        echo "This gate verifies marker PRESENCE ONLY. It does not parse the"
+        echo "reason; any string passes. The preflight, JSON-output, and"
+        echo "permission-mode items above are review-enforced conventions, not"
+        echo "structural guarantees."
+        echo ""
+        echo "The marker remains required to force a pause and documented"
+        echo "decision at every new '-p' introduction. Add it with a one-line"
+        echo "reason on the same line or the line immediately above:"
         echo "    # headless-claude-ok: <one-line reason>"
         echo "    claude --print \"\$prompt\""
         echo ""
-        echo "Refs: HIMMEL-128. Cite https://code.claude.com/docs/en/headless.md"
-        echo "and https://code.claude.com/docs/en/authentication.md."
+        echo "Refs: HIMMEL-1748; scripts/lib/bank-preflight.sh;"
+        echo "docs/internals/enforcement.md#claude-invocation-billing-himmel-128;"
+        echo "https://code.claude.com/docs/en/headless.md."
     } >&2
     exit 1
 fi

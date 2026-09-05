@@ -22,10 +22,18 @@
 #     hook's post ever fails, the gate refuses green until a genuine review
 #     exists at head).
 #
-# ONE REVIEW PER PR, NOT PER PUSH: this hook fires only on PR CREATION (a
-# PostToolUse on `gh pr create`), never on push. It also scans the PR for an
-# existing `@coderabbitai (full )?review` comment before posting, so a retried
-# or idempotent create never double-posts.
+# ONE REVIEW PER HEAD SHA (HIMMEL-1906): dedup used to be keyed per PR (scan
+# for ANY existing `@coderabbitai review` comment) — that made sense when this
+# hook only fired at PR creation, but it silently blackholed every later fix
+# round: a push after the first review left the PR's comment list non-empty,
+# so the per-PR scan always short-circuited, the merge gate correctly refused
+# the "Review skipped" head, and nothing ever re-triggered (PRs #1717/#1718).
+# Dedup is now keyed by head SHA via the shared ledger in
+# scripts/lib/cr-trigger-ledger.sh — the SAME ledger a sibling hook,
+# trigger-cr-on-push.sh, uses to trigger a review on a PUSH that advances an
+# open PR's head. The per-PR comment scan is kept here ONLY as a secondary
+# guard (a reused/reopened PR number can carry a stale trigger comment); it no
+# longer gates the push path, where it would reintroduce the same bug.
 #
 # Input: PostToolUse JSON on stdin. Bash shape:
 #   { "tool_name": "Bash",
@@ -44,6 +52,26 @@ set -euo pipefail
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 warn() { echo "trigger-cr-on-pr-create: $*" >&2; }
+
+# Shared per-head-SHA ledger (HIMMEL-1906) — see scripts/lib/cr-trigger-ledger.sh
+# for the dedup contract, and for cr_trigger_repo_armed (HIMMEL-2034), the
+# foreign-repo guard. Sourcing failure fails CLOSED for the POST specifically
+# (warn + exit 0, post nothing): without the lib this hook can neither dedup
+# nor tell whose repo the PR is on. The hook itself still exits 0, so a
+# successful PR create is never stranded.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../lib/cr-trigger-ledger.sh
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/../lib/cr-trigger-ledger.sh" 2>/dev/null; then
+    # Was: fall back to a per-PR comment scan and post anyway. That fallback is
+    # gone (HIMMEL-2034) — this lib now also owns cr_trigger_repo_armed, the
+    # check that keeps the trigger off FOREIGN repos, so a run without it
+    # cannot tell whose PR it is about to comment on. Not posting is the cheap
+    # failure: the merge gate refuses green until a review lands at head, which
+    # is loud, whereas a comment on a stranger's PR is not ours to make.
+    warn "WARNING: could not load cr-trigger-ledger.sh — cannot verify this PR's repo is ours; not triggering CodeRabbit. Post '@coderabbitai review' manually if this PR is on one of our repos"
+    exit 0
+fi
 
 # Read stdin once (small payload — safe to buffer).
 payload=""
@@ -129,7 +157,22 @@ fi
 # matcher would silently never fire — the gate would look installed and do
 # nothing on a whole platform (CR codex-2 + glm-3, independently agreed).
 # `\b` is replaced by an explicit "end of token" alternation.
-if ! echo "$cmd" | grep -qE '(^|[;&|`$(])[[:space:]]*gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)'; then
+#
+# HIMMEL-1975 — this line is now BYTE-IDENTICAL to the PreToolUse sibling
+# check-cr-marker-on-pr-create.sh; keep it that way (HIMMEL-1362 lockstep, and
+# the two have already diverged once). Two changes landed together:
+#   - the end-of-token class widened from `[[:space:]]` to `[^[:alnum:]_-]`, so
+#     an argument-less invocation ending on a metacharacter (`gh pr create;`,
+#     `$(gh pr create)`, `gh pr create>out`) is no longer silently skipped —
+#     the sibling has had this since HIMMEL-1372, this twin had not;
+#   - the command position gained `{` / `!` plus one optional reserved-word or
+#     wrapper prefix, closing `{ gh pr create; }`, `if gh pr create`,
+#     `! gh pr create`, `then|else|elif|while|until|do gh pr create` and
+#     `sudo|env|nohup|timeout|command|exec|xargs … gh pr create`.
+# The full rationale (why exactly these heads, why `[^|;&]*` is bounded, and
+# why this is not a tokenizer — HIMMEL-912) lives on the sibling, next to the
+# same line; it is not duplicated here so the two cannot drift in prose either.
+if ! echo "$cmd" | grep -qE '(^|[;&|`$({!])[[:space:]]*((if|then|else|elif|while|until|do|time|sudo|nohup|command|exec)[[:space:]]+)?((env|timeout|xargs)[[:space:]]+[^|;&]*)?gh[[:space:]]+pr[[:space:]]+create([^[:alnum:]_-]|$)'; then
     exit 0
 fi
 
@@ -163,15 +206,40 @@ if [ -z "$num" ] || [ -z "$repo_path" ] || [ "$repo_path" = "$rest" ]; then
     exit 0
 fi
 
-# Need gh to scan for an existing trigger and to post the comment.
+# HIMMEL-2034: `gh pr create` can open a PR on ANY repo — an upstream, someone
+# else's fork — and this hook used to comment on whatever it was. Check before
+# any gh call, so a foreign PR costs no API round-trip either. Redundant with
+# the same check inside cr_trigger_post_review (that one covers the sibling
+# push hook and the forge seam); kept here because the head-SHA fallback below
+# posts directly, without going through that function.
+if ! cr_trigger_repo_armed "$repo_path"; then
+    warn "$repo_path: $CR_TRIGGER_FOREIGN_ADVISORY"
+    exit 0
+fi
+
+# Need gh to look up the head SHA, to scan for an existing trigger, and to
+# post the comment.
 if ! command -v gh >/dev/null 2>&1; then
     warn "WARNING: gh not in PATH; could not trigger CodeRabbit on PR #$num — post '@coderabbitai review' manually"
     exit 0
 fi
 
-# Idempotency (one review per PR): if a `@coderabbitai (full )?review` trigger
-# already exists on the PR, do not double-post. Network call — only reached on a
-# real PR creation, so the cost is acceptable.
+# Head SHA for the ledger key. A fresh `gh pr create` has exactly one head,
+# but reading it back from the PR object (rather than trusting a local ref)
+# keeps this correct even if something else moved HEAD between the create and
+# this hook running.
+head_sha=$(gh pr view "$num" --repo "$repo_path" --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+if [ -n "$head_sha" ]; then
+    # scan_existing=1: a reused/reopened PR number can carry a stale trigger
+    # comment from a prior life — see the header note.
+    cr_trigger_post_review "$head_sha" "$num" "$repo_path" 1
+    exit 0
+fi
+warn "WARNING: could not resolve the head SHA for PR #$num — falling back to the per-PR comment scan"
+
+# Fallback (head SHA unresolvable): the pre-HIMMEL-1906
+# per-PR scan. Idempotency (one review per PR): if a `@coderabbitai (full
+# )?review` trigger already exists on the PR, do not double-post.
 existing=$(gh api "repos/$repo_path/issues/$num/comments" --paginate --jq '.[].body' 2>/dev/null || true)
 if printf '%s\n' "$existing" | grep -qiE '@coderabbitai[[:space:]]+(full[[:space:]]+)?review'; then
     exit 0

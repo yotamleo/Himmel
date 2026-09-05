@@ -38,15 +38,15 @@
 # An EXIT trap converts any abnormal exit (anything other than 0 or 2) into a
 # fail-closed exit 2.
 #
-# Opt-in env vars (the two `conditional` matrix cells graphify can reach at
+# Opt-in env vars (the one `conditional` matrix cell graphify can reach at
 # purpose=extraction; set in the launching shell, not per-call):
 #   GRAPHIFY_SALUS_LOCAL_OK=1     - allow salus corpus x local-ollama (per-run
 #                                   opt-in; PHI stays on-machine but even local
 #                                   salus extraction needs an explicit opt-in).
-#   GRAPHIFY_CLIPPINGS_GLM_OK=1   - allow luna-clippings corpus x zai-glm
-#                                   (the pre-existing narrow clipped-public-web
-#                                   content exception).
-# Neither flag can flip a hard-deny cell (salus x any cloud, gemini anywhere).
+# (HIMMEL-2224: luna-clippings x zai-glm was the other conditional cell;
+# HIMMEL-1749 dropped the GLM/Z.ai Coding Plan, so that cell is now an
+# explicit deny and GRAPHIFY_CLIPPINGS_GLM_OK can no longer open it.)
+# This flag can't flip a hard-deny cell (salus x any cloud, gemini anywhere).
 #
 # Backend -> provider map (backend name is lower-cased first):
 #   ollama          -> local-ollama, UNLESS OLLAMA_HOST points off-box
@@ -57,6 +57,8 @@
 #                      points at api.deepseek.com; otherwise the undeclared
 #                      `openai` (falls to matrix default deny)
 #   glm | zai       -> zai-glm
+#   kimi            -> moonshot (endpoint-aware via KIMI_BASE_URL; non-Moonshot
+#                      hosts fall through fail-closed as kimi-custom)
 #   gemini | google -> google-gemini
 #   claude | claude-cli -> ENDPOINT-AWARE (HIMMEL-1049 + codex-adv-1): graphify's
 #                      claude backend honors ANTHROPIC_BASE_URL, so classify by
@@ -360,6 +362,28 @@ deny() { # <reason>
     exit 2
 }
 
+# HIMMEL-1776 (fence parity by extraction): file-readability and endpoint-host
+# predicates shared with scripts/graphify/refresh-graph-map.sh, the scheduled
+# path this interactive fence never runs on. ONE implementation instead of two
+# hand-kept copies that can drift (HIMMEL-1748 / PR #1680 fixed exactly that
+# drift once already).
+PHI_EGRESS_LIB="$SCRIPT_DIR/phi-egress-lib.sh"
+{ [ -f "$PHI_EGRESS_LIB" ] && [ -r "$PHI_EGRESS_LIB" ]; } || deny "shared predicates lib missing or unreadable at $PHI_EGRESS_LIB (fail-closed)"
+# shellcheck source=./phi-egress-lib.sh
+# shellcheck disable=SC1091
+. "$PHI_EGRESS_LIB" || deny "failed to load shared predicates lib $PHI_EGRESS_LIB (fail-closed)"
+
+# _gf_deny_on_endpoint_override -> HIMMEL-1085. Called right before a
+# graphify command-position invocation is actually evaluated; denies when
+# classify_clause's wrapper walk saw a command-local (or `env`-local)
+# assignment of an endpoint-selector var ahead of it. Named as the var only
+# (never the value) - ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN are credentials
+# and must not be echoed into a denial message.
+_gf_deny_on_endpoint_override() {
+    [ -n "${_GF_ENDPOINT_OVERRIDE:-}" ] || return 0
+    deny "command-local endpoint-selector assignment ($_GF_ENDPOINT_OVERRIDE=...) in front of graphify - a per-call VAR=x prefix or env VAR=x changes which provider this extraction actually reaches, and this fence process's own environment cannot see it (HIMMEL-1085). Set it in the launching shell (export, or a persistent env) where fence classification can see it, or drop the prefix."
+}
+
 # --- path helpers (pure bash, bash 3.2-safe) --------------------------------
 
 _lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -400,6 +424,25 @@ _strip_cmd() {
     t="${t//\$/}"; t="${t//(/}";  t="${t//)/}"
     t="${t//\\/}"
     printf '%s' "$t"
+}
+
+# _wrapper_base <_strip_cmd'd token> -> last path segment, so a path-qualified
+# launcher wrapper (/usr/bin/env, /bin/sudo, C:/tools/timeout) is recognized
+# by its bare name (HIMMEL-2087). classify_clause's wrapper walk previously
+# matched wrapper tokens by bare name only, so a path-qualified form walked
+# straight past every wrapper case, stopped the token walk, and never reached
+# evaluate_invocation - bypassing both the HIMMEL-1085 endpoint-override
+# denial and the fence's ordinary corpus x provider policy. Mirrors
+# guard_cmdpos_grammar's EXEPFX (lib.sh HIMMEL-1180), which already tolerates
+# this for block-destructive-commands.sh: optional drive prefix, then
+# everything up to the last `/` (backslash is moot here - _strip_cmd already
+# deletes it above, same as every other path token this file classifies).
+_wrapper_base() {
+    local t="$1"
+    case "$t" in
+        [A-Za-z]:*) t="${t#?:}" ;;
+    esac
+    printf '%s' "${t##*/}"
 }
 
 # _abs <path> -> absolute path (expanduser + anchor a relative path to TOOL_CWD).
@@ -609,7 +652,7 @@ _graphify_corpus_marker() {
     while [ -n "$d" ] && [ "$d" != "$prev" ]; do
         mk="$d/.graphify-corpus"
         if [ -e "$mk" ]; then
-            if ! { [ -f "$mk" ] && [ -r "$mk" ]; }; then
+            if ! _guard_file_readable "$mk"; then
                 printf '__marker_unreadable__\t%s' "$mk"; return
             fi
             # `read` exits non-zero on a final line lacking a trailing newline
@@ -648,7 +691,7 @@ _graphify_backend_marker() {
     local d="$1" mk content trimmed
     mk="$d/.graphify-backend"
     [ -e "$mk" ] || { printf ''; return; }
-    if ! { [ -f "$mk" ] && [ -r "$mk" ]; }; then
+    if ! _guard_file_readable "$mk"; then
         printf '__backend_unreadable__\t%s' "$mk"; return
     fi
     # Command substitution strips ALL trailing newlines, so a multiline check on
@@ -676,7 +719,7 @@ _graphify_backend_marker() {
 _under_any_list() {
     local p="$1" listfile="$2" root
     [ -e "$listfile" ] || { echo miss; return; }
-    { [ -f "$listfile" ] && [ -r "$listfile" ]; } || { echo unreadable; return; }
+    _guard_file_readable "$listfile" || { echo unreadable; return; }
     while IFS= read -r root || [ -n "$root" ]; do
         root="${root%$'\r'}"
         root="${root%/}"; root="${root%\\}"
@@ -926,33 +969,34 @@ _map_anthropic_endpoint() {
     fi
     u="${ANTHROPIC_BASE_URL:-}"
     [ -n "$u" ] || { echo anthropic; return; }
-    u="$(_lc "$u")"
-    # Reject any backslash BEFORE host classification (CodeRabbit-major on
-    # HIMMEL-1049): a backslash is never valid in a URL authority, but some HTTP
-    # clients (WHATWG URL parsing) fold `\` into `/`, so
-    # `https://evil.com\@api.anthropic.com` could resolve to evil.com while the
-    # `${u##*@}` userinfo strip below sees api.anthropic.com. Fail closed.
-    case "$u" in *\\*) echo anthropic-custom; return ;; esac
-    # Require an explicit HTTPS scheme. A plaintext http:// endpoint would egress
-    # corpus content in cleartext; a scheme-less (`api.anthropic.com`) or
-    # arbitrary-scheme (`file://`, `evil://`) value is malformed/ambiguous. All of
-    # these fail closed to anthropic-custom (CodeRabbit-major on HIMMEL-1049), so a
-    # bare/plaintext trusted hostname can never be waved through as anthropic (the
-    # real gateways — api.anthropic.com, api.z.ai — are HTTPS).
-    case "$u" in
-        https://*) : ;;
-        *) echo anthropic-custom; return ;;
-    esac
-    u="${u#*://}"       # strip the (validated) https:// scheme
-    u="${u%%/*}"        # authority = up to the first '/'
-    u="${u%%\?*}"       # strip ?query   (scheme-/path-less forms)
-    u="${u%%#*}"        # strip #fragment
-    host="${u##*@}"     # drop userinfo (user:pass@)
-    host="${host%%:*}"  # drop :port
+    # _guard_endpoint_host (shared, HIMMEL-1776) rejects a backslash BEFORE host
+    # classification (CodeRabbit-major on HIMMEL-1049: some HTTP clients fold
+    # `\` into `/`, so `https://evil.com\@api.anthropic.com` could resolve to
+    # evil.com while a naive userinfo strip sees api.anthropic.com), and
+    # requires an explicit HTTPS scheme (a plaintext http:// endpoint would
+    # egress corpus content in cleartext; scheme-less/arbitrary-scheme values
+    # are malformed/ambiguous). Either failure -> anthropic-custom (fail-closed).
+    host="$(_guard_endpoint_host "$u")" || { echo anthropic-custom; return; }
     case "$host" in
         api.anthropic.com)          echo anthropic ;;
         api.z.ai|open.bigmodel.cn)  echo zai-glm ;;
         *)                          echo anthropic-custom ;;
+    esac
+}
+
+# _map_kimi_endpoint -> resolve Kimi's effective endpoint. Same exact-host,
+# HTTPS-only, backslash-rejecting rules as _map_anthropic_endpoint: raw substring
+# matching would trust lookalikes such as api.moonshot.ai.evil. Unset means the
+# native backend's default Moonshot endpoint; anything else is an unverified
+# sentinel that is hard-denied before the matrix wildcard can see it.
+_map_kimi_endpoint() {
+    local u host
+    u="${KIMI_BASE_URL:-}"
+    [ -n "$u" ] || { echo moonshot; return; }
+    host="$(_guard_endpoint_host "$u")" || { echo kimi-custom; return; }
+    case "$host" in
+        api.moonshot.ai|api.moonshot.cn) echo moonshot ;;
+        *)                               echo kimi-custom ;;
     esac
 }
 
@@ -970,6 +1014,7 @@ map_provider() {
             if [ "$hit" = 1 ]; then echo deepseek; else echo openai; fi
             ;;
         glm|zai)       echo zai-glm ;;
+        kimi|moonshot)  _map_kimi_endpoint ;;
         gemini|google) echo google-gemini ;;
         claude|claude-cli) _map_anthropic_endpoint "$b" ;;
         *)             echo "$b" ;;
@@ -978,12 +1023,17 @@ map_provider() {
 
 # _json_escape <string> -> JSON-safe (backslash, quote, and control chars).
 _json_escape() {
-    local s="$1"
+    local s="$1" i octal ctrl escaped
     s="${s//\\/\\\\}"
     s="${s//\"/\\\"}"
-    s="${s//$'\n'/\\n}"
-    s="${s//$'\r'/\\r}"
-    s="${s//$'\t'/\\t}"
+    # POSIX paths may contain every C0 byte except NUL, which bash variables
+    # cannot carry. Encode the representable range uniformly as \u00XX.
+    for i in {1..31}; do
+        printf -v octal '%03o' "$i"
+        printf -v ctrl '%b' "\\0$octal"
+        printf -v escaped '\\u%04x' "$i"
+        s="${s//$ctrl/$escaped}"
+    done
     printf '%s' "$s"
 }
 
@@ -1166,6 +1216,11 @@ apply_verdict() {
         deny "claude backend points at an unverified endpoint (ANTHROPIC_BASE_URL is set to an unrecognized/unsupported value - not echoed, it may carry credentials); refusing on every corpus (fail-closed). Fix: unset ANTHROPIC_BASE_URL, or point it at https://api.anthropic.com or the ratified gateway https://api.z.ai (https only, exact host); or pick a backend that does not read it (e.g. --backend ollama for local extraction)"
     fi
 
+    if [ "$provider" = "kimi-custom" ]; then
+        # Same credential-redaction rule as ANTHROPIC_BASE_URL above.
+        deny "kimi backend points at an unverified endpoint (KIMI_BASE_URL is set to an unrecognized/unsupported value - not echoed, it may carry credentials); refusing on every corpus (fail-closed). Fix: unset KIMI_BASE_URL, or point it at https://api.moonshot.ai or https://api.moonshot.cn (https only, exact host)"
+    fi
+
     command -v node >/dev/null 2>&1 || deny "node not found; cannot evaluate the egress matrix (fail-closed)"
 
     everr="$(mktemp 2>/dev/null || echo "")"
@@ -1206,8 +1261,10 @@ apply_verdict() {
             ;;
         conditional)
             case "$corpus/$provider" in
+                # luna-clippings/zai-glm was retired here by HIMMEL-2224: that
+                # matrix cell is now an explicit deny (HIMMEL-1749 DROP), so no
+                # opt-in can reach it anymore.
                 salus/local-ollama)     optvar="GRAPHIFY_SALUS_LOCAL_OK";   optval="${GRAPHIFY_SALUS_LOCAL_OK:-}" ;;
-                luna-clippings/zai-glm) optvar="GRAPHIFY_CLIPPINGS_GLM_OK"; optval="${GRAPHIFY_CLIPPINGS_GLM_OK:-}" ;;
                 *) deny "$corpus x $provider x extraction is conditional with no known opt-in (fail-closed)" ;;
             esac
             if [ "$optval" = "1" ]; then
@@ -1406,11 +1463,38 @@ classify_clause() {
     # so a wrapper set placed before graphify - exec / nohup / timeout 600 /
     # sudo / env -i / stdbuf -oL / ... - does not hide the invocation from the
     # command-position walk. Wrappers may chain (`sudo nohup timeout 600 ...`).
+    #
+    # HIMMEL-1085: while walking past a leading/env-local assignment, also
+    # check whether it is one of the ENDPOINT-SELECTOR vars _map_anthropic_endpoint
+    # reads from ITS OWN process environment (ANTHROPIC_BASE_URL,
+    # CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX, ANTHROPIC_API_KEY,
+    # ANTHROPIC_AUTH_TOKEN). A command-local `VAR=x graphify ...` or
+    # `env VAR=x graphify ...` prefix is invisible to that read (this fence
+    # process's own env is unaffected by an assignment scoped to a command it
+    # merely inspects the text of) yet IS inherited by the graphify subprocess
+    # once allowed through - so the classifier would see ordinary anthropic
+    # traffic while the real extraction routes to whatever the override names.
+    # _GF_ENDPOINT_OVERRIDE is intentionally a SCRIPT-GLOBAL (not `local`), reset
+    # once per top-level clause by the caller below: classify_clause recurses
+    # into itself to unwrap `bash -c`/`sh -c`, and the override has to survive
+    # that recursion (`ANTHROPIC_BASE_URL=x bash -c "graphify ..."` sees the
+    # assignment in the OUTER call, the graphify token only in the INNER one).
     while [ "$i" -lt "$n" ]; do
         raw="${toks[$i]}"; s="$(_strip_cmd "$raw")"
         case "$s" in
             [A-Za-z_]*=*)
+                case "${s%%=*}" in
+                    ANTHROPIC_BASE_URL|CLAUDE_CODE_USE_BEDROCK|CLAUDE_CODE_USE_VERTEX|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)
+                        _GF_ENDPOINT_OVERRIDE="${s%%=*}" ;;
+                esac
                 i=$((i+1)); continue ;;                    # leading VAR=val assignment
+        esac
+        # HIMMEL-2087: match the wrapper NAME on its bare basename, so a
+        # path-qualified wrapper (/usr/bin/env, /bin/sudo, ...) is recognized
+        # the same as the bare form. `$s` stays the full (path-qualified)
+        # token for everything below (inner-loop flag scans etc.) - only the
+        # case-match target is stripped.
+        case "$(_wrapper_base "$s")" in
             command|exec|builtin|nohup|time|nice)
                 i=$((i+1)); continue ;;                    # transparent wrapper (no args to consume)
             env)
@@ -1418,7 +1502,13 @@ classify_clause() {
                 while [ "$i" -lt "$n" ]; do
                     case "$(_strip_cmd "${toks[$i]}")" in
                         -u|--unset)   i=$((i+2)) ;;        # flag + VAR value
-                        [A-Za-z_]*=*) i=$((i+1)) ;;        # env-local assignment
+                        [A-Za-z_]*=*)
+                            case "$(_strip_cmd "${toks[$i]}")" in
+                                ANTHROPIC_BASE_URL=*|CLAUDE_CODE_USE_BEDROCK=*|CLAUDE_CODE_USE_VERTEX=*|ANTHROPIC_API_KEY=*|ANTHROPIC_AUTH_TOKEN=*)
+                                    _GF_ENDPOINT_OVERRIDE="$(_strip_cmd "${toks[$i]}")"
+                                    _GF_ENDPOINT_OVERRIDE="${_GF_ENDPOINT_OVERRIDE%%=*}" ;;
+                            esac
+                            i=$((i+1)) ;;                  # env-local assignment
                         -*)           i=$((i+1)) ;;        # -i / - / --ignore-environment / ...
                         *)            break ;;
                     esac
@@ -1531,6 +1621,7 @@ classify_clause() {
                 k=$((k+1))
             done
             if [ "$found" = 1 ]; then
+                _gf_deny_on_endpoint_override
                 args=()
                 while [ "$k" -lt "$n" ]; do args+=("${toks[$k]}"); k=$((k+1)); done
                 evaluate_invocation ${args[@]+"${args[@]}"}
@@ -1542,6 +1633,7 @@ classify_clause() {
     # Plain command position.
     case "$s" in
         graphify|*/graphify)
+            _gf_deny_on_endpoint_override
             args=()
             j=$((i+1))
             while [ "$j" -lt "$n" ]; do args+=("${toks[$j]}"); j=$((j+1)); done
@@ -1575,6 +1667,11 @@ while IFS= read -r clause || [ -n "$clause" ]; do
     # shellcheck disable=SC2086 # intentional word split for tokenisation
     set -- $clause
     [ "$#" -gt 0 ] || continue
+    # HIMMEL-1085: reset once per TOP-LEVEL clause, not inside classify_clause
+    # itself - that function recurses to unwrap `bash -c`/`sh -c`, and a reset
+    # there would erase an override the outer call already captured before the
+    # inner call ever reaches the graphify token.
+    _GF_ENDPOINT_OVERRIDE=""
     classify_clause "$@"
     # Same _strip_cmd normalization as the graphify command-position match
     # (quotes/backticks/$/(/)/backslash stripped), checked on the clause's own

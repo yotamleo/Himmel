@@ -32,6 +32,16 @@ test(".salus marker refuses", () => {
   expect((r as any).reason).toMatch(/\.salus/);
 });
 
+// HIMMEL-2173: .salus-profile ALONE (no .salus) also refuses — a defense for
+// salus deployments that predate the profile installer shipping the real
+// .salus guard marker alongside it.
+test(".salus-profile-only marker refuses", () => {
+  writeFileSync(join(work, ".salus-profile"), "");
+  const r = checkGlmGuards(work, cfg);
+  expect(r.ok).toBe(false);
+  expect((r as any).reason).toMatch(/\.salus-profile/);
+});
+
 test("phi-roots line refuses (no override exists)", () => {
   writeFileSync(join(cfg, "phi-roots"), work + "\n");
   expect(checkGlmGuards(work, cfg).ok).toBe(false);

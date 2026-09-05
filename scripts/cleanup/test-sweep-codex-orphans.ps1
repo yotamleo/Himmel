@@ -383,8 +383,10 @@ $visProcs = @(
 )
 # Raw assignment, no @() wrap / no pipe on the call itself: the function
 # returns via unary comma (same contract as Get-CxcTokens - see the note at
-# its call site) so the array survives assignment as ONE object.
-$blindRaw = Get-BlindClientPids -Procs $visProcs
+# its call site) so the array survives assignment as ONE object. The lookup
+# seam keeps this synthetic snapshot hermetic while production uses Get-Process.
+$allTestPidsLive = { param([int]$ProcessId) [pscustomobject]@{ Id = $ProcessId } }
+$blindRaw = Get-BlindClientPids -Procs $visProcs -ProcessLookup $allTestPidsLive
 $blind = @($blindRaw | Sort-Object)
 Check 'blind outside clients = {900,902,903,904,922}' (($blind -join ',') -eq '900,902,903,904,922') "got=$($blind -join ',')"
 Check 'verified hidden broker descendant 921 excluded' (-not ($blind -contains 921)) "got=$($blind -join ',')"
@@ -392,6 +394,37 @@ Check 'undated stale-PPID plausible client 922 stays blind' ($blind -contains 92
 Check 'unrelated hidden svchost 905 ignored' (-not ($blind -contains 905)) "got=$($blind -join ',')"
 $noBlind = Get-BlindClientPids -Procs @( (Rec 901 1 'node.exe' (ClientRef 'tok9')) )
 Check 'all-visible -> empty'           ($noBlind.Count -eq 0) "got count=$($noBlind.Count)"
+
+# Only a REAL "no such process" proves absence. The stub therefore throws the
+# ErrorRecord shape Get-Process actually produces (FullyQualifiedErrorId
+# NoProcessFoundForGivenId) — a plain string exception would prove nothing and
+# must NOT unblock (see the two fail-closed cases below).
+$exitedBlind = Get-BlindClientPids -Procs @( (Rec 930 1 'node.exe' '') ) -ProcessLookup {
+  param([int]$ProcessId)
+  throw [System.Management.Automation.ErrorRecord]::new(
+    [System.Exception]::new("process exited"),
+    "NoProcessFoundForGivenId",
+    [System.Management.Automation.ErrorCategory]::ObjectNotFound,
+    $ProcessId)
+}
+Check 'exited unreadable client does NOT block the pass' ($exitedBlind.Count -eq 0) "got count=$($exitedBlind.Count)"
+$liveBlind = Get-BlindClientPids -Procs @( (Rec 931 1 'bun.exe' $null) ) -ProcessLookup $allTestPidsLive
+Check 'live unreadable client STILL blocks the pass' (($liveBlind -join ',') -eq '931') "got=$($liveBlind -join ',')"
+
+# HIMMEL-1706 CR: a lookup that FAILS for any reason other than proven absence
+# leaves liveness unknown, and unknown must keep blocking. Treating these as
+# "gone" would be fail-OPEN — the sweep would proceed against a client it could
+# not verify, which is the hole this whole function exists to close.
+$deniedBlind = Get-BlindClientPids -Procs @( (Rec 932 1 'node.exe' '') ) -ProcessLookup {
+  param([int]$ProcessId)
+  throw [System.ComponentModel.Win32Exception]::new(5, "Access is denied")
+}
+Check 'access-denied lookup STILL blocks (fail-closed)' (($deniedBlind -join ',') -eq '932') "got=$($deniedBlind -join ',')"
+$oddBlind = Get-BlindClientPids -Procs @( (Rec 933 1 'bun.exe' '') ) -ProcessLookup {
+  param([int]$ProcessId)
+  throw [System.InvalidOperationException]::new("lookup failed")
+}
+Check 'unexpected lookup error STILL blocks (fail-closed)' (($oddBlind -join ',') -eq '933') "got=$($oddBlind -join ',')"
 
 # --- Test 6d: caller-path @() wrap regression (HIMMEL-930) -------------------
 # Get-BlindClientPids is array-guaranteed by its own unary-comma return (Test

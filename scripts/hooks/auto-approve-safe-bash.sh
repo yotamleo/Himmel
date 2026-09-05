@@ -16,16 +16,29 @@
 # and decides itself, bypassing the matcher's bail-out.
 #
 # CONTRACT — inverted vs the block-* hooks; read carefully:
-#   * NEVER blocks, NEVER denies. Worst case it stays silent and the
+#   * NEVER blocks (exit-2). ALMOST NEVER denies — the one carve-out below
+#     emits an explicit permissionDecision:"deny", never an exit-2 block, and
+#     even that is a single narrow shape. Otherwise it stays silent and the
 #     command falls through to the normal permission flow (prompt in
 #     interactive, abort in headless) — identical to this hook not
 #     existing. It therefore FAILS OPEN: missing jq, unparseable input,
 #     anything-not-provably-safe → silent `exit 0`, no decision emitted.
-#   * It only ever EMITS "allow". The existing destructive deny-list and
-#     the block-* deny hooks remain the hard backstop: per CC docs a deny
-#     rule and an exit-2 hook WIN over a hook "allow". So auto-approving
-#     `cat *`/`grep *` here cannot defeat block-read-secrets (that hook
-#     exits 2 on a secret read; its decision takes precedence).
+#   * It only ever EMITS "allow" — with exactly ONE documented DENY
+#     carve-out (HIMMEL-2121): a root-anchored `find` with no `-maxdepth`
+#     anywhere in its segment (e.g. `find / -iname x`, `find C:\ -name x`,
+#     `find $HOME -name x`). WHY a deny and not silence: this hook exists
+#     because the fall-through prompt is unattended in headless/cadence
+#     sessions — but that only makes the walker WORSE, not safer, since an
+#     orphaned whole-disk `find` outlives its dead parent (specimen: 20+ min,
+#     pinned a saturated spawn path). The shape is never legitimate without
+#     `-maxdepth`, so it is denied outright rather than left to a prompt
+#     nobody is there to answer. Single-run bypass: `FIND_ROOTWALK_OK=1` set
+#     in the LAUNCHING shell (see segment_is_rootwalk_find below).
+#   * The existing destructive deny-list and the block-* deny hooks remain
+#     the hard backstop: per CC docs a deny rule and an exit-2 hook WIN over
+#     a hook "allow". So auto-approving `cat *`/`grep *` here cannot defeat
+#     block-read-secrets (that hook exits 2 on a secret read; its decision
+#     takes precedence).
 #
 # SAFETY MODEL — a command is auto-approved ONLY when ALL hold:
 #   1. No command/process substitution: no `$(`  `` ` ``  `<(`  `>(`.
@@ -51,8 +64,10 @@
 #     fall through to a prompt. That errs SAFE (prompt), never toward a
 #     wrong approval.
 #
-# No bypass env var — there is nothing to bypass (the hook only grants).
-# To DISABLE, comment it out in .claude/settings.json.
+# No bypass env var for the ALLOW side — there is nothing to bypass (grants
+# only). The one DENY carve-out (HIMMEL-2121, above) has its own bypass:
+# FIND_ROOTWALK_OK=1 in the launching shell.
+# To DISABLE the hook entirely, comment it out in .claude/settings.json.
 #
 # bash 3.2-compatible (no mapfile / associative arrays).
 set -uo pipefail
@@ -237,15 +252,146 @@ gh_subcmd_is_read() {
     return 1
 }
 
-segment_is_safe() {
-    local -a a
-    # shellcheck disable=SC2206 # intentional word split for tokenisation
-    IFS=' ' read -ra a <<< "$1"
+# Split one command segment into shell WORDS without evaluating it. Whitespace
+# delimits words only when unquoted; quote delimiters and escapes stay in each
+# raw token so shell_word_value can simulate their argv value and expansion
+# semantics. Adjacent fragments (`/''`, `"$HOME"/`) remain one word.
+tokenize_seg_words() {
+    local s="$1" n i c nx st word have
+    n=${#s}; i=0; st=0; word=""; have=0; RB_TOKENS=()
+    while [ "$i" -lt "$n" ]; do
+        c="${s:$i:1}"
+        if [ "$st" = 1 ]; then                       # inside single quotes
+            word="$word$c"; have=1
+            [ "$c" = "'" ] && st=0
+            i=$((i + 1)); continue
+        fi
+        if [ "$st" = 2 ]; then                       # inside double quotes
+            if [ "$c" = "\\" ]; then
+                nx="${s:$((i + 1)):1}"
+                word="$word$c$nx"; have=1; i=$((i + 2)); continue
+            fi
+            word="$word$c"; have=1
+            [ "$c" = '"' ] && st=0
+            i=$((i + 1)); continue
+        fi
+        case "$c" in
+            "'") st=1; word="$word$c"; have=1 ;;
+            '"') st=2; word="$word$c"; have=1 ;;
+            "\\")
+                nx="${s:$((i + 1)):1}"
+                # Keep the established Git-Bash/Windows `find C:\ <expr>`
+                # spelling as a drive-root token; the following space still
+                # delimits the next word instead of being consumed here.
+                case "$nx" in [[:space:]]) word="$word$c"; have=1; i=$((i + 1)); continue ;; esac
+                word="$word$c$nx"; have=1; i=$((i + 2)); continue ;;
+            [[:space:]])
+                if [ "$have" -eq 1 ]; then
+                    RB_TOKENS+=("$word"); word=""; have=0
+                fi ;;
+            *) word="$word$c"; have=1 ;;
+        esac
+        i=$((i + 1))
+    done
+    [ "$st" = 0 ] || return 1
+    [ "$have" -eq 0 ] || RB_TOKENS+=("$word")
+    return 0
+}
+
+# Simulate one raw shell word's argv text without performing expansion. The
+# cooked value joins adjacent quote fragments and removes quote delimiters.
+# SW_EXPANDS_HOME records whether $HOME/${HOME} or
+# $USERPROFILE/${USERPROFILE} is a real expansion (unquoted or double-quoted),
+# rather than identical-looking text protected by single quotes or a backslash.
+# shellcheck disable=SC2016 # every variable spelling below is inspected literally; nothing is expanded
+shell_word_value() {
+    local s="$1" n i c nx st=0
+    n=${#s}; i=0; SW_VALUE=""; SW_EXPANDS_HOME=0; SW_EXPANDS_TILDE=0
+    while [ "$i" -lt "$n" ]; do
+        c="${s:$i:1}"
+        if [ "$st" = 1 ]; then
+            if [ "$c" = "'" ]; then st=0; else SW_VALUE="$SW_VALUE$c"; fi
+            i=$((i + 1)); continue
+        fi
+        if [ "$st" = 0 ] && [ "$c" = '$' ]; then
+            nx="${s:$((i + 1)):1}"
+            # ANSI-C and locale quotes have values that cannot be safely
+            # classified statically; leave them for the approval prompt.
+            case "$nx" in "'"|'"') return 1 ;; esac
+        fi
+        case "$c" in
+            "'")
+                [ "$st" = 0 ] && { st=1; i=$((i + 1)); continue; } ;;
+            '"')
+                if [ "$st" = 2 ]; then st=0; else st=2; fi
+                i=$((i + 1)); continue ;;
+            "\\")
+                nx="${s:$((i + 1)):1}"
+                if [ "$st" = 0 ]; then
+                    if [ -z "$nx" ]; then
+                        SW_VALUE="$SW_VALUE$c"; i=$((i + 1)); continue
+                    fi
+                    SW_VALUE="$SW_VALUE$nx"; i=$((i + 2)); continue
+                fi
+                case "$nx" in
+                    '$'|'`'|'"'|"\\") SW_VALUE="$SW_VALUE$nx"; i=$((i + 2)); continue ;;
+                esac ;;
+        esac
+        if [ "$c" = '~' ] && [ "$st" = 0 ] && [ "$i" -eq 0 ]; then
+            case "${s:$((i + 1)):1}" in ''|'/'|"'"|'"') SW_EXPANDS_TILDE=1 ;; esac
+        fi
+        if [ "$c" = '$' ]; then
+            if [ "${s:$i:14}" = '${USERPROFILE}' ]; then
+                SW_VALUE="$SW_VALUE"'${USERPROFILE}'; SW_EXPANDS_HOME=1
+                i=$((i + 14)); continue
+            fi
+            if [ "${s:$i:12}" = '$USERPROFILE' ]; then
+                case "${s:$((i + 12)):1}" in
+                    [A-Za-z0-9_]) ;;
+                    *)
+                        SW_VALUE="$SW_VALUE"'$USERPROFILE'; SW_EXPANDS_HOME=1
+                        i=$((i + 12)); continue ;;
+                esac
+            fi
+            if [ "${s:$i:7}" = '${HOME}' ]; then
+                SW_VALUE="$SW_VALUE"'${HOME}'; SW_EXPANDS_HOME=1
+                i=$((i + 7)); continue
+            fi
+            if [ "${s:$i:5}" = '$HOME' ]; then
+                case "${s:$((i + 5)):1}" in
+                    [A-Za-z0-9_]) ;;
+                    *)
+                        SW_VALUE="$SW_VALUE"'$HOME'; SW_EXPANDS_HOME=1
+                        i=$((i + 5)); continue ;;
+                esac
+            fi
+        fi
+        SW_VALUE="$SW_VALUE$c"; i=$((i + 1))
+    done
+    [ "$st" = 0 ]
+}
+
+# Tokenizes a segment and resolves the binary it actually executes: skips
+# shell keywords, group tokens, redirects and leading assignments, same rules
+# segment_is_safe has always used. Factored out so the HIMMEL-2121
+# root-anchored-find deny check (segment_is_rootwalk_find, below) resolves
+# "what runs" identically instead of re-deriving its own copy that could
+# silently drift from the safety scan.
+#
+# Sets RB_TOKENS (full token array) and RB_STATUS:
+#   empty — segment has no tokens.
+#   safe  — no single resolvable binary, but not dangerous either (a
+#           for/select header, or nothing executable e.g. bare `done`).
+#   unsafe — a `case` body, or a leading VAR= that isn't an innocuous
+#            locale/timezone var (must fall through to a prompt).
+#   bin   — resolved; RB_BIN is the binary token, RB_IDX its index.
+resolve_seg_binary() {
+    tokenize_seg_words "$1" || { RB_TOKENS=(); RB_BIN=""; RB_IDX=-1; RB_STATUS=unsafe; return 0; }
+    local -a a=("${RB_TOKENS[@]}")
+    RB_BIN=""; RB_IDX=-1
     local n=${#a[@]}
-    [ "$n" -eq 0 ] && return 0
+    if [ "$n" -eq 0 ]; then RB_STATUS=empty; return 0; fi
     local i=0 t
-    # Skip shell keywords, group tokens, redirects and leading assignments
-    # to land on the binary that this segment actually executes.
     while [ "$i" -lt "$n" ]; do
         t="${a[$i]}"
         case "$t" in
@@ -254,9 +400,9 @@ segment_is_safe() {
             if|while|until)                # eval the binary that follows
                 i=$((i + 1)); continue ;;
             for|select)                    # header: following words are data
-                return 0 ;;
+                RB_STATUS=safe; return 0 ;;
             case)                          # don't parse case bodies — fall through
-                return 1 ;;
+                RB_STATUS=unsafe; return 0 ;;
             '<'|'>'|'>>'|'<<'|'<<<'|'&>'|'&>>'|'2>'|'1>'|'2>>'|'<&'|'>&')
                 i=$((i + 2)); continue ;;  # redirect operator + its target token
             [0-9]'>'*|[0-9]'<'*|'>'*|'<'*|'&>'*)
@@ -270,15 +416,177 @@ segment_is_safe() {
                 # dangerous-env-var set is open-ended.
                 case "$t" in
                     LANG=*|LANGUAGE=*|LC_[A-Z]*=*|TZ=*) i=$((i + 1)); continue ;;
-                    *) return 1 ;;
+                    *) RB_STATUS=unsafe; return 0 ;;
                 esac ;;
             *) break ;;
         esac
     done
-    [ "$i" -ge "$n" ] && return 0          # nothing executable (e.g. bare `done`)
+    if [ "$i" -ge "$n" ]; then RB_STATUS=safe; return 0; fi   # e.g. bare `done`
     local bin="${a[$i]}"
     bin="${bin#(}"; bin="${bin#\{}"        # strip glued group opener
-    [ -z "$bin" ] && return 0
+    shell_word_value "$bin" || { RB_STATUS=unsafe; return 0; }
+    bin="$SW_VALUE"
+    if [ -z "$bin" ]; then RB_STATUS=safe; return 0; fi
+    RB_STATUS=bin; RB_BIN="$bin"; RB_IDX="$i"
+}
+
+# HIMMEL-2121: does this segment run `find` with a root-anchored PATH OPERAND
+# and no `-maxdepth N` anywhere? That shape walks the WHOLE disk; see header
+# CONTRACT for why it is denied rather than left to an unattended prompt.
+is_root_anchor() {
+    local u expands_home expands_tilde
+    shell_word_value "$1" || return 1
+    u="$SW_VALUE"; expands_home="$SW_EXPANDS_HOME"; expands_tilde="$SW_EXPANDS_TILDE"
+    # Canonicalize root-equivalent forms before matching: collapse every run
+    # of consecutive `/` into one, drop a trailing `/.` (optionally followed
+    # by `/`) (round 4, codex-1), and collapse runs of consecutive `\` into
+    # one (round 5, codex-1) — so `///`, `/.`, `/./`, `//c/`, and a
+    # double-backslash `C:\\` (common when an agent types `"C:\\"` inside
+    # double quotes) all normalize to the string a plain `/`, `/c/`, or
+    # `C:\` would, and can't dodge the case match below by spelling root a
+    # different way.
+    u=$(printf '%s' "$u" | sed -E 's@/+@/@g; s@/\.(/)?$@/@; s@\\+@\\@g')
+    # shellcheck disable=SC2016,SC2088 # literal match patterns (this segment's
+    # raw text), not tilde/expression expansion — the hook never eval's them.
+    case "$u" in
+        /|//)                     return 0 ;;  # POSIX root
+        /[A-Za-z]|/[A-Za-z]/)     return 0 ;;  # MSYS drive root: /c, /c/ (NOT /c/subpath)
+        [A-Za-z]:|[A-Za-z]:\\|[A-Za-z]:/) return 0 ;;  # Windows drive root: C:  C:\  C:/
+        '%USERPROFILE%'|"%USERPROFILE%\\"|'%USERPROFILE%/') return 0 ;;
+    esac
+    if [ "$expands_tilde" -eq 1 ]; then
+        # shellcheck disable=SC2088 # literal cooked forms, expansion was tracked from the raw word
+        case "$u" in '~'|'~/') return 0 ;; esac
+    fi
+    if [ "$expands_home" -eq 1 ]; then
+        # shellcheck disable=SC2016 # literal raw expansion forms, never this hook's environment
+        case "$u" in
+            '$HOME'|'${HOME}'|'$HOME/'|'${HOME}/'|\
+            '$USERPROFILE'|'${USERPROFILE}'|'$USERPROFILE/'|'${USERPROFILE}/'|\
+            "\$USERPROFILE\\"|"\${USERPROFILE}\\") return 0 ;;
+        esac
+    fi
+    return 1
+}
+
+# Lexically normalize a literal absolute POSIX path and report only paths whose
+# `.` / `..` segments reduce all the way to `/`. This deliberately does not
+# inspect the filesystem, resolve symlinks, or expand variables: `/tmp/..`
+# qualifies, while `/tmp/../var`, `/tmp/..hidden`, and `$HOME/..` do not.
+path_textually_resolves_to_root() {
+    local path="$1" part idx
+    local -a parts stack=()
+    case "$path" in /*) ;; *) return 1 ;; esac
+    IFS='/' read -ra parts <<< "$path"
+    for part in "${parts[@]}"; do
+        case "$part" in
+            ''|'.') ;;
+            '..')
+                if [ "${#stack[@]}" -gt 0 ]; then
+                    idx=$((${#stack[@]} - 1)); unset "stack[$idx]"
+                fi ;;
+            *) stack+=("$part") ;;
+        esac
+    done
+    [ "${#stack[@]}" -eq 0 ]
+}
+
+segment_is_rootwalk_find() {
+    resolve_seg_binary "$1"
+    [ "$RB_STATUS" = bin ] || return 1
+    case "$RB_BIN" in
+        find|find.exe|*/find|*/find.exe) ;;
+        *) return 1 ;;
+    esac
+    local -a a=("${RB_TOKENS[@]}")
+    local total=${#a[@]} j tok val cooked has_root=0 has_maxdepth=0
+
+    # -maxdepth N: a real -maxdepth is an OPTION immediately followed by a
+    # nonempty all-digits VALUE — count it only in that shape (round 2,
+    # codex-2/codex-4). A token that merely READS "-maxdepth" as some OTHER
+    # primary's value (e.g. `find / -name -maxdepth`, nothing digit-shaped
+    # after it) is not counted. Quotes are stripped first so `"-maxdepth" 2`
+    # is recognized too. This scans every remaining token — -maxdepth is a
+    # flag, not a path operand, so it may legally appear anywhere — EXCEPT
+    # inside an ACTION primary's own payload: `-exec`/`-execdir`/`-ok`/
+    # `-okdir` consume every following token as their OWN argument list up to
+    # a terminator (`;` / `\;` / `+`), so a `-maxdepth N` sitting in there,
+    # e.g. `find / -exec echo -maxdepth 2 \;`, is echo's argument, not find's
+    # option, and must not count. Once the terminator is seen, RESUME
+    # scanning find's OWN remaining flags (round 4, codex-4: a genuinely
+    # bounded `-exec ... \; -maxdepth N` must not be denied). `-delete` takes
+    # NO payload — it is a plain flag, so it is deliberately NOT in this set;
+    # a `-maxdepth` after it is real.
+    j=$((RB_IDX + 1))
+    while [ "$j" -lt "$total" ]; do
+        shell_word_value "${a[$j]}" || return 1
+        tok="$SW_VALUE"
+        case "$tok" in
+            -exec|-execdir|-ok|-okdir)
+                j=$((j + 1))
+                while [ "$j" -lt "$total" ]; do
+                    shell_word_value "${a[$j]}" || return 1
+                    case "$SW_VALUE" in
+                        ';'|'\;'|'+') j=$((j + 1)); break ;;
+                        *) j=$((j + 1)) ;;
+                    esac
+                done
+                continue ;;
+        esac
+        if [ "$tok" = "-maxdepth" ]; then
+            shell_word_value "${a[$((j + 1))]:-}" || return 1
+            val="$SW_VALUE"
+            case "$val" in
+                ''|*[!0-9]*) : ;;              # empty or not all-digits → not it
+                *) has_maxdepth=1 ;;
+            esac
+        fi
+        j=$((j + 1))
+    done
+
+    # Path operands: `find [-H|-L|-P] [-D dbgopts] [-Olevel] [--] [path...]
+    # [expr]` — first skip find's own leading OPTIONS (round 2, codex-1: they
+    # used to hide a root path behind them, e.g. `find -L / ...`; round 4,
+    # codex-3: a bare `--` option terminator is skipped here too, not treated
+    # as the break that stops path-operand collection, e.g. `find -- / ...`),
+    # THEN collect path operands until the first expression token (a
+    # `-flag`, `(`, or `!`). A root-anchor string in an EXPRESSION arg
+    # (`-name "~"`, `-path "$HOME"`) is not a path find will walk — only a
+    # true path operand counts. No path operand at all → find defaults to
+    # `.` → never a rootwalk.
+    j=$((RB_IDX + 1))
+    while [ "$j" -lt "$total" ]; do
+        shell_word_value "${a[$j]}" || return 1
+        tok="$SW_VALUE"
+        case "$tok" in
+            -H|-L|-P) j=$((j + 1)); continue ;;
+            -D)       j=$((j + 2)); continue ;;   # consumes a following debugopts arg
+            -O*)      j=$((j + 1)); continue ;;   # glued optimisation level (-O2, -O3)
+            --)       j=$((j + 1)); continue ;;   # find's own option terminator
+            *)        break ;;
+        esac
+    done
+    for tok in "${a[@]:$j}"; do
+        shell_word_value "$tok" || return 1
+        cooked="$SW_VALUE"
+        case "$cooked" in
+            -*|'('|'!') break ;;
+        esac
+        is_root_anchor "$tok" && has_root=1
+        path_textually_resolves_to_root "$cooked" && has_root=1
+    done
+
+    [ "$has_root" -eq 1 ] && [ "$has_maxdepth" -eq 0 ]
+}
+
+segment_is_safe() {
+    resolve_seg_binary "$1"
+    case "$RB_STATUS" in
+        empty|safe) return 0 ;;
+        unsafe)     return 1 ;;
+    esac
+    local -a a=("${RB_TOKENS[@]}")
+    local n=${#a[@]} i="$RB_IDX" bin="$RB_BIN"
 
     if is_safe_bin "$bin"; then
         local k
@@ -383,6 +691,9 @@ scan_cmd() {
         if [ "$st" = 2 ]; then                       # inside double quotes
             if [ "$c" = "\\" ]; then                 # \<x> keeps next char literal
                 nx="${s:$((i + 1)):1}"
+                if [ "$nx" = "$NL" ]; then          # line continuation: remove both bytes
+                    SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
+                fi
                 seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "
                 i=$((i + 2)); continue
             fi
@@ -395,7 +706,11 @@ scan_cmd() {
         case "$c" in
             "'") st=1; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; i=$((i + 1)); continue ;;
             '"') st=2; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; i=$((i + 1)); continue ;;
-            "\\") seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue ;;
+            "\\")
+                if [ "$nx" = "$NL" ]; then          # line continuation: remove both bytes
+                    SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
+                fi
+                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue ;;
             ';'|"$NL")                               # statement separator
                 SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
                 SCAN_MASK="$SCAN_MASK$c"; i=$((i + 1)); continue ;;
@@ -428,19 +743,85 @@ scan_cmd() {
 
 emit_allow() {
     local reason
-    reason=$(printf '%s' "auto-approve-safe-bash: $1" | jq -Rs . 2>/dev/null) || reason='"safe read-only command"'
+    # HIMMEL-2123: `jq -n --arg r "<text>" '$r'` JSON-encodes the exact string
+    # in ONE jq call with no piped input at all — no `printf` fork feeding it
+    # (a herestring/pipe here would also risk a spurious trailing-newline
+    # byte inside the encoded string, which `-Rs` slurp mode would have kept
+    # literally; `--arg` passes the value as-is, unchanged).
+    reason=$(jq -n --arg r "auto-approve-safe-bash: $1" '$r' 2>/dev/null) || reason='"safe read-only command"'
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":%s}}\n' "$reason"
+    exit 0
+}
+
+# HIMMEL-2121: the one DENY carve-out — see header CONTRACT.
+emit_deny() {
+    local reason
+    reason=$(jq -n --arg r "auto-approve-safe-bash: $1" '$r' 2>/dev/null) || reason='"denied: root-anchored find with no -maxdepth"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
     exit 0
 }
 
 # --- Fail open on anything we cannot evaluate ---
 command -v jq >/dev/null 2>&1 || exit 0
-input=$(cat 2>/dev/null || true)
+# HIMMEL-2123: bash builtin `read` instead of `$(cat)` drops one spawn.
+input=""
+IFS= read -r -d '' input 2>/dev/null || true
 [ -n "$input" ] || exit 0
-tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
+# tool_name + command in ONE jq call (via `<<<`, no printf fork) instead of
+# two separate `printf | jq` pipelines — same shape already proven in
+# require-quiet-run.sh (HIMMEL-2060) and block-tail-pipe-on-gates.sh
+# (HIMMEL-2123). Windows jq.exe writes CRLF, so strip the stray CR off $tool.
+# `// ""` (empty STRING), not `// empty` (a zero-output jq GENERATOR): in a
+# `+`-concatenation, one operand collapsing to `empty` zeroes out the WHOLE
+# expression (cross-product-of-generators semantics), not just that field.
+result=$(jq -r '(.tool_name // "") + "\n" + (.tool_input.command // "")' <<<"$input" 2>/dev/null) || exit 0
+tool="${result%%$'\n'*}"
+tool="${tool%$'\r'}"
+cmd="${result#*$'\n'}"
+# Windows jq.exe renders embedded newlines as CRLF too. Restore LF before the
+# shell-structure scan so a Bash backslash-newline continuation is not seen as
+# backslash-CR followed by a separate newline command boundary.
+cmd="${cmd//$'\r\n'/$'\n'}"
 [ "$tool" = "Bash" ] || exit 0   # PowerShell keeps its own native rules
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
 [ -n "$cmd" ] || exit 0
+
+# Quote-aware structural scan (HIMMEL-209): produces SCAN_SEGS (split only at
+# UNQUOTED separators) + SCAN_MASK (quoted spans blanked). Fail closed if the
+# quotes are unbalanced — better to fall through to a prompt than mis-parse.
+scan_cmd "$cmd" || exit 0
+
+# Bash ANSI-C ($'...') and locale ($"...") quotes can encode or rewrite values
+# at runtime, so no static token value is trustworthy enough for ALLOW or DENY.
+# Fail open before both classification paths; an over-match only prompts.
+case "$cmd" in *'$"'*|*"$'"*) exit 0 ;; esac
+
+# --- HIMMEL-2121: deny a root-anchored `find` with no -maxdepth ---
+# Fires on EVERY segment, deliberately BEFORE the global tripwires below
+# (round 2, codex-3): a command carrying $(...)/`` /<()/>() used to fall
+# through those tripwires first and never reach this deny, so
+# `find / -iname $(hostname)` was silently let through to a prompt instead
+# of denied. The deny never APPROVES anything, so running it ahead of the
+# tripwires cannot make the hook less safe — it only widens what gets caught.
+# Also fires ahead of the redirect/safe-segment scan further below, so it
+# catches the shape even when a later segment would merely fall through to a
+# prompt — headless/cadence sessions leave that prompt unattended, and the
+# orphaned whole-disk walker outlives its dead parent (specimen: 20+ min,
+# saturated the spawn path). Bypass: FIND_ROOTWALK_OK set to a truthy value
+# (1/true/yes/on) in the LAUNCHING shell.
+case "${FIND_ROOTWALK_OK:-}" in
+    1|true|yes|on) ;;  # explicit truthy bypass — skip the deny scan entirely
+    *)
+        while IFS= read -r seg; do
+            seg="${seg#"${seg%%[![:space:]]*}"}"   # ltrim
+            [ -z "$seg" ] && continue
+            if segment_is_rootwalk_find "$seg"; then
+                emit_deny "a root-anchored find with no -maxdepth walks the WHOLE disk and can outlive its parent for 20+ minutes in headless/cadence sessions, where the fall-through prompt is unattended (HIMMEL-2121). Use the Glob tool, or scope it to a repo-rooted directory: find <dir> ... -maxdepth N. One-run bypass: set FIND_ROOTWALK_OK=1 in the LAUNCHING shell."
+            fi
+        done <<EOF
+$SCAN_SEGS
+EOF
+        ;;
+esac
 
 # --- Global tripwires: never auto-approve dynamic execution / file writes ---
 # shellcheck disable=SC2016 # the single-quoted $( etc. are literal match patterns, not expansions
@@ -448,11 +829,6 @@ case "$cmd" in
     *'$('*|*'`'*|*'<('*|*'>('*)        exit 0 ;;  # command / process substitution
     *'system('*|*'popen('*|*'exec('*)  exit 0 ;;  # interpreter shell-out
 esac
-
-# Quote-aware structural scan (HIMMEL-209): produces SCAN_SEGS (split only at
-# UNQUOTED separators) + SCAN_MASK (quoted spans blanked). Fail closed if the
-# quotes are unbalanced — better to fall through to a prompt than mis-parse.
-scan_cmd "$cmd" || exit 0
 
 # Output redirect to a real file → not safe. Strip /dev/null sinks + fd-dups first.
 # Anchor /dev/null to a token boundary so `>/dev/null.bak` (a real file) is

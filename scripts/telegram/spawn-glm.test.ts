@@ -3,6 +3,7 @@ import { expect, test, beforeEach, spyOn } from "bun:test";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { GIT_TEST_TIMEOUT_MS, fixtureDir, initHermeticRepo, makeSharedFixtureRepo, removeFixture } from "./fixture-repo";
 import {
   composeWorkerPrompt,
   composePointerPrompt,
@@ -13,7 +14,7 @@ import {
   transcriptDirFor,
   glmSessionRoot,
   mintGlmOutboxHelper,
-  poisonPushUrl,
+  PUSH_PROTECTION_DISCLOSURE,
   ensureWorkspaceTrust,
   planSpawn,
   planSharedSpawn,
@@ -22,6 +23,7 @@ import {
   runSharedDispatch,
   finalMeta,
   parseArgs,
+  readBriefFile,
   writeLiveWorkerMeta,
   executeRun,
   computeResumeAt,
@@ -102,6 +104,9 @@ test("worker prompt embeds minted session paths + contract", () => {
   expect(p).toContain("glm/a");
   expect(p).toMatch(/never push/i);
   expect(p).toMatch(/never open a PR/i);
+  // HIMMEL-1755: the shared-refs/stash ban rides with the no-push contract.
+  expect(p).toMatch(/NEVER MUTATE THE STASH/);
+  expect(p).toContain("refs/checkpoints/<slug>");
   expect(p).toContain('bash "$GLM_SESSION_DIR/append-outbox.sh" <base64url-token>');
   expect(p).not.toContain("appendFileSync");
   expect(p).toContain("Summarize X");
@@ -233,11 +238,14 @@ test("GLM guard check runs BEFORE git worktree add — a refusal leaves no orpha
   const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
   const guardIdx = src.indexOf("checkGlmGuards(");
   const wtIdx = src.indexOf('"worktree", "add"');
-  const poisonIdx = src.indexOf("poisonPushUrl(absCwd");
+  const trustIdx = src.indexOf("ensureWorkspaceTrust(worktree);");
   expect(guardIdx).toBeGreaterThan(-1);
   expect(wtIdx).toBeGreaterThan(-1);
+  expect(trustIdx).toBeGreaterThan(-1);
   expect(guardIdx).toBeLessThan(wtIdx);
-  expect(guardIdx).toBeLessThan(poisonIdx);
+  // the poison call this used to order against is gone (HIMMEL-1961); the
+  // guard must still precede every remaining worktree side-effect.
+  expect(guardIdx).toBeLessThan(trustIdx);
 });
 
 test("HIMMEL-1503: refuseNonPrimaryCwd runs IMMEDIATELY after absCwd is resolved — before every other preflight and any worktree side-effect (wiring pin)", () => {
@@ -277,20 +285,17 @@ test("baseMeta records worker_worktree (the minted worktree), distinct from the 
 
 test("shared-branch lock is acquired BEFORE any worktree mutation, and main() guards before dispatching (wiring pin)", () => {
   const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
-  // acquire → worktree add → trust-seed (HIMMEL-1096, unconditional) → poison
+  // acquire → worktree add → trust-seed (HIMMEL-1096, unconditional)
   // ordering inside runSharedDispatch
   const acquireIdx = src.indexOf('"acquire", p.repoDir, p.branch, "glm"');
   const addIdx = src.indexOf("if (p.needsWorktreeAdd) p.gitAdd();");
   const trustIdx = src.indexOf("ensureWorkspaceTrust(p.worktree);");
-  const poisonIdx = src.indexOf("poisonPushUrl(p.repoDir, p.worktree)");
   expect(acquireIdx).toBeGreaterThan(-1);
   expect(addIdx).toBeGreaterThan(-1);
   expect(trustIdx).toBeGreaterThan(-1);
-  expect(poisonIdx).toBeGreaterThan(-1);
   expect(acquireIdx).toBeLessThan(addIdx);      // lock before worktree add
   expect(acquireIdx).toBeLessThan(trustIdx);    // lock before trust-seed
   expect(addIdx).toBeLessThan(trustIdx);        // worktree add before trust-seed
-  expect(acquireIdx).toBeLessThan(poisonIdx);   // lock before poison
   // main() runs the GLM guard before it dispatches into the shared lifecycle
   const guardIdx = src.indexOf("checkGlmGuards(worktree)");
   const callIdx = src.indexOf("runSharedDispatch({");
@@ -317,8 +322,13 @@ test("own-branch (flag-less) path is untouched — mints its own branch with -b,
   const dispatchIdx = src.indexOf("runSharedDispatch({");
   expect(ownAddIdx).toBeGreaterThan(-1);      // own-branch still mints via -b
   expect(dispatchIdx).toBeGreaterThan(-1);    // shared path is separate
-  // own-branch poison stays the direct call (not routed through runSharedDispatch)
-  expect(src.includes("poisonPushUrl(absCwd, worktree)")).toBe(true);
+  // the own-branch path must not have grown a config-mutation fence back
+  // (HIMMEL-1961): no lane writes remote.origin.pushurl any more.
+  // The own-branch path has no exported seam to snapshot, so it is pinned by
+  // the stronger source-text invariant instead: this lane makes NO git config
+  // call at all any more. Unlike a key-name check, renaming or building the key
+  // dynamically cannot slip past it (HIMMEL-1961 CR).
+  expect(src).not.toContain('"config"');
 });
 
 test("transcript dir derives from escaped cwd, not slug", () => {
@@ -333,45 +343,39 @@ test("transcript dir escapes EVERY non-alphanumeric (underscore too — matches 
   expect(d).toBe(join(homedir(), ".claude", "projects", "C--Users-alice-Documents-github-my-docs"));
 });
 
-test("pushurl poison makes bare git push fail in the worktree", () => {
-  const repo = mkdtempSync(join(tmpdir(), "glmgit-"));
-  const run = (args: string[], cwd: string) => Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  run(["init", "-b", "main"], repo);
-  run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"], repo);
-  run(["remote", "add", "origin", repo], repo); // self-remote: push would otherwise succeed
-  const wt = join(repo, "wt");
-  run(["worktree", "add", wt, "-b", "glm/x"], repo);
-  // control: prove the target IS pushable pre-poison (guards against a false
-  // positive from a broken remote/worktree setup)
-  const control = run(["push", "--dry-run", "origin", "HEAD"], wt);
-  expect(control.exitCode).toBe(0);
-  poisonPushUrl(repo, wt);
-  const push = run(["push", "origin", "HEAD"], wt);
-  expect(push.exitCode).not.toBe(0);
-  // and the failure is the POISON, not some other breakage
-  expect(push.stderr.toString()).toContain("DISABLED-glm-quarantine");
-  rmSync(repo, { recursive: true, force: true });
-});
-
-// --- runSharedDispatch (HIMMEL-800 I6/I7): pushurl capture/restore + lock
-// lifecycle, exercised against a REAL temp git repo + worktree + the REAL lock
-// script (mirrors the codex suite's section-14 pattern). ---
+// --- runSharedDispatch (HIMMEL-800 I7): lock lifecycle, and (HIMMEL-1961) the
+// promise that a dispatch leaves the operator's git config alone — exercised
+// against a REAL temp git repo + worktree + the REAL lock script (mirrors the
+// codex suite's section-14 pattern). ---
 
 function makeSharedRepo() {
-  const repo = mkdtempSync(join(tmpdir(), "glmshared-"));
-  const run = (args: string[], cwd: string) => Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  run(["init", "-b", "main"], repo);
-  run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"], repo);
-  run(["remote", "add", "origin", repo], repo); // self-remote so a real push would resolve
-  const wt = join(repo, ".claude", "worktrees", "glm+feat-live-pr");
-  run(["worktree", "add", "-b", "feat/live-pr", wt], repo);
-  return { repo, wt, run };
+  return makeSharedFixtureRepo("glmshared-", "glm+feat-live-pr", "feat/live-pr");
 }
+// configSnapshot(repo, wt, run) -- everything a dispatch could write, read back
+// (HIMMEL-1961 CR). A source-text pin only proves today's SPELLING is absent;
+// this proves the dispatch changed nothing, whatever it spells. `--local` is
+// where a repo-scoped write lands and `--worktree` is where the retired poison
+// wrote, so a byte-identical pair before and after covers both. The rc is part
+// of the snapshot on purpose: `--list --worktree` fails when
+// extensions.worktreeConfig is off, and a dispatch that switched that toggle on
+// would flip the rc even before any key appeared.
+function configSnapshot(repo: string, wt: string, run: (a: string[], c: string) => { exitCode: number; stdout: { toString(): string } }): string {
+  const cap = (args: string[], cwd: string) => {
+    const r = run(args, cwd);
+    return `rc=${r.exitCode}\n${r.stdout.toString()}`;
+  };
+  return [
+    `[repo --local]\n${cap(["config", "--list", "--local"], repo)}`,
+    `[wt --worktree]\n${cap(["config", "--list", "--worktree"], wt)}`,
+    `[wt --local]\n${cap(["config", "--list", "--local"], wt)}`,
+  ].join("\n=====\n");
+}
+
 const LOCK_SCRIPT = resolve("scripts/lib/shared-branch-lock.sh");
 const lockStatus = (repo: string, branch: string) =>
-  Bun.spawnSync(["bash", LOCK_SCRIPT, "status", repo, branch], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
+  Bun.spawnSync([BASH_BIN, LOCK_SCRIPT, "status", repo, branch], { stdout: "pipe", stderr: "pipe" }).stdout.toString().trim();
 
-test("runSharedDispatch (I6a): a pre-existing worktree pushurl is restored to its exact value after a successful run, lock freed", async () => {
+test("runSharedDispatch: a pre-existing worktree pushurl is left EXACTLY as it was, lock freed (HIMMEL-1961)", async () => {
   const { repo, wt, run } = makeSharedRepo();
   try {
     run(["config", "extensions.worktreeConfig", "true"], repo);
@@ -381,59 +385,92 @@ test("runSharedDispatch (I6a): a pre-existing worktree pushurl is restored to it
     if (res.ok) expect(res.code).toBe(0);
     expect(run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt).stdout.toString().trim()).toBe("git@example.com:orig/repo.git");
     expect(lockStatus(repo, "feat/live-pr")).toBe("free");
-  } finally { rmSync(repo, { recursive: true, force: true }); }
-});
+  } finally { removeFixture(repo); }
+}, GIT_TEST_TIMEOUT_MS);
 
-test("runSharedDispatch (I6b): no prior pushurl → pushurl is UNSET after run (not left poisoned)", async () => {
+test("runSharedDispatch: a dispatch mutates NO git config — behavioural before/after snapshot (HIMMEL-1961)", async () => {
   const { repo, wt, run } = makeSharedRepo();
   try {
-    const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => 0 });
+    // Seed the operator config a push fence is most tempted to touch:
+    // url.<base>.pushInsteadOf redirects where a push LANDS without naming a
+    // remote or a pushurl. It is the operator's to set, so the dispatch must
+    // leave it alone — neither clobber it nor "helpfully" clear it. (The
+    // worker-side hook separately DENIES a worker writing one; that is the
+    // classifier's job, not the dispatcher's.)
+    run(["config", "url.https://github.com/.pushInsteadOf", "git@github.com:"], repo);
+    const before = configSnapshot(repo, wt, run);
+    // A branch name unique to THIS case: both suites otherwise dispatch
+    // "feat/live-pr", and the shared-branch lock is keyed by branch, so running
+    // the two files together made one of them lose the acquire and fail for a
+    // reason that had nothing to do with git config (a likely contributor to
+    // the HIMMEL-1786 flaky family). gitAdd is stubbed here, so the name only
+    // has to be unique -- no worktree needs to exist for it.
+    const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/cfg-snapshot-glm", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => 0 });
     expect(res.ok).toBe(true);
-    const got = run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt);
-    expect(got.exitCode).not.toBe(0);   // key absent (unset)
-    expect(got.stdout.toString()).not.toContain("DISABLED-glm-quarantine");
-    expect(lockStatus(repo, "feat/live-pr")).toBe("free");
-  } finally { rmSync(repo, { recursive: true, force: true }); }
-});
+    expect(configSnapshot(repo, wt, run)).toBe(before);
+    expect(run(["config", "--get", "url.https://github.com/.pushInsteadOf"], repo).stdout.toString().trim()).toBe("git@github.com:");
+    expect(lockStatus(repo, "feat/cfg-snapshot-glm")).toBe("free");
+  } finally {
+    removeFixture(repo);
+  }
+}, GIT_TEST_TIMEOUT_MS);
 
-test("runSharedDispatch (I6c): runBody throwing still restores pushurl AND releases the lock", async () => {
+test("runSharedDispatch: a throwing runBody leaves the pushurl untouched AND releases the lock", async () => {
   const { repo, wt, run } = makeSharedRepo();
   try {
     run(["config", "extensions.worktreeConfig", "true"], repo);
     run(["config", "--worktree", "remote.origin.pushurl", "git@example.com:orig/repo.git"], wt);
     await expect(runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => { throw new Error("boom"); } }))
       .rejects.toThrow("boom");
-    expect(run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt).stdout.toString().trim()).toBe("git@example.com:orig/repo.git"); // restored despite throw
+    expect(run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt).stdout.toString().trim()).toBe("git@example.com:orig/repo.git"); // untouched despite throw
     expect(lockStatus(repo, "feat/live-pr")).toBe("free");                                                                                     // released despite throw
-  } finally { rmSync(repo, { recursive: true, force: true }); }
-});
+  } finally { removeFixture(repo); }
+}, GIT_TEST_TIMEOUT_MS);
 
-test("runSharedDispatch (I2/I6d): a prior pushurl equal to the poison sentinel is treated as absent → UNSET, not re-poisoned", async () => {
+test("runSharedDispatch: historical quarantine residue is left alone, not adopted or cleared (HIMMEL-1961)", async () => {
+  // A worktree from a dispatch that ran BEFORE the removal can still carry the
+  // old sentinel. This lane no longer reads or writes push config, so it must
+  // neither treat the value as an operator setting to preserve nor take it upon
+  // itself to clean up: scripts/lanes/stop-worker.sh owns healing that residue
+  // (HIMMEL-1929). Either behaviour here would be config mutation returning by
+  // the back door.
   const { repo, wt, run } = makeSharedRepo();
   try {
-    // simulate a prior crashed shared-mode run: pushurl left as the sentinel
     run(["config", "extensions.worktreeConfig", "true"], repo);
     run(["config", "--worktree", "remote.origin.pushurl", "DISABLED-glm-quarantine"], wt);
     const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => 0 });
     expect(res.ok).toBe(true);
-    const got = run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt);
-    expect(got.exitCode).not.toBe(0);   // unset, NOT restored to the sentinel
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+    expect(run(["config", "--worktree", "--get", "remote.origin.pushurl"], wt).stdout.toString().trim()).toBe("DISABLED-glm-quarantine");
+  } finally { removeFixture(repo); }
+}, GIT_TEST_TIMEOUT_MS);
+
+test("the dispatch report discloses that push protection is contract-only (HIMMEL-1961/1942)", () => {
+  // With no mechanical fence, the report line IS the protection story, so it
+  // has to be in the report and it has to say the same thing dispatch-lane.sh
+  // says. Both spawners print the one shared constant.
+  expect(PUSH_PROTECTION_DISCLOSURE).toContain("contract-only");
+  expect(PUSH_PROTECTION_DISCLOSURE).toMatch(/NOT mechanically prevented/);
+  for (const lane of ["spawn-glm.ts", "spawn-claudex.ts"]) {
+    const src = readFileSync(join("scripts", "telegram", lane), "utf8");
+    expect(src).toContain("console.log(PUSH_PROTECTION_DISCLOSURE)");
+  }
+  const dispatcher = readFileSync(join("scripts", "telegram", "dispatch-lane.sh"), "utf8");
+  expect(dispatcher).toContain("push protection: contract-only");
 });
 
 test("runSharedDispatch (I7): a held lock refuses (ok:false), body never runs, pre-existing owner.json intact", async () => {
   const { repo, wt } = makeSharedRepo();
   try {
-    const acq = Bun.spawnSync(["bash", LOCK_SCRIPT, "acquire", repo, "feat/live-pr", "external-holder"], { stdout: "pipe", stderr: "pipe" });
+    const acq = Bun.spawnSync([BASH_BIN, LOCK_SCRIPT, "acquire", repo, "feat/live-pr", "external-holder"], { stdout: "pipe", stderr: "pipe" });
     expect(acq.exitCode).toBe(0);
     let ran = false;
     const res = await runSharedDispatch({ repoDir: repo, worktree: wt, branch: "feat/live-pr", needsWorktreeAdd: false, lockScript: LOCK_SCRIPT, gitAdd: () => {}, runBody: async () => { ran = true; return 0; } });
     expect(res.ok).toBe(false);
     expect(ran).toBe(false);                                       // body never ran (mirror codex 14e)
     expect(lockStatus(repo, "feat/live-pr")).toContain("external-holder"); // pre-existing lock not clobbered
-    Bun.spawnSync(["bash", LOCK_SCRIPT, "release", repo, "feat/live-pr"], { stdout: "pipe", stderr: "pipe" });
-  } finally { rmSync(repo, { recursive: true, force: true }); }
-});
+    Bun.spawnSync([BASH_BIN, LOCK_SCRIPT, "release", repo, "feat/live-pr"], { stdout: "pipe", stderr: "pipe" });
+  } finally { removeFixture(repo); }
+}, GIT_TEST_TIMEOUT_MS);
 
 test("runSharedDispatch (I7): needsWorktreeAdd:true invokes gitAdd exactly once inside the lock", async () => {
   const { repo, wt } = makeSharedRepo();
@@ -443,8 +480,8 @@ test("runSharedDispatch (I7): needsWorktreeAdd:true invokes gitAdd exactly once 
     expect(res.ok).toBe(true);
     expect(adds).toBe(1);
     expect(lockStatus(repo, "feat/live-pr")).toBe("free");
-  } finally { rmSync(repo, { recursive: true, force: true }); }
-});
+  } finally { removeFixture(repo); }
+}, GIT_TEST_TIMEOUT_MS);
 
 test("runSharedDispatch (HIMMEL-1096): needsWorktreeAdd:true pre-trusts the worktree via ensure-workspace-trust.sh", async () => {
   const { repo, wt } = makeSharedRepo();
@@ -463,10 +500,10 @@ test("runSharedDispatch (HIMMEL-1096): needsWorktreeAdd:true pre-trusts the work
   } finally {
     if (prevCfg === undefined) delete process.env.WORKSPACE_TRUST_CONFIG; else process.env.WORKSPACE_TRUST_CONFIG = prevCfg;
     if (prevJitter === undefined) delete process.env.TRUST_WRITE_JITTER_MS; else process.env.TRUST_WRITE_JITTER_MS = prevJitter;
-    rmSync(repo, { recursive: true, force: true });
+    removeFixture(repo);
     rmSync(trustCfg, { force: true });
   }
-});
+}, GIT_TEST_TIMEOUT_MS);
 
 test("ensureWorkspaceTrust is non-fatal: a bad dir never throws, just warns", () => {
   expect(() => ensureWorkspaceTrust(join(tmpdir(), "himmel-no-such-dir-1096"))).not.toThrow();
@@ -490,10 +527,10 @@ test("runSharedDispatch (HIMMEL-1096, codex-adv round): needsWorktreeAdd:false (
     expect(cfg.projects[keys[0]].hasTrustDialogAccepted).toBe(true);
   } finally {
     if (prevCfg === undefined) delete process.env.WORKSPACE_TRUST_CONFIG; else process.env.WORKSPACE_TRUST_CONFIG = prevCfg;
-    rmSync(repo, { recursive: true, force: true });
+    removeFixture(repo);
     rmSync(trustCfg, { force: true });
   }
-});
+}, GIT_TEST_TIMEOUT_MS);
 
 // --- gitIsDirty / gitBranchExists (CR round 2 F1): the REAL git-probe
 // implementations that feed planSharedSpawn's injected deps — previously only
@@ -502,34 +539,9 @@ test("runSharedDispatch (HIMMEL-1096, codex-adv round): needsWorktreeAdd:false (
 // FAIL-CLOSED (C3) throw path, against real git state (mirrors the
 // makeSharedRepo real-temp-repo pattern used by the I6/I7 suite above).
 
-// Real `git worktree add` + `branch -D` against a temp repo runs 6-16s on Windows
-// (well over bun's 5000ms default). Pinned explicitly so these prove the teardown
-// everywhere, instead of timing out into a false red on a slow box.
-const GIT_TEST_TIMEOUT_MS = 60_000;
-
-// A throwaway repo with the HOST's global hooks switched off. Not a nicety: a
-// global core.hooksPath (tokensave installs one) fires a post-checkout auto-init
-// on `worktree add` — it reads an all-zeros old-ref as a fresh clone — and
-// backgrounds a full index into the temp repo. That costs ~30s per test and
-// holds tokensave.db open long enough to EBUSY the rmSync cleanup. These tests
-// exercise git, not whatever the host has installed globally.
-function initHermeticRepo(prefix: string): { repo: string; run: (args: string[]) => void } {
-  const repo = mkdtempSync(join(tmpdir(), prefix));
-  // Throw on a failed git command rather than swallowing it. Setup errors must
-  // surface AS setup errors — and silently ignoring the core.hooksPath call
-  // would be worse than a confusing failure: the test would still run, but
-  // WITHOUT the hermeticity this helper exists to guarantee, i.e. a false green.
-  const run = (args: string[]) => {
-    const r = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
-    if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed (rc=${r.exitCode}): ${r.stderr.toString().trim()}`);
-  };
-  run(["init", "-b", "main"]);
-  const noHooks = join(repo, "no-hooks");
-  mkdirSync(noHooks, { recursive: true });
-  run(["config", "core.hooksPath", noHooks]);
-  run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"]);
-  return { repo, run };
-}
+// GIT_TEST_TIMEOUT_MS, initHermeticRepo and makeSharedFixtureRepo live in
+// ./fixture-repo (HIMMEL-1888): both suites share them, and the teardown that
+// goes with them may only remove fixtures this run created.
 
 // HIMMEL-1094 — behavioural proof on a REAL repo. The wiring pins above show the
 // teardown is called in the right place; this shows it actually undoes both the
@@ -546,7 +558,7 @@ test("HIMMEL-1094: teardownMintedWorktree removes a just-minted worktree AND its
 
     expect(existsSync(wt)).toBe(false);
     expect(gitBranchExists(repo, "glm/minted")).toBe(false);
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+  } finally { removeFixture(repo); }
 }, GIT_TEST_TIMEOUT_MS);
 
 test("HIMMEL-1094: teardown is best-effort — a bogus worktree/branch never throws (must not mask the original error)", () => {
@@ -555,7 +567,7 @@ test("HIMMEL-1094: teardown is best-effort — a bogus worktree/branch never thr
     // Teardown runs on an ALREADY-failing path; if it threw, it would replace the
     // real resolve error with a confusing git error.
     expect(() => teardownMintedWorktree(repo, join(repo, "does-not-exist"), "no/such-branch")).not.toThrow();
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+  } finally { removeFixture(repo); }
 }, GIT_TEST_TIMEOUT_MS);
 
 // HIMMEL-1094 — the FAIL-SAFE guarantee, and the reason the teardown carries no
@@ -577,7 +589,7 @@ test("HIMMEL-1094: teardown refuses a worktree holding content, and KEEPS its br
 
     expect(existsSync(wt)).toBe(true);
     expect(gitBranchExists(repo, "glm/dirty")).toBe(true);
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+  } finally { removeFixture(repo); }
 }, GIT_TEST_TIMEOUT_MS);
 
 // HIMMEL-1094 [CodeRabbit] — the retry must actually OUTLAST the race it exists
@@ -603,7 +615,7 @@ test("HIMMEL-1094: teardown RETRIES until a transient blocker clears (the tokens
 
     expect(existsSync(wt)).toBe(false);
     expect(gitBranchExists(repo, "glm/transient")).toBe(false);
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+  } finally { removeFixture(repo); }
 }, GIT_TEST_TIMEOUT_MS);
 
 // HIMMEL-1094 — the exact damage the parked WIP did, pinned. When a remove dies
@@ -628,11 +640,11 @@ test("HIMMEL-1094: a stranded worktree (admin record already pruned) still KEEPS
 
     expect(existsSync(wt)).toBe(true);
     expect(gitBranchExists(repo, "glm/stranded")).toBe(true);
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+  } finally { removeFixture(repo); }
 }, GIT_TEST_TIMEOUT_MS);
 
 test("gitIsDirty (F1): a real clean temp repo -> false; with an uncommitted file -> true", () => {
-  const repo = mkdtempSync(join(tmpdir(), "gitdirty-"));
+  const repo = fixtureDir("gitdirty-");
   const run = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
   try {
     run(["init", "-b", "main"]);
@@ -640,8 +652,8 @@ test("gitIsDirty (F1): a real clean temp repo -> false; with an uncommitted file
     expect(gitIsDirty(repo)).toBe(false);
     writeFileSync(join(repo, "untracked.txt"), "x");
     expect(gitIsDirty(repo)).toBe(true);
-  } finally { rmSync(repo, { recursive: true, force: true }); }
-});
+  } finally { removeFixture(repo); }
+}, GIT_TEST_TIMEOUT_MS);
 
 test("gitIsDirty (F1, C3 fail-closed): a non-git dir THROWS with the worktree-state message, never reads as clean", () => {
   const dir = mkdtempSync(join(tmpdir(), "gitdirty-nogit-"));
@@ -659,7 +671,7 @@ test("gitIsDirty (F1, C3 fail-closed): a dir with a bogus .git FILE (corrupt git
 });
 
 test("gitBranchExists (F1): real repo — existing branch true, missing branch false", () => {
-  const repo = mkdtempSync(join(tmpdir(), "branchexists-"));
+  const repo = fixtureDir("branchexists-");
   const run = (args: string[]) => Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
   try {
     run(["init", "-b", "main"]);
@@ -667,8 +679,8 @@ test("gitBranchExists (F1): real repo — existing branch true, missing branch f
     run(["branch", "feat/x"]);
     expect(gitBranchExists(repo, "feat/x")).toBe(true);
     expect(gitBranchExists(repo, "feat/does-not-exist")).toBe(false);
-  } finally { rmSync(repo, { recursive: true, force: true }); }
-});
+  } finally { removeFixture(repo); }
+}, GIT_TEST_TIMEOUT_MS);
 
 // --- HIMMEL-1503: primary-checkout cwd guard ---
 
@@ -751,7 +763,7 @@ test("detectNonPrimaryCwd (real git): primary checkout -> ok; its linked worktre
     const r = detectNonPrimaryCwd(wt);
     expect(r.ok).toBe(false);
     expect((r as { primaryPath?: string }).primaryPath).toBe(resolve(repo));
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+  } finally { removeFixture(repo); }
 }, GIT_TEST_TIMEOUT_MS);
 
 // --- planSpawn / finalMeta (pure decision logic) ---
@@ -1024,7 +1036,7 @@ test("spawn-glm real CLI: dispatch from inside a linked worktree cwd is REFUSED 
     expect(r.stdout.toString()).not.toContain("session-dir:"); // no dispatch happened
     // the exact incident shape: no worktree minted NESTED inside the stale worktree cwd
     expect(existsSync(join(wt, ".claude", "worktrees"))).toBe(false);
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+  } finally { removeFixture(repo); }
 }, GIT_TEST_TIMEOUT_MS);
 
 test("spawn-glm real CLI: dispatch from the PRIMARY checkout is NOT caught by the HIMMEL-1503 guard (happy path — proceeds to the next, unrelated check)", () => {
@@ -1037,7 +1049,7 @@ test("spawn-glm real CLI: dispatch from the PRIMARY checkout is NOT caught by th
     const err = r.stderr.toString();
     expect(err).not.toContain("HIMMEL-1503"); // the guard did not fire
     expect(err).toMatch(/is not a himmel checkout/); // fell through to the next existing refusal
-  } finally { rmSync(repo, { recursive: true, force: true }); }
+  } finally { removeFixture(repo); }
 }, GIT_TEST_TIMEOUT_MS);
 
 test("parseArgs: a bare unrecognized flag is a usage refusal, not swallowed as the task (HIMMEL-1225)", () => {
@@ -1460,42 +1472,6 @@ test("executeRun arms the SIGTERM finalize for the live run window and disarms o
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-// --- poisonPushUrl scope (CR finding F1: tripwire must be worktree-scoped, not
-// repo-global). The poison sets remote.origin.pushurl via `--worktree`, which
-// only lands in the worktree's private config when extensions.worktreeConfig is
-// on. This pins that scope: a SIBLING worktree (shares the repo's origin config)
-// and the repo-global config itself must both stay clean.
-
-test("pushurl poison is worktree-scoped, not repo-global (sibling worktree still pushes; repo-global pushurl unset)", () => {
-  const repo = mkdtempSync(join(tmpdir(), "glmgit-"));
-  const run = (args: string[], cwd: string) => Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  run(["init", "-b", "main"], repo);
-  run(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "seed"], repo);
-  run(["remote", "add", "origin", repo], repo); // self-remote: a real push would land in-repo
-  const wtPoison = join(repo, "wtp");
-  const wtSibling = join(repo, "wts");
-  run(["worktree", "add", wtPoison, "-b", "glm/p"], repo);
-  run(["worktree", "add", wtSibling, "-b", "glm/s"], repo);
-  poisonPushUrl(repo, wtPoison);
-  // anchor: the poisoned worktree's push fails on the POISON
-  const pushPoison = run(["push", "origin", "HEAD"], wtPoison);
-  expect(pushPoison.exitCode).not.toBe(0);
-  expect(pushPoison.stderr.toString()).toContain("DISABLED-glm-quarantine");
-  // sibling worktree shares the repo's origin url (its own worktree config is
-  // empty) → its push is UNAFFECTED. If the poison had leaked repo-global, this
-  // sibling push --dry-run would hit DISABLED-glm-quarantine and fail.
-  const drySibling = run(["push", "--dry-run", "origin", "HEAD"], wtSibling);
-  expect(drySibling.exitCode).toBe(0);
-  // direct repo-global proof: remote.origin.pushurl was never written to the
-  // shared .git/config (git config --get exits 1 when the key is unset).
-  const cfgGlobal = run(["config", "--get", "remote.origin.pushurl"], repo);
-  expect(cfgGlobal.exitCode).not.toBe(0);
-  rmSync(repo, { recursive: true, force: true });
-});
-
-// --- planSpawn refusal when ONE settings file mixes model + env.ANTHROPIC_*
-// (CR finding F4: the combination is untested — assert the env conflict still
-// refuses and is not masked by the co-located model downgrade).
 
 test("planSpawn refuses when ONE settings file mixes model + env.ANTHROPIC_* (env conflict not masked by co-located model)", () => {
   const r = planSpawn("/repo", undefined, okDeps({ settingsConflicts: () => [
@@ -1829,6 +1805,135 @@ test("parseArgs --context big|small (HIMMEL-718): value captured, validated, def
   const trailing = parseArgs(["t", "--context"]);
   expect(trailing.ok).toBe(false);
   expect((trailing as any).error).toMatch(/--context requires a value/);
+});
+
+// --- HIMMEL-1780: --brief-file — a multi-line brief reaches the worker via ONE
+// literal command, instead of the cd/$(cat)/var compound that defeats the
+// allow-rule prefix and the native permission matcher (HIMMEL-203). ---
+
+test("parseArgs --brief-file (HIMMEL-1780): value captured, missing value refuses, mutually exclusive with a positional prompt", () => {
+  const ok = parseArgs(["--brief-file", "C:/tmp/brief.md", "--cwd", "/repo"]);
+  expect(ok.ok).toBe(true);
+  if (ok.ok) expect(ok.args.briefFile).toBe("C:/tmp/brief.md");
+  // no positional captured alongside the flag
+  expect((ok as any).args.task).toBeUndefined();
+  // omitted → unset; the positional form still parses
+  expect((parseArgs(["t"]) as any).args.briefFile).toBeUndefined();
+  expect(parseArgs(["inline task"]).ok).toBe(true);
+
+  const trailing = parseArgs(["--brief-file"]);
+  expect(trailing.ok).toBe(false);
+  expect((trailing as any).error).toMatch(/--brief-file requires a value/);
+
+  const both = parseArgs(["inline task", "--brief-file", "C:/tmp/brief.md"]);
+  expect(both.ok).toBe(false);
+  expect((both as any).error).toMatch(/--brief-file and a positional prompt are mutually exclusive/);
+  // order-independent
+  const bothReversed = parseArgs(["--brief-file", "C:/tmp/brief.md", "inline task"]);
+  expect(bothReversed.ok).toBe(false);
+});
+
+test("readBriefFile (HIMMEL-1780): reads a multi-line brief verbatim; missing / unreadable / empty all fail CLOSED", () => {
+  const dir = mkdtempSync(join(tmpdir(), "glm-brief-"));
+  try {
+    const briefPath = join(dir, "brief.md");
+    const multiLine = "line one of the brief\nline two\n\n## Section\n- a bullet\n";
+    writeFileSync(briefPath, multiLine);
+    const ok = readBriefFile(briefPath);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.task).toBe(multiLine); // verbatim, no trim
+
+    // missing file — clean refusal naming the path, never an empty brief
+    const missing = readBriefFile(join(dir, "no-such-brief.md"));
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error).toContain("no-such-brief.md");
+
+    // unreadable: a DIRECTORY path (portable across POSIX/Windows — readFileSync
+    // fails with EISDIR here regardless of chmod semantics)
+    const unreadable = readBriefFile(dir);
+    expect(unreadable.ok).toBe(false);
+    if (!unreadable.ok) expect(unreadable.error).toContain("could not be read");
+
+    // empty / whitespace-only — readable but contentless, same fail-closed gate
+    const emptyPath = join(dir, "empty.md");
+    writeFileSync(emptyPath, "   \n\t\n");
+    const empty = readBriefFile(emptyPath);
+    expect(empty.ok).toBe(false);
+    if (!empty.ok) expect(empty.error).toMatch(/is empty/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// Real CLI end-to-end — the flag's contract fires from the actual entrypoint,
+// before any side effect (no worktree minted, no session-dir printed), against
+// the same hermetic-repo pattern the HIMMEL-1503 CLI tests use.
+test("spawn-glm real CLI: missing / unreadable / both-supplied --brief-file each REFUSE (exit 2, usage error, no dispatch)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "glm-brief-cli-"));
+  try {
+    const missingPath = join(dir, "no-such-brief.md");
+    const r1 = Bun.spawnSync(["bun", "scripts/telegram/spawn-glm.ts", "--brief-file", missingPath, "--cwd", dir], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+    });
+    expect(r1.exitCode).toBe(2);
+    const err1 = r1.stderr.toString();
+    expect(err1).toContain("no-such-brief.md");
+    expect(err1).toMatch(/usage: spawn-glm/);
+    expect(r1.stdout.toString()).not.toContain("session-dir:"); // no worker spawned
+
+    // unreadable: a directory as the brief path
+    const r2 = Bun.spawnSync(["bun", "scripts/telegram/spawn-glm.ts", "--brief-file", dir, "--cwd", dir], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+    });
+    expect(r2.exitCode).toBe(2);
+    expect(r2.stderr.toString()).toMatch(/could not be read/);
+    expect(r2.stdout.toString()).not.toContain("session-dir:");
+
+    // both supplied — the clean mutual-exclusion error names both forms
+    const briefPath = join(dir, "brief.md");
+    writeFileSync(briefPath, "the file brief\n");
+    const r3 = Bun.spawnSync(["bun", "scripts/telegram/spawn-glm.ts", "inline task", "--brief-file", briefPath, "--cwd", dir], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+    });
+    expect(r3.exitCode).toBe(2);
+    expect(r3.stderr.toString()).toMatch(/mutually exclusive/);
+    expect(r3.stdout.toString()).not.toContain("session-dir:");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
+test("spawn-glm real CLI: a valid --brief-file is READ and becomes the task — the dispatch proceeds past the brief gate (HIMMEL-1780)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "glm-brief-ok-"));
+  try {
+    const briefPath = join(dir, "brief.md");
+    writeFileSync(briefPath, "Do the multi-line task from the brief file.\nSecond line.\n");
+    // A non-himmel --cwd makes the dispatch refuse at the NEXT gate after the
+    // brief read ("is not a himmel checkout") — proving the file was read,
+    // accepted as the task, and did NOT trip the missing-brief usage error.
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-glm.ts", "--brief-file", briefPath, "--cwd", dir], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+    });
+    expect(r.exitCode).toBe(2);
+    const err = r.stderr.toString();
+    expect(err).not.toMatch(/--brief-file/);            // the brief gate passed
+    expect(err).toMatch(/is not a himmel checkout/);    // reached the next refusal
+    expect(r.stdout.toString()).not.toContain("session-dir:");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, GIT_TEST_TIMEOUT_MS);
+
+test("main() reads --brief-file BEFORE any side effect and its contents flow into the composed brief (wiring pin, HIMMEL-1780)", () => {
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  const readIdx = src.indexOf("readBriefFile(briefFile)");
+  const usageGateIdx = src.indexOf("if (!task) { console.error(usage); process.exit(2); }");
+  const composeIdx = src.indexOf("composeWorkerPrompt(task, sessionDir, branch");
+  const wtIdx = src.indexOf('"worktree", "add"');
+  expect(readIdx).toBeGreaterThan(-1);
+  expect(usageGateIdx).toBeGreaterThan(-1);
+  expect(composeIdx).toBeGreaterThan(-1);
+  // the brief-file read precedes the missing-task usage gate, the brief
+  // composition, and every side effect — a bad path refuses with no orphans
+  expect(readIdx).toBeLessThan(usageGateIdx);
+  expect(readIdx).toBeLessThan(composeIdx);
+  expect(readIdx).toBeLessThan(wtIdx);
+  // the usage string documents the flag (done criterion)
+  expect(src).toContain("[<prompt> | --brief-file <path>]");
 });
 
 // applyCarryFrom (HIMMEL-682) — exercises the autonomousEff→gate SECURITY wiring
@@ -2313,4 +2418,22 @@ test("checkpoint is wired into runBody in a FINALLY around executeRun (wiring pi
   // The meta write must READ-MERGE-WRITE: executeRun has terminal-meta writes
   // at :885/:891/:908/:927/:946 and a blind write here would clobber them.
   expect(src).toMatch(/mergeMetaCheckpoint/);
+});
+
+test("HIMMEL-1778: runBody runs the shared huge-diff guard BEFORE the worker launches, warn-only (wiring pin)", () => {
+  // runBody is the one seam covering BOTH modes after the branch exists and
+  // before executeRun — own-branch (minted above the call) and shared (gitAdd
+  // ran inside runSharedDispatch).
+  const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
+  const guardIdx = src.indexOf('checkHugeDiff("spawn-glm"');
+  const runIdx = src.indexOf("await executeRun({");
+  expect(guardIdx).toBeGreaterThan(-1);
+  expect(runIdx).toBeGreaterThan(-1);
+  expect(guardIdx).toBeLessThan(runIdx);
+  // WARN-ONLY: the guard's result can only ever reach console.error, never
+  // process.exit — a legitimately large branch must still dispatch.
+  expect(/if \(hugeDiff\.note\) console\.error\(hugeDiff\.note\);/.test(src)).toBe(true);
+  // shared module, not a local re-definition (copy-paste drift: PR #1680, #1691)
+  expect(src).toContain('from "./huge-diff-guard"');
+  expect(src).not.toContain("function findDominatingPath");
 });

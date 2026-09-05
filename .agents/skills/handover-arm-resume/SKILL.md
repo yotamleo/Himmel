@@ -1,6 +1,6 @@
 ---
 name: handover-arm-resume
-description: Arm the OS scheduler to relaunch claude at a given time with a given handover. Dedup-guarded. Use when the user asks to arm a resume / schedule a relaunch or run /handover-arm-resume.
+description: Arm the OS scheduler to relaunch claude at a given time with a given handover. Use for /handover-arm-resume.
 ---
 
 # handover-arm-resume

@@ -27,7 +27,7 @@
 # token vocabulary. The operator decides WHEN and HOW; the gate enforces
 # that the decision was made consciously, before push.
 #
-# Recognised tokens (at least one must appear after the colon, followed
+# Recognised tokens (one must appear IMMEDIATELY after the colon, followed
 # by whitespace / end-of-line / one of [.,;] — see TOKEN_RE below for
 # the anchored form that prevents `manualish` and friends from matching):
 #   manual                — operator did a focused security read of the diff
@@ -162,8 +162,15 @@ commit_msgs=$(git log --format='%B' "${diff_base}..HEAD" 2>/dev/null || true)
 #   `Security reviewed: manual`            -> match
 #   `Security reviewed: manual.`           -> match
 #   `Security reviewed: manual, fix X`     -> match
+#
+# HIMMEL-1681: the token must sit IMMEDIATELY after the colon. The old
+# `:.*${TOKEN_RE}` let it appear anywhere later on the line, so a trailer that
+# explicitly NEGATES the attestation satisfied the gate:
+#   `Security reviewed: no manual review was performed`  -> used to MATCH
+# Free-form prose AFTER the token is still fine (`manual — checked X`), which
+# is the shape this repo writes daily; TOKEN_RE's own end-anchor allows it.
 TOKEN_RE='(manual|claude-code-security-review|pr-review-toolkit|ad-hoc)([[:space:]]|$|[.,;])'
-ATTEST_RE="^[[:space:]]*Security reviewed:.*${TOKEN_RE}"
+ATTEST_RE="^[[:space:]]*Security reviewed:[[:space:]]*${TOKEN_RE}"
 
 # HIMMEL-1115: match with a here-string, NOT `printf ... | grep -q`.
 #

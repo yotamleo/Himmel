@@ -1,9 +1,9 @@
 import { beforeEach, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, getUpdatesBackoffMs, shouldAlertOutage, OUTAGE_ALERT_AFTER_MS, type FetchImageFn } from "./poller";
+import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, getUpdatesBackoffMs, shouldAlertOutage, OUTAGE_ALERT_AFTER_MS, parseModelTag, hasReadOnlyFloor, mentionsBot, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { GROUP_ANONYMOUS_BOT_ID, isAllowed, isOperatorIdentity, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -619,6 +619,105 @@ test("non-operator group chatter is still dropped when the exemption is wired (H
 
   expect(ran).toEqual([]);
   expect(await readMeta(r, "group_-50")).toBeNull();
+});
+
+// --- REQUIRE-MENTION GATE (LUNA-158) ---
+// Grow-tent groups are shared with luna_grow_bot, which owns `/grow`. Rather
+// than blocklist that one command, access.json opts the whole group into
+// @mention-only mode (GroupPolicy.requireMention) — a message that doesn't
+// @mention THIS bot is dropped before triage and before the HIMMEL-1296
+// operator floor, which must not rescue a message aimed at a different bot.
+const mentionOn = () => true;
+const BOT = "luna_bridge_bot";
+
+test("tent-group message without @mention from the OPERATOR is dropped before triage (LUNA-158)", async () => {
+  const r = root(); const ran: string[] = []; const triaged: string[] = [];
+  const logs: string[] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => { logs.push(args.join(" ")); };
+  try {
+    await handleInbound(r, { from:5, chat_id:-50, text:"/grow status?" },
+      async (s:string) => { ran.push(s); },
+      undefined,
+      async (text): Promise<TriageVerdict> => { triaged.push(text); return "spawn-high"; },
+      (fromId) => fromId === 5,
+      undefined,
+      mentionOn, BOT);
+  } finally { console.error = origError; }
+
+  expect(triaged).toEqual([]);
+  expect(ran).toEqual([]);
+  expect(await readMeta(r, "group_-50")).toBeNull();
+  expect(logs.some((l) => l.includes("require-mention drop for group_-50"))).toBe(true);
+});
+
+test("the same tent-group message WITH @mention reaches triage (LUNA-158)", async () => {
+  const r = root(); const ran: any[] = []; const triaged: string[] = [];
+  await handleInbound(r, { from:5, chat_id:-50, text:`@${BOT} status?` },
+    async (session:string, modelOverride?: string) => { ran.push({ session, modelOverride }); },
+    undefined,
+    async (text): Promise<TriageVerdict> => { triaged.push(text); return "spawn-high"; },
+    (fromId) => fromId === 5,
+    undefined,
+    mentionOn, BOT);
+
+  expect(triaged).toEqual([`@${BOT} status?`]);
+  expect(ran).toEqual([{ session: "group_-50", modelOverride: undefined }]);
+});
+
+test("a group WITHOUT require_mention is unaffected — triage runs regardless of mention (LUNA-158)", async () => {
+  const r = root(); const ran: any[] = []; const triaged: string[] = [];
+  await handleInbound(r, { from:1, chat_id:-50, text:"no mention here" },
+    async (session:string, modelOverride?: string) => { ran.push({ session, modelOverride }); },
+    undefined,
+    async (text): Promise<TriageVerdict> => { triaged.push(text); return "spawn-high"; },
+    undefined,
+    undefined,
+    () => false, BOT);
+
+  expect(triaged).toEqual(["no mention here"]);
+  expect(ran).toEqual([{ session: "group_-50", modelOverride: undefined }]);
+});
+
+test("a DM is unaffected by require_mention (chat_id >= 0 is out of scope) (LUNA-158)", async () => {
+  const r = root(); const ran: any[] = []; const triaged: string[] = [];
+  await handleInbound(r, { from:5, chat_id:5, text:"no mention here either" },
+    async (session:string, modelOverride?: string) => { ran.push({ session, modelOverride }); },
+    undefined,
+    async (text): Promise<TriageVerdict> => { triaged.push(text); return "spawn-high"; },
+    undefined,
+    undefined,
+    mentionOn, BOT);
+
+  // DMs never hit the group-scoped triage gate at all, so a DM just routes as
+  // ordinary chat straight through to the run — untouched either way.
+  expect(triaged).toEqual([]);
+  expect(ran).toEqual([{ session: "__chat__", modelOverride: undefined }]);
+});
+
+test("mentionsBot: word-char boundaries on both sides (CR codex-2)", () => {
+  expect(mentionsBot(`hey @${BOT} status?`, BOT)).toBe(true);
+  expect(mentionsBot(`@${BOT}`, BOT)).toBe(true);
+  expect(mentionsBot(`@${BOT.toUpperCase()}`, BOT)).toBe(true);          // case-insensitive
+  expect(mentionsBot(`@${BOT}2 hi`, BOT)).toBe(false);                   // trailing word-char = longer username
+  expect(mentionsBot(`user@${BOT} hi`, BOT)).toBe(false);                // email-like embed is not a mention
+  expect(mentionsBot(`(@${BOT})`, BOT)).toBe(true);                      // punctuation boundary still matches
+  expect(mentionsBot(`/grow@${BOT} status?`, BOT)).toBe(true);           // Telegram command addressing
+  expect(mentionsBot(`/grow@${BOT}2`, BOT)).toBe(false);                 // longer username still excluded
+});
+
+test("an unresolvable bot username fails OPEN to triage, never drops (LUNA-158)", async () => {
+  const r = root(); const ran: any[] = []; const triaged: string[] = [];
+  await handleInbound(r, { from:5, chat_id:-50, text:"status?" },
+    async (session:string, modelOverride?: string) => { ran.push({ session, modelOverride }); },
+    undefined,
+    async (text): Promise<TriageVerdict> => { triaged.push(text); return "spawn-high"; },
+    (fromId) => fromId === 5,
+    undefined,
+    mentionOn, undefined);   // botUsername unresolved
+
+  expect(triaged).toEqual(["status?"]);
+  expect(ran).toEqual([{ session: "group_-50", modelOverride: undefined }]);
 });
 
 // The batch is already marked consumed by readNewLines before any of it is
@@ -1390,6 +1489,88 @@ test("makeRunFn with no vault for the chat threads no file-into-vault clause (HI
   const vaultFor = (_chatId: number) => null;
   await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, vaultFor)("group_-99");
   expect(captured).not.toContain("file the document's content into the Obsidian vault");
+});
+
+// --- LUNA-101: the three spawn routes (cwd / vault / neither) ---
+// One spy shape for all three: capture every arg runImpl receives so the branch
+// is asserted on what actually reaches the spawn, not on an intermediate.
+type SpawnSpy = { prompt: string; cwd: string; mode?: string; extraEnv?: Record<string, string> };
+const spawnSpy = () => {
+  const seen: SpawnSpy = { prompt: "", cwd: "" };
+  const runImpl = async (prompt: string, cwd: string, mode?: any, _lane?: any, _model?: any, _settings?: any, _observe?: any, extraEnv?: any) => {
+    seen.prompt = prompt; seen.cwd = cwd; seen.mode = mode; seen.extraEnv = extraEnv;
+    return { code: 0, capped: false, pid: 1 };
+  };
+  return { seen, runImpl };
+};
+// A cwd route is only honoured when the target carries a read-only floor
+// (.claude/settings.json — CR codex-adv-1), so route tests need a REAL dir.
+const flooredRepo = (() => {
+  const d = mkdtempSync(join(tmpdir(), "cr-floored-repo-"));
+  mkdirSync(join(d, ".claude", "hooks"), { recursive: true });
+  writeFileSync(join(d, ".claude", "hooks", "guard.py"), "#");
+  writeFileSync(join(d, ".claude", "settings.json"), JSON.stringify(
+    { hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "python .claude/hooks/guard.py" }] }] } }));
+  return d;
+})();
+const seedChat = async (r: string, session: string, chatId: number) => {
+  await ensureSession(r, session);
+  await writeMeta(r, session, freshMeta(chatId));
+  await appendLine(join(sessionDir(r, session), "inbox.jsonl"), JSON.stringify({ text: "how's the mint tent?" }));
+};
+
+test("makeRunFn: a cwd-routed chat spawns in that repo, bypassPermissions, with the GGS markers", async () => {
+  const r = root(); await seedChat(r, "group_-5245475441", -5245475441);
+  const { seen, runImpl } = spawnSpy();
+  const cwdFor = (c: number) => c === -5245475441 ? flooredRepo : null;
+  await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, undefined, undefined, cwdFor)("group_-5245475441");
+  expect(seen.cwd).toBe(flooredRepo);
+  expect(seen.mode).toBe("bypassPermissions");
+  expect(seen.extraEnv).toEqual({ HERMES_BOUNDED_RUN: "1", GGS_ROLE: "readonly" });
+  expect(seen.prompt).not.toContain("into the Obsidian vault");
+});
+
+test("makeRunFn: a vault chat is unchanged — vault cwd, bypass, and NO GGS markers", async () => {
+  const r = root(); await seedChat(r, "group_-50", -50);
+  const { seen, runImpl } = spawnSpy();
+  const vaultFor = (c: number) => c === -50 ? "/salus" : null;
+  await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, vaultFor, undefined, () => null)("group_-50");
+  expect(seen.cwd).toBe("/salus");
+  expect(seen.mode).toBe("bypassPermissions");
+  expect(seen.extraEnv).toBeUndefined();
+  expect(seen.prompt).toContain("into the Obsidian vault");
+});
+
+test("makeRunFn: an unrouted chat keeps repoCwd, no permission mode, no markers", async () => {
+  const r = root(); await seedChat(r, "group_-99", -99);
+  const { seen, runImpl } = spawnSpy();
+  await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, () => null, undefined, () => null)("group_-99");
+  expect(seen.cwd).toBe("/repo");
+  expect(seen.mode).toBeUndefined();
+  expect(seen.extraEnv).toBeUndefined();
+});
+
+// defaultVault is pinned live, so vaultFor returns non-null for EVERY chat —
+// including the tent groups. Without suppression the cwd route would still carry
+// the Obsidian filing clause into a code repo (spec §3.A.1).
+test("makeRunFn: cwd wins over an inherited defaultVault and suppresses the filing clause", async () => {
+  const r = root(); await seedChat(r, "group_-5553924158", -5553924158);
+  const { seen, runImpl } = spawnSpy();
+  await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, () => "/luna", undefined, () => flooredRepo)("group_-5553924158");
+  expect(seen.cwd).toBe(flooredRepo);
+  expect(seen.prompt).not.toContain("into the Obsidian vault");
+  expect(seen.prompt).toContain("Do NOT file it anywhere");
+});
+
+// An empty-string cwd in access.json must read as "unset", not as cwd "" —
+// the same normalization the vault branch already does.
+test("makeRunFn: a blank cwd falls back to repoCwd with no bypass", async () => {
+  const r = root(); await seedChat(r, "group_-77", -77);
+  const { seen, runImpl } = spawnSpy();
+  await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, () => null, undefined, () => "")("group_-77");
+  expect(seen.cwd).toBe("/repo");
+  expect(seen.mode).toBeUndefined();
+  expect(seen.extraEnv).toBeUndefined();
 });
 
 test("safeExt: keeps plain extensions, rejects Telegram-controlled traversal/query shapes", async () => {
@@ -2443,6 +2624,256 @@ test("a burst keeps the STRONGEST model — a cheap first line cannot pin haiku"
   await c("s", undefined);               // then a spawn-high line
   now = 200; await c.flushDue(now);
   expect(got).toEqual([undefined]);      // NOT "haiku"
+});
+
+// --- LUNA-101: leading `model:` tag ---
+test("parseModelTag: strips a valid leading tag", () => {
+  expect(parseModelTag("model:sonnet hi")).toEqual({ model: "sonnet", rest: "hi", unknown: false });
+});
+test("parseModelTag: case-insensitive on the key, strict on the value", () => {
+  expect(parseModelTag("Model:opus x").model).toBe("opus");
+  expect(parseModelTag("MODEL:HAIKU y").model).toBe("haiku");
+});
+test("parseModelTag: tolerates a space after the colon", () => {
+  expect(parseModelTag("model: haiku y").model).toBe("haiku");
+});
+test("parseModelTag: flags an unknown value and still strips it", () => {
+  expect(parseModelTag("model:gpt5 z")).toEqual({ model: null, rest: "z", unknown: true });
+});
+test("parseModelTag: prose is untouched (no colon → not a tag)", () => {
+  expect(parseModelTag("model railway question")).toEqual({ model: null, rest: "model railway question", unknown: false });
+});
+test("parseModelTag: a non-leading tag is prose", () => {
+  expect(parseModelTag("use model:sonnet please").model).toBeNull();
+  expect(parseModelTag("use model:sonnet please").rest).toBe("use model:sonnet please");
+});
+test("parseModelTag: a bare tag with no message leaves an empty rest", () => {
+  expect(parseModelTag("model:opus")).toEqual({ model: "opus", rest: "", unknown: false });
+});
+
+test("handleInbound: an explicit tag beats the triage override and is stripped from the inbox line", async () => {
+  const r = root();
+  const seen: (string | undefined)[] = [];
+  const lowTriage = async () => "spawn-low" as const;
+  await handleInbound(r, { from: 1, chat_id: -50, text: "model:sonnet what changed in soak.log?" },
+    async (_s, m) => { seen.push(m); }, undefined, lowTriage, () => true);
+  expect(seen).toEqual(["sonnet"]);                        // NOT "haiku"
+  const line = JSON.parse((await readFile(join(sessionDir(r, "group_-50"), "inbox.jsonl"), "utf8")).trim());
+  expect(line.text).toBe("what changed in soak.log?");     // tag consumed, not shown to the session
+});
+
+test("handleInbound: an unknown tag notices the chat and falls back to the default model", async () => {
+  const r = root();
+  const seen: (string | undefined)[] = [];
+  const notices: { chat: number; text: string }[] = [];
+  await handleInbound(r, { from: 1, chat_id: -50, text: "model:gpt5 hello" },
+    async (_s, m) => { seen.push(m); }, undefined, async () => "spawn-high" as const, () => true,
+    async (chat, text) => { notices.push({ chat, text }); });
+  expect(seen).toEqual([undefined]);
+  expect(notices.length).toBe(1);
+  expect(notices[0].chat).toBe(-50);
+  expect(notices[0].text).toContain("unknown model tag");
+});
+
+// A tag must never open a path into the trusted auto-action gate: that gate's
+// safety rests on a WHOLE-message match by the operator.
+// isOperator MUST be () => true here (CR glm-2): with the default () => false the
+// tag is never parsed, so the test passed because `classify` simply did not match
+// the `model:`-prefixed text — NOT because the `!tagged` guard fired. That left
+// the guard, which is a security boundary, completely untested.
+test("handleInbound: an OPERATOR's tagged message still cannot reach the auto-command gate", async () => {
+  const r = root();
+  let fired = false;
+  const auto = { authorize: () => true, enabledOps: new Set(["arm-resume"]), fire: () => { fired = true; } } as any;
+  await handleInbound(r, { from: 1, chat_id: 7, text: "model:opus /arm HIMMEL-1", caption: false },
+    async () => {}, auto, undefined, () => true);
+  expect(fired).toBe(false);   // the !tagged guard, not a classify miss
+});
+// The control: same operator, same op, NO tag — proving the test above fails for
+// the tag and not for some unrelated reason in this harness.
+test("handleInbound: the same operator's UNTAGGED auto-command does fire", async () => {
+  const r = root();
+  let fired = false;
+  const auto = { authorize: () => true, enabledOps: new Set(["arm-resume"]), fire: () => { fired = true; } } as any;
+  await handleInbound(r, { from: 1, chat_id: 7, text: "/arm HIMMEL-1", caption: false },
+    async () => {}, auto, undefined, () => true);
+  expect(fired).toBe(true);
+});
+test("handleInbound: an untagged auto-command still fires (regression)", async () => {
+  const r = root();
+  let fired = false;
+  const auto = { authorize: () => true, enabledOps: new Set(["arm-resume"]), fire: () => { fired = true; } } as any;
+  await handleInbound(r, { from: 1, chat_id: 7, text: "/arm HIMMEL-1", caption: false },
+    async () => {}, auto);
+  expect(fired).toBe(true);
+});
+
+test("a burst never downgrades an EXPLICIT tag to the default", async () => {
+  const got: (string | undefined)[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (_s, m) => { got.push(m); }, { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("s", "sonnet", true);           // explicit tag
+  await c("s", undefined);                // a later untagged line in the same burst
+  now = 200; await c.flushDue(now);
+  expect(got).toEqual(["sonnet"]);        // the operator asked for sonnet; honour it
+});
+// --- CR codex-adv fixes ---
+test("cwd route is REFUSED when the target has no .claude/settings.json (no read-only floor)", async () => {
+  const r = root(); await seedChat(r, "group_-8801", -8801);
+  const { seen, runImpl } = spawnSpy();
+  const noFloor = join(tmpdir(), "cr-no-floor-" + Math.random().toString(36).slice(2));
+  mkdirSync(noFloor, { recursive: true });
+  await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, () => null, undefined, () => noFloor)("group_-8801");
+  expect(seen.cwd).toBe("/repo");            // route dropped, NOT spawned in the unattested dir
+  expect(seen.mode).toBeUndefined();          // and crucially: no bypassPermissions
+  expect(seen.extraEnv).toBeUndefined();
+});
+test("cwd route is HONOURED when the target carries a verifiable floor", async () => {
+  const r = root(); await seedChat(r, "group_-8802", -8802);
+  const { seen, runImpl } = spawnSpy();
+  const withFloor = flooredRepo;
+  await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, () => null, undefined, () => withFloor)("group_-8802");
+  expect(seen.cwd).toBe(withFloor);
+  expect(seen.mode).toBe("bypassPermissions");
+  expect(seen.extraEnv).toEqual({ HERMES_BOUNDED_RUN: "1", GGS_ROLE: "readonly" });
+});
+// A settings file must REGISTER a PreToolUse hook whose script is on disk.
+// Existence alone was the round-2 [high]: `{}` read as a floor and granted bypass.
+const floorCase = (settings: string | null, withScript: boolean): string => {
+  const d = mkdtempSync(join(tmpdir(), "cr-floor-probe-"));
+  mkdirSync(join(d, ".claude", "hooks"), { recursive: true });
+  if (settings !== null) writeFileSync(join(d, ".claude", "settings.json"), settings);
+  if (withScript) writeFileSync(join(d, ".claude", "hooks", "guard.py"), "#");
+  return d;
+};
+const GUARD = JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "python .claude/hooks/guard.py" }] }] } });
+const guardWithMatcher = (matcher: any) => JSON.stringify(
+  { hooks: { PreToolUse: [{ ...(matcher === undefined ? {} : { matcher }), hooks: [{ type: "command", command: "python .claude/hooks/guard.py" }] }] } });
+
+test("hasReadOnlyFloor: rejects missing, empty, malformed, hookless, and dead-registration settings", () => {
+  expect(hasReadOnlyFloor(floorCase(null, true))).toBe(false);            // no settings.json
+  expect(hasReadOnlyFloor(floorCase("{}", true))).toBe(false);            // empty object — the round-2 hole
+  expect(hasReadOnlyFloor(floorCase("{ not json", true))).toBe(false);    // malformed
+  expect(hasReadOnlyFloor(floorCase('{"hooks":{}}', true))).toBe(false);  // hooks, but no PreToolUse
+  expect(hasReadOnlyFloor(floorCase('{"hooks":{"PreToolUse":[]}}', true))).toBe(false);  // empty array
+  expect(hasReadOnlyFloor(floorCase(GUARD, false))).toBe(false);          // registered, script MISSING (dead hook)
+});
+test("hasReadOnlyFloor: accepts a registration whose script exists", () => {
+  expect(hasReadOnlyFloor(floorCase(GUARD, true))).toBe(true);
+});
+
+// An UNRELATED hook is not a floor (CR codex-2): a registration matching only
+// Task left bypass unlocked over Bash, the tool a bounded GGS session actually
+// runs hactl through and the one an injected prompt would reach for.
+test("hasReadOnlyFloor: the matcher must cover Bash", () => {
+  expect(hasReadOnlyFloor(floorCase(guardWithMatcher("Task"), true))).toBe(false);
+  expect(hasReadOnlyFloor(floorCase(guardWithMatcher("Write|Edit"), true))).toBe(false);
+  expect(hasReadOnlyFloor(floorCase(guardWithMatcher("Bash"), true))).toBe(true);
+  expect(hasReadOnlyFloor(floorCase(guardWithMatcher("Bash|Read|Grep|Glob"), true))).toBe(true);
+  // absent matcher == all tools in the Claude Code contract
+  expect(hasReadOnlyFloor(floorCase(guardWithMatcher(undefined), true))).toBe(true);
+  expect(hasReadOnlyFloor(floorCase(guardWithMatcher(""), true))).toBe(true);
+});
+
+// "*" and "**" are the documented match-ALL wildcards (HIMMEL-1726): they
+// cover Bash by definition, same as an absent matcher — the predicate was
+// rejecting exactly the widest, most conservative guard a repo could write.
+test("hasReadOnlyFloor: the documented match-all wildcards '*' and '**' cover Bash", () => {
+  expect(hasReadOnlyFloor(floorCase(guardWithMatcher("*"), true))).toBe(true);
+  expect(hasReadOnlyFloor(floorCase(guardWithMatcher("**"), true))).toBe(true);
+});
+
+// HIMMEL-1799: this slot asserted against the operator's literal home paths
+// and bare-returned when they were absent — vacuously green on every machine
+// but one (the HIMMEL-1788 shape: a check that cannot fail is a check not
+// running), and the literals aborted public propagation at the leak scan.
+// Realistic fixtures carry the intent on every machine instead: a full repo
+// settings.json — unrelated keys, another hook event alongside PreToolUse, a
+// multi-tool matcher, args after the script — is a floor; a vault-shaped
+// settings whose hooks are not a PreToolUse default-deny is not, even with
+// its script on disk.
+test("hasReadOnlyFloor: a realistic repo config is a floor; a realistic vault config is not", () => {
+  const repo = floorCase(JSON.stringify({
+    model: "claude-sonnet-5",
+    permissions: { allow: ["Bash(git status:*)"] },
+    hooks: {
+      PreToolUse: [{ matcher: "Bash|Write|Edit", hooks: [{ type: "command", command: "python .claude/hooks/guard.py --deny-write" }] }],
+      PostToolUse: [{ hooks: [{ type: "command", command: "node .claude/hooks/guard.py" }] }],
+    },
+  }), true);
+  const vault = floorCase(JSON.stringify({
+    statusLine: { type: "command", command: "node .claude/hooks/guard.py" },
+    hooks: { PostToolUse: [{ hooks: [{ type: "command", command: "node .claude/hooks/guard.py" }] }] },
+  }), true);
+  expect(hasReadOnlyFloor(repo)).toBe(true);
+  expect(hasReadOnlyFloor(vault)).toBe(false);
+});
+
+// The refused route must NOT fall through to the vault branch (CR codex-adv
+// round 2): defaultVault is pinned live, so that fallback put a bypassed,
+// filing-enabled session inside the personal vault — worse than the missing
+// floor it was refusing.
+test("a REFUSED cwd route never lands in the vault, never bypasses, never files", async () => {
+  const r = root(); await seedChat(r, "group_-8803", -8803);
+  const { seen, runImpl } = spawnSpy();
+  const noFloor = floorCase("{}", false);
+  await makeRunFn(r, "/repo", runImpl, 5000, undefined, 3, () => "/luna", undefined, () => noFloor)("group_-8803");
+  expect(seen.cwd).toBe("/repo");                 // NOT "/luna", NOT the unattested dir
+  expect(seen.mode).toBeUndefined();              // no bypassPermissions
+  expect(seen.extraEnv).toBeUndefined();          // no GGS markers
+  expect(seen.prompt).not.toContain("into the Obsidian vault");   // no filing clause
+});
+
+test("handleInbound: a NON-operator cannot use the model tag (it stays ordinary text)", async () => {
+  const r = root();
+  const seen: (string | undefined)[] = [];
+  // Pin TELEGRAM_TRIAGE (CR CodeRabbit): the haiku assertion needs the triage
+  // block to run, and it is guarded by `TELEGRAM_TRIAGE !== "off"` — an ambient
+  // `off` in a dev shell or CI job would fail this test for an unrelated reason.
+  const prev = process.env.TELEGRAM_TRIAGE;
+  delete process.env.TELEGRAM_TRIAGE;
+  try {
+    await handleInbound(r, { from: 999, chat_id: -50, text: "model:opus give me the good model" },
+      async (_s, m) => { seen.push(m); }, undefined, async () => "spawn-low" as const, () => false);
+    expect(seen).toEqual(["haiku"]);   // triage's cost control stands, NOT opus
+    const line = JSON.parse((await readFile(join(sessionDir(r, "group_-50"), "inbox.jsonl"), "utf8")).trim());
+    expect(line.text).toBe("model:opus give me the good model");   // preserved verbatim, not stripped
+  } finally {
+    if (prev === undefined) delete process.env.TELEGRAM_TRIAGE; else process.env.TELEGRAM_TRIAGE = prev;
+  }
+});
+
+// A message arriving DURING an awaited deferred dispatch starts a fresh hold;
+// the re-merge must not drop the deferred hold's explicit tag.
+test("a DEFERRED dispatch does not lose an explicit tag to a message that arrives mid-await", async () => {
+  const got: (string | undefined)[] = [];
+  let now = 0;
+  let deferNext = true;
+  let c: any;
+  const dispatch = async (_s: string, m?: string) => {
+    if (deferNext) {
+      deferNext = false;
+      await c("s", undefined);          // untagged message lands during the await
+      return false;                     // ...and the dispatch defers
+    }
+    got.push(m);
+    return true;
+  };
+  c = makeBurstCoalescer(dispatch, { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("s", "sonnet", true);
+  now = 200; await c.flushDue(now);     // first flush defers + re-holds
+  now = 400; await c.flushDue(now);     // second flush actually dispatches
+  expect(got).toEqual(["sonnet"]);      // NOT undefined (the default model)
+});
+
+test("a burst still escalates a TRIAGE haiku (the explicit flag is opt-in, not the default)", async () => {
+  const got: (string | undefined)[] = [];
+  let now = 0;
+  const c = makeBurstCoalescer(async (_s, m) => { got.push(m); }, { quietMs: 100, maxHoldMs: 9999, now: () => now });
+  await c("s", "haiku");                  // no explicit flag → triage
+  await c("s", undefined);
+  now = 200; await c.flushDue(now);
+  expect(got).toEqual([undefined]);
 });
 
 // The test above hands makeBurstCoalescer a STUB dispatch fn, so it exercises

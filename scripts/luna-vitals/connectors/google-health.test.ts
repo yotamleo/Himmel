@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'bun:test';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { pull } from './google-health';
 import { ReconsentNeededError, RECONSENT_EXIT } from './auth/oauth';
 import { validateRow, writeArtifact } from '../src/types';

@@ -44,6 +44,10 @@ chk "medic skill installed"        "[ -f '$MED/.claude/skills/medic/SKILL.md' ]"
 chk "egress floor installed"       "[ -f '$MED/.claude/hooks/block-cloud-egress.sh' ]"
 chk "operator skin-archive row preserved" "grep -q '2025-12-31 | hands' '$MED/_skin-photo-archive.md'"
 chk "operator _CLAUDE rules preserved" "grep -q 'my own rules' '$MED/_CLAUDE.md'"
+# HIMMEL-2173: a vault that predates .salus (only .salus-profile, the shape
+# make_vault fixtures above) must get the PHI guard marker backfilled by a
+# plain upgrade — this is the durability fix's own re-run path.
+chk ".salus PHI guard marker backfilled on upgrade" "[ -f '$MED/.salus' ]"
 
 echo "== non-medical vault (no marker) — gate must SKIP medical assets =="
 PLAIN="$WORK/vault-plain"; make_vault "$PLAIN" 0
@@ -51,12 +55,14 @@ bash "$TPL/scripts/upgrade.sh" --template-dir "$TPL" --vault-dir "$PLAIN" --yes 
 chk "egress floor NOT installed"   "[ ! -f '$PLAIN/.claude/hooks/block-cloud-egress.sh' ]"
 chk "medic skill NOT installed"    "[ ! -f '$PLAIN/.claude/skills/medic/SKILL.md' ]"
 chk "no .salus-profile created"    "[ ! -f '$PLAIN/.salus-profile' ]"
+chk "no .salus created"            "[ ! -f '$PLAIN/.salus' ]"
 
 echo "== --dry-run on a medical vault must make NO changes =="
 DRY="$WORK/vault-dry"; make_vault "$DRY" 1
 bash "$TPL/scripts/upgrade.sh" --template-dir "$TPL" --vault-dir "$DRY" --dry-run >/dev/null 2>&1
 chk "dry-run did NOT install the egress floor" "[ ! -f '$DRY/.claude/hooks/block-cloud-egress.sh' ]"
 chk "dry-run did NOT install the medic skill"  "[ ! -f '$DRY/.claude/skills/medic/SKILL.md' ]"
+chk "dry-run did NOT create .salus"            "[ ! -f '$DRY/.salus' ]"
 
 echo ""
 if [ "$fails" -eq 0 ]; then echo "PASS — salus upgrade profile-gate test"; else echo "FAIL — $fails check(s)"; exit 1; fi

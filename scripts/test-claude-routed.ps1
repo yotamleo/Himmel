@@ -10,6 +10,12 @@
   the real user profile or ~/.claude.
 #>
 $ErrorActionPreference = 'Stop'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ScriptDir = $PSScriptRoot
 $Launcher  = Join-Path $ScriptDir 'claude-routed.ps1'
 # Directory holding pwsh itself — a PATH that keeps pwsh (needed to spawn the
@@ -227,6 +233,13 @@ try {
   New-Item -ItemType File -Force -Path (Join-Path $WORK '.salus') | Out-Null
   Assert-Exit (Invoke-Launcher) 3 'salus refuses'
   Assert-Exit (Invoke-Launcher -LArgs @('-Force')) 3 'salus refuses despite -Force'
+
+  # --- T8b: .salus-profile marker ALONE (no .salus) -> refuse exit 3 (HIMMEL-2173
+  # part 2 — a defense for salus deployments that predate part 1 shipping .salus). ---
+  New-Sandbox; $script:KEY = 'omni-test-123'  # gitleaks:allow
+  New-Item -ItemType File -Force -Path (Join-Path $WORK '.salus-profile') | Out-Null
+  Assert-Exit (Invoke-Launcher) 3 'salus-profile-only refuses'
+  Assert-Exit (Invoke-Launcher -LArgs @('-Force')) 3 'salus-profile-only refuses despite -Force'
 
   # --- T9: denylisted cwd -> refuse without -Force, proceed with it. Guard config
   # is DELIBERATELY read from ~/.config/claude-glm (shared source of truth), NOT a
@@ -501,8 +514,8 @@ try {
   # back to ShellExecute bare-name resolution (the "how do you want to open
   # this file?" picker). Same idiom as the $PwshDir line at the top of the file.
   $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
-  $pa = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
-  $pb = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -PassThru
+  $pa = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -NoNewWindow -PassThru
+  $pb = Start-Process $pwshPath -ArgumentList @('-NoProfile', '-File', $Launcher) -WorkingDirectory $WORK -NoNewWindow -PassThru
   $pa.WaitForExit(); $pb.WaitForExit()
   if ($pa.ExitCode -eq 0 -and $pb.ExitCode -eq 0) { Pass 'both concurrent launches exit 0' } else { Fail "concurrent launches exit A=$($pa.ExitCode) B=$($pb.ExitCode)" }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-routed\.seeded')) { Pass 'concurrent seed left a sentinel' } else { Fail 'concurrent seed left no sentinel' }

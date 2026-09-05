@@ -14,6 +14,9 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CR="$REPO_ROOT/scripts/ci/check-commit-range.sh"
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/fixture-tempdir.sh"
 [ -f "$CR" ] || { echo "FAIL: $CR not found"; exit 1; }
 failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
@@ -23,13 +26,16 @@ fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
 # extra commits; echoes the base SHA via a file (avoids subshell var loss).
 mkrepo() {
     local d="$1"; shift
-    git init -q "$d"
-    git -C "$d" config user.email t@e
-    git -C "$d" config user.name t
-    git -C "$d" commit -q --allow-empty -m "chore: base"
-    git -C "$d" rev-parse HEAD > "$d/.base"
-    local m
-    for m in "$@"; do git -C "$d" commit -q --allow-empty -m "$m"; done
+    (
+        fixture_enter_git_init_dir "$d" || exit 1
+        git init -q
+        git config user.email t@e
+        git config user.name t
+        git commit -q --allow-empty -m "chore: base"
+        git rev-parse HEAD > .base
+        local m
+        for m in "$@"; do git commit -q --allow-empty -m "$m"; done
+    )
 }
 
 run_cr() { # <repo-dir> -> runs strict check-commit-range against <base>..HEAD
@@ -40,7 +46,7 @@ run_cr() { # <repo-dir> -> runs strict check-commit-range against <base>..HEAD
 }
 
 # --- one bad (non-conventional) commit -> rc1 + surfaces it ---
-t="$(mktemp -d)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t" "feat(x): HIMMEL-1 good commit" "broken commit no type"
 out="$(run_cr "$t")"; rc=$?
 if [ "$rc" -eq 1 ]; then pass "non-conventional -> rc1"; else fail "expected rc1, got $rc: $out"; fi
@@ -48,7 +54,7 @@ if grepq "$out" 'broken commit no type'; then pass "surfaces offending subject";
 rm -rf "$t"
 
 # --- all-clean ticketed range -> rc0 ---
-t="$(mktemp -d)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t" "fix(api): HIMMEL-2 ok" "chore: HIMMEL-3 tidy"
 out="$(run_cr "$t")"; rc=$?
 if [ "$rc" -eq 0 ]; then pass "clean range -> rc0"; else fail "expected rc0, got $rc: $out"; fi
@@ -57,7 +63,7 @@ rm -rf "$t"
 # --- a REAL merge commit in the range is skipped (HIMMEL-1483 CR1) ---
 # The hook's merge exemption is live-MERGE_HEAD only, so the range gate must
 # skip historical merges structurally (--no-merges; parent count >= 2).
-t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t" "fix(api): HIMMEL-2 ok"
 git -C "$t" checkout -q -b side
 git -C "$t" commit -q --allow-empty -m "feat(y): HIMMEL-4 side work"
@@ -70,14 +76,14 @@ rm -rf "$t"
 # --- ...but a merge-SHAPED message with ONE parent is still validated ---
 # Parent count is the unfakeable signal: a hand-typed "Merge branch ..." subject
 # on an ordinary commit gets no skip and fails the gate (anti-spoof, r2 intent).
-t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t" "Merge branch 'fake' into main"
 out="$(run_cr "$t")"; rc=$?
 if [ "$rc" -eq 1 ]; then pass "merge-shaped single-parent commit still fails"; else fail "expected rc1, got $rc: $out"; fi
 rm -rf "$t"
 
 # --- malformed HIMMEL- ticket -> rc1 + named ---
-t="$(mktemp -d)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t" "feat(x): HIMMEL-abc malformed ticket"
 out="$(run_cr "$t")"; rc=$?
 if [ "$rc" -eq 1 ]; then pass "malformed ticket -> rc1"; else fail "expected rc1, got $rc: $out"; fi
@@ -85,14 +91,14 @@ if grepq "$out" -i 'malformed'; then pass "names malformed ticket"; else fail "n
 rm -rf "$t"
 
 # --- conventional but ticketless commit -> rc1 ---
-t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t" "chore: ticket omitted"
 out="$(run_cr "$t")"; rc=$?
 if [ "$rc" -eq 1 ]; then pass "ticketless strict commit -> rc1"; else fail "expected rc1, got $rc: $out"; fi
 rm -rf "$t"
 
 # --- spoofed dependabot commit metadata is not enough without a trusted PR author ---
-t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t"
 git -C "$t" -c user.name='dependabot[bot]' -c user.email='bot@example.invalid' \
   commit -q --allow-empty -m "chore: bump dependency"
@@ -101,14 +107,14 @@ if [ "$rc" -eq 1 ]; then pass "bot metadata without trusted author -> rc1"; else
 rm -rf "$t"
 
 # --- trusted bot PR author still needs bot-authored commit metadata ---
-t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t" "chore: bump dependency"
 out="$(TICKET_ID_TRUSTED_AUTHOR='dependabot[bot]' run_cr "$t")"; rc=$?
 if [ "$rc" -eq 1 ]; then pass "trusted bot with human commit author -> rc1"; else fail "expected rc1, got $rc: $out"; fi
 rm -rf "$t"
 
 # --- trusted bot PR author plus bot commit metadata is exempt ---
-t="$(mktemp -d -t himmel-commit-range.XXXXXX)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t"
 git -C "$t" -c user.name='dependabot[bot]' -c user.email='bot@example.invalid' \
   commit -q --allow-empty -m "chore: bump dependency"
@@ -117,14 +123,14 @@ if [ "$rc" -eq 0 ]; then pass "trusted bot and bot commit author -> rc0"; else f
 rm -rf "$t"
 
 # --- unresolvable base ref -> rc2 (cannot evaluate the range) ---
-t="$(mktemp -d)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t" "chore: x"
 out="$( cd "$t" && bash "$CR" "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" 2>&1 )"; rc=$?
 if [ "$rc" -eq 2 ]; then pass "unresolvable base -> rc2"; else fail "expected rc2, got $rc: $out"; fi
 rm -rf "$t"
 
 # --- empty range (base == HEAD) -> rc0 + 'nothing to lint' ---
-t="$(mktemp -d)"
+t="$(fixture_mktemp_dir)" || exit 1
 mkrepo "$t"   # base commit only; HEAD == base
 out="$( cd "$t" && bash "$CR" HEAD 2>&1 )"; rc=$?
 if [ "$rc" -eq 0 ]; then pass "empty range -> rc0"; else fail "expected rc0, got $rc: $out"; fi

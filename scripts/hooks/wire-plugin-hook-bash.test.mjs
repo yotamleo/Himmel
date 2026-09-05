@@ -10,6 +10,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WIRER = join(HERE, 'wire-plugin-hook-bash.mjs');
 const PLUGIN_HOOKS = join(HERE, '..', '..', 'marketplace', 'plugins', 'himmel-ops', 'hooks', 'hooks.json');
 
+// HIMMEL-2047: an independent restatement of wire-plugin-hook-bash.mjs's own
+// wired-form prefix, not imported from it — so this spec pins the expected
+// output rather than circularly re-running the generator it is meant to
+// check. The launcher sources run-node.sh VENDORED into the plugin itself
+// (${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh, byte-identical to
+// scripts/lib/run-node.sh — see test-plugin-hook-bash-wiring.sh's drift
+// check), never $CLAUDE_PROJECT_DIR — see wiredCommand()'s own header
+// comment for why (CR round 2, [codex-1]/[codex-2]).
+const WIRED_PREFIX = '. "${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js" ';
+
 function commands(pluginHooks) {
   return Object.values(pluginHooks.hooks).flatMap((groups) =>
     groups.flatMap((group) => group.hooks.map((hook) => hook.command))
@@ -26,7 +36,7 @@ function unwire(text) {
       commandHook.command = 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/inject-minerva-critic.sh"';
       continue;
     }
-    const match = command.match(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"$/);
+    const match = command.match(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"/);
     assert.ok(match, `could not extract project hook script from ${command}`);
     const script = match[1];
     if (script === 'block-lesson-enforcement-writes.sh') {
@@ -60,17 +70,17 @@ function invoke(...args) {
   return spawnSync(process.execPath, [WIRER, ...args], { encoding: 'utf8' });
 }
 
-test('rewrites the exact 16-command plugin inventory through the installed launcher', () => {
+test('rewrites the exact 19-command plugin inventory through the installed launcher', () => {
   withFixture((fixture) => {
     const before = JSON.parse(readFileSync(fixture, 'utf8'));
     const result = invoke(fixture);
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 16 hook command\(s\)/);
-    assert.equal(commands(after).length, 16);
+    assert.match(result.stdout, /rewrote 19 hook command\(s\)/);
+    assert.equal(commands(after).length, 19);
     for (const command of commands(after)) {
-      assert.match(command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/run-hook-with-bash\.js" /);
+      assert.ok(command.startsWith(WIRED_PREFIX));
       assert.doesNotMatch(command, /(^|\s)bash(\s|$)/);
     }
 

@@ -25,6 +25,12 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 $CodexProxyBaseUrl = if ($env:CODEX_PROXY_BASE_URL) { $env:CODEX_PROXY_BASE_URL } else { 'http://127.0.0.1:8317' }
 # Model names are whatever the local CLIProxyAPI /v1/models exposes for the
 # authed codex subscription (gpt-5.6-sol at ship time). All overridable per task.
@@ -60,6 +66,14 @@ if (-not [long]::TryParse($CodexContextWindow, [ref]$CodexCtxParsed) -or $CodexC
 # override the home root per-invocation (PowerShell's $HOME is fixed at startup).
 $HomeDir   = $env:USERPROFILE
 $ConfigDir = Join-Path $HomeDir '.claude-codex'
+# Seed-content generation, stamped into the .seeded sentinel (twin: claude-glm.ps1's
+# $SeedVersion). BUMP whenever Copy-SeedConfig's OWN logic changes what gets written
+# (e.g. a new CLAUDE.md stanza) — such a change touches no SOURCE file under
+# ~/.claude, so the mtime-based staleness checks below never fire and an
+# already-seeded machine would silently keep the old seeded content forever. A
+# mismatch forces exactly one re-seed.
+# v1 = initial version (HIMMEL-1927: the claudex model-identity stanza).
+$SeedVersion = '1'
 
 # --- key resolution: process env first, else the launcher-repo .env ----------
 # CLAUDE_CODEX_DOTENV_ROOT (test hook) pins the .env root; production falls back to
@@ -243,13 +257,16 @@ function Invoke-GuardWorkspace {
   $salusHit = $false
   $d = $gw
   while ($true) {
-    if (Test-Path -LiteralPath (Join-Path $d '.salus')) { $salusHit = $true; break }
+    # HIMMEL-2173: also accept .salus-profile (template machinery dropped by
+    # the salus profile installer) — a defense for deployments that predate
+    # the installer shipping the real .salus guard marker alongside it.
+    if ((Test-Path -LiteralPath (Join-Path $d '.salus')) -or (Test-Path -LiteralPath (Join-Path $d '.salus-profile'))) { $salusHit = $true; break }
     $parent = Split-Path -Parent $d
     if (-not $parent -or $parent -eq $d) { break }
     $d = $parent
   }
   if ($salusHit -or (Test-GuardHitAny -Target $gw -BaseName 'phi-roots')) {
-    [Console]::Error.WriteLine("claude-codex: REFUSED - $Label is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to a cloud codex backend.")
+    [Console]::Error.WriteLine("claude-codex: REFUSED - $Label is PHI-marked (.salus / .salus-profile / phi-roots). No override exists; PHI never goes to a cloud codex backend.")
     exit 3
   }
   if (Test-GuardHitAny -Target $gw -BaseName 'egress-denylist') {
@@ -360,6 +377,15 @@ if (j.env) for (const k of Object.keys(j.env)) { const u=k.toUpperCase(); if (u.
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 '@
 
+# Get-CodexStanzaModel (HIMMEL-1927, twin of the bash codex_stanza_model): the
+# SANITIZED model value, shared by Copy-SeedConfig (what actually lands in the
+# CLAUDE.md stanza) and Test-ConfigSeedStale (what the .seeded stamp is
+# compared against) — so the staleness check always tracks what was WRITTEN,
+# not the raw ambient $CodexModel.
+function Get-CodexStanzaModel {
+  if ($CodexModel -match '^[A-Za-z0-9._-]+$') { $CodexModel } else { 'an unrecognized codex slug' }
+}
+
 function Copy-SeedConfig {
   # Transactional: the .seeded sentinel is removed FIRST and (re)written LAST, and
   # every Copy-Item/sanitize runs under ErrorActionPreference=Stop, so ANY failure
@@ -429,8 +455,26 @@ function Copy-SeedConfig {
     foreach ($f in 'CLAUDE.md', 'RTK.md') {
       $p = Join-Path $src $f
       $dp = Join-Path $ConfigDir $f
-      if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $dp -Force }
+      if (Test-Path -LiteralPath $p -PathType Leaf) { Copy-Item -LiteralPath $p -Destination $dp -Force }
       elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
+    }
+    # Source-absent CLAUDE.md stays absent: a stanza-only lane copy would make Test-ConfigSeedStale reseed on every launch.
+    $claudeMd = Join-Path $ConfigDir 'CLAUDE.md'
+    if (Test-Path -LiteralPath $claudeMd -PathType Leaf) {
+      # CR (HIMMEL-1927): CodexModel is an ordinary ambient env var, deliberately
+      # left unvalidated (see its default assignment above) and not swept by
+      # this launcher the way ANTHROPIC_*/CLAUDE_CODE_USE_* are — so a
+      # newline-bearing value must not land verbatim in agent instructions.
+      # Degrade to a generic phrase outside a plain slug shape; the common case
+      # (gpt-5.6-sol) is unaffected.
+      $stanzaModel = Get-CodexStanzaModel
+      $identityStanza = @"
+
+## Claudex lane model identity (HIMMEL-1927)
+
+Your backend model is $stanzaModel (OpenAI, via the local CLIProxyAPI codex proxy). Claude Code does not recognize that slug, so it asserts 'You are powered by the model named Opus 4.8' in your system prompt — that is a slug-recognition artifact, not your identity. You are NOT an Anthropic model and NOT an orchestrator tier; do not reason about your own capabilities or delegation tier from that line.
+"@
+      [System.IO.File]::AppendAllText($claudeMd, $identityStanza, (New-Object System.Text.UTF8Encoding($false)))
     }
     # Clean re-mirror + deletion mirror (HIMMEL-828/819): remove the destination subtree
     # FIRST — this both drops files deleted from the source AND mirrors a whole-subtree
@@ -466,8 +510,10 @@ function Copy-SeedConfig {
     } elseif (Test-Path -LiteralPath $hudDst) {
       Remove-Item -LiteralPath $hudDst -Force
     }
-    # sentinel LAST: only a fully-populated seed reads as "seeded"
-    New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
+    # sentinel LAST: only a fully-populated seed reads as "seeded"; stamped with the
+    # seed-content generation PLUS the sanitized model (HIMMEL-1927, twin: bash's
+    # composite printf) so a launcher-logic change OR a model change re-seeds once.
+    Set-Content -LiteralPath (Join-Path $ConfigDir '.seeded') -Value "$SeedVersion|$(Get-CodexStanzaModel)"
   } catch {
     [Console]::Error.WriteLine("claude-codex: FAILED to seed config dir ($($_.Exception.Message)). Refusing to launch with a half-seeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-codex).")
     exit 4
@@ -487,6 +533,22 @@ function Copy-SeedConfig {
 # explicit -Reseed only) — the escape hatch if auto-reseed ever blocks a
 # launch in your setup (e.g. seed re-runs surfacing a broken node).
 function Test-ConfigSeedStale {
+  # Seed-content generation migration — checked BEFORE the freshness opt-out (CR,
+  # twin: claude-glm.ps1). A launcher-logic change (e.g. a new CLAUDE.md stanza)
+  # touches no SOURCE file, so it would otherwise never trigger a reseed on an
+  # already-seeded machine. CLAUDE_LANE_AUTO_RESEED=0 is an escape hatch for
+  # freshness CHURN — it must NOT keep stale seeded content loaded forever, so a
+  # generation mismatch always re-seeds regardless (twin: config_seed_stale). An
+  # empty/legacy sentinel (every machine seeded before this generation existed)
+  # reads as a mismatch too. HIMMEL-1927: the stamp is the composite
+  # SeedVersion|model — a model change alone (no version bump) must ALSO read
+  # as stale, or a stale stanza keeps asserting the previous backend's identity
+  # until an unrelated reseed occurs (twin: bash's composite comparison).
+  $sentinelEarly = Join-Path $ConfigDir '.seeded'
+  if (Test-Path -LiteralPath $sentinelEarly) {
+    $stampEarly = (Get-Content -LiteralPath $sentinelEarly -Raw -ErrorAction SilentlyContinue)
+    if (($null -eq $stampEarly) -or ($stampEarly.Trim() -ne "$SeedVersion|$(Get-CodexStanzaModel)")) { return $true }
+  }
   if ($env:CLAUDE_LANE_AUTO_RESEED -eq '0') { return $false }
   # try/catch: the predicate must never block a launch. A TOCTOU race (file
   # deleted between Test-Path and Get-Item under ErrorActionPreference=Stop)
@@ -744,6 +806,15 @@ $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $CodexHaiku
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = $CodexModel
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $CodexModel
 $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $CodexContextWindow
+# HIMMEL-1887: AUTO_COMPACT_WINDOW only sets the compaction THRESHOLD; this
+# declares the model's window. Claude Code resolves the effective compact
+# window as min(modelWindow, configured), and for a model absent from its
+# catalog the modelWindow falls back to a hardcoded 200000 — so the configured
+# value above was silently clamped to 200000. Fed the SAME value on purpose:
+# min(o,c) with o == c is c for every value a caller picks, so the clamp is
+# structurally unreachable. Twin of the bash launcher's export; guarded by
+# scripts/parity/test-launcher-context-env-parity.sh.
+$env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = $CodexContextWindow
 $env:CLAUDE_CODE_SUBAGENT_MODEL     = $CodexSubagentModel
 $env:CLAUDE_CODE_ALWAYS_ENABLE_EFFORT = '1'
 $env:CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY = '3'

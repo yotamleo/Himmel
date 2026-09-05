@@ -32,7 +32,35 @@
 # Exit: 0 clean, 1 findings. bash 3.2-safe; no `date -d` (Git-Bash-unreliable).
 set -uo pipefail
 
-MEMDIR="${MEMDIR:-$HOME/.claude/projects/C--Users-yotam-Documents-github-himmel/memory}"
+# Claude Code's project-dir slug: the PRIMARY checkout's repo-root absolute
+# path with each `:`/`/`/`\` mapped to `-` (HIMMEL-2194 — derive instead of
+# hardcoding the operator's own path). `--show-toplevel` returns the
+# WORKTREE's own root when run from one (wrong slug — memory lives under the
+# PRIMARY checkout's slug); `--git-common-dir` is the shared .git dir every
+# worktree points back at, so its dirname is the primary root even when this
+# script runs from inside a worktree.
+if [ -z "${MEMDIR:-}" ]; then
+    _git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -z "$_git_common_dir" ]; then
+        # Fallback for git < 2.31, which lacks --path-format (returns empty
+        # above, not an error). The plain form can return a RELATIVE path
+        # (e.g. ".git"), so resolve it against cwd before deriving the slug --
+        # left relative, the slug would silently differ from the
+        # --path-format=absolute case on newer git.
+        _git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+        case "$_git_common_dir" in
+            ""|/*|[A-Za-z]:/*|[A-Za-z]:\\*) : ;; # empty or already absolute
+            *) _git_common_dir="$(cd "$_git_common_dir" 2>/dev/null && pwd -P)" ;;
+        esac
+    fi
+    [ -n "$_git_common_dir" ] || {
+        printf '%s\n' 'memory-capture audit: not inside a git repo (git --git-common-dir returned nothing) — cannot derive MEMDIR; set MEMDIR explicitly or run from a repo' >&2
+        exit 1
+    }
+    _repo_root="$(dirname "$_git_common_dir")"
+    _repo_slug="$(printf '%s' "$_repo_root" | sed 's/[:\\/]/-/g')"
+    MEMDIR="$HOME/.claude/projects/$_repo_slug/memory"
+fi
 LOG="${MEMORY_CAPTURE_LOG:-$MEMDIR/.capture-log.jsonl}"
 LINE_MAX="${MEMORY_LINE_MAX:-200}"
 BUDGET="${MEMORY_BUDGET_BYTES:-24400}"

@@ -1,5 +1,5 @@
 ---
-description: Update this himmel checkout (harness) — six-item dependency chain (pull, marketplace, jira CLI dist, qmd fork, hermes, luna template) with per-item status + abort-on-first-failure, plus seven best-effort advisory steps (codex re-sanitize, statusLine re-wire, graphify pin sync, plugin gap report, plugin-set reconcile, cadence/guardrail drift checks, dependency-readiness check). `himmelctl update` runs the same engine. autoUpdate does NOT deliver the checkout (git pull) or the core hooks/slash-commands — it only re-syncs installed plugins from the on-disk dir. A configured LUNA_VAULT_PATH is already refreshed by step 6 of this chain; use /luna-upgrade only for an explicit Luna-only run, and /himmel-update-all for multi-vault workflows.
+description: Update this himmel checkout (harness) — pull, marketplace, jira CLI, qmd, hermes, luna template, plus advisories.
 ---
 
 Updates an existing himmel install. **`git pull` is the only thing that
@@ -50,7 +50,42 @@ warn-only unless `HIMMEL_RECONCILE_PLUGINS=1`), stale **cadence-runner** /
 **guardrail-mode block** drift checks, and a **dependency-readiness check**
 (HIMMEL-1393) — surfaces an enabled skill missing its declared API key, or
 an enabled+keyed skill whose docs still mark its toolkit disabled
-(presence-only, no key values read).
+(presence-only, no key values read), a **cli-proxy-api host roll** and an
+**installed-marketplaces catch-up** (both HIMMEL-2134, below), and a **qmd
+daemon-restart notice** when the qmd step installed new code under a live
+daemon.
+
+**Machine-local catch-up (HIMMEL-2134).** Three advisory steps close the gap
+where a merged pin bump reached this checkout's *repo* but never reached the
+*machine*. That staleness is invisible to `scripts/check-plugin-drift.sh`: for
+a `tag_release`/`mode: base` entry the guard reads `synced_base` — a literal in
+`scripts/upstreams.json` that `apply-drift-bump.sh` moved together with the
+pin — never the installed artifact, so the row reads `CURRENT` the instant the
+bump merges while the host still runs the old build.
+
+- **cli-proxy-api host roll** — compares the machine's version stamp against the
+  `$Version` pin in `scripts/setup/cli-proxy-lane.ps1` and runs
+  `-Install -Restart` **only when the stamp is strictly OLDER than the pin**. A
+  host at or ahead of the pin is left alone (himmel-update never downgrades), and
+  a version that cannot be compared at all — no `python3`, or a stamp like
+  `custom` that is not a version — is also left alone, with the manual roll
+  command printed instead. The only path to a roll is a positively established
+  "behind". Semver-aware: a prerelease (`7.2.142-rc1`) sorts below the same
+  stable core, so it IS behind a stable pin and rolls forward; build metadata
+  (`+build17`) carries no ordering and reads as equal. When it does roll, `cli-proxy-lane.ps1` owns the dangerous parts: it
+  is pin-aware, refuses to bounce the proxy while a codex-lane client is actively
+  connected (`Assert-BounceSafe`), stages the swap with a rollback copy, and
+  health-gates on `/v1/models`. A refused bounce is a correct refusal, not a
+  failure — re-run when idle.
+- **installed-marketplaces catch-up** —
+  `scripts/upstreams/update-marketplaces.sh` re-syncs the `mkt-manual`
+  marketplaces (`autoUpdate` off) that nothing else updates. `himmel` is
+  excluded: it is chain item 2, where a failure must abort the update. Every row
+  is attempted regardless of what the previous row did.
+- **qmd daemon restart** — installing a new qmd build does NOT reload the
+  running daemon on :8181, and stopping that process is termination an agent may
+  not do. The step prints the exact operator commands instead; it never kills
+  anything.
 
 This command can run from **any directory** (HIMMEL-459), so first resolve the
 himmel checkout using the same checkout-resolution order as
@@ -73,9 +108,19 @@ fi
 bash "$REPO/scripts/himmel-update.sh"                 # six-item chain + advisory steps
 bash "$REPO/scripts/himmel-update.sh" --check         # report only (behind/ahead + gaps), no pull
 bash "$REPO/scripts/himmel-update.sh" --plugins-check # just the plugin gap report, no git
+bash "$REPO/scripts/himmel-update.sh" --only <item>   # run ONE step and stop; see below
 # equivalent entry point:
 node "$REPO/scripts/himmelctl/bin.js" update          # same engine, thin wrapper
 ```
+
+`--only <item>` runs a single step and stops — for re-running the one thing that
+did not land (a cli-proxy roll that correctly refused to bounce a live render, a
+qmd step after you restarted the daemon by hand) without paying for a full pull
++ marketplace + jira-dist + luna-template cycle. Items: `pull`, `marketplace`,
+`jira_cli`, `qmd_fork`, `hermes`, `luna_template`, `graphify`, `cli_proxy`,
+`marketplaces`. It does NOT walk the chain (whose abort-on-first-failure
+ordering exists because those items genuinely depend on each other); `--only
+pull` still honours the dirty-tree pre-check. An unknown item exits 2.
 
 After it finishes: hooks are live immediately; **restart any running Claude
 session** to pick up plugin / slash-command / skill changes. To act on a

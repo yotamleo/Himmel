@@ -45,13 +45,19 @@ is_quota_exhaustion() {
 # classify_failure <rc> [out_file] [err_file]
 #
 # Precedence (first match wins):
-#   timeout > quota-5h > quota-long > rate-limit > auth > http-4xx > http-5xx
-#   > malformed-output > empty-response > generic-rc-N
+#   timeout > usage-error > quota-5h > quota-long > rate-limit > auth >
+#   http-4xx > http-5xx > malformed-output > empty-response > generic-rc-N
 #
 # HIMMEL-729 pairing rule preserved: both quota buckets are checked BEFORE
 # auth, so a bare AccessDenied/401/403 classifies auth, while the SAME text
 # paired with a quota/exhaustion phrase classifies quota-5h/quota-long first —
 # auth can only win when no quota phrase is present.
+#
+# rc=2 is critic-first-pass.sh's own documented usage-error exit (the only
+# caller of this function); its stderr usage() text can legitimately contain
+# digit runs that look like an HTTP status (e.g. "(HIMMEL-473)") without being
+# one (HIMMEL-2107). Classify it as usage-error before any text scan runs, so
+# a member's malformed invocation never gets reported as a transport failure.
 # ---------------------------------------------------------------------------
 classify_failure() {
     _cf_rc="${1:-1}"
@@ -60,6 +66,7 @@ classify_failure() {
 
     case "$_cf_rc" in
         124|137) echo timeout; return 0 ;;
+        2) echo usage-error; return 0 ;;
     esac
 
     _cf_blob=""
@@ -94,9 +101,15 @@ $(cat "$_cf_err" 2>/dev/null)"
         echo auth; return 0
     fi
 
-    # other 4xx / 5xx.
-    if _cf_has '(^|[^0-9])4[0-9][0-9]([^0-9]|$)'; then echo http-4xx; return 0; fi
-    if _cf_has '(^|[^0-9])5[0-9][0-9]([^0-9]|$)'; then echo http-5xx; return 0; fi
+    # other 4xx / 5xx. A bare digit run also matches inside a ticket ID like
+    # "HIMMEL-473" (HIMMEL-2107). Every himmel ticket ID is PROJECT-NNN, so
+    # the number is always immediately preceded by a hyphen; excluding that
+    # one shape (codex CR round 3: requiring an HTTP/status/code keyword
+    # nearby instead lost real "400 Bad Request"/"500 ..." text that carries
+    # no such keyword) keeps recall on genuine status text while a ticket
+    # reference can never match.
+    if _cf_has '(^|[^0-9-])4[0-9][0-9]([^0-9]|$)'; then echo http-4xx; return 0; fi
+    if _cf_has '(^|[^0-9-])5[0-9][0-9]([^0-9]|$)'; then echo http-5xx; return 0; fi
 
     # critic-first-pass.sh's own malformed-output fail-open marker.
     if _cf_has 'malformed output'; then echo malformed-output; return 0; fi

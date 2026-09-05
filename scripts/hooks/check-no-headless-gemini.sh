@@ -43,14 +43,19 @@ fi
 # basename. Exemptions cover:
 #   - this hook + its smoke test (talk about the pattern)
 #   - docs/ + handovers/ + CLAUDE.md (documentation/anti-recommendations)
-#   - .agents/ (vendored caveman skills — upstream code, can't modify)
+#   - .agents/ (harness-neutral skill wrappers — docs, same as .claude/commands)
 #   - .claude/commands/*.md (slash-command docs, often anti-recommend)
+#   - root CHANGELOG.md (generated from immutable commit subjects by
+#     scripts/gen-changelog.sh — it records that a headless call was once
+#     discussed/shipped, it can never introduce one, and the opt-in marker
+#     can't survive regeneration, HIMMEL-2250)
 is_exempt() {
     case "$1" in
         scripts/hooks/check-no-headless-gemini.sh) return 0 ;;
         scripts/hooks/test-check-no-headless-gemini.sh) return 0 ;;
         CLAUDE.md) return 0 ;;
         AGENTS.md) return 0 ;;
+        CHANGELOG.md) return 0 ;;
         docs/*) return 0 ;;
         handovers/*) return 0 ;;
         .agents/*) return 0 ;;

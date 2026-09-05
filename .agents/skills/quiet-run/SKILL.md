@@ -1,6 +1,6 @@
 ---
 name: quiet-run
-description: Run a noisy command quietly — one OK/ERR line + log path. Use when the user asks to run something quietly or runs /quiet-run.
+description: Run a noisy command quietly — one OK/ERR line plus a log path. Use for /quiet-run.
 ---
 
 # quiet-run

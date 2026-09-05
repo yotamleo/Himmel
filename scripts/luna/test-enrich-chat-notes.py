@@ -244,9 +244,11 @@ class TestGateAndLedger(unittest.TestCase):
             ledger = Path(td) / "led.jsonl"
             os.environ["GRAPHIFY_LEDGER"] = str(ledger)
             try:
-                # zai-glm: a sanctioned enrichment provider (HIMMEL-1167/1257) —
-                # the ledger records allow+log only for a permitted provider now
-                # that deepseek is de-listed.
+                # zai-glm as the ledger SHAPE fixture. Its cell is deny as of
+                # HIMMEL-2224, but ledger_append is a pure formatter — it never
+                # consults the matrix — so the egress id here only has to be a
+                # real one. The gate's refusal of zai-glm is covered by
+                # test-egress-matrix.mjs and test_gate_deny_refuses_before_any_call.
                 ok = mod.ledger_append(Path("/v/chats"), 7, 200, "zai-glm")
             finally:
                 del os.environ["GRAPHIFY_LEDGER"]
@@ -1026,7 +1028,11 @@ class TestProviderEgressWiring(unittest.TestCase):
     def test_main_glm_provider_end_to_end(self):
         # --provider glm dispatches through call_anthropic, writes
         # enriched_model = glm-5.2, ledgers provider=zai-glm, and SKIPS the
-        # deepseek-only off-peak advisory.
+        # deepseek-only off-peak advisory. The egress gate is MOCKED here, so
+        # this pins the anthropic-api_style DISPATCH path only — it is not a
+        # claim that zai-glm is permitted. It is not (deny as of HIMMEL-2224);
+        # with the real gate this run refuses at rc=2, which is what
+        # test_gate_deny_refuses_before_any_call covers.
         with tempfile.TemporaryDirectory() as td:
             vault = _mk_vault(td)
             os.environ["LUNA_VAULT_PATH"] = str(vault)

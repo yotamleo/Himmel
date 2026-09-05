@@ -32,10 +32,17 @@ tmp="$(mktemp -d -t critic-panel-fallback-test.XXXXXX)"
 # shellcheck disable=SC2064
 trap "rm -rf $tmp" EXIT
 fails=0
+_skips=0
 LEDGER_NOOP="$tmp/ledger-noop.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$LEDGER_NOOP"
 chmod +x "$LEDGER_NOOP"
 export CRITIC_LEDGER_APPEND="$LEDGER_NOOP"
+
+# HIMMEL-2241: case 11 deliberately does NOT stub CRITIC_FIRST_PASS, so the
+# real critic-first-pass.sh -> scripts/hermes/invoke.sh chain runs and appends
+# flow-run rows. CRITIC_LEDGER_APPEND above stubs the CR-findings ledger, a
+# different file. Redirect the flow-run ledger into this test's scratch dir.
+export HIMMEL_FLOW_RUNS_LEDGER="$tmp/flow-runs.jsonl"
 
 check() {
     if [ "$2" = "$3" ]; then
@@ -62,6 +69,14 @@ check_not_contains() {
     else
         echo "ok - $1"
     fi
+}
+
+# skip <label> -- a case that could not run in this environment. Must NEVER
+# be reported with the "ok - " pass token: a skip credited as a pass hides
+# the fact that nothing was asserted (HIMMEL-2258 audit; HIMMEL-2226 fix).
+skip() {
+    echo "SKIP - $1"
+    _skips=$((_skips + 1))
 }
 
 # --- Fixture: 1-row free panel, anchor with the OpenRouter fallback pinned. ---
@@ -439,7 +454,10 @@ if command -v timeout > /dev/null 2>&1; then
         "$([ "$(grep -cF -- "$FB1" "$tmp/cap10p")" = "1" ] && [ "$(grep -cF -- "$FB2" "$tmp/cap10p")" = "1" ] && echo ok)" "ok"
     check "10p: parallel all-exhausted -> exit 1" "$rc10p" "1"
 else
-    for _i in 1 2 3 4 5 6 7 8 9 10; do echo "ok - 9p/10p: SKIP (no timeout binary)"; done
+    # HIMMEL-2226 (HIMMEL-2258 audit): this branch used to emit the "ok - "
+    # pass token, so a runner without GNU timeout silently credited 10 passes
+    # for assertions that never ran. Route through skip() instead.
+    for _i in 1 2 3 4 5 6 7 8 9 10; do skip "9p/10p case $_i: no timeout binary"; done
 fi
 
 # ===========================================================================
@@ -563,11 +581,44 @@ STUBEOF
     check_contains "16: budget-exhausted line after a hung candidate" "$stderr16" \
         "fallback-chain budget exhausted"
     check "16: candidate past the budget skipped (never invoked)" "$(grep -cF -- "$FB2" "$tmp/cap16")" "0"
-    check "16: seat wall-clock bounded (no stacked full timeouts)" "$([ "$_t16_elapsed" -le 8 ] && echo yes)" "yes"
+    # HIMMEL-2296: the no-stacking invariant is proven STRUCTURALLY — by how
+    # many candidates the stub was actually handed — not by wall clock. Correct
+    # behaviour invokes exactly two: $PRI (fails fast) then $FB (hangs, killed
+    # on the shared seat budget). A chain handing each candidate a fresh full
+    # member timeout would show three. This replaces a fixed `-le 8` bound whose
+    # nominal cost was already ~7s (CRITIC_TIMEOUT_SECS=2 + the panel's
+    # CRITIC_KILL_GRACE_SECS=5 default) — ~1s of slack, so it reported
+    # `got []` on any loaded box. That made it a load detector, not a bug
+    # detector: reproduced 25-34s on an idle-extracted repro of this one case.
+    check "16: exactly primary + one fallback attempted (no chain stacking)" \
+        "$(grep -c . "$tmp/cap16")" "2"
+    # RESIDUAL, stated rather than papered over (panel round 2, codex-2): the
+    # count proves at most primary+one fallback were ATTEMPTED, which catches
+    # the documented regression (a fresh full timeout per candidate lets the
+    # chain reach FB2, giving three lines). It does NOT by itself prove the
+    # budget was SHARED — a hypothetical regression that hands FB1 a fresh
+    # timeout but still stops the chain at two candidates would pass both this
+    # count and the ceiling below. Discriminating that needs per-candidate
+    # durations, and the wall clock cannot supply them here: with
+    # CRITIC_TIMEOUT_SECS=2 the shared-vs-fresh difference is ~2s, dwarfed by
+    # the 25-34s of ambient scheduling noise measured on this box — which is
+    # exactly why the old fixed 8s bound was flaky rather than diagnostic. That
+    # shape would also require a second, unrelated bug in the chain-length
+    # logic, so it is recorded here rather than chased.
+    #
+    # Coarse LIVENESS guard, deliberately not a performance assertion. It fires
+    # only if the hung candidate is never reaped at all — the one failure the
+    # count above cannot see, since a `sleep 999` left running would still have
+    # appended exactly two lines. Derived from the knobs with 10x slack so
+    # ambient load cannot trip it; a stacking regression is caught by the count.
+    _t16_ceiling=$(( (2 + 5) * 10 ))
+    check "16: hung candidate was reaped (liveness bound)" \
+        "$([ "$_t16_elapsed" -le "$_t16_ceiling" ] && echo yes)" "yes"
     check_contains "16: member ends unavailable" "$stderr16" \
         "panel-availability: qwen3coder unavailable"
 else
-    echo "ok - 16: skipped (no timeout binary)"
+    # HIMMEL-2226 (HIMMEL-2258 audit): was "ok - " (a silently-credited pass).
+    skip "16: no timeout binary"
 fi
 
 # --- Case 17 (codex-adv, HIMMEL-953): fallback attempts PRESERVE the row's
@@ -713,17 +764,16 @@ check "21: without trigger=any a timeout is NOT retried (1 attempt)" \
 check_contains "21: and it is reported unavailable(timeout)" \
     "$(cat "$tmp/err21")" "panel-availability: glm unavailable (timeout"
 
-# Case 22: the SHIPPED registry actually carries the retry config. Case 20
-# proves the mechanism against a fixture; without this, critics.json could lose
-# the chain and every fixture test would still pass.
-SHIPPED="$(cd "$(dirname "$0")" && pwd)/critics.json"
-check "22: shipped glm row declares a fallback chain" \
-    "$(node -e 'const r=require(process.argv[1]).panel.find(x=>x.slug==="glm");process.stdout.write(String(!!(r&&r.fallback_models&&r.fallback_models.length)))' "$SHIPPED")" "true"
-check "22: shipped glm row sets fallback_trigger=any (timeouts retry)" \
-    "$(node -e 'const r=require(process.argv[1]).panel.find(x=>x.slug==="glm");process.stdout.write(String(r&&r.fallback_trigger))' "$SHIPPED")" "any"
+# Case 22 (HIMMEL-1221) checked that the SHIPPED registry's glm row carried a
+# retry config. HIMMEL-1904 retired the glm critic row itself (subscription
+# cancelled), so the row this case asserted on no longer exists — removed.
 
 if [ "$fails" -eq 0 ]; then
-    echo "ALL PASS"
+    if [ "$_skips" -gt 0 ]; then
+        echo "ALL PASS ($_skips skipped)"
+    else
+        echo "ALL PASS"
+    fi
 else
     echo "$fails FAILED"
     exit 1

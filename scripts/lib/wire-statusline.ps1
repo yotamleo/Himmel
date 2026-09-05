@@ -30,87 +30,112 @@ function Set-HimmelStatusLine {
         [Parameter(Mandatory = $true)] [string]$HimmelPath
     )
 
-    # Forward-slash the himmel path so the `node "..."` command is valid.
-    $himmelFwd = $HimmelPath.Replace('\', '/')
-    $cmd = "node `"$himmelFwd/marketplace/plugins/claude-hud/dist/index.js`""
+    # Captured native stdout is decoded via [Console]::OutputEncoding, the
+    # legacy OEM codepage here, not UTF-8 (HIMMEL-2256; dot-sourcing this
+    # library must not mutate the caller's console encoding at top level).
+    # Save/restore around the capture so the caller's encoding is unchanged
+    # on every exit path, including a thrown error.
+    #
+    # Piping TEXT INTO jq's stdin is a separate direction governed by the
+    # $OutputEncoding preference variable, not [Console]::OutputEncoding --
+    # on Windows PowerShell 5.1 it defaults to ASCIIEncoding, silently
+    # replacing every non-ASCII char with `?` before jq ever sees it
+    # (HIMMEL-2256 twin bug). Must be set at global scope: a bare
+    # $OutputEncoding assignment inside a function is function-local and the
+    # child process never sees it.
+    #
+    # BOM-less: [Encoding]::UTF8 emits EF BB BF on stdin, which older jq rejects.
+    $prevOutputEncoding = [Console]::OutputEncoding
+    $prevOutEncodingPref = $global:OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
-    $settingsDir = Split-Path $SettingsPath -Parent
-    if (-not $settingsDir) { $settingsDir = '.' }
+        # Forward-slash the himmel path so the `node "..."` command is valid.
+        $himmelFwd = $HimmelPath.Replace('\', '/')
+        $cmd = "node `"$himmelFwd/marketplace/plugins/claude-hud/dist/index.js`""
 
-    if (Test-Path $SettingsPath) {
-        $raw = Get-Content $SettingsPath -Raw
-        if ([string]::IsNullOrWhiteSpace($raw)) {
-            # Empty / whitespace-only file → start from {} (ConvertFrom-Json
-            # returns $null on empty input, which then throws on property access).
-            $cfg = [pscustomobject]@{}
+        $settingsDir = Split-Path $SettingsPath -Parent
+        if (-not $settingsDir) { $settingsDir = '.' }
+
+        if (Test-Path $SettingsPath) {
+            $raw = Get-Content $SettingsPath -Raw
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                # Empty / whitespace-only file → start from {} (ConvertFrom-Json
+                # returns $null on empty input, which then throws on property access).
+                $cfg = [pscustomobject]@{}
+            } else {
+                try {
+                    $cfg = $raw | ConvertFrom-Json
+                } catch {
+                    # Throw (not Write-Error+return): the script entry point converts
+                    # this to `exit 1` so `-File` callers see a non-zero code, matching
+                    # the bash twin's `return 1`. Write-Error alone exits 0 under the
+                    # default child $ErrorActionPreference='Continue'.
+                    throw "wire-statusline: $SettingsPath is not valid JSON — refusing to overwrite"
+                }
+            }
         } else {
-            try {
-                $cfg = $raw | ConvertFrom-Json
-            } catch {
-                # Throw (not Write-Error+return): the script entry point converts
-                # this to `exit 1` so `-File` callers see a non-zero code, matching
-                # the bash twin's `return 1`. Write-Error alone exits 0 under the
-                # default child $ErrorActionPreference='Continue'.
-                throw "wire-statusline: $SettingsPath is not valid JSON — refusing to overwrite"
-            }
+            New-Item -ItemType Directory -Force $settingsDir | Out-Null
+            $cfg = [pscustomobject]@{}
         }
-    } else {
-        New-Item -ItemType Directory -Force $settingsDir | Out-Null
-        $cfg = [pscustomobject]@{}
-    }
 
-    # (1) statusLine → hud renderer.
-    $statusLine = [pscustomobject]@{ type = 'command'; command = $cmd }
-    if ($cfg.PSObject.Properties['statusLine']) {
-        $cfg.statusLine = $statusLine
-    } else {
-        $cfg | Add-Member -NotePropertyName statusLine -NotePropertyValue $statusLine -Force
-    }
+        # (1) statusLine → hud renderer.
+        $statusLine = [pscustomobject]@{ type = 'command'; command = $cmd }
+        if ($cfg.PSObject.Properties['statusLine']) {
+            $cfg.statusLine = $statusLine
+        } else {
+            $cfg | Add-Member -NotePropertyName statusLine -NotePropertyValue $statusLine -Force
+        }
 
-    # (2) Merge the extra-cmd gate into .env, preserving every other env key.
-    if (-not $cfg.PSObject.Properties['env']) {
-        $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) -Force
-    }
-    if ($cfg.env.PSObject.Properties['CLAUDE_HUD_ALLOW_EXTRA_CMD']) {
-        $cfg.env.CLAUDE_HUD_ALLOW_EXTRA_CMD = '1'
-    } else {
-        $cfg.env | Add-Member -NotePropertyName CLAUDE_HUD_ALLOW_EXTRA_CMD -NotePropertyValue '1' -Force
-    }
+        # (2) Merge the extra-cmd gate into .env, preserving every other env key.
+        if (-not $cfg.PSObject.Properties['env']) {
+            $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) -Force
+        }
+        if ($cfg.env.PSObject.Properties['CLAUDE_HUD_ALLOW_EXTRA_CMD']) {
+            $cfg.env.CLAUDE_HUD_ALLOW_EXTRA_CMD = '1'
+        } else {
+            $cfg.env | Add-Member -NotePropertyName CLAUDE_HUD_ALLOW_EXTRA_CMD -NotePropertyValue '1' -Force
+        }
 
-    $json = $cfg | ConvertTo-Json -Depth 20
-    if (Get-Command jq -ErrorAction SilentlyContinue) {
-        $normalized = $json | jq --indent 2 .
-        if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
-    }
-    Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
-    Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
-
-    # (3) Drop the hud config next to settings.json, substituting this clone's
-    # path for the <himmel-path> placeholder. Guarded on the source existing so
-    # tests wiring against a synthetic himmel path stay a pure statusLine/env op.
-    $hudSrc = "$himmelFwd/marketplace/plugins/claude-hud/config/himmel-config.json"
-    if (Test-Path $hudSrc) {
-        $hudDir = Join-Path $settingsDir 'plugins/claude-hud'
-        New-Item -ItemType Directory -Force $hudDir | Out-Null
-        $hudCfg = (Get-Content $hudSrc -Raw).Replace('<himmel-path>', $himmelFwd).Replace("`r`n", "`n")
-        $hudPath = Join-Path $hudDir 'config.json'
-        $hudTmp = "$hudPath.tmp"
-        # UTF-8 without BOM; single trailing LF (matches the bash twin's printf).
-        [System.IO.File]::WriteAllText($hudTmp, $hudCfg.TrimEnd("`n") + "`n")
-        # Validate the substituted config is still JSON before publishing it — a
-        # JSON-breaking himmel path would otherwise yield a config.json the
-        # renderer fails on silently at render time. jq is optional here (matches
-        # the ConvertTo-Json fallback above); skip the check when it is absent.
+        $json = $cfg | ConvertTo-Json -Depth 20
         if (Get-Command jq -ErrorAction SilentlyContinue) {
-            & jq -e . $hudTmp *> $null
-            if ($LASTEXITCODE -ne 0) {
-                Remove-Item -LiteralPath $hudTmp -Force
-                throw "wire-statusline: substituted hud config is not valid JSON — refusing to write"
-            }
+            $normalized = $json | jq --indent 2 .
+            if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
         }
-        Move-Item -Path $hudTmp -Destination $hudPath -Force
+        Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
+        Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
+
+        # (3) Drop the hud config next to settings.json, substituting this clone's
+        # path for the <himmel-path> placeholder. Guarded on the source existing so
+        # tests wiring against a synthetic himmel path stay a pure statusLine/env op.
+        $hudSrc = "$himmelFwd/marketplace/plugins/claude-hud/config/himmel-config.json"
+        if (Test-Path $hudSrc) {
+            $hudDir = Join-Path $settingsDir 'plugins/claude-hud'
+            New-Item -ItemType Directory -Force $hudDir | Out-Null
+            $hudCfg = (Get-Content $hudSrc -Raw).Replace('<himmel-path>', $himmelFwd).Replace("`r`n", "`n")
+            $hudPath = Join-Path $hudDir 'config.json'
+            $hudTmp = "$hudPath.tmp"
+            # UTF-8 without BOM; single trailing LF (matches the bash twin's printf).
+            [System.IO.File]::WriteAllText($hudTmp, $hudCfg.TrimEnd("`n") + "`n")
+            # Validate the substituted config is still JSON before publishing it — a
+            # JSON-breaking himmel path would otherwise yield a config.json the
+            # renderer fails on silently at render time. jq is optional here (matches
+            # the ConvertTo-Json fallback above); skip the check when it is absent.
+            if (Get-Command jq -ErrorAction SilentlyContinue) {
+                & jq -e . $hudTmp *> $null
+                if ($LASTEXITCODE -ne 0) {
+                    Remove-Item -LiteralPath $hudTmp -Force
+                    throw "wire-statusline: substituted hud config is not valid JSON — refusing to write"
+                }
+            }
+            Move-Item -Path $hudTmp -Destination $hudPath -Force
+        }
+        Write-Host "  wired statusLine → $SettingsPath"
+    } finally {
+        [Console]::OutputEncoding = $prevOutputEncoding
+        $global:OutputEncoding = $prevOutEncodingPref
     }
-    Write-Host "  wired statusLine → $SettingsPath"
 }
 
 # Direct invocation (both args supplied) runs the function. Dot-sourcing with

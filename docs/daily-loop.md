@@ -121,7 +121,7 @@ If you get the format wrong you see:
 COMMIT REJECTED: message does not match conventional commit format.
 
   Required:  type(scope): message
-  Ticket:    required only when TICKET_ID_REQUIRED=1
+  Ticket:    required by default; TICKET_ID_REQUIRED=0 opts out
 
   Types: feat fix chore docs refactor test style perf ci build revert
 

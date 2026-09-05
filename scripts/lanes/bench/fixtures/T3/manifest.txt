@@ -1,0 +1,7 @@
+Deploy-App.ps1
+Get-Status.ps1
+Invoke-Backup.ps1
+New-Report.ps1
+Remove-TempFiles.ps1
+Set-Config.ps1
+Start-Service.ps1

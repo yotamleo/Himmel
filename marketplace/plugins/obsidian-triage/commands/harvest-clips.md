@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Glob, Grep, Read, Edit, Write, Skill
-description: Autonomous HARVEST pass over the Obsidian vault's Clippings/ folder. For each unharvested clip, mark `harvested_at:` to flag it ready for /triage-clips. github URLs are dispatched to `obsidian-triage:luna-ingest` for repo synthesis; every other type relies on the LUNA-2 Web Clipper body content already captured in the clip (no external fetch, no API keys). No user prompts. Idempotent via `harvested_at:` marker.
+description: Autonomous HARVEST pass over Clippings/ — stamp harvested_at on each new clip; github URLs go to luna-ingest.
 argument-hint: "[vault-path] [--dry-run] [--limit N] [--firecrawl-thin] [--firecrawl-budget N]"
 ---
 
@@ -109,10 +109,10 @@ A clip is **unharvested** if its YAML frontmatter does NOT contain a line matchi
 find "<vault>/Clippings" -maxdepth 2 -type f -name '*.md' \
   -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' \
   -not -path '*/_evidence/*' -print0 \
-  | xargs -0 -I {} sh -c 'grep -qE "^harvested_at:[[:space:]]*\S" "$1" || echo "$1"' _ {}
+  | xargs -0 -I {} sh -c 'grep -qE "^harvested_at:[[:space:]]*\S" "${1}" || echo "${1}"' _ {}
 ```
 
-Maxdepth 2 captures subfolders. The exclusions skip the four inbox-internal names that are NEVER source clips (LUNA-53 + LUNA-55 + LUNA-83): `_synthesis/` (`/synthesize-clips` output — `type: synthesis` proposal pages), `_done/` (`/archive-clips` archive of graduated clips, which already completed harvest), `_deferred.md` (`/archive-clips` backlog log), and `_evidence/` (`Clippings/_evidence/` is the reviewed-evidence pool — including its `_rejected/` subfolder — excluded from inbox/eligibility scans; visible to `/synthesize-clips` only). Without these, the scan re-catches derived/archived content every run and pollutes it with `harvest_*` frontmatter. Sort by `date_clipped` ascending (oldest first). Apply `--limit N` cap.
+Maxdepth 2 captures subfolders. Four inbox-internal names are never source clips and are excluded: `_synthesis/` (`/synthesize-clips` output — `type: synthesis` proposal pages), `_done/` (`/archive-clips` archive of graduated clips, which already completed harvest), `_deferred.md` (`/archive-clips` backlog log), and `_evidence/` (the reviewed-evidence pool, including `_rejected/`; visible to `/synthesize-clips` only). Without these, the scan re-catches derived/archived content every run and pollutes it with `harvest_*` frontmatter. Sort by `date_clipped` ascending (oldest first). Apply `--limit N` cap.
 
 If zero unharvested clips: exit 0 with `harvest-clips: 0 unharvested clips in Clippings/ — nothing to do`.
 
@@ -172,7 +172,7 @@ Apply canonicalization rules per domain (LUNA-11 will land the shared `lib/url-c
 |--------|------|
 | `x.com` / `twitter.com` / `mobile.twitter.com` | host → `x.com`; keep path through `/status/<id>`; drop query string. |
 | `youtube.com` / `youtu.be` | normalize to `youtube.com/watch?v=<id>`; drop other query params. |
-| `github.com` | strip `/tree/<branch>`, `/blob/<branch>/<path>`, trailing `/`. Lowercase owner/repo. |
+| `github.com` | strip `/tree/<branch>` and trailing `/`; **keep** `/blob/<branch>/<path>` (one file is a distinct document from the repo root — HIMMEL-1735). Lowercase owner/repo. |
 | `reddit.com` / `old.reddit.com` / `new.reddit.com` / other subdomain variants | host -> `www.reddit.com`; drop query/fragment + trailing slash; lowercase the `/r/<sub>` segment. `redd.it` short links are resolved by the reddit-enrich rung (HEAD redirect), NOT here. |
 | Generic article | drop `utm_*`, `fbclid`, `gclid`, `ref=`, `source=`, `mc_cid`, `mc_eid`. |
 | `medium.com` | drop `?source=`. |

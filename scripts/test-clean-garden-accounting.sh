@@ -393,6 +393,727 @@ else
 fi
 clear_checkpoints
 
+echo "RUN E: HIMMEL-1692 dirty merged worktree is never pruned + is checkpointed"
+
+# --- E fixtures --------------------------------------------------------------
+# RUN A..D mutate the repo (RUN A prunes wt-merged etc.) and RUN D's tail
+# already calls clear_checkpoints, so this section starts from a clean
+# checkpoint namespace and adds its own worktrees rather than reusing any
+# from A-D.
+#
+# (a) feat/staged-wip: STAGED (git add, uncommitted) + UNSTAGED (tracked,
+#     modified) work in a worktree whose branch tip nonetheless has a merged
+#     PR — the exact 3,089-line staged-but-uncommitted loss shape HIMMEL-1692
+#     documents. Only the dirty guard stands between this and deletion.
+WT_STAGED=$(mk_wt_commit wt-staged feat/staged-wip)
+STAGED_TIP=$(git -C "$WT_STAGED" rev-parse HEAD)
+STAGED_NEW_CONTENT="staged-new-file-$$"
+printf '%s\n' "$STAGED_NEW_CONTENT" > "$WT_STAGED/new-staged-file.txt"
+git -C "$WT_STAGED" add new-staged-file.txt
+STAGED_DIRTY_CONTENT="unstaged-dirty-mod-$$"
+printf '%s\n' "$STAGED_DIRTY_CONTENT" > "$WT_STAGED/wt-staged.txt"
+
+# (b) feat/untracked-wip: merged row, tip matches, plus one untracked
+#     non-allowlisted file — the case `git stash create` alone cannot capture.
+WT_UNTRACKED=$(mk_wt_commit wt-untracked feat/untracked-wip)
+UNTRACKED_TIP=$(git -C "$WT_UNTRACKED" rev-parse HEAD)
+UNTRACKED_CONTENT="forgotten-file-content-$$"
+printf '%s\n' "$UNTRACKED_CONTENT" > "$WT_UNTRACKED/forgotten-notes.txt"
+
+# Both branches are prune-ELIGIBLE by the merged-PR predicate (tip == recorded
+# head), so ONLY the dirty guard stands between them and deletion.
+{
+    printf 'owner/repo\tfeat/staged-wip\tmerged\t%s\n' "$STAGED_TIP"
+    printf 'owner/repo\tfeat/untracked-wip\tmerged\t%s\n' "$UNTRACKED_TIP"
+} >> "$GH_ROWS_ORIGIN"
+
+STAGED_STATUS_BEFORE=$(git -C "$WT_STAGED" status --porcelain)
+
+e_out=$(run_clean)
+
+if [ -d "$WT_STAGED" ]; then
+    pass "E1: dirty merged worktree (staged+unstaged) survives the prune"
+else
+    fail "E1: wt-staged directory was deleted" "$e_out"
+fi
+
+staged_on_disk=$(cat "$WT_STAGED/new-staged-file.txt" 2>/dev/null)
+if [ "$staged_on_disk" = "$STAGED_NEW_CONTENT" ]; then
+    pass "E2: staged file content survives on disk, byte-exact"
+else
+    fail "E2: staged file content mismatch: got '$staged_on_disk'" "$e_out"
+fi
+
+if grepq "$e_out" -F "feat/staged-wip has uncommitted changes — skipped"; then
+    pass "E3: dirty-guard WARN still fires for feat/staged-wip"
+else
+    fail "E3: expected the uncommitted-changes WARN for feat/staged-wip" "$e_out"
+fi
+
+if ckpt_exists refs/checkpoints/wt-staged-autosave; then
+    pass "E4: refs/checkpoints/wt-staged-autosave now exists"
+else
+    fail "E4: expected refs/checkpoints/wt-staged-autosave to exist" "$e_out"
+fi
+
+ckpt_staged_new=$(git -C "$REPO" show refs/checkpoints/wt-staged-autosave:new-staged-file.txt 2>/dev/null)
+if [ "$ckpt_staged_new" = "$STAGED_NEW_CONTENT" ]; then
+    pass "E5: checkpoint tree captures the STAGED-but-uncommitted file"
+else
+    fail "E5: checkpoint tree missing/wrong staged file: got '$ckpt_staged_new'" "$e_out"
+fi
+
+ckpt_staged_mod=$(git -C "$REPO" show refs/checkpoints/wt-staged-autosave:wt-staged.txt 2>/dev/null)
+if [ "$ckpt_staged_mod" = "$STAGED_DIRTY_CONTENT" ]; then
+    pass "E6: checkpoint tree captures the UNSTAGED modification (not HEAD's content)"
+else
+    fail "E6: checkpoint tree has wrong content for wt-staged.txt: got '$ckpt_staged_mod'" "$e_out"
+fi
+
+ckpt_untracked=$(git -C "$REPO" show refs/checkpoints/wt-untracked-autosave:forgotten-notes.txt 2>/dev/null)
+if [ -d "$WT_UNTRACKED" ] && [ "$ckpt_untracked" = "$UNTRACKED_CONTENT" ]; then
+    pass "E7: wt-untracked survives and its checkpoint captures the untracked file (git stash create cannot do this)"
+else
+    fail "E7: wt-untracked survival or checkpoint content wrong: got '$ckpt_untracked'" "$e_out"
+fi
+
+STAGED_STATUS_AFTER=$(git -C "$WT_STAGED" status --porcelain)
+if [ "$STAGED_STATUS_AFTER" = "$STAGED_STATUS_BEFORE" ]; then
+    pass "E8: checkpointing did not mutate wt-staged (status --porcelain byte-identical)"
+else
+    fail "E8: worktree status changed by checkpointing (before='$STAGED_STATUS_BEFORE' after='$STAGED_STATUS_AFTER')" "$e_out"
+fi
+
+OLD_STAGED_CKPT=$(git -C "$REPO" rev-parse refs/checkpoints/wt-staged-autosave)
+run_clean >/dev/null
+NEW_PARENTS=$(git -C "$REPO" rev-list --parents -n 1 refs/checkpoints/wt-staged-autosave)
+case " $NEW_PARENTS " in
+    *" $OLD_STAGED_CKPT "*) pass "E9: re-run's checkpoint carries the previous checkpoint oid as a parent (lossless)" ;;
+    *) fail "E9: previous checkpoint oid $OLD_STAGED_CKPT not among parents" "$NEW_PARENTS" ;;
+esac
+
+clear_checkpoints
+dry_out=$(run_clean --dry-run)
+any_ckpt=$(git -C "$REPO" for-each-ref --format='%(refname)' refs/checkpoints/ 2>/dev/null)
+if [ -z "$any_ckpt" ] && grepq "$dry_out" -F "DRY clean-garden: would checkpoint"; then
+    pass "E10: --dry-run prints the would-checkpoint line and writes no ref"
+else
+    fail "E10: dry-run left refs='$any_ckpt' or missing the DRY line" "$dry_out"
+fi
+clear_checkpoints
+
+# --- E11: tool-generated churn is NOT user work -----------------------------
+# The dirty guard must refuse genuine WIP without also jamming on churn that
+# no human wrote. .tokensave/ is the live case on this box: a tokensave watcher
+# chained off the GLOBAL git hookspath mints a SQLite DB inside a worktree
+# seconds after `git worktree add`, so without the is_ignorable_stray entry
+# EVERY merged worktree would classify "forgotten" and never prune again —
+# a guard that refuses everything is as useless as one that refuses nothing.
+# Note this fixture repo has NO .gitignore yet (RUN F writes the first one), so
+# .tokensave/ here really is unignored-untracked: this exercises the allowlist
+# itself, which is the adopter-checkout shape where .gitignore lacks the entry.
+WT_CHURN=$(mk_wt_commit wt-churn feat/tool-churn)
+CHURN_TIP=$(git -C "$WT_CHURN" rev-parse HEAD)
+mkdir -p "$WT_CHURN/.tokensave"
+printf 'fake-sqlite\n' > "$WT_CHURN/.tokensave/tokensave.db"
+printf '{}\n'          > "$WT_CHURN/.tokensave/config.json"
+printf 'owner/repo\tfeat/tool-churn\tmerged\t%s\n' "$CHURN_TIP" >> "$GH_ROWS_ORIGIN"
+
+e11_out=$(run_clean)
+if [ ! -d "$WT_CHURN" ]; then
+    pass "E11: merged worktree whose only untracked content is .tokensave/ IS pruned"
+else
+    fail "E11: wt-churn survived — tool churn wrongly read as user work" "$e11_out"
+fi
+if ! ckpt_exists refs/checkpoints/wt-churn-autosave; then
+    pass "E11: no autosave checkpoint minted for pure tool churn"
+else
+    fail "E11: unexpected refs/checkpoints/wt-churn-autosave for tool churn" "$e11_out"
+fi
+clear_checkpoints
+
+# --- E12: a STAGED version superseded on disk is not lost --------------------
+# `add -A` records only the WORKING-TREE content, so a file staged with one
+# content and then edited again keeps just the on-disk version — the staged
+# snapshot in between would vanish (codex CR round 1). One tree cannot hold
+# both, so the index is captured as its own commit and hung off the checkpoint
+# as an extra parent. Assert BOTH survive: the checkpoint tree carries the
+# worktree version (what `git restore --source` should yield), and some parent
+# carries the staged version.
+WT_IDX=$(mk_wt_commit wt-idx feat/idx-split)
+IDX_TIP=$(git -C "$WT_IDX" rev-parse HEAD)
+IDX_STAGED="staged-version-$$"
+IDX_WORKTREE="worktree-version-$$"
+printf '%s\n' "$IDX_STAGED" > "$WT_IDX/wt-idx.txt"
+git -C "$WT_IDX" add wt-idx.txt
+printf '%s\n' "$IDX_WORKTREE" > "$WT_IDX/wt-idx.txt"
+printf 'owner/repo\tfeat/idx-split\tmerged\t%s\n' "$IDX_TIP" >> "$GH_ROWS_ORIGIN"
+
+e12_out=$(run_clean)
+
+ckpt_idx_tree=$(git -C "$REPO" show refs/checkpoints/wt-idx-autosave:wt-idx.txt 2>/dev/null)
+if [ "$ckpt_idx_tree" = "$IDX_WORKTREE" ]; then
+    pass "E12: checkpoint tree carries the WORKTREE version (what restore --source yields)"
+else
+    fail "E12: checkpoint tree should hold the worktree version, got '$ckpt_idx_tree'" "$e12_out"
+fi
+
+idx_found=0
+for _p in $(git -C "$REPO" rev-list --parents -n 1 refs/checkpoints/wt-idx-autosave 2>/dev/null | cut -d' ' -f2-); do
+    if [ "$(git -C "$REPO" show "$_p:wt-idx.txt" 2>/dev/null)" = "$IDX_STAGED" ]; then
+        idx_found=1
+        break
+    fi
+done
+if [ "$idx_found" -eq 1 ]; then
+    pass "E12: the superseded STAGED version survives as a checkpoint parent"
+else
+    fail "E12: no checkpoint parent carries the staged version '$IDX_STAGED'" "$e12_out"
+fi
+clear_checkpoints
+
+# --- E13: staged-only work, reverted on disk, is still checkpointed ---------
+# The complementary case to E12, and the sharper one: stage X, then put the
+# file back to HEAD's content on disk. `status --porcelain` still reports the
+# worktree dirty (a staged modification), so the prune refuses and calls
+# checkpoint_worktree — but the WORKTREE tree now collapses back to HEAD's own
+# tree. A nothing-to-save early-return placed before the index capture exits 0
+# there and silently discards X (codex CR round 3, Critical). The staged
+# snapshot is the only work that exists, so it must become the checkpoint's own
+# tree, not a parent nobody restores.
+WT_SONLY=$(mk_wt_commit wt-sonly feat/staged-only)
+SONLY_TIP=$(git -C "$WT_SONLY" rev-parse HEAD)
+SONLY_STAGED="staged-only-version-$$"
+printf '%s\n' "$SONLY_STAGED" > "$WT_SONLY/wt-sonly.txt"
+git -C "$WT_SONLY" add wt-sonly.txt
+# Restore HEAD's blob BYTE-EXACTLY. `$(cat file)` strips the trailing newline,
+# so writing it back with printf leaves a one-byte difference — the worktree
+# tree then does NOT equal head_tree and this test silently exercises E12's
+# path instead of the staged-only one it exists for.
+git -C "$WT_SONLY" show "HEAD:wt-sonly.txt" > "$WT_SONLY/wt-sonly.txt"
+# Assert the fixture really is the staged-only shape, or this test passes for
+# the wrong reason. NOTE the two diffs are different questions: plain
+# `git diff` is WORKTREE-vs-INDEX (non-empty here BY DESIGN — that is the
+# staged delta), so it is the wrong guard. `git diff HEAD` is WORKTREE-vs-HEAD,
+# which is the invariant that makes the temporary tree collapse to head_tree.
+if [ -n "$(git -C "$WT_SONLY" diff HEAD --name-only)" ]; then
+    fail "E13 fixture: worktree still differs from HEAD — the staged-only case is not being exercised"
+fi
+if [ -z "$(git -C "$WT_SONLY" diff --cached --name-only)" ]; then
+    fail "E13 fixture: nothing staged — the staged-only case is not being exercised"
+fi
+printf 'owner/repo\tfeat/staged-only\tmerged\t%s\n' "$SONLY_TIP" >> "$GH_ROWS_ORIGIN"
+
+e13_out=$(run_clean)
+
+if [ -d "$WT_SONLY" ]; then
+    pass "E13: staged-only worktree survives the prune"
+else
+    fail "E13: wt-sonly was pruned despite a staged modification" "$e13_out"
+fi
+ckpt_sonly=$(git -C "$REPO" show refs/checkpoints/wt-sonly-autosave:wt-sonly.txt 2>/dev/null)
+if [ "$ckpt_sonly" = "$SONLY_STAGED" ]; then
+    pass "E13: the checkpoint restores TO the staged-only content (not silently dropped)"
+else
+    fail "E13: checkpoint should carry the staged-only content, got '$ckpt_sonly'" "$e13_out"
+fi
+clear_checkpoints
+
+echo "RUN F: HIMMEL-1692 stray-husk sweep is fail-closed on unsaved work"
+
+# --- F fixtures --------------------------------------------------------------
+# The stray sweep only looks under $PRIMARY_WORKTREE/.claude/worktrees, and
+# in this suite PRIMARY_WORKTREE == $REPO (git-common-dir of a non-worktree
+# checkout). The real himmel repo gitignores /.claude/worktrees (see its
+# .gitignore) — that matters here: a plain leftover directory placed there
+# has no `.git` of its own, so `classify_worktree` resolves it by walking up
+# to $REPO's OWN repo boundary; without the gitignore its junk files would
+# show up as $REPO's own untracked files (verdict "forgotten", wrongly
+# refused). Replicate the real gitignore so F6 exercises the actual
+# production shape rather than an artifact of this fixture's repo missing it.
+printf '/.claude/worktrees\n' > "$REPO/.gitignore"
+git -C "$REPO" add .gitignore
+git -C "$REPO" commit -q -m "gitignore worktrees (RUN F fixture)"
+
+STRAY_HOME_F="$REPO/.claude/worktrees"
+mkdir -p "$STRAY_HOME_F"
+
+# mk_husk <name> <branch> — a HAND-BUILT worktree admin record under
+# .claude/worktrees, wired up WITHOUT ever calling `git worktree add`. It
+# produces the same end state the old "real worktree add, then corrupt the
+# back-reference" approach did: an admin dir at $REPO/.git/worktrees/<name>/
+# whose "gitdir" file (what `git worktree list` reads to report the
+# worktree's path) is bogus from birth, so the husk is invisible to
+# clean-garden's registered_worktree_path() lookup and reads as an
+# unregistered stray — while REMAINING a fully live git worktree: `git -C
+# <husk> ...` still resolves HEAD/index/status normally, because those
+# commands consult the husk's OWN .git file + the admin dir's HEAD/commondir,
+# never the "gitdir" back-reference. This is the shape a partially-failed
+# `git worktree remove` leaves behind when the working directory survives (a
+# locked file, say) but the admin record is already gone — see
+# mk_broken_husk below for what happens once the ENTIRE admin dir (not just
+# this one file) is gone.
+#
+# .tokensave note (measured, not guessed — HIMMEL-1692 RUN F post-mortem):
+# this machine chains a tokensave.exe watcher off the GLOBAL git hookspath
+# (core.hookspath) — post-checkout fires `tokensave.exe init &` whenever the
+# old-SHA arg is all-zeros (i.e. on any real `git worktree add` or `git
+# clone`), and post-commit fires `tokensave.exe sync &` on EVERY commit,
+# unconditionally. A real `git worktree add` here attracted a live
+# .tokensave/ (config.json + a WAL-mode SQLite db) within 1-2s, and every
+# subsequent commit inside that worktree re-attracted it within 0-1s — even
+# right after deleting it, and the delete could itself fail with "Device or
+# resource busy" while tokensave's own process still held the db file open.
+# That race made RUN F's assertions pass/fail for the WRONG reason: the
+# stray-sweep's freshness gate (`find -mmin -1440`) saw the husk as
+# touched-in-the-last-24h and skipped it before the HIMMEL-1692 guard this
+# suite exists to test ever ran. Building the admin record BY HAND never
+# fires post-checkout at all (no `git worktree add` ⇒ no "old SHA is
+# all-zeros" event) — measured across a hand-built create + a real
+# `git -C husk commit`, polled for 20s: .tokensave never appeared either
+# time. Do not "simplify" this back to `git worktree add` + stale_husk; that
+# reintroduces the race this comment documents.
+mk_husk() {
+    local name="$1" branch="$2" wt admin head_sha
+    wt="$STRAY_HOME_F/$name"
+    admin="$REPO/.git/worktrees/$name"
+    head_sha=$(git -C "$REPO" rev-parse HEAD)
+    mkdir -p "$wt" "$admin"
+    git -C "$REPO" update-ref "refs/heads/$branch" "$head_sha"
+    printf 'ref: refs/heads/%s\n' "$branch" > "$admin/HEAD"
+    printf '../..\n' > "$admin/commondir"
+    # bogus from birth — same end state the old corrupt-after-the-fact
+    # version produced, so this is an unregistered stray immediately.
+    printf 'bogus-unregistered-path-for-%s\n' "$name" > "$admin/gitdir"
+    printf 'gitdir: %s\n' "$admin" > "$wt/.git"
+    git -C "$wt" read-tree HEAD >/dev/null 2>&1
+    git -C "$wt" checkout-index -a -f >/dev/null 2>&1
+    printf '%s\n' "$branch" > "$wt/committed.txt"
+    git -C "$wt" add committed.txt
+    git -C "$wt" commit -q -m "$branch"
+    printf '%s\n' "$wt"
+}
+
+# mk_broken_husk <name> — NOT a real worktree: a plain directory whose own
+# `.git` is a FILE with a gitdir: line pointing at a path that does not
+# exist — the real broken-admin-record shape (the WHOLE
+# $REPO/.git/worktrees/<name> admin dir is gone, not just one file inside
+# it). git cannot resolve HEAD from here at all ("fatal: not a git
+# repository"), so classify_worktree reports scanfail.
+mk_broken_husk() {
+    local name="$1" wt
+    wt="$STRAY_HOME_F/$name"
+    mkdir -p "$wt"
+    printf 'gitdir: %s/nonexistent-admin-dir/.git\n' "$TMP_ROOT_UNIX" > "$wt/.git"
+    printf 'leftover content\n' > "$wt/somefile.txt"
+    printf '%s\n' "$wt"
+}
+
+# mk_plain_leftover <name> — no `.git` anywhere: an ordinary directory that
+# is simply not a worktree at all.
+mk_plain_leftover() {
+    local name="$1" wt
+    wt="$STRAY_HOME_F/$name"
+    mkdir -p "$wt"
+    printf 'leftover\n' > "$wt/leftover.txt"
+    printf '%s\n' "$wt"
+}
+
+# stale_husk <dir> — back-date every entry inside <dir> (including <dir>
+# itself) to 3 days ago, then VERIFY the freshness gate (`find -mmin -1440`,
+# which the sweep also uses) actually sees it as stale. The sweep skips
+# anything with an entry touched in the last 24h, so an unverified back-date
+# would make later assertions pass or fail for the wrong reason.
+stale_husk() {
+    local dir="$1"
+    find "$dir" -exec touch -d "3 days ago" {} + 2>/dev/null
+    if [ -n "$(find "$dir" -mmin -1440 -print 2>/dev/null)" ]; then
+        echo "FIXTURE ERROR: $dir did not back-date to stale" >&2
+        return 1
+    fi
+    return 0
+}
+
+# norm_path <dir> — resolve <dir> the way clean-garden.sh's OWN bash session
+# will report it, not the cygpath -m form this suite built $wt from. MSYS
+# normalizes cwd-relative paths under TEMP to its /tmp mount regardless of
+# which path form you cd'd in with (the "MSYS mangling" trap) — so the
+# stray-sweep's WARN/DRY lines echo $stray_dir in that mounted form, which
+# can differ textually (though not physically) from $HUSK_*. Any assertion
+# that literal-matches clean-garden's echoed text must compare against THIS
+# form.
+norm_path() {
+    ( cd "$1" 2>/dev/null && pwd ) || printf '%s' "$1"
+}
+
+# verify_unregistered <dir> — sanity-check the mk_husk corruption actually
+# worked before trusting assertions built on top of it.
+verify_unregistered() {
+    local wt="$1" wt_norm wt_list
+    wt_norm=$(cd "$wt" 2>/dev/null && pwd || echo "$wt")
+    wt_list=$(git -C "$REPO" worktree list --porcelain)
+    if grepq "$wt_list" -F "worktree $wt_norm"; then
+        echo "FIXTURE ERROR: $wt is still registered in git worktree list" >&2
+        return 1
+    fi
+    return 0
+}
+
+clear_checkpoints
+
+# --- F1/F2/F3: tracked uncommitted work survives + is checkpointed ----------
+HUSK_TRACKED=$(mk_husk husk-tracked exp/husk-tracked)
+printf 'MODIFIED after commit\n' > "$HUSK_TRACKED/committed.txt"
+HUSK_TRACKED_CONTENT=$(cat "$HUSK_TRACKED/committed.txt")
+verify_unregistered "$HUSK_TRACKED"
+stale_husk "$HUSK_TRACKED" || fail "F-fixture: stale_husk failed for husk-tracked"
+
+# --- F4: untracked non-stray file survives + is checkpointed ----------------
+HUSK_UNTRACKED=$(mk_husk husk-untracked exp/husk-untracked)
+HUSK_UNTRACKED_CONTENT="forgotten-husk-content-$$"
+printf '%s\n' "$HUSK_UNTRACKED_CONTENT" > "$HUSK_UNTRACKED/forgotten.txt"
+verify_unregistered "$HUSK_UNTRACKED"
+stale_husk "$HUSK_UNTRACKED" || fail "F-fixture: stale_husk failed for husk-untracked"
+
+# --- F5: clean worktree husk — positive control, still swept ----------------
+HUSK_CLEAN=$(mk_husk husk-clean exp/husk-clean)
+verify_unregistered "$HUSK_CLEAN"
+stale_husk "$HUSK_CLEAN" || fail "F-fixture: stale_husk failed for husk-clean"
+
+# --- F6: plain non-git leftover directory — still swept ---------------------
+LEFTOVER_PLAIN=$(mk_plain_leftover leftover-plain)
+stale_husk "$LEFTOVER_PLAIN" || fail "F-fixture: stale_husk failed for leftover-plain"
+
+# --- F7: broken/unreadable .git — scanfail, fail-closed ---------------------
+HUSK_BROKEN=$(mk_broken_husk husk-broken)
+stale_husk "$HUSK_BROKEN" || fail "F-fixture: stale_husk failed for husk-broken"
+
+f_out=$(run_clean)
+
+if [ -d "$HUSK_TRACKED" ]; then
+    pass "F1: husk with tracked uncommitted changes survives the sweep"
+else
+    fail "F1: husk-tracked directory was swept" "$f_out"
+fi
+tracked_on_disk=$(cat "$HUSK_TRACKED/committed.txt" 2>/dev/null)
+if [ "$tracked_on_disk" = "$HUSK_TRACKED_CONTENT" ]; then
+    pass "F1: husk-tracked content is still readable byte-exact"
+else
+    fail "F1: husk-tracked content mismatch: got '$tracked_on_disk'" "$f_out"
+fi
+
+if grepq "$f_out" -F "refusing to sweep $(norm_path "$HUSK_TRACKED")"; then
+    pass "F2: refusal WARN names the husk-tracked path"
+else
+    fail "F2: expected a refusal WARN naming $HUSK_TRACKED" "$f_out"
+fi
+
+ckpt_tracked=$(git -C "$REPO" show refs/checkpoints/husk-tracked-autosave:committed.txt 2>/dev/null)
+if [ "$ckpt_tracked" = "$HUSK_TRACKED_CONTENT" ]; then
+    pass "F3: husk-tracked content was checkpointed"
+else
+    fail "F3: checkpoint missing/wrong for husk-tracked: got '$ckpt_tracked'" "$f_out"
+fi
+
+if [ -d "$HUSK_UNTRACKED" ]; then
+    pass "F4: husk with untracked non-stray file survives the sweep"
+else
+    fail "F4: husk-untracked directory was swept" "$f_out"
+fi
+ckpt_untracked=$(git -C "$REPO" show refs/checkpoints/husk-untracked-autosave:forgotten.txt 2>/dev/null)
+if [ "$ckpt_untracked" = "$HUSK_UNTRACKED_CONTENT" ]; then
+    pass "F4: husk-untracked content was checkpointed"
+else
+    fail "F4: checkpoint missing/wrong for husk-untracked: got '$ckpt_untracked'" "$f_out"
+fi
+
+if [ ! -d "$HUSK_CLEAN" ]; then
+    pass "F5: clean worktree husk IS still swept (positive control)"
+else
+    fail "F5: clean husk-clean survived — sweep wrongly disabled" "$f_out"
+fi
+
+if [ ! -d "$LEFTOVER_PLAIN" ]; then
+    pass "F6: plain non-git leftover directory IS still swept"
+else
+    fail "F6: leftover-plain survived — sweep wrongly disabled" "$f_out"
+fi
+
+if [ -d "$HUSK_BROKEN" ]; then
+    pass "F7: husk with broken/unreadable .git survives the sweep"
+else
+    fail "F7: husk-broken directory was swept" "$f_out"
+fi
+if grepq "$f_out" -F "refusing to sweep $(norm_path "$HUSK_BROKEN")" && grepq "$f_out" -F "could not inspect"; then
+    pass "F7: warning says the contents could not be inspected"
+else
+    fail "F7: expected a 'could not inspect' WARN for $HUSK_BROKEN" "$f_out"
+fi
+
+if grepq "$f_out" -F "clean-garden: stray-sweep" && grepq "$f_out" -F "3 refused"; then
+    pass "F8: stray-sweep summary line reports the refusal count"
+else
+    fail "F8: expected the stray-sweep summary to report '3 refused'" "$f_out"
+fi
+
+# --- F9: --dry-run neither sweeps nor refuses destructively -----------------
+HUSK_DRY=$(mk_husk husk-dry exp/husk-dry)
+verify_unregistered "$HUSK_DRY"
+stale_husk "$HUSK_DRY" || fail "F-fixture: stale_husk failed for husk-dry"
+dry_f_out=$(run_clean --dry-run)
+if grepq "$dry_f_out" -F "DRY clean-garden: would sweep stray husk $(norm_path "$HUSK_DRY")"; then
+    pass "F9: --dry-run reports the clean husk as would-sweep"
+else
+    fail "F9: expected a would-sweep DRY line for $HUSK_DRY" "$dry_f_out"
+fi
+if [ -d "$HUSK_DRY" ]; then
+    pass "F9: --dry-run leaves the clean husk on disk"
+else
+    fail "F9: --dry-run deleted $HUSK_DRY" "$dry_f_out"
+fi
+
+clear_checkpoints
+
+# --- RUN G: HIMMEL-1970 stale remote-tracking refs are not phantom orphans ---
+# refs/remotes/origin/* is a local CACHE. With deleteBranchOnMerge=true (and
+# merge-on-green no longer running `gh pr merge --delete-branch`, HIMMEL-1679)
+# a merged branch disappears server-side without touching that cache, so the
+# ref lingered and was re-reported MERGED-CLEAN forever — the "19 MERGED-CLEAN,
+# 0 pruned" report that read as a broken pruner. Needs a REACHABLE origin, so
+# this fixture uses a local bare repo + FORGE=github (the documented test
+# override) instead of the unreachable https URL the fixture above uses.
+echo "RUN G: HIMMEL-1970 stale remote-tracking refs"
+G_BARE="$TMP_ROOT/g-origin.git"
+git init -q --bare "$G_BARE" 2>/dev/null || git init -q --bare "$G_BARE"
+G_REPO="$TMP_ROOT/g-repo"
+git init -q --initial-branch=main "$G_REPO" 2>/dev/null || {
+    git init -q "$G_REPO"
+    git -C "$G_REPO" symbolic-ref HEAD refs/heads/main || true
+}
+git -C "$G_REPO" config user.email t@test.com
+git -C "$G_REPO" config user.name t
+printf 'g base\n' > "$G_REPO/README"
+git -C "$G_REPO" add README
+git -C "$G_REPO" commit -q -m "g base"
+git -C "$G_REPO" branch -m main 2>/dev/null || true
+git -C "$G_REPO" remote add origin "$G_BARE"
+git -C "$G_REPO" push -q origin main
+# A merged branch that origin STILL has — the row that must survive.
+git -C "$G_REPO" checkout -q -b chore/g-live
+printf 'g live\n' > "$G_REPO/live.txt"
+git -C "$G_REPO" add live.txt
+git -C "$G_REPO" commit -q -m "g live"
+git -C "$G_REPO" push -q origin chore/g-live
+G_LIVE_SHA=$(git -C "$G_REPO" rev-parse chore/g-live)
+git -C "$G_REPO" checkout -q main
+git -C "$G_REPO" fetch -q origin
+# A merged branch origin already deleted server-side: only the stale
+# remote-tracking ref remains locally (never pushed).
+G_TREE=$(git -C "$G_REPO" rev-parse "main^{tree}")
+G_GONE_SHA=$(printf 'g gone\n' | git -C "$G_REPO" commit-tree "$G_TREE" -p "$(git -C "$G_REPO" rev-parse main)")
+git -C "$G_REPO" update-ref refs/remotes/origin/chore/g-gone "$G_GONE_SHA"
+G_ROWS="$TMP_ROOT_UNIX/g-origin.tsv"
+{
+    printf 'owner/repo\tchore/g-live\tmerged\t%s\n' "$G_LIVE_SHA"
+    printf 'owner/repo\tchore/g-gone\tmerged\t%s\n' "$G_GONE_SHA"
+} > "$G_ROWS"
+
+run_clean_g() {
+    (
+        # shellcheck disable=SC2031  # subshell modification intentional in this test harness
+        export PATH="${STUB_DIR}:${PATH}"
+        # shellcheck disable=SC2030  # subshell modification intentional in this test harness
+        export GH_ROWS_ORIGIN="$G_ROWS" GH_ROWS_PUBLIC GH_CALLS
+        export FORGE=github   # origin is a local path, not a github URL
+        cd "$G_REPO" || exit 1
+        bash "$CLEAN_GARDEN" --prune-only "$@" 2>&1
+    )
+}
+g_ref_exists() { git -C "$G_REPO" rev-parse --quiet --verify refs/remotes/origin/chore/g-gone >/dev/null 2>&1; }
+
+# G1 — --dry-run classifies identically but touches no ref.
+g_dry=$(run_clean_g --dry-run)
+if grepq "$g_dry" -F "branch=chore/g-gone"; then
+    fail "G1: --dry-run still reported the stale remote-tracking ref as an orphan" "$g_dry"
+else
+    pass "G1: --dry-run skips a branch that is no longer on origin"
+fi
+if g_ref_exists; then
+    pass "G1: --dry-run leaves refs/remotes/origin/chore/g-gone in place"
+else
+    fail "G1: --dry-run deleted a remote-tracking ref" "$g_dry"
+fi
+
+# G2 — the real run skips it AND drops the dead ref, so the count stops lying.
+g_out=$(run_clean_g)
+if grepq "$g_out" -F "branch=chore/g-gone"; then
+    fail "G2: stale remote-tracking ref was still classified" "$g_out"
+else
+    pass "G2: stale remote-tracking ref is not reported as a remote orphan"
+fi
+if g_ref_exists; then
+    fail "G2: stale refs/remotes/origin/chore/g-gone was not pruned" "$g_out"
+else
+    pass "G2: stale remote-tracking ref is pruned"
+fi
+assert_line "G2: a branch still on origin is still MERGED-CLEAN" "$g_out" \
+    "remote=origin branch=chore/g-live" "category=MERGED-CLEAN"
+if grepq "$g_out" -F "accounting summary" && grepq "$g_out" -F "remote branches: 1 MERGED-CLEAN"; then
+    pass "G2: summary names the remote-branch population and counts only the live one"
+else
+    fail "G2: expected 'remote branches: 1 MERGED-CLEAN' in the accounting summary" "$g_out"
+fi
+
+# G3 — unreachable remote: fail OPEN (classify as before) and say so in the
+# DEFAULT (non-verbose) output, so a stale remote-branch count is never silent.
+git -C "$G_REPO" remote set-url origin "$TMP_ROOT/g-nonexistent.git"
+g_off=$(run_clean_g)
+if grepq "$g_off" -F "remote-tracking refresh skipped (origin unreachable)"; then
+    pass "G3: unreachable remote prints the staleness notice without --verbose"
+else
+    fail "G3: expected an unconditional refresh-skipped notice" "$g_off"
+fi
+assert_line "G3: unreachable remote still classifies as before" "$g_off" \
+    "remote=origin branch=chore/g-live" "category=MERGED-CLEAN"
+
+echo "RUN H: HIMMEL-2227 in-use worktree probe before remove"
+# A plain `git worktree remove` is NOT atomic on Windows (see
+# scripts/lib/worktree-inuse.sh's own header for the measured repro): with a
+# native process holding a directory inside the tree, git deletes the
+# CONTENTS, deregisters the admin entry, and only then fails the final
+# rmdir. clean-garden's prune loop now probes BEFORE the remove (gating both
+# the plain and the --force/strays paths) so an in-use tree is skipped WHOLE
+# instead of gutted.
+
+h_wt_list_has() {
+    local path="$1" path_pwd line wt wt_pwd
+    path_pwd=$(cd "$path" 2>/dev/null && pwd) || path_pwd="$path"
+    while IFS= read -r line; do
+        case "$line" in
+            "worktree "*)
+                wt="${line#worktree }"
+                wt_pwd=$(cd "$wt" 2>/dev/null && pwd) || wt_pwd="$wt"
+                [ "$wt_pwd" = "$path_pwd" ] && return 0
+                ;;
+        esac
+    done < <(git -C "$REPO" worktree list --porcelain 2>/dev/null)
+    return 1
+}
+h_branch_gone() { ! git -C "$REPO" rev-parse --quiet --verify "refs/heads/$1" >/dev/null 2>&1; }
+
+# H1 — NEGATIVE CONTROL, the probe must not block a legitimate prune: already
+# proven by RUN A's very first assertion ("exact merged PR head is pruned",
+# above) — a merged, clean, NOT-held worktree with no holder involved at all
+# is pruned normally there, under this same (post-fix) clean-garden.sh.
+
+# H2 — NEGATIVE CONTROL: a merged worktree with uncommitted (staged) work is
+# still refused and left INTACT — not merely `[ -d ]` (a GUTTED tree also
+# satisfies that, the exact blind spot HIMMEL-2227 closes), but with its
+# .git, its `git worktree list` admin row, and its tracked file's content all
+# surviving.
+WT_H2=$(mk_wt_commit wt-h2-dirty feat/h2-dirty)
+H2_SHA=$(git -C "$WT_H2" rev-parse HEAD)
+printf 'dirty work\n' >> "$WT_H2/wt-h2-dirty.txt"
+git -C "$WT_H2" add wt-h2-dirty.txt
+# shellcheck disable=SC2031  # GH_ROWS_ORIGIN modified in subshell intentionally in this test harness
+printf 'owner/repo\tfeat/h2-dirty\tmerged\t%s\n' "$H2_SHA" >> "$GH_ROWS_ORIGIN"
+h2_out=$(run_clean)
+if [ -d "$WT_H2" ] && [ -e "$WT_H2/.git" ]; then
+    pass "H2: dirty merged worktree survives WHOLE (dir + .git)"
+else
+    fail "H2: dirty merged worktree is missing its dir or .git" "$h2_out"
+fi
+if h_wt_list_has "$WT_H2"; then
+    pass "H2: dirty merged worktree's admin row survives"
+else
+    fail "H2: dirty merged worktree's admin row is gone" "$h2_out"
+fi
+if [ -f "$WT_H2/wt-h2-dirty.txt" ] && grep -qF "dirty work" "$WT_H2/wt-h2-dirty.txt"; then
+    pass "H2: dirty merged worktree's staged content survives"
+else
+    fail "H2: dirty merged worktree's staged content is gone" "$h2_out"
+fi
+if h_branch_gone feat/h2-dirty; then
+    fail "H2: branch deleted despite a dirty (kept) worktree" "$h2_out"
+else
+    pass "H2: branch NOT deleted for the kept dirty worktree"
+fi
+clear_checkpoints
+
+# H3 — POSITIVE CONTROL (fails before this change / passes after): a merged,
+# CLEAN worktree held open by a real native pwsh process is SKIPPED and
+# survives WHOLE. Windows-gated: a native process holding a directory is the
+# only thing MEASURED to block the rename probe (worktree-inuse.sh's own
+# repro table) — an MSYS bash holder does not — so this case is not
+# constructible on other platforms.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        PWSH=$(command -v pwsh || command -v powershell || true)
+        if [ -z "$PWSH" ]; then
+            echo "  SKIP: H3 — no pwsh/powershell on PATH — HIMMEL-2227 in-use-worktree case needs a native Windows holder"
+        else
+            WT_H3=$(mk_wt_commit wt-h3-held feat/h3-held)
+            H3_SHA=$(git -C "$WT_H3" rev-parse HEAD)
+            # shellcheck disable=SC2031  # GH_ROWS_ORIGIN modified in subshell intentionally in this test harness
+            printf 'owner/repo\tfeat/h3-held\tmerged\t%s\n' "$H3_SHA" >> "$GH_ROWS_ORIGIN"
+            # Ready marker lives OUTSIDE the worktree (a sibling path), not
+            # inside it: an extra untracked file INSIDE the tree perturbs the
+            # very git-worktree-remove behaviour under test. cygpath -m (not a
+            # bare argv pass) so a native pwsh.exe gets the real Windows path,
+            # not MSYS's naive /tmp -> C:\tmp argv mangling (a different,
+            # wrong root from /tmp's actual mount).
+            ready="$WT_H3.test-ready"
+            ready_win=$(cygpath -m "$ready" 2>/dev/null || printf '%s' "$ready")
+            rm -f "$ready"
+            ( cd "$WT_H3" && "$PWSH" -NoProfile -Command "New-Item -ItemType File '$ready_win' | Out-Null; Start-Sleep 30" ) &
+            HOLDER=$!
+            tries=0
+            while [ ! -f "$ready" ] && [ "$tries" -lt 100 ]; do
+                sleep 0.1
+                tries=$((tries + 1))
+            done
+            if [ ! -f "$ready" ]; then
+                fail "H3: the pwsh holder never signaled ready — cannot exercise the in-use case"
+            else
+                h3_out=$(run_clean)
+                if [ -d "$WT_H3" ] && [ -e "$WT_H3/.git" ]; then
+                    pass "H3: held worktree survives WHOLE (dir + .git)"
+                else
+                    fail "H3: held worktree is missing its dir or .git (gutted)" "$h3_out"
+                fi
+                if h_wt_list_has "$WT_H3"; then
+                    pass "H3: held worktree's admin row survives"
+                else
+                    fail "H3: held worktree's admin row is gone" "$h3_out"
+                fi
+                if [ -f "$WT_H3/wt-h3-held.txt" ] && grep -qF "feat/h3-held" "$WT_H3/wt-h3-held.txt"; then
+                    pass "H3: held worktree's tracked content survives"
+                else
+                    fail "H3: held worktree's tracked content is gone (the pre-fix HIMMEL-2227 wreck)" "$h3_out"
+                fi
+                if h_branch_gone feat/h3-held; then
+                    fail "H3: branch deleted despite an in-use worktree" "$h3_out"
+                else
+                    pass "H3: branch NOT deleted for the in-use worktree"
+                fi
+                if grepq "$h3_out" -F "in use by a live process" && grepq "$h3_out" -F "skipped"; then
+                    pass "H3: WARN names the worktree as in-use/skipped"
+                else
+                    fail "H3: expected a WARN naming the worktree in-use/skipped" "$h3_out"
+                fi
+            fi
+            # ALWAYS kill the holder, pass or fail, or the suite leaves an
+            # orphan pwsh process behind.
+            kill "$HOLDER" 2>/dev/null
+            wait "$HOLDER" 2>/dev/null
+        fi
+        ;;
+    *)
+        echo "  SKIP: H3 — not Windows; a held cwd blocks neither rename nor rmdir on POSIX (HIMMEL-2227)"
+        ;;
+esac
+clear_checkpoints
+
 echo
 echo "===================================="
 echo "test summary: $PASS passed, $FAIL failed"

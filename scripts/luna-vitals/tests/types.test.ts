@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
-import { join } from "path";
-import { tmpdir } from "os";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { validateRow, validateConflict, readArtifact, writeArtifact, type ReviewArtifact } from "../src/types";
 
 test("validateRow rejects non-ISO date, non-finite value, empty metric/source", () => {

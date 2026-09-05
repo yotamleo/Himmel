@@ -6,9 +6,11 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/ship-branch.sh"
-tmp="$(mktemp -d)"
-# shellcheck disable=SC2064
-trap "rm -rf $tmp" EXIT
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HERE/../lib/fixture-tempdir.sh"
+tmp="$(fixture_mktemp_dir)" || exit 1
+trap 'rm -rf "$tmp"' EXIT
 fail=0
 
 ok()  { echo "ok - $1"; }
@@ -17,9 +19,11 @@ bad() { echo "FAIL - $1"; fail=1; }
 # make_repo <dir> : repo with bare origin sibling, main pushed, glm/x committed.
 make_repo() {
     local d="$1"
-    git -c init.defaultBranch=main init -q "$d"
+    [ -n "$d" ] || { echo "FAIL: empty fixture repo path" >&2; return 1; }
+    mkdir -p "$d" || return 1
     (
-        cd "$d" || exit 1
+        fixture_enter_git_init_dir "$d" || exit 1
+        git -c init.defaultBranch=main init -q
         git config user.email t@t.test
         git config user.name tester
         echo base > f.txt
@@ -47,7 +51,7 @@ write_meta() {
 # ============================================================================
 
 # --- T1: happy path pushes to origin + clears marker on SHA match -----------
-repo="$tmp/r1"; make_repo "$repo"
+repo="$tmp/r1"; make_repo "$repo" || exit 1
 tip_full="$(cd "$repo" && git rev-parse glm/x)"
 sd="$tmp/s1"; write_meta "$sd" "pass (sha=$tip_full; critics=2)"
 # Marker with the matching full SHA (as check-cr-before-push.sh writes it).
@@ -63,13 +67,13 @@ if [ "$pushed" = "$tip_full" ]; then ok "T1 branch pushed to origin"; else bad "
 if [ ! -f "$repo/.git/cr-pending/glm/x" ]; then ok "T1 marker cleared on SHA match"; else bad "T1: marker should be cleared"; fi
 
 # --- T2: missing verdict -> refuse (exit 2) ----------------------------------
-repo="$tmp/r2"; make_repo "$repo"
+repo="$tmp/r2"; make_repo "$repo" || exit 1
 sd="$tmp/s2"; write_meta "$sd" ""
 rc=0; (cd "$repo" && bash "$SCRIPT" glm/x --session-dir "$sd" >/dev/null 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then ok "T2 missing verdict refused (exit 2)"; else bad "T2: missing verdict should exit 2 (got $rc)"; fi
 
 # --- T3: verdict SHA != tip -> refuse ----------------------------------------
-repo="$tmp/r3"; make_repo "$repo"
+repo="$tmp/r3"; make_repo "$repo" || exit 1
 sd="$tmp/s3"; write_meta "$sd" "pass (sha=deadbee; critics=2)"
 rc=0; (cd "$repo" && bash "$SCRIPT" glm/x --session-dir "$sd" >/dev/null 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then ok "T3 verdict-sha != tip refused (exit 2)"; else bad "T3: sha mismatch should exit 2 (got $rc)"; fi
@@ -77,20 +81,20 @@ if [ "$rc" -eq 2 ]; then ok "T3 verdict-sha != tip refused (exit 2)"; else bad "
 # --- T4: run from a .claude/worktrees/ path -> refuse ------------------------
 wt="$tmp/.claude/worktrees/glm+x"
 mkdir -p "$wt"
-make_repo "$wt"
+make_repo "$wt" || exit 1
 tips="$(cd "$wt" && git rev-parse --short glm/x)"
 sd="$tmp/s4"; write_meta "$sd" "pass (sha=$tips; critics=2)"
 rc=0; (cd "$wt" && bash "$SCRIPT" glm/x --session-dir "$sd" >/dev/null 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then ok "T4 run-from-worktree refused (exit 2)"; else bad "T4: worktree path should exit 2 (got $rc)"; fi
 
 # --- T5: non-glm branch without --allow-any-branch -> refuse -----------------
-repo="$tmp/r5"; make_repo "$repo"
+repo="$tmp/r5"; make_repo "$repo" || exit 1
 sd="$tmp/s5"; write_meta "$sd" "pass (sha=abcdef0; critics=2)"
 rc=0; (cd "$repo" && bash "$SCRIPT" feat/x --session-dir "$sd" >/dev/null 2>&1) || rc=$?
 if [ "$rc" -eq 2 ]; then ok "T5 non-glm branch refused (exit 2)"; else bad "T5: non-glm branch should exit 2 (got $rc)"; fi
 
 # --- T6: marker with WRONG sha is NOT cleared (bind clear to pushed SHA) -----
-repo="$tmp/r6"; make_repo "$repo"
+repo="$tmp/r6"; make_repo "$repo" || exit 1
 tip_full="$(cd "$repo" && git rev-parse glm/x)"
 sd="$tmp/s6"; write_meta "$sd" "pass (sha=$tip_full; critics=2)"
 mkdir -p "$repo/.git/cr-pending/glm"

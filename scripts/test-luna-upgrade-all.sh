@@ -175,9 +175,20 @@ case "$out" in
     *) fail "T-bad-template-dir mentions missing template/marketplace" "got: $out" ;;
 esac
 
-# T-no-template: no template resolvable exits 2 with message
+# T-no-template: no template resolvable exits 2 with message.
+#
+# The engine is COPIED outside any himmel tree first (HIMMEL-2460). Since the
+# script now resolves its own checkout's template ahead of the $HOME scan, an
+# in-tree invocation can no longer fail to find one no matter what $HOME says
+# — that is the fix working, not a hole in this case. Reaching the genuinely
+# unresolvable state now means: no --template-dir, no ambient HIMMEL_DIR /
+# HIMMEL_REPO, an empty $HOME, and a copy of the script with no template
+# beside it.
 V_EMPTY="$TMP/t-empty-vault"; mkdir -p "$V_EMPTY"
-out=$(HOME="$TMP/emptyhome" bash "$ENGINE" \
+T_LOOSE_ENGINE="$TMP/t-loose/scripts/luna-upgrade-all.sh"
+mkdir -p "$(dirname "$T_LOOSE_ENGINE")"
+cp "$ENGINE" "$T_LOOSE_ENGINE"
+out=$(HOME="$TMP/emptyhome" HIMMEL_DIR='' HIMMEL_REPO='' bash "$T_LOOSE_ENGINE" \
     sweep --roots "$TMP/no-roots-here" 2>&1); rc=$?
 assert_eq "T-no-template exits 2" "2" "$rc"
 case "$out" in *"could not locate"*|*"HIMMEL_DIR"*|*"template"*) pass "T-no-template prints helpful message" ;; *) fail "T-no-template prints helpful message" "got: $out" ;; esac
@@ -1298,6 +1309,117 @@ case "$i3_corrupt_line" in
     error*) pass "I3-all-errored: corrupt vault line has state=error" ;;
     *) fail "I3-all-errored: corrupt vault line has state=error" "got: $i3_corrupt_line" ;;
 esac
+
+# ===========================================================================
+# T-RESOLVE (HIMMEL-2460): the template comes from the INVOKING checkout
+# ---------------------------------------------------------------------------
+# resolve_template used to fall straight from $HIMMEL_DIR to a hardcoded
+# $HOME-relative candidate list. On the acceptance-matrix guest the install ran
+# from ~/Documents/github/himmel-main (the private RC) while the upgrade
+# sourced its template from ~/Documents/github/himmel — a stale PUBLIC mirror —
+# and wrote 22 files into a real vault from it, silently.
+#
+# The fixture is two checkouts under one fake HOME, each with its own template
+# whose upgrade.sh stamps a different marker into the vault. A is where the
+# invoked script lives; B sits at the first path the old candidate list scans.
+# Neither --template-dir nor HIMMEL_DIR is set, so only the resolution order
+# decides which marker lands.
+TR_HOME="$TMP/tr-home"
+TR_A="$TR_HOME/work/himmel-main"
+TR_B="$TR_HOME/Documents/github/himmel"
+TR_VAULT="$TR_HOME/vault"
+TR_REL="templates/luna-second-brain"
+
+# mk_tr_checkout <root> <marker>
+mk_tr_checkout() {
+    local root="$1" marker="$2"
+    mkdir -p "$root/$TR_REL/marketplace/.claude-plugin" "$root/$TR_REL/scripts" "$root/scripts"
+    printf '{"name":"luna","plugins":[]}\n' \
+        > "$root/$TR_REL/marketplace/.claude-plugin/marketplace.json"
+    # Stub engine: prints the banner + one plan line the multi-vault layer
+    # parses, and on --yes stamps its own checkout's marker into the vault.
+    cat > "$root/$TR_REL/scripts/upgrade.sh" <<STUB
+#!/usr/bin/env bash
+set -uo pipefail
+tdir=""; vdir=""; mode=dry
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        --template-dir) tdir="\$2"; shift 2 ;;
+        --vault-dir)    vdir="\$2"; shift 2 ;;
+        --dry-run)      mode=dry; shift ;;
+        --yes)          mode=yes; shift ;;
+        *)              shift ;;
+    esac
+done
+echo "  template : \$tdir (v9.9.9)"
+echo "  vault    : \$vdir (v0.0.1)"
+echo "  WRITE  MARKER.md"
+if [ "\$mode" = yes ]; then printf '%s\n' "$marker" > "\$vdir/MARKER.md"; fi
+exit 0
+STUB
+    chmod +x "$root/$TR_REL/scripts/upgrade.sh"
+}
+
+mk_tr_checkout "$TR_A" A
+mk_tr_checkout "$TR_B" B
+cp "$ENGINE" "$TR_A/scripts/luna-upgrade-all.sh"
+
+mkdir -p "$TR_VAULT"
+printf '{"template":"luna-second-brain","version":"0.0.1"}\n' > "$TR_VAULT/.vault-template.json"
+printf '# vault\n' > "$TR_VAULT/_CLAUDE.md"
+
+tr_out=$(HOME="$TR_HOME" HIMMEL_DIR='' bash "$TR_A/scripts/luna-upgrade-all.sh" \
+    apply --vault "$TR_VAULT" 2>&1); tr_rc=$?
+tr_marker=$(cat "$TR_VAULT/MARKER.md" 2>/dev/null || echo "<none>")
+
+assert_eq "T-RESOLVE: apply exits 0" 0 "$tr_rc"
+# The defect, stated as the assertion: the marker written into the vault comes
+# from the checkout the script was invoked from, not from the $HOME scan.
+assert_eq "T-RESOLVE: vault upgraded from the INVOKING checkout" A "$tr_marker"
+if grepq "$tr_out" -F "$TR_A"; then
+    pass "T-RESOLVE: banner names the source checkout"
+else
+    fail "T-RESOLVE: banner names the source checkout" "got: $tr_out"
+fi
+if grepq "$tr_out" -E 'template source:.*\(own checkout\)'; then
+    pass "T-RESOLVE: banner states how the template was resolved"
+else
+    fail "T-RESOLVE: banner states how the template was resolved" "got: $tr_out"
+fi
+
+# Negative control: an EXPLICIT --template-dir still wins over the own checkout,
+# so the new preference cannot silently override an operator's choice.
+rm -f "$TR_VAULT/MARKER.md"
+HOME="$TR_HOME" HIMMEL_DIR='' bash "$TR_A/scripts/luna-upgrade-all.sh" \
+    apply --vault "$TR_VAULT" --template-dir "$TR_B/$TR_REL" >/dev/null 2>&1; tr_b_rc=$?
+tr_b_marker=$(cat "$TR_VAULT/MARKER.md" 2>/dev/null || echo "<none>")
+assert_eq "T-RESOLVE: explicit --template-dir apply exits 0" 0 "$tr_b_rc"
+assert_eq "T-RESOLVE: explicit --template-dir still wins" B "$tr_b_marker"
+
+# Ordering control: an AMBIENT env var does not beat the invoking checkout.
+# --template-dir is a per-invocation statement; HIMMEL_DIR / HIMMEL_REPO are
+# ambient config that outlives the checkout that wrote them — exactly the way
+# a stale mirror got chosen on the guest. Nothing in this repo sets HIMMEL_DIR,
+# and HIMMEL_REPO is written by setup/adopt, so both stay reachable for a copy
+# of this script living outside a himmel tree, just below it.
+rm -f "$TR_VAULT/MARKER.md"
+HOME="$TR_HOME" HIMMEL_DIR="$TR_B" HIMMEL_REPO="$TR_B" \
+    bash "$TR_A/scripts/luna-upgrade-all.sh" apply --vault "$TR_VAULT" >/dev/null 2>&1; tr_c_rc=$?
+tr_c_marker=$(cat "$TR_VAULT/MARKER.md" 2>/dev/null || echo "<none>")
+assert_eq "T-RESOLVE: ambient-env apply exits 0" 0 "$tr_c_rc"
+assert_eq "T-RESOLVE: own checkout beats an ambient HIMMEL_DIR/HIMMEL_REPO" A "$tr_c_marker"
+
+# ...but an ambient HIMMEL_REPO IS used when the invoking script has no
+# template of its own (a copy living outside a himmel tree), ahead of the scan.
+TR_LOOSE="$TR_HOME/loose"
+mkdir -p "$TR_LOOSE/scripts"
+cp "$ENGINE" "$TR_LOOSE/scripts/luna-upgrade-all.sh"
+rm -f "$TR_VAULT/MARKER.md"
+HOME="$TR_HOME" HIMMEL_DIR='' HIMMEL_REPO="$TR_A" bash "$TR_LOOSE/scripts/luna-upgrade-all.sh" \
+    apply --vault "$TR_VAULT" >/dev/null 2>&1; tr_d_rc=$?
+tr_d_marker=$(cat "$TR_VAULT/MARKER.md" 2>/dev/null || echo "<none>")
+assert_eq "T-RESOLVE: template-less checkout apply exits 0" 0 "$tr_d_rc"
+assert_eq "T-RESOLVE: HIMMEL_REPO beats the \$HOME scan" A "$tr_d_marker"
 
 # ===========================================================================
 echo

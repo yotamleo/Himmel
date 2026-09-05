@@ -49,7 +49,7 @@ guardrails are welcome.
   skeleton itself.
 - Skeleton tooling specific to one operator's workflow (e.g., Jira
   CLI). Those belong in the operator's own engine repo (e.g.,
-  [himmel](https://github.com/yotamleo/Himmel)).
+  [himmel](https://github.com/yotamleo/himmel)).
 - Auto-installing 3rd-party plugins inside setup.sh. We document the
   install command and let the operator review before running.
 

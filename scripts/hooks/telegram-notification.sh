@@ -68,13 +68,24 @@ MESSAGE="$(printf '%s' "$PAYLOAD" | jq -r '.message // empty')"
 ENV_ROOT="$( cd "$SESSION_CWD" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)/.." 2>/dev/null && pwd )"
 [ -n "$ENV_ROOT" ] || ENV_ROOT="$SESSION_CWD"
 
+# --- Explicit-empty = deliberate suppression (HIMMEL-1926) -------------------
+# load_dotenv treats set-but-EMPTY as absent (HIMMEL-1922) and would fill the
+# chat id from .env. For an egress path that is the wrong fail-safe direction:
+# an explicitly EMPTY TELEGRAM_GROUP_CHAT_ID in the environment means OFF, and
+# must never fall back to .env. Capture setness BEFORE the loader runs; the
+# suppression contract lives in the hook that owns the egress decision, so
+# load_dotenv's one-seam semantic stays intact.
+if [ "${TELEGRAM_GROUP_CHAT_ID+set}" = "set" ] && [ -z "$TELEGRAM_GROUP_CHAT_ID" ]; then
+    exit 0
+fi
+
 if [ -r "$HOOK_LIB/load-dotenv.sh" ]; then
     # shellcheck source=/dev/null
     . "$HOOK_LIB/load-dotenv.sh"
     load_dotenv --root "$ENV_ROOT" TELEGRAM_GROUP_CHAT_ID 2>/dev/null || true
 fi
 
-# --- Silent no-op gate: unset/blank TELEGRAM_GROUP_CHAT_ID -------------------
+# --- Silent no-op gate: unset/blank TELEGRAM_GROUP_CHAT_ID (after .env) -------
 [ -n "${TELEGRAM_GROUP_CHAT_ID:-}" ] || exit 0
 
 # --- repo name (read-only; never `git fetch`) --------------------------------

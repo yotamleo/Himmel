@@ -76,4 +76,48 @@ rm -f "$MEM/MEMORY.md"
 printf 'body\n' > "$MEM/orphan-when-no-index.md"
 run; assert_rc "missing index + topic file = orphan flagged" 1 "$?"
 
+# 9 (CR round 2, HIMMEL-2194): outside any git repo and MEMDIR unset, the
+# script must fail loudly instead of deriving a "." slug and silently auditing
+# $HOME/.claude/projects/./memory. $SB (mktemp -d) is itself outside any git
+# work tree, so cd there + no MEMDIR reproduces the bug's precondition exactly.
+noncmd_err="$SB/noncmd.err"
+( cd "$SB" && env -u MEMDIR MEMORY_CAPTURE_LOG="$SB/capture.jsonl" MEMORY_AUDIT_SKIP_QMD=1 bash "$AUDIT" >/dev/null 2>"$noncmd_err" )
+noncmd_rc=$?
+assert_rc "non-repo cwd fails loudly (no MEMDIR)" 1 "$noncmd_rc"
+if grep -q 'not inside a git repo' "$noncmd_err"; then
+    echo "PASS non-repo cwd diagnostic present"
+else
+    echo "FAIL non-repo cwd diagnostic present (stderr: $(cat "$noncmd_err"))"
+    FAILED=1
+fi
+
+# 10 (HIMMEL-2194 r5): git < 2.31 lacks --path-format, so `git rev-parse
+# --path-format=absolute --git-common-dir` returns nothing there; the script
+# must fall back to plain `--git-common-dir` and still derive MEMDIR. A stub
+# `git` on PATH that rejects --path-format (delegating everything else to the
+# real git) simulates that shape cheaply, without needing an actual old git
+# binary. Real git's plain form returns a RELATIVE ".git" from a repo's
+# toplevel (verified empirically) — exactly the case the normalization step
+# exists for; without it MEMDIR would derive from an unresolved relative path.
+fb_repo="$SB/fb-repo"; git init -q "$fb_repo"
+fb_bin="$SB/fb-bin"; mkdir -p "$fb_bin"
+real_git="$(command -v git)"
+cat > "$fb_bin/git" <<STUBEOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" --path-format=absolute "*) exit 1 ;;
+esac
+exec "$real_git" "\$@"
+STUBEOF
+chmod +x "$fb_bin/git"
+fb_err="$SB/fb.err"
+( cd "$fb_repo" && PATH="$fb_bin:$PATH" env -u MEMDIR MEMORY_CAPTURE_LOG="$SB/capture.jsonl" MEMORY_AUDIT_SKIP_QMD=1 bash "$AUDIT" >/dev/null 2>"$fb_err" )
+fb_rc=$?
+if grep -q 'not inside a git repo' "$fb_err"; then
+    echo "FAIL git<2.31 fallback derives MEMDIR (stderr: $(cat "$fb_err"))"
+    FAILED=1
+else
+    assert_rc "git<2.31 fallback derives MEMDIR (clean run)" 0 "$fb_rc"
+fi
+
 exit "$FAILED"

@@ -1,5 +1,14 @@
 # GLM offload loop (HIMMEL-654)
 
+> **Status: dormant (operator ruling 2026-08-19, HIMMEL-1967).** Implementation
+> work routes to native Claude subagents only; this lane is opt-in via
+> `GLM_LANE_OK` and, per `scripts/lanes/lanes.json`'s `readiness.passesRequired`,
+> must show 10 consecutive verify-return passes before dispatch routes toward it
+> (the HIMMEL-1575 startup-hang class). See `scripts/lanes/lanes.json` / `/lanes`
+> for the live inventory and [`lane-calibration.md`](internals/lane-calibration.md)
+> for calibration detail. The mechanics below remain the reference for how the
+> lane works if re-enabled — this is not a "use this today" doc.
+
 Spawn a GLM-lane Claude worker from the main (Fable) session, inspect its
 output through files, validate the diff through the normal CR loop, and only
 then push. The worker runs against the Z.ai GLM Anthropic-compatible endpoint —
@@ -124,6 +133,19 @@ scripts:
    equals the pushed SHA. It NEVER opens a PR and NEVER merges — it prints the
    exact `gh pr create` command for the operator.
 
+**Push a lane branch from ITS OWN worktree (HIMMEL-1809).** pre-commit's
+pre-push hooks lint the pusher's WORKING TREE, not the pushed commits, so a
+`git push <branch>` issued from the primary checkout (on `main`) inspects
+main's copy of every file the branch touched: findings cite line numbers the
+branch does not have, and a branch whose touched files are clean on main sails
+through a gate that never looked at it. `check-cr-before-push.sh` now refuses a
+push whose ref is not the checked-out branch — use `git -C <worktree> push …`
+instead, after the worker's session has released the poisoned push URL. This
+applies to `ship-branch.sh` step 2 above, which pushes from the trusted main
+checkout by design: until it is reworked to push from the branch's worktree, it
+needs `PUSH_FOREIGN_REF_OK=1` in its launching shell, which accepts that the
+pre-push gates judged main's tree rather than the branch's.
+
 The worker gains no push authority at any point: `poisonPushUrl`, the worker
 no-push prompt, and the external-writes deny hook are UNCHANGED. A prior
 adversarial design review REJECTED a "let the worker push" model (a
@@ -143,15 +165,17 @@ its window on a hard-blocked capability; the correct split is:
 - **Worker** — commit early, attestation trailers in the first commit, an
   outbox `DONE` line. Never push, never open a PR (the standing worker
   contract above). If it hits a genuinely blocked capability (a `git push`
-  the tripwire refused) it appends one `{"type":"escalation","arm":"git-push",...}`
+  the deny-hook refused) it appends one `{"type":"escalation","arm":"git-push",...}`
   outbox row and moves on — see §Escalation channel. A worker that finishes
   and only has that one blocked step left terminates with `meta.status:
   "done_escalated"` (HIMMEL-1641) instead of burning the rest of its window —
   read that status the same as `done`.
 - **Parent** — push `glm/<slug>` **from the PRIMARY checkout**, not the
-  worker's worktree: its `remote.origin.pushurl` is
-  `DISABLED-glm-quarantine` by design (the poisoned-pushurl tripwire), so a
-  push attempted there fails on purpose. Open the PR, then run
+  worker's worktree: the primary checkout is where the attestation trailers and
+  push credentials legitimately live, and pushing from a worker worktree
+  bypasses that ownership. (Until HIMMEL-1961 the worktree also carried a
+  poisoned `remote.origin.pushurl` that made such a push fail on purpose; that
+  mechanism is gone — the rule is now convention, not a wall.) Open the PR, then run
   `node scripts/lanes/verify-return.mjs glm/<slug> --ticket <TICKET>` — only
   AFTER the push, never before. A `FAILED ... no-upstream` line with a
   `verify-return: branch has local commits but no upstream — GLM lane
@@ -384,29 +408,23 @@ a lock — not sole ownership — governs write access. Everything else in the
 worker contract (no push, no PR, the escalation channel, the outbox/context
 reporting paths) is unchanged from own-branch mode.
 
-**Push-tripwire scope.** The poisoned-pushurl tripwire (§Honest enforcement
-below) still applies per-dispatch, but shared mode must not leave a REUSED
-worktree poisoned forever (that worktree outlives any one dispatch — the next
-round needs a real `pushurl`, and so does the operator's own later push after
-review). `spawn-glm` captures any pre-existing per-worktree `pushurl` before
-poisoning it, then — in the SAME `finally` that releases the lock — restores
-exactly what was there (or unsets it, if there was none). A crash between
-acquire and that restore fails **closed** (push stays blocked, lock stays
-held) — the accepted tradeoff, recoverable via the manual `release` above.
+**Push-tripwire scope — RETIRED (HIMMEL-1961).** Shared mode used to poison
+the reused worktree's `pushurl` for the length of a dispatch and restore it in
+the same `finally` that released the lock. The mechanism is gone: a dispatch
+now leaves the operator's git config exactly as it found it, in every scope,
+and the lock release is the only cleanup. See §Honest enforcement for what
+replaced it (nothing mechanical — the contract, the deny-hook, and the CR gate).
 
-After such a crash the reused worktree's `pushurl` may still be the poison
-sentinel (`DISABLED-glm-quarantine`). Inspect and clear it by hand if you want
-to push from that worktree before the next dispatch:
+A worktree last dispatched BEFORE that removal can still carry the sentinel
+(`DISABLED-glm-quarantine`), and nothing produces it any more, so nothing will
+regenerate it. `scripts/lanes/stop-worker.sh` clears it whenever it halts a
+worker (HIMMEL-1929) — it only ever touches that exact value, leaving a real
+`pushurl` alone, and it reports every clear it makes. To clear one by hand:
 
+```bash
+git -C <worktree> config --worktree --get remote.origin.pushurl   # shows DISABLED-glm-quarantine if still poisoned
+git -C <worktree> config --worktree --unset remote.origin.pushurl  # clear it
 ```
-git -C <reused-worktree> config --worktree --get remote.origin.pushurl   # shows DISABLED-glm-quarantine if still poisoned
-git -C <reused-worktree> config --worktree --unset remote.origin.pushurl  # clear it
-```
-
-You usually don't need to: the next shared-mode reuse **self-heals** it —
-`spawn-glm` now treats a captured poison sentinel as "no prior pushurl" and
-UNSETS it in the restore step (rather than restoring the poison forever), so a
-worktree left poisoned by a crashed run comes back clean on its next dispatch.
 
 **Respawn on cap.** A capped shared-mode run's respawn handover
 (`composeRespawnHandover(..., { shared: true })`) re-dispatches with
@@ -458,7 +476,8 @@ inline exception. The mechanical tail, e.g. the doc-only 1.3, was fan-able.)
 
 - **GLM workers** (many, parallel) — one `spawn-glm` per fix, each on its own
   `glm/<slug>` worktree+branch. They edit + commit + (optionally) update Jira.
-  They **never** push, PR, or merge (the worker prompt contract + tripwire).
+  They **never** push, PR, or merge (the worker prompt contract + the deny
+  hook; push protection is contract-only — HIMMEL-1961).
 - **Main thread** (one writer) — owns everything the workers are fenced from:
   1. **CR** — run the critic panel + reviewers over each worker's `glm/<slug>`
      diff (the parent CR gate is the load-bearing control; §Honest enforcement).
@@ -553,28 +572,38 @@ polarity.
 
 ## Honest enforcement inventory
 
-**A tripwire, not a wall.** In the worker's worktree, spawn-glm enables
-`extensions.worktreeConfig` and sets a worktree-scoped invalid push URL
-(`remote.origin.pushurl=DISABLED-glm-quarantine`), so a bare `git push` — and
-with it the normal `gh pr create` path — fails loudly. This blocks
-**accidental / default-path** pushes only. It is **not** a containment wall:
+**Push protection is contract-only (HIMMEL-1961).** There is no mechanical
+push fence on these lanes, and every dispatch report says so in as many words:
+`push protection: contract-only; pushing, opening a PR, and merging are NOT
+mechanically prevented by this lane`.
 
-- A `bypassPermissions` worker could push via an explicit URL or unset the
-  config, and it inherits the operator's git credentials via the shared
-  `~/.claude`.
-- Other external writes are **prompt-forbidden only** (the worker contract
-  above), not mechanically blocked. (Jira is now operator-*allowed* on-lane —
-  audited + recoverable; see the Hardening section.)
+Until HIMMEL-1961 spawn-glm set a worktree-scoped invalid push URL
+(`remote.origin.pushurl=DISABLED-glm-quarantine`) so a default-path `git push`
+failed loudly. It was retired rather than repaired, for the same reasons
+HIMMEL-1942 retired it from `dispatch-lane.sh`: it only affected remote-NAME
+resolution (a worker that pushes to an explicit URL never consulted it),
+mutating shared git config was unsafe across concurrent dispatches and abnormal
+termination — it could permanently lose the operator's push configuration — and
+a hard-killed worker stranded the sentinel behind it (HIMMEL-1929). It bought
+protection against accidents only, at the price of a real risk to operator
+config.
 
-**The load-bearing control is the CR gate.** No GLM-produced branch is
-pushed or merged except by the validating session after the CR loop. The
-interim posture is: *default-push tripwired + prompt-requested +
-human/Fable-CR-gated*. The hard per-lane bound arrives with the WS4/WS7 gates.
+What remains, honestly labelled:
 
-Side effect, documented: `extensions.worktreeConfig` is a **repo-global** toggle
-on himmel's shared `.git/config` (it enables per-worktree config resolution
-repo-wide and persists after the worktree is removed). Benign for himmel's
-existing worktrees (none carry worktree-scoped config); left permanent.
+- **The worker contract** — the prompt forbids push / PR / merge outright.
+- **The deny-hook** (`block-glm-external-writes.sh`) — deterministic,
+  in-session, blocks push / PR / external-write command shapes, including
+  `git config …url` rewrites. An accidental-shape guard, not a wall: it
+  inspects command text, so a wrapper or an in-process network call evades it.
+- **The parent CR gate** — the load-bearing control. No GLM-produced branch is
+  pushed or merged except by the validating session after the CR loop.
+
+A worker still inherits the operator's git credentials via the shared `~/.claude`,
+so none of this is a security boundary. A real fence needs credential and
+network isolation (sandboxed HOME, no remote write credential, the parent
+outside the sandbox owning push) — scoped, not built, on HIMMEL-1961, because
+today's threat model is a worker misreading a parent-authored brief rather than
+an adversary. The hard per-lane bound arrives with the WS4/WS7 gates.
 
 The D2 egress guards (`glm-guard.ts`) are **dormant-by-construction in v1**:
 with the himmel-worktree cwd scope they can realistically fire only if the
@@ -619,19 +648,17 @@ occurrences vs allowed ones, so `gh pr view 1 && gh pr merge 1` still denies
 CLI-first — `block-backend-tier` enforces that in every session), and the
 obsidian-vault MCP stays blocked (vault offload is the v2 follow-up).
 
-**The guard stack is now three layers:**
+**The guard stack is two layers** (it was three until HIMMEL-1961 retired the
+poisoned-pushurl tripwire):
 
 1. **deny-hook** (this hook) — deterministic, in-session, blocks the write
    shapes above before they run.
-2. **poisoned pushurl tripwire** — the worktree-scoped invalid `pushurl` that
-   fails a default-path `git push`.
-3. **parent-session CR gate** — no GLM branch is pushed/merged except by the
+2. **parent-session CR gate** — no GLM branch is pushed/merged except by the
    validating session after the CR loop.
 
 The deny-hook is an accidental-shape guard (like `block-read-secrets`), NOT a
-containment wall. **Layers 2 and 3 (tripwire + CR gate) remain the load-bearing
-backstops**; the hook is the added deterministic in-session layer, not a
-replacement for them.
+containment wall. **The CR gate is the load-bearing backstop**; the hook is the
+deterministic in-session layer in front of it, not a replacement for it.
 
 **When the hook is actually LIVE — BOTH conditions must hold** (merging the PR
 is not enough):
@@ -666,7 +693,7 @@ covered target.
 **Bypass:** `GLM_EXTERNAL_WRITES_OK=1` set in the shell that spawns the worker
 (session-sticky; a per-call prefix does not reach the hook).
 
-**Known limitations** (tripwire + CR-gate backstopped): a wrapper that displaces
+**Known limitations** (CR-gate backstopped): a wrapper that displaces
 the command from command position is missed — env-prefixed `FOO=1 git push`,
 `sudo`/`xargs`/`timeout` wrappers, the dashed `git-push` form, and the
 `=`-joined global-flag form `git --git-dir=/x push`; malformed or empty tool
@@ -738,8 +765,7 @@ strict validity check (arm enum, per-arm deny-shape anchor, no unbounded
 uses. Everything is **fail-closed**: an unset/absent ledger, or any malformed /
 mis-anchored / expired / exhausted grant line, leaves the arm denying. Like the
 deny-hook itself, this is an **accidental-shape guard for a same-user worker**,
-not a containment wall — the load-bearing controls remain the poisoned-pushurl
-tripwire and the parent CR gate.
+not a containment wall — the load-bearing control remains the parent CR gate.
 
 ## Peak-hours & quota windows (lane scheduling, HIMMEL-654 decision #4)
 
@@ -793,7 +819,9 @@ Routing rules:
   coverage of the worker's git ops was NOT exercised — unknown, not
   proven. Default-mode guidance stands: expect possible deadlock-until-
   timeout on unapproved tools; prefer bypassPermissions for unattended
-  runs (tripwire + guard-checked cwd are the compensating controls).
+  runs (at the time of this record the pushurl tripwire + guard-checked cwd
+  were the compensating controls; the tripwire is gone as of HIMMEL-1961, so
+  the deny-hook and the CR gate carry that weight now).
 - **Execution-time findings folded back into the code:** settings `model`
   key → warning not refusal (`2135712e`); `.env` resolution falls back to
   the main checkout via `git rev-parse --git-common-dir` when running from

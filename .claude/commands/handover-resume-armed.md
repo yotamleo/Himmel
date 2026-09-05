@@ -1,5 +1,5 @@
 ---
-description: Fast-resume from the last armed session — surface its transcript + stop-point (the answered AskUserQuestion = the agreed continuation) with no manual JSONL archaeology. HIMMEL-208.
+description: Fast-resume from the last armed session — surface its transcript and stop-point, no manual JSONL archaeology.
 argument-hint: (no args)
 ---
 

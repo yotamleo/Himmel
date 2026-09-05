@@ -19,6 +19,11 @@
 #   - IMPORTANT: stamp is written / touch'd BEFORE the network fetch so a
 #     hung git fetch never wedges future checks (operator restarts a session,
 #     hung job from the previous run holds the interval open).
+#   - The fetch itself is DETACHED (HIMMEL-1844): the count is read from the
+#     LOCAL remote-tracking refs, and the fetch only refreshes them for the
+#     NEXT check. Nothing here touches the network on the session-start path,
+#     so this hook can no longer be killed mid-run by the harness timeout.
+#     First run on a fresh clone therefore sees pre-fetch refs and is silent.
 #
 # Env knobs (all optional):
 #   UPDATE_CHECK_DISABLE=1           kill switch
@@ -81,15 +86,63 @@ if [ -z "$ROOT" ]; then
 fi
 [ -d "$ROOT/.git" ] || exit 0
 
-# ─── fetch (quiet; offline / no-remote is a silent no-op) ───────────────────
-git -C "$ROOT" fetch --quiet origin 2>/dev/null || exit 0
+# ─── upstream branch + behind count, from the LOCAL refs ────────────────────
+# Read BEFORE the refresh below is spawned. Both commands are local — nothing
+# here touches the network — and taking the reading first is what makes this
+# run's answer deterministic: a fetch racing the count would report the previous
+# check's refs or this one's depending on who won, which is a coin flip in the
+# hook and a flaky assertion in its suite.
+upstream=$(git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || upstream=""
+behind=""
+if [ -n "$upstream" ]; then
+    behind=$(git -C "$ROOT" rev-list --count "HEAD..$upstream" 2>/dev/null) || behind=""
+fi
 
-# ─── upstream branch ─────────────────────────────────────────────────────────
-upstream=$(git -C "$ROOT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || exit 0
-[ -n "$upstream" ] || exit 0
+# ─── refresh the remote refs OUT OF BAND (HIMMEL-1844) ──────────────────────
+# Those remote-tracking refs ARE the cache; this detached fetch is its
+# out-of-band refresh. So the count above is the one the PREVIOUS check fetched
+# (at most INTERVAL old, and a commit count is not a signal that turns over in
+# four hours) and the NEXT check sees today's. The synchronous fetch that used
+# to sit ahead of it is what made this hook a timeout: an offline station, a VPN
+# with a black-holed route, or a credential prompt blocked session start until
+# the harness killed the hook at 15s — and a killed hook emits nothing, so the
+# operator lost the nudge on exactly the runs that cost the most. Detached, its
+# stdin is /dev/null (a prompt EOFs out instead of hanging) and its worst
+# outcome is an unrefreshed ref set.
+#
+# UNCONDITIONAL past this point — in particular it runs on the up-to-date path,
+# which is the common one. Gating it on `behind > 0` would mean a checkout that
+# reads current never fetches again and so can never discover that it isn't.
+# shellcheck source=scripts/lib/detach.sh disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/detach.sh" 2>/dev/null || true
+# No synchronous fallback when detach.sh is absent. A broken checkout is not a
+# reason to put the network back on the session-start path — that would make the
+# non-blocking contract conditional on a file this hook cannot verify, and the
+# thing at stake is a NUDGE. This hook already fails open and silent on a dozen
+# conditions (no repo, no upstream, offline); one more is in character.
+if command -v detach_run >/dev/null 2>&1; then
+    # Two bounds, for the two ways a detached fetch hangs forever instead of
+    # merely failing:
+    #   - a black-holed transfer — git's own abort, bail under 1KB/s for 60s.
+    #     Covers https, which is what himmel clones use; an ssh remote falls back
+    #     to the transport's own timeouts.
+    #   - a credential prompt — stdin is already /dev/null, but git opens
+    #     /dev/tty directly to ask, so a clone whose token expired would park on
+    #     a question nobody will ever answer. This does NOT disable the
+    #     credential HELPER: that would break the nudge outright on a private
+    #     clone, which is the case this hook exists for.
+    # No total wall-clock deadline: a portable one needs a killer process, and
+    # coreutils `timeout` is the Windows SLEEP trap qmd-staleness-notice.sh
+    # documents at length. What is left (DNS, connect) is bounded by the OS
+    # stack, and the throttle above bounds how many can ever be in flight.
+    detach_run env GIT_TERMINAL_PROMPT=0 \
+        git -C "$ROOT" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 \
+        fetch --quiet origin
+fi
 
-# ─── behind count ────────────────────────────────────────────────────────────
-behind=$(git -C "$ROOT" rev-list --count "HEAD..$upstream" 2>/dev/null) || exit 0
+# ─── verdict ─────────────────────────────────────────────────────────────────
+# No upstream, no readable count, or not behind → silent, exactly as before.
+[ -n "$behind" ] || exit 0
 # Validate: must be a non-negative integer.
 case "$behind" in ''|*[!0-9]*) exit 0 ;; esac
 [ "$behind" -gt 0 ] || exit 0

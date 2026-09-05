@@ -7,17 +7,29 @@ import { getHudPluginDir } from './claude-config-dir.js';
 import { createDebug } from './debug.js';
 import { sanitizeDisplayText } from './utils/sanitize.js';
 import { sanitizeTranscriptModel } from './model-source.js';
+import { isDetectedPromptCacheTtl, PROMPT_CACHE_TTL_1H_SECONDS, PROMPT_CACHE_TTL_5M_SECONDS, } from './constants.js';
 const debug = createDebug('transcript');
-const TRANSCRIPT_CACHE_VERSION = 13;
+const TRANSCRIPT_CACHE_VERSION = 18;
 const MCP_TOOL_NAME_PATTERN = /^mcp__(.+?)__(.+)$/;
 const ACTIVITY_NAME_MAX_LEN = 64;
 const MESSAGE_ID_MAX_LEN = 128;
-const SEEN_MESSAGE_IDS_MAX = 4096;
+const REQUEST_ID_MAX_LEN = 128;
+const MESSAGE_USAGE_MAX = 4096;
+const MCP_ERROR_SERVERS_MAX = 64;
 // Hard cap on the advisor model ID captured from the transcript. Real Claude
 // model IDs (e.g. "claude-haiku-4-5-20251001") fit comfortably under this; the
 // cap exists to prevent a malformed transcript from persisting an oversized
 // string through the JSON cache and onto every statusline refresh.
 const ADVISOR_MODEL_MAX_LEN = 64;
+// Openers of user text that never leaves the machine. Client-side slash
+// commands write their invocation, their output, and their caveat as user
+// records, and an interrupt writes a marker; none of them sends a request.
+const LOCAL_ONLY_USER_TEXT_PREFIXES = [
+    '<command-name>',
+    '<command-message>',
+    '<local-command-',
+    '[Request interrupted by user',
+];
 let createReadStreamImpl = fs.createReadStream;
 function normalizeTokenCount(value) {
     if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -25,19 +37,91 @@ function normalizeTokenCount(value) {
     }
     return Math.max(0, Math.trunc(value));
 }
+/**
+ * Reads the TTL a request actually used from its per-tier cache-write counters,
+ * so the cache clock does not depend on the user naming the right tier.
+ *
+ * Returns undefined when the request wrote nothing — a pure cache read leaves
+ * both counters at zero — which keeps the tier detected earlier in the session.
+ * Mixed tiers are representable, since one request may carry several cache
+ * breakpoints, and take the shortest: that is the first part of the prefix to
+ * lapse, so it is when the cached prompt stops being whole.
+ */
+function detectPromptCacheTtlSeconds(cacheCreation) {
+    if (!cacheCreation) {
+        return undefined;
+    }
+    if (normalizeTokenCount(cacheCreation.ephemeral_5m_input_tokens) > 0) {
+        return PROMPT_CACHE_TTL_5M_SECONDS;
+    }
+    if (normalizeTokenCount(cacheCreation.ephemeral_1h_input_tokens) > 0) {
+        return PROMPT_CACHE_TTL_1H_SECONDS;
+    }
+    return undefined;
+}
+/**
+ * True for user text that Claude Code produced locally rather than sending. A
+ * slash command that runs in the client writes its invocation and its output as
+ * user records without any request going out, and an interrupted request leaves
+ * a marker record behind for the same reason. None of them refreshes the cache.
+ */
+function isLocalOnlyUserText(text) {
+    return LOCAL_ONLY_USER_TEXT_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+/**
+ * True when a user record is the start of a request rather than a local note.
+ *
+ * Claude Code sends a request as soon as a prompt is submitted or a tool result
+ * comes back, so the record itself marks the request start. Unknown shapes are
+ * treated as prompts: a record the harness writes without recognizable content
+ * is far more likely to be a message than a client-side aside.
+ */
+function isPromptCacheRequestStart(entry) {
+    const content = entry.message?.content;
+    if (typeof content === 'string') {
+        return !isLocalOnlyUserText(content);
+    }
+    if (Array.isArray(content)) {
+        // Tool results always trigger the follow-up request that carries them.
+        return content.some((block) => block?.type === 'tool_result')
+            || !content.some((block) => block?.type === 'text' && isLocalOnlyUserText(block.text ?? ''));
+    }
+    return true;
+}
 function normalizeMessageId(value) {
     return typeof value === 'string' && value.length > 0 && value.length <= MESSAGE_ID_MAX_LEN
         ? value
         : null;
 }
-function rememberMessageId(seenMessageIds, messageId) {
-    if (seenMessageIds.size >= SEEN_MESSAGE_IDS_MAX) {
-        const oldest = seenMessageIds.values().next().value;
+function normalizeRequestId(value) {
+    return typeof value === 'string' && value.length > 0 && value.length <= REQUEST_ID_MAX_LEN
+        ? value
+        : undefined;
+}
+function accumulateMessageUsage(usageByMessageId, messageId, current, total) {
+    const previous = usageByMessageId.get(messageId);
+    if (!previous && usageByMessageId.size >= MESSAGE_USAGE_MAX) {
+        const oldest = usageByMessageId.keys().next().value;
         if (oldest !== undefined) {
-            seenMessageIds.delete(oldest);
+            usageByMessageId.delete(oldest);
         }
     }
-    seenMessageIds.add(messageId);
+    const prior = previous ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+    };
+    total.inputTokens += Math.max(0, current.inputTokens - prior.inputTokens);
+    total.outputTokens += Math.max(0, current.outputTokens - prior.outputTokens);
+    total.cacheCreationTokens += Math.max(0, current.cacheCreationTokens - prior.cacheCreationTokens);
+    total.cacheReadTokens += Math.max(0, current.cacheReadTokens - prior.cacheReadTokens);
+    usageByMessageId.set(messageId, {
+        inputTokens: Math.max(prior.inputTokens, current.inputTokens),
+        outputTokens: Math.max(prior.outputTokens, current.outputTokens),
+        cacheCreationTokens: Math.max(prior.cacheCreationTokens, current.cacheCreationTokens),
+        cacheReadTokens: Math.max(prior.cacheReadTokens, current.cacheReadTokens),
+    });
 }
 function normalizeSessionTokens(tokens) {
     if (!tokens || typeof tokens !== 'object') {
@@ -119,6 +203,7 @@ function serializeTranscriptData(data) {
         })),
         skills: [...data.skills],
         mcpServers: [...data.mcpServers],
+        mcpErrors: [...data.mcpErrors],
         agents: data.agents.map((agent) => ({
             ...agent,
             startTime: agent.startTime.toISOString(),
@@ -128,6 +213,8 @@ function serializeTranscriptData(data) {
         sessionStart: data.sessionStart?.toISOString(),
         sessionName: data.sessionName,
         lastAssistantResponseAt: data.lastAssistantResponseAt?.toISOString(),
+        promptCacheAnchorAt: data.promptCacheAnchorAt?.toISOString(),
+        promptCacheTtlSeconds: data.promptCacheTtlSeconds,
         sessionTokens: data.sessionTokens,
         lastCompactBoundaryAt: data.lastCompactBoundaryAt?.toISOString(),
         lastCompactPostTokens: data.lastCompactPostTokens,
@@ -146,6 +233,7 @@ function deserializeTranscriptData(data) {
         })),
         skills: normalizeNameList(data.skills),
         mcpServers: normalizeNameList(data.mcpServers),
+        mcpErrors: normalizeNameList(data.mcpErrors).slice(0, MCP_ERROR_SERVERS_MAX),
         agents: data.agents.map((agent) => ({
             ...agent,
             model: sanitizeTranscriptModel(agent.model),
@@ -156,6 +244,13 @@ function deserializeTranscriptData(data) {
         sessionStart: data.sessionStart ? new Date(data.sessionStart) : undefined,
         sessionName: data.sessionName,
         lastAssistantResponseAt: data.lastAssistantResponseAt ? new Date(data.lastAssistantResponseAt) : undefined,
+        promptCacheAnchorAt: data.promptCacheAnchorAt ? new Date(data.promptCacheAnchorAt) : undefined,
+        // Only a real tier is accepted back. Detection can produce nothing else, so
+        // any other value means a corrupt snapshot, and dropping it falls back to
+        // the default TTL instead of counting down against a fabricated one.
+        promptCacheTtlSeconds: isDetectedPromptCacheTtl(data.promptCacheTtlSeconds)
+            ? data.promptCacheTtlSeconds
+            : undefined,
         sessionTokens: normalizeSessionTokens(data.sessionTokens),
         lastCompactBoundaryAt: data.lastCompactBoundaryAt ? new Date(data.lastCompactBoundaryAt) : undefined,
         lastCompactPostTokens: typeof data.lastCompactPostTokens === 'number' ? data.lastCompactPostTokens : undefined,
@@ -223,6 +318,7 @@ export async function parseTranscript(transcriptPath) {
         tools: [],
         skills: [],
         mcpServers: [],
+        mcpErrors: [],
         agents: [],
         todos: [],
     };
@@ -244,6 +340,7 @@ export async function parseTranscript(transcriptPath) {
     const toolMap = new Map();
     const skillSet = new Set();
     const mcpServerSet = new Set();
+    const mcpErrorSet = new Set();
     const agentMap = new Map();
     let latestTodos = [];
     const taskIdToIndex = new Map();
@@ -261,8 +358,17 @@ export async function parseTranscript(transcriptPath) {
         cacheCreationTokens: 0,
         cacheReadTokens: 0,
     };
-    const seenMessageIds = new Set();
+    const usageByMessageId = new Map();
     let lastUsageKey;
+    // Prompt-cache clock state. `prevMainChainAt` trails the main conversation so
+    // a response can be anchored to the record it answers; the request fields hold
+    // the anchor for the request currently being read.
+    let prevMainChainAt;
+    let promptCacheAnchorAt;
+    let promptCacheTtlSeconds;
+    let promptCacheRequestId;
+    let promptCacheRequestAnchorAt;
+    let promptCachePendingRequestAt;
     let parsedCleanly = false;
     try {
         const fileStream = createReadStreamImpl(canonicalTranscriptPath);
@@ -337,24 +443,26 @@ export async function parseTranscript(transcriptPath) {
                 if (entry.type === 'assistant' && entry.message?.usage) {
                     const usage = entry.message.usage;
                     const msgId = normalizeMessageId(entry.message.id);
-                    let shouldCount = false;
+                    const normalizedUsage = {
+                        inputTokens: normalizeTokenCount(usage.input_tokens),
+                        outputTokens: normalizeTokenCount(usage.output_tokens),
+                        cacheCreationTokens: normalizeTokenCount(usage.cache_creation_input_tokens),
+                        cacheReadTokens: normalizeTokenCount(usage.cache_read_input_tokens),
+                    };
                     if (msgId !== null) {
                         lastUsageKey = undefined;
-                        if (!seenMessageIds.has(msgId)) {
-                            rememberMessageId(seenMessageIds, msgId);
-                            shouldCount = true;
-                        }
+                        accumulateMessageUsage(usageByMessageId, msgId, normalizedUsage, sessionTokens);
                     }
                     else {
                         const usageKey = `${usage.input_tokens}|${usage.output_tokens}|${usage.cache_creation_input_tokens}|${usage.cache_read_input_tokens}`;
-                        shouldCount = usageKey !== lastUsageKey;
+                        const shouldCount = usageKey !== lastUsageKey;
                         lastUsageKey = usageKey;
-                    }
-                    if (shouldCount) {
-                        sessionTokens.inputTokens += normalizeTokenCount(usage.input_tokens);
-                        sessionTokens.outputTokens += normalizeTokenCount(usage.output_tokens);
-                        sessionTokens.cacheCreationTokens += normalizeTokenCount(usage.cache_creation_input_tokens);
-                        sessionTokens.cacheReadTokens += normalizeTokenCount(usage.cache_read_input_tokens);
+                        if (shouldCount) {
+                            sessionTokens.inputTokens += normalizedUsage.inputTokens;
+                            sessionTokens.outputTokens += normalizedUsage.outputTokens;
+                            sessionTokens.cacheCreationTokens += normalizedUsage.cacheCreationTokens;
+                            sessionTokens.cacheReadTokens += normalizedUsage.cacheReadTokens;
+                        }
                     }
                 }
                 else {
@@ -390,7 +498,54 @@ export async function parseTranscript(transcriptPath) {
                         }
                     }
                 }
-                processEntry(entry, toolMap, skillSet, mcpServerSet, agentMap, taskIdToIndex, latestTodos, result);
+                // Prompt-cache clock, tracked apart from lastAssistantResponseAt so the
+                // last-response element keeps its current subagent-inclusive meaning.
+                //
+                // Two corrections live here. Subagent records are skipped, because a
+                // subagent runs against its own cache and does not refresh the main
+                // session's. And a response is anchored to the record it answers rather
+                // than to itself, because the cache lifetime starts with the request that
+                // reads or writes the cache — anchoring on the response would hand the
+                // session however long that response took to generate. Records sharing a
+                // requestId came from one request and so share one anchor.
+                if (entry.isSidechain !== true) {
+                    const entryAt = entry.timestamp ? new Date(entry.timestamp) : null;
+                    const entryHasTime = entryAt !== null && !Number.isNaN(entryAt.getTime());
+                    if (entry.type === 'assistant' && entryHasTime) {
+                        const requestId = normalizeRequestId(entry.requestId);
+                        // An absent requestId (very old transcripts) makes every record its
+                        // own request, which anchors to the preceding record — later than the
+                        // true request start, but never later than the response itself.
+                        if (requestId === undefined || requestId !== promptCacheRequestId) {
+                            promptCacheRequestId = requestId;
+                            promptCacheRequestAnchorAt = prevMainChainAt;
+                        }
+                        // No preceding record, or one stamped after the response it triggered:
+                        // fall back to the response, which is the latest defensible anchor.
+                        promptCacheAnchorAt = (promptCacheRequestAnchorAt
+                            && promptCacheRequestAnchorAt.getTime() <= entryAt.getTime())
+                            ? promptCacheRequestAnchorAt
+                            : entryAt;
+                        const detectedTtl = detectPromptCacheTtlSeconds(entry.message?.usage?.cache_creation);
+                        if (detectedTtl !== undefined) {
+                            promptCacheTtlSeconds = detectedTtl;
+                        }
+                        // A response closes the request the pending anchor was holding.
+                        promptCachePendingRequestAt = undefined;
+                    }
+                    // A request whose response has not been written yet has still already
+                    // refreshed the cache, so the record that opened it is the live anchor.
+                    // Only a record with no assistant record after it can be that opener,
+                    // which is what keeps a user record carrying a skewed future timestamp
+                    // from displacing the response it precedes in the file.
+                    if (entry.type === 'user' && entryHasTime && isPromptCacheRequestStart(entry)) {
+                        promptCachePendingRequestAt = entryAt;
+                    }
+                    if (entryHasTime) {
+                        prevMainChainAt = entryAt;
+                    }
+                }
+                processEntry(entry, toolMap, skillSet, mcpServerSet, mcpErrorSet, agentMap, taskIdToIndex, latestTodos, result);
             }
             catch (err) {
                 lastUsageKey = undefined;
@@ -420,6 +575,7 @@ export async function parseTranscript(transcriptPath) {
     result.tools = Array.from(toolMap.values()).slice(-20);
     result.skills = Array.from(skillSet.values());
     result.mcpServers = Array.from(mcpServerSet.values());
+    result.mcpErrors = Array.from(mcpErrorSet.values());
     result.agents = Array.from(agentMap.values()).slice(-10);
     result.todos = latestTodos;
     result.sessionName = customTitle ?? latestSlug;
@@ -429,6 +585,15 @@ export async function parseTranscript(transcriptPath) {
     result.compactionCount = compactionCount;
     result.advisorModel = latestAdvisorModel;
     result.ultracodeActive = latestUltracodeActive;
+    // Promote the pending request only when it moves the clock forward. A record
+    // stamped before the response it follows is skew, and the earlier anchor is
+    // the one that cannot overstate how much cache lifetime is left.
+    result.promptCacheAnchorAt = (promptCachePendingRequestAt
+        && (!promptCacheAnchorAt
+            || promptCachePendingRequestAt.getTime() > promptCacheAnchorAt.getTime()))
+        ? promptCachePendingRequestAt
+        : promptCacheAnchorAt;
+    result.promptCacheTtlSeconds = promptCacheTtlSeconds;
     if (parsedCleanly) {
         writeTranscriptCache(canonicalTranscriptPath, transcriptState, result);
     }
@@ -437,7 +602,7 @@ export async function parseTranscript(transcriptPath) {
 export function _setCreateReadStreamForTests(impl) {
     createReadStreamImpl = impl ?? fs.createReadStream;
 }
-function processEntry(entry, toolMap, skillSet, mcpServerSet, agentMap, taskIdToIndex, latestTodos, result) {
+function processEntry(entry, toolMap, skillSet, mcpServerSet, mcpErrorSet, agentMap, taskIdToIndex, latestTodos, result) {
     const timestamp = entry.timestamp ? new Date(entry.timestamp) : new Date();
     const hasValidTimestamp = !Number.isNaN(timestamp.getTime());
     if (!result.sessionStart && entry.timestamp && hasValidTimestamp) {
@@ -559,6 +724,22 @@ function processEntry(entry, toolMap, skillSet, mcpServerSet, agentMap, taskIdTo
             if (tool) {
                 tool.status = block.is_error ? 'error' : 'completed';
                 tool.endTime = timestamp;
+                // Track each server's latest observed result. Tool names are untrusted
+                // transcript data, so reuse the bounded terminal-safe extractor.
+                const mcpServerName = extractMcpServerName(tool.name);
+                if (mcpServerName) {
+                    if (block.is_error) {
+                        if (!mcpErrorSet.has(mcpServerName) && mcpErrorSet.size >= MCP_ERROR_SERVERS_MAX) {
+                            const oldest = mcpErrorSet.values().next().value;
+                            if (oldest !== undefined)
+                                mcpErrorSet.delete(oldest);
+                        }
+                        mcpErrorSet.add(mcpServerName);
+                    }
+                    else {
+                        mcpErrorSet.delete(mcpServerName);
+                    }
+                }
             }
             const agent = agentMap.get(block.tool_use_id);
             if (agent) {
@@ -568,6 +749,10 @@ function processEntry(entry, toolMap, skillSet, mcpServerSet, agentMap, taskIdTo
                 const resolvedModel = sanitizeTranscriptModel(entry.toolUseResult?.resolvedModel);
                 if (resolvedModel) {
                     agent.model = resolvedModel;
+                }
+                if (entry.toolUseResult?.isAsync === true
+                    || entry.toolUseResult?.status === 'async_launched') {
+                    agent.background = true;
                 }
                 if (!agent.background) {
                     agent.endTime = timestamp;

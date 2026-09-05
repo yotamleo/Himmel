@@ -1,6 +1,6 @@
 ---
 name: handover
-description: Use when the user says "new epic", "new task", "new standalone", "end session", "update status", "handover", "handover-resume #N", "handover bug", "log a bug", "track a bug", "fix didn't work", "handover bugs", "bug dashboard", "handover lessons", "lessons sweep", "handover init", "handover register", "handover repos", or asks to create/track work items in the handover system. Also use when wrapping up a session or resuming tracked work. Triggers on phrases like "wrap up", "session done", "start epic", "add task to #N", "handover-resume", "resume session", "register handover for <repo>".
+description: Handover system — new epic/task, wrap up/end session, update status, log a bug, lessons, init/register/repos/resume.
 ---
 
 # Handover System

@@ -167,5 +167,22 @@ printf 'himmel-extra\n' > "$S/marketplaces.txt"   # 'himmel' absent; only a subs
 run "$S" --plugins=himmel-ops >/dev/null
 assert_log_has "$S/calls.log" "marketplace add" "registers 'himmel' when only 'himmel-extra' present (no substring false-match)"
 
+echo "== scenario K: phase 4 hook-set lint runs from THIS script (HIMMEL-1981) =="
+# /himmel-update calls the .sh installer, not the .ps1 twin that already carried
+# the probe — so the Codex hook-set drift + pwsh-trap lint has to fire here too.
+# Advisory: it must never change the exit code or the call log.
+S="$TMP/K"; mk_state "$S"
+printf 'himmel\n' > "$S/marketplaces.txt"; : > "$S/plugins.txt"
+out="$(run "$S" --plugins=himmel-ops 2>&1)"
+# Assert the phase reached a TERMINAL state, not just its (unconditional)
+# heading: either the probe's own SUMMARY line, or one of the two documented
+# skips. A broken platform test or pwsh invocation prints neither.
+if grepq "$out" -E -e '^SUMMARY: [0-9]+ hooks' -e '^skip: (not Windows|pwsh not on PATH)'; then
+  pass "phase 4 hook-set lint runs to a terminal state (probe summary or a declared skip)"
+else
+  fail "phase 4 hook-set lint neither linted nor skipped"
+fi
+assert_log_lacks "$S/calls.log" "remove" "phase 4 mutates nothing"
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED" >&2; exit 1; fi

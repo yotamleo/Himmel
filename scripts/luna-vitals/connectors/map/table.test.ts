@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
-import { readdirSync } from 'fs';
-import { join } from 'path';
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { MAPPINGS, EXCLUDED } from './table';
 
 const VALID_CATEGORIES = new Set(['daily', 'sample', 'interval']);

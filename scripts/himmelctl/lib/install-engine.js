@@ -4,7 +4,8 @@
 // converge red/degraded manifest items. This engine NEVER re-implements
 // wiring/plugin-install/settings-merge logic — every dispatch shells out to
 // an EXISTING primitive script (adopt.sh, setup.sh, the wire-*.sh/
-// unwire-*.sh libs, install-plugins.sh, qmd-bin.sh's qmd_install), mirroring
+// unwire-*.sh libs, install-plugins.sh, qmd-bin.sh's qmd_install,
+// guardrail-block.mjs's own `install` verb — HIMMEL-2176), mirroring
 // the doctrine test-wizard-noinstall-guard.sh already enforces on bin.js
 // itself. Keeping this dispatch table in its OWN file (not bin.js) keeps
 // that guard's bin.js-only script-literal scan meaningful — ensure's actual
@@ -26,24 +27,41 @@ const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
 const { parseDotEnv } = require('./probes.js');
+const { resolvePowershell } = require('./helpers.js');
+// HIMMEL-2176: the SAME bash resolver scripts/hooks/run-hook-with-bash.js's
+// own launcher uses to pick a real, usable Git Bash on Windows (never bare
+// 'bash', which can silently resolve to the WSL launcher or a 0-byte
+// WindowsApps alias there) — reused here (mirrors deps-engine.js's own
+// require of it) rather than re-deriving a second bash-selection policy.
+const { resolveBash: resolveHookBash } = require('../../hooks/run-hook-with-bash.js');
 
 // install.types planInstall/runInstall know how to dispatch. `config` is
 // deliberately absent — config-type items are hint-only pre-sub-ticket-D; the
 // caller (ensure, A5) must exclude them from the item list handed to
 // planInstall in the first place, never rely on this engine to skip them.
-const RUNNABLE_INSTALL_TYPES = ['adopt', 'setup', 'wire', 'plugins', 'qmd', 'dep', 'build'];
+// HIMMEL-2326: 'observability' added — its own switch case in buildEntry()
+// dispatches to install-stack.ps1 (win32-only in Phase A; posix returns an
+// `unrunnable` entry naming the gap, HIMMEL-2333 — never a doomed spawn of
+// install-stack.sh's loud placeholder).
+const RUNNABLE_INSTALL_TYPES = ['adopt', 'setup', 'wire', 'plugins', 'qmd', 'dep', 'build', 'observability', 'tokensave'];
 
 // The closed `target` vocabulary each target-bearing install type dispatches
 // on — the SINGLE source of truth buildEntry()'s switch (and unwireCommand()'s
 // 'wire' branch) actually branch on, exported so manifest-lint.mjs can reject
 // a typo (e.g. "statuslien") that would otherwise lint clean and silently
-// dispatch the WRONG primitive: every non-'statusline' wire target falls
-// through to pretooluse-hooks, every non-'jira-cli' build target to
-// bitbucket. Keep in lockstep with those branches — a value authored here
-// without a matching dispatch site (or vice versa) is a bug.
+// dispatch the WRONG primitive: 'statusline' and 'guardrail-block-global' are
+// each their OWN explicit branch below; every other wire target (today, only
+// 'pretooluse-hooks') falls through to the pretooluse-hooks primitive, and
+// every non-'jira-cli' build target to bitbucket. Keep in lockstep with those
+// branches — a value authored here without a matching dispatch site (or vice
+// versa) is a bug.
+// HIMMEL-2326: 'observability'/'stack' added — buildEntry()'s own
+// 'observability' case (below) is its ONLY dispatch site; 'wire'/'build'
+// above are untouched.
 const INSTALL_TARGETS = {
-  wire: ['statusline', 'pretooluse-hooks'],
+  wire: ['statusline', 'pretooluse-hooks', 'guardrail-block-global'],
   build: ['jira-cli', 'bitbucket-cli'],
+  observability: ['stack'],
 };
 
 // adopt/setup items COLLAPSE to ONE invocation — each converges the WHOLE
@@ -116,6 +134,36 @@ function buildEntry(item, ctx, diagnosticState) {
       if (install.target === 'statusline') {
         return { cmd: 'bash', args: [path.join(scriptsDir, 'lib', 'wire-statusline.sh'), settings, ctx.repoRoot] };
       }
+      if (install.target === 'guardrail-block-global') {
+        // HIMMEL-2176: guardrail-block.mjs is ITSELF the primitive here — a
+        // Node CLI with its own `install --node <ABS> --bash <ABS>` verb
+        // (see its own run()/installData()) that writes the OPERATOR'S
+        // GLOBAL ~/.claude/settings.json directly (settingsPath() there,
+        // overridable only via CLAUDE_USER_SETTINGS — a TEST seam, not
+        // something this engine sets). Spawned by ARGV, not `bash -c` — no
+        // shell-string quoting surface exists at all here, mirroring
+        // probes.js's own cmd:guardrail_block_status probe, which spawns
+        // this exact script the exact same way (process.execPath +
+        // absolute script path, no shell). `--node` is THIS engine's own
+        // running node (process.execPath is always absolute) — the same
+        // node the resulting hook should run under later; `--bash` is
+        // resolved via resolveHookBash(), the SAME resolver
+        // scripts/hooks/run-hook-with-bash.js's own launcher uses to pick a
+        // genuinely usable Git Bash on Windows (never bare 'bash', which can
+        // silently resolve to the WSL launcher or a 0-byte WindowsApps
+        // alias there). guardrail-block.mjs's own requireAbsolute('bash', …)
+        // makes an unresolvable bash a HARD requirement, not optional — when
+        // resolveHookBash() finds nothing usable it returns null; surfaced
+        // here as `unrunnable` (per the brief: never hand it a relative or
+        // empty path, which it would reject anyway) rather than a doomed
+        // spawn.
+        const bashPath = resolveHookBash({ env: ctx.env || process.env, platform });
+        if (!bashPath) {
+          return { unrunnable: 'no usable bash found (Git Bash on Windows, or bash on PATH elsewhere) — guardrail-block.mjs install requires one; install it, then re-run' };
+        }
+        const scriptPath = path.join(scriptsDir, 'hooks', 'guardrail-block.mjs');
+        return { cmd: process.execPath, args: [scriptPath, 'install', '--node', process.execPath, '--bash', bashPath] };
+      }
       // 'pretooluse-hooks' (the other authored wire target). prefix mirrors
       // adopt.sh's own convention: $CLAUDE_PROJECT_DIR for project scope, the
       // himmel clone's abs path for user scope.
@@ -168,6 +216,29 @@ function buildEntry(item, ctx, diagnosticState) {
       }
       return { cmd: 'bash', args: ['-c', '. "$1" && qmd_install && qmd_register_collection "$2" himmel && qmd_register_collection "$3" luna', 'himmel-qmd', resolverPath, himmelPath, lunaPath] };
     }
+    case 'tokensave': {
+      // HIMMEL-2547: tokensave's index is per-CHECKOUT, not per-machine — a
+      // freshly-cloned/worktree'd checkout with the binary installed still
+      // fails `tokensave serve`'s `initialize` handshake ("no TokenSave
+      // index found ... run 'tokensave init'"), which codex/Claude report as
+      // a closed MCP connection rather than the real cause. The
+      // probes.js initMarker check (HIMMEL-1093) already reports this as
+      // 'degraded' — this is the matching remediation.
+      // `--no-git-hook` is load-bearing: tokensave's own git-hook offer must
+      // never touch this checkout's `.git/hooks` (the gated pre-commit
+      // chain) — HIMMEL-2281 is the hooksPath race that opened when a
+      // second tool's hooks collided with himmel's own.
+      // Idempotency: `tokensave init` on an already-initialized checkout
+      // EXITS NONZERO ("already initialized ... use tokensave sync
+      // instead") rather than no-op'ing — the `test -d` guard below makes a
+      // second `ensure` run against an already-indexed checkout a clean,
+      // silent no-op instead of a spurious failed[] entry. `ctx.targetPath`
+      // (never a hardcoded path or the user's home) is the SAME path
+      // probes.js's initMarker check resolves `.tokensave` against, passed
+      // as a bash POSITIONAL arg ($1) for the same quoting-safety reason as
+      // the 'qmd'/'build' cases above.
+      return { cmd: 'bash', args: ['-c', 'test -d "$1/.tokensave" || tokensave init "$1" --no-git-hook', 'himmel-tokensave', ctx.targetPath] };
+    }
     case 'build': {
       // Same positional-arg fix as 'qmd' above, for the build dir.
       // CR fix: an explicit if/else, NOT `bun … || (npm …)` — the `||` form
@@ -179,6 +250,22 @@ function buildEntry(item, ctx, diagnosticState) {
         cmd: 'bash',
         args: ['-c', 'cd "$1" && (if command -v bun >/dev/null 2>&1; then bun install && bun run build; else npm install && npm run build; fi)', 'himmel-build', dir],
       };
+    }
+    case 'observability': {
+      // HIMMEL-2326: install-stack.ps1 (winget/scoop packages +
+      // Register-LogonTask per exporter) is Phase A's (HIMMEL-922) ONLY
+      // installer. scripts/observability/install-stack.sh is an 11-line
+      // loud placeholder that `exit 2`s — cross-platform packaging is
+      // tracked as its own gap (HIMMEL-2333), not something this ticket
+      // builds. Mirrors the WINGET_IDS posix-gap posture above: never a
+      // doomed spawn of the placeholder — posix returns `unrunnable` with a
+      // reason naming the gap instead.
+      if (platform !== 'win32') {
+        return { unrunnable: 'observability stack install is Windows-only in Phase A (HIMMEL-922) — install-stack.sh is a loud placeholder (exit 2); cross-platform packaging is tracked as HIMMEL-2333. Install from a Windows host, or wait for that work to land.' };
+      }
+      const psBin = resolvePowershell(ctx.env || process.env);
+      const scriptPath = path.join(scriptsDir, 'observability', 'install-stack.ps1');
+      return { cmd: psBin, args: ['-NoProfile', '-NonInteractive', '-File', scriptPath, '-RepoRoot', ctx.repoRoot] };
     }
     case 'dep': {
       const tool = depToolName(item, ctx);
@@ -507,6 +594,24 @@ function runHardenedSpawn(entry) {
     const password = resolveSudoPassword(entry.repoRoot);
     entry = Object.assign({}, entry, { input: `${password}\n` });
   }
+  // HIMMEL-2289 (sibling sweep): buildEntry() emits the literal `cmd: 'bash'`
+  // for every shell primitive (adopt/setup/wire/plugins/qmd/dep). Spawning
+  // that bare name resolves through PATH — on Windows to
+  // C:\WINDOWS\system32\bash.exe, the WSL launcher, which cannot read the
+  // Windows-form script path in entry.args at all; the win32 branch relays
+  // entry.cmd on to job-run.ps1, so PowerShell resolves the same WSL stub.
+  // Only the guardrail-block-global wire target had the rule (it needed an
+  // ABSOLUTE --bash to hand onward); resolving here covers every other
+  // primitive at the single spawn seam, and leaves PLAN output ('bash')
+  // untouched. Unresolvable => refuse rather than run the WSL stub, matching
+  // buildEntry()'s own `unrunnable` refusal for that target.
+  if (entry.cmd === 'bash') {
+    const bashPath = process.env.HIMMELCTL_BASH || resolveHookBash({ env: process.env });
+    if (!bashPath) {
+      return { ok: false, reason: 'no usable bash found (Git Bash on Windows, or bash on PATH elsewhere) — install one, then re-run' };
+    }
+    entry = Object.assign({}, entry, { cmd: bashPath });
+  }
   const timeoutMs = installTimeoutMs();
   const childEnv = Object.assign({}, process.env);
   // CR fix (SECURITY, MAJOR): Windows env var names are case-insensitive —
@@ -707,7 +812,7 @@ function runHardenedSpawnWin32(entry, timeoutMs, childEnv) {
       : { stdio: 'inherit' },
     { env: childEnv, timeout: backstopMs, killSignal: 'SIGKILL' },
   );
-  const r = spawnSync('powershell', psArgs, spawnOpts);
+  const r = spawnSync(resolvePowershell(childEnv), psArgs, spawnOpts);
   if (r.error && r.error.code === 'ETIMEDOUT') {
     return { ok: false, reason: `timed out after ${Math.round(timeoutMs / 1000)}s` };
   }

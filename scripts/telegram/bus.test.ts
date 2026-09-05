@@ -6,7 +6,7 @@ import { sessionDir, ensureSession, readMeta, writeMeta, atomicWrite } from "./b
 import { appendLine, readNewLines, sessionDir as _sd, ensureSession as _es, sendToSession } from "./bus";
 import { appendContext, readContext, truncateFullyConsumed } from "./bus";
 
-function root() { return mkdtempSync(join(tmpdir(), "bus-")); }
+function root() { return mkdtempSync(join(tmpdir(), "telegram-bus-")); }
 
 test("ensureSession atomically creates dir + returns created flag", async () => {
   const r = root();

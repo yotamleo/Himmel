@@ -8,9 +8,11 @@ unset CR_PROFILE CRITIC_PANEL_TIERS 2>/dev/null || true
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/pr-check-external.sh"
-tmp="$(mktemp -d)"
-# shellcheck disable=SC2064
-trap "rm -rf $tmp" EXIT
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HERE/../lib/fixture-tempdir.sh"
+tmp="$(fixture_mktemp_dir)" || exit 1
+trap 'rm -rf "$tmp"' EXIT
 fail=0
 
 ok()  { echo "ok - $1"; }
@@ -57,9 +59,11 @@ CODEX_ABSENT_ERR="$(printf 'panel-availability: qwen3coder ok')"
 make_repo() {
     # $1 = repo dir; creates origin.git sibling, main + glm/x (non-empty diff) + glm/empty (no diff)
     local d="$1"
-    git -c init.defaultBranch=main init -q "$d"
+    [ -n "$d" ] || { echo "FAIL: empty fixture repo path" >&2; return 1; }
+    mkdir -p "$d" || return 1
     (
-        cd "$d" || exit 1
+        fixture_enter_git_init_dir "$d" || exit 1
+        git -c init.defaultBranch=main init -q
         git config user.email t@t.test
         git config user.name tester
         echo base > f.txt
@@ -94,7 +98,7 @@ meta_verdict() {
 
 # ============================================================================
 repo="$tmp/repo"
-make_repo "$repo"
+make_repo "$repo" || exit 1
 
 # --- T1: clean path writes external_cr_verdict + prints snippet --------------
 sd="$tmp/s1"; new_session "$sd"

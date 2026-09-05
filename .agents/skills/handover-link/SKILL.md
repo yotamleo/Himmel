@@ -1,6 +1,6 @@
 ---
 name: handover-link
-description: Report or check where Claude reads/writes handover state (inline ./handovers or external $HANDOVER_DIR). Use when the user asks where handover state lives or runs /handover-link.
+description: Report where Claude reads/writes handover state (inline ./handovers or $HANDOVER_DIR). Use for /handover-link.
 ---
 
 # handover-link

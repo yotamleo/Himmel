@@ -1,4 +1,4 @@
-import type { StdinData, UsageData, TranscriptData } from './types.js';
+import type { ScopedUsageWindow, StdinData, UsageData, TranscriptData } from './types.js';
 import type { ModelFormatMode } from './config.js';
 type StdinStream = Pick<NodeJS.ReadStream, 'setEncoding' | 'on' | 'off' | 'pause'> & {
     isTTY?: boolean;
@@ -30,6 +30,13 @@ export declare function isEnterpriseModelId(modelId?: string): boolean;
 export declare function getProviderLabel(stdin: StdinData): string | null;
 export declare function shouldHideUsage(stdin: StdinData): boolean;
 export declare function getUsageFromStdin(stdin: StdinData): UsageData | null;
+/**
+ * Parses `rate_limits.model_scoped` (model-scoped weekly windows, e.g. Fable).
+ * The upstream schema carries `utilization` on the same 0-100 scale used by
+ * the generic rate-limit windows. Malformed entries are dropped, and both the
+ * retained entry count and label size are bounded because stdin is untrusted.
+ */
+export declare function parseScopedWindows(modelScoped: unknown): ScopedUsageWindow[];
 /**
  * Strips redundant context-window size suffixes from model display names.
  *

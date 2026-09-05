@@ -4,6 +4,73 @@ All notable changes to Claude HUD will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `display.showDailyCost` option to show today's cumulative spend across sessions (`Today $12.34`), accumulated from the native stdin `cost.total_cost_usd` into a per-day ledger that resets at local midnight (#695).
+- Break the session-tokens line's combined cache figure into separate cache-write and cache-read totals.
+
+### Fixed
+- Refresh the prompt-cache clock when a request starts rather than when its response arrives, ignoring client-side slash command records, interrupt markers, and subagent requests (#719).
+- Treat Agent `tool_result` payloads with `isAsync` or `status: async_launched` as background so the agents line stays up until the task-notification (#734).
+- Pass `--no-optional-locks` on `git diff --numstat` so a timed-out statusline poll cannot leave `.git/index.lock` behind (#726).
+- Render the prompt-cache clock as `until <time>` so the value reads as expiry, not write time (#727).
+- Refresh stale per-model cost-estimate pricing (enterprise plan aliases) and drop the Sonnet 5 introductory-rate cutover date, which no current pricing reference corroborates.
+
+### Docs
+- Add the ten missing config options and the absolute-path caveat for `display.externalUsagePath` to `README.zh.md` (#730).
+
+## [0.8.0] - 2026-08-18
+
+### Added
+- Load optional per-config-directory overrides from `$CLAUDE_CONFIG_DIR/claude-hud.json` while preserving shared plugin settings (#714).
+- `display.effortFormat` option (`full` | `symbol` | `text`) to render the effort indicator as symbol only or level text only; `full` keeps the current output (#691).
+
+### Security
+- Bound config file size and nesting, reject symlinked or prototype-sensitive config input, and sanitize terminal-bound config labels (#714).
+
+## [0.7.2] - 2026-08-17
+
+### Fixed
+- Anchor prompt-cache expiry to the main-session request, ignore subagent cache writes, and detect 5-minute or 1-hour cache tiers while preserving the configured fallback (#702).
+
+### Security
+- Bound transcript request identifiers before grouping prompt-cache writes (#702).
+
+### Dependencies
+- Update the development-only `@types/node` package from 26.1.2 to 26.2.0 (#711).
+
+## [0.7.1] - 2026-08-11
+
+### Fixed
+- Remove completed agents on the next HUD refresh after one minute and keep completed history from displacing running agents (#704).
+
+### Security
+- Sanitize, validate, and bound agent labels before terminal output (#704).
+
+## [0.7.0] - 2026-08-07
+
+### Added
+- Read bounded model-scoped usage windows from an optional external snapshot while preserving explicit empty stdin snapshots (#690).
+- Configure wall-clock hour cycles and optional seconds without changing the locale-driven default (#692).
+- Right-align an ordered suffix of merged expanded rows with `display.rightAlign` (#693).
+- Price Claude Opus 5, Sonnet 5, and Fable 5 in local cost estimates, including Sonnet's time-limited introductory rate (#694).
+- Detect the official MiniMax Anthropic-compatible endpoints and estimate MiniMax M2.7 token/cache cost without guessing MiniMax M3's request-tier pricing (#696).
+- Surface bounded MCP server failures when MCP activity or config counts are enabled, clearing a failure after a later successful result (#699).
+- Cache derived opt-in authentication labels against the source profile identity (#700).
+
+### Fixed
+- Prevent short-lived Windows statusline processes from orphaning their owned Git process trees, with bounded output, timeouts, and non-interactive read-only Git behavior (#703).
+- Silence `/dev/tty` probe failures during setup command execution (#686).
+- Treat Unicode variation selectors as zero-width in terminal-cell calculations (#687).
+- Count completed and progressive assistant token records after zero-value transcript placeholders (#698).
+- Preserve configured element order in right-aligned rows and cap hostile terminal/config widths (#693).
+
+### Security
+- Sanitize, bound, cache-version, and opt-in MCP error names before terminal rendering (#699).
+- Validate and version derived-auth cache entries, reject symlink/oversized reads, use private permissions, and write through unique exclusive temporary files (#700).
+
+### Dependencies
+- Update the development-only `@types/node` package from 26.1.1 to 26.1.2 (#697).
+
 ## [0.6.0] - 2026-07-20
 
 ### Added

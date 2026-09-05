@@ -1,5 +1,5 @@
 ---
-description: Babysit a PUBLIC propagation PR (default repo yotamleo/Himmel) to CR-clean + CI-green before the operator merges — creates the PR if the branch is pushed but has none, watches the CodeRabbit App review + CI via check-ci.sh, loops fixes, and STOPS at PR-ready. The public squash-merge stays an operator action (HIMMEL-1196).
+description: Babysit a PUBLIC propagation PR to CR-clean + CI-green, then STOP — the squash-merge stays an operator action.
 argument-hint: [pr-number|branch] [--repo <owner/name>]
 ---
 

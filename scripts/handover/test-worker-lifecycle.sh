@@ -71,6 +71,20 @@ export HANDOVER_DIR
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
 export HIMMEL_FLOW_RUNS_LEDGER="$TMP/flow-runs.jsonl"
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
+# HIMMEL-1965: the shipped-work preflight (HIMMEL-1331) derives a ticket ID from
+# the handover and probes LIVE Jira/GitHub for it. This suite's fixture is
+# himmel-1463.md, so the moment HIMMEL-1463 itself shipped, every arm here that
+# does not pass --force started refusing with rc=11 -- T2 and T9 failed on the
+# status of the very ticket the suite was written for.
+#
+# It also only refuses where the probe can reach Jira: the CLI lives in an
+# UNTRACKED dist/, which a worktree does not have, so the probe fail-opens there
+# and the SAME COMMIT passes in a clean worktree and fails in the primary
+# checkout. That asymmetry is what made it read as a code regression.
+#
+# Shield it. This suite exercises the reconciler and the pre-arm worker guard;
+# test-arm-resume.sh owns the shipped-work gate and sets this per-case.
+export ARM_SHIPPED_OK=1
 export ARM_BRIDGE_LIVE=0
 export ARM_MAX_SLOTS=0
 # This suite deliberately arms a $TMP fixture (resume_cwd is $WORK_REPO,
@@ -82,13 +96,56 @@ export ARM_TEMP_CWD_OK=1
 
 SCHED_STUB="$TMP/sched-stub"
 mkdir -p "$SCHED_STUB"
-for cmd in schtasks atq powershell; do
-    cat > "$SCHED_STUB/$cmd" <<'EOF'
+# HIMMEL-938/1879 (same fix as test-arm-resume.sh's SCHED_STUB_T17): a
+# stateless "always exit 0, never list anything" schtasks fake is internally
+# inconsistent with arm-resume's post-arm EXISTENCE verify, which re-queries
+# after /create and reads an empty answer as "the create registered nothing"
+# -> rc=2 on every real (non-dry-run) arm through this stub (T2/T6/T9 here all
+# do real arms). Give it real /create+/query+/delete state instead.
+cat > "$SCHED_STUB/schtasks" <<EOF
+#!/usr/bin/env bash
+db="$TMP/sched-stub.tasks"
+cmd="\${1:-}"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create|/delete)
+        if [ -f "\$db" ]; then
+            grep -vFx "\$tn" "\$db" > "\$db.tmp" 2>/dev/null || : > "\$db.tmp"
+            mv "\$db.tmp" "\$db"
+        fi
+        [ "\$cmd" = /create ] && printf '%s\\n' "\$tn" >> "\$db"
+        exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+chmod +x "$SCHED_STUB/schtasks"
+cat > "$SCHED_STUB/atq" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-    chmod +x "$SCHED_STUB/$cmd"
-done
+chmod +x "$SCHED_STUB/atq"
+# Probe "unavailable" -> arm-resume's NextRunTime verify fail-opens (WARN, arm
+# stands) rather than querying a real scheduler for a task the fake /create
+# above never actually registered with the OS (same reasoning as
+# SCHED_STUB_T17's powershell stub).
+cat > "$SCHED_STUB/powershell" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$SCHED_STUB/powershell"
 cat > "$SCHED_STUB/at" <<'EOF'
 #!/usr/bin/env bash
 cat >/dev/null
@@ -99,6 +156,27 @@ cat > "$SCHED_STUB/claude" <<'EOF'
 exit 0
 EOF
 chmod +x "$SCHED_STUB/at" "$SCHED_STUB/claude"
+
+# mktemp shim for T1b (HIMMEL-708 fallout): arm-resume's --time HH:MM
+# resolution now round-trips through py_armor_capture, which ALSO calls
+# mktemp -- so a global broken TMPDIR (the old way this case forced a
+# failure) trips that earlier, unrelated mktemp call instead of the
+# worker-reconcile one T1b means to test. Gate the injected failure to only
+# the reconcile-stderr template, behind an opt-in env var, so it fires for
+# T1b alone and every other mktemp call (py-armor's included) still succeeds.
+REAL_MKTEMP="$(command -v mktemp)"
+cat > "$SCHED_STUB/mktemp" <<EOF
+#!/usr/bin/env bash
+if [ -n "\${MKTEMP_FAIL_RECONCILE:-}" ]; then
+    for a in "\$@"; do
+        case "\$a" in
+            *arm-resume.reconcile-err.*) exit 1 ;;
+        esac
+    done
+fi
+exec "$REAL_MKTEMP" "\$@"
+EOF
+chmod +x "$SCHED_STUB/mktemp"
 
 NEAR_HHMM=$(node -e 'const d = new Date(Date.now() + 5 * 60 * 1000); process.stdout.write(String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"))')
 
@@ -167,7 +245,7 @@ if [ -z "$(ls -A "$SECURE_STDERR_TMP" 2>/dev/null)" ]; then pass "T1a secure std
 rm -f "$OLD_CENSUS_PATH"
 
 # T1b: mktemp failure is validated and refuses before either census command.
-out=$(TMPDIR="$TMP/missing-tmpdir" PATH="$SCHED_STUB:$PATH" LIVE_PIDS=111 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
+out=$(MKTEMP_FAIL_RECONCILE=1 PATH="$SCHED_STUB:$PATH" LIVE_PIDS=111 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
 assert_rc "T1b mktemp failure refuses arm" 2 "$rc"
 assert_contains "T1b mktemp failure is diagnosable" "mktemp failed for worker reconcile stderr" "$out"
@@ -399,6 +477,23 @@ rm -rf "$RACE_DIR"
 
 # T8b: a session-dir stat failure remains fail-open (no orphaning) but now
 # emits a diagnostic instead of being indistinguishable from not-exceeded.
+#
+# HIMMEL-2066: the census is now ONE batched node call reading paths on
+# stdin instead of one call per meta.json, so this stub can no longer spot
+# "the call for STAT_DIR" via argv[3] -- it reads the whole piped stdin and
+# checks whether STAT_DIR's path is IN the batch instead. The race is still
+# exact: the census (and this deletion) fully completes and is captured
+# before the per-candidate while loop -- including the ceiling check this
+# test targets -- ever starts.
+#
+# Slurping stdin (`$(cat)`) is gated to ONLY the census invocation (matched
+# by the same script-body marker below). Every OTHER node call this run
+# makes (_worker_meta_is_fresh, the ceiling check, ...) is invoked without
+# its own stdin redirection, so it inherits whatever fd 0 this test process
+# itself has -- a terminal's fd 0 never hits EOF, so an unconditional
+# `$(cat)` here would hang the suite when run interactively (CI's implicit
+# `</dev/null` masked this). Route the non-census branch to /dev/null
+# instead of reading stdin at all.
 STAT_NODE_DIR="$TMP/stat-node"
 STAT_DIR="$WORKER_BRIDGE_ROOT/claudex-sessions/claudex-stat-failure"
 mkdir -p "$STAT_NODE_DIR" "$STAT_DIR"
@@ -407,11 +502,20 @@ cat > "$STAT_DIR/meta.json" <<'EOF'
 EOF
 cat > "$STAT_NODE_DIR/node" <<'EOF'
 #!/usr/bin/env bash
-"$REAL_NODE" "$@"
-rc=$?
 case "${2:-}" in
     *'const vals = [o.status, o.pid'*)
-        if [ "$rc" -eq 0 ] && [ "${3:-}" = "$STAT_META_DIR/meta.json" ]; then rm -rf "$STAT_META_DIR"; fi
+        input=$(cat)
+        printf '%s' "$input" | "$REAL_NODE" "$@"
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            case "$input" in
+                *"$STAT_META_DIR/meta.json"*) rm -rf "$STAT_META_DIR" ;;
+            esac
+        fi
+        ;;
+    *)
+        "$REAL_NODE" "$@" </dev/null
+        rc=$?
         ;;
 esac
 exit "$rc"
@@ -440,6 +544,12 @@ out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS='' bash "$ARM" --time "$N
 rc=$?
 assert_rc "T9 malformed meta refuses without override" 2 "$rc"
 assert_contains "T9 refusal names the offending meta path" "glm-malformed/meta.json" "$out"
+# T6's --force arm above left its own task registered in the stateful
+# schtasks stub's db; without --force here, this arm would otherwise (and
+# correctly) hit the real dedup-block path (rc=3) instead of the scenario
+# this case means to exercise. Reset so this arm starts from a clean
+# scheduler, like every T-case before the stub gained real state.
+rm -f "$TMP/sched-stub.tasks"
 out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS='' ARM_WITH_LIVE_WORKERS=1 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
 assert_rc "T9 override warns and proceeds" 0 "$rc"
@@ -447,6 +557,30 @@ assert_contains "T9 override warning is loud" "WARN arm-resume: ARM_WITH_LIVE_WO
 assert_contains "T9 override still names the offending meta path" "glm-malformed/meta.json" "$out"
 assert_contains "T9 override reaches scheduler success" "RESUME ARMED" "$out"
 rm -rf "$MALFORMED_DIR"
+
+# T10: HIMMEL-2066 -- one census batch mixing a terminal row, a live running
+# row, and a malformed row must reconcile the good rows exactly as before
+# and still surface the parse failure as rc=2 for the batch as a whole.
+T10_TERMINAL_DIR="$WORKER_BRIDGE_ROOT/glm-sessions/glm-t10-terminal"
+T10_LIVE_DIR="$WORKER_BRIDGE_ROOT/claudex-sessions/claudex-t10-live"
+T10_MALFORMED_DIR="$WORKER_BRIDGE_ROOT/glm-sessions/glm-t10-malformed"
+mkdir -p "$T10_TERMINAL_DIR" "$T10_LIVE_DIR" "$T10_MALFORMED_DIR"
+cat > "$T10_TERMINAL_DIR/meta.json" <<'EOF'
+{"status":"completed","pid":1009,"lane":"glm","task_name":"t10-terminal"}
+EOF
+cat > "$T10_LIVE_DIR/meta.json" <<'EOF'
+{"status":"running","pid":1010,"lane":"codex","task_name":"t10-live"}
+EOF
+printf '{not valid json' > "$T10_MALFORMED_DIR/meta.json"
+out=$(LIVE_PIDS=1010 bash "$RECONCILE" 2>&1)
+rc=$?
+assert_rc "T10 mixed batch with a malformed row exits 2" 2 "$rc"
+assert_contains "T10 malformed row is still reported" "glm-t10-malformed/meta.json" "$out"
+assert_file_contains "T10 terminal row untouched" '"status":"completed"' "$T10_TERMINAL_DIR/meta.json"
+assert_file_contains "T10 live row untouched" '"status":"running"' "$T10_LIVE_DIR/meta.json"
+out=$(LIVE_PIDS=1010 bash "$RECONCILE" --list-live 2>&1)
+assert_contains "T10 live row still surfaces via --list-live" "task=t10-live pid=1010" "$out"
+rm -rf "$T10_TERMINAL_DIR" "$T10_LIVE_DIR" "$T10_MALFORMED_DIR"
 
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"

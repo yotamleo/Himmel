@@ -1,6 +1,6 @@
 ---
 name: handover-pr-merge
-description: Squash-merge the PR for the current handover/<TICKET>-<slug> branch. Plain merge (no --admin by default). Use when the user asks to merge the handover PR or run /handover-pr-merge.
+description: Squash-merge the PR for the current handover/<TICKET>-<slug> branch. Use for /handover-pr-merge.
 ---
 
 # handover-pr-merge

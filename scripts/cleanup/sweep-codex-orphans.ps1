@@ -639,6 +639,11 @@ function Get-CodexClientLeases {
 # (claude.exe, ChatGPT.exe, node.exe, bun.exe), its token could silently drop
 # out of the live-token set and a broker could misclassify as ORPHAN.
 #
+# Re-confirm liveness before classifying an empty CommandLine as blind: short-
+# lived node/bun processes can exit between the CIM snapshot and this decision.
+# A gone process cannot hold a live broker; a still-running unreadable process
+# remains fail-closed and blocks -Kill. ProcessLookup is the hermetic test seam.
+#
 # Do NOT gate on every invisible process: unrelated cross-session / SYSTEM
 # processes routinely hide CommandLine from a non-elevated sweep, which would
 # disable -Kill permanently. Processes inside any broker tree are also excluded;
@@ -646,14 +651,34 @@ function Get-CodexClientLeases {
 function Get-BlindClientPids {
   param(
     [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Procs,
-    [AllowNull()]$BrokerTreePids = $null
+    [AllowNull()]$BrokerTreePids = $null,
+    [AllowNull()][scriptblock]$ProcessLookup = $null
   )
   if ($null -eq $BrokerTreePids) { $BrokerTreePids = Get-CodexBrokerTreePids -Procs $Procs }
   $out = New-Object System.Collections.ArrayList
   foreach ($p in $Procs) {
     if ($BrokerTreePids.Contains([int]$p.ProcessId)) { continue }
     if (-not (Test-IsPlausibleCodexAppServerClient -Proc $p)) { continue }
-    if ([string]::IsNullOrEmpty([string]$p.CommandLine)) { [void]$out.Add([int]$p.ProcessId) }
+    if (-not [string]::IsNullOrEmpty([string]$p.CommandLine)) { continue }
+    $liveNow = $null
+    $absenceProven = $false
+    try {
+      if ($ProcessLookup) { $liveNow = & $ProcessLookup ([int]$p.ProcessId) }
+      else { $liveNow = Get-Process -Id ([int]$p.ProcessId) -ErrorAction Stop }
+    } catch {
+      # ONLY a genuine "no such process" proves the client exited. Any other
+      # lookup failure (access-denied, or anything unexpected) leaves liveness
+      # UNKNOWN, and unknown must keep BLOCKING -- dropping the pid here would
+      # re-open the exact fail-open hole this function exists to close.
+      # NOTE this catch is NOT the same shape as the catch-alls elsewhere in
+      # this file (e.g. the kill loop at the -Kill sites): there, "treat an
+      # exception as gone" SKIPS a kill and is therefore fail-SAFE. Here it
+      # REMOVES a blocker, so the identical shape would be fail-OPEN. Same code,
+      # opposite safety direction (HIMMEL-1706 CR).
+      $absenceProven = ([string]$_.FullyQualifiedErrorId) -like 'NoProcessFoundForGivenId*'
+      $liveNow = $null
+    }
+    if (($null -ne $liveNow) -or (-not $absenceProven)) { [void]$out.Add([int]$p.ProcessId) }
   }
   return , ($out.ToArray())
 }

@@ -203,3 +203,39 @@ test('getProviderLabel returns null when CLAUDE_CODE_USE_BEDROCK=0', () => {
     else process.env.CLAUDE_CODE_USE_BEDROCK = orig;
   }
 });
+
+test('getProviderLabel recognizes both MiniMax Anthropic endpoints', () => {
+  const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
+  const originalApiBaseUrl = process.env.ANTHROPIC_API_BASE_URL;
+
+  try {
+    delete process.env.ANTHROPIC_API_BASE_URL;
+    process.env.ANTHROPIC_BASE_URL = 'https://api.minimax.io/anthropic';
+    assert.equal(getProviderLabel({ model: { id: 'MiniMax-M3' } }), 'MiniMax');
+
+    delete process.env.ANTHROPIC_BASE_URL;
+    process.env.ANTHROPIC_API_BASE_URL = 'https://api.minimaxi.com/anthropic/';
+    assert.equal(getProviderLabel({ model: { id: 'MiniMax-M3' } }), 'MiniMax');
+  } finally {
+    if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
+    if (originalApiBaseUrl === undefined) delete process.env.ANTHROPIC_API_BASE_URL;
+    else process.env.ANTHROPIC_API_BASE_URL = originalApiBaseUrl;
+  }
+});
+
+test('getProviderLabel rejects lookalike MiniMax endpoints', () => {
+  const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
+  const originalApiBaseUrl = process.env.ANTHROPIC_API_BASE_URL;
+
+  try {
+    delete process.env.ANTHROPIC_API_BASE_URL;
+    process.env.ANTHROPIC_BASE_URL = 'https://proxy.api.minimax.io/anthropic';
+    assert.equal(getProviderLabel({ model: { id: 'MiniMax-M3' } }), null);
+  } finally {
+    if (originalBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL;
+    else process.env.ANTHROPIC_BASE_URL = originalBaseUrl;
+    if (originalApiBaseUrl === undefined) delete process.env.ANTHROPIC_API_BASE_URL;
+    else process.env.ANTHROPIC_API_BASE_URL = originalApiBaseUrl;
+  }
+});

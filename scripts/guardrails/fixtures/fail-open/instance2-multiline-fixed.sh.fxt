@@ -1,0 +1,27 @@
+# Post-fix twin of instance2-multiline-arm.sh.fxt — the multiline fallback
+# arm in its CORRECT shape: the arm produces the sentinel (it names the
+# failure) and the sentinel is hard-denied BEFORE the matrix eval, so it can
+# never reach a wildcard cell. Proves the round-2 arm tracking accepts
+# properly-denied multiline arms rather than flagging the form itself.
+#
+# Expected: lint-fail-open.sh passes this file clean.
+if [ -z "${ANTHROPIC_BASE_URL:-}" ]; then
+    EFFECTIVE_PROVIDER="anthropic"
+else
+    endpoint_host="$(_endpoint_host "$ANTHROPIC_BASE_URL")" || endpoint_host=""
+    case "$endpoint_host" in
+        api.anthropic.com)
+            EFFECTIVE_PROVIDER="anthropic"
+            ;;
+        *)
+            EFFECTIVE_PROVIDER="anthropic-custom"
+            ;;
+    esac
+fi
+if [ "$EFFECTIVE_PROVIDER" = "anthropic-custom" ]; then
+    echo "unverified endpoint — refusing scheduled egress on every corpus (fail-closed)" >&2
+    exit 2
+fi
+verdict_line="$(node "$MX_EVAL" "$CORPUS_CLASS" "$EFFECTIVE_PROVIDER" extraction)" \
+    || { echo "matrix eval failed" >&2; exit 2; }
+echo "verdict: $verdict_line"

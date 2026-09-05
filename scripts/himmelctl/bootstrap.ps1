@@ -10,6 +10,11 @@
 # Usage (-ExecutionPolicy Bypass: a clean machine's default policy is
 # Restricted, which refuses -File outright):
 #   powershell -ExecutionPolicy Bypass -File scripts/himmelctl/bootstrap.ps1 [-DryRun] [-DefaultScope project|user]
+# ps51-ok: HIMMEL-2126 — this is the NODE-LESS bootstrap for a genuinely clean
+# Windows machine, which may not have pwsh (a separate download) installed
+# yet; `powershell` (5.1) ships on every stock Windows box, so it is the one
+# interpreter this script can assume. Everything AFTER hand-off to
+# bin.js/himmelctl prefers pwsh via resolvePowershell().
 #
 # HIMMELCTL_REPO_ROOT overrides where bin.js is looked up (same seam bin.js
 # itself honors) so a hermetic test can point the hand-off at a stub.

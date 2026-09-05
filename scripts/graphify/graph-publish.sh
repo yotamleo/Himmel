@@ -240,9 +240,16 @@ Publishes a refreshed graphify-out/graph.json + GRAPH_REPORT.md for **${corpus}*
 
 ${files_block}
 
+## Review class — MACHINE-GENERATED, not CodeRabbit-reviewable (HIMMEL-2278)
+
+Every path in this PR's diff is a tracked graphify-out artifact (\`graphify-out/graph.json\`, \`graphify-out/GRAPH_REPORT.md\`) — a regenerated data snapshot, zero code. The CodeRabbit App does not review this class, so **do not post a CodeRabbit review-trigger comment here, and do not park on the CR gate**: the review is never coming (precedents #2013 dependabot, #2035 this class; both ended in a manual operator merge after a dead poll). This body deliberately spells out no trigger phrase — a literal one here would fire the very request it is telling you not to make.
+
+\`check-ci.sh\` recognizes the class from that diff shape — not from a label or this text, which any PR could copy — and treats the absent App review as the expected state. Checks-green, CHANGES_REQUESTED and unresolved-thread gating still apply here in full.
+
 ## Ticket
 
 - HIMMEL-1129
+- HIMMEL-2278 (the machine-generated-PR review class)
 
 ---
 

@@ -11,6 +11,7 @@ HOOK="$(cd "$(dirname "$0")" && pwd)/block-glm-external-writes.sh"
 
 FAILED=0
 CASES=0
+SKIPPED=0
 GLM_URL="https://api.z.ai/api/anthropic"
 BASH_ABS=$(command -v bash)
 EMPTY_PATH=$(mktemp -d)
@@ -34,9 +35,13 @@ OWN_HELPER_NATIVE="$OWN_SESSION_NATIVE/append-outbox.sh"
 SIBLING_HELPER_NATIVE="$SIBLING_SESSION_NATIVE/append-outbox.sh"
 
 # run_case <json> [VAR=val ...] — extra args become env assignments.
+# HIMMEL-2085: also unset the generalized worker-ness/pin-dir vars so a
+# developer's own shell env (or a leftover from an earlier case) can never
+# leak into a case that does not explicitly set them.
 run_case() {
     local input="$1"; shift
-    printf '%s' "$input" | env -u ANTHROPIC_BASE_URL -u GLM_EXTERNAL_WRITES_OK -u GLM_SESSION_DIR "$@" bash "$HOOK" >/dev/null 2>&1
+    printf '%s' "$input" | env -u ANTHROPIC_BASE_URL -u GLM_EXTERNAL_WRITES_OK -u GLM_SESSION_DIR \
+        -u HIMMEL_WORKER -u HIMMEL_HOOK_INTEGRITY_DIR -u HIMMEL_HOOK_INTEGRITY_BYPASS_OK "$@" bash "$HOOK" >/dev/null 2>&1
     echo "$?"
 }
 
@@ -49,6 +54,17 @@ assert_rc() {
         echo "FAIL $label — expected rc=$expected, got rc=$actual"
         FAILED=$((FAILED + 1))
     fi
+}
+
+# skip_case <label> <reason> — platform-gated case whose premise cannot exist
+# on this host. Still increments CASES (so EXPECTED_CASES stays a true
+# invariant across platforms) but never FAILED; the SKIP line names what did
+# not run and why, per the no-silent-skip rule.
+skip_case() {
+    local label="$1" reason="$2"
+    CASES=$((CASES + 1))
+    SKIPPED=$((SKIPPED + 1))
+    echo "SKIP $label — $reason"
 }
 
 # HIMMEL-1649 round 3: the hook is the EXECUTOR. A valid report is recorded by
@@ -109,6 +125,17 @@ j_pwsh() { printf '{"tool_name":"PowerShell","tool_input":{"command":%s}}' "$(pr
 # absolute path so the script still runs and must fail closed at the jq check.
 run_case_no_jq() {
     printf '%s' "$1" | env -u ANTHROPIC_BASE_URL "ANTHROPIC_BASE_URL=$GLM_URL" PATH="$EMPTY_PATH" "$BASH_ABS" "$HOOK" >/dev/null 2>&1
+    echo "$?"
+}
+# HIMMEL-2085 CR history: round 2 [codex-3] fail-OPENED a native-only
+# worker_lane here (scope concern); round 3 [codex-1] correctly called that a
+# reopening of the pin-forging attack this ticket exists to close (jq-missing
+# means the pin-dir class cannot evaluate anything, so fail-open leaves it
+# silently inert) -- reverted back to fail-closed for every worker_lane. The
+# SAME jq-missing runner, but for a native-only worker_lane (HIMMEL_WORKER=1,
+# no ANTHROPIC_BASE_URL) instead of glm_lane, pinning that both now agree.
+run_case_no_jq_native() {
+    printf '%s' "$1" | env -u ANTHROPIC_BASE_URL -u HIMMEL_WORKER "HIMMEL_WORKER=1" PATH="$EMPTY_PATH" "$BASH_ABS" "$HOOK" >/dev/null 2>&1
     echo "$?"
 }
 
@@ -447,6 +474,13 @@ assert_rc "glm remote set-url"           2 "$(run_case "$(j_bash 'git remote set
 assert_rc "glm config pushurl"           2 "$(run_case "$(j_bash 'git config remote.origin.pushurl git@github.com:u/r.git')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm config --local pushurl"   2 "$(run_case "$(j_bash 'git config --local remote.origin.pushurl git@github.com:u/r.git')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm config --get url (pinned overmatch)" 2 "$(run_case "$(j_bash 'git config --get remote.origin.url')" "ANTHROPIC_BASE_URL=$GLM_URL")"
+# url.<base>.pushInsteadOf rewrites where a push LANDS without naming a remote
+# or a pushurl, so it is the same escape as `remote set-url` by another key.
+# Both directions are denied: setting one redirects a push, and unsetting one
+# removes an operator redirect the worker was never asked to touch (HIMMEL-1961
+# CR -- the deny existed, nothing pinned it).
+assert_rc "glm config pushInsteadOf set"   2 "$(run_case "$(j_bash 'git config url.https://github.com/.pushInsteadOf git@github.com:')" "ANTHROPIC_BASE_URL=$GLM_URL")"
+assert_rc "glm config pushInsteadOf unset" 2 "$(run_case "$(j_bash 'git config --unset url.https://github.com/.pushInsteadOf')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm gh at end of command"     2 "$(run_case "$(j_bash 'cd /tmp && gh')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm iwr (PS alias)"           2 "$(run_case "$(j_pwsh 'iwr https://example.com')" "ANTHROPIC_BASE_URL=$GLM_URL")"
 assert_rc "glm curl"                     2 "$(run_case "$(j_bash 'curl -X POST https://api.example.com -d x=1')" "ANTHROPIC_BASE_URL=$GLM_URL")"
@@ -550,6 +584,7 @@ assert_rc "glm env-prefix push (pinned limitation)" 0 "$(run_case "$(j_bash 'FOO
 
 # --- Edge cases: jq availability + malformed input ---
 assert_rc "glm jq missing fails closed"  2 "$(run_case_no_jq "$(j_bash 'git status')")"
+assert_rc "native worker jq missing ALSO fails closed (round-3 [codex-1] reversal)" 2 "$(run_case_no_jq_native "$(j_bash 'git status')")"
 assert_rc "glm malformed JSON allows (documented)" 0 "$(run_case '{not json' "ANTHROPIC_BASE_URL=$GLM_URL")"
 
 # --- Escape hatch (expect rc=0 on an otherwise-blocked command) ---
@@ -625,18 +660,555 @@ mk_grants "{\"type\":\"grant\",\"grant_id\":\"g13\",\"arm\":\"git-push\",\"patte
 assert_rc "G13 builtin-allowed fast path"       0 "$(run_case_grant "$(j_bash 'gh pr view 1')")"
 assert_rc "G13 fast path did not consume grant" 0 "$(consumptions g13)"
 
+# --- HIMMEL-2085: hook-integrity pin-dir write-fence (worker-ness, not lane) --
+# The pin-dir class is the ONLY class in this file gated on worker_lane
+# (glm_lane OR HIMMEL_WORKER=1) instead of glm_lane alone — see the header's
+# HIMMEL-2085 GENERALIZATION note. These cases pin: (a) a headed/off-lane
+# session stays unaffected, (b) a native (non-GLM) dispatched worker is now
+# denied — closing the exact gap the ticket was filed for, (c) GLM-lane
+# behavior for this NEW class is the same deny, (d) the documented bypass
+# works, and (e) a native worker gets ONLY this class, not the rest of the
+# GLM-specific enforcement (scope boundary, not a regression).
+PIN_FIXTURE=$(mktemp -d -t hook-integrity.XXXXXX)
+PIN_FIXTURE_NATIVE=$(native_dir "$PIN_FIXTURE")
+PIN_WRITE_CMD="echo pwned > $PIN_FIXTURE/forged-session.json"
+PIN_WRITE_CMD_NATIVE="echo pwned > $PIN_FIXTURE_NATIVE/forged-session.json"
+
+assert_rc "pin-dir write off-lane (headed session, unaffected)" 0 \
+    "$(run_case "$(j_bash "$PIN_WRITE_CMD")" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+assert_rc "pin-dir write denied for a native dispatched worker (HIMMEL-2085)" 2 \
+    "$(run_case "$(j_bash "$PIN_WRITE_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "pin-dir write denied via native Windows-style path spelling" 2 \
+    "$(run_case "$(j_bash "$PIN_WRITE_CMD_NATIVE")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE_NATIVE")"
+assert_rc "pin-dir write denied via PowerShell (native worker)" 2 \
+    "$(run_case "$(j_pwsh "Set-Content -Path $PIN_FIXTURE/x.json -Value pwned")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# codex-1 (pr-check critic-panel round 4): the outer-command checks above scan
+# only tool_input.command text, so `bash script.sh` (script.sh containing the
+# forge payload) passed every check while the SCRIPT still forged the pin.
+# Absolute script paths keep this hermetic regardless of the test runner's cwd.
+PIN_SCRIPT_DIR=$(mktemp -d -t pin-script.XXXXXX)
+PIN_SCRIPT_FORGE="$PIN_SCRIPT_DIR/forge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_SCRIPT_FORGE"
+PIN_SCRIPT_BENIGN="$PIN_SCRIPT_DIR/benign.sh"
+printf 'echo hello world\n' > "$PIN_SCRIPT_BENIGN"
+assert_rc "pin-dir write denied via invoked script content (codex-1 round 4)" 2 \
+    "$(run_case "$(j_bash "bash $PIN_SCRIPT_FORGE")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "pin-dir write denied via dot-sourced script content (codex-1 round 4)" 2 \
+    "$(run_case "$(j_bash ". $PIN_SCRIPT_FORGE")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "benign invoked script allowed (round-4 fix, no false positive)" 0 \
+    "$(run_case "$(j_bash "bash $PIN_SCRIPT_BENIGN")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "pin-dir invoked-script check skips a nonexistent path (fail-open on non-evaluable)" 0 \
+    "$(run_case "$(j_bash 'bash /nonexistent/path/for/this/test.sh')" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# codex-1/codex-2 (pr-check critic-panel round 5): the round-4 extraction above
+# only matched an interpreter word immediately followed by whitespace then an
+# UNQUOTED path -- direct execution (no interpreter word at all), a dash-option
+# before the path, a quoted path, and the `node` interpreter (an explicitly
+# documented dispatched-worker grant, Bash(node *), alongside Bash(bash *))
+# all bypassed it.
+PIN_SCRIPT_FORGE_JS="$PIN_SCRIPT_DIR/forge.js"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_SCRIPT_FORGE_JS"
+assert_rc "pin-dir write denied via direct script execution, no interpreter word (codex-1 round 5)" 2 \
+    "$(run_case "$(j_bash "$PIN_SCRIPT_FORGE")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "pin-dir write denied via bash -x with a dash option before the path (codex-1 round 5)" 2 \
+    "$(run_case "$(j_bash "bash -x $PIN_SCRIPT_FORGE")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "pin-dir write denied via a quoted script path (codex-1 round 5)" 2 \
+    "$(run_case "$(j_bash "bash \"$PIN_SCRIPT_FORGE\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "pin-dir write denied via the node interpreter (codex-2 round 5)" 2 \
+    "$(run_case "$(j_bash "node $PIN_SCRIPT_FORGE_JS")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "benign direct-exec script still allowed (round-5 fix, no false positive)" 0 \
+    "$(run_case "$(j_bash "$PIN_SCRIPT_BENIGN")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# codex-2/codex-3 (pr-check critic-panel round 5, fresh pass AFTER the fix
+# above landed): the regex-patch extraction still truncated a quoted path
+# containing a SPACE to its first whitespace-delimited token, and matched an
+# absolute/path-qualified interpreter (`/bin/bash forge.sh`) as a direct-exec
+# target on the INTERPRETER itself rather than extracting its script argument.
+# Root-caused with a quote-aware tokenizer (this file's own commentary above
+# the awk block) instead of a third regex patch.
+PIN_SCRIPT_SPACE_DIR=$(mktemp -d -t "pin-space.XXXXXX")
+PIN_SCRIPT_SPACE_FORGE="$PIN_SCRIPT_SPACE_DIR/my forge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_SCRIPT_SPACE_FORGE"
+assert_rc "pin-dir write denied via a quoted script path containing a space (codex-2 round 5 re-review)" 2 \
+    "$(run_case "$(j_bash "bash \"$PIN_SCRIPT_SPACE_FORGE\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+PIN_BASH_ABS=$(command -v bash)
+if [ -n "$PIN_BASH_ABS" ]; then
+    assert_rc "pin-dir write denied via an absolute interpreter path (codex-3 round 5 re-review)" 2 \
+        "$(run_case "$(j_bash "$PIN_BASH_ABS $PIN_SCRIPT_FORGE")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+fi
+
+# codex-2 (pr-check critic-panel round 5, re-review pass 2): a `cd <dir> &&`
+# segment ahead of the script invocation must shift the resolution cwd for
+# every later segment -- the awk tokenizer used a STATIC tool_cwd and missed
+# a script the command actually ran from a subdirectory. $PIN_SCRIPT_DIR is
+# absolute, so `cd`-ing there keeps this hermetic regardless of the test
+# runner's own cwd; `forge.sh` is deliberately RELATIVE here to exercise the
+# post-cd resolution.
+assert_rc "pin-dir write denied via cd-then-invoke with a relative script path (codex-2 round 5 re-review pass 2)" 2 \
+    "$(run_case "$(j_bash "cd $PIN_SCRIPT_DIR && bash forge.sh")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2200: three round-5 re-review residuals in the awk tokenizer,
+# root-caused with a single-pass quote/escape-aware scanner (see the file's
+# own commentary above the awk block) instead of another regex/split patch.
+# codex-1: a `;` inside a QUOTED script path used to split the command
+# mid-token because segment splitting ran BEFORE quote-aware tokenization.
+PIN_SCRIPT_SEMI_FORGE="$PIN_SCRIPT_DIR/forge;payload.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_SCRIPT_SEMI_FORGE"
+assert_rc "pin-dir write denied via a semicolon inside a quoted script path (HIMMEL-2200 codex-1)" 2 \
+    "$(run_case "$(j_bash "bash \"$PIN_SCRIPT_SEMI_FORGE\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# codex-2: a backslash-escaped space in an UNQUOTED path is a legitimate shell
+# escaping form; the old tokenizer had no backslash handling at all and would
+# truncate at the first (apparently unescaped) space. Reuses the existing
+# space-containing fixture file, referenced via its escaped-space spelling
+# instead of quotes.
+PIN_ESCAPED_SPACE_CMD="bash ${PIN_SCRIPT_SPACE_DIR}/my\\ forge.sh"
+assert_rc "pin-dir write denied via a backslash-escaped space in an unquoted script path (HIMMEL-2200 codex-2)" 2 \
+    "$(run_case "$(j_bash "$PIN_ESCAPED_SPACE_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# codex-3: the round-5 cd-tracking advanced the modeled cwd unconditionally,
+# even when the cd target does not exist on disk. A real shell's failed `cd`
+# leaves it in the ORIGINAL directory, so `cd <nonexistent>; bash forge.sh`
+# still executes forge.sh from tool_cwd -- pre-fix, the unconditional advance
+# resolved forge.sh against the (nonexistent) target instead, the file check
+# skipped a path that doesn't exist, and the pin payload was missed entirely
+# (a false ALLOW). tool_cwd is set to $PIN_SCRIPT_DIR (which holds the pin
+# payload forge.sh from the codex-1 round-4 fixture above) via an explicit
+# tool_input.cwd, so a correct fix must still catch it after the failed cd.
+PIN_CD_FAIL_JSON=$(jq -n --arg cmd "cd /this/definitely/does/not/exist/himmel-2200; bash forge.sh" \
+    --arg cwd "$PIN_SCRIPT_DIR" '{tool_name:"Bash", tool_input:{command:$cmd, cwd:$cwd}}')
+assert_rc "pin-dir write denied because a failed cd must not advance the modeled cwd (HIMMEL-2200 codex-3)" 2 \
+    "$(run_case "$PIN_CD_FAIL_JSON" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2200 pr-check critic-panel re-review (codex-1): the backslash
+# handling added above was itself too broad -- it fired unconditionally even
+# when the mediated tool is PowerShell (backslash is an ordinary literal
+# character there, never an escape), stripping the separators out of a native
+# Windows path and missing the real script. It also over-escaped inside a
+# BASH double-quoted string: real bash only treats `\$` `` \` `` `\"` `\\` as
+# special there, so a backslash before an ordinary character (the `U` in
+# `C:\Users`) must stay literal, both characters kept.
+PIN_SCRIPT_DIR_NATIVE=$(native_dir "$PIN_SCRIPT_DIR")
+# These two rows exercise a native Windows backslash path and only hold a
+# premise under a real Windows/MSYS host. native_dir()'s `pwd -W` is
+# MSYS-only; on POSIX (this box included) it always falls through to
+# `pwd -P`, so PIN_SCRIPT_DIR_NATIVE is a plain POSIX path here, the
+# backslash below is NOT a path separator, and the constructed command names
+# a different, nonexistent file. The guard correctly does not deny that --
+# rc=0 is right, there is no guard gap. Same platform predicate + SKIP voice
+# as scripts/luna/test-qmd-cadence.sh and scripts/graphify/test-ggs-cadence.sh.
+case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
+    msys*|cygwin*|win32*|MINGW*)
+        # PowerShell, UNQUOTED native path: pwsh dialect must disable
+        # backslash-escape handling entirely, so the path resolves exactly as
+        # spelled.
+        assert_rc "pin-dir write denied via a native Windows backslash path under PowerShell, unquoted (HIMMEL-2200 codex-1)" 2 \
+            "$(run_case "$(j_pwsh "bash ${PIN_SCRIPT_DIR_NATIVE}\\forge.sh")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+        # Bash, DOUBLE-QUOTED native path: a backslash before an ordinary
+        # character inside double quotes is not one of bash's four real
+        # escape targets and must stay literal (both characters kept), not be
+        # silently dropped.
+        assert_rc "pin-dir write denied via a native Windows backslash path in a bash double-quoted string (HIMMEL-2200 codex-1)" 2 \
+            "$(run_case "$(j_bash "bash \"${PIN_SCRIPT_DIR_NATIVE}\\forge.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+        ;;
+    *)
+        skip_case "pin-dir write denied via a native Windows backslash path under PowerShell, unquoted (HIMMEL-2200 codex-1)" \
+            "no Windows/MSYS host here — native_dir()'s pwd -W is MSYS-only, so the backslash path is unreachable and rc=0 is already correct"
+        skip_case "pin-dir write denied via a native Windows backslash path in a bash double-quoted string (HIMMEL-2200 codex-1)" \
+            "no Windows/MSYS host here — native_dir()'s pwd -W is MSYS-only, so the backslash path is unreachable and rc=0 is already correct"
+        ;;
+esac
+
+# --- HIMMEL-2200 pr-check critic-panel re-review ROUND 3 (codex-1): the
+# cd-existence `test -d` probe (round 2's fix, since replaced) reflected
+# filesystem state at HOOK-SCAN time, before any segment of the multi-segment
+# command has executed -- a real, concrete TOCTOU. `rmdir real; cd real; bash
+# forge.sh`: at scan time `real` genuinely exists, so a scan-time probe says
+# "cd succeeds" and follows it -- but the real shell's `rmdir` removes `real`
+# FIRST, so the real `cd` then FAILS and the shell stays in the ORIGINAL
+# directory, exactly where the real forge.sh sits, unscanned by a
+# probe-and-commit design. Root-caused by replacing the single tracked cwd
+# with a small FORKED set of candidates: every cd keeps the pre-cd candidate
+# (models "cd fails") AND adds the post-cd candidate (models "cd succeeds"),
+# so whichever branch the real shell takes, one candidate matches it. This
+# fixture creates `real` as a genuinely-existing subdirectory (so the retired
+# test-d probe would have advanced into it) while the real payload sits at
+# the ORIGINAL cwd -- the fork model's "stays put" candidate must still find
+# it.
+PIN_TOCTOU_DIR=$(mktemp -d -t pin-toctou.XXXXXX)
+PIN_TOCTOU_FORGE="$PIN_TOCTOU_DIR/forge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_TOCTOU_FORGE"
+mkdir -p "$PIN_TOCTOU_DIR/real"
+PIN_TOCTOU_JSON=$(jq -n --arg cmd "rmdir real; cd real; bash forge.sh" --arg cwd "$PIN_TOCTOU_DIR" \
+    '{tool_name:"Bash", tool_input:{command:$cmd, cwd:$cwd}}')
+assert_rc "pin-dir write denied via rmdir-then-cd TOCTOU on an existing target (HIMMEL-2200 pr-check panel round 3 codex-1)" 2 \
+    "$(run_case "$PIN_TOCTOU_JSON" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2200 pr-check critic-panel re-review ROUND 5 (codex-1): the
+# candidate-set fork model (round 4) capped growth at MAXCAND by keeping the
+# FIRST MAXCAND entries of the de-duped set -- but that set is built
+# unchanged-block-first, advanced-block-second, so a plain first-N truncation
+# systematically dropped EVERY "cd succeeds" candidate once enough distinct
+# cd targets accumulated (candidates roughly double per distinct cd; MAXCAND=32
+# means the 6th distinct cd is the first to overflow and get truncated),
+# silently reopening the exact fork-model gap round 4 exists to close. Fixed
+# by truncating BALANCED -- up to half the cap from each block -- so a real
+# execution path can never be dropped just because it was pushed second. This
+# fixture chains 6 distinct cd targets, with the real payload only at the
+# FINAL (6th) location -- exactly the shape that overflowed the naive
+# first-N truncation.
+PIN_CHAIN_DIR=$(mktemp -d -t pin-chain.XXXXXX)
+for _n in 1 2 3 4 5; do mkdir -p "$PIN_CHAIN_DIR/d$_n"; done
+mkdir -p "$PIN_CHAIN_DIR/d5/d6"
+PIN_CHAIN_FORGE="$PIN_CHAIN_DIR/d5/d6/forge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_CHAIN_FORGE"
+PIN_CHAIN_JSON=$(jq -n --arg cmd "cd $PIN_CHAIN_DIR/d1; cd ../d2; cd ../d3; cd ../d4; cd ../d5; cd d6; bash forge.sh" \
+    --arg cwd "$PIN_CHAIN_DIR" '{tool_name:"Bash", tool_input:{command:$cmd, cwd:$cwd}}')
+assert_rc "pin-dir write denied via 6 distinct cds overflowing MAXCAND (HIMMEL-2200 pr-check panel round 5 codex-1)" 2 \
+    "$(run_case "$PIN_CHAIN_JSON" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2214: `&&`/`||` short-circuit truthiness. The tokenizer segments
+# on a bare `;`/`&`/`|` and has no notion of AND/OR short-circuit, so it models
+# `false && cd existing` as if the cd ran while a real shell skips it and stays
+# put. Against the pre-HIMMEL-2200 tokenizer (single modeled cwd, advanced
+# unconditionally) that was a real fail-OPEN: the model moved into `existing`
+# and never scanned the forge.sh actually sitting at the ORIGINAL cwd. The
+# HIMMEL-2200 fork model SUBSUMES it -- a cd forks rather than replaces, and a
+# cd skipped by short-circuit is indistinguishable from a cd that ran and
+# failed, which is exactly the preserved unchanged candidate. Verified
+# both-direction against `git show 2bab2305:scripts/hooks/block-glm-external-writes.sh`
+# (ALLOWS this shape) vs today (DENIES it); this case pins the behaviour so a
+# future narrowing of the fork model cannot silently reopen it.
+PIN_SHORTCIRCUIT_DIR=$(mktemp -d -t pin-shortcircuit.XXXXXX)
+mkdir -p "$PIN_SHORTCIRCUIT_DIR/existing"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_SHORTCIRCUIT_DIR/forge.sh"
+PIN_SHORTCIRCUIT_JSON=$(jq -n --arg cmd 'false && cd existing; bash forge.sh' \
+    --arg cwd "$PIN_SHORTCIRCUIT_DIR" '{tool_name:"Bash", tool_input:{command:$cmd, cwd:$cwd}}')
+assert_rc "pin-dir write denied when a short-circuited cd never runs (HIMMEL-2214, subsumed by the fork model)" 2 \
+    "$(run_case "$PIN_SHORTCIRCUIT_JSON" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# Negative control for the case above: identical command shape, benign script
+# content. A rc=2 here would mean the case above proves nothing.
+PIN_SHORTCIRCUIT_OK_DIR=$(mktemp -d -t pin-shortcircuit-ok.XXXXXX)
+mkdir -p "$PIN_SHORTCIRCUIT_OK_DIR/existing"
+printf 'echo hello world\n' > "$PIN_SHORTCIRCUIT_OK_DIR/forge.sh"
+PIN_SHORTCIRCUIT_OK_JSON=$(jq -n --arg cmd 'false && cd existing; bash forge.sh' \
+    --arg cwd "$PIN_SHORTCIRCUIT_OK_DIR" '{tool_name:"Bash", tool_input:{command:$cmd, cwd:$cwd}}')
+assert_rc "short-circuit shape with benign script content still allowed (HIMMEL-2214 negative control)" 0 \
+    "$(run_case "$PIN_SHORTCIRCUIT_OK_JSON" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2218 [codex-2]: PowerShell's escape character is the BACKTICK, and
+# the tokenizer modelled no PowerShell escape at all -- so a backtick-escaped
+# separator inside an UNQUOTED PowerShell path was treated as a real segment
+# boundary, truncating the token to a path that matches no file, and the real
+# script went unscanned (fail-OPEN). Reuses the `forge;payload.sh` fixture: the
+# quoted spelling of this same path is the HIMMEL-2200 codex-1 case above, so
+# the pair isolates dialect escape handling from quote handling.
+# A literal backtick, assembled once so the fixtures below stay readable.
+PIN_BT='`'
+PIN_PWSH_ESCSEP_CMD="bash ${PIN_SCRIPT_DIR_NATIVE}/forge${PIN_BT};payload.sh"
+assert_rc "pin-dir write denied via a backtick-escaped separator in an unquoted PowerShell path (HIMMEL-2218 codex-2)" 2 \
+    "$(run_case "$(j_pwsh "$PIN_PWSH_ESCSEP_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2218 [codex-3]: a bash backslash-newline (or PowerShell
+# backtick-newline) line continuation joins two PHYSICAL lines into ONE logical
+# command before the real shell parses it. Each awk input record is one
+# physical line, so a script path split across a continuation used to extract
+# as two unrelated fragments and the real file was never scanned (fail-OPEN).
+# `for` + `ge.sh` rejoins to the existing $PIN_SCRIPT_DIR/forge.sh fixture.
+PIN_CONT_CMD=$(printf 'bash %s/for\\\nge.sh' "$PIN_SCRIPT_DIR")
+assert_rc "pin-dir write denied via a bash backslash-newline line continuation (HIMMEL-2218 codex-3)" 2 \
+    "$(run_case "$(j_bash "$PIN_CONT_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+PIN_PWSH_CONT_CMD=$(printf 'bash %s/for%s\nge.sh' "$PIN_SCRIPT_DIR" "$PIN_BT")
+assert_rc "pin-dir write denied via a PowerShell backtick-newline line continuation (HIMMEL-2218 codex-3)" 2 \
+    "$(run_case "$(j_pwsh "$PIN_PWSH_CONT_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# Positive control on the odd/even rule that decides a continuation: TWO
+# trailing backslashes are an escaped literal backslash, so the line really
+# ends and nothing joins -- the resulting `.../for\` path matches no file.
+# Joining here would be over-eager, not fail-closed, so this must stay rc=0.
+PIN_CONT_EVEN_CMD=$(printf 'bash %s/for\\\\\nge.sh' "$PIN_SCRIPT_DIR")
+assert_rc "an even run of trailing backslashes is not a line continuation (HIMMEL-2218 codex-3 control)" 0 \
+    "$(run_case "$(j_bash "$PIN_CONT_EVEN_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2218 [codex-3], CodeRabbit review on PR #2005: CRLF line endings.
+# AWK splits records on \n, so a command submitted with CRLF keeps the \r at
+# the END of every record -- which means the escape character continuing the
+# line is no longer the LAST character and the continuation join never fires.
+# Verified a live fail-OPEN on BOTH dialects before the fix (rc=0 on the branch
+# head that added the join, rc=2 after stripping one terminal \r). The strip
+# happens once at the scanner entry point, so it also keeps a stray \r out of
+# every token, rather than being patched per branch.
+PIN_CR=$(printf '\r')
+PIN_CRLF_CONT_CMD=$(printf 'bash %s/for\\%s\nge.sh' "$PIN_SCRIPT_DIR" "$PIN_CR")
+assert_rc "pin-dir write denied via a bash line continuation with CRLF endings (HIMMEL-2218 codex-3, PR #2005 CodeRabbit)" 2 \
+    "$(run_case "$(j_bash "$PIN_CRLF_CONT_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+PIN_PWSH_CRLF_CONT_CMD=$(printf 'bash %s/for%s%s\nge.sh' "$PIN_SCRIPT_DIR_NATIVE" "$PIN_BT" "$PIN_CR")
+assert_rc "pin-dir write denied via a PowerShell line continuation with CRLF endings (HIMMEL-2218 codex-3, PR #2005 CodeRabbit)" 2 \
+    "$(run_case "$(j_pwsh "$PIN_PWSH_CRLF_CONT_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# Negative control: the same CRLF continuation shape resolving to a BENIGN
+# script must stay rc=0, so the two cases above are the payload being caught
+# and not the \r strip turning into a blanket deny on any CRLF command.
+PIN_CRLF_BENIGN_CMD=$(printf 'bash %s/beni\\%s\ngn.sh' "$PIN_SCRIPT_DIR" "$PIN_CR")
+assert_rc "CRLF line continuation to a benign script still allowed (HIMMEL-2218 codex-3 control)" 0 \
+    "$(run_case "$(j_bash "$PIN_CRLF_BENIGN_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2218 expansion (console ruling, same scanner region and the same
+# fail-open direction as codex-2): PowerShell embeds a literal quote inside a
+# single-quoted string by DOUBLING it, so the doubled pair is one literal
+# character in the token -- not a close followed by a reopen. Reading it as
+# close-then-reopen dropped the quote character and produced a path matching no
+# file. Bash has no doubling rule (two adjacent single-quoted strings really do
+# concatenate), so the fix is pwsh-gated and the bash control below pins that.
+PIN_SQ_FORGE="$PIN_SCRIPT_DIR/it's forge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_SQ_FORGE"
+PIN_PWSH_SQ_CMD="bash '${PIN_SCRIPT_DIR_NATIVE}/it''s forge.sh'"
+assert_rc "pin-dir write denied via a PowerShell doubled single-quote in a script path (HIMMEL-2218 expansion)" 2 \
+    "$(run_case "$(j_pwsh "$PIN_PWSH_SQ_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# Bash control: the SAME text under bash is two adjacent quoted strings that
+# concatenate to `its forge.sh`, which is not a file -- so bash semantics must
+# stay unchanged (rc=0). A rc=2 here would mean the pwsh rule leaked dialects.
+PIN_BASH_SQ_CMD="bash '${PIN_SCRIPT_DIR}/it''s forge.sh'"
+assert_rc "bash adjacent-quote concatenation semantics unchanged by the pwsh doubling rule (HIMMEL-2218 expansion control)" 0 \
+    "$(run_case "$(j_bash "$PIN_BASH_SQ_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2218 [codex-2], pr-check panel ROUND 2: modelling only the
+# self-escaping trio (backtick, dollar, double-quote) was not enough. In
+# PowerShell the backtick ALWAYS escapes: `n `t `r `a `b `f `v stand for control
+# characters, `0 for NUL, and for ANY other character the backtick is simply
+# DROPPED. So `xforge.sh really is xforge.sh -- an ordinary command with no
+# exotic filename at all -- and the old model produced a literal-backtick path
+# that matched no file, leaving the script unscanned. A fail-OPEN, verified
+# rc=0 before / rc=2 after.
+PIN_PWSH_ESCX_FORGE="$PIN_SCRIPT_DIR/xforge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_PWSH_ESCX_FORGE"
+assert_rc "pin-dir write denied when a PowerShell unrecognized escape drops the backtick (HIMMEL-2218 codex-2, panel round 2)" 2 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_SCRIPT_DIR_NATIVE}/${PIN_BT}xforge.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# Negative control: same escape shape, benign target — must stay allowed, or
+# the case above would prove only that PowerShell commands are denied wholesale.
+PIN_PWSH_ESCX_BENIGN="$PIN_SCRIPT_DIR/xok.sh"
+printf 'echo hello world\n' > "$PIN_PWSH_ESCX_BENIGN"
+assert_rc "PowerShell unrecognized-escape path to a benign script still allowed (HIMMEL-2218 codex-2 control)" 0 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_SCRIPT_DIR_NATIVE}/${PIN_BT}xok.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# And a RECOGNIZED sequence must resolve to its control character, not to the
+# letter: `t is a TAB, so this fixture is only reachable if the resolver runs.
+PIN_TAB=$(printf '\t')
+PIN_PWSH_TAB_FORGE="$PIN_SCRIPT_DIR/for${PIN_TAB}ge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_PWSH_TAB_FORGE"
+assert_rc "pin-dir write denied when a PowerShell \`t resolves to a real tab in the path (HIMMEL-2218 codex-2, panel round 2)" 2 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_SCRIPT_DIR_NATIVE}/for${PIN_BT}tge.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2218 [codex-1], pr-check panel ROUND 3: PowerShell's
+# VARIABLE-LENGTH escape, `u{...}. Expectations here are not inferred from
+# docs -- they were taken from a real PowerShell 7.6.5, which resolves
+# "`u{66}orge" AND bare `u{66}orge alike to forge. So `u{66}orge.sh genuinely
+# executes forge.sh, and a model that stops at one-character escapes looks for
+# a literal u{66}orge.sh and scans nothing. This is the encoding that matters
+# most of the escape family: a worker can apply it to ANY path, needing no
+# unusual filename at all.
+assert_rc "pin-dir write denied via a PowerShell \`u{...} escape in a quoted path (HIMMEL-2218 codex-1, panel round 3)" 2 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_SCRIPT_DIR_NATIVE}/${PIN_BT}u{66}orge.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "pin-dir write denied via a PowerShell \`u{...} escape in a BARE path (HIMMEL-2218 codex-1, panel round 3)" 2 \
+    "$(run_case "$(j_pwsh "bash ${PIN_SCRIPT_DIR_NATIVE}/${PIN_BT}u{66}orge.sh")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# Control: the same encoding resolving to the BENIGN script must stay allowed
+# (0x62 = b, so this is benign.sh), or the two cases above would only prove
+# that any command containing a backtick is denied.
+assert_rc "a \`u{...} escape resolving to a benign script is still allowed (HIMMEL-2218 codex-1 control)" 0 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_SCRIPT_DIR_NATIVE}/${PIN_BT}u{62}enign.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# Control: a MALFORMED sequence is not a unicode escape at all and must not be
+# resolved as one -- otherwise the parser would invent paths on any `u it sees.
+assert_rc "a malformed \`u{zz} is not treated as a unicode escape (HIMMEL-2218 codex-1 control)" 0 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_SCRIPT_DIR_NATIVE}/${PIN_BT}u{zz}orge.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- COMPLETENESS BY ENUMERATION (operator directive, PR #2005 round 3).
+# The PowerShell backtick grammar is FINITE, so the resolver is closed by
+# enumerating it rather than by waiting to see whether another review round
+# finds a hole. Every expectation below was read off a real PowerShell 7.6.5:
+#
+#   `n=10  `t=9  `r=13  `a=7  `b=8  `f=12  `v=11  `0=0     (control sequences)
+#   `$=$   `"="  ``=`                                       (self-escaping trio)
+#   `u{66}=f                                                (variable length)
+#   `x=x                                                    (default: drop the backtick)
+#
+# NOT complete after all, and worth saying so plainly rather than leaving the
+# claim standing: the round-5 panel found `e (ESC, 0x1B) missing from the list
+# above. The enumeration was written out by hand instead of derived from
+# about_Special_Characters, so it reproduced the author-s blind spot -- the
+# exact failure mode enumeration was supposed to prevent. `e is deferred to
+# HIMMEL-2236 with the >255-codepoint issue; a fix there should extend these
+# cases from the language reference, not from another hand-written list.
+#
+# One case per form. The control sequences are asserted in the NEGATIVE
+# direction, which is the direction that actually matters and needs no exotic
+# filename: `n must NOT degrade to the letter n. Each fixture below is a REAL
+# pin-forging payload named for<letter>ge.sh, so a resolver that collapsed the
+# sequence to its letter would resolve onto the payload and DENY -- these cases
+# pass only because the sequence resolved to a control character instead.
+PIN_ESC_DIR=$(mktemp -d -t pin-escgrammar.XXXXXX)
+PIN_ESC_DIR_NATIVE=$(native_dir "$PIN_ESC_DIR")
+for _esc_letter in n t r a b f v 0; do
+    printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_ESC_DIR/for${_esc_letter}ge.sh"
+done
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_ESC_DIR/forge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_ESC_DIR/for${PIN_BT}ge.sh"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_ESC_DIR/for\$ge.sh"
+
+for _esc_letter in n t r a b f v 0; do
+    assert_rc "PowerShell \`$_esc_letter resolves to its control character, not the letter (escape-grammar enumeration)" 0 \
+        "$(run_case "$(j_pwsh "bash \"${PIN_ESC_DIR_NATIVE}/for${PIN_BT}${_esc_letter}ge.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+done
+
+# Self-escaping trio. `` and `$ resolve to characters that ARE legal in a
+# filename, so these two assert the POSITIVE direction: the payload is found.
+assert_rc "pin-dir write denied via a PowerShell \`\` escape (literal backtick in the path)" 2 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_ESC_DIR_NATIVE}/for${PIN_BT}${PIN_BT}ge.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+assert_rc "pin-dir write denied via a PowerShell \`\$ escape (literal dollar in the path)" 2 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_ESC_DIR_NATIVE}/for${PIN_BT}\$ge.sh\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# `" cannot be asserted positively -- a double quote is not a legal NTFS
+# filename character -- so assert what actually matters: it must NOT terminate
+# the string. Real PowerShell reads this whole thing as ONE argument
+# (.../forge.sh";echo hi), which is not a file, so the command is allowed. A
+# tokenizer that let `" close the quote would see `bash <dir>/forge.sh` as its
+# own segment and DENY. This case passes only when `" is escaped correctly.
+assert_rc "a PowerShell \`\" escape does not terminate the quoted path (escape-grammar enumeration)" 0 \
+    "$(run_case "$(j_pwsh "bash \"${PIN_ESC_DIR_NATIVE}/forge.sh${PIN_BT}\";echo hi\"")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- pr-check panel ROUND 4 [codex-2]: the NUL filter has to sit on the
+# EMITTED path, not on the token. A NUL can also arrive through the modeled
+# CWD -- `cd path`0suffix` puts one in a candidate directory -- and the
+# token-only test let that through, whereupon the bash reader silently dropped
+# the NUL and spliced the candidate into a REAL directory, denying a command
+# PowerShell never pointed there. Same false-positive shape as the `0 bug the
+# grammar enumeration caught, one layer further in.
+PIN_CDNUL_DIR=$(mktemp -d -t pin-cdnul.XXXXXX)
+PIN_CDNUL_DIR_NATIVE=$(native_dir "$PIN_CDNUL_DIR")
+mkdir -p "$PIN_CDNUL_DIR/sub"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_CDNUL_DIR/sub/forge.sh"
+assert_rc "a NUL reaching the modeled cwd is not repaired into a real directory (panel round 4 codex-2)" 0 \
+    "$(run_case "$(j_pwsh "cd ${PIN_CDNUL_DIR_NATIVE}/su${PIN_BT}0b; bash forge.sh")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+# Control: the identical chain through the REAL directory must still deny, or
+# the case above would pass merely because cd-tracking stopped working.
+assert_rc "the same cd chain through the real directory still denies (panel round 4 codex-2 control)" 2 \
+    "$(run_case "$(j_pwsh "cd ${PIN_CDNUL_DIR_NATIVE}/sub; bash forge.sh")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- pr-check panel ROUND 2 [codex-1], adjudicated DISPROVED as a bypass but
+# pinned here so it stays disproved. The claim was that the continuation join
+# can replace a real script path and let a write through. For any command a
+# shell will actually EXECUTE, the join preserves detection: the interpreter and
+# script tokens sit on the first physical line and survive the join, and a quote
+# that closes on a later line still ends its token before the next segment. The
+# one shape whose modelling the join does change is a command with an
+# UNTERMINATED quote — which bash refuses outright ("unexpected EOF while
+# looking for matching") and therefore never runs, so there is no write to fence.
+# These two cases are the executable shapes; a real regression would flip them.
+PIN_JOIN_ARG_CMD=$(printf "bash %s/forge.sh 'arg\\\\\nmore'" "$PIN_SCRIPT_DIR")
+assert_rc "a continuation inside a quoted ARGUMENT does not hide the script (panel round 2 codex-1)" 2 \
+    "$(run_case "$(j_bash "$PIN_JOIN_ARG_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+PIN_JOIN_SEG_CMD=$(printf "bash '%s/a\\\\\nb'; bash %s/forge.sh" "$PIN_SCRIPT_DIR" "$PIN_SCRIPT_DIR")
+assert_rc "a closed quote across a continuation still ends its segment (panel round 2 codex-1)" 2 \
+    "$(run_case "$(j_bash "$PIN_JOIN_SEG_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# --- HIMMEL-2225 (pr-check critic-panel round 6 [codex-1]): the candidate set
+# used to be built as an unchanged BLOCK followed by an advanced BLOCK, so
+# once MAXCAND was reached the first-N truncation dropped the advanced block
+# wholesale -- i.e. every "the latest cd succeeded, but an earlier one did not"
+# candidate vanished at once. The round-5 protected index-1 invariant covers
+# only the all-success chain, so a payload reachable ONLY on a mixed
+# success/failure path was a fail-OPEN. Fixed by interleaving the two branches
+# per candidate, so truncation degrades both evenly.
+# Fixture: six distinct RELATIVE cd targets (the set doubles per target, so the
+# 6th overflows MAXCAND=32) where `d5` does NOT exist and the payload sits at
+# d1/d2/d3/d4/d6 -- reachable only on the "every cd but d5 succeeded" branch,
+# which is the candidate the old block layout truncated away.
+PIN_INTERLEAVE_DIR=$(mktemp -d -t pin-interleave.XXXXXX)
+mkdir -p "$PIN_INTERLEAVE_DIR/d1/d2/d3/d4/d6"
+printf 'echo pwned > "%s/forged.json"\n' "$PIN_FIXTURE" > "$PIN_INTERLEAVE_DIR/d1/d2/d3/d4/d6/forge.sh"
+PIN_INTERLEAVE_JSON=$(jq -n --arg cmd 'cd d1; cd d2; cd d3; cd d4; cd d5; cd d6; bash forge.sh' \
+    --arg cwd "$PIN_INTERLEAVE_DIR" '{tool_name:"Bash", tool_input:{command:$cmd, cwd:$cwd}}')
+assert_rc "pin-dir write denied on a partial-failure cd branch past MAXCAND (HIMMEL-2225 round 6 codex-1)" 2 \
+    "$(run_case "$PIN_INTERLEAVE_JSON" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# codex-1 (pr-check critic-panel ROUND 2): a CUSTOM pin dir configured in one
+# drive-letter spelling (POSIX) must still be caught when the worker's command
+# references the SAME directory in the OTHER spelling (native/Windows) --
+# cross-spelling, unlike the same-spelling-both-sides case above. Rooted under
+# $HOME (a genuine "/c/..." <-> "C:/..." drive mapping), NOT mktemp's default
+# TMPDIR (MSYS mounts /tmp as its own alias, not a plain drive-letter pair, so
+# a TMPDIR-rooted fixture cannot exercise this conversion at all). The
+# "pin-cross-" name deliberately does not match the fixed default-path suffix
+# check, isolating this case to the drive-letter-canonicalization fix.
+PIN_CROSS_DIR=$(mktemp -d "$HOME/pin-cross-XXXXXX")
+PIN_CROSS_DIR_NATIVE=$(native_dir "$PIN_CROSS_DIR")
+assert_rc "pin-dir write denied via cross-spelling custom dir (codex-1 round 2)" 2 \
+    "$(run_case "$(j_bash "echo pwned > $PIN_CROSS_DIR_NATIVE/forged.json")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_CROSS_DIR")"
+
+# codex-1 (pr-check critic-panel round 1): matching only the RESOLVED absolute
+# path missed the shell expanding an UNEXPANDED variable reference at
+# execution time — the command text never contains the resolved path as a
+# literal substring, so the original check alone missed it. A custom pin-dir
+# fixture (not containing "himmel/hook-integrity" in its own name) isolates
+# the var-name branch from the fixed-suffix branch below.
+PIN_VAR_CUSTOM_DIR=$(mktemp -d -t pin-custom.XXXXXX)
+
+# codex-2 (pr-check critic-panel round 2): PowerShell's canonical $env:X /
+# ${env:X} scope-qualified variable syntax must be denied too -- the round-1
+# fix only matched bash-style $X / ${X}.
+# shellcheck disable=SC2016  # literal unexpanded PowerShell $env: reference is the command text under test
+PIN_ENV_CMD='Set-Content -Path "$env:HIMMEL_HOOK_INTEGRITY_DIR/forged.json" -Value pwned'
+assert_rc "pin-dir write denied via PowerShell \$env: reference (codex-2)" 2 \
+    "$(run_case "$(j_pwsh "$PIN_ENV_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_VAR_CUSTOM_DIR")"
+# shellcheck disable=SC2016  # literal unexpanded PowerShell ${env:X} reference is the command text under test
+PIN_ENV_BRACED_CMD='Set-Content -Path "${env:HIMMEL_HOOK_INTEGRITY_DIR}/forged.json" -Value pwned'
+assert_rc "pin-dir write denied via PowerShell \${env:X} braced reference (codex-2)" 2 \
+    "$(run_case "$(j_pwsh "$PIN_ENV_BRACED_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_VAR_CUSTOM_DIR")"
+
+# shellcheck disable=SC2016  # literal unexpanded env-var reference is the command text under test
+PIN_VAR_CMD='echo pwned > "$HIMMEL_HOOK_INTEGRITY_DIR/forged.json"'
+assert_rc "pin-dir write denied via unexpanded \$HIMMEL_HOOK_INTEGRITY_DIR reference (codex-1)" 2 \
+    "$(run_case "$(j_bash "$PIN_VAR_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_VAR_CUSTOM_DIR")"
+# shellcheck disable=SC2016  # literal unexpanded env-var reference is the command text under test
+PIN_VAR_BRACED_CMD='echo pwned > "${HIMMEL_HOOK_INTEGRITY_DIR}/forged.json"'
+assert_rc "pin-dir write denied via unexpanded \${HIMMEL_HOOK_INTEGRITY_DIR} braced reference (codex-1)" 2 \
+    "$(run_case "$(j_bash "$PIN_VAR_BRACED_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_VAR_CUSTOM_DIR")"
+# shellcheck disable=SC2016  # literal unexpanded $HOME reference is the command text under test
+PIN_HOME_CMD='echo pwned > "$HOME/.claude/himmel/hook-integrity/forged.json"'
+assert_rc "pin-dir write denied via unexpanded \$HOME default-path reference (codex-1)" 2 \
+    "$(run_case "$(j_bash "$PIN_HOME_CMD")" "HIMMEL_WORKER=1")"
+
+assert_rc "pin-dir write denied on the GLM lane too (new class extends it)" 2 \
+    "$(run_case "$(j_bash "$PIN_WRITE_CMD")" "ANTHROPIC_BASE_URL=$GLM_URL" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+assert_rc "pin-dir write allowed under the documented bypass" 0 \
+    "$(run_case "$(j_bash "$PIN_WRITE_CMD")" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE" "HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1")"
+
+# Scope boundary: a native worker gets ONLY the pin-dir class. The rest of
+# this file's GLM-specific enforcement (push/gh/network) does not extend to
+# it — HIMMEL-2085 asked for the hook-integrity surface, not a full GLM-lane
+# replica for native workers.
+assert_rc "native worker git push NOT blocked by this hook (out of HIMMEL-2085 scope)" 0 \
+    "$(run_case "$(j_bash 'git push origin main')" "HIMMEL_WORKER=1")"
+assert_rc "native worker unrelated command allowed" 0 \
+    "$(run_case "$(j_bash 'git status')" "HIMMEL_WORKER=1" "HIMMEL_HOOK_INTEGRITY_DIR=$PIN_FIXTURE")"
+
+# GLM lane's pre-existing enforcement is unchanged by this generalization.
+assert_rc "glm lane git push still blocked (regression pin)" 2 \
+    "$(run_case "$(j_bash 'git push origin main')" "ANTHROPIC_BASE_URL=$GLM_URL")"
+
 if [ "$FAILED" -ne 0 ]; then
     echo "$FAILED case(s) FAILED"
     exit 1
 fi
 
-# Total-count guard: every assert_rc increments CASES; a drift here means a case
-# was silently dropped (or an early exit skipped the tail) even though nothing
-# FAILED. Update EXPECTED_CASES deliberately when adding/removing a case.
-EXPECTED_CASES=158
+# Total-count guard: every assert_rc/skip_case increments CASES; a drift here
+# means a case was silently dropped (or an early exit skipped the tail) even
+# though nothing FAILED. Update EXPECTED_CASES deliberately when adding/
+# removing a case.
+EXPECTED_CASES=229   # +69: HIMMEL-2085 pin-dir write-fence + scope-boundary cases (+3 codex-1 var-expansion fix, +4 round-2 codex-1/2/3 fixes, +4 round-4 codex-1 script-indirection fix, +5 round-5 codex-1/2 direct-exec/dash-option/quoted-path/node fixes, +2 round-5 re-review pass 1 codex-2/3 quoted-space-path/absolute-interpreter fixes, +1 round-5 re-review pass 2 codex-2 cd-then-invoke fix, +3 HIMMEL-2200 quote-aware-split/backslash-escape/cd-existence-check fixes, +2 HIMMEL-2200 pr-check panel re-review codex-1 pwsh-dialect/double-quote-escape fixes, +1 HIMMEL-2200 pr-check panel round-3 codex-1 rmdir-then-cd TOCTOU fix, +1 HIMMEL-2200 pr-check panel round-5 codex-1 candidate-cap-truncation fix, +2 HIMMEL-2214 short-circuit-cd subsumption pin and its benign control, +1 HIMMEL-2218 codex-2 pwsh backtick-escaped separator fix, +3 HIMMEL-2218 codex-3 bash/pwsh line-continuation fix and its even-run control, +2 HIMMEL-2218 expansion pwsh doubled-single-quote fix and its bash-dialect control, +1 HIMMEL-2225 round-6 codex-1 candidate-interleave fix, +3 PR #2005 CodeRabbit CRLF line-continuation fix and its benign control, +3 PR #2005 panel round-2 codex-2 pwsh escape-sequence resolver and its controls, +2 PR #2005 panel round-2 codex-1 continuation-join non-regression pins, +4 PR #2005 panel round-3 codex-1 pwsh `u{...} unicode-escape fix and its controls, +11 PR #2005 PowerShell escape-grammar completeness enumeration, one case per form, +2 PR #2005 panel round-4 codex-2 NUL-filter-on-emitted-path fix and its control)
 if [ "$CASES" -ne "$EXPECTED_CASES" ]; then
     echo "CASE-COUNT MISMATCH — ran $CASES, expected $EXPECTED_CASES"
     exit 1
 fi
-echo "all cases passed ($CASES/$EXPECTED_CASES)"
+if [ "$SKIPPED" -ne 0 ]; then
+    echo "all cases passed ($CASES/$EXPECTED_CASES, $SKIPPED skipped)"
+else
+    echo "all cases passed ($CASES/$EXPECTED_CASES)"
+fi
 exit 0

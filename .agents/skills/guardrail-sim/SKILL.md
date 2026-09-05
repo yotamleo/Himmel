@@ -1,6 +1,6 @@
 ---
 name: guardrail-sim
-description: Pre-flight guardrail simulator — flags/rewrites predictable himmel guardrail collisions in planned bash commands before they stall a run. Use when the user asks to simulate guardrails or run /guardrail-sim.
+description: Flag/rewrite predictable himmel guardrail collisions in planned bash commands. Use for /guardrail-sim.
 ---
 
 # guardrail-sim

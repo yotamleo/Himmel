@@ -1,0 +1,401 @@
+#!/usr/bin/env bash
+# claude-openrouter — thin launcher: Claude Code on the OpenRouter metered lane
+# (HIMMEL-1774). bash 3.2-safe. Copy-and-edit of scripts/claude-routed (the WS1
+# extensibility seam: a new backend plugged into the same launcher skeleton),
+# with TWO OpenRouter-specific gates the siblings do not carry:
+#   1. An egress-matrix consultation (HARD REQUIREMENT) — REFUSES fail-closed
+#      until the operator declares an explicit `openrouter` provider + cell in
+#      scripts/guardrails/egress-matrix.json. There is NO --force / proceed-anyway
+#      override for this; the matrix is the authorizing gate for a lane whose
+#      content transits a third party (OpenRouter). Reaching a Claude model
+#      THROUGH OpenRouter is NOT covered by the existing `anthropic` cell.
+#   2. Advisory remaining-credit surfacing (stderr) — OpenRouter exposes a metered
+#      balance; a query failure is reported LOUDLY as UNKNOWN, never silent
+#      (the HIMMEL-1771 fail-open-silently class).
+# Pin: the target model is a Claude 1M-context tier (CLAUDE_CODE_AUTO_COMPACT_WINDOW
+# = 1000000). Endpoint + slug were verified against OpenRouter's live API and
+# docs on 2026-08-15: the native Anthropic-compatible endpoint needs NO loopback
+# translation proxy, and the 1M Claude tiers are natively 1M (no `:extended`
+# suffix). See the backend block for the selectable tiers.
+# Everything else (PHI guard, config-dir seeding, arg handling, exit codes) is
+# behaviour-identical to claude-routed. Exit codes: 2 = missing key / claude not
+# on PATH, 3 = egress or PHI refusal (or node missing — the matrix cannot be
+# consulted), 4 = failed seed.
+# shellcheck disable=SC1091  # load-dotenv.sh path issue
+set -u
+
+# --- backend block (DIFFERS from claude-routed; this is the whole variant) ------
+# Claude Code speaks the Anthropic Messages API (/v1/messages). OpenRouter
+# exposes a NATIVE Anthropic-compatible endpoint at https://openrouter.ai/api
+# (verified against OpenRouter's live API + docs, 2026-08-15) — NO loopback
+# translation proxy is needed. OPENROUTER_ANTHROPIC_BASE_URL stays an
+# env-overridable seam for pointing at a different Anthropic-Messages-compatible
+# endpoint.
+OPENROUTER_ANTHROPIC_BASE_URL="${OPENROUTER_ANTHROPIC_BASE_URL:-https://openrouter.ai/api}"
+# Model pin (HIMMEL-1774 §5, verified 2026-08-15 against
+# https://openrouter.ai/api/v1/models — 20 Anthropic models report
+# context_length: 1000000): the 1M Claude tiers are NATIVELY 1M on OpenRouter;
+# do NOT append `:extended` (no such variant exists). Default is the judge tier.
+# Selectable without editing the launcher (OPENROUTER_MODEL env):
+#   anthropic/claude-opus-5   (default — judge/orchestrator tier, 1M)
+#   anthropic/claude-fable-5  (the judgment/taste escalation tier)
+#   anthropic/claude-opus-5-fast
+#   anthropic/claude-sonnet-5
+# `:batch` variants exist for async pricing — opt in deliberately, never default.
+OPENROUTER_MODEL="${OPENROUTER_MODEL:-anthropic/claude-opus-5}"
+OPENROUTER_HAIKU="${OPENROUTER_HAIKU:-$OPENROUTER_MODEL}"
+# OPENROUTER_CONTEXT_WINDOW feeds CLAUDE_CODE_AUTO_COMPACT_WINDOW (export block
+# below) so Claude Code budgets against the real 1M tier instead of its ~200k
+# default for an unrecognized slug.
+OPENROUTER_CONTEXT_WINDOW="${OPENROUTER_CONTEXT_WINDOW:-1000000}"
+# OpenRouter API root for the ADVISORY credit probe (OpenAI-style account
+# metadata; carries the key but NO corpus content). Separate from the Anthropic
+# transport base above.
+OPENROUTER_API_BASE="${OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}"
+CONFIG_DIR="${HOME}/.claude-openrouter"   # per-lane isolation (own seeded config dir)
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HERE/.." && pwd)"   # launcher lives in <repo>/scripts -> repo root (himmel-code corpus)
+# shellcheck source=lib/load-dotenv.sh
+# Sourcing only DEFINES load_dotenv(); it must be CALLED with the key name.
+# --root pins the .env to the LAUNCHER's repo (himmel), not the CWD repo —
+# the motivating workload runs with cwd in the luna vault, whose .env has no
+# OpenRouter key; CWD-resolution would exit 2 despite himmel/.env holding the key.
+# CLAUDE_OPENROUTER_DOTENV_ROOT (test hook) overrides that root so hermetic tests
+# never read the real himmel .env — same production code path either way.
+# HIMMEL-1482: when invoked from a linked worktree copy of itself, $HERE/.. is a
+# worktree root with no .env — _load_dotenv_primary_for falls back to the primary
+# checkout so the key is still found (same pin-to-the-launcher's-repo contract,
+# just primary-aware; the CWD repo is still never trusted).
+if [ -z "${OPENROUTER_API_KEY-}" ] && [ -f "$HERE/lib/load-dotenv.sh" ]; then
+  . "$HERE/lib/load-dotenv.sh"
+  load_dotenv --root "$(_load_dotenv_primary_for "${CLAUDE_OPENROUTER_DOTENV_ROOT:-$HERE/..}")" OPENROUTER_API_KEY
+  # load_dotenv leaves surrounding quotes literal (the shared lib does not strip
+  # them); drop ONE matching surrounding quote pair so a `.env` value written as
+  # OPENROUTER_API_KEY="…" doesn't send the quotes to the API. bash 3.2-safe.
+  case "${OPENROUTER_API_KEY-}" in
+    \"*\") OPENROUTER_API_KEY="${OPENROUTER_API_KEY#\"}"; OPENROUTER_API_KEY="${OPENROUTER_API_KEY%\"}" ;;
+    \'*\') OPENROUTER_API_KEY="${OPENROUTER_API_KEY#\'}"; OPENROUTER_API_KEY="${OPENROUTER_API_KEY%\'}" ;;
+  esac
+fi
+
+if [ -z "${OPENROUTER_API_KEY-}" ]; then
+  msg="claude-openrouter: OPENROUTER_API_KEY is not set. Export it or add it to the repo .env (never settings.json)."
+  [ -f "$HERE/lib/load-dotenv.sh" ] || msg="$msg (note: lib/load-dotenv.sh not found next to the launcher — .env was never read; run scripts/claude-openrouter from the himmel checkout rather than a copied/symlinked binary)"
+  echo "$msg" >&2
+  exit 2
+fi
+
+# node is REQUIRED to consult the egress matrix (and to sanitize settings during
+# seeding). Fail CLOSED if it is absent: the egress policy cannot be verified, so
+# reporting ready would let content reach a third party un-audited (HIMMEL-1771).
+if ! command -v node >/dev/null 2>&1; then
+  echo "claude-openrouter: node is required to consult the egress matrix and seed the config dir — refusing to launch without it." >&2
+  exit 3
+fi
+
+RESEED=0
+FORCE=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reseed) RESEED=1; shift ;;
+    --force)  FORCE=1;  shift ;;
+    *) break ;;
+  esac
+done
+
+# --- tiered egress guard (PHI) -------------------------------------------------
+# Guard config dir is DELIBERATELY SHARED with claude-glm (~/.config/claude-glm),
+# NOT a per-lane dir: one guard source of truth means a PHI/egress rule written
+# once governs every launcher variant (matches claude-routed).
+# HIMMEL-1773 caveat: this guard matches the sibling STRUCTURE but is NOT
+# proven-correct on the real corpus — it keys on a `.salus` marker file, while
+# the live vault carries `.salus-profile`, and the phi-roots fallback list does
+# not exist. So the path-based PHI perimeter is currently INERT on the real vault
+# (inherited defect, not silently re-endorsed here). The authoritative PHI
+# backstop is the egress matrix's hard-deny on salus (consulted below).
+CFG="${HOME}/.config/claude-glm"
+
+path_under_any() { # $1 path, $2 listfile
+  # returns: 0 = $1 is under a listed root; 1 = no restriction (absent list, or
+  # present but no line matches); 2 = list exists but is not a readable regular
+  # file (caller MUST fail closed — an unreadable guard config must never silently
+  # allow egress).
+  [ -e "$2" ] || return 1
+  { [ -f "$2" ] && [ -r "$2" ]; } || return 2
+  while IFS= read -r root || [ -n "$root" ]; do
+    root="${root%$'\r'}"                   # strip trailing CR (CRLF config lines)
+    root="${root%/}"                       # strip trailing slash
+    [ -n "$root" ] || continue
+    case "$1/" in "$root"/*) return 0 ;; esac
+  done < "$2"
+  return 1
+}
+
+CWD="$(pwd)"
+path_under_any "$CWD" "$CFG/phi-roots"; phi_rc=$?
+if [ "$phi_rc" -eq 2 ]; then
+  echo "claude-openrouter: guard config $CFG/phi-roots exists but is not a readable file — failing closed." >&2
+  exit 3
+fi
+if [ -f "$CWD/.salus" ] || [ "$phi_rc" -eq 0 ]; then
+  echo "claude-openrouter: REFUSED - this workspace is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to a cloud OpenRouter backend." >&2
+  exit 3
+fi
+path_under_any "$CWD" "$CFG/egress-denylist"; deny_rc=$?
+if [ "$deny_rc" -eq 2 ]; then
+  echo "claude-openrouter: guard config $CFG/egress-denylist exists but is not a readable file — failing closed." >&2
+  exit 3
+fi
+if [ "$deny_rc" -eq 0 ]; then
+  if [ "$FORCE" -eq 1 ]; then
+    echo "claude-openrouter: WARNING - denylisted workspace, proceeding under --force. Content WILL be sent through OpenRouter." >&2
+  else
+    echo "claude-openrouter: REFUSED - workspace is on the egress denylist ($CFG/egress-denylist). Re-run with --force to override." >&2
+    exit 3
+  fi
+fi
+
+# --- egress-matrix consultation (HARD GATE, no override) -----------------------
+# The authorizing gate for this lane. Consults scripts/guardrails/egress-matrix.json
+# and REFUSES fail-closed unless an EXPLICIT `openrouter` provider is declared AND
+# a rule with provider "openrouter" (NOT a wildcard "*") permits the launch
+# corpus. A wildcard provider:"*" allow does NOT authorize a new third-party path
+# — the operator must make an explicit decision per corpus. CLAUDE_OPENROUTER_EGRESS_MATRIX
+# (test hook) points at a hermetic matrix so the suite can exercise both the
+# refuse path (the real matrix, no cell) and the proceed path (a fixture cell).
+# There is NO --force / proceed-anyway bypass for this gate (HIMMEL-1774).
+EGRESS_MATRIX="${CLAUDE_OPENROUTER_EGRESS_MATRIX:-$HERE/guardrails/egress-matrix.json}"
+egress_consult() { # $1 = matrix path, $2 = himmel-code corpus root
+  node -e '
+const fs=require("fs"), path=require("path");
+const matrixPath=process.argv[1], repoRoot=process.argv[2];
+let M;
+try { M=JSON.parse(fs.readFileSync(matrixPath,"utf8")); }
+catch (e) { console.error("claude-openrouter: egress matrix unreadable ("+matrixPath+"): "+(e.message||e)+" — failing closed."); process.exit(3); }
+const PROVIDER="openrouter";
+// This launcher performs INFERENCE (it runs Claude Code). A matrix rule
+// authorizes the lane only when its purpose is "*" (any) or exactly the
+// launcher purpose — a cell the operator scoped to a different purpose
+// (embedding, extraction, ...) must NOT silently authorize an inference lane
+// (CR round 2, HIMMEL-1774).
+const PURPOSE="inference";
+// 1. The provider itself must be DECLARED. A wildcard provider:"*" allow does
+//    not authorize a new third-party routing layer in front of model vendors.
+if (!M.providers || !Object.prototype.hasOwnProperty.call(M.providers, PROVIDER)) {
+  console.error("claude-openrouter: REFUSED - provider \""+PROVIDER+"\" is not declared in the egress matrix ("+matrixPath+" -> providers). Reaching a Claude model through OpenRouter is a NEW third-party egress path (content transits OpenRouter) and is NOT covered by the existing \"anthropic\" cell. Declare it as an operator policy decision: add a providers."+PROVIDER+" entry plus a per-corpus rule.");
+  process.exit(3);
+}
+// 2. Classify the launch corpus (most-restrictive). salus is already refused by
+//    the path guard; treat it as deny here too. Vault corpora collapse to the
+//    restrictive luna-personal label (fail-safe — they should stay DENY).
+const cwd=process.env.CLAUDE_OPENROUTER_CWD || process.cwd();
+// under(): equality counts (launching FROM the himmel checkout root itself is
+// himmel-code, not "unknown" — a root-equal cwd must classify, not fall through).
+const under=(root)=>{ try { const c=path.resolve(cwd).toLowerCase(), r=path.resolve(root).toLowerCase(); return !!root && (c===r || c.startsWith(r+path.sep)); } catch(_) { return false; } };
+let corpus;
+if (under(process.env.LUNA_VAULT_PATH) || under(process.env.LUNA_VAULT)) corpus="luna-personal";
+else if (under(process.env.HANDOVER_DIR)) corpus="handover-state";
+else if (under(repoRoot)) corpus="himmel-code";
+else corpus="unknown";
+// 3. Require an EXPLICIT openrouter rule (provider === PROVIDER, not "*")
+//    permitting this corpus for this lane purpose (PURPOSE above), applying the
+//    FIRST-MATCH-WINS semantics the matrix documents: among the explicit-provider
+//    rows, the FIRST row matching (corpus, purpose) decides - including a deny.
+//    Scanning past a deny to find a later permissive row would let a future
+//    wildcard-corpus allow silently override an explicit vault deny, and the
+//    matrix relies on row ORDER (the salus openrouter row is deliberately placed
+//    above the wildcard hard deny so the ruling stays legible).
+//    CR round 4, HIMMEL-1774.
+let match=null;
+for (const r of (M.rules||[])) {
+  if (r.provider!==PROVIDER) continue;
+  if (!(r.corpus==="*" || r.corpus===corpus)) continue;
+  if (!(r.purpose==="*" || r.purpose===PURPOSE)) continue;
+  match=r; break;
+}
+// A "conditional" cell is permitted ONLY while its condition holds. This
+// launcher cannot evaluate matrix conditions, so it fails closed rather than
+// launching as if the cell were unconditional (CR round 4, codex-3).
+const allowed = !!match && (match.verdict==="allow" || match.verdict==="allow+log");
+if (!allowed) {
+  console.error("claude-openrouter: REFUSED - no egress-matrix cell permits \""+PROVIDER+"\" for corpus \""+corpus+"\" with purpose \""+PURPOSE+"\" ("+matrixPath+")"+(match?" - the first matching cell has verdict \""+match.verdict+"\"":"")+". Add a rule { corpus: \""+corpus+"\" (or \"*\"), provider: \""+PROVIDER+"\", purpose: \""+PURPOSE+"\" (or \"*\"), verdict: \"allow\" } ABOVE any row that denies it. Vault corpora (luna/salus) should stay DENY; himmel-code is the recommended first cell.");
+  process.exit(3);
+}
+process.exit(0);
+' "$1" "$2"
+}
+egress_consult "$EGRESS_MATRIX" "$REPO_ROOT"
+egress_rc=$?
+[ "$egress_rc" -ne 0 ] && exit "$egress_rc"
+
+sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_* (node: himmel dep)
+  node -e '
+const fs=require("fs");
+const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+delete j.model;
+if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) delete j.env[k];
+fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
+' "$1" "$2"
+}
+
+seed_fail() { # $1 = failing-operation detail — abort seeding, never mark it seeded
+  echo "claude-openrouter: FAILED to $1. Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-openrouter)." >&2
+  exit 4
+}
+
+seed_config_dir() {
+  # Transactional: the .seeded sentinel is removed FIRST and (re)written LAST, so
+  # ANY failure — first seed OR --reseed — leaves no sentinel and the next launch
+  # re-seeds.
+  rm -f "$CONFIG_DIR/.seeded"
+  SRC="${HOME}/.claude"
+  mkdir -p "$CONFIG_DIR/plugins" || seed_fail "create $CONFIG_DIR/plugins"
+  if [ -f "$SRC/settings.json" ]; then
+    sanitize_settings "$SRC/settings.json" "$CONFIG_DIR/settings.json" \
+      || seed_fail "sanitize settings.json (node missing/broken?)"
+  else
+    rm -f "$CONFIG_DIR/settings.json" || seed_fail "remove stale settings.json"
+  fi
+  for f in CLAUDE.md RTK.md; do
+    if [ -f "$SRC/$f" ]; then
+      cp "$SRC/$f" "$CONFIG_DIR/$f" || seed_fail "copy $f"
+    else
+      rm -f "$CONFIG_DIR/$f" || seed_fail "remove stale $f"
+    fi
+  done
+  for d in commands skills hooks agents; do
+    rm -rf "${CONFIG_DIR:?}/$d" || seed_fail "clear stale $d"
+    [ -d "$SRC/$d" ] && { cp -R "$SRC/$d" "$CONFIG_DIR/" || seed_fail "copy $d"; }
+  done
+  for p in installed_plugins.json known_marketplaces.json; do
+    if [ -f "$SRC/plugins/$p" ]; then
+      cp "$SRC/plugins/$p" "$CONFIG_DIR/plugins/$p" || seed_fail "copy plugins/$p"
+    else
+      rm -f "$CONFIG_DIR/plugins/$p" || seed_fail "remove stale plugins/$p"
+    fi
+  done
+  rm -rf "${CONFIG_DIR:?}/plugins/marketplaces" || seed_fail "clear stale plugins/marketplaces"
+  [ -d "$SRC/plugins/marketplaces" ] && { cp -R "$SRC/plugins/marketplaces" "$CONFIG_DIR/plugins/" || seed_fail "copy plugins/marketplaces"; }
+  if [ -f "$SRC/plugins/claude-hud/config.json" ]; then
+    mkdir -p "$CONFIG_DIR/plugins/claude-hud" || seed_fail "create $CONFIG_DIR/plugins/claude-hud"
+    cp "$SRC/plugins/claude-hud/config.json" "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "copy plugins/claude-hud/config.json"
+  else
+    rm -f "$CONFIG_DIR/plugins/claude-hud/config.json" || seed_fail "remove stale plugins/claude-hud/config.json"
+  fi
+  : > "$CONFIG_DIR/.seeded" || seed_fail "write the .seeded sentinel"
+}
+
+# Staleness-aware reseed (HIMMEL-819): re-mirror on plain launch when a tracked
+# source drifted or was deleted. Opt-out: CLAUDE_LANE_AUTO_RESEED=0.
+config_seed_stale() {
+  [ "${CLAUDE_LANE_AUTO_RESEED:-1}" = "0" ] && return 1
+  for s in settings.json CLAUDE.md RTK.md plugins/installed_plugins.json plugins/known_marketplaces.json plugins/claude-hud/config.json; do
+    if [ -f "${HOME}/.claude/$s" ]; then
+      if [ "${HOME}/.claude/$s" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
+    elif [ -f "$CONFIG_DIR/$s" ]; then
+      return 0
+    fi
+  done
+  for d in commands skills hooks agents plugins/marketplaces; do
+    if [ -d "${HOME}/.claude/$d" ]; then
+      [ -d "$CONFIG_DIR/$d" ] || return 0
+      if [ "${HOME}/.claude/$d" -nt "$CONFIG_DIR/.seeded" ]; then return 0; fi
+    elif [ -d "$CONFIG_DIR/$d" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Concurrency lock (HIMMEL-830): serialize concurrent same-lane reseeds so two
+# launches cannot interleave seed_config_dir's rm/cp into a torn config dir.
+LOCK="$CONFIG_DIR.seed-lock"
+SEED_LOCK_TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"
+SEED_LOCK_STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"
+
+seed_lock_is_stale() {
+  [ -d "$LOCK" ] || return 1
+  lock_mt="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null)"
+  [ -n "$lock_mt" ] || return 1
+  [ "$(( $(date +%s) - lock_mt ))" -ge "$SEED_LOCK_STALE" ]
+}
+
+seed_with_lock() {
+  seed_lock_ticks=0
+  seed_lock_max=$(( SEED_LOCK_TIMEOUT * 2 ))
+  while ! mkdir_err="$(mkdir "$LOCK" 2>&1)"; do
+    if seed_lock_is_stale && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
+      rmdir "$LOCK.stale.$$" 2>/dev/null || true
+      continue
+    fi
+    if [ "$seed_lock_ticks" -ge "$seed_lock_max" ]; then
+      echo "claude-openrouter: timed out after ${SEED_LOCK_TIMEOUT}s waiting for the config-dir seed lock ($LOCK). If no other claude-openrouter launch of this lane is seeding, remove that dir, or tune CLAUDE_LANE_SEED_LOCK_TIMEOUT / CLAUDE_LANE_SEED_LOCK_STALE; last mkdir error: $mkdir_err" >&2
+      exit 4
+    fi
+    sleep 0.5
+    seed_lock_ticks=$(( seed_lock_ticks + 1 ))
+  done
+  trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+  if [ "$RESEED" -eq 1 ] || [ ! -f "$CONFIG_DIR/.seeded" ] || config_seed_stale; then
+    seed_config_dir
+  fi
+  trap - EXIT
+  rmdir "$LOCK" 2>/dev/null || echo "claude-openrouter: WARNING - failed to release seed lock $LOCK (not empty or busy); it self-heals via stale steal after ${SEED_LOCK_STALE}s but concurrent launches wait/time out until then." >&2
+}
+
+if [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then
+  seed_with_lock
+fi
+
+# --- advisory remaining-credit surfacing (HIMMEL-1774 §4) ----------------------
+# OpenRouter exposes a metered balance at GET <OPENROUTER_API_BASE>/credits. This
+# is ADVISORY (stderr) and NEVER gates the launch (the egress matrix is the gate).
+# A query failure is reported LOUDLY as UNKNOWN, never silent (HIMMEL-1771). The
+# credits call carries the API key but NO corpus content (account metadata only),
+# and runs only AFTER the egress gate has authorized the lane. The Authorization
+# header travels via `-K -` (curl config on stdin) so the key is not in argv.
+credit_surfaced=0
+if command -v curl >/dev/null 2>&1; then
+  credit_raw="$(printf 'header "Authorization: Bearer %s"\n' "$OPENROUTER_API_KEY" \
+    | curl -s -m 5 --noproxy '*' -K - "$OPENROUTER_API_BASE/credits" 2>/dev/null || true)"
+  # Parse total_credits - total_usage → remaining. node returns the number on
+  # stdout (exit 0) only on a clean parse of the expected shape; anything else
+  # exits nonzero and the launcher reports UNKNOWN.
+  credit_rem="$(printf '%s' "$credit_raw" | node -e '
+let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+  try { const j=JSON.parse(s); const d=j.data||j; const t=Number(d.total_credits), u=Number(d.total_usage);
+    if (Number.isFinite(t)&&Number.isFinite(u)) { process.stdout.write((t-u).toFixed(2)); return; } } catch(_) {}
+  process.exit(2);
+});' 2>/dev/null || true)"
+  if [ -n "$credit_rem" ]; then
+    echo "claude-openrouter: remaining metered credit: \$$credit_rem (OpenRouter balance at $OPENROUTER_API_BASE/credits). Advisory only." >&2
+    credit_surfaced=1
+  fi
+fi
+if [ "$credit_surfaced" -ne 1 ]; then
+  echo "claude-openrouter: remaining metered credit: UNKNOWN (could not query $OPENROUTER_API_BASE/credits). The metered balance is NOT verified — do not assume it is fine." >&2
+fi
+
+command -v claude >/dev/null 2>&1 || { echo "claude-openrouter: 'claude' not found on PATH" >&2; exit 2; }
+
+# --- launch: env contract mirrors the siblings --------------------------------
+# Exported in the shell, NOT passed as `env VAR=...` argv, so the key is not
+# exposed in the process list (claude-codex R9 parity). The base URL points at
+# OpenRouter's native Anthropic-compatible endpoint; the model is the pinned
+# Claude 1M tier; AUTO_COMPACT_WINDOW budgets against the real 1M window.
+# ANTHROPIC_API_KEY is DELIBERATELY exported EMPTY — this is load-bearing, not
+# cosmetic: an inherited or ambient non-empty value would pull the SDK back onto
+# its Anthropic-native auth path, while the empty key (plus the auth token above)
+# is what forces the OpenRouter route. Every OpenRouter Claude Code / Agent SDK
+# example carries exactly this shape (verified 2026-08-15).
+export ANTHROPIC_BASE_URL="$OPENROUTER_ANTHROPIC_BASE_URL"
+export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+export ANTHROPIC_API_KEY=""
+export ANTHROPIC_MODEL="$OPENROUTER_MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$OPENROUTER_HAIKU"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$OPENROUTER_MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$OPENROUTER_MODEL"
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$OPENROUTER_CONTEXT_WINDOW"
+export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+exec claude "$@"

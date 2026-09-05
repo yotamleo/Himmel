@@ -81,7 +81,15 @@ user_slug() {
     return 2
 }
 
+# user_slug_verify [severity]
+#
+# `severity` labels the unresolved-case diagnostic and defaults to ERR, so
+# every pre-existing caller is unchanged. Pass WARN when the caller CONTINUES
+# on an unresolved slug (HIMMEL-2537: himmel's setup.sh step [0.5/9] does) —
+# a block that opens with "ERR" above a run that then completes normally
+# teaches the reader the wrong thing about what just happened.
 user_slug_verify() {
+    local _sev="${1:-ERR}"
     local slug
     if slug=$(user_slug); then
         local _forge_kind
@@ -95,8 +103,8 @@ user_slug_verify() {
         printf '%s' "$slug"
         return 0
     fi
+    printf '%s user-slug: cannot resolve USER_SLUG.\n' "$_sev" >&2
     cat >&2 <<'EOF'
-ERR user-slug: cannot resolve USER_SLUG.
 
 Tried (in order):
   1. $USER_SLUG env var: unset or empty.

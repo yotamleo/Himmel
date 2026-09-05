@@ -1,0 +1,22 @@
+# Pre-fix reconstruction (round 2, codex-adv-2) of the HIMMEL-1776
+# instance-2 family in its ORDINARY multiline case-arm form. The round-1
+# detector only recognized a fallback assignment standing on the SAME line
+# as the `*)`, so this conventional shape — an unknown endpoint silently
+# taking the name of a TRUSTED provider, un-denied, and reaching the matrix
+# eval — sailed past. Proven RED against the round-1 detector (missed).
+#
+# Expected: lint-fail-open.sh fires fail-open(sentinel-not-denied) here.
+if [ -z "${ANTHROPIC_BASE_URL:-}" ]; then
+    EFFECTIVE_PROVIDER="openai"
+else
+    endpoint_host="$(_endpoint_host "$ANTHROPIC_BASE_URL")" || endpoint_host=""
+    case "$endpoint_host" in
+        api.openai.com) EFFECTIVE_PROVIDER="openai" ;;
+        *)
+            EFFECTIVE_PROVIDER="anthropic"
+            ;;
+    esac
+fi
+verdict_line="$(node "$MX_EVAL" "$CORPUS_CLASS" "$EFFECTIVE_PROVIDER" extraction)" \
+    || { echo "matrix eval failed" >&2; exit 2; }
+echo "verdict: $verdict_line"

@@ -608,6 +608,13 @@ function Register-IntervalTask {
     [string]$WorkingDirectory,
     [int]$IntervalMinutes
   )
+  # HIMMEL-2081: unlike Register-LogonTask above, this function never
+  # consulted $Hidden at all -- every interval task (today: luna-sync-alert,
+  # a bare bun.exe run with no cmd/pwsh wrapper) always registered
+  # InteractiveToken, popping a visible console on EVERY fire regardless of
+  # whether the installer's own -Hidden switch was passed. $Hidden is the
+  # same script-level switch (parent scope) Register-LogonTask already reads
+  # above; same S4U principal fix, applied here too.
 
   $action = New-ScheduledTaskAction -Execute $Execute -Argument $Arguments -WorkingDirectory $WorkingDirectory
   $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes)
@@ -617,13 +624,97 @@ function Register-IntervalTask {
     -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
 
-  Register-ScheduledTask `
-    -TaskName $TaskName `
-    -Action $action `
-    -Trigger $trigger `
-    -Settings $settings `
-    -Description "himmel local observability stack task" `
-    -Force | Out-Null
+  $registerArgs = @{
+    TaskName    = $TaskName
+    Action      = $action
+    Trigger     = $trigger
+    Settings    = $settings
+    Description = "himmel local observability stack task"
+    Force       = $true
+  }
+  if ($Hidden) {
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $registerArgs.Principal = New-ScheduledTaskPrincipal -UserId $currentIdentity -LogonType S4U -RunLevel Limited
+  }
+  Register-ScheduledTask @registerArgs | Out-Null
+}
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2209: seed GRAFANA_TELEGRAM_BOT_TOKEN / GRAFANA_TELEGRAM_CHAT_ID at
+# User scope from himmel's OWN repo-root .env only -- see the call site below
+# for why (this supersedes a cross-source fallback to the Telegram bridge's
+# .env/access.json, HIMMEL-924 F3, which silently mis-routed ops alerts to
+# the shared luna bot / the operator's personal DM). Split into small pieces
+# so test-install-stack.ps1 can dot-source and unit-test them without a real
+# [Environment] User-scope round trip:
+#   Get-HimmelEnvValue             -- pure .env text parser (mirrors
+#                                      boot-preflight.ps1's Get-EnvValue;
+#                                      not shared, that copy isn't either)
+#   Get-UserEnvVar / Set-UserEnvVar -- thin, mockable wrappers around the two
+#                                      [Environment]:: static calls
+#   Set-GrafanaTelegramEnvVar      -- the "already set? / seed from .env /
+#                                      warn + leave unset, no fallback"
+#                                      policy, called once per var so the
+#                                      logic isn't duplicated twice
+function Get-HimmelEnvValue {
+  param([string]$EnvText, [string]$KeyName)
+  if (-not $EnvText) { return $null }
+  # [ \t] (not \s) around the tokens: .NET's \s matches \n too, so \s* right
+  # before the capture group could consume a KEY's own line break and let the
+  # (lazy, non-newline-matching) capture group land on the FOLLOWING line's
+  # content instead of reporting an empty value -- e.g. a bare "KEY=" line
+  # directly above another "OTHER=secret" line would silently parse KEY's
+  # value as "OTHER=secret". Horizontal-whitespace-only keeps the match on
+  # KEY's own line, same intent as boot-preflight.ps1's Get-EnvValue without
+  # inheriting this cross-line bug.
+  $pattern = "(?m)^[ \t]*$([regex]::Escape($KeyName))[ \t]*=[ \t]*(.+?)[ \t]*$"
+  $m = [regex]::Match($EnvText, $pattern)
+  if (-not $m.Success) { return $null }
+  $val = $m.Groups[1].Value.Trim()
+  if ($val.Length -ge 2) {
+    $firstChar = $val.Substring(0, 1)
+    $lastChar = $val.Substring($val.Length - 1, 1)
+    if (($firstChar -eq '"' -or $firstChar -eq "'") -and ($firstChar -eq $lastChar)) {
+      $val = $val.Substring(1, $val.Length - 2)
+      # Re-trim AFTER stripping the quote pair: a quoted whitespace-only
+      # value (KEY="   ") loses its quotes above and leaves bare spaces,
+      # which IsNullOrEmpty does NOT catch on its own.
+      $val = $val.Trim()
+    }
+  }
+  if ([string]::IsNullOrEmpty($val)) { return $null }
+  return $val
+}
+
+function Get-UserEnvVar {
+  param([string]$Name)
+  [Environment]::GetEnvironmentVariable($Name, 'User')
+}
+
+function Set-UserEnvVar {
+  param([string]$Name, [string]$Value)
+  [Environment]::SetEnvironmentVariable($Name, $Value, 'User')
+}
+
+function Set-GrafanaTelegramEnvVar {
+  param([string]$VarName, [string]$EnvText)
+  # [pr-check panel round 2, codex-1]: the replaced implementation wrapped its
+  # equivalent [Environment] read+write in try/catch so a registry failure
+  # warned instead of aborting the installer (this step is documented
+  # NON-FATAL). Restore that guarantee here around both the "already set?"
+  # read and the write.
+  try {
+    if (Get-UserEnvVar -Name $VarName) { return }
+    $val = Get-HimmelEnvValue -EnvText $EnvText -KeyName $VarName
+    if ($val) {
+      Set-UserEnvVar -Name $VarName -Value $val
+      Write-Step "Seeded $VarName from himmel's .env."
+    } else {
+      Write-Warning "$VarName not set in himmel's .env -- Grafana's Telegram contact point will not send until $VarName is set manually (see README.md)."
+    }
+  } catch {
+    Write-Warning "Could not seed $VarName from himmel's .env ($($_.Exception.Message)) -- set it manually (see README.md)."
+  }
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -755,6 +846,7 @@ $grafanaProvisioning = Join-Path $stateRoot 'grafana-provisioning'
 [server]
 http_addr = 127.0.0.1
 http_port = 3000
+root_url = http://127.0.0.1:3000/
 
 [paths]
 data = $($grafanaData.Replace('\', '/'))
@@ -774,48 +866,28 @@ provisioning = $($grafanaProvisioning.Replace('\', '/'))
 New-Item -ItemType Directory -Path $grafanaProvisioning -Force | Out-Null
 Copy-Item -Path (Join-Path $scriptDir 'provisioning\*') -Destination $grafanaProvisioning -Recurse -Force
 
-# HIMMEL-924 -- RATIFIED F3: seed the two env vars contact-points.yaml
-# interpolates ($GRAFANA_TELEGRAM_BOT_TOKEN / $GRAFANA_TELEGRAM_CHAT_ID),
-# persisted at User scope so the logon-triggered Grafana task inherits them.
-# Reuses the Telegram bridge's already-provisioned bot token and chat_id --
-# the exact same sources luna-sync-alert.ts reads (HIMMEL-1199 precedent) --
-# because Telegram's "one poller per bot token" constraint is specific to
-# long-polling (getUpdates)/webhook registration; a sendMessage-only caller,
-# which is all Grafana's Telegram notifier ever does, cannot collide with
-# the bridge's poller regardless of how many processes hold the token. See
-# README.md's "Alerting" section for the full writeup. This step is
-# NON-FATAL and never overwrites an operator-set value: an operator who
-# wants a SEPARATE bot token (the design's other sanctioned option) can set
-# both variables themselves before running the installer.
-if (-not [Environment]::GetEnvironmentVariable('GRAFANA_TELEGRAM_BOT_TOKEN', 'User')) {
-  try {
-    $bridgeEnvPath = Join-Path $env:USERPROFILE '.claude\channels\telegram\.env'
-    $tokenLine = Get-Content -LiteralPath $bridgeEnvPath -ErrorAction Stop | Where-Object { $_ -match '^\s*TELEGRAM_BOT_TOKEN\s*=\s*(.+)$' } | Select-Object -First 1
-    if ($tokenLine -match '^\s*TELEGRAM_BOT_TOKEN\s*=\s*(.+)$') {
-      [Environment]::SetEnvironmentVariable('GRAFANA_TELEGRAM_BOT_TOKEN', $Matches[1].Trim(), 'User')
-      Write-Step 'Seeded GRAFANA_TELEGRAM_BOT_TOKEN from the Telegram bridge .env (reused token, sendMessage-only use).'
-    } else {
-      Write-Warning "TELEGRAM_BOT_TOKEN not found in $bridgeEnvPath -- Grafana's Telegram contact point will not send until GRAFANA_TELEGRAM_BOT_TOKEN is set manually (see README.md)."
-    }
-  } catch {
-    Write-Warning "Could not read the Telegram bridge .env to seed GRAFANA_TELEGRAM_BOT_TOKEN ($($_.Exception.Message)) -- set it manually (see README.md)."
+# HIMMEL-2209 (supersedes HIMMEL-924 F3's bridge-reuse design): seed the two
+# env vars contact-points.yaml interpolates ($GRAFANA_TELEGRAM_BOT_TOKEN /
+# $GRAFANA_TELEGRAM_CHAT_ID), persisted at User scope so the logon-triggered
+# Grafana task inherits them. Seeded ONLY from himmel's OWN repo-root .env --
+# never from the Telegram bridge's .env / access.json (that cross-source
+# fallback silently routed ops alerts to the shared luna bot / the
+# operator's personal DM). See README.md's "Alerting" section for the full
+# writeup. This step is NON-FATAL and never overwrites an operator-set
+# value; an absent/empty key in .env WARNS loudly and leaves the var unset
+# -- no fallback, ever.
+$himmelEnvPath = Join-Path $RepoRoot '.env'
+$himmelEnvText = ''
+try {
+  if (Test-Path -LiteralPath $himmelEnvPath) {
+    $himmelEnvText = Get-Content -LiteralPath $himmelEnvPath -Raw
   }
+} catch {
+  Write-Warning "Could not read himmel's .env at $himmelEnvPath ($($_.Exception.Message)) -- Grafana Telegram alerting env vars will not be seeded automatically (see README.md)."
 }
-if (-not [Environment]::GetEnvironmentVariable('GRAFANA_TELEGRAM_CHAT_ID', 'User')) {
-  try {
-    $accessJsonPath = Join-Path $env:USERPROFILE '.claude\channels\telegram\access.json'
-    $access = Get-Content -LiteralPath $accessJsonPath -ErrorAction Stop -Raw | ConvertFrom-Json
-    $chatId = $access.allowFrom | Select-Object -First 1
-    if ($chatId) {
-      [Environment]::SetEnvironmentVariable('GRAFANA_TELEGRAM_CHAT_ID', "$chatId", 'User')
-      Write-Step 'Seeded GRAFANA_TELEGRAM_CHAT_ID from the Telegram bridge access.json (allowFrom[0]).'
-    } else {
-      Write-Warning "access.json's allowFrom is empty at $accessJsonPath -- Grafana's Telegram contact point will not send until GRAFANA_TELEGRAM_CHAT_ID is set manually (see README.md)."
-    }
-  } catch {
-    Write-Warning "Could not read the Telegram bridge access.json to seed GRAFANA_TELEGRAM_CHAT_ID ($($_.Exception.Message)) -- set it manually (see README.md)."
-  }
-}
+Set-GrafanaTelegramEnvVar -VarName 'GRAFANA_TELEGRAM_BOT_TOKEN' -EnvText $himmelEnvText
+Set-GrafanaTelegramEnvVar -VarName 'GRAFANA_TELEGRAM_CHAT_ID' -EnvText $himmelEnvText
+
 # A logon-triggered task inherits the User-scope environment block computed
 # at the TASK's own logon, not this installer's already-running session --
 # refresh this process's view too so a same-session Grafana restart (rare,

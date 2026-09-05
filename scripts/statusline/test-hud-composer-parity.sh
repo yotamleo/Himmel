@@ -106,48 +106,63 @@ run_composer() {
 }
 
 # ── Case 2: session economics line (exact computed values) ──────────────────
-# claude-opus: read_savings=(5-0.5)/1e6, write_overhead=(10-5)/1e6.
-# net = 2e6*4.5e-6 - 1e5*5e-6 = 9.0 - 0.5 = 8.5. hit = 2e6*100/2.05e6 = 97.
+# hit = 2e6*100/2.05e6 = 97. The row is END-ANCHORED: HIMMEL-2265 removed the
+# trailing `net <±>$<n>` cache-savings figure, and an unanchored match would
+# still pass if it came back.
 out="$(run_composer)"
-# shellcheck disable=SC2016 # $ is literal fixed-string text, not an expansion
-if grepq "$out" -F 'session  r:2.0M  w:100k  hit:97%  net +$8.5000'; then
-    pass "session economics -> exact 'r:2.0M w:100k hit:97% net +\$8.5000'"
+if grepq "$out" -E '^session  r:2\.0M  w:100k  hit:97%$'; then
+    pass "session economics -> exact 'r:2.0M w:100k hit:97%' (no net figure)"
 else
     fail "session economics -> got: $(printf '%s\n' "$out" | grep -F 'session' || echo '(no session line)')"
 fi
 
-# ── Case 2b: unknown-model guess marker, END-TO-END (HIMMEL-1316, glm-2) ────
-# The composer renders the net through format_econ_line, a DIFFERENT code path
-# from the legacy bar's build_cache_lines. test/test_cache.sh cannot cover it —
-# that suite sources only bin/statusline.sh, which does not define
-# format_econ_line — so without this case the composer could drop the marker
-# and every suite would still be green. The composer is the future default
-# renderer, so this is the path that ends up mattering most.
-#
-# PAIRED against Case 2 immediately above, which is the negative control: it
-# runs the SAME fixture through the recognised `claude-opus-4-8` and asserts the
-# exact string `net +$8.5000` with no marker. "Mark every net" would pass this
-# case and fail that one.
-unknown_json="$(printf '{"model":{"id":"zzz-not-a-real-model"},"transcript_path":"%s","cwd":"%s"}' "$TRANSCRIPT" "$WT")"
-out_unknown="$(printf '%s' "$unknown_json" | \
-    HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HANDOVER_DIR="$HROOT" \
-    CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" \
-    HIMMEL_WHERE_ARE_WE_SEG_TIMEOUT=30 \
-    bash "$COMPOSER" 2>/dev/null)"
-# LC_ALL=C for the same reason Case 4 needs it — see the note there.
-if LC_ALL=C grepq "$out_unknown" -E '^session .*net [+-]\$[0-9.]+\?'; then
-    pass "unknown model -> composer marks the net with '?' (guess, not fact)"
-else
-    fail "unknown model -> no '?' marker: $(printf '%s\n' "$out_unknown" | grep -E '^session ' || echo '(no session line)')"
-fi
+# ── Case 2b: REMOVED by HIMMEL-2265 ─────────────────────────────────────────
+# This case asserted the HIMMEL-1316 `?` guess-marker on the session row's
+# `net` — the marker that flagged a model priced by the per-model price
+# table's `*)` Sonnet-rate fallback. HIMMEL-2265 removed the whole
+# cache-savings figure (and the price table with it) from the composer, so
+# there is no net to mark and no rate to guess: the enforcement is deliberately
+# deleted WITH the feature it enforced, not weakened. Cases 2 and 3 are now
+# END-ANCHORED, which is what keeps the figure from silently returning.
+# (The legacy bar keeps its own price table until Task 5.4 decommissions it;
+# its `?`-marker coverage lives on in test/test_cache.sh.)
 
 # ── Case 3: all-sessions economics line (exact computed values) ─────────────
-# net = 45e6*4.5e-6 - 12e6*5e-6 = 202.5 - 60 = 142.5. hit = 45e6*100/48e6 = 93.
-# shellcheck disable=SC2016 # $ anchors/literals are regex text, not expansion
-if grepq "$out" -E '^all +r:45\.0M  w:12\.0M  hit:93%  net [+]\$142\.5000$'; then
-    pass "all-sessions economics -> exact 'all r:45.0M w:12.0M hit:93% net +\$142.5000'"
+# hit = 45e6*100/48e6 = 93. END-ANCHORED for the same reason as Case 2.
+if grepq "$out" -E '^all +r:45\.0M  w:12\.0M  hit:93%$'; then
+    pass "all-sessions economics -> exact 'all r:45.0M w:12.0M hit:93%' (no net figure)"
 else
     fail "all-sessions economics -> got: $(printf '%s\n' "$out" | grep -E '^all ' || echo '(no all line)')"
+fi
+
+# ── Case 3b: token-volume row — `used:` only, no `cache:` (HIMMEL-2265) ──────
+# total used = inputs + reads + writes + outputs = 3e6 + 45e6 + 12e6 + 0 = 60.0M
+# (the seeded all-stats cache carries no `.outputs`, so it reads as 0).
+# END-ANCHORED, and paired with the whole-render negative below: together they
+# pin that the removed `cache:<read+creation>` field does not come back — on
+# this row or any other.
+if grepq "$out" -E '^total +used:60\.0M$'; then
+    pass "token volume -> exact 'total used:60.0M' (cache: field removed)"
+else
+    fail "token volume -> got: $(printf '%s\n' "$out" | grep -E '^total ' || echo '(no total line)')"
+fi
+
+# ── Case 3c: whole-render negative — no money figure, no `cache:` field ──────
+# The composer no longer prices anything: HIMMEL-2265 deleted the hand-
+# maintained per-model rate card whose figures drifted from live pricing. The
+# end-anchored cases above pin the three rows they each name; this pins the
+# ABSENCE across the WHOLE render, so a savings figure or a `cache:` field
+# reintroduced on some OTHER row still fails. Kept as two separate assertions
+# so a failure names which one came back.
+if grepq "$out" -E 'net +[+-]?\$'; then
+    fail "no-money -> a '\$' net figure is back: $(printf '%s\n' "$out" | grep -E 'net +[+-]?\$')"
+else
+    pass "no-money -> no net \$ figure anywhere in the render"
+fi
+if grepq "$out" -F 'cache:'; then
+    fail "no-cache-field -> 'cache:' is back: $(printf '%s\n' "$out" | grep -F 'cache:')"
+else
+    pass "no-cache-field -> no 'cache:' field anywhere in the render"
 fi
 
 # ── Case 4: WAW parity — composer's WAW line == the segment's own output ─────
@@ -175,6 +190,41 @@ if [ -n "$key" ]; then
     fi
 else
     pass "WAW parity -> SKIPPED (branch '$branch' yields no ticket key)"
+fi
+
+# ── Case 4b: EMPTY transcript_path must not shift cwd (HIMMEL-2265) ──────────
+# The stdin fields are read through ONE `read` with a single-char IFS. Tab is
+# IFS *whitespace*, so a leading EMPTY field collapses and every later field
+# shifts left — and `.transcript_path` is legitimately empty on a session with
+# no transcript yet. Under a tab separator that silently handed the WAW segment
+# an empty --cwd (it fell back to $PWD), which is invisible in the econ rows and
+# only shows up as a wrong/missing where-are-we line. The composer uses the US
+# (\037) separator for exactly this reason; this case is what keeps it there.
+#
+# Asserted through a STUB segment that echoes the --cwd it was handed, because
+# the real segment's output does not reveal which cwd it received. The stub
+# lives beside a COPY of the composer so $ROOT/where-are-we resolves to it.
+# (the composer invokes it as `bash "$seg" --cwd "$cwd"`, so the value is $2.)
+SHIFT_TMP="$TMP/cwdshift"
+mkdir -p "$SHIFT_TMP/where-are-we"
+printf '%s\n' '#!/usr/bin/env bash' 'cat >/dev/null 2>&1 || true' 'echo "SEG-CWD=$2"' \
+    > "$SHIFT_TMP/where-are-we/statusline-segment.sh"
+cp -r "$DIR" "$SHIFT_TMP/statusline"
+out_shift="$(printf '{"transcript_path":"","cwd":"/expected/cwd"}' | \
+    CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$SHIFT_TMP/statusline/hud-custom-lines.sh" 2>/dev/null)"
+if grepq "$out_shift" -F 'SEG-CWD=/expected/cwd'; then
+    pass "empty transcript_path -> cwd survives (no leading-empty-field shift)"
+else
+    fail "empty transcript_path -> cwd shifted: $(printf '%s\n' "$out_shift" | grep -F 'SEG-CWD=' || echo '(no SEG-CWD line)')"
+fi
+# Negative control for the SAME fixture: a NON-empty transcript_path must still
+# parse both fields, so the fix cannot be "always ignore the first field".
+out_shift2="$(printf '{"transcript_path":"%s","cwd":"/expected/cwd"}' "$TRANSCRIPT" | \
+    CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$SHIFT_TMP/statusline/hud-custom-lines.sh" 2>/dev/null)"
+if grepq "$out_shift2" -F 'SEG-CWD=/expected/cwd' && grepq "$out_shift2" -E '^session  r:2\.0M'; then
+    pass "non-empty transcript_path -> both fields parse (cwd AND the transcript)"
+else
+    fail "non-empty transcript_path -> got: $(printf '%s\n' "$out_shift2" | grep -E 'SEG-CWD=|^session' || echo '(nothing)')"
 fi
 
 # ── Case 5: env-knob — HIMMEL_WHERE_ARE_WE off suppresses the WAW line ───────
@@ -210,11 +260,11 @@ fi
 # HIMMEL-797: a missing transcript means the session's cache stats are
 # UNKNOWN, not zero — a bare "r:0 w:0" is indistinguishable from a session
 # that genuinely computed to zero usage. The composer now renders the
-# explicit "session~ r:? w:? hit:?% net ?" marker for this case (see
+# explicit "session~ r:? w:? hit:?%" marker for this case (see
 # read_session_cache_stats' sess_unknown in hud-custom-lines.sh).
 out_empty="$(printf '{"model":{"id":"claude-opus-4-8"},"transcript_path":"/nonexistent","cwd":"%s"}' "$WT" | \
     CLAUDE_ALL_SESSIONS_CACHE_DIR="$TMP/empty" bash "$COMPOSER" 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && grepq "$out_empty" -F 'session~  r:?  w:?  hit:?%  net ?'; then
+if [ "$rc" -eq 0 ] && grepq "$out_empty" -E '^session~  r:\?  w:\?  hit:\?%$'; then
     pass "fail-open -> missing transcript renders the unknown marker, exit 0"
 else
     fail "fail-open -> rc=$rc out='$out_empty'"
@@ -240,16 +290,81 @@ STUBEOF
 chmod +x "$STUBDIR/jq"
 out_slow="$(printf '%s' "$stdin_json" | HIMMEL_SESSION_CACHE_TIMEOUT=1 PATH="$STUBDIR:$PATH" \
     HIMMEL_WHERE_ARE_WE=0 CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$COMPOSER" 2>/dev/null)"; rc=$?
-if [ "$rc" -eq 0 ] && grepq "$out_slow" -F 'session~  r:?  w:?  hit:?%  net ?'; then
+if [ "$rc" -eq 0 ] && grepq "$out_slow" -E '^session~  r:\?  w:\?  hit:\?%$'; then
     pass "HIMMEL-797: slow transcript parse -> session row degrades to unknown marker, exit 0"
 else
     fail "HIMMEL-797: slow transcript parse -> rc=$rc session line: $(printf '%s\n' "$out_slow" | grep -F 'session' || echo '(none)')"
 fi
-# shellcheck disable=SC2016 # $ anchors/literals are regex text, not expansion
-if grepq "$out_slow" -E '^all +r:45\.0M  w:12\.0M  hit:93%  net [+]\$142\.5000$'; then
+if grepq "$out_slow" -E '^all +r:45\.0M  w:12\.0M  hit:93%$'; then
     pass "HIMMEL-797: slow transcript parse -> all row still renders (isolated from the slow session parse)"
 else
     fail "HIMMEL-797: slow transcript parse -> all row missing/wrong: $(printf '%s\n' "$out_slow" | grep -E '^all ' || echo '(none)')"
+fi
+
+# ── Case 9: env-knob — HIMMEL_STATUSLINE_ECON off suppresses lines 2-4 ───────
+# Group toggle, not three: one knob suppresses session + all + total together.
+# Same normalisation contract as HIMMEL_WHERE_ARE_WE (Case 5) — WAW stays on
+# here so this case can't be confused with WAW's own suppression.
+out_econ_off="$(printf '%s' "$stdin_json" | HIMMEL_STATUSLINE_ECON=0 \
+    HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HANDOVER_DIR="$HROOT" \
+    CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" HIMMEL_WHERE_ARE_WE_SEG_TIMEOUT=30 \
+    bash "$COMPOSER" 2>/dev/null)"
+if ! grepq "$out_econ_off" -E '^(session|session~|all|week|month|all~|total) '; then
+    pass "env-knob HIMMEL_STATUSLINE_ECON=0 -> all three econ rows suppressed"
+else
+    fail "env-knob HIMMEL_STATUSLINE_ECON=0 -> an econ row survived: $(printf '%s\n' "$out_econ_off" | grep -E '^(session|session~|all|week|month|all~|total) ')"
+fi
+if grepq "$out_econ_off" -F '⎇'; then
+    pass "env-knob HIMMEL_STATUSLINE_ECON=0 -> WAW line untouched (group toggle scoped to econ only)"
+else
+    fail "env-knob HIMMEL_STATUSLINE_ECON=0 -> WAW line disappeared too (knob over-scoped)"
+fi
+# Accepted-value parity with HIMMEL_WHERE_ARE_WE: 'off' (mixed case, padded
+# whitespace) must normalise the same way (tr-lowercase then tr-d-whitespace).
+out_econ_off2="$(printf '%s' "$stdin_json" | HIMMEL_STATUSLINE_ECON=' Off ' \
+    HIMMEL_WHERE_ARE_WE_ROLLUP_DIR="$ROLLDIR" HANDOVER_DIR="$HROOT" \
+    CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" HIMMEL_WHERE_ARE_WE_SEG_TIMEOUT=30 \
+    bash "$COMPOSER" 2>/dev/null)"
+if ! grepq "$out_econ_off2" -E '^(session|session~|all|week|month|all~|total) '; then
+    pass "env-knob HIMMEL_STATUSLINE_ECON=' Off ' -> normalises like HIMMEL_WHERE_ARE_WE"
+else
+    fail "env-knob HIMMEL_STATUSLINE_ECON=' Off ' -> not suppressed: $(printf '%s\n' "$out_econ_off2" | grep -E '^(session|session~|all|week|month|all~|total) ')"
+fi
+
+# ── Case 10: HIMMEL_STATUSLINE_ECON gates the WORK, not just the emit ────────
+# Proven by INSTRUMENTATION, not wall-clock: the composer's own stdin-parse jq
+# call (line ~63, unconditional) would confound a timing assertion against a
+# stub that sleeps on every jq invocation. read_session_cache_stats is the
+# ONLY caller in this file that passes jq the `-rs` (slurp) flag, so a stub
+# that marks a sentinel file only on `-rs` isolates "read_session_cache_stats
+# ran" from every other jq call in the render.
+MARKDIR="$TMP/callmark"; mkdir -p "$MARKDIR"
+cat > "$STUBDIR/jq" <<STUBEOF
+#!/usr/bin/env bash
+for a in "\$@"; do [ "\$a" = "-rs" ] && touch "$MARKDIR/hit"; done
+exec "$REAL_JQ" "\$@"
+STUBEOF
+chmod +x "$STUBDIR/jq"
+rm -f "$MARKDIR/hit"
+out_skip="$(printf '%s' "$stdin_json" | HIMMEL_STATUSLINE_ECON=0 PATH="$STUBDIR:$PATH" \
+    HIMMEL_WHERE_ARE_WE=0 CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" \
+    bash "$COMPOSER" 2>/dev/null)"; rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out_skip" ] && [ ! -f "$MARKDIR/hit" ]; then
+    pass "HIMMEL-2319: ECON=0 skips the read_session_cache_stats CALL (no -rs jq invocation, no compute-then-discard)"
+else
+    hit_state=no; [ -f "$MARKDIR/hit" ] && hit_state=yes
+    fail "HIMMEL-2319: ECON=0 -> rc=$rc out='$out_skip' -rs-invoked=$hit_state (expensive call still fired)"
+fi
+# Negative control: with the knob left on (default), the call DOES fire — this
+# proves the marker mechanism itself works live, not just that it defaults to
+# absent.
+rm -f "$MARKDIR/hit"
+out_on="$(printf '%s' "$stdin_json" | PATH="$STUBDIR:$PATH" HIMMEL_WHERE_ARE_WE=0 \
+    CLAUDE_ALL_SESSIONS_CACHE_DIR="$ECON_DIR" bash "$COMPOSER" 2>/dev/null)"; rc2=$?
+if [ "$rc2" -eq 0 ] && [ -f "$MARKDIR/hit" ]; then
+    pass "negative control: ECON on (default) -> read_session_cache_stats DOES fire (marker mechanism verified live)"
+else
+    fail "negative control: ECON on -> marker not set (rc=$rc2), mechanism did not verify the CALL"
 fi
 
 echo "---"

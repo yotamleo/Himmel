@@ -1,13 +1,6 @@
 ---
 name: contra
-description: >
-  CONTRA passes over the luna vault (LUNA-96/97 — spinoff of the Contrarian Loop concept).
-  Default mode GHOST-SELF: for topics active in the last 14 days, load same-topic notes older
-  than --min-age (default 6 months) and write a short reaction in the voice of past-you to
-  current-you, using ONLY verbatim quotes from the old notes. --bridge mode: force one analogy
-  between a technical-domain note and a personal/philosophical-domain note. Lean-invoke only —
-  never scheduled (manual-proof-first, HIMMEL-177). Triggers on /contra at the user prompt or
-  programmatic Skill dispatch.
+description: CONTRA passes over the luna vault — ghost-self (past-you reacts to current-you) or --bridge analogy. Fires on /contra.
 ---
 
 # /contra — ghost-self + bridge passes (LUNA-96, LUNA-97)

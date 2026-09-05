@@ -1,0 +1,8 @@
+VERSION = "1.0.0"
+MAX_RETRIES = 3
+TIMEOUT_SECONDS = 30
+
+DEFAULT_CONFIG = {
+    "retries": MAX_RETRIES,
+    "timeout": TIMEOUT_SECONDS,
+}

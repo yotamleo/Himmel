@@ -40,6 +40,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
@@ -52,15 +53,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # snapshot_dir <dir> — sorted sha256 lines, one per file under <dir>. The
 # zero-mutation assertions (cases c/d/e) run BEFORE any primitive dispatch,
@@ -142,10 +134,10 @@ targetF="$work/targetF"; mkdir -p "$targetF"
 cacheF="$work/cacheF"; mkdir -p "$cacheF"
 homeF="$work/homeF"; mkdir -p "$homeF"
 write_cache "$cacheF/install-profile.json" adopter project none "" inline "" lean
-getOut=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheF")" HOME="$homeF" \
+getOut=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheF")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheF")-luna-config.json" HOME="$homeF" USERPROFILE="$(winpath "$homeF")" \
   "$node_bin" "$wizard" scope get </dev/null )
 [ "$getOut" = "project" ] || fail "case f: scope get should print 'project' (got: $getOut)"
-statusOut=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheF")" HOME="$homeF" \
+statusOut=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheF")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheF")-luna-config.json" HOME="$homeF" USERPROFILE="$(winpath "$homeF")" \
   "$node_bin" "$wizard" scope status </dev/null )
 [ "$statusOut" = "project" ] || fail "case f: scope status should print 'project' (got: $statusOut)"
 echo "ok: case f — scope get / scope status print the current scope"
@@ -159,7 +151,7 @@ write_cache "$cache/install-profile.json" adopter project none "" inline "" lean
 # Seed the project scope (ensure wires wire-item + persists the project
 # target). Output is discarded; set -e aborts on a non-zero seed, and the
 # settings/state assertions below prove it took.
-( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cache")" HOME="$home" \
+( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cache")-luna-config.json" HOME="$home" USERPROFILE="$(winpath "$home")" \
   "$node_bin" "$wizard" ensure --yes </dev/null ) >/dev/null
 jq -e '.statusLine.command' "$target/.claude/settings.json" >/dev/null \
   || fail "seed: ensure should have wired wire-item into the project settings (got: $(cat "$target/.claude/settings.json" 2>/dev/null))"
@@ -168,7 +160,7 @@ jq -e '.statusLine.command' "$target/.claude/settings.json" >/dev/null \
 echo "ok: seed — project-scope install wired (wire-item green, project target persisted)"
 
 # ── case a + b: project -> user switch ──────────────────────────────────────
-switchOut=$( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cache")" HOME="$home" \
+switchOut=$( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cache")-luna-config.json" HOME="$home" USERPROFILE="$(winpath "$home")" \
   "$node_bin" "$wizard" scope set user --yes </dev/null )
 grepq "$switchOut" -F "scope switched 'project' -> 'user'" \
   || fail "case a: expected the switch success line (got: $switchOut)"
@@ -193,7 +185,7 @@ echo "ok: case a — project->user switch unwires the old scope and wires the ne
 # manifest, but the assertion documents the both-scopes invariant).
 [ "$(jq -r '.scope' "$cache/install-profile.json")" = "user" ] \
   || fail "case b: install-profile scope should be 'user' after the switch (got: $(jq -r '.scope' "$cache/install-profile.json"))"
-getAfter=$( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cache")" HOME="$home" \
+getAfter=$( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cache")-luna-config.json" HOME="$home" USERPROFILE="$(winpath "$home")" \
   "$node_bin" "$wizard" scope get </dev/null )
 [ "$getAfter" = "user" ] || fail "case b: scope get should return 'user' after the switch (got: $getAfter)"
 echo "ok: case b — state re-keyed to the user scope (project key deleted); recorded scope flipped; scope get returns 'user'"
@@ -257,7 +249,7 @@ printf '{"statusLine":{"command":"himmel"},"enabledPlugins":{"foo":"true"}}' > "
 
 snapCBefore=$(snapshot_dir "$work")
 set +e
-outC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HOME="$homeC" \
+outC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC")-luna-config.json" HOME="$homeC" USERPROFILE="$(winpath "$homeC")" \
   "$node_bin" "$wizard" scope set user --yes 2>&1 </dev/null ); rcC=$?
 set -e
 [ "$rcC" -eq 1 ] || fail "case c: fail-closed should exit 1 (got rc=$rcC): $outC"
@@ -287,14 +279,14 @@ targetD="$work/targetD"; mkdir -p "$targetD"
 cacheD="$work/cacheD"; mkdir -p "$cacheD"
 homeD="$work/homeD"; mkdir -p "$homeD"
 write_cache "$cacheD/install-profile.json" adopter project none "" inline "" lean
-( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HOME="$homeD" \
+( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheD")-luna-config.json" HOME="$homeD" USERPROFILE="$(winpath "$homeD")" \
   "$node_bin" "$wizard" ensure --yes </dev/null ) >/dev/null
 jq -e '.statusLine.command' "$targetD/.claude/settings.json" >/dev/null \
   || fail "case d seed: ensure should wire wire-item (got: $(cat "$targetD/.claude/settings.json" 2>/dev/null))"
 
 snapDBefore=$(snapshot_dir "$work")
 set +e
-outD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HOME="$homeD" \
+outD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheD")-luna-config.json" HOME="$homeD" USERPROFILE="$(winpath "$homeD")" \
   "$node_bin" "$wizard" scope set user --dry-run </dev/null ); rcD=$?
 set -e
 [ "$rcD" -eq 0 ] || fail "case d: --dry-run should exit 0 (got rc=$rcD): $outD"
@@ -319,14 +311,14 @@ targetE="$work/targetE"; mkdir -p "$targetE"
 cacheE="$work/cacheE"; mkdir -p "$cacheE"
 homeE="$work/homeE"; mkdir -p "$homeE"
 write_cache "$cacheE/install-profile.json" adopter project none "" inline "" lean
-( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" HOME="$homeE" \
+( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheE")-luna-config.json" HOME="$homeE" USERPROFILE="$(winpath "$homeE")" \
   "$node_bin" "$wizard" ensure --yes </dev/null ) >/dev/null
 jq -e '.statusLine.command' "$targetE/.claude/settings.json" >/dev/null \
   || fail "case e seed: ensure should wire wire-item (got: $(cat "$targetE/.claude/settings.json" 2>/dev/null))"
 
 snapEBefore=$(snapshot_dir "$work")
 set +e
-outE=$( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" HOME="$homeE" \
+outE=$( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheE")-luna-config.json" HOME="$homeE" USERPROFILE="$(winpath "$homeE")" \
   "$node_bin" "$wizard" scope set user 2>&1 </dev/null ); rcE=$?
 set -e
 [ "$rcE" -eq 2 ] || fail "case e: non-interactive scope switch without --yes should exit 2 (got rc=$rcE): $outE"
@@ -346,14 +338,14 @@ wrongG="$work/wrongG";  mkdir -p "$wrongG"
 cacheG="$work/cacheG";  mkdir -p "$cacheG"
 homeG="$work/homeG";    mkdir -p "$homeG"
 write_cache "$cacheG/install-profile.json" adopter project none "" inline "" lean
-( cd "$targetG" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HOME="$homeG" \
+( cd "$targetG" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheG")-luna-config.json" HOME="$homeG" USERPROFILE="$(winpath "$homeG")" \
   "$node_bin" "$wizard" ensure --yes </dev/null ) >/dev/null
 jq -e '.statusLine.command' "$targetG/.claude/settings.json" >/dev/null \
   || fail "case g seed: ensure should wire the project (got: $(cat "$targetG/.claude/settings.json" 2>/dev/null))"
 
 snapGBefore=$(snapshot_dir "$work")
 set +e
-outG=$( cd "$wrongG" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HOME="$homeG" \
+outG=$( cd "$wrongG" && HIMMELCTL_REPO_ROOT="$(winpath "$repo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheG")-luna-config.json" HOME="$homeG" USERPROFILE="$(winpath "$homeG")" \
   "$node_bin" "$wizard" scope set user --yes 2>&1 </dev/null ); rcG=$?
 set -e
 [ "$rcG" -eq 2 ] || fail "case g: scope set from the wrong dir should exit 2 (got rc=$rcG): $outG"

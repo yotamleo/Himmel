@@ -28,8 +28,10 @@ node_modules/
 #                     regardless of its real age.
 #   cache/          - graphify's semantic cache; local, and large.
 graphify-out/*
-!graphify-out/graph.json
-!graphify-out/GRAPH_REPORT.md
+# .claudeignore
+# Claude Code prompt cache invalidated after every graphify extract Graphify writes output files (graph.json, graphify-out/) into the workspace. If those paths aren't ignored, every write invalidates Claude Code's prompt cache, forcing a full re-upload at cache-write rates on the next turn. Add them to .claudeignore:
+graph.json
+graphify-out/
 /.claude/skills/graphify/
 # graphify multi-harness init scatters per-machine integration files across the
 # repo (HIMMEL-1193). Regenerable via /graphify, same as the ignored skills dir
@@ -56,6 +58,11 @@ Thumbs.db
 # Match any .claude/ dir (the hook writes into the cwd's .claude/, e.g. scripts/telegram/.claude/).
 **/.claude/end-session-wiki.log
 **/.claude/end-session-wiki.log.old
+# run-hook-with-bash.js --chain durable skip/deny log (HIMMEL-2060) — local
+# diagnostics, not source. Not root-anchored (CR round 4, codex-2): the
+# launcher falls back to cwd when CLAUDE_PROJECT_DIR is unset, so a nested
+# invocation writes .claude/logs/ under a subdirectory too.
+**/.claude/logs/
 # Handover transient state
 .last-consolidate.json
 **/handovers/*/.last-consolidate.json
@@ -107,12 +114,13 @@ logs/gemini/
 # they belong in <state-repo>/.../specs/decision/, never himmel docs/.
 /docs/adr/
 # Codex artifacts (HIMMEL-427: codex IS now wired). The guardrail wiring is
-# TRACKED (hooks.json + the run-hook.cmd polyglot + its README); codex's local
+# TRACKED (hooks.json + the platform run-hook wrappers + its README); codex's local
 # runtime config, sessions, and auto-generated slash-command→skill mirrors stay
 # ignored. (AGENTS.md itself is tracked separately.)
 .codex/*
 !.codex/hooks.json
 !.codex/run-hook.cmd
+!.codex/run-hook.sh
 !.codex/codex-hook-adapter.sh
 !.codex/README.md
 .agents/skills/source-command-*/

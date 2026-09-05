@@ -32,6 +32,21 @@ assert_eq() {
 TMP_ROOT=$(mktemp -d)
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
 
+# HIMMEL-1924: a successful github create/edit now posts an `@coderabbitai
+# review` trigger. Disarm it for the routing cases below so they stay hermetic
+# and machine-independent — this checkout IS armed (`git config --local
+# himmel.coderabbit true`), so without this the trigger would fire during the
+# legacy assertions. The trigger cases at the end arm it explicitly (CR_APP=1).
+export CR_APP=0
+# HIMMEL-2034: the trigger seam now posts only on a repo whose CR gate is ours.
+# The trigger stub's PR URLs are on acme/widget (not this checkout's origin),
+# so allowlist it — the foreign-repo refusal itself is covered by the two hook
+# suites.
+export CR_TRIGGER_REPOS="acme/widget"
+# Redirect the shared ledger to a throwaway file: no test may read or write the
+# real repo's .git/cr-triggered-heads.
+export CR_TRIGGER_LEDGER_PATH="$TMP_ROOT/cr-triggered-heads"
+
 # ── forge_detect: FORGE override ─────────────────────────────────────────────
 echo "TEST: forge_detect honors FORGE override"
 assert_eq "FORGE=github"    "github"    "$(FORGE=github forge_detect)"
@@ -241,6 +256,82 @@ case "$args" in
     "issue create --title My Title --body Body"*) pass "issue_create maps --title --body, drops REPO/LABEL" ;;
     *) fail "issue_create arg mapping" "got: $args" ;;
 esac
+
+# ── CodeRabbit trigger at the seam (HIMMEL-1924) ─────────────────────────────
+# A PR opened/advanced from inside a script matches neither HIMMEL-1906 hook
+# (they match the bash command string), so the seam itself must post the
+# `@coderabbitai review` trigger — exactly once per head SHA, via the SAME
+# ledger the hooks use, and never on an unarmed repo or on bitbucket.
+echo "TEST: github seam triggers CodeRabbit once per head SHA (HIMMEL-1924)"
+TRIG_LOG="$TMP_ROOT/trigger-comments.log"
+: > "$TRIG_LOG"
+export TRIG_LOG
+TRIG_STUB="$TMP_ROOT/gh-trigger.sh"
+cat >"$TRIG_STUB" <<'STUB'
+#!/usr/bin/env bash
+# `pr view` answers the seam's number/head/url lookup ($TRIG_HEAD selects the
+# head); `pr comment` appends the posted body to $TRIG_LOG instead of posting.
+case "${1:-} ${2:-}" in
+    "pr create") echo "https://github.com/acme/widget/pull/42" ;;
+    "pr view")   printf '%s %s %s\n' 42 "${TRIG_HEAD:?TRIG_HEAD unset}" "https://github.com/acme/widget/pull/42" ;;
+    "pr comment")
+        body=""
+        while [ "$#" -gt 0 ]; do
+            case "$1" in --body) body="${2:-}"; shift ;; esac
+            shift
+        done
+        printf '%s\n' "$body" >> "${TRIG_LOG:?}"
+        ;;
+esac
+exit 0
+STUB
+chmod +x "$TRIG_STUB"
+trig_count() { wc -l < "$TRIG_LOG" 2>/dev/null | tr -d ' '; }
+
+# 1. an armed repo: a seam-opened PR posts the trigger and records the head.
+FORGE=github GH_CMD="$TRIG_STUB" CR_APP=1 TRIG_HEAD=sha-aaa forge_pr_create T B main feat/x >/dev/null 2>&1
+assert_eq "seam-opened PR posts one trigger" "1" "$(trig_count)"
+if grep -qx '@coderabbitai review' "$TRIG_LOG"; then
+    pass "the posted body is '@coderabbitai review'"
+else
+    fail "trigger body" "got: $(cat "$TRIG_LOG")"
+fi
+if grep -qxF "acme/widget 42 sha-aaa" "$CR_TRIGGER_LEDGER_PATH"; then
+    pass "the head is recorded in the shared ledger (repo PR sha)"
+else
+    fail "ledger record" "got: $(cat "$CR_TRIGGER_LEDGER_PATH" 2>/dev/null)"
+fi
+
+# 2. same head again -> ledger no-op (this is what makes the seam and the two
+#    HIMMEL-1906 hooks double-post-safe: they share this ledger).
+FORGE=github GH_CMD="$TRIG_STUB" CR_APP=1 TRIG_HEAD=sha-aaa forge_pr_create T B main feat/x >/dev/null 2>&1
+assert_eq "a second call at the SAME head posts nothing" "1" "$(trig_count)"
+
+# 3. a new head -> posts again (the fix-round case HIMMEL-1906 exists for).
+FORGE=github GH_CMD="$TRIG_STUB" CR_APP=1 TRIG_HEAD=sha-bbb forge_pr_create T B main feat/x >/dev/null 2>&1
+assert_eq "a NEW head posts again" "2" "$(trig_count)"
+
+# 4. the advance arm: a body refresh on an existing PR at a new head (what
+#    graph-publish.sh / pr-open.sh do after pushing) triggers too.
+FORGE=github GH_CMD="$TRIG_STUB" CR_APP=1 TRIG_HEAD=sha-ccc forge_pr_set_body 42 T B >/dev/null 2>&1
+assert_eq "pr_set_body at a new head triggers (script-advanced PR)" "3" "$(trig_count)"
+
+# 5/6. disarmed repos post NOTHING — CR_PROFILE=none (the documented opt-out)
+#      and an adopter clone with no CodeRabbit App (cr-available.sh default).
+FORGE=github GH_CMD="$TRIG_STUB" CR_APP=1 CR_PROFILE=none TRIG_HEAD=sha-ddd forge_pr_create T B main feat/x >/dev/null 2>&1
+assert_eq "CR_PROFILE=none posts nothing" "3" "$(trig_count)"
+FORGE=github GH_CMD="$TRIG_STUB" CR_APP=0 TRIG_HEAD=sha-eee forge_pr_create T B main feat/x >/dev/null 2>&1
+assert_eq "an unarmed repo posts nothing" "3" "$(trig_count)"
+
+# 7. bitbucket is a structural no-op — CodeRabbit is GitHub-only, so the
+#    bitbucket backend carries no trigger at all.
+FORGE=bitbucket BITBUCKET_CMD="$BB_STUB" CR_APP=1 forge_pr_create T B main feat/x >/dev/null 2>&1
+assert_eq "bitbucket create posts no trigger" "3" "$(trig_count)"
+
+# 8. the create's stdout stays exactly the PR URL — the trigger's diagnostics
+#    go to stderr, so a caller parsing the URL is unaffected.
+assert_eq "pr_create stdout is still just the URL" "https://github.com/acme/widget/pull/42" \
+    "$(FORGE=github GH_CMD="$TRIG_STUB" CR_APP=1 TRIG_HEAD=sha-fff forge_pr_create T B main feat/x 2>/dev/null)"
 
 echo
 echo "===================================="

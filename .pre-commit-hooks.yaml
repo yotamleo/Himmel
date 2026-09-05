@@ -7,7 +7,7 @@
 # Consumer example (full snippet + luna's PR-lane regex:
 # docs/luna/pr-lane-guard.md):
 #
-#   - repo: https://github.com/yotamleo/Himmel
+#   - repo: https://github.com/yotamleo/himmel
 #     rev: <commit SHA>   # pin; bump with `pre-commit autoupdate --bleeding-edge`
 #     hooks:
 #       - id: pr-lane-isolation

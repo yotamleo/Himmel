@@ -9,6 +9,10 @@ $script:fails = 0
 function Pass([string]$m) { "PASS: $m" }
 function Fail([string]$m) { "FAIL: $m"; $script:fails++ }
 
+# Exercise the native ambient path by default even when this suite is invoked
+# from a live lane worker; the dedicated lane-config case sets it back.
+Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
+
 function Write-Note([string]$p) {
     Set-Content -LiteralPath $p -Encoding utf8 -Value @'
 ---
@@ -73,6 +77,34 @@ function Mark-Crystallized([string]$p) {
     [System.IO.File]::WriteAllText($p, (($out -join "`n") + "`n"), $enc)
 }
 
+# --- Case 0: proxied lane config defers to native-auth reheal -----------------
+$SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $SB -Force | Out-Null
+$note = Join-Path $SB 'note.md'; $tr = Join-Path $SB 't.jsonl'; $mark = Join-Path $SB 'marker.txt'
+Write-Note $note; Set-Content -LiteralPath $tr -Value '{}'
+New-Item -ItemType Directory -Path (Join-Path $SB 'home\.claude') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $SB 'lane-config') -Force | Out-Null
+$h0 = (Get-FileHash -LiteralPath $note).Hash
+$oldHome = $env:HOME; $oldUserProfile = $env:USERPROFILE
+$env:HOME = (Join-Path $SB 'home'); $env:USERPROFILE = (Join-Path $SB 'home')
+$env:CLAUDE_CONFIG_DIR = (Join-Path $SB 'lane-config')
+$env:CRYSTALLIZE_CLAUDE_BIN = $STUB; $env:STUB_MODE = 'success'; $env:CRYSTALLIZE_MARKER = $mark
+$env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids')
+$stderrFile = Join-Path $SB 'stderr.txt'
+& $PWSH -NoProfile -File $CRYS $note $tr 2> $stderrFile | Out-Null
+$rc0 = $LASTEXITCODE
+$env:HOME = $oldHome; $env:USERPROFILE = $oldUserProfile
+Remove-Item Env:\CLAUDE_CONFIG_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:\CRYSTALLIZE_MARKER -ErrorAction SilentlyContinue
+if ($rc0 -eq 0) { Pass 'lane-config: exits 0 for deferred synthesis' } else { Fail "lane-config: exit was $rc0" }
+if ((Get-FileHash -LiteralPath $note).Hash -eq $h0) { Pass 'lane-config: note stays byte-unchanged' } else { Fail 'lane-config: note changed despite deferral' }
+$nc = Get-Content -LiteralPath $note -Raw
+if ($nc -match '(?m)^crystallized: false$') { Pass 'lane-config: crystallized stays false for reheal' } else { Fail 'lane-config: crystallized flag changed' }
+if (-not (Test-Path $mark)) { Pass 'lane-config: claude was not launched' } else { Fail 'lane-config: claude launched into the proxy' }
+$stderrText = if (Test-Path -LiteralPath $stderrFile) { Get-Content -LiteralPath $stderrFile -Raw } else { '' }
+if ($stderrText -match 'crystallize-note: DEFERRED') { Pass 'lane-config: emits an explanatory deferral line' } else { Fail 'lane-config: no deferral message on stderr' }
+Remove-Item -LiteralPath $SB -Recurse -Force
+
 # --- Case 1: success — sections filled, crystallized true, identity preserved --
 $SB = Join-Path ([System.IO.Path]::GetTempPath()) ("cnt-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $SB -Force | Out-Null
@@ -82,11 +114,13 @@ $idBefore = Identity $note
 $envd = Join-Path $SB 'env.txt'
 $env:CRYSTALLIZE_CLAUDE_BIN = $STUB; $env:STUB_MODE = 'success'
 $env:CRYSTALLIZE_PID_DIR = (Join-Path $SB 'pids'); $env:CRYSTALLIZE_ENV_DUMP = $envd
+$env:ANTHROPIC_BASE_URL = 'http://ambient-proxy.invalid'
 # CRYSTALLIZE_NOW pins the stamp time (the script — not the stub — now owns the
 # flag + timestamp from the body diff, HIMMEL-590 T1d).
 $env:CRYSTALLIZE_NOW = '2026-06-28T12:00:00Z'
 Run-Crys $note $tr
 Remove-Item Env:\CRYSTALLIZE_NOW -ErrorAction SilentlyContinue
+Remove-Item Env:\ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue
 $nc = Get-Content -LiteralPath $note -Raw
 if ($nc -match '(?m)^crystallized: true$') { Pass 'success: crystallized: true set (by script, from body diff)' } else { Fail 'success: crystallized not flipped' }
 if ($nc -match 'Crystallized by stub') { Pass 'success: Summary rewritten' } else { Fail 'success: Summary not rewritten' }
@@ -95,6 +129,7 @@ if ((Identity $note) -eq $idBefore) { Pass 'success: identity frontmatter byte-s
 $ed = Get-Content -LiteralPath $envd -Raw
 if ($ed -match 'CLAUDE_END_SESSION_WIKI=0') { Pass 'recursion-guard: CLAUDE_END_SESSION_WIKI=0' } else { Fail 'recursion-guard: end-session-wiki env not set' }
 if ($ed -match 'HIMMEL_WHERE_ARE_WE=0') { Pass 'recursion-guard: HIMMEL_WHERE_ARE_WE=0 (HIMMEL-572 fold-in)' } else { Fail 'recursion-guard: where-are-we env not set' }
+if ($ed -match 'ANTHROPIC_BASE_URL=<unset>') { Pass 'native-auth pin: ambient ANTHROPIC_BASE_URL cleared before launch' } else { Fail 'native-auth pin: ambient ANTHROPIC_BASE_URL reached claude' }
 Remove-Item -LiteralPath $SB -Recurse -Force
 
 # --- Case 2: fail — note unchanged, crystallized stays false -----------------

@@ -106,7 +106,7 @@
       "minVersion": null,
       "bootstrap": false,
       "install": {
-        "linux": { "manager": "hint", "detail": "install gitleaks from its official release tarball, then re-run" },
+        "linux": { "manager": "ensure-tools" },
         "macos": { "manager": "brew", "pkg": "gitleaks" },
         "win32": { "manager": "winget", "id": "Gitleaks.Gitleaks" }
       }

@@ -26,6 +26,24 @@ FLOW_RUN_ROTATE_BYTES=10485760
 # twin. The classifier scans only the run-log tail.
 FLOW_RUN_TRUNCATION_SIGNATURE_RE='Background tasks still running.*terminating'
 
+# The ONE retryable-upstream signature list (HIMMEL-1152). A cadence leg that
+# dies on a transient Anthropic API failure — the 2026-07-17 harvest run died
+# on the literal line `API Error: Server error mid-response. The response above
+# may be incomplete.` after harvesting 7 clips — is worth re-invoking: every
+# pipeline stage is idempotent through its own markers (harvested_at:,
+# processed:, the _done/ move), so a re-invoke RESUMES instead of redoing.
+# Deliberately NARROW: the claude CLI's `API Error:` prefix must be on the
+# line, so ordinary log prose mentioning "overloaded" or a 500 cannot arm a
+# retry, and every other failure is treated as real and never retried. Runner
+# only — no TS consumer, so the twin does not mirror it.
+FLOW_RUN_TRANSIENT_SIGNATURE_RE='API Error:.*([Ss]erver error|[Oo]verloaded|mid-response|5[0-9][0-9])'
+
+# Cadence runners stamp this word into their log immediately before each
+# attempt, so the scan below reads ONLY the current attempt's output. Without
+# it, attempt 2's own (non-transient) failure would be judged against
+# attempt 1's leftover error line and burn the whole retry budget.
+FLOW_RUN_ATTEMPT_MARKER='cadence-attempt'
+
 _fr_now_utc() {
     date -u +%Y-%m-%dT%H:%M:%SZ
 }
@@ -92,8 +110,14 @@ flow_run_row_end() {
         "$(_fr_json_null_str "$note")"
 }
 
+# flow_run_classify <exit_code> [log_path] [extra_marker_re] [required_marker]
+# required_marker (HIMMEL-1716): when the leg's prompt asks the agent to print
+# a bare terminal marker ONLY on genuine completion (PIPELINE-LEG-DONE), a
+# zero exit with no such line in the log tail is a leg that parked, was
+# blocked on a prompt, or bailed early -- classify it `parked`, never
+# `complete`. A missing log counts as no marker. Truncation still wins.
 flow_run_classify() {
-    local exit_code="${1:-}" log_path="${2:-}" extra_marker_re="${3:-}"
+    local exit_code="${1:-}" log_path="${2:-}" extra_marker_re="${3:-}" required_marker="${4:-}"
     if [ "${exit_code:-0}" != "0" ]; then
         printf 'error\n'
         return 0
@@ -108,12 +132,51 @@ flow_run_classify() {
             return 0
         fi
     fi
+    if [ -n "$required_marker" ]; then
+        if [ -z "$log_path" ] || [ ! -f "$log_path" ] \
+            || ! tail -n 50 "$log_path" 2>/dev/null | tr -d '\r' | grep -Fxq -- "$required_marker"; then
+            printf 'parked\n'
+            return 0
+        fi
+    fi
     printf 'complete\n'
+}
+
+# flow_run_is_transient <exit_code> [log_path]
+# rc 0 -> the run FAILED and the current attempt's log carries the transient
+# upstream signature: the caller may retry it. rc 1 -> everything else,
+# including a zero exit, a missing/unreadable log, and a failure with no
+# signature. Fail-closed on purpose: no evidence is not a retry.
+flow_run_is_transient() {
+    local exit_code="${1:-}" log_path="${2:-}"
+    [ "${exit_code:-0}" != "0" ] || return 1
+    [ -n "$log_path" ] && [ -f "$log_path" ] || return 1
+    # Reset the buffer at every attempt marker, so what reaches grep is the
+    # text written after the LAST one (the whole log when a caller stamps no
+    # marker at all).
+    awk -v m="$FLOW_RUN_ATTEMPT_MARKER" '
+        index($0, m) { buf = ""; next }
+        { buf = buf $0 "\n" }
+        END { printf "%s", buf }
+    ' "$log_path" 2>/dev/null | grep -Eq "$FLOW_RUN_TRANSIENT_SIGNATURE_RE"
 }
 
 flow_run_append() {
     local line="${1:-}" path dir size
     path=$(flow_run_ledger_path)
+    # HIMMEL-2241: a MISSED test redirect must fail LOUD, never silently
+    # pollute production telemetry. run-shell-tests.sh exports
+    # HIMMEL_SUITE_LOCK_HELD for the whole suite run, so a write reaching here
+    # with the marker set and NO explicit override is a fixture spawning a real
+    # wrapper that fell back to ~/.himmel/flow-runs.jsonl -- the shape that
+    # paged HimmelFlowRunError for runs that never happened. Quarantine the row
+    # in the suite's own temp root and say so on stderr. A genuine flow outside
+    # any suite has the marker unset and is untouched, and a fixture that DID
+    # redirect never reaches this branch.
+    if [ -n "${HIMMEL_SUITE_LOCK_HELD:-}" ] && [ -z "${HIMMEL_FLOW_RUNS_LEDGER:-}" ]; then
+        path="${TMPDIR:-/tmp}/flow-runs-unredirected.jsonl"
+        printf '[flow-run-ledger] HIMMEL-2241 WARN: shell suite running (HIMMEL_SUITE_LOCK_HELD set) with no HIMMEL_FLOW_RUNS_LEDGER override; row quarantined in %s instead of the production ledger. Export HIMMEL_FLOW_RUNS_LEDGER to a scratch path in the fixture that spawned this wrapper.\n' "$path" >&2
+    fi
     dir=$(dirname "$path")
     [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || true
     if [ -f "$path" ]; then
@@ -164,6 +227,14 @@ if [ "$_fr_is_main" = "1" ]; then
             shift
             flow_run_classify "$@"
             ;;
+        # Unlike its siblings this verb answers through the EXIT CODE (the
+        # generated .bat reads it with `if errorlevel 1`), so it exits here
+        # instead of falling through to the unconditional `exit 0` below.
+        --is-transient)
+            shift
+            flow_run_is_transient "$@" && exit 0
+            exit 1
+            ;;
         --append-start)
             shift
             _fr_emit_append_start "$@"
@@ -173,7 +244,7 @@ if [ "$_fr_is_main" = "1" ]; then
             _fr_emit_append_end "$@"
             ;;
         *)
-            echo "usage: flow-run-ledger.sh (--emit-start|--emit-end|--classify|--append-start|--append-end) ..." >&2
+            echo "usage: flow-run-ledger.sh (--emit-start|--emit-end|--classify|--is-transient|--append-start|--append-end) ..." >&2
             exit 2
             ;;
     esac

@@ -1,6 +1,6 @@
 # telegram-himmel
 
-`[yotamleo fork]` of `telegram@claude-plugins-official` **v0.0.6**.
+`[yotamleo fork]` of `telegram@claude-plugins-official` **v0.0.7**.
 
 ## Why this fork
 
@@ -13,7 +13,10 @@ out of remote Telegram.
 
 ## The change
 
-One behavioural delta vs upstream: the stale-kill, the `bot.pid` write, and
+The first of three live deltas, all described below: two behavioural (carried as
+**four** `[telegram-himmel fork]` hunks in `server.ts` — grep that marker, it is
+the source of truth) and one packaging in `package.json`, which carries no
+marker. The stale-kill, the `bot.pid` write, and
 the poller IIFE are gated behind `TELEGRAM_OWN_POLLER=1`. Only the designated
 owner session polls; all other sessions still load the MCP and keep every
 outbound tool (`reply`, `react`, `download_attachment` via `bot.api`), but
@@ -29,6 +32,27 @@ TELEGRAM_OWN_POLLER=1 claude "<prompt>" --channels plugin:telegram-himmel@himmel
 
 Disable upstream `telegram@claude-plugins-official` while this fork is
 enabled, or upstream's ungated poller re-introduces the steal.
+
+A second behavioural delta, added at the 0.0.7 re-sync (HIMMEL-1858): upstream
+gates the stale-poller `SIGTERM` on `execFileSync('ps', …, '-o', 'args=')` inside
+one broad try/catch. Git Bash's MSYS `ps` does not support `-o args=` and cannot
+see native PIDs, so on Windows it *throws*, the catch swallows it, the kill is
+skipped — and `bot.pid` is overwritten regardless, leaving two live getUpdates
+consumers. The fork defaults the kill to ON and gives the `ps` probe its own
+try/catch, so only a `ps` that actually ran may suppress it. Where `ps` works,
+upstream's PID-recycling protection is unchanged.
+
+One packaging delta: `package.json`'s `start` skips `bun install` when
+`node_modules` already exists (upstream reinstalls every launch). Upstream's
+`1>&2` redirect is kept — `bun install` on stdout would corrupt the MCP stream.
+
+The fork also carried a photo-handling delta until the 0.0.7 re-sync: photos
+recorded `file_id` for lazy download (HIMMEL-266, filed because an eager
+download inside the grammy handler stalled the poll loop for N×60s on a batch
+of N photos). Upstream 0.0.7 downloads eagerly but only *after* the gate
+approves, and surfaces `meta.image_path`; that behaviour was adopted by
+operator decision (HIMMEL-1858) and the himmel delta dropped. A photo batch
+from an allowlisted sender can still serialize downloads in the poll loop.
 
 ## Opt-in MCP launch (HIMMEL-591)
 
@@ -55,10 +79,17 @@ in `/mcp` — expected.
 
 ## Upstream-watch protocol
 
-Pinned to upstream **v0.0.6**. On an upstream bump:
+Pinned to upstream **v0.0.7**. On an upstream bump:
 1. Diff new upstream `server.ts` against this vendored copy.
-2. Re-apply the three `TELEGRAM_OWN_POLLER` edits (search `[telegram-himmel fork]`).
-3. Bump the pinned version here + re-run `tests/test-telegram-poller-gate.sh`.
+2. Re-apply **all four** `[telegram-himmel fork]` edits — search that marker, do
+   not count from memory: the three `TELEGRAM_OWN_POLLER` hunks (the const, the
+   owner-only stale-kill + `bot.pid` write, the poller IIFE) **and** the
+   `looksLikeServer` ps-fallback. Re-check the count against the marker after
+   every bump; the fourth was added at 0.0.7 and a re-sync that reapplies only
+   the "three" silently reintroduces the Windows two-poller bug.
+3. Bump the pinned version here + re-run BOTH `tests/test-telegram-poller-gate.sh`
+   (behavioural, includes the live reap case) and `bash scripts/plugin-test.sh
+   telegram-himmel` (code-shape guards for all four edits).
 
 The `check-telegram-fork-drift` pre-commit hook (scripts/hooks/) flags when
 the installed upstream cache no longer matches `UPSTREAM_PIN`.

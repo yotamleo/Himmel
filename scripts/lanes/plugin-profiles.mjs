@@ -8,6 +8,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homedir } from 'node:os';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REGISTRY = process.env.PLUGIN_PROFILES_REGISTRY || join(SCRIPT_DIR, 'plugin-profiles.json');
@@ -19,6 +20,30 @@ const REGISTRY = process.env.PLUGIN_PROFILES_REGISTRY || join(SCRIPT_DIR, 'plugi
 // id is emitted unquoted into the spawn-glm cap-respawn command line. Every real
 // plugin id (see catalog) matches this.
 const ID_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/;
+
+// mcpCatalog url/command/args credential-literal guard (glm-3): unlike env/
+// headers (which must be a BARE $VAR reference, nothing else — see
+// validateRegistry), these fields are ordinary invocation literals, so a
+// plain value ("npx", "http://localhost:8181/mcp", a filesystem path) is
+// fine. What is NOT fine: a $-token that isn't a clean bare reference (a
+// stray "${...}" or "$1foo" reads as broken/unintended interpolation, not a
+// real var — flag it), or a substring matching a HIGH-SIGNAL secret prefix
+// (API-key/token prefix, a Bearer header). Deliberately NOT a generic
+// base64/hex-blob heuristic: `[A-Za-z0-9+/]{32,}` false-positives on an
+// ordinary POSIX path (`/` is in the class and nothing in a path breaks the
+// run) — exactly the shape T3.1 will populate command/args with for a local
+// stdio server. This validator's job is the $VAR contract, not entropy
+// detection; the registry's authoritative leak gate is the pre-push/gitleaks
+// scan (spec'd for T3.1), so a weak heuristic here buys little and costs a
+// false rejection of ordinary paths. Returns a problem string, or null if clean.
+const SECRET_SHAPE_RE = /sk-[A-Za-z0-9]{10,}|gh[pousr]_[A-Za-z0-9]{10,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{12,}|Bearer\s+\S+/;
+function credentialLiteralIssue(value) {
+  for (const token of value.match(/\$\w*/g) ?? []) {
+    if (!/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(token)) return `contains a malformed $-interpolation "${token}" (an embedded $VAR is fine, but this token isn't one — expected $ followed by a variable name)`;
+  }
+  if (SECRET_SHAPE_RE.test(value)) return 'looks like it contains an embedded credential literal';
+  return null;
+}
 
 export function loadRegistry(path = REGISTRY) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -83,6 +108,76 @@ export function readEnabledPluginIds(home, cwd, configDir) {
   return [...ids];
 }
 
+// Shared field-spec helpers (HIMMEL-2154): floor/catalog/base/profile.enable/
+// profile.drop all validate the same two facts about an id list — each id
+// matches ID_RE, and each id is a catalog member — plus an optional
+// no-duplicates check. Pulling that out here is what collapses validateRegistry's
+// complexity; the per-field CALL SITES below still decide which checks apply and
+// with what wording, so every existing rejection case keeps its exact message.
+function validateIdList(errors, ids, catalogSet, label, missingSuffix = '') {
+  for (const id of ids) {
+    if (!ID_RE.test(id)) errors.push(`${label} id "${id}" is not a valid plugin@marketplace id`);
+    if (!catalogSet.has(id)) errors.push(`${label} id "${id}" is missing from catalog${missingSuffix}`);
+  }
+}
+function checkNoDuplicates(errors, ids, message) {
+  if (ids.length !== new Set(ids).size) errors.push(message);
+}
+
+// One profile entry's validation (enable/drop/disallowedTools + the "bare"
+// floor-only invariant). Pulled out of validateRegistry's profiles loop for
+// the same reason as validateIdList above: this body repeats once per
+// profile in the registry, so extracting it is what collapses the parent's
+// complexity, not a behavior change.
+function validateProfileSpec(errors, name, spec, catalogSet, floorSet) {
+  if (spec === null) {
+    // Only "operator" may be null — a null on any other profile silently
+    // disables its injection, so reject it here (the operator-null check
+    // above already validates operator itself).
+    if (name !== 'operator') errors.push(`profile "${name}" must be { enable: [...] } — only "operator" may be null (the never-injected sentinel)`);
+    return;
+  }
+  if (typeof spec !== 'object' || !Array.isArray(spec.enable)) { errors.push(`profile "${name}" must be null or { enable: [...] }`); return; }
+  if (name === 'bare') {
+    // ENFORCE the floor-only promise, not just document it (codex-adv-2):
+    // resolveProfile skips the base step for "bare" by name, so a non-empty
+    // enable/drop/disallowedTools here would silently grant bare a
+    // persistent capability its whole reason to exist says it shouldn't
+    // have. --add-plugins is the only sanctioned way to add anything.
+    if (spec.enable.length !== 0) errors.push('profile "bare" enable must be empty — bare is floor-only by construction; add plugins per-dispatch via --add-plugins, never persistently in the registry');
+    if (spec.drop !== undefined) errors.push('profile "bare" must not declare drop — bare already resolves to floor-only, a drop list is meaningless there');
+    if (spec.disallowedTools !== undefined) errors.push('profile "bare" must not declare disallowedTools — bare has no base capability to restrict');
+  }
+  validateIdList(errors, spec.enable, catalogSet, `profile "${name}" enable`);
+  if (spec.drop !== undefined) {
+    if (!Array.isArray(spec.drop)) {
+      errors.push(`profile "${name}" drop must be an array`);
+    } else {
+      validateIdList(errors, spec.drop, catalogSet, `profile "${name}" drop`);
+      const enableSet = new Set(spec.enable);
+      for (const id of spec.drop) {
+        if (floorSet.has(id)) errors.push(`profile "${name}" drop id "${id}" is a floor id (the floor is inviolable)`);
+        if (enableSet.has(id)) errors.push(`profile "${name}" drop id "${id}" is also in enable (drop and enable are mutually exclusive)`);
+      }
+    }
+  }
+  // disallowedTools is SCHEMA-ONLY here — nothing consumes it yet. The
+  // producer is T2.3 (a --disallowedTools CLI flag threaded through the
+  // claudex builder via a second resolver export, deliberately NOT by
+  // widening resolveProfile's return shape — that would break pinned
+  // spawn-glm.test.ts literals and touches a file another session owns).
+  if (spec.disallowedTools !== undefined) {
+    const toolsOk = Array.isArray(spec.disallowedTools) && spec.disallowedTools.every((t) => typeof t === 'string' && t.length > 0);
+    if (!toolsOk) errors.push(`profile "${name}" disallowedTools must be an array of non-empty strings`);
+  }
+  // contextBudget (HIMMEL-2189) — the first-turn token ceiling the measured
+  // probe asserts against, so it is REQUIRED on every non-operator profile
+  // (a missing budget would let a lane's context footprint grow unnoticed).
+  if (!Number.isInteger(spec.contextBudget) || spec.contextBudget <= 0) {
+    errors.push(`profile "${name}" contextBudget must be a positive integer`);
+  }
+}
+
 // Registry-integrity check (design follow-up: a pre-commit floor-present guard).
 // Returns an array of human-readable problems ([] === valid). Kept separate from
 // resolveProfile so a resolve stays cheap and a validator can gate the JSON.
@@ -102,29 +197,77 @@ export function validateRegistry(registry) {
   if (!catalogOk) errors.push('catalog must be a non-empty array');
   if (!profilesOk) errors.push('profiles must be a non-null object');
   const catalogSet = new Set(catalogOk ? catalog : []);
-  if (floorOk) for (const id of floor) {
-    if (!ID_RE.test(id)) errors.push(`floor id "${id}" is not a valid plugin@marketplace id`);
-    if (!catalogSet.has(id)) errors.push(`floor id "${id}" is missing from catalog (a complete map cannot guarantee it)`);
-  }
+  if (floorOk) validateIdList(errors, floor, catalogSet, 'floor', ' (a complete map cannot guarantee it)');
   if (catalogOk) {
-    for (const id of catalog) if (!ID_RE.test(id)) errors.push(`catalog id "${id}" is not a valid plugin@marketplace id`);
-    if (catalog.length !== catalogSet.size) errors.push('catalog contains duplicate ids');
+    validateIdList(errors, catalog, catalogSet, 'catalog');
+    checkNoDuplicates(errors, catalog, 'catalog contains duplicate ids');
   }
+  const floorSet = new Set(floorOk ? floor : []);
+  const VAR_RE = /^\$[A-Za-z_][A-Za-z0-9_]*$/;
+
+  // base is OPTIONAL (absent -> treated as [] at resolve time, which fails in
+  // the SAFE direction — fewer plugins on): a custom registry that predates
+  // this field must not hard-fail on upgrade. When PRESENT it is fully
+  // validated, same rigor as floor/catalog.
+  const base = registry?.base;
+  const baseOk = base === undefined || Array.isArray(base);
+  if (!baseOk) errors.push('base must be an array');
+  if (baseOk && base !== undefined) {
+    validateIdList(errors, base, catalogSet, 'base');
+    checkNoDuplicates(errors, base, 'base contains duplicate ids');
+  }
+
+  // mcpCatalog is structure-only in this task (populating it is T3.1) and also
+  // OPTIONAL (absent -> treated as {}, same upgrade-safety reasoning as base).
+  // When present, validate the shape and the credential-literal guard: env/
+  // headers values must be a BARE $VAR reference (never a literal — those two
+  // fields exist solely to carry secrets); url/command/args are ordinary
+  // literals (a plain URL or command is fine) but may not embed a malformed
+  // $-interpolation or an obvious secret shape — the registry ships publicly.
+  const mcpCatalog = registry?.mcpCatalog;
+  const mcpOk = mcpCatalog === undefined || (mcpCatalog !== null && typeof mcpCatalog === 'object' && !Array.isArray(mcpCatalog));
+  if (!mcpOk) errors.push('mcpCatalog must be a non-null object');
+  if (mcpOk && mcpCatalog !== undefined) {
+    for (const [id, entry] of Object.entries(mcpCatalog)) {
+      if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) { errors.push(`mcpCatalog entry "${id}" must be an object`); continue; }
+      for (const field of ['env', 'headers']) {
+        const map = entry[field];
+        if (map === undefined) continue;
+        if (map === null || typeof map !== 'object' || Array.isArray(map)) { errors.push(`mcpCatalog entry "${id}" ${field} must be an object`); continue; }
+        for (const [k, v] of Object.entries(map)) {
+          if (typeof v !== 'string' || !VAR_RE.test(v)) errors.push(`mcpCatalog entry "${id}" ${field}.${k} must be a $VAR reference (e.g. "$TOKEN"), never a literal`);
+        }
+      }
+      for (const field of ['url', 'command']) {
+        const v = entry[field];
+        if (v === undefined) continue;
+        if (typeof v !== 'string') { errors.push(`mcpCatalog entry "${id}" ${field} must be a string`); continue; }
+        const issue = credentialLiteralIssue(v);
+        if (issue) errors.push(`mcpCatalog entry "${id}" ${field} ${issue}`);
+      }
+      if (entry.args !== undefined) {
+        if (!Array.isArray(entry.args) || !entry.args.every((a) => typeof a === 'string')) {
+          errors.push(`mcpCatalog entry "${id}" args must be an array of strings`);
+        } else {
+          entry.args.forEach((a, i) => {
+            const issue = credentialLiteralIssue(a);
+            if (issue) errors.push(`mcpCatalog entry "${id}" args[${i}] ${issue}`);
+          });
+        }
+      }
+    }
+  }
+
   if (profilesOk) {
     if (!Object.hasOwn(profiles, 'operator') || profiles.operator !== null) errors.push('profile "operator" must be present and null (the never-injected sentinel)');
+    // "bare" itself is OPTIONAL (glm-1): a registry without it simply doesn't
+    // offer that profile, and resolveProfile already fails closed on an
+    // unknown name — nothing is lost, and requiring it would hard-fail the
+    // exact pre-existing custom registries base/mcpCatalog were made optional
+    // for. What must not exist is a LYING bare — that invariant is enforced
+    // below, unconditionally, whenever "bare" IS present.
     for (const [name, spec] of Object.entries(profiles)) {
-      if (spec === null) {
-        // Only "operator" may be null — a null on any other profile silently
-        // disables its injection, so reject it here (the operator-null check
-        // above already validates operator itself).
-        if (name !== 'operator') errors.push(`profile "${name}" must be { enable: [...] } — only "operator" may be null (the never-injected sentinel)`);
-        continue;
-      }
-      if (typeof spec !== 'object' || !Array.isArray(spec.enable)) { errors.push(`profile "${name}" must be null or { enable: [...] }`); continue; }
-      for (const id of spec.enable) {
-        if (!ID_RE.test(id)) errors.push(`profile "${name}" enable id "${id}" is not a valid plugin@marketplace id`);
-        if (!catalogSet.has(id)) errors.push(`profile "${name}" enable id "${id}" is missing from catalog`);
-      }
+      validateProfileSpec(errors, name, spec, catalogSet, floorSet);
     }
   }
   return errors;
@@ -133,10 +276,17 @@ export function validateRegistry(registry) {
 // Resolve a profile into a settings object, or null for the operator sentinel
 // (never injected — that IS ~/.claude). The returned map is COMPLETE: every
 // catalog id is present (false unless enabled), so injection is correct whether
-// Claude Code MERGES or REPLACES enabledPlugins. Floor is forced true LAST so
-// nothing — a mis-declared enable, an overlay — can drop it (design Rule 1).
-// `opts.addPlugins` is the per-dispatch overlay (design Rule 4): task-specific
-// plugins enabled over the base for this one dispatch.
+// Claude Code MERGES or REPLACES enabledPlugins. Resolution order:
+//   0. deny-by-default: catalog UNION opts.installed all false
+//   1. registry.base on (skipped for "bare" — see below)
+//   2. profile.drop off
+//   3. profile.enable on
+//   4. opts.addPlugins (the per-dispatch --add-plugins overlay) on
+//   5. registry.floor on, LAST
+// Floor is forced true LAST so nothing — a mis-declared drop, a bad overlay —
+// can drop it (design Rule 1). "bare" is name-recognized (like operator) and
+// skips step 1: it resolves to floor-only-plus-overlay so a dispatch can
+// compose a one-off surface purely from --add-plugins with no registry entry.
 export function resolveProfile(registry, name, opts = {}) {
   const profiles = registry.profiles ?? {};
   // Own-property test, NOT `name in profiles` — `in` walks the prototype chain,
@@ -174,7 +324,7 @@ export function resolveProfile(registry, name, opts = {}) {
   }
   const spec = profiles[name];
 
-  // 1. deny-by-default baseline = the checked-in catalog UNION the caller's live
+  // 0. deny-by-default baseline = the checked-in catalog UNION the caller's live
   //    plugin universe (opts.installed). The static catalog alone cannot enforce
   //    deny-by-default across version skew: a plugin installed on this machine but
   //    absent from the catalog would go unmentioned and INHERIT its enabled state,
@@ -184,11 +334,18 @@ export function resolveProfile(registry, name, opts = {}) {
   const enabledPlugins = {};
   for (const id of (registry.catalog ?? [])) enabledPlugins[id] = false;
   for (const id of (opts.installed ?? [])) enabledPlugins[id] = false;
+  // 1. registry.base on — skipped for "bare" (name-recognized): folding base in
+  //    for bare would duplicate it as a drop list that rots the moment base
+  //    grows, and "bare" would quietly stop meaning bare.
+  if (name !== 'bare') {
+    for (const id of (registry.base ?? [])) enabledPlugins[id] = true;
+  }
   // Defensive: a malformed non-operator null/other spec yields the lean floor
   // (Array.isArray guard), never a crash or a silent no-inject.
-  for (const id of (Array.isArray(spec?.enable) ? spec.enable : [])) enabledPlugins[id] = true; // 2. profile base on
-  for (const id of addPlugins) enabledPlugins[id] = true;                 // 3. per-dispatch overlay on
-  for (const id of (registry.floor ?? [])) enabledPlugins[id] = true;     // 4. floor forced on (inviolable)
+  for (const id of (Array.isArray(spec?.drop) ? spec.drop : [])) enabledPlugins[id] = false;   // 2. profile.drop off
+  for (const id of (Array.isArray(spec?.enable) ? spec.enable : [])) enabledPlugins[id] = true; // 3. profile.enable on
+  for (const id of addPlugins) enabledPlugins[id] = true;                 // 4. per-dispatch overlay on
+  for (const id of (registry.floor ?? [])) enabledPlugins[id] = true;     // 5. floor forced on, LAST (inviolable)
   return { enabledPlugins };
 }
 
@@ -240,7 +397,18 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
       if (argv[i + 1] === undefined) die(2, 'plugin-profiles: --add-plugins requires a value');
       addPlugins.push(...parseAddPlugins(argv[++i]));
     }
-    const settings = resolveProfileByName(name, { addPlugins });
+    // opts.installed = the LIVE plugin universe (CR, codex-adv-1): without it the
+    // emitted map denies only catalogued ids, so a plugin enabled on this machine
+    // but absent from catalog goes unmentioned and inherits its lower-layer
+    // `true` under merge semantics — the exact leak "bare" promises floor-only
+    // freedom from. readEnabledPluginIds already fails closed on an unparseable
+    // settings layer, so this CLI stays fail-closed too. Pass CLAUDE_CONFIG_DIR
+    // (glm-2): a child reading a non-default config dir has a different
+    // user-scope layer, so skipping it would miss plugins enabled there —
+    // the same leak class, just via a different layer. undefined falls back
+    // to <home>/.claude, the existing behaviour.
+    const installed = readEnabledPluginIds(homedir(), process.cwd(), process.env.CLAUDE_CONFIG_DIR);
+    const settings = resolveProfileByName(name, { addPlugins, installed });
     if (settings === null) process.exit(0); // operator: nothing to inject
     process.stdout.write(JSON.stringify(settings) + '\n');
   } catch (e) {

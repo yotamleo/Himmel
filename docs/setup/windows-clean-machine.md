@@ -5,7 +5,7 @@ full himmel dev machine — base toolchain, himmel + luna, ported credentials,
 the delegation-lane fleet (hermes, codex, copilot, antigravity, ollama, GLM),
 and always-on hardening (no sleep, auto-logon) — **driven entirely over SSH
 from an existing himmel machine**. First executed 2026-07-10 against a clean
-ASUS laptop (`win2`); every gotcha below was hit for real on that run.
+ASUS laptop; every gotcha below was hit for real on that run.
 
 Relationship to [`new-machine.md`](new-machine.md): that doc is the canonical
 per-tool reference (what each tool is for, .env variable walkthrough, hook
@@ -24,7 +24,7 @@ Prereq on target (one-time, physical/RDP): Settings → Apps → Optional featur
 
 1. **Generate a dedicated keypair on the source** and add the pubkey on the
    target. ⚠️ **Copy the pubkey via a file transfer, not by re-typing or
-   chat-pasting** — on the first win2 run a *single base64 character* got
+   chat-pasting** — on the first run a *single base64 character* got
    corrupted in transit and auth failed. Diagnose exactly this with
    fingerprints:
 
@@ -48,7 +48,7 @@ Prereq on target (one-time, physical/RDP): Settings → Apps → Optional featur
 3. **Source-side `~/.ssh/config`:**
 
    ```
-   Host win2
+   Host target
        HostName <target-ip>
        User <target-user>
        Port 22
@@ -59,7 +59,7 @@ Prereq on target (one-time, physical/RDP): Settings → Apps → Optional featur
    POSIX-ish silently degrades. Invoke PowerShell explicitly on every call:
 
    ```bash
-   ssh win2 "powershell -NoProfile -Command \"...\""
+   ssh target "powershell -NoProfile -Command \"...\""
    ```
 
 5. **Make sshd survive reboots** (on target): `Set-Service sshd -StartupType Automatic`.
@@ -87,9 +87,9 @@ Gotchas hit on the first run:
   means NO Python. Install `Python.Python.3.12` explicitly; verify
   `python --version` prints a real version.
 - **Fresh-session rule**: PATH edits from installers are invisible to the
-  session that ran them. Each new `ssh win2 ...` call is a fresh session —
+  session that ran them. Each new `ssh target ...` call is a fresh session —
   structure multi-step installs as separate ssh calls, not one mega-session.
-- **`winget upgrade --all` can break winget itself mid-process**: on the win2
+- **`winget upgrade --all` can break winget itself mid-process**: on that
   run, a full upgrade pass invalidated the `winget.exe` WindowsApps alias for
   the *running* process (`Access is denied` on the next invocation). A fresh
   session was fine. Don't chain `winget upgrade --all` and more winget calls
@@ -99,8 +99,8 @@ Gotchas hit on the first run:
 
 ```bash
 # gh: pipe the oauth token source→target (never lands on disk in transit)
-gh auth token | ssh win2 "gh auth login --with-token"
-ssh win2 "git config --global user.name <name> && git config --global user.email <email> && gh auth setup-git"
+gh auth token | ssh target "gh auth login --with-token"
+ssh target "git config --global user.name <name> && git config --global user.email <email> && gh auth setup-git"
 ```
 
 `gh auth setup-git` matters: unattended git over HTTPS fails later on a stale
@@ -122,7 +122,7 @@ credential helper without it.
    the public name gives you a stale, differently-numbered history. Check the
    source machine's `git remote -v` and clone **that** URL.
 2. `git config --global core.longpaths true` **before** cloning big vaults —
-   the luna clone on win2 finished but **checkout failed** ("unable to
+   the luna clone on the target finished but **checkout failed** ("unable to
    checkout working tree") until longpaths was on; recover an already-cloned
    vault with `git checkout -f HEAD`.
 3. Run the full machine setup **detached** so an ssh drop doesn't kill it,
@@ -217,7 +217,7 @@ Auto-logon (so scheduled `claude` relaunches get a desktop session):
 
 ## Verification checklist
 
-- [ ] `ssh win2 "powershell -NoProfile -Command hostname"` answers
+- [ ] `ssh target "powershell -NoProfile -Command hostname"` answers
 - [ ] `node scripts/jira/dist/index.js list` returns issues (proves node build + .env)
 - [ ] `pre-commit --version` + hooks installed in himmel clone
 - [ ] `rtk --version`

@@ -47,12 +47,60 @@ esac
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
 [ -n "$cmd" ] || exit 0
 
-# Word-boundary `graphify` match (a path-invoked `.../graphify` still matches;
-# `mygraphify` / `graphifyx` do not). Pad so leading/trailing boundaries work.
-case " $cmd " in
-    *[!A-Za-z0-9_]graphify[!A-Za-z0-9_]*) ;;
-    *) exit 0 ;;
-esac
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# COMMAND-POSITION `graphify` match (HIMMEL-1180), not "the word appears
+# anywhere". The old word-boundary check below matched a bare mention
+# ANYWHERE in the command text (`grep -rn graphify .` or a reference left
+# over after an unrelated `cd` both tripped it, HIMMEL-1168), which is a
+# false-trip source, not a security property this hook actually needs -
+# the real decision is delegated to graphify-fence.sh below regardless.
+# Anchor to command position instead, sharing the SAME wrapper/assignment
+# grammar block-destructive-commands.sh uses (HIMMEL-851: sudo / env / cmd
+# [/switches] /c / powershell|pwsh [-flags] -c), so a wrapped invocation
+# (`env FOO=1 graphify ...`, `sudo graphify ...`) still matches while an
+# unrelated mention does not. Residual (accepted,
+# HIMMEL-1180): a quoted-payload wrapper (`bash -c "graphify ..."`) is not
+# unwrapped HERE - same documented HIMMEL-851 gap, proportionate for a hook
+# guarding accidental agent egress rather than an adversary; graphify-fence.sh
+# does its own bash -c unwrap for anything that DOES reach it. CR round 2
+# (codex-2, suggestion): for the same "not a general parser" reason, this
+# regex is not quote-aware either - a literal `; graphify ...` inside a
+# quoted argument (e.g. `printf '; graphify x'`) can spuriously look like a
+# new command-position clause and route to the fence. Accepted: an
+# over-invocation of the fence on data that merely CONTAINS graphify-shaped
+# text is a false-trip in the OPPOSITE direction from HIMMEL-1180's actual
+# problem (over-blocking noise on real graphify text vs. an unnecessary
+# fence call on a rare quoted string), and the fence itself still evaluates
+# correctly - it just runs slightly more often than the ideal.
+# shellcheck source=../guardrails/lib.sh
+# shellcheck disable=SC1091
+if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
+    echo "block-graphify-egress: cannot source guardrails/lib.sh — refusing to evaluate" >&2
+    exit 2
+fi
+guard_cmdpos_grammar
+# CR round 1 (codex-1): the shared CMDPOS wrapper set (sudo/env/cmd/
+# powershell|pwsh) does not include `timeout` -- block-destructive-
+# commands.sh never wrapped it either (grep its own source: absent). Unlike
+# the accepted bash -c residual above, `timeout 10 graphify ...` is NOT a
+# quoted-payload case, and the OLD naive substring match DID catch it -- so
+# leaving it out here would be a real regression, not the same accepted gap.
+# CR round 2 (codex-1): same shape for the TRANSPARENT no-argument wrappers
+# `command`/`exec`/`builtin`/`nohup`/`time`/`nice` -- graphify-fence.sh's own
+# classify_clause already treats these as pass-through (HIMMEL-621), the
+# shared CMDPOS never did, and the old substring match caught them too.
+# Rebuild CMDPOS LOCALLY with both alternatives spliced into the same
+# wrapper loop, reusing the EXEPFX/ASSIGN pieces guard_cmdpos_grammar
+# already set -- kept local to this hook rather than folded into the shared
+# function, since widening block-destructive-commands.sh's own grammar is a
+# bigger, separately-reviewed change against its own 1000+-case suite, not
+# something this ticket's diff should risk.
+CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|timeout([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?))*[[:space:]]+[^-[:space:]][^[:space:]]*|command|exec|builtin|nohup|time|nice|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
+cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;')
+if ! printf '%s' "$cmd_lc" | grep -Eq "${CMDPOS}graphify(\.exe)?([^[:alnum:]_.-]|\$)"; then
+    exit 0
+fi
 
 # Tool-call cwd (HIMMEL-779): the command's cwd (.tool_input.cwd) is where the
 # agent will actually run it; this hook process's own $PWD is the project root
@@ -62,7 +110,6 @@ esac
 # project root and miss (fail-open). Absent on payloads that carry no cwd.
 tool_cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FENCE="$SCRIPT_DIR/../guardrails/graphify-fence.sh"
 [ -f "$FENCE" ] || exit 0   # fence not installed -> do not block
 

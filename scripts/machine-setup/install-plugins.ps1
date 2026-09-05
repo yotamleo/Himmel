@@ -30,6 +30,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = Resolve-Path (Join-Path $ScriptDir '..\..')
 
@@ -99,8 +105,12 @@ foreach ($name in $cfg.extraKnownMarketplaces.PSObject.Properties.Name) {
 # known_marketplaces.json) directly in the scope's settings file, for every
 # template entry flagged autoUpdate. Patch only entries already registered there,
 # so a marketplace-name vs template-key mismatch can't create an orphan entry.
+# HIMMEL-2353: honor $env:CLAUDE_CONFIG_DIR like the sibling
+# reconcile-enabled-plugins.ps1:69 idiom — a hermetic-test seam, not a
+# per-call-site flag (a bare $HOME here is what let a test suite reach the
+# operator's real settings.json).
 $settingsFile = switch ($Scope) {
-    'user'    { Join-Path $HOME '.claude\settings.json' }
+    'user'    { $cfgDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }; Join-Path $cfgDir 'settings.json' }
     'project' { Join-Path $PWD.Path '.claude\settings.json' }
     'local'   { Join-Path $PWD.Path '.claude\settings.local.json' }
 }
@@ -129,9 +139,35 @@ foreach ($name in $autoNames) {
     # 5.1 run would corrupt the operator's real settings.json. WriteAllText with
     # UTF8Encoding($false) is BOM-free on both; the temp+move mirrors the bash
     # twin's crash-safety (-Depth 100 covers settings.json's nesting).
-    $tmp = "$settingsFile.autoupdate.tmp"
-    [System.IO.File]::WriteAllText($tmp, ($settings | ConvertTo-Json -Depth 100), (New-Object System.Text.UTF8Encoding $false))
-    Move-Item -Force -LiteralPath $tmp -Destination $settingsFile
+    # HIMMEL-2324: an unpredictable suffix, not the fixed "$settingsFile.autoupdate.tmp"
+    # — a fixed name lets anyone with write access to this directory pre-plant
+    # a symlink/reparse point there before we get here, so the write below (or
+    # the Move-Item) lands through it. GetRandomFileName() keeps the temp in
+    # the SAME directory as $settingsFile (Move-Item stays a same-volume
+    # rename) and makes the path un-guessable — pre-planting is infeasible —
+    # but a name alone is not exclusive-create: it's what closes the hole
+    # together with FileMode.CreateNew below (CR round 1, codex-1: WriteAllText
+    # creates-or-TRUNCATES and follows a reparse point if one exists at $tmp).
+    # CreateNew throws if anything already exists at the path, including a
+    # reparse point — the real O_EXCL equivalent.
+    $tmp = "$settingsFile.autoupdate." + [System.IO.Path]::GetRandomFileName()
+    $bytes = (New-Object System.Text.UTF8Encoding $false).GetBytes(($settings | ConvertTo-Json -Depth 100))
+    # HIMMEL-2324 (CR round 7, codex-8): the create+write+move used to run with
+    # no catch at all -- under this script's $ErrorActionPreference = Stop, a
+    # Write or Move-Item failure did not just leak $tmp, it ABORTED THE WHOLE
+    # INSTALLER, contradicting this site's own tolerant design (a cosmetic
+    # patch must not abort under set -e / Stop). Wrap create+write+move in one
+    # try/catch: on any failure, remove the orphaned temp and skip/continue
+    # like every other failure at this site, instead of leaking or aborting.
+    try {
+        $fs = [System.IO.File]::Open($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+        try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Close() }
+        Move-Item -Force -LiteralPath $tmp -Destination $settingsFile
+    } catch {
+        Remove-Item -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+        Write-Host "  skip: $name (write/move failed -- $settingsFile left unchanged)"
+        continue
+    }
     Write-Host "  autoUpdate=true: $name"
 }
 
