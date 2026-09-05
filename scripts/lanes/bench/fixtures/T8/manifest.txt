@@ -1,0 +1,3 @@
+tests/test_alpha.sh
+tests/test_beta.sh
+tests/test_gamma.sh

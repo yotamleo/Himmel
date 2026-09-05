@@ -26,6 +26,12 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 # Surface Ctrl-C / pipeline failures rather than letting the script
 # continue past a broken step. Mirrors `trap ... INT TERM` in setup.sh.
 $ErrorActionPreference = 'Stop'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 trap { Write-Host "setup interrupted: $_" -ForegroundColor Red; exit 1 }
 
 Write-Host "==> himmel setup"
@@ -262,13 +268,32 @@ function Test-Qmd {
 }
 
 Write-Host "[4/9] Registering qmd collection 'himmel'..."
+# ONE Git Bash resolution for every `bash <script>` this installer runs below.
+# [0/9] only proves SOME bash is on PATH, and on Windows a bare `bash` resolves
+# to the System32 WSL stub, which cannot read a C:/... path at all -- the
+# -notmatch clause rejects it on the fallback path (HIMMEL-1992; same rule as
+# the -FillEnv block below and docs/internals/environment-gotchas.md).
+$GitBash = "C:\Program Files\Git\bin\bash.exe"
+if (-not (Test-Path $GitBash)) {
+    # -All, not the first hit: when the System32 stub LEADS PATH, a real Git
+    # Bash further down is still usable, and taking only the first match would
+    # conclude "no Git Bash" and skip every step below (CR round 1, codex-3).
+    # Same idiom this script already uses for the WindowsApps python stub.
+    $bc = Get-Command bash -All -ErrorAction SilentlyContinue |
+        Where-Object { $_.Source -and $_.Source -notmatch 'System32|Sysnative|WindowsApps' } |
+        Select-Object -First 1
+    $GitBash = if ($bc) { $bc.Source } else { $null }
+}
 # Neutralize the broken qmd plugin-cache stub first so plain `qmd` works
-# inside Claude's Bash tool too (HIMMEL-163). The fixer is bash; Git Bash is
-# a verified prereq ([0/9]) so it is always present here. Native exe non-zero
-# exits do NOT throw in pwsh -- check $LASTEXITCODE explicitly.
-& bash "$RepoRoot/scripts/lib/fix-qmd-stub.sh"
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  WARNING: fix-qmd-stub failed (rc=$LASTEXITCODE) -- continuing."
+# inside Claude's Bash tool too (HIMMEL-163). The fixer is bash. Native exe
+# non-zero exits do NOT throw in pwsh -- check $LASTEXITCODE explicitly.
+if ($GitBash) {
+    & $GitBash "$RepoRoot/scripts/lib/fix-qmd-stub.sh"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  WARNING: fix-qmd-stub failed (rc=$LASTEXITCODE) -- continuing."
+    }
+} else {
+    Write-Host "  WARNING: Git Bash not found -- skipping fix-qmd-stub." -ForegroundColor Yellow
 }
 if (Test-Qmd) {
     # Merge stderr into success stream (pwsh's `2>&1`) so the captured payload
@@ -308,15 +333,11 @@ if (-not (Test-Path ".env")) {
 }
 # -FillEnv (HIMMEL-453): prompt for the must-set values via the bash fill-env.sh
 # (one implementation). Default-off; non-interactive shells no-op inside
-# fill-env.sh. Resolve GIT Bash explicitly -- a bare `bash` on Windows often
-# resolves to the System32 WSL stub, which cannot read C:/... paths.
+# fill-env.sh. $GitBash comes from the single resolution at [4/9] -- same rule
+# as that block: a bare `bash` on Windows often resolves to the System32 WSL
+# stub, which cannot read C:/... paths.
 if ($FillEnv -and (Test-Path ".env")) {
-    $gitBash = "C:\Program Files\Git\bin\bash.exe"
-    if (-not (Test-Path $gitBash)) {
-        $bc = Get-Command bash -ErrorAction SilentlyContinue
-        $gitBash = if ($bc -and $bc.Source -notmatch 'System32') { $bc.Source } else { $null }
-    }
-    if (-not $gitBash) {
+    if (-not $GitBash) {
         Write-Host "  -FillEnv skipped: Git Bash not found (edit .env by hand)." -ForegroundColor Yellow
     } else {
         $fe   = (Join-Path $RepoRoot "scripts/setup/fill-env.sh").Replace('\', '/')
@@ -325,7 +346,7 @@ if ($FillEnv -and (Test-Path ".env")) {
         $savedEAP = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            & $gitBash $fe $envF $exF
+            & $GitBash $fe $envF $exF
             if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: fill-env failed; continuing." -ForegroundColor Yellow }
         } finally {
             $ErrorActionPreference = $savedEAP
@@ -350,14 +371,11 @@ if ($FillEnv -and (Test-Path ".env")) {
 # point of step 6 -- if it can be silenced by a caller's preference,
 # the gate has no teeth.
 Write-Host "[6/9] Handover root check..."
-$GitBash = "C:\Program Files\Git\bin\bash.exe"
-if (-not (Test-Path $GitBash)) {
-    $BashCmd = Get-Command bash -ErrorAction SilentlyContinue
-    if ($BashCmd) {
-        $GitBash = $BashCmd.Source
-    }
-}
-if (Test-Path $GitBash) {
+# $GitBash comes from the single resolution at [4/9]. This block used to
+# re-resolve it WITHOUT the System32 filter, so on a WSL box it could hand this
+# check the stub -- which exits 127 on the C:/ script path and reads as a
+# handover misconfig (HIMMEL-1992).
+if ($GitBash) {
     # Pass the script as an argument (bash <script> <args>) rather than
     # via `-c "bash '$script' doctor"` -- the latter spawns a redundant
     # nested bash process AND is fragile if $RepoRoot ever contains a
@@ -501,15 +519,25 @@ if ($installGraphify) {
     $savedEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & bash "$RepoRoot/scripts/lib/graphify-bin.sh" install
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  WARNING: graphify install failed (rc=$LASTEXITCODE); setup continues." -ForegroundColor Yellow
+        # $GitBash (resolved once at [4/9]) -- never a bare `bash`, which on
+        # Windows is the System32 WSL stub and exits 127 on this C:/ path
+        # (HIMMEL-1992).
+        if (-not $GitBash) {
+            Write-Host "  WARNING: Git Bash not found; skipping the graphify install." -ForegroundColor Yellow
             Write-Host "  Retry manually: bash `"$RepoRoot/scripts/lib/graphify-bin.sh`" install" -ForegroundColor Yellow
         } else {
-            # Register the MCP server so the install delivers the mcp__graphify__*
-            # tools, not just the CLI (HIMMEL-1047). user scope; delegates to the
-            # ONE bash impl. WARN-not-fail; idempotent.
-            & bash "$RepoRoot/scripts/lib/graphify-bin.sh" register-mcp user
+            & $GitBash "$RepoRoot/scripts/lib/graphify-bin.sh" install
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  WARNING: graphify install failed (rc=$LASTEXITCODE); setup continues." -ForegroundColor Yellow
+                Write-Host "  Retry manually: bash `"$RepoRoot/scripts/lib/graphify-bin.sh`" install" -ForegroundColor Yellow
+            } else {
+                # Register the MCP server so the install delivers the mcp__graphify__*
+                # tools, not just the CLI (HIMMEL-1047). user scope; delegates to the
+                # ONE bash impl. WARN-not-fail; idempotent.
+                & $GitBash "$RepoRoot/scripts/lib/graphify-bin.sh" register-mcp user
+                # HIMMEL-2480: re-price the hook-guard entries the install just wrote.
+                & $GitBash "$RepoRoot/scripts/lib/graphify-bin.sh" price-hooks
+            }
         }
     } finally {
         $ErrorActionPreference = $savedEAP

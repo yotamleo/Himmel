@@ -4,43 +4,67 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox auto-approve-safe-bash.sh" },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox check-cr-marker-on-pr-create.sh" }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox auto-approve-safe-bash.sh+check-cr-marker-on-pr-create.sh+block-read-secrets.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
+            "timeout": 60
+          }
         ]
       },
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "PowerShell",
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-edit-on-main.sh" },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-lesson-enforcement-writes.sh" }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox block-read-secrets.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox block-read-secrets.sh+block-destructive-commands.sh+block-docker-privesc.sh+block-merged-pr-commit.sh+block-terminal-write-fence.sh+block-lesson-enforcement-writes.sh",
+            "timeout": 60
+          }
         ]
       },
       {
-        "matcher": "Bash|PowerShell|Read|Grep",
+        "matcher": "Read|Grep",
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-read-secrets.sh" }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox block-read-secrets.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox block-read-secrets.sh",
+            "timeout": 15
+          }
         ]
       },
       {
-        "matcher": "Bash|PowerShell",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|apply_patch",
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-destructive-commands.sh" },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-docker-privesc.sh" },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-merged-pr-commit.sh" },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-terminal-write-fence.sh" },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-lesson-enforcement-writes.sh" }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox block-edit-on-main.sh+block-lesson-enforcement-writes.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox block-edit-on-main.sh+block-lesson-enforcement-writes.sh",
+            "timeout": 60
+          }
         ]
       },
       {
         "matcher": "mcp__plugin_atlassian_atlassian__.*",
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox block-backend-tier.sh" }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox block-backend-tier.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox block-backend-tier.sh",
+            "timeout": 15
+          }
         ]
       },
       {
         "matcher": ".*",
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox auto-arm-on-cap.sh" }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox auto-arm-on-cap.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox auto-arm-on-cap.sh",
+            "timeout": 60
+          }
         ]
       }
     ],
@@ -48,33 +72,60 @@
       {
         "matcher": "Agent",
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox auto-arm-on-subagent-cap.sh" }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox auto-arm-on-subagent-cap.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox auto-arm-on-subagent-cap.sh",
+            "timeout": 60
+          }
         ]
       }
     ],
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox check-update-available.sh", "timeout": 15 },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox inject-initiative.sh", "timeout": 10 },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox inject-where-are-we.sh", "timeout": 15 },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox inject-doc-freshness.sh", "timeout": 10 }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox improve-on-submit.sh" }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox --lifecycle check-update-available.sh+inject-initiative.sh+inject-where-are-we.sh+inject-doc-freshness.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox --lifecycle check-update-available.sh+inject-initiative.sh+inject-where-are-we.sh+inject-doc-freshness.sh",
+            "timeout": 60
+          }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox refresh-where-are-we-on-end.sh", "timeout": 15 },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox jira-nudge-on-end.sh", "timeout": 15 },
-          { "type": "command", "command": ".codex/run-hook.cmd --sandbox end-session-wiki.sh", "timeout": 30 }
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox --lifecycle refresh-where-are-we-on-end.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox --lifecycle refresh-where-are-we-on-end.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox --lifecycle jira-nudge-on-end.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox --lifecycle jira-nudge-on-end.sh",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox --lifecycle end-session-wiki.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox --lifecycle end-session-wiki.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox --lifecycle telegram-session-end.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox --lifecycle telegram-session-end.sh",
+            "timeout": 3
+          }
         ]
       }
     ]

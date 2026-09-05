@@ -7,16 +7,17 @@ full compat matrix.
 
 ## Files
 - **`hooks.json`** — the project hook config (Codex recognises a project
-  `.codex/hooks.json` layer). Every tracked command invokes
-  `run-hook.cmd --sandbox <script.sh>`.
+  `.codex/hooks.json` layer). Every tracked entry uses `command` to invoke
+  `run-hook.sh --sandbox <script.sh>` on Unix and `commandWindows` to invoke
+  `run-hook.cmd --sandbox <script.sh>` on Windows.
   Kept to the strict schema (only a top-level `hooks` key — Codex's parser uses
   `deny_unknown_fields`, so an extra key like `description`/`_comment` would make
   it skip the hooks).
   Includes `block-docker-privesc.sh` + `block-merged-pr-commit.sh` (HIMMEL-589):
   these two SECURITY guards ship via the `himmel-ops` plugin `hooks.json` using
   `$CLAUDE_PROJECT_DIR`, which Codex leaves unset for plugin hooks — so they
-  silently no-op under Codex unless mirrored here, where `run-hook.cmd` derives
-  the repo root from its own location.
+  silently no-op under Codex unless mirrored here, where the platform wrapper
+  derives the repo root from its own location.
   Also wires the three advisory **SessionStart** hooks `inject-initiative.sh`,
   `inject-where-are-we.sh`, `inject-doc-freshness.sh` (HIMMEL-596) for the same
   root-resolution reason. These are advisory (always exit 0) and emit their
@@ -26,9 +27,9 @@ full compat matrix.
   reliable Codex context channel). The wrap is gated on the **event**, not the
   exit code (any exit code → additionalContext; these events have no deny path).
   Adding hooks re-trust-hashes `.codex/hooks.json` on the next Codex session.
-- **`run-hook.cmd`** — a **polyglot** wrapper (cmd.exe batch on Windows, bash on
-  Unix) that fixes the three reasons the old hand-ported `.codex/hooks.json` did
-  **not** block on Windows under Codex:
+- **`run-hook.cmd`** — the Windows-only batch wrapper selected by
+  `commandWindows`. It fixes the three reasons the old hand-ported
+  `.codex/hooks.json` did **not** block on Windows under Codex:
   1. **No `CLAUDE_PROJECT_DIR`.** Codex injects no `CLAUDE_PROJECT_DIR` for
      project hooks (plugin hooks get `CLAUDE_PLUGIN_ROOT`, not
      `CLAUDE_PROJECT_DIR`). The wrapper derives the repo root from its **own**
@@ -55,6 +56,10 @@ full compat matrix.
   `HIMMEL_CODEX_HOOK_BASH` can override the detected Bash path for
   tests/diagnostics. `--no-sandbox` is reserved for trusted/manual diagnostics:
   it skips the startup smoke check and surfaces the raw child exit code.
+- **`run-hook.sh`** — the Unix-only shell wrapper selected by `command`. It
+  derives and exports `CLAUDE_PROJECT_DIR`, owns the `--lifecycle` contract, and
+  delegates to the same adapter. Keeping it separate lets Git check out the
+  batch wrapper as CRLF and the shell wrapper as LF.
 - **`codex-hook-adapter.sh`** — the exit-code→JSON-decision bridge. Runs the
   named guardrail with the hook JSON on **stdin** (inherited untouched) and, when
   it exits 2 (block), re-emits the block as Codex's JSON
@@ -64,15 +69,16 @@ full compat matrix.
   Claude Code, which never invokes the adapter.
 
 ## Tests
-- `scripts/hooks/test-codex-run-hook.sh` — the Unix (bash) branch.
-- `scripts/hooks/test-codex-run-hook.ps1` — the Windows (cmd.exe) branch.
-Both assert: `CLAUDE_PROJECT_DIR` derived+exported, stdin forwarded, a non-block
-exit code propagated, an **exit-2 block translated to a JSON `deny`** (stderr →
-reason), and fail-closed JSON denies for wrapper/adapter precondition failures.
+- `scripts/hooks/test-codex-run-hook.sh` — the Unix `run-hook.sh` wrapper.
+- `scripts/hooks/test-codex-run-hook.ps1` — the Windows `run-hook.cmd` wrapper.
+Both assert: `CLAUDE_PROJECT_DIR` derived+exported, stdin forwarded, a normal
+non-block outcome proceeds cleanly, an **exit-2 block translated to a JSON
+`deny`** (stderr → reason), and fail-closed JSON denies for wrapper/adapter
+precondition failures.
 The Windows test also covers Git Bash startup failure before adapter execution,
 plus explicit `--sandbox` and diagnostic `--no-sandbox` modes.
 - `scripts/hooks/test-codex-sessionstart-hooks.sh` — asserts the three advisory
-  SessionStart hooks (HIMMEL-596) are wired through `run-hook.cmd --sandbox`, the
+  SessionStart hooks (HIMMEL-596) are wired through the platform wrappers, the
   strict schema holds, and `inject-initiative` fires end-to-end through the
   adapter as `additionalContext` JSON (gate ON) / no-op (gate OFF).
 
@@ -81,10 +87,10 @@ plus explicit `--sandbox` and diagnostic `--no-sandbox` modes.
   as-is. It passes `--sandbox` to every wrapper invocation, which keeps the
   Windows Git Bash startup preflight fail-closed. Codex needs a writable sandbox
   (`workspace-write` or wider); `read-only` can suppress hook side effects.
-- **No-sandbox diagnostics:** invoke `.codex/run-hook.cmd --no-sandbox <script.sh>`
-  manually when debugging a trusted local runtime and you want the raw child exit
-  code. Do not wire `--no-sandbox` into project hooks; it is intentionally a
-  diagnostic escape hatch, not the default guardrail posture.
+- **No-sandbox diagnostics (Windows):** invoke `.codex/run-hook.cmd` with
+  `--no-sandbox <script.sh>` when debugging a trusted local runtime and you want
+  the raw child exit code. Do not wire `--no-sandbox` into project hooks; it is
+  intentionally a diagnostic escape hatch, not the default guardrail posture.
 
 ## Live-verified (codex-cli 0.141.0, Windows, HIMMEL-427)
 Confirmed against a real `codex exec` run: `.codex/hooks.json` parses (no

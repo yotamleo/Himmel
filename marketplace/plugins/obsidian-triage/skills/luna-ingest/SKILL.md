@@ -1,6 +1,6 @@
 ---
 name: luna-ingest
-description: Use when ingesting a github OR bitbucket.org repo / issue / PR URL into the luna Obsidian vault — repo URLs fetch metadata + README, follow 1-hop references, classify each (integrate / take-parts / inspire / skip / api_failure) and write a structured tech-ingest note under 30-Resources/Tech/; issue URLs (github.com or bitbucket.org) fetch the issue and write an issue note; bitbucket PR URLs (HIMMEL-329) write a PR note. Triggers on /luna-ingest <url> at user prompt OR programmatic Skill-tool dispatch from inside another runbook (e.g. obsidian-triage:harvest-clips repo-URL dispatch branch). Host-routed: github.com via gh, bitbucket.org via the himmel bitbucket CLI. Rejects twitter / article inputs.
+description: Use to ingest a github or bitbucket repo / issue / PR URL into the luna vault as a structured note. /luna-ingest.
 ---
 
 # luna-ingest — chain-following triage (LUNA-5 Wedge B, MVP; skill conversion LUNA-9)

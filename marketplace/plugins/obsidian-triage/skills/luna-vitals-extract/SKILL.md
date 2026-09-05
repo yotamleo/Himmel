@@ -1,6 +1,6 @@
 ---
 name: luna-vitals-extract
-description: Use when backfilling salus health series for one vault time-bucket (HIMMEL-355). Extracts (date, metric, value) tuples for the tracked vitals from the bucket's notes — deterministic structured entries via the luna-vitals CLI, plus an LLM pass over prose/timeline — and writes ONE per-bucket review artifact for operator review. One bucket per armed slot (single-writer). Never writes 50-Vitals/ directly.
+description: Use to backfill salus health series for one luna time-bucket — writes a per-bucket review artifact, never 50-Vitals/.
 ---
 
 Extract health-series rows for ONE time-bucket into a review artifact. Inputs: a date range

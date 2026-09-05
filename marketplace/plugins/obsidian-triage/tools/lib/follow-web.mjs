@@ -30,6 +30,7 @@ import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 // Kinds github/gh-api can't cover — the web rung's remit. `course` is
 // included even though follow-verify's headFn does a HEAD probe: a course
@@ -398,6 +399,15 @@ export function makeCliWebFn(env = process.env) {
 export function makeHermesWebFn(env = process.env) {
   if (!env.FOLLOW_WEB_HERMES) return null;
   const scriptPath = fileURLToPath(new URL("../../../../../scripts/hermes/invoke.sh", import.meta.url));
+  // Never a bare "bash": on Windows PATH resolves it to the System32 WSL stub,
+  // which cannot read the C:/ scriptPath above (HIMMEL-1992/1279). Reuses the
+  // hook launcher's resolver -- required here, beside the script it runs, so
+  // the two share one failure mode instead of adding a load-time dependency.
+  // No usable bash => no hermes rung at all (same shape as the disabled case):
+  // falling back to a bare "bash" would spawn the stub this line exists to
+  // avoid, and its 127 reads as "the web found nothing" (CR round 1, codex-1).
+  const bashBin = createRequire(import.meta.url)("../../../../../scripts/hooks/run-hook-with-bash.js").resolveBash();
+  if (!bashBin) return null;
   const toolset = (env.FOLLOW_WEB_HERMES_TOOLSET || "").trim() || HERMES_DEFAULT_TOOLSET;
   const model = (env.FOLLOW_WEB_HERMES_MODEL || "").trim();
   let remaining = parseInt(env.FOLLOW_WEB_HERMES_BUDGET || "", 10) || HERMES_DEFAULT_BUDGET;
@@ -410,7 +420,7 @@ export function makeHermesWebFn(env = process.env) {
     if (model) args.push("--model", model);
     args.push(webFactCheckPrompt(query));
     try {
-      const res = spawnSync("bash", args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024 });
+      const res = spawnSync(bashBin, args, { encoding: "utf8", timeout, maxBuffer: 8 * 1024 * 1024 });
       if (res.error || res.status !== 0 || !res.stdout) return { found: false };
       return parseWebFactStdout(res.stdout);
     } catch {

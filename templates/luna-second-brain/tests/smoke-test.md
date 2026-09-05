@@ -21,7 +21,7 @@ clone path is exercised:
 
 ```bash
 cd /tmp
-gh repo clone yotamleo/luna-brain luna-brain-smoke
+gh repo clone yotamleo/Himmel/tree/main/templates/luna-second-brain luna-brain-smoke
 cd luna-brain-smoke
 bash scripts/setup.sh
 ```

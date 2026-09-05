@@ -26,6 +26,20 @@ stderr_file=$4
 pid_file=${5:-}
 timeout_secs=${6:-0}
 cleanup_rc_file=${7:-}
+
+# HIMMEL-1957/HIMMEL-2056: keep the adversarial lane dormant until its
+# empty-output and timeout behavior is understood. Exit cleanly before
+# creating any ownership sidecar or acquiring a render lease so /pr-check
+# harvests this exactly like an absent companion (no pid means no
+# attempted-review availability record) - and write the one-line
+# machine-readable sentinel to stdout_file so codex-adv-completion-check.sh
+# can positively recognize this as ABSENT rather than a HIMMEL-1420 silent
+# death, if anything ever inspects it.
+if [ "${CODEX_ADV_OK:-}" != "1" ]; then
+    echo "codex adversarial pass skipped: dormant pending investigation (HIMMEL-1957); set CODEX_ADV_OK=1 to launch" >&2
+    printf '%s\n' "codex-adv: dormant (HIMMEL-1957)" > "$stdout_file"
+    exit 0
+fi
 [ -n "$cleanup_rc_file" ] || cleanup_rc_file="${stdout_file}.cleanup-rc"
 case "$timeout_secs" in ''|*[!0-9]*) timeout_secs=0 ;; esac
 rm -f "$cleanup_rc_file"

@@ -6,6 +6,9 @@ LIB="$(cd "$(dirname "$0")" && pwd)/handover-path.sh"
 # shellcheck source=handover-path.sh
 # shellcheck disable=SC1091
 . "$LIB"
+# shellcheck source=fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$(dirname "$LIB")/fixture-tempdir.sh"
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -45,7 +48,7 @@ assert_eq "T1 mode A reports A" "A" "$(handover_mode)"
 # T1b: pure handover_root in Mode A with MISSING dir → rc=2 (HIMMEL-150).
 # Use an isolated temp git repo with no handovers/ to exercise the pure
 # fail-closed path without polluting himmel state.
-TMP_REPO_PURE=$(mktemp -d)
+TMP_REPO_PURE=$(fixture_mktemp_dir) || exit 1
 git -C "$TMP_REPO_PURE" init --quiet
 (
     cd "$TMP_REPO_PURE" || exit 1
@@ -62,7 +65,7 @@ fi
 rm -rf "$TMP_REPO_PURE"
 
 # T1c: handover_root_ensure in Mode A with missing dir → creates + rc=0.
-TMP_REPO_ENSURE=$(mktemp -d)
+TMP_REPO_ENSURE=$(fixture_mktemp_dir) || exit 1
 git -C "$TMP_REPO_ENSURE" init --quiet
 got_ensure=$(
     cd "$TMP_REPO_ENSURE" || exit 1
@@ -193,6 +196,133 @@ if [ "$outside8" != "$outside8_lower" ]; then
     echo "PASS T8f case-distinct outside-root handovers keep distinct registry keys"
 else
     echo "FAIL T8f outside-root Foo.md and foo.md collapsed to one key '$outside8'"
+    FAILED=$((FAILED + 1))
+fi
+
+# T9 (HIMMEL-2073): _arm_identity_path memoizes per (path, $PLATFORM) pair in
+# $_ARM_CACHE_DIR (every call site is `x=$(_arm_identity_path ...)`, a command
+# substitution that forks a subshell an in-memory cache cannot survive).
+# Assert the cache dir/file actually gets created + populated (proves the
+# mechanism is live, not just that recomputation happens to agree with
+# itself), that a repeated call with the SAME path but a DIFFERENT $PLATFORM
+# still returns the platform-correct answer (the exact regression T8c/T8d
+# above already caught once: a naive path-only cache key served a stale
+# cross-platform value), and — T9e, CR round 2 codex-5 — that a second call
+# with the identical (path, PLATFORM) genuinely SKIPS recomputation rather
+# than merely landing on the same answer by coincidence: a counting `realpath`
+# stub on PATH proves it is invoked exactly once across two lookups.
+# Clear cache CONTENTS only — $_ARM_CACHE_DIR itself is created ONCE at
+# source time (top-level library code, not re-run per subshell), so unsetting
+# or removing the directory here would leave every subsequent subshell with
+# no cache dir to write into (caught in review: a first draft of this test
+# did exactly that and made T9a fail against a WORKING library).
+rm -f "${_ARM_CACHE_DIR:?}/identity" "${_ARM_CACHE_DIR:?}/cygpath-avail" 2>/dev/null || true
+T9PATH="$TMP/layout-a/handovers/HIMMEL-1344-test/next-session-1.md"
+first9=$(PLATFORM=linux _arm_identity_path "$T9PATH")
+if [ -n "${_ARM_CACHE_DIR:-}" ] && [ -s "$_ARM_CACHE_DIR/identity" ]; then
+    echo "PASS T9a identity-path cache dir/file is created and populated on first call"
+else
+    echo "FAIL T9a identity-path cache dir/file missing/empty after a call"
+    FAILED=$((FAILED + 1))
+fi
+second9=$(PLATFORM=linux _arm_identity_path "$T9PATH")
+assert_eq "T9b a cache HIT (same path, same PLATFORM) returns the identical value" "$first9" "$second9"
+windows9=$(PLATFORM=windows _arm_identity_path "$T9PATH")
+linux9_again=$(PLATFORM=linux _arm_identity_path "$T9PATH")
+assert_eq "T9c a different PLATFORM for the SAME path is not served the other platform's cached value" "$first9" "$linux9_again"
+if [ "$windows9" != "$first9" ]; then
+    echo "PASS T9d windows (case-folded) and linux (case-preserved) cache independently for the same path"
+else
+    echo "FAIL T9d windows PLATFORM override returned the linux-cached (case-preserved) value"
+    FAILED=$((FAILED + 1))
+fi
+
+# T9e: a counting realpath stub proves the SECOND identical lookup is an
+# actual cache HIT (skips recomputation), not just an equal answer.
+rm -f "${_ARM_CACHE_DIR:?}/identity" "${_ARM_CACHE_DIR:?}/cygpath-avail" 2>/dev/null || true
+T9E_BIN="$TMP/t9e-bin"; mkdir -p "$T9E_BIN"
+T9E_COUNT="$TMP/t9e-realpath-calls"
+: > "$T9E_COUNT"
+T9E_REAL_REALPATH=$(command -v realpath)
+cat > "$T9E_BIN/realpath" <<EOF
+#!/usr/bin/env bash
+echo x >> "$T9E_COUNT"
+exec "$T9E_REAL_REALPATH" "\$@"
+EOF
+chmod +x "$T9E_BIN/realpath"
+_t9e_old_path="$PATH"
+PATH="$T9E_BIN:$PATH"
+PLATFORM=linux _arm_identity_path "$T9PATH" >/dev/null
+PLATFORM=linux _arm_identity_path "$T9PATH" >/dev/null
+PATH="$_t9e_old_path"
+t9e_calls=$(wc -l < "$T9E_COUNT" | tr -d ' ')
+assert_eq "T9e the SECOND identical lookup skips realpath entirely (cache hit, not a coincidental recompute)" "1" "$t9e_calls"
+
+# T9f (CR round 2, codex-3 Suggestion): the SAME relative path string means a
+# DIFFERENT file after a `cd` — the cache key must include $PWD, or a stale
+# cross-directory answer gets served back.
+rm -f "${_ARM_CACHE_DIR:?}/identity" "${_ARM_CACHE_DIR:?}/cygpath-avail" 2>/dev/null || true
+T9F_DIR_A="$TMP/t9f-a"; T9F_DIR_B="$TMP/t9f-b"
+mkdir -p "$T9F_DIR_A" "$T9F_DIR_B"
+t9f_from_a=$(cd "$T9F_DIR_A" && PLATFORM=linux _arm_identity_path "rel.md")
+t9f_from_b=$(cd "$T9F_DIR_B" && PLATFORM=linux _arm_identity_path "rel.md")
+if [ "$t9f_from_a" != "$t9f_from_b" ]; then
+    echo "PASS T9f the same relative path resolves independently per \$PWD (not cross-directory cached)"
+else
+    echo "FAIL T9f a relative path lookup after cd returned the OTHER directory's cached identity ($t9f_from_a)"
+    FAILED=$((FAILED + 1))
+fi
+
+# CR round 5, codex-1 CRITICAL added an `[ -O "$_stale" ]` ownership guard as
+# the PRIMARY defense ahead of the content-shape checks T9g/T9h below (a
+# foreign-owned directory can never pass it, closing the class no
+# content-shape heuristic alone can). Not exercised by its own test here:
+# proving the negative (a directory NOT owned by this process survives)
+# needs a second real OS user/UID, which this hermetic single-user suite has
+# no way to simulate. T9g/T9h below still hold — they cover the OTHER half
+# (a directory this process DOES own but that isn't actually one of ours).
+#
+# T9g (CR round 3, codex-1 Important): the GC sweep must never delete a
+# same-named `arm-resume-cache.*` directory it did not create itself — only
+# a candidate whose ENTIRE contents are exactly our own known filenames is
+# eligible. TMPDIR is redirected to this test's own sandbox so the sweep
+# never touches the real system temp dir.
+T9G_TMPDIR="$TMP/t9g-tmpdir"; mkdir -p "$T9G_TMPDIR"
+T9G_FOREIGN="$T9G_TMPDIR/arm-resume-cache.foreign"
+mkdir -p "$T9G_FOREIGN"
+printf 'not ours\n' > "$T9G_FOREIGN/unrelated-file.txt"
+# Backdate it past the 1-day sweep threshold so age alone can't be why it survives.
+touch -d '2 days ago' "$T9G_FOREIGN" 2>/dev/null || touch -t 202001010000 "$T9G_FOREIGN" 2>/dev/null || true
+T9G_OURS="$T9G_TMPDIR/arm-resume-cache.ours"
+mkdir -p "$T9G_OURS"
+: > "$T9G_OURS/identity"
+touch -d '2 days ago' "$T9G_OURS" 2>/dev/null || touch -t 202001010000 "$T9G_OURS" 2>/dev/null || true
+TMPDIR="$T9G_TMPDIR" _arm_cache_dir_gc
+if [ -d "$T9G_FOREIGN" ]; then
+    echo "PASS T9g the GC sweep left a foreign same-named directory (unrecognized contents) alone"
+else
+    echo "FAIL T9g the GC sweep deleted a foreign same-named directory it did not create"
+    FAILED=$((FAILED + 1))
+fi
+if [ ! -d "$T9G_OURS" ]; then
+    echo "PASS T9g the GC sweep DID remove its own stale (>1 day) cache dir"
+else
+    echo "FAIL T9g the GC sweep left its own stale cache dir behind"
+    FAILED=$((FAILED + 1))
+fi
+
+# T9h (CR round 4, codex-1 Important): a foreign entry that merely SHARES a
+# name (`identity`) with our known file but is itself a DIRECTORY (holding
+# arbitrary nested data) must NOT pass the shape check on name alone.
+T9H_TRAP="$T9G_TMPDIR/arm-resume-cache.trap"
+mkdir -p "$T9H_TRAP/identity"
+printf 'nested foreign data\n' > "$T9H_TRAP/identity/payload.txt"
+touch -d '2 days ago' "$T9H_TRAP" 2>/dev/null || touch -t 202001010000 "$T9H_TRAP" 2>/dev/null || true
+TMPDIR="$T9G_TMPDIR" _arm_cache_dir_gc
+if [ -d "$T9H_TRAP" ]; then
+    echo "PASS T9h a directory named 'identity' (not a file) disqualifies the candidate, even though the name matches"
+else
+    echo "FAIL T9h the GC sweep deleted a directory holding foreign nested data because its name matched 'identity'"
     FAILED=$((FAILED + 1))
 fi
 

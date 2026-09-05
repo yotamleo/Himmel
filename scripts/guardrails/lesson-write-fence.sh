@@ -35,6 +35,16 @@
 #        file_path). Any deny-list hit -> exit 2, stderr names the class +
 #        why + the propose-only recovery (file a ticket / draft-PR body
 #        proposing the change; enforcement edits are operator-lane).
+#     3b. apply_patch (HIMMEL-2170, Codex's create/edit envelope - it has no
+#        Edit/Write/NotebookEdit/MultiEdit tool at all): no `.tool_input.
+#        file_path` either - every target lives inside `*** Add File:`/
+#        `*** Update File:`/`*** Delete File:` lines in `.tool_input.command`
+#        instead. Every such target is extracted and classified through the
+#        SAME `classify_target` as step 3; any deny-list hit on ANY target
+#        denies the whole call. A command carrying NONE of these lines
+#        (malformed/unparseable patch text) is itself a DENY under
+#        HIMMEL_LESSON_LOOP=1 - fail-closed, matching every other malformed-
+#        input case in this file (see point 2 above).
 #     4. Bash|PowerShell: round-4 REWRITE - an ARCHITECTURE INVERSION, not
 #        another shape patch. Rounds 1-3b each closed one more per-verb
 #        write-shape gap on a DENY-LIST of known writers (glued redirects,
@@ -602,7 +612,7 @@ classify_target() {
                                 ;;
                             *)
                                 if [ "$relpath" = "$v_lc" ]; then
-                                    _MATCH_CLASS="${ENTRY_CLASS[$i]}"; _MATCH_WHY="${ENTRY_WHY[$i]}"
+                                    _MATCH_CLASS="${ENTRY_CLASS[$i]}"; _MATCH_WHY="${ENTRY_WHY[$i]}"  # fail-open-ok: this *) arm discriminates entry SHAPE (exact path vs the */ dir-prefix alternative), not an unclassified input — the entry table row is the classification and it matched exactly under the = guard above
                                     return 0
                                 fi
                                 ;;
@@ -1284,6 +1294,83 @@ case "$tool_name" in
                 _deny_enforcement "$p"
             fi
         done
+        exit 0
+        ;;
+    apply_patch)
+        # Codex's create/edit envelope (HIMMEL-2170): no tool_input.file_path
+        # at all — every target lives inside "*** Add/Update/Delete File:"
+        # lines in tool_input.command instead (see harness-compat.md's
+        # empirical event/tool-name matrix). Extract every such target and
+        # classify EACH one through the SAME classify_target used above; any
+        # fenced target denies the whole call. Unlike the Edit/Write branch
+        # (which silently skips an empty file_path), a command from which NO
+        # target can be extracted at all is treated as malformed and denies
+        # under HIMMEL_LESSON_LOOP=1 — fail-closed, matching this fence's own
+        # convention for every other unparseable/ambiguous input (malformed
+        # JSON on stdin, a missing policy, jq absent, ...; see the header).
+        load_policy
+        cwd="$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null)"
+        [ -n "$cwd" ] || cwd="$PWD"
+        cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)"
+        targets=""
+        _ap_prev=""
+        while IFS= read -r ap_line || [ -n "$ap_line" ]; do
+            # Strip a trailing CR: on this platform `jq -r` CRLF-converts
+            # embedded newlines in its output, and command substitution only
+            # strips the FINAL trailing newline group, not internal ones - so
+            # a multi-line `cmd` (apply_patch's patch text always is) arrives
+            # here with a stray `\r` glued onto every line but the last. An
+            # EXACT-match policy entry (`.claude/settings.json`) would
+            # silently mismatch on that trailing byte and fail OPEN; a
+            # directory-prefix entry happens to be immune (its glob has a
+            # trailing `*`), which is what let this hide in this ticket's own
+            # multi-target test before the malformed-command target line was
+            # checked against an exact-match entry.
+            ap_line="${ap_line%$'\r'}"
+            case "$ap_line" in
+                '*** Add File: '*)    targets="${targets}${ap_line#'*** Add File: '}"$'\n'; _ap_prev="" ;;
+                '*** Update File: '*) targets="${targets}${ap_line#'*** Update File: '}"$'\n'; _ap_prev="update" ;;
+                '*** Delete File: '*) targets="${targets}${ap_line#'*** Delete File: '}"$'\n'; _ap_prev="" ;;
+                # HIMMEL-2170 CR round 1: a rename/move destination. Per the
+                # official apply_patch grammar (verified against
+                # codex-rs/apply-patch/src/parser.rs,
+                # openai/codex@18b9e7fd9e3f6670cc4f300338e44050b2c301e4 -
+                # `MOVE_TO_MARKER = "*** Move to: "`, grammar comment
+                # `update_hunk: "*** Update File: " filename LF change_move?
+                # change?` / `change_move: "*** Move to: " filename LF`),
+                # this line is OPTIONAL and immediately follows an
+                # `*** Update File:` line. Without this arm, an Update on an
+                # ALLOWED source could move it onto a FENCED destination path
+                # that is never classified.
+                #
+                # CodeRabbit round (HIMMEL-2170): the grammar makes Move-to
+                # valid ONLY immediately after an Update File line - a
+                # standalone/misplaced Move-to (no Update immediately before
+                # it) is not a real target at all, it is malformed patch
+                # syntax. Treating it as a target anyway let an invalid patch
+                # be silently ALLOWED whenever that stray path happened to be
+                # non-fenced. `_ap_prev` tracks the immediately-preceding
+                # marker; anything other than "update" here routes to the
+                # SAME malformed-command deny every other unparseable
+                # apply_patch hits (fail-closed, immediate - not merely
+                # dropped, so one bad Move-to line denies the whole call even
+                # if other lines in the same patch extracted valid targets).
+                '*** Move to: '*)
+                    [ "$_ap_prev" = "update" ] || \
+                        deny "apply_patch Move-to line not immediately preceded by an Update File line (malformed patch text; fail-closed)"
+                    targets="${targets}${ap_line#'*** Move to: '}"$'\n'
+                    _ap_prev="" ;;
+                *) _ap_prev="" ;;
+            esac
+        done <<< "$cmd"
+        [ -n "$(printf '%s' "$targets" | tr -d '[:space:]')" ] || \
+            deny "apply_patch command carries no Add/Update/Delete File target (malformed/unparseable patch text; fail-closed)"
+        while IFS= read -r p || [ -n "$p" ]; do
+            [ -n "$p" ] || continue
+            if classify_target "$p" "$cwd"; then
+                _deny_enforcement "$p"
+            fi
+        done <<< "$targets"
         exit 0
         ;;
     Bash|PowerShell)

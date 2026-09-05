@@ -33,11 +33,13 @@ GEN="$SCRIPT_DIR/../agents-md/generate.mjs"
 # shellcheck source=scripts/guardrails/lib.sh
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/guardrails/lib.sh"
-rc=0; is_himmel_dev_repo || rc=$?
+rc=0
+# shellcheck disable=SC2119  # deliberately called with no args to use its DIR default (.)
+is_himmel_dev_repo || rc=$?
 # `if`, not `[ … ] && exit 0` — under errexit a false test makes the compound
 # return 1 and kills the script with a bogus failure.
 if [ "$rc" -eq 1 ]; then exit 0; fi   # not a himmel-dev checkout → no-op
-if [ ! -f "$GEN" ]; then echo "→ debrand-coverage: generator missing — fail-closed" >&2; exit 2; fi
+if [ ! -f "$GEN" ]; then echo "→ debrand-coverage: generator missing — fail-closed" >&2; exit 2; fi  # fail-open-ok: unreadable generator fails node under errexit → the gate reports and blocks (fail-closed)
 
 # Only relevant when the repo-root CLAUDE.md or debrand table is staged. A git
 # failure here is NOT "nothing staged" — suppressing it with `|| true` would

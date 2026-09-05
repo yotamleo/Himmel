@@ -20,9 +20,9 @@
 #
 # Branches:
 #   * stdin HAS rate_limits -> mirror them into both files (free, no network).
-#   * stdin has NO rate_limits -> query the OAuth seam for extra_usage, MERGING
-#     it while preserving the existing five_hour/seven_day (never clobber good
-#     data with empties).
+#   * stdin has NO rate_limits -> query the OAuth seam; fetched primaries win,
+#     with existing five_hour/seven_day as fallback when a fetched window is
+#     absent (so an empty fetch never clobbers good data).
 #
 # Throttle (dual TTL, env-tunable):
 #   USAGE_CACHE_TTL (300s) — a fresher consumer cache short-circuits the rates
@@ -198,17 +198,27 @@ if [ -z "$fetched" ] || ! printf '%s' "$fetched" | jq -e 'type=="object"' >/dev/
   exit 0
 fi
 
-# Merge: preserve prior five_hour/seven_day (fall back to fetched, then {}),
-# take extra_usage from the fetch, stamp oauth_checked_at.
 new_cache=$(jq -n --argjson prev "$prev" --argjson f "$fetched" --argjson ts "$now_epoch" '
   ($prev // {}) as $p |
   ($f // {}) as $ff |
+  # HIMMEL-1841: fetched primaries WIN; $p is the fallback only when the
+  # fetch lacks a window. The old order ($p first) discarded live numbers
+  # on every poll, which is why the cache read week-old under a fresh mtime.
+  (if (($ff.five_hour.utilization // null) != null) then $ff.five_hour else null end) as $fh |
+  (if (($ff.seven_day.utilization // null) != null) then $ff.seven_day else null end) as $sd |
   {
-    five_hour: ($p.five_hour // $ff.five_hour // {}),
-    seven_day: ($p.seven_day // $ff.seven_day // {}),
+    five_hour:   ($fh // $p.five_hour // {}),
+    seven_day:   ($sd // $p.seven_day // {}),
     extra_usage: ($ff.extra_usage // $p.extra_usage // {}),
     oauth_checked_at: $ts
-  }' 2>/dev/null)
+  }
+  # Provenance: refresh the aggregate stamp ONLY when both fetched primaries
+  # were taken. A partial fetch preserves the prior stamp so a carried-forward
+  # window continues to age honestly; oauth_checked_at cannot prove this.
+  + (if ($fh != null and $sd != null) then {primaries_refreshed_at: $ts}
+     elif ($p.primaries_refreshed_at != null) then {primaries_refreshed_at: $p.primaries_refreshed_at}
+     else {} end)
+  ' 2>/dev/null)
 
 if [ -z "$new_cache" ]; then
   echo "WARN usage-cache-producer: failed to merge fetched usage; keeping previous cache" >&2

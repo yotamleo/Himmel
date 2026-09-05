@@ -54,9 +54,47 @@
 #   stdout: normalized (lowercase, "[bot]" suffix stripped), space-joined set
 #   of logins that count as "the bot". Default: coderabbitai.
 #
+# cr_review_walkthrough <owner> <repo> <pr-number> <head-sha>
+#   CodeRabbit's SECOND delivery channel (HIMMEL-1824). A pass that finds
+#   nothing mints NO review object at all: its entire delivery is the
+#   head-anchored commit status plus an in-place EDIT of the walkthrough issue
+#   comment. So an anchor test over review OBJECTS is structurally blind exactly
+#   when there is nothing wrong — and the advertised remedy ("request a full
+#   review") is then an infinite loop that burns one included review per turn
+#   and can never mint the object the gate demands (measured on PR #1708:
+#   three clean passes, zero objects, four same-head review commands).
+#   stdout: "clean" | "dirty" | "none"   rc 0
+#     clean  the walkthrough says it reviewed UP TO this head and generated no
+#            actionable comments
+#     dirty  a walkthrough exists for this head but reports actionable comments
+#     none   no walkthrough comment names this head (says nothing either way)
+#   rc 1 = cannot evaluate (query/parse failure).
+#
 # cr_review_freshness <owner> <repo> <pr-number> <head-sha>
 #   stdout (single line):
 #     "fresh <login> <oid>"  the latest bot review is anchored to <head-sha>
+#     "fresh-clean-no-object <login> <oid>"
+#                            no review OBJECT at head, but the walkthrough
+#                            certifies the head was reviewed with no actionable
+#                            comments (HIMMEL-1824).
+#                            CALLER PRECONDITION (CR round 6): accept this state
+#                            ONLY after certifying the bot's head STATUS is
+#                            `success` (cr-signal.sh). Unlike `fresh`, whose
+#                            evidence is a review OBJECT that exists because a
+#                            pass completed, this state's evidence is TEXT, and
+#                            text alone cannot say the current pass concluded.
+#                            Concretely: a clean pass at H writes "up to H", a
+#                            later re-review of H FAILS, and the walkthrough
+#                            still reads clean — a caller that skips the status
+#                            would pass a head whose latest review failed. This
+#                            reader stays status-INDEPENDENT by design (see the
+#                            three-readers note above), so the check belongs to
+#                            the caller and is pinned by the consumer canary in
+#                            test-cr-review-freshness.sh. The App itself reviewed
+#                            this head, so this is real App evidence — no
+#                            panel carry is involved, and it holds for a
+#                            high-risk diff.
+#                            <oid> is the stale object anchor, kept for the log.
 #     "stale <login> <oid>"  the latest bot review is anchored to a
 #                            NON-head commit — the head was never re-reviewed
 #     "none"                 zero bot reviews on the whole PR (self-skip:
@@ -87,6 +125,15 @@
 #                   entry is stripped, so either spelling works)
 #   GH_CMD          gh override (test seam, matches cr-signal.sh / cr-body-
 #                   findings.sh / cr-merge-gate.sh)
+#   CR_WALK_MAX_PAGES  how many 100-comment pages cr_review_walkthrough may
+#                   read before giving up (default 5). The cap is what keeps
+#                   the walkthrough lookup bounded; there is no unbounded
+#                   --paginate anywhere in this lib.
+#   CR_GH_TIMEOUT   hard per-call ceiling in seconds (default 20). Every gh call
+#                   in this lib is wrapped: a wedged network call returns
+#                   non-zero instead of hanging the caller, which is the whole
+#                   point of keeping this reader a bounded script (HIMMEL-1949).
+#                   Ignored when `timeout` is unavailable.
 #
 # Sourceable from hooks and scripts: uses only `return`, never `exit`; does
 # not toggle set -e. bash 3.2-safe (no mapfile, no associative arrays). Every
@@ -94,7 +141,23 @@
 # `set -e` never aborts on a parse failure. Requires SYSTEM jq — callers
 # enforce its availability (this lib just `return 1`s if parsing fails).
 
-_crf_gh() { "${GH_CMD:-gh}" "$@"; }
+# Hard ceiling on every call. `timeout` is absent on some boxes (stock macOS
+# without coreutils); there the call runs unbounded rather than not at all —
+# the ceiling is best-effort, the non-zero-on-failure contract is not.
+_crf_gh() {
+    local t="${CR_GH_TIMEOUT:-20}"
+    case "$t" in ''|*[!0-9]*) t=20 ;; esac
+    # GNU `timeout 0` means NO limit — the exact hang this wrapper exists to
+    # prevent, reachable through a value that passes the digit check above.
+    # Arithmetic, not string comparison, so 0 / 00 / 000 are all caught
+    # (same guard HIMMEL-1953 needed for CASE_TIMEOUT_SECS).
+    [ "$t" -ge 1 ] 2>/dev/null || t=20
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$t" "${GH_CMD:-gh}" "$@"
+    else
+        "${GH_CMD:-gh}" "$@"
+    fi
+}
 
 cr_review_bot_logins() {
     printf '%s\n' "${CR_BOT_LOGINS:-coderabbitai}" | tr ',' ' ' | tr '[:upper:]' '[:lower:]' \
@@ -112,6 +175,13 @@ def norm: ascii_downcase | sub("\\[bot\\]$"; "");
 | [ $r.nodes[]?
     | select(.state != "PENDING")
     | select(.author.__typename == "Bot")
+    # HIMMEL-1824: drop empty review SHELLS. `chat.auto_reply` replies and
+    # CodeRabbit incremental passes both mint COMMENTED objects with an empty
+    # body and zero comments (two such at 12:18:00 on PR #1708). They carry no
+    # verdict, so counting them lets an empty payload fake FRESH as easily as
+    # it can bury a real review under a newer nothing.
+    | select(((.body // "") | gsub("^[[:space:]]+|[[:space:]]+$"; "")) != ""
+             or ((.comments.totalCount // 0) > 0))
     | select((.author.login // "" | norm) as $l | $set | index($l) != null) ]
   as $bot
 | if ($bot | length) == 0 then
@@ -125,6 +195,111 @@ def norm: ascii_downcase | sub("\\[bot\\]$"; "");
       end
   end
 '
+
+# The walkthrough comment is edit-in-place and machine readable. One bounded
+# page of issue comments: the walkthrough is created with CodeRabbit's first
+# pass and only ever EDITED afterwards, so it sits near the start of the
+# comment list even on a long-running PR.
+# PAGINATED under a hard cap, in creation order (CR rounds 2-3).
+#
+# MEASURED, because the obvious fix does not work: the PER-ISSUE comments
+# endpoint SILENTLY IGNORES sort/direction. Against the live API, the id
+# sequence for ?per_page=100 and ?per_page=100&sort=updated&direction=desc is
+# byte-identical, so round 2 shipped a no-op. (The REPOSITORY-level endpoint
+# /repos/O/R/issues/comments DOES honour sort -- verified the same way -- but it
+# orders across EVERY issue in the repo, so on a busy repo page 1 can hold zero
+# comments from the PR we are asking about. That trades a rare miss for a
+# routine one.)
+#
+# So: walk this issue own comments, at most CR_WALK_MAX_PAGES pages of 100,
+# stopping at the first page that carries the walkthrough or at a short page
+# (which is the last one). At most 5 bounded calls, each under CR_GH_TIMEOUT.
+# ponytail: 500 comments. Beyond that the walkthrough reads "none" and the
+# caller stays fail-closed; raise the cap if a PR ever exceeds it.
+#
+# IDENTITY (HIMMEL-1058 stance, same as the review filter above): the
+# walkthrough is only evidence when the BOT wrote it. Selecting on the marker
+# text alone would let any user post a comment containing that string and flip
+# a genuine stale-anchor BLOCK into a pass — the marker is public, visible in
+# every CodeRabbit walkthrough on every PR. So require `user.type == "Bot"` AND
+# a configured login. REST spells the login `coderabbitai[bot]` where GraphQL
+# says `coderabbitai` (the landmine documented above), so normalize both sides
+# with the same rule.
+# shellcheck disable=SC2016  # jq program, not a shell variable
+_CRF_WALK_JQ='
+def norm: ascii_downcase | sub("\\[bot\\]$"; "");
+($bots | split(" ") | map(select(length > 0))) as $set
+| [ .[]?
+    | select(.user.type == "Bot")
+    | select((.user.login // "" | norm) as $l | $set | index($l) != null)
+    | select(((.body // "") | contains("summarize by coderabbit.ai"))) ]
+  | last | (.body // "")
+'
+
+cr_review_walkthrough() {
+    local owner="$1" repo="$2" num="$3" head="$4"
+    if [ -z "$owner" ] || [ -z "$repo" ] || [ -z "$num" ] || [ -z "$head" ]; then return 1; fi
+    case "$num" in ''|*[!0-9]*) return 1 ;; esac
+
+    local json body kind tok page maxp cnt bots
+    bots=$(cr_review_bot_logins)
+    maxp="${CR_WALK_MAX_PAGES:-5}"
+    case "$maxp" in ''|*[!0-9]*) maxp=5 ;; esac
+    [ "$maxp" -ge 1 ] || maxp=1
+
+    body=""
+    page=1
+    while [ "$page" -le "$maxp" ]; do
+        json=$(_crf_gh api "repos/$owner/$repo/issues/$num/comments?per_page=100&page=$page" 2>/dev/null) || return 1
+
+        # Same canary posture as cr_review_freshness: a valid payload is an
+        # array (possibly empty). An error object is cannot-evaluate, not "no
+        # comments" — a page we could not read must never read as "absent".
+        kind=$(printf '%s' "$json" | jq -r 'if type == "array" then "array" else empty end' 2>/dev/null || true)
+        [ "$kind" = "array" ] || return 1
+
+        body=$(printf '%s' "$json" | jq -r --arg bots "$bots" "$_CRF_WALK_JQ" 2>/dev/null || true)
+        [ -n "$body" ] && [ "$body" != "null" ] && break
+        body=""
+
+        # A short page is the last page — stop rather than spend the cap.
+        cnt=$(printf '%s' "$json" | jq -r 'length' 2>/dev/null || true)
+        case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
+        [ "$cnt" -lt 100 ] && break
+        page=$((page + 1))
+    done
+    if [ -z "$body" ]; then printf 'none\n'; return 0; fi
+
+    # Is THIS head the commit the walkthrough says it reviewed UP TO?
+    #
+    # Read only the two fields that carry that claim — "between <base> and
+    # <oid>" and "up to `<short-oid>`" — never every hex token in the body
+    # (CR round 4). A walkthrough is long prose that can name other commits in
+    # passing; scanning it whole would let an incidental mention of the head
+    # certify a review that never covered it, which is the same
+    # evidence-means-something-else failure this whole change exists to remove.
+    # Within a field a PREFIX test is right and safe: CodeRabbit abbreviates
+    # there, and a 7+ hex prefix of this head is this head by git's own rule.
+    local named=0 cands
+    # `|| true`: grep exits 1 on no match, and a caller running with pipefail
+    # must not see that as a lib failure (this file's stated convention).
+    cands=$(
+        {
+            printf '%s' "$body" | grep -oE 'and [0-9a-f]{7,40}' 2>/dev/null
+            printf '%s' "$body" | grep -oE 'up to [^0-9a-f]?[0-9a-f]{7,40}' 2>/dev/null
+        } | grep -oE '[0-9a-f]{7,40}' 2>/dev/null
+    ) || true
+    for tok in $cands; do
+        case "$head" in "$tok"*) named=1; break ;; esac
+    done
+    [ "$named" -eq 1 ] || { printf 'none\n'; return 0; }
+
+    case "$body" in
+        *"No actionable comments were generated"*) printf 'clean\n' ;;
+        *) printf 'dirty\n' ;;
+    esac
+    return 0
+}
 
 cr_review_freshness() {
     local owner="$1" repo="$2" num="$3" head="$4"
@@ -142,7 +317,7 @@ cr_review_freshness() {
     # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables — literal on purpose
     json=$(_crf_gh api graphql \
         -f o="$owner" -f r="$repo" -F n="$num" \
-        -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviews(last:100){totalCount nodes{author{login __typename} commit{oid} state}}}}}' \
+        -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviews(last:100){totalCount nodes{author{login __typename} commit{oid} state body comments(first:1){totalCount}}}}}}' \
         2>/dev/null) || return 1
 
     # Canary first, exactly like cr-signal.sh / cr-body-findings.sh: a valid
@@ -163,7 +338,34 @@ cr_review_freshness() {
     case "$result" in
         malformed) return 1 ;;
         none|paged) printf '%s\n' "$result"; return 0 ;;
-        fresh\ *|stale\ *) printf '%s\n' "$result"; return 0 ;;
+        fresh\ *) printf '%s\n' "$result"; return 0 ;;
+        stale\ *)
+            # HIMMEL-1824: no OBJECT at head is not the same claim as "the head
+            # was not reviewed". Before reporting stale, ask the channel a clean
+            # pass actually uses. A walkthrough that names this head and reports
+            # no actionable comments IS the App's verdict on this head.
+            # Fail-closed: an unreadable walkthrough leaves the stale verdict
+            # exactly as it was, so this can only ever turn a false BLOCK into a
+            # pass, never a real block into one.
+            #
+            # ONLY the stale arm needs this, and that is not an oversight (CR
+            # round 1 read it as one). "stale" is the sole BLOCKING state: the
+            # caller self-skips on "none" (absence of a bot review is not
+            # evidence of staleness, and cr-signal.sh already required a
+            # concluded status), so a PR with no review object but a clean
+            # walkthrough at head already passes. Consulting the walkthrough
+            # there would spend a call to change nothing.
+            # Minting this state does NOT assert the pass concluded — see the
+            # caller precondition in the header. Every current consumer gates
+            # on the bot status before it reaches this state, and the canary
+            # keeps it that way.
+            local walk
+            walk=$(cr_review_walkthrough "$owner" "$repo" "$num" "$head" 2>/dev/null || true)
+            if [ "$walk" = "clean" ]; then
+                printf 'fresh-clean-no-object %s\n' "${result#stale }"
+                return 0
+            fi
+            printf '%s\n' "$result"; return 0 ;;
         *) return 1 ;;
     esac
 }

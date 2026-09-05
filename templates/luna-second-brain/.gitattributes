@@ -1,2 +1,11 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Union merge is AUTO-RESOLUTION. It is safe ONLY for append-only line-record
+# ledgers, where "keep both sides' lines" is the correct merge. This is a CLOSED
+# ALLOWLIST of exactly two enumerated paths — never a glob. Sibling files under
+# handovers/.locks/queue/<lock>/ (owner, owner.json) are SINGLE-RECORD lock
+# ownership files that union merge would silently corrupt into two owners.
+# Adding a path here requires the same justification in writing (LUNA-131).
+handovers/.locks/arms.jsonl              merge=union
+handovers/.locks/queue/takeovers.log     merge=union

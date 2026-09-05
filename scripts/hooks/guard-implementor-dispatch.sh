@@ -15,9 +15,10 @@
 #   2. If no lane is available but the live 5-hour bank is near exhaustion,
 #      retain HIMMEL-920's HARD refusal / WARN advisory policy.
 #
-# Both policies fail open when their own evidence is unavailable. Lane routing
-# never blocks without a positively resolved lane. A bank HARD refusal requires
-# a fresh numeric utilization and a provably live five_hour resets_at window.
+# Lane routing never refuses toward a lane whose required bank windows are
+# unknown: missing/unreadable evidence is loud and skips that lane. A parent-bank
+# HARD refusal requires fresh numeric utilization for a window the parent lane
+# actually has and a provably live resets_at value.
 # Missing/unparseable resets_at downgrades HARD to the visible WARN advisory.
 #
 # Haiku always allows: it is already the cheap bulk-mechanical tier. Known
@@ -278,25 +279,24 @@ _run_bounded() {
     return "$rc"
 }
 
-# lane_funded <lane-id> — return 0 iff the lane's bank is FUNDED. FAIL-OPEN by
-# design: a missing helper, missing bun, a timeout, a non-zero exit, unparseable
-# output, or an explicit `unknown` state ALL resolve to FUNDED with one warning.
-# ONLY a live `spent` state returns non-zero. This guard never invents a new
-# hard-block — `spent` makes the caller SKIP this lane toward the other lane (or
-# the HIMMEL-920 fall-through); it never refuses toward the caller.
+# lane_funded <lane-id> — return 0 iff the lane's declared active access path is
+# positively FUNDED. Missing helpers, timeouts, non-zero exits, garbage, missing
+# lane lines, and explicit `unknown` verdicts all fail LOUD and skip the lane.
+# This never refuses toward the caller directly: it falls through to another
+# lane or the parent-bank guard, but never routes toward unmeasured capacity.
 lane_funded() {
-    local id="$1" cmd budget out rc state lid lstate
+    local id="$1" cmd budget out rc state lid lstate _detail
     budget="${IMPL_GUARD_BANK_BUDGET_SECS:-4}"
     if [ -n "${IMPL_GUARD_BANK_STATUS_CMD:-}" ]; then
         cmd="$IMPL_GUARD_BANK_STATUS_CMD"
     else
         if ! command -v bun >/dev/null 2>&1; then
-            warn "lane '$id' bank-status probe needs bun, which is not on PATH — treating it as funded (fail-open)"
-            return 0
+            warn "lane '$id' bank-status probe needs bun, which is not on PATH — bank UNKNOWN; skipping it"
+            return 1
         fi
         if [ ! -f "$repo_root/scripts/lanes/bank-status.ts" ]; then
-            warn "lane '$id' bank-status probe is missing ($repo_root/scripts/lanes/bank-status.ts) — treating it as funded (fail-open)"
-            return 0
+            warn "lane '$id' bank-status probe is missing ($repo_root/scripts/lanes/bank-status.ts) — bank UNKNOWN; skipping it"
+            return 1
         fi
         cmd="bun \"$repo_root/scripts/lanes/bank-status.ts\""
     fi
@@ -306,16 +306,16 @@ lane_funded() {
     # crashed can still have written a partial `<lane> spent` line, and the
     # `spent` arm below is the ONE arm that refuses a lane — so parsing first
     # let a half-dead probe skip a lane on evidence it never finished
-    # producing. Non-zero rc means "no verdict", which is fail-OPEN by this
-    # function's documented contract, whatever bytes landed on stdout.
+    # producing. Non-zero rc means "no verdict", so the lane is skipped,
+    # whatever bytes landed on stdout.
     if [ "$rc" -ne 0 ]; then
-        warn "lane '$id' bank-status probe did not finish cleanly (rc=$rc) — treating it as funded (fail-open)"
-        return 0
+        warn "lane '$id' bank-status probe did not finish cleanly (rc=$rc) — bank UNKNOWN; skipping it"
+        return 1
     fi
     # Parse `<lane-id> <state>` for this lane. A here-string (no pipeline) keeps
-    # this pipefail-safe (HIMMEL-1430).
+    # this pipefail-safe (HIMMEL-1430); the third variable absorbs status detail.
     state=""
-    while IFS=' ' read -r lid lstate; do
+    while IFS=' ' read -r lid lstate _detail; do
         [ -n "$lid" ] || continue
         if [ "$lid" = "$id" ]; then
             state="$lstate"
@@ -330,14 +330,17 @@ lane_funded() {
         funded)
             return 0
             ;;
+        unknown)
+            warn "lane '$id' bank is UNKNOWN — skipping it; inspect /lanes for the missing required window"
+            return 1
+            ;;
         *)
-            # No rc branch here — a non-zero rc already returned above.
             if [ -z "$state" ]; then
-                warn "lane '$id' bank-status probe returned no '$id' line — treating it as funded (fail-open)"
+                warn "lane '$id' bank-status probe returned no '$id' line — bank UNKNOWN; skipping it"
             else
-                warn "lane '$id' bank-status probe returned an unrecognised state ('$state') — treating it as funded (fail-open)"
+                warn "lane '$id' bank-status probe returned an unrecognised state ('$state') — bank UNKNOWN; skipping it"
             fi
-            return 0
+            return 1
             ;;
     esac
 }

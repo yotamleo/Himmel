@@ -25,6 +25,13 @@ import { resolveProfileByName, parseAddPlugins, readEnabledPluginIds } from "../
 // threshold that drifts from the code is the exact prose-vs-mechanism failure
 // this guard exists to end).
 import { checkRoundGuard } from "./round-guard";
+// HIMMEL-1778: huge-diff lane guard — warn (never block) when the target
+// branch's diff vs main is dominated by one huge file, naming the file, so a
+// worker ingesting `git diff main` can't blow its context window unattributed.
+import { checkHugeDiff } from "./huge-diff-guard";
+// HIMMEL-2154: shared declarative flag-table parser — the mechanical part of
+// parseArgs (and spawn-claudex's parseClaudexArgs) collapsed into one loop.
+import { parseLaneArgs, type FlagTable } from "./lane-args";
 
 // HIMMEL-1040: the default lane profile for an impl worker — the lean set (floor
 // + pr-review-toolkit). Override per-dispatch with --profile; `operator` opts out
@@ -181,6 +188,17 @@ export function mintRetaskNonce(): string {
 // which instructions are actually honored). Lane-agnostic: spawn-claudex.ts
 // imports this so both lanes carry byte-identical rules text, only the token
 // differs per dispatch.
+// HIMMEL-1755: ~50 worktrees of the primary checkout share ONE `refs/stash`, so
+// a worker's `git stash pop`/`drop` reaches into a PARALLEL session's entries.
+// Measured twice in a single leg (2026-08-12): a drop destroyed another
+// session's stash, recovered only because it had been tagged.
+// scripts/hooks/block-git-stash.sh refuses the mutations structurally; this line
+// is the brief-level twin, so a worker reaches for the sanctioned alternative
+// instead of bouncing off a deny it does not understand. Exported and shared by
+// both lanes for the same reason composeRetaskBlock is.
+export const STASH_BAN_LINE =
+  "NEVER MUTATE THE STASH — no bare `git stash`, and no push/save/pop/drop/clear/branch/store. Every worktree of this checkout shares ONE refs/stash, so a stash mutation silently destroys a parallel session's entries; a PreToolUse guard refuses them. Commit your work-in-progress on your own branch instead, or snapshot it to refs/checkpoints/<slug>; for a stash-shaped snapshot, `git tag wip-<slug> \"$(git stash create)\"` is race-free (`create` writes no ref, so there is nothing for another session to drop) and `git stash apply wip-<slug>` restores it. Reading the stash is FINE and not discouraged: `git stash list`, `show`, `apply` and `create` are all allowed.";
+
 export function composeRetaskBlock(nonce: string): string {
   return [
     `RETASK CHANNEL: The coordinator may revise this brief (expand, narrow, redirect)`,
@@ -248,9 +266,8 @@ export function composeGlmOutboxWriteHint(outbox: string): string {
 // ── HIMMEL-1378: permission hardening (prevention, not just detection) ─────
 //
 // Design: bypassPermissions is FORBIDDEN for an unattended worker (it strips
-// EVERY guardrail — block-glm-external-writes.sh, block-read-secrets.sh, the
-// pushurl tripwire's own permission surface, all of it — trading the hang
-// class this ticket fixes for a much worse one). The chosen mechanism is
+// EVERY guardrail — block-glm-external-writes.sh, block-read-secrets.sh, all
+// of it — trading the hang class this ticket fixes for a much worse one). The chosen mechanism is
 // `--permission-mode dontAsk` (verified via `claude --help` on the installed
 // v2.1.220 CLI as a real accepted value, and via current Claude Code
 // permission docs as the ONLY mode documented to auto-DENY an unmatched tool
@@ -392,6 +409,7 @@ export function composeWorkerPrompt(task: string, sessionDir: string, branch: st
     `You are an unattended GLM-lane worker session (himmel offload spike).`,
     branchLine,
     `HARD RULES: never push, never open a PR — a validating session reviews your branch and owns the git/PR surface. Jira updates (status, comments, followup tickets) ARE allowed via node scripts/jira/dist/index.js (audited + recoverable).`,
+    STASH_BAN_LINE,
     `COMMIT EARLY (HIMMEL-1200): the MOMENT your tests pass — or the change is otherwise coherent — git commit your work on ${branch}, then keep refining in FOLLOW-UP commits. Use a CONVENTIONAL commit message ("type(scope): [HIMMEL-N ]summary", type one of feat|fix|chore|docs|refactor|test; the [HIMMEL-N ] ticket ref is optional but validated if present) — the commit-msg gate REJECTS a non-conventional message, and a rejected commit would recreate the very uncommitted-timeout failure this rule prevents. Do NOT hold all your work for one final commit: a committed-but-imperfect branch is recoverable by the parent, but an uncommitted timeout at the wall loses everything.`,
     `ATTESTATION (HIMMEL-1210): the pre-push gate needs two trailers on that first commit, and they must be TRUE — actually do the work they claim, then attest it, never paste them by rote. If you touched a shell/script file, run/exercise it, then add \`Platforms tested: <os>\` naming the OS you actually tested on. On any non-docs code change, actually read back your own diff, then add \`Security reviewed: <token>\` with whichever of these matches what you did: manual, claude-code-security-review, pr-review-toolkit, ad-hoc.`,
     composeRetaskBlock(mintRetaskNonce()),
@@ -459,31 +477,54 @@ export function preflightWindowCheck(p: { briefChars: number; overheadChars: num
   return { ok: true };
 }
 
-// Default-path push tripwire (spec D4 — honest scope: blocks accidental/default
-// pushes only; the load-bearing control is the CR gate). extensions.worktreeConfig
-// is a REPO-GLOBAL toggle (documented, left permanent).
-// CR round 2 F4: the poison string is compared against elsewhere
-// (runSharedDispatch's prior-pushurl capture) — one definition so the two
-// sites cannot drift apart. Exported (HIMMEL-1003): the claudex lane reuses
-// poisonPushUrl AS-IS (lane-agnostic — the sentinel's literal text doesn't
-// matter functionally, only that a push against it fails) and needs the same
-// constant for its own runSharedDispatch twin's I2 crash-recovery compare, so
-// the three sites (this file's two + the claudex twin) share ONE definition.
-export const POISON_SENTINEL = "DISABLED-glm-quarantine" as const;
+// REMOVED (HIMMEL-1961): the pushurl "quarantine" that used to live here.
+// This lane rewrote remote.origin.pushurl to a sentinel for the duration of a
+// dispatch. It was never a fence and it cost more than it bought:
+//   - it only affects remote-NAME resolution. A worker reads remote.origin.url
+//     and runs `git push <explicit-url>`; rewriting url too does not help,
+//     because the destination can be reconstructed independently.
+//   - mutating shared git config is unsafe across concurrent dispatches and
+//     abnormal termination, and could PERMANENTLY LOSE the operator's push
+//     configuration. himmel runs concurrent dispatches by design.
+//   - it stranded the sentinel on any worktree whose worker was hard-killed
+//     (HIMMEL-1929), and with no producer left nothing self-healed it.
+// HIMMEL-1942 deleted the same mechanism from dispatch-lane.sh after three
+// review rounds rather than patch it a fourth time; this is the matching
+// removal in the spawner lanes.
+//
+// WHAT THIS COSTS, stated so nobody has to rediscover it: a worker keeps the
+// operator's git credentials (it always did — the sentinel never removed
+// them), and the default-path push no longer hits a second net behind the
+// deny-hook. That accident-layer depth is knowingly traded away, because the
+// only thing providing it could permanently lose the operator's push
+// configuration, and a lost remote costs more than the accident it prevents.
+// The remaining layers are the worker contract, block-glm-external-writes.sh
+// on the command shapes, and the parent CR gate. The decision, its threat
+// model (a worker misreading a parent-authored brief, not an adversary), and
+// the named conditions that would reverse it are recorded on HIMMEL-1961. Push protection here is CONTRACT-ONLY and the
+// dispatch report says so out loud. Do not reintroduce a config-mutation
+// fence: a real one needs credential/network isolation, which is an operator
+// call tracked on HIMMEL-1961, not something a spawner can fake with git config.
+//
+// scripts/lanes/stop-worker.sh still clears the sentinel when it halts a
+// worker (HIMMEL-1929). That is deliberate: it heals historical residue left
+// by dispatches that ran BEFORE this removal.
 
-export function poisonPushUrl(repoRoot: string, worktree: string): void {
-  const g = (args: string[], cwd: string) => { const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.toString()}`); };
-  g(["config", "extensions.worktreeConfig", "true"], repoRoot);
-  g(["config", "--worktree", "remote.origin.pushurl", POISON_SENTINEL], worktree);
-}
+// The disclosure every lane report carries, word-for-word what
+// dispatch-lane.sh prints (HIMMEL-1942) so an operator reading any lane's
+// report gets the same sentence. Exported: the claudex lane prints the same
+// line, and one definition means the two cannot drift into saying different
+// things about the same (absent) protection.
+export const PUSH_PROTECTION_DISCLOSURE =
+  "push protection: contract-only; pushing, opening a PR, and merging are NOT mechanically prevented by this lane";
 
 // HIMMEL-1096: pre-trust a freshly-created worktree in Claude Code's config
 // (~/.claude.json) so the spawned worker's `claude` launch does not stall on
 // the interactive workspace-trust prompt — an unattended GLM/claudex dispatch
 // has no human present to answer it. Delegates to the shared helper
 // (scripts/lib/ensure-workspace-trust.sh, HIMMEL-386), already used by
-// arm-resume.sh and vmsdk.py for the same reason. Exported (mirrors
-// poisonPushUrl) so the claudex lane reuses it as-is. Non-fatal by the
+// arm-resume.sh and vmsdk.py for the same reason. Exported so the claudex
+// lane reuses it as-is. Non-fatal by the
 // helper's own contract (documented there: any nonzero exit is warn-and-
 // continue, never abort) — a trust pre-seed failure must never block a spawn.
 export function ensureWorkspaceTrust(worktree: string): void {
@@ -725,68 +766,119 @@ export function isHelpFlag(argv: string[]): boolean {
   return argv.includes("--help") || argv.includes("-h");
 }
 
-export type ParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small"; profile: string; addPlugins: string[]; roundsOverride?: string };
+export type ParsedArgs = { task?: string; briefFile?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; armOnCap: boolean; grants: GrantSpec[]; autonomous: boolean; carryFrom?: string; context?: "big" | "small"; profile: string; addPlugins: string[]; roundsOverride?: string };
+
+// HIMMEL-2154: the declarative flag table for parseArgs (shared loop mechanics
+// live in lane-args.ts's parseLaneArgs; spawn-claudex.ts's CLAUDEX_FLAG_TABLE
+// is its twin). Each entry is the exact per-flag validation the old inline
+// if/else chain had — only the "requires a value" / unrecognized-flag /
+// positional-capture mechanics moved out.
+const GLM_FLAG_TABLE: FlagTable<ParsedArgs> = {
+  "--cwd": { kind: "value", apply: (s, v) => { s.cwd = v; return undefined; } },
+  "--name": { kind: "value", apply: (s, v) => { s.name = v; return undefined; } },
+  // HIMMEL-800: --branch selects shared-branch mode (commit onto an existing
+  // caller-named branch under a lock, instead of minting glm/<slug> fresh).
+  "--branch": { kind: "value", apply: (s, v) => { s.branch = v; return undefined; } },
+  "--timeout-mins": {
+    kind: "value",
+    apply: (s, v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return `--timeout-mins must be a positive number (got "${v}")`;
+      s.timeoutMins = n;
+      return undefined;
+    },
+  },
+  "--permission-mode": {
+    kind: "value",
+    apply: (s, v) => {
+      const err = refuseUnknownPermissionMode(v);
+      if (err) return err;
+      s.permMode = v as PermissionMode;
+      return undefined;
+    },
+  },
+  "--arm-on-cap": { kind: "bool", apply: (s) => { s.armOnCap = true; } },
+  "--no-arm-on-cap": { kind: "bool", apply: (s) => { s.armOnCap = false; } },
+  "--grant": {
+    kind: "value",
+    apply: (s, v) => {
+      const p = parseGrantFlag(v);
+      if (!p.ok) return `--grant ${p.error}`;
+      s.grants.push(p.spec);
+      return undefined;
+    },
+  },
+  "--autonomous": { kind: "bool", apply: (s) => { s.autonomous = true; } },
+  "--carry-from": { kind: "value", apply: (s, v) => { s.carryFrom = v; return undefined; } },
+  // HIMMEL-1780: --brief-file reads the TASK from a file, so a multi-line
+  // dispatch is ONE literal command (`bun scripts/telegram/spawn-glm.ts
+  // --brief-file <path> ...`) instead of the cd/$(cat)/var compound that
+  // defeats both the allow-rule prefix and the native permission matcher
+  // (HIMMEL-203). The file is READ in main(), not here — parseArgs stays
+  // pure (fs-free), so a missing/unreadable path is a clean main()-side
+  // usage refusal.
+  "--brief-file": { kind: "value", apply: (s, v) => { s.briefFile = v; return undefined; } },
+  "--context": {
+    kind: "value",
+    apply: (s, v) => {
+      if (v !== "big" && v !== "small") return `--context must be big or small (got "${v}")`;
+      s.context = v;
+      return undefined;
+    },
+  },
+  // HIMMEL-1040: --profile selects the lane plugin profile (default lane-impl);
+  // --add-plugins a@m,b@m is the per-dispatch overlay (repeatable — values
+  // accumulate). Resolution/validation happens in main() so a bad name/id is a
+  // clean pre-side-effect refusal.
+  "--profile": { kind: "value", apply: (s, v) => { s.profile = v; return undefined; } },
+  "--add-plugins": { kind: "value", apply: (s, v) => { s.addPlugins.push(...parseAddPlugins(v)); return undefined; } },
+  // HIMMEL-1553: recorded operator override for the round guard's cheap-lane
+  // refusal at ROUND_ESCALATE_THRESHOLD. Reason substance is enforced by the
+  // guard itself (checkRoundGuard), so the refusal can explain the floor.
+  "--rounds-override": {
+    kind: "value",
+    missingValueError: "--rounds-override requires a value (why another cheap-lane round is justified)",
+    apply: (s, v) => { s.roundsOverride = v; return undefined; },
+  },
+};
+
 // Pure + validated: a value-taking flag with no value, or a non-positive /
 // non-finite --timeout-mins, is a USAGE REFUSAL (main → exit 2) — NOT a silent
 // NaN that setTimeout(NaN)≈0 turns into an instant kill, and NOT a bare
 // resolve() throw from a trailing --cwd with no value.
 export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | { ok: false; error: string } {
-  let task: string | undefined;
-  let cwd = process.cwd();
-  let name: string | undefined;
-  let branch: string | undefined;
-  let timeoutMins: number | undefined;
-  let permMode: PermissionMode | undefined;
-  let armOnCap = true;
-  const grants: GrantSpec[] = [];
-  let autonomous = false;
-  let carryFrom: string | undefined;
-  let context: "big" | "small" | undefined;
-  // HIMMEL-1040: --profile selects the lane plugin profile (default lane-impl);
-  // --add-plugins a@m,b@m is the per-dispatch overlay (repeatable — values
-  // accumulate). Resolution/validation happens in main() so a bad name/id is a
-  // clean pre-side-effect refusal.
-  let profile = DEFAULT_LANE_PROFILE;
-  const addPlugins: string[] = [];
-  let roundsOverride: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
-    else if (a === "--name") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--name requires a value" }; name = v; }
-    // HIMMEL-800: --branch selects shared-branch mode (commit onto an existing
-    // caller-named branch under a lock, instead of minting glm/<slug> fresh).
-    else if (a === "--branch") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--branch requires a value" }; branch = v; }
-    else if (a === "--timeout-mins") {
-      const v = argv[++i];
-      if (v === undefined) return { ok: false, error: "--timeout-mins requires a value" };
-      const n = Number(v);
-      if (!Number.isFinite(n) || n <= 0) return { ok: false, error: `--timeout-mins must be a positive number (got "${v}")` };
-      timeoutMins = n;
-    }
-    else if (a === "--permission-mode") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--permission-mode requires a value" }; permMode = v as PermissionMode; }
-    else if (a === "--arm-on-cap") armOnCap = true;
-    else if (a === "--no-arm-on-cap") armOnCap = false;
-    else if (a === "--grant") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--grant requires a value" }; const p = parseGrantFlag(v); if (!p.ok) return { ok: false, error: `--grant ${p.error}` }; grants.push(p.spec); }
-    else if (a === "--autonomous") autonomous = true;
-    else if (a === "--carry-from") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--carry-from requires a value" }; carryFrom = v; }
-    else if (a === "--context") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--context requires a value" }; if (v !== "big" && v !== "small") return { ok: false, error: `--context must be big or small (got "${v}")` }; context = v; }
-    else if (a === "--profile") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--profile requires a value" }; profile = v; }
-    else if (a === "--add-plugins") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--add-plugins requires a value" }; addPlugins.push(...parseAddPlugins(v)); }
-    // HIMMEL-1553: recorded operator override for the round guard's cheap-lane
-    // refusal at ROUND_ESCALATE_THRESHOLD. Reason substance is enforced by the
-    // guard itself (checkRoundGuard), so the refusal can explain the floor.
-    else if (a === "--rounds-override") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--rounds-override requires a value (why another cheap-lane round is justified)" }; roundsOverride = v; }
-    // HIMMEL-1225: a bare unrecognized flag (--help/-h already short-circuit in
-    // main) is a mistyped/unsupported option, NOT a task — fail closed rather
-    // than dispatch a real worker to reason about the literal flag string.
-    else if (a.startsWith("-")) return { ok: false, error: `unrecognized flag "${a}" (--help for usage)` };
-    else if (task === undefined) task = a;
-  }
+  const args: ParsedArgs = {
+    task: undefined, briefFile: undefined, cwd: process.cwd(), name: undefined, branch: undefined,
+    timeoutMins: undefined, permMode: undefined, armOnCap: true, grants: [], autonomous: false,
+    carryFrom: undefined, context: undefined, profile: DEFAULT_LANE_PROFILE, addPlugins: [], roundsOverride: undefined,
+  };
+  const result = parseLaneArgs(argv, GLM_FLAG_TABLE, args, (s, token) => { if (s.task === undefined) s.task = token; });
+  if (!result.ok) return result;
   // HIMMEL-800: --branch and --name are mutually exclusive — shared mode
   // derives its slug from the branch name, so a co-supplied --name would be
   // silently ignored (or ambiguous about which name wins). Refuse instead.
-  if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
-  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins, roundsOverride } };
+  if (args.branch !== undefined && args.name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
+  // HIMMEL-1780: --brief-file and a positional prompt are mutually exclusive —
+  // the file's contents BECOME the task, so a co-supplied positional would be
+  // silently dropped (or ambiguous about which brief wins). Refuse instead.
+  if (args.briefFile !== undefined && args.task !== undefined) return { ok: false, error: "--brief-file and a positional prompt are mutually exclusive (pass the brief as a file or inline, not both)" };
+  return { ok: true, args };
+}
+
+// HIMMEL-1780: the --brief-file read, extracted so every failure mode is a
+// TESTABLE refusal rather than an inlined readFileSync in main(). FAIL-CLOSED
+// on every branch: a missing, unreadable (EACCES/EISDIR/…) or EMPTY file is a
+// usage error naming the path — never a dispatch that silently proceeds with
+// an empty brief. Contents are returned VERBATIM (no trim beyond the
+// emptiness probe) so multi-line briefs reach the worker byte-for-byte.
+export function readBriefFile(path: string): { ok: true; task: string } | { ok: false; error: string } {
+  try {
+    const text = readFileSync(path, "utf8");
+    if (text.trim().length === 0) return { ok: false, error: `--brief-file ${path} is empty — refusing to dispatch a worker with no brief` };
+    return { ok: true, task: text };
+  } catch (e) {
+    return { ok: false, error: `--brief-file ${path} could not be read (${String((e as { message?: string })?.message ?? e)}) — refusing to dispatch a worker with no brief` };
+  }
 }
 
 // HIMMEL-682 (Task L1): read a capped session's grants.jsonl and compute the
@@ -1301,11 +1393,11 @@ export async function executeRun(deps: {
 // source-text wiring-pinned. Dependency-injected: `gitAdd` performs the
 // existing-branch (NO -b) worktree add main() supplies, `runBody` is the
 // mkdir-sessionDir-through-executeRun block main() builds. Returns ok:false on
-// a failed lock acquire (main maps it to exit 4). The pushurl restore + lock
-// release run in a finally on every CATCHABLE exit path (including a thrown
-// runBody, which still propagates after cleanup); a SIGKILL/hard-kill is not
-// catchable, so a leaked lock is recovered manually via `shared-branch-lock.sh
-// release` (docs/glm-offload.md).
+// a failed lock acquire (main maps it to exit 4). The lock release runs in a
+// finally on every CATCHABLE exit path (including a thrown runBody, which
+// still propagates after cleanup); a SIGKILL/hard-kill is not catchable, so a
+// leaked lock is recovered manually via `shared-branch-lock.sh release`
+// (docs/glm-offload.md).
 export async function runSharedDispatch(p: {
   repoDir: string; worktree: string; branch: string; needsWorktreeAdd: boolean;
   lockScript: string; gitAdd: () => void; runBody: () => Promise<number>;
@@ -1315,82 +1407,52 @@ export async function runSharedDispatch(p: {
     env: { ...process.env, SHARED_BRANCH_LOCK_HOLDER_PID: String(process.pid) },
   });
   if (acquire.exitCode !== 0) return { ok: false, reason: acquire.stderr.toString().trim() || `spawn-glm: shared-branch-lock acquire failed (rc=${acquire.exitCode})` };
-  let priorPushUrl: string | undefined;
-  // CR round 2 F5: only true once poisonPushUrl has actually completed — gates
-  // the finally's restore step so a throw BEFORE poisoning (gitAdd, or the
-  // priorPushUrl read itself) never triggers a restore attempt (or its
-  // "may stay push-poisoned" warning) against a worktree that was never
-  // touched. Distinct from priorPushUrl: that can legitimately stay
-  // `undefined` (no prior url) while poisoned is still true.
-  let poisoned = false;
   try {
     if (p.needsWorktreeAdd) p.gitAdd(); // NO -b: an existing branch, never minted here
     // Unconditional (codex-adv, HIMMEL-1096 CR round): a REUSED managed
     // worktree (needsWorktreeAdd=false) from a pre-change or failed dispatch
     // may never have been trust-seeded — seeding is idempotent, so cover both.
     ensureWorkspaceTrust(p.worktree);
-    // Capture any pre-existing per-worktree pushurl immediately before
-    // poisoning so the finally can restore exactly what was there. Crash-
-    // recovery constraint (I2): a prior shared-mode run that crashed between
-    // poison and restore leaves the poison sentinel as the pushurl — treat
-    // that as "no prior pushurl" so the finally UNSETS it rather than
-    // restoring the poison forever. F9 narrow edge: on a repo whose
-    // extensions.worktreeConfig was never enabled, `--worktree --get` can
-    // fall back to reading the repo-level pushurl; the later restore
-    // re-scopes it per-worktree via `--worktree` — accepted (first-ever
-    // dispatch + a pre-existing repo-level pushurl only).
-    const priorRes = Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "--get", "remote.origin.pushurl"], { stdout: "pipe", stderr: "pipe" });
-    if (priorRes.exitCode === 0) {
-      const got = priorRes.stdout.toString().trim();
-      if (got !== POISON_SENTINEL) priorPushUrl = got;
-    }
-    poisonPushUrl(p.repoDir, p.worktree);
-    poisoned = true;
+    // No pushurl mutation here any more (HIMMEL-1961, see the removal note
+    // above): this dispatch leaves the operator's git config exactly as it
+    // found it, in every scope.
     const code = await p.runBody();
     return { ok: true, code };
   } finally {
-    // Restore/unset the pushurl, THEN release the lock — the release sits in
-    // its own inner finally so a throw from the pushurl step cannot skip it (a
-    // poisoned worktree is bad; a leaked lock blocks the next writer, worse).
-    // F6: each cleanup step gets its OWN try/catch — a THROWING Bun.spawnSync
-    // (unspawnable git/bash binary, not just a nonzero exit) must degrade to a
-    // logged warning and never replace/out-rank a substantive error already
-    // propagating from runBody/gitAdd/poisonPushUrl above.
+    // Releasing the lock is now the ONLY cleanup: a leaked lock blocks the
+    // next writer on this branch, so it keeps its own try/catch — a THROWING
+    // Bun.spawnSync (unspawnable git/bash binary, not just a nonzero exit)
+    // must degrade to a logged warning and never replace/out-rank a
+    // substantive error already propagating from runBody/gitAdd above.
     try {
-      // F5: skip the restore attempt AND its warning entirely when poisoning
-      // never happened — nothing to restore, and warning would be misleading.
-      if (poisoned) {
-        const restore = priorPushUrl !== undefined
-          ? Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "remote.origin.pushurl", priorPushUrl], { stdout: "pipe", stderr: "pipe" })
-          : Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "--unset", "remote.origin.pushurl"], { stdout: "pipe", stderr: "pipe" });
-        // `--unset` exits 5 when the key is already absent — benign in the
-        // no-prior-pushurl case (nothing to clear). Any OTHER nonzero is loud so
-        // a worktree left push-poisoned leaves a trail.
-        if (restore.exitCode !== 0 && !(priorPushUrl === undefined && restore.exitCode === 5)) {
-          console.error(`spawn-glm: WARNING - pushurl restore failed (rc=${restore.exitCode}); ${p.worktree} may stay push-poisoned: ${restore.stderr.toString().trim()}`);
-        }
-      }
+      const rel = Bun.spawnSync([BASH_BIN, p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
+      if (rel.exitCode !== 0) console.error(`spawn-glm: WARNING - shared-branch-lock release failed (rc=${rel.exitCode}); the lock for ${p.branch} may stay held: ${rel.stderr.toString().trim()}`);
     } catch (e) {
-      console.error(`spawn-glm: WARNING - pushurl restore threw (${String((e as any)?.message ?? e)}); ${p.worktree} may stay push-poisoned`);
-    } finally {
-      try {
-        const rel = Bun.spawnSync([BASH_BIN, p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
-        if (rel.exitCode !== 0) console.error(`spawn-glm: WARNING - shared-branch-lock release failed (rc=${rel.exitCode}); the lock for ${p.branch} may stay held: ${rel.stderr.toString().trim()}`);
-      } catch (e) {
-        console.error(`spawn-glm: WARNING - shared-branch-lock release threw (${String((e as any)?.message ?? e)}); the lock for ${p.branch} may stay held`);
-      }
+      console.error(`spawn-glm: WARNING - shared-branch-lock release threw (${String((e as any)?.message ?? e)}); the lock for ${p.branch} may stay held`);
     }
   }
 }
 
 async function main(): Promise<void> {
-  const usage = "usage: spawn-glm <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--context big|small] [--profile <name>] [--add-plugins a@m,b@m] [--rounds-override <why>] (default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
+  const usage = "usage: spawn-glm [<prompt> | --brief-file <path>] [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--context big|small] [--profile <name>] [--add-plugins a@m,b@m] [--rounds-override <why>] (the prompt is the task brief, inline, or read verbatim from --brief-file — HIMMEL-1780; default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
   const rawArgv = process.argv.slice(2);
   // HIMMEL-1225: help short-circuit — before parseArgs, before any side effect.
   if (isHelpFlag(rawArgv)) { console.log(usage); process.exit(0); }
   const parsed = parseArgs(rawArgv);
   if (!parsed.ok) { console.error(`spawn-glm: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins, roundsOverride } = parsed.args;
+  const { task: taskArg, briefFile, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, armOnCap, grants, autonomous, carryFrom, context, profile, addPlugins, roundsOverride } = parsed.args;
+  // HIMMEL-1780: --brief-file's contents BECOME the task. Read here — before
+  // any side effect and before every task-consuming consumer below (round
+  // guard, window preflight, composeWorkerPrompt) — so a missing/unreadable/
+  // empty file is a clean exit-2 usage refusal that leaves no orphan
+  // worktree/branch/meta, and the file's brief flows through the EXISTING
+  // brief.md + pointer-prompt machinery unchanged (HIMMEL-740).
+  let task: string | undefined = taskArg;
+  if (briefFile !== undefined) {
+    const brief = readBriefFile(briefFile);
+    if (!brief.ok) { console.error(`spawn-glm: ${brief.error}`); console.error(usage); process.exit(2); }
+    task = brief.task;
+  }
   if (!task) { console.error(usage); process.exit(2); }
   // HIMMEL-1378: structural forbid, before any side effect. Never a silent
   // downgrade — a caller asking for bypassPermissions gets a clean usage
@@ -1489,7 +1551,7 @@ async function main(): Promise<void> {
   if (!pre.ok) { console.error(pre.reason); process.exit(2); }
 
   // GLM guard (spec D2) BEFORE any worktree/branch mutation (#848): a refusal
-  // must leave NO orphan worktree/branch/poisoned-pushurl behind. The
+  // must leave NO orphan worktree/branch behind. The
   // path-under-list checks resolve worktree as a string, so a PHI- or
   // egress-denied dispatch path refuses here, pre-creation.
   const guard = checkGlmGuards(worktree);
@@ -1504,6 +1566,13 @@ async function main(): Promise<void> {
   // i.e. before ANY of the worker's state exists. The own-branch caller passes a
   // teardown; shared mode passes nothing (runSharedDispatch calls runBody()).
   const runBody = async (onSetupFail?: () => void): Promise<number> => {
+    // HIMMEL-1778: runBody is the one seam that covers BOTH modes after the
+    // branch exists and BEFORE the worker launches (own-branch: minted just
+    // above; shared: gitAdd ran inside runSharedDispatch). Warn-only — a
+    // legitimately large branch still dispatches; the warning names the
+    // dominating path + share so the next context-window death is attributable.
+    const hugeDiff = checkHugeDiff("spawn-glm", { cwd: worktree, branch });
+    if (hugeDiff.note) console.error(hugeDiff.note);
     // HIMMEL-1040 (CR): resolve the profile FIRST — before meta.json is written.
     // resolveProfileSettings throws on an unreadable/malformed settings layer, and
     // it sits OUTSIDE executeRun's failure-transition guard; if it ran after the
@@ -1637,7 +1706,6 @@ async function main(): Promise<void> {
   if (!sharedMode) {
     g(["worktree", "add", worktree, "-b", branch]);
     ensureWorkspaceTrust(worktree);
-    poisonPushUrl(absCwd, worktree);
     // HIMMEL-1094: this dispatch MINTED both the worktree and the branch (-b), so
     // it owns them until the worker starts. Teardown is passed ONLY here — shared
     // mode must never tear down a caller-owned worktree/branch.
@@ -1658,6 +1726,7 @@ async function main(): Promise<void> {
 
   console.log(`session-dir: ${sessionDir}`);
   console.log(`transcript-dir: ${transcriptDirFor(worktree)}`);
+  console.log(PUSH_PROTECTION_DISCLOSURE);
   console.log(`exit: ${code}`);
   process.exit(code);
 }

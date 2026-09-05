@@ -9,6 +9,7 @@
       "profiles": ["core", "all"],
       "deps": [],
       "probe": { "type": "git-hooks", "hooks": ["pre-commit", "commit-msg", "pre-push"] },
+      "install": { "type": "adopt" },
       "removable": "full-offboard-only"
     },
     {
@@ -101,6 +102,7 @@
       "profiles": ["luna", "all"],
       "deps": ["tokensave-binary"],
       "probe": { "type": "mcp-registered", "server": "tokensave", "bin": "tokensave", "initMarker": ".tokensave" },
+      "install": { "type": "tokensave" },
       "removable": "full-offboard-only"
     },
     {
@@ -130,6 +132,17 @@
       "profiles": ["core", "luna", "all"],
       "deps": [],
       "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins" },
+      "install": { "type": "plugins" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "himmel-ops-plugin",
+      "kind": "plugin",
+      "scopes": ["project", "user"],
+      "profiles": ["core", "luna", "all"],
+      "deps": [],
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins.himmel-ops@himmel", "expect": true },
       "install": { "type": "plugins" },
       "removable": "full-offboard-only",
       "offboard": "advise"
@@ -391,6 +404,7 @@
       "profiles": ["core", "all"],
       "deps": [],
       "probe": { "type": "cmd:guardrail_block_status", "script": "scripts/hooks/guardrail-block.mjs" },
+      "install": { "type": "wire", "target": "guardrail-block-global" },
       "removable": "full-offboard-only"
     },
     {
@@ -410,6 +424,91 @@
       "profiles": ["core", "all"],
       "deps": [],
       "probe": { "type": "dep", "cmd": "gemini" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "cadence-armed",
+      "kind": "scheduler",
+      "scopes": ["user"],
+      "profiles": ["luna", "all"],
+      "deps": [],
+      "probe": { "type": "cadence-coherence", "envVar": "PIPELINE_BAT_DIR", "defaultSubdir": ".claude/pipeline-cadence" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "luna-sources",
+      "kind": "vault",
+      "scopes": ["user"],
+      "profiles": ["luna", "all"],
+      "deps": ["luna-vault-scaffold"],
+      "probe": { "type": "luna-sources", "script": "scripts/luna/fetch-health.py", "sources": ["reddit", "x-fxtwitter", "instagram-embed", "instagram-media", "x-media", "x-twitter-cli", "youtube-playwright", "firecrawl", "bitbucket"] },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "phi-coherence",
+      "kind": "wiring",
+      "scopes": ["user"],
+      "profiles": ["luna", "all"],
+      "deps": ["luna-vault-scaffold"],
+      "probe": { "type": "phi-coherence" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "engine-allowlist",
+      "kind": "wiring",
+      "scopes": ["user"],
+      "profiles": ["luna", "all"],
+      "deps": ["cadence-armed"],
+      "probe": {
+        "type": "engine-allowlist",
+        "script": "scripts/hooks/cadence-approve-engines.sh",
+        "envVar": "PIPELINE_BAT_DIR",
+        "defaultSubdir": ".claude/pipeline-cadence",
+        "legs": [
+          { "schedule": "harvest", "requiredSuffixes": [
+            "marketplace/plugins/obsidian-triage/tools/harvest-clip-body-batch.py",
+            "marketplace/plugins/obsidian-triage/tools/ig-media-fetch.py"
+          ] },
+          { "schedule": "health", "requiredSuffixes": [
+            "marketplace/plugins/obsidian-triage/skills/vault-lint/vault_lint.py"
+          ] }
+        ]
+      },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "bridge-health",
+      "kind": "lane",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": ["telegram-bridge"],
+      "probe": { "type": "bridge-health", "envFile": ".claude/channels/telegram/.env", "tokenKey": "TELEGRAM_BOT_TOKEN", "accessFile": ".claude/channels/telegram/access.json", "apiModule": "scripts/telegram/telegram-api.ts" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "bridge-persistence",
+      "kind": "lane",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": ["telegram-bridge"],
+      "probe": { "type": "bridge-persistence" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "observability-stack",
+      "kind": "scheduler",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": [],
+      "probe": { "type": "observability-stack" },
+      "install": { "type": "observability", "target": "stack" },
       "removable": "full-offboard-only",
       "offboard": "advise"
     }

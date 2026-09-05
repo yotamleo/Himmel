@@ -21,6 +21,7 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 state_lib="$repo_root/scripts/himmelctl/lib/state.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
 [ -f "$state_lib" ] || { echo "FAIL: $state_lib not found" >&2; exit 1; }
@@ -36,15 +37,6 @@ work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
 state_lib_w="$(winpath "$state_lib")"
 manifest_w="$(winpath "$manifest_path")"
 
@@ -53,7 +45,7 @@ caseA_dir="$work/caseA-target"; mkdir -p "$caseA_dir"
 homeA="$work/homeA"; mkdir -p "$homeA"
 cacheA="$work/cacheA"
 
-out=$(cd "$caseA_dir" && HOME="$homeA" HIMMELCTL_CACHE_DIR="$(winpath "$cacheA")" "$node_bin" -e "
+out=$(cd "$caseA_dir" && HOME="$homeA" USERPROFILE="$(winpath "$homeA")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheA")" "$node_bin" -e "
 const state = require('$state_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const answers = {
@@ -75,7 +67,7 @@ echo "$out" | jq -e '.items["handover-wiring"].enabled == true' >/dev/null \
   || fail "caseA: handover-wiring should be enabled:true when handover.mode=external (got: $out)"
 echo "ok: caseA golden-six items + handover-wiring(external) all enabled:true"
 
-outNone=$(cd "$caseA_dir" && HOME="$homeA" HIMMELCTL_CACHE_DIR="$(winpath "$cacheA")" "$node_bin" -e "
+outNone=$(cd "$caseA_dir" && HOME="$homeA" USERPROFILE="$(winpath "$homeA")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheA")" "$node_bin" -e "
 const state = require('$state_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const answers = {
@@ -95,7 +87,7 @@ caseB_dir="$work/caseB-project"; mkdir -p "$caseB_dir"
 homeB="$work/homeB"; mkdir -p "$homeB"
 cacheB="$work/cacheB"
 
-outB=$(cd "$caseB_dir" && HOME="$homeB" HIMMELCTL_CACHE_DIR="$(winpath "$cacheB")" "$node_bin" -e "
+outB=$(cd "$caseB_dir" && HOME="$homeB" USERPROFILE="$(winpath "$homeB")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheB")" "$node_bin" -e "
 const state = require('$state_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const projectAnswers = { role:'adopter', tier:'standard', scope:'project', vault:{mode:'none',path:''}, handover:{mode:'inline',path:''}, pluginSet:'lean', lanes:[], alwaysOn:false };
@@ -121,7 +113,7 @@ caseC_dir="$work/caseC-target"; mkdir -p "$caseC_dir"
 homeC="$work/homeC"; mkdir -p "$homeC"
 cacheC="$work/cacheC"
 
-(cd "$caseC_dir" && HOME="$homeC" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" "$node_bin" -e "
+(cd "$caseC_dir" && HOME="$homeC" USERPROFILE="$(winpath "$homeC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" "$node_bin" -e "
 const state = require('$state_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const answers = { role:'adopter', tier:'standard', scope:'project', vault:{mode:'none',path:''}, handover:{mode:'inline',path:''}, pluginSet:'lean', lanes:[], alwaysOn:false };
@@ -133,7 +125,7 @@ statePathC="$cacheC/state.json"
 [ -f "$statePathC" ] || fail "caseC: state.json was not written at $statePathC"
 cp "$statePathC" "$work/state-save1.json"
 
-(cd "$caseC_dir" && HOME="$homeC" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" "$node_bin" -e "
+(cd "$caseC_dir" && HOME="$homeC" USERPROFILE="$(winpath "$homeC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" "$node_bin" -e "
 const state = require('$state_lib_w');
 let s = state.load();
 state.save(s);
@@ -152,7 +144,7 @@ caseD_dir="$work/caseD-target"; mkdir -p "$caseD_dir"
 homeD="$work/homeD"; mkdir -p "$homeD"
 cacheD="$work/cacheD"
 
-outD=$(cd "$caseD_dir" && HOME="$homeD" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" "$node_bin" -e "
+outD=$(cd "$caseD_dir" && HOME="$homeD" USERPROFILE="$(winpath "$homeD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" "$node_bin" -e "
 const state = require('$state_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const answers = {
@@ -234,7 +226,7 @@ caseE_dir="$work/caseE-target"; mkdir -p "$caseE_dir"
 homeE="$work/homeE"; mkdir -p "$homeE"
 cacheE="$work/cacheE"
 
-outE=$(cd "$caseE_dir" && HOME="$homeE" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" "$node_bin" -e "
+outE=$(cd "$caseE_dir" && HOME="$homeE" USERPROFILE="$(winpath "$homeE")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" "$node_bin" -e "
 const state = require('$state_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const answers = {

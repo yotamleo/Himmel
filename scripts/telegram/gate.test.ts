@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { GROUP_ANONYMOUS_BOT_ID, isAllowed, isGroupAllowed, isOperatorIdentity, vaultForChat } from "./gate";
+import { GROUP_ANONYMOUS_BOT_ID, cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, requireMentionForChat, vaultForChat } from "./gate";
 
 // Real access.json shape (~/.claude/channels/telegram/access.json):
 //   { "dmPolicy": "allowlist", "allowFrom": ["1000000001"], "groups": {}, "pending": {} }
@@ -56,9 +56,10 @@ test("isGroupAllowed: a non-empty per-group allowFrom restricts senders (fork Gr
   expect(isGroupAllowed(access, -50)).toBe(false);          // no sender (anonymous) → fail closed
 });
 
-test("isGroupAllowed: empty/missing per-group allowFrom admits any member; requireMention is ignored", () => {
-  // pins the documented divergence from the fork: the bun bridge does not
-  // parse entities, so requireMention has no effect here
+test("isGroupAllowed: empty/missing per-group allowFrom admits any member; requireMention is out of scope here", () => {
+  // isGroupAllowed answers "is this sender/chat admitted at all" — requireMention
+  // (LUNA-158) is a separate @mention-only gate honored by poller.ts
+  // handleInbound via requireMentionForChat below, not by this predicate.
   expect(isGroupAllowed({ groups: { "-50": { allowFrom: [] } } }, -50, 999)).toBe(true);
   expect(isGroupAllowed({ groups: { "-50": { requireMention: true } } }, -50, 999)).toBe(true);
 });
@@ -182,4 +183,71 @@ test("vaultForChat: null when no vault and no default (fails closed → file not
   expect(vaultForChat({}, -50)).toBeNull();
   expect(vaultForChat(null as any, -50)).toBeNull();
   expect(vaultForChat(undefined as any, -50)).toBeNull();
+});
+
+// cwdForChat (LUNA-101) — the repo a chat's session spawns in. Deliberately
+// NOT a mirror of vaultForChat: there is no defaultCwd, because a default
+// would route every chat (including DMs) into that repo.
+
+test("cwdForChat: a group's own cwd is returned", () => {
+  const access = { groups: { "-5553924158": { cwd: "C:/x/ggs-local" } } };
+  expect(cwdForChat(access, -5553924158)).toBe("C:/x/ggs-local");
+  expect(cwdForChat(access, "-5553924158")).toBe("C:/x/ggs-local");
+});
+
+test("cwdForChat: a group without cwd gets null (no default fallback)", () => {
+  const access = { defaultVault: "/luna", groups: { "-50": {} } };
+  expect(cwdForChat(access, -50)).toBeNull();
+});
+
+test("cwdForChat: an unknown chat gets null and never inherits defaultVault", () => {
+  const access = { defaultVault: "/luna", groups: { "-5553924158": { cwd: "C:/x/ggs-local" } } };
+  expect(cwdForChat(access, -999)).toBeNull();
+  expect(cwdForChat(access, 1000000001)).toBeNull();
+});
+
+test("cwdForChat: missing/empty access fails closed", () => {
+  expect(cwdForChat({}, -50)).toBeNull();
+  expect(cwdForChat(null as any, -50)).toBeNull();
+  expect(cwdForChat(undefined as any, -50)).toBeNull();
+});
+
+// access.json is hand-edited, and a malformed cwd is TRUTHY — it would otherwise
+// reach the floor check and the spawn as a non-string (CR CodeRabbit).
+// The key is DOCUMENTED as absolute; a relative value would resolve against the
+// poller's launch directory, so the same config would mean different places
+// depending on where the bridge was started (CR codex-1).
+test("cwdForChat: a RELATIVE cwd is refused (absolute paths only)", () => {
+  expect(cwdForChat({ groups: { "-50": { cwd: "ggs-local" } } }, -50)).toBeNull();
+  expect(cwdForChat({ groups: { "-50": { cwd: "./ggs-local" } } }, -50)).toBeNull();
+  expect(cwdForChat({ groups: { "-50": { cwd: "../ggs-local" } } }, -50)).toBeNull();
+  expect(cwdForChat({ groups: { "-50": { cwd: "" } } }, -50)).toBeNull();
+});
+test("cwdForChat: accepts the absolute shapes access.json actually carries", () => {
+  expect(cwdForChat({ groups: { "-50": { cwd: "C:/Users/x/ggs-local" } } }, -50)).toBe("C:/Users/x/ggs-local");
+  expect(cwdForChat({ groups: { "-50": { cwd: "C:\\Users\\x\\ggs-local" } } }, -50)).toBe("C:\\Users\\x\\ggs-local");
+  expect(cwdForChat({ groups: { "-50": { cwd: "/home/x/ggs-local" } } }, -50)).toBe("/home/x/ggs-local");
+  expect(cwdForChat({ groups: { "-50": { cwd: "\\\\server\\share" } } }, -50)).toBe("\\\\server\\share");
+});
+
+test("cwdForChat: a malformed (non-string) cwd is refused at the boundary", () => {
+  expect(cwdForChat({ groups: { "-50": { cwd: 7 as any } } }, -50)).toBeNull();
+  expect(cwdForChat({ groups: { "-50": { cwd: true as any } } }, -50)).toBeNull();
+  expect(cwdForChat({ groups: { "-50": { cwd: ["/x"] as any } } }, -50)).toBeNull();
+  expect(cwdForChat({ groups: { "-50": { cwd: { path: "/x" } as any } } }, -50)).toBeNull();
+});
+
+// requireMentionForChat (LUNA-158) — the per-group @mention-only opt-in.
+test("requireMentionForChat: true only for a group with requireMention:true", () => {
+  const access = { groups: { "-5245475441": { requireMention: true }, "-50": {} } };
+  expect(requireMentionForChat(access, -5245475441)).toBe(true);
+  expect(requireMentionForChat(access, "-5245475441")).toBe(true);
+  expect(requireMentionForChat(access, -50)).toBe(false);
+});
+
+test("requireMentionForChat: unknown chat and missing/empty access default to false (unaffected, including DMs)", () => {
+  expect(requireMentionForChat({ groups: { "-50": { requireMention: true } } }, -999)).toBe(false);
+  expect(requireMentionForChat({}, -50)).toBe(false);
+  expect(requireMentionForChat(null as any, -50)).toBe(false);
+  expect(requireMentionForChat(undefined as any, -50)).toBe(false);
 });

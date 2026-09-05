@@ -81,13 +81,13 @@ assert("telegram clip without chat_id (bare numeric msg id) → no message", 0, 
 // Some bridges file the chat+message_id into a single composite telegram_msg_id.
 // The digest must derive both the chat AND a NUMERIC reply target from it, with
 // no separate telegram_chat_id and no vault backfill.
-const single = "telegram-tg-group_-1003985279697-1782605997"; // single message
-const drop   = "tg-group_-1003985279697-1782605414-7";        // one drop of a multi-link msg
+const single = "telegram-tg-group_-1001234567890-1782605997"; // single message
+const drop   = "tg-group_-1001234567890-1782605414-7";        // one drop of a multi-link msg
 
 assert("parseTelegramRef derives chat + numeric msg from a composite id",
-  { chatId: "-1003985279697", replyTo: "1782605997" }, parseTelegramRef({ telegram_msg_id: single }));
+  { chatId: "-1001234567890", replyTo: "1782605997" }, parseTelegramRef({ telegram_msg_id: single }));
 assert("parseTelegramRef strips the multi-drop suffix to the real message id",
-  { chatId: "-1003985279697", replyTo: "1782605414" }, parseTelegramRef({ telegram_msg_id: drop }));
+  { chatId: "-1001234567890", replyTo: "1782605414" }, parseTelegramRef({ telegram_msg_id: drop }));
 assert("parseTelegramRef prefers an explicit telegram_chat_id over the embedded one",
   { chatId: "777", replyTo: "1782605997" }, parseTelegramRef({ telegram_chat_id: "777", telegram_msg_id: single }));
 
@@ -96,7 +96,7 @@ assert("parseTelegramRef prefers an explicit telegram_chat_id over the embedded 
 const composite = [{ subject: "[[30-Resources/Concepts/Voicebox]]", clip: { clipped_via: "telegram", telegram_msg_id: single } }];
 const dComp = buildPromotionDigest(composite);
 assert("composite-id clip (no separate chat_id) → one message", 1, dComp.length);
-assert("composite digest targets the embedded chat", "-1003985279697", dComp[0].chat_id);
+assert("composite digest targets the embedded chat", "-1001234567890", dComp[0].chat_id);
 assert("composite digest threads under the embedded numeric message id", "1782605997", dComp[0].reply_to);
 
 // reply_to is OPTIONAL: a clean chat_id but an unparseable msg id → still sends,

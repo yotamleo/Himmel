@@ -32,6 +32,18 @@ fi
 input=$(cat)
 
 raw_cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+
+# Strip carriage returns at the CAPTURE boundary (HIMMEL-2234). CRLF command
+# text otherwise leaves a stray CR glued to the LAST token of every line, and
+# every position-sensitive check below then silently stops matching: a
+# $-anchored regex, an exact string comparison, a word-split token used as a
+# lookup key. Doing it ONCE here rather than at each use site is the whole
+# point of the rule (the same class fixed the pin-dir fence in #2005, where a
+# trailing CR disabled line-continuation detection and left scripts
+# UNSCANNED). Removing CRs can only make a deny check match MORE, never less,
+# so the failure direction stays closed. Pure bash: a hook runs on every tool
+# call and must not pay for a subprocess.
+raw_cmd=${raw_cmd//$'\r'/}
 raw_cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null || true)
 
 # If we cannot parse the command, fail open.

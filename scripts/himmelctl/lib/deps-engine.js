@@ -35,6 +35,11 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { which } = require('./helpers.js');
 const { resolveSudoPassword } = require('./install-engine.js');
+// Never spawn a bare 'bash': on Windows PATH resolves it to the System32 WSL
+// stub, which cannot read a C:/ path, so every probe below would report the
+// dep MISSING instead of running (HIMMEL-1992, same class as HIMMEL-1279).
+// Reuses the hook launcher's resolver -- the one place this rule is tested.
+const { resolveBash } = require('../../hooks/run-hook-with-bash.js');
 
 // Read scripts/install/deps.json under repoRoot and return its deps array.
 // CR fix: a MISSING deps.json (fs ENOENT) is distinguished from a MALFORMED
@@ -140,8 +145,14 @@ function isExecutableFile(p) {
 
 function probePresence(dep, ctx) {
   if (dep.resolver) {
+    const bash = resolveBash({ env: ctx.env || process.env });
+    // No usable bash => the probe cannot run. Falling back to a bare 'bash'
+    // would hand the probe the very WSL stub this resolution exists to avoid
+    // (CR round 1, codex-2); an unrunnable probe is "not present", the same
+    // answer the failed spawn produced before.
+    if (!bash) return false;
     const resolverPath = path.join(ctx.repoRoot, dep.resolver);
-    const r = spawnSync('bash', ['-c', '. "$1" && has_qmd', 'himmel-dep', resolverPath], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
+    const r = spawnSync(bash, ['-c', '. "$1" && has_qmd', 'himmel-dep', resolverPath], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
     return !r.error && r.status === 0;
   }
   const resolved = which(dep.cmd, ctx.env);
@@ -157,8 +168,8 @@ function probePresence(dep, ctx) {
 // treat null as "can't verify", never as a crash. A present-but-degraded
 // tool (version probe fails) still reports severity:"degraded" in
 // depStatus, not a crash. Always routed through `bash -c` (never a raw
-// spawnSync(dep.cmd, ...)) — same reason bin.js's detectRole()/
-// installMissing()/runPluginEnable() all do the same: Node's non-shell
+// spawnSync(dep.cmd, ...)) — same reason bin.js's installMissing()/
+// runPluginEnable() all do the same: Node's non-shell
 // spawnSync does its own PATH resolution on win32 and can silently prefer
 // an unrelated same-named binary, or simply fail to launch a .cmd/.bat/
 // shebang-script tool at all (CreateProcess requires bash's own
@@ -172,12 +183,16 @@ function probePresence(dep, ctx) {
 // convention as probePresence and install-engine.js's buildEntry() cases.
 function probeVersion(dep, ctx) {
   const versionArgs = (dep.versionProbe && dep.versionProbe.args) || ['--version'];
+  const bash = resolveBash({ env: ctx.env || process.env });
+  // Same refusal as probePresence: no usable bash => no version, never the
+  // bare-'bash' fallback that lands on the WSL stub (CR round 1, codex-2).
+  if (!bash) return null;
   let r;
   if (dep.resolver) {
     const resolverPath = path.join(ctx.repoRoot, dep.resolver);
-    r = spawnSync('bash', ['-c', '. "$1" && qmd_cmd "${@:2}"', 'himmel-dep', resolverPath, ...versionArgs], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
+    r = spawnSync(bash, ['-c', '. "$1" && qmd_cmd "${@:2}"', 'himmel-dep', resolverPath, ...versionArgs], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
   } else {
-    r = spawnSync('bash', ['-c', '"$1" "${@:2}"', 'himmel-dep', dep.cmd, ...versionArgs], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
+    r = spawnSync(bash, ['-c', '"$1" "${@:2}"', 'himmel-dep', dep.cmd, ...versionArgs], { encoding: 'utf8', timeout: 10000, killSignal: 'SIGKILL', env: ctx.env || process.env });
   }
   if (r.error || r.status !== 0) return null;
   const out = `${r.stdout || ''}\n${r.stderr || ''}`;

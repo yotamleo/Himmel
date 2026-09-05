@@ -4,6 +4,9 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 
 ## Start here
 
+- [why-himmel.md](why-himmel.md) — the case for the harness: the five failure modes it exists for, the evidence, and what it costs you.
+- [adoption-trail.html](adoption-trail.html) — the eight-level adoption trail, as a page you open in a browser: what each level turns on, what it changes, and what it does not.
+- [architecture.md](architecture.md) — five diagrams: the enforcement layers, the handover system, the fleet/console model, the Jira seam, the observability chain.
 - [getting-started.md](getting-started.md) — clone to your first PR-gated loop in ~15 minutes.
 - [daily-loop.md](daily-loop.md) — one full loop (worktree → PR → merge → clean → handover), with every hook and gate explained where it fires.
 - [configuration.md](configuration.md) — the canonical configuration + control-surface reference: the chains (mermaid), every gate classified HARD / auth-gated / advisory, every knob by surface, and the off-switches. Pairs with [.env.example](../.env.example), the per-key flag map.
@@ -76,10 +79,8 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 
 ## Historical / working records (not a navigation target)
 
-`adr/` (architecture decision records), `patches/` (dated point-fix logs),
-and `specs/` (internal design/plan docs migrating to the state repo per
-CLAUDE.md HIMMEL-409) hold dated, single-purpose artifacts kept for
-provenance rather than day-to-day reference — browse the directory rather
+`patches/` (dated point-fix logs) holds dated, single-purpose artifacts kept
+for provenance rather than day-to-day reference — browse the directory rather
 than looking for an index here.
 
 ---

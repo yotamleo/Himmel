@@ -171,12 +171,37 @@ if ($DryRun) { Write-Host "    DRY: would write reconciled enabledPlugins to $Se
 #   POSIX (pwsh on Linux/macOS): seed the temp as a perms-preserving copy of the
 #            target (Copy-Item keeps the mode); the truncate-write below keeps it.
 $settingsObj | Add-Member -NotePropertyName enabledPlugins -NotePropertyValue ([PSCustomObject]$newEp) -Force
-$tmp = "$Settings.reconcile.tmp"
+# HIMMEL-2324: an unpredictable suffix, not the fixed "$Settings.reconcile.tmp"
+# — a fixed name lets anyone with write access to this directory pre-plant a
+# symlink/reparse point there before we get here, so the write below (or the
+# final Move-Item) lands through it. GetRandomFileName() keeps the temp in the
+# SAME directory as $Settings (so Move-Item stays a same-volume rename) and
+# makes the path un-guessable — pre-planting is infeasible — but a name alone
+# is not exclusive-create: it's what closes the hole together with the
+# exclusive New-Item below (CR round 1, codex-2: the previous `-Force` on
+# New-Item OVERWRITES an existing path instead of failing, so a pre-planted
+# reparse point at $tmp would have been silently reused).
+$tmp = "$Settings.reconcile." + [System.IO.Path]::GetRandomFileName()
 # $IsWindows is undefined in Windows PowerShell 5.1 (only pwsh 6+ defines it);
 # 5.1 runs ONLY on Windows, so treat an undefined value as Windows.
 $onWindows = if ($null -eq $IsWindows) { $true } else { [bool]$IsWindows }
 if ($onWindows) {
-  New-Item -ItemType File -Force -Path $tmp | Out-Null
+  # HIMMEL-2324 (CR round 5, codex-1): New-Item -Path $tmp -ErrorAction Stop
+  # is NOT an atomic O_EXCL create -- it goes through PowerShell's FileSystem
+  # provider, which does an existence check THEN creates: two steps with a
+  # window between them an attacker could still win by planting a reparse
+  # point. Switched to FileMode.CreateNew (mirrors install-plugins.ps1's
+  # autoUpdate site) -- a single syscall with CREATE_NEW semantics and no
+  # check-then-create gap; throws if anything already exists at the path,
+  # reparse point included. Close the stream immediately: Set-Acl below needs
+  # the file unlocked, and actual content is written later via WriteAllText,
+  # same as before.
+  try {
+    $fs = [System.IO.File]::Open($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+    $fs.Close()
+  } catch {
+    Die "reconcile-enabled-plugins: could not create temp file $tmp (already exists?) - refusing to replace $Settings" 1
+  }
   try { Set-Acl -LiteralPath $tmp -AclObject (Get-Acl -LiteralPath $Settings) }
   catch {
     try { Remove-Item -Force -LiteralPath $tmp -ErrorAction Stop } catch { [Console]::Error.WriteLine("reconcile-enabled-plugins: warning - could not remove temp file $tmp") }
@@ -185,6 +210,17 @@ if ($onWindows) {
 } else {
   Copy-Item -LiteralPath $Settings -Destination $tmp -Force
 }
-[System.IO.File]::WriteAllText($tmp, ($settingsObj | ConvertTo-Json -Depth 100), (New-Object System.Text.UTF8Encoding $false))
-Move-Item -Force $tmp $Settings
+# HIMMEL-2324 (CR round 7, codex-8 sibling): the write+move used to run with
+# no catch at all -- a WriteAllText or Move-Item failure left $tmp orphaned
+# in $Settings's directory with nothing to clean it up. Mirror the Set-Acl
+# failure branch above: on any failure, remove the orphaned temp and Die
+# loud, matching this site's established tone (unlike install-plugins.ps1's
+# tolerant autoUpdate site, this one must not silently continue).
+try {
+  [System.IO.File]::WriteAllText($tmp, ($settingsObj | ConvertTo-Json -Depth 100), (New-Object System.Text.UTF8Encoding $false))
+  Move-Item -Force $tmp $Settings
+} catch {
+  try { Remove-Item -Force -LiteralPath $tmp -ErrorAction Stop } catch { [Console]::Error.WriteLine("reconcile-enabled-plugins: warning - could not remove temp file $tmp") }
+  Die "reconcile-enabled-plugins: could not write/replace $Settings - refusing to leave a partial or orphaned temp file" 1
+}
 Write-Host "    reconciled: enabledPlugins written to $Settings"

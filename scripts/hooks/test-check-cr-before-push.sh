@@ -16,10 +16,21 @@
 #   5. feature branch with docs-only diff -> docs-audit-lane marker.
 #   6. mixed docs + handover-state (no code) -> docs-audit-lane marker.
 #   + ancestor-pref (HIMMEL-295) now keyed on the marker lane.
+#   + HIMMEL-2104: empty-stdin up-to-date push mints a bound marker from the
+#     upstream tracking ref; empty-stdin fallback never downgrades an
+#     existing BOUND marker to unbound when no fresh binding can be derived.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$SCRIPT_DIR/check-cr-before-push.sh"
+# Most cases below deliberately push a feature refspec while the fixture repo
+# sits on main — they pin MARKER semantics, not the HIMMEL-1809 foreign-ref
+# policy, which would otherwise refuse that shape before any marker work. The
+# policy itself has its own section at the bottom, which unsets this.
+export PUSH_FOREIGN_REF_OK=1
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
 
 PASS=0
 FAIL=0
@@ -37,21 +48,22 @@ pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 
 # Setup: tmp git repo with main + a branch we can mutate per-test.
-TMP_ROOT=$(mktemp -d)
+TMP_ROOT=$(fixture_mktemp_dir) || exit 1
 if command -v cygpath >/dev/null 2>&1; then
     TMP_ROOT=$(cygpath -m "$TMP_ROOT")
 fi
 SLUG="dpz$$"
 REPO="$TMP_ROOT/repo"
-git init -q --initial-branch=main "$REPO" 2>/dev/null || {
-    git init -q "$REPO"
-    git -C "$REPO" symbolic-ref HEAD refs/heads/main || true
-}
+mkdir -p "$REPO" || exit 1
 (
-    cd "$REPO"
+    fixture_enter_git_init_dir "$REPO" || exit 1
+    git init -q --initial-branch=main 2>/dev/null || {
+        git init -q
+        git symbolic-ref HEAD refs/heads/main || true
+    }
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "init"
     git branch -m main 2>/dev/null || true
-)
+) || exit 1
 
 run_hook() {
     (
@@ -309,6 +321,68 @@ if [ -f "$m_fallback" ] && [ "$(awk -F' [|] ' '{print $2; exit}' "$m_fallback" 2
 else
     fail "empty stdin should preserve worktree-HEAD marker path" "out: $out"
 fi
+git -C "$REPO" checkout -q main
+
+# HIMMEL-2104: up-to-date push (empty stdin) mints a bound marker ------------
+
+echo "TEST: empty-stdin up-to-date push mints marker binding from upstream (HIMMEL-2104)"
+BARE_ORIGIN="$TMP_ROOT/bare-origin.git"
+git init -q --bare "$BARE_ORIGIN"
+git -C "$REPO" remote add origin "$BARE_ORIGIN" 2>/dev/null || git -C "$REPO" remote set-url origin "$BARE_ORIGIN"
+git -C "$REPO" checkout -q -b feat/uptodate-2104 main
+printf 'function uptodate() {}\n' > "$REPO/uptodate.sh"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add uptodate.sh
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "uptodate code"
+uptodate_sha=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" push -q -u origin feat/uptodate-2104
+m_uptodate=$(marker_path feat/uptodate-2104)
+rm -f "$m_uptodate"
+out=$(run_hook)
+if [ -f "$m_uptodate" ]; then
+    marker_sha=$(awk -F' [|] ' '{print $2; exit}' "$m_uptodate" 2>/dev/null || true)
+    marker_remote=$(awk -F' [|] ' '{print $4; exit}' "$m_uptodate" 2>/dev/null || true)
+    marker_remote_ref=$(awk -F' [|] ' '{print $5; exit}' "$m_uptodate" 2>/dev/null || true)
+    marker_endpoint=$(awk -F' [|] ' '{print $6; exit}' "$m_uptodate" 2>/dev/null || true)
+    if [ "$marker_sha" = "$uptodate_sha" ] && [ "$marker_remote" = "origin" ] &&
+       [ "$marker_remote_ref" = "refs/heads/feat/uptodate-2104" ] && [ -n "$marker_endpoint" ]; then
+        pass "up-to-date empty-stdin push minted a bound marker from the upstream tracking ref"
+    else
+        fail "up-to-date marker binding wrong (sha=$marker_sha remote=$marker_remote ref=$marker_remote_ref endpoint=$marker_endpoint)" "out: $out"
+    fi
+else
+    fail "up-to-date empty-stdin push should have written a bound marker" "out: $out"
+fi
+case "$out" in
+    *"reminted the marker binding"*) pass "hook explains the up-to-date remint" ;;
+    *) fail "expected up-to-date remint message" "actual: $out" ;;
+esac
+git -C "$REPO" checkout -q main
+
+# HIMMEL-2104: empty-stdin fallback must not downgrade a BOUND marker -------
+
+echo "TEST: empty-stdin fallback preserves an existing BOUND marker it cannot rebind"
+git -C "$REPO" checkout -q -b feat/bound-protect-2104 main
+printf 'protect\n' > "$REPO/protect.sh"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add protect.sh
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "protect code"
+protect_sha=$(git -C "$REPO" rev-parse HEAD)
+m_protect=$(marker_path feat/bound-protect-2104)
+mkdir -p "$(dirname "$m_protect")"
+printf '2026-08-01T00:00:00+00:00 | %s | full | origin | refs/heads/feat/bound-protect-2104 | https://example.com/repo.git | %s\n' \
+    "$protect_sha" "$protect_sha" > "$m_protect"
+prior_marker_content=$(cat "$m_protect")
+out=$(run_hook)
+new_marker_content=$(cat "$m_protect" 2>/dev/null || true)
+if [ "$new_marker_content" = "$prior_marker_content" ]; then
+    pass "empty-stdin fallback left the existing bound marker untouched"
+else
+    fail "bound marker should not be overwritten by empty-stdin fallback" \
+        "before: $prior_marker_content / after: $new_marker_content / out: $out"
+fi
+case "$out" in
+    *"keeping the existing BOUND CR marker"*) pass "hook explains it kept the bound marker" ;;
+    *) fail "expected bound-marker-preserved message" "actual: $out" ;;
+esac
 git -C "$REPO" checkout -q main
 
 # Test 5: feature branch with reviewable-docs-only diff -> docs-audit marker (HIMMEL-303)
@@ -658,6 +732,275 @@ case "$out" in
     *"no push endpoint URL"*) pass "refusal names the missing endpoint binding (reason-specific)" ;;
     *) fail "refusal must say 'no push endpoint URL'" "out: $out" ;;
 esac
+
+# HIMMEL-1809: foreign-ref push refusal ------------------------------
+# pre-push gates lint the PUSHER'S working tree, so pushing a branch that is not
+# the checked-out one has the gates inspect content the push does not carry
+# (misattributed findings; fail-OPEN when the touched files are clean on the
+# checked-out branch). These cases run with the exemption UNSET.
+
+# run_hook_gated REFS — like run_hook_refs, but with the suite-wide
+# PUSH_FOREIGN_REF_OK exemption removed, so the policy itself is under test.
+run_hook_gated() {
+    local refs="$1"
+    (
+        cd "$REPO"
+        unset PUSH_FOREIGN_REF_OK
+        bash "$HOOK" origin https://example.com/repo.git <<< "$refs" 2>&1
+    )
+}
+
+git -C "$REPO" checkout -q -b feat/foreign-1809 main
+echo 'function fr(){}' > "$REPO/foreign.sh"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add foreign.sh
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "code"
+foreign_sha=$(git -C "$REPO" rev-parse --verify refs/heads/feat/foreign-1809)
+foreign_line="refs/heads/feat/foreign-1809 $foreign_sha refs/heads/feat/foreign-1809 $Z40"
+
+echo "TEST: pushing a branch that is not the checked-out one -> refused (HIMMEL-1809)"
+git -C "$REPO" checkout -q main
+rc=0; out=$(run_hook_gated "$foreign_line") || rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "foreign-ref push -> exit 2 (fail closed)"
+else
+    fail "foreign-ref push -> expected exit 2 got $rc" "out: $out"
+fi
+case "$out" in
+    *"working tree of 'main'"*"you are pushing 'feat/foreign-1809'"*)
+        pass "refusal names BOTH the linted branch and the pushed branch" ;;
+    *)
+        fail "refusal must name main and feat/foreign-1809" "out: $out" ;;
+esac
+if [ ! -f "$(marker_path feat/foreign-1809)" ]; then
+    pass "refusal happens before any marker work"
+else
+    fail "a marker was written despite the foreign-ref refusal"
+fi
+
+echo "TEST: PUSH_FOREIGN_REF_OK=1 exempts the foreign-ref push"
+rc=0; out=$(run_hook_refs "$foreign_line") || rc=$?
+if [ "$rc" -eq 0 ] && [ -f "$(marker_path feat/foreign-1809)" ]; then
+    pass "PUSH_FOREIGN_REF_OK=1 -> push proceeds and the marker is written"
+else
+    fail "PUSH_FOREIGN_REF_OK=1 should exempt the refusal (rc=$rc)" "out: $out"
+fi
+rm -f "$(marker_path feat/foreign-1809)"
+
+echo "TEST: pushing the checked-out branch passes the foreign-ref check"
+git -C "$REPO" checkout -q feat/foreign-1809
+rc=0; out=$(run_hook_gated "$foreign_line") || rc=$?
+if [ "$rc" -eq 0 ] && [ -f "$(marker_path feat/foreign-1809)" ]; then
+    pass "same-branch push -> not refused (marker written as usual)"
+else
+    fail "same-branch push must pass the foreign-ref check (rc=$rc)" "out: $out"
+fi
+
+echo "TEST: a delete push names no working-tree content -> exempt"
+rc=0; out=$(run_hook_gated "(delete) $Z40 refs/heads/feat/some-other-branch $foreign_sha") || rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "delete push (local ref '(delete)') -> not refused"
+else
+    fail "delete push must be exempt from the foreign-ref refusal (rc=$rc)" "out: $out"
+fi
+rc=0; out=$(run_hook_gated "refs/heads/feat/some-other-branch $Z40 refs/heads/feat/some-other-branch $foreign_sha") || rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "delete push (all-zero local SHA) -> not refused"
+else
+    fail "zero-SHA delete must be exempt from the foreign-ref refusal (rc=$rc)" "out: $out"
+fi
+
+echo "TEST: a raw commit pushed onto a branch is refused even from that branch's worktree"
+older_sha=$(git -C "$REPO" rev-parse --verify "refs/heads/feat/foreign-1809^")
+rc=0; out=$(run_hook_gated "$older_sha $older_sha refs/heads/feat/foreign-1809 $Z40") || rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "sha:refs/heads/<b> push -> exit 2 (the linted tree is not the pushed commit)"
+else
+    fail "a non-HEAD commit pushed onto a branch must be refused (rc=$rc)" "out: $out"
+fi
+
+echo "TEST: a tag push carries no working-tree claim -> exempt"
+rc=0; out=$(run_hook_gated "refs/tags/v1809 $foreign_sha refs/tags/v1809 $Z40") || rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "tag destination -> not refused"
+else
+    fail "tag push must be exempt from the foreign-ref refusal (rc=$rc)" "out: $out"
+fi
+
+echo "TEST: detached HEAD -> refused (no branch's working tree matches the push)"
+git -C "$REPO" checkout -q --detach
+rc=0; out=$(run_hook_gated "$foreign_line") || rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "detached HEAD -> exit 2 (fail closed)"
+else
+    fail "detached HEAD -> expected exit 2 got $rc" "out: $out"
+fi
+case "$out" in
+    *"working tree of 'detached HEAD'"*)
+        pass "detached-HEAD refusal says so instead of naming an empty branch" ;;
+    *)
+        fail "detached-HEAD refusal must name 'detached HEAD'" "out: $out" ;;
+esac
+git -C "$REPO" checkout -q main
+
+# HIMMEL-1558: the CR marker lock ------------------------------------
+# The marker has exactly two writers — this hook and clear-cr-marker.sh — and
+# the second validates for minutes before unlinking. Both hold ONE
+# branch-scoped lock while they touch the file; these cases pin what this side
+# does when it cannot have it. Each asserts the specific REASON, not merely a
+# non-zero rc (HIMMEL-1554): a fail-closed bug and a fail-closed feature share
+# an exit code.
+LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
+
+# lock_root — the CR-marker lock namespace under this repo's git COMMON dir
+# (same relative-path handling as marker_path above). The lock DIRECTORY name
+# is the lib's business, so it is discovered by glob rather than re-deriving
+# the slug rule here.
+lock_root() {
+    local git_dir
+    git_dir=$(git -C "$REPO" rev-parse --git-common-dir)
+    case "$git_dir" in
+        /*|?:/*|?:\\*) ;;
+        *)             git_dir="$REPO/$git_dir" ;;
+    esac
+    echo "${git_dir}/himmel-cr-marker"
+}
+
+git -C "$REPO" checkout -q -b feat/lock-1558 main
+echo 'function locked(){}' > "$REPO/locked.sh"
+git -C "$REPO" -c user.email=t@test.com -c user.name=test add locked.sh
+git -C "$REPO" -c user.email=t@test.com -c user.name=test commit -q -m "code"
+lock_sha=$(git -C "$REPO" rev-parse --verify refs/heads/feat/lock-1558)
+lock_line="refs/heads/feat/lock-1558 $lock_sha refs/heads/feat/lock-1558 $Z40"
+m_lock=$(marker_path feat/lock-1558)
+
+echo "TEST: a held marker lock refuses the push instead of overwriting the marker"
+rm -f "$m_lock"
+SHARED_BRANCH_LOCK_NS=himmel-cr-marker bash "$LOCK_LIB" \
+    acquire "$REPO" feat/lock-1558 clear-cr-marker >/dev/null 2>&1
+export CR_MARKER_LOCK_WAIT_SECONDS=1
+rc=0; out=$(run_hook_refs "$lock_line") || rc=$?
+unset CR_MARKER_LOCK_WAIT_SECONDS
+if [ "$rc" -eq 2 ]; then
+    pass "held marker lock -> exit 2 (fail closed)"
+else
+    fail "held marker lock -> expected exit 2 got $rc" "out: $out"
+fi
+case "$out" in
+    *"holds the CR marker lock"*)
+        pass "the refusal names the lock, not a generic marker-write failure" ;;
+    *)
+        fail "held-lock refusal must name the lock" "out: $out" ;;
+esac
+# The holder block the lock lib prints (owner.json) precedes the hook's own
+# line, so the two are asserted independently rather than in one ordered glob.
+case "$out" in
+    *'"lane":"clear-cr-marker"'*)
+        pass "the refusal names the holder (owner.json), not just a timeout" ;;
+    *)
+        fail "held-lock refusal must name the holder" "out: $out" ;;
+esac
+if [ -f "$m_lock" ]; then
+    fail "a push that could not take the lock must not write the marker anyway" "marker at $m_lock"
+else
+    pass "no marker written while another writer holds the lock"
+fi
+
+echo "TEST: a stale marker lock is reclaimed, not waited out forever"
+# The holder died without releasing (a killed /pr-check). Its recorded age is
+# past the TTL, so the write reclaims the lock rather than wedging every push
+# on this branch.
+lockdir=""
+for d in "$(lock_root)"/*.lock; do
+    if [ -d "$d" ]; then lockdir="$d"; break; fi
+done
+if [ -n "$lockdir" ]; then
+    printf '{"pid":1,"lane":"clear-cr-marker","branch":"feat/lock-1558","acquired_at":"2026-01-01T00:00:00Z","acquired_epoch":%s}\n' \
+        "$(( $(date +%s) - 4000 ))" > "$lockdir/owner.json"
+    pass "stale-lock fixture prepared"
+else
+    fail "stale-lock fixture: no lock dir under $(lock_root)"
+fi
+rc=0; out=$(run_hook_refs "$lock_line") || rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "stale marker lock -> reclaimed, push proceeds"
+else
+    fail "stale marker lock -> expected exit 0 got $rc" "out: $out"
+fi
+case "$out" in
+    *"RECLAIMING a stale lock"*)
+        pass "the reclaim leaves a loud trail" ;;
+    *)
+        fail "a reclaimed stale lock must be announced, not silent" "out: $out" ;;
+esac
+if [ -f "$m_lock" ]; then
+    pass "the marker is written after the reclaim"
+else
+    fail "reclaimed lock: the marker should have been written" "out: $out"
+fi
+if [ -d "$lockdir" ]; then
+    fail "the marker lock must be released after the write" "still at $lockdir"
+else
+    pass "the marker lock is released after the write"
+fi
+
+echo "TEST: an EMPTY holder record after acquire refuses the push before the marker is written"
+# HIMMEL-1994. acquire creates owner.json by redirect and keeps rc 0 when the
+# printf fails (a full disk), so the lock can be HELD with a zero-byte record —
+# and that record is what every ownership check downstream compares against. An
+# empty one is no evidence of exclusion at all, so the write must not happen.
+# The state is unreachable from outside (the write lives INSIDE acquire), so
+# this case runs the hook from a copied tree whose lock lib is the real one
+# plus a truncate; the hook and the guardrail lib are byte-identical copies.
+stub_tree="$TMP_ROOT/emptyowner"
+stub_lock_root=$(lock_root)
+mkdir -p "$stub_tree/scripts/hooks" "$stub_tree/scripts/guardrails" "$stub_tree/scripts/lib"
+cp "$HOOK" "$stub_tree/scripts/hooks/check-cr-before-push.sh"
+cp "$SCRIPT_DIR/../guardrails/lib.sh" "$stub_tree/scripts/guardrails/lib.sh"
+cp "$LOCK_LIB" "$stub_tree/scripts/lib/shared-branch-lock-real.sh"
+cat > "$stub_tree/scripts/lib/shared-branch-lock.sh" <<STUB
+#!/usr/bin/env bash
+rc=0
+bash "$stub_tree/scripts/lib/shared-branch-lock-real.sh" "\$@" || rc=\$?
+if [ "\$rc" -eq 0 ] && { [ "\$1" = "acquire" ] || [ "\$1" = "acquire-wait" ]; }; then
+    for d in "$stub_lock_root"/*.lock; do
+        [ -d "\$d" ] && : > "\$d/owner.json"
+    done
+fi
+exit \$rc
+STUB
+rm -f "$m_lock"
+rc=0
+out=$(cd "$REPO" && bash "$stub_tree/scripts/hooks/check-cr-before-push.sh" \
+    origin https://example.com/repo.git <<< "$lock_line" 2>&1) || rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "empty holder record -> exit 2 (fail closed)"
+else
+    fail "empty holder record -> expected exit 2 got $rc" "out: $out"
+fi
+case "$out" in
+    *"holder record is EMPTY"*)
+        pass "the refusal names the unreadable holder record, not a generic lock timeout" ;;
+    *)
+        fail "empty-record refusal must name the holder record" "out: $out" ;;
+esac
+if [ -f "$m_lock" ]; then
+    fail "a push whose exclusion cannot be proven must not write the marker" "marker at $m_lock"
+else
+    pass "no marker written when the holder record is empty"
+fi
+# With no record, a release cannot tell this run's lock from a replacement
+# holder's — so the lock is deliberately left in place for the TTL.
+lockdir=""
+for d in "$stub_lock_root"/*.lock; do
+    if [ -d "$d" ]; then lockdir="$d"; break; fi
+done
+if [ -n "$lockdir" ]; then
+    pass "the lock is LEFT ALONE rather than released without ownership evidence"
+    rm -rf "$lockdir"
+else
+    fail "empty holder record: the lock must not be released on an unprovable ownership"
+fi
+git -C "$REPO" checkout -q main
 
 # Summary ------------------------------------------------------------
 

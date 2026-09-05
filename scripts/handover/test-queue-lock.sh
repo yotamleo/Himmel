@@ -1066,6 +1066,374 @@ else
 fi
 rm -f "$ARMS_REGISTRY"
 
+
+# --- T35: close-evidence emit fires on a real release, NEVER on a force ----
+# HIMMEL-2294. `_ql_emit_close_evidence` declares THIS session closable so
+# flow-exporter.ts can drop it from session_dead_total. Two invariants, and
+# the NEGATIVE one is the load-bearing half: a force-release is a stranger
+# cleaning up someone else's stranded lock, so emitting there would key a
+# close row to the CLEANER's still-live session and permanently exempt it
+# from the gauge -- a false negative in the very alert this reconciler
+# fixes. Nothing else guards that, and it is a one-line "helpful" edit away
+# from regressing. `bun` is stubbed via a PATH shim script (NOT a shell
+# function -- CR fix codex-2 wraps the real call in `timeout` when present,
+# and `timeout` execs its command directly, so a shell function defined in
+# the same process is invisible to it; a PATH-resolvable executable is not)
+# so the probe records the call without ever spawning the real writer or
+# touching a ledger, whichever branch `_ql_emit_close_evidence` takes.
+HO35="$HANDOVER_DIR/HIMMEL-856-test/next-session-35.md"
+: > "$HO35"
+T35_PROBE="$TMPDIR_ROOT/t35-emit-probe"
+T35_BIN="$TMPDIR_ROOT/t35-bin"
+mkdir -p "$T35_BIN"
+cat > "$T35_BIN/bun" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$T35_PROBE_FILE"
+EOF
+chmod +x "$T35_BIN/bun"
+t35_out=$(bash -c '
+    . "$1"
+    ho="$2"
+    probe="$3"
+    bindir="$4"
+    export PATH="$bindir:$PATH"
+    export T35_PROBE_FILE="$probe"
+    queue_lock_acquire "$ho" "session-t35" >/dev/null 2>&1
+    queue_lock_release "$ho" "session-t35" >/dev/null 2>&1
+    echo "NORMAL_RC=$?"
+    echo "NORMAL_EMITS=$( [ -f "$probe" ] && wc -l < "$probe" | tr -d " " || echo 0 )"
+    echo "NORMAL_ARGS=$(cat "$probe" 2>/dev/null)"
+    rm -f "$probe"
+    queue_lock_acquire "$ho" "session-t35b" >/dev/null 2>&1
+    QUEUE_LOCK_FORCE_RELEASE=1 queue_lock_release "$ho" >/dev/null 2>&1
+    echo "FORCE_RC=$?"
+    echo "FORCE_EMITS=$( [ -f "$probe" ] && wc -l < "$probe" | tr -d " " || echo 0 )"
+' _ "$LIB" "$HO35" "$T35_PROBE" "$T35_BIN" 2>&1)
+if grepq "$t35_out" '^NORMAL_RC=0$' \
+    && grepq "$t35_out" '^NORMAL_EMITS=1$' \
+    && grepq "$t35_out" '^NORMAL_ARGS=.*session-close --evidence queue_lock_release' \
+    && grepq "$t35_out" '^FORCE_RC=0$' \
+    && grepq "$t35_out" '^FORCE_EMITS=0$'; then
+    pass "T35: close evidence emitted on token release, never on force-release"
+else
+    fail "T35: close-evidence emit contract broken (out=$t35_out)"
+fi
+rm -f "$T35_PROBE"
+rm -rf "$T35_BIN"
+
+# --- T36: idle-warn "possibly stuck on a prompt" (HIMMEL-2381) -------------
+# A FRESH lock (age < ttl) whose heartbeat exceeds QUEUE_LOCK_IDLE_WARN_SECONDS
+# (default 2700s) warns distinctly from the half-TTL AGING warning (T18) --
+# the idle-warn threshold is meant to catch a hung interactive-permission
+# prompt within minutes, well before the hours-scale TTL/aging thresholds
+# would say anything.
+HO36="$HANDOVER_DIR/HIMMEL-856-test/next-session-36.md"
+: > "$HO36"
+LOCKDIR36="$HANDOVER_DIR/.locks/queue/HIMMEL-856-test__next-session-36.lock"
+mkdir -p "$LOCKDIR36"
+t36_hb=$(date -u -d "@$(( $(date -u +%s) - 3000 ))" +%Y-%m-%dT%H:%M:%SZ)
+printf '{"session":"idler","host":"h","handover":"%s","started":"%s","heartbeat":"%s"}\n' \
+    "$HO36" "$t36_hb" "$t36_hb" > "$LOCKDIR36/owner.json"
+# age ~3000s: past the default 2700s idle-warn but far short of the default
+# 21600s TTL (half=10800s), so idle-warn fires and AGING must not.
+err=$(bash "$LIB" status "$HO36" 2>&1 1>/dev/null)
+rc=$?
+if [ "$rc" -eq 11 ] && grepq "$err" -i 'possibly stuck on a prompt' && ! grepq "$err" -i 'AGING'; then
+    pass "T36: FRESH lock past idle-warn (default 2700s) warns 'possibly stuck on a prompt', not AGING"
+else
+    fail "T36: idle-warn warning (got rc=$rc err=$err)"
+fi
+# QUEUE_LOCK_IDLE_WARN_SECONDS override: raising the threshold above the
+# observed age must silence the warning.
+err=$(QUEUE_LOCK_IDLE_WARN_SECONDS=9000 bash "$LIB" status "$HO36" 2>&1 1>/dev/null)
+rc=$?
+if [ "$rc" -eq 11 ] && ! grepq "$err" -i 'possibly stuck on a prompt'; then
+    pass "T36: QUEUE_LOCK_IDLE_WARN_SECONDS override raises the threshold (no warning below it)"
+else
+    fail "T36: idle-warn override (got rc=$rc err=$err)"
+fi
+QUEUE_LOCK_FORCE_RELEASE=1 bash "$LIB" release "$HO36" >/dev/null 2>&1
+
+# --- T37: sweep with no locks at all -> rc=0, explicit "no held locks" ----
+# (HIMMEL-2369). A fresh handover root under its own mktemp dir, never
+# touching the real ~/.himmel / ~/.claude state -- verify the resolved root
+# is actually this fixture before asserting on it (this suite has clobbered
+# real user state before by leaving an env var empty).
+SWEEP_ROOT="$TMPDIR_ROOT/sweep-root"
+mkdir -p "$SWEEP_ROOT"
+resolved_root=$(HANDOVER_DIR="$SWEEP_ROOT" bash -c '. "$1"; handover_root_ensure' _ "$SCRIPT_DIR/../lib/handover-path.sh")
+if [ "$resolved_root" = "$SWEEP_ROOT" ]; then
+    pass "T37: fixture root actually resolves as the handover root (not real state)"
+else
+    fail "T37: handover_root_ensure resolved '$resolved_root', expected '$SWEEP_ROOT' -- refusing to proceed with sweep fixtures"
+fi
+out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" '^sweep: no held locks$'; then
+    pass "T37: sweep with no locks at all -> rc=0, explicit no-held-locks line"
+else
+    fail "T37: sweep with no locks (got rc=$rc out=$out)"
+fi
+
+# --- T38: sweep with a FRESH lock -> present, NOT flagged -------------------
+SWEEP_QDIR="$SWEEP_ROOT/.locks/queue"
+mkdir -p "$SWEEP_QDIR"
+FRESH_SLUG="HIMMEL-2369-test__fresh"
+FRESH_LOCKDIR="$SWEEP_QDIR/$FRESH_SLUG.lock"
+mkdir -p "$FRESH_LOCKDIR"
+fresh_hb="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"session":"sweep-fresh","host":"h","handover":"fresh.md","started":"%s","heartbeat":"%s"}\n' \
+    "$fresh_hb" "$fresh_hb" > "$FRESH_LOCKDIR/owner.json"
+out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ -n "$out" ] && grepq "$out" "$FRESH_SLUG"; then
+    pass "T38: positive control -- sweep output is non-empty and names the fresh fixture slug"
+else
+    fail "T38: sweep output missing/empty, or missing the fresh slug (out=$out)"
+fi
+if [ "$rc" -eq 0 ] && grepq "$out" "slug=$FRESH_SLUG session=sweep-fresh host=h" && ! grepq "$out" "$FRESH_SLUG.*IDLE-HELD"; then
+    pass "T38: FRESH lock present in sweep output, NOT flagged, rc=0"
+else
+    fail "T38: FRESH lock should be present + unflagged, rc=0 (got rc=$rc out=$out)"
+fi
+rm -rf "$FRESH_LOCKDIR"
+
+# --- T39: sweep with an OLD lock -> flagged IDLE-HELD?, rc=20 --------------
+OLD_SLUG="HIMMEL-2369-test__old"
+OLD_LOCKDIR="$SWEEP_QDIR/$OLD_SLUG.lock"
+mkdir -p "$OLD_LOCKDIR"
+# Fixed ancient literal (same convention as T9/T14/T18/T24/T32/T33 -- NOT
+# `date -d`, which is GNU-only and breaks on BSD/macOS, codex-4). The sweep
+# has no half-TTL AGING check to disambiguate from (unlike T36), so an
+# ancient fixed date is unambiguous: it is well past the idle-warn threshold
+# and needs no date arithmetic at all.
+printf '{"session":"sweep-old","host":"h","handover":"old.md","started":"2020-01-01T00:00:00Z","heartbeat":"2020-01-01T00:00:00Z"}\n' \
+    > "$OLD_LOCKDIR/owner.json"
+out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ "$rc" -eq 20 ] && grepq "$out" "slug=$OLD_SLUG session=sweep-old host=h" && grepq "$out" "$OLD_SLUG.*IDLE-HELD"; then
+    pass "T39: OLD lock (heartbeat past idle-warn threshold) flagged IDLE-HELD?, rc=20"
+else
+    fail "T39: OLD lock should be flagged, rc=20 (got rc=$rc out=$out)"
+fi
+
+# --- T40: fresh + old together -- BOTH lines appear, flagged one does not --
+# suppress the other (the load-bearing property: exactly the check that
+# proves a flagged lock does not hide its siblings).
+mkdir -p "$FRESH_LOCKDIR"
+printf '{"session":"sweep-fresh","host":"h","handover":"fresh.md","started":"%s","heartbeat":"%s"}\n' \
+    "$fresh_hb" "$fresh_hb" > "$FRESH_LOCKDIR/owner.json"
+out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ "$rc" -eq 20 ]; then
+    pass "T40: fresh+old together -> rc=20 (at least one flagged)"
+else
+    fail "T40: fresh+old together should be rc=20 (got $rc)"
+fi
+if grepq "$out" "slug=$FRESH_SLUG.*status=OK" && grepq "$out" "slug=$OLD_SLUG.*status=IDLE-HELD"; then
+    pass "T40: BOTH lines present -- flagged lock does not suppress the unflagged one"
+else
+    fail "T40: expected both a status=OK fresh line and an IDLE-HELD old line (out=$out)"
+fi
+
+# --- T41: negative control -- a very high QUEUE_LOCK_IDLE_WARN_SECONDS -----
+# un-flags the OLD lock and drops the exit code to 0, proving the flag
+# tracks the knob rather than being hardcoded (mirrors T36's override check).
+# OLD_LOCKDIR's heartbeat is the fixed "2020-01-01T00:00:00Z" literal (its
+# age is ~2e8s and growing every year this suite runs), so the override
+# must clear that, not just a few thousand seconds -- 999999999s (~31.7yr)
+# comfortably outlives it.
+out="$(HANDOVER_DIR="$SWEEP_ROOT" QUEUE_LOCK_IDLE_WARN_SECONDS=999999999 bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && ! grepq "$out" 'IDLE-HELD'; then
+    pass "T41: negative control -- QUEUE_LOCK_IDLE_WARN_SECONDS raised above every age -> nothing flagged, rc=0"
+else
+    fail "T41: negative control failed (got rc=$rc out=$out)"
+fi
+rm -rf "$FRESH_LOCKDIR" "$OLD_LOCKDIR"
+
+# --- T42: corrupt locks (missing owner.json, and garbage content) are ------
+# reported on their own line rather than skipped silently, and do not abort
+# the sweep -- a fresh sibling lock still appears.
+CORRUPT1_SLUG="HIMMEL-2369-test__corrupt-missing"
+CORRUPT1_LOCKDIR="$SWEEP_QDIR/$CORRUPT1_SLUG.lock"
+mkdir -p "$CORRUPT1_LOCKDIR"   # no owner.json at all
+# Backdate past _QL_SWEEP_CORRUPT_GRACE_SECS (HIMMEL-2369 CR round-2,
+# codex-2): a FRESHLY-created missing-owner dir is now INDETERMINATE, not
+# CORRUPT (see T44) -- this fixture needs to be a genuinely OLD miss to
+# still exercise the CORRUPT path T42 is about.
+t42_grace=$(sed -n 's/^_QL_SWEEP_CORRUPT_GRACE_SECS=\([0-9][0-9]*\).*/\1/p' "$LIB" | head -1)
+touch -d "@$(( $(date -u +%s) - ${t42_grace:-5} - 60 ))" "$CORRUPT1_LOCKDIR"
+CORRUPT2_SLUG="HIMMEL-2369-test__corrupt-garbage"
+CORRUPT2_LOCKDIR="$SWEEP_QDIR/$CORRUPT2_SLUG.lock"
+mkdir -p "$CORRUPT2_LOCKDIR"
+printf 'not json at all' > "$CORRUPT2_LOCKDIR/owner.json"
+mkdir -p "$FRESH_LOCKDIR"
+printf '{"session":"sweep-fresh","host":"h","handover":"fresh.md","started":"%s","heartbeat":"%s"}\n' \
+    "$fresh_hb" "$fresh_hb" > "$FRESH_LOCKDIR/owner.json"
+out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if grepq "$out" "slug=$CORRUPT1_SLUG.*CORRUPT" && grepq "$out" "slug=$CORRUPT2_SLUG.*CORRUPT"; then
+    pass "T42: both a missing-owner.json lock and a garbage-content lock are reported CORRUPT"
+else
+    fail "T42: corrupt locks not both reported (out=$out)"
+fi
+if grepq "$out" "slug=$FRESH_SLUG.*status=OK"; then
+    pass "T42: a corrupt lock does not abort the sweep -- the fresh sibling still appears"
+else
+    fail "T42: fresh sibling missing from sweep output after corrupt locks were present (out=$out)"
+fi
+if [ "$rc" -eq 20 ]; then
+    pass "T42: at least one CORRUPT lock -> rc=20 (corrupt counts as flagged, same fail-closed posture as the single-queue status path)"
+else
+    fail "T42: expected rc=20 with corrupt locks present (got $rc)"
+fi
+rm -rf "$CORRUPT1_LOCKDIR" "$CORRUPT2_LOCKDIR" "$FRESH_LOCKDIR"
+
+# --- T43: a partially-parseable owner is NOT healthy just because one -----
+# field survived (HIMMEL-2369 CR round-1, codex-1): the CORRUPT check only
+# trips when session/host/heartbeat are ALL empty, so an owner.json missing
+# just its heartbeat -- or one where the heartbeat is present but garbage --
+# used to fall through to status=OK age=unknown, a clean-looking verdict for
+# a lock this sweep could not actually assess. Both shapes must now be
+# FLAGGED (status=UNKNOWN) and the sweep must exit 20, never 0.
+SESSIONONLY_SLUG="HIMMEL-2369-test__session-only"
+SESSIONONLY_LOCKDIR="$SWEEP_QDIR/$SESSIONONLY_SLUG.lock"
+mkdir -p "$SESSIONONLY_LOCKDIR"
+printf '{"session":"sweep-sessiononly"}\n' > "$SESSIONONLY_LOCKDIR/owner.json"
+out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ "$rc" -eq 20 ] && grepq "$out" "slug=$SESSIONONLY_SLUG.*status=UNKNOWN"; then
+    pass "T43: owner.json retaining ONLY session (no heartbeat at all) is flagged UNKNOWN, rc=20"
+else
+    fail "T43: session-only owner should be flagged UNKNOWN, rc=20 (got rc=$rc out=$out)"
+fi
+rm -rf "$SESSIONONLY_LOCKDIR"
+
+BADHB_SLUG="HIMMEL-2369-test__heartbeat-unparsable"
+BADHB_LOCKDIR="$SWEEP_QDIR/$BADHB_SLUG.lock"
+mkdir -p "$BADHB_LOCKDIR"
+printf '{"heartbeat":"not-a-real-timestamp"}\n' > "$BADHB_LOCKDIR/owner.json"
+out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ "$rc" -eq 20 ] && grepq "$out" "slug=$BADHB_SLUG.*status=UNKNOWN"; then
+    pass "T43: owner.json retaining ONLY an unparsable heartbeat is flagged UNKNOWN, rc=20"
+else
+    fail "T43: unparsable-heartbeat-only owner should be flagged UNKNOWN, rc=20 (got rc=$rc out=$out)"
+fi
+rm -rf "$BADHB_LOCKDIR"
+
+# Negative control MUST still pass unchanged: a genuinely healthy old lock
+# (parseable heartbeat, just old) stays unflagged under a high threshold --
+# proving the codex-1 fix is "fail-closed on unassessable", not "flag
+# everything".
+mkdir -p "$OLD_LOCKDIR"
+printf '{"session":"sweep-old","host":"h","handover":"old.md","started":"2020-01-01T00:00:00Z","heartbeat":"2020-01-01T00:00:00Z"}\n' \
+    > "$OLD_LOCKDIR/owner.json"
+out="$(HANDOVER_DIR="$SWEEP_ROOT" QUEUE_LOCK_IDLE_WARN_SECONDS=999999999 bash "$LIB" status --sweep 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && ! grepq "$out" 'IDLE-HELD' && ! grepq "$out" 'UNKNOWN' && ! grepq "$out" 'CORRUPT'; then
+    pass "T43: negative control still holds -- a genuinely healthy old (but parseable) lock stays unflagged under a raised threshold"
+else
+    fail "T43: negative control regressed -- a parseable old lock should stay unflagged (got rc=$rc out=$out)"
+fi
+rm -rf "$OLD_LOCKDIR"
+
+# --- T44: sweep race window -- missing owner.json is NOT always CORRUPT ----
+# (HIMMEL-2369 CR round-2, codex-2): acquire creates the lock DIR then
+# writes owner.json a moment later; a sweep landing in that routine,
+# sub-second window must not cry wolf on a healthy in-flight acquire. The
+# discriminator is the lock dir's own mtime (py_armor_mtime) -- an empirical
+# precheck confirms it actually reports a fresh dir as fresh on THIS box
+# first (mirrors last round's live `date -d` check), before trusting the
+# sweep's own use of it. A dir younger than _QL_SWEEP_CORRUPT_GRACE_SECS
+# reads INDETERMINATE and does not flag; a dir older than it still reads
+# CORRUPT and still flags -- fail-closed for genuine corruption is
+# unchanged.
+T44_GRACE=$(sed -n 's/^_QL_SWEEP_CORRUPT_GRACE_SECS=\([0-9][0-9]*\).*/\1/p' "$LIB" | head -1)
+if [ -z "$T44_GRACE" ]; then
+    fail "T44: cannot read _QL_SWEEP_CORRUPT_GRACE_SECS from $LIB -- the grace constant moved or was renamed; re-point this test at it"
+else
+    T44_PROBE_DIR="$TMPDIR_ROOT/t44-mtime-probe"
+    mkdir -p "$T44_PROBE_DIR"
+    t44_probe_mtime=$(bash -c '. "$1"; py_armor_mtime "$2"' _ "$SCRIPT_DIR/../lib/py-armor.sh" "$T44_PROBE_DIR")
+    t44_probe_age=-1
+    [ -n "$t44_probe_mtime" ] && t44_probe_age=$(( $(date -u +%s) - t44_probe_mtime ))
+    if [ "$t44_probe_age" -ge 0 ] && [ "$t44_probe_age" -lt "$T44_GRACE" ]; then
+        pass "T44: py_armor_mtime precheck -- a freshly-created dir reports as fresh on this box (age=${t44_probe_age}s)"
+    else
+        fail "T44: py_armor_mtime precheck failed (mtime=$t44_probe_mtime age=$t44_probe_age) -- the age mechanism this fix relies on may not behave as expected here"
+    fi
+
+    YOUNG_SLUG="HIMMEL-2369-test__missing-owner-young"
+    YOUNG_LOCKDIR="$SWEEP_QDIR/$YOUNG_SLUG.lock"
+    mkdir -p "$YOUNG_LOCKDIR"   # freshly created, NO owner.json -- simulates acquire mid-flight
+    out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+    rc=$?
+    if grepq "$out" "slug=$YOUNG_SLUG.*status=INDETERMINATE" && ! grepq "$out" "slug=$YOUNG_SLUG.*CORRUPT"; then
+        pass "T44: a YOUNG lock dir with no owner.json yet is INDETERMINATE, not CORRUPT"
+    else
+        fail "T44: young missing-owner lock should be INDETERMINATE (got rc=$rc out=$out)"
+    fi
+    if [ "$rc" -eq 0 ]; then
+        pass "T44: a lone INDETERMINATE lock does not flag the sweep (rc=0)"
+    else
+        fail "T44: INDETERMINATE alone should not raise rc (got rc=$rc)"
+    fi
+    rm -rf "$YOUNG_LOCKDIR"
+
+    OLDMISS_SLUG="HIMMEL-2369-test__missing-owner-old"
+    OLDMISS_LOCKDIR="$SWEEP_QDIR/$OLDMISS_SLUG.lock"
+    mkdir -p "$OLDMISS_LOCKDIR"
+    # touch -d "@<epoch>" (NOT `date -d` arithmetic on a heartbeat string --
+    # codex-4 last round; this is the SAME idiom T31 already uses to backdate
+    # a lock dir's mtime, proven to work on this box).
+    t44_old_epoch=$(( $(date -u +%s) - T44_GRACE - 60 ))
+    touch -d "@$t44_old_epoch" "$OLDMISS_LOCKDIR"
+    out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 20 ] && grepq "$out" "slug=$OLDMISS_SLUG.*status=CORRUPT"; then
+        pass "T44: an OLD lock dir with no owner.json (past the grace window) is still CORRUPT, rc=20"
+    else
+        fail "T44: old missing-owner lock should stay CORRUPT + rc=20 (got rc=$rc out=$out)"
+    fi
+    rm -rf "$OLDMISS_LOCKDIR"
+fi
+
+# --- T45: sweep output escaping (HIMMEL-2369 CR round-2, codex-3) ----------
+# slug/session/host are filesystem- or owner-controlled; a raw space or a
+# literal embedded newline in a value must not forge or split the
+# documented one-record-per-line contract. Every line the sweep prints
+# starts with "slug=", so if a newline split a record, the total line
+# count would exceed the count of "slug="-prefixed lines.
+SPACE_SLUG="HIMMEL-2369-test__esc-space"
+SPACE_LOCKDIR="$SWEEP_QDIR/$SPACE_SLUG.lock"
+mkdir -p "$SPACE_LOCKDIR"
+esc_hb="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '{"session":"bad session","host":"h","handover":"x.md","started":"%s","heartbeat":"%s"}\n' \
+    "$esc_hb" "$esc_hb" > "$SPACE_LOCKDIR/owner.json"
+
+NL_SLUG="HIMMEL-2369-test__esc-newline"
+NL_LOCKDIR="$SWEEP_QDIR/$NL_SLUG.lock"
+mkdir -p "$NL_LOCKDIR"
+printf '{"session":"bad\nsession","host":"h","handover":"x.md","started":"%s","heartbeat":"%s"}\n' \
+    "$esc_hb" "$esc_hb" > "$NL_LOCKDIR/owner.json"
+
+out="$(HANDOVER_DIR="$SWEEP_ROOT" bash "$LIB" status --sweep 2>&1)"
+t45_lines=$(printf '%s\n' "$out" | wc -l)
+t45_slug_lines=$(printf '%s\n' "$out" | grep -c '^slug=')
+if [ "$t45_lines" -eq "$t45_slug_lines" ]; then
+    pass "T45: every line of sweep output is a slug= record -- no stray line from an embedded space/newline"
+else
+    fail "T45: sweep output has a non-slug= line (space/newline forged or split a record): $out"
+fi
+if grepq "$out" "slug=$SPACE_SLUG session=bad_session " && grepq "$out" "slug=$NL_SLUG session=bad_session "; then
+    pass "T45: a raw space and a raw embedded newline in session are both folded, not passed through raw"
+else
+    fail "T45: escaping did not neutralize the space/newline session values (out=$out)"
+fi
+rm -rf "$SPACE_LOCKDIR" "$NL_LOCKDIR"
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

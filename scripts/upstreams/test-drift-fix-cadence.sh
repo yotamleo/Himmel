@@ -248,7 +248,7 @@ assert_has "$out" "/drift-fix" "drift runner fires the /drift-fix runbook"
 assert_has "$out" "/fork-resync" "resync runner fires the /fork-resync runbook"
 assert_has "$out" "scripts/upstreams.json" "resync prompt selects registered fork entries, not qmd only"
 assert_has "$out" "claude-obsidian" "resync prompt names claude-obsidian coverage"
-assert_has "$out" "non-additive" "resync prompt treats claude-obsidian non-additive audit as designed"
+assert_has "$out" "regression" "resync prompt treats a non-additive claude-obsidian result as a regression, not as designed"
 assert_has "$out" "--push" "unattended resync prompt explicitly forbids the push path"
 assert_has "$out" "< /dev/null" "runner gives the session stdin EOF"
 assert_lacks "$out" "--print" "runner never uses --print (HIMMEL-128 billing)"
@@ -449,6 +449,18 @@ rm -rf "$root" "$state"
 
 # --------------------------------------------------------------------------
 if command -v cygpath >/dev/null 2>&1; then
+  # Hermetic shared WSH preflight: both policy values are absent and the fake
+  # windowless host accepts the zero-exit smoke .vbs.
+  wsh_state=$(mktemp -d -t drift-wsh.XXXXXX)
+  fake_wscript="$wsh_state/wscript-fake.exe"
+  printf '#!/bin/sh\nexit 0\n' > "$fake_wscript"
+  chmod +x "$fake_wscript"
+  fake_wsh_powershell="$wsh_state/powershell-wsh-fake.sh"
+  printf '#!/bin/sh\necho ABSENT\n' > "$fake_wsh_powershell"
+  chmod +x "$fake_wsh_powershell"
+  export CADENCE_WSCRIPT_BIN="$fake_wscript"
+  export CADENCE_WSH_POWERSHELL="$fake_wsh_powershell"
+
   echo "[test-drift-fix-cadence] Windows (schtasks) arm — both legs"
   root=$(make_root); state=$(mktemp -d); fake_st=$(make_fake_schtasks "$state"); fake_claude=$(make_stub_claude "$state" .exe)
   win_env() {
@@ -467,6 +479,12 @@ if command -v cygpath >/dev/null 2>&1; then
   assert_has "$out" "himmel-cadence-runner-format:" "runner carries the format stamp"
   assert_has "$out" "/drift-fix" "drift runner fires the /drift-fix runbook"
   assert_has "$out" "/fork-resync" "resync runner fires the /fork-resync runbook"
+  # HIMMEL-1753: Exec is a `wscript //B <shim>.vbs` wrapper around the .bat.
+  # The hidden-powershell shape still allocated consoles; wscript allocates zero.
+  assert_has "$out" "<Command>wscript.exe</Command>" "task XML Exec Command is wscript.exe, not the bare .bat"
+  assert_has "$out" "//B" "task XML Exec Arguments carries //B batch mode"
+  assert_has "$out" "drift-fix.vbs" "drift task XML Exec Arguments references the runner shim"
+  assert_has "$out" "fork-resync.vbs" "resync task XML Exec Arguments references the runner shim"
   if [ ! -f "$state/bat/drift-fix.bat" ] && [ ! -f "$state/bat/fork-resync.bat" ]; then
     pass "dry-run wrote no .bat"
   else
@@ -568,6 +586,13 @@ if command -v cygpath >/dev/null 2>&1; then
   else
     fail "post-arm verify failure left a leg armed"
   fi
+  # HIMMEL-1753 r2 (glm-2): the drift leg's shim WAS published before the
+  # resync leg failed the verify — rollback must remove it too, not orphan it.
+  if [ ! -f "$state/bat/drift-fix.vbs" ] && [ ! -f "$state/bat/fork-resync.vbs" ]; then
+    pass "failed arm leaves no orphan .vbs shim (rollback removed both)"
+  else
+    fail "failed arm orphaned a .vbs shim until a later disarm"
+  fi
   rm -rf "$root" "$state"
 
   echo "[test-drift-fix-cadence] Windows: mid-loop cygpath failure rolls back BOTH legs (CR)"
@@ -594,21 +619,41 @@ FAKE
   else
     fail "mid-loop cygpath failure left a leg armed (half-armed cadence)"
   fi
+  # HIMMEL-1753 r2 (glm-2): leg 1 published its shim before leg 2's cygpath
+  # failed — rollback removes it instead of orphaning it.
+  if [ ! -f "$state/bat/drift-fix.vbs" ]; then
+    pass "mid-loop cygpath rollback removed the published shim too"
+  else
+    fail "mid-loop cygpath rollback orphaned the drift leg's .vbs shim"
+  fi
   rm -rf "$root" "$state"
 
-  echo "[test-drift-fix-cadence] Windows: emit_bat write failure rolls back BOTH legs (CR)"
+  echo "[test-drift-fix-cadence] Windows: publication onto a non-regular final path rolls back BOTH legs (CR + HIMMEL-1753 r2)"
   root=$(make_root); state=$(mktemp -d); fake_st=$(make_fake_schtasks "$state"); fake_claude=$(make_stub_claude "$state" .exe)
-  # A directory sitting where the drift leg's .bat should be a file -- the
-  # `emit_bat ... > "$bat_file"` redirect fails, and that failure must not
-  # slip past the `set -e` guard without rolling back both legs.
+  # A directory sitting where the drift leg's .bat should be a file. Staging
+  # (HIMMEL-1753 r2) means the emitter's redirect no longer fails — the staged
+  # temp path is free — so this sabotage must be caught by the pre-promotion
+  # guard: `mv` onto a directory would "succeed" by moving the staged file
+  # INSIDE it, arming a task at a path that is not a file. The refusal must
+  # roll back both legs and leave no shim or staged temp behind.
   mkdir -p "$state/bat/drift-fix.bat"
   out=$(win_env bash "$CADENCE" arm 2>&1); rc=$?
-  if [ "$rc" -eq 4 ]; then pass "emit_bat write failure is rc=4"; else fail "expected rc=4, got rc=$rc: $out"; fi
-  assert_has "$out" "could not write" "write failure message names the bat file"
+  if [ "$rc" -eq 4 ]; then pass "non-regular final path refusal is rc=4"; else fail "expected rc=4, got rc=$rc: $out"; fi
+  assert_has "$out" "not a regular file" "refusal message names the squatting path"
   if [ ! -f "$state/armed_HIMMEL-DriftFix" ] && [ ! -f "$state/armed_HIMMEL-ForkResync" ]; then
-    pass "emit_bat write failure leaves NEITHER leg armed (all-or-nothing)"
+    pass "publication refusal leaves NEITHER leg armed (all-or-nothing)"
   else
-    fail "emit_bat write failure left a leg armed (half-armed cadence)"
+    fail "publication refusal left a leg armed (half-armed cadence)"
+  fi
+  if [ ! -f "$state/bat/drift-fix.vbs" ] && [ ! -f "$state/bat/fork-resync.vbs" ]; then
+    pass "publication refusal leaves no orphan .vbs shim"
+  else
+    fail "publication refusal left an orphan .vbs shim"
+  fi
+  if ! compgen -G "$state/bat/".?.* >/dev/null; then
+    pass "publication refusal cleans its staged temps"
+  else
+    fail "staged temp litter left after publication refusal" "$(ls -A "$state/bat")"
   fi
   rm -rf "$root" "$state"
 
@@ -630,7 +675,7 @@ FAKE
   else
     fail "extensionless shim armed despite being unrunnable by cmd.exe"
   fi
-  rm -rf "$root" "$state"
+  rm -rf "$root" "$state" "$wsh_state"
 else
   echo "[test-drift-fix-cadence] Windows (schtasks) — skipped: no cygpath on this host"
 fi

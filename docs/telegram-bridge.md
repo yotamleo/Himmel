@@ -1,126 +1,75 @@
-# Telegram remote bridge — operator runbook
+# Telegram remote bridge — adopter guide
 
-Run Claude Code as a remote-controllable agent over Telegram: DM the bot from
-your phone, the owner session receives it and replies. Built on the
-**`telegram-himmel`** fork (a poller-gated fork of
-`telegram@claude-plugins-official`).
+Control Claude Code from your phone over Telegram: DM the bot, an always-on
+bridge spawns a bounded Claude run per message and relays the reply back.
 
-## Why the fork (1-line)
+## What it is
 
-Telegram allows one `getUpdates` poller per bot token. Upstream polls in
-*every* claude session and steals the slot, so any ad-hoc window kills your
-bridge. `telegram-himmel` gates the poller behind `TELEGRAM_OWN_POLLER=1` —
-only the designated owner polls; everything else leaves the slot alone. Full
-rationale: [`marketplace/plugins/telegram-himmel/README.md`](../marketplace/plugins/telegram-himmel/README.md).
+An always-on **bun** process (`scripts/telegram/supervisor.ts` +
+`scripts/telegram/poller.ts`) owns the single Telegram poll slot for your bot
+token. For each inbound message it spawns a short-lived, bounded `claude` run
+that does one turn and exits; a file-backed bus (under
+`~/.claude/handover/bridge/`) carries per-session state across runs, usage
+caps, and crashes. There is no long-lived Claude session to babysit — the
+bridge itself is just the bun process.
 
-## One-time setup (already done on this machine)
+Mechanism detail (delivery model, file bus layout, IPC, hardening) lives in
+[`docs/internals/telegram-bridge.md`](internals/telegram-bridge.md); this page
+is the front door.
+
+## Required config
+
+- `~/.claude/channels/telegram/.env` with `TELEGRAM_BOT_TOKEN=<your bot token>`
+- `~/.claude/channels/telegram/access.json` with `{"allowFrom":["<your-telegram-user-id>"]}`
+
+## Start / stop
+
+**Start:**
 
 ```bash
-claude plugin marketplace update himmel
-claude plugin install telegram-himmel@himmel
+cd scripts/telegram && bun supervisor.ts
 ```
 
-In `~/.claude/settings.json` → `enabledPlugins`:
+The supervisor keeps `bun poller.ts` alive (restart-on-exit with backoff).
 
-```json
-"telegram-himmel@himmel": true,
-"telegram@claude-plugins-official": false
-```
+**Stop (cross-platform):**
 
-Upstream **must stay disabled** — its ungated poller re-creates the steal.
-Token + allowlist live in `~/.claude/channels/telegram/` and carry over from
-upstream (no re-pairing).
-
-## Launch the owner (the bridge)
-
-Two things are required and easy to get wrong:
-
-1. **`TELEGRAM_OWN_POLLER=1`** — makes this session the poller.
-2. **`--dangerously-load-development-channels plugin:telegram-himmel@himmel`** —
-   the fork is a *local* channel, not on Claude's built-in approved-channels
-   allowlist, so a plain `--channels` drops inbound. This flag opts in (it's
-   your own fork). The flag takes the `plugin:` spec **directly** — do NOT also
-   pass `--channels`. On launch it prompts once; choose **"I am using this for
-   local development"**.
-
-**PowerShell:**
-```powershell
-$env:TELEGRAM_OWN_POLLER=1; claude "telegram bridge owner — standby" --dangerously-load-development-channels plugin:telegram-himmel@himmel
-```
-
-**Git Bash / Linux / macOS:**
 ```bash
-TELEGRAM_OWN_POLLER=1 claude "telegram bridge owner — standby" --dangerously-load-development-channels plugin:telegram-himmel@himmel
+cd scripts/telegram && bun supervisor.ts --kill
 ```
 
-Confirm: the session prints `Listening for channel messages from:
-plugin:telegram-himmel@himmel`. DM your bot (`@<your-bot-username>`) from the allowlisted
-account → the message appears in the session as a `<channel …>` block; reply
-flows back to Telegram.
+**Restart (Windows):** `pwsh -File scripts/telegram/restart-bridge.ps1` (add
+`-StatusOnly` to just check). This is also the preferred lever on Windows
+since it clears any duplicate pollers left by an older launch.
 
-## Non-owner sessions
+## What you can do from a phone
 
-Just run `claude` normally — **no env var, no flag**. The plugin still loads,
-so outbound tools (`reply`, `react`) work, but it won't poll and won't steal
-the owner's slot. Open as many as you like; the bridge stays up.
+DM the bot once it's running:
 
-## Alias
+- `work on <TICKET-KEY>` — dispatch: create/resume a session for that ticket and run it.
+- `<TICKET-KEY>: <text>` — send a follow-up to that session.
+- `status` / `sessions` / `stop <TICKET-KEY>` — control commands.
+- Anything else — ordinary chat with the current session.
 
-Drop one of these in your shell profile so you don't retype the launch.
+Privileged actions (arming a resume, restarting the bridge, and other
+operator-only ops) are gated behind an explicit auto-command syntax and an
+allowlisted-operator check — see the auto-action docs in
+[`internals/telegram-bridge.md`](internals/telegram-bridge.md#ws-d--auto-mode)
+for what's enabled and how it's authorized. A forwarded message can never
+trigger one of these commands.
 
-**PowerShell** (`$PROFILE`):
-```powershell
-function tgowner {
-    $env:TELEGRAM_OWN_POLLER = "1"
-    claude "telegram bridge owner — standby" --dangerously-load-development-channels plugin:telegram-himmel@himmel
-}
-```
-Then: `tgowner`. (Sets `$env:TELEGRAM_OWN_POLLER` for that shell — open
-non-owner windows in a different shell, or clear with
-`$env:TELEGRAM_OWN_POLLER=$null`.)
+## The one-poller-per-token trap
 
-**Bash / Zsh** (`~/.bashrc` / `~/.zshrc`):
-```bash
-alias tgowner='TELEGRAM_OWN_POLLER=1 claude "telegram bridge owner — standby" --dangerously-load-development-channels plugin:telegram-himmel@himmel'
-```
-The inline `VAR=1 cmd` form scopes the env var to that one launch — non-owner
-windows are unaffected.
-
-## Verify (quick)
-
-| Check | How | Expect |
-|---|---|---|
-| Owner polls | launch owner, DM bot | `<channel>` block in session |
-| Non-owner doesn't steal | owner up, open plain `claude`, DM bot | owner still receives; `cat ~/.claude/channels/telegram/bot.pid` unchanged |
-| Outbound from non-owner | ask plain session to send a Telegram msg | delivered |
+Telegram allows exactly **one** `getUpdates` consumer per bot token. Do not
+launch a `claude --channels` (or `TELEGRAM_OWN_POLLER=1`) session by hand
+while the bun bridge is running — it becomes a second consumer and Telegram
+returns `409 Conflict`, breaking delivery for both. If you need a manual
+`--channels` session, stop the bridge first (`bun supervisor.ts --kill`).
 
 ## Troubleshooting
 
-- **DM sent, no reply, session shows nothing.** Check the fork's MCP log:
-  `~/AppData/Local/claude-cli-nodejs/Cache/<cwd-slug>/mcp-logs-plugin-telegram-himmel-telegram/`.
-  - `Channel notifications skipped: … not on the approved channels allowlist` →
-    you launched without `--dangerously-load-development-channels`. Relaunch
-    with it.
-  - `poller disabled (not owner; set TELEGRAM_OWN_POLLER=1)` → you forgot the
-    env var. Relaunch with it.
-- **`--dangerously-load-development-channels entries must be tagged`** → you
-  passed a stray `--channels`. The dev-channels flag takes the `plugin:` spec
-  directly; remove the separate `--channels`.
-- **`'TELEGRAM_OWN_POLLER=1' is not recognized`** → that's bash syntax in
-  PowerShell. Use `$env:TELEGRAM_OWN_POLLER=1; claude …`.
-- **409 Conflict in the log** → another poller holds the token (a stray owner
-  or upstream still enabled). Ensure upstream is disabled and only one owner
-  runs.
-
-## Keeping the fork current
-
-Pinned to upstream v0.0.6 (`marketplace/plugins/telegram-himmel/UPSTREAM_PIN`).
-The `check-telegram-fork-drift` pre-commit hook flags when the installed
-upstream cache drifts from the pin — re-sync per the fork README.
-
-## Roadmap
-
-Automating the owner lifecycle (keep it alive across context/usage-cap cycles
-+ arm work sessions from a Telegram message) is **HIMMEL-207** (bun supervisor
-+ `arm-resume` integration), unified with HIMMEL-208 (fast-resume from armed
-session).
+- **`409 Conflict` in the poller log** — another poller holds the token
+  (usually a stray hand-launched `--channels` session, or two supervisors).
+  Kill the extra poller; on Windows, `restart-bridge.ps1` clears this for you.
+- **No reply to a DM** — check that your Telegram user id is in
+  `access.json`'s `allowFrom`, and that the bridge process is actually up.

@@ -10,8 +10,11 @@ export function formatSessionTokenSummary(tokens, prefix) {
         `${t('format.in')}: ${formatTokens(tokens.inputTokens)}`,
         `${t('format.out')}: ${formatTokens(tokens.outputTokens)}`,
     ];
-    if (tokens.cacheCreationTokens > 0 || tokens.cacheReadTokens > 0) {
-        parts.push(`${t('format.cache')}: ${formatTokens(tokens.cacheCreationTokens + tokens.cacheReadTokens)}`);
+    if (tokens.cacheCreationTokens > 0) {
+        parts.push(`${t('format.cacheWrite')}: ${formatTokens(tokens.cacheCreationTokens)}`);
+    }
+    if (tokens.cacheReadTokens > 0) {
+        parts.push(`${t('format.cacheRead')}: ${formatTokens(tokens.cacheReadTokens)}`);
     }
     return `${prefix} ${formatTokens(total)} (${parts.join(', ')})`;
 }

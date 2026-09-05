@@ -260,10 +260,27 @@ for w in windows:
         exhausted.append((w, e))
 
 asap = now + buffer_min * 60
+# HIMMEL-1968: with an operator-raised threshold (RESUME_SLOT_THRESHOLD=97 on
+# 2026-08-19) a 96% weekly is "free" by the rule and resolves ASAP — correct,
+# but it launched a session straight into a nearly exhausted weekly bank with
+# nothing louder than the 96% inside the reason string. Any window at/over
+# NEAR_WALL_PCT that still counts as headroom gets a WARN on stderr naming the
+# window, the threshold and its reset, so an ASAP into a near-wall bank is a
+# visible choice, never a quiet one. The slot itself is unchanged.
+NEAR_WALL_PCT = 85.0
 if not exhausted:
     target = asap
     detail = ", ".join(f"{w.replace('_','-')}={util(w):.0f}%" for w in windows)
     reason = f"bank free ({detail} < {threshold:.0f}%) -> ASAP (+{buffer_min}m)"
+    for w in windows:
+        if util(w) >= NEAR_WALL_PCT:
+            e = reset_epoch(w)
+            when = (datetime.fromtimestamp(e).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+                    if e is not None else "unknown")
+            sys.stderr.write(
+                f"WARN resume-slot: {w.replace('_','-')}={util(w):.0f}% is under the {threshold:.0f}% "
+                f"threshold but near the wall -- arming ASAP into a nearly exhausted bank "
+                f"(resets {when}); pass --time HH:MM to park past the reset if that is not intended\n")
 else:
     # Wait for the LATEST reset among exhausted windows (binding constraint).
     w, target = max(exhausted, key=lambda t: t[1])

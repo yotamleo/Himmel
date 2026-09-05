@@ -32,6 +32,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/forge.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/forge.sh"
+# HIMMEL-2227 — worktree_in_use / worktree_intact: a plain `git worktree
+# remove` is NOT atomic on Windows (see the lib's own header for the measured
+# repro), so the prune loop below probes before removing and classifies a
+# failed remove instead of trusting a bare non-zero rc.
+# shellcheck source=lib/worktree-inuse.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/worktree-inuse.sh"
 
 # shellcheck disable=SC2016  # literal text, no expansion intended
 USAGE_TEXT='Usage: clean-garden.sh [branch-name] [flags]
@@ -288,13 +295,28 @@ is_branch_mergeable_for_prune() {
 }
 
 # Is an untracked path a known, discardable stray? (HIMMEL-431)
-# Allowlist (survey-grounded): bun package-lock.json, codex AGENTS.md / .codex/.
-# Scoped to "may be discarded when pruning a MERGED worktree" — NOT a decision
-# about repo tracking of codex files (that is HIMMEL-417).
+# Allowlist (survey-grounded): bun package-lock.json, codex AGENTS.md / .codex/,
+# tokensave .tokensave/. Scoped to "may be discarded when pruning a MERGED
+# worktree" — NOT a decision about repo tracking of codex files (that is
+# HIMMEL-417).
+#
+# On tool-generated churn (HIMMEL-1692): every entry here is ALSO gitignored in
+# this repo, so `ls-files --others --exclude-standard` normally filters it long
+# before classify_worktree sees it. The allowlist is the belt to that braces —
+# it keeps the verdict correct in a clone/adopter checkout whose .gitignore
+# lacks the entry, where the churn would otherwise read as "forgotten" (=
+# possible user work) and refuse the prune forever. .tokensave/ is the sharp
+# case: this machine chains a tokensave watcher off the GLOBAL git hookspath,
+# so post-checkout mints a live SQLite DB inside a NEW worktree within seconds
+# of `git worktree add` — churn that is emphatically not user work. Adding a
+# path here says only "safe to DISCARD with an already-merged worktree"; it can
+# never suppress a refusal driven by tracked modifications, which are checked
+# first and independently in classify_worktree.
 is_ignorable_stray() {
     case "$1" in
         AGENTS.md|*/AGENTS.md)                 return 0 ;;
         .codex/*|*/.codex/*)                   return 0 ;;
+        .tokensave/*|*/.tokensave/*)           return 0 ;;
         package-lock.json|*/package-lock.json) return 0 ;;
     esac
     return 1
@@ -329,6 +351,158 @@ $untracked
 EOF
     if [ -n "$nonign" ]; then echo "forgotten $nonign"; return 0; fi
     echo "strays $strays"; return 0
+}
+
+# HIMMEL-1692 — snapshot a refused-prune worktree's uncommitted work to
+# refs/checkpoints/<slug>, so classify_worktree's refusal above (tracked or
+# forgotten verdict) doesn't just leave that work sitting unprotected in the
+# worktree against any OTHER deletion path. A temporary GIT_INDEX_FILE is used
+# instead of `git stash`: `git stash create` alone cannot capture untracked
+# files, and neither the real index nor the working tree may be touched here —
+# this runs against someone else's live worktree, possibly mid-edit. The
+# written ref is reaped by the existing checkpoint TTL sweep further down this
+# file (CHECKPOINT_TTL_DAYS) — no separate lifecycle needed.
+#
+# Failure-tolerant by design: this is a safety net bolted onto a refusal that
+# already happened, so a failure here must never abort the sweep or flip the
+# prune verdict. Every git call is guarded and a failure returns non-zero
+# quietly with a WARN; callers invoke this as `checkpoint_worktree ... || true`.
+checkpoint_worktree() {
+    local wt="$1" br="$2"
+    local raw slug tmp_dir tmp_index head_oid head_tree old_oid tree oid nfiles rc
+    local index_tree index_oid index_parent snap_tree
+
+    raw="$(basename "$wt")"
+    slug="$(printf '%s' "$raw" | sed -E 's/[^A-Za-z0-9._-]/-/g')-autosave"
+
+    if ! git check-ref-format "refs/checkpoints/$slug" >/dev/null 2>&1; then
+        echo "WARN clean-garden: checkpoint ref 'refs/checkpoints/$slug' rejected by check-ref-format — skipping snapshot for $br ($wt)" >&2
+        return 1
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY clean-garden: would checkpoint $wt -> refs/checkpoints/$slug"
+        return 0
+    fi
+
+    head_oid=$(git -C "$wt" rev-parse --verify HEAD 2>/dev/null)
+    if [ -z "$head_oid" ]; then
+        echo "WARN clean-garden: could not resolve HEAD for $br ($wt) — skipping checkpoint" >&2
+        return 1
+    fi
+
+    tmp_dir=$(mktemp -d 2>/dev/null)
+    if [ -z "$tmp_dir" ] || [ ! -d "$tmp_dir" ]; then
+        echo "WARN clean-garden: could not create temp dir for checkpoint of $br — skipping" >&2
+        return 1
+    fi
+    tmp_index="$tmp_dir/index"
+
+    # Seed from HEAD first: a fresh index is EMPTY, so `add -A` over it alone
+    # would write a tree containing ONLY the currently-dirty paths — a diff vs
+    # HEAD that DELETES the rest of the repo. read-tree HEAD then `add -A`
+    # yields HEAD-plus-changes, which is what "checkpoint" means.
+    if ! GIT_INDEX_FILE="$tmp_index" git -C "$wt" read-tree "$head_oid" >/dev/null 2>&1; then
+        echo "WARN clean-garden: checkpoint read-tree failed for $br ($wt) — skipping" >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    if ! GIT_INDEX_FILE="$tmp_index" git -C "$wt" add -A >/dev/null 2>&1; then
+        echo "WARN clean-garden: checkpoint add -A failed for $br ($wt) — skipping" >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    tree=$(GIT_INDEX_FILE="$tmp_index" git -C "$wt" write-tree 2>/dev/null)
+    if [ -z "$tree" ]; then
+        echo "WARN clean-garden: checkpoint write-tree failed for $br ($wt) — skipping" >&2
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+    rm -rf "$tmp_dir"
+
+    head_tree=$(git -C "$wt" rev-parse --verify "${head_oid}^{tree}" 2>/dev/null)
+
+    # Capture the INDEX snapshot too, and do it BEFORE the nothing-to-save
+    # early-return (codex CR rounds 1 + 3). `add -A` above records the
+    # WORKING-TREE content of every path, so the index is a SECOND state this
+    # function must not drop:
+    #   - staged X, then edited again on disk -> worktree wins, X would be lost;
+    #   - staged X, then reverted on disk to HEAD -> the worktree tree collapses
+    #     back to HEAD's, so an early-return placed above this would exit 0 and
+    #     silently discard X, even though `status --porcelain` reported the
+    #     worktree dirty and sent us here. That was round 3's Critical.
+    # READ-ONLY: `write-tree` with no GIT_INDEX_FILE override reads the
+    # worktree's REAL index and writes only tree objects — it never rewrites the
+    # index file, so the mid-edit-worktree invariant this function is built
+    # around still holds. Best-effort like everything else here: an unmerged or
+    # unreadable index just yields no index snapshot.
+    index_tree=$(git -C "$wt" write-tree 2>/dev/null)
+
+    # Which tree does the checkpoint RESTORE to? Normally the worktree — that is
+    # the state an operator expects `git restore --source=<ref>` to give back.
+    # But when the worktree collapses back to HEAD and only the index differs,
+    # the staged snapshot is the ONLY work that exists, so it becomes the
+    # checkpoint's own tree rather than being demoted to a parent nobody looks at.
+    snap_tree="$tree"
+    if [ "$tree" = "$head_tree" ] && [ -n "$index_tree" ] && [ "$index_tree" != "$head_tree" ]; then
+        snap_tree="$index_tree"
+    fi
+    if [ "$snap_tree" = "$head_tree" ]; then
+        return 0   # nothing to save — worktree AND index both collapse to HEAD
+    fi
+
+    # One tree cannot represent both states, so when the index differs from the
+    # tree we are restoring to, keep it as an extra PARENT: reachable from the
+    # ref (fetchable, not gc-able) without changing what a restore yields.
+    index_parent=""
+    if [ -n "$index_tree" ] && [ "$index_tree" != "$snap_tree" ] && [ "$index_tree" != "$head_tree" ]; then
+        index_oid=$(git -C "$wt" commit-tree "$index_tree" -p "$head_oid" -m "clean-garden autosave INDEX (HIMMEL-1692): $br" 2>/dev/null)
+        [ -n "$index_oid" ] && index_parent="$index_oid"
+    fi
+
+    # Lossless overwrite: an existing checkpoint becomes a SECOND parent, so a
+    # re-run of /clean never discards an earlier snapshot, and the update-ref
+    # below passes the old oid as the expected value (compare-and-swap) —
+    # the same shape prune_checkpoint_refs uses for its delete.
+    old_oid=$(git -C "$PRIMARY_WORKTREE" rev-parse --verify --quiet "refs/checkpoints/$slug" 2>/dev/null)
+    set -- -p "$head_oid"
+    [ -n "$old_oid" ] && set -- "$@" -p "$old_oid"
+    [ -n "$index_parent" ] && set -- "$@" -p "$index_parent"
+    oid=$(git -C "$wt" commit-tree "$snap_tree" "$@" -m "clean-garden autosave (HIMMEL-1692): $br" 2>/dev/null)
+    if [ -z "$oid" ]; then
+        echo "WARN clean-garden: checkpoint commit-tree failed for $br ($wt) — skipping" >&2
+        return 1
+    fi
+
+    # Compare-and-swap on BOTH paths (codex adversarial round 4). The update
+    # path passes the observed old oid; the CREATE path passes the EMPTY STRING,
+    # which is git's "this ref must not exist" expectation — without it, two
+    # concurrent /clean runs that both saw no ref would both plain-write it and
+    # the loser's snapshot would become unreachable, silently, from the function
+    # that promises losslessness. On contention we WARN and return 1 rather than
+    # retry: the winner's checkpoint is a snapshot of the SAME worktree taken
+    # seconds apart, so refusing to clobber it loses nothing real, and a
+    # rebuild-and-retry loop would add a race of its own to best-effort armor.
+    rc=0
+    if [ -n "$old_oid" ]; then
+        git -C "$PRIMARY_WORKTREE" update-ref "refs/checkpoints/$slug" "$oid" "$old_oid" 2>/dev/null || rc=1
+    else
+        git -C "$PRIMARY_WORKTREE" update-ref "refs/checkpoints/$slug" "$oid" "" 2>/dev/null || rc=1
+    fi
+    if [ "$rc" -ne 0 ]; then
+        echo "WARN clean-garden: checkpoint update-ref failed for $br (refs/checkpoints/$slug created or moved concurrently — the other run's checkpoint stands) — skipping" >&2
+        return 1
+    fi
+
+    nfiles=$(git -C "$wt" diff-tree --no-commit-id --name-only -r "$head_tree" "$snap_tree" 2>/dev/null | wc -l | tr -d ' ')
+    # Recover into a SEPARATE detached worktree, never `git restore --worktree
+    # -- .` (codex adversarial round 1). `restore` writes every captured path
+    # into whatever worktree the operator happens to be standing in — silently
+    # overwriting THEIR uncommitted work, and not necessarily even the worktree
+    # this snapshot came from. A data-loss guard must not advertise a
+    # data-losing recovery. `worktree add --detach` is inspectable and additive.
+    echo "SAVED clean-garden: checkpointed $br -> refs/checkpoints/$slug ($nfiles file(s)); recover with: git worktree add --detach <recovery-path> refs/checkpoints/$slug   (inspect there, then copy what you need — do NOT 'git restore' over a live worktree)"
+    return 0
 }
 
 # Read worktree list into parallel arrays.
@@ -572,12 +746,65 @@ REMOTE_TIP_DIFFERS=0
 REMOTE_CLOSED_UNMERGED=0
 REMOTE_NO_PR=0
 REMOTE_UNKNOWN=0
+
+# HIMMEL-1970 — `refs/remotes/<remote>/*` is a LOCAL CACHE, and nothing here
+# ever refreshed it. This repo has deleteBranchOnMerge=true, and merge-on-green
+# no longer passes `gh pr merge --delete-branch` (HIMMEL-1679) — that flag's
+# `git push origin --delete` was what used to drop the local ref as a side
+# effect. So a squash-merged branch now vanishes server-side while its
+# remote-tracking ref lives on forever, and the classifier below re-reports it
+# as MERGED-CLEAN on every run (19 of them on 2026-08-20 — read by a human as
+# "19 worktrees were kept and none pruned", which the prune loop never claimed:
+# these counters are about REMOTE BRANCHES, never worktrees). Drop the dead
+# refs before classifying. Fail-OPEN: a stale ref only inflates a report, so an
+# unreachable remote just leaves the cache alone and everything is classified
+# as before.
+REMOTE_LIVE_HEADS=""
+REMOTE_LIVE_OK=0
+refresh_remote_tracking() {
+    local remote="$1" heads
+    REMOTE_LIVE_HEADS=""
+    REMOTE_LIVE_OK=0
+    # Non-interactive: an https remote without cached credentials would
+    # otherwise sit on a username prompt and hang /clean (which runs unattended
+    # from cadences), and an ssh remote would hang on a host-key/passphrase
+    # prompt. Both are turned into a fast failure, which is the fail-open path.
+    if ! heads=$(GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes}" \
+            git -C "$PRIMARY_WORKTREE" ls-remote --heads "$remote" 2>/dev/null); then
+        # Unconditional, not log(): a DEFAULT run must carry the marker that
+        # the remote-branch counters below may be stale.
+        echo "clean-garden: remote-tracking refresh skipped ($remote unreachable) — the remote-branch counters below may include branches the remote no longer has"
+        return 0
+    fi
+    REMOTE_LIVE_HEADS=$(printf '%s\n' "$heads" | sed -n 's#^[0-9a-f]*[[:space:]]*refs/heads/##p')
+    REMOTE_LIVE_OK=1
+    # --dry-run must not touch refs; the skip below still keeps the REPORT
+    # honest in that mode, so both modes classify identically.
+    [ "$DRY_RUN" -eq 1 ] && return 0
+    git -C "$PRIMARY_WORKTREE" remote prune "$remote" >/dev/null 2>&1 || true
+    return 0
+}
+
+# Is this remote-tracking branch still on the remote? Unknown (refresh failed)
+# counts as live — never drop a row on missing evidence.
+remote_branch_is_live() {
+    [ "$REMOTE_LIVE_OK" -eq 1 ] || return 0
+    grep -qxF "$1" <<EOF
+$REMOTE_LIVE_HEADS
+EOF
+}
+
 report_remote_orphans() {
     local remote="$1" branch tip category
     git -C "$PRIMARY_WORKTREE" remote get-url "$remote" >/dev/null 2>&1 || return 0
+    refresh_remote_tracking "$remote"
     while IFS=' ' read -r branch tip; do
         [ -n "$branch" ] || continue
         [ "$branch" != "HEAD" ] || continue
+        if ! remote_branch_is_live "$branch"; then
+            log "  remote-orphan skip (no longer on $remote): $branch"
+            continue
+        fi
         if [ -n "$MAIN_REF" ] && git -C "$PRIMARY_WORKTREE" merge-base --is-ancestor "$tip" "$MAIN_REF" 2>/dev/null; then
             continue
         fi
@@ -657,9 +884,11 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 echo "WARN clean-garden: $br working-tree scan failed — skipped ($wt)" >&2
                 SKIPPED=$((SKIPPED+1)); continue ;;
             tracked)
+                checkpoint_worktree "$wt" "$br" || true
                 echo "WARN clean-garden: $br has uncommitted changes — skipped ($wt)" >&2
                 SKIPPED=$((SKIPPED+1)); continue ;;
             "forgotten "*)
+                checkpoint_worktree "$wt" "$br" || true
                 echo "WARN clean-garden: $br has untracked files that are not known strays (possible forgotten work) — skipped ($wt): ${verdict#forgotten }" >&2
                 SKIPPED=$((SKIPPED+1)); continue ;;
         esac
@@ -697,6 +926,17 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             fi
         fi
 
+        # HIMMEL-2227 — in-use probe BEFORE the remove, plain or --force alike:
+        # the remove is NOT atomic on Windows, and --force strips git's own
+        # up-front refusal, so without this probe a forced remove on an
+        # in-use tree is guaranteed to gut it (see worktree-inuse.sh's header
+        # for the measured repro).
+        if worktree_in_use "$wt"; then
+            echo "WARN clean-garden: $br could not be safely removed (likely in use by a live process) — skipped ($wt); $WORKTREE_INUSE_DETAIL" >&2
+            SKIPPED=$((SKIPPED+1))
+            continue
+        fi
+
         if git -C "$PRIMARY_WORKTREE" worktree remove "${remove_args[@]}" "$wt" >/dev/null 2>&1; then
             if git -C "$PRIMARY_WORKTREE" branch -D "$br" >/dev/null 2>&1; then
                 echo "OK clean-garden: pruned $br ($wt)"
@@ -712,7 +952,17 @@ if [ "$NO_PRUNE" -eq 0 ]; then
                 log "  deleted cr-pending marker for $br"
             fi
         else
-            echo "ERR clean-garden: failed to remove worktree $wt (re-dirtied? locked? run with --verbose to investigate)" >&2
+            # HIMMEL-2227 — never report a removal outcome without LOOKING. A
+            # refusal git makes up front leaves the tree whole; a failure
+            # part-way through (only reachable via --force here, since a
+            # plain remove already refuses up front on real dirt) leaves a
+            # gutted tree that still answers `git ls-files` with confident
+            # zeroes.
+            if worktree_intact "$PRIMARY_WORKTREE" "$wt"; then
+                echo "ERR clean-garden: failed to remove worktree $wt (re-dirtied? locked?) — git refused the removal; the worktree is still registered with its .git link present. Run with --verbose to investigate." >&2
+            else
+                echo "ERR clean-garden: removal of worktree $wt FAILED PARTWAY — the tree may be GUTTED (its .git link and/or its 'git worktree list' entry is gone). Do NOT trust anything measured inside it: git commands there report an empty repo. Recover from the primary checkout, in order: 1) git -C '$PRIMARY_WORKTREE' worktree prune  2) make sure '$wt' is empty or removed -- 'git worktree add' refuses a non-empty destination, and remnants can survive exactly this partial-remove case  3) git -C '$PRIMARY_WORKTREE' worktree add '$wt' '$br'" >&2
+            fi
             FAILED=$((FAILED+1))
         fi
     done
@@ -723,6 +973,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
         STRAY_FOUND=0
         STRAY_SWEPT=0
         STRAY_FAILED=0
+        STRAY_REFUSED=0
         STRAY_RECLAIMED_KIB=0
         while IFS= read -r stray_dir; do
             [ -n "$stray_dir" ] || continue
@@ -744,6 +995,102 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             fi
 
             STRAY_FOUND=$((STRAY_FOUND+1))
+
+            # HIMMEL-1692 — this is the one unconditional `rm -rf` in the
+            # script, so classify before destroying. A husk here can be a
+            # REAL worktree whose admin record died mid-`git worktree remove`
+            # (see the ERR path above — "failed to remove worktree" — that
+            # leaves exactly this shape: directory present, `git worktree
+            # list` blind to it; unguarded, this loop would have destroyed it
+            # 24h later). Reuse classify_worktree/checkpoint_worktree rather
+            # than re-deriving worktree state here.
+            #
+            # HIMMEL-2267 — but classify_worktree only describes THIS directory
+            # when it IS one. On a plain leftover directory (no .git of its own)
+            # `git -C` does not fail: it walks UP to the enclosing checkout and
+            # answers about the PARENT's working tree, so the husk inherited the
+            # parent's verdict. Wherever `.claude/worktrees` is not gitignored —
+            # any adopter clone whose .gitignore lacks the entry — a husk's own
+            # contents then read back as "forgotten <path>" and the sweep
+            # refused them forever. Settle "is this a worktree at all" FIRST;
+            # only a real one is worth classifying. MSYS TRAP: `-e
+            # "$stray_dir/.git"` can resolve `.git.exe` and other surprises
+            # under Git-Bash; `find -maxdepth 1 -name .git` is the reliable
+            # presence check.
+            #
+            # HIMMEL-2267 — this presence check must distinguish find FAILING
+            # (permissions, a transient I/O error, an exotic path) from find
+            # RUNNING and finding no .git: `2>/dev/null` on an emptiness test
+            # alone makes both look like "no .git", which fails OPEN into the
+            # unconditional `rm -rf` below. Capture find's own exit status; on
+            # failure we cannot prove this ISN'T a worktree, so route to the
+            # existing "scanfail" verdict (below), which already refuses to
+            # sweep rather than guess.
+            if stray_git_marker=$(find "$stray_dir" -maxdepth 1 -name .git 2>/dev/null); then  # gnu-ok: Git-Bash can resolve a Bash `-e "$stray_dir/.git"` test to .git.exe (see comment above); -maxdepth is also POSIX-supported by BSD find
+                if [ -z "$stray_git_marker" ]; then
+                    verdict="nonworktree"
+                else
+                    verdict=$(classify_worktree "$stray_dir") || verdict="scanfail"
+                fi
+            else
+                # find itself failed — we cannot prove this is NOT a worktree,
+                # so fail closed rather than delete something uninspectable.
+                # HIMMEL-2267 — distinct from "scanfail" below: this is the
+                # presence PROBE failing, before we even know whether a .git
+                # exists, so it gets its own verdict and message rather than
+                # being blamed on classify_worktree/git.
+                verdict="probefail"
+            fi
+            case "$verdict" in
+                nonworktree)
+                    # No .git at all — a plain leftover directory, never a
+                    # worktree, so there is no uncommitted work to preserve.
+                    log "  stray-sweep plain leftover directory (no .git): $stray_dir"
+                    ;;
+                tracked|"forgotten "*)
+                    checkpoint_worktree "$stray_dir" "(husk) $(basename "$stray_dir")" || true
+                    echo "WARN clean-garden: stray husk has uncommitted work ($verdict) — refusing to sweep $stray_dir" >&2
+                    STRAY_REFUSED=$((STRAY_REFUSED+1))
+                    continue
+                    ;;
+                probefail)
+                    # The .git presence check itself failed (permissions, a
+                    # transient I/O error, an exotic path) — we never even
+                    # learned whether $stray_dir has a .git, so it is unknown
+                    # whether this is a worktree at all. Fail closed rather
+                    # than assume it's safe.
+                    echo "WARN clean-garden: stray husk's .git presence check could not be completed (unknown whether it is a worktree) — refusing to sweep $stray_dir (inspect by hand, then rm -rf it yourself once satisfied)" >&2
+                    STRAY_REFUSED=$((STRAY_REFUSED+1))
+                    continue
+                    ;;
+                scanfail)
+                    # The presence check above already peeled off the no-.git
+                    # case as "nonworktree", so reaching here means $stray_dir
+                    # DOES have a .git — but classify_worktree's own git
+                    # status/ls-files call still failed to read it. Fail
+                    # closed on the evidence that it WAS a worktree rather
+                    # than assume it's safe.
+                    echo "WARN clean-garden: stray husk looks like a broken/orphaned worktree whose contents git could not inspect — refusing to sweep $stray_dir (inspect by hand, then rm -rf it yourself once satisfied)" >&2
+                    STRAY_REFUSED=$((STRAY_REFUSED+1))
+                    continue
+                    ;;
+                clean|"strays "*)
+                    : ;;   # the two known-disposable verdicts — sweep below
+                *)
+                    # Unknown verdict. classify_worktree's vocabulary is closed
+                    # today, so this is unreachable — which is exactly why it
+                    # must be explicit: the arm below this case is an
+                    # unconditional `rm -rf`, so a verdict added later without
+                    # updating this switch would silently DEFAULT TO DELETING.
+                    # Fail closed, matching the prune loop's own `*)` skip.
+                    echo "WARN clean-garden: stray husk got an unrecognized classify verdict ('$verdict') — refusing to sweep $stray_dir (fail-closed; teach this case statement the new verdict)" >&2
+                    STRAY_REFUSED=$((STRAY_REFUSED+1))
+                    continue
+                    ;;
+            esac
+            # verdict is "nonworktree", "clean", or "strays ..." — safe to
+            # sweep.
+
             stray_kib=$(du -sk "$stray_dir" 2>/dev/null | awk '{ print $1 }') || stray_kib=0
             stray_kib=${stray_kib:-0}
 
@@ -764,7 +1111,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
         done < <(find "$STRAY_HOME" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
         if [ "$STRAY_FOUND" -gt 0 ]; then
             STRAY_SIZE=$(human_kib "$STRAY_RECLAIMED_KIB")
-            echo "clean-garden: stray-sweep — $STRAY_SWEPT swept, $STRAY_FAILED failed ($STRAY_SIZE reclaimed)"
+            echo "clean-garden: stray-sweep — $STRAY_SWEPT swept, $STRAY_FAILED failed, $STRAY_REFUSED refused ($STRAY_SIZE reclaimed)"
         fi
     fi
 
@@ -831,11 +1178,75 @@ if [ "$NO_PRUNE" -eq 0 ]; then
     if [ "$INCLUDE_PUBORIGIN" -eq 1 ]; then
         report_remote_orphans puborigin
     fi
-    echo "clean-garden: accounting summary — $LOCAL_KEPT kept worktrees; $REMOTE_MERGED_CLEAN MERGED-CLEAN, $REMOTE_TIP_DIFFERS TIP-DIFFERS, $REMOTE_CLOSED_UNMERGED CLOSED-UNMERGED, $REMOTE_NO_PR NO-PR"
+    # HIMMEL-1970: name the second population. These four counters come from
+    # report_remote_orphans (refs/remotes/*), NOT from the kept worktrees — a
+    # bare "N MERGED-CLEAN" next to "N kept worktrees" was read as "N merged
+    # worktrees were kept but not pruned", which the prune loop never said.
+    echo "clean-garden: accounting summary — $LOCAL_KEPT kept worktrees; remote branches: $REMOTE_MERGED_CLEAN MERGED-CLEAN, $REMOTE_TIP_DIFFERS TIP-DIFFERS, $REMOTE_CLOSED_UNMERGED CLOSED-UNMERGED, $REMOTE_NO_PR NO-PR"
     ACCOUNTING_UNKNOWN=$((LOCAL_UNKNOWN + REMOTE_UNKNOWN))
     if [ "$ACCOUNTING_UNKNOWN" -gt 0 ] || [ "$REMOTE_TIP_DIFFERS" -gt 0 ] || [ "$REMOTE_NO_PR" -gt 0 ]; then
-        echo "ALERT clean-garden: attention required — $ACCOUNTING_UNKNOWN UNKNOWN, $REMOTE_TIP_DIFFERS TIP-DIFFERS, $REMOTE_NO_PR NO-PR"
+        echo "ALERT clean-garden: attention required — $ACCOUNTING_UNKNOWN UNKNOWN, $REMOTE_TIP_DIFFERS TIP-DIFFERS, $REMOTE_NO_PR NO-PR (the last two count remote branches, not worktrees)"
     fi
+
+    # HIMMEL-2070 — report-only: which LOCAL BRANCHES (not just kept
+    # worktrees) are ahead of main with no PR at all. This is the gap the
+    # prune loop above never covers: it only drops a branch whose PR already
+    # MERGED, so a squash-merged branch under a DIFFERENT head (a squash
+    # rewrites the patch-id — the accounting above is blind to it), or one
+    # that never got a PR opened, is invisible to it by design. Delegates
+    # entirely to scripts/unlanded-work.sh's classification; never re-derives
+    # it here. Read-only: prints DROP commands for the one class that is safe
+    # to force through — it never runs them, and never touches a worktree
+    # with uncommitted changes itself (unlanded-work.sh never touches a
+    # worktree at all).
+    report_unlanded_work() {
+        local script="$PRIMARY_WORKTREE/scripts/unlanded-work.sh"
+        [ -f "$script" ] || return 0
+        echo "clean-garden: full accounting — unlanded local work (never a PR)"
+        # Capture stderr separately and cd into PRIMARY_WORKTREE first
+        # (codex-3/codex-4, HIMMEL-2070 CR round 2): unlanded-work.sh always
+        # exits 0 by contract even on a scan failure (an unresolvable
+        # --base), writing the diagnostic to stderr instead — a discarded
+        # stderr made a failed scan print the same all-zero accounting as a
+        # genuinely clean repo. The explicit cd (rather than trusting
+        # whatever cwd this function happened to be called from) guarantees
+        # the detector resolves ITS repo as this checkout, not wherever the
+        # caller's shell cwd is.
+        local stderr_tmp; stderr_tmp="$(mktemp)"
+        local tsv; tsv="$(cd "$PRIMARY_WORKTREE" && bash "$script" --tsv 2>"$stderr_tmp")"
+        local scan_stderr; scan_stderr="$(cat "$stderr_tmp" 2>/dev/null)"; rm -f "$stderr_tmp"
+        if [ -z "$tsv" ] && [ -n "$scan_stderr" ]; then
+            echo "  scan unavailable: $(printf '%s' "$scan_stderr" | head -1)"
+            return 0
+        fi
+        local n_landed n_stale n_unlanded
+        n_landed="$(printf '%s\n' "$tsv" | awk -F'\t' '$1=="LANDED-ELSEWHERE"' | grep -c . || true)"
+        n_stale="$(printf '%s\n' "$tsv" | awk -F'\t' '$1=="STALE"' | grep -c . || true)"
+        n_unlanded="$(printf '%s\n' "$tsv" | awk -F'\t' '$1=="UNLANDED-LIVE"' | grep -c . || true)"
+        echo "  LANDED-ELSEWHERE=${n_landed:-0} (safe to drop)  STALE=${n_stale:-0} (review before dropping)  UNLANDED-LIVE=${n_unlanded:-0} (never opened as a PR)"
+        if [ "${n_landed:-0}" -gt 0 ]; then
+            echo "  LANDED-ELSEWHERE drop commands:"
+            printf '%s\n' "$tsv" | awk -F'\t' '$1=="LANDED-ELSEWHERE"' | while IFS="$(printf '\t')" read -r _ branch _ _ _ _ wt; do
+                [ -n "$branch" ] || continue
+                # %q, not a double-quoted %s (codex-5, HIMMEL-2070 CR round 2):
+                # a git ref name may legally contain "$(...)"/backticks/quotes,
+                # which a double-quoted printed command does not neutralize.
+                # No --force (codex-2, HIMMEL-2070 CR round 3) -- matches
+                # this script's own documented policy above ("this command
+                # never uses `git worktree remove --force`"). Plain `git
+                # worktree remove` already refuses on any uncommitted or
+                # untracked change, which is the safety check --force exists
+                # to bypass; advertising --force by default in a "safe to
+                # drop" command could discard real uncommitted work.
+                [ -n "$wt" ] && printf '    git worktree remove %q\n' "$wt"
+                printf '    git branch -D %q\n' "$branch"
+            done
+        fi
+        if [ "${n_stale:-0}" -gt 0 ]; then
+            echo "  STALE: no ready-to-run destructive command here on purpose — a STALE branch may carry never-landed work that merely no longer applies against main; review by hand (bash scripts/unlanded-work.sh --class STALE)."
+        fi
+    }
+    report_unlanded_work
 fi
 
 # ---------------------------------------------------------------------------
@@ -856,6 +1267,10 @@ fi
 # checkpoint COMMIT's own date, generously, rather than guessing at intent.
 # Deliberately NOT tied to whether the worktree or branch still exists — a
 # checkpoint outliving its worktree is precisely the case worth keeping.
+#
+# checkpoint_worktree (HIMMEL-1692) writes into this SAME refs/checkpoints/
+# namespace when the prune loop refuses a dirty worktree, so those autosave
+# refs age out under this same TTL sweep — no separate lifecycle needed.
 CHECKPOINT_TTL_DAYS="${CHECKPOINT_TTL_DAYS:-14}"
 # Validate BEFORE the arithmetic: a leading-zero value like 08 is read as OCTAL
 # by `$(( ))` and dies "value too great for base" (under this script's `set -e`,

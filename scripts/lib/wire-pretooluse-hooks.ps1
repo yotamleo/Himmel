@@ -62,8 +62,29 @@ function Set-PretooluseHooks {
 ]
 "@
     if ($DryRun) { Write-Host "DRY: merge 3 PreToolUse hook stanzas into $SettingsPath (prefix: $Prefix)"; return }
-    $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
-    $filter = @'
+
+    # Captured native stdout is decoded via [Console]::OutputEncoding, the
+    # legacy OEM codepage here, not UTF-8 (HIMMEL-2256; dot-sourcing this
+    # library must not mutate the caller's console encoding at top level).
+    # Save/restore around the capture so the caller's encoding is unchanged
+    # on every exit path, including a thrown error.
+    #
+    # Piping TEXT INTO jq's stdin is a separate direction governed by the
+    # $OutputEncoding preference variable, not [Console]::OutputEncoding --
+    # on Windows PowerShell 5.1 it defaults to ASCIIEncoding, silently
+    # replacing every non-ASCII char with `?` before jq ever sees it
+    # (HIMMEL-2256 twin bug). Must be set at global scope: a bare
+    # $OutputEncoding assignment inside a function is function-local and the
+    # child process never sees it.
+    #
+    # BOM-less: [Encoding]::UTF8 emits EF BB BF on stdin, which older jq rejects.
+    $prevOutputEncoding = [Console]::OutputEncoding
+    $prevOutEncodingPref = $global:OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
+        $filter = @'
 .hooks = (.hooks // {})
 | .hooks.PreToolUse = (
     ((.hooks.PreToolUse // [])
@@ -74,10 +95,14 @@ function Set-PretooluseHooks {
     + $add
   )
 '@
-    $out = $base | jq --indent 2 --argjson add $desired $filter
-    if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq transform failed" }
-    Write-SettingsAtomic -SettingsPath $SettingsPath -Json ($out -join "`n")
-    Write-Host "  wired PreToolUse hooks -> $SettingsPath"
+        $out = $base | jq --indent 2 --argjson add $desired $filter
+        if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq transform failed" }
+        Write-SettingsAtomic -SettingsPath $SettingsPath -Json ($out -join "`n")
+        Write-Host "  wired PreToolUse hooks -> $SettingsPath"
+    } finally {
+        [Console]::OutputEncoding = $prevOutputEncoding
+        $global:OutputEncoding = $prevOutEncodingPref
+    }
 }
 
 function Set-SessionStartHook {
@@ -92,8 +117,29 @@ function Set-SessionStartHook {
     $cmd = "bash `"$pfx/scripts/hooks/$HookBasename`""
     $basepat = "scripts/hooks/" + ($HookBasename -replace '\.', '[.]')
     if ($DryRun) { Write-Host "DRY: merge SessionStart hook $HookBasename into $SettingsPath (prefix: $Prefix)"; return }
-    $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
-    $filter = @'
+
+    # Captured native stdout is decoded via [Console]::OutputEncoding, the
+    # legacy OEM codepage here, not UTF-8 (HIMMEL-2256; dot-sourcing this
+    # library must not mutate the caller's console encoding at top level).
+    # Save/restore around the capture so the caller's encoding is unchanged
+    # on every exit path, including a thrown error.
+    #
+    # Piping TEXT INTO jq's stdin is a separate direction governed by the
+    # $OutputEncoding preference variable, not [Console]::OutputEncoding --
+    # on Windows PowerShell 5.1 it defaults to ASCIIEncoding, silently
+    # replacing every non-ASCII char with `?` before jq ever sees it
+    # (HIMMEL-2256 twin bug). Must be set at global scope: a bare
+    # $OutputEncoding assignment inside a function is function-local and the
+    # child process never sees it.
+    #
+    # BOM-less: [Encoding]::UTF8 emits EF BB BF on stdin, which older jq rejects.
+    $prevOutputEncoding = [Console]::OutputEncoding
+    $prevOutEncodingPref = $global:OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
+        $filter = @'
 .hooks = (.hooks // {})
 | .hooks.SessionStart = ((.hooks.SessionStart // [])
     | map(.hooks = ((.hooks // [])
@@ -105,10 +151,14 @@ function Set-SessionStartHook {
   else .hooks.SessionStart[$idx].hooks += [{"type":"command","command":$cmd}]
   end
 '@
-    $out = $base | jq --indent 2 --arg cmd $cmd --arg basepat $basepat $filter
-    if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq transform failed" }
-    Write-SettingsAtomic -SettingsPath $SettingsPath -Json ($out -join "`n")
-    Write-Host "  wired SessionStart $HookBasename -> $SettingsPath"
+        $out = $base | jq --indent 2 --arg cmd $cmd --arg basepat $basepat $filter
+        if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq transform failed" }
+        Write-SettingsAtomic -SettingsPath $SettingsPath -Json ($out -join "`n")
+        Write-Host "  wired SessionStart $HookBasename -> $SettingsPath"
+    } finally {
+        [Console]::OutputEncoding = $prevOutputEncoding
+        $global:OutputEncoding = $prevOutEncodingPref
+    }
 }
 
 # Direct invocation (SettingsPath + Prefix supplied) wires the PreToolUse trio.

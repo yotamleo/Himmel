@@ -17,8 +17,12 @@
 #   computes the conflict LOCALLY via `git merge-tree` (HIMMEL-1232) rather
 #   than reading GitHub's flaky async `mergeable` field. When no PR exists,
 #   exits 0 (nothing to gate on).
-# - Refuses (exit 1) when the verdict is `CONFLICTING`. Surfaces the
-#   PR URL + the gh command to inspect.
+# - Refuses (exit 1) when the verdict is `CONFLICTING`, UNLESS it is provably
+#   stale (HIMMEL-1074): the base is an ancestor of the local head AND the
+#   pushed tree has no conflict markers — i.e. the operator already merged the
+#   advanced base in and resolved cleanly, so the verdict (computed against the
+#   stale remote head) no longer reflects the push. The refusal message names
+#   the sanctioned recovery. See the CONFLICTING branch for the full rationale.
 # - Falls back to exit 0 (best-effort) when gh CLI is missing or
 #   unauthenticated — a hard refuse would block pushes whenever the
 #   operator works offline.
@@ -77,15 +81,101 @@ fi
 
 case "$mergeable" in
     CONFLICTING)
-        # Only GitHub yields CONFLICTING here — Bitbucket's forge_pr_mergeable
-        # is hardcoded UNKNOWN — so the inspect hint stays gh-flavored.
+        # Only GitHub yields CONFLICTING here — Bitbucket's
+        # forge_pr_mergeable is hardcoded UNKNOWN (spec §5.1) — so the base
+        # read and the recovery hints below stay gh-flavored.
+        #
+        # HIMMEL-1074 — a CONFLICTING verdict can be STALE. forge_pr_mergeable
+        # computes it as `git merge-tree <base> <remote-head>` against the PR's
+        # headRefOid: the commit ALREADY on the remote, NOT the local head
+        # being pushed. When the base advanced under the PR and the operator
+        # resolved the conflict locally (merging the new base in), the verdict
+        # still describes the OLD remote head — so the push that would land the
+        # resolution is refused. The gate blocked its own recovery path.
+        #
+        # Carve-out: allow the push when we can prove LOCALLY the verdict is
+        # stale — the base is an ANCESTOR of the local head (the operator
+        # merged it in) AND the pushed tree carries no leftover conflict
+        # markers (the merge was resolved, not left half-done). Both are local,
+        # verifiable facts. If either is inconclusive, REFUSE — a genuinely
+        # conflicted tree must never be waved through, and inconclusive
+        # evidence defaults to the safe refusal. No new bypass; the carve-out
+        # is evidence-gated, not flag-gated.
+        base=$(_gh pr view "$branch" --json baseRefName \
+                 --jq '.baseRefName' 2>/dev/null || true)
+        stale_ok=0
+        # HIMMEL-1074 CR round: `origin/$base` is a LOCALLY CACHED
+        # remote-tracking ref — if it wasn't fetched since the real base
+        # advanced further, the ancestor check below could pass against a
+        # stale cached base while the CURRENT remote base still genuinely
+        # conflicts, incorrectly allowing the push on outdated local state.
+        # Refresh it first. The push itself already requires network
+        # reachability to origin, so this adds no new requirement; a failed
+        # fetch is itself inconclusive evidence and falls through to the
+        # refuse path below (fail-closed), same as an unresolved base name.
+        if [ -n "$base" ]; then
+            git fetch origin "$base" >/dev/null 2>&1 || base=""
+        fi
+        if [ -n "$base" ] \
+           && git merge-base --is-ancestor "origin/$base" HEAD >/dev/null 2>&1; then
+            # The base is merged into the local head — the CONFLICTING verdict
+            # (computed against the stale remote head) is stale by construction.
+            # Guard against a botched resolution that left conflict markers in
+            # the pushed files.
+            #
+            # CONFLICT-MARKER HEURISTIC (limitation documented, NOT exact):
+            # scoped to the push's own diff — `git diff origin/<base>...HEAD`
+            # (only what this push introduces). Flagged only when BOTH the
+            # `<<<<<<<` start AND the `>>>>>>>` end delimiter appear as added
+            # lines: a real unresolved conflict always has both, while a
+            # doc/fixture illustrating a single marker typically does not, so a
+            # legitimate push is not blocked by an isolated marker in a code
+            # fence. A file that legitimately pairs the delimiters (e.g. a
+            # fixture for a conflict-marker parser) WOULD trip this and fall
+            # back to the refuse-with-recovery path below — the safe direction,
+            # never a silent allow. The ancestor check above is the conclusive
+            # evidence; this guard only tightens it. It runs ONLY in the
+            # CONFLICTING path, so a MERGEABLE PR carrying such a fixture is
+            # never inspected. Here-strings (not printf|grep) avoid the
+            # pipefail/SIGPIPE trap (HIMMEL-1430).
+            # HIMMEL-1074 CR round: `2>/dev/null || true` alone would swallow a
+            # genuine `git diff` failure into an empty string — no markers found
+            # in empty output reads as "clean" and stale_ok=1, allowing the push
+            # on INCONCLUSIVE evidence (the diff never actually ran). Capture the
+            # exit status explicitly so a failed diff falls through to refuse,
+            # matching the documented fail-closed contract above.
+            diff_rc=0
+            push_diff=$(git diff "origin/$base...HEAD" 2>/dev/null) || diff_rc=$?
+            if [ "$diff_rc" -eq 0 ] \
+               && ! { grep -qE '^\+<<<<<<< ' <<< "$push_diff" \
+                      && grep -qE '^\+>>>>>>> ' <<< "$push_diff"; }; then
+                stale_ok=1
+            fi
+        fi
+
+        if [ "$stale_ok" = "1" ]; then
+            echo "→ pr-mergeable: PR for '$branch' reads CONFLICTING, but the verdict is provably stale — origin/$base is an ancestor of HEAD and the pushed tree has no conflict markers. Allowing the push." >&2
+            exit 0
+        fi
+
+        # Refuse: the verdict is current (base not yet merged in) or the
+        # evidence was inconclusive (no base / unresolvable origin/<base> /
+        # leftover markers). Lead with the sanctioned recovery so the flow is
+        # a documented one-liner rather than an operator interrupt.
         cat >&2 <<EOF
 ERROR: the open PR for branch '$branch' is in CONFLICTING state.
-       Resolve merge conflicts before pushing.
 
-       Inspect: gh pr view $branch --json mergeable,mergeStateStatus
+       The verdict is computed against the remote head already on the server,
+       so the ONLY way to clear a genuine conflict is to resolve it locally and
+       push the resolution — this gate runs on exactly that push.
 
-Bypass: SKIP_PR_MERGEABLE=1 git push ...
+       Sanctioned recovery (clears a genuine conflict; also unblocks a stale one):
+         git fetch origin
+         git merge origin/${base:-main}   # or rebase onto it; resolve conflicts
+         git push                         # origin/${base:-main} is now an ancestor of HEAD
+
+       Inspect:  gh pr view $branch --json mergeable,mergeStateStatus
+       Bypass:   SKIP_PR_MERGEABLE=1 git push ...   (operator-set; denied in auto-mode)
 EOF
         exit 1
         ;;

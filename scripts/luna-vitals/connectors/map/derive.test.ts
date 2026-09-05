@@ -1,5 +1,5 @@
 import { describe, test, expect, spyOn } from 'bun:test';
-import { join } from 'path';
+import { join } from 'node:path';
 import { aggregateRows, deriveRestingHeartRate, deriveSleep } from './derive';
 import { extractRows } from './shape';
 import { MAPPINGS } from './table';

@@ -75,7 +75,7 @@ log_msg() {
     {
         (umask 077; mkdir -p "$LOG_DIR") 2>/dev/null
         # Rotate at 1 MB (1048576 bytes)
-        if [ -f "$LOG_PATH" ]; then
+        if [ -f "$LOG_PATH" ]; then  # fail-open-ok: best-effort log rotation — an unreadable log yields an empty size, handled explicitly below; logging never breaks the hook
             local size
             size="$(wc -c < "$LOG_PATH" 2>/dev/null | tr -d ' ')"
             if [ -n "$size" ] && [ "$size" -gt 1048576 ] 2>/dev/null; then

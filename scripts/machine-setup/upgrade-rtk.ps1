@@ -41,6 +41,12 @@ param(
     [switch]$DryRun
 )
 
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 # Same version shape as scripts/upstreams.json's rtk `version_regex`.
 $VersionRegex = '[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.\-]*'
 

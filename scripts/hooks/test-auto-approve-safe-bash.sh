@@ -34,11 +34,13 @@ FAILED=0
 j_bash() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
 j_pwsh() { printf '{"tool_name":"PowerShell","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
 
-# Returns ALLOW if the hook emitted an allow decision, else PASS.
+# Returns ALLOW/DENY if the hook emitted that decision, else PASS.
 decide() {
     local out
     out=$(printf '%s' "$1" | bash "$HOOK" 2>/dev/null)
-    if grepq "$out" '"permissionDecision":"allow"'; then
+    if grepq "$out" '"permissionDecision":"deny"'; then
+        echo "DENY"
+    elif grepq "$out" '"permissionDecision":"allow"'; then
         echo "ALLOW"
     else
         echo "PASS"
@@ -271,6 +273,130 @@ assert "fwl on master branch"      PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git
 # Detached HEAD: branch unresolvable → NOT granted.
 git -C "$FWL_REPO" checkout -q --detach
 assert "fwl detached HEAD"         PASS  "$(decide_in "$FWL_REPO" "$(j_bash 'git push --force-with-lease')")"
+
+# --- HIMMEL-2121: deny a root-anchored find with no -maxdepth ---
+# Specimen: `find / -iname harvest-clips -not -path /node_modules/` survived
+# its dead parent 20+ min and pinned the machine's saturated spawn path.
+assert "find / no maxdepth"        DENY  "$(decide "$(j_bash 'find / -iname harvest-clips -not -path /node_modules/')")"
+assert "find windows drive root"   DENY  "$(decide "$(j_bash 'find C:\ -name x')")"
+assert "find \$HOME root"          DENY  "$(decide "$(j_bash 'find $HOME -name x')")"
+assert "find ~ root"               DENY  "$(decide "$(j_bash 'find ~ -name x')")"
+assert "find /c msys drive root"   DENY  "$(decide "$(j_bash 'find /c -iname y')")"
+# Not root-anchored → unchanged (falls through to the pre-existing scan).
+assert "find . still ALLOW"        ALLOW "$(decide "$(j_bash "find . -name '*.md'")")"
+assert "find scripts still ALLOW"  ALLOW "$(decide "$(j_bash 'find scripts -type f')")"
+assert "find /c/subpath ALLOW"     ALLOW "$(decide "$(j_bash 'find /c/Users/x/repo -iname y')")"
+# Root-anchored but -maxdepth present → not the walker shape, still ALLOW.
+assert "find / with maxdepth"      ALLOW "$(decide "$(j_bash 'find / -maxdepth 2 -name x')")"
+# Bypass: FIND_ROOTWALK_OK=1 skips the deny entirely (allowed like a normal
+# safe find would be — no -delete/-exec present).
+assert "find / bypass env"         ALLOW "$(FIND_ROOTWALK_OK=1 decide "$(j_bash 'find / -iname x')")"
+# Still-guarded shapes (existing behavior, unaffected by the new deny): not
+# root-anchored, so segment_is_safe's own guard (not the new deny) applies.
+assert "find . -delete still PASS" PASS  "$(decide "$(j_bash 'find . -delete')")"
+
+# --- Round-2 locks (independent review): root-anchor strings in EXPRESSION
+# arg positions must NOT deny — only a true PATH OPERAND counts.
+assert "find . -name tilde-expr"   ALLOW "$(decide "$(j_bash 'find . -name "~"')")"
+assert "find . -path HOME-expr"    ALLOW "$(decide "$(j_bash 'find . -path "$HOME"')")"
+assert "find scripts -newer tilde" ALLOW "$(decide "$(j_bash 'find scripts -newer ~')")"
+assert "find . -iname slash-expr"  ALLOW "$(decide "$(j_bash 'find . -iname "/"')")"
+assert "find no path operand"      ALLOW "$(decide "$(j_bash 'find -iname x')")"
+# Trailing-slash home variants must still DENY.
+assert "find HOME/ trailing slash" DENY  "$(decide "$(j_bash 'find $HOME/ -iname x')")"
+
+# --- Round-3 locks (cross-model critic panel): leading find OPTIONS hiding a
+# root path, -maxdepth-as-a-VALUE evasion, pre-tripwire ordering, quoted
+# -maxdepth, and a stricter FIND_ROOTWALK_OK bypass ---
+assert "find -L / leading option"  DENY  "$(decide "$(j_bash 'find -L / -name x')")"
+assert "find -name -maxdepth val"  DENY  "$(decide "$(j_bash 'find / -name -maxdepth')")"
+# A root-anchored find carrying a substitution must STILL deny — the deny
+# scan now runs before the global $(...) tripwire (codex-3).
+assert "find w/ substitution DENY" DENY  "$(decide "$(j_bash 'find / -iname $(hostname)')")"
+assert "find quoted -maxdepth"     ALLOW "$(decide "$(j_bash 'find / "-maxdepth" 2 -name x')")"
+# FIND_ROOTWALK_OK is truthy-only now: "0" must NOT bypass, "1" still does.
+assert "bypass=0 still DENIES"     DENY  "$(FIND_ROOTWALK_OK=0 decide "$(j_bash 'find / -iname x')")"
+assert "bypass=1 still ALLOWS"     ALLOW "$(FIND_ROOTWALK_OK=1 decide "$(j_bash 'find / -iname x')")"
+
+# --- Round-4 lock (cross-model critic panel, codex-2 round 2 confirmed): a
+# -maxdepth+digits pair sitting inside an -exec action's own payload must
+# NOT count as find's own -maxdepth flag.
+assert "maxdepth inside -exec DENY" DENY  "$(decide "$(j_bash 'find / -exec echo -maxdepth 2 ;')")"
+# Unchanged: a real top-level -maxdepth still ALLOWS.
+assert "real -maxdepth still ALLOW" ALLOW "$(decide "$(j_bash 'find / -maxdepth 2 -name x')")"
+# Unchanged: scoped path with -delete stays un-denied (segment_is_safe's own
+# guard handles it, not the rootwalk deny).
+assert "find . -delete still PASS2" PASS  "$(decide "$(j_bash 'find . -delete')")"
+
+# --- Round-5 locks (cross-model critic panel, round 4): root-equivalent
+# canonicalization, `--` option terminator, and resuming the -maxdepth scan
+# after an action primary's payload ---
+assert "find /// canonicalizes"    DENY  "$(decide "$(j_bash 'find /// -name x')")"
+assert "find /. canonicalizes"     DENY  "$(decide "$(j_bash 'find /. -name x')")"
+assert "find /./ canonicalizes"    DENY  "$(decide "$(j_bash 'find /./ -name x')")"
+assert "find -- / honors terminator" DENY "$(decide "$(j_bash 'find -- / -name x')")"
+# A genuinely bounded -exec (terminated with \; before -maxdepth) must not be
+# denied by the rootwalk check — but -exec is ALSO its own unrelated
+# unapproved shape in segment_is_safe (it can execute), so the overall
+# decision is PASS (not denied, not auto-approved), same pattern as the
+# -delete cases below. Verified directly: this is NOT a DENY.
+assert "bounded -exec + -maxdepth" PASS  "$(decide "$(j_bash 'find / -exec echo {} \; -maxdepth 2')")"
+# -delete takes no payload, so it never shields a real -maxdepth after it —
+# but a `find /` with no -maxdepth at all is still a rootwalk regardless of
+# -delete being present.
+assert "find / -delete DENY"       DENY  "$(decide "$(j_bash 'find / -delete')")"
+# -maxdepth after -delete is real → not denied; -delete's OWN guard in
+# segment_is_safe still keeps this un-approved, so PASS (not ALLOW).
+assert "find / -delete -maxdepth"  PASS  "$(decide "$(j_bash 'find / -delete -maxdepth 2')")"
+
+# --- Round-6 locks (cross-model critic panel, round 5, FINAL): collapse
+# backslash runs (double-backslash C:\\, common when an agent types "C:\\"
+# inside double quotes) and add $USERPROFILE/${USERPROFILE} home anchors
+# (Git Bash exports USERPROFILE) ---
+assert "find C:\\\\ double backslash" DENY "$(decide "$(j_bash 'find C:\\ -name x')")"
+assert "find \$USERPROFILE"        DENY  "$(decide "$(j_bash 'find $USERPROFILE -name x')")"
+assert "find \${USERPROFILE}/"     DENY  "$(decide "$(j_bash 'find ${USERPROFILE}/ -name x')")"
+# Unchanged: a real MSYS subpath under a drive root still ALLOWS.
+assert "find /c/Users/x/repo ALLOW2" ALLOW "$(decide "$(j_bash 'find /c/Users/x/repo -iname y')")"
+
+# --- HIMMEL-2122: shell-word quote semantics + dot-dot root equivalence ---
+# Single quotes make variable-shaped text literal; find receives a path named
+# `$HOME` / `${USERPROFILE}`, not either environment variable's value.
+assert "find single-quoted HOME literal" ALLOW "$(decide "$(j_bash "find '\$HOME' -name x")")"
+assert "find single-quoted USERPROFILE literal" ALLOW "$(decide "$(j_bash "find '\${USERPROFILE}' -name x")")"
+# Adjacent quoted and unquoted fragments form one shell word. Both spellings
+# below execute as `find /`, so they must not evade the rootwalk deny.
+assert "find slash + empty quotes" DENY "$(decide "$(j_bash "find /'' -name x")")"
+assert "find empty quotes + slash" DENY "$(decide "$(j_bash "find ''/ -name x")")"
+# ANSI-C quotes can encode path values, so do not statically approve or deny
+# any command containing one.
+assert "find ANSI-C quoted slash"   PASS "$(decide "$(j_bash "find \$'/' -name x")")"
+assert "find ANSI-C hex slash"      PASS "$(decide "$(j_bash "find \$'\x2f' -name x")")"
+assert "find ANSI-C octal slash"    PASS "$(decide "$(j_bash "find \$'\57' -name x")")"
+# Locale quotes may be translated by gettext, so do not statically approve or
+# deny any command containing one.
+assert "find locale-quoted slash"   PASS "$(decide "$(j_bash 'find $"/" -name x')")"
+assert "locale-quoted binary"       PASS "$(decide "$(j_bash '$"cat" README.md')")"
+# Backslash-newline is removed by Bash before tokenization. With indentation
+# the path remains `/`; without it, the following text joins into `/-name`.
+assert "find continued root"         DENY  "$(decide "$(j_bash "find /\\${nl} -name x")")"
+assert "find continued non-root"     ALLOW "$(decide "$(j_bash "find /\\${nl}-name x")")"
+# A backslash-escaped delimiter belongs to the binary word in real Bash; the
+# hook must not cook `git\` down to `git` and approve `status` as a subcommand.
+assert "escaped-space binary stays PASS" PASS "$(decide "$(j_bash 'git\ status')")"
+# A path operand containing /.. can resolve to root and is denied unless a
+# real find-level -maxdepth bounds it. Expression arguments remain non-paths.
+assert "find /tmp/.. canonicalizes" DENY  "$(decide "$(j_bash 'find /tmp/.. -name x')")"
+assert "find nested /.. to root"    DENY  "$(decide "$(j_bash 'find /tmp/foo/../.. -name x')")"
+assert "find /tmp/.. with maxdepth" ALLOW "$(decide "$(j_bash 'find /tmp/.. -maxdepth 1 -name x')")"
+assert "find /tmp/../var scoped"    ALLOW "$(decide "$(j_bash 'find /tmp/../var -name x')")"
+assert "find /tmp/..hidden scoped"  ALLOW "$(decide "$(j_bash 'find /tmp/..hidden -name x')")"
+assert "find /.. expression arg"    ALLOW "$(decide "$(j_bash 'find . -path /tmp/..')")"
+# Tilde expansion occurs only when the leading tilde is unquoted/unescaped;
+# the existing `find ~` case above remains the positive DENY control.
+assert "find single-quoted tilde literal" ALLOW "$(decide "$(j_bash "find '~' -name x")")"
+assert "find double-quoted tilde literal" ALLOW "$(decide "$(j_bash 'find "~" -name x')")"
+assert "find escaped tilde literal"       ALLOW "$(decide "$(j_bash 'find \~ -name x')")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

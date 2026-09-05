@@ -877,9 +877,13 @@ export function applyDelta(base, delta) {
       if (op & 0x04) cpOff += delta[p++] * 0x10000;
       if (op & 0x08) cpOff += delta[p++] * 0x1000000;
       let cpSize = 0;
+      /* oxlint-disable oxc/bad-bitwise-operator -- disjoint byte assembly (bits
+         0-7/8-15/16-23), |= is correct here; ||= would short-circuit after the
+         first nonzero byte and silently drop high-order size bits (HIMMEL-2163) */
       if (op & 0x10) cpSize |= delta[p++];
       if (op & 0x20) cpSize |= delta[p++] << 8;
       if (op & 0x40) cpSize |= delta[p++] << 16;
+      /* oxlint-enable oxc/bad-bitwise-operator */
       if (p > delta.length) return null; // truncated copy command
       if (cpSize === 0) cpSize = 0x10000;
       // Validate the copy range against the actual base buffer (HIMMEL-1427 r9):

@@ -823,16 +823,26 @@ EOF
 
 # --- Fail open on anything we cannot evaluate ---
 # Drain stdin BEFORE any early exit: bailing out first would SIGPIPE the caller
-# that is still writing the hook input.
-input=$(cat 2>/dev/null || true)
+# that is still writing the hook input. HIMMEL-2123: a bash builtin `read`
+# (not `$(cat)`) still drains fully, one less external-process spawn.
+input=""
+IFS= read -r -d '' input 2>/dev/null || true
 [ "${JIRA_COMPOUND_WRITE_OK:-0}" = "1" ] && exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 [ -n "$input" ] || exit 0
-# Use jq's output only when jq SUCCEEDS: a partial parse (malformed input, trailing
-# garbage) must not reach the block path on half-read values.
-tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null) || exit 0
+# HIMMEL-2123: tool_name + command in ONE jq call (via `<<<`, no printf fork)
+# instead of two separate `printf | jq` pipelines. `// ""` (empty STRING),
+# not `// empty` (a zero-output jq GENERATOR): in a `+`-concatenation, one
+# operand collapsing to `empty` zeroes out the WHOLE expression, not just
+# that field. Use jq's output only when jq SUCCEEDS: a partial parse
+# (malformed input, trailing garbage) must not reach the block path on
+# half-read values. Windows jq.exe writes CRLF, so strip the stray CR off
+# $tool (same shape as require-quiet-run.sh, HIMMEL-2060).
+result=$(jq -r '(.tool_name // "") + "\n" + (.tool_input.command // "")' <<<"$input" 2>/dev/null) || exit 0
+tool="${result%%$'\n'*}"
+tool="${tool%$'\r'}"
+cmd="${result#*$'\n'}"
 [ "$tool" = "Bash" ] || exit 0   # PowerShell keeps its own native rules
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [ -n "$cmd" ] || exit 0
 
 FN_DEF=0

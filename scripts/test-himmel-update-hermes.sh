@@ -28,6 +28,23 @@ check() {  # <description> <expected-substring> <actual-output>
   fi
 }
 
+# run_hermes_check_bounded <HERMES_HOME> — invoke `update_hermes check`
+# bounded by `timeout` when it's on PATH. Cases 3/4 below point at the REAL
+# NousResearch/hermes-agent remote, so their `git ls-remote` genuinely hits
+# github.com with no bound otherwise — making a normally-local/hermetic
+# suite network-dependent, and able to hang (HIMMEL-2151). `timeout` can't
+# run a shell function directly, so it's exported and invoked via `bash -c`;
+# falls back to an unbounded direct call when `timeout` isn't available
+# (same graceful-degrade convention as check-plugin-drift.sh).
+run_hermes_check_bounded() {
+  if command -v timeout >/dev/null 2>&1; then
+    export -f update_hermes
+    HERMES_HOME="$1" timeout 60 bash -c 'update_hermes check' 2>&1
+  else
+    HERMES_HOME="$1" update_hermes check 2>&1
+  fi
+}
+
 # HERMES_HOME is the install ROOT; the git checkout is its hermes-agent/ subdir.
 
 # Case 1: install root with no hermes-agent checkout → "not installed" skip.
@@ -45,14 +62,14 @@ check "foreign checkout skips" "is not a NousResearch/hermes-agent checkout" "$o
 # graceful handling (offline / current / update-available), never crash/push.
 git init -q "$tmp/install/hermes-agent"
 git -C "$tmp/install/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git
-out=$(HERMES_HOME="$tmp/install" update_hermes check 2>&1)
+out=$(run_hermes_check_bounded "$tmp/install")
 check "nous checkout check handled" "could not reach origin|hermes is current|update available" "$out"
 
 # Case 4: HERMES_HOME pointing STRAIGHT at the checkout (…/.git present) is
 # tolerated — same NousResearch handling.
 git init -q "$tmp/direct"
 git -C "$tmp/direct" remote add origin https://github.com/NousResearch/hermes-agent.git
-out=$(HERMES_HOME="$tmp/direct" update_hermes check 2>&1)
+out=$(run_hermes_check_bounded "$tmp/direct")
 check "direct checkout tolerated" "could not reach origin|hermes is current|update available" "$out"
 
 # ── fail-vs-skip (CR: genuine hermes failures must not be hidden as skipped)─
@@ -113,16 +130,57 @@ if [ "$rc" -eq 0 ]; then echo "ok: absent hermes -> exit 0 (run_hermes_step, cha
 # shellcheck disable=SC2154  # STATUS_hermes is set by the sourced himmel-update.sh (HIMMEL_UPDATE_LIB=1 seam above)
 if [ "$STATUS_hermes" = "skipped" ]; then echo "ok: run_hermes_step sets STATUS_hermes=skipped when absent"; else echo "FAIL: STATUS_hermes was '$STATUS_hermes', expected 'skipped'"; fail=1; fi
 
-# Case 7: origin unreachable (fetch itself fails) -> clean SKIP, never a
-# FAILURE — "couldn't attempt" vs "ran and errored". A LOCAL path that does
-# not exist forces a deterministic, instant, network-free fetch failure (the
-# hermetic equivalent of "offline") — no real DNS/network dependency.
+# Case 7 (HIMMEL-2151): a LOCAL remote path that does not exist forces a
+# deterministic, instant, network-free fetch failure — but git's own message
+# for it ("does not appear to be a git repository" / "Could not read from
+# remote repository") is NOT an offline/DNS-reachability phrase. Before
+# HIMMEL-2151 EVERY fetch error was masqueraded as a clean skip; now only a
+# genuine network-unreachable error gets that treatment, so an invalid/broken
+# remote correctly surfaces as a real FAILURE instead. Case 7b below covers
+# the genuine-offline classification (skip) via a fake git shim.
 git init -q "$tmp/offline/hermes-agent"
 git -C "$tmp/offline/hermes-agent" remote add origin "$tmp/no-such-remote/NousResearch/hermes-agent"
 rc=0
 out=$(HERMES_HOME="$tmp/offline" update_hermes apply 2>&1) || rc=$?
-check "unreachable origin (apply): skip message, not FAILED" "skip: could not reach origin" "$out"
-if [ "$rc" -eq 0 ]; then echo "ok: unreachable origin (apply) -> exit 0 (skip, not fail)"; else echo "FAIL: unreachable origin (apply) -> exit $rc"; fail=1; fi
+check "invalid remote path (apply): FAILED, not masqueraded as offline" "FAILED: hermes git fetch failed" "$out"
+if [ "$rc" -ne 0 ]; then echo "ok: invalid remote path (apply) -> non-zero exit (real failure)"; else echo "FAIL: invalid remote path (apply) -> exit was 0"; fail=1; fi
+
+# Case 7b (HIMMEL-2151): a genuine offline/DNS-resolution-style git error
+# (matched case-insensitively, e.g. "Could not resolve host") must still be
+# a clean SKIP. Real DNS failures aren't reproducible hermetically, so a fake
+# `git` shim simulates the exact message; every other git subcommand passes
+# straight through to the real git (same idiom as
+# scripts/hooks/test-check-pr-mergeable.sh's FAKE_GIT_BIN).
+git init -q "$tmp/offline-dns/hermes-agent"
+git -C "$tmp/offline-dns/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git
+REAL_GIT_7B=$(command -v git)
+FAKE_GIT_7B="$tmp/fakegit-7b"
+mkdir -p "$FAKE_GIT_7B"
+cat > "$FAKE_GIT_7B/git" <<EOF
+#!/usr/bin/env bash
+# update_hermes always calls git as \`git -C <path> <subcommand> ...\` — skip
+# -C's argument to find the real subcommand (idiom shared with
+# scripts/graphify/test-refresh-graph-map.sh's T42 git wrapper).
+sub=""; skip=0
+for a in "\$@"; do
+  if [ "\$skip" = 1 ]; then skip=0; continue; fi
+  case "\$a" in
+    -C|-c) skip=1 ;;
+    -*) : ;;
+    *) sub="\$a"; break ;;
+  esac
+done
+if [ "\$sub" = "fetch" ]; then
+    echo "fatal: unable to access 'https://github.com/NousResearch/hermes-agent.git/': Could not resolve host: github.com" >&2
+    exit 128
+fi
+exec "$REAL_GIT_7B" "\$@"
+EOF
+chmod +x "$FAKE_GIT_7B/git"
+rc=0
+out=$(PATH="$FAKE_GIT_7B:$PATH" HERMES_HOME="$tmp/offline-dns" update_hermes apply 2>&1) || rc=$?
+check "genuine DNS-style fetch failure: skip message, not FAILED" "skip: could not reach origin" "$out"
+if [ "$rc" -eq 0 ]; then echo "ok: genuine DNS-style failure (apply) -> exit 0 (skip, not fail)"; else echo "FAIL: genuine DNS-style failure (apply) -> exit $rc"; fail=1; fi
 
 # Case 8: apply mode follows the branch's CONFIGURED upstream — including a
 # non-origin remote and a differently named remote branch — instead of fetching
@@ -194,6 +252,107 @@ after2_fetch_head=$(fetch_head_snapshot "$tmp/checkmode/hermes-agent")
 after2_refs=$(refs_snapshot "$tmp/checkmode/hermes-agent")
 if [ "$before_fetch_head" = "$after2_fetch_head" ]; then echo "ok: --check (update-available case) still leaves FETCH_HEAD unchanged"; else echo "FAIL: --check (update-available case) mutated FETCH_HEAD"; fail=1; fi
 if [ "$before_refs" = "$after2_refs" ]; then echo "ok: --check (update-available case) still leaves refs unchanged"; else echo "FAIL: --check (update-available case) mutated refs"; fail=1; fi
+
+# ── force-pushed upstream must RESYNC, not wedge (HIMMEL-2139) ──────────────
+# NousResearch force-pushes hermes-agent's main, so our HEAD stops being an
+# ancestor of upstream and the ff-only merge fails FOREVER — which used to
+# abort the whole update chain until a human hand-reset the checkout. Now a
+# non-ff FETCH_HEAD resyncs, but ONLY on a clean tree with no commit of our
+# own. Both fixtures below deliberately give the SEED and the CHECKOUT
+# DIFFERENT identities: `FETCH_HEAD..HEAD` after a force-push holds the OLD
+# UPSTREAM commits, so a shared identity would make every case look like
+# "our own commit" and the resync could never be exercised.
+bareF="$tmp/bareF/NousResearch/hermes-agent.git"
+mkdir -p "$bareF"; git init -q --bare "$bareF"
+seedF="$tmp/seedF"
+git clone -q "$bareF" "$seedF"
+git -C "$seedF" config user.email "upstream@test"; git -C "$seedF" config user.name "Upstream"
+printf 'v1\n' > "$seedF/f.txt"; git -C "$seedF" add f.txt; git -C "$seedF" commit --quiet -m v1
+defbranchF=$(git -C "$seedF" rev-parse --abbrev-ref HEAD)
+git -C "$seedF" push --quiet origin "HEAD:$defbranchF"
+
+# Both checkouts are cloned BEFORE the rewrite, so they hold the pre-force-push
+# commit exactly like the real hermes checkout does.
+git clone -q "$bareF" "$tmp/forcepush/hermes-agent"
+git -C "$tmp/forcepush/hermes-agent" config user.email "operator@test"
+git -C "$tmp/forcepush/hermes-agent" config user.name "Operator"
+oldF=$(git -C "$tmp/forcepush/hermes-agent" rev-parse HEAD)
+
+git clone -q "$bareF" "$tmp/forcepush-ours/hermes-agent"
+git -C "$tmp/forcepush-ours/hermes-agent" config user.email "operator@test"
+git -C "$tmp/forcepush-ours/hermes-agent" config user.name "Operator"
+printf 'mine\n' > "$tmp/forcepush-ours/hermes-agent/mine.txt"
+git -C "$tmp/forcepush-ours/hermes-agent" add mine.txt
+git -C "$tmp/forcepush-ours/hermes-agent" commit --quiet -m "operator work"
+
+# Upstream REWRITES the very commit we hold and force-pushes over it.
+printf 'v1-rewritten\n' > "$seedF/f.txt"; git -C "$seedF" add f.txt
+git -C "$seedF" commit --quiet --amend -m "v1 rewritten"
+git -C "$seedF" push --quiet --force origin "HEAD:$defbranchF"
+wantF=$(git -C "$seedF" rev-parse HEAD)
+
+# Case 9: clean tree, no commit of ours → resync to upstream HEAD, rc 0.
+rc=0
+out=$(HERMES_HOME="$tmp/forcepush" update_hermes apply 2>&1) || rc=$?
+check "force-pushed upstream: resync message, not FAILED" "upstream rewrote history — resynced" "$out"
+if [ "$rc" -eq 0 ]; then echo "ok: force-pushed upstream -> exit 0 (chain not aborted)"; else echo "FAIL: force-pushed upstream -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
+gotF=$(git -C "$tmp/forcepush/hermes-agent" rev-parse HEAD)
+if [ "$gotF" = "$wantF" ]; then echo "ok: force-pushed upstream -> checkout moved to upstream HEAD"; else echo "FAIL: resynced HEAD was '$gotF', expected '$wantF'"; fail=1; fi
+rescuedF=$(git -C "$tmp/forcepush/hermes-agent" rev-parse himmel-pre-resync 2>/dev/null || echo missing)
+if [ "$rescuedF" = "$oldF" ]; then echo "ok: previous HEAD preserved at tag himmel-pre-resync"; else echo "FAIL: rescue tag was '$rescuedF', expected '$oldF'"; fail=1; fi
+
+# Case 10: same force-push shape but the checkout holds a commit by its OWN
+# identity → the HIMMEL-893 contract wins, still a genuine FAILURE. This is
+# what proves the discriminator is a CONJUNCTION and not just "tree is clean"
+# (the tree here is perfectly clean — the work is committed).
+rc=0
+out=$(HERMES_HOME="$tmp/forcepush-ours" update_hermes apply 2>&1) || rc=$?
+check "force-push + our own commit: still FAILED" "FAILED: hermes git pull was not fast-forward" "$out"
+if [ "$rc" -ne 0 ]; then echo "ok: force-push + our own commit -> non-zero exit"; else echo "FAIL: force-push + our own commit -> exit was 0"; printf '%s\n' "$out"; fail=1; fi
+oursHead=$(git -C "$tmp/forcepush-ours/hermes-agent" rev-parse HEAD)
+if [ "$oursHead" != "$wantF" ]; then echo "ok: force-push + our own commit -> checkout NOT reset (work preserved)"; else echo "FAIL: our commit was discarded by the resync"; fail=1; fi
+
+# Case 11 (HIMMEL-2139 CR): the commit is ours but the configured identity now
+# differs only in CASE. git preserves the case an identity was committed with,
+# so a case-sensitive match would read our own commit as upstream churn and
+# reset --hard over it. Must still FAIL.
+git clone -q "$bareF" "$tmp/forcepush-case/hermes-agent"
+git -C "$tmp/forcepush-case/hermes-agent" config user.email "Operator@Test"
+git -C "$tmp/forcepush-case/hermes-agent" config user.name "Operator"
+git -C "$tmp/forcepush-case/hermes-agent" reset --hard -q "$oldF"
+printf 'mine\n' > "$tmp/forcepush-case/hermes-agent/mine.txt"
+git -C "$tmp/forcepush-case/hermes-agent" add mine.txt
+git -C "$tmp/forcepush-case/hermes-agent" commit --quiet -m "operator work (mixed-case identity)"
+caseHead=$(git -C "$tmp/forcepush-case/hermes-agent" rev-parse HEAD)
+# The checkout now reports its identity in a different case than the commit.
+git -C "$tmp/forcepush-case/hermes-agent" config user.email "operator@test"
+rc=0
+out=$(HERMES_HOME="$tmp/forcepush-case" update_hermes apply 2>&1) || rc=$?
+check "case-variant identity: our commit still recognised, FAILED" "FAILED: hermes git pull was not fast-forward" "$out"
+if [ "$rc" -ne 0 ]; then echo "ok: case-variant identity -> non-zero exit"; else echo "FAIL: case-variant identity -> exit was 0"; printf '%s\n' "$out"; fail=1; fi
+caseNow=$(git -C "$tmp/forcepush-case/hermes-agent" rev-parse HEAD)
+if [ "$caseNow" = "$caseHead" ]; then echo "ok: case-variant identity -> checkout NOT reset (work preserved)"; else echo "FAIL: case-variant identity -> our commit was discarded"; fail=1; fi
+
+# Case 12 (HIMMEL-2437): no HERMES_HOME override and no LOCALAPPDATA (the
+# Linux/macOS station shape) must resolve the default root to $HOME/.hermes —
+# NEVER $HOME/AppData/Local/hermes (a Windows %LOCALAPPDATA% layout rendered
+# under a POSIX $HOME, the ticket's own repro). Both vars are unset in a
+# subshell so the rest of the suite's own HERMES_HOME usage elsewhere is
+# unaffected; no checkout exists under the scratch $HOME, so this stays a
+# cheap offline "not installed" skip that still proves the RESOLVED path.
+out=$(
+  unset HERMES_HOME LOCALAPPDATA
+  HOME="$tmp/linux-default"
+  export HOME
+  update_hermes check 2>&1
+)
+check "no HERMES_HOME/LOCALAPPDATA: default root is \$HOME/.hermes" \
+  "skip: hermes not installed as a git checkout \\($tmp/linux-default/\\.hermes/hermes-agent\\)" "$out"
+if grepq "$out" "AppData"; then
+  echo "FAIL: default root resolution fell back to \$HOME/AppData/Local (HIMMEL-2437 regression)"; fail=1
+else
+  echo "ok: default root resolution never falls back to \$HOME/AppData/Local on Linux/macOS"
+fi
 
 # ── report_cadence_stale() — stale cadence runner nudge (HIMMEL-588/969) ─────
 # Same lib seams; *_BAT_DIR point at fixture runner dirs.

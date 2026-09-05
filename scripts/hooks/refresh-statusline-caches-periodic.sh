@@ -201,7 +201,7 @@ if command -v rebuild_all_sessions_index >/dev/null 2>&1 \
         # The -f guard is load-bearing: a failing `<` redirect is reported by
         # the SHELL, so its own `2>/dev/null` cannot suppress the message — and
         # a marker-less legacy-bar lock is the normal case, not an error.
-        [ -f "$lock/owner.pid" ] && lock_pid=$(tr -dc '0-9' < "$lock/owner.pid" 2>/dev/null)
+        [ -f "$lock/owner.pid" ] && lock_pid=$(tr -dc '0-9' < "$lock/owner.pid" 2>/dev/null)  # fail-open-ok: an unreadable pid marker reads as no marker — the lock is judged by heartbeat/mtime and never reaped on a read failure (fail-safe; see comment above)
         if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
             lock_stale=1
         else

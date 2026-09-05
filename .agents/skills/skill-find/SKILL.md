@@ -1,6 +1,6 @@
 ---
 name: skill-find
-description: Embedding-indexed lookup over installed skills/commands/agents — eliminates wrong-namespace mistakes. Use when the user asks which skill/command/agent fits an intent, or runs /skill-find.
+description: Embedding-indexed lookup over installed skills/commands/agents. Use for which-skill-fits or /skill-find.
 ---
 
 # skill-find

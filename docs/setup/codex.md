@@ -58,12 +58,14 @@ harness-compat.md §3.
 ## 4. Hooks — the PreToolUse guardrails
 
 himmel's guardrails are wired for Codex through a **tracked project
-`.codex/hooks.json`**. Each entry routes through `.codex/run-hook.cmd --sandbox
-<guard>.sh`, a polyglot wrapper that (1) derives `CLAUDE_PROJECT_DIR` from its own
-location (Codex injects it for neither plugin nor project hooks), (2) finds Git
-Bash explicitly, and (3) delegates to `.codex/codex-hook-adapter.sh`, which
-translates himmel's exit-2 block into the JSON `permissionDecision:"deny"` Codex
-acts on (Codex ignores bare exit 2). Wired guards include `auto-approve-safe-bash`,
+`.codex/hooks.json`**. Each entry uses `command` to route Unix through
+`.codex/run-hook.sh` and `commandWindows` to route Windows through
+`.codex/run-hook.cmd`; both pass `--sandbox <guard>.sh`. The wrappers (1) derive
+`CLAUDE_PROJECT_DIR` from their own location (Codex injects it for neither plugin
+nor project hooks) and (2) delegate to `.codex/codex-hook-adapter.sh`. The
+Windows wrapper also finds Git Bash explicitly. The adapter translates himmel's
+exit-2 block into the JSON `permissionDecision:"deny"` Codex acts on (Codex
+ignores bare exit 2). Wired guards include `auto-approve-safe-bash`,
 `block-edit-on-main`, `block-read-secrets`, `block-backend-tier`,
 `block-docker-privesc`, and `block-merged-pr-commit`.
 

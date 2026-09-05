@@ -97,17 +97,63 @@ make_handover() {
 # only thing under test.
 SCHED_STUB="$TMP/sched-stub"
 mkdir -p "$SCHED_STUB"
-cat > "$SCHED_STUB/schtasks" <<'EOF'
+# HIMMEL-1879: /create must actually register something. A stub that reports
+# success and then answers every /query with an empty scheduler is internally
+# inconsistent, and the post-arm existence verify reads it (correctly) as "the
+# create armed nothing" -> rc 2, so the telemetry cases below never see an arm.
+# The verify asks the SAME oracle the pre-arm dedup asks, so a stub honest
+# enough for dedup is honest enough for it. Real `/create /f` overwrite-in-place
+# semantics; state starts empty.
+cat > "$SCHED_STUB/schtasks" <<EOF
 #!/usr/bin/env bash
+db="$TMP/sched-stub.tasks"
+cmd="\${1:-}"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create|/delete)
+        if [ -f "\$db" ]; then
+            grep -vFx "\$tn" "\$db" > "\$db.tmp" 2>/dev/null || : > "\$db.tmp"
+            mv "\$db.tmp" "\$db"
+        fi
+        [ "\$cmd" = /create ] && printf '%s\\n' "\$tn" >> "\$db"
+        exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+cat > "$SCHED_STUB/atq" <<EOF
+#!/usr/bin/env bash
+d="$TMP/sched-stub.atdir"; [ -d "\$d" ] || exit 0
+for f in "\$d"/job-*; do
+    [ -f "\$f" ] || continue
+    printf '%s\\tThu Jun 11 09:00:00 2026 a user\\n' "\${f##*/job-}"
+done
 exit 0
 EOF
-cat > "$SCHED_STUB/atq" <<'EOF'
+cat > "$SCHED_STUB/at" <<EOF
 #!/usr/bin/env bash
-exit 0
-EOF
-cat > "$SCHED_STUB/at" <<'EOF'
-#!/usr/bin/env bash
-exit 0
+d="$TMP/sched-stub.atdir"; mkdir -p "\$d"
+case "\${1:-}" in
+    -c) cat "\$d/job-\${2:-}" 2>/dev/null; exit 0 ;;
+    -t)
+        n=\$(cat "\$d/.counter" 2>/dev/null || echo 0); n=\$((n + 1))
+        printf '%s' "\$n" > "\$d/.counter"
+        cat > "\$d/job-\$n"
+        exit 0 ;;
+    *) cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
 EOF
 cat > "$SCHED_STUB/powershell" <<'EOF'
 #!/usr/bin/env bash
@@ -118,20 +164,63 @@ chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/
 # Armed stub (the ARMED_STUB pattern): a non-dry-run arm completes on any
 # platform without touching the real scheduler, so the "armed" telemetry
 # record is emitted. TMPDIR pinned so a windows .bat lands under $TMP.
+# HIMMEL-1879: /create must REGISTER what it was given -- a stub that reports
+# success and then answers every /query empty is internally inconsistent, and
+# the post-arm existence verify reads that (correctly) as an arm that armed
+# nothing (rc 2), so no "armed" telemetry line is ever written. Own state file,
+# separate from $SCHED_STUB's, so the two stubs cannot see each other's tasks.
 ARMED_STUB="$TMP/armed-stub"
 mkdir -p "$ARMED_STUB"
-cat > "$ARMED_STUB/schtasks" <<'EOF'
+cat > "$ARMED_STUB/schtasks" <<EOF
 #!/usr/bin/env bash
+db="$TMP/armed-stub.tasks"
+cmd="\${1:-}"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create|/delete)
+        if [ -f "\$db" ]; then
+            grep -vFx "\$tn" "\$db" > "\$db.tmp" 2>/dev/null || : > "\$db.tmp"
+            mv "\$db.tmp" "\$db"
+        fi
+        [ "\$cmd" = /create ] && printf '%s\\n' "\$tn" >> "\$db"
+        exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+cat > "$ARMED_STUB/atq" <<EOF
+#!/usr/bin/env bash
+d="$TMP/armed-stub.atdir"; [ -d "\$d" ] || exit 0
+for f in "\$d"/job-*; do
+    [ -f "\$f" ] || continue
+    printf '%s\\tThu Jun 11 09:00:00 2026 a user\\n' "\${f##*/job-}"
+done
 exit 0
 EOF
-cat > "$ARMED_STUB/atq" <<'EOF'
+cat > "$ARMED_STUB/at" <<EOF
 #!/usr/bin/env bash
-exit 0
-EOF
-cat > "$ARMED_STUB/at" <<'EOF'
-#!/usr/bin/env bash
-cat > /dev/null
-exit 0
+d="$TMP/armed-stub.atdir"; mkdir -p "\$d"
+case "\${1:-}" in
+    -c) cat "\$d/job-\${2:-}" 2>/dev/null; exit 0 ;;
+    -t)
+        n=\$(cat "\$d/.counter" 2>/dev/null || echo 0); n=\$((n + 1))
+        printf '%s' "\$n" > "\$d/.counter"
+        cat > "\$d/job-\$n"
+        exit 0 ;;
+    *) cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
 EOF
 cat > "$ARMED_STUB/claude" <<'EOF'
 #!/usr/bin/env bash
@@ -151,7 +240,20 @@ chmod +x "$ARMED_STUB/schtasks" "$ARMED_STUB/atq" "$ARMED_STUB/at" "$ARMED_STUB/
 #                     be a large POSITIVE gap, never negative: a broken wrap
 #                     would yield ~-10 min -> <=60 -> not refused -> LG4 fails)
 FAR_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(hours=3)).strftime("%H:%M"))')
-NEAR_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=5)).strftime("%H:%M"))')
+# NEAR is a FUNCTION, not a captured value, and its lead is 20 min, not 5
+# (HIMMEL-1879 / HIMMEL-1756). Both halves answer the same failure: a captured
+# +5 min target expires long before the last use, then reads as past-for-today,
+# rolls to TOMORROW, lands >60 min out, and is refused rc=9 by the very guard
+# the case is trying to show STAYING SILENT (LG6b, 3x on unmodified main under
+# box load, 2026-08-12; again 2026-08-20). Recomputing per use keeps "near"
+# actually near however long the run took to get here, and 20 minutes absorbs
+# the slow part that recomputation alone cannot: arm-resume runs the live-worker
+# census BEFORE it parses --time, so on a loaded box that preamble by itself can
+# outlast a 5-minute target between the call and its consumption. 20 min is
+# still comfortably inside the 60-minute ceiling, so long_gap=0 is unchanged.
+# FAR/WRAP are deliberately still captured once -- their whole point is a fixed
+# distance. LG-fix below pins both halves so this cannot silently regress.
+near_hhmm() { python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=20)).strftime("%H:%M"))'; }
 WRAP_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=10)).strftime("%H:%M"))')
 
 # ---------------------------------------------------------------------------
@@ -171,7 +273,7 @@ assert_contains "LG1 WARN names the requested time" "out ($FAR_HHMM)" "$out"
 # LG2: gap <= 60 min -> SILENT, unchanged behavior (rc 0, no WARN).
 # ---------------------------------------------------------------------------
 HO=$(make_handover "$WORK_REPO")
-out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$NEAR_HHMM" --handover "$HO" --dry-run 2>&1)
+out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$(near_hhmm)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "LG2 near HH:MM proceeds silently (rc 0)" 0 "$rc"
 assert_not_contains "LG2 no long-gap WARN on a near arm" "is the queue actually empty" "$out"
@@ -198,6 +300,22 @@ out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$WRAP_HHMM" --handover "$HO" 
 rc=$?
 assert_rc "LG4 past-time wrap refused (positive gap, rc 9)" 9 "$rc"
 assert_contains "LG4 wrap refusal still cites the directive" "ALWAYS-CONTINUE" "$out"
+# HIMMEL-2247: the rolled path must carry BOTH messages. The ALWAYS-CONTINUE
+# WARN is the guardrail citation; the HIMMEL-2147 "already past for today" ERR
+# line is the up-front rollover context. A regression that drops either one
+# (e.g. re-making them an if/else) fails here.
+assert_contains "LG4 wrap refusal still asks if the queue is empty" "is the queue actually empty" "$out"
+assert_contains "LG4 wrap refusal names the rollover up front" "already past for today" "$out"
+# HIMMEL-2247 (CR round 1): ORDER is the contract, not just presence. The
+# HIMMEL-2147 rollover line must come UP FRONT, PREFIXING the WARN — the
+# regression was exactly a swap of prefix for replace. This pattern also
+# pins the FULL citation text, which a bare "ALWAYS-CONTINUE" match does not.
+case "$out" in
+    *"already past for today"*"ALWAYS-CONTINUE directive says arm <=30-60 min while work remains"*)
+        lg4_order="ROLLOVER-FIRST" ;;
+    *) lg4_order="WARN-FIRST-OR-MISSING" ;;
+esac
+assert_contains "LG4 rollover context precedes the full ALWAYS-CONTINUE citation" "ROLLOVER-FIRST" "$lg4_order"
 
 # ---------------------------------------------------------------------------
 # LG5: ARM_RESUME_SAFETY_ARM=1 (automated safety arm) is EXEMPT — a far HH:MM
@@ -271,13 +389,47 @@ assert_contains "LG6a record names the event" '"event":"armed"' "$tline"
 assert_contains "LG6a record marks the explicit long-gap choice" '"long_gap":"1"' "$tline"
 
 # ---------------------------------------------------------------------------
+# LG-fix (HIMMEL-1756): the fixture self-check, run HERE — immediately before
+#       the case that broke, i.e. after everything slow in this suite has
+#       already happened. That placement is the slow-path simulation: no sleep
+#       is injected, the run's own elapsed time is the load. A regression to a
+#       suite-start capture makes the second assertion red as soon as the run
+#       takes longer than 5 minutes, naming the fixture instead of leaving
+#       LG6b to report rc=9 as if arm-resume had refused a legitimate near arm.
+# ---------------------------------------------------------------------------
+if declare -F near_hhmm >/dev/null 2>&1; then
+    echo "PASS LG-fix near_hhmm is a function (recomputed per use, not captured once)"
+else
+    echo "FAIL LG-fix near_hhmm is not a function -- a captured NEAR_HHMM goes stale mid-run and LG6b fails rc=9 for a fixture reason"
+    FAILED=$((FAILED + 1))
+fi
+_near_lead=$(python3 -c '
+import datetime, sys
+hh, mm = (int(x) for x in sys.argv[1].split(":"))
+now = datetime.datetime.now().astimezone()
+cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+if cand <= now:
+    cand += datetime.timedelta(days=1)
+print(int((cand - now).total_seconds()))
+' "$(near_hhmm)")
+# 20 min minus the HH:MM truncation is 1140-1200s; anything under 900 means the
+# value went stale, anything over 1200 means the lead was widened past what the
+# comment above claims (and toward the 3600s long-gap ceiling).
+if [ "$_near_lead" -ge 900 ] && [ "$_near_lead" -le 1200 ]; then
+    echo "PASS LG-fix near_hhmm is still genuinely near this late in the run (${_near_lead}s out)"
+else
+    echo "FAIL LG-fix near_hhmm lead is ${_near_lead}s, outside the 900-1200s window -- LG2/LG6b are about to fail for a fixture reason, not a product one"
+    FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # LG6b: a NEAR arm (no --long-gap) records long_gap=0 — the ledger
 #       distinguishes an explicit long park from a normal near arm.
 # ---------------------------------------------------------------------------
 HO=$(make_handover "$WORK_REPO")
 TELE_LG6B="$TMP/tel-lg6b"
 out=$(TMPDIR="$TMP" PATH="$ARMED_STUB:$PATH" SKILL_TELEMETRY_DIR="$TELE_LG6B" \
-    bash "$ARM" --time "$NEAR_HHMM" --handover "$HO" 2>&1)
+    bash "$ARM" --time "$(near_hhmm)" --handover "$HO" 2>&1)
 rc=$?
 assert_rc "LG6b near arm arms (rc 0)" 0 "$rc"
 TLOG="$TELE_LG6B/skill-usage.jsonl"

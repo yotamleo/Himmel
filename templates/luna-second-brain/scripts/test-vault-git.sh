@@ -46,6 +46,17 @@ export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-luna-test@example.com}"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# Isolate the fixture from the HOST's global git config (LUNA-131). A host that
+# sets core.hooksPath globally (a common multi-repo setup) makes `pre-commit
+# install` abort with "Cowardly refusing to install hooks with core.hooksPath
+# set", so setup.sh's hook-install step fails and Precondition B SKIPs every
+# hook-dependent phase — a red/vacuous suite for a reason that has nothing to do
+# with the code under test. An empty global config also keeps any other host
+# setting (aliases, autocrlf overrides, templatedir) out of the fixture; the
+# identity the fixture needs is already supplied by the GIT_* exports above.
+export GIT_CONFIG_GLOBAL="$TMP/gitconfig-isolated"
+: >"$GIT_CONFIG_GLOBAL"
+
 # Build a faithful-enough vault fixture at $1 (NO .git — setup bootstraps it).
 make_vault() {
   local v="$1"

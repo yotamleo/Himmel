@@ -120,6 +120,21 @@ EOF
 rc=$(run_hook "CLAUDE.md")
 assert_rc "T12 CLAUDE.md exempt" 0 "$rc"
 
+# T12b: root CHANGELOG.md exempt (generated from commit subjects) → CLEAN
+cat > "$TMP/CHANGELOG.md" <<'EOF'
+- [HIMMEL-2178] claude -p headless dispatch wrapper + file-per-session registry (#1990)
+EOF
+rc=$(run_hook "CHANGELOG.md")
+assert_rc "T12b root CHANGELOG.md exempt" 0 "$rc"
+
+# T12c: nested CHANGELOG.md NOT exempt (path-anchored, not basename) → BLOCK
+mkdir -p "$TMP/some/dir"
+cat > "$TMP/some/dir/CHANGELOG.md" <<'EOF'
+- [HIMMEL-2178] claude -p headless dispatch wrapper + file-per-session registry (#1990)
+EOF
+rc=$(run_hook "some/dir/CHANGELOG.md")
+assert_rc "T12c nested CHANGELOG.md still flagged" 1 "$rc"
+
 # T13: self-exempt hook + test → CLEAN
 cat > "$TMP/scripts/hooks/check-no-headless-claude.sh" <<'EOF'
 PATTERN='claude -p'

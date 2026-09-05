@@ -44,6 +44,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
@@ -59,15 +60,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # HIMMEL-1446 r3: every `update` case reaches applyHimmelctlPathShim() (dry-run
 # prints the resolved binDir; the accept cases B/C write the launcher into it).
@@ -121,7 +113,7 @@ cA=$(build_path "$stubA" bash git jq python3 npm -- )
 hA="$work/hA"; mkdir -p "$hA"
 fixtureA="$work/caseA-fixture"; build_fixture "$fixtureA" 0
 set +e
-out=$(PATH="$cA" HOME="$hA" HIMMELCTL_INTERACTIVE=0 HIMMELCTL_BASH=bash \
+out=$(PATH="$cA" HOME="$hA" USERPROFILE="$(winpath "$hA")" HIMMELCTL_CACHE_DIR="$(winpath "$hA.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hA.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureA")" \
       "$node_bin" "$wizard" update --dry-run \
       </dev/null 2>&1); rc=$?
@@ -139,7 +131,7 @@ cB=$(build_path "$stubB" bash git jq python3 npm -- )
 hB="$work/hB"; mkdir -p "$hB"
 fixtureB="$work/caseB-fixture"; build_fixture "$fixtureB" 0
 set +e
-out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
+out=$(PATH="$cB" HOME="$hB" USERPROFILE="$(winpath "$hB")" HIMMELCTL_CACHE_DIR="$(winpath "$hB.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hB.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureB")" \
       "$node_bin" "$wizard" update \
       </dev/null 2>&1); rc=$?
@@ -168,7 +160,7 @@ cC=$(build_path "$stubC" bash git jq python3 npm -- )
 hC="$work/hC"; mkdir -p "$hC"
 fixtureC="$work/caseC-fixture"; build_fixture "$fixtureC" 42
 set +e
-out=$(PATH="$cC" HOME="$hC" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
+out=$(PATH="$cC" HOME="$hC" USERPROFILE="$(winpath "$hC")" HIMMELCTL_CACHE_DIR="$(winpath "$hC.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hC.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureC")" \
       "$node_bin" "$wizard" update \
       </dev/null 2>&1); rc=$?
@@ -184,7 +176,7 @@ cD=$(build_path "$stubD" bash git jq python3 npm -- )
 hD="$work/hD"; mkdir -p "$hD"
 fixtureD="$work/caseD-fixture"; build_fixture "$fixtureD" 0
 set +e
-out=$(PATH="$cD" HOME="$hD" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
+out=$(PATH="$cD" HOME="$hD" USERPROFILE="$(winpath "$hD")" HIMMELCTL_CACHE_DIR="$(winpath "$hD.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hD.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureD")" \
       "$node_bin" "$wizard" update --items foo \
       </dev/null 2>&1); rc=$?
@@ -213,7 +205,7 @@ stubE="$work/caseE"; mkdir -p "$stubE"
 cE=$(build_path "$stubE" bash git jq python3 npm -- )
 hE="$work/hE"; mkdir -p "$hE"
 set +e
-out=$(PATH="$cE" HOME="$hE" HIMMELCTL_INTERACTIVE=0 HIMMELCTL_BASH=bash \
+out=$(PATH="$cE" HOME="$hE" USERPROFILE="$(winpath "$hE")" HIMMELCTL_CACHE_DIR="$(winpath "$hE.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hE.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT='C:\Users\test\himmel' \
       "$node_bin" "$wizard" update --dry-run \
       </dev/null 2>&1); rc=$?
@@ -253,7 +245,7 @@ cF=$(build_path "$stubF" bash git jq python3 npm -- )
 hF="$work/hF"; mkdir -p "$hF"
 fixtureF="$work/caseF-fixture"; build_fixture "$fixtureF" 0
 set +e
-out=$(PATH="$cF" HOME="$hF" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$cF" HOME="$hF" USERPROFILE="$(winpath "$hF")" HIMMELCTL_CACHE_DIR="$(winpath "$hF.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hF.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureF")" \
       "$node_bin" "$wizard" update --dry-run \
       </dev/null 2>&1); rc=$?
@@ -291,7 +283,7 @@ fixtureG="$work/caseG-fixture"; build_fixture "$fixtureG" 0
 # Pre-existing UNMARKED file at the loader dest -> writeMarkedLauncher refuses.
 printf 'third-party\n' > "$work/isolated-bin/himmelctl.js"
 set +e
-out=$(PATH="$cG" HOME="$hG" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
+out=$(PATH="$cG" HOME="$hG" USERPROFILE="$(winpath "$hG")" HIMMELCTL_CACHE_DIR="$(winpath "$hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hG.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 HIMMELCTL_BASH=bash \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureG")" \
       "$node_bin" "$wizard" update \
       </dev/null 2>&1); rc=$?

@@ -28,6 +28,30 @@ $refresh = ($env:CRYSTALLIZE_REFRESH -eq '1')
 $env:CLAUDE_END_SESSION_WIKI = '0'
 $env:HIMMEL_WHERE_ARE_WE = '0'
 
+# A lane config dir carries proxy routing but no native credentials. Defer this
+# best-effort synthesis to backfill rather than fire its Anthropic model pin into
+# the lane proxy (HIMMEL-1927); an unresolvable path is fail-open in the same way.
+#
+# HIMMEL-1927 CR finding: this predicate is deliberately conservative -- ANY
+# CLAUDE_CONFIG_DIR that differs from ~/.claude defers, even a legitimate
+# custom-but-native one. Do NOT narrow this to also require ANTHROPIC_BASE_URL:
+# a lane config dir (e.g. ~/.claude-codex) carries no .credentials.json, so
+# proceeding there produces a SILENT auth failure swallowed by this script's
+# stub-hidden output below -- same end state as the bug, minus the error log.
+# A false-defer here is recoverable via `backfill-sessions.sh --reheal`; a
+# credential-less proceed is not, because the failure is silent. Keep the
+# predicate as-is.
+if ($env:CLAUDE_CONFIG_DIR) {
+    try {
+        $configuredClaudeDir = (Resolve-Path -LiteralPath $env:CLAUDE_CONFIG_DIR -ErrorAction Stop).Path
+        $nativeClaudeDir = (Resolve-Path -LiteralPath (Join-Path $HOME '.claude') -ErrorAction Stop).Path
+    } catch { exit 0 }
+    if (-not [String]::Equals($configuredClaudeDir, $nativeClaudeDir, [StringComparison]::OrdinalIgnoreCase)) {
+        [Console]::Error.WriteLine("crystallize-note: DEFERRED (not failed) - CLAUDE_CONFIG_DIR=$($env:CLAUDE_CONFIG_DIR) is not ~/.claude; the mechanical note is still written and stays crystallized: false; backfill-sessions.sh --reheal picks it up later once running on native auth.")
+        exit 0
+    }
+}
+
 # Resolve claude (test override wins). No claude -> leave the mechanical note.
 $bin = $env:CRYSTALLIZE_CLAUDE_BIN
 if (-not $bin) { $bin = (Get-Command claude -ErrorAction SilentlyContinue).Source }
@@ -189,6 +213,12 @@ $rulesContent
 
     # Pre-hash: the edit-confirmed flag-set keys off whether the body moved.
     $hashBefore = (Get-FileHash -LiteralPath $NotePath -Algorithm SHA256).Hash
+
+    # Ambient proxy exports must not redirect this Max-plan launch (HIMMEL-1867).
+    try {
+        . (Join-Path $himmelRoot 'scripts\lib\native-auth-pin.ps1')
+        NativeAuthPinEnv
+    } catch { exit 0 }
 
     Push-Location $noteDir
     [Environment]::CurrentDirectory = $noteDir

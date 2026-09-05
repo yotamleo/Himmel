@@ -4,7 +4,15 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RUNNER="$HERE/run-codex-adversarial.sh"
-PR_CHECK="$HERE/../../.claude/commands/pr-check.md"
+# HIMMEL-2226: the step-3 kickoff and step-3.1 harvest fences left
+# .claude/commands/pr-check.md for real scripts (a worktree-isolated Bash tool
+# refuses shell function definitions and `IFS= read` on a command line, which
+# made the fences unrunnable from a worktree -- the normal place himmel feature
+# work happens). Every assertion below that used to awk-extract a fence out of
+# the runbook and eval it now runs the real script instead, which also retires
+# the HIMMEL-2160 coupling that left this suite red on a green pr-check.md.
+KICKOFF="$HERE/codex-adv-kickoff.sh"
+HARVEST="$HERE/codex-adv-harvest.sh"
 # shellcheck source=../lib/proc-tree.sh
 # shellcheck disable=SC1091
 . "$HERE/../lib/proc-tree.sh"
@@ -36,6 +44,178 @@ check() {
         fails=$((fails + 1))
     fi
 }
+
+# --- HIMMEL-2226 fence fixture -------------------------------------------
+# codex-adv-kickoff.sh and codex-adv-harvest.sh derive their himmel root from
+# $0/../.. and source scripts/lib/proc-tree.sh from it, so the fixture is a
+# himmel-SHAPED tree: copying the two scripts (plus the libs they source and
+# the completion check they shell out to) next to a stub proc-tree.sh makes
+# every identity/liveness/terminate outcome deterministic on every platform --
+# the same technique the launcher fixture below uses. Because a function
+# definition shadows the `kill` builtin and the `sleep` binary for the whole
+# sourcing script, no signal from a recovery test can ever reach a real
+# process and no test spends wall-clock in a retry loop.
+# HOME is pinned to an empty fixture dir on EVERY invocation: the companion is
+# resolved through a $HOME-rooted glob (so no codex render is ever spawned and
+# nothing touches the network) and the render-lease registry is $HOME-rooted
+# too (RENDER_LEASE_DIR is pinned as well, belt and braces).
+fx="$tmp/fence-fixture"
+mkdir -p "$fx/scripts/cr" "$fx/scripts/lib" "$fx/scripts/guardrails" \
+         "$fx/home" "$fx/leases" "$fx/repo"
+# run-codex-adversarial.sh is deliberately NOT copied in: with an empty
+# fixture HOME the companion glob never resolves, so no case can reach a
+# launch -- and if one ever did, the missing launcher fails loudly instead of
+# starting a real render.
+cp "$KICKOFF" "$HARVEST" "$HERE/codex-adv-completion-check.sh" "$fx/scripts/cr/"
+cp "$HERE/../lib/load-dotenv.sh" "$HERE/../lib/render-lease.sh" "$fx/scripts/lib/"
+cp "$HERE/../guardrails/lib.sh" "$fx/scripts/guardrails/"
+cat > "$fx/scripts/lib/proc-tree.sh" <<'SH'
+# Deterministic proc-tree stub (HIMMEL-2226 test fixture). Behaviour knobs are
+# plain env vars; the *_RULES maps are space-separated "<pid>:<value>" pairs
+# that override the per-call default for a named pid.
+_h2226_rule() {
+    local map="$1" key="$2" def="$3" entry
+    for entry in $map; do
+        case "$entry" in
+            "$key":*) printf '%s\n' "${entry#*:}"; return 0 ;;
+        esac
+    done
+    printf '%s\n' "$def"
+}
+# A "killable" pid is a recorded survivor: it verifies and is alive until the
+# recovery path TERMs it, and is confirmed gone afterwards.
+_h2226_killable() {
+    local entry
+    for entry in ${H2226_KILLABLE:-}; do
+        [ "$entry" = "$1" ] && return 0
+    done
+    return 1
+}
+proc_tree_is_windows() { return 1; }
+proc_tree_winpid() { printf '%s\n' "$1"; }
+proc_tree_group_members() { return 1; }
+proc_tree_group_terminate() { return "${H2226_TERMINATE_RC:-0}"; }
+proc_tree_process_identity() {
+    local value
+    value=$(_h2226_rule "${H2226_IDENTITY_VALUES:-}" "$1" "")
+    [ -n "$value" ] || return 1
+    printf '%s\n' "$value"
+}
+proc_tree_process_identity_matches() {
+    [ -z "${H2226_PROBE_LOG:-}" ] || printf '%s\n' "$1" >> "$H2226_PROBE_LOG"
+    if _h2226_killable "$1"; then
+        [ -e "${H2226_KILLED_MARKER:-/nonexistent}" ] && return 1
+        return 0
+    fi
+    return "$(_h2226_rule "${H2226_IDENTITY_RULES:-}" "$1" "${H2226_IDENTITY_RC:-0}")"
+}
+proc_tree_process_alive() {
+    if _h2226_killable "$1"; then
+        [ -e "${H2226_KILLED_MARKER:-/nonexistent}" ] && return 1
+        return 0
+    fi
+    return "$(_h2226_rule "${H2226_ALIVE_RULES:-}" "$1" "${H2226_ALIVE_RC:-1}")"
+}
+proc_tree_terminate() {
+    [ -z "${H2226_TERMINATE_LOG:-}" ] || printf '%s %s %s\n' "$1" "$2" "$3" >> "$H2226_TERMINATE_LOG"
+    return "$(_h2226_rule "${H2226_TERMINATE_RULES:-}" "$1" "${H2226_TERMINATE_RC:-0}")"
+}
+kill() {
+    [ -z "${H2226_SIGNAL_LOG:-}" ] || printf '%s:%s\n' "$1" "$2" >> "$H2226_SIGNAL_LOG"
+    [ "$1" != "-TERM" ] || [ -z "${H2226_KILLED_MARKER:-}" ] || : > "$H2226_KILLED_MARKER"
+    return 0
+}
+sleep() {
+    [ -z "${H2226_SLEEP_LOG:-}" ] || printf 's\n' >> "$H2226_SLEEP_LOG"
+    # Fires only once the terminate stub has run, so a hook can model the
+    # launcher wrapper publishing its rc/cleanup status a beat AFTER the
+    # harvest's cleanup attempt without perturbing the identity wait loop
+    # that runs before it.
+    if [ -n "${H2226_SLEEP_HOOK:-}" ] && [ -s "${H2226_TERMINATE_LOG:-/nonexistent}" ]; then
+        bash "$H2226_SLEEP_HOOK"
+    fi
+    return 0
+}
+SH
+(
+    cd "$fx/repo" || exit 1
+    git init -q -b main .
+    git config user.email t@t
+    git config user.name t
+    git config commit.gpgsign false
+    git commit -q --allow-empty -m init
+)
+adv="$fx/repo/.git/codex-adv-out"
+mkdir -p "$adv"
+export H2226_PROBE_LOG="$fx/probe.log" H2226_SIGNAL_LOG="$fx/signals.log" \
+       H2226_TERMINATE_LOG="$fx/terminate.log" H2226_SLEEP_LOG="$fx/sleep.log" \
+       H2226_KILLED_MARKER="$fx/killed"
+# Each case owns a fresh branch (so its .git/codex-adv-out/<branch>.* sidecars
+# cannot collide with another case's) and a clean stub-log set.
+fixture_reset() {
+    : > "$fx/probe.log"; : > "$fx/signals.log"
+    : > "$fx/terminate.log"; : > "$fx/sleep.log"
+    rm -f "$fx/killed"
+}
+# run_kickoff/run_harvest <branch> [VAR=value ...] -- the trailing assignments
+# are this case's stub knobs, handed to `env` so they cannot leak into the next
+# case. CR_PROFILE is set non-empty so load-dotenv's non-clobbering load can
+# never pull a real value out of a checkout's .env and change which branch of
+# the script under test fires.
+run_kickoff() {
+    local branch="$1"; shift
+    ( cd "$fx/repo" && git checkout -q -B "$branch" >/dev/null 2>&1 &&
+      env HOME="$fx/home" RENDER_LEASE_DIR="$fx/leases" CR_PROFILE=fixturetest "$@" \
+        bash "$fx/scripts/cr/codex-adv-kickoff.sh" )
+}
+run_harvest() {
+    local branch="$1"; shift
+    ( cd "$fx/repo" && git checkout -q -B "$branch" >/dev/null 2>&1 &&
+      env HOME="$fx/home" RENDER_LEASE_DIR="$fx/leases" CR_PROFILE=fixturetest "$@" \
+        bash "$fx/scripts/cr/codex-adv-harvest.sh" )
+}
+
+# HIMMEL-1957: the default-dormant path must look exactly like companion
+# absence to /pr-check: clean rc, no process/ownership pid, and therefore no
+# harvest attempt or availability record. Model the kickoff subshell too, which
+# writes the wrapper rc after it returns.
+unset CODEX_ADV_OK
+mkdir -p "$tmp/dormant-stub-bin"
+cat > "$tmp/dormant-stub-bin/node" <<'SH'
+#!/usr/bin/env bash
+: > "${HIMMEL_1957_COMPANION_STARTED:?}"
+SH
+chmod +x "$tmp/dormant-stub-bin/node"
+(
+    PATH="$tmp/dormant-stub-bin:$PATH" HIMMEL_1957_COMPANION_STARTED="$tmp/companion.started" \
+        bash "$RUNNER" "$tmp/not-used.mjs" main "$tmp/dormant.stdout" "$tmp/dormant.stderr" "$tmp/dormant.pid" \
+        2>"$tmp/dormant-runner.stderr"
+    printf '%s\n' "$?" > "$tmp/dormant.rc"
+)
+check "dormant launch exits as a clean skip" "$(cat "$tmp/dormant.rc")" "0"
+check "dormant launch spawns no node process" "$(test -e "$tmp/companion.started" && echo spawned || echo absent)" "absent"
+check "dormant launch publishes no ownership pid" "$(test -e "$tmp/dormant.pid" && echo published || echo absent)" "absent"
+check "dormant launch reports exactly one skip line" "$(wc -l < "$tmp/dormant-runner.stderr" | tr -d ' ')" "1"
+check "dormant skip names its reason and opt-in" "$(cat "$tmp/dormant-runner.stderr")" "codex adversarial pass skipped: dormant pending investigation (HIMMEL-1957); set CODEX_ADV_OK=1 to launch"
+# HIMMEL-2056: the dormant skip also writes a one-line machine-readable
+# sentinel to stdout_file so codex-adv-completion-check.sh can positively
+# classify it as ABSENT, never a HIMMEL-1420 silent death, wherever it's read.
+check "dormant launch writes the ABSENT sentinel to stdout_file" "$(cat "$tmp/dormant.stdout" 2>/dev/null)" "codex-adv: dormant (HIMMEL-1957)"
+# The harvest tests pid presence before reading rc or assigning an
+# availability status; companion-absent and dormant-wrapper paths both have no
+# pid. HIMMEL-2226: assert that end to end against the real harvest script --
+# feed it the dormant launcher's OWN stdout with no ownership pid and require
+# the dormant/absent classification, no findings, and NO availability record.
+fixture_reset
+cp "$tmp/dormant.stdout" "$adv/h-dormant"
+harvest_dormant_rc=0
+harvest_dormant_out=$(run_harvest h-dormant 2>"$fx/h-dormant.err") || harvest_dormant_rc=$?
+check "dormant harvest exits clean" "$harvest_dormant_rc" "0"
+check "harvest treats a missing pid as not launched" "$harvest_dormant_out" "codex-adv: dormant/absent (HIMMEL-1957) -- not launched, no retry"
+check "dormant harvest records no availability status" "$(grep -Fc 'codex-adv-status:' "$fx/h-dormant.err")" "0"
+
+# Every remaining test exercises the pre-existing live path.
+export CODEX_ADV_OK=1
 
 cat > "$tmp/stubborn-child.mjs" <<'JS'
 import fs from 'node:fs';
@@ -117,6 +297,10 @@ cat > "$tmp/lease-fixture/companion.mjs" <<'JS'
 await new Promise(resolve => setTimeout(resolve, 100));
 JS
 cat > "$tmp/lease-fixture/companion-lease.mjs" <<'JS'
+import fs from 'node:fs';
+if (process.env.HIMMEL_1957_COMPANION_STARTED) {
+    fs.writeFileSync(process.env.HIMMEL_1957_COMPANION_STARTED, 'started');
+}
 await new Promise(resolve => setTimeout(resolve, 3000));
 JS
 cat > "$tmp/lease-fixture/companion-delayed.mjs" <<'JS'
@@ -132,7 +316,9 @@ PATH="$tmp/lease-fixture/stub-bin:$PATH" \
 HIMMEL_R5_WINDOWS=1 \
 HIMMEL_R5_WINPID=424242 \
 HIMMEL_R5_PWSH_ARGS="$tmp/lease-windows.args" \
+HIMMEL_1957_COMPANION_STARTED="$tmp/companion.started" \
     bash "$tmp/lease-fixture/cr/run-codex-adversarial.sh" "$tmp/lease-fixture/companion-lease.mjs" main "$tmp/lease-windows.stdout" "$tmp/lease-windows.stderr" "$tmp/lease-windows.pid" || runner_rc=$?
+check "CODEX_ADV_OK=1 reaches the live launch path" "$(test -e "$tmp/companion.started" && echo started || echo absent)" "started"
 check "Windows lease runner exits 0" "$runner_rc" "0"
 check "Windows ownership pid sidecar is nonempty" "$(test -s "$tmp/lease-windows.pid" && echo nonempty || echo empty)" "nonempty"
 check "Windows ownership identity sidecar is nonempty" "$(test -s "$tmp/lease-windows.pid.identity" && echo nonempty || echo empty)" "nonempty"
@@ -240,15 +426,32 @@ RENDER_LEASE_LOCK_ATTEMPTS=2 RENDER_LEASE_LOCK_DELAY_SECS=0 \
 check "unusable registry refuses the launch with 75" "$runner_rc" "75"
 check "unusable registry refusal is loud" "$(grep -Fc 'launch REFUSED' "$tmp/lease-1509-broken-runner.stderr" 2>/dev/null)" "1"
 
-# pr-check wiring: kickoff probe + both fences exporting the launch claim.
+# HIMMEL-1509 launch claim. Both scripts export the per-branch claim before
+# invoking the shared launcher (kickoff for the background render, harvest for
+# its bounded retry). Neither launch path can be exercised here without
+# spawning a real render, so this stays a source-level assertion -- but now
+# against the scripts that carry the wiring rather than the runbook prose that
+# no longer does (HIMMEL-2160: that coupling is exactly what left this suite
+# red on a green pr-check.md).
 # shellcheck disable=SC2016
-lease_export_wiring=$(grep -Fc 'export RENDER_LEASE_BRANCH="$branch"' "$PR_CHECK" 2>/dev/null)
+lease_export_wiring=$(cat "$KICKOFF" "$HARVEST" | grep -Fc 'export RENDER_LEASE_BRANCH="$branch"')
 check "kickoff and harvest both export the launch claim" "$lease_export_wiring" "2"
-# shellcheck disable=SC2016
-lease_probe_wiring=$(grep -Fc 'render_lease_probe "$branch"' "$PR_CHECK" 2>/dev/null)
-check "kickoff pre-flights the branch lease probe" "$lease_probe_wiring" "1"
-lease_source_wiring=$(grep -Fc '. scripts/lib/render-lease.sh' "$PR_CHECK" 2>/dev/null)
-check "kickoff sources the render-lease lib" "$lease_source_wiring" "1"
+# The lease PROBE is behavioural: a live lease on this branch must refuse the
+# kickoff loudly, spawn nothing, and leave the holder's record intact. This
+# also subsumes the retired "kickoff sources the render-lease lib" text grep --
+# a grep for a source line is vacuous once the probe it enables is executed,
+# because the probe cannot fire at all unless the lib is sourced.
+fixture_reset
+mkdir -p "$fx/leases/h-leased"
+printf 'branch\th-leased\nworktree\t%s\nacquired_by\t999999\nstarted_at\t2026-01-01T00:00:00Z\nleader_pid\t424242\nleader_identity\ttest-identity\nstatus\trunning\n' \
+    "$fx/repo" > "$fx/leases/h-leased/lease.record"
+kickoff_leased_rc=0
+run_kickoff h-leased \
+    H2226_IDENTITY_RC=0 >"$fx/k-leased.out" 2>"$fx/k-leased.err" || kickoff_leased_rc=$?
+check "kickoff pre-flights the branch lease probe" "$kickoff_leased_rc" "1"
+check "lease-refused kickoff names the live lease" "$(grep -Fc 'holds a live render lease' "$fx/k-leased.err")" "1"
+check "lease-refused kickoff preserves the holder record" "$(test -s "$fx/leases/h-leased/lease.record" && echo preserved || echo missing)" "preserved"
+check "lease-refused kickoff publishes no ownership pid" "$(test -e "$adv/h-leased.pid" && echo published || echo absent)" "absent"
 
 # HIMMEL-1474 r11: launch identity is a required ownership handshake. Persistent
 # INITIAL probe failure must terminate the still-owned group before returning,
@@ -491,147 +694,102 @@ process_gone_rc=0
 proc_tree_process_alive 2147483647 || process_gone_rc=$?
 check "identity-free liveness probe confirms absent pid" "$process_gone_rc" "1"
 
-# HIMMEL-1474 r6b: execute the production harvest loop with deterministic
-# identity and sleep stubs. An unavailable probe must consume the wait budget;
-# only a confirmed mismatch/exit may abandon the wait at waited=0.
-harvest_loop_extract_rc=0
-harvest_loop=$(awk '
-    /while \[ ! -s "\$codex_rc_file" \]; do/ { capture=1 }
-    capture {
-        sub(/^       /, "")
-        print
-        if ($0 == "done") { complete=1; exit }
-    }
-    END { if (!complete) exit 42 }
-' "$PR_CHECK") || harvest_loop_extract_rc=$?
-check "harvest-loop extractor reaches its terminating done" "$harvest_loop_extract_rc" "0"
-# shellcheck disable=SC2034,SC2317,SC2329
-harvest_unavailable_result=$(
-    codex_rc_file="$tmp/harvest-unavailable.rc"
-    codex_pid=424242
-    codex_identity=''
-    codex_to=5
-    waited=0
-    probe_count=0
-    proc_tree_process_identity_matches() {
-        probe_count=$((probe_count + 1))
-        return 2
-    }
-    sleep() { :; }
-    eval "$harvest_loop"
-    printf '%s:%s\n' "$probe_count" "$waited"
-)
-check "identity-unavailable harvest waits through waited=0" "$harvest_unavailable_result" "2:5"
+# HIMMEL-1474 r6b + r8: run the real harvest script's wait loop against the
+# deterministic identity stub. An UNAVAILABLE probe must consume the wait
+# budget (the loop cannot abandon a render it merely failed to inspect); the
+# guarded cleanup that follows must carry the LAUNCH IDENTITY; and terminate
+# rc 2 -- no signal sent, so the render may still be live -- must be reported
+# as live-but-unreaped with its recovery sidecars preserved.
+# CRITIC_TIMEOUT_SECS=1 makes the poll budget 2s, so one stubbed sleep
+# exhausts it; the sidecar names are the ones the launcher publishes, which is
+# what the retired "kickoff and harvest share the identity sidecar" text grep
+# was really asserting.
+fixture_reset
+printf '%s\n' 424242 > "$adv/h-unreaped.pid"
+printf '%s\n' test-identity > "$adv/h-unreaped.pid.identity"
+run_harvest h-unreaped \
+    H2226_IDENTITY_RC=2 H2226_TERMINATE_RC=2 CRITIC_TIMEOUT_SECS=1 >"$fx/h-unreaped.out" 2>"$fx/h-unreaped.err"
+check "identity-unavailable harvest waits through waited=0" "$(wc -l < "$fx/probe.log" | tr -d ' ')" "2"
+check "identity-unavailable harvest consumes its wait budget" "$(test -s "$fx/sleep.log" && echo waited || echo skipped)" "waited"
+check "production harvest passes launch identity to proc_tree_terminate" "$(cat "$fx/terminate.log")" "424242 1 test-identity"
+check "terminate-rc-2 harvest is live-but-unreaped" "$(grep -Fc 'live but unreaped' "$fx/h-unreaped.err")" "1"
+check "live-but-unreaped harvest explains preserved handles" "$(grep -Fc 'because no signal was sent' "$fx/h-unreaped.err")" "1"
+check "live-but-unreaped harvest records unavailable" "$(grep -Fc 'codex-adv-status: unavailable' "$fx/h-unreaped.err")" "1"
+check "live-but-unreaped harvest preserves pid sidecar" "$(test -s "$adv/h-unreaped.pid" && echo preserved || echo missing)" "preserved"
+check "live-but-unreaped harvest preserves identity sidecar" "$(test -s "$adv/h-unreaped.pid.identity" && echo preserved || echo missing)" "preserved"
 
-# shellcheck disable=SC2034,SC2317,SC2329
-harvest_mismatch_result=$(
-    codex_rc_file="$tmp/harvest-mismatch.rc"
-    codex_pid=424242
-    codex_identity='test-identity'
-    codex_to=5
-    waited=0
-    probe_count=0
-    proc_tree_process_identity_matches() {
-        probe_count=$((probe_count + 1))
-        return 1
-    }
-    sleep() { :; }
-    eval "$harvest_loop"
-    printf '%s:%s\n' "$probe_count" "$waited"
-)
-check "identity mismatch harvest breaks at waited=0" "$harvest_mismatch_result" "1:0"
+# Only a CONFIRMED mismatch/exit may abandon the wait at waited=0. It must not
+# reach the timeout cleanup at all, and with no launcher rc on disk
+# (HIMMEL-1474 r12: killed pre-write) the ownership handles stay put.
+fixture_reset
+printf '%s\n' 424242 > "$adv/h-nolauncherrc.pid"
+printf '%s\n' test-identity > "$adv/h-nolauncherrc.pid.identity"
+printf '%s\n' 0 > "$adv/h-nolauncherrc.pid.cleanup-rc"
+run_harvest h-nolauncherrc \
+    H2226_IDENTITY_RC=1 CRITIC_TIMEOUT_SECS=1 >"$fx/h-nolauncherrc.out" 2>"$fx/h-nolauncherrc.err"
+check "identity mismatch harvest breaks at waited=0" "$(wc -l < "$fx/probe.log" | tr -d ' ')" "1"
+check "identity mismatch harvest skips the timeout cleanup" "$(test -s "$fx/terminate.log" && echo terminated || echo skipped)" "skipped"
+check "missing launcher rc marks cleanup unverified" "$(grep -Fc 'launcher status missing' "$fx/h-nolauncherrc.err")" "1"
+check "missing launcher rc records unavailable" "$(grep -Fc 'codex-adv-status: unavailable' "$fx/h-nolauncherrc.err")" "1"
+check "missing launcher rc preserves pid sidecar" "$(test -s "$adv/h-nolauncherrc.pid" && echo preserved || echo missing)" "preserved"
+check "missing launcher rc preserves identity sidecar" "$(test -s "$adv/h-nolauncherrc.pid.identity" && echo preserved || echo missing)" "preserved"
+check "missing launcher rc preserves cleanup status" "$(cat "$adv/h-nolauncherrc.pid.cleanup-rc" 2>/dev/null)" "0"
 
-harvest_wiring=$(grep -Fc "proc_tree_terminate \"\$codex_pid\" 1 \"\$codex_identity\"" "$PR_CHECK" 2>/dev/null)
-check "production harvest passes launch identity to proc_tree_terminate" "$harvest_wiring" "1"
-identity_file_wiring=$(grep -Fc "codex_identity_file=\"\${codex_pid_file}.identity\"" "$PR_CHECK" 2>/dev/null)
-check "kickoff and harvest share the identity sidecar" "$identity_file_wiring" "2"
-survivors_file_wiring=$(grep -Fc "codex_survivors_file=\"\${codex_pid_file}.survivors\"" "$PR_CHECK" 2>/dev/null)
-check "kickoff and harvest share the survivor sidecar" "$survivors_file_wiring" "2"
-rc_first_wiring=$(grep -Fc "while [ ! -s \"\$codex_rc_file\" ]; do" "$PR_CHECK" 2>/dev/null)
-check "production harvest checks rc before identity probing" "$rc_first_wiring" "1"
-
-# HIMMEL-1474 r11/r12: execute the kickoff recovery fence. Cleanup status is
-# record-scoped, so a clean primary can be cleared independently of a failed
-# retry while an unverifiable record still blocks overwrite.
-kickoff_recovery_extract_rc=0
-kickoff_recovery_block=$(awk '
-    /HIMMEL-1474 r11 kickoff recovery start/ { capture=1; next }
-    /HIMMEL-1474 r11 kickoff recovery end/ {
-        if (capture) complete=1
-        exit
-    }
-    capture { sub(/^   /, ""); print }
-    END { if (!complete) exit 42 }
-' "$PR_CHECK") || kickoff_recovery_extract_rc=$?
-check "kickoff-recovery extractor reaches its end marker" "$kickoff_recovery_extract_rc" "0"
+# HIMMEL-1474 r11/r12: the kickoff recovery fence, now run as the real
+# scripts/cr/codex-adv-kickoff.sh. Cleanup status is record-scoped, so a clean
+# primary can be cleared independently of a failed retry while an unverifiable
+# record still blocks overwrite. The launcher-published cleanup status feeding
+# these cases is the REAL one from the r12 signal test above.
+fixture_reset
+cp "$tmp/handshake-signal.pid.cleanup-rc" "$adv/k-orphan.pid.retry.cleanup-rc"
 handshake_next_kickoff_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/handshake-signal.pid"
-    codex_retry_pid_file="$tmp/handshake-signal-retry.pid"
-    proc_tree_process_identity_matches() { return 9; }
-    proc_tree_terminate() { return 9; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/handshake-next-kickoff.stderr" || handshake_next_kickoff_rc=$?
+run_kickoff k-orphan \
+    H2226_IDENTITY_RC=9 H2226_TERMINATE_RC=9 >"$fx/k-orphan.out" 2>"$fx/k-orphan.err" || handshake_next_kickoff_rc=$?
 check "failed blank-identity recovery does not block the next kickoff" "$handshake_next_kickoff_rc" "0"
-check "next kickoff clears orphan cleanup status without a pid marker" "$(test -e "$tmp/handshake-signal.pid.cleanup-rc" && echo preserved || echo cleared)" "cleared"
+check "next kickoff clears orphan cleanup status without a pid marker" "$(test -e "$adv/k-orphan.pid.retry.cleanup-rc" && echo preserved || echo cleared)" "cleared"
 
-rm -f "$tmp/kickoff-primary.pid" "$tmp/kickoff-primary.pid.identity" "$tmp/kickoff-primary.pid.cleanup-rc" \
-      "$tmp/kickoff-retry.pid" "$tmp/kickoff-retry.pid.identity" "$tmp/kickoff-retry.pid.cleanup-rc"
-printf '%s\n' 424243 > "$tmp/kickoff-primary.pid"
-printf '%s\n' primary-identity > "$tmp/kickoff-primary.pid.identity"
-printf '%s\n' 0 > "$tmp/kickoff-primary.pid.cleanup-rc"
-printf '%s\n' 424244 > "$tmp/kickoff-retry.pid"
-printf '%s\n' retry-identity > "$tmp/kickoff-retry.pid.identity"
-printf '%s\n' 1 > "$tmp/kickoff-retry.pid.cleanup-rc"
+fixture_reset
+printf '%s\n' 424243 > "$adv/k-mixed.pid"
+printf '%s\n' primary-identity > "$adv/k-mixed.pid.identity"
+printf '%s\n' 0 > "$adv/k-mixed.pid.cleanup-rc"
+printf '%s\n' 424244 > "$adv/k-mixed.pid.retry"
+printf '%s\n' retry-identity > "$adv/k-mixed.pid.retry.identity"
+printf '%s\n' 1 > "$adv/k-mixed.pid.retry.cleanup-rc"
 kickoff_mixed_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/kickoff-primary.pid"
-    codex_retry_pid_file="$tmp/kickoff-retry.pid"
-    proc_tree_process_identity_matches() { return 2; }
-    proc_tree_terminate() { return 9; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/kickoff-mixed.stderr" || kickoff_mixed_rc=$?
+run_kickoff k-mixed \
+    H2226_IDENTITY_RC=2 H2226_TERMINATE_RC=9 >"$fx/k-mixed.out" 2>"$fx/k-mixed.err" || kickoff_mixed_rc=$?
 check "failed retry blocks kickoff after clean primary is cleared" "$kickoff_mixed_rc" "1"
-check "clean primary record is removed independently" "$(test -e "$tmp/kickoff-primary.pid" && echo preserved || echo cleared)" "cleared"
-check "clean primary cleanup status is removed independently" "$(test -e "$tmp/kickoff-primary.pid.cleanup-rc" && echo preserved || echo cleared)" "cleared"
-check "failed retry pid remains preserved" "$(test -s "$tmp/kickoff-retry.pid" && echo preserved || echo missing)" "preserved"
-check "failed retry cleanup status remains preserved" "$(cat "$tmp/kickoff-retry.pid.cleanup-rc" 2>/dev/null)" "1"
+check "clean primary record is removed independently" "$(test -e "$adv/k-mixed.pid" && echo preserved || echo cleared)" "cleared"
+check "clean primary cleanup status is removed independently" "$(test -e "$adv/k-mixed.pid.cleanup-rc" && echo preserved || echo cleared)" "cleared"
+check "failed retry pid remains preserved" "$(test -s "$adv/k-mixed.pid.retry" && echo preserved || echo missing)" "preserved"
+check "failed retry cleanup status remains preserved" "$(cat "$adv/k-mixed.pid.retry.cleanup-rc" 2>/dev/null)" "1"
 
+fixture_reset
+printf '%s\n' 424244 > "$adv/k-recover.pid.retry"
+printf '%s\n' retry-identity > "$adv/k-recover.pid.retry.identity"
+printf '%s\n' 1 > "$adv/k-recover.pid.retry.cleanup-rc"
 kickoff_recover_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/kickoff-primary.pid"
-    codex_retry_pid_file="$tmp/kickoff-retry.pid"
-    proc_tree_process_identity_matches() { return 0; }
-    proc_tree_terminate() { return 0; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/kickoff-recover.stderr" || kickoff_recover_rc=$?
+run_kickoff k-recover \
+    H2226_IDENTITY_RC=0 H2226_TERMINATE_RC=0 >"$fx/k-recover.out" 2>"$fx/k-recover.err" || kickoff_recover_rc=$?
 check "kickoff recovers prior retry ownership state" "$kickoff_recover_rc" "0"
-check "kickoff recovery clears retry pid sidecar" "$(test -e "$tmp/kickoff-retry.pid" && echo preserved || echo cleared)" "cleared"
-check "kickoff recovery clears retry identity sidecar" "$(test -e "$tmp/kickoff-retry.pid.identity" && echo preserved || echo cleared)" "cleared"
-check "kickoff recovery clears retry cleanup status" "$(test -e "$tmp/kickoff-retry.pid.cleanup-rc" && echo preserved || echo cleared)" "cleared"
-kickoff_recover_diagnostic=$(grep -Fc "recovered prior retry render" "$tmp/kickoff-recover.stderr" 2>/dev/null)
+check "kickoff recovery clears retry pid sidecar" "$(test -e "$adv/k-recover.pid.retry" && echo preserved || echo cleared)" "cleared"
+check "kickoff recovery clears retry identity sidecar" "$(test -e "$adv/k-recover.pid.retry.identity" && echo preserved || echo cleared)" "cleared"
+check "kickoff recovery clears retry cleanup status" "$(test -e "$adv/k-recover.pid.retry.cleanup-rc" && echo preserved || echo cleared)" "cleared"
+kickoff_recover_diagnostic=$(grep -Fc "recovered prior retry render" "$fx/k-recover.err" 2>/dev/null)
 check "kickoff recovery reports recovered retry" "$kickoff_recover_diagnostic" "1"
 
-printf '%s\n' 424245 > "$tmp/kickoff-primary.pid"
-printf '%s\n' primary-identity > "$tmp/kickoff-primary.pid.identity"
-printf '%s\n' 2 > "$tmp/kickoff-primary.pid.cleanup-rc"
+fixture_reset
+printf '%s\n' 424245 > "$adv/k-block.pid"
+printf '%s\n' primary-identity > "$adv/k-block.pid.identity"
+printf '%s\n' 2 > "$adv/k-block.pid.cleanup-rc"
 kickoff_block_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/kickoff-primary.pid"
-    codex_retry_pid_file="$tmp/kickoff-retry.pid"
-    proc_tree_process_identity_matches() { return 2; }
-    proc_tree_terminate() { return 9; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/kickoff-block.stderr" || kickoff_block_rc=$?
+run_kickoff k-block \
+    H2226_IDENTITY_RC=2 H2226_TERMINATE_RC=9 >"$fx/k-block.out" 2>"$fx/k-block.err" || kickoff_block_rc=$?
 check "kickoff blocks unverifiable preserved state" "$kickoff_block_rc" "1"
-check "blocked kickoff preserves primary pid sidecar" "$(test -s "$tmp/kickoff-primary.pid" && echo preserved || echo missing)" "preserved"
-check "blocked kickoff preserves primary identity sidecar" "$(test -s "$tmp/kickoff-primary.pid.identity" && echo preserved || echo missing)" "preserved"
-check "blocked kickoff preserves primary cleanup status" "$(cat "$tmp/kickoff-primary.pid.cleanup-rc" 2>/dev/null)" "2"
-kickoff_block_diagnostic=$(grep -Fc "kickoff BLOCKED" "$tmp/kickoff-block.stderr" 2>/dev/null)
+check "blocked kickoff preserves primary pid sidecar" "$(test -s "$adv/k-block.pid" && echo preserved || echo missing)" "preserved"
+check "blocked kickoff preserves primary identity sidecar" "$(test -s "$adv/k-block.pid.identity" && echo preserved || echo missing)" "preserved"
+check "blocked kickoff preserves primary cleanup status" "$(cat "$adv/k-block.pid.cleanup-rc" 2>/dev/null)" "2"
+kickoff_block_diagnostic=$(grep -Fc "kickoff BLOCKED" "$fx/k-block.err" 2>/dev/null)
 check "blocked kickoff emits actionable diagnostic" "$kickoff_block_diagnostic" "1"
 
 # HIMMEL-1474 r14: once a failed cleanup record's leader exits, survivor
@@ -639,44 +797,28 @@ check "blocked kickoff emits actionable diagnostic" "$kickoff_block_diagnostic" 
 # cleanup statuses through the launcher and the next kickoff fence.
 for survivor_cleanup_rc in 1 2; do
     survivor_prefix="$tmp/survivor-anchor-$survivor_cleanup_rc"
-    rm -f "$survivor_prefix.pid" "$survivor_prefix.pid.identity" "$survivor_prefix.pid.cleanup-rc" "$survivor_prefix.pid.survivors" "$survivor_prefix-killed" "$survivor_prefix-signals"
+    rm -f "$survivor_prefix.pid" "$survivor_prefix.pid.identity" "$survivor_prefix.pid.cleanup-rc" "$survivor_prefix.pid.survivors"
     runner_rc=0
     HIMMEL_R6_GROUP_TERMINATE_RC="$survivor_cleanup_rc" HIMMEL_R14_GROUP_MEMBERS=5151 \
         bash "$tmp/lease-fixture/cr/run-codex-adversarial.sh" "$tmp/lease-fixture/companion.mjs" main "$survivor_prefix.stdout" "$survivor_prefix.stderr" "$survivor_prefix.pid" 0 "$survivor_prefix.pid.cleanup-rc" 2>"$survivor_prefix-runner.stderr" || runner_rc=$?
     check "cleanup rc $survivor_cleanup_rc after leader exit remains unavailable" "$runner_rc" "125"
     survivor_record=$(awk -F'\t' '{ print $1 ":" $2; exit }' "$survivor_prefix.pid.survivors" 2>/dev/null)
     check "cleanup rc $survivor_cleanup_rc publishes survivor identity sidecar" "$survivor_record" "5151:test-identity"
-    survivor_leader_pid=$(cat "$survivor_prefix.pid")
+    # Hand the launcher's OWN ownership record to the real kickoff script: the
+    # sidecar names the launcher publishes are the ones the kickoff consumes,
+    # which is the cross-script agreement the retired text greps counted.
+    fixture_reset
+    survivor_branch="k-survivor-$survivor_cleanup_rc"
+    cp "$survivor_prefix.pid" "$adv/$survivor_branch.pid"
+    cp "$survivor_prefix.pid.identity" "$adv/$survivor_branch.pid.identity"
+    cp "$survivor_prefix.pid.cleanup-rc" "$adv/$survivor_branch.pid.cleanup-rc"
+    cp "$survivor_prefix.pid.survivors" "$adv/$survivor_branch.pid.survivors"
     survivor_recover_rc=0
-    # shellcheck disable=SC2034,SC2317,SC2329
-    (
-        codex_pid_file="$survivor_prefix.pid"
-        codex_retry_pid_file="$survivor_prefix-retry.pid"
-        proc_tree_process_identity_matches() {
-            if [ "$1" = "$survivor_leader_pid" ]; then
-                return 1
-            fi
-            if [ "$1" = "5151" ] && [ "$2" = "test-identity" ] && [ ! -e "$survivor_prefix-killed" ]; then
-                return 0
-            fi
-            return 1
-        }
-        proc_tree_process_alive() {
-            [ "$1" = "5151" ] && [ ! -e "$survivor_prefix-killed" ]
-        }
-        proc_tree_process_identity() { return 1; }
-        proc_tree_terminate() { return 9; }
-        kill() {
-            printf '%s:%s\n' "$1" "$2" >> "$survivor_prefix-signals"
-            [ "$1" != "-TERM" ] || : > "$survivor_prefix-killed"
-            return 0
-        }
-        sleep() { :; }
-        eval "$kickoff_recovery_block"
-    ) 2>"$survivor_prefix-recover.stderr" || survivor_recover_rc=$?
+    run_kickoff "$survivor_branch" \
+        H2226_IDENTITY_RC=1 H2226_ALIVE_RC=1 H2226_TERMINATE_RC=9 H2226_KILLABLE=5151 >"$survivor_prefix-recover.stdout" 2>"$survivor_prefix-recover.stderr" || survivor_recover_rc=$?
     check "cleanup rc $survivor_cleanup_rc next kickoff recovers through survivor anchor" "$survivor_recover_rc" "0"
-    check "cleanup rc $survivor_cleanup_rc recovery signals verified survivor" "$(grep -Fc -- '-TERM:5151' "$survivor_prefix-signals" 2>/dev/null)" "1"
-    check "cleanup rc $survivor_cleanup_rc recovery clears survivor sidecar" "$(test -e "$survivor_prefix.pid.survivors" && echo preserved || echo cleared)" "cleared"
+    check "cleanup rc $survivor_cleanup_rc recovery signals verified survivor" "$(grep -Fc -- '-TERM:5151' "$fx/signals.log" 2>/dev/null)" "1"
+    check "cleanup rc $survivor_cleanup_rc recovery clears survivor sidecar" "$(test -e "$adv/$survivor_branch.pid.survivors" && echo preserved || echo cleared)" "cleared"
 done
 
 # An unavailable process-table snapshot must not publish an empty sidecar that
@@ -691,202 +833,97 @@ check "unavailable survivor snapshot emits diagnostic" "$(grep -Fc 'survivor sna
 
 # A complete r14 snapshot may name survivors that exited before the next
 # kickoff. Confirmed absence is definitive and clears the preserved record.
-printf '%s\n' 424250 > "$tmp/survivors-gone.pid"
-printf '%s\n' leader-identity > "$tmp/survivors-gone.pid.identity"
-printf '%s\n' 1 > "$tmp/survivors-gone.pid.cleanup-rc"
-printf '5152\ttest-identity\n' > "$tmp/survivors-gone.pid.survivors"
+fixture_reset
+printf '%s\n' 424250 > "$adv/k-survivors-gone.pid"
+printf '%s\n' leader-identity > "$adv/k-survivors-gone.pid.identity"
+printf '%s\n' 1 > "$adv/k-survivors-gone.pid.cleanup-rc"
+printf '5152\ttest-identity\n' > "$adv/k-survivors-gone.pid.survivors"
 survivors_gone_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/survivors-gone.pid"
-    codex_retry_pid_file="$tmp/survivors-gone-retry.pid"
-    proc_tree_process_identity_matches() { return 1; }
-    proc_tree_process_alive() { return 1; }
-    proc_tree_process_identity() { return 1; }
-    proc_tree_terminate() { return 9; }
-    kill() { return 9; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/survivors-gone.stderr" || survivors_gone_rc=$?
+run_kickoff k-survivors-gone \
+    H2226_IDENTITY_RC=1 H2226_ALIVE_RC=1 H2226_TERMINATE_RC=9 >"$fx/k-survivors-gone.out" 2>"$fx/k-survivors-gone.err" || survivors_gone_rc=$?
 check "exited leader with all survivor anchors gone proceeds" "$survivors_gone_rc" "0"
-check "all-gone survivor recovery clears ownership record" "$(test -e "$tmp/survivors-gone.pid" && echo preserved || echo cleared)" "cleared"
+check "all-gone survivor recovery clears ownership record" "$(test -e "$adv/k-survivors-gone.pid" && echo preserved || echo cleared)" "cleared"
+check "all-gone survivor recovery signals nothing" "$(test -s "$fx/signals.log" && echo signaled || echo silent)" "silent"
 
 # HIMMEL-1501: a preserved cleanup rc of 3 (confirmed-gone before any signal
 # was sent) must be recovered the same way as 1/2 -- the survivors sidecar
 # stays the authority regardless of which rc the prior run left behind.
-printf '%s\n' 424254 > "$tmp/confirmed-gone-record.pid"
-printf '%s\n' leader-identity > "$tmp/confirmed-gone-record.pid.identity"
-printf '%s\n' 3 > "$tmp/confirmed-gone-record.pid.cleanup-rc"
-printf '5154\ttest-identity\n' > "$tmp/confirmed-gone-record.pid.survivors"
+fixture_reset
+printf '%s\n' 424254 > "$adv/k-rc3-record.pid"
+printf '%s\n' leader-identity > "$adv/k-rc3-record.pid.identity"
+printf '%s\n' 3 > "$adv/k-rc3-record.pid.cleanup-rc"
+printf '5154\ttest-identity\n' > "$adv/k-rc3-record.pid.survivors"
 confirmed_gone_record_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/confirmed-gone-record.pid"
-    codex_retry_pid_file="$tmp/confirmed-gone-record-retry.pid"
-    proc_tree_process_identity_matches() { return 1; }
-    proc_tree_process_alive() { return 1; }
-    proc_tree_process_identity() { return 1; }
-    proc_tree_terminate() { return 9; }
-    kill() { return 9; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/confirmed-gone-record.stderr" || confirmed_gone_record_rc=$?
+run_kickoff k-rc3-record \
+    H2226_IDENTITY_RC=1 H2226_ALIVE_RC=1 H2226_TERMINATE_RC=9 >"$fx/k-rc3-record.out" 2>"$fx/k-rc3-record.err" || confirmed_gone_record_rc=$?
 check "state cleanup rc=3 with all survivor anchors gone proceeds" "$confirmed_gone_record_rc" "0"
-check "rc=3 survivor recovery clears ownership record" "$(test -e "$tmp/confirmed-gone-record.pid" && echo preserved || echo cleared)" "cleared"
+check "rc=3 survivor recovery clears ownership record" "$(test -e "$adv/k-rc3-record.pid" && echo preserved || echo cleared)" "cleared"
 
 # The leader can match at the first probe and then exit before the guarded
 # terminate call. Confirmed-gone rc 3 must join the same survivor recovery path
 # rather than blocking the next kickoff.
-printf '%s\n' 424255 > "$tmp/terminate-confirmed-gone.pid"
-printf '%s\n' leader-identity > "$tmp/terminate-confirmed-gone.pid.identity"
-printf '%s\n' 1 > "$tmp/terminate-confirmed-gone.pid.cleanup-rc"
-printf '5156\ttest-identity\n' > "$tmp/terminate-confirmed-gone.pid.survivors"
-rm -f "$tmp/terminate-confirmed-gone-killed" "$tmp/terminate-confirmed-gone-signals" "$tmp/terminate-confirmed-gone-called"
+fixture_reset
+printf '%s\n' 424255 > "$adv/k-terminate-rc3.pid"
+printf '%s\n' leader-identity > "$adv/k-terminate-rc3.pid.identity"
+printf '%s\n' 1 > "$adv/k-terminate-rc3.pid.cleanup-rc"
+printf '5156\ttest-identity\n' > "$adv/k-terminate-rc3.pid.survivors"
 terminate_confirmed_gone_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/terminate-confirmed-gone.pid"
-    codex_retry_pid_file="$tmp/terminate-confirmed-gone-retry.pid"
-    proc_tree_process_identity_matches() {
-        if [ "$1" = "424255" ]; then
-            return 0
-        fi
-        if [ "$1" = "5156" ] && [ "$2" = "test-identity" ] && [ ! -e "$tmp/terminate-confirmed-gone-killed" ]; then
-            return 0
-        fi
-        return 1
-    }
-    proc_tree_process_alive() { [ "$1" = "5156" ] && [ ! -e "$tmp/terminate-confirmed-gone-killed" ]; }
-    proc_tree_terminate() { : > "$tmp/terminate-confirmed-gone-called"; return 3; }
-    kill() {
-        printf '%s:%s\n' "$1" "$2" >> "$tmp/terminate-confirmed-gone-signals"
-        [ "$1" != "-TERM" ] || : > "$tmp/terminate-confirmed-gone-killed"
-        return 0
-    }
-    sleep() { :; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/terminate-confirmed-gone.stderr" || terminate_confirmed_gone_rc=$?
+run_kickoff k-terminate-rc3 \
+    H2226_IDENTITY_RC=1 H2226_IDENTITY_RULES=424255:0 H2226_ALIVE_RC=1 \
+    H2226_TERMINATE_RC=3 H2226_KILLABLE=5156 \
+    >"$fx/k-terminate-rc3.out" 2>"$fx/k-terminate-rc3.err" || terminate_confirmed_gone_rc=$?
 check "identity match followed by terminate rc 3 recovers through survivor anchor" "$terminate_confirmed_gone_rc" "0"
-check "terminate rc 3 recovery attempted guarded leader cleanup" "$(test -e "$tmp/terminate-confirmed-gone-called" && echo called || echo missed)" "called"
-check "terminate rc 3 recovery signals verified survivor" "$(grep -Fc -- '-TERM:5156' "$tmp/terminate-confirmed-gone-signals" 2>/dev/null)" "1"
-check "terminate rc 3 recovery clears ownership record" "$(test -e "$tmp/terminate-confirmed-gone.pid" && echo preserved || echo cleared)" "cleared"
+check "terminate rc 3 recovery attempted guarded leader cleanup" "$(grep -Fc '424255 1 leader-identity' "$fx/terminate.log")" "1"
+check "terminate rc 3 recovery signals verified survivor" "$(grep -Fc -- '-TERM:5156' "$fx/signals.log" 2>/dev/null)" "1"
+check "terminate rc 3 recovery clears ownership record" "$(test -e "$adv/k-terminate-rc3.pid" && echo preserved || echo cleared)" "cleared"
 
 # A live pid with a different identity is not the recorded survivor and cannot
 # be signaled or silently treated as absence.
-printf '%s\n' 424251 > "$tmp/survivor-mismatch.pid"
-printf '%s\n' leader-identity > "$tmp/survivor-mismatch.pid.identity"
-printf '%s\n' 2 > "$tmp/survivor-mismatch.pid.cleanup-rc"
-printf '5153\ttest-identity\n' > "$tmp/survivor-mismatch.pid.survivors"
+fixture_reset
+printf '%s\n' 424251 > "$adv/k-survivor-mismatch.pid"
+printf '%s\n' leader-identity > "$adv/k-survivor-mismatch.pid.identity"
+printf '%s\n' 2 > "$adv/k-survivor-mismatch.pid.cleanup-rc"
+printf '5153\ttest-identity\n' > "$adv/k-survivor-mismatch.pid.survivors"
 survivor_mismatch_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/survivor-mismatch.pid"
-    codex_retry_pid_file="$tmp/survivor-mismatch-retry.pid"
-    proc_tree_process_identity_matches() { return 1; }
-    proc_tree_process_alive() { [ "$1" = "5153" ]; }
-    proc_tree_process_identity() {
-        [ "$1" != "5153" ] || printf '%s\n' recycled-identity
-    }
-    proc_tree_terminate() { return 9; }
-    kill() { return 9; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/survivor-mismatch.stderr" || survivor_mismatch_rc=$?
+run_kickoff k-survivor-mismatch \
+    H2226_IDENTITY_RC=1 H2226_ALIVE_RC=1 H2226_ALIVE_RULES=5153:0 \
+    H2226_IDENTITY_VALUES=5153:recycled-identity H2226_TERMINATE_RC=9 \
+    >"$fx/k-survivor-mismatch.out" 2>"$fx/k-survivor-mismatch.err" || survivor_mismatch_rc=$?
 check "identity-mismatched survivor blocks kickoff" "$survivor_mismatch_rc" "1"
-check "identity-mismatched survivor record stays preserved" "$(test -s "$tmp/survivor-mismatch.pid.survivors" && echo preserved || echo missing)" "preserved"
-check "identity-mismatched survivor diagnostic names mismatch" "$(grep -Fc 'identity mismatch' "$tmp/survivor-mismatch.stderr" 2>/dev/null)" "1"
+check "identity-mismatched survivor record stays preserved" "$(test -s "$adv/k-survivor-mismatch.pid.survivors" && echo preserved || echo missing)" "preserved"
+check "identity-mismatched survivor diagnostic names mismatch" "$(grep -Fc 'identity mismatch' "$fx/k-survivor-mismatch.err" 2>/dev/null)" "1"
+check "identity-mismatched survivor is never signaled" "$(test -s "$fx/signals.log" && echo signaled || echo silent)" "silent"
 
 # Pre-r14 failed records have no survivor anchors. Preserve the old fail-closed
 # manual path instead of guessing that a dead leader means an empty group.
-printf '%s\n' 424252 > "$tmp/legacy-record.pid"
-printf '%s\n' leader-identity > "$tmp/legacy-record.pid.identity"
-printf '%s\n' 1 > "$tmp/legacy-record.pid.cleanup-rc"
-rm -f "$tmp/legacy-record.pid.survivors"
+fixture_reset
+printf '%s\n' 424252 > "$adv/k-legacy.pid"
+printf '%s\n' leader-identity > "$adv/k-legacy.pid.identity"
+printf '%s\n' 1 > "$adv/k-legacy.pid.cleanup-rc"
+rm -f "$adv/k-legacy.pid.survivors"
 legacy_record_rc=0
-# shellcheck disable=SC2034,SC2317,SC2329
-(
-    codex_pid_file="$tmp/legacy-record.pid"
-    codex_retry_pid_file="$tmp/legacy-record-retry.pid"
-    proc_tree_process_identity_matches() { return 1; }
-    proc_tree_process_identity() { return 1; }
-    proc_tree_terminate() { return 9; }
-    eval "$kickoff_recovery_block"
-) 2>"$tmp/legacy-record.stderr" || legacy_record_rc=$?
+run_kickoff k-legacy \
+    H2226_IDENTITY_RC=1 H2226_ALIVE_RC=1 H2226_TERMINATE_RC=9 >"$fx/k-legacy.out" 2>"$fx/k-legacy.err" || legacy_record_rc=$?
 check "legacy failed record without survivor sidecar stays blocked" "$legacy_record_rc" "1"
-check "legacy failed record stays preserved" "$(test -s "$tmp/legacy-record.pid" && echo preserved || echo missing)" "preserved"
-check "legacy record diagnostic names manual recovery path" "$(grep -Fc 'legacy pre-r14 record); manual recovery required' "$tmp/legacy-record.stderr" 2>/dev/null)" "1"
+check "legacy failed record stays preserved" "$(test -s "$adv/k-legacy.pid" && echo preserved || echo missing)" "preserved"
+check "legacy record diagnostic names manual recovery path" "$(grep -Fc 'legacy pre-r14 record); manual recovery required' "$fx/k-legacy.err" 2>/dev/null)" "1"
 
-# HIMMEL-1474 r8: terminate rc 2 means no signal was sent. Execute the
-# production timeout-classification/cleanup block and prove its recovery
-# handles survive instead of being erased as though the render had exited.
-harvest_timeout_extract_rc=0
-harvest_timeout_block=$(awk '
-    /harvest_timed_out=0/ { capture=1 }
-    capture {
-        raw=$0
-        sub(/^       /, "")
-        print
-        if (raw ~ /^       if \[ "\$harvest_live_unreaped" -eq 0 \] && \[ "\$harvest_survivors" -eq 0 \] && \[ "\$harvest_cleanup_unverified" -eq 0 \]; then/) cleanup=1
-        else if (cleanup && raw == "       fi") { complete=1; exit }
-    }
-    END { if (!complete) exit 42 }
-' "$PR_CHECK") || harvest_timeout_extract_rc=$?
-check "harvest-timeout extractor reaches the cleanup block terminator" "$harvest_timeout_extract_rc" "0"
-printf '%s\n' 424242 > "$tmp/harvest-live.pid"
-printf '%s\n' test-identity > "$tmp/harvest-live.pid.identity"
-rm -f "$tmp/harvest-live.rc"
-# shellcheck disable=SC2034,SC2154,SC2317,SC2329
-harvest_live_result=$(
-    codex_pid=424242
-    codex_identity=test-identity
-    codex_pid_file="$tmp/harvest-live.pid"
-    codex_identity_file="$tmp/harvest-live.pid.identity"
-    codex_survivors_file="$tmp/harvest-live.pid.survivors"
-    codex_rc_file="$tmp/harvest-live.rc"
-    codex_err_file="$tmp/harvest-live.err"
-    codex_out="$tmp/harvest-live.out"
-    codex_to=5
-    waited=5
-    codex_findings=stale
-    codex_rc=0
-    codex_avail_status=''
-    proc_tree_terminate() { return 2; }
-    eval "$harvest_timeout_block" 2>"$tmp/harvest-live.stderr"
-    printf '%s:%s:%s:%s\n' "$harvest_live_unreaped" "$harvest_timed_out" "$codex_rc" "$codex_avail_status"
-)
-check "terminate-rc-2 harvest is live-but-unreaped" "$harvest_live_result" "1:0:2:unavailable"
-check "live-but-unreaped harvest preserves pid sidecar" "$(test -s "$tmp/harvest-live.pid" && echo preserved || echo missing)" "preserved"
-check "live-but-unreaped harvest preserves identity sidecar" "$(test -s "$tmp/harvest-live.pid.identity" && echo preserved || echo missing)" "preserved"
-harvest_live_diagnostic=$(grep -Fc "live but unreaped" "$tmp/harvest-live.stderr" 2>/dev/null)
-check "live-but-unreaped harvest reports distinct state" "$harvest_live_diagnostic" "1"
-harvest_preserve_diagnostic=$(grep -Fc "because no signal was sent" "$tmp/harvest-live.stderr" 2>/dev/null)
-check "live-but-unreaped harvest explains preserved handles" "$harvest_preserve_diagnostic" "1"
-
+# HIMMEL-1474 r8: terminate rc 2 (no signal sent) is asserted above, on the
+# same real-script run as the wait-budget case it shares a launch shape with.
+#
 # HIMMEL-1474 r9: terminate rc 1 means escalated cleanup left survivors. The
 # gate remains a timeout while its recovery handles stay available.
-printf '%s\n' 424243 > "$tmp/harvest-survivors.pid"
-printf '%s\n' test-identity > "$tmp/harvest-survivors.pid.identity"
-rm -f "$tmp/harvest-survivors.rc"
-# shellcheck disable=SC2034,SC2154,SC2317,SC2329
-harvest_survivors_result=$(
-    codex_pid=424243
-    codex_identity=test-identity
-    codex_pid_file="$tmp/harvest-survivors.pid"
-    codex_identity_file="$tmp/harvest-survivors.pid.identity"
-    codex_survivors_file="$tmp/harvest-survivors.pid.survivors"
-    codex_rc_file="$tmp/harvest-survivors.rc"
-    codex_err_file="$tmp/harvest-survivors.err"
-    codex_out="$tmp/harvest-survivors.out"
-    codex_to=5
-    waited=5
-    codex_findings=stale
-    codex_rc=0
-    codex_avail_status=''
-    proc_tree_terminate() { return 1; }
-    eval "$harvest_timeout_block" 2>"$tmp/harvest-survivors.stderr"
-    printf '%s:%s:%s:%s\n' "$harvest_live_unreaped" "$harvest_timed_out" "$codex_rc" "$codex_avail_status"
-)
-check "terminate-rc-1 harvest remains a timeout" "$harvest_survivors_result" "0:1:124:unavailable"
-check "terminate-rc-1 harvest preserves pid sidecar" "$(test -s "$tmp/harvest-survivors.pid" && echo preserved || echo missing)" "preserved"
-check "terminate-rc-1 harvest preserves identity sidecar" "$(test -s "$tmp/harvest-survivors.pid.identity" && echo preserved || echo missing)" "preserved"
-harvest_survivors_diagnostic=$(grep -Fc "survivors after escalated cleanup — sidecars preserved for recovery" "$tmp/harvest-survivors.stderr" 2>/dev/null)
+fixture_reset
+printf '%s\n' 424243 > "$adv/h-survivors.pid"
+printf '%s\n' test-identity > "$adv/h-survivors.pid.identity"
+run_harvest h-survivors \
+    H2226_IDENTITY_RC=2 H2226_TERMINATE_RC=1 CRITIC_TIMEOUT_SECS=1 >"$fx/h-survivors.out" 2>"$fx/h-survivors.err"
+check "terminate-rc-1 harvest remains a timeout" "$(grep -Fc 'codex adversarial pass timed out with survivors' "$fx/h-survivors.err")" "1"
+check "terminate-rc-1 harvest records unavailable" "$(grep -Fc 'codex-adv-status: unavailable' "$fx/h-survivors.err")" "1"
+check "terminate-rc-1 harvest is not live-but-unreaped" "$(grep -Fc 'live but unreaped' "$fx/h-survivors.err")" "0"
+check "terminate-rc-1 harvest preserves pid sidecar" "$(test -s "$adv/h-survivors.pid" && echo preserved || echo missing)" "preserved"
+check "terminate-rc-1 harvest preserves identity sidecar" "$(test -s "$adv/h-survivors.pid.identity" && echo preserved || echo missing)" "preserved"
+harvest_survivors_diagnostic=$(grep -Fc "survivors after escalated cleanup" "$fx/h-survivors.err" 2>/dev/null)
 check "terminate-rc-1 harvest reports preserved recovery sidecars" "$harvest_survivors_diagnostic" "1"
 
 # HIMMEL-1501: terminate rc 3 means the leader was CONFIRMED already
@@ -896,132 +933,69 @@ check "terminate-rc-1 harvest reports preserved recovery sidecars" "$harvest_sur
 # lands (simulated here via the rc_wait poll, same as the real "a beat
 # later" race the production code documents), sidecars are removed rather
 # than preserved.
-printf '%s\n' 424244 > "$tmp/harvest-confirmed-gone.pid"
-printf '%s\n' test-identity > "$tmp/harvest-confirmed-gone.pid.identity"
-rm -f "$tmp/harvest-confirmed-gone.rc" "$tmp/harvest-confirmed-gone.pid.cleanup-rc" "$tmp/harvest-confirmed-gone.pid.survivors" "$tmp/harvest-confirmed-gone-killed" "$tmp/harvest-confirmed-gone-signals"
-# shellcheck disable=SC2034,SC2154,SC2317,SC2329
-harvest_confirmed_gone_result=$(
-    codex_pid=424244
-    codex_identity=test-identity
-    codex_pid_file="$tmp/harvest-confirmed-gone.pid"
-    codex_identity_file="$tmp/harvest-confirmed-gone.pid.identity"
-    codex_survivors_file="$tmp/harvest-confirmed-gone.pid.survivors"
-    codex_rc_file="$tmp/harvest-confirmed-gone.rc"
-    codex_cleanup_rc_file="$tmp/harvest-confirmed-gone.pid.cleanup-rc"
-    codex_err_file="$tmp/harvest-confirmed-gone.err"
-    codex_out="$tmp/harvest-confirmed-gone.out"
-    codex_to=5
-    waited=5
-    codex_findings=stale
-    codex_rc=0
-    codex_avail_status=''
-    proc_tree_terminate() { return 3; }
-    proc_tree_process_identity_matches() {
-        [ "$1" = "5155" ] && [ "$2" = "test-identity" ] && [ ! -e "$tmp/harvest-confirmed-gone-killed" ]
-    }
-    proc_tree_process_alive() { [ "$1" = "5155" ] && [ ! -e "$tmp/harvest-confirmed-gone-killed" ]; }
-    kill() {
-        printf '%s:%s\n' "$1" "$2" >> "$tmp/harvest-confirmed-gone-signals"
-        [ "$1" != "-TERM" ] || : > "$tmp/harvest-confirmed-gone-killed"
-        return 0
-    }
-    # shellcheck disable=SC2329  # invoked indirectly by the harvest's rc_wait poll
-    sleep() {
-        printf '%s\n' 1 > "$codex_rc_file"
-        printf '5155\ttest-identity\n' > "$codex_survivors_file"
-        printf '%s\n' 3 > "$codex_cleanup_rc_file"
-    }
-    eval "$harvest_timeout_block" 2>"$tmp/harvest-confirmed-gone.stderr"
-    printf '%s:%s:%s:%s\n' "$harvest_live_unreaped" "$harvest_timed_out" "$codex_rc" "$codex_avail_status"
-)
-check "terminate-rc-3 harvest is NOT live-but-unreaped" "$harvest_confirmed_gone_result" "0:0:1:unavailable"
-check "confirmed-gone harvest resolves survivor anchor" "$(grep -Fc -- '-TERM:5155' "$tmp/harvest-confirmed-gone-signals" 2>/dev/null)" "1"
-check "confirmed-gone harvest removes pid sidecar" "$(test -e "$tmp/harvest-confirmed-gone.pid" && echo preserved || echo cleared)" "cleared"
-check "confirmed-gone harvest removes identity sidecar" "$(test -e "$tmp/harvest-confirmed-gone.pid.identity" && echo preserved || echo cleared)" "cleared"
-check "confirmed-gone harvest removes survivor sidecar" "$(test -e "$tmp/harvest-confirmed-gone.pid.survivors" && echo preserved || echo cleared)" "cleared"
-harvest_confirmed_gone_diagnostic=$(grep -Fc "live but unreaped" "$tmp/harvest-confirmed-gone.stderr" 2>/dev/null)
-check "confirmed-gone harvest never reports live-but-unreaped" "$harvest_confirmed_gone_diagnostic" "0"
+fixture_reset
+printf '%s\n' 424244 > "$adv/h-terminate-rc3.pid"
+printf '%s\n' test-identity > "$adv/h-terminate-rc3.pid.identity"
+# The launcher publishes its rc/cleanup status a BEAT LATER, after the
+# harvest's cleanup attempt; the stub sleep runs this hook only once the
+# terminate stub has fired, which is exactly that window.
+cat > "$fx/h-terminate-rc3.hook" <<HOOK
+printf '%s\n' 1 > "$adv/h-terminate-rc3.rc"
+printf '5155\ttest-identity\n' > "$adv/h-terminate-rc3.pid.survivors"
+printf '%s\n' 3 > "$adv/h-terminate-rc3.pid.cleanup-rc"
+HOOK
+run_harvest h-terminate-rc3 \
+    H2226_IDENTITY_RC=2 H2226_TERMINATE_RC=3 H2226_KILLABLE=5155 \
+    H2226_ALIVE_RC=1 H2226_SLEEP_HOOK="$fx/h-terminate-rc3.hook" \
+    CRITIC_TIMEOUT_SECS=1 \
+    >"$fx/h-terminate-rc3.out" 2>"$fx/h-terminate-rc3.err"
+check "terminate-rc-3 harvest is NOT live-but-unreaped" "$(grep -Fc 'live but unreaped' "$fx/h-terminate-rc3.err")" "0"
+check "terminate-rc-3 harvest never reports a timeout" "$(grep -Fc 'codex adversarial pass timed out' "$fx/h-terminate-rc3.err")" "0"
+check "confirmed-gone harvest resolves survivor anchor" "$(grep -Fc -- '-TERM:5155' "$fx/signals.log" 2>/dev/null)" "1"
+check "confirmed-gone harvest removes pid sidecar" "$(test -e "$adv/h-terminate-rc3.pid" && echo preserved || echo cleared)" "cleared"
+check "confirmed-gone harvest removes identity sidecar" "$(test -e "$adv/h-terminate-rc3.pid.identity" && echo preserved || echo cleared)" "cleared"
+check "confirmed-gone harvest removes survivor sidecar" "$(test -e "$adv/h-terminate-rc3.pid.survivors" && echo preserved || echo cleared)" "cleared"
 
 # HIMMEL-1474 r12: cleanup is removable only after BOTH launcher status and a
-# zero cleanup status exist. A killed-pre-write launcher and a late cleanup
-# publication each preserve the ownership handles.
-printf '%s\n' 424246 > "$tmp/harvest-no-rc.pid"
-printf '%s\n' test-identity > "$tmp/harvest-no-rc.pid.identity"
-printf '%s\n' 0 > "$tmp/harvest-no-rc.pid.cleanup-rc"
-rm -f "$tmp/harvest-no-rc.rc"
-# shellcheck disable=SC2034,SC2154,SC2317,SC2329
-harvest_no_rc_result=$(
-    codex_pid=424246
-    codex_identity=test-identity
-    codex_pid_file="$tmp/harvest-no-rc.pid"
-    codex_identity_file="$tmp/harvest-no-rc.pid.identity"
-    codex_survivors_file="$tmp/harvest-no-rc.pid.survivors"
-    codex_rc_file="$tmp/harvest-no-rc.rc"
-    codex_cleanup_rc_file="$tmp/harvest-no-rc.pid.cleanup-rc"
-    codex_err_file="$tmp/harvest-no-rc.err"
-    codex_out="$tmp/harvest-no-rc.out"
-    codex_to=5
-    waited=0
-    codex_findings=stale
-    codex_rc=0
-    codex_avail_status=''
-    sleep() { :; }
-    eval "$harvest_timeout_block" 2>"$tmp/harvest-no-rc.stderr"
-    printf '%s:%s:%s\n' "$harvest_cleanup_unverified" "$codex_rc" "$codex_avail_status"
-)
-check "missing launcher rc marks cleanup unverified" "$harvest_no_rc_result" "1:1:unavailable"
-check "missing launcher rc preserves pid sidecar" "$(test -s "$tmp/harvest-no-rc.pid" && echo preserved || echo missing)" "preserved"
-check "missing launcher rc preserves identity sidecar" "$(test -s "$tmp/harvest-no-rc.pid.identity" && echo preserved || echo missing)" "preserved"
-check "missing launcher rc preserves cleanup status" "$(cat "$tmp/harvest-no-rc.pid.cleanup-rc" 2>/dev/null)" "0"
-no_rc_diagnostic=$(grep -Fc "launcher status missing" "$tmp/harvest-no-rc.stderr" 2>/dev/null)
-check "missing launcher rc reports preserved handles" "$no_rc_diagnostic" "1"
-
-printf '%s\n' 424247 > "$tmp/harvest-late-cleanup.pid"
-printf '%s\n' test-identity > "$tmp/harvest-late-cleanup.pid.identity"
-printf '%s\n' 7 > "$tmp/harvest-late-cleanup.rc"
-rm -f "$tmp/harvest-late-cleanup.pid.cleanup-rc"
-# shellcheck disable=SC2034,SC2154
-harvest_late_cleanup_result=$(
-    codex_pid=424247
-    codex_identity=test-identity
-    codex_pid_file="$tmp/harvest-late-cleanup.pid"
-    codex_identity_file="$tmp/harvest-late-cleanup.pid.identity"
-    codex_survivors_file="$tmp/harvest-late-cleanup.pid.survivors"
-    codex_rc_file="$tmp/harvest-late-cleanup.rc"
-    codex_cleanup_rc_file="$tmp/harvest-late-cleanup.pid.cleanup-rc"
-    codex_err_file="$tmp/harvest-late-cleanup.err"
-    codex_out="$tmp/harvest-late-cleanup.out"
-    codex_to=5
-    waited=0
-    codex_findings=stale
-    codex_rc=0
-    codex_avail_status=''
-    eval "$harvest_timeout_block" 2>"$tmp/harvest-late-cleanup.stderr"
-    printf '%s:%s:%s\n' "$harvest_cleanup_unverified" "$codex_rc" "$codex_avail_status"
-)
-check "late cleanup status marks cleanup unverified" "$harvest_late_cleanup_result" "1:7:unavailable"
-check "late cleanup status preserves pid sidecar" "$(test -s "$tmp/harvest-late-cleanup.pid" && echo preserved || echo missing)" "preserved"
-check "late cleanup status preserves identity sidecar" "$(test -s "$tmp/harvest-late-cleanup.pid.identity" && echo preserved || echo missing)" "preserved"
-late_cleanup_diagnostic=$(grep -Fc "cleanup unverified (rc=missing)" "$tmp/harvest-late-cleanup.stderr" 2>/dev/null)
+# zero cleanup status exist. The killed-pre-write launcher half is asserted
+# above (h-nolauncherrc); this is the late cleanup publication -- a recorded
+# launcher rc with its cleanup status still missing keeps both handles. The
+# recorded rc also proves the rc-first ordering: with a launcher status on
+# disk the harvest never probes launch identity at all.
+fixture_reset
+printf '%s\n' 424247 > "$adv/h-late-cleanup.pid"
+printf '%s\n' test-identity > "$adv/h-late-cleanup.pid.identity"
+printf '%s\n' 7 > "$adv/h-late-cleanup.rc"
+run_harvest h-late-cleanup \
+    H2226_IDENTITY_RC=2 CRITIC_TIMEOUT_SECS=1 >"$fx/h-late-cleanup.out" 2>"$fx/h-late-cleanup.err"
+check "production harvest checks rc before identity probing" "$(wc -l < "$fx/probe.log" | tr -d ' ')" "0"
+check "late cleanup status reports the launcher rc" "$(grep -Fc 'codex adversarial pass failed (rc=7' "$fx/h-late-cleanup.err")" "1"
+check "late cleanup status records unavailable" "$(grep -Fc 'codex-adv-status: unavailable' "$fx/h-late-cleanup.err")" "1"
+check "late cleanup status preserves pid sidecar" "$(test -s "$adv/h-late-cleanup.pid" && echo preserved || echo missing)" "preserved"
+check "late cleanup status preserves identity sidecar" "$(test -s "$adv/h-late-cleanup.pid.identity" && echo preserved || echo missing)" "preserved"
+late_cleanup_diagnostic=$(grep -Fc "cleanup unverified (rc=missing)" "$fx/h-late-cleanup.err" 2>/dev/null)
 check "late cleanup status reports missing cleanup rc" "$late_cleanup_diagnostic" "1"
 
 # HIMMEL-1474 r10/r12: the synchronous retry owns distinct recovery sidecars. Its
 # timeout status remains 124 while cleanup rc 1/2 and both handles survive.
+# The retry RECORD path is the one cross-script name neither side can prove
+# behaviourally here (kickoff's retry recovery is asserted above against
+# ${pid}.retry.*, but harvest only writes that record on a real relaunch),
+# so it stays a source-level assertion -- against the two scripts now, not the
+# runbook. The primary/retry cleanup-status and identity/survivor sidecar
+# greps are RETIRED: in the extracted kickoff they are one recover_codex_state
+# function parameterized by the record prefix, and every one of those names is
+# now exercised end to end above (the launcher publishes them, the kickoff and
+# harvest consume them), so counting the text would only pass vacuously.
 # shellcheck disable=SC2016
-retry_pid_wiring=$(grep -Fc 'codex_retry_pid_file="${codex_pid_file}.retry"' "$PR_CHECK" 2>/dev/null)
+retry_pid_wiring=$(cat "$KICKOFF" "$HARVEST" | grep -Fc 'codex_retry_pid_file="${codex_pid_file}.retry"')
 check "kickoff and harvest share the dedicated retry pid sidecar" "$retry_pid_wiring" "2"
 # shellcheck disable=SC2016
-retry_survivors_wiring=$(grep -Fc 'codex_retry_survivors_file="${codex_retry_pid_file}.survivors"' "$PR_CHECK" 2>/dev/null)
-check "kickoff and harvest share the dedicated retry survivor sidecar" "$retry_survivors_wiring" "2"
+retry_survivors_wiring=$(grep -Fc 'codex_retry_survivors_file="${codex_retry_pid_file}.survivors"' "$HARVEST" 2>/dev/null)
+check "harvest gives its retry a dedicated survivor sidecar" "$retry_survivors_wiring" "1"
 # shellcheck disable=SC2016
-retry_launcher_wiring=$(grep -Fc '"$codex_retry_pid_file" "$codex_timeout" "$codex_retry_cleanup_rc_file"' "$PR_CHECK" 2>/dev/null)
+retry_launcher_wiring=$(grep -Fc '"$codex_retry_pid_file" "$codex_timeout" "$codex_retry_cleanup_rc_file"' "$HARVEST" 2>/dev/null)
 check "production retry passes its pid and cleanup sidecars to the launcher" "$retry_launcher_wiring" "1"
-# shellcheck disable=SC2016
-primary_cleanup_wiring=$(grep -Fc 'codex_cleanup_rc_file="${codex_pid_file}.cleanup-rc"' "$PR_CHECK" 2>/dev/null)
-check "kickoff and harvest derive primary cleanup status from its pid record" "$primary_cleanup_wiring" "2"
-# shellcheck disable=SC2016
-retry_cleanup_wiring=$(grep -Fc 'codex_retry_cleanup_rc_file="${codex_retry_pid_file}.cleanup-rc"' "$PR_CHECK" 2>/dev/null)
-check "kickoff and harvest derive retry cleanup status from its pid record" "$retry_cleanup_wiring" "2"
 for retry_cleanup_rc in 1 2; do
     rm -f "$tmp/retry-$retry_cleanup_rc.pid" "$tmp/retry-$retry_cleanup_rc.pid.identity" "$tmp/retry-$retry_cleanup_rc.pid.cleanup-rc"
     runner_rc=0
@@ -1048,30 +1022,22 @@ for companion_cleanup_rc in 1 2; do
         bash "$tmp/lease-fixture/cr/run-codex-adversarial.sh" "$tmp/lease-fixture/companion-fails.mjs" main "$companion_prefix.stdout" "$companion_prefix.stderr" "$companion_prefix.pid" 0 "$companion_prefix.pid.cleanup-rc" 2>"$companion_prefix-runner.stderr" || runner_rc=$?
     check "companion rc wins over cleanup rc $companion_cleanup_rc" "$runner_rc" "7"
     check "companion failure publishes cleanup rc $companion_cleanup_rc" "$(cat "$companion_prefix.pid.cleanup-rc" 2>/dev/null)" "$companion_cleanup_rc"
-    printf '%s\n' "$runner_rc" > "$companion_prefix.rc"
-    # shellcheck disable=SC2034,SC2154
-    companion_harvest_result=$(
-        codex_pid=$(cat "$companion_prefix.pid")
-        codex_identity=$(cat "$companion_prefix.pid.identity")
-        codex_pid_file="$companion_prefix.pid"
-        codex_identity_file="$companion_prefix.pid.identity"
-        codex_survivors_file="$companion_prefix.pid.survivors"
-        codex_rc_file="$companion_prefix.rc"
-        codex_cleanup_rc_file="$companion_prefix.pid.cleanup-rc"
-        codex_err_file="$companion_prefix.stderr"
-        codex_out="$companion_prefix.stdout"
-        codex_to=5
-        waited=0
-        codex_findings=stale
-        codex_rc=0
-        codex_avail_status=''
-        eval "$harvest_timeout_block" 2>"$companion_prefix-harvest.stderr"
-        printf '%s:%s:%s\n' "$harvest_cleanup_unverified" "$codex_rc" "$codex_avail_status"
-    )
-    check "harvest sees companion cleanup rc $companion_cleanup_rc" "$companion_harvest_result" "1:7:unavailable"
-    check "companion cleanup rc $companion_cleanup_rc preserves pid sidecar" "$(test -s "$companion_prefix.pid" && echo preserved || echo missing)" "preserved"
-    check "companion cleanup rc $companion_cleanup_rc preserves identity sidecar" "$(test -s "$companion_prefix.pid.identity" && echo preserved || echo missing)" "preserved"
-    check "companion cleanup rc $companion_cleanup_rc preserves cleanup status" "$(cat "$companion_prefix.pid.cleanup-rc" 2>/dev/null)" "$companion_cleanup_rc"
+    # Hand the launcher's real record (companion rc 7 plus an unverified
+    # cleanup status) to the real harvest script.
+    fixture_reset
+    companion_branch="h-companion-$companion_cleanup_rc"
+    printf '%s\n' "$runner_rc" > "$adv/$companion_branch.rc"
+    cp "$companion_prefix.pid" "$adv/$companion_branch.pid"
+    cp "$companion_prefix.pid.identity" "$adv/$companion_branch.pid.identity"
+    cp "$companion_prefix.pid.cleanup-rc" "$adv/$companion_branch.pid.cleanup-rc"
+    run_harvest "$companion_branch" \
+        H2226_IDENTITY_RC=2 CRITIC_TIMEOUT_SECS=1 >"$companion_prefix-harvest.stdout" 2>"$companion_prefix-harvest.stderr"
+    check "harvest sees companion rc 7 with cleanup rc $companion_cleanup_rc" "$(grep -Fc "codex adversarial pass failed (rc=7" "$companion_prefix-harvest.stderr")" "1"
+    check "harvest marks companion cleanup rc $companion_cleanup_rc unverified" "$(grep -Fc "cleanup unverified (rc=$companion_cleanup_rc)" "$companion_prefix-harvest.stderr")" "1"
+    check "harvest records unavailable for companion cleanup rc $companion_cleanup_rc" "$(grep -Fc 'codex-adv-status: unavailable' "$companion_prefix-harvest.stderr")" "1"
+    check "companion cleanup rc $companion_cleanup_rc preserves pid sidecar" "$(test -s "$adv/$companion_branch.pid" && echo preserved || echo missing)" "preserved"
+    check "companion cleanup rc $companion_cleanup_rc preserves identity sidecar" "$(test -s "$adv/$companion_branch.pid.identity" && echo preserved || echo missing)" "preserved"
+    check "companion cleanup rc $companion_cleanup_rc preserves cleanup status" "$(cat "$adv/$companion_branch.pid.cleanup-rc" 2>/dev/null)" "$companion_cleanup_rc"
 done
 
 if [ "$fails" -eq 0 ]; then

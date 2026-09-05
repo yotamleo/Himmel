@@ -5,6 +5,9 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/scripts/hooks/check-artifact-leakage.sh"
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$ROOT/scripts/lib/fixture-tempdir.sh"
 fails=0
 ok() { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
@@ -14,7 +17,7 @@ if bash -n "$SCRIPT"; then ok "syntax (bash -n)"; else bad "syntax"; fi
 
 # Fresh throwaway repo per run. Staging needs no identity/commit; the modify
 # case below sets identity inline.
-TMP="$(mktemp -d)"
+TMP="$(fixture_mktemp_dir)" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 git -C "$TMP" init -q
 

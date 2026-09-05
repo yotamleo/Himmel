@@ -38,6 +38,275 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ─── TTL cache: the probe runs OUT OF BAND (HIMMEL-1844) ────────────────────
+# `qmd status` is a cold sqlite read, and cold is the normal case at session
+# start: 11.5s measured on the operator's station against ~1.4s warm. This hook
+# ran it inline on EVERY startup, compact and resume, which is a large slice of
+# the 16% SessionStart timeout rate — and a hook the harness kills prints
+# NOTHING, so the runs that most needed the advisory were the ones that lost it.
+#
+# So the probe moved off the session-start path without moving off the session:
+# this run SERVES the last verdict from a cache file — a mkdir -p, a few stats
+# for the trust checks below, and one cat, with no `qmd` anywhere — and
+# when that file is older than the TTL it kicks a DETACHED refresh whose output
+# becomes the cache the NEXT session start serves. The advisory text is
+# unchanged byte-for-byte — it is simply up to one TTL old, which is nothing
+# against a 36h staleness budget, and it is the same trade the notice already
+# makes (`qmd status`'s own figure is a proxy, see docs/internals/enforcement.md).
+#
+# WHERE THE DEFERRED OUTPUT SURFACES: the next SessionStart — startup, compact
+# or resume, whichever comes first — reads the refreshed cache. A station with
+# no cache yet is silent for exactly one session; that is the ONLY output this
+# design gives up, and it buys back the 16% of sessions that were losing it.
+#
+# The cache is keyed by nothing but the hook: a change to
+# QMD_STALENESS_MAX_AGE_HOURS / QMD_STALENESS_REQUIRE_COLLECTIONS is honoured by
+# the next refresh, not the next session. QMD_STALENESS_CACHE_TTL=0 disables the
+# cache entirely and probes inline (the pre-HIMMEL-1844 behaviour, block and
+# all) — which is also how test-qmd-staleness-notice.sh exercises the routing
+# table without a cache file standing in front of every case.
+# A PRIVATE SUBDIR of the state dir, not the state dir itself. /tmp/claude is
+# shared with the rest of himmel's tmp state, and this hook needs its cache
+# directory to be one nobody else can write — so it makes its own rather than
+# imposing that on a directory other hooks (and possibly the operator) already
+# use. Everything below then owns what it validates and tightens.
+CACHE_DIR="${QMD_STALENESS_CACHE_DIR:-/tmp/claude}/qmd-staleness"
+CACHE="$CACHE_DIR/qmd-staleness-notice.out"
+TTL="${QMD_STALENESS_CACHE_TTL:-3600}"
+case "$TTL" in ''|*[!0-9]*) TTL=3600 ;; esac
+
+# Age of $1 in seconds, or empty when it does not exist / cannot be stat'd.
+# GNU stat, then BSD stat (stock macOS) — same ladder as check-update-available.
+_qmd_age() {
+    local mt="" now="" age=""
+    now=$(date +%s 2>/dev/null) || return 0
+    mt=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null) || return 0
+    [ -n "$mt" ] || return 0
+    age=$(( now - mt ))
+    # A mtime in the FUTURE — clock skew, a restored backup, a copied file — is
+    # not evidence of freshness, and a negative age would read as fresh until the
+    # clock caught up, suppressing every refresh for as long as the skew lasts.
+    # Report it as unknown, which routes to the refresh path.
+    if [ "$age" -lt 0 ]; then return 0; fi
+    printf '%s' "$age"
+}
+
+# Serve a cache only if it is OURS: a regular file, not a symlink, owned by this
+# user. The path is predictable and on POSIX /tmp is shared, and unlike the rest
+# of /tmp/claude — stamps and statusline JSON — this file's CONTENTS go verbatim
+# into the session's context inside a <system-reminder>. That makes a
+# foreign-owned or symlinked cache an injection channel, not a stale verdict.
+# Anything that fails this reads as NO cache: nothing is printed and a refresh is
+# kicked, so a hostile file is never read and never suppresses the probe either.
+# `-O` is a POSIX test builtin (effective uid owns it), so this costs no fork and
+# needs neither stat nor id — both of which differ across GNU/BSD/Git Bash.
+#
+# OWNERSHIP IS NOT ENOUGH, which is why _qmd_not_shared_writable exists: a file
+# this user owns but that a permissive umask left group- or world-WRITABLE can be
+# edited in place by another local user without ever changing hands. There is no
+# test builtin for the permission bits, so this is the same GNU→BSD `stat` ladder
+# _qmd_age uses; a mode that cannot be read at all counts as untrusted, which
+# costs a refresh, not a verdict. A file that fails heals on the next pass — the
+# refresh publishes by renaming a fresh mktemp file over it, mode and all.
+_qmd_not_shared_writable() {
+    local mode grp oth
+    mode=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null) || return 1
+    [ -n "$mode" ] || return 1
+    oth="${mode: -1}"
+    grp="${mode%?}"
+    grp="${grp: -1}"
+    case "$oth" in 2|3|6|7) return 1 ;; esac
+    case "$grp" in 2|3|6|7) return 1 ;; esac
+    return 0
+}
+
+_qmd_cache_ok() {
+    [ -f "$CACHE" ] && [ ! -L "$CACHE" ] && [ -O "$CACHE" ] && [ -r "$CACHE" ] || return 1
+    _qmd_not_shared_writable "$CACHE"
+}
+
+# The DIRECTORY has to pass the same bar, and for a different reason than the
+# file: whoever can write the dir can rename their own file over our cache
+# BETWEEN the check above and the read, which turns the leaf test into a race
+# rather than a gate — and the refresh would be publishing into a path someone
+# else controls. A $CACHE_DIR that does not pass disables the cache entirely and
+# this hook probes INLINE: slower, but never reading or writing a path another
+# user controls, and never silent.
+#
+# It CREATES the dir first and validates what is actually there afterwards.
+# Exempting a nonexistent path as "trusted, we will make it" would leave the
+# window this whole check exists to close — the path is predictable, so someone
+# else can create it, or symlink it, in the gap before our `mkdir -p` (which
+# succeeds on an existing symlink-to-dir and follows it). Nothing is exempt: if
+# the dir is not there and ours after our own attempt to make it, there is no
+# cache. `chmod` because a permissive umask (002) would otherwise produce a
+# group-writable dir that every LATER session rejects — a self-inflicted
+# permanent fallback to the slow probe this ticket is about. Tightening a dir
+# this user owns is safe; on a foreign one the chmod simply fails and the check
+# below refuses it anyway.
+# The state dir ABOVE ours has to be one a stranger cannot swap. Validating only
+# the leaf leaves the classic ancestor TOCTOU: replace the parent between the
+# check and the read and every check below is answered by a different directory.
+# Two shapes are safe — one we own, or the world-writable-but-STICKY /tmp, where
+# only an entry's owner may rename or remove it. A world-writable parent WITHOUT
+# the sticky bit is neither, so there is no cache and the hook probes inline.
+# `${CACHE_DIR%/*}` instead of `dirname`: same answer, no fork, and this runs on
+# the session-start path. Only the immediate parent is checked; the trust root
+# above it (/tmp, $HOME) is the platform's to guarantee, and walking to / would
+# be a directory-per-session cost for a boundary nobody can move anyway.
+_qmd_parent_ok() {
+    local p mode owner
+    p="${CACHE_DIR%/*}"
+    [ -n "$p" ] || p="/"
+    # CREATE IT IF IT IS NOT THERE, then validate what is — the same
+    # create-then-validate rule the leaf follows. Refusing a missing state dir
+    # instead would leave a FRESH HOST, where /tmp/claude does not exist yet, on
+    # the slow inline probe in every session forever: precisely the outcome this
+    # ticket exists to remove, reintroduced by its own security check.
+    #
+    # Plain `mkdir`, not `mkdir -p`, because its success is the only honest
+    # signal that the directory is OURS: if it succeeds we made it, and its mode
+    # is ours to set (a permissive umask would otherwise leave it group-writable
+    # and every later session would reject it). If it fails the dir already
+    # existed, and it is left exactly as found — it is shared with the rest of
+    # himmel's tmp state and not this hook's to retighten.
+    if mkdir "$p" 2>/dev/null; then
+        chmod go-w "$p" 2>/dev/null || true
+    fi
+    # A SYMLINK parent is refused outright, never followed: every test after this
+    # resolves through the link, so an attacker-owned link in sticky /tmp aimed
+    # at a user-owned directory would pass all of them and then be re-pointed
+    # before the cache is read. `-L` tests the link itself, which is the only
+    # test here that does not resolve it.
+    [ ! -L "$p" ] || return 1
+    [ -d "$p" ] || return 1
+    # OWNING a parent is not enough on its own — a 0777 directory this user owns
+    # is one any local user can replace entries in, which is the whole attack.
+    # Sticky is the exception and the reason /tmp works: there only an entry's
+    # own owner may rename or remove it, however wide the directory's own bits.
+    # So: sticky, or ours AND not writable by anyone else.
+    mode=$(stat -c %a "$p" 2>/dev/null || stat -f %Lp "$p" 2>/dev/null) || return 1
+    case "$mode" in
+        1???)
+            # Sticky protects entries from everyone EXCEPT the directory's own
+            # owner, so it is a trust root only when that owner is root or us —
+            # which is exactly what /tmp is. A sticky directory a third party
+            # owns is still theirs to rewrite, so it earns nothing here.
+            owner=$(stat -c %u "$p" 2>/dev/null || stat -f %u "$p" 2>/dev/null) || return 1
+            if [ "$owner" = "0" ]; then return 0; fi
+            if [ -O "$p" ]; then return 0; fi
+            return 1
+            ;;
+    esac
+    [ -O "$p" ] || return 1
+    _qmd_not_shared_writable "$p"
+}
+
+_qmd_dir_ok() {
+    _qmd_parent_ok || return 1
+    mkdir -p "$CACHE_DIR" 2>/dev/null || true
+    # VALIDATE BEFORE CHMOD. `chmod` follows symlinks, so tightening first would
+    # let a symlink at the predictable path aim this hook's chmod at any
+    # directory the operator owns — a permission-changing primitive handed to
+    # whoever wins the race. Nothing is touched until the path is proven to be a
+    # real directory, not a link, and ours.
+    [ -d "$CACHE_DIR" ] && [ ! -L "$CACHE_DIR" ] && [ -O "$CACHE_DIR" ] || return 1
+    # Tighten only this hook's OWN subdir, never the shared state dir above it:
+    # a permissive umask (002) would otherwise create it group-writable, and
+    # every later session would then reject it — a self-inflicted permanent
+    # fallback to the slow inline probe this ticket is about.
+    chmod go-w "$CACHE_DIR" 2>/dev/null || true
+    _qmd_not_shared_writable "$CACHE_DIR"
+}
+
+# Publish the refresh child's output atomically and release the lock. stdout is
+# reassigned FIRST: the capture file is still open on fd 1 here, and on Windows
+# renaming a file with a live handle can fail outright — publishing through a
+# closed fd is the portable order, not a stylistic one.
+# shellcheck disable=SC2317,SC2329  # invoked indirectly, via the EXIT trap.
+_qmd_publish() {
+    exec >/dev/null 2>&1 || true
+    mv -f "$_cache_tmp" "$CACHE" 2>/dev/null || rm -f "$_cache_tmp" 2>/dev/null || true
+    rmdir "$CACHE.lock" 2>/dev/null || true
+}
+
+if [ "${QMD_STALENESS_REFRESH:-0}" = "1" ]; then
+    # Refresh child: run the probe below with stdout captured into the cache.
+    # Every branch of this hook ends in `exit 0`, so the EXIT trap is the one
+    # publish point and no branch can forget it.
+    #
+    # THE CHILD OWNS THE LOCK, start to finish. The parent used to acquire it
+    # before spawning, which meant a child that never got off the ground left a
+    # lock with no owner and suppressed every refresh for the next five minutes.
+    # Here the only process that can create the lock is the one that then does
+    # the work, so an unowned lock cannot exist; a parent whose child dies early
+    # simply spawns another next session. Two sessions starting together both
+    # spawn, and the one that loses `mkdir` exits immediately — a cheap bash
+    # start, against two `qmd status` probes on one sqlite index, which is how a
+    # session start creates the locked index it then warns about.
+    _qmd_dir_ok || exit 0
+    # A lock older than any live probe could be was left by a killed child
+    # (SIGKILL runs no trap), so reap it before trying to acquire.
+    _lock_age="$(_qmd_age "$CACHE.lock")"
+    if [ -n "$_lock_age" ] && [ "$_lock_age" -gt 300 ]; then
+        rmdir "$CACHE.lock" 2>/dev/null || true
+    fi
+    mkdir "$CACHE.lock" 2>/dev/null || exit 0   # another refresh is already running
+    # mktemp, not "$CACHE.$$.tmp": a PID-derived name is guessable, and a plain
+    # `>` redirect FOLLOWS a symlink someone else pre-placed there — which would
+    # hand this hook out as a write primitive against any file the operator can
+    # write. mktemp creates O_EXCL, so it can neither follow nor clobber, and it
+    # applies the tightest mode the platform honours (0600 on POSIX; MSYS derives
+    # the bits from the ACL and reports 0644, which _qmd_not_shared_writable
+    # accepts because it is not writable by anyone else either).
+    # Explicit template: BSD mktemp (stock macOS) rejects a bare invocation.
+    _cache_tmp="$(mktemp "$CACHE.XXXXXX" 2>/dev/null)" || _cache_tmp=""
+    if [ -n "$_cache_tmp" ] && exec >"$_cache_tmp" 2>/dev/null; then
+        trap '_qmd_publish' EXIT
+    else
+        # Nowhere to write the cache: this refresh is a no-op, never a hang.
+        # Release the lock, or the next 300s of session starts would skip a
+        # refresh that never actually ran.
+        if [ -n "$_cache_tmp" ]; then rm -f "$_cache_tmp" 2>/dev/null || true; fi
+        rmdir "$CACHE.lock" 2>/dev/null || true
+        exit 0
+    fi
+elif [ "$TTL" -gt 0 ] && _qmd_dir_ok; then
+    _cache_age=""
+    if _qmd_cache_ok; then _cache_age="$(_qmd_age "$CACHE")"; fi
+    if [ -n "$_cache_age" ] && [ "$_cache_age" -lt "$TTL" ]; then
+        cat "$CACHE" 2>/dev/null   # fresh: serve it, probe nothing
+        exit 0
+    fi
+    # Read the previous verdict BEFORE spawning anything. A refresh that
+    # published while we were still deciding what to print would make this run's
+    # output depend on who won — the cold-cache run could suddenly speak, and the
+    # stale-cache run could serve the new verdict — which is a coin flip in the
+    # hook and a flaky assertion in its suite. Same ordering rule as
+    # check-update-available: take the reading, then start the refresh.
+    _prev=""
+    if _qmd_cache_ok; then _prev="$(cat "$CACHE" 2>/dev/null || true)"; fi
+    # shellcheck source=scripts/lib/detach.sh disable=SC1091
+    . "$HERE/../lib/detach.sh" 2>/dev/null || true
+    if command -v detach_run >/dev/null 2>&1; then
+        # Spawn unconditionally; the child takes the lock or exits (see above).
+        detach_run env QMD_STALENESS_REFRESH=1 bash "$HERE/qmd-staleness-notice.sh"
+        # Serve the previous verdict while the refresh runs. A stale verdict is
+        # still the last thing that was true; silence is not. The notice always
+        # ends in a newline, which `$(…)` strips and this printf restores, so a
+        # served notice is byte-identical to the probe's own output.
+        if [ -n "$_prev" ]; then printf '%s\n' "$_prev"; fi
+        exit 0
+    fi
+    # No detach helper — detach.sh is a sibling in this same repo, so this is a
+    # broken checkout, not a configuration. Fall through and probe INLINE: the
+    # pre-HIMMEL-1844 behaviour. Slow, but this hook must never fail silent.
+fi
+# TTL=0 (cache disabled), a cache dir this user does not own, and the
+# broken-checkout fallback all land here and probe INLINE, printing to stdout
+# exactly as this hook always did.
+
 GUARD="$HERE/../luna/qmd-staleness.sh"
 # Deliberately NOT a silent exit. An absent guard is not the adopter-without-qmd
 # case (that is rc 2, below, and stays silent) — the hook and the guard ship in

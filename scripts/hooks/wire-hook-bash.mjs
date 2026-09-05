@@ -32,21 +32,74 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // is on. The frozen, own-only invariant is the script LIST + its order below
 // (HIMMEL-1552). Bumping a count would rebuild the same wall for the next
 // capability that adds a hook.
+//
+// HIMMEL-2002: one entry may now be a CHAIN (`run-hook-with-bash.js --chain a.sh
+// b.sh ...`), so the list below is the FLATTENED document order — a guardrail
+// wired for several disjoint matchers appears once per matcher. That is the
+// point of the dispatcher: making the matchers disjoint is what buys one launch
+// per tool event, and it necessarily repeats a guardrail that guards several
+// tools. The invariant is unchanged in strength: the flattened owned scripts,
+// in document order, must equal this list EXACTLY — same count, same order, no
+// extras, no unexpected repeats.
 const OWNED_EVENTS = Object.freeze(new Set(['PreToolUse', 'PostToolUse', 'SessionStart']));
-const EXPECTED_SCRIPT_ORDER = Object.freeze([
+export const EXPECTED_SCRIPT_ORDER = Object.freeze([
+  // PreToolUse `Bash` chain.
   'auto-approve-safe-bash.sh',
   'check-cr-marker-on-pr-create.sh',
   'block-jira-compound-write.sh',
-  'block-edit-on-main.sh',
-  'guard-memory-capture.sh',
-  'orchestrator-inline-guard.sh',
+  'block-tail-pipe-on-gates.sh',
   'block-read-secrets.sh',
   'block-destructive-commands.sh',
+  'block-git-stash.sh',
   'block-rogue-claude-schedule.sh',
+  'block-chokepoint-env-prefix.sh',
+  'require-quiet-run.sh',
+  // Also in the Bash chain (HIMMEL-2360): the deny rules this hook replaces
+  // covered Bash REDIRECT targets too ("Bash redirect targets are checked
+  // against Edit rules"), so guarding only the edit tools would have silently
+  // reopened `echo x > <primary>/.claude/settings.json`. Listed once per chain
+  // it appears in, per HIMMEL-2002.
+  'block-edit-live-settings.sh',
+  // PreToolUse `PowerShell` chain.
+  'block-read-secrets.sh',
+  'block-destructive-commands.sh',
+  'block-git-stash.sh',
+  'block-rogue-claude-schedule.sh',
+  'block-chokepoint-env-prefix.sh',
+  // PreToolUse `Read|Grep`.
+  'block-read-secrets.sh',
+  // PreToolUse `Edit|Write|MultiEdit|NotebookEdit` chain.
+  'block-edit-on-main.sh',
+  // HIMMEL-2360: denies writes to a LIVE settings.json/settings.local.json
+  // (user-scope $HOME/.claude, or the PRIMARY checkout's) while ALLOWING the
+  // worktree copy, so hook wiring rides the owning leg's own PR. Replaces the
+  // two `Edit(**/.claude/settings*.json)` deny rules, which could not tell a
+  // primary checkout from a linked worktree.
+  'block-edit-live-settings.sh',
+  'guard-memory-capture.sh',
+  // PreToolUse `Edit|Write|NotebookEdit` — its own entry, NOT folded into the
+  // chain above: it does not guard MultiEdit, and widening a guard's matcher is
+  // not something a launch-count refactor gets to do.
+  'orchestrator-inline-guard.sh',
+  // PreToolUse, one entry each.
   'block-backend-tier.sh',
   'auto-arm-on-cap.sh',
+  // PreToolUse `Bash|Monitor` — its own matcher (HIMMEL-2140): denies a
+  // subagent (agent_id present) from backgrounding a Bash call or reaching
+  // for Monitor — the parking pathology. Parents (no agent_id) are
+  // unaffected. See block-subagent-park.sh's header for the full derivation.
+  'block-subagent-park.sh',
+  // PostToolUse — two sibling entries, deliberately un-chained: both are
+  // side-effecting, and chaining would make the push trigger reachable only
+  // when the PR-create trigger does not deny first.
   'auto-arm-on-subagent-cap.sh',
   'trigger-cr-on-pr-create.sh',
+  'trigger-cr-on-push.sh',
+  // PostToolUse `Bash|Edit|Write|MultiEdit|NotebookEdit` — write-time hook-file
+  // parse guard, appended after the trust ledger's own (foreign) entry in that
+  // block, so the flattened OWNED order below still matches document order.
+  'check-hook-file-parse.sh',
+  // SessionStart chain (HIMMEL-2003).
   'check-update-available.sh',
   'inject-initiative.sh',
   'qmd-staleness-notice.sh',
@@ -111,9 +164,11 @@ function hookEntries(settings) {
 // the textual rewrite (rewriteSettingsText), so the two walks cannot disagree
 // about what is owned.
 //
-//   { kind: 'owned', script, wired }  a scripts/hooks/<known>.sh invocation
+//   { kind: 'owned', scripts, wired } a scripts/hooks/<known>.sh invocation
 //                                     this tool routes through run-hook-with-
 //                                     bash (wired) or would route (unwired).
+//                                     `scripts` holds one name, or several for
+//                                     a `--chain` entry (HIMMEL-2002).
 //   { kind: 'impostor', script }      a scripts/hooks/*.sh invocation naming a
 //                                     script NOT in KNOWN_HOOK_SCRIPTS. Refused
 //                                     by hookEntries under an owned event.
@@ -122,6 +177,55 @@ function hookEntries(settings) {
 //                                     event's own .sh hook, a malformed entry.
 //                                     This tool owns neither its routing nor its
 //                                     text; it is left byte-identical.
+// HIMMEL-2047: a bare `node "<path>"` launcher is unresolvable if node itself
+// is off PATH (the nvm-windows migration window that dropped SessionEnd hooks
+// silently) — the very failure scripts/lib/run-node.sh exists to survive.
+// LEGACY_LAUNCHER is the pre-HIMMEL-2047 bare-node form, recognised so an
+// already-wired-the-old-way command still migrates.
+const RUN_NODE = '$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh';
+const LEGACY_LAUNCHER = 'node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js"';
+
+// The wired form: SOURCE run-node.sh (`.` — a shell builtin, no PATH lookup,
+// and not the bare-`bash` token HIMMEL-1516 banned from this inventory
+// either) when it EXISTS, so it resolves node at runtime
+// (scripts/lib/resolve-node.sh's resolve_node() — the same helper HIMMEL-2015
+// gave individual project hook scripts) and execs it; fall back to the
+// pre-HIMMEL-2047 bare `node` launcher when run-node.sh is ABSENT (an old
+// checkout predating this fix), so that case degrades to exactly today's
+// behaviour rather than a NEW hard failure at the launcher (critic-panel
+// finding [codex-1], HIMMEL-2047 CR round 1). `argsSuffix` is everything that
+// followed `run-hook-with-bash.js` in the legacy form — INCLUDING its leading
+// space — so it drops in unchanged on both branches, single script or
+// `--chain` member list alike. An `if`, not `[ -f ] && … || node …`: the
+// latter re-runs the hook a second time via bare node whenever the FIRST run
+// exits non-zero for its own reasons (e.g. a guard denying), not only when
+// run-node.sh is missing.
+function wrapWithFallback(argsSuffix) {
+  const target = '$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js';
+  return `if [ -f "${RUN_NODE}" ]; then . "${RUN_NODE}" "${target}"${argsSuffix}; else node "${target}"${argsSuffix}; fi`;
+}
+
+// The suffix after a recognised launcher prefix: either one script, or a
+// `--chain` (optionally `--lifecycle`, HIMMEL-2003) member list. Returns the
+// owned scripts, or null if the suffix matches neither shape.
+function launcherSuffixScripts(rest) {
+  let m = rest.match(/^"\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"$/);
+  if (m) return [m[1]];
+  m = rest.match(/^--chain (?:--lifecycle )?((?:"\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/[A-Za-z0-9._-]+\.sh" )*"\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/[A-Za-z0-9._-]+\.sh")$/);
+  if (m) return [...m[1].matchAll(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)/g)].map((x) => x[1]);
+  return null;
+}
+
+// The wired command is `wrapWithFallback` applied to a legacy-shaped suffix —
+// recognise it by matching the fixed if/then/else scaffold with the shared
+// args captured once and required (via backreference) to match on both
+// branches, exactly what wrapWithFallback emits.
+const WIRED_RE = new RegExp(
+  '^if \\[ -f "\\$CLAUDE_PROJECT_DIR/scripts/lib/run-node\\.sh" \\]; then \\. '
+  + '"\\$CLAUDE_PROJECT_DIR/scripts/lib/run-node\\.sh" "\\$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash\\.js"( .+); '
+  + 'else node "\\$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash\\.js"\\1; fi$'
+);
+
 function classifyCommand(command) {
   if (typeof command !== 'string') return { kind: 'foreign' };
 
@@ -131,22 +235,35 @@ function classifyCommand(command) {
   }
   if (match) {
     return KNOWN_HOOK_SCRIPTS.has(match[1])
-      ? { kind: 'owned', script: match[1], wired: false }
+      ? { kind: 'owned', scripts: [match[1]], wired: false }
       : { kind: 'impostor', script: match[1] };
   }
 
-  match = command.match(/^node "\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/run-hook-with-bash\.js" "\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"$/);
-  if (match) {
-    return KNOWN_HOOK_SCRIPTS.has(match[1])
-      ? { kind: 'owned', script: match[1], wired: true }
-      : { kind: 'impostor', script: match[1] };
+  // argsSuffix always includes its leading space (matches wrapWithFallback's
+  // own convention), so launcherSuffixScripts always sees the same shape
+  // whichever launcher form it was pulled from.
+  let argsSuffix = null;
+  let wired = false;
+  const wiredMatch = command.match(WIRED_RE);
+  if (wiredMatch) {
+    argsSuffix = wiredMatch[1];
+    wired = true;
+  } else if (command.startsWith(`${LEGACY_LAUNCHER} `)) {
+    argsSuffix = ` ${command.slice(LEGACY_LAUNCHER.length + 1)}`;
+  }
+  if (argsSuffix !== null) {
+    const scripts = launcherSuffixScripts(argsSuffix.slice(1));
+    if (scripts) {
+      const unknown = scripts.find((s) => !KNOWN_HOOK_SCRIPTS.has(s));
+      return unknown ? { kind: 'impostor', script: unknown } : { kind: 'owned', scripts, wired };
+    }
   }
 
   return { kind: 'foreign' };
 }
 
 function wiredCommand(script) {
-  return `node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js" "$CLAUDE_PROJECT_DIR/scripts/hooks/${script}"`;
+  return wrapWithFallback(` "$CLAUDE_PROJECT_DIR/scripts/hooks/${script}"`);
 }
 
 function bareCommand(script) {
@@ -157,8 +274,32 @@ function bareCommand(script) {
 // install-when-missing). Order-preserving so installMissingEntries() can
 // process them in EXPECTED_SCRIPT_ORDER order and chain anchors correctly.
 function missingOwnedScripts(entries) {
-  const present = new Set(entries.map((e) => e.classified.script));
-  return EXPECTED_SCRIPT_ORDER.filter((s) => !present.has(s));
+  const present = new Set(entries.flatMap((e) => e.classified.scripts));
+  // De-duplicated: EXPECTED_SCRIPT_ORDER repeats a guardrail once per matcher
+  // it is wired for, but "missing" is a property of the SCRIPT, not of a slot.
+  return [...new Set(EXPECTED_SCRIPT_ORDER)].filter((s) => !present.has(s));
+}
+
+// The owned scripts in document order, one row per script — a chain entry
+// contributes one row per member. This is the list the frozen inventory is
+// compared against.
+function flatOwnedScripts(entries) {
+  return entries.flatMap((e) => e.classified.scripts.map((script) => ({ path: e.path, script })));
+}
+
+// Compare the flattened owned scripts against the inventory minus whatever is
+// legitimately missing. One check covers count, order, extras and duplicates.
+function assertInventory(entries, missing, label) {
+  const found = flatOwnedScripts(entries);
+  const expected = EXPECTED_SCRIPT_ORDER.filter((s) => !missing.includes(s));
+  if (found.length !== expected.length) {
+    fail(`${label}owned hook inventory size mismatch: expected ${expected.length}, found ${found.length}`);
+  }
+  found.forEach((row, i) => {
+    if (row.script !== expected[i]) {
+      fail(`${row.path} script inventory mismatch: expected ${expected[i]}, found ${row.script}`);
+    }
+  });
 }
 
 // Index of the bracket matching text[openIdx] ('[' or '{'), skipping over
@@ -230,7 +371,7 @@ function installMissingEntries(text, missing) {
   groups.forEach((group) => {
     (group.hooks || []).forEach((hook, hookIndex) => {
       const c = classifyCommand(hook && hook.command);
-      if (c.kind === 'owned') scoped.push({ group, hookIndex, script: c.script });
+      if (c.kind === 'owned') for (const script of c.scripts) scoped.push({ group, hookIndex, script });
     });
   });
 
@@ -299,7 +440,9 @@ function pruneInsertedEntries(settings, insertedScripts) {
       if (!Array.isArray(group.hooks)) continue;
       group.hooks = group.hooks.filter((hook) => {
         const c = classifyCommand(hook && hook.command);
-        return !(c.kind === 'owned' && toPrune.has(c.script));
+        // Installed entries are always single-script (installMissingEntries
+        // writes the bare form), so a chain can never be pruned by this gate.
+        return !(c.kind === 'owned' && c.scripts.length === 1 && toPrune.has(c.scripts[0]));
       });
     }
   }
@@ -332,18 +475,7 @@ export function rewriteSettingsText(text) {
   // entry, a duplicate — is still refused; a shortfall that is fully
   // explained by known-missing scripts is not.
   const missing = missingOwnedScripts(originalEntries);
-  if (originalEntries.length + missing.length !== EXPECTED_SCRIPT_ORDER.length) {
-    fail(`owned hook inventory size mismatch: expected ${EXPECTED_SCRIPT_ORDER.length}, found ${originalEntries.length}`);
-  }
-  // FOUND entries (document order) must be exactly EXPECTED_SCRIPT_ORDER with
-  // the missing scripts removed — a subsequence match, so mis-ordering among
-  // the PRESENT entries is still refused even when something is also missing.
-  const expectedPresentOrder = EXPECTED_SCRIPT_ORDER.filter((s) => !missing.includes(s));
-  originalEntries.forEach((entry, i) => {
-    if (entry.classified.script !== expectedPresentOrder[i]) {
-      fail(`${entry.path} script inventory mismatch: expected ${expectedPresentOrder[i]}, found ${entry.classified.script}`);
-    }
-  });
+  assertInventory(originalEntries, missing, '');
 
   // Install missing owned SessionStart entries (bare/unwired) BEFORE the
   // normal command-rewrite pass below, so they flow through it like any other
@@ -356,14 +488,7 @@ export function rewriteSettingsText(text) {
   // Defensive re-check: install must have produced EXACTLY the full inventory,
   // in order — a sanity net on installMissingEntries itself, not a case a
   // caller can reach differently (mirrors the "ALIGNMENT" net further below).
-  if (entries.length !== EXPECTED_SCRIPT_ORDER.length) {
-    fail(`post-install owned hook inventory size mismatch: expected ${EXPECTED_SCRIPT_ORDER.length}, found ${entries.length}`);
-  }
-  entries.forEach((entry, i) => {
-    if (entry.classified.script !== EXPECTED_SCRIPT_ORDER[i]) {
-      fail(`${entry.path} script inventory mismatch: expected ${EXPECTED_SCRIPT_ORDER[i]}, found ${entry.classified.script}`);
-    }
-  });
+  assertInventory(entries, [], 'post-install ');
 
   // The textual rewrite must walk the SAME set of "command" fields the
   // COMMAND_FIELD regex visits, in the SAME document order, and decide each
@@ -428,7 +553,16 @@ export function rewriteSettingsText(text) {
     const c = entry.classified;
     if (c.wired) return whole;
     changed += 1;
-    return `${key}${separator}${JSON.stringify(wiredCommand(c.script))}`;
+    // Two prior (unwired) shapes reach here: a fully bare `bash .../<script>.sh`
+    // (single script only — a chain has no bare form) migrates via
+    // wiredCommand(); an already-launcher-wired-the-OLD-way command
+    // (HIMMEL-2047: bare `node`, single or `--chain`) migrates by wrapping its
+    // existing script argument(s) — a chain's members included, verbatim — in
+    // the if/then/else fallback wrapWithFallback() builds.
+    const newCommand = entry.hook.command.startsWith(`${LEGACY_LAUNCHER} `)
+      ? wrapWithFallback(` ${entry.hook.command.slice(LEGACY_LAUNCHER.length + 1)}`)
+      : wiredCommand(c.scripts[0]);
+    return `${key}${separator}${JSON.stringify(newCommand)}`;
   });
 
   if (slotIndex !== commandSlots.length) {

@@ -140,14 +140,206 @@ _hp_ascii_lower() {
     done
 }
 
+# _arm_cache_dir -- one PRIVATE scratch dir per top-level process, backing
+# both caches below (HIMMEL-2073). Every call site of _arm_identity_path is
+# `x=$(_arm_identity_path ...)`; command substitution forks a SUBSHELL, so an
+# in-memory cache variable set inside it dies with it (a naive
+# `_ARM_CYGPATH_AVAILABLE=""` var, the _py_armor_have_gnu_timeout pattern,
+# never actually caches anything here — verified: it measured ZERO
+# improvement). A FILE survives the subshell boundary.
+#
+# Created via `mktemp -d` (CR round 1, codex-1 CRITICAL): an earlier draft
+# derived the cache path from `$$` alone in the SHARED, world-writable temp
+# dir — predictable, so another local user could pre-plant a symlink at that
+# exact path and have this script's `>`/`>>` write through it onto any file
+# the invoking user can write. `mktemp -d` is atomic (O_EXCL) and mode 0700,
+# so no other user can occupy or peek into it first. It also closes CR round
+# 1 codex-3 (PID reuse): $$ can be recycled by an unrelated LATER process,
+# which would then silently inherit an EARLIER process's stale cache; a
+# `mktemp` name is not derived from the PID at all.
+#
+# Computed ONCE and exported: subshells forked AFTER this line inherit the
+# exported value (bash propagates the environment INTO a fork, just not back
+# OUT of one), so every subshell this library's functions run in shares the
+# SAME directory without needing to derive it again.
+#
+# No EXIT trap here on purpose (CR round 2, codex-2 Important — a leaked dir
+# per process is real: arm-resume.sh fires from recurring scheduled tasks, so
+# it accumulates, unlike the single small file py-armor.sh's own harmless-leak
+# precedent covers). arm-resume.sh already owns an EXIT trap of its own (`trap
+# _arm_worker_stderr_cleanup EXIT`); a second bare `trap ... EXIT` from a
+# sourced library SILENTLY OVERWRITES whichever one runs last instead of
+# chaining, and this file is sourced by more than one caller (queue-lock.sh
+# too) so there is no single safe place to splice a chained trap without
+# risking exactly that collision. Self-cleaning instead: sweep this library's
+# own >1-day-old cache dirs before creating a new one.
+#
+# OWNERSHIP is the primary guard (CR round 5, codex-1 CRITICAL): no
+# content-shape heuristic, however narrow, can be airtight against a
+# DELIBERATE adversary who knows the heuristic and crafts a directory to
+# pass it — the round-3/round-4 fixes (name + regular-file checks) each
+# closed one such bypass, but the reviewer's round-5 point is structural,
+# not another bypass to patch: only an OWNERSHIP check can prove this
+# process is the one that created a candidate, full stop. `[ -O "$_stale" ]`
+# is a bash BUILTIN test (no `stat`/`id` subprocess) that is true iff the
+# path's owner is this process's effective UID — a foreign-owned directory
+# can never pass it regardless of what an adversary puts inside it, closing
+# the "privileged process deletes another user's data" class this whole
+# thread has been circling. The content-shape check (name + `-f`, CR rounds
+# 3-4) stays as defense-in-depth: ownership alone would still permit
+# deleting a SELF-owned directory that happens to share the glob but isn't
+# actually one of ours (e.g. one the operator created by hand for something
+# else) — the shape check catches that case, ownership catches the
+# adversarial one; together they cover both.
+#
+# HIMMEL-2125 -- AGE IS THE FIRST FILTER, and it costs ONE `find` for the whole
+# sweep. It used to be the LAST: the loop paid a `basename` fork per entry
+# inside every candidate dir plus a `find` fork per dir, and only then asked
+# whether the dir was even old enough to delete. Since this GC runs at SOURCE
+# time on every arm-resume / queue-lock / cap-reset-time / resume-slot
+# invocation, and each of those invocations leaks one more cache dir, the
+# sweep got monotonically slower as the leak grew -- ~3 forks x every dir that
+# had ever leaked. Measured on OVERLORD8: 1034 dirs present, of which exactly 2
+# were age-eligible, and the sweep burned 23s of a 28s dry-run arm (MSYS forks
+# are ~10ms each). Hoisting the age test makes the expensive per-entry work run
+# only on the handful of dirs that can actually be deleted.
+#
+# The aggregate find is newline-delimited and read back with `while read`, so
+# a directory name containing a literal newline would split into two lines --
+# the 2nd line would reach the loop body without having been through the
+# `-mmin +1440` test itself, AND it would be a bare relative fragment (e.g.
+# find prints "$TMPDIR/arm-resume-cache.x\nfoo" -> line 2 is "foo", resolved
+# against cwd, not $TMPDIR) that could point outside $TMPDIR entirely.
+# Guarded two ways right before the rm: a containment check (the candidate's
+# path must still literally start with "$TMPDIR/arm-resume-cache." -- no
+# split second line can ever carry that prefix, which structurally kills the
+# whole class) and a per-candidate age re-check (find -maxdepth 0). Only the
+# handful of dirs that survive the pre-filter + ownership + shape checks pay
+# those forks, so the single-find performance win above is untouched
+# (measured: 2 of 1034).
+#
+# BOTH guards below are UNCHANGED and still gate every `rm`: ownership (`-O`,
+# the primary anti-adversary check argued above) and the content-shape check.
+# The shape check now uses `${_entry##*/}` -- bash parameter expansion with
+# semantics identical to `basename` here, minus the fork.
+_arm_cache_dir_gc() {
+    local _stale _entry _looks_ours _aged
+    # `-name` BEFORE `-type`/`-mmin` on purpose: find evaluates left to right,
+    # so the cheap name match runs first and only the ~matching entries get
+    # stat'd -- $TMPDIR can hold tens of thousands of unrelated files.
+    _aged=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'arm-resume-cache.*' -type d -mmin +1440 2>/dev/null) || _aged=""
+    [ -n "$_aged" ] || return 0
+    while IFS= read -r _stale; do
+        [ -n "$_stale" ] || continue
+        [ -d "$_stale" ] || continue
+        [ -O "$_stale" ] || continue
+        _looks_ours=1
+        for _entry in "$_stale"/* "$_stale"/.[!.]* "$_stale"/..?*; do
+            [ -e "$_entry" ] || continue
+            if [ -f "$_entry" ]; then
+                case "${_entry##*/}" in
+                    identity|cygpath-avail) ;;
+                    *) _looks_ours=0 ;;
+                esac
+            else
+                _looks_ours=0
+            fi
+        done
+        [ "$_looks_ours" -eq 1 ] || continue
+        # Containment: a newline-split 2nd line from the aggregate find is a
+        # bare fragment, not a path rooted at $TMPDIR -- reject anything that
+        # doesn't literally start with our own prefix (see comment above the
+        # loop). No split line can ever carry it, so this alone kills the
+        # whole class; checked first since it's the cheapest of the two.
+        case "$_stale" in
+            "${TMPDIR:-/tmp}"/arm-resume-cache.*) ;;
+            *) continue ;;
+        esac
+        # Re-verify age for THIS candidate: the aggregate find above is a
+        # newline-delimited pre-filter, and a dir name with an embedded
+        # newline could otherwise slip an unaged line past it (see comment
+        # above the loop). Only reached by candidates that already passed
+        # ownership + shape, so this is ~1 extra fork per actually-stale dir.
+        [ -n "$(find "$_stale" -maxdepth 0 -mmin +1440 2>/dev/null)" ] || continue
+        rm -rf "$_stale" 2>/dev/null || true
+    done <<< "$_aged"
+}
+if [ -z "${_ARM_CACHE_DIR:-}" ]; then
+    _arm_cache_dir_gc
+    _ARM_CACHE_DIR=$(mktemp -d -t arm-resume-cache.XXXXXX 2>/dev/null) || _ARM_CACHE_DIR=""
+    export _ARM_CACHE_DIR
+fi
+
+# _arm_cygpath_available -- rc 0 iff cygpath is on PATH. Probed once per
+# top-level process and cached in $_ARM_CACHE_DIR (falls back to recomputing
+# every call, the pre-cache behavior, when the dir could not be created).
+_arm_cygpath_available() {
+    local _avail="" _f="${_ARM_CACHE_DIR:+$_ARM_CACHE_DIR/cygpath-avail}"
+    [ -n "$_f" ] && [ -r "$_f" ] && _avail=$(<"$_f")
+    if [ -z "$_avail" ]; then
+        if command -v cygpath >/dev/null 2>&1; then _avail=yes; else _avail=no; fi
+        [ -n "$_f" ] && { printf '%s' "$_avail" > "$_f" 2>/dev/null || true; }
+    fi
+    [ "$_avail" = yes ]
+}
+
 # _arm_identity_path <path> -- the canonical handover identity first shipped
 # in arm-resume.sh for scheduler-row dedup (HIMMEL-1304). It lives in this
 # shared library now because queue-lock.sh must consume the exact same identity
 # from arms.jsonl (HIMMEL-1344). On Windows, cygpath folds C:/, C:\ and /c/
 # spellings together, then case-folding matches NTFS semantics; POSIX paths
 # retain case because it can distinguish real files there.
+#
+# Memoized per (raw input, raw $PLATFORM override) pair in $_ARM_CACHE_DIR
+# (falls back to always recomputing when the dir could not be created): a
+# single arm calls this on the SAME path (e.g. the handover root, from both
+# the scheduler-identity call site and the registry-dedup call site) more
+# than once, and each call was re-spawning `realpath` + `cygpath` for an
+# identical answer — measured at ~30% of a dry-run's wall time on Windows,
+# and 32% of its total subprocess/statement volume. $PLATFORM is the only
+# OTHER input this function's output depends on (test-handover-path.sh calls
+# it as `PLATFORM=linux _arm_identity_path ...` to exercise a non-Windows
+# branch on a Windows dev box) — omitting it from the key served a stale
+# cross-platform answer back the moment two calls shared a path but not a
+# $PLATFORM (caught by T8d in review).
+#
+# One `path<US>platform<US>ostype<US>cwd<US>value` line per memoized tuple,
+# `<US>` = ASCII Unit Separator (0x1F, never a whitespace-class IFS char). A
+# first draft used a literal tab: bash's `read` treats any WHITESPACE-class
+# IFS character (space/tab/newline, always whitespace-role regardless of what
+# IFS is set to) as COLLAPSING — adjacent tabs merge into one delimiter, so
+# the common case (`$PLATFORM` unset -> an EMPTY middle field,
+# `path<TAB><TAB>value`) split as path/value/"" instead of path/""/value,
+# silently missing on every lookup (CR round 1, codex-2 IMPORTANT). 0x1F is
+# not whitespace-class, so `read` splits on it exactly, empty fields
+# included — a plain `read -r` split stays a safe, dependency-free lookup
+# with no `grep`/`awk` subprocess spent just to consult the cache. $PWD is in
+# the key too (CR round 2, codex-3 Suggestion): _arm_realpath resolves a
+# RELATIVE `$1` against the CURRENT directory, so the same relative-path
+# STRING can legitimately mean two different files across a `cd` — keying on
+# text alone would serve the wrong directory's answer back. $OSTYPE is in the
+# key too (CR round 3, codex-2 Suggestion): it is the OTHER input the
+# auto-detect branch below reads when $PLATFORM is unset, so a caller
+# overriding $OSTYPE instead of $PLATFORM (the same override shape
+# test-handover-path.sh already exercises for $PLATFORM) hit the identical
+# stale-cross-platform-answer class T8c/T8d caught for $PLATFORM. Residual
+# (CR round 1 codex-4 + round 2 codex-4, both Suggestion, accepted): a path,
+# $PLATFORM, $OSTYPE, or $PWD containing a literal 0x1F or newline byte would
+# still break the split — POSIX allows any byte but NUL/`/` in a path, so
+# this is not a hard guarantee, only true for every realistic value on this
+# codebase's actual call sites. Escaping it fully is out of proportion for a
+# same-process memoization cache; revisit if that ever becomes real.
 _arm_identity_path() {
-    local _p _platform="${PLATFORM:-}" _os
+    local _p _platform="${PLATFORM:-}" _os _key_path _key_plat _key_os _key_cwd _val _cf="${_ARM_CACHE_DIR:+$_ARM_CACHE_DIR/identity}"
+    if [ -n "$_cf" ] && [ -r "$_cf" ]; then
+        while IFS=$'\037' read -r _key_path _key_plat _key_os _key_cwd _val; do
+            if [ "$_key_path" = "$1" ] && [ "$_key_plat" = "$_platform" ] \
+               && [ "$_key_os" = "${OSTYPE:-}" ] && [ "$_key_cwd" = "$PWD" ]; then
+                printf '%s' "$_val"
+                return 0
+            fi
+        done < "$_cf"
+    fi
     _p=$(_arm_realpath "$1")
     if [ -z "$_platform" ]; then
         _os="${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}"
@@ -158,11 +350,12 @@ _arm_identity_path() {
         esac
     fi
     if [ "$_platform" = windows ]; then
-        if command -v cygpath >/dev/null 2>&1; then
+        if _arm_cygpath_available; then
             _p=$(cygpath -u "$_p" 2>/dev/null) || _p=$(_arm_realpath "$1")
         fi
         _hp_ascii_lower "$_p"; _p="$_HP_LOWER"
     fi
+    [ -n "$_cf" ] && { printf '%s\037%s\037%s\037%s\037%s\n' "$1" "${PLATFORM:-}" "${OSTYPE:-}" "$PWD" "$_p" >> "$_cf" 2>/dev/null || true; }
     printf '%s' "$_p"
 }
 
@@ -386,4 +579,58 @@ _hp_arms_record_matches_path() {
     _hp_legacy_key=$(_arm_registry_identity_path_from_root "$_HP_UNESC" "$_hp_root")
     [ "$_hp_legacy_key" = "$_hp_key" ] && _HP_ARMS_MATCH=1
     return 0
+}
+
+# _hp_session_stem_num <basename.md> -- parse a handover session filename
+# into $_HP_STEM (series name) + $_HP_NUM (leg number string, may carry
+# leading zeros e.g. "01"). Used by auto-commit.sh's write-time half of the
+# HIMMEL-1830/1831 one-file-per-leg guard (the arm-time half already landed
+# independently in arm-resume.sh as the rc-17 split-leg check, HIMMEL-1830 /
+# PR #1794 -- this helper is not shared with it).
+#
+# Matches "<stem>-<digits>.md" -- the greedy `.+` plus the right-anchored
+# `-([0-9]+)\.md$` naturally picks the LAST hyphen-number run, so a stem that
+# itself contains digits (e.g. "HIMMEL-654-dispatch-session-25.md") still
+# splits correctly (stem="HIMMEL-654-dispatch-session", num="25"). The
+# supported unnumbered leg-1 spelling "<stem>.md" maps to the same stem with
+# num="1", so "<stem>.md" + "<stem>-2.md" cannot bypass the write-time guard.
+#
+# A bare-ticket-key stem is rejected (CR findings, codex-1 Important x2): a
+# JIRA project key is, by this codebase's own convention, an all-caps token
+# (HIMMEL, LUNA, GGS, ...). "HIMMEL-1830.md" parses as stem="HIMMEL"
+# num="1830" -- indistinguishable from a real leg number -- so two unrelated
+# tickets' one-off notes ("HIMMEL-1830.md" + "HIMMEL-1831.md") would collide
+# on the same stem and false-refuse a commit with no actual leg split.
+# Rejecting every hyphen-free stem was too broad a fix: it also silently
+# stopped catching the guard's own documented examples ("foo-25.md" +
+# "foo-26.md", "foo.md" + "foo-2.md") which use ordinary lowercase/mixed-case
+# single-token stems. Only a stem that is ITSELF all-caps alnum (matches
+# ^[A-Z][A-Z0-9]*$ -- looks like nothing but a project key) is rejected;
+# any other single-token stem (lowercase or mixed-case) is still a valid
+# leg-series name.
+#
+# Returns 1 (no match, both globals cleared) when the basename is not a
+# Markdown handover filename, or its stem is a bare ticket-key-shaped token.
+_HP_STEM=""
+_HP_NUM=""
+_hp_session_stem_num() {
+    _HP_STEM=""
+    _HP_NUM=""
+    if [[ "$1" =~ ^(.+)-([0-9]+)\.md$ ]]; then
+        _HP_STEM="${BASH_REMATCH[1]}"
+        _HP_NUM="${BASH_REMATCH[2]}"
+        if [[ "$_HP_STEM" =~ ^[A-Z][A-Z0-9]*$ ]]; then
+            _HP_STEM=""; _HP_NUM=""; return 1
+        fi
+        return 0
+    fi
+    if [[ "$1" =~ ^(.+)\.md$ ]]; then
+        _HP_STEM="${BASH_REMATCH[1]}"
+        _HP_NUM="1"
+        if [[ "$_HP_STEM" =~ ^[A-Z][A-Z0-9]*$ ]]; then
+            _HP_STEM=""; _HP_NUM=""; return 1
+        fi
+        return 0
+    fi
+    return 1
 }

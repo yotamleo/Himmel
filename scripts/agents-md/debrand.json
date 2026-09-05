@@ -53,7 +53,7 @@
     "note": "HIMMEL-688 escalation prose — routing fact, neutralized so a GPT/Codex driver doesn't read a Claude-only dispatch as an instruction it can execute. LIVE — keep this string intact when editing the escalation paragraph."
   },
   {
-    "from": "Fable 5 = judgment and taste, the\nescalation target",
+    "from": "Fable = judgment and taste, the\nescalation target",
     "to": "the top model = judgment and taste, the\nescalation target",
     "note": "HIMMEL-480: the condensed tier-semantics sentence that replaced the lane table in CLAUDE.md — same neutralization the table row (now dormant) provided. LIVE. Embedded newline matches CLAUDE.md's hard wrap; re-check this rule if that paragraph is rewrapped."
   },

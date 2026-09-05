@@ -1,4 +1,5 @@
 export declare const UNKNOWN_TERMINAL_WIDTH: null;
+export declare const MAX_TERMINAL_WIDTH = 1000;
 export declare function getTerminalWidth(options?: {
     preferEnv?: boolean;
     fallback?: number | null;

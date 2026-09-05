@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: Create a git worktree under .claude/worktrees/ for a type/slug branch (feat|fix|chore|docs|refactor|test). Use when the user asks to make a worktree or run /worktree.
+description: Create a git worktree under .claude/worktrees/ for a type/slug branch. Use for /worktree.
 ---
 
 # worktree

@@ -20,6 +20,14 @@
 # Exit codes: 0 -- all cases passed; 1 -- at least one failed.
 set -uo pipefail
 
+# run-shell-tests.sh exports its whole environment to every child suite, and
+# a queued after-report is launched with SUITE_LOCK_WAIT=21600 -- so a suite
+# invocation of THIS suite inherits that value unless we clear it. Several
+# cases below (W1, 2m) assert the knob is absent and fail if the inner
+# runner queues instead of refusing on sight. Explicit per-case prefixes
+# (e.g. W2's SUITE_LOCK_WAIT=0) still apply after this unset.
+unset SUITE_LOCK_WAIT
+
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
 # `set -o pipefail`: grep -q exits the instant it matches, the producer
@@ -96,6 +104,31 @@ if grepq "$out1" -F "pid=$$"; then
   pass "refusal message names the holder"
 else
   fail "refusal message does not name the holding pid; output: $out1"
+fi
+# The refusal must say WHICH case it is in (HIMMEL-1805): this holder's pid
+# answered the probe, so the message carries the PRESENT verdict — not the
+# unverifiable one whose advice would counsel waiting on a guess.
+if grepq "$out1" -F 'PID PRESENT'; then
+  pass "refusal message distinguishes a probed holder (PID PRESENT verdict)"
+else
+  fail "refusal message missing the PID PRESENT verdict for a probed holder; output: $out1"
+fi
+# kill -0 proves the pid EXISTS, not that it is still the original holder
+# (pids recycle), so the verdict must not overclaim aliveness (HIMMEL-1805
+# round 3). Grepped in caps: the honest wording may say "not proof of life",
+# which a case-sensitive -F for the verdict token must not trip on.
+if grepq "$out1" -F 'ALIVE'; then
+  fail "refusal overclaims ALIVE for a merely-present pid; output: $out1"
+else
+  pass "refusal claims presence, not aliveness"
+fi
+# The verdict names what this host resolved to, which also pins that the
+# fixture's this_host branding really matched the runner's resolution — the
+# assertion above would pass for the wrong reason if it ever did not.
+if grepq "$out1" -F 'this host='; then
+  pass "present-pid verdict names what this host resolved to"
+else
+  fail "present-pid verdict does not name this host; output: $out1"
 fi
 # The refused run must not have executed anything.
 if grepq "$out1" -F '[PASS]'; then
@@ -318,6 +351,26 @@ if [ "$rc2d2" -eq 2 ]; then
 else
   fail "foreign owner-file dir -> expected rc 2 got $rc2d2; output: $out2d2"
 fi
+# The verdict must not relabel an operational failure as contention
+# (HIMMEL-1805 round 4): this directory is not a lock and the reclaim refused
+# to delete foreign content -- a condition re-running cannot clear, so the
+# race verdict's "re-run in a moment" advice would send an unattended job
+# retrying forever without ever seeing the real requirement.
+if grepq "$out2d2" -F 'TAKEOVER IN PROGRESS'; then
+  fail "an operational reclaim failure is reported as a takeover race; output: $out2d2"
+else
+  pass "operational reclaim failure does not use the race verdict"
+fi
+if grepq "$out2d2" -F 'RECLAIM FAILED'; then
+  pass "operational reclaim failure has a verdict of its own"
+else
+  fail "operational reclaim failure has no verdict of its own; output: $out2d2"
+fi
+if grepq "$out2d2" -F 'RECLAIM ERROR'; then
+  pass "the concrete reclaim error is named"
+else
+  fail "no concrete reclaim error named; output: $out2d2"
+fi
 if [ "$rc2d" -eq 2 ]; then
   pass "an unusable lock path refuses (rc 2) rather than proceeding unlocked"
 else
@@ -367,6 +420,26 @@ if [ -d "$lock2e.claim" ]; then
   pass "the other taker's claim is left alone"
 else
   fail "the run destroyed another taker's live claim"
+fi
+# The refusal must describe the state it observed (HIMMEL-1805 round 3): this
+# run SAW a dead same-host pid and judged the lock abandoned. Losing the
+# takeover race to another taker is not "the owner records no pid" — there was
+# a pid, it was dead, and the race was lost — and the generation that judgement
+# came from is too stale to quote TTL arithmetic out of.
+if grepq "$out2e" -F 'records no pid'; then
+  fail "takeover-race refusal claims the owner records no pid; output: $out2e"
+else
+  pass "takeover-race refusal does not claim a missing pid"
+fi
+if grepq "$out2e" -F 'TTL backstop reclaims'; then
+  fail "takeover-race refusal quotes TTL advice from the stale generation; output: $out2e"
+else
+  pass "takeover-race refusal gives no stale-generation TTL advice"
+fi
+if grepq "$out2e" -F 'TAKEOVER IN PROGRESS'; then
+  pass "takeover-race refusal names the race (TAKEOVER IN PROGRESS verdict)"
+else
+  fail "takeover-race refusal missing the TAKEOVER IN PROGRESS verdict; output: $out2e"
 fi
 
 # --------------------------------------------------------------------------
@@ -479,6 +552,522 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# Case 2h -- a FOREIGN-host holder is refused until the TTL (HIMMEL-1805).
+#
+# A pid from another machine says nothing about liveness here, so the probe
+# is skipped by design and the lock is honoured until its TTL expires -- even
+# when the pid is one this test OBSERVED die. The refusal must say that
+# case: the holder is UNVERIFIABLE, not alive, and the message names what
+# this host resolved to, so a same-machine host-string divergence is
+# diagnosable from the output instead of silent.
+# --------------------------------------------------------------------------
+echo "== Case 2h: a foreign-host holder is refused until the TTL =="
+sb2h=$(new_sandbox)
+cat > "$sb2h/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+bash -c 'exit 0' & dead2h=$!
+wait "$dead2h" 2>/dev/null
+
+lock2h="$sb2h/suite.lock"
+mkdir -p "$lock2h"
+printf 'pid=%s\nhost=some-other-host\nstarted=%s\nscan=remote\n' \
+  "$dead2h" "$(date +%s)" > "$lock2h/owner"
+
+out2h=$(SUITE_LOCK_DIR="$lock2h" bash "$RUNNER" "$sb2h" 2>&1)
+rc2h=$?
+if [ "$rc2h" -eq 2 ]; then
+  pass "foreign-host holder with a dead pid -> still refused (rc 2)"
+else
+  fail "foreign-host holder -> expected rc 2 got $rc2h; output: $out2h"
+fi
+if grepq "$out2h" -F 'UNVERIFIABLE'; then
+  pass "foreign-host refusal says the holder is unverifiable"
+else
+  fail "foreign-host refusal missing the UNVERIFIABLE verdict; output: $out2h"
+fi
+if grepq "$out2h" -F 'PID PRESENT'; then
+  fail "foreign-host refusal claims a probed-present pid"
+else
+  pass "foreign-host refusal does not claim a probed-present pid"
+fi
+if grepq "$out2h" -F 'this host='; then
+  pass "foreign-host refusal names what this host resolved to"
+else
+  fail "foreign-host refusal does not name this host; output: $out2h"
+fi
+if grepq "$out2h" -F 'TTL backstop'; then
+  pass "foreign-host refusal names the TTL as the way out"
+else
+  fail "foreign-host refusal missing the TTL advice; output: $out2h"
+fi
+
+# The "until the TTL" half: the SAME foreign shape, aged past its TTL, is
+# reclaimed -- the backstop really is the only way a foreign lock frees.
+echo "== Case 2h2: a foreign-host lock past its TTL is reclaimed =="
+lock2h2="$sb2h/suite2.lock"
+mkdir -p "$lock2h2"
+printf 'pid=%s\nhost=some-other-host\nstarted=%s\nscan=remote\n' \
+  "$dead2h" "$(( $(date +%s) - 100000 ))" > "$lock2h2/owner"
+
+out2h2=$(SUITE_LOCK_DIR="$lock2h2" SUITE_LOCK_TTL=60 bash "$RUNNER" "$sb2h" 2>&1)
+rc2h2=$?
+if [ "$rc2h2" -eq 0 ]; then
+  pass "foreign-host lock past TTL -> reclaimed (rc 0)"
+else
+  fail "foreign-host lock past TTL -> expected rc 0 got $rc2h2; output: $out2h2"
+fi
+
+# --------------------------------------------------------------------------
+# Case 2i -- a host differing only in CASE is still this host (HIMMEL-1805).
+#
+# _suite_lock_host's sources disagree in case on Windows (bash's own
+# HOSTNAME=overlord8 vs the COMPUTERNAME=OVERLORD8 fallback), and an
+# inherited HOSTNAME survives into child bash -- so two runs on the SAME
+# machine can brand and probe under different spellings. A case-strict
+# compare silently skipped the liveness probe and refused a provably dead
+# same-machine pid until the TTL: the exact observed incident. The match is
+# case-insensitive; a genuinely different name (Case 2h) still mismatches.
+# --------------------------------------------------------------------------
+echo "== Case 2i: a case-variant host still counts as this host =="
+# The variant must actually VARY, or this case is vacuous: on a host whose
+# resolved name has no lowercase letters (the COMPUTERNAME=OVERLORD8 fallback
+# is all-caps), upper-casing is a no-op and the "variant" would silently test
+# the plain same-host path — green, but not testing what it names. Fold the
+# other way when the first fold changes nothing; a name with no letters at
+# all cannot be varied, and the case says so instead of passing quietly.
+# (this_host, defined at the top of this file, resolves EXACTLY as the
+# runner's _suite_lock_host does.)
+variant_host=$(printf '%s' "$(this_host)" | tr '[:lower:]' '[:upper:]')
+if [ "$variant_host" = "$(this_host)" ]; then
+  variant_host=$(printf '%s' "$(this_host)" | tr '[:upper:]' '[:lower:]')
+fi
+
+if [ "$variant_host" != "$(this_host)" ]; then
+sb2i=$(new_sandbox)
+cat > "$sb2i/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+
+# Dead pid under the case-variant spelling -> probed, found dead, RECLAIMED.
+bash -c 'exit 0' & dead2i=$!
+wait "$dead2i" 2>/dev/null
+lock2i="$sb2i/suite.lock"
+mkdir -p "$lock2i"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2i" "$variant_host" "$(date +%s)" > "$lock2i/owner"
+
+out2i=$(SUITE_LOCK_DIR="$lock2i" bash "$RUNNER" "$sb2i" 2>&1)
+rc2i=$?
+if [ "$rc2i" -eq 0 ]; then
+  pass "dead pid under a case-variant host spelling -> reclaimed (rc 0)"
+else
+  fail "case-variant host: expected reclaim rc 0 got $rc2i; output: $out2i"
+fi
+
+# LIVE pid under the case-variant spelling -> probed, answers, still refuses:
+# case-folding widens the probe to same-machine spellings, never past them.
+lock2i2="$sb2i/suite2.lock"
+mkdir -p "$lock2i2"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=live\n' \
+  "$$" "$variant_host" "$(date +%s)" > "$lock2i2/owner"
+
+out2i2=$(SUITE_LOCK_DIR="$lock2i2" bash "$RUNNER" "$sb2i" 2>&1)
+rc2i2=$?
+if [ "$rc2i2" -eq 2 ]; then
+  pass "live pid under a case-variant host spelling -> still refused (rc 2)"
+else
+  fail "case-variant host with a live pid: expected rc 2 got $rc2i2; output: $out2i2"
+fi
+if grepq "$out2i2" -F 'PID PRESENT'; then
+  pass "case-variant live refusal carries the PID PRESENT verdict"
+else
+  fail "case-variant live refusal missing the PID PRESENT verdict; output: $out2i2"
+fi
+else
+  echo "  SKIP  host name has no letters to case-vary on this host"
+fi
+
+# --------------------------------------------------------------------------
+# Case 2j -- a LIVE holder the probe may not signal is NOT reclaimed
+# (HIMMEL-1805 round 4).
+#
+# POSIX kill -0 fails for ESRCH (no such process) AND for EPERM (the caller
+# may not signal it): a live holder running under another account fails the
+# probe exactly like a dead one, so reading every failure as "holder dead"
+# reclaims a live holder's lock out from under it -- a fail-OPEN, the opposite
+# direction of every other defect in this arc, all of which merely withheld a
+# warning. A refusal the probe cannot explain must fall through to the TTL
+# instead (the HIMMEL-1776 convention: unknown never takes the permissive
+# path).
+#
+# The holder is THIS TEST'S pid: genuinely alive on this host. An exported
+# kill() shim makes `kill -0 <that pid>` fail the way it fails for such a
+# holder -- refused with a reason that is not "no such process" -- while every
+# other call delegates to the real builtin, so the runner's watchdog and
+# termination behaviour is unchanged.
+# --------------------------------------------------------------------------
+echo "== Case 2j: a live holder the probe may not signal is not reclaimed =="
+sb2j=$(new_sandbox)
+cat > "$sb2j/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2j="$sb2j/suite.lock"
+mkdir -p "$lock2j"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other-user\n' \
+  "$$" "$(this_host)" "$(date +%s)" > "$lock2j/owner"
+
+probe_refuse_pid=$$
+# shellcheck disable=SC2317,SC2329  # invoked by the runner child via export -f
+kill() {
+  if [ "$1" = "-0" ] && [ "$2" = "$probe_refuse_pid" ]; then
+    printf 'bash: kill: (%s) - Operation not permitted\n' "$2" >&2
+    return 1
+  fi
+  builtin kill "$@"
+}
+export -f kill
+export probe_refuse_pid
+
+out2j=$(SUITE_LOCK_DIR="$lock2j" bash "$RUNNER" "$sb2j" 2>&1)
+rc2j=$?
+unset -f kill
+unset probe_refuse_pid
+
+if [ "$rc2j" -eq 2 ]; then
+  pass "live but unsignalable holder -> refused, not reclaimed (rc 2)"
+else
+  fail "live but unsignalable holder -> expected rc 2 got $rc2j; output: $out2j"
+fi
+if [ -f "$lock2j/owner" ] && grep -qF "pid=$$" "$lock2j/owner"; then
+  pass "a refused probe left the live holder's lock intact"
+else
+  fail "the refusal reclaimed a live holder's lock; output: $out2j"
+fi
+if grepq "$out2j" -F 'UNVERIFIABLE'; then
+  pass "refused-probe refusal says the holder is unverifiable"
+else
+  fail "refused-probe refusal missing the UNVERIFIABLE verdict; output: $out2j"
+fi
+# The probe was REFUSED, not answered: claiming the pid was probed present
+# would be the same overread this case exists to catch, in the other
+# direction.
+if grepq "$out2j" -F 'PID PRESENT'; then
+  fail "refused-probe refusal claims a probed-present pid; output: $out2j"
+else
+  pass "refused-probe refusal does not claim a probed-present pid"
+fi
+if grepq "$out2j" -F 'TTL backstop'; then
+  pass "refused-probe refusal names the TTL as the way out"
+else
+  fail "refused-probe refusal missing the TTL advice; output: $out2j"
+fi
+
+# --------------------------------------------------------------------------
+# Case 2j2 -- the UNDATED sibling of 2j: a same-host holder whose probe was
+# refused AND whose owner file carries no "started" line at all (HIMMEL-1805
+# round 6).
+#
+# age starts at -1 and only becomes a duration when the owner's started field
+# parses, so this shape -- a pid, this host, a probe refused for a reason that
+# is not "no such process", and no timestamp -- is the one refusal path where
+# age stays the sentinel: not stale (a refused probe is not death), not
+# datable. Printed as "-1s" it reads as a measurement, and the TTL sentence
+# it anchored named a backstop that can never fire -- age=-1 never reaches
+# the TTL -- so the refusal must say the age is unknown instead of quoting
+# arithmetic out of the sentinel.
+# --------------------------------------------------------------------------
+echo "== Case 2j2: an undated holder with a refused probe gets no TTL advice =="
+sb2j2=$(new_sandbox)
+cat > "$sb2j2/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2j2="$sb2j2/suite.lock"
+mkdir -p "$lock2j2"
+printf 'pid=%s\nhost=%s\nscan=other-user\n' \
+  "$$" "$(this_host)" > "$lock2j2/owner"
+
+probe_refuse_pid=$$
+# shellcheck disable=SC2317,SC2329  # invoked by the runner child via export -f
+kill() {
+  if [ "$1" = "-0" ] && [ "$2" = "$probe_refuse_pid" ]; then
+    printf 'bash: kill: (%s) - Operation not permitted\n' "$2" >&2
+    return 1
+  fi
+  builtin kill "$@"
+}
+export -f kill
+export probe_refuse_pid
+
+out2j2=$(SUITE_LOCK_DIR="$lock2j2" bash "$RUNNER" "$sb2j2" 2>&1)
+rc2j2=$?
+unset -f kill
+unset probe_refuse_pid
+
+if [ "$rc2j2" -eq 2 ]; then
+  pass "undated holder with a refused probe -> refused, not reclaimed (rc 2)"
+else
+  fail "undated holder with a refused probe -> expected rc 2 got $rc2j2; output: $out2j2"
+fi
+if [ -f "$lock2j2/owner" ] && grep -qF "pid=$$" "$lock2j2/owner"; then
+  pass "a refused probe left the undated holder's lock intact"
+else
+  fail "the refusal reclaimed an undated holder's lock; output: $out2j2"
+fi
+if grepq "$out2j2" -F 'TTL backstop reclaims'; then
+  fail "undated refusal quotes a TTL backstop that can never fire; output: $out2j2"
+else
+  pass "undated refusal does not quote TTL reclamation advice"
+fi
+if grepq "$out2j2" -F 'no usable "started" timestamp'; then
+  pass "undated refusal says the owner has no usable started timestamp"
+else
+  fail "undated refusal missing the no-usable-started advice; output: $out2j2"
+fi
+if grepq "$out2j2" -F 'age=-1'; then
+  fail "undated refusal prints the age sentinel as a duration (age=-1); output: $out2j2"
+else
+  pass "undated refusal does not print the raw age sentinel"
+fi
+
+# A non-numeric pid is not probeable owner metadata. Treat it exactly like a
+# missing pid, so an undated same-host lock cannot be wedged by a corrupt value.
+echo "== Case 2j3: an undated holder with a non-numeric pid is reclaimed =="
+sb2j3=$(new_sandbox)
+cat > "$sb2j3/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2j3="$sb2j3/suite.lock"
+mkdir -p "$lock2j3"
+printf 'pid=not-a-pid\nhost=%s\nscan=corrupt\n' "$(this_host)" > "$lock2j3/owner"
+
+out2j3=$(SUITE_LOCK_DIR="$lock2j3" bash "$RUNNER" "$sb2j3" 2>&1)
+rc2j3=$?
+if [ "$rc2j3" -eq 0 ]; then
+  pass "undated holder with a non-numeric pid -> reclaimed (rc 0)"
+else
+  fail "undated holder with a non-numeric pid -> expected rc 0 got $rc2j3; output: $out2j3"
+fi
+
+# --------------------------------------------------------------------------
+# Cases 2k/2l/2m -- a failed reclaim step answered by a LIVE WINNER is
+# contention, not an operational failure (HIMMEL-1805 round 5).
+#
+# Round 4 split the reclaim's return codes but split them the wrong way for
+# three ORDINARY races: after a stranded claim is cleared, another taker can
+# win the re-mkdir (2k); the noclobber brand can lose to the uutils co-winner
+# of the claim mkdir this code explicitly anticipates (2l, HIMMEL-966); and
+# after the stale lock is dropped, a normal acquirer can win the re-acquire
+# before _suite_lock_claim does (2m). All three printed RECLAIM FAILED with
+# advice to remove the lock by hand -- while a live runner may own it, the
+# exact starvation HIMMEL-1338 exists to prevent, then actively recommended
+# by the refusal.
+#
+# Each race is injected deterministically by shadowing mkdir ON PATH for the
+# one runner invocation: a shim directory is prepended to PATH carrying a
+# `mkdir` script that delegates to the real binary unless this is the exact
+# target path on the exact Nth call -- in which case the "other party" wins
+# by creating the directory AND branding a fresh foreign owner into it. "A
+# live winner exists" is precisely what the classification must check before
+# calling a failed step operational. A PATH shim, not an exported mkdir()
+# function (the Case 2j kill() technique): a function named mkdir defined
+# here would make every earlier mkdir -p fixture call in this file resolve
+# to it statically (shellcheck SC2218), while the shim is live only for the
+# prefixed invocation. The call counter lives in a file because each shim
+# invocation is its own process.
+#
+# Shared assertions per case: the refusal carries the TAKEOVER IN PROGRESS
+# verdict (retry advice), NOT the RECLAIM FAILED verdict (dead-end advice),
+# the co-winner's brand is left intact, and the shim's own call counter
+# proves the race fired (race_shim_fired) — a shim PATH refused to execute
+# must FAIL the case rather than assert against a scenario that never
+# happened.
+# --------------------------------------------------------------------------
+race_shim_prepare() {
+  RACE_SHIM_DIR=$(mktemp -d "$WORK/shimXXXXXX")
+  RACE_REAL_MKDIR=$(command -v mkdir)
+  export RACE_REAL_MKDIR
+  cat > "$RACE_SHIM_DIR/mkdir" <<'SHEOF'
+#!/usr/bin/env bash
+# Test shim, not a runtime component: shadows mkdir on PATH for one runner
+# invocation. Delegates to the real mkdir unless this is the injected race.
+if [ "$#" -eq 1 ] && [ "$1" = "${RACE_TARGET:-}" ]; then
+  n=$(( $(cat "${RACE_HITS:?}" 2>/dev/null || printf '0') + 1 ))
+  printf '%s' "$n" > "${RACE_HITS:?}"
+  if [ "$n" -eq "${RACE_HIT_NO:?}" ]; then
+    "${RACE_REAL_MKDIR:?}" "$1"
+    printf 'pid=%s\nhost=co-winner\nstarted=%s\nscan=%s\n' \
+      "$$" "$(date +%s)" "${RACE_SCAN:?}" > "$1/owner"
+    exit "${RACE_SIM_RC:?}"
+  fi
+fi
+exec "${RACE_REAL_MKDIR:?}" "$@"
+SHEOF
+  # The heredoc creates the shim mode 644, and PATH lookup needs the execute
+  # bit on Linux/macOS — without this the shim is silently skipped, mkdir
+  # resolves to the real binary, and the races below never happen. MSYS /tmp
+  # is noacl (a created file reads as +x whatever its bits), which is why the
+  # hole was invisible on the dev box; race_shim_fired in each case is the
+  # tripwire that turns any future skip back into a failure that names itself.
+  chmod +x "$RACE_SHIM_DIR/mkdir"
+}
+
+# race_shim_fired <hits-file> <hit-no> — the case's race really happened.
+#
+# The hits file is written ONLY by the shim, so a missing file — or a count
+# that never reached the injection call — means PATH resolved mkdir to the
+# real binary and no race was injected. The verdict assertions around this
+# check would then be evaluated against a scenario that did not occur, so the
+# case FAILS here, naming the cause, before they can lend a vacuous result
+# any credibility.
+race_shim_fired() {
+  if [ -f "$1" ] && [ "$(cat "$1" 2>/dev/null || printf '0')" -ge "$2" ]; then
+    pass "the injected race fired (shim reached mkdir call $2)"
+  else
+    fail "the injected race never fired (counter $(cat "$1" 2>/dev/null || printf 'absent') never reached $2): the mkdir shim was skipped — this case's scenario did not happen"
+  fi
+}
+race_shim_prepare
+
+echo "== Case 2k: a claim won between the stranded-claim drop and the re-mkdir =="
+sb2k=$(new_sandbox)
+cat > "$sb2k/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2k="$sb2k/suite.lock"
+mkdir -p "$lock2k"
+bash -c 'exit 0' & dead2k=$!
+wait "$dead2k" 2>/dev/null
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2k" "$(this_host)" "$(date +%s)" > "$lock2k/owner"
+# A stranded claim, aged past its 120s expiry so the runner clears it.
+mkdir -p "$lock2k.claim"
+printf 'pid=1\nstarted=%s\n' "$(( $(date +%s) - 300 ))" > "$lock2k.claim/owner"
+
+# Hit #2 on the claim path is the re-mkdir after the runner dropped the
+# stranded claim -- where the co-taker wins the freed slot.
+out2k=$(PATH="$RACE_SHIM_DIR:$PATH" RACE_TARGET="$lock2k.claim" RACE_HIT_NO=2 \
+  RACE_SIM_RC=1 RACE_SCAN=case2k-co-taker RACE_HITS="$sb2k/hits" \
+  SUITE_LOCK_DIR="$lock2k" bash "$RUNNER" "$sb2k" 2>&1)
+rc2k=$?
+race_shim_fired "$sb2k/hits" 2
+
+if [ "$rc2k" -eq 2 ]; then
+  pass "claim lost between drop and re-mkdir -> refused (rc 2)"
+else
+  fail "claim lost between drop and re-mkdir -> expected rc 2 got $rc2k; output: $out2k"
+fi
+if grepq "$out2k" -F 'TAKEOVER IN PROGRESS'; then
+  pass "lost re-mkdir is reported as the race it is"
+else
+  fail "lost re-mkdir missing the TAKEOVER IN PROGRESS verdict; output: $out2k"
+fi
+if grepq "$out2k" -F 'RECLAIM FAILED'; then
+  fail "an ordinary claim race is reported as an operational failure; output: $out2k"
+else
+  pass "claim race is not reported as an operational failure"
+fi
+if [ -f "$lock2k.claim/owner" ] && grep -qF 'scan=case2k-co-taker' "$lock2k.claim/owner"; then
+  pass "the co-taker's freshly-won claim is left intact"
+else
+  fail "the run destroyed a co-taker's freshly-won claim; output: $out2k"
+fi
+
+echo "== Case 2l: the noclobber brand loses to the uutils co-winner =="
+sb2l=$(new_sandbox)
+cat > "$sb2l/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2l="$sb2l/suite.lock"
+mkdir -p "$lock2l"
+bash -c 'exit 0' & dead2l=$!
+wait "$dead2l" 2>/dev/null
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2l" "$(this_host)" "$(date +%s)" > "$lock2l/owner"
+
+# No pre-existing claim, so hit #1 on the claim path is the takeover's own
+# mkdir. uutils coreutils resolves two concurrent mkdirs of the same path to
+# BOTH rc=0 (HIMMEL-966), so the shim returns SUCCESS -- having branded the
+# co-winner's owner first, which is what makes the runner's own noclobber
+# brand lose.
+out2l=$(PATH="$RACE_SHIM_DIR:$PATH" RACE_TARGET="$lock2l.claim" RACE_HIT_NO=1 \
+  RACE_SIM_RC=0 RACE_SCAN=case2l-co-winner RACE_HITS="$sb2l/hits" \
+  SUITE_LOCK_DIR="$lock2l" bash "$RUNNER" "$sb2l" 2>&1)
+rc2l=$?
+race_shim_fired "$sb2l/hits" 1
+
+if [ "$rc2l" -eq 2 ]; then
+  pass "brand lost to the uutils co-winner -> refused (rc 2)"
+else
+  fail "brand lost to the uutils co-winner -> expected rc 2 got $rc2l; output: $out2l"
+fi
+if grepq "$out2l" -F 'TAKEOVER IN PROGRESS'; then
+  pass "a lost brand is reported as the race it is"
+else
+  fail "lost brand missing the TAKEOVER IN PROGRESS verdict; output: $out2l"
+fi
+if grepq "$out2l" -F 'RECLAIM FAILED'; then
+  fail "a lost noclobber brand is reported as an operational failure; output: $out2l"
+else
+  pass "lost brand is not reported as an operational failure"
+fi
+if [ -f "$lock2l.claim/owner" ] && grep -qF 'scan=case2l-co-winner' "$lock2l.claim/owner"; then
+  pass "the co-winner's branded claim is left intact"
+else
+  fail "the run destroyed a co-winner's branded claim; output: $out2l"
+fi
+
+echo "== Case 2m: the freed lock is won before the re-acquire =="
+sb2m=$(new_sandbox)
+cat > "$sb2m/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lock2m="$sb2m/suite.lock"
+mkdir -p "$lock2m"
+bash -c 'exit 0' & dead2m=$!
+wait "$dead2m" 2>/dev/null
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=crashed\n' \
+  "$dead2m" "$(this_host)" "$(date +%s)" > "$lock2m/owner"
+
+# Hit #1 on the LOCK path is the runner's initial claim (the stale lock dir
+# makes the real mkdir fail on its own); hit #2 is the re-acquire after the
+# reclaim dropped it -- where a normal acquirer wins the gap.
+out2m=$(PATH="$RACE_SHIM_DIR:$PATH" RACE_TARGET="$lock2m" RACE_HIT_NO=2 \
+  RACE_SIM_RC=1 RACE_SCAN=case2m-acquirer RACE_HITS="$sb2m/hits" \
+  SUITE_LOCK_DIR="$lock2m" bash "$RUNNER" "$sb2m" 2>&1)
+rc2m=$?
+race_shim_fired "$sb2m/hits" 2
+
+if [ "$rc2m" -eq 2 ]; then
+  pass "freed lock won before the re-acquire -> refused (rc 2)"
+else
+  fail "freed lock won before the re-acquire -> expected rc 2 got $rc2m; output: $out2m"
+fi
+if grepq "$out2m" -F 'TAKEOVER IN PROGRESS'; then
+  pass "a lost re-acquire is reported as the race it is"
+else
+  fail "lost re-acquire missing the TAKEOVER IN PROGRESS verdict; output: $out2m"
+fi
+if grepq "$out2m" -F 'RECLAIM FAILED'; then
+  fail "a lost re-acquire is reported as an operational failure; output: $out2m"
+else
+  pass "lost re-acquire is not reported as an operational failure"
+fi
+if [ -f "$lock2m/owner" ] && grep -qF 'scan=case2m-acquirer' "$lock2m/owner"; then
+  pass "the acquirer's freshly-won lock is left intact"
+else
+  fail "the run destroyed an acquirer's freshly-won lock; output: $out2m"
+fi
+
+# --------------------------------------------------------------------------
 # Case 3 -- the lock is RE-ENTRANT for nested runs.
 #
 # scripts/ci/test-run-shell-tests.sh invokes the runner fifteen times and is
@@ -562,9 +1151,9 @@ empty_identity_result=$(
   # shellcheck disable=SC1091  # runtime path; library is checked separately
   . "$CI_DIR/../lib/proc-tree.sh"
   signal_calls=0
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   kill() { signal_calls=$((signal_calls + 1)); }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   taskkill() { signal_calls=$((signal_calls + 1)); }
   terminate_rc=0
   proc_tree_terminate 4242 0 "" || terminate_rc=$?
@@ -588,11 +1177,11 @@ confirmed_gone_result=$(
   # shellcheck disable=SC1091  # runtime path; library is checked separately
   . "$CI_DIR/../lib/proc-tree.sh"
   signal_calls=0
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_process_identity_matches() { return 1; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   kill() { signal_calls=$((signal_calls + 1)); }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   taskkill() { signal_calls=$((signal_calls + 1)); }
   terminate_rc=0
   proc_tree_terminate 4242 0 test-identity || terminate_rc=$?
@@ -610,11 +1199,11 @@ unavailable_identity_result=$(
   # shellcheck disable=SC1091  # runtime path; library is checked separately
   . "$CI_DIR/../lib/proc-tree.sh"
   signal_calls=0
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_process_identity_matches() { return 2; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   kill() { signal_calls=$((signal_calls + 1)); }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   taskkill() { signal_calls=$((signal_calls + 1)); }
   terminate_rc=0
   proc_tree_terminate 4242 0 test-identity || terminate_rc=$?
@@ -640,16 +1229,16 @@ recycled_identity_result=$(
   . "$CI_DIR/../lib/proc-tree.sh"
   signal_log=''
   identity_checks=0
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_process_identity_matches() {
     identity_checks=$((identity_checks + 1))
     [ "$identity_checks" -eq 1 ]
   }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_group_alive() { return 0; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   kill() { signal_log="${signal_log}${1}:${2},"; return 0; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   sleep() { :; }
   terminate_rc=0
   proc_tree_terminate 4242 0 test-identity || terminate_rc=$?
@@ -667,11 +1256,11 @@ guarded_fallback_result=$(
   # shellcheck disable=SC1091  # runtime path; library is checked separately
   . "$CI_DIR/../lib/proc-tree.sh"
   signal_log=''
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_process_identity_matches() { return 0; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_group_alive() { return 0; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   kill() { signal_log="${signal_log}${1}:${2},"; return 1; }
   terminate_rc=0
   proc_tree_terminate 4242 0 test-identity || terminate_rc=$?
@@ -693,11 +1282,11 @@ leader_exit_survivor_result=$(
   signal_log=''
   leader_checks=0
   alive_checks=0
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_group_members() { printf '%s\n' 4242 500; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_process_identity() { printf 'identity-%s\n' "$1"; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_process_identity_matches() {
     if [ "$1" = "4242" ]; then
       leader_checks=$((leader_checks + 1))
@@ -706,14 +1295,14 @@ leader_exit_survivor_result=$(
       [ "$1" = "500" ] && [ "$2" = "identity-500" ]
     fi
   }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   proc_tree_group_alive() {
     alive_checks=$((alive_checks + 1))
     [ "$alive_checks" -eq 1 ]
   }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   kill() { signal_log="${signal_log}${1}:${2},"; return 0; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_terminate
   sleep() { :; }
   terminate_rc=0
   proc_tree_terminate 4242 0 identity-4242 || terminate_rc=$?
@@ -740,22 +1329,22 @@ group_member_identity_result=$(
   signal_log=''
   identity_checks=0
   taskkill_calls=0
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_group_terminate
   proc_tree_group_alive() { return 0; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_group_terminate
   proc_tree_group_members() { printf '%s\n' 500 501; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_group_terminate
   proc_tree_process_identity() { printf 'identity-%s\n' "$1"; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_group_terminate
   proc_tree_process_identity_matches() {
     identity_checks=$((identity_checks + 1))
     [ "$1" = "500" ]
   }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_group_terminate
   kill() { signal_log="${signal_log}${1}:${2},"; return 0; }
   # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_group_terminate
   taskkill() { taskkill_calls=$((taskkill_calls + 1)); return 0; }
-  # shellcheck disable=SC2329  # invoked indirectly by proc_tree_group_terminate
+  # shellcheck disable=SC2317,SC2329  # invoked indirectly by proc_tree_group_terminate
   sleep() { :; }
   terminate_rc=0
   proc_tree_group_terminate 4242 0 || terminate_rc=$?
@@ -1037,7 +1626,8 @@ touch "$(dirname "$0")/never.ran"
 exit 0
 SHEOF
 
-out7=$(SUITE_LOCK_DIR="$sb7/suite.lock" SUITE_RUN_BUDGET=1 SUITE_TIMEOUT=30 \
+out7=$(SUITE_LOCK_DIR="$sb7/suite.lock" SUITE_ROTATE_STATE="$sb7/rotate.cursor" \
+  SUITE_RUN_BUDGET=1 SUITE_TIMEOUT=30 \
   bash "$RUNNER" "$sb7" 2>&1)
 rc7=$?
 if [ "$rc7" -eq 1 ]; then
@@ -1063,7 +1653,8 @@ cat > "$sb7b/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
 SHEOF
-out7b=$(SUITE_LOCK_DIR="$sb7b/suite.lock" SUITE_RUN_BUDGET=3600 \
+out7b=$(SUITE_LOCK_DIR="$sb7b/suite.lock" SUITE_ROTATE_STATE="$sb7b/rotate.cursor" \
+  SUITE_RUN_BUDGET=3600 \
   bash "$RUNNER" "$sb7b" 2>&1)
 rc7b=$?
 if [ "$rc7b" -eq 0 ]; then
@@ -1214,6 +1805,545 @@ if grepq "$out9b" -E 'value too great for base|invalid octal'; then
   fail "zero-padded value was parsed as octal; output: $out9b"
 else
   pass "no octal parse error on a zero-padded value"
+fi
+
+# --------------------------------------------------------------------------
+# Case W1 -- SUITE_LOCK_WAIT unset: the new knob is genuinely opt-in. A held
+# lock must still refuse ON SIGHT with the historical single-shot BEHAVIOUR —
+# same decision, same rc 2, nothing waited (HIMMEL-2215).
+#
+# Behaviour, deliberately not byte-identical TEXT: the refusal gained three
+# lines naming SUITE_LOCK_WAIT as the way to queue instead. So this case
+# asserts the decision (rc 2), the verdict marker (REFUSED), and the ABSENCE
+# of any heartbeat — never an exact-output match, which would fail on the
+# intended new lines and would have to be re-baselined on every message edit.
+# --------------------------------------------------------------------------
+echo "== Case W1: default is unchanged -- a held lock still refuses on sight =="
+sbw1=$(new_sandbox)
+cat > "$sbw1/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lockw1="$sbw1/suite.lock"
+mkdir -p "$lockw1"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other\n' \
+  "$$" "$(this_host)" "$(date +%s)" > "$lockw1/owner"
+
+outw1=$(SUITE_LOCK_DIR="$lockw1" bash "$RUNNER" "$sbw1" 2>&1)
+rcw1=$?
+if [ "$rcw1" -eq 2 ]; then
+  pass "no SUITE_LOCK_WAIT -> held lock still refuses (rc 2)"
+else
+  fail "no SUITE_LOCK_WAIT -> expected rc 2 got $rcw1; output: $outw1"
+fi
+if grepq "$outw1" -F 'REFUSED'; then
+  pass "refusal message present"
+else
+  fail "refusal message missing; output: $outw1"
+fi
+if grepq "$outw1" -F 'WAITING:'; then
+  fail "unset SUITE_LOCK_WAIT queued instead of refusing; output: $outw1"
+else
+  pass "no WAITING: heartbeat when the knob is unset"
+fi
+
+# --------------------------------------------------------------------------
+# Case W2 -- SUITE_LOCK_WAIT=0 is explicitly the same as unset: 0 is the
+# meaningful OFF value for this budget, not a degenerate "wait zero seconds".
+# --------------------------------------------------------------------------
+echo "== Case W2: SUITE_LOCK_WAIT=0 is explicitly the same as unset =="
+sbw2=$(new_sandbox)
+cat > "$sbw2/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lockw2="$sbw2/suite.lock"
+mkdir -p "$lockw2"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other\n' \
+  "$$" "$(this_host)" "$(date +%s)" > "$lockw2/owner"
+
+outw2=$(SUITE_LOCK_DIR="$lockw2" SUITE_LOCK_WAIT=0 bash "$RUNNER" "$sbw2" 2>&1)
+rcw2=$?
+if [ "$rcw2" -eq 2 ]; then
+  pass "SUITE_LOCK_WAIT=0 -> held lock still refuses (rc 2)"
+else
+  fail "SUITE_LOCK_WAIT=0 -> expected rc 2 got $rcw2; output: $outw2"
+fi
+if grepq "$outw2" -F 'WAITING:'; then
+  fail "SUITE_LOCK_WAIT=0 queued instead of refusing; output: $outw2"
+else
+  pass "no WAITING: heartbeat with SUITE_LOCK_WAIT=0"
+fi
+
+# A leading-zero value is a valid decimal budget, not a malformed one --
+# "0060" must parse as 60, not trip the WARN fallback. Use "0003" (a 3s
+# budget) rather than "0060" so this sub-case does not cost the suite a full
+# minute; SUITE_LOCK_WAIT_INTERVAL=1 keeps the heartbeat cadence tight too.
+outw2z=$(SUITE_LOCK_DIR="$lockw2" SUITE_LOCK_WAIT=0003 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sbw2" 2>&1)
+rcw2z=$?
+if [ "$rcw2z" -eq 2 ]; then
+  pass "SUITE_LOCK_WAIT=0003 -> still refuses once its budget is spent (rc 2)"
+else
+  fail "SUITE_LOCK_WAIT=0003 -> expected rc 2 got $rcw2z; output: $outw2z"
+fi
+if grepq "$outw2z" -F 'WARN' && grepq "$outw2z" -F 'SUITE_LOCK_WAIT'; then
+  fail "SUITE_LOCK_WAIT=0003 (a valid leading-zero budget) was rejected as malformed; output: $outw2z"
+else
+  pass "no WARN naming SUITE_LOCK_WAIT -- leading zeros parsed as decimal"
+fi
+if grepq "$outw2z" -F 'WAITING:'; then
+  pass "WAITING: heartbeat present -- 0003 was honoured as a 3s budget, not rejected"
+else
+  fail "no WAITING: heartbeat; 0003 should have queued for its 3s budget; output: $outw2z"
+fi
+
+# --------------------------------------------------------------------------
+# Case W3 -- LIVE TWO-PROCESS PROBE: a genuine race between a real holder and
+# a real waiter, not a simulation. This is the done-criterion evidence for
+# HIMMEL-2215 -- the waiter must queue, heartbeat repeatedly naming the
+# holder, and eventually acquire once the holder exits, all without ever
+# touching the lock while the holder still has it.
+# --------------------------------------------------------------------------
+echo "== Case W3: a live waiter queues behind a live holder, then acquires =="
+sbw3=$(new_sandbox)
+cat > "$sbw3/test-hold.sh" <<'SHEOF'
+#!/usr/bin/env bash
+sleep 8
+exit 0
+SHEOF
+lockw3="$sbw3/suite.lock"
+
+SUITE_LOCK_DIR="$lockw3" bash "$RUNNER" "$sbw3" >"$sbw3/holder.log" 2>&1 &
+holder_pid=$!
+
+# The lock is a DIRECTORY with an owner FILE; test with `-f` on the owner
+# file, never `cat` -- the file may not exist yet.
+_spin=0
+while [ ! -f "$lockw3/owner" ] && [ "$_spin" -lt 100 ]; do
+  sleep 0.1
+  _spin=$((_spin + 1))
+done
+
+if [ ! -f "$lockw3/owner" ]; then
+  fail "W3 setup -- holder never branded the lock within 10s; cannot run the race"
+  kill "$holder_pid" 2>/dev/null
+  wait "$holder_pid" 2>/dev/null
+else
+  holder_reported_pid=$(grep '^pid=' "$lockw3/owner" | cut -d= -f2)
+
+  SUITE_LOCK_DIR="$lockw3" SUITE_LOCK_WAIT=60 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sbw3" >"$sbw3/waiter.log" 2>&1
+  rcw3=$?
+
+  wait "$holder_pid"
+  holder_rc=$?
+
+  outw3=$(cat "$sbw3/waiter.log" 2>/dev/null || echo "")
+  holder_log=$(cat "$sbw3/holder.log" 2>/dev/null || echo "")
+
+  if [ "$rcw3" -eq 0 ]; then
+    pass "W3a: waiter eventually acquired (rc 0) rather than refusing"
+  else
+    fail "W3a: waiter -> expected rc 0 got $rcw3; output: $outw3"
+  fi
+
+  if grepq "$outw3" -F 'WAITING:'; then
+    pass "W3b: waiter log contains a WAITING: heartbeat"
+  else
+    fail "W3b: no WAITING: heartbeat in waiter output: $outw3"
+  fi
+
+  if grepq "$outw3" -F "pid=$holder_reported_pid"; then
+    pass "W3c: heartbeat names the holder's actual pid"
+  else
+    fail "W3c: heartbeat does not name pid=$holder_reported_pid; output: $outw3"
+  fi
+
+  waiting_count=$(grep -c 'WAITING:' "$sbw3/waiter.log" 2>/dev/null) || waiting_count=0
+  case "$waiting_count" in ''|*[!0-9]*) waiting_count=0 ;; esac
+  if [ "$waiting_count" -ge 2 ]; then
+    pass "W3d: heartbeat repeats ($waiting_count times) rather than firing once"
+  else
+    fail "W3d: heartbeat fired $waiting_count time(s), expected >= 2; output: $outw3"
+  fi
+
+  if grepq "$outw3" -E 'held=[0-9]+s'; then
+    pass "W3e: heartbeat carries the holder's elapsed hold time"
+  else
+    fail "W3e: no held=<seconds>s in heartbeat; output: $outw3"
+  fi
+
+  if grepq "$outw3" -F 'has waited'; then
+    pass "W3f: heartbeat carries how long this run has waited"
+  else
+    fail "W3f: no 'has waited' in heartbeat; output: $outw3"
+  fi
+
+  if grepq "$outw3" -F 'ACQUIRED:'; then
+    pass "W3g: waiter log closes the loop with ACQUIRED:"
+  else
+    fail "W3g: no ACQUIRED: in waiter output: $outw3"
+  fi
+
+  # The two checks above are necessary but NOT sufficient on their own: a
+  # waiter that stole the lock mid-hold is invisible to both. suite_lock_release
+  # compares the owner file against its own pid/host before deleting anything,
+  # so a holder whose lock was taken over does not fail -- it prints
+  # "NOTE: not releasing ... it was taken over" and exits 0. That NOTE is the
+  # runner's own evidence of a theft, and it is emitted no matter WHEN in the
+  # hold the takeover happened, so it is a stronger and more deterministic
+  # check than sampling the owner file at some arbitrary mid-flight moment.
+  if grepq "$holder_log" -F 'REFUSED'; then
+    fail "W3h: holder log shows REFUSED -- the waiter contended the lock while held; holder log: $holder_log"
+  elif [ "$holder_rc" -ne 0 ]; then
+    fail "W3h: holder exited non-zero ($holder_rc); holder log: $holder_log"
+  elif grepq "$holder_log" -F 'not releasing'; then
+    fail "W3h: the holder's lock was TAKEN OVER while it still held it -- the waiter stole the lock; holder log: $holder_log"
+  else
+    pass "W3h: the waiter did not steal the lock while the holder held it (holder released its own lock cleanly)"
+  fi
+
+  # W3i pins the accuracy fix: `waited` used to be assigned only on the
+  # failure path (before the sleep), so the ACQUIRED: line could report a
+  # duration lower than the real wait -- 0 in the worst case, which the
+  # `-gt 0` guard would then suppress entirely. W3 waits ~8s, so a real
+  # measurement taken at acquisition must read at least 1s.
+  acq_secs=$(printf '%s\n' "$outw3" | sed -n 's/.*after waiting \([0-9][0-9]*\)s\..*/\1/p' | head -1)
+  case "$acq_secs" in ''|*[!0-9]*) acq_secs=-1 ;; esac
+  if [ "$acq_secs" -ge 1 ]; then
+    pass "W3i: ACQUIRED: reports a real elapsed wait (${acq_secs}s), measured at acquisition"
+  else
+    fail "W3i: ACQUIRED: reported '${acq_secs}' seconds -- the waited counter is stale (measured at the last failure, not at acquisition); output: $outw3"
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# Case W4 -- the wait budget is honoured (the run actually spends it) and the
+# give-up verdict is loud: the last attempt against a still-held lock must
+# print the full REFUSED block, not a quiet retry.
+# --------------------------------------------------------------------------
+echo "== Case W4: the wait budget is honoured and the give-up verdict is loud =="
+sbw4=$(new_sandbox)
+cat > "$sbw4/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lockw4="$sbw4/suite.lock"
+mkdir -p "$lockw4"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other\n' \
+  "$$" "$(this_host)" "$(date +%s)" > "$lockw4/owner"
+
+start4=$(date +%s)
+outw4=$(SUITE_LOCK_DIR="$lockw4" SUITE_LOCK_WAIT=3 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sbw4" 2>&1)
+rcw4=$?
+elapsed4=$(( $(date +%s) - start4 ))
+
+if [ "$rcw4" -eq 2 ]; then
+  pass "budget exhausted -> rc 2"
+else
+  fail "budget exhausted -> expected rc 2 got $rcw4; output: $outw4"
+fi
+if grepq "$outw4" -F 'WAITING:'; then
+  pass "output contains a WAITING: heartbeat before giving up"
+else
+  fail "no WAITING: heartbeat in output: $outw4"
+fi
+if grepq "$outw4" -F 'GAVE UP'; then
+  pass "output contains the GAVE UP verdict"
+else
+  fail "no GAVE UP verdict in output: $outw4"
+fi
+if grepq "$outw4" -F 'REFUSED'; then
+  pass "the final attempt is loud (REFUSED present)"
+else
+  fail "the final attempt did not emit REFUSED; output: $outw4"
+fi
+owner4=$(cat "$lockw4/owner" 2>/dev/null || echo "")
+if grepq "$owner4" -F "pid=$$"; then
+  pass "the holder's lock is intact after the waiter gave up"
+else
+  fail "the holder's lock was disturbed; owner file: $owner4"
+fi
+if [ "$elapsed4" -ge 3 ]; then
+  pass "the run actually spent the budget (${elapsed4}s >= 3s)"
+else
+  fail "the run returned in ${elapsed4}s, budget not honoured; output: $outw4"
+fi
+
+# --------------------------------------------------------------------------
+# Case W5 -- a malformed SUITE_LOCK_WAIT falls back to no wait, loudly: a
+# typo must not silently convert a refusal into an hours-long block.
+# --------------------------------------------------------------------------
+echo "== Case W5: a malformed SUITE_LOCK_WAIT falls back to no wait, loudly =="
+sbw5=$(new_sandbox)
+cat > "$sbw5/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lockw5="$sbw5/suite.lock"
+mkdir -p "$lockw5"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other\n' \
+  "$$" "$(this_host)" "$(date +%s)" > "$lockw5/owner"
+
+outw5=$(SUITE_LOCK_DIR="$lockw5" SUITE_LOCK_WAIT=abc bash "$RUNNER" "$sbw5" 2>&1)
+rcw5=$?
+if [ "$rcw5" -eq 2 ]; then
+  pass "malformed SUITE_LOCK_WAIT -> rc 2 (no wait)"
+else
+  fail "malformed SUITE_LOCK_WAIT -> expected rc 2 got $rcw5; output: $outw5"
+fi
+if grepq "$outw5" -F 'WARN'; then
+  pass "output contains a WARN for the malformed value"
+else
+  fail "no WARN in output: $outw5"
+fi
+if grepq "$outw5" -F 'SUITE_LOCK_WAIT'; then
+  pass "the warning names SUITE_LOCK_WAIT"
+else
+  fail "warning does not name SUITE_LOCK_WAIT; output: $outw5"
+fi
+if grepq "$outw5" -F 'WAITING:'; then
+  fail "malformed SUITE_LOCK_WAIT queued instead of falling back; output: $outw5"
+else
+  pass "no WAITING: heartbeat -- typo did not become an unbounded block"
+fi
+
+# --------------------------------------------------------------------------
+# Case W6 -- an out-of-range SUITE_LOCK_WAIT falls back to no wait, loudly.
+# An all-digit value is not the same as an in-range one: bash arithmetic
+# WRAPS past intmax instead of failing, so a fat-fingered digit run must be
+# caught separately from the non-digit case Case W5 already covers -- a typo
+# here must not silently become an unbounded block either.
+# --------------------------------------------------------------------------
+echo "== Case W6: an out-of-range SUITE_LOCK_WAIT falls back to no wait, loudly =="
+sbw6=$(new_sandbox)
+cat > "$sbw6/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lockw6="$sbw6/suite.lock"
+mkdir -p "$lockw6"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other\n' \
+  "$$" "$(this_host)" "$(date +%s)" > "$lockw6/owner"
+
+outw6=$(SUITE_LOCK_DIR="$lockw6" SUITE_LOCK_WAIT=99999999999999999999 bash "$RUNNER" "$sbw6" 2>&1)
+rcw6=$?
+if [ "$rcw6" -eq 2 ]; then
+  pass "out-of-range SUITE_LOCK_WAIT -> rc 2 (no wait)"
+else
+  fail "out-of-range SUITE_LOCK_WAIT -> expected rc 2 got $rcw6; output: $outw6"
+fi
+if grepq "$outw6" -F 'WARN'; then
+  pass "output contains a WARN for the out-of-range value"
+else
+  fail "no WARN in output: $outw6"
+fi
+if grepq "$outw6" -F 'SUITE_LOCK_WAIT'; then
+  pass "the warning names SUITE_LOCK_WAIT"
+else
+  fail "warning does not name SUITE_LOCK_WAIT; output: $outw6"
+fi
+if grepq "$outw6" -F 'WAITING:'; then
+  fail "out-of-range SUITE_LOCK_WAIT queued instead of falling back; output: $outw6"
+else
+  pass "no WAITING: heartbeat -- a digit-string typo did not become an unbounded block"
+fi
+if grep -q "^pid=$$\$" "$lockw6/owner" 2>/dev/null; then
+  pass "the holder's lock is still intact after the refusal"
+else
+  fail "the holder's owner file no longer shows pid=$$; refusal must not have touched it"
+fi
+
+# --------------------------------------------------------------------------
+# Case W7 -- a permanent safety refusal does NOT queue (HIMMEL-2215 round 2,
+# codex-1). SUITE_LOCK_DIR pointed at a directory that exists, has no owner
+# file, and is not empty is a safety refusal, not "someone else holds it" --
+# waiting can never clear it. Before this fix the wait loop could not tell the
+# two apart and would spend the whole SUITE_LOCK_WAIT budget printing
+# WAITING: lines naming a holder that does not exist.
+# --------------------------------------------------------------------------
+echo "== Case W7: a permanent safety refusal does NOT queue =="
+sbw7=$(new_sandbox)
+cat > "$sbw7/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+mkdir -p "$sbw7/notalock"
+touch "$sbw7/notalock/decoy"
+
+start7=$(date +%s)
+outw7=$(SUITE_LOCK_DIR="$sbw7/notalock" SUITE_LOCK_WAIT=60 SUITE_LOCK_WAIT_INTERVAL=1 bash "$RUNNER" "$sbw7" 2>&1)
+rcw7=$?
+elapsed7=$(( $(date +%s) - start7 ))
+
+if [ "$rcw7" -eq 2 ]; then
+  pass "permanent refusal -> rc 2"
+else
+  fail "permanent refusal -> expected rc 2 got $rcw7; output: $outw7"
+fi
+if grepq "$outw7" -F 'REFUSED'; then
+  pass "output contains REFUSED"
+else
+  fail "no REFUSED in output: $outw7"
+fi
+if grepq "$outw7" -F 'WAITING:'; then
+  fail "a permanent refusal was dressed up as a queue -- WAITING: present; output: $outw7"
+else
+  pass "no WAITING: heartbeat -- a safety refusal is never presented as a queue"
+fi
+if grepq "$outw7" -F 'NOT QUEUED'; then
+  pass "output contains NOT QUEUED"
+else
+  fail "no NOT QUEUED verdict in output: $outw7"
+fi
+if [ "$elapsed7" -lt 30 ]; then
+  pass "broke out immediately instead of spending the 60s budget (${elapsed7}s)"
+else
+  fail "spent ${elapsed7}s on a refusal waiting cannot clear; output: $outw7"
+fi
+
+# --------------------------------------------------------------------------
+# Case W8 -- the wait budget has a ceiling (HIMMEL-2215 round 2, codex-2). A
+# near-intmax SUITE_LOCK_WAIT round-trips the existing validation (it IS
+# intmax), but `start + SUITE_LOCK_WAIT` then overflows into a NEGATIVE
+# deadline and the run refuses instantly instead of waiting -- so the ceiling
+# must reject it as out-of-range, same as an ordinary overflow.
+# --------------------------------------------------------------------------
+echo "== Case W8: the wait budget has a ceiling =="
+sbw8=$(new_sandbox)
+cat > "$sbw8/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lockw8="$sbw8/suite.lock"
+mkdir -p "$lockw8"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other\n' \
+  "$$" "$(this_host)" "$(date +%s)" > "$lockw8/owner"
+
+outw8a=$(SUITE_LOCK_DIR="$lockw8" SUITE_LOCK_WAIT=31536001 bash "$RUNNER" "$sbw8" 2>&1)
+rcw8a=$?
+if [ "$rcw8a" -eq 2 ]; then
+  pass "just-over-the-ceiling SUITE_LOCK_WAIT -> rc 2 (no wait)"
+else
+  fail "just-over-the-ceiling SUITE_LOCK_WAIT -> expected rc 2 got $rcw8a; output: $outw8a"
+fi
+if grepq "$outw8a" -F 'WARN'; then
+  pass "output contains a WARN for the over-ceiling value"
+else
+  fail "no WARN in output: $outw8a"
+fi
+if grepq "$outw8a" -F 'SUITE_LOCK_WAIT'; then
+  pass "the warning names SUITE_LOCK_WAIT"
+else
+  fail "warning does not name SUITE_LOCK_WAIT; output: $outw8a"
+fi
+if grepq "$outw8a" -F 'WAITING:'; then
+  fail "an over-ceiling SUITE_LOCK_WAIT queued instead of falling back; output: $outw8a"
+else
+  pass "no WAITING: heartbeat -- the ceiling did not let it queue"
+fi
+if grep -q "^pid=$$\$" "$lockw8/owner" 2>/dev/null; then
+  pass "the holder's lock is still intact after the refusal"
+else
+  fail "the holder's owner file no longer shows pid=$$; refusal must not have touched it"
+fi
+
+outw8b=$(SUITE_LOCK_DIR="$lockw8" SUITE_LOCK_WAIT=9223372036854775807 bash "$RUNNER" "$sbw8" 2>&1)
+rcw8b=$?
+if [ "$rcw8b" -eq 2 ]; then
+  pass "near-intmax SUITE_LOCK_WAIT -> rc 2 (no wait)"
+else
+  fail "near-intmax SUITE_LOCK_WAIT -> expected rc 2 got $rcw8b; output: $outw8b"
+fi
+if grepq "$outw8b" -F 'WARN'; then
+  pass "output contains a WARN for the near-intmax value"
+else
+  fail "no WARN in output: $outw8b"
+fi
+if grepq "$outw8b" -F 'SUITE_LOCK_WAIT'; then
+  pass "the warning names SUITE_LOCK_WAIT"
+else
+  fail "warning does not name SUITE_LOCK_WAIT; output: $outw8b"
+fi
+if grepq "$outw8b" -F 'WAITING:'; then
+  fail "a near-intmax SUITE_LOCK_WAIT queued instead of falling back; output: $outw8b"
+else
+  pass "no WAITING: heartbeat -- the round-trip-but-overflowing value did not slip through"
+fi
+if grep -q "^pid=$$\$" "$lockw8/owner" 2>/dev/null; then
+  pass "the holder's lock is still intact after the refusal"
+else
+  fail "the holder's owner file no longer shows pid=$$; refusal must not have touched it"
+fi
+
+# --------------------------------------------------------------------------
+# Case W9 -- a huge SUITE_LOCK_WAIT_INTERVAL cannot outlive the wait budget
+# (HIMMEL-2215 round 3, codex/gpt-5.6-sol). SUITE_LOCK_WAIT_INTERVAL only
+# validates as a positive integer, with no upper bound. The clamp used to be
+# written as `now + nap > deadline`; with a near-intmax interval that SUM
+# wraps negative, so it is never greater than the deadline, the clamp is
+# skipped, and `sleep` gets the near-intmax value -- blocking far past the
+# SUITE_LOCK_WAIT budget the clamp exists to enforce. The fix compares
+# against the remaining budget instead of a sum. A held lock forces the
+# queue path (not the NOT-QUEUED safety-refusal path), and the run must
+# still give up once SUITE_LOCK_WAIT is spent, well under a minute.
+# --------------------------------------------------------------------------
+echo "== Case W9: a huge SUITE_LOCK_WAIT_INTERVAL cannot outlive the wait budget =="
+sbw9=$(new_sandbox)
+cat > "$sbw9/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+lockw9="$sbw9/suite.lock"
+mkdir -p "$lockw9"
+printf 'pid=%s\nhost=%s\nstarted=%s\nscan=other\n' \
+  "$$" "$(this_host)" "$(date +%s)" > "$lockw9/owner"
+
+startw9=$(date +%s)
+if command -v timeout >/dev/null 2>&1; then
+  outw9=$(SUITE_LOCK_DIR="$lockw9" SUITE_LOCK_WAIT=3 SUITE_LOCK_WAIT_INTERVAL=9223372036854775807 \
+    timeout 60 bash "$RUNNER" "$sbw9" 2>&1)
+  rcw9=$?
+  w9_ran=1
+else
+  # SKIPPED, deliberately -- never run this one unguarded. The case exists to
+  # prove a near-intmax interval cannot outlive the budget; without a watchdog
+  # a regression in exactly that code path hands `sleep` a near-intmax argument
+  # and wedges the whole suite, so the unguarded fallback risks the very hang
+  # the case is testing for. A hand-rolled bash watchdog is not the answer
+  # either: reaping a runner's whole process tree on Git Bash is the problem
+  # scripts/lib/proc-tree.sh exists to solve, and reimplementing it inline in a
+  # test is worse than declaring the gap.
+  echo "  SKIP  W9 needs the 'timeout' binary to bound a possible hang -- not present, case skipped"
+  w9_ran=0
+fi
+endw9=$(date +%s)
+elapsedw9=$(( endw9 - startw9 ))
+
+if [ "$w9_ran" -eq 1 ]; then
+  if [ "$rcw9" -eq 124 ]; then
+    fail "the interval clamp was skipped; sleep outlived the budget (timed out after ${elapsedw9}s)"
+  else
+    if [ "$rcw9" -eq 2 ]; then
+      pass "huge SUITE_LOCK_WAIT_INTERVAL -> rc 2 (budget spent, refused)"
+    else
+      fail "huge SUITE_LOCK_WAIT_INTERVAL -> expected rc 2 got $rcw9; output: $outw9"
+    fi
+    if [ "$elapsedw9" -lt 60 ]; then
+      pass "gave up in ${elapsedw9}s -- did not sleep past the budget"
+    else
+      fail "took ${elapsedw9}s -- the clamp let sleep run past the budget; output: $outw9"
+    fi
+    if grepq "$outw9" -F 'GAVE UP'; then
+      pass "output contains GAVE UP -- this is the queue path, not a safety refusal"
+    else
+      fail "no GAVE UP in output: $outw9"
+    fi
+  fi
+  if grep -q "^pid=$$\$" "$lockw9/owner" 2>/dev/null; then
+    pass "the holder's lock is still intact after the wait"
+  else
+    fail "the holder's owner file no longer shows pid=$$; the wait must not have touched it"
+  fi
 fi
 
 # --------------------------------------------------------------------------

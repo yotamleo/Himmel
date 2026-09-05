@@ -76,9 +76,11 @@
 #           none, or no CodeRabbit status exists). rc 0 = read ok (incl. empty);
 #           rc 1 = cannot evaluate. Same identity-matched query as the probe, so
 #           the description belongs to the status cr_signal_state classified.
-#           Added for HIMMEL-1465: a rate-limited skip and an auto-reviews-
-#           disabled skip both project to `skipped`, and only rate-limiting is
-#           panel-carriable — the gates need the description to tell them apart.
+#           Added for HIMMEL-1465, when only a rate-limited skip was panel-
+#           carriable and the gates needed the description to tell it from an
+#           auto-reviews-disabled one (both project to `skipped`). Since
+#           HIMMEL-1506/1760 BOTH gates carry every skip wording on a clean
+#           exact-head panel, so the description now only labels the audit line.
 #
 #   A SHA that does not exist returns `[]` with HTTP 200 on this endpoint, so it
 #   is indistinguishable from "no CodeRabbit status" and reports "absent". That

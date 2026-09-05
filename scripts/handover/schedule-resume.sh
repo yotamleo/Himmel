@@ -60,7 +60,8 @@ fi
 # Self-contained resume prompt. Single line so it survives both schtasks
 # (CMD quoting) and `at` (heredoc). Avoid backticks and $() so the operator's
 # shell does not pre-interpolate anything before scheduling.
-RESUME_PROMPT="load $HANDOVER_PATH overnight mode"
+# HIMMEL-1719: the pointer clause names § Launch preamble (docs/handover/overnight-mode.md) — single line, quoting-safe charset; test section 1719 pins both.
+RESUME_PROMPT="load $HANDOVER_PATH overnight mode. Apply the Launch preamble standing instructions in docs/handover/overnight-mode.md before Phase 1."
 
 # Platform detection. Prefer OSTYPE (set by bash); fall back to uname.
 detect_platform() {

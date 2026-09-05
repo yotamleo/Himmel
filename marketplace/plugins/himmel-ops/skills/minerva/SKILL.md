@@ -1,9 +1,9 @@
 ---
 name: minerva
-description: Use when turning an idea into an implementation plan — runs brainstorm → spec → plan as ONE pipeline with an ADVERSARIAL CRITIC LOOP between each stage. Trigger on "build/implement/design X", "/minerva", or any feature/capability work that should pass through a spec + plan before code. Composes superpowers brainstorming + writing-plans (no fork); adds a spec-critic and a plan-critic.
+description: Grill / stress-test / brainstorm an idea, or design/build a feature, into a critic-hardened spec + plan. /minerva
 ---
 
-# minerva — brainstorm → critic → spec → critic → plan (HIMMEL-428)
+# minerva — grill → brainstorm → critic → spec → critic → plan (HIMMEL-428)
 
 Orchestrate a hardened path from idea to implementation plan. You drive the
 superpowers sub-skills and insert an adversarial critic between each stage, so
@@ -12,6 +12,12 @@ goddess of wisdom + strategic planning with himmel's critic discipline.
 
 **You are the orchestrator.** Do not let the sub-skills auto-chain past their
 stage — you decide when each critic runs and when to advance.
+
+**One front door (HIMMEL-2039).** grill / stress-test / interrogate / brainstorm
+/ "build / design / implement X" / `/minerva` all land here. The grilling
+stance is minerva's Stage 1a, not a second skill: if
+`mattpocock-skills:grilling` fires, run Stage 1a below and continue the
+pipeline rather than stopping at a shared understanding.
 
 ## Mode (gates)
 
@@ -41,10 +47,52 @@ bash "$S/autonomy-mode.sh" 2>/dev/null || echo interactive
 - Output `autonomous` → do NOT pause; the critics are the gate; auto-advance
   through to the terminal.
 
-## Stage 1 — brainstorm → spec
+## Stage 1 — grill → brainstorm → spec
 
-Invoke `superpowers:brainstorming` for the interactive design (clarifying
-questions, approaches, the design, and the written spec).
+### 1a. Grill (the interrogation phase, HIMMEL-2039)
+
+Before any design is written, interrogate the idea until it survives. Map it as
+a **design tree**: every decision branches into the decisions that hang off it.
+
+Work the tree in **rounds**. The **frontier** is every decision whose
+prerequisites are already settled — the questions you can ask *now* without
+guessing at answers you have not heard yet. Ask the WHOLE frontier in one
+round, numbered, each with your recommended answer:
+
+```
+❓ **Q1** — **<question title>**: <question body, options if any>
+
+➡️ <your recommended answer>
+```
+
+Then wait. Each round's answers reshape the tree: settled decisions push the
+frontier outward and unblock the questions that depended on them. Recompute the
+frontier and ask the next round. A question whose answer depends on another
+question still open in THIS round belongs to a LATER round.
+
+**Facts are your job, never the operator's.** When a frontier question needs a
+fact from the environment, go get it — never ask for what you could look up.
+Look it up inline when a handful of tool calls settles it; delegate only a
+genuinely independent, sizeable search (CLAUDE.md subagent policy). Do not
+block on it: only the questions downstream of a running exploration wait; ask
+the rest of the frontier now. The *decisions* are the operator's — put each to
+them and wait.
+
+**Stop condition:** the frontier is empty — every branch visited, nothing
+silently assumed. Do not advance to 1b until the operator confirms you have
+reached a shared understanding.
+
+`autonomous` mode has no operator to answer: still build the tree and still
+write the frontier out, but answer each question yourself with the recommended
+answer and carry the whole Q/A list into the spec as an explicit ASSUMPTIONS
+section — the Stage-2 critic red-teams it (charter dimension 1, hidden
+assumptions).
+
+### 1b. Brainstorm → spec
+
+Invoke `superpowers:brainstorming` for the design and the written spec, carrying
+the Stage-1a outcome in as settled context — do not re-ask what the grill
+settled.
 
 **HALT it before its auto-handoff to writing-plans.** When brainstorming has
 written + self-reviewed the spec and the design is approved, return HERE

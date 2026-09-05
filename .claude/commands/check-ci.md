@@ -1,6 +1,6 @@
 ---
-description: Token-free PR merge-gate watcher — one process loops inside gh pr checks --watch --fail-fast, then verifies zero unresolved review threads, no changes-requested review, and (when CodeRabbit is armed) that its latest review is anchored to the head SHA, and returns a single exit code (0=green+resolved, 1=red, 2=cannot evaluate/no PR/usage error/indeterminate, 3=unresolved threads/changes requested/outside-diff body finding, 4=stale bot review or an incremental-silent review object), so merge-on-green costs ~zero tokens (HIMMEL-949 / HIMMEL-1181).
-argument-hint: [pr-number|branch|url] [--grace <sec>] [--settle <sec>] [--threads-only] [--escalate]
+description: Token-free PR merge-gate watcher — loops gh pr checks --watch, verifies threads resolved, returns one exit code.
+argument-hint: [pr-number|branch|url] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only] [--escalate]
 ---
 
 Watch the current branch's PR merge gate without an agent poll loop. All the
@@ -35,7 +35,15 @@ re-watch — it catches check runs that register late, so the first green
 can't certify an incomplete check set (default 30, `--settle 0` disables,
 e.g. `bash scripts/check-ci.sh 1150 --settle 60`). `--threads-only` runs
 just the review-thread gate — that's how `/pr-check` step 4.8 reuses this
-implementation.)
+implementation. `--max-wait <sec>` (default 540, `CHECK_CI_MAX_WAIT` env,
+0 = unbounded) bounds each `gh pr checks --watch` round — CodeRabbit's
+rollup row can sit "pending" long after every other check (and its own gate
+status) is decidable, so the watch is supervised and stopped early once the
+verdict no longer depends on it, or at this cap, whichever comes first
+(`check-ci: watch cap reached (Ns) — evaluating now`, HIMMEL-2062); a cap hit
+with genuine non-CodeRabbit work still pending refuses (exit 2) rather than
+certifying green over unfinished checks. `merge-on-green.sh` calls this
+script with no flags, so it inherits the same bound via `CHECK_CI_MAX_WAIT`.)
 
 Act on the exit code:
 
@@ -61,8 +69,14 @@ Act on the exit code:
   never reported as a red check), the thread-state query failed or returned
   a malformed page, the PR head moved during the run (the green verdict is
   bound to the watched head SHA — a concurrent push invalidates it), or
-  usage error. Cannot-evaluate always blocks certification even if the
-  checks themselves look green — re-run.
+  usage error. Also (when CodeRabbit is armed) when its status says the
+  review COMPLETED while the PR carries **no CodeRabbit review object at
+  any head, ever**, and no walkthrough certifies this head: a "completed"
+  review with nothing to be incremental to is not evidence of a review
+  (HIMMEL-1374 — the remedy is one `@coderabbitai full review`). A
+  rate-limited App carried by a clean exact-head critic panel is a
+  different, sanctioned shape and still certifies. Cannot-evaluate always
+  blocks certification even if the checks themselves look green — re-run.
 - `3` — checks green but the review state blocks the merge: unresolved
   review threads remain, a review requests changes, or (when CodeRabbit is
   armed) its review body reports an outside-diff-range finding. Address each
@@ -71,14 +85,42 @@ Act on the exit code:
 - `4` — (when CodeRabbit is armed) either the latest bot review is anchored
   to a commit OTHER than the head SHA — the head was never re-reviewed, and
   GitHub auto-resolving threads on a later commit can mask this
-  (HIMMEL-1181, B2: wait for / re-trigger a fresh review, then re-run) — or
-  CodeRabbit concluded incrementally but posted no review object at the head
-  while a prior head had outside-diff findings (request `@coderabbitai full
-  review`, or opt in with `--escalate`). Distinct remedy from `3`: there is
-  no thread to resolve here.
+  (HIMMEL-1181, B2) — or CodeRabbit concluded incrementally but posted no
+  review object at the head while a prior head had outside-diff findings
+  (opt in with `--escalate`). Distinct remedy from `3`: there is no thread to
+  resolve here. **The remedy is `@coderabbitai full review` — the plain
+  incremental `@coderabbitai review` NO-OPS on an already-reviewed commit
+  (HIMMEL-1698).** Since HIMMEL-1718 the stale case is no longer a hard
+  block: a clean exact-head critic panel in the CR ledger CARRIES it (exit 0,
+  with the carry, the stale anchor and the responder models named on
+  stdout). As of HIMMEL-2162 this is the DEFAULT regardless of the diff's
+  risk classification — a panel that reviewed THIS head is the same evidence
+  a fresh App review would be, high-risk file list or not. FAIL-CLOSED is
+  unchanged: no panel row at this head still exits 4.
 
 `CR_BOT_LOGINS` (default `coderabbitai`, a trailing `[bot]` suffix optional)
 sets the review-author logins the freshness gate (`4`, stale case) treats as
 the bot — for a repo whose review bot isn't CodeRabbit. `CR_PROFILE=none` /
 `CR_APP=0` skip the freshness + body-findings + status gates together (see
 `scripts/lib/cr-available.sh`).
+
+**A repo that never armed hears nothing about CodeRabbit** — that silence is
+deliberate (HIMMEL-1125: nothing was configured, so nothing is missing, and an
+adopter who does not use CodeRabbit should not be told about a product they do
+not have). HIMMEL-2380 carves out the single state where silence would be a
+lie: `git config --local himmel.coderabbit` set to a value git cannot parse as
+a boolean. `git config --bool` errors on it, the error is swallowed, and the
+repo reads as unarmed — so a clone that genuinely HAS CodeRabbit silently loses
+the signal gate and every subsequent green certifies a review nobody checked
+for. That state, and only that state, prints a WARNING naming the fix. It does
+not block: exit 0 is unchanged, because a typo in a config value must not wedge
+a merge (`scripts/lib/cr-available.sh`'s `cr_app_state`).
+
+`merge-on-green.sh` records the same answer as a `cr=armed|not-configured|disabled|broken`
+field on its audit line. An unattended `ARMAUTOMERGE` chain has no operator
+reading this script's output, and `gate=check-ci:0` alone cannot distinguish
+"CodeRabbit reviewed this and passed" from "there is no CodeRabbit here".
+The interim `CHECK_CI_FRESHNESS_CARRY_HIGH_RISK` knob (HIMMEL-1717/1718) is
+RETIRED: it only ever gated whether a high-risk diff could reach the
+panel-carry check at all, never bypassed the need for real panel evidence —
+now that the check is unconditional, it has no remaining job.

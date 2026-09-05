@@ -77,6 +77,22 @@ test("buildPrompt without a vault adds no file-into-vault clause (HIMMEL-321)", 
   const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r" });
   expect(p).not.toContain("into the Obsidian vault");   // matches the real clause text
 });
+// --- LUNA-101: cwd-routed (code-repo) sessions read attachments, file nothing ---
+test("buildPrompt cwdRouted swaps the vault-filing clause for read-and-summarize", () => {
+  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r", sessionCwd:"/ggs" }, null, true);
+  expect(p).not.toContain("into the Obsidian vault");
+  expect(p).toContain("summarize");
+  expect(p).toContain("Do NOT file it anywhere");
+});
+test("buildPrompt cwdRouted ignores a vault argument (route wins, never both clauses)", () => {
+  const p = buildPrompt("group_-50", { inbox:"i", outbox:"o", context:"c", cwd:"/r", sessionCwd:"/ggs" }, "/luna", true);
+  expect(p).not.toContain("into the Obsidian vault");
+  expect(p).toContain("Do NOT file it anywhere");
+});
+test("buildPrompt cwdRouted=false is byte-identical to the pre-LUNA-101 call (regression)", () => {
+  const paths = { inbox:"i", outbox:"o", context:"c", cwd:"/r" };
+  expect(buildPrompt("group_-50", paths, "/salus", false)).toBe(buildPrompt("group_-50", paths, "/salus"));
+});
 // --- HIMMEL-578: per-chat vault cwd + scoped bypass + image filing ---
 test("buildRunArgs injects --permission-mode before the prompt when set; omits it otherwise", () => {
   const a = buildRunArgs("do it", "bypassPermissions");
@@ -222,6 +238,94 @@ test("sessionEnv routes glm lane through glmChildEnv", () => {
     expect(sessionEnv(undefined).ANTHROPIC_BASE_URL).toBeUndefined();
     expect("TELEGRAM_OWN_POLLER" in sessionEnv(undefined)).toBe(false);
   } finally { delete process.env.ZAI_API_KEY; }
+});
+
+// --- LUNA-101: extraEnv merge (the GGS marker channel) ---
+test("sessionEnv merges extraEnv over the inherited env", () => {
+  const e = sessionEnv(undefined, { HERMES_BOUNDED_RUN: "1", GGS_ROLE: "readonly" });
+  expect(e.HERMES_BOUNDED_RUN).toBe("1");
+  expect(e.GGS_ROLE).toBe("readonly");
+});
+test("sessionEnv without extraEnv carries no GGS markers (default posture)", () => {
+  const e = sessionEnv(undefined);
+  expect(e.HERMES_BOUNDED_RUN).toBeUndefined();
+  expect(e.GGS_ROLE).toBeUndefined();
+});
+
+// --- HIMMEL-1753: no spawned worker may block behind an editor window ---
+test("sessionEnv pins every editor hook to a no-op on both lanes", () => {
+  process.env.ZAI_API_KEY = "k-editor";
+  try {
+    for (const lane of [undefined, "glm"] as const) {
+      const e = sessionEnv(lane);
+      expect(e.GIT_EDITOR).toBe("true");
+      expect(e.EDITOR).toBe("true");
+      expect(e.VISUAL).toBe("true");
+      expect(e.GH_PROMPT_DISABLED).toBe("1");
+    }
+  } finally { delete process.env.ZAI_API_KEY; }
+});
+// The poller is launched by a scheduled task whose env carries no GIT_EDITOR,
+// so inheriting is not enough — an ambient INTERACTIVE editor must be overridden.
+test("sessionEnv overrides an inherited interactive editor", () => {
+  const prior = process.env.GIT_EDITOR;
+  process.env.GIT_EDITOR = "notepad";
+  try {
+    expect(sessionEnv(undefined).GIT_EDITOR).toBe("true");
+  } finally {
+    if (prior === undefined) delete process.env.GIT_EDITOR; else process.env.GIT_EDITOR = prior;
+  }
+});
+test("sessionEnv lets an explicit extraEnv editor override win", () => {
+  expect(sessionEnv(undefined, { GIT_EDITOR: "code --wait" }).GIT_EDITOR).toBe("code --wait");
+});
+// The markers are set by the ROUTE, never inherited (CR CodeRabbit): a poller
+// whose own env carries them must not hand every unrouted session a false
+// bounded-read-only identity.
+test("sessionEnv strips INHERITED GGS markers on an unrouted session", () => {
+  const priorRun = process.env.HERMES_BOUNDED_RUN, priorRole = process.env.GGS_ROLE;
+  process.env.HERMES_BOUNDED_RUN = "1";
+  process.env.GGS_ROLE = "operator";
+  try {
+    const e = sessionEnv(undefined);
+    expect(e.HERMES_BOUNDED_RUN).toBeUndefined();
+    expect(e.GGS_ROLE).toBeUndefined();
+    // ...but the cwd route still grants them.
+    const routed = sessionEnv(undefined, { HERMES_BOUNDED_RUN: "1", GGS_ROLE: "readonly" });
+    expect(routed.GGS_ROLE).toBe("readonly");
+  } finally {
+    if (priorRun === undefined) delete process.env.HERMES_BOUNDED_RUN; else process.env.HERMES_BOUNDED_RUN = priorRun;
+    if (priorRole === undefined) delete process.env.GGS_ROLE; else process.env.GGS_ROLE = priorRole;
+  }
+});
+test("sessionEnv still strips TELEGRAM_OWN_POLLER when extraEnv is present", () => {
+  process.env.TELEGRAM_OWN_POLLER = "1";
+  try {
+    expect("TELEGRAM_OWN_POLLER" in sessionEnv(undefined, { GGS_ROLE: "readonly" })).toBe(false);
+  } finally { delete process.env.TELEGRAM_OWN_POLLER; }
+});
+// The strip must run BEFORE the merge, so an ambient TELEGRAM_OWN_POLLER can
+// never survive — and a marker can never be stripped by it.
+test("sessionEnv: extraEnv cannot be clobbered by the poller-var strip", () => {
+  // Seed the var (CR codex-1): without it the strip assertion below passes even
+  // if the glm branch leaks the poller marker — a vacuous test on exactly the
+  // half it exists to cover.
+  // ZAI_API_KEY must be seeded too (CR codex-adv round 3): the glm branch runs
+  // buildGlmEnv, which THROWS with no key, so this test passed only on a machine
+  // that happened to have one — it would fail on a clean checkout / in CI.
+  // Save-and-restore rather than an unconditional delete, so a real ambient key
+  // survives for later tests in the file.
+  const priorKey = process.env.ZAI_API_KEY, priorPoller = process.env.TELEGRAM_OWN_POLLER;
+  process.env.ZAI_API_KEY = "k-hermetic";
+  process.env.TELEGRAM_OWN_POLLER = "1";
+  try {
+    const e = sessionEnv("glm", { GGS_ROLE: "readonly" });
+    expect(e.GGS_ROLE).toBe("readonly");
+    expect("TELEGRAM_OWN_POLLER" in e).toBe(false);
+  } finally {
+    if (priorKey === undefined) delete process.env.ZAI_API_KEY; else process.env.ZAI_API_KEY = priorKey;
+    if (priorPoller === undefined) delete process.env.TELEGRAM_OWN_POLLER; else process.env.TELEGRAM_OWN_POLLER = priorPoller;
+  }
 });
 
 const T5H = "API Error: 429 {\"error\":{\"code\":1316,\"message\":\"Usage limit reached for the past 5 hours. Insufficient balance for extra usage\"}}";

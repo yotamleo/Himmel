@@ -16,7 +16,9 @@ Two processes make it up:
 **Single-owner constraint:** Telegram allows exactly ONE `getUpdates` consumer
 per bot token. A second poller (stale proc, or a `claude --channels
 telegram-himmel` plugin session) causes `409 Conflict` storms and the bridge
-goes deaf. Run exactly one. `restart-bridge.ps1` enforces this.
+goes deaf. Run exactly one. `restart-bridge.ps1` (Windows) enforces this;
+`restart-bridge.sh` (POSIX — Linux/macOS, Stage-1) is its sibling launcher,
+see below.
 
 ---
 
@@ -25,7 +27,8 @@ goes deaf. Run exactly one. `restart-bridge.ps1` enforces this.
 ```powershell
 # Start (or restart) the bridge — kills any stale bridge procs, starts ONE
 # supervisor, settles 35s, verifies no 409 AND real progress (offset advanced
-# or a poll heartbeat logged — HIMMEL-1510). This is the canonical launcher.
+# or a poll heartbeat logged — HIMMEL-1510). This is the canonical Windows
+# launcher.
 pwsh -File scripts/telegram/restart-bridge.ps1
 
 # Status only — report procs + 409 count, touch nothing.
@@ -37,6 +40,106 @@ pwsh -File scripts/telegram/restart-bridge.ps1 -Repo C:/path/to/himmel
 
 Exit codes: `0` = up + clean · `1` = usage/env error · `2` = started but still
 seeing 409 (investigate).
+
+## Human — quick commands (POSIX / Linux, macOS)
+
+`restart-bridge.sh` is the Stage-1 POSIX sibling of `restart-bridge.ps1`. It
+covers happy-path start/run/stop/status, the stale-lock recovery `flock` gives
+for free, and — since HIMMEL-2551 — a pidfile ledger used as an identity source
+with a **staleness refusal** (a recorded pid whose process started after the
+ledger was written is refused, the same class of guard as the PS1's
+`Test-LedgerPidValid`). Unlike the PS1 it still does **not** ship the
+`-FromLedger` verb itself, orphan `bun server.ts` detection, or the
+offset/heartbeat progress-proof verify — so it does not prove no-409/real
+progress after launch. Those remaining gaps are tracked as HIMMEL-2268, not
+silently dropped; see the script's own header comment for the full honesty
+note.
+
+One platform caveat inside that: the stale-lock recovery is what `flock` gives
+for free, and **stock macOS ships no `flock`** (nor does this repo's Windows
+Git Bash). The script does not fail there — it prints a named WARNING and
+proceeds without the lock, so start/stop/status still work and only the
+serialization of two CONCURRENT starts is lost. Install `flock` (Homebrew's
+`util-linux`) if you want that back.
+
+```bash
+# Start (or restart) the bridge — kills any stale bridge procs belonging to
+# THIS instance (see below), starts ONE supervisor detached (nohup), returns.
+bash scripts/telegram/restart-bridge.sh start
+
+# Status only — report bridge process(es) found, touch nothing.
+bash scripts/telegram/restart-bridge.sh status
+
+# Foreground: same lock + same sweep, but exec the supervisor in the
+# foreground instead of detaching. This is what the systemd unit runs.
+bash scripts/telegram/restart-bridge.sh run
+
+# Point at a non-default repo root.
+bash scripts/telegram/restart-bridge.sh start --repo /path/to/himmel
+```
+
+**Kills are instance-scoped (HIMMEL-2551).** Matching `supervisor.ts` /
+`poller.ts` on the command line only narrows the *candidates* — every himmel
+checkout runs those same entrypoint names, so name-matching alone once let a
+sandboxed test fixture SIGKILL the operator's live bridge. A candidate is
+killed only if it is also this instance's: recorded in this bridge root's
+`supervisor.pid`, or running with a working directory equal to this
+instance's `scripts/telegram` (the cwd source is what still catches stale
+orphans). A candidate whose cwd cannot be read and which is not in the
+pidfile is left alone, with one WARNING on stderr.
+
+A ledger entry counts only while it is **not stale** — i.e. the process did not
+start *after* the pidfile was written. That single check is what lets both
+identity sources coexist: without it, honouring the ledger across checkouts
+would license killing another checkout's supervisor that merely inherited a
+recycled pid (the same guard `restart-bridge.ps1`'s `Test-LedgerPidValid` has
+always applied). When a timestamp cannot be read at all the check reports
+*undeterminable* rather than guessing, and that licenses ownership only where
+the cwd is unreadable too (the macOS/no-`lsof` host, which must still be able
+to stop its own bridge) — a readable but mismatching cwd is evidence and is not
+overridden. So on a host that reads cwds but not timestamps, a shared-root
+instance stops being swept: a possible `409` accepted rather than possibly
+killing a stranger's bridge.
+
+*One poller per token* is preserved whenever two configurations share **either**
+the bridge root (one shared `supervisor.pid`, e.g. a git worktree and the
+primary checkout under one `$HOME`) **or** the checkout (one shared bridge dir)
+— either way they still sweep each other. Only when the roots **and** the
+checkouts both differ are they isolated; on the same bot token those can now run
+concurrently and Telegram will answer one with `409 Conflict`. That is
+deliberate — the old "protection" was an indiscriminate machine-wide kill.
+`start`/`run`/`stop` instead print one WARNING naming how many foreign bridge
+processes they left alone; running exactly one bridge per token is an operator
+responsibility.
+
+Two roots sharing a checkout are deliberately not separated: from the outside,
+"my own orphan from a previous run" and "another root's live bridge" are
+indistinguishable when both run from the same directory — and reclaiming that
+orphan is what the cwd source is for.
+
+A test fixture should export `HIMMEL_TEST_FIXTURE=1`: under that marker,
+`start`/`stop`/`run` refuse with **rc=3** if `BRIDGE_ROOT` is unset, or if
+`--repo` points at a real checkout — i.e. the target bridge dir is inside any
+git work tree, not merely the launcher's own (that case gets its own, more
+pointed message). So a fixture can never operate on a real bridge by accident.
+The work-tree test is unconditional: it walks up looking for a `.git` entry in
+pure shell, with no `git` binary to be missing, so there is no host on which
+the guard quietly stops guarding.
+(`scripts/ci/run-shell-tests.sh` exports it for every suite it launches.)
+
+`start`/`run` also refuse with **rc=4** (HIMMEL-2556) when another launcher's
+handoff is still in flight — a short window after `nohup`/`exec` where the
+future supervisor is already a live process but not yet visible to the
+`ps`-based candidate scan, so a concurrent launcher would otherwise find
+nothing to sweep and start a duplicate (two pollers on one token, `409
+Conflict`). Both verbs write a launch marker file,
+`<bridgeRoot>/supervisor.launching`, while still holding the lock, naming the
+pid about to become the supervisor; a launcher that finds it still alive, not
+yet visible, and younger than 30s refuses rather than sweep or launch. The
+marker self-clears once the supervisor becomes visible or its launcher dies,
+so it never wedges a later `start` — see
+`docs/internals/telegram-bridge.md`'s "Launch handoff" section for the full
+three-part rule.
 
 ### Stop the bridge
 
@@ -50,6 +153,10 @@ bun --cwd scripts/telegram supervisor.ts --kill
 running) · `2` = pidfile unreadable/corrupt, or a kill signal failed (e.g.
 EPERM) → bridge MAY still be running, check manually (the pidfile is kept on
 signal failure so a retry can still find the bridge).
+
+POSIX equivalent: `bash scripts/telegram/restart-bridge.sh stop` — kills only
+the bridge's own supervisor/poller processes, serialized under the same
+token-scoped lock `start` uses.
 
 ### Logs
 
@@ -81,6 +188,50 @@ your user session: bun, claude auth, and the bot token in
 `~/.claude/channels/telegram/.env`). It invokes `restart-bridge.ps1`, which is
 idempotent, so the logon task safely no-ops / reclaims if a bridge is already
 up. Remove it with `pwsh -File scripts/telegram/install-logon-task.ps1 -Remove`.
+
+### Linux (systemd user unit + linger)
+
+The POSIX twin installs a systemd **user** unit
+(`scripts/telegram/systemd/telegram-bridge.service`) instead of a scheduled
+task. Preferred: let the install wizard's bridge-persistence step render and
+enable it for you (`scripts/himmelctl/lib/bridge-persistence.js`'s
+`installSystemdUnit` + `enableLinger`) — it substitutes the unit's
+`@HIMMEL_REPO@` placeholder with your checkout path and runs the commands
+below on your behalf. Once installed, don't hand-edit the unit file; re-run
+the installer instead (it owns the substitution/escaping).
+
+The unit is `Type=simple` and its `ExecStart` is
+`restart-bridge.sh run` — the bun supervisor is the unit's own MAINPID, so
+`Restart=on-failure` genuinely brings the bridge back when the supervisor
+dies (including on a signal). `StartLimitIntervalSec=600` +
+`StartLimitBurst=5` bound that: `supervisor.ts`'s circuit breaker halts with
+`exit 1` when the poller keeps crashing immediately, and without a start limit
+`Restart=` would relaunch it every 10s forever and silently override the
+breaker. Five restarts in ten minutes leaves the unit `failed`, for a human
+(`systemctl --user reset-failed telegram-bridge.service` to clear it once
+you've fixed the cause). It was `Type=oneshot` + `RemainAfterExit=yes`
+around a detached `start` until HIMMEL-2551, which made systemd blind to the
+supervisor: the unit reported `active (exited)` right through a dead bridge.
+**If you installed the unit before that change, the copy in
+`~/.config/systemd/user/` is stale — re-run the installer to pick up the new
+shape.**
+
+Whichever way it lands, the unit alone is not enough — without linger it
+stops the moment you log out:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now telegram-bridge.service
+
+# Linger keeps YOUR systemd user instance (and this unit) running after you
+# log out — e.g. over SSH after the session closes, or across a headless
+# reboot before any login. Skip it and the bridge dies at logout.
+loginctl enable-linger "$USER"
+```
+
+Check status: `systemctl --user status telegram-bridge.service` /
+`journalctl --user -u telegram-bridge.service`; check linger:
+`loginctl show-user "$USER" --property=Linger`.
 
 ---
 
@@ -125,16 +276,36 @@ dropped) OR the chat is allowlisted: its chat_id is a key in `groups` in
 ```
 
 A non-empty per-group `allowFrom` (the fork's GroupPolicy shape) restricts
-which senders are accepted in that group; the fork's `requireMention` is
-**ignored** by the bun bridge (it doesn't parse message entities) — a bare
-key admits every member. Text-less updates (service messages, stickers,
-photos) are dropped at ingest.
+which senders are accepted in that group; a bare key admits every member.
+Text-less service messages and stickers are dropped at ingest (photos are
+ingested as `[photo]`, caption or not).
 
 Plain group/channel messages get their own session (`group_<chat_id>`), so
 replies route back to that chat — the operator DM is untouched. Ticket verbs
 (`work on <KEY>` / `<KEY>: …`) route to the shared per-ticket session, whose
 replies go to whichever chat FIRST created that session. Non-allowed groups
 fail closed.
+
+### require_mention (per-group) (LUNA-158)
+
+Set `"requireMention": true` on a group entry to put it in @mention-only
+mode — used for groups shared with a sibling bot (e.g. the grow-tent groups,
+which also host `luna_grow_bot` and its own `/grow` command):
+
+```json
+"groups": { "-5245475441": { "requireMention": true } }
+```
+
+A group message in a `requireMention` group is dropped — before triage and
+before the operator floor — unless its text `@mentions` this bridge's own bot
+username (resolved at startup via `getMe`, retried every 60 s until it
+succeeds; no message-entities parsing — a plain case-insensitive regex over
+the text, which also accepts Telegram's `/cmd@botusername` command
+addressing). The drop is logged as
+`[poller] require-mention drop for <session>` in `supervisor.log`. While the
+bot's username is unresolved, the gate fails OPEN (every group behaves as if
+`requireMention` were unset) and logs a warning — it never silently goes
+quiet; gating activates on the retry that resolves it, no restart needed.
 
 ### Posting with "Remain anonymous" on (HIMMEL-1358)
 
@@ -472,6 +643,20 @@ $env:WHISPER_INTEGRATION_TEST = "1"; bun test scripts/telegram/transcribe-integr
 # (Git Bash: WHISPER_INTEGRATION_TEST=1 bun test scripts/telegram/transcribe-integration.test.ts)
 ```
 
+## Tests
+
+Run from the **repo root** (the suites resolve helper scripts relative to the
+cwd): `bun test scripts/telegram/<file>.test.ts --dots`.
+
+The REAL-GIT cases build their throwaway repos under the OS temp dir through
+`fixture-repo.ts`, and tear them down with its `removeFixture` — which
+removes a path only if that helper created it, so a worktree you are working in
+is refused and named on stderr rather than reaped (HIMMEL-1888).
+
+When a case fails during a busy dispatch leg, run the same suite on `main`
+under the same load before concluding the branch broke it — this family has a
+measured history of failing purely with ambient load (HIMMEL-1786).
+
 ## Files
 
 | File | Role |
@@ -486,8 +671,12 @@ $env:WHISPER_INTEGRATION_TEST = "1"; bun test scripts/telegram/transcribe-integr
 | `transcribe.ts` | whisper.cpp voice-note transcription (HIMMEL-251) |
 | `transcribe-integration.test.ts` | live acceptance test (real binaries; needs `WHISPER_INTEGRATION_TEST=1`) |
 | `restart-bridge.ps1` | **the canonical Windows launcher** |
+| `restart-bridge.sh` | the Stage-1 POSIX launcher (Linux/macOS); parity gaps vs. the PS1 tracked as HIMMEL-2268 |
+| `onboard.ts` | bounded onboarding run (`bun scripts/telegram/onboard.ts`) — reports chat.id/from.id for `access.json`; never writes it |
 | `install-logon-task.ps1` | register/remove/report the `HimmelTelegramBridge` reboot-persistence task |
+| `systemd/telegram-bridge.service` | systemd **user** unit template (`@HIMMEL_REPO@` placeholder) — Linux reboot-persistence twin of the logon task |
 | `run-prompt.md` | the prompt contract handed to each bounded run |
+| `fixture-repo.ts` | real-git test fixtures + the registry-gated teardown the spawn suites use (HIMMEL-1888) |
 
 Bot: `@<your-bot-username>`. Token: `~/.claude/channels/telegram/.env`
 (`TELEGRAM_BOT_TOKEN=`). Logs + pidfile: `~/.claude/channels/telegram/`.

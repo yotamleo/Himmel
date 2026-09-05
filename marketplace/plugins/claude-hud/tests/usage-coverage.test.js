@@ -42,7 +42,7 @@ function baseContext() {
       pathLevels: 1,
       elementOrder: ['project', 'context', 'usage'],
       gitStatus: { enabled: true, showDirty: true, showAheadBehind: false, showFileStats: false, branchOverflow: 'truncate', pushWarningThreshold: 0, pushCriticalThreshold: 0 },
-      display: { showModel: true, showProject: true, showContextBar: true, contextValue: 'percent', showConfigCounts: true, showCost: false, showDuration: true, showSpeed: false, showTokenBreakdown: true, showUsage: true, usageValue: 'percent', usageBarEnabled: false, showResetLabel: true, showTools: true, showSkills: false, showMcp: false, showAgents: true, showTodos: true, showSessionTokens: false, showSessionName: false, showClaudeCodeVersion: false, showMemoryUsage: false, showPromptCache: false, promptCacheTtlSeconds: 300, showOutputStyle: false, mergeGroups: [['context', 'usage']], autocompactBuffer: 'enabled', usageThreshold: 0, sevenDayThreshold: 80, environmentThreshold: 0, customLine: '' },
+      display: { showModel: true, showProject: true, showContextBar: true, contextValue: 'percent', showConfigCounts: true, showCost: false, showDuration: true, showSpeed: false, showTokenBreakdown: true, showUsage: true, usageValue: 'percent', usageBarEnabled: false, showResetLabel: true, showTools: true, showSkills: false, showMcp: false, showAgents: true, showTodos: true, showSessionTokens: false, showSessionName: false, showClaudeCodeVersion: false, showMemoryUsage: false, showPromptCache: false, showOutputStyle: false, mergeGroups: [['context', 'usage']], autocompactBuffer: 'enabled', usageThreshold: 0, sevenDayThreshold: 80, environmentThreshold: 0, customLine: '' },
       colors: {
         context: 'green',
         usage: 'brightBlue',
@@ -135,6 +135,26 @@ test('renderUsageLine compact mode with both windows', () => {
   const line = stripAnsi(renderUsageLine(ctx) ?? '');
   assert.ok(line.includes('5h:'));
   assert.ok(line.includes('7d:'));
+});
+
+test('renderUsageLine applies wall-clock options to generic compact windows', () => {
+  const ctx = baseContext();
+  const resetAt = new Date();
+  resetAt.setDate(resetAt.getDate() + 1);
+  resetAt.setHours(19, 23, 45, 0);
+  ctx.config.display.usageCompact = true;
+  ctx.config.display.timeFormat = 'absolute';
+  ctx.config.display.hourCycle = 'h23';
+  ctx.config.display.showClockSeconds = true;
+  ctx.usageData.fiveHour = 60;
+  ctx.usageData.sevenDay = 85;
+  ctx.usageData.fiveHourResetAt = resetAt;
+  ctx.usageData.sevenDayResetAt = resetAt;
+
+  const line = stripAnsi(renderUsageLine(ctx) ?? '');
+  assert.match(line, /5h:.*19:23:45/);
+  assert.match(line, /7d:.*19:23:45/);
+  assert.doesNotMatch(line, /AM|PM/i);
 });
 
 test('renderUsageLine compact mode returns null when no window data qualifies', () => {

@@ -2,8 +2,8 @@
  * Google Health connector — wires auth, fetch, map, and derive into a single
  * `pull` that returns a ReviewArtifact, plus a thin argv CLI for pull/auth-url/auth-exchange.
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { join, dirname, resolve } from 'path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join, dirname, resolve } from 'node:path';
 import { MAPPINGS } from './map/table';
 import { extractRows, pointDate } from './map/shape';
 import { aggregateRows, deriveRestingHeartRate, deriveSleep, type SleepWarning } from './map/derive';

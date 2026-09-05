@@ -86,6 +86,48 @@ printf '%s\n' "$EMPTYCORPUS" > "$OUT/.graphify_root"
 bash "$SCRIPT" --out "$OUT" >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 2 ] && pass "T4c absolute/traversal manifest keys skipped -> rc=2" || fail "T4c rc=2 (got $rc)"
 
+# --- T4d: majority of manifest paths exist -> corpus verified (HIMMEL-2072) ---
+# 3 of 4 manifest-named paths exist under the corpus (75%, above the >50%
+# threshold) -- must NOT be called orphaned, unlike the old "at least one
+# match" rule this replaces (which also would have passed here, but this
+# fixture is the one the ratio-based rule is built for).
+OUT="$WS/t4d/graphify-out"; CORPUS="$WS/t4d/corpus"
+mkdir -p "$OUT" "$CORPUS/notes"
+printf '{"a.md":{"mtime":0},"b.md":{"mtime":0},"notes/c.md":{"mtime":0},"missing.md":{"mtime":0}}\n' > "$OUT/manifest.json"
+printf '{"nodes":[],"edges":[]}\n' > "$OUT/graph.json"
+printf '# a\n' > "$CORPUS/a.md"; printf '# b\n' > "$CORPUS/b.md"; printf '# c\n' > "$CORPUS/notes/c.md"
+printf '%s\n' "$CORPUS" > "$OUT/.graphify_root"
+out=$( bash "$SCRIPT" --out "$OUT" --max-age-days 7 2>&1 >/dev/null ); rc=$?
+[ "$rc" -eq 0 ] && pass "T4d 3/4 manifest paths exist (75%) -> corpus verified, rc=0" || fail "T4d rc=0 (got $rc): $out"
+printf '%s\n' "$out" | grep -q '3/4 manifest paths exist' \
+  && pass "T4d prints the measured ratio" || fail "T4d ratio not printed: $out"
+
+# --- T4e: majority of manifest paths MISSING -> orphaned (HIMMEL-2072) ---
+# The exact regression this ticket reports: most manifest paths exist on
+# disk (75% here too, just the complement of T4d) is NOT this case -- this
+# is 1 of 4 existing (25%, below >50% missing threshold), which must FAIL.
+OUT="$WS/t4e/graphify-out"; CORPUS="$WS/t4e/corpus"
+mkdir -p "$OUT" "$CORPUS"
+printf '{"only-real.md":{"mtime":0},"gone1.md":{"mtime":0},"gone2.md":{"mtime":0},"gone3.md":{"mtime":0}}\n' > "$OUT/manifest.json"
+printf '{"nodes":[],"edges":[]}\n' > "$OUT/graph.json"
+printf '# real\n' > "$CORPUS/only-real.md"
+printf '%s\n' "$CORPUS" > "$OUT/.graphify_root"
+out=$( bash "$SCRIPT" --out "$OUT" --max-age-days 7 2>&1 >/dev/null ); rc=$?
+[ "$rc" -eq 2 ] && pass "T4e 1/4 manifest paths exist (25%) -> orphaned, rc=2" || fail "T4e rc=2 (got $rc): $out"
+
+# --- T4f: EXACTLY 50% existing -> corpus verified, not orphaned (boundary) ---
+# codex-1 CR nit: the fail message said "threshold >50% required" but the
+# implemented condition (exist*2 < total) passes at exactly 50% -- pin the
+# boundary so the message and the behavior can never silently drift apart.
+OUT="$WS/t4f/graphify-out"; CORPUS="$WS/t4f/corpus"
+mkdir -p "$OUT" "$CORPUS"
+printf '{"real1.md":{"mtime":0},"real2.md":{"mtime":0},"gone1.md":{"mtime":0},"gone2.md":{"mtime":0}}\n' > "$OUT/manifest.json"
+printf '{"nodes":[],"edges":[]}\n' > "$OUT/graph.json"
+printf '# 1\n' > "$CORPUS/real1.md"; printf '# 2\n' > "$CORPUS/real2.md"
+printf '%s\n' "$CORPUS" > "$OUT/.graphify_root"
+out=$( bash "$SCRIPT" --out "$OUT" --max-age-days 7 2>&1 >/dev/null ); rc=$?
+[ "$rc" -eq 0 ] && pass "T4f exactly 2/4 (50%) exist -> corpus verified, rc=0" || fail "T4f rc=0 (got $rc): $out"
+
 # --- T5: fail bad --corpus-root (dir does not exist) ---
 OUT="$WS/t5/graphify-out"; CORPUS="$WS/t5/corpus"; build_out "$OUT" "$CORPUS"
 bash "$SCRIPT" --out "$OUT" --corpus-root "$WS/nope" >/dev/null 2>&1; rc=$?
@@ -103,6 +145,76 @@ bash "$SCRIPT" --out "$WS/no-such-dir" >/dev/null 2>&1; rc=$?
 # --- T8: usage error on missing --out ---
 bash "$SCRIPT" --max-age-days 7 >/dev/null 2>&1; rc=$?
 [ "$rc" -eq 1 ] && pass "T8 missing --out -> usage rc=1" || fail "T8 usage rc=1 (got $rc)"
+
+# Make a git commit N days ago in $1 (repo dir); print its SHA. HIMMEL-1647 fixtures.
+git_commit_days_ago() {  # $1=repo dir, $2=days ago
+  local repo="$1" days="$2" epoch
+  epoch=$(python3 -c 'import time,sys; print(int(time.time()-float(sys.argv[1])*86400))' "$days")
+  ( cd "$repo" \
+    && git init -q . \
+    && git config user.email test@example.com \
+    && git config user.name test \
+    && git add -A \
+    && GIT_AUTHOR_DATE="@$epoch +0000" GIT_COMMITTER_DATE="@$epoch +0000" git commit -q -m init \
+    && git rev-parse HEAD )
+}
+
+# --- T9: build-identity age overrides a FALSE-FRESH mtime (HIMMEL-1647) ---
+# graph.json's own mtime is fresh (just written) but its embedded
+# built_at_commit points at a commit 10 days old -- the exact checkout/
+# restore shape the ticket describes. Must WARN off the commit's age.
+OUT="$WS/t9/graphify-out"; CORPUS="$WS/t9/corpus"; build_out "$OUT" "$CORPUS"
+SHA="$(git_commit_days_ago "$CORPUS" 10)"
+python3 -c 'import json,sys
+json.dump({"built_at_commit": sys.argv[2]}, open(sys.argv[1], "w"))' "$OUT/graph.json" "$SHA"
+printf '%s\n' "$CORPUS" > "$OUT/.graphify_root"
+bash "$SCRIPT" --out "$OUT" --max-age-days 7 >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && pass "T9 fresh mtime + old built_at_commit -> rc=1 (identity wins)" || fail "T9 rc=1 (got $rc)"
+
+# --- T9b: build-identity age also clears a falsely-stale mtime ---
+# graph.json's mtime is backdated (would WARN under mtime-only logic) but its
+# built_at_commit is fresh (today) -- must report OK.
+OUT="$WS/t9b/graphify-out"; CORPUS="$WS/t9b/corpus"; build_out "$OUT" "$CORPUS"
+SHA="$(git_commit_days_ago "$CORPUS" 0)"
+python3 -c 'import json,sys
+json.dump({"built_at_commit": sys.argv[2]}, open(sys.argv[1], "w"))' "$OUT/graph.json" "$SHA"
+printf '%s\n' "$CORPUS" > "$OUT/.graphify_root"
+backdate_days "$OUT/graph.json" 30
+out=$( bash "$SCRIPT" --out "$OUT" --max-age-days 7 2>/dev/null ); rc=$?
+[ "$rc" -eq 0 ] && pass "T9b stale mtime + fresh built_at_commit -> rc=0 (identity wins)" || fail "T9b rc=0 (got $rc): $out"
+
+# --- T9c: unresolvable built_at_commit falls back to mtime (unaffected) ---
+OUT="$WS/t9c/graphify-out"; CORPUS="$WS/t9c/corpus"; build_out "$OUT" "$CORPUS"
+python3 -c 'import json,sys
+json.dump({"built_at_commit": "deadbeef"}, open(sys.argv[1], "w"))' "$OUT/graph.json"
+printf '%s\n' "$CORPUS" > "$OUT/.graphify_root"
+backdate_days "$OUT/graph.json" 10
+bash "$SCRIPT" --out "$OUT" --max-age-days 7 >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && pass "T9c unresolvable built_at_commit falls back to mtime -> rc=1" || fail "T9c rc=1 (got $rc)"
+
+# --- T9d: non-SHA built_at_commit ("--all") is rejected, falls back to mtime ---
+# codex-1 CR finding: an unvalidated built_at_commit passed straight to
+# `git log` lets a value like "--all" be parsed as a git OPTION (not a
+# revision), resolving to an unrelated, often-fresher timestamp. Must be
+# rejected before reaching git.
+OUT="$WS/t9d/graphify-out"; CORPUS="$WS/t9d/corpus"; build_out "$OUT" "$CORPUS"
+git_commit_days_ago "$CORPUS" 0 >/dev/null
+python3 -c 'import json,sys
+json.dump({"built_at_commit": "--all"}, open(sys.argv[1], "w"))' "$OUT/graph.json"
+printf '%s\n' "$CORPUS" > "$OUT/.graphify_root"
+backdate_days "$OUT/graph.json" 10
+bash "$SCRIPT" --out "$OUT" --max-age-days 7 >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && pass "T9d built_at_commit=--all rejected, falls back to mtime -> rc=1" || fail "T9d rc=1 (got $rc)"
+
+# --- T9e: non-SHA built_at_commit ("HEAD") is rejected, falls back to mtime ---
+OUT="$WS/t9e/graphify-out"; CORPUS="$WS/t9e/corpus"; build_out "$OUT" "$CORPUS"
+git_commit_days_ago "$CORPUS" 0 >/dev/null
+python3 -c 'import json,sys
+json.dump({"built_at_commit": "HEAD"}, open(sys.argv[1], "w"))' "$OUT/graph.json"
+printf '%s\n' "$CORPUS" > "$OUT/.graphify_root"
+backdate_days "$OUT/graph.json" 10
+bash "$SCRIPT" --out "$OUT" --max-age-days 7 >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && pass "T9e built_at_commit=HEAD rejected, falls back to mtime -> rc=1" || fail "T9e rc=1 (got $rc)"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

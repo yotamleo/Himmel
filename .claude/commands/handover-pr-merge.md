@@ -1,5 +1,5 @@
 ---
-description: Squash-merge the PR for the current handover/<TICKET>-<slug> branch (HIMMEL-141).
+description: Squash-merge the PR for the current handover/<TICKET>-<slug> branch.
 argument-hint: [--dry-run]
 ---
 

@@ -69,7 +69,11 @@ jobs:
       # in a git pathspec `**/` requires an intervening directory, silently
       # dropping the 34 top-level scripts. xargs -r: no files -> don't run
       # shellcheck on stdin.
-      - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | xargs -0 -r shellcheck --severity=warning
+      # scripts/lanes/bench/fixtures/ holds benchmark INPUT scripts — sample
+      # shell fed to the lane bench as the thing being measured. Adding
+      # shellcheck directives to them would change the artifact under
+      # measurement, so they're excluded the same way scripts/statusline/ is.
+      - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | grep -zv '^scripts/lanes/bench/fixtures/' | xargs -0 -r shellcheck --severity=warning
 
   node-suites:
     runs-on: ubuntu-latest
@@ -139,8 +143,27 @@ jobs:
           node-version: '22'
       - run: bash scripts/hooks/check-guardrail-matrices.sh
 
+  # Matrix, not ubuntu-only (HIMMEL-1109). This suite spawns the luna-vitals CLI
+  # and connectors/pull-cadence.sh as subprocesses, so it is exactly the kind of
+  # suite whose result depends on the host — and it sat red on Windows for
+  # months (12 tests when the ticket was filed, 3 by the time anyone looked
+  # again) because CI only ever saw Linux. macOS is deliberately
+  # left out: GitHub bills those runners 10x, and this suite has no macOS-only
+  # surface beyond the BSD-vs-GNU `date` fallback in pull-cadence.sh, which the
+  # tests bypass by pinning FROM/TO.
+  #
+  # `shell: bash` because the run lines below chain with `&&` — the default
+  # shell on windows-latest is pwsh. `fail-fast: false` so a red Windows leg
+  # still reports the Linux result instead of cancelling it.
   bun-suites:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -192,6 +215,37 @@ jobs:
       # EMPTY worktree, so the test would validate nothing and die on setup.
       - name: The doc-invariants job itself is not a no-op
         run: bash scripts/hooks/test-ci-doc-invariants.sh
+      # HIMMEL-2037 — the pre-commit `skill-description-cap` hook only sees
+      # STAGED files, so it cannot catch an over-cap description that arrived
+      # via a bypassed hook. This step re-runs the same lint over the whole
+      # tracked set. It takes paths directly, so it needs no staging step and
+      # must stay ABOVE the destructive orphan checkout below.
+      # -z / xargs -0, not $(…): a tracked path containing whitespace would be
+      # word-split by command substitution and the lint would read nonexistent
+      # fragments instead of the real file.
+      - name: Skill/command descriptions stay within the 120-char cap
+        run: git ls-files -z '.claude/commands/*.md' '.claude/skills/*/SKILL.md' '.agents/skills/*/SKILL.md' 'marketplace/plugins/*/commands/*.md' 'marketplace/plugins/*/skills/*/SKILL.md' | xargs -0 node scripts/lanes/skill-cost.mjs --max-desc 120
+      # HIMMEL-2051 — same rationale as the description-cap step above: the
+      # pre-commit `command-positional-args` hook only sees staged files, so
+      # this re-runs the same lint over the whole tracked set.
+      # claude-hud is excluded: it is pinned byte-for-byte (HIMMEL-718) and
+      # gated by its own drift guard below, not this lint.
+      - name: Commands have no bare $<digit> in their fenced code
+        run: git ls-files -z '.claude/commands/*.md' 'marketplace/plugins/*/commands/*.md' -- ':!marketplace/plugins/claude-hud' | xargs -0 node scripts/lanes/skill-cost.mjs --check-positional-args
+      # HIMMEL-2064 — docs/commands-catalog.md's Description column is
+      # generated from `.claude/commands/*.md` frontmatter; this refuses a
+      # divergent hand-edit. Reads the tracked files directly, so it needs no
+      # staging step and must stay ABOVE the destructive orphan checkout below.
+      - name: commands-catalog.md Description column matches command frontmatter
+        run: node scripts/lib/gen-commands-catalog.mjs check
+      # HIMMEL-2176 Task 5 — .env.example's generated secrets block is
+      # rendered from scripts/himmelctl/lib/secrets-manifest.json; this
+      # refuses a divergent hand-edit of either file. Reads the tracked files
+      # directly (non-staged check), so it needs no staging step and must
+      # stay ABOVE the destructive orphan checkout below, same as the
+      # commands-catalog check just above it.
+      - name: .env.example's generated secrets block matches secrets-manifest.json
+        run: node scripts/lib/gen-secrets-doc.mjs check
       # LOAD-BEARING — do not remove (HIMMEL-1305). These gates are pre-commit
       # hooks: each triggers off `git diff --cached` and exits 0 when its inputs
       # are not staged. A CI checkout's index is identical to HEAD, so without
@@ -279,6 +333,22 @@ jobs:
       - name: npm license allowlist
         run: bash scripts/hooks/check-npm-licenses.sh
 
+      # HIMMEL-2573: this gate has a hard floor (npm >= 11) that the pinned
+      # node-version above does not meet — node 22 bundles npm 10.9.8. That
+      # floor and this job's runtime can drift apart silently: the only
+      # symptom was an error that read like a package problem, and it went
+      # unnoticed because it passes on every developer machine (newer npm
+      # installed locally) and this repo never ran the workflow before
+      # (Actions is off on the private repo by design). Upgrade npm here
+      # rather than bumping node-version — node 22 is the tested runtime for
+      # the whole workflow and a signature gate shouldn't quietly change that.
+      # Print the version so the next time this floor and this runtime drift
+      # apart, it's one glance at the log instead of an investigation.
+      - name: upgrade npm to meet the audit-signatures floor (>= 11)
+        run: |
+          npm i -g npm@^11
+          npm --version
+
       # npm audit signatures (production) — pre-push `npm-audit-signatures`. This
       # gate does NOT self-install; it relies on the node_modules the npm-audit
       # step above materialized for the scripts/{jira,bitbucket,himmel-run}
@@ -303,7 +373,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     steps:
+      # fetch-depth: 0 (not the default shallow clone) so --changed-since below
+      # can resolve a pull_request's base SHA, which a depth-1 checkout of the
+      # head ref does not carry.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       # arm-resume's non-dry-run cases exercise the real `at` scheduler backend,
       # which the supported runtime provides (HIMMEL-594 `ubuntu.sh` installs +
       # enables at/atd). GitHub's ubuntu image ships without `at`, so CI fell back
@@ -321,9 +396,19 @@ jobs:
       # FAIL_LOG_DIR: full failed-suite logs land there and upload as an
       # artifact below — the inline tail is bounded, so without this the
       # failing assertion can be unrecoverable from Actions logs (HIMMEL-963).
+      # SUITE_TIER_MODE (HIMMEL-2166): fast on every per-PR/post-merge leg
+      # (pull_request, push, or a plain workflow_dispatch) — this job is
+      # ubuntu-only there. `all` stays the corpus on the nightly/force_all_os
+      # legs that expand to the paid windows+macOS matrix, matching the
+      # cadence/full-scan intent this ticket must not touch.
+      # SUITE_CHANGED_SINCE: only on pull_request, where a base SHA exists —
+      # a docs-only PR then skips the whole corpus (run-shell-tests.sh's own
+      # docs-only fast lane); push/schedule/dispatch have no PR base to diff.
       - run: bash scripts/ci/run-shell-tests.sh
         env:
           FAIL_LOG_DIR: failed-suite-logs
+          SUITE_TIER_MODE: ${{ (github.event_name == 'schedule' || inputs.force_all_os) && 'all' || 'fast' }}
+          SUITE_CHANGED_SINCE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
       - name: Upload failed-suite logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -332,3 +417,49 @@ jobs:
           path: failed-suite-logs/
           if-no-files-found: ignore
           retention-days: 14
+      # LUNA-131 soak/sweeper suites — DORMANT in the private repo (HIMMEL-297:
+      # CI lives on the public side). Kept here as reference/commented-out YAML,
+      # not wired into any step — no `on:` trigger reaches this block. Un-comment
+      # only on the public repo once these suites are ready to gate there.
+      # run-shell-tests.sh cannot reach these: it only discovers `test-*.sh`, so
+      # no .ps1 suite is visible to it at all.
+      #
+      # HONEST SCOPE (preserved from the design, for when this is un-commented
+      # on the public repo): the windows-latest leg of this job expands only
+      # on `schedule` / `force_all_os` and carries continue-on-error, so the
+      # two Windows steps below would be a SIGNAL, not a gate — the real gate
+      # is the local run in the LUNA-131 build. The correlator step is
+      # cross-platform and would run on every PR's ubuntu leg, making IT the
+      # one real gate among the three. None of this fires here — the whole
+      # block is inert YAML comments.
+      #
+      # The vault suites hard-SKIP without pre-commit (test-vault-git.ps1:16-21),
+      # and a SKIP exits 0 — so without this install the Windows steps below
+      # would be a permanent vacuous PASS (LUNA-131).
+      # - name: Install pre-commit (Windows)
+      #   if: runner.os == 'Windows'
+      #   shell: bash
+      #   run: python -m pip install --disable-pip-version-check pre-commit
+      #
+      # - name: Vault sweeper suite (Windows only)
+      #   if: runner.os == 'Windows'
+      #   shell: bash
+      #   run: |
+      #     set -o pipefail
+      #     pwsh -NoProfile -File templates/luna-second-brain/scripts/test-vault-sweeper.ps1 | tee sweeper.log
+      #     if grep -q '^SKIP all' sweeper.log; then
+      #       echo "::error::vault-sweeper suite SKIPPED — a SKIP is not a pass"; exit 1
+      #     fi
+      #
+      # - name: Foreground-window logger suite (Windows only)
+      #   if: runner.os == 'Windows'
+      #   shell: bash
+      #   run: |
+      #     set -o pipefail
+      #     pwsh -NoProfile -File scripts/observability/test-foreground-window-log.ps1 | tee focus.log
+      #     if grep -q '^SKIP all' focus.log; then
+      #       echo "::error::foreground-window-log suite SKIPPED — a SKIP is not a pass"; exit 1
+      #     fi
+      #
+      # - name: Focus/tick correlator suite
+      #   run: node --test scripts/observability/focus-tick-correlate.test.mjs

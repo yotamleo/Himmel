@@ -1,0 +1,8 @@
+{
+  "name": "@widget-platform/core",
+  "version": "0.4.0",
+  "dependencies": {
+    "left-pad": "1.1.0",
+    "lodash": "4.18.1"
+  }
+}

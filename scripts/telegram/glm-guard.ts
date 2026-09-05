@@ -31,17 +31,23 @@ function pathUnderAny(target: string, listFile: string): "hit" | "miss" | "unrea
 }
 
 export function checkGlmGuards(cwd: string, cfgDir: string = join(homedir(), ".config", "claude-glm")): GuardResult {
-  // .salus root marker (#850): existsSync fails OPEN (returns false on a stat
-  // error like EACCES/EIO), which would let an unreadable .salus slip through as
-  // "not PHI". statSync distinguishes a real ENOENT (absent) from any other stat
-  // error, failing CLOSED — matching the pathUnderAny list checks' posture below.
-  try {
-    statSync(join(cwd, ".salus"));
-    return { ok: false, reason: `glm-guard: REFUSED — ${cwd} is PHI-marked (.salus). No override exists.` };
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException | undefined)?.code;
-    if (code !== "ENOENT")
-      return { ok: false, reason: `glm-guard: .salus at ${cwd} is not a readable stat target (stat code ${code ?? "?"}) — failing closed.` };
+  // .salus / .salus-profile root marker (#850, HIMMEL-2173): existsSync fails
+  // OPEN (returns false on a stat error like EACCES/EIO), which would let an
+  // unreadable marker slip through as "not PHI". statSync distinguishes a real
+  // ENOENT (absent) from any other stat error, failing CLOSED — matching the
+  // pathUnderAny list checks' posture below. .salus-profile (template
+  // machinery dropped by the salus profile installer) is accepted too — a
+  // defense for deployments that predate the installer shipping the real
+  // .salus guard marker alongside it.
+  for (const marker of [".salus", ".salus-profile"]) {
+    try {
+      statSync(join(cwd, marker));
+      return { ok: false, reason: `glm-guard: REFUSED — ${cwd} is PHI-marked (${marker}). No override exists.` };
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== "ENOENT")
+        return { ok: false, reason: `glm-guard: ${marker} at ${cwd} is not a readable stat target (stat code ${code ?? "?"}) — failing closed.` };
+    }
   }
   for (const [file, label] of [["phi-roots", "PHI-marked (phi-roots)"], ["egress-denylist", "on the egress denylist"]] as const) {
     const rc = pathUnderAny(cwd, join(cfgDir, file));

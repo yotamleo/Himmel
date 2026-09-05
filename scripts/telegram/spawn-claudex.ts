@@ -10,8 +10,8 @@
 // launcher, mirroring spawn-glm's own+shared-branch lifecycle.
 //
 // Lane-agnostic helpers are IMPORTED from spawn-glm.ts (transcriptDirFor,
-// poisonPushUrl, preflightWindowCheck, measureOverheadChars, finalMeta,
-// POISON_SENTINEL) rather than copy-pasted. Everything GLM-branded (worker
+// preflightWindowCheck, measureOverheadChars, finalMeta) rather than
+// copy-pasted. Everything GLM-branded (worker
 // prompt, plan functions, args parser, the shared-dispatch lock lifecycle,
 // main) is twinned here with codex/claudex wording and a claudex/<slug>
 // branch — see the design brief (HIMMEL-1003) for the twin/import split.
@@ -20,22 +20,30 @@
 // session — Claude Code gives each subagent/session its own context, so
 // there is no v2-subagent-history-copy and no fast-mode toggle to carry or
 // disable here; nothing to implement for that requirement.
-import { existsSync, mkdirSync, writeFileSync, appendFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { spawn } from "bun";
-import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, type PermissionMode } from "./run";
-import { transcriptDirFor, poisonPushUrl, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, POISON_SENTINEL, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta } from "./spawn-glm";
+import { BASH_BIN, REPO_ROOT, killTree, detectContentFilter, NON_INTERACTIVE_EDITOR_ENV, type PermissionMode } from "./run";
+import { SPAWN_OWN_GROUP } from "../lib/kill-tree.mjs";
+import { transcriptDirFor, PUSH_PROTECTION_DISCLOSURE, ensureWorkspaceTrust, preflightWindowCheck, measureOverheadChars, finalMeta, resolveProfileSettings, teardownMintedWorktree, DEFAULT_LANE_PROFILE, mintRetaskNonce, composeRetaskBlock, STASH_BAN_LINE, composeBashShapeWarning, composeOutboxWriteHint, composeWorkerSettings, refuseBypassPermissions, refuseUnknownPermissionMode, isHelpFlag, writeLiveWorkerMeta, readBriefFile } from "./spawn-glm";
 // HIMMEL-1553: symptom-brief loop breaker, two-stage — shared with spawn-glm
 // so both worker lanes carry one decision table: invariant required at the
 // warn stage, cheap lane refused at the escalate stage. Thresholds live in
 // round-guard.ts (ROUND_WARN_THRESHOLD / ROUND_ESCALATE_THRESHOLD) — not
 // restated here, so this comment cannot drift off the code (glm-4, CR round 2).
 import { checkRoundGuard } from "./round-guard";
+// HIMMEL-1778: huge-diff lane guard — shared module (one predicate, both
+// lanes; never copy-pasted — see huge-diff-guard.ts for the incident).
+import { checkHugeDiff } from "./huge-diff-guard";
 // HIMMEL-1040 plugin profiles: same per-dispatch lean-profile injection as the
 // GLM lane. spawn-claudex dispatches through scripts/claude-codex, which already
 // screens + forwards --settings — so the resolved payload just rides its argv.
 import { parseAddPlugins } from "../lanes/plugin-profiles.mjs";
+// HIMMEL-2154: shared declarative flag-table parser — see spawn-glm.ts's
+// GLM_FLAG_TABLE for the twin.
+import { parseLaneArgs, type FlagTable } from "./lane-args";
+import { CODEX_BANK_PROBE_REMEDY, readCodexBankCache } from "../lanes/bank-status-core.mjs";
 
 export function claudexSessionRoot(): string {
   return join(process.env.BRIDGE_ROOT ?? join(homedir(), ".claude", "handover", "bridge"), "claudex-sessions");
@@ -50,9 +58,16 @@ export function claudexSessionRoot(): string {
 // in v1 — it just skips and notes it in the final context.md summary via the
 // generic HARD RULES line below. A followup ticket ports the channel if the
 // codex lane needs the same graceful-degrade path GLM has.
-export function composeClaudexWorkerPrompt(task: string, sessionDir: string, branch: string, opts?: { shared?: boolean }): string {
+export function composeClaudexWorkerPrompt(task: string, sessionDir: string, branch: string, opts?: { shared?: boolean; model?: string }): string {
   const outbox = join(sessionDir, "outbox.jsonl");
   const context = join(sessionDir, "context.md");
+  const rawModel = opts?.model ?? "gpt-5.6-sol";
+  // HIMMEL-1927 CR: opts.model is exported/programmatic-caller-facing (the
+  // CLI --model path is already restricted to a fixed enum at parse time —
+  // see parseClaudexArgs below), so a newline-bearing value must not land
+  // verbatim in the dispatched worker's prompt. Degrade to a generic phrase
+  // outside a plain slug shape; gpt-5.6-sol/terra/luna are unaffected.
+  const resolvedModel = /^[A-Za-z0-9._-]+$/.test(rawModel) ? rawModel : "an unrecognized codex slug";
   // HIMMEL-1342: shared mode's ONE sanctioned base-integration verb is
   // `git merge main`. An earlier revision of this PR permitted `git rebase
   // main` instead (per-commit conflict surfacing is gentler on a stale
@@ -71,8 +86,14 @@ export function composeClaudexWorkerPrompt(task: string, sessionDir: string, bra
     : `Work ONLY inside your current directory (a dedicated git worktree). Commit your work on the branch ${branch} which is already checked out.`;
   return [
     `You are an unattended claudex-lane worker session (himmel offload, codex weekly bank, HIMMEL-654/979/1003) — do the scoped chunk below and stop, do not expand scope.`,
+    // HIMMEL-1927: outbound HTTP captured the resolved Codex slug, and worker
+    // transcripts echoed it on every assistant message; Claude Code's Opus 4.8
+    // assertion is only its fallback for an unrecognized model slug.
+    `Your backend model is ${resolvedModel} (OpenAI, via the local CLIProxyAPI codex proxy). Claude Code does not recognize that slug, so it asserts 'You are powered by the model named Opus 4.8' in your system prompt — that is a slug-recognition artifact, not your identity. You are NOT an Anthropic model and NOT an orchestrator tier; do not reason about your own capabilities or delegation tier from that line.`,
     branchLine,
     `HARD RULES: never push, never open a PR — a validating session reviews your branch and owns the git/PR surface. Jira updates (status, comments, followup tickets) ARE allowed via node scripts/jira/dist/index.js (audited + recoverable). If a step is hard-blocked, skip it, continue the rest of the task, and note the skipped step in your final ${context} summary — v1 has no escalation channel to append to.`,
+    // HIMMEL-1755: shared with the GLM lane so both briefs carry identical text.
+    STASH_BAN_LINE,
     // HIMMEL-1218: RETASK channel — see spawn-glm.ts's composeWorkerPrompt for
     // the same block; imported verbatim so both lanes carry identical rules text.
     composeRetaskBlock(mintRetaskNonce()),
@@ -268,66 +289,111 @@ export function revalidateSharedWorktree(deps: {
 // ── args parsing ──────────────────────────────────────────────────────────
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh";
-export type ClaudexParsedArgs = { task?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; effort?: EffortLevel; force: boolean; skipAuthPreflight: boolean; profile: string; addPlugins: string[]; roundsOverride?: string };
+// HIMMEL-1464: per-dispatch codex tier selector. Kept to the three tiers the
+// local CLIProxyAPI proxy exposes for the codex subscription (verified live).
+// scripts/claude-codex's own CODEX_MODEL knob stays UNVALIDATED by design — it
+// documents "all overridable per task" against whatever the proxy's /v1/models
+// serves, and the proxy currently serves other models beyond these three, so a
+// hardcoded allowlist at the launcher would be a regression, not a fix. This
+// allowlist is scoped to the NEW spawn-claudex flag only: a fresh interface can
+// be strict without breaking the launcher's existing direct-invocation contract.
+// Broader launcher-side validation (against the proxy's LIVE /v1/models) stays
+// open on HIMMEL-1464.
+export type CodexModelTier = "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna";
+export type ClaudexParsedArgs = { task?: string; briefFile?: string; cwd: string; name?: string; branch?: string; timeoutMins?: number; permMode?: PermissionMode; effort?: EffortLevel; model?: CodexModelTier; force: boolean; skipAuthPreflight: boolean; profile: string; addPlugins: string[]; roundsOverride?: string };
+
+// HIMMEL-2154: the declarative flag table for parseClaudexArgs — mirrors
+// spawn-glm.ts's GLM_FLAG_TABLE (shared loop mechanics live in
+// lane-args.ts's parseLaneArgs). Each entry is the exact per-flag validation
+// the old inline if/else chain had.
+const CLAUDEX_FLAG_TABLE: FlagTable<ClaudexParsedArgs> = {
+  "--cwd": { kind: "value", apply: (s, v) => { s.cwd = v; return undefined; } },
+  "--name": { kind: "value", apply: (s, v) => { s.name = v; return undefined; } },
+  "--branch": { kind: "value", apply: (s, v) => { s.branch = v; return undefined; } },
+  "--timeout-mins": {
+    kind: "value",
+    apply: (s, v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n <= 0) return `--timeout-mins must be a positive number (got "${v}")`;
+      s.timeoutMins = n;
+      return undefined;
+    },
+  },
+  "--permission-mode": {
+    kind: "value",
+    apply: (s, v) => {
+      const err = refuseUnknownPermissionMode(v);
+      if (err) return err;
+      s.permMode = v as PermissionMode;
+      return undefined;
+    },
+  },
+  // --effort (HIMMEL-1001 D5): refuse `max` (undocumented codex juice) and
+  // `ultra` (unreachable from Claude Code — falls back to xhigh) with a message
+  // pointing at the operating-rules doc, rather than silently forwarding them.
+  "--effort": {
+    kind: "value",
+    apply: (s, v) => {
+      if (v === "max" || v === "ultra") return `--effort ${v} is refused — 'max' is undocumented codex juice and 'ultra' is unreachable from Claude Code (silently falls back to xhigh); the HIMMEL-1001 ladder tops out at xhigh. See docs/tooling-catalog.md#claude-codex.`;
+      if (v !== "low" && v !== "medium" && v !== "high" && v !== "xhigh") return `--effort must be one of low|medium|high|xhigh (got "${v}"); see docs/tooling-catalog.md#claude-codex`;
+      s.effort = v;
+      return undefined;
+    },
+  },
+  // HIMMEL-1464: per-dispatch codex tier pin (e.g. to bench gpt-5.6-luna).
+  // Sets CODEX_MODEL in the worker's child env — validated ONLY here, not by
+  // scripts/claude-codex (its CODEX_MODEL knob stays unvalidated by design;
+  // see the CodexModelTier comment above).
+  "--model": {
+    kind: "value",
+    apply: (s, v) => {
+      if (v !== "gpt-5.6-sol" && v !== "gpt-5.6-terra" && v !== "gpt-5.6-luna") return `--model must be one of gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna (got "${v}"); see docs/tooling-catalog.md#claude-codex`;
+      s.model = v;
+      return undefined;
+    },
+  },
+  "--force": { kind: "bool", apply: (s) => { s.force = true; } },
+  // Auth-preflight override is an EXPLICIT per-invocation flag, never an env
+  // var: an ambient/inherited setting must not be able to silently disable the
+  // fail-closed auth gate and restore the original startup failure (codex-adv CR).
+  "--skip-auth-preflight": { kind: "bool", apply: (s) => { s.skipAuthPreflight = true; } },
+  // HIMMEL-1040: --profile (default lane-impl) + --add-plugins overlay, resolved
+  // in main() so a bad name/id is a clean pre-side-effect refusal (mirrors spawn-glm).
+  "--profile": { kind: "value", apply: (s, v) => { s.profile = v; return undefined; } },
+  "--add-plugins": { kind: "value", apply: (s, v) => { s.addPlugins.push(...parseAddPlugins(v)); return undefined; } },
+  // HIMMEL-1553: recorded operator override for the round guard's cheap-lane
+  // refusal — same contract as spawn-glm (substance enforced by the guard).
+  "--rounds-override": {
+    kind: "value",
+    missingValueError: "--rounds-override requires a value (why another cheap-lane round is justified)",
+    apply: (s, v) => { s.roundsOverride = v; return undefined; },
+  },
+  // HIMMEL-1780: --brief-file reads the TASK from a file, so a multi-line
+  // dispatch is ONE literal command (`bun scripts/telegram/spawn-claudex.ts
+  // --brief-file <path> ...`) instead of the cd/$(cat)/var compound that
+  // defeats both the allow-rule prefix and the native permission matcher
+  // (HIMMEL-203). The file is READ in main(), not here — parseClaudexArgs
+  // stays pure (fs-free); the read itself is spawn-glm's exported
+  // readBriefFile (one fail-closed implementation across both lanes).
+  "--brief-file": { kind: "value", apply: (s, v) => { s.briefFile = v; return undefined; } },
+};
 
 // Pure + validated, mirrors spawn-glm's parseArgs (a value-taking flag with no
 // value, or a non-positive/non-finite --timeout-mins, is a usage refusal).
-// --effort (HIMMEL-1001 D5): refuse `max` (undocumented codex juice) and
-// `ultra` (unreachable from Claude Code — falls back to xhigh) with a message
-// pointing at the operating-rules doc, rather than silently forwarding them.
 export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParsedArgs } | { ok: false; error: string } {
-  let task: string | undefined;
-  let cwd = process.cwd();
-  let name: string | undefined;
-  let branch: string | undefined;
-  let timeoutMins: number | undefined;
-  let permMode: PermissionMode | undefined;
-  let effort: EffortLevel | undefined;
-  let force = false;
-  let skipAuthPreflight = false;
-  // HIMMEL-1040: --profile (default lane-impl) + --add-plugins overlay, resolved
-  // in main() so a bad name/id is a clean pre-side-effect refusal (mirrors spawn-glm).
-  let profile = DEFAULT_LANE_PROFILE;
-  const addPlugins: string[] = [];
-  let roundsOverride: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--cwd") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--cwd requires a value" }; cwd = v; }
-    else if (a === "--name") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--name requires a value" }; name = v; }
-    else if (a === "--branch") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--branch requires a value" }; branch = v; }
-    else if (a === "--timeout-mins") {
-      const v = argv[++i];
-      if (v === undefined) return { ok: false, error: "--timeout-mins requires a value" };
-      const n = Number(v);
-      if (!Number.isFinite(n) || n <= 0) return { ok: false, error: `--timeout-mins must be a positive number (got "${v}")` };
-      timeoutMins = n;
-    }
-    else if (a === "--permission-mode") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--permission-mode requires a value" }; permMode = v as PermissionMode; }
-    else if (a === "--effort") {
-      const v = argv[++i];
-      if (v === undefined) return { ok: false, error: "--effort requires a value" };
-      if (v === "max" || v === "ultra") return { ok: false, error: `--effort ${v} is refused — 'max' is undocumented codex juice and 'ultra' is unreachable from Claude Code (silently falls back to xhigh); the HIMMEL-1001 ladder tops out at xhigh. See docs/tooling-catalog.md#claude-codex.` };
-      if (v !== "low" && v !== "medium" && v !== "high" && v !== "xhigh") return { ok: false, error: `--effort must be one of low|medium|high|xhigh (got "${v}"); see docs/tooling-catalog.md#claude-codex` };
-      effort = v;
-    }
-    else if (a === "--force") force = true;
-    // Auth-preflight override is an EXPLICIT per-invocation flag, never an env
-    // var: an ambient/inherited setting must not be able to silently disable the
-    // fail-closed auth gate and restore the original startup failure (codex-adv CR).
-    else if (a === "--skip-auth-preflight") skipAuthPreflight = true;
-    else if (a === "--profile") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--profile requires a value" }; profile = v; }
-    else if (a === "--add-plugins") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--add-plugins requires a value" }; addPlugins.push(...parseAddPlugins(v)); }
-    // HIMMEL-1553: recorded operator override for the round guard's cheap-lane
-    // refusal — same contract as spawn-glm (substance enforced by the guard).
-    else if (a === "--rounds-override") { const v = argv[++i]; if (v === undefined) return { ok: false, error: "--rounds-override requires a value (why another cheap-lane round is justified)" }; roundsOverride = v; }
-    // HIMMEL-1225: a bare unrecognized flag (--help/-h already short-circuit in
-    // main) is a mistyped/unsupported option, NOT a task — fail closed rather
-    // than dispatch a real worker to reason about the literal flag string.
-    else if (a.startsWith("-")) return { ok: false, error: `unrecognized flag "${a}" (--help for usage)` };
-    else if (task === undefined) task = a;
-  }
-  if (branch !== undefined && name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
-  return { ok: true, args: { task, cwd, name, branch, timeoutMins, permMode, effort, force, skipAuthPreflight, profile, addPlugins, roundsOverride } };
+  const args: ClaudexParsedArgs = {
+    task: undefined, briefFile: undefined, cwd: process.cwd(), name: undefined, branch: undefined,
+    timeoutMins: undefined, permMode: undefined, effort: undefined, model: undefined, force: false,
+    skipAuthPreflight: false, profile: DEFAULT_LANE_PROFILE, addPlugins: [], roundsOverride: undefined,
+  };
+  const result = parseLaneArgs(argv, CLAUDEX_FLAG_TABLE, args, (s, token) => { if (s.task === undefined) s.task = token; });
+  if (!result.ok) return result;
+  if (args.branch !== undefined && args.name !== undefined) return { ok: false, error: "--branch and --name are mutually exclusive (shared mode derives the slug from the branch)" };
+  // HIMMEL-1780: --brief-file and a positional prompt are mutually exclusive —
+  // the file's contents BECOME the task, so a co-supplied positional would be
+  // silently dropped (or ambiguous about which brief wins). Refuse instead.
+  if (args.briefFile !== undefined && args.task !== undefined) return { ok: false, error: "--brief-file and a positional prompt are mutually exclusive (pass the brief as a file or inline, not both)" };
+  return { ok: true, args };
 }
 
 // ── codex weekly bank preflight (HIMMEL-1003 D4) ────────────────────────────
@@ -337,63 +403,56 @@ export function parseClaudexArgs(argv: string[]): { ok: true; args: ClaudexParse
 // quota signal recorded for a claudex dispatch; a followup ticket adds a
 // claudex row to the shared quota-gauge ledger.
 
-// Bounded tail read: the codex rollout log is a live-growing sqlite file that
-// can reach several hundred MB (verified live on the dev machine, 2026-07-14:
-// ~469MB) — a full-file synchronous read on every dispatch would be a
-// multi-hundred-MB memory spike + a slow scan for what must stay a cheap
-// preflight. This bounds the read to the file's last N bytes (where recent
-// rollout rows land in practice) rather than the brief's literal
-// `grep -a -o ... <whole file> | tail -1` — same "read the LAST occurrence"
-// semantics, verified against the live shape (`"secondary":{"used_percent":85`),
-// bounded for a file this large.
-const CODEX_BANK_LOG_TAIL_BYTES = 8 * 1024 * 1024; // 8 MiB
+// SOURCE (HIMMEL-1678): the TTL'd cache written by
+// scripts/lanes/codex-bank-probe.ts, whose source of truth is
+// `codex -s read-only -a untrusted app-server` -> JSON-RPC
+// account/rateLimits/read. That is the ONLY surface that reports codex quota.
+//
+// What this replaced, kept as history so nobody resurrects it: a tail scan of
+// ~/.codex/logs_2.sqlite for `"secondary":{"used_percent":N}`. That file is a
+// LOG database and never carried a quota field at all, so the scan could only
+// ever return null -> "unreadable" -> refuse. Every claudex dispatch was
+// refused before it started; the verdict was the right answer to the wrong
+// question.
+//
+// This preflight does NOT spawn the probe: spawning `codex app-server` per
+// dispatch leaks a process whenever the kill fails, and the dispatch path is
+// exactly where that would compound. A stale/absent cache refuses, and the
+// refusal names the probe as the remedy.
+const CODEX_BANK_CACHE_TTL_DEFAULT_SECONDS = 6 * 60 * 60; // matches bank-status.ts
 
-export function codexBankLogPath(home: string): string {
-  return join(home, ".codex", "logs_2.sqlite");
+export function codexBankCachePath(home: string, env: Record<string, string | undefined> = process.env): string {
+  return env.CODEX_BANK_CACHE || join(home, ".himmel", "cache", "codex-bank.json");
 }
 
-// latin1 (not utf8): the file is a binary sqlite container, but the JSON text
-// fragments being scanned are pure ASCII — a byte-for-byte latin1 mapping is
-// lossless for a text/grep-style scan and can't produce replacement chars at
-// a tail-cut boundary the way a multi-byte utf8 decode could.
-function readFileTail(path: string, maxBytes: number): string {
-  const size = statSync(path).size;
-  const start = Math.max(0, size - maxBytes);
-  const length = size - start;
-  const fd = openSync(path, "r");
+export type CodexBankRead = { usedPct: number | null; reason: string | null };
+
+// FAIL-CLOSED: every path that cannot establish a live weekly number returns
+// usedPct null WITH a reason, and evaluateCodexBankPreflight turns that into a
+// refusal. readFile is injected so this is testable without a real cache.
+export function fetchCodexWeeklyUsedPercent(
+  home: string,
+  nowMs: number = Date.now(),
+  ttlSeconds: number = CODEX_BANK_CACHE_TTL_DEFAULT_SECONDS,
+  readFile: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): CodexBankRead {
+  const path = codexBankCachePath(home);
+  let text: string;
   try {
-    const buf = Buffer.alloc(length);
-    readSync(fd, buf, 0, length, start);
-    return buf.toString("latin1");
-  } finally {
-    closeSync(fd);
-  }
-}
-
-// Pure parser: the LAST "secondary":{...,"used_percent":<N>,...} match in the
-// scanned text (secondary = weekly bank, primary = 5h — per the rollout log
-// shape; not this lane's concern, the 5h bank is the Claude-tier guard's job).
-export function parseCodexWeeklyUsedPercent(raw: string): number | null {
-  const re = /"secondary"\s*:\s*\{[^}]*?"used_percent"\s*:\s*([0-9]+(?:\.[0-9]+)?)/g;
-  let m: RegExpExecArray | null;
-  let last: number | null = null;
-  while ((m = re.exec(raw)) !== null) {
-    const n = Number(m[1]);
-    if (Number.isFinite(n)) last = n;
-  }
-  return last;
-}
-
-// FAIL-OPEN (D4): any read error (missing/cold/unreadable log, a torn read,
-// etc.) returns null — this must never brick a dispatch on a cold log.
-// readTail is injected so this is testable without a real multi-hundred-MB
-// file on disk.
-export function fetchCodexWeeklyUsedPercent(home: string, readTail: (path: string, maxBytes: number) => string = readFileTail): number | null {
-  try {
-    return parseCodexWeeklyUsedPercent(readTail(codexBankLogPath(home), CODEX_BANK_LOG_TAIL_BYTES));
+    text = readFile(path);
   } catch {
-    return null;
+    return { usedPct: null, reason: `codex bank cache missing/unreadable at ${path} — ${CODEX_BANK_PROBE_REMEDY}` };
   }
+  const result = readCodexBankCache(text, nowMs, ttlSeconds);
+  if (result.kind !== "measured") return { usedPct: null, reason: result.reason };
+  // The weekly window is the bank this lane spends. readCodexBankCache has
+  // already dropped any limit whose window reset and kept the GOVERNING
+  // (highest-used) limit per window, so this is the number to gate on. Other
+  // windows keep their own reset instants and are none of this lane's business
+  // (HIMMEL-1725: no single global reset is ever synthesized).
+  const weekly = result.readings.find((r) => r.window === "weekly");
+  if (weekly === undefined) return { usedPct: null, reason: `codex bank cache holds no live WEEKLY window — ${CODEX_BANK_PROBE_REMEDY}` };
+  return { usedPct: weekly.usedPct, reason: null };
 }
 
 // env-knob coercion, pure + tested (mirrors spawn-glm's parseWarnPct).
@@ -406,12 +465,17 @@ export function parsePct(raw: string | undefined, fallback: number): number {
 export type BankPreflightResult = { action: "ok" | "warn" | "refuse"; usedPct: number | null; message?: string };
 
 // Pure decision fn (D4): WARN at warnPct, REFUSE at refusePct unless
-// overridden (CLAUDEX_BANK_OK=1 / --force), null usedPct fails OPEN (HIMMEL-275
-// spirit: an invisible reading is visible-invisible, never a silent skip).
+// overridden (CLAUDEX_BANK_OK=1 / --force). An unreadable weekly bank refuses
+// loudly: this preflight must never claim success when no check occurred.
 // Rationale for refusing BEFORE any worktree side-effect: a capped worker
 // dies mid-run — the tree survives but the work is lost.
-export function evaluateCodexBankPreflight(usedPct: number | null, opts: { warnPct: number; refusePct: number; override: boolean }): BankPreflightResult {
-  if (usedPct === null) return { action: "ok", usedPct: null, message: "codex weekly bank unreadable (~/.codex/logs_2.sqlite missing/cold/unparseable) — fail-open, proceeding without a bank preflight" };
+export function evaluateCodexBankPreflight(usedPct: number | null, opts: { warnPct: number; refusePct: number; override: boolean; reason?: string | null }): BankPreflightResult {
+  if (usedPct === null) {
+    const why = opts.reason ?? `codex weekly bank unreadable — ${CODEX_BANK_PROBE_REMEDY}`;
+    return opts.override
+      ? { action: "warn", usedPct: null, message: `${why} — proceeding under explicit override after no bank preflight was possible` }
+      : { action: "refuse", usedPct: null, message: `${why} — refusing because no bank preflight was possible. Override with CLAUDEX_BANK_OK=1 or --force only after checking capacity manually.` };
+  }
   if (usedPct >= opts.refusePct) {
     if (opts.override) return { action: "warn", usedPct, message: `codex weekly bank at ${usedPct}% (>= refuse threshold ${opts.refusePct}%) — proceeding under override (CLAUDEX_BANK_OK=1/--force)` };
     return { action: "refuse", usedPct, message: `codex weekly bank at ${usedPct}% (>= refuse threshold ${opts.refusePct}%) — refusing before any worktree side-effect (a capped worker dies mid-run; the tree survives but the work is lost). Override with CLAUDEX_BANK_OK=1 or --force.` };
@@ -621,8 +685,11 @@ export function claudexLauncherPath(repoRoot: string): string {
 
 // cmd construction only — the launcher's own arg screen passes
 // --permission-mode/--settings/the prompt through verbatim to `exec claude "$@"`
-// (D1). NO --model flag: claude-codex pins CODEX_MODEL via ANTHROPIC_MODEL/
-// ANTHROPIC_DEFAULT_*_MODEL itself; passing one here would fight that.
+// (D1). NO --model flag is ever added to `cmd`: claude-codex pins the model via
+// ANTHROPIC_MODEL/ANTHROPIC_DEFAULT_*_MODEL itself, derived from its OWN
+// CODEX_MODEL env var (a `claude` CLI flag here would fight that). spawn-claudex's
+// --model (HIMMEL-1464) sets CODEX_MODEL in the child env instead — see
+// claudexChildEnv — never a cmd-line flag.
 // settings (HIMMEL-1040): the resolved plugin-profile `--settings` payload —
 // claude-codex screens it (env-injection) then forwards it to claude. Omitted
 // (operator profile) => no flag. Placed before the prompt, after --permission-mode.
@@ -637,43 +704,305 @@ export function buildClaudexRunArgs(launcherPath: string, prompt: string, permMo
 // Child env (D1): the base env passed straight through — NO ANTHROPIC_* var,
 // NO GLM-style env block; scripts/claude-codex owns the entire trust
 // boundary and sweeps ambient ANTHROPIC_*/CLAUDE_CODE_USE_* itself. The ONLY
-// override this lane makes is the optional per-dispatch effort pin (D5,
+// overrides this lane makes are the optional per-dispatch effort pin (D5,
 // unset => the launcher's own `${CLAUDE_CODE_EFFORT_LEVEL:-high}` default
-// applies), plus stripping TELEGRAM_OWN_POLLER so a spawned worker never
-// adopts poller ownership (mirrors run.ts's sessionEnv/glmChildEnv).
-// `base` is injected so this is testable without touching the real process.env.
-export function claudexChildEnv(base: Record<string, string | undefined>, effort?: EffortLevel): Record<string, string | undefined> {
-  const env: Record<string, string | undefined> = { ...base };
+// applies), the optional per-dispatch model pin (HIMMEL-1464, unset =>
+// the launcher's own `${CODEX_MODEL:-gpt-5.6-sol}` default applies), the
+// unconditional HIMMEL_WORKER worker-ness marker (HIMMEL-2085, see below) —
+// plus stripping TELEGRAM_OWN_POLLER so a spawned worker never adopts poller
+// ownership (mirrors run.ts's sessionEnv/glmChildEnv). `base` is injected so
+// this is testable without touching the real process.env.
+export function claudexChildEnv(base: Record<string, string | undefined>, effort?: EffortLevel, model?: CodexModelTier): Record<string, string | undefined> {
+  // HIMMEL-1753: same no-op-editor pin as the glm/default lanes (see
+  // NON_INTERACTIVE_EDITOR_ENV in run.ts) — a claudex worker also spawns with
+  // stdin closed and could otherwise block behind an editor window.
+  const env: Record<string, string | undefined> = { ...base, ...NON_INTERACTIVE_EDITOR_ENV };
   if (effort) env.CLAUDE_CODE_EFFORT_LEVEL = effort;
+  if (model) env.CODEX_MODEL = model;
+  // HIMMEL-2085: this lane had NO worker-ness marker at all — buildGlmEnv's
+  // HIMMEL_GLM_WORKER only ever reached the GLM lane, so a native (Sonnet/
+  // Opus-via-codex-proxy) dispatched worker carried no positive signal a hook
+  // could gate on, leaving block-glm-external-writes.sh's pin-dir write-fence
+  // (and any future worker-scoped guard keyed the same way) unable to see
+  // this lane at all. HIMMEL_WORKER is the general marker every dispatched
+  // worker lane's child-env builder sets — see glm-env.ts's buildGlmEnv for
+  // the GLM twin.
+  env.HIMMEL_WORKER = "1";
   delete env.TELEGRAM_OWN_POLLER;
   return env;
 }
 
-export type ClaudexRunResult = { code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string };
+export type ClaudexEndReason = "clean" | "nonzero-exit" | "killed-at-deadline";
+export type ClaudexRunResult = {
+  code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string;
+  endReason?: ClaudexEndReason; elapsedMs?: number; stdoutBytes?: number; stderrBytes?: number;
+  outputAnomaly?: "no-output-captured"; liveLogHandled?: boolean; unpersistedLogTail?: Uint8Array;
+  timeoutForensicsPath?: string;
+};
+
+type ClaudexRunOpts = {
+  permMode?: PermissionMode; effort?: EffortLevel; model?: CodexModelTier; repoRoot: string; settings?: string;
+  runLogPath?: string; timeoutForensicsPath?: string;
+};
+
+const EMPTY_OUTPUT_NOTE = (endReason: ClaudexEndReason) =>
+  `[spawn-claudex anomaly] child produced no stdout or stderr (0 bytes captured; end_reason=${endReason})\n`;
+
+const LIVE_LOG_DISCONTINUITY_NOTE =
+  "[spawn-claudex anomaly] live run.log persistence was incomplete; retained tail follows and may overlap earlier output\n";
+const LIVE_LOG_APPEND_FAILURE_NOTE =
+  "[spawn-claudex anomaly] live run.log append failed; queued suffix follows and may overlap only at the failed append boundary\n";
+export const MAX_UNPERSISTED_LOG_BYTES = 1024 * 1024;
+
+type CapturedByteCounts = {
+  stdout: number | null;
+  stderr: number | null;
+  retainedTailBytes?: number;
+};
+
+function capturedByteCounts(res: ClaudexRunResult): CapturedByteCounts {
+  // Injected/alternate runners written before HIMMEL-1943 only return `tail`.
+  // The tail may be truncated and combines both channels, so its encoded size
+  // describes only the retained artifact, not either channel's byte total.
+  if (res.stdoutBytes === undefined && res.stderrBytes === undefined) {
+    return {
+      stdout: null,
+      stderr: null,
+      retainedTailBytes: new TextEncoder().encode(res.tail ?? "").byteLength,
+    };
+  }
+  return { stdout: res.stdoutBytes ?? null, stderr: res.stderrBytes ?? null };
+}
+
+function noOutputCaptured(bytes: CapturedByteCounts): boolean {
+  if (bytes.stdout === null || bytes.stderr === null) return false;
+  return bytes.stdout + bytes.stderr === 0;
+}
+
+function finalClaudexMeta(res: ClaudexRunResult): ReturnType<typeof finalMeta> & Record<string, unknown> {
+  const endReason = res.endReason ?? (res.timedOut ? "killed-at-deadline" : res.code === 0 ? "clean" : "nonzero-exit");
+  const bytes = capturedByteCounts(res);
+  const outputAnomaly = res.outputAnomaly ?? (noOutputCaptured(bytes) ? "no-output-captured" : undefined);
+  return {
+    ...finalMeta(res.code, res.pid, res.capped, res.blocked, res.timedOut),
+    end_reason: endReason,
+    elapsed_ms: res.elapsedMs ?? null,
+    stdout_bytes: bytes.stdout,
+    stderr_bytes: bytes.stderr,
+    ...(bytes.retainedTailBytes !== undefined ? {
+      retained_tail_utf8_bytes: bytes.retainedTailBytes,
+      byte_counts_note: "unknown-legacy-tail-only",
+    } : {}),
+    ...(outputAnomaly ? { output_anomaly: outputAnomaly } : {}),
+    ...(res.timeoutForensicsPath ? { timeout_forensics: res.timeoutForensicsPath } : {}),
+  };
+}
+
+export function captureTimeoutForensics(path: string | undefined, cwd: string, elapsedMs: number, stdoutBytes: number, stderrBytes: number): boolean {
+  if (!path) return false;
+  const git = (args: string[]): string => {
+    try {
+      const r = Bun.spawnSync(["git", "-C", cwd, ...args], { stdout: "pipe", stderr: "pipe", timeout: 2_000 });
+      const output = `${r.stdout.toString()}${r.stderr.toString()}`.trimEnd();
+      if (r.exitCode === null || r.signalCode != null) return `[probe timed out or was killed]${output ? `\n${output}` : ""}`;
+      return output || `[no output; exit ${r.exitCode}]`;
+    } catch (e) {
+      return `[probe threw: ${String((e as any)?.message ?? e)}]`;
+    }
+  };
+  const status = git(["status", "--short"]);
+  const head = git(["log", "-1", "--oneline"]);
+  const report = [
+    "spawn-claudex timeout forensics (captured after process exit and pipe drain)",
+    `elapsed_ms: ${elapsedMs}`,
+    "byte_counts_scope: final-after-process-exit-and-pipe-drain",
+    `stdout_bytes: ${stdoutBytes}`,
+    `stderr_bytes: ${stderrBytes}`,
+    "",
+    `$ git -C ${cwd} status --short`, status,
+    "",
+    `$ git -C ${cwd} log -1 --oneline`, head,
+    "",
+  ].join("\n");
+  try { writeFileSync(path, report); return true; }
+  catch (e) {
+    console.error(`spawn-claudex: timeout forensics write failed (non-fatal): ${String((e as any)?.message ?? e)}`);
+    return false;
+  }
+}
+
+export async function killThenCaptureTimeoutForensics(kill: () => void, drain: () => Promise<void>, capture: () => boolean): Promise<boolean> {
+  // The deadline is the kill boundary. The probes only observe the worktree,
+  // so waiting for process exit + both pipes to drain before probing preserves
+  // the evidence and makes the captured byte counts final without extending
+  // the worker's execution beyond its configured deadline.
+  kill();
+  await drain();
+  return capture();
+}
+
+const TIMEOUT_DRAIN_GRACE_MS = 5_000;
+
+export async function awaitDrainWithBound(drain: Promise<unknown>, cancelPipes: () => void, graceMs: number = TIMEOUT_DRAIN_GRACE_MS): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const drained = await Promise.race([
+    drain.then(() => true),
+    new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  if (!drained) {
+    // A descendant can inherit and retain the direct child's pipe handles even
+    // after that child is reaped. Stop waiting on those OS handles after a
+    // bounded grace period; cancelling the readers settles both consume()
+    // promises, which are still awaited below before forensics are captured.
+    cancelPipes();
+    await drain;
+  }
+}
+
+export function createClaudexLiveLogAppender(
+  runLogPath: string | undefined,
+  append: (path: string, chunk: Uint8Array) => void = (path, chunk) => appendFileSync(path, chunk),
+): {
+  append: (chunk: Uint8Array) => void;
+  result: () => Pick<ClaudexRunResult, "liveLogHandled" | "unpersistedLogTail">;
+} {
+  let liveLogHandled = !!runLogPath;
+  let liveLogBroken = false;
+  let unpersistedLogBytes = 0;
+  let unpersistedLogDropped = false;
+  const unpersistedLogChunks: Uint8Array[] = [];
+  const retain = (chunk: Uint8Array) => {
+    if (unpersistedLogDropped) return;
+    if (unpersistedLogBytes + chunk.byteLength > MAX_UNPERSISTED_LOG_BYTES) {
+      // run.log is cosmetic: once exact recovery would exceed 1 MiB, release
+      // the queued suffix and let executeClaudexRun persist its bounded tail
+      // behind the existing discontinuity marker instead.
+      unpersistedLogChunks.length = 0;
+      unpersistedLogBytes = 0;
+      unpersistedLogDropped = true;
+      return;
+    }
+    unpersistedLogChunks.push(chunk.slice());
+    unpersistedLogBytes += chunk.byteLength;
+  };
+  return {
+    append(chunk) {
+      if (!runLogPath) return;
+      // Once an append fails, retain that chunk and every later chunk. This
+      // gives the post-run fallback an exact suffix boundary and preserves
+      // chronology without replaying output already written successfully.
+      if (liveLogBroken) {
+        retain(chunk);
+        return;
+      }
+      try { append(runLogPath, chunk); }
+      catch (e) {
+        liveLogHandled = false;
+        liveLogBroken = true;
+        retain(chunk);
+        console.error(`spawn-claudex: run.log append failed (non-fatal): ${String((e as any)?.message ?? e)}`);
+      }
+    },
+    result() {
+      let unpersistedLogTail: Uint8Array | undefined;
+      if (!unpersistedLogDropped && unpersistedLogChunks.length > 0) {
+        const note = new TextEncoder().encode(LIVE_LOG_APPEND_FAILURE_NOTE);
+        // This final contiguous copy is bounded to the 1 MiB retained suffix
+        // plus the fixed note; peak recovery storage is therefore ~2 MiB.
+        unpersistedLogTail = new Uint8Array(note.byteLength + unpersistedLogBytes);
+        unpersistedLogTail.set(note);
+        let offset = note.byteLength;
+        for (const chunk of unpersistedLogChunks) {
+          unpersistedLogTail.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+      }
+      return { liveLogHandled, unpersistedLogTail };
+    },
+  };
+}
 
 // The real bounded-run spawn (mirrors run.ts's runSession: stdin closed,
 // hard process-TREE kill on timeout via the imported killTree, tail kept for
 // run.log persistence). NOT unit-tested directly (it launches a real
 // process) — executeClaudexRun below takes it as an injected dependency so
 // tests stub it and never launch claude-codex/claude for real.
-export async function runClaudexSession(prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string; settings?: string }, onSpawn?: (pid: number) => void): Promise<ClaudexRunResult> {
+export async function runClaudexSession(prompt: string, cwd: string, opts: ClaudexRunOpts, onSpawn?: (pid: number) => void): Promise<ClaudexRunResult> {
   const launcherPath = claudexLauncherPath(opts.repoRoot);
   const { cmd } = buildClaudexRunArgs(launcherPath, prompt, opts.permMode, opts.settings);
-  const env = claudexChildEnv(process.env, opts.effort);
-  const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
+  const env = claudexChildEnv(process.env, opts.effort, opts.model);
+  const startedAt = Date.now();
+  // SPAWN_OWN_GROUP (HIMMEL-1956): killTree's POSIX half signals the process
+  // GROUP, which only exists if the child leads one. Without it a timed-out
+  // claudex worker's descendants survive and keep these pipes open.
+  const p = spawn(cmd, { ...SPAWN_OWN_GROUP, cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
   onSpawn?.(pid);
   const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000);
   let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; killTree(pid, (s) => p.kill(s as any)); }, timeoutMs);
-  let out: string, err: string, code: number;
+  let timeoutForensicsWritten = false;
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let stdoutTail = "";
+  let stderrTail = "";
+  const liveLog = createClaudexLiveLogAppender(opts.runLogPath);
+  const consume = (stream: ReadableStream<Uint8Array>, channel: "stdout" | "stderr") => {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
+    const done = (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (channel === "stdout") stdoutBytes += value.byteLength;
+        else stderrBytes += value.byteLength;
+        liveLog.append(value);
+        if (channel === "stdout") stdoutTail = (stdoutTail + decoder.decode(value, { stream: true })).slice(-65536);
+        else stderrTail = (stderrTail + decoder.decode(value, { stream: true })).slice(-65536);
+      }
+      if (channel === "stdout") stdoutTail = (stdoutTail + decoder.decode()).slice(-65536);
+      else stderrTail = (stderrTail + decoder.decode()).slice(-65536);
+    })();
+    return { done, cancel: () => { void reader.cancel().catch(() => {}); } };
+  };
+  const stdout = consume(p.stdout, "stdout");
+  const stderr = consume(p.stderr, "stderr");
+  const exited = p.exited;
+  const drained = Promise.all([exited, stdout.done, stderr.done] as const);
+  let timeoutTask: Promise<void> | undefined;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    timeoutTask = killThenCaptureTimeoutForensics(
+      () => killTree(pid, (s) => p.kill(s as any)),
+      () => awaitDrainWithBound(drained, () => { stdout.cancel(); stderr.cancel(); }),
+      () => captureTimeoutForensics(opts.timeoutForensicsPath, cwd, Date.now() - startedAt, stdoutBytes, stderrBytes),
+    ).then((written) => { timeoutForensicsWritten = written; });
+  }, timeoutMs);
+  let code: number;
   try {
-    [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    [code] = await drained;
   } finally {
     clearTimeout(timer);
   }
-  const tail = (out + err).slice(-65536);
-  return { code: timedOut ? -1 : code, capped: detectClaudexCap(tail), blocked: detectContentFilter(tail), timedOut, pid, tail };
+  // If the deadline fired, the timeout task owns the ordered cleanup. Do not
+  // return while its drain/capture work is still in flight.
+  if (timeoutTask) await timeoutTask;
+  // Preserve the old read-once contract for callers: stdout followed by
+  // stderr, capped to the final 64KiB-equivalent JS string slice.
+  const tail = (stdoutTail + stderrTail).slice(-65536);
+  const endReason: ClaudexEndReason = timedOut ? "killed-at-deadline" : code === 0 ? "clean" : "nonzero-exit";
+  const outputAnomaly = stdoutBytes + stderrBytes === 0 ? "no-output-captured" as const : undefined;
+  if (outputAnomaly && opts.runLogPath) {
+    liveLog.append(new TextEncoder().encode(EMPTY_OUTPUT_NOTE(endReason)));
+  }
+  const { liveLogHandled, unpersistedLogTail } = liveLog.result();
+  return {
+    code: timedOut ? -1 : code,
+    capped: detectClaudexCap(tail), blocked: detectContentFilter(tail), timedOut, pid, tail,
+    endReason, elapsedMs: Date.now() - startedAt, stdoutBytes, stderrBytes, outputAnomaly,
+    liveLogHandled, unpersistedLogTail,
+    timeoutForensicsPath: timedOut && timeoutForensicsWritten ? opts.timeoutForensicsPath : undefined,
+  };
 }
 
 export function writeClaudexLiveMeta(
@@ -692,8 +1021,8 @@ export function writeClaudexLiveMeta(
 // success path writes finalMeta (done/failed/capped/blocked/timeout), and a
 // thrown run() writes {status:"failed", exit_code:-1} THEN rethrows.
 export async function executeClaudexRun(deps: {
-  run: (prompt: string, cwd: string, opts: { permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string; settings?: string }, onSpawn?: (pid: number) => void) => Promise<ClaudexRunResult>;
-  prompt: string; worktree: string; permMode?: PermissionMode; effort?: EffortLevel; repoRoot: string;
+  run: (prompt: string, cwd: string, opts: ClaudexRunOpts, onSpawn?: (pid: number) => void) => Promise<ClaudexRunResult>;
+  prompt: string; worktree: string; permMode?: PermissionMode; effort?: EffortLevel; model?: CodexModelTier; repoRoot: string;
   sessionDir: string; metaPath: string; runningMeta: Record<string, unknown>;
   // HIMMEL-1040: the resolved --settings plugin-profile payload (undefined = operator / no injection).
   settings?: string;
@@ -706,14 +1035,23 @@ export async function executeClaudexRun(deps: {
     writeClaudexLiveMeta(deps.metaPath, deps.runningMeta, { pid });
   };
   try {
-    const res = await deps.run(deps.prompt, deps.worktree, { permMode: deps.permMode, effort: deps.effort, repoRoot: deps.repoRoot, settings: deps.settings }, recordLivePid);
+    const runLogPath = join(deps.sessionDir, "run.log");
+    const timeoutForensicsPath = join(deps.sessionDir, "timeout-forensics.txt");
+    const res = await deps.run(deps.prompt, deps.worktree, { permMode: deps.permMode, effort: deps.effort, model: deps.model, repoRoot: deps.repoRoot, settings: deps.settings, runLogPath, timeoutForensicsPath }, recordLivePid);
     // run.log append is COSMETIC persistence — isolated so an I/O failure here
-    // never flips a successful run to failed (mirrors spawn-glm's executeRun).
-    if (res.tail !== undefined) {
-      try { appendFileSync(join(deps.sessionDir, "run.log"), res.tail); }
+    // never flips a successful run to failed. Real runs stream live; injected
+    // test/alternate runners retain the old post-run tail persistence fallback.
+    if (!res.liveLogHandled) {
+      const bytes = capturedByteCounts(res);
+      const fallbackLog = res.unpersistedLogTail ?? (noOutputCaptured(bytes)
+        ? EMPTY_OUTPUT_NOTE(res.endReason ?? (res.timedOut ? "killed-at-deadline" : res.code === 0 ? "clean" : "nonzero-exit"))
+        : res.liveLogHandled === false
+          ? `${LIVE_LOG_DISCONTINUITY_NOTE}${res.tail ?? ""}`
+          : res.tail);
+      try { if (fallbackLog !== undefined) appendFileSync(runLogPath, fallbackLog); }
       catch (e) { console.error(`spawn-claudex: run.log append failed (non-fatal): ${String((e as any)?.message ?? e)}`); }
     }
-    const fm = finalMeta(res.code, res.pid, res.capped, res.blocked, res.timedOut);
+    const fm = finalClaudexMeta(res);
     writeFileSync(deps.metaPath, JSON.stringify({ ...deps.runningMeta, ...fm }, null, 2));
     return { code: res.code };
   } catch (e) {
@@ -728,9 +1066,11 @@ export async function executeClaudexRun(deps: {
 // "glm" as the lane argument to shared-branch-lock.sh acquire and its
 // messages are "spawn-glm:"-prefixed — reusing it as-is would record a
 // claudex dispatch's lock under the wrong lane name. The lifecycle itself
-// (acquire -> capture prior pushurl -> poison -> runBody -> restore -> release
-// in a finally) is identical; POISON_SENTINEL is imported so the I2
-// crash-recovery compare can't drift from spawn-glm's own definition.
+// (acquire -> runBody -> release in a finally) is identical. The pushurl
+// quarantine both twins used to carry is gone (HIMMEL-1961 — see the removal
+// note in spawn-glm.ts); this dispatch leaves the operator's git config
+// untouched in every scope, and its report says push protection is
+// contract-only.
 export async function runClaudexSharedDispatch(p: {
   repoDir: string; worktree: string; branch: string; needsWorktreeAdd: boolean;
   lockScript: string; gitAdd: () => void; runBody: () => Promise<number>;
@@ -746,8 +1086,6 @@ export async function runClaudexSharedDispatch(p: {
     env: { ...process.env, SHARED_BRANCH_LOCK_HOLDER_PID: String(process.pid) },
   });
   if (acquire.exitCode !== 0) return { ok: false, reason: acquire.stderr.toString().trim() || `spawn-claudex: shared-branch-lock acquire failed (rc=${acquire.exitCode})` };
-  let priorPushUrl: string | undefined;
-  let poisoned = false;
   try {
     if (p.revalidateClean) { const rv = p.revalidateClean(); if (!rv.ok) return rv; } // stale-clean guard, lock released in finally
     if (p.needsWorktreeAdd) p.gitAdd(); // NO -b: an existing branch, never minted here
@@ -755,34 +1093,17 @@ export async function runClaudexSharedDispatch(p: {
     // worktree (needsWorktreeAdd=false) from a pre-change or failed dispatch
     // may never have been trust-seeded — seeding is idempotent, so cover both.
     ensureWorkspaceTrust(p.worktree);
-    const priorRes = Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "--get", "remote.origin.pushurl"], { stdout: "pipe", stderr: "pipe" });
-    if (priorRes.exitCode === 0) {
-      const got = priorRes.stdout.toString().trim();
-      if (got !== POISON_SENTINEL) priorPushUrl = got;
-    }
-    poisonPushUrl(p.repoDir, p.worktree);
-    poisoned = true;
     const code = await p.runBody();
     return { ok: true, code };
   } finally {
+    // Releasing the lock is the only cleanup left (HIMMEL-1961): a leaked lock
+    // blocks the next writer on this branch, so a THROWING Bun.spawnSync must
+    // degrade to a warning rather than out-rank an error already propagating.
     try {
-      if (poisoned) {
-        const restore = priorPushUrl !== undefined
-          ? Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "remote.origin.pushurl", priorPushUrl], { stdout: "pipe", stderr: "pipe" })
-          : Bun.spawnSync(["git", "-C", p.worktree, "config", "--worktree", "--unset", "remote.origin.pushurl"], { stdout: "pipe", stderr: "pipe" });
-        if (restore.exitCode !== 0 && !(priorPushUrl === undefined && restore.exitCode === 5)) {
-          console.error(`spawn-claudex: WARNING - pushurl restore failed (rc=${restore.exitCode}); ${p.worktree} may stay push-poisoned: ${restore.stderr.toString().trim()}`);
-        }
-      }
+      const rel = Bun.spawnSync([BASH_BIN, p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
+      if (rel.exitCode !== 0) console.error(`spawn-claudex: WARNING - shared-branch-lock release failed (rc=${rel.exitCode}); the lock for ${p.branch} may stay held: ${rel.stderr.toString().trim()}`);
     } catch (e) {
-      console.error(`spawn-claudex: WARNING - pushurl restore threw (${String((e as any)?.message ?? e)}); ${p.worktree} may stay push-poisoned`);
-    } finally {
-      try {
-        const rel = Bun.spawnSync([BASH_BIN, p.lockScript, "release", p.repoDir, p.branch], { stdout: "pipe", stderr: "pipe" });
-        if (rel.exitCode !== 0) console.error(`spawn-claudex: WARNING - shared-branch-lock release failed (rc=${rel.exitCode}); the lock for ${p.branch} may stay held: ${rel.stderr.toString().trim()}`);
-      } catch (e) {
-        console.error(`spawn-claudex: WARNING - shared-branch-lock release threw (${String((e as any)?.message ?? e)}); the lock for ${p.branch} may stay held`);
-      }
+      console.error(`spawn-claudex: WARNING - shared-branch-lock release threw (${String((e as any)?.message ?? e)}); the lock for ${p.branch} may stay held`);
     }
   }
 }
@@ -796,13 +1117,26 @@ export async function runClaudexSharedDispatch(p: {
 // there is no exit-3 GLM-guard equivalent here — claude-codex owns PHI/egress
 // guarding itself, D1).
 async function main(): Promise<void> {
-  const usage = "usage: spawn-claudex <prompt> [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--effort low|medium|high|xhigh] [--profile <name>] [--add-plugins a@m,b@m] [--rounds-override <why>] [--force] [--skip-auth-preflight] (default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
+  const usage = "usage: spawn-claudex [<prompt> | --brief-file <path>] [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--effort low|medium|high|xhigh] [--model gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna] [--profile <name>] [--add-plugins a@m,b@m] [--rounds-override <why>] [--force] [--skip-auth-preflight] (the prompt is the task brief, inline, or read verbatim from --brief-file — HIMMEL-1780; default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
   const rawArgv = process.argv.slice(2);
   // HIMMEL-1225: help short-circuit — before parseClaudexArgs, before any side effect.
   if (isHelpFlag(rawArgv)) { console.log(usage); process.exit(0); }
   const parsed = parseClaudexArgs(rawArgv);
   if (!parsed.ok) { console.error(`spawn-claudex: ${parsed.error}`); console.error(usage); process.exit(2); }
-  const { task, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, effort, force, skipAuthPreflight, profile, addPlugins, roundsOverride } = parsed.args;
+  const { task: taskArg, briefFile, cwd, name, branch: branchArg, timeoutMins, permMode: permModeArg, effort, model, force, skipAuthPreflight, profile, addPlugins, roundsOverride } = parsed.args;
+  // HIMMEL-1780: --brief-file's contents BECOME the task (readBriefFile is
+  // spawn-glm's exported fail-closed helper — one implementation across both
+  // lanes). Read here — before any side effect and before every task-consuming
+  // consumer below (round guard, bank preflight, plan, worker-prompt compose)
+  // — so a missing/unreadable/empty file is a clean exit-2 usage refusal that
+  // leaves no orphan worktree/branch/meta, and the file's brief flows into the
+  // EXISTING <session-dir>/brief.md + pointer-prompt machinery unchanged.
+  let task: string | undefined = taskArg;
+  if (briefFile !== undefined) {
+    const brief = readBriefFile(briefFile);
+    if (!brief.ok) { console.error(`spawn-claudex: ${brief.error}`); console.error(usage); process.exit(2); }
+    task = brief.task;
+  }
   if (!task) { console.error(usage); process.exit(2); }
   // HIMMEL-1378: same structural forbid + worker default as spawn-glm.ts — see
   // its composeWorkerSettings/refuseBypassPermissions comment for the full
@@ -834,12 +1168,13 @@ async function main(): Promise<void> {
   catch (e) { console.error(`spawn-claudex: ${String((e as any)?.message ?? e)}`); console.error(usage); process.exit(2); }
 
   // Codex weekly bank preflight (D4) BEFORE any worktree/branch side-effect.
-  const usedPct = fetchCodexWeeklyUsedPercent(homedir());
+  const bankRead = fetchCodexWeeklyUsedPercent(homedir());
   const bankOverride = force || process.env.CLAUDEX_BANK_OK === "1";
-  const bank = evaluateCodexBankPreflight(usedPct, {
+  const bank = evaluateCodexBankPreflight(bankRead.usedPct, {
     warnPct: parsePct(process.env.CLAUDEX_BANK_WARN_PCT, 80),
     refusePct: parsePct(process.env.CLAUDEX_BANK_REFUSE_PCT, 90),
     override: bankOverride,
+    reason: bankRead.reason,
   });
   if (bank.message) console.error(`spawn-claudex: ${bank.message}`);
   if (bank.action === "refuse") process.exit(2);
@@ -869,7 +1204,7 @@ async function main(): Promise<void> {
   // doubles the codex-bank spend for this dispatch.
   const CLAUDEX_WINDOW_TOKENS = 272_000;
   const sessionDir = join(claudexSessionRoot(), `claudex-${slug}-${Date.now()}`);
-  const briefText = composeClaudexWorkerPrompt(task, sessionDir, branch, { shared: sharedMode });
+  const briefText = composeClaudexWorkerPrompt(task, sessionDir, branch, { shared: sharedMode, model });
   const overheadChars = measureOverheadChars(absCwd, homedir());
   const pre = preflightWindowCheck({ briefChars: briefText.length, overheadChars, windowTokens: CLAUDEX_WINDOW_TOKENS });
   if (!pre.ok) { console.error(pre.reason); process.exit(2); }
@@ -916,6 +1251,10 @@ async function main(): Promise<void> {
   // i.e. before ANY of the worker's state exists. The own-branch caller passes a
   // teardown; shared mode passes nothing (runSharedDispatch calls runBody()).
   const runBody = async (onSetupFail?: () => void): Promise<number> => {
+    // HIMMEL-1778: same seam as spawn-glm's twin — runBody runs in BOTH modes
+    // after the branch exists and before the worker launches. Warn-only.
+    const hugeDiff = checkHugeDiff("spawn-claudex", { cwd: worktree, branch });
+    if (hugeDiff.note) console.error(hugeDiff.note);
     // HIMMEL-1040 (CR): resolve the profile FIRST — before meta.json is written.
     // resolveProfileSettings throws on an unreadable/malformed settings layer and
     // sits OUTSIDE executeClaudexRun's failure-transition guard; after the
@@ -938,7 +1277,11 @@ async function main(): Promise<void> {
     mkdirSync(sessionDir, { recursive: true });
     const metaPath = join(sessionDir, "meta.json");
     const started_at = new Date().toISOString();
-    const baseMeta = { status: "running", pid: 0, started_at, lane: "codex", task_name: slug };
+    // HIMMEL-1693 CR round 2: worker_worktree is what stop-worker.sh's
+    // checkpoint_worker_worktree reads before signalling a worker -- without
+    // it every Claudex session refused the stop (exit 5, "no worker worktree
+    // recorded"). Same field spawn-glm.ts's baseMeta already writes.
+    const baseMeta = { status: "running", pid: 0, started_at, lane: "codex", task_name: slug, worker_worktree: worktree };
     const runningMeta = sharedMode ? { ...baseMeta, shared_branch: branch } : baseMeta;
     writeFileSync(metaPath, JSON.stringify(runningMeta, null, 2));
 
@@ -951,7 +1294,7 @@ async function main(): Promise<void> {
     // by the pre-launch auth preflight in main() (HIMMEL-1037), never by
     // re-running a worker (which could duplicate the worker's allowed side
     // effects). No retry wrapper here.
-    const { code } = await executeClaudexRun({ run: runClaudexSession, prompt, worktree, permMode, effort, repoRoot: REPO_ROOT, sessionDir, metaPath, runningMeta, settings });
+    const { code } = await executeClaudexRun({ run: runClaudexSession, prompt, worktree, permMode, effort, model, repoRoot: REPO_ROOT, sessionDir, metaPath, runningMeta, settings });
     return code;
   };
 
@@ -959,7 +1302,6 @@ async function main(): Promise<void> {
   if (!sharedMode) {
     g(["worktree", "add", worktree, "-b", branch]);
     ensureWorkspaceTrust(worktree);
-    poisonPushUrl(absCwd, worktree);
     // HIMMEL-1094: this dispatch MINTED both the worktree and the branch (-b), so
     // it owns them until the worker starts. Teardown is passed ONLY here — shared
     // mode must never tear down a caller-owned worktree/branch.
@@ -986,6 +1328,7 @@ async function main(): Promise<void> {
 
   console.log(`session-dir: ${sessionDir}`);
   console.log(`transcript-dir: ${transcriptDirFor(worktree)}`);
+  console.log(PUSH_PROTECTION_DISCLOSURE);
   console.log(`exit: ${code}`);
   process.exit(code);
 }

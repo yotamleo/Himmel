@@ -1,25 +1,30 @@
 export const UNKNOWN_TERMINAL_WIDTH = null;
+export const MAX_TERMINAL_WIDTH = 1000;
+function normalizeColumns(columns) {
+    return Math.min(Math.floor(columns), MAX_TERMINAL_WIDTH);
+}
 function parseEnvColumns() {
     const envColumns = Number.parseInt(process.env.COLUMNS ?? '', 10);
-    return Number.isFinite(envColumns) && envColumns > 0 ? envColumns : null;
+    return Number.isFinite(envColumns) && envColumns > 0 ? normalizeColumns(envColumns) : null;
 }
 function parseStreamColumns(columns) {
     return typeof columns === 'number' && Number.isFinite(columns) && columns > 0
-        ? Math.floor(columns)
+        ? normalizeColumns(columns)
         : null;
 }
 export function getTerminalWidth(options = {}) {
     const { preferEnv = false, fallback = null } = options;
+    const normalizedFallback = parseStreamColumns(fallback);
     if (preferEnv) {
         return parseEnvColumns()
             ?? parseStreamColumns(process.stdout?.columns)
             ?? parseStreamColumns(process.stderr?.columns)
-            ?? fallback;
+            ?? normalizedFallback;
     }
     return parseStreamColumns(process.stdout?.columns)
         ?? parseStreamColumns(process.stderr?.columns)
         ?? parseEnvColumns()
-        ?? fallback;
+        ?? normalizedFallback;
 }
 // Returns a progress bar width scaled to the current terminal width.
 // Wide (>=100): 10, Medium (60-99): 6, Narrow (<60): 4.

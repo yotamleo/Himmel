@@ -166,29 +166,37 @@ is_dirty() {
 # False on:
 #   - main itself
 #   - detached HEAD
-#   - branches at main's tip with NO divergence either way
-#     (ahead=0 AND behind=0); see HIMMEL-114 short-circuit
+#   - branches with no commits of their own whose HEAD sits on the default
+#     branch's first-parent chain (ahead=0), regardless of behind-count
+#     (HIMMEL-1947, superseding the narrower HIMMEL-114 form)
 # Returns 2 if the resolved default-branch ref (main or master) is missing or
 # git plumbing fails (predicate cannot be evaluated - e.g., shallow clones
 # missing the merge base).
 #
 # Known limitations (chosen tradeoffs, NOT bugs):
-# - FAST-FORWARD MERGE AMBIGUITY (HIMMEL-114): a branch that was FF-merged
-#   to main while main has NOT advanced since produces ahead=0 + behind=0,
-#   which is REFERENTIALLY INDISTINGUISHABLE from a fresh branch created at
-#   main's SHA. The HIMMEL-114 short-circuit treats both as "not merged"
-#   because (a) himmel's workflow uses squash + --no-ff merges via
-#   `gh pr merge`, so true FF-merge-no-advance is rare, and (b) blocking
-#   the FIRST commit on every fresh branch is the more painful failure mode
-#   in practice. The squash arm covers most real merge cases via
-#   patch-id equivalence. A reflog-based heuristic could distinguish
-#   fresh-from-FF-merged but breaks across clones.
+# - FAST-FORWARD MERGE AMBIGUITY (HIMMEL-114, widened by HIMMEL-1947): a
+#   branch that was FF-merged to main produces ahead=0 with HEAD still on
+#   main's first-parent chain (FF-merge creates no new commit, so the tip
+#   stays on that chain permanently) - REGARDLESS of whether main has since
+#   advanced. HIMMEL-114 only pinned the no-advance case; HIMMEL-1947 replaced
+#   the behind-count check with the first-parent-chain check above, which
+#   extends the same ambiguity to behind>0 too, because an FF-merged tip and
+#   a fresh branch off main are REFERENTIALLY INDISTINGUISHABLE in the DAG
+#   either way - no graph-only predicate can tell them apart. The
+#   short-circuit treats both as "not merged" because (a) himmel's workflow
+#   uses squash + --no-ff merges via `gh pr merge`, so true FF-merge is rare,
+#   and (b) narrowing this back to catch FF-merges would reintroduce
+#   HIMMEL-1947 itself: blocking the FIRST commit on every fresh branch once
+#   main has advanced, the more painful failure mode by far. The squash arm
+#   covers most real merge cases via patch-id equivalence. A reflog-based
+#   heuristic could distinguish fresh-from-FF-merged but breaks across clones.
 # - FORCE-RESET TO BRANCH SHA: if `main` is force-reset to a feature
-#   branch's tip out-of-band (admin-merge bypass + manual update-ref),
-#   ahead=0 + behind=0 also holds. Same short-circuit returns "not
-#   merged". Acceptance argument: force-resetting main requires bypassing
-#   no-push-to-main + branch protection + admin-merge guards already, so
-#   reaching this state means multiple guards have already been bypassed.
+#   branch's tip out-of-band (admin-merge bypass + manual update-ref), HEAD
+#   is trivially on the (now-identical) first-parent chain and ahead=0 also
+#   holds. Same short-circuit returns "not merged". Acceptance argument:
+#   force-resetting main requires bypassing no-push-to-main + branch
+#   protection + admin-merge guards already, so reaching this state means
+#   multiple guards have already been bypassed.
 is_merged_into_main() {
     local dir="${1:-.}"
     local b rc
@@ -207,21 +215,42 @@ is_merged_into_main() {
         return 2
     fi
 
-    # HIMMEL-114: short-circuit "fresh branch at main's SHA" BEFORE the
-    # direct-merge listing arm. The differentiator between a fresh branch
-    # and a direct-merge is BEHIND-count, not ahead-count:
-    #   ahead=0 + behind=0  -> fresh branch (HEAD == main, just diverged)
-    #   ahead=0 + behind>0  -> direct-merge (main moved on past the merge)
-    #   ahead>0             -> active branch (check direct-merge + squash)
-    # Pre-HIMMEL-114 the direct-merge arm fired on fresh branches at main's
-    # SHA because `git branch --merged main` lists every ref at main's SHA,
-    # which blocked the FIRST commit on docs/feat branches.
-    local ahead behind
+    # Short-circuit "branch has committed nothing of its own" BEFORE the
+    # direct-merge listing arm, which otherwise fires on any ref reachable
+    # from main (`git branch --merged main` lists them all) and blocks the
+    # FIRST commit on a fresh branch.
+    #
+    # ahead>0 is always an active branch -> fall through to the direct-merge
+    # and squash arms. ahead=0 means no commits of the branch's own, and two
+    # graph shapes land there. BEHIND-count does not separate them
+    # (HIMMEL-114 assumed it did, so it only caught behind=0 and a fresh
+    # branch still got blocked the moment main advanced - HIMMEL-1947); the
+    # FIRST-PARENT chain does:
+    #   HEAD on $db's first-parent line  -> branch point, nothing committed
+    #       yet. Fresh branch, whether or not main has since advanced.
+    #   HEAD off that line               -> the second parent of a --no-ff
+    #       merge, i.e. a genuinely direct-merged feature branch. Blocks.
+    # FF-merged-with-no-advance stays indistinguishable from a fresh branch
+    # (identical refs) and keeps returning not-merged - the tradeoff
+    # HIMMEL-114 chose and its test still pins.
+    local ahead
     ahead=$(git -C "$dir" rev-list "$db..HEAD" --count 2>/dev/null) || return 2
-    behind=$(git -C "$dir" rev-list "HEAD..$db" --count 2>/dev/null) || return 2
-    if [ "$ahead" = "0" ] && [ "$behind" = "0" ]; then
-        # Branch is at main's SHA with no divergence in either direction.
-        return 1
+    if [ "$ahead" = "0" ]; then
+        local head_sha first_parents
+        head_sha=$(git -C "$dir" rev-parse HEAD 2>/dev/null) || return 2
+        first_parents=$(git -C "$dir" rev-list --first-parent "$db" 2>/dev/null) || return 2
+        # Pure-bash whole-line membership test — no pipeline and no here-string.
+        # A `grep -q` pipeline takes SIGPIPE on first match, which `set -o
+        # pipefail` reports as a FAILED pipeline on a SUCCESSFUL match
+        # (HIMMEL-1430); a here-string of >= 64 KiB (main passed 1600
+        # first-parent commits) wedges Git Bash forever — bash writes it into
+        # a pipe before the reader runs and MSYS over-reports the pipe size
+        # (HIMMEL-2027). Newline-framing both sides keeps the match exact.
+        case "$first_parents" in
+            "$head_sha"|"$head_sha"$'\n'*|*$'\n'"$head_sha"|*$'\n'"$head_sha"$'\n'*)
+                return 1
+                ;;
+        esac
     fi
 
     # Direct-merge arm. Capture the full branch list first, THEN grep with
@@ -333,6 +362,98 @@ warn_doc_guard_off() {
     return 0
 }
 
+# _tolower_ascii STRING -> sets _TOLOWER_OUT to STRING with A-Z folded to a-z.
+#
+# HIMMEL-1741: is_secret_basename used to fold case with `printf | tr`, a fork
+# PAIR per call. block-read-secrets.sh calls the predicate once per tokenised
+# argument of every Bash/PowerShell command, so on Windows with Defender
+# real-time scanning (~667 ms a fork pair, ~10x a normal Git-Bash spawn) that
+# fold was the dominant cost of a hook that fires on EVERY Read/Grep/Bash tool
+# call. This is the builtin-only replacement: zero processes.
+#
+# Result is returned in the global _TOLOWER_OUT rather than on stdout, because
+# `x=$(...)` would fork a subshell and reintroduce exactly the cost being
+# removed.
+#
+# bash-3.2-safe by construction: no `${var,,}` (bash 4), no associative arrays,
+# no `+=`.
+#
+# LINEAR BY CONSTRUCTION, and that is a correctness requirement, not a nicety
+# (codex-adv, HIMMEL-1741 CR r1). The input here is NOT bounded to a short
+# filesystem basename: block-read-secrets.sh calls the predicate once per
+# TOKEN of every Bash/PowerShell command, and a token can be a base64
+# `-EncodedCommand` payload, a data: URI or a long JSON blob. The first
+# implementation peeled one character at a time (`${s%"${s#?}"}` + `out="$out$c"`),
+# which copies the shrinking suffix AND the growing output every iteration —
+# O(n^2). Measured on this box, min-of-3, against the `printf | tr` fork pair
+# it replaced:
+#     len      char-loop     26-subst     printf|tr
+#      64          26 ms        23 ms        80 ms
+#    2000         398 ms        25 ms        80 ms
+#    8000      13,435 ms        30 ms        75 ms
+# i.e. one 8 KB uppercase-bearing token cost THIRTEEN SECONDS — a far worse
+# stall than the fork this ticket set out to remove. The 26 `${b//A/a}`
+# substitutions below are each a single linear pass, so the whole fold is
+# bounded at 26n and stays flat (~timer floor) at every size, beating `tr` even
+# on short input. Do not "simplify" this back into a character loop.
+#
+# ASCII-only, which MATCHES the `tr '[:upper:]' '[:lower:]'` it replaces: that
+# tr is byte-oriented and folds only A-Z here, and every case arm below is
+# ASCII, so a non-ASCII byte could never change a verdict either way. Verified
+# byte-for-byte against tr over an alphabet/digit/punctuation/UTF-8 corpus.
+# The uppercase pre-check makes the common already-lowercase path a single
+# `case` with no substitution at all.
+_tolower_ascii() {
+    _TOLOWER_OUT="$1"
+    case "$_TOLOWER_OUT" in
+        *[ABCDEFGHIJKLMNOPQRSTUVWXYZ]*) ;;
+        *) return 0 ;;
+    esac
+    local b="$_TOLOWER_OUT"
+    b="${b//A/a}"; b="${b//B/b}"; b="${b//C/c}"; b="${b//D/d}"
+    b="${b//E/e}"; b="${b//F/f}"; b="${b//G/g}"; b="${b//H/h}"
+    b="${b//I/i}"; b="${b//J/j}"; b="${b//K/k}"; b="${b//L/l}"
+    b="${b//M/m}"; b="${b//N/n}"; b="${b//O/o}"; b="${b//P/p}"
+    b="${b//Q/q}"; b="${b//R/r}"; b="${b//S/s}"; b="${b//T/t}"
+    b="${b//U/u}"; b="${b//V/v}"; b="${b//W/w}"; b="${b//X/x}"
+    b="${b//Y/y}"; b="${b//Z/z}"
+    _TOLOWER_OUT="$b"
+}
+
+# guard_cmdpos_grammar — HIMMEL-1180. Sets EXEPFX / ASSIGN / CMDPOS in the
+# CALLER's scope (plain assignment, not `local` — this is meant to be sourced
+# inline into a hook script, the same way the rest of this file's predicates
+# are). Byte-identical to the grammar block-destructive-commands.sh built up
+# over several CR rounds (HIMMEL-851 r1/r2/r4/r5/r6/r7); factored out here so
+# block-graphify-egress.sh can anchor its OWN atom ("graphify") to command
+# position with the same wrapper/assignment tolerance instead of re-deriving
+# — or worse, drifting from — a second copy.
+#
+# CMDPOS matches: start of command or right after a separator (|;&(`),
+# optional whitespace, then zero or more of {a VAR=val assignment | a BOUNDED
+# launcher wrapper — sudo/env/cmd [/switches] /c/powershell|pwsh [-flags]
+# -c/-command, each with its own flag-and-assignment tolerance} each followed
+# by required whitespace, then a final EXEPFX (optional quote + Windows drive
+# + path segments) immediately before the atom the caller appends.
+#
+# Deliberately NOT a general shell parser. The documented residual is
+# QUOTED-PAYLOAD wrappers (`bash -c "<atom> ..."`, `sh -c`, xargs/nohup
+# chains) — out of scope per HIMMEL-851's own no-general-parser rule, and
+# accepted for the graphify guard too (HIMMEL-1180): this hook is the fast
+# gate for accidental agent egress, not an adversarial boundary — the
+# post-`bash -c` unwrap graphify-fence.sh's own classify_clause does is a
+# SEPARATE, deeper analysis that already handles that case for anything this
+# gate's fast check lets through.
+#
+# Callers: append their own atom alternation directly after `"$CMDPOS"`, e.g.
+#   grep -Eq "${CMDPOS}graphify(\.exe)?([^[:alnum:]_.-]|\$)"
+guard_cmdpos_grammar() {
+    EXEPFX='["'\'']?([a-z]:)?([^[:space:]|;&`"'\'']*[/\\])?'
+    ASSIGN='[[:alnum:]_]+=('\''[^'\'']*'\''|"[^"]*"|[^[:space:]|;&]*)'
+    # shellcheck disable=SC2034 # consumed by the CALLER after sourcing, not in this file
+    CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
+}
+
 # is_secret_basename PATH_OR_TOKEN
 # True iff PATH_OR_TOKEN's basename matches a secret-file pattern (.env,
 # .envrc, id_rsa, id_ed25519, credentials.json, secrets.y[a]ml, *.pem, *.key,
@@ -348,8 +469,8 @@ warn_doc_guard_off() {
 # non-matching "basename" (HIMMEL-879). On POSIX a literal backslash in a
 # filename over-matches toward blocking - fail-closed, acceptable.
 #
-# The basename is lowercased BEFORE matching (tr, bash-3.2-safe - no
-# ${var,,}): git ls-files/check-ignore fold case on Windows/macOS
+# The basename is lowercased BEFORE matching (_tolower_ascii, a builtin-only
+# fold - HIMMEL-1741; bash-3.2-safe, no ${var,,}): git ls-files/check-ignore fold case on Windows/macOS
 # (core.ignorecase=true), so a mixed-case name (.ENV, ID_RSA) would
 # otherwise dodge these lowercase case-arms while the filesystem still
 # treats it as the same file (HIMMEL-879). Case arms below stay lowercase.
@@ -376,7 +497,8 @@ is_secret_basename() {
     p="${p%\"}"; p="${p%\'}"
     local base="${p##*/}"
     base="${base##*\\}"
-    base=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
+    _tolower_ascii "$base"
+    base="$_TOLOWER_OUT"
     # Strip ALL trailing spaces/dots (Windows path-component normalization,
     # see header). bash-3.2-safe loop; terminates on empty string.
     while :; do

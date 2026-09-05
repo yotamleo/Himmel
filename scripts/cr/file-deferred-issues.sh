@@ -19,7 +19,10 @@
 #     path/to/file.ext:LINE: <SEVERITY>: <problem>. <fix>.
 #
 # Bullets (`- ` / `* `) and backtick fences/spans wrapping the finding
-# line are stripped before matching; no other formats are recognised.
+# line are stripped before matching. The critic panel's own shape
+# (`## Suggestions (N found)` heading + `- [id]: text [path:line]` findings,
+# HIMMEL-2068) is rewritten into the canonical shape above by a
+# normalisation pass before matching — see normalize_panel_input() below.
 #
 # Why MEDIUM is NOT auto-filed: MEDIUM findings warrant attention before
 # merge — auto-filing would let them slip into a backlog. NIT / LOW /
@@ -141,6 +144,94 @@ if [ -z "$INPUT_CONTENT" ]; then
     exit 1
 fi
 
+# Normalisation pass (HIMMEL-2068): the critic panel (scripts/cr/critic-panel.sh)
+# emits a different shape than the canonical `path:LINE: SEV: text` line the
+# extractor below parses — severity lives in the enclosing `## <section>`
+# HEADING, not on the finding line itself:
+#     ## Suggestions (3 found)
+#     - [glm-3]: some finding text. [path/to/file.py:74]
+# Rewrite that into `path:74: SUGGESTION: [glm-3] some finding text.` so the
+# existing extractor (hashing, dedupe, titles, forge routing — everything
+# below stays byte-identical) handles it exactly like a native finding.
+# `Important Issues` / `Critical Issues` map to IMPORTANT / CRITICAL, which
+# are deliberately absent from $SEVERITIES_REGEX above — those must keep
+# BLOCKING the PR through the existing /pr-check marker flow and must never
+# be auto-filed here.
+#
+# Lines already in the canonical shape (and any other line that isn't a panel
+# finding) pass through completely unchanged — this pass is additive, never
+# destructive to the existing input format. A line that looks like a panel
+# finding (`- [id]: ...` / `[id]: ...`) but can't be normalised — no bracketed
+# `[path]`/`[path:line]` suffix, or an unknown/absent section — is never
+# silently dropped: it's reported on stderr as
+# `skipped (unparsable) <id>: <first 100 chars of the line>` and counted, plus
+# a one-line per-section recognised/skipped summary. Implemented with bash's
+# own `[[ =~ ]]` (BASH_REMATCH) rather than awk capture groups (not POSIX,
+# and mawk/busybox awk on some platforms lack them) or associative arrays
+# (bash 3.2 on macOS has none) — stays portable git-bash/linux/macos.
+normalize_panel_input() {
+    local section="" line id rest sev path lnum
+    local suggestion_n=0 important_n=0 critical_n=0 skipped_n=0
+
+    while IFS= read -r line; do
+        # Section heading: "## Suggestions (3 found)" -> section="Suggestions"
+        if [[ "$line" =~ ^##[[:space:]]+(.+)[[:space:]]+\([0-9]+[[:space:]]+found\)[[:space:]]*$ ]]; then
+            section="${BASH_REMATCH[1]}"
+            continue
+        fi
+        # Any OTHER "##" heading (a different producer's section, e.g. a
+        # /pr-review-toolkit:review-pr heading combined into the same input)
+        # clears section state instead of leaving it stale (codex-2, HIMMEL-2068
+        # CR round) — without this a later `[id]: ... [path:line]` bullet under
+        # an unrelated heading would inherit the PRIOR panel section and be
+        # auto-filed (or blocked) as though it still belonged there.
+        if [[ "$line" =~ ^##[[:space:]] ]]; then
+            section=""
+            continue
+        fi
+
+        # Panel finding line: `- [id]: text [path:line]` — bullet optional
+        # (`-`/`*`), no-bullet tolerated too.
+        if [[ "$line" =~ ^[[:space:]]*([-*][[:space:]]+)?\[([^]]+)\]:[[:space:]]*(.*)$ ]]; then
+            id="${BASH_REMATCH[2]}"
+            rest="${BASH_REMATCH[3]}"
+
+            case "$section" in
+                Suggestions)         sev="SUGGESTION" ;;
+                "Important Issues")  sev="IMPORTANT" ;;
+                "Critical Issues")   sev="CRITICAL" ;;
+                *)                   sev="" ;;
+            esac
+
+            if [ -n "$sev" ] && [[ "$rest" =~ ^(.*[^[:space:]])[[:space:]]+\[([^][:space:]]+)(:([0-9]+))?\][[:space:]]*$ ]]; then
+                path="${BASH_REMATCH[2]}"
+                lnum="${BASH_REMATCH[4]}"
+                if [ -n "$lnum" ]; then
+                    printf '%s\n' "${path}:${lnum}: ${sev}: [${id}] ${BASH_REMATCH[1]}"
+                else
+                    printf '%s\n' "${path}: ${sev}: [${id}] ${BASH_REMATCH[1]}"
+                fi
+                case "$sev" in
+                    SUGGESTION) suggestion_n=$((suggestion_n + 1)) ;;
+                    IMPORTANT)  important_n=$((important_n + 1)) ;;
+                    CRITICAL)   critical_n=$((critical_n + 1)) ;;
+                esac
+            else
+                echo "skipped (unparsable) ${id}: ${line:0:100}" >&2
+                skipped_n=$((skipped_n + 1))
+            fi
+            continue
+        fi
+
+        printf '%s\n' "$line"
+    done <<< "$1"
+
+    if [ "$((suggestion_n + important_n + critical_n + skipped_n))" -gt 0 ]; then
+        echo "file-deferred-issues: panel findings recognised — Suggestions=${suggestion_n}, Important Issues=${important_n}, Critical Issues=${critical_n}; ${skipped_n} skipped (unparsable)" >&2
+    fi
+}
+NORMALIZED_CONTENT=$(normalize_panel_input "$INPUT_CONTENT")
+
 # Resolve repo identity via the forge seam — owner/repo on GitHub, workspace/repo
 # on Bitbucket. Used for the GitHub dedupe/label/create calls below; the
 # Bitbucket CLI derives its own ws/repo from the origin remote, so REPO is a
@@ -174,7 +265,7 @@ HEAD_SHA=$(git rev-parse --short HEAD)
 # pipeline itself.
 set +e
 # shellcheck disable=SC2016  # single-quoted sed expressions are intentional (literal regex)
-candidates=$(printf '%s\n' "$INPUT_CONTENT" \
+candidates=$(printf '%s\n' "$NORMALIZED_CONTENT" \
     | sed -E 's/^[[:space:]]*[-*][[:space:]]+//; s/^`+//; s/`+$//' \
     | grep -E "^[^[:space:]:]+(:[0-9]+)?:[[:space:]]*(${SEVERITIES_REGEX})[[:space:]]*:")
 pipeline_rc=$?

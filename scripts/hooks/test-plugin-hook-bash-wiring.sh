@@ -10,6 +10,17 @@ PLUGIN_ROOT="$REPO_ROOT/marketplace/plugins/himmel-ops"
 HOOKS_JSON="$PLUGIN_ROOT/hooks/hooks.json"
 CANONICAL_LAUNCHER="$HOOKS_DIR/run-hook-with-bash.js"
 PLUGIN_LAUNCHER="$PLUGIN_ROOT/hooks/run-hook-with-bash.js"
+# HIMMEL-2047: the node-resolving launcher is VENDORED into the plugin
+# (same pattern as run-hook-with-bash.js above) rather than sourced from
+# $CLAUDE_PROJECT_DIR — that path is attacker-controlled for whatever
+# project the plugin happens to be active in, and CR round 2's critic-panel
+# finding [codex-1] is right that sourcing an arbitrary project file there,
+# unconditionally, would let an untrusted opened repo execute code on every
+# hook event. Two more byte-identical pairs to track.
+CANONICAL_RUN_NODE="$REPO_ROOT/scripts/lib/run-node.sh"
+PLUGIN_RUN_NODE="$PLUGIN_ROOT/hooks/run-node.sh"
+CANONICAL_RESOLVE_NODE="$REPO_ROOT/scripts/lib/resolve-node.sh"
+PLUGIN_RESOLVE_NODE="$PLUGIN_ROOT/hooks/resolve-node.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq not on PATH"; exit 1; }
 
@@ -20,6 +31,8 @@ FIRED="$T/fired"
 ERR="$T/err"
 mkdir -p "$T/plugin/hooks" "$T/project/scripts/hooks"
 cp "$PLUGIN_LAUNCHER" "$T/plugin/hooks/run-hook-with-bash.js"
+cp "$PLUGIN_RUN_NODE" "$T/plugin/hooks/run-node.sh"
+cp "$PLUGIN_RESOLVE_NODE" "$T/plugin/hooks/resolve-node.sh"
 
 pass=0
 fail=0
@@ -32,11 +45,23 @@ else
     bad "plugin launcher drifted from the canonical launcher"
 fi
 
-count="$(jq '[.hooks | to_entries[] | .value[] | .hooks[] | select(.type == "command")] | length' "$HOOKS_JSON")"
-if [ "$count" = "16" ]; then
-    ok "plugin inventory contains exactly 16 command hooks"
+if cmp -s "$CANONICAL_RUN_NODE" "$PLUGIN_RUN_NODE"; then
+    ok "plugin run-node.sh is byte-identical to scripts/lib/run-node.sh"
 else
-    bad "plugin inventory expected 16 command hooks, found $count"
+    bad "plugin run-node.sh drifted from scripts/lib/run-node.sh"
+fi
+
+if cmp -s "$CANONICAL_RESOLVE_NODE" "$PLUGIN_RESOLVE_NODE"; then
+    ok "plugin resolve-node.sh is byte-identical to scripts/lib/resolve-node.sh"
+else
+    bad "plugin resolve-node.sh drifted from scripts/lib/resolve-node.sh"
+fi
+
+count="$(jq '[.hooks | to_entries[] | .value[] | .hooks[] | select(.type == "command")] | length' "$HOOKS_JSON")"
+if [ "$count" = "19" ]; then
+    ok "plugin inventory contains exactly 19 command hooks"
+else
+    bad "plugin inventory expected 19 command hooks, found $count"
 fi
 
 if jq -e '[.hooks | to_entries[] | .value[] | .hooks[] | .command | select(test("(^|[[:space:]])bash([[:space:]]|$)"))] | length == 0' "$HOOKS_JSON" >/dev/null; then
@@ -65,11 +90,14 @@ for script in \
     block-glm-external-writes.sh \
     block-graphify-egress.sh \
     block-rogue-codex-wsl.sh \
+    block-rogue-codex-exec.sh \
     block-lesson-enforcement-writes.sh \
     guard-implementor-dispatch.sh \
+    guard-console-dispatch.sh \
     inject-where-are-we.sh \
     inject-doc-freshness.sh \
     inject-worktree-nudge.sh \
+    record-hook-integrity.sh \
     refresh-where-are-we-on-end.sh \
     jira-nudge-on-end.sh \
     telegram-session-end.sh \
@@ -98,10 +126,10 @@ fired=0
 if [ -f "$FIRED" ]; then
     fired="$(wc -l < "$FIRED" | tr -d '[:space:]')"
 fi
-if [ "$executed" = "16" ] && [ "$fired" = "16" ]; then
-    ok "all 16 plugin-delivered commands executed and forwarded the PreToolUse payload"
+if [ "$executed" = "19" ] && [ "$fired" = "19" ]; then
+    ok "all 19 plugin-delivered commands executed and forwarded the PreToolUse payload"
 else
-    bad "expected 16 executed/forwarded commands, got executed=$executed fired=$fired"
+    bad "expected 19 executed/forwarded commands, got executed=$executed fired=$fired"
 fi
 
 GUARD_COMMAND="$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | contains("block-docker-privesc.sh")) | .hooks[0].command' "$HOOKS_JSON")"

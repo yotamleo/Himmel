@@ -41,13 +41,18 @@
 #      step) and excluded from a follow-up `--items item-b` — no false
 #      rejection, since an already-satisfied dep is exactly what the
 #      "excluded == already satisfied" assumption legitimately covers.
-#   s. (CR fix, HIMMEL-755 manifest-authoring bug) pre-commit-hooks
-#      (reproduced with its exact real shape, post-fix: no `install` key)
-#      is hint-only — adopt.sh is NEVER dispatched for it (spy log proven
-#      empty) and ensure exits 0, not fail-closed forever on a genuinely
-#      fine machine (adopt.sh never lays a .pre-commit-config.yaml into an
-#      adopted project — "does THIS project carry the gate" is a
-#      legitimate read-only signal).
+#   s. (HIMMEL-2441 update, was the HIMMEL-755 manifest-authoring-bug
+#      regression test) pre-commit-hooks now carries `install:{type:"adopt"}`
+#      in the real manifest (reproduced here) — adopt.sh's own
+#      install_precommit_hooks() genuinely wires the git-hooks probe's target
+#      (pre-commit/commit-msg/pre-push under .git/hooks), so dispatching
+#      adopt.sh for a red pre-commit-hooks item is no longer the HIMMEL-755
+#      fail-forever bug (a real adopt.sh converges it; test-adopt.sh proves
+#      that end-to-end). This spy-only fixture proves DISPATCH — adopt.sh IS
+#      invoked for a red pre-commit-hooks item — mirroring case f's
+#      dispatch-only style; the spy stub never touches .git/hooks, so
+#      convergence itself is intentionally out of scope here (case f's own
+#      rationale) and the exit code is not asserted.
 #   t. (CR fix, CodeRabbit round 15, MAJOR — the toward-ENABLED mirror of
 #      case k's bug in test-wizard-ensure-disable.sh) `--items
 #      dependent-item,hint-prereq`, where hint-prereq is desired+red but
@@ -73,6 +78,8 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
@@ -101,15 +108,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # write_cache <path> <role> <scope> <vault-mode> <vault-path> <handover-mode>
 #             <handover-path> <plugin-set> — same minimal valid Draft-A
@@ -193,7 +191,7 @@ targetA="$work/targetA"; mkdir -p "$targetA"
 cacheA="$work/cacheA"; mkdir -p "$cacheA"
 snapABefore=$(snapshot_dir "$work")
 set +e
-errA=$( cd "$targetA" && HIMMELCTL_REPO_ROOT="$(winpath "$repoA")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheA")" HOME="$work/home" \
+errA=$( cd "$targetA" && HIMMELCTL_REPO_ROOT="$(winpath "$repoA")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheA")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheA")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
   "$node_bin" "$wizard" ensure 2>&1 )
 rcA=$?
 set -e
@@ -231,7 +229,7 @@ cacheB="$work/cacheB"; mkdir -p "$cacheB"
 write_cache "$cacheB/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureB() {
-  ( cd "$targetB" && HIMMELCTL_REPO_ROOT="$(winpath "$repoBDG")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheB")" HOME="$work/home" \
+  ( cd "$targetB" && HIMMELCTL_REPO_ROOT="$(winpath "$repoBDG")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheB")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheB")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
       "$node_bin" "$wizard" ensure </dev/null )
 }
 # Seed the ONE sanctioned derive-if-missing write before the purity snapshot
@@ -282,7 +280,7 @@ logD="$work/ensure-log-d.txt"; : > "$logD"
 
 snapDBefore=$(snapshot_dir "$work")
 set +e
-outD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HOME="$work/home" ENSURE_LOG="$(winpath "$logD")" \
+outD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheD")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" ENSURE_LOG="$(winpath "$logD")" \
   "$node_bin" "$wizard" ensure --dry-run </dev/null ); rcD=$?
 set -e
 [ "$rcD" -eq 0 ] || fail "case d: --dry-run should exit 0 (got rc=$rcD): $outD"
@@ -296,14 +294,14 @@ echo "ok: case d — --dry-run prints the ordered plan; spy log empty; zero muta
 # hangs on non-interactive stdin ────────────────────────────────────────────
 logG="$work/ensure-log-g.txt"; : > "$logG"
 set +e
-outG1=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HOME="$work/home" ENSURE_LOG="$(winpath "$logG")" \
+outG1=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheD")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" ENSURE_LOG="$(winpath "$logG")" \
   "$node_bin" "$wizard" ensure --dry-run </dev/null ); rcG1=$?
 set -e
 [ "$rcG1" -eq 0 ] || fail "case g: without --yes should still exit 0 non-interactively (got rc=$rcG1): $outG1"
 offerCount=$(echo "$outG1" | grep -c 'about to ' || true)
 [ "$offerCount" -eq 1 ] || fail "case g: the consolidated offer should print EXACTLY once (got $offerCount): $outG1"
 set +e
-outG2=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HOME="$work/home" ENSURE_LOG="$(winpath "$logG")" \
+outG2=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheD")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" ENSURE_LOG="$(winpath "$logG")" \
   "$node_bin" "$wizard" ensure --dry-run --yes </dev/null ); rcG2=$?
 set -e
 [ "$rcG2" -eq 0 ] || fail "case g: --yes should exit 0 non-interactively (got rc=$rcG2): $outG2"
@@ -322,7 +320,7 @@ logJ="$work/ensure-log-j.txt"; : > "$logJ"
 
 snapJBefore=$(snapshot_dir "$work")
 set +e
-outJ=$( cd "$targetJ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheJ")" HOME="$work/home" ENSURE_LOG="$(winpath "$logJ")" \
+outJ=$( cd "$targetJ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheJ")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheJ")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" ENSURE_LOG="$(winpath "$logJ")" \
     "$node_bin" "$wizard" ensure 2>&1 </dev/null ); rcJ=$?
 set -e
 [ "$rcJ" -eq 2 ] || fail "case j: a non-interactive ensure without --yes should exit 2 (got rc=$rcJ): $outJ"
@@ -342,7 +340,7 @@ logK="$work/ensure-log-k.txt"; : > "$logK"
 
 snapKBefore=$(snapshot_dir "$work")
 set +e
-outK=$( cd "$targetK" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheK")" HOME="$work/home" ENSURE_LOG="$(winpath "$logK")" HIMMELCTL_INTERACTIVE=1 \
+outK=$( cd "$targetK" && HIMMELCTL_REPO_ROOT="$(winpath "$repoD")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheK")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheK")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" ENSURE_LOG="$(winpath "$logK")" HIMMELCTL_INTERACTIVE=1 \
     "$node_bin" "$wizard" ensure <<<"n" 2>&1 ); rcK=$?
 set -e
 [ "$rcK" -eq 0 ] || fail "case k: an interactive decline should exit 0 (got rc=$rcK): $outK"
@@ -400,7 +398,7 @@ write_cache "$cacheC/install-profile.json" adopter project existing "$vaultC" in
 qmdRegLogC="$work/qmd-reg-log-c.txt"; : > "$qmdRegLogC"
 
 runEnsureC() {
-  ( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HOME="$work/home" QMD_REG_LOG_C="$(winpath "$qmdRegLogC")" \
+  ( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" QMD_REG_LOG_C="$(winpath "$qmdRegLogC")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 outC0=$(runEnsureC --yes)
@@ -418,7 +416,7 @@ set -e
 grep -qxF 'himmel' "$qmdRegLogC" || fail "case c: qmd install should register the himmel collection (spy log: $(cat "$qmdRegLogC"))"
 grep -qxF 'luna' "$qmdRegLogC" || fail "case c: qmd install should register the luna collection (spy log: $(cat "$qmdRegLogC"))"
 
-outC2=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HOME="$work/home" \
+outC2=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
     "$node_bin" "$wizard" status --json </dev/null )
 echo "$outC2" | jq -e '.items[] | select(.id=="luna-item") | .severity == "green"' >/dev/null \
   || fail "case c: post-reconcile status should read luna-item green (got: $outC2)"
@@ -440,7 +438,7 @@ vaultI="$work/vaultI"; mkdir -p "$vaultI"
 write_cache "$cacheI/install-profile.json" adopter project existing "$vaultI" inline "" lean
 
 runEnsureI() {
-  ( cd "$targetI" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheI")" HOME="$work/home" \
+  ( cd "$targetI" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheI")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheI")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 # Seed under core (the ONE sanctioned derive-if-missing write) BEFORE the
@@ -475,7 +473,7 @@ write_cache "$cacheX/install-profile.json" adopter project none "" inline "" lea
 qmdRegLogX="$work/qmd-reg-log-x.txt"; : > "$qmdRegLogX"
 
 set +e
-outX=$( cd "$targetX" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheX")" HOME="$work/home" QMD_REG_LOG_C="$(winpath "$qmdRegLogX")" \
+outX=$( cd "$targetX" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheX")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheX")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" QMD_REG_LOG_C="$(winpath "$qmdRegLogX")" \
     "$node_bin" "$wizard" ensure --profile luna --yes 2>&1 </dev/null ); rcX=$?
 set -e
 # CR fix (CodeRabbit round 22, MAJOR — a REAL false green): assert the run
@@ -589,7 +587,7 @@ logE="$work/ensure-log-e.txt"; : > "$logE"
 # exit code deliberately not captured: dep-a/build-a never actually converge
 # to green in this spy-only fixture (expected, irrelevant here) — the
 # ASSERTION is the invocation log, not the exit code.
-outE=$( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repoE")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" HOME="$work/home" \
+outE=$( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repoE")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheE")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
     PATH="$hermeticPath" ENSURE_LOG="$(winpath "$logE")" \
     "$node_bin" "$wizard" ensure --yes </dev/null ) || true
 lineCountE=$(wc -l < "$logE" | tr -d ' ')
@@ -637,7 +635,7 @@ logF="$work/ensure-log-f.txt"; : > "$logF"
 
 # exit code deliberately not captured (adopt-1/adopt-2 never actually
 # converge in this spy-only fixture) — same rationale as case e above.
-outF=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repoF")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheF")" HOME="$work/home" \
+outF=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repoF")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheF")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheF")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
     ENSURE_LOG="$(winpath "$logF")" \
     "$node_bin" "$wizard" ensure --yes </dev/null ) || true
 lineCountF=$(wc -l < "$logF" | tr -d ' ')
@@ -670,7 +668,7 @@ write_cache "$cacheH/install-profile.json" adopter project none "" inline "" lea
 logH="$work/ensure-log-h.txt"; : > "$logH"
 
 set +e
-outH=$( cd "$targetH" && HIMMELCTL_REPO_ROOT="$(winpath "$repoH")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheH")" HOME="$work/home" \
+outH=$( cd "$targetH" && HIMMELCTL_REPO_ROOT="$(winpath "$repoH")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheH")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheH")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
     ENSURE_LOG="$(winpath "$logH")" \
     "$node_bin" "$wizard" ensure --yes </dev/null ); rcH=$?
 set -e
@@ -709,7 +707,7 @@ cacheL="$work/cacheL"; mkdir -p "$cacheL"
 write_cache "$cacheL/install-profile.json" adopter project none "" inline "" lean
 
 set +e
-outL=$( cd "$targetL" && HIMMELCTL_REPO_ROOT="$(winpath "$repoL")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheL")" HOME="$work/home" \
+outL=$( cd "$targetL" && HIMMELCTL_REPO_ROOT="$(winpath "$repoL")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheL")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheL")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
     "$node_bin" "$wizard" ensure --yes 2>&1 </dev/null ); rcL=$?
 set -e
 [ -f "$targetL/external.marker" ] || fail "case l setup: the stub should have created the marker before exiting 1 (fixture drift)"
@@ -754,7 +752,7 @@ cacheM="$work/cacheM"; mkdir -p "$cacheM"
 write_cache "$cacheM/install-profile.json" adopter project none "" inline "" lean
 scopeLogM="$work/scope-log-m.txt"; : > "$scopeLogM"
 
-outM=$( cd "$targetM" && HIMMELCTL_REPO_ROOT="$(winpath "$repoM")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheM")" HOME="$work/home" SCOPE_LOG="$(winpath "$scopeLogM")" \
+outM=$( cd "$targetM" && HIMMELCTL_REPO_ROOT="$(winpath "$repoM")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheM")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheM")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" SCOPE_LOG="$(winpath "$scopeLogM")" \
     "$node_bin" "$wizard" ensure --yes </dev/null )
 grepq "$outM" -F 'already at the desired state' || fail "case m: a project-scope run should see NOTHING to converge (user-only-item is out of scope) (got: $outM)"
 [ ! -s "$scopeLogM" ] || fail "case m: user-only-item's unwire must NEVER be invoked from a project-scope run (spy log: $(cat "$scopeLogM"))"
@@ -793,7 +791,7 @@ cacheN="$work/cacheN"; mkdir -p "$cacheN"
 write_cache "$cacheN/install-profile.json" adopter project none "" inline "" lean
 
 set +e
-outN=$( cd "$targetN" && HIMMELCTL_REPO_ROOT="$(winpath "$repoN")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheN")" HOME="$work/home" \
+outN=$( cd "$targetN" && HIMMELCTL_REPO_ROOT="$(winpath "$repoN")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheN")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheN")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
     "$node_bin" "$wizard" ensure --yes </dev/null ); rcN=$?
 set -e
 [ "$rcN" -eq 0 ] || fail "case n: real-item should converge cleanly (got rc=$rcN): $outN"
@@ -833,7 +831,7 @@ homeO="$work/homeO"; mkdir -p "$homeO"
 write_cache "$cacheO/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureO() {
-  ( cd "$targetO" && HIMMELCTL_REPO_ROOT="$(winpath "$repoO")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheO")" HOME="$homeO" \
+  ( cd "$targetO" && HIMMELCTL_REPO_ROOT="$(winpath "$repoO")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheO")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheO")-luna-config.json" HOME="$homeO" USERPROFILE="$(winpath "$homeO")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 # Bootstrap: derive under profile core AND converge (stale-item is freshly
@@ -850,11 +848,12 @@ set -e
 # remove the marker (simulating the wiring having drifted/reverted
 # out-of-band) so re-converging it is observable.
 STATE_LIB_PATH="$(winpath "$repo_root/scripts/himmelctl/lib/state.js")" \
-  HIMMELCTL_CACHE_DIR="$(winpath "$cacheO")" HOME="$homeO" "$node_bin" -e "
+  HIMMELCTL_CACHE_DIR="$(winpath "$cacheO")" HOME="$homeO" USERPROFILE="$(winpath "$homeO")" "$node_bin" -e "
 const state = require(process.env.STATE_LIB_PATH);
 const s = state.load();
 const key = Object.keys(s.targets)[0];
 s.targets[key].items['stale-item'].enabled = false;
+s.targets[key].items['stale-item'].overrides = { consent: 'no' };  // HIMMEL-2349: a deliberate override suppresses the new additive reconcile too
 state.save(s);
 "
 rm -f "$targetO/stale.marker"
@@ -922,7 +921,7 @@ homeP="$work/homeP"; mkdir -p "$homeP"
 write_cache "$cacheP/install-profile.json" adopter project none "" inline "" lean
 logP="$work/ensure-log-p.txt"; : > "$logP"
 set +e
-outP=$( cd "$targetP" && HIMMELCTL_REPO_ROOT="$(winpath "$repoPQR")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheP")" HOME="$homeP" ENSURE_LOG="$(winpath "$logP")" \
+outP=$( cd "$targetP" && HIMMELCTL_REPO_ROOT="$(winpath "$repoPQR")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheP")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheP")-luna-config.json" HOME="$homeP" USERPROFILE="$(winpath "$homeP")" ENSURE_LOG="$(winpath "$logP")" \
     "$node_bin" "$wizard" ensure --items item-b --yes 2>&1 </dev/null ); rcP=$?
 set -e
 [ "$rcP" -eq 2 ] || fail "case p: --items item-b (prereq item-a excluded) should exit 2 (got rc=$rcP): $outP"
@@ -942,7 +941,7 @@ homeQ="$work/homeQ"; mkdir -p "$homeQ"
 write_cache "$cacheQ/install-profile.json" adopter project none "" inline "" lean
 logQ="$work/ensure-log-q.txt"; : > "$logQ"
 set +e
-outQ=$( cd "$targetQ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoPQR")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheQ")" HOME="$homeQ" ENSURE_LOG="$(winpath "$logQ")" \
+outQ=$( cd "$targetQ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoPQR")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheQ")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheQ")-luna-config.json" HOME="$homeQ" USERPROFILE="$(winpath "$homeQ")" ENSURE_LOG="$(winpath "$logQ")" \
     "$node_bin" "$wizard" ensure --items item-a,item-b --yes </dev/null ); rcQ=$?
 set -e
 [ "$rcQ" -eq 0 ] || fail "case q: --items item-a,item-b (full closure) should converge both and exit 0 (got rc=$rcQ): $outQ"
@@ -965,7 +964,7 @@ homeR="$work/homeR"; mkdir -p "$homeR"
 write_cache "$cacheR/install-profile.json" adopter project none "" inline "" lean
 logR="$work/ensure-log-r.txt"; : > "$logR"
 runEnsureR() {
-  ( cd "$targetR" && HIMMELCTL_REPO_ROOT="$(winpath "$repoPQR")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheR")" HOME="$homeR" ENSURE_LOG="$(winpath "$logR")" \
+  ( cd "$targetR" && HIMMELCTL_REPO_ROOT="$(winpath "$repoPQR")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheR")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheR")-luna-config.json" HOME="$homeR" USERPROFILE="$(winpath "$homeR")" ENSURE_LOG="$(winpath "$logR")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 set +e
@@ -984,17 +983,18 @@ while IFS= read -r _l; do logLinesR+=("$_l"); done < "$logR"
 [ "${logLinesR[1]}" = "item-b" ] || fail "case r: the second invocation should be item-b (got: ${logLinesR[1]})"
 echo "ok: case r — an already-GREEN excluded dep does not trigger a false closure rejection"
 
-# ── case s (CR fix, HIMMEL-755 manifest-authoring bug): pre-commit-hooks
-# must be HINT-ONLY, not dispatched via adopt.sh. adopt.sh never lays a
-# .pre-commit-config.yaml into an adopted project (status-report.js's own
-# carry-forward comment documents this explicitly: "does THIS project carry
-# the gate" is a legitimate read-only signal, not a broken install) — a
-# prior manifest.json authoring mistake gave it install:{type:"adopt"}
-# anyway, which would have made a genuinely fine machine fail-close FOREVER
-# (adopt.sh runs, the post-check still reads red, ensure never converges).
-# Reproduces the item's EXACT real shape (id/kind/scopes/profiles/probe/
-# removable, post-fix: no `install` key) with an adopt.sh SPY stub to
-# definitively prove it is never invoked. ───────────────────────────────────
+# ── case s (HIMMEL-2441 update, was HIMMEL-755's manifest-authoring-bug
+# regression test): pre-commit-hooks now carries install:{type:"adopt"} in
+# the real manifest — install_precommit_hooks() in the real adopt.sh
+# genuinely wires the git-hooks probe's target, so dispatching adopt.sh for
+# a red pre-commit-hooks item is no longer the fail-forever bug HIMMEL-755
+# fixed by stripping the install key. Reproduces the item's exact real shape
+# (id/kind/scopes/profiles/probe/install/removable) with an adopt.sh SPY
+# stub that proves DISPATCH — adopt.sh IS invoked for a red pre-commit-hooks
+# item — mirroring case f's dispatch-only style above. The spy never
+# touches .git/hooks, so it can't converge the probe; exit code is
+# deliberately not captured (case f's own rationale) — convergence with a
+# REAL adopt.sh is proven end-to-end by test-adopt.sh, not here. ───────────
 repoS="$work/repoS"; mkdir -p "$repoS/scripts/install" "$repoS/scripts"
 cat > "$repoS/scripts/install/manifest.json" <<'JSON'
 {
@@ -1003,7 +1003,8 @@ cat > "$repoS/scripts/install/manifest.json" <<'JSON'
   "items": [
     {
       "id": "pre-commit-hooks", "kind": "hook", "scopes": ["project"], "profiles": ["core", "all"], "deps": [],
-      "probe": { "type": "file-exists", "path": ".pre-commit-config.yaml" },
+      "probe": { "type": "git-hooks", "hooks": ["pre-commit", "commit-msg", "pre-push"] },
+      "install": { "type": "adopt" },
       "removable": "full-offboard-only"
     }
   ]
@@ -1019,15 +1020,15 @@ cacheS="$work/cacheS"; mkdir -p "$cacheS"
 write_cache "$cacheS/install-profile.json" adopter project none "" inline "" lean
 logS="$work/ensure-log-s.txt"; : > "$logS"
 
-set +e
-outS=$( cd "$targetS" && HIMMELCTL_REPO_ROOT="$(winpath "$repoS")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheS")" HOME="$work/homeS" \
+# exit code deliberately not captured (the spy never converges the git-hooks
+# probe) — same rationale as case f above.
+outS=$( cd "$targetS" && HIMMELCTL_REPO_ROOT="$(winpath "$repoS")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheS")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheS")-luna-config.json" HOME="$work/homeS" USERPROFILE="$(winpath "$work/homeS")" \
     ENSURE_LOG="$(winpath "$logS")" \
-    "$node_bin" "$wizard" ensure --yes </dev/null ); rcS=$?
-set -e
-[ "$rcS" -eq 0 ] || fail "case s: pre-commit-hooks as a hint must NOT fail-close ensure (got rc=$rcS): $outS"
-[ ! -s "$logS" ] || fail "case s: adopt.sh must NEVER be invoked for pre-commit-hooks (spy log should stay empty; got: $(cat "$logS"))"
-grepq "$outS" -F 'pre-commit-hooks' || fail "case s: the hint message should name pre-commit-hooks (got: $outS)"
-echo "ok: case s — pre-commit-hooks is hint-only: ensure reports it as a hint, never dispatches adopt.sh, exits 0"
+    "$node_bin" "$wizard" ensure --yes 2>&1 </dev/null ) || true
+[ -s "$logS" ] || fail "case s: adopt.sh must be dispatched for a red pre-commit-hooks item under install:{type:\"adopt\"} (spy log is empty; ensure output: $outS)"
+grepq "$(cat "$logS")" 'adopt.sh-INVOKED' || fail "case s: spy log missing the adopt.sh-INVOKED marker (got: $(cat "$logS"))"
+grepq "$outS" -F 'pre-commit-hooks' || fail "case s: ensure output should name pre-commit-hooks (got: $outS)"
+echo "ok: case s — pre-commit-hooks (install:{type:\"adopt\"}) dispatches adopt.sh for a red item (HIMMEL-2441)"
 
 # ── case t (CR fix, MAJOR — the toward-ENABLED mirror of case k's bug):
 # being NAMED in --items does NOT mean a dependency will actually be
@@ -1068,7 +1069,7 @@ write_cache "$cacheT/install-profile.json" adopter project none "" inline "" lea
 # so it will NEVER be dispatched; dependent-item must still be REJECTED,
 # not installed on top of the missing prereq.
 set +e
-outT=$( cd "$targetT" && HIMMELCTL_REPO_ROOT="$(winpath "$repoT")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheT")" HOME="$homeT" \
+outT=$( cd "$targetT" && HIMMELCTL_REPO_ROOT="$(winpath "$repoT")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheT")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheT")-luna-config.json" HOME="$homeT" USERPROFILE="$(winpath "$homeT")" \
     "$node_bin" "$wizard" ensure --items dependent-item,hint-prereq --yes 2>&1 </dev/null ); rcT=$?
 set -e
 [ "$rcT" -eq 2 ] || fail "case t: --items dependent-item,hint-prereq (prereq included but hint-only) should exit 2 (got rc=$rcT): $outT"
@@ -1087,7 +1088,7 @@ echo "ok: case t — --items naming a hint-only prerequisite is REJECTED too (me
 # telling them the real fix immediately). Reuses repoT/targetT — case t's
 # run above was a zero-mutation rejection, so the fixture is still clean.
 set +e
-outU=$( cd "$targetT" && HIMMELCTL_REPO_ROOT="$(winpath "$repoT")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheT")" HOME="$homeT" \
+outU=$( cd "$targetT" && HIMMELCTL_REPO_ROOT="$(winpath "$repoT")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheT")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheT")-luna-config.json" HOME="$homeT" USERPROFILE="$(winpath "$homeT")" \
     "$node_bin" "$wizard" ensure --items dependent-item --yes 2>&1 </dev/null ); rcU=$?
 set -e
 [ "$rcU" -eq 2 ] || fail "case u: --items dependent-item (hint-prereq excluded entirely) should exit 2 (got rc=$rcU): $outU"
@@ -1142,7 +1143,7 @@ homeV="$work/homeV"; mkdir -p "$homeV"
 write_cache "$cacheV/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureV() {
-  ( cd "$targetV" && HIMMELCTL_REPO_ROOT="$(winpath "$repoV")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheV")" HOME="$homeV" \
+  ( cd "$targetV" && HIMMELCTL_REPO_ROOT="$(winpath "$repoV")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheV")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheV")-luna-config.json" HOME="$homeV" USERPROFILE="$(winpath "$homeV")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 # Bootstrap: derive + converge the project entry at <abs targetV> (its scope
@@ -1161,12 +1162,13 @@ set -e
 # converges it, while a stale-scope-keyed reconcile does not. Then remove the
 # marker so re-convergence is observable.
 STATE_LIB_PATH="$(winpath "$repo_root/scripts/himmelctl/lib/state.js")" \
-  HIMMELCTL_CACHE_DIR="$(winpath "$cacheV")" HOME="$homeV" "$node_bin" -e "
+  HIMMELCTL_CACHE_DIR="$(winpath "$cacheV")" HOME="$homeV" USERPROFILE="$(winpath "$homeV")" "$node_bin" -e "
 const state = require(process.env.STATE_LIB_PATH);
 const s = state.load();
 const key = Object.keys(s.targets)[0];
 s.targets[key].scope = 'user';
 s.targets[key].items['drift-item'].enabled = false;
+s.targets[key].items['drift-item'].overrides = { consent: 'no' };  // HIMMEL-2349: a deliberate override suppresses the new additive reconcile too
 state.save(s);
 "
 rm -f "$targetV/drift.marker"
@@ -1239,7 +1241,7 @@ cacheW="$work/cacheW"; mkdir -p "$cacheW"
 write_cache "$cacheW/install-profile.json" adopter project none "" inline "" lean
 
 set +e
-outW=$( cd "$targetW" && HIMMELCTL_REPO_ROOT="$(winpath "$repoW")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheW")" HOME="$work/home" \
+outW=$( cd "$targetW" && HIMMELCTL_REPO_ROOT="$(winpath "$repoW")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheW")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheW")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
     "$node_bin" "$wizard" ensure --yes </dev/null ); rcW=$?
 set -e
 [ "$rcW" -eq 0 ] || fail "case w: converging both adopt items should exit 0 (got rc=$rcW): $outW"
@@ -1313,7 +1315,7 @@ homeY="$work/homeY"; mkdir -p "$homeY"
 write_cache "$cacheY/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureY() {
-  ( cd "$targetY" && HIMMELCTL_REPO_ROOT="$(winpath "$repoY")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheY")" HOME="$homeY" \
+  ( cd "$targetY" && HIMMELCTL_REPO_ROOT="$(winpath "$repoY")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheY")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheY")-luna-config.json" HOME="$homeY" USERPROFILE="$(winpath "$homeY")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 

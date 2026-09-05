@@ -27,6 +27,10 @@ MP="templates/luna-second-brain/marketplace/.claude-plugin/marketplace.json"
 # from the real repo tree (not a fixture repo), same as SCRIPT.
 UPGRADE_SH="$HOOKS/../../templates/luna-second-brain/scripts/upgrade.sh"
 
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HOOKS/../lib/fixture-tempdir.sh"
+
 # mk_market <path> <version> — write a minimal valid marketplace.json.
 mk_market() { mkdir -p "$(dirname "$1")"; printf '{"name":"luna-brain","metadata":{"version":"%s"},"plugins":[]}\n' "$2" > "$1"; }
 
@@ -46,19 +50,19 @@ extract_case_arms() {
 # setup_repo: temp git repo WITH the .himmel-dev marker. Explicit mktemp
 # template (not a bare `mktemp -d`): BSD mktemp on macOS requires one for -d.
 setup_repo() {
-  R=$(mktemp -d -t tv-test-repo.XXXXXX); git -C "$R" init -q
+  R=$(fixture_mktemp_dir) || return 1; git -C "$R" init -q
   git -C "$R" config user.email t@t; git -C "$R" config user.name t
   : > "$R/.himmel-dev"
 }
-setup_repo_no_marker() { setup_repo; rm -f "$R/.himmel-dev"; }
+setup_repo_no_marker() { setup_repo || return 1; rm -f "$R/.himmel-dev"; }
 
 # setup_repo_with_origin: seeds marketplace.json on main + a bare origin for
 # pre-push base resolution (mirrors test-doc-guard.sh's setup_repo_with_origin).
 setup_repo_with_origin() {
-  setup_repo
+  setup_repo || return 1
   mk_market "$R/$MP" 0.1.0
   git -C "$R" add "$MP"; git -C "$R" commit -qm "seed market"
-  ORIGIN=$(mktemp -d -t tv-test-origin.XXXXXX); git -C "$ORIGIN" init -q --bare
+  ORIGIN=$(fixture_mktemp_dir) || return 1; git -C "$ORIGIN" init -q --bare
   git -C "$R" remote add origin "$ORIGIN"
   git -C "$R" branch -M main
   git -C "$R" push -q origin main
@@ -94,7 +98,7 @@ run_test() {
 
 # Required contract: template file + no bump -> fail.
 run_test "blocks owned content (docs/) without bump (rc=1)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   git add templates/luna-second-brain/docs/foo.md;
   expect_rc 1 bash "$SCRIPT"
@@ -102,7 +106,7 @@ run_test "blocks owned content (docs/) without bump (rc=1)" '
 
 # Required contract: template file + bump -> pass.
 run_test "passes owned content WITH version bump (rc=0)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   mk_market "$MP" 0.2.0; git add templates/luna-second-brain/docs/foo.md "$MP";
   expect_rc 0 bash "$SCRIPT"
@@ -110,7 +114,7 @@ run_test "passes owned content WITH version bump (rc=0)" '
 
 # Required contract: skip-class file alone -> pass (skipexists plugin asset, HIMMEL-525).
 run_test "skipexists plugin asset alone passes (rc=0)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/.obsidian/plugins/foo;
   : > templates/luna-second-brain/.obsidian/plugins/foo/main.js;
   git add templates/luna-second-brain/.obsidian/plugins/foo/main.js;
@@ -119,7 +123,7 @@ run_test "skipexists plugin asset alone passes (rc=0)" '
 
 # Required contract: skip-class catch-all (user content) alone -> pass.
 run_test "user-content (skip catch-all) alone passes (rc=0)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   : > templates/luna-second-brain/Some-User-Note.md;
   git add templates/luna-second-brain/Some-User-Note.md;
   expect_rc 0 bash "$SCRIPT"
@@ -127,7 +131,7 @@ run_test "user-content (skip catch-all) alone passes (rc=0)" '
 
 # Required contract: non-template change -> pass.
 run_test "non-template change passes (rc=0)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   : > README-ROOT.md; git add README-ROOT.md;
   expect_rc 0 bash "$SCRIPT"
 '
@@ -136,7 +140,7 @@ run_test "non-template change passes (rc=0)" '
 # diff-driven, not working-tree-driven, so a deletion must be caught the same
 # as an addition/modification (HIMMEL-524 CR round 3).
 run_test "blocks staged deletion of owned content without bump (rc=1)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   git add templates/luna-second-brain/docs/foo.md; git commit -qm "add doc";
   git rm -q templates/luna-second-brain/docs/foo.md;
@@ -147,7 +151,7 @@ run_test "blocks staged deletion of owned content without bump (rc=1)" '
 # without a bump -> fail. The pre-fix early "$TEMPLATE_ROOT absent -> exit 0"
 # working-tree check would have bypassed this entirely (the bug this closes).
 run_test "blocks deletion of the ENTIRE template dir without bump (rc=1)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   git add templates/luna-second-brain/docs/foo.md; git commit -qm "add doc";
   git rm -rq templates/luna-second-brain;
@@ -156,26 +160,26 @@ run_test "blocks deletion of the ENTIRE template dir without bump (rc=1)" '
 
 # Structural: no-op without .himmel-dev marker.
 run_test "no-op without .himmel-dev marker (rc=0)" '
-  setup_repo_no_marker; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo_no_marker && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md; git add templates/luna-second-brain/docs/foo.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 # Structural: bypass seam.
 run_test "TEMPLATE_VERSION_OK=1 bypasses (rc=0)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md; git add templates/luna-second-brain/docs/foo.md;
   expect_rc 0 env TEMPLATE_VERSION_OK=1 bash "$SCRIPT"
 '
 
 # Structural: force-err seam.
 run_test "TEMPLATE_VERSION_FORCE_ERR=1 exits 2" '
-  setup_repo; cd "$R"; expect_rc 2 env TEMPLATE_VERSION_FORCE_ERR=1 bash "$SCRIPT"
+  setup_repo && cd "$R" || exit 1; expect_rc 2 env TEMPLATE_VERSION_FORCE_ERR=1 bash "$SCRIPT"
 '
 
 # marketplace.json itself is owned: a description change without a bump -> fail.
 run_test "marketplace.json description change without bump fails (rc=1)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   printf "%s\n" "{\"name\":\"luna-brain\",\"metadata\":{\"description\":\"x\",\"version\":\"0.1.0\"},\"plugins\":[]}" > "$MP";
   git add "$MP";
   expect_rc 1 bash "$SCRIPT"
@@ -183,21 +187,21 @@ run_test "marketplace.json description change without bump fails (rc=1)" '
 
 # A pure version bump alone (no other content) passes.
 run_test "pure version bump alone passes (rc=0)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mk_market "$MP" 0.2.0; git add "$MP";
   expect_rc 0 bash "$SCRIPT"
 '
 
 # threeway class (_CLAUDE.md) without bump -> fail.
 run_test "_CLAUDE.md (threeway) change without bump fails (rc=1)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   : > templates/luna-second-brain/_CLAUDE.md; git add templates/luna-second-brain/_CLAUDE.md;
   expect_rc 1 bash "$SCRIPT"
 '
 
 # jsonmerge class (community-plugins.json) without bump -> fail.
 run_test "community-plugins.json (jsonmerge) change without bump fails (rc=1)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/.obsidian; : > templates/luna-second-brain/.obsidian/community-plugins.json;
   git add templates/luna-second-brain/.obsidian/community-plugins.json;
   expect_rc 1 bash "$SCRIPT"
@@ -205,7 +209,7 @@ run_test "community-plugins.json (jsonmerge) change without bump fails (rc=1)" '
 
 # pre-push: bump in a later commit of the range -> pass.
 run_test "pre-push passes when version bumped in a later commit (rc=0)" '
-  setup_repo_with_origin; cd "$R"; git checkout -qb feat/x;
+  setup_repo_with_origin && cd "$R" || exit 1; git checkout -qb feat/x;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   git add .; git commit -qm "content";
   mk_market "$MP" 0.2.0; git add "$MP"; git commit -qm "bump";
@@ -214,7 +218,7 @@ run_test "pre-push passes when version bumped in a later commit (rc=0)" '
 
 # pre-push: range never bumps -> fail.
 run_test "pre-push blocks when range never bumps (rc=1)" '
-  setup_repo_with_origin; cd "$R"; git checkout -qb feat/y;
+  setup_repo_with_origin && cd "$R" || exit 1; git checkout -qb feat/y;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   git add .; git commit -qm "content";
   expect_rc 1 env TEMPLATE_VERSION_NO_FETCH=1 bash "$SCRIPT" --pre-push
@@ -224,7 +228,7 @@ run_test "pre-push blocks when range never bumps (rc=1)" '
 # must still fail. prev_v has to compare at the MERGE-BASE, not the current
 # main tip, or the main-side bump falsely clears the branch (HIMMEL-524 CR).
 run_test "pre-push blocks when main bumps after split but branch never bumps (rc=1)" '
-  setup_repo_with_origin; cd "$R"; git checkout -qb feat/z;
+  setup_repo_with_origin && cd "$R" || exit 1; git checkout -qb feat/z;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   git add .; git commit -qm "content";
   git checkout -q main; mk_market "$MP" 0.2.0; git add "$MP"; git commit -qm "main bump";
@@ -239,7 +243,7 @@ run_test "pre-push blocks when main bumps after split but branch never bumps (rc
 # set diff.renames=true so the fixture proves the flag matters rather than
 # happening to pass under an unconfigured default (HIMMEL-524 CR round 4).
 run_test "blocks rename of owned file OUT of template dir without bump (rc=1)" '
-  setup_repo; cd "$R"; git config diff.renames true;
+  setup_repo && cd "$R" || exit 1; git config diff.renames true;
   mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/docs;
   printf "same content on both sides of the rename, long enough to be detected\n" > templates/luna-second-brain/docs/foo.md;
@@ -277,7 +281,7 @@ run_test "extract_case_arms filters comments/blanks inside the case block" '
 # closed, not silently fall back to a stale local origin/$db that could carry
 # an upstream bump the branch never earned (HIMMEL-524 CR round 5).
 run_test "pre-push fails closed when fetch fails without NO_FETCH (rc=2)" '
-  setup_repo_with_origin; cd "$R"; git checkout -qb feat/fetchfail;
+  setup_repo_with_origin && cd "$R" || exit 1; git checkout -qb feat/fetchfail;
   git remote set-url origin "$R/does-not-exist";
   expect_rc 2 bash "$SCRIPT" --pre-push
 '
@@ -286,7 +290,7 @@ run_test "pre-push fails closed when fetch fails without NO_FETCH (rc=2)" '
 # fall through as an empty touched set (which would exit 0). Corrupt the
 # index so `git diff --cached` itself fails (HIMMEL-524 CR round 5).
 run_test "pre-commit fails closed when the staged diff cannot be computed (rc=2)" '
-  setup_repo; cd "$R"; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
+  setup_repo && cd "$R" || exit 1; mk_market "$MP" 0.1.0; git add "$MP"; git commit -qm seed;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   git add templates/luna-second-brain/docs/foo.md;
   printf "garbage-not-an-index" > .git/index;
@@ -297,7 +301,7 @@ run_test "pre-commit fails closed when the staged diff cannot be computed (rc=2)
 # object so `git diff $base...HEAD` itself fails, must fail closed (HIMMEL-524
 # CR round 5).
 run_test "pre-push fails closed when the range diff cannot be computed (rc=2)" '
-  setup_repo_with_origin; cd "$R"; git checkout -qb feat/corrupt;
+  setup_repo_with_origin && cd "$R" || exit 1; git checkout -qb feat/corrupt;
   mkdir -p templates/luna-second-brain/docs; : > templates/luna-second-brain/docs/foo.md;
   git add .; git commit -qm "content";
   head_sha=$(git rev-parse HEAD);

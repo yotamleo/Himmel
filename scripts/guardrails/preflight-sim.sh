@@ -54,7 +54,7 @@ HIT=0
 GITBASH='"C:\Program Files\Git\bin\bash.exe"'
 
 apply_learnings() {
-    [ -f "$LEARNINGS" ] || return 0
+    [ -f "$LEARNINGS" ] || return 0  # fail-open-ok: advisory tool only — an unreadable learnings file degrades the sim to built-in rules; the miss allows nothing
     while IFS= read -r _lline; do
         case "$_lline" in ''|'#'*) continue ;; esac
         # Fail closed on a malformed line (a typo missing a delimiter) — a curated

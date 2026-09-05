@@ -8,9 +8,9 @@
  * its PULL_CMD seam uses `pwsh -NoProfile -Command $env:PULL_CMD`.
  */
 import { test, expect } from 'bun:test';
-import { existsSync, mkdtempSync } from 'fs';
-import { dirname, join } from 'path';
-import { tmpdir } from 'os';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -78,8 +78,13 @@ async function runWrapper(pullCmdSnippet: string): Promise<RunResult> {
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-// 15 s per test — bash startup on Windows can be slow (cold cache).
-const TIMEOUT = 15_000;
+// 60 s per test (HIMMEL-1109). Each run spawns bash plus three nested
+// `bash flow-run-ledger.sh` subprocesses; on Windows that costs ~2.5 s idle
+// but >15 s when the rest of the suite is spawning subprocesses in parallel,
+// which timed the old 15 s budget out. The budget is a harness allowance, not
+// a performance assertion — the wrapper's real work is a minutes-long network
+// pull.
+const TIMEOUT = 60_000;
 
 test('PULL_CMD exit 75 -> wrapper exits 75 and prints re-consent reminder', async () => {
   const { rc, stderr } = await runWrapper('exit 75');

@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
-import { join } from "path";
-import { tmpdir } from "os";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { mergeRows } from "../src/merge";
 import { writeArtifact } from "../src/types";
 

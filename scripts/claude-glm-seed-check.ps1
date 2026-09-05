@@ -11,7 +11,8 @@
   Read-only: NEVER mutates either directory (no --fix; --reseed lives on the launcher).
 
   settings.json is INTENTIONALLY EXCLUDED: the launcher re-sanitizes it every
-  seed (strips `model` + `env.ANTHROPIC_*`), so the sanitized copy never
+  seed (strips `model` + env keys `ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, and
+  `CLAUDE_CODE_OAUTH_TOKEN` case-insensitively), so the sanitized copy never
   byte-matches the raw source -- comparing it would report permanent drift.
 
   Usage:

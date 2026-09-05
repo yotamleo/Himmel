@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Glob, Grep, Read, Edit, Write, Skill
-description: CONTRA passes over the luna vault (LUNA-96/97) — ghost-self (past-you, older than --min-age, reacting to current-you with a verbatim-quote guard) or --bridge (one forced cross-domain analogy). Appends to today's daily note under `## Thinking`. Lean-invoke only — never scheduled (HIMMEL-177).
+description: CONTRA passes over the luna vault — ghost-self (past-you reacts to current-you) or --bridge cross-domain analogy.
 argument-hint: "[--min-age <Nw|Nm>] [--bridge]"
 ---
 

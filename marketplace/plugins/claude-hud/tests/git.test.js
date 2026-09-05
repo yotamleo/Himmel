@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -339,7 +339,7 @@ test('getGitStatus attaches line diffs to renamed files with shared directory pr
     execFileSync('git', ['add', '.gitkeep'], { cwd: dir, stdio: 'ignore' });
     execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, stdio: 'ignore' });
 
-    execFileSync('mkdir', ['-p', pkgDir]);
+    await mkdir(pkgDir, { recursive: true });
     await writeFile(path.join(pkgDir, 'old.ts'), 'export const a = 1;\n');
     execFileSync('git', ['add', 'pkg/old.ts'], { cwd: dir, stdio: 'ignore' });
     execFileSync('git', ['commit', '-m', 'add old.ts'], { cwd: dir, stdio: 'ignore' });
@@ -362,7 +362,9 @@ test('getGitStatus attaches line diffs to renamed files with shared directory pr
   }
 });
 
-test('getGitStatus keeps line diffs for literal filenames containing arrow text', async () => {
+test('getGitStatus keeps line diffs for literal filenames containing arrow text', {
+  skip: process.platform === 'win32' ? 'Windows filenames cannot contain >' : false,
+}, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'claude-hud-git-'));
   try {
     execFileSync('git', ['init'], { cwd: dir, stdio: 'ignore' });

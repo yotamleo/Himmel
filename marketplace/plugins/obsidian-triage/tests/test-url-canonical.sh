@@ -33,6 +33,53 @@ assert "redd.it not expanded (generic passthrough)" \
   "https://redd.it/abc123" \
   "$(canon 'https://redd.it/abc123')"
 
+# github: /blob/<branch>/<path> is a distinct FILE, /tree/<branch> is a repo view (HIMMEL-1735).
+assert "github keeps /blob/<branch>/<path>" \
+  "https://github.com/anthropics/claude-cookbooks/blob/main/claude_agent_sdk/08_Dynamic_workflows.ipynb" \
+  "$(canon 'https://github.com/anthropics/claude-cookbooks/blob/main/claude_agent_sdk/08_Dynamic_workflows.ipynb')"
+assert "github /blob/ does NOT collapse to the repo root" \
+  "https://github.com/o/r/blob/main/a.md" \
+  "$(canon 'https://github.com/o/r/blob/main/a.md')"
+assert "github two files in one repo stay distinct" \
+  "https://github.com/o/r/blob/main/b.md" \
+  "$(canon 'https://github.com/o/r/blob/main/b.md')"
+assert "github lowercases owner/repo but not the blob path" \
+  "https://github.com/anthropics/claude-cookbooks/blob/main/Dir/File.ipynb" \
+  "$(canon 'https://github.com/Anthropics/Claude-Cookbooks/blob/main/Dir/File.ipynb')"
+assert "github still strips /tree/<branch>" \
+  "https://github.com/o/r" \
+  "$(canon 'https://github.com/o/r/tree/main')"
+assert "github still strips /tree/<branch>/<subdir>" \
+  "https://github.com/o/r" \
+  "$(canon 'https://github.com/o/r/tree/main/some/dir')"
+assert "github repo root unchanged + trailing slash stripped" \
+  "https://github.com/o/r" \
+  "$(canon 'https://github.com/o/r/')"
+
+# --- JS <-> Python parity (HIMMEL-1735) -------------------------------------
+# harvest-clip-body-batch.py carries a hand-written mirror of these rules. Three
+# copies of one rule drift silently; assert the two executable ones agree.
+py="$here/../tools/harvest-clip-body-batch.py"
+pycanon() { IN="$1" PYMOD="$py" python -c '
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("hcb", os.environ["PYMOD"])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(m.canonicalize(os.environ["IN"]))'; }
+
+if command -v python >/dev/null 2>&1; then
+  for url in \
+    'https://github.com/Anthropics/Claude-Cookbooks/blob/main/claude_agent_sdk/08_Dynamic_workflows.ipynb' \
+    'https://github.com/o/r/blob/main/a.md' \
+    'https://github.com/o/r/tree/main' \
+    'https://github.com/o/r/tree/main/some/dir' \
+    'https://github.com/o/r/'
+  do
+    assert "js/py parity: $url" "$(canon "$url")" "$(pycanon "$url")"
+  done
+else
+  echo "  SKIP  js/py parity (no python on PATH)"
+fi
+
 echo ""
 echo "url-canonical tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

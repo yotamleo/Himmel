@@ -1,6 +1,6 @@
 # v2 Frontmatter Schema
 
-Every `master-plan.md` (epics), `brief.md` (tasks, standalones), and `context.md` (epics) carries v2 frontmatter. Other per-item files (`bugs.md`, `reviewer-notes.md`, `extra-rules.md`, `plan.md`, `next-session-*.md`) carry only `template_version`.
+Every `master-plan.md` (epics), `brief.md` (tasks, standalones), and `context.md` (epics) carries v2 frontmatter. Other per-item files (`bugs.md`, `reviewer-notes.md`, `extra-rules.md`, `plan.md`) carry only `template_version`. `next-session-*.md` carries `template_version` **plus** `resume_cwd:` (see below, HIMMEL-2147) — it is the only non-v2 file with a second frontmatter key, because it is the file `arm-resume.sh` reads to resolve which repo an unattended resume runs in.
 
 ## v2 frontmatter block
 
@@ -35,6 +35,26 @@ template_version: 2
 ```
 
 That's the entire frontmatter — only the version. Bumped from 1 to 2.
+
+## `next-session-*.md` frontmatter (HIMMEL-2147)
+
+```yaml
+---
+template_version: 2
+resume_cwd: <repo-root>
+---
+```
+
+`resume_cwd:` is **always** set to `<repo-root>` (Template Placeholders,
+`references/resolution.md`) — the canonical absolute path of the target repo,
+forward slashes — never left out or blank. `arm-resume.sh` reads this key to
+resolve which repo an unattended resume runs in; omitting it falls through to
+auto-detecting the handover file's own git toplevel, which is wrong for a
+handover parked in a different repo (the state repo) than the work it
+describes, and — if that auto-detected repo is single-writer — a rc=14
+refusal (with only a registry-bucket fallback, HIMMEL-2147 item 1b, as a
+safety net). `end-session` must fill this key on every `next-session-N.md`
+it creates.
 
 ## Migration / mismatch behaviour
 

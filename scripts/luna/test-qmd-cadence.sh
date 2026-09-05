@@ -92,12 +92,49 @@ if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); 
 # -> infinite exec loop -> the suite hangs to the CI timeout.
 REAL_BASH="$(command -v bash)"
 
+# The real mv, resolved for the same reason as REAL_BASH: the W8d fake mv below
+# shadows PATH and must delegate every non-sabotaged call to the real binary.
+REAL_MV="$(command -v mv)"
+
 # Fake bash on PATH (arm resolves it via `command -v bash`). A no-op stub is
 # enough — the tests assert runner TEXT, they never fire the runner. Shebang is
 # /bin/sh (absolute) so the stub can never shebang-recurse into itself.
+# HIMMEL-1701/1686: the stub is PLATFORM-NAMED. An EXTENSIONLESS file called
+# `bash` makes Windows ShellExecute return SE_ERR_NOASSOC, which pops the
+# "Select an app to open 'bash'" picker — a modal that hangs an unattended
+# cadence run with nobody there to dismiss it. HERMETIC_EXE_SUFFIX is CONSUMED
+# from scripts/lib/hermetic-path.sh (where the reader,
+# path_dir_has_scrubbed_tool, lives too) rather than re-derived here, so the
+# writer and reader sides cannot drift.
+# shellcheck source=../lib/hermetic-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/hermetic-path.sh"
 mkdir -p "$TMP_ROOT/bin"
-printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/bin/bash"
-chmod +x "$TMP_ROOT/bin/bash"
+printf '#!/bin/sh\nexit 0\n' > "$TMP_ROOT/bin/bash$HERMETIC_EXE_SUFFIX"
+chmod +x "$TMP_ROOT/bin/bash$HERMETIC_EXE_SUFFIX"
+
+# The HIMMEL-1686 assertion, ported from scripts/test-adopt.sh: the
+# platform-named stub must EXIST, and on Windows no extensionless `bash` may
+# be created. The expected suffix comes from an INDEPENDENT platform probe,
+# never from HERMETIC_EXE_SUFFIX — reusing the writer's own value makes the
+# check tautological (a regression to an empty suffix would move both sides
+# together and still match). `find` with a literal -name match is REQUIRED for
+# the rejection branch: on MSYS/Git-Bash `test -e` resolves bash -> bash.exe,
+# so a plain file test would fire on every healthy Windows run.
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT*) WANT_EXE_SUFFIX='.exe' ;;
+  *)                                WANT_EXE_SUFFIX='' ;;
+esac
+if [ -f "$TMP_ROOT/bin/bash$WANT_EXE_SUFFIX" ]; then
+    pass "hermetic bash stub is platform-named (bash$WANT_EXE_SUFFIX)"
+else
+    fail "hermetic bash stub is platform-named (bash$WANT_EXE_SUFFIX)" "missing: $TMP_ROOT/bin/bash$WANT_EXE_SUFFIX"
+fi
+if [ -n "$WANT_EXE_SUFFIX" ] && [ -n "$(find "$TMP_ROOT/bin" -maxdepth 1 -name bash -print -quit)" ]; then
+    fail "no extensionless bash stub on Windows" "SE_ERR_NOASSOC hazard: $TMP_ROOT/bin/bash"
+else
+    pass "no extensionless bash stub on Windows"
+fi
 
 # Fake `qmd` on PATH: arm resolves it via `command -v qmd` and FAILS FAST when
 # absent, because the scheduler fires with a minimal PATH that does not carry
@@ -363,6 +400,35 @@ else
     fail "dry-run wrote runners" "$(ls "$CRON_DIR")"
 fi
 
+# Test C4c: --hourly emits an hourly crontab line instead of the daily one
+# (HIMMEL-2111) -- mirrors graphmap-cadence's AST-himmel hourly cron entry.
+
+echo "TEST: --hourly emits an hourly cron entry (fixed minute, every hour)"
+out=$(run_cron arm --hourly --dry-run)
+assert_contains "hourly dry-run entry uses the anchor's minute, every hour" "00 * * * *" "$out"
+assert_not_contains "hourly dry-run entry is not the daily shape" "00 05 * * *" "$out"
+assert_contains "hourly dry-run still marker-tagged" "# HIMMEL-Qmd-Reindex" "$out"
+
+echo "TEST: --hourly --time uses the anchor's MINUTE only, not the hour"
+out=$(run_cron arm --hourly --time 03:42 --dry-run)
+assert_contains "hourly entry honors --time's minute" "42 * * * *" "$out"
+assert_not_contains "hourly entry ignores --time's hour" "42 03 * * *" "$out"
+
+echo "TEST: without --hourly the cadence stays daily (regression guard)"
+out=$(run_cron arm --dry-run)
+assert_contains "default cadence unchanged" "00 05 * * *" "$out"
+assert_not_contains "default cadence carries no hourly shape" "00 * * * *" "$out"
+
+echo "TEST: cron arm --hourly installs the hourly entry for real"
+out=$(run_cron arm --hourly)
+assert_contains "hourly arm banner" "QMD REINDEX CADENCE ARMED" "$out"
+assert_contains "hourly arm banner describes itself as hourly" "hourly" "$out"
+tab=$(cat "$CSTATE/crontab" 2>/dev/null || echo MISSING)
+assert_contains "installed entry is hourly (fixed minute, every hour)" "00 * * * *" "$tab"
+assert_not_contains "installed entry is not the daily shape" "00 05 * * *" "$tab"
+assert_contains "installed entry still marker-tagged" "# HIMMEL-Qmd-Reindex" "$tab"
+run_cron disarm >/dev/null
+
 # Test C5: arm installs a marker-tagged entry, preserves unrelated lines ------
 
 echo "TEST: cron arm installs the entry with defaults, preserves unrelated lines"
@@ -388,7 +454,7 @@ runner=$(cat "$CRON_DIR/qmd-reindex.sh" 2>/dev/null || echo MISSING)
 # The sh runner embeds paths via printf %q (backslash-escapes); strip the
 # escapes before multi-word / path asserts.
 runner_plain=${runner//\\/}
-assert_contains "runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 9" "$runner"
+assert_contains "runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: 15" "$runner"
 assert_contains "runner fires qmd-reindex.sh" "qmd-reindex.sh" "$runner_plain"
 assert_contains "runner points at the SHIPPED reindex script" \
     "$HIMMEL_ROOT_EXP/scripts/luna/qmd-reindex.sh" "$runner_plain"
@@ -956,12 +1022,74 @@ esac
 FAKE
 chmod +x "$FAKE_SCHTASKS"
 
+# Hermetic WSH preflight fixtures (HIMMEL-1793). The fake PowerShell returns
+# the requested HKLM/HKCU Enabled state; ABSENT models a missing value. The
+# fake wscript is the same host seam production smoke-probes before arming.
+FAKE_WSCRIPT="$TMP_ROOT/wscript-fake.exe"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE_WSCRIPT"
+chmod +x "$FAKE_WSCRIPT"
+
+FAKE_WSH_POWERSHELL="$TMP_ROOT/powershell-wsh-fake.sh"
+cat > "$FAKE_WSH_POWERSHELL" <<'FAKE'
+#!/bin/sh
+case "$*" in
+    *HKLM:*) value="${FAKE_WSH_HKLM:-ABSENT}" ;;
+    *HKCU:*) value="${FAKE_WSH_HKCU:-ABSENT}" ;;
+    *) echo "fake PowerShell: missing registry hive" >&2; exit 2 ;;
+esac
+case "$value" in
+    ABSENT) echo ABSENT ;;
+    *) echo "VALUE:$value" ;;
+esac
+FAKE
+chmod +x "$FAKE_WSH_POWERSHELL"
+export CADENCE_WSCRIPT_BIN="$FAKE_WSCRIPT"
+export CADENCE_WSH_POWERSHELL="$FAKE_WSH_POWERSHELL"
+
 BAT_DIR="$TMP_ROOT/bats"
 
 run_qc() {
     QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
         PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
 }
+
+run_qc_wsh() {
+    local wscript="$1" hklm="$2" hkcu="$3"
+    shift 3
+    env CADENCE_WSCRIPT_BIN="$wscript" CADENCE_WSH_POWERSHELL="$FAKE_WSH_POWERSHELL" \
+        FAKE_WSH_HKLM="$hklm" FAKE_WSH_HKCU="$hkcu" \
+        QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
+        PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" "$@"
+}
+
+# Test W0: WSH preflight refuses dead runner environments --------------------
+
+echo "TEST: schtasks arm refuses when wscript.exe is absent"
+rc=0; out=$(run_qc_wsh "$TMP_ROOT/missing-wscript.exe" ABSENT ABSENT arm 2>&1) || rc=$?
+assert_rc "missing wscript refuses arm with rc 2" 2 "$rc"
+assert_contains "missing wscript refusal is loud" "Windows Script Host runner is unavailable" "$out"
+assert_contains "missing wscript refusal names the missing host" "missing-wscript.exe' is not on PATH" "$out"
+
+echo "TEST: schtasks arm refuses when HKLM disables WSH"
+rc=0; out=$(run_qc_wsh "$FAKE_WSCRIPT" 0 ABSENT arm 2>&1) || rc=$?
+assert_rc "HKLM Enabled=0 refuses arm with rc 2" 2 "$rc"
+assert_contains "HKLM policy refusal is loud" "disabled by HKLM policy (Enabled=0)" "$out"
+
+echo "TEST: schtasks arm refuses when HKCU disables WSH"
+rc=0; out=$(run_qc_wsh "$FAKE_WSCRIPT" 1 0 arm 2>&1) || rc=$?
+assert_rc "HKCU Enabled=0 refuses arm with rc 2" 2 "$rc"
+assert_contains "HKCU policy refusal is loud" "disabled by HKCU policy (Enabled=0)" "$out"
+
+echo "TEST: HKCU Enabled=1 overrides HKLM Enabled=0"
+rc=0; out=$(run_qc_wsh "$FAKE_WSCRIPT" 0 1 arm --dry-run 2>&1) || rc=$?
+assert_rc "HKCU enabled override permits arm preflight" 0 "$rc"
+assert_contains "enabled override reaches the normal arm plan" "DRY" "$out"
+
+if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ] && [ ! -d "$BAT_DIR" ]; then
+    pass "WSH preflight failures register no task and publish no runner"
+else
+    fail "WSH preflight failure mutated scheduler or runner state"
+fi
 
 # Test W1: status on an empty scheduler --------------------------------------
 
@@ -989,6 +1117,21 @@ else
     fail "dry-run wrote a .bat" "$(ls "$BAT_DIR")"
 fi
 
+# Test W2b: --hourly layers a Repetition fragment onto the daily CalendarTrigger
+# (HIMMEL-2111) -- same idiom graphmap-cadence.sh uses for its AST-himmel task.
+
+echo "TEST: schtasks --hourly dry-run XML carries the Repetition fragment"
+out=$(run_qc arm --hourly --dry-run)
+assert_contains "hourly dry-run XML repetition interval" "<Interval>PT1H</Interval>" "$out"
+assert_contains "hourly dry-run XML repetition duration" "<Duration>P1D</Duration>" "$out"
+assert_contains "hourly dry-run XML repetition never stops" "<StopAtDurationEnd>false</StopAtDurationEnd>" "$out"
+assert_contains "hourly dry-run keeps the daily ScheduleByDay trigger" "<ScheduleByDay>" "$out"
+assert_contains "hourly dry-run still anchors StartBoundary at --time" "T05:00:00" "$out"
+
+echo "TEST: schtasks arm --dry-run WITHOUT --hourly carries no Repetition (regression guard)"
+out=$(run_qc arm --dry-run)
+assert_not_contains "default dry-run XML has no Repetition" "<Repetition>" "$out"
+
 # Test W3: arm registers the daily task --------------------------------------
 
 echo "TEST: schtasks arm registers HIMMEL-Qmd-Reindex daily 05:00"
@@ -1003,13 +1146,25 @@ assert_contains "XML StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAva
 # deliberately takes no lock of its own, so this is the only serialization.
 assert_contains "XML IgnoreNew (no self-overlap)" "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" "$task_xml"
 assert_contains "XML names the ticket" "HIMMEL-568" "$task_xml"
-assert_contains "Exec points at the runner bat" "qmd-reindex.bat" "$task_xml"
+assert_contains "Exec points at the runner shim" "qmd-reindex.vbs" "$task_xml"
+# HIMMEL-1753: Exec is a `wscript //B <shim>.vbs` wrapper around the .bat.
+# The hidden-powershell shape still allocated consoles; wscript allocates zero.
+# Element-scoped (not whole-XML) checks so a wrapper regression that happened
+# to still mention the .bat somewhere else in the document wouldn't hide a
+# broken Command or Arguments shape.
+task_command_elem=$(printf '%s' "$task_xml" | grep -o '<Command>[^<]*</Command>' | head -1)
+task_arguments_elem=$(printf '%s' "$task_xml" | grep -o '<Arguments>[^<]*</Arguments>' | head -1)
+assert_contains "XML Exec Command is wscript.exe, not the bare .bat" "<Command>wscript.exe</Command>" "$task_command_elem"
+assert_not_contains "XML Exec Command does not carry the shim path" "qmd-reindex.vbs" "$task_command_elem"
+assert_contains "XML Exec Arguments carries //B batch mode" "//B" "$task_arguments_elem"
+assert_contains "XML Exec Arguments references the runner shim" "qmd-reindex.vbs" "$task_arguments_elem"
+assert_not_contains "XML Exec no longer uses hidden powershell" "-WindowStyle Hidden" "$task_xml"
 
 # Test W4: the .bat fires qmd-reindex.sh with the right arguments -------------
 
 echo "TEST: .bat runner fires bash qmd-reindex.sh (deterministic, no claude)"
 bat=$(cat "$BAT_DIR/qmd-reindex.bat" 2>/dev/null || echo MISSING)
-assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 9" "$bat"
+assert_contains "bat stamps the format version (HIMMEL-588)" "rem himmel-cadence-runner-format: 15" "$bat"
 assert_contains "bat cds into himmel root" 'cd /d "' "$bat"
 assert_contains "bat fires qmd-reindex.sh" "qmd-reindex.sh" "$bat"
 assert_contains "bat pins the resolved qmd absolute path" "--qmd-bin \"$QMD_BIN_DIR/qmd\"" "$bat"
@@ -1027,6 +1182,18 @@ out=$(run_qc status)
 assert_contains "reindex armed" "ARMED      HIMMEL-Qmd-Reindex" "$out"
 assert_contains "status shows next run time" "next run:" "$out"
 assert_contains "status surfaces run log state" "run log" "$out"
+
+# A scheduler row alone is not health: probe the same registered task while its
+# configured runner host is unavailable and require a non-zero UNHEALTHY status.
+echo "TEST: schtasks status marks a registered task UNHEALTHY when wscript is absent"
+rc=0; out=$(run_qc_wsh "$TMP_ROOT/missing-wscript.exe" ABSENT ABSENT status 2>&1) || rc=$?
+assert_rc "registered-but-unexecutable status rc 2" 2 "$rc"
+assert_contains "registered-but-unexecutable status is UNHEALTHY" \
+    "UNHEALTHY  HIMMEL-Qmd-Reindex" "$out"
+assert_contains "unhealthy status explains runner availability" \
+    "registered; runner unavailable" "$out"
+assert_not_contains "unhealthy task is not falsely ARMED" \
+    "ARMED      HIMMEL-Qmd-Reindex" "$out"
 
 # Test W6: re-arm without --force -> dedup block ------------------------------
 
@@ -1124,6 +1291,108 @@ fi
 rc=0; out=$(run_qc arm 2>&1) || rc=$?
 assert_rc "arm works again after a full disarm (no wedge)" 0 "$rc"
 run_qc disarm >/dev/null
+
+# Test W8e: --hourly arm registers the Repetition fragment for real, in the
+# schema-required order (HIMMEL-2111) -- mirrors graphmap-cadence's assertion
+# that Repetition precedes ScheduleByDay in the emitted trigger.
+
+echo "TEST: schtasks arm --hourly registers the Repetition fragment for real"
+out=$(run_qc arm --hourly)
+assert_contains "hourly arm banner" "QMD REINDEX CADENCE ARMED" "$out"
+assert_contains "hourly arm banner describes itself as hourly" "hourly" "$out"
+task_xml=$(cat "$STATE/tasks/HIMMEL-Qmd-Reindex" 2>/dev/null || echo MISSING)
+assert_contains "registered XML keeps the daily ScheduleByDay trigger" "<ScheduleByDay>" "$task_xml"
+assert_contains "registered XML repetition interval" "<Interval>PT1H</Interval>" "$task_xml"
+assert_contains "registered XML repetition duration" "<Duration>P1D</Duration>" "$task_xml"
+assert_contains "registered XML repetition never stops" "<StopAtDurationEnd>false</StopAtDurationEnd>" "$task_xml"
+assert_contains "registered XML still anchors StartBoundary at default --time" "T05:00:00" "$task_xml"
+# calendarTriggerType extends triggerBaseType, whose sequence puts Repetition
+# BEFORE the ScheduleByX choice -- schtasks /create /xml can reject the
+# opposite order (see qmd-cadence.sh's emit_task_xml for the schema note).
+rep_pos=$(printf '%s' "$task_xml" | grep -bo '<Repetition>' | head -1 | cut -d: -f1)
+sched_pos=$(printf '%s' "$task_xml" | grep -bo '<ScheduleByDay>' | head -1 | cut -d: -f1)
+if [ -n "$rep_pos" ] && [ -n "$sched_pos" ] && [ "$rep_pos" -lt "$sched_pos" ]; then
+    pass "Repetition precedes ScheduleByDay (schema order)"
+else
+    fail "Repetition does not precede ScheduleByDay" "$task_xml"
+fi
+run_qc disarm >/dev/null
+
+# Test W8d: a failed promotion aborts BEFORE registration (HIMMEL-1753 r2) -----
+#
+# The two publish `mv`s sit between staging and schtasks /create. Unchecked, a
+# failed promotion fell through to registering a task that pointed at a missing
+# (first arm) or stale (re-arm) runner/shim — the armed-at-nothing state the
+# publish-before-register ordering exists to prevent. No portable FILESYSTEM
+# state fails `mv` onto the final path (a directory squatting there makes mv
+# SUCCEED by moving the staged file inside it), so the failure is injected with
+# a PATH-first fake mv that fails ONLY for the promotion whose final path is
+# named by $STATE/mv-fail-target and delegates every other call to the real mv.
+# Its dir is POSIX-form on PATH (a mixed C:/ entry is invisible to Git-Bash —
+# same reason QMD_BIN_DIR_PATH is cygpath -u'd) and its shebang is the
+# pre-resolved REAL_BASH so it can never recurse into the fake bash stub.
+
+echo "TEST: failed .bat promotion aborts the arm, no task registered"
+MVFAIL_BIN="$TMP_ROOT/mvfail-bin"
+mkdir -p "$MVFAIL_BIN"
+MVFAIL_BIN_PATH="$MVFAIL_BIN"
+if command -v cygpath >/dev/null 2>&1; then MVFAIL_BIN_PATH=$(cygpath -u "$MVFAIL_BIN"); fi
+FAKE_MV="$MVFAIL_BIN/mv"
+cat >"$FAKE_MV" <<FAKE
+#!$REAL_BASH
+STATE="$STATE"
+REAL_MV="$REAL_MV"
+FAKE
+cat >>"$FAKE_MV" <<'FAKE'
+last=""
+for a in "$@"; do last="$a"; done
+if [ -f "$STATE/mv-fail-target" ] && [ "$last" = "$(cat "$STATE/mv-fail-target" 2>/dev/null)" ]; then
+    echo "fake mv: simulated promotion failure for $last" >&2
+    exit 1
+fi
+exec "$REAL_MV" "$@"
+FAKE
+chmod +x "$FAKE_MV"
+printf '%s' "$BAT_DIR/qmd-reindex.bat" > "$STATE/mv-fail-target"
+rc=0; out=$(QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
+    PATH="$MVFAIL_BIN_PATH:$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
+assert_rc "failed .bat promotion is rc 4" 4 "$rc"
+assert_contains "promotion failure names the runner" "failed to promote staged runner" "$out"
+if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ]; then
+    pass "no task registered when the .bat promotion fails"
+else
+    fail "task registered despite failed .bat promotion" "$(ls "$STATE/tasks")"
+fi
+if ! compgen -G "$BAT_DIR/*.tmp.*" >/dev/null; then
+    pass "staged tmp files cleaned when the .bat promotion fails"
+else
+    fail "staged tmp litter after failed .bat promotion" "$(ls "$BAT_DIR")"
+fi
+
+echo "TEST: failed shim promotion aborts the arm, no task registered"
+printf '%s' "$BAT_DIR/qmd-reindex.vbs" > "$STATE/mv-fail-target"
+rc=0; out=$(QMD_CADENCE_SCHTASKS="$FAKE_SCHTASKS" QMD_CADENCE_BAT_DIR="$BAT_DIR" \
+    PATH="$MVFAIL_BIN_PATH:$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" "$REAL_BASH" "$SCRIPT" arm 2>&1) || rc=$?
+assert_rc "failed shim promotion is rc 4" 4 "$rc"
+assert_contains "promotion failure names the shim" "failed to promote staged shim" "$out"
+if [ -z "$(ls -A "$STATE/tasks" 2>/dev/null)" ]; then
+    pass "no task registered when the shim promotion fails"
+else
+    fail "task registered despite failed shim promotion" "$(ls "$STATE/tasks")"
+fi
+if ! compgen -G "$BAT_DIR/*.tmp.*" >/dev/null; then
+    pass "staged shim tmp cleaned when the shim promotion fails"
+else
+    fail "staged tmp litter after failed shim promotion" "$(ls "$BAT_DIR")"
+fi
+# The .bat promotion runs FIRST and succeeded — its final file holds complete
+# new content while no task references it (the documented inert state).
+if [ -f "$BAT_DIR/qmd-reindex.bat" ]; then
+    pass ".bat published (inert) before the shim promotion failed"
+else
+    fail ".bat missing after its own promotion succeeded"
+fi
+rm -f "$STATE/mv-fail-target"
 
 # Test W9: failing /query is fail-CLOSED --------------------------------------
 

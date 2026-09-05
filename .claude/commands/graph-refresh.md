@@ -1,5 +1,5 @@
 ---
-description: One-shot operator refresh of the luna and/or himmel graphify graphs — fires refresh-graph-map.sh per corpus serially with the cadence's argument sets (HIMMEL-1644).
+description: One-shot operator refresh of the luna and/or himmel graphify graphs — one refresh-graph-map.sh run per corpus.
 argument-hint: [luna|himmel|both] [--vault <path>] [--dry-run]
 ---
 
@@ -51,4 +51,5 @@ Exit codes:
 - `0` all selected corpora refreshed successfully
 - `1` usage error (unknown corpus / unknown flag)
 - `2` environment error (`refresh-graph-map.sh` not found, `--vault` is not a directory, or the vault preflight refused it -- PHI/denylisted/root/non-vault, HIMMEL-1644)
-- `3` one or more corpus refresh legs failed (`refresh-graph-map.sh` exited non-zero)
+- `3` one or more corpus refresh legs FAILED (`refresh-graph-map.sh` exited non-zero, not a bank skip) -- investigate
+- `4` no failures, but one or more legs were SKIPPED (bank at/over threshold, runner exited 3) and nothing else failed -- benign, retry later

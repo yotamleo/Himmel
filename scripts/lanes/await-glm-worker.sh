@@ -208,7 +208,7 @@ while :; do
     if [ -z "$d" ]; then
         d="$(resolve_session_dir)"
     fi
-    if [ -n "$d" ] && [ -f "$d/meta.json" ]; then
+    if [ -n "$d" ] && [ -f "$d/meta.json" ]; then  # fail-open-ok: unreadable/torn meta.json reads as NON-terminal (positive-match rule below) — polling continues to the deadline
         # Positively require a KNOWN terminal status (the finalMeta set in
         # spawn-glm.ts) before completing. Anything else — "running", an
         # unrecognized status, or a torn read mid-rewrite — is treated as
@@ -222,11 +222,17 @@ while :; do
         # dispatcher-side SIGTERM finalize) are both terminal — without them
         # here a healthy/correctly-finalized worker reads as still-running and
         # burns the rest of this poll's window instead of completing at once.
-        if grep -qE '"status"[[:space:]]*:[[:space:]]*"(done|failed|capped|blocked|timeout|done_escalated|killed-by-caller)"' "$d/meta.json"; then
+        # HIMMEL-1693: stop-worker.sh's annotate_halt writes stopped-by-parent
+        # (signalled) / already-exited (confirmed gone before any signal) and
+        # always zeros pid alongside them — without both listed here, a halted
+        # worker's pid=0 falls through to the liveness check below (unprobeable)
+        # and eventually reads STALLED/deadline instead of the terminal halt it
+        # already recorded.
+        if grep -qE '"status"[[:space:]]*:[[:space:]]*"(done|failed|capped|blocked|timeout|done_escalated|killed-by-caller|stopped-by-parent|already-exited)"' "$d/meta.json"; then
             echo "await-glm-worker: TERMINAL: $d"
             cat "$d/meta.json"
             echo
-            if [ -f "$d/outbox.jsonl" ]; then
+            if [ -f "$d/outbox.jsonl" ]; then  # fail-open-ok: display-only outbox tail after a terminal status — an unreadable outbox costs the echo, nothing else
                 echo "--- outbox tail ---"
                 tail -3 "$d/outbox.jsonl"
             fi

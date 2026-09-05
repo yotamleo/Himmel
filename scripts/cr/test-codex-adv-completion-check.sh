@@ -365,4 +365,33 @@ Assessment:
 
 No material findings.' '')" "ok"
 
+# ── HIMMEL-2056: the run-codex-adversarial.sh dormant skip (HIMMEL-1957,
+#    CODEX_ADV_OK unset) writes exactly this one-line sentinel to stdout
+#    instead of a genuine review render. It must classify as its OWN outcome
+#    (absent) — never the HIMMEL-1420 silent-death "unavailable" class — so
+#    the harvest fence records no ledger row and takes no retry for it. ─────
+check "30: rc=0, dormant sentinel -> absent (not unavailable)" \
+    "$(status_of 0 'codex-adv: dormant (HIMMEL-1957)' '')" "absent"
+check "31: rc=0, dormant sentinel -> CLI exit 3" "$(rc_of 0 'codex-adv: dormant (HIMMEL-1957)' '')" "3"
+
+# ── the sentinel is recognized only as the WHOLE stdout content — a genuine
+#    completion can never take this shape (it always opens with the heading),
+#    so this is safe without needing position-anchoring like the other
+#    markers, but confirm a near-miss (trailing content) still falls through
+#    to the ordinary line-walk and classifies unavailable. ──────────────────
+check "32: rc=0, dormant-looking line plus trailing content -> unavailable, not absent" \
+    "$(status_of 0 'codex-adv: dormant (HIMMEL-1957)
+extra line' '')" "unavailable"
+
+# ── critic-panel [codex-1] (CR round on HIMMEL-2056, reproduced): `$( )`
+#    strips ALL trailing newlines, so comparing only `$(cat file)` to the
+#    sentinel would ALSO match a malformed file carrying extra trailing
+#    blank lines after it — a genuine dormant write is always exactly one
+#    line, so this must classify unavailable (via the line-walk), not
+#    absent. The line-count guard closes it. ─────────────────────────────
+check "33: rc=0, sentinel plus trailing blank lines -> unavailable, not absent" \
+    "$(status_of 0 'codex-adv: dormant (HIMMEL-1957)
+
+' '')" "unavailable"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

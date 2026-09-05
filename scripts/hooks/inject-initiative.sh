@@ -182,11 +182,11 @@ if [ -n "$_ii_sid_safe" ]; then
     fi
 fi
 
-# Profile-dependent labels (which var the operator set; shown in the directive).
+# Which var the operator set (named in the pointer, so the profile is visible).
 if _il_truthy "${HIMMEL_OVERNIGHT:-}"; then
-    _var="HIMMEL_INITIATIVE_OVERNIGHT"; _profile="overnight"
+    _var="HIMMEL_INITIATIVE_OVERNIGHT"
 else
-    _var="HIMMEL_INITIATIVE"; _profile="interactive"
+    _var="HIMMEL_INITIATIVE"
 fi
 
 # Membership test against the active leg set.
@@ -195,71 +195,63 @@ has_leg() { case " $active " in *" $1 "*) return 0;; *) return 1;; esac; }
 # CSV of recognized tokens for the in-session echo (typo visibility).
 _steps_csv=$(printf '%s' "$active" | tr ' ' ',')
 
-# --- Assemble the directive ------------------------------------------------
-# Invariant prose stays in quoted heredocs (it contains backticks that an
-# unquoted heredoc would try to command-substitute). Only the numbered step
-# list is built dynamically, so it renumbers to the active subset.
-printf '<system-reminder>\n%s is active for this Claude Code session (%s profile).\n' "$_var" "$_profile"
-printf 'Active steps: %s\n' "$_steps_csv"
-# Tasklist-seed preamble (HIMMEL-539): an UNNUMBERED, handover-conditional
-# instruction printed BEFORE the numbered legs (so it cannot acquire a leg
-# number and does not break the "completion point:" → list coupling). The native
-# tasklist is an agent-side tool (TaskCreate/TaskList/TaskUpdate) no shell can
-# call — this prose is the only way to seed it on an armed/resumed session.
-cat <<'EOF'
-
-First — if this session was resumed from a handover (you were asked to "load
-<handover>"), seed your native tasklist from the handover's ordered step list
-BEFORE anything else, whatever heading that list uses (e.g. a "How to execute"
-/ numbered-steps section): call TaskCreate once per step, then TaskUpdate each
-task as you start and finish it so progress stays glanceable. Keeping it updated
-through the run is best-effort. If you were not resumed from a handover, skip this.
-EOF
-cat <<'EOF'
-
-Take initiative: drive the current work to done without waiting for an
-explicit "ship it" each time. At a *natural completion point* (a logical chunk
-of work is finished AND verified):
-EOF
-
-_n=0
-# shellcheck disable=SC2016 # backticks in the format strings are literal directive prose, not expansions
-for _tok in $active; do
-    # `plan` is a reserved vocabulary token (no behavior yet) — consumes no number.
-    [ "$_tok" = plan ] && continue
-    _n=$((_n + 1))
-    case "$_tok" in
-        execute)  printf '%d. When a critic-hardened plan exists, hand it to execution: invoke `superpowers:subagent-driven-development` (recommended) to implement it task-by-task. (Advisory — it does not relax any rail.)\n' "$_n" ;;
-        prcheck)  printf '%d. Run `/pr-check` and loop — fix every finding, re-run — until CR is clean.\n' "$_n" ;;
-        pr)       printf '%d. When CR is clean, open or refresh the PR.\n' "$_n" ;;
-        ticket)   printf '%d. Transition the Jira ticket to the appropriate status.\n' "$_n" ;;
-        merge)    printf '%d. When CR is clean and the PR is open, squash-merge to PRIVATE main. Armed auto-merge (ARMAUTOMERGE=1 + private repo, HIMMEL-1042): run `bash scripts/handover/merge-on-green.sh` (exactly, to match the standing allow-rule) — it gates on `check-ci.sh` green + a certified head SHA and merges only then. Otherwise use `scripts/handover/pr-merge.sh` (plain-first; defer to the operator on real branch protection; never `--admin`). Advisory — branch protection still applies.\n' "$_n" ;;
-        public)   printf '%d. After merge, propagate to public END-TO-END: run `bash scripts/propagate-public.sh ship <branch> <base>..<head> --commit-file <f> --title <t> --body-file <f>` — exactly this helper (its fail-closed leak scan + byte-verify are the safety gate; never a raw git push to the public remote), then babysit the PR with /cr-public to CR-clean + CI-green. STOP at PR-ready and report the FULL /cr-public exit-0 payload to the operator: PR URL + short head SHA + check-ci verdict + diff-identity verdict + the ready-to-send /mergepub <pr> <sha12> line + the GitHub-UI fallback link. The public squash-merge stays HUMAN-authorized (Telegram /mergepub <pr> <sha12>, or the GitHub UI) — never run it yourself.\n' "$_n" ;;
-        handover) printf '%d. Write the handover.\n' "$_n" ;;
-    esac
-done
-
-cat <<'EOF'
-
-Scope and limits:
-- Fire only at completion points, NOT on every small edit. Don't interrupt
-  mid-task.
-EOF
-# The unconditional no-merge guard is dropped only when the `merge` leg is
-# explicitly active (then the merge step above carries the gate); every other
-# configuration keeps merge an operator action.
-has_leg merge || printf -- '- Do NOT merge — merge stays an operator action.\n'
-cat <<'EOF'
-- This directive does NOT relax any safety rail. The CR-marker hook still
-  HARD-blocks `gh pr create` until a clean /pr-check; attestation trailers must
-  be in the FIRST commit; reactive `git commit --amend` and self-editing
-  `.claude/settings.json` to widen rules are still HARD-vetoed.
-EOF
-printf '\nTo disable for the rest of the session, unset %s in the\n' "$_var"
-printf 'launching shell + restart claude (env vars do not propagate into a running\n'
-printf 'session). For per-part control, set %s to a comma-separated\n' "$_var"
-printf 'subset of: execute, prcheck, pr, ticket, merge, public, handover\n'
-printf '(e.g. %s=prcheck,pr).\n' "$_var"
+# --- Assemble the directive (POINTER form, HIMMEL-2036) ---------------------
+# The 3,150-byte runbook used to be injected in full on every session start, on
+# both harnesses, whether or not a completion point was ever reached. It now
+# lives in scripts/hooks/initiative-runbook.md and this hook emits a ~370-byte
+# POINTER — the same treatment inject-where-are-we.sh gives its global digest.
+#
+# What stays INLINE is the safety-relevant part, and only that: the no-merge
+# guard (dropped only when the `merge` leg is explicitly active) and the
+# enforcement sentence. Losing the step list to a file costs a read; losing
+# "this does not relax any rail" costs a rail. The `Active steps:` echo stays so
+# a typo'd token is still visible without opening the runbook.
+#
+# The runbook path is ABSOLUTE — like inject-where-are-we.sh's latest.md
+# pointer. This hook is wired at user scope too, and it reads the himmel clone's
+# .env for the gate vars, so a session started in a DIFFERENT repo can be
+# initiative-active; a repo-relative path would not resolve there, and a broken
+# pointer loses every step body including the merge/public safeguards.
+#
+# It is resolved from THIS SCRIPT'S OWN directory, not from $_ii_root: the
+# runbook is installed as the script's sibling, so the script dir is always
+# right, whereas $_ii_root is empty whenever HIMMEL_REPO is unset AND the git
+# toplevel lookup fails (a copy installed outside a git checkout, or no git on
+# PATH) — which would have emitted a dangling `./scripts/hooks/...`. Same byte
+# cost either way (the script's own dir IS <root>/scripts/hooks); this buys
+# correctness, not bytes. If even `pwd` fails, fall back to the git root and
+# then to the literal relative path: a best-effort pointer beats none, and every
+# other line of the directive still renders.
+#
+# Those bytes are why the enforcement line below states the rail without
+# re-listing which rails — the list is in the runbook, and the sentence is what
+# has to survive the trip inline.
+#
+# The read trigger is CONDITIONAL, and that is the whole saving. "Read it first"
+# would make every session load the runbook at session start — deferring the
+# 3.1 KB rather than removing it. Naming the two moments it is actually needed
+# (a completion point; a handover resume, which is when the tasklist-seed
+# section applies) means an ordinary session never opens the file at all.
+#
+# But the DIRECTIVE itself cannot live behind that trigger. "Take initiative at
+# a completion point" is what makes a session recognise a completion point at
+# all; if it only existed in the runbook, nothing would ever prompt the read and
+# the whole feature would vanish silently — the exact no-error regression the
+# audit warned this change could cause. So the one-line directive is inline and
+# only the step BODIES are deferred.
+_ii_rb_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd) || _ii_rb_dir=""
+if [ -n "$_ii_rb_dir" ]; then
+    _ii_runbook="$_ii_rb_dir/initiative-runbook.md"
+elif [ -n "$_ii_root" ]; then
+    _ii_runbook="$_ii_root/scripts/hooks/initiative-runbook.md"
+else
+    _ii_runbook="scripts/hooks/initiative-runbook.md"
+fi
+printf '<system-reminder>\n%s is active. Active steps: %s\n' "$_var" "$_steps_csv"
+printf 'At a completion point (work finished AND verified), run them unasked.\n'
+printf 'Step bodies (read then; or now if handover-resumed): %s\n' "$_ii_runbook"
+has_leg merge || printf 'Do NOT merge.\n'
+printf 'This directive does NOT relax any safety rail.\n'
 printf '</system-reminder>\n'
 
 exit 0

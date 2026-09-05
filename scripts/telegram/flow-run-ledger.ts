@@ -3,9 +3,9 @@
 // scripts/lib/flow-run-ledger.sh; serializers are byte-identical by contract.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 
-export type FlowRunOutcome = "complete" | "truncated" | "error";
+export type FlowRunOutcome = "complete" | "truncated" | "error" | "parked";
 export type FlowRunLane = string | null;
 
 export const FLOW_RUN_ROTATE_BYTES = 10 * 1024 * 1024;
@@ -114,23 +114,43 @@ function lastLines(text: string, n: number): string {
   return lines.slice(Math.max(0, lines.length - n)).join("\n");
 }
 
-export function classifyOutcome(exitCode: number, logPath?: string | null, extraMarkerRegex?: string): FlowRunOutcome {
+// requiredMarker (HIMMEL-1716): a zero exit whose log tail lacks the bare
+// completion marker line is a parked/blocked leg, not a complete one (mirrors
+// flow_run_classify in scripts/lib/flow-run-ledger.sh). A missing log is no marker.
+export function classifyOutcome(exitCode: number, logPath?: string | null, extraMarkerRegex?: string, requiredMarker?: string): FlowRunOutcome {
   if (exitCode !== 0) return "error";
-  if (!logPath || !existsSync(logPath)) return "complete";
+  if (!logPath || !existsSync(logPath)) return requiredMarker ? "parked" : "complete";
   const tail = lastLines(readFileSync(logPath, "utf8"), 50);
   if (FLOW_RUN_TRUNCATION_SIGNATURES.some((re) => re.test(tail))) return "truncated";
   if (extraMarkerRegex) {
     try {
       if (new RegExp(extraMarkerRegex).test(tail)) return "truncated";
     } catch {
-      return "complete";
+      // invalid extra regex: ignore it, but the required-marker check below
+      // still applies (coderabbit #1762 -- mirrors the bash classifier).
     }
   }
+  if (requiredMarker && !tail.split(/\r?\n/).some((l) => l === requiredMarker)) return "parked";
   return "complete";
 }
 
 export function appendFlowRun(row: FlowRunRow, path?: string): void {
-  const p = path ?? ledgerPath();
+  let p = path ?? ledgerPath();
+  // HIMMEL-2241 (mirrors the bash twin's flow_run_append guard): a missed test
+  // redirect must fail LOUD, never silently pollute production telemetry.
+  // run-shell-tests.sh exports HIMMEL_SUITE_LOCK_HELD for the whole suite run
+  // and children inherit it, so a write reaching here with the marker set and
+  // NO explicit path or env override is a fixture that fell back to
+  // ~/.himmel/flow-runs.jsonl. Quarantine it in the suite's own temp root.
+  if (path === undefined && process.env.HIMMEL_SUITE_LOCK_HELD && !process.env.HIMMEL_FLOW_RUNS_LEDGER) {
+    // TMPDIR first, so this lands in the same per-suite temp root the bash
+    // twin uses; os.tmpdir() rather than the twin's "/tmp" literal for the
+    // fallback, because a native Windows node process has no /tmp.
+    p = join(process.env.TMPDIR || tmpdir(), "flow-runs-unredirected.jsonl");
+    console.error(
+      `[flow-run-ledger] HIMMEL-2241 WARN: shell suite running (HIMMEL_SUITE_LOCK_HELD set) with no HIMMEL_FLOW_RUNS_LEDGER override; row quarantined in ${p} instead of the production ledger. Export HIMMEL_FLOW_RUNS_LEDGER to a scratch path in the fixture that spawned this wrapper.`,
+    );
+  }
   const dir = dirname(p);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   if (existsSync(p) && statSync(p).size >= FLOW_RUN_ROTATE_BYTES) {

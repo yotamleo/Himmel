@@ -4,6 +4,13 @@
 # PowerShell twin of test-install-plugins-diagnostics.sh (HIMMEL-438 — C2).
 # Keep in lockstep with the .sh when changing either.
 #
+# HIMMEL-2324: the .sh twin also carries a case for the HIMMEL-2292
+# force-enable step's predictable temp path ("$SETTINGS.enable.tmp"), but
+# install-plugins.ps1 has NO force-enable step at all (a pre-existing,
+# bash-only gap unrelated to this ticket) — there is no matching temp-path
+# site here to test. The one real predictable-temp site in install-plugins.ps1
+# (the autoUpdate patch) is covered by test-install-plugins-autoupdate.ps1.
+#
 # Run: pwsh -NoProfile -File scripts/machine-setup/test-install-plugins-diagnostics.ps1
 
 $ErrorActionPreference = 'Continue'
@@ -11,8 +18,7 @@ $script:Failed = 0
 $Cli = Join-Path $PSScriptRoot 'install-plugins.ps1'
 
 if (-not $IsWindows) {
-    Write-Host 'SKIP: not Windows — the claude.cmd stub needs cmd.exe'
-    Write-Host 'PASS (skipped)'
+    Write-Host 'test-install-plugins-diagnostics.ps1: SKIPPED — 0 cases ran (not Windows; the claude.cmd stub needs cmd.exe)'
     exit 0
 }
 
@@ -77,6 +83,7 @@ function Set-Stub {
 
 $Pwsh = (Get-Command pwsh).Source
 $SavedPath = $env:PATH
+$SavedConfigDir = $env:CLAUDE_CONFIG_DIR
 
 function Invoke-Install {
     $out = (& $Pwsh -NoProfile -File $Cli -Template $Template -Scope user 2>&1 | Out-String)
@@ -86,6 +93,12 @@ function Invoke-Install {
 
 try {
     $env:PATH = "$StubDir;$env:PATH"
+    # HIMMEL-2353: install-plugins.ps1's `user` scope resolves to
+    # $env:CLAUDE_CONFIG_DIR when set (else the real $HOME/.claude) — pin it
+    # into this suite's own $Tmp so a `-Scope user` run here can NEVER reach
+    # the operator's real settings.json, even on a step-failure path. Set
+    # once up front (not per-case).
+    $env:CLAUDE_CONFIG_DIR = Join-Path $Tmp '.claude'
 
     # 1. real install failure → loud diagnostics + non-zero (verify misses foo)
     Set-Stub @()
@@ -105,6 +118,7 @@ try {
 }
 finally {
     $env:PATH = $SavedPath
+    $env:CLAUDE_CONFIG_DIR = $SavedConfigDir
     Remove-Item Env:STUB_INSTALL_FAIL, Env:STUB_INSTALL_BENIGN -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }

@@ -76,21 +76,36 @@ for (const [i, r] of m.rules.entries()) {
     `rule[${i}] pending-operator without decision_needed`);
 }
 
-// 3. salus: every CLOUD provider x every purpose = hard deny; local-ollama = conditional
+// 3. salus: every CLOUD provider x every purpose = hard deny; local-ollama = conditional.
+//    EXCEPTION (2026-08-15 operator ruling, HIMMEL-1774): the openrouter cell keeps
+//    verdict deny (the default does NOT change) but is deliberately NOT hard — the
+//    cell is operator-configurable (A-tier provider, adopter portability). Every
+//    OTHER provider keeps its hard deny.
 for (const p of providers) {
   for (const u of purposes) {
     const { effective, rule } = evaluate("salus", p, u);
     if (p === "local-ollama") {
       assert(effective === "conditional", `salus x ${p} x ${u} must be conditional (per-run opt-in), got ${effective}`);
+    } else if (p === "openrouter") {
+      assert(effective === "deny", `salus x ${p} x ${u} must stay deny by default (configurable ≠ open), got ${effective}`);
+      assert(rule && rule.provider === "openrouter" && rule.hard === undefined,
+        `salus x ${p} x ${u} must deny via its OWN non-hard openrouter row (operator-configurable, 2026-08-15 ruling), got ${rule ? `hard=${rule.hard}` : "default"}`);
     } else {
       assert(effective === "deny", `salus x ${p} x ${u} must be deny, got ${effective}`);
       assert(rule && rule.hard === true, `salus x ${p} x ${u} deny must be hard`);
     }
   }
 }
+// 3a. The NON-openrouter salus wildcard row is STILL hard — the 2026-08-15
+//     configurability ruling is scoped to the openrouter provider ONLY.
+const salusWildcard = m.rules.find(r => r.corpus === "salus" && r.provider === "*" && r.purpose === "*");
+assert(salusWildcard && salusWildcard.verdict === "deny" && salusWildcard.hard === true,
+  "salus x * x * wildcard deny must stay HARD (only the openrouter cell is configurable)");
 
 // 3b. voice-audio: every NON-LOCAL provider x every purpose = hard deny;
-//     local-speech = allow (HIMMEL-1522).
+//     local-speech = allow (HIMMEL-1522). EXCEPTION (2026-08-15 ruling,
+//     HIMMEL-1774): the openrouter cell stays deny but is NOT hard —
+//     operator-configurable, same scoped ruling as salus above.
 //
 // Held at the salus tier deliberately. The salus deny keys on file paths and
 // speech has none, so a mic streaming to a cloud API would bypass the PHI
@@ -112,12 +127,20 @@ for (const p of providers) {
       } else {
         assert(effective === "deny", `voice-audio x ${p} x ${u} must be deny — local-speech is STT/TTS only, got ${effective}`);
       }
+    } else if (p === "openrouter") {
+      assert(effective === "deny", `voice-audio x ${p} x ${u} must stay deny by default (configurable ≠ open), got ${effective}`);
+      assert(rule && rule.provider === "openrouter" && rule.hard === undefined,
+        `voice-audio x ${p} x ${u} must deny via its OWN non-hard openrouter row (operator-configurable, 2026-08-15 ruling), got ${rule ? `hard=${rule.hard}` : "default"}`);
     } else {
       assert(effective === "deny", `voice-audio x ${p} x ${u} must be deny, got ${effective}`);
       assert(rule && rule.hard === true, `voice-audio x ${p} x ${u} deny must be hard`);
     }
   }
 }
+// 3c. The NON-openrouter voice-audio wildcard row is STILL hard (scoped ruling).
+const voiceWildcard = m.rules.find(r => r.corpus === "voice-audio" && r.provider === "*" && r.purpose === "*");
+assert(voiceWildcard && voiceWildcard.verdict === "deny" && voiceWildcard.hard === true,
+  "voice-audio x * x * wildcard deny must stay HARD (only the openrouter cell is configurable)");
 // An unlisted provider must not reach the mic either (default fail-closed).
 assert(evaluate("voice-audio", "brand-new-provider", "stt").effective === "deny",
   "voice-audio must deny an unlisted provider");
@@ -178,7 +201,7 @@ assert(evaluate("mystery-corpus", "google-gemini", "inference").effective === "d
 //     programmatic, so a typo'd conditional->allow on the CN brief-egress
 //     cells (or a shadowing earlier rule) fails loudly
 const conditionalRules = m.rules.filter(r => r.verdict === "conditional");
-assert(conditionalRules.length >= 4, "expected the salus opt-in + 2 handover brief-scoped (codex, glm) + clippings-GLM cells (the alibaba brief cell was denied by HIMMEL-1257)");
+assert(conditionalRules.length >= 2, "expected the salus opt-in + the handover-state x openai-codex brief-scoped cell (the alibaba brief cell was denied by HIMMEL-1257; the zai-glm handover-brief + clippings-GLM cells by HIMMEL-2224)");
 for (const r of conditionalRules) {
   const probe = {
     corpus: r.corpus === "*" ? corpora[0] : r.corpus,
@@ -212,18 +235,82 @@ assertExplicitDeny("handover-state", "alibaba", "inference",
 assertExplicitDeny("luna-personal", "alibaba", "embedding",
   "luna-personal x alibaba x embedding — Alibaba de-listed, 765 pilot not pursued (HIMMEL-1257)");
 // The sanctioned providers stay as-ratified (guard against over-broad edits).
-assert(evaluate("luna-personal", "zai-glm", "extraction").effective === "allow",
-  "luna-personal x zai-glm x extraction stays allow+log (HIMMEL-1122; the sanctioned CN lane)");
+// HIMMEL-2224: zai-glm de-listed too — landing HIMMEL-1749's DROP branch (GLM
+// Coding Plan auto-renew cancelled 2026-08-12, plan lapsed 2026-08-17). Same
+// legible-reversal pattern: four explicit deny ROWS, not deleted rows. moonshot
+// (HIMMEL-1748) is the replacement CN extraction lane.
+assertExplicitDeny("luna-personal", "zai-glm", "extraction",
+  "luna-personal x zai-glm x extraction — GLM lane dropped (HIMMEL-2224/1749), was the reversed HIMMEL-1122 ratification");
+assertExplicitDeny("luna-personal", "zai-glm", "enrichment",
+  "luna-personal x zai-glm x enrichment — GLM lane dropped (HIMMEL-2224/1749), was the reversed HIMMEL-1167 ratification");
+assertExplicitDeny("luna-clippings", "zai-glm", "extraction",
+  "luna-clippings x zai-glm x extraction — GLM lane dropped (HIMMEL-2224/1749); the narrow G2.3 ladder exception is denied");
+assertExplicitDeny("handover-state", "zai-glm", "inference",
+  "handover-state x zai-glm x inference — GLM lane dropped (HIMMEL-2224/1749); the brief-scoped worker cell is denied");
+assert(evaluate("himmel-code", "zai-glm", "inference").effective === "allow",
+  "himmel-code x zai-glm stays allow — de-listing is for private-content egress, not public code (wildcard)");
+assert(evaluate("handover-state", "openai-codex", "inference").rule?.verdict === "conditional",
+  "handover-state x openai-codex x inference must STAY the brief-scoped conditional (the zai-glm de-listing must not touch the codex worker cell)");
+assert(evaluate("luna-personal", "moonshot", "extraction").rule?.verdict === "allow+log",
+  "luna-personal x moonshot x extraction must be allow+log (HIMMEL-1748)");
+assert(evaluate("luna-clippings", "moonshot", "extraction").rule?.verdict === "allow+log",
+  "luna-clippings x moonshot x extraction must be allow+log (HIMMEL-1748)");
+assert(evaluate("luna-personal", "moonshot", "enrichment").effective === "deny",
+  "luna-personal x moonshot x enrichment must stay denied (unratified purpose)");
+assert(evaluate("salus", "moonshot", "extraction").effective === "deny",
+  "salus x moonshot x extraction must be hard denied");
 assert(evaluate("himmel-code", "openai-codex", "inference").effective === "allow",
   "himmel-code x codex impl lane must stay allowed");
 assert(evaluate("himmel-code", "deepseek", "inference").effective === "allow",
   "himmel-code x deepseek stays allow — de-listing is for private-content egress, not public code (wildcard)");
-assert(evaluate("luna-personal", "zai-glm", "inference").effective === "deny",
-  "luna-personal x zai-glm x inference must fall through to default deny (extraction/enrichment only)");
+assert(evaluate("luna-personal", "zai-glm", "inference").rule === null,
+  "luna-personal x zai-glm x inference must still fall through to DEFAULT deny — the HIMMEL-2224 de-listing adds explicit deny rows only for the four cells that were open, it does not invent new rows");
 assert(evaluate("luna-personal", "deepseek", "embedding").effective === "deny",
   "luna-personal x deepseek x embedding must deny (DeepSeek de-listed; no embedding cell existed anyway)");
 assert(evaluate("handover-state", "openai-codex", "embedding").effective === "deny",
   "no bulk pipelines over handover-state");
+
+// 7. OpenRouter (HIMMEL-1774): declared as its OWN provider — content transits
+//    the aggregator, a different trust boundary from the vendor cells, so the
+//    anthropic allowances do NOT carry over. Operator ruling pinned per cell:
+//    ALLOW himmel-code + handover-state (inference — the scripts/claude-openrouter
+//    lane, whose hard gate authorizes ONLY on an explicit provider:"openrouter"
+//    rule); DENY salus + voice-audio and luna-personal + luna-clippings.
+//    2026-08-15 operator ruling: ALL FOUR openrouter deny cells are deliberately
+//    OPERATOR-CONFIGURABLE — verdict stays deny (nothing is opened by that
+//    ruling), but `hard` is absent so an operator can later ratify an open by
+//    editing the cell. wantHard below therefore asserts NON-hard for the deny
+//    cells (hard === undefined), pinning the configurability decision itself.
+//    Each cell is asserted via its OWN explicit row (not the wildcards and not
+//    default-deny), so deleting or shadowing a ruling row fails loudly.
+function assertOpenRouterCell(corpus, purpose, wantVerdict, wantHard, msg) {
+  const { effective, rule } = evaluate(corpus, "openrouter", purpose);
+  assert(effective === wantVerdict, `${msg} — effective must be ${wantVerdict}, got ${effective}`);
+  assert(rule && rule.provider === "openrouter" && rule.corpus === corpus,
+    `${msg} — must resolve via an EXPLICIT ${corpus} x openrouter rule, got ${rule ? `${rule.corpus} x ${rule.provider}` : "default"}`);
+  if (wantHard === true) assert(rule.hard === true, `${msg} — the explicit rule must be hard`);
+  if (wantHard === false) assert(rule.hard === undefined,
+    `${msg} — the explicit rule must be NON-hard (operator-configurable, 2026-08-15 ruling), got hard=${rule.hard}`);
+}
+assertOpenRouterCell("himmel-code", "inference", "allow", null,
+  "himmel-code x openrouter x inference — the lane's authorizing cell (HIMMEL-1774)");
+assertOpenRouterCell("handover-state", "inference", "allow", null,
+  "handover-state x openrouter x inference — substrate-shaped session lane (HIMMEL-1774)");
+assertOpenRouterCell("salus", "extraction", "deny", false,
+  "salus x openrouter — PHI denied by default, cell operator-configurable (HIMMEL-1774 + 2026-08-15 ruling)");
+assertOpenRouterCell("voice-audio", "stt", "deny", false,
+  "voice-audio x openrouter — audio denied by default, cell operator-configurable (HIMMEL-1774 + 2026-08-15 ruling)");
+assertOpenRouterCell("luna-personal", "inference", "deny", false,
+  "luna-personal x openrouter — vault DENY per ruling (HIMMEL-1774)");
+assertOpenRouterCell("luna-clippings", "extraction", "deny", false,
+  "luna-clippings x openrouter — vault DENY per ruling (HIMMEL-1774)");
+// The allows are inference-ONLY: the lane must not silently become a bulk
+// extraction/embedding pipeline over the transit vendor. (himmel-code's
+// non-inference purposes stay covered by its deliberate wildcard allow-all.)
+assert(evaluate("luna-personal", "openrouter", "enrichment").effective === "deny",
+  "luna-personal x openrouter x enrichment must deny");
+assert(evaluate("handover-state", "openrouter", "embedding").effective === "deny",
+  "handover-state x openrouter x embedding must deny (no bulk pipelines over the transit vendor)");
 
 if (failures > 0) {
   console.error(`egress-matrix: ${failures} invariant failure(s)`);

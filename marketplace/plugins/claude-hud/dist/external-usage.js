@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createDebug } from './debug.js';
+import { parseScopedWindows } from './stdin.js';
 import { sanitizeDisplayText } from './utils/sanitize.js';
 const debug = createDebug('external-usage');
 const MAX_BALANCE_LABEL_LENGTH = 50;
@@ -207,7 +208,11 @@ export function getUsageFromExternalSnapshot(config, now = Date.now()) {
         const fiveHour = parseUsagePercent(parsed.five_hour?.used_percentage);
         const sevenDay = parseUsagePercent(parsed.seven_day?.used_percentage);
         const balanceLabel = sanitizeBalanceLabel(parsed.balance_label);
-        if (fiveHour === null && sevenDay === null && balanceLabel === null) {
+        const scopedWindows = parseScopedWindows(parsed.model_scoped);
+        if (fiveHour === null
+            && sevenDay === null
+            && balanceLabel === null
+            && scopedWindows.length === 0) {
             return null;
         }
         const fiveHourResetAt = parseDateValue(parsed.five_hour?.resets_at);
@@ -226,6 +231,9 @@ export function getUsageFromExternalSnapshot(config, now = Date.now()) {
         };
         if (balanceLabel !== null) {
             usage.balanceLabel = balanceLabel;
+        }
+        if (scopedWindows.length > 0) {
+            usage.scopedWindows = scopedWindows;
         }
         return usage;
     }

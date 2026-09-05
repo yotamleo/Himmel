@@ -187,19 +187,35 @@ if ! bash "$REPO_ROOT/scripts/setup/check-jira-key.sh" "$_jira_mode"; then
 fi
 echo ""
 
-# --- USER_SLUG resolution (HIMMEL-145) ---
+# --- USER_SLUG resolution (HIMMEL-145; advisory per HIMMEL-2537) ---
 # Verify the operator's user slug resolves at setup time so paths in
 # handover bucket layout, registry.json, and overnight artifacts line
-# up. Fail loud rather than letting downstream scripts pick the wrong
-# directory.
+# up. ADVISORY, not fatal: nothing below consumes the slug and every
+# real consumer resolves it at call time, so an abort here only stopped
+# steps [1/9]..[9/9] that would all have succeeded. The rationale (and
+# the measurement behind it) lives in the sub-script.
 echo "[0.5/9] Resolving USER_SLUG..."
-# shellcheck source=lib/user-slug.sh
-# shellcheck disable=SC1091
-. "$REPO_ROOT/scripts/lib/user-slug.sh"
-if _resolved_slug=$(user_slug_verify); then
+_user_slug_manual=0
+_slug_rc=0
+# --dotenv-root here too, not just at the footer (CR round 6 [codex-1]): on a
+# RE-RUN of setup the .env from a previous run already exists, and resolving
+# the way a bare shell does would print the "cannot resolve" diagnostic for a
+# slug the consumers can read perfectly well — a WARN the footer then silently
+# contradicts by not firing. On a FIRST run .env does not exist yet (step [5/9]
+# creates it), so this is a no-op there; the placeholder rejection covers the
+# fresh-copy-of-.env.example case.
+_resolved_slug=$(bash "$REPO_ROOT/scripts/setup/check-user-slug.sh" --dotenv-root "$REPO_ROOT") || _slug_rc=$?
+if [ "$_slug_rc" -eq 0 ]; then
   export USER_SLUG="$_resolved_slug"
 else
-  exit 1
+  _user_slug_manual=1
+  # rc=3 is the sub-script's own "advised" signal and has already printed the
+  # diagnostic. Anything else means the probe itself broke (missing file, a
+  # crash) — a different fact from "the slug does not resolve", and saying so
+  # is cheaper than letting an unexplained still-manual row confuse the reader.
+  if [ "$_slug_rc" -ne 3 ]; then
+    echo "  WARNING: check-user-slug.sh exited rc=$_slug_rc (expected 0 or 3); treating USER_SLUG as unresolved." >&2
+  fi
 fi
 echo ""
 
@@ -425,6 +441,7 @@ if [ "$_install_graphify" = "1" ]; then
     # not just the CLI (HIMMEL-1047). user scope — setup.sh provisions this
     # machine's own environment. WARN-not-fail; idempotent.
     graphify_register_mcp user
+    graphify_price_hooks
   else
     echo "  WARNING: graphify install failed; setup continues." >&2
   fi
@@ -437,6 +454,56 @@ echo ""
 
 echo "Setup complete."
 echo ""
+# HIMMEL-2537: step 0.5 is advisory, so the one thing it left undone has to
+# survive the scrollback the same way HIMMEL-2536's git-hooks row does. A run
+# that ends "Setup complete." while a step was skipped, and says so nowhere the
+# operator will still be looking, is the failure both tickets are about.
+# CR round 1 [codex-1]: step 0.5 runs BEFORE [5/9], which creates .env and,
+# under --fill-env, prompts for USER_SLUG — so a flag latched at 0.5 would tell
+# an operator who had just typed a slug to go and set one. Re-probe with .env
+# bridged in, the way the consumers this row names actually resolve it. Only
+# ever clears the flag: a re-probe that still fails leaves the row standing.
+if [ "$_user_slug_manual" = "1" ]; then
+  if _refreshed_slug=$(bash "$REPO_ROOT/scripts/setup/check-user-slug.sh" --dotenv-root "$REPO_ROOT" 2>/dev/null); then
+    export USER_SLUG="$_refreshed_slug"
+    _user_slug_manual=0
+  else
+    _footer_slug_rc=$?
+    # HIMMEL-2537 CR round 3 [codex-1]: never let a broken re-probe erase a
+    # KNOWN unresolved verdict (rc=3) from [0.5/9] — only adopt the footer's
+    # own rc while the state is still open (unknown), so an rc=3 known-bad
+    # verdict can't be silently upgraded to "unknown" by a second probe that
+    # merely crashed. Mirrors userSlugState()'s own unverified/did-not-resolve
+    # split in scripts/himmelctl/bin.js.
+    if [ "$_slug_rc" -ne 3 ]; then
+      _slug_rc="$_footer_slug_rc"
+    fi
+  fi
+fi
+if [ "$_user_slug_manual" = "1" ]; then
+  if [ "$_slug_rc" -eq 3 ]; then
+    echo "STILL MANUAL: USER_SLUG did not resolve (see [0.5/9] above)."
+    echo "  Handover bucket paths, registry.json and scratch dir names cannot be"
+    echo "  derived until you set ONE of: USER_SLUG in your shell/.env, an"
+    echo "  authenticated forge CLI (gh auth login), or git config --global user.name."
+    echo "  No re-run of setup is needed — each consumer resolves the slug when it runs."
+    echo ""
+  else
+    echo "STILL MANUAL: USER_SLUG could NOT be verified (check-user-slug.sh exited rc=$_slug_rc);"
+    echo "  treat it as unresolved until you have checked, not as confirmed unresolved."
+    # The prescribed command carries --dotenv-root for the same reason the
+    # probes do (CR round 9 [codex-1], the round-4 finding on the himmelctl
+    # row repeated here): without it an operator whose slug lives only in
+    # .env runs a check that reports "unresolved" and concludes their setup
+    # is broken, when every consumer reads it fine.
+    echo "  Handover bucket paths, registry.json and scratch dir names may or may not be"
+    echo "  derivable — run 'bash scripts/setup/check-user-slug.sh --dotenv-root .' from"
+    echo "  your checkout root to see why the probe itself failed, then set USER_SLUG in"
+    echo "  your shell/.env once you know."
+    echo "  No re-run of setup is needed — each consumer resolves the slug when it runs."
+    echo ""
+  fi
+fi
 echo "NEXT: read docs/getting-started.md (clone-to-first-loop in ~15 min),"
 echo "      then start your first loop with /worktree."
 echo ""

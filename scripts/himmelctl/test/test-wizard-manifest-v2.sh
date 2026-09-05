@@ -71,15 +71,7 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 
 lint_w="$(winpath "$lint")"
 
@@ -368,5 +360,36 @@ errP2=$(run_lint "$caseP_valid" 2>&1); rcP2=$?
 set -e
 [ "$rcP2" -eq 0 ] || fail "case p: offboard:'advise' (a valid value) should lint clean (got rc=$rcP2): $errP2"
 echo "ok: case p (part 2) — offboard:'advise' (a valid closed-vocabulary value) is accepted"
+
+# ── case q (HIMMEL-2292): probe type 'settings-key' field 'expect' — a
+# non-boolean value exits 1, 'expect' paired with 'keys' (not 'key') exits 1,
+# and a valid boolean 'expect' paired with 'key' lints clean. ─────────────
+caseQ_type="$work/case-q-type.json"
+mutate_base "$caseQ_type" "m.items[0].probe = { type: 'settings-key', file: '.claude/settings.json', key: 'A', expect: 'yes' };"
+set +e
+errQ1=$(run_lint "$caseQ_type" 2>&1); rcQ1=$?
+set -e
+[ "$rcQ1" -eq 1 ] || fail "case q: probe.expect:'yes' (not a boolean) should exit 1 (got rc=$rcQ1): $errQ1"
+grepq "$errQ1" -F "'expect', when present, must be a boolean" \
+  || fail "case q: error should name the boolean requirement (got: $errQ1)"
+echo "ok: case q (part 1) — probe.expect with a non-boolean value exits 1"
+
+caseQ_keys="$work/case-q-keys.json"
+mutate_base "$caseQ_keys" "m.items[0].probe = { type: 'settings-key', file: '.claude/settings.json', keys: ['A', 'B'], expect: true };"
+set +e
+errQ2=$(run_lint "$caseQ_keys" 2>&1); rcQ2=$?
+set -e
+[ "$rcQ2" -eq 1 ] || fail "case q: probe.expect paired with 'keys' (not singular 'key') should exit 1 (got rc=$rcQ2): $errQ2"
+grepq "$errQ2" -F "'expect' requires singular 'key', not 'keys'" \
+  || fail "case q: error should name the key-vs-keys requirement (got: $errQ2)"
+echo "ok: case q (part 2) — probe.expect paired with 'keys' exits 1"
+
+caseQ_valid="$work/case-q-valid.json"
+mutate_base "$caseQ_valid" "m.items[0].probe = { type: 'settings-key', file: '.claude/settings.json', key: 'A', expect: true };"
+set +e
+errQ3=$(run_lint "$caseQ_valid" 2>&1); rcQ3=$?
+set -e
+[ "$rcQ3" -eq 0 ] || fail "case q: a valid boolean probe.expect paired with singular 'key' should lint clean (got rc=$rcQ3): $errQ3"
+echo "ok: case q (part 3) — probe.expect:true paired with singular 'key' is accepted"
 
 echo "PASS"

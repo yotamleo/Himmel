@@ -45,10 +45,11 @@ ROWS_FILE=""
 OUT_FILE=""
 ACTIONS_FILE=""
 DRY_RUN=0
+NO_UNLANDED=0
 
 usage() {
     cat <<'EOF'
-Usage: morning-report.sh [--rows FILE] [--out PATH] [--actions FILE] [--dry-run]
+Usage: morning-report.sh [--rows FILE] [--out PATH] [--actions FILE] [--dry-run] [--no-unlanded]
 
 Reads one TSV row per dispatched ticket (stdin by default):
 
@@ -70,9 +71,16 @@ Optional:
                 survives every regeneration (one-off notes elsewhere do not
                 resurface in a regenerated report). Skipped when absent/blank.
   --dry-run     Print the report to stdout; touch no files.
+  --no-unlanded Suppress the "## Unlanded work" section (HIMMEL-2070).
 
 Environment overrides:
-  HANDOVER_DIR   External handover root (Mode B).
+  HANDOVER_DIR       External handover root (Mode B).
+  UNLANDED_TSV       Path to a pre-computed unlanded-work.sh --tsv file (test
+                     seam) — when set, scripts/unlanded-work.sh is never
+                     shelled out to.
+  GEN_CHANGELOG_SCRIPT  Path to gen-changelog.sh (test seam) — when set,
+                     overrides the default scripts/gen-changelog.sh so a
+                     test fixture never shells out to the live generator.
 EOF
 }
 
@@ -88,6 +96,7 @@ while [ $# -gt 0 ]; do
             [ -n "${2:-}" ] || { echo "ERR morning-report: --actions requires a FILE" >&2; exit 1; }
             ACTIONS_FILE="$2"; shift 2 ;;
         --dry-run) DRY_RUN=1; shift ;;
+        --no-unlanded) NO_UNLANDED=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *)         echo "ERR morning-report: unknown arg: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -236,6 +245,134 @@ EOF
 if [ -n "$actions_body" ]; then
     report="$report"$'\n\n'"## Standing operator actions"$'\n\n'"$actions_body"
 fi
+
+# Append "## Unlanded work" (HIMMEL-2070): AGED UNLANDED-LIVE branches — work
+# committed but never opened as a PR. Advisory: a detector failure must not
+# fail this report, but it also must not silently render as "none" (which
+# would look identical to a genuinely clean scan) — it gets its own explicit
+# "unavailable" line instead. UNLANDED_TSV is a test seam: when set, a
+# pre-computed --tsv file is read instead of shelling out to the live repo.
+if [ "$NO_UNLANDED" -eq 0 ]; then
+    unlanded_tsv=""
+    unlanded_ok=1
+    if [ -n "${UNLANDED_TSV:-}" ]; then
+        if [ -f "$UNLANDED_TSV" ]; then
+            # codex-3, HIMMEL-2070 CR round 6: check cat's own exit status —
+            # a file that exists but fails to READ (permission denied, I/O
+            # error) must not silently render as unlanded_ok=1 (-> "None"),
+            # identical to the "empty scan" case this whole section exists
+            # to distinguish from a genuine failure.
+            unlanded_tsv="$(cat "$UNLANDED_TSV")" || unlanded_ok=0
+        else
+            unlanded_ok=0
+        fi
+    else
+        unlanded_detector="$SCRIPT_DIR/../unlanded-work.sh"
+        if [ -f "$unlanded_detector" ]; then
+            # cd into the repo the detector belongs to before invoking it
+            # (codex-4, HIMMEL-2070 CR round 2): unlanded-work.sh resolves its
+            # OWN repo from the CALLER's cwd, so without this a caller whose
+            # cwd is outside (or in a different) git repo silently scans the
+            # wrong tree — or none at all. $SCRIPT_DIR/.. is always inside
+            # this checkout regardless of where morning-report.sh was invoked
+            # from. Capture stderr separately too (codex-2, same round): the
+            # detector always exits 0 by contract even on a scan failure (an
+            # unresolvable --base) — a discarded stderr made that failure
+            # read identically to a genuinely empty scan ("None").
+            unlanded_stderr_tmp="$(mktemp)"
+            unlanded_tsv="$(cd "$SCRIPT_DIR/.." && bash "$unlanded_detector" --tsv 2>"$unlanded_stderr_tmp")" || unlanded_ok=0
+            unlanded_stderr="$(cat "$unlanded_stderr_tmp" 2>/dev/null)"; rm -f "$unlanded_stderr_tmp"
+            if [ -z "$unlanded_tsv" ] && [ -n "$unlanded_stderr" ]; then
+                unlanded_ok=0
+            fi
+        else
+            unlanded_ok=0
+        fi
+    fi
+    unlanded_section=$'\n\n## Unlanded work\n\n'
+    if [ "$unlanded_ok" -eq 0 ]; then
+        unlanded_section="${unlanded_section}_unlanded-work scan unavailable._"
+    else
+        aged_rows="$(printf '%s\n' "$unlanded_tsv" | awk -F'\t' '$1=="UNLANDED-LIVE" && $5=="1"')"
+        if [ -z "$(printf '%s' "$aged_rows" | tr -d '[:space:]')" ]; then
+            unlanded_section="${unlanded_section}_None — no aged unlanded branch found._"
+        else
+            unlanded_section="${unlanded_section}$(printf '%s\n' "$aged_rows" | awk -F'\t' '{ printf "- **%s** — +%s commits, age %sh (%s)\n", $2, $3, $4, $6 }')"
+        fi
+    fi
+    report="$report$unlanded_section"
+fi
+
+# Append "## Changelog freshness" (HIMMEL-2250): CHANGELOG.md is 100%
+# derived from git log, so regenerating it per-commit/per-worktree across
+# ~20 parallel branches would guarantee a textual merge conflict on every
+# landing — this report already runs once daily on main, after the night's
+# merges, and is the one artifact the operator reads every morning, so a
+# staleness ROW here is the cheapest structural layer that turns invisible
+# rot (the 8-week/1052-entry gap this ticket exists to fix) into a visible
+# daily line, without ever regenerating the file itself. ADVISORY ONLY: the
+# `--check` rc=1 (stale) case is the EXPECTED common case, not a script
+# error, so it must never abort this report under `set -e` — hence the
+# `|| changelog_rc=$?` guard, mirroring the unlanded-work section above.
+#
+# HIMMEL-2364: a GEN_CHANGELOG_SCRIPT override can be relative (e.g. a test
+# stub, or an operator pointing at a script next to their cwd). The `-f`
+# existence check below and the actual execution MUST agree on the same
+# path — resolve to absolute in the CALLER's cwd, before the `cd
+# "$SCRIPT_DIR/.."` on the execution line moves us elsewhere, so a relative
+# override that genuinely resolves from the caller's cwd doesn't pass the
+# check and then fail to exec. An unresolvable path (missing file/dir) is
+# left as-is so it still falls through to the existing "not found" branch
+# below rather than erroring out here.
+#
+# codex-1 CR finding: resolving dir and basename in ONE assignment
+# (`x="$(cd ... && pwd)/$(basename ...)"`) is a trap — bash reports that
+# compound assignment's exit status from the LAST command substitution
+# (`basename`, which always succeeds), never the `cd`/`pwd` one, so a
+# `|| fallback` on it can NEVER fire. A missing/unresolvable directory then
+# silently produces "/<basename>" instead of falling back — a malformed
+# path that could coincidentally match a real root-level file. Resolve the
+# directory in its OWN assignment first (its exit status is then genuinely
+# the `cd`/`pwd` result) and only rebuild changelog_script when that
+# resolved to something; otherwise leave it as the original override so it
+# falls through to the existing "not found" branch below.
+changelog_script="${GEN_CHANGELOG_SCRIPT:-$SCRIPT_DIR/../gen-changelog.sh}"
+changelog_script_dir="$(cd "$(dirname "$changelog_script")" 2>/dev/null && pwd)" || changelog_script_dir=""
+if [ -n "$changelog_script_dir" ]; then
+    changelog_script="$changelog_script_dir/$(basename "$changelog_script")"
+fi
+changelog_section=$'\n\n## Changelog freshness\n\n'
+changelog_rc=0
+if [ -f "$changelog_script" ]; then
+    changelog_check_out="$(cd "$SCRIPT_DIR/.." && bash "$changelog_script" --check 2>&1)" || changelog_rc=$?
+else
+    changelog_rc=127
+fi
+case "$changelog_rc" in
+    0) changelog_section="${changelog_section}_Current — CHANGELOG.md matches git history._" ;;
+    1)
+        # Parse the entry count out of the STRUCTURED "STALE gen-changelog:"
+        # line only, not the first digits anywhere in the merged
+        # stdout+stderr capture — a stray digit earlier in the stream (a
+        # warning line, a config count, etc.) must never be mistaken for the
+        # entry count. Fall back to quoting the line verbatim if its shape
+        # ever changes underneath this script (also covers the missing-file
+        # variant, which has no count). `|| n=""` is load-bearing under
+        # `set -o pipefail`: pipefail reports the PIPELINE's status as the
+        # rightmost command that failed, not `head`'s own (successful) exit
+        # code — so a no-match line makes `grep` fail, the substitution
+        # fails, and `set -e` would otherwise abort this whole report on the
+        # exact "shape changed" case this fallback exists to survive.
+        n="$(printf '%s' "$changelog_check_out" | grep -oE '^STALE gen-changelog: CHANGELOG\.md is [0-9]+ entr\(ies\) behind' | grep -oE '[0-9]+' | head -1)" || n=""
+        if [ -n "$n" ]; then
+            changelog_section="${changelog_section}- **CHANGELOG.md is $n entries behind** — run \`bash scripts/gen-changelog.sh\` and land it in a PR."
+        else
+            changelog_section="${changelog_section}- **${changelog_check_out}**"
+        fi
+        ;;
+    *) changelog_section="${changelog_section}_changelog freshness check unavailable._" ;;
+esac
+report="$report$changelog_section"
 
 # Write / print ----------------------------------------------------------
 

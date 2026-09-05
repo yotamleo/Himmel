@@ -15,9 +15,13 @@
 #   rc=2 FAIL — out dir missing; manifest.json missing/unparseable/empty;
 #               --corpus-root given but the dir does not exist;
 #               corpus orphaned (no --corpus-root AND no .graphify_root marker,
-#               OR no file named in manifest.json resolves under the corpus root).
-#   rc=1 WARN — graph.json (or manifest.json if graph.json is absent) mtime is
-#               older than --max-age-days.
+#               OR >50% of manifest.json's checkable paths do not resolve
+#               under the corpus root).
+#   rc=1 WARN — age is older than --max-age-days. Age is measured from
+#               graph.json's embedded built_at_commit (via that commit's
+#               committer date in the resolved corpus, when available —
+#               HIMMEL-1647), else falls back to graph.json's (or
+#               manifest.json's) filesystem mtime.
 #   rc=0 OK   — fresh AND corpus verified; prints exactly one line:
 #               "graph-freshness: OK (<age-days>d old, corpus verified)"
 #
@@ -27,8 +31,10 @@
 #   no --corpus-root → the .graphify_root marker file in the out dir is read; its
 #     first non-blank line is the corpus-root path (absolute, or relative to the
 #     out dir's parent). Marker absent OR empty → orphan (rc=2). With the root
-#     resolved, at least one file NAMED in manifest.json must exist under it;
-#     none found → orphan (rc=2).
+#     resolved, count how many manifest.json-named paths exist under it, out
+#     of how many are checkable (untrusted absolute/traversal keys are
+#     skipped from both counts); >50% missing (or zero checkable) → orphan
+#     (rc=2). The measured ratio is always printed (stderr) for this step.
 #
 # Usage:
 #   check-graph-freshness.sh --out <graphify-out dir> [--max-age-days N] [--corpus-root <path>]
@@ -144,32 +150,91 @@ else
     /*|[A-Za-z]:*) CORPUS_RESOLVED="$MARKER_ROOT" ;;
     *)             CORPUS_RESOLVED="$OUT/../$MARKER_ROOT" ;;
   esac
-  # at least one manifest-named file must exist under the resolved corpus root.
-  # Keys are UNTRUSTED (a corrupt/crafted manifest could carry absolute or
-  # ..-traversal paths that "verify" via files OUTSIDE the root — codex CR):
-  # only plain relative keys may join the path; others are skipped.
-  found=0
+  # Count how many manifest-named files exist under the resolved corpus root,
+  # out of how many are checkable, and orphan only on a MAJORITY miss
+  # (HIMMEL-2072) rather than requiring just one hit. Keys are UNTRUSTED (a
+  # corrupt/crafted manifest could carry absolute or ..-traversal paths that
+  # "verify" via files OUTSIDE the root — codex CR): only plain relative keys
+  # may join the path; others are skipped (not counted either way).
+  #
+  # Strip a trailing CR from each key (HIMMEL-2072 root cause): python3 on
+  # Windows writes text-mode stdout, translating each print()'s "\n" to
+  # "\r\n"; bash's `$(...)` command substitution here strips only the very
+  # LAST trailing newline, so every key but the last keeps a literal
+  # trailing \r glued onto its filename. `$CORPUS_RESOLVED/$key` then never
+  # matches a real file for ~all keys, and the checker reported "0 exist"
+  # while the overwhelming majority genuinely did.
+  total=0
+  exist=0
   while IFS= read -r key; do
+    key="${key%$'\r'}"
     [ -n "$key" ] || continue
     case "$key" in
       /*|[A-Za-z]:*|../*|*/../*|*/..|..) continue ;;
     esac
-    if [ -e "$CORPUS_RESOLVED/$key" ]; then found=1; break; fi
+    total=$((total + 1))
+    [ -e "$CORPUS_RESOLVED/$key" ] && exist=$((exist + 1))
   done <<< "$KEYS"
-  [ "$found" -eq 1 ] || fail "corpus orphaned: no file named in manifest.json exists under $CORPUS_RESOLVED (graph references a gone/moved corpus)."
+  # Orphan threshold: >50% of checkable manifest paths missing. total=0 (no
+  # checkable keys at all) has nothing to verify against -> orphaned too.
+  RATIO_PCT=0
+  [ "$total" -gt 0 ] && RATIO_PCT=$(( exist * 100 / total ))
+  echo "graph-freshness: corpus check: $exist/$total manifest paths exist under $CORPUS_RESOLVED (${RATIO_PCT}%)." >&2
+  if [ "$total" -eq 0 ] || [ $(( exist * 2 )) -lt "$total" ]; then
+    fail "corpus orphaned: only $exist/$total manifest.json paths exist under $CORPUS_RESOLVED (${RATIO_PCT}%, at least 50% required) — graph references a gone/moved corpus."
+  fi
 fi
 
-# --- 4. age check (graph.json preferred, else manifest.json mtime) ---
+# --- 4. age check: build identity (built_at_commit) preferred over mtime ---
+# HIMMEL-1647: graph.json is git-tracked while manifest.json/.graphify_root
+# are not, so a checkout/restore can give an OLD graph a FRESH mtime while
+# corpus verification (step 3) still passes on retained metadata — mtime
+# alone then stays silent on genuinely stale structure. When graph.json
+# embeds a built_at_commit and the resolved corpus is a git repo that knows
+# that commit, age is measured from THAT commit's committer date instead —
+# a checkout cannot forge a commit date. Falls back to file mtime when the
+# identity signal is unavailable (no graph.json, no built_at_commit, corpus
+# isn't a git repo, or the commit is unknown to it, e.g. a shallow clone).
 AGE_FILE="$OUT/graph.json"
 [ -f "$AGE_FILE" ] || AGE_FILE="$MANIFEST"
+
+AGE_EPOCH=""
+if [ -f "$OUT/graph.json" ]; then
+  # built_at_commit is UNTRUSTED graph.json content (codex CR): must look
+  # like a literal commit SHA (hex, 7-40 chars) before it ever reaches git,
+  # or a value like "HEAD" (a ref, not the actual built commit) or "--all"
+  # (a git OPTION, not a revision — `git log --all` silently swallows it)
+  # would resolve to an unrelated, often-fresher timestamp and falsely mark
+  # a stale graph as fresh. Reject anything else here, before it's used.
+  BUILT_COMMIT="$(python3 -c 'import json,re,sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError, UnicodeError):
+    sys.exit(0)
+c = d.get("built_at_commit") if isinstance(d, dict) else None
+if isinstance(c, str) and re.fullmatch(r"[0-9a-fA-F]{7,40}", c):
+    print(c)' "$OUT/graph.json" 2>/dev/null || true)"
+  if [ -n "$BUILT_COMMIT" ]; then
+    AGE_EPOCH="$(git -C "$CORPUS_RESOLVED" log -1 --format=%ct "$BUILT_COMMIT" -- 2>/dev/null || true)"
+  fi
+fi
+
 # verdict = STALE when real-valued age (days) > max-age-days; floor days for display.
-AGE_OUT="$(python3 -c 'import os,sys,time
+if [ -n "$AGE_EPOCH" ]; then
+  AGE_OUT="$(python3 -c 'import sys,time
+age=(time.time()-float(sys.argv[1]))/86400.0
+print("STALE" if age > float(sys.argv[2]) else "FRESH", int(age))' "$AGE_EPOCH" "$MAX_AGE_DAYS")"
+  AGE_SRC="build commit ${BUILT_COMMIT}"
+else
+  AGE_OUT="$(python3 -c 'import os,sys,time
 age=(time.time()-os.path.getmtime(sys.argv[1]))/86400.0
 print("STALE" if age > float(sys.argv[2]) else "FRESH", int(age))' "$AGE_FILE" "$MAX_AGE_DAYS")" \
-  || fail "cannot read mtime of $AGE_FILE."
+    || fail "cannot read mtime of $AGE_FILE."
+  AGE_SRC="$AGE_FILE mtime"
+fi
 read -r AGE_VERDICT AGE_DAYS_FLOOR <<< "$AGE_OUT"
 if [ "$AGE_VERDICT" = "STALE" ]; then
-  echo "graph-freshness: WARN $AGE_FILE is ${AGE_DAYS_FLOOR}d old (older than --max-age-days $MAX_AGE_DAYS)." >&2
+  echo "graph-freshness: WARN $AGE_SRC is ${AGE_DAYS_FLOOR}d old (older than --max-age-days $MAX_AGE_DAYS)." >&2
   echo "  $REMEDIATION" >&2
   exit 1
 fi

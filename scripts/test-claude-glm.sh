@@ -204,6 +204,12 @@ setup; KEY="zai-test-123"; touch "$WORK/.salus"
 t "salus refuses" 3
 t "salus refuses despite --force" 3 --force
 
+# --- T8b: .salus-profile marker ALONE (no .salus) -> refuse exit 3 (HIMMEL-2173
+# part 2 — a defense for salus deployments that predate part 1 shipping .salus).
+setup; KEY="zai-test-123"; touch "$WORK/.salus-profile"
+t "salus-profile-only refuses" 3
+t "salus-profile-only refuses despite --force" 3 --force
+
 # --- T9: denylisted cwd -> refuse without --force, proceed with it
 setup; KEY="zai-test-123"
 mkdir -p "$FAKEHOME/.config/claude-glm"

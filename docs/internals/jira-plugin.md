@@ -39,6 +39,8 @@ For Jira ops in this repo, default to the local CLI at
 | Move        | `... move HIMMEL-N --to-project LUNA [--type Story] [--dry-run]` (HIMMEL-197 — close source + create target + copy comments) | (none — Jira Cloud REST API has no direct project-change endpoint) |
 | Projects    | `... projects` / `... project-create ...`                                   | `getVisibleJiraProjects` / no equivalent for create              |
 | Link        | `... link HIMMEL-A HIMMEL-B --type Relates` (HIMMEL-210; case-insensitive type, validated against the live type list) | `createIssueLink` (+ `getIssueLinkTypes` for the type list) |
+| Links       | `... links HIMMEL-N` (HIMMEL-1731; lists id, type, canonical `inward=` / `outward=` keys, and the relation from the queried issue) | `getJiraIssue` with the `issuelinks` field |
+| Unlink      | `... unlink HIMMEL-INWARD HIMMEL-OUTWARD [--type Relates]` (HIMMEL-1731; resolves the REST id from the directed pair and refuses ambiguous matches) | (none — use `DELETE /rest/api/3/issueLink/{id}`) |
 | Assign      | `... assign HIMMEL-N <email\|accountId>` (`-`/`unassigned` clears, `auto` = default assignee; email → accountId via `/user/search`) (HIMMEL-437) | `editJiraIssue` (assignee field) |
 | Attachments | `... attachments HIMMEL-N` (list) / `... download HIMMEL-N [id] [--all] [--out dir]` (HIMMEL-437) | (none — MCP has no attachment download) |
 | Worklog     | `... worklog add HIMMEL-N --time 1h [--comment ...]` / `... worklog list HIMMEL-N` (HIMMEL-437) | `addWorklogToJiraIssue` (no list) |
@@ -109,7 +111,7 @@ The verb↔MCP-method rows above mirror `_CONFLUENCE_VERB_METHOD_MAP` in
 ## Mutation breadcrumbs (HIMMEL-618)
 
 Every ticket-workflow mutating verb (`transition`, `comment`, `create`, `move`,
-`edit`, `assign`, `worklog`, `link`, `sprint`) writes a breadcrumb file under
+`edit`, `assign`, `worklog`, `link`, `unlink`, `sprint`) writes a breadcrumb file under
 `~/.claude/jira-breadcrumbs/` immediately after its request **resolves** — not
 gated on the command's exit code, so a mutation that landed before a later
 non-fatal failure (e.g. an attachment upload) still leaves a breadcrumb.

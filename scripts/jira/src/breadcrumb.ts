@@ -6,7 +6,7 @@ import { join } from 'node:path';
 // HIMMEL-618: jira-mutation breadcrumb.
 //
 // Every mutating verb (transition, comment, create, move, edit, assign,
-// worklog, link, sprint) calls writeJiraBreadcrumb(<ticket>) immediately after
+// worklog, link, unlink, sprint) calls writeJiraBreadcrumb(<ticket>) immediately after
 // its mutating request RESOLVES — NOT gated on the command's exit code, so a
 // mutation that landed before a later non-fatal failure (e.g. an attachment
 // upload) still leaves a breadcrumb.

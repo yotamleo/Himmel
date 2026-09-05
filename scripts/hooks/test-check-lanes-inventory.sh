@@ -19,12 +19,16 @@ HOOKS="$(cd "$(dirname "$0")" && pwd)"
 # diff --cached`, both PWD-relative, so `cd "$R"` suffices.
 SCRIPT="$HOOKS/check-lanes-inventory.sh"
 
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HOOKS/../lib/fixture-tempdir.sh"
+
 setup_repo() {
-  R=$(mktemp -d); git -C "$R" init -q
+  R=$(fixture_mktemp_dir) || return 1; git -C "$R" init -q
   git -C "$R" config user.email t@t; git -C "$R" config user.name t
   : > "$R/.himmel-dev"
 }
-setup_repo_no_marker() { setup_repo; rm -f "$R/.himmel-dev"; }
+setup_repo_no_marker() { setup_repo || return 1; rm -f "$R/.himmel-dev"; }
 
 expect_rc() { local want=$1; shift; local rc=0; "$@" || rc=$?; [ "$rc" -eq "$want" ]; }
 
@@ -37,39 +41,39 @@ run_test() {
 }
 
 run_test "clean CLAUDE.md (policy + /lanes pointer) staged → pass (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "Delegate down. Query \`/lanes\` (from scripts/lanes/lanes.json).\n" > CLAUDE.md;
   git add CLAUDE.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "re-introduced inventory needle staged → block (rc=1)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf -- "- GLM lane (scripts/telegram/spawn-glm.ts) — impl chunks\n" > CLAUDE.md;
   git add CLAUDE.md;
   expect_rc 1 bash "$SCRIPT"
 '
 
 run_test "no-op without .himmel-dev marker (rc=0)" '
-  setup_repo_no_marker; cd "$R";
+  setup_repo_no_marker && cd "$R" || exit 1;
   printf -- "- codex (CR_PROFILE=paid)\n" > CLAUDE.md; git add CLAUDE.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "CLAUDE.md not staged → no-op (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "unrelated\n" > other.txt; git add other.txt;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "LANES_GUARD_OK=1 bypasses a would-be drift (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf -- "- gemini (gemini-subagent)\n" > CLAUDE.md; git add CLAUDE.md;
   expect_rc 0 env LANES_GUARD_OK=1 bash "$SCRIPT"
 '
 
 run_test "pointer line naming lanes.json is exempt (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   printf "Query the live set with \`/lanes\` (derived from scripts/lanes/lanes.json + machine state).\n" > CLAUDE.md;
   git add CLAUDE.md;
   expect_rc 0 bash "$SCRIPT"

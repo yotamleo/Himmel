@@ -8,7 +8,7 @@
 # run-pwsh.sh + the .sh twin). Under Codex none of them ran: .codex/hooks.json had
 # no Stop key, and the plugin wrapper's $CLAUDE_PROJECT_DIR is unset under Codex
 # (the same no-op class HIMMEL-596 fixed for SessionStart). Fix: wire all three
-# into .codex/hooks.json Stop via run-hook.cmd --sandbox.
+# into .codex/hooks.json Stop via run-hook.sh --sandbox.
 #
 # Stop is SIDE-EFFECTING, not context-injecting. The authoritative Codex
 # stop.command.output schema carries NO additionalContext / hookSpecificOutput
@@ -24,11 +24,11 @@
 #
 # This suite asserts:
 #   1) STATIC WIRING - each of the 3 SessionEnd hooks is wired into
-#      .codex/hooks.json Stop through run-hook.cmd --sandbox; no raw
+#      .codex/hooks.json Stop through run-hook.sh --sandbox; no raw
 #      $CLAUDE_PROJECT_DIR/bare-bash path remains; the file parses and carries ONLY
 #      a top-level `hooks` key (Codex deny_unknown_fields strict schema).
 #   2) BEHAVIORAL smoke (Codex env simulated, gates OFF) - each wired Stop hook runs
-#      through run-hook.cmd and exits 0 emitting NO hookSpecificOutput on stdout
+#      through run-hook.sh and exits 0 emitting NO hookSpecificOutput on stdout
 #      (proves the Stop branch is taken, not the additionalContext wrap, and that an
 #      advisory hook never blocks teardown).
 #   3) BEHAVIORAL positive (jira-nudge gate ON, hermetic temp git repo) - since
@@ -46,11 +46,11 @@
 # dogfooding machine and the test would go LIVE). Ambient HIMMEL_* profile vars are
 # stripped and HOME is pointed at a temp dir (so no HOME-rooted lookup -- vault
 # resolution, jira breadcrumb store -- ever touches real machine state). No network,
-# no real Telegram (relay stubbed). bash 3.2-safe. The run-hook.cmd cmd.exe branch is
-# covered by the existing .ps1 twin (test-codex-run-hook.ps1).
+# no real Telegram (relay stubbed). bash 3.2-safe. The Windows run-hook.cmd
+# wrapper is covered by the existing .ps1 twin (test-codex-run-hook.ps1).
 #
 # Coverage note: end-session-wiki.sh self-guards out on msys*/cygwin*/Windows_NT
-# (its .ps1 is the Windows-Claude path; run-hook.cmd is bash-only), so on a Windows
+# (its .ps1 is the Windows-Claude path; run-hook.sh is Unix-only), so on a Windows
 # Git-Bash runner its section-2 smoke is a trivial exit-0 -- its Stop routing is
 # exercised end-to-end only on POSIX. The adapter Stop branch itself is fully
 # covered cross-platform by sections 3 (nudge) + 4 (stub).
@@ -78,19 +78,33 @@ trap 'rm -rf "$TMP_ROOT" 2>/dev/null || true' EXIT
 # Extract the (first) Stop hook command wiring a given hook filename.
 wired_cmd() {
   jq -r --arg h "$1" \
-    '.hooks.Stop[]?.hooks[]?.command // empty | select(contains($h))' \
+    '(.hooks.Stop[]?, .hooks.SessionEnd[]?) | .hooks[]?.command // empty | select(contains($h))' \
     "$HOOKS_JSON" 2>/dev/null | head -1
 }
 
-# A minimal Codex Stop input payload. $1 = cwd, $2 = transcript_path (empty -> null).
+# A minimal Codex end-side input payload. $1 = cwd, $2 = transcript_path
+# (empty -> null), $3 = event name (default Stop). The event is a PARAMETER
+# because the adapter branches on `hook_event_name`: telegram-session-end is
+# wired to SessionEnd (HIMMEL-2021), so smoking it with a Stop payload would
+# leave the adapter's SessionEnd dispatch untested.
 stop_payload() {
+  _sp_ev="${3:-Stop}"
   if [ -n "${2:-}" ]; then
-    jq -cn --arg cwd "$1" --arg tp "$2" \
-      '{hook_event_name:"Stop",cwd:$cwd,transcript_path:$tp,session_id:"t",turn_id:"t",model:"m",permission_mode:"default",last_assistant_message:null,stop_hook_active:false}'
+    jq -cn --arg cwd "$1" --arg tp "$2" --arg ev "$_sp_ev" \
+      '{hook_event_name:$ev,cwd:$cwd,transcript_path:$tp,session_id:"t",turn_id:"t",model:"m",permission_mode:"default",last_assistant_message:null,stop_hook_active:false}'
   else
-    jq -cn --arg cwd "$1" \
-      '{hook_event_name:"Stop",cwd:$cwd,transcript_path:null,session_id:"t",turn_id:"t",model:"m",permission_mode:"default",last_assistant_message:null,stop_hook_active:false}'
+    jq -cn --arg cwd "$1" --arg ev "$_sp_ev" \
+      '{hook_event_name:$ev,cwd:$cwd,transcript_path:null,session_id:"t",turn_id:"t",model:"m",permission_mode:"default",last_assistant_message:null,stop_hook_active:false}'
   fi
+}
+
+# The event each end hook is actually wired to, so the smoke loop feeds every
+# hook the payload its own adapter branch will see at runtime.
+hook_event() {
+  case "$1" in
+    telegram-session-end.sh) echo SessionEnd ;;
+    *) echo Stop ;;
+  esac
 }
 
 # Strip ambient profile/initiative vars so a launching shell that has them ON
@@ -98,19 +112,33 @@ stop_payload() {
 # a gated-OFF assertion into a false red. Gate vars are then set explicitly per case.
 ENV_CLEAN="-u CLAUDE_PROJECT_DIR -u HIMMEL_OVERNIGHT -u HIMMEL_INITIATIVE_OVERNIGHT -u HIMMEL_INITIATIVE -u HIMMEL_WHERE_ARE_WE -u HIMMEL_JIRA_NUDGE"
 
-STOP_HOOKS="refresh-where-are-we-on-end.sh jira-nudge-on-end.sh end-session-wiki.sh"
+# telegram-session-end joined the end set in HIMMEL-2021 (the operator-reaching
+# relay a Codex session previously ended without). It is the one member NOT on
+# Stop: Codex fires Stop on every assistant TURN, and the queue cannot collapse
+# that (detach_queued drains stdin, so entryKey has no session dimension and
+# falls back to a random suffix — and dedup only merges PENDING entries anyway),
+# so a Stop wiring would relay once per turn. It is on the real SessionEnd event
+# instead, which fires once; being enqueue-and-exit is what lets it fit that
+# event's 1-3s cap. wired_cmd below searches both events.
+STOP_HOOKS="refresh-where-are-we-on-end.sh jira-nudge-on-end.sh end-session-wiki.sh telegram-session-end.sh"
 
 # == 1) Static wiring ========================================================
+# telegram-session-end must be on SessionEnd, never Stop (per-turn relay).
+if [ -z "$(jq -r '.hooks.Stop[]?.hooks[]?.command // empty | select(contains("telegram-session-end.sh"))' "$HOOKS_JSON" 2>/dev/null)" ]; then
+  ok "telegram-session-end.sh is NOT on Codex Stop (would relay once per turn)"
+else
+  bad "telegram-session-end.sh is wired to Codex Stop - Stop fires per turn"
+fi
 for h in $STOP_HOOKS; do
   c="$(wired_cmd "$h")"
-  if [ -n "$c" ]; then ok "$h wired into .codex/hooks.json Stop"; else bad "$h wired into .codex/hooks.json Stop"; fi
-  case "$c" in *run-hook.cmd*) ok "$h routed through run-hook.cmd";; *) bad "$h routed through run-hook.cmd (got: ${c:-<none>})";; esac
+  if [ -n "$c" ]; then ok "$h wired into .codex/hooks.json Stop/SessionEnd"; else bad "$h wired into .codex/hooks.json Stop/SessionEnd"; fi
+  case "$c" in *run-hook.sh*) ok "$h routed through run-hook.sh";; *) bad "$h routed through run-hook.sh (got: ${c:-<none>})";; esac
   case "$c" in *--sandbox*) ok "$h uses --sandbox mode";; *) bad "$h uses --sandbox mode (got: ${c:-<none>})";; esac
 done
 
 # No raw $CLAUDE_PROJECT_DIR / bare-bash path may remain in any Stop command (that
 # under-Codex no-op bug is exactly what this ticket fixes).
-raw="$(jq -r '.hooks.Stop[]?.hooks[]?.command // empty | select(contains("CLAUDE_PROJECT_DIR"))' "$HOOKS_JSON" 2>/dev/null)"
+raw="$(jq -r '(.hooks.Stop[]?, .hooks.SessionEnd[]?) | .hooks[]?.command // empty | select(contains("CLAUDE_PROJECT_DIR"))' "$HOOKS_JSON" 2>/dev/null)"
 if [ -z "$raw" ]; then ok "no raw \$CLAUDE_PROJECT_DIR path in any Stop command"; else bad "raw \$CLAUDE_PROJECT_DIR path present: $raw"; fi
 
 # Strict schema: file parses, and the ONLY top-level key is `hooks`.
@@ -123,21 +151,31 @@ fi
 
 # == 2) Behavioral smoke: each Stop hook runs, exit 0, no hookSpecificOutput ==
 # Gates set EXPLICITLY =0 (see ENV_CLEAN note). CLAUDE_PROJECT_DIR unset -> proves
-# run-hook.cmd re-derives the repo root under Codex. cwd = REPO_ROOT (a real dir, so
+# run-hook.sh re-derives the repo root under Codex. cwd = REPO_ROOT (a real dir, so
 # jira-nudge's `[ -d cwd ]` precondition holds before it exits at the gate).
-SMOKE_PAYLOAD="$(stop_payload "$REPO_ROOT" "")"
+# Two more explicit gates, both for telegram-session-end: an EMPTY
+# TELEGRAM_GROUP_CHAT_ID is that hook's deliberate-suppression contract
+# (HIMMEL-1926) and must never fall back to the repo .env, and a per-run
+# HIMMEL_STOP_QUEUE_DIR keeps the enqueue off the operator's live queue so the
+# worker draining it is this test's own, inheriting that suppression, rather
+# than a long-lived worker from a real session.
 for h in $STOP_HOOKS; do
   cmd="$(wired_cmd "$h")"
   if [ -z "$cmd" ]; then bad "$h smoke: not wired (cannot run)"; continue; fi
   out="$TMP_ROOT/smoke-$h.out"
+  # The payload's event matches the event this hook is WIRED to, so each smoke
+  # exercises the adapter branch that will actually run it (HIMMEL-2021).
+  ev="$(hook_event "$h")"
+  payload="$(stop_payload "$REPO_ROOT" "" "$ev")"
   # shellcheck disable=SC2086 # $ENV_CLEAN flags + $cmd are intentional splits
   # HOME=$TMP_ROOT keeps any HOME-rooted lookup (vault resolution, breadcrumb store)
   # off the real machine -- tests must never touch real data.
-  ( cd "$REPO_ROOT" && printf '%s' "$SMOKE_PAYLOAD" \
+  ( cd "$REPO_ROOT" && printf '%s' "$payload" \
       | env $ENV_CLEAN HOME="$TMP_ROOT" HIMMEL_WHERE_ARE_WE=0 HIMMEL_JIRA_NUDGE=0 CLAUDE_END_SESSION_WIKI=0 \
+        HIMMEL_STOP_QUEUE_DIR="$TMP_ROOT/stop-queue" TELEGRAM_GROUP_CHAT_ID= \
         bash $cmd >"$out" 2>/dev/null ); rc=$?
-  if [ "$rc" -eq 0 ]; then ok "$h smoke: exit 0 (advisory, never blocks teardown)"; else bad "$h smoke: exit 0 (got rc=$rc)"; fi
-  if ! grep -q 'hookSpecificOutput' "$out" 2>/dev/null; then ok "$h smoke: no hookSpecificOutput on stdout"; else bad "$h smoke: stdout leaked hookSpecificOutput ($(cat "$out"))"; fi
+  if [ "$rc" -eq 0 ]; then ok "$h smoke ($ev): exit 0 (advisory, never blocks teardown)"; else bad "$h smoke ($ev): exit 0 (got rc=$rc)"; fi
+  if ! grep -q 'hookSpecificOutput' "$out" 2>/dev/null; then ok "$h smoke ($ev): no hookSpecificOutput on stdout"; else bad "$h smoke ($ev): stdout leaked hookSpecificOutput ($(cat "$out"))"; fi
 done
 
 # == 3) Behavioral positive: jira-nudge gate ON -> detached relay fires ==

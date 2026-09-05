@@ -264,5 +264,31 @@ contains "branch-less records are not attributed" "$bb_nb" "no branch-attributed
 base_out="$(CR_LEDGER="$L" bash "$CS" 2>&1)"
 not_contains "default output does not gain the spend table" "$base_out" "Review spend per branch"
 
+# ── HIMMEL-2067: unadjudicated findings at each branch's latest head ───────
+# feat/wedge: QH1 (older, superseded) then QH2 (latest by ts). At QH2: w-1 has
+# no verdict (stays unadjudicated), w-2 has no verdict but is adjudicated by a
+# later amend (must NOT count), w-3 is already disproved (must NOT count).
+# w-old sits on the superseded QH1 head with no verdict and must NOT count —
+# only the latest head is gated. feat/clean is fully adjudicated -> 0.
+LU="$tmp/by-branch-unadjudicated.jsonl"
+{
+  echo '{"kind":"finding","ts":"2026-05-01T00:00:00Z","branch":"feat/wedge","head":"QH1","model":"codex","finding_id":"w-old","severity":"sug","file":"f","line":1,"verdict":""}'
+  echo '{"kind":"avail","ts":"2026-05-01T00:00:01Z","branch":"feat/wedge","head":"QH1","model":"codex","status":"ok"}'
+  echo '{"kind":"finding","ts":"2026-05-01T00:01:00Z","branch":"feat/wedge","head":"QH2","model":"codex","finding_id":"w-1","severity":"sug","file":"f","line":2,"verdict":""}'
+  echo '{"kind":"finding","ts":"2026-05-01T00:01:01Z","branch":"feat/wedge","head":"QH2","model":"codex","finding_id":"w-2","severity":"sug","file":"f","line":3,"verdict":""}'
+  echo '{"kind":"finding","ts":"2026-05-01T00:01:02Z","branch":"feat/wedge","head":"QH2","model":"codex","finding_id":"w-3","severity":"imp","file":"f","line":4,"verdict":"disproved"}'
+  echo '{"kind":"amend","ts":"2026-05-01T00:01:03Z","branch":"feat/wedge","target_head":"QH2","finding_id":"w-2","artifact":"diff","perspective":"off","set":{"verdict":"agreed"},"reason":"adjudicated"}'
+  echo '{"kind":"avail","ts":"2026-05-01T00:01:04Z","branch":"feat/wedge","head":"QH2","model":"codex","status":"ok"}'
+  echo '{"kind":"finding","ts":"2026-05-02T00:00:00Z","branch":"feat/clean","head":"RH1","model":"codex","finding_id":"c-1","severity":"sug","file":"f","line":1,"verdict":"agreed"}'
+  echo '{"kind":"avail","ts":"2026-05-02T00:00:01Z","branch":"feat/clean","head":"RH1","model":"codex","status":"ok"}'
+} > "$LU"
+lu_out="$(CR_LEDGER="$LU" bash "$CS" --by-branch 2>&1)"
+contains "unadjudicated count for feat/wedge (1 at latest head; old-head and amended findings excluded)" "$lu_out" "1 unadjudicated at latest head"
+contains "unadjudicated count for feat/clean (0, fully adjudicated)" "$lu_out" "0 unadjudicated at latest head"
+contains "repo-wide unadjudicated total across both branches" "$lu_out" "Unadjudicated at latest head (HIMMEL-2067): 1 finding(s) across 2 branch(es)."
+lu_one="$(CR_LEDGER="$LU" bash "$CS" --by-branch feat/wedge 2>&1)"
+contains "branch-filtered report still shows the per-branch unadjudicated count" "$lu_one" "1 unadjudicated at latest head"
+not_contains "branch filter drops the repo-wide unadjudicated total" "$lu_one" "Unadjudicated at latest head (HIMMEL-2067)"
+
 # ── Final ──────────────────────────────────────────────────────────────────
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

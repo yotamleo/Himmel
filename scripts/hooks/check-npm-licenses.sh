@@ -12,7 +12,9 @@ set -euo pipefail
 # marketplace/plugins/obsidian-triage/tools (HIMMEL-179).
 ALLOWED="MIT;ISC;BSD-2-Clause;BSD-3-Clause;Apache-2.0;CC0-1.0;Unlicense;0BSD;Python-2.0"
 
-if ! pkgs_raw=$(git ls-files '*package.json' ':(exclude)*/node_modules/*'); then
+# Bench FIXTURES excluded (HIMMEL-1723) — fixture packages are benchmark
+# inputs, not shipped dependencies; see check-npm-audit.sh for the rationale.
+if ! pkgs_raw=$(git ls-files '*package.json' ':(exclude)*/node_modules/*' ':(exclude)scripts/lanes/bench/fixtures/*'); then
     echo "ERROR: 'git ls-files' failed — cannot enumerate packages to license-check." >&2
     exit 1
 fi

@@ -1,0 +1,6 @@
+package.json
+package-lock.json
+packages/core/package.json
+packages/utils/package.json
+tools/codegen/scripts/package.json
+examples/demo-app/package.json

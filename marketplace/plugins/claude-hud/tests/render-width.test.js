@@ -124,6 +124,7 @@ function countContaining(lines, needle) {
 
 test('render wraps long lines to terminal width and keeps all activity lines visible', () => {
   const ctx = baseContext();
+  const completedAt = Date.now() - 3_000;
   ctx.stdin.model = { display_name: 'Sonnet 4.6' };
   ctx.stdin.cwd = '/tmp/very-long-project-name-for-terminal-wrap-checking';
   ctx.gitStatus = {
@@ -149,8 +150,8 @@ test('render wraps long lines to terminal width and keeps all activity lines vis
   ];
   ctx.transcript.agents = [
     { id: 'agent-1', type: 'plan-a', status: 'running', startTime: new Date(0) },
-    { id: 'agent-2', type: 'plan-b', status: 'completed', startTime: new Date(0), endTime: new Date(3000) },
-    { id: 'agent-3', type: 'plan-c', status: 'completed', startTime: new Date(0), endTime: new Date(3500) },
+    { id: 'agent-2', type: 'plan-b', status: 'completed', startTime: new Date(completedAt - 3_000), endTime: new Date(completedAt) },
+    { id: 'agent-3', type: 'plan-c', status: 'completed', startTime: new Date(completedAt - 3_500), endTime: new Date(completedAt) },
   ];
   ctx.transcript.todos = [
     { content: 'todo-marker', status: 'in_progress' },
@@ -794,6 +795,9 @@ test('width math counts ambiguous chars as 2 cells only in CJK mode', async () =
     assert.equal(isCjkAmbiguousWide(), true);
     assert.equal(codePointCellWidth(0x2588, isCjkAmbiguousWide()), 2);
     assert.equal(codePointCellWidth(0x0041, isCjkAmbiguousWide()), 1);
+    assert.equal(codePointCellWidth(0xFE0E, isCjkAmbiguousWide()), 0);
+    assert.equal(codePointCellWidth(0xFE0F, isCjkAmbiguousWide()), 0);
+    assert.equal(codePointCellWidth(0xE0100, isCjkAmbiguousWide()), 0);
   } finally {
     setLanguage('en');
   }

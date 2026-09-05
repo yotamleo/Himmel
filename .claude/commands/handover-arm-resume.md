@@ -1,6 +1,6 @@
 ---
-description: Arm the OS scheduler to relaunch claude at the given time with the given handover. Dedup-guarded. Direct schtasks/at invoke. HIMMEL-122.
-argument-hint: --time <HH:MM|smart|auto> --handover <path> [--force] [--dedup-any] [--dry-run]
+description: Arm the OS scheduler to relaunch claude at a given time with a given handover. Dedup-guarded.
+argument-hint: --time <HH:MM|smart|auto> --handover <path> [--force] [--dedup-any] [--dry-run] [--model <name>] [--fable-ok <reason>]
 ---
 
 Actually create the scheduled relaunch (not just print the command — for the print-only flavor see `scripts/handover/schedule-resume.sh`). Wraps the platform scheduler (`schtasks` on Windows, `at` or `crontab` on POSIX) directly — does NOT shell out to `schedule-resume.sh` (whose stdout mixes prose with commands and isn't safe to `bash -c`).
@@ -16,6 +16,9 @@ Actually create the scheduled relaunch (not just print the command — for the p
 - **POSIX dedup that actually works:** the `at` job body includes `# HIMMEL-Resume-<task_name>` as a comment line so `atq + at -c | grep` finds it. (v1 omitted this marker; dedup was dead.)
 - **Windows path correctness:** the .bat indirection is written via `mktemp` and the path converted with `cygpath -w` for `schtasks`. (v1 emitted `%TEMP%\...` which bash left literal.)
 - **Loud banner:** post-arm output explicitly tells operator to `/exit` so the cron relaunch doesn't compete with the still-open session.
+- **The `RESUME ARMED` banner is EARNED, not assumed (HIMMEL-1879):** a `schtasks /create` rc=0 is not proof anything is scheduled, so after arming the script queries the entry back and refuses (rc 2, named reason) when it is gone or its fire time has already passed — a failed arm now reads as a failure instead of a success line over an empty scheduler. Two more truthfulness rules ride with it: a `--time smart`/`auto` target that arming itself outran is pushed forward to a still-firable minute (`ARM_MIN_LEAD_SEC`, default 120s) rather than registering already-expired; and an arm that fired *during* the create→verify window prints a distinct **`RESUME CONSUMED`** banner — a session is already running, nothing is scheduled for later, do not wait for a fire. Re-arming a handover whose arm already fired is refused rc=15 (the scheduler reads clean because a fired arm deletes its own registration; the flow-run ledger is what remembers) — pass `--force` for a deliberate re-run.
+- **Fixture arms are refused (HIMMEL-1365):** a handover file **or** work directory under a temp/scratch root refuses rc=12 rather than creating a REAL scheduled task that launches an unattended session against a throwaway path. Opt in with `ARM_FIXTURE_OK=1` (or the original `ARM_TEMP_CWD_OK=1`) when a harness means it. `--list-temp-arms` is the read-only sweep for entries already armed that way — it reports and never deletes (rc 16 = hits, rc 18 = one or more entries could not be inspected — not a clean sweep).
+- **Tier is fail-safe, not fail-expensive (HIMMEL-2332, operator ruling 30):** omitting `--model` no longer inherits the operator's default (Fable) — an ordinary arm defaults to **opus**. A Fable-family `--model` (matched by substring: `fable`, `claude-fable-5`, …) on a non-console arm is refused **rc=20** unless justified with `--fable-ok "<reason>"`, which is echoed into the guard line and the closing banner. A **`*-console.md`** handover is exempt both ways (ruling 25 — the console lane is ALWAYS Fable): it keeps the operator default when unpinned and takes a Fable pin with no ceremony. The chosen model and the reason are printed at guard time, so `--dry-run` shows them.
 
 Run:
 
@@ -42,7 +45,7 @@ Common invocations:
 - `/handover-arm-resume --time auto --handover handovers/<USER_SLUG>/himmel/standalones/HIMMEL-44-windows-install-test/next-session.md --force`
 - `/handover-arm-resume --time 14:00 --handover handovers/<USER_SLUG>/status.md --dry-run`
 
-Exit codes: 0 armed, 1 usage error, 2 env unusable (includes a fail-closed dedup-listing error), 3 dedup block (same handover; or any slot under `--dedup-any`), 4 scheduler failed, 5 `--channels` refused while the bun Telegram bridge is live, 6 exact-minute time collision, 7 the handover's queue lock is FRESH (a session is live on it), 8 this handover already has a PENDING arm on another host.
+Exit codes: 0 armed, 1 usage error, 2 env unusable (includes a fail-closed dedup-listing error), 3 dedup block (same handover; or any slot under `--dedup-any`), 4 scheduler failed, 5 `--channels` refused while the bun Telegram bridge is live, 6 exact-minute time collision, 7 the handover's queue lock is FRESH (a session is live on it), 8 this handover already has a PENDING arm on another host, 20 a Fable-family `--model` on a non-console arm with no `--fable-ok`.
 
 **Scope:** This is the *arm* half of HIMMEL-122; `smart` (HIMMEL-204) is the
 usage-aware *detect* heuristic wired into the arm path.

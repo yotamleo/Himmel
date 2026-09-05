@@ -30,6 +30,9 @@ STATUSES = (
 )
 TIMEOUT_SECONDS = 30
 USER_AGENT = "himmel-fetch-health/1.0"
+# x.com cookies are still served under both hosts; the exported Netscape
+# file carries whichever the browser session used (HIMMEL-2549).
+TWITTER_COOKIE_DOMAINS = ("x.com", "twitter.com")
 
 # Fixed known-good URLs send no Luna corpus content. The egress matrix governs
 # corpus-to-provider content, so no matrix row or ledger applies; response bodies
@@ -216,7 +219,15 @@ def classify_command(returncode: int, stderr: str) -> ProbeResult:
 
 
 def run_command(args: list[str], *, env: dict[str, str], timeout: int = TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, capture_output=True, text=True, env=env, timeout=timeout, check=False)
+    # Foreign CLIs (gallery-dl, twitter) embed their own Python runtime. A
+    # PYTHONHOME/PYTHONPATH inherited from the invoking interpreter (e.g. a uv
+    # python stub that injects its own PYTHONHOME) points that runtime at the
+    # WRONG stdlib and crashes it (SRE module mismatch class); PYTHONPATH is
+    # stripped alongside it defensively (no observed repro, same failure class).
+    # Scrub only what reaches subprocess.run — the caller's `env` dict (used for
+    # config lookups like TWITTER_AUTH_TOKEN) is left untouched.
+    child_env = {k: v for k, v in env.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
+    return subprocess.run(args, capture_output=True, text=True, env=child_env, timeout=timeout, check=False)
 
 
 def probe_gallery_dl(
@@ -225,6 +236,8 @@ def probe_gallery_dl(
     url_key: str,
     env: dict[str, str],
     command: Callable[..., subprocess.CompletedProcess[str]],
+    *,
+    child_env: dict[str, str] | None = None,
 ) -> ProbeResult:
     cookie_file = resolve_home(env) / ".luna" / "cookies" / cookie_name
     if not cookie_file.is_file():
@@ -234,21 +247,93 @@ def probe_gallery_dl(
         return ProbeResult("transport-fail", "gallery-dl missing")
     url = env.get(url_key, DEFAULT_URLS[source])
     try:
-        completed = command([binary, "--simulate", "--cookies", str(cookie_file), url], env=env, timeout=TIMEOUT_SECONDS)
+        # HIMMEL-2549 CR round 1 CRITIC-1: gallery-dl needs no .env key at
+        # all (the cookie path is a file, not a credential in this dict), so
+        # it gets child_env (the pre-merge process env) unchanged — never
+        # `env`, which the registry populates with the whole checkout .env.
+        completed = command(
+            [binary, "--simulate", "--cookies", str(cookie_file), url],
+            env=child_env if child_env is not None else env,
+            timeout=TIMEOUT_SECONDS,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return ProbeResult("transport-fail", "gallery-dl invocation failed")
     return classify_command(completed.returncode, completed.stderr)
 
 
-def probe_twitter_cli(env: dict[str, str], command: Callable[..., subprocess.CompletedProcess[str]]) -> ProbeResult:
-    if not env.get("TWITTER_AUTH_TOKEN", "").strip() or not env.get("TWITTER_CT0", "").strip():
-        return ProbeResult("auth-or-cookie-expired", "twitter CLI credentials missing")
+def twitter_cookie_credentials(env: dict[str, str]) -> tuple[str, str]:
+    # HIMMEL-2549: TWITTER_AUTH_TOKEN / TWITTER_CT0 ARE the auth_token / ct0
+    # cookies in the Netscape file the x-media probe already reads, so read the
+    # pair from there rather than making the operator duplicate the secret into
+    # .env. Same reader as cookie_header (MozillaCookieJar), which also parses
+    # the `#HttpOnly_` line prefix that auth_token is written under.
+    cookie_file = resolve_home(env) / ".luna" / "cookies" / "twitter.txt"
+    if not cookie_file.is_file():
+        return "", ""
+    jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
+    try:
+        # ignore_expires=True is deliberate here and must NOT be "fixed" into
+        # expiry filtering (CR round 4 codex-1, declined with reason). This is
+        # a HEALTH PROBE: its job is to attempt the call with whatever
+        # credentials exist and report what actually happened. An expired
+        # auth_token makes the twitter CLI fail auth, which classify_command
+        # turns into `auth-or-cookie-expired` — the correct, useful diagnosis.
+        # Filtering expired cookies out first would downgrade that to
+        # "credentials missing", hiding a real expiry behind a wrong reason.
+        # The youtube converter DOES check expiry, because there an expired
+        # marker would overwrite a good file; nothing destructive happens here.
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except (OSError, LoadError):
+        return "", ""
+    found: dict[str, str] = {}
+    for cookie in jar:
+        domain = (cookie.domain or "").lstrip(".").lower()
+        if domain in TWITTER_COOKIE_DOMAINS and cookie.name in ("auth_token", "ct0"):
+            value = (cookie.value or "").strip()
+            # CR round 4 codex-1: setdefault alone kept the FIRST match even
+            # when its value is empty/stale, so a real credential for the
+            # OTHER supported domain (x.com vs twitter.com) later in the same
+            # jar was ignored. Skip empty candidates so the first NON-EMPTY
+            # match per name wins — still first-wins, not last-wins.
+            if value and cookie.name not in found:
+                found[cookie.name] = value
+    return found.get("auth_token", ""), found.get("ct0", "")
+
+
+def probe_twitter_cli(
+    env: dict[str, str],
+    command: Callable[..., subprocess.CompletedProcess[str]],
+    *,
+    child_env: dict[str, str] | None = None,
+) -> ProbeResult:
+    token = env.get("TWITTER_AUTH_TOKEN", "").strip()
+    ct0 = env.get("TWITTER_CT0", "").strip()
+    if not token or not ct0:
+        # Per-key fallback: an explicitly provided value still wins for ITS key.
+        cookie_token, cookie_ct0 = twitter_cookie_credentials(env)
+        token = token or cookie_token
+        ct0 = ct0 or cookie_ct0
+    if not token or not ct0:
+        return ProbeResult(
+            "auth-or-cookie-expired",
+            "twitter CLI credentials missing (TWITTER_AUTH_TOKEN/TWITTER_CT0, or auth_token/ct0 in ~/.luna/cookies/twitter.txt)",
+        )
     binary = shutil.which("twitter", path=env.get("PATH"))
     if not binary:
         return ProbeResult("transport-fail", "twitter CLI missing")
     tweet_id = env.get("FETCH_HEALTH_TWITTER_TWEET_ID", "20")
+    # The CLI reads the pair from ITS OWN environment, so the resolved
+    # (cookie-sourced or .env-sourced) value has to reach the child — but
+    # HIMMEL-2549 CR round 1 CRITIC-1: onto the CHILD env BASE (the pre-merge
+    # process env), never onto `env`, which the registry populates with the
+    # whole checkout .env (~120 keys, most of them unrelated credentials).
+    # This injection is still load-bearing; only its base dict changed.
+    # run_command still scrubs PYTHONHOME/PYTHONPATH out of whatever results.
+    base = dict(child_env) if child_env is not None else dict(env)
+    base["TWITTER_AUTH_TOKEN"] = token
+    base["TWITTER_CT0"] = ct0
     try:
-        completed = command([binary, "tweet", tweet_id, "--json"], env=env, timeout=TIMEOUT_SECONDS)
+        completed = command([binary, "tweet", tweet_id, "--json"], env=base, timeout=TIMEOUT_SECONDS)
     except (OSError, subprocess.TimeoutExpired):
         return ProbeResult("transport-fail", "twitter CLI invocation failed")
     return classify_command(completed.returncode, completed.stderr)
@@ -257,7 +342,11 @@ def probe_twitter_cli(env: dict[str, str], command: Callable[..., subprocess.Com
 def probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
     state_file = resolve_home(env) / ".luna" / "playwright-state" / "youtube.json"
     if not state_file.is_file():
-        return ProbeResult("auth-or-cookie-expired", "youtube Playwright storage state missing")
+        return ProbeResult(
+            "auth-or-cookie-expired",
+            "youtube Playwright storage state missing "
+            "(rebuild: yt-dlp --cookies-from-browser 'chrome:<profile>' -> Netscape -> storageState)",
+        )
     try:
         state = json.loads(state_file.read_text(encoding="utf-8"))
         cookies = []
@@ -269,7 +358,11 @@ def probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> Probe
         if not cookies:
             return ProbeResult("auth-or-cookie-expired", "youtube storage state has no matching cookies")
     except (OSError, ValueError, KeyError, TypeError):
-        return ProbeResult("auth-or-cookie-expired", "youtube Playwright storage state unreadable")
+        return ProbeResult(
+            "auth-or-cookie-expired",
+            "youtube Playwright storage state unreadable "
+            "(rebuild: yt-dlp --cookies-from-browser 'chrome:<profile>' -> Netscape -> storageState)",
+        )
     url = env.get("FETCH_HEALTH_YOUTUBE_URL", DEFAULT_URLS["youtube-playwright"])
     try:
         result = http(
@@ -292,12 +385,24 @@ def probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> Probe
     )
 
 
-def probe_github(env: dict[str, str], command: Callable[..., subprocess.CompletedProcess[str]]) -> ProbeResult:
+def probe_github(
+    env: dict[str, str],
+    command: Callable[..., subprocess.CompletedProcess[str]],
+    *,
+    child_env: dict[str, str] | None = None,
+) -> ProbeResult:
     binary = shutil.which("gh", path=env.get("PATH"))
     if not binary:
         return ProbeResult("transport-fail", "gh CLI missing")
     try:
-        completed = command([binary, "api", "repos/cli/cli", "--jq", ".full_name"], env=env, timeout=TIMEOUT_SECONDS)
+        # HIMMEL-2549 CR round 1 CRITIC-1: gh authenticates from its own
+        # config, needing no .env key — child_env (pre-merge process env)
+        # unchanged, never `env` (the whole-checkout-.env lookup dict).
+        completed = command(
+            [binary, "api", "repos/cli/cli", "--jq", ".full_name"],
+            env=child_env if child_env is not None else env,
+            timeout=TIMEOUT_SECONDS,
+        )
     except (OSError, subprocess.TimeoutExpired):
         return ProbeResult("transport-fail", "gh invocation failed")
     return classify_command(completed.returncode, completed.stderr)
@@ -351,22 +456,51 @@ def load_repo_env(env: dict[str, str], repo_root: Path) -> dict[str, str]:
     env_file = repo_root / ".env"
     if not env_file.is_file():
         return loaded
+    # HIMMEL-2549 duplicate/absent policy, mirroring scripts/lib/load-dotenv.sh
+    # so the two loaders cannot disagree about the same file:
+    #   * the FIRST occurrence of a key in the file wins (that loader's awk
+    #     `key in seen` guard) — including an empty `KEY=` placeholder, which
+    #     therefore shadows a value appended lower down, in BOTH loaders;
+    #   * an existing value that is set-but-EMPTY counts as ABSENT (its
+    #     HIMMEL-1922 rule). The prior setdefault let a bare `KEY=` exported
+    #     into the process env win, and every probe then read "missing" while
+    #     the .env held the real value.
+    # A live NON-empty process value still wins over the file.
+    #
+    # HIMMEL-2549 CR round 5: "empty" here means ZERO-LENGTH, exactly like
+    # bash's `[ -z "${KEY-}" ]` (the documented shell-side policy this
+    # mirrors) — NOT `.strip()`-empty. A whitespace-only exported value
+    # (`KEY="   "`) makes `[ -z ]` false, so load_dotenv.sh treats it as
+    # PRESENT and does not load from the file; a `.strip()` check here would
+    # have disagreed and loaded from the file anyway, breaking the parity
+    # this function exists to guarantee. Confirmed both ways:
+    # `KEY="   "; [ -z "${KEY-}" ]` -> false (present) in bash. The FILE side
+    # is unaffected by this distinction: `_clean_dotenv_value` (this file)
+    # and `_load_dotenv_trim` (load-dotenv.sh) both strip a file value before
+    # it is ever compared, so a whitespace-only line in the .env still reads
+    # as the trimmed value on both sides either way.
+    seen: set[str] = set()
     try:
         for line in env_file.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if not stripped or stripped.startswith("#") or "=" not in stripped:
                 continue
             key, value = stripped.split("=", 1)
-            loaded.setdefault(key.strip(), _clean_dotenv_value(value))
+            key = key.strip()
+            if key in seen or loaded.get(key, ""):
+                continue
+            seen.add(key)
+            loaded[key] = _clean_dotenv_value(value)
     except OSError:
         pass
     return loaded
 
 
-def probe_bitbucket(env: dict[str, str], http: Callable[..., HttpResult], repo_root: Path) -> ProbeResult:
-    effective = load_repo_env(env, repo_root)
-    email = effective.get("BITBUCKET_EMAIL", "").rstrip()
-    token = effective.get("BITBUCKET_API_TOKEN", "").rstrip()
+def probe_bitbucket(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
+    # HIMMEL-2549: the .env merge moved up to build_probe_registry, so this
+    # probe is no longer the only one that can see the checkout's config.
+    email = env.get("BITBUCKET_EMAIL", "").rstrip()
+    token = env.get("BITBUCKET_API_TOKEN", "").rstrip()
     if not email or not token:
         return ProbeResult("auth-or-cookie-expired", "Bitbucket credentials missing")
     auth = base64.b64encode(f"{email}:{token}".encode()).decode()
@@ -421,6 +555,44 @@ def probe_firecrawl(env: dict[str, str], http: Callable[..., HttpResult]) -> Pro
     return classify_http(result, auth_required=True, valid_body=valid)
 
 
+def build_probe_registry(
+    env: dict[str, str],
+    http: Callable[..., HttpResult],
+    command: Callable[..., subprocess.CompletedProcess[str]],
+    repo_root: Path,
+) -> dict[str, Callable[[], ProbeResult]]:
+    # HIMMEL-2549: merge the primary checkout's .env HERE — the one boundary
+    # where the process env and the resolved repo root meet — so every probe,
+    # the FETCH_HEALTH_* URL overrides and REDDIT_COOKIE_FILE included, sees the
+    # same effective config on both the `--probe` and the scheduled path. The
+    # cron wrapper sources nothing, so before this only probe_bitbucket (which
+    # called load_repo_env itself) could read a key that lives only in .env.
+    #
+    # CR round 1 CRITIC-1: that merge is for CONFIG LOOKUP only. The checkout's
+    # .env carries ~120 keys (router/wifi/sudo passwords, Jira/Confluence/Codex
+    # tokens, Grafana/VM credentials, a dozen vendor API keys...) that a
+    # third-party child process (gallery-dl, gh) or a CLI reading its own
+    # environment (twitter) has no business seeing. `effective` is the merged
+    # lookup dict every probe reads config from; `child_env` is the ORIGINAL,
+    # pre-merge process env — the only thing a command probe's subprocess is
+    # ever handed, plus (for twitter only) the one resolved credential pair it
+    # actually needs, injected by probe_twitter_cli itself.
+    effective = load_repo_env(env, repo_root)
+    child_env = env
+    return {
+        "reddit": lambda: probe_reddit(effective, http),
+        "x-fxtwitter": lambda: probe_fxtwitter(effective, http),
+        "instagram-embed": lambda: probe_instagram_embed(effective, http),
+        "instagram-media": lambda: probe_gallery_dl("instagram-media", "instagram.txt", "FETCH_HEALTH_INSTAGRAM_MEDIA_URL", effective, command, child_env=child_env),
+        "x-media": lambda: probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", effective, command, child_env=child_env),
+        "x-twitter-cli": lambda: probe_twitter_cli(effective, command, child_env=child_env),
+        "youtube-playwright": lambda: probe_youtube(effective, http),
+        "github": lambda: probe_github(effective, command, child_env=child_env),
+        "bitbucket": lambda: probe_bitbucket(effective, http),
+        "firecrawl": lambda: probe_firecrawl(effective, http),
+    }
+
+
 def run_probes(
     env: dict[str, str],
     *,
@@ -429,18 +601,7 @@ def run_probes(
     repo_root: Path | None = None,
 ) -> dict[str, ProbeResult]:
     root = repo_root or primary_repo_root()
-    probes = {
-        "reddit": lambda: probe_reddit(env, http),
-        "x-fxtwitter": lambda: probe_fxtwitter(env, http),
-        "instagram-embed": lambda: probe_instagram_embed(env, http),
-        "instagram-media": lambda: probe_gallery_dl("instagram-media", "instagram.txt", "FETCH_HEALTH_INSTAGRAM_MEDIA_URL", env, command),
-        "x-media": lambda: probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", env, command),
-        "x-twitter-cli": lambda: probe_twitter_cli(env, command),
-        "youtube-playwright": lambda: probe_youtube(env, http),
-        "github": lambda: probe_github(env, command),
-        "bitbucket": lambda: probe_bitbucket(env, http, root),
-        "firecrawl": lambda: probe_firecrawl(env, http),
-    }
+    probes = build_probe_registry(env, http, command, root)
     results: dict[str, ProbeResult] = {}
     for source, probe in probes.items():
         try:
@@ -448,6 +609,25 @@ def run_probes(
         except Exception:
             results[source] = ProbeResult("transport-fail", "unexpected probe failure")
     return results
+
+
+def run_single_probe(
+    source: str,
+    env: dict[str, str],
+    *,
+    http: Callable[..., HttpResult] = fetch_http,
+    command: Callable[..., subprocess.CompletedProcess[str]] = run_command,
+    repo_root: Path | None = None,
+) -> ProbeResult:
+    root = repo_root or primary_repo_root()
+    probes = build_probe_registry(env, http, command, root)
+    if source not in probes:
+        valid = ", ".join(sorted(probes))
+        raise ValueError(f"unknown probe source: {source!r} (valid sources: {valid})")
+    try:
+        return probes[source]()
+    except Exception:
+        return ProbeResult("transport-fail", "unexpected probe failure")
 
 
 def read_previous(path: Path) -> dict:
@@ -493,8 +673,18 @@ def write_state(path: Path, results: dict[str, ProbeResult], now: datetime) -> N
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", help="override output state path")
+    parser.add_argument("--probe", metavar="SOURCE", help="run a single probe and print its JSON result (skips state writes)")
     args = parser.parse_args(argv)
     env = dict(os.environ)
+
+    if args.probe:
+        try:
+            result = run_single_probe(args.probe, env)
+        except ValueError as error:
+            parser.error(str(error))
+        print(json.dumps({"status": result.status, "reason": result.reason}))
+        return 0 if result.status == "ok" else 1
+
     path = Path(args.state) if args.state else state_path(env)
     results = run_probes(env)
     write_state(path, results, utc_now())

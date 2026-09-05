@@ -33,6 +33,7 @@ check "media/skin gitkeep present"   "[ -f '$VAULT/_media/skin/.gitkeep' ]"
 check "posture appended to _CLAUDE"  "grep -q 'salus-posture-block' '$VAULT/_CLAUDE.md'"
 check "base _CLAUDE preserved"       "grep -q 'base rules here' '$VAULT/_CLAUDE.md'"
 check ".salus-profile marker dropped" "[ -f '$VAULT/.salus-profile' ]"
+check ".salus PHI guard marker dropped (HIMMEL-2173)" "[ -f '$VAULT/.salus' ]"
 
 # skin archive ships schema-only (header + separator, ZERO data rows)
 _datarows="$(grep -cE '^\| 20[0-9][0-9]-' "$VAULT/_skin-photo-archive.md" 2>/dev/null || true)"
@@ -64,13 +65,15 @@ else
 fi
 
 echo "== idempotency: re-apply must NOT overwrite operator content =="
-# operator adds a real data row + a second settings sentinel
+# operator adds a real data row + a second settings sentinel + a customized .salus
 printf '| 2026-01-02 | hands | active | x | **eczema** | note |\n' >> "$VAULT/_skin-photo-archive.md"
 printf '{"_sentinel":"do-not-clobber"}\n' > "$VAULT/.claude/settings.json"
+printf 'operator-customized\n' > "$VAULT/.salus"
 apply_salus_overlay "$VAULT" || bad "re-apply returned non-zero"
 check "operator data row preserved"  "grep -q '2026-01-02 | hands' '$VAULT/_skin-photo-archive.md'"
 check "existing settings NOT clobbered" "grep -q 'do-not-clobber' '$VAULT/.claude/settings.json'"
 check "posture appended ONCE (idempotent)" "[ \"\$(grep -c 'salus-posture-block' '$VAULT/_CLAUDE.md')\" -eq 1 ]"
+check "existing .salus NOT clobbered (HIMMEL-2173)" "grep -q 'operator-customized' '$VAULT/.salus'"
 
 echo "== egress floor BEHAVIOR (the structural PHI floor must actually DENY, not just exist) =="
 # CR Critical (HIMMEL-577): assert the installed hook's exit codes per tool, so a

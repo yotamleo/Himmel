@@ -24,49 +24,74 @@ function Set-HandoverDir {
         [Parameter(Mandatory = $true)] [string]$HandoverDir
     )
 
-    # Forward-slash so the stored value is a valid Git-Bash path even when a
-    # caller passes a Windows backslash path.
-    $hdirFwd = $HandoverDir.Replace('\', '/')
+    # Captured native stdout is decoded via [Console]::OutputEncoding, the
+    # legacy OEM codepage here, not UTF-8 (HIMMEL-2256; dot-sourcing this
+    # library must not mutate the caller's console encoding at top level).
+    # Save/restore around the capture so the caller's encoding is unchanged
+    # on every exit path, including a thrown error.
+    #
+    # Piping TEXT INTO jq's stdin is a separate direction governed by the
+    # $OutputEncoding preference variable, not [Console]::OutputEncoding --
+    # on Windows PowerShell 5.1 it defaults to ASCIIEncoding, silently
+    # replacing every non-ASCII char with `?` before jq ever sees it
+    # (HIMMEL-2256 twin bug). Must be set at global scope: a bare
+    # $OutputEncoding assignment inside a function is function-local and the
+    # child process never sees it.
+    #
+    # BOM-less: [Encoding]::UTF8 emits EF BB BF on stdin, which older jq rejects.
+    $prevOutputEncoding = [Console]::OutputEncoding
+    $prevOutEncodingPref = $global:OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
-    if (Test-Path $SettingsPath) {
-        $raw = Get-Content $SettingsPath -Raw
-        if ([string]::IsNullOrWhiteSpace($raw)) {
-            $cfg = [pscustomobject]@{}
-        } else {
-            try {
-                $cfg = $raw | ConvertFrom-Json
-            } catch {
-                # Throw (not Write-Error+return): the entry point converts this to
-                # `exit 1` so `-File` callers see a non-zero code, matching the
-                # bash twin's `return 1`.
-                throw "wire-handover-dir: $SettingsPath is not valid JSON -- refusing to overwrite"
+        # Forward-slash so the stored value is a valid Git-Bash path even when a
+        # caller passes a Windows backslash path.
+        $hdirFwd = $HandoverDir.Replace('\', '/')
+
+        if (Test-Path $SettingsPath) {
+            $raw = Get-Content $SettingsPath -Raw
+            if ([string]::IsNullOrWhiteSpace($raw)) {
+                $cfg = [pscustomobject]@{}
+            } else {
+                try {
+                    $cfg = $raw | ConvertFrom-Json
+                } catch {
+                    # Throw (not Write-Error+return): the entry point converts this to
+                    # `exit 1` so `-File` callers see a non-zero code, matching the
+                    # bash twin's `return 1`.
+                    throw "wire-handover-dir: $SettingsPath is not valid JSON -- refusing to overwrite"
+                }
             }
+        } else {
+            $dir = Split-Path $SettingsPath
+            if ($dir) { New-Item -ItemType Directory -Force $dir | Out-Null }
+            $cfg = [pscustomobject]@{}
         }
-    } else {
-        $dir = Split-Path $SettingsPath
-        if ($dir) { New-Item -ItemType Directory -Force $dir | Out-Null }
-        $cfg = [pscustomobject]@{}
-    }
 
-    # Ensure an .env object exists, then set/replace only the HANDOVER_DIR
-    # member (all sibling env keys preserved).
-    if (-not $cfg.PSObject.Properties['env'] -or $null -eq $cfg.env) {
-        $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) -Force
-    }
-    if ($cfg.env.PSObject.Properties['HANDOVER_DIR']) {
-        $cfg.env.HANDOVER_DIR = $hdirFwd
-    } else {
-        $cfg.env | Add-Member -NotePropertyName HANDOVER_DIR -NotePropertyValue $hdirFwd -Force
-    }
+        # Ensure an .env object exists, then set/replace only the HANDOVER_DIR
+        # member (all sibling env keys preserved).
+        if (-not $cfg.PSObject.Properties['env'] -or $null -eq $cfg.env) {
+            $cfg | Add-Member -NotePropertyName env -NotePropertyValue ([pscustomobject]@{}) -Force
+        }
+        if ($cfg.env.PSObject.Properties['HANDOVER_DIR']) {
+            $cfg.env.HANDOVER_DIR = $hdirFwd
+        } else {
+            $cfg.env | Add-Member -NotePropertyName HANDOVER_DIR -NotePropertyValue $hdirFwd -Force
+        }
 
-    $json = $cfg | ConvertTo-Json -Depth 20
-    if (Get-Command jq -ErrorAction SilentlyContinue) {
-        $normalized = $json | jq --indent 2 .
-        if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
+        $json = $cfg | ConvertTo-Json -Depth 20
+        if (Get-Command jq -ErrorAction SilentlyContinue) {
+            $normalized = $json | jq --indent 2 .
+            if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
+        }
+        Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
+        Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
+        Write-Host "  set env.HANDOVER_DIR -> $SettingsPath"
+    } finally {
+        [Console]::OutputEncoding = $prevOutputEncoding
+        $global:OutputEncoding = $prevOutEncodingPref
     }
-    Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
-    Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
-    Write-Host "  set env.HANDOVER_DIR -> $SettingsPath"
 }
 
 # Direct invocation (both args supplied) runs the function. Dot-sourcing with no

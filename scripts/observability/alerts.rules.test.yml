@@ -58,22 +58,35 @@ tests:
               summary: 'Flow pipeline-synthesize run errored in the last 15m'
 
   # HimmelFlowRunStalled is a LEVEL check, not increase() (HIMMEL-1695), so a
-  # persistent stall is NOT silent: any non-zero stalled series pages on the
-  # next evaluation and keeps paging while it stays non-zero. pipeline-vitals
-  # is stalled from t=0 and therefore fires at 3m AND 5m; pipeline-harvest only
-  # goes non-zero at 5m. armed-resume rises identically to harvest and is
-  # excluded at both times by the rule's flow!="armed-resume" matcher — its
-  # absence from the 5m expectations is what pins the alert-fatigue fix.
+  # persistent stall is NOT silent: once its `for` pending window elapses, any
+  # non-zero stalled series pages on every subsequent evaluation while it
+  # stays non-zero. HIMMEL-2211 raised `for` from 0m to 10m (damps a
+  # transient count — see alerts.rules.yml's own comment for the full
+  # incident this is fixing) and added `keep_firing_for: 30m`, covered by its
+  # own gap test below. Every check here carries a 1m buffer past the 10m
+  # `for` boundary so promtool's whole-minute sampling can't make the
+  # boundary assertion flaky (same margin style as HimmelAgentTreeRamRunaway
+  # above).
+  #
+  # pipeline-vitals is stalled from t=0, so its pending window elapses at
+  # t=10 (checked at t=11). pipeline-harvest only goes non-zero at t=5, so ITS
+  # window elapses at t=15 (checked at t=16). armed-resume rises identically
+  # to harvest and is excluded at every eval_time by the rule's
+  # flow!="armed-resume" matcher — its absence from every expectation below is
+  # what pins the alert-fatigue fix.
   - interval: 1m
     input_series:
       - series: 'flow_run_outcome_total{flow="pipeline-vitals",outcome="stalled"}'
-        values: '1x10'
+        values: '1x30'
       - series: 'flow_run_outcome_total{flow="pipeline-harvest",outcome="stalled"}'
-        values: '0x4 1x4'
+        values: '0x4 1x26'
       - series: 'flow_run_outcome_total{flow="armed-resume",outcome="stalled"}'
-        values: '0x4 1x4'
+        values: '0x4 1x26'
     alert_rule_test:
-      - eval_time: 3m
+      - eval_time: 5m
+        alertname: HimmelFlowRunStalled
+        exp_alerts: []
+      - eval_time: 11m
         alertname: HimmelFlowRunStalled
         exp_alerts:
           - exp_labels:
@@ -82,7 +95,7 @@ tests:
               severity: page
             exp_annotations:
               summary: 'Flow pipeline-vitals has a run stalled past its deadline'
-      - eval_time: 5m
+      - eval_time: 16m
         alertname: HimmelFlowRunStalled
         exp_alerts:
           - exp_labels:
@@ -97,6 +110,54 @@ tests:
               severity: page
             exp_annotations:
               summary: 'Flow pipeline-vitals has a run stalled past its deadline'
+
+  # HIMMEL-2211: keep_firing_for absorbs a scrape gap — the exact shape that
+  # turned one real stall into 51 resolve/fire pairs a night before the
+  # prometheus.yml scrape_timeout fix made the gaps rare. pipeline-ghost-gap
+  # holds stalled=1 long enough to actually fire (past `for: 10m`), then the
+  # series goes fully absent for 10 consecutive samples (`_`) — long enough to
+  # outrun Prometheus's own 5m staleness lookback, so the expression
+  # genuinely evaluates to no data partway through the gap, not just a
+  # same-value read carried forward — before resuming. Without
+  # keep_firing_for, the alert would resolve as soon as the expression first
+  # reads empty; with the 30m grace (comfortably longer than this 10m gap) it
+  # must still be firing throughout, and after the series resumes.
+  - interval: 1m
+    input_series:
+      - series: 'flow_run_outcome_total{flow="pipeline-ghost-gap",outcome="stalled"}'
+        values: '1x20 _x10 1x10'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HimmelFlowRunStalled
+        exp_alerts:
+          - exp_labels:
+              flow: pipeline-ghost-gap
+              outcome: stalled
+              severity: page
+            exp_annotations:
+              summary: 'Flow pipeline-ghost-gap has a run stalled past its deadline'
+      # t=27: 8m past the last real sample (t=19) — outside the 5m staleness
+      # lookback, so PromQL itself sees no data here. Only keep_firing_for
+      # (30m grace, started ~t=24 when the lookback last covered t=19) keeps
+      # this firing.
+      - eval_time: 27m
+        alertname: HimmelFlowRunStalled
+        exp_alerts:
+          - exp_labels:
+              flow: pipeline-ghost-gap
+              outcome: stalled
+              severity: page
+            exp_annotations:
+              summary: 'Flow pipeline-ghost-gap has a run stalled past its deadline'
+      - eval_time: 35m
+        alertname: HimmelFlowRunStalled
+        exp_alerts:
+          - exp_labels:
+              flow: pipeline-ghost-gap
+              outcome: stalled
+              severity: page
+            exp_annotations:
+              summary: 'Flow pipeline-ghost-gap has a run stalled past its deadline'
 
   # HimmelFlowLastSuccessAgeExceeded: last_success_timestamp held at a fixed
   # value far enough in the past (relative to promtool's own synthetic
@@ -164,7 +225,72 @@ tests:
             exp_annotations:
               summary: 'Scheduled task himmel-pipeline-vitals is disabled or missing'
 
+  # HIMMEL-2075: a task allowlisted via expected_disabled_tasks (rendered as
+  # scheduled_task_expected_disabled == 1) does NOT fire even though it is
+  # disabled — the `unless on (task)` join exempts it.
+  - interval: 1m
+    input_series:
+      - series: 'scheduled_task_exists{task="himmel-pipeline-vitals"}'
+        values: '1x5'
+      - series: 'scheduled_task_enabled{task="himmel-pipeline-vitals"}'
+        values: '0x5'
+      - series: 'scheduled_task_expected_disabled{task="himmel-pipeline-vitals"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HimmelScheduledTaskDisabled
+        exp_alerts: []
+
+  # ... but a DIFFERENT task, disabled and not on the allowlist, still fires
+  # in the same evaluation — the exemption is per-task, not blanket.
+  - interval: 1m
+    input_series:
+      - series: 'scheduled_task_exists{task="himmel-pipeline-vitals"}'
+        values: '1x5'
+      - series: 'scheduled_task_enabled{task="himmel-pipeline-vitals"}'
+        values: '0x5'
+      - series: 'scheduled_task_expected_disabled{task="himmel-pipeline-vitals"}'
+        values: '1x5'
+      - series: 'scheduled_task_exists{task="himmel-pipeline-harvest"}'
+        values: '1x5'
+      - series: 'scheduled_task_enabled{task="himmel-pipeline-harvest"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HimmelScheduledTaskDisabled
+        exp_alerts:
+          - exp_labels:
+              task: himmel-pipeline-harvest
+              severity: page
+            exp_annotations:
+              summary: 'Scheduled task himmel-pipeline-harvest is disabled or missing'
+
+  # HIMMEL-2075 CR fix (codex-1): the allowlist only exempts the `enabled ==
+  # 0` arm, not `exists == 0`. An allowlisted task that gets DELETED
+  # entirely must still page — the allowlist promises continued
+  # exists/enabled coverage, not a blanket exemption from this rule.
+  - interval: 1m
+    input_series:
+      - series: 'scheduled_task_exists{task="himmel-pipeline-vitals"}'
+        values: '0x5'
+      - series: 'scheduled_task_enabled{task="himmel-pipeline-vitals"}'
+        values: '0x5'
+      - series: 'scheduled_task_expected_disabled{task="himmel-pipeline-vitals"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: HimmelScheduledTaskDisabled
+        exp_alerts:
+          - exp_labels:
+              task: himmel-pipeline-vitals
+              severity: page
+            exp_annotations:
+              summary: 'Scheduled task himmel-pipeline-vitals is disabled or missing'
+
   # HimmelAgentTreeRamRunaway: needs to hold true for 10m before firing.
+  # No subagent_active_total series in this fixture at all — pins the
+  # `or vector(0)` NaN guard: without it scalar(sum(subagent_active_total))
+  # is NaN and this alert would never fire.
   - interval: 1m
     input_series:
       - series: 'agent_tree_rss_bytes{class="codex-app-server"}'
@@ -173,6 +299,59 @@ tests:
       - eval_time: 5m
         alertname: HimmelAgentTreeRamRunaway
         exp_alerts: []
+      - eval_time: 11m
+        alertname: HimmelAgentTreeRamRunaway
+        exp_alerts:
+          - exp_labels:
+              class: codex-app-server
+              severity: warn
+            exp_annotations:
+              summary: 'Agent tree class codex-app-server RSS exceeds 6 GiB'
+
+  # HIMMEL-2075: 6 concurrent subagents raises the effective threshold to
+  # 6442450944 + 1073741824*(6-2) = 10737418240 (~10 GiB). 9 GiB, which would
+  # have paged under the old flat 6 GiB rule, stays quiet during a legitimate
+  # swarm...
+  - interval: 1m
+    input_series:
+      - series: 'agent_tree_rss_bytes{class="codex-app-server"}'
+        values: '9000000000x15'
+      - series: 'subagent_active_total{host="test-host",subagent_type="explorer"}'
+        values: '6x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HimmelAgentTreeRamRunaway
+        exp_alerts: []
+
+  # ...but a genuine runaway (15 GiB) still fires past the same swarm-scaled
+  # threshold.
+  - interval: 1m
+    input_series:
+      - series: 'agent_tree_rss_bytes{class="codex-app-server"}'
+        values: '15000000000x15'
+      - series: 'subagent_active_total{host="test-host",subagent_type="explorer"}'
+        values: '6x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HimmelAgentTreeRamRunaway
+        exp_alerts:
+          - exp_labels:
+              class: codex-app-server
+              severity: warn
+            exp_annotations:
+              summary: 'Agent tree class codex-app-server RSS exceeds 6 GiB'
+
+  # HIMMEL-2149: class="other" is host-detectors.ps1's catch-all for
+  # everything NOT descended from a recognized agent root (the rest of the
+  # desktop), so it must never page here even at a genuinely runaway value —
+  # a real agent-tree class in the SAME evaluation still fires normally.
+  - interval: 1m
+    input_series:
+      - series: 'agent_tree_rss_bytes{class="other"}'
+        values: '17500000000x15'
+      - series: 'agent_tree_rss_bytes{class="codex-app-server"}'
+        values: '7000000000x15'
+    alert_rule_test:
       - eval_time: 11m
         alertname: HimmelAgentTreeRamRunaway
         exp_alerts:
@@ -204,16 +383,16 @@ tests:
               summary: 'codex-fleet orphan count is 2'
 
   # HimmelWatcherDown: flow-exporter job goes to 0 (down) and stays down past
-  # the 5m grace.
+  # the 10m grace (HIMMEL-2365: was 5m).
   - interval: 1m
     input_series:
       - series: 'up{job="flow-exporter"}'
-        values: '1x5 0x10'
+        values: '1x5 0x20'
     alert_rule_test:
-      - eval_time: 7m
+      - eval_time: 13m
         alertname: HimmelWatcherDown
         exp_alerts: []
-      - eval_time: 11m
+      - eval_time: 17m
         alertname: HimmelWatcherDown
         exp_alerts:
           - exp_labels:
@@ -248,17 +427,305 @@ tests:
 
   # HimmelSessionDead: a stale-transcript unpaired-start session, gauge-based
   # (no increase()) — present from minute 0 in this fixture, same shape as
-  # HimmelFlowRunStalled.
+  # HimmelFlowRunStalled. HIMMEL-2149: severity downgraded page -> warn (see
+  # the rule's own comment). HIMMEL-2365: for: 10m debounces the crossing
+  # (was 0m).
   - interval: 1m
     input_series:
       - series: 'session_dead_total{host="workstation1"}'
-        values: '1x10'
+        values: '1x15'
     alert_rule_test:
-      - eval_time: 1m
+      - eval_time: 5m
+        alertname: HimmelSessionDead
+        exp_alerts: []
+      - eval_time: 11m
         alertname: HimmelSessionDead
         exp_alerts:
           - exp_labels:
               host: workstation1
-              severity: page
+              severity: warn
             exp_annotations:
               summary: 'Host workstation1 has 1 dead session(s)'
+
+  # HIMMEL-1604 healthy post-boot steady state: 2.05 GiB nonpaged + 4.08 GiB
+  # paged = 6.13 GiB total, flat, and 20 GiB committed of a 64 GiB limit
+  # (0.31). None of the four pool/commit rules may fire on this.
+  - interval: 1m
+    input_series:
+      - series: 'windows_memory_pool_nonpaged_bytes{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '2201170739x120'
+      - series: 'windows_memory_pool_paged_bytes{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '4380866641x120'
+      - series: 'windows_memory_committed_bytes{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '21474836480x120'
+      - series: 'windows_memory_commit_limit{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '68719476736x120'
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: HimmelKernelPoolHigh
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: HimmelKernelPoolCritical
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: HimmelKernelPoolLeakRate
+        exp_alerts: []
+      - eval_time: 100m
+        alertname: HimmelCommitPressure
+        exp_alerts: []
+
+  # HIMMEL-1604 known-bad, the 2026-08-06 episode-2 pre-reboot sample:
+  # 9.3 GiB nonpaged + 11.8 GiB paged = 21.1 GiB total (both level rules
+  # fire), and 58 GiB committed of a 64 GiB limit = 0.906 (commit pressure
+  # fires). Level rules stay silent inside their `for` grace.
+  - interval: 1m
+    input_series:
+      - series: 'windows_memory_pool_nonpaged_bytes{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '9985348239x40'
+      - series: 'windows_memory_pool_paged_bytes{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '12670769725x40'
+      - series: 'windows_memory_committed_bytes{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '62277025792x40'
+      - series: 'windows_memory_commit_limit{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '68719476736x40'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HimmelKernelPoolCritical
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: HimmelKernelPoolHigh
+        exp_alerts:
+          - exp_labels:
+              instance: 127.0.0.1:9182
+              job: windows_exporter
+              severity: warn
+            exp_annotations:
+              summary: 'Kernel pool total exceeds 12 GiB on 127.0.0.1:9182'
+      - eval_time: 30m
+        alertname: HimmelKernelPoolCritical
+        exp_alerts:
+          - exp_labels:
+              instance: 127.0.0.1:9182
+              job: windows_exporter
+              severity: page
+            exp_annotations:
+              summary: 'Kernel pool total exceeds 18 GiB on 127.0.0.1:9182 — only a reboot reclaims it'
+      - eval_time: 30m
+        alertname: HimmelCommitPressure
+        exp_alerts:
+          - exp_labels:
+              instance: 127.0.0.1:9182
+              job: windows_exporter
+              severity: warn
+            exp_annotations:
+              summary: 'Committed memory exceeds 85% of the commit limit on 127.0.0.1:9182'
+
+  # HIMMEL-1604 leak slope: 2 GiB nonpaged flat, paged climbing 1.5 GiB/h
+  # (26843546 B/min) from 2 GiB — the shape of both real incidents. Total
+  # never reaches 12 GiB inside this fixture, so the slope rule is the ONLY
+  # thing that catches it: that is the whole point of having it. deriv reads
+  # the true slope as soon as the [1h:5m] subquery holds two samples (~10m),
+  # so the rule's own `for: 1h` is what sets the detection latency (~70m) —
+  # still hours ahead of any level rule on this curve.
+  - interval: 1m
+    input_series:
+      - series: 'windows_memory_pool_nonpaged_bytes{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '2147483648x180'
+      - series: 'windows_memory_pool_paged_bytes{instance="127.0.0.1:9182",job="windows_exporter"}'
+        values: '2147483648+26843546x180'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: HimmelKernelPoolLeakRate
+        exp_alerts: []
+      - eval_time: 150m
+        alertname: HimmelKernelPoolHigh
+        exp_alerts: []
+      - eval_time: 150m
+        alertname: HimmelKernelPoolLeakRate
+        exp_alerts:
+          - exp_labels:
+              instance: 127.0.0.1:9182
+              job: windows_exporter
+              severity: warn
+            exp_annotations:
+              summary: 'Kernel pool on 127.0.0.1:9182 is growing faster than 1 GiB/h'
+
+  # HIMMEL-2478/2480: HimmelHookChainBudgetPressure — skip > 10, sustained
+  # past `for: 5m` fires; a boundary value of exactly 10 must NOT fire
+  # (proves `>`, not `>=`); a spike under the 5m grace must not fire either;
+  # and a `deny`-labeled spike must never trigger this (skip-only) rule.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_budget_events_recent{action="skip"}'
+        values: '11x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HimmelHookChainBudgetPressure
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HimmelHookChainBudgetPressure
+        exp_alerts:
+          - exp_labels:
+              action: skip
+              severity: warn
+            exp_annotations:
+              summary: '11 hook-chain members skipped their budget in the last 10m — early warning for a spawn-storm hang'
+
+  # Boundary: exactly 10 (the threshold value itself) never crosses `> 10`,
+  # no matter how long it holds.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_budget_events_recent{action="skip"}'
+        values: '10x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HimmelHookChainBudgetPressure
+        exp_alerts: []
+
+  # Above threshold but for less than the 5m `for` grace, then genuinely
+  # drops back below threshold: the trailing 0x10 makes the series actually
+  # read < 10 again, rather than just stop being sampled — Prometheus's 5m
+  # staleness lookback would otherwise keep the last `11x3` sample "live"
+  # past t=3, and evaluating only at 3m (mid-spike, before `for: 5m` could
+  # even elapse) proved only that it hadn't fired YET, not that it never
+  # would. The 3m check still pins that (mid-spike, `for: 5m` still pending —
+  # this is what would fail loudly if `for` regressed to 0m, since the spike
+  # itself is genuinely above threshold there); the 6m check — past where
+  # `for: 5m` would have fired had the spike genuinely persisted, and after
+  # the real decline — is what proves the short spike never fires, not
+  # merely that it hadn't fired yet.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_budget_events_recent{action="skip"}'
+        values: '11x3 0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HimmelHookChainBudgetPressure
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HimmelHookChainBudgetPressure
+        exp_alerts: []
+
+  # A `deny` spike must never fire the skip-only pressure rule.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_budget_events_recent{action="deny"}'
+        values: '50x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HimmelHookChainBudgetPressure
+        exp_alerts: []
+
+  # HIMMEL-2478/2480: HimmelHookChainBudgetDenials — deny > 2, same shape as
+  # the pressure rule above: positive case, exact-threshold boundary, `for`
+  # grace, and cross-action isolation (a `skip` spike must not fire this
+  # deny-only rule).
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_budget_events_recent{action="deny"}'
+        values: '3x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: HimmelHookChainBudgetDenials
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HimmelHookChainBudgetDenials
+        exp_alerts:
+          - exp_labels:
+              action: deny
+              severity: page
+            exp_annotations:
+              summary: '3 hook-chain must-run guards were denied fail-closed in the last 10m'
+
+  # Boundary: exactly 2 never crosses `> 2`.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_budget_events_recent{action="deny"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HimmelHookChainBudgetDenials
+        exp_alerts: []
+
+  # Above threshold but for less than the 5m `for` grace, then genuinely
+  # drops back below threshold — same reasoning as the pressure rule's
+  # equivalent fixture above: the trailing 0x10 makes the series actually
+  # read <= 2 again instead of merely going unsampled (which the 5m
+  # staleness lookback would read as still-live). The 3m check pins the
+  # mid-spike pending state (would fail loudly if `for` regressed to 0m); the
+  # 6m check, after the real decline, proves the spike never fires rather
+  # than that it hadn't fired yet.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_budget_events_recent{action="deny"}'
+        values: '3x3 0x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HimmelHookChainBudgetDenials
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: HimmelHookChainBudgetDenials
+        exp_alerts: []
+
+  # A `skip` spike must never fire the deny-only rule.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_budget_events_recent{action="skip"}'
+        values: '50x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HimmelHookChainBudgetDenials
+        exp_alerts: []
+
+  # HIMMEL-2478/2480 CR follow-up: HimmelHookChainLogUnreadable — the health
+  # gauge for the reader above. Fires above 0, sustained past the 10m `for`
+  # grace; a value of exactly 0 never fires, no matter how long it holds.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_skip_log_unreadable'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HimmelHookChainLogUnreadable
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: HimmelHookChainLogUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: warn
+            exp_annotations:
+              summary: '1 hook-chain skip log(s) unreadable — hook_chain_budget_events_recent may be under-counting'
+
+  # Boundary: exactly 0 (the healthy value) never fires, no matter how long
+  # it holds.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_skip_log_unreadable'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HimmelHookChainLogUnreadable
+        exp_alerts: []
+
+  # Above threshold but for less than the 10m `for` grace, then genuinely
+  # drops back to 0: the trailing 0-samples make the series actually read 0
+  # again, rather than just stop being sampled — Prometheus's 5m staleness
+  # lookback would otherwise keep the last non-zero sample "live" past the
+  # spike (the vacuous-fixture trap already caught on this file: a series
+  # that simply stops still satisfies an instant query for that lookback
+  # window). The 8m check pins the mid-spike pending state (would fail loudly
+  # if `for` regressed to 0m, since the spike itself is genuinely above
+  # threshold there); the 12m check — past where `for: 10m` would have fired
+  # had the spike genuinely persisted, and after the real decline — proves
+  # the short spike never fires, not merely that it hadn't fired yet.
+  - interval: 1m
+    input_series:
+      - series: 'hook_chain_skip_log_unreadable'
+        values: '1x8 0x15'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: HimmelHookChainLogUnreadable
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: HimmelHookChainLogUnreadable
+        exp_alerts: []

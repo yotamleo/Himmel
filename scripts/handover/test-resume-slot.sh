@@ -351,6 +351,27 @@ assert_contains "T19c blames the option, not the token after it" "--threshold ne
 assert_not_contains "T19c does not misreport the next arg as unknown" "unknown arg: epoch" "$err"
 
 # ---------------------------------------------------------------------------
+# T20: near-wall WARN (HIMMEL-1968). Under an operator-raised threshold a 96%
+#      weekly is headroom by the rule and resolves ASAP (the 2026-08-19 19:37
+#      arm, RESUME_SLOT_THRESHOLD=97) — the slot stays ASAP, but stderr must
+#      carry a loud WARN naming the near-wall window. A genuinely free bank
+#      emits no WARN.
+# ---------------------------------------------------------------------------
+mk_cache "$TMP/at96.json" 6.0 "$(iso_in 9000)" 96.0 "$(iso_in 200000)"
+out=$(RESUME_SLOT_THRESHOLD=97 bash "$SLOT" --cache "$TMP/at96.json" --max-age 0 --emit reason 2>"$TMP/at96.err"); rc=$?
+err=$(cat "$TMP/at96.err")
+assert_rc "T20 96% under threshold 97 still exits 0" 0 "$rc"
+assert_contains "T20 slot is still ASAP (bank free by the rule)" "bank free" "$out"
+assert_contains "T20 stderr carries the near-wall WARN" "WARN resume-slot: seven-day=96%" "$err"
+assert_contains "T20 WARN names the threshold" "under the 97% threshold" "$err"
+assert_contains "T20 WARN offers the remedy" "pass --time HH:MM" "$err"
+assert_not_contains "T20 WARN stays off stdout (emit contract)" "WARN resume-slot" "$out"
+mk_cache "$TMP/at16.json" 2.0 "$(iso_in 9000)" 16.0 "$(iso_in 200000)"
+out=$(RESUME_SLOT_THRESHOLD=97 bash "$SLOT" --cache "$TMP/at16.json" --max-age 0 --emit reason 2>&1); rc=$?
+assert_rc "T20b free bank exits 0" 0 "$rc"
+assert_not_contains "T20b free bank emits no near-wall WARN" "WARN resume-slot" "$out"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 if [ "$FAILED" -gt 0 ]; then echo "---"; echo "FAIL $FAILED case(s)"; exit 1; fi

@@ -45,7 +45,8 @@ if ($env:CRYSTALLIZE_ENV_DUMP) {
     $w = if ($null -ne $env:CLAUDE_END_SESSION_WIKI) { $env:CLAUDE_END_SESSION_WIKI } else { '<unset>' }
     $a = if ($null -ne $env:HIMMEL_WHERE_ARE_WE) { $env:HIMMEL_WHERE_ARE_WE } else { '<unset>' }
     $r = if ($null -ne $env:CRYSTALLIZE_RULES_FILE) { $env:CRYSTALLIZE_RULES_FILE } else { '<unset>' }
-    Set-Content -LiteralPath $env:CRYSTALLIZE_ENV_DUMP -Value @("CLAUDE_END_SESSION_WIKI=$w", "HIMMEL_WHERE_ARE_WE=$a", "CRYSTALLIZE_RULES_FILE=$r")
+    $b = if ($null -ne $env:ANTHROPIC_BASE_URL) { $env:ANTHROPIC_BASE_URL } else { '<unset>' }
+    Set-Content -LiteralPath $env:CRYSTALLIZE_ENV_DUMP -Value @("CLAUDE_END_SESSION_WIKI=$w", "HIMMEL_WHERE_ARE_WE=$a", "CRYSTALLIZE_RULES_FILE=$r", "ANTHROPIC_BASE_URL=$b")
 }
 
 if ($mode -eq 'fail') { exit 7 }

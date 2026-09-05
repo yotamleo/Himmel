@@ -1,5 +1,5 @@
 ---
-description: Generate the dated 🌅 Morning Report from live git/gh/jira/worktree state at ~zero Claude tokens (no-token default; opt-in --llm enriches TL;DR + Suggested order + theme-clustered Backlog). HIMMEL-574.
+description: Generate the dated Morning Report from live git/gh/jira/worktree state at ~zero tokens; --llm enriches it.
 argument-hint: "[--llm] [--llm-model M] [--since SHA] [--since-date YYYY-MM-DD] [--out PATH] [--jira-limit N] [--backlog-limit N] [--dry-run]"
 ---
 

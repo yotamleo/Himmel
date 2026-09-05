@@ -24,8 +24,8 @@ export function basenameLink(link) {
 
 /**
  * Composite telegram id form some bridges file under, e.g.
- * `telegram-tg-group_-1003985279697-1782605997` (single) or
- * `tg-group_-1003985279697-1782605414-7` (one drop of a multi-link message):
+ * `telegram-tg-group_-1001234567890-1782605997` (single) or
+ * `tg-group_-1001234567890-1782605414-7` (one drop of a multi-link message):
  * `…_<chat_id>-<message_id>[-<drop>]`, chat possibly negative (supergroup).
  * Captures group 1 = chat_id, group 2 = the numeric Telegram message_id.
  */

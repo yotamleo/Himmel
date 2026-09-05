@@ -27,6 +27,7 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -41,15 +42,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # write_cache <path> <role> <scope> <vault-mode> <vault-path> <handover-mode>
 #             <handover-path> <plugin-set> — a minimal valid Draft-A profile
@@ -94,7 +86,7 @@ fs.writeFileSync('$fixtureRepoA_w/scripts/install/manifest.json', JSON.stringify
 
 # ── seed run: status against the OLD (item-short) manifest derives + saves
 # a target entry that never carries pre-commit-hooks at all.
-( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HOME="$homeA" \
+( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HIMMEL_LUNA_CONFIG_PATH="$cacheA_w-luna-config.json" HOME="$homeA" USERPROFILE="$(winpath "$homeA")" \
     "$node_bin" "$wizard" status --json >/dev/null ) \
   || fail "case a setup: seed status run (old manifest) failed"
 
@@ -114,7 +106,7 @@ wiringBefore=$(jq -e --arg k "$targetKeyA" '.targets[$k].items["wiring-pretoolus
 # status — this is the exact scenario a himmel-update delivers.
 cp "$manifest_path" "$fixtureRepoA/scripts/install/manifest.json"
 
-outA=$( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HOME="$homeA" \
+outA=$( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HIMMEL_LUNA_CONFIG_PATH="$cacheA_w-luna-config.json" HOME="$homeA" USERPROFILE="$(winpath "$homeA")" \
     "$node_bin" "$wizard" status --json ) \
   || fail "case a: post-upgrade status run failed"
 
@@ -138,7 +130,7 @@ echo "ok: case a — an already-tracked item's state survives the migration unch
 # ── a second post-upgrade run performs zero further state.json writes
 # (migration is idempotent — nothing left to backfill). ─────────────────────
 before2=$(sha256sum "$cacheA/state.json")
-( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HOME="$homeA" \
+( cd "$targetA" && HIMMELCTL_REPO_ROOT="$fixtureRepoA_w" HIMMELCTL_CACHE_DIR="$cacheA_w" HIMMEL_LUNA_CONFIG_PATH="$cacheA_w-luna-config.json" HOME="$homeA" USERPROFILE="$(winpath "$homeA")" \
     "$node_bin" "$wizard" status --json >/dev/null ) || fail "case a: second post-upgrade run failed"
 after2=$(sha256sum "$cacheA/state.json")
 [ "$before2" = "$after2" ] || fail "case a: a second run against an already-migrated target should write nothing further to state.json"
@@ -172,7 +164,7 @@ vaultB="$work/vault"
 write_cache "$cacheB/install-profile.json" adopter project default-template "$(winpath "$vaultB")" inline "" lean
 
 runStatusB() {
-  ( cd "$targetB" && HIMMELCTL_REPO_ROOT="$fixtureRepoB_w" HIMMELCTL_CACHE_DIR="$cacheB_w" HOME="$homeB" \
+  ( cd "$targetB" && HIMMELCTL_REPO_ROOT="$fixtureRepoB_w" HIMMELCTL_CACHE_DIR="$cacheB_w" HIMMEL_LUNA_CONFIG_PATH="$cacheB_w-luna-config.json" HOME="$homeB" USERPROFILE="$(winpath "$homeB")" \
       "$node_bin" "$wizard" status --items graphify-mcp --json )
 }
 

@@ -123,20 +123,57 @@ worker_pid_alive() {
     return 1
 }
 
-# _worker_meta_fields <meta.json> -- unit-separator-delimited fields. A
-# non-whitespace separator preserves empty shared_branch/repo_dir positions in
-# bash 3.2's read builtin.
-_worker_meta_fields() {
+# _worker_census -- HIMMEL-2066 batch replacement for the old per-file
+# _worker_meta_fields: ONE node process for the whole census run instead of
+# one `node -e` spawn per meta.json. ~0.5s node startup x hundreds of
+# meta.json files under Windows/Git-Bash ate the ASAP arm lead and tripped
+# the caller's timeout.
+#
+# Reads newline-delimited "origPath\x1fopenPath" pairs on stdin (always
+# $BRIDGE/<lane>-sessions/<session>/meta.json -- no newlines in practice) and
+# writes one row per PARSEABLE file to stdout:
+# "origPath\x1fstatus\x1fpid\x1fshared_branch\x1frepo_dir\x1flane\x1ftask_name\n"
+# -- same unit-separator convention as before (survives bash 3.2's `read`
+# with empty fields). A file that fails to parse writes
+# "ERR reconcile-workers: cannot parse <origPath>: <msg>" to stderr and NO
+# stdout row, but every other path still gets processed; the process exits 2
+# at the very end iff anything failed to parse, mirroring the old per-file
+# FAILED=1-but-keep-going contract.
+#
+# openPath (not origPath) is what actually gets fs.readFileSync'd: node.exe
+# is a native Windows binary, and MSYS/Git-Bash only rewrites POSIX-looking
+# ARGV elements into Windows form for a native child automatically -- it
+# does not touch data piped through stdin. The old per-file call passed its
+# one path as an argv element and got that translation for free; the caller
+# below does the equivalent translation itself (via cygpath, batched once)
+# before piping. origPath -- the untranslated bash-native path -- is what
+# gets reported back in each row, so every downstream consumer (the other
+# per-candidate node helpers below, --list-live output, callers' own path
+# matching) keeps seeing the same path shape as before this change.
+_worker_census() {
     # shellcheck disable=SC2016  # JavaScript template literals, not shell expansion.
     node -e '
 const fs = require("fs");
-const p = process.argv[1];
-let o;
-try { o = JSON.parse(fs.readFileSync(p, "utf8")); }
-catch (e) { console.error(`ERR reconcile-workers: cannot parse ${p}: ${e.message}`); process.exit(2); }
-const vals = [o.status, o.pid, o.shared_branch, o.repo_dir, o.lane, o.task_name];
-process.stdout.write(vals.map(v => v == null ? "" : String(v)).join("\x1f"));
-' "$1"
+const readline = require("readline");
+let failed = false;
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+    if (line === "") return;
+    const sep = line.indexOf("\x1f");
+    const origPath = sep === -1 ? line : line.slice(0, sep);
+    const openPath = sep === -1 ? line : line.slice(sep + 1);
+    let o;
+    try { o = JSON.parse(fs.readFileSync(openPath, "utf8")); }
+    catch (e) {
+        console.error(`ERR reconcile-workers: cannot parse ${origPath}: ${e.message}`);
+        failed = true;
+        return;
+    }
+    const vals = [o.status, o.pid, o.shared_branch, o.repo_dir, o.lane, o.task_name];
+    process.stdout.write(origPath + "\x1f" + vals.map(v => v == null ? "" : String(v)).join("\x1f") + "\n");
+});
+rl.on("close", () => { process.exit(failed ? 2 : 0); });
+'
 }
 
 # _worker_meta_is_fresh <meta.json> -- rc 0 while the terminal writer may still
@@ -279,16 +316,59 @@ _worker_release_dead_lock() {
 }
 
 FAILED=0
+
+# HIMMEL-2066: gather every meta.json path FIRST, then hand the whole batch
+# to one _worker_census node process below, instead of spawning node once
+# per file inside this loop. Zero files -> census_paths stays empty ->
+# _worker_census is never invoked at all.
+census_paths=""
 for lane_dir in "$BRIDGE/glm-sessions" "$BRIDGE/claudex-sessions"; do
     for meta in "$lane_dir"/*/meta.json; do
         [ -f "$meta" ] || continue
-        fields=$(_worker_meta_fields "$meta")
-        rc=$?
-        if [ "$rc" -ne 0 ]; then
-            FAILED=1
-            continue
+        census_paths="$census_paths$meta"$'\n'
+    done
+done
+
+if [ -n "$census_paths" ]; then
+    # node.exe cannot open the bash-native (MSYS/POSIX-style) path directly on
+    # Windows -- see _worker_census's doc comment above. cygpath -f converts
+    # the WHOLE list in one extra process (still O(1) spawns for the batch,
+    # not O(files)); everywhere else (no cygpath, i.e. not Windows) the
+    # "open" path is just the original path, unchanged.
+    census_orig_file=$(mktemp 2>/dev/null) && census_open_file=$(mktemp 2>/dev/null)
+    if [ -z "${census_orig_file:-}" ] || [ -z "${census_open_file:-}" ]; then
+        echo "ERR reconcile-workers: mktemp failed for worker census batch" >&2
+        rm -f "${census_orig_file:-}"
+        FAILED=1
+        census_rows=""
+    else
+        printf '%s' "$census_paths" > "$census_orig_file"
+        if command -v cygpath >/dev/null 2>&1; then
+            cygpath -w -f "$census_orig_file" > "$census_open_file"
+            cygpath_rc=$?
+            # Name the real cause up front -- without this, a failed batch
+            # conversion looks identical to hundreds of individually corrupt
+            # meta.json files (each still fails its own JSON.parse below).
+            [ "$cygpath_rc" -eq 0 ] || echo "ERR reconcile-workers: cygpath batch conversion failed rc=$cygpath_rc" >&2
+        else
+            cp "$census_orig_file" "$census_open_file"
         fi
-        IFS=$'\x1f' read -r status pid branch repo_dir lane task_name <<< "$fields"
+        census_rows=$(paste -d $'\x1f' "$census_orig_file" "$census_open_file" | _worker_census)
+        rc=$?
+        [ "$rc" -eq 0 ] || FAILED=1
+        rm -f "$census_orig_file" "$census_open_file"
+    fi
+
+    # Read from fd 3, not the loop body's inherited stdin (fd 0): the loop
+    # body below calls several node helpers per candidate row, and if any of
+    # them ever reads from an inherited stdin (a test stub intercepting node
+    # this way caught it -- HIMMEL-2066), that read would silently steal
+    # bytes meant for THIS loop's next iteration, dropping rows. Row fields
+    # are single-line JSON scalars from this codebase's own writers (status/
+    # pid/branch/etc. are never multi-line strings), so a bare newline always
+    # means "next row" -- there's no embedded-newline case to guard against.
+    while IFS=$'\x1f' read -r meta status pid branch repo_dir lane task_name <&3; do
+        [ -n "$meta" ] || continue
         [ "$status" = "running" ] || continue
 
         if worker_pid_alive "$pid"; then
@@ -370,8 +450,8 @@ for lane_dir in "$BRIDGE/glm-sessions" "$BRIDGE/claudex-sessions"; do
             fi
         fi
         echo "$summary"
-    done
-done
+    done 3<<< "$census_rows"
+fi
 
 [ "$FAILED" -eq 0 ] || exit 2
 exit 0

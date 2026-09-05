@@ -69,6 +69,21 @@ check "15: bare AccessDenied (unpaired) -> auth, NOT quota" \
 check "16: 422 -> http-4xx" "$(classify 1 '' 'HTTP 422 Unprocessable Entity')" "http-4xx"
 check "17: 500 -> http-5xx" "$(classify 1 '' 'HTTP 500 Internal Server Error')" "http-5xx"
 check "18: 503 -> http-5xx" "$(classify 1 '' 'HTTP 503 Service Unavailable')" "http-5xx"
+check "18b: 400 Bad Request (no HTTP/status/code keyword) -> still http-4xx" \
+    "$(classify 1 '' '400 Bad Request')" "http-4xx"
+check "18c: 500 Internal Server Error with no leading HTTP -> still http-5xx" \
+    "$(classify 1 '' 'curl: (22) 500 Internal Server Error')" "http-5xx"
+
+# ── HIMMEL-2107: a ticket ID inside usage text is not an HTTP status ───────
+check "16b: usage text containing HIMMEL-473 -> not http-4xx (rc=2 usage-error)" \
+    "$(classify 2 '' 'critic-first-pass.sh: empty stdin — pipe a unified diff
+Usage: git diff origin/HEAD...HEAD | critic-first-pass.sh --model <name>
+The review prompt is adapted to the model FAMILY (HIMMEL-473): gpt/codex, open, claude.
+Exit: 0 = findings emitted; 1 = invoke failed; 2 = usage error.')" \
+    "usage-error"
+check "16c: same HIMMEL-473 text under a non-usage rc still avoids http-4xx" \
+    "$(classify 1 '' 'adapted to the model FAMILY (HIMMEL-473): gpt/codex, open, claude.')" \
+    "generic-rc-1"
 
 # ── malformed-output marker (critic-first-pass.sh's own fail-open text) ────
 check "19: malformed output marker -> malformed-output" \

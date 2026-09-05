@@ -1,6 +1,6 @@
 ---
 name: luna-upgrade
-description: Use when an existing luna-second-brain vault needs to pull newer himmel template updates — refreshed bundled-plugin assets, .obsidian config, _CLAUDE.md operating-manual changes, scripts/hooks, scaffold docs, and the PLUGINS-SETUP manual-install list — WITHOUT touching user content (journal, notes, clips). Previews the change plan (dry-run), surfaces any _CLAUDE.md merge conflict or changed manual-install table, asks the operator to confirm, then applies. Triggers on /luna-upgrade at the user prompt OR programmatic Skill-tool dispatch. Distinct from himmel harness self-update and Claude Code marketplace autoUpdate — this is VAULT content/config (HIMMEL-389).
+description: Use when a luna-second-brain vault needs newer himmel template updates, user content untouched. /luna-upgrade.
 ---
 
 # luna-upgrade — content-preserving vault/template upgrade (HIMMEL-389)

@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" \"${CLAUDE_PLUGIN_ROOT}/hooks/inject-minerva-critic.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" \"${CLAUDE_PLUGIN_ROOT}/hooks/inject-minerva-critic.sh\"",
+            "timeout": 15
           }
         ]
       },
@@ -15,7 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-docker-privesc.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-docker-privesc.sh\"",
+            "timeout": 15
           }
         ]
       },
@@ -24,7 +26,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-merged-pr-commit.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-merged-pr-commit.sh\"",
+            "timeout": 60
           }
         ]
       },
@@ -33,7 +36,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-unresolved-cr-merge.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-unresolved-cr-merge.sh\"",
+            "timeout": 60
           }
         ]
       },
@@ -42,7 +46,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional --fail-closed-when \"HIMMEL_GLM_WORKER=1\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-glm-external-writes.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional --fail-closed-when \"HIMMEL_GLM_WORKER=1\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-glm-external-writes.sh\"",
+            "timeout": 15
           }
         ]
       },
@@ -51,7 +56,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-graphify-egress.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-graphify-egress.sh\"",
+            "timeout": 15
           }
         ]
       },
@@ -60,7 +66,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-rogue-codex-wsl.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-rogue-codex-wsl.sh\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-rogue-codex-exec.sh\"",
+            "timeout": 15
           }
         ]
       },
@@ -69,7 +86,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional --fail-closed-when \"HIMMEL_LESSON_LOOP=1\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-lesson-enforcement-writes.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional --fail-closed-when \"HIMMEL_LESSON_LOOP=1\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-lesson-enforcement-writes.sh\"",
+            "timeout": 15
           }
         ]
       },
@@ -78,7 +96,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-implementor-dispatch.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-implementor-dispatch.sh\"",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-console-dispatch.sh\"",
+            "timeout": 15
           }
         ]
       }
@@ -88,7 +112,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-where-are-we.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-where-are-we.sh\"",
+            "timeout": 15
           }
         ]
       },
@@ -96,7 +121,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-doc-freshness.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-doc-freshness.sh\"",
+            "timeout": 15
           }
         ]
       },
@@ -104,7 +130,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-worktree-nudge.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-worktree-nudge.sh\"",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/record-hook-integrity.sh\"",
+            "timeout": 15
           }
         ]
       }
@@ -114,7 +150,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/refresh-where-are-we-on-end.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/refresh-where-are-we-on-end.sh\"",
+            "timeout": 3
           }
         ]
       },
@@ -122,7 +159,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/jira-nudge-on-end.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/jira-nudge-on-end.sh\"",
+            "timeout": 3
           }
         ]
       },
@@ -130,7 +168,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-session-end.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-session-end.sh\"",
+            "timeout": 3
           }
         ]
       }
@@ -140,7 +179,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-notification.sh\""
+            "command": ". \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" --optional \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-notification.sh\"",
+            "timeout": 15
           }
         ]
       }

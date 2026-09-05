@@ -141,10 +141,138 @@
 #   purity         a full sweep over every manifest.json item leaves the
 #                  fixture repo + vault trees byte-identical (sha256
 #                  snapshot before/after).
+#   telegram-access — HIMMEL-2176 Task 6 formal-schema extension: a
+#                  semantically-usable access.json (non-empty allowFrom) that
+#                  ALSO carries a wrong-typed field elsewhere (dmPolicy as a
+#                  number, a per-group requireMention as a string) now reads
+#                  degraded — the schema check runs BEFORE the pre-existing
+#                  usable-allow-rule check, so a previously-passing shape
+#                  can't mask a formal violation.
+#   cmd:telegram_getme (HIMMEL-2176 Task 6) — no token (absent) / stub `bun`
+#                  ok (present, detail carries the returned username, never
+#                  the token) / stub `bun` rejects (degraded) / bun absent
+#                  from PATH (degraded); a dedicated assertion greps the full
+#                  JSON result for a distinctive fake token value and expects
+#                  zero matches, across every one of these cases. Plus (CR fix,
+#                  HIMMEL-2176 retask stage1-build-6d2e): a child that dumps
+#                  the raw token straight to stderr, and a child whose stderr
+#                  echoes a request URL with the token embedded in its path
+#                  (getMe()'s own URL shape) — both still read degraded, and
+#                  neither leaks the token into the result; the redacted
+#                  detail keeps a `[REDACTED]` marker in its place, proving
+#                  the diagnostic text was scrubbed, not silently dropped.
+#                  Plus (CR round 9, retask stage1-build-6d2e): a
+#                  runtime-observed network/API failure (the real script's
+#                  own `runtime:`-tagged stderr) reads as a connectivity
+#                  problem, never "probe wiring broken", while an
+#                  import-stage (`wiring:`-tagged) failure still does —
+#                  proving the two are told apart, not that everything
+#                  became "runtime".
+#   cmd:whisper_ready (HIMMEL-2176 Task 6, hardened by CR fix codex-2) —
+#                  binary+model both present (present) / binary present,
+#                  model missing (degraded) / binary missing (absent);
+#                  platform-branched default binary name proven both ways via
+#                  ctx.platform (whisper-cli.exe on a simulated win32,
+#                  whisper-cli elsewhere); ALSO a plain DIRECTORY at the
+#                  binary path (absent, never present), a 0-byte binary
+#                  (absent) and a 0-byte model (degraded) — a truncated
+#                  download must never read ready. Plus (CR fix, HIMMEL-2176
+#                  retask stage1-build-6d2e): the exec-bit check is proven to
+#                  be driven by ctx.platform, not the real host
+#                  process.platform — process.platform is overridden to a
+#                  non-win32 value while ctx.platform stays 'win32' and
+#                  fs.accessSync is instrumented to count X_OK calls, so the
+#                  win32-simulated fixtures above are shown to pass because
+#                  of the platform routing, not by accident of this test host
+#                  already being win32.
+#   cmd:python_interpreter (HIMMEL-2176 Task 6) — absent (nothing on PATH,
+#                  via bash's own rc=127 "command not found"), present (a
+#                  stub interpreter that runs the given script and echoes the
+#                  marker), degraded (a stub that mimics the REAL Windows
+#                  Store python.exe app-execution alias: resolves on PATH,
+#                  exits non-zero without running the script).
+#   distinct-tokens (HIMMEL-2176 Task 6) — both unconfigured / only one
+#                  configured / two distinct values (all present, nothing to
+#                  collide with) vs. two IDENTICAL non-empty values
+#                  (degraded, the one and only failure shape).
+#   luna-sources   (HIMMEL-2176 Task 6, corrected under retask
+#                  stage1-build-6d2e) — all configured sources ok (present);
+#                  one auth-expired among others ok (degraded, names the
+#                  source + reason); one source unrecognized by
+#                  fetch-health.py (argparse exit code 2, matched against its
+#                  own literal 'unknown probe source' stderr wording — NOT
+#                  the bare rc alone) among others ok reads DEGRADED, never
+#                  present (HIMMEL-1128 loud-degradation: a source not being
+#                  monitored at all must not hide behind a green verdict); a
+#                  DIFFERENT rc=2 usage error not carrying that wording folds
+#                  into the unhealthy list instead, proving the two aren't
+#                  conflated; every source unrecognized (nothing evaluated)
+#                  reads DEGRADED too (CR round 3, retask stage1-build-6d2e —
+#                  nothing being monitored at all can't be a lesser signal
+#                  than one bad entry among healthy ones), distinguishable
+#                  from genuinely-nothing-configured (empty list / every
+#                  source merely unconfigured), which stays absent/warn.
+#                  Subprocess faked via a stub
+#                  `python` script keyed on the `--probe <source>` argument,
+#                  never a JS mock. ALSO (CR fix codex-3, retask
+#                  stage1-build-6d2e): a source whose reason names a simply
+#                  ABSENT credential/artifact (matches fetch-health.py's own
+#                  "...missing" wording) reads absent (unconfigured, warn
+#                  tier), distinguishable in detail from a configured-but-
+#                  broken source (degraded/fail tier) and from the
+#                  "unrecognized" bucket above; a MIX of both in one sweep
+#                  reads degraded (fail wins) and names both groups.
+#   bridge-persistence (HIMMEL-2176 Stage-1 PR-C, status item S6) —
+#                  bridge.enabled:false reads absent/cleanAbsence:true; Linux
+#                  (unit+linger via a stubbed systemctl/loginctl on PATH,
+#                  HIMMELCTL_SYSTEMD_USER_UNIT_DIR sandboxed): unit+linger ok
+#                  reads present, linger OFF reads degraded naming linger
+#                  specifically, unit absent reads degraded naming the unit;
+#                  a unit file present but systemctl is-enabled reports it
+#                  disabled reads degraded, never present (existence is not
+#                  enablement — retask stage1-build-6d2e round 6); a unit file
+#                  present but is-enabled exiting with an UNRECOGNIZED code
+#                  (the null/undetermined tri-state, distinct from a confirmed
+#                  not-enabled) also reads degraded but must NOT claim "not
+#                  enabled" — it must name the undetermined condition instead;
+#                  Windows (a stubbed powershell/Get-ScheduledTask on PATH, never a
+#                  file-on-disk inference — the S1 false-green class; schtasks'
+#                  LOCALIZED text output replaced with the culture-invariant
+#                  .State enum — retask stage1-build-6d2e round 7): task
+#                  registered AND State=Ready/Running reads present, a task
+#                  that EXISTS but is State=Disabled (the query still
+#                  succeeds) reads degraded naming the Disabled state, never
+#                  present (the same existence-is-not-enablement CRITICAL
+#                  fix), NOT registered at all reads degraded (with an
+#                  explicit anti-false-green case: a plausible runner file on
+#                  disk must not flip this), a failed scheduler query reads
+#                  degraded/unknown, never present; an unsupported platform
+#                  (darwin) reads a loud degraded naming the launchd/Stage-2
+#                  limitation; a malformed config.json degrades cleanly,
+#                  never crashes. Part B (bridge.envPath /
+#                  bridge.whisper.{cli,model} — previously read by nothing):
+#                  a configured envPath resolves the token from THAT path
+#                  when set (no TELEGRAM_ENV override); TELEGRAM_ENV wins
+#                  over a different configured value; no config file at all
+#                  behaves identically to before this ticket (regression
+#                  guard, both for the envPath and the whisper cli/model
+#                  resolution); a malformed config degrades cleanly, never
+#                  crashes cmd:whisper_ready either.
 
 set -euo pipefail
 
-repo_root=$(git rev-parse --show-toplevel)
+# git rev-parse is the primary resolution (unchanged on a normal checkout);
+# the path-based fallback (3 levels up from this file) is what the sibling
+# suites (test-restart-bridge.sh, test-bridge-persistence.sh) already use, and
+# is what makes this suite runnable under WSL against this worktree — its
+# .git is a FILE pointing at a Windows-absolute `gitdir: C:/Users/...` path
+# WSL cannot follow, so `git rev-parse --show-toplevel` fails there (retask
+# stage1-build-6d2e). Deliberately NOT an exported GIT_DIR/GIT_WORK_TREE: that
+# leaks into every probe fixture spawned below (proven — it broke the
+# git-hooks case, which resolved hooks against the Windows .git instead of a
+# fixture repo), where a plain path never can.
+repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || repo_root=$(cd "$(dirname "$0")/../../.." && pwd)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 probes_lib="$repo_root/scripts/himmelctl/lib/probes.js"
 helpers_lib="$repo_root/scripts/himmelctl/lib/helpers.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
@@ -166,15 +294,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 is_win32() {
   case "$(uname -s)" in
@@ -215,6 +334,16 @@ probes_lib_w="$(winpath "$probes_lib")"
 helpers_lib_w="$(winpath "$helpers_lib")"
 manifest_w="$(winpath "$manifest_path")"
 repo_root_w="$(winpath "$repo_root")"
+
+# HIMMEL-2289: a path under $work that is never created — pins HIMMELCTL_BASH
+# to a genuinely unresolvable bash. A bare `env: { PATH: '' }` used to be
+# enough to un-resolve bash for a spawn-error case, but resolveProbeBash()
+# (probes.js) now falls through to resolveBash() (scripts/hooks/
+# run-hook-with-bash.js), which also probes canonical Git-for-Windows
+# locations on win32 (hardcoded, e.g. C:\Program Files\Git\bin\bash.exe) and
+# /bin/bash, /usr/bin/bash on posix REGARDLESS of PATH — so an empty PATH
+# alone is now vacuous on both platforms and no longer proves a spawn error.
+no_such_bash_w="$(winpath "$work/no-such-bash/bash")"
 
 # ── which() (helpers.js): key-PRESENCE, not truthiness — HIMMEL-1093 round 5
 # CR fix (codex-1): `e.PATH || e.Path || ''` treated a DELIBERATELY scrubbed
@@ -929,12 +1058,21 @@ echo "$outGmcp" | jq -e '.actual == "present"' >/dev/null \
 echo "ok: graphify-mcp's dropped bin field is redundant — the registered-command check alone correctly validates its REAL entrypoint"
 
 # ── handover-dir (handover-wiring) ──────────────────────────────────────────
+# HIMMEL-2298: these two cases run the REAL scripts/lib/handover-path.sh
+# against the real checkout, and that resolver is slow on Windows — measured
+# 4.8-13.0s wall for 1.2s of user time, i.e. MSYS syscall-bound rather than
+# blocked on anything. Under this suite's OWN load (it spawns hundreds of bash
+# processes) it has been seen to exceed even the 60s family budget, which made
+# these long-standing cases latently flaky: they assert WIRING, not latency, so
+# a slow host must not turn them red. Pin a generous-but-bounded budget via
+# HIMMELCTL_PROBE_TIMEOUT_SECS — a genuine hang still fails them. The
+# underlying resolver latency is HIMMEL-2312, not a budget problem.
 hd_present_dir="$work/hd-present-handoverdir"; mkdir -p "$hd_present_dir"
 outHDp=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'handover-wiring');
-const env = Object.assign({}, process.env, { HANDOVER_DIR: '$(winpath "$hd_present_dir")' });
+const env = Object.assign({}, process.env, { HANDOVER_DIR: '$(winpath "$hd_present_dir")', HIMMELCTL_PROBE_TIMEOUT_SECS: '180' });
 const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'project', env };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
@@ -945,7 +1083,7 @@ outHDa=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'handover-wiring');
-const env = Object.assign({}, process.env);
+const env = Object.assign({}, process.env, { HIMMELCTL_PROBE_TIMEOUT_SECS: '180' });
 delete env.HANDOVER_DIR;
 const ctx = { repoRoot: '$(winpath "$hd_absent_cwd")', targetPath: '$(winpath "$hd_absent_cwd")', scope: 'project', env };
 console.log(JSON.stringify(runProbe(item, ctx)));
@@ -1104,20 +1242,23 @@ echo "$outHHnr" | jq -e '.detail | contains("cannot source resolver")' >/dev/nul
 echo "ok: cmd:has_hermes — a missing/unreadable resolver reads degraded, distinguished from hermes genuinely not installed"
 
 # ── cmd:has_hermes: spawn error -> degraded, NOT absent (CR fix, ───────────
-# HIMMEL-1093 round 4). ctx.env with an empty PATH makes 'bash' itself
-# unresolvable to spawnSync, exercising the r.error branch.
+# HIMMEL-1093 round 4). HIMMEL-2289: PATH:'' alone no longer un-resolves
+# bash (resolveProbeBash()'s Git-for-Windows/posix fallback candidates below
+# aren't PATH-gated — see the no_such_bash_w comment above) — HIMMELCTL_BASH
+# pinned to a path that is never created is what actually forces the spawn
+# error and exercises the r.error branch.
 outHHse=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'hermes-lanes');
-const ctx = { repoRoot: '$(winpath "$hh_repo_present")', targetPath: '$repo_root_w', scope: 'user', env: { PATH: '' } };
+const ctx = { repoRoot: '$(winpath "$hh_repo_present")', targetPath: '$repo_root_w', scope: 'user', env: { PATH: '', HIMMELCTL_BASH: '$no_such_bash_w' } };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outHHse" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "cmd:has_hermes degraded (spawn error, bash unresolvable): (got: $outHHse)"
 echo "$outHHse" | jq -e '.detail | contains("spawn error")' >/dev/null \
   || fail "cmd:has_hermes spawn-error detail should name it (got: $outHHse)"
-echo "ok: cmd:has_hermes — a spawn error (bash unresolvable) reads degraded, not absent"
+echo "ok: cmd:has_hermes — a spawn error (bash unresolvable via a pinned-nonexistent HIMMELCTL_BASH) reads degraded, not absent"
 
 # ── cmd:has_hermes: unexpected rc (127 — resolver sourced fine but never ───
 # defined resolve_hermes_py) -> degraded, NOT absent (CR fix, HIMMEL-1093
@@ -1209,13 +1350,16 @@ echo "$outIDHnr" | jq -e '.detail | contains("cannot source resolver")' >/dev/nu
 echo "ok: cmd:is_himmel_dev — a missing/unreadable resolver reads degraded, distinguished from a genuinely absent marker"
 
 # ── cmd:is_himmel_dev: spawn error -> degraded, NOT absent (CR fix, ─────────
-# HIMMEL-1093 round 2, codex-1). ctx.env with an empty PATH makes 'bash'
-# itself unresolvable to spawnSync, exercising the r.error branch.
+# HIMMEL-1093 round 2, codex-1). HIMMEL-2289: PATH:'' alone no longer
+# un-resolves bash (resolveProbeBash()'s Git-for-Windows/posix fallback
+# candidates below aren't PATH-gated — see the no_such_bash_w comment above)
+# — HIMMELCTL_BASH pinned to a path that is never created is what actually
+# forces the spawn error and exercises the r.error branch.
 outIDHse=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'doc-guard-map');
-const ctx = { repoRoot: '$(winpath "$idh_present")', targetPath: '$(winpath "$idh_present")', scope: 'project', env: { PATH: '' } };
+const ctx = { repoRoot: '$(winpath "$idh_present")', targetPath: '$(winpath "$idh_present")', scope: 'project', env: { PATH: '', HIMMELCTL_BASH: '$no_such_bash_w' } };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outIDHse" | jq -e '.actual == "degraded"' >/dev/null \
@@ -1259,12 +1403,22 @@ telegramHome() {
   local name="$1"; mkdir -p "$work/$name/.claude/channels/telegram"; printf '%s' "$work/$name"
 }
 
+# HIMMEL_LUNA_CONFIG_PATH points every telegram-access/cmd:telegram_getme
+# invocation in this section at a deliberately nonexistent path
+# (resolveBridgeEnvFilePath now consults ~/.himmel/config.json for
+# bridge.envPath — HIMMEL-2176 Stage-1 PR-C, Part B) — never the real file. A
+# nonexistent path makes loadConfigIfPresent() skip load() entirely, so this
+# whole section's pre-existing, unaffected HOME-based fixture resolution is
+# unchanged.
+tg_no_config="$work/tg-no-config.json"
+tg_no_config_w="$(winpath "$tg_no_config")"
+
 # no token at all -> absent, regardless of access.json.
 tb_no_token=$(telegramHome "tb-no-token")
 cat > "$tb_no_token/.claude/channels/telegram/access.json" <<'JSON'
 {"allowFrom":["12345"]}
 JSON
-outTBnoToken=$("$node_bin" -e "
+outTBnoToken=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'telegram-bridge');
@@ -1281,7 +1435,7 @@ tb_token_only=$(telegramHome "tb-token-only")
 cat > "$tb_token_only/.claude/channels/telegram/.env" <<'ENV'
 TELEGRAM_BOT_TOKEN=123:abc
 ENV
-outTBtokenOnly=$("$node_bin" -e "
+outTBtokenOnly=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'telegram-bridge');
@@ -1301,7 +1455,7 @@ cat > "$tb_malformed/.claude/channels/telegram/.env" <<'ENV'
 TELEGRAM_BOT_TOKEN=123:abc
 ENV
 printf '{not valid json' > "$tb_malformed/.claude/channels/telegram/access.json"
-outTBmalformed=$("$node_bin" -e "
+outTBmalformed=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'telegram-bridge');
@@ -1322,7 +1476,7 @@ ENV
 cat > "$tb_empty_rules/.claude/channels/telegram/access.json" <<'JSON'
 {"dmPolicy":"allowlist","allowFrom":[],"groups":{}}
 JSON
-outTBemptyRules=$("$node_bin" -e "
+outTBemptyRules=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'telegram-bridge');
@@ -1344,7 +1498,7 @@ ENV
 cat > "$tb_valid/.claude/channels/telegram/access.json" <<'JSON'
 {"dmPolicy":"allowlist","allowFrom":["12345"]}
 JSON
-outTBvalid=$("$node_bin" -e "
+outTBvalid=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'telegram-bridge');
@@ -1366,7 +1520,7 @@ ENV
 cat > "$tb_group_only/.claude/channels/telegram/access.json" <<'JSON'
 {"groups":{"-100123":{}}}
 JSON
-outTBgroupOnly=$("$node_bin" -e "
+outTBgroupOnly=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'telegram-bridge');
@@ -1377,6 +1531,798 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 echo "$outTBgroupOnly" | jq -e '.actual == "present"' >/dev/null \
   || fail "telegram-access: token + a groups-only access.json (no top-level allowFrom) should read present: (got: $outTBgroupOnly)"
 echo "ok: telegram-access — token + a groups-only access.json reads present, no longer a tautological file-exists on a tracked script"
+
+# ── telegram-access: formal JSON-schema extension (HIMMEL-2176 Task 6) ─────
+# A semantically-usable access.json (non-empty allowFrom) that ALSO carries a
+# wrong-typed field elsewhere must now read degraded — proves the schema
+# check runs BEFORE (not instead of) the pre-existing usable-allow-rule check.
+tb_schema_bad_dmpolicy=$(telegramHome "tb-schema-bad-dmpolicy")
+cat > "$tb_schema_bad_dmpolicy/.claude/channels/telegram/.env" <<'ENV'
+TELEGRAM_BOT_TOKEN=123:abc
+ENV
+cat > "$tb_schema_bad_dmpolicy/.claude/channels/telegram/access.json" <<'JSON'
+{"dmPolicy":42,"allowFrom":["12345"]}
+JSON
+outTBschemaDm=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'telegram-bridge');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$tb_schema_bad_dmpolicy")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outTBschemaDm" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "telegram-access schema: dmPolicy as a number (non-empty allowFrom notwithstanding) should read degraded: (got: $outTBschemaDm)"
+echo "$outTBschemaDm" | jq -e '.detail | test("schema"; "i")' >/dev/null \
+  || fail "telegram-access schema: detail should name the formal-schema failure (got: $outTBschemaDm)"
+echo "ok: telegram-access — formal schema catches a wrong-typed dmPolicy even with an otherwise-usable allowFrom"
+
+tb_schema_bad_group=$(telegramHome "tb-schema-bad-group")
+cat > "$tb_schema_bad_group/.claude/channels/telegram/.env" <<'ENV'
+TELEGRAM_BOT_TOKEN=123:abc
+ENV
+cat > "$tb_schema_bad_group/.claude/channels/telegram/access.json" <<'JSON'
+{"allowFrom":["12345"],"groups":{"-100123":{"requireMention":"yes"}}}
+JSON
+outTBschemaGroup=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'telegram-bridge');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$tb_schema_bad_group")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outTBschemaGroup" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "telegram-access schema: a per-group requireMention as a string should read degraded: (got: $outTBschemaGroup)"
+echo "$outTBschemaGroup" | jq -e '.detail | contains("requireMention")' >/dev/null \
+  || fail "telegram-access schema: detail should name the offending field (got: $outTBschemaGroup)"
+echo "ok: telegram-access — formal schema recurses into per-group fields (requireMention type-checked)"
+
+# Regression: a previously-valid, schema-clean fixture (groups-only, no
+# top-level allowFrom) must still read present now that the schema check
+# runs first.
+tb_schema_ok=$(telegramHome "tb-schema-ok")
+cat > "$tb_schema_ok/.claude/channels/telegram/.env" <<'ENV'
+TELEGRAM_BOT_TOKEN=123:abc
+ENV
+cat > "$tb_schema_ok/.claude/channels/telegram/access.json" <<'JSON'
+{"dmPolicy":"allowlist","groups":{"-100123":{"requireMention":true,"allowFrom":["1"]}}}
+JSON
+outTBschemaOk=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'telegram-bridge');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$tb_schema_ok")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outTBschemaOk" | jq -e '.actual == "present"' >/dev/null \
+  || fail "telegram-access schema: a schema-clean groups-only access.json should still read present: (got: $outTBschemaOk)"
+echo "ok: telegram-access — a schema-clean access.json is unaffected by the new formal check"
+
+# ── cmd:telegram_getme (HIMMEL-2176 Task 6) ─────────────────────────────────
+# no token at all -> absent, bun never even invoked.
+gm_no_token=$(telegramHome "gm-no-token")
+outGMnoToken=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_no_token")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMnoToken" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "cmd:telegram_getme: no token should read absent: (got: $outGMnoToken)"
+echo "ok: cmd:telegram_getme — no token reads absent"
+
+# stub `bun`: HIMMEL_PROBE_TOKEN == GOODTOKEN999 -> "ok:testbot"; else "fail".
+# Fakes the SUBPROCESS boundary (this file's own convention), never the JS
+# import boundary — the real telegram-api.ts is never touched by this suite.
+gm_bun_stub="$work/gm-bun-stub"; mkdir -p "$gm_bun_stub"
+cat > "$gm_bun_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+if [ "$HIMMEL_PROBE_TOKEN" = "GOODTOKEN999" ]; then
+  echo "ok:testbot"
+else
+  echo "fail"
+fi
+STUB
+chmod +x "$gm_bun_stub/bun"
+pathGMpresent=$(build_path "$gm_bun_stub" bash git jq --)
+
+gm_valid=$(telegramHome "gm-valid")
+printf 'TELEGRAM_BOT_TOKEN=GOODTOKEN999\n' > "$gm_valid/.claude/channels/telegram/.env"
+outGMvalid=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" PATH="$pathGMpresent" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_valid")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMvalid" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:telegram_getme: stub bun 'ok' should read present: (got: $outGMvalid)"
+echo "$outGMvalid" | jq -e '.detail | contains("testbot")' >/dev/null \
+  || fail "cmd:telegram_getme: present detail should name the returned username: (got: $outGMvalid)"
+if echo "$outGMvalid" | grep -qF "GOODTOKEN999"; then
+  fail "cmd:telegram_getme: the raw token must NEVER appear in probe output (got: $outGMvalid)"
+fi
+echo "ok: cmd:telegram_getme — a valid token (stub bun) reads present, token never leaks into the result"
+
+gm_rejected=$(telegramHome "gm-rejected")
+printf 'TELEGRAM_BOT_TOKEN=BADTOKEN000\n' > "$gm_rejected/.claude/channels/telegram/.env"
+outGMrejected=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" PATH="$pathGMpresent" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_rejected")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMrejected" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:telegram_getme: stub bun 'fail' (unauthorized) should read degraded: (got: $outGMrejected)"
+if echo "$outGMrejected" | grep -qF "BADTOKEN000"; then
+  fail "cmd:telegram_getme: the raw REJECTED token must NEVER appear in probe output (got: $outGMrejected)"
+fi
+echo "ok: cmd:telegram_getme — an unauthorized/rejected token reads degraded, never leaks into the result"
+
+# CR fix (codex-5, retask stage1-build-6d2e): probes.js hands the checkout's
+# apiModule path to the child `bun` process via HIMMEL_PROBE_TELEGRAM_API for
+# a dynamic import() -- a native Windows path there is runtime-dependent as
+# an ESM specifier and can be rejected as an unsupported URL scheme. Every
+# other test in this block stubs `bun` itself (this file's own established
+# convention, never the JS import boundary), so the real import() call is
+# never exercised anywhere in this suite -- that is exactly why the bug
+# shipped. This pins the SHAPE of what's handed to the child instead: the
+# stub asserts on its own received env (HIMMEL_PROBE_TELEGRAM_API must start
+# with `file://`, never a bare native path) without needing a real bun.
+gm_urlshape_stub="$work/gm-urlshape-stub"; mkdir -p "$gm_urlshape_stub"
+cat > "$gm_urlshape_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+case "$HIMMEL_PROBE_TELEGRAM_API" in
+  file://*) echo "ok:urlshape" ;;
+  *) echo "fail" ;;
+esac
+STUB
+chmod +x "$gm_urlshape_stub/bun"
+pathGMurlshape=$(build_path "$gm_urlshape_stub" bash git jq --)
+
+gm_urlshape=$(telegramHome "gm-urlshape")
+printf 'TELEGRAM_BOT_TOKEN=URLSHAPETOKEN222\n' > "$gm_urlshape/.claude/channels/telegram/.env"
+outGMurlshape=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" PATH="$pathGMurlshape" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_urlshape")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMurlshape" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:telegram_getme: HIMMEL_PROBE_TELEGRAM_API handed to the child must be a file:// URL, not a native path (got: $outGMurlshape)"
+echo "ok: cmd:telegram_getme — HIMMEL_PROBE_TELEGRAM_API handed to the child is a file:// URL (pathToFileURL), not a native Windows path"
+
+# bun absent from PATH entirely -> degraded (probe wiring / prerequisite gap,
+# never conflated with 'no token configured').
+gm_no_bun_stub="$work/gm-no-bun-bin"; mkdir -p "$gm_no_bun_stub"
+pathGMabsent=$(build_path "$gm_no_bun_stub" bash git jq -- bun)
+gm_no_bun=$(telegramHome "gm-no-bun")
+printf 'TELEGRAM_BOT_TOKEN=SOMETOKEN111\n' > "$gm_no_bun/.claude/channels/telegram/.env"
+outGMnoBun=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" PATH="$pathGMabsent" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_no_bun")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMnoBun" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:telegram_getme: bun absent from PATH should read degraded: (got: $outGMnoBun)"
+if echo "$outGMnoBun" | grep -qF "SOMETOKEN111"; then
+  fail "cmd:telegram_getme: the raw token must NEVER appear even on a bun-missing wiring failure (got: $outGMnoBun)"
+fi
+echo "ok: cmd:telegram_getme — bun missing from PATH reads degraded, token still never leaks"
+
+# CR fix (HIMMEL-2176, retask stage1-build-6d2e): every case above only ever
+# exercised a stub `bun` that prints "ok:"/"fail" to STDOUT — none of them
+# covered a child that writes something raw to STDERR containing the token,
+# which is exactly the shape that leaked in production (getMe()'s own
+# request URL embeds the token in its path: https://api.telegram.org/
+# bot<TOKEN>/getMe, and any fetch failure/stack trace naming that URL used to
+# be folded into the probe's detail verbatim). These two cases prove the
+# redaction independently of what the tests above already cover.
+gm_stderr_token_stub="$work/gm-stderr-token-stub"; mkdir -p "$gm_stderr_token_stub"
+cat > "$gm_stderr_token_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+echo "child crashed, raw token dump: $HIMMEL_PROBE_TOKEN" >&2
+exit 1
+STUB
+chmod +x "$gm_stderr_token_stub/bun"
+pathGMstderrToken=$(build_path "$gm_stderr_token_stub" bash git jq --)
+
+gm_stderr_token=$(telegramHome "gm-stderr-token")
+printf 'TELEGRAM_BOT_TOKEN=LEAKPROBE99887766\n' > "$gm_stderr_token/.claude/channels/telegram/.env"
+outGMstderrToken=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" PATH="$pathGMstderrToken" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_stderr_token")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMstderrToken" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:telegram_getme: a child dumping the raw token to stderr should still read degraded: (got: $outGMstderrToken)"
+if echo "$outGMstderrToken" | grep -qF "LEAKPROBE99887766"; then
+  fail "cmd:telegram_getme: a child that writes the raw token to stderr must NOT leak it into the probe result (got: $outGMstderrToken)"
+fi
+echo "ok: cmd:telegram_getme — a child dumping the raw token to stderr never leaks it into the probe result"
+
+gm_stderr_url_stub="$work/gm-stderr-url-stub"; mkdir -p "$gm_stderr_url_stub"
+cat > "$gm_stderr_url_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+echo "TypeError: fetch failed: https://api.telegram.org/bot$HIMMEL_PROBE_TOKEN/getMe: getaddrinfo ENOTFOUND api.telegram.org" >&2
+exit 1
+STUB
+chmod +x "$gm_stderr_url_stub/bun"
+pathGMstderrUrl=$(build_path "$gm_stderr_url_stub" bash git jq --)
+
+gm_stderr_url=$(telegramHome "gm-stderr-url")
+printf 'TELEGRAM_BOT_TOKEN=LEAKPROBE99887766\n' > "$gm_stderr_url/.claude/channels/telegram/.env"
+outGMstderrUrl=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" PATH="$pathGMstderrUrl" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_stderr_url")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMstderrUrl" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:telegram_getme: a child echoing a token-bearing URL to stderr should still read degraded: (got: $outGMstderrUrl)"
+if echo "$outGMstderrUrl" | grep -qF "LEAKPROBE99887766"; then
+  fail "cmd:telegram_getme: a child that echoes a token-bearing request URL to stderr must NOT leak the token into the probe result (got: $outGMstderrUrl)"
+fi
+echo "$outGMstderrUrl" | jq -e '.detail | contains("[REDACTED]")' >/dev/null \
+  || fail "cmd:telegram_getme: the redacted detail should still carry a [REDACTED] marker in place of the token, proving the diagnostic text was scrubbed rather than dropped (got: $outGMstderrUrl)"
+echo "ok: cmd:telegram_getme — a child echoing a token-bearing request URL to stderr never leaks the token; diagnostic text otherwise preserved"
+
+# CR round 9 fix (HIMMEL-2176, retask stage1-build-6d2e): every failure case
+# above reads as "probe wiring broken" -- correct for a script that never
+# even got to import telegram-api.ts, but WRONG for a genuine network/API
+# failure the getMe() call itself observed (DNS, connectivity, Telegram
+# unreachable). The real inline script tags that case's stderr with
+# "runtime:" before this suite's own redaction step ever sees it; this stub
+# reproduces exactly that shape (never touching the real JS import boundary,
+# same convention as every other case in this block) to prove probes.js
+# routes it to a connectivity-flavoured detail instead of "wiring broken",
+# while still never leaking the token.
+gm_runtime_network_stub="$work/gm-runtime-network-stub"; mkdir -p "$gm_runtime_network_stub"
+cat > "$gm_runtime_network_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+echo "runtime:TypeError: fetch failed: getaddrinfo ENOTFOUND api.telegram.org (token was $HIMMEL_PROBE_TOKEN)" >&2
+exit 1
+STUB
+chmod +x "$gm_runtime_network_stub/bun"
+pathGMruntimeNetwork=$(build_path "$gm_runtime_network_stub" bash git jq --)
+
+gm_runtime_network=$(telegramHome "gm-runtime-network")
+printf 'TELEGRAM_BOT_TOKEN=NETFAILTOKEN555\n' > "$gm_runtime_network/.claude/channels/telegram/.env"
+outGMruntimeNetwork=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" PATH="$pathGMruntimeNetwork" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_runtime_network")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMruntimeNetwork" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:telegram_getme: a runtime-observed network failure should read degraded: (got: $outGMruntimeNetwork)"
+echo "$outGMruntimeNetwork" | jq -e '.detail | (contains("wiring broken") | not)' >/dev/null \
+  || fail "cmd:telegram_getme: a runtime-observed network failure must NOT be reported as probe wiring broken: (got: $outGMruntimeNetwork)"
+echo "$outGMruntimeNetwork" | jq -e '.detail | (contains("connectivity") or contains("ENOTFOUND"))' >/dev/null \
+  || fail "cmd:telegram_getme: a runtime-observed network failure detail should carry a connectivity-flavoured hint: (got: $outGMruntimeNetwork)"
+if echo "$outGMruntimeNetwork" | grep -qF "NETFAILTOKEN555"; then
+  fail "cmd:telegram_getme: a runtime-observed network failure must NOT leak the token (got: $outGMruntimeNetwork)"
+fi
+echo "ok: cmd:telegram_getme — a runtime-observed network failure reads degraded with a connectivity detail, not 'probe wiring broken', and never leaks the token"
+
+# The wiring side of the same distinction: an import-stage failure (tagged
+# "wiring:" by the real script) must still read as a probe wiring problem —
+# proving the fix routes on the tag rather than defaulting everything to
+# "runtime" now that both are possible.
+gm_wiring_stub="$work/gm-wiring-stub"; mkdir -p "$gm_wiring_stub"
+cat > "$gm_wiring_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+echo "wiring:Error: Cannot find module 'telegram-api.ts'" >&2
+exit 1
+STUB
+chmod +x "$gm_wiring_stub/bun"
+pathGMwiring=$(build_path "$gm_wiring_stub" bash git jq --)
+
+gm_wiring=$(telegramHome "gm-wiring")
+printf 'TELEGRAM_BOT_TOKEN=WIRINGTOKEN333\n' > "$gm_wiring/.claude/channels/telegram/.env"
+outGMwiring=$(HIMMEL_LUNA_CONFIG_PATH="$tg_no_config_w" PATH="$pathGMwiring" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-getme', probe: { type: 'cmd:telegram_getme', envFile: '.claude/channels/telegram/.env', tokenKey: 'TELEGRAM_BOT_TOKEN', apiModule: 'scripts/telegram/telegram-api.ts' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$gm_wiring")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outGMwiring" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:telegram_getme: an import-stage (wiring) failure should read degraded: (got: $outGMwiring)"
+echo "$outGMwiring" | jq -e '.detail | contains("wiring")' >/dev/null \
+  || fail "cmd:telegram_getme: an import-stage failure should still be reported as probe wiring broken: (got: $outGMwiring)"
+if echo "$outGMwiring" | grep -qF "WIRINGTOKEN333"; then
+  fail "cmd:telegram_getme: an import-stage failure must NOT leak the token (got: $outGMwiring)"
+fi
+echo "ok: cmd:telegram_getme — an import-stage (wiring) failure still reads as probe wiring broken, never leaks the token"
+
+# ── cmd:whisper_ready (HIMMEL-2176 Task 6) ──────────────────────────────────
+# HIMMEL_LUNA_CONFIG_PATH points every invocation below at a deliberately
+# nonexistent path (probeWhisperReady now consults ~/.himmel/config.json for
+# bridge.whisper.{cli,model} — HIMMEL-2176 Stage-1 PR-C, Part B) — never the
+# real file. A nonexistent path makes loadConfigIfPresent() skip load()
+# entirely, matching this whole block's pre-existing, unaffected behavior.
+wr_no_config="$work/wr-no-config.json"
+
+wr_absent="$work/wr-absent-dir"; mkdir -p "$wr_absent"
+outWRabsent=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$wr_no_config")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$wr_absent")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'linux' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outWRabsent" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "cmd:whisper_ready: empty WHISPER_DIR should read absent: (got: $outWRabsent)"
+echo "$outWRabsent" | jq -e '.detail | contains("whisper-cli") and (contains("whisper-cli.exe") | not)' >/dev/null \
+  || fail "cmd:whisper_ready: absent detail on a simulated POSIX platform should name the POSIX default binary name 'whisper-cli' (not .exe): (got: $outWRabsent)"
+echo "ok: cmd:whisper_ready — no binary reads absent, POSIX default binary name has no .exe"
+
+wr_degraded="$work/wr-degraded-dir"; mkdir -p "$wr_degraded"
+printf 'stub-binary' > "$wr_degraded/whisper-cli.exe"
+outWRdegraded=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$wr_no_config")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$wr_degraded")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'win32' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outWRdegraded" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:whisper_ready: binary present (simulated win32 default name), model missing should read degraded: (got: $outWRdegraded)"
+echo "$outWRdegraded" | jq -e '.detail | contains("whisper-cli.exe") and contains("ggml-small.bin")' >/dev/null \
+  || fail "cmd:whisper_ready: degraded detail should name both the win32 binary default and the missing model (got: $outWRdegraded)"
+echo "ok: cmd:whisper_ready — binary present (win32 default name), model missing reads degraded"
+
+wr_present="$work/wr-present-dir"; mkdir -p "$wr_present"
+printf 'stub-binary' > "$wr_present/whisper-cli.exe"
+printf 'stub-model' > "$wr_present/ggml-small.bin"
+outWRpresent=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$wr_no_config")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$wr_present")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'win32' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outWRpresent" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:whisper_ready: binary + model both present should read present: (got: $outWRpresent)"
+echo "ok: cmd:whisper_ready — binary + model both present reads present"
+
+# CR fix (HIMMEL-2176, codex-2): a DIRECTORY sitting at the binary path (a
+# stray same-named folder, or a broken/partial install) must never read
+# present or degraded from bare fs.existsSync() — it must read absent, same
+# as a genuinely missing binary. Ambient WHISPER_CLI/WHISPER_MODEL/
+# WHISPER_DIR are explicitly nulled per the task brief's own warning (a real
+# operator env value on this machine previously produced a false pass).
+wr_dir_binary="$work/wr-dir-binary-dir"; mkdir -p "$wr_dir_binary/whisper-cli.exe"
+outWRdirBinary=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$wr_no_config")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$wr_dir_binary")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'win32' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outWRdirBinary" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "cmd:whisper_ready: a DIRECTORY at the binary path must read absent, never present/degraded: (got: $outWRdirBinary)"
+echo "$outWRdirBinary" | jq -e '.detail | test("directory"; "i")' >/dev/null \
+  || fail "cmd:whisper_ready: a directory-at-binary-path detail should name the actual problem (got: $outWRdirBinary)"
+echo "ok: cmd:whisper_ready — a plain directory at the binary path reads absent, never ready"
+
+# CR fix (HIMMEL-2176, codex-2): a 0-byte binary (a truncated/interrupted
+# download) must read absent, never present.
+wr_empty_binary="$work/wr-empty-binary-dir"; mkdir -p "$wr_empty_binary"
+: > "$wr_empty_binary/whisper-cli.exe"
+outWRemptyBinary=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$wr_no_config")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$wr_empty_binary")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'win32' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outWRemptyBinary" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "cmd:whisper_ready: a 0-byte binary must read absent, never present: (got: $outWRemptyBinary)"
+echo "$outWRemptyBinary" | jq -e '.detail | test("0-byte"; "i")' >/dev/null \
+  || fail "cmd:whisper_ready: a 0-byte binary detail should name it a 0-byte file (got: $outWRemptyBinary)"
+echo "ok: cmd:whisper_ready — a 0-byte binary (truncated download) reads absent, never ready"
+
+# CR fix (HIMMEL-2176, codex-2): binary usable, but a 0-byte MODEL (a
+# truncated model download — the design's own checklist item warns about
+# exactly this) must read degraded, never present.
+wr_empty_model="$work/wr-empty-model-dir"; mkdir -p "$wr_empty_model"
+printf 'not-empty' > "$wr_empty_model/whisper-cli.exe"
+: > "$wr_empty_model/ggml-small.bin"
+outWRemptyModel=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$wr_no_config")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$wr_empty_model")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'win32' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outWRemptyModel" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:whisper_ready: a 0-byte model (binary usable) must read degraded, never present: (got: $outWRemptyModel)"
+echo "$outWRemptyModel" | jq -e '.detail | test("0-byte"; "i")' >/dev/null \
+  || fail "cmd:whisper_ready: a 0-byte model detail should name it a 0-byte file (got: $outWRemptyModel)"
+echo "ok: cmd:whisper_ready — a 0-byte model (truncated download) reads degraded, never ready"
+
+# CR fix (HIMMEL-2176, retask stage1-build-6d2e): isUsableFile()'s exec-bit
+# check used to read the REAL process.platform directly instead of the
+# effective platform (ctx.platform || process.platform) this file's own
+# convention threads everywhere else — a win32-simulated probe running on an
+# actual POSIX host would silently fall back to that host's own exec check
+# instead of skipping it (Windows has no exec-bit concept). The
+# wr_present/wr_degraded fixtures above pin ctx.platform:'win32', but on
+# THIS test host the real process.platform already happens to read 'win32'
+# too, so they could not tell the fix apart from the pre-fix bug — the exec
+# check would be skipped either way, for the wrong reason. This test forces
+# the two apart: process.platform is overridden (a real, JS-visible
+# override — libuv's own X_OK enforcement is unaffected either way, since
+# this only changes what isUsableFile() itself reads to decide whether to
+# even ATTEMPT the check) to a non-win32 value while ctx.platform stays
+# 'win32', and fs.accessSync is instrumented to count X_OK calls. The pre-fix
+# code (reading the overridden process.platform) would attempt the exec
+# check anyway; the fixed code (reading ctx.platform) must skip it entirely —
+# proving the win32-simulated fixtures above now pass because of the
+# effective-platform routing, not by accident of the real host OS.
+outWRplatformRouting=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$wr_no_config")" "$node_bin" -e "
+const fs = require('fs');
+let xOkCalls = 0;
+const origAccessSync = fs.accessSync;
+fs.accessSync = function (p, mode) {
+  if (mode === fs.constants.X_OK) xOkCalls += 1;
+  return origAccessSync.call(fs, p, mode);
+};
+Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$wr_present")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'win32' };
+const result = runProbe(item, ctx);
+console.log(JSON.stringify({ result, xOkCalls }));
+")
+echo "$outWRplatformRouting" | jq -e '.result.actual == "present"' >/dev/null \
+  || fail "cmd:whisper_ready: ctx.platform:'win32' should still read present even with the real process.platform overridden to non-win32: (got: $outWRplatformRouting)"
+echo "$outWRplatformRouting" | jq -e '.xOkCalls == 0' >/dev/null \
+  || fail "cmd:whisper_ready: ctx.platform:'win32' must skip the exec-bit check entirely (fs.accessSync X_OK must not be called), even when the real process.platform reads non-win32 (got: $outWRplatformRouting)"
+echo "ok: cmd:whisper_ready — the exec-bit check is driven by ctx.platform, not the real host process.platform (HIMMEL-2176 CR fix)"
+
+# CR fix (retask stage1-build-6d2e): loadConfigIfPresent() used to read
+# HIMMEL_LUNA_CONFIG_PATH from the real process.env directly, ignoring
+# ctx.env — the same shape as the HOME bug expandHomeForCtx already fixed a
+# few files up ("would have resolved against the real operator's
+# ~/.claude/channels/telegram/.env in production for any caller not using
+# ctx.env.HOME"). Proven the SAME way the pre-existing "cmd:codex_provisioned
+# honors ctx.env.HOME" case above proves its own fix: a MINIMAL ctx.env (no
+# process.env spread at all) carrying its OWN HIMMEL_LUNA_CONFIG_PATH, set
+# alongside a DIFFERENT value on the real subprocess env var. The two
+# configs are engineered to disagree on the RESULT, not just wording — the
+# ambient config's model file doesn't exist in the whisper dir (would read
+# degraded), the ctx config's does (present) — so only a genuine ctx.env
+# read, not an accidental string match, can make this pass.
+wr_ctxenv_dir="$work/wr-ctxenv-dir"; mkdir -p "$wr_ctxenv_dir"
+printf 'stub-binary' > "$wr_ctxenv_dir/whisper-cli"; chmod +x "$wr_ctxenv_dir/whisper-cli"
+printf 'stub-model' > "$wr_ctxenv_dir/ctx-model.bin"
+wr_ctxenv_cfg="$work/wr-ctxenv-config.json"
+cat > "$wr_ctxenv_cfg" <<'JSON'
+{"version":1,"luna":{"vaultPath":"/x","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":true,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ctx-model.bin"}}}
+JSON
+wr_ambient_cfg="$work/wr-ambient-config.json"
+cat > "$wr_ambient_cfg" <<'JSON'
+{"version":1,"luna":{"vaultPath":"/x","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":true,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ambient-model.bin"}}}
+JSON
+outWRctxEnvConfig=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$wr_ambient_cfg")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: { WHISPER_DIR: '$(winpath "$wr_ctxenv_dir")', HIMMEL_LUNA_CONFIG_PATH: '$(winpath "$wr_ctxenv_cfg")' },
+  platform: 'linux' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outWRctxEnvConfig" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:whisper_ready: a ctx.env.HIMMEL_LUNA_CONFIG_PATH override must be honored over the ambient process.env one (got: $outWRctxEnvConfig)"
+echo "$outWRctxEnvConfig" | jq -e '.detail | test("ambient-model"; "i") | not' >/dev/null \
+  || fail "cmd:whisper_ready: must not have consulted the ambient process.env config at all (got: $outWRctxEnvConfig)"
+echo "ok: cmd:whisper_ready — a ctx.env HIMMEL_LUNA_CONFIG_PATH override is honored, not the ambient process.env one (HIMMEL-2176 CR fix)"
+
+# ── cmd:python_interpreter (HIMMEL-2176 Task 6) ─────────────────────────────
+pi_absent_stub="$work/pi-absent-bin"; mkdir -p "$pi_absent_stub"
+pathPIabsent=$(build_path "$pi_absent_stub" bash git jq -- python python3)
+outPIabsent=$(PATH="$pathPIabsent" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'python-interpreter', probe: { type: 'cmd:python_interpreter', cmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outPIabsent" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "cmd:python_interpreter: nothing on PATH should read absent: (got: $outPIabsent)"
+echo "ok: cmd:python_interpreter — absent when nothing resolves on PATH"
+
+# present: a stub interpreter that actually RUNS the given script (not just
+# resolves) and echoes the marker back — also proves PYTHONHOME is threaded
+# to the child (named in the detail), not just read from the real process env.
+pi_present_stub="$work/pi-present-bin"; mkdir -p "$pi_present_stub"
+cat > "$pi_present_stub/python" <<'STUB'
+#!/usr/bin/env bash
+echo HIMMEL_PY_OK
+exit 0
+STUB
+chmod +x "$pi_present_stub/python"
+pathPIpresent=$(build_path "$pi_present_stub" bash git jq --)
+outPIpresent=$(PATH="$pathPIpresent" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'python-interpreter', probe: { type: 'cmd:python_interpreter', cmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { PYTHONHOME: '$(winpath "$pi_present_stub")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outPIpresent" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:python_interpreter: a working stub interpreter should read present: (got: $outPIpresent)"
+echo "$outPIpresent" | jq -e '.detail | contains("PYTHONHOME")' >/dev/null \
+  || fail "cmd:python_interpreter: present detail should name the PYTHONHOME actually threaded to the child (got: $outPIpresent)"
+echo "ok: cmd:python_interpreter — a working interpreter that runs the script reads present, PYTHONHOME threaded through"
+
+# degraded: mimics the REAL Windows Store python.exe app-execution alias —
+# resolves on PATH but exits non-zero without ever running the given script.
+pi_stub_stub="$work/pi-stub-bin"; mkdir -p "$pi_stub_stub"
+cat > "$pi_stub_stub/python" <<'STUB'
+#!/usr/bin/env bash
+echo "Python was not found; run without arguments to install from the Microsoft Store." >&2
+exit 9009
+STUB
+chmod +x "$pi_stub_stub/python"
+pathPIstub=$(build_path "$pi_stub_stub" bash git jq --)
+outPIstub=$(PATH="$pathPIstub" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'python-interpreter', probe: { type: 'cmd:python_interpreter', cmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outPIstub" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cmd:python_interpreter: a Windows-Store-alias-shaped stub should read degraded, not absent: (got: $outPIstub)"
+echo "ok: cmd:python_interpreter — a resolved-but-stub interpreter (Windows Store alias shape) reads degraded, never absent"
+
+# ── distinct-tokens (HIMMEL-2176 Task 6) ────────────────────────────────────
+dt_both_absent="$work/dt-both-absent"; mkdir -p "$dt_both_absent/.claude/channels/telegram"
+outDTbothAbsent=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-distinct-tokens', probe: { type: 'distinct-tokens', envFileA: '.claude/channels/telegram/.env', tokenKeyA: 'TELEGRAM_BOT_TOKEN', envFileB: '.env', tokenKeyB: 'TELEGRAM_BOT_TOKEN' } };
+const ctx = { repoRoot: '$(winpath "$dt_both_absent")', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$dt_both_absent")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outDTbothAbsent" | jq -e '.actual == "present"' >/dev/null \
+  || fail "distinct-tokens: both unconfigured should read present (nothing to collide): (got: $outDTbothAbsent)"
+echo "ok: distinct-tokens — both tokens unconfigured reads present"
+
+dt_only_a="$work/dt-only-a"; mkdir -p "$dt_only_a/.claude/channels/telegram"
+printf 'TELEGRAM_BOT_TOKEN=AAA111\n' > "$dt_only_a/.claude/channels/telegram/.env"
+outDTonlyA=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-distinct-tokens', probe: { type: 'distinct-tokens', envFileA: '.claude/channels/telegram/.env', tokenKeyA: 'TELEGRAM_BOT_TOKEN', envFileB: '.env', tokenKeyB: 'TELEGRAM_BOT_TOKEN' } };
+const ctx = { repoRoot: '$(winpath "$dt_only_a")', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$dt_only_a")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outDTonlyA" | jq -e '.actual == "present"' >/dev/null \
+  || fail "distinct-tokens: only the bridge token configured should read present: (got: $outDTonlyA)"
+echo "ok: distinct-tokens — only one side configured reads present"
+
+dt_distinct="$work/dt-distinct"; mkdir -p "$dt_distinct/.claude/channels/telegram"
+printf 'TELEGRAM_BOT_TOKEN=AAA111\n' > "$dt_distinct/.claude/channels/telegram/.env"
+printf 'TELEGRAM_BOT_TOKEN=BBB222\n' > "$dt_distinct/.env"
+outDTdistinct=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-distinct-tokens', probe: { type: 'distinct-tokens', envFileA: '.claude/channels/telegram/.env', tokenKeyA: 'TELEGRAM_BOT_TOKEN', envFileB: '.env', tokenKeyB: 'TELEGRAM_BOT_TOKEN' } };
+const ctx = { repoRoot: '$(winpath "$dt_distinct")', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$dt_distinct")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outDTdistinct" | jq -e '.actual == "present"' >/dev/null \
+  || fail "distinct-tokens: two DIFFERENT tokens should read present: (got: $outDTdistinct)"
+echo "ok: distinct-tokens — two distinct tokens reads present"
+
+dt_collision="$work/dt-collision"; mkdir -p "$dt_collision/.claude/channels/telegram"
+printf 'TELEGRAM_BOT_TOKEN=SAMETOKEN999\n' > "$dt_collision/.claude/channels/telegram/.env"
+printf 'TELEGRAM_BOT_TOKEN=SAMETOKEN999\n' > "$dt_collision/.env"
+outDTcollision=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'telegram-distinct-tokens', probe: { type: 'distinct-tokens', envFileA: '.claude/channels/telegram/.env', tokenKeyA: 'TELEGRAM_BOT_TOKEN', envFileB: '.env', tokenKeyB: 'TELEGRAM_BOT_TOKEN' } };
+const ctx = { repoRoot: '$(winpath "$dt_collision")', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$dt_collision")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outDTcollision" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "distinct-tokens: two IDENTICAL tokens should read degraded: (got: $outDTcollision)"
+echo "$outDTcollision" | jq -e '.detail | test("IDENTICAL")' >/dev/null \
+  || fail "distinct-tokens: degraded detail should call out the collision (got: $outDTcollision)"
+echo "ok: distinct-tokens — two identical non-empty tokens (bridge vs jira-nudge relay) reads degraded"
+
+# ── luna-sources (HIMMEL-2176 Task 6) ───────────────────────────────────────
+# Stub `python`: dispatches on the LAST argv (the --probe SOURCE value),
+# mimicking fetch-health.py's own --probe <source> contract exactly (JSON on
+# stdout + rc 0/1; argparse's fixed rc 2 for a genuinely unrecognized source,
+# with the EXACT stderr wording run_single_probe's own ValueError produces —
+# "unknown probe source: '<name>' (valid sources: ...)" — since the probe
+# disambiguates rc=2 by matching that literal text, not the bare code; a
+# SEPARATE rc=2 case (bad-flag-source) deliberately does NOT carry that text,
+# proving an unrelated usage error is never misclassified as "unrecognized
+# source") — fakes the SUBPROCESS boundary, never a JS mock of the aggregator.
+luna_stub="$work/luna-py-bin"; mkdir -p "$luna_stub"
+cat > "$luna_stub/python" <<'STUB'
+#!/usr/bin/env bash
+source_name="${@: -1}"
+case "$source_name" in
+  reddit|x-fxtwitter)
+    printf '{"status":"ok","reason":"reachable"}\n'
+    exit 0
+    ;;
+  firecrawl)
+    printf '{"status":"auth-or-cookie-expired","reason":"Firecrawl API key rejected"}\n'
+    exit 1
+    ;;
+  cookie-missing-source)
+    printf '{"status":"auth-or-cookie-expired","reason":"reddit cookie file missing"}\n'
+    exit 1
+    ;;
+  ghost-source)
+    echo "fetch-health.py: error: unknown probe source: 'ghost-source' (valid sources: bitbucket, firecrawl, github, reddit, ...)" >&2
+    exit 2
+    ;;
+  bad-flag-source)
+    echo "fetch-health.py: error: unrecognized arguments: --some-future-flag" >&2
+    exit 2
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+STUB
+chmod +x "$luna_stub/python"
+pathLuna=$(build_path "$luna_stub" bash git jq --)
+
+outLunaAllOk=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['reddit', 'x-fxtwitter'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaAllOk" | jq -e '.actual == "present"' >/dev/null \
+  || fail "luna-sources: all configured sources ok should read present: (got: $outLunaAllOk)"
+echo "ok: luna-sources — all configured sources healthy reads present"
+
+outLunaOneAuth=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['reddit', 'firecrawl'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaOneAuth" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "luna-sources: one CONFIGURED-but-broken source (rejected key, not a missing one) among others ok should read degraded: (got: $outLunaOneAuth)"
+echo "$outLunaOneAuth" | jq -e '.detail | contains("firecrawl") and contains("auth-or-cookie-expired")' >/dev/null \
+  || fail "luna-sources: degraded detail should name the failing source + status (got: $outLunaOneAuth)"
+echo "$outLunaOneAuth" | jq -e '.detail | test("not configured"; "i") | not' >/dev/null \
+  || fail "luna-sources: a REJECTED (not missing) credential must be bucketed as unhealthy, never as unconfigured (got: $outLunaOneAuth)"
+echo "ok: luna-sources — one CONFIGURED-but-broken source among others ok reads degraded, naming it, never bucketed as unconfigured"
+
+# CR fix (HIMMEL-2176, codex-3, retask stage1-build-6d2e): a source the
+# adopter simply never CONFIGURED (fetch-health.py's reason names an absent
+# credential/artifact — e.g. "reddit cookie file missing") must warn
+# (actual:absent, remapped to severity:degraded by status-report.js's S2
+# block), NOT fail like a genuinely broken configured source. Distinguishable
+# in detail from the configured-but-broken case above ("not configured yet"
+# vs. "unhealthy").
+outLunaOneUnconfigured=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['reddit', 'cookie-missing-source'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaOneUnconfigured" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "luna-sources: one UNCONFIGURED source (credential/artifact simply missing) among others ok must read absent (warn), not degraded (fail): (got: $outLunaOneUnconfigured)"
+echo "$outLunaOneUnconfigured" | jq -e '.detail | contains("cookie-missing-source") and test("not configured"; "i")' >/dev/null \
+  || fail "luna-sources: unconfigured detail should name the source and say it is not configured yet (got: $outLunaOneUnconfigured)"
+echo "$outLunaOneUnconfigured" | jq -e '.detail | test("unhealthy"; "i") | not' >/dev/null \
+  || fail "luna-sources: an unconfigured source must not be worded like a broken/unhealthy one (got: $outLunaOneUnconfigured)"
+echo "ok: luna-sources — one unconfigured source among others ok reads absent (warn), distinguishable from a configured-but-broken source"
+
+# Nothing configured at all: every named source is unconfigured (no problems,
+# no healthy sources either) — still warn (absent), same tier as the mixed
+# case above, never a fail.
+outLunaAllUnconfigured=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['cookie-missing-source'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaAllUnconfigured" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "luna-sources: every configured source unconfigured (nothing configured at all) should read absent (warn): (got: $outLunaAllUnconfigured)"
+echo "ok: luna-sources — nothing configured at all (every source unconfigured) reads absent (warn), never a fail"
+
+# Mixed: a configured-but-broken source AND an unconfigured one in the SAME
+# sweep — the broken one must still force the fail tier (degraded), and both
+# groups must remain distinguishable in the one combined detail.
+outLunaMixed=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['firecrawl', 'cookie-missing-source'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaMixed" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "luna-sources: a configured-but-broken source alongside an unconfigured one must still read degraded (fail wins): (got: $outLunaMixed)"
+echo "$outLunaMixed" | jq -e '.detail | contains("firecrawl") and test("unhealthy"; "i") and contains("cookie-missing-source") and test("not configured"; "i")' >/dev/null \
+  || fail "luna-sources: the mixed detail must name BOTH the broken source (unhealthy) and the unconfigured one (not configured), distinguishably (got: $outLunaMixed)"
+echo "ok: luna-sources — a configured-but-broken source alongside an unconfigured one reads degraded (fail wins), naming both groups distinguishably"
+
+# CR fix (HIMMEL-2176 Task 6, retask stage1-build-6d2e): a profile naming a
+# source fetch-health.py has never heard of (typo, renamed, dropped upstream)
+# used to fold into a footnote and still read 'present' — a fail-open-
+# silently shape (HIMMEL-1128's loud-degradation rule): a source that isn't
+# being monitored at all must never hide behind an otherwise-green verdict.
+# Pins the fix: one healthy + one unrecognized must NOT report present.
+outLunaOneUnrecognized=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['reddit', 'ghost-source'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaOneUnrecognized" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "luna-sources: one unrecognized source among others ok must NOT read present (fail-open-silently, HIMMEL-1128): (got: $outLunaOneUnrecognized)"
+echo "$outLunaOneUnrecognized" | jq -e '.detail | contains("ghost-source") and test("not recognized"; "i") and test("not being monitored"; "i")' >/dev/null \
+  || fail "luna-sources: degraded detail should name the unrecognized source and say plainly it is not being monitored (got: $outLunaOneUnrecognized)"
+echo "ok: luna-sources — one unrecognized-by-fetch-health.py source among others ok reads degraded, never present"
+
+# The ambiguity check: a DIFFERENT rc=2 usage error (not the documented
+# 'unknown probe source' wording) must fold into `problems` (a wiring
+# problem), never be silently treated as the same "unrecognized source" case.
+outLunaAmbiguousRc2=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['reddit', 'bad-flag-source'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaAmbiguousRc2" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "luna-sources: a rc=2 usage error NOT worded 'unknown probe source' must still read degraded: (got: $outLunaAmbiguousRc2)"
+echo "$outLunaAmbiguousRc2" | jq -e '.detail | contains("unexpected usage error") and (test("not recognized"; "i") | not)' >/dev/null \
+  || fail "luna-sources: an ambiguous rc=2 must be labeled a wiring problem, NOT misclassified as 'unrecognized source' (got: $outLunaAmbiguousRc2)"
+echo "ok: luna-sources — an rc=2 NOT matching the documented 'unknown probe source' wording is never misclassified as an unrecognized source"
+
+# CR round 3 fix (HIMMEL-2176, retask stage1-build-6d2e): every named source
+# unrecognized means NOTHING is being monitored at all — a profile
+# configuration error, not a lesser signal than the "one bad entry among
+# healthy ones" case above. Must read degraded (fail), never absent (warn) —
+# it must not collapse into the same benign verdict as "genuinely nothing
+# configured" (empty sources list / every source merely unconfigured, both
+# tested elsewhere in this file).
+outLunaAllSkip=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['ghost-source'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaAllSkip" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "luna-sources: every configured source unrecognized (nothing evaluated) should read degraded (fail — nothing is monitored at all): (got: $outLunaAllSkip)"
+echo "$outLunaAllSkip" | jq -e '.detail | contains("ghost-source") and test("not recognized"; "i")' >/dev/null \
+  || fail "luna-sources: all-unrecognized detail should name the source and say it is not recognized (got: $outLunaAllSkip)"
+echo "ok: luna-sources — every configured source unrecognized (nothing evaluated) reads degraded (fail), never warn"
+
+outLunaEmpty=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: [], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaEmpty" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "luna-sources: an empty sources list should read absent: (got: $outLunaEmpty)"
+echo "ok: luna-sources — an empty configured-sources list reads absent"
 
 # ── file-exists: {homePath} placeholder (obsidian-second-brain) — HIMMEL-1100
 osb_home_present="$work/osb-home-present"; mkdir -p "$osb_home_present/.claude/plugins/obsidian-second-brain/.git"
@@ -1574,12 +2520,18 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 echo "$outPCnr" | jq -e '.actual == "degraded"' >/dev/null || fail "cmd:cadence_armed degraded (resolver missing — probe wiring broken): (got: $outPCnr)"
 echo "$outPCnr" | jq -e '.detail | contains("cannot source resolver")' >/dev/null || fail "cmd:cadence_armed missing-resolver detail should name the sourcing failure (got: $outPCnr)"
 
+# ── cmd:cadence_armed: spawn error -> degraded, NOT absent. HIMMEL-2289:
+# PATH:'' alone no longer un-resolves bash (resolveProbeBash()'s
+# Git-for-Windows/posix fallback candidates below aren't PATH-gated — see
+# the no_such_bash_w comment above) — HIMMELCTL_BASH pinned to a path that is
+# never created is what actually forces the spawn error and exercises the
+# r.error branch.
 outPCse=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'pipeline-cadence');
 const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
-  env: { PATH: '', PIPELINE_BAT_DIR: '$(winpath "$pc_unarmed_dir")' } };
+  env: { PATH: '', PIPELINE_BAT_DIR: '$(winpath "$pc_unarmed_dir")', HIMMELCTL_BASH: '$no_such_bash_w' } };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outPCse" | jq -e '.actual == "degraded"' >/dev/null || fail "cmd:cadence_armed degraded (spawn error, bash unresolvable): (got: $outPCse)"
@@ -2807,9 +3759,1680 @@ echo "ok: cmd:hermes_checkout — a NORMAL linked-worktree checkout (gitdir -> w
 
 echo "ok: cmd:hermes_checkout (hermes-checkout) present/absent/degraded (wrong origin / no origin / spoofed origin), including the root/.git tolerance fallback and SSH-form origin urls"
 
+# HIMMEL-2437: no HERMES_HOME override and no LOCALAPPDATA (the Linux/macOS
+# station shape) must resolve the default root to $HOME/.hermes — NOT
+# $HOME/AppData/Local/hermes (a Windows %LOCALAPPDATA% layout rendered under a
+# POSIX $HOME, the ticket's own repro). HOME is faked ONLY inside ctx.env
+# passed to runProbe (never at the bash level), matching the mcp-registered
+# cases above.
+hc_home_linux_default="$work/hc-home-linux-default"; mkdir -p "$hc_home_linux_default/.hermes/hermes-agent/.git"
+cat > "$hc_home_linux_default/.hermes/hermes-agent/.git/config" <<'CFG'
+[remote "origin"]
+	url = https://github.com/NousResearch/hermes-agent.git
+CFG
+outHClx=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'hermes-checkout');
+const env = Object.assign({}, process.env, { HOME: '$(winpath "$hc_home_linux_default")' });
+delete env.HERMES_HOME;
+delete env.LOCALAPPDATA;
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHClx" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:hermes_checkout present (Linux/macOS default root \$HOME/.hermes, no HERMES_HOME/LOCALAPPDATA): (got: $outHClx)"
+echo "$outHClx" | jq -e '.detail | contains("NousResearch/hermes-agent")' >/dev/null \
+  || fail "cmd:hermes_checkout Linux-default detail should name the verified origin (got: $outHClx)"
+
+# Windows shape must stay unchanged: LOCALAPPDATA set (no HERMES_HOME) still
+# resolves to $LOCALAPPDATA/hermes/hermes-agent.
+hc_home_winpath_lad="$work/hc-home-winpath-lad"; mkdir -p "$hc_home_winpath_lad/hermes/hermes-agent/.git"
+cat > "$hc_home_winpath_lad/hermes/hermes-agent/.git/config" <<'CFG'
+[remote "origin"]
+	url = https://github.com/NousResearch/hermes-agent.git
+CFG
+outHCwlad=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'hermes-checkout');
+const env = Object.assign({}, process.env, { LOCALAPPDATA: '$(winpath "$hc_home_winpath_lad")' });
+delete env.HERMES_HOME;
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHCwlad" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cmd:hermes_checkout present (Windows LOCALAPPDATA/hermes/hermes-agent, no HERMES_HOME): (got: $outHCwlad)"
+echo "$outHCwlad" | jq -e '.detail | contains("NousResearch/hermes-agent")' >/dev/null \
+  || fail "cmd:hermes_checkout LOCALAPPDATA-default detail should name the verified origin (got: $outHCwlad)"
+echo "ok: cmd:hermes_checkout — default root resolution: no HERMES_HOME/LOCALAPPDATA reads \$HOME/.hermes (Linux/macOS), LOCALAPPDATA set still reads \$LOCALAPPDATA/hermes (Windows unchanged) (HIMMEL-2437)"
+
 depsCheck=$(jq -r '.items[] | select(.id=="hermes-lanes") | .deps | join(",")' "$manifest_path")
 [ "$depsCheck" = "hermes-checkout" ] || fail "manifest: hermes-lanes.deps should be exactly [\"hermes-checkout\"] (got: $depsCheck)"
 echo "ok: hermes-lanes correctly deps on hermes-checkout (distinct probes: checkout provenance vs runtime venv health)"
+
+# ── cadence-coherence (cadence-armed) — HIMMEL-2176 Task 7, status item S1 ──
+# CR fix (HIMMEL-2176 CR round 10, retask stage1-build-6d2e): this probe used
+# to trust a generated RUNNER FILE's mere existence as proof a scheduler task
+# is registered — but a runner file survives after its Task Scheduler entry
+# is deleted, or after an `arm` that failed partway, so S1 (the ONE status
+# item whose whole job is catching "not actually armed") could itself read a
+# false green. It now shells out to pipeline-cadence.sh's own `status` (the
+# single source of truth for scheduler state — the same posture
+# engine-allowlist already applies to cadence-approve-engines.sh below) and
+# parses ITS answer, rather than re-deriving a schtasks/cron query here.
+#
+# Scheduler responses are faked via a stub `schtasks` executable wired
+# through pipeline-cadence.sh's own PIPELINE_SCHTASKS test seam (the same
+# seam scripts/luna/test-pipeline-cadence.sh's own suite uses) — a real stub
+# process on this suite's own hermetic-executable convention, never a JS
+# mock. The Windows wscript smoke-probe cadence_registered_status runs
+# underneath is neutralized the same way that suite does it
+# (CADENCE_WSCRIPT_BIN / CADENCE_WSH_POWERSHELL fakes), so an ARMED read is
+# deterministic instead of depending on this machine's real WSH policy.
+# HIMMEL_LUNA_CONFIG_PATH points each case at its OWN fixture config.json (or
+# a deliberately nonexistent path, exercising luna-config.js's defaultConfig()
+# fallback) — never the real ~/.himmel/config.json.
+cc_bat="$work/cc-batdir"; mkdir -p "$cc_bat"
+cc_cfg_missing="$work/cc-config-missing.json"   # deliberately never created
+
+cc_wscript="$work/cc-wscript-fake.sh"
+printf '#!/bin/sh\nexit 0\n' > "$cc_wscript"
+chmod +x "$cc_wscript"
+cc_wsh_powershell="$work/cc-wsh-powershell-fake.sh"
+printf '#!/bin/sh\necho ABSENT\n' > "$cc_wsh_powershell"
+chmod +x "$cc_wsh_powershell"
+
+# `touch $cc_sched_state/tasks/<name>` marks <name> registered — /query /tn
+# answers TaskName/Next-Run-Time (rc 0) when the marker exists, the real
+# schtasks NOT_FOUND stderr signature (rc 1) otherwise, matching query_one's
+# own NOT_FOUND_RE. `touch $cc_sched_state/fail-query` makes every /query an
+# untrusted access-denied, exercising the "scheduler unqueryable" path.
+cc_sched_state="$work/cc-schtasks-state"; mkdir -p "$cc_sched_state/tasks"
+cc_schtasks="$work/cc-schtasks-fake.sh"
+cat > "$cc_schtasks" <<FAKE
+#!/usr/bin/env bash
+STATE="$cc_sched_state"
+FAKE
+cat >> "$cc_schtasks" <<'FAKE'
+tn=""; mode=""
+args=("$@")
+i=0
+while [ $i -lt ${#args[@]} ]; do
+    case "${args[$i]}" in
+        /query) mode="/query" ;;
+        /tn) i=$((i+1)); tn="${args[$i]}" ;;
+    esac
+    i=$((i+1))
+done
+if [ -e "$STATE/fail-query" ]; then
+    echo "ERROR: Access is denied." >&2
+    exit 1
+fi
+if [ "$mode" = "/query" ] && [ -n "$tn" ]; then
+    if [ -f "$STATE/tasks/$tn" ]; then
+        printf 'TaskName:      \\%s\nNext Run Time: 6/15/2026 3:00:00 AM\n' "$tn"
+        exit 0
+    fi
+    echo "ERROR: The system cannot find the file specified." >&2
+    exit 1
+fi
+exit 1
+FAKE
+chmod +x "$cc_schtasks"
+
+run_cc() {
+  local cfgPath="$1"
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cfgPath")" \
+  PIPELINE_BAT_DIR="$(winpath "$cc_bat")" \
+  PIPELINE_SCHTASKS="$cc_schtasks" \
+  CADENCE_WSCRIPT_BIN="$cc_wscript" \
+  CADENCE_WSH_POWERSHELL="$cc_wsh_powershell" \
+  "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'cadence-armed');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+cat > "$work/cc-enabled.json" <<'JSON'
+{"version":1,"luna":{"vaultPath":"/x","cadence":{"enabled":true,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+
+# no config at all -> defaultConfig() (enabled:false), nothing registered -> absent, cleanAbsence:true.
+outCCabs=$(run_cc "$cc_cfg_missing")
+echo "$outCCabs" | jq -e '.actual == "absent" and .cleanAbsence == true' >/dev/null \
+  || fail "cadence-coherence: no config + nothing registered should read absent with cleanAbsence:true (got: $outCCabs)"
+echo "ok: cadence-coherence — no config document (defaults: disabled) + nothing registered reads absent, cleanAbsence:true"
+
+# enabled:false but the scheduler still has a task registered -> degraded (unmanaged leftover), NOT cleanAbsence.
+touch "$cc_sched_state/tasks/HIMMEL-Pipeline-Harvest"
+outCCleft=$(run_cc "$cc_cfg_missing")
+echo "$outCCleft" | jq -e '.actual == "degraded" and (.cleanAbsence // false) == false' >/dev/null \
+  || fail "cadence-coherence: enabled:false + a leftover registered schedule should read degraded, no cleanAbsence (got: $outCCleft)"
+echo "$outCCleft" | jq -e '.detail | contains("unmanaged leftovers")' >/dev/null \
+  || fail "cadence-coherence: leftover detail should say unmanaged leftovers (got: $outCCleft)"
+echo "ok: cadence-coherence — enabled:false with a scheduler task surviving reads degraded (unmanaged leftover), never cleanAbsence"
+rm -f "$cc_sched_state/tasks/HIMMEL-Pipeline-Harvest"
+
+# ── the CR round-10 finding itself: RED then GREEN ──────────────────────────
+# A generated runner file for the harvest leg exists on disk, but the (fake)
+# scheduler has NOTHING registered for it. Before this fix, this exact shape
+# read present (the false green); it must now read a genuine fail.
+: > "$cc_bat/pipeline-harvest.bat"
+outCCbug=$(run_cc "$work/cc-enabled.json")
+echo "$outCCbug" | jq -e '.actual == "absent" and (.cleanAbsence // false) == false' >/dev/null \
+  || fail "cadence-coherence: enabled:true + a runner file present but NO scheduler task registered must read absent, never present (got: $outCCbug)"
+echo "ok: cadence-coherence — RED: a runner file's mere presence, with nothing actually registered in the scheduler, does not read green (the CR round-10 finding)"
+
+# Same runner file, unchanged — only the scheduler now genuinely has all 4
+# tasks registered. That, and only that, is what flips this to present.
+: > "$cc_bat/pipeline-fetch-health.bat"
+: > "$cc_bat/pipeline-synthesize.bat"
+: > "$cc_bat/pipeline-health.bat"
+touch "$cc_sched_state/tasks/HIMMEL-Pipeline-FetchHealth" "$cc_sched_state/tasks/HIMMEL-Pipeline-Harvest" \
+  "$cc_sched_state/tasks/HIMMEL-Pipeline-Synthesize" "$cc_sched_state/tasks/HIMMEL-Pipeline-Health"
+outCCok=$(run_cc "$work/cc-enabled.json")
+echo "$outCCok" | jq -e '.actual == "present"' >/dev/null \
+  || fail "cadence-coherence: enabled:true + all 4 schedules actually registered in the scheduler should read present (got: $outCCok)"
+echo "ok: cadence-coherence — GREEN: once the scheduler genuinely has all 4 tasks registered, the same runner files now read present"
+
+# partial drift: only 1/4 actually registered -> degraded, naming the fraction.
+rm -f "$cc_sched_state/tasks/HIMMEL-Pipeline-FetchHealth" "$cc_sched_state/tasks/HIMMEL-Pipeline-Synthesize" "$cc_sched_state/tasks/HIMMEL-Pipeline-Health"
+outCCpartial=$(run_cc "$work/cc-enabled.json")
+echo "$outCCpartial" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cadence-coherence: enabled:true + 1/4 registered should read degraded (got: $outCCpartial)"
+echo "$outCCpartial" | jq -e '.detail | contains("3/4")' >/dev/null \
+  || fail "cadence-coherence: partial-drift detail should name the fraction (got: $outCCpartial)"
+echo "ok: cadence-coherence — enabled:true with a partial schedule/task match reads degraded, naming the drift"
+rm -f "$cc_sched_state/tasks/HIMMEL-Pipeline-Harvest"
+rm -f "$cc_bat"/*.bat
+
+# enabled:true, nothing registered at all (and no decoy runner files) -> absent, genuine fail (no cleanAbsence).
+outCCfail=$(run_cc "$work/cc-enabled.json")
+echo "$outCCfail" | jq -e '.actual == "absent" and (.cleanAbsence // false) == false' >/dev/null \
+  || fail "cadence-coherence: enabled:true + nothing registered should read absent, no cleanAbsence (got: $outCCfail)"
+echo "ok: cadence-coherence — enabled:true with nothing registered reads absent, a genuine fail (never cleanAbsence)"
+
+# scheduler unqueryable (every /query answers an untrusted access-denied) ->
+# loud degraded naming the limitation, never a silent pass or an
+# assumed-healthy default (HIMMEL-1128).
+touch "$cc_sched_state/fail-query"
+outCCunq=$(run_cc "$work/cc-enabled.json")
+echo "$outCCunq" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "cadence-coherence: an unqueryable scheduler should read degraded, never present/absent (got: $outCCunq)"
+echo "$outCCunq" | jq -e '.detail | contains("scheduler")' >/dev/null \
+  || fail "cadence-coherence: unqueryable-scheduler detail should name the limitation (got: $outCCunq)"
+echo "ok: cadence-coherence — a scheduler that refuses every query reads a loud degraded naming the limitation, never assumed-healthy"
+rm -f "$cc_sched_state/fail-query"
+
+# ── phi-coherence — HIMMEL-2176 Task 7, status item S3 ──────────────────────
+phi_vault="$work/phi-vault"; mkdir -p "$phi_vault"
+phi_home="$work/phi-home"; mkdir -p "$phi_home/.config/claude-glm"
+phi_cfg="$work/phi-config.json"
+cat > "$phi_cfg" <<JSON
+{"version":1,"luna":{"vaultPath":"$(winpath "$phi_vault")","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+
+run_phi() {
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$phi_cfg")" HOME="$(winpath "$phi_home")" USERPROFILE="$(winpath "$phi_home")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'phi-coherence');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+outPHIneither=$(run_phi)
+echo "$outPHIneither" | jq -e '.actual == "present"' >/dev/null \
+  || fail "phi-coherence: neither a .salus marker nor a phi-roots entry should read present (pass when both absent): (got: $outPHIneither)"
+echo "ok: phi-coherence — neither marker nor phi-roots entry reads present (coherent: neither claims PHI)"
+
+: > "$phi_vault/.salus"
+outPHImarkerOnly=$(run_phi)
+echo "$outPHImarkerOnly" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "phi-coherence: a .salus marker with no phi-roots entry should read degraded (partial): (got: $outPHImarkerOnly)"
+echo "ok: phi-coherence — a .salus marker with no phi-roots entry reads degraded (egress enforcement may not see it)"
+
+printf '%s\n' "$(winpath "$phi_vault")" > "$phi_home/.config/claude-glm/phi-roots"
+outPHIboth=$(run_phi)
+echo "$outPHIboth" | jq -e '.actual == "present"' >/dev/null \
+  || fail "phi-coherence: a .salus marker AND a matching phi-roots entry should read present (coherent): (got: $outPHIboth)"
+echo "ok: phi-coherence — a .salus marker AND a matching phi-roots entry reads present (coherent)"
+
+rm -f "$phi_vault/.salus"
+outPHIrootsOnly=$(run_phi)
+echo "$outPHIrootsOnly" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "phi-coherence: a phi-roots entry with no .salus marker should read degraded (stale entry?): (got: $outPHIrootsOnly)"
+echo "ok: phi-coherence — a phi-roots entry with no local .salus marker reads degraded (stale entry?)"
+rm -f "$phi_home/.config/claude-glm/phi-roots"
+
+# ── phi-coherence: platform-driven case-folding (HIMMEL-2176 CR round 5,
+# retask stage1-build-6d2e) — POSIX filesystems are case-sensitive, so two
+# paths differing only in case must NOT compare equal there; win32
+# filesystems default to case-insensitive, so they MUST compare equal there.
+# Driven through ctx.platform (not the real host process.platform) so this
+# is meaningful on any host — a previous fix in this file was passing only
+# because the dev box happens to be Windows, and that trap is worth not
+# repeating here.
+phi_case_vault="$work/PHI-Case-Vault"; mkdir -p "$phi_case_vault"
+: > "$phi_case_vault/.salus"
+phi_case_cfg="$work/phi-case-config.json"
+cat > "$phi_case_cfg" <<JSON
+{"version":1,"luna":{"vaultPath":"$(winpath "$phi_case_vault")","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+# phi-roots lists the SAME path with different case in its last segment
+# (phi-vault -> PHI-VAULT-style casing) — a case-sensitive (POSIX) compare
+# must treat this as a DIFFERENT path (no listing, degraded); a
+# case-insensitive (win32) compare must treat it as the SAME path (listed,
+# present).
+printf '%s\n' "$(winpath "$phi_case_vault" | tr '[:lower:]' '[:upper:]')" > "$phi_home/.config/claude-glm/phi-roots"
+
+run_phi_platform() {
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$phi_case_cfg")" HOME="$(winpath "$phi_home")" USERPROFILE="$(winpath "$phi_home")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'phi-coherence');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env, platform: '$1' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+outPHIposix=$(run_phi_platform linux)
+echo "$outPHIposix" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "phi-coherence: ctx.platform=linux (POSIX) must treat differently-cased paths as DIFFERENT — expected degraded (got: $outPHIposix)"
+echo "ok: phi-coherence — ctx.platform=linux (POSIX) treats case-differing paths as DIFFERENT (degraded, no false coherence)"
+
+outPHIwin32=$(run_phi_platform win32)
+echo "$outPHIwin32" | jq -e '.actual == "present"' >/dev/null \
+  || fail "phi-coherence: ctx.platform=win32 must treat differently-cased paths as the SAME — expected present (got: $outPHIwin32)"
+echo "ok: phi-coherence — ctx.platform=win32 treats case-differing paths as the SAME (present)"
+rm -f "$phi_home/.config/claude-glm/phi-roots"
+
+# ── phi-coherence: ~-prefixed vaultPath (CodeRabbit App finding, HIMMEL-2176
+# retask stage1-build-6d2e) — luna-config.js's schema accepts any string for
+# vaultPath, and bridge.envPath's own default is itself `~`-prefixed, so this
+# is a realistic document shape. path.resolve('~/...') resolves against CWD,
+# not $HOME, so an unexpanded vaultPath used to misread fs.existsSync's
+# marker check as false AND normalizeForPhiMatch's comparison as a
+# CWD-relative path — both landing on false coincided with an empty
+# phi-roots file also reading false, so the probe read a WRONG 'present'
+# instead of the correct 'degraded' (marker present, not listed). $HOME is
+# driven through this fixture's own temp dir — never the real home.
+phi_tilde_home="$work/phi-tilde-home"; mkdir -p "$phi_tilde_home/Documents/luna" "$phi_tilde_home/.config/claude-glm"
+: > "$phi_tilde_home/Documents/luna/.salus"
+phi_tilde_cfg="$work/phi-tilde-config.json"
+cat > "$phi_tilde_cfg" <<JSON
+{"version":1,"luna":{"vaultPath":"~/Documents/luna","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+
+run_phi_tilde() {
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$phi_tilde_cfg")" HOME="$(winpath "$phi_tilde_home")" USERPROFILE="$(winpath "$phi_tilde_home")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'phi-coherence');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+outPHItildeVault=$(run_phi_tilde)
+echo "$outPHItildeVault" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "phi-coherence: a ~-prefixed vaultPath must expand against \$HOME before the marker check — expected degraded (marker present via the real path, not listed) (got: $outPHItildeVault)"
+echo "$outPHItildeVault" | jq -e '.detail | contains("~") | not' >/dev/null \
+  || fail "phi-coherence: ~-prefixed vaultPath detail still carries a literal '~' — expansion did not happen (got: $outPHItildeVault)"
+echo "ok: phi-coherence — a ~-prefixed vaultPath expands against \$HOME and reads the correct (degraded) verdict, not a false 'present'"
+
+# ── phi-coherence: ~-prefixed phi-roots entry (same finding — either side of
+# the coherence check can carry a `~`) — vaultPath here is already a fully-
+# expanded absolute path; the phi-roots entry is the one that's `~`-prefixed,
+# and it must resolve to the SAME home-relative path as the vault for the
+# probe to see them as coherent.
+phi_tilde2_vault="$phi_tilde_home/Documents/luna2"; mkdir -p "$phi_tilde2_vault"
+: > "$phi_tilde2_vault/.salus"
+phi_tilde2_cfg="$work/phi-tilde2-config.json"
+cat > "$phi_tilde2_cfg" <<JSON
+{"version":1,"luna":{"vaultPath":"$(winpath "$phi_tilde2_vault")","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+# shellcheck disable=SC2088  # deliberate literal '~' — the fixture proves the
+# probe's OWN expandHome() call expands it, not the shell
+printf '%s\n' '~/Documents/luna2' > "$phi_tilde_home/.config/claude-glm/phi-roots"
+
+run_phi_tilde2() {
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$phi_tilde2_cfg")" HOME="$(winpath "$phi_tilde_home")" USERPROFILE="$(winpath "$phi_tilde_home")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'phi-coherence');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+outPHItildeRoots=$(run_phi_tilde2)
+echo "$outPHItildeRoots" | jq -e '.actual == "present"' >/dev/null \
+  || fail "phi-coherence: a ~-prefixed phi-roots entry must expand against \$HOME to match a fully-expanded vaultPath — expected present (coherent) (got: $outPHItildeRoots)"
+echo "ok: phi-coherence — a ~-prefixed phi-roots entry expands against \$HOME and matches the expanded vault path (present)"
+rm -f "$phi_tilde_home/.config/claude-glm/phi-roots"
+
+# ── phi-coherence: ~\ -prefixed vaultPath (backslash form — CodeRabbit App
+# finding, HIMMEL-2176 retask stage1-build-6d2e): the ~/ fix above left `~\`
+# (the separator a Windows-authored config value actually writes, e.g.
+# `~\Documents\luna`) still falling through expandHome()'s bare `return p`,
+# same false 'present' this suite already proved for the ~/ form. Quoted
+# heredoc (<<'JSON') below — an UNQUOTED heredoc's backslash-collapsing rule
+# (POSIX: `\\` -> a single `\`) would corrupt the double-backslash JSON
+# escaping this fixture needs. $HOME is driven through this fixture's own
+# temp dir — never the real home.
+phi_tildebs_home="$work/phi-tildebs-home"; mkdir -p "$phi_tildebs_home/Documents/luna" "$phi_tildebs_home/.config/claude-glm"
+: > "$phi_tildebs_home/Documents/luna/.salus"
+phi_tildebs_cfg="$work/phi-tildebs-config.json"
+cat > "$phi_tildebs_cfg" <<'JSON'
+{"version":1,"luna":{"vaultPath":"~\\Documents\\luna","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+
+run_phi_tildebs() {
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$phi_tildebs_cfg")" HOME="$(winpath "$phi_tildebs_home")" USERPROFILE="$(winpath "$phi_tildebs_home")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'phi-coherence');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+outPHItildebsVault=$(run_phi_tildebs)
+echo "$outPHItildebsVault" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "phi-coherence: a ~\\-prefixed vaultPath must expand against \$HOME before the marker check — expected degraded (marker present via the real path, not listed) (got: $outPHItildebsVault)"
+echo "$outPHItildebsVault" | jq -e '.detail | contains("~") | not' >/dev/null \
+  || fail "phi-coherence: ~\\-prefixed vaultPath detail still carries a literal '~' — expansion did not happen (got: $outPHItildebsVault)"
+echo "ok: phi-coherence — a ~\\-prefixed vaultPath expands against \$HOME and reads the correct (degraded) verdict, not a false 'present'"
+
+# ── phi-coherence: ~\ -prefixed phi-roots entry (same finding, backslash
+# form) — vaultPath here is already a fully-expanded absolute path; the
+# phi-roots entry is the one that's `~\`-prefixed, and it must resolve to the
+# SAME home-relative path as the vault for the probe to see them as coherent.
+phi_tildebs2_vault="$phi_tildebs_home/Documents/luna2"; mkdir -p "$phi_tildebs2_vault"
+: > "$phi_tildebs2_vault/.salus"
+phi_tildebs2_cfg="$work/phi-tildebs2-config.json"
+cat > "$phi_tildebs2_cfg" <<JSON
+{"version":1,"luna":{"vaultPath":"$(winpath "$phi_tildebs2_vault")","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+# shellcheck disable=SC2088  # deliberate literal '~' — the fixture proves the
+# probe's OWN expandHome() call expands it, not the shell
+printf '%s\n' '~\Documents\luna2' > "$phi_tildebs_home/.config/claude-glm/phi-roots"
+
+run_phi_tildebs2() {
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$phi_tildebs2_cfg")" HOME="$(winpath "$phi_tildebs_home")" USERPROFILE="$(winpath "$phi_tildebs_home")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'phi-coherence');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+outPHItildebsRoots=$(run_phi_tildebs2)
+echo "$outPHItildebsRoots" | jq -e '.actual == "present"' >/dev/null \
+  || fail "phi-coherence: a ~\\-prefixed phi-roots entry must expand against \$HOME to match a fully-expanded vaultPath — expected present (coherent) (got: $outPHItildebsRoots)"
+echo "ok: phi-coherence — a ~\\-prefixed phi-roots entry expands against \$HOME and matches the expanded vault path (present)"
+rm -f "$phi_tildebs_home/.config/claude-glm/phi-roots"
+
+# ── engine-allowlist — HIMMEL-2176 Task 7, status item S4 ───────────────────
+# Exercised against the REAL repo + the REAL cadence-approve-engines.sh
+# script (never a copied literal), only PIPELINE_BAT_DIR is faked — proving
+# the real manifest's `legs[].requiredSuffixes` genuinely stay covered by the
+# real hook's live ENGINE_LIST (a drift here is a real bug, not a fixture
+# artifact). The MISSING-suffix (fail) case below uses a deliberately
+# fabricated item descriptor (never the real one) naming a suffix the real
+# hook could never grant, so the failure path is exercised without needing a
+# custom stub script.
+ea_bat="$work/ea-batdir"; mkdir -p "$ea_bat"
+
+outEAnone=$(PIPELINE_BAT_DIR="$(winpath "$ea_bat")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'engine-allowlist');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outEAnone" | jq -e '.actual == "absent" and .cleanAbsence == true' >/dev/null \
+  || fail "engine-allowlist: no known leg armed should read absent, cleanAbsence:true (got: $outEAnone)"
+echo "ok: engine-allowlist — no luna cadence leg with a known engine requirement armed reads absent, cleanAbsence:true"
+
+: > "$ea_bat/pipeline-health.bat"
+outEAok=$(PIPELINE_BAT_DIR="$(winpath "$ea_bat")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'engine-allowlist');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outEAok" | jq -e '.actual == "present"' >/dev/null \
+  || fail "engine-allowlist: health armed, its real required suffix present in the live allow-list, should read present (got: $outEAok)"
+echo "ok: engine-allowlist — an armed leg whose required engine(s) ARE present in the real cadence-approve-engines.sh allow-list reads present"
+
+outEAmissing=$(PIPELINE_BAT_DIR="$(winpath "$ea_bat")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = {
+  id: 'engine-allowlist-fixture', probe: {
+    type: 'engine-allowlist', script: 'scripts/hooks/cadence-approve-engines.sh',
+    envVar: 'PIPELINE_BAT_DIR', defaultSubdir: '.claude/pipeline-cadence',
+    legs: [{ schedule: 'health', requiredSuffixes: ['no/such/engine-script-exists.py'] }],
+  },
+};
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(require('$probes_lib_w').runProbe(item, ctx)));
+")
+echo "$outEAmissing" | jq -e '.actual == "absent" and (.cleanAbsence // false) == false' >/dev/null \
+  || fail "engine-allowlist: an armed leg missing its required suffix from the live allow-list should read absent, a genuine fail (got: $outEAmissing)"
+echo "$outEAmissing" | jq -e '.detail | contains("health") and contains("no/such/engine-script-exists.py")' >/dev/null \
+  || fail "engine-allowlist: missing-suffix detail should name the leg + the missing suffix (got: $outEAmissing)"
+echo "ok: engine-allowlist — an armed leg missing a required engine from the live allow-list reads absent (the silent-04:00-stall class), never cleanAbsence"
+rm -f "$ea_bat"/*.bat
+
+# ── bridge-health — HIMMEL-2176 Task 7, status item S5 ──────────────────────
+# S5's binding rulings (probes.js's own header comment): (1) counts poller.ts
+# CONSUMER processes only, never the combined supervisor-or-poller regex
+# restart-bridge.ps1 uses for a different purpose; (2) Windows-CIM-only —
+# EVERY other platform reads a LOUD degraded naming the limitation, never a
+# silent pass. The poller-count check is routed through `bash -c` (this
+# file's own established cross-platform seam), so a stub `powershell`
+# EXECUTABLE on PATH fakes it here, never a JS mock.
+bh_dir="$work/bh-dir"; mkdir -p "$bh_dir/.claude/channels/telegram"
+
+# no token at all -> absent, cleanAbsence:true, short-circuited before any
+# getMe/poller-count check runs at all. HIMMEL_LUNA_CONFIG_PATH points at a
+# deliberately nonexistent path (defaultConfig() -> bridge.enabled:false)
+# now that the token-absent branch itself consults ~/.himmel/config.json —
+# never the real file.
+outBHabs=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/bh-config-missing.json")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'bridge-health');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$bh_dir")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outBHabs" | jq -e '.actual == "absent" and .cleanAbsence == true' >/dev/null \
+  || fail "bridge-health: no token configured should read absent, cleanAbsence:true (got: $outBHabs)"
+echo "ok: bridge-health — no token configured (bridge never set up) reads absent, cleanAbsence:true, short-circuited"
+
+# CR fix (HIMMEL-2176 round 6): a missing token alone used to mark
+# cleanAbsence regardless of bridge.enabled — an adopter who explicitly set
+# bridge.enabled:true in ~/.himmel/config.json got the same silent n/a
+# downgrade as someone who never opted in. Pin both directions against
+# lunaConfig.js's own HIMMEL_LUNA_CONFIG_PATH seam (never the real file), in
+# a fresh dir carrying no telegram .env/access.json at all.
+bh_cfg_dir="$work/bh-cfg-dir"; mkdir -p "$bh_cfg_dir/.claude/channels/telegram"
+
+bh_cfg_enabled="$work/bh-config-enabled.json"
+cat > "$bh_cfg_enabled" <<'JSON'
+{"version":1,"luna":{"vaultPath":"/x","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":true,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+
+bh_cfg_disabled="$work/bh-config-disabled.json"
+cat > "$bh_cfg_disabled" <<'JSON'
+{"version":1,"luna":{"vaultPath":"/x","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+
+run_bh_cfg() {
+  local cfgPath="$1"
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cfgPath")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'bridge-health');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$bh_cfg_dir")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+# bridge.enabled:true + no token configured -> loud absent, NEVER
+# cleanAbsence — the adopter explicitly asked for this subsystem and it
+# cannot work without a token; status-report.js's opt-in downgrade must
+# never fire here.
+outBHenabledNoToken=$(run_bh_cfg "$bh_cfg_enabled")
+echo "$outBHenabledNoToken" | jq -e '.actual == "absent" and (.cleanAbsence // false) == false' >/dev/null \
+  || fail "bridge-health: bridge.enabled=true + no token should read absent, never cleanAbsence (got: $outBHenabledNoToken)"
+echo "ok: bridge-health — bridge.enabled=true with no token configured reads a loud absent, never cleanAbsence"
+
+# bridge.enabled:false (explicit) + no token -> absent, cleanAbsence:true —
+# unchanged from the ordinary never-opted-in case.
+outBHdisabledNoToken=$(run_bh_cfg "$bh_cfg_disabled")
+echo "$outBHdisabledNoToken" | jq -e '.actual == "absent" and .cleanAbsence == true' >/dev/null \
+  || fail "bridge-health: bridge.enabled=false + no token should read absent, cleanAbsence:true (got: $outBHdisabledNoToken)"
+echo "ok: bridge-health — bridge.enabled=false (explicit) with no token configured reads absent, cleanAbsence:true"
+
+cat > "$bh_dir/.claude/channels/telegram/.env" <<'ENV'
+TELEGRAM_BOT_TOKEN=fake-bridge-health-token-marker
+ENV
+cat > "$bh_dir/.claude/channels/telegram/access.json" <<'JSON'
+{"allowFrom": ["111"]}
+JSON
+
+bh_stub="$work/bh-stub"; mkdir -p "$bh_stub"
+cat > "$bh_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+echo "ok:testbot"
+STUB
+chmod +x "$bh_stub/bun"
+
+# CR fix (codex-4, retask stage1-build-6d2e): probeBridgePollerCount now emits
+# each matching process's own CommandLine (not a bare Count) so it can anchor
+# to THIS checkout's own scripts/telegram/poller.ts — the stub `powershell`
+# below therefore echoes raw CommandLine fixture lines (one per line), never a
+# number; the real anchor/count logic lives in probes.js and is exercised
+# here exactly as production would drive it.
+repo_root_native_w=$(printf '%s' "$repo_root_w" | sed 's#/#\\#g')
+other_checkout_native="C:\\Users\\testuser\\Documents\\github\\himmel\\.claude\\worktrees\\feat-some-other-checkout"
+
+run_bh() {
+  local lines="$1" platform="${2:-win32}" repoRootOverride="${3:-$repo_root_w}"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' "cat <<'PSOUT'"
+    printf '%s\n' "$lines"
+    printf '%s\n' 'PSOUT'
+  } > "$bh_stub/powershell"
+  chmod +x "$bh_stub/powershell"
+  # Scrub any REAL powershell off the inherited PATH first (never assumed
+  # absent by luck), then prepend the stub dir so ours is the one resolved.
+  local pathVal
+  pathVal="$bh_stub:$(scrub_path "$PATH" powershell)"
+  PATH="$pathVal" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'bridge-health');
+const ctx = { repoRoot: '$repoRootOverride', targetPath: '$(winpath "$bh_dir")', scope: 'project', platform: '$platform', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+# Bare, unpathed token — the genuine shape supervisor.ts's own
+# `spawn(["bun","poller.ts"], {cwd})` produces (restart-bridge.ps1's own
+# Test-BridgeCoreProc comment: "the genuine command lines carry NO path") —
+# unattributable to any checkout by path alone, so it is still counted.
+outBH1=$(run_bh 'bun.exe poller.ts' win32)
+echo "$outBH1" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-health: token getMe ok + access.json schema ok + exactly 1 bare-token poller should read present (got: $outBH1)"
+echo "$outBH1" | jq -e '.detail | contains("fake-bridge-health-token-marker") | not' >/dev/null \
+  || fail "bridge-health: the raw token must never appear in the result (got: $outBH1)"
+echo "ok: bridge-health — token getMe ok + access.json schema ok + exactly 1 bare-token poller.ts process reads present, token never leaked"
+
+outBH0=$(run_bh '' win32)
+echo "$outBH0" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "bridge-health: 0 poller.ts processes should read absent (fail) (got: $outBH0)"
+echo "ok: bridge-health — 0 poller.ts processes reads absent (fail)"
+
+outBH2=$(run_bh "$(printf 'bun.exe poller.ts\nbun.exe poller.ts')" win32)
+echo "$outBH2" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "bridge-health: 2 poller.ts processes (a supervisor+2 pollers or a duplicate) should read absent (fail) (got: $outBH2)"
+echo "ok: bridge-health — 2 poller.ts processes (never exactly 1) reads absent (fail), never a false present"
+
+outBHposix=$(run_bh 'bun.exe poller.ts' linux)
+echo "$outBHposix" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "bridge-health: a non-win32 platform must read a LOUD degraded (HIMMEL-1128), never a silent present just because the token/access checks pass (got: $outBHposix)"
+echo "$outBHposix" | jq -e '.detail | test("not implemented"; "i")' >/dev/null \
+  || fail "bridge-health: the POSIX-degraded detail should name the limitation explicitly (got: $outBHposix)"
+echo "ok: bridge-health — a non-Windows platform reads a LOUD degraded naming the poller-count limitation, never a silent pass"
+
+# CR fix (codex-4, retask stage1-build-6d2e): a poller.ts token explicitly
+# PATHED to THIS checkout's own root (mixed-slash form, matching winpath's
+# cygpath -m output — HIMMEL-2176's own documented "mixed or native path
+# form" reality) must still count as this checkout's poller.
+outBHthisPathed=$(run_bh "bun.exe ${repo_root_w}/scripts/telegram/poller.ts" win32)
+echo "$outBHthisPathed" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-health: a poller.ts pathed to THIS checkout (mixed-slash) should still read present (got: $outBHthisPathed)"
+echo "ok: bridge-health — a poller.ts token pathed to THIS checkout (mixed-slash form) reads present"
+
+# Same checkout, but native backslashes and mismatched case — the anchor
+# normalizes separators AND case (NTFS is case-insensitive; Win32_Process
+# CommandLine has been observed in both separator forms).
+outBHthisNativeUpper=$(run_bh "bun.exe $(printf '%s' "$repo_root_native_w" | tr '[:lower:]' '[:upper:]')\\SCRIPTS\\TELEGRAM\\POLLER.TS" win32)
+echo "$outBHthisNativeUpper" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-health: a poller.ts pathed to THIS checkout (native backslashes, upper-cased) should still read present (got: $outBHthisNativeUpper)"
+echo "ok: bridge-health — a poller.ts token pathed to THIS checkout (native backslashes, mismatched case) reads present"
+
+# CR round 3 fix (HIMMEL-2176, retask stage1-build-6d2e): [^\s"']* stopped at
+# the first space, truncating a poller.ts path under a checkout with a space
+# in it (e.g. 'C:\Users\John Doe\himmel\...') to a fragment that could never
+# match the anchor — the healthy LOCAL poller then read as foreign and
+# bridge-health falsely reported zero pollers. A real Win32_Process
+# CommandLine quotes an argument containing a space, so the fixed extractor
+# tries a QUOTED token first. This is the third of the three token shapes now
+# covered: (1) bare, unpathed ('bun.exe poller.ts', outBH1 above); (2) an
+# unquoted, space-free path (outBHthisPathed/outBHthisNativeUpper above); (3)
+# this one — a quoted path containing a space.
+bh_space_root_w='C:/Users/John Doe/himmel/.claude/worktrees/feat-space-checkout'
+bh_space_root_native='C:\Users\John Doe\himmel\.claude\worktrees\feat-space-checkout'
+outBHspaceQuoted=$(run_bh "bun.exe \"${bh_space_root_native}\\scripts\\telegram\\poller.ts\"" win32 "$bh_space_root_w")
+echo "$outBHspaceQuoted" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-health: a poller.ts path containing a space, quoted (the real Win32_Process shape), must still resolve to THIS checkout and read present (got: $outBHspaceQuoted)"
+echo "ok: bridge-health — a quoted poller.ts path containing a space resolves to THIS checkout and reads present"
+
+# The same space-containing checkout, but pathed to a DIFFERENT one — must
+# still be excluded, proving the quoted extraction doesn't just always match.
+outBHspaceQuotedForeign=$(run_bh "bun.exe \"${bh_space_root_native}\\scripts\\telegram\\poller.ts\"" win32 "$repo_root_w")
+echo "$outBHspaceQuotedForeign" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "bridge-health: a quoted poller.ts path with a space, belonging to a DIFFERENT checkout, must not be counted as this one's (got: $outBHspaceQuotedForeign)"
+echo "ok: bridge-health — a quoted poller.ts path with a space, pathed to a DIFFERENT checkout, is still excluded"
+
+# CR fix (codex-4, retask stage1-build-6d2e): the exact gap this fix closes —
+# a poller.ts token pathed to a DIFFERENT checkout must NOT be counted as
+# this one's, even though the old bare-substring match would have counted it
+# (false healthy, or a spurious duplicate alongside a real local poller).
+outBHforeign=$(run_bh "bun.exe ${other_checkout_native}\\scripts\\telegram\\poller.ts" win32)
+echo "$outBHforeign" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "bridge-health: a poller.ts pathed to a DIFFERENT checkout must not be counted as this one's (expected 0 -> absent, got: $outBHforeign)"
+echo "$outBHforeign" | jq -e '.detail | contains("0 poller")' >/dev/null \
+  || fail "bridge-health: a foreign-checkout poller must read as 0 for THIS checkout, not silently folded in (got: $outBHforeign)"
+echo "ok: bridge-health — a poller.ts token pathed to a DIFFERENT checkout is excluded, never counted as this checkout's"
+
+# A foreign-checkout poller alongside a genuinely healthy local one: the
+# foreign one must not inflate the count into a spurious duplicate-poller
+# failure on an otherwise-healthy bridge.
+outBHmixedForeign=$(run_bh "bun.exe poller.ts"$'\n'"bun.exe ${other_checkout_native}\\scripts\\telegram\\poller.ts" win32)
+echo "$outBHmixedForeign" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-health: this checkout's healthy bare-token poller alongside an unrelated foreign-checkout poller should still read present, not a spurious duplicate (got: $outBHmixedForeign)"
+echo "ok: bridge-health — a foreign-checkout poller alongside this checkout's healthy one does not force a spurious duplicate-poller failure"
+
+# The existing supervisor-plus-child case, unchanged: the supervisor's own
+# commandline never contains 'poller.ts' at all, so even if a defensive CIM
+# query ever returned it alongside the real child, it must still read as
+# exactly ONE consumer.
+outBHsupervisorPlusChild=$(run_bh "$(printf 'bun.exe supervisor.ts\nbun.exe poller.ts')" win32)
+echo "$outBHsupervisorPlusChild" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-health: a supervisor.ts line alongside its poller.ts child must still read exactly 1 consumer (got: $outBHsupervisorPlusChild)"
+echo "ok: bridge-health — a supervisor-plus-child pair still reads as exactly one poller.ts consumer"
+
+# ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
+# Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)
+# present when bridge.enabled; warn when enabled but persistence is absent.
+# bridge.enabled:false is a clean opt-out (cleanAbsence:true), never red.
+# Windows registration is verified by QUERYING THE SCHEDULER (stub schtasks
+# on PATH), never inferred from a file on disk — the exact S1 false-green
+# class this item exists to close. macOS/other reads a LOUD degraded naming
+# the Stage-2 limitation (A12), never a silent pass.
+bp_cfg_enabled="$work/bp-config-enabled.json"
+cat > "$bp_cfg_enabled" <<'JSON'
+{"version":1,"luna":{"vaultPath":"/x","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":true,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+bp_cfg_disabled="$work/bp-config-disabled.json"
+cat > "$bp_cfg_disabled" <<'JSON'
+{"version":1,"luna":{"vaultPath":"/x","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":false,"envPath":"~/x/.env","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+bp_cfg_malformed="$work/bp-config-malformed.json"
+printf '{not valid json' > "$bp_cfg_malformed"
+
+run_bp() {
+  # run_bp <configPath> <jsScript>
+  local cfgPath="$1"; shift
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cfgPath")" "$node_bin" -e "$1"
+}
+
+bp_item_js='const { runProbe } = require("'"$probes_lib_w"'");
+const manifest = JSON.parse(require("fs").readFileSync("'"$manifest_w"'", "utf8"));
+const item = manifest.items.find((i) => i.id === "bridge-persistence");'
+
+# ── case 1: bridge.enabled:false -> clean absence, opt-in, never red ───────
+outBP1=$(run_bp "$bp_cfg_disabled" "
+$bp_item_js
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outBP1" | jq -e '.actual == "absent" and .cleanAbsence == true' >/dev/null \
+  || fail "bridge-persistence: bridge.enabled=false should read absent, cleanAbsence:true (got: $outBP1)"
+echo "$outBP1" | jq -e '.detail | test("bridge.enabled"; "i")' >/dev/null \
+  || fail "bridge-persistence: cleanAbsence detail should name bridge.enabled (got: $outBP1)"
+echo "ok: bridge-persistence — bridge.enabled=false reads absent, cleanAbsence:true, never red"
+
+# ── Linux branch: unit + linger, via stubbed systemctl/loginctl on PATH ────
+# bridge-persistence.js calls spawnSync('systemctl'|'loginctl', ...) DIRECTLY
+# (never through bash -c — its own module header: "every real command is run
+# via spawnSync on the actual binary... never a spawned bash"). Sibling suite
+# scripts/himmelctl/test/test-bridge-persistence.sh (Task 9) already
+# documents this repo's Windows Git Bash dev host's exact limitation: Node
+# refuses to spawnSync() a .bat/.cmd without shell:true (CVE-2024-27980), and
+# an extensionless shebang script isn't CreateProcess-able at all — so the
+# stub satisfies which()'s PATH-presence check (haveSystemctl()/
+# haveLoginctl() read true) but the actual spawn ENOENTs, same shape as
+# "genuinely absent". Same technique adopted here: the stub LOGS every
+# invocation it actually receives; each spawn-dependent assertion below
+# checks that log first and SKIPs (never fakes a pass) when the log shows the
+# spawn never ran. On a real Linux/macOS host every assertion runs for real,
+# no SKIP. The unit-ABSENT case (case 4 below) needs no such gate — fileExists
+# is a pure fs.existsSync with no spawn dependency for its verdict, so it
+# asserts unconditionally on every host.
+bp_stub="$work/bp-stub"; mkdir -p "$bp_stub"
+bp_stub_log="$work/bp-stub.log"
+bp_stub_state="$work/bp-stub-state"; mkdir -p "$bp_stub_state"
+bp_linux_unit_dir="$work/bp-linux-unit-dir"; mkdir -p "$bp_linux_unit_dir"
+
+# On a real Linux host (retask stage1-build-6d2e — WSL) systemctl/loginctl
+# live in /usr/bin ALONGSIDE bash itself (confirmed on this repo's WSL host).
+# scrub_path drops a PATH dir WHOLESALE when it carries a scrubbed tool
+# (HIMMEL-874/880's own documented hazard) — scrubbing systemctl/loginctl
+# would therefore also drop bash, and the stub scripts' own
+# `#!/usr/bin/env bash` shebang would then fail to resolve `bash` in the
+# child's own PATH. link_hermetic_tool (hermetic-path.sh's documented
+# convention: "link bash + whatever tools ... into a stub dir BEFORE calling
+# scrub_path") keeps bash resolvable in $bp_stub regardless of what gets
+# scrubbed. A no-op on Windows, where systemctl/loginctl are never on PATH at
+# all — scrub_path drops nothing there and this stub is never actually
+# spawned successfully anyway (see the file-header SKIP note above).
+link_hermetic_tool bash "$bp_stub"
+
+cat > "$bp_stub/systemctl" <<'STUB'
+#!/usr/bin/env bash
+: "${BP_STUB_LOG:?}"
+echo "systemctl $*" >> "$BP_STUB_LOG"
+case "$*" in
+  "--user is-enabled telegram-bridge.service")
+    if [ -f "${BP_STUB_STATE:?}/enabled" ]; then echo enabled; exit 0
+    elif [ -f "${BP_STUB_STATE:?}/enabled-unknown" ]; then echo unknown; exit 3
+    else echo disabled; exit 1; fi
+    ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$bp_stub/systemctl"
+
+cat > "$bp_stub/loginctl" <<'STUB'
+#!/usr/bin/env bash
+: "${BP_STUB_LOG:?}"
+echo "loginctl $*" >> "$BP_STUB_LOG"
+case "$*" in
+  *"--property=Linger")
+    if [ -f "${BP_STUB_STATE:?}/linger-yes" ]; then echo "Linger=yes"; exit 0
+    elif [ -f "${BP_STUB_STATE:?}/linger-no" ]; then echo "Linger=no"; exit 0
+    else exit 3; fi
+    ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$bp_stub/loginctl"
+
+bp_stub_log_has() { [ -f "$bp_stub_log" ] && grep -qF "$1" "$bp_stub_log"; }
+
+run_bp_linux() {
+  local unitDir="$1" cfgPath="$2"
+  local pathVal
+  pathVal="$bp_stub:$(scrub_path "$PATH" systemctl loginctl)"
+  HIMMELCTL_SYSTEMD_USER_UNIT_DIR="$(winpath "$unitDir")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cfgPath")" \
+    PATH="$pathVal" BP_STUB_LOG="$(winpath "$bp_stub_log")" BP_STUB_STATE="$(winpath "$bp_stub_state")" "$node_bin" -e "
+$bp_item_js
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', platform: 'linux', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+# ── case 2: Linux, unit installed + linger on -> present ───────────────────
+: > "$bp_linux_unit_dir/telegram-bridge.service"
+rm -f "$bp_stub_log"; : > "$bp_stub_state/enabled"; rm -f "$bp_stub_state/linger-no"; : > "$bp_stub_state/linger-yes"
+outBP2=$(run_bp_linux "$bp_linux_unit_dir" "$bp_cfg_enabled")
+if bp_stub_log_has "is-enabled" && bp_stub_log_has "property=Linger"; then
+  echo "$outBP2" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-persistence: Linux unit installed+enabled, linger on should read present (got: $outBP2)"
+  echo "ok: bridge-persistence — Linux: unit installed+enabled, linger on reads present"
+else
+  echo "SKIP: bridge-persistence — Linux unit+linger present case: no evidence in the stub log that systemctl/loginctl actually spawned on this host (see file header, CVE-2024-27980 / no-shebang-exec-on-Windows)"
+fi
+
+# ── case 3: Linux, unit installed + linger OFF -> warn, naming linger ──────
+rm -f "$bp_stub_log"; : > "$bp_stub_state/enabled"; rm -f "$bp_stub_state/linger-yes"; : > "$bp_stub_state/linger-no"
+outBP3=$(run_bp_linux "$bp_linux_unit_dir" "$bp_cfg_enabled")
+if bp_stub_log_has "is-enabled" && bp_stub_log_has "property=Linger"; then
+  echo "$outBP3" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-persistence: Linux unit installed, linger OFF should read degraded (warn) (got: $outBP3)"
+  echo "$outBP3" | jq -e '.detail | test("linger"; "i")' >/dev/null \
+    || fail "bridge-persistence: linger-off detail should name linger specifically, not a generic absence (got: $outBP3)"
+  echo "ok: bridge-persistence — Linux: unit installed, linger OFF reads degraded, naming linger specifically"
+else
+  echo "SKIP: bridge-persistence — Linux linger-OFF case: no evidence in the stub log that systemctl/loginctl actually spawned on this host (see file header, CVE-2024-27980 / no-shebang-exec-on-Windows)"
+fi
+
+# ── case 4: Linux, unit ABSENT -> warn, naming the unit. No SKIP gate here —
+# fileExists is a pure fs.existsSync with no spawn dependency for the verdict
+# (probeBridgePersistence short-circuits on !fileExists before ever calling
+# lingerEnabled), so this is deterministic and testable on every host. ─────
+bp_linux_no_unit_dir="$work/bp-linux-no-unit-dir"; mkdir -p "$bp_linux_no_unit_dir"
+rm -f "$bp_stub_log"; rm -f "$bp_stub_state/enabled"; : > "$bp_stub_state/linger-yes"
+outBP4=$(run_bp_linux "$bp_linux_no_unit_dir" "$bp_cfg_enabled")
+echo "$outBP4" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "bridge-persistence: Linux unit ABSENT should read degraded (warn) (got: $outBP4)"
+echo "$outBP4" | jq -e '.detail | test("telegram-bridge.service"; "i")' >/dev/null \
+  || fail "bridge-persistence: unit-absent detail should name the unit (got: $outBP4)"
+echo "ok: bridge-persistence — Linux: unit not installed reads degraded, naming the unit (deterministic, no spawn dependency)"
+
+# ── case 4b (retask stage1-build-6d2e round 6): the unit FILE exists, but
+# `systemctl --user is-enabled` reports it disabled/masked (rc!=0) — the
+# SAME existence-is-not-enablement distinction as the Windows fix above.
+# bridge-persistence.js's systemdUnitInstalled() already derives `enabled`
+# from is-enabled's own exit code (never from file presence alone), so this
+# closes a TEST gap, not a code gap — confirming that behavior end-to-end
+# through this probe rather than just asserting it in prose. Same SKIP gate
+# as cases 2/3: genuinely exercised only where the spawn can actually run
+# (never on this repo's Windows dev host — see the file-header note above).
+: > "$bp_linux_unit_dir/telegram-bridge.service"
+rm -f "$bp_stub_log"; rm -f "$bp_stub_state/enabled"; : > "$bp_stub_state/linger-yes"
+outBP4b=$(run_bp_linux "$bp_linux_unit_dir" "$bp_cfg_enabled")
+if bp_stub_log_has "is-enabled"; then
+  echo "$outBP4b" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-persistence: Linux unit file present but is-enabled reports disabled must read degraded, never present (got: $outBP4b)"
+  echo "$outBP4b" | jq -e '.detail | test("not enabled"; "i")' >/dev/null \
+    || fail "bridge-persistence: disabled-unit detail should distinguish 'installed but not enabled' from 'not installed' (got: $outBP4b)"
+  echo "ok: bridge-persistence — Linux: unit file present but systemctl is-enabled reports disabled reads degraded, never present"
+else
+  echo "SKIP: bridge-persistence — Linux unit-disabled case: no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case 4c (CR fix, retask stage1-build-6d2e round 6, CRITICAL): unit file
+# exists but `systemctl --user is-enabled` exits with an UNRECOGNIZED code
+# (neither 0 nor 1) — systemdUnitInstalled()'s `enabled` is a genuine
+# tri-state (true/false/null) and this is the null/UNDETERMINED case, not a
+# confirmed "not enabled". The pre-fix `enabled !== true` check folded this
+# into the same "installed but not enabled" wording as case 4b's confirmed-
+# disabled unit — telling an operator to `systemctl enable` a unit whose
+# enablement was never actually established. The detail here must NOT claim
+# "not enabled" and MUST name the undetermined condition, while the verdict
+# stays degraded either way. Same SKIP gate as 4b (spawn-dependent).
+: > "$bp_linux_unit_dir/telegram-bridge.service"
+rm -f "$bp_stub_log"; rm -f "$bp_stub_state/enabled"; : > "$bp_stub_state/enabled-unknown"; : > "$bp_stub_state/linger-yes"
+outBP4c=$(run_bp_linux "$bp_linux_unit_dir" "$bp_cfg_enabled")
+rm -f "$bp_stub_state/enabled-unknown"
+if bp_stub_log_has "is-enabled"; then
+  echo "$outBP4c" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-persistence: Linux unit file present, is-enabled UNDETERMINED must still read degraded (got: $outBP4c)"
+  echo "$outBP4c" | jq -e '.detail | test("not enabled"; "i") | not' >/dev/null \
+    || fail "bridge-persistence: undetermined-enablement detail must NOT claim 'not enabled' — that was never established (got: $outBP4c)"
+  echo "$outBP4c" | jq -e '.detail | test("could not be determined"; "i")' >/dev/null \
+    || fail "bridge-persistence: undetermined-enablement detail should name the undetermined condition (got: $outBP4c)"
+  echo "ok: bridge-persistence — Linux: unit file present but is-enabled UNDETERMINED reads degraded without claiming 'not enabled'"
+else
+  echo "SKIP: bridge-persistence — Linux unit-enablement-undetermined case: no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case 4d (same sweep, retask stage1-build-6d2e): unit installed+enabled,
+# but `loginctl show-user --property=Linger` fails (neither yes nor no) — the
+# stub's existing else-branch (exit 3) already models this; lingerEnabled()
+# treats any non-zero rc as null/UNDETERMINED, same tri-state shape as
+# unitInfo.enabled above, and the pre-fix `linger !== true` check folded it
+# into the same "linger is NOT enabled" wording as a confirmed-off linger.
+# Detail here must NOT claim linger is confirmed off and MUST name the
+# undetermined condition; verdict stays degraded either way.
+: > "$bp_linux_unit_dir/telegram-bridge.service"
+rm -f "$bp_stub_log"; : > "$bp_stub_state/enabled"; rm -f "$bp_stub_state/linger-yes" "$bp_stub_state/linger-no"
+outBP4d=$(run_bp_linux "$bp_linux_unit_dir" "$bp_cfg_enabled")
+if bp_stub_log_has "is-enabled" && bp_stub_log_has "property=Linger"; then
+  echo "$outBP4d" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-persistence: Linux unit installed+enabled, linger query UNDETERMINED must still read degraded (got: $outBP4d)"
+  echo "$outBP4d" | jq -e '.detail | test("linger is NOT enabled"; "i") | not' >/dev/null \
+    || fail "bridge-persistence: undetermined-linger detail must NOT claim linger is confirmed NOT enabled — that was never established (got: $outBP4d)"
+  echo "$outBP4d" | jq -e '.detail | test("could not be determined"; "i")' >/dev/null \
+    || fail "bridge-persistence: undetermined-linger detail should name the undetermined condition (got: $outBP4d)"
+  echo "ok: bridge-persistence — Linux: unit installed+enabled, linger query UNDETERMINED reads degraded without claiming linger is confirmed off"
+else
+  echo "SKIP: bridge-persistence — Linux linger-undetermined case: no evidence in the stub log that systemctl/loginctl actually spawned on this host"
+fi
+
+# ── case 4e (CR fix, retask stage1-build-6d2e, final round): the SPAWN side
+# of the class cases 4c/4d already proved for the config-path READ side —
+# bridgePersistence.systemdUnitInstalled()/lingerEnabled() take no
+# parameters and resolve+spawn systemctl/loginctl purely off the ambient
+# process.env (which()'s PATH lookup, spawnSync's inherited env). A single
+# node -e invocation drives it: the REAL subprocess PATH has systemctl AND
+# loginctl scrubbed entirely (so a bug that ignores ctx.env would find
+# nothing and read degraded/undetermined), while a MINIMAL ctx.env (no
+# process.env spread) carries its OWN PATH pointing at a stub dir where
+# systemctl/loginctl report the unit installed+enabled and linger on. Only a
+# genuine ctx.env-scoped resolve+spawn can make this read present — same
+# SKIP gate as every other Linux bridge-persistence spawn case (this stub
+# never actually spawns on this repo's Windows dev host).
+bp_ctxenv_stub="$work/bp-ctxenv-stub"; mkdir -p "$bp_ctxenv_stub"
+link_hermetic_tool bash "$bp_ctxenv_stub"
+cat > "$bp_ctxenv_stub/systemctl" <<'STUB'
+#!/usr/bin/env bash
+: "${BP_STUB_LOG:?}"
+echo "systemctl $*" >> "$BP_STUB_LOG"
+case "$*" in
+  "--user is-enabled telegram-bridge.service") echo enabled; exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$bp_ctxenv_stub/systemctl"
+cat > "$bp_ctxenv_stub/loginctl" <<'STUB'
+#!/usr/bin/env bash
+: "${BP_STUB_LOG:?}"
+echo "loginctl $*" >> "$BP_STUB_LOG"
+case "$*" in
+  *"--property=Linger") echo "Linger=yes"; exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$bp_ctxenv_stub/loginctl"
+bp_ctxenv_unit_dir="$work/bp-ctxenv-unit-dir"; mkdir -p "$bp_ctxenv_unit_dir"
+: > "$bp_ctxenv_unit_dir/telegram-bridge.service"
+bp_ctxenv_log="$work/bp-ctxenv-stub.log"; rm -f "$bp_ctxenv_log"
+outBPctxEnvSpawn=$(HIMMELCTL_SYSTEMD_USER_UNIT_DIR="$(winpath "$bp_ctxenv_unit_dir")" \
+  PATH="$(scrub_path "$PATH" systemctl loginctl)" "$node_bin" -e "
+$bp_item_js
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', platform: 'linux',
+  env: {
+    PATH: '$(winpath "$bp_ctxenv_stub")',
+    USER: 'ctxenv-user',
+    HOME: '$(winpath "$work")',
+    HIMMEL_LUNA_CONFIG_PATH: '$(winpath "$bp_cfg_enabled")',
+    BP_STUB_LOG: '$(winpath "$bp_ctxenv_log")',
+  } };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+if [ -s "$bp_ctxenv_log" ]; then
+  echo "$outBPctxEnvSpawn" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-persistence: ctx.env PATH must drive the systemctl/loginctl resolve+spawn, not the ambient process.env (got: $outBPctxEnvSpawn)"
+  echo "ok: bridge-persistence — Linux: ctx.env (not ambient process.env) drives the systemctl/loginctl resolve+spawn (HIMMEL-2176 CR fix, retask stage1-build-6d2e)"
+else
+  echo "SKIP: bridge-persistence — ctx.env spawn-routing case: no evidence in the stub log that systemctl/loginctl actually spawned on this host"
+fi
+
+# ── Windows branch: scheduler registration via a stubbed powershell on PATH ──
+# CR fix (codex-2, retask stage1-build-6d2e round 7): schtasks' text output
+# is LOCALIZED (both the field label and the "Enabled" value translate on
+# non-English Windows) — probes.js now queries Get-ScheduledTask and reads
+# its `.State` enum via `.ToString()`, which is culture-invariant BY
+# CONSTRUCTION (Ready/Disabled/Running/Queued — .NET enum member names, never
+# translated). The stub therefore fakes `powershell`, not `schtasks`, and
+# every case below drives it with the INVARIANT enum member name — exactly
+# what a REAL non-English Windows would also produce, proving the fix
+# without needing to fake an actual German/Japanese/etc. locale.
+write_bp_powershell() {
+  # $1: 0 (task found, emit STATE:$2, rc=0) | 1 (task genuinely not found —
+  #     emit NOTFOUND, rc=0 — the real Get-ScheduledTask/FullyQualifiedErrorId
+  #     match probes.js now performs, replacing the old -ErrorAction
+  #     SilentlyContinue swallowed-error shape) | 2 (query fails at the
+  #     process level — spawn/timeout/crash — nonzero rc, no output) |
+  #     3 (query fails but PowerShell itself CATCHES the error, rc=0 — e.g.
+  #     the ScheduledTasks module unavailable, access denied, a WinRM/CIM
+  #     problem — retask stage1-build-6d2e: this must NOT read absent, since
+  #     unlike mode 1 nothing ever confirmed the task doesn't exist)
+  # $2: OPTIONAL — the State enum member to emit when $1=0 (default: Ready)
+  local mode="$1" state="${2:-Ready}"
+  # resolvePowershell() PREFERS pwsh over powershell — a leftover
+  # $bp_stub/pwsh from an earlier case (write_bp_pwsh_only) would silently
+  # shadow this fresh powershell write otherwise, since bp_stub is reused
+  # across every Windows-branch case in this file.
+  rm -f "$bp_stub/pwsh"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    if [ "$mode" = "0" ]; then
+      printf 'echo "STATE:%s"\n' "$state"
+    elif [ "$mode" = "1" ]; then
+      printf 'echo "NOTFOUND"\n'
+    elif [ "$mode" = "3" ]; then
+      # A representative real FullyQualifiedErrorId for a CAUGHT, non-absent
+      # failure — same shape confirmed on a real host for e.g. the
+      # ScheduledTasks module missing (CommandNotFoundException), distinct
+      # from the exact CmdletizationQuery_NotFound_TaskName match.
+      printf 'echo "ERR:HResult 0x80070005,Get-ScheduledTask"\n'
+    fi
+    if [ "$mode" = "2" ]; then
+      printf 'exit 2\n'
+    else
+      printf 'exit 0\n'
+    fi
+  } > "$bp_stub/powershell"
+  chmod +x "$bp_stub/powershell"
+}
+
+run_bp_win() {
+  local cfgPath="$1"
+  local pathVal
+  # Scrub BOTH names, not just 'powershell' (retask stage1-build-6d2e round
+  # 12, caught here): resolvePowershell() PREFERS pwsh, so a real pwsh.exe
+  # left on PATH shadows the $bp_stub/powershell stub below and this test
+  # queries the REAL Windows Task Scheduler instead — exactly what happened
+  # on this dev machine (it found a genuine 'HimmelTelegramBridge' task).
+  pathVal="$bp_stub:$(scrub_path "$PATH" powershell pwsh)"
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cfgPath")" PATH="$pathVal" "$node_bin" -e "
+$bp_item_js
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', platform: 'win32', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+# write_bp_pwsh_only <state> — a $bp_stub/pwsh stub only, NO powershell stub
+# anywhere (retask stage1-build-6d2e round 12, codex-2): proves the probe
+# resolves the interpreter via helpers.js's resolvePowershell() (which
+# PREFERS pwsh) rather than a hardcoded 'powershell' binary name — the same
+# helper bridge-persistence.js (the installer half of this feature) already
+# uses, so a PowerShell-7-only machine doesn't have the installer succeed
+# while the probe reports persistence as unknown forever.
+write_bp_pwsh_only() {
+  local state="${1:-Ready}"
+  rm -f "$bp_stub/powershell"
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf 'echo "STATE:%s"\n' "$state"
+    printf 'exit 0\n'
+  } > "$bp_stub/pwsh"
+  chmod +x "$bp_stub/pwsh"
+}
+
+run_bp_win_pwsh_only() {
+  local cfgPath="$1"
+  local pathVal
+  # Scrub BOTH names off the OUTER (real) PATH — bp_stub itself (prepended)
+  # carries only `pwsh` (write_bp_pwsh_only above already removed any
+  # leftover `powershell` stub from an earlier case), so `pwsh` is the ONLY
+  # thing either name can resolve to.
+  pathVal="$bp_stub:$(scrub_path "$PATH" powershell pwsh)"
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cfgPath")" PATH="$pathVal" "$node_bin" -e "
+$bp_item_js
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', platform: 'win32', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+# ── case 5: Windows, scheduled task registered (State=Ready) -> present ────
+write_bp_powershell 0 Ready
+outBP5=$(run_bp_win "$bp_cfg_enabled")
+echo "$outBP5" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-persistence: Windows task registered (Ready) should read present (got: $outBP5)"
+echo "ok: bridge-persistence — Windows: scheduled task registered (State=Ready) reads present"
+
+# ── case 5b: State=Running is ALSO a healthy/active state, not just Ready —
+# proves the classification isn't hardcoded to a single enum member. ───────
+write_bp_powershell 0 Running
+outBP5b=$(run_bp_win "$bp_cfg_enabled")
+echo "$outBP5b" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-persistence: Windows task registered (Running) should read present (got: $outBP5b)"
+echo "ok: bridge-persistence — Windows: scheduled task registered (State=Running) reads present"
+
+# ── case 5c (retask stage1-build-6d2e round 12, codex-2): only `pwsh`
+# resolves — NO `powershell` anywhere on PATH — must still classify
+# correctly (present), never 'unknown'. A machine with only PowerShell 7
+# installed is a real, common shape; a hardcoded 'powershell' binary name
+# would never find an interpreter there. ───────────────────────────────────
+write_bp_pwsh_only Ready
+outBP5c=$(run_bp_win_pwsh_only "$bp_cfg_enabled")
+echo "$outBP5c" | jq -e '.actual == "present"' >/dev/null \
+  || fail "bridge-persistence: with ONLY pwsh resolving (no powershell), an enabled task must still read present, not unknown (got: $outBP5c)"
+echo "ok: bridge-persistence — Windows: only pwsh resolves (no powershell), task registered still reads present"
+
+# ── case 6: Windows, task NOT registered -> warn. Anti-false-green: a
+# plausible runner/launcher FILE existing on disk must NOT flip this to
+# present — only the scheduler's own answer may. ───────────────────────────
+bp_fake_runner_dir="$work/bp-fake-runner"; mkdir -p "$bp_fake_runner_dir"
+: > "$bp_fake_runner_dir/restart-bridge.ps1"
+: > "$bp_fake_runner_dir/HimmelTelegramBridge.xml"
+write_bp_powershell 1
+outBP6=$(run_bp_win "$bp_cfg_enabled")
+echo "$outBP6" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "bridge-persistence: Windows task not registered should read degraded (warn), even with a plausible runner file present on disk (got: $outBP6)"
+echo "$outBP6" | jq -e '.detail | test("HimmelTelegramBridge"; "i")' >/dev/null \
+  || fail "bridge-persistence: not-registered detail should name the task (got: $outBP6)"
+echo "ok: bridge-persistence — Windows: task not registered reads degraded (warn), never inferred present from a runner file on disk"
+
+# ── case 6b (retask stage1-build-6d2e round 6, CRITICAL codex-1): the task
+# EXISTS (State=Disabled) — a disabled task will not run at logon, so this
+# must NOT read present. Existence is not enablement. ──────────────────────
+write_bp_powershell 0 Disabled
+outBP6b=$(run_bp_win "$bp_cfg_enabled")
+echo "$outBP6b" | jq -e '.actual != "present"' >/dev/null \
+  || fail "bridge-persistence: a task that exists but is Disabled must NEVER read present (got: $outBP6b)"
+echo "$outBP6b" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "bridge-persistence: a Disabled task should read degraded (warn), not absent/unknown (got: $outBP6b)"
+echo "$outBP6b" | jq -e '.detail | test("Disabled"; "i")' >/dev/null \
+  || fail "bridge-persistence: disabled-task detail should name the Disabled state, not just 'exists' (got: $outBP6b)"
+echo "ok: bridge-persistence — Windows: task exists but is Disabled reads degraded, never present (existence is not enablement)"
+
+# ── case 7: Windows, scheduler query FAILS (unexpected rc) -> unknown/degraded, NEVER present ──
+write_bp_powershell 2
+outBP7=$(run_bp_win "$bp_cfg_enabled")
+echo "$outBP7" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "bridge-persistence: a failed scheduler query should read degraded, never present (got: $outBP7)"
+echo "$outBP7" | jq -e '.detail | test("unknown"; "i")' >/dev/null \
+  || fail "bridge-persistence: a failed scheduler query detail should call the registration status unknown (got: $outBP7)"
+echo "ok: bridge-persistence — Windows: a failed scheduler query reads degraded/unknown, never present"
+
+# ── case 7b (CR fix, retask stage1-build-6d2e): Get-ScheduledTask query
+# CAUGHT an error that is NOT the exact "no such task" identifier (e.g. the
+# ScheduledTasks module unavailable, access denied, a WinRM/CIM problem) —
+# PowerShell itself exits 0 here (the try/catch swallows it internally), so
+# this is a DIFFERENT failure shape than case 7's process-level rc=2. The
+# pre-fix `-ErrorAction SilentlyContinue` collapsed this into the same
+# empty-stdout/rc=0 shape as a genuine not-found, reading it 'absent' — an
+# operator would then be told to reinstall persistence when the truth is the
+# scheduler could not be queried at all. Must read degraded/unknown, and the
+# detail must NOT claim the task is absent/not registered. ──────────────────
+write_bp_powershell 3
+outBP7b=$(run_bp_win "$bp_cfg_enabled")
+echo "$outBP7b" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "bridge-persistence: a caught (non-not-found) scheduler query error should read degraded, never present (got: $outBP7b)"
+echo "$outBP7b" | jq -e '.detail | test("unknown"; "i")' >/dev/null \
+  || fail "bridge-persistence: a caught scheduler query error detail should call the registration status unknown (got: $outBP7b)"
+echo "$outBP7b" | jq -e '.detail | test("no scheduled task named"; "i") | not' >/dev/null \
+  || fail "bridge-persistence: a caught (non-not-found) error must NOT be worded as a confirmed absence (got: $outBP7b)"
+echo "ok: bridge-persistence — Windows: a caught scheduler query error (not the exact not-found identifier) reads degraded/unknown, never absent or present"
+
+# ── case 8: unsupported platform (darwin) -> loud degraded naming Stage 2 ──
+outBP8=$(run_bp "$bp_cfg_enabled" "
+$bp_item_js
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', platform: 'darwin', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outBP8" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "bridge-persistence: an unsupported platform (darwin) should read a LOUD degraded, never a silent pass (got: $outBP8)"
+echo "$outBP8" | jq -e '.detail | test("Stage 2"; "i") or (.detail | test("launchd"; "i"))' >/dev/null \
+  || fail "bridge-persistence: the unsupported-platform detail should name the launchd/Stage-2 limitation explicitly (got: $outBP8)"
+echo "ok: bridge-persistence — an unsupported platform (darwin) reads a LOUD degraded naming the launchd/Stage-2 limitation, never a silent pass"
+
+# ── case: malformed config must not crash the probe (Part B #12, shared) ───
+outBPmalformed=$(run_bp "$bp_cfg_malformed" "
+$bp_item_js
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outBPmalformed" | jq -e '.actual == "degraded" and (.detail | test("luna config"; "i"))' >/dev/null \
+  || fail "bridge-persistence: a malformed config.json must not crash the probe — degrades naming the config read failure (got: $outBPmalformed)"
+echo "ok: bridge-persistence — a malformed config.json degrades cleanly, never crashes the probe"
+
+# ── Part B — the inert-config wiring closes: bridge.envPath / bridge.whisper.{cli,model} ──
+# HIMMEL-2176 Stage-1 PR-C, Part B: these config fields used to be read by
+# NOTHING (probeTelegramAccess/probeTelegramGetMe only ever consulted the
+# manifest's hardcoded envFile; probeWhisperReady only ever consulted
+# WHISPER_*/hardcoded defaults). Precedence pinned here: explicit process-env
+# override (TELEGRAM_ENV / WHISPER_CLI/WHISPER_MODEL) wins, else the
+# adopter's configured value, else the hardcoded default.
+pb_home="$work/pb-home"; mkdir -p "$pb_home/.claude/channels/telegram"
+pb_configured_env_dir="$work/pb-configured-env"; mkdir -p "$pb_configured_env_dir"
+cat > "$pb_configured_env_dir/bridge.env" <<'ENV'
+TELEGRAM_BOT_TOKEN=configured-path-token-marker
+ENV
+cat > "$pb_home/.claude/channels/telegram/access.json" <<'JSON'
+{"allowFrom": ["1"]}
+JSON
+# NOTE: the manifest default envFile ('.claude/channels/telegram/.env' under
+# $pb_home) is deliberately left EMPTY/absent — only the CONFIGURED path
+# carries a token, so a pass here proves resolution actually followed the
+# configured value, not a coincidental fallback.
+pb_cfg_envpath="$work/pb-config-envpath.json"
+cat > "$pb_cfg_envpath" <<JSON
+{"version":1,"luna":{"vaultPath":"/x","cadence":{"enabled":false,"schedules":{"fetchHealth":{"time":"01:30"},"harvest":{"time":"02:00"},"synthesize":{"time":"03:00"},"health":{"time":"04:00","day":"SUN"}},"models":{"harvest":"sonnet","synthesize":"sonnet","health":"haiku"}},"phi":{"declared":false}},"bridge":{"enabled":true,"envPath":"$(winpath "$pb_configured_env_dir/bridge.env")","whisper":{"cli":null,"model":"ggml-small.bin"}}}
+JSON
+
+# ── case 9: configured bridge.envPath, no TELEGRAM_ENV override -> resolves there ──
+outPB9=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$pb_cfg_envpath")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'telegram-bridge');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$pb_home")', TELEGRAM_ENV: undefined }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outPB9" | jq -e '.actual == "present"' >/dev/null \
+  || fail "Part B case 9: bridge.envPath configured (no TELEGRAM_ENV) should resolve the token from the configured path (got: $outPB9)"
+echo "ok: Part B case 9 — bridge.envPath configured, no TELEGRAM_ENV override, resolves from the configured path"
+
+# ── case 10: TELEGRAM_ENV override present AND a different configured value -> env wins ──
+pb_override_env_dir="$work/pb-override-env"; mkdir -p "$pb_override_env_dir"
+cat > "$pb_override_env_dir/override.env" <<'ENV'
+TELEGRAM_BOT_TOKEN=env-override-token-marker
+ENV
+outPB10=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$pb_cfg_envpath")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'telegram-bridge');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$pb_home")', TELEGRAM_ENV: '$(winpath "$pb_override_env_dir/override.env")' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outPB10" | jq -e '.actual == "present"' >/dev/null \
+  || fail "Part B case 10: TELEGRAM_ENV override should win over a different configured envPath (got: $outPB10)"
+echo "$outPB10" | jq -e '.detail | contains("configured-path-token-marker")' >/dev/null \
+  && fail "Part B case 10: the configured-path env file must NOT have been read once TELEGRAM_ENV overrides it (got: $outPB10)"
+echo "ok: Part B case 10 — TELEGRAM_ENV process-env override wins over a different configured bridge.envPath"
+
+# ── case 10b (retask stage1-build-6d2e round 9, codex-3): TELEGRAM_ENV set
+# to a ~/-prefixed path must expand against HOME before resolving — the
+# configured-envPath branch already expanded `~`, the override branch used
+# to return the raw value verbatim, so the HIGHEST-priority input was the
+# one most likely to fail for an adopter who set it the natural way. ──────
+pb_tilde_env_dir="$pb_home/tilde-env-dir"; mkdir -p "$pb_tilde_env_dir"
+cat > "$pb_tilde_env_dir/tilde.env" <<'ENV'
+TELEGRAM_BOT_TOKEN=tilde-slash-override-token-marker
+ENV
+outPB10b=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$pb_cfg_envpath")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'telegram-bridge');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$pb_home")', TELEGRAM_ENV: '~/tilde-env-dir/tilde.env' }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outPB10b" | jq -e '.actual == "present"' >/dev/null \
+  || fail "Part B case 10b: TELEGRAM_ENV=~/... must expand against HOME before resolving (got: $outPB10b)"
+echo "ok: Part B case 10b — TELEGRAM_ENV with a ~/-prefixed path expands against HOME and resolves"
+
+# ── case 10c: TELEGRAM_ENV set to a ~\-prefixed (backslash) path — the
+# documented HIMMEL-2263 gap class — must ALSO expand correctly. The raw
+# value is passed through a real env var (never interpolated into the JS
+# source string) so neither bash's nor JS's own backslash-escape handling
+# can corrupt it — same convention this suite already uses for any fixture
+# value that might carry a backslash or apostrophe. Windows-only assertion:
+# expandHomeForCtx's path.join(home, p.slice(2)) only SPLITS on `\` as a
+# separator on win32 — on POSIX, Node's path.join keeps a `\` as a literal
+# filename character (the exact, already-ticketed HIMMEL-2275 class the
+# EXISTING phi-coherence `~\` test already hits on this suite's WSL run) —
+# so this stays a Windows-only proof rather than adding a 13th Linux
+# failure to a bucket the coordinator is tracking as a fixed count of 12.
+pb_tildebs_env_dir="$pb_home/tildebs-env-dir"; mkdir -p "$pb_tildebs_env_dir"
+cat > "$pb_tildebs_env_dir/tildebs.env" <<'ENV'
+TELEGRAM_BOT_TOKEN=tilde-backslash-override-token-marker
+ENV
+if is_win32; then
+  outPB10c=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$pb_cfg_envpath")" PB_TILDEBS_RAW='~\tildebs-env-dir\tildebs.env' "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'telegram-bridge');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { HOME: '$(winpath "$pb_home")', TELEGRAM_ENV: process.env.PB_TILDEBS_RAW }) };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+  echo "$outPB10c" | jq -e '.actual == "present"' >/dev/null \
+    || fail "Part B case 10c: TELEGRAM_ENV=~\\... (backslash, HIMMEL-2263 gap class) must expand against HOME before resolving (got: $outPB10c)"
+  printf '%s\n' "ok: Part B case 10c — TELEGRAM_ENV with a ~\\-prefixed (backslash) path expands against HOME and resolves"
+else
+  # printf, not echo (SC2028): this message's text carries a literal
+  # backslash, and echo's escape-interpretation behavior is shell-dependent —
+  # printf '%s' never re-interprets its argument, portable everywhere, the
+  # same convention the rest of this repo's shell already uses for anything
+  # containing a backslash.
+  printf '%s\n' "SKIP: Part B case 10c — ~\\-prefixed TELEGRAM_ENV is a Windows-only path shape (path.join doesn't split on '\\' on POSIX — the same known HIMMEL-2275 class as the existing phi-coherence ~\\ test)"
+fi
+
+# ── case: no config at all -> whisper_ready behaves identically to today (regression guard) ──
+pb_no_config="$work/pb-no-config.json"
+pb_whisper_dir="$work/pb-whisper-dir"; mkdir -p "$pb_whisper_dir"
+printf 'stub-binary' > "$pb_whisper_dir/whisper-cli.exe"
+printf 'stub-model' > "$pb_whisper_dir/ggml-small.bin"
+outPBnoConfig=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$pb_no_config")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$pb_whisper_dir")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'win32' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outPBnoConfig" | jq -e '.actual == "present"' >/dev/null \
+  || fail "Part B regression: whisper_ready with NO config file at all should behave exactly as before this ticket (got: $outPBnoConfig)"
+echo "ok: Part B regression — cmd:whisper_ready with no config file at all resolves exactly as before this ticket"
+
+# ── case: malformed config -> whisper_ready degrades, never crashes ────────
+outPBwhisperMalformed=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$bp_cfg_malformed")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'whisper-transcription', probe: { type: 'cmd:whisper_ready' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
+  env: Object.assign({}, process.env, { WHISPER_DIR: '$(winpath "$pb_whisper_dir")', WHISPER_CLI: undefined, WHISPER_MODEL: undefined }), platform: 'win32' };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outPBwhisperMalformed" | jq -e '.actual == "degraded" and (.detail | test("luna config"; "i"))' >/dev/null \
+  || fail "Part B: cmd:whisper_ready with a malformed config.json must degrade cleanly, never crash (got: $outPBwhisperMalformed)"
+echo "ok: Part B — cmd:whisper_ready with a malformed config.json degrades cleanly, never crashes"
+
+# ── HIMMEL-2289 regression: bash-backed probes must resolve via HIMMELCTL_BASH,
+# never the bare `bash` name — a sabotage-stub `bash` FIRST on PATH stands in
+# for Windows System32's WSL launcher (the exact binary that broke
+# doc-guard-map / handover-wiring / hermes-lanes on a fully healthy host
+# before this fix — see probes.js's resolveProbeBash/spawnBashProbe header
+# comment). Each positive case proves the probe still reads its healthy
+# verdict when HIMMELCTL_BASH points at a real bash despite the sabotage stub
+# shadowing PATH (this fails against the pre-fix bare-`bash` spawn); each
+# negative control pins HIMMELCTL_BASH AT the sabotage stub instead, proving
+# the positive assertion isn't vacuous. ─────────────────────────────────────
+real_bash_w="$(winpath "$(command -v bash)")"
+
+# HIMMEL-2289: when this stub is PINNED directly as HIMMELCTL_BASH (the
+# negative controls, and the toolchain-row non-vacuous case below) it is
+# spawned DIRECTLY (never via a real bash's own shebang exec) — and this
+# host's own documented Windows limitation (see the bridge-persistence
+# "Linux branch" comment above, CVE-2024-27980 / no-shebang-exec-on-Windows)
+# means a plain extensionless `#!/usr/bin/env bash` script isn't
+# CreateProcess-able as a directly-spawned `bin` there at all (ENOENT, not a
+# controlled nonzero exit) — that would make the negative control vacuously
+# "pass" via a spawn error instead of actually exercising "resolves fine but
+# can't source". On win32 the stand-in is therefore a COPY of Git for
+# Windows' own coreutils false.exe — a real PE binary that ignores every
+# argument and always exits 1 — never a script; on posix a plain shebang
+# script (exec-able directly there) is exactly the "always fails" bash a
+# sabotage stub needs to be.
+sabotage_bash_dir="$work/sabotage-bash-bin"; mkdir -p "$sabotage_bash_dir"
+if is_win32; then
+  sabotage_bash="$sabotage_bash_dir/bash.exe"
+  false_exe="$(command -v false.exe || true)"
+  [ -n "$false_exe" ] || fail "HIMMEL-2289 setup: no false.exe on PATH — the win32 sabotage-bash stand-in needs a real PE binary that always exits nonzero (Git for Windows ships one at /usr/bin/false.exe)"
+  cp "$false_exe" "$sabotage_bash"
+else
+  sabotage_bash="$sabotage_bash_dir/bash"
+  cat > "$sabotage_bash" <<'STUB'
+#!/usr/bin/env bash
+exit 127
+STUB
+fi
+chmod +x "$sabotage_bash"
+sabotage_path="$sabotage_bash_dir:$PATH"
+
+# handover-wiring (handover-dir), reusing hd_present_dir from the happy-path
+# case above (same repoRoot/targetPath shape).
+outHWreg=$(PATH="$sabotage_path" HIMMELCTL_BASH="$real_bash_w" HANDOVER_DIR="$(winpath "$hd_present_dir")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHWreg" | jq -e '.actual == "present"' >/dev/null \
+  || fail "HIMMEL-2289 regression: handover-wiring should read present via HIMMELCTL_BASH despite a sabotage 'bash' shadowing PATH (got: $outHWreg)"
+echo "ok: HIMMEL-2289 regression — handover-wiring reads present via HIMMELCTL_BASH even with a WSL-launcher-shaped sabotage bash first on PATH"
+
+outHWnc=$(HIMMELCTL_BASH="$(winpath "$sabotage_bash")" HANDOVER_DIR="$(winpath "$hd_present_dir")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHWnc" | jq -e '.actual != "present"' >/dev/null \
+  || fail "HIMMEL-2289 negative control: handover-wiring must NOT read present when HIMMELCTL_BASH is pinned at the sabotage stub (got: $outHWnc)"
+echo "ok: HIMMEL-2289 negative control — handover-wiring does NOT read present when HIMMELCTL_BASH points at the sabotage stub (proves the positive case is not vacuous)"
+
+# hermes-lanes (cmd:has_hermes), reusing hh_repo_present from the happy-path
+# case above.
+outHLreg=$(PATH="$sabotage_path" HIMMELCTL_BASH="$real_bash_w" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'hermes-lanes');
+const ctx = { repoRoot: '$(winpath "$hh_repo_present")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHLreg" | jq -e '.actual == "present"' >/dev/null \
+  || fail "HIMMEL-2289 regression: hermes-lanes should read present via HIMMELCTL_BASH despite a sabotage 'bash' shadowing PATH (got: $outHLreg)"
+echo "ok: HIMMEL-2289 regression — hermes-lanes (cmd:has_hermes) reads present via HIMMELCTL_BASH even with a WSL-launcher-shaped sabotage bash first on PATH"
+
+outHLnc=$(HIMMELCTL_BASH="$(winpath "$sabotage_bash")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'hermes-lanes');
+const ctx = { repoRoot: '$(winpath "$hh_repo_present")', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHLnc" | jq -e '.actual != "present"' >/dev/null \
+  || fail "HIMMEL-2289 negative control: hermes-lanes must NOT read present when HIMMELCTL_BASH is pinned at the sabotage stub (got: $outHLnc)"
+echo "ok: HIMMEL-2289 negative control — hermes-lanes does NOT read present when HIMMELCTL_BASH points at the sabotage stub"
+
+# doc-guard-map (cmd:is_himmel_dev), reusing idh_present from the happy-path
+# case above.
+outDGreg=$(PATH="$sabotage_path" HIMMELCTL_BASH="$real_bash_w" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'doc-guard-map');
+const ctx = { repoRoot: '$(winpath "$idh_present")', targetPath: '$(winpath "$idh_present")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outDGreg" | jq -e '.actual == "present"' >/dev/null \
+  || fail "HIMMEL-2289 regression: doc-guard-map should read present via HIMMELCTL_BASH despite a sabotage 'bash' shadowing PATH (got: $outDGreg)"
+echo "ok: HIMMEL-2289 regression — doc-guard-map (cmd:is_himmel_dev) reads present via HIMMELCTL_BASH even with a WSL-launcher-shaped sabotage bash first on PATH"
+
+outDGnc=$(HIMMELCTL_BASH="$(winpath "$sabotage_bash")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'doc-guard-map');
+const ctx = { repoRoot: '$(winpath "$idh_present")', targetPath: '$(winpath "$idh_present")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outDGnc" | jq -e '.actual != "present"' >/dev/null \
+  || fail "HIMMEL-2289 negative control: doc-guard-map must NOT read present when HIMMELCTL_BASH is pinned at the sabotage stub (got: $outDGnc)"
+echo "ok: HIMMEL-2289 negative control — doc-guard-map does NOT read present when HIMMELCTL_BASH points at the sabotage stub"
+
+# ── HIMMEL-2289: toolchain bash row (probeBashDep — dep item cmd:'bash') ────
+# The manifest carries no dep/bash item — probeDep() only routes to
+# probeBashDep() when item.probe.cmd === 'bash' (probes.js) — so the item is
+# constructed inline, mirroring this file's established inline-item idiom
+# (engine-allowlist-fixture above).
+outBDhealthy=$(HIMMELCTL_BASH="$real_bash_w" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'bash', probe: { type: 'dep', cmd: 'bash' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outBDhealthy" | jq -e '.actual == "present"' >/dev/null \
+  || fail "toolchain bash (probeBashDep) present (HIMMELCTL_BASH = real bash, repo root carries scripts/guardrails/lib.sh): (got: $outBDhealthy)"
+echo "$outBDhealthy" | jq -e --arg b "$real_bash_w" '.detail == $b' >/dev/null \
+  || fail "toolchain bash present detail should be the resolved bash path (got: $outBDhealthy, expected: $real_bash_w)"
+echo "ok: toolchain bash (probeBashDep) reads present with the resolved bash path as detail when it can source scripts/guardrails/lib.sh"
+
+# Non-vacuous: the resolved bash EXISTS (which() would have called this
+# 'ok bash ready') but can't source the proof file — the exact false-green
+# the operator hit (a present-but-broken WSL bash.exe), reproduced here with
+# a stub that always exits nonzero regardless of what it's asked to run.
+outBDstub=$(HIMMELCTL_BASH="$(winpath "$sabotage_bash")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'bash', probe: { type: 'dep', cmd: 'bash' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outBDstub" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "toolchain bash (probeBashDep) degraded (HIMMELCTL_BASH resolves but cannot source scripts/guardrails/lib.sh — the exact false-\"ok bash ready\" class this probe exists to catch): (got: $outBDstub)"
+echo "$outBDstub" | jq -e '.detail | contains("cannot source")' >/dev/null \
+  || fail "toolchain bash non-vacuous detail should name the sourcing failure (got: $outBDstub)"
+echo "ok: toolchain bash (probeBashDep) reads degraded, naming 'cannot source', when the resolved bash exists but can't source scripts/guardrails/lib.sh — proves presence alone is not enablement"
+
+# Unresolvable: HIMMELCTL_BASH pinned to a nonexistent path, PATH scrubbed
+# too. resolveProbeBash() trusts a set HIMMELCTL_BASH unconditionally (it
+# never existsSync-checks it), so this does NOT hit probeBashDep's own
+# '!bash -> no usable bash found' branch — it is spawnSync's own ENOENT on
+# the bogus path that produces r.error, read here via probeBashDep's
+# spawn-error branch (confirmed against probes.js, not assumed).
+outBDunresolv=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'bash', probe: { type: 'dep', cmd: 'bash' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: { PATH: '', HIMMELCTL_BASH: '$no_such_bash_w' } };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outBDunresolv" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "toolchain bash (probeBashDep) absent (HIMMELCTL_BASH pinned nonexistent, PATH scrubbed): (got: $outBDunresolv)"
+echo "$outBDunresolv" | jq -e '.detail | contains("spawn error")' >/dev/null \
+  || fail "toolchain bash unresolvable detail should name the spawn error (got: $outBDunresolv)"
+echo "ok: toolchain bash (probeBashDep) reads absent naming 'spawn error' when HIMMELCTL_BASH is pinned nonexistent"
+
+# Proof file absent: a checkout that predates scripts/guardrails/lib.sh (or a
+# stripped fixture) must not read the interpreter itself as broken.
+bd_no_proof="$work/bd-no-proof"; mkdir -p "$bd_no_proof"
+outBDnoproof=$(HIMMELCTL_BASH="$real_bash_w" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'bash', probe: { type: 'dep', cmd: 'bash' } };
+const ctx = { repoRoot: '$(winpath "$bd_no_proof")', targetPath: '$(winpath "$bd_no_proof")', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outBDnoproof" | jq -e '.actual == "present"' >/dev/null \
+  || fail "toolchain bash (probeBashDep) present (repoRoot carries no scripts/guardrails/lib.sh — presence-only skip): (got: $outBDnoproof)"
+echo "$outBDnoproof" | jq -e '.detail | contains("presence only")' >/dev/null \
+  || fail "toolchain bash presence-only detail should name the skip (got: $outBDnoproof)"
+echo "ok: toolchain bash (probeBashDep) reads present with a 'presence only' detail when the checkout carries no scripts/guardrails/lib.sh to prove against — a missing repo file is not a statement about the interpreter"
+
+# ── HIMMEL-2298: the probe spawn budget is a FAMILY default, not a per-probe
+# constant. HIMMEL-2289 measured that a probe launching a process on Windows
+# legitimately occupies 8-18s and raised ONE probe (cadence-coherence) from the
+# 10s default to 60s — leaving its 14 siblings at 10s. The operator's next
+# wizard run then hit the SAME false DEGRADED one probe over: "handover state —
+# DEGRADED, timed out after 10s" on a healthy host (measured here at 3.5-8.1s
+# even IDLE, i.e. a 20% margin, which ~4 concurrent sessions erase). The budget
+# now lives on spawnProbeSync/spawnBashProbe as PROBE_TIMEOUT_MS, so a probe
+# cannot be left behind on the old one. ────────────────────────────────────
+#
+# The budget is exercised through HIMMELCTL_PROBE_TIMEOUT_SECS rather than by
+# sleeping past the real 60s default — a suite that waits a minute to prove one
+# number is its own defect (CR [codex-1] on this ticket). The override is the
+# same env-seam class as HIMMELCTL_BASH and the sibling of install-engine's
+# INSTALL_TIMEOUT_SECS, so this drives the SHIPPED code path, not a test-only
+# branch. The 60s default itself is pinned structurally further down, where
+# asserting it costs nothing. Real bash, real resolver-sourcing path: none of
+# the win32 shebang-exec caveats from the 2289 cases apply here.
+#
+# Case 1 — a resolver slower than the budget reads degraded, and the message
+# reports the budget ACTUALLY applied (2s here, not a hardcoded figure). That
+# second assertion is the drift half of this ticket: before it, every probe
+# said "10s" no matter what budget it ran under.
+hd_slow_repo="$work/hd-slow-resolver"; mkdir -p "$hd_slow_repo/scripts/lib"
+hd_slow_root="$work/hd-slow-root"; mkdir -p "$hd_slow_root"
+cat > "$hd_slow_repo/scripts/lib/handover-path.sh" <<SLOWHD
+sleep 4
+handover_root() { printf '%s\n' '$(winpath "$hd_slow_root")'; }
+SLOWHD
+outHDover=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const env = Object.assign({}, process.env, { HIMMELCTL_PROBE_TIMEOUT_SECS: '2' });
+const ctx = { repoRoot: '$(winpath "$hd_slow_repo")', targetPath: '$(winpath "$hd_slow_repo")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHDover" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "HIMMEL-2298: a resolver slower than the configured budget must read degraded (got: $outHDover)"
+echo "$outHDover" | jq -e '.detail | contains("timed out after 2s")' >/dev/null \
+  || fail "HIMMEL-2298: the timeout message must report the budget ACTUALLY applied (2s via HIMMELCTL_PROBE_TIMEOUT_SECS), never a hardcoded figure — that drift is what put the wrong number in the operator's bug report (got: $outHDover)"
+echo "ok: HIMMEL-2298 — the spawn budget is honoured end-to-end and the timeout message reports the budget actually applied, not a hardcoded one"
+
+# Case 2 — the SAME 4s resolver under the shipped default reads present, with
+# no timeout reported. Deliberately NOT called the regression proof (CR round 4
+# [codex-2], agreed): 4s clears the old 10s default too on an idle box, so this
+# case does not by itself demonstrate the reported failure — it pins the
+# complement of case 1 (a probe inside its budget must come back clean, and
+# must not acquire a timeout row from the budget plumbing).
+#
+# The old-vs-new proof is case 1 plus the 60s pin below: case 1 shows a
+# resolver slower than its budget producing exactly the operator's false
+# DEGRADED, and the pin shows the shipped budget is now 60s rather than the 10s
+# that probe legitimately exceeded. The direct measurement against shipped main
+# (degraded "timed out after 10s" at 10016ms, vs present at 12080ms on this
+# branch, same fixture) is recorded in the PR body — a 12s sleep in the suite
+# to re-derive it every run was the round-1 finding.
+outHDunder=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const ctx = { repoRoot: '$(winpath "$hd_slow_repo")', targetPath: '$(winpath "$hd_slow_repo")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHDunder" | jq -e '.actual == "present"' >/dev/null \
+  || fail "HIMMEL-2298: a resolver well inside the shipped family budget must read present, never a timed-out degraded (got: $outHDunder)"
+echo "$outHDunder" | jq -e '.detail | contains("timed out") | not' >/dev/null \
+  || fail "HIMMEL-2298: a resolver well inside the budget must not report a timeout at all (got: $outHDunder)"
+echo "ok: HIMMEL-2298 — a resolver inside the shipped family budget reads present with no timeout row (the complement of the over-budget case above)"
+
+# CR round 2 [codex-1]: a sub-millisecond override must NOT disable the guard.
+# `secs > 0` accepted 0.0004, which rounds to 0 ms — and Node reads timeout:0
+# as NO TIMEOUT, so the probe would run unbounded while looking configured.
+# The 4s resolver must therefore still be bounded by the DEFAULT budget (it
+# completes, reading present) rather than silently losing its hang guard.
+outHDsubms=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const env = Object.assign({}, process.env, { HIMMELCTL_PROBE_TIMEOUT_SECS: '0.0004' });
+const ctx = { repoRoot: '$(winpath "$hd_slow_repo")', targetPath: '$(winpath "$hd_slow_repo")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHDsubms" | jq -e '.actual == "present"' >/dev/null \
+  || fail "HIMMEL-2298 CR[codex-1]: a sub-millisecond HIMMELCTL_PROBE_TIMEOUT_SECS must fall back to the default budget, not round to 0ms (which Node reads as NO timeout, disabling the hang guard) (got: $outHDsubms)"
+echo "ok: HIMMEL-2298 CR[codex-1] — a sub-millisecond budget override falls back to the default instead of rounding to 0ms and disabling the hang guard"
+
+# CR round 3 [codex-1]: the other end of the same class. A huge-but-finite
+# override overflows `secs * 1000` to Infinity, which passed the round-2
+# `ms >= 1` check and reached spawnSync as an out-of-range timeout. Both ends
+# now take the one safe-integer predicate, so the probe still runs (and, here,
+# completes) instead of throwing.
+outHDhuge=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const env = Object.assign({}, process.env, { HIMMELCTL_PROBE_TIMEOUT_SECS: '1e308' });
+const ctx = { repoRoot: '$(winpath "$hd_slow_repo")', targetPath: '$(winpath "$hd_slow_repo")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHDhuge" | jq -e '.actual == "present"' >/dev/null \
+  || fail "HIMMEL-2298 CR round 3 [codex-1]: a huge-but-finite HIMMELCTL_PROBE_TIMEOUT_SECS must fall back to the default budget, not overflow to Infinity and reach spawnSync as an out-of-range timeout (got: $outHDhuge)"
+echo "ok: HIMMEL-2298 CR[codex-1 r3] — a huge-but-finite budget override falls back to the default instead of overflowing to Infinity"
+
+# CR round 2 [codex-2]: a fractional budget must be reported accurately. This
+# ticket exists because a timeout message disagreed with its budget; reporting
+# 1.5s as "2s" is the same defect in miniature.
+outHDfrac=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const env = Object.assign({}, process.env, { HIMMELCTL_PROBE_TIMEOUT_SECS: '1.5' });
+const ctx = { repoRoot: '$(winpath "$hd_slow_repo")', targetPath: '$(winpath "$hd_slow_repo")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHDfrac" | jq -e '.actual == "degraded"' >/dev/null \
+  || fail "HIMMEL-2298 CR[codex-2]: a 1.5s budget against a 4s resolver must read degraded (got: $outHDfrac)"
+echo "$outHDfrac" | jq -e '.detail | contains("timed out after 1.5s")' >/dev/null \
+  || fail "HIMMEL-2298 CR[codex-2]: a fractional budget must be reported exactly (1.5s), never rounded to a figure that disagrees with the budget actually applied (got: $outHDfrac)"
+echo "ok: HIMMEL-2298 CR[codex-2] — a fractional budget is reported exactly, never rounded into disagreement with itself"
+
+# Negative control: the SAME harness, but handover_root itself fails. Proves
+# case 2 is not passing vacuously — if the probe read present regardless of
+# what the resolver did, this would read present too.
+hd_slow_fail_repo="$work/hd-slow-resolver-fail"; mkdir -p "$hd_slow_fail_repo/scripts/lib"
+cat > "$hd_slow_fail_repo/scripts/lib/handover-path.sh" <<'SLOWHDFAIL'
+handover_root() { return 1; }
+SLOWHDFAIL
+outHDslowNc=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'handover-wiring');
+const ctx = { repoRoot: '$(winpath "$hd_slow_fail_repo")', targetPath: '$(winpath "$hd_slow_fail_repo")', scope: 'project', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outHDslowNc" | jq -e '.actual != "present"' >/dev/null \
+  || fail "HIMMEL-2298 negative control: handover-dir must NOT read present when handover_root itself fails (got: $outHDslowNc)"
+echo "ok: HIMMEL-2298 negative control — handover-dir does NOT read present when the resolver's handover_root fails (proves the regression case is not vacuous)"
+
+# ── HIMMEL-2298 family invariants (structural — these are what stop a THIRD
+# report of this same sibling-branch defect). Both are textual assertions over
+# probes.js, so a probe added later cannot quietly opt out of the budget.
+probes_src="$repo_root/scripts/himmelctl/lib/probes.js"
+
+# (1) EVERY process-spawning probe routes through the shared helper. Exactly
+# one spawnSync call may exist in the file, and it must be the one inside
+# spawnProbeSync — that is what makes PROBE_TIMEOUT_MS a family default rather
+# than a value 15 call sites each have to remember. A new probe calling
+# spawnSync directly would get NO budget at all (the shape configuredHooksPath
+# carried until this ticket: a wedged git blocked `status` indefinitely).
+spawnsync_count=$(grep -c 'spawnSync(' "$probes_src")
+[ "$spawnsync_count" -eq 1 ] \
+  || fail "HIMMEL-2298: probes.js must contain exactly ONE spawnSync( call (the one inside spawnProbeSync, which applies PROBE_TIMEOUT_MS + SIGKILL to the whole family); found $spawnsync_count — a new spawn site is bypassing the shared budget"
+awk '/^function spawnProbeSync/,/^}/' "$probes_src" | grep -q 'spawnSync(' \
+  || fail "HIMMEL-2298: the single spawnSync( call is no longer inside spawnProbeSync — the family budget is not being applied"
+echo "ok: HIMMEL-2298 family invariant — every process-spawning probe routes through spawnProbeSync, so PROBE_TIMEOUT_MS applies to all of them"
+
+# (1b) The shipped DEFAULT is 60s. The functional cases above drive the budget
+# through HIMMELCTL_PROBE_TIMEOUT_SECS so they cost seconds instead of a
+# minute, which means nothing there pins the number an operator actually gets —
+# this does, for free. 10s was the value that manufactured false DEGRADED rows
+# on healthy Windows hosts twice (HIMMEL-2289, HIMMEL-2298); dropping back
+# under ~20s reopens that.
+grep -q 'const PROBE_TIMEOUT_MS = 60000;' "$probes_src" \
+  || fail "HIMMEL-2298: the shipped family budget must remain 60s (const PROBE_TIMEOUT_MS = 60000) — the functional cases drive an override for speed and cannot pin the default an operator gets"
+echo "ok: HIMMEL-2298 family invariant — the shipped default budget is pinned at 60s"
+
+# (2) No probe hardcodes a stale budget in its own timeout message. The 15
+# "timed out after 10s" strings that survived 2289's one-probe raise are
+# exactly how a reader (and the operator's bug report) learns the wrong number;
+# details now interpolate the budget the result was actually run under.
+! grep -q 'timed out after 10s' "$probes_src" \
+  || fail "HIMMEL-2298: probes.js still hardcodes 'timed out after 10s' — a timeout message must report the budget actually applied (probeTimeoutSecs(r)), or it drifts the moment the budget changes"
+echo "ok: HIMMEL-2298 family invariant — no probe hardcodes a timeout figure; every message reports the budget actually applied"
 
 # ── purity: full sweep over every manifest item, fixture tree byte-identical ─
 purity_root="$work/purity-repo"
@@ -2844,7 +5467,13 @@ purity_vault="$work/purity-vault"; mkdir -p "$purity_vault"
 purity_before=$(snapshot_dir "$purity_root")
 purity_vault_before=$(snapshot_dir "$purity_vault")
 
-sweepOut=$("$node_bin" -e "
+# HIMMEL-2176 Task 7: cadence-coherence/phi-coherence read the adopter's
+# shared config document via luna-config.js's OWN HIMMEL_LUNA_CONFIG_PATH
+# seam (not ctx.env — see that module's header) — pointed at a path under
+# $work that is never created, so load() takes its safe defaultConfig()
+# fallback rather than the sweep silently reading the REAL
+# ~/.himmel/config.json.
+sweepOut=$(HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/purity-luna-config.json")" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const repoRoot = '$(winpath "$purity_root")';

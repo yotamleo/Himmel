@@ -249,10 +249,14 @@ When you are ready to add Jira:
 
 ---
 
-## Pre-commit hooks (optional but recommended)
+## Pre-commit hooks (config is optional; wiring is automatic)
 
-himmel's pre-commit gates work independently of Claude Code. The most
-useful one for a generic repo:
+himmel's pre-commit gates work independently of Claude Code. `adopt.sh`/
+`adopt.ps1` already wire the pre-commit, commit-msg and pre-push hook types
+into your target by default (`--allow-missing-config`, so it no-ops safely
+until you add a config; opt out with `--skip-hooks`/`-SkipHooks`) —
+what's still up to you is which hooks actually run. The most useful one
+for a generic repo:
 
 ```yaml
 # .pre-commit-config.yaml

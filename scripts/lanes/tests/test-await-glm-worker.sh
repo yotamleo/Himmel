@@ -143,6 +143,19 @@ case "$out" in
     *) echo "ok   numeric-epoch-ordering output" ;;
 esac
 
+# 15. HIMMEL-1693: stop-worker.sh's annotate_halt writes status=stopped-by-parent
+# and zeros pid when it actually signalled a worker. Must read as terminal
+# (rc 0), not fall through to the pid=0 liveness path and eventually STALL/timeout.
+d=$(mk_session "glm-t15-1000000000001" "stopped-by-parent")
+bash "$SUT" --session-dir "$d" --max-mins 0 >/dev/null 2>&1
+check "stopped-by-parent-terminal rc" 0 $?
+
+# 16. HIMMEL-1693: annotate_halt writes status=already-exited when the leader
+# was confirmed gone before any signal was sent. Also terminal (rc 0).
+d=$(mk_session "glm-t16-1000000000001" "already-exited")
+bash "$SUT" --session-dir "$d" --max-mins 0 >/dev/null 2>&1
+check "already-exited-terminal rc" 0 $?
+
 echo
 if [ "$fails" -gt 0 ]; then
     echo "test-await-glm-worker: $fails FAILURE(S)"

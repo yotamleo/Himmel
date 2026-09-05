@@ -133,9 +133,83 @@ canon() {
 
 input=$(cat)
 
-# Extract the target file_path. NotebookEdit uses notebook_path; tolerate both.
-file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || true)
-[ -z "$file_path" ] && exit 0
+tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
+
+# Extract target path(s). NotebookEdit uses notebook_path; tolerate both.
+# Codex's apply_patch (create/edit envelope, HIMMEL-2170) carries no
+# file_path/notebook_path field at all -- every target lives inside
+# "*** Add/Update/Delete File:" lines in tool_input.command instead (see
+# docs/internals/harness-compat.md's empirical event/tool-name matrix, and
+# scripts/guardrails/lesson-write-fence.sh's twin extraction). Pull every such
+# target out of the patch text; the loop below (replacing the old single-path
+# body) runs the SAME repo/branch check against EACH one, so a hit on ANY
+# target blocks the whole apply_patch call. A command with none of these
+# lines (empty/malformed patch text) yields an empty target list, which falls
+# through to the same allow this hook already gave an empty file_path -- this
+# guard's established fail-open posture for an unresolvable target (it is
+# defense-in-depth; check-worktree-isolation.sh is the commit-time backstop).
+targets=""
+if [ "$tool_name" = "apply_patch" ]; then
+    cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+    # HIMMEL-2170 CR round 2: read the TOOL's cwd the same way lesson-write-
+    # fence.sh's twin branch does (`.tool_input.cwd // .cwd`, fallback $PWD).
+    # canon() below has no cwd parameter of its own - it resolves a relative
+    # path against the HOOK PROCESS's $PWD, which can differ from the tool
+    # cwd - so an apply_patch target that is RELATIVE must be joined onto
+    # the tool cwd HERE, before canon(), or it silently misresolves and a
+    # primary-checkout edit can slip past the main-branch block.
+    cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
+    [ -n "$cwd" ] || cwd="$PWD"
+    _ap_prev=""
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        # Strip a trailing CR (see lesson-write-fence.sh's twin extraction for
+        # the full explanation): `jq -r` CRLF-converts embedded newlines on
+        # this platform, and command substitution only strips the FINAL
+        # trailing newline group — every OTHER line in a multi-line
+        # tool_input.command (apply_patch's patch text always is) keeps a
+        # stray `\r` glued on.
+        _line="${_line%$'\r'}"
+        _target=""
+        case "$_line" in
+            '*** Add File: '*)    _target="${_line#'*** Add File: '}"; _ap_prev="" ;;
+            '*** Update File: '*) _target="${_line#'*** Update File: '}"; _ap_prev="update" ;;
+            '*** Delete File: '*) _target="${_line#'*** Delete File: '}"; _ap_prev="" ;;
+            # HIMMEL-2170 CR round 1: a rename/move destination (optional
+            # line immediately following an `*** Update File:` line - see
+            # lesson-write-fence.sh's twin arm for the grammar citation).
+            # Without this, an Update on an ALLOWED-branch source could move
+            # it onto a path inside the PRIMARY checkout without that
+            # destination ever being checked.
+            #
+            # CodeRabbit round (HIMMEL-2170): valid only immediately after an
+            # Update File line (see the fence's twin comment for the grammar
+            # citation). Unlike the fence, this hook does NOT deny on a
+            # misplaced Move-to — its established posture is fail-OPEN on an
+            # unresolvable/malformed target (see the header's fail-open/
+            # fail-closed note): a stray Move-to simply contributes NO
+            # target ($_target stays empty, dropped below) rather than being
+            # treated as a real one. Other valid targets in the same patch
+            # (e.g. an Update line) are still checked normally.
+            '*** Move to: '*)
+                [ "$_ap_prev" = "update" ] && _target="${_line#'*** Move to: '}"
+                _ap_prev="" ;;
+            *) _ap_prev="" ;;
+        esac
+        if [ -n "$_target" ]; then
+            case "$_target" in
+                /*|[A-Za-z]:/*|[A-Za-z]:\\*) : ;;                # already absolute
+                *)                           _target="$cwd/$_target" ;;
+            esac
+            targets="${targets}${_target}"$'\n'
+        fi
+    done <<< "$cmd"
+else
+    targets=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || true)
+fi
+[ -n "$(printf '%s' "$targets" | tr -d '[:space:]')" ] || exit 0
+
+while IFS= read -r file_path || [ -n "$file_path" ]; do
+[ -n "$file_path" ] || continue
 
 # `|| file_real=""` suppresses set -e on canon failure so the empty-check below
 # catches it with an actionable message instead of set -e aborting rc=1.
@@ -180,13 +254,13 @@ while [ "$_d" != "$_prev" ]; do
 done
 
 # File is not inside any git repo (global config, /tmp, system files) → allow.
-[ -z "$repo_real" ] && exit 0
+[ -z "$repo_real" ] && continue
 repo_real="${repo_real%/}"
 
 # Skip handover/status doc edits — pure docs the operator may update from the
 # primary checkout on main. Anchored to the FILE's repo root (Himmel#45).
 case "$file_real" in
-    "$repo_real"/handovers/*) exit 0 ;;
+    "$repo_real"/handovers/*) continue ;;
 esac
 
 # No explicit `.claude/worktrees/` skip is needed: a git worktree carries its
@@ -220,7 +294,7 @@ if [ "$branch_rc" -eq 1 ]; then
     # checkout a `.git` DIRECTORY. Feature work belongs in a worktree, so the
     # worktree case is the only feature-branch path that ALLOWS the edit.
     if [ ! -d "$repo_real/.git" ]; then
-        exit 0
+        continue
     fi
     block_reason="primary-feature"
 elif [ "$branch_rc" -ne 0 ]; then
@@ -258,7 +332,7 @@ if ! is_secret_basename "$file_real"; then
     ls_rc=0
     git -C "$repo_real" ls-files --error-unmatch -- "$file_real" >/dev/null 2>&1 || ls_rc=$?
     if [ "$ls_rc" -eq 1 ] && git -C "$repo_real" check-ignore -q -- "$file_real" >/dev/null 2>&1; then
-        exit 0
+        continue
     fi
 fi
 
@@ -270,7 +344,7 @@ fi
 # EDIT_ON_MAIN_OK=1 — session bypass (set in the LAUNCHING shell; a per-edit
 # prefix cannot reach the hook process).
 if [ "${EDIT_ON_MAIN_OK:-0}" = "1" ]; then
-    exit 0
+    continue
 fi
 
 # Single-writer opt-in (HIMMEL-404): a repo with a local `.single-writer`
@@ -285,7 +359,7 @@ fi
 # boundary (the operator can equally use EDIT_ON_MAIN_OK=1 or comment the hook,
 # and anyone able to create the marker could just touch it directly).
 if [ -f "$repo_real/.single-writer" ]; then
-    exit 0
+    continue
 fi
 
 if [ "$block_reason" = "primary-feature" ]; then
@@ -340,3 +414,6 @@ Or, if this is a single-writer repo you always commit to main directly
 Or temporarily comment out the hook stanza in .claude/settings.json.
 EOF
 exit 2
+done <<< "$targets"
+
+exit 0

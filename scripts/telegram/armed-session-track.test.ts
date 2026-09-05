@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { record, readBreadcrumbs, parseTranscriptTail, resolve } from "./armed-session-track";
 
-function ctx() { const dir = mkdtempSync(join(tmpdir(), "ast-")); return { dir, file: join(dir, "armed-sessions.jsonl") }; }
+function ctx() { const dir = mkdtempSync(join(tmpdir(), "telegram-ast-")); return { dir, file: join(dir, "armed-sessions.jsonl") }; }
 
 const JSONL = [
   `{"type":"last-prompt","leafUuid":"x"}`,

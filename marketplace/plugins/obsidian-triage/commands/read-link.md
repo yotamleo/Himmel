@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Glob, Grep, Read, WebFetch, Skill
-description: Vault-first link reader — read an already-harvested luna clip for a URL before any live fetch; live fetch (fxtwitter / WebFetch / luna-ingest) is the last resort, never Grok.
+description: Vault-first link reader — read the already-harvested luna clip for a URL before any live fetch. Never Grok.
 argument-hint: "<url>"
 ---
 

@@ -1,8 +1,12 @@
 # HIMMEL-924: one flat policy, every himmel-observability rule routes to the
-# single Telegram contact point. `page` vs `warn` (rules.yaml labels) is
-# informational only in this design — a second delivery channel per
-# severity is not in scope; add a nested route matching `severity = page`
-# if/when the operator wants to split them.
+# single Telegram contact point. `page` vs `warn` (rules.yaml labels) used to
+# be informational only — HIMMEL-2149 (panel round 5, codex-2) pointed out
+# that relabeling HimmelSessionDead page->warn achieves nothing operator-
+# facing without an actual route split: this flat policy pings Telegram on
+# the SAME repeat_interval regardless of severity, so a severity-only fix
+# was cosmetic. The nested `warn` route below is that split, doing what this
+# comment already anticipated ("add a nested route... if/when the operator
+# wants to split them").
 apiVersion: 1
 
 policies:
@@ -11,4 +15,22 @@ policies:
     group_by: ['alertname', 'flow', 'task', 'class', 'stage', 'job']
     group_wait: 30s
     group_interval: 5m
-    repeat_interval: 4h
+    repeat_interval: 12h  # HIMMEL-2130 (operator-directed, 2026-08-26): was 4h
+    routes:
+      # HIMMEL-2149: severity=warn alerts (HimmelAgentTreeRamRunaway,
+      # HimmelSessionDead as of this ticket) still deliver to the same
+      # Telegram contact point — dropping them entirely would remove the
+      # ONLY notification surface this stack has (no Alertmanager, and this
+      # IS the delivery path, unlike alerts.rules.yml's self-visibility-only
+      # copy) — but repeat far less often, so a standing warn-level signal
+      # stops re-pinging every 12h like a page does. 7d: long enough that a
+      # persistent warn condition is not routine noise, short enough that a
+      # week-old unresolved warn still resurfaces.
+      - receiver: himmel-telegram
+        matchers:
+          - severity = warn
+        group_by: ['alertname', 'flow', 'task', 'class', 'stage', 'job']
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 168h
+        continue: false

@@ -11,6 +11,11 @@ Creates a numbered session file. Append-only — never overwrites.
 2. Determine target directory.
 3. Find the **highest existing index** `M` across `next-session-*.md` files → `N = M + 1` (never `count + 1` — with gaps like `next-session-1.md` + `next-session-3.md`, `count + 1` = 3 would overwrite an existing file; append-only requires max-index).
 4. Create `next-session-N.md` with:
+   - Frontmatter `resume_cwd: <repo-root>` (Template Placeholders,
+     `references/resolution.md`) — **always set, never omitted** — so
+     `arm-resume.sh` resolves the correct work repo without falling back to
+     auto-detection (see `references/v2-schema.md` § `next-session-*.md`
+     frontmatter, HIMMEL-2147).
    - Bullet summary of session work
    - Current active task, blockers
    - "First Action Next Session" — one sentence
@@ -38,6 +43,12 @@ Load latest session: <state-root>/{<bucket>/}<type-path>/#N-<slug>/next-session-
 
 **Rules:**
 - Always run `end-session` at session end — even if short.
+- **ONE numbered file per leg (HIMMEL-1830).** One session writes exactly one
+  `next-session-N.md`: state/recovery first, then the ordered task list. Never
+  split state and orders across `next-session-N.md` + `next-session-N+1.md` —
+  the relaunch loads ONE file, so the other half is orphaned, and the numbering
+  stops counting legs. If the file is getting long, keep it long. `arm-resume.sh`
+  refuses rc 17 when it is pointed at the second half of a split leg.
 - Session files are append-only — never delete or rename `next-session-*.md`.
 - To resume: load the highest-numbered `next-session-*.md` in the target dir.
 

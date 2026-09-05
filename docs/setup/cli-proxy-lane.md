@@ -35,20 +35,20 @@ switch for a status report that names the next command:
 | `-Install` | download the pinned CLIProxyAPI binary + write `~/.cli-proxy-api/config.yaml` (loopback-bound) if missing |
 | `-Login` | one-time codex OAuth via **device-code** flow (no local browser needed — works over SSH) |
 | `-Start` | start the proxy in the **foreground** (Ctrl-C to stop) — for debugging |
-| `-Register` | register a windowless **logon task**, **and start it now** — so the proxy is up immediately and restarts at each sign-in |
+| `-Register` | register a windowless **logon task** (hidden `wscript` launcher — see below), **and start it now** — so the proxy is up immediately and restarts at each sign-in |
 | `-Verify` | curl the running proxy |
 
 ## What to run — per host
 
-Both hosts already have the binary + `config.yaml` staged.
+This assumes `-Install` already ran (binary + `config.yaml` staged).
 
-**win1** (codex OAuth already present):
+**A host that already has codex OAuth present:**
 
 ```powershell
 .\scripts\setup\cli-proxy-lane.ps1 -Register   # starts it now + persists across sign-in
 ```
 
-**win2** (needs the one-time login):
+**A host that needs the one-time login:**
 
 ```powershell
 .\scripts\setup\cli-proxy-lane.ps1 -Login
@@ -95,6 +95,59 @@ successful") and exits 0; re-verify the lane end-to-end (section above).
 Detection caveat: the gateway's `/v1/models` endpoint is registry-backed and
 keeps returning 200 during an OAuth gap — probe a real completion
 (`/v1/messages`) to detect an auth gap, never `/v1/models`.
+
+## The logon-task launcher, and the Defender detection it trips (HIMMEL-1822)
+
+`-Register` registers the at-logon task with the action
+`wscript.exe //B //Nologo "<home>\.cli-proxy-api\start-hidden.vbs"`. The proxy
+exe is a console-subsystem (`WINDOWS_CUI`) binary, so the earlier registration
+form — `powershell -NoProfile -WindowStyle Hidden -Command "& exe"` — created a
+console that was only hidden *after* a visible flash at every sign-in.
+`wscript.exe` is a GUI-subsystem process (it allocates no console) and the
+generated `start-hidden.vbs` starts the exe with `SW_HIDE` from creation. Both
+`-Install` and `-Register` (re)write `start-hidden.vbs` next to the exe with
+paths derived from the resolved install root; re-running either is idempotent,
+and re-running `-Register` upgrades a machine still carrying the old
+PowerShell-wrapper action to the launcher form.
+
+**Windows Defender removes this registration — expected, and the fix is an
+exclusion, not stealth.** The registration command line (`schtasks /create`
+with an at-logon trigger, limited run level, force-overwrite, and a WSH script
+as the action) trips the `Trojan:Win32/Commando.A!ml` ML heuristic — "a
+scheduled task launching a WSH script at logon" is a textbook persistence
+pattern, so the heuristic firing on it is expected, not a sign of compromise.
+Three removals observed on this fleet (2026-08-14, 2026-08-16 ×2). The
+sanctioned fix is an operator-added exclusion — deliberately NOT an obfuscated
+registration command. Scope it to `start-hidden.vbs` specifically, not the
+whole install directory: that script is what the heuristic keys on, and a
+narrower exclusion keeps `config.yaml` and the codex OAuth token under
+real-time scanning:
+
+```powershell
+# elevated, once per host:
+Add-MpPreference -ExclusionPath "$env:USERPROFILE\.cli-proxy-api\start-hidden.vbs"
+# then re-register:
+.\scripts\setup\cli-proxy-lane.ps1 -Register
+```
+
+**Residual risk, accepted (CR round):** `start-hidden.vbs` is a user-writable
+file that runs automatically at every sign-in, so excluding it — narrowly
+scoped or not — creates an antivirus blind spot for whatever content sits at
+that exact path: a process already running as the signed-in user (the
+realistic compromise scenario on a single-user workstation) can overwrite it
+and gain both the blind spot and logon persistence. This is inherent to
+persisting *any* auto-run script through a Defender exclusion — narrowing the
+exclusion's scope (above) shrinks it to this one file, but does not remove it,
+and there is no ACL-based mitigation that helps here (restricting writes to
+the operator account does nothing against code already running as that
+operator). It is the same tradeoff `-Register` already accepts by design
+(*"expected, and the fix is an exclusion, not stealth"*, above) — named here
+explicitly rather than left implicit.
+
+Until the exclusion is in place the proxy will **not** auto-start at logon
+(start it manually with `-Start`; `-Register` throws before it gets that far
+while the task keeps vanishing). `-Register` detects a failed `/create` or a
+task that vanished right after creation and prints this guidance itself.
 
 ## Notes
 

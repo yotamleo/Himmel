@@ -421,10 +421,14 @@ rm -f "$ARM_LOG"
 
 echo "Test 23: Mode A snapshot resolves via hook_dir git root, not session cwd (HIMMEL-294)"
 # Create a fake worktree-like git repo with a handovers/ dir as the session cwd.
-# No HANDOVER_DIR set. The hook must use handover_root from hook_dir's git root,
-# not the session cwd. The real repo containing the hook (scripts/hooks/) has a
-# handovers/ dir (present in this checkout); the fake cwd repo must NOT attract
-# the snapshot.
+# HANDOVER_DIR pinned EMPTY (Mode A): the suite may run on a Mode B machine whose
+# launching shell exports the real HANDOVER_DIR. handover_root would then — by
+# design — redirect the snapshot to the external state repo, which both
+# invalidates this Mode A premise and drops a test snapshot into the real
+# handover root. Empty is treated as unset by handover_root, pinning Mode A.
+# The hook must use handover_root from hook_dir's git root, not the session
+# cwd. The real repo containing the hook (scripts/hooks/) has a handovers/ dir
+# (present in this checkout); the fake cwd repo must NOT attract the snapshot.
 S="$TMP/s23"; mkdir -p "$S"
 FAKE_REPO="$TMP/fake-git-repo"; mkdir -p "$FAKE_REPO"
 git init -q "$FAKE_REPO" 2>/dev/null || true
@@ -439,6 +443,7 @@ REAL_HANDOVERS="$REAL_HOOK_GIT_ROOT/handovers"
     printf '%s\n' "$(cap_payload 'sid-023')" | \
         AUTO_ARM_STATE_DIR="$S" \
         AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+        HANDOVER_DIR="" \
         CLAUDE_PROJECT_DIR="" \
         bash "$HOOK" >/dev/null 2>"$STDERR_LOG"
 )

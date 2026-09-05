@@ -13,6 +13,50 @@ pass() { echo "  ok: $1"; }
 fail() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 
 WS="$(mktemp -d)"; trap 'rm -rf "$WS"' EXIT
+# HIMMEL-2050: the fixture used to pass --backend deepseek, a backend
+# refresh-graph-map.sh's egress preflight has no provider mapping for --
+# HIMMEL-1257 de-listed it, so every invocation below fail-closed before the
+# lock logic under test was ever reached. --backend kimi resolves
+# EFFECTIVE_PROVIDER to "moonshot", which the egress matrix allows (allow+log)
+# for luna-personal extraction (this fixture's default --corpus-class).
+# graphify itself is fully stubbed below (GRAPHIFY_MAP_BIN) so no real
+# network call happens regardless of backend. Deliberately kimi, not
+# claude/claude-cli (the sibling test-refresh-graph-map.sh suite's default):
+# this suite asserts sub-second lock-wait/timeout precision, and claude/
+# claude-cli's bank-preflight guard + (claude-cli only) seed-claude-config.sh
+# add real, sometimes multi-second preflight latency before the lock is even
+# attempted -- enough to blow out T2/T4/T5's tight hold-vs-timeout margins.
+# kimi is a native graphify backend that skips both (bank-preflight only
+# guards claude/claude-cli; seed-claude-config only runs for claude-cli).
+export GRAPHIFY_LEDGER="$WS/graphify-egress.jsonl"
+unset ANTHROPIC_BASE_URL KIMI_BASE_URL
+export MOONSHOT_API_KEY="test-hermetic-key"
+HERMETIC_HOME="$WS/hermetic-home"; mkdir -p "$HERMETIC_HOME/.claude"
+printf 'test-subscription-auth\n' > "$HERMETIC_HOME/.claude/.credentials.json"
+printf '{}\n' > "$HERMETIC_HOME/.claude/settings.json"
+export HOME="$HERMETIC_HOME"
+# This suite asserts sub-second lock-wait/timeout precision (e.g. a 1s bounded
+# GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS raced against a 4s test-only hold), so
+# the ~1 real node-runtime startup refresh-graph-map.sh's egress-preflight
+# spends on `node egress-matrix-eval.mjs` before ever reaching the lock code
+# is enough, under load, to eat the whole margin between a challenger's
+# arrival and the holder's release. Stub just that one lookup (ticket's
+# explicit alternative to picking a real backend) with a thin `node` shim
+# ahead of the real one on PATH: it answers instantly for
+# egress-matrix-eval.mjs and execs the real node for everything else
+# (publish-graph-map.mjs still runs for real, so published-artifact
+# assertions are unaffected).
+REAL_NODE="$(command -v node)"
+SHIMBIN="$WS/shimbin"; mkdir -p "$SHIMBIN"
+cat > "$SHIMBIN/node" <<NODESTUB
+#!/usr/bin/env bash
+case "\$1" in
+  *egress-matrix-eval.mjs) printf 'allow\tstubbed for HIMMEL-2050 lock-timing test\n'; exit 0 ;;
+esac
+exec "$REAL_NODE" "\$@"
+NODESTUB
+chmod +x "$SHIMBIN/node"
+export PATH="$SHIMBIN:$PATH"
 
 # report_for_gen <gen> -- a valid, publish-parseable GRAPH_REPORT.md carrying
 # a generation tag in the community title, so a completed run's report is
@@ -76,7 +120,7 @@ BBIN="$WS/bbin"; make_stub "$BBIN" "B"
 # Process A: acquires the promote lock, then holds it for 4s (test-only hook)
 # before doing any actual promote work -- a wide, deterministic overlap window.
 GRAPHIFY_MAP_BIN="$ABIN/graphify" PATH="$ABIN:$PATH" GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=4 \
-  bash "$SCRIPT" --name lock1 --corpus-root "$CORPUS1" --backend deepseek \
+  bash "$SCRIPT" --name lock1 --corpus-root "$CORPUS1" --backend kimi \
   --maps-dir "$MAPS1" --title "Lock Map" --slug lock-map --corpus-tag lock \
   > "$WS/a.out" 2> "$WS/a.err" &
 APID=$!
@@ -99,7 +143,7 @@ printf '# b\ncontent b\n' > "$CORPUS1/notes/b.md"
 
 START=$(date -u +%s)
 out_b=$( GRAPHIFY_MAP_BIN="$BBIN/graphify" PATH="$BBIN:$PATH" \
-  bash "$SCRIPT" --name lock1 --corpus-root "$CORPUS1" --backend deepseek \
+  bash "$SCRIPT" --name lock1 --corpus-root "$CORPUS1" --backend kimi \
   --maps-dir "$MAPS1" --title "Lock Map" --slug lock-map --corpus-tag lock 2>&1 ); rc_b=$?
 END=$(date -u +%s)
 ELAPSED=$(( END - START ))
@@ -133,7 +177,7 @@ CBIN="$WS/cbin"; make_stub "$CBIN" "C"
 DBIN="$WS/dbin"; make_stub "$DBIN" "D"
 
 GRAPHIFY_MAP_BIN="$CBIN/graphify" PATH="$CBIN:$PATH" GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=4 \
-  bash "$SCRIPT" --name lock2 --corpus-root "$CORPUS2" --backend deepseek \
+  bash "$SCRIPT" --name lock2 --corpus-root "$CORPUS2" --backend kimi \
   --maps-dir "$MAPS2" --title "Lock Map 2" --slug lock-map-2 --corpus-tag lock2 \
   > "$WS/c.out" 2> "$WS/c.err" &
 CPID=$!
@@ -145,13 +189,19 @@ while [ ! -d "$OUT2/.promote.lock" ] && [ "$i" -lt 200 ]; do
 done
 [ -d "$OUT2/.promote.lock" ] || fail "T2 setup: process C did not acquire the promote lock in time"
 
-out_d=$( GRAPHIFY_MAP_BIN="$DBIN/graphify" PATH="$DBIN:$PATH" GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS=1 \
-  bash "$SCRIPT" --name lock2 --corpus-root "$CORPUS2" --backend deepseek \
+# HIMMEL-1653: C's extraction lock (acquired before pull/extraction, held
+# through the whole run) now gates D BEFORE it can ever reach the promote
+# lock C is holding -- so D's bound must be on the extraction lock too, or
+# it just waits out C's hold at the (wider-default) extraction gate instead
+# of refusing fast. Both bounds set short, matching this test's intent.
+out_d=$( GRAPHIFY_MAP_BIN="$DBIN/graphify" PATH="$DBIN:$PATH" \
+  GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS=1 GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=1 \
+  bash "$SCRIPT" --name lock2 --corpus-root "$CORPUS2" --backend kimi \
   --maps-dir "$MAPS2" --title "Lock Map 2" --slug lock-map-2 --corpus-tag lock2 2>&1 ); rc_d=$?
 
 [ "$rc_d" -eq 2 ] && pass "T2 the bounded second process (1s timeout) fails with rc=2, not a silent clobber" \
   || fail "T2 bounded process should exit 2 (got $rc_d): $out_d"
-echo "$out_d" | grep -q "giving up" && pass "T2 stderr carries a loud explanation" \
+echo "$out_d" | grep -qE "giving up|already extracting" && pass "T2 stderr carries a loud explanation" \
   || fail "T2 stderr should explain the refusal: $out_d"
 [ -e "$OUT2/graph.json" ] && fail "T2 out dir was written by the failed/blocked process (clobber!)" \
   || pass "T2 out dir untouched by the failed process while C still holds the lock"
@@ -175,7 +225,7 @@ printf '%s\n' "$STALE_AT" > "$OUT3/.promote.lock/acquired"
 
 EBIN="$WS/ebin"; make_stub "$EBIN" "E"
 out_e=$( GRAPHIFY_MAP_BIN="$EBIN/graphify" PATH="$EBIN:$PATH" GRAPHIFY_PROMOTE_LOCK_STALE_SECONDS=10 \
-  bash "$SCRIPT" --name lock3 --corpus-root "$CORPUS3" --backend deepseek \
+  bash "$SCRIPT" --name lock3 --corpus-root "$CORPUS3" --backend kimi \
   --maps-dir "$MAPS3" --title "Lock Map 3" --slug lock-map-3 --corpus-tag lock3 2>&1 ); rc_e=$?
 
 [ "$rc_e" -eq 0 ] && pass "T3 refresh succeeds by taking over the stale lock" || fail "T3 should exit 0 (got $rc_e): $out_e"
@@ -189,37 +239,47 @@ grep -q '"gen":"E"' "$OUT3/graph.json" 2>/dev/null && pass "T3 the refresh compl
 [ -d "$OUT3/.promote.lock" ] && fail "T3 lock dir left behind after takeover run (takeover -> acquire -> release did not compose)" \
   || pass "T3 lock dir gone after the takeover run (takeover -> acquire -> eager release composed)"
 
-# --- T4 (CR r1, codex-adv-1): two SIMULTANEOUS contenders against one stale
-# lock -- the takeover must be single-winner. The rm-then-continue takeover
-# let both contenders judge the same stale stamp, then the second's rm -rf
-# destroy the first's freshly-won lock -- both inside the promote block at
-# once. Asserts: exactly ONE takeover trail, the two holds are fully
-# serialized (elapsed >= 2x the hold), and the final triple is one
-# self-consistent generation. NOTE: the buggy interleave is a genuine race
-# (a ~tens-of-ms window), so this test is probabilistic as a RED detector --
-# but it must be deterministically GREEN under the single-winner fix. ---
+# --- T4 (CR r1, codex-adv-1; HIMMEL-1653 retargeted): two SIMULTANEOUS
+# contenders against one stale lock -- the takeover must be single-winner.
+# The rm-then-continue takeover let both contenders judge the same stale
+# stamp, then the second's rm -rf destroy the first's freshly-won lock --
+# both inside the guarded block at once. Asserts: exactly ONE takeover
+# trail, the two holds are fully serialized, and the final triple is one
+# self-consistent generation.
+#
+# HIMMEL-1653: retargeted from .promote.lock to .extraction.lock. The
+# extraction lock is now acquired BEFORE the promote lock and held through
+# it, so two independent invocations can no longer be simultaneous
+# contenders for .promote.lock at all -- they serialize at the wider
+# extraction gate first (proven directly by T10). This test's single-winner-
+# takeover shape is still exactly the property that matters for the lock
+# that IS reachable by two live invocations, so it now targets
+# .extraction.lock instead -- same takeover algorithm (mkdir + owner-token +
+# atomic-rename single-winner), same assertions. ---
 echo "T4: two simultaneous contenders against one stale lock -- single-winner takeover"
 CORPUS4="$WS/c4"; mkdir -p "$CORPUS4/notes"
 MAPS4="$WS/m4"; mkdir -p "$MAPS4"
 OUT4="$CORPUS4/graphify-out"
 printf '# k\ncontent k\n' > "$CORPUS4/notes/k.md"
-mkdir -p "$OUT4/.promote.lock"
+mkdir -p "$OUT4/.extraction.lock"
 STALE_AT4=$(( $(date -u +%s) - 100000 ))
-printf '%s\n' "$STALE_AT4" > "$OUT4/.promote.lock/acquired"
+printf '%s\n' "$STALE_AT4" > "$OUT4/.extraction.lock/acquired"
 
 GBIN4="$WS/g4bin"; make_stub "$GBIN4" "G"
 HBIN4="$WS/h4bin"; make_stub "$HBIN4" "H"
 
 START4=$(date -u +%s)
 GRAPHIFY_MAP_BIN="$GBIN4/graphify" PATH="$GBIN4:$PATH" \
-  GRAPHIFY_PROMOTE_LOCK_STALE_SECONDS=10 GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=5 \
-  bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend deepseek \
+  GRAPHIFY_EXTRACTION_LOCK_STALE_SECONDS=300 GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=5 \
+  GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=60 \
+  bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend kimi \
   --maps-dir "$MAPS4" --title "Lock Map 4" --slug lock-map-4 --corpus-tag lock4 \
   > "$WS/g4.out" 2> "$WS/g4.err" &
 GPID=$!
 GRAPHIFY_MAP_BIN="$HBIN4/graphify" PATH="$HBIN4:$PATH" \
-  GRAPHIFY_PROMOTE_LOCK_STALE_SECONDS=10 GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=5 \
-  bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend deepseek \
+  GRAPHIFY_EXTRACTION_LOCK_STALE_SECONDS=300 GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=5 \
+  GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=60 \
+  bash "$SCRIPT" --name lock4 --corpus-root "$CORPUS4" --backend kimi \
   --maps-dir "$MAPS4" --title "Lock Map 4" --slug lock-map-4 --corpus-tag lock4 \
   > "$WS/h4.out" 2> "$WS/h4.err" &
 HPID=$!
@@ -244,11 +304,21 @@ else
   fail "T4 final artifacts are spliced across generations (graph=$GEN_GRAPH4 report=$GEN_REPORT4)"
 fi
 
-# --- T5 (CR r1, codex-1): owner-blind release. A stale-but-ALIVE former
-# holder (machine-sleep mid-promote) that was taken over must NOT, on wake,
-# delete the SUCCESSOR's lock -- release only removes the lock dir when its
-# owner token is still ours; on mismatch it WARNs loudly and leaves the
-# successor's lock alone. ---
+# --- T5 (CR r1, codex-1; HIMMEL-1653 retargeted): owner-blind release. A
+# stale-but-ALIVE former holder (machine-sleep mid-run) that was taken over
+# must NOT, on wake, delete the SUCCESSOR's lock -- release only removes the
+# lock dir when its owner token is still ours; on mismatch it WARNs loudly
+# and leaves the successor's lock alone.
+#
+# HIMMEL-1653: retargeted from .promote.lock to .extraction.lock, for the
+# same reason as T4 -- the extraction lock is acquired before (and held
+# through) the promote lock, so a successor can no longer reach
+# .promote.lock while a former owner is still inside its own run at all; it
+# would just wait at the wider extraction gate. The owner-blind-release
+# property this test guards is still exactly as important for the lock that
+# IS now reachable by two live invocations, so it targets .extraction.lock
+# instead -- same release algorithm (owner-token compare, refuse on
+# mismatch), same assertions. ---
 echo "T5: taken-over former owner's release leaves the successor's lock alone"
 CORPUS5="$WS/c5"; mkdir -p "$CORPUS5/notes"
 MAPS5="$WS/m5"; mkdir -p "$MAPS5"
@@ -259,52 +329,65 @@ FBIN5="$WS/f5bin"; make_stub "$FBIN5" "F"
 SBIN5="$WS/s5bin"; make_stub "$SBIN5" "S"
 
 # Former owner F: acquires, then holds 6s (simulates a machine-sleep pause
-# mid-promote -- alive, but paused past the stale threshold).
-GRAPHIFY_MAP_BIN="$FBIN5/graphify" PATH="$FBIN5:$PATH" GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=6 \
-  bash "$SCRIPT" --name lock5 --corpus-root "$CORPUS5" --backend deepseek \
+# mid-run -- alive, but paused past the stale threshold).
+GRAPHIFY_MAP_BIN="$FBIN5/graphify" PATH="$FBIN5:$PATH" GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=6 \
+  bash "$SCRIPT" --name lock5 --corpus-root "$CORPUS5" --backend kimi \
   --maps-dir "$MAPS5" --title "Lock Map 5" --slug lock-map-5 --corpus-tag lock5 \
   > "$WS/f5.out" 2> "$WS/f5.err" &
 FPID=$!
 i=0
-while { [ ! -d "$OUT5/.promote.lock" ] || [ ! -f "$OUT5/.promote.lock/acquired" ]; } && [ "$i" -lt 200 ]; do
+while { [ ! -d "$OUT5/.extraction.lock" ] || [ ! -f "$OUT5/.extraction.lock/acquired" ]; } && [ "$i" -lt 200 ]; do
   sleep 0.05
   i=$((i + 1))
 done
-[ -f "$OUT5/.promote.lock/acquired" ] || fail "T5 setup: former owner F never acquired the promote lock"
+[ -f "$OUT5/.extraction.lock/acquired" ] || fail "T5 setup: former owner F never acquired the extraction lock"
 # Backdate F's stamp so a successor judges the lock stale while F is alive.
 BACKDATE5=$(( $(date -u +%s) - 100000 ))
-printf '%s\n' "$BACKDATE5" > "$OUT5/.promote.lock/acquired"
+printf '%s\n' "$BACKDATE5" > "$OUT5/.extraction.lock/acquired"
 
 # Successor S: takes over the (apparently) stale lock, then holds 8s so it
 # is still the lock holder when F wakes and releases.
 GRAPHIFY_MAP_BIN="$SBIN5/graphify" PATH="$SBIN5:$PATH" \
-  GRAPHIFY_PROMOTE_LOCK_STALE_SECONDS=10 GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=8 \
-  bash "$SCRIPT" --name lock5 --corpus-root "$CORPUS5" --backend deepseek \
+  GRAPHIFY_EXTRACTION_LOCK_STALE_SECONDS=10 GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=8 \
+  bash "$SCRIPT" --name lock5 --corpus-root "$CORPUS5" --backend kimi \
   --maps-dir "$MAPS5" --title "Lock Map 5" --slug lock-map-5 --corpus-tag lock5 \
   > "$WS/s5.out" 2> "$WS/s5.err" &
 SPID=$!
 # Wait (bounded) until S's takeover replaced the backdated stamp.
 i=0
-while [ "$(cat "$OUT5/.promote.lock/acquired" 2>/dev/null)" = "$BACKDATE5" ] && [ "$i" -lt 200 ]; do
+while [ "$(cat "$OUT5/.extraction.lock/acquired" 2>/dev/null)" = "$BACKDATE5" ] && [ "$i" -lt 200 ]; do
   sleep 0.05
   i=$((i + 1))
 done
-[ "$(cat "$OUT5/.promote.lock/acquired" 2>/dev/null)" != "$BACKDATE5" ] && pass "T5 successor S took over the stale lock while F is paused" \
+[ "$(cat "$OUT5/.extraction.lock/acquired" 2>/dev/null)" != "$BACKDATE5" ] && pass "T5 successor S took over the stale lock while F is paused" \
   || fail "T5 setup: successor S never took over the stale lock"
 
 wait "$FPID"; rc_f=$?
 [ "$rc_f" -eq 0 ] && pass "T5 former owner F still completes its own run (rc=0)" || fail "T5 F should exit 0 (got $rc_f): $(cat "$WS/f5.err" 2>/dev/null)"
-[ -d "$OUT5/.promote.lock" ] && pass "T5 successor's lock SURVIVES the former owner's release (owner-token mismatch)" \
+[ -d "$OUT5/.extraction.lock" ] && pass "T5 successor's lock SURVIVES the former owner's release (owner-token mismatch)" \
   || fail "T5 former owner's release deleted the successor's lock (owner-blind rm -rf)"
 grep -q "not releasing" "$WS/f5.err" 2>/dev/null && pass "T5 former owner WARNs loudly instead of releasing" \
   || fail "T5 former owner's release printed no takeover WARN: $(cat "$WS/f5.err" 2>/dev/null)"
 
 wait "$SPID"; rc_s=$?
 [ "$rc_s" -eq 0 ] && pass "T5 successor S completes successfully" || fail "T5 S should exit 0 (got $rc_s): $(cat "$WS/s5.err" 2>/dev/null)"
-grep -q '"gen":"S"' "$OUT5/graph.json" 2>/dev/null && grep -q 'GEN_S' "$OUT5/GRAPH_REPORT.md" 2>/dev/null \
-  && pass "T5 final artifacts are the successor's self-consistent generation" \
-  || fail "T5 final artifacts are not the successor's own generation"
-[ -d "$OUT5/.promote.lock" ] && fail "T5 successor's own release left the lock behind" \
+# HIMMEL-1653: unlike the old promote-lock-only version of this test, F's
+# and S's REAL (stubbed) pull/extraction/promote work can now both fall
+# inside the same wall-clock window (the extraction-lock hold moved earlier,
+# ahead of that work, instead of wrapping it) -- so which of F/S's promote
+# lands LAST is no longer deterministically S. What must still hold, and is
+# still promote-lock's job to guarantee regardless of extraction-lock
+# takeover: whichever one lands last is a single self-consistent generation
+# (graph.json and GRAPH_REPORT.md agree), never a splice of both.
+GEN_GRAPH5=$(grep -o '"gen":"[FS]"' "$OUT5/graph.json" 2>/dev/null | head -1 | tr -dc 'FS')
+GEN_REPORT5=$(grep -o 'GEN_[FS]' "$OUT5/GRAPH_REPORT.md" 2>/dev/null | head -1)
+G5="$GEN_GRAPH5"; R5="${GEN_REPORT5#GEN_}"
+if [ -n "$G5" ] && [ "$G5" = "$R5" ]; then
+  pass "T5 final graph.json + GRAPH_REPORT.md are one self-consistent generation ($G5), never spliced across F/S"
+else
+  fail "T5 final artifacts are spliced across generations (graph=$GEN_GRAPH5 report=$GEN_REPORT5)"
+fi
+[ -d "$OUT5/.extraction.lock" ] && fail "T5 successor's own release left the lock behind" \
   || pass "T5 successor's own release removed its lock normally"
 
 # --- T6 (CR r1, code-reviewer): a STAMP-LESS lock (holder hard-crashed
@@ -326,7 +409,7 @@ KBIN6="$WS/k6bin"; make_stub "$KBIN6" "K"
 # variant 1: acquired file MISSING entirely.
 mkdir -p "$OUT6/.promote.lock"
 out_j=$( GRAPHIFY_MAP_BIN="$JBIN6/graphify" PATH="$JBIN6:$PATH" GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS=20 \
-  bash "$SCRIPT" --name lock6 --corpus-root "$CORPUS6" --backend deepseek \
+  bash "$SCRIPT" --name lock6 --corpus-root "$CORPUS6" --backend kimi \
   --maps-dir "$MAPS6" --title "Lock Map 6" --slug lock-map-6 --corpus-tag lock6 2>&1 ); rc_j=$?
 [ "$rc_j" -eq 0 ] && pass "T6 refresh reclaims the stamp-less lock and succeeds" \
   || fail "T6 refresh should exit 0 after reclaiming the stamp-less lock (got $rc_j): $out_j"
@@ -344,7 +427,7 @@ grep -q '"gen":"J"' "$OUT6/graph.json" 2>/dev/null && pass "T6 promote completed
 mkdir -p "$OUT6/.promote.lock"
 printf 'not-a-number\n' > "$OUT6/.promote.lock/acquired"
 out_k=$( GRAPHIFY_MAP_BIN="$KBIN6/graphify" PATH="$KBIN6:$PATH" GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS=20 \
-  bash "$SCRIPT" --name lock6 --corpus-root "$CORPUS6" --backend deepseek \
+  bash "$SCRIPT" --name lock6 --corpus-root "$CORPUS6" --backend kimi \
   --maps-dir "$MAPS6" --title "Lock Map 6" --slug lock-map-6 --corpus-tag lock6 2>&1 ); rc_k=$?
 [ "$rc_k" -eq 0 ] && pass "T6 refresh reclaims the garbage-stamped lock and succeeds" \
   || fail "T6 refresh should exit 0 after reclaiming the garbage-stamped lock (got $rc_k): $out_k"
@@ -375,7 +458,7 @@ LBIN7="$WS/l7bin"; make_stub "$LBIN7" "L"
 mkdir -p "$OUT7/manifest.json"   # a DIRECTORY at the final manifest.json path -> the
                                  # stamp-invalidation rm -f fails post-acquire
 out_l=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
-  bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend deepseek \
+  bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend kimi \
   --maps-dir "$MAPS7" --title "Lock Map 7" --slug lock-map-7 --corpus-tag lock7 2>&1 ); rc_l=$?
 [ "$rc_l" -ne 0 ] && pass "T7 planted promote failure exits non-zero" \
   || fail "T7 planted promote failure should exit non-zero (got $rc_l): $out_l"
@@ -383,7 +466,7 @@ out_l=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
   || pass "T7 lock released by the EXIT trap after the post-acquire failure"
 rmdir "$OUT7/manifest.json" 2>/dev/null || rm -rf "$OUT7/manifest.json"
 out_l2=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
-  bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend deepseek \
+  bash "$SCRIPT" --name lock7 --corpus-root "$CORPUS7" --backend kimi \
   --maps-dir "$MAPS7" --title "Lock Map 7" --slug lock-map-7 --corpus-tag lock7 2>&1 ); rc_l2=$?
 [ "$rc_l2" -eq 0 ] && pass "T7 immediate re-run succeeds (no leftover lock to fight)" \
   || fail "T7 immediate re-run should exit 0 (got $rc_l2): $out_l2"
@@ -413,7 +496,7 @@ MBIN8="$WS/m8bin"; make_stub "$MBIN8" "M"
 NBIN8="$WS/n8bin"; make_stub "$NBIN8" "N"
 
 GRAPHIFY_MAP_BIN="$MBIN8/graphify" PATH="$MBIN8:$PATH" GRAPHIFY_PUBLISH_TEST_HOLD_SECONDS=5 \
-  bash "$SCRIPT" --name lock8 --corpus-root "$CORPUS8" --backend deepseek \
+  bash "$SCRIPT" --name lock8 --corpus-root "$CORPUS8" --backend kimi \
   --maps-dir "$MAPS8" --title "Lock Map 8" --slug lock-map-8 --corpus-tag lock8 \
   > "$WS/m8.out" 2> "$WS/m8.err" &
 MPID=$!
@@ -433,7 +516,7 @@ sleep 1
   || pass "T8 publish has not run yet inside the seam window"
 # Second refresh meanwhile: must WAIT for the first's publish to finish.
 GRAPHIFY_MAP_BIN="$NBIN8/graphify" PATH="$NBIN8:$PATH" GRAPHIFY_PUBLISH_TEST_HOLD_SECONDS=5 \
-  bash "$SCRIPT" --name lock8 --corpus-root "$CORPUS8" --backend deepseek \
+  bash "$SCRIPT" --name lock8 --corpus-root "$CORPUS8" --backend kimi \
   --maps-dir "$MAPS8" --title "Lock Map 8" --slug lock-map-8 --corpus-tag lock8 \
   > "$WS/n8.out" 2> "$WS/n8.err" &
 NPID=$!
@@ -465,13 +548,13 @@ PBIN9="$WS/p9bin"; make_stub "$PBIN9" "P"
 QBIN9="$WS/q9bin"; make_stub "$QBIN9" "Q"
 # Seed a published-from state (gen P), then clear the MOC.
 out_seed=$( GRAPHIFY_MAP_BIN="$PBIN9/graphify" PATH="$PBIN9:$PATH" \
-  bash "$SCRIPT" --name lock9 --corpus-root "$CORPUS9" --backend deepseek \
+  bash "$SCRIPT" --name lock9 --corpus-root "$CORPUS9" --backend kimi \
   --maps-dir "$MAPS9" --title "Lock Map 9" --slug lock-map-9 --corpus-tag lock9 2>&1 ); rc_seed=$?
 [ "$rc_seed" -eq 0 ] || fail "T9 setup: seed refresh failed (rc=$rc_seed): $out_seed"
 rm -f "$MOC9"
 # Writer: full refresh (gen Q) holding the lock pre-promote for 4s.
 GRAPHIFY_MAP_BIN="$QBIN9/graphify" PATH="$QBIN9:$PATH" GRAPHIFY_PROMOTE_TEST_HOLD_SECONDS=4 \
-  bash "$SCRIPT" --name lock9 --corpus-root "$CORPUS9" --backend deepseek \
+  bash "$SCRIPT" --name lock9 --corpus-root "$CORPUS9" --backend kimi \
   --maps-dir "$MAPS9" --title "Lock Map 9" --slug lock-map-9 --corpus-tag lock9 \
   > "$WS/q9.out" 2> "$WS/q9.err" &
 QPID=$!
@@ -502,6 +585,59 @@ grep -q 'GEN_Q' "$MOC9" 2>/dev/null && pass "T9 reader's MOC is the writer's pro
   || fail "T9 reader's MOC is not the writer's generation"
 [ -d "$OUT9/.promote.lock" ] && fail "T9 reader left the lock behind" \
   || pass "T9 reader released the lock after publishing"
+
+# --- T10 (HIMMEL-1653): the extraction-wide lock refuses a concurrent
+# SECOND invocation from ever entering extraction while a FIRST is still
+# extracting -- the gap the promote lock alone left open (it deliberately
+# does not guard pull/copy/extraction, only the short promote block). Proof
+# shape mirrors T2/T9 (bounded second process fails loudly rather than
+# silently double-extracting), but asserts the EXTRACTION lock specifically:
+# process E holds it (test-hold hook, no promote-lock hold needed -- the
+# extraction lock alone must be enough), and a bounded process F must refuse
+# BEFORE ever touching the promote lock. ---
+echo "T10: extraction-wide lock refuses a concurrent second extraction"
+CORPUS10="$WS/c10"; mkdir -p "$CORPUS10/notes"
+MAPS10="$WS/m10"; mkdir -p "$MAPS10"
+OUT10="$CORPUS10/graphify-out"
+printf '# e\ncontent e\n' > "$CORPUS10/notes/e.md"
+
+EBIN10="$WS/ebin10"; make_stub "$EBIN10" "E"
+FBIN10="$WS/fbin10"; make_stub "$FBIN10" "F"
+
+GRAPHIFY_MAP_BIN="$EBIN10/graphify" PATH="$EBIN10:$PATH" GRAPHIFY_EXTRACTION_TEST_HOLD_SECONDS=4 \
+  bash "$SCRIPT" --name lock10 --corpus-root "$CORPUS10" --backend kimi \
+  --maps-dir "$MAPS10" --title "Lock Map 10" --slug lock-map-10 --corpus-tag lock10 \
+  > "$WS/e10.out" 2> "$WS/e10.err" &
+EPID=$!
+
+i=0
+while [ ! -d "$OUT10/.extraction.lock" ] && [ "$i" -lt 200 ]; do
+  sleep 0.05
+  i=$((i + 1))
+done
+if [ -d "$OUT10/.extraction.lock" ]; then
+  pass "T10 process E holds the extraction lock"
+else
+  fail "T10 setup: process E never acquired the extraction lock"
+fi
+
+out_f=$( GRAPHIFY_MAP_BIN="$FBIN10/graphify" PATH="$FBIN10:$PATH" GRAPHIFY_EXTRACTION_LOCK_TIMEOUT_SECONDS=1 \
+  bash "$SCRIPT" --name lock10 --corpus-root "$CORPUS10" --backend kimi \
+  --maps-dir "$MAPS10" --title "Lock Map 10" --slug lock-map-10 --corpus-tag lock10 2>&1 ); rc_f=$?
+
+[ "$rc_f" -eq 2 ] && pass "T10 the bounded second process (1s timeout) refuses with rc=2, not a silent double-extraction" \
+  || fail "T10 bounded process should exit 2 (got $rc_f): $out_f"
+echo "$out_f" | grep -q "extraction lock" && pass "T10 refusal names the extraction lock (not the promote lock)" \
+  || fail "T10 refusal should name the extraction lock: $out_f"
+echo "$out_f" | grep -q "already extracting" && pass "T10 stderr carries a loud explanation" \
+  || fail "T10 stderr should explain the refusal: $out_f"
+[ -d "$OUT10/.promote.lock" ] && fail "T10 bounded process F reached the promote lock at all -- it should have refused at the extraction gate, before extraction/promote ever started" \
+  || pass "T10 bounded process F never reached the promote step (refused at the earlier extraction gate)"
+
+wait "$EPID"; rc_e=$?
+[ "$rc_e" -eq 0 ] && pass "T10 process E completes successfully" || fail "T10 process E should exit 0 (got $rc_e): $(cat "$WS/e10.err" 2>/dev/null)"
+[ -d "$OUT10/.extraction.lock" ] && fail "T10 process E left the extraction lock behind" \
+  || pass "T10 process E released the extraction lock on exit"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

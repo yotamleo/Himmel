@@ -6,6 +6,12 @@
   so a scenario's `exit 1` cannot terminate this harness.
 #>
 $ErrorActionPreference = "Stop"
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ScriptDir = $PSScriptRoot
 $Installer = Join-Path $ScriptDir "install-himmel-codex.ps1"
 

@@ -29,6 +29,19 @@
 #                  cannot be verified) — unsupported/unknown encoding. Inspect
 #                  manually; do NOT prepend a UTF-8 BOM (that corrupts a
 #                  non-UTF-8 payload such as UTF-16). (HIMMEL-1432 CR r3.)
+#   [parse]       the file does not parse (`bash -n`). A hook file is LIVE the
+#                 instant it is written, so a parse error denies EVERY command
+#                 fleet-wide before any commit gate can run. The commonest cause
+#                 is an apostrophe in prose inside a single-quoted awk/sed/perl
+#                 program (`# it's the entry point`) — it ends the shell string
+#                 early. (HIMMEL-2230.)
+#   [quote-break] an apostrophe that TERMINATED a single-quoted awk/sed/perl
+#                 program body: the closing quote is immediately followed by a
+#                 word character, the signature of prose (`it's`, `don't`)
+#                 rather than an intended end-of-program. Catches the same class
+#                 as [parse] in the case where the file still happens to parse
+#                 (the stray quote re-balanced) but awk receives a TRUNCATED
+#                 program. (HIMMEL-2230.)
 #   [errexit]     `set -e` / `-eu` / `-euo` / `-o errexit` — errexit leaks into a
 #                 sourcing shell; himmel convention is `set -uo pipefail`.
 #   [shellcheck]  the same linter the pre-commit gate runs (when installed).
@@ -49,6 +62,9 @@ set -uo pipefail
 
 # statusline is vendored byte-for-byte (HIMMEL-331); mirror the gate's exclude.
 EXCLUDE_SUBSTR='scripts/statusline/'
+
+# Resolve sibling helpers (hook-parse-check.sh) relative to this script, not cwd.
+LINT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
     # Print only the contiguous header doc block (stop at the first non-# line),
@@ -350,6 +366,21 @@ while IFS= read -r f; do
 $ee
 EOF
         file_issues=$((file_issues + 1))
+    fi
+
+    # [parse] + [quote-break] — HIMMEL-2230, delegated to the shared checker so
+    # there is exactly ONE implementation: scripts/hooks/check-hook-file-parse.sh
+    # runs the same script at WRITE time, which is the only moment that helps a
+    # live hook file. Findings already carry their own path and tag.
+    if [ -f "$LINT_DIR/hook-parse-check.sh" ]; then
+        if ! hpc_out="$(bash "$LINT_DIR/hook-parse-check.sh" "$f" 2>&1)"; then
+            file_report="$file_report$hpc_out"$'
+'
+            file_issues=$((file_issues + 1))
+        fi
+    else
+        printf 'shell-lint: hook-parse-check.sh missing next to shell-lint.sh - [parse]/[quote-break] skipped
+' >&2
     fi
 
     # [shellcheck] — the gate's linter (when installed). Check rc directly.
