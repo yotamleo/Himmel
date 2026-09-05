@@ -69,7 +69,11 @@ jobs:
       # in a git pathspec `**/` requires an intervening directory, silently
       # dropping the 34 top-level scripts. xargs -r: no files -> don't run
       # shellcheck on stdin.
-      - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | xargs -0 -r shellcheck --severity=warning
+      # scripts/lanes/bench/fixtures/ holds benchmark INPUT scripts — sample
+      # shell fed to the lane bench as the thing being measured. Adding
+      # shellcheck directives to them would change the artifact under
+      # measurement, so they're excluded the same way scripts/statusline/ is.
+      - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | grep -zv '^scripts/lanes/bench/fixtures/' | xargs -0 -r shellcheck --severity=warning
 
   node-suites:
     runs-on: ubuntu-latest
@@ -328,6 +332,22 @@ jobs:
       # npm license allowlist — pre-push `npm-licenses`.
       - name: npm license allowlist
         run: bash scripts/hooks/check-npm-licenses.sh
+
+      # HIMMEL-2573: this gate has a hard floor (npm >= 11) that the pinned
+      # node-version above does not meet — node 22 bundles npm 10.9.8. That
+      # floor and this job's runtime can drift apart silently: the only
+      # symptom was an error that read like a package problem, and it went
+      # unnoticed because it passes on every developer machine (newer npm
+      # installed locally) and this repo never ran the workflow before
+      # (Actions is off on the private repo by design). Upgrade npm here
+      # rather than bumping node-version — node 22 is the tested runtime for
+      # the whole workflow and a signature gate shouldn't quietly change that.
+      # Print the version so the next time this floor and this runtime drift
+      # apart, it's one glance at the log instead of an investigation.
+      - name: upgrade npm to meet the audit-signatures floor (>= 11)
+        run: |
+          npm i -g npm@^11
+          npm --version
 
       # npm audit signatures (production) — pre-push `npm-audit-signatures`. This
       # gate does NOT self-install; it relies on the node_modules the npm-audit

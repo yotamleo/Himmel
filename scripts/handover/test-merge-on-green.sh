@@ -30,6 +30,12 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOG="$SCRIPT_DIR/merge-on-green.sh"
 
+# RED-control contract (HIMMEL-2518) for the mutation controls added below
+# (HIMMEL-2544 PR-D): proves a mutant actually ran, produced output, and
+# produced the SPECIFIC predicted wrong value, not merely "differs from
+# correct".
+. "$SCRIPT_DIR/../lib/red-control.sh"
+
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS + 1)); }
@@ -96,18 +102,43 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 # $LAST_ERR = the run's captured stderr (HIMMEL-2227, 11k3 — the gutted-remove
 # operator message is stderr-only, never the audit log).
 LAST_GH_LOG=""; LAST_AUDIT=""; LAST_CLEAR_LOG=""; LAST_ERR=""
-run_mog() {
-    local expected="$1" name="$2"; shift 2
-    [ "${1:-}" = "--" ] && shift
-    local tmp; tmp=$(mktemp -d)
-    local ghlog="$tmp/gh.log"; : > "$ghlog"
-    local audit="$tmp/audit.log"
-    [ "${STUB_AUDIT_UNWRITABLE:-0}" = "1" ] && audit="$tmp/nodir/audit.log"  # parent absent → unwritable
+
+# mog_build_fixture <tmpdir>
+#
+# Build the scratch tree run_mog executes merge-on-green.sh in: copies of the
+# script + its lib siblings, a stub check-ci.sh, a stub clear-cr-marker.sh,
+# and a stub `gh` FIRST on PATH. Pulled out of run_mog (HIMMEL-2544 PR-D) so a
+# RED control can build the SAME fixture around a MUTANT copy of
+# merge-on-green.sh and run it directly through red_control_run — going
+# through run_mog itself would consume the run with run_mog's own pass/fail,
+# leaving nothing for the control to assert against.
+#
+# Takes only the tmpdir (CR round-1 F3 dropped the ghlog/clearlog parameters
+# run_mog originally passed): both stub scripts written below read $GH_LOG /
+# $CLEAR_LOG from the environment at RUNTIME (set by whichever caller execs
+# the copied merge-on-green.sh — run_mog, or a RED control's own
+# red_control_run --env), never from a build-time path here, so carrying them
+# as parameters was dead weight — the class of thing this repo's rules
+# forbid keeping "for symmetry".
+#
+# MOG_SRC (read here, optional) is a TEST-HARNESS-ONLY seam: it picks which
+# SOURCE FILE gets copied to the fixture's fixed
+# $tmp/scripts/handover/merge-on-green.sh path, defaulting to the real $MOG.
+# This is NOT the gate-integrity seam the file header above forbids — that
+# ban is about merge-on-green.sh itself reading `gh`/check-ci from the
+# environment at RUNTIME, which would let a live run silently swap in a fake
+# gate. MOG_SRC never reaches the copied script's own runtime: the copy still
+# has no env seams of its own and still resolves `gh` and check-ci.sh only
+# from its fixed sibling paths. MOG_SRC just lets THIS TEST HARNESS point the
+# copy step at a scratch mutant instead of the shipped script; production
+# merge-on-green.sh gains no seam.
+mog_build_fixture() {
+    local tmp="$1"
 
     # Copy the script into a temp tree so its fixed `../check-ci.sh` sibling
     # resolves to our stub — no CHECK_CI env override exists any more.
     mkdir -p "$tmp/scripts/handover" "$tmp/scripts/lib" "$tmp/bin"
-    cp "$MOG" "$tmp/scripts/handover/merge-on-green.sh"
+    cp "${MOG_SRC:-$MOG}" "$tmp/scripts/handover/merge-on-green.sh"
     # merge-on-green.sh now sources its HIMMEL-2227 in-use predicates from the
     # shared lib (../lib/worktree-inuse.sh, relative to its own SCRIPT_DIR) —
     # the copy must carry that sibling too.
@@ -126,7 +157,6 @@ run_mog() {
     # exactly like check-ci above — the wrapper has no env seam for it either.
     # The stub records its argv, so a case can prove the merge path went THROUGH
     # clear-cr-marker.sh (never a raw `rm`) and with which branch.
-    local clearlog="$tmp/clear.log"; : > "$clearlog"
     if [ "${STUB_NO_CLEARER:-0}" != "1" ]; then
         mkdir -p "$tmp/scripts/cr"
         # SC2016 is the point: "$*" / "$CLEAR_LOG" must reach the stub FILE
@@ -285,6 +315,27 @@ esac
 exit 0
 STUB
     chmod +x "$tmp/bin/gh"
+}
+
+run_mog() {
+    local expected="$1" name="$2"; shift 2
+    [ "${1:-}" = "--" ] && shift
+    # Templated + guarded (known-findings [mktemp-no-template]): a bare
+    # `mktemp -d` is a BSD/macOS portability hazard, and an unchecked one
+    # leaves $tmp EMPTY so every path below is built at the filesystem root.
+    # This line predates HIMMEL-2544 and the refactor above only moved it, but
+    # the diff carries it now, so it is fixed rather than pre-rebutted.
+    local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/mog-run.XXXXXX")
+    if [ -z "$tmp" ] || [ ! -d "$tmp" ]; then
+        fail "$name — mktemp -d produced no run sandbox; refusing to build fixture paths on an empty root"
+        return
+    fi
+    local ghlog="$tmp/gh.log"; : > "$ghlog"
+    local audit="$tmp/audit.log"
+    [ "${STUB_AUDIT_UNWRITABLE:-0}" = "1" ] && audit="$tmp/nodir/audit.log"  # parent absent → unwritable
+    local clearlog="$tmp/clear.log"; : > "$clearlog"
+
+    mog_build_fixture "$tmp"
 
     local err rc
     # cwd matters since HIMMEL-1970: the post-merge prune reads `git worktree
@@ -359,8 +410,15 @@ assert_merge_lacks() {
 # The re-query must be PINNED to the resolved PR number + repo (HIMMEL-1694):
 # a selector-less `pr view` resolves from the current branch, which is wrong
 # after a post-merge checkout switch or from a cwd that is not the PR's tree.
+# Defined ONCE here (coderabbit CR round-1, RC-3 finding) so RC-3's own setup
+# guard and paired positive below call the SAME matcher instead of hand-copying
+# the pattern — if the anchor is ever tightened, all three sites move together
+# instead of RC-3 staying green against a stale copy that no longer reflects
+# what this assertion actually runs.
+STATE_REQUERY_REGEX='^pr view [0-9]+ --repo [^ ]+ --json state(,headRefOid,baseRefName)?( |$)'
+state_requery_matches() { grep -Eq "$STATE_REQUERY_REGEX" "$1"; }
 assert_state_requery() {
-    if grep -Eq '^pr view [0-9]+ --repo [^ ]+ --json state(,headRefOid,baseRefName)?( |$)' "$LAST_GH_LOG"; then pass
+    if state_requery_matches "$LAST_GH_LOG"; then pass
     else fail "$1 (no PINNED post-merge 'pr view <num> --repo <nwo> --json state[,headRefOid,baseRefName]' re-query found)"; fi
 }
 # Exact resolved identity (coderabbit, #1758): the pin must name THIS PR's
@@ -405,6 +463,86 @@ assert_gh_lacks "no-PR: no merge attempted" "pr merge"
 # 4. PR OPEN but repo is public → fail-closed refuse (exit 12), no merge.
 STUB_PRIVATE=false run_mog 12 "public repo → exit 12"
 assert_gh_lacks "public repo: no merge attempted" "pr merge"
+
+# RC-3 (HIMMEL-2544 PR-D) — the comment on assert_state_requery above claims a
+# LITERAL (unanchored) 'pr view .*--json state' matcher would ALSO match the
+# initial metadata query as a substring. Placed right here, immediately after
+# case 4: that case refuses at the privacy guard BEFORE any post-merge
+# re-query ever fires, so ITS OWN $LAST_GH_LOG carries exactly the initial
+# metadata query and nothing else — a fixture DERIVED from a real run just
+# made, not transcribed by hand into a heredoc (CR round-1 F1: an earlier
+# version of this case hand-typed the gh-log line and claimed it was
+# "verified empirically", which was actually derivation from reading
+# merge-on-green.sh's source — the same prose-only-evidence class this PR
+# exists to fix). Sitting here also keeps this case below the
+# HIMMEL_1495_SELF short-circuit further down, so RC-2's self-reinvoked
+# mutant no longer re-runs it on every invocation.
+rc3_ghlog="$LAST_GH_LOG"
+# Guard the derived fixture before trusting it: it must actually contain a
+# 'pr view' call (case 4 really queried gh), and it must NOT already match
+# the shipped anchored regex — a fixture that failed the anchored regex for
+# the wrong reason (e.g. an empty log) would make the paired positive below
+# vacuous.
+if ! grep -q '^pr view' "$rc3_ghlog"; then
+    fail "RC-3 setup: case 4's gh log has no 'pr view' line at all — cannot derive the fixture from it"
+elif state_requery_matches "$rc3_ghlog"; then
+    fail "RC-3 setup: case 4's gh log already matches the shipped anchored regex — it is not the initial-metadata-only fixture this case needs"
+else
+    # The mutant: the pre-anchor matcher this case exists to disprove. A
+    # one-line scratch script, not a mutation of an existing file — there is
+    # no prior source to diff against, so the pre/post/diff-count proof the
+    # awk-mutant cases elsewhere in this file use does not apply here; the
+    # "mutation" IS the whole file. Be honest about what that costs: this
+    # `grep && echo || echo` shape always exits 0 no matter what it's given,
+    # so contract point (a) — "the mutant RAN" — is satisfied trivially here
+    # in a way it is not for RC-1/RC-2. That is inherent to a matcher-shaped
+    # mutant; the real discriminating evidence is the SPECIFIC observed value
+    # (point c) plus the paired positive assertion below, not point (a).
+    #
+    # Templated + guarded like SUITE_HOLDER_DIR above (CR round-2 F7): a bare,
+    # unchecked `mktemp` feeding a later `rm -f` is the same shape HIMMEL-2518
+    # was written to close, even though the blast radius here is smaller
+    # (`rm -f ""` errors rather than deleting anything) — pin the SHAPE before
+    # arming the cleanup, not just the exit status.
+    rc3_mutant=$(mktemp "${TMPDIR:-/tmp}/mog-2544-rc3-mutant.XXXXXX")
+    if [ -z "$rc3_mutant" ] || [ ! -f "$rc3_mutant" ]; then
+        fail "RC-3 setup: mktemp produced no mutant-script file — refusing to build the fixture on an empty root"
+    else
+        cat > "$rc3_mutant" <<'EOF'
+#!/usr/bin/env bash
+grep -q -- 'pr view .*--json state' "$1" && echo 'requery=matched' || echo 'requery=no-match'
+EOF
+        red_control_run -- bash "$rc3_mutant" "$rc3_ghlog"
+        if red_control_assert --label "RC-3" --expect-rc 0 \
+            --observed     "$RED_CONTROL_OUT" \
+            --expect-wrong "requery=matched" \
+            --correct      "requery=no-match" \
+            --note "the unanchored 'pr view --json state' substring matches the INITIAL six-field metadata query, so assert_state_requery would pass with the post-merge confirmation removed entirely; the word-boundary anchor is what makes it load-bearing"
+        then
+            pass
+        else
+            fail "RC-3 mutant: RED control did not hold (see the RED-control diagnostic above)"
+        fi
+        # Paired POSITIVE: the SHIPPED (anchored) assert_state_requery regex
+        # must NOT match this same fixture — proving both halves in one case:
+        # the naive matcher is fooled, the real one is not. Calls
+        # state_requery_matches(), the SAME predicate assert_state_requery
+        # itself runs (not a duplicated hand-copy of the pattern), so this
+        # control drifts WITH the shipped assertion rather than silently
+        # diverging into a stale copy if the anchor is ever tightened further
+        # — a regression there would then leave this control green while no
+        # longer testing what actually ships. (The setup guard above already
+        # proved this once to protect ITSELF from a vacuous fixture; this is
+        # the case's own pass/fail record of the same fact, not a silent
+        # reuse of the setup check's tally.)
+        if state_requery_matches "$rc3_ghlog"; then
+            fail "RC-3 positive: the shipped anchored regex unexpectedly matched the initial-metadata-only fixture — the anchor is not doing its job"
+        else
+            pass
+        fi
+        rm -f "$rc3_mutant"
+    fi
+fi
 
 # 5. isPrivate undeterminable (empty) → fail closed (exit 12).
 STUB_PRIVATE="" run_mog 12 "undeterminable privacy → exit 12 fail-closed"
@@ -913,6 +1051,113 @@ SHEOF
         fi
         stop_suite_holder
 
+        # RC-1 (HIMMEL-2544 PR-D) — 11k4's own comment above claims a specific
+        # counterfactual ("this is the case that FAILS before the fix ...and
+        # PASSES after it") that nothing in the suite ever executed. Build a
+        # scratch mutant of merge-on-green.sh with the HIMMEL-2517 guard
+        # neutralised and prove that counterfactual actually holds.
+        #
+        # Neutralise with `false &&` rather than deleting the block: the diff
+        # is exactly the one guard line (verified below), not a reshaped
+        # block, so the mutant is the minimal faithful "this guard doesn't
+        # run" mutation rather than a differently-shaped one.
+        # shellcheck disable=SC2016  # literal match/replacement against
+        # merge-on-green.sh's own source text (unexpanded $path_norm) -- not a
+        # shell expansion.
+        rc1_guard_line='    if worktree_has_live_suite_run "$path_norm"; then'
+        # shellcheck disable=SC2016  # same reason as rc1_guard_line above.
+        rc1_neutered_line='    if false && worktree_has_live_suite_run "$path_norm"; then'
+        # Templated + guarded like SUITE_HOLDER_DIR above, not a bare unchecked
+        # `mktemp -d` (CR round-2 F7): this is exactly the HIMMEL-2518 hazard
+        # — a scratch path feeding a recursive delete (`rm -rf "$rc1_mutant_dir"`
+        # below) must have its SHAPE pinned before any cleanup is armed on it,
+        # not merely its exit status trusted. `fail` and skip the control
+        # rather than `exit 1`: a scratch-dir failure here must not abort the
+        # whole suite mid-fixture (red-control.sh's own header makes the same
+        # point about never aborting and leaving state behind).
+        rc1_mutant_dir=$(mktemp -d "${TMPDIR:-/tmp}/mog-2544-rc1-mutant.XXXXXX")
+        if [ -z "$rc1_mutant_dir" ] || [ ! -d "$rc1_mutant_dir" ]; then
+            fail "RC-1 setup: mktemp -d produced no mutant-build sandbox — refusing to build fixture paths on an empty root"
+        else
+            rc1_mutant="$rc1_mutant_dir/merge-on-green.mutant.sh"
+            awk -v line="$rc1_guard_line" -v repl="$rc1_neutered_line" \
+                '$0==line{print repl; next}{print}' "$MOG" > "$rc1_mutant"
+            rc1_pre=$(grep -Fc -- "$rc1_guard_line" "$MOG")
+            rc1_post=$(grep -Fc -- "$rc1_guard_line" "$rc1_mutant")
+            # A one-line REPLACEMENT (unlike the awk-deletion cases elsewhere in
+            # this file) shows up in `diff` as a two-line hunk — one `<` (the
+            # original) and one `>` (the neutered line) — so 2, not 1, is the
+            # clean-single-line-substitution count here.
+            rc1_diff=$(diff "$MOG" "$rc1_mutant" | grep -c '^[<>]')
+            if [ "$rc1_pre" -ge 1 ] && [ "$rc1_post" -eq 0 ] && [ "$rc1_diff" -eq 2 ]; then
+                read -r RC1_REPO RC1_WT RC1_SHA <<< "$(mk_prune_fixture)"
+                if ! start_suite_holder "$RC1_WT" "$SUITE_HOLDER_DIR/run-shell-tests.sh"; then
+                    fail "RC-1 setup: the suite holder never signaled ready — control not established"
+                else
+                    pass  # holder reached execution: the control below is against a real process
+                    # Same HIMMEL-2518 discipline as rc1_mutant_dir above — this
+                    # one feeds `rm -rf "$ctl_tmp"` below.
+                    ctl_tmp=$(mktemp -d "${TMPDIR:-/tmp}/mog-2544-rc1-ctl.XXXXXX")
+                    if [ -z "$ctl_tmp" ] || [ ! -d "$ctl_tmp" ]; then
+                        fail "RC-1 setup: mktemp -d produced no control sandbox — refusing to build the mutant fixture on an empty root"
+                    else
+                        ctl_gh="$ctl_tmp/gh.log"; : > "$ctl_gh"
+                        ctl_clear="$ctl_tmp/clear.log"; : > "$ctl_clear"
+                        ctl_audit="$ctl_tmp/audit.log"; : > "$ctl_audit"
+                        MOG_SRC="$rc1_mutant" mog_build_fixture "$ctl_tmp"
+                        # shellcheck disable=SC2034  # read by the sourced red-control.sh
+                        RED_CONTROL_TMPDIR="$ctl_tmp"
+                        red_control_run --cwd "$RC1_REPO" \
+                            --env GH_LOG="$ctl_gh" --env CLEAR_LOG="$ctl_clear" --env MERGE_ON_GREEN_LOG="$ctl_audit" \
+                            --env PATH="$ctl_tmp/bin:$PATH" --env MERGE_ON_GREEN_SLEEP_CMD=: --env CR_APP="" \
+                            --env STUB_SHA="$RC1_SHA" --env STUB_HEAD_BRANCH="feat/mog-prune" --env ARMAUTOMERGE=1 \
+                            -- bash "$ctl_tmp/scripts/handover/merge-on-green.sh"
+                        # merge-on-green's `audit()` echoes every audit LINE to
+                        # stdout as well as the log file (merge-on-green.sh:174),
+                        # so RED_CONTROL_OUT already carries the "MERGED ...
+                        # prune=<x> ..." line directly (verified empirically) —
+                        # no need to fall back to reading ctl_audit through a
+                        # `cat` wrapper.
+                        rc1_prune=$(printf '%s' "$RED_CONTROL_OUT" | grep -o 'prune=[^ ]*' | head -n1)
+                        rc1_wt=absent
+                        [ -d "$RC1_WT" ] && rc1_wt=present
+                        # If the mutant's output carried no 'prune=' token at
+                        # all, the observed value passed below must be EMPTY,
+                        # not " wt=$rc1_wt" (CR round-1 F5): a non-empty string
+                        # here would slip past red_control_assert's point-(b)
+                        # emptiness check and get misdiagnosed as
+                        # `wrong-mutation` — the wrong verdict, since what
+                        # actually broke is the EXTRACTION, not the mutation.
+                        # An empty --observed routes it to the `empty` mode
+                        # instead, which names the right failure.
+                        rc1_observed=""
+                        [ -n "$rc1_prune" ] && rc1_observed="$rc1_prune wt=$rc1_wt"
+                        if red_control_assert --label "RC-1" --expect-rc 0 \
+                            --observed     "$rc1_observed" \
+                            --expect-wrong "prune=removed wt=absent" \
+                            --correct      "prune=suite-running-kept wt=present" \
+                            --note "without the HIMMEL-2517 worktree_has_live_suite_run guard the merged worktree is deleted out from under a live shell-test run — the measured PASS 6 / FAIL 422 wreck of PRs #2133/#2134, which is what 11k4/11k6/11k12/11k13 exist to prevent"
+                        then
+                            pass
+                        else
+                            fail "RC-1 mutant: RED control did not hold (see the RED-control diagnostic above)"
+                        fi
+                        # Unset, not just let it fall out of scope:
+                        # RED_CONTROL_TMPDIR is a global the library reads, and
+                        # a later control (RC-2) sourcing red-control.sh's
+                        # default fallback must not inherit a now-deleted
+                        # directory from this one.
+                        unset RED_CONTROL_TMPDIR
+                        rm -rf "$ctl_tmp"
+                    fi
+                fi
+                stop_suite_holder
+            else
+                fail "RC-1 setup: mutation of the worktree_has_live_suite_run guard was not reproduced cleanly (pre=$rc1_pre post=$rc1_post diff_lines=$rc1_diff)"
+            fi
+            rm -rf "$rc1_mutant_dir"
+        fi
+
         # 11k5. NEGATIVE CONTROL: same runner, same name in argv, but anchored
         # OUTSIDE the tree and saying nothing about it. A detector that keyed on
         # "a run-shell-tests.sh exists anywhere" would refuse here and strand
@@ -1321,6 +1566,76 @@ if [ "${HIMMEL_1495_SELF:-0}" != "1" ]; then
         fail "hermetic-to-armed-env (startup scrub missing?)"; sed 's/^/  armed: /' "$_armed_log" >&2
     fi
     rm -f "$_armed_log"
+
+    # RC-2 (HIMMEL-2544 PR-D) — the comment above claims a specific
+    # counterfactual ("remove the startup 'unset ARMAUTOMERGE
+    # CR_MERGE_GATE_OK' and the reinvoked copy instead reads ARMAUTOMERGE=1
+    # as opted-in and exits non-zero") that nothing here ever executed.
+    # Build a scratch mutant of THIS SUITE with that one line removed and
+    # prove the counterfactual holds.
+    #
+    # The mutant is a copy of THIS FILE, so it must live where its own
+    # `SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"` still
+    # resolves to the real merge-on-green.sh + libs — i.e. right here in
+    # $SCRIPT_DIR, not an arbitrary mktemp dir. run-shell-tests.sh discovers
+    # suites via `find -H "$scan" ... -name 'test-*.sh'` (scripts/ci/run-shell-tests.sh),
+    # a glob matched against the FULL basename — a leading dot makes this name
+    # unable to match that pattern at all, so a concurrent discovery run can
+    # never pick this transient file up as a suite of its own.
+    rc2_unset_line='unset ARMAUTOMERGE CR_MERGE_GATE_OK'
+    rc2_mutant="$SCRIPT_DIR/.test-merge-on-green.rc2-mutant.$$.sh"
+    awk -v line="$rc2_unset_line" '$0 != line' "$SCRIPT_DIR/test-merge-on-green.sh" > "$rc2_mutant"
+    # -Fx (whole-LINE match), not a substring count: this RC-2 case's own
+    # source (this comment block, the note text below) mentions the exact
+    # unset line as prose/quoted text, which would inflate a substring count
+    # to 4 without ever meaning the awk filter left anything behind. `awk`'s
+    # `$0 != line` is itself a whole-line comparison, so the verification must
+    # match that semantics, not merely "a line containing this text".
+    rc2_pre=$(grep -Fxc -- "$rc2_unset_line" "$SCRIPT_DIR/test-merge-on-green.sh")
+    rc2_post=$(grep -Fxc -- "$rc2_unset_line" "$rc2_mutant")
+    rc2_diff=$(diff "$SCRIPT_DIR/test-merge-on-green.sh" "$rc2_mutant" | grep -c '^[<>]')
+    if [ "$rc2_pre" -ge 1 ] && [ "$rc2_post" -eq 0 ] && [ "$rc2_diff" -eq 1 ]; then
+        # The self-probe path (HIMMEL_1495_SELF=1) prints its `FAIL:` line to
+        # STDERR only (run_mog's own `fail()`), and the success path (scrub
+        # held) prints no comparable marker to stdout either — so merge
+        # stderr into stdout here (rather than relying on red_control_run's
+        # separate errfile) or the observed extraction below would have
+        # nothing to read on the failure side, which is exactly the "empty"
+        # vacuity mode this contract exists to catch.
+        # shellcheck disable=SC2016  # the inner `$1` is bash -c's OWN
+        # positional parameter (bound below to $rc2_mutant), not this shell's
+        # -- intentionally unexpanded here.
+        red_control_run --env CR_MERGE_GATE_OK=1 --env ARMAUTOMERGE=1 --env HIMMEL_1495_SELF=1 \
+            -- bash -c 'exec bash "$1" 2>&1' _ "$rc2_mutant"
+        # Anchor on the 1495 self-probe's OWN case name (run_mog's `fail()`
+        # emits "FAIL: <name>"), not a bare 'FAIL:' substring (CR round-1 F2).
+        # The mutant is a full copy of this suite: everything ABOVE the
+        # `if [ "${HIMMEL_1495_SELF:-0}" = "1" ]` short-circuit still runs
+        # before it (today just top-level setup — function defs, sourcing —
+        # nothing that itself emits "FAIL:", but that is an accident of the
+        # current file, not a guarantee). A bare 'FAIL:' substring match would
+        # let an UNRELATED regression anywhere in that path print its own
+        # "FAIL: ..." line, set rc=1 for a reason that has nothing to do with
+        # the startup scrub, and still read as `probe=failed` — "confirming"
+        # this control without it ever having exercised the thing it claims to
+        # test. Anchoring on the exact case name closes that off regardless of
+        # what else ever runs ahead of the short-circuit.
+        rc2_probe=passed
+        grepq "$RED_CONTROL_OUT" -F -- 'FAIL: armed-env scrubbed: no-opt-in still refuses' && rc2_probe=failed
+        if red_control_assert --label "RC-2" --expect-rc 1 \
+            --observed     "probe=$rc2_probe" \
+            --expect-wrong "probe=failed" \
+            --correct      "probe=passed" \
+            --note "without the startup 'unset ARMAUTOMERGE CR_MERGE_GATE_OK' an --automerge-armed launching shell's ambient ARMAUTOMERGE=1 leaks in, the no-opt-in refusal (case 1) reads as opted-in, and the suite certifies a hermeticity it does not have"
+        then
+            pass
+        else
+            fail "RC-2 mutant: RED control did not hold (see the RED-control diagnostic above)"
+        fi
+    else
+        fail "RC-2 setup: mutation of the startup unset line was not reproduced cleanly (pre=$rc2_pre post=$rc2_post diff_lines=$rc2_diff)"
+    fi
+    rm -f "$rc2_mutant"
 fi
 
 

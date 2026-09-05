@@ -1,5 +1,5 @@
 ---
-description: Fan out N work items to the right lane by TYPE — encodes the invariant routing table so tier selection stops being a per-dispatch judgement call, and REFUSES to route destructive/irreversible work below the judgement tier (HIMMEL-1829).
+description: Fan out N work items to the right lane by TYPE; refuses to route destructive/irreversible work below the judgement tier.
 argument-hint: [work items, one per line or a numbered list]
 ---
 
