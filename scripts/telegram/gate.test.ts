@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { GROUP_ANONYMOUS_BOT_ID, cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, requireMentionForChat, vaultForChat } from "./gate";
+import { GROUP_ANONYMOUS_BOT_ID, cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, operatorChatId, requireMentionForChat, vaultForChat } from "./gate";
 
 // Real access.json shape (~/.claude/channels/telegram/access.json):
 //   { "dmPolicy": "allowlist", "allowFrom": ["1000000001"], "groups": {}, "pending": {} }
@@ -250,4 +250,30 @@ test("requireMentionForChat: unknown chat and missing/empty access default to fa
   expect(requireMentionForChat({}, -50)).toBe(false);
   expect(requireMentionForChat(null as any, -50)).toBe(false);
   expect(requireMentionForChat(undefined as any, -50)).toBe(false);
+});
+
+// HIMMEL-2580: the cursor-reset notice has no originating chat to reply into,
+// so it addresses the operator's DM — chat_id === the allowFrom user id.
+// Every not-a-usable-chat shape must fail closed to null, because the caller's
+// only alternative to "log-only" is messaging some other chat entirely.
+test("operatorChatId returns the global allowFrom DM, and fails closed otherwise", () => {
+  expect(operatorChatId({ allowFrom: ["1000000001"] })).toBe(1000000001);
+  expect(operatorChatId({ allowFrom: ["1000000001", "1000000002"] })).toBe(1000000001);   // first entry wins
+  expect(operatorChatId({ allowFrom: [] })).toBe(null);
+  expect(operatorChatId({})).toBe(null);
+  expect(operatorChatId(null as any)).toBe(null);
+  expect(operatorChatId(undefined as any)).toBe(null);
+  expect(operatorChatId({ allowFrom: ["not-a-number"] })).toBe(null);
+  expect(operatorChatId({ allowFrom: [""] })).toBe(null);      // Number("") is 0, not a chat
+  expect(operatorChatId({ allowFrom: ["  "] })).toBe(null);    // Number("  ") is 0 too
+  expect(operatorChatId({ allowFrom: ["0"] })).toBe(null);
+  expect(operatorChatId({ allowFrom: [{} as any] })).toBe(null);
+  // CR codex-1: a hand-edited access.json can carry a bare string where the
+  // array belongs — indexing it yields the CHARACTER "1", a valid-looking id.
+  expect(operatorChatId({ allowFrom: "1000000001" as any })).toBe(null);
+  expect(operatorChatId({ allowFrom: {} as any })).toBe(null);
+  // CR codex-1: a negative id is a group/channel, never an operator DM.
+  expect(operatorChatId({ allowFrom: ["-1001234567890"] })).toBe(null);
+  expect(operatorChatId({ allowFrom: ["1.5"] })).toBe(null);      // not an integer id
+  expect(operatorChatId({ allowFrom: [1000000001 as any] })).toBe(1000000001);   // numeric entries too
 });

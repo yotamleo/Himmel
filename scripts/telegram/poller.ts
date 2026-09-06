@@ -2,12 +2,12 @@ import { readFile, writeFile, rename, mkdir, readdir, unlink, stat } from "node:
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
-import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, truncateFullyConsumed, type Meta } from "./bus";
+import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, repairCursorBeyondEof, truncateFullyConsumed, type Meta, type OnCursorReset } from "./bus";
 import { classify, type Route } from "./router";
 import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, getMe, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { installTimestampedLogging } from "./log-timestamp";
-import { cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, loadAccess, requireMentionForChat, vaultForChat, type Access } from "./gate";
+import { cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, loadAccess, operatorChatId, requireMentionForChat, vaultForChat, type Access } from "./gate";
 import { runSession, buildPrompt, BASH_BIN, type BusPaths, type PermissionMode } from "./run";
 import { classifyForSpawn, type TriageVerdict, type TriageModelOverride, type ModelOverride } from "./triage";
 import { transcribe } from "./transcribe";
@@ -270,6 +270,27 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
   // Concurrency — not an early offset — is the HIMMEL-266 fix; each download is
   // already time-bounded at the API layer, so this await cannot hang unbounded.
   if (maxId >= offset) await saveOffset(root, maxId + 1);
+}
+
+// HIMMEL-2580 CR: repair a beyond-EOF cursor BEFORE ingestUpdates appends
+// this tick's messages, not after. ingestUpdates appends to inbound.jsonl;
+// repairing after that append resets the cursor to the POST-append EOF,
+// so the very messages just appended land BELOW the repaired cursor and
+// are dropped along with the genuinely-lost ones. Repairing first means
+// the tick's own appends land ABOVE the repaired cursor and are read
+// normally by readNewLines below. readNewLines still calls this itself
+// too (defence in depth) — after a pre-ingest repair it just finds
+// nothing left to repair.
+//
+// Extracted to a named, exported function (HIMMEL-2580 CR codex-2) so the
+// ordering is a real seam a test can pin: calling repairCursorBeyondEof and
+// ingestUpdates separately from a test (as bus.test.ts's ordering tests do)
+// does not protect the poller's actual call site — moving the two lines in
+// main() back below ingestUpdates would leave those tests green. The test
+// for THIS function, in poller.test.ts, is what pins the production ordering.
+export async function repairThenIngest(root: string, updates: any[], allow: AllowFn, fetchImage?: FetchImageFn, fetchVoice?: FetchVoiceFn, fetchDoc?: FetchDocFn, notifyDocFail?: NotifyDocFailFn, onCursorReset?: OnCursorReset): Promise<void> {
+  await repairCursorBeyondEof(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"), onCursorReset);
+  await ingestUpdates(root, updates, allow, fetchImage, fetchVoice, fetchDoc, notifyDocFail);
 }
 
 export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; sender_chat?: number; forwarded?: boolean; caption?: boolean; image_path?: string; document_path?: string; document_name?: string };
@@ -1803,6 +1824,23 @@ export async function main(): Promise<void> {
     await sendMessage(token, chatId, `⚠️ couldn't download "${name}" (it may exceed Telegram's ~20MB limit) — I forwarded your caption only.`);
   };
   const send = async (chat: number, text: string) => { await sendMessage(token, chat, text); };
+  // HIMMEL-2580: inbound.jsonl's cursor is ROOT-scoped, not chat-scoped, so a
+  // "your messages were dropped" notice has no originating chat to reply into.
+  // It goes to the operator's own DM: in a DM Telegram's chat_id IS the sender
+  // id, so the global allowFrom identity (the same one isOperatorIdentity
+  // trusts) is that chat. No allowlist configured → log-only, exactly as the
+  // prolonged-outage notice degrades.
+  const operatorChat = operatorChatId(access);
+  const onCursorReset: OnCursorReset = async ({ file, cursor, size }) => {
+    if (operatorChat === null) return;
+    const gap = cursor - size;
+    // "may not have been" (CR codex-2): the offset gap cannot establish
+    // delivery status. A cursor past EOF also happens when an OLDER file is
+    // restored over one whose lines were all processed first — those messages
+    // WERE delivered. Asserting a loss would push the operator into resending
+    // work that already ran.
+    await send(operatorChat, `⚠️ bridge inbox recovery: the read cursor was at byte ${cursor} but ${file} is only ${size} bytes — the file shrank underneath it. Anything in the ~${gap} bytes between them is no longer on disk and may not have been delivered. I have reset the cursor to ${size}; please resend anything you did not get an answer to.`);
+  };
   // Remote auto-actions (HIMMEL-424 B2): the trusted bridge parses a structured `/arm`
   // and invokes auto-action.sh DIRECTLY — the agent is never in the trust path. Inert
   // unless TELEGRAM_AUTO_ACTIONS enables an op (default OFF). `runScript` spawns the
@@ -1917,8 +1955,10 @@ export async function main(): Promise<void> {
       await Bun.sleep(backoffMs);
       continue;
     }
-    await ingestUpdates(root, updates, allow, fetchImage, fetchVoice, fetchDoc, notifyDocFail);
-    const fresh = await readNewLines<Inbound>(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"));
+    // Ordering (HIMMEL-2580 CR): see repairThenIngest's own comment for why
+    // the repair must run before the ingest append, not after.
+    await repairThenIngest(root, updates, allow, fetchImage, fetchVoice, fetchDoc, notifyDocFail, onCursorReset);
+    const fresh = await readNewLines<Inbound>(join(root, "inbound.jsonl"), join(root, "inbound.jsonl.cursor"), onCursorReset);
     // Per-BATCH, so it resets every poll tick: a chat whose fault persists is
     // re-notified on the next batch rather than silenced for the session.
     const notifiedChats = new Set<number>();

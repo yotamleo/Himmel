@@ -1114,6 +1114,98 @@ case "$(uname -s)" in
 esac
 clear_checkpoints
 
+# H4 — POSITIVE CONTROL (fails before this change / passes after): a merged,
+# CLEAN worktree held open by a FOREIGN live process (its cwd inside the
+# tree) is SKIPPED by a real --prune-only run and survives WHOLE.
+# Linux-gated: the fix is a /proc scan (worktree-inuse.sh) that walks
+# /proc/*/cwd for a live process anchored inside the tree and, if that
+# holder is not in the calling process's OWN ancestry, reports it as an
+# in-use-confirmed foreign holder -- that scan only exists on Linux, so
+# before HIMMEL-2602 a held cwd here was invisible to worktree_in_use (the
+# rename probe is a no-op on POSIX, exactly like H3's *) arm above), and
+# clean-garden's last guard before `git worktree remove` would have pruned
+# a live session's own worktree out from under it.
+case "$(uname -s)" in
+    Linux)
+        WT_H4=$(mk_wt_commit wt-h4-held-linux feat/h4-held-linux)
+        H4_SHA=$(git -C "$WT_H4" rev-parse HEAD)
+        # shellcheck disable=SC2031  # GH_ROWS_ORIGIN modified in subshell intentionally in this test harness
+        printf 'owner/repo\tfeat/h4-held-linux\tmerged\t%s\n' "$H4_SHA" >> "$GH_ROWS_ORIGIN"
+        # Launched as a DIRECT CHILD OF THIS TEST SCRIPT -- a SIBLING of the
+        # clean-garden process run_clean forks below, never its ancestor --
+        # which is what makes it FOREIGN under the ancestry predicate in
+        # worktree-inuse.sh and is the whole point of this row. No ready
+        # marker inside the tree (same reason as H3: an extra untracked file
+        # inside the worktree perturbs the very git-worktree-remove behaviour
+        # under test) -- the marker instead lives at a SIBLING path outside
+        # the worktree. The holder idles until that marker is REMOVED rather
+        # than a fixed sleep: a fixed sleep races run_clean's own duration --
+        # on a loaded box a slow run_clean can outlive it, worktree_in_use
+        # would then correctly find no holder, and this row would go red for
+        # a reason that is not a real regression (HIMMEL-2602 follow-up).
+        # Self-bounded at 60s (300 * 0.2s) so a failing case can never strand
+        # this process on the box. Readiness for run_clean is still confirmed
+        # by polling the holder's cwd via /proc, bounded, exactly as
+        # test-worktree-inuse.sh's own wait_cwd helper does.
+        h4_ready="$WT_H4.test-ready"
+        rm -f "$h4_ready"
+        # shellcheck disable=SC2016  # $1/$2 are the CHILD bash's own positional args (set via the trailing `_ "$WT_H4" "$h4_ready"`), not meant to expand in this shell
+        setsid nohup bash -c 'cd "$1" || exit 1; touch "$2"; n=0; while [ -e "$2" ] && [ "$n" -lt 300 ]; do sleep 0.2; n=$((n + 1)); done' _ "$WT_H4" "$h4_ready" >/dev/null 2>&1 &
+        H4_HOLDER=$!
+        h4_want=$(cd "$WT_H4" 2>/dev/null && pwd -P)
+        h4_tries=0
+        while [ "$(readlink -f "/proc/$H4_HOLDER/cwd" 2>/dev/null)" != "$h4_want" ] && [ "$h4_tries" -lt 200 ]; do  # gnu-ok: this block is uname-gated to Linux, where /proc exists and readlink -f is coreutils' own
+            sleep 0.1
+            h4_tries=$((h4_tries + 1))
+        done
+        if [ "$(readlink -f "/proc/$H4_HOLDER/cwd" 2>/dev/null)" != "$h4_want" ]; then  # gnu-ok: this block is uname-gated to Linux, where /proc exists and readlink -f is coreutils' own
+            fail "H4: the holder never anchored its cwd inside the worktree -- cannot exercise the in-use case"
+        else
+            h4_out=$(run_clean)
+            if [ -d "$WT_H4" ] && [ -e "$WT_H4/.git" ]; then
+                pass "H4: held worktree survives WHOLE (dir + .git)"
+            else
+                fail "H4: held worktree is missing its dir or .git (gutted)" "$h4_out"
+            fi
+            if h_wt_list_has "$WT_H4"; then
+                pass "H4: held worktree's admin row survives"
+            else
+                fail "H4: held worktree's admin row is gone" "$h4_out"
+            fi
+            if [ -f "$WT_H4/wt-h4-held-linux.txt" ] && grep -qF "feat/h4-held-linux" "$WT_H4/wt-h4-held-linux.txt"; then
+                pass "H4: held worktree's tracked content survives"
+            else
+                fail "H4: held worktree's tracked content is gone (the pre-fix HIMMEL-2602 wreck)" "$h4_out"
+            fi
+            if h_branch_gone feat/h4-held-linux; then
+                fail "H4: branch deleted despite an in-use worktree" "$h4_out"
+            else
+                pass "H4: branch NOT deleted for the in-use worktree"
+            fi
+            if grepq "$h4_out" -F "in use by a live process" && grepq "$h4_out" -F "skipped"; then
+                pass "H4: WARN names the worktree as in-use/skipped"
+            else
+                fail "H4: expected a WARN naming the worktree in-use/skipped" "$h4_out"
+            fi
+            if grepq "$h4_out" -F "Process $H4_HOLDER has its working directory"; then
+                pass "H4: WARN names the holding pid, confirmed via /proc"
+            else
+                fail "H4: expected the WARN to name the holding pid, confirmed via /proc" "$h4_out"
+            fi
+        fi
+        # ALWAYS reap the holder, pass or fail, or the suite leaves an orphan
+        # sleeper behind -- remove the marker first so the holder's own loop
+        # exits on its own, then kill+wait as a backstop in case it is stuck.
+        rm -f "$h4_ready"
+        kill "$H4_HOLDER" 2>/dev/null
+        wait "$H4_HOLDER" 2>/dev/null
+        ;;
+    *)
+        echo "  SKIP: H4 — the /proc live-holder detector is Linux-only (HIMMEL-2602)"
+        ;;
+esac
+clear_checkpoints
+
 echo
 echo "===================================="
 echo "test summary: $PASS passed, $FAIL failed"

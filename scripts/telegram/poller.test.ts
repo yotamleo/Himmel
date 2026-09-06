@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readNewLines, readMeta, writeMeta, ensureSession, appendLine, sessionDir } from "./bus";
-import { ingestUpdates, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, getUpdatesBackoffMs, shouldAlertOutage, OUTAGE_ALERT_AFTER_MS, parseModelTag, hasReadOnlyFloor, mentionsBot, type FetchImageFn } from "./poller";
+import { ingestUpdates, repairThenIngest, loadOffset, handleInbound, handleAutoCommand, replyViaOutbox, runAndSettle, reconcile, flushOutboxes, isRetryDue, peekPending, commitPending, makeRunFn, makeAllow, makeDispatcher, makeFetchVoice, sweepStuckRunning, signalTyping, guarded, deliverAllPending, sweepAttachments, resolveRetentionMs, noticeText, parseBridgeEnv, loadBridgeEnv, bridgeEnvOrigin, makeRestart, makeBurstCoalescer, intervalEnvMs, windowEnvMs, handleBatch, RESTART_WATCHDOG_MS, getUpdatesBackoffMs, shouldAlertOutage, OUTAGE_ALERT_AFTER_MS, parseModelTag, hasReadOnlyFloor, mentionsBot, type FetchImageFn } from "./poller";
 import { readFile, writeFile, mkdir, utimes } from "node:fs/promises";
 import { GROUP_ANONYMOUS_BOT_ID, isAllowed, isOperatorIdentity, vaultForChat } from "./gate";
 import { describeEnabledOps, KNOWN_OPS } from "./auto-action";
@@ -455,6 +455,32 @@ test("ingest accepts a channel_post (no from) when the chat is allowed; from fal
   expect(lines[0].from).toBe(-1001234);              // sender_chat fallback
   expect(lines[0].text).toBe("channel msg");
   expect(await loadOffset(r)).toBe(7);               // offset advances past both (confirmed)
+});
+
+// HIMMEL-2580 CR codex-2: bus.test.ts's ordering tests call
+// repairCursorBeyondEof and appendLine/ingestUpdates directly — they pin the
+// ordering PROPERTY, but do not exercise the poller's actual production call
+// site, so moving main()'s two lines back below ingestUpdates would leave
+// them green. This test calls repairThenIngest itself — the real seam main()
+// calls — so it goes red if the repair is ever moved back below the ingest.
+test("repairThenIngest: a stale beyond-EOF cursor is repaired BEFORE the tick's own ingest, preserving the ingested message", async () => {
+  const r = root();
+  const f = join(r, "inbound.jsonl"); const cur = f + ".cursor";
+  await appendLine(f, JSON.stringify({ n: 1 }));
+  const staleSize = Buffer.byteLength(await readFile(f, "utf8"), "utf8");
+  await writeFile(cur, String(staleSize + 7000), "utf8");   // the shrink (stale cursor beyond EOF)
+
+  const logs: string[] = [];
+  const origError = console.error;
+  console.error = (...args: unknown[]) => { logs.push(args.join(" ")); };
+  try {
+    await repairThenIngest(r, [{ update_id: 10, message: { chat:{id:1}, from:{id:1}, text:"hi" } }], allowAll);
+  } finally { console.error = origError; }
+
+  const lines = await readNewLines(f, cur);
+  expect(lines.length).toBe(1);
+  expect(lines[0].update_id).toBe(10);
+  expect(lines[0].text).toBe("hi");
 });
 
 test("dispatch creates session, enqueues, sets chat_id; running session only enqueues", async () => {

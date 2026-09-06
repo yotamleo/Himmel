@@ -141,8 +141,14 @@ mog_build_fixture() {
     cp "${MOG_SRC:-$MOG}" "$tmp/scripts/handover/merge-on-green.sh"
     # merge-on-green.sh now sources its HIMMEL-2227 in-use predicates from the
     # shared lib (../lib/worktree-inuse.sh, relative to its own SCRIPT_DIR) —
-    # the copy must carry that sibling too.
-    cp "$SCRIPT_DIR/../lib/worktree-inuse.sh" "$tmp/scripts/lib/worktree-inuse.sh"
+    # the copy must carry that sibling too. WT_INUSE_SRC is MOG_SRC's own twin
+    # (same TEST-HARNESS-ONLY seam, same non-gate-integrity reasoning above):
+    # it lets a RED control swap in a scratch MUTANT of the shared lib while
+    # merge-on-green.sh itself stays the real, unmutated script (HIMMEL-2602
+    # RC-1 mutates the ancestry-exclusion logic, which lives in the lib, not
+    # in merge-on-green.sh's own guard). Defaults to the real file, so every
+    # existing case that never sets it is unaffected.
+    cp "${WT_INUSE_SRC:-$SCRIPT_DIR/../lib/worktree-inuse.sh}" "$tmp/scripts/lib/worktree-inuse.sh"
     # HIMMEL-2380: merge-on-green now records the repo's CodeRabbit-availability
     # state on its audit lines, and reads it from this sibling. Without the copy
     # the source fails, CR_STATE falls back to `unknown`, and every cr= assertion
@@ -971,15 +977,35 @@ esac
 #   11k4  runner cwd INSIDE the tree                     -> refused
 #   11k5  runner cwd OUTSIDE, argv silent about the tree -> pruned  (control)
 #   11k6  runner cwd OUTSIDE, argv NAMES the tree        -> refused (queued-runner shape)
-#   11k7  non-runner process cwd INSIDE the tree         -> pruned  (control)
+#   11k7  non-runner process cwd INSIDE the tree, FOREIGN -> refused (HIMMEL-2602, see below)
 #   11k8  runner argv names a PREFIX-SHARING sibling     -> pruned  (control)
-#   11k9  a non-runner process that NAMES a runner      -> pruned  (control)
+#   11k9  a non-runner process that NAMES a runner, FOREIGN -> refused (HIMMEL-2602, see below)
 #   11k10 argv names a path that merely ENDS with ours  -> pruned  (control)
 #   11k11 ONE argument embedding a space and our path  -> pruned  (control)
 #   11k12 relative argv path, runner cwd OUTSIDE tree  -> refused
 #   11k13 relative argv path spelled through ./ and ../ -> refused
-# 11k5 and 11k7 are the controls that keep 11k4/11k6 honest: without them a
-# detector that simply always refused would pass just as well.
+#   11k14 a holder that IS the caller's own ANCESTRY   -> pruned (HIMMEL-2602)
+# 11k5 and 11k8/11k10/11k11 are the controls that keep 11k4/11k6/11k12/11k13
+# honest: without them a detector that simply always refused would pass just
+# as well.
+#
+# HIMMEL-2602 CONTRACT REVISION (2026-09-06) — 11k7 and 11k9 were originally
+# NEGATIVE controls for THIS predicate specifically ("the refusal must key on
+# the runner, not on 'anything is in there'"), because worktree_in_use itself
+# was a no-op on Linux at the time: nothing else was watching a non-runner
+# holder, so pruning around it was correct. worktree_in_use now has its OWN
+# live-process detector (scripts/lib/worktree-inuse.sh, HIMMEL-2602) that
+# catches ANY foreign holder, runner or not — and HIMMEL-2517 was written for
+# a LEG-run merge, where the merge process's own ancestry naturally included
+# the leg holding the tree. Merges are now CONSOLE-run while the leg still
+# holds its tree, and the first post-HIMMEL-2584 merge (PR #2179) proved the
+# hazard for real: merge-on-green pruned that PR's own worktree out from under
+# it. Both fixtures below launch their holder as a SIBLING of the merge-on-green
+# process (a direct child of this test script, same as merge-on-green itself),
+# never an ancestor — so both are now FOREIGN holders under the ancestry
+# predicate and correctly BLOCK the prune. 11k14, below, is the new control
+# that keeps THIS predicate honest: a holder that IS the caller's ancestry
+# must still be pruned around, or HIMMEL-1970's auto-prune is dead on arrival.
 case "$(uname -s)" in
     Linux*)
         # A failed mktemp leaves this EMPTY, and every path below is built on
@@ -1028,6 +1054,36 @@ SHEOF
             wait "$HOLDER_PID" 2>/dev/null
         }
 
+        # run_mog_as_descendant <ancestor_cwd> <mog_cwd> <mog_script> [argv...]
+        # HIMMEL-2602 (11k14, RC-1) — runs <mog_script> exactly the way
+        # run_mog's own inner invocation does (cd to <mog_cwd>, then `exec
+        # bash` so the merge-on-green PROCESS's own cwd is <mog_cwd>), but as
+        # the CHILD of a REAL, separate process that cd's to <ancestor_cwd>
+        # and stays alive (blocked on `wait`) for the whole run -- the actual
+        # process shape of "a leg holds the tree, a console-run merge-on-green
+        # runs underneath it", not a simulated flag. GH_LOG/CLEAR_LOG/etc are
+        # read from the environment by the caller's own var-prefix, exactly
+        # like any other command -- prefixed vars on a function call are
+        # exported for its duration (same mechanism STUB_SHA/STUB_HEAD_BRANCH
+        # already rely on to reach the gh stub several process-generations
+        # down from run_mog above), so they reach the ancestor subshell, the
+        # exec'd mog process, and everything mog itself spawns.
+        #
+        # Stdout/stderr and the exit code are NOT redirected/captured here
+        # (unlike run_mog): the caller wraps this call exactly like it would
+        # wrap any other command (`... >/dev/null 2>"$errfile"`, `rc=$?`),
+        # because the surrounding `( ... )` here is only the ancestor-fork
+        # boundary, not a place to hide that plumbing from the caller.
+        run_mog_as_descendant() {
+            local ancestor_cwd="$1" mog_cwd="$2" mog_script="$3"; shift 3
+            (
+                cd "$ancestor_cwd" || exit 1
+                bash -c 'cd "$1" || exit 1; shift; exec bash "$@"' _ "$mog_cwd" "$mog_script" "$@" &
+                local child=$!
+                wait "$child"
+            )
+        }
+
         # 11k4. POSITIVE: a runner executing inside the merged worktree. This is
         # the case that FAILS before the fix (prune=removed, tree gone, and the
         # runner then renders the 422-red artifact) and PASSES after it.
@@ -1050,113 +1106,6 @@ SHEOF
             esac
         fi
         stop_suite_holder
-
-        # RC-1 (HIMMEL-2544 PR-D) — 11k4's own comment above claims a specific
-        # counterfactual ("this is the case that FAILS before the fix ...and
-        # PASSES after it") that nothing in the suite ever executed. Build a
-        # scratch mutant of merge-on-green.sh with the HIMMEL-2517 guard
-        # neutralised and prove that counterfactual actually holds.
-        #
-        # Neutralise with `false &&` rather than deleting the block: the diff
-        # is exactly the one guard line (verified below), not a reshaped
-        # block, so the mutant is the minimal faithful "this guard doesn't
-        # run" mutation rather than a differently-shaped one.
-        # shellcheck disable=SC2016  # literal match/replacement against
-        # merge-on-green.sh's own source text (unexpanded $path_norm) -- not a
-        # shell expansion.
-        rc1_guard_line='    if worktree_has_live_suite_run "$path_norm"; then'
-        # shellcheck disable=SC2016  # same reason as rc1_guard_line above.
-        rc1_neutered_line='    if false && worktree_has_live_suite_run "$path_norm"; then'
-        # Templated + guarded like SUITE_HOLDER_DIR above, not a bare unchecked
-        # `mktemp -d` (CR round-2 F7): this is exactly the HIMMEL-2518 hazard
-        # — a scratch path feeding a recursive delete (`rm -rf "$rc1_mutant_dir"`
-        # below) must have its SHAPE pinned before any cleanup is armed on it,
-        # not merely its exit status trusted. `fail` and skip the control
-        # rather than `exit 1`: a scratch-dir failure here must not abort the
-        # whole suite mid-fixture (red-control.sh's own header makes the same
-        # point about never aborting and leaving state behind).
-        rc1_mutant_dir=$(mktemp -d "${TMPDIR:-/tmp}/mog-2544-rc1-mutant.XXXXXX")
-        if [ -z "$rc1_mutant_dir" ] || [ ! -d "$rc1_mutant_dir" ]; then
-            fail "RC-1 setup: mktemp -d produced no mutant-build sandbox — refusing to build fixture paths on an empty root"
-        else
-            rc1_mutant="$rc1_mutant_dir/merge-on-green.mutant.sh"
-            awk -v line="$rc1_guard_line" -v repl="$rc1_neutered_line" \
-                '$0==line{print repl; next}{print}' "$MOG" > "$rc1_mutant"
-            rc1_pre=$(grep -Fc -- "$rc1_guard_line" "$MOG")
-            rc1_post=$(grep -Fc -- "$rc1_guard_line" "$rc1_mutant")
-            # A one-line REPLACEMENT (unlike the awk-deletion cases elsewhere in
-            # this file) shows up in `diff` as a two-line hunk — one `<` (the
-            # original) and one `>` (the neutered line) — so 2, not 1, is the
-            # clean-single-line-substitution count here.
-            rc1_diff=$(diff "$MOG" "$rc1_mutant" | grep -c '^[<>]')
-            if [ "$rc1_pre" -ge 1 ] && [ "$rc1_post" -eq 0 ] && [ "$rc1_diff" -eq 2 ]; then
-                read -r RC1_REPO RC1_WT RC1_SHA <<< "$(mk_prune_fixture)"
-                if ! start_suite_holder "$RC1_WT" "$SUITE_HOLDER_DIR/run-shell-tests.sh"; then
-                    fail "RC-1 setup: the suite holder never signaled ready — control not established"
-                else
-                    pass  # holder reached execution: the control below is against a real process
-                    # Same HIMMEL-2518 discipline as rc1_mutant_dir above — this
-                    # one feeds `rm -rf "$ctl_tmp"` below.
-                    ctl_tmp=$(mktemp -d "${TMPDIR:-/tmp}/mog-2544-rc1-ctl.XXXXXX")
-                    if [ -z "$ctl_tmp" ] || [ ! -d "$ctl_tmp" ]; then
-                        fail "RC-1 setup: mktemp -d produced no control sandbox — refusing to build the mutant fixture on an empty root"
-                    else
-                        ctl_gh="$ctl_tmp/gh.log"; : > "$ctl_gh"
-                        ctl_clear="$ctl_tmp/clear.log"; : > "$ctl_clear"
-                        ctl_audit="$ctl_tmp/audit.log"; : > "$ctl_audit"
-                        MOG_SRC="$rc1_mutant" mog_build_fixture "$ctl_tmp"
-                        # shellcheck disable=SC2034  # read by the sourced red-control.sh
-                        RED_CONTROL_TMPDIR="$ctl_tmp"
-                        red_control_run --cwd "$RC1_REPO" \
-                            --env GH_LOG="$ctl_gh" --env CLEAR_LOG="$ctl_clear" --env MERGE_ON_GREEN_LOG="$ctl_audit" \
-                            --env PATH="$ctl_tmp/bin:$PATH" --env MERGE_ON_GREEN_SLEEP_CMD=: --env CR_APP="" \
-                            --env STUB_SHA="$RC1_SHA" --env STUB_HEAD_BRANCH="feat/mog-prune" --env ARMAUTOMERGE=1 \
-                            -- bash "$ctl_tmp/scripts/handover/merge-on-green.sh"
-                        # merge-on-green's `audit()` echoes every audit LINE to
-                        # stdout as well as the log file (merge-on-green.sh:174),
-                        # so RED_CONTROL_OUT already carries the "MERGED ...
-                        # prune=<x> ..." line directly (verified empirically) —
-                        # no need to fall back to reading ctl_audit through a
-                        # `cat` wrapper.
-                        rc1_prune=$(printf '%s' "$RED_CONTROL_OUT" | grep -o 'prune=[^ ]*' | head -n1)
-                        rc1_wt=absent
-                        [ -d "$RC1_WT" ] && rc1_wt=present
-                        # If the mutant's output carried no 'prune=' token at
-                        # all, the observed value passed below must be EMPTY,
-                        # not " wt=$rc1_wt" (CR round-1 F5): a non-empty string
-                        # here would slip past red_control_assert's point-(b)
-                        # emptiness check and get misdiagnosed as
-                        # `wrong-mutation` — the wrong verdict, since what
-                        # actually broke is the EXTRACTION, not the mutation.
-                        # An empty --observed routes it to the `empty` mode
-                        # instead, which names the right failure.
-                        rc1_observed=""
-                        [ -n "$rc1_prune" ] && rc1_observed="$rc1_prune wt=$rc1_wt"
-                        if red_control_assert --label "RC-1" --expect-rc 0 \
-                            --observed     "$rc1_observed" \
-                            --expect-wrong "prune=removed wt=absent" \
-                            --correct      "prune=suite-running-kept wt=present" \
-                            --note "without the HIMMEL-2517 worktree_has_live_suite_run guard the merged worktree is deleted out from under a live shell-test run — the measured PASS 6 / FAIL 422 wreck of PRs #2133/#2134, which is what 11k4/11k6/11k12/11k13 exist to prevent"
-                        then
-                            pass
-                        else
-                            fail "RC-1 mutant: RED control did not hold (see the RED-control diagnostic above)"
-                        fi
-                        # Unset, not just let it fall out of scope:
-                        # RED_CONTROL_TMPDIR is a global the library reads, and
-                        # a later control (RC-2) sourcing red-control.sh's
-                        # default fallback must not inherit a now-deleted
-                        # directory from this one.
-                        unset RED_CONTROL_TMPDIR
-                        rm -rf "$ctl_tmp"
-                    fi
-                fi
-                stop_suite_holder
-            else
-                fail "RC-1 setup: mutation of the worktree_has_live_suite_run guard was not reproduced cleanly (pre=$rc1_pre post=$rc1_post diff_lines=$rc1_diff)"
-            fi
-            rm -rf "$rc1_mutant_dir"
-        fi
 
         # 11k5. NEGATIVE CONTROL: same runner, same name in argv, but anchored
         # OUTSIDE the tree and saying nothing about it. A detector that keyed on
@@ -1196,20 +1145,29 @@ SHEOF
         fi
         stop_suite_holder
 
-        # 11k7. NEGATIVE CONTROL: a process cwd'd inside the tree that is NOT a
-        # suite runner (identical script, different name). The refusal must key
-        # on the runner, not on "anything is in there" — merge-on-green's own
-        # armed chain legs sit in these trees, and blocking on them would undo
-        # HIMMEL-1970's whole point.
+        # 11k7. HIMMEL-2602 CONTRACT REVISION: a process cwd'd inside the tree
+        # that is NOT a suite runner (identical script, different name) —
+        # ORIGINALLY a negative control ("the refusal must key on the runner,
+        # not on 'anything is in there'"), back when worktree_in_use itself
+        # was a Linux no-op and nothing else was watching this holder. It now
+        # has its own /proc-based detector (HIMMEL-2602) that catches ANY
+        # foreign holder, and this fixture launches its holder as a SIBLING of
+        # the merge-on-green process (both direct children of this test
+        # script) -- never an ancestor -- so it IS foreign under the new
+        # ancestry predicate and now correctly BLOCKS the prune.
         read -r P_REPO P_WT P_SHA <<< "$(mk_prune_fixture)"
         if ! start_suite_holder "$P_WT" "$SUITE_HOLDER_DIR/sleeper.sh"; then
             fail "11k7: the sleeper never signaled ready — control not established"
         else
             pass
             MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune" \
-                run_mog 0 "merged + a non-runner process inside the worktree -> pruned, exit 0"
-            assert_audit_has "11k7: a non-runner process does not block the prune" "prune=removed branch=deleted"
-            if [ -d "$P_WT" ]; then fail "11k7: worktree survived a prune it should have allowed"; else pass; fi
+                run_mog 0 "merged + a FOREIGN non-runner process inside the worktree -> kept, exit 0 (HIMMEL-2602)"
+            assert_audit_has "11k7: a foreign non-runner process now blocks the prune (HIMMEL-2602)" "prune=in-use-confirmed"
+            if [ -d "$P_WT" ]; then pass; else fail "11k7: worktree was pruned despite a foreign holder cwd'd inside it"; fi
+            case "$LAST_ERR" in
+                *"Process $HOLDER_PID has its working directory"*) pass ;;
+                *) fail "11k7: the WARN does not name the holding pid $HOLDER_PID (got: ${LAST_ERR:-<none>})" ;;
+            esac
         fi
         stop_suite_holder
 
@@ -1319,11 +1277,17 @@ SHEOF
         fi
         stop_suite_holder
 
-        # 11k9. NEGATIVE CONTROL (round-4 CR finding codex-3): a process that
+        # 11k9. HIMMEL-2602 CONTRACT REVISION (round-4 CR finding codex-3 for
+        # the original worktree_has_live_suite_run-only shape): a process that
         # NAMES a runner without being one — an editor or a `tail -f` opened on
-        # `run-shell-tests.sh` — with its cwd inside the merged worktree. Naming
-        # is not running, and someone editing that file in that worktree is
-        # precisely who would otherwise pin their own merged tree open.
+        # `run-shell-tests.sh` — with its cwd inside the merged worktree.
+        # ORIGINALLY a negative control against worktree_has_live_suite_run
+        # specifically ("naming is not running"). This holder is launched as a
+        # SIBLING of the merge-on-green process (both direct children of this
+        # test script), never an ancestor, so it is FOREIGN under the new
+        # ancestry predicate too — worktree_in_use's own /proc scan (HIMMEL-2602)
+        # now catches it independent of whether it names a runner at all, and
+        # the prune is correctly BLOCKED.
         #
         # The holder must be a REAL binary, not another bash script: a script
         # with a shebang is exec'd through its interpreter, so the kernel rewrites
@@ -1368,11 +1332,148 @@ SHEOF
                 # Only argv[0] differs from a real runner.
                 pass
                 MOG_CWD="$P_REPO" STUB_SHA="$P_SHA" STUB_HEAD_BRANCH="feat/mog-prune" \
-                    run_mog 0 "merged + a non-runner process NAMING a runner -> pruned, exit 0"
-                assert_audit_has "11k9: naming a runner is not running one" "prune=removed branch=deleted"
-                if [ -d "$P_WT" ]; then fail "11k9: worktree retained for an editor that merely names the runner"; else pass; fi
+                    run_mog 0 "merged + a FOREIGN process NAMING a runner -> kept, exit 0 (HIMMEL-2602)"
+                assert_audit_has "11k9: a foreign holder blocks the prune regardless of naming a runner (HIMMEL-2602)" "prune=in-use-confirmed"
+                if [ -d "$P_WT" ]; then pass; else fail "11k9: worktree was pruned despite a foreign holder cwd'd inside it"; fi
+                case "$LAST_ERR" in
+                    *"Process $HOLDER_PID has its working directory"*) pass ;;
+                    *) fail "11k9: the WARN does not name the holding pid $HOLDER_PID (got: ${LAST_ERR:-<none>})" ;;
+                esac
             fi
             stop_suite_holder
+        fi
+
+        # 11k14. POSITIVE (HIMMEL-2602): a holder that IS the caller's own
+        # ANCESTRY -> the prune PROCEEDS. This is the row that keeps
+        # HIMMEL-1970 alive and the whole reason ancestry, not a bare
+        # self-cwd exclusion, is the predicate: merge-on-green's own armed
+        # chain leg sits in the tree it just merged, and that leg is this
+        # process's own ANCESTOR, not itself. A REAL process, not a
+        # simulated flag: an outer process cd's into the merged worktree and
+        # stays alive (blocked on `wait`) while merge-on-green runs as its
+        # CHILD with ITS OWN cwd elsewhere -- the ancestry walk must find the
+        # holder via PPid, not via merge-on-green's own cwd (which would
+        # instead trip the EARLIER own-cwd-deferred guard, a different code
+        # path this row is not testing).
+        read -r OA_REPO OA_WT OA_SHA <<< "$(mk_prune_fixture)"
+        oa_tmp=$(mktemp -d "${TMPDIR:-/tmp}/mog-2602-oa.XXXXXX")
+        if [ -z "$oa_tmp" ] || [ ! -d "$oa_tmp" ]; then
+            fail "11k14 setup: mktemp -d produced no run sandbox — refusing to build fixture paths on an empty root"
+        else
+            oa_gh="$oa_tmp/gh.log"; : > "$oa_gh"
+            oa_clear="$oa_tmp/clear.log"; : > "$oa_clear"
+            oa_audit="$oa_tmp/audit.log"
+            mog_build_fixture "$oa_tmp"
+            GH_LOG="$oa_gh" CLEAR_LOG="$oa_clear" MERGE_ON_GREEN_LOG="$oa_audit" PATH="$oa_tmp/bin:$PATH" \
+                  MERGE_ON_GREEN_SLEEP_CMD=: CR_APP="" STUB_SHA="$OA_SHA" STUB_HEAD_BRANCH="feat/mog-prune" ARMAUTOMERGE=1 \
+                  run_mog_as_descendant "$OA_WT" "$OA_REPO" "$oa_tmp/scripts/handover/merge-on-green.sh" \
+                  >/dev/null 2>"$oa_tmp/err"
+            oa_rc=$?
+            LAST_GH_LOG="$oa_gh"; LAST_AUDIT="$oa_audit"; LAST_CLEAR_LOG="$oa_clear"; LAST_ERR=$(cat "$oa_tmp/err" 2>/dev/null)
+            if [ "$oa_rc" -eq 0 ]; then
+                pass "11k14: merge-on-green exits 0 with an ANCESTOR holding the tree"
+            else
+                fail "11k14: expected exit 0, got $oa_rc (err: ${LAST_ERR:-<none>})"
+            fi
+            assert_audit_has "11k14: the prune proceeds when the holder is the caller's own ancestry" "prune=removed branch=deleted"
+            if [ -d "$OA_WT" ]; then fail "11k14: worktree survived despite the holder being the caller's own ancestor"; else pass; fi
+            rm -rf "$oa_tmp"
+        fi
+
+        # RC-1 (HIMMEL-2544 PR-D originally; RE-DERIVED for HIMMEL-2602) —
+        # 11k14's own claim ("a holder in mog's own ancestry does not block
+        # the prune") is not expressible through red-control.sh's existing
+        # red_control_run/_assert pair: their single --cwd becomes BOTH the
+        # ancestor's AND (via env's exec-in-place) mog's own eventual cwd,
+        # and mog's OWN cwd being the tree trips the EARLIER own-cwd-deferred
+        # guard before ever reaching worktree_in_use at all -- exactly the
+        # shape 11k14 exists to avoid. This control builds the SAME evidence
+        # red_control_run/_assert would (ran, produced a value, that value is
+        # the SPECIFIC wrong one predicted, not merely different from
+        # correct) by hand, using run_mog_as_descendant's real ancestor-fork
+        # shape instead.
+        #
+        # Mutant target: scripts/lib/worktree-inuse.sh's own ancestry
+        # EXCLUSION CHECK -- NOT merge-on-green.sh's HIMMEL-2517 guard. That
+        # guard's own mutant (this RC-1's ORIGINAL target) no longer isolates
+        # anything as of HIMMEL-2602: worktree_in_use's own /proc scan now
+        # independently catches the exact case that guard's absence used to
+        # expose (measured: the old mutant produced prune=in-use-confirmed
+        # wt=present, not the predicted prune=removed wt=absent -- reported
+        # rather than papered over, per the ruling on this ticket). Neutralise
+        # with a `case "" in` swap-in, the same minimal-single-line-diff
+        # discipline the original mutant used (`false &&`).
+        # shellcheck disable=SC2016  # literal match/replacement against
+        # worktree-inuse.sh's own source text (unexpanded $inuse_ancestry) --
+        # not a shell expansion.
+        rc1_check_line='                    case "$inuse_ancestry" in'
+        rc1_neutered_check='                    case "" in'
+        rc1_mutant_dir=$(mktemp -d "${TMPDIR:-/tmp}/mog-2602-rc1-mutant.XXXXXX")
+        if [ -z "$rc1_mutant_dir" ] || [ ! -d "$rc1_mutant_dir" ]; then
+            fail "RC-1 setup: mktemp -d produced no mutant-build sandbox — refusing to build fixture paths on an empty root"
+        else
+            rc1_wt_inuse_mutant="$rc1_mutant_dir/worktree-inuse.mutant.sh"
+            awk -v line="$rc1_check_line" -v repl="$rc1_neutered_check" \
+                '$0==line{print repl; next}{print}' "$SCRIPT_DIR/../lib/worktree-inuse.sh" > "$rc1_wt_inuse_mutant"
+            rc1_pre=$(grep -Fc -- "$rc1_check_line" "$SCRIPT_DIR/../lib/worktree-inuse.sh")
+            rc1_post=$(grep -Fc -- "$rc1_check_line" "$rc1_wt_inuse_mutant")
+            rc1_diff=$(diff "$SCRIPT_DIR/../lib/worktree-inuse.sh" "$rc1_wt_inuse_mutant" | grep -c '^[<>]')
+            if [ "$rc1_pre" -eq 1 ] && [ "$rc1_post" -eq 0 ] && [ "$rc1_diff" -eq 2 ]; then
+                # --- Row 1: the OWN-ANCESTRY fixture (11k14's shape) under
+                # the mutant -> must FLIP to the predicted wrong value.
+                read -r RC1A_REPO RC1A_WT RC1A_SHA <<< "$(mk_prune_fixture)"
+                rc1a_tmp=$(mktemp -d "${TMPDIR:-/tmp}/mog-2602-rc1a.XXXXXX")
+                if [ -z "$rc1a_tmp" ] || [ ! -d "$rc1a_tmp" ]; then
+                    fail "RC-1 row-1 setup: mktemp -d produced no sandbox — refusing to build fixture paths on an empty root"
+                else
+                    rc1a_gh="$rc1a_tmp/gh.log"; : > "$rc1a_gh"
+                    rc1a_clear="$rc1a_tmp/clear.log"; : > "$rc1a_clear"
+                    rc1a_audit="$rc1a_tmp/audit.log"
+                    WT_INUSE_SRC="$rc1_wt_inuse_mutant" mog_build_fixture "$rc1a_tmp"
+                    GH_LOG="$rc1a_gh" CLEAR_LOG="$rc1a_clear" MERGE_ON_GREEN_LOG="$rc1a_audit" PATH="$rc1a_tmp/bin:$PATH" \
+                          MERGE_ON_GREEN_SLEEP_CMD=: CR_APP="" STUB_SHA="$RC1A_SHA" STUB_HEAD_BRANCH="feat/mog-prune" ARMAUTOMERGE=1 \
+                          run_mog_as_descendant "$RC1A_WT" "$RC1A_REPO" "$rc1a_tmp/scripts/handover/merge-on-green.sh" \
+                          >/dev/null 2>"$rc1a_tmp/err"
+                    rc1a_rc=$?
+                    rc1a_prune=$(grep -o 'prune=[^ ]*' "$rc1a_audit" 2>/dev/null | head -n1)
+                    rc1a_wt=absent; [ -d "$RC1A_WT" ] && rc1a_wt=present
+                    rc1a_observed="$rc1a_prune wt=$rc1a_wt"
+                    if [ "$rc1a_rc" -ne 0 ]; then
+                        fail "RC-1 row-1 (own-ancestry): the mutant CRASHED (rc=$rc1a_rc, expected 0) -- proves nothing (err: $(cat "$rc1a_tmp/err" 2>/dev/null))"
+                    elif [ -z "$rc1a_prune" ]; then
+                        fail "RC-1 row-1 (own-ancestry): the mutant produced no prune= token -- proves nothing"
+                    elif [ "$rc1a_observed" = "prune=in-use-confirmed wt=present" ]; then
+                        pass "RC-1 row-1 (own-ancestry) RED confirmed: with the ancestry exclusion disabled the caller's own ancestor is wrongly treated as a foreign holder ($rc1a_observed; the real script produces prune=removed wt=absent) -- 11k14's exclusion is load-bearing, not vacuously true"
+                    elif [ "$rc1a_observed" = "prune=removed wt=absent" ]; then
+                        fail "RC-1 row-1 (own-ancestry): the mutant reproduced the CORRECT value ($rc1a_observed) -- this mutation is not exercising the ancestry exclusion at all"
+                    else
+                        fail "RC-1 row-1 (own-ancestry): the mutant produced an UNPREDICTED value ($rc1a_observed) -- neither the correct nor the predicted-wrong outcome"
+                    fi
+                    rm -rf "$rc1a_tmp"
+                fi
+
+                # --- Row 2: the FOREIGN-holder fixture (11k7's shape) under
+                # the SAME mutant -> must NOT flip -- proves the mutation is
+                # isolated to the ancestry exclusion and does not touch
+                # foreign-holder detection at all.
+                read -r RC1B_REPO RC1B_WT RC1B_SHA <<< "$(mk_prune_fixture)"
+                if ! start_suite_holder "$RC1B_WT" "$SUITE_HOLDER_DIR/sleeper.sh"; then
+                    fail "RC-1 row-2 setup: the sleeper never signaled ready — control not established"
+                else
+                    pass  # holder reached execution: the control below is against a real process
+                    WT_INUSE_SRC="$rc1_wt_inuse_mutant" MOG_CWD="$RC1B_REPO" STUB_SHA="$RC1B_SHA" STUB_HEAD_BRANCH="feat/mog-prune" \
+                        run_mog 0 "RC-1 row-2 (foreign holder) under the ancestry-exclusion mutant -> still kept, exit 0"
+                    if grep -qF "prune=in-use-confirmed" "$LAST_AUDIT" 2>/dev/null; then
+                        pass "RC-1 row-2 (foreign holder): the mutation does NOT flip a foreign holder's outcome -- isolated to the ancestry exclusion"
+                    else
+                        fail "RC-1 row-2 (foreign holder): expected prune=in-use-confirmed (unchanged from the real script) but got a different outcome -- the mutation is not isolated to the ancestry exclusion (audit: $(cat "$LAST_AUDIT" 2>/dev/null))"
+                    fi
+                fi
+                stop_suite_holder
+            else
+                fail "RC-1 setup: mutation of the ancestry-exclusion check was not reproduced cleanly (pre=$rc1_pre post=$rc1_post diff_lines=$rc1_diff)"
+            fi
+            rm -rf "$rc1_mutant_dir"
         fi
 
         rm -rf "$SUITE_HOLDER_DIR"

@@ -50,7 +50,7 @@
 # (HIMMEL-891) -- without carrying a fork. A pin bump is a reviewed change to this
 # line, paired with `synced_base` in scripts/upstreams.json so the nightly
 # fork-drift guard stays truthful.
-_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.53}"; }
+_graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.55}"; }
 _graphify_pypi_name() { printf '%s\n' "graphifyy"; }
 # The default `uv tool install` package spec includes the native Kimi backend's
 # runtime dependencies (openai + tiktoken). Recorded non-empty extras are still

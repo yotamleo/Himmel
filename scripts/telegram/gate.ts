@@ -26,6 +26,31 @@ import { homedir } from "node:os";
 export type GroupPolicy = { requireMention?: boolean; allowFrom?: string[]; vault?: string; cwd?: string; trustAnonymousAdmins?: boolean };
 export type Access = { dmPolicy?: string; allowFrom?: string[]; groups?: Record<string, GroupPolicy>; defaultVault?: string };
 
+// The operator's own DM chat, or null when there is no usable one
+// (HIMMEL-2580). Some dispatcher notices are not about any incoming message —
+// the bridge inbox cursor is root-scoped, so a "your messages were dropped"
+// notice has no originating chat to reply into. In a DM Telegram's chat_id IS
+// the sender id, so the global allowFrom identity is that chat. Fails CLOSED
+// the same way isAllowed does: missing/empty/malformed → null, and the caller
+// degrades to log-only rather than guessing a chat to message.
+export function operatorChatId(access: Access | null | undefined): number | null {
+  const allow = access?.allowFrom;
+  // Array.isArray, exactly as isAllowed does (CR codex-1): a hand-edited
+  // access.json can carry a bare STRING there, and `"12345"[0]` indexes to the
+  // CHARACTER "1" — which parses as a perfectly valid chat id and would send
+  // the operator's notice to user 1.
+  if (!Array.isArray(allow) || allow.length === 0) return null;
+  const first = allow[0];
+  if (typeof first !== "string" && typeof first !== "number") return null;
+  const n = Number(first);
+  // A POSITIVE safe integer only (CR codex-1). 0 is not a chat and is what
+  // Number("") and Number(" ") both produce, so a blank entry fails closed
+  // here instead of addressing chat 0; a NEGATIVE id is a group/channel, and
+  // allowFrom holds user ids — a negative one there is malformed, and
+  // broadcasting a dispatcher notice into a group is the wrong failure.
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 // Pure predicate. Fails CLOSED: missing/empty/malformed allowlist → false.
 export function isAllowed(access: Access | null | undefined, fromId: number | string): boolean {
   const allow = access?.allowFrom;

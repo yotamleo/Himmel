@@ -135,3 +135,12 @@ scripts/lanes/lanes.local.json
 # stray Corsair iCUE/CorsairLink driver log dropped in the repo root by the
 # host tooling — machine-local noise, never ours to commit (HIMMEL-1611).
 CorsairLink.log
+# CPython bytecode for the harness's tracked .py sources — pure build
+# byproducts, regenerated on the next import, never work product (HIMMEL-2584).
+# Left untracked-but-unignored, they read to clean-garden as "untracked files
+# that are not known strays (possible forgotten work)", so it correctly refuses
+# to prune — and EVERY merged worktree became unprunable (5 of 5 on this
+# station). The guard's verdict was right; the repo had just never told git
+# these files are noise.
+__pycache__/
+*.pyc

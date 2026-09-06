@@ -311,13 +311,19 @@ is_branch_mergeable_for_prune() {
 # of `git worktree add` — churn that is emphatically not user work. Adding a
 # path here says only "safe to DISCARD with an already-merged worktree"; it can
 # never suppress a refusal driven by tracked modifications, which are checked
-# first and independently in classify_worktree.
+# first and independently in classify_worktree. A checkout whose .gitignore
+# lacks the entry isn't only an adopter clone: it's also every worktree PINNED
+# at a commit older than the .gitignore change, which is why adding the rule
+# to .gitignore alone cannot unstick worktrees that already exist (HIMMEL-2584
+# — __pycache__/*.pyc from any tracked .py script run in the worktree).
 is_ignorable_stray() {
     case "$1" in
         AGENTS.md|*/AGENTS.md)                 return 0 ;;
         .codex/*|*/.codex/*)                   return 0 ;;
         .tokensave/*|*/.tokensave/*)           return 0 ;;
         package-lock.json|*/package-lock.json) return 0 ;;
+        __pycache__/*|*/__pycache__/*)         return 0 ;;
+        *.pyc)                                 return 0 ;;
     esac
     return 1
 }
