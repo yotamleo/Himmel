@@ -113,6 +113,14 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
+      # HIMMEL-2587: the bench-run-batch dispatch-luna tests shell out to
+      # scripts/lanes/bench/bank-snapshot.sh, which runs bun. Without bun the
+      # snapshot answers UNKNOWN for both banks and run-batch.sh correctly
+      # refuses to start a paid attempt — so those tests abort fail-closed
+      # before reaching their assertions and the job stays red. Installing bun
+      # keeps the retry-cap / resume / mid-batch-abort contract under a runner
+      # check; SKIP-guarding them instead would exit 0 with nothing exercised.
+      - uses: oven-sh/setup-bun@v2
       - run: node --test "scripts/lanes/tests/**/*.test.mjs"
       # HIMMEL-1529: same shape — a zero-dependency node:test suite outside any
       # package.json. Listed explicitly because nothing globs for it; an

@@ -21,6 +21,123 @@ set -euo pipefail
 # because MSYS rewrites path-looking argv on the way out — which MSYS_NO_PATHCONV
 # / MSYS2_ARG_CONV_EXCL turn off. Inheriting the cwd needs no rewriting at all.
 cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 1
+
+# The Claude-side inventory this gate compares Codex against is read straight
+# from the tracked .claude/settings.json (see `sources` in the node script
+# below) — there is no fixture or fallback. `.claude/settings.json` is a
+# PRIVATE_PATHS entry in scripts/lib/public-clone-paths.sh: the public mirror
+# deliberately does not carry the operator's live hook wiring, so on a public
+# checkout this file is genuinely absent, not broken. Without it there is no
+# Claude-side inventory to diff Codex against, so the gate has nothing to
+# assert — SKIP rather than crash on the ENOENT.
+#
+# "Missing from the working tree" and "not tracked" are DIFFERENT claims (CR
+# panel finding, codex-2): a private checkout where the file was simply
+# deleted or moved hits the same `[ ! -f ]` branch as the genuine public-mirror
+# omission, and a broken hook inventory would silently read as an intentional
+# skip instead of failing. Skip only when the file is genuinely untracked (the
+# public-mirror case the message names); fail, naming the real cause, when it
+# is tracked but the working copy is missing.
+#
+# is_settings_tracked <repo-dir> <path> — prints tracked|untracked|unknown.
+# NOTE: this function's body is intentionally duplicated verbatim in
+# scripts/himmelctl/test/test-trust-clean-checkout.sh (same defect, same
+# fix, CR round 3 codex-1/codex-2) rather than shared from a lib — the brief
+# fixing this restricted edits to those two files only, so extracting a
+# shared scripts/lib/*.sh would itself be a scope violation. Keep the two
+# bodies byte-identical if either ever needs to change.
+#
+# `git ls-files --error-unmatch` alone reads the INDEX, not HEAD (CR round 3,
+# codex-1): a STAGED deletion (`git rm --cached`) removes the index entry
+# while HEAD still carries it, so an index-only probe misreports a genuinely
+# tracked, merely-mid-deletion file as untracked — the exact hole this probe
+# exists to close, moved one step along rather than closed (proven in a
+# scratch repo: commit the file, `git rm --cached` it, `ls-files
+# --error-unmatch` -> rc=1 while `git cat-file -e HEAD:<path>` -> rc=0). A
+# freshly `git add`ed-but-not-yet-committed file is the mirror case: present
+# in the index, absent from HEAD, and still legitimately tracked. So
+# "tracked" means present in EITHER the index OR HEAD.
+#
+# HEAD may not exist yet (a fresh repo with no commits) — `git rev-parse
+# --verify -q HEAD` failing there is a LOOKUP FAILURE for the HEAD probe, not
+# evidence the path is absent from HEAD, so it must never be read as "not in
+# HEAD"; only the index answer counts while HEAD is unborn.
+#
+# Callers must not conflate "prints untracked" with "the probe could not run":
+# only a probe that genuinely ran and confirmed absence on both index and HEAD
+# may report "untracked" — an unresolved git/work-tree precondition prints
+# "unknown" instead, and the caller (below) treats unknown the same as tracked
+# (fail-closed toward FAIL, never toward SKIP).
+#
+# CR round 3, second pass (codex, Suggestion but correct): every probe above
+# was written as `if git ...; then yes; else no; fi`, which collapsed "git
+# ran and confirmed absence" and "git failed to run at all" into the same
+# `no`/`unborn` branch — a corrupted index or an unreadable ref would then
+# read as confirmed absence, and the elif below would call that "untracked".
+# Fixed by keying off the exit STATUS: `git ls-files --error-unmatch` and
+# `git rev-parse --verify -q ...` both use rc=1 for a genuine "not found" and
+# any OTHER nonzero for a real lookup failure (corrupt index, unreadable
+# object, garbage ref) — measured directly, not assumed: a truncated
+# `.git/index` gives ls-files rc=128; a `.git/HEAD` overwritten with garbage
+# gives rev-parse rc=128 even under `-q`; a corrupted tree/commit object
+# reached via `HEAD:<path>` gives rc=128. Only rc=1 maps to a genuine `no`
+# (or `unborn`, for the HEAD-exists check specifically); every other nonzero
+# maps to `unknown`.
+#
+# One deliberate departure from the literal instrument this fix was scoped
+# to: `git cat-file -e HEAD:<path>` does NOT give rc=1 for "not present" on
+# this git (2.55.0) — measured directly: `cat-file -e HEAD:<nonexistent>`
+# gives rc=128 ("fatal: path '<path>' does not exist in '<ref>'"), the SAME
+# rc a corrupted tree object gives. rc alone cannot discriminate genuine
+# absence from corruption through cat-file, so mapping rc==1 to `no` there
+# would never fire for a normal untracked file and would silently break the
+# SKIP path this whole fix protects. `git rev-parse --verify -q
+# "HEAD:<path>"` is the equivalent existence check that DOES carry the
+# needed rc=1-for-absence / rc=128-for-corruption split (measured: absent ->
+# rc=1, corrupt tree -> rc=128, corrupt commit object reached via HEAD:path
+# -> rc=128) — same question, an instrument that actually answers it.
+is_settings_tracked() {
+  local dir="$1" path="$2" in_index in_head rc
+  command -v git >/dev/null 2>&1 || { echo unknown; return; }
+  git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo unknown; return; }
+
+  if git -C "$dir" ls-files --error-unmatch "$path" >/dev/null 2>&1; then
+    in_index=yes
+  else
+    rc=$?
+    if [ "$rc" -eq 1 ]; then in_index=no; else in_index=unknown; fi
+  fi
+
+  if git -C "$dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    if git -C "$dir" rev-parse --verify -q "HEAD:$path" >/dev/null 2>&1; then
+      in_head=yes
+    else
+      rc=$?
+      if [ "$rc" -eq 1 ]; then in_head=no; else in_head=unknown; fi
+    fi
+  else
+    rc=$?
+    if [ "$rc" -eq 1 ]; then in_head=unborn; else in_head=unknown; fi
+  fi
+
+  if [ "$in_index" = yes ] || [ "$in_head" = yes ]; then
+    echo tracked
+  elif [ "$in_index" = no ] && { [ "$in_head" = no ] || [ "$in_head" = unborn ]; }; then
+    echo untracked
+  else
+    echo unknown
+  fi
+}
+
+if [ ! -f ".claude/settings.json" ]; then
+  if [ "$(is_settings_tracked . .claude/settings.json)" = untracked ]; then
+    echo "[SKIP] test-codex-hook-parity.sh — .claude/settings.json not tracked in this checkout (PRIVATE_PATHS entry in scripts/lib/public-clone-paths.sh; the public mirror deliberately omits the operator's live hook wiring, so there is no Claude-side inventory to compare Codex's .codex/hooks.json against)."
+    exit 0
+  fi
+  echo "FAIL - .claude/settings.json is tracked (or its tracked-ness could not be confirmed) in this checkout but missing from the working tree - this is a broken or dirty checkout, not the public-mirror omission (PRIVATE_PATHS only omits the file from the PUBLIC clone; a private checkout's git history always carries it). Restore it, e.g. 'git checkout -- .claude/settings.json', before re-running this suite." >&2
+  exit 1
+fi
+
 fails=0
 # assert_empty <label> <offenders> — pass when the offender list is blank; the
 # offenders themselves are the failure message, so no case needs a second lookup.

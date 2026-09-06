@@ -457,12 +457,108 @@ then pass "claude-replay FAIL row on a crashing hook"; else fail "no claude-repl
 EMPTY="$TMP/empty-bin"; mkdir -p "$EMPTY"
 printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$(command -v jq)" > "$EMPTY/jq"
 chmod +x "$EMPTY/jq"
+
+# "pwsh absent" must hold for real, not just for our own $BIN stub dir: several
+# hosted CI images (confirmed: GitHub-hosted ubuntu-latest ships a REAL pwsh,
+# symlinked at /usr/bin/pwsh -> /opt/microsoft/powershell/7/pwsh by the apt/
+# tarball installer) ship a real pwsh reachable through an ordinary fallback
+# PATH, so simply leaving $BIN out of PATH does not make `command -v pwsh`
+# fail there the way it does on a pwsh-less dev box. Left unmasked,
+# hook-smoke-demo.sh's own `command -v pwsh` gate finds that real binary and
+# runs the REAL probe-codex-hooks.ps1 path against $DEMO — a clone of the
+# minimal $FIX fixture, which carries no scripts/ tree at all — so pwsh fails
+# to find that file and the leg reports "probe enumerated no project hooks"
+# instead of the SKIP these cases assert.
+#
+# An earlier version of this fix built the masked PATH by symlinking every
+# OTHER entry out of /usr/bin, /bin and /mingw64/bin. Two problems, found on
+# measurement rather than shipped on assumption:
+#   (1) COST: on Git Bash/MSYS without `MSYS=winsymlinks:nativestrict` (the
+#       default), `ln -s` reports success but silently falls back to a plain
+#       COPY, not a link (the exact failure mode
+#       scripts/himmelctl/test/test-himmelctl-path-shim.sh's caseG2 already
+#       documents via its own `ln -s ... && [ -L ... ]` check). Mirroring the
+#       full contents of three directories - /mingw64/bin alone typically
+#       carries git's DLL closure plus curl/openssl/perl/python, well past
+#       100MB - as real file copies would multiply this already-~8s suite's
+#       cost by an unacceptable, host-dependent amount for zero benefit.
+#   (2) COVERAGE: pwsh's real location is OS-specific and not exhausted by
+#       those three directories - confirmed via actions/runner-images'
+#       Install-PowershellCore.ps1: on windows-latest, the official MSI
+#       installs to "$env:ProgramFiles\PowerShell\7\pwsh.exe" and adds THAT
+#       to PATH, a directory this suite's constructed PATH never lists in the
+#       first place (see below). Masking-by-directory-scan is whack-a-mole
+#       against wherever any given runner image happens to install pwsh.
+#
+# The fix that is cheap AND structurally correct rather than merely guarded:
+# build a PATH containing ONLY a whitelist of thin wrapper SCRIPTS (the exact
+# pattern $EMPTY/jq above already uses) for the specific external tools this
+# codex-only, agent-and-pwsh-absent run path actually calls, each resolved
+# once against the REAL ambient PATH and re-exec'd by absolute path. No
+# directory this suite did not explicitly list is ever searched, so pwsh -
+# wherever it lives, on any current or future runner image - is unreachable
+# by construction, not by exclusion. A wrapper script is a few bytes of text;
+# there is nothing here for MSYS's symlink fallback to be slow about.
+TOOLBOX="$TMP/toolbox"; mkdir -p "$TOOLBOX"
+# Resolved ONCE against the real, unrestricted ambient PATH (before the
+# toolbox is the only thing on PATH) and baked into every wrapper's shebang as
+# an ABSOLUTE path - never `#!/usr/bin/env bash`. `env`'s own PATH-based `bash`
+# lookup would otherwise resolve straight back to $TOOLBOX/bash once that
+# wrapper exists and is the only `bash` on PATH: the kernel execs the wrapper,
+# its shebang runs /usr/bin/env (a fixed path, fine), env then searches PATH
+# for "bash" and finds the SAME wrapper again - infinite self-recursion,
+# caught by hand before this fix ever reached a real run (a `#!/usr/bin/env
+# bash` -named-"bash" wrapper hangs immediately, it does not error).
+_TOOLBOX_BASH="$(command -v bash)"
+toolbox_add() {  # toolbox_add <tool...> — wrap each tool actually on PATH; skip the rest
+    local t p
+    for t in "$@"; do
+        p="$(command -v "$t" 2>/dev/null)" || continue
+        printf '#!%s\nexec "%s" "$@"\n' "$_TOOLBOX_BASH" "$p" > "$TOOLBOX/$t"
+        chmod +x "$TOOLBOX/$t"
+    done
+}
+# bash: hook-smoke-demo.sh is invoked as `bash "$SMOKE"`, so `bash` itself is
+# looked up under the very PATH being constructed here, same as every other
+# name below - the whitelist is not just for the SCRIPT's internal calls.
+# The rest is every external tool hook-smoke-demo.sh's setup/clone/cleanup and
+# codex-exec/codex-replay legs call on the --codex-only path (codex-print/
+# -replay are RUN_CLAUDE-gated off by --codex-only, so nothing claude-side
+# needs to be listed here). cygpath is Windows/MSYS-only and simply skips
+# where absent, same as every other entry.
+toolbox_add bash git jq sed grep cat mkdir rm chmod date dirname basename \
+    mktemp cygpath timeout find cp mv ln head tail cut tr wc env sleep tee \
+    uname hostname id xargs awk
+
 set +e
-OUT="$(PATH="$EMPTY:/usr/bin:/bin:/mingw64/bin" bash "$SMOKE" --from "$FIX" --codex-only 2>&1)"; RC=$?
+OUT="$(PATH="$EMPTY:$TOOLBOX" bash "$SMOKE" --from "$FIX" --codex-only 2>&1)"; RC=$?
 set -e
 assert_rc 2 "all-SKIP run exits 2, not 0" "vacuous-guard: $OUT"
 if printf '%s\n' "$OUT" | grep -q 'NOTHING RAN'
 then pass "all-SKIP run says NOTHING RAN"; else fail "no NOTHING RAN message: $OUT"; fi
+
+# --- 11-guard: the toolbox itself must be genuinely pwsh-less, not just empty -
+# Two ways this could go vacuously green even though the guard above proves
+# nothing: (a) the toolbox construction breaks silently and pwsh is STILL
+# reachable through some path this suite failed to anticipate - an empty PATH
+# and a pwsh-free PATH both make `command -v pwsh` fail the same way, so a
+# broken build and a correct one are indistinguishable from the vacuous-guard
+# case's rc=2 alone; (b) the toolbox came out EMPTY (no tool resolved at all),
+# in which case codex-exec/codex-replay would both SKIP for "nothing on PATH"
+# reasons that have nothing to do with pwsh, and the case above would still
+# report rc=2/NOTHING RAN for the WRONG reason. Both must fail the suite
+# loudly, not silently pass or skip - a pass here that isn't real defeats the
+# entire point of the case it is guarding.
+if PATH="$TOOLBOX" command -v pwsh >/dev/null 2>&1; then
+    fail "pwsh mask did not work: pwsh is still resolvable under PATH=\$TOOLBOX ($(PATH="$TOOLBOX" command -v pwsh)) - every vacuous-guard/no-positive-control assertion above and below is meaningless"
+else
+    pass "pwsh mask holds: command -v pwsh fails under the toolbox-only PATH"
+fi
+if PATH="$TOOLBOX" command -v git >/dev/null 2>&1; then
+    pass "toolbox is not empty: git (a tool the demo genuinely needs) still resolves under it"
+else
+    fail "toolbox came out empty - git does not resolve under PATH=\$TOOLBOX, so the vacuous-guard case above passes on a broken PATH, not a masked pwsh"
+fi
 
 # --- 11a: the claude leg fails CLOSED when the native-auth pin is unavailable -
 # An unpinned headless launch can be routed through a local proxy with no error
@@ -483,7 +579,7 @@ else fail "claude leg launched unpinned: $OUT"; fi
 NOPWSH="$TMP/bin-nopwsh"; mkdir -p "$NOPWSH"
 cp "$BIN/codex" "$BIN/claude" "$EMPTY/jq" "$NOPWSH/"
 set +e
-OUT="$(PATH="$NOPWSH:/usr/bin:/bin:/mingw64/bin" SMOKE_STUB_MODE=clean bash "$SMOKE" --from "$FIX" --codex-only --timeout 20 2>&1)"; RC=$?
+OUT="$(PATH="$NOPWSH:$TOOLBOX" SMOKE_STUB_MODE=clean bash "$SMOKE" --from "$FIX" --codex-only --timeout 20 2>&1)"; RC=$?
 set -e
 assert_rc 2 "codex-exec without codex-replay exits 2, not 0" "no-positive-control: $OUT"
 if printf '%s\n' "$OUT" | grep -q 'without its positive control'

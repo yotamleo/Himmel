@@ -89,9 +89,14 @@ chmod +x "$fx/scripts/cr/panel-first-pass.sh"
 
 CALL_LOG="$tmp/panel-calls.log"
 export CALL_LOG
+# ARGS_LOG records the stub's argv so a test can assert WHICH base literal the
+# panel actually received (HIMMEL-1984 capture-once, HIMMEL-2598 T12).
+ARGS_LOG="$tmp/panel-args.log"
+export ARGS_LOG
 cat > "$fx/scripts/cr/critic-panel.sh" <<'STUBEOF'
 #!/usr/bin/env bash
 printf 'called\n' >> "$CALL_LOG"
+printf '%s\n' "$*" >> "$ARGS_LOG"
 cat >/dev/null
 [ -n "${FAKE_OUT:-}" ] && printf '%s\n' "$FAKE_OUT"
 [ -n "${FAKE_ERR:-}" ] && printf '%s\n' "$FAKE_ERR" >&2
@@ -268,6 +273,115 @@ else
     # (b) the SPECIFIC wrong value, not merely "different from 7".
     if [ "$rc" -eq 0 ]; then ok "T9 control reproduces the exact defect (exit 0 on an unresolvable pin)"; else bad "T9 control did not reproduce the defect: exit $rc, want the pre-fix 0"; fi
     assert_has "$err" "critic panel unavailable" "T9 control reproduces the misleading outage message"
+fi
+
+# =============================================================================
+# T10 (HIMMEL-2598, the ticket's primary acceptance): a SECOND fixture with a
+# bare upstream + repo2 whose LOCAL main has been rewound one commit behind
+# origin/main -- exactly the "unpulled primary checkout" state that made
+# panel-first-pass.sh review other people's already-merged commits as if they
+# were this branch's own (cost a paid critic call + a misattributed finding
+# on HIMMEL-2528 round 5). The diff base must resolve refs/remotes/origin/main,
+# never the stale local ref.
+up="$tmp/upstream.git"
+mkdir -p "$up"
+git init -q --bare "$up"
+repo2="$tmp/repo2"
+mkdir -p "$repo2"
+(
+    fixture_enter_git_init_dir "$repo2" || exit 1
+    git -c init.defaultBranch=main init -q
+    git config user.email t@t.test
+    git config user.name tester
+    git config commit.gpgsign false
+    echo A > f.txt
+    git add f.txt
+    git commit -q -m A
+    echo B >> f.txt
+    git commit -q -am B
+    git remote add origin "$up"
+    git push -q origin main
+    git remote set-head origin -a >/dev/null 2>&1 || true
+    git checkout -q -b feature
+    echo C >> f.txt
+    git commit -q -am C
+    git update-ref refs/heads/main "$(git rev-parse main~1)"   # local main -> A; origin/main stays at B
+) || { echo "FAIL: T10 fixture setup failed" >&2; exit 1; }
+
+r2_local_main="$(git -C "$repo2" rev-parse refs/heads/main)"
+r2_origin_main="$(git -C "$repo2" rev-parse refs/remotes/origin/main)"
+r2_feature="$(git -C "$repo2" rev-parse feature)"
+
+# The whole row is meaningless if the fixture failed to diverge the two refs.
+if [ "$r2_local_main" = "$r2_origin_main" ]; then
+    bad "T10 fixture is VACUOUS: local main and origin/main are the same commit ($r2_local_main)"
+else
+    ok "T10 fixture diverged: local main ($r2_local_main) != origin/main ($r2_origin_main)"
+fi
+
+rm -f "$CALL_LOG" "$ARGS_LOG" "$tmp/err"
+out="$( (cd "$repo2" && FAKE_RC=0 FAKE_OUT='[codex-1] f.txt:1 finding' \
+    bash "$SCRIPT" --head "$r2_feature" --branch feature) 2>"$tmp/err" )"; rc=$?
+err="$(cat "$tmp/err")"
+if [ "$rc" -eq 0 ]; then ok "T10 exits 0"; else bad "T10 exit (got $rc)"; fi
+assert_has "$out" "captured diff base: main ($r2_origin_main)" "T10 diff base resolves origin/main, not stale local main"
+assert_lacks "$out" "main ($r2_local_main)" "T10 diff base does NOT carry the stale local main sha"
+
+# T12: CONTROL, HIMMEL-1984 capture-once. Reads $ARGS_LOG from the T10 run
+# above -- checked here, BEFORE T11 below invokes the panel again and would
+# append a second line to it, so "exactly one --base-sha handoff" stays a
+# clean read of T10's run alone. The panel must receive the SAME base literal
+# stdout printed -- never re-derive it live in a later step -- so the two
+# review lanes (stdout ledger + panel argv) can never re-resolve it minutes
+# apart and disagree.
+if [ -f "$ARGS_LOG" ]; then
+    args="$(cat "$ARGS_LOG")"
+    assert_has "$args" "--base-sha $r2_origin_main" "T12 panel received the origin-resolved base sha"
+    assert_lacks "$args" "--base-sha $r2_local_main" "T12 panel did NOT receive the stale local base sha"
+    _base_sha_count="$(grep -o -- '--base-sha' "$ARGS_LOG" | wc -l | tr -d ' ')"
+    if [ "$_base_sha_count" = "1" ]; then
+        ok "T12 exactly one --base-sha handoff (capture-once holds)"
+    else
+        bad "T12 expected exactly one --base-sha handoff, got $_base_sha_count"
+    fi
+else
+    bad "T12 ARGS_LOG missing from the T10 run"
+fi
+
+# T11: CONTROL, no remote -> resolves the LOCAL branch. Reuses the EXISTING
+# $repo fixture (it has no origin remote). T3/T4/T7 already exercise this
+# line incidentally; this row names it explicitly as HIMMEL-2598's documented
+# fallback control (no origin/$db to prefer, so $db itself must still work).
+# Runs AFTER the T12 read above so its panel invocation can't add a second
+# line to $ARGS_LOG before T12 counts it.
+rm -f "$CALL_LOG" "$tmp/err"
+out="$( (cd "$repo" && FAKE_RC=0 FAKE_OUT='[codex-1] f.txt:1 finding' \
+    bash "$SCRIPT" --head "$feature_sha" --branch feature) 2>"$tmp/err" )"; rc=$?
+assert_has "$out" "captured diff base: main ($main_sha)" "T11 no-remote control resolves the local branch"
+
+# T13: RED CONTROL by REVERTING THE REAL FIX (never a stub), following T9's
+# mutant contract exactly. The mutant lives INSIDE the fixture tree ($fx/...)
+# so it can never resolve HIMMEL_ROOT outside the fixture and reach the real,
+# paid critic panel.
+mutant2="$fx/scripts/cr/panel-first-pass.mutant2.sh"
+# shellcheck disable=SC2016  # single-quoted sed program matching literal shell syntax in $SCRIPT, not expanding here
+sed 's|^db_sha=\$(git rev-parse --verify --quiet .*|db_sha=$(git rev-parse "$db")|' "$SCRIPT" > "$mutant2"
+if cmp -s "$SCRIPT" "$mutant2"; then
+    bad "T13 control is VACUOUS: the mutation matched nothing, so the mutant is the fixed script"
+else
+    ok "T13 mutation applied (fix line reverted)"
+    if grep -q '^db_sha=.*refs/remotes/origin/' "$mutant2"; then
+        bad "T13 control is VACUOUS: the mutant still carries the origin-preferring code line"
+    else
+        ok "T13 mutant no longer prefers origin/\$db"
+    fi
+    chmod +x "$mutant2"
+    rm -f "$CALL_LOG" "$ARGS_LOG" "$tmp/err"
+    out="$( (cd "$repo2" && FAKE_RC=0 FAKE_OUT='[codex-1] f.txt:1 finding' \
+        bash "$mutant2" --head "$r2_feature" --branch feature) 2>"$tmp/err" )"; rc=$?
+    if [ "$rc" -eq 0 ]; then ok "T13 control RAN to completion (exit 0)"; else bad "T13 control did not run to completion: exit $rc"; fi
+    assert_has "$out" "captured diff base: main ($r2_local_main)" "T13 control reproduces the SPECIFIC wrong value (stale local main)"
+    assert_lacks "$out" "main ($r2_origin_main)" "T13 control does not carry the correct origin-resolved sha"
 fi
 
 # --- no writes outside the mktemp fixture -----------------------------------

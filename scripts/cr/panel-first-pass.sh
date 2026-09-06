@@ -96,7 +96,14 @@ db=$(. "$HIMMEL_ROOT/scripts/guardrails/lib.sh" 2>/dev/null && default_branch ||
 # HIMMEL-1984 - capture the BASE commit once, here, next to $db. Substitute
 # this literal into every --base-sha below; never re-derive it live, and
 # never re-derive it in a later step either.
-db_sha=$(git rev-parse "$db")
+# HIMMEL-2598 - $db is a BARE name (default_branch strips any origin/ prefix
+# for ITS callers), so `git rev-parse "$db"` resolves refs/heads/$db: the
+# LOCAL branch. When this checkout is the unpulled primary, local main lags
+# origin/main, and this silently diffs against a stale base -- reviewing
+# other people's already-merged commits as if they belonged to this branch.
+# Prefer the remote-tracking ref; fall back to the local name only when
+# there is no origin/$db (e.g. a fixture repo with no remote).
+db_sha=$(git rev-parse --verify --quiet "refs/remotes/origin/$db" || git rev-parse "$db")
 echo "captured diff base: $db ($db_sha)"   # carry this literal into step 3.2
 
 # HIMMEL-558: load CR_PROFILE from the PRIMARY checkout's .env (a live process

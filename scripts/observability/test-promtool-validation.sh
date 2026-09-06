@@ -141,7 +141,12 @@ nodatastate_table() {
 }
 
 # Every uid actually in the file, in file order.
-ACTUAL_UIDS="$(grep -oE '^[[:space:]]*- uid: [A-Za-z0-9_]+' "$RULES_FILE" | awk '{print $NF}')"
+# HIMMEL-2599: Grafana rule uids may contain a hyphen (the public leak scrub
+# renames example-ws_inbox_backlog_rising to example-ws_inbox_backlog_rising)
+# — a class missing the hyphen truncates at it, so the real uid reads as
+# "example" (an unknown uid below) AND the table entry for the full name
+# reads as orphaned. Widen the class to match what Grafana actually permits.
+ACTUAL_UIDS="$(grep -oE '^[[:space:]]*- uid: [A-Za-z0-9_-]+' "$RULES_FILE" | awk '{print $NF}')"
 
 # A duplicate `- uid:` in rules.yaml is invalid for Grafana on its own, and
 # left unchecked it also makes the per-uid loop below silently run the same

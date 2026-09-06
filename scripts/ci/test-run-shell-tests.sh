@@ -106,6 +106,22 @@ export SUITE_LOCK_DIR="$SUITE_LOCK_SANDBOX/suite.lock"
 export SUITE_ROTATE_STATE="$SUITE_LOCK_SANDBOX/rotate.cursor"
 trap 'rm -rf "$SUITE_LOCK_SANDBOX"' EXIT
 
+# HIMMEL-2599: neutralize the ambient suite-control environment for every
+# nested $RUNNER invocation below. CI's shell-unit job (.github/workflows/ci.yml)
+# exports SUITE_TIER_MODE and SUITE_CHANGED_SINCE on every pull_request/push
+# leg (HIMMEL-2166) so the OUTER run-shell-tests.sh call narrows its own plan --
+# but this file's nested calls inherited them too, silently narrowing THEIR
+# plans (SUITE_TIER_MODE=fast tier-skips, --changed-since-shaped filtering) and
+# short-circuiting the very rotation/conditional-suite code paths under test.
+# Some cases already neutralize SUITE_TIER_MODE per-call (`env -u
+# SUITE_TIER_MODE`, HIMMEL-2120/2243) where they need it explicit and local;
+# unsetting both here once, for the whole file, closes the gap for every OTHER
+# call site instead of requiring each new case to remember its own `env -u`.
+# A case that wants to exercise these vars still sets them explicitly on its
+# own invocation, which overrides an unset ambient value the same way it would
+# override an inherited one.
+unset SUITE_TIER_MODE SUITE_CHANGED_SINCE
+
 # HIMMEL-2518/HIMMEL-2544: Case 18m-R's mutation control goes through the
 # RED-control contract helper rather than a hand-rolled inequality — the helper
 # asserts the mutant RAN, PRODUCED a value, and produced the SPECIFIC wrong
