@@ -89,6 +89,7 @@ fi
 RESEED=0
 FORCE=0
 PREFLIGHT_ONLY=0
+GUARD_CHECK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --reseed) RESEED=1; shift ;;
@@ -99,6 +100,10 @@ while [ $# -gt 0 ]; do
     # the transient 503 auth_unavailable OAuth-refresh gap before it ever spins
     # a worker (and never re-runs one, which could duplicate side effects).
     --preflight-only) PREFLIGHT_ONLY=1; shift ;;
+    # HIMMEL-2626: check-only entry for the unattended dispatcher's PHI/egress
+    # pre-check — see the guard_workspace call site below for what this does
+    # and why it exists.
+    --guard-check) GUARD_CHECK=1; shift ;;
     *) break ;;
   esac
 done
@@ -226,6 +231,27 @@ guard_workspace() { # $1 dir-as-given, $2 label for messages
 
 CWD="$(pwd -P)"
 guard_workspace "$CWD" "this workspace"
+
+# HIMMEL-2626: --guard-check <dir> is the check-only entry the unattended
+# spawn-claudex dispatcher calls PRE-CREATION — before it mints the worktree,
+# the branch, the session dir, meta.json, or spends a billable auth probe.
+# Without this, the only refusal for a PHI-marked dispatch arrives at launch
+# (the guard_workspace call above, applied to the WORKER'S cwd), by which time
+# all of that already happened. This is deliberately NOT a second recogniser
+# reimplemented inside spawn-claudex: guard_workspace stays the single owner
+# of the PHI/egress verdict (D1), so the two call sites can never drift apart.
+# guard_workspace itself exits 3 on a refusal (and on an inaccessible
+# directory) and returns normally on an allow, so falling through to `exit 0`
+# below means the directory is clear. No config dir is seeded and claude is
+# never launched. A caller passing both --guard-check and --force inherits
+# guard_workspace's existing --force behavior verbatim (it only softens the
+# egress-denylist row to a warning; PHI markers/phi-roots never have an
+# override) — spawn-claudex never passes --force through to this launcher.
+if [ "$GUARD_CHECK" -eq 1 ]; then
+  [ $# -ge 1 ] || { echo "claude-codex: --guard-check needs a directory argument." >&2; exit 2; }
+  guard_workspace "$1" "$1"
+  exit 0
+fi
 
 # Harness-integrity arg screen (CR HIMMEL-979 R3/R4): args pass to claude
 # verbatim, so flags that disable hooks or inject settings would break the

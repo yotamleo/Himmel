@@ -605,7 +605,8 @@ outside the sandbox owning push) — scoped, not built, on HIMMEL-1961, because
 today's threat model is a worker misreading a parent-authored brief rather than
 an adversary. The hard per-lane bound arrives with the WS4/WS7 gates.
 
-The D2 egress guards (`glm-guard.ts`) are **dormant-by-construction in v1**:
+The D2 egress guards (`phi-egress-guard.ts`, renamed from `glm-guard.ts` under
+HIMMEL-2622) are **dormant-by-construction in v1**:
 with the himmel-worktree cwd scope they can realistically fire only if the
 himmel tree itself is listed in `~/.config/claude-glm/{phi-roots,egress-denylist}`.
 They ship now (fail-closed, no `--force` on this path) because the vault

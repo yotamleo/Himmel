@@ -264,7 +264,25 @@ _arm_cache_dir_gc() {
         rm -rf "$_stale" 2>/dev/null || true
     done <<< "$_aged"
 }
-if [ -z "${_ARM_CACHE_DIR:-}" ]; then
+# _arm_cache_dir_usable -- rc 0 iff $_ARM_CACHE_DIR is set AND still exists
+# AND is writable. This is EXISTENCE, not emptiness -- checked both here at
+# source time and again inside each cache consumer below, because the
+# variable being non-empty proves nothing: it is EXPORTED, so it is
+# inherited verbatim by every descendant process and by any long-lived shell
+# for as long as that shell lives, and neither of those re-derives it. A
+# reboot that wipes /tmp is the easy way to make the directory vanish while
+# the variable survives; the sharper, self-inflicted way needs no restart --
+# _arm_cache_dir_gc (below) deletes cache dirs older than 1440 minutes and
+# runs in every OTHER fresh top-level process, so a shell alive longer than
+# that keeps exporting a path some newer process has already GC'd out from
+# under it. Re-minting only at source time cannot fix that second case (a
+# shell that already sourced this file does not run the `if` below again),
+# so the two consumers re-check usability themselves at each call rather
+# than trusting the variable's mere non-emptiness.
+_arm_cache_dir_usable() {
+    [ -n "${_ARM_CACHE_DIR:-}" ] && [ -d "$_ARM_CACHE_DIR" ] && [ -w "$_ARM_CACHE_DIR" ]
+}
+if ! _arm_cache_dir_usable; then
     _arm_cache_dir_gc
     _ARM_CACHE_DIR=$(mktemp -d -t arm-resume-cache.XXXXXX 2>/dev/null) || _ARM_CACHE_DIR=""
     export _ARM_CACHE_DIR
@@ -274,11 +292,18 @@ fi
 # top-level process and cached in $_ARM_CACHE_DIR (falls back to recomputing
 # every call, the pre-cache behavior, when the dir could not be created).
 _arm_cygpath_available() {
-    local _avail="" _f="${_ARM_CACHE_DIR:+$_ARM_CACHE_DIR/cygpath-avail}"
+    local _avail="" _f=""
+    _arm_cache_dir_usable && _f="$_ARM_CACHE_DIR/cygpath-avail"
     [ -n "$_f" ] && [ -r "$_f" ] && _avail=$(<"$_f")
     if [ -z "$_avail" ]; then
         if command -v cygpath >/dev/null 2>&1; then _avail=yes; else _avail=no; fi
-        [ -n "$_f" ] && { printf '%s' "$_avail" > "$_f" 2>/dev/null || true; }
+        # stderr redirected FIRST: redirections apply left to right, so if
+        # `> "$_f"` fails to open (e.g. $_ARM_CACHE_DIR vanished between the
+        # usability check above and here), the shell's own diagnostic lands
+        # on the ALREADY-redirected fd2 (/dev/null), not the real stderr.
+        # Reordered the other way around, the open failure fires before
+        # 2>/dev/null takes effect and prints raw regardless (HIMMEL-2583).
+        [ -n "$_f" ] && { printf '%s' "$_avail" 2>/dev/null > "$_f" || true; }
     fi
     [ "$_avail" = yes ]
 }
@@ -330,7 +355,8 @@ _arm_cygpath_available() {
 # codebase's actual call sites. Escaping it fully is out of proportion for a
 # same-process memoization cache; revisit if that ever becomes real.
 _arm_identity_path() {
-    local _p _platform="${PLATFORM:-}" _os _key_path _key_plat _key_os _key_cwd _val _cf="${_ARM_CACHE_DIR:+$_ARM_CACHE_DIR/identity}"
+    local _p _platform="${PLATFORM:-}" _os _key_path _key_plat _key_os _key_cwd _val _cf=""
+    _arm_cache_dir_usable && _cf="$_ARM_CACHE_DIR/identity"
     if [ -n "$_cf" ] && [ -r "$_cf" ]; then
         while IFS=$'\037' read -r _key_path _key_plat _key_os _key_cwd _val; do
             if [ "$_key_path" = "$1" ] && [ "$_key_plat" = "$_platform" ] \
@@ -355,7 +381,11 @@ _arm_identity_path() {
         fi
         _hp_ascii_lower "$_p"; _p="$_HP_LOWER"
     fi
-    [ -n "$_cf" ] && { printf '%s\037%s\037%s\037%s\037%s\n' "$1" "${PLATFORM:-}" "${OSTYPE:-}" "$PWD" "$_p" >> "$_cf" 2>/dev/null || true; }
+    # stderr redirected FIRST (see the matching comment in
+    # _arm_cygpath_available above) so a failed `>>` open never reaches the
+    # real stderr even if $_ARM_CACHE_DIR vanished between the usability
+    # check and here (HIMMEL-2583).
+    [ -n "$_cf" ] && { printf '%s\037%s\037%s\037%s\037%s\n' "$1" "${PLATFORM:-}" "${OSTYPE:-}" "$PWD" "$_p" 2>/dev/null >> "$_cf" || true; }
     printf '%s' "$_p"
 }
 

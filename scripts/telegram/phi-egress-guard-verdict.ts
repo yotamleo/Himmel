@@ -1,18 +1,18 @@
-// scripts/telegram/glm-guard-verdict.ts — HIMMEL-2204 cross-language parity
-// harness. Thin CLI over the REAL checkGlmGuards(), normalizing its {ok,
+// scripts/telegram/phi-egress-guard-verdict.ts — HIMMEL-2204 cross-language parity
+// harness. Thin CLI over the REAL checkPhiEgressGuards(), normalizing its {ok,
 // reason} result to one coarse verdict label so a bash test can diff it
 // against the bash-side reference verdict without depending on exact wording
-// (test-glm-guard-parity.sh: "assert the VERDICT, not the mechanism").
-// Not a runtime entry point for glm-guard.ts itself — test-only.
-import { checkGlmGuards } from "./glm-guard";
+// (test-phi-egress-guard-parity.sh: "assert the VERDICT, not the mechanism").
+// Not a runtime entry point for phi-egress-guard.ts itself — test-only.
+import { checkPhiEgressGuards } from "./phi-egress-guard";
 
 const [, , cwd, cfgDir] = process.argv;
 if (!cwd || !cfgDir) {
-  console.error("usage: glm-guard-verdict.ts <cwd> <cfgDir>");
+  console.error("usage: phi-egress-guard-verdict.ts <cwd> <cfgDir>");
   process.exit(2);
 }
 
-const r = checkGlmGuards(cwd, cfgDir);
+const r = checkPhiEgressGuards(cwd, cfgDir);
 if (r.ok) {
   console.log("ALLOW");
 } else {

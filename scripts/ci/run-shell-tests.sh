@@ -606,7 +606,7 @@ esac
 SUITE_REQUIRE_TOOL_DEFAULT="
 scripts/test-claude-openrouter-pwsh.sh  pwsh  # PowerShell twin smoke suite for claude-openrouter.ps1 (HIMMEL-1792); runs wherever pwsh exists, loud-skips where it does not
 scripts/lib/test-native-auth-pin-pwsh.sh  pwsh  # PowerShell twin suite for native-auth-pin.ps1 (HIMMEL-1867); runs wherever pwsh exists, loud-skips where it does not
-scripts/telegram/test-glm-guard-parity.sh  bun  # cross-language phi-egress-lib.sh/glm-guard.ts parity check (HIMMEL-2204); runs wherever bun exists, loud-skips where it does not
+scripts/telegram/test-phi-egress-guard-parity.sh  bun  # cross-language parity check (scripts/claude-glm vs scripts/telegram/phi-egress-guard.ts) (HIMMEL-2204); runs wherever bun exists, loud-skips where it does not
 "
 SUITE_REQUIRE_TOOL="${SUITE_REQUIRE_TOOL:-$SUITE_REQUIRE_TOOL_DEFAULT}"
 

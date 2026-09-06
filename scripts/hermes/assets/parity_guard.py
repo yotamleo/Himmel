@@ -766,7 +766,8 @@ def _merged_pr_reason(start: str):
 # PHI-marked material to any of them is a data-egress violation, so this fence
 # fires UNCONDITIONALLY on this profile ("both engines" per F-B5 — no engine
 # gate is needed because the profile has no local engine). Semantics mirror
-# scripts/telegram/glm-guard.ts checkGlmGuards (KEEP IN SYNC): a path is PHI if
+# scripts/telegram/phi-egress-guard.ts checkPhiEgressGuards (KEEP IN SYNC,
+# renamed from glm-guard.ts under HIMMEL-2622): a path is PHI if
 # a `.salus` marker sits at it or any ancestor, or it is under a root listed in
 # ~/.config/claude-glm/{phi-roots,egress-denylist}. FAIL-CLOSED: a list file
 # that exists but is unreadable REFUSES; there is no override on this lane.
@@ -777,9 +778,9 @@ def _merged_pr_reason(start: str):
 # pattern that happens to resolve under a PHI root over-blocks. The terminal
 # scan is command-text best-effort (wrapper/quoting gaps, like block-read-secrets).
 # Single source of truth for the PHI/egress root lists — the SAME files
-# glm-guard.ts reads (~/.config/claude-glm). CLAUDE_GLM_CONFIG_DIR overrides the
-# location (mirrors glm-guard's cfgDir param; lets the test suite point at a
-# temp tree without touching the real home).
+# phi-egress-guard.ts reads (~/.config/claude-glm). CLAUDE_GLM_CONFIG_DIR
+# overrides the location (mirrors phi-egress-guard's cfgDir param; lets the
+# test suite point at a temp tree without touching the real home).
 PHI_CONFIG_DIR = os.environ.get("CLAUDE_GLM_CONFIG_DIR") or os.path.join(
     os.path.expanduser("~"), ".config", "claude-glm")
 PHI_ROOT_LISTS = ("phi-roots", "egress-denylist")
@@ -813,7 +814,8 @@ def _salus_marked(ap: str) -> bool:
 
 def _under_any_root(ap: str, listfile: str) -> str:
     """'hit' | 'miss' | 'unreadable' — is absolute `ap` a listed root or a
-    descendant of one? Mirrors glm-guard.ts pathUnderAny (fail-closed tri-state)."""
+    descendant of one? Mirrors phi-egress-guard.ts pathUnderAny (fail-closed
+    tri-state)."""
     if not os.path.exists(listfile):
         return "miss"
     try:

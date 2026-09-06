@@ -110,7 +110,8 @@ DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
 Corpus membership resolves through the SAME primitives the live guards
 already use: `.salus` root markers and the
 `~/.config/claude-glm/{phi-roots,egress-denylist}` list files
-(`scripts/telegram/glm-guard.ts`, `scripts/hermes/assets/parity_guard.py`),
+(`scripts/telegram/phi-egress-guard.ts` — renamed from `glm-guard.ts` under
+HIMMEL-2622 — and `scripts/hermes/assets/parity_guard.py`),
 plus vault/state roots from env or config — never hardcoded absolute paths.
 The matrix defines *policy*; membership resolution stays with the guards.
 
@@ -182,7 +183,7 @@ real vault path listed beside it); mixed staged+real invocations need
 |---|---|
 | `scripts/guardrails/graphify-fence.sh` (HIMMEL-621 Phase G-F) | maps graphify `--backend` → provider, target path → corpus, purpose = `extraction`; verdict via `scripts/guardrails/egress-matrix-eval.mjs` (the reference semantics as a CLI); wired as the narrow `block-graphify-egress` PreToolUse hook |
 | `parity_guard.py` PHI/egress fence (HIMMEL-695) | the `salus` row (hard deny) — already enforced; the matrix documents the policy it implements |
-| `glm-guard.ts` | same `salus`/denylist row |
+| `phi-egress-guard.ts` (renamed from `glm-guard.ts`, HIMMEL-2622) | same `salus`/denylist row |
 | HIMMEL-765 embedding/rerank pilot client | the `alibaba` × `embedding`/`rerank`/`vision-embedding` cells — all now explicit `deny` (Alibaba de-listed, HIMMEL-1257; the pilot is not being pursued) |
 
 ## Invariants (enforced by the test)

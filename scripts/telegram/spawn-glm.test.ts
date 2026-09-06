@@ -236,7 +236,7 @@ test("window preflight runs BEFORE git worktree add — a refusal leaves no orph
 
 test("GLM guard check runs BEFORE git worktree add — a refusal leaves no orphan (wiring pin, #848)", () => {
   const src = readFileSync("scripts/telegram/spawn-glm.ts", "utf8");
-  const guardIdx = src.indexOf("checkGlmGuards(");
+  const guardIdx = src.indexOf("checkPhiEgressGuards(");
   const wtIdx = src.indexOf('"worktree", "add"');
   const trustIdx = src.indexOf("ensureWorkspaceTrust(worktree);");
   expect(guardIdx).toBeGreaterThan(-1);
@@ -297,7 +297,7 @@ test("shared-branch lock is acquired BEFORE any worktree mutation, and main() gu
   expect(acquireIdx).toBeLessThan(trustIdx);    // lock before trust-seed
   expect(addIdx).toBeLessThan(trustIdx);        // worktree add before trust-seed
   // main() runs the GLM guard before it dispatches into the shared lifecycle
-  const guardIdx = src.indexOf("checkGlmGuards(worktree)");
+  const guardIdx = src.indexOf("checkPhiEgressGuards(worktree)");
   const callIdx = src.indexOf("runSharedDispatch({");
   expect(guardIdx).toBeGreaterThan(-1);
   expect(callIdx).toBeGreaterThan(-1);
@@ -331,16 +331,37 @@ test("own-branch (flag-less) path is untouched — mints its own branch with -b,
   expect(src).not.toContain('"config"');
 });
 
+// transcriptDirFor() runs the input through resolve(), which is PLATFORM
+// dependent: "C:\Users\..." is absolute on win32 and *relative* on POSIX, where
+// resolve() silently prefixes the cwd and the expected escape string can never
+// match (HIMMEL-2620 — these two were the "2 spawn-glm reds" on Linux). The fix
+// is a platform-appropriate ABSOLUTE fixture, not a skip: the escaping rule is
+// the same on both, so both legs keep the assertion. Expected strings stay
+// hand-written per platform — deriving them from the implementation's own regex
+// would make the test tautological.
+const CWD_FIXTURE = process.platform === "win32"
+  ? {
+      worktree: "C:\\Users\\alice\\Documents\\github\\himmel\\.claude\\worktrees\\glm+a",
+      worktreeEscaped: "C--Users-alice-Documents-github-himmel--claude-worktrees-glm-a",
+      underscore: "C:\\Users\\alice\\Documents\\github\\my_docs",
+      underscoreEscaped: "C--Users-alice-Documents-github-my-docs",
+    }
+  : {
+      worktree: "/home/alice/Documents/github/himmel/.claude/worktrees/glm+a",
+      worktreeEscaped: "-home-alice-Documents-github-himmel--claude-worktrees-glm-a",
+      underscore: "/home/alice/Documents/github/my_docs",
+      underscoreEscaped: "-home-alice-Documents-github-my-docs",
+    };
+
 test("transcript dir derives from escaped cwd, not slug", () => {
-  const d = transcriptDirFor("C:\\Users\\alice\\Documents\\github\\himmel\\.claude\\worktrees\\glm+a");
-  expect(d).toBe(join(homedir(), ".claude", "projects",
-    "C--Users-alice-Documents-github-himmel--claude-worktrees-glm-a"));
+  const d = transcriptDirFor(CWD_FIXTURE.worktree);
+  expect(d).toBe(join(homedir(), ".claude", "projects", CWD_FIXTURE.worktreeEscaped));
 });
 
 test("transcript dir escapes EVERY non-alphanumeric (underscore too — matches real CC dirs)", () => {
   // ground truth from real CC project dirs: ...\my_docs → ...-my-docs
-  const d = transcriptDirFor("C:\\Users\\alice\\Documents\\github\\my_docs");
-  expect(d).toBe(join(homedir(), ".claude", "projects", "C--Users-alice-Documents-github-my-docs"));
+  const d = transcriptDirFor(CWD_FIXTURE.underscore);
+  expect(d).toBe(join(homedir(), ".claude", "projects", CWD_FIXTURE.underscoreEscaped));
 });
 
 // --- runSharedDispatch (HIMMEL-800 I7): lock lifecycle, and (HIMMEL-1961) the

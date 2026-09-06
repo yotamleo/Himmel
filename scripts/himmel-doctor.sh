@@ -1614,7 +1614,7 @@ $seen"
 # The salus medical-vault profile installer/upgrade drops `.salus-profile`
 # (template machinery) at the vault root; the PHI launcher guards (claude-glm/
 # claude-codex/claude-routed + their .ps1 twins + the hermes parity guard, and
-# scripts/telegram/glm-guard.ts) test for `.salus` before refusing a cloud/
+# scripts/telegram/phi-egress-guard.ts) test for `.salus` before refusing a cloud/
 # codex launch there (now `.salus-profile` too, as a defense — HIMMEL-2173
 # part 2). A vault that carries the profile marker but no `.salus` looks
 # PHI-protected to the operator (it opted into the medical profile) yet had no
@@ -2030,6 +2030,140 @@ check_c30() {
     fi
 }
 
+# --- C31: tokensave wired for codex but this checkout has no index (HIMMEL-2578) -
+# tokensave is a PER-CHECKOUT index (`.tokensave/`, gitignored), not a
+# per-machine install. When codex's config.toml declares
+# [mcp_servers.tokensave] but the checkout was never indexed, `tokensave
+# serve` exits before answering `initialize`, and codex reports only:
+#   MCP client for tokensave failed to start: MCP startup failed: handshaking
+#   with MCP server failed: connection closed: initialize response
+# — naming neither cause nor remedy, and reading to an operator like a full
+# MCP outage (HIMMEL-2547). This is the doctor-side twin of the installer's
+# own probe of the same marker (scripts/install/manifest.json's
+# "initMarker": ".tokensave"), but over the CODEX config rather than
+# .mcp.json.
+#
+# Test seams: CODEX_HOME (codex's OWN env var, not a test-only invention;
+# matches scripts/codex/startup-health.sh's convention) selects the config
+# file, and HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT selects the checkout whose
+# .tokensave/ index is probed — required because THIS station is the
+# wired+indexed OK case, so the WARN row is unobservable without a seam, and
+# mutating the real checkout or the operator's real codex config to observe
+# it is not an option.
+check_c31() {
+    local codex_home="${CODEX_HOME:-${HOME:-}/.codex}"
+    local cfg="$codex_home/config.toml"
+    local checkout="${HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT:-$REPO_ROOT}"
+
+    if [ ! -f "$cfg" ]; then
+        # Distinct wording from "does not wire tokensave" below (CR-round
+        # precedent, C30): "no codex config at all" and "a config that wires
+        # something else" are different facts, and collapsing them into one
+        # message is itself a finding.
+        emit OK C31-tokensave-index "no codex config at $cfg — nothing to check"
+        return
+    fi
+    if [ ! -r "$cfg" ]; then
+        # A failed read establishes NOTHING about what the config wires.
+        # Calling that "not wired" would assert an OK from evidence that
+        # never said so — the same finding class as C30's MainPID-query
+        # rows. Never OK, never WARN: only INFO (undetermined).
+        local cfg_q; cfg_q=$(printf '%q' "$cfg")
+        emit INFO C31-tokensave-index "$cfg exists but is not readable — tokensave wiring undetermined" \
+            "chmod +r $cfg_q   # or re-run this check as the file's owner"
+        return
+    fi
+    # Anchored to the exact parent-table header, never a bare substring
+    # match: a real wired config carries 80+ per-tool
+    # [mcp_servers.tokensave.tools.<name>] sub-tables, which declare no
+    # `command` (codex spawns nothing from them) — a substring match on
+    # '[mcp_servers.tokensave' would misread those as wiring. Requiring
+    # `\]` immediately (mod whitespace) after the SECOND segment is what
+    # keeps those sub-tables excluded: `.tools.foo]` puts a literal `.`
+    # where the pattern instead demands whitespace-then-`]`, so the match
+    # fails and the sub-table row stays "not wired". The leading
+    # ^[[:space:]]* anchor is what excludes a commented-out
+    # `# [mcp_servers.tokensave]` header too.
+    #
+    # Past this point TOML's own header grammar has three independent
+    # dimensions, and this pattern covers each one FULLY rather than
+    # accreting one more bolted-on alternative per CR round (three rounds
+    # each added a single case; this rewrite closes the shape instead):
+    #   - whitespace: TOML permits it after the opening `[`, on both
+    #     sides of the dotted-key `.` separator, and before the closing
+    #     `]` — every `[[:space:]]*` below is one of those four spots.
+    #   - key spelling: EACH dotted segment (`mcp_servers` and
+    #     `tokensave` independently, not just the second) may be a bare
+    #     key, a basic string (`"key"`), or a literal string (`'key'`) —
+    #     hence the three-way alternation applied twice, once per
+    #     segment.
+    #   - trailing comment: `[[:space:]]*(#.*)?$` tolerates an inline
+    #     TOML comment after the closing bracket (e.g.
+    #     `[mcp_servers.tokensave] # local server`) — TOML permits that,
+    #     and without it a commented-header config reads as unwired,
+    #     which is a false OK that suppresses the WARN below.
+    #
+    # Deliberate boundary: this is a regex, not a TOML parser, so escape
+    # sequences INSIDE a quoted key are not decoded — a header spelled
+    # with an escape (e.g. a key containing `t`) would still read as
+    # unwired here. No tool in the wild writes that, and correctly
+    # decoding it needs a real TOML parser, not one more alternation. A
+    # future round that turns up such a spelling should record it as a
+    # documented scope line here, not bolt on another case.
+    local hdr_re
+    hdr_re='^[[:space:]]*\[[[:space:]]*(mcp_servers|"mcp_servers"|'"'"'mcp_servers'"'"')[[:space:]]*\.[[:space:]]*(tokensave|"tokensave"|'"'"'tokensave'"'"')[[:space:]]*\][[:space:]]*(#.*)?$'
+    if ! grep -qE "$hdr_re" "$cfg"; then
+        emit OK C31-tokensave-index "codex config at $cfg does not wire tokensave — nothing armed, nothing to check"
+        return
+    fi
+    # `enabled = false` on an MCP server table is a REAL codex key, IN USE on
+    # this station's own ~/.codex/config.toml (mcp_servers.telegram carries
+    # `enabled = false`) — not a hypothetical branch. A disabled tokensave
+    # table means codex will never start it, so an unindexed checkout is not
+    # a problem: warning here would be exactly the "nag when nothing is
+    # armed" failure C30's banner exists to avoid. Read ONLY the parent
+    # table's own body — from its header line up to (not including) the
+    # next TOML table header — because the real config carries 80+
+    # [mcp_servers.tokensave.tools.*] sub-tables right after the parent, and
+    # an `enabled` line inside one of those is NOT part of the parent's body
+    # (see the negative-control test row for this exact trap).
+    #
+    # Like hdr_re above, the `enabled` key itself accepts all three TOML key
+    # spellings — bare, "enabled", and 'enabled' — since `"enabled" = false`
+    # and `'enabled' = false` are the same key as the bare form and a config
+    # using either spelling is genuinely disabled. The same documented
+    # boundary as hdr_re applies here too: this is a regex, not a TOML
+    # parser, so escape sequences inside a quoted key are not decoded. Only
+    # the KEY spelling is widened, never the value — `enabled = "false"` is
+    # the TOML string "false", not the boolean, so it must still fall
+    # through to the WARN below (see the value-not-key control).
+    local hdr_line
+    hdr_line=$(grep -nE "$hdr_re" "$cfg" | head -n1 | cut -d: -f1)
+    # awk reads the parent table's own body and answers the question
+    # itself — via its own exit status — so there is no pipeline for
+    # `pipefail` to invert (a `printf | grep -q` producer/consumer pair can
+    # SIGPIPE on an early match, turning a SUCCESSFUL match into a failed
+    # pipeline, HIMMEL-1430) and no here-string to materialise the body
+    # into a shell variable, which would hit Git Bash's ~64 KiB here-string
+    # limit on a large config (HIMMEL-2027).
+    if awk -v start="$hdr_line" '
+        NR == start { in_body = 1; next }
+        in_body && /^[[:space:]]*\[/ { exit }
+        in_body && /^[[:space:]]*(enabled|"enabled"|'"'"'enabled'"'"')[[:space:]]*=[[:space:]]*false[[:space:]]*(#.*)?$/ { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    ' "$cfg"; then
+        emit OK C31-tokensave-index "codex config at $cfg declares [mcp_servers.tokensave] but enabled = false — the table is disabled, nothing armed, nothing to check"
+        return
+    fi
+    if [ -d "$checkout/.tokensave" ]; then
+        emit OK C31-tokensave-index "codex wires tokensave and $checkout is indexed (.tokensave/ present)"
+        return
+    fi
+    local checkout_q; checkout_q=$(printf '%q' "$checkout")
+    emit WARN C31-tokensave-index "codex wires tokensave for $checkout but it has no .tokensave/ index — tokensave serve will exit before answering initialize, and codex will report only the opaque 'connection closed: initialize response' (HIMMEL-2547)" \
+        "tokensave init $checkout_q --no-git-hook   # --no-git-hook is load-bearing: tokensave's own hook install races himmel's gated pre-commit chain (HIMMEL-2281)"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -2063,6 +2197,7 @@ check_c27
 check_c28_guardrail_consent
 check_c29
 check_c30
+check_c31
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

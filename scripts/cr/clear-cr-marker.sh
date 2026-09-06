@@ -602,8 +602,8 @@ exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("d
 # lower its severity), so it must never be the one piece of decisive evidence
 # the transcript omits.
 if [ -n "$applied_amends" ]; then
-    echo "clear-cr-marker: applied amend(s) at ${tip:0:8}: $applied_amends" >&2
-    audit "AMENDS branch=$branch sha=$tip applied=$applied_amends"
+    echo "clear-cr-marker: merged amend(s) while evaluating ${tip:0:8}: $applied_amends" >&2
+    audit "AMENDS-MERGED branch=$branch sha=$tip merged=$applied_amends"
 fi
 
 # Malformed ledger lines => the verdict is UNKNOWN. Refuse (coderabbit).

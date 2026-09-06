@@ -916,7 +916,8 @@ omitted-key and unknown-key red paths).
 the offload loop (spawn → inspect → validate → push-by-validator). It creates a
 fresh git worktree + `glm/<slug>` branch, resolves the GLM env block
 (`glm-env.ts` — `ZAI_API_KEY` from shell env or the himmel repo `.env`, launcher
--parity `ANTHROPIC_*` vars), runs the D2 egress guard (`glm-guard.ts`), composes
+-parity `ANTHROPIC_*` vars), runs the D2 egress guard (`phi-egress-guard.ts`,
+renamed from `glm-guard.ts` under HIMMEL-2622), composes
 the worker prompt with minted `outbox.jsonl` / `context.md` paths, and drives
 the run through the `runSession(…, lane:"glm")` seam in `run.ts`. GLM runs pin
 `--model opus` (→ `glm-5.2[1m]`) and ignore `TELEGRAM_CLAUDE_MODEL`. Sessions live

@@ -62,7 +62,7 @@ cleanup() {
   # foreign-bridge case launches from a separate path (HIMMEL-2551). Two
   # literal -F sweeps rather than one regex — $WORK is an mktemp path and may
   # legitimately carry regex metacharacters.
-  for pat in "$WORK/fakebin/bun" "$WORK/decoybin/bun" "$WORK/slowbin/stage2"; do
+  for pat in "$WORK/fakebin/bun" "$WORK/decoybin/bun" "$WORK/slowbin/stage2" "$HOME/.bun/bin/bun" "$WORK/precedence-bin/bun"; do
     # shellcheck disable=SC2009 # portable across GNU/BSD/MSYS ps -ef; pgrep is
     # inconsistent/absent on this repo's MSYS dev host.
     while IFS= read -r p; do [ -n "$p" ] && pids+=("$p"); done \
@@ -1860,6 +1860,197 @@ else
     "see the root skip above"
   skip "marker-remove failure: the bridge itself still launches normally (one poller)" "see the root skip above"
   skip "marker-remove failure: write_launch_marker's later overwrite of the same file still succeeds" "see the root skip above"
+fi
+
+# ── HIMMEL-2582: the PATH fallback finds bun under $HOME/.bun/bin ─────────
+# when the launcher's OWN PATH is linger-shaped. A linger-started systemd
+# user unit runs before the login shell's PATH import, so on 2026-09-05 the
+# unit's own environment was PATH=/usr/local/bin:/usr/bin (read live from
+# /proc/<poller>/environ) — `command -v bun` failed there, and once that was
+# worked around by hand the poller's bounded run still died with
+# `Error: Executable not found in $PATH: "claude"`. restart-bridge.sh now
+# appends $HOME/.local/bin and $HOME/.bun/bin (when they exist) to
+# whatever PATH it was launched with, for every verb, before the first
+# `command -v` (see `_himmel_tool_dir` near the top of the script).
+#
+# Reuses $NOBUN_BIN — the curated, symlinked-tool, deliberately-bun-free PATH
+# built above for the RETASK bun-resolution case — as the "linger-shaped"
+# PATH for both cases below: it excludes $FAKE_BIN and any real bun while
+# still resolving every OTHER external command restart-bridge.sh calls (ps,
+# grep, sed, awk, date, stat, flock, ...). The literal linger PATH
+# "/usr/local/bin:/usr/bin" cannot be used verbatim here: this station ships
+# a real bun at /usr/bin/bun, so any PATH built from real system directories
+# resolves it and the negative control below would be vacuous — only a
+# from-scratch curated directory can guarantee "no bun anywhere on PATH" on
+# a host that genuinely has one installed.
+#
+# `env PATH=... bash "$SCRIPT" ...` (never a bare `export PATH=...`) scopes
+# the override to each ONE invocation so it cannot leak into $PATH for the
+# rest of the suite, which still needs $FAKE_BIN on it for every other case.
+# Only `start`/`run` resolve bun at all (`status` never calls `command -v
+# bun`), so `start` is the only verb that can exercise this — stopped and
+# polled to zero afterward, matching the neighbouring bun-resolution case.
+if [ "$NOBUN_OK" -eq 1 ]; then
+  # Negative control: same curated bun-free PATH, and a sandboxed HOME with
+  # no $HOME/.bun/bin — proves the probe actually observes the failure mode
+  # (and not some other unrelated PATH quirk of this host) before the
+  # positive case below is allowed to mean anything.
+  rm -rf "$HOME/.bun" 2>/dev/null || true
+  path2582_neg_rc=0
+  path2582_neg_out=$(run_with_timeout 20 env PATH="$NOBUN_BIN" bash "$SCRIPT" --repo "$FIXTURE_REPO" start 2>&1) || path2582_neg_rc=$?
+  # grep reads a HERE-STRING rather than taking the output on a pipe: this
+  # file runs under `set -o pipefail` (line 34), where a quiet grep exits at
+  # the first match, the producer then takes SIGPIPE writing the rest, and the
+  # PIPELINE status goes non-zero — so a successful match can read as a failure
+  # and invert the guard (HIMMEL-1430). The captured output is a few short
+  # lines, far below the size where a here-string wedges Git Bash
+  # (HIMMEL-2027).
+  check "HIMMEL-2582 control: linger-shaped PATH with no \$HOME/.bun/bin exits 1" 1 "$path2582_neg_rc"
+  if grep -q "'bun' not found on PATH" <<< "$path2582_neg_out"; then
+    pass "HIMMEL-2582 control: output names \"'bun' not found on PATH\""
+  else
+    fail "HIMMEL-2582 control: output names \"'bun' not found on PATH\"" \
+      "output: $(printf '%s' "$path2582_neg_out" | tr '\n' '|')"
+  fi
+
+  # The actual assertion: same PATH, but $HOME/.bun/bin/bun now exists (the
+  # fix's own fallback target) — the block must add it to the curated PATH,
+  # so bun resolution succeeds and the launcher must NOT print the not-found
+  # message.
+  mkdir -p "$HOME/.bun/bin"
+  cp "$FAKE_BIN/bun" "$HOME/.bun/bin/bun"
+  chmod +x "$HOME/.bun/bin/bun"
+  HOMEBUN_POLLER_PAT="$HOME/.bun/bin/bun poller.ts"
+  HOMEBUN_SUPERVISOR_PAT="$HOME/.bun/bin/bun supervisor.ts"
+  path2582_pos_rc=0
+  path2582_pos_out=$(run_with_timeout 20 env PATH="$NOBUN_BIN" bash "$SCRIPT" --repo "$FIXTURE_REPO" start 2>&1) || path2582_pos_rc=$?
+  check "HIMMEL-2582: with \$HOME/.bun/bin/bun present, start exits 0" 0 "$path2582_pos_rc"
+  if grep -q "'bun' not found on PATH" <<< "$path2582_pos_out"; then
+    fail "HIMMEL-2582: the PATH fallback finds \$HOME/.bun/bin/bun (no not-found message)" \
+      "output: $(printf '%s' "$path2582_pos_out" | tr '\n' '|')"
+  else
+    pass "HIMMEL-2582: the PATH fallback finds \$HOME/.bun/bin/bun (no not-found message)"
+  fi
+  homebun_pollers=$(poll_until "$HOMEBUN_POLLER_PAT" 1 30)
+  check "HIMMEL-2582: the bridge actually launched via \$HOME/.bun/bin/bun (one poller)" 1 "$homebun_pollers"
+
+  stop_bridge >"$WORK/log-2582-cleanup-stop.log" 2>&1
+  poll_until "$HOMEBUN_POLLER_PAT" 0 30 >/dev/null
+  poll_until "$HOMEBUN_SUPERVISOR_PAT" 0 10 >/dev/null
+
+  # PRECEDENCE (CR codex-1). The tool dirs are APPENDED, not prepended, so a
+  # bun the incoming PATH already resolves stays in charge — an operator who
+  # deliberately points the bridge at a specific build must not be silently
+  # overruled by whatever happens to sit in ~/.bun/bin. An earlier draft
+  # prepended while its comment claimed the opposite; this case exists so the
+  # ordering is pinned by a launch rather than asserted in prose.
+  #
+  # Both bun copies are present and identical in behaviour, so the ONLY thing
+  # distinguishing them is the argv path the launcher execs — which is exactly
+  # what the poller pattern below matches on.
+  mkdir -p "$HOME/.bun/bin"
+  cp "$FAKE_BIN/bun" "$HOME/.bun/bin/bun"
+  chmod +x "$HOME/.bun/bin/bun"
+  PRECEDENCE_BIN="$WORK/precedence-bin"
+  mkdir -p "$PRECEDENCE_BIN"
+  cp "$FAKE_BIN/bun" "$PRECEDENCE_BIN/bun"
+  chmod +x "$PRECEDENCE_BIN/bun"
+  PRECEDENCE_POLLER_PAT="$PRECEDENCE_BIN/bun poller.ts"
+  precedence_rc=0
+  run_with_timeout 20 env PATH="$PRECEDENCE_BIN:$NOBUN_BIN" bash "$SCRIPT" --repo "$FIXTURE_REPO" start >"$WORK/log-2582-precedence.log" 2>&1 || precedence_rc=$?
+  check "HIMMEL-2582: a bun already on PATH wins over \$HOME/.bun/bin (dirs are appended)" 0 "$precedence_rc"
+  precedence_pollers=$(poll_until "$PRECEDENCE_POLLER_PAT" 1 30)
+  check "HIMMEL-2582: the launcher exec'd the PATH bun, not the \$HOME/.bun/bin one" 1 "$precedence_pollers"
+  homebun_leaked=$(count_procs "$HOMEBUN_POLLER_PAT")
+  check "HIMMEL-2582: \$HOME/.bun/bin/bun was NOT used while a PATH bun existed" 0 "$homebun_leaked"
+
+  stop_bridge >"$WORK/log-2582-precedence-stop.log" 2>&1
+  poll_until "$PRECEDENCE_POLLER_PAT" 0 30 >/dev/null
+  poll_until "$PRECEDENCE_BIN/bun supervisor.ts" 0 10 >/dev/null
+  rm -rf "$HOME/.bun"
+
+  # ── HIMMEL-2582 (CR codex-1, round 2, AGREED): the launched CHILD inherits
+  # a PATH on which `claude` resolves — not just bun ────────────────────────
+  # Every HIMMEL-2582 case above exercises ONLY bun resolution
+  # ($HOME/.bun/bin). If someone dropped "$HOME/.local/bin" back out of the
+  # `for _himmel_tool_dir in ...` list in restart-bridge.sh, this whole suite
+  # would stay green while re-breaking the exact defect the ticket was filed
+  # for: the poller's bounded run dying with `Error: Executable not found in
+  # $PATH: "claude"`. `claude` is never resolved by restart-bridge.sh itself
+  # (only bun is, via `command -v bun` above) — it is resolved later, by the
+  # POLLER CHILD, out of whatever PATH it inherited. So the property this
+  # case pins is inheritance, not restart-bridge.sh's own resolution: a fake
+  # `claude` under $HOME/.local/bin, and a PROBE bun that — only when invoked
+  # as supervisor.ts — records what ITS OWN inherited environment resolves
+  # `claude` to, then idles in the exact same tight sleep loop every other
+  # fake bun in this suite uses, so the existing stop/poll helpers keep
+  # working on it unmodified.
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/claude"
+  chmod +x "$HOME/.local/bin/claude"
+
+  CLAUDE_PROBE_FILE="$WORK/claude-probe.out"
+  rm -f "$CLAUDE_PROBE_FILE"
+  mkdir -p "$HOME/.bun/bin"
+  cat > "$HOME/.bun/bin/bun" <<EOF
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  supervisor.ts)
+    command -v claude >"$CLAUDE_PROBE_FILE" 2>&1 || true
+    "\$0" poller.ts &
+    while :; do sleep 1; done
+    ;;
+  poller.ts)
+    while :; do sleep 1; done
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+EOF
+  chmod +x "$HOME/.bun/bin/bun"
+
+  claudepath_rc=0
+  run_with_timeout 20 env PATH="$NOBUN_BIN" bash "$SCRIPT" --repo "$FIXTURE_REPO" start >"$WORK/log-2582-claude-probe.log" 2>&1 || claudepath_rc=$?
+  check "HIMMEL-2582 (claude fallback): start exits 0" 0 "$claudepath_rc"
+  claudepath_pollers=$(poll_until "$HOMEBUN_POLLER_PAT" 1 30)
+  check "HIMMEL-2582 (claude fallback): the probe bridge launched (one poller)" 1 "$claudepath_pollers"
+
+  # The probe write happens in supervisor.ts BEFORE it forks the poller, so
+  # observing the poller above (just proven) already implies the probe file
+  # is written; this loop is only a portability guard against a slow flush.
+  claude_probe_seen=0
+  cpi=0
+  while [ "$cpi" -lt 30 ]; do
+    [ -s "$CLAUDE_PROBE_FILE" ] && { claude_probe_seen=1; break; }
+    cpi=$((cpi + 1))
+    sleep 0.2
+  done
+  if [ "$claude_probe_seen" -eq 1 ] && grep -q -- "$HOME/.local/bin/claude" "$CLAUDE_PROBE_FILE"; then
+    pass "HIMMEL-2582 (claude fallback): the launched child resolves claude via \$HOME/.local/bin"
+  else
+    fail "HIMMEL-2582 (claude fallback): the launched child resolves claude via \$HOME/.local/bin" \
+      "probe file $([ -s "$CLAUDE_PROBE_FILE" ] && echo present || echo missing/empty); contents: $(tr '\n' '|' <"$CLAUDE_PROBE_FILE" 2>/dev/null)"
+  fi
+
+  stop_bridge >"$WORK/log-2582-claude-probe-stop.log" 2>&1
+  poll_until "$HOMEBUN_POLLER_PAT" 0 30 >/dev/null
+  poll_until "$HOMEBUN_SUPERVISOR_PAT" 0 10 >/dev/null
+  rm -rf "$HOME/.local/bin" "$HOME/.bun"
+else
+  skip "HIMMEL-2582 control: linger-shaped PATH with no \$HOME/.bun/bin exits 1" \
+    "could not build a bun-less PATH on this host (see the RETASK bun-resolution skip above)"
+  skip "HIMMEL-2582 control: output names \"'bun' not found on PATH\"" "see the skip above"
+  skip "HIMMEL-2582: with \$HOME/.bun/bin/bun present, start exits 0" "see the skip above"
+  skip "HIMMEL-2582: the PATH fallback finds \$HOME/.bun/bin/bun (no not-found message)" "see the skip above"
+  skip "HIMMEL-2582: the bridge actually launched via \$HOME/.bun/bin/bun (one poller)" "see the skip above"
+  skip "HIMMEL-2582: a bun already on PATH wins over \$HOME/.bun/bin (dirs are appended)" "see the skip above"
+  skip "HIMMEL-2582: the launcher exec'd the PATH bun, not the \$HOME/.bun/bin one" "see the skip above"
+  skip "HIMMEL-2582: \$HOME/.bun/bin/bun was NOT used while a PATH bun existed" "see the skip above"
+  skip "HIMMEL-2582 (claude fallback): start exits 0" "see the skip above"
+  skip "HIMMEL-2582 (claude fallback): the probe bridge launched (one poller)" "see the skip above"
+  skip "HIMMEL-2582 (claude fallback): the launched child resolves claude via \$HOME/.local/bin" "see the skip above"
 fi
 
 echo ""

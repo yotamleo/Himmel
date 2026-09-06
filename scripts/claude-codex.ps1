@@ -155,12 +155,17 @@ $Force  = $false
 # HIMMEL-1037: --preflight-only mirrors the bash twin — a cheap auth/liveness
 # probe (0=healthy, 2=unavailable) that exits without launching a worker.
 $PreflightOnly = $false
+# HIMMEL-2626: check-only entry for the unattended dispatcher's PHI/egress
+# pre-check — see the Invoke-GuardWorkspace call site below for what this does
+# and why it exists.
+$GuardCheck = $false
 $ClaudeArgs = [System.Collections.Generic.List[string]]::new()
 $leading = $true
 foreach ($a in $args) {
   if ($leading -and ($a -ieq '-Reseed' -or $a -ieq '--reseed')) { $Reseed = $true; continue }
   if ($leading -and ($a -ieq '-Force'  -or $a -ieq '--force'))  { $Force  = $true; continue }
   if ($leading -and ($a -ieq '-PreflightOnly' -or $a -ieq '--preflight-only')) { $PreflightOnly = $true; continue }
+  if ($leading -and ($a -ieq '-GuardCheck' -or $a -ieq '--guard-check')) { $GuardCheck = $true; continue }
   $leading = $false
   $ClaudeArgs.Add($a)
 }
@@ -281,6 +286,31 @@ function Invoke-GuardWorkspace {
 
 $cwd = (Get-Location).ProviderPath
 Invoke-GuardWorkspace -Dir $cwd -Label 'this workspace'
+
+# HIMMEL-2626: --guard-check <dir> is the check-only entry the unattended
+# spawn-claudex dispatcher calls PRE-CREATION — before it mints the worktree,
+# the branch, the session dir, meta.json, or spends a billable auth probe.
+# Without this, the only refusal for a PHI-marked dispatch arrives at launch
+# (the Invoke-GuardWorkspace call above, applied to the WORKER'S cwd), by
+# which time all of that already happened. This is deliberately NOT a second
+# recogniser reimplemented inside spawn-claudex: Invoke-GuardWorkspace stays
+# the single owner of the PHI/egress verdict (D1), so the two call sites can
+# never drift apart. Invoke-GuardWorkspace itself exits 3 on a refusal (and on
+# an inaccessible directory) and returns normally on an allow, so falling
+# through to `exit 0` below means the directory is clear. No config dir is
+# seeded and claude is never launched. A caller passing both --guard-check and
+# --force inherits Invoke-GuardWorkspace's existing --force behavior verbatim
+# (it only softens the egress-denylist row to a warning; PHI markers/phi-roots
+# never have an override) — spawn-claudex never passes --force through to
+# this launcher.
+if ($GuardCheck) {
+  if ($ClaudeArgs.Count -lt 1) {
+    [Console]::Error.WriteLine('claude-codex: --guard-check needs a directory argument.')
+    exit 2
+  }
+  Invoke-GuardWorkspace -Dir $ClaudeArgs[0] -Label $ClaudeArgs[0]
+  exit 0
+}
 
 # Harness-integrity arg screen (CR HIMMEL-979 R3/R4): args pass to claude
 # verbatim, so flags that disable hooks or inject settings would break the

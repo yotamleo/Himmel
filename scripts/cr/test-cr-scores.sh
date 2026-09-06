@@ -290,5 +290,59 @@ lu_one="$(CR_LEDGER="$LU" bash "$CS" --by-branch feat/wedge 2>&1)"
 contains "branch-filtered report still shows the per-branch unadjudicated count" "$lu_one" "1 unadjudicated at latest head"
 not_contains "branch filter drops the repo-wide unadjudicated total" "$lu_one" "Unadjudicated at latest head (HIMMEL-2067)"
 
+# ── HIMMEL-2579: scoring pass tallies the amend-MERGED verdict ──────────────
+# Since HIMMEL-2321 a finding row is always written with an EMPTY verdict; the
+# real verdict arrives only as a later `amend` record keyed on target_head.
+# amend-1: adjudicated (must count as agreed). amend-2: no matching amend
+# (target_head does not match its finding's head) -> stays unadjudicated.
+# amend-3: an amend targeting a DIFFERENT head than the finding actually
+# carries -> guards the (head, finding_id) key shape (must NOT be applied).
+LA="$tmp/amend-scores.jsonl"
+{
+  echo '{"kind":"finding","ts":"2026-06-01T00:00:00Z","branch":"b","head":"AMH1","model":"delta","finding_id":"d-1","severity":"major","file":"f","line":1,"verdict":""}'
+  echo '{"kind":"amend","ts":"2026-06-01T00:00:01Z","branch":"b","target_head":"AMH1","finding_id":"d-1","artifact":"diff","perspective":"off","set":{"verdict":"agreed"},"reason":"adjudicated"}'
+  echo '{"kind":"finding","ts":"2026-06-01T00:00:02Z","branch":"b","head":"AMH1","model":"delta","finding_id":"d-2","severity":"minor","file":"f","line":2,"verdict":""}'
+  echo '{"kind":"finding","ts":"2026-06-01T00:00:03Z","branch":"b","head":"AMH1","model":"delta","finding_id":"d-3","severity":"minor","file":"f","line":3,"verdict":""}'
+  echo '{"kind":"amend","ts":"2026-06-01T00:00:04Z","branch":"b","target_head":"WRONG-HEAD","finding_id":"d-3","artifact":"diff","perspective":"off","set":{"verdict":"agreed"},"reason":"adjudicated"}'
+} > "$LA"
+amend_out="$(CR_LEDGER="$LA" bash "$CS" 2>&1)"
+# d-1 amend-merged -> agreed, d-2/d-3 stay empty-verdict -> delta agreed% = 1/3 = 33%.
+# Before the fix every row tallied off the empty raw verdict -> agreed% = 0%.
+# Pin the WHOLE row (total=3, agreed%=33%) so a blanket "call everything
+# agreed" regression (total=3, agreed%=100%) would also fail this assertion.
+contains "amend-merged finding counts as agreed; total stays 3 (denominator untouched)" \
+  "$amend_out" "delta                   3        33%"
+
+# A finding with NO matching amend must stay unadjudicated (guards against
+# "call everything agreed"): d-2 has no amend at all, d-3's amend targets a
+# DIFFERENT head (WRONG-HEAD) so it must not apply either — only 1 of the 3
+# findings is counted agreed.
+not_contains "amend-merged finding does not make delta 100pct agreed" "$amend_out" "delta                   3        100%"
+
+# ── HIMMEL-2579: drop advice uses the merged verdict, not the raw one ───────
+# codex: 12 raw-empty findings, 8 of which are amended to "agreed" -> merged
+# agreed% = 8/12 = 67% (>=40 threshold -> NO drop advice). Off the raw rows
+# alone every finding would tally as empty-verdict -> 0% agreed -> drop advice
+# WOULD have fired. This pins that the fix suppresses the spurious advice.
+LD="$tmp/drop-amend-scores.jsonl"
+{
+  for i in 1 2 3 4 5 6 7 8; do
+    echo "{\"kind\":\"finding\",\"ts\":\"2026-06-02T00:00:0${i}Z\",\"branch\":\"b\",\"head\":\"DH1\",\"model\":\"codex\",\"finding_id\":\"dc-${i}\",\"severity\":\"minor\",\"file\":\"f\",\"line\":${i},\"verdict\":\"\"}" >> "$LD"
+    echo "{\"kind\":\"amend\",\"ts\":\"2026-06-02T00:00:1${i}Z\",\"branch\":\"b\",\"target_head\":\"DH1\",\"finding_id\":\"dc-${i}\",\"artifact\":\"diff\",\"perspective\":\"off\",\"set\":{\"verdict\":\"agreed\"},\"reason\":\"adjudicated\"}" >> "$LD"
+  done
+  # Minute 01 with a zero-padded second, NOT "00:00:2${i}" -- that spelling
+  # produced 00:00:210Z / 00:00:211Z / 00:00:212Z for i >= 10, i.e. three-digit
+  # seconds. Those parse today only because cr-scores.sh never validates the
+  # ts format, so the case was quietly asserting scoring behaviour on ledger
+  # dates that can never occur, and would break for an unrelated reason the
+  # day a timestamp check is added.
+  for i in 9 10 11 12; do
+    echo "{\"kind\":\"finding\",\"ts\":\"2026-06-02T00:01:$(printf '%02d' "$i")Z\",\"branch\":\"b\",\"head\":\"DH1\",\"model\":\"codex\",\"finding_id\":\"dc-${i}\",\"severity\":\"minor\",\"file\":\"f\",\"line\":${i},\"verdict\":\"\"}" >> "$LD"
+  done
+}
+drop_amend_out="$(CR_LEDGER="$LD" CR_SCORES_DROP_BELOW=40 CR_SCORES_MIN_N=10 bash "$CS" 2>&1)"
+not_contains "merged verdicts above threshold suppress drop advice for codex" "$drop_amend_out" "consider dropping codex"
+contains "codex merged agreed% shows 67" "$drop_amend_out" "67%"
+
 # ── Final ──────────────────────────────────────────────────────────────────
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

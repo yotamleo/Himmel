@@ -13,9 +13,9 @@
 # Source this file, then call `resolve_hermes_py [CHECKOUT_DIR]`:
 #   py="$(resolve_hermes_py "$src")" || { echo "no hermes py"; exit 1; }
 # CHECKOUT_DIR is the hermes-agent checkout that owns venv/ (optional). When
-# omitted it is derived from HERMES_HOME / %LOCALAPPDATA%/hermes (the invoke.sh
-# default), tolerating HERMES_HOME pointing straight at the checkout (venv/ at
-# the root). Prints the absolute path on stdout + returns 0 on success; returns
+# omitted it is derived from HERMES_HOME, else %LOCALAPPDATA%/hermes on Windows
+# and $HOME/.hermes on POSIX (HIMMEL-2582), tolerating HERMES_HOME pointing
+# straight at the checkout (venv/ at the root). Prints the absolute path on stdout + returns 0 on success; returns
 # 1 + empty stdout when no executable interpreter is found. bash 3.2-safe.
 
 resolve_hermes_py() {
@@ -31,7 +31,20 @@ resolve_hermes_py() {
     local src="${1:-}"
     if [ -z "$src" ]; then
         local root="${HERMES_HOME:-}"
-        [ -n "$root" ] || root="${LOCALAPPDATA:-$HOME/AppData/Local}/hermes"
+        # Default root, per-platform (HIMMEL-2582). This used to be
+        # ${LOCALAPPDATA:-$HOME/AppData/Local}/hermes unconditionally — a
+        # WINDOWS path on every host — so on any POSIX box that had not
+        # exported HERMES_HOME the resolver looked under ~/AppData/Local,
+        # found nothing, and returned 1. That is what made the bridge's triage
+        # fail open with "hermes interpreter not found" on the Linux station
+        # (2026-09-05), recovered there with an Environment=HERMES_HOME
+        # drop-in that this default makes unnecessary. LOCALAPPDATA is the
+        # marker of a Windows host, so keep the Windows default INSIDE that
+        # branch: a Git-Bash/WSL operator with hermes under %LOCALAPPDATA%
+        # resolves exactly as before. Elsewhere hermes installs to ~/.hermes.
+        if [ -z "$root" ]; then
+            if [ -n "${LOCALAPPDATA:-}" ]; then root="$LOCALAPPDATA/hermes"; else root="$HOME/.hermes"; fi
+        fi
         src="$root/hermes-agent"
         # Tolerate HERMES_HOME pointing straight at the checkout (venv/ at root).
         [ -d "$src/venv" ] || { [ -d "$root/venv" ] && src="$root"; }

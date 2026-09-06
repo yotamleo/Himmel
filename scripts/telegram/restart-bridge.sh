@@ -238,6 +238,52 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# TOOL DIRS ON PATH (HIMMEL-2582) — runs for EVERY verb, before the first
+# `command -v`. A linger-started systemd user unit is launched by the user
+# manager BEFORE the graphical session imports the login shell's PATH, so the
+# unit's own environment is bare: PATH=/usr/local/bin:/usr/bin, read live from
+# /proc/<poller>/environ on 2026-09-05. bun lives in ~/.bun/bin and claude in
+# ~/.local/bin, so `command -v bun` below exited 1 and, once that was worked
+# around, the poller's bounded run died with
+# `Error: Executable not found in $PATH: "claude"`. The session went capped,
+# retry_at +15min, fail_count climbing, while messages stayed durable in
+# inbox.pending.jsonl with nothing ever answering them.
+#
+# Fixed HERE rather than with Environment=PATH= in the systemd unit, on
+# purpose: this script is the single entry point EVERY launcher goes through
+# (the unit's ExecStart, a hand-run `restart-bridge.sh start`, the Windows
+# scheduled-task twin), so one fix covers all of them, present and future. A
+# unit-only Environment= fixes exactly one launcher and leaves a manual run
+# broken in precisely the same way — and it would bake an operator-specific
+# tool-dir list into a template that is installed verbatim on every host.
+# `systemctl --user show-environment` printing a full PATH is MISLEADING here:
+# that is the manager's environment after login import, not what the unit was
+# started with.
+#
+# APPEND, not prepend (CR codex-1). These are FALLBACK directories: the defect
+# is "the tool is not on PATH at all", and appending fixes exactly that while
+# leaving any tool the incoming PATH already resolves in charge. Prepending
+# would instead override a deliberately-placed executable earlier on PATH —
+# an operator pointing the bridge at a specific claude or bun build would be
+# silently overruled by whatever happens to sit in ~/.local/bin. An earlier
+# draft of this block prepended AND claimed in this very comment that an
+# earlier entry still won; it did not, which is the kind of claim a comment
+# should never make on the reader's behalf.
+#
+# Skip a dir that does not exist (no phantom entries on a host without bun);
+# skip one already present, so this is idempotent across the exec chain —
+# `run` execs bun, which spawns the poller, each inheriting this PATH.
+# bash 3.2-safe: no arrays, no ${var,,}.
+for _himmel_tool_dir in "$HOME/.local/bin" "$HOME/.bun/bin"; do
+  [ -d "$_himmel_tool_dir" ] || continue
+  case ":$PATH:" in
+    *":$_himmel_tool_dir:"*) ;;
+    *) PATH="$PATH:$_himmel_tool_dir" ;;
+  esac
+done
+unset _himmel_tool_dir
+export PATH
+
 bridge_root() { printf '%s' "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}"; }
 lock_dir()    { printf '%s' "${BRIDGE_LOCK_DIR:-$(bridge_root)}"; }
 

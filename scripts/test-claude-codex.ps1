@@ -182,6 +182,73 @@ try {
   Invoke-Launcher
   if ($script:LastLaunchExit -eq 3) { Pass '.salus-profile-only marker refuses (exit 3)' } else { Fail ".salus-profile-only marker did not refuse (exit $script:LastLaunchExit)" }
   if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-codex\.seeded')) { Fail '.salus-profile-only refusal still seeded the config dir' } else { Pass '.salus-profile-only refusal seeded nothing' }
+
+  # --- HIMMEL-2626: --guard-check <dir> — the check-only entry the unattended
+  # spawn-claudex dispatcher calls PRE-CREATION, before it mints a worktree.
+  # Only exit codes are asserted (Invoke-Launcher discards output), same as
+  # the .salus tests above.
+
+  # clean directory -> exit 0, no config seeded.
+  New-Sandbox
+  $env:CODEX_MODEL = 'gpt-5.6-sol'
+  Invoke-Launcher -LArgs @('--guard-check', $WORK)
+  if ($script:LastLaunchExit -eq 0) { Pass 'guard-check: clean directory is allowed' } else { Fail "guard-check: clean directory was not allowed (exit $script:LastLaunchExit)" }
+  if (Test-Path -LiteralPath (Join-Path $FAKEHOME '.claude-codex\.seeded')) { Fail 'guard-check seeded the config dir' } else { Pass 'guard-check seeded nothing' }
+
+  # .salus at the checked directory itself -> exit 3. The marker sits on
+  # "$WORK\target", NOT on $WORK itself (the launcher's cwd for this run) —
+  # a marker directly at $WORK would already be caught by the unconditional
+  # "this workspace" screen regardless of --guard-check, proving nothing
+  # about the new entry point specifically.
+  New-Sandbox
+  $env:CODEX_MODEL = 'gpt-5.6-sol'
+  New-Item -ItemType Directory -Force -Path (Join-Path $WORK 'target') | Out-Null
+  New-Item -ItemType File -Force -Path (Join-Path $WORK 'target\.salus') | Out-Null
+  Invoke-Launcher -LArgs @('--guard-check', (Join-Path $WORK 'target'))
+  if ($script:LastLaunchExit -eq 3) { Pass 'guard-check: .salus at the checked dir refuses' } else { Fail "guard-check: .salus at the checked dir did not refuse (exit $script:LastLaunchExit)" }
+
+  # .salus in a PARENT of the checked directory -> exit 3 — the ANCESTOR-walk
+  # row the TypeScript guard (scripts/telegram/phi-egress-guard.ts) cannot
+  # reach at all, since a not-yet-created worktree has no ancestor to walk.
+  # The marker sits OUTSIDE $WORK (the launcher's cwd for this run) so this
+  # proves --guard-check's OWN walk on its argument, not the unconditional
+  # "this workspace" cwd screen that already runs against $WORK.
+  New-Sandbox
+  $env:CODEX_MODEL = 'gpt-5.6-sol'
+  New-Item -ItemType Directory -Force -Path (Join-Path $WORK 'protected\sub') | Out-Null
+  New-Item -ItemType File -Force -Path (Join-Path $WORK 'protected\.salus') | Out-Null
+  Invoke-Launcher -LArgs @('--guard-check', (Join-Path $WORK 'protected\sub'))
+  if ($script:LastLaunchExit -eq 3) { Pass 'guard-check: .salus on an ancestor of the checked dir refuses' } else { Fail "guard-check: ancestor .salus did not refuse (exit $script:LastLaunchExit)" }
+
+  # egress-denylist under the claude-glm cfg dir naming the checked directory
+  # -> exit 3 (also pins the cross-cfg-dir union: Test-GuardHitAny reads BOTH
+  # ~/.config/claude-codex and ~/.config/claude-glm). The checked/denied
+  # directory is "$FAKEHOME\denied" — NOT anything under $WORK.
+  # Test-PathUnderAny is BIDIRECTIONAL (a target inside a listed root OR a
+  # listed root inside the target both match), so a denylist line naming a
+  # DESCENDANT of $WORK (e.g. "$WORK\target") would also refuse $WORK itself —
+  # the unconditional "this workspace" cwd screen (cwd is $WORK) would then
+  # fire regardless of --guard-check, proving nothing about the new entry
+  # point. "$FAKEHOME\denied" has no prefix overlap with $WORK either way.
+  New-Sandbox
+  $env:CODEX_MODEL = 'gpt-5.6-sol'
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME '.config\claude-glm') | Out-Null
+  New-Item -ItemType Directory -Force -Path (Join-Path $FAKEHOME 'denied') | Out-Null
+  Set-Content -LiteralPath (Join-Path $FAKEHOME '.config\claude-glm\egress-denylist') -Value (Join-Path $FAKEHOME 'denied')
+  Invoke-Launcher -LArgs @('--guard-check', (Join-Path $FAKEHOME 'denied'))
+  if ($script:LastLaunchExit -eq 3) { Pass 'guard-check: egress-denylist (claude-glm cfg dir) refuses' } else { Fail "guard-check: egress-denylist did not refuse (exit $script:LastLaunchExit)" }
+
+  # no directory argument -> exit 2, usage refusal.
+  New-Sandbox
+  $env:CODEX_MODEL = 'gpt-5.6-sol'
+  Invoke-Launcher -LArgs @('--guard-check')
+  if ($script:LastLaunchExit -eq 2) { Pass 'guard-check: missing directory argument is a usage refusal' } else { Fail "guard-check: missing directory argument gave exit $script:LastLaunchExit (expected 2)" }
+
+  # nonexistent path -> exit 3, fail closed (not an allow).
+  New-Sandbox
+  $env:CODEX_MODEL = 'gpt-5.6-sol'
+  Invoke-Launcher -LArgs @('--guard-check', (Join-Path $WORK 'does-not-exist'))
+  if ($script:LastLaunchExit -eq 3) { Pass 'guard-check: a nonexistent path fails closed' } else { Fail "guard-check: nonexistent path gave exit $script:LastLaunchExit (expected 3)" }
 } finally {
   foreach ($n in $OrigEnv.Keys) {
     if ($null -eq $OrigEnv[$n]) { Remove-Item "Env:$n" -ErrorAction SilentlyContinue } else { Set-Item "Env:$n" $OrigEnv[$n] }

@@ -43,6 +43,31 @@ run_launcher() {
   fi
 }
 
+# HIMMEL-2626: like run_launcher, but for cases that must exit NONZERO — an
+# expected exit code plus a substring the combined stdout+stderr must contain
+# (an empty needle skips the substring check).
+run_launcher_expect() {
+  local name="$1" expected="$2" needle="$3"
+  shift 3
+  ( cd "$WORK" && HOME="$FAKEHOME" PATH="$BIN:$PATH" CLIPROXY_API_KEY="test-key" \
+      CODEX_MODEL="${MODEL:-gpt-5.6-sol}" CLAUDE_CODEX_DOTENV_ROOT="$WORK" \
+      bash "$LAUNCHER" "$@" >"$WORK/out.txt" 2>&1 )
+  local got=$?
+  if [ "$got" -ne "$expected" ]; then
+    echo "FAIL: $name (exit $got, expected $expected)"
+    cat "$WORK/out.txt"
+    FAILS=$((FAILS + 1))
+    return
+  fi
+  if [ -n "$needle" ] && ! grep -qF "$needle" "$WORK/out.txt"; then
+    echo "FAIL: $name (output missing expected text: $needle)"
+    cat "$WORK/out.txt"
+    FAILS=$((FAILS + 1))
+    return
+  fi
+  echo "ok: $name"
+}
+
 # A named model reaches the load-bearing seeded CLAUDE.md stanza at the file end.
 setup
 MODEL="gpt-5.6-terra"
@@ -173,6 +198,68 @@ touch "$WORK/.salus-profile"
 rc=$?
 [ "$rc" -eq 3 ] || { echo "FAIL: .salus-profile-only marker did not refuse (rc=$rc)"; cat "$WORK/out.txt"; FAILS=$((FAILS + 1)); }
 [ -f "$FAKEHOME/.claude-codex/.seeded" ] && { echo "FAIL: .salus-profile-only refusal still seeded the config dir"; FAILS=$((FAILS + 1)); }
+
+
+# --- HIMMEL-2626: --guard-check <dir> — the check-only entry the unattended
+# spawn-claudex dispatcher calls PRE-CREATION, before it mints a worktree.
+# guard_workspace already exits 3 on a refusal / inaccessible directory and
+# returns normally on an allow, so falling through to exit 0 means clear.
+
+# T12: clean directory -> exit 0, no config seeded.
+setup
+MODEL="gpt-5.6-sol"
+run_launcher "guard-check: clean directory is allowed" --guard-check "$WORK"
+[ -f "$FAKEHOME/.claude-codex/.seeded" ] && { echo "FAIL: guard-check seeded the config dir"; FAILS=$((FAILS + 1)); }
+
+# T13: .salus at the checked directory itself -> exit 3, names PHI-marked.
+# The marker sits on "$WORK/target", NOT on $WORK itself (the launcher's cwd
+# for this run) — cwd is $WORK, so a marker directly at $WORK would already be
+# caught by the unconditional "this workspace" screen regardless of whether
+# --guard-check's own guard_workspace call ever ran, proving nothing about the
+# new entry point specifically.
+setup
+MODEL="gpt-5.6-sol"
+mkdir -p "$WORK/target"
+touch "$WORK/target/.salus"
+run_launcher_expect "guard-check: .salus at the checked dir refuses" 3 "PHI-marked" --guard-check "$WORK/target"
+
+# T14: .salus in a PARENT of the checked directory -> exit 3 — the
+# ANCESTOR-walk row the TypeScript guard (scripts/telegram/phi-egress-guard.ts)
+# cannot reach at all, since a not-yet-created worktree has no ancestor to
+# walk. The marker sits OUTSIDE $WORK (the launcher's cwd for this run) so
+# this proves --guard-check's OWN walk on its argument, not the unconditional
+# "this workspace" cwd screen that already runs against $WORK.
+setup
+MODEL="gpt-5.6-sol"
+mkdir -p "$WORK/protected/sub"
+touch "$WORK/protected/.salus"
+run_launcher_expect "guard-check: .salus on an ancestor of the checked dir refuses" 3 "PHI-marked" --guard-check "$WORK/protected/sub"
+
+# T15: egress-denylist under the claude-glm cfg dir naming the checked
+# directory -> exit 3, names the denylist (also pins the cross-cfg-dir union:
+# guard_hit_any reads BOTH ~/.config/claude-codex and ~/.config/claude-glm).
+# The checked/denied directory is "$FAKEHOME/denied" — NOT anything under
+# $WORK. path_under_any is BIDIRECTIONAL (a target inside a listed root OR a
+# listed root inside the target both match), so a denylist line naming a
+# DESCENDANT of $WORK (e.g. "$WORK/target") would also refuse $WORK itself —
+# the unconditional "this workspace" cwd screen (cwd is $WORK) would then fire
+# regardless of --guard-check, proving nothing about the new entry point.
+# "$FAKEHOME/denied" has no prefix overlap with $WORK either direction.
+setup
+MODEL="gpt-5.6-sol"
+mkdir -p "$FAKEHOME/.config/claude-glm" "$FAKEHOME/denied"
+printf '%s\n' "$FAKEHOME/denied" > "$FAKEHOME/.config/claude-glm/egress-denylist"
+run_launcher_expect "guard-check: egress-denylist (claude-glm cfg dir) refuses" 3 "egress denylist" --guard-check "$FAKEHOME/denied"
+
+# T16: no directory argument -> exit 2, usage message.
+setup
+MODEL="gpt-5.6-sol"
+run_launcher_expect "guard-check: missing directory argument is a usage refusal" 2 "needs a directory argument" --guard-check
+
+# T17: nonexistent path -> exit 3, fail closed (not an allow).
+setup
+MODEL="gpt-5.6-sol"
+run_launcher_expect "guard-check: a nonexistent path fails closed" 3 "" --guard-check "$WORK/does-not-exist"
 
 if [ "$FAILS" -ne 0 ]; then
   echo "$FAILS test(s) failed"

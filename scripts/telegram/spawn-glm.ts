@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { runSession, killTree, BASH_BIN, REPO_ROOT, detectGlmCap, type PermissionMode, type GlmCapWindow, type RunObserver } from "./run";
-import { checkGlmGuards } from "./glm-guard";
+import { checkPhiEgressGuards } from "./phi-egress-guard";
 import { buildGlmEnv, findSettingsConflicts, formatConflict, fetchGlmUsage, readZaiKey, glmContextPreset, type SettingsConflict, type GlmUsage } from "./glm-env";
 import { appendQuotaGauge, buildGlmRow, isGlmPeak } from "./quota-gauge";
 import { parseGrantFlag, composeGrantLine, nextGrantId, authorityGate, classifyShape, composeEscalationForRefusedGrant, carryGrants, seedCarriedGrants, type GrantSpec } from "./grants";
@@ -1554,7 +1554,7 @@ async function main(): Promise<void> {
   // must leave NO orphan worktree/branch behind. The
   // path-under-list checks resolve worktree as a string, so a PHI- or
   // egress-denied dispatch path refuses here, pre-creation.
-  const guard = checkGlmGuards(worktree);
+  const guard = checkPhiEgressGuards(worktree);
   if (!guard.ok) { console.error(guard.reason); process.exit(3); }
 
   const g = (args: string[]) => { const r = Bun.spawnSync(["git", "-C", absCwd, ...args], { stdout: "pipe", stderr: "pipe" }); if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.toString()}`); };

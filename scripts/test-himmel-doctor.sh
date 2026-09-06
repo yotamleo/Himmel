@@ -40,6 +40,14 @@ export CLAUDE_GLM_CONFIG_DIR=""
 # shell would otherwise point C28 at the operator's real himmelctl state.
 export HIMMELCTL_CACHE_DIR=""
 
+# Hermeticity (HIMMEL-2578): C31 resolves the codex config through
+# $CODEX_HOME (default $HOME/.codex) — HOME is redirected per-case so the
+# default already lands in the temp HOME, but an inherited CODEX_HOME from
+# the launching shell would otherwise point C31 at the operator's real codex
+# config, and on a checkout with no .tokensave/ (a fresh CI clone) that would
+# flip every unrelated case to a WARN. Dedicated C31 cases set it per-case.
+export CODEX_HOME=""
+
 # Hermeticity: C14 reads OLLAMA_NO_CLOUD from the live env — never let an
 # inherited value from the launching shell leak into the default test runs.
 unset OLLAMA_NO_CLOUD
@@ -2541,6 +2549,536 @@ if { grepq "$out" 'OK   C30-bridge-liveness' || grepq "$out" 'INFO C30-bridge-li
     pass "C30 -> OK/INFO (no systemctl on this host, wording scoped to systemd — never claims no persistence is possible at all)"
 else
     fail "C30 no-systemctl -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+# ── C31: tokensave wired for codex but this checkout has no index ────────────
+# (HIMMEL-2578 — HIMMEL-2547 fix shape 2.) Two seams: CODEX_HOME (codex's OWN
+# env var, not a test-only invention) selects the config file, and
+# HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT selects the checkout whose `.tokensave/`
+# index is probed. THIS station is the wired+indexed OK case, so the WARN row
+# is not observable here live: every case below drives it from a stub config
+# and a stub checkout. Neither the real ~/.codex/config.toml nor the real
+# checkout is ever mutated by this suite.
+#
+# write_codex_config <dir> <mode> — writes <dir>/config.toml.
+#   wired      the table shape read off this station's REAL ~/.codex/config.toml
+#              (verified 2026-09-06 — `args` first, then an absolute `command`),
+#              surrounded by the same kind of neighbouring [mcp_servers.*] and
+#              per-tool sub-tables a real wired config carries. The point of
+#              copying the real shape is that the parser must not be validated
+#              against a wording only this suite and the parser agree on.
+#   wired-comment  same as wired but with a trailing TOML comment on the
+#              parent-table header line (`[mcp_servers.tokensave] # ...`) —
+#              a valid TOML header, still wired.
+#   subtables  ONLY per-tool [mcp_servers.tokensave.tools.*] tables and NO
+#              parent table. The real config carries 80+ of these, and they
+#              declare no `command` — codex spawns nothing from them, so this
+#              is NOT wired.
+#   commented  the parent table present but commented out — also not wired.
+#   unwired    a real-shaped config wiring a DIFFERENT MCP server only.
+#   wired-disabled  the parent table carries `enabled = false` in its own
+#              body, followed by the same per-tool sub-tables `wired` emits
+#              — proves the body scan still stops at the next table header.
+#   wired-disabled-large  same as wired-disabled, but with several THOUSAND
+#              filler key lines between `enabled = false` and the next table
+#              header. This size is the entire point (HIMMEL-1430 regression
+#              guard): `enabled = false` lands on line 4 of the body while a
+#              large remainder is still unwritten, which is exactly the
+#              shape that turns a `printf | grep -q` pipeline's SUCCESSFUL
+#              early-exit match into a pipefail failure via SIGPIPE. Do not
+#              "simplify" this down to a small fixture — that silently
+#              deletes the regression coverage.
+#   wired-subtable-disabled  the parent table is enabled (no `enabled` key),
+#              but a per-tool sub-table carries its OWN `enabled = false` —
+#              negative control: that must NOT read as the parent disabled.
+#   wired-quoted-key  same as `wired` but the header spells the key as the
+#              TOML literal-string form `[mcp_servers.'tokensave']`.
+#   wired-spaced-dot  same as `wired` but the header has whitespace around
+#              the dotted-key separator: `[mcp_servers . tokensave]`.
+#   wired-spaced-brackets  same as `wired` but with whitespace immediately
+#              inside both the opening and closing brackets:
+#              `[ mcp_servers.tokensave ]`.
+#   wired-quoted-first  same as `wired` but the FIRST segment is a
+#              basic-string key: `["mcp_servers".tokensave]`.
+#   wired-pathological  same as `wired` but combines several dimensions at
+#              once — whitespace inside both brackets, a quoted first
+#              segment, a literal-string second segment, and a trailing
+#              comment: `[ "mcp_servers" . 'tokensave' ]  # local`.
+#   wired-disabled-quoted-basic  same as `wired-disabled` but the disabled
+#              key is spelled as the TOML basic-string form `"enabled"`.
+#   wired-disabled-quoted-literal  same as `wired-disabled` but the disabled
+#              key is spelled as the TOML literal-string form `'enabled'`.
+write_codex_config() {
+    local dir="$1" mode="$2"
+    mkdir -p "$dir"
+    cat > "$dir/config.toml" <<'TOML'
+model = "gpt-5.1-codex-max"
+
+[mcp_servers.graphify]
+args = ["mcp"]
+command = "/home/example/.local/bin/graphify"
+TOML
+    case "$mode" in
+        wired)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-comment)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave] # local server
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        subtables)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        commented)
+            cat >> "$dir/config.toml" <<'TOML'
+
+# [mcp_servers.tokensave]
+# args = ["serve"]
+# command = "/home/example/.local/bin/tokensave"
+TOML
+            ;;
+        unwired) : ;;
+        wired-disabled)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+enabled = false
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-disabled-large)
+            {
+                cat <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+enabled = false
+TOML
+                seq 1 5000 | sed 's/^/filler_key_/; s/$/ = "x"/'
+                cat <<'TOML'
+
+[mcp_servers.other]
+command = "/home/example/.local/bin/other"
+TOML
+            } >> "$dir/config.toml"
+            ;;
+        wired-subtable-disabled)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+enabled = false
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-quoted-key)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.'tokensave']
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-spaced-dot)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers . tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-spaced-brackets)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[ mcp_servers.tokensave ]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-quoted-first)
+            cat >> "$dir/config.toml" <<'TOML'
+
+["mcp_servers".tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-pathological)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[ "mcp_servers" . 'tokensave' ]  # local
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-disabled-quoted-basic)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+"enabled" = false
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-disabled-quoted-literal)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+'enabled' = false
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        *) fail "write_codex_config: unknown mode '$mode'"; return 1 ;;
+    esac
+}
+
+# Sanity: the fixture's own wired table must be byte-identical to the shape the
+# doctor's parser is asked to recognise on a REAL station. Asserted here rather
+# than assumed, so a future edit to either side cannot quietly drift them apart.
+c31_fx="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 fixture: mktemp -d failed"; exit 1; }
+write_codex_config "$c31_fx" wired
+if grepq "$(cat "$c31_fx/config.toml")" -F '[mcp_servers.tokensave]
+args = ["serve"]' && grepq "$(cat "$c31_fx/config.toml")" -E '^command = "/[^"]*/tokensave"$'; then
+    pass "C31 fixture — the wired stub carries this station's real table shape (bare [mcp_servers.tokensave], args before an absolute command)"
+else
+    fail "C31 fixture: the wired stub drifted from the real ~/.codex/config.toml shape -> $(cat "$c31_fx/config.toml")"
+fi
+rm -rf "$c31_fx"
+
+echo "== C31: codex wires tokensave AND the checkout is indexed -> OK, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-indexed: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout/.tokensave"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-index' && grepq "$out" -F 'indexed' && ! grepq "$out" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK (wired + indexed)"
+else
+    fail "C31 wired-indexed -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: codex wires tokensave but the checkout has NO .tokensave/ -> WARN naming the remedy VERBATIM =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-unindexed: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-index' \
+   && grepq "$out" -F "tokensave init $t/checkout --no-git-hook" \
+   && grepq "$out" -F '.tokensave'; then
+    pass "C31 -> WARN naming 'tokensave init <checkout> --no-git-hook' verbatim"
+else
+    fail "C31 wired-unindexed -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: a valid TOML trailing comment on the header must not read as unwired -> WARN, unindexed checkout =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-comment: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-comment
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-index' && ! grepq "$out" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (a trailing TOML comment on the header is still a valid wired table)"
+else
+    fail "C31 wired-comment -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: the WARN remedy shell-escapes a checkout path containing spaces (copy-pasteability contract) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 spaces-path: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/my checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired
+checkout_q="$(printf '%q' "$t/my checkout")"
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/my checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-index' \
+   && grepq "$out" -F "tokensave init $checkout_q --no-git-hook" \
+   && ! grepq "$out" -F "tokensave init $t/my checkout --no-git-hook"; then
+    pass "C31 -> WARN remedy shell-escapes a checkout path with spaces"
+else
+    fail "C31 spaces-path -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: the codex config wires some OTHER server but not tokensave -> OK, NEVER a WARN (nothing was armed) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 unwired: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" unwired
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-index' && grepq "$out" -F 'does not wire tokensave' && ! grepq "$out" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK (unindexed checkout, but tokensave was never wired for codex — no nag)"
+else
+    fail "C31 unwired -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: ONLY per-tool [mcp_servers.tokensave.tools.*] sub-tables, no parent table -> NOT wired -> OK, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 subtables: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" subtables
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-index' && grepq "$out" -F 'does not wire tokensave' && ! grepq "$out" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK (per-tool sub-tables declare no command — a substring match on '[mcp_servers.tokensave' would have warned here)"
+else
+    fail "C31 subtables -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: the parent table present but COMMENTED OUT -> NOT wired -> OK, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 commented: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" commented
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-index' && grepq "$out" -F 'does not wire tokensave' && ! grepq "$out" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK (a commented-out table is not wiring)"
+else
+    fail "C31 commented -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: no codex config at all -> OK, says so distinctly, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 no-config: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+out="$(CODEX_HOME="$t/no-such-codex-home" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-index' && grepq "$out" -F 'no codex config' \
+   && ! grepq "$out" -F 'does not wire tokensave' && ! grepq "$out" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK, 'no codex config' is worded distinctly from a config that simply does not wire tokensave"
+else
+    fail "C31 no-config -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+# A config that cannot be READ says nothing about what it wires. Reading a
+# failed grep as "not wired" would assert an OK from evidence that never
+# established it — the same finding class C30's MainPID-query rows exist for.
+if [ "$(id -u 2>/dev/null || echo 0)" = "0" ]; then
+    echo "== C31: unreadable config -> SKIPPED (running as root: mode 000 is still readable) =="
+else
+    echo "== C31: the codex config exists but is UNREADABLE -> INFO/undetermined, never OK-not-wired and never a WARN =="
+    t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 unreadable: mktemp -d failed"; exit 1; }
+    mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+    write_codex_config "$t/codex" wired
+    chmod 000 "$t/codex/config.toml"
+    out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'INFO C31-tokensave-index' && grepq "$out" -F 'not readable' \
+       && ! grepq "$out" 'OK   C31-tokensave-index' && ! grepq "$out" 'WARN C31-tokensave-index'; then
+        pass "C31 -> INFO (an unreadable config is undetermined — never a clean OK, never a WARN)"
+    else
+        fail "C31 unreadable -> $(printf '%s' "$out" | grep C31)"
+    fi
+    chmod 600 "$t/codex/config.toml"
+    rm -rf "$t"
+fi
+
+echo "== C31: enabled = false on the tokensave table, unindexed checkout -> OK (disabled), never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-index')"
+if grepq "$c31_line" 'OK   C31-tokensave-index' && grepq "$c31_line" -F 'disabled' && ! grepq "$c31_line" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK (table present but enabled = false — nothing armed, no nag)"
+else
+    fail "C31 wired-disabled -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: \"enabled\" (basic-string key) = false on the tokensave table, unindexed checkout -> OK (disabled), never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled-quoted-basic: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled-quoted-basic
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-index')"
+if grepq "$c31_line" 'OK   C31-tokensave-index' && grepq "$c31_line" -F 'disabled' && ! grepq "$c31_line" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK (basic-string key \"enabled\" = false — nothing armed, no nag)"
+else
+    fail "C31 wired-disabled-quoted-basic -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: 'enabled' (literal-string key) = false on the tokensave table, unindexed checkout -> OK (disabled), never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled-quoted-literal: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled-quoted-literal
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-index')"
+if grepq "$c31_line" 'OK   C31-tokensave-index' && grepq "$c31_line" -F 'disabled' && ! grepq "$c31_line" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK (literal-string key 'enabled' = false — nothing armed, no nag)"
+else
+    fail "C31 wired-disabled-quoted-literal -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: enabled = false on a LARGE tokensave table body, unindexed checkout -> OK (disabled), never a WARN (HIMMEL-1430 regression guard) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled-large: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled-large
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-index')"
+if grepq "$c31_line" 'OK   C31-tokensave-index' && grepq "$c31_line" -F 'disabled' && ! grepq "$c31_line" 'WARN C31-tokensave-index'; then
+    pass "C31 -> OK (large disabled body — the enabled=false match must not be lost to an early-exit pipeline race under pipefail)"
+else
+    fail "C31 wired-disabled-large -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: enabled = false in a SUB-table only (parent enabled) -> still WARN (negative control for the range scan) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-subtable-disabled: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-subtable-disabled
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-index')"
+if grepq "$c31_line" 'WARN C31-tokensave-index' && ! grepq "$c31_line" -F 'disabled'; then
+    pass "C31 -> WARN (a sub-table's own enabled = false must not disable the parent table)"
+else
+    fail "C31 wired-subtable-disabled -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: a literal-string header key [mcp_servers.'tokensave'] is recognised as wiring -> WARN, unindexed checkout =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-quoted-key: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-quoted-key
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-index' && ! grepq "$out" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (literal-string header key [mcp_servers.'tokensave'] recognised as wired)"
+else
+    fail "C31 wired-quoted-key -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: whitespace around the dotted-key separator [mcp_servers . tokensave] is recognised as wiring -> WARN, unindexed checkout =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-spaced-dot: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-spaced-dot
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-index' && ! grepq "$out" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (whitespace around the dotted-key separator recognised as wired)"
+else
+    fail "C31 wired-spaced-dot -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: whitespace immediately inside both brackets [ mcp_servers.tokensave ] is recognised as wiring -> WARN, unindexed checkout =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-spaced-brackets: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-spaced-brackets
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-index')"
+if grepq "$c31_line" 'WARN C31-tokensave-index' && ! grepq "$c31_line" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (whitespace immediately inside both brackets recognised as wired)"
+else
+    fail "C31 wired-spaced-brackets -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: a quoted FIRST segment [\"mcp_servers\".tokensave] is recognised as wiring -> WARN, unindexed checkout =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-quoted-first: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-quoted-first
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-index')"
+if grepq "$c31_line" 'WARN C31-tokensave-index' && ! grepq "$c31_line" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (quoted first segment recognised as wired)"
+else
+    fail "C31 wired-quoted-first -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: a pathological but valid combined spelling [ \"mcp_servers\" . 'tokensave' ]  # local is recognised as wiring -> WARN, unindexed checkout =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-pathological: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/checkout"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-pathological
+out="$(CODEX_HOME="$t/codex" HIMMEL_DOCTOR_TOKENSAVE_CHECKOUT="$t/checkout" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-index')"
+if grepq "$c31_line" 'WARN C31-tokensave-index' && ! grepq "$c31_line" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (combined whitespace + quoting + trailing-comment spelling recognised as wired)"
+else
+    fail "C31 wired-pathological -> $c31_line"
 fi
 rm -rf "$t"
 

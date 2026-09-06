@@ -395,6 +395,29 @@ process.env.BRIDGE_PERSISTENCE_STUB_STATE = STUB_STATE;
     fail('install (stub present): unit file written with @HIMMEL_REPO@ substituted for repoRoot', `content=${JSON.stringify(content)}`);
   }
 
+  // HIMMEL-2582: the unit inherits a BARE environment when systemd-logind
+  // starts it under linger — PATH=/usr/local/bin:/usr/bin, read live from
+  // /proc/<poller>/environ on 2026-09-05 — so the poller could not find
+  // `claude` (~/.local/bin) and its bounded run died. The fix puts the tool
+  // dirs on PATH inside restart-bridge.sh rather than as an Environment=PATH=
+  // line here, so that EVERY launcher gets it (the unit, a hand-run
+  // `restart-bridge.sh start`, the Windows scheduled-task twin) instead of
+  // only this one. That makes the unit's ExecStart routing through
+  // restart-bridge.sh load-bearing: if it is ever changed to invoke bun or
+  // supervisor.ts directly, the PATH fix is silently bypassed and the bridge
+  // regresses to the 2026-09-05 failure with the unit still reporting active.
+  // Pin the coupling here, where the rendered unit is already in hand.
+  //
+  // Note the sibling assertion below — no unescaped `%h` may survive in a
+  // rendered unit. An `Environment=PATH=%h/.local/bin:...` line in the
+  // template would violate exactly that, which is the structural reason this
+  // fix does not live in the unit file.
+  const execStartLines = content.split('\n').filter((l) => l.startsWith('ExecStart='));
+  check('install: ExecStart routes through restart-bridge.sh (carries the HIMMEL-2582 PATH prepend)',
+    true, execStartLines.length === 1 && /restart-bridge\.sh/.test(execStartLines[0]));
+  check('install: unit declares no Environment=PATH= (the tool dirs are the launcher\'s job, not the template\'s)',
+    false, /^Environment=PATH=/m.test(content));
+
   // codex-1 CR fix (round 13): a repoRoot containing systemd specifier `%`
   // (and, since we're in here, a space/`"`/`\`) must render LITERALLY, never
   // expanded (%h -> home) or corrupted (an unescaped `%` was verified live

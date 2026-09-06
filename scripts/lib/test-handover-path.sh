@@ -326,6 +326,36 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# T9i (HIMMEL-2583): $_ARM_CACHE_DIR can be validly minted at source time and
+# then vanish LATER while the shell stays alive -- a session alive past the
+# GC's 1440-minute threshold keeps exporting a path some OTHER fresh
+# top-level process has already deleted (or a reboot just wiped /tmp
+# outright). Simulate that directly: point $_ARM_CACHE_DIR at a directory
+# that does not exist, then call both cache consumers. Assertion (b) below
+# is the one the original bug missed entirely and the one that matters most:
+# the `|| true` on the write already guarantees rc=0 regardless, so only an
+# INDEPENDENTLY captured, empty stderr proves the raw shell diagnostic
+# ("No such file or directory") is actually gone, not merely that it didn't
+# fail the script.
+T9I_SAVED_CACHE_DIR="$_ARM_CACHE_DIR"
+_ARM_CACHE_DIR="$TMP/arm-resume-cache.GONE-$$"
+T9I_STDERR="$TMP/t9i-stderr"
+T9I_PATH="$TMP/layout-a/handovers/HIMMEL-1344-test/next-session-1.md"
+t9i_expected=$(_arm_realpath "$T9I_PATH")
+t9i_id1=$(PLATFORM=linux _arm_identity_path "$T9I_PATH" 2>"$T9I_STDERR")
+t9i_id2=$(PLATFORM=linux _arm_identity_path "$T9I_PATH" 2>>"$T9I_STDERR")
+_arm_cygpath_available 2>>"$T9I_STDERR" >/dev/null
+assert_eq "T9i identity lookup with a vanished cache dir still returns the correct (degraded, uncached) value" "$t9i_expected" "$t9i_id1"
+assert_eq "T9i a second lookup after a vanished cache dir agrees with the first (recompute, not a stale/garbage answer)" "$t9i_id1" "$t9i_id2"
+if [ -s "$T9I_STDERR" ]; then
+    echo "FAIL T9i a vanished \$_ARM_CACHE_DIR leaked raw shell diagnostics to stderr:"
+    sed 's/^/    /' "$T9I_STDERR"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS T9i a vanished \$_ARM_CACHE_DIR produced NOTHING on stderr"
+fi
+_ARM_CACHE_DIR="$T9I_SAVED_CACHE_DIR"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

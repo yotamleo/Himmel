@@ -413,6 +413,145 @@ test("spawn-claudex real CLI: dispatch from the PRIMARY checkout is NOT caught b
   } finally { removeFixture(repo); }
 }, CX_GIT_TEST_TIMEOUT_MS);
 
+// --- HIMMEL-2626: PHI/egress pre-check, real CLI end-to-end.
+//
+// Before this pre-check, spawn-claudex.ts had no EXPLICIT pre-creation
+// PHI/egress guard call, but the picture was not "no refusal until launch"
+// either — it split into two cases, both worse than a direct refusal:
+//   - default path (auth preflight ON): probeClaudexAuth spawns the launcher
+//     with `--preflight-only` and `cwd: absCwd` (spawn-claudex.ts's
+//     probeClaudexAuth), and the launcher's UNCONDITIONAL
+//     `guard_workspace "$CWD" "this workspace"` (claude-codex, before the
+//     `--preflight-only` branch) runs first — so a PHI-marked absCwd WAS
+//     already refused pre-creation. But that exit 3 doesn't map to
+//     probeClaudexAuth's "unavailable" (CLAUDEX_PREFLIGHT_GAP_EXIT) or "ok"
+//     cases, so it falls into the generic "fatal" bucket and main() reports
+//     it as "codex auth preflight reports a PERMANENT failure ... fix the
+//     claude-codex config" — a real refusal, MISATTRIBUTED as a credential
+//     problem, exit 2 (see the RED test below, which observed exactly this).
+//   - `--skip-auth-preflight` path: probeClaudexAuth is never called, so
+//     nothing screens absCwd pre-creation — the worktree, branch, session dir
+//     and meta.json all get minted, and only the eventual launch-time screen
+//     (against the WORKER's worktree) has a chance to refuse (see the
+//     dedicated RED test for this path below).
+// This pre-check fixes BOTH: a correctly-attributed exit 3, before the probe
+// is spent, on every path. ---
+
+test("spawn-claudex real CLI: a PHI-marked checkout is REFUSED (exit 3) before any worktree/branch/session side-effect (HIMMEL-2626)", () => {
+  const { repo } = initHermeticRepo("cxcli-phi-");
+  const fakeHome = mkdtempSync(join(tmpdir(), "cxcli-phi-home-"));
+  try {
+    // make the fixture pass isHimmelCheckout (it looks for scripts/claude-codex)
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    writeFileSync(join(repo, "scripts", "claude-codex"), "#!/usr/bin/env bash\nexit 0\n");
+    writeFileSync(join(repo, ".salus"), "");
+    // --force bypasses ONLY the codex-bank preflight; it is never forwarded to
+    // the launcher (buildClaudexRunArgs), so the pre-check stays fail-closed.
+    // CLIPROXY_API_KEY short-circuits the launcher's dotenv read (the guard
+    // check never uses the key); HOME is redirected so the operator's real
+    // phi-roots/egress-denylist cannot influence the verdict.
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-claudex.ts", "do the task", "--cwd", repo, "--force"], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+      env: { ...process.env, CLIPROXY_API_KEY: "test-key", HOME: fakeHome },
+    });
+    expect(r.exitCode).toBe(3);
+    expect(r.stderr.toString()).toMatch(/PHI-marked/);
+    expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
+  } finally { rmSync(fakeHome, { recursive: true, force: true }); removeFixture(repo); }
+}, CX_GIT_TEST_TIMEOUT_MS);
+
+// This is the case the pre-check actually RESCUES: --skip-auth-preflight
+// never calls probeClaudexAuth at all, so before this pre-check NOTHING
+// screened absCwd pre-creation — the worktree, branch, session dir and
+// meta.json all got minted, and the ACTUAL worker launch (executeClaudexRun,
+// cwd:worktree) is what eventually refused: the worktree lives PHYSICALLY at
+// <absCwd>/.claude/worktrees/<slug>, and guard_workspace's `.salus` check is a
+// plain `[ -e ... ]` ancestor walk on the filesystem (not git-tracked
+// content), so it climbs from the worktree straight back up into absCwd and
+// finds the marker there even though `git worktree add` never copied it.
+// The exit code even comes out the same (3) — the pre-fix REGRESSION is not
+// in the number, it's WHERE it happens and what surfaces: the worktree,
+// branch, session dir and meta.json all exist by the time that refusal
+// fires, and the launcher's "PHI-marked" message lands in the WORKER's own
+// captured log (run.log / transcript), never in spawn-claudex's own stderr —
+// so an operator watching this dispatch sees a silently-orphaned session, not
+// a refusal. Post-fix, the pre-check's own console.error/stderr forward makes
+// "PHI-marked" appear in spawn-claudex's OWN stderr, and nothing gets minted
+// at all — both of those are what this test actually discriminates on.
+test("spawn-claudex real CLI: a PHI-marked checkout is REFUSED (exit 3) even with --skip-auth-preflight, before any worktree/branch/session side-effect (HIMMEL-2626)", () => {
+  const { repo } = initHermeticRepo("cxcli-phi-skipauth-");
+  const fakeHome = mkdtempSync(join(tmpdir(), "cxcli-phi-skipauth-home-"));
+  try {
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    writeFileSync(join(repo, "scripts", "claude-codex"), "#!/usr/bin/env bash\nexit 0\n");
+    writeFileSync(join(repo, ".salus"), "");
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-claudex.ts", "do the task", "--cwd", repo, "--force", "--skip-auth-preflight"], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+      env: { ...process.env, CLIPROXY_API_KEY: "test-key", HOME: fakeHome },
+    });
+    expect(r.exitCode).toBe(3);
+    expect(r.stderr.toString()).toMatch(/PHI-marked/);
+    expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
+  } finally { rmSync(fakeHome, { recursive: true, force: true }); removeFixture(repo); }
+}, CX_GIT_TEST_TIMEOUT_MS);
+
+// Negative control (HIMMEL-2626 EXPANSION): without this, a broken pre-check
+// that refuses EVERY dispatch would also pass the RED test above. A clean
+// checkout must sail past the pre-check and reach the (later, unrelated)
+// codex auth preflight, which then refuses for its own reason — no real
+// cli-proxy-api is listening in this sandbox — landing on exit 2, not 3.
+// CLAUDEX_AUTH_RETRY_DELAYS="0.01" (10ms): an all-ZERO schedule is REJECTED by
+// parseAuthRetryDelaysMs (falls back to the 10s/20s/30s default, which made
+// this test time out against the 20s spawn budget below) — "0.01" is the
+// smallest nonzero schedule, one 10ms backoff, so the preflight still exhausts
+// its (tiny) budget fast.
+test("spawn-claudex real CLI: a CLEAN checkout is NOT caught by the PHI/egress pre-check — proceeds to the codex auth preflight (HIMMEL-2626, negative control)", () => {
+  const { repo } = initHermeticRepo("cxcli-phiclean-");
+  const fakeHome = mkdtempSync(join(tmpdir(), "cxcli-phiclean-home-"));
+  try {
+    mkdirSync(join(repo, "scripts"), { recursive: true });
+    writeFileSync(join(repo, "scripts", "claude-codex"), "#!/usr/bin/env bash\nexit 0\n");
+    // deliberately NO .salus marker and NO guard-list entries
+    const r = Bun.spawnSync(["bun", "scripts/telegram/spawn-claudex.ts", "do the task", "--cwd", repo, "--force"], {
+      cwd: resolve("."), stdout: "pipe", stderr: "pipe", timeout: 20_000,
+      env: {
+        ...process.env, CLIPROXY_API_KEY: "test-key", HOME: fakeHome, CLAUDEX_AUTH_RETRY_DELAYS: "0.01",
+        // Pin the probe to a closed port (CR follow-up): without this, the
+        // control relies on nothing listening at claude-codex's default
+        // CODEX_PROXY_BASE_URL (127.0.0.1:8317). If a real CLIProxyAPI happened
+        // to be up there AND accepted this bogus key, the auth probe would
+        // read healthy and the dispatch would proceed to mint a worktree and
+        // launch a real worker — measured (see scripts/claude-codex) at rc=20
+        // (transient) against a refused connection, so this still exercises
+        // the same "sails past the pre-check, stops at auth" path.
+        CODEX_PROXY_BASE_URL: "http://127.0.0.1:1",
+      },
+    });
+    const err = r.stderr.toString();
+    expect(r.exitCode).not.toBe(3);
+    expect(err).not.toMatch(/PHI-marked/);
+    expect(err).not.toMatch(/egress denylist/i);
+    expect(existsSync(join(repo, ".claude", "worktrees"))).toBe(false);
+    expect(r.exitCode).toBe(2);
+    expect(err).toMatch(/auth preflight|auth still unavailable/);
+  } finally { rmSync(fakeHome, { recursive: true, force: true }); removeFixture(repo); }
+}, CX_GIT_TEST_TIMEOUT_MS);
+
+test("PHI/egress pre-check runs BEFORE git worktree add, ensureWorkspaceTrust and the auth preflight — a refusal leaves no orphan (wiring pin, HIMMEL-2626)", () => {
+  const src = readFileSync("scripts/telegram/spawn-claudex.ts", "utf8");
+  const guardIdx = src.indexOf("--guard-check");
+  const wtIdx = src.indexOf('"worktree", "add"');
+  const trustIdx = src.indexOf("ensureWorkspaceTrust(worktree);");
+  const authIdx = src.indexOf("runAuthPreflightWithBackoff(");
+  expect(guardIdx).toBeGreaterThan(-1);
+  expect(wtIdx).toBeGreaterThan(-1);
+  expect(trustIdx).toBeGreaterThan(-1);
+  expect(authIdx).toBeGreaterThan(-1);
+  expect(guardIdx).toBeLessThan(wtIdx);
+  expect(guardIdx).toBeLessThan(trustIdx);
+  expect(guardIdx).toBeLessThan(authIdx);
+});
+
 // --- runClaudexSharedDispatch (mirrors spawn-glm's I6/I7 suite, lane="codex") --
 
 function makeSharedRepo() {
@@ -1066,6 +1205,18 @@ test("probeClaudexAuth: exit 0 -> ok, exit 20 (gap) -> unavailable, exit 2/other
     withRc("2", () => expect(probeClaudexAuth(repoRoot, repoRoot)).toBe("fatal")); // missing-key = permanent
     withRc("5", () => expect(probeClaudexAuth(repoRoot, repoRoot)).toBe("fatal")); // any other nonzero = permanent
   } finally { rmSync(repoRoot, { recursive: true, force: true }); }
+});
+
+test("probeClaudexAuth: exit 3 (the launcher's own PHI/egress guard_workspace refusal) is fatal, with an explicit guard-attribution line — not left to read as a credential problem (HIMMEL-2626)", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "cxprobe-guard-"));
+  const spy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    mkdirSync(join(repoRoot, "scripts"), { recursive: true });
+    writeFileSync(join(repoRoot, "scripts", "claude-codex"), '#!/usr/bin/env bash\nexit "${FAKE_PREFLIGHT_RC:-0}"\n');
+    const withRc = (rc: string, fn: () => void) => { const prev = process.env.FAKE_PREFLIGHT_RC; process.env.FAKE_PREFLIGHT_RC = rc; try { fn(); } finally { if (prev === undefined) delete process.env.FAKE_PREFLIGHT_RC; else process.env.FAKE_PREFLIGHT_RC = prev; } };
+    withRc("3", () => expect(probeClaudexAuth(repoRoot, repoRoot)).toBe("fatal"));
+    expect(spy.mock.calls.some((c) => String(c[0]).includes("PHI/egress guard") && String(c[0]).includes("NOT an auth or credential problem"))).toBe(true);
+  } finally { spy.mockRestore(); rmSync(repoRoot, { recursive: true, force: true }); }
 });
 
 test("probeClaudexAuth: on a fatal exit, the launcher's own stderr evidence line is forwarded verbatim (HIMMEL-1380 — named evidence, not an asserted cause)", () => {

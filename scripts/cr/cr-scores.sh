@@ -224,6 +224,19 @@ for (const r of filteredRecords) {
 const allHeads = Object.entries(headTs).sort((a,b)=>a[1]<b[1]?-1:1).map(e=>e[0]);
 const windowHeads = new Set(allHeads.slice(-WINDOW_N));
 
+// HIMMEL-2579: a finding row always carries an EMPTY verdict since
+// HIMMEL-2321 — the real verdict arrives only as a later amend record keyed
+// on target_head. Same map shape as the unadjudicated block in the
+// --by-branch section above; built again here since that is a separate
+// node -e invocation with no shared state.
+const SEP = String.fromCharCode(31);
+const amendsMap = new Map();
+for (const r of filteredRecords) {
+  if (r.kind !== "amend" || !r.set || typeof r.set !== "object") continue;
+  const k = [r.target_head, r.finding_id, r.artifact || "diff", r.perspective || "off"].join(SEP);
+  amendsMap.set(k, Object.assign({}, amendsMap.get(k) || {}, r.set));
+}
+
 // Aggregate per model, all-time + windowed.
 function emptyStats() {
   return { total:0, agreed:0, disproved:0, conflict:0, unaddressed:0, avail_ok:0, avail_total:0 };
@@ -244,11 +257,19 @@ for (const r of filteredRecords) {
     if (!win[r.model]) win[r.model] = emptyStats();
   }
   if (r.kind === "finding") {
+    // Tally the AMEND-MERGED verdict, not the raw (always-empty) row. The
+    // inWin gate stays keyed on the RAW head — unchanged denominator
+    // semantics — even when an amend re-keys the head via set.head;
+    // decoupling total from the verdict bucket would let a table per-verdict
+    // columns stop summing to its own total column.
+    const k = [r.head, r.finding_id, r.artifact || "diff", r.perspective || "off"].join(SEP);
+    const eff = amendsMap.has(k) ? Object.assign({}, r, amendsMap.get(k)) : r;
+    const effVerdict = typeof eff.verdict === "string" ? eff.verdict.trim() : eff.verdict;
     all[r.model].total++;
-    all[r.model][r.verdict] = (all[r.model][r.verdict] || 0) + 1;
+    all[r.model][effVerdict] = (all[r.model][effVerdict] || 0) + 1;
     if (inWin) {
       win[r.model].total++;
-      win[r.model][r.verdict] = (win[r.model][r.verdict] || 0) + 1;
+      win[r.model][effVerdict] = (win[r.model][effVerdict] || 0) + 1;
     }
   } else if (r.kind === "avail") {
     all[r.model].avail_total++;

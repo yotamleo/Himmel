@@ -954,7 +954,7 @@ _clause_has_enforcement_signal() {
 # inline-eval clause (`python -c`/`node -e`/`bash -c`/`pwsh -Command`/...)
 # whose eval string names an enforcement-path signal.
 _deny_inline_eval() {
-    deny "interpreter inline-eval write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
+    deny "interpreter inline-eval write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
 }
 
 # _clause_has_procsub <tok...> -> 0 iff any token in the clause contains a
@@ -983,7 +983,7 @@ _clause_has_procsub() {
 # clause (`>(...)`/`<(...)`) whose raw text names an enforcement-path
 # signal.
 _deny_procsub() {
-    deny "process-substitution write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
+    deny "process-substitution write refused: the clause names an enforcement-path signal (guardrails/hooks/settings/pre-commit/gitleaks/codex/backends/lessons/CLAUDE.md/AGENTS.md/hooks.json/parity_guard.py/glm-guard.ts/phi-egress-guard.ts). This surface is propose-only: file a ticket or describe the change in a draft-PR body; enforcement-path edits are operator-lane. clause=$1"
 }
 
 # _verb_is_read_only <verb_lc> <verb-onward-tok...> -> 0 iff the

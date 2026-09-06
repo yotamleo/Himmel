@@ -1177,6 +1177,43 @@ stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 0 "amend severity imp->sug unblocks gate 4 → exit 0"
 rm -rf "$tmp"
 
+# 6a-1a. HIMMEL-2579 — the message announcing a merged amend must not claim it
+# was APPLIED at this head. $applied_amends is the list the READ pass merges
+# IN MEMORY while evaluating a run; it is never a write to the ledger. The old
+# wording ("applied amend(s) at <sha>" / audit tag AMENDS with applied=) read
+# exactly like ledger corruption when this was filed: checked against the live
+# ledger, ZERO amend rows carried a target_head equal to the clearing head of a
+# run that printed ~200 of them — the 271 amend rows span 120 distinct
+# target_head values, each keeping the head its finding was actually raised
+# against. Assert the new phrasing fires AND the old phrasing is absent, so a
+# future edit cannot silently restore the false claim.
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok "${sha:0:8}")" "$(finding "${sha:0:8}" imp agreed)" \
+  "$(printf '{"kind":"amend","target_head":"%s","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"severity":"sug"},"reason":"out of diff"}' "${sha:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "amend-merge message case → exit 0"
+if grepq "$LAST_CLEAR_OUT" -F "merged amend(s) while evaluating ${sha:0:8}:"; then pass; else
+    fail "merge message must say MERGED WHILE EVALUATING this head: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F "applied amend"; then
+    fail "merge message must NOT claim the amend was APPLIED: $LAST_CLEAR_OUT"
+else
+    pass
+fi
+if grepq "$LAST_CLEAR_OUT" -F "AMENDS-MERGED branch=feat/x sha=$sha"; then pass; else
+    fail "audit line must carry AMENDS-MERGED with branch= and sha= intact: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F "merged=codex-1"; then pass; else
+    fail "audit line must carry a merged= key naming the amend: $LAST_CLEAR_OUT"
+fi
+if grepq "$LAST_CLEAR_OUT" -F "applied="; then
+    fail "audit line must NOT carry the old applied= key: $LAST_CLEAR_OUT"
+else
+    pass
+fi
+rm -rf "$tmp"
+
 # 6a-2. Incident 2: the finding was keyed to the head that FIXES it instead of
 # the head it was raised against. An amend that re-keys `head` must move the
 # finding OFF this head entirely.

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# scripts/telegram/test-glm-guard-parity.sh — HIMMEL-2204 cross-language
+# scripts/telegram/test-phi-egress-guard-parity.sh — HIMMEL-2204 cross-language
 # parity test for the PHI/egress predicates.
 #
 # WHY: scripts/guardrails/phi-egress-lib.sh (HIMMEL-1776) is the shared bash
 # implementation of the file-readability predicate that guards the phi-roots
-# / egress-denylist lists; scripts/telegram/glm-guard.ts::checkGlmGuards is an
+# / egress-denylist lists; scripts/telegram/phi-egress-guard.ts::checkPhiEgressGuards is an
 # independent, hand-kept TypeScript reimplementation of the SAME contract
 # (marker check + list-membership check + fail-closed-on-unreadable) for the
-# env-only GLM spawn path, which cannot source a bash lib. Two implementations
+# env-injected worker spawn path, which cannot source a bash lib. Two implementations
 # of one security contract can silently drift (HIMMEL-1748/#1680 already
 # happened once between two BASH copies before extraction). A parity test
 # cannot make the drift impossible the way extraction would, but it can make
@@ -15,7 +15,7 @@
 # asserts they reach the SAME allow/deny verdict.
 #
 # The bash side runs the REAL root-scan function — `path_under_any` is
-# extracted verbatim (via sed) from scripts/claude-glm, glm-guard.ts's OWN
+# extracted verbatim (via sed) from scripts/claude-glm, phi-egress-guard.ts's OWN
 # documented sync partner (named in its header) — not a test-authored
 # reimplementation, so drift in the ACTUAL deployed bash list-matching logic
 # is caught, not just drift in this test's idea of it (HIMMEL-2204 CR round
@@ -26,18 +26,18 @@
 # uses case-INSENSITIVE matching instead, for a different, broader purpose;
 # see HIMMEL-2204 mission notes for why that pairing does not apply here).
 # The `.salus`/`.salus-profile` marker check stays test-owned: it is two
-# inline `[ -e ... ]` lines in checkGlmGuards, not a function claude-glm
+# inline `[ -e ... ]` lines in checkPhiEgressGuards, not a function claude-glm
 # exposes for extraction (claude-glm's own marker check is inline too, and
 # uses `-f` instead of `-e` — a latent, currently-inert divergence reported
 # separately in the HIMMEL-2204 PR body, not fixed here).
 #
-# The TS side runs the REAL checkGlmGuards() via glm-guard-verdict.ts, which
+# The TS side runs the REAL checkPhiEgressGuards() via phi-egress-guard-verdict.ts, which
 # normalizes {ok, reason} to a coarse verdict label so this suite compares
 # ONLY the verdict, never the mechanism (an unreadable-file exception in TS
 # and a non-zero rc in bash can both "fail" while meaning different things —
 # per the HIMMEL-2204 brief, only the verdict is asserted here).
 #
-# bun is a RUNTIME capability this suite needs (glm-guard.ts is only run
+# bun is a RUNTIME capability this suite needs (phi-egress-guard.ts is only run
 # through the project's existing bun toolchain for scripts/telegram). Where
 # it is absent the suite SKIPs loudly (HIMMEL-1788) rather than passing
 # silently; registered in SUITE_REQUIRE_TOOL (scripts/ci/run-shell-tests.sh,
@@ -48,10 +48,10 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 CLAUDE_GLM="$REPO_ROOT/scripts/claude-glm"
-TS_VERDICT="$HERE/glm-guard-verdict.ts"
+TS_VERDICT="$HERE/phi-egress-guard-verdict.ts"
 
 if ! command -v bun >/dev/null 2>&1; then
-  echo "[SKIP] test-glm-guard-parity.sh — bun not found on PATH; the glm-guard.ts side of the HIMMEL-2204 parity check did NOT run on this host."
+  echo "[SKIP] test-phi-egress-guard-parity.sh — bun not found on PATH; the phi-egress-guard.ts side of the HIMMEL-2204 parity check did NOT run on this host."
   exit 0
 fi
 for f in "$CLAUDE_GLM" "$TS_VERDICT"; do
@@ -86,9 +86,9 @@ _bash_under_any() {
     esac
 }
 
-# _bash_glm_guard_verdict <cwd> <cfgdir> -> the bash-side reference verdict,
-# in the same label space glm-guard-verdict.ts prints.
-_bash_glm_guard_verdict() {
+# _bash_phi_egress_verdict <cwd> <cfgdir> -> the bash-side reference verdict,
+# in the same label space phi-egress-guard-verdict.ts prints.
+_bash_phi_egress_verdict() {
     local cwd="$1" cfgdir="$2" rc
     [ -e "$cwd/.salus" ] && { echo DENY_SALUS; return; }
     [ -e "$cwd/.salus-profile" ] && { echo DENY_SALUS_PROFILE; return; }
@@ -108,7 +108,7 @@ _bash_glm_guard_verdict() {
 # check <label> <cwd> <cfgdir> -> runs both sides, compares verdicts.
 check() {
     local label="$1" cwd="$2" cfgdir="$3" bash_v ts_v
-    bash_v="$(_bash_glm_guard_verdict "$cwd" "$cfgdir")"
+    bash_v="$(_bash_phi_egress_verdict "$cwd" "$cfgdir")"
     ts_v="$(bun "$TS_VERDICT" "$cwd" "$cfgdir" 2>/dev/null)"
     if [ "$bash_v" = "$ts_v" ]; then
         pass "$label -> $bash_v"
@@ -163,9 +163,9 @@ rmdir "$CFG/egress-denylist"
 
 echo "---"
 if [ "$failures" -eq 0 ]; then
-    echo "test-glm-guard-parity: all fixture rows agree between phi-egress-lib.sh and glm-guard.ts"
+    echo "test-phi-egress-guard: all fixture rows agree between scripts/claude-glm and phi-egress-guard.ts"
     exit 0
 else
-    echo "test-glm-guard-parity: $failures divergence(s) found — see FAIL lines above"
+    echo "test-phi-egress-guard: $failures divergence(s) found — see FAIL lines above"
     exit 1
 fi

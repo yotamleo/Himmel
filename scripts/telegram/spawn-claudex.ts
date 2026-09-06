@@ -7,7 +7,12 @@
 // file NEVER sets an ANTHROPIC_* var, NEVER builds a GLM-style env block, and
 // NEVER re-implements any guard claude-codex already owns — it only mints the
 // worktree/branch, composes the worker prompt, and dispatches THROUGH the
-// launcher, mirroring spawn-glm's own+shared-branch lifecycle.
+// launcher, mirroring spawn-glm's own+shared-branch lifecycle. HIMMEL-2626
+// added ONE pre-creation call INTO that same launcher (`claude-codex
+// --guard-check <dir>`, a check-only entry onto its existing guard_workspace)
+// so a PHI-marked dispatch refuses before any worktree/branch/session
+// side-effect and before the auth preflight, instead of only at launch —
+// still nothing re-implemented, since it is the launcher's own verdict.
 //
 // Lane-agnostic helpers are IMPORTED from spawn-glm.ts (transcriptDirFor,
 // preflightWindowCheck, measureOverheadChars, finalMeta) rather than
@@ -609,6 +614,33 @@ export function probeClaudexAuth(repoRoot: string, cwd: string, timeoutMs: numbe
   if (r.exitCode === null || r.signalCode != null) return "unavailable"; // killed / timed out
   if (r.exitCode === 0) return "ok";
   if (r.exitCode === CLAUDEX_PREFLIGHT_GAP_EXIT) return "unavailable";
+  // HIMMEL-2626: exit 3 is the launcher's OWN PHI/egress guard_workspace
+  // refusal (unconditional, runs before the --preflight-only branch this probe
+  // exercises) — a real, permanent verdict, but with no special-casing it fell
+  // into the generic evidence-forwarding below and surfaced to the operator as
+  // "codex auth preflight reports a PERMANENT failure ... fix the claude-codex
+  // config" (main()'s fatal message), sending them to chase credentials for a
+  // guard refusal. "fatal" is still the CORRECT verdict here (permanent, must
+  // abort, must never retry) — only the attribution was wrong, so fix that and
+  // nothing else. This branch is DEAD BY CONSTRUCTION on the normal path since
+  // the HIMMEL-2626 pre-check in main() now screens the SAME absCwd with the
+  // SAME guard before this probe ever runs against it — kept as defense for a
+  // marker created in the narrow window between the two calls, and for any
+  // future caller that reaches this probe without going through that
+  // pre-check first.
+  // Forward the launcher's OWN stderr FIRST (codex-1, CR round 1): it names
+  // WHICH row refused — the .salus/.salus-profile marker, a phi-roots or
+  // egress-denylist entry, or an inaccessible directory — and returning before
+  // the HIMMEL-1380 block below would drop exactly that detail, leaving only
+  // the generic attribution line. Pre-2626 this exit fell through to that
+  // block and the operator saw the specific reason; keep it that way, and add
+  // the attribution rather than substituting it.
+  if (r.exitCode === 3) {
+    const guardEvidence = r.stderr?.toString().trim();
+    if (guardEvidence) console.error(`spawn-claudex: ${guardEvidence}`);
+    console.error(`spawn-claudex: the codex auth probe was refused by claude-codex's PHI/egress guard (exit 3) for ${cwd} — this is a guard verdict, NOT an auth or credential problem (HIMMEL-2626).`);
+    return "fatal";
+  }
   // HIMMEL-1380: the launcher already logged "HTTP <code> — body: …" to its own
   // stderr right before this exit — forward it verbatim so the operator-facing
   // fatal message (below, in the caller) is backed by what was actually
@@ -1113,9 +1145,9 @@ export async function runClaudexSharedDispatch(p: {
 // Exit codes: 0 = --help/-h (usage printed to stdout, HIMMEL-1225) · 1 =
 // uncaught error (main().catch) · 2 = a refusal (usage, bank preflight,
 // himmel-checkout / shared-branch plan, window preflight, --effort
-// max/ultra) · 4 = shared-branch-lock acquire failure (parity with spawn-glm;
-// there is no exit-3 GLM-guard equivalent here — claude-codex owns PHI/egress
-// guarding itself, D1).
+// max/ultra) · 3 = PHI/egress pre-check refusal (HIMMEL-2626; the verdict
+// still comes from claude-codex --guard-check, D1 intact) · 4 =
+// shared-branch-lock acquire failure (parity with spawn-glm).
 async function main(): Promise<void> {
   const usage = "usage: spawn-claudex [<prompt> | --brief-file <path>] [--cwd <dir>] [--name <slug>] [--branch <existing-branch>] [--timeout-mins <n>] [--permission-mode dontAsk] [--effort low|medium|high|xhigh] [--model gpt-5.6-sol|gpt-5.6-terra|gpt-5.6-luna] [--profile <name>] [--add-plugins a@m,b@m] [--rounds-override <why>] [--force] [--skip-auth-preflight] (the prompt is the task brief, inline, or read verbatim from --brief-file — HIMMEL-1780; default --permission-mode: dontAsk; bypassPermissions is refused — HIMMEL-1378)";
   const rawArgv = process.argv.slice(2);
@@ -1197,6 +1229,45 @@ async function main(): Promise<void> {
     needsWorktreeAdd = true;
   }
 
+  // PHI/egress pre-check (HIMMEL-2626) BEFORE any worktree/branch/session
+  // side-effect and before the (network) codex auth preflight below. This
+  // calls the LAUNCHER's own check-only entry (scripts/claude-codex
+  // --guard-check) rather than re-implementing a recogniser here:
+  // scripts/claude-codex stays the SINGLE owner of the PHI/egress verdict
+  // (D1) — its guard_workspace already screens the launch cwd at launch time,
+  // so nothing here can drift out of sync with it, because nothing here
+  // duplicates it. This call exists for ORDERING and ATTRIBUTION, not for a
+  // refusal that didn't exist before: probeClaudexAuth already runs the
+  // launcher with cwd:absCwd, whose unconditional guard_workspace screen (it
+  // runs before the --preflight-only branch) DOES refuse a PHI-marked absCwd
+  // pre-creation today — but that exit 3 doesn't fit probeClaudexAuth's
+  // ok/unavailable cases, so it falls into "fatal" and surfaces as a
+  // misattributed "codex auth preflight reports a PERMANENT failure" (fix
+  // your credentials) instead of a PHI refusal. And --skip-auth-preflight
+  // skips probeClaudexAuth entirely, so THAT path had no pre-creation
+  // screening at all — the worktree, branch, session dir and meta.json all
+  // got minted before the worker's own launch-time guard_workspace(worktree)
+  // had a chance to refuse. This call fixes both: a correctly-attributed exit
+  // 3, before either the auth probe or a mint, on every path. `cwd: absCwd`
+  // pins what gets screened to the dispatch target itself, not whatever
+  // directory the operator happened to invoke spawn-claudex from (the
+  // launcher's "this workspace" check is against ITS OWN process cwd).
+  // Screens absCwd (the himmel checkout, which exists now) rather than
+  // worktree (which does not exist yet — the launcher's own
+  // accessible-directory check would just fail-close on it for the wrong
+  // reason); worktree is always a descendant of absCwd, so every guard row
+  // covering the checkout already refuses here, and a row naming only the
+  // lane's worktree subtree is still caught at launch by the launcher's own
+  // screening of the worker's cwd. Any nonzero exit refuses (fail-closed): 3
+  // is the guard's own verdict, 2 is a launcher-level failure (missing key,
+  // bad arg) — either way this dispatch must not proceed.
+  const guardCheck = Bun.spawnSync([BASH_BIN, claudexLauncherPath(REPO_ROOT), "--guard-check", absCwd], { cwd: absCwd, stdout: "pipe", stderr: "pipe" });
+  if (guardCheck.exitCode !== 0) {
+    process.stderr.write(guardCheck.stderr);
+    console.error(`spawn-claudex: PHI/egress pre-check refused this dispatch (claude-codex --guard-check exited ${guardCheck.exitCode}) — refusing before any worktree/branch/session side-effect (HIMMEL-2626).`);
+    process.exit(3);
+  }
+
   // Per-model window preflight (HIMMEL-740 pattern, reused): refuse a brief
   // that cannot fit BEFORE any side effect. 272_000 is the GPT-5.6 2x-billing
   // ceiling documented in docs/tooling-catalog.md#claude-codex — kept under
@@ -1236,7 +1307,12 @@ async function main(): Promise<void> {
         // excerpt. Only a 401/403 is a deterministic invalid-key signal; curl
         // unavailable and egress refusal are the other permanent causes, but a
         // bare CLIPROXY_API_KEY accusation is no longer asserted here.
-        ? "spawn-claudex: codex auth preflight reports a PERMANENT failure — see the preflight-probe evidence line above for the observed status/body (only 401/403 means an invalid CLIPROXY_API_KEY; other causes: curl unavailable, or a config/egress refusal — NOT a transient 5xx/408/timeout, which is retried) — aborting before any worktree; fix the claude-codex config, then re-dispatch (HIMMEL-1037/1380)."
+        // HIMMEL-2626: a PHI/egress GUARD refusal (exit 3) is also permanent
+        // and lands here — probeClaudexAuth prints its own "refused by
+        // claude-codex's PHI/egress guard ... NOT an auth or credential
+        // problem" attribution line right above this one when that's the
+        // cause, so this generic line no longer reads as credentials-only.
+        ? "spawn-claudex: codex auth preflight reports a PERMANENT failure — see the preflight-probe evidence line above for the observed status/body (only 401/403 means an invalid CLIPROXY_API_KEY; other causes: curl unavailable, a config/egress refusal, or a PHI/egress guard refusal — NOT a transient 5xx/408/timeout, which is retried) — aborting before any worktree; fix the claude-codex config, then re-dispatch (HIMMEL-1037/1380)."
         : "spawn-claudex: codex auth still unavailable (503 refresh gap / transient 5xx/408/timeout) after the full backoff budget — refusing rather than launch into a known-doomed auth state (would reproduce the failure and strand a worktree); re-dispatch once the gateway recovers (HIMMEL-1037).");
       process.exit(2);
     }
