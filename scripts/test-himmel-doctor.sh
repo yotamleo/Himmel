@@ -78,6 +78,29 @@ export DOCTOR_ORPHAN_SCAN_SKIP=1
 HIMMEL_DOCTOR_PROC_BASE="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-noproc.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }
 export HIMMEL_DOCTOR_PROC="$HIMMEL_DOCTOR_PROC_BASE/no-proc"
 
+# Hermeticity (HIMMEL-2515): C24's systemd probe and C30 both resolve through
+# systemctl via this seam -- and on THIS station it is not just present but
+# ENABLED and ACTIVE (a real, operator-depended-on telegram-bridge.service).
+# tool_dirs()'s PATH scrub does not save us here the way it does for gh/node:
+# systemctl lives in /usr/bin on this Arch/CachyOS box, the SAME dir every
+# other whitelisted tool (git, jq, sed, ...) resolves through, so TOOLS_PATH
+# would still find the real binary. Point the seam at a nonexistent absolute
+# path globally (`command -v` on an absolute path never falls through to
+# PATH, so this is a clean "systemctl absent" regardless of what tool_dirs()
+# picks up); dedicated C24/C30 cases override it per-case with their own fake
+# systemctl. Never invoke the REAL systemctl against telegram-bridge.service
+# from this suite -- read-only verification of it happens by hand, at most
+# once, outside the test run.
+#
+# Templated + guarded mktemp (CR round 1 E4): matches the C29 seam directly
+# above, not DOCTOR_HERMES_HOME_EMPTY's untemplated form near the top of this
+# file -- C29's is the more recent convention (this seam's own dedicated test
+# rows already use it), and it also drops the one shell-lint mktemp advisory
+# an untemplated `mktemp -d` draws here instead of leaving it for a reviewer
+# to raise.
+HIMMEL_DOCTOR_SYSTEMCTL_BASE="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-nosystemctl.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }
+export HIMMEL_DOCTOR_SYSTEMCTL="$HIMMEL_DOCTOR_SYSTEMCTL_BASE/no-systemctl"
+
 # Hermeticity (HIMMEL-969): C8's runner-home defaults resolve via
 # cadence_user_home (USERPROFILE via cygpath on Windows) — per-case HOME
 # redirection does NOT cover that, so pin all four seams to empty dirs
@@ -1421,15 +1444,44 @@ fi
 rm -rf "$t"
 
 # ── C24: expected-but-absent cadence tasks (HIMMEL-1680) ─────────────────────
-# fake_task_probe <dir> <existing-task-names...> — a scheduler-probe stub for
-# WHICHEVER platform this test happens to run on: schtasks on Windows/MSYS
-# (is_windows() true), crontab elsewhere. Only the "does <name> exist" shape
-# is faked — good enough for check_c24, which only ever asks that question.
+# fake_task_probe [--windows|--posix] <dir> <existing-task-names...> — a
+# scheduler-probe stub for either an EXPLICITLY named platform, or (with
+# neither flag) whichever platform this test process happens to run on:
+# schtasks on Windows/MSYS (is_windows() true), crontab elsewhere. Only the
+# "does <name> exist" shape is faked — good enough for check_c24, which only
+# ever asks that question.
+#
+# HIMMEL-2515 CR round 3 finding 1: sensing the CALLING PROCESS's own ambient
+# uname (the no-flag default) is safe ONLY for a caller whose matching doctor
+# invocation ALSO leaves is_windows() ambient (no $FAKEBIN pin on its PATH).
+# Any caller that pins the doctor to a specific platform via $FAKEBIN MUST
+# pass the matching --posix/--windows flag explicitly instead of relying on
+# the default — otherwise this fixture and the PINNED doctor invocation can
+# silently disagree about the platform: on a real Windows host, an unflagged
+# call here still senses Windows and writes a schtasks stub while a
+# $FAKEBIN-first ("echo Linux") doctor invocation takes the crontab branch
+# and finds none, falling through toward a missing or the operator's REAL
+# crontab. The flag makes the platform an explicit, hard-to-forget statement
+# at each call site instead of an ambient fact that can drift out of sync
+# with the doctor's own pin — see the fixture-pin RED/GREEN control below for
+# a reproduction of the silent-disagreement failure.
 # shellcheck disable=SC2016  # single-quoted $1/$2/$3 are emitted literally for the fake binary's own /bin/sh
 fake_task_probe() {
+    local platform=""
+    case "${1:-}" in
+        --windows) platform=windows; shift ;;
+        --posix)   platform=posix; shift ;;
+    esac
     local dir="$1"; shift
     mkdir -p "$dir"
-    if case "$(uname -s 2>/dev/null || echo x)" in MINGW*|MSYS*|CYGWIN*) true ;; *) false ;; esac; then
+    if [ -z "$platform" ]; then
+        if case "$(uname -s 2>/dev/null || echo x)" in MINGW*|MSYS*|CYGWIN*) true ;; *) false ;; esac; then
+            platform=windows
+        else
+            platform=posix
+        fi
+    fi
+    if [ "$platform" = windows ]; then
         {
             printf '#!/bin/sh\n'
             printf 'if [ "$1" = "/query" ] && [ "$2" = "/tn" ]; then\n'
@@ -1445,12 +1497,154 @@ fake_task_probe() {
         {
             printf '#!/bin/sh\n'
             printf 'if [ "$1" = "-l" ]; then\n'
+            # The leading `:` is LOAD-BEARING when $@ is empty (the "no task
+            # names -> empty crontab" shape every C24-absent case relies on):
+            # a bare "if COND; then\nfi" with nothing between them is a shell
+            # SYNTAX ERROR (empty compound-command body), not an empty
+            # then-branch -- this crashed `crontab -l` with rc=2 on every
+            # POSIX host and was misread by check_c24's sched_unavailable
+            # probe as "the scheduler itself is unreachable", masking the
+            # intended WARN under a false INFO (the pre-existing baseline red
+            # row this PR turns green).
+            printf '    :\n'
             for n in "$@"; do printf '    printf "%%s\\n" "0 0 * * * true # %s"\n' "$n"; done
             printf 'fi\n'
             printf 'exit 0\n'
         } > "$dir/crontab"
         chmod +x "$dir/crontab"
     fi
+}
+
+# fake_systemctl <dir> <state> [mainpid] [nrestarts] — a stub `systemctl`
+# used by both C24's HimmelTelegramBridge probe and C30 (HIMMEL-2515). Never
+# touches anything real; only answers `--user is-enabled <unit>` and
+# `--user show <unit> -p <MainPID|NRestarts> --value`, the exact two shapes
+# check_c24/check_c30 invoke. <state> (every literal is-enabled text below
+# was VERIFIED against this box's real systemd 261 -- `man systemctl` Table 3
+# plus live is-enabled queries against real units in each state, none of
+# them telegram-bridge.service -- not assumed; see CR round 1 E1, which
+# caught an earlier "could not be found" guess that real systemd never
+# actually prints for a missing unit):
+#   enabled         — is-enabled prints "enabled", rc 0
+#   enabledruntime  — is-enabled prints "enabled-runtime", rc 0 (E1: also
+#                     counts as armed, same as "enabled" -- a runtime-only
+#                     enablement symlink, not a permanent one)
+#   disabled        — is-enabled prints "disabled", rc 1 (installed, not armed)
+#   notfound        — is-enabled prints "not-found" (verified literal, rc 4)
+#                     -- the unit file does not exist on this host at all
+#   busfail         — is-enabled prints THIS STATION's own real bus-failure
+#                     wording, rc 1 (transient/environment failure -- must
+#                     NOT read as absence). CR round 1 E5: captured from a
+#                     genuine forced failure, not guessed --
+#                     `XDG_RUNTIME_DIR=/nonexistent DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent
+#                     systemctl --user is-enabled telegram-bridge.service`
+#                     on this box (systemd 261) prints exactly:
+#                       "Failed to connect to user scope bus via local transport: No such file or directory"
+#                     An earlier version of this stub emitted the OLDER
+#                     systemd wording below instead, which the production
+#                     pattern at the time only matched by coincidence of
+#                     testing itself against its own guess -- the stub and
+#                     the code agreed with each other and both disagreed
+#                     with the real machine; this row would have passed
+#                     while proving nothing about the "unknown" branch
+#                     actually firing. Re-capture with the same reproduction
+#                     if this station's systemd version ever changes the
+#                     wording again.
+#   busfailold      — the OLDER systemd wording ("Failed to connect to bus:
+#                     ..."), covered by its own row so both forms are
+#                     verified by a test row, not just asserted in a comment.
+#   permdenied      — CR round 1 finding 2: an unrecognized/failed is-enabled
+#                     answer that is NEITHER a named enablement state NOR the
+#                     bus-unreachable wording above -- the shape that used to
+#                     fall through _systemd_user_unit_state's `*)` wildcard
+#                     into "disabled" (asserting the unit IS installed on no
+#                     evidence) before this ticket's fix made that bucket
+#                     "unknown" instead. This literal wording is INVENTED,
+#                     not captured from a real permission-denied is-enabled
+#                     invocation -- two attempts to force a genuine one on
+#                     this box (chmod 000 on a fixture unit file under
+#                     ~/.config/systemd/user, and chmod 000 on that directory
+#                     itself, each followed by daemon-reload) both had this
+#                     station's systemd fall back to "not-found" rather than
+#                     surfacing any permission string, so a real repro was not
+#                     obtained. The wording below follows systemd's
+#                     documented "Failed to X: %m" error-message shape (%m
+#                     expanding to the errno string), which is plausible but
+#                     UNVERIFIED -- treat it as a stand-in for "some
+#                     unrecognized failed answer", not as a verified literal.
+#
+# <mainpid>/<nrestarts> normally carry the literal `show -p ...` value to
+# print (any literal text works here already, e.g. "abc" -- so a
+# non-numeric-but-non-empty success case needs no sentinel at all), but
+# either may instead be one of two sentinels:
+#   FAIL  (CR round 2, HIMMEL-2515): makes the corresponding `--user show
+#         <unit> -p <MainPID|NRestarts> --value` query FAIL (rc 1, nothing
+#         on stdout) while `is-enabled` still answers per <state> as normal
+#         -- is-enabled and show are two separate invocations in
+#         check_c30/_c24_cron_has_task's caller, and this is what lets a
+#         test row fail ONLY the show query without touching the
+#         is-enabled gate above it.
+#   EMPTY (CR round 3, finding 2): makes the query SUCCEED (rc 0) but print
+#         nothing -- distinct from FAIL, and from a literal "0", because
+#         `${3:-0}`/`${4:-0}` cannot represent a genuinely empty value
+#         through normal argument defaulting (bash treats an empty arg the
+#         same as an unset one). Needed to prove a successful-but-unreadable
+#         query is read as UNDETERMINED, never as a live "MainPID=0".
+# shellcheck disable=SC2016  # $state/$mainpid/$nrestarts are meant to reach the fake binary's own /bin/sh unexpanded
+fake_systemctl() {
+    local dir="$1" state="$2" mainpid="${3:-0}" nrestarts="${4:-0}"
+    mkdir -p "$dir"
+    {
+        printf '#!/bin/sh\n'
+        printf 'state=%s\n' "$state"
+        printf 'mainpid=%s\n' "$mainpid"
+        printf 'nrestarts=%s\n' "$nrestarts"
+        cat <<'SCRIPT'
+if [ "$1" = "--user" ] && [ "$2" = "is-enabled" ]; then
+    case "$state" in
+        enabled) echo enabled; exit 0 ;;
+        enabledruntime) echo enabled-runtime; exit 0 ;;
+        disabled) echo disabled; exit 1 ;;
+        notfound) echo not-found; exit 4 ;;
+        busfail) echo "Failed to connect to user scope bus via local transport: No such file or directory" >&2; exit 1 ;;
+        busfailold) echo "Failed to connect to bus: No such file or directory" >&2; exit 1 ;;
+        permdenied) echo "Failed to get unit file state for telegram-bridge.service: Permission denied" >&2; exit 1 ;;
+    esac
+elif [ "$1" = "--user" ] && [ "$2" = "show" ]; then
+    shift 2; shift # drop --user show <unit>
+    prop="" prev=""
+    for a in "$@"; do
+        [ "$prev" = "-p" ] && prop="$a"
+        prev="$a"
+    done
+    case "$prop" in
+        MainPID)
+            if [ "$mainpid" = "FAIL" ]; then
+                echo "Failed to get properties: Transport endpoint is not connected" >&2
+                exit 1
+            fi
+            if [ "$mainpid" = "EMPTY" ]; then
+                printf '\n'
+            else
+                printf '%s\n' "$mainpid"
+            fi ;;
+        NRestarts)
+            if [ "$nrestarts" = "FAIL" ]; then
+                echo "Failed to get properties: Transport endpoint is not connected" >&2
+                exit 1
+            fi
+            if [ "$nrestarts" = "EMPTY" ]; then
+                printf '\n'
+            else
+                printf '%s\n' "$nrestarts"
+            fi ;;
+    esac
+    exit 0
+fi
+exit 1
+SCRIPT
+    } > "$dir/systemctl"
+    chmod +x "$dir/systemctl"
 }
 
 echo "== C24: no observability registry -> OK C24-cadence-registry =="
@@ -1522,6 +1716,334 @@ if grepq "$out" 'INFO C24-cadence-registry' && grepq "$out" -F 'unreachable' && 
     pass "C24 -> INFO (scheduler probe unavailable, never a false mass-WARN)"
 else
     fail "C24 scheduler-unavailable -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+# ── C24 (HIMMEL-2515): HimmelTelegramBridge's systemd probe ──────────────────
+# CR round 1 finding 1: check_c24's task loop branches on is_windows() FIRST
+# (schtasks vs. systemd/crontab), before it ever looks at the task name -- so
+# on a real Windows/Git-Bash host every row below would take the schtasks
+# branch and never touch fake_systemctl at all. fake_task_probe already
+# writes whichever stub matches THIS host's real uname (schtasks on
+# MINGW/MSYS/CYGWIN, crontab elsewhere), so on Windows these rows would find
+# the (nameless) fake_task_probe call's task absent via schtasks and WARN --
+# exactly the failure the RED control below reproduces. Every row here
+# therefore puts $FAKEBIN (the "echo Linux" uname stub used since HIMMEL-2010
+# to exercise the non-Windows --fix path, defined near the top of this file)
+# FIRST on PATH, ahead of $t/probe -- this pins is_windows() to false
+# regardless of the real host, so the systemd probe these rows exist to test
+# is what actually runs, deterministically, on every platform.
+echo "== C24 (HIMMEL-2515, finding 1 RED/GREEN): the FAKEBIN uname pin is what makes the systemd rows below platform-independent =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-winsim.XXXXXX")" || { fail "C24 finding-1 control: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe" "$t/mingw"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"          # --posix pins the crontab stub regardless of the real host, same as every row below
+fake_systemctl "$t/probe" enabled 424242 0
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$t/mingw/uname"; chmod +x "$t/mingw/uname"
+# A real Windows host also has a real schtasks -- check_c24's pre-loop
+# sched_unavailable probe (`schtasks /query`) must succeed so the per-task
+# loop below is actually reached; only the PER-TASK query (`/query /tn
+# <name>`) reports the (never-armed-here) task absent, mirroring a genuine
+# schtasks that has never heard of this task name.
+# shellcheck disable=SC2016  # single-quoted $1/$2 are emitted literally for the fake binary's own /bin/sh
+{
+    printf '#!/bin/sh\n'
+    printf 'if [ "$1" = "/query" ] && [ "$2" = "/tn" ]; then exit 1; fi\n'
+    printf 'exit 0\n'
+} > "$t/mingw/schtasks"
+chmod +x "$t/mingw/schtasks"
+# RED control: simulate a Windows host (uname -> MINGW64_NT via $t/mingw)
+# WITHOUT the FAKEBIN pin -- is_windows() now reads true, check_c24 takes the
+# schtasks branch, finds no schtasks binary here (fake_task_probe wrote
+# crontab, since IT read the REAL host's uname), and counts the task
+# absent -- reproducing this finding's bug on a real Windows host.
+out_red="$(PATH="$t/mingw:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out_red" 'WARN C24-cadence-registry' && grepq "$out_red" -F 'HimmelTelegramBridge'; then
+    pass "C24 finding-1 RED control -> WARN under a simulated Windows host without the uname pin (confirms the bug)"
+else
+    fail "C24 finding-1 RED control -> did not reproduce the bug; got: $(printf '%s' "$out_red" | grep C24)"
+fi
+# GREEN: put $FAKEBIN first, ahead of BOTH the mingw stub and the probe dir --
+# this is the fix applied to every row below. is_windows() now reads false
+# regardless of the simulated host, so the systemd probe (fake_systemctl
+# enabled) is what actually gets exercised.
+out_green="$(PATH="$FAKEBIN:$t/mingw:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out_green" 'OK   C24-cadence-registry' && ! grepq "$out_green" 'WARN C24-cadence-registry'; then
+    pass "C24 finding-1 GREEN -> FAKEBIN-first uname pin forces the POSIX/systemd branch even under a simulated Windows host"
+else
+    fail "C24 finding-1 GREEN -> $(printf '%s' "$out_green" | grep C24)"
+fi
+rm -rf "$t"
+
+# ── C24 (HIMMEL-2515 CR round 3, finding 1): the FIXTURE must follow the
+# PINNED platform, not the test process's ambient host ─────────────────────
+# The RED/GREEN pair above proves the doctor's OWN is_windows() branch is
+# pinnable via $FAKEBIN. This pair proves the companion half: fake_task_probe
+# itself must be told the SAME platform, not left to sense the calling
+# process's real uname — otherwise a fixture written under one platform can
+# silently disagree with a doctor invocation pinned to a different one.
+echo "== C24 (HIMMEL-2515 CR round 3, finding 1): fake_task_probe must follow the PINNED platform, not the ambient host's uname =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-fixture-pin.XXXXXX")" || { fail "C24 fixture-pin: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe" "$t/mingw"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+# systemd reports "unknown" (bus unreachable) so check_c24 falls back to the
+# crontab probe -- the ONLY branch where the fixture's platform actually
+# matters (an "enabled"/"disabled" systemd answer never looks at crontab at
+# all, so it couldn't demonstrate this mismatch).
+fake_systemctl "$t/probe" busfail
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$t/mingw/uname"; chmod +x "$t/mingw/uname"
+# RED: call fake_task_probe with NO explicit platform flag while a fake
+# Windows uname sits FIRST on the CALLING process's own PATH -- exactly how
+# every call site in this block worked before this fix, sensing the ambient
+# host instead of the platform the doctor will be pinned to. It writes a
+# schtasks stub, no crontab. The doctor is then run PINNED to POSIX via
+# $FAKEBIN (as every row in this block is) with a curated $NOGH PATH tail
+# that has no real crontab reachable at all (never touch the operator's
+# real crontab from this suite) -- so if the fixture disagrees with the pin,
+# the crontab probe finds NOTHING to read, not even a stub.
+#
+# HIMMEL-2515 CR round 4 note: this scenario's OWN crontab is genuinely
+# unreachable (the mismatched fixture wrote schtasks, not crontab), which
+# used to trip the whole-function early return and read as a blanket
+# "scheduler unreachable" INFO regardless of what systemd said. Since round
+# 4 made that bail backend-specific, HimmelTelegramBridge (expected here)
+# has an alternate backend (systemctl IS reachable, even though its answer
+# is "unknown"/busfail) so the per-task loop still runs; with BOTH probes
+# inconclusive for this one task, it now lands in the pre-existing
+# INDETERMINATE bucket instead. The RED/GREEN distinction this row exists to
+# prove still holds: RED's mismatched fixture leaves the crontab probe with
+# nothing to find (INDETERMINATE); GREEN's correctly-pinned fixture gives
+# the crontab probe a real row to find (confirmed PRESENT) -- see below.
+PATH="$t/mingw:$PATH" fake_task_probe "$t/probe" HimmelTelegramBridge
+out_red="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out_red" 'OK   C24-cadence-registry' && grepq "$out_red" 'INFO C24-cadence-registry' && grepq "$out_red" -F 'UNDETERMINED' && grepq "$out_red" -F 'HimmelTelegramBridge' && ! grepq "$out_red" 'WARN C24-cadence-registry'; then
+    pass "C24 fixture-pin RED control -> an ambient-sensed fixture (Windows caller, POSIX-pinned doctor) mismatches: crontab probe finds nothing, task reads INDETERMINATE instead of the intended confirmed-present"
+else
+    fail "C24 fixture-pin RED control -> $(printf '%s' "$out_red" | grep C24)"
+fi
+# GREEN: same scenario, but fake_task_probe is told the platform EXPLICITLY
+# (--posix) instead of sensing the calling process's ambient uname -- the
+# fixture now matches the doctor's pin regardless of what host is really
+# running this suite (the fake Windows uname is still first on PATH here,
+# and it no longer matters).
+fake_task_probe --posix "$t/probe" HimmelTelegramBridge
+out_green="$(PATH="$FAKEBIN:$t/mingw:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out_green" 'OK   C24-cadence-registry' && grepq "$out_green" -F 'expected cadence task(s) present' && ! grepq "$out_green" 'WARN C24-cadence-registry' && ! grepq "$out_green" -F 'UNDETERMINED'; then
+    pass "C24 fixture-pin GREEN -> --posix ties the fixture to the pinned platform, matching the doctor regardless of the ambient host"
+else
+    fail "C24 fixture-pin GREEN -> $(printf '%s' "$out_green" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515): HimmelTelegramBridge armed via systemd, no crontab row -> present, OK (the ticket's bug: pre-fix this WARNs) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 systemd-present: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+fake_systemctl "$t/probe" enabled 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'expected cadence task(s) present' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (HimmelTelegramBridge present via systemd)"
+else
+    fail "C24 systemd-present -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515, CR round 1 E1): HimmelTelegramBridge enabled-runtime (not permanent 'enabled') -> STILL present, OK -- a narrower repeat of this ticket's own bug if misclassified =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 systemd-enabled-runtime: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+fake_systemctl "$t/probe" enabledruntime 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'expected cadence task(s) present' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (enabled-runtime counts as present, same as enabled)"
+else
+    fail "C24 systemd-enabled-runtime -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515): HimmelTelegramBridge NOT enabled via systemd, no crontab row -> still absent, WARN (fix must not blanket-excuse the task) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 systemd-disabled: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+fake_systemctl "$t/probe" disabled
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'HimmelTelegramBridge'; then
+    pass "C24 -> WARN (systemd reports NOT enabled, still counted absent)"
+else
+    fail "C24 systemd-disabled -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24: HimmelTelegramBridge expected, NO systemctl at all -> falls back to crontab probe, unchanged pre-fix behavior =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 no-systemctl: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/no-such-systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'HimmelTelegramBridge'; then
+    pass "C24 -> WARN (no systemctl on PATH, crontab-only fallback unchanged)"
+else
+    fail "C24 no-systemctl -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515): a NON-bridge task expected, systemctl reports enabled -> the systemd probe must NOT leak to other tasks (still WARN) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 no-leak: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[{"name":"codex-sweep","cadence_seconds":14400}],"expected_tasks":["HIMMEL-CodexOrphanSweep"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+fake_systemctl "$t/probe" enabled 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'HIMMEL-CodexOrphanSweep'; then
+    pass "C24 -> WARN (a non-bridge task stays crontab-only, systemd probe did not leak)"
+else
+    fail "C24 no-leak -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515): systemctl present but the user bus is unreachable -> falls back to crontab (crontab HAS the row -> OK, proves it was NOT read as absent) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 bus-unreachable: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe" "HimmelTelegramBridge"
+fake_systemctl "$t/probe" busfail
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (bus-unreachable fell back to crontab instead of being read as absent)"
+else
+    fail "C24 bus-unreachable -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (CR round 1 E5): same, but the OLDER systemd bus-failure wording ('Failed to connect to bus: ...') -> also falls back to crontab, not read as absent =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 bus-unreachable-old: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe" "HimmelTelegramBridge"
+fake_systemctl "$t/probe" busfailold
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (older bus-unreachable wording also falls back to crontab, not read as absent)"
+else
+    fail "C24 bus-unreachable-old -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515, CR round 1 finding 2): unrecognized/permission-error is-enabled output falls back to crontab like bus-unreachable (crontab HAS the row -> OK, not misread as 'disabled') =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 finding-2: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe" "HimmelTelegramBridge"
+fake_systemctl "$t/probe" permdenied
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (unrecognized/permission-error output falls back to crontab instead of being misread as 'disabled')"
+else
+    fail "C24 finding-2 -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C30 (HIMMEL-2515, CR round 1 finding 2): unrecognized/permission-error is-enabled output -> INFO, must NEVER claim 'installed but not enabled' (the probe proved nothing) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 finding-2: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" permdenied
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'installed but not enabled'; then
+    pass "C30 -> INFO (unrecognized is-enabled output never asserted as installed-but-disabled)"
+else
+    fail "C30 finding-2 -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515, CR round 1 finding 3): systemd bus unreachable AND no crontab row -> INDETERMINATE, never a false expected-but-absent WARN, never silently dropped =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 finding-3: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"          # no crontab row -- neither probe can confirm presence
+fake_systemctl "$t/probe" busfail
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" 'INFO C24-cadence-registry' && grepq "$out" -F 'UNDETERMINED' && grepq "$out" -F 'HimmelTelegramBridge'; then
+    pass "C24 -> INFO indeterminate (bus-unreachable + no crontab row is UNDETERMINED, never a false expected-but-absent WARN, never silently dropped)"
+else
+    fail "C24 finding-3 -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+# ── C24 (HIMMEL-2515, CR round 4): crontab availability must be PER-BACKEND,
+# not a whole-function early return ──────────────────────────────────────────
+# CR round 4 finding: check_c24 probed the scheduler ONCE before its per-task
+# loop and early-returned when it was unavailable -- so on a systemd-only
+# Linux host with no `crontab` on PATH at all, that return fired BEFORE the
+# per-task loop ever ran, and the systemd probe for HimmelTelegramBridge
+# added earlier in this ticket never executed. $NOGH (defined near the top of
+# this file) is the curated PATH used here instead of fake_task_probe's
+# crontab stub: it symlinks only a fixed tool list that does NOT include
+# crontab, so `command -v crontab` genuinely fails and this station's real
+# crontab is never touched -- distinct from every fake_task_probe row above,
+# which stubs a *working* crontab binary that merely reports no rows.
+echo "== C24 (HIMMEL-2515 CR round 4): HimmelTelegramBridge armed via systemd, crontab NOT ON PATH AT ALL -> present, OK (this is the finding: crontab-unavailable must not skip the whole check) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-nocron.XXXXXX")" || { fail "C24 nocron-present: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_systemctl "$t/probe" enabled 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'expected cadence task(s) present' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (HimmelTelegramBridge present via systemd even with no crontab reachable on PATH at all)"
+else
+    fail "C24 nocron-present -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515 CR round 4): HimmelTelegramBridge NOT enabled via systemd, crontab NOT on PATH at all -> still absent, WARN (proves the fix does not blanket-excuse the bridge) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-nocron.XXXXXX")" || { fail "C24 nocron-absent: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_systemctl "$t/probe" disabled
+out="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'HimmelTelegramBridge'; then
+    pass "C24 -> WARN (systemd reports NOT enabled -- genuinely absent even with crontab unreachable entirely)"
+else
+    fail "C24 nocron-absent -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515 CR round 4): mixed registry -- bridge armed via systemd + a crontab-ONLY sibling task, crontab NOT on PATH at all -> bridge PRESENT, sibling task INDETERMINATE (never joins the WARN, never silently dropped) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-nocron.XXXXXX")" || { fail "C24 nocron-mixed: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[{"name":"codex-sweep","cadence_seconds":14400}],"expected_tasks":["HimmelTelegramBridge","HIMMEL-CodexOrphanSweep"]}\n' > "$t/home/.himmel/observability.json"
+fake_systemctl "$t/probe" enabled 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+# CR round 5: pre-fix, this INDETERMINATE line hardcoded the bridge's cause
+# (systemd bus unreachable) and remedy (check telegram-bridge.service) even
+# though HIMMEL-CodexOrphanSweep is a crontab-ONLY sibling -- crontab, not
+# systemd, is what's unreachable here. Assert the corrected per-task
+# attribution: names crontab, recommends `crontab -l`, and never sends this
+# sibling's operator to check the bridge's unit. Scoped to just this
+# INDETERMINATE line's own remedy (via grep -A1, not a pipe -- see this
+# file's pipefail note near grepq's definition) rather than the whole $out,
+# because C30 legitimately prints 'telegram-bridge.service' elsewhere in its
+# own unrelated MainPID remedy.
+c24_indet_ctx="$(grep -A1 -F 'UNDETERMINED enablement (crontab itself is unreachable, and these tasks have no other backend): HIMMEL-CodexOrphanSweep' <<< "$out")"
+if ! grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" 'INFO C24-cadence-registry' && [ -n "$c24_indet_ctx" ] && grepq "$c24_indet_ctx" -F 'crontab -l' && ! grepq "$c24_indet_ctx" 'telegram-bridge.service'; then
+    pass "C24 -> bridge present via systemd, crontab-only sibling task INDETERMINATE naming CRONTAB (not systemd) as its cause, recommending crontab -l (not systemctl)"
+else
+    fail "C24 nocron-mixed -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515 CR round 5): HimmelTelegramBridge indeterminate for BOTH reasons -- systemd bus unreachable AND crontab itself unreachable -- must say so honestly, not pick one =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-nocron.XXXXXX")" || { fail "C24 both-causes: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_systemctl "$t/probe" busfail
+out="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" 'INFO C24-cadence-registry' && grepq "$out" -F 'HimmelTelegramBridge has UNDETERMINED enablement — neither backend could answer' && grepq "$out" -F 'systemctl --user is-enabled telegram-bridge.service, and crontab -l'; then
+    pass "C24 -> HimmelTelegramBridge INDETERMINATE names BOTH backends (systemd unknown + crontab unreachable), recommends both remedies"
+else
+    fail "C24 both-causes -> $(printf '%s' "$out" | grep C24)"
 fi
 rm -rf "$t"
 
@@ -1840,11 +2362,197 @@ else
 fi
 rm -rf "$t"
 
+# ── C30: telegram-bridge liveness (HIMMEL-2515) ───────────────────────────────
+# Reuses fake_systemctl (defined above, alongside C24's HimmelTelegramBridge
+# rows). check_c30 must never touch the REAL telegram-bridge.service -- every
+# case below points HIMMEL_DOCTOR_SYSTEMCTL at a fake binary or a nonexistent
+# path, never at the real "systemctl" on PATH.
+
+echo "== C30: unit enabled, active, live MainPID -> OK naming the pid and NRestarts =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 live: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled "$$" 2
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F "pid $$" && grepq "$out" -F '2 restart'; then
+    pass "C30 -> OK, names pid $$ and 2 restarts"
+else
+    fail "C30 live -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 1 E1): unit enabled-runtime, active, live MainPID -> STILL OK naming the pid (same as permanent 'enabled') =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 enabled-runtime: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabledruntime "$$" 0
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F "pid $$"; then
+    pass "C30 -> OK, enabled-runtime names pid $$ (not misread as 'no unit installed')"
+else
+    fail "C30 enabled-runtime -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30: unit enabled but MainPID=0 -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 mainpid-zero: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled 0 3
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C30-bridge-liveness' && grepq "$out" -F 'MainPID=0'; then
+    pass "C30 -> WARN (MainPID=0, armed but not running)"
+else
+    fail "C30 mainpid-zero -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30: unit enabled, MainPID names a pid that is NOT alive -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 dead-pid: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+# A guaranteed-dead pid: spawn a trivial child, reap it, then CONFIRM with
+# kill -0 that the pid is actually gone (never assume a bare high number is
+# unused -- pid reuse is a real risk, so this verifies rather than guesses).
+dead_pid=""
+for _try in 1 2 3 4 5; do
+    ( exit 0 ) & _cand=$!
+    wait "$_cand" 2>/dev/null
+    if ! kill -0 "$_cand" 2>/dev/null; then dead_pid="$_cand"; break; fi
+done
+if [ -z "$dead_pid" ]; then
+    fail "C30 dead-pid: could not obtain a confirmed-dead pid after 5 tries"
+else
+    fake_systemctl "$t/probe" enabled "$dead_pid" 1
+    out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'WARN C30-bridge-liveness' && grepq "$out" -F "MainPID=$dead_pid"; then
+        pass "C30 -> WARN (MainPID $dead_pid is enabled but the pid is dead)"
+    else
+        fail "C30 dead-pid -> $(printf '%s' "$out" | grep C30)"
+    fi
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 2): unit enabled, but the MainPID show query FAILS -> INFO/undetermined, must NEVER read as MainPID=0/WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 mainpid-query-fails: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled FAIL 0
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && grepq "$out" -F 'MainPID query failed' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'MainPID=0'; then
+    pass "C30 -> INFO (MainPID query failure never read as MainPID=0/armed-but-not-running)"
+else
+    fail "C30 mainpid-query-fails -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 3, finding 2): unit enabled, MainPID query SUCCEEDS but returns EMPTY -> INFO/undetermined, must NEVER read as a live MainPID=0/WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 mainpid-empty-success: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled EMPTY 0
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && grepq "$out" -F 'unreadable value' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'MainPID=0'; then
+    pass "C30 -> INFO (a SUCCESSFUL query that returned no value is undetermined, never a false MainPID=0/armed-but-not-running)"
+else
+    fail "C30 mainpid-empty-success -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+# The "other direction" for this finding -- a SUCCESSFUL query that returns
+# a literal numeric "0" must STILL WARN, unlike the unreadable-value case
+# above -- is already covered by the pre-existing "unit enabled but
+# MainPID=0 -> WARN" row further up this file; no need to duplicate it here.
+
+echo "== C30 (CR round 2): unit enabled, live MainPID, but the NRestarts show query FAILS -> STILL OK (liveness known), restart count reported unknown =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 nrestarts-query-fails: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled "$$" FAIL
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F "pid $$" && grepq "$out" -F 'restart count unknown' && ! grepq "$out" -F '0 restart' && ! grepq "$out" 'WARN C30-bridge-liveness'; then
+    pass "C30 -> OK, pid $$ reported, NRestarts degraded to unknown rather than falsely claiming 0"
+else
+    fail "C30 nrestarts-query-fails -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (item 4, CR round 3): unit enabled, live MainPID, NRestarts show query SUCCEEDS but returns a non-numeric value -> STILL OK, wording must not name a query FAILURE that never happened =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 nrestarts-nonnumeric-success: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled "$$" EMPTY
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F "pid $$" && grepq "$out" -F 'no usable restart count' && ! grepq "$out" -F 'NRestarts query failed' && ! grepq "$out" 'WARN C30-bridge-liveness'; then
+    pass "C30 -> OK, pid $$ reported, a SUCCESSFUL-but-unreadable NRestarts is worded distinctly from a query FAILURE that did not happen"
+else
+    fail "C30 nrestarts-nonnumeric-success -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30: no unit installed on this host (systemctl present, is-enabled -> not-found) -> OK, says NOT INSTALLED, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 no-unit: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" notfound
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F 'no telegram-bridge.service installed' && ! grepq "$out" -F 'installed but not enabled' && ! grepq "$out" 'WARN C30-bridge-liveness'; then
+    pass "C30 -> OK, says NOT installed (never a WARN)"
+else
+    fail "C30 no-unit -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 1 E2): unit INSTALLED but disabled (not not-found) -> OK, but the message must say INSTALLED-not-enabled, never the not-found wording =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 installed-disabled: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" disabled
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F 'installed but not enabled' && ! grepq "$out" -F 'no telegram-bridge.service installed' && ! grepq "$out" 'WARN C30-bridge-liveness'; then
+    pass "C30 -> OK, distinctly says INSTALLED-but-disabled (never the not-found wording)"
+else
+    fail "C30 installed-disabled -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 1 E5): systemctl present but the user bus is unreachable (this station's real wording) -> INFO, NEVER read as absent/disabled =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 bus-unreachable: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" busfail
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && grepq "$out" -F 'bus unreachable' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'installed but not enabled'; then
+    pass "C30 -> INFO (bus-unreachable skipped cleanly, never misread as installed-but-disabled)"
+else
+    fail "C30 bus-unreachable -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 1 E5): same, but the OLDER systemd bus-failure wording -> also INFO, never misread =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 bus-unreachable-old: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" busfailold
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && grepq "$out" -F 'bus unreachable' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'installed but not enabled'; then
+    pass "C30 -> INFO (older bus-unreachable wording also skipped cleanly)"
+else
+    fail "C30 bus-unreachable-old -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (item 3, CR round 3): systemctl absent entirely -> OK, wording scoped to SYSTEMD persistence, never a whole-host absence claim (a Windows scheduled task is C24's concern, not this check's) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 no-systemctl: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/no-such-systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if { grepq "$out" 'OK   C30-bridge-liveness' || grepq "$out" 'INFO C30-bridge-liveness'; } \
+   && ! grepq "$out" 'WARN C30-bridge-liveness' \
+   && grepq "$out" -F 'systemd-unit bridge persistence' \
+   && ! grepq "$out" -F 'no bridge persistence possible here'; then
+    pass "C30 -> OK/INFO (no systemctl on this host, wording scoped to systemd — never claims no persistence is possible at all)"
+else
+    fail "C30 no-systemctl -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
 rm -rf "$FAKEROOT"
 # r4-codex-4: HIMMEL_DOCTOR_PROC_BASE (the C29 procfs-absent hermeticity
 # seam) was created near the top of this file and never removed, leaking a
 # temp dir per run - cleaned up here alongside FAKEROOT, this file's own
 # established end-of-run cleanup convention (it has no EXIT trap).
 rm -rf "$HIMMEL_DOCTOR_PROC_BASE"
+# Same reasoning for HIMMEL_DOCTOR_SYSTEMCTL_BASE (HIMMEL-2515, CR round 1
+# E4) -- templated like HIMMEL_DOCTOR_PROC_BASE above, so it gets the same
+# cleanup.
+rm -rf "$HIMMEL_DOCTOR_SYSTEMCTL_BASE"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

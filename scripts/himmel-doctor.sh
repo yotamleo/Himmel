@@ -1172,6 +1172,152 @@ check_c23() {
 # scheduler, never mutates the registry or any task. WARN-only (never FAIL),
 # mirroring the read-only advisory stance of C7-C9: a missing cadence is a
 # nudge to re-arm, not a guardrail break.
+#
+# HIMMEL-2515: the Telegram bridge's Linux persistence is a systemd --user
+# unit (scripts/himmelctl/lib/bridge-persistence.js installSystemdUnit()),
+# not a crontab row — but the registry names it "HimmelTelegramBridge" (the
+# Windows scheduled-task name; kept stable across platforms on purpose, so
+# this fix does NOT rename the registry entry). The crontab-only probe below
+# therefore WARNed "expected-but-absent" on every Linux station with a
+# WORKING bridge — a permanent false alarm that trains the operator to
+# ignore C24. Fix: for that one task name, probe
+# `systemctl --user is-enabled telegram-bridge.service` first when systemctl
+# is on PATH; "enabled" counts as present. The crontab probe stays the
+# fallback: unconditionally for every OTHER task, and for this task too when
+# systemctl is absent, or its answer is inconclusive (see
+# _systemd_user_unit_state below — a bus-unreachable "Failed to connect to
+# bus" is NOT evidence the unit is absent, so it must not be read as one).
+#
+# Test seam: HIMMEL_DOCTOR_SYSTEMCTL (shared with C30's check below)
+# overrides the systemctl binary; default "systemctl" (PATH-resolved).
+#
+# _systemd_user_unit_state <systemctl_bin> <unit> — echoes "enabled",
+# "disabled", "notfound" or "unknown". Shared by C24 (this check) and C30
+# below — named check-neutral on purpose (an earlier draft called this
+# _c24_systemd_enabled, which read as C24-owned to a reviewer despite C30
+# calling it too, and invited deleting it if C24 is ever retired/rewritten).
+# is-enabled only reads the unit's enablement symlinks (it starts and stops
+# nothing), so this is as read-only as the crontab probe C24 augments.
+#
+# Every `systemctl --user is-enabled` answer is handled BY NAME below (per
+# `man systemctl` Table 3 and empirically verified against this box's
+# systemd 261) rather than falling through an undocumented wildcard — an
+# earlier draft's silent `*) -> disabled` mapped "enabled-runtime" (rc 0,
+# same "this unit WILL autostart" meaning as "enabled", differing only in
+# whether the enablement symlink lives in /etc, permanent, or /run,
+# runtime-only) to "disabled", reproducing THIS TICKET'S OWN false-absent
+# bug in a narrower case (a bridge enabled with `enable --runtime` would
+# read as expected-but-absent). Caught by CR round 1 (E1) before ever
+# shipping.
+_systemd_user_unit_state() {
+    local bin="$1" unit="$2" out
+    # LC_ALL=C (CR round 1 E5): the stdout enum (enabled/not-found/...) is
+    # never translated, but the bus-failure diagnostic below is a strerror()
+    # tail and IS locale-dependent on this box (`locale -a` lists de_DE.utf8
+    # among others) -- this repo has already been bitten once by parsing an
+    # unpinned localized label, so pin it here even though it costs nothing
+    # for the common (non-failure) path.
+    out="$(LC_ALL=C "$bin" --user is-enabled "$unit" 2>&1)"
+    case "$out" in
+        *"Failed to connect to"*"bus"*)
+            # Transient/environment failure, not a unit-state answer at all —
+            # NOT evidence the unit is absent (HIMMEL-2515). The wording is
+            # systemd-version-dependent -- both forms observed for real (CR
+            # round 1 E5, this station's systemd 261, forced via
+            # XDG_RUNTIME_DIR=/nonexistent DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent):
+            #   older systemd: "Failed to connect to bus: No such file or directory"
+            #   this station:  "Failed to connect to user scope bus via local
+            #                   transport: No such file or directory"
+            # A literal `*"Failed to connect to bus"*` glob (the original,
+            # untested-against-a-real-failure version) matches the first but
+            # NOT the second -- "to bus" is never a contiguous substring in
+            # the real message this box's systemd produces, so it fell
+            # through to the `*)` default below and silently reproduced the
+            # exact false-absent bug this ticket exists to fix. This looser
+            # two-part glob matches either wording.
+            printf 'unknown' ;;
+        enabled|enabled-runtime)
+            # Both mean systemd WILL start this unit on its own — the only
+            # difference is where the enablement symlink lives.
+            printf 'enabled' ;;
+        not-found)
+            # The unit file does not exist at all (exit 4) — genuinely
+            # nothing installed, distinct from "installed but not enabled"
+            # (see C30's E2 fix below, which needs this distinction to word
+            # its OK message honestly).
+            printf 'notfound' ;;
+        disabled|static|indirect|generated|transient|alias|linked|linked-runtime|masked|masked-runtime|bad)
+            # Named deliberately, not swallowed by a wildcard (E1):
+            #   disabled          — has an [Install] section but isn't enabled.
+            #   static            — no [Install] section; can't be enabled at all.
+            #   indirect          — enables OTHER units via Also=, not itself.
+            #   generated         — a generator-tool unit; "may not be enabled".
+            #   transient         — created via the runtime API; "may not be enabled".
+            #   alias             — a symlinked alternate name, not itself an
+            #                       enablement (rc 0, but not "will autostart").
+            #   linked/-runtime   — a unit file made available via a symlink,
+            #                       WITHOUT the WantedBy enablement this check
+            #                       cares about.
+            #   masked/-runtime   — explicitly BLOCKED from ever starting.
+            #   bad               — invalid unit / another error (is-enabled
+            #                       normally prints an error instead of this
+            #                       literal token, but the table documents it).
+            # None of these mean "systemd will autostart this on its own", so
+            # all count as "not enabled" for C24/C30's purposes -- but every
+            # one of them still means the unit is INSTALLED (unlike
+            # "not-found" above), which is why this bucket stays "disabled",
+            # never folded into "notfound".
+            printf 'disabled' ;;
+        *)
+            # A systemd is-enabled answer this helper does not recognise yet
+            # (a future state, a permission-denied/other failed invocation, or
+            # a translated/locale string) — genuinely UNVERIFIED, not "not
+            # enabled". Default to "unknown", never "disabled" (CR round 1
+            # finding 2, HIMMEL-2515): the original comment here argued the
+            # conservative default was deliberate, and it was right that
+            # unfamiliar output must never be read as "armed" — but wrong
+            # about which bucket is the SAFE one. "disabled" asserts the unit
+            # IS installed, a fact this branch never established (a bare
+            # permission error proves nothing about install state either way).
+            # Both callers already have a real inconclusive-answer path for
+            # exactly this: C24 falls back to its crontab probe, C30 declines
+            # to guess and emits INFO — folding an unrecognised/failed answer
+            # into "disabled" instead skips both of those and asserts a fact
+            # the probe never proved.
+            printf 'unknown' ;;
+    esac
+}
+
+# _c24_cron_has_task <task> — true (rc 0) when the current user's crontab
+# has a row whose comment marker is exactly "# <task>" at end of line, false
+# (rc 1) otherwise (including "no crontab for this user" at all).
+#
+# HIMMEL-1430 / HIMMEL-2515: the shape this replaces,
+# `crontab -l 2>/dev/null | grep -qE "# ${task}\$"`, is a
+# `<producer> | grep -q` pipeline under this file's `set -uo pipefail`
+# (line 10) — grep -q exits the instant it matches, crontab then takes
+# SIGPIPE writing whatever output is left, and pipefail reports the
+# PIPELINE as failed if any stage exited non-zero. So a SUCCESSFUL match
+# can still read as "not found" — a false "expected-but-absent cadence
+# task" WARN, exactly the bug class this ticket exists to remove
+# (known-findings.json: grep-q-pipe-under-pipefail). Fix: capture the
+# command's own output into a local first, then match against that with no
+# pipe in the way (this repo's `known-findings.sh` prescribes the same
+# capture-then-match shape). A here-string is used for the match rather than
+# a second pipe; a crontab is comfortably under the ~64 KiB here-string
+# size that wedges Git Bash (HIMMEL-2027), so it's safe at this size.
+#
+# This fixes BOTH call sites in check_c24's task loop below: the new
+# systemctl-"unknown" fallback branch, and the PRE-EXISTING `else` branch a
+# few lines under it — same latent bug in the same loop, and the `else`
+# branch is the primary path taken for every non-bridge cadence task, so it
+# needed the identical fix.
+_c24_cron_has_task() {
+    local task="$1" cron
+    cron="$(crontab -l 2>/dev/null)"
+    grep -qE "# ${task}\$" <<< "$cron"
+}
+
 check_c24() {
     local registry; registry="$(observability_registry_path)"
     if [ ! -f "$registry" ]; then
@@ -1194,36 +1340,101 @@ check_c24() {
     # codex-1 (CR round 3): probe the scheduler ITSELF once before looping --
     # without this, an access-denied/transient schtasks or crontab error
     # reads identically to "every expected task is gone" and WARNs on all of
-    # them, a false alarm distinct from a genuinely absent task.
-    local sched_unavailable=0 crontab_err=""
+    # them, a false alarm distinct from a genuinely absent task. That
+    # reasoning is still correct -- but HIMMEL-2515 CR round 4 found it had
+    # been wired as a single WHOLE-FUNCTION early return, unconditionally,
+    # which was right back when crontab was the only backend this check ever
+    # spoke to. Once the systemd probe for HimmelTelegramBridge below was
+    # added, a crontab-only early return became wrong: on a systemd-only
+    # Linux host with no cron installed at all (common on modern minimal
+    # distros), it returned before the per-task loop ever ran, so the
+    # systemd probe never executed and the bridge's enablement was never
+    # checked at all -- precisely the visibility this ticket exists to
+    # provide. Availability is now tracked PER BACKEND: a missing/failing
+    # crontab only takes crontab-probed tasks off the table (each becomes
+    # INDETERMINATE per-task below, reusing CR round 1's existing bucket
+    # rather than inventing a second one); a systemd-probed task is
+    # unaffected by crontab's availability. The whole-check bail a few lines
+    # down still fires when it is genuinely the right call -- crontab
+    # unreachable AND no expected task has any OTHER backend (no
+    # HimmelTelegramBridge expected, or systemctl itself unavailable too) --
+    # because in that case nothing here could be checked either way, and
+    # skipping the whole check is more honest than a false-clean OK or a
+    # false WARN on tasks crontab was never going to be able to answer for.
+    local crontab_unavailable=0 crontab_err=""
+    local systemctl_bin="${HIMMEL_DOCTOR_SYSTEMCTL:-systemctl}"
     if is_windows; then
+        # Windows has exactly one backend (schtasks) for every cadence task,
+        # so schtasks unavailable really does mean nothing here can be
+        # checked -- the original whole-check bail is still correct as-is.
         if ! command -v schtasks >/dev/null 2>&1 || ! MSYS_NO_PATHCONV=1 schtasks /query >/dev/null 2>&1; then
-            sched_unavailable=1
+            emit INFO C24-cadence-registry "the live scheduler (schtasks) is unreachable -- expected-cadence check skipped (not a false-clean OK)" "verify manually: schtasks /query"
+            return
         fi
     else
         if ! command -v crontab >/dev/null 2>&1; then
-            sched_unavailable=1
+            crontab_unavailable=1
         else
             crontab_err="$(crontab -l 2>&1 >/dev/null)"
             # Mirrors graphmap-cadence.sh's cron_read classification: "no
             # crontab for this user" is the normal empty case, not a failure.
             if ! crontab -l >/dev/null 2>/dev/null && ! printf '%s' "$crontab_err" | grep -qi 'no crontab'; then
-                sched_unavailable=1
+                crontab_unavailable=1
             fi
         fi
-    fi
-    if [ "$sched_unavailable" -eq 1 ]; then
-        emit INFO C24-cadence-registry "the live scheduler ($(is_windows && echo schtasks || echo crontab)) is unreachable -- expected-cadence check skipped (not a false-clean OK)" "verify manually: $(is_windows && echo 'schtasks /query' || echo 'crontab -l')"
-        return
+        # here-string, not a `producer | grep -q` pipe -- see _c24_cron_has_task's
+        # comment above on why that shape is unsafe under this file's pipefail.
+        if [ "$crontab_unavailable" -eq 1 ] && { ! grep -qx 'HimmelTelegramBridge' <<< "$expected" || ! command -v "$systemctl_bin" >/dev/null 2>&1; }; then
+            emit INFO C24-cadence-registry "the live scheduler (crontab) is unreachable -- expected-cadence check skipped (not a false-clean OK)" "verify manually: crontab -l"
+            return
+        fi
     fi
 
-    local missing="" task
+    local missing="" indeterminate="" indeterminate_crontab_only="" task
     while IFS= read -r task; do
         [ -n "$task" ] || continue
         if is_windows; then
             MSYS_NO_PATHCONV=1 schtasks /query /tn "$task" >/dev/null 2>&1 || missing="$missing $task"
+        elif [ "$task" = "HimmelTelegramBridge" ] && command -v "$systemctl_bin" >/dev/null 2>&1; then
+            case "$(_systemd_user_unit_state "$systemctl_bin" telegram-bridge.service)" in
+                enabled) : ;; # present via systemd — the crontab probe never had this task's row
+                unknown)
+                    # Bus unreachable/unrecognized: not evidence of absence —
+                    # fall back to the same crontab probe a systemctl-less
+                    # host would use, UNLESS crontab is already known
+                    # unavailable (CR round 4) -- then skip straight to
+                    # indeterminate instead of invoking a crontab already
+                    # known unable to answer. If crontab ALSO has no row,
+                    # NEITHER probe established absence — this task's
+                    # enablement is genuinely INDETERMINATE, not missing (CR
+                    # round 1 finding 3, HIMMEL-2515: this is the ticket's
+                    # own false-absent bug re-entering through the "unknown"
+                    # fallback path). Track it apart from $missing so it
+                    # never joins the expected-but-absent WARN, while still
+                    # surfacing it below rather than dropping it silently.
+                    if [ "$crontab_unavailable" -eq 1 ] || ! _c24_cron_has_task "$task"; then
+                        indeterminate="$indeterminate $task"
+                    fi
+                    ;;
+                *) missing="$missing $task" ;; # disabled OR notfound -- neither counts as armed
+            esac
+        elif [ "$crontab_unavailable" -eq 1 ]; then
+            # CR round 4: this task's only backend is crontab and crontab is
+            # unreachable — INDETERMINATE (CR round 1's existing bucket),
+            # never silently dropped and never joining the
+            # expected-but-absent WARN (that would blame the task for
+            # something crontab, not it, made unknowable). Tracked in its own
+            # $indeterminate_crontab_only bucket too (CR round 5) so the
+            # diagnostic below can name crontab, not systemd, as this task's
+            # cause — this branch is never reached for HimmelTelegramBridge
+            # while crontab is unavailable (the whole-check bail above
+            # guarantees systemctl is available whenever the bridge is
+            # expected and crontab_unavailable=1), so every task landing here
+            # is a genuinely crontab-only task.
+            indeterminate="$indeterminate $task"
+            indeterminate_crontab_only="$indeterminate_crontab_only $task"
         else
-            crontab -l 2>/dev/null | grep -qE "# ${task}\$" || missing="$missing $task"
+            _c24_cron_has_task "$task" || missing="$missing $task"
         fi
     done <<EOF
 $expected
@@ -1231,8 +1442,40 @@ EOF
     if [ -n "$missing" ]; then
         emit WARN C24-cadence-registry "expected-but-absent cadence task(s):$missing — registered as owned but not found on the live scheduler" \
             "re-arm the missing cadence (its script's 'arm' subcommand), or if intentionally retired, run its 'disarm' to unregister"
+    elif [ -n "$indeterminate" ]; then
+        emit OK C24-cadence-registry "no expected-but-absent cadence task(s) — every task whose enablement could be determined is present on the live scheduler"
     else
         emit OK C24-cadence-registry "all $(printf '%s\n' "$expected" | grep -c .) expected cadence task(s) present on the live scheduler"
+    fi
+    # codex-1 (CR round 5): this used to be a single emit hardcoding ONE cause
+    # (systemd bus unreachable) and ONE remedy (check systemctl) for every
+    # $indeterminate task -- but since CR round 4 a task reaches this bucket
+    # via two unrelated routes: HimmelTelegramBridge when the systemd probe
+    # answered "unknown" (crontab consulted as a fallback, or itself
+    # unavailable), or a crontab-only sibling when CRONTAB ITSELF is what's
+    # unreachable ($indeterminate_crontab_only above) -- nothing to do with
+    # systemd or the bridge. Telling that sibling's operator to check
+    # telegram-bridge.service names a cause this check never established and
+    # hands a remedy that cannot help: the same false-attribution class this
+    # whole ticket exists to remove, now in the operator-facing text.
+    # Attribute per task instead: the bridge (the only task ever routed
+    # through the systemd probe) gets its own line, naming BOTH backends when
+    # crontab was also unavailable rather than picking one; any crontab-only
+    # sibling gets a separate line naming crontab and `crontab -l`.
+    case " $indeterminate " in
+        *' HimmelTelegramBridge '*)
+            if [ "$crontab_unavailable" -eq 1 ]; then
+                emit INFO C24-cadence-registry "HimmelTelegramBridge has UNDETERMINED enablement — neither backend could answer (systemd bus unreachable/unrecognized, and crontab itself is unreachable) — not scored as expected-but-absent (neither probe established absence), but not confirmed present either" \
+                    "verify manually: systemctl --user is-enabled telegram-bridge.service, and crontab -l"
+            else
+                emit INFO C24-cadence-registry "HimmelTelegramBridge has UNDETERMINED enablement (systemd bus unreachable/unrecognized, and no crontab row either) — not scored as expected-but-absent (neither probe established absence), but not confirmed present either" \
+                    "verify manually: systemctl --user is-enabled telegram-bridge.service"
+            fi
+            ;;
+    esac
+    if [ -n "$indeterminate_crontab_only" ]; then
+        emit INFO C24-cadence-registry "cadence task(s) with UNDETERMINED enablement (crontab itself is unreachable, and these tasks have no other backend):$indeterminate_crontab_only — not scored as expected-but-absent (neither probe established absence), but not confirmed present either" \
+            "verify manually: crontab -l"
     fi
 }
 
@@ -1654,6 +1897,139 @@ check_c29() {
     printf '%s' "$rows"
 }
 
+# --- C30: telegram-bridge liveness (read-only advisory, HIMMEL-2515) ------------
+# C24 only answers "is the systemd unit ARMED" (is-enabled reads WantedBy
+# symlinks; it says nothing about whether the process is actually running).
+# Type=simple + Restart=on-failure means a crash-looping bridge reports
+# "enabled" indefinitely with no other signal from C24's probe. This check
+# reads the live unit's MainPID and confirms that pid is still alive (kill
+# -0) rather than trusting ActiveState/is-enabled alone — added alongside the
+# C24 fix above (scope extension recorded on HIMMEL-2515) because C24
+# answering "armed" invites exactly this "but is it actually up" follow-up.
+# Read-only, like C24: only ever queries systemctl show/is-enabled, never
+# start/stop/restart/reload/kill — this station's bridge is a LIVE
+# production unit. WARN-only (never FAIL). The state that matters most:
+# NEVER warn when no bridge persistence was ever installed here — most
+# adopters have none, and a doctor that nags every station that never armed
+# one is the exact "operators learn to ignore this check" failure C24's own
+# false alarm already demonstrated.
+#
+# Test seam: HIMMEL_DOCTOR_SYSTEMCTL (shared with C24's probe above) — the
+# systemctl binary to invoke; default "systemctl" (PATH-resolved).
+check_c30() {
+    local systemctl_bin="${HIMMEL_DOCTOR_SYSTEMCTL:-systemctl}" unit="telegram-bridge.service"
+    if ! command -v "$systemctl_bin" >/dev/null 2>&1; then
+        # Scoped to SYSTEMD persistence specifically (CR round 3, finding 3):
+        # this check only ever speaks to the systemd unit, so it must not
+        # imply a whole-host verdict. C24 explicitly supports a Windows
+        # `HimmelTelegramBridge` SCHEDULED TASK as an alternative persistence
+        # mechanism this check knows nothing about -- "no bridge persistence
+        # possible here" was false on exactly that platform.
+        emit OK C30-bridge-liveness "no systemctl on this host — no systemd-unit bridge persistence to check here (a scheduled-task equivalent, if any, is C24's concern, not this check's)"
+        return
+    fi
+    # Gate on is-enabled FIRST (shared with C24's probe): reading MainPID for
+    # a unit that was never armed would come back 0/empty too —
+    # indistinguishable from "armed but crashed" unless this is checked
+    # first. Most adopters have no bridge at all; this is what keeps this
+    # check from warning at every one of them (the exact
+    # false-alarm-trains-operators-to-ignore-it failure C24 already
+    # demonstrated — see the banner above).
+    #
+    # "notfound" and "disabled" get DISTINCT OK messages (E2, CR round 1):
+    # both are correctly OK (nothing armed, nothing to WARN about), but they
+    # are not the same fact -- "notfound" means the unit file does not exist
+    # at all, "disabled" means it IS installed and someone (deliberately or
+    # not) left it unarmed. Collapsing them into one "no unit installed"
+    # message is false in the second case, and an operator who installed the
+    # bridge and then intentionally disabled it, reading "not installed",
+    # concludes the check is broken -- the same trust-erosion this ticket
+    # exists to fix, arriving via the message instead of the verdict.
+    case "$(_systemd_user_unit_state "$systemctl_bin" "$unit")" in
+        enabled) : ;;
+        unknown)
+            emit INFO C30-bridge-liveness "systemd user bus unreachable — bridge-liveness check skipped (not evidence the unit is absent, HIMMEL-2515)" "verify manually: $systemctl_bin --user is-enabled $unit"
+            return
+            ;;
+        notfound)
+            emit OK C30-bridge-liveness "no $unit installed on this host — no bridge persistence to check"
+            return
+            ;;
+        *)
+            emit OK C30-bridge-liveness "$unit is installed but not enabled — no bridge persistence armed, nothing to check" \
+                "systemctl --user enable $unit   # if this was meant to run — an OPERATOR decision, this check never enables it"
+            return
+            ;;
+    esac
+    # CR round 2: the MainPID `show` query's exit status was never checked --
+    # a query that FAILS (bus dropped mid-run, unit torn down between the
+    # is-enabled gate above and this query, a resource limit, ...) prints
+    # nothing to stdout, and the sanitiser two lines down used to read that
+    # empty output exactly like a genuine "MainPID=0" answer, asserting
+    # "armed but not running" from a query that established nothing --
+    # this ticket's own bug class, reachable even though is-enabled and
+    # show are two SEPARATE invocations and the bus-unreachable case above
+    # only gates on the first of them. Capture the exit status and treat a
+    # FAILED query as undetermined, never as a live "0".
+    local mainpid mainpid_rc nrestarts nrestarts_rc
+    mainpid="$("$systemctl_bin" --user show "$unit" -p MainPID --value 2>/dev/null)"
+    mainpid_rc=$?
+    if [ "$mainpid_rc" -ne 0 ]; then
+        emit INFO C30-bridge-liveness "$unit is enabled but its MainPID query failed (systemctl exit $mainpid_rc) — bridge-liveness undetermined, not evidence it is down" \
+            "verify manually: $systemctl_bin --user show $unit -p MainPID --value"
+        return
+    fi
+    # Sanitisation stays for the SUCCESS path only: a query that returned rc 0
+    # but printed something non-numeric (or nothing) still isn't a pid --
+    # and CR round 3 finding 2: that is a DIFFERENT answer from a literal
+    # numeric "0", not the same one. A literal "0" (or a numeric pid that is
+    # no longer alive) genuinely establishes the bridge is not running --
+    # that is what the WARN below is for. An empty/non-numeric value from a
+    # query that itself SUCCEEDED establishes nothing either way (the query
+    # answered with something that isn't a pid at all) -- treating it as "0"
+    # asserted "armed but not running" from evidence that never said so, the
+    # same bug class the mainpid_rc check above already fixed for a FAILED
+    # query; this closes the same hole for a successful-but-unreadable one.
+    case "$mainpid" in
+        ''|*[!0-9]*)
+            emit INFO C30-bridge-liveness "$unit is enabled but its MainPID query returned an unreadable value ('$mainpid') — bridge-liveness undetermined, not evidence it is down" \
+                "verify manually: $systemctl_bin --user show $unit -p MainPID --value"
+            return
+            ;;
+    esac
+    if [ "$mainpid" -eq 0 ] || ! kill -0 "$mainpid" 2>/dev/null; then
+        emit WARN C30-bridge-liveness "$unit MainPID=$mainpid — armed but not running" \
+            "systemctl --user status $unit   # inspect; restarting it is an OPERATOR decision, this check never restarts it"
+        return
+    fi
+    # NRestarts is decoration on the OK line below, not evidence of anything
+    # -- so a FAILED query here degrades the count to "unknown" rather than
+    # blocking the liveness verdict the MainPID query already established
+    # (deliberate: unlike MainPID, there is no WARN this could wrongly
+    # trigger, so there is nothing to protect by returning early).
+    nrestarts="$("$systemctl_bin" --user show "$unit" -p NRestarts --value 2>/dev/null)"
+    nrestarts_rc=$?
+    # Item 4 (mine, CR round 3): the two ways this can come up empty are NOT
+    # the same fact -- a FAILED query (rc != 0) genuinely means "NRestarts
+    # query failed", but a SUCCESSFUL query that printed something
+    # non-numeric named that same failure on no evidence of it. Track which
+    # happened so the OK line below never claims a cause the query didn't
+    # establish.
+    local nrestarts_unreadable=0
+    if [ "$nrestarts_rc" -ne 0 ]; then
+        nrestarts=""
+    else
+        case "$nrestarts" in ''|*[!0-9]*) nrestarts=""; nrestarts_unreadable=1 ;; esac
+    fi
+    if [ -n "$nrestarts" ]; then
+        emit OK C30-bridge-liveness "$unit is running (pid $mainpid, $nrestarts restart(s) so far)"
+    elif [ "$nrestarts_unreadable" -eq 1 ]; then
+        emit OK C30-bridge-liveness "$unit is running (pid $mainpid, no usable restart count — NRestarts query returned a non-numeric value)"
+    else
+        emit OK C30-bridge-liveness "$unit is running (pid $mainpid, restart count unknown — NRestarts query failed)"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -1686,6 +2062,7 @@ check_c26
 check_c27
 check_c28_guardrail_consent
 check_c29
+check_c30
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
