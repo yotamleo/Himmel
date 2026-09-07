@@ -104,6 +104,53 @@ function Set-Content {
     Microsoft.PowerShell.Management\Set-Content -LiteralPath $LiteralPath -Value $Value
 }
 
+# -Register test state (HIMMEL-1822): a shadow schtasks records invocations and
+# plays a configurable registration outcome through $global:LASTEXITCODE, so the
+# registration form and the Defender-removal detection are exercised without
+# touching the real task scheduler.
+$script:SchtasksCalls = @()
+$script:SchtasksCreateExit = 0
+$script:SchtasksTaskPresent = $true
+# Per-probe override for the /query sequence (HIMMEL-1822 settle-loop race
+# test): consumed in order, one $bool per /query call; falls back to
+# $SchtasksTaskPresent once exhausted. Lets a test simulate "present at the
+# first probe, removed by a later one" instead of one static state.
+$script:SchtasksQueryResults = @()
+$script:SchtasksRunExit = 0
+function schtasks {
+    $line = ($args -join ' ')
+    $script:SchtasksCalls += ,$line
+    if ($line -match '(^| )/create( |$)') {
+        $global:LASTEXITCODE = $script:SchtasksCreateExit
+    } elseif ($line -match '(^| )/query( |$)') {
+        if (@($script:SchtasksQueryResults).Count -gt 0) {
+            $present = $script:SchtasksQueryResults[0]
+            $script:SchtasksQueryResults = @($script:SchtasksQueryResults | Select-Object -Skip 1)
+        } else {
+            $present = $script:SchtasksTaskPresent
+        }
+        $global:LASTEXITCODE = if ($present) { 0 } else { 1 }
+    } elseif ($line -match '(^| )/run( |$)') {
+        $global:LASTEXITCODE = $script:SchtasksRunExit
+    } else {
+        $global:LASTEXITCODE = 0
+    }
+}
+function Start-Sleep {
+    # No-op: the Defender settle loop's back-off must not slow the suite. This
+    # shadow is SUITE-WIDE (CR round, codex-adv Suggestion: scoping it only to
+    # the -Register tests would be safer against a future test silently losing
+    # real timing coverage). It is a no-op today for every OTHER path too: the
+    # only two source functions that call the real Start-Sleep
+    # (Stop-ProxyInstance, Wait-ProxyRunning) are themselves fully replaced by
+    # the mocks directly above, so nothing in this suite currently exercises
+    # real Start-Sleep-gated behavior outside Register-ProxyLogonTask. Adding a
+    # test against a NON-mocked, Start-Sleep-using function must account for
+    # this shadow (e.g. assert call counts/ordering instead of relying on
+    # elapsed wall-clock time).
+    param([int]$Milliseconds, [int]$Seconds)
+}
+
 function New-Fixture([string]$Root, [string]$Name) {
     $dir = Join-Path $Root $Name
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -138,6 +185,29 @@ function Reset-Lifecycle([object]$Fixture) {
 }
 function Test-NoSwapArtifacts([string]$Dir) {
     @((Get-ChildItem -LiteralPath $Dir | Where-Object { $_.Name -match '\.(new|rollback)$' })).Count -eq 0
+}
+
+function New-RegisterFixture([string]$Root, [string]$Name) {
+    $dir = Join-Path $Root $Name
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $exe = Join-Path $dir 'cli-proxy-api.exe'
+    $cfg = Join-Path $dir 'config.yaml'
+    [System.IO.File]::WriteAllText($exe, 'fake-binary')
+    [System.IO.File]::WriteAllText($cfg, 'fake-config')
+    [pscustomobject]@{ Dir = $dir; Exe = $exe; Cfg = $cfg; Vbs = Join-Path $dir 'start-hidden.vbs' }
+}
+function Reset-Register([object]$Fixture) {
+    # Re-aim the helper's install-root globals at the fixture so registration
+    # writes/queries land in the sandbox, never the real ~/.cli-proxy-api.
+    $script:SchtasksCalls = @()
+    $script:SchtasksCreateExit = 0
+    $script:SchtasksTaskPresent = $true
+    $script:SchtasksQueryResults = @()
+    $script:SchtasksRunExit = 0
+    $script:Dir = $Fixture.Dir
+    $script:Exe = $Fixture.Exe
+    $script:Cfg = $Fixture.Cfg
+    $script:Vbs = $Fixture.Vbs
 }
 
 $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("himmel-cli-proxy-swap-test-" + [guid]::NewGuid().ToString('N'))
@@ -320,6 +390,82 @@ try {
     Check 'leftover-file install writes the new binary' (([System.IO.File]::ReadAllText($fixture.Destination)) -eq 'new-binary')
     Check 'leftover-file install writes the new version stamp' (([System.IO.File]::ReadAllText($fixture.VersionStamp)).Trim() -eq '7.2.113')
     Check 'leftover lock file cleaned' (-not (Test-Path -LiteralPath $lockPath))
+
+    $origDir = $Dir; $origExe = $Exe; $origCfg = $Cfg; $origVbs = $Vbs
+
+    Write-Host 'Test 11: -Register writes the launcher and registers the wscript task action'
+    $fixture = New-RegisterFixture $Tmp 'register-new'
+    Reset-Register $fixture
+    Register-ProxyLogonTask
+    Check 'launcher written next to the exe' (Test-Path -LiteralPath $fixture.Vbs)
+    $vbsBody = [System.IO.File]::ReadAllText($fixture.Vbs)
+    $expectedRun = '"""' + $fixture.Exe + '"" -config ""' + $fixture.Cfg + '""", 0, False'
+    Check 'launcher starts the installed exe hidden' ($vbsBody.Contains($expectedRun)) $vbsBody
+    $vbsFirstBytes = [System.IO.File]::ReadAllBytes($fixture.Vbs) | Select-Object -First 3
+    Check 'launcher carries a UTF-8 BOM (WSH non-ASCII-path safety, CR round)' (($vbsFirstBytes[0] -eq 0xEF) -and ($vbsFirstBytes[1] -eq 0xBB) -and ($vbsFirstBytes[2] -eq 0xBF)) ($vbsFirstBytes -join ',')
+    $createLine = @($script:SchtasksCalls | Where-Object { $_ -match '(^| )/create( |$)' })[0]
+    Check 'task action is the wscript launcher' (($createLine -match 'wscript\.exe //B //Nologo') -and ($createLine.Contains('"' + $fixture.Vbs + '"'))) $createLine
+    Check 'registration force-replaces (idempotent + upgrades old form)' ($createLine -match '(^| )/f( |$)') $createLine
+    Check 'old PowerShell-wrapper action is gone' ($createLine -notmatch 'powershell') $createLine
+    Check 'task verified present after create' (@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/query( |$)' }).Count -ge 1)
+    Check 'task started immediately' (@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/run( |$)' }).Count -eq 1)
+    Register-ProxyLogonTask
+    $createCalls = @($script:SchtasksCalls | Where-Object { $_ -match '(^| )/create( |$)' })
+    Check 're-register does not duplicate the task (same /tn, /f)' ($createCalls.Count -eq 2) "count=$($createCalls.Count)"
+    Check 're-register rewrites identical launcher bytes' (([System.IO.File]::ReadAllText($fixture.Vbs)) -eq $vbsBody)
+
+    Write-Host 'Test 12: a task removed right after registration fails loudly with Defender guidance'
+    $fixture = New-RegisterFixture $Tmp 'register-defender-removed'
+    Reset-Register $fixture
+    $script:SchtasksTaskPresent = $false
+    $errorMessage = ''
+    try { Register-ProxyLogonTask } catch { $errorMessage = $_.Exception.Message }
+    Check 'removal is surfaced as a failure' ($errorMessage.Contains("logon task 'cli-proxy-api' is ABSENT right after registration")) $errorMessage
+    Check 'failure names Defender' ($errorMessage.Contains('Windows Defender')) $errorMessage
+    Check 'failure names the detection' ($errorMessage.Contains('Trojan:Win32/Commando.A!ml')) $errorMessage
+    Check 'failure quotes the exclusion command scoped to the launcher, not the whole dir' ($errorMessage.Contains('Add-MpPreference -ExclusionPath "' + $fixture.Vbs + '"')) $errorMessage
+    Check 'failure states the lost logon start' ($errorMessage.Contains('will NOT auto-start')) $errorMessage
+    Check 'no /run attempted against a vanished task' (@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/run( |$)' }).Count -eq 0)
+
+    Write-Host 'Test 13: a failed schtasks /create carries the same Defender guidance'
+    $fixture = New-RegisterFixture $Tmp 'register-create-failed'
+    Reset-Register $fixture
+    $script:SchtasksCreateExit = 1
+    $errorMessage = ''
+    try { Register-ProxyLogonTask } catch { $errorMessage = $_.Exception.Message }
+    Check 'create failure is surfaced' ($errorMessage.Contains('schtasks /create failed (exit 1)')) $errorMessage
+    Check 'create failure still names Defender' ($errorMessage.Contains('Trojan:Win32/Commando.A!ml')) $errorMessage
+
+    Write-Host 'Test 14: a task present at the first probe but genuinely removed mid-window still fails (HIMMEL-1822 settle-loop race)'
+    $fixture = New-RegisterFixture $Tmp 'register-removed-mid-window'
+    Reset-Register $fixture
+    # Present at the immediate post-/create probe (delay 0), gone by the time
+    # Defender's async removal has had a moment to run (the later probes) -
+    # and it STAYS gone on the confirming retry too, because this is a real
+    # removal. Stopping at the first success would miss this; the fix must not.
+    $script:SchtasksQueryResults = @($true, $false, $false, $false, $false)
+    $errorMessage = ''
+    try { Register-ProxyLogonTask } catch { $errorMessage = $_.Exception.Message }
+    Check 'a mid-window removal is still caught (not masked by an early positive)' ($errorMessage.Contains("logon task 'cli-proxy-api' is ABSENT right after registration")) $errorMessage
+    Check 'all four settle probes plus the confirming retry were taken' (@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/query( |$)' }).Count -eq 5) "count=$(@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/query( |$)' }).Count)"
+    Check 'no /run attempted against a task removed mid-window' (@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/run( |$)' }).Count -eq 0)
+
+    Write-Host 'Test 15: a single transient query glitch on the final settle probe does not misreport a live task as removed'
+    $fixture = New-RegisterFixture $Tmp 'register-transient-glitch'
+    Reset-Register $fixture
+    # Present on every probe except a lone flaky failure at the final
+    # SCHEDULED one - the task was never actually touched by Defender, only
+    # that one query hiccuped. The immediate confirming retry (falls back to
+    # $SchtasksTaskPresent = $true, unset here) must recover it rather than
+    # declare a false removal.
+    $script:SchtasksQueryResults = @($true, $true, $true, $false)
+    $errorMessage = ''
+    try { Register-ProxyLogonTask } catch { $errorMessage = $_.Exception.Message }
+    Check 'a lone final-probe glitch does not fail the registration' ($errorMessage -eq '') $errorMessage
+    Check 'the confirming retry query was taken' (@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/query( |$)' }).Count -eq 5) "count=$(@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/query( |$)' }).Count)"
+    Check 'task started immediately despite the glitch' (@($script:SchtasksCalls | Where-Object { $_ -match '(^| )/run( |$)' }).Count -eq 1)
+
+    $Dir = $origDir; $Exe = $origExe; $Cfg = $origCfg; $Vbs = $origVbs
 
     Write-Host ""
     Write-Host "test-cli-proxy-lane: $script:Pass passed, $script:Fail failed"

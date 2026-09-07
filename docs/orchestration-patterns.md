@@ -80,7 +80,7 @@ _Evidence:_ Cognition / walden_yan
 
 - **A verifier lane in every shape** — the single highest-leverage role
   (0xMorlex,
-  `Clippings/_evidence/telegram-tg-group_-1003985279697-1782407069-tweet-from-x-com-i-status-2070079645148451263.md`).
+  `Clippings/_evidence/telegram-tg-group_-1001234567890-1782407069-tweet-from-x-com-i-status-2070079645148451263.md`).
 - **The orchestrator owns stop-conditions; workers never self-report done**
   (0xMorlex, same clip). himmel enforces this structurally: `/overnight-shift`
   reads `scripts/overnight/stop-marker.sh`, not a worker's claim of completion.
@@ -111,8 +111,8 @@ the armed-resume chain (`scripts/handover/arm-resume.sh` +
 
 ## 7. Concurrency
 
-The **machine-aware concurrency budget** (ADR
-`docs/adr/2026-07-05-machine-aware-concurrency-budget.md`, HIMMEL-536) gates the
+The **machine-aware concurrency budget** (HIMMEL-536; the ADR migrated out of
+himmel `docs/` to the state repo per the "Where artifacts land" rule) gates the
 himmel-OWNED dispatch points (`/overnight-shift`, subagent fan-out scripts,
 arm-resume scheduling). The GA Workflow tool's 16-concurrent / 1000-total caps
 are Anthropic-enforced internals — a **fixed ceiling the machine budget lives
@@ -143,10 +143,10 @@ Each doctrine claim → its pointer → resolved (clip/path exists as of 2026-07
 | §3 | blast-radius slot classes | luna `Clippings/_evidence/@Av1dlive – 2026-06-17T235945+0200.md` | ✔ clip exists |
 | §3 | reviewer = different family; cost = iterations | luna `Clippings/_done/2026-05/How Boris Cherny Uses Claude Code.md` | ✔ clip exists |
 | §4 | share-among-co-builders / isolate-verifiers | luna `Clippings/_done/2026-05/@walden_yan – 2026-05-25T030401+0200.md` | ✔ clip exists |
-| §5 | verifier every lane; orchestrator owns stop; claim-and-record | luna `Clippings/_evidence/telegram-tg-group_-1003985279697-1782407069-tweet-from-x-com-i-status-2070079645148451263.md` (0xMorlex) | ✔ clip exists |
+| §5 | verifier every lane; orchestrator owns stop; claim-and-record | luna `Clippings/_evidence/telegram-tg-group_-1001234567890-1782407069-tweet-from-x-com-i-status-2070079645148451263.md` (0xMorlex) | ✔ clip exists |
 | §5 | coordinator passes prior outputs | luna `Clippings/_done/2026-05/@eng_khairallah1 – 2026-05-25T023712+0200.md` | ✔ clip exists |
 | §5 | token-pause ~85%, kill-after-3, >1h judge | luna `Clippings/_evidence/@Av1dlive – 2026-06-17T235945+0200.md` | ✔ clip exists |
 | §5 | shipped verifier topology | `scripts/cr/critic-panel.sh`; `.claude/commands/pr-check.md` (4.6/4.7) | ✔ paths exist |
 | §6 | durability = checkpoint/resume | luna `Clippings/_evidence/telegram-1781861527-tweet-from-x-com-i-status-2067677007140278630.md` (Inngest) | ✔ clip exists |
 | §6 | shipped durability | `scripts/hooks/inject-where-are-we.sh`; `scripts/handover/arm-resume.sh`; `scripts/lib/scheduler-backend.sh` | ✔ paths exist |
-| §7 | machine-aware budget; Workflow caps = ceiling | `docs/adr/2026-07-05-machine-aware-concurrency-budget.md` (HIMMEL-536) | ✔ path exists (this PR) |
+| §7 | machine-aware budget; Workflow caps = ceiling | HIMMEL-536 (ADR now in the state repo, not himmel `docs/`) | ✔ ticket record |

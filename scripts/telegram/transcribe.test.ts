@@ -87,10 +87,18 @@ test("transcribe: whisper timeout sets timedOut flag, logs timeout reason", asyn
 
 // HIMMEL-268 hardening: timeout arg reaches exec (realExec integration)
 test("realExec: kills long-running child and sets timedOut after timeout", async () => {
-  // ping -n 100 127.0.0.1 sends 100 ICMP requests with 1s gaps → ~100s wall time.
-  // Killed after 200ms; timedOut must be set and exit code non-zero.
+  // Need a genuinely long-running child so the 200ms timeout actually fires
+  // before it exits on its own. `ping -n 100` is Windows ping syntax (-n =
+  // count, ~100s wall time); on POSIX -n means "numeric output" and takes no
+  // argument, so `100` is parsed as the destination host and ping exits
+  // immediately with an error — timedOut never gets set (HIMMEL-2620). Use
+  // platform-native long-lived commands so the assertions stay live on both.
   // (cmd /c timeout /t 30 exits immediately in non-TTY contexts with code 125.)
-  const res = await realExec(["ping", "-n", "100", "127.0.0.1"], 200);
+  const cmd =
+    process.platform === "win32"
+      ? ["ping", "-n", "100", "127.0.0.1"]
+      : ["sleep", "30"];
+  const res = await realExec(cmd, 200);
   expect(res.timedOut).toBe(true);
   // exit code after a kill is non-zero (signal kill or taskkill forceful exit)
   expect(res.code).not.toBe(0);

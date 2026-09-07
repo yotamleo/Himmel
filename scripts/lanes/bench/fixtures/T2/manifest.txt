@@ -1,0 +1,9 @@
+# T2 — files the two-stage-grep sweep is allowed to touch
+check-alpha.sh
+check-beta.sh
+check-gamma.sh
+check-delta.sh
+check-epsilon.sh
+check-zeta.sh
+check-eta.sh
+check-theta.sh

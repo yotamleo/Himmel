@@ -54,7 +54,7 @@ case "$INPUT_LC" in
 esac
 
 _block() {
-    echo "block-rogue-codex-wsl: raw 'wsl ... codex exec' refused - dispatch through the chokepoint: bash scripts/codex/dispatch-codex-wsl.sh --distro <name> --clone <in-distro-path> [--brief-file <path>] [args...] (containment, mutex, quota preflight, ledger). Bypass for a deliberate one-off: CODEX_WSL_RAW_OK=1 in the launching shell. (HIMMEL-999)" >&2
+    echo "block-rogue-codex-wsl: raw 'wsl ... codex exec' refused - dispatch through the chokepoint: bash scripts/codex/dispatch-codex-wsl.sh --distro <name> --clone <in-distro-path> [--brief-file <path>] [args...] (containment, mutex, quota preflight, ledger). Bypass for a deliberate one-off: CODEX_WSL_RAW_OK=1 in the launching shell." >&2
     exit 2
 }
 

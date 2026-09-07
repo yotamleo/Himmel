@@ -2,13 +2,14 @@
 // Pure reader: no ledger writes, no process control, no enforcement.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { ledgerPath as flowRunLedgerPath, type FlowRunEnd, type FlowRunRow, type FlowRunStart } from "../telegram/flow-run-ledger";
 import { ledgerPath as quotaGaugeLedgerPath } from "../telegram/quota-gauge";
 import {
   ledgerPath as sessionRunLedgerPath,
   SESSION_END_REASONS,
   SUBAGENT_OUTCOMES,
+  type SessionCloseRow,
   type SessionEndRow,
   type SessionRunRow,
   type SessionStartRow,
@@ -26,6 +27,34 @@ const DEFAULT_STALL_DEADLINE_SECONDS = 6 * 60 * 60;
 // a late crash detection. Operator-tunable via
 // `observability.json` -> `sessions.stale_after_seconds`.
 const DEFAULT_SESSION_STALE_AFTER_SECONDS = 15 * 60;
+// HIMMEL-2075: HimmelSessionDead is a level check (`session_dead_total > 0`,
+// `for: 0m`) with no separate windowing of its own — once a start row crosses
+// DEFAULT_SESSION_STALE_AFTER_SECONDS it stays `dead` on every render until it
+// ages out of the 14-day LOOKBACK_MS ledger window, so the alert pages
+// continuously for the whole backlog rather than just newly-dead sessions.
+// This TTL caps how long a dead session counts toward the ALERTING gauge
+// (session_dead_total), measured from when the session BECAME dead (not
+// from raw activity/age — that would shorten the window by
+// staleAfterSeconds and, for any operator-configured staleAfterSeconds >=
+// this TTL, make it impossible for a session to ever be counted at all).
+// The dashboard-facing SessionView.status stays `dead` for the full
+// LOOKBACK_MS window regardless, so nothing disappears from /sessions.json.
+// 24h: long enough to page once for a session that died overnight, short
+// enough that a multi-day backlog stops re-paging on every evaluation.
+const SESSION_DEAD_ALERT_TTL_SECONDS = 24 * 60 * 60;
+// HIMMEL-2149: same shape as SESSION_DEAD_ALERT_TTL_SECONDS above, for
+// flow_run_outcome_total{outcome="stalled"} — the OTHER alerting gauge with
+// no TTL of its own. HimmelFlowRunStalled is a level check (`> 0`, `for:
+// 0m`), so once an unpaired start row crosses its stall deadline
+// (deadlineSeconds()) it counted as stalled on EVERY render until it aged out
+// of the 14d LOOKBACK_MS window — a single killed worker paged on the 12h
+// HimmelFlowRunStalled interval for up to 14 days (HIMMEL-2149 evidence:
+// hermes-invoke x10 + pipeline-harvest x1, ghost rows from 08-11 to 08-25).
+// Measured from when the row BECAME stalled (ageS - deadlineSeconds), not
+// from raw age, for the same reason as SESSION_DEAD_ALERT_TTL_SECONDS: raw
+// age would shorten the window by deadlineSeconds and, for any flow whose
+// declared deadline exceeds this TTL, make it impossible to ever count.
+const FLOW_STALLED_ALERT_TTL_SECONDS = 24 * 60 * 60;
 const CACHE_TTL_MS = 60 * 1000;
 const SCHEDULER_QUERY_TIMEOUT_MS = 10 * 1000;
 const HOST_DETECTOR_TIMEOUT_MS = 10 * 1000;
@@ -41,6 +70,12 @@ type FlowConfig = {
 export type ObservabilityConfig = {
   flows?: FlowConfig[];
   expected_tasks?: string[];
+  // HIMMEL-2075: tasks in expected_tasks the operator has allowlisted as
+  // intentionally disabled right now — exempts them from
+  // HimmelScheduledTaskDisabled without removing them from expected_tasks
+  // (so they still get scheduled_task_exists/enabled coverage for anything
+  // OTHER than the disabled state itself).
+  expected_disabled_tasks?: string[];
   vault_path?: string;
   host_detectors_ttl_seconds?: number;
   quota_sources?: {
@@ -98,6 +133,77 @@ type HostDetectorRunner = () => unknown | Promise<unknown>;
 export type GitDivergenceResult = { unpushed: number | null; uncommittedFiles: number };
 export type GitRunner = (vaultPath: string) => GitDivergenceResult | Promise<GitDivergenceResult>;
 
+// HIMMEL-2211: liveness is what separates a real stall from a ghost row. An
+// unpaired start past its deadline is only a STALL if the process behind it
+// is still alive. A start row whose pid is gone is an ABANDONED run — the
+// process died without writing its end row (killed worker, reboot). Real
+// hygiene information, but nothing is hung and no human can act now, so it
+// must not page: hermes-invoke-1787956038-3242214 (pid 3242214, dead) sent 53
+// pages in one night on its own.
+//
+// FAIL-SAFE DIRECTION: only a pid we can actually probe may DOWNGRADE a row to
+// `abandoned`. A row from another host (the ledger carries rows minted on
+// other machines, where a pid says nothing about a local process of the same
+// number) and a row with no pid both stay `stalled`, as does every row when
+// the probe itself fails. Alert coverage is never silently lost; the worst
+// case is the pre-2211 behaviour.
+export type PidLivenessRunner = (pids: number[]) => Set<number>;
+
+// One snapshot of every running pid, not one probe per row: the spawn cost is
+// what would push the render past the scrape budget (HIMMEL-2211 — the render
+// is already ~6.6s against a 10s Prometheus scrape_timeout).
+export function defaultPidLiveness(pids: number[], platform: NodeJS.Platform = process.platform): Set<number> {
+  if (pids.length === 0) return new Set<number>();
+  if (platform === "win32") {
+    try {
+      const proc = Bun.spawnSync(["tasklist", "/NH", "/FO", "CSV"], {
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, MSYS_NO_PATHCONV: "1" },
+      });
+      if (proc.exitCode !== 0) return new Set(pids);
+      const running = new Set<number>();
+      for (const line of proc.stdout.toString().split(/\r?\n/)) {
+        const m = /^"[^"]*","(\d+)"/.exec(line.trim());
+        if (m) running.add(Number(m[1]));
+      }
+      // HIMMEL-2211: a self-pid sentinel, not an empty-parse check — this
+      // process is definitionally alive, so a complete tasklist snapshot
+      // MUST contain process.pid. Its absence proves the snapshot is
+      // incomplete (truncated, filtered, or in an unexpected format), which
+      // subsumes the empty-output case (an empty set can't contain it
+      // either) while also catching a PARTIAL parse: truncated/malformed
+      // output that still yields some valid rows would pass an
+      // empty-set check yet still be missing live pids, silently
+      // downgrading real stalls to `abandoned` and muting a page-severity
+      // alert. Same fail-safe direction as the exitCode !== 0 and catch
+      // paths above/below: in any environment where our own pid legitimately
+      // does not appear, this simply never downgrades a row — costing a
+      // possible `abandoned` classification, never suppressing an alert.
+      if (!running.has(process.pid)) return new Set(pids);
+      return new Set(pids.filter((pid) => running.has(pid)));
+    } catch {
+      // A broken probe must never mute the alert — treat every candidate as alive.
+      return new Set(pids);
+    }
+  }
+  const alive = new Set<number>();
+  for (const pid of pids) {
+    // ONLY ESRCH ("no such process") is confirmed death. EPERM means the
+    // process EXISTS and is not ours. Every OTHER error is an UNPROBEABLE
+    // pid, not a dead one, so it must fail safe to alive — same direction as
+    // the win32 branch's spawn-failure path above, and the same convention
+    // scripts/lib/settings-lock.mjs documents. Testing for EPERM instead
+    // (the pre-CR shape) inverted this: an unexpected probe error read as
+    // death and would silently downgrade a real stall to `abandoned`,
+    // muting a page-severity alert — the exact failure this whole function
+    // exists to avoid.
+    try { process.kill(pid, 0); alive.add(pid); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") alive.add(pid); }
+  }
+  return alive;
+}
+
 type Cached<T> = {
   key: string;
   fetchedAtMs: number;
@@ -122,10 +228,17 @@ export type RenderMetricsOptions = {
   sessionLedgerPath?: string;
   lanesPath?: string;
   fetchHealthStatePath?: string;
+  toolCensusPath?: string;
+  hookChainSkipLogPath?: string;
   platform?: NodeJS.Platform;
   schedulerRunner?: SchedulerRunner;
   hostDetectorRunner?: HostDetectorRunner;
   gitRunner?: GitRunner;
+  // HIMMEL-2211: test seam for the flow-stall liveness probe (defaultPidLiveness).
+  pidLivenessRunner?: PidLivenessRunner;
+  // HIMMEL-2211: test seam for the local hostname the liveness probe is only
+  // ever allowed to run against (see foldFlowLedger's sameHost check).
+  localHost?: string;
   graphAgeRunner?: ShippedGraphAgeRunner;
   // Total wall-clock budget for the WHOLE shipped-graph-age family across all
   // configured repos (CR round 2, codex-adv-4). Defaults to
@@ -139,7 +252,7 @@ type FlowStats = {
   flow: string;
   observed: boolean;
   lastSuccessTimestamp?: number;
-  outcomes: Record<"complete" | "truncated" | "error" | "stalled", number>;
+  outcomes: Record<"complete" | "truncated" | "error" | "stalled" | "abandoned", number>;
   latestEndMs?: number;
   latestItemsProcessed?: number | null;
   itemsProcessedTotal: number;
@@ -187,7 +300,7 @@ function emptyStats(flow: string): FlowStats {
   return {
     flow,
     observed: false,
-    outcomes: { complete: 0, truncated: 0, error: 0, stalled: 0 },
+    outcomes: { complete: 0, truncated: 0, error: 0, stalled: 0, abandoned: 0 },
     itemsProcessedTotal: 0,
     hasItemsProcessedTotal: false,
     inFlight: 0,
@@ -217,7 +330,13 @@ function parseFlowLedgerRows(path: string, nowMs: number): { rows: FlowRunRow[];
   return { rows, ledgerRows: rows.length };
 }
 
-function foldFlowLedger(rows: FlowRunRow[], config: ObservabilityConfig, nowMs: number): Map<string, FlowStats> {
+function foldFlowLedger(
+  rows: FlowRunRow[],
+  config: ObservabilityConfig,
+  nowMs: number,
+  pidLiveness: PidLivenessRunner = defaultPidLiveness,
+  localHost: string = hostname(),
+): Map<string, FlowStats> {
   const stats = new Map<string, FlowStats>();
   const starts = new Map<string, FlowRunStart>();
   const endedRunIds = new Set<string>();
@@ -265,17 +384,33 @@ function foldFlowLedger(rows: FlowRunRow[], config: ObservabilityConfig, nowMs: 
     }
   }
 
+  // Two passes so liveness is probed ONCE for all candidates (see
+  // defaultPidLiveness): collect the expired unpaired rows, probe, classify.
+  const expired: Array<{ start: FlowRunStart; probePid: number | null }> = [];
   for (const start of starts.values()) {
     if (endedRunIds.has(start.run_id)) continue;
     const s = ensure(start.flow);
     const firedMs = Date.parse(start.fired_at);
     if (!Number.isFinite(firedMs)) continue;
     const ageS = (nowMs - firedMs) / 1000;
-    if (ageS > deadlineSeconds(start.flow, config)) {
-      s.outcomes.stalled++;
-    } else {
-      s.inFlight++;
-    }
+    const deadline = deadlineSeconds(start.flow, config);
+    if (ageS <= deadline) { s.inFlight++; continue; }
+    // HIMMEL-2149: only the ALERTING buckets are TTL-capped — a row past
+    // FLOW_STALLED_ALERT_TTL_SECONDS since becoming stalled simply stops being
+    // counted anywhere (not reclassified as in-flight, which it plainly is not).
+    if (ageS - deadline > FLOW_STALLED_ALERT_TTL_SECONDS) continue;
+    // Case-insensitive: the ledger carries both "overlord8" and "OVERLORD8"
+    // for the same machine, written by different callers.
+    const sameHost = typeof start.host === "string" && start.host.toLowerCase() === localHost.toLowerCase();
+    const probePid = sameHost && typeof start.pid === "number" && Number.isFinite(start.pid) && start.pid > 0 ? start.pid : null;
+    expired.push({ start, probePid });
+  }
+  const probeable = expired.flatMap((e) => (e.probePid === null ? [] : [e.probePid]));
+  const alive = probeable.length > 0 ? pidLiveness(probeable) : new Set<number>();
+  for (const e of expired) {
+    const s = ensure(e.start.flow);
+    if (e.probePid !== null && !alive.has(e.probePid)) s.outcomes.abandoned++;
+    else s.outcomes.stalled++;
   }
 
   return stats;
@@ -302,16 +437,22 @@ function addFamily(lines: string[], name: string, help: string, type: "gauge" | 
   lines.push(...samples);
 }
 
-function buildFlowMetrics(path: string, config: ObservabilityConfig, nowMs: number): { lines: string[]; ledgerRows: number } {
+function buildFlowMetrics(
+  path: string,
+  config: ObservabilityConfig,
+  nowMs: number,
+  pidLiveness?: PidLivenessRunner,
+  localHost?: string,
+): { lines: string[]; ledgerRows: number } {
   const { rows, ledgerRows } = parseFlowLedgerRows(path, nowMs);
-  const stats = [...foldFlowLedger(rows, config, nowMs).values()].sort((a, b) => a.flow.localeCompare(b.flow));
+  const stats = [...foldFlowLedger(rows, config, nowMs, pidLiveness, localHost).values()].sort((a, b) => a.flow.localeCompare(b.flow));
   const lines: string[] = [];
 
   addFamily(lines, "flow_run_last_success_timestamp", "Epoch seconds of the last complete run end row in the 14d ledger window.", "gauge",
     stats.flatMap((s) => s.lastSuccessTimestamp === undefined ? [] : [sample("flow_run_last_success_timestamp", { flow: s.flow }, s.lastSuccessTimestamp)]));
 
-  const outcomes: Array<"complete" | "truncated" | "error" | "stalled"> = ["complete", "truncated", "error", "stalled"];
-  addFamily(lines, "flow_run_outcome_total", "Runs by outcome in the sliding 14d ledger window; exporter restarts and window slides can reset this counter.", "counter",
+  const outcomes: Array<"complete" | "truncated" | "error" | "stalled" | "abandoned"> = ["complete", "truncated", "error", "stalled", "abandoned"];
+  addFamily(lines, "flow_run_outcome_total", "Runs by outcome in the sliding 14d ledger window; exporter restarts and window slides can reset this counter. `stalled` = an unpaired start past its deadline whose process is alive or unprobeable; `abandoned` = the same, but the pid was confirmed dead on this host (HIMMEL-2211).", "counter",
     stats.flatMap((s) => s.observed ? outcomes.map((outcome) => sample("flow_run_outcome_total", { flow: s.flow, outcome }, s.outcomes[outcome])) : []));
 
   addFamily(lines, "flow_run_items_processed", "Last ended run items_processed value; null is omitted.", "gauge",
@@ -404,6 +545,8 @@ function sessionStaleAfterSeconds(config: ObservabilityConfig): number {
 function sessionRowTimestampMs(row: SessionRunRow): number {
   const ts = row.ev === "start"
     ? (row as SessionStartRow | SubagentStartRow).started_at
+    : row.ev === "close"
+    ? (row as SessionCloseRow).closed_at
     : (row as SessionEndRow | SubagentEndRow).ended_at;
   const ms = typeof ts === "string" ? Date.parse(ts) : NaN;
   return Number.isFinite(ms) ? ms : NaN;
@@ -412,10 +555,17 @@ function sessionRowTimestampMs(row: SessionRunRow): number {
 function isSessionRunRow(raw: unknown): raw is SessionRunRow {
   if (!raw || typeof raw !== "object") return false;
   const r = raw as Record<string, unknown>;
-  if (r.v !== 1) return false;
+  // v1 and v2 rows coexist in the ledger: v2 (HIMMEL-2022) only ADDS fields.
+  if (r.v !== 1 && r.v !== 2) return false;
   if (r.kind !== "session" && r.kind !== "subagent") return false;
+  // HIMMEL-2294: `close` is a session-only ev — a subagent row never emits
+  // one — so it is validated inside the kind==="session" branch, not in the
+  // shared start/end check below.
+  if (r.kind === "session") {
+    if (r.ev !== "start" && r.ev !== "end" && r.ev !== "close") return false;
+    return typeof r.session_id === "string" && r.session_id.length > 0;
+  }
   if (r.ev !== "start" && r.ev !== "end") return false;
-  if (r.kind === "session") return typeof r.session_id === "string" && r.session_id.length > 0;
   return typeof r.subagent_id === "string" && r.subagent_id.length > 0
     && typeof r.parent_session_id === "string" && r.parent_session_id.length > 0;
 }
@@ -468,18 +618,30 @@ type SessionFold = {
   subagentStarts: SubagentStartRow[];
   subagentEndIds: Set<string>;
   subagentEnds: SubagentEndRow[];
+  // HIMMEL-2294: session_id -> closed_at (ms) for every close-evidence row
+  // with a parseable timestamp (see session-run-ledger.ts's SessionCloseRow).
+  // CR fix (codex-1): carries the timestamp, not just membership — a close
+  // row is only valid evidence up to a point, so buildSessionMetrics needs
+  // WHEN it closed, not just THAT it closed, to invalidate a close row a
+  // session kept working past. Consumed to gate the session_dead_total
+  // ALERTING gauge only — it never touches SessionView.status above. An
+  // unparseable/missing closed_at is dropped here (fail-closed: not valid
+  // evidence).
+  closedAtMsBySessionId: Map<string, number>;
 };
 
 export function foldSessionLedger(rows: SessionRunRow[], nowMs: number, staleAfterSeconds: number): SessionFold {
   const starts = new Map<string, SessionStartRow>();
   const ends = new Map<string, SessionEndRow>();
+  const closes = new Map<string, SessionCloseRow>();
   const subagentStarts = new Map<string, SubagentStartRow>();
   const subagentEnds = new Map<string, SubagentEndRow>();
 
   for (const row of rows) {
     if (row.kind === "session") {
       if (row.ev === "start") starts.set(row.session_id, row);
-      else ends.set(row.session_id, row);
+      else if (row.ev === "end") ends.set(row.session_id, row);
+      else closes.set(row.session_id, row);
       continue;
     }
     if (row.ev === "start") subagentStarts.set(row.subagent_id, row);
@@ -530,12 +692,20 @@ export function foldSessionLedger(rows: SessionRunRow[], nowMs: number, staleAft
   }
 
   views.sort((a, b) => (b.started_at.localeCompare(a.started_at)) || a.session_id.localeCompare(b.session_id));
+
+  const closedAtMsBySessionId = new Map<string, number>();
+  for (const [sessionId, row] of closes) {
+    const ms = Date.parse(row.closed_at);
+    if (Number.isFinite(ms)) closedAtMsBySessionId.set(sessionId, ms);
+  }
+
   return {
     sessions: views,
     endRows: [...ends.values()],
     subagentStarts: [...subagentStarts.values()],
     subagentEndIds: new Set(subagentEnds.keys()),
     subagentEnds: [...subagentEnds.values()],
+    closedAtMsBySessionId,
   };
 }
 
@@ -545,6 +715,16 @@ function buildSessionMetrics(path: string, config: ObservabilityConfig, nowMs: n
   const fold = foldSessionLedger(rows, nowMs, staleAfterSeconds);
   const lines: string[] = [];
 
+  // HIMMEL-2294: per-parent set of session_ids that stranded at least one
+  // subagent — a start row with no matching end row, REGARDLESS of the
+  // parent's status (a subagent whose parent already looks "dead" is the
+  // exact case that matters here). Derived from fold's existing
+  // subagentStarts/subagentEndIds rather than re-parsing the ledger.
+  const strandedParents = new Set<string>();
+  for (const sub of fold.subagentStarts) {
+    if (!fold.subagentEndIds.has(sub.subagent_id)) strandedParents.add(sub.parent_session_id);
+  }
+
   // Per host: a zeroed entry for every host observed in the window, so the
   // gauges stay present (and a dead-session alert stays evaluable) once the
   // last live session on that host goes away.
@@ -552,7 +732,65 @@ function buildSessionMetrics(path: string, config: ObservabilityConfig, nowMs: n
   for (const view of fold.sessions) {
     const bucket = byHost.get(view.host) ?? { active: 0, dead: 0 };
     if (view.status === "running") bucket.active++;
-    if (view.status === "dead") bucket.dead++;
+    // HIMMEL-2075: session_dead_total is the ALERTING gauge, so a start row
+    // that has been dead longer than SESSION_DEAD_ALERT_TTL_SECONDS drops out
+    // of it — it stays `dead` on the dashboard-facing SessionView (view.status
+    // above is untouched) for the full 14d ledger window, just not counted
+    // here. CR fix (codex-1): measured from when the session BECAME dead
+    // (activitySeconds - staleAfterSeconds), not from raw activity/age —
+    // comparing raw activitySeconds against the TTL directly shortens the
+    // alerting window by staleAfterSeconds and, for any operator-configured
+    // staleAfterSeconds >= the TTL, makes it impossible for a session to
+    // ever enter session_dead_total at all.
+    if (view.status === "dead") {
+      const activitySeconds = view.last_activity_seconds ?? view.age_seconds;
+      if (activitySeconds - staleAfterSeconds <= SESSION_DEAD_ALERT_TTL_SECONDS) {
+        // HIMMEL-2294: a session that declared its own closability (a close
+        // row — it ran its close protocol WHILE STILL ALIVE, e.g. a queue
+        // lock release at wrap; see session-run-ledger.ts's SessionCloseRow)
+        // is excluded from this ALERTING gauge — that is the whole point of
+        // the reconciler: a closed terminal never fires SessionEnd, so it
+        // otherwise ages into a false-positive HimmelSessionDead page.
+        // EXCEPT it still counts if it stranded a subagent (started, never
+        // ended) — a leg that declared closable but left fan-out running is
+        // a real loss, not hygiene noise. Same minimal-blast-radius scoping
+        // as the TTL gate above: only this gauge changes, never view.status.
+        //
+        // CR fix (codex-1): temporal invalidation. A plain "any close row
+        // exists" membership check let ONE lock release early in a long
+        // session permanently suppress alerting for it, even if it kept
+        // working for hours afterward and later died unexpectedly — a false
+        // negative in exactly the alert this ticket fixes (a chain can
+        // acquire/release locks across several legs within one session).
+        // A session legitimately writes a little more transcript after its
+        // release (the wrap message, the release output itself), so
+        // staleAfterSeconds — already operator-tunable, not a new constant —
+        // is reused as the grace window past closed_at. Still advancing a
+        // full staleness window later means it plainly did not close: the
+        // declaration is stale and the session counts as dead again.
+        //
+        // CR fix (codex-1) round 2: this comparison needs REAL activity
+        // evidence, so it deliberately does NOT reuse the activitySeconds
+        // computed above for the TTL gate — that one falls back to
+        // age_seconds, and age is time since the session STARTED, not
+        // activity. Falling back to it here made lastActivityMs equal the
+        // session's start time, which always predates closed_at, so
+        // declaredClosed came out permanently true whenever the transcript
+        // was missing/unreadable — defeating the temporal invalidation this
+        // block exists to add. Measured on this machine's live ledger: 579
+        // of 943 session start rows have a missing transcript file, so the
+        // null last_activity_seconds path is the MAJORITY case, not a
+        // corner case. Fail closed instead, same direction as the
+        // unparseable/missing closed_at check below: no transcript-derived
+        // activity evidence means the close declaration cannot be trusted,
+        // so the session counts as dead.
+        const lastActivityMs = view.last_activity_seconds === null ? null : nowMs - view.last_activity_seconds * 1000;
+        const closedAtMs = fold.closedAtMsBySessionId.get(view.session_id);
+        const declaredClosed = lastActivityMs !== null && closedAtMs !== undefined && (lastActivityMs - closedAtMs) / 1000 <= staleAfterSeconds;
+        const stranded = strandedParents.has(view.session_id);
+        if (!declaredClosed || stranded) bucket.dead++;
+      }
+    }
     byHost.set(view.host, bucket);
   }
   const hosts = [...byHost.keys()].sort((a, b) => a.localeCompare(b));
@@ -689,6 +927,286 @@ function fetchHealthMetrics(path: string): { lines: string[]; comments: string[]
   }
 }
 
+// HIMMEL-1462: per-session tool-call census written by
+// scripts/observability/tool-call-census.sh. Same passive contract as the
+// fetch-health state above — the exporter never runs the extractor, it only
+// reads whatever the extractor last wrote.
+const TOOL_CENSUS_WINDOW_MS = 24 * 60 * 60 * 1000;
+// A census row is written by the same host that scrapes it, so a future
+// `ended_at` means small clock jitter, not a real future session. Tolerate a
+// few minutes of it and drop anything further out, rather than letting a
+// badly-dated row count against a window it has not entered.
+const TOOL_CENSUS_FUTURE_GRACE_MS = 5 * 60 * 1000;
+
+function defaultToolCensusPath(env: Record<string, string | undefined>): string {
+  const override = env.HIMMEL_TOOL_CENSUS;
+  if (override && override.trim()) return override;
+  return join(env.USERPROFILE ?? env.HOME ?? homedir(), ".himmel", "tool-call-census.jsonl");
+}
+
+function bump(counts: Map<string, Map<string, number>>, project: string, key: string, by: number): void {
+  let byKey = counts.get(project);
+  if (!byKey) {
+    byKey = new Map();
+    counts.set(project, byKey);
+  }
+  byKey.set(key, (byKey.get(key) ?? 0) + by);
+}
+
+function nonNegativeInt(raw: unknown): number {
+  return typeof raw === "number" && Number.isFinite(raw) && raw >= 0 ? Math.floor(raw) : 0;
+}
+
+function toolCensusMetrics(path: string, nowMs: number): { lines: string[]; comments: string[] } {
+  if (!existsSync(path)) return { lines: [], comments: [] };
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    const message = e instanceof Error && e.message ? e.message : "census read failed";
+    return { lines: [], comments: [`# himmel_tool_* omitted: ${message.replace(/\s+/g, " ").trim()}`] };
+  }
+
+  const calls = new Map<string, Map<string, number>>();
+  const errors = new Map<string, Map<string, number>>();
+  const denials = new Map<string, Map<string, number>>();
+  const cutoffMs = nowMs - TOOL_CENSUS_WINDOW_MS;
+  let skipped = 0;
+
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let row: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+      row = parsed as Record<string, unknown>;
+    } catch {
+      // A half-written row must not cost the whole family, same as the flow
+      // and session ledgers.
+      skipped += 1;
+      continue;
+    }
+
+    // Window on the session's LAST activity. A row with no parseable end is
+    // dropped, never dated to now.
+    const endedAt = typeof row.ended_at === "string" ? Date.parse(row.ended_at) : NaN;
+    if (!Number.isFinite(endedAt) || endedAt < cutoffMs || endedAt > nowMs + TOOL_CENSUS_FUTURE_GRACE_MS) continue;
+
+    const project = sanitizeLabelValue(row.project);
+    const toolCalls = row.tool_calls;
+    if (toolCalls && typeof toolCalls === "object" && !Array.isArray(toolCalls)) {
+      for (const [rawTool, value] of Object.entries(toolCalls as Record<string, unknown>)) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+        const stats = value as Record<string, unknown>;
+        const tool = sanitizeLabelValue(rawTool);
+        bump(calls, project, tool, nonNegativeInt(stats.calls));
+        bump(errors, project, tool, nonNegativeInt(stats.errors));
+      }
+    }
+
+    const rowDenials = row.denials;
+    if (rowDenials && typeof rowDenials === "object" && !Array.isArray(rowDenials)) {
+      for (const [rawClass, value] of Object.entries(rowDenials as Record<string, unknown>)) {
+        bump(denials, project, sanitizeLabelValue(rawClass), nonNegativeInt(value));
+      }
+    }
+  }
+
+  const flatten = (counts: Map<string, Map<string, number>>, name: string, label: string): string[] =>
+    [...counts.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .flatMap(([project, byKey]) =>
+        [...byKey.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, value]) => sample(name, { [label]: key, project }, value)));
+
+  const lines: string[] = [];
+  addFamily(lines, "himmel_tool_calls_total", "Tool calls per tool and project folded from the last 24h of the session tool-call census. WINDOW-FOLDED: the value drops as sessions age out, which reads as a counter reset.", "counter",
+    flatten(calls, "himmel_tool_calls_total", "tool"));
+  addFamily(lines, "himmel_tool_errors_total", "Errored tool results per tool and project over the same 24h census window; an explicit 0 means the tool ran without an error, never that the census is missing.", "counter",
+    flatten(errors, "himmel_tool_errors_total", "tool"));
+  addFamily(lines, "himmel_tool_denials_total", "Guardrail denials by class (hook name, `auto-mode-classifier`, `user-rejected`, or `hook-unclassified`) over the same 24h census window.", "counter",
+    flatten(denials, "himmel_tool_denials_total", "class"));
+
+  const comments = skipped > 0 ? [`# himmel_tool_* partial: ${skipped} unparseable census row(s) skipped`] : [];
+  return { lines, comments };
+}
+
+// HIMMEL-2480: hook-chain budget pressure. scripts/hooks/run-hook-with-bash.js
+// ALREADY writes one row per starved chain member (HIMMEL-2060) with `action`
+// (`skip` = the guard silently did not evaluate this tool call; `deny` = the
+// tool call was refused fail-closed), `elapsed` and `budget`. Nothing read it.
+// The 2026-09-03 spawn-storm hang is visible in that log ~30-135 min before
+// the box became unusable (see docs — measured, not assumed), so the whole
+// early-warning slice is a reader plus two rules; no new hot-path ledger, and
+// nothing extra runs on a tool call.
+const HOOK_CHAIN_WINDOW_MS = 10 * 60 * 1000;
+// Same clock-jitter tolerance as the tool census: the writer and the reader
+// are the same host, so a slightly-future row is jitter, not a real future.
+const HOOK_CHAIN_FUTURE_GRACE_MS = 5 * 60 * 1000;
+// Emitted unconditionally, 0 included — see the family help below.
+const HOOK_CHAIN_ACTIONS = ["deny", "skip"] as const;
+
+// Mirrors run-hook-with-bash.js's own skipLogPath(): the same
+// RUN_HOOK_CHAIN_SKIP_LOG override, then the project tree. When the override
+// is set it means exactly that one file — the shared escape hatch that
+// points both the writer and the reader at one log when they run from
+// different roots. Otherwise this folds the primary checkout's log with
+// every worktree's own log (HIMMEL-2478 CR finding 1): a worktree session's
+// hook-with-bash.js writes to ITS OWN .claude/logs, invisible to the primary
+// checkout's log otherwise. Single-level glob of the worktrees directory, not
+// a recursive walk. The exporter is a service with an arbitrary cwd, so it
+// resolves the checkout from its OWN location rather than cwd — it monitors
+// the himmel checkout it ships from.
+// repoRoot defaults to the real checkout root; tests inject a tmp root so the
+// glob is exercised without ever touching this machine's real .claude/worktrees.
+//
+// Returns worktreesDirUnreadable alongside paths (HIMMEL-2478/2480 CR
+// follow-up): a bare try/catch around readdirSync used to make "no worktrees
+// directory at all" (normal — an adopter with none) indistinguishable from
+// "the directory exists but couldn't be enumerated" (a real fault). The
+// existsSync() check below splits the two: absence contributes nothing here,
+// an existing-but-unreadable directory sets the flag so the caller can count
+// it toward hook_chain_skip_log_unreadable instead of it vanishing silently.
+export function defaultHookChainSkipLogPaths(env: Record<string, string | undefined>, repoRoot: string = join(import.meta.dir, "..", "..")): { paths: string[]; worktreesDirUnreadable: boolean } {
+  const override = env.RUN_HOOK_CHAIN_SKIP_LOG;
+  if (override && override.trim()) return { paths: [override], worktreesDirUnreadable: false };
+  const paths = [join(repoRoot, ".claude", "logs", "hook-chain-skips.jsonl")];
+  const worktreesDir = join(repoRoot, ".claude", "worktrees");
+  let worktreesDirUnreadable = false;
+  if (existsSync(worktreesDir)) {
+    try {
+      for (const name of readdirSync(worktreesDir)) {
+        const dir = join(worktreesDir, name);
+        try {
+          if (!statSync(dir).isDirectory()) continue;
+        } catch {
+          continue;
+        }
+        paths.push(join(dir, ".claude", "logs", "hook-chain-skips.jsonl"));
+      }
+    } catch {
+      // Present but unreadable (permissions, a race after existsSync, etc.)
+      // — a genuine fault, not "no worktrees".
+      worktreesDirUnreadable = true;
+    }
+  }
+  return { paths, worktreesDirUnreadable };
+}
+
+// `paths` is exactly the set of logs to fold — callers that want "exactly one
+// file" (an explicit hookChainSkipLogPath option, or RUN_HOOK_CHAIN_SKIP_LOG)
+// pass a single-element array; defaultHookChainSkipLogPaths is the only
+// caller that passes more than one. Per-log failures are fail-soft and
+// independent of each other: an unreadable worktree log must not cost the
+// counts a readable primary log (or a different worktree) already has.
+export function hookChainMetrics(paths: string[], nowMs: number): { lines: string[]; comments: string[]; unreadableCount: number } {
+  const counts = new Map<string, number>(HOOK_CHAIN_ACTIONS.map((a) => [a, 0]));
+  const cutoffMs = nowMs - HOOK_CHAIN_WINDOW_MS;
+  let malformedRows = 0;
+  let existingCount = 0;
+  let readableCount = 0;
+  const unreadableLogs: string[] = [];
+
+  for (const path of paths) {
+    if (!existsSync(path)) continue;
+    existingCount += 1;
+    let text: string;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch (e) {
+      const message = e instanceof Error && e.message ? e.message : "skip log read failed";
+      unreadableLogs.push(message.replace(/\s+/g, " ").trim());
+      continue;
+    }
+    readableCount += 1;
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let row: Record<string, unknown>;
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+        row = parsed as Record<string, unknown>;
+      } catch {
+        // A half-written row must not cost the whole family, same as the flow,
+        // session and tool-census ledgers.
+        malformedRows += 1;
+        continue;
+      }
+      const ts = typeof row.ts === "string" ? Date.parse(row.ts) : NaN;
+      if (!Number.isFinite(ts)) {
+        // Missing/unparseable ts is schema drift, not a normal out-of-window
+        // row — count it so drift shows up instead of silently reading 0.
+        malformedRows += 1;
+        continue;
+      }
+      if (ts < cutoffMs || ts > nowMs + HOOK_CHAIN_FUTURE_GRACE_MS) continue;
+      const action = typeof row.action === "string" ? row.action : "";
+      if (!counts.has(action)) {
+        // Same reasoning: an unrecognised action is drift in the writer, not
+        // the normal path, so it must not vanish silently either.
+        malformedRows += 1;
+        continue;
+      }
+      counts.set(action, counts.get(action)! + 1);
+    }
+  }
+
+  const comments: string[] = [];
+  if (existingCount === 0) {
+    // Deliberately still emit zeros: no log existed anywhere means "this
+    // fleet has never starved a chain member", and a MISSING series would put
+    // the two Grafana rules into NoData — which notifies. Fail open, stay
+    // quiet. Distinct from the readableCount === 0 branch below: THIS is "no
+    // logs found", that is "a log was found but could not be read".
+    comments.push("# hook_chain_budget_events_recent: skip log absent, reporting 0");
+  } else if (readableCount === 0) {
+    // Every log that exists failed to read, so unlike a malformed row inside
+    // an otherwise-readable log, nothing here can be trusted — omit the whole
+    // family rather than render a false 0.
+    const detail = unreadableLogs.length === 1
+      ? unreadableLogs[0]
+      : `${unreadableLogs.length} skip logs unreadable (first: ${unreadableLogs[0]})`;
+    return { lines: [], comments: [`# hook_chain_budget_events_recent omitted: ${detail}`], unreadableCount: unreadableLogs.length };
+  } else {
+    // At least one log was read, so the counts below are real — but two
+    // independent partial states can still apply on top of them: some ROWS in
+    // a readable log were malformed/unrecognised (malformedRows), and/or some
+    // OTHER log existed but could not be read at all (unreadableLogs, whose
+    // counts are simply missing from the total, not zeroed or omitted).
+    if (malformedRows > 0) comments.push(`# hook_chain_budget_events_recent partial: ${malformedRows} malformed or unrecognised skip-log row(s) skipped`);
+    if (unreadableLogs.length > 0) comments.push(`# hook_chain_budget_events_recent partial: ${unreadableLogs.length} skip log(s) unreadable, counts from the rest still included (first: ${unreadableLogs[0]})`);
+  }
+
+  const lines: string[] = [];
+  addFamily(lines, "hook_chain_budget_events_recent",
+    "Hook-chain members that blew their time budget in the last 10 minutes, by action (`skip` = the guard silently did not evaluate the tool call, `deny` = the tool call was refused fail-closed). Folded from the skip log scripts/hooks/run-hook-with-bash.js writes. A GAUGE over a sliding window, deliberately NOT a window-folded counter: a folded counter reads its own window slide as a reset, which is how increase() invents phantom spikes (HIMMEL-2478). Both actions are always emitted, 0 included, so a quiet box renders Normal instead of Grafana NoData.",
+    "gauge",
+    HOOK_CHAIN_ACTIONS.map((action) => sample("hook_chain_budget_events_recent", { action }, counts.get(action)!)));
+  return { lines, comments, unreadableCount: unreadableLogs.length };
+}
+
+// HIMMEL-2478/2480 CR follow-up: a `#` scrape comment is not alertable —
+// hookChainMetrics's own read failures and defaultHookChainSkipLogPaths'
+// worktrees-enumeration failure used to surface only as prose nobody
+// scrapes. This gauge is always emitted, 0 when everything is fine, so both
+// failure classes get a real series a rule can fire on. `unreadableLogCount`
+// is hookChainMetrics's unreadableCount (paths that exist but failed to
+// read); `worktreesDirUnreadable` is defaultHookChainSkipLogPaths' flag for
+// a worktrees directory that exists but couldn't be enumerated (absence of
+// the directory is normal and contributes nothing there).
+export function hookChainSkipLogUnreadableMetrics(unreadableLogCount: number, worktreesDirUnreadable: boolean): string[] {
+  const value = unreadableLogCount + (worktreesDirUnreadable ? 1 : 0);
+  const lines: string[] = [];
+  addFamily(lines, "hook_chain_skip_log_unreadable",
+    "Count of hook-chain skip logs that exist but could not be read, plus 1 if the .claude/worktrees directory exists but could not be enumerated. Always emitted, 0 when healthy. Non-zero means this early-warning signal is degraded and hook_chain_budget_events_recent may be under-counting — the budget alerts cannot be trusted while this is set.",
+    "gauge",
+    [sample("hook_chain_skip_log_unreadable", {}, value)]);
+  return lines;
+}
+
 function normalizeTaskSamples(raw: unknown): ScheduledTaskSample[] {
   const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
   const samples: ScheduledTaskSample[] = [];
@@ -769,9 +1287,20 @@ async function scheduledTaskMetrics(
     return { lines: [], comments: ["# scheduled_task_* omitted: platform has no Windows Scheduled Tasks API"] };
   }
 
+  // HIMMEL-2075: the disabled-allowlist is config, not a live query result,
+  // so it is read fresh every call rather than threaded through the
+  // scheduler cache above. Runtime-validated (CR-flagged): observability.json
+  // is operator-edited JSON, not trusted from the static ObservabilityConfig
+  // type — a non-array value here would throw at buildScheduledTaskLines'
+  // .filter() call, and a non-string element would leak an invalid
+  // Prometheus label value.
+  const expectedDisabledTasks = Array.isArray(config.expected_disabled_tasks)
+    ? config.expected_disabled_tasks.filter((t): t is string => typeof t === "string" && t.length > 0)
+    : [];
+
   const key = tasks.join("\0");
   if (opts.cache.scheduler && opts.cache.scheduler.key === key && opts.nowMs - opts.cache.scheduler.fetchedAtMs < CACHE_TTL_MS) {
-    return buildScheduledTaskLines(opts.cache.scheduler.value.samples, opts.cache.scheduler.value.comments);
+    return buildScheduledTaskLines(opts.cache.scheduler.value.samples, opts.cache.scheduler.value.comments, expectedDisabledTasks);
   }
 
   const runner = opts.schedulerRunner ?? runWindowsScheduledTasks;
@@ -785,10 +1314,10 @@ async function scheduledTaskMetrics(
     comments.push("# scheduled_task_* omitted: scheduled-task query failed");
   }
   opts.cache.scheduler = { key, fetchedAtMs: opts.nowMs, value: { samples, comments } };
-  return buildScheduledTaskLines(samples, comments);
+  return buildScheduledTaskLines(samples, comments, expectedDisabledTasks);
 }
 
-function buildScheduledTaskLines(samples: ScheduledTaskSample[], comments: string[]): { lines: string[]; comments: string[] } {
+function buildScheduledTaskLines(samples: ScheduledTaskSample[], comments: string[], expectedDisabledTasks: string[] = []): { lines: string[]; comments: string[] } {
   const ordered = [...samples].sort((a, b) => a.task.localeCompare(b.task));
   const lines: string[] = [];
   addFamily(lines, "scheduled_task_exists", "Whether an expected Windows scheduled task exists.", "gauge",
@@ -797,6 +1326,14 @@ function buildScheduledTaskLines(samples: ScheduledTaskSample[], comments: strin
     ordered.map((s) => sample("scheduled_task_enabled", { task: s.task }, s.enabled ?? 0)));
   addFamily(lines, "scheduled_task_next_run_timestamp", "Next run time as epoch seconds from a Date object, never a locale-rendered string.", "gauge",
     ordered.flatMap((s) => s.exists && typeof s.next_run_timestamp === "number" ? [sample("scheduled_task_next_run_timestamp", { task: s.task }, s.next_run_timestamp)] : []));
+  // HIMMEL-2075: tasks the operator has allowlisted as intentionally
+  // disabled right now — HimmelScheduledTaskDisabled excludes any task with
+  // a `1` here via an `unless on (task)` join. Deduped/sorted like the other
+  // task families; a task not in the allowlist is simply omitted (never
+  // emitted as 0), matching PromQL's "absent = not excluded" semantics.
+  const disabledTasks = [...new Set(expectedDisabledTasks.filter(Boolean))].sort();
+  addFamily(lines, "scheduled_task_expected_disabled", "Whether an expected Windows scheduled task is intentionally disabled by operator allowlist.", "gauge",
+    disabledTasks.map((task) => sample("scheduled_task_expected_disabled", { task }, 1)));
   return { lines, comments };
 }
 
@@ -1348,7 +1885,7 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   const lanesPath = options.lanesPath ?? defaultLanesPath();
 
   const lines: string[] = [];
-  const flow = buildFlowMetrics(flowPath, cfg, nowMs);
+  const flow = buildFlowMetrics(flowPath, cfg, nowMs, options.pidLivenessRunner, options.localHost);
   lines.push(...flow.lines);
 
   const sessionPath = options.sessionLedgerPath ?? sessionRunLedgerPath(env);
@@ -1358,6 +1895,18 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   const fetchHealth = fetchHealthMetrics(options.fetchHealthStatePath ?? defaultFetchHealthStatePath(env));
   lines.push(...fetchHealth.comments);
   lines.push(...fetchHealth.lines);
+
+  const toolCensus = toolCensusMetrics(options.toolCensusPath ?? defaultToolCensusPath(env), nowMs);
+  lines.push(...toolCensus.comments);
+  lines.push(...toolCensus.lines);
+
+  const hookChainPaths = options.hookChainSkipLogPath
+    ? { paths: [options.hookChainSkipLogPath], worktreesDirUnreadable: false }
+    : defaultHookChainSkipLogPaths(env);
+  const hookChain = hookChainMetrics(hookChainPaths.paths, nowMs);
+  lines.push(...hookChain.comments);
+  lines.push(...hookChain.lines);
+  lines.push(...hookChainSkipLogUnreadableMetrics(hookChain.unreadableCount, hookChainPaths.worktreesDirUnreadable));
 
   const scheduled = await scheduledTaskMetrics(cfg, {
     platform: options.platform ?? process.platform,

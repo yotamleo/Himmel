@@ -1,0 +1,23 @@
+# Post-fix twin of instance2-single-quoted.sh.fxt — the single-quoted
+# sentinel produced AND denied in single quotes, the shape a fix written in
+# the file's own quoting style ships. Proves the round-2 literal parser
+# round-trips: the single-quoted producer yields a literal, and the
+# single-quoted comparison satisfies the hard-deny check.
+#
+# Expected: lint-fail-open.sh passes this file clean.
+if [ -z "${ANTHROPIC_BASE_URL:-}" ]; then
+    EFFECTIVE_PROVIDER="anthropic"
+else
+    endpoint_host="$(_endpoint_host "$ANTHROPIC_BASE_URL")" || endpoint_host=""
+    case "$endpoint_host" in
+        api.anthropic.com) EFFECTIVE_PROVIDER="anthropic" ;;
+        *) EFFECTIVE_PROVIDER='anthropic-custom' ;;
+    esac
+fi
+if [ "$EFFECTIVE_PROVIDER" = 'anthropic-custom' ]; then
+    echo "unverified endpoint — refusing scheduled egress on every corpus (fail-closed)" >&2
+    exit 2
+fi
+verdict_line="$(node "$MX_EVAL" "$CORPUS_CLASS" "$EFFECTIVE_PROVIDER" extraction)" \
+    || { echo "matrix eval failed" >&2; exit 2; }
+echo "verdict: $verdict_line"

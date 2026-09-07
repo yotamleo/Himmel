@@ -66,4 +66,41 @@ function profileForVault(answers) {
   return mode === 'default-template' ? 'all' : 'core';
 }
 
-module.exports = { cacheDir, profileForVault, which };
+// resolvePowershell(env) -> preferred PowerShell executable (HIMMEL-2126).
+//
+// WHY: Windows PowerShell 5.1 (powershell.exe/bare 'powershell') has a trap
+// class pwsh (PowerShell 7) does not — it reads a BOM-less UTF-8 script as
+// cp1252, mojibaking an em-dash into a phantom token that throws a
+// ParserError at the WRONG line; it has its own reserved-variable quirks;
+// and it strips jq-style quoting differently than pwsh. Operator ruling
+// (2026-08-26): ALWAYS invoke pwsh unless a named reason exists — 5.1 is a
+// loud, named fallback only, never a silent default.
+//
+// HIMMELCTL_POWERSHELL overrides everything (nonstandard install OR a
+// hermetic test pinning a specific interpreter) — same seam class as
+// HIMMELCTL_BASH; no warning is printed for an explicit override. Otherwise
+// prefers `pwsh` on PATH; falling back to `powershell` prints ONE warning to
+// stderr naming the trap class + HIMMEL-2126 so the fallback is never
+// silent. Returns a bare command name (`pwsh`/`powershell`) when `which`
+// finds nothing, so a caller relying on PATH resolution at spawn time still
+// gets a sane default and an honest ENOENT if truly absent.
+function resolvePowershell(env) {
+  const e = env || process.env;
+  if (e.HIMMELCTL_POWERSHELL) return e.HIMMELCTL_POWERSHELL;
+  // Probe pwsh.exe explicitly too (panel round-3, HIMMEL-2126): which()'s
+  // executable-extension walk is win32-only, so a pwsh.exe-only PATH entry
+  // (WSL interop, POSIX test fixtures) needs the explicit second name —
+  // mirrors scripts/lib/resolve-powershell.sh.
+  const pwsh = which('pwsh', e) || which('pwsh.exe', e);
+  if (pwsh) return pwsh;
+  const ps51 = which('powershell', e) || 'powershell';
+  process.stderr.write(
+    'himmelctl: pwsh (PowerShell 7) not found; falling back to Windows PowerShell 5.1 -- '
+    + 'HIMMEL-2126: PS 5.1 misreads BOM-less UTF-8 as cp1252 (em-dash mojibake -> phantom-token '
+    + 'ParserError at the WRONG line), has reserved-variable quirks, and strips jq-style quoting '
+    + 'differently than pwsh. Install pwsh (PowerShell 7) to silence this.\n'
+  );
+  return ps51;
+}
+
+module.exports = { cacheDir, profileForVault, which, resolvePowershell };

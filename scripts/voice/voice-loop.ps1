@@ -153,6 +153,7 @@ if (-not (Test-Daemon)) {
 }
 
 $logPath = Join-Path $HOME '.himmel\voice\loop.log'
+$errLog  = Join-Path $HOME '.himmel\voice\claude-stderr.log'
 # This log holds spoken transcripts and full replies, i.e. whatever was said in
 # the room. Unbounded, it becomes an indefinite record of that. Bounded in both
 # directions: each entry is truncated, and the file rotates at 1 MB keeping one
@@ -289,7 +290,15 @@ do {
     # nothing" — with the permission refusal or startup error that explained it
     # thrown away. It must not reach stdout either, or the daemon would try to
     # pronounce it, hence a file rather than the console.
-    $errLog = Join-Path $HOME '.himmel\voice\claude-stderr.log'
+    # Rotate claude-stderr.log the same way loop.log rotates: at 1 MB keeping
+    # one previous generation. The native `2>>` append below cannot bound
+    # itself, so the cap is applied here, once per turn, before the next append.
+    try {
+        $errExisting = Get-Item -LiteralPath $errLog -ErrorAction Stop
+        if ($errExisting.Length -gt $LogMaxBytes) {
+            Move-Item -LiteralPath $errLog -Destination "$errLog.1" -Force -ErrorAction Stop
+        }
+    } catch { }   # no log yet, or rotation lost a race -- neither fails a turn
     $reply = ($null | & claude @claudeArgs 2>>$errLog | Out-String)
     $sw.Stop()
     # Strip ANSI colour so the daemon does not try to pronounce escape codes.

@@ -9,7 +9,7 @@
  * Rules (LUNA-37, matching harvest-clips.md Phase 3 table):
  *   - x.com / twitter.com / mobile.twitter.com  → host=x.com, keep /<user>/status/<id>, drop query
  *   - youtube.com / youtu.be                    → youtube.com/watch?v=<id>
- *   - github.com                                → lowercase owner/repo, strip /tree/, /blob/, trailing /
+ *   - github.com                                → lowercase owner/repo, strip /tree/, KEEP /blob/, trailing /
  *   - medium.com                                → drop ?source=
  *   - generic                                   → drop utm_*, fbclid, gclid, ref=, source=, mc_cid, mc_eid
  *
@@ -115,16 +115,18 @@ export function canonicalize(rawUrl) {
     return `https://youtube.com${u.pathname}`;
   }
 
-  // github.com — lowercase owner/repo, strip /tree/<branch>, /blob/<branch>/<path>, trailing /
+  // github.com — lowercase owner/repo, strip /tree/<branch>[...], KEEP /blob/<branch>/<path>, trailing /
   if (GITHUB_HOSTS.has(host)) {
     const parts = u.pathname.split("/").filter(Boolean);
     if (parts.length >= 2) {
       const [owner, repo, ...rest] = parts;
       let kept = [owner.toLowerCase(), repo.toLowerCase()];
-      if (rest.length && (rest[0] === "tree" || rest[0] === "blob")) {
-        // strip /tree/<branch>[...] + /blob/<branch>/<path>
-        // Per harvest-clips.md, we strip the entire ref-scoped suffix.
+      if (rest.length >= 2 && rest[0] === "tree") {
+        // strip /tree/<branch>[...] — a branch/subtree VIEW of the same repo.
       } else {
+        // /blob/<branch>/<path> is kept verbatim (HIMMEL-1735): it points at one
+        // specific FILE, a distinct document from the repo root. Collapsing it
+        // made every github file URL dedup away against an already-clipped repo.
         kept = kept.concat(rest);
       }
       return `https://github.com/${kept.join("/")}`.replace(/\/$/, "");

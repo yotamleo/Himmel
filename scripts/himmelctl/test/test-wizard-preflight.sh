@@ -35,6 +35,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
@@ -83,7 +84,7 @@ PATH="$c1path" command -v jq >/dev/null 2>&1 \
   && fail "case1 sanity: jq should be absent on the stub PATH"
 h1="$work/h1"; mkdir -p "$h1"
 set +e
-out=$(PATH="$c1path" HOME="$h1" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$c1path" HOME="$h1" USERPROFILE="$(winpath "$h1")" HIMMELCTL_CACHE_DIR="$(winpath "$h1.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h1.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       "$node_bin" "$wizard" install </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "case1: missing jq should exit non-zero (got $rc)"
@@ -99,7 +100,7 @@ stub2="$work/case2"; mkdir -p "$stub2"
 c2path=$(build_path "$stub2" bash git jq python3 npm -- )
 h2="$work/h2"; mkdir -p "$h2"
 set +e
-out=$(PATH="$c2path" HOME="$h2" \
+out=$(PATH="$c2path" HOME="$h2" USERPROFILE="$(winpath "$h2")" HIMMELCTL_CACHE_DIR="$(winpath "$h2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h2.himmelctl-cache/luna-config.json")" \
       "$node_bin" "$wizard" install --dry-run </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case2: all tools present should reach preflight OK (got rc=$rc)"
@@ -153,7 +154,7 @@ PATH="$c3path" command -v jq >/dev/null 2>&1 \
   && fail "case3 sanity: jq should be absent before the install offer"
 h3="$work/h3"; mkdir -p "$h3"
 set +e
-out=$(PATH="$c3path" HOME="$h3" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$c3path" HOME="$h3" USERPROFILE="$(winpath "$h3")" HIMMELCTL_CACHE_DIR="$(winpath "$h3.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h3.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       "$node_bin" "$wizard" install <<<"y" 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case3: install+recheck should reach preflight OK (got rc=$rc)"
@@ -190,7 +191,7 @@ STUB
       && fail "case3b sanity: git should be absent before the install offer"
     h3b="$work/h3b"; mkdir -p "$h3b"
     set +e
-    out=$(PATH="$c3bpath" HOME="$h3b" HIMMELCTL_INTERACTIVE=1 \
+    out=$(PATH="$c3bpath" HOME="$h3b" USERPROFILE="$(winpath "$h3b")" HIMMELCTL_CACHE_DIR="$(winpath "$h3b.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h3b.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
           "$node_bin" "$wizard" install <<<"y" 2>&1); rc=$?
     set -e
     [ "$rc" -eq 0 ] || fail "case3b: Git.Git install+recheck should reach preflight OK (got rc=$rc): $out"
@@ -223,16 +224,16 @@ c4_budget=15
 c4_out="$work/case4.out"
 set +e
 if command -v timeout >/dev/null 2>&1; then
-  timeout "$c4_budget" env PATH="$c4path" HOME="$h4" HIMMELCTL_INTERACTIVE=1 \
+  timeout "$c4_budget" env PATH="$c4path" HOME="$h4" USERPROFILE="$(winpath "$h4")" HIMMELCTL_CACHE_DIR="$(winpath "$h4.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h4.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
     "$node_bin" "$wizard" install </dev/null >"$c4_out" 2>&1
   rc=$?
 else
   if command -v setsid >/dev/null 2>&1; then
-    setsid env PATH="$c4path" HOME="$h4" HIMMELCTL_INTERACTIVE=1 \
+    setsid env PATH="$c4path" HOME="$h4" USERPROFILE="$(winpath "$h4")" HIMMELCTL_CACHE_DIR="$(winpath "$h4.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h4.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       "$node_bin" "$wizard" install </dev/null >"$c4_out" 2>&1 &
     c4_pid=$!; c4_grouped=1
   else
-    env PATH="$c4path" HOME="$h4" HIMMELCTL_INTERACTIVE=1 \
+    env PATH="$c4path" HOME="$h4" USERPROFILE="$(winpath "$h4")" HIMMELCTL_CACHE_DIR="$(winpath "$h4.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h4.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       "$node_bin" "$wizard" install </dev/null >"$c4_out" 2>&1 &
     c4_pid=$!; c4_grouped=0
   fi
@@ -263,7 +264,7 @@ stub5="$work/case5"; mkdir -p "$stub5"
 c5path=$(build_path "$stub5" bash git jq python3 npm -- )
 h5="$work/h5"; mkdir -p "$h5"
 set +e
-out=$(PATH="$c5path" HOME="$h5" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$c5path" HOME="$h5" USERPROFILE="$(winpath "$h5")" HIMMELCTL_CACHE_DIR="$(winpath "$h5.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h5.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       "$node_bin" "$wizard" install uninstall </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "case5: 'install uninstall' should hard-error with rc=2 (got rc=$rc): $out"

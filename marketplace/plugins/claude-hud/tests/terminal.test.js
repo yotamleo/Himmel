@@ -1,6 +1,17 @@
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { getAdaptiveBarWidth } from '../dist/utils/terminal.js';
+import { getAdaptiveBarWidth, getTerminalWidth } from '../dist/utils/terminal.js';
+
+test('getTerminalWidth caps hostile widths', () => {
+  const originalColumns = process.env.COLUMNS;
+  process.env.COLUMNS = '600000000';
+  try {
+    assert.equal(getTerminalWidth({ preferEnv: true }), 1000);
+  } finally {
+    if (originalColumns === undefined) delete process.env.COLUMNS;
+    else process.env.COLUMNS = originalColumns;
+  }
+});
 
 describe('getAdaptiveBarWidth', () => {
   let originalStdoutColumns;

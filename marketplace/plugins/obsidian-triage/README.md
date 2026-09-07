@@ -13,6 +13,8 @@ Autonomous triage + synthesis for Obsidian Web Clipper output.
 
 - **`obsidian-triage:roadmap-clips` skill** (LUNA-59) — cross-source synthesis: aggregates actionable items across daily-note action items, the clipper backlog (`Clippings/_deferred.md`), synthesis proposals, promotion candidates, and the component inventory, clusters them into sequenced themes (effort/impact + target repo), dedups candidate tickets against open Jira, and writes a `60-Maps/<date>-roadmap.md` note. **Proposals only** — never auto-files tickets or restructures the vault (same contract as `/synthesize-clips`). Read-only aggregation lives in `tools/roadmap-aggregate.mjs` (pure Node, no runtime deps); invokable as `/roadmap-clips` OR `Skill { skill: "obsidian-triage:roadmap-clips" }`.
 
+- **`obsidian-triage:grow-feed-log` skill** (LUNA-130) — a second entry point, parallel to `telegram-clip`: turns a grow-tent Telegram message describing a feed/watering ("added 5L + 2 caps to the mint"), or a bare nutrient-label photo, into an appended entry in `<vault>/20-Areas/Grow/Grow-Feeding-Log.md`. LLM-first by design — no rigid `/feed` command grammar; the skill reads the message (and any photo via `Read`) and derives {date, vessel, water, product, dose, EC, note} itself, resolving vessel names and product identity against the target file's own existing rows/`## Products` section (never a hardcoded table). A feed appends one row to `## Log`; a new product appends a `### <name>` subsection to `## Products` (feed rows wikilink to it via `[[#<name>]]`). Deterministic append logic lives in `tools/grow-feed-log.mjs` (pure Node, no runtime deps): vault-containment, cell sanitization (pipe-escape + newline-collapse so the table can't break), idempotency per `--msg-id` (plus a product-name idempotency gate in product mode), and the `updated:` frontmatter bump. Invokable as `/grow-feed-log <text>` OR `Skill { skill: "obsidian-triage:grow-feed-log", args: "<text>" }`. Telegram routing/access-gating (how a message reaches this skill) is LUNA-127 — a separate, blocked ticket; this skill only owns the extract+append half.
+
 Together: harvest → **enrich** (X body-fill via `tools/fxtwitter-enrich.mjs` — see `tools/README.md`) → tag → link → action-item → promote-suggest → mark processed → synthesize patterns → graduate to `_done/` → over time, propose structure → roadmap. `Clippings/` acts as an inbox that drains as clips complete the chain. The vault learns from accumulated clips.
 
 The **enrich** stage runs `fxtwitter-enrich.mjs` (X), `ig-embed-enrich.mjs` (Instagram) and `reddit-enrich.mjs` (Reddit — cookie-authenticated `.json`, burner-account cookies at `~/.luna/cookies/reddit.txt`) between harvest and triage. For X it fills a thin telegram bare-URL stub's `## The Idea` from the tweet text and de-anonymizes `author`/`title` (the `x.com/i/status/<id>` forwards), so triage tags a rich body on its first pass. The same enrich also fires **inline** at `telegram-clip` filing time (best-effort) so group links are usually born rich. Authenticated long tail (protected tweets, login-walled IG) defers to the `playwright-crawl-*` rung. Reddit's anonymous `.json` is 403-blocked (verified 2026-07-08); the rung uses exported burner cookies. If cookies prove brittle, the escalation path is a free official OAuth script app (100 QPM, app registration) — documented here, not built; `--firecrawl-thin` treating reddit as article-like is the noisy, credit-metered last resort.
@@ -32,11 +34,18 @@ The existing `pipeline-cadence` scheduler arms it daily at **01:30** as
 | Instagram caption enrichment | None | Instagram `embed/captioned` response for a known post |
 | Instagram media enrichment | Netscape cookies at `~/.luna/cookies/instagram.txt` | `gallery-dl --simulate --cookies ...` against a known post |
 | X media enrichment | Netscape cookies at `~/.luna/cookies/twitter.txt` | `gallery-dl --simulate --cookies ...` against a known tweet |
-| X CLI enrichment | `TWITTER_AUTH_TOKEN` + `TWITTER_CT0` in the process environment | `twitter tweet 20 --json` |
+| X CLI enrichment | `TWITTER_AUTH_TOKEN` + `TWITTER_CT0` (process env or the primary checkout's `.env`), falling back per key to `auth_token`/`ct0` in `~/.luna/cookies/twitter.txt` | `twitter tweet 20 --json` |
 | YouTube Playwright enrichment | `~/.luna/playwright-state/youtube.json` storage state | YouTube request carrying the matching storage-state cookies |
 | GitHub harvest / ingest | Authenticated `gh` CLI | `gh api repos/cli/cli` |
-| Bitbucket ingest | `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN`, including primary-checkout `.env` lookup | Authenticated `GET /2.0/user` |
-| Firecrawl article enrichment | `FIRECRAWL_API_KEY` (`FIRECRAWL_BASE_URL` optional) | `POST /v2/scrape` for `https://example.com/` |
+| Bitbucket ingest | `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN` (process env or the primary checkout's `.env`) | Authenticated `GET /2.0/user` |
+| Firecrawl article enrichment | `FIRECRAWL_API_KEY` (process env or the primary checkout's `.env`; `FIRECRAWL_BASE_URL` optional) | `POST /v2/scrape` for `https://example.com/` |
+
+Every probe reads the primary checkout's `.env` (HIMMEL-2549) — the merge
+happens once, at the registry boundary, so the 01:30 cadence run sees the same
+config as a manual run even though its wrapper sources nothing. A live
+non-empty process value still wins; a set-but-empty one does not. The
+duplicate-key and empty-placeholder rules are in
+[`docs/internals/environment-gotchas.md`](../../../docs/internals/environment-gotchas.md).
 
 Every result is classified as exactly `ok`, `auth-or-cookie-expired`,
 `blocked-or-rate-limited`, or `transport-fail`. Missing credentials, cookie
@@ -46,6 +55,50 @@ atomically to `~/.himmel/fetch-health.json` (override:
 `HIMMEL_FETCH_HEALTH_STATE`) and exported by the existing passive flow exporter
 at `http://127.0.0.1:9877/metrics` as `clip_fetch_source_status` and
 `clip_fetch_source_last_success_timestamp`.
+
+### Rebuilding the YouTube storage state (HIMMEL-2549)
+
+`playwright-auth-save.mjs youtube` opens a real browser and asks you to log in.
+Google blocks that sign-in as automated often enough that it is no longer the
+first thing to try. A cookie-exporter browser extension was tried too, but its
+export was missing the `HttpOnly` login cookies (an extension only sees those
+if it was granted the `cookies` permission and reads them via `chrome.cookies`
+rather than page JavaScript) — which is why the yt-dlp route below is the
+documented one. Export from the Chrome profile that is already signed in
+instead:
+
+```bash
+python3 scripts/luna/youtube-state-from-chrome.py --profile Default
+```
+
+That runs `yt-dlp --cookies-from-browser 'chrome:<profile>'` to get a Netscape
+cookie jar, keeps only the `youtube.com` / `google.com` cookies (the export
+carries every site you are signed in to), converts them to the Playwright
+storage-state shape, and writes `~/.luna/playwright-state/youtube.json`
+atomically at mode `0600`. It prints one line — the path and the cookie COUNT,
+never a value. A healthy export is on the order of 40-70 cookies; a handful
+means the wrong or a signed-out profile.
+
+Give the real profile DIRECTORY name, not its display name (`Default`,
+`'Profile 1'` — quote it if it has a space). `--from-cookies PATH` converts a
+jar you exported yourself, and `--out PATH` writes somewhere other than the
+canonical location.
+
+Expect yt-dlp to print extraction warnings ("Signature solving failed", "The
+page needs to be reloaded") and exit non-zero while still writing a perfectly
+good jar — the cookies are the deliverable, not the video, so the script judges
+the jar rather than yt-dlp's exit code.
+
+Verify before trusting it:
+
+```bash
+python3 scripts/luna/fetch-health.py --probe youtube-playwright
+```
+
+`ok` means the state carries a live session — the probe requires the
+authenticated `"LOGGED_IN":true` marker, so an expired jar cannot read green.
+Both the `storage state missing` and `storage state unreadable` reasons name
+this route.
 
 ### Instagram media rung: `/ig-media-enrich` (HIMMEL-770)
 
@@ -353,6 +406,8 @@ A `tests/test-synthesize-invariants.sh` covers the synthesize-side invariants (p
 `tests/test-daily-timeline.sh` (LUNA-90) is the fixture-gated acceptance test for the daily `## Clip pipeline` timeline: correct captured/reviewed-by-kind/promoted/densified counts anchored to the target date, byte-identical second-run idempotency, in-place refresh on state change, CRLF preservation, missing-note no-op, and the triage/synthesize runbook wiring. Pure Node.
 
 `tests/test-telegram-digest.sh` + `tests/test-synthesize-telegram-digest.sh` + `tests/test-telegram-clip-inbox.sh` (LUNA-91) cover the promotion digest (one batched reply per chat — not per promotion — distinct-subject dedup, non-telegram/suppression exclusion, reply threading), its end-to-end emission from `synthesize-stubs --apply` (digest file written, stale-cleared on no-op re-run, suppressed under `--no-telegram-digest`), and the telegram-clip inbox-state contract (no `processed:`/`lifecycle:` marker, `telegram_chat_id` provenance). Pure Node.
+
+`tests/test-grow-feed-log.sh` (LUNA-130) covers the feed-log entry point against a temp fixture vault (never the real vault): feed-row placement inside the `## Log` table (right after the last existing row, `## Products` untouched), idempotent re-run by `--msg-id` (byte-identical no-op), pipe/newline cell sanitization, `--dry-run` no-write, product-mode section insertion before `## Notes` plus its own product-name idempotency gate, vault/target-file/`## Log`-table validation exit codes, and the `updated:` frontmatter bump on a real write only. Pure Node.
 
 ## Known issues (as of audit cycle 2026-05-25)
 

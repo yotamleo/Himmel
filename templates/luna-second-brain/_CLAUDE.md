@@ -42,12 +42,41 @@ knowledge.
 
 ---
 
+## Retrieval Routing — which organ answers what
+
+When the vault has a knowledge graph (a `graphify-out/` dir at the vault
+root), route retrieval by question shape, not habit — text-search-only is
+the failure mode:
+
+- **Content lookup** ("find my notes on X", "what did I save about Y") →
+  text/semantic search (qmd or your search tool) first.
+- **Structure & neighborhoods** ("how does X relate to Y", "what clusters
+  around Z", "map this theme") → the **graphify graph**:
+  `graphify query "<question>" --graph "<vault-root>/graphify-out/graph.json"`
+  (the graph path must be the `--graph` flag — a positional directory is
+  silently ignored and the query runs against the current directory's
+  graph), or the graphify MCP tools when connected. The curated entry
+  point is the graphify map note in `60-Maps/` (written by the graph
+  refresh).
+- A **search miss is not evidence of absence** — structural connections
+  often live only in the graph; try graphify before concluding a relation
+  doesn't exist.
+- Never `graphify path` — node IDs are file-scoped, so cross-file
+  traversal is structurally broken; join `graphify query` results
+  in-head instead.
+- Escalation (documented, not applied): if sessions keep defaulting to
+  text search only, `graphify install --project --strict` wires a hook
+  that blocks the first raw file read per session until one
+  `graphify query` runs.
+
+---
+
 ## Vault Identity
 
 - **Owner:** {{OWNER_NAME}}
 - **Vault name:** {{VAULT_NAME}}
 - **Primary purpose:** {{VAULT_PURPOSE}}
-- **Instantiated from:** [luna-brain](https://github.com/yotamleo/himmel/tree/main/templates/luna-second-brain) skeleton
+- **Instantiated from:** [luna-brain](https://github.com/yotamleo/Himmel/tree/main/templates/luna-second-brain) skeleton
 - **Created:** {{CREATED_DATE}}
 
 ---
@@ -107,27 +136,26 @@ Claude should **ask before saving**:
 
 ---
 
-## Contradiction-Resolution Policy (LUNA-98)
+## Contradiction-Resolution Policy
 
-Contradiction-resolution runbooks (`/obsidian-reconcile` or any successor) are **propose-only** in
-this vault — never auto-merge. Two notes that contradict each other are not necessarily wrong: they
-may cover different contexts, constraints, or phases, and an auto-merge destroys the reasoning that
-made each right at the time. A steelman is a suggestion, not a verdict.
+Contradiction-resolution runbooks (`/obsidian-reconcile` or any successor) are **propose-only** —
+never auto-merge. Two contradicting notes are not necessarily wrong: they may cover different
+contexts or phases, and auto-merging destroys the reasoning that made each right at the time.
 
 - **Clear winner found:** do NOT rewrite the outdated page. Write the proposed rewrite to
   `00-Inbox/Conflict (proposed) — <topic>.md` (`status: proposed`) with both sides, the evidence,
   and the full proposed text. The operator applies or rejects.
 - **Genuinely ambiguous:** write `00-Inbox/Conflict (open) — <topic>.md` (`status: open`)
-  documenting both sides (this replaces the upstream `wiki/decisions/` path, which does not exist
-  in this vault).
+  documenting both sides.
 - `00-Inbox/` is the operator-triage queue — conflict notes land where the operator already looks.
 - Conflict notes carry the vault's base frontmatter (`date:`, `type: conflict`, `tags:` incl.
-  `conflict`, `ai-first: true`) plus the `status: proposed` / `status: open` field above.
-- An explicit `--auto` argument restores upstream rewrite behavior; without it, propose-only.
+  `conflict`, `ai-first: true`) plus the `status:` field above.
+- An explicit `--auto` argument lets the runbook rewrite the losing note in place instead of
+  proposing; without it, propose-only.
 
 **Shared daily-note heading:** thinking-type passes (`/obsidian-challenge`, `/contra`) append to
-today's daily note under the exact H2 heading `## Thinking` — one heading, no per-command variants
-(prevents heading drift; spec D2.5).
+today's daily note under the exact H2 heading `## Thinking` — one heading, no per-command variants,
+which prevents heading drift.
 
 ---
 
@@ -156,7 +184,7 @@ ai-first: true
 
 Note types: `daily` | `weekly` | `project` | `area` | `resource` | `person` | `concept` | `book` | `decision` | `conflict`
 
-### Decision-shaped notes — premise frontmatter (LUNA-95)
+### Decision-shaped notes — premise frontmatter
 
 Standalone `type: decision` notes MUST carry, in addition to the base fields:
 
@@ -172,11 +200,9 @@ contradiction pass consumes it (last-wins parsing would compare an unintended va
 
 The body section `## The Critical Assumption` stays (nuance, confidence, recency); the frontmatter
 is the machine-tractable index that contradiction passes compare across notes. The producing layer
-is `[[_Templates/Decision]]` — instantiate the template, never freeform a decision note. External
-obsidian-second-brain commands do NOT emit these fields (their write steps are hardcoded); when a
-Claude session authors a decision note directly it applies this contract itself. If decision notes
-appear without the fields twice, escalate structurally per himmel HIMMEL-195 (fork the producing
-command into obsidian-triage).
+is `[[_Templates/Decision]]` — instantiate the template, never freeform a decision note. Some
+external commands do not emit these fields, so a Claude session authoring a decision note directly
+must apply this contract itself.
 
 ---
 

@@ -1,11 +1,19 @@
 ---
-description: Mid-session jump to a fresh claude session when context window is approaching the soft budget. Sibling of /handover-arm-resume. HIMMEL-130.
+description: Mid-session jump to a fresh claude session when the context window nears the soft budget.
 argument-hint: [--message "what to pick up"] [--delay <minutes>] [--print] [--dry-run] [--force]
 ---
 
 Operator-invoked context-hop: writes a snapshot to the handover root then either schedules a relaunch via `arm-resume.sh` (default) or prints the command to run manually (`--print`).
 
-Use this when the current session is approaching ~75–80% of its context window and you want to /exit + pick up cleanly without losing state. Sibling of `/handover-arm-resume`:
+Use this when the current session is approaching ~75–80% of its context window and you want to /exit + pick up cleanly without losing state. **Measure that threshold, do not eyeball it** — `bash scripts/context-fill.sh` prints the current session's window fill, and `--percent` gives the bare integer (HIMMEL-2212). Branch on its EXIT STATUS, not on the number alone: a stale or unknown reading prints nothing and exits 3/4, so a bare `[ "$(…)" -ge 75 ]` collapses into a false comparison indistinguishable from "below threshold". Note it reports **context-window fill**, not the `<total_tokens>` spend budget. Sibling of `/handover-arm-resume`:
+
+```bash
+if fill=$(bash scripts/context-fill.sh --percent); then
+  [ "$fill" -ge 75 ] && echo "hop now: ${fill}% of the context window used"
+else
+  echo "fill is STALE or UNKNOWN (exit $?) — do not read that as low"
+fi
+```
 
 - `/handover-arm-resume` is **cron-armed at a chosen future time** (typical usage: arm overnight when you stop work for the night, expecting to pick up tomorrow morning).
 - `/context-hop` is **operator-invoked NOW** with a short delay (default 2 minutes) so the relaunch fires just after you /exit the current session. Same dedup safeguard + cd-into-repo + MSYS_NO_PATHCONV contract (inherits from `arm-resume.sh`, PRs #137 + #139).
@@ -66,7 +74,7 @@ hardcoded fallback path.
 
 ## Scope
 
-Spike covers the operator-invoked path. Auto-trigger at 75/80% context (the DETECT half) is a follow-up wedge — Claude doesn't have first-class access to its own context budget yet. Until then, the operator is the trigger.
+Spike covers the operator-invoked path. The DETECT half is no longer blind: since HIMMEL-2212 a session can read its own context-window fill via `scripts/context-fill.sh`, so a 75/80% auto-trigger is now a mechanical follow-up rather than an unmeasurable one. Firing the hop is still an operator action.
 
 ## Prior stop-point (shared resolver)
 

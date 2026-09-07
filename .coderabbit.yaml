@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit review settings (HIMMEL-926). Versioned here so the GitHub App
-# and the CLI lane (/pr-check step 3.2, scripts/cr/coderabbit-review.sh) share
-# one config; this file overrides the org dashboard for this repo.
+# CodeRabbit review settings (HIMMEL-926). This is the GitHub App's config --
+# the App is the ONLY CodeRabbit surface himmel uses (HIMMEL-2704) -- and it
+# overrides the org dashboard for this repo.
 #
 # Decisions (rationale on HIMMEL-926):
 #   - profile chill: CodeRabbit is one finding source in a multi-critic panel;
@@ -18,12 +18,9 @@
 #     fires it automatically on every `gh pr create`, so the App is the
 #     PRIMARY CodeRabbit reviewer — one review per PR, at PR-ready time — on
 #     BOTH repos, with GitHub Actions off on the private repo by design
-#     (HIMMEL-1305) ruling out a CI-native trigger there. The local CLI lane
-#     (/pr-check step 3.2, coderabbit-review.sh) is a SECOND, optional pass on
-#     the same account — opt-out via CODERABBIT_CLI_DISABLE=1 in .env, and its
-#     Windows/WSL fallback is opt-in-only via CODERABBIT_ALLOW_WSL (HIMMEL-1339;
-#     probing wsl.exe to find the CLI is what boots the whole distro, so that
-#     lane is off by default rather than paying that cost unasked).
+#     (HIMMEL-1305) ruling out a CI-native trigger there. Re-trigger after every
+#     push: a head move discards the in-flight review. There is no local CLI
+#     lane — HIMMEL-2704 retired it, so the App is the only reviewer.
 #     Consequence: CodeRabbit is no longer a merge gate — it was also dropped
 #     from the public repo's branch-protection required checks (it would
 #     otherwise be an unsatisfiable required context with auto-review off).

@@ -282,6 +282,29 @@ nonotercv=$?
 if [ "$nonotercv" -eq 2 ]; then ok "dormant rule without a note is rejected"
 else bad "dormant rule without a note is rejected (rc=$nonotercv)"; fi
 
+# ---- 11. Astra-facing preamble elements survive the render (HIMMEL-2585) ---
+# The RED control for the GPT-6 Astra prompting changes: these three elements
+# live ONLY in preamble.md (they are addressed to non-Claude harnesses, so
+# CLAUDE.md is deliberately not their source), and AGENTS.md is the file a
+# codex/hermes lane actually reads. Rendering the REAL preamble over the small
+# fixture source proves each element reaches the generated file rather than
+# being dropped by the ladder assembly, the rewrap, or a debrand rule. Every
+# assertion below fails on the pre-HIMMEL-2585 preamble — that is the point.
+run 0 "re-write before the Astra-element assertions" -- --write
+astra_has() {
+  local desc="$1" pat="$2"
+  if grep -qF "$pat" "$TGT"; then ok "$desc"
+  else bad "$desc — not found in the generated AGENTS.md"; fi
+}
+astra_has "read-what-the-task-needs scoping reaches AGENTS.md" \
+  "not a pre-flight checklist"
+astra_has "standing test-suite permission reaches AGENTS.md" \
+  "without stopping for approval at each step"
+astra_has "the approval carve-out survives beside that permission" \
+  "blast radius outside the worktree"
+astra_has "testing calibration reaches AGENTS.md" \
+  "broaden or repeat only when new changes justify it"
+
 # ---- summary --------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

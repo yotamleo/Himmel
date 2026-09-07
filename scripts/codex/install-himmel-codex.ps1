@@ -34,6 +34,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 if ($Rest -and $Rest.Count -gt 0) {
   Write-Error "unknown argument(s): $($Rest -join ' ') (use -DryRun / -All / -Plugins <csv>)"
   exit 2
@@ -132,6 +138,20 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "sanitize step failed (exit $LASTEXITCODE)" }
 } catch {
   Write-Warning "sanitize step failed (non-fatal): $($_.Exception.Message)"
+}
+
+# --- 4. lint Codex hook commands for the Windows pwsh runner (HIMMEL-1982) ---
+# codex-cli on Windows runs every hook as `pwsh -NoProfile -Command "<cmd>"`;
+# a bare `bash ...` resolves via the Machine PATH to the WSL launcher stub and
+# can hang, and a command starting with a quoted path is a pwsh string
+# expression (ParserError, exit 1). Advisory only: never fails the install.
+Write-Host ""
+Write-Host "--- 4. lint Codex hook commands for the Windows pwsh runner (HIMMEL-1982) ---"
+$prober = Join-Path $PSScriptRoot "probe-codex-hooks.ps1"
+try {
+  & $prober -Project $RepoRoot -NoFail
+} catch {
+  Write-Warning "hook lint step failed (non-fatal): $($_.Exception.Message)"
 }
 
 Write-Host ""

@@ -55,6 +55,7 @@ if [ -n "${CRYSTALLIZE_ENV_DUMP:-}" ]; then
         printf 'CLAUDE_END_SESSION_WIKI=%s\n' "${CLAUDE_END_SESSION_WIKI:-<unset>}"
         printf 'HIMMEL_WHERE_ARE_WE=%s\n' "${HIMMEL_WHERE_ARE_WE:-<unset>}"
         printf 'CRYSTALLIZE_RULES_FILE=%s\n' "${CRYSTALLIZE_RULES_FILE:-<unset>}"
+        printf 'ANTHROPIC_BASE_URL=%s\n' "${ANTHROPIC_BASE_URL-<unset>}"
     } > "$CRYSTALLIZE_ENV_DUMP" 2>/dev/null
 fi
 

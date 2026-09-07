@@ -197,7 +197,7 @@ export function readGlmBank(ledgerPath: string, nowMs: number): BankResult {
   return { readings: [{ window: row.window ?? "5h", usedPct: row.used_pct }], omitReason: null };
 }
 
-export type LaneQuotaTargets = { withBank: Array<{ lane: string; bank: BankId }>; without: string[] };
+export type LaneQuotaTargets = { withBank: Array<{ lane: string; bank: BankId; quota?: { accessPaths?: Array<{ kind?: string; windows?: string[] }>; activeAccessPath?: number } }>; without: string[] };
 
 export function readLaneQuotaTargets(lanesPath: string): LaneQuotaTargets {
   const out: LaneQuotaTargets = { withBank: [], without: [] };

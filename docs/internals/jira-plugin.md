@@ -39,6 +39,8 @@ For Jira ops in this repo, default to the local CLI at
 | Move        | `... move HIMMEL-N --to-project LUNA [--type Story] [--dry-run]` (HIMMEL-197 — close source + create target + copy comments) | (none — Jira Cloud REST API has no direct project-change endpoint) |
 | Projects    | `... projects` / `... project-create ...`                                   | `getVisibleJiraProjects` / no equivalent for create              |
 | Link        | `... link HIMMEL-A HIMMEL-B --type Relates` (HIMMEL-210; case-insensitive type, validated against the live type list) | `createIssueLink` (+ `getIssueLinkTypes` for the type list) |
+| Links       | `... links HIMMEL-N` (HIMMEL-1731; lists id, type, canonical `inward=` / `outward=` keys, and the relation from the queried issue) | `getJiraIssue` with the `issuelinks` field |
+| Unlink      | `... unlink HIMMEL-INWARD HIMMEL-OUTWARD [--type Relates]` (HIMMEL-1731; resolves the REST id from the directed pair and refuses ambiguous matches) | (none — use `DELETE /rest/api/3/issueLink/{id}`) |
 | Assign      | `... assign HIMMEL-N <email\|accountId>` (`-`/`unassigned` clears, `auto` = default assignee; email → accountId via `/user/search`) (HIMMEL-437) | `editJiraIssue` (assignee field) |
 | Attachments | `... attachments HIMMEL-N` (list) / `... download HIMMEL-N [id] [--all] [--out dir]` (HIMMEL-437) | (none — MCP has no attachment download) |
 | Worklog     | `... worklog add HIMMEL-N --time 1h [--comment ...]` / `... worklog list HIMMEL-N` (HIMMEL-437) | `addWorklogToJiraIssue` (no list) |
@@ -70,6 +72,49 @@ scripts/jira/dist/index.js list` works with an empty shell environment.
 A `JIRA_PROJECT_KEY` *unset in your shell* is irrelevant and is **not**
 the cause of a `projectKey()` error; check the repo-root `.env` instead.
 Only pass `--project FOO` for a one-off call against a different project.
+
+## Gotchas
+
+**`transition <key> <numeric-id>` is a vacuous success.** `transitions <key>`
+lists numeric IDs for reading, not for passing back to `transition` — `transition`
+takes the status **name** as its positional arg (`transition HIMMEL-N Done`).
+Passing the numeric ID back can print a plausible-looking path (e.g.
+`- In Progress` / `- Done`) and still leave the ticket in its original status.
+Always pass the NAME, and always re-`get` the ticket afterward to verify the
+status actually changed — the printed path is not the artifact.
+
+**`--desc-file`/`--comment-file` bodies are markdown, and Jira wiki markup
+corrupts them.** These flags are parsed as markdown → ADF. Writing Jira wiki
+markup (`h2.`, `||header||`, `{code}`, `{{mono}}`) does not render — the
+tokens come through literally and tables collapse to one unreadable line.
+The dangerous part: **markdown italics eat underscores** — `HIMMEL_REPO`
+renders as `HIMMELREPO`, `himmel_dir` as `himmeldir`. A table can survive
+looking plausible while naming variables that don't exist. Use `##`,
+markdown tables, fenced code blocks, and backtick every identifier; then
+re-`get` and check the underscores explicitly — this is an artifact check,
+not a formatting preference. `edit --desc-file` repairs a corrupted body in
+place.
+
+**`create` has no `--priority`; `edit` does.** `create --help` does not list
+a priority flag — file the ticket, then `node <repo-root>/scripts/jira/dist/index.js
+edit <key> --priority High` to set the real field. A priority stated only in
+the body text leaves the field empty and the ticket unsorted in any priority
+view.
+
+**A literal `JIRA_PROJECT_KEY=<key>` env-prefix on a CLI call is refused as a
+SHAPE, not resolved.** For a cross-project op (filing into a different
+project from the repo root), use `--project <KEY>` — never a `VAR=value`
+prefix on the command. The permission matcher bails on the env-prefix shape
+and `block-jira-compound-write` refuses it outright; this applies to every
+write verb, including explicit-key verbs (`comment <KEY-N>`, `transition
+<KEY-N>`) which need no project arg at all.
+
+**A worktree lacks `dist/` — invoke by absolute path from the primary
+checkout.** `scripts/jira/dist/index.js` is an untracked build artifact that
+only exists in the primary checkout. Running the CLI relative from a
+worktree fails `MODULE_NOT_FOUND` and can silently fail a `create`. Always
+invoke `node <repo-root>/scripts/jira/dist/index.js <op>` by absolute path,
+never the global `jira` shim.
 
 ## Confluence CLI (HIMMEL-437)
 
@@ -109,7 +154,7 @@ The verb↔MCP-method rows above mirror `_CONFLUENCE_VERB_METHOD_MAP` in
 ## Mutation breadcrumbs (HIMMEL-618)
 
 Every ticket-workflow mutating verb (`transition`, `comment`, `create`, `move`,
-`edit`, `assign`, `worklog`, `link`, `sprint`) writes a breadcrumb file under
+`edit`, `assign`, `worklog`, `link`, `unlink`, `sprint`) writes a breadcrumb file under
 `~/.claude/jira-breadcrumbs/` immediately after its request **resolves** — not
 gated on the command's exit code, so a mutation that landed before a later
 non-fatal failure (e.g. an attachment upload) still leaves a breadcrumb.

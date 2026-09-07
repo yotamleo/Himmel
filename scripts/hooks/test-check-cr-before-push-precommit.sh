@@ -24,7 +24,19 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$SCRIPT_DIR/check-cr-before-push.sh"
 INSTALLER="$SCRIPT_DIR/install-cr-pre-push-legacy.sh"
+# HIMMEL-2371: the installed legacy hook also resolves and runs
+# check-push-target.sh (with the same captured ref stream) ahead of the CR
+# gate, and fails closed if it's missing from the primary checkout — the
+# fixture below must carry a real copy for the installer to find.
+PUSH_HOOK="$SCRIPT_DIR/check-push-target.sh"
 LIB="$SCRIPT_DIR/../guardrails/lib.sh"
+LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
+# Every scenario here pushes a destination ref that is NOT the fixture's
+# checked-out branch — that is the whole point of the pre-commit stdin-collapse
+# regression it pins. The HIMMEL-1809 foreign-ref refusal would stop that shape
+# before the marker logic runs; it has its own cases in
+# test-check-cr-before-push.sh, so exempt it here.
+export PUSH_FOREIGN_REF_OK=1
 
 PASS=0
 FAIL=0
@@ -75,10 +87,12 @@ build_repo() {
     # global config.
     git -C "$REPO" config --local core.hooksPath ""
     git -C "$REPO" commit -q --allow-empty -m init
-    mkdir -p "$REPO/scripts/hooks" "$REPO/scripts/guardrails"
+    mkdir -p "$REPO/scripts/hooks" "$REPO/scripts/guardrails" "$REPO/scripts/lib"
     cp "$HOOK" "$REPO/scripts/hooks/check-cr-before-push.sh"
     cp "$INSTALLER" "$REPO/scripts/hooks/install-cr-pre-push-legacy.sh"
+    cp "$PUSH_HOOK" "$REPO/scripts/hooks/check-push-target.sh"
     cp "$LIB" "$REPO/scripts/guardrails/lib.sh"
+    cp "$LOCK_LIB" "$REPO/scripts/lib/shared-branch-lock.sh"
     cat > "$REPO/.pre-commit-config.yaml" <<'YAML'
 repos:
   - repo: local

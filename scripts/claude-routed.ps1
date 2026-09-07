@@ -142,8 +142,11 @@ function Assert-GuardReadable {
 
 $cwd = (Get-Location).ProviderPath
 Assert-GuardReadable (Join-Path $Cfg 'phi-roots')
-if ((Test-Path -LiteralPath (Join-Path $cwd '.salus')) -or (Test-PathUnderAny -Target $cwd -ListFile (Join-Path $Cfg 'phi-roots'))) {
-  [Console]::Error.WriteLine('claude-routed: REFUSED - this workspace is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to the routed GLM backend.')
+# HIMMEL-2173: also accept .salus-profile (template machinery dropped by the
+# salus profile installer) — a defense for deployments that predate the
+# installer shipping the real .salus guard marker alongside it.
+if ((Test-Path -LiteralPath (Join-Path $cwd '.salus')) -or (Test-Path -LiteralPath (Join-Path $cwd '.salus-profile')) -or (Test-PathUnderAny -Target $cwd -ListFile (Join-Path $Cfg 'phi-roots'))) {
+  [Console]::Error.WriteLine('claude-routed: REFUSED - this workspace is PHI-marked (.salus / .salus-profile / phi-roots). No override exists; PHI never goes to the routed GLM backend.')
   exit 3
 }
 Assert-GuardReadable (Join-Path $Cfg 'egress-denylist')

@@ -17,5 +17,5 @@ test('lane worker profiles disable the redundant codex plugin', () => {
     assert.equal(settings.enabledPlugins[CODEX_PLUGIN], false, `${name} must not start the codex app-server stack`);
   }
 
-  assert.equal(resolveProfile(REGISTRY, 'user').enabledPlugins[CODEX_PLUGIN], true, 'the worker-only change must not alter the non-worker user profile');
+  assert.equal(resolveProfile(REGISTRY, 'user').enabledPlugins[CODEX_PLUGIN], false, 'the installer user profile must keep the on-demand codex plugin disabled');
 });

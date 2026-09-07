@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # load-dotenv.sh — shell-side .env key loader (HIMMEL-335).
 #
-# Mirrors the Jira CLI's loadEnv() (scripts/jira/src/client.ts): reads the
-# primary checkout's .env and exports requested keys into the environment
-# ONLY if they are currently unset (a value already in the live env wins,
-# same as JS `??=`). This makes <repo-root>/.env a real config source for the
-# handover shell tooling (HANDOVER_DIR, USER_SLUG) — not just for the Jira CLI.
+# Reads the primary checkout's .env and exports requested keys into the
+# environment ONLY if they are currently ABSENT, where absent means UNSET **or
+# EMPTY** (a live non-empty value wins). This makes <repo-root>/.env a real
+# config source for the handover shell tooling (HANDOVER_DIR, USER_SLUG) — not
+# just for the Jira CLI.
+#
+# HIMMEL-1922: the empty half is load-bearing, not incidental. Every caller
+# guards with `[ -z "${KEY-}" ]` — empty is not a usable value — so a loader
+# that counted set-empty as "already provided" loaded nothing and still
+# returned 0. The Jira CLI's loadEnv() (scripts/jira/src/client.ts) uses JS
+# `??=`, under which an exported empty string DOES win; that half of the mirror
+# no longer holds and is tracked separately.
 #
 # Usage — source this file, then:
 #   load_dotenv [KEY ...]
@@ -102,32 +109,115 @@ _load_dotenv_primary_for() {  # $1 = candidate root dir
 }
 
 load_dotenv() {
-    local root=""
+    local _ld_root=""
     if [ "${1:-}" = "--root" ]; then
-        root="$2"; shift 2
+        _ld_root="$2"; shift 2
     fi
-    local keys=("$@")
-    [ "${#keys[@]}" -eq 0 ] && keys=(HANDOVER_DIR USER_SLUG)
+    local _ld_keys=("$@")
+    [ "${#_ld_keys[@]}" -eq 0 ] && _ld_keys=(HANDOVER_DIR USER_SLUG)
 
-    local envfile
+    local _ld_envfile
     # An explicit --root bypasses CWD git resolution (never trust the CWD repo).
-    [ -n "$root" ] || { root=$(_load_dotenv_root) || return 0; }
-    envfile="$root/.env"
-    [ -f "$envfile" ] || return 0
+    [ -n "$_ld_root" ] || { _ld_root=$(_load_dotenv_root) || return 0; }
+    _ld_envfile="$_ld_root/.env"
+    [ -f "$_ld_envfile" ] || return 0
 
-    local line key val want
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"
-        case "$line" in ''|'#'*) continue ;; esac
-        [ "${line#*=}" = "$line" ] && continue   # no '=' → not a KEY=VALUE line
-        key=$(_load_dotenv_trim "${line%%=*}")
-        for want in "${keys[@]}"; do
-            # First match wins: once exported, ${!want} is non-empty so the
-            # next matching line for the same key is skipped here too.
-            if [ "$key" = "$want" ] && [ -z "${!want:-}" ]; then
-                val=$(_load_dotenv_trim "${line#*=}")
-                export "$want=$val"
-            fi
-        done
-    done < "$envfile"
+    local _ld_key _ld_line _ld_val
+    local _ld_pending=()
+    for _ld_key in "${_ld_keys[@]}"; do
+        # Absent means UNSET **or EMPTY** (HIMMEL-1922). `declare -p` is Bash
+        # 3.2-compatible and short-circuits the indirect expansion when the key
+        # is genuinely unset, so this stays `set -u`-safe. Every caller guards
+        # with `[ -z "${KEY-}" ]`, i.e. empty is not a usable value; a loader
+        # that treated set-empty as "already provided" silently loaded nothing
+        # and still returned 0 — the exact silent-failure class this family of
+        # tickets exists to remove. Non-clobbering therefore protects a live
+        # NON-EMPTY value.
+        if ! declare -p "$_ld_key" >/dev/null 2>&1 || [ -z "${!_ld_key:-}" ]; then
+            _ld_pending[${#_ld_pending[@]}]="$_ld_key"
+        fi
+    done
+    [ "${#_ld_pending[@]}" -gt 0 ] || return 0
+
+    # Read .env once. awk compares the complete trimmed key (the equivalent of
+    # anchored ^KEY= matching), emits only the first match for each requested
+    # key, and leaves value trimming to the existing shell helper. The helper
+    # therefore forks at most once per requested match, not once per .env line.
+    while IFS= read -r _ld_line || [ -n "$_ld_line" ]; do
+        _ld_key="${_ld_line%%=*}"
+        _ld_val=$(_load_dotenv_trim "${_ld_line#*=}")
+        export "$_ld_key=$_ld_val"
+    done < <(
+        awk '
+            BEGIN {
+                for (i = 2; i < ARGC; i++) {
+                    wanted[ARGV[i]] = 1
+                    delete ARGV[i]
+                }
+            }
+            {
+                line = $0
+                sub(/\r$/, "", line)
+                if (line == "" || line ~ /^#/) next
+
+                equals = index(line, "=")
+                if (equals == 0) next
+
+                key = substr(line, 1, equals - 1)
+                sub(/^[[:space:]]+/, "", key)
+                sub(/[[:space:]]+$/, "", key)
+                if (!(key in wanted) || (key in seen)) next
+
+                seen[key] = 1
+                print key "=" strip_comment(substr(line, equals + 1))
+            }
+            # HIMMEL-2462: drop an unquoted trailing comment. The marker is
+            # WHITESPACE followed by "#", per the dotenv convention — so
+            # `URL=http://x/#frag` keeps its fragment and only a real gutter
+            # comment goes. A value is quoted only when it BEGINS with a quote
+            # (skip leading whitespace, then check the first non-whitespace
+            # char) — a quote appearing later inside an unquoted value is DATA,
+            # not structure. Inside a DOUBLE-quoted value a backslash escapes
+            # the next character, so `\"` does not close the quote; inside a
+            # SINGLE-quoted value a backslash is a LITERAL character (shell/
+            # dotenv convention — a single-quoted trailing-backslash Windows
+            # path must still close on the real closing quote), so escaping
+            # applies only when the opening quote was `"`. A "#" inside quotes is
+            # data; an UNTERMINATED quote keeps the whole remainder rather
+            # than guessing where a broken value ends. Trailing whitespace is
+            # left to _load_dotenv_trim. Surrounding quotes are still NOT
+            # stripped (HIMMEL-1493 covers that).
+            #
+            # Why this matters: .env.example USED TO ship
+            # `JIRA_PROJECT_KEY=HIMMEL   # default project for jira ops`, and
+            # check-commit-msg.sh builds its ticket pattern from that key. Every
+            # machine installed from that .env.example was running the
+            # commit-msg gate with the impossible pattern
+            # `HIMMEL   # default project for jira ops-[0-9]+`.
+            function strip_comment(v,    i, c, q, n, started, esc) {
+                n = length(v)
+                q = ""
+                started = 0
+                esc = 0
+                for (i = 1; i <= n; i++) {
+                    c = substr(v, i, 1)
+                    if (!started) {
+                        if (c == " " || c == "\t") continue
+                        started = 1
+                        if (c == "\"" || c == "'"'"'") { q = c; continue }
+                    }
+                    if (q != "") {
+                        if (q == "\"" && esc) { esc = 0; continue }
+                        if (q == "\"" && c == "\\") { esc = 1; continue }
+                        if (c == q) q = ""
+                        continue
+                    }
+                    if (c == "#" && i > 1 && substr(v, i - 1, 1) ~ /[ \t]/) {
+                        return substr(v, 1, i - 1)
+                    }
+                }
+                return v
+            }
+        ' "$_ld_envfile" "${_ld_pending[@]}"
+    )
 }

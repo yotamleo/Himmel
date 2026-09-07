@@ -53,7 +53,8 @@ $ConfigDir = Join-Path $HomeDir '.claude-glm'
 # settings.json happens to change, so a previously-persisted forbidden key would
 # linger past the fix (CR). A mismatch forces exactly one re-seed.
 # v2 = strip env.ANTHROPIC_*/CLAUDE_CODE_USE_* case-insensitively.
-$SeedVersion = '2'
+# v3 = also strip CLAUDE_CODE_OAUTH_TOKEN so seeded settings cannot override lane auth.
+$SeedVersion = '3'
 
 # --- key resolution: process env first, else the launcher-repo .env ----------
 # CLAUDE_GLM_DOTENV_ROOT (test hook) pins the .env root; production falls back to
@@ -206,8 +207,11 @@ function Assert-GuardReadable {
 
 $cwd = (Get-Location).ProviderPath
 Assert-GuardReadable (Join-Path $Cfg 'phi-roots')
-if ((Test-Path -LiteralPath (Join-Path $cwd '.salus')) -or (Test-PathUnderAny -Target $cwd -ListFile (Join-Path $Cfg 'phi-roots'))) {
-  [Console]::Error.WriteLine('claude-glm: REFUSED - this workspace is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to a cloud GLM backend.')
+# HIMMEL-2173: also accept .salus-profile (template machinery dropped by the
+# salus profile installer) — a defense for deployments that predate the
+# installer shipping the real .salus guard marker alongside it.
+if ((Test-Path -LiteralPath (Join-Path $cwd '.salus')) -or (Test-Path -LiteralPath (Join-Path $cwd '.salus-profile')) -or (Test-PathUnderAny -Target $cwd -ListFile (Join-Path $Cfg 'phi-roots'))) {
+  [Console]::Error.WriteLine('claude-glm: REFUSED - this workspace is PHI-marked (.salus / .salus-profile / phi-roots). No override exists; PHI never goes to a cloud GLM backend.')
   exit 3
 }
 Assert-GuardReadable (Join-Path $Cfg 'egress-denylist')
@@ -234,7 +238,7 @@ const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 delete j.model;
 if (j.env) for (const k of Object.keys(j.env)) {
   const u=k.toUpperCase();
-  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) delete j.env[k];
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0 || u==="CLAUDE_CODE_OAUTH_TOKEN") delete j.env[k];
 }
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 '@
@@ -425,11 +429,15 @@ function Test-ConfigSeedStale {
 # .seeded sentinel guards FAILED seeds, not CONCURRENT ones). The lock is a
 # DIRECTORY sibling of $ConfigDir (NOT under it, so the seeder's own recursive
 # removes can never delete it); New-Item -ItemType Directory is atomic and throws
-# if it already exists. The dir is kept EMPTY so the release remove is atomic and
-# steal-safe. Env names + defaults + rc=4 mirror the bash twin exactly.
-$Lock            = "$ConfigDir.seed-lock"
-$SeedLockTimeout = if ($env:CLAUDE_LANE_SEED_LOCK_TIMEOUT) { [int]$env:CLAUDE_LANE_SEED_LOCK_TIMEOUT } else { 60 }   # seconds to wait
-$SeedLockStale   = if ($env:CLAUDE_LANE_SEED_LOCK_STALE) { [int]$env:CLAUDE_LANE_SEED_LOCK_STALE } else { 120 }     # seconds before a held lock is presumed abandoned
+# if it already exists. The dir carries a per-invocation owner token; release
+# checks that token before removing anything so a stale holder cannot delete a
+# replacement owner's lock. Env names + defaults + rc=4 mirror the bash twin.
+$Lock          = "$ConfigDir.seed-lock"
+$SeedLockToken = "$PID@$([Environment]::MachineName)-$([Guid]::NewGuid().ToString('N'))"
+[int]$SeedLockTimeoutParsed = 0
+$SeedLockTimeout = if ([int]::TryParse($env:CLAUDE_LANE_SEED_LOCK_TIMEOUT, [ref]$SeedLockTimeoutParsed) -and $SeedLockTimeoutParsed -gt 0) { $SeedLockTimeoutParsed } else { 60 }   # seconds to wait
+[int]$SeedLockStaleParsed = 0
+$SeedLockStale = if ([int]::TryParse($env:CLAUDE_LANE_SEED_LOCK_STALE, [ref]$SeedLockStaleParsed) -and $SeedLockStaleParsed -gt 0) { $SeedLockStaleParsed } else { 120 }     # seconds before a held lock is presumed abandoned
 
 function Test-SeedLockStale {
   # $true when $Lock exists and its mtime is older than $SeedLockStale seconds.
@@ -440,6 +448,25 @@ function Test-SeedLockStale {
   } catch { return $false }
 }
 
+function Remove-OwnedSeedLock {
+  param([bool]$Warn)
+  $ownerPath = Join-Path $Lock 'owner'
+  try {
+    $owner = (Get-Content -LiteralPath $ownerPath -Raw -ErrorAction Stop).TrimEnd([char[]]"`r`n")
+  } catch {
+    return
+  }
+  if ($owner -ne $SeedLockToken) { return }
+  try {
+    Remove-Item -LiteralPath $ownerPath -Force -ErrorAction Stop
+    [System.IO.Directory]::Delete($Lock)
+  } catch {
+    if ($Warn) {
+      [Console]::Error.WriteLine("claude-glm: WARNING - failed to release seed lock $Lock (not empty or busy); it self-heals via stale steal after ${SeedLockStale}s but concurrent launches wait/time out until then.")
+    }
+  }
+}
+
 function Invoke-SeedWithLock {
   # Acquire (New-Item dir), poll on contention, steal a stale holder, or time out (exit 4).
   $ticks = 0
@@ -448,6 +475,13 @@ function Invoke-SeedWithLock {
   while ($true) {
     try {
       New-Item -ItemType Directory -Path $Lock -ErrorAction Stop | Out-Null
+      try {
+        Set-Content -LiteralPath (Join-Path $Lock 'owner') -Value $SeedLockToken -NoNewline -Encoding utf8NoBOM -ErrorAction Stop
+      } catch {
+        Remove-Item -LiteralPath $Lock -Recurse -Force -ErrorAction SilentlyContinue
+        [Console]::Error.WriteLine("claude-glm: FAILED to record seed-lock ownership ($($_.Exception.Message)). Refusing to seed without an owned lock.")
+        exit 4
+      }
       break   # acquired
     } catch {
       $lastAcquireErr = $_.Exception.Message
@@ -457,17 +491,16 @@ function Invoke-SeedWithLock {
       # by a queued loser (a fresh lock is never stale). A plain remove steal is a
       # TOCTOU double-acquire: two waiters both judge the dead lock stale, one
       # removes+re-acquires, the other's queued remove then deletes the winner's
-      # fresh EMPTY lock, both seed concurrently -- the torn config this lock
-      # exists to prevent. The renamed dir is removed best-effort with the
-      # empty-only [IO.Directory]::Delete (rmdir parity; no -Recurse vaporizing);
-      # if it was non-empty (invariant violation) the orphan is harmless -- it is
-      # not the lock path. Accepted residual: a LIVE seeder holding the lock past
+      # fresh lock, both seed concurrently -- the torn config this lock exists to
+      # prevent. The renamed dir and its old owner token are removed before the
+      # winner retries acquisition. If cleanup fails, the orphan is harmless -- it
+      # is not the lock path. Accepted residual: a LIVE seeder holding the lock past
       # $SeedLockStale gets stolen -- but seeds are sub-second copies, so a hold
       # that long means a dead/hung holder in practice.
       if (Test-SeedLockStale) {
         try {
           Rename-Item -LiteralPath $Lock -NewName ((Split-Path -Leaf $Lock) + ".stale.$PID") -ErrorAction Stop
-          try { [System.IO.Directory]::Delete("$Lock.stale.$PID") } catch { }   # orphaned .stale dir is harmless (not the lock path)
+          Remove-Item -LiteralPath "$Lock.stale.$PID" -Recurse -Force -ErrorAction SilentlyContinue
           continue
         } catch {
           # not the steal winner -- fall through to poll
@@ -499,11 +532,10 @@ function Invoke-SeedWithLock {
       Copy-SeedConfig
     }
   } finally {
-    # Empty-only release ([IO.Directory]::Delete = rmdir parity, never -Recurse:
-    # recursing would silently vaporize evidence of an invariant violation). A
-    # failure warns (worth surfacing) but stays NON-FATAL: the seed itself succeeded.
-    try { [System.IO.Directory]::Delete($Lock) }
-    catch { [Console]::Error.WriteLine("claude-glm: WARNING - failed to release seed lock $Lock (not empty or busy); it self-heals via stale steal after ${SeedLockStale}s but concurrent launches wait/time out until then.") }
+    # Release only a lock whose owner token is still ours. A stolen lock belongs to
+    # its replacement owner and is left untouched without warning. Failure to remove
+    # our own lock warns but stays NON-FATAL: the seed itself succeeded.
+    Remove-OwnedSeedLock $true
   }
 }
 

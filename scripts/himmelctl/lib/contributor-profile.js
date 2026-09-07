@@ -168,7 +168,11 @@ function reportLines(report, opts) {
     const guidance = laneGuidance(row);
     if (guidance) lines.push(guidance);
   }
-  lines.push(...adopterProfileLib.hardeningPointerLines());
+  // HIMMEL-2308: alwaysOn is asked universally now (the dev overlay is an
+  // orthogonal layer on top of a profile install, not its own flow) — the
+  // universal epilogue (bin.js's printAdopterEpilogue, printed alongside this
+  // report on every run) already reports the honest hardening state, so this
+  // report no longer duplicates/shadows it with a hardcoded "not asked" line.
   lines.push(dryRun
     ? `  - would run the idempotent contributor setup primitive via ${derived}; NOTHING above was mutated`
     : '  - setup primitive completed; post-install probes above are authoritative');

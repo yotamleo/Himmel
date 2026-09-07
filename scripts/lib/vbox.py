@@ -15,14 +15,30 @@ Used by scripts/machine-setup/windows-vm-setup.py and (later) the full SDK.
 """
 
 import os
+import shutil
 import socket
 import subprocess
 import time
 
-# Standard install path on Windows; overridable for non-default installs / CI.
-VBOXMANAGE = os.environ.get(
-    "VBOXMANAGE_PATH", r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
-)
+# Standard install path on Windows, used only as a last-resort fallback.
+_WINDOWS_DEFAULT = r"C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
+
+
+def _resolve_vboxmanage():
+    """Resolve the VBoxManage binary to invoke.
+
+    An explicit VBOXMANAGE_PATH env override always wins. Otherwise resolve
+    via PATH (covers Linux/macOS installs, where VBoxManage is a normal PATH
+    binary), falling back to the standard Windows install path when `which`
+    finds nothing there.
+    """
+    override = os.environ.get("VBOXMANAGE_PATH")
+    if override:
+        return override
+    return shutil.which("VBoxManage") or _WINDOWS_DEFAULT
+
+
+VBOXMANAGE = _resolve_vboxmanage()
 
 
 class VBoxError(RuntimeError):

@@ -1,0 +1,37 @@
+{
+  "$comment": "HIMMEL-2302: per-cadence wizard registry — one row per cadence UNIT (script-level granularity) the install wizard can offer to arm. bin.js's askCadences()/CADENCE_REGISTRY enumerate from this file; the menu is never a hardcoded list in bin.js. `script` is a repo-root-relative path to a cmd_arm()/cmd_status()/cmd_disarm() cadence script (test-wizard-cadence-registry.sh's staleness lint asserts both facts for every row). `requires`: 'vault' rows are only offered when vault!=='none'; 'lane:codex' rows are only offered when 'codex' is in the final lanes selection (filtered out otherwise, so the answer stays genuinely undefined — never fabricated). `recommended` is a static per-row signal (today: only pipeline) — the wizard's actual per-run pre-selected default comes from PROFILE_PRESETS[profile].cadenceIds in bin.js, not from this flag. scripts/graphify/ggs-cadence.sh is DELIBERATELY EXCLUDED from this registry — it is operator-personal hardware (a Spider Farmer GGS BLE controller cadence), not a general installer surface.",
+  "cadences": [
+    {
+      "id": "pipeline",
+      "label": "luna pipeline",
+      "script": "scripts/luna/pipeline-cadence.sh",
+      "description": "daily fetch-health/harvest/synthesize + weekly health runs against the vault (HIMMEL-255/357/798/1449)",
+      "requires": "vault",
+      "recommended": true
+    },
+    {
+      "id": "qmd",
+      "label": "qmd reindex",
+      "script": "scripts/luna/qmd-cadence.sh",
+      "description": "daily qmd update+embed+completeness assert over every configured collection (HIMMEL-568)",
+      "requires": "vault",
+      "recommended": false
+    },
+    {
+      "id": "graphmap",
+      "label": "graphify graph refresh",
+      "script": "scripts/luna/graphmap-cadence.sh",
+      "description": "hourly free structural (AST) refresh + weekly semantic refresh of the luna/himmel graphify graphs (HIMMEL-829)",
+      "requires": "vault",
+      "recommended": false
+    },
+    {
+      "id": "codex-sweep",
+      "label": "codex orphan sweep",
+      "script": "scripts/cleanup/codex-sweep-cadence.sh",
+      "description": "recurring sweep of orphaned codex broker/MCP-fleet processes (HIMMEL-892)",
+      "requires": "lane:codex",
+      "recommended": false
+    }
+  ]
+}

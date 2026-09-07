@@ -83,6 +83,32 @@ ROWS="$TMP_ROOT/rows.tsv"
 hroot="$TMP_ROOT/handover-root"
 mkdir -p "$hroot"
 
+# Hermeticity (HIMMEL-2070): every case below invokes $SCRIPT, and morning-report
+# now always tries to append a "## Unlanded work" section. Without a seam that
+# would shell out to the LIVE scripts/unlanded-work.sh from every test here —
+# slow (a full scan takes minutes on this repo) and dependent on this checkout's
+# real branches. Point every unrelated case at an empty pre-computed TSV;
+# dedicated Unlanded-work tests below override UNLANDED_TSV per-case.
+UNLANDED_EMPTY="$TMP_ROOT/unlanded-empty.tsv"
+: > "$UNLANDED_EMPTY"
+export UNLANDED_TSV="$UNLANDED_EMPTY"
+
+# Same hermeticity problem for "## Changelog freshness" (HIMMEL-2250): without
+# a seam every case below would shell out to the LIVE scripts/gen-changelog.sh
+# --check against THIS checkout's real, full git history — slow (repeated
+# once per test case) and dependent on whether CHANGELOG.md happens to be
+# current when this suite runs. Point every unrelated case at a fast stub
+# that always reports current; the dedicated changelog-freshness test below
+# overrides GEN_CHANGELOG_SCRIPT per-case.
+CHANGELOG_CHECK_OK="$TMP_ROOT/fake-gen-changelog-ok.sh"
+cat > "$CHANGELOG_CHECK_OK" <<'FAKEEOF'
+#!/usr/bin/env bash
+echo "OK gen-changelog: CHANGELOG.md is current"
+exit 0
+FAKEEOF
+chmod +x "$CHANGELOG_CHECK_OK"
+export GEN_CHANGELOG_SCRIPT="$CHANGELOG_CHECK_OK"
+
 # Test 1+2: report shape + decisions-first ordering --------------------
 
 echo "TEST: basic report shape + decisions-first ordering"
@@ -364,6 +390,152 @@ printf -- '- Action with a | pipe and **bold**.\n' > "$acts"
 printf '%s\n' $'HIMMEL-382\tfeat/HIMMEL-382-z\thttps://example.com/pr/14\tdone\tShipped' > "$ROWS"
 report=$(HANDOVER_DIR="$hroot" bash "$SCRIPT" --rows "$ROWS" --actions "$acts" --dry-run)
 assert_contains "actions body verbatim (pipe un-escaped)" "Action with a | pipe and **bold**." "$report"
+
+# Test 23: UNLANDED_TSV seam — no rows -> "None" placeholder -------------
+
+echo "TEST: no UNLANDED_TSV rows -> Unlanded work section shows None"
+printf '%s\n' $'HIMMEL-390\tfeat/HIMMEL-390-a\thttps://example.com/pr/15\tdone\tShipped' > "$ROWS"
+report=$(bash "$SCRIPT" --rows "$ROWS" --dry-run)
+assert_contains "unlanded heading present" "## Unlanded work" "$report"
+assert_contains "unlanded none placeholder" "_None — no aged unlanded branch found._" "$report"
+
+# Test 24: UNLANDED_TSV seam — an AGED UNLANDED-LIVE row is listed -------
+
+echo "TEST: UNLANDED_TSV with an AGED UNLANDED-LIVE row -> listed in the section"
+u="$TMP_ROOT/unlanded-aged.tsv"
+printf 'UNLANDED-LIVE\tfeat/himmel-9001-widget\t3\t72\t1\tno PR found; delta applies cleanly\t\n' > "$u"
+printf 'LANDED-ELSEWHERE\tglm/himmel-9002-old\t1\t500\t0\tcontent already on main\t\n' >> "$u"
+report=$(UNLANDED_TSV="$u" bash "$SCRIPT" --rows "$ROWS" --dry-run)
+assert_contains "aged row listed"     "feat/himmel-9001-widget"          "$report"
+assert_contains "aged row evidence"   "no PR found; delta applies cleanly" "$report"
+assert_contains "aged row ahead/age"  "+3 commits, age 72h"              "$report"
+if printf '%s\n' "$report" | grep -qF "himmel-9002-old"; then
+    fail "non-aged/other-class row leaked into Unlanded work section"
+else
+    pass "only AGED UNLANDED-LIVE rows appear in the section"
+fi
+
+# Test 25: --no-unlanded suppresses the section entirely ------------------
+
+echo "TEST: --no-unlanded suppresses the Unlanded work section"
+report=$(UNLANDED_TSV="$u" bash "$SCRIPT" --rows "$ROWS" --dry-run --no-unlanded)
+if printf '%s\n' "$report" | grep -qF "## Unlanded work"; then
+    fail "--no-unlanded did not suppress the section"
+else
+    pass "--no-unlanded suppresses the Unlanded work section"
+fi
+
+# Test 26: detector unavailable -> explicit "unavailable" line, never a false "None"
+
+echo "TEST: UNLANDED_TSV points at a missing file -> explicit unavailable line"
+report=$(UNLANDED_TSV="$TMP_ROOT/does-not-exist.tsv" bash "$SCRIPT" --rows "$ROWS" --dry-run)
+assert_contains "unavailable line shown" "_unlanded-work scan unavailable._" "$report"
+if printf '%s\n' "$report" | grep -qF "_None — no aged unlanded branch found._"; then
+    fail "missing UNLANDED_TSV silently rendered as None instead of unavailable"
+else
+    pass "missing UNLANDED_TSV never silently renders as None"
+fi
+
+# Test 27: report generation succeeds when changelog --check returns 1 (HIMMEL-2250)
+# Guards the `|| changelog_rc=$?` capture in morning-report.sh: a stale
+# changelog is the EXPECTED common case, not a script error, so it must
+# never abort this report under `set -e`.
+
+echo "TEST: report generation succeeds when changelog --check returns 1"
+fake_changelog="$TMP_ROOT/fake-gen-changelog-stale.sh"
+cat > "$fake_changelog" <<'FAKEEOF'
+#!/usr/bin/env bash
+echo "STALE gen-changelog: CHANGELOG.md is 5 entr(ies) behind - run scripts/gen-changelog.sh"
+exit 1
+FAKEEOF
+chmod +x "$fake_changelog"
+printf '%s\n' $'HIMMEL-391\tfeat/HIMMEL-391-a\thttps://example.com/pr/16\tdone\tShipped' > "$ROWS"
+rc=0
+report=$(HANDOVER_DIR="$hroot" GEN_CHANGELOG_SCRIPT="$fake_changelog" bash "$SCRIPT" --rows "$ROWS" --dry-run 2>&1) || rc=$?
+case "$rc" in
+    0) pass "report generation succeeds (rc=0) with a stale changelog" ;;
+    *) fail "expected rc=0, got $rc" "$report" ;;
+esac
+assert_contains "changelog freshness heading" "## Changelog freshness" "$report"
+assert_contains "stale changelog row"          "CHANGELOG.md is 5 entries behind" "$report"
+
+# Test 28: --check rc=1 with NO digits in its output -> verbatim fallback,
+# report still generates in full (HIMMEL-2250 regression: an earlier version
+# of the digit-parse `n="$(... | grep ... | head -1)"` was unguarded, and
+# under `set -o pipefail` a no-match `grep` fails the whole substitution —
+# `set -e` then killed the report on exactly this "--check line shape
+# changed" case the verbatim fallback exists to survive).
+
+echo "TEST: changelog --check rc=1 with no digits -> verbatim fallback, report still generates"
+fake_changelog_nodigits="$TMP_ROOT/fake-gen-changelog-nodigits.sh"
+cat > "$fake_changelog_nodigits" <<'FAKEEOF'
+#!/usr/bin/env bash
+echo "STALE: unknown"
+exit 1
+FAKEEOF
+chmod +x "$fake_changelog_nodigits"
+rc=0
+report=$(HANDOVER_DIR="$hroot" GEN_CHANGELOG_SCRIPT="$fake_changelog_nodigits" bash "$SCRIPT" --rows "$ROWS" --dry-run 2>&1) || rc=$?
+case "$rc" in
+    0) pass "report generation succeeds (rc=0) with a no-digits stale line" ;;
+    *) fail "expected rc=0, got $rc" "$report" ;;
+esac
+assert_contains "verbatim fallback row" "STALE: unknown" "$report"
+
+# Test 29: changelog freshness count is parsed from the STRUCTURED line only,
+# not the first digits anywhere in the merged stdout+stderr capture (HIMMEL-2250
+# CR finding 3: a stray digit earlier in the stream must never be mistaken for
+# the entry count).
+
+echo "TEST: changelog freshness count ignores stray digits elsewhere in the capture"
+fake_changelog_noisy="$TMP_ROOT/fake-gen-changelog-noisy.sh"
+cat > "$fake_changelog_noisy" <<'FAKEEOF'
+#!/usr/bin/env bash
+echo "warning: could not read config from 42 sources" >&2
+echo "STALE gen-changelog: CHANGELOG.md is 7 entr(ies) behind — run scripts/gen-changelog.sh"
+exit 1
+FAKEEOF
+chmod +x "$fake_changelog_noisy"
+printf '%s\n' $'HIMMEL-392\tfeat/HIMMEL-392-a\thttps://example.com/pr/17\tdone\tShipped' > "$ROWS"
+report=$(HANDOVER_DIR="$hroot" GEN_CHANGELOG_SCRIPT="$fake_changelog_noisy" bash "$SCRIPT" --rows "$ROWS" --dry-run 2>&1)
+assert_contains "count taken from the structured line (7)" "CHANGELOG.md is 7 entries behind" "$report"
+leaked=$(printf '%s\n' "$report" | grep -F "42 entries behind") || leaked=""
+if [ -n "$leaked" ]; then
+    fail "count leaked from an unrelated stderr digit (42) instead of the structured line (7)"
+else
+    pass "count not polluted by an unrelated stderr digit"
+fi
+
+# Test 30: a RELATIVE GEN_CHANGELOG_SCRIPT actually RUNS, not just "doesn't
+# 127" (HIMMEL-2364). morning-report.sh's `-f "$changelog_script"` existence
+# check runs in the CALLER's cwd, but the execution line `cd "$SCRIPT_DIR/.."
+# && bash "$changelog_script"` runs after cd'ing away from it — so a relative
+# override passes the existence check and then fails to exec. bash's own
+# "command not found" for that failed exec is rc=127, which COLLIDES with
+# this script's own file-missing branch (also rc=127): a changelog script
+# that EXISTS but was named relatively renders the identical "changelog
+# freshness check unavailable." row as a genuinely missing one. Asserting
+# rc != 127 would not catch this (the report always exits 0 under --dry-run
+# regardless of changelog_rc) — only asserting the RENDERED row reflects a
+# real, successful run proves the script was actually invoked.
+
+echo "TEST: relative GEN_CHANGELOG_SCRIPT is actually executed, not just found"
+caller_dir="$TMP_ROOT/caller"
+mkdir -p "$caller_dir"
+cat > "$caller_dir/fake-changelog.sh" <<'FAKEEOF'
+#!/usr/bin/env bash
+echo "OK gen-changelog: CHANGELOG.md is current"
+exit 0
+FAKEEOF
+chmod +x "$caller_dir/fake-changelog.sh"
+printf '%s\n' $'HIMMEL-393\tfeat/HIMMEL-393-a\thttps://example.com/pr/18\tdone\tShipped' > "$ROWS"
+report=$(cd "$caller_dir" && HANDOVER_DIR="$hroot" GEN_CHANGELOG_SCRIPT="fake-changelog.sh" bash "$SCRIPT" --rows "$ROWS" --dry-run 2>&1)
+if grepq "$report" -F "_changelog freshness check unavailable._"; then
+    fail "relative GEN_CHANGELOG_SCRIPT rendered as unavailable — the -f check and the exec disagreed on the path" "$report"
+else
+    pass "relative GEN_CHANGELOG_SCRIPT does not render as unavailable"
+fi
+assert_contains "changelog freshness reflects a real run" "_Current — CHANGELOG.md matches git history._" "$report"
 
 # Summary --------------------------------------------------------------
 

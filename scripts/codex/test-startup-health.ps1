@@ -12,6 +12,12 @@
 param()
 $ErrorActionPreference = 'Stop'
 
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 $DET  = Join-Path $PSScriptRoot 'startup-health.ps1'
 $TMP  = Join-Path ([System.IO.Path]::GetTempPath()) ("sh-test-" + [guid]::NewGuid().ToString('N').Substring(0,8))
 $NEW  = '019f3c01-afbf-7ef3-a689-c5be6d9afde0'

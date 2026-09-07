@@ -12,6 +12,7 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || fail "$wizard not found"
 command -v node >/dev/null 2>&1 || fail "node required"
@@ -24,13 +25,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d -t himmelctl-path-shim.XXXXXX)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 bash_bin=$(winpath "$(command -v bash)")
 
@@ -52,6 +46,8 @@ STUB
 run_update() {
   local _fixture="$1" _bin="$2" _platform="$3" _path="$4"
   PATH="$_path" HIMMELCTL_BASH="$bash_bin" \
+    HIMMELCTL_CACHE_DIR="$(winpath "$_fixture.himmelctl-cache")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_fixture.himmelctl-cache/luna-config.json")" \
     HIMMELCTL_REPO_ROOT="$(winpath "$_fixture")" \
     HIMMELCTL_BIN_DIR="$(winpath "$_bin")" \
     HIMMELCTL_SHIM_PLATFORM="$_platform" \
@@ -103,7 +99,7 @@ build_update_fixture "$fixtureC"
 printf 'profile-sentinel\n' > "$homeC/.profile"
 printf 'bashrc-sentinel\n' > "$homeC/.bashrc"
 before_path="$PATH"
-out=$(HOME="$(winpath "$homeC")" run_update "$fixtureC" "$binC" linux "$PATH")
+out=$(HOME="$(winpath "$homeC")" USERPROFILE="$(winpath "$homeC")" run_update "$fixtureC" "$binC" linux "$PATH")
 [ "$PATH" = "$before_path" ] || fail "caseC: parent PATH changed"
 [ "$(cat "$homeC/.profile")" = 'profile-sentinel' ] || fail "caseC: .profile was mutated"
 [ "$(cat "$homeC/.bashrc")" = 'bashrc-sentinel' ] || fail "caseC: .bashrc was mutated"
@@ -135,6 +131,8 @@ binD="$work/caseD-bin"
 build_update_fixture "$fixtureD"
 set +e
 out=$(PATH="$PATH" HIMMELCTL_BASH="$bash_bin" \
+  HIMMELCTL_CACHE_DIR="$(winpath "$fixtureD.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$fixtureD.himmelctl-cache/luna-config.json")" \
   HIMMELCTL_REPO_ROOT="$(winpath "$fixtureD")" \
   HIMMELCTL_BIN_DIR="$(winpath "$binD")" HIMMELCTL_SHIM_PLATFORM=linux \
   "$node_bin" "$wizard" update --dry-run </dev/null 2>&1); rc=$?
@@ -198,6 +196,12 @@ cat > "$fixtureF/scripts/himmelctl/bin.js" <<'STUB'
 const fs = require('fs');
 fs.appendFileSync(process.env.SHIM_CALL_LOG, `install:${process.argv.slice(2).join('|')}\n`);
 STUB
+# HIMMEL-2308: ONE execution engine now — deriveCommand() always targets
+# adopt.sh, with the dev overlay's setup.sh/setup.ps1 as an ADDITIONAL step
+# on top. A silent no-op (never touching INSTALL_CALL_LOG) so the assertion
+# below still sees exactly the overlay's own 'setup' line.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixtureF/scripts/adopt.sh"
+chmod +x "$fixtureF/scripts/adopt.sh"
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*)
     cat > "$fixtureF/scripts/setup.ps1" <<'STUB'
@@ -229,9 +233,9 @@ JSON
 for tool in bash git jq python3 npm; do link_hermetic_tool "$tool" "$stubF"; done
 install_path="$(winpath "$binF"):$(winpath "$stubF"):$PATH"
 set +e
-out=$(PATH="$install_path" HOME="$(winpath "$homeF")" \
+out=$(PATH="$install_path" HOME="$(winpath "$homeF")" USERPROFILE="$(winpath "$homeF")" \
   HIMMELCTL_BASH="$bash_bin" HIMMELCTL_INTERACTIVE=0 \
-  HIMMELCTL_CACHE_DIR="$(winpath "$work/caseF-cache")" \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/caseF-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseF-cache")-luna-config.json" \
   HIMMELCTL_REPO_ROOT="$(winpath "$fixtureF")" \
   HIMMELCTL_BIN_DIR="$(winpath "$binF")" HIMMELCTL_SHIM_PLATFORM=linux \
   INSTALL_CALL_LOG="$(winpath "$work/install-calls.log")" \

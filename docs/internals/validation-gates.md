@@ -138,7 +138,7 @@ only 3 and 4 reach Claude-only; 1 and 2 BILL:
    `registry <path> missing/invalid/empty — anchor-only (codex)`.
 2. **Registry present and valid, but no row matches the tier filter** (exit 8)
    ⇒ **paid** codex anchor-only, via the same fallback. This is the shipped
-   default today: `critics.json` holds exactly one row (`codex`/`gpt-5.5`, tier
+   default today: `critics.json` holds exactly one row (`codex`/`gpt-5.6-sol`, tier
    `paid`) and no free anchor, so an unset `CR_PROFILE` (tier filter `free`)
    matches nothing and lands here.
    The free lane was REMOVED DELIBERATELY (operator, HIMMEL-1101): the free
@@ -152,11 +152,29 @@ only 3 and 4 reach Claude-only; 1 and 2 BILL:
    critic (paid codex) returned rc=1 for a whole run once its weekly bank was
    exhausted — with no free row registered, that is 0/1 panel critics.
    **This does NOT by itself block the CR gate.** `clear-cr-marker.sh` counts
-   ANY ledger `avail … status=ok` as a responder (`:176`), and the CodeRabbit
-   CLI pass (`/pr-check` step 3.2) records its own — so the gate can still
-   certify on CodeRabbit while every panel critic is down, and did. What a
-   single-critic roster costs is the panel's own cross-model redundancy, not
-   the gate's ability to certify. Accepted knowingly (HIMMEL-1101).
+   ANY ledger `avail … status=ok` as a responder (`:176`), so the interactive
+   lane's own Claude floor review can still certify the HEAD while every panel
+   critic is down. What a single-critic roster costs is the panel's own
+   cross-model redundancy, not the gate's ability to certify. Accepted
+   knowingly (HIMMEL-1101).
+
+   **Narrowed by HIMMEL-2704.** This paragraph used to name a second escape —
+   the non-panel CodeRabbit CLI pass in `/pr-check` step 3.2, which recorded an
+   availability row of its own. That pass is deleted (CodeRabbit is the App
+   only), so the Claude floor is the sole remaining one. Under
+   `CR_REQUIRE_CROSS_MODEL=1` a panel-wide outage is much closer to closed:
+   gate 3b requires a non-Claude `avail … ok` at the SHA, and exactly two
+   sources can still supply one — the panel itself, and the codex ADVERSARIAL
+   pass (`codex-adv-harvest.sh`, step 3.1), which records
+   `avail --model codex-adv` independently of the panel run. A Claude-only
+   floor keeps the marker closed (exit 14) until one of them responds.
+
+   The caveat that survives: both of those rows come from the SAME provider.
+   `codex-adv` is not cross-PROVIDER redundancy for the panel's `codex` row —
+   an OpenAI-side outage or an exhausted bank takes both out together, and then
+   nothing can satisfy gate 3b. That single point of failure is what
+   HIMMEL-1904 re-introduced when the `glm` row was retired, and it is the
+   reason HIMMEL-2711 is filed.
 4. **The panel cannot be run at all** — e.g. the diff could not be produced
    (`pr-check.md:99`, "critic panel unavailable — claude-only review (git diff
    failed …)") ⇒ Claude-only fail-open. `CR_PROFILE=none` is the explicit
@@ -293,8 +311,12 @@ no rewrite.
 
 ## Carry-forwards
 
-- **→ WS8 (Mission Control):** gate verdicts + trust-tier state are first-class
-  C&C surfaces (what's quarantined, what's pending verdict).
+- **→ WS8 (Mission Control):** the Phase 1 read-only console
+  (`scripts/fleet-control/`, see `docs/jarvis-subsystems.md`) ships fleet/
+  escalation/quota surfaces but not gate verdicts or trust-tier state; making
+  those (what's quarantined, what's pending verdict) first-class C&C surfaces
+  is still forward work, alongside the dispatch/adjudication controls Phase 2
+  will add.
 - **→ WS10 (Jarvis):** the §6 emission points are the self-improvement loop's
   input corpus.
 - **→ WS4:** when the artifact-critic (D1) ships, minerva Stage-2/4 chains gain

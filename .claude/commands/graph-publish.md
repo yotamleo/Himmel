@@ -1,5 +1,5 @@
 ---
-description: Publish a freshly-refreshed graphify graph — commits + opens/refreshes a PR against the tracked graphify-out/ artifacts (HIMMEL-1129).
+description: Publish a freshly-refreshed graphify graph — commit and open/refresh a PR against tracked graphify-out/ artifacts.
 argument-hint: [--dry-run] [--base <branch>] [--no-fetch]
 ---
 
@@ -12,6 +12,13 @@ working tree has uncommitted changes outside the two graph paths.
 Run this AFTER regenerating the graph locally (e.g. via
 `scripts/graphify/refresh-graph-map.sh`), from the repo whose graph you
 want to ship. Does not run on any cadence/hook — lean-invoke only.
+
+**The PR it opens is machine-generated and will never get a CodeRabbit App
+review** (HIMMEL-2278). Do not post a review-trigger comment on it and do not
+park on the CR gate — `check-ci.sh` classifies the PR from its diff shape (every
+changed path is a tracked `graphify-out/` artifact) and treats the absent App review as
+expected. Checks-green and unresolved-thread gating still apply, so a clean
+`check-ci.sh` run is still the merge bar.
 
 Run:
 

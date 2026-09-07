@@ -24,7 +24,11 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check-npm-licenses.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT="$SCRIPT_DIR/check-npm-licenses.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
 
 FAILED=0
 
@@ -45,9 +49,9 @@ assert_eq() {
 # and a TRACKED-but-nested node_modules package.json (defensive-exclude case).
 make_repo() {
     local dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b main
         git config user.email t@t
         git config user.name t
@@ -75,11 +79,11 @@ make_repo() {
         echo '{"name":"forced"}' > vendor/node_modules/forced/package.json
         git add -f vendor/node_modules/forced/package.json
         git -c commit.gpgsign=false commit -q -m "add nested node_modules pkg"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
-REPO=$(make_repo)
+REPO=$(make_repo) || exit 1
 trap 'rm -rf "$REPO"' EXIT
 
 EXPECTED_ALL=$(printf '%s\n' \
@@ -93,7 +97,7 @@ EXPECTED_ALL=$(printf '%s\n' \
 # Case 1: NEW enumeration (the `git ls-files` enumeration line in
 # check-npm-licenses.sh) finds all 6 committed packages and excludes both
 # node_modules entries.
-new_out=$( cd "$REPO" && git ls-files '*package.json' ':(exclude)*/node_modules/*' | sort )
+new_out=$( cd "$REPO" && git ls-files '*package.json' ':(exclude)*/node_modules/*' ':(exclude)scripts/lanes/bench/fixtures/*' | sort )
 assert_eq "new git-ls-files enumeration finds all 6 committed packages" "$EXPECTED_ALL" "$new_out"
 
 # Case 2: the 4 formerly-missed packages ARE in the new output (explicit).
@@ -126,9 +130,9 @@ fi
 # SKIPPED by the gate, so a repo whose only package is bun-managed passes (rc 0)
 # instead of erroring "No packages found in this path". Runs the REAL script
 # against a throwaway repo; the skip happens before any npm/npx call (no network).
-BUN_REPO=$(mktemp -d)
+BUN_REPO=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$BUN_REPO" || exit 1
+    fixture_enter_git_init_dir "$BUN_REPO" || exit 1
     git init -q -b main
     git config user.email t@t
     git config user.name t
@@ -137,7 +141,7 @@ BUN_REPO=$(mktemp -d)
     : > scripts/luna-vitals/bun.lock   # bun lockfile, no package-lock.json
     git add -A
     git -c commit.gpgsign=false commit -q -m "bun-only package"
-)
+) || exit 1
 bun_out=$( cd "$BUN_REPO" && bash "$SCRIPT" 2>&1 ); bun_rc=$?
 if [ "$bun_rc" -eq 0 ] && grepq "$bun_out" -i "bun-managed"; then
     echo "PASS bun-managed package skipped — gate passes (rc 0), no 'No packages found'"

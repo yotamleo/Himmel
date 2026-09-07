@@ -1,0 +1,51 @@
+{
+  "user": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "mattpocock-skills@claude-plugins-official",
+      "plannotator-effective-html@effective-html",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "superpowers@claude-plugins-official"
+    ],
+    "contextBudget": 50000
+  },
+  "lane-impl": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  },
+  "lane-review": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  },
+  "lane-content": {
+    "enabled": [
+      "claude-obsidian@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "obsidian-triage@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  },
+  "bare": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  }
+}

@@ -82,7 +82,8 @@ const cases = [
   ["https://youtu.be/dQw4w9WgXcQ?t=10",              "https://youtube.com/watch?v=dQw4w9WgXcQ"],
   ["https://www.youtube.com/watch?v=ABCD&feature=x", "https://youtube.com/watch?v=ABCD"],
   ["https://github.com/Foo/Bar/tree/main/sub",       "https://github.com/foo/bar"],
-  ["https://github.com/Foo/Bar/blob/main/x.md",      "https://github.com/foo/bar"],
+  // /blob/ is a distinct FILE, not a view of the repo root (HIMMEL-1735).
+  ["https://github.com/Foo/Bar/blob/main/x.md",      "https://github.com/foo/bar/blob/main/x.md"],
   ["https://github.com/Foo/Bar/",                    "https://github.com/foo/bar"],
   ["https://medium.com/path?source=tw",              "https://medium.com/path"],
   ["https://example.com/x?utm_source=tw&keep=1",     "https://example.com/x?keep=1"],

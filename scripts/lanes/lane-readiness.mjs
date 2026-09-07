@@ -82,6 +82,21 @@ export function laneStates(lanesJson, ledgerText) {
     });
 }
 
+// Remedy hints (HIMMEL-2782): a lane-id -> one-line fix, printed to STDERR
+// only. Never stdout: the guard (guard-implementor-dispatch.sh's lane_ready)
+// parses stdout with `while IFS=' ' read -r lid lstate` and then matches
+// `case "$state" in down)` verbatim - appending text to that line would
+// corrupt the match and silently fail-open a down lane to ready, defeating
+// the safety direction `down` exists for. A lane absent from this table gets
+// no hint; `down` alone on stdout still communicates SKIP correctly.
+export const REMEDY_HINTS = {
+  claudex: 'bash scripts/setup/cli-proxy-lane.sh --status',
+};
+
+export function remedyFor(laneId) {
+  return REMEDY_HINTS[laneId];
+}
+
 function main() {
   const lanesPath = process.env.LANES_REGISTRY || join(SCRIPT_DIR, 'lanes.json');
   let lanesJson;
@@ -103,6 +118,10 @@ function main() {
   }
   for (const { lane, state } of laneStates(lanesJson, ledgerText)) {
     process.stdout.write(`${lane} ${state}\n`);
+    if (state === 'down') {
+      const hint = remedyFor(lane);
+      if (hint) process.stderr.write(`lane-readiness: ${lane} is down — remedy: ${hint}\n`);
+    }
   }
 }
 

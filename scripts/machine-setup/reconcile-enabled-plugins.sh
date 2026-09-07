@@ -205,8 +205,26 @@ fi
 # downgrade a restrictive settings file (e.g. 0600) to the umask default. cp -p
 # is best-effort — a filesystem without perm bits (Windows) falls back to plain
 # cp, harmless there.
-TMP="$SETTINGS.reconcile.tmp"
-cp -p "$SETTINGS" "$TMP" 2>/dev/null || cp "$SETTINGS" "$TMP"
+#
+# HIMMEL-2324: mktemp, not the predictable "$SETTINGS.reconcile.tmp" — a fixed
+# name lets anyone with write access to this directory pre-plant a symlink
+# there before we get here, so the jq redirect (or the mv) writes through it.
+# mktemp creates the file itself (O_EXCL, unpredictable suffix, same directory
+# so the mv stays atomic) — there's nothing to plant onto. A `-L` exists-check
+# would still be TOCTOU-racy between check and write.
+TMP="$(mktemp "$SETTINGS.reconcile.XXXXXX")" || {
+  echo "reconcile-enabled-plugins: mktemp failed — $SETTINGS left unchanged" >&2
+  exit 1
+}
+cp -p "$SETTINGS" "$TMP" 2>/dev/null || cp "$SETTINGS" "$TMP" || {
+  # CR round 3 (codex-2): if BOTH cp attempts fail, this bare statement's
+  # failure trips `set -e` and exits the script right here — leaving the
+  # already-mktemp'd $TMP orphaned in $SETTINGS's directory. Clean it up
+  # before exiting, mirroring the jq-failure branch below.
+  rm -f "$TMP"
+  echo "reconcile-enabled-plugins: cp failed — $SETTINGS left unchanged" >&2
+  exit 1
+}
 # if/else (not `&& mv`): a bare `jq ... && mv` trips set -e on a jq failure and
 # aborts before cleanup; mirror install-plugins.sh's tolerant temp+move.
 if jq --argjson ep "$NEW_EP" '.enabledPlugins = $ep' "$SETTINGS" > "$TMP"; then

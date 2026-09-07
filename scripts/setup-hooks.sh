@@ -128,6 +128,13 @@ if ! bash "$SCRIPT_DIR/hooks/install-cr-pre-push-legacy.sh"; then
   echo "  WARNING: CR pre-push legacy hook not installed (see above). Setup continues; the push-time self-heal retries this install on first push." >&2
 fi
 $PYTHON -m pre_commit install --hook-type commit-msg
+# Non-fatal (HIMMEL-2095), same pattern as the CR pre-push legacy install
+# above: `reference-transaction` is not a `pre-commit install --hook-type`
+# supported type, so it needs its own installer. A failure here must not
+# abort the rest of this refresh.
+if ! bash "$SCRIPT_DIR/hooks/install-main-ref-transaction.sh"; then
+  echo "  WARNING: main-branch reference-transaction guard not installed (see above). Setup continues." >&2
+fi
 
 echo "==> Done. Run '$PYTHON -m pre_commit run --all-files' to validate all hooks now."
 

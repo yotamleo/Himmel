@@ -1,5 +1,5 @@
 ---
-description: Auto-commit *.md changes in the handover root (Mode B / external HANDOVER_DIR only). HIMMEL-59 MVP.
+description: Auto-commit *.md changes in the handover root (Mode B / external HANDOVER_DIR only). MVP.
 argument-hint: <message> [--push] [--dry-run]
 ---
 

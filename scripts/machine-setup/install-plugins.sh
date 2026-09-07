@@ -30,6 +30,10 @@
 #   --himmel-path PATH   Override $HIMMEL_PATH used for <himmel-path>
 #                        placeholder expansion (defaults to repo root
 #                        inferred from script location).
+#   --settings PATH      Override the scope-resolved settings.json target
+#                        (used by the marketplace autoUpdate patch and the
+#                        force-enable step below; a hermetic-test seam,
+#                        mirrors reconcile-enabled-plugins.sh's own flag).
 set -euo pipefail
 
 # ── Resolve script + repo paths ─────────────────────────────────────────────
@@ -41,6 +45,7 @@ DRY_RUN=0
 SCOPE="user"
 TEMPLATE="$REPO_ROOT/docs/setup/settings-template.json"
 HIMMEL_PATH="$REPO_ROOT"
+SETTINGS=""
 
 # ── Parse args ──────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -49,6 +54,7 @@ while [[ $# -gt 0 ]]; do
     --scope)         SCOPE="$2"; shift 2 ;;
     --template)      TEMPLATE="$2"; shift 2 ;;
     --himmel-path)   HIMMEL_PATH="$2"; shift 2 ;;
+    --settings)      SETTINGS="$2"; shift 2 ;;
     -h|--help)
       sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | head -n -1
       exit 0
@@ -131,10 +137,14 @@ done
 # already exist there, so a marketplace-name vs template-key mismatch can't
 # create an orphan entry.
 case "$SCOPE" in
-  user)    SETTINGS_FILE="$HOME/.claude/settings.json" ;;
+  # HIMMEL-2353: honor CLAUDE_CONFIG_DIR like the sibling reconcile-enabled-plugins.sh:81
+  # idiom — a hermetic-test seam, not a per-call-site flag (a bare $HOME/.claude
+  # here is what let a test suite reach the operator's real settings.json).
+  user)    SETTINGS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" ;;
   project) SETTINGS_FILE="$PWD/.claude/settings.json" ;;
   local)   SETTINGS_FILE="$PWD/.claude/settings.local.json" ;;
 esac
+[[ -n "$SETTINGS" ]] && SETTINGS_FILE="$SETTINGS"
 
 echo "──── Enabling marketplace auto-update ($SETTINGS_FILE) ────"
 # tr -d '\r': jq emits CRLF on Windows; a trailing \r would corrupt the name key.
@@ -163,25 +173,75 @@ while IFS= read -r NAME; do
   # jq failure trips `set -e` and aborts the whole script mid-run — skipping the
   # install + verify steps for a merely-cosmetic patch. Tolerate it like the
   # `marketplace add` / `install` steps do, and clean up the temp on failure.
+  #
+  # HIMMEL-2324: mktemp, not a predictable "$SETTINGS_FILE.autoupdate.tmp" — a
+  # fixed name lets anyone with write access to this directory pre-plant a
+  # symlink there before we get here, so the jq redirect (or the mv) writes
+  # through it. mktemp creates the file itself (O_EXCL, unpredictable suffix,
+  # same directory so the mv stays atomic) — there's nothing to plant onto. A
+  # `-L` exists-check would still be TOCTOU-racy between check and write.
+  # Seed it as a perms-preserving copy of $SETTINGS_FILE first: mktemp creates
+  # at mode 0600, and this site previously had no seed (it always created a
+  # brand-new file via redirect) — without the seed the mv would narrow
+  # settings.json's mode to 0600.
+  AUTOUPDATE_TMP="$(mktemp "$SETTINGS_FILE.autoupdate.XXXXXX")" || {
+    echo "  skip: $NAME (mktemp failed — $SETTINGS_FILE left unchanged)" >&2
+    continue
+  }
+  cp -p "$SETTINGS_FILE" "$AUTOUPDATE_TMP" 2>/dev/null || cp "$SETTINGS_FILE" "$AUTOUPDATE_TMP" || {
+    # CR round 3 (codex-2, sibling site): if BOTH cp attempts fail, this bare
+    # statement's failure trips `set -e` and exits the script — leaving the
+    # already-mktemp'd $AUTOUPDATE_TMP orphaned. Clean it up; tolerant/skip
+    # (not exit), matching this site's own jq-failure branch below — a
+    # cosmetic patch must not abort the installer under set -e.
+    rm -f "$AUTOUPDATE_TMP"
+    echo "  skip: $NAME (cp failed — $SETTINGS_FILE left unchanged)" >&2
+    continue
+  }
   if jq --arg n "$NAME" '.extraKnownMarketplaces[$n].autoUpdate = true' \
-       "$SETTINGS_FILE" > "$SETTINGS_FILE.autoupdate.tmp"; then
-    mv "$SETTINGS_FILE.autoupdate.tmp" "$SETTINGS_FILE"
+       "$SETTINGS_FILE" > "$AUTOUPDATE_TMP"; then
+    mv "$AUTOUPDATE_TMP" "$SETTINGS_FILE"
     echo "  autoUpdate=true: $NAME"
   else
-    rm -f "$SETTINGS_FILE.autoupdate.tmp"
+    rm -f "$AUTOUPDATE_TMP"
     echo "  skip: $NAME (jq patch failed — $SETTINGS_FILE left unchanged)" >&2
   fi
 done <<< "$AUTO_NAMES"
+
+# ── Snapshot enabledPlugins BEFORE the install loop (HIMMEL-2733) ───────────
+# `claude plugin install <spec> --scope <scope>` WRITES
+# enabledPlugins["<spec>"] = true as a side effect — verified against the real
+# CLI in an empty CLAUDE_CONFIG_DIR (marketplace add + install, then
+# `enabledPlugins` already carries the spec as `true`). So a LIVE read of
+# $SETTINGS_FILE taken AFTER the install loop below can no longer tell "the
+# operator already had this true" apart from "the install loop itself just
+# wrote true for every on-demand spec it touched" — that confusion is exactly
+# what let a fresh machine ship the on-demand tier ENABLED (the opposite of
+# this ticket). Snapshot here, before any install runs: the on-demand
+# registration step further down treats a spec as an operator override only
+# when it is present AND `true` in THIS pre-install snapshot, never in the
+# post-install live map. A missing $SETTINGS_FILE at this point (a genuinely
+# fresh machine) yields an empty snapshot — i.e. no overrides, not a skip.
+PRE_INSTALL_ENABLED_JSON='{}'
+if [[ -f "$SETTINGS_FILE" ]] && jq -e . "$SETTINGS_FILE" >/dev/null 2>&1; then
+  PRE_INSTALL_ENABLED_JSON=$(jq -c '.enabledPlugins // {}' "$SETTINGS_FILE")
+fi
 
 # ── Install plugins ─────────────────────────────────────────────────────────
 echo "──── Installing plugins ($SCOPE scope) ────"
 # tr -d '\r': jq emits CRLF on Windows; a trailing \r would corrupt both the
 # install spec and the later presence comparison (INSTALLED_SPECS is \r-free).
-# select(.value == true): only install template entries flagged true — a
-# false-flagged entry (the HIMMEL-816 lean profile) must NOT be installed,
-# or the lean template silently re-creates the pre-lean maximal set on every
-# fresh machine (HIMMEL-816 follow-up gap).
-SPECS=$(echo "$EXPANDED" | jq -r '.enabledPlugins | to_entries[] | select(.value == true) | .key' | tr -d '\r')
+# HIMMEL-2733 two-tier profile: the install set is enabledPlugins-true (the
+# ALWAYS tier) UNION onDemandPlugins' keys (the ON-DEMAND tier — installed so
+# it's reachable in one command, but left DISABLED below). A `false`-flagged
+# entry ABSENT from onDemandPlugins must still NOT be installed, or the lean
+# template silently re-creates the pre-lean maximal set on every fresh
+# machine (HIMMEL-816 follow-up gap). `sort -u` dedupes the (normally
+# disjoint) union and keeps a stable, empty-safe result.
+SPECS=$(echo "$EXPANDED" | jq -r '
+  ((.enabledPlugins // {}) | to_entries[] | select(.value == true) | .key),
+  ((.onDemandPlugins // {}) | keys[])
+' | tr -d '\r' | sort -u)
 while IFS= read -r SPEC; do
   [[ -z "$SPEC" ]] && continue
   echo "  install: $SPEC"
@@ -193,11 +253,69 @@ done <<< "$SPECS"
 # plugin, so install exit codes can't tell a real failure from an idempotent
 # no-op — which is exactly how a failed handover@himmel install used to look
 # identical to "already installed". Verify by PRESENCE instead: list the
-# installed plugins and confirm every enabledPlugins spec is there. Skipped
-# under --dry-run (nothing was installed).
+# installed plugins and confirm every spec in $SPECS is there — HIMMEL-2733:
+# that's the WHOLE install set (ALWAYS tier + ON-DEMAND tier), so a missing
+# on-demand plugin is a real install failure too, not just a missing
+# always-enabled one. Skipped under --dry-run (nothing was installed).
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "──── Done (dry-run; verify skipped) ────"
   exit 0
+fi
+
+# ── Register on-demand plugins as disabled (HIMMEL-2733) ────────────────────
+# Normalize BEFORE presence verification: a partial install or failed `plugin
+# list` must still undo successful installs' enabledPlugins=true side effects.
+# Otherwise a retry snapshots those installer-written values as deliberate
+# overrides and leaves the fresh on-demand tier enabled forever. This step does
+# not claim install success; verification below remains authoritative.
+#
+# "Operator override" means present AND `true` in the PRE-INSTALL snapshot —
+# NEVER presence in the post-install live map. Every non-override on-demand key
+# gets `false` written unconditionally, while a value already true before this
+# run stays true. A resolved local-scope settings.local.json is a real target
+# here; skip only a missing file. Refuse malformed JSON or write failures loudly,
+# using the same atomic, permission-preserving temp-file discipline as the other
+# settings writers in this script.
+SETTINGS_FILE_BASENAME_LC="$(basename "$SETTINGS_FILE" | tr '[:upper:]' '[:lower:]')"
+ONDEMAND_KEYS_JSON=$(echo "$EXPANDED" | jq -c '[(.onDemandPlugins // {}) | keys[]]')
+ONDEMAND_KEYS_COUNT=$(jq 'length' <<< "$ONDEMAND_KEYS_JSON")
+if [[ "$ONDEMAND_KEYS_COUNT" -gt 0 && -f "$SETTINGS_FILE" ]]; then
+  if jq -e . "$SETTINGS_FILE" >/dev/null 2>&1; then
+    # Keep the set as JSON end-to-end. Native jq emits CRLF on Windows; a raw
+    # line round-trip would preserve each trailing CR as part of the plugin key.
+    NONOVERRIDE_ONDEMAND_JSON=$(jq -cn --argjson keys "$ONDEMAND_KEYS_JSON" --argjson pre "$PRE_INSTALL_ENABLED_JSON" '
+      [$keys[] | select(. as $k | ($pre[$k] // false) != true)]
+    ')
+    if jq -e 'length > 0' <<< "$NONOVERRIDE_ONDEMAND_JSON" >/dev/null; then
+      echo "──── Registering on-demand plugins as disabled (installed, not enabled) ────"
+      jq -r '.[]' <<< "$NONOVERRIDE_ONDEMAND_JSON" | tr -d '\r' | while IFS= read -r SPEC; do
+        [[ -n "$SPEC" ]] && echo "  disable (on-demand): $SPEC"
+      done
+      # HIMMEL-2324: unpredictable O_EXCL temp in the same directory keeps the
+      # final mv atomic and prevents a pre-planted symlink/reparse target.
+      if ! ONDEMAND_TMP="$(mktemp "$SETTINGS_FILE.ondemand.XXXXXX")"; then
+        echo "  ERROR: mktemp failed — $SETTINGS_FILE left unchanged" >&2
+        exit 1
+      fi
+      cp -p "$SETTINGS_FILE" "$ONDEMAND_TMP" 2>/dev/null || cp "$SETTINGS_FILE" "$ONDEMAND_TMP" || {
+        rm -f "$ONDEMAND_TMP"
+        echo "  ERROR: on-demand cp failed — $SETTINGS_FILE left unchanged" >&2
+        exit 1
+      }
+      if jq --argjson nonoverride "$NONOVERRIDE_ONDEMAND_JSON" \
+           '.enabledPlugins = ((.enabledPlugins // {}) + ($nonoverride | map({(.): false}) | add))' \
+           "$SETTINGS_FILE" > "$ONDEMAND_TMP"; then
+        mv "$ONDEMAND_TMP" "$SETTINGS_FILE"
+      else
+        rm -f "$ONDEMAND_TMP"
+        echo "  ERROR: on-demand jq patch failed — $SETTINGS_FILE left unchanged" >&2
+        exit 1
+      fi
+    fi
+  else
+    echo "  ERROR: $SETTINGS_FILE is not valid JSON — refusing to register on-demand plugins" >&2
+    exit 1
+  fi
 fi
 
 echo "──── Verifying installed plugins ────"
@@ -233,6 +351,86 @@ fi
 
 echo "  All $(grep -c . <<< "$SPECS") enabled plugins present."
 
+# ── Force-enable drifted template-true plugins (HIMMEL-2292) ─────────────────
+# Presence in `claude plugin list` (verified above) is NOT the same as ENABLED
+# in settings.json — a plugin can be fully installed while
+# enabledPlugins["<spec>"] is still `false` (a stale manual /plugin toggle, an
+# older template, a machine that predates a template flip — the overlord8
+# himmel-ops@himmel:false state that left block-glm-external-writes.sh inert
+# despite being correctly wired via the plugin's own hooks.json). Unlike the
+# lean-floor reconcile below, this step is ALWAYS ON, no HIMMEL_RECONCILE_
+# PLUGINS gate: it only ever flips a template-`true` spec's live value from
+# `false`/absent to `true` and never touches a spec the template doesn't flag
+# `true` — additive-only, so there's nothing here for that opt-in to protect
+# against. Skipped for settings.local.json (the protected per-machine
+# override input — mirrors reconcile-enabled-plugins.sh's own basename guard)
+# and when the target file doesn't exist yet (a fresh machine has nothing to
+# patch; the installs above already created it correctly).
+if [[ -f "$SETTINGS_FILE" && "$SETTINGS_FILE_BASENAME_LC" != "settings.local.json" ]]; then
+  if jq -e . "$SETTINGS_FILE" >/dev/null 2>&1; then
+    TRUE_SPECS_JSON=$(echo "$EXPANDED" | jq -c '[.enabledPlugins | to_entries[] | select(.value == true) | .key]')
+    DRIFTED=$(jq -r --argjson trueSpecs "$TRUE_SPECS_JSON" '
+      (.enabledPlugins // {}) as $live | $trueSpecs[] | select(($live[.] // false) != true)
+    ' "$SETTINGS_FILE")
+    if [[ -n "$DRIFTED" ]]; then
+      echo "──── Force-enabling drifted plugins (installed but disabled) ────"
+      while IFS= read -r SPEC; do [[ -n "$SPEC" ]] && echo "  enable: $SPEC"; done <<< "$DRIFTED"
+      # CR fix (codex-1, panel round 3): seed the temp file as a perms-preserving
+      # COPY of $SETTINGS_FILE first (cp -p — mirrors reconcile-enabled-plugins.sh's
+      # own pattern), THEN let jq's `>` redirect truncate-write that ALREADY-
+      # EXISTING file in place — redirecting into an existing path preserves its
+      # inode/permission bits, unlike creating a brand-new file, which takes the
+      # process umask and can widen a restrictive settings.json (e.g. 0600) to
+      # world-readable on the final mv. cp -p is best-effort; a filesystem
+      # without perm bits (Windows) falls back to plain cp, harmless there.
+      #
+      # HIMMEL-2324: mktemp, not the predictable "$SETTINGS_FILE.enable.tmp" —
+      # a fixed name lets anyone with write access to this directory pre-plant
+      # a symlink there before we get here, so the jq redirect (or the mv)
+      # writes through it. mktemp creates the file itself (O_EXCL, unpredictable
+      # suffix, same directory so the mv stays atomic) — there's nothing to
+      # plant onto. A `-L` exists-check would still be TOCTOU-racy between
+      # check and write.
+      if ! ENABLE_TMP="$(mktemp "$SETTINGS_FILE.enable.XXXXXX")"; then
+        echo "  ERROR: mktemp failed — $SETTINGS_FILE left unchanged" >&2
+        exit 1
+      fi
+      cp -p "$SETTINGS_FILE" "$ENABLE_TMP" 2>/dev/null || cp "$SETTINGS_FILE" "$ENABLE_TMP" || {
+        # CR round 3 (codex-2, sibling site): if BOTH cp attempts fail, this
+        # bare statement's failure trips `set -e` and exits the script —
+        # leaving the already-mktemp'd $ENABLE_TMP orphaned. Clean it up;
+        # loud AND non-zero (not tolerant), matching this site's own
+        # jq-failure branch below — this step is the HIMMEL-2292 repair
+        # mechanism itself, so a swallowed failure must not report success.
+        rm -f "$ENABLE_TMP"
+        echo "  ERROR: force-enable cp failed — $SETTINGS_FILE left unchanged" >&2
+        exit 1
+      }
+      if jq --argjson trueSpecs "$TRUE_SPECS_JSON" \
+           '.enabledPlugins = ((.enabledPlugins // {}) + ($trueSpecs | map({(.): true}) | add))' \
+           "$SETTINGS_FILE" > "$ENABLE_TMP"; then
+        mv "$ENABLE_TMP" "$SETTINGS_FILE"
+      else
+        rm -f "$ENABLE_TMP"
+        # Loud AND non-zero (unlike the autoUpdate patch above, which is
+        # cosmetic): this step is the repair mechanism the whole ticket
+        # exists for (HIMMEL-2292) — a swallowed failure here would let the
+        # installer report success while a required plugin like himmel-ops
+        # stays silently disabled, exactly the failure mode being fixed.
+        echo "  ERROR: force-enable jq patch failed — $SETTINGS_FILE left unchanged" >&2
+        exit 1
+      fi
+    fi
+  else
+    # Loud AND non-zero — same reasoning as the failed-patch branch above:
+    # a malformed settings.json means force-enable silently never ran, and
+    # a required plugin (e.g. himmel-ops) can stay disabled with the
+    # installer still reporting success.
+    echo "  ERROR: $SETTINGS_FILE is not valid JSON — refusing to force-enable" >&2
+    exit 1
+  fi
+fi
+
 # ── Reconcile enabledPlugins to the lean floor (HIMMEL-1032) ─────────────────
 # Install is additive (it only installs `true` entries), so a FRESH machine is
 # already lean — the extras were never installed. The subtractive reconcile only
@@ -255,4 +453,27 @@ case "${HIMMEL_RECONCILE_PLUGINS:-}" in
   *)
     echo "  (install is additive-only; set HIMMEL_RECONCILE_PLUGINS=1 to also disable drifted plugins down to the lean floor)" ;;
 esac
+
+# ── Install summary: on-demand tier (HIMMEL-2733) ────────────────────────────
+# Discoverability, not enforcement: name what just landed installed-but-
+# disabled and how to reach it, plus the doc-only onDemandConnectors tier
+# himmel never installs (a per-machine Chrome extension / claude.ai connector
+# toggle) — no installer reads that key to write anything.
+ONDEMAND_SUMMARY=$(echo "$EXPANDED" | jq -r '
+  (.onDemandPlugins // {}) | to_entries[] | "  " + .key + " — " + .value.neededBy
+')
+if [[ -n "$ONDEMAND_SUMMARY" ]]; then
+  echo "──── On-demand tier (installed, disabled by default) ────"
+  echo "$ONDEMAND_SUMMARY"
+  if [[ "$SCOPE" == "user" ]]; then
+    echo "  Enable one:  /profile enable <spec>     (or: claude plugin enable <spec> --scope user)"
+  else
+    echo "  Enable one:  claude plugin enable <spec> --scope $SCOPE"
+  fi
+fi
+CONNECTOR_NAMES=$(echo "$EXPANDED" | jq -r '(.onDemandConnectors // {}) | keys | join(", ")')
+if [[ -n "$CONNECTOR_NAMES" ]]; then
+  echo "  Not installed by himmel — enable in the Chrome extension / claude.ai connectors: $CONNECTOR_NAMES"
+fi
+
 echo "──── Done ────"

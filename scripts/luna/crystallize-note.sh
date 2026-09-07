@@ -36,6 +36,28 @@ RULES_FILE="${CRYSTALLIZE_RULES_FILE:-${3:-}}"
 export CLAUDE_END_SESSION_WIKI=0
 export HIMMEL_WHERE_ARE_WE=0
 
+# A lane config dir carries proxy routing but no native credentials. Defer this
+# best-effort synthesis to backfill rather than fire its Anthropic model pin into
+# the lane proxy (HIMMEL-1927); an unresolvable path is fail-open in the same way.
+#
+# HIMMEL-1927 CR finding: this predicate is deliberately conservative -- ANY
+# CLAUDE_CONFIG_DIR that differs from ~/.claude defers, even a legitimate
+# custom-but-native one. Do NOT narrow this to also require ANTHROPIC_BASE_URL:
+# a lane config dir (e.g. ~/.claude-codex) carries no .credentials.json, so
+# proceeding there produces a SILENT auth failure swallowed by this script's
+# `>/dev/null 2>&1 ... || true` below -- same end state as the bug, minus the
+# error log. A false-defer here is recoverable via
+# `backfill-sessions.sh --reheal`; a credential-less proceed is not, because
+# the failure is silent. Keep the predicate as-is.
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    _configured_claude_dir="$(cd "$CLAUDE_CONFIG_DIR" 2>/dev/null && pwd -P)" || exit 0
+    _native_claude_dir="$(cd "${HOME}/.claude" 2>/dev/null && pwd -P)" || exit 0
+    if [ "$_configured_claude_dir" != "$_native_claude_dir" ]; then
+        echo "crystallize-note: DEFERRED (not failed) - CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR is not ~/.claude; the mechanical note is still written and stays crystallized: false; backfill-sessions.sh --reheal picks it up later once running on native auth." >&2
+        exit 0
+    fi
+fi
+
 # Resolve the claude binary (test override wins). No claude -> leave the
 # mechanical note untouched.
 CLAUDE_BIN="${CRYSTALLIZE_CLAUDE_BIN:-}"
@@ -240,6 +262,11 @@ TR_DIR=""
 _hash() { { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null; } | awk '{print $1}'; }
 HASH_BEFORE="$(_hash "$NOTE_PATH")"
 
+# Ambient proxy exports must not redirect this Max-plan launch (HIMMEL-1867).
+# shellcheck source=scripts/lib/native-auth-pin.sh
+# shellcheck disable=SC1091
+. "$HIMMEL_ROOT/scripts/lib/native-auth-pin.sh" || exit 0
+native_auth_pin_env || exit 0
 (
     cd "$NOTE_DIR" 2>/dev/null || exit 0
     CRYSTALLIZE_NOTE="$NOTE_PATH" CRYSTALLIZE_TRANSCRIPT="$TRANSCRIPT_PATH" \

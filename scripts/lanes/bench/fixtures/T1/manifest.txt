@@ -1,0 +1,19 @@
+# T1 manifest — HIMMEL-1723
+# Sanctioned paths: the new helper file, plus every mod file that legitimately
+# contains the printf|grep -q idiom and must be swept.
+strcheck.sh
+config-validate.sh
+env-checks.sh
+arg-parser.sh
+network-guard.sh
+log-filters.sh
+state-machine.sh
+secrets-scan.sh
+permission-checks.sh
+release-gate.sh
+feature-flags.sh
+path-sanitize.sh
+user-input-guard.sh
+ci-status-check.sh
+package-filter.sh
+hostname-match.sh

@@ -1,12 +1,13 @@
 // scripts/lanes/tests/resolve.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { delimiter } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { resolveLanes, resolveLaneInventory, formatCodexHealth, buildCtx, fmtCtx, mergeLocalOverlay } from '../resolve.mjs';
+import { resolveLanes, resolveLaneInventory, formatCodexHealth, buildCtx, fmtCtx, formatContextAnnotation, formatQuotaAnnotation, mergeLocalOverlay, unknownOverlayKeys } from '../resolve.mjs';
 import { applyLaneOverride, applyProfileAllowlist, writeProfileAllowlist } from '../set-lane-override.mjs';
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -22,9 +23,8 @@ test('GLM lane appears with ZAI_API_KEY set', () => {
   assert.ok(resolveLanes(REG, ctx({ env: { ZAI_API_KEY: 'k' } })).some((l) => l.id === 'glm'));
   assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === 'glm'));
 });
-test('glm-subagent lane (inline Agent-tool dispatch) keys off ZAI_API_KEY too', () => {
-  assert.ok(resolveLanes(REG, ctx({ env: { ZAI_API_KEY: 'k' } })).some((l) => l.id === 'glm-subagent'));
-  assert.ok(!resolveLanes(REG, ctx()).some((l) => l.id === 'glm-subagent'));
+test('retired glm-subagent wrapper lane is absent from the registry', () => {
+  assert.ok(!REG.lanes.some((l) => l.id === 'glm-subagent'));
 });
 test('codex lane keys off CR_PROFILE=paid', () => {
   assert.ok(resolveLanes(REG, ctx({ env: { CR_PROFILE: 'free,paid' } })).some((l) => l.id === 'codex'));
@@ -64,6 +64,46 @@ test('buildCtx pathHas does real PATH/PATHEXT lookup (HIMMEL-780 follow-through)
     assert.equal(pathHas('copilot'), false, 'POSIX matches the bare name only, not .cmd');
   }
   assert.equal(pathHas('missing-cli'), false);
+});
+test('buildCtx installed.hermes accepts only a real interpreter, matching resolve-hermes-py.sh', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'lanes-repo-'));
+  const home = mkdtempSync(join(tmpdir(), 'lanes-hermes-'));
+  // installed.hermes must mean "invoke.sh will find an interpreter". The shell
+  // resolver tests `[ -x ]`, so anything it would reject must be rejected here
+  // too -- otherwise the lane resolves and dispatch exits 3 after provisioning.
+  const dir = join(home, 'a-directory');
+  mkdirSync(dir);
+  assert.equal(buildCtx(repo, { HERMES_PY: dir, HERMES_HOME: home }).installed.hermes, false,
+    'a directory is not an interpreter');
+
+  const plain = join(home, 'not-executable');
+  writeFileSync(plain, 'x');
+  if (process.platform !== 'win32') {
+    chmodSync(plain, 0o644);
+    assert.equal(buildCtx(repo, { HERMES_PY: plain, HERMES_HOME: home }).installed.hermes, false,
+      'a non-executable file is not an interpreter');
+  }
+
+  const real = join(home, process.platform === 'win32' ? 'python.exe' : 'python');
+  writeFileSync(real, '#!/bin/sh');
+  chmodSync(real, 0o755);
+  assert.equal(buildCtx(repo, { HERMES_PY: real, HERMES_HOME: home }).installed.hermes, true,
+    'an executable regular file is an interpreter');
+
+  assert.equal(buildCtx(repo, { HERMES_HOME: home }).installed.hermes, false,
+    'no HERMES_PY and no venv under HERMES_HOME means the lane is unavailable');
+
+  // Pins the round-10 removal: a hermes/hermes-agent shim on PATH must NOT make
+  // the lane resolve, because resolve-hermes-py.sh never reads PATH.
+  const bin = mkdtempSync(join(tmpdir(), 'lanes-shim-'));
+  for (const nm of ['hermes', 'hermes.cmd', 'hermes-agent', 'hermes-agent.cmd']) {
+    writeFileSync(join(bin, nm), 'shim');
+    chmodSync(join(bin, nm), 0o755);
+  }
+  const shimEnv = { PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD', HERMES_HOME: mkdtempSync(join(tmpdir(), 'lanes-empty-')) };
+  const shimCtx = buildCtx(repo, shimEnv);
+  assert.equal(shimCtx.pathHas('hermes'), true, 'fixture must really put a shim on PATH');
+  assert.equal(shimCtx.installed.hermes, false, 'a PATH shim is not an interpreter');
 });
 test('every "installed" probe names a tool buildCtx actually populates (HIMMEL-780 lockstep guard)', () => {
   const populated = Object.keys(buildCtx(mkdtempSync(join(tmpdir(), 'lanes-ctx-')), {}).installed);
@@ -147,6 +187,124 @@ test('/lanes text distinguishes suppressed-by-profile while --json stays effecti
   assert.deepEqual(json.map((lane) => lane.id), ['core']);
 });
 
+// HIMMEL-1967 — a registry-declared dormant lane must show as dormant in the
+// /lanes text (not silently listed as if it were routable).
+test('/lanes text flags a dormant lane with its reason and opt-in env', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lanes-dormant-'));
+  const file = join(dir, 'registry.json');
+  writeFileSync(file, JSON.stringify({
+    lanes: [
+      {
+        id: 'sleeper', label: 'Sleeper lane', class: 'impl', bestFor: 'nothing right now', effort: 'low',
+        probe: { kind: 'always' },
+        dormant: { reason: 'test dormancy reason', optInEnv: 'SLEEPER_LANE_OK' },
+      },
+    ],
+  }));
+  const env = { ...process.env, LANES_REGISTRY: file };
+  const text = execFileSync(process.execPath, [RESOLVER], { env, encoding: 'utf8' });
+  assert.match(text, /\[DORMANT: test dormancy reason — opt in: SLEEPER_LANE_OK=1\]/);
+});
+
+// HIMMEL-1967 — every registry-declared dormant impl lane must actually render.
+test('every real registry dormant impl lane shows DORMANT in /lanes text', () => {
+  // The resolver drops a lane whose probe fails BEFORE rendering, so a dormant lane
+  // keyed on a machine-state probe is absent on a bare machine and this assertion
+  // would be env-dependent. Force every dormant lane's probe inputs so the test
+  // proves the RENDERER annotates dormancy, not that this box satisfies the probes.
+  // LANES_REGISTRY pins the child to the tracked lanes.json: without it resolve.mjs
+  // layers lanes.local.json over REG and an operator override could re-break this.
+  const dormantLanes = REG.lanes.filter((l) => l.class === 'impl' && l.dormant);
+  const forcedEnv = { LANES_REGISTRY: join(TEST_DIR, '..', 'lanes.json') };
+  const resolvedPathDirs = new Set();
+  const skippedPathProbes = [];
+  // Resolve the REAL CLI location via the OS (where/which) - no synthetic stubs
+  // that would drift from how the probe and the dispatcher actually resolve
+  // binaries on this platform. Shared below by the HIMMEL-2573 re-check, so both
+  // agree on what "on PATH" means instead of the assertion inventing a second
+  // mechanism.
+  const resolveCliDir = (cli) => {
+    const isWin = process.platform === 'win32';
+    const probe = isWin ? ['where', cli] : ['which', cli];
+    try {
+      const first = execFileSync(probe[0], probe.slice(1), { encoding: 'utf8' }).split(/\r?\n/)[0].trim();
+      return first ? dirname(first) : null;
+    } catch {
+      return null;
+    }
+  };
+  for (const l of dormantLanes) {
+    if (!l.probe) continue;
+    switch (l.probe.kind) {
+      case 'env':
+        if (l.probe.name) forcedEnv[l.probe.name] = 'test-forced';
+        break;
+      case 'installed':
+        // buildCtx only models installed.hermes; HERMES_PY pointing at this running
+        // node binary passes hermesInstalled's isExe check on every platform.
+        if (l.probe.tool === 'hermes') forcedEnv.HERMES_PY = process.execPath;
+        else throw new Error(`unhandled installed-probe tool '${l.probe.tool}' - extend this fixture`);
+        break;
+      case 'path': {
+        if (l.probe.cli && !resolvedPathDirs.has(l.probe.cli)) {
+          const dir = resolveCliDir(l.probe.cli);
+          if (dir) resolvedPathDirs.add(dir);
+          else {
+            // CLI genuinely absent on this machine: the lane cannot be force-rendered
+            // here. Record it so the gap is reported below, not silent.
+            skippedPathProbes.push(`${l.id} (cli '${l.probe.cli}' not on this machine)`);
+          }
+        }
+        break;
+      }
+      case 'always':
+      case 'crprofile':
+        break;
+      default:
+        throw new Error(`unhandled probe kind '${l.probe.kind}' - extend this fixture`);
+    }
+  }
+  if (resolvedPathDirs.size > 0) {
+    const prefix = [...resolvedPathDirs].join(delimiter) + delimiter;
+    forcedEnv.PATH = prefix + (process.env.PATH || '');
+    forcedEnv.Path = forcedEnv.PATH;
+  }
+  const text = execFileSync(process.execPath, [RESOLVER], { encoding: 'utf8', env: { ...process.env, ...forcedEnv } });
+  assert.ok(dormantLanes.length > 0, 'expected at least one dormant impl lane in the real registry');
+  // HIMMEL-2573: a path-probed lane's CLI (codex-wsl's `wsl`; codex-exec's
+  // `codex`) can be genuinely absent here - wsl is Windows-only tooling and can
+  // never resolve on Linux/macOS, and a CLI like codex may simply not be
+  // installed on a given box or CI runner either. Neither is hardcoded to one
+  // platform: derive both branches - CLI present (must render DORMANT) and CLI
+  // absent (must appear in the loud skip list, and ONLY there) - from a fresh
+  // probe right here, so the suite is correct on whichever host runs it instead
+  // of only the one it happened to be written on.
+  for (const l of dormantLanes) {
+    if (l.probe?.kind !== 'path' || !l.probe.cli) continue;
+    const reallyAbsent = !resolveCliDir(l.probe.cli);
+    const flaggedAbsent = skippedPathProbes.some((s) => s.startsWith(`${l.id} (cli '${l.probe.cli}'`));
+    assert.equal(flaggedAbsent, reallyAbsent,
+      `lane '${l.id}': loud-skip flag (${flaggedAbsent}) disagrees with a fresh probe of '${l.probe.cli}' (absent=${reallyAbsent})`);
+  }
+  // A skipped lane is a real coverage gap, and it has to stay visible on a GREEN
+  // run: the pre-HIMMEL-2573 assertion made it loud only by FAILING, and the
+  // reconciliation above only speaks when the flag and a fresh probe disagree.
+  // CI runs this suite as a bare `node --test` (.github/workflows/ci.yml), and
+  // node's default reporter passes a test file's stderr through (spec on node
+  // 24, tap on older ones - either way the line shows), so the gap is reported
+  // on the host where nobody is watching. The
+  // `dot` reporter in CLAUDE.md's local invocation prints only dots and
+  // failures: it shows neither these lines nor t.diagnostic(). That is a
+  // property of that reporter, not of this report.
+  for (const skipped of skippedPathProbes) {
+    process.stderr.write(`lanes/resolve: DORMANT render NOT exercised for ${skipped}\n`);
+  }
+  for (const lane of dormantLanes) {
+    if (skippedPathProbes.some((s) => s.startsWith(`${lane.id} `))) continue; // CLI genuinely absent here - can't force-render
+    assert.match(text, new RegExp(`\\[DORMANT: .*opt in: ${lane.dormant.optInEnv}=1\\]`), `lane '${lane.id}' missing DORMANT annotation`);
+  }
+});
+
 // HIMMEL-747 — codex startup-health annotation for /lanes.
 test('formatCodexHealth: healthy (rc 0) / no-codex (rc 2) / spawn-fail (rc -1) render nothing', () => {
   assert.equal(formatCodexHealth(0, ''), '');
@@ -178,14 +336,87 @@ test('fmtCtx: compacts M / k, drops non-positive + non-numeric', () => {
   assert.equal(fmtCtx(undefined), '');  // absent contextWindow renders nothing
   assert.equal(fmtCtx(NaN), '');
 });
-test('every contextWindow in the registry is a positive integer', () => {
+test('context annotations derive from structured window + overflow (no prose drift)', () => {
+  assert.equal(formatContextAnnotation({ windowTokens: 1000000, overflow: 'hard-limit' }), '[ctx: 1M; hard limit]');
+  assert.equal(
+    formatContextAnnotation({ windowTokens: 272000, overflow: 'compact-continue' }),
+    '[ctx: 272k; compacts+continues past window (cost penalty)]',
+  );
+  assert.equal(formatContextAnnotation(undefined), '');
+});
+test('every structured context in the registry is valid and carries no legacy descriptor', () => {
   for (const l of REG.lanes) {
-    if (l.contextWindow === undefined) continue;
-    assert.ok(Number.isInteger(l.contextWindow) && l.contextWindow > 0,
-      `${l.id} contextWindow must be a positive integer`);
+    assert.equal(l.contextWindow, undefined, `${l.id} must not carry legacy contextWindow prose-adjacent data`);
+    if (l.context === undefined) continue;
+    assert.ok(Number.isInteger(l.context.windowTokens) && l.context.windowTokens > 0,
+      `${l.id} context.windowTokens must be a positive integer`);
+    assert.ok(['hard-limit', 'compact-continue'].includes(l.context.overflow),
+      `${l.id} context.overflow must be explicit`);
+  }
+  assert.equal(REG.lanes.find((l) => l.id === 'glm').context.windowTokens, 1000000);
+  for (const id of ['claudex', 'codex', 'codex-exec', 'codex-wsl', 'hermes-oneshot']) {
+    assert.deepEqual(REG.lanes.find((l) => l.id === id).context, { windowTokens: 900000, overflow: 'compact-continue' });
   }
 });
 
+test('quota annotation names active access, existing windows, and the binding constraint', () => {
+  const claude = { accessPaths: [{ kind: 'subscription', windows: ['5h', 'weekly'] }], activeAccessPath: 0 };
+  assert.equal(
+    formatQuotaAnnotation(claude, { detail: 'measured 5h used=4% free=96%; weekly used=96% free=4%' }),
+    '[access: subscription; windows: 5h+weekly; binds: weekly]',
+  );
+  const codex = { accessPaths: [{ kind: 'subscription', windows: ['weekly'] }], activeAccessPath: 0 };
+  assert.equal(formatQuotaAnnotation(codex, { detail: 'unmeasurable reason="cold"' }),
+    '[access: subscription; windows: weekly; binds: unknown]');
+  const glm = { accessPaths: [
+    { kind: 'subscription', windows: ['5h', 'weekly'] },
+    { kind: 'metered-api-key', provider: 'z.ai', windows: [] },
+  ], activeAccessPath: 0 };
+  assert.equal(
+    formatQuotaAnnotation(glm, { detail: 'measured 5h used=25% free=75%; weekly used=50% free=50%' }),
+    '[access: subscription; windows: 5h+weekly; binds: weekly; alternative: metered API key (z.ai)]',
+  );
+});
+
+test('every quota access path has an explicit type and window structure', () => {
+  for (const l of REG.lanes.filter((lane) => lane.quota)) {
+    assert.ok(Array.isArray(l.quota.accessPaths) && l.quota.accessPaths.length > 0, `${l.id} missing quota.accessPaths`);
+    assert.ok(Number.isInteger(l.quota.activeAccessPath), `${l.id} missing quota.activeAccessPath`);
+    assert.ok(l.quota.accessPaths[l.quota.activeAccessPath], `${l.id} activeAccessPath is out of range`);
+    for (const path of l.quota.accessPaths) {
+      assert.ok(['subscription', 'metered-api-key'].includes(path.kind), `${l.id} has unknown access path kind`);
+      assert.ok(Array.isArray(path.windows), `${l.id} access path windows must be an array`);
+    }
+  }
+});
+
+// HIMMEL-1913 — unknown per-lane overlay keys must not fail silently.
+test('unknownOverlayKeys: reports drop as unknown', () => {
+  const base = { lanes: [{ id: 'glm', probe: { kind: 'env', name: 'ZAI_API_KEY' } }] };
+  const local = { lanes: [{ id: 'glm', drop: true }] };
+  assert.deepEqual(unknownOverlayKeys(base, local), [{ id: 'glm', keys: ['drop'] }]);
+});
+test('unknownOverlayKeys: accepts delta keys present on any base lane', () => {
+  const base = { lanes: [
+    { id: 'a', probe: { kind: 'always' } },
+    { id: 'b', effort: 'low', probe: { kind: 'never' } },
+  ] };
+  const local = { lanes: [
+    { id: 'a', probe: { kind: 'never' } },
+    { id: 'a', effort: 'high' },
+  ] };
+  assert.deepEqual(unknownOverlayKeys(base, local), []);
+});
+test('unknownOverlayKeys: checks overlay-only lanes against the shared schema', () => {
+  const base = { lanes: [{ id: 'a', probe: { kind: 'always' } }] };
+  const local = { lanes: [{ id: 'custom', probe: { kind: 'always' }, typoedField: true }] };
+  assert.deepEqual(unknownOverlayKeys(base, local), [{ id: 'custom', keys: ['typoedField'] }]);
+});
+test('unknownOverlayKeys: derives known keys from base lane data', () => {
+  const base = { lanes: [{ id: 'a', novelField: 'base value' }] };
+  const local = { lanes: [{ id: 'custom', novelField: 'local value' }] };
+  assert.deepEqual(unknownOverlayKeys(base, local), []);
+});
 // HIMMEL-758 — mergeLocalOverlay(): the true per-lane lanes.local.json overlay
 // `himmelctl config` writes through set-lane-override.mjs.
 test('mergeLocalOverlay: no local overrides -> base returned unchanged (same lane objects)', () => {
@@ -203,6 +434,12 @@ test('mergeLocalOverlay: a local entry shallow-merges onto the matching base id 
   assert.deepEqual(merged.lanes.map((l) => l.id), ['a', 'b']); // base order preserved
   assert.deepEqual(merged.lanes[0], { id: 'a', label: 'A', probe: { kind: 'never' } }); // label survives, probe overridden
   assert.deepEqual(merged.lanes[1], base.lanes[1]); // untouched lane unchanged
+});
+test('mergeLocalOverlay: drop stays an inert merged field and does not remove the lane', () => {
+  const base = { lanes: [{ id: 'glm', probe: { kind: 'always' } }] };
+  const local = { lanes: [{ id: 'glm', drop: true }] };
+  const merged = mergeLocalOverlay(base, local);
+  assert.deepEqual(merged.lanes, [{ id: 'glm', probe: { kind: 'always' }, drop: true }]);
 });
 test('mergeLocalOverlay: a local-only id (absent from base) is appended', () => {
   const base = { lanes: [{ id: 'a', probe: { kind: 'always' } }] };

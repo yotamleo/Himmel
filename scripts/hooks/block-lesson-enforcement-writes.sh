@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell) - thin
+# PreToolUse hook (Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|
+# apply_patch, HIMMEL-2170 - Codex's create/edit envelope, see lesson-write-
+# fence.sh's own header for the extraction detail) - thin
 # wrapper for the lesson-loop enforcement-path write-fence (HIMMEL-767
 # deliverable 3). The self-evolving loop (lessons -> tickets/draft-PRs) is
 # PROPOSE-ONLY; this hook is the delivery surface that structurally denies it
@@ -49,7 +51,7 @@ fi
 
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
 case "$tool" in
-    Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell) ;;
+    Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|apply_patch) ;;
     *) exit 0 ;;
 esac
 

@@ -42,9 +42,12 @@ test('resolved map is COMPLETE — every catalog id is present', () => {
   assert.equal(Object.keys(r.enabledPlugins).length, new Set(REG.catalog).size);
 });
 
-test('lane-impl drops all content/authoring but keeps floor + pr-review', () => {
+test('lane-impl keeps its four-plugin surface and disables operator always-tier extras', () => {
   const { enabledPlugins: p } = resolveProfile(REG, 'lane-impl');
   assert.equal(p['pr-review-toolkit-himmel@himmel'], true);
+  assert.equal(p['superpowers@claude-plugins-official'], false);
+  assert.equal(p['mattpocock-skills@claude-plugins-official'], false);
+  assert.equal(p['plannotator-effective-html@effective-html'], false);
   assert.equal(p['claude-obsidian@himmel'], false);
   assert.equal(p['obsidian-triage@himmel'], false);
   assert.equal(p['skill-creator@claude-plugins-official'], false);
@@ -214,7 +217,7 @@ test('resolveProfileByName FAILS CLOSED on an invalid registry (guard, not just 
   assert.throws(() => resolveProfileByName('lane-impl', {}, bad), /registry invalid/);
   // a valid registry still resolves through the same wrapper
   const good = join(dir, 'good.json');
-  writeFileSync(good, JSON.stringify({ floor: ['a@m'], catalog: ['a@m', 'b@m'], profiles: { operator: null, 'lane-impl': { enable: ['b@m'] } } }));
+  writeFileSync(good, JSON.stringify({ floor: ['a@m'], catalog: ['a@m', 'b@m'], profiles: { operator: null, bare: { enable: [], contextBudget: 5000 }, 'lane-impl': { enable: ['b@m'], contextBudget: 5000 } } }));
   assert.equal(resolveProfileByName('lane-impl', {}, good).enabledPlugins['a@m'], true);
 });
 
@@ -270,48 +273,306 @@ test('validateRegistry collects errors (never throws) on malformed shapes', () =
   }
 });
 
-test('user profile keeps content plugins but drops dev-authoring (HIMMEL-1044 shape)', () => {
+test('user profile matches the installer always tier and leaves on-demand plugins disabled', () => {
   const { enabledPlugins: p } = resolveProfile(REG, 'user');
-  // content a user wants
-  assert.equal(p['superpowers@claude-plugins-official'], true);
-  assert.equal(p['coderabbit@claude-plugins-official'], true);
-  assert.equal(p['claude-obsidian@himmel'], true);
-  // dev-authoring dropped
-  assert.equal(p['skill-creator@claude-plugins-official'], false);
-  assert.equal(p['plugin-dev@claude-plugins-official'], false);
-  assert.equal(p['claude-md-management@claude-plugins-official'], false);
-  assert.equal(p['hookify@claude-plugins-official'], false);
+  for (const id of [
+    'superpowers@claude-plugins-official',
+    'mattpocock-skills@claude-plugins-official',
+    'plannotator-effective-html@effective-html',
+    'handover@himmel',
+    'himmel-ops@himmel',
+    'qmd@himmel',
+    'pr-review-toolkit-himmel@himmel',
+  ]) assert.equal(p[id], true, `${id} must stay in the always tier`);
+  for (const id of [
+    'context7@claude-plugins-official',
+    'playwright@claude-plugins-official',
+    'typescript-lsp@claude-plugins-official',
+    'claude-obsidian@himmel',
+    'luna-correlate@himmel',
+    'obsidian-triage@himmel',
+    'telegram-himmel@himmel',
+    'codex@openai-codex',
+  ]) assert.equal(p[id], false, `${id} must stay on demand`);
 });
 
 test('settings-template enabledPlugins mirrors the registry `user` profile (HIMMEL-1044 wiring)', () => {
   // The adopter-facing docs/setup/settings-template.json is the human-readable
   // mirror of the registry's `user` profile (HIMMEL-1040/1044). They are
-  // hand-maintained and MUST NOT silently drift: if the template re-enables a
-  // dev plugin the registry keeps off (or drops one it expects on) an adopter
-  // gets the wrong set. This locks the two together so the drift that made
-  // HIMMEL-1044 necessary cannot recur. ONE justified carve-out:
-  // `codex@openai-codex` is enabled by the registry's `user` profile
-  // explicitly (HIMMEL-1677 took it OUT of the floor so `lane-*` workers
-  // disable it), but no adopter machine carries the codex marketplace — the
-  // adopter template legitimately omits it. The lane spawn scripts only ever
-  // resolve `lane-*` profiles (never `user`), so the `user` profile exists
-  // purely as this template's source of truth.
+  // hand-maintained and MUST NOT silently drift: the template's true entries
+  // are the always tier, while installed on-demand plugins stay false. This
+  // locks both tiers together so an adopter and the resolver get the same set.
   const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   const tmpl = JSON.parse(readFileSync(join(REPO_ROOT, 'docs', 'setup', 'settings-template.json'), 'utf8'));
   const user = resolveProfile(REG, 'user').enabledPlugins;
-  const LANE_ONLY = new Set(['codex@openai-codex']);
   // Forward: every plugin the adopter template has an opinion on must agree with
-  // the registry's user profile (catches the template re-enabling a dev plugin).
+  // the registry's user profile.
   for (const [id, on] of Object.entries(tmpl.enabledPlugins)) {
-    if (LANE_ONLY.has(id) || !Object.hasOwn(user, id)) continue;
+    assert.ok(Object.hasOwn(user, id), `template plugin ${id} is missing from the registry catalog`);
     assert.equal(on, user[id], `template/registry drift on ${id}: template=${on} registry-user=${user[id]}`);
   }
   // Reverse: every plugin the registry enables for a user must also be enabled
-  // in the adopter template (catches the template dropping a user plugin),
-  // except lane-dispatch-only ids an adopter machine lacks.
+  // in the adopter template (catches the template dropping an always-tier plugin).
   const tmplTrue = new Set(Object.entries(tmpl.enabledPlugins).filter(([, v]) => v).map(([k]) => k));
   for (const id of Object.keys(user).filter((k) => user[k])) {
-    if (LANE_ONLY.has(id)) continue;
     assert.ok(tmplTrue.has(id), `registry user enables ${id} but the adopter template does not — drift`);
   }
+});
+
+// ── Schema (HIMMEL-1461 T2.1b): base / drop / disallowedTools / mcpCatalog / bare ──
+// A synthetic registry, independent of the shipped data, so these tests pin the
+// ORDER of operations rather than any particular catalog content.
+const SCHEMA_REG = {
+  floor: ['floor@m'],
+  base: ['floor@m', 'base-only@m'],
+  mcpCatalog: {},
+  catalog: ['floor@m', 'base-only@m', 'dropped@m', 'enabled@m', 'overlay@m'],
+  profiles: {
+    operator: null,
+    bare: { enable: [], contextBudget: 5000 },
+    schema: { enable: ['enabled@m'], drop: ['base-only@m'], contextBudget: 5000 },
+  },
+};
+
+test('resolution order: base -> drop -> enable -> overlay -> floor (last)', () => {
+  const { enabledPlugins: p } = resolveProfile(SCHEMA_REG, 'schema', { addPlugins: ['overlay@m'] });
+  assert.equal(p['base-only@m'], false, 'an id in base AND drop must end false — drop must apply after base');
+  assert.equal(p['enabled@m'], true, 'profile.enable must apply');
+  assert.equal(p['overlay@m'], true, 'the dispatch overlay must apply');
+  assert.equal(p['floor@m'], true, 'the floor must be on');
+  assert.equal(p['dropped@m'], false, 'an untouched catalog id stays denied by default');
+});
+
+test('the dispatch overlay overrides a profile drop — overlay applies AFTER drop', () => {
+  const { enabledPlugins: p } = resolveProfile(SCHEMA_REG, 'schema', { addPlugins: ['base-only@m'] });
+  assert.equal(p['base-only@m'], true, 'an explicit --add-plugins ask must win over a profile drop');
+});
+
+test('the floor survives a drop naming a floor id — floor is forced true LAST regardless of validity', () => {
+  // validateRegistry rejects a floor id in drop (below); this proves the
+  // RESOLVER's floor-forced-last guarantee holds at resolve time too — nothing,
+  // not even a mis-declared drop, can turn the floor off.
+  const evil = { ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, evil: { enable: [], drop: ['floor@m'] } } };
+  const { enabledPlugins: p } = resolveProfile(evil, 'evil');
+  assert.equal(p['floor@m'], true);
+});
+
+test('"bare" skips base and resolves to floor-only, but still honours --add-plugins', () => {
+  const { enabledPlugins: p } = resolveProfile(SCHEMA_REG, 'bare');
+  assert.equal(p['floor@m'], true);
+  assert.equal(p['base-only@m'], false, 'bare must NOT inherit base');
+  const overlaid = resolveProfile(SCHEMA_REG, 'bare', { addPlugins: ['overlay@m'] });
+  assert.equal(overlaid.enabledPlugins['overlay@m'], true, 'bare still honours the dispatch overlay — that is its purpose');
+});
+
+test('CLI: node plugin-profiles.mjs bare prints exactly the three shipped floor ids as true', () => {
+  // Sandboxed HOME/cwd (glm-3): the CLI now calls readEnabledPluginIds, which
+  // throws on an unparseable settings layer — running against the real dev
+  // machine's HOME/cwd would make this test's pass/fail depend on whatever
+  // happens to be on that machine. Point it at a clean tmpdir fixture instead,
+  // the same pattern the codex-adv-1 regression test below already uses.
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const home = mkdtempSync(join(tmpdir(), 'pp-cli-bare-home-'));
+  const configDir = join(home, '.claude');
+  const cwd = mkdtempSync(join(tmpdir(), 'pp-cli-bare-cwd-'));
+  const run = spawnSync(process.execPath, [cli, 'bare'], {
+    encoding: 'utf8',
+    cwd,
+    env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: configDir },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const p = JSON.parse(run.stdout).enabledPlugins;
+  const trueKeys = Object.keys(p).filter((k) => p[k]).sort();
+  assert.deepEqual(trueKeys, [...FLOOR].sort());
+});
+
+test('CLI: --list includes bare', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const run = spawnSync(process.execPath, [cli, '--list'], { encoding: 'utf8' });
+  assert.equal(run.status, 0);
+  assert.ok(run.stdout.split('\n').includes('bare'));
+});
+
+test('CLI: --validate exits 0 on the shipped registry', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const run = spawnSync(process.execPath, [cli, '--validate'], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+});
+
+test('lane-review carries disallowedTools; every other shipped profile does not', () => {
+  assert.deepEqual(REG.profiles['lane-review'].disallowedTools, ['Write', 'Edit', 'NotebookEdit']);
+  for (const name of ['user', 'lane-impl', 'lane-content', 'bare']) {
+    assert.equal(REG.profiles[name]?.disallowedTools, undefined, `${name} must not carry disallowedTools`);
+  }
+});
+
+test('validateRegistry: base, when present, must be an array of valid, cataloged ids', () => {
+  assert.ok(validateRegistry({ ...SCHEMA_REG, base: 'not-an-array' }).some((e) => /base must be an array/.test(e)));
+  assert.ok(validateRegistry({ ...SCHEMA_REG, base: ['not-an-id'] }).some((e) => /base id "not-an-id" is not a valid/.test(e)));
+  assert.ok(validateRegistry({ ...SCHEMA_REG, base: ['missing@m'] }).some((e) => /base id "missing@m" is missing from catalog/.test(e)));
+});
+
+test('validateRegistry: mcpCatalog shape + $VAR-reference rule (a literal is a credential leak)', () => {
+  assert.ok(validateRegistry({ ...SCHEMA_REG, mcpCatalog: null }).some((e) => /mcpCatalog must be a non-null object/.test(e)));
+  assert.ok(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: 'nope' } }).some((e) => /mcpCatalog entry "x" must be an object/.test(e)));
+  assert.ok(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { env: { TOKEN: 'sk-literal-secret' } } } }).some((e) => /mcpCatalog entry "x" env\.TOKEN must be a \$VAR reference/.test(e)));
+  assert.deepEqual(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { env: { TOKEN: '$TOKEN' }, headers: { Authorization: '$AUTH_HEADER' } } } }), []);
+});
+
+test('validateRegistry: a profile naming an id in both drop and enable is an error', () => {
+  const bad = { ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, both: { enable: ['enabled@m'], drop: ['enabled@m'] } } };
+  assert.ok(validateRegistry(bad).some((e) => /"both" drop id "enabled@m" is also in enable/.test(e)));
+});
+
+test('validateRegistry: a profile naming a floor id in drop is an error', () => {
+  const bad = { ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, evil: { enable: [], drop: ['floor@m'] } } };
+  assert.ok(validateRegistry(bad).some((e) => /"evil" drop id "floor@m" is a floor id/.test(e)));
+});
+
+test('validateRegistry: every drop id must be valid per ID_RE and present in catalog', () => {
+  assert.ok(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, bad1: { enable: [], drop: ['not-an-id'] } } }).some((e) => /"bad1" drop id "not-an-id" is not a valid/.test(e)));
+  assert.ok(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, bad2: { enable: [], drop: ['missing@m'] } } }).some((e) => /"bad2" drop id "missing@m" is missing from catalog/.test(e)));
+});
+
+test('validateRegistry: disallowedTools must be an array of non-empty strings', () => {
+  assert.ok(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, bad: { enable: [], disallowedTools: 'Write' } } }).some((e) => /"bad" disallowedTools must be an array of non-empty strings/.test(e)));
+  assert.ok(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, bad: { enable: [], disallowedTools: [''] } } }).some((e) => /"bad" disallowedTools must be an array of non-empty strings/.test(e)));
+  assert.deepEqual(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, ok: { enable: [], disallowedTools: ['Write'], contextBudget: 5000 } } }), []);
+});
+
+test('validateRegistry: contextBudget is required on every non-operator profile and must be a positive integer', () => {
+  const { contextBudget, ...noBudget } = SCHEMA_REG.profiles.schema;
+  assert.ok(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, schema: noBudget } }).some((e) => /"schema" contextBudget must be a positive integer/.test(e)), 'missing contextBudget must error');
+  for (const bad of [0, -1, 1.5, '5000', null]) {
+    assert.ok(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, schema: { ...noBudget, contextBudget: bad } } }).some((e) => /"schema" contextBudget must be a positive integer/.test(e)), `contextBudget ${JSON.stringify(bad)} must error`);
+  }
+  assert.deepEqual(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, schema: { ...noBudget, contextBudget: 5000 } } }), []);
+});
+
+test('validateRegistry: the shipped registry\'s non-operator profiles all carry a positive-integer contextBudget', () => {
+  for (const [name, spec] of Object.entries(REG.profiles)) {
+    if (spec === null) continue; // operator
+    assert.ok(Number.isInteger(spec.contextBudget) && spec.contextBudget > 0, `${name} must carry a positive-integer contextBudget`);
+  }
+});
+
+test('absent drop/disallowedTools on an existing profile is a clean no-op', () => {
+  assert.deepEqual(validateRegistry(SCHEMA_REG), []);
+  const p = resolveProfile(SCHEMA_REG, 'schema');
+  assert.equal(p.enabledPlugins['enabled@m'], true);
+  assert.equal(p.enabledPlugins['floor@m'], true);
+});
+
+test('base is OPTIONAL (absent -> clean; a custom pre-upgrade registry must not hard-fail)', () => {
+  const { base, ...noBase } = SCHEMA_REG;
+  assert.deepEqual(validateRegistry(noBase), []);
+  // resolve-time: absent base behaves as [] — nothing base-only ends up on
+  const p = resolveProfile(noBase, 'schema');
+  assert.equal(p.enabledPlugins['base-only@m'], false);
+});
+
+test('mcpCatalog is OPTIONAL (absent -> clean); a present-but-malformed one still errors', () => {
+  const { mcpCatalog, ...noMcp } = SCHEMA_REG;
+  assert.deepEqual(validateRegistry(noMcp), []);
+  assert.ok(validateRegistry({ ...noMcp, mcpCatalog: 'nope' }).some((e) => /mcpCatalog must be a non-null object/.test(e)));
+});
+
+test('validateRegistry: base contains duplicate ids is an error', () => {
+  assert.ok(validateRegistry({ ...SCHEMA_REG, base: ['floor@m', 'floor@m'] }).some((e) => /base contains duplicate ids/.test(e)));
+});
+
+test('validateRegistry: mcpCatalog url/command/args reject malformed $-interpolation and obvious secret shapes; plain literals are fine', () => {
+  // plain literals — no $ at all — are fine, including a bare URL
+  assert.deepEqual(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { command: 'npx', args: ['-y', '@foo/bar'], url: 'http://localhost:8181/mcp' } } }), []);
+  // an embedded bare $VAR reference inside a larger literal is fine
+  assert.deepEqual(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { url: 'https://$HOST:$PORT/mcp' } } }), []);
+  // malformed interpolation
+  assert.ok(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { command: '${TOKEN}' } } }).some((e) => /mcpCatalog entry "x" command contains a malformed \$-interpolation/.test(e)));
+  // an obvious secret shape embedded in a literal
+  assert.ok(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { args: ['--token', 'sk-abcdefghijklmnop'] } } }).some((e) => /mcpCatalog entry "x" args\[1\] looks like it contains an embedded credential literal/.test(e)));
+  // args must be an array of strings
+  assert.ok(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { args: 'nope' } } }).some((e) => /mcpCatalog entry "x" args must be an array of strings/.test(e)));
+});
+
+test('validateRegistry: mcpCatalog url/command/args — ordinary filesystem paths validate clean (regression: the generic base64/hex-blob heuristic false-positived on POSIX paths, dropped)', () => {
+  assert.deepEqual(validateRegistry({
+    ...SCHEMA_REG,
+    mcpCatalog: {
+      x: {
+        command: '/usr/local/lib/nodemodules/someserver/dist/index.js',
+        args: ['/home/user/documents/mcpservers/server.js', 'C:/Users/user/Documents/github/himmel/scripts/x.js'],
+      },
+    },
+  }), []);
+});
+
+test('regression (finding 1, codex-adv-1): CLI uses the child effective CLAUDE_CONFIG_DIR for its installed-plugin baseline', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const home = mkdtempSync(join(tmpdir(), 'pp-cli-home-'));
+  const configDir = mkdtempSync(join(tmpdir(), 'pp-cli-config-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'pp-cli-cwd-'));
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'wrong-user-config@somewhere': true } }));
+  writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'sneaky@somewhere': true } }));
+  const run = spawnSync(process.execPath, [cli, 'bare'], {
+    encoding: 'utf8',
+    cwd,
+    env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: configDir },
+  });
+  assert.equal(run.status, 0, run.stderr);
+  const p = JSON.parse(run.stdout).enabledPlugins;
+  assert.equal(p['sneaky@somewhere'], false, 'an uncatalogued plugin enabled in the child config must not leak into bare');
+  assert.equal(p['wrong-user-config@somewhere'], undefined, 'the default HOME config must not be scanned when CLAUDE_CONFIG_DIR overrides it');
+});
+
+test('regression (finding 2, codex-adv-2): validateRegistry rejects a non-empty bare.enable — the floor-only invariant is enforced, not just asserted', () => {
+  const bad = { ...REG, profiles: { ...REG.profiles, bare: { enable: ['playwright@claude-plugins-official'] } } };
+  const errs = validateRegistry(bad);
+  assert.ok(errs.some((e) => /"bare" enable must be empty/.test(e)));
+  // the same mis-edit resolved by hand (bypassing the validator) really would
+  // have leaked the plugin — this is exactly what the validator now blocks
+  const leaked = resolveProfile(bad, 'bare');
+  assert.equal(leaked.enabledPlugins['playwright@claude-plugins-official'], true);
+});
+
+test('validateRegistry: "bare" is OPTIONAL — a registry with no bare key validates clean (glm-1: presence must not hard-fail a pre-existing custom registry)', () => {
+  const { bare, ...noBare } = REG.profiles;
+  assert.deepEqual(validateRegistry({ ...REG, profiles: noBare }), []);
+});
+
+test('validateRegistry: "bare", when present, must not declare a non-empty enable, drop, or disallowedTools', () => {
+  assert.ok(validateRegistry({ ...REG, profiles: { ...REG.profiles, bare: { enable: [], drop: [] } } }).some((e) => /"bare" must not declare drop/.test(e)));
+  assert.ok(validateRegistry({ ...REG, profiles: { ...REG.profiles, bare: { enable: [], disallowedTools: ['Write'] } } }).some((e) => /"bare" must not declare disallowedTools/.test(e)));
+});
+
+// ── Golden baseline (HIMMEL-1461 T2.1a) ─────────────────────────────────────
+// Pins what the CURRENT resolver produces for every shipped profile, so a
+// later registry-schema change is provably resolution-preserving. REGISTRY_PATH
+// is passed POSITIONALLY, not via PLUGIN_PROFILES_REGISTRY: that env var is
+// read once at module load and ESM imports are hoisted, so setting it in this
+// file would land after evaluation and be silently ignored — the generator
+// would then read the real registry while claiming to be pinned.
+// "bare" included (glm-4): its resolution is deterministic under the golden's
+// explicit { installed: [] }, and pinning floor-only here turns any future
+// regression of the floor-only promise into a golden diff.
+const REGISTRY_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.json');
+const GOLDEN_PROFILES = ['operator', 'user', 'lane-impl', 'lane-review', 'lane-content', 'bare'];
+const GOLDEN_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'golden-profiles.json');
+
+test('golden baseline — resolveProfile output for shipped profiles is pinned (HIMMEL-1461 T2.1a)', () => {
+  // installed: [] — omitting it would make the result depend on the machine's
+  // live plugin universe and the fixture would go red on every other clone.
+  const registry = loadRegistry(REGISTRY_PATH);
+  const actual = {};
+  for (const name of GOLDEN_PROFILES) actual[name] = resolveProfile(registry, name, { installed: [] });
+
+  // Regenerate with: PLUGIN_PROFILES_UPDATE_GOLDEN=1 node --test scripts/lanes/tests/plugin-profiles.test.mjs
+  if (process.env.PLUGIN_PROFILES_UPDATE_GOLDEN) {
+    writeFileSync(GOLDEN_FIXTURE, JSON.stringify(actual, null, 2) + '\n');
+  }
+
+  // deepEqual, never a JSON.stringify comparison — key order is not part of
+  // the contract this fixture pins.
+  const expected = JSON.parse(readFileSync(GOLDEN_FIXTURE, 'utf8'));
+  assert.deepEqual(actual, expected);
 });

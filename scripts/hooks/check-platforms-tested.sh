@@ -142,7 +142,23 @@ commit_msgs=$(git log --format='%B' "${diff_base}..HEAD" 2>/dev/null || true)
 # unrecognised values (`Platforms tested: yes`) do NOT count, otherwise
 # operators game the gate by typing the prefix without naming a target.
 PLATFORM_RE='(linux|windows|macos|ubuntu|debian|fedora|arch|mac|darwin|wsl|posix|gitbash|git-bash|powershell|pwsh)'
-ATTEST_RE="^[[:space:]]*Platforms tested:.*\\b${PLATFORM_RE}\\b"
+# HIMMEL-1975 — POSIX ERE, token FIRST. The previous form was
+#   ^[[:space:]]*Platforms tested:.*\b${PLATFORM_RE}\b
+# which carried both defects HIMMEL-1372 fixed in check-cr-marker-on-pr-create.sh:
+#   1. `\b` is a GNU extension. BSD grep (macOS — a platform this repo targets,
+#      scripts/hooks/CLAUDE.md) reads it as a LITERAL `b`, so the predicate
+#      became `.*b(linux|…)b` and `Platforms tested: windows` did NOT match:
+#      the gate BLOCKED every correctly-attested push on macOS. The same file
+#      already fixed `\s` -> `[[:space:]]` for exactly this reason and called
+#      ATTEST_RE "the odd one out" — this is that one.
+#   2. `.*` let the token sit ANYWHERE on the line, so
+#      `Platforms tested: not really, I did not try linux` passed. The
+#      companion security-review gate already demands "token first, prose
+#      after"; this is the same shape, and the same shape the smoke suite's
+#      existing values (`linux, windows`, `gitbash (msys2), wsl`) already use.
+# `\b` is replaced by an explicit end-of-token class, so `linuxish` still does
+# not count while `windows-gitbash` / `gitbash (msys2)` / `linux, windows` do.
+ATTEST_RE="^[[:space:]]*Platforms tested:[[:space:]]*${PLATFORM_RE}([^[:alnum:]]|$)"
 
 # HIMMEL-1115: match with a here-string, NOT `printf ... | grep -q`.
 #

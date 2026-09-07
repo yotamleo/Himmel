@@ -116,17 +116,119 @@ case "$_emitted" in
   *) fail=$((fail + 1)); printf '%s\n' "  FAIL: emitted PATH line does NOT put Git usr\\bin ahead of %PATH%: [$_emitted]" ;;
 esac
 
+echo "[test-cadence-format] cadence_vbs_wrapper — execution preserves rc=42 (HIMMEL-1753)"
+case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
+  msys*|cygwin*|win32*|MINGW*)
+    cscript_bin=""
+    if command -v cscript.exe >/dev/null 2>&1; then
+      cscript_bin="$(command -v cscript.exe)"
+    elif command -v cscript >/dev/null 2>&1; then
+      cscript_bin="$(command -v cscript)"
+    fi
+    if [ -z "$cscript_bin" ] || ! command -v cygpath >/dev/null 2>&1; then
+      fail=$((fail + 1))
+      echo "  FAIL: Windows rc=42 execution test needs cscript and cygpath"
+    else
+      shim_tmp="$(mktemp -d -t cadence-format.XXXXXX)"
+      shim_dir="$shim_tmp/rc 42 fixture"
+      mkdir -p "$shim_dir"
+      shim_bat="$shim_dir/exit-42.bat"
+      shim_vbs="$shim_dir/exit-42.vbs"
+      printf '@echo off\r\necho ran> "%%~dp0ran.txt"\r\nexit /b 42\r\n' > "$shim_bat"
+      cadence_vbs_wrapper "$(cygpath -w "$shim_bat")" > "$shim_vbs"
+      shim_rc=0
+      MSYS_NO_PATHCONV=1 "$cscript_bin" //B //NoLogo "$(cygpath -w "$shim_vbs")" >/dev/null 2>&1 || shim_rc=$?
+      if [ -f "$shim_dir/ran.txt" ]; then
+        pass=$((pass + 1)); echo "  ok: generated shim executes the fixture runner"
+      else
+        fail=$((fail + 1)); echo "  FAIL: generated shim did not execute the fixture runner"
+      fi
+      assert_eq "generated shim forwards the fixture runner's literal rc=42" "$shim_rc" "42"
+      rm -rf "$shim_tmp"
+    fi
+    ;;
+  *) echo "  SKIP: execution check is Windows-only (cscript + .bat)" ;;
+esac
+
 echo "[test-cadence-format] runner format stamp"
 # Pinned to the exact current value, not merely "is an integer" — an
 # any-integer assertion can never fail, so it pinned nothing. The point of a
 # literal here is the tripwire: a version bump is a deliberate act (it nudges
 # every armed operator to `arm --force`), so it should require touching this
 # line. Bump it in the same commit that bumps cadence-format.sh.
-if [ "$CADENCE_RUNNER_FORMAT_VERSION" = 9 ]; then
-  pass=$((pass + 1)); echo "  ok: CADENCE_RUNNER_FORMAT_VERSION is the expected 9"
+if [ "$CADENCE_RUNNER_FORMAT_VERSION" = 16 ]; then
+  pass=$((pass + 1)); echo "  ok: CADENCE_RUNNER_FORMAT_VERSION is the expected 16"
 else
-  fail=$((fail + 1)); echo "  FAIL: expected CADENCE_RUNNER_FORMAT_VERSION=9, got '$CADENCE_RUNNER_FORMAT_VERSION'"
+  fail=$((fail + 1)); echo "  FAIL: expected CADENCE_RUNNER_FORMAT_VERSION=16, got '$CADENCE_RUNNER_FORMAT_VERSION'"
 fi
+
+echo "[test-cadence-format] CADENCE_RUNNER_BASENAMES includes upstream-watch (HIMMEL-2367)"
+case " $CADENCE_RUNNER_BASENAMES " in
+  *" upstream-watch "*)
+    pass=$((pass + 1)); echo "  ok: upstream-watch is a stamped runner basename" ;;
+  *)
+    fail=$((fail + 1)); echo "  FAIL: upstream-watch missing from CADENCE_RUNNER_BASENAMES: '$CADENCE_RUNNER_BASENAMES'" ;;
+esac
+
+echo "[test-cadence-format] cadence_wsh_probe — prefers pwsh over powershell.exe (HIMMEL-2126)"
+# shellcheck source=scripts/lib/hermetic-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/hermetic-path.sh"
+_wsh_tmp="$(mktemp -d -t cadence-wsh.XXXXXX)"
+_fake_wscript="$_wsh_tmp/wscript-fake"
+printf '#!/bin/sh\nexit 0\n' > "$_fake_wscript"; chmod +x "$_fake_wscript"
+_fake_ps_absent() { printf '#!/bin/sh\necho ABSENT\n' > "$1"; chmod +x "$1"; }
+
+# Case 1: both pwsh and powershell.exe on PATH -> pwsh wins, no warning.
+_bin1="$_wsh_tmp/bin1"; mkdir -p "$_bin1"
+_fake_ps_absent "$_bin1/pwsh"
+_fake_ps_absent "$_bin1/powershell.exe"
+CADENCE_WSH_CHECKED=0; CADENCE_WSH_AVAILABLE=0; CADENCE_WSH_DETAIL=""
+unset CADENCE_WSH_POWERSHELL
+_stderr1="$_wsh_tmp/stderr1.log"
+if PATH="$_bin1:$PATH" CADENCE_WSCRIPT_BIN="$_fake_wscript" cadence_wsh_probe 2>"$_stderr1"; then
+  pass=$((pass + 1)); echo "  ok: cadence_wsh_probe available when pwsh is present"
+else
+  fail=$((fail + 1)); echo "  FAIL: cadence_wsh_probe should be available (detail: $CADENCE_WSH_DETAIL)"
+fi
+if [ -s "$_stderr1" ]; then
+  fail=$((fail + 1)); echo "  FAIL: cadence_wsh_probe warned even though pwsh was found: $(cat "$_stderr1")"
+else
+  pass=$((pass + 1)); echo "  ok: cadence_wsh_probe stays silent when pwsh is found"
+fi
+
+# Case 2: no pwsh anywhere on PATH, only powershell.exe -> loud named fallback.
+# scrub_path drops the real pwsh install dir so this box's own pwsh cannot leak in.
+# HIMMEL-2535: prepend a tool floor. scrub_path drops a PATH dir WHOLESALE, so
+# on any box where pwsh ships alongside the coreutils (the /usr/bin case that
+# made HIMMEL-2470/2520/2524/2530 red) this scrub would take bash and the
+# probe's own utilities with it. It is green here only because this station has
+# no pwsh at all, so the scrub currently drops nothing -- latent, not correct.
+# Tool set measured, not guessed: the case reaches for mktemp, rm and tr.
+_wsh_floor="$_wsh_tmp/floor"
+build_hermetic_bin "$_wsh_floor" mktemp rm tr
+_path_no_pwsh="$_wsh_floor:$(scrub_path "$PATH" pwsh)"
+hermetic_path_excludes "$_path_no_pwsh" pwsh || {
+  fail=$((fail + 1)); echo "  FAIL: the no-pwsh PATH still resolves a pwsh"; }
+_bin2="$_wsh_tmp/bin2"; mkdir -p "$_bin2"
+_fake_ps_absent "$_bin2/powershell.exe"
+# shellcheck disable=SC2034  # CADENCE_WSH_CHECKED/AVAILABLE consumed by cadence_wsh_probe (sourced, SC1091-disabled)
+CADENCE_WSH_CHECKED=0
+# shellcheck disable=SC2034
+CADENCE_WSH_AVAILABLE=0
+CADENCE_WSH_DETAIL=""
+_stderr2="$_wsh_tmp/stderr2.log"
+if PATH="$_bin2:$_path_no_pwsh" CADENCE_WSCRIPT_BIN="$_fake_wscript" cadence_wsh_probe 2>"$_stderr2"; then
+  pass=$((pass + 1)); echo "  ok: cadence_wsh_probe falls back to powershell.exe when pwsh is absent"
+else
+  fail=$((fail + 1)); echo "  FAIL: cadence_wsh_probe should still be available via the powershell.exe fallback (detail: $CADENCE_WSH_DETAIL)"
+fi
+if grep -q 'HIMMEL-2126' "$_stderr2" 2>/dev/null; then
+  pass=$((pass + 1)); echo "  ok: cadence_wsh_probe names the trap class + HIMMEL-2126 on fallback"
+else
+  fail=$((fail + 1)); echo "  FAIL: cadence_wsh_probe fallback did not warn: $(cat "$_stderr2" 2>/dev/null)"
+fi
+rm -rf "$_wsh_tmp"
 
 echo
 echo "[test-cadence-format] pass=$pass fail=$fail"

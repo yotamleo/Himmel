@@ -17,12 +17,26 @@
 #   1 — at least one case failed
 set -uo pipefail
 
-HOOK="$(cd "$(dirname "$0")" && pwd)/block-backend-tier.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOOK="$SCRIPT_DIR/block-backend-tier.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK"
 
 # --- Stub CLI factory -------------------------------------------------------
 TMPDIR_TEST=$(mktemp -d)
-trap 'rm -rf "$TMPDIR_TEST"' EXIT
+trap 'rm -rf "$TMPDIR_TEST" "${EQ_ROOT:-$TMPDIR_TEST}"' EXIT
+
+# Isolate the section-4 fixture repos from the machine's real git config: the
+# operator's global core.hooksPath would otherwise fire himmel's own commit
+# gates inside a throwaway repo and fail for a reason no case is about (same
+# pattern as test-check-hookspath.sh).
+GIT_ISOLATE_DIR="$TMPDIR_TEST/gitconfig-isolate"
+mkdir -p "$GIT_ISOLATE_DIR"
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL="$GIT_ISOLATE_DIR/.gitconfig"
+: > "$GIT_CONFIG_GLOBAL"
 
 # make_stub <path> <verb>... — emits each verb on --list-commands; any other
 # argv exits 1.
@@ -471,6 +485,157 @@ assert_rc "registry-file path: block getConfluencePage (confluence service in re
 rc=$(printf '%s' '{"tool_name":"mcp__plugin_atlassian_atlassian__getJiraIssue","tool_input":{}}' \
     | env "BACKENDS_REGISTRY=$REG_ATLASSIAN_BOTH" bash "$HOOK" >/dev/null 2>&1; echo "$?")
 assert_rc "registry-file path: block getJiraIssue (jira not shadowed by confluence)" 2 "$rc"
+
+# ============================================================================
+# 4. VERDICT EQUALITY ACROSS CHECKOUTS (HIMMEL-2237)
+# ============================================================================
+#
+# The property that was missing: for the SAME payload, this hook must return
+# the SAME verdict whether it is invoked from the primary checkout or from a
+# linked worktree. It did not — every backend CLI is a path under an untracked
+# dist/ build artifact that exists only in the primary, the probe resolved it
+# against the INVOKING checkout, and so the guard fell open (rc=0) in every
+# worktree while refusing (rc=2) from the primary, on identical input.
+#
+# The fixture reproduces that world exactly: a throwaway repo whose registry
+# points at a relative CLI path that is .gitignored — so it is present in the
+# primary and ABSENT from the linked worktree, the same way scripts/jira/dist/
+# is. The hook itself is COPIED into the fixture (it resolves the primary from
+# its own location), so both checkouts run the real script under test.
+#
+# These cases are deliberately NOT stubbed via JIRA_CLI/CONFLUENCE_CLI — those
+# seams bypass path resolution entirely, which is exactly why every section
+# above could not have caught this.
+
+echo ""
+echo "=== Verdict equality across checkouts (HIMMEL-2237) ==="
+
+EQ_ROOT=$(fixture_mktemp_dir) || exit 1
+EQ_PRIMARY="$EQ_ROOT/primary"
+EQ_WORKTREE="$EQ_ROOT/wt"
+EQ_CLI="$EQ_PRIMARY/scripts/fakecli/index.js"
+mkdir -p "$EQ_PRIMARY"
+
+eq_setup_rc=0
+(
+    fixture_enter_git_init_dir "$EQ_PRIMARY" || exit 1
+    git init -q -b main || exit 1
+    git config user.email himmel-fixture@example.invalid
+    git config user.name "himmel fixture"
+    mkdir -p scripts/hooks scripts/fakecli
+    cp "$HOOK" scripts/hooks/block-backend-tier.sh || exit 1
+    # scripts/fakecli/ stands in for scripts/jira/dist/: a build artifact git
+    # never carries into a linked worktree.
+    printf '%s\n' 'scripts/fakecli/' > .gitignore
+    cat > scripts/backends.json <<'ENDJSON'
+{
+  "jira": {
+    "enabled": true,
+    "mcp_prefix": "mcp__plugin_atlassian_atlassian__",
+    "cli": "scripts/fakecli/index.js",
+    "chain": ["cli", "api", "mcp"]
+  }
+}
+ENDJSON
+    git add .gitignore scripts/hooks/block-backend-tier.sh scripts/backends.json || exit 1
+    git -c commit.gpgsign=false commit -q --no-verify -m "fixture" || exit 1
+    git worktree add -q "$EQ_WORKTREE" -b probe >/dev/null 2>&1 || exit 1
+) || eq_setup_rc=$?
+
+if [ "$eq_setup_rc" -ne 0 ]; then
+    echo "FAIL verdict-equality fixture setup (rc=$eq_setup_rc)"
+    FAILED=$((FAILED + 1))
+else
+    # Created AFTER the commit, so it is untracked: present in the primary,
+    # absent from the worktree — exactly the dist/ situation.
+    make_stub "$EQ_CLI" get list transition
+
+    # Invoke the fixture's OWN copy of the hook from inside <checkout>, with
+    # CLAUDE_PROJECT_DIR pointing there — the shape a real session has. No
+    # JIRA_CLI/CONFLUENCE_CLI/BACKENDS_REGISTRY seams: path resolution IS the
+    # thing under test, and `env -u` clears any inherited value.
+    eq_rc_at() {
+        local checkout="$1" input="$2"
+        printf '%s' "$input" | (
+            cd "$checkout" || exit 99
+            env -u JIRA_CLI -u CONFLUENCE_CLI -u BACKENDS_REGISTRY \
+                "CLAUDE_PROJECT_DIR=$checkout" \
+                bash "$checkout/scripts/hooks/block-backend-tier.sh" >/dev/null 2>&1
+        )
+        echo "$?"
+    }
+
+    eq_stderr_at() {
+        local checkout="$1" input="$2"
+        printf '%s' "$input" | (
+            cd "$checkout" || exit 99
+            # Capture ONLY stderr: stdout is discarded inside the group, then the
+            # group's stderr becomes this subshell's stdout. Brace-group form
+            # clarifies the intent for SC2069.
+            { env -u JIRA_CLI -u CONFLUENCE_CLI -u BACKENDS_REGISTRY \
+                "CLAUDE_PROJECT_DIR=$checkout" \
+                bash "$checkout/scripts/hooks/block-backend-tier.sh" >/dev/null; } 2>&1
+        ) || true
+    }
+
+    # assert_equal_verdicts <label> <expected-rc> <primary-rc> <worktree-rc>
+    assert_equal_verdicts() {
+        local label="$1" expected="$2" prc="$3" wrc="$4"
+        if [ "$prc" = "$wrc" ] && [ "$prc" = "$expected" ]; then
+            echo "PASS $label (primary=$prc worktree=$wrc)"
+        else
+            echo "FAIL $label — expected BOTH rc=$expected, got primary=$prc worktree=$wrc"
+            FAILED=$((FAILED + 1))
+        fi
+    }
+
+    assert_contains() {
+        local label="$1" haystack="$2" needle="$3"
+        case "$haystack" in
+            *"$needle"*) echo "PASS $label" ;;
+            *)
+                echo "FAIL $label — missing: $needle"
+                echo "--- got ---"; echo "$haystack"; echo "-----------"
+                FAILED=$((FAILED + 1))
+                ;;
+        esac
+    }
+
+    EQ_MAPPED='{"tool_name":"mcp__plugin_atlassian_atlassian__getJiraIssue","tool_input":{}}'
+    EQ_UNMAPPED='{"tool_name":"mcp__plugin_atlassian_atlassian__lookupJiraAccountId","tool_input":{}}'
+
+    # Direction 1 — MCP call WITH a plugin equivalent ('get' is in the primary
+    # CLI's verb list): REFUSED from BOTH checkouts. This is the regression —
+    # the worktree returned 0 here before the fix.
+    eq_p=$(eq_rc_at "$EQ_PRIMARY" "$EQ_MAPPED")
+    eq_w=$(eq_rc_at "$EQ_WORKTREE" "$EQ_MAPPED")
+    assert_equal_verdicts "verdict equality: mapped method REFUSED from primary and worktree" 2 "$eq_p" "$eq_w"
+
+    # The worktree refusal must be the real refusal, not an incidental rc=2.
+    assert_contains "worktree refusal names the plugin replacement" \
+        "$(eq_stderr_at "$EQ_WORKTREE" "$EQ_MAPPED")" 'plugin has an equivalent'
+
+    # Direction 2 — MCP call WITHOUT a plugin equivalent (unmapped method):
+    # ALLOWED from BOTH. Guards against "arm it by blocking everything".
+    eq_p=$(eq_rc_at "$EQ_PRIMARY" "$EQ_UNMAPPED")
+    eq_w=$(eq_rc_at "$EQ_WORKTREE" "$EQ_UNMAPPED")
+    assert_equal_verdicts "verdict equality: unmapped method ALLOWED from primary and worktree" 0 "$eq_p" "$eq_w"
+
+    # Carve-out control — and the anti-vacuous control for direction 1. Delete
+    # the PRIMARY's CLI (a fresh clone that never built) and both checkouts
+    # must fall open WITH the advisory. That the worktree verdict flips 2 -> 0
+    # purely because the PRIMARY's CLI vanished proves the worktree case above
+    # genuinely introspected the primary's CLI rather than passing by luck.
+    rm -f "$EQ_CLI"
+    eq_p=$(eq_rc_at "$EQ_PRIMARY" "$EQ_MAPPED")
+    eq_w=$(eq_rc_at "$EQ_WORKTREE" "$EQ_MAPPED")
+    assert_equal_verdicts "carve-out: primary CLI absent → ALLOWED from primary and worktree" 0 "$eq_p" "$eq_w"
+
+    assert_contains "carve-out advisory on stderr (primary)" \
+        "$(eq_stderr_at "$EQ_PRIMARY" "$EQ_MAPPED")" 'falling OPEN'
+    assert_contains "carve-out advisory on stderr (worktree)" \
+        "$(eq_stderr_at "$EQ_WORKTREE" "$EQ_MAPPED")" 'falling OPEN'
+fi
 
 # ============================================================================
 # Summary

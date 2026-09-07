@@ -92,7 +92,7 @@ himmel needs almost nothing to start:
 - **Want the companion vault?** himmel ships a ready-to-use AI-first Obsidian
   vault skeleton at
   [`templates/luna-second-brain/`](../templates/luna-second-brain/) — copy it
-  out into its own git repo and run its `setup.sh`. Its
+  out into its own git repo and run its `scripts/setup.sh`. Its
   [README](../templates/luna-second-brain/README.md#quickstart) has the
   install steps. With the vault in place, each Claude session is auto-captured
   into it — [point the capture at a specific vault](luna/end-session-wiki.md#choosing-the-target-vault)

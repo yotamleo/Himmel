@@ -1,6 +1,6 @@
 ---
 name: roadmap-clips
-description: Use when the operator wants a cross-source roadmap from the luna vault — aggregates actionable items across daily-note action items, the clipper pipeline backlog (_deferred.md), synthesis proposals, promotion candidates, and the component inventory, clusters them into sequenced themes (effort/impact + code vs vault-only target), dedups candidate tickets against the operator's configured Jira projects, and writes a 60-Maps/ roadmap note. Proposals only — never auto-files tickets or restructures the vault. Triggers on /roadmap-clips at the user prompt OR programmatic Skill-tool dispatch. Idempotent per day. LUNA-59.
+description: Use when the operator wants a cross-source roadmap from the luna vault — writes a 60-Maps/ note. Proposals only.
 ---
 
 # roadmap-clips — cross-source roadmap synthesis (LUNA-59)

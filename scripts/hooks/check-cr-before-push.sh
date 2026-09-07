@@ -19,6 +19,8 @@
 # Bypass:
 #   - SKIP_CR=1 git push ...    (env-var skip; logs WARNING)
 #   - git push --no-verify ...  (skip all pre-push hooks)
+#   - PUSH_FOREIGN_REF_OK=1     (the HIMMEL-1809 foreign-ref refusal ONLY —
+#                                see refuse_foreign_ref_push; not a CR bypass)
 #
 # ── CR MARKER IDENTITY CONTRACT (HIMMEL-1540 — the one model, defined once) ──
 # The marker is a pending-review OBLIGATION for a proposed publication:
@@ -62,6 +64,10 @@
 # Fail CLOSED whenever any of (N, R, E, B) is unavailable or unrelated.
 # Round 5 rule: never add another resolution source — extend the marker
 # payload and this contract instead.
+# MUTUAL EXCLUSION (HIMMEL-1558): the marker file has exactly two writers —
+# this hook and clear-cr-marker.sh — and both hold the branch-scoped lock at
+# <git-common-dir>/himmel-cr-marker/<slug>.lock while they touch it. A third
+# writer must take it too, or it reopens the race the lock closes.
 #
 # Note: the prior TTY-check landmine (silent no-op under pre-commit framework)
 # is no longer relevant — there's no subprocess to gate on TTY. The whole
@@ -89,6 +95,75 @@ diff_base=""
 # branch below.
 push_remote_name="${1:-}"
 push_remote_url="${2:-}"
+
+# refuse_foreign_ref_push REF_LINES — HIMMEL-1809.
+#
+# pre-commit's pre-push hooks (shellcheck, gitleaks, the attestation gates)
+# operate on the PUSHER'S WORKING TREE, never on the pushed commits. Pushing a
+# worktree branch from the primary checkout — which sits on the default branch
+# by design for the whole lane workflow — therefore lints the default branch's
+# copy of every file the branch touched. Both failure directions are real:
+# findings are MISATTRIBUTED to line numbers the pushed branch does not have
+# (unreproducible with the linter directly), and, worse, it fails OPEN — a
+# branch that introduces a violation in a file that is clean on the default
+# branch sails through a gate that never inspected it.
+#
+# pre-commit cannot be fixed here (working-tree operation is its design), so
+# this — the first himmel-owned pre-push stage, holding git's raw ref stream —
+# refuses the shape instead. Push from the branch's own worktree, where the
+# working tree IS the pushed content.
+#
+# The property that makes a working-tree lint meaningful is not "same branch
+# NAME" but "the commit on the wire IS this worktree's HEAD", so that is what
+# is compared. Keying on the name would still wave through
+# `git push origin <sha>:refs/heads/b`, `HEAD~3:refs/heads/b`, or a tag pushed
+# onto a branch — every one of them lints a tree the push does not carry.
+# Ceiling (deliberate): UNCOMMITTED changes in this worktree still differ from
+# the pushed commits. Refusing every dirty-tree push would refuse the ordinary
+# workflow, so that gap stays open; HIMMEL-1809's subject is ref identity.
+#
+# Returns 2 on refusal (caller exits), 0 otherwise. Delete pushes and pushes
+# whose destination is not a branch name no working-tree content and are
+# exempt; PUSH_FOREIGN_REF_OK=1 (set in the LAUNCHING shell) is the explicit
+# operator bypass and accepts that the gates inspected the current worktree,
+# not the pushed content.
+refuse_foreign_ref_push() {
+    local ref_lines="$1"
+    local current head_sha local_ref local_sha remote_ref remote_sha branch
+
+    if [ "${PUSH_FOREIGN_REF_OK:-0}" = "1" ]; then
+        return 0
+    fi
+
+    # Empty on a detached HEAD — refused below, since no branch's working tree
+    # can be claimed to match the pushed content.
+    current=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+    # Unborn HEAD leaves this empty and every branch push then refuses, which
+    # is the fail-closed direction (there is no tree to have linted).
+    head_sha=$(git rev-parse --verify HEAD 2>/dev/null || true)
+
+    while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+        # Only a push that publishes a BRANCH claims a reviewed working tree;
+        # tags carry none, and this matches certify_pushed_ref's own scope.
+        case "$remote_ref" in
+            refs/heads/*) branch=${remote_ref#refs/heads/} ;;
+            *) continue ;;
+        esac
+        # A delete push names no local content. Match any all-zero object ID so
+        # this stays correct in SHA-1 and SHA-256 repositories alike.
+        if [ -n "$local_sha" ] && [ -z "${local_sha//0/}" ]; then
+            continue
+        fi
+        if [ -n "$current" ] && [ -n "$head_sha" ] && [ "$local_sha" = "$head_sha" ]; then
+            continue
+        fi
+        echo "check-cr-before-push: refusing — pre-push gates lint the working tree of '${current:-detached HEAD}' but you are pushing '${branch}' (${local_ref}). Push from the branch's own worktree (git -C <wt> push …) or set PUSH_FOREIGN_REF_OK=1 in the LAUNCHING shell." >&2
+        return 2
+    done <<REF_LINES
+$ref_lines
+REF_LINES
+    return 0
+}
 
 # scrub_endpoint URL — strip http(s) userinfo (embedded tokens/passwords)
 # before the URL is persisted in the plaintext marker under .git. Non-http
@@ -155,8 +230,10 @@ write_marker_for_branch() {
     local local_sha="$2"
     local remote_ref="${3:-}"
     local changed non_docs reviewable_docs audit_kind
-    local git_dir marker_path short_sha
+    local git_dir marker_path short_sha now_ts
     local endpoint="" base_sha=""
+    local lock_lib lock_wait lock_rc=0 write_rc=0 lock_owner release_rc=0
+    local prev_marker marker_line rollback_claim
 
     # Skip on the protected default (main OR master) / detached HEAD — pushing the
     # default branch is blocked elsewhere and there's no meaningful diff to review.
@@ -169,6 +246,86 @@ write_marker_for_branch() {
     if [ "${SKIP_CR:-0}" = "1" ]; then
         echo "→ code-review: SKIP_CR=1 set — skipping marker write (WARNING: review locally with /pr-check before opening PR)" >&2
         exit 0
+    fi
+
+    # ── HIMMEL-2104: up-to-date-push remint + bound-marker protection ──────
+    # This function is reached with remote_ref EMPTY only from the legacy
+    # worktree-HEAD fallback at the bottom of this file — the shape that
+    # fires when git invokes this hook with no ref-update data on stdin
+    # (observed: a `git push` that finds the branch already up-to-date on
+    # the remote still runs the hook, but has no ref line to report).
+    #
+    # (a) If the branch's own upstream tracking ref is CONFIRMED at exactly
+    #     the pushed SHA, that upstream data IS a real ref-derived binding —
+    #     mint it here instead of leaving fields 4-6 blank (fix direction 2).
+    # (b) If no such binding can be derived and an existing marker for this
+    #     branch is ALREADY bound, do not replace it with an unbound one —
+    #     leave it untouched (fix direction 1). The unbound worktree-HEAD
+    #     write stays the behaviour only when there is no prior bound marker
+    #     to protect.
+    if [ -z "$remote_ref" ]; then
+        local mint_remote="" mint_url="" mint_sha
+        if [ -n "$push_remote_name" ] && [ -n "$push_remote_url" ]; then
+            # git's OWN pre-push argv already resolved the exact target of
+            # THIS push (honors branch.*.pushRemote / remote.pushDefault /
+            # an explicit `git push <remote>` — none of which
+            # branch.<name>.remote reflects, CR round 2 codex-1). Trust it
+            # over any config-derived guess.
+            mint_remote="$push_remote_name"
+            mint_url="$push_remote_url"
+        else
+            # Fully manual invocation (no argv at all, e.g. run by hand) —
+            # the only local signal left is the branch's configured upstream.
+            mint_remote=$(git config --get "branch.${branch}.remote" 2>/dev/null || true)
+            if [ -n "$mint_remote" ]; then
+                mint_url=$(git remote get-url --push "$mint_remote" 2>/dev/null || git config --get "remote.${mint_remote}.url" 2>/dev/null || true)
+            fi
+        fi
+        # A matching remote-tracking ref proves $branch's content IS on that
+        # remote — it does NOT prove THIS particular push invocation was the
+        # one that put it there or even touched $branch at all (CR round 3
+        # codex-1): empty stdin is a property of the whole push, not of any
+        # one ref, so `git push origin other-branch` while $branch happens to
+        # be independently up to date looks identical. remote.<name>.push
+        # (an explicit custom refspec) is the concrete case that can point
+        # this push at a ref other than refs/heads/$branch entirely — refuse
+        # to mint when one is configured, same fail-closed direction as the
+        # rest of this function. Note this is defense in depth, not the
+        # actual safety boundary: clear-cr-marker.sh re-resolves the marker's
+        # claimed endpoint+ref with a LIVE ls-remote at clear time and refuses
+        # on any mismatch, so even a wrongly-attributed (but factually
+        # accurate) mint here cannot clear unreviewed code — it can only ever
+        # be refused later for a reason unrelated to what triggered the mint.
+        if [ -n "$mint_remote" ] && [ -n "$mint_url" ] && \
+           [ -z "$(git config --get "remote.${mint_remote}.push" 2>/dev/null || true)" ]; then
+            # Confirm THIS remote already has local_sha at refs/heads/$branch
+            # via its local tracking ref — no network call (mirrors
+            # resolve_diff_base's no-fetch stance above). A successful push
+            # always updates this ref, so it is accurate for the genuine
+            # up-to-date case; anything else (never fetched, non-default
+            # refspec) simply fails to mint rather than guessing.
+            mint_sha=$(git rev-parse --verify --quiet "refs/remotes/${mint_remote}/${branch}" 2>/dev/null || true)
+            if [ -n "$mint_sha" ] && [ "$mint_sha" = "$local_sha" ]; then
+                remote_ref="refs/heads/$branch"
+                push_remote_name="$mint_remote"
+                push_remote_url="$mint_url"
+                echo "→ code-review: up-to-date push detected for '${branch}' (no ref-update data on stdin) — reminted the marker binding from the ${mint_remote} tracking ref instead of leaving it unbound." >&2
+            fi
+        fi
+        if [ -z "$remote_ref" ]; then
+            git_dir=$(git rev-parse --git-common-dir)
+            marker_path="${git_dir}/cr-pending/${branch}"
+            if [ -f "$marker_path" ]; then
+                local existing_remote existing_ref existing_endpoint
+                existing_remote=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$4); print $4; exit}' "$marker_path" 2>/dev/null || true)
+                existing_ref=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$5); print $5; exit}' "$marker_path" 2>/dev/null || true)
+                existing_endpoint=$(awk -F' [|] ' '{gsub(/^[ \t]+|[ \t]+$/,"",$6); print $6; exit}' "$marker_path" 2>/dev/null || true)
+                if [ -n "$existing_remote" ] && [ "$existing_ref" = "refs/heads/$branch" ] && [ -n "$existing_endpoint" ]; then
+                    echo "→ code-review: keeping the existing BOUND CR marker for '${branch}' — this invocation carried no ref-update data and could not re-derive the remote binding, so it will NOT downgrade the marker to unbound. If HEAD has genuinely moved unreviewed, push it for real (even an empty commit) to remint the marker." >&2
+                    return 0
+                fi
+            fi
+        fi
     fi
 
     # Ref-derived markers must carry the remote identity, destination ref AND
@@ -252,10 +409,130 @@ write_marker_for_branch() {
     marker_path="${git_dir}/cr-pending/${branch}"
     mkdir -p "$(dirname "${marker_path}")"
     short_sha=$(git rev-parse --short "$local_sha")
-    printf '%s | %s | %s | %s | %s | %s | %s\n' "$(date -Iseconds)" "${local_sha}" "${audit_kind}" "${push_remote_name}" "${remote_ref}" "${endpoint}" "${base_sha}" > "${marker_path}"
+    now_ts=$(date -Iseconds)
+
+    # ── The marker lock (HIMMEL-1558) ───────────────────────────────────────
+    # This write and clear-cr-marker.sh's read-validate-delete critical section
+    # take ONE branch-scoped lock. Without it, a push landing between that
+    # script's final re-validation and its unlink replaces the marker with one
+    # certifying a NEWER, unreviewed SHA — and the unlink then deletes THAT,
+    # opening `gh pr create` for code no critic ever saw. `flock` is absent on
+    # the Git Bash this repo targets, so the primitive is the repo's existing
+    # mkdir-based lock lib under the CR-marker namespace.
+    #
+    # WAIT, then refuse LOUDLY: the holder's critical section is sub-second
+    # plus one ls-remote, so a legitimate push normally waits milliseconds.
+    # Writing the marker anyway on a timeout would be exactly the fail-open the
+    # lock exists to prevent; a refused push is retryable, an ungated PR is not.
+    # Only the write is inside the lock — every value it needs is resolved
+    # above, so no `set -e` abort can leak the lock between acquire and release.
+    lock_lib="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
+    if [ ! -f "$lock_lib" ]; then
+        echo "→ code-review: branch-lock library missing at ${lock_lib} — refusing the push (the CR marker cannot be written without mutual exclusion against a concurrent clear; bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    # Tuning knob for the WAIT only (both directions fail closed: a shorter
+    # wait refuses sooner, a longer one waits longer). The 300s TTL is a
+    # constant — see the lock lib's TTL RECLAMATION header.
+    case "${CR_MARKER_LOCK_WAIT_SECONDS:-}" in
+        ''|*[!0-9]*) lock_wait=30 ;;
+        *) lock_wait="${CR_MARKER_LOCK_WAIT_SECONDS}" ;;
+    esac
+    SHARED_BRANCH_LOCK_NS=himmel-cr-marker SHARED_BRANCH_LOCK_HOLDER_PID=$$ \
+        bash "$lock_lib" acquire-wait "." "$branch" "check-cr-before-push" "$lock_wait" 300 || lock_rc=$?
+    if [ "$lock_rc" -ne 0 ]; then
+        echo "→ code-review: another writer holds the CR marker lock for '${branch}' (waited ${lock_wait}s, lock rc=${lock_rc}) — refusing the push. /pr-check is clearing this branch's marker right now; let it finish, then push again (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    lock_owner=$(SHARED_BRANCH_LOCK_NS=himmel-cr-marker bash "$lock_lib" status "." "$branch" 2>/dev/null || true)
+    # An EMPTY record is NOT "no holder": status prints a fixed sentinel for an
+    # absent owner.json, so empty means the record could not be READ — a
+    # zero-byte owner.json (acquire creates it by redirect and keeps rc 0 when
+    # the printf fails, e.g. ENOSPC), or a failed read. Every ownership check
+    # downstream compares against this value, so an empty one is no evidence at
+    # all. Refuse BEFORE the write (HIMMEL-1994) rather than write the marker
+    # and discover it at the release: there is then nothing to roll back. The
+    # lock stays put — with no record, a release cannot tell this run's lock
+    # from a replacement holder's.
+    if [ -z "$lock_owner" ]; then
+        echo "→ code-review: the CR marker lock for '${branch}' was acquired but its holder record is EMPTY (zero-byte or unreadable owner.json) — refusing the push, because this write cannot be proven mutually excluded against /pr-check's marker clear. Nothing was written. The lock is left in place; if nothing else is running, clear it with: SHARED_BRANCH_LOCK_NS=himmel-cr-marker bash scripts/lib/shared-branch-lock.sh release . '${branch}' (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    # The marker as it stands BEFORE this write. If the release below proves
+    # the write was not excluded, this is what gets put back (CR round 5): the
+    # writer that reclaimed the lock while this process was starved wrote its
+    # own certificate, and refusing this push without undoing the overwrite
+    # would leave ITS marker replaced by ours.
+    prev_marker=$(cat "${marker_path}" 2>/dev/null || true)
+    marker_line=$(printf '%s | %s | %s | %s | %s | %s | %s\n' "${now_ts}" "${local_sha}" "${audit_kind}" "${push_remote_name}" "${remote_ref}" "${endpoint}" "${base_sha}")
+    printf '%s\n' "${marker_line}" > "${marker_path}" || write_rc=$?
+    # Releasing tells us whether we STILL held the lock while writing (CR round
+    # 2, codex-2): the TTL that keeps a dead holder from wedging the branch can
+    # also reclaim the lock from a process the OS starved for longer than the
+    # TTL, and such a process would otherwise resume and overwrite a marker
+    # clear-cr-marker.sh had already validated for deletion. rc 3 means the
+    # lock changed hands, so this write was NOT excluded — refuse the push.
+    # The marker just written stays: a marker only ever BLOCKS `gh pr create`,
+    # so leaving it is the fail-closed direction, and clear-cr-marker.sh's own
+    # holder re-check refuses to unlink it.
+    release_rc=0
+    SHARED_BRANCH_LOCK_NS=himmel-cr-marker bash "$lock_lib" \
+        release-if-owner "." "$branch" "${lock_owner:-?}" >&2 || release_rc=$?
+    if [ "$release_rc" -eq 3 ]; then
+        # Undo the unexcluded write — through a CLAIM, not a compare followed
+        # by a write (CR round 6, codex-1): reading the marker and then
+        # overwriting it is check-then-act, and a writer landing in between
+        # would have its newer certificate destroyed by the rollback. Claiming
+        # the file by rename makes the decision and the mutation apply to the
+        # same bytes, and the file goes back with an atomic create-if-absent
+        # (`ln` fails when the path exists), so a certificate written while the
+        # path was free survives. The rollback only ever RESTORES content,
+        # never removes the file: a marker's absence is what opens
+        # `gh pr create`, so deleting one here would turn a lost race into the
+        # ungated PR this whole gate prevents.
+        if [ -n "${prev_marker}" ]; then
+            rollback_claim="${marker_path}.rollback.$$"
+            rm -f "${rollback_claim}"
+            if mv "${marker_path}" "${rollback_claim}" 2>/dev/null; then
+                if [ "$(cat "${rollback_claim}" 2>/dev/null || true)" = "${marker_line}" ]; then
+                    printf '%s\n' "${prev_marker}" > "${rollback_claim}" || true
+                fi
+                # The no-hard-link fallback is `set -C` (O_EXCL), not a test
+                # followed by `mv`: the test-then-mv was still check-then-act,
+                # and a marker created between the two got overwritten by the
+                # rollback (CR round 8, codex-2).
+                if ! ln "${rollback_claim}" "${marker_path}" 2>/dev/null; then
+                    ( set -C; cat "${rollback_claim}" > "${marker_path}" ) 2>/dev/null || true
+                fi
+                # Same three-way ending as clear-cr-marker.sh's
+                # restore_marker_claim, kept in lockstep with it (CR round 9,
+                # codex-2). An unconditional `rm` here deleted the only copy of
+                # the certificate whenever both atomic attempts failed for a
+                # filesystem reason rather than because a newer marker had
+                # landed — a fail-open on the rollback path.
+                if [ -e "${marker_path}" ]; then
+                    # Occupied by a NEWER marker: ours is stale, drop it.
+                    rm -f "${rollback_claim}"
+                elif ! mv "${rollback_claim}" "${marker_path}" 2>/dev/null; then
+                    # Last resort failed too — keep the claim rather than
+                    # leave the branch with no marker at all.
+                    echo "→ code-review: WARNING: could not restore the previous CR marker for '${branch}' — it is still on disk at ${rollback_claim}, but ${marker_path} is EMPTY, so \`gh pr create\` is UNGATED for this branch until you move it back" >&2
+                fi
+            fi
+        fi
+        echo "→ code-review: the CR marker lock for '${branch}' changed hands (or its holder record became unreadable) while this push was writing the marker — refusing the push, because the write was not mutually excluded against /pr-check's marker clear. Re-run the push (bypass with SKIP_CR=1 or git push --no-verify)" >&2
+        return 2
+    fi
+    if [ "$release_rc" -ne 0 ]; then
+        echo "→ code-review: WARNING: could not release the CR marker lock for '${branch}' — the next writer reclaims it after the TTL" >&2
+    fi
+    if [ "$write_rc" -ne 0 ]; then
+        echo "→ code-review: failed to write the CR marker at ${marker_path} (rc=${write_rc}) — refusing the push" >&2
+        return 2
+    fi
 
     if [ "$audit_kind" = "docs-audit" ]; then
-        echo "→ code-review: docs-audit marker written for ${branch} (HEAD=${short_sha}). Run /pr-check (docs-audit lane: one code-reviewer with the docs charter) before opening the PR — docs are never zero-CR (HIMMEL-303)." >&2
+        echo "→ code-review: docs-audit marker written for ${branch} (HEAD=${short_sha}). Run /pr-check (docs-audit lane: one code-reviewer with the docs charter) before opening the PR — docs are never zero-CR." >&2
     else
         echo "→ code-review: marker written for ${branch} (HEAD=${short_sha}). Run /pr-review-toolkit:review-pr (or /pr-check) in your Claude session before opening the PR." >&2
     fi
@@ -327,14 +604,25 @@ certify_pushed_ref() {
 # on each destination branch, not on the branch checked out in this worktree: the
 # sanctioned push path commonly pushes a feature refspec from a checkout on main.
 saw_pushed_ref=0
+# Read the stream ONCE: the foreign-ref refusal (HIMMEL-1809) has to see every
+# pushed ref before any marker work, and stdin cannot be rewound.
+push_ref_lines=""
 if [ ! -t 0 ]; then
+    push_ref_lines=$(cat)
+fi
+
+refuse_foreign_ref_push "$push_ref_lines" || exit $?
+
+if [ -n "$push_ref_lines" ]; then
     while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
         if [ -z "${local_ref}${local_sha}${remote_ref}${remote_sha}" ]; then
             continue
         fi
         saw_pushed_ref=1
         certify_pushed_ref "$remote_ref" "$local_sha" || exit $?
-    done
+    done <<REF_LINES
+$push_ref_lines
+REF_LINES
 fi
 
 if [ "$saw_pushed_ref" -eq 1 ]; then

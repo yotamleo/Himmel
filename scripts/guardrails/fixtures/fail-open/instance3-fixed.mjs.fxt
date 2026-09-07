@@ -1,0 +1,17 @@
+// Post-fix twin of instance3-preflight-unguarded.mjs.fxt — the shape that
+// shipped as the HIMMEL-1776 instance-3 fix: a non-finite reading is an
+// explicit UNKNOWN reason (refuse), never a number that silently fails the
+// threshold comparison.
+//
+// Expected: lint-fail-open.sh passes this file clean.
+export const CODEX_WEEKLY_REFUSE_PCT = 80;
+
+export function evaluatePreflight({ codexWeeklyPct }) {
+  const reasons = [];
+  if (!Number.isFinite(codexWeeklyPct)) {
+    reasons.push('codex weekly UNKNOWN');
+  } else if (codexWeeklyPct >= CODEX_WEEKLY_REFUSE_PCT) {
+    reasons.push(`codex weekly ${codexWeeklyPct}% >= ${CODEX_WEEKLY_REFUSE_PCT}%`);
+  }
+  return { proceed: reasons.length === 0, reasons };
+}

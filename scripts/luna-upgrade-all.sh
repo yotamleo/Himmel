@@ -19,7 +19,15 @@
 #   bash scripts/luna-upgrade-all.sh apply --vault <path> [--template-dir <path>]
 #       [--force-unstamped]
 #   bash scripts/luna-upgrade-all.sh restore --vault <path> [--from <ts>] [--list]
+#
+# Template resolution order (HIMMEL-2460) — see resolve_template below:
+#   --template-dir > this script's OWN checkout > $HIMMEL_DIR > $HIMMEL_REPO
+#   > the $HOME-relative candidate scan
 set -uo pipefail
+
+# The checkout this script itself lives in — the strongest signal short of an
+# explicit --template-dir about which himmel the caller meant.
+SELF_REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # ---------------------------------------------------------------------------
 # Manifest header field parser — BSD/macOS-sed-safe (C1 fix: HIMMEL-462).
@@ -131,8 +139,18 @@ done
 
 # ---------------------------------------------------------------------------
 # resolve_template: locate himmel's upgrade.sh.
-# Order: --template-dir > $HIMMEL_DIR > $HOME-relative candidates.
-# Sets global TEMPLATE_DIR and UPGRADE.
+# Order (HIMMEL-2460): --template-dir > this script's OWN checkout >
+# $HIMMEL_DIR > $HIMMEL_REPO > $HOME-relative candidates.
+#
+# An AMBIENT pointer must not outrank the checkout you are running from — a
+# stale env var or a lucky $HOME-scan hit is exactly the failure this order
+# exists to prevent: an install driven from ~/Documents/github/himmel-main
+# upgraded a real vault from a stale PUBLIC mirror at ~/Documents/github/himmel,
+# silently, because the scan got there first. An explicit per-invocation
+# --template-dir still wins over both. Do not "fix" the ambient vars back
+# above the own checkout.
+#
+# Sets globals TEMPLATE_DIR, UPGRADE and TEMPLATE_SOURCE (how it was found).
 resolve_template() {
     local rel="templates/luna-second-brain"
 
@@ -140,18 +158,37 @@ resolve_template() {
         # Validate: a real luna-second-brain template has marketplace.json
         if [ -f "$TEMPLATE_DIR/marketplace/.claude-plugin/marketplace.json" ]; then
             UPGRADE="$TEMPLATE_DIR/scripts/upgrade.sh"
+            TEMPLATE_SOURCE="--template-dir"
             return 0
         fi
         echo "luna-upgrade-all: --template-dir does not look like a luna-second-brain template (missing marketplace/.claude-plugin/marketplace.json): $TEMPLATE_DIR" >&2
         return 1
     fi
 
-    if [ -n "${HIMMEL_DIR:-}" ] && \
-       [ -f "$HIMMEL_DIR/$rel/marketplace/.claude-plugin/marketplace.json" ]; then
-        TEMPLATE_DIR="$(cd "$HIMMEL_DIR/$rel" && pwd)"
+    # The checkout this script was invoked OUT of, before any ambient pointer.
+    if [ -f "$SELF_REPO_ROOT/$rel/marketplace/.claude-plugin/marketplace.json" ]; then
+        TEMPLATE_DIR="$(cd "$SELF_REPO_ROOT/$rel" && pwd)"
         UPGRADE="$TEMPLATE_DIR/scripts/upgrade.sh"
+        TEMPLATE_SOURCE="own checkout"
         return 0
     fi
+
+    # Ambient pointers — reached only by a copy of this script living outside a
+    # himmel tree, which is the one case where they mean anything.
+    local var_val
+    for var_val in "${HIMMEL_DIR:-}" "${HIMMEL_REPO:-}"; do
+        [ -n "$var_val" ] || continue
+        if [ -f "$var_val/$rel/marketplace/.claude-plugin/marketplace.json" ]; then
+            TEMPLATE_DIR="$(cd "$var_val/$rel" && pwd)"
+            UPGRADE="$TEMPLATE_DIR/scripts/upgrade.sh"
+            if [ "$var_val" = "${HIMMEL_DIR:-}" ]; then
+                TEMPLATE_SOURCE="HIMMEL_DIR env"
+            else
+                TEMPLATE_SOURCE="HIMMEL_REPO env"
+            fi
+            return 0
+        fi
+    done
 
     if [ -n "${HOME:-}" ]; then
         local cand
@@ -161,6 +198,7 @@ resolve_template() {
             if [ -f "$cand/$rel/marketplace/.claude-plugin/marketplace.json" ]; then
                 TEMPLATE_DIR="$(cd "$cand/$rel" && pwd)"
                 UPGRADE="$TEMPLATE_DIR/scripts/upgrade.sh"
+                TEMPLATE_SOURCE="HOME scan"
                 return 0
             fi
         done
@@ -171,11 +209,24 @@ resolve_template() {
 }
 
 UPGRADE=""
+TEMPLATE_SOURCE=""
 if ! resolve_template; then
     exit 2
 fi
 TEMPLATE_DIR="$(cd "$TEMPLATE_DIR" && pwd)"
 UPGRADE="$TEMPLATE_DIR/scripts/upgrade.sh"
+
+# Say WHICH checkout the template came from, and at which commit, BEFORE any
+# write. The 2460 upgrade wrote 22 files into a real vault from a checkout the
+# operator never named; provenance costs nothing and puts it in the transcript.
+# stderr, not stdout, so --porcelain output stays parseable.
+_tmpl_repo_root="$(cd "$TEMPLATE_DIR/../.." && pwd)"
+_tmpl_sha="no git"
+if command -v git >/dev/null 2>&1; then
+    _tmpl_sha="$(git -C "$_tmpl_repo_root" rev-parse --short HEAD 2>/dev/null || true)"
+    [ -n "$_tmpl_sha" ] || _tmpl_sha="no git"
+fi
+echo "luna-upgrade-all: template source: $_tmpl_repo_root @ $_tmpl_sha ($TEMPLATE_SOURCE)" >&2
 
 # ---------------------------------------------------------------------------
 # classify_vault <path>: stdout one of luna-family | unstamped | not-a-vault

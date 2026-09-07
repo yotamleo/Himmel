@@ -52,7 +52,10 @@ if [ "${1:-}" != "__himmel_detached" ]; then
     if [ -t 0 ]; then :; else cat >/dev/null 2>&1 || true; fi
     # shellcheck source=/dev/null
     . "$(dirname "${BASH_SOURCE[0]}")/../lib/detach.sh"
-    detach_run bash "$0" __himmel_detached
+    # HIMMEL-2004: through the BOUNDED Stop queue, not a per-session tree. Same
+    # instant return; one worker drains it. detach_queued falls back to
+    # detach_run wherever the queue is unavailable.
+    detach_queued where-are-we-on-end bash "$0" __himmel_detached
     exit 0
 fi
 

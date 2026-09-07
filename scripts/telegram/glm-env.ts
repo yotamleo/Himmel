@@ -90,6 +90,12 @@ export function buildGlmEnv(repoRoot: string, context?: "big" | "small"): Record
     // path ONLY (spawn-glm / run.ts); claude-glm{,.ps1} never touches it, which
     // is exactly why the marker separates the two populations.
     HIMMEL_GLM_WORKER: "1",
+    // HIMMEL-2085: the broader worker-ness class HIMMEL_GLM_WORKER is one
+    // instance of. block-glm-external-writes.sh's pin-dir write-fence keys on
+    // THIS var (not the GLM-specific one) so the same fence generalizes to
+    // every dispatched worker lane — see claudexChildEnv (spawn-claudex.ts)
+    // for the other lane that sets it.
+    HIMMEL_WORKER: "1",
     ANTHROPIC_BASE_URL: "https://api.z.ai/api/anthropic",
     ANTHROPIC_AUTH_TOKEN: key,
     ANTHROPIC_MODEL: model,
