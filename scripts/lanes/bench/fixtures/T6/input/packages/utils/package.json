@@ -1,0 +1,7 @@
+{
+  "name": "@widget-platform/utils",
+  "version": "0.2.1",
+  "dependencies": {
+    "left-pad": "1.1.0"
+  }
+}

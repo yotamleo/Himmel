@@ -19,6 +19,10 @@ skill runbook, the egress-floor hook, and templates.
 - `_CLAUDE.salus.md` — medical posture block, appended to the vault's `_CLAUDE.md`.
 - `.salus-profile` — marker dropped at the vault root so `upgrade.sh` knows this
   vault is on the medical profile and may carry medic-asset updates.
+- `.salus` — the PHI guard marker (HIMMEL-2173), dropped alongside
+  `.salus-profile` (never overwritten if already present). This is the marker
+  the `claude-glm`/`claude-codex`/`claude-routed` launchers and the hermes
+  parity guard test for before refusing a cloud/codex launch from this vault.
 
 ## How to create a Salus vault
 Copy the base `luna-second-brain` template, then:

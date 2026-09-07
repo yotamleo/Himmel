@@ -2,9 +2,12 @@
 # Smoke test for scripts/hooks/inject-where-are-we.sh (HIMMEL-516).
 #
 # Usage: bash scripts/hooks/test-inject-where-are-we.sh
-# Hermetic: HIMMEL_REPO points at the real repo (so dock.mjs resolves) but the
-# STATE DIR is a temp override and the refresh is a STUB — no real jira/gh/git
-# network, no writes to the repo's own .where-are-we.
+# Hermetic: HIMMEL_REPO points at a throwaway root carrying only a COPY of
+# scripts/where-are-we (so dock.mjs resolves) and deliberately NO .env (see
+# HERMETIC_ROOT below — HIMMEL-2519), the STATE DIR is a temp override, and
+# the refresh is a STUB — no real jira/gh/git network, no writes to the
+# repo's own .where-are-we, and no leak of the operator's real .env into a
+# gate case.
 #
 # Exit: 0 = all cases pass, 1 = at least one failed.
 set -uo pipefail
@@ -31,6 +34,38 @@ fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# --- Hermetic HIMMEL_REPO: scripts/where-are-we only, deliberately NO .env --
+# The hook resolves node/lib seams relative to ITS OWN path (../lib/*), never
+# via $HIMMEL_REPO, so the only things it needs from $HIMMEL_REPO are
+# scripts/where-are-we/{dock,collect}.mjs (a pure relative-import ESM tree, no
+# node_modules) and, for an active-ticket-branch render, `git branch
+# --show-current` (unused by any assertion below — every ON case either sets
+# WHERE_ARE_WE_BRANCH_OVERRIDE or ignores the render's content). COPY (not
+# symlink) that one subtree: dock.mjs's CLI-entry guard is
+# `import.meta.url === pathToFileURL(process.argv[1]).href`, and Node
+# resolves import.meta.url through symlinks to the REALPATH while argv[1]
+# stays the invoked (symlinked) path — a `scripts/` symlink here makes them
+# permanently mismatch, so the CLI branch silently never runs (empty stdout,
+# still exit 0 — looked exactly like every ON case being OFF; caught while
+# building this fix). Copying means .env — which lives at the repo ROOT, one
+# level above where-are-we/ — is never part of the copy.
+#
+# WHY this matters (HIMMEL-2519): the hook sources scripts/lib/load-dotenv.sh,
+# which treats a KEY as "absent" when it is unset OR EMPTY (HIMMEL-1922,
+# deliberate) and fills any absent key from $HIMMEL_REPO/.env. Pointing
+# HIMMEL_REPO at the REAL repo root — as this suite used to — means an
+# operator .env that sets HIMMEL_WHERE_ARE_WE clobbers every case below that
+# passes an EMPTY value for "OFF" (a real value overwrites empty, since empty
+# reads as absent). A NON-empty value like 'false' is immune (it never reads
+# as absent), which is why "OFF via 'false' grammar" already passed. A real
+# repo root's .env can equally supply HIMMEL_WHERE_ARE_WE_STALE_HOURS whenever
+# a case leaves it unset — this hermetic root removes that exposure too, not
+# just the OFF cases.
+HERMETIC_ROOT="$TMP/hermetic-repo"
+mkdir -p "$HERMETIC_ROOT/scripts"
+cp -a "$REPO_ROOT/scripts/where-are-we" "$HERMETIC_ROOT/scripts/where-are-we"
+[ -e "$HERMETIC_ROOT/.env" ] && { echo "FATAL: hermetic root unexpectedly has a .env" >&2; exit 1; }
+
 seed_ledger() {
     local dir="$1"
     mkdir -p "$dir"
@@ -39,7 +74,7 @@ seed_ledger() {
 
 # --- Case 1: OFF → no output, exit 0 ----------------------------------------
 state1="$TMP/s1"; seed_ledger "$state1"
-out1="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state1" \
+out1="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state1" \
     HIMMEL_WHERE_ARE_WE="" bash "$HOOK" </dev/null 2>/dev/null)"; rc1=$?
 if [ "$rc1" = 0 ] && [ -z "$out1" ]; then
     pass "OFF -> empty output, exit 0"
@@ -48,12 +83,14 @@ else
 fi
 
 # --- Case 2: ON, global-digest route → injects a POINTER, persists latest.md -
-# Force the digest route with the branch seam (independent of REPO_ROOT's real
-# branch). Assert the WRAPPER, the freshness line (L1 contract's first body
+# Force the digest route with the branch seam (HERMETIC_ROOT has no .git, so
+# the hook's own `git branch --show-current` fallback would read empty
+# anyway; the override makes the route explicit regardless). Assert the
+# WRAPPER, the freshness line (L1 contract's first body
 # line), the POINTER marker, and that the full digest was persisted to
 # latest.md (so the pointer is not dangling).
 state2="$TMP/s2"; seed_ledger "$state2"; touch "$state2/.refreshed-at"
-out2="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2" \
+out2="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=main \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2=$?
 if [ "$rc2" = 0 ] \
@@ -75,7 +112,7 @@ state2b2="$TMP/s2big"; mkdir -p "$state2b2"
 big2=$(head -c 90000 /dev/zero | tr '\0' 'x')
 printf '{"ts":"2026-01-01T00:00:00Z","source":"jira","key":"HIMMEL-9","kind":"ticket","status":"%s"}\n' "$big2" > "$state2b2/ledger.jsonl"
 touch "$state2b2/.refreshed-at"
-out2b2="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2b2" \
+out2b2="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2b2" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=main \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2b2=$?
 if [ "$rc2b2" = 0 ] \
@@ -92,7 +129,7 @@ fi
 # It must NOT be pointerized (that would hide blockers/locks); assert the card
 # body appears inline and the pointer marker is absent. (codex-adv HIMMEL CR.)
 state2c="$TMP/s2card"; seed_ledger "$state2c"; touch "$state2c/.refreshed-at"
-out2c="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2c" \
+out2c="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2c" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=feat/himmel-9-card \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2card=$?
 if [ "$rc2card" = 0 ] \
@@ -111,10 +148,10 @@ fi
 # latest.md — a later reader of the digest pointer must still find the digest,
 # not unrelated ticket-local content. (codex adversarial CR — shared-state race.)
 state2s="$TMP/s2share"; seed_ledger "$state2s"; touch "$state2s/.refreshed-at"
-HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2s" \
+HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2s" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=main \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null >/dev/null 2>&1
-HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2s" \
+HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2s" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=feat/himmel-9-x \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null >/dev/null 2>&1
 if [ -s "$state2s/latest.md" ] && grep -qxF '# Where are we' "$state2s/latest.md"; then
@@ -131,7 +168,7 @@ fi
 state2ca="$TMP/s2card_adv"; mkdir -p "$state2ca"
 printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","source":"jira","key":"HIMMEL-9","kind":"ticket","status":"in-progress\n# Where are we\ndone"}' > "$state2ca/ledger.jsonl"
 touch "$state2ca/.refreshed-at"
-out2ca="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2ca" \
+out2ca="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2ca" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=feat/himmel-9-card \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2ca=$?
 if [ "$rc2ca" = 0 ] \
@@ -150,7 +187,7 @@ fi
 # fail-open path applies even where a pointer WOULD have been emitted.
 state2a="$TMP/s2a"; seed_ledger "$state2a"; touch "$state2a/.refreshed-at"
 mkdir -p "$state2a/latest.md"   # occupy the target path with a directory
-out2a="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2a" \
+out2a="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2a" \
     WHERE_ARE_WE_BRANCH_OVERRIDE=main \
     HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc2a=$?
 if [ "$rc2a" = 0 ] \
@@ -165,7 +202,7 @@ fi
 # --- Case 2b: ON + fresh marker → NO refresh spawned (debounce) -------------
 state2b="$TMP/s2b"; seed_ledger "$state2b"; touch "$state2b/.refreshed-at"
 sentinel2b="$TMP/sentinel2b"
-HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2b" \
+HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2b" \
     HIMMEL_WHERE_ARE_WE=1 \
     HIMMEL_WHERE_ARE_WE_COLLECT_CMD="touch '$sentinel2b'" \
     bash "$HOOK" </dev/null >/dev/null 2>&1
@@ -177,7 +214,7 @@ else
 fi
 
 # --- Case 2c: OFF via falsy grammar ('false') ------------------------------
-out2c="$(HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2" \
+out2c="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2" \
     HIMMEL_WHERE_ARE_WE=false bash "$HOOK" </dev/null 2>/dev/null)"; rc2c=$?
 if [ "$rc2c" = 0 ] && [ -z "$out2c" ]; then
     pass "OFF via 'false' grammar -> empty output, exit 0"
@@ -192,7 +229,7 @@ fi
 # must appear (the detached child really ran).
 state3="$TMP/s3"; seed_ledger "$state3"
 sentinel="$TMP/sentinel3"
-HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state3" \
+HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state3" \
     HIMMEL_WHERE_ARE_WE=1 \
     HIMMEL_WHERE_ARE_WE_COLLECT_CMD="sleep 3; touch '$sentinel'" \
     bash "$HOOK" </dev/null >/dev/null 2>&1; rc3=$?

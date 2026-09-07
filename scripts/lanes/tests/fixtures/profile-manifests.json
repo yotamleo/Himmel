@@ -1,0 +1,58 @@
+{
+  "user": {
+    "enabled": [
+      "claude-obsidian@himmel",
+      "coderabbit@claude-plugins-official",
+      "codex@openai-codex",
+      "context7@claude-plugins-official",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "luna-correlate@himmel",
+      "obsidian-triage@himmel",
+      "playwright@claude-plugins-official",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "superpowers@claude-plugins-official",
+      "telegram-himmel@himmel",
+      "typescript-lsp@claude-plugins-official"
+    ],
+    "contextBudget": 50000
+  },
+  "lane-impl": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  },
+  "lane-review": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  },
+  "lane-content": {
+    "enabled": [
+      "claude-obsidian@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "obsidian-triage@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  },
+  "bare": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  }
+}

@@ -33,7 +33,16 @@
 # would be a false positive (HIMMEL-876, e.g. the operator-local
 # scripts/cr/critics.local.json overlay). EXCEPT the secret-file class
 # (.env, keys, credentials — mirrored from block-read-secrets.sh): those
-# are gitignored BECAUSE they are sensitive, and stay denied.
+# are gitignored BECAUSE they are sensitive, and stay denied. Also EXCEPT the
+# `.single-writer` basename itself (HIMMEL-2526): that marker is gitignored
+# too, but writing it is exactly the "disable this fence" action, so it never
+# takes this exemption either.
+#
+# The resolution/branch/exemption/bypass decision itself is the shared
+# `main_checkout_verdict` predicate in scripts/guardrails/lib.sh (HIMMEL-2526)
+# — this hook and any Bash-mediated write fence call the SAME function so a
+# `cat >`/`sed -i`/python-heredoc write is judged identically to an Edit/Write
+# tool call, instead of drifting a second copy of this logic.
 #
 # Hook input arrives on stdin as JSON. Exit codes:
 #   0 — allow (default for any non-blocking path)
@@ -133,9 +142,83 @@ canon() {
 
 input=$(cat)
 
-# Extract the target file_path. NotebookEdit uses notebook_path; tolerate both.
-file_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || true)
-[ -z "$file_path" ] && exit 0
+tool_name=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
+
+# Extract target path(s). NotebookEdit uses notebook_path; tolerate both.
+# Codex's apply_patch (create/edit envelope, HIMMEL-2170) carries no
+# file_path/notebook_path field at all -- every target lives inside
+# "*** Add/Update/Delete File:" lines in tool_input.command instead (see
+# docs/internals/harness-compat.md's empirical event/tool-name matrix, and
+# scripts/guardrails/lesson-write-fence.sh's twin extraction). Pull every such
+# target out of the patch text; the loop below (replacing the old single-path
+# body) runs the SAME repo/branch check against EACH one, so a hit on ANY
+# target blocks the whole apply_patch call. A command with none of these
+# lines (empty/malformed patch text) yields an empty target list, which falls
+# through to the same allow this hook already gave an empty file_path -- this
+# guard's established fail-open posture for an unresolvable target (it is
+# defense-in-depth; check-worktree-isolation.sh is the commit-time backstop).
+targets=""
+if [ "$tool_name" = "apply_patch" ]; then
+    cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+    # HIMMEL-2170 CR round 2: read the TOOL's cwd the same way lesson-write-
+    # fence.sh's twin branch does (`.tool_input.cwd // .cwd`, fallback $PWD).
+    # canon() below has no cwd parameter of its own - it resolves a relative
+    # path against the HOOK PROCESS's $PWD, which can differ from the tool
+    # cwd - so an apply_patch target that is RELATIVE must be joined onto
+    # the tool cwd HERE, before canon(), or it silently misresolves and a
+    # primary-checkout edit can slip past the main-branch block.
+    cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
+    [ -n "$cwd" ] || cwd="$PWD"
+    _ap_prev=""
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        # Strip a trailing CR (see lesson-write-fence.sh's twin extraction for
+        # the full explanation): `jq -r` CRLF-converts embedded newlines on
+        # this platform, and command substitution only strips the FINAL
+        # trailing newline group — every OTHER line in a multi-line
+        # tool_input.command (apply_patch's patch text always is) keeps a
+        # stray `\r` glued on.
+        _line="${_line%$'\r'}"
+        _target=""
+        case "$_line" in
+            '*** Add File: '*)    _target="${_line#'*** Add File: '}"; _ap_prev="" ;;
+            '*** Update File: '*) _target="${_line#'*** Update File: '}"; _ap_prev="update" ;;
+            '*** Delete File: '*) _target="${_line#'*** Delete File: '}"; _ap_prev="" ;;
+            # HIMMEL-2170 CR round 1: a rename/move destination (optional
+            # line immediately following an `*** Update File:` line - see
+            # lesson-write-fence.sh's twin arm for the grammar citation).
+            # Without this, an Update on an ALLOWED-branch source could move
+            # it onto a path inside the PRIMARY checkout without that
+            # destination ever being checked.
+            #
+            # CodeRabbit round (HIMMEL-2170): valid only immediately after an
+            # Update File line (see the fence's twin comment for the grammar
+            # citation). Unlike the fence, this hook does NOT deny on a
+            # misplaced Move-to — its established posture is fail-OPEN on an
+            # unresolvable/malformed target (see the header's fail-open/
+            # fail-closed note): a stray Move-to simply contributes NO
+            # target ($_target stays empty, dropped below) rather than being
+            # treated as a real one. Other valid targets in the same patch
+            # (e.g. an Update line) are still checked normally.
+            '*** Move to: '*)
+                [ "$_ap_prev" = "update" ] && _target="${_line#'*** Move to: '}"
+                _ap_prev="" ;;
+            *) _ap_prev="" ;;
+        esac
+        if [ -n "$_target" ]; then
+            case "$_target" in
+                /*|[A-Za-z]:/*|[A-Za-z]:\\*) : ;;                # already absolute
+                *)                           _target="$cwd/$_target" ;;
+            esac
+            targets="${targets}${_target}"$'\n'
+        fi
+    done <<< "$cmd"
+else
+    targets=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' 2>/dev/null || true)
+fi
+[ -n "$(printf '%s' "$targets" | tr -d '[:space:]')" ] || exit 0
+
+while IFS= read -r file_path || [ -n "$file_path" ]; do
+[ -n "$file_path" ] || continue
 
 # `|| file_real=""` suppresses set -e on canon failure so the empty-check below
 # catches it with an actionable message instead of set -e aborting rc=1.
@@ -153,142 +236,34 @@ if [ -z "$file_real" ]; then
     exit 2
 fi
 
-# Resolve the EDITED FILE's git repo root — NOT the launch/project dir
-# (CLAUDE_PROJECT_DIR). Anchoring to the launch dir silently no-oped the guard
-# when Claude was started ABOVE the repo: a nested repo on main went unguarded
-# because the OUTER dir's branch was read instead (Himmel#45). Walk up the
-# file's OWN canonicalised ancestors looking for a `.git` (a directory in a
-# normal checkout, a FILE in a linked worktree or submodule). Walking
-# file_real's ancestors — rather than `git -C <dir> rev-parse --show-toplevel`
-# — keeps repo_real a literal PREFIX of file_real (no git-vs-canon path-form
-# mismatch on the handovers/ check) AND lets us distinguish "inside a repo whose
-# branch we cannot read" (→ fail CLOSED in the branch check) from "not inside
-# any repo" (→ allow) — `git rev-parse` collapses both to rc=128. The check is
-# `.git`-EXISTENCE only (no git invocation), so a not-yet-created Write target
-# whose parent dirs are missing simply keeps walking up to the repo root, and
-# the loop terminates at the filesystem root where dirname stops changing
-# (robust on both `/...` and bare-drive `C:/...` forms — no `git -C C:` foot-gun).
+# Resolve the EDITED FILE's write verdict via the shared main_checkout_verdict
+# predicate (scripts/guardrails/lib.sh, HIMMEL-2526) — the walk-up-for-`.git`,
+# branch check, handovers/untracked-ignored/secret-class/single-writer-basename
+# exemptions, and the EDIT_ON_MAIN_OK / .single-writer bypasses all live there
+# now, shared with any other Bash-mediated write fence, instead of a second
+# copy of this logic drifting here. The call MUST go through `|| verdict_rc=$?`
+# (not a bare call): under set -e a bare call returning nonzero (the common
+# case — most edits get judged, not merely resolved) aborts the script with NO
+# stderr, surfacing as Claude Code's "hook error: No stderr output"
+# (HIMMEL-392, the same reason the old inline `is_on_main` call needed it).
 repo_real=""
-_d=$(dirname "$file_real")
-_prev=""
-while [ "$_d" != "$_prev" ]; do
-    if [ -e "$_d/.git" ]; then repo_real="$_d"; break; fi
-    _prev="$_d"
-    # `|| _d="$_prev"` keeps a (near-impossible) dirname failure from aborting
-    # the hook with no stderr under set -e — it just terminates the loop.
-    _d=$(dirname "$_d") || _d="$_prev"
-done
+verdict_rc=0
+repo_real=$(main_checkout_verdict "$file_real") || verdict_rc=$?
 
-# File is not inside any git repo (global config, /tmp, system files) → allow.
-[ -z "$repo_real" ] && exit 0
-repo_real="${repo_real%/}"
+# rc=0 covers every allow path main_checkout_verdict has: not inside any repo,
+# the handovers/ carve-out, a linked worktree, the untracked+gitignored
+# exemption, EDIT_ON_MAIN_OK=1, and a repo-root .single-writer marker.
+[ "$verdict_rc" -eq 0 ] && continue
 
-# Skip handover/status doc edits — pure docs the operator may update from the
-# primary checkout on main. Anchored to the FILE's repo root (Himmel#45).
-case "$file_real" in
-    "$repo_real"/handovers/*) exit 0 ;;
-esac
-
-# No explicit `.claude/worktrees/` skip is needed: a git worktree carries its
-# own `.git` FILE, so the walk above resolves repo_real to the worktree dir,
-# and the branch check below ALLOWS the edit at the `.git`-is-not-a-directory
-# test (a feature branch in the PRIMARY checkout, whose `.git` is a directory,
-# is blocked instead — HIMMEL-507). The old launch-dir-anchored worktrees skip
-# was itself part of the Himmel#45 mis-anchoring.
-
-# Check the branch of the FILE's repo. rc=2 (branch unreadable — e.g. a repo
-# with a corrupt/removed HEAD) fails CLOSED to match this script's security
-# posture (jq/git/realpath capability checks above also fail closed). The call
-# MUST go through `|| branch_rc=$?` (not a bare `is_on_main`): under set -e a
-# bare call returning rc=1 (feature branch) aborts the script rc=1 with NO
-# stderr — before the rc=1 ALLOW path below — surfacing as Claude Code's "hook
-# error: No stderr output" (HIMMEL-392).
-branch_rc=0
-is_on_main "$repo_real" || branch_rc=$?
-
-# Map the branch state to a block reason — or allow. The hook's job is to force
-# ALL feature work into a worktree (header), so an edit in the PRIMARY checkout
-# is blocked whether the branch is main OR a feature branch; only a linked
-# worktree (its own `.git` is a FILE, not a directory) is allowed (HIMMEL-507).
-#   rc=1 + repo_real/.git is a FILE → linked worktree / submodule → ALLOW
-#   rc=1 + repo_real/.git is a DIR  → feature branch in the PRIMARY checkout → BLOCK
-#   rc=0                            → main/master → BLOCK
-#   rc>=2                           → branch unreadable → fail CLOSED
-block_reason=""
-if [ "$branch_rc" -eq 1 ]; then
-    # A linked worktree (and a submodule) carries a `.git` FILE; the primary
-    # checkout a `.git` DIRECTORY. Feature work belongs in a worktree, so the
-    # worktree case is the only feature-branch path that ALLOWS the edit.
-    if [ ! -d "$repo_real/.git" ]; then
-        exit 0
-    fi
-    block_reason="primary-feature"
-elif [ "$branch_rc" -ne 0 ]; then
-    echo "block-edit-on-main: is_on_main returned rc=$branch_rc (cannot determine branch for '$repo_real') - refusing to evaluate" >&2
+# rc=3: branch unreadable (e.g. a repo with a corrupt/removed HEAD) — fail
+# CLOSED to match this script's security posture (jq/git/realpath capability
+# checks above also fail closed).
+if [ "$verdict_rc" -eq 3 ]; then
+    echo "block-edit-on-main: cannot determine branch for '$repo_real' - refusing to evaluate" >&2
     exit 2
-else
-    block_reason="main"
 fi
 
-# Secret-file class (HIMMEL-876 CR carve-out). A secret file (.env, keys,
-# credentials) is typically gitignored precisely BECAUSE it is sensitive
-# machine-local state — exempting it below would let an unattended Write
-# clobber the REAL .env in the primary checkout, a trust-boundary regression
-# the pre-exemption hook incidentally prevented. `is_secret_basename` (shared
-# with block-read-secrets.sh, HIMMEL-879 — see scripts/guardrails/lib.sh for
-# the pattern list + case-fold rationale) is sourced above.
-#
-# Untracked + gitignored exemption (HIMMEL-876): the guard's purpose is
-# protecting TRACKED code from an on-main/primary-feature commit — a file
-# that is both untracked AND gitignored (e.g. the HIMMEL-727 operator-local
-# scripts/cr/critics.local.json overlay) can never end up in such a commit,
-# so blocking it is a false positive. Only exempt when BOTH hold: an
-# untracked-but-NOT-ignored file could still be `git add`ed and committed,
-# so that stays blocked. `ls-files --error-unmatch` rc=1 means untracked;
-# any other rc (0=tracked, >1=git error) skips the exemption and falls
-# through to the existing block below — fail CLOSED on any git-command
-# surprise, never allow on error. Short-circuited: this only runs once we
-# already know the edit would otherwise be denied.
-#
-# Secret-class carve-out: a file in the secret-file class above NEVER takes
-# this exemption, even when untracked+gitignored — it falls through to the
-# existing deny, preserving the incidental protection of the real .env /
-# keys in the primary checkout from unattended clobbering.
-if ! is_secret_basename "$file_real"; then
-    ls_rc=0
-    git -C "$repo_real" ls-files --error-unmatch -- "$file_real" >/dev/null 2>&1 || ls_rc=$?
-    if [ "$ls_rc" -eq 1 ] && git -C "$repo_real" check-ignore -q -- "$file_real" >/dev/null 2>&1; then
-        exit 0
-    fi
-fi
-
-# Both block reasons are "feature work in the PRIMARY checkout" (on main, or on
-# a feature branch). Honour the shared opt-outs BEFORE printing a block message
-# so the operator never sees a misleading "refusing" warning for an edit that
-# will actually succeed.
-#
-# EDIT_ON_MAIN_OK=1 — session bypass (set in the LAUNCHING shell; a per-edit
-# prefix cannot reach the hook process).
-if [ "${EDIT_ON_MAIN_OK:-0}" = "1" ]; then
-    exit 0
-fi
-
-# Single-writer opt-in (HIMMEL-404): a repo with a local `.single-writer`
-# marker at its root commits straight to main by design (personal vaults /
-# state repos) — the worktree-forcing block does not apply. Anchored to
-# repo_real (the edited file's repo), so a parent's marker never leaks the
-# opt-out onto a nested repo. The marker is gitignored (global excludes) so
-# it never propagates to a clone/fork — a checkout without it stays protected.
-# POSIX `[ -f ]` is true for a regular file OR a symlink that resolves to one,
-# and false for a directory, unreadable file, or broken symlink (fail-closed).
-# That is acceptable: the marker is a deliberate local opt-in, not a security
-# boundary (the operator can equally use EDIT_ON_MAIN_OK=1 or comment the hook,
-# and anyone able to create the marker could just touch it directly).
-if [ -f "$repo_real/.single-writer" ]; then
-    exit 0
-fi
-
-if [ "$block_reason" = "primary-feature" ]; then
+if [ "$verdict_rc" -eq 2 ]; then
     cat >&2 <<EOF
 ⛔ block-edit-on-main: refusing to edit \`$file_path\` — its repo is the PRIMARY
 checkout on a feature branch. Feature work must be isolated in a worktree per
@@ -311,6 +286,7 @@ EOF
     exit 2
 fi
 
+# The only remaining verdict is rc=1 ("main"/"master").
 cat >&2 <<EOF
 ⛔ block-edit-on-main: refusing to edit \`$file_path\` — its repo is on main/master.
 (file: $file_real — repo: $repo_real)
@@ -340,3 +316,6 @@ Or, if this is a single-writer repo you always commit to main directly
 Or temporarily comment out the hook stanza in .claude/settings.json.
 EOF
 exit 2
+done <<< "$targets"
+
+exit 0

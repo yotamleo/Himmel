@@ -1,4 +1,5 @@
 import { spawn } from "bun";
+import { killTree, SPAWN_OWN_GROUP } from "../lib/kill-tree.mjs";
 import { buildGlmEnv, GLM_MODEL_ALIAS } from "./glm-env";
 import { existsSync } from "node:fs";
 import { dirname } from "node:path";
@@ -107,13 +108,50 @@ export function glmChildEnv(): Record<string, string | undefined> {
   return env;
 }
 
+// HIMMEL-1753: a spawned worker runs with stdin CLOSED (see runSession), so it
+// can never answer an interactive editor or prompt. Any tool that falls back to
+// $EDITOR (git commit without -m, gh pr create without --body, ...) would open a
+// window on the operator's desktop and then block forever behind it — a focus
+// steal that also contaminates the LUNA-131 focus soak. Pinning every editor
+// hook to the no-op `true` turns that silent hang into a fast, loud failure.
+// DEFENCE-IN-DEPTH, not a confirmed root cause: gh detects a non-interactive
+// context and errors ("must provide --title and --body ... when not running
+// interactively") rather than opening an editor, so this closes the paths where
+// a TTY *is* present rather than a proven live leak.
+// These merge OVER the inherited process env on purpose — the poller itself is
+// launched by a scheduled task whose environment carries none of them — but
+// UNDER extraEnv, so an explicit per-route value still wins.
+export const NON_INTERACTIVE_EDITOR_ENV: Record<string, string> = {
+  GIT_EDITOR: "true",
+  EDITOR: "true",
+  VISUAL: "true",
+  GH_PROMPT_DISABLED: "1",
+};
+
 // env selection per lane — exported so the lane wiring itself is unit-tested
 // (not only the glmChildEnv helper).
-export function sessionEnv(lane?: "glm"): Record<string, string | undefined> {
-  if (lane === "glm") return glmChildEnv();
-  const e: Record<string, string | undefined> = { ...process.env };
-  delete e.TELEGRAM_OWN_POLLER;
-  return e;
+// extraEnv (LUNA-101): per-route child-env additions, merged LAST so the
+// TELEGRAM_OWN_POLLER strip (which both branches do) can never remove a marker,
+// and an ambient poller var can never survive a marker merge. This is the only
+// channel by which a route reaches the child env — the env is built here, not
+// in the poller.
+export function sessionEnv(lane?: "glm", extraEnv?: Record<string, string>): Record<string, string | undefined> {
+  const base: Record<string, string | undefined> = lane === "glm" ? glmChildEnv() : { ...process.env };
+  // Reads asymmetric but is not: glmChildEnv() ALREADY deletes it (see above), so
+  // the glm branch's base arrives stripped and re-deleting would be dead code.
+  // Both branches end up without it — asserted by a test that seeds the var and
+  // calls sessionEnv("glm"). (Two independent critics have now read this line as
+  // a glm leak; the note is here so a third does not.)
+  if (lane !== "glm") delete base.TELEGRAM_OWN_POLLER;
+  // The GGS markers are SET BY THE ROUTE, never inherited (CR CodeRabbit): if the
+  // poller's own environment happens to carry them, every unrouted session would
+  // silently claim to be a bounded read-only GGS run. Same posture as the
+  // TELEGRAM_OWN_POLLER strip above — clear first, then let extraEnv grant them.
+  delete base.HERMES_BOUNDED_RUN;
+  delete base.GGS_ROLE;
+  // NON_INTERACTIVE_EDITOR_ENV before extraEnv: a route may override an editor
+  // key deliberately, but nothing ambient can reinstate an interactive one.
+  return { ...base, ...NON_INTERACTIVE_EDITOR_ENV, ...(extraEnv ?? {}) };
 }
 
 // The bounded-run PROMPT. Tells the spawned claude session what it is, where to
@@ -129,8 +167,12 @@ export function sessionEnv(lane?: "glm"): Record<string, string | undefined> {
 // medical PHI-egress floor — load), but the Jira-CLI path stays anchored on
 // `cwd` (the himmel repo root) because `dist/` only exists there. The "running
 // in" line reports the actual spawn cwd.
+// `cwdRouted` (LUNA-101): this session spawns in a CODE REPO (access.json `cwd`),
+// not a vault. Attachments are read and summarized in-reply, never filed —
+// a code repo has no _CLAUDE.md filing conventions. The flag wins over `vault`
+// so an inherited defaultVault cannot re-attach the filing clause.
 export type BusPaths = { inbox: string; outbox: string; context: string; cwd: string; sessionCwd?: string };
-export function buildPrompt(session: string, p: BusPaths, vault?: string | null): string {
+export function buildPrompt(session: string, p: BusPaths, vault?: string | null, cwdRouted = false): string {
   const isTicket = /^[A-Z][A-Z0-9]+-[0-9]+$/.test(session);
   const job = isTicket
     ? `You are working on ticket ${session}. Do the ticket's work.`
@@ -142,7 +184,9 @@ export function buildPrompt(session: string, p: BusPaths, vault?: string | null)
     `If a line has an "image_path" field, use the Read tool on that path — it is a photo the operator attached; the line's "text" is its caption.`,
     `If a line has a "document_path" field, use the Read tool on that path — it is a file the operator attached (e.g. a PDF); the line's "text" is its caption and "document_name" is the original filename.`,
     job,
-    ...(vault ? [
+    ...(cwdRouted ? [
+      `When a message carries a "document_path" or an "image_path", READ it and summarize its content in your reply. Do NOT file it anywhere — this is a code-repo session, not a vault.`,
+    ] : vault ? [
       `When a message carries a "document_path" OR an "image_path", FILE that attachment's content into the Obsidian vault at ${vault} (not just read it): read that vault's _CLAUDE.md first and follow its filing conventions — if the vault has a "medic" skill (or another vault-local filing skill) use it, otherwise use the obsidian-second-brain skill. In your reply, confirm what you filed and where.`,
     ] : []),
     // Jira sanction (HIMMEL-424 followup): without this, the auto-mode classifier
@@ -150,7 +194,7 @@ export function buildPrompt(session: string, p: BusPaths, vault?: string | null)
     // the bridge would reply "I can't create the ticket (classifier veto)". Stating
     // it as in-scope lifts the veto. Non-destructive only: there is no delete op, and
     // move (closes the source ticket) / project-create (admin) are excluded.
-    `Acting on Jira tickets for the operator is part of your job — when asked, DO IT DIRECTLY (don't just offer a paste-ready command). Use the Jira CLI by its ABSOLUTE path: \`node ${p.cwd}/scripts/jira/dist/index.js <op>\` (JIRA_PROJECT_KEY comes from the repo .env; run it with --help for the ops). You MAY create, edit/update, comment, transition, assign, change priority/labels, attach files, link, and read tickets — this is sanctioned, non-destructive work. You may NOT delete tickets (there is no delete op), and do NOT use \`move\` (it closes the source ticket) or \`project-create\` (admin) unless the operator explicitly asks.`,
+    `Acting on Jira tickets for the operator is part of your job: when asked, run the change yourself rather than offering a command to paste. Use the Jira CLI by its absolute path: \`node ${p.cwd}/scripts/jira/dist/index.js <op>\` (JIRA_PROJECT_KEY comes from the repo .env; --help lists the ops). Creating, editing, commenting, transitioning, assigning, changing priority/labels, attaching, linking and reading tickets is sanctioned, non-destructive work. You may NOT delete tickets (there is no delete op), and do not use \`move\` (it closes the source ticket) or \`project-create\` (admin) unless the operator explicitly asks.`,
     `Reply to the operator by APPENDING one JSON line {"text":"<your reply>"} per message to ${p.outbox}. That is the only way to reach the operator.`,
     `Do NOT poll Telegram yourself and do NOT open a --channels session.`,
     `As your FINAL action, append a one-line progress note to ${p.context} (so the next run has context). Then stop — you are done.`,
@@ -198,14 +242,14 @@ export function detectContentFilter(output: string): boolean { return FILTER_SEN
 // direct child; claude's own subprocess tree survives as an orphan that keeps
 // holding stdout/stderr — p.exited never resolves, the session sticks "running"
 // (the live 1.5h DM wedge), and a later retry would spawn a SECOND child against
-// the same session's context.md/outbox (single-writer violation). taskkill /T /F
-// takes the whole tree; SIGKILL is the POSIX equivalent + fallback.
-export function killTree(pid: number, kill: (sig?: number | NodeJS.Signals) => void): void {
-  if (process.platform === "win32") {
-    try { Bun.spawnSync(["taskkill", "/PID", String(pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" }); } catch {}
-  }
-  try { kill("SIGKILL"); } catch {}
-}
+// the same session's context.md/outbox (single-writer violation).
+//
+// HIMMEL-1956: the implementation moved to scripts/lib/kill-tree.mjs, shared
+// with the codex-bank-probe copy that carried the same defect (HIMMEL-1835).
+// It is re-exported here because "./run" is the import path four modules and
+// the bun suite already use. The POSIX half only works for a child spawned
+// with SPAWN_OWN_GROUP — see that file for the measured matrix.
+export { killTree };
 
 // Lane → model pin: the GLM lane pins its alias (→ glm-5.2[1m] via
 // ANTHROPIC_DEFAULT_OPUS_MODEL) and MUST NOT inherit TELEGRAM_CLAUDE_MODEL; any
@@ -247,8 +291,8 @@ async function drain(stream: ReadableStream<Uint8Array>, onChunk?: (s: string) =
   return acc;
 }
 
-export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: RunObserver): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
-  const env = sessionEnv(lane);
+export async function runSession(prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: RunObserver, extraEnv?: Record<string, string>): Promise<{ code: number; capped: boolean; blocked: boolean; timedOut: boolean; pid: number; tail?: string }> {
+  const env = sessionEnv(lane, extraEnv);
   // PERMISSION POSTURE (HIMMEL-314; see also HIMMEL-203, HIMMEL-578):
   // the bounded run inherits the operator's default permission mode (accept-edits)
   // and runs with stdin closed (EOF) so it CANNOT answer a permission prompt. Any
@@ -262,7 +306,11 @@ export async function runSession(prompt: string, cwd: string, permissionMode?: P
   // NOT loosen containment: the VAULT's PreToolUse hooks (e.g. block-cloud-egress)
   // still fire and HARD-block web/cloud/push. Non-vault sessions keep the default.
   const { cmd } = buildRunArgs(prompt, permissionMode, modelOverride ?? laneModel(lane), settings);
-  const p = spawn(cmd, { cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
+  // SPAWN_OWN_GROUP (HIMMEL-1956): the timeout below calls killTree, and its
+  // POSIX half signals the process GROUP -- which has to exist before it can
+  // be signalled. Without this the claude worker's own children survive the
+  // deadline and keep holding these pipes.
+  const p = spawn(cmd, { ...SPAWN_OWN_GROUP, cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
   const pid = p.pid;
   if (observe?.onSpawn) { try { observe.onSpawn(pid); } catch { /* best-effort, never abort the run */ } }
   const timeoutMs = Number(process.env.RUN_TIMEOUT_MS ?? 30 * 60 * 1000);

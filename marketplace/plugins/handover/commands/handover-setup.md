@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion, Skill
-description: First-time handover bootstrap — asks where handover state should live, persists it to .env as HANDOVER_DIR, then runs init (new) or register (existing). Use on a fresh machine/repo before /handover new-epic etc.
+description: First-time handover bootstrap — pick where handover state lives, persist HANDOVER_DIR to .env, then init/register.
 argument-hint: "[handover-dir]"
 ---
 

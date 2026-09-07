@@ -13,13 +13,16 @@ set -uo pipefail
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HOOK_DIR/telegram-notification.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HOOK_DIR/../lib/fixture-tempdir.sh"
 
 FAILED=0
 PASSED=0
 pass() { echo "PASS $1"; PASSED=$((PASSED + 1)); }
 fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 
-ROOT_TMP="$(mktemp -d)"
+ROOT_TMP="$(fixture_mktemp_dir)" || exit 1
 trap 'rm -rf "$ROOT_TMP"' EXIT
 
 STUB_DIR="$ROOT_TMP/stubs"
@@ -42,7 +45,7 @@ chmod +x "$STUB_DIR/bun"
 build_case() {
     # args: <repo_name>
     local name="$1"
-    CASE_REPO="$(mktemp -d "$ROOT_TMP/${name}.XXXXXX")"
+    CASE_REPO="$(mktemp -d "$ROOT_TMP/${name}.XXXXXX")" || return 1
     git -C "$CASE_REPO" init -q
     git -C "$CASE_REPO" config core.hooksPath /dev/null
     git -C "$CASE_REPO" config commit.gpgsign false
@@ -62,7 +65,11 @@ run_hook() {
     local pf
     pf="$(mktemp "$ROOT_TMP/payload.XXXXXX")"
     printf '%s' "$CASE_PAYLOAD" > "$pf"
-    if [ -n "$chat_id" ]; then
+    if [ "$chat_id" = "__EMPTY__" ]; then
+        # exported-but-EMPTY (HIMMEL-1926): distinct from unset — must suppress.
+        env PATH="$STUB_DIR:$PATH" TELEGRAM_GROUP_CHAT_ID="" \
+            bash "$HOOK" __himmel_detached "$pf" >/dev/null 2>&1
+    elif [ -n "$chat_id" ]; then
         env PATH="$STUB_DIR:$PATH" TELEGRAM_GROUP_CHAT_ID="$chat_id" \
             bash "$HOOK" __himmel_detached "$pf" >/dev/null 2>&1
     else
@@ -77,6 +84,18 @@ run_hook() {
 build_case "himmel"
 run_hook "" 2
 if [ ! -f "$BUN_LOG" ]; then pass "unset chat id: bun never invoked (silent no-op)"; else fail "unset chat id: bun never invoked (silent no-op)"; fi
+
+# 1b. Exported EMPTY TELEGRAM_GROUP_CHAT_ID while the repo .env HOLDS a chat id
+#     (HIMMEL-1926): an explicit empty override is deliberate suppression — the
+#     hook must exit before load_dotenv can fill the id from .env. The unset
+#     twin on the same fixture proves .env is live (bun IS invoked), so the
+#     suppression assertion is not vacuous.
+build_case "himmel"
+printf 'TELEGRAM_GROUP_CHAT_ID=-1009999\n' > "$CASE_REPO/.env"
+run_hook "__EMPTY__" 2
+if [ ! -f "$BUN_LOG" ]; then pass "exported-empty chat id + .env id: bun never invoked (explicit empty suppresses)"; else fail "exported-empty chat id + .env id: bun never invoked (explicit empty suppresses)"; fi
+run_hook "" 5
+if [ -f "$BUN_LOG" ]; then pass "unset chat id + .env id: bun invoked (.env fixture is live)"; else fail "unset chat id + .env id: bun invoked (.env fixture is live)"; fi
 
 # 2. Set TELEGRAM_GROUP_CHAT_ID -> bun invoked with notification + composed env.
 build_case "himmel"

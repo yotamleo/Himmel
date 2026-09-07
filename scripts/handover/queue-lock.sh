@@ -17,6 +17,7 @@
 #   bash queue-lock.sh heartbeat <handover-path> <session-token>
 #   bash queue-lock.sh release   <handover-path> <session-token>
 #   bash queue-lock.sh status    <handover-path>
+#   bash queue-lock.sh status --sweep [<handover-dir>]
 #
 # TOKEN CONTRACT (HIMMEL-856 CR, C1): `acquire` records a session token in
 # owner.json (the given session-id, or a generated "<hostname>-pid<pid>")
@@ -112,6 +113,15 @@
 #                 lock dir -- owner.json missing/unreadable -- also
 #                 reports 11, fail-closed, and SAYS it is corrupt)
 #              12 held, STALE -- eligible for takeover (owner.json printed)
+#   status --sweep (HIMMEL-2369): a SEPARATE code path/exit table, one line
+#              per held lock under <root>/.locks/queue/*.lock -- see the
+#              queue_lock_status_sweep header comment for the line shape.
+#              0  no held locks at all ("sweep: no held locks"), or locks
+#                 present but none flagged
+#              20 at least one lock is flagged IDLE-HELD?, CORRUPT, or
+#                 UNKNOWN (owner.json parsed but its heartbeat did not) -- a
+#                 tick script can check this rc alone and not miss a flag
+#                 even if it never scans stdout
 #
 # CONVENTIONS: bash 3.2-safe (no associative arrays, no ${var,,}, no
 # mapfile). `set -uo pipefail`, not -e -- callers care about specific exit
@@ -169,10 +179,16 @@ Usage: queue-lock.sh acquire   <handover-path> [session-id]
        queue-lock.sh heartbeat <handover-path> <session-token>
        queue-lock.sh release   <handover-path> <session-token>
        queue-lock.sh status    <handover-path>
+       queue-lock.sh status --sweep [<handover-dir>]
 
 acquire prints "release-token: <token>" on success -- capture it and pass
 it to heartbeat/release (both refuse without it). Lost the token?
 QUEUE_LOCK_FORCE_RELEASE=1 queue-lock.sh release <handover-path>
+
+status --sweep (HIMMEL-2369) enumerates every held lock under a handover
+ROOT's .locks/queue/ in one shot, flagging any whose heartbeat exceeds
+QUEUE_LOCK_IDLE_WARN_SECONDS (default 2700s, HIMMEL-2381) as IDLE-HELD?.
+Exit 20 if anything is flagged, 0 otherwise (including "no held locks").
 EOF
 }
 
@@ -196,6 +212,17 @@ print(int(d.timestamp()))' "$iso" 2>/dev/null; then
         fi
     fi
     printf '%s' "$e"
+}
+
+# _ql_idle_warn_threshold -- print the QUEUE_LOCK_IDLE_WARN_SECONDS value
+# (default 2700, HIMMEL-2381), digits-only-validated. Factored out so the
+# single-queue `status` idle-warn line and `status --sweep`'s IDLE-HELD? flag
+# (HIMMEL-2369) read the SAME knob the SAME way -- one default, not two
+# copy-pasted 2700s that could drift apart.
+_ql_idle_warn_threshold() {
+    local v="${QUEUE_LOCK_IDLE_WARN_SECONDS:-2700}"
+    case "$v" in ''|*[!0-9]*) v=2700 ;; esac
+    printf '%s' "$v"
 }
 
 _ql_hostname() {
@@ -511,6 +538,44 @@ _ql_arms_mutex_release() {
     rm -f "$reg.lock/owner" 2>/dev/null
     rmdir "$reg.lock" 2>/dev/null
     return 0
+}
+
+# _ql_emit_close_evidence -- HIMMEL-2294: best-effort declare THIS session
+# closable, at the moment a real release succeeds. session_dead_total
+# (flow-exporter.ts) false-pages when a terminal is closed: claude is
+# killed with no SessionEnd hook, so the session ages into "dead" with no
+# evidence it ever wrapped up cleanly. This is the reconciler -- release is
+# the operator-preferred call site because every mission leg releases its
+# queue lock at wrap, so coverage is automatic rather than convention-
+# dependent. Writer path resolved relative to THIS script's own location
+# (not cwd); runtime/invocation form matches
+# scripts/observability/wire-session-telemetry-hooks.mjs's wiring. MUST
+# stay silent and never affect this script's own exit code or stdout (the
+# "release-token: <token>" contract) -- stdout/stderr redirected, no stdin
+# attached, `|| true`. NOT called from the QUEUE_LOCK_FORCE_RELEASE=1 branch:
+# the session running a force-release is typically a STRANGER cleaning up
+# someone else's stranded lock, not the holder wrapping up -- it is alive and
+# continuing, so a close row keyed to ITS OWN $CLAUDE_CODE_SESSION_ID would
+# wrongly and PERMANENTLY exempt that live session from session_dead_total.
+# Only the token-verified normal path below is, by construction, the lock's
+# own holder actually closing.
+#
+# CR fix (codex-2): bounded with `timeout` when available -- a hung bun
+# runtime would otherwise block the release caller despite the `|| true`
+# below (rc is only checked after the call returns), stranding an unattended
+# overnight leg on its wrap path. Same graceful-degrade convention as
+# scripts/cr/critic-panel.sh's per-member hang protection: run unbounded
+# when `timeout` is absent. 15s is ample for a one-line append.
+_ql_emit_close_evidence() {
+    local timeout_bin
+    timeout_bin="$(command -v timeout 2>/dev/null)" || timeout_bin=""
+    if [ -n "$timeout_bin" ]; then
+        "$timeout_bin" 15 bun "$_QL_SCRIPT_DIR/../observability/session-run-hook.ts" session-close --evidence queue_lock_release \
+            </dev/null >/dev/null 2>&1 || true
+    else
+        bun "$_QL_SCRIPT_DIR/../observability/session-run-hook.ts" session-close --evidence queue_lock_release \
+            </dev/null >/dev/null 2>&1 || true
+    fi
 }
 
 # Drop a takeover claim only while its atomic owner brand still names us.
@@ -834,6 +899,8 @@ queue_lock_release() {
             echo "queue-lock: failed to remove lock dir '$lockdir' -- it still exists (open handle on Windows? permission?); NOT released" >&2
             return 1
         fi
+        # No _ql_emit_close_evidence here -- see its header comment: the
+        # forcing session is a cleaner, not the holder wrapping up.
         return 0
     fi
     # C1: the token is MANDATORY -- a token-less release would rm another
@@ -870,11 +937,21 @@ queue_lock_release() {
         echo "queue-lock: failed to remove lock dir '$lockdir' -- it still exists (open handle on Windows? permission?); NOT released" >&2
         return 1
     fi
+    _ql_emit_close_evidence
     return 0
 }
 
 queue_lock_status() {
     local ho="${1:-}"
+    # --sweep (HIMMEL-2369) is a SEPARATE code path: $2, if given, is a
+    # handover ROOT (not a single handover path) -- see
+    # queue_lock_status_sweep's own header comment. Dispatched here (rather
+    # than a new top-level verb) since the CLI shape is `status --sweep`.
+    if [ "$ho" = "--sweep" ]; then
+        shift
+        queue_lock_status_sweep "${1:-}"
+        return $?
+    fi
     if [ -z "$ho" ]; then
         _ql_usage >&2
         return 1
@@ -920,8 +997,226 @@ queue_lock_status() {
     if [ "$age" -ge 0 ] && [ "$age" -ge $(( ttl / 2 )) ]; then
         echo "WARN queue-lock: heartbeat age ${age}s exceeds half the TTL (${ttl}s) -- the lock is AGING toward stale; refresh it (queue-lock.sh heartbeat) on long sessions" >&2
     fi
+    # HIMMEL-2381: the TTL/aging thresholds above are sized for the overnight
+    # BUDGET (hours) -- too coarse to catch a leg hung on an interactive
+    # permission prompt (nobody unattended to answer it), which stalls its
+    # heartbeat within minutes. A tighter idle-warn threshold (default 45m)
+    # flags that narrower class; "possibly" because queue-lock.sh alone can't
+    # tell a stuck prompt from any other reason a session stopped ticking --
+    # the console cross-checks ListAgents (session still listed = likely a
+    # live prompt, not a crash) before acting. See
+    # docs/internals/environment-gotchas.md for the operator recovery.
+    local idle_warn
+    idle_warn=$(_ql_idle_warn_threshold)
+    if [ "$age" -ge 0 ] && [ "$age" -ge "$idle_warn" ]; then
+        echo "WARN queue-lock: heartbeat age ${age}s exceeds idle-warn threshold (${idle_warn}s) -- possibly stuck on a prompt if the session is still listed in ListAgents (docs/internals/environment-gotchas.md)" >&2
+    fi
     echo "status: FRESH"
     return 11
+}
+
+# queue_lock_status_sweep [<handover-root>] -- HIMMEL-2369: `status` inspects
+# ONE queue at a time, but the console's periodic tick needs a cheap way to
+# ask "is ANY leg on this machine stuck?" without already knowing every
+# handover path in advance (a leg hung on an interactive prompt, or idle-
+# waiting on an operator action, stops heartbeating within minutes but holds
+# its lock for the full multi-hour TTL -- HIMMEL-2381's single-queue
+# idle-warn line can't help unless something already knows to ask about that
+# ONE queue). This enumerates every lock dir under <root>/.locks/queue/ and
+# reports each on its own line.
+#
+# <handover-root>, when given, IS the handover root (unlike every other verb
+# here, which takes a single handover PATH) -- resolved via
+# handover_root_ensure, same as every other scripts/handover/*.sh script,
+# when omitted. Never hardcodes ./handovers/.
+#
+# One line per lock dir to stdout (machine-greppable):
+#   slug=<slug> session=<s> host=<h> age=<n>s status=<TOKEN>
+# slug/session/host are filesystem- or owner-controlled, so they are run
+# through _ql_sweep_field before ever reaching an echo (HIMMEL-2369 CR
+# round-2, codex-3): whitespace and control bytes -- a literal newline most
+# of all -- are folded to "_" and the value is length-capped, so a crafted
+# or merely odd value can never forge or split the one-line-per-lock
+# contract a caller parses this output against.
+# status is one of:
+#   OK            -- held, heartbeat age below the idle-warn threshold
+#   IDLE-HELD?    -- heartbeat age >= QUEUE_LOCK_IDLE_WARN_SECONDS (the SAME
+#                    knob and comparison as the single-queue status
+#                    idle-warn; see _ql_idle_warn_threshold -- one
+#                    threshold, not two)
+#   CORRUPT       -- owner.json missing for longer than
+#                    _QL_SWEEP_CORRUPT_GRACE_SECS (see INDETERMINATE below),
+#                    or present but session/host/heartbeat ALL extract empty
+#                    (wholly unparsable)
+#   UNKNOWN       -- owner.json parsed (some field(s) may be present -- a
+#                    partially-parseable owner is NOT healthy just because
+#                    one field survived) but the heartbeat could not be
+#                    parsed into an epoch, so this lock's freshness cannot
+#                    be assessed at all
+#   INDETERMINATE -- owner.json is missing but the lock DIRECTORY is younger
+#                    than _QL_SWEEP_CORRUPT_GRACE_SECS (HIMMEL-2369 CR
+#                    round-2, codex-2): `acquire` mkdirs the lock dir and
+#                    THEN writes owner.json a moment later (a takeover does
+#                    the same rm+re-mkdir dance; `release`'s rm -rf can also
+#                    unlink owner.json before the directory entry itself is
+#                    gone) -- a sweep landing in that narrow, routine window
+#                    would otherwise call a perfectly healthy in-flight
+#                    acquire/release CORRUPT. The console runs this sweep on
+#                    a periodic tick while legs acquire/release constantly,
+#                    so that race is not rare, it is scheduled -- and a
+#                    sweep that cries wolf gets ignored, which defeats the
+#                    whole point of the rc=20 signal. NOT flagged (does not
+#                    contribute to rc=20) -- but deliberately narrow, not a
+#                    way to silence real corruption (see below).
+# CORRUPT and UNKNOWN both count as FLAGGED (rc=20), the SAME fail-closed
+# posture as IDLE-HELD? (HIMMEL-2369 CR round-1, codex-1): a lock this sweep
+# could not fully assess must never report a clean status=OK. This differs
+# from the single-queue `status` path on purpose -- there, an unparsable
+# heartbeat still returns rc=11 (held), never a clean verdict, so "treat as
+# FRESH" is safe; here, unflagged + exit 0 IS the sweep's clean verdict, so
+# "we could not age it" must not look identical to "we checked and it's
+# fine". One bad lock (corrupt OR unassessable) never aborts the rest of
+# the sweep -- it is reported on its own line and the loop continues.
+# INDETERMINATE does NOT weaken this: the discriminator is the lock
+# DIRECTORY's own mtime (py_armor_mtime -- the same primitive the
+# takeover-claim and arms-mutex staleness checks already use elsewhere in
+# this file), fail-closed on a failed probe (an mtime that cannot be read
+# is treated as OLD, i.e. still CORRUPT+flagged, never silently waved
+# through) -- so a lock genuinely stuck with no owner.json for longer than
+# the grace period still reports CORRUPT and still exits 20. This is NOT
+# "skip missing-owner locks": a young miss is reported as its own visible
+# INDETERMINATE line (not silently dropped), and the grace window
+# (seconds) is tiny next to the idle-warn threshold (minutes) it sits next
+# to, so it cannot mask a real stuck lock.
+#
+# Exit codes (a SEPARATE table from the single-queue status codes above):
+#   0  no held locks at all ("sweep: no held locks" is printed so silence
+#      is never ambiguous), or locks present but none flagged (an
+#      INDETERMINATE line alone does not flag)
+#   20 at least one lock is IDLE-HELD?, CORRUPT, or UNKNOWN -- a tick
+#      script checking only the exit code (never scanning stdout) cannot
+#      miss it
+# A lock dir younger than this many seconds with no owner.json yet is
+# "being acquired/released", not corrupt -- see INDETERMINATE above. Named
+# (not inlined) so the test suite can read it back rather than duplicate
+# the magic number (same convention as _QL_ARMS_MUTEX_STALE_SECS). Small
+# next to QUEUE_LOCK_IDLE_WARN_SECONDS (minutes) on purpose: the real
+# acquire/release window this covers is sub-second even under load; this
+# gives generous margin without coming anywhere near masking a genuinely
+# stuck lock.
+_QL_SWEEP_CORRUPT_GRACE_SECS=5
+
+# _ql_sweep_field <value> -- HIMMEL-2369 CR round-2 (codex-3): ONE shared
+# sanitize path for every filesystem- or owner-controlled value the sweep
+# emits (slug, session, host) so a future field added to the line can't
+# slip through un-sanitized -- see the "slug/session/host are..." note in
+# the header comment above. Folds to the same kind of safe charset
+# _ql_slug already uses for filesystem-derived slugs (alnum plus a few
+# characters legal in hostnames/session ids); every other byte, INCLUDING
+# a literal newline or space, becomes "_" so it can never forge or split
+# the one-record-per-line contract. Length-capped so one long odd value
+# can't blow up the line either.
+_ql_sweep_field() {
+    local v
+    v=$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.:@+-' '_')
+    printf '%.200s' "$v"
+}
+
+queue_lock_status_sweep() {
+    local root="${1:-}"
+    if [ -z "$root" ]; then
+        if ! root=$(handover_root_ensure 2>/dev/null); then
+            echo "queue-lock: could not resolve handover root (HANDOVER_DIR unset and no inline handovers/ dir?)" >&2
+            return 1
+        fi
+    fi
+    local qdir="$root/.locks/queue"
+    if [ ! -d "$qdir" ]; then
+        echo "sweep: no held locks"
+        return 0
+    fi
+    local idle_warn now_epoch
+    idle_warn=$(_ql_idle_warn_threshold)
+    now_epoch=$(_ql_now_epoch)
+    local found=0 flagged=0 lockdir slug
+    for lockdir in "$qdir"/*.lock; do
+        [ -d "$lockdir" ] || continue
+        found=1
+        slug=$(basename "$lockdir" .lock)
+        slug=$(_ql_sweep_field "$slug")
+        if [ ! -f "$lockdir/owner.json" ]; then
+            # codex-2 (HIMMEL-2369 CR round-2): a missing owner.json is NOT
+            # automatically CORRUPT -- `acquire` mkdirs this dir and writes
+            # owner.json a moment later (release/takeover have the same
+            # kind of gap in reverse); discriminate by the dir's own mtime
+            # so a sweep landing in that routine, sub-second window doesn't
+            # cry wolf on a perfectly healthy in-flight operation. Fail
+            # CLOSED on a failed mtime probe (dir_mtime empty) -- an
+            # unreadable timestamp must never mask genuine corruption.
+            local dir_mtime="" dir_age=0 mtime_ok=0
+            dir_mtime=$(py_armor_mtime "$lockdir" 2>/dev/null) || dir_mtime=""
+            if [ -n "$dir_mtime" ] && [ -n "$now_epoch" ]; then
+                dir_age=$(( now_epoch - dir_mtime ))
+                [ "$dir_age" -lt 0 ] && dir_age=0   # clock-skew/rounding, not a failed probe
+                mtime_ok=1
+            fi
+            if [ "$mtime_ok" -eq 1 ] && [ "$dir_age" -lt "$_QL_SWEEP_CORRUPT_GRACE_SECS" ]; then
+                echo "slug=$slug status=INDETERMINATE reason=owner.json-missing-recent age=${dir_age}s"
+            else
+                echo "slug=$slug status=CORRUPT reason=owner.json-missing"
+                flagged=1
+            fi
+            continue
+        fi
+        local o_raw o_session o_host o_heartbeat hb_epoch age
+        o_raw=$(cat "$lockdir/owner.json" 2>/dev/null) || o_raw=""
+        o_session=$(_ql_json_field_str "$o_raw" session)
+        o_host=$(_ql_json_field_str "$o_raw" host)
+        o_heartbeat=$(_ql_json_field_str "$o_raw" heartbeat)
+        o_session=$(_ql_sweep_field "$o_session")
+        o_host=$(_ql_sweep_field "$o_host")
+        if [ -z "$o_session" ] && [ -z "$o_host" ] && [ -z "$o_heartbeat" ]; then
+            echo "slug=$slug status=CORRUPT reason=owner.json-unparsable"
+            flagged=1
+            continue
+        fi
+        age=-1
+        # Guard the EMPTY-string case before calling _ql_epoch_of_iso: GNU
+        # `date -d ""` does NOT error -- it silently parses an empty string
+        # as "today at midnight" and returns a valid-looking epoch, which
+        # would otherwise sneak an owner.json missing its heartbeat key
+        # straight past the UNKNOWN check below with a bogus small age
+        # (HIMMEL-2369 CR round-1 follow-up, found while testing codex-1).
+        # An empty heartbeat is unconditionally unassessable; skip the call.
+        if [ -n "$o_heartbeat" ]; then
+            hb_epoch=$(_ql_epoch_of_iso "$o_heartbeat")
+            if [ -n "$hb_epoch" ] && [ -n "$now_epoch" ]; then
+                age=$(( now_epoch - hb_epoch ))
+                [ "$age" -lt 0 ] && age=0
+            fi
+        fi
+        if [ "$age" -ge 0 ] && [ "$age" -ge "$idle_warn" ]; then
+            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=${age}s status=IDLE-HELD?"
+            flagged=1
+        elif [ "$age" -ge 0 ]; then
+            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=${age}s status=OK"
+        else
+            # Heartbeat missing or present-but-unparsable (codex-1, HIMMEL-2369
+            # CR round-1): fail-closed -- flagged, not a clean OK. See the
+            # header comment above for why this can't mirror the single-queue
+            # status path's "treat as FRESH".
+            echo "slug=$slug session=${o_session:-unknown} host=${o_host:-unknown} age=unknown status=UNKNOWN"
+            flagged=1
+        fi
+    done
+    if [ "$found" -eq 0 ]; then
+        echo "sweep: no held locks"
+        return 0
+    fi
+    if [ "$flagged" -eq 1 ]; then
+        return 20
+    fi
+    return 0
 }
 
 _ql_main() {

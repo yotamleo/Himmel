@@ -1,5 +1,5 @@
 ---
-description: Graceful-halt marker for in-progress /overnight-shift sessions (HIMMEL-137).
+description: Graceful-halt marker for in-progress /overnight-shift sessions.
 argument-hint: [--hard | --reset]
 ---
 

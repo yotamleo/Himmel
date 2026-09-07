@@ -24,8 +24,7 @@ $script:Failed = 0
 $Cli = Join-Path $PSScriptRoot 'install-plugins.ps1'
 
 if (-not $IsWindows) {
-    Write-Host 'SKIP: not Windows — the claude.cmd stub needs cmd.exe'
-    Write-Host 'PASS (skipped)'
+    Write-Host 'test-install-plugins-verify.ps1: SKIPPED — 0 cases ran (not Windows; the claude.cmd stub needs cmd.exe)'
     exit 0
 }
 
@@ -89,6 +88,7 @@ function Set-Stub {
 
 $Pwsh = (Get-Command pwsh).Source
 $SavedPath = $env:PATH
+$SavedConfigDir = $env:CLAUDE_CONFIG_DIR
 
 function Invoke-Install {
     param([string[]]$ExtraArgs = @())
@@ -99,6 +99,14 @@ function Invoke-Install {
 
 try {
     $env:PATH = "$StubDir;$env:PATH"
+    # HIMMEL-2353: install-plugins.ps1's `user` scope resolves to
+    # $env:CLAUDE_CONFIG_DIR when set (else the real $HOME/.claude) — pin it
+    # into this suite's own $Tmp so a `-Scope user` run here can NEVER reach
+    # the operator's real settings.json, even on a verify-FAIL path (the bug
+    # this suite exists to catch reached the reconcile step past verify).
+    # Set once up front (not per-case): every Invoke-Install below resolves
+    # `user` scope, verify-fail path included.
+    $env:CLAUDE_CONFIG_DIR = Join-Path $Tmp '.claude'
 
     # 1. all present → exit 0 + summary
     Set-Stub @('good-a@mp', 'good-b@mp', 'bogus@nowhere')
@@ -153,6 +161,7 @@ try {
     Assert-Lacks 'false-flagged plugin absent from verify output' 'disabled@mp --' $out
 } finally {
     $env:PATH = $SavedPath
+    $env:CLAUDE_CONFIG_DIR = $SavedConfigDir
     Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }
 

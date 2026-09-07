@@ -148,6 +148,12 @@ function Write-NoteToFile {
     [System.IO.File]::WriteAllText($Path, $Content, $enc)
 }
 
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 try {
     $ErrorActionPreference = 'Stop'
     Set-StrictMode -Version Latest

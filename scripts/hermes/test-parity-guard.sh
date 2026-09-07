@@ -32,6 +32,9 @@ export GH_CMD="$TMP/no-such-gh-binary"
 unset HERMES_EXTERNAL_WRITES_OK
 unset ANTHROPIC_BASE_URL
 unset HERMES_ENGINE
+# The guard reads $TERMINAL_CWD as the agent's workspace (HIMMEL-2008); a real
+# hermes session would leak one in, so drop it for a hermetic run.
+unset TERMINAL_CWD
 
 fails=0
 # expect = "block" | "allow"
@@ -70,11 +73,14 @@ g "content not over-blocked" allow '{"tool_name":"write_file","tool_input":{"pat
 # so the native python (Git Bash) stats the real temp tree.
 mkdir -p "$TMP/mainrepo/.git" "$TMP/mainrepo/src" \
          "$TMP/featrepo/.git" "$TMP/featrepo/src" \
-         "$TMP/mastrepo/.git"
+         "$TMP/mastrepo/.git" "$TMP/mast (x86)repo/.git"
 printf 'ref: refs/heads/main\n'   > "$TMP/mainrepo/.git/HEAD"
 printf 'ref: refs/heads/feat/x\n' > "$TMP/featrepo/.git/HEAD"
 printf 'ref: refs/heads/master\n' > "$TMP/mastrepo/.git/HEAD"
+printf 'ref: refs/heads/master\n' > "$TMP/mast (x86)repo/.git/HEAD"
 MR="$(wp "$TMP/mainrepo")"; FR="$(wp "$TMP/featrepo")"; MASTR="$(wp "$TMP/mastrepo")"
+MASTRP="$(wp "$TMP/mast (x86)repo")"   # parens in the path (HIMMEL-2008)
+TMPW="$(wp "$TMP")"                    # repo-free temp root (no .git ancestor)
 
 echo "== parity_guard: terminal classes =="
 g "git commit"     allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git commit -m x\",\"cwd\":\"$FR\"}}"
@@ -94,6 +100,65 @@ g "schtasks /end refused"        block '{"tool_name":"terminal","tool_input":{"c
 g "schtasks /CREATE upper refused" block '{"tool_name":"terminal","tool_input":{"command":"schtasks /CREATE /tn X /tr Y"}}'
 g "schtasks /Delete mixed refused" block '{"tool_name":"terminal","tool_input":{"command":"schtasks /Delete /tn X /f"}}'
 g "grep schtasks string allowed" allow '{"tool_name":"terminal","tool_input":{"command":"grep -n schtasks file.sh"}}'
+# HIMMEL-1821: the ScheduledTasks PowerShell module + the raw Schedule.Service
+# COM object reach the SAME capability without schtasks.exe. Mirrors the
+# .sh hook's cases (lockstep, HIMMEL-754).
+g "Register-ScheduledTask refused"   block '{"tool_name":"terminal","tool_input":{"command":"Register-ScheduledTask -TaskName X -Xml t.xml"}}'
+g "Unregister-ScheduledTask refused" block '{"tool_name":"terminal","tool_input":{"command":"Unregister-ScheduledTask -TaskName X -Confirm:0"}}'
+g "Set-ScheduledTask refused"        block '{"tool_name":"terminal","tool_input":{"command":"Set-ScheduledTask -TaskName X -User SYSTEM"}}'
+g "Start-ScheduledTask refused"      block '{"tool_name":"terminal","tool_input":{"command":"Start-ScheduledTask -TaskName X"}}'
+g "Stop-ScheduledTask refused"       block '{"tool_name":"terminal","tool_input":{"command":"Stop-ScheduledTask -TaskName X"}}'
+g "Disable-ScheduledTask refused"    block '{"tool_name":"terminal","tool_input":{"command":"Disable-ScheduledTask -TaskName X"}}'
+g "Enable-ScheduledTask refused"     block '{"tool_name":"terminal","tool_input":{"command":"Enable-ScheduledTask -TaskName X"}}'
+g "pwsh -Command Register- refused"  block '{"tool_name":"terminal","tool_input":{"command":"pwsh -NoProfile -Command \"Register-ScheduledTask -TaskName X -Xml t.xml\""}}'
+g "chained ; Start-ScheduledTask refused" block '{"tool_name":"terminal","tool_input":{"command":"Get-Date; Start-ScheduledTask -TaskName X"}}'
+# CR r1: the module-qualified call form is absorbed by _EXE_PREFIX after norm()
+# folds "\" to "/" — pinned so it stays that way.
+g "module-qualified Register- refused" block '{"tool_name":"terminal","tool_input":{"command":"ScheduledTasks\\Register-ScheduledTask -TaskName X"}}'
+# CR r8: script-block form. "{" is a LOCAL anchor for the scheduled-task rules
+# only — it cannot join the shared _CMDPOS_DESTRUCTIVE (see the residual note).
+g "scriptblock Register- refused"     block '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { Register-ScheduledTask -TaskName X }"}}'
+g "scriptblock COM refused"           block '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { New-Object -ComObject Schedule.Service }"}}'
+g "scriptblock Get-ScheduledTask allowed" allow '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { Get-ScheduledTask -TaskName X }"}}'
+g "jq object literal with atom key allowed" allow '{"tool_name":"terminal","tool_input":{"command":"jq \"{format: .x}\" f.json"}}'
+# shellcheck disable=SC2016  # literal PowerShell $var assignment is the point of this case
+g "assigned ComObject progid refused" block '{"tool_name":"terminal","tool_input":{"command":"$sv = New-Object -ComObject Schedule.Service"}}'
+g "quoted ComObject progid refused"   block '{"tool_name":"terminal","tool_input":{"command":"New-Object -ComObject \"Schedule.Service\""}}'
+# CR r1: PowerShell binds unambiguous parameter PREFIXES and New-Object has no
+# other -c* parameter, so the abbreviated flags reach the COM API too.
+g "abbreviated -ComO progid refused"  block '{"tool_name":"terminal","tool_input":{"command":"New-Object -ComO Schedule.Service"}}'
+g "minimal -c progid refused"         block '{"tool_name":"terminal","tool_input":{"command":"New-Object -c Schedule.Service"}}'
+# CR r7: parenthesised expression form is still an invocation.
+g "parenthesised progid refused"      block '{"tool_name":"terminal","tool_input":{"command":"New-Object -ComObject (\"Schedule.Service\")"}}'
+# Read/write split (HIMMEL-1141 semantics carried to the module): the READ
+# verbs and the in-memory object BUILDERS stay allowed, as does a plain
+# grep/doc mention of either spelling.
+g "Get-ScheduledTask allowed"        allow '{"tool_name":"terminal","tool_input":{"command":"Get-ScheduledTask -TaskName X"}}'
+g "Get-ScheduledTaskInfo allowed"    allow '{"tool_name":"terminal","tool_input":{"command":"Get-ScheduledTaskInfo -TaskName X"}}'
+g "module-qualified Get- allowed"    allow '{"tool_name":"terminal","tool_input":{"command":"ScheduledTasks\\Get-ScheduledTask -TaskName X"}}'
+g "Export-ScheduledTask allowed"     allow '{"tool_name":"terminal","tool_input":{"command":"Export-ScheduledTask -TaskName X"}}'
+g "New-ScheduledTask builder allowed" allow '{"tool_name":"terminal","tool_input":{"command":"New-ScheduledTask -Action a -Trigger t"}}'
+g "New-ScheduledTaskTrigger allowed" allow '{"tool_name":"terminal","tool_input":{"command":"New-ScheduledTaskTrigger -Daily -At 3am"}}'
+g "New-ScheduledTaskAction allowed"  allow '{"tool_name":"terminal","tool_input":{"command":"New-ScheduledTaskAction -Execute claude.exe"}}'
+g "grep Register-ScheduledTask allowed" allow '{"tool_name":"terminal","tool_input":{"command":"grep -rn Register-ScheduledTask docs/"}}'
+g "grep Schedule.Service allowed"       allow '{"tool_name":"terminal","tool_input":{"command":"grep -rn Schedule.Service docs/"}}'
+# CR r2: the -c* parameter-prefix tolerance is scoped to new-object, so a
+# grep/rg whose own flag starts with "c" is not collateral.
+g "grep -c Schedule.Service allowed"    allow '{"tool_name":"terminal","tool_input":{"command":"grep -c Schedule.Service docs/x.md"}}'
+g "rg --count Schedule.Service allowed" allow '{"tool_name":"terminal","tool_input":{"command":"rg --count Schedule.Service docs/"}}'
+# CR r3: grepping the full literal phrase stays allowed — new-object carries a
+# command-position anchor (widened by "=" for the assignment form).
+g "grep full COM phrase allowed"     allow '{"tool_name":"terminal","tool_input":{"command":"grep -n \"New-Object -ComObject Schedule.Service\" docs/x.md"}}'
+# CR r5: the reflective progid route is a documented residual, not a rule — a
+# literal match for it only caught the naive spelling and denied this grep.
+g "grep GetTypeFromProgID allowed"   allow '{"tool_name":"terminal","tool_input":{"command":"grep -n GetTypeFromProgID docs/x.md"}}'
+# CR r6: the progid carries the usual trailing token boundary, so an unrelated
+# COM object whose name merely starts with it is not collateral.
+g "Schedule.ServiceEx progid allowed" allow '{"tool_name":"terminal","tool_input":{"command":"New-Object -ComObject Schedule.ServiceEx"}}'
+# CR r7: assigning the command TEXT to a string is not invoking it — no quote
+# is tolerated between the command-position anchor and new-object.
+# shellcheck disable=SC2016  # literal PowerShell $var assignment is the point of this case
+g "string assignment of COM phrase allowed" allow '{"tool_name":"terminal","tool_input":{"command":"$s = \"New-Object -ComObject Schedule.Service\""}}'
 
 echo "== parity_guard: destructive-floor spec fixes (HIMMEL-851) =="
 # U1: /s is bound to the switch, not a path prefix — `rd /scripts` is not a
@@ -222,10 +287,14 @@ g "git commit on worker branch allowed" allow "{\"tool_name\":\"terminal\",\"too
 # .single-writer marker at the repo root opts the on-main repo out.
 : > "$TMP/mainrepo/.single-writer"
 g "write on main with .single-writer allowed" allow "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$MR/src/foo.sh\"}}"
-# Process-cwd fallback (payload carries NO cwd -> guard resolves os.getcwd()).
-# Driven DETERMINISTICALLY by cd-ing into a fixture repo (#975: never inherit
-# the suite runner's cwd) — this is the production path for terminal payloads
-# that omit cwd, so it keeps a regression guard after the hermetic fix above.
+g "absolute write in master repo refused"     block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$MASTR/src/foo.sh\"}}"
+# cwd contract (HIMMEL-2008). The guard's OWN cwd is the session LAUNCH dir
+# (hermes sends Path.cwd() of the agent process), so it is NOT evidence about
+# the worktree the agent works in: with no usable cwd signal the target dir is
+# undeterminable -> ALLOW (fail-open, same stance as a detached HEAD). The
+# block stands wherever the dir IS known — an arg cwd, $TERMINAL_CWD, an
+# explicit `cd`/`git -C`, or an absolute path. gcwd cd-s into a fixture repo so
+# the guard's process cwd is DETERMINISTIC (#975: never inherit the runner's).
 gcwd() {  # gcwd "<label>" "<expect>" "<dir to run the guard from>" '<json payload>'
   out="$(cd "$3" && printf '%s' "$4" | "$PY" "$GUARD")"
   case "$out" in
@@ -236,8 +305,138 @@ gcwd() {  # gcwd "<label>" "<expect>" "<dir to run the guard from>" '<json paylo
   if [ "$got" = "$2" ]; then echo "  ok: $1"; else
     echo "  FAIL: $1 — expected $2 got $got" >&2; fails=$((fails + 1)); fi
 }
-gcwd "git commit, no payload cwd, guard cwd=master repo refused" block "$TMP/mastrepo" '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
-gcwd "git commit, no payload cwd, guard cwd=worker repo allowed" allow "$TMP/featrepo" '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
+gcwd "git commit, no cwd signal, guard cwd=master repo allowed (undeterminable)" allow "$TMP/mastrepo" '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
+gcwd "git commit, no cwd signal, guard cwd=worker repo allowed" allow "$TMP/featrepo" '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
+gcwd "relative write, no cwd signal, guard cwd=master repo allowed" allow "$TMP/mastrepo" '{"tool_name":"write_file","tool_input":{"path":"src/foo.sh"}}'
+# `cd <dir> &&` / `pushd <dir>` prefixes name the commit's dir explicitly.
+gcwd "cd <worker repo> && git commit, guard cwd=master repo allowed" allow "$TMP/mastrepo" "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $FR && git commit -m x\"}}"
+gcwd "cd <master repo> ; git commit refused" block "$TMP/featrepo" "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $MASTR ; git commit -m x\"}}"
+# NEAREST the commit verb wins: an earlier `git -C <other> status` says nothing
+# about where the later commit runs, and a `git -C` on the commit itself beats an
+# earlier cd.
+gcwd "git -C <master> status && cd <worker repo> && git commit allowed" allow "$TMP/mastrepo" "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git -C $MASTR status && cd $FR && git commit -m x\"}}"
+gcwd "cd <worker repo> && git -C <master> commit refused" block "$TMP/featrepo" "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $FR && git -C $MASTR commit -m x\"}}"
+# Shell scope + cwd restoration: a subshell's cwd never leaks to its parent, and
+# popd undoes its pushd — both commits below really do run in the worktree.
+export TERMINAL_CWD="$FR"
+g "pushd <master> && popd && git commit allowed" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"pushd $MASTR && popd && git commit -m x\"}}"
+g "(cd <master> && git log) ; git commit allowed"  allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"(cd $MASTR && git log) ; git commit -m x\"}}"
+g "pushd <master> && git commit (no popd) refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"pushd $MASTR && git commit -m x\"}}"
+# HIMMEL-2008: `popd` pops only what `pushd` pushed. bash errors on a 1-deep
+# stack and leaves the cwd alone, so a bare `cd` SURVIVES a following popd —
+# the commit really does run in <master>.
+g "cd <master> && popd && git commit refused (popd cannot undo a cd)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $MASTR && popd && git commit -m x\"}}"
+g "pushd <master> && popd && popd && git commit allowed (extra popd is a no-op)" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"pushd $MASTR && popd && popd && git commit -m x\"}}"
+g "cd <worker> && (cd <master> && git log) && git commit allowed" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $FR && (cd $MASTR && git log) && git commit -m x\"}}"
+# HIMMEL-2008: a RELATIVE hop resolves against the hop before it, not against
+# base_cwd — `cd .. && cd mastrepo` lands in <master>, exactly where the shell
+# lands. Anchoring only the last hop to base_cwd yielded <worker>/mastrepo,
+# which walks back up to <worker> and wrongly allows.
+g "cd .. && cd mastrepo && git commit refused (relative hops chain)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd .. && cd mastrepo && git commit -m x\"}}"
+g "cd .. && cd featrepo && git commit allowed (relative hops chain)" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd .. && cd featrepo && git commit -m x\"}}"
+unset TERMINAL_CWD
+# Documented LIMIT (HIMMEL-2008): the walk has no short-circuit semantics, so a
+# `cd` the shell would SKIP still counts as executed. Statically undecidable —
+# it turns on the left-hand exit status. Pinned in both directions: the first
+# case is the fail-OPEN half (real cwd is <master>, guard judges <worker>).
+export TERMINAL_CWD="$MASTR"
+g "true || cd <worker> counted as executed, allows (documented limit)" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"true || cd $FR && git commit -m x\"}}"
+unset TERMINAL_CWD
+export TERMINAL_CWD="$FR"
+g "true || cd <master> counted as executed, refuses (documented limit)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"true || cd $MASTR && git commit -m x\"}}"
+# HIMMEL-2008: `git -C` scopes ONE git call and never moves the shell, so only
+# a `git -C` on the COMMIT INVOCATION counts. An earlier `git -C <worker>
+# status` must not pin a commit the shell already `cd`-ed into <master>.
+g "cd <master> && git -C <worker> status && git commit refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $MASTR && git -C $FR status && git commit -m x\"}}"
+# HIMMEL-2008: subshell groups are stripped to a FIXPOINT — a NESTED group left
+# the outer `cd` in the walk and refused a commit the subshell never moved.
+g "(cd <master> && (git log)) ; git commit allowed (nested subshell)" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"(cd $MASTR && (git log)) ; git commit -m x\"}}"
+# HIMMEL-2008: a `(` MID-TOKEN belongs to a path, not a subshell. Blanking it
+# corrupted the dir before the walk saw it -> unresolvable -> fail-open.
+g "cd \"<master (x86) path>\" && git commit refused (parens in a quoted path)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd \\\"$MASTRP\\\" && git commit -m x\"}}"
+# HIMMEL-2008: a quoted `git -C` dir containing SPACES. A bare \S+ stopped at
+# the first space, so `_GIT_COMMIT` did not match the command at all and the
+# commit locks were never entered — a total bypass, not just a misjudged dir.
+g "git -C \"<master path with spaces>\" commit refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git -C \\\"$MASTRP\\\" commit -m x\"}}"
+# HIMMEL-2008: EVERY `git commit` is judged, not just the first — only the text
+# before the FIRST commit used to be walked, so a second commit further along
+# the chain ran on main entirely unchecked.
+g "cd <worker> && git commit && cd <master> && git commit refused (2nd commit)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $FR && git commit -m a && cd $MASTR && git commit -m b\"}}"
+# HIMMEL-2008: git-level options may PRECEDE `-C`.
+g "git --no-pager -C <master> commit refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git --no-pager -C $MASTR commit -m x\"}}"
+# HIMMEL-2008: git's ATTACHED short-option form.
+g "git -C<master> commit refused (attached -C value)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git -C$MASTR commit -m x\"}}"
+# HIMMEL-2008: git applies MULTIPLE -C in order — the LAST one wins, so a
+# first-wins scan judged the worker while the commit ran on master.
+g "git -C <worker> -C <master> commit refused (last -C wins)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git -C $FR -C $MASTR commit -m x\"}}"
+# HIMMEL-2008: a `-C` INSIDE a quoted option value is not a chdir. A raw-text
+# scan chdir'd to it and dropped the branch lock on a commit running in <master>.
+export TERMINAL_CWD="$MASTR"
+g "-C inside a quoted option value is not a chdir (refused)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git -c core.pager=\\\"less -C $FR\\\" commit -m x\"}}"
+# Documented LIMIT (HIMMEL-2008): the `cd` WALK is not quote-aware, so a
+# separator inside a quoted argument still reads as a separator. Needs crafted
+# text; out of a hygiene guard's threat model. Pinned so the contract is known.
+g "echo \"; cd <worker>\" && git commit allowed (quoting in the walk, documented limit)" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"echo \\\"; cd $FR\\\" && git commit -m x\"}}"
+unset TERMINAL_CWD
+export TERMINAL_CWD="$FR"
+# HIMMEL-2008: --git-dir names the REPO whose HEAD (so whose BRANCH) is
+# committed to, and OUTRANKS the cwd. Attached and valued spellings both.
+g "git --git-dir=<master>/.git --work-tree=<master> commit refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git --git-dir=$MASTR/.git --work-tree=$MASTR commit -m x\"}}"
+g "git --git-dir <master>/.git commit refused (valued spelling)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git --git-dir $MASTR/.git commit -m x\"}}"
+# --git-dir OUTRANKS --work-tree: the file tree does not decide the branch.
+g "git --git-dir=<master>/.git --work-tree=<worker> commit refused (--git-dir wins)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git --git-dir=$MASTR/.git --work-tree=$FR commit -m x\"}}"
+# --work-tree ALONE does NOT move the repo: without --git-dir the git dir is
+# still discovered from the cwd, so the commit lands on the CWD's branch.
+g "git --work-tree <master> commit allowed (work tree is not the repo)" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git --work-tree $MASTR commit -m x\"}}"
+unset TERMINAL_CWD
+export TERMINAL_CWD="$MASTR"
+g "git --work-tree <worker> commit refused (cwd repo still decides)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"git --work-tree $FR commit -m x\"}}"
+unset TERMINAL_CWD
+export TERMINAL_CWD="$FR"
+unset TERMINAL_CWD
+export TERMINAL_CWD="$FR"
+# Documented LIMIT (HIMMEL-2008): each element of a pipeline runs in its own
+# subshell, so `cd <x> | cat` never moves the parent — but the walk follows it.
+# Pinned in the fail-OPEN direction (real cwd is <master>, guard judges worker).
+unset TERMINAL_CWD
+export TERMINAL_CWD="$MASTR"
+g "cd <worker> | cat ; git commit allowed (pipeline subshell, documented limit)" allow "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $FR | cat ; git commit -m x\"}}"
+unset TERMINAL_CWD
+export TERMINAL_CWD="$FR"
+# HIMMEL-2008: a `cd` to a MISSING dir fails in the shell and leaves the cwd
+# alone. Following it judged a path nothing runs in — and with no repo ancestor
+# the branch lock fell open on a commit still running in <master>.
+export TERMINAL_CWD="$MASTR"
+g "cd <missing> ; git commit refused (failed cd leaves cwd alone)" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"cd $TMPW/definitely-absent-xyz ; git commit -m x\"}}"
+unset TERMINAL_CWD
+export TERMINAL_CWD="$FR"
+unset TERMINAL_CWD
+# A RELATIVE explicit workdir/cwd arg anchors to $TERMINAL_CWD (hermes resolves
+# it the same way) instead of being dropped. Driven through the terminal tool:
+# for a write tool every string arg is ALSO a candidate path, so a workdir case
+# there would block either way and prove nothing.
+export TERMINAL_CWD="$TMPW"
+g "relative workdir arg anchored to TERMINAL_CWD refused" block '{"tool_name":"terminal","tool_input":{"command":"git commit -m x","workdir":"./mastrepo"}}'
+unset TERMINAL_CWD
+# Documented LIMIT: a cd inside a quoted wrapper payload is not parsed (no
+# separator before it) -> the agent cwd is judged instead. Fail-open direction.
+export TERMINAL_CWD="$FR"
+gcwd "cd inside sh -c wrapper not parsed (falls back to agent cwd)" allow "$TMP/mastrepo" "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"sh -c 'cd $MASTR && git commit -m x'\"}}"
+unset TERMINAL_CWD
+gcwd "pushd <master repo> && git commit refused" block "$TMP/featrepo" "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"pushd $MASTR && git commit -m x\"}}"
+# Top-level payload cwd: honored, EXCEPT when it merely mirrors the guard's own
+# process cwd (which is exactly what hermes sends — see _agent_cwd).
+gcwd "payload cwd = worker repo, guard cwd=master repo allowed" allow "$TMP/mastrepo" "{\"tool_name\":\"terminal\",\"cwd\":\"$FR\",\"tool_input\":{\"command\":\"git commit -m x\"}}"
+gcwd "payload cwd mirroring the guard's own cwd is not evidence (allow)" allow "$TMP/mastrepo" "{\"tool_name\":\"terminal\",\"cwd\":\"$MASTR\",\"tool_input\":{\"command\":\"git commit -m x\"}}"
+g "payload cwd = master repo refused" block "{\"tool_name\":\"terminal\",\"cwd\":\"$MASTR\",\"tool_input\":{\"command\":\"git commit -m x\"}}"
+# $TERMINAL_CWD — the session workspace hermes exports to child processes.
+export TERMINAL_CWD="$FR"
+gcwd "relative write, TERMINAL_CWD=worker repo, guard cwd=master repo allowed" allow "$TMP/mastrepo" '{"tool_name":"write_file","tool_input":{"path":"src/foo.sh"}}'
+gcwd "git commit, TERMINAL_CWD=worker repo, guard cwd=master repo allowed" allow "$TMP/mastrepo" '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
+export TERMINAL_CWD="$MASTR"
+gcwd "relative write, TERMINAL_CWD=master repo refused" block "$TMP/featrepo" '{"tool_name":"write_file","tool_input":{"path":"src/foo.sh"}}'
+gcwd "git commit, TERMINAL_CWD=master repo refused" block "$TMP/featrepo" '{"tool_name":"terminal","tool_input":{"command":"git commit -m x"}}'
+unset TERMINAL_CWD
 
 echo "== parity_guard: block-merged-pr-commit parity (HIMMEL-731) =="
 # Worker branch fixture; the merged-PR verdict is injected via the
@@ -307,6 +506,11 @@ printf '%s\n' "$(wp "$TMP/denyroot")" > "$CFG/egress-denylist" # registered egre
 CFG_W="$(wp "$CFG")"; export CLAUDE_GLM_CONFIG_DIR="$CFG_W"
 WV="$(wp "$TMP/vault")"
 g ".salus write refused (ancestor walk)" block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$WV/sub/note.md\"}}"
+# HIMMEL-2008: the PHI fence must see the SAME cwd-resolved target as the branch
+# check, or a RELATIVE write into a vault egresses while its absolute twin blocks.
+export TERMINAL_CWD="$WV"
+g ".salus relative write via TERMINAL_CWD refused" block '{"tool_name":"write_file","tool_input":{"path":"sub/note.md"}}'
+unset TERMINAL_CWD
 g ".salus read refused"        block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$WV/patient.md\"}}"
 g ".salus search refused"      block "{\"tool_name\":\"search_files\",\"tool_input\":{\"path\":\"$WV\"}}"
 g "phi-roots descendant refused" block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$(wp "$TMP/phi/case")/pt.md\"}}"
@@ -314,6 +518,12 @@ g "non-PHI write still allowed" allow "{\"tool_name\":\"write_file\",\"tool_inpu
 g "terminal .salus ref refused" block '{"tool_name":"terminal","tool_input":{"command":"cat /data/.salus/pt.md"}}'
 g "egress-denylist descendant refused" block "{\"tool_name\":\"read_file\",\"tool_input\":{\"path\":\"$(wp "$TMP/denyroot/pt")/x.md\"}}"
 g "delete under .salus refused" block "{\"tool_name\":\"delete_file\",\"tool_input\":{\"path\":\"$WV/old.md\"}}"
+# .salus-profile ALONE (no .salus) -> refused too (HIMMEL-2173 part 2 — a
+# defense for salus deployments that predate part 1 shipping .salus).
+mkdir -p "$TMP/vault2"
+: > "$TMP/vault2/.salus-profile"
+WV2="$(wp "$TMP/vault2")"
+g ".salus-profile-only write refused (HIMMEL-2173)" block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$WV2/note.md\"}}"
 PHI_W="$(wp "$TMP/phi")"
 g "terminal phi-root ref refused" block "{\"tool_name\":\"terminal\",\"tool_input\":{\"command\":\"grep x $PHI_W/case/pt.md\"}}"
 # symlink/junction INTO a .salus vault must not bypass the ancestor walk (realpath).
@@ -404,6 +614,76 @@ unset HERMES_ONESHOT_MODEL
 g "PHI write still refused with opt-in"      block "{\"tool_name\":\"write_file\",\"tool_input\":{\"path\":\"$WV/sub/note.md\"}}"
 unset HERMES_EXTERNAL_WRITES_OK
 unset CLAUDE_GLM_CONFIG_DIR
+
+echo "== parity_guard: deny-escalation (HIMMEL-2025) =="
+DENY_STATE="$(wp "$TMP/deny-state")"
+DENY_PAYLOAD='{"tool_name":"terminal","tool_input":{"command":"rm -rf build"}}'
+OTHER_DENY_PAYLOAD='{"tool_name":"terminal","tool_input":{"command":"git push --force"}}'
+
+rm -rf "$TMP/deny-state"
+out1="$(printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD")"
+out2="$(printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD")"
+out3="$(printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD")"
+case "$out1$out2" in
+  *ESCALATED*) echo "  FAIL: escalated before the 3rd identical deny" >&2; fails=$((fails + 1)) ;;
+  *) echo "  ok: no escalation before the 3rd identical deny" ;;
+esac
+case "$out3" in
+  *ESCALATED*) echo "  ok: 3rd identical deny escalates" ;;
+  *) echo "  FAIL: 3rd identical deny did not escalate: $out3" >&2; fails=$((fails + 1)) ;;
+esac
+if [ -f "$TMP/deny-state/abort" ] && grep -q "ESCALATED" "$TMP/deny-state/abort"; then
+  echo "  ok: abort marker written with the escalation reason"
+else
+  echo "  FAIL: abort marker missing/empty after escalation" >&2; fails=$((fails + 1))
+fi
+
+# A DIFFERENT denied call resets the streak (same-tool, same-args identity
+# only — not "any deny").
+rm -rf "$TMP/deny-state"
+printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD" >/dev/null
+printf '%s' "$OTHER_DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD" >/dev/null
+out3b="$(printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD")"
+case "$out3b" in
+  *ESCALATED*) echo "  FAIL: a differing deny in between still escalated" >&2; fails=$((fails + 1)) ;;
+  *) echo "  ok: an interleaved differing deny resets the streak" ;;
+esac
+
+# PARITY_GUARD_DENY_ESCALATE_N override escalates sooner.
+rm -rf "$TMP/deny-state"
+out_n1="$(printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" PARITY_GUARD_DENY_ESCALATE_N=2 "$PY" "$GUARD")"
+out_n2="$(printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" PARITY_GUARD_DENY_ESCALATE_N=2 "$PY" "$GUARD")"
+case "$out_n1" in *ESCALATED*) echo "  FAIL: escalated on the 1st deny with N=2" >&2; fails=$((fails + 1)) ;; *) : ;; esac
+case "$out_n2" in
+  *ESCALATED*) echo "  ok: PARITY_GUARD_DENY_ESCALATE_N=2 escalates on the 2nd deny" ;;
+  *) echo "  FAIL: PARITY_GUARD_DENY_ESCALATE_N=2 did not escalate on the 2nd deny: $out_n2" >&2; fails=$((fails + 1)) ;;
+esac
+
+# No PARITY_GUARD_STATE_DIR (e.g. hermes launched directly, outside
+# invoke.sh) -> escalation is a no-op: never blocks the verdict, never writes
+# a marker anywhere.
+unset PARITY_GUARD_STATE_DIR
+out_noenv1="$(printf '%s' "$DENY_PAYLOAD" | "$PY" "$GUARD")"
+out_noenv2="$(printf '%s' "$DENY_PAYLOAD" | "$PY" "$GUARD")"
+out_noenv3="$(printf '%s' "$DENY_PAYLOAD" | "$PY" "$GUARD")"
+case "$out_noenv1$out_noenv2$out_noenv3" in
+  *ESCALATED*) echo "  FAIL: escalated with no PARITY_GUARD_STATE_DIR set" >&2; fails=$((fails + 1)) ;;
+  *) echo "  ok: no PARITY_GUARD_STATE_DIR -> escalation stays a no-op" ;;
+esac
+
+# An intervening ALLOW breaks the streak (HIMMEL-2025 CR round 1, codex-2):
+# denies counted "in a row" only -- an allowed call between two identical
+# denies means the run made progress, not that it is spinning.
+rm -rf "$TMP/deny-state"
+ALLOW_PAYLOAD='{"tool_name":"read_file","tool_input":{"path":"/repo/README.md"}}'
+printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD" >/dev/null
+printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD" >/dev/null
+printf '%s' "$ALLOW_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD" >/dev/null
+out_after_allow="$(printf '%s' "$DENY_PAYLOAD" | PARITY_GUARD_STATE_DIR="$DENY_STATE" "$PY" "$GUARD")"
+case "$out_after_allow" in
+  *ESCALATED*) echo "  FAIL: escalated on the 3rd deny even though an ALLOW broke the streak" >&2; fails=$((fails + 1)) ;;
+  *) echo "  ok: an intervening ALLOW resets the deny streak" ;;
+esac
 
 echo "== wire_parity_guard: set (insert + replace) =="
 cfg="$(wp "$TMP/c1.yaml")"

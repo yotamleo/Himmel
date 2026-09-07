@@ -12,6 +12,11 @@
  * section. Plain tweets and long ("note") tweets are frontmatter-only
  * enrichments — the body already has the raw text from the clip-body harvest.
  *
+ * HIMMEL-2621: a quote tweet gets BOTH — its own text body-filled into
+ * "## The Idea" (when the clip body is thin) AND the quoted post under
+ * "## Crawled content". The chooser used to be exclusive, so any tweet with
+ * a quote recorded only the QUOTED author's words.
+ *
  * G-3 invariant: existing body sections must be byte-identical post-write.
  * Only "## Crawled content" may be added (articles + quote-context).
  * Frontmatter mutation is whitelisted to the keys listed in FM_KEYS below.
@@ -27,6 +32,7 @@
  *
  * Usage:
  *   bun fxtwitter-enrich.mjs --vault <path> [--limit N] [--dry-run]
+ *                            [--reflag] [--reenrich-quote-only]
  *
  * Exit codes:
  *   0 — run completed (may include partial/failed clips; see summary)
@@ -74,25 +80,36 @@ const RESET_FM_KEYS = ["processed", "triaged_at"];
 // end-of-body. Stripped on the backfill re-triage reset.
 const PROMOTION_SECTION_RE = /\n## Promotion candidate\n<!-- triage (?:(?!-->)[\s\S])*?-->[\s\S]*?(?=\n## |\s*$)/;
 
+// A previously written fxtwitter quote-context "## Crawled content" section:
+// heading + its `<!-- enriched <date> via fxtwitter (quote-context) -->`
+// marker, up to the next `## ` heading or end-of-body. Replaced (not
+// duplicated) by the --reenrich-quote-only backfill (HIMMEL-2621).
+const QUOTE_SECTION_RE = /\n## Crawled content\n<!-- enriched \d{4}-\d{2}-\d{2} via fxtwitter \(quote-context\) -->[\s\S]*?(?=\n## |\s*$)/;
+
 function usage(code = 1) {
   const out = code === 0 ? console.log : console.error;
-  out("Usage: fxtwitter-enrich.mjs --vault <path> [--limit N] [--dry-run] [--reflag]");
+  out("Usage: fxtwitter-enrich.mjs --vault <path> [--limit N] [--dry-run] [--reflag] [--reenrich-quote-only]");
   out("");
   out("Enrich X clips via api.fxtwitter.com (no browser, no auth).");
   out("--reflag: backfill the needs_thread signal onto already-enriched X clips");
   out("          (fetch + re-evaluate; writes ONLY needs_thread, no body change).");
+  out("--reenrich-quote-only: backfill clips already enriched by fxtwitter that have");
+  out("          tweet_has_quote: true but NO `## The Idea` — the pre-HIMMEL-2621");
+  out("          chooser dropped the clipped author's own text. Re-fetches, adds");
+  out("          `## The Idea`, and replaces the stale quote-context section.");
   out("Only clips with `processed: true` are enriched.");
   process.exit(code);
 }
 
 function parseArgs(argv) {
-  const out = { vault: null, limit: 0, dryRun: false, reflag: false };
+  const out = { vault: null, limit: 0, dryRun: false, reflag: false, reenrichQuoteOnly: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--vault") out.vault = argv[++i];
     else if (a === "--limit") out.limit = parseInt(argv[++i] || "0", 10) || 0;
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--reflag") out.reflag = true;
+    else if (a === "--reenrich-quote-only") out.reenrichQuoteOnly = true;
     else if (a === "-h" || a === "--help") usage(0);
     else {
       console.error(`unknown arg: ${a}`);
@@ -100,6 +117,10 @@ function parseArgs(argv) {
     }
   }
   if (!out.vault) usage(1);
+  if (out.reflag && out.reenrichQuoteOnly) {
+    console.error("--reflag and --reenrich-quote-only are separate backfills; run them one at a time");
+    usage(1);
+  }
   return out;
 }
 
@@ -190,6 +211,29 @@ export function isThinTweetBody(body) {
 
 function alreadyEnriched(fmRaw) {
   return /^enriched_at:\s*\S/m.test(fmRaw);
+}
+
+/**
+ * Return true when a clip is a pre-HIMMEL-2621 quote-only casualty: enriched
+ * by fxtwitter, the tweet carried a quote, the clip still has no
+ * `## The Idea`, AND the body carries no real tweet text of its own — i.e. it
+ * recorded the QUOTED author's words and dropped the clipped author's own. A
+ * clip with no `## The Idea` that already has the author's own prose
+ * elsewhere (a different heading, or plain prose before the first `## `) was
+ * never a casualty of the old exclusive chooser — body-filling it would
+ * duplicate text it already has, so `isThinTweetBody` gates it out. The
+ * --reenrich-quote-only backfill targets exactly the casualties; every other
+ * clip is skipped under that switch.
+ *
+ * @param {string} fmRaw - raw frontmatter text.
+ * @param {string} body  - the clip body.
+ * @returns {boolean}
+ */
+export function isQuoteOnlyClip(fmRaw, body) {
+  if (!/^enrichment_source:\s*"?fxtwitter"?\s*$/m.test(fmRaw)) return false;
+  if (!/^tweet_has_quote:\s*"?true"?\s*$/m.test(fmRaw)) return false;
+  if (/^## The Idea\s*$/m.test(body)) return false;
+  return isThinTweetBody(body);
 }
 
 function isProcessed(fm) {
@@ -561,11 +605,47 @@ function renderArticleSection(tweet) {
   return lines.join("\n");
 }
 
+/**
+ * Render the quoted post's body.
+ *
+ * `q.text` carries t.co links already expanded to their destination;
+ * `q.raw_text.text` keeps the shortener — so `q.text` is preferred here
+ * (verified against the live api.fxtwitter.com payloads on HIMMEL-2621).
+ *
+ * A quoted post that is itself an X Article, or media with a bare t.co
+ * stand-in for its text, has no prose of its own. Rendering that verbatim
+ * produced sections whose ONLY content was a shortener URL. Fall back to
+ * what fxtwitter does give: the article title + preview, or a media marker.
+ *
+ * The forbidden thing is a bare SHORTENER, not a bare URL. A quoted post
+ * whose whole text is a real external link and that carries no article or
+ * media metadata still has content worth keeping — so the URL is preserved
+ * as the last resort, and only a t.co (which carries nothing on its own)
+ * degrades to the no-text marker.
+ *
+ * @param {object} q - the quoted tweet (tweet.quote).
+ * @returns {string} markdown body for the quote section.
+ */
+function renderQuoteBody(q) {
+  const text = (q.text || q.raw_text?.text || "").trim();
+  if (text && !/^https?:\/\/\S+$/.test(text)) return text;
+  const article = q.article || {};
+  const title = String(article.title || "").replace(/\s+/g, " ").trim();
+  if (title) {
+    const preview = String(article.preview_text || "").trim();
+    return preview ? `**${title}**\n\n${preview}` : `**${title}**`;
+  }
+  const mediaCount = q.media?.all?.length || 0;
+  if (mediaCount) return `_(quoted media: ${mediaCount} item(s))_`;
+  if (text && !/^https?:\/\/t\.co\//.test(text)) return text;
+  return "_(no quote text)_";
+}
+
 function renderQuoteSection(tweet) {
   // tweet.quote holds the quoted tweet
   const q = tweet.quote || {};
   const author = q.author?.screen_name ? `@${q.author.screen_name}` : "(unknown)";
-  const text = (q.raw_text?.text || q.text || "").trim();
+  const text = renderQuoteBody(q);
   const url = q.url || "";
   const lines = [
     "## Crawled content",
@@ -573,7 +653,7 @@ function renderQuoteSection(tweet) {
     "",
     `### Quoted tweet (${author})`,
     "",
-    text || "_(no quote text)_",
+    text,
     "",
   ];
   if (url) lines.push(`[Quoted tweet](${url})`);
@@ -738,11 +818,23 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
     });
   }
 
+  // --reenrich-quote-only (HIMMEL-2621 backfill): clips already enriched by
+  // fxtwitter whose tweet carried a quote lost the clipped author's own text,
+  // because the old chooser was exclusive. They are already-enriched, so the
+  // normal path skips them forever. This switch re-processes exactly those —
+  // fxtwitter source, tweet_has_quote: true, NO `## The Idea` yet, and no
+  // real tweet text elsewhere in the body (isQuoteOnlyClip) — and nothing
+  // else: every other clip is skipped under it.
   const thinBody = isThinTweetBody(body);
-  if (!isProcessed(fm) && !thinBody) {
+  const quoteBackfill = !!opts.reenrichQuoteOnly && isQuoteOnlyClip(fmRaw, body);
+  if (opts.reenrichQuoteOnly && !quoteBackfill) {
+    return { glyph: "o", message: `${rel} -- skipped (reenrich-quote-only: not a quote-only fxtwitter clip)` };
+  }
+
+  if (!isProcessed(fm) && !thinBody && !quoteBackfill) {
     return { glyph: "o", message: `${rel} -- skipped (not processed, body not thin)` };
   }
-  if (alreadyEnriched(fmRaw)) return { glyph: "o", message: `${rel} -- skipped (already enriched)` };
+  if (alreadyEnriched(fmRaw) && !quoteBackfill) return { glyph: "o", message: `${rel} -- skipped (already enriched)` };
   const sourceVal = fm.source || "";
   if (!isXSource(sourceVal)) return { glyph: "o", message: `${rel} -- skipped (not x/twitter source)` };
 
@@ -751,7 +843,10 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
   const fxtUrl = fxtUrlFor(canon);
   if (!fxtUrl) return { glyph: "x", message: `${rel} -- failed (build fxt url): ${canon}` };
 
-  if (dryRun) return { glyph: "v", message: `${rel} -- would enrich via ${fxtUrl} [dry-run]` };
+  if (dryRun) {
+    const what = quoteBackfill ? "would re-enrich (quote-only)" : "would enrich";
+    return { glyph: "v", message: `${rel} -- ${what} via ${fxtUrl} [dry-run]` };
+  }
 
   // Rate-limit BEFORE the network call. The single inline telegram-clip call
   // (serial bridge) skips it — politeness only matters for the batch loop.
@@ -788,7 +883,25 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
   if (isArticle) {
     section = renderArticleSection(tweet);
   } else if (hasQuote) {
-    section = renderQuoteSection(tweet);
+    // HIMMEL-2621: a quote tweet carries BOTH — the clipped author's own text
+    // (body-filled into `## The Idea` when the clip body is thin, through the
+    // SAME didBodyFill path so the HIMMEL-256 injection re-screen runs) and
+    // the quoted post under `## Crawled content`. The two render into one
+    // section string so the single G-3 section-add identity still holds.
+    // quoteBackfill implies thinBody (isQuoteOnlyClip requires
+    // isThinTweetBody), so the plain thinBody check covers both paths.
+    const quoteSection = renderQuoteSection(tweet);
+    const ownText = (tweet.text || "").trim();
+    if (thinBody && ownText) {
+      section = `${renderIdeaSection(tweet.text)}\n\n${quoteSection}`;
+      didBodyFill = true;
+      if (!fm.author) bodyFill.author = [`@${tweet.author?.screen_name || ""}`];
+      if (isTelegramTitlePlaceholder(fm.title)) {
+        bodyFill.title = ownText.replace(/\s+/g, " ").trim().slice(0, 80);
+      }
+    } else {
+      section = quoteSection;
+    }
   } else if (thinBody) {
     // Thin plain/note tweet: inject tweet text into `## The Idea`.
     const tweetText = (tweet.text || "").trim();
@@ -835,7 +948,21 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
     last_error: null,
     ...bodyFill,
   };
-  const res = await writeEnrichment({ clipPath, rel, text, baselineSha, fmRaw, body, markers, section, resetTriage: thinBody && isProcessed(fm), statusGlyph: "v", statusMsg: `enriched (article=${isArticle}, note=${isNote}, quote=${hasQuote})` });
+  const res = await writeEnrichment({
+    clipPath, rel, text, baselineSha, fmRaw, body, markers, section,
+    // The re-triage reset is for the thin→filled transition at FIRST enrich.
+    // The quote backfill is a corrective re-enrich of clips that were already
+    // triaged (and mostly archived into _evidence/) — clearing processed: on
+    // those would strip 170 triage-authored `## Promotion candidate` sections
+    // and dump the whole archive back into the triage queue. Not this ticket's
+    // job: the backfill restores dropped text, it does not re-open verdicts.
+    resetTriage: thinBody && isProcessed(fm) && !quoteBackfill,
+    // On the quote backfill the clip already carries a stale quote-context
+    // section; replace it rather than adding a second one.
+    stripQuoteSection: quoteBackfill,
+    statusGlyph: "v",
+    statusMsg: `${quoteBackfill ? "re-enriched (quote-only)" : "enriched"} (article=${isArticle}, note=${isNote}, quote=${hasQuote})`,
+  });
 
   // HIMMEL-256: re-screen the just-written clip for prompt injection on the
   // real-text body-fill path only (## The Idea now holds untrusted tweet
@@ -879,7 +1006,7 @@ export async function processClip(clipPath, vault, dryRun, opts = {}) {
 /**
  * Write the enriched clip with full G-3 / YAML verification and revert.
  */
-async function writeEnrichment({ clipPath, rel, text, baselineSha, fmRaw, body, markers, section, resetTriage = false, statusGlyph, statusMsg }) {
+async function writeEnrichment({ clipPath, rel, text, baselineSha, fmRaw, body, markers, section, resetTriage = false, stripQuoteSection = false, statusGlyph, statusMsg }) {
   // Stale-read guard.
   let nowText;
   try {
@@ -892,7 +1019,11 @@ async function writeEnrichment({ clipPath, rel, text, baselineSha, fmRaw, body, 
   }
 
   let newBody = body;
-  if (section) newBody = insertCrawledSection(body, section);
+  // HIMMEL-2621 quote backfill: drop the stale fxtwitter quote-context
+  // section before inserting the freshly rendered one, so the clip ends up
+  // with exactly one `## Crawled content`.
+  if (stripQuoteSection) newBody = newBody.replace(QUOTE_SECTION_RE, "");
+  if (section) newBody = insertCrawledSection(newBody, section);
   let fmForMarkers = fmRaw;
   if (resetTriage) {
     // Backfill re-triage reset: strip the triage-authored promotion section
@@ -936,10 +1067,12 @@ async function writeEnrichment({ clipPath, rel, text, baselineSha, fmRaw, body, 
   //
   // SKIPPED on the backfill re-triage reset: that path deliberately mutates
   // the body beyond a single-section-add (it strips the promotion section),
-  // so the single-section-add identity no longer holds. The other guards
-  // (post.body === newBody write-succeeded check above, frontmatter-present
-  // check above, YAML parse-validate below) still fully protect the write.
-  if (!resetTriage) {
+  // so the single-section-add identity no longer holds. Same for the
+  // HIMMEL-2621 quote backfill, which replaces the stale quote-context
+  // section. The other guards (post.body === newBody write-succeeded check
+  // above, frontmatter-present check above, YAML parse-validate below) still
+  // fully protect the write.
+  if (!resetTriage && !stripQuoteSection) {
     if (section) {
       const stripped = post.body.replace(section, "").replace(/\n{3,}/g, "\n\n");
       const origNorm = body.replace(/\n{3,}/g, "\n\n");
@@ -983,7 +1116,7 @@ async function main() {
   let ok = 0, partial = 0, failed = 0, skipped = 0, processed = 0;
   for (const clip of clips) {
     if (args.limit > 0 && processed >= args.limit) break;
-    const res = await processClip(clip, args.vault, args.dryRun, { reflag: args.reflag });
+    const res = await processClip(clip, args.vault, args.dryRun, { reflag: args.reflag, reenrichQuoteOnly: args.reenrichQuoteOnly });
     const prefix =
       res.glyph === "v" ? "OK  " :
       res.glyph === "o" ? "SKIP" :

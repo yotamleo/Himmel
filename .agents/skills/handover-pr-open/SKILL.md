@@ -1,6 +1,6 @@
 ---
 name: handover-pr-open
-description: Open or update the PR for the current handover/<TICKET>-<slug> branch. Idempotent. Use when the user asks to open/refresh the handover PR or run /handover-pr-open.
+description: Open or update the PR for the current handover/<TICKET>-<slug> branch. Idempotent. Use for /handover-pr-open.
 ---
 
 # handover-pr-open

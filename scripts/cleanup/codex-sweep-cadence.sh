@@ -67,7 +67,10 @@
 #   3  dedup block — HIMMEL-CodexOrphanSweep already armed; --force replaces
 #   4  scheduler invocation failed (/create, /delete, path conversion) OR
 #      the post-arm verify query failed / reported no live next-run time
-#      (rolled back: the just-armed task is deleted before exiting 4)
+#      (rolled back: the just-armed task is deleted before exiting 4). That
+#      self-deletion also writes a `codex-sweep-cadence` / outcome=self-deleted
+#      row to the flow-run ledger (HIMMEL-1879) — absence of a scheduled task
+#      is otherwise indistinguishable from "not due yet".
 #
 # Known limitations:
 #   - query_task's locale-independent existence probe (codex-7) needs a
@@ -151,6 +154,9 @@ SUPERSEDE_SCRIPT="$HIMMEL_ROOT/scripts/codex/reap-superseded-fleets.ps1"
 # shellcheck source=../lib/cadence-format.sh
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/cadence-format.sh"
+# shellcheck source=../lib/observability-registry.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/observability-registry.sh"
 
 SWEEP_TIME="09:00"
 REPEAT_HOURS=4
@@ -292,15 +298,18 @@ command -v "$SCHTASKS_BIN" >/dev/null 2>&1 || {
 run_schtasks() { MSYS_NO_PATHCONV=1 "$SCHTASKS_BIN" "$@"; }
 
 # Emit the runner .bat body: stamp the format version, rotate the log
-# (move /y to .prev on each fire), stamp the fire time, then run the sweep
-# payload followed by the reap payload with each %ERRORLEVEL% captured to
-# the log — a silently-refusing sweep (the exact failure class HIMMEL-892
-# exists to kill) must be auditable from the log alone.
+# (move /y to .prev on each fire), stamp the fire time, then run all three
+# payloads with each rc captured to the log. Any non-zero leg is remembered and
+# returned AFTER the later legs run, so Task Scheduler cannot report success
+# merely because the final payload succeeded (HIMMEL-1706).
 emit_bat() {
     local bat_dir_esc="$1" pwsh_esc="$2" sweep_esc="$3" reap_esc="$4" supersede_esc="$5"
     printf '@echo off\r\n'
     printf 'rem codex-sweep-cadence runner (HIMMEL-892)\r\n'
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
+    # Pin editor hooks to the no-op `true` so a cadence child (stdin closed under
+    # schtasks) can never block on an editor prompt (HIMMEL-1753).
+    cadence_bat_editor_set
     # Quoted `set "LOG=..."`, not bare `set LOG=...` (HIMMEL-1281). This was
     # the ONE emitter line interpolating an escaped value OUTSIDE quotes —
     # where & < > | really are live metacharacters and the old caret escapes
@@ -309,14 +318,28 @@ emit_bat() {
     # mode. Bonus: the quoted form also stops a trailing space in the bat dir
     # from landing in %LOG%.
     printf 'set "LOG=%s\\codex-sweep.log"\r\n' "$bat_dir_esc"
+    printf 'set "PAYLOAD_FAILED=0"\r\n'
     printf 'if exist "%%LOG%%" move /y "%%LOG%%" "%%LOG%%.prev" >nul\r\n'
     printf 'echo [fired %%date%% %%time%%] > "%%LOG%%"\r\n'
-    printf '"%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$sweep_esc"
-    printf 'echo [sweep exit rc=%%ERRORLEVEL%%] >> "%%LOG%%"\r\n'
-    printf '"%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$reap_esc"
-    printf 'echo [reap exit rc=%%ERRORLEVEL%%] >> "%%LOG%%"\r\n'
-    printf '"%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$supersede_esc"
-    printf 'echo [supersede exit rc=%%ERRORLEVEL%%] >> "%%LOG%%"\r\n'
+    # `call` on every payload leg (HIMMEL-1389, mirroring #1454's fix in
+    # drift-fix-cadence.sh): if the resolved pwsh/powershell path is ever a
+    # .cmd/.bat shim, a bare invocation makes cmd.exe transfer control into it
+    # and never return — the rc capture, the two later legs and the
+    # PAYLOAD_FAILED exit would all silently never run, and Task Scheduler
+    # would see the shim's rc instead of the sweep's.
+    printf 'call "%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$sweep_esc"
+    printf 'set "PAYLOAD_RC=%%ERRORLEVEL%%"\r\n'
+    printf 'echo [sweep exit rc=%%PAYLOAD_RC%%] >> "%%LOG%%"\r\n'
+    printf 'if not "%%PAYLOAD_RC%%"=="0" set "PAYLOAD_FAILED=1"\r\n'
+    printf 'call "%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$reap_esc"
+    printf 'set "PAYLOAD_RC=%%ERRORLEVEL%%"\r\n'
+    printf 'echo [reap exit rc=%%PAYLOAD_RC%%] >> "%%LOG%%"\r\n'
+    printf 'if not "%%PAYLOAD_RC%%"=="0" set "PAYLOAD_FAILED=1"\r\n'
+    printf 'call "%s" -NoProfile -ExecutionPolicy Bypass -File "%s" -Kill >> "%%LOG%%" 2>&1\r\n' "$pwsh_esc" "$supersede_esc"
+    printf 'set "PAYLOAD_RC=%%ERRORLEVEL%%"\r\n'
+    printf 'echo [supersede exit rc=%%PAYLOAD_RC%%] >> "%%LOG%%"\r\n'
+    printf 'if not "%%PAYLOAD_RC%%"=="0" set "PAYLOAD_FAILED=1"\r\n'
+    printf 'exit /b %%PAYLOAD_FAILED%%\r\n'
 }
 
 # --- schtasks task XML (StartWhenAvailable + InteractiveToken Principal) ---
@@ -367,9 +390,24 @@ repetition_xml() {
 # schtasks /create /xml expects) but the bytes are plain ASCII (cmd.exe's
 # OEM codepage mojibakes non-ASCII — same rule as graphmap-cadence).
 emit_task_xml() {
-    local command_raw="$1" start_time="$2" schedule_xml="$3" repeat_hours="${4:-0}" command repetition
-    command=$(xml_escape "$command_raw")
+    local bat_win="$1" start_time="$2" schedule_xml="$3" repeat_hours="${4:-0}"
+    local repetition vbs_win vbs_args
+    # HIMMEL-1753: Exec is a `wscript //B <shim>.vbs` wrapper around the .bat.
+    # The earlier hidden-powershell wrapper (-WindowStyle Hidden) was MEASURED to
+    # still allocate visible consoles; wscript //B hosting the .vbs shim (which
+    # runs the .bat hidden via WScript.Shell.Run and forwards its exit code via
+    # WScript.Quit) allocates zero consoles. (codex-sweep previously threaded the
+    # resolved pwsh path in here as <Command> — that is gone now; the resolved
+    # pwsh still drives the .bat's three payload legs via emit_bat's $pwsh_esc.)
+    # The shim path is derived from the .bat path through cadence_vbs_path — the
+    # SAME helper cmd_arm writes the file with — so referenced path and written
+    # file can never disagree. //B is the WSH batch-mode flag (no error/prompt
+    # UI); the path is quoted for spaces, then xml_escaped like any element text.
+    # WScript.Quit in the shim preserves HIMMEL-1706 exit-code fidelity (rc=42
+    # re-arm survives — proven in test-cadence-format.sh).
     repetition=$(repetition_xml "$repeat_hours")
+    vbs_win=$(cadence_vbs_path "$bat_win")
+    vbs_args=$(xml_escape "//B \"${vbs_win}\"")
     cat <<XML
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -396,7 +434,8 @@ ${schedule_xml}
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${command}</Command>
+      <Command>wscript.exe</Command>
+      <Arguments>${vbs_args}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -438,12 +477,16 @@ resolve_pwsh() {
         printf '%s' "$SWEEP_PWSH"
         return 0
     fi
-    local p
-    if p=$(command -v pwsh 2>/dev/null); then
-        printf '%s' "$p"
-        return 0
-    fi
+    local p pwsh_cand
+    for pwsh_cand in pwsh pwsh.exe; do
+        if p=$(command -v "$pwsh_cand" 2>/dev/null); then
+            printf '%s' "$p"
+            return 0
+        fi
+    done
     if p=$(command -v powershell 2>/dev/null); then
+        # HIMMEL-2126: pwsh is unavailable — loud, named 5.1 fallback, never silent.
+        echo "WARN resolve_pwsh: pwsh (PowerShell 7) not found; falling back to Windows PowerShell 5.1 (powershell) -- HIMMEL-2126: PS 5.1 misreads BOM-less UTF-8 as cp1252 (em-dash mojibake -> phantom-token ParserError at the WRONG line), has reserved-variable quirks, and strips jq-style quoting differently than pwsh." >&2
         printf '%s' "$p"
         return 0
     fi
@@ -598,6 +641,8 @@ status_log() {
 }
 
 cmd_arm() {
+    cadence_require_wsh "codex-sweep-cadence" || exit 2
+
     command -v cygpath >/dev/null 2>&1 || {
         echo "ERR codex-sweep-cadence: cygpath not on PATH; cannot convert paths for schtasks" >&2
         exit 2
@@ -690,7 +735,7 @@ cmd_arm() {
     supersede_esc=$(cadence_cmd_escape "$supersede_win")
     bat_dir_esc=$(cadence_cmd_escape "$bat_dir_win")
 
-    local bat_file="$BAT_DIR/codex-sweep.bat" bat_win
+    local bat_file="$BAT_DIR/codex-sweep.bat" vbs_file="$BAT_DIR/codex-sweep.vbs" bat_win
     if ! bat_win=$(cygpath -w "$bat_file" 2>&1); then
         echo "ERR codex-sweep-cadence: cygpath -w failed for bat file: $bat_win" >&2
         exit 4
@@ -702,6 +747,8 @@ cmd_arm() {
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY codex-sweep-cadence: would write $bat_file:"
         emit_bat "$bat_dir_esc" "$pwsh_esc" "$sweep_esc" "$reap_esc" "$supersede_esc" | sed 's/^/    /'
+        echo "DRY codex-sweep-cadence: would write $vbs_file:"
+        cadence_vbs_wrapper "$bat_win" | sed 's/^/    /'
         echo "DRY codex-sweep-cadence: would schtasks /create /tn $TASK_NAME /xml <daily $SWEEP_TIME, repeat every ${REPEAT_HOURS}h, StartWhenAvailable=true, InteractiveToken/LeastPrivilege> /f"
         emit_task_xml "$bat_win" "$SWEEP_TIME" "$sched" "$REPEAT_HOURS" | sed 's/^/    /'
         echo "codex-sweep-cadence: dry-run complete (no changes made)"
@@ -730,9 +777,18 @@ cmd_arm() {
     # the task but leaves the published new .bat in place (inert without a
     # task; disarm cleans it up). Only early failures BEFORE this point
     # (cygpath, mktemp) still leave any pre-existing .bat byte-identical.
-    local bat_tmp
+    local bat_tmp vbs_tmp
     bat_tmp=$(mktemp "$BAT_DIR/.codex-sweep.bat.XXXXXX")
+    vbs_tmp=$(mktemp "$BAT_DIR/.codex-sweep.vbs.XXXXXX")
     emit_bat "$bat_dir_esc" "$pwsh_esc" "$sweep_esc" "$reap_esc" "$supersede_esc" > "$bat_tmp"
+    cadence_vbs_wrapper "$bat_win" > "$vbs_tmp"
+    # Publish the shim first: an already-armed task can safely run the new shim
+    # against the still-current .bat while the pair is being replaced.
+    if ! mv -f "$vbs_tmp" "$vbs_file"; then
+        echo "ERR codex-sweep-cadence: failed to publish runner shim to $vbs_file" >&2
+        rm -f "$bat_tmp" "$vbs_tmp"
+        exit 4
+    fi
     if ! mv -f "$bat_tmp" "$bat_file"; then
         echo "ERR codex-sweep-cadence: failed to publish runner to $bat_file" >&2
         rm -f "$bat_tmp"
@@ -752,6 +808,11 @@ cmd_arm() {
     fi
     if [ -s "$err_file" ]; then cat "$err_file" >&2; fi
     rm -f "$err_file"
+
+    # Register immediately after /create succeeds. If the post-arm verification
+    # below proves the task dead and rolls it back, the task intentionally stays
+    # expected so scheduled_task_exists pages on that vanished registration.
+    observability_register_cadence codex-sweep 14400 "$TASK_NAME"
 
     # Post-arm verify (HIMMEL-938 lesson, ported from scripts/handover/
     # arm-resume.sh Part B): a successful schtasks /create rc=0 is not proof
@@ -806,6 +867,45 @@ cmd_arm() {
         if [ "$_ps_out" = "NEXTRUN-NONE" ]; then
             echo "ERR codex-sweep-cadence: post-arm verify found NO NextRunTime for '$TASK_NAME' -- the task registered but will never fire. Deleting the bad task -- this is the HIMMEL-938 silent-misarm class." >&2
             run_schtasks /delete /tn "$TASK_NAME" /f >/dev/null 2>&1 || true
+            # HIMMEL-1879 part 2: ABSENCE IS A REAL STATE, and a run-watcher
+            # cannot see it. On 2026-08-09 this cadence ran clean at 12:00 and
+            # 13:00, then self-deleted and was gone ~13h before anyone noticed:
+            # nothing was WRONG in the ledger, there simply were no more rows,
+            # and "no rows" reads identically to "not due yet". The fail-closed
+            # delete above stays exactly as it is -- what changes is that the
+            # deletion now leaves a POSITIVE row behind, so the absence has a
+            # cause an operator (or a cadence auditor) can find. Best-effort:
+            # a ledger write must never change the arm's outcome.
+            _csd_ledger="$SCRIPT_DIR/../lib/flow-run-ledger.sh"
+            _csd_path="${HIMMEL_FLOW_RUNS_LEDGER:-$HOME/.himmel/flow-runs.jsonl}"
+            # Tracked, not assumed (codex-2): the ledger write is best-effort, so
+            # the banner below must not promise a row that a missing helper or a
+            # failed write never produced -- an operator who goes looking for it
+            # and finds nothing learns to distrust the banner.
+            _csd_logged=0
+            if [ -f "$_csd_ledger" ]; then
+                _csd_run=$(bash "$_csd_ledger" --append-start "codex-sweep-cadence" "" "" "arm" "" "$TASK_NAME" "" "$$" 2>/dev/null) || _csd_run=""
+                if [ -n "$_csd_run" ] && bash "$_csd_ledger" --append-end "codex-sweep-cadence" "$_csd_run" "" 4 "self-deleted" "" \
+                        "post-arm verify returned NEXTRUN-NONE; the cadence DELETED ITS OWN task (fail-closed, HIMMEL-938). NOT armed -- no further rows will appear for this task until it is re-armed." >/dev/null 2>&1; then
+                    _csd_logged=1
+                fi
+            fi
+            {
+                echo "=================================================================="
+                echo "  CADENCE SELF-DELETED ITS OWN TASK (HIMMEL-1879)"
+                echo "    task:   $TASK_NAME"
+                echo "    ledger: $_csd_path"
+                echo "  NOTHING IS SCHEDULED. The sweep will simply stop happening,"
+                echo "  and silence looks exactly like 'not due yet' -- which is how"
+                echo "  the 2026-08-09 disappearance went ~13h unnoticed."
+                if [ "$_csd_logged" -eq 1 ]; then
+                    echo "  A 'self-deleted' row was written to the flow-run ledger above."
+                else
+                    echo "  WARNING: the 'self-deleted' ledger row could NOT be written, so"
+                    echo "  THIS BANNER IS THE ONLY RECORD. Note it somewhere durable."
+                fi
+                echo "=================================================================="
+            } >&2
             # The runner .bat was already published (see the atomic
             # publication block above) -- it stays on disk holding the new
             # content. It's inert without a live task (disarm cleans it up
@@ -847,7 +947,7 @@ cmd_status() {
         0)
             next=$(printf '%s\n' "$QUERY_OUT" | grep -i 'Next Run Time' | head -1 \
                 | sed 's/^[^:]*:[[:space:]]*//' || true)
-            echo "ARMED      $TASK_NAME${next:+ (next run: $next)}"
+            cadence_registered_status "$TASK_NAME" "${next:+ (next run: $next)}" || status_rc=2
             ;;
         1)  echo "not armed  $TASK_NAME" ;;
         *)
@@ -879,7 +979,8 @@ cmd_disarm() {
     # failed partway, and disarm should always leave the runner clean too.
     # Still --dry-run safe: gated on DRY_RUN, so a preview touches nothing.
     if [ "$DRY_RUN" -eq 0 ]; then
-        rm -f "$BAT_DIR/codex-sweep.bat"
+        rm -f "$BAT_DIR/codex-sweep.bat" "$BAT_DIR/codex-sweep.vbs"
+        observability_unregister_cadence codex-sweep "$TASK_NAME"
     fi
     if [ "$found" -eq 0 ]; then
         echo "codex-sweep-cadence: nothing armed — disarm is a no-op"
@@ -889,6 +990,17 @@ cmd_disarm() {
         echo "codex-sweep-cadence: cadence disarmed"
     fi
 }
+
+# Runtime preflight on the ARM path only (HIMMEL-1991) — same reasoning as
+# graphmap-cadence: arming hands this runtime to an unattended schedule, so the
+# drift is named while a human is still watching. Advisory by default;
+# HIMMEL_RUNTIME_PREFLIGHT=strict refuses, =0 silences.
+if [ "$SUBCMD" = "arm" ]; then
+    # shellcheck source=../lib/runtime-preflight.sh
+    # shellcheck disable=SC1091
+    . "$(dirname "${BASH_SOURCE[0]}")/../lib/runtime-preflight.sh"
+    runtime_preflight "codex-sweep-cadence arm" || exit 1
+fi
 
 case "$SUBCMD" in
     arm)    cmd_arm ;;

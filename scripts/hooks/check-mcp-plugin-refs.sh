@@ -59,6 +59,10 @@ fi
 violations=()
 for f in "${files[@]}"; do
     [ -f "$f" ] || continue
+    if [ ! -r "$f" ]; then
+        echo "⛔ check-mcp-plugin-refs: staged file '$f' is unreadable — refusing to skip the MCP-reference scan on it (fail-closed)." >&2
+        exit 1
+    fi
     is_exempt "$f" && continue
     if grep -E -l "$PATTERN" -- "$f" >/dev/null 2>&1; then
         violations+=("$f")

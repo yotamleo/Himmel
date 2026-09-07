@@ -3,7 +3,12 @@ import os, sys, unittest, copy, shutil, subprocess, json, tempfile, pathlib
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "skills", "vault-lint"))
 import vault_lint as vl
 
-_ENGINE = os.path.join(os.path.dirname(__file__), "..", "skills", "vault-lint", "vault_lint.py")
+# VAULT_LINT_ENGINE override is the containment-falsification seam (HIMMEL-1762):
+# point the subprocess tests at a scratch engine copy with the containment check
+# stripped — the refusal tests must go RED against it.
+_ENGINE = os.environ.get("VAULT_LINT_ENGINE") or os.path.join(
+    os.path.dirname(__file__), "..", "skills", "vault-lint", "vault_lint.py"
+)
 
 
 class TestCliEncoding(unittest.TestCase):
@@ -36,8 +41,8 @@ class TestExtraction(unittest.TestCase):
         # must not leave a trailing backslash on the target (HIMMEL-411).
         self.assertEqual(vl.link_target(r"path/Note\|Alias"), "path/Note")
         self.assertEqual(
-            vl.extract_links(r"| [[30-Resources/Tech/caveman\|caveman]] | x |"),
-            ["30-Resources/Tech/caveman"],
+            vl.extract_links(r"| [[30-Resources/Tech/rtk\|rtk]] | x |"),
+            ["30-Resources/Tech/rtk"],
         )
     def test_strip_code_removes_fenced_and_inline(self):
         t = "real [[A]]\n```\ncode [[B]]\n```\nand `inline [[C]]` end"
@@ -311,6 +316,103 @@ class TestDotDirSkip(unittest.TestCase):
             if f["path"].startswith(".obsidian/") or f["path"].startswith(".pytest_cache/") or f["path"].startswith(".trash/")
         ]
         self.assertEqual(dot_findings, [], f"unexpected findings for dot-dir files: {dot_findings}")
+
+
+class TestReportPathContainment(unittest.TestCase):
+    """HIMMEL-1762: a config-supplied report_path must not be able to write
+    outside the vault — by absolute path, traversal, or symlink/junction.
+    Containment is proven positively (both sides resolved to real paths, then
+    ancestor-or-equal), never inferred from the string shape of the value."""
+
+    def _dirs(self):
+        base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        vault = pathlib.Path(base, "vault"); vault.mkdir()
+        outside = pathlib.Path(base, "outside"); outside.mkdir()
+        return base, vault, outside
+
+    def _run_engine(self, vault, report_path=None):
+        if report_path is not None:
+            pathlib.Path(vault, ".vault-lint.json").write_text(
+                json.dumps({"report_path": report_path}), encoding="utf-8")
+        return subprocess.run([sys.executable, _ENGINE, str(vault)], capture_output=True)
+
+    def _assert_refused(self, result, escaped_file):
+        err = result.stderr.decode("utf-8", errors="replace")
+        self.assertNotEqual(
+            result.returncode, 0,
+            f"engine accepted an escaping report_path; stderr: {err}")
+        self.assertIn("refusing", err)
+        self.assertFalse(escaped_file.exists(), "report was written outside the vault")
+
+    def test_absolute_outside_refused(self):
+        _, vault, outside = self._dirs()
+        r = self._run_engine(vault, outside.as_posix() + "/pwned.md")
+        self._assert_refused(r, outside / "pwned.md")
+
+    def test_traversal_refused(self):
+        _, vault, outside = self._dirs()
+        r = self._run_engine(vault, "../outside/pwned.md")
+        self._assert_refused(r, outside / "pwned.md")
+
+    def test_symlink_or_junction_escape_refused(self):
+        # A `..`-free report_path that escapes via a reparse point: the
+        # containment proof must follow the link, not trust the string shape.
+        _, vault, outside = self._dirs()
+        link = vault / "linked"
+        try:
+            os.symlink(outside, link)                    # POSIX + privileged Windows
+        except OSError:
+            try:
+                import _winapi                           # junction: no privilege needed
+                _winapi.CreateJunction(str(outside), str(link))
+            except (ImportError, OSError) as e:
+                raise unittest.SkipTest(
+                    "cannot create a symlink or junction in this envelope "
+                    f"({e}); symlink-escape case NOT verified (HIMMEL-1788)")
+        r = self._run_engine(vault, "linked/pwned.md")
+        self._assert_refused(r, outside / "pwned.md")
+
+    def test_absolute_inside_vault_allowed(self):
+        # Containment is about location, not syntax: an absolute path that
+        # resolves INTO the vault is legitimate. Built from realpath(vault) so
+        # it holds even when the vault root is itself reached via a symlink.
+        _, vault, _ = self._dirs()
+        abs_inside = pathlib.Path(os.path.realpath(vault), "abs-report.md").as_posix()
+        r = self._run_engine(vault, abs_inside)
+        self.assertEqual(r.returncode, 0, msg=r.stderr.decode("utf-8", errors="replace"))
+        self.assertTrue((vault / "abs-report.md").exists())
+
+    def test_default_report_path_still_writes_in_vault(self):
+        _, vault, _ = self._dirs()
+        r = self._run_engine(vault)                      # no config file → DEFAULTS
+        self.assertEqual(r.returncode, 0, msg=r.stderr.decode("utf-8", errors="replace"))
+        import datetime
+        today = datetime.date.today().isoformat()
+        self.assertTrue((vault / f"_lint-report-{today}.md").exists())
+        self.assertIn(f"_lint-report-{today}.md", r.stdout.decode("utf-8", errors="replace"))
+
+
+class TestConfigPathSurface(unittest.TestCase):
+    """HIMMEL-1762 enumeration guard: report_path is the only config key the
+    engine consumes as a filesystem write path; every other consumed key is
+    matched against vault-relative strings or is a scalar (log_path is declared
+    in DEFAULTS but never read). If a new key shows up here, extend the
+    containment matrix in TestReportPathContainment before shipping it."""
+
+    def test_engine_consumes_exactly_the_known_config_keys(self):
+        import re
+        src = pathlib.Path(_ENGINE).read_text(encoding="utf-8")
+        used = set()
+        for m in re.finditer(r'cfg\[[\"\'](\w+)[\"\']\]|cfg\.get\([\"\'](\w+)[\"\']', src):
+            used.add(m.group(1) or m.group(2))
+        self.assertEqual(
+            used,
+            {"link_scan_exclude", "bulk_dirs", "orphan_exempt", "frontmatter_exempt",
+             "duplicate_exempt", "known_unbuilt_links", "report_path"},
+            "config-key consumption surface changed — audit the new key for "
+            "path containment (HIMMEL-1762)",
+        )
 
 
 if __name__ == "__main__":

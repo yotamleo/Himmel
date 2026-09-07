@@ -156,9 +156,17 @@
 # exact wording against the new source before wiring it in, exactly as this
 # investigation did for 1.0.5; never encode a guess).
 #
+# HIMMEL-2056: the dormant skip (HIMMEL-1957, run-codex-adversarial.sh, when
+# CODEX_ADV_OK != 1) writes exactly one line to stdout instead of a genuine
+# review render - "codex-adv: dormant (HIMMEL-1957)" - and is recognized here
+# as its own ABSENT outcome, never the HIMMEL-1420 silent-death class: no
+# retry, no ledger row. Never confusable with a genuine render (which always
+# opens with the "# Codex Adversarial Review" heading, per the line-walk
+# below) since the match requires stdout to contain ONLY that exact line.
+#
 # Exposes classify_codex_adv_completion <rc> [stdout_file] [stderr_file],
 # which sets (and echoes, in CLI form) two lines:
-#   status=ok|unavailable
+#   status=ok|unavailable|absent
 #   err_tail=<last non-blank line of stderr_file, or (none)>
 #
 # err_tail is DIAGNOSTIC ONLY (HIMMEL-1420 point 2; CONFIRMED still-diagnostic
@@ -175,15 +183,16 @@
 # Functions only when sourced — no side effect (mirrors failure-classify.sh).
 # The CLI form below is BASH_SOURCE-guarded so it also runs standalone:
 #   bash codex-adv-completion-check.sh <rc> [stdout_file] [stderr_file]
-# Exit (CLI form): 0 = ok, 1 = unavailable, 2 = usage error.
+# Exit (CLI form): 0 = ok, 1 = unavailable, 2 = usage error, 3 = absent
+# (dormant skip, HIMMEL-1957/HIMMEL-2056).
 # bash 3.2-safe. Deliberately NO top-level `set` when sourced (matches
 # failure-classify.sh's contract — a sourced file must not mutate the
 # caller's shell options); the CLI form sets its own options.
 
 # ---------------------------------------------------------------------------
 # classify_codex_adv_completion <rc> [stdout_file] [stderr_file]
-# Sets CODEX_ADV_STATUS (ok|unavailable) and CODEX_ADV_ERR_TAIL. Returns 0 for
-# ok, 1 for unavailable.
+# Sets CODEX_ADV_STATUS (ok|unavailable|absent) and CODEX_ADV_ERR_TAIL.
+# Returns 0 for ok, 1 for unavailable, 3 for absent (dormant, HIMMEL-2056).
 # ---------------------------------------------------------------------------
 classify_codex_adv_completion() {
     _cac_rc="${1:-1}"
@@ -200,65 +209,85 @@ classify_codex_adv_completion() {
     case "$_cac_rc" in
         0)
             if [ -n "$_cac_out" ] && [ -f "$_cac_out" ]; then
-                # Single forward-only line-walk (CR round 4) — see the header
-                # comment above for the full 8-step contract this encodes.
-                # `sub(/\r$/, "", line)` defensively normalizes a stray CR
-                # (CRLF) so an exact-equality check can't miss on that alone.
-                _cac_status=$(awk '
-                    BEGIN { state = "heading"; summary_seen = 0; done = 0 }
-                    {
-                        line = $0
-                        sub(/\r$/, "", line)
+                # HIMMEL-2056: recognize the dormant sentinel (see the header
+                # comment) FIRST, before the line-walk — stdout containing
+                # ONLY this exact line is the run-codex-adversarial.sh dormant
+                # skip, never a genuine render. The newline-COUNT guard
+                # matters: `$( )` strips ALL trailing newlines, so comparing
+                # only `$(cat file)` to the sentinel would also match a
+                # malformed file carrying extra trailing blank lines after it
+                # (codex-1, CR round on HIMMEL-2056) — a genuine dormant
+                # write (single line, one optional trailing newline) has at
+                # most ONE newline character; 2+ means trailing content was
+                # stripped away by the substitution above.
+                if [ "$(wc -l < "$_cac_out" 2>/dev/null | tr -d ' ')" -le 1 ] &&
+                   [ "$(cat "$_cac_out" 2>/dev/null)" = "codex-adv: dormant (HIMMEL-1957)" ]; then
+                    CODEX_ADV_STATUS="absent"
+                else
+                    # Single forward-only line-walk (CR round 4) — see the
+                    # header comment above for the full 8-step contract this
+                    # encodes. `sub(/\r$/, "", line)` defensively normalizes a
+                    # stray CR (CRLF) so an exact-equality check can't miss on
+                    # that alone.
+                    _cac_status=$(awk '
+                        BEGIN { state = "heading"; summary_seen = 0; done = 0 }
+                        {
+                            line = $0
+                            sub(/\r$/, "", line)
 
-                        if (state == "heading") {
-                            if (line != "# Codex Adversarial Review") { print "unavailable"; done = 1; exit }
-                            state = "line2"; next
-                        }
-                        if (state == "line2") {
-                            if (line != "") { print "unavailable"; done = 1; exit }
-                            state = "line3"; next
-                        }
-                        if (state == "line3") {
-                            if (line == "Codex did not return valid structured JSON.") { print "unavailable"; done = 1; exit }
-                            if (substr(line, 1, 8) != "Target: ") { print "unavailable"; done = 1; exit }
-                            state = "line4"; next
-                        }
-                        if (state == "line4") {
-                            if (line == "Codex returned JSON with an unexpected review shape.") { print "unavailable"; done = 1; exit }
-                            if (substr(line, 1, 9) != "Verdict: ") { print "unavailable"; done = 1; exit }
-                            state = "line5"; next
-                        }
-                        if (state == "line5") {
-                            if (line != "") { print "unavailable"; done = 1; exit }
-                            state = "summary"; next
-                        }
-                        if (state == "summary") {
-                            if (line == "") {
-                                if (summary_seen == 1) { state = "marker"; next }
+                            if (state == "heading") {
+                                if (line != "# Codex Adversarial Review") { print "unavailable"; done = 1; exit }
+                                state = "line2"; next
+                            }
+                            if (state == "line2") {
+                                if (line != "") { print "unavailable"; done = 1; exit }
+                                state = "line3"; next
+                            }
+                            if (state == "line3") {
+                                if (line == "Codex did not return valid structured JSON.") { print "unavailable"; done = 1; exit }
+                                if (substr(line, 1, 8) != "Target: ") { print "unavailable"; done = 1; exit }
+                                state = "line4"; next
+                            }
+                            if (state == "line4") {
+                                if (line == "Codex returned JSON with an unexpected review shape.") { print "unavailable"; done = 1; exit }
+                                if (substr(line, 1, 9) != "Verdict: ") { print "unavailable"; done = 1; exit }
+                                state = "line5"; next
+                            }
+                            if (state == "line5") {
+                                if (line != "") { print "unavailable"; done = 1; exit }
+                                state = "summary"; next
+                            }
+                            if (state == "summary") {
+                                if (line == "") {
+                                    if (summary_seen == 1) { state = "marker"; next }
+                                    print "unavailable"; done = 1; exit
+                                }
+                                summary_seen = 1; next
+                            }
+                            if (state == "marker") {
+                                if (line == "No material findings.") { print "ok"; done = 1; exit }
+                                if (line == "Findings:") { state = "bullets"; next }
                                 print "unavailable"; done = 1; exit
                             }
-                            summary_seen = 1; next
+                            if (state == "bullets") {
+                                if (line ~ /^- \[.*\] .* \(.*\)$/) { print "ok"; done = 1; exit }
+                                next
+                            }
                         }
-                        if (state == "marker") {
-                            if (line == "No material findings.") { print "ok"; done = 1; exit }
-                            if (line == "Findings:") { state = "bullets"; next }
-                            print "unavailable"; done = 1; exit
-                        }
-                        if (state == "bullets") {
-                            if (line ~ /^- \[.*\] .* \(.*\)$/) { print "ok"; done = 1; exit }
-                            next
-                        }
-                    }
-                    END { if (!done) print "unavailable" }
-                ' "$_cac_out" 2>/dev/null)
-                [ "$_cac_status" = "ok" ] && CODEX_ADV_STATUS="ok"
+                        END { if (!done) print "unavailable" }
+                    ' "$_cac_out" 2>/dev/null)
+                    [ "$_cac_status" = "ok" ] && CODEX_ADV_STATUS="ok"
+                fi
             fi
             ;;
         *) : ;;  # any non-zero rc is unavailable regardless of stdout content
     esac
 
-    [ "$CODEX_ADV_STATUS" = "ok" ] && return 0
-    return 1
+    case "$CODEX_ADV_STATUS" in
+        ok) return 0 ;;
+        absent) return 3 ;;
+        *) return 1 ;;
+    esac
 }
 
 # CLI form (not sourced): classify_codex_adv_completion <rc> [stdout_file] [stderr_file].

@@ -42,10 +42,13 @@ for f in "$SOUL_ASSET" "$GUARD_ASSET" "$WIRE" "$SYNC"; do
 done
 
 # --- resolve hermes install root --------------------------------------------
+# Order: HERMES_HOME (explicit override) > $LOCALAPPDATA/hermes (Windows,
+# when set) > $HOME/.hermes (Linux/macOS default — upstream hermes' own
+# default config home).
 resolve_home() {
   if [ -n "${HERMES_HOME:-}" ]; then echo "$HERMES_HOME"; return; fi
   if [ -n "${LOCALAPPDATA:-}" ]; then echo "$LOCALAPPDATA/hermes"; return; fi
-  echo "$HOME/.local/share/hermes"
+  echo "$HOME/.hermes"
 }
 HOME_DIR="$(resolve_home)"
 [ -d "$HOME_DIR" ] || { echo "ERR: hermes home not found at $HOME_DIR — is hermes installed? (set HERMES_HOME)" >&2; exit 1; }
@@ -108,8 +111,27 @@ echo "installed   : $HA_SOUL"
 #    its own - keep it synced on every create/refresh.
 "$PYBIN" "$SYNC" "$HOME_DIR/config.yaml" "$HA_CONFIG"
 
-# 5. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
-"$PYBIN" "$WIRE" set "$HA_CONFIG" "$GUARD_DEST" "$PYBIN"
+# 5. wire himmel_agent's pre_tool_call hook -> parity_guard (full set), plus the
+#    END-side on_session_finalize chain (HIMMEL-2021) when node and this repo are
+#    both resolvable. Windows note: the hook command is consumed by hermes, not
+#    by Git Bash, so both paths are converted to native form — an MSYS `/c/...`
+#    from `command -v` / `pwd` would not resolve there.
+to_native() {  # $1 = a path from this shell; echo it in a form hermes can spawn
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || echo "$1" ;;
+    *) echo "$1" ;;
+  esac
+}
+NODE_BIN="$(command -v node 2>/dev/null || true)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ -n "$NODE_BIN" ] && [ -f "$REPO_ROOT/scripts/hooks/run-hook-with-bash.js" ]; then
+  "$PYBIN" "$WIRE" set "$HA_CONFIG" "$GUARD_DEST" "$PYBIN" \
+    "$(to_native "$NODE_BIN")" "$(to_native "$REPO_ROOT")"
+else
+  echo "WARN: node not on PATH (or himmel checkout not found) — wiring the guard only," >&2
+  echo "      no on_session_finalize end hook. Re-run with node available." >&2
+  "$PYBIN" "$WIRE" set "$HA_CONFIG" "$GUARD_DEST" "$PYBIN"
+fi
 
 # 6. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.
 #    Default (no flag) = the `default` profile + all others. --parity-guard=<csv>

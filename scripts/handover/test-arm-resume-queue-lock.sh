@@ -39,6 +39,12 @@ unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK 2>/dev/null || true
 # hits the HIMMEL-1365 temp-target refusal (rc=12). Same shield
 # test-arm-resume.sh carries (HIMMEL-1623).
 export ARM_TEMP_CWD_OK=1
+# Split-leg shield (HIMMEL-1830): this suite's fixtures are a flat POOL of
+# next-session-<N>.md files in ONE directory, all created seconds apart and
+# none of them ever a relaunch point — which is exactly the shape the split-leg
+# guard refuses (rc=17). They are not a leg chain; declare the opt-out once
+# here rather than teaching every case to dodge the numbering.
+export ARM_SPLIT_LEG_OK=1
 # Worker-census shield (HIMMEL-1622/#1635, same as test-arm-resume.sh): point
 # the live-lane-worker census at an isolated empty root under $TMP, or every
 # REAL-arm case here refuses rc=10 whenever a GLM/claudex lane worker (or a
@@ -46,6 +52,24 @@ export ARM_TEMP_CWD_OK=1
 # state class that produced this suite's shifting 8/13/18-fail reds under
 # parallel lane load (leg 7, 2026-08-09).
 export WORKER_BRIDGE_ROOT="$TMP/worker-bridge-shield"
+# Shipped-work shield (HIMMEL-2118): the HIMMEL-1331 preflight derives a ticket
+# ID from the handover (this suite's H1 lines all name HIMMEL-856) and probes
+# LIVE Jira/gh on every non-dry-run arm below -- the day HIMMEL-856 went Done,
+# every such arm would refuse rc=11. This suite exercises queue-lock/registry
+# behavior; test-arm-resume.sh owns the shipped-work gate (1331/1331b cases,
+# Jira stubbed) and sets this per-case.
+export ARM_SHIPPED_OK=1
+# Ticket-mutex shield (HIMMEL-2165): every fixture in this suite names the same
+# synthetic ticket (HIMMEL-856), and each real arm (T7c onward) registers a
+# slot for it under a DIFFERENT handover file than the one before -- exactly
+# what the HIMMEL-1329 ticket-level mutex exists to refuse (rc=13). That mutex
+# postdates this suite and fires BEFORE the queue-lock/cross-host checks this
+# suite actually exercises (arm-resume.sh evaluates it ahead of the rc=7/8
+# paths), so left unshielded it masked every later assertion behind a false
+# rc=13. test-arm-resume.sh owns dedicated ticket-mutex coverage (its "1329"
+# section); shield it here the same way the other post-hoc guardrails above
+# are shielded.
+export ARM_TICKET_DUP_OK=1
 
 # A near future time keeps these queue-lock fixtures inside the HIMMEL-1475
 # explicit-HH:MM long-gap limit. Computed LAZILY at each use, never once at
@@ -96,17 +120,63 @@ assert_not_contains() {
 # these HIMMEL-856-specific assertions.
 SCHED_STUB="$TMP/sched-stub"
 mkdir -p "$SCHED_STUB"
-cat > "$SCHED_STUB/schtasks" <<'EOF'
+# HIMMEL-1879: the scheduler still starts EMPTY (so the dedup/collision checks
+# stay out of the way, as the note above intends) but /create now REGISTERS the
+# name it was given. A stub that reports create success and then answers every
+# /query empty is internally inconsistent, and the post-arm existence verify
+# reads that (correctly) as "the create armed nothing" -> rc 2. Every case in
+# this suite arms a DISTINCT handover, so per-name registration cannot turn into
+# a dedup hit. `/create /f` overwrites in place, as the real schtasks does.
+cat > "$SCHED_STUB/schtasks" <<EOF
 #!/usr/bin/env bash
+db="$TMP/sched-stub.tasks"
+cmd="\${1:-}"; shift || true
+tn=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        /tn)   tn="\${2:-}"; shift 2 ;;
+        /tn=*) tn="\${1#/tn=}"; shift ;;
+        *)     shift ;;
+    esac
+done
+case "\$cmd" in
+    /query)
+        [ -f "\$db" ] || exit 0
+        while IFS= read -r t; do
+            [ -n "\$t" ] && printf '"\\\\%s","2026-01-01","Ready"\\n' "\$t"
+        done < "\$db"
+        exit 0 ;;
+    /create|/delete)
+        if [ -f "\$db" ]; then
+            grep -vFx "\$tn" "\$db" > "\$db.tmp" 2>/dev/null || : > "\$db.tmp"
+            mv "\$db.tmp" "\$db"
+        fi
+        [ "\$cmd" = /create ] && printf '%s\\n' "\$tn" >> "\$db"
+        exit 0 ;;
+    *) exit 0 ;;
+esac
+EOF
+cat > "$SCHED_STUB/atq" <<EOF
+#!/usr/bin/env bash
+d="$TMP/sched-stub.atdir"; [ -d "\$d" ] || exit 0
+for f in "\$d"/job-*; do
+    [ -f "\$f" ] || continue
+    printf '%s\\tThu Jun 11 09:00:00 2026 a user\\n' "\${f##*/job-}"
+done
 exit 0
 EOF
-cat > "$SCHED_STUB/atq" <<'EOF'
+cat > "$SCHED_STUB/at" <<EOF
 #!/usr/bin/env bash
-exit 0
-EOF
-cat > "$SCHED_STUB/at" <<'EOF'
-#!/usr/bin/env bash
-exit 0
+d="$TMP/sched-stub.atdir"; mkdir -p "\$d"
+case "\${1:-}" in
+    -c) cat "\$d/job-\${2:-}" 2>/dev/null; exit 0 ;;
+    -t)
+        n=\$(cat "\$d/.counter" 2>/dev/null || echo 0); n=\$((n + 1))
+        printf '%s' "\$n" > "\$d/.counter"
+        cat > "\$d/job-\$n"
+        exit 0 ;;
+    *) cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
 EOF
 # HIMMEL-1301 / HIMMEL-938: the schtasks /create above is a stateless "always
 # succeeds" fake -- it never registers anything with the real OS scheduler. On
@@ -164,6 +234,19 @@ rc=$?
 assert_rc "T2: FRESH queue lock refuses arm" 7 "$rc"
 assert_contains "T2: stderr names the live holder" "live-session" "$out"
 assert_contains "T2: stderr names the override" "QUEUE_LOCK_TAKEOVER" "$out"
+
+# --- T2b: HIMMEL-2125 ARM_PROFILE inflight marker on the SAME rc=7 refusal --
+# _arm_phase_done for "queue-lock-probe" only ran on the phase's RETURN path;
+# the `exit 7` above fires INSIDE the phase, before that call, so the old
+# EXIT-trap reporter printed no queue-lock-probe entry at all on this exact
+# refusal -- the profile line would have named every OTHER phase but the one
+# that actually burned the time. Same FRESH-lock fixture as T2, just with
+# ARM_PROFILE=1 added.
+out=$(ARM_PROFILE=1 bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
+rc=$?
+assert_rc "T2b: FRESH queue lock still refuses arm (rc=7)" 7 "$rc"
+assert_contains "T2b: PROFILE line present" "PROFILE arm-resume:" "$out"
+assert_contains "T2b: PROFILE marks the aborted phase inflight" "queue-lock-probe=inflight" "$out"
 
 # --- T3: QUEUE_LOCK_TAKEOVER=1 overrides the FRESH refusal -> rc=0, WARN ----
 out=$(QUEUE_LOCK_TAKEOVER=1 bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
@@ -403,6 +486,14 @@ out=$(bash "$ARM" --time "$(future_time)" --handover "$HO15" 2>&1)
 rc=$?
 assert_rc "T15: first real arm succeeds" 0 "$rc"
 HO15_ALT="$HANDOVER_DIR/HIMMEL-856-test/../HIMMEL-856-test/next-session-15.md"
+# HIMMEL-1879: the stub scheduler REGISTERS now (it has to -- the post-arm
+# existence verify refuses a create that armed nothing), and both spellings
+# canonicalize to the same task name, so the second arm would be a legitimate
+# rc 3 same-handover dedup. This case is about the arms.jsonl prune, not dedup:
+# clear the scheduler, which is what "always exit 0" used to mean. arms.jsonl is
+# deliberately NOT cleared -- the record from the first arm is the thing the
+# assertion below expects the re-arm to REPLACE.
+: > "$TMP/sched-stub.tasks"
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO15_ALT" 2>&1)
 rc=$?
 assert_rc "T15: second real arm under another spelling succeeds" 0 "$rc"
@@ -484,6 +575,9 @@ HO19_ESC=$(printf '%s' "$HO19" | sed -e 's/\\/\\\\/g')
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO19" 2>&1)
 rc=$?
 assert_rc "T19: first arm with a backslash path succeeds" 0 "$rc"
+# Same reason as T15: clear the (now registering) stub scheduler so the re-arm
+# is not refused as its own duplicate. arms.jsonl stays -- it is what is under test.
+: > "$TMP/sched-stub.tasks"
 out=$(bash "$ARM" --time "$(future_time)" --handover "$HO19" 2>&1)
 rc=$?
 assert_rc "T19: second arm (re-arm) with a backslash path succeeds" 0 "$rc"

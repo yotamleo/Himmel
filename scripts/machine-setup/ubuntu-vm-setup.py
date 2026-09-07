@@ -2,6 +2,13 @@
 """
 Ubuntu VirtualBox VM provisioner.
 
+DESKTOP GUEST ONLY: this installs guest additions, forces X11, and enables
+GDM3 auto-login — it assumes a full Ubuntu desktop guest. The rebuilt Linux
+test guest (`ubuntu_new`) is the Ubuntu 24.04 noble server cloud image
+provisioned headless via a cloud-init NoCloud seed (see docs/setup/vms.md,
+"Linux host"); this script does NOT apply to that guest and there is no
+--server mode here. Do not run it against a cloud-image guest.
+
 Prerequisites:
   - VM created in VirtualBox with NAT port forwarding: host 2222 -> guest 22
   - .env has ubuntu_vm_user and ubuntu_vm_pass

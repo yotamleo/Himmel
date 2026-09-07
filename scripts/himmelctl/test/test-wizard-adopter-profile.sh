@@ -26,11 +26,15 @@
 #   C. opt-in gating — codex/hermes are absent from a default run and appear
 #      only under --with-codex/--with-hermes.
 #   D. flag validation — `--lanes bogus`, `--lanes codex` (opt-in ids are not
-#      a second door around the explicit flag) and `--from-profile` combined
-#      with a lane flag all exit 2. With a MISSING profile the CONFLICT is
-#      reported, never a load failure, and the file is not opened at all
-#      (CR round 10 [codex-r9-1] — the ordering was already correct; only the
-#      rc had been pinned, so the message class could have drifted silently).
+#      a second door around the explicit flag), `--lanes ollama`/`--lanes
+#      copilot` (HIMMEL-2352: dormant-in-v1 ids get DISTINCT wording naming
+#      their lanes.json opt-in env, not a bare unknown-lane message — "one
+#      door, not two"), `--lanes none` (accepted) and `--from-profile`
+#      combined with a lane flag all exit 2 (or, for `none`, exit 0). With a
+#      MISSING profile the CONFLICT is reported, never a load failure, and the
+#      file is not opened at all (CR round 10 [codex-r9-1] — the ordering was
+#      already correct; only the rc had been pinned, so the message class
+#      could have drifted silently).
 #   E. hardening is PRINTED, NEVER EXECUTED — alwaysOn=true prints the
 #      checklist while a sentinel `powercfg` stub on PATH proves nothing ran.
 #   F. alwaysOn=false -> the one-line pointer, and NO powercfg text at all.
@@ -47,10 +51,11 @@
 #      (CR round 1 [codex-adv-3]): HERMES_PY and venvs under HERMES_HOME read
 #      PRESENT with `hermes` off PATH, and a bare `hermes` on PATH with no
 #      real install reads ABSENT.
-#   L. a FAILED pluginSet=full step is reported as failed (CR round 1
-#      [codex-adv-2]) — never as "full plugin set enabled" beside a nonzero rc.
-#      L2: under --dry-run the same step is phrased as PLANNED, not past-tense
-#      (CR round 2 [codex-r2-1 / glm-r2-3]).
+#   L. HIMMEL-2304: pluginSet=full's enable step is RETIRED — a legacy
+#      profile carrying it validates and runs to rc=0 with zero `claude`
+#      calls, and the summary says the option was retired, never "full
+#      plugin set enabled" and never a plugin-command failure. L2: same
+#      under --dry-run.
 #   M. a lane DISABLED by lanes.local.json does not read ready (CR round 2
 #      [codex-adv-r2-1]) — it reads DISABLED, names the config flip that fixes
 #      it, and is NOT sent back to the package manager. Verified by mutation:
@@ -87,8 +92,9 @@
 #      excludes the lane. Asserted against resolveLanes itself, with a
 #      no-overlay baseline, so the two cannot drift apart again.
 #   U. overlay remediation preserves the SETUP note (CR round 9
-#      [codex-adv-r8-2]) — a DISABLED copilot keeps its device-flow login and a
-#      forced-on absent ollama keeps its model pull, ordered AFTER the fix.
+#      [codex-adv-r8-2]) — a DISABLED codex keeps its post-install auth setup
+#      and a forced-on absent codex keeps the same step, ordered AFTER the fix
+#      (HIMMEL-2352: both halves now use codex — see the case's own comment).
 #
 #   V. ABSENT *and* overlay-disabled (CR round 11 [codex-r10-1]) — the last
 #      cell of the matrix: installing the CLI alone leaves /lanes excluding
@@ -105,10 +111,13 @@
 #      resolve.mjs does (CR round 11 [codex-adv-r10-3]), with a no-override
 #      control proving the overlay otherwise applies.
 #   Z. an APPLIED adopter install persists the resolver's narrow-only profile
-#      allowlist plus its wizard-owned scope. `none`, the default selection,
-#      codex-only opt-in, hermes-only opt-in and both opt-ins constrain only that
-#      subset; ollama-cloud and every other unoffered registry lane stay on their
-#      real base probes.
+#      allowlist plus its wizard-owned scope. `none`, codex-only opt-in,
+#      hermes-only opt-in and both opt-ins constrain only that subset;
+#      ollama-cloud and every other unoffered registry lane stay on their
+#      real base probes. (HIMMEL-2352: the matrix used to also cover a
+#      non-opt-in "default" combo — ollama+copilot selected with no flag —
+#      but v1 has no non-opt-in lane left to make that combo meaningful, so
+#      it is dropped rather than forced onto a lane that isn't a default.)
 #   AA. LANES_REGISTRY makes applied profile persistence fail loudly before an
 #      ignored lanes.local.json write; success is never reported.
 #
@@ -124,6 +133,7 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
@@ -133,7 +143,8 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 node_bin=$(command -v node)
 
 # Same rationale as test-wizard-questions.sh: pin bin.js's bash spawns to the
-# PATH-honoring `bash` so detectRole reads the STUB git, not the real repo.
+# PATH-honoring `bash` so any git shell-out (e.g. the lane probe's buildCtx)
+# reads the STUB git below, not the real repo.
 export HIMMELCTL_BASH=bash
 
 # shellcheck source=lib/hermetic-path.sh
@@ -143,13 +154,6 @@ export HIMMELCTL_BASH=bash
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # HIMMEL-1446 r3: a non-dry-run install (caseE --from-profile) reaches
 # applyHimmelctlPathShim(), whose default binDir is the operator's REAL
@@ -245,7 +249,7 @@ run_install() {
   local _p
   _p=$(build_path "$_stub" bash jq python3 npm -- "${LANE_TOOLS[@]}")
   make_git_stub "$_stub" "https://github.com/someone/other-repo.git"
-  PATH="$_p" HOME="$_home" HIMMELCTL_INTERACTIVE=0 \
+  PATH="$_p" HOME="$_home" USERPROFILE="$(winpath "$_home")" HIMMELCTL_CACHE_DIR="$(winpath "$_home.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_home.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
     HIMMELCTL_REPO_ROOT="$(winpath "$_fixture")" \
     "$node_bin" "$wizard" install --dry-run "$@" </dev/null 2>&1
 }
@@ -273,76 +277,88 @@ epilogue() { printf '%s' "$1" | sed -n '/delegation lanes/,$p'; }
 # pipeline, so the status is grep's own verdict and nothing else.
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-# HIMMEL-1447: the wizard resolves the ollama install command per-platform
+# HIMMEL-1447: the wizard resolves the codex install command per-platform
 # (adopter-profile.js pickByPlatform), so the suite asserts the ACTIVE
 # platform's EXACT string. The previous win32 literal failed on ubuntu CI and
 # passed vacuously on POSIX; an any-platform alternation was rejected in CR —
 # it would keep CI green if the wizard regressed to another platform's hint.
 # (Library-level platform mapping for all three platforms is pinned by caseQ.)
+#
+# HIMMEL-2352 (ruling 34): codex is the vehicle for every generic
+# probe/summary mechanism case below that used to use ollama/copilot — those
+# two are DROPPED from V1_LANES entirely (see adopter-profile.js's own
+# comment), so a case whose whole point is exercising the SHARED probeLane/
+# buildSummary machinery (not anything ollama/copilot-specific) now selects
+# codex via --with-codex instead of relying on a non-opt-in default that no
+# longer exists.
 case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) OLLAMA_INSTALL_HINT='winget install Ollama.Ollama' ;;
-  Darwin)               OLLAMA_INSTALL_HINT='brew install ollama' ;;
-  *)                    OLLAMA_INSTALL_HINT='see https://ollama.com/download' ;;
+  MINGW*|MSYS*|CYGWIN*) CODEX_INSTALL_HINT='winget install OpenAI.Codex' ;;
+  *)                    CODEX_INSTALL_HINT='npm install -g @openai/codex' ;;
 esac
 # Negative asserts reject EVERY platform's hint — a foreign-platform leak
 # (winget on Linux) must fail too (CR round 2 [codex-adv-r2-1]).
-OLLAMA_ANY_HINT_RE='winget install Ollama[.]Ollama|ollama[.]com/download|brew install ollama'
+CODEX_ANY_HINT_RE='winget install OpenAI[.]Codex|npm install -g @openai/codex'
 
 # ── Case A: lanes absent -> MISSING + manual entry with the install command ──
+# HIMMEL-2352: codex is opt-in in v1 (no non-opt-in lane exists any more), so
+# --with-codex selects it the same way a real adopter's --with-codex or
+# interactive 'codex' answer would.
 sA="$work/a"; mkdir -p "$sA"; hA="$work/a-home"; mkdir -p "$hA"
 fA="$work/a-fix"; make_fixture "$fA"
-capture "$sA" "$hA" "$fA"
+capture "$sA" "$hA" "$fA" --with-codex
 [ "$rc" -eq 0 ] || fail "caseA: dry-run should succeed (got rc=$rc): $out"
 grepq "$out" '"lanesMeaningful": true' \
   || fail "caseA: newly-built profiles must mark lane selections as meaningful: $out"
 ep=$(epilogue "$out")
-grepq "$ep" -E '!! +ollama +MISSING' \
-  || fail "caseA: ollama should probe MISSING on a scrubbed PATH: $ep"
-grepq "$ep" -E '!! +copilot +MISSING' \
-  || fail "caseA: copilot should probe MISSING on a scrubbed PATH: $ep"
+grepq "$ep" -E '!! +codex +MISSING' \
+  || fail "caseA: codex should probe MISSING on a scrubbed PATH: $ep"
 grepq "$ep" 'still manual' \
   || fail "caseA: summary should carry a 'still manual' section: $ep"
-grepq "$ep" 'lane ollama' \
-  || fail "caseA: ollama should appear in the manual section: $ep"
+grepq "$ep" 'lane codex' \
+  || fail "caseA: codex should appear in the manual section: $ep"
 # The install command must be surfaced — an adopter who is told a lane is
 # missing and NOT told how to get it has been given a defect report, not a
 # next step.
-grepq "$ep" -iE 'winget install Ollama|ollama.com/download|brew install ollama' \
+grepq "$ep" -iE 'winget install OpenAI.Codex|npm install -g @openai/codex' \
   || fail "caseA: the manual entry must carry an install command: $ep"
 # And the installer must never claim it installed a lane it only probed.
-grepq "$ep" '+ lane ollama' \
+grepq "$ep" '+ lane codex' \
   && fail "caseA: an ABSENT lane must not appear under 'installed': $ep"
 echo "ok: caseA absent lanes -> MISSING + manual entry carrying the install command"
 
 # ── Case B: lane present -> available + installed, never manual ──────────────
 sB="$work/b"; mkdir -p "$sB"; hB="$work/b-home"; mkdir -p "$hB"
 fB="$work/b-fix"; make_fixture "$fB"
-# Plant a fake `ollama` the node-side which() will resolve. build_path scrubs
-# the REAL one off PATH, so this stub is the only match.
-plant_cli "$sB" ollama
-capture "$sB" "$hB" "$fB"
+# Plant a fake `codex` the node-side which() will resolve. build_path scrubs
+# the REAL one off PATH, so this stub is the only match. The fixture carries
+# no scripts/install/manifest.json, so codex's richer readiness probe
+# (manifestItem: 'codex-cli') degrades to 'unverified' exactly like a lane
+# with no manifestItem at all (laneSetupState's ENOENT catch) — caseO below
+# is the counterpart that DOES provide a manifest and pins the 'ready' branch.
+plant_cli "$sB" codex
+capture "$sB" "$hB" "$fB" --with-codex
 [ "$rc" -eq 0 ] || fail "caseB: dry-run should succeed (got rc=$rc): $out"
 ep=$(epilogue "$out")
-grepq "$ep" -E '~ +ollama +binary present' \
-  || fail "caseB: a planted ollama should probe available: $ep"
+grepq "$ep" -E '~ +codex +binary present' \
+  || fail "caseB: a planted codex should probe available: $ep"
 # CR round 1 [codex-1]: a present lane is a FACT, not an action himmelctl
 # performed — it belongs in `skipped` ("already available, nothing to
 # install"), never in the installed/would-install bucket.
-grepq "$ep" -- '- lane ollama — binary already present' \
+grepq "$ep" -- '- lane codex — binary already present' \
   || fail "caseB: a present lane belongs under 'skipped' as already available: $ep"
 grepq "$ep" 'nothing to install' \
   || fail "caseB: a present lane should say nothing to install (idempotent): $ep"
-grepq "$ep" '+ lane ollama' \
+grepq "$ep" '+ lane codex' \
   && fail "caseB: a present lane must NOT be claimed as installed work: $ep"
 # CR round 4 [codex-adv-r3-2]: the probe sees a BINARY, not a working lane.
-# ollama still needs its model pulled, so that step must survive into `still
-# manual` as a verify item — dropping it told the adopter a lane they cannot
-# yet use was ready. It must NOT be re-listed as an install, though.
+# codex still needs auth (its note says so), so that step must survive into
+# `still manual` as a verify item — dropping it told the adopter a lane they
+# cannot yet use was ready. It must NOT be re-listed as an install, though.
 grepq "$ep" 'cannot confirm setup' \
   || fail "caseB: a present lane's unverified setup must stay visible: $ep"
-grepq "$ep" 'ollama pull' \
-  || fail "caseB: the retained setup step should name the model pull: $ep"
-grepq "$ep" -E "$OLLAMA_ANY_HINT_RE" \
+grepq "$ep" 'auth lives in ~/.codex/auth.json' \
+  || fail "caseB: the retained setup step should name the auth step: $ep"
+grepq "$ep" -E "$CODEX_ANY_HINT_RE" \
   && fail "caseB: a present lane must not be sent back to the package manager: $ep"
 echo "ok: caseB present lane -> binary present + setup step retained, never re-installed"
 
@@ -355,6 +371,12 @@ grepq "$ep" 'opt in with --with-codex' \
   || fail "caseC: a default run should show codex as opt-in: $ep"
 grepq "$ep" 'opt in with --with-hermes' \
   || fail "caseC: a default run should show hermes as opt-in: $ep"
+# HIMMEL-2303: no codex/hermes opt-in -> the summary discloses the resulting
+# Claude-only CR floor.
+grepq "$ep" 'cross-model CR floor — NOT satisfied' \
+  || fail "caseC: a default run (no codex/hermes opt-in) should disclose the Claude-only CR floor: $ep"
+grepq "$ep" 'cross-model CR floor — satisfied' \
+  && fail "caseC: a default run must NOT claim the cross-model floor is satisfied: $ep"
 sC2="$work/c2"; mkdir -p "$sC2"; hC2="$work/c2-home"; mkdir -p "$hC2"
 capture "$sC2" "$hC2" "$fC" --with-codex
 [ "$rc" -eq 0 ] || fail "caseC: --with-codex should succeed (got rc=$rc): $out"
@@ -363,14 +385,64 @@ grepq "$ep" -E '(!!|ok) +codex' \
   || fail "caseC: --with-codex should SELECT codex (probed, not 'not selected'): $ep"
 grepq "$ep" 'opt in with --with-hermes' \
   || fail "caseC: --with-codex must not also select hermes: $ep"
-echo "ok: caseC opt-in lanes appear only under their own flag"
+# CR round 1 [codex-2]: opting in is not the same as the lane actually being
+# usable. This fixture never plants a codex binary (LANE_TOOLS is scrubbed
+# off PATH by run_install), so codex reads ABSENT even though it was opted
+# into — the floor must say NOT satisfied yet, never a bare "satisfied" off
+# the opt-in alone.
+grepq "$ep" 'cross-model CR floor — NOT satisfied yet: codex opted in but not available' \
+  || fail "caseC: --with-codex with codex ABSENT should disclose 'not satisfied yet', not a bare satisfied claim: $ep"
+grepq "$ep" 'cross-model CR floor — satisfied' \
+  && fail "caseC: --with-codex with codex ABSENT must not claim the floor satisfied: $ep"
+
+# The genuinely-satisfied case: codex opted in AND actually present.
+sC3="$work/c3"; mkdir -p "$sC3"; hC3="$work/c3-home"; mkdir -p "$hC3"
+plant_cli "$sC3" codex
+capture "$sC3" "$hC3" "$fC" --with-codex
+[ "$rc" -eq 0 ] || fail "caseC: --with-codex + a present codex binary should succeed (got rc=$rc): $out"
+ep=$(epilogue "$out")
+# HIMMEL-2303: codex opted in AND present -> the summary reflects the
+# RESULTING satisfied CR floor.
+grepq "$ep" 'cross-model CR floor — satisfied (codex opted in and present)' \
+  || fail "caseC: --with-codex + a present codex binary should disclose the satisfied cross-model CR floor: $ep"
+grepq "$ep" 'cross-model CR floor — NOT satisfied' \
+  && fail "caseC: --with-codex + a present codex binary must not claim the Claude-only floor still applies: $ep"
+
+# CR round 2 [codex-1]: BOTH lanes opted in, but only the SECOND (hermes) is
+# present — V1_LANES orders codex before hermes, so checking only the first
+# opted-in lane would report "not satisfied" even though hermes could review.
+# hermes' probe needs a real venv under HERMES_HOME (never a bare PATH hit —
+# see caseK above), so this builds that fixture directly rather than through
+# the shared capture() helper, which has no HERMES_HOME seam.
+sC4="$work/c4"; mkdir -p "$sC4"; hC4="$work/c4-home"; mkdir -p "$hC4"
+vC4="$work/c4-venv"; mkdir -p "$vC4/venv/bin" "$vC4/venv/Scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$vC4/venv/bin/python"; chmod +x "$vC4/venv/bin/python"
+printf 'stub\n' > "$vC4/venv/Scripts/python.exe"
+pC4=$(build_path "$sC4" bash jq python3 npm -- "${LANE_TOOLS[@]}")
+make_git_stub "$sC4" "https://github.com/someone/other-repo.git"
+set +e
+out=$(PATH="$pC4" HOME="$hC4" USERPROFILE="$(winpath "$hC4")" HIMMELCTL_CACHE_DIR="$(winpath "$hC4.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hC4.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+      HERMES_HOME="$(winpath "$vC4")" \
+      HIMMELCTL_REPO_ROOT="$(winpath "$fC")" \
+      "$node_bin" "$wizard" install --dry-run --with-codex --with-hermes </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "caseC: --with-codex --with-hermes + only hermes present should succeed (got rc=$rc): $out"
+ep=$(epilogue "$out")
+grepq "$ep" 'cross-model CR floor — satisfied (hermes opted in and present)' \
+  || fail "caseC: with codex ABSENT and hermes PRESENT (both opted in), the floor must be satisfied via hermes, not report unsatisfied because codex (checked first) is absent: $ep"
+grepq "$ep" 'cross-model CR floor — NOT satisfied' \
+  && fail "caseC: must not report unsatisfied when hermes (the second opted-in lane) is present: $ep"
+echo "ok: caseC opt-in lanes appear only under their own flag; CR-floor disclosure reflects the RESULTING selection (opted-in-but-absent vs opted-in-and-present vs a later opted-in lane satisfying it)"
 
 # ── Case D: flag validation ─────────────────────────────────────────────────
 expect_rc2() {
   local _label="$1"; shift
   set +e
   local _o
-  _o=$(HIMMELCTL_INTERACTIVE=0 "$node_bin" "$wizard" install "$@" </dev/null 2>&1)
+  _o=$(HIMMELCTL_INTERACTIVE=0 \
+    HIMMELCTL_CACHE_DIR="$(winpath "$work/caseD-expect-rc2.himmelctl-cache")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseD-expect-rc2.himmelctl-cache/luna-config.json")" \
+    "$node_bin" "$wizard" install "$@" </dev/null 2>&1)
   local _rc=$?
   set -e
   [ "$_rc" -eq 2 ] || fail "caseD/$_label: expected rc=2, got $_rc: $_o"
@@ -379,16 +451,46 @@ expect_rc2 bogus-lane --lanes bogus
 expect_rc2 optin-via-lanes --lanes codex
 expect_rc2 empty-lanes --lanes ,
 expect_rc2 profile-conflict --from-profile "$work/nope.json" --with-codex
-expect_rc2 profile-conflict-lanes --from-profile "$work/nope.json" --lanes ollama
+expect_rc2 profile-conflict-lanes --from-profile "$work/nope.json" --lanes none
+
+# HIMMEL-2352 (ruling 34): --lanes accepts ONLY 'none' in v1 — ollama/copilot
+# are refused the SAME way codex/hermes are (one door, not two), but with
+# DISTINCT wording naming the scripts/lanes/lanes.json opt-in env instead of a
+# --with-<id> flag that does not exist for them. 'none' itself must still work.
+for _dormant_pair in 'ollama:OLLAMA_LOCAL_LANE_OK' 'copilot:COPILOT_CLI_LANE_OK'; do
+  _dl="${_dormant_pair%%:*}"; _de="${_dormant_pair##*:}"
+  expect_rc2 "dormant-$_dl" --lanes "$_dl"
+  set +e
+  dormant_out=$(HIMMELCTL_INTERACTIVE=0 \
+    HIMMELCTL_CACHE_DIR="$(winpath "$work/caseD-dormant-$_dl.himmelctl-cache")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseD-dormant-$_dl.himmelctl-cache/luna-config.json")" \
+    "$node_bin" "$wizard" install --lanes "$_dl" </dev/null 2>&1)
+  set -e
+  grepq "$dormant_out" "dormant in v1" \
+    || fail "caseD: --lanes $_dl should be refused with dormant wording, not a bare unknown-lane message: $dormant_out"
+  grepq "$dormant_out" "$_de=1" \
+    || fail "caseD: --lanes $_dl's refusal should name its lanes.json opt-in env ($_de): $dormant_out"
+done
+sDnone="$work/d-none"; mkdir -p "$sDnone"; hDnone="$work/d-none-home"; mkdir -p "$hDnone"
+fDnone="$work/d-none-fix"; make_fixture "$fDnone"
+capture "$sDnone" "$hDnone" "$fDnone" --lanes none
+[ "$rc" -eq 0 ] || fail "caseD: --lanes none should be accepted (got rc=$rc): $out"
+
 # CR round 10 [codex-r9-1] investigated this ordering: with a MISSING profile
 # the run must report the flag-CONFLICT (a parse-time contract), never the
 # profile-LOAD failure. It already does — the combination is rejected in
 # parseArgs, before cmdInstall ever opens the file — but only the rc was
 # pinned, so the message class could have drifted without a test noticing.
 # Both are asserted now, including the absence of any load-failure text.
+# 'none' is the only value --lanes accepts in v1 (see the dormant-refusal
+# block above), so it is the value used here to exercise the CONFLICT check
+# itself without also tripping the lane-validity refusal.
 set +e
-conflict_out=$(HIMMELCTL_INTERACTIVE=0 "$node_bin" "$wizard" install \
-  --from-profile "$work/definitely-not-here.json" --lanes ollama </dev/null 2>&1)
+conflict_out=$(HIMMELCTL_INTERACTIVE=0 \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/caseD-conflict.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseD-conflict.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" install \
+  --from-profile "$work/definitely-not-here.json" --lanes none </dev/null 2>&1)
 conflict_rc=$?
 set -e
 [ "$conflict_rc" -eq 2 ] \
@@ -418,7 +520,7 @@ JSON
 pD2=$(build_path "$sD2" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sD2" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pD2" HOME="$hD2" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pD2" HOME="$hD2" USERPROFILE="$(winpath "$hD2")" HIMMELCTL_CACHE_DIR="$(winpath "$hD2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hD2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fD2")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profD2")" \
       </dev/null 2>&1); rc=$?
@@ -429,6 +531,85 @@ grepq "$out" 'legacy profile has lanes:\[\]' \
 grepq "$out" 'reconfirm lane selection' \
   || fail "caseD2: refusal must tell the operator how to recover: $out"
 echo "ok: caseD2 legacy lanes:[] profile fails loud and requires lane-selection reconfirmation"
+
+# ── case D3 (HIMMEL-2352 backward compatibility): a profile naming a lane
+# this ticket made DORMANT must still LOAD. ollama and copilot were the
+# DEFAULT selection before 2352, so every adopter who ran the wizard has them
+# in ~/.claude/himmel/install-profile.json, and the shipped operator profile
+# carried them too — erroring would brick all of those caches on the next
+# --from-profile run. They are dropped from the effective selection with a
+# note naming the registry opt-in env instead. The NEGATIVE half matters just
+# as much: an id that was never a lane must still fail loud, so the carve-out
+# is keyed to the known dormant set and not to "anything unrecognised".
+sD3="$work/d3"; mkdir -p "$sD3"; hD3="$work/d3-home"; mkdir -p "$hD3"
+fD3="$work/d3-fix"; make_fixture "$fD3"
+pD3=$(build_path "$sD3" bash jq python3 npm -- "${LANE_TOOLS[@]}")
+make_git_stub "$sD3" "https://github.com/someone/other-repo.git"
+
+run_d3() {
+  PATH="$pD3" HOME="$hD3" USERPROFILE="$(winpath "$hD3")" \
+    HIMMELCTL_CACHE_DIR="$(winpath "$hD3.himmelctl-cache")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hD3.himmelctl-cache/luna-config.json")" \
+    HIMMELCTL_INTERACTIVE=0 HIMMELCTL_REPO_ROOT="$(winpath "$fD3")" \
+    "$node_bin" "$wizard" install --from-profile "$(winpath "$1")" --dry-run </dev/null 2>&1
+}
+
+# D3a — the pre-2352 default selection, verbatim.
+profD3="$work/d3-dormant-profile.json"
+cat > "$profD3" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "scope": "project",
+  "vault": { "mode": "none" },
+  "handover": { "mode": "inline" },
+  "pluginSet": "lean",
+  "lanes": ["codex", "copilot", "hermes", "ollama"],
+  "lanesMeaningful": true,
+  "alwaysOn": false,
+  "devOverlay": false
+}
+JSON
+set +e
+out=$(run_d3 "$profD3"); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "case D3a: a profile naming the pre-2352 default lanes must still LOAD (got rc=$rc): $out"
+grepq "$out" -F "profile names lane 'ollama', which is dormant in v1" \
+  || fail "case D3a: the drop of a dormant lane must be announced, not silent: $out"
+grepq "$out" -F 'OLLAMA_LOCAL_LANE_OK=1' \
+  || fail "case D3a: the note must name the registry opt-in env, not imply a --with-ollama flag: $out"
+grepq "$out" -F "profile names lane 'copilot', which is dormant in v1" \
+  || fail "case D3a: copilot must be announced too, not just the first dormant lane: $out"
+grepq "$out" -F 'COPILOT_CLI_LANE_OK=1' \
+  || fail "case D3a: copilot's note must name its own opt-in env: $out"
+grepq "$out" -E 'derived: .*adopt\.sh' \
+  || fail "case D3a: the core install must still be derived — dropping a dormant lane is not a refusal: $out"
+
+# D3b — NEGATIVE control: an id that was never a lane still fails loud.
+profD3b="$work/d3-bogus-profile.json"
+cat > "$profD3b" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "scope": "project",
+  "vault": { "mode": "none" },
+  "handover": { "mode": "inline" },
+  "pluginSet": "lean",
+  "lanes": ["codex", "not-a-real-lane"],
+  "lanesMeaningful": true,
+  "alwaysOn": false,
+  "devOverlay": false
+}
+JSON
+set +e
+outB=$(run_d3 "$profD3b"); rcB=$?
+set -e
+[ "$rcB" -ne 0 ] || fail "case D3b: an unknown lane id must STILL fail loud, not be swallowed by the dormant carve-out (got rc=0): $outB"
+grepq "$outB" -F 'contains unknown lane "not-a-real-lane"' \
+  || fail "case D3b: the refusal must name the offending id: $outB"
+grepq "$outB" -F "dormant in v1" \
+  && fail "case D3b: an unknown id must not be described as dormant: $outB"
+echo "ok: case D3 — a pre-2352 profile naming ollama/copilot still loads (dropped with a note naming its opt-in env); a genuinely unknown lane still fails loud"
 
 # ── Case E: hardening PRINTED, never EXECUTED ───────────────────────────────
 # A sentinel `powercfg` stub: if the installer ever shelled out to it, the
@@ -459,7 +640,7 @@ JSON
 pE=$(build_path "$sE" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sE" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pE" HOME="$hE" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pE" HOME="$hE" USERPROFILE="$(winpath "$hE")" HIMMELCTL_CACHE_DIR="$(winpath "$hE.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hE.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fE")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profE")" \
       </dev/null 2>&1); rc=$?
@@ -520,30 +701,46 @@ grepq "$out" 'powercfg' \
   && fail "caseF: alwaysOn=false must not dump the checklist: $out"
 echo "ok: caseF alwaysOn=false -> pointer line only, no checklist"
 
-# ── Case G: contributor gets its own report, not the adopter epilogue ───────
+# ── Case G (HIMMEL-2308): --contribute gets its own report AND the ──────────
+# universal epilogue, never one instead of the other. The old role fork used
+# to print the contributor-dev report EXCLUSIVELY (no adopter lane/summary
+# section) — devOverlay is an orthogonal layer now, so BOTH sections print.
 sG="$work/g"; mkdir -p "$sG"; hG="$work/g-home"; mkdir -p "$hG"
 fG="$work/g-fix"; make_fixture "$fG"
 mkdir -p "$fG/scripts/install"
 cp "$repo_root/scripts/install/manifest.json" "$fG/scripts/install/manifest.json"
 cp "$repo_root/scripts/install/deps.json" "$fG/scripts/install/deps.json"
-topG="$work/g-top"; mkdir -p "$topG"; touch "$topG/.himmel-dev"
+# The dev overlay's own primitive — contributeCheckoutOk() reads this (the
+# platform-appropriate one), and deriveOverlayCommand() derives it as the
+# overlay's additional command.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fG/scripts/setup.sh"
+chmod +x "$fG/scripts/setup.sh"
+printf 'exit 0\n' > "$fG/scripts/setup.ps1"
 pG=$(build_path "$sG" bash jq python3 npm -- "${LANE_TOOLS[@]}")
-make_git_stub "$sG" "https://github.com/user/himmel.git" "$(winpath "$topG")"
 set +e
-out=$(PATH="$pG" HOME="$hG" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pG" HOME="$hG" USERPROFILE="$(winpath "$hG")" HIMMELCTL_CACHE_DIR="$(winpath "$hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hG.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fG")" \
-      "$node_bin" "$wizard" install --dry-run </dev/null 2>&1); rc=$?
+      "$node_bin" "$wizard" install --dry-run --contribute 2>&1 <<INPUT
+starter
+project
+none
+inline
+lean
+none
+no
+INPUT
+); rc=$?
 set -e
-[ "$rc" -eq 0 ] || fail "caseG: contributor dry-run should succeed (got rc=$rc): $out"
-grepq "$out" '"role": "contributor"' \
-  || fail "caseG: fixture should resolve to contributor: $out"
+[ "$rc" -eq 0 ] || fail "caseG: --contribute dry-run should succeed (got rc=$rc): $out"
+grepq "$out" '"devOverlay": true' \
+  || fail "caseG: --contribute should record devOverlay=true (got: $out)"
 grepq "$out" 'contributor dev profile' \
-  || fail "caseG: contributor should print its contributor-dev report: $out"
+  || fail "caseG: --contribute should print its own dev-overlay report (got: $out)"
 grepq "$out" 'delegation lanes' \
-  && fail "caseG: contributor must print NO adopter lane report: $out"
+  || fail "caseG: --contribute must ALSO print the universal adopter lane report, not instead-of it (got: $out)"
 grepq "$out" 'install summary' \
-  && fail "caseG: contributor must print NO adopter summary: $out"
-echo "ok: caseG contributor -> contributor-dev report, no adopter epilogue"
+  || fail "caseG: --contribute must ALSO print the universal install summary (got: $out)"
+echo "ok: caseG --contribute -> the dev-overlay report AND the universal epilogue both print"
 
 # ── Case H: two identical runs -> byte-identical epilogue ───────────────────
 sH="$work/h"; mkdir -p "$sH"; hH="$work/h-home"; mkdir -p "$hH"
@@ -561,12 +758,12 @@ echo "ok: caseH repeated runs produce a byte-identical epilogue (idempotent)"
 # ── Case I: unreadable lane registry -> UNKNOWN, never a false 'available' ──
 sI="$work/i"; mkdir -p "$sI"; hI="$work/i-home"; mkdir -p "$hI"
 fI="$work/i-fix"; make_fixture "$fI" --no-registry
-capture "$sI" "$hI" "$fI"
+capture "$sI" "$hI" "$fI" --with-codex
 [ "$rc" -eq 0 ] || fail "caseI: a missing registry must not crash the run (got rc=$rc): $out"
 ep=$(epilogue "$out")
-grepq "$ep" -E '\?\? +ollama +UNKNOWN' \
+grepq "$ep" -E '\?\? +codex +UNKNOWN' \
   || fail "caseI: a missing lane registry should degrade to UNKNOWN: $ep"
-grepq "$ep" -E '(ok|~) +ollama' \
+grepq "$ep" -E '(ok|~) +codex' \
   && fail "caseI: a missing registry must NEVER report a lane as available: $ep"
 echo "ok: caseI unreadable lane registry -> UNKNOWN, never a false available"
 
@@ -625,7 +822,7 @@ JSON
 pJ=$(build_path "$sJ2" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sJ2" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pJ" HOME="$hJ2" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pJ" HOME="$hJ2" USERPROFILE="$(winpath "$hJ2")" HIMMELCTL_CACHE_DIR="$(winpath "$hJ2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hJ2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fJ2")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profJ")" \
       </dev/null 2>&1); rc=$?
@@ -652,7 +849,7 @@ hermes_probe() {
   _p=$(build_path "$_stub" bash jq python3 npm -- "${LANE_TOOLS[@]}")
   make_git_stub "$_stub" "https://github.com/someone/other-repo.git"
   set +e
-  PATH="$_p" HOME="$_h" HIMMELCTL_INTERACTIVE=0 \
+  PATH="$_p" HOME="$_h" USERPROFILE="$(winpath "$_h")" HIMMELCTL_CACHE_DIR="$(winpath "$_h.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_h.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
     HERMES_HOME="$_home" HERMES_PY="$_py" \
     HIMMELCTL_REPO_ROOT="$(winpath "$kfix")" \
     "$node_bin" "$wizard" install --dry-run --lanes none --with-hermes </dev/null 2>&1
@@ -684,11 +881,12 @@ grepq "$out" -E '~ +hermes +binary present' \
   || fail "caseK3: an explicit HERMES_PY must read as installed: $(epilogue "$out")"
 echo "ok: caseK hermes honors HERMES_PY + venv layouts and rejects a bare PATH hit"
 
-# ── Case L: a FAILED plugin step must not be reported as success ────────────
-# CR round 1 [codex-adv-2]. With `claude` absent from the stub PATH every
-# `claude plugin ...` command fails, so pluginSet=full completes with a
-# nonzero rc — the summary must say so rather than print "full plugin set
-# enabled" alongside that failure.
+# ── Case L (HIMMEL-2304): a legacy pluginSet=full profile must never be ─────
+# reported as an enabled/failed plugin step — that step is GONE. Before this
+# ticket, `claude` absent from PATH made every `claude plugin ...` command
+# fail and the summary reported that failure (CR round 1 [codex-adv-2]); now
+# `claude` is never invoked at all, so the run succeeds and the summary says
+# the option was retired, never "enabled" and never "FAILED".
 sL="$work/l"; mkdir -p "$sL"; hL="$work/l-home"; mkdir -p "$hL"
 fL="$work/l-fix"; make_fixture "$fL"
 profL="$work/l-profile.json"
@@ -708,43 +906,41 @@ JSON
 pL=$(build_path "$sL" bash jq python3 npm -- "${LANE_TOOLS[@]}" claude)
 make_git_stub "$sL" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pL" HOME="$hL" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pL" HOME="$hL" USERPROFILE="$(winpath "$hL")" HIMMELCTL_CACHE_DIR="$(winpath "$hL.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hL.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fL")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profL")" \
       </dev/null 2>&1); rc=$?
 set -e
-[ "$rc" -ne 0 ] \
-  || fail "caseL: a wholly-failed plugin step should exit nonzero (got rc=$rc): $out"
+[ "$rc" -eq 0 ] \
+  || fail "caseL: a legacy pluginSet=full profile has no plugin step left to fail — should exit 0 (got rc=$rc): $out"
 grepq "$out" 'full plugin set enabled' \
-  && fail "caseL: must NOT claim the full plugin set was enabled after failures: $out"
+  && fail "caseL: must NOT claim the full plugin set was enabled — the step no longer runs: $out"
 grepq "$out" 'plugin command(s) FAILED' \
-  || fail "caseL: the summary should report the failed plugin commands: $out"
-# Single-quoted on purpose: the backticks are literal text in the summary's
-# retry hint, not a command substitution.
-# shellcheck disable=SC2016
-grepq "$out" 're-run `himmelctl install` to retry' \
-  || fail "caseL: the failure entry should carry the retry instruction: $out"
-echo "ok: caseL failed plugin step -> reported as failed, never as 'enabled'"
+  && fail "caseL: must NOT report a plugin-command failure — no plugin command was ever invoked: $out"
+grepq "$out" 'retired (HIMMEL-2304)' \
+  || fail "caseL: the summary should say pluginSet=full was retired: $out"
+echo "ok: caseL a legacy pluginSet=full profile -> retired, never reported as enabled or failed"
 
-# L2 — CR round 2 [codex-r2-1 / glm-r2-3]: the same pluginSet=full profile
-# under --dry-run must describe the enable step as PLANNED, never in the past
-# tense. `pluginFailures` is null there (the step never ran), which used to be
-# coerced to "no failures" and printed as "full plugin set enabled".
+# L2 — the same pluginSet=full profile under --dry-run must ALSO never claim
+# "full plugin set enabled" or preview a plugin-enable DRY line — there is
+# nothing left to plan.
 sL2="$work/l2"; mkdir -p "$sL2"; hL2="$work/l2-home"; mkdir -p "$hL2"
 pL2=$(build_path "$sL2" bash jq python3 npm -- "${LANE_TOOLS[@]}" claude)
 make_git_stub "$sL2" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pL2" HOME="$hL2" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pL2" HOME="$hL2" USERPROFILE="$(winpath "$hL2")" HIMMELCTL_CACHE_DIR="$(winpath "$hL2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hL2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fL")" \
       "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$profL")" \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseL2: dry-run should succeed (got rc=$rc): $out"
 grepq "$out" 'full plugin set enabled' \
-  && fail "caseL2: --dry-run must not use the past tense for the enable step: $out"
+  && fail "caseL2: --dry-run must not claim the retired enable step ran: $out"
 grepq "$out" 'would be enabled' \
-  || fail "caseL2: --dry-run should describe the enable step as planned: $out"
-echo "ok: caseL2 --dry-run phrases the plugin enable step as planned, not done"
+  && fail "caseL2: --dry-run must not preview a retired enable step as planned work: $out"
+grepq "$out" 'retired (HIMMEL-2304)' \
+  || fail "caseL2: --dry-run should also say pluginSet=full was retired: $out"
+echo "ok: caseL2 --dry-run also reports pluginSet=full as retired, never planned or done"
 
 # ── Case M: a lane DISABLED by lanes.local.json must not read ready ─────────
 # CR round 2 [codex-adv-r2-1]. The probe used to read base lanes.json alone,
@@ -755,28 +951,28 @@ echo "ok: caseL2 --dry-run phrases the plugin enable step as planned, not done"
 sM="$work/m"; mkdir -p "$sM"; hM="$work/m-home"; mkdir -p "$hM"
 fM="$work/m-fix"; make_fixture "$fM"
 cat > "$fM/scripts/lanes/lanes.local.json" <<'OVERLAY'
-{ "lanes": [ { "id": "ollama-local", "probe": { "kind": "never" } } ] }
+{ "lanes": [ { "id": "codex-exec", "probe": { "kind": "never" } } ] }
 OVERLAY
-plant_cli "$sM" ollama
-capture "$sM" "$hM" "$fM"
+plant_cli "$sM" codex
+capture "$sM" "$hM" "$fM" --with-codex
 [ "$rc" -eq 0 ] || fail "caseM: dry-run should succeed (got rc=$rc): $out"
 ep=$(epilogue "$out")
-grepq "$ep" -E '~ +ollama +binary present' \
+grepq "$ep" -E '~ +codex +binary present' \
   && fail "caseM: an overlay-DISABLED lane must NOT read as available: $ep"
-grepq "$ep" -E '\-\- +ollama +DISABLED' \
+grepq "$ep" -E '\-\- +codex +DISABLED' \
   || fail "caseM: an overlay-disabled lane should read DISABLED: $ep"
-grepq "$ep" 'config set lanes.ollama-local on' \
+grepq "$ep" 'config set lanes.codex-exec on' \
   || fail "caseM: the fix for a disabled lane is a config flip, and must be named: $ep"
 # It is installed — so it must NOT be reported as something to go install.
-grepq "$ep" -E "$OLLAMA_ANY_HINT_RE" \
+grepq "$ep" -E "$CODEX_ANY_HINT_RE" \
   && fail "caseM: a DISABLED-but-installed lane must not be sent back to the package manager: $ep"
 # Sanity: the same fixture WITHOUT the overlay reads available, proving the
 # difference comes from the overlay and not from the stub being broken.
 fM2="$work/m2-fix"; make_fixture "$fM2"
 sM2="$work/m2"; mkdir -p "$sM2"; hM2="$work/m2-home"; mkdir -p "$hM2"
-plant_cli "$sM2" ollama
-capture "$sM2" "$hM2" "$fM2"
-grepq "$(epilogue "$out")" -E '~ +ollama +binary present' \
+plant_cli "$sM2" codex
+capture "$sM2" "$hM2" "$fM2" --with-codex
+grepq "$(epilogue "$out")" -E '~ +codex +binary present' \
   || fail "caseM: without the overlay the same stub must read available: $(epilogue "$out")"
 echo "ok: caseM overlay-disabled lane reads DISABLED, not ready, and not reinstallable"
 
@@ -790,20 +986,20 @@ for _shape in truncated wrongshape; do
   sN="$work/n-$_shape"; mkdir -p "$sN"; hN="$work/n-$_shape-home"; mkdir -p "$hN"
   fN="$work/n-$_shape-fix"; make_fixture "$fN"
   case "$_shape" in
-    truncated)  printf '{"lanes":[{"id":"ollama-local",\n' > "$fN/scripts/lanes/lanes.local.json" ;;
+    truncated)  printf '{"lanes":[{"id":"codex-exec",\n' > "$fN/scripts/lanes/lanes.local.json" ;;
     wrongshape) printf '{"lanes":{}}\n'                    > "$fN/scripts/lanes/lanes.local.json" ;;
   esac
   # Plant the binary too: without the fail-closed the lane would read present,
   # so this proves the overlay error wins over a real probe hit.
-  plant_cli "$sN" ollama
-  capture "$sN" "$hN" "$fN"
+  plant_cli "$sN" codex
+  capture "$sN" "$hN" "$fN" --with-codex
   [ "$rc" -eq 0 ] || fail "caseN/$_shape: a corrupt overlay must not crash the run (got rc=$rc): $out"
   ep=$(epilogue "$out")
-  grepq "$ep" -E '\?\? +ollama +UNKNOWN' \
+  grepq "$ep" -E '\?\? +codex +UNKNOWN' \
     || fail "caseN/$_shape: a corrupt overlay should make lanes read UNKNOWN: $ep"
   grepq "$ep" 'lanes.local.json' \
     || fail "caseN/$_shape: the diagnostic must NAME the offending file: $ep"
-  grepq "$ep" -E '(ok|~) +ollama' \
+  grepq "$ep" -E '(ok|~) +codex' \
     && fail "caseN/$_shape: a corrupt overlay must not still report the lane usable: $ep"
 done
 echo "ok: caseN corrupt lanes.local.json -> UNKNOWN, file named, fails closed like the resolver"
@@ -844,32 +1040,36 @@ echo "ok: caseO richer readiness probe -> 'ready', no redundant verify item"
 # drop its install command. An override expresses intent; it cannot conjure an
 # executable. The full 2x2 (physical x enabled) is pinned here.
 pM_fix() { make_fixture "$1"; printf '%s\n' "$2" > "$1/scripts/lanes/lanes.local.json"; }
-ALWAYS_OVERLAY='{ "lanes": [ { "id": "ollama-local", "probe": { "kind": "always" } } ] }'
+# HIMMEL-2352: codex is the vehicle (see the CODEX_INSTALL_HINT comment above)
+# — ollama-local is dormant-in-v1, so its registry row can no longer be
+# reached through the wizard's own opt-in path at all; codex exercises the
+# identical mergeLocalOverlay/probeLane machinery this case is pinning.
+ALWAYS_OVERLAY='{ "lanes": [ { "id": "codex-exec", "probe": { "kind": "always" } } ] }'
 
 # P1 — forced ON, nothing installed: must NOT read present, and must KEEP the
 # install command. This is the reproduction from the review.
 sP1="$work/p1"; mkdir -p "$sP1"; hP1="$work/p1-home"; mkdir -p "$hP1"
 fP1="$work/p1-fix"; pM_fix "$fP1" "$ALWAYS_OVERLAY"
-capture "$sP1" "$hP1" "$fP1"
+capture "$sP1" "$hP1" "$fP1" --with-codex
 [ "$rc" -eq 0 ] || fail "caseP1: dry-run should succeed (got rc=$rc): $out"
 ep=$(epilogue "$out")
-grepq "$ep" -E '(ok|~) +ollama' \
+grepq "$ep" -E '(ok|~) +codex' \
   && fail "caseP1: an always-overlay must NOT make an uninstalled lane read present: $ep"
-grepq "$ep" -E 'XX +ollama +MISCONFIGURED' \
+grepq "$ep" -E 'XX +codex +MISCONFIGURED' \
   || fail "caseP1: forced-on-but-absent should read MISCONFIGURED: $ep"
-grepq "$ep" -F "$OLLAMA_INSTALL_HINT" \
+grepq "$ep" -F "$CODEX_INSTALL_HINT" \
   || fail "caseP1: the install command must survive a bogus override: $ep"
 
 # P2 — forced ON with the binary actually there: still present, and the detail
 # must name the REAL reason, not the override ("registry probe kind=always").
 sP2="$work/p2"; mkdir -p "$sP2"; hP2="$work/p2-home"; mkdir -p "$hP2"
 fP2="$work/p2-fix"; pM_fix "$fP2" "$ALWAYS_OVERLAY"
-plant_cli "$sP2" ollama
-capture "$sP2" "$hP2" "$fP2"
+plant_cli "$sP2" codex
+capture "$sP2" "$hP2" "$fP2" --with-codex
 ep=$(epilogue "$out")
-grepq "$ep" -E '~ +ollama +binary present' \
+grepq "$ep" -E '~ +codex +binary present' \
   || fail "caseP2: an always-overlay over a real binary should still read present: $ep"
-grepq "$ep" 'ollama found on PATH' \
+grepq "$ep" 'codex found on PATH' \
   || fail "caseP2: the detail must cite physical presence, not the override: $ep"
 grepq "$ep" 'kind=always' \
   && fail "caseP2: the override must never be the stated reason a lane is present: $ep"
@@ -911,12 +1111,18 @@ for (const plat of ["linux", "darwin"]) {
   }
 }
 const win = render("win32");
-for (const want of [/install-himmel-codex\.ps1/, /install-himmel-profile\.ps1/, /winget install/, /powercfg/]) {
+// HIMMEL-2126: a printed note cannot run resolvePowershell() itself, so the
+// codex/hermes win32 notes must say BOTH the pwsh preference AND that
+// powershell.exe still works for that one step (verified: both .ps1 targets
+// carry a UTF-8 BOM and no PS7-only syntax, so 5.1 genuinely tolerates them) —
+// a stock clean-Windows box (no pwsh yet) must not be handed a dead command.
+for (const want of [/install-himmel-codex\.ps1/, /install-himmel-profile\.ps1/, /winget install/, /powercfg/,
+                     /pwsh\/PowerShell 7 preferred/, /powershell\.exe also works for this step/]) {
   if (!want.test(win)) { console.error("win32 lost its own guidance " + want + "\n" + win); process.exit(1); }
 }
 ' "$(winpath "$repo_root/scripts/himmelctl/lib/adopter-profile.js")" "$(winpath "$fQ")" \
   || fail "caseQ: lane guidance is not platform-correct"
-echo "ok: caseQ POSIX platforms get POSIX guidance; win32 keeps its PowerShell guidance"
+echo "ok: caseQ POSIX platforms get POSIX guidance; win32 keeps its PowerShell guidance (pwsh preferred, powershell.exe fallback stated, HIMMEL-2126)"
 
 # ── Case R: vault=default-template onto an OCCUPIED destination ────────────
 # CR round 8 [codex-adv-r7-3]. adopt.sh's do_luna() skips the template copy
@@ -946,7 +1152,7 @@ chmod +x "$fR/scripts/adopt.sh"
 occR="$work/r-occupied"; mkdir -p "$occR"; printf 'unrelated\n' > "$occR/README.md"
 profR="$work/r-profile.json"; rVault_profile "$(winpath "$occR")" > "$profR"
 set +e
-out=$(PATH="$pR" HOME="$hR" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pR" HOME="$hR" USERPROFILE="$(winpath "$hR")" HIMMELCTL_CACHE_DIR="$(winpath "$hR.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hR.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fR")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profR")" \
       </dev/null 2>&1); rc=$?
@@ -964,7 +1170,7 @@ grepq "$out" 'scaffolded' \
 # R2 — occupied but STAMPED: proceed, and report reuse rather than scaffolding.
 printf '{ "template": "luna-second-brain" }\n' > "$occR/.vault-template.json"
 set +e
-out=$(PATH="$pR" HOME="$hR" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pR" HOME="$hR" USERPROFILE="$(winpath "$hR")" HIMMELCTL_CACHE_DIR="$(winpath "$hR.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hR.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fR")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profR")" \
       </dev/null 2>&1); rc=$?
@@ -984,14 +1190,14 @@ rm -f "$adopt_ran"
 for _mode in flag interactive; do
   set +e
   if [ "$_mode" = flag ]; then
-    out=$(PATH="$pR" HOME="$hR" HIMMELCTL_INTERACTIVE=0 \
+    out=$(PATH="$pR" HOME="$hR" USERPROFILE="$(winpath "$hR")" HIMMELCTL_CACHE_DIR="$(winpath "$hR.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hR.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
           HIMMELCTL_REPO_ROOT="$(winpath "$fR")" \
           "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$profR")" \
           </dev/null 2>&1)
   else
-    out=$(printf 'adopter\nproject\ndefault-template\n%s\ninline\nlean\nnone\nno\n' "$(winpath "$occR")" \
-      | PATH="$pR" HOME="$hR" HIMMELCTL_INTERACTIVE=1 \
-        HIMMELCTL_CACHE_DIR="$(winpath "$work/r3-cache")" \
+    out=$(printf 'starter\nproject\ndefault-template\n%s\ninline\nlean\nnone\nno\n' "$(winpath "$occR")" \
+      | PATH="$pR" HOME="$hR" USERPROFILE="$(winpath "$hR")" HIMMELCTL_INTERACTIVE=1 \
+        HIMMELCTL_CACHE_DIR="$(winpath "$work/r3-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/r3-cache")-luna-config.json" \
         HIMMELCTL_REPO_ROOT="$(winpath "$fR")" \
         "$node_bin" "$wizard" install --dry-run 2>&1)
   fi
@@ -1020,8 +1226,12 @@ const planned = a.buildSummary(ans, [], { derived:"X", dryRun:true }).planned.jo
 for (const past of [/ scaffolded /, / upgraded in place/, /-> \/h \(HANDOVER_DIR\)/, / via X/]) {
   if (past.test(planned)) { console.error("dry-run planned bucket uses past tense " + past + "\n" + planned); process.exit(1); }
 }
+// HIMMEL-2304: pluginSet=full used to contribute a 4th conditional-tense row
+// ("full plugin set (would be enabled)") — that branch is retired now (it
+// lands in `skipped`, not `planned`, regardless of dryRun), so only the top
+// summary line + vault + handover stay conditional here: 3, not 4.
 const n = planned.split("\n").filter((l) => /would/.test(l)).length;
-if (n !== 4) { console.error("expected all 4 planned rows conditional, got " + n + "\n" + planned); process.exit(1); }
+if (n !== 3) { console.error("expected all 3 planned rows conditional, got " + n + "\n" + planned); process.exit(1); }
 const done = a.buildSummary(ans, [], { derived:"X", dryRun:false, pluginFailures:[], pluginTotal:2 }).installed.join("\n");
 if (/would/.test(done)) { console.error("applied bucket leaked conditional tense\n" + done); process.exit(1); }
 ' "$(winpath "$repo_root/scripts/himmelctl/lib/adopter-profile.js")" \
@@ -1038,15 +1248,18 @@ for _probe in 'null' '{}' '{"kind":""}' '{"kind":"future-thing"}'; do
   sT="$work/t-$(printf '%s' "$_probe" | tr -cd '[:lower:]')"; mkdir -p "$sT"
   hT="$sT-home"; mkdir -p "$hT"
   fT="$sT-fix"; make_fixture "$fT"
-  printf '{ "lanes": [ { "id": "ollama-local", "probe": %s } ] }\n' "$_probe" \
+  # HIMMEL-2352: codex is the vehicle (see the CODEX_INSTALL_HINT comment
+  # above) — this loop drives the wizard's own epilogue, and ollama-local is
+  # dormant-in-v1 there, so codex-exec exercises the identical overlay path.
+  printf '{ "lanes": [ { "id": "codex-exec", "probe": %s } ] }\n' "$_probe" \
     > "$fT/scripts/lanes/lanes.local.json"
   # Plant the binary: physical presence is real, so only the overlay handling
   # can be what keeps the lane from reading present.
-  plant_cli "$sT" ollama
-  capture "$sT" "$hT" "$fT"
+  plant_cli "$sT" codex
+  capture "$sT" "$hT" "$fT" --with-codex
   [ "$rc" -eq 0 ] || fail "caseT[$_probe]: run should succeed (got rc=$rc): $out"
   ep=$(epilogue "$out")
-  grepq "$ep" -E '(ok|~) +ollama' \
+  grepq "$ep" -E '(ok|~) +codex' \
     && fail "caseT[$_probe]: a degenerate overlay probe must NOT read present: $ep"
   grepq "$ep" 'lanes.local.json' \
     || fail "caseT[$_probe]: the reason should name the overlay: $ep"
@@ -1080,38 +1293,46 @@ echo "ok: caseT degenerate overlay probes fail closed, consistent with resolveLa
 # ── Case U: overlay remediation must not drop the setup note ────────────────
 # CR round 9 [codex-adv-r8-2]. Round 7 guaranteed a lane's platform-specific
 # setup step survives into `still manual`; the disabled/misconfigured branches
-# were dropping it, so a disabled copilot showed only the re-enable command
-# and a forced-on absent ollama only install+override repair.
-# U1 — DISABLED copilot keeps its device-flow login step, AFTER the re-enable.
+# were dropping it, so a disabled lane showed only the re-enable command and a
+# forced-on absent lane only install+override repair.
+# HIMMEL-2352: codex is the vehicle for BOTH halves (see the
+# CODEX_INSTALL_HINT comment above) — hermes's probe is kind=installed, which
+# the shared capture()/run_install() helper has no seam for (see caseK's own
+# comment: it needs HERMES_HOME/HERMES_PY threaded through a dedicated
+# function), so it cannot be forced ABSENT hermetically through capture() the
+# way U2 needs. codex's path-probe is fully controlled by the scrubbed PATH
+# capture() already builds, so it stays the reliable vehicle for both halves.
+# U1 — DISABLED codex keeps its post-install auth-setup step, AFTER the
+# re-enable.
 sU1="$work/u1"; mkdir -p "$sU1"; hU1="$work/u1-home"; mkdir -p "$hU1"
 fU1="$work/u1-fix"; make_fixture "$fU1"
-printf '{ "lanes": [ { "id": "copilot-cli", "probe": { "kind": "never" } } ] }\n' \
+printf '{ "lanes": [ { "id": "codex-exec", "probe": { "kind": "never" } } ] }\n' \
   > "$fU1/scripts/lanes/lanes.local.json"
-plant_cli "$sU1" copilot
-capture "$sU1" "$hU1" "$fU1"
+plant_cli "$sU1" codex
+capture "$sU1" "$hU1" "$fU1" --with-codex
 ep=$(epilogue "$out")
-grepq "$ep" 'config set lanes.copilot-cli on' \
+grepq "$ep" 'config set lanes.codex-exec on' \
   || fail "caseU1: the re-enable command must still be present: $ep"
-grepq "$ep" 'device-flow login' \
+grepq "$ep" 'install-himmel-codex.sh' \
   || fail "caseU1: a DISABLED lane must keep its setup step: $ep"
 # Ordering: remediation before the setup step it unblocks.
-remediation_line=$(printf '%s' "$ep" | grep -n 'config set lanes.copilot-cli on' | head -1 | cut -d: -f1)
-setup_line=$(printf '%s' "$ep" | grep -n 'device-flow login' | tail -1 | cut -d: -f1)
+remediation_line=$(printf '%s' "$ep" | grep -n 'config set lanes.codex-exec on' | head -1 | cut -d: -f1)
+setup_line=$(printf '%s' "$ep" | grep -n 'install-himmel-codex.sh' | tail -1 | cut -d: -f1)
 [ "$remediation_line" -lt "$setup_line" ] \
   || fail "caseU1: remediation should come BEFORE the setup step: $ep"
 
-# U2 — forced-on-but-ABSENT ollama keeps its model-pull step.
+# U2 — forced-on-but-ABSENT codex keeps its auth-setup step.
 sU2="$work/u2"; mkdir -p "$sU2"; hU2="$work/u2-home"; mkdir -p "$hU2"
 fU2="$work/u2-fix"; make_fixture "$fU2"
-printf '{ "lanes": [ { "id": "ollama-local", "probe": { "kind": "always" } } ] }\n' \
+printf '{ "lanes": [ { "id": "codex-exec", "probe": { "kind": "always" } } ] }\n' \
   > "$fU2/scripts/lanes/lanes.local.json"
-capture "$sU2" "$hU2" "$fU2"
+capture "$sU2" "$hU2" "$fU2" --with-codex
 ep=$(epilogue "$out")
-grepq "$ep" -E 'XX +ollama +MISCONFIGURED' \
+grepq "$ep" -E 'XX +codex +MISCONFIGURED' \
   || fail "caseU2: forced-on-but-absent should read MISCONFIGURED: $ep"
-grepq "$ep" -F "$OLLAMA_INSTALL_HINT" \
+grepq "$ep" -F "$CODEX_INSTALL_HINT" \
   || fail "caseU2: the install command must survive: $ep"
-grepq "$ep" 'ollama pull' \
+grepq "$ep" 'install-himmel-codex.sh' \
   || fail "caseU2: a MISCONFIGURED lane must keep its setup step: $ep"
 echo "ok: caseU overlay remediation preserves the setup note, ordered after the fix"
 
@@ -1120,26 +1341,29 @@ echo "ok: caseU overlay remediation preserves the setup note, ordered after the 
 # while lanes.local.json still turns it off: /lanes keeps excluding it, so an
 # adopter who followed the one instruction we gave got nothing. Both steps
 # must be listed, install first, then the re-enable, then the setup step.
+# HIMMEL-2352: codex is the vehicle (see the CODEX_INSTALL_HINT comment
+# above); the previous absent+disabled cell is the same probeLane branch
+# whichever v1 lane exercises it.
 sV="$work/v"; mkdir -p "$sV"; hV="$work/v-home"; mkdir -p "$hV"
 fV="$work/v-fix"; make_fixture "$fV"
-printf '{ "lanes": [ { "id": "ollama-local", "probe": { "kind": "never" } } ] }\n' \
+printf '{ "lanes": [ { "id": "codex-exec", "probe": { "kind": "never" } } ] }\n' \
   > "$fV/scripts/lanes/lanes.local.json"
 # NOTE: no plant_cli here — the lane is absent AND disabled, the whole point.
-capture "$sV" "$hV" "$fV"
+capture "$sV" "$hV" "$fV" --with-codex
 [ "$rc" -eq 0 ] || fail "caseV: dry-run should succeed (got rc=$rc): $out"
 ep=$(epilogue "$out")
-grepq "$ep" -F "$OLLAMA_INSTALL_HINT" \
+grepq "$ep" -F "$CODEX_INSTALL_HINT" \
   || fail "caseV: the install command must be listed: $ep"
-grepq "$ep" 'config set lanes.ollama-local on' \
+grepq "$ep" 'config set lanes.codex-exec on' \
   || fail "caseV: the overlay re-enable must ALSO be listed: $ep"
-grepq "$ep" 'ollama pull' \
+grepq "$ep" 'install-himmel-codex.sh' \
   || fail "caseV: the setup step must survive here too: $ep"
 grepq "$ep" 'DISABLED by scripts/lanes/lanes.local.json' \
   || fail "caseV: the row should say the overlay also blocks it: $ep"
 # Ordering: install, then re-enable, then setup.
-i_install=$(printf '%s' "$ep" | grep -nF "$OLLAMA_INSTALL_HINT" | head -1 | cut -d: -f1)
-i_enable=$(printf '%s' "$ep" | grep -n 'config set lanes.ollama-local on' | head -1 | cut -d: -f1)
-i_setup=$(printf '%s' "$ep" | grep -n 'ollama pull' | head -1 | cut -d: -f1)
+i_install=$(printf '%s' "$ep" | grep -nF "$CODEX_INSTALL_HINT" | head -1 | cut -d: -f1)
+i_enable=$(printf '%s' "$ep" | grep -n 'config set lanes.codex-exec on' | head -1 | cut -d: -f1)
+i_setup=$(printf '%s' "$ep" | grep -n 'install-himmel-codex.sh' | head -1 | cut -d: -f1)
 { [ "$i_install" -lt "$i_enable" ] && [ "$i_enable" -lt "$i_setup" ]; } \
   || fail "caseV: steps must read install -> re-enable -> setup (got $i_install/$i_enable/$i_setup): $ep"
 echo "ok: caseV absent+disabled lists install, overlay re-enable, and setup in order"
@@ -1198,7 +1422,7 @@ printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "project",\n 
 pX=$(build_path "$sX" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sX" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pX" HOME="$hX" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pX" HOME="$hX" USERPROFILE="$(winpath "$hX")" HIMMELCTL_CACHE_DIR="$(winpath "$hX.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hX.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fX")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profX")" \
       </dev/null 2>&1); rc=$?
@@ -1218,33 +1442,35 @@ echo "ok: caseX the occupied-vault gate is re-evaluated immediately before the s
 # wholesale replacement and does NOT layer lanes.local.json on top of it, so
 # reading checkout-default + overlay under the override made this report a
 # different lane set than /lanes resolved.
+# HIMMEL-2352: codex is the vehicle (see the CODEX_INSTALL_HINT comment
+# above) — this case drives the wizard's own epilogue.
 sY="$work/y"; mkdir -p "$sY"; hY="$work/y-home"; mkdir -p "$hY"
 fY="$work/y-fix"; make_fixture "$fY"
-# An overlay that would DISABLE ollama if it were consulted.
-printf '{ "lanes": [ { "id": "ollama-local", "probe": { "kind": "never" } } ] }\n' \
+# An overlay that would DISABLE codex if it were consulted.
+printf '{ "lanes": [ { "id": "codex-exec", "probe": { "kind": "never" } } ] }\n' \
   > "$fY/scripts/lanes/lanes.local.json"
 altY="$work/y-registry.json"
-printf '{ "lanes": [ { "id": "ollama-local", "probe": { "kind": "path", "cli": "ollama" } } ] }\n' > "$altY"
-plant_cli "$sY" ollama
+printf '{ "lanes": [ { "id": "codex-exec", "probe": { "kind": "path", "cli": "codex" } } ] }\n' > "$altY"
+plant_cli "$sY" codex
 pY=$(build_path "$sY" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sY" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pY" HOME="$hY" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pY" HOME="$hY" USERPROFILE="$(winpath "$hY")" HIMMELCTL_CACHE_DIR="$(winpath "$hY.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hY.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       LANES_REGISTRY="$(winpath "$altY")" \
       HIMMELCTL_REPO_ROOT="$(winpath "$fY")" \
-      "$node_bin" "$wizard" install --dry-run </dev/null 2>&1); rc=$?
+      "$node_bin" "$wizard" install --dry-run --with-codex </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseY: dry-run under LANES_REGISTRY should succeed (got rc=$rc): $out"
 ep=$(epilogue "$out")
-grepq "$ep" -E '~ +ollama +binary present' \
+grepq "$ep" -E '~ +codex +binary present' \
   || fail "caseY: under LANES_REGISTRY the overlay must be IGNORED: $ep"
 grepq "$ep" 'DISABLED' \
   && fail "caseY: the skipped overlay must not still disable the lane: $ep"
 # Control: the SAME fixture WITHOUT the override does honour the overlay.
 set +e
-out=$(PATH="$pY" HOME="$hY" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pY" HOME="$hY" USERPROFILE="$(winpath "$hY")" HIMMELCTL_CACHE_DIR="$(winpath "$hY.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hY.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fY")" \
-      "$node_bin" "$wizard" install --dry-run </dev/null 2>&1)
+      "$node_bin" "$wizard" install --dry-run --with-codex </dev/null 2>&1)
 set -e
 grepq "$(epilogue "$out")" 'DISABLED' \
   || fail "caseY: without the override the overlay must still apply: $(epilogue "$out")"
@@ -1254,24 +1480,27 @@ echo "ok: caseY LANES_REGISTRY replaces the registry and skips the overlay, like
 # Every optional probe the fixture can satisfy is made true below. That makes
 # suppression observable while also proving registry lanes outside the persisted
 # wizard scope remain on their base probes.
-profile_scope='ollama-local,copilot-cli,codex-exec,hermes-oneshot'
-for _combo in none default codex hermes both; do
+# HIMMEL-2352: PROFILE_LANE_REGISTRY_IDS (the wizard-owned scope the real
+# code persists) is now V1_LANES.map(registryId) = just codex-exec and
+# hermes-oneshot — ollama-local/copilot-cli dropped out of V1_LANES entirely,
+# so they are no longer part of the persisted scope either.
+profile_scope='codex-exec,hermes-oneshot'
+for _combo in none codex hermes both; do
   sZ="$work/z-$_combo"; mkdir -p "$sZ"; hZ="$work/z-$_combo-home"; mkdir -p "$hZ"
   fZ="$work/z-$_combo-fix"; make_fixture "$fZ"
   profZ="$work/z-$_combo-profile.json"
   case "$_combo" in
     none)    _profile_lanes='[]'; _expected='' ;;
-    default) _profile_lanes='["ollama","copilot"]'; _expected='ollama-local,copilot-cli' ;;
-    codex)   _profile_lanes='["ollama","copilot","codex"]'; _expected='ollama-local,copilot-cli,codex-exec' ;;
-    hermes)  _profile_lanes='["ollama","copilot","hermes"]'; _expected='ollama-local,copilot-cli,hermes-oneshot' ;;
-    both)    _profile_lanes='["ollama","copilot","codex","hermes"]'; _expected='ollama-local,copilot-cli,codex-exec,hermes-oneshot' ;;
+    codex)   _profile_lanes='["codex"]'; _expected='codex-exec' ;;
+    hermes)  _profile_lanes='["hermes"]'; _expected='hermes-oneshot' ;;
+    both)    _profile_lanes='["codex","hermes"]'; _expected='codex-exec,hermes-oneshot' ;;
   esac
   printf '{\n  "role": "adopter",\n  "tier": "standard",\n  "scope": "project",\n  "vault": { "mode": "none", "path": "" },\n  "handover": { "mode": "inline", "path": "" },\n  "pluginSet": "lean",\n  "lanes": %s,\n  "lanesMeaningful": true,\n  "alwaysOn": false\n}\n' \
     "$_profile_lanes" > "$profZ"
   pZ=$(build_path "$sZ" bash jq python3 npm -- "${LANE_TOOLS[@]}")
   make_git_stub "$sZ" "https://github.com/someone/other-repo.git"
   set +e
-  out=$(PATH="$pZ" HOME="$hZ" HIMMELCTL_INTERACTIVE=0 \
+  out=$(PATH="$pZ" HOME="$hZ" USERPROFILE="$(winpath "$hZ")" HIMMELCTL_CACHE_DIR="$(winpath "$hZ.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hZ.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
         HIMMELCTL_REPO_ROOT="$(winpath "$fZ")" \
         "$node_bin" "$wizard" install --from-profile "$(winpath "$profZ")" \
         </dev/null 2>&1); rc=$?
@@ -1350,14 +1579,14 @@ cat > "$profAA" <<'JSON'
   "vault": { "mode": "none", "path": "" },
   "handover": { "mode": "inline", "path": "" },
   "pluginSet": "lean",
-  "lanes": ["ollama"],
+  "lanes": ["codex"],
   "alwaysOn": false
 }
 JSON
 pAA=$(build_path "$sAA" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sAA" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pAA" HOME="$hAA" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pAA" HOME="$hAA" USERPROFILE="$(winpath "$hAA")" HIMMELCTL_CACHE_DIR="$(winpath "$hAA.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hAA.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       LANES_REGISTRY="$(winpath "$fAA/scripts/lanes/lanes.json")" \
       HIMMELCTL_REPO_ROOT="$(winpath "$fAA")" \
       "$node_bin" "$wizard" install --from-profile "$(winpath "$profAA")" \
@@ -1406,7 +1635,7 @@ JS
 pAB=$(build_path "$sAB" bash jq python3 npm -- "${LANE_TOOLS[@]}")
 make_git_stub "$sAB" "https://github.com/someone/other-repo.git"
 set +e
-out=$(PATH="$pAB" HOME="$hAB" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$pAB" HOME="$hAB" USERPROFILE="$(winpath "$hAB")" HIMMELCTL_CACHE_DIR="$(winpath "$hAB.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hAB.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fAB")" \
       DENY_LANE_OVERLAY_DIR="$(winpath "$fAB/scripts/lanes")" \
       NODE_OPTIONS="--require=$(winpath "$denyAB")" \
@@ -1426,4 +1655,336 @@ grepq "$out" 'lane profile preflight failed' \
   && fail "caseAB: T5b preflight must abort before applyHandoverStep writes HANDOVER_DIR"
 echo "ok: caseAB unwritable overlay dir aborts T5b before handover, wire or upgrade mutation"
 
-echo "PASS: test-wizard-adopter-profile.sh (30 cases)"
+# ── Case AC (HIMMEL-2305): resolveActiveFeatures() — the ONE selection ->
+# feature mapping shared by the secrets walk (bin.js's runSecretsWalk) and
+# status-report.js's n/a downgrades. Pure unit test against the function
+# directly, mirroring caseJ's buildSummary-model style above.
+#   - a genuinely missing `answers` (not just an empty object) fails OPEN:
+#     null, never a fabricated empty Set — callers must keep full-nag/
+#     full-walk behavior rather than silently scoping everything out.
+#   - vault/cadence/bridge+whisper/lane:codex/lane:hermes each flip on only
+#     when the recorded answer says so; an absent section (never asked)
+#     reads OFF, same round-8 "not asked ≠ answered off, but still OFF for
+#     scoping" rule every other luna/secretsWalk/bridge section follows.
+#   - legacy `luna.cadenceEnabled` (pre-HIMMEL-2302, no top-level `cadences`)
+#     still flips 'cadence' on via resolveCadenceDispositions' own fallback.
+#   - 'core' is always on for any real answers object.
+# shellcheck disable=SC2016
+"$node_bin" -e '
+const a = require(process.argv[1]);
+const fail = (m) => { console.error(m); process.exit(1); };
+
+if (a.resolveActiveFeatures(undefined) !== null) fail("undefined answers should fail open (null), not a Set");
+if (a.resolveActiveFeatures(null) !== null) fail("null answers should fail open (null), not a Set");
+
+const bare = { scope: "project", vault: { mode: "none", path: "" }, lanes: [] };
+const bareFeatures = a.resolveActiveFeatures(bare);
+if (!(bareFeatures instanceof Set)) fail("a real (even minimal) answers object must return a Set, not null");
+if (!bareFeatures.has("core")) fail("core must always be on");
+if (bareFeatures.has("vault")) fail("vault=none must not turn on the vault feature");
+if (bareFeatures.has("cadence")) fail("no cadences section (never asked) must not turn on the cadence feature");
+if (bareFeatures.has("bridge") || bareFeatures.has("whisper")) fail("no bridge section (never asked) must not turn on bridge/whisper");
+if (bareFeatures.has("lane:codex") || bareFeatures.has("lane:hermes")) fail("empty lanes must not turn on either lane feature");
+
+const vaultOn = a.resolveActiveFeatures(Object.assign({}, bare, { vault: { mode: "default-template", path: "/v" } }));
+if (!vaultOn.has("vault")) fail("vault.mode!=none must turn on the vault feature");
+
+const cadenceOn = a.resolveActiveFeatures(Object.assign({}, bare, { cadences: { pipeline: "armed" } }));
+if (!cadenceOn.has("cadence")) fail("any armed cadence must turn on the cadence feature");
+const cadenceOff = a.resolveActiveFeatures(Object.assign({}, bare, { cadences: { pipeline: "off" } }));
+if (cadenceOff.has("cadence")) fail("an explicitly-off cadence disposition must not turn on the cadence feature");
+const cadenceLegacy = a.resolveActiveFeatures(Object.assign({}, bare, { luna: { cadenceEnabled: true } }));
+if (!cadenceLegacy.has("cadence")) fail("legacy luna.cadenceEnabled=true must still turn on the cadence feature");
+
+const bridgeOn = a.resolveActiveFeatures(Object.assign({}, bare, { bridge: { enabled: true } }));
+if (!bridgeOn.has("bridge")) fail("bridge.enabled=true must turn on the bridge feature");
+if (!bridgeOn.has("whisper")) fail("bridge.enabled=true must ALSO turn on the whisper feature");
+const bridgeOff = a.resolveActiveFeatures(Object.assign({}, bare, { bridge: { enabled: false } }));
+if (bridgeOff.has("bridge") || bridgeOff.has("whisper")) fail("bridge.enabled=false must not turn on bridge/whisper");
+
+const codexOn = a.resolveActiveFeatures(Object.assign({}, bare, { lanes: ["codex"] }));
+if (!codexOn.has("lane:codex")) fail("lanes containing codex must turn on lane:codex");
+if (codexOn.has("lane:hermes")) fail("selecting codex must not also turn on lane:hermes");
+const hermesOn = a.resolveActiveFeatures(Object.assign({}, bare, { lanes: ["hermes"] }));
+if (!hermesOn.has("lane:hermes")) fail("lanes containing hermes must turn on lane:hermes");
+' "$(winpath "$repo_root/scripts/himmelctl/lib/adopter-profile.js")" \
+  || fail "caseAC: resolveActiveFeatures() selection->feature mapping is wrong"
+echo "ok: caseAC resolveActiveFeatures() fails open on a missing answers object and maps vault/cadence/bridge+whisper/lanes correctly otherwise"
+
+# ── Case AD (HIMMEL-2536): the git gate hooks are reported from DISK ────────
+# The measured 2457 failure: on a stock guest with neither uv nor pipx,
+# adopt.sh warns and SKIPS placing the hooks, a garbage commit message then
+# lands rc=0, and the install summary's `still manual` section prints
+# `(nothing)` in the very same run. Two halves are pinned here.
+#
+# AD1 — the renderer: buildSummary must carry a still-manual row when, and
+# only when, the probe says hooks are genuinely missing. A --dry-run (null,
+# nothing ran) and a non-repo target (applicable:false, adopt.sh skips it by
+# design) must both stay silent — a preview that claims a probe it never
+# performed is the same class of lie this section exists to refuse.
+# shellcheck disable=SC2016
+"$node_bin" -e '
+const a = require(process.argv[1]);
+const fail = (m) => { console.error(m); process.exit(1); };
+const ans = { role:"adopter", scope:"project", vault:{mode:"none",path:""},
+              handover:{mode:"inline",path:""}, pluginSet:"lean", lanes:[], alwaysOn:false };
+const manualText = (s) => s.manual.map((m) => [m.what, m.how, m.note].join(" ")).join("\n");
+
+const missing = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  gitHooks: { applicable:true, verified:true, placed:false, missing:["pre-commit","commit-msg","pre-push"] } });
+const mt = manualText(missing);
+if (!/git gate hooks/.test(mt)) fail("missing hooks produced no still-manual row");
+if (!/commit-msg/.test(mt)) fail("the row must NAME the hooks that are missing");
+if (!/NOT gated/.test(mt)) fail("the row must state the consequence, not just the fact");
+if (!/re-run/.test(mt)) fail("the row must carry a remedy, not just a defect report");
+
+const placed = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  gitHooks: { applicable:true, verified:true, placed:true, missing:[] } });
+if (/git gate hooks/.test(manualText(placed))) fail("hooks that ARE placed must produce no still-manual row");
+
+// CR round 1 [codex-2]: a probe that could not run is its own row, and it must
+// not be silently folded into either of the two states above.
+const unverified = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  gitHooks: { applicable:true, verified:false, reason:"git rev-parse --git-path hooks failed" } });
+const ut = manualText(unverified);
+if (!/could NOT be verified/.test(ut)) fail("an unverifiable hooks probe produced no still-manual row");
+if (!/possibly ungated/.test(ut)) fail("the unverifiable row must not read as reassurance");
+if (/NOT placed/.test(ut)) fail("an unverifiable probe must not be reported as a known-missing gate");
+
+const nonRepo = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  gitHooks: { applicable:false } });
+if (/git gate hooks/.test(manualText(nonRepo))) fail("a non-git target must produce no still-manual row");
+
+const dry = a.buildSummary(ans, [], { derived:"x", dryRun:true, gitHooks: null });
+if (/git gate hooks/.test(manualText(dry))) fail("--dry-run must not claim a hooks probe it never ran");
+' "$(winpath "$repo_root/scripts/himmelctl/lib/adopter-profile.js")" \
+  || fail "caseAD1: buildSummary does not report the git gate hooks honestly"
+
+# AD2 — the probe itself, against REAL git repos. The interesting arm is the
+# linked worktree: its `.git` is a FILE, so the obvious `<target>/.git/hooks`
+# check finds nothing and would read EVERY worktree install as ungated, while
+# git actually runs the hooks in the SHARED common dir. `git rev-parse
+# --git-path hooks` is what pre-commit itself resolves, so it is what the
+# probe uses.
+adBin="$work/ad-bin"; mkdir -p "$adBin"
+adRepo="$work/ad-repo"; mkdir -p "$adRepo"
+(
+  cd "$adRepo" || exit 1
+  git init -q . >/dev/null 2>&1
+  git config user.email ad@example.invalid
+  git config user.name  "Case AD"
+  : > seed.txt
+  git add seed.txt >/dev/null 2>&1
+  git commit -qm "seed" >/dev/null 2>&1
+) || fail "caseAD2: could not build the fixture repo"
+
+probe_hooks() {
+  # $1 = cwd to probe. Prints `applicable placed missing` as one line.
+  # shellcheck disable=SC2016
+  ( cd "$1" && "$node_bin" -e '
+const s = require(process.argv[1]).gitGateHooksState();
+console.log([s.applicable, s.placed === undefined ? "-" : s.placed, (s.missing || []).join(",") || "-"].join(" "));
+' "$(winpath "$repo_root/scripts/himmelctl/bin.js")" )
+}
+
+adNonRepo=$(probe_hooks "$adBin") || fail "caseAD2: probe failed on a non-repo dir"
+[ "$adNonRepo" = "false - -" ] \
+  || fail "caseAD2: a non-git dir must probe applicable=false, got [$adNonRepo]"
+
+adBare=$(probe_hooks "$adRepo") || fail "caseAD2: probe failed on the fixture repo"
+case "$adBare" in
+  "true false "*commit-msg*) : ;;
+  *) fail "caseAD2: a repo with no gate hooks must probe placed=false naming commit-msg, got [$adBare]" ;;
+esac
+
+# `git init` does not always leave a .git/hooks directory behind -- with the
+# hermetic HOME this suite runs under, the sample-hook template dir is not
+# applied, so the bare-repo arm above is measuring a hooks dir that does not
+# exist at all. Create it the way git itself resolves it.
+adHooks=$( cd "$adRepo" && git rev-parse --git-path hooks )
+case "$adHooks" in /*) : ;; *) adHooks="$adRepo/$adHooks" ;; esac
+mkdir -p "$adHooks"
+for h in pre-commit commit-msg pre-push; do
+  printf '#!/bin/sh\nexit 0\n' > "$adHooks/$h"
+  chmod +x "$adHooks/$h"
+done
+adFull=$(probe_hooks "$adRepo") || fail "caseAD2: probe failed after placing hooks"
+[ "$adFull" = "true true -" ] \
+  || fail "caseAD2: all three hooks present must probe placed=true, got [$adFull]"
+
+# CR round 1 [codex-1]: "the path exists" is not "git will run it". A
+# non-executable file and a DIRECTORY at the hook path both satisfy an
+# existence check while git runs nothing -- certifying an ungated repo as
+# gated is the exact false-clean this ticket is about. Windows is exempt:
+# git-for-windows runs hooks through sh and ignores the mode, so the bit is
+# not part of "would git run this" there.
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo "  (caseAD2: executable-bit arm skipped -- git-for-windows ignores the hook mode)" ;;
+  *)
+    chmod -x "$adHooks/commit-msg"
+    adNoExec=$(probe_hooks "$adRepo") || fail "caseAD2: probe failed on a non-executable hook"
+    case "$adNoExec" in
+      "true false "*commit-msg*) : ;;
+      *) fail "caseAD2: a NON-EXECUTABLE commit-msg must read as missing, got [$adNoExec]" ;;
+    esac
+    chmod +x "$adHooks/commit-msg" ;;
+esac
+
+rm -f "$adHooks/pre-push"
+mkdir -p "$adHooks/pre-push"
+adDir=$(probe_hooks "$adRepo") || fail "caseAD2: probe failed on a directory-shaped hook"
+case "$adDir" in
+  "true false "*pre-push*) : ;;
+  *) fail "caseAD2: a DIRECTORY at the hook path must read as missing, got [$adDir]" ;;
+esac
+rmdir "$adHooks/pre-push"
+printf '#!/bin/sh\nexit 0\n' > "$adHooks/pre-push"
+chmod +x "$adHooks/pre-push"
+
+# The worktree arm, and the reason the probe uses `git rev-parse --git-path
+# hooks` at all. A linked worktree's `.git` is a FILE, so the obvious
+# `<target>/.git/hooks` check finds nothing there and would report EVERY
+# worktree install as ungated. Git does not work that way: hooks live in the
+# common dir and are SHARED by every worktree, so the hooks placed on the main
+# checkout above are exactly the ones git will run here. Measured, not assumed
+# -- this arm fails if the probe ever goes back to a literal .git/hooks join.
+#
+# CR round 1 [codex-3]: this arm does NOT silently skip when `git worktree add`
+# fails. It is the ONLY arm that exercises the path resolution the fix exists
+# for, so a skip here is a suite that passes while proving nothing -- and git
+# worktree is available wherever this suite runs at all, since the fixture repo
+# above already needed init/add/commit from the same binary.
+adWt="$work/ad-wt"
+( cd "$adRepo" && git worktree add -q -b case-ad-wt "$adWt" >/dev/null 2>&1 ) \
+  || fail "caseAD2: git worktree add failed -- the linked-worktree arm is the whole point of the path resolution under test and must not be skipped"
+[ -f "$adWt/.git" ] \
+  || fail "caseAD2: fixture assumption broken -- a linked worktree's .git should be a FILE"
+[ -e "$adWt/.git/hooks" ] \
+  && fail "caseAD2: fixture assumption broken -- <worktree>/.git/hooks should not exist"
+adWtOut=$(probe_hooks "$adWt") || fail "caseAD2: probe failed inside the worktree"
+[ "$adWtOut" = "true true -" ] \
+  || fail "caseAD2: a worktree must read the SHARED common-dir hooks as placed, got [$adWtOut]"
+echo "ok: caseAD git gate hooks are reported from disk — missing/placed/non-repo/dry-run all distinct, worktree hooks dir resolved"
+
+# ── caseAS (HIMMEL-2537): the dev overlay's USER_SLUG step is advisory now.
+# Until this ticket, setup.sh exited 1 on an unresolved slug and runPlan
+# returned on that rc BEFORE the epilogue -- so no summary was printed and none
+# could be wrong. Making the install complete is what creates the obligation to
+# say what was left undone, which is the same argument caseAD pins for the git
+# gate hooks.
+#
+# AS1 -- the renderer.
+# shellcheck disable=SC2016
+"$node_bin" -e '
+const a = require(process.argv[1]);
+const fail = (m) => { console.error(m); process.exit(1); };
+const ans = { role:"adopter", scope:"project", vault:{mode:"none",path:""},
+              handover:{mode:"inline",path:""}, pluginSet:"lean", lanes:[], alwaysOn:false };
+const manualText = (s) => s.manual.map((m) => [m.what, m.how, m.note].join(" ")).join("\n");
+
+const unresolved = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  userSlug: { applicable:true, verified:true, resolved:false } });
+const ut = manualText(unresolved);
+if (!/USER_SLUG/.test(ut)) fail("an unresolved slug produced no still-manual row");
+if (!/handover bucket paths/.test(ut)) fail("the row must state the consequence, not just the fact");
+if (!/gh auth login/.test(ut)) fail("the row must carry the remedies, not just a defect report");
+
+const resolved = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  userSlug: { applicable:true, verified:true, resolved:true } });
+if (/USER_SLUG/.test(manualText(resolved))) fail("a slug that DID resolve must produce no still-manual row");
+
+// A probe that could not run is its own row -- the caseAD/codex-2 lesson: an
+// unverifiable state must not be folded into either known state.
+const unverified = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  userSlug: { applicable:true, verified:false, reason:"check-user-slug.sh exited rc=127" } });
+const vt = manualText(unverified);
+if (!/could NOT be verified/.test(vt)) fail("an unverifiable slug probe produced no still-manual row");
+if (/did NOT resolve/.test(vt)) fail("an unverifiable probe must not be reported as a known-unresolved slug");
+// codex round 4 [codex-1]: the prescribed command must match what
+// userSlugState() actually ran (with --dotenv-root), or an operator whose
+// USER_SLUG lives only in .env is told to run a command that misreports them.
+if (!/check-user-slug\.sh --dotenv-root/.test(vt)) fail("the unverified row prescribed command must carry --dotenv-root");
+
+const nonApplicable = a.buildSummary(ans, [], { derived:"x", dryRun:false,
+  userSlug: { applicable:false } });
+if (/USER_SLUG/.test(manualText(nonApplicable))) fail("win32 (setup.ps1 has no such step) must produce no still-manual row");
+
+const dry = a.buildSummary(ans, [], { derived:"x", dryRun:true, userSlug: null });
+if (/USER_SLUG/.test(manualText(dry))) fail("--dry-run must not claim a slug probe it never ran");
+' "$(winpath "$repo_root/scripts/himmelctl/lib/adopter-profile.js")" \
+  || fail "caseAS1: buildSummary does not report the USER_SLUG step honestly"
+
+# AS2 -- the probe. HIMMELCTL_REPO_ROOT points bin.js at STUB fixtures, so all
+# four arms are deterministic instead of depending on whether the tester's own
+# machine happens to have a git identity or an authenticated gh.
+probe_slug() {
+  # $1 = HIMMELCTL_REPO_ROOT to probe. Prints `applicable verified resolved`.
+  # shellcheck disable=SC2016
+  HIMMELCTL_REPO_ROOT="$1" "$node_bin" -e '
+const s = require(process.argv[1]).userSlugState();
+console.log([s.applicable, s.verified === undefined ? "-" : s.verified,
+             s.resolved === undefined ? "-" : s.resolved].join(" "));
+' "$(winpath "$repo_root/scripts/himmelctl/bin.js")"
+}
+as_stub() {
+  # $1 = fixture root, $2 = the rc the stub check-user-slug.sh exits with.
+  mkdir -p "$1/scripts/setup"
+  printf '#!/usr/bin/env bash\nexit %s\n' "$2" > "$1/scripts/setup/check-user-slug.sh"
+  chmod +x "$1/scripts/setup/check-user-slug.sh"
+}
+# as_stub_argv -- a stub that RECORDS its own argv instead of just exiting, so
+# the assertion binds to the probe's BEHAVIOUR (what it actually passed the
+# script) rather than grepping bin.js's source for the flag (CR round 2
+# [codex-1]: the fix is that userSlugState() now passes --dotenv-root
+# repoRoot() on the same spawnSync call the other arms above already probe).
+as_stub_argv() {
+  # $1 = fixture root, $2 = the rc to exit with.
+  mkdir -p "$1/scripts/setup"
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf '\''%%s\n'\'' "$@" > %q/argv-capture\n' "$1"
+    printf 'exit %s\n' "$2"
+  } > "$1/scripts/setup/check-user-slug.sh"
+  chmod +x "$1/scripts/setup/check-user-slug.sh"
+}
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo "  (caseAS2: probe arms skipped -- the dev overlay on win32 is setup.ps1, which has no USER_SLUG step)" ;;
+  *)
+    asOk="$work/as-ok";   as_stub "$asOk" 0
+    asAdv="$work/as-adv"; as_stub "$asAdv" 3
+    asBad="$work/as-bad"; as_stub "$asBad" 7
+    asGone="$work/as-gone"; mkdir -p "$asGone/scripts/setup"
+
+    asOkOut=$(probe_slug "$asOk") || fail "caseAS2: probe failed on the rc=0 stub"
+    [ "$asOkOut" = "true true true" ] \
+      || fail "caseAS2: rc=0 must read as resolved, got [$asOkOut]"
+    asAdvOut=$(probe_slug "$asAdv") || fail "caseAS2: probe failed on the rc=3 stub"
+    [ "$asAdvOut" = "true true false" ] \
+      || fail "caseAS2: rc=3 (advised) must read as verified-but-unresolved, got [$asAdvOut]"
+    # An unexpected rc is the probe breaking, NOT a slug that failed to resolve.
+    # Collapsing the two would put a confident "did NOT resolve" row in front of
+    # an operator whose slug may be perfectly fine.
+    asBadOut=$(probe_slug "$asBad") || fail "caseAS2: probe failed on the rc=7 stub"
+    [ "$asBadOut" = "true false -" ] \
+      || fail "caseAS2: an unexpected rc must read as unverified, got [$asBadOut]"
+    asGoneOut=$(probe_slug "$asGone") || fail "caseAS2: probe failed on the missing-script fixture"
+    [ "$asGoneOut" = "true false -" ] \
+      || fail "caseAS2: an absent check-user-slug.sh must read as unverified, got [$asGoneOut]"
+
+    # The probe must pass --dotenv-root repoRoot() on the same spawnSync call
+    # (CR round 2 [codex-1]) -- without it a slug filled into the fixture's
+    # own .env is invisible to this replay, disagreeing with setup.sh's footer.
+    asArgv="$work/as-argv"; as_stub_argv "$asArgv" 0
+    argvProbeOut=$(probe_slug "$asArgv") || fail "caseAS2: probe failed on the argv-capture stub"
+    [ "$argvProbeOut" = "true true true" ] \
+      || fail "caseAS2: argv-capture stub did not read as resolved, got [$argvProbeOut]"
+    capturedArgv=$(cat "$asArgv/argv-capture" 2>/dev/null || echo "")
+    printf '%s' "$capturedArgv" | grep -q -F -- "--dotenv-root" \
+      || fail "caseAS2: the probe did not pass --dotenv-root, argv was [$capturedArgv]"
+    ;;
+esac
+echo "ok: caseAS the USER_SLUG step is reported from a replay of its own check — resolved/unresolved/unverified/dry-run all distinct"
+
+echo "PASS: test-wizard-adopter-profile.sh (35 cases)"

@@ -153,6 +153,39 @@ fi
 [ -z "$repo_root" ] && repo_root=$(cd "$hook_dir/../.." && pwd)
 
 # ---------------------------------------------------------------------------
+# Resolve the PRIMARY checkout (used for RELATIVE CLI paths only).
+#
+# HIMMEL-2237: every backend CLI in the registry lives under an untracked
+# dist/ build artifact that exists ONLY in the primary checkout — root
+# CLAUDE.md already says so, as the reason the Jira CLI must be invoked by
+# absolute path from the primary. Resolving the CLI-existence probe against
+# the INVOKING checkout therefore made the probe always miss in a linked
+# worktree, fail open, and leave this guard INERT in exactly the place
+# CLAUDE.md mandates all feature work happens — live only on main, where
+# nobody is meant to be working.
+#
+# `git worktree list --porcelain` names the primary first; the git-common-dir
+# dirname is the fallback for setups where the porcelain is unavailable.
+# It MUST be --git-common-dir, NOT --git-dir: in a linked worktree --git-dir
+# resolves to <primary>/.git/worktrees/<name>, whose dirname is not the
+# primary (HIMMEL-2035, scripts/cr/install-cr-gate.sh).
+#
+# The REGISTRY is deliberately still read from $repo_root: backends.json is
+# tracked, so the invoking checkout's copy is the routing config actually
+# under test on that branch.
+# ---------------------------------------------------------------------------
+primary_root=$(git -C "$hook_dir" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p;1q')
+if [ -z "$primary_root" ] || [ ! -d "$primary_root" ]; then
+    primary_common_dir=$(git -C "$hook_dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+    if [ -n "$primary_common_dir" ]; then
+        primary_root=$(dirname "$primary_common_dir")
+    else
+        primary_root=""
+    fi
+fi
+[ -n "$primary_root" ] && [ -d "$primary_root" ] || primary_root="$repo_root"
+
+# ---------------------------------------------------------------------------
 # Load registry: BACKENDS_REGISTRY env (test seam) → backends.json → defaults
 # ---------------------------------------------------------------------------
 registry_json=""
@@ -225,7 +258,7 @@ invoke_cli() {
             node "$bin" --list-commands 2>/dev/null
             ;;
         *)
-            if ! command -v "$bin" >/dev/null 2>&1 && [ ! -f "$bin" ]; then
+            if ! command -v "$bin" >/dev/null 2>&1 && [ ! -f "$bin" ]; then  # fail-open-ok: CLI probe — an unreadable binary fails loudly and the chain falls to the next enforced tier
                 return 1
             fi
             "$bin" --list-commands 2>/dev/null
@@ -238,7 +271,7 @@ invoke_cli() {
 #   Evaluate ONE prefix-matching service. Returns:
 #     2 — block (refusal already printed to stderr)
 #     0 — no block for this service (caller should try the next match)
-#   Reads globals: tool_name, repo_root, env bypass vars, JIRA_CLI/CONFLUENCE_CLI.
+#   Reads globals: tool_name, primary_root, env bypass vars, JIRA_CLI/CONFLUENCE_CLI.
 #   Every "no block" path returns 0 (NOT exit) so the multi-service loop below
 #   can keep going; only a genuine block returns 2. Call it from an `if`
 #   condition so `set -e` is suspended for its dynamic extent (a `return 2`
@@ -312,7 +345,8 @@ EOF
     cli_bin="$matched_cli"
     case "$cli_bin" in
         /*) : ;;  # absolute — keep as-is
-        *)  cli_bin="$repo_root/$cli_bin" ;;
+        # Relative → the PRIMARY checkout, never the invoking one (HIMMEL-2237).
+        *)  cli_bin="$primary_root/$cli_bin" ;;
     esac
     # Test seams: JIRA_CLI / CONFLUENCE_CLI override the resolved CLI path.
     if [ "$matched_service" = "jira" ] && [ -n "${JIRA_CLI:-}" ]; then
@@ -323,6 +357,13 @@ EOF
     fi
 
     if [ ! -f "$cli_bin" ] && ! command -v "$cli_bin" >/dev/null 2>&1; then
+        # fail-open-ok: the genuine carve-out — a checkout that has never built
+        # the CLI has no plugin equivalent to route to. Say so on stderr: an
+        # inert guard that reports nothing is indistinguishable from a working
+        # one, which is how this class went unnoticed three times
+        # (HIMMEL-1773, HIMMEL-2085, HIMMEL-2237).
+        printf 'block-backend-tier: %s CLI not found at %s — falling OPEN for "%s" (build the CLI to arm this guard)\n' \
+            "$matched_service" "$cli_bin" "$tool_name" >&2
         return 0
     fi
     commands=$(invoke_cli "$cli_bin") || return 0

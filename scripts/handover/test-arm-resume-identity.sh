@@ -51,7 +51,8 @@
 #   Group 2 -- sanitization collisions must stay TWO slots (defect A, false-+):
 #     G2.1 a+b.md vs ab.md          -> FAIL  arm2 rc=3 ("already scheduled"),
 #                                              1 slot
-#     G2.2 v1.2.md vs v12.md        -> FAIL  arm2 rc=3, 1 slot
+#     (G2.2 v1.2.md vs v12.md dropped -- HIMMEL-2120: same tr -cd collision
+#      branch as G2.1, representative drop)
 #   Group 3 -- --force replace must be transactional (defect B):
 #     G3.1 force fails at rc 7      -> FAIL  pre-existing slot DESTROYED (0)
 #     G3.2 force fails at rc 8      -> FAIL  pre-existing slot DESTROYED (0)
@@ -89,6 +90,12 @@ export WORKER_BRIDGE_ROOT="$TMP/bridge"
 # opt-out as test-arm-resume.sh; missing it cost 30 failures first caught by
 # the public wave-2k CI (the private repo runs no Actions by design).
 export ARM_TEMP_CWD_OK=1
+# Shipped-work shield (HIMMEL-2118): the HIMMEL-1331 preflight derives a ticket
+# ID from the handover (fixtures here name HIMMEL-1304) and probes LIVE Jira —
+# the day HIMMEL-1304 went Done, every fixture arm refused rc=11 (21/36 FAIL).
+# This suite exercises arm identity/slots; test-arm-resume.sh owns the
+# shipped-work gate (1331/1331b cases, Jira stubbed) and sets this per-case.
+export ARM_SHIPPED_OK=1
 mkdir -p "$WORKER_BRIDGE_ROOT/glm-sessions" "$WORKER_BRIDGE_ROOT/claudex-sessions"
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS ARM_DUP_OK SCHED_CREATE_FAIL 2>/dev/null || true
 
@@ -108,9 +115,20 @@ git init -q "$WORK_REPO"
 # So EVERY arm below carries --long-gap: this suite's subject is identity,
 # dedup and transactionality, NOT the long-gap guard, and --long-gap is a no-op
 # for an arm already inside the 60-min window (so it cannot regress a fast run).
-# The guard itself stays covered by the dedicated Group 4 case. FUTURE_TIME is a
-# near-future value only so the asserted rc/slot shape is realistic.
-FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
+# The guard itself stays covered by the dedicated Group 4 case.
+#
+# HIMMEL-1879: the offset is 8h, not the original 30m. A 30-minute target lapses
+# somewhere inside this 40+ minute run, and for ~one minute either side of that
+# crossing an arm's target could go PAST between derivation and /create --
+# observed live as G5.1 rc=2 ("lead=-30s; the arm itself took 60s"). That is the
+# post-arm verify working exactly as designed (a scheduler entry registered at or
+# after its own fire time never fires, so the honest answer is a refusal, not a
+# RESUME ARMED banner) -- the fixture, not the guard, was wrong. 8h clears the
+# whole run with no crossing, so the identity/dedup/transactionality assertions
+# stay about identity instead of racing the clock. Every arm here already carries
+# --long-gap, which now genuinely sanctions the distance rather than being a
+# no-op. Group 4 computes its own FAR_TIME and is unaffected.
+FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(hours=8)).strftime("%H:%M"))')
 FAILED=0
 
 # --- assertions -------------------------------------------------------------
@@ -476,8 +494,10 @@ test_collision_pair() {
 
 DB5=$(new_db "$TMP/db5.tasks")
 test_collision_pair "G2.1" "a+b.md" "ab.md" "$DB5"
-DB6=$(new_db "$TMP/db6.tasks")
-test_collision_pair "G2.2" "v1.2.md" "v12.md" "$DB6"
+# G2.2 (v1.2.md vs v12.md) dropped -- HIMMEL-2120 corpus reduction. Same
+# tr -cd collision branch as G2.1, just a different stripped char class
+# (`.` alone vs `+`/`.` together); G2.1 already exercises the branch, so
+# G2.2 is a representative drop, not a claim of full equivalence.
 
 echo
 echo "== Group 3: --force replace must be transactional (defect B) =="
@@ -677,6 +697,33 @@ out=$(SCHED_DB="$DB11" SCHED_DB_DIR="${DB11}.atdir" PATH="$STUB:$PATH" bash "$AR
 rc=$?
 assert_rc "G4.2 --long-gap SANCTIONS the >60min arm (rc=0)" 0 "$rc" "$out"
 assert_slots "G4.2 sanctioned far arm armed ONE slot" 1 "$DB11" "${DB11}.atdir" "$out"
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
+echo
+echo "== Group 4b: HIMMEL-2147 a past --time gets an explicit rollover refusal =="
+# A --time already past today silently rolls to tomorrow (HIMMEL-1674 Part B)
+# and, being >60min out, hits the SAME long-gap guard as G4.1/G4.2 -- but the
+# refusal text must say WHY the gap is large (a past-time rollover) instead of
+# the generic "queue not empty?" nag, else a retry that re-passes the same
+# (now-further-past) --time repeats the same confusing refusal with no visible
+# cause (HIMMEL-2147). 5 minutes ago (not 2h, like G4's FAR_TIME) keeps this a
+# distinct case from G4.1/G4.2: a small past offset, not a deliberately far
+# future one.
+G4B_DIR="$HANDOVER_DIR/g4b"; HO_PAST="$G4B_DIR/past.md"; mk_ho "$HO_PAST"
+# Clamped to 00:00 in the first 5 minutes after midnight: now-5min would wrap
+# to 23:5x, which is a FUTURE time for the current day -- no rollover, no rc=9,
+# and this case would flake in exactly the window overnight chains run in.
+PAST_TIME=$(python3 -c 'import datetime; n=datetime.datetime.now(); t=n-datetime.timedelta(minutes=5); print("00:00" if t.date()!=n.date() else t.strftime("%H:%M"))')
+DB12=$(new_db "$TMP/db12.tasks")
+out=$(SCHED_DB="$DB12" SCHED_DB_DIR="${DB12}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$PAST_TIME" --handover "$HO_PAST" 2>&1)
+rc=$?
+assert_rc "G4B.1 a past --time still REFUSES rc=9 without --long-gap" 9 "$rc" "$out"
+assert_contains "G4B.1 refusal names the past-time rollover explicitly" "already past for today" "$out"
+assert_slots "G4B.1 refused arm armed NO slot" 0 "$DB12" "${DB12}.atdir" "$out"
+out=$(SCHED_DB="$DB12" SCHED_DB_DIR="${DB12}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$PAST_TIME" --long-gap --handover "$HO_PAST" 2>&1)
+rc=$?
+assert_rc "G4B.2 --long-gap SANCTIONS the rolled-to-tomorrow arm (rc=0)" 0 "$rc" "$out"
+assert_slots "G4B.2 sanctioned rolled arm armed ONE slot" 1 "$DB12" "${DB12}.atdir" "$out"
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
 echo

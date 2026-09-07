@@ -10,18 +10,18 @@
 # (and nothing for project hooks), so under Codex `$h` resolves empty,
 # `[ -f "$h" ]` is false, and the hook SILENTLY NO-OPS — initiative / overnight
 # mode, the where-are-we ledger, and the doc-freshness nudge never fire. Fix:
-# wire all three into .codex/hooks.json SessionStart via run-hook.cmd --sandbox
+# wire all three into .codex/hooks.json SessionStart via run-hook.sh --sandbox
 # (the wrapper derives the repo root from its OWN location, harness-agnostically),
 # exactly like check-update-available (the existing advisory SessionStart hook)
 # and the HIMMEL-589 security guards.
 #
 # This suite asserts:
 #   1) STATIC WIRING — each of the 3 hooks (+ retained check-update-available) is
-#      wired into .codex/hooks.json SessionStart through run-hook.cmd; no raw
+#      wired into .codex/hooks.json SessionStart through run-hook.sh; no raw
 #      $CLAUDE_PROJECT_DIR/bare-bash path remains; the file parses and carries
 #      ONLY a top-level `hooks` key (Codex's deny_unknown_fields strict schema).
 #   2) BEHAVIORAL (advisory passthrough, end-to-end) — running the WIRED
-#      inject-initiative command through run-hook.cmd (bash branch) with the Codex
+#      inject-initiative command through run-hook.sh (bash branch) with the Codex
 #      env simulated (CLAUDE_PROJECT_DIR UNSET) emits its <system-reminder> on
 #      STDOUT and exits 0 when the gate is ON, and emits nothing (exit 0) when the
 #      gate is OFF. inject-initiative is pure local env+prose (no node/network),
@@ -32,7 +32,7 @@
 #      full inject behavior is covered by their own test-inject-*.sh under Claude).
 #
 # Hermetic: no network, no .env required (process env wins via load_dotenv's
-# non-clobber). The Windows cmd.exe branch of run-hook.cmd is covered by the
+# non-clobber). The Windows run-hook.cmd wrapper is covered by the
 # existing .ps1 twin (test-codex-run-hook.ps1). bash 3.2-safe.
 set -uo pipefail
 
@@ -57,7 +57,7 @@ wired_cmd() {
 }
 
 # Run a hook via its WIRED .codex/hooks.json command, simulating the Codex env
-# (CLAUDE_PROJECT_DIR UNSET — run-hook.cmd must re-derive + export it). Extra args
+# (CLAUDE_PROJECT_DIR UNSET — run-hook.sh must re-derive + export it). Extra args
 # are env overrides (e.g. HIMMEL_INITIATIVE=all). Feeds an empty SessionStart
 # payload on stdin. Prints the command's stdout.
 #
@@ -76,11 +76,11 @@ run_codex_hook() {
       | env $HOOK_ENV_CLEAN "$@" bash $cmd 2>/dev/null )
 }
 
-# ── 1) Static wiring: all advisory SessionStart hooks routed via run-hook.cmd ──
+# ── 1) Static wiring: all advisory SessionStart hooks routed via run-hook.sh ──
 for h in inject-initiative.sh inject-where-are-we.sh inject-doc-freshness.sh check-update-available.sh; do
   c="$(wired_cmd "$h")"
   if [ -n "$c" ]; then ok "$h wired into .codex/hooks.json SessionStart"; else bad "$h wired into .codex/hooks.json SessionStart"; fi
-  case "$c" in *run-hook.cmd*) ok "$h routed through run-hook.cmd";; *) bad "$h routed through run-hook.cmd (got: ${c:-<none>})";; esac
+  case "$c" in *run-hook.sh*) ok "$h routed through run-hook.sh";; *) bad "$h routed through run-hook.sh (got: ${c:-<none>})";; esac
   case "$c" in *--sandbox*) ok "$h uses --sandbox mode";; *) bad "$h uses --sandbox mode (got: ${c:-<none>})";; esac
 done
 
@@ -101,13 +101,13 @@ else
 fi
 
 # ── 2) Behavioral: inject-initiative FIRES through the adapter under Codex ────
-# The boundary that matters is NOT "run-hook.cmd emits stdout" (the security
+# The boundary that matters is NOT "run-hook.sh emits stdout" (the security
 # guards already prove passthrough) but "Codex receives the directive as
 # context". Under Codex that channel is hookSpecificOutput.additionalContext, so
 # the adapter wraps an advisory SessionStart hook's exit-0 output into that JSON
 # (HIMMEL-596). Gate ON: HIMMEL_INITIATIVE=all → resolve_legs yields a non-empty
 # interactive set → the directive is emitted as additionalContext JSON, exit 0.
-# CLAUDE_PROJECT_DIR is UNSET, so this also proves run-hook.cmd re-derives the
+# CLAUDE_PROJECT_DIR is UNSET, so this also proves run-hook.sh re-derives the
 # repo root under Codex.
 on_out="$(run_codex_hook inject-initiative.sh HIMMEL_INITIATIVE=all)"
 if printf '%s' "$on_out" | jq -e '.hookSpecificOutput.hookEventName == "SessionStart"' >/dev/null 2>&1; then
@@ -121,9 +121,15 @@ else
   bad "inject-initiative: gate ON → additionalContext carries the directive (got: ${on_out:-<empty>})"
 fi
 
-# Gate OFF: HIMMEL_INITIATIVE=off → empty set → no output, exit 0.
+# Gate OFF: HIMMEL_INITIATIVE=off → empty set → no directive, exit 0. Since
+# HIMMEL-2003 the wired command is the whole SessionStart CHAIN, so its sibling
+# members' context legitimately lands in this output — assert the DIRECTIVE is
+# absent, which is what the gate actually controls, not overall emptiness.
 off_out="$(run_codex_hook inject-initiative.sh HIMMEL_INITIATIVE=off)"
-if [ -z "$off_out" ]; then ok "inject-initiative: gate OFF → no output"; else bad "inject-initiative: gate OFF → no output (got: $off_out)"; fi
+case "$off_out" in
+  *"is active. Active steps:"*) bad "inject-initiative: gate OFF → no directive (got: $off_out)";;
+  *) ok "inject-initiative: gate OFF → no directive";;
+esac
 off_cmd="$(wired_cmd inject-initiative.sh)"
 # shellcheck disable=SC2086 # $HOOK_ENV_CLEAN flags + $off_cmd are intentional splits
 ( cd "$REPO_ROOT" && printf '{"hook_event_name":"SessionStart"}' | env $HOOK_ENV_CLEAN HIMMEL_INITIATIVE=off bash $off_cmd >/dev/null 2>&1 ); off_rc=$?
@@ -137,7 +143,7 @@ for h in inject-where-are-we.sh inject-doc-freshness.sh; do
   h_cmd="$(wired_cmd "$h")"
   # shellcheck disable=SC2086 # $HOOK_ENV_CLEAN flags + $h_cmd are intentional splits
   ( cd "$REPO_ROOT" && printf '{"hook_event_name":"SessionStart"}' | env $HOOK_ENV_CLEAN bash $h_cmd >/dev/null 2>&1 ); rc=$?
-  if [ "$rc" -eq 0 ]; then ok "$h: runs through run-hook.cmd, exit 0 (advisory)"; else bad "$h: runs through run-hook.cmd, exit 0 (got rc=$rc)"; fi
+  if [ "$rc" -eq 0 ]; then ok "$h: runs through run-hook.sh, exit 0 (advisory)"; else bad "$h: runs through run-hook.sh, exit 0 (got rc=$rc)"; fi
 done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

@@ -14,7 +14,7 @@ fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
 # A realistic "node not on PATH" still needs coreutils — but on apt-node
 # systems node LIVES in the coreutils dir (/usr/bin, HIMMEL-966), so use
 # a curated symlink dir carrying only the tools these cases need.
-UTILS_ROOT="$(mktemp -d)"
+UTILS_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-utils.XXXXXX")"
 trap 'rm -rf "$UTILS_ROOT"' EXIT
 UTILS_DIR="$UTILS_ROOT/utils"
 mkdir -p "$UTILS_DIR"
@@ -49,28 +49,38 @@ EOF
     chmod +x "$dir/node"
 }
 
+# Every case below hands run-node.sh the SAME four-var sandbox prefix. All four
+# are load-bearing: RESOLVE_NODE_PROBE_DIRS replaces resolve-node.sh's step-3
+# well-known-locations list, but step 1 (NVM_SYMLINK + its hardcoded
+# /c/nvm4w/nodejs default, via RESOLVE_NODE_NVM4W_DIR) is probed BEFORE both
+# PATH and step 3 and stays live under that seam — so on an nvm-windows host
+# the REAL node wins and the fake is never consulted (HIMMEL-2252; the seam was
+# narrowed to this contract in HIMMEL-2077 and these cases still assumed the
+# old one). RESOLVE_NODE_NVM4W_DIR must be set-but-EMPTY, not unset: the
+# resolver reads it with ${VAR-default}. Drop any of the four and the case
+# silently passes against the host's real node instead of the fake.
 echo "== run-node: args pass through + stdout =="
-tmp="$(mktemp -d)"; make_fake_node "$tmp/bin"
-out="$(PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$tmp/bin" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" bash "$RUN" "$tmp/echo-args.js" A B)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-args.XXXXXX")"; make_fake_node "$tmp/bin"
+out="$(PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$tmp/bin" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" bash "$RUN" "$tmp/echo-args.js" A B)"
 if [ "$out" = "args:A B" ]; then pass "args -> '$out'"; else fail "args -> '$out'"; fi
 rm -rf "$tmp"
 
 echo "== run-node: exit code propagates =="
-tmp="$(mktemp -d)"; make_fake_node "$tmp/bin"
-PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$tmp/bin" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" bash "$RUN" "$tmp/exit42.js" >/dev/null 2>&1
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-exit.XXXXXX")"; make_fake_node "$tmp/bin"
+PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$tmp/bin" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" bash "$RUN" "$tmp/exit42.js" >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 42 ]; then pass "exit -> 42"; else fail "exit -> $rc (want 42)"; fi
 rm -rf "$tmp"
 
 echo "== run-node: stdin reaches the child =="
-tmp="$(mktemp -d)"; make_fake_node "$tmp/bin"
-out="$(printf 'PAYLOAD-123' | PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$tmp/bin" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" bash "$RUN" "$tmp/echo-stdin.js")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-stdin.XXXXXX")"; make_fake_node "$tmp/bin"
+out="$(printf 'PAYLOAD-123' | PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$tmp/bin" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" bash "$RUN" "$tmp/echo-stdin.js")"
 if [ "$out" = "PAYLOAD-123" ]; then pass "stdin -> '$out'"; else fail "stdin -> '$out'"; fi
 rm -rf "$tmp"
 
 echo "== run-node: no node -> silent, exit 0, one log line =="
-tmp="$(mktemp -d)"; cdir="$tmp/claude"
-out="$(PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" CLAUDE_DIR="$cdir" bash "$RUN" "$tmp/caveman-activate.js" 2>"$tmp/err.txt")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-nonode.XXXXXX")"; cdir="$tmp/claude"
+out="$(PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" CLAUDE_DIR="$cdir" bash "$RUN" "$tmp/hook.js" 2>"$tmp/err.txt")"
 rc=$?
 err="$(cat "$tmp/err.txt")"
 logc=0; [ -f "$cdir/himmel-node.log" ] && logc="$(wc -l < "$cdir/himmel-node.log" | tr -d ' ')"
@@ -81,5 +91,177 @@ else
 fi
 rm -rf "$tmp"
 
+echo "== run-node: the wired plugin-hook launcher chain fires with node off PATH (HIMMEL-2047) =="
+# HIMMEL-2015 gave run-node.sh to individual project hook scripts but left
+# every marketplace/plugins/himmel-ops/hooks/hooks.json entry (and
+# .claude/settings.json's) invoking run-hook-with-bash.js via a bare `node` —
+# which the 2026-08-22 nvm-windows migration proved unresolvable mid-session,
+# silently dropping every SessionEnd guardrail. HIMMEL-2047 routes those
+# launchers through this same resolver (wire-plugin-hook-bash.mjs's
+# wiredCommand()); this reproduces one verbatim, with node off PATH, and
+# proves the target hook script still runs end to end.
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-plugin-launcher.XXXXXX")"
+real_node="$(command -v node 2>/dev/null || true)"
+if [ -z "$real_node" ]; then
+    echo "  SKIP: no real node on PATH to resolve against"
+else
+    node_dir="$(dirname "$real_node")"
+    hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
+    cat > "$hook_dir/marker-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+echo HOOK_FIRED
+EOF
+    chmod +x "$hook_dir/marker-hook.sh"
+    # The exact launcher shape wire-plugin-hook-bash.mjs wires into every
+    # hooks.json entry (and wire-hook-bash.mjs into settings.json): sourced
+    # run-node.sh resolves node at runtime and execs run-hook-with-bash.js,
+    # which spawns the target hook under a resolved bash. Only the final
+    # target is swapped for the harmless marker script above.
+    cmd=". \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/marker-hook.sh\""
+    out="$(PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$node_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash -c "$cmd" 2>"$tmp/err.txt")"
+    rc=$?
+    err="$(cat "$tmp/err.txt")"
+    if [ "$rc" -eq 0 ] && [ "$out" = "HOOK_FIRED" ]; then
+        pass "plugin-hook launcher fires with node off PATH (out='$out')"
+    else
+        fail "plugin-hook launcher with node off PATH -> rc=$rc out='$out' err='$err'"
+    fi
+fi
+rm -rf "$tmp"
+
+
+# ---------------------------------------------------------------------------
+# HIMMEL-2692: run-node.sh is SOURCED by hook commands, and Claude Code runs
+# those through /bin/sh — dash on Debian/Ubuntu. A bash-only expansion there is
+# fatal (`${BASH_SOURCE[0]}` -> "Bad substitution" -> empty dir -> the `.` fails
+# -> rc=2 -> a PreToolUse DENY on EVERY tool call). Neither a bash-run smoke
+# test nor `sh -n` on a bash-is-/bin/sh host can see that, so the controls below
+# are (a) a literal ban on the expansion in BOTH copies, and (b) an end-to-end
+# source of each copy under every NON-BASH POSIX shell this host actually has.
+# ---------------------------------------------------------------------------
+PLUGIN_HOOKS="$REPO_ROOT/marketplace/plugins/himmel-ops/hooks"
+# A bash array, not a whitespace-joined string: a checkout path containing a
+# space would otherwise word-split into nonexistent fragments and the checks
+# below would silently inspect nothing (codex-4 on the HIMMEL-2692 panel).
+COPIES=("$REPO_ROOT/scripts/lib/run-node.sh" "$PLUGIN_HOOKS/run-node.sh")
+
+echo "== run-node: no bash-only \${BASH_SOURCE} in either copy's CODE (HIMMEL-2692) =="
+for f in "${COPIES[@]}"; do
+    rel="${f#"$REPO_ROOT/"}"
+    n="$(grep -v '^[[:space:]]*#' "$f" | grep -c 'BASH_SOURCE' || true)"
+    if [ "$n" = "0" ]; then pass "no BASH_SOURCE in executable lines of $rel"; else fail "$rel still uses BASH_SOURCE in code (${n}x) — dash cannot parse it"; fi
+done
+
+echo "== run-node: shellcheck -s sh is clean on both copies (HIMMEL-2692) =="
+if command -v shellcheck >/dev/null 2>&1; then
+    for f in "${COPIES[@]}"; do
+        rel="${f#"$REPO_ROOT/"}"
+        if sc_out="$(shellcheck -s sh -S error "$f" 2>&1)"; then
+            pass "shellcheck -s sh clean: $rel"
+        else
+            fail "shellcheck -s sh on $rel: $sc_out"
+        fi
+    done
+else
+    echo "  SKIP: shellcheck not installed"
+fi
+
+echo "== run-node: sourced under a NON-BASH POSIX shell the launcher chain still fires (HIMMEL-2692) =="
+# Candidate POSIX shells, most faithful to the reported platform first. dash is
+# the exact Debian/Ubuntu /bin/sh; busybox ash and zsh's sh emulation are the
+# same class (no BASH_SOURCE, and $0 = the SHELL when a file is sourced).
+# Whatever this host has is used; a host with NONE of them prints a loud SKIP
+# rather than a green tick, because bash alone cannot reproduce the defect.
+posix_shells=''
+# /usr/lib/initcpio/busybox is Arch's mkinitcpio busybox — not on PATH, but a
+# REAL ash (dash-family) shell, so on a host with no dash it still exercises
+# the actual failing platform semantics rather than only zsh's sh emulation.
+for _c in dash "busybox sh" "/usr/lib/initcpio/busybox sh" "zsh --emulate sh" mksh yash posh ksh; do
+    # shellcheck disable=SC2086  # deliberate word-split: $_c is a shell + flags
+    set -- $_c
+    command -v "$1" >/dev/null 2>&1 || continue
+    posix_shells="${posix_shells}${posix_shells:+|}$_c"
+done
+if [ -z "$posix_shells" ]; then
+    echo "  SKIP: no non-bash POSIX shell on this host (dash/busybox/zsh/mksh/yash/posh/ksh) — the dash path is UNVERIFIED here"
+elif ! command -v node >/dev/null 2>&1; then
+    echo "  SKIP: no real node on PATH to resolve against"
+else
+    # Under $UTILS_ROOT so the file-scope EXIT trap cleans it up.
+    ptmp="$UTILS_ROOT/posix"; mkdir -p "$ptmp/hooks"
+    cat > "$ptmp/hooks/marker-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+echo HOOK_FIRED
+EOF
+    chmod +x "$ptmp/hooks/marker-hook.sh"
+    _save_ifs="$IFS"
+    IFS='|'
+    for sh_cmd in $posix_shells; do
+        IFS="$_save_ifs"
+        # Each copy is exercised with ONLY the root its own call site exports,
+        # so the repo copy proves the CLAUDE_PROJECT_DIR candidate and the
+        # plugin copy proves the CLAUDE_PLUGIN_ROOT one.
+        for which in repo plugin; do
+            if [ "$which" = repo ]; then
+                copy="$REPO_ROOT/scripts/lib/run-node.sh"
+                env_root="CLAUDE_PROJECT_DIR=$REPO_ROOT"
+            else
+                copy="$PLUGIN_HOOKS/run-node.sh"
+                env_root="CLAUDE_PLUGIN_ROOT=$REPO_ROOT/marketplace/plugins/himmel-ops"
+            fi
+            cmd=". \"$copy\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$ptmp/hooks/marker-hook.sh\""
+            # Run from a neutral cwd: when a file is sourced, `dirname $0` is
+            # ".", and a cwd that happened to hold resolve-node.sh would mask a
+            # broken env-root lookup.
+            # shellcheck disable=SC2086  # deliberate word-split: $sh_cmd is a shell + flags
+            out="$(cd "$ptmp" && env -u CLAUDE_PROJECT_DIR -u CLAUDE_PLUGIN_ROOT "$env_root" $sh_cmd -c "$cmd" 2>"$ptmp/err.txt")"
+            rc=$?
+            err="$(cat "$ptmp/err.txt")"
+            if [ "$rc" -eq 0 ] && [ "$out" = "HOOK_FIRED" ]; then
+                pass "$sh_cmd + $which copy -> HOOK_FIRED rc=0"
+            else
+                fail "$sh_cmd + $which copy -> rc=$rc out='$out' err='$err'"
+            fi
+        done
+        IFS='|'
+    done
+    IFS="$_save_ifs"
+fi
+
+echo "== run-node: a damaged plugin install NEVER sources the repo under review (HIMMEL-2702) =="
+# The cross-trust vector this closes: resolve-node.sh is SOURCED, not executed,
+# so a resolver found under CLAUDE_PROJECT_DIR — the repo UNDER REVIEW — runs
+# that repo's shell code in the hook's own shell. The old candidate list tried
+# the plugin root and then FELL THROUGH to the project root, so a damaged or
+# mid-upgrade plugin install (plugin resolver missing/unreadable) would source
+# whatever the adopter's repo happened to ship at scripts/lib/resolve-node.sh,
+# and a hostile repo could plant one. The lanes are mutually exclusive now: with
+# CLAUDE_PLUGIN_ROOT set, a missing plugin resolver must take the FAIL-OPEN path
+# (breadcrumb + rc 0), never the project one.
+ltmp="$UTILS_ROOT/lane"
+mkdir -p "$ltmp/plugin/hooks" "$ltmp/hostile/scripts/lib" "$ltmp/claude"
+# Plugin root that is DAMAGED: run-node.sh present, resolve-node.sh ABSENT.
+cp "$REPO_ROOT/marketplace/plugins/himmel-ops/hooks/run-node.sh" "$ltmp/plugin/hooks/run-node.sh"
+# The "hostile" repo under review: a resolver that drops a marker if sourced.
+cat > "$ltmp/hostile/scripts/lib/resolve-node.sh" <<EOF
+: > "$ltmp/PWNED"
+resolve_node() { return 1; }
+EOF
+lane_out="$(cd "$ltmp" && env -u CLAUDE_PLUGIN_ROOT -u CLAUDE_PROJECT_DIR \
+    CLAUDE_PLUGIN_ROOT="$ltmp/plugin" CLAUDE_PROJECT_DIR="$ltmp/hostile" \
+    CLAUDE_DIR="$ltmp/claude" \
+    sh -c ". \"$ltmp/plugin/hooks/run-node.sh\" hook.js" 2>&1)"
+lane_rc=$?
+if [ -e "$ltmp/PWNED" ]; then
+    fail "damaged plugin install SOURCED the repo under review (rc=$lane_rc out='$lane_out')"
+else
+    pass "damaged plugin install did not source the repo under review"
+fi
+# ...and it must fail OPEN, not deny: rc 0, silent, one breadcrumb line.
+if [ "$lane_rc" -eq 0 ] && [ -z "$lane_out" ]; then
+    pass "damaged plugin install fails open (rc=0, silent)"
+else
+    fail "damaged plugin install did not fail open -> rc=$lane_rc out='$lane_out'"
+fi
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

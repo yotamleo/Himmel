@@ -74,6 +74,42 @@ bash scripts/codex/sanitize-plugin-hooks.sh --dry-run    # report, change nothin
 pwsh -NoProfile -File scripts\codex\sanitize-plugin-hooks.ps1 -DryRun
 ```
 
+## probe-codex-hooks.ps1 — Windows pwsh-runner hook lint (HIMMEL-1982)
+
+codex-cli on Windows runs every hook command as
+`pwsh.exe -NoProfile -Command "<command>"`. Two traps follow: a command
+starting with bare `bash` resolves via the **Machine** PATH to the WSL
+launcher stub at `C:\Windows\System32\bash.exe` (`Git\usr\bin` is only on the
+User PATH, which comes later) — when WSL is wedged the hook hangs to Codex's
+default 600s hook timeout; and a command that **starts with a quoted path**
+(a quoted `.cmd`, or a `${CLAUDE_PLUGIN_ROOT}`-substituted path) is parsed by
+pwsh as a string *expression*, not a command invocation, so it errors out
+immediately (`ParserError`, exit 1). The fix differs per trap: bare-bash needs
+a **path-qualified Git Bash exe** (`& "C:\Program Files\Git\bin\bash.exe" <rest>`
+— a bare leading `& ` alone still resolves `bash` via PATH to the same WSL
+stub); quoted-path-start just needs a leading `& ` (the executable is already
+a full path; `&` makes pwsh invoke it instead of parsing it as a string).
+
+`probe-codex-hooks.ps1` enumerates the EFFECTIVE hook set for a project —
+`<CodexHome>/hooks.json` (global), `<Project>/.codex/hooks.json` (project),
+and the `hooks.json` of every plugin enabled in `<CodexHome>/config.toml` —
+substitutes `${CLAUDE_PLUGIN_ROOT}` the same way Codex does, and statically
+lints each command for the two traps above (plus an advisory WARN for a
+bash/sh invocation with no `timeout`, and an INFO for `$CLAUDE_PROJECT_DIR`,
+which Codex does not substitute under pwsh). `-Replay` actually EXECUTES
+every effective hook the way Codex would — side effects included; use it only
+against hooks you trust.
+
+```powershell
+pwsh -NoProfile -File scripts\codex\probe-codex-hooks.ps1                 # static lint, current project
+pwsh -NoProfile -File scripts\codex\probe-codex-hooks.ps1 -Project C:\repo -NoFail
+pwsh -NoProfile -File scripts\codex\probe-codex-hooks.ps1 -Replay -Arm gitbash -TimeoutSec 10
+```
+
+Wired as an advisory (non-fatal) phase 4 of `install-himmel-codex.ps1`.
+Tests: `scripts/codex/test-probe-codex-hooks.ps1` (hermetic; never touches
+the real `~/.codex`).
+
 ## Dispatching codex impl workers (lane chokepoint, HIMMEL-741/781)
 
 The `codex-exec` impl lane (`scripts/lanes/lanes.json`) dispatches codex CLI
@@ -147,6 +183,30 @@ help in that case):
 bash scripts/lib/shared-branch-lock.sh release <worktree-or-repo-dir> <branch>
 ```
 
+### Watchdog + ledger (HIMMEL-2023)
+
+The dispatch used to end in an **unbounded** `wait`, so a wedged headless run
+hung with no timeout, no kill, and no ledger row - invisible outside a headed
+TUI (HIMMEL-1788 instance 5). Now:
+
+- the run is timeboxed to `CODEX_EXEC_TIMEOUT` seconds (default **1800**, the
+  codex-exec lane's own `timeoutSeconds` in `scripts/lanes/lanes.json`; a
+  non-numeric value is REFUSED rather than degrading back to an unbounded
+  wait);
+- on expiry the process **tree** is terminated via `scripts/lib/proc-tree.sh`
+  (group signal, verified, Windows `taskkill` fallback) - so codex's leaked
+  MCP fleet goes too, not just codex;
+- the dispatch exits **124** and prints
+  `codex-exec: TIMEOUT after <N>s - killed tree ...` on stderr;
+- every dispatch writes flow-run-ledger start/end rows to
+  `~/.himmel/flow-runs.jsonl` (`flow: "codex-exec"`), `outcome` one of
+  `complete` / `timeout` / `error` - the same feed
+  `dispatch-codex-wsl.sh` already fed.
+
+A raw `codex exec` outside this chokepoint gets none of it, which is why
+`scripts/hooks/block-rogue-codex-exec.sh` refuses it (bypass
+`CODEX_EXEC_RAW_OK=1`).
+
 ### Job registry + MCP-fleet reap (HIMMEL-840)
 
 The codex-exec **CLI sandbox** (this dispatcher) leaks its own MCP-server
@@ -162,7 +222,11 @@ periodic sweep:
    a child in a non-interactive script redirects its stdin to `/dev/null` by
    default, so the child is launched with an explicit `<&0` to inherit the
    dispatcher's own stdin (a caller that pipes context to `codex exec` would
-   otherwise silently see it dropped).
+   otherwise silently see it dropped) - **unless the dispatcher's own stdin is
+   a terminal**, in which case the child gets `</dev/null` instead
+   (HIMMEL-2023: `codex exec` reads stdin to EOF even with an argv prompt, so
+   an inherited TTY blocks the run forever before a token is spent; a terminal
+   is never a brief).
 2. Right after the child starts, it writes a **job registry** entry under
    `CODEX_JOBS_DIR` (default `$HOME/.himmel/state/codex-exec-jobs/`), one
    file per job (`<epoch>-<codexpid>.json`: `codex_pid`, `dispatch_pid`,
@@ -170,7 +234,11 @@ periodic sweep:
 3. On EXIT (composed with the shared-branch lock-release trap), it calls
    `reap-mcp-fleet.sh --root-pid <codex-child-pid> --started-at <epoch> --kill`
    to terminate any still-live descendants of that pid - the leftover MCP
-   fleet, if any - then removes the registry entry.
+   fleet, if any - then removes the registry entry. **On a timeout or a
+   nonzero codex exit the entry is MOVED to `$CODEX_JOBS_DIR/failed/` instead
+   of being deleted** (HIMMEL-2023): the failure's forensic trace outlives it,
+   while leaving the live-jobs glob (`*.json` at the top level) so the
+   maintenance scan below does not re-report a job that is already dead.
 
 If the dispatcher itself is killed before its own EXIT trap can run (e.g.
 SIGKILL), the registry entry survives as evidence of the leak.

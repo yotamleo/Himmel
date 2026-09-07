@@ -1,0 +1,11 @@
+# The suppression path: the instance-1 shape with an inline, reasoned
+# `# fail-open-ok:` marker. A deliberate exception is allowed — but only by
+# SAYING WHY, on the line a reader of the guard will read.
+#
+# Expected: lint-fail-open.sh passes this file clean.
+for cfg in "$HOME/.config/claude-glm/phi-roots"; do
+    [ -f "$cfg" ] || continue  # fail-open-ok: fixture — proves the inline suppression path silences a flagged shape
+    while IFS= read -r p; do
+        printf '%s\n' "$p"
+    done < "$cfg"
+done

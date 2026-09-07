@@ -1,0 +1,4 @@
+# T5 — files the config-list edit is allowed to touch
+propagation-config.sh
+propagation-config.json
+secret-scan-patterns.txt

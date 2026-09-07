@@ -1,7 +1,7 @@
 // scripts/lanes/resolve.mjs
 // HIMMEL-689 — resolve the machine-available delegation lanes from lanes.json.
 // Pure resolveLanes (tested) + buildCtx (real machine, untested by design) + CLI.
-import { readFileSync, existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join, delimiter, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,11 +48,34 @@ export function resolveLanes(registry, ctx) {
     .map((row) => row.lane);
 }
 
+// unknownOverlayKeys(base, local) -> [{ id, keys }] (HIMMEL-1913). Known
+// per-lane keys come from the shared registry itself, so adding a field there
+// automatically permits the same field in local deltas and overlay-only lanes.
+// Pure — no I/O, no process.env reads.
+export function unknownOverlayKeys(base, local) {
+  const baseLanes = (base && Array.isArray(base.lanes)) ? base.lanes : [];
+  const localLanes = (local && Array.isArray(local.lanes)) ? local.lanes : [];
+  const known = new Set(['id']);
+  for (const lane of baseLanes) {
+    if (!lane || typeof lane !== 'object' || Array.isArray(lane)) continue;
+    for (const key of Object.keys(lane)) known.add(key);
+  }
+  const unknown = [];
+  for (const patch of localLanes) {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) continue;
+    const keys = Object.keys(patch).filter((key) => !known.has(key));
+    if (keys.length > 0) unknown.push({ id: patch.id, keys });
+  }
+  return unknown;
+}
+
 // mergeLocalOverlay(base, local) -> merged registry object (HIMMEL-758). A
 // TRUE per-lane overlay, not a wholesale replace: each entry in
-// `local.lanes` is shallow-merged onto the base lane sharing its `id` (local
-// fields win), so lanes.local.json only ever needs to carry the DELTA (e.g.
-// just `{ id, probe }`), never a full copy of the shared registry. A local
+// `local.lanes` is merged onto the base lane sharing its `id` (local fields
+// win). The structured dispatch object and its flag maps are deep-merged;
+// other established lane fields retain the original shallow merge. Thus
+// lanes.local.json only needs to carry the DELTA (e.g. `{ id, probe }` or a
+// dispatch flag override), never a full copy of the shared registry. A local
 // entry naming an id absent from `base` is appended as a genuinely
 // machine-local lane. Base lane order is preserved; local-only entries land
 // at the end. Pure — no I/O, no process.env reads.
@@ -63,7 +86,17 @@ export function mergeLocalOverlay(base, local) {
   for (const patch of localLanes) {
     if (!patch || !patch.id) continue;
     const existing = byId.get(patch.id);
-    byId.set(patch.id, existing ? { ...existing, ...patch } : patch);
+    if (existing && existing.dispatch && patch.dispatch) {
+      const dispatch = {
+        ...existing.dispatch,
+        ...patch.dispatch,
+        flags: { ...(existing.dispatch.flags ?? {}), ...(patch.dispatch.flags ?? {}) },
+        requiredEnvFlags: { ...(existing.dispatch.requiredEnvFlags ?? {}), ...(patch.dispatch.requiredEnvFlags ?? {}) },
+      };
+      byId.set(patch.id, { ...existing, ...patch, dispatch });
+    } else {
+      byId.set(patch.id, existing ? { ...existing, ...patch } : patch);
+    }
   }
   const baseIds = new Set(baseLanes.map((l) => l.id));
   const merged = baseLanes.map((l) => byId.get(l.id));
@@ -74,7 +107,7 @@ export function mergeLocalOverlay(base, local) {
   // keys must not shadow shared registry fields. Per-lane entries still use the
   // id-aware merge above.
   const out = { ...base, lanes: merged };
-  for (const key of ['profileAllowlist', 'profileAllowlistScope']) {
+  for (const key of ['profileAllowlist', 'profileAllowlistScope', 'defaultImplLane']) {
     if (local && Object.prototype.hasOwnProperty.call(local, key)) out[key] = local[key];
   }
   return out;
@@ -96,7 +129,7 @@ export function resolveBankTargets(base, local, bankIds) {
   for (const lane of (merged && merged.lanes) || []) {
     if (!lane || typeof lane.id !== 'string' || !lane.id) continue;
     const bank = lane.quota && lane.quota.bank;
-    if (typeof bank === 'string' && ids.includes(bank)) withBank.push({ lane: lane.id, bank });
+    if (typeof bank === 'string' && ids.includes(bank)) withBank.push({ lane: lane.id, bank, quota: lane.quota });
     else without.push(lane.id);
   }
   return { withBank, without };
@@ -145,7 +178,14 @@ function pathHasFactory(env) {
 // machine, so a bash-spawn probe is unconditionally true (re-opening R1 B2).
 // Pure existsSync also sidesteps the Windows WSL-`bash`-stub trap (R2 I-R2-3).
 function hermesInstalled(env) {
-  const isExe = (p) => { try { return existsSync(p); } catch { return false; } };
+  // A regular file that is executable, not merely a path that exists: the shell
+  // resolver tests `[ -x ]`, so a directory or a non-executable file named like
+  // an interpreter would otherwise pass here and fail there. On Windows Node
+  // ignores X_OK, which matches what MSYS `[ -x ]` reports for the same file.
+  const isExe = (p) => {
+    try { if (!statSync(p).isFile()) return false; accessSync(p, constants.X_OK); return true; }
+    catch { return false; }
+  };
   if (env.HERMES_PY && isExe(env.HERMES_PY)) return true;                     // honor a still-valid HERMES_PY
   const local = env.LOCALAPPDATA || join(env.HOME || env.USERPROFILE || '', 'AppData', 'Local');
   const root  = env.HERMES_HOME || join(local, 'hermes');
@@ -160,7 +200,15 @@ export function buildCtx(repoRoot, procEnv) {
   const mainRoot = mainCheckoutRoot(repoRoot);
   const dotenv = { ...(mainRoot ? parseDotenv(join(mainRoot, '.env')) : {}), ...parseDotenv(join(repoRoot, '.env')) };
   const env = { ...dotenv, ...procEnv };
-  return { env, pathHas: pathHasFactory(env), installed: { hermes: hermesInstalled(env) } };
+  const pathHas = pathHasFactory(env);
+  // installed.hermes must mean "dispatch will find an interpreter", so it probes
+  // exactly what invoke.sh consults (resolve-hermes-py.sh: HERMES_PY, then the
+  // HERMES_HOME-derived venv) and nothing wider. A `hermes`/`hermes-agent` shim
+  // on PATH was accepted here before; that resolver never reads PATH, so a
+  // profile-scoped HERMES_HOME selected the default impl lane and then exited 3
+  // after the dispatcher had already provisioned a worktree. An unavailable lane
+  // reported up front beats a lane that fails mid-dispatch.
+  return { env, pathHas, installed: { hermes: hermesInstalled(env) } };
 }
 
 function loadRegistry() {
@@ -183,6 +231,9 @@ function loadRegistry() {
       && (!Array.isArray(base.profileAllowlistScope) || !base.profileAllowlistScope.every((id) => typeof id === 'string'))) {
     die(2, `lanes: cannot evaluate — registry ${REGISTRY} profileAllowlistScope must be an array of lane ids`);
   }
+  if (base.defaultImplLane !== undefined && typeof base.defaultImplLane !== 'string') {
+    die(2, `lanes: cannot evaluate — registry ${REGISTRY} defaultImplLane must be a lane id`);
+  }
   // LANES_REGISTRY (explicit full-override — tests/CI) replaces wholesale,
   // exactly as before HIMMEL-758: no local overlay applied on top of an
   // explicit override. Only the DEFAULT registry path layers lanes.local.json.
@@ -201,11 +252,23 @@ function loadRegistry() {
       && (!Array.isArray(local.profileAllowlistScope) || !local.profileAllowlistScope.every((id) => typeof id === 'string'))) {
     die(2, `lanes: cannot evaluate — ${LOCAL_REGISTRY} profileAllowlistScope must be an array of lane ids`);
   }
+  if (local.defaultImplLane !== undefined && typeof local.defaultImplLane !== 'string') {
+    die(2, `lanes: cannot evaluate — ${LOCAL_REGISTRY} defaultImplLane must be a lane id`);
+  }
+  for (const { id, keys } of unknownOverlayKeys(base, local)) {
+    for (const key of keys) {
+      if (key === 'drop') {
+        process.stderr.write(`lanes.local.json: lane '${id}' sets unknown key 'drop' (it is silently ignored by lane resolution — lanes has no drop, unlike critics.local.json). To force a lane off, use {"probe":{"kind":"never"}} or run: node scripts/lanes/set-lane-override.mjs ${id} never\n`);
+      } else {
+        process.stderr.write(`lanes.local.json: lane '${id}' sets unknown key '${key}' (it is silently ignored by lane resolution)\n`);
+      }
+    }
+  }
   return mergeLocalOverlay(base, local);
 }
 
-// HIMMEL-1029 P1: compact a context-window token count for the /lanes line
-// (1000000 -> "1M", 272000 -> "272k"). Absent contextWindow renders nothing.
+// HIMMEL-1029/HIMMEL-1768: context prose is derived only from structured
+// context fields, so a stale hand-maintained descriptor cannot contradict them.
 export function fmtCtx(n) {
   if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '';
   if (n % 1000000 === 0) return `${n / 1000000}M`;
@@ -213,11 +276,76 @@ export function fmtCtx(n) {
   return String(n);
 }
 
+export function formatContextAnnotation(context) {
+  const window = fmtCtx(context?.windowTokens);
+  if (!window) return '';
+  if (context?.overflow === 'compact-continue') return `[ctx: ${window}; compacts+continues past window (cost penalty)]`;
+  if (context?.overflow === 'hard-limit') return `[ctx: ${window}; hard limit]`;
+  return `[ctx: ${window}; overflow unknown]`;
+}
+
+// resolveActiveAccessPath(quota) -> { ok: true, path, index } | { ok: false, reason }
+// (HIMMEL-1768 round 3). Resolve the lane's ACTIVE access path from explicit
+// selection, never by positional fallback. An ABSENT activeAccessPath selects
+// the first path — the registry's documented default shape, not an error. An
+// EXPLICIT index that fails to select a path (out of range, fractional,
+// non-number) is a registry ERROR: !ok plus a reason, so every consumer
+// (guard verdict, /lanes display) reports unknown + a diagnostic instead of
+// silently gating on paths[0]. Shared by bank-status.ts and
+// formatQuotaAnnotation so the resolution rule cannot drift between them.
+export function resolveActiveAccessPath(quota) {
+  const paths = Array.isArray(quota?.accessPaths) ? quota.accessPaths : [];
+  if (paths.length === 0) return { ok: false, reason: 'no access path declared' };
+  const index = quota.activeAccessPath ?? 0;
+  if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= paths.length) {
+    return { ok: false, reason: `activeAccessPath ${JSON.stringify(index)} does not select one of ${paths.length} declared access path(s)` };
+  }
+  const path = paths[index];
+  if (!path || typeof path !== 'object') {
+    return { ok: false, reason: `access path ${index} is not an object` };
+  }
+  return { ok: true, path, index };
+}
+
+export function formatQuotaAnnotation(quota, status) {
+  const paths = Array.isArray(quota?.accessPaths) ? quota.accessPaths : [];
+  if (paths.length === 0) return '';
+  const resolved = resolveActiveAccessPath(quota);
+  if (!resolved.ok) return `[access: unresolved — ${resolved.reason}]`;
+  const active = resolved.path;
+  const access = active.kind === 'metered-api-key'
+    ? `metered API key${active.provider ? ` (${active.provider})` : ''}`
+    : 'subscription';
+  const windows = Array.isArray(active.windows) ? active.windows : [];
+  let binding = windows.length === 0 ? 'metered spend' : 'unknown';
+  if (status?.detail?.startsWith('measured ')) {
+    const measured = [...status.detail.matchAll(/(\S+) used=([0-9.]+)%/g)]
+      .map((m) => ({ window: m[1], usedPct: Number(m[2]) }))
+      .filter((reading) => windows.includes(reading.window) && Number.isFinite(reading.usedPct));
+    if (measured.length > 0) binding = measured.reduce((a, b) => b.usedPct > a.usedPct ? b : a).window;
+  }
+  const limits = windows.length > 0 ? windows.join('+') : 'none';
+  // Alternatives are every declared path EXCEPT the resolved active one.
+  // paths.slice(1) listed the ACTIVE path itself as an "alternative" whenever
+  // activeAccessPath !== 0 — the display half of the positional-index
+  // assumption HIMMEL-1768 removes.
+  const alternatives = paths
+    .filter((_, i) => i !== resolved.index)
+    .map((path) => path.kind === 'metered-api-key'
+      ? `metered API key${path.provider ? ` (${path.provider})` : ''}`
+      : `${path.kind} ${(path.windows ?? []).join('+')}`)
+    .join(', ');
+  return `[access: ${access}; windows: ${limits}; binds: ${binding}${alternatives ? `; alternative: ${alternatives}` : ''}]`;
+}
+
 function renderText(lanes, suppressed, bankStatuses = new Map()) {
   const rows = lanes.map((l) => {
-    const ctx = fmtCtx(l.contextWindow);
-    const bank = l.quota?.bank ? ` ${formatBankAnnotation(bankStatuses.get(l.id))}` : '';
-    return `- ${l.label} — ${l.bestFor} (${l.effort})` + (ctx ? ` [ctx: ${ctx}]` : '') + bank;
+    const context = formatContextAnnotation(l.context);
+    const status = bankStatuses.get(l.id);
+    const quota = formatQuotaAnnotation(l.quota, status);
+    const bank = l.quota?.bank ? ` ${formatBankAnnotation(status)}` : '';
+    const dormant = l.dormant ? ` [DORMANT: ${l.dormant.reason} — opt in: ${l.dormant.optInEnv}=1]` : '';
+    return `- ${l.label} — ${l.bestFor} (${l.effort})` + (context ? ` ${context}` : '') + (quota ? ` ${quota}` : '') + bank + dormant;
   });
   let out = `Available delegation lanes on this machine (${lanes.length}):\n` + rows.join('\n');
   if (suppressed.length > 0) {
@@ -226,7 +354,8 @@ function renderText(lanes, suppressed, bankStatuses = new Map()) {
   }
   return out +
     '\n\nNote: codex(paid) reflects CR_PROFILE=paid (opt-in preference, not a funded-bank guarantee).\n' +
-    'Note: [ctx: N] = the lane\'s max usable context; absent = unverified/varies. Route work to a lane whose window holds it (codex lanes are 272k, not 1M).\n';
+    'Note: [access: ...; windows: ...; binds: ...] distinguishes subscription windows from metered API access; unknown means the required source is unreadable.\n' +
+    'Note: [ctx: ...] is derived from structured context.windowTokens + context.overflow; absent = unverified/varies.\n';
 }
 
 // HIMMEL-747 — turn the codex startup-health detector's exit code + WARN lines
@@ -272,6 +401,9 @@ function runBankStatus(repoRoot, env, registry) {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10000,
       env,
+      windowsHide: true, // HIMMEL-2081: same fix as HIMMEL-2042 (node spawn sites) -- this
+      // runs unattended off guard-implementor-dispatch.sh on every lane dispatch and
+      // popped a visible bun.exe console without this.
     });
     return parseBankStatusOutput(out);
   } catch (e) {
@@ -290,7 +422,11 @@ const mode = process.argv[2];
 if (process.argv[1]?.endsWith('resolve.mjs')) {
   const registry = loadRegistry();
   const inventory = resolveLaneInventory(registry, buildCtx(REPO_ROOT, process.env));
-  const lanes = inventory.filter((row) => !row.suppressedByProfile).map((row) => row.lane);
+  const lanes = inventory.filter((row) => !row.suppressedByProfile).map((row) => {
+    const lane = row.lane;
+    if (lane.class !== 'impl' || !lane.dispatch) return lane;
+    return { ...lane, dispatch: { ...lane.dispatch, preferredDefault: lane.id === registry.defaultImplLane } };
+  });
   const suppressed = inventory.filter((row) => row.suppressedByProfile).map((row) => row.lane);
   if (mode === '--json') process.stdout.write(JSON.stringify(lanes, null, 2) + '\n');
   else {

@@ -37,9 +37,10 @@
 # what every future `qmd-bin.sh install` runs, with no reviewed repo change
 # -- a supply-chain trust boundary on new-machine bootstrap (mirrors the
 # HIMMEL-891 graphify precedent, scripts/lib/graphify-bin.sh). The commit
-# SHA is the only content-addressed, unmovable ref. The fork tag
-# v2.6.3-himmel.1 points at this same commit as human-readable release
-# provenance; a pin bump is a reviewed change to this file. Fork
+# SHA is the only content-addressed, unmovable ref. The fork branch
+# himmel-main-v2.8.3 carries this commit as human-readable release
+# provenance (HIMMEL-2136, fork-drift #518, resync onto upstream v2.8.3);
+# a pin bump is a reviewed change to this file. Fork
 # repo/ref/clone-dir are overridable via QMD_FORK_REPO / QMD_FORK_REF /
 # QMD_FORK_DIR for testing or a private mirror.
 # qmd_register_collection() is the shared idempotent collection-
@@ -51,8 +52,8 @@
 
 # Fork config -- overridable per call (env var set before sourcing/calling).
 _qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/yotamleo/qmd.git}"; }
-# = v2.6.3-himmel.1
-_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-1032a648447a54eb73df138a3861dd7a9a64c595}"; }
+# = himmel-main-v2.8.3
+_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-a6ebf30281bf2c9e656c27f9e8ee04455c89d0c3}"; }
 _qmd_fork_dir() { printf '%s\n' "${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"; }
 _qmd_fork_min_version() { printf '%s\n' "${QMD_FORK_MIN_VERSION:-2.6.3}"; }
 # Build-success stamp INSIDE the clone (HIMMEL-911 CR r3): one file, no

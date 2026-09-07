@@ -20,6 +20,12 @@
 param([string]$ParityGuard = "")
 
 $ErrorActionPreference = "Stop"
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $Profile_ = "himmel_agent"
 $AssetDir = Join-Path $PSScriptRoot "assets"
 $SoulAsset = Join-Path $AssetDir "himmel-agent.SOUL.md"
@@ -32,9 +38,11 @@ foreach ($f in @($SoulAsset, $GuardAsset, $Wire, $Sync)) {
 }
 
 # --- resolve hermes install root ---
+# Order: HERMES_HOME (explicit override) > $LOCALAPPDATA/hermes (Windows) >
+# $HOME/.hermes (Linux/macOS pwsh — upstream hermes' own default config home).
 $HomeDir = if ($env:HERMES_HOME) { $env:HERMES_HOME }
            elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "hermes" }
-           else { Join-Path $HOME ".local/share/hermes" }
+           else { Join-Path $HOME ".hermes" }
 if (-not (Test-Path $HomeDir)) { throw "hermes home not found at $HomeDir — is hermes installed? (set HERMES_HOME)" }
 
 # --- resolve hermes CLI ---
@@ -105,8 +113,17 @@ Write-Host "installed   : $HaSoul"
 # explicitly so a failed sync cannot end in "OK: provisioned" (CR finding).
 if ($LASTEXITCODE -ne 0) { throw "sync_model_aliases.py failed (exit $LASTEXITCODE) syncing model_aliases into $HaConfig" }
 
-# 5. wire himmel_agent's pre_tool_call hook -> parity_guard (full set)
-& $Py $Wire set $HaConfig $GuardDest $Py
+# 5. wire himmel_agent's pre_tool_call hook -> parity_guard (full set), plus the
+#    END-side on_session_finalize chain (HIMMEL-2021) when node and this repo are
+#    both resolvable. Paths are already native here (twin of the .sh cygpath step).
+$NodeBin = if (Get-Command node -ErrorAction SilentlyContinue) { (Get-Command node).Source } else { $null }
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+if ($NodeBin -and (Test-Path (Join-Path $RepoRoot "scripts/hooks/run-hook-with-bash.js"))) {
+  & $Py $Wire set $HaConfig $GuardDest $Py $NodeBin $RepoRoot
+} else {
+  Write-Warning "node not on PATH (or himmel checkout not found) - wiring the guard only, no on_session_finalize end hook."
+  & $Py $Wire set $HaConfig $GuardDest $Py
+}
 if ($LASTEXITCODE -ne 0) { throw "wire_parity_guard.py set failed (exit $LASTEXITCODE) wiring $HaConfig" }
 
 # 6. universal guard (HIMMEL-744): ensure parity_guard on EVERY other profile.

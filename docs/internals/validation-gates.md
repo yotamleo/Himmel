@@ -138,7 +138,7 @@ only 3 and 4 reach Claude-only; 1 and 2 BILL:
    `registry <path> missing/invalid/empty — anchor-only (codex)`.
 2. **Registry present and valid, but no row matches the tier filter** (exit 8)
    ⇒ **paid** codex anchor-only, via the same fallback. This is the shipped
-   default today: `critics.json` holds exactly one row (`codex`/`gpt-5.5`, tier
+   default today: `critics.json` holds exactly one row (`codex`/`gpt-5.6-sol`, tier
    `paid`) and no free anchor, so an unset `CR_PROFILE` (tier filter `free`)
    matches nothing and lands here.
    The free lane was REMOVED DELIBERATELY (operator, HIMMEL-1101): the free
@@ -293,8 +293,12 @@ no rewrite.
 
 ## Carry-forwards
 
-- **→ WS8 (Mission Control):** gate verdicts + trust-tier state are first-class
-  C&C surfaces (what's quarantined, what's pending verdict).
+- **→ WS8 (Mission Control):** the Phase 1 read-only console
+  (`scripts/fleet-control/`, see `docs/jarvis-subsystems.md`) ships fleet/
+  escalation/quota surfaces but not gate verdicts or trust-tier state; making
+  those (what's quarantined, what's pending verdict) first-class C&C surfaces
+  is still forward work, alongside the dispatch/adjudication controls Phase 2
+  will add.
 - **→ WS10 (Jarvis):** the §6 emission points are the self-improvement loop's
   input corpus.
 - **→ WS4:** when the artifact-critic (D1) ships, minerva Stage-2/4 chains gain

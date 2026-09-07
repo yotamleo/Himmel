@@ -11,7 +11,7 @@ template and accumulates content over time. The skeleton does not ship
 content — only the bones, hooks, and plugin pointers.
 
 > **Where this lives:** this template ships inside the public
-> [himmel](https://github.com/yotamleo/Himmel) repo (the dev engine that
+> [himmel](https://github.com/yotamleo/himmel) repo (the dev engine that
 > provides the worktree / handover / PR-flow tooling the vault inherits).
 > To create a vault, copy this folder *out* of himmel into its own git
 > repo — see Quickstart.
@@ -28,8 +28,8 @@ folder is still nested inside the himmel checkout would target himmel, not
 your vault.
 
 ```bash
-git clone https://github.com/yotamleo/Himmel
-cp -r Himmel/templates/luna-second-brain my-vault   # name it whatever you like
+git clone https://github.com/yotamleo/himmel
+cp -r himmel/templates/luna-second-brain my-vault   # name it whatever you like
 cd my-vault
 git init                                            # your vault is its own repo
 
@@ -63,7 +63,7 @@ Open your vault folder in Obsidian to start using the vault.
 
 To import historical sessions and learn how the capture → triage → synthesize
 pipeline compounds over time, see the
-[compounding loop guide](https://github.com/yotamleo/Himmel/blob/main/docs/luna/compounding.md).
+[compounding loop guide](https://github.com/yotamleo/himmel/blob/main/docs/luna/compounding.md).
 
 > **Keep your vault out of himmel's history.** If you created the vault
 > *inside* the himmel checkout (e.g. `himmel/my-vault`) rather than as a
@@ -160,7 +160,7 @@ See `docs/contributing.md` for the full contribution workflow.
 
 ## License
 
-MIT — this template ships inside the [himmel](https://github.com/yotamleo/Himmel)
+MIT — this template ships inside the [himmel](https://github.com/yotamleo/himmel)
 repository and is covered by its root `LICENSE`. Bundled `.obsidian`
 plugins retain their own upstream licenses (see each plugin's
 `LICENSE`/`LICENCE` file under `.obsidian/plugins/`).

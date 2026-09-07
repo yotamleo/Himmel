@@ -90,6 +90,9 @@ WT_NESTED=$(mk_wt wt-nested feat/nested)   # case 8: nested package-lock.json (d
 WT_MIXED=$(mk_wt wt-mixed   feat/mixed)    # case 9: stray + non-stray (forgotten wins)
 WT_BAK=$(mk_wt wt-bak       feat/bak)      # case 10: AGENTS.md.bak (allowlist boundary)
 WT_SCAN=$(mk_wt wt-scan     feat/scan)     # case 11: broken .git -> scanfail (fail-closed)
+WT_PYCACHE=$(mk_wt wt-pycache feat/pycache) # case 12: pinned-worktree __pycache__ (HIMMEL-2584)
+WT_PYSRC=$(mk_wt wt-pysrc   feat/pysrc)    # case 13: untracked .py source (allowlist boundary)
+WT_PYNEW=$(mk_wt wt-pynew   feat/pynew)    # case 14: untracked .py source + its .pyc together
 
 printf 'lock\n' > "$WT_LOCK/package-lock.json"
 mkdir -p "$WT_CODEX/.codex"; printf 'x\n' > "$WT_CODEX/.codex/config.toml"; printf 'x\n' > "$WT_CODEX/AGENTS.md"
@@ -102,6 +105,28 @@ mkdir -p "$WT_BAK/docs"; printf 'x\n' > "$WT_BAK/docs/AGENTS.md.bak"
 # WT_SCAN: break the worktree's gitdir pointer so `git -C status` fails (rc!=0)
 # -> classify_worktree returns "scanfail" -> conservative skip (fail-closed).
 rm -f "$WT_SCAN/.git"
+# WT_PYCACHE: the real HIMMEL-2584 shape — nested __pycache__ dirs from the bug
+# report, with NO .gitignore rule for pycache in this fixture repo, so the
+# files reach classify_worktree as untracked (reproducing a worktree PINNED at
+# a commit before the .gitignore fix, not one that already ignores them).
+mkdir -p "$WT_PYCACHE/scripts/lib/__pycache__" "$WT_PYCACHE/scripts/luna/__pycache__"
+printf 'x\n' > "$WT_PYCACHE/scripts/lib/__pycache__/vbox.cpython-314.pyc"
+printf 'x\n' > "$WT_PYCACHE/scripts/luna/__pycache__/fetch-health.cpython-314.pyc"
+# WT_PYSRC: a real .py SOURCE file, the sharp neighbour of *.pyc — must stay
+# forgotten (allowlist boundary, mirrors case 10's AGENTS.md.bak).
+mkdir -p "$WT_PYSRC/scripts/lib"; printf 'x\n' > "$WT_PYSRC/scripts/lib/vbox.py"
+# WT_PYNEW: the real-world pairing — a genuinely new, never-committed script
+# AND the bytecode running it just produced, together in the same worktree.
+# The .pyc allowlist entry (case 12) cannot know whether a .pyc's source is
+# tracked; it is a path-pattern match, not a provenance check. Protection here
+# comes entirely from the untracked SOURCE: classify_worktree puts newthing.py
+# in the forgotten list because it fails is_ignorable_stray, which is what
+# blocks the prune — the sibling .pyc is (correctly) still a discardable stray
+# with nothing of its own to lose, same as case 12, it's just not what is
+# saving this worktree.
+mkdir -p "$WT_PYNEW/scripts/__pycache__"
+printf 'x\n' > "$WT_PYNEW/scripts/newthing.py"
+printf 'x\n' > "$WT_PYNEW/scripts/__pycache__/newthing.cpython-314.pyc"
 
 run_clean() {
     (
@@ -128,8 +153,8 @@ else
     fail "6: dry-run removed a worktree" "$dry_out"
 fi
 # D4 dry-run parity across non-stray branches: nothing mutated, regardless of verdict.
-if [ -d "$WT_NOTES" ] && [ -d "$WT_WIP" ] && [ -d "$WT_NESTED" ] && [ -d "$WT_MIXED" ] && [ -d "$WT_BAK" ] && [ -d "$WT_SCAN" ]; then
-    pass "6: dry-run mutated nothing across all branch types (forgotten/tracked/nested/mixed/bak/scanfail)"
+if [ -d "$WT_NOTES" ] && [ -d "$WT_WIP" ] && [ -d "$WT_NESTED" ] && [ -d "$WT_MIXED" ] && [ -d "$WT_BAK" ] && [ -d "$WT_SCAN" ] && [ -d "$WT_PYCACHE" ] && [ -d "$WT_PYSRC" ] && [ -d "$WT_PYNEW" ]; then
+    pass "6: dry-run mutated nothing across all branch types (forgotten/tracked/nested/mixed/bak/scanfail/pycache/pysrc/pynew)"
 else
     fail "6: dry-run removed a non-stray worktree" "$dry_out"
 fi
@@ -210,6 +235,44 @@ fi
 # case 11: broken gitdir -> scanfail -> conservative skip (fail-closed)
 if [ -d "$WT_SCAN" ]; then pass "11: scanfail worktree kept (fail-closed on unknown state)"; else fail "11: scanfail worktree was pruned (must fail closed)" "$out"; fi
 case "$out" in *"feat/scan working-tree scan failed"*) pass "11: WARN reports working-tree scan failed" ;; *) fail "11: expected 'working-tree scan failed' for feat/scan" "$out" ;; esac
+
+# case 12: real HIMMEL-2584 shape — nested __pycache__/*.pyc, no pycache rule
+# in this fixture's .gitignore -> allowlisted stray -> pruned + NOTE.
+if [ ! -d "$WT_PYCACHE" ]; then pass "12: pycache-stray worktree pruned"; else fail "12: pycache-stray worktree NOT pruned" "$out"; fi
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/pycache")" "discarding untracked strays:.*\.pyc"; then
+    pass "12: NOTE names the .pyc stray"
+else
+    fail "12: expected strays NOTE naming a .pyc file for feat/pycache" "$out"
+fi
+
+# case 13: untracked .py SOURCE (sharp neighbour of .pyc) -> non-stray -> kept + WARN
+if [ -d "$WT_PYSRC" ]; then pass "13: .py-source worktree kept (boundary: .py != .pyc)"; else fail "13: .py-source worktree wrongly classified as stray and pruned" "$out"; fi
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/pysrc")" "not known strays.*vbox.py"; then
+    pass "13: kept as forgotten — WARN names vbox.py"
+else
+    fail "13: expected 'not known strays' WARN naming vbox.py for feat/pysrc" "$out"
+fi
+
+# case 14: a genuinely new script's untracked SOURCE plus the untracked .pyc it
+# just produced, together in one worktree. The .pyc allowlist (case 12) is a
+# path-pattern match — it cannot know whether a given .pyc's source is
+# tracked — so it can never be what protects unsaved work. What protects it is
+# the untracked newthing.py itself failing is_ignorable_stray, which puts the
+# whole worktree in the "forgotten" bucket and blocks the prune. The sibling
+# .pyc is still, correctly, classified as a discardable stray on its own —
+# it's just not the thing saving this worktree.
+pynew_line=$(printf '%s\n' "$out" | grep -F "feat/pynew")
+if [ -d "$WT_PYNEW" ]; then pass "14: new-script worktree kept (untracked source blocks prune)"; else fail "14: new-script worktree wrongly pruned (unsaved work would be lost)" "$out"; fi
+if grepq "$pynew_line" "not known strays.*newthing.py"; then
+    pass "14: kept as forgotten — WARN names newthing.py"
+else
+    fail "14: expected 'not known strays' WARN naming newthing.py for feat/pynew" "$out"
+fi
+if grepq "$pynew_line" "newthing.cpython-314.pyc"; then
+    fail "14: WARN unexpectedly also names the sibling .pyc — forgotten list should carry only the non-stray source" "$out"
+else
+    pass "14: WARN does not name the sibling .pyc (only the non-stray source is listed as forgotten)"
+fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo

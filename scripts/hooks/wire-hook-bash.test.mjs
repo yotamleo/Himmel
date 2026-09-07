@@ -6,11 +6,26 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { assertOnlyHookCommandsChanged, assertPermissionsUnchanged } from './wire-hook-bash.mjs';
+import { assertOnlyHookCommandsChanged, assertPermissionsUnchanged, EXPECTED_SCRIPT_ORDER } from './wire-hook-bash.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WIRER = join(HERE, 'wire-hook-bash.mjs');
 const SETTINGS = join(HERE, '..', '..', '.claude', 'settings.json');
+
+// Derived from the inventory itself (HIMMEL-1952), not hardcoded — a hardcoded
+// count would rebuild the same wall wire-hook-bash.mjs's own comment warns
+// about for the next capability that adds a hook.
+const SCRIPT_COUNT = EXPECTED_SCRIPT_ORDER.length;
+const REWROTE_RE = new RegExp(`rewrote ${SCRIPT_COUNT} hook command\\(s\\)`);
+const WOULD_REWRITE_RE = new RegExp(`would rewrite ${SCRIPT_COUNT} hook command\\(s\\).*wrote nothing`);
+
+// HIMMEL-2047: an independent restatement of wire-hook-bash.mjs's own wired
+// prefix, not imported from it — so this spec pins the expected output rather
+// than circularly re-running the generator it is meant to check. The wired
+// form sources run-node.sh when present, falling back to bare `node` when it
+// is absent (an old checkout predating this fix) — see wrapWithFallback()'s
+// own header comment for why.
+const WIRED_LAUNCHER = 'if [ -f "$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh" ]; then . "$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh" "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js"';
 
 // Public/adopter clones lack .claude/settings.json (it is in PRIVATE_PATHS and
 // redacted on the public mirror), so the live file this suite exercises is
@@ -23,17 +38,35 @@ const SETTINGS_SKIP = existsSync(SETTINGS)
   : '.claude/settings.json (PRIVATE_PATHS) is absent — public mirror / adopter checkout lacks the private fixture this suite is the spec for';
 const test = (name, fn) => baseTest(name, SETTINGS_SKIP ? { skip: SETTINGS_SKIP } : {}, fn);
 
-// The live settings.json is the fixture SOURCE (it carries the real 17-script
-// inventory the wirer asserts against), but the fixture must not inherit its
-// current wiring state: once the tree is wired, a fixture copied verbatim makes
-// every "rewrote 17" expectation read "already wired" and the suite fails on a
-// correctly-wired repo. Normalize each hook command back to the bare-bash form
-// so the rewrite tests always start unwired, whatever the tree looks like.
+// The live settings.json is the fixture SOURCE (it carries the real inventory
+// the wirer asserts against, sized by EXPECTED_SCRIPT_ORDER), but the fixture
+// must not inherit its current wiring state: once the tree is wired, a fixture
+// copied verbatim makes every "rewrote N" expectation read "already wired" and
+// the suite fails on a correctly-wired repo. Normalize each hook command back
+// to the bare-bash form so the rewrite tests always start unwired, whatever
+// the tree looks like.
+// A `--chain` entry (HIMMEL-2002) has no bare form, so "unwired" for it means
+// EXPANDED: one bare entry per member, in order. That keeps the fixture at one
+// unrouted entry per owned script — which is what makes `rewrote N` count
+// EXPECTED_SCRIPT_ORDER.length here, exactly as it did before chains existed.
 function unwire(text) {
-  return text.replace(
-    /"node \\"\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/run-hook-with-bash\.js\\" \\"\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)\\""/g,
-    '"bash $CLAUDE_PROJECT_DIR/scripts/hooks/$1"'
-  );
+  const settings = JSON.parse(text);
+  for (const groups of Object.values(settings.hooks)) {
+    for (const group of groups) {
+      group.hooks = group.hooks.flatMap((hook) => {
+        const command = String(hook.command || '');
+        if (!command.startsWith(WIRED_LAUNCHER)) return [hook];
+        // The if/then/else form repeats its script argument(s) once per
+        // branch (the resolver call and the bare-node fallback) — dedupe so
+        // a --chain of N members still unwires to exactly N bare entries.
+        const scripts = [...new Set(
+          [...command.matchAll(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)/g)].map((m) => m[1])
+        )];
+        return scripts.map((script) => ({ ...hook, command: `bash $CLAUDE_PROJECT_DIR/scripts/hooks/${script}` }));
+      });
+    }
+  }
+  return `${JSON.stringify(settings, null, 2)}\n`;
 }
 
 function withFixture(run, { wired = false } = {}) {
@@ -65,22 +98,37 @@ test('rewrites the known hook inventory through the Bash resolver', () => {
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
+    assert.match(result.stdout, REWROTE_RE);
 
     const all = commands(after);
-    // The 17 OWNED scripts are routed through the Bash resolver.
-    const wired = all.filter((c) => c.startsWith('node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js"'));
-    assert.equal(wired.length, 17);
+    // The OWNED scripts (SCRIPT_COUNT of them) are routed through the Bash resolver.
+    const wired = all.filter((c) => c.startsWith(WIRED_LAUNCHER));
+    assert.equal(wired.length, SCRIPT_COUNT);
     for (const command of wired) {
-      assert.match(command, /^node "\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/run-hook-with-bash\.js" /);
+      assert.ok(command.startsWith(`${WIRED_LAUNCHER} `));
     }
     // Foreign commands (the trust ledger under the owned events + speak-reply
     // under Stop) coexist and are NOT touched by this tool — the point of
     // HIMMEL-1552. They remain present, in their original form.
-    const foreign = all.filter((c) => !c.startsWith('node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js"'));
+    const foreign = all.filter((c) => !c.startsWith(WIRED_LAUNCHER));
     assert.ok(foreign.length > 0, 'foreign hook commands coexist with the owned inventory');
     assert.deepEqual(after.permissions, before.permissions);
   });
+});
+
+// HIMMEL-1516 residual. Every test above is a spec for the TOOL, and the tool's
+// own-only invariant deliberately ignores foreign events — so nothing asserted
+// the state of the FILE, and `speak-reply.sh` under `Stop` sat on a bare `bash`
+// long after the owned inventory had been routed, keeping exactly the PATH
+// roulette HIMMEL-1516 exists to remove (WSL stub / 0-byte Store alias / the
+// "Select an app to open 'bash'" modal). This case is the spec for the file:
+// a hook command that invokes `bash` as a bare token is the bug, whichever
+// event carries it. Mirrors the plugin inventory's identical assertion in
+// scripts/hooks/test-plugin-hook-bash-wiring.sh.
+test('no hook command in the live settings.json invokes bash by bare name', () => {
+  const live = JSON.parse(readFileSync(SETTINGS, 'utf8'));
+  const bare = commands(live).filter((command) => /(^|\s)bash(\s|$)/.test(command));
+  assert.deepEqual(bare, [], 'every hook command must route through run-hook-with-bash.js');
 });
 
 test('is idempotent after the first rewrite', () => {
@@ -199,7 +247,7 @@ test('installs a missing owned SessionStart entry back into place', () => {
 
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
+    assert.match(result.stdout, REWROTE_RE);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
     assert.deepEqual(after.permissions, beforePermissions);
@@ -209,7 +257,7 @@ test('installs a missing owned SessionStart entry back into place', () => {
     const sessionHooks = after.hooks.SessionStart[0].hooks;
     const idx = sessionHooks.findIndex((h) => (h.command ?? '').includes('qmd-staleness-notice.sh'));
     assert.ok(idx > 0, 'qmd-staleness-notice.sh entry was reinstalled');
-    assert.match(sessionHooks[idx].command, /^node "\$CLAUDE_PROJECT_DIR\/scripts\/hooks\/run-hook-with-bash\.js" /);
+    assert.ok(sessionHooks[idx].command.startsWith(`${WIRED_LAUNCHER} `));
     assert.match(sessionHooks[idx - 1].command, /inject-initiative\.sh/);
     // HIMMEL-1643 (codex-adv-3): an installer-produced SessionStart entry must
     // carry a bounded timeout so a hung advisory can never block session startup
@@ -298,7 +346,7 @@ test('--check reports the rewrite and writes nothing', () => {
     const result = invoke('--check', fixture);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /would rewrite 17 hook command\(s\).*wrote nothing/);
+    assert.match(result.stdout, WOULD_REWRITE_RE);
     assert.equal(readFileSync(fixture, 'utf8'), before);
   });
 });
@@ -325,7 +373,7 @@ test('accepts the live repo settings shape (foreign event keys + interleaved for
   withFixture((fixture) => {
     const result = invoke('--check', fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /would rewrite 17 hook command\(s\)/);
+    assert.match(result.stdout, WOULD_REWRITE_RE);
   });
 });
 
@@ -360,9 +408,11 @@ test('rewrites the correct slots when a foreign event key precedes an owned one'
     settings.hooks = reordered;
     writeFileSync(fixture, `${JSON.stringify(settings, null, 2)}\n`);
 
+    const stopBefore = settings.hooks.Stop[0].hooks[0].command;
+
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
+    assert.match(result.stdout, REWROTE_RE);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
     const preCommands = after.hooks.PreToolUse.flatMap((g) => g.hooks).map((h) => h.command);
@@ -370,8 +420,11 @@ test('rewrites the correct slots when a foreign event key precedes an owned one'
       'the first OWNED command was rewritten to its resolver');
     const stopCommand = after.hooks.Stop[0].hooks[0].command;
     assert.match(stopCommand, /speak-reply\.sh/);
-    assert.ok(!stopCommand.includes('run-hook-with-bash.js'),
-      'the foreign Stop command was left untouched');
+    // BYTE-IDENTICAL is the actual invariant. Asserting the absence of the
+    // resolver was a proxy for it, and it stopped meaning that once the Stop
+    // slot legitimately NAMED the resolver as an argument (HIMMEL-2004 queues
+    // the speak-reply invocation rather than running it inline).
+    assert.equal(stopCommand, stopBefore, 'the foreign Stop command was left untouched');
   });
 });
 
@@ -393,13 +446,13 @@ test('accepts a known hook script under a foreign event key (appended)', () => {
 
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
+    assert.match(result.stdout, REWROTE_RE);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
-    // The 17 OWNED scripts still route through the resolver.
+    // The OWNED scripts (SCRIPT_COUNT of them) still route through the resolver.
     const wired = commands(after).filter((c) =>
-      c.startsWith('node "$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js"'));
-    assert.equal(wired.length, 17);
+      c.startsWith(WIRED_LAUNCHER));
+    assert.equal(wired.length, SCRIPT_COUNT);
     // The known script planted under the FOREIGN Stop key is left untouched —
     // it is not this tool's hook, so neither its routing nor its text is owned.
     const stopCommands = after.hooks.Stop.flatMap((g) => g.hooks).map((h) => h.command);
@@ -426,7 +479,7 @@ test('accepts a known hook script under a foreign event key ordered first', () =
 
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
+    assert.match(result.stdout, REWROTE_RE);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
     // The first OWNED command (the real PreToolUse[0]) is still rewritten to its
@@ -453,7 +506,7 @@ test('an unrecognised .sh under a foreign event key is left untouched (isolation
 
     const result = invoke(fixture);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 17 hook command\(s\)/);
+    assert.match(result.stdout, REWROTE_RE);
 
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
     const stopCommands = after.hooks.Stop.flatMap((g) => g.hooks).map((h) => h.command);

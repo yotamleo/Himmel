@@ -20,6 +20,9 @@ HOOK="$SCRIPT_DIR/guard-implementor-dispatch.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/himmel-impl-guard.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+pass=0
+fail=0
+
 REG_CLAUDEX="$TMP/claudex.json"
 REG_GLM="$TMP/glm.json"
 REG_NONE="$TMP/none.json"
@@ -43,8 +46,8 @@ cp "$REPO_ROOT/scripts/lanes/bank-status-core.mjs" "$FAKE_REPO_NO_CLAUDEX/script
 
 # HIMMEL-1513 funded-bank fixtures. A fake project root carrying BOTH dispatchers
 # (so claudex AND glm pass lane_runnable) but NO bank-status.ts — proves the
-# default-path helper-missing branch fail-opens (lane treated as funded) rather
-# than stranding the caller.
+# default-path helper-missing branch reports UNKNOWN and skips the lane rather
+# than routing toward unmeasured capacity.
 FAKE_REPO_NO_BANK="$TMP/fake-repo-no-bank"
 mkdir -p "$FAKE_REPO_NO_BANK/scripts/lanes" "$FAKE_REPO_NO_BANK/scripts/telegram"
 cp "$REPO_ROOT/scripts/lanes/resolve.mjs" "$FAKE_REPO_NO_BANK/scripts/lanes/resolve.mjs"
@@ -52,23 +55,6 @@ cp "$REPO_ROOT/scripts/lanes/probe.mjs" "$FAKE_REPO_NO_BANK/scripts/lanes/probe.
 cp "$REPO_ROOT/scripts/lanes/bank-status-core.mjs" "$FAKE_REPO_NO_BANK/scripts/lanes/bank-status-core.mjs"
 : > "$FAKE_REPO_NO_BANK/scripts/telegram/spawn-claudex.ts"
 : > "$FAKE_REPO_NO_BANK/scripts/telegram/spawn-glm.ts"
-
-# PATH stub with bun's directory removed (mandatory negative test — a live
-# credential but no Bun runtime). Stubbing PATH rather than mutating the real
-# environment; jq/node/bash stay reachable since only bun's dir is dropped.
-if BUN_PATH=$(command -v bun 2>/dev/null); then
-    BUN_DIR=$(dirname "$BUN_PATH")
-else
-    BUN_DIR=""
-fi
-# grep -x anchors the pattern to the WHOLE line, so an empty BUN_DIR (bun
-# already absent from this machine's PATH) matches nothing — no PATH entry is
-# ever the literal empty string — and every line survives -v unchanged. That
-# is exactly the desired no-op: PATH already lacks bun in that case, so
-# nothing needs stripping and jq/node/bash stay reachable. (A plain `grep -v`
-# without `-x` would collapse the whole PATH here, since an empty pattern is
-# a substring of every line — that is NOT what this uses.)
-STUB_PATH_NO_BUN=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vxF "$BUN_DIR" | tr '\n' ':')
 
 # Resolve bash ONCE from the suite's own unmodified PATH, before any test
 # hands `env` a narrowed one (HIMMEL-1567). run_hook invokes this absolute
@@ -79,6 +65,70 @@ if [ -z "$BASH_ABS" ]; then
     echo "FATAL: cannot resolve bash on PATH" >&2
     exit 1
 fi
+# Refusing a relative PATH is deliberate: these are hermetic fixtures.
+# A bash resolved through a relative PATH means the invoking environment
+# is already broken in a way that makes any result untrustworthy
+# (HIMMEL-2520, CR [codex-1]).
+case "$BASH_ABS" in
+    /*) ;;
+    *) echo "FATAL: bash resolved to a non-absolute path ('$BASH_ABS') — this fixture invokes it after a cd and/or as a shim shebang, both of which need an absolute path" >&2; exit 1 ;;
+esac
+
+# A curated allowlist PATH (mandatory negative test — a live credential but
+# no Bun runtime) -- a scratch dir holding ONLY forwarding shims for the
+# tools this hook's bun-missing path actually walks (verified empirically:
+# cat, jq, tr, sed, grep, dirname, node, stat, date, awk), each resolved from
+# THIS host's live PATH, and NO bun/bunx anywhere in it (HIMMEL-2520, shape
+# from HIMMEL-2470).
+#
+# The prior version (directory-stripping: drop every PATH entry that itself
+# contains an executable bun/bun.exe) breaks on any host where bun shares a
+# directory with the rest of the toolchain -- on this Arch/CachyOS station
+# bun and bunx sit in /usr/bin alongside jq, node, sed and coreutils, so
+# stripping that directory silently guts every tool the hook needs before it
+# even reaches its own bun check (it hit "jq not on PATH — allowing
+# (fail-open)" instead, a DIFFERENT fail-open message than the one this test
+# asserts on). HIMMEL-2160's insight (a machine can have more than one bun
+# install on PATH, so a single `command -v` strip is not enough) is still
+# true, but an allowlist makes it moot: bun/bunx are simply never placed in
+# it, no matter how many real installs exist elsewhere on the host.
+#
+# Shims are wrapper scripts (`exec "$real" "$@"`), not symlinks/copies --
+# MSYS/Cygwin binaries resolve sibling runtime DLLs relative to argv0's
+# invocation path, so a relocated copy fails to load on Git-Bash even though
+# the real binary works fine; a wrapper relocates nothing and behaves
+# identically on Linux/macOS/Windows.
+STUB_PATH_NO_BUN_DIR="$TMP/no-bun-bin"
+mkdir -p "$STUB_PATH_NO_BUN_DIR"
+for _t in cat jq tr sed grep dirname node stat date awk; do
+    _tpath=$(command -v "$_t" 2>/dev/null) || { echo "FATAL: cannot resolve '$_t' on PATH to build the bun-missing allowlist" >&2; exit 1; }
+    printf '#!%s\nexec "%s" "$@"\n' "$BASH_ABS" "$_tpath" > "$STUB_PATH_NO_BUN_DIR/$_t"
+    chmod +x "$STUB_PATH_NO_BUN_DIR/$_t"
+done
+unset _t _tpath
+STUB_PATH_NO_BUN="$STUB_PATH_NO_BUN_DIR"
+
+# Positive control for the instrument: the allowlist PATH has no bun AND
+# genuinely resolves every tool the hook's bun-missing path needs -- a "bun
+# not found" verdict proves nothing if bun was never removed, and an
+# over-narrow allowlist that silently dropped (say) `node` would make the
+# hook fail for the wrong reason while looking identical to the case under
+# test (HIMMEL-2520).
+_missing=""
+for _t in cat jq tr sed grep dirname node stat date awk; do
+    PATH="$STUB_PATH_NO_BUN" command -v "$_t" >/dev/null 2>&1 || _missing="$_missing $_t"
+done
+if PATH="$STUB_PATH_NO_BUN" command -v bun >/dev/null 2>&1; then
+    echo "FAIL fixture control: allowlist PATH still resolves bun"
+    fail=$((fail + 1))
+elif [ -n "$_missing" ]; then
+    echo "FAIL fixture control: allowlist PATH missing required tool(s):$_missing"
+    fail=$((fail + 1))
+else
+    echo "PASS fixture control: allowlist PATH resolves no bun and every required tool"
+    pass=$((pass + 1))
+fi
+unset _t _missing
 
 # HIMMEL-1567: the suite is not hermetic to whether the real `bun` binary is
 # on the runner's PATH -- it isn't on the CI (ubuntu-latest) box, so every
@@ -109,6 +159,7 @@ chmod +x "$STUB_BUN_DIR/bun"
 BANK_FUNDED_CMD="printf 'claudex funded\\nglm funded\\n'"
 BANK_CLAUDEX_SPENT_CMD="printf 'claudex spent\\nglm funded\\n'"
 BANK_BOTH_SPENT_CMD="printf 'claudex spent\\nglm spent\\n'"
+BANK_CLAUDEX_UNKNOWN_CMD="printf 'claudex unknown unmeasurable\\nglm funded measured\\n'"
 BANK_GARBAGE_CMD="printf 'claudex ???\\nglm ???\\n'"
 BANK_HANG_CMD="sleep 30"
 
@@ -132,9 +183,6 @@ printf '%s\n' \
     '{"v":1,"ev":"end","flow":"verify-return","note":"PASS HIMMEL-1 claudex/w1"}' \
     '{"v":1,"ev":"end","flow":"verify-return","note":"PASS HIMMEL-1 claudex/w2"}' \
     > "$LEDGER_CLAUDEX_READY"
-
-pass=0
-fail=0
 
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
@@ -198,6 +246,13 @@ large_payload() {
 
 mkcache() {
     printf '{"five_hour":{"utilization":%s,"resets_at":"%s"}}' "$2" "$(( $(date +%s) + 3600 ))" > "$1"
+}
+
+# mkcache_both <path> <five_hour_util> <seven_day_util> - HIMMEL-2653 fixture
+# carrying BOTH windows, each with a live (future) resets_at.
+mkcache_both() {
+    printf '{"five_hour":{"utilization":%s,"resets_at":"%s"},"seven_day":{"utilization":%s,"resets_at":"%s"}}' \
+        "$2" "$(( $(date +%s) + 3600 ))" "$3" "$(( $(date +%s) + 3600 ))" > "$1"
 }
 
 run_hook() {
@@ -306,7 +361,6 @@ RC15=$?
 assert_rc "missing resolver allows when bank cannot be checked" 0 "$RC15"
 assert_contains "missing resolver reports lane fail-open" "lane resolver missing" "$(cat "$TMP/err-missing")"
 
-BASH_ABS=$(command -v bash)
 EMPTY_DIR="$TMP/empty-path"
 mkdir -p "$EMPTY_DIR"
 printf '%s' "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code.')" \
@@ -395,6 +449,106 @@ RC30=$(run_hook bank-iso "$REG_NONE" "$(payload general-purpose sonnet 'Implemen
 assert_rc "fractional ISO future resets_at authorizes HARD" 2 "$RC30"
 
 echo ""
+echo "=== HIMMEL-2653: weekly (seven_day) bank ceiling ==="
+
+# THE headline case: the fleet burned 73% of its weekly bank while five-hour
+# sat at a quiet 45% all day and the live gate never fired. A quiet five-hour
+# window must not mask a HARD-tripping weekly one.
+CACHE_WEEKLY_HARD="$TMP/cache-weekly-hard.json"; mkcache_both "$CACHE_WEEKLY_HARD" 10 90
+RC71=$(run_hook weekly-hard "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_WEEKLY_HARD")
+assert_rc "weekly HARD (90) with quiet five-hour (10) denies" 2 "$RC71"
+assert_contains "weekly HARD refusal names the 7-day window" "7-day bank at 90% (>= HARD 85%)" "$(cat "$TMP/err-weekly-hard")"
+assert_contains "weekly HARD refusal keeps lane-routing advice" "himmel-ops:glm-subagent" "$(cat "$TMP/err-weekly-hard")"
+
+# The exact case the live gate missed all day: 74% weekly (>= WARN 70%) with a
+# quiet 45% five-hour reading must WARN, not stay silent.
+CACHE_WEEKLY_WARN="$TMP/cache-weekly-warn.json"; mkcache_both "$CACHE_WEEKLY_WARN" 45 74
+RC72=$(run_hook weekly-warn "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_WEEKLY_WARN")
+assert_rc "weekly WARN (74) with quiet five-hour (45) allows" 0 "$RC72"
+assert_contains "weekly WARN emits visible allow decision" '"permissionDecision":"allow"' "$(cat "$TMP/out-weekly-warn")"
+assert_contains "weekly WARN names the 7-day window" "7-day bank at 74% (>= WARN 70%)" "$(cat "$TMP/out-weekly-warn")"
+
+# No regression: a HARD five-hour reading must still deny even when the
+# weekly window is quiet.
+CACHE_FIVE_HARD_WEEKLY_LOW="$TMP/cache-five-hard-weekly-low.json"; mkcache_both "$CACHE_FIVE_HARD_WEEKLY_LOW" 82 10
+RC73=$(run_hook five-hard-weekly-low "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_FIVE_HARD_WEEKLY_LOW")
+assert_rc "five-hour HARD (82) with quiet weekly (10) still denies" 2 "$RC73"
+assert_contains "regression: refusal names the 5-hour window" "5-hour bank at 82% (>= HARD 80%)" "$(cat "$TMP/err-five-hard-weekly-low")"
+
+# A cache carrying only five_hour (the pre-2653 shape) must behave exactly as
+# before — no 7-day chatter leaks into an otherwise unchanged HARD refusal.
+RC74=$(run_hook seven-absent "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_HARD")
+assert_rc "seven_day absent: five-hour-only path still HARD denies" 2 "$RC74"
+assert_contains "seven_day absent: message unchanged" "5-hour bank at 85%" "$(cat "$TMP/err-seven-absent")"
+assert_not_contains "seven_day absent: no 7-day chatter leaks into the message" "7-day" "$(cat "$TMP/err-seven-absent")"
+
+# Independent fail-open, proof 1: an unusable five_hour (null) must NOT
+# suppress a usable, tripping seven_day.
+CACHE_FIVE_NULL_SEVEN_HARD="$TMP/cache-five-null-seven-hard.json"
+printf '{"five_hour":{"utilization":null,"resets_at":"%s"},"seven_day":{"utilization":90,"resets_at":"%s"}}' \
+    "$(( $(date +%s) + 3600 ))" "$(( $(date +%s) + 3600 ))" > "$CACHE_FIVE_NULL_SEVEN_HARD"
+RC75=$(run_hook five-null-seven-hard "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_FIVE_NULL_SEVEN_HARD")
+assert_rc "five_hour unusable (null) does not suppress a usable, tripping seven_day" 2 "$RC75"
+assert_contains "independent fail-open: refusal names the 7-day window" "7-day bank at 90% (>= HARD 85%)" "$(cat "$TMP/err-five-null-seven-hard")"
+
+# Independent fail-open, proof 2: only when BOTH windows are unusable does the
+# hook fail open, naming both.
+CACHE_BOTH_UNUSABLE="$TMP/cache-both-unusable.json"
+printf '%s' '{"five_hour":{"utilization":null},"seven_day":{"utilization":"garbage"}}' > "$CACHE_BOTH_UNUSABLE"
+RC76=$(run_hook both-unusable "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_BOTH_UNUSABLE")
+assert_rc "both windows unusable fails open" 0 "$RC76"
+assert_contains "both-unusable names both windows in the warning" "neither the 5-hour nor the 7-day" "$(cat "$TMP/err-both-unusable")"
+
+echo ""
+echo "=== HIMMEL-2653 CR round 2: invalid threshold overrides fall back, never suppress ==="
+
+# Zero (the exact reported shape): with BOTH windows tripping their OWN HARD
+# threshold at default values, the tie-break at line ~642 divides by HARD as a
+# denominator. An unvalidated IMPL_GUARD_HARD=0 makes that division fatal in
+# awk, the command substitution returns empty, and hard_window is wiped out
+# even though five_hour already tripped -- a silent allow on what should be a
+# HARD refusal. Both windows here trip regardless of the override (90 >= 80
+# default HARD, 90 >= 85 default WEEKLY_HARD), so this isolates the tie-break
+# path rather than the trip check itself.
+CACHE_BOTH_HARD="$TMP/cache-both-hard.json"; mkcache_both "$CACHE_BOTH_HARD" 90 90
+RC77=$(run_hook hard-zero "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_BOTH_HARD" IMPL_GUARD_HARD=0)
+assert_rc "IMPL_GUARD_HARD=0 still HARD-refuses via the default threshold" 2 "$RC77"
+assert_contains "zero override warns and names the default" "IMPL_GUARD_HARD=0 is not a positive number — using default 80" "$(cat "$TMP/err-hard-zero")"
+assert_contains "zero override refusal uses the default 80% threshold" "bank at 90% (>= HARD 80%)" "$(cat "$TMP/err-hard-zero")"
+
+# Negative: a WARN-tripping five_hour reading must still advise using the
+# default WARN threshold, not be silenced by a negative override.
+RC78=$(run_hook warn-negative "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_WARN" IMPL_GUARD_WARN=-5)
+assert_rc "IMPL_GUARD_WARN=-5 still allows (WARN is advisory)" 0 "$RC78"
+assert_contains "negative override warns and names the default" "IMPL_GUARD_WARN=-5 is not a positive number — using default 65" "$(cat "$TMP/err-warn-negative")"
+assert_contains "negative override advisory uses the default 65% threshold" "WARN 65%" "$(cat "$TMP/out-warn-negative")"
+
+# Non-numeric: reuse the existing weekly-HARD fixture (quiet five_hour,
+# tripping seven_day) with a garbage IMPL_GUARD_WEEKLY_HARD override -- the
+# 7-day refusal must still fire off the default 85% threshold.
+RC79=$(run_hook weekly-hard-nonnumeric "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_WEEKLY_HARD" IMPL_GUARD_WEEKLY_HARD=notanumber)
+assert_rc "IMPL_GUARD_WEEKLY_HARD=notanumber still HARD-refuses via the default" 2 "$RC79"
+assert_contains "non-numeric override warns and names the default" "IMPL_GUARD_WEEKLY_HARD=notanumber is not a positive number — using default 85" "$(cat "$TMP/err-weekly-hard-nonnumeric")"
+assert_contains "non-numeric override refusal uses the default 85% threshold" "7-day bank at 90% (>= HARD 85%)" "$(cat "$TMP/err-weekly-hard-nonnumeric")"
+
+echo ""
+echo "=== HIMMEL-2653 CR round 3: explicit HARD->WARN downgrade must survive WARN_T > HARD ==="
+
+# The existing "HARD without resets_at downgrades to allow" case (RC24) cannot
+# distinguish the explicit downgrade from *_IS_WARN's own threshold check,
+# because it uses the DEFAULT thresholds (WARN_T=65 <= HARD=80) where a util
+# of 85 trips WARN on its own regardless. Isolate the downgrade with an
+# operator config where WARN_T > HARD and a util strictly between them: HARD
+# refuses eligibility-wise but cannot (no resets_at), and *_IS_WARN's own
+# check (62 >= 65?) is false -- only the explicit downgrade produces a WARN.
+CACHE_WARN_GT_HARD="$TMP/cache-warn-gt-hard.json"
+printf '%s' '{"five_hour":{"utilization":62}}' > "$CACHE_WARN_GT_HARD"
+RC80=$(run_hook downgrade-warn-gt-hard "$REG_NONE" "$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')" IMPL_GUARD_CACHE_PATH="$CACHE_WARN_GT_HARD" IMPL_GUARD_HARD=60 IMPL_GUARD_WARN=65)
+assert_rc "HARD-eligible reading with no resets_at, WARN_T>HARD, still allows" 0 "$RC80"
+assert_contains "downgrade emits a visible allow decision" '"permissionDecision":"allow"' "$(cat "$TMP/out-downgrade-warn-gt-hard")"
+assert_contains "downgrade advisory uses the (higher) WARN threshold" "WARN 65%" "$(cat "$TMP/out-downgrade-warn-gt-hard")"
+
+echo ""
 echo "=== HIMMEL-1513: a registry-available lane must also be runnable ==="
 
 # 1. MANDATORY negative test — credential present (registry says claudex is
@@ -449,16 +603,12 @@ assert_contains "both-spent warns claudex spent" "lane 'claudex' is runnable but
 assert_contains "both-spent warns glm spent" "lane 'glm' is runnable but its bank is spent" "$(cat "$TMP/err-both-spent")"
 assert_not_contains "both-spent emits NO lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-both-spent")"
 
-# 2b. A probe that emits `spent` AND exits NON-ZERO must be treated as FUNDED.
-# `spent` is the one arm that refuses a lane, and a timed-out or crashed probe
-# can still have written a partial `<lane> spent` line — so accepting it would
-# skip a lane on evidence the probe never finished producing. rc is checked
-# BEFORE the output is parsed: non-zero means "no verdict", which is fail-OPEN.
-# Without that ordering this case reports "bank is spent" and skips claudex.
+# 2b. A probe that emits `spent` AND exits NON-ZERO has no usable verdict.
+# The lane must be skipped loudly rather than accepted on a partial line.
 RC35B=$(run_hook spent-but-rc-nonzero "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="printf 'claudex spent\\nglm spent\\n'; exit 3" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
-assert_rc "spent+rc!=0 fails OPEN: claudex stays eligible, hook refuses toward it" 2 "$RC35B"
+assert_rc "spent+rc!=0 leaves both banks unknown and falls through" 0 "$RC35B"
 assert_contains "spent+rc!=0 warns the probe did not finish cleanly" "did not finish cleanly (rc=3)" "$(cat "$TMP/err-spent-but-rc-nonzero")"
-assert_contains "spent+rc!=0 treats the lane as funded" "treating it as funded (fail-open)" "$(cat "$TMP/err-spent-but-rc-nonzero")"
+assert_contains "spent+rc!=0 names UNKNOWN" "bank UNKNOWN; skipping it" "$(cat "$TMP/err-spent-but-rc-nonzero")"
 assert_not_contains "spent+rc!=0 does NOT accept the partial spent verdict" "bank is spent" "$(cat "$TMP/err-spent-but-rc-nonzero")"
 
 # 3. A spent preferred lane with NO other lane available also falls through
@@ -467,24 +617,28 @@ RC37=$(run_hook glm-spent-no-claudex "$REG_GLM" "$(payload general-purpose sonne
 assert_rc "spent glm with no claudex falls through (low bank -> allow)" 0 "$RC37"
 assert_not_contains "spent-glm emits NO lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-glm-spent-no-claudex")"
 
-# 4. Fail-open: every probe failure treats the lane as FUNDED, so the refusal is
-# unchanged from the funded behaviour (still refuses toward claudex, never
-# strands the caller). Covers helper-missing (default path: bank-status.ts
-# absent from a fake checkout), helper times out, and garbage output.
+# 4. Every unreadable-bank shape reports UNKNOWN and skips the lane. Covers an
+# explicit unknown verdict plus helper-missing, timeout, and garbage output.
+RC37B=$(run_hook bank-explicit-unknown "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1768' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="$BANK_CLAUDEX_UNKNOWN_CMD" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
+assert_rc "unknown claudex skips to measured-funded glm" 2 "$RC37B"
+assert_contains "explicit unknown is loud at the gate" "lane 'claudex' bank is UNKNOWN" "$(cat "$TMP/err-bank-explicit-unknown")"
+assert_contains "explicit unknown fallback names glm" "spawn-glm" "$(cat "$TMP/err-bank-explicit-unknown")"
+assert_not_contains "explicit unknown never treats claudex as funded" "spawn-claudex" "$(cat "$TMP/err-bank-explicit-unknown")"
+
 RC38=$(run_hook bank-helper-missing "$REG_BOTH" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" CLAUDE_PROJECT_DIR="$FAKE_REPO_NO_BANK" IMPL_GUARD_BANK_STATUS_CMD="" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
-assert_rc "missing probe helper fail-opens to claudex refusal" 2 "$RC38"
-assert_contains "missing-helper fail-open warns" "bank-status probe is missing" "$(cat "$TMP/err-bank-helper-missing")"
-assert_contains "missing-helper still names the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-bank-helper-missing")"
+assert_rc "missing probe helper leaves both banks unknown and falls through" 0 "$RC38"
+assert_contains "missing-helper names UNKNOWN" "bank UNKNOWN; skipping it" "$(cat "$TMP/err-bank-helper-missing")"
+assert_not_contains "missing-helper emits no lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-bank-helper-missing")"
 
 RC39=$(run_hook bank-timeout "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="$BANK_HANG_CMD" IMPL_GUARD_BANK_BUDGET_SECS=1 IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
-assert_rc "timed-out probe fail-opens to claudex refusal" 2 "$RC39"
-assert_contains "timeout fail-open warns" "did not finish cleanly" "$(cat "$TMP/err-bank-timeout")"
-assert_contains "timeout still names the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-bank-timeout")"
+assert_rc "timed-out probe skips claudex and falls through" 0 "$RC39"
+assert_contains "timeout names UNKNOWN" "bank UNKNOWN; skipping it" "$(cat "$TMP/err-bank-timeout")"
+assert_not_contains "timeout emits no lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-bank-timeout")"
 
 RC40=$(run_hook bank-garbage "$REG_CLAUDEX" "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code and commit it.')" IMPL_GUARD_BANK_STATUS_CMD="$BANK_GARBAGE_CMD" IMPL_GUARD_CACHE_PATH="$CACHE_LOW")
-assert_rc "garbage probe output fail-opens to claudex refusal" 2 "$RC40"
-assert_contains "garbage fail-open warns" "unrecognised state" "$(cat "$TMP/err-bank-garbage")"
-assert_contains "garbage still names the claudex dispatcher" "spawn-claudex" "$(cat "$TMP/err-bank-garbage")"
+assert_rc "garbage probe output skips claudex and falls through" 0 "$RC40"
+assert_contains "garbage output names UNKNOWN" "bank UNKNOWN; skipping it" "$(cat "$TMP/err-bank-garbage")"
+assert_not_contains "garbage emits no lane refusal" "refusing implementation-shaped" "$(cat "$TMP/err-bank-garbage")"
 
 # RC1 above (general-purpose + claudex available refuses) is the regression guard
 # proving a general-purpose implementation dispatch is still REFUSED — it runs

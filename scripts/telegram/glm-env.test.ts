@@ -26,6 +26,10 @@ test("env block from process.env key", () => {
   // interactive GLM session (cwd in the luna vault, no himmel scripts/ tree)
   // out of the fail-closed population.
   expect(e.HIMMEL_GLM_WORKER).toBe("1");
+  // HIMMEL-2085: the general worker-ness marker HIMMEL_GLM_WORKER is now one
+  // instance of — set alongside it so block-glm-external-writes.sh's pin-dir
+  // write-fence generalizes across lanes without keying on GLM specifically.
+  expect(e.HIMMEL_WORKER).toBe("1");
   expect(Object.keys(e)).not.toContain("CLAUDE_CONFIG_DIR");
 });
 

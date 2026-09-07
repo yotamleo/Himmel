@@ -57,8 +57,61 @@ class TestConstruction(unittest.TestCase):
         self.assertEqual(vm.os, "ubuntu")
         self.assertEqual(vm.port, 2222)
         self.assertEqual(vm.host, "127.0.0.1")
-        self.assertEqual(vm.user, "osboxes")
+        # ubuntu_new's registry entry carries a literal "user": "himmel"
+        # (HIMMEL-2623) — the real guest login, which now wins over
+        # user_env's "osboxes" (see test_literal_user_wins_over_stale_env_var
+        # below for the isolated, registry-independent proof of that
+        # precedence rule).
+        self.assertEqual(vm.user, "himmel")
         self.assertEqual(vm.password, "pw")
+
+    def test_literal_user_wins_over_stale_env_var(self):
+        """HIMMEL-2623: a registry entry's literal 'user' must win over
+        'user_env', even when the env var it names is set to something else
+        entirely — this is the exact failure mode that shipped silently
+        (ubuntu_new's real guest user is 'himmel'; .env's ubuntu_vm_user was
+        stale at the retired VM's 'osboxes', and vmsdk failed BOTH password
+        and key auth because it connected as the wrong user for both
+        attempts, not because the lane was down). Uses a throwaway registry
+        + a POISONED env var so this is provable without touching the real
+        scripts/lib/vms.json or scripts/lib/.env."""
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        reg_path = Path(tmp) / "vms.json"
+        reg_path.write_text(json.dumps({
+            "poisoned": {
+                "os": "ubuntu", "ssh_port": 2299,
+                "user": "himmel",
+                "user_env": "ubuntu_vm_user", "pass_env": "ubuntu_vm_pass",
+            }
+        }))
+        with mock.patch.dict(os.environ,
+                             {"ubuntu_vm_user": "osboxes", "ubuntu_vm_pass": "pw"},
+                             clear=False):
+            with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+                vm = vmsdk.VM("poisoned", registry_path=str(reg_path))
+        self.assertEqual(vm.user, "himmel")
+
+    def test_no_literal_user_falls_back_to_user_env(self):
+        """Back-compat: an entry with no literal 'user' key still resolves
+        from user_env exactly as before this fix."""
+        import tempfile
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        reg_path = Path(tmp) / "vms.json"
+        reg_path.write_text(json.dumps({
+            "nouser": {
+                "os": "ubuntu", "ssh_port": 2298,
+                "user_env": "ubuntu_vm_user", "pass_env": "ubuntu_vm_pass",
+            }
+        }))
+        with mock.patch.dict(os.environ,
+                             {"ubuntu_vm_user": "osboxes", "ubuntu_vm_pass": "pw"},
+                             clear=False):
+            with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
+                vm = vmsdk.VM("nouser", registry_path=str(reg_path))
+        self.assertEqual(vm.user, "osboxes")
 
     def test_unknown_vm_lists_known(self):
         with self.assertRaises(vmsdk.VMError) as cm:
@@ -66,11 +119,17 @@ class TestConstruction(unittest.TestCase):
         self.assertIn("ubuntu_new", str(cm.exception))
 
     def test_missing_env_names_key(self):
+        # ubuntu_new's literal "user": "himmel" (HIMMEL-2623) short-circuits
+        # the user_env lookup entirely, so with everything unset the FIRST
+        # env key still required is pass_env (ubuntu_vm_pass), not
+        # user_env (ubuntu_vm_user) — see the no-literal-user fixture in
+        # TestStation.test_vm_entry_back_compat_unchanged for the user_env
+        # path still raising on that key when there is no literal to bypass it.
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
                 with self.assertRaises(vmsdk.VMError) as cm:
                     vmsdk.VM("ubuntu_new")
-        self.assertIn("ubuntu_vm_user", str(cm.exception))
+        self.assertIn("ubuntu_vm_pass", str(cm.exception))
 
 
 class TestLifecycleExec(unittest.TestCase):
@@ -234,10 +293,10 @@ class TestClone(unittest.TestCase):
             dest = vm.clone_himmel(ref="main", depth=1)
         self.assertEqual(dest, "~/himmel")
         joined = "\n".join(calls)
-        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel-private.git", joined)
+        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel.git", joined)
         self.assertIn("--depth 1", joined)
         self.assertIn("--branch main", joined)
-        self.assertIn("set-url origin https://github.com/yotamleo/himmel-private.git", joined)
+        self.assertIn("set-url origin https://github.com/yotamleo/himmel.git", joined)
 
     def test_clone_refuses_existing_dest(self):
         vm = self._vm()
@@ -271,8 +330,8 @@ class TestClone(unittest.TestCase):
         joined = "\n".join(calls)
         self.assertIn(r"if exist C:\himmel", joined)
         self.assertIn(r'"C:\Program Files\Git\bin\bash.exe" -lc', joined)
-        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel-private.git", joined)
-        self.assertIn("set-url origin https://github.com/yotamleo/himmel-private.git", joined)
+        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel.git", joined)
+        self.assertIn("set-url origin https://github.com/yotamleo/himmel.git", joined)
 
 
 class TestProvisionE2E(unittest.TestCase):
@@ -313,7 +372,10 @@ class TestProvisionE2E(unittest.TestCase):
         self.assertEqual(rc, 0)
         argv = sr.call_args[0][0]
         self.assertIn("test-install-symmetry-vm.sh", " ".join(argv))
-        self.assertIn("osboxes@localhost", argv)   # NOT bare "localhost"
+        # ubuntu_new's registry entry now carries a literal "user": "himmel"
+        # (HIMMEL-2623) — the real guest login, which wins over user_env's
+        # "osboxes" (see TestConstruction.test_literal_user_wins_over_stale_env_var).
+        self.assertIn("himmel@localhost", argv)   # NOT bare "localhost"
         self.assertIn("2222", [str(a) for a in argv])
         # Bash (Git Bash on Windows) mangles backslash paths — every arg PASSED TO
         # bash (argv[1:], not the interpreter argv[0]) must be backslash-free
@@ -877,7 +939,7 @@ class TestTriggerClaude(unittest.TestCase):
         prompt = dc.call_args[0][0]
         self.assertIn(guest, prompt)
         self.assertEqual(dc.call_args.kwargs.get("cwd"),
-                         "~/Documents/github/himmel-private")
+                         "~/Documents/github/himmel")
 
     def test_same_basename_different_sources_distinct_guest_paths(self):
         """codex-adv CR: next-session-N.md exists in many buckets — two
@@ -991,7 +1053,7 @@ class TestTriggerClaude(unittest.TestCase):
              mock.patch.object(vm, "run", side_effect=fake_run):
             vm.trigger_claude(str(self.local), when="22:30")
         joined = "\n".join(cmds)
-        self.assertIn("cd ~/Documents/github/himmel-private", joined)
+        self.assertIn("cd ~/Documents/github/himmel", joined)
         self.assertNotIn("--cwd", joined)
 
     def test_scheduled_with_explicit_cwd_includes_cwd_flag(self):
@@ -1166,13 +1228,20 @@ class TestStation(unittest.TestCase):
         self.assertIn("host", str(cm.exception))
 
     def test_vm_entry_back_compat_unchanged(self):
-        """Existing (non-station) registry entries behave exactly as before:
-        kind defaults to "vm", auth defaults to "password", loopback host/port,
-        password-env auth — VM back-compat is the explicit requirement here."""
+        """Existing (non-station) registry entries with NO literal 'user' key
+        behave exactly as before HIMMEL-2623: kind defaults to "vm", auth
+        defaults to "password", loopback host/port, user_env/pass_env auth.
+        Uses a throwaway registry (not the real ubuntu_new entry, which now
+        carries a literal 'user' — see TestConstruction's literal-precedence
+        tests for that) so this stays a pure back-compat check."""
+        reg_path = self._write_registry({
+            "plainvm": {"os": "ubuntu", "ssh_port": 2222,
+                        "user_env": "ubuntu_vm_user", "pass_env": "ubuntu_vm_pass"},
+        })
         with mock.patch.dict(os.environ,
                              {"ubuntu_vm_user": "osboxes", "ubuntu_vm_pass": "pw"}, clear=False):
             with mock.patch.object(vmsdk, "_load_dotenv_into_env"):
-                vm = vmsdk.VM("ubuntu_new")
+                vm = vmsdk.VM("plainvm", registry_path=reg_path)
         self.assertEqual(vm.kind, "vm")
         self.assertEqual(vm.auth, "password")
         self.assertEqual(vm.host, "127.0.0.1")

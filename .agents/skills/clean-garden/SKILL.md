@@ -1,6 +1,6 @@
 ---
 name: clean-garden
-description: Prune merged-PR worktrees AND create a new one in one shot. Use when the user asks to run /clean_garden or prune-and-create a worktree.
+description: Prune merged-PR worktrees AND create a new one in one shot. Use for /clean_garden or prune-and-create.
 ---
 
 # clean-garden

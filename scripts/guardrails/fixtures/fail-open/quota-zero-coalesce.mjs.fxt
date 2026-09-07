@@ -1,0 +1,13 @@
+// Pre-fix shape of HIMMEL-1776 instance 4 (scripts/lanes/bench/
+// aggregate-tokens.mjs family): a malformed or unreadable reading resolved
+// its usage at zero, so a run that could not be measured reported as free —
+// and "free" never trips a budget gate.
+//
+// Expected: lint-fail-open.sh fires fail-open(quota-zero) here.
+export function spentSoFar(readings) {
+  let spent = 0;
+  for (const r of readings) {
+    spent += r.usage ?? 0; // an unreadable usage reads as nothing-spent
+  }
+  return spent;
+}

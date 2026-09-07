@@ -205,6 +205,16 @@ flowchart TD
     CLX --> BACK
 ```
 
+**Dormancy (operator ruling 2026-08-19, HIMMEL-1967).** The diagram shows what
+each chokepoint *does*, not what is currently routed to it. Every external
+impl lane in the registry is marked `dormant`, and `lanes.json` deliberately
+carries no `defaultImplLane` — so an unqualified impl dispatch refuses toward
+the native Claude-subagent path rather than silently picking a lane. Opting
+one in is per-dispatch and per-lane (`GLM_LANE_OK`, `CLAUDEX_LANE_OK` — see
+the env table in §4.1). Hermes critic rows inside `/pr-check` are unaffected.
+`/lanes` is the live inventory; `internals/lane-calibration.md` is the status
+of record.
+
 Key invariants (enforced or structural, not just prose): external workers
 commit on their **own** `glm/<slug>` / `claudex/<slug>` branches in isolated
 worktrees (shared-branch mode `--branch <existing>` serializes through
@@ -237,7 +247,7 @@ tries to close.
 | `worktree-isolation`, `merged-branch-check`, `hookspath-misconfig`, `lockfile-integrity`, `artifact-leakage`, `uv-lock-integrity`, `pip-hashes`, `mcp-plugin-refs` | pre-commit | HARD | fix the finding (`--no-verify` only) |
 | drift guards (`doc-guard`, `agents-md-fresh`, `lanes-inventory-guard`, `hud-drift`, `telegram-fork-drift`, `template-himmel-plugins`) | pre-commit (most carry no `stages:` pin, so today they fire at every installed stage, push included) | HARD | fix the finding |
 | `no-headless-claude` / `no-headless-gemini` (billing rule, HIMMEL-128) | pre-commit | HARD | `# headless-claude-ok: <reason>` marker on/above the line; docs paths exempt (`scripts/hooks/check-no-headless-claude.sh`) |
-| `conventional-commit-msg` — conventional shape + strict ticket traceability when `TICKET_ID_REQUIRED=1` | commit-msg | HARD | fix the message; merge/revert and `TICKET_ID_EXEMPT_AUTHORS` exempt (fixup/squash skip shape only) |
+| `conventional-commit-msg` — conventional shape + ticket traceability (ON by default; pattern = `TICKET_ID_PATTERN`, else `JIRA_PROJECT_KEY-N`, else `#N`) | commit-msg | HARD | fix the message; `TICKET_ID_REQUIRED=0` opts out of the ticket half; merge/revert and `TICKET_ID_EXEMPT_AUTHORS` exempt (fixup/squash skip shape only) |
 | `no-push-to-main` | pre-push | HARD | none — work through a PR |
 | `npm-audit` / `npm-licenses` / `npm-audit-signatures` | pre-push | HARD | fix the dependency |
 | `no-force-push` | pre-push | HARD for `main`; advisory elsewhere | `SKIP_FORCE_PUSH_GATE=1` silences the non-main warning only |
@@ -259,7 +269,9 @@ Wired in three places: the repo's `.claude/settings.json` (project scope),
 [§4.2](#42-claude-code-settings--hooks)), and the himmel-ops plugin's
 `marketplace/plugins/himmel-ops/hooks/hooks.json` (`block-docker-privesc`,
 `block-merged-pr-commit`, `block-unresolved-cr-merge`, `block-graphify-egress`,
-`block-rogue-codex-wsl`, `guard-implementor-dispatch` — these six exist only
+`block-rogue-codex-wsl`, `block-rogue-codex-exec`, `guard-implementor-dispatch`,
+`guard-console-dispatch`
+— these eight exist only
 where that plugin is installed). All scripts under `scripts/hooks/`. Full
 per-hook behavior: [internals/enforcement.md](internals/enforcement.md).
 
@@ -270,18 +282,21 @@ per-hook behavior: [internals/enforcement.md](internals/enforcement.md).
 | `block-destructive-commands` | recursive `rm`, `schtasks` mutation, `taskkill`, forced git rewrites, `curl\|sh`, … | auth-gated | `DESTRUCTIVE_OK=1` |
 | `block-rogue-claude-schedule` | one command that both registers a scheduler job and launches `claude` | auth-gated | `ROGUE_SCHEDULE_OK=1`; or use the sanctioned `arm-resume.sh` / `pipeline-cadence.sh` |
 | `block-rogue-codex-wsl` | raw `wsl … codex exec` outside the dispatch chokepoint | auth-gated | `CODEX_WSL_RAW_OK=1` |
+| `block-rogue-codex-exec` | raw native `codex exec` outside the dispatch chokepoint (no preflight, no pins, no registry, no watchdog) | auth-gated | `CODEX_EXEC_RAW_OK=1` |
 | `block-backend-tier` | an MCP (Model Context Protocol plugin-server) call for a service whose CLI ranks higher and has the verb (registry `scripts/backends.json`) | auth-gated | `MCP_ALL_OK=1` or `MCP_<SERVICE>_OK=1` |
 | `block-jira-compound-write` | a Jira CLI write wrapped in `$(…)`/heredoc/chain | auth-gated (blocks the compound shape, prescribes the one literal retry) | `JIRA_COMPOUND_WRITE_OK=1` |
+| `block-tail-pipe-on-gates` | a pipeline whose FIRST stage invokes an exit-code-critical gate (`check-ci.sh`, `clear-cr-marker.sh`, `run-shell-tests.sh`, `merge-on-green.sh`, `pr-merge.sh`, `scripts/*/test-*.sh`) and whose LAST stage is `tail`/`head` — `$?` would be tail's, not the gate's | advisory (fail-open on anything it cannot parse) | a same-line `# tail-pipe-ok: <reason>` marker — deliberately NOT an env var, since a per-call prefix never reaches a hook (HIMMEL-203) |
 | `guard-memory-capture` | writes to the auto-memory store breaking its form rules | auth-gated | `MEMORY_CAPTURE_OK=1` |
 | `block-docker-privesc` | privileged/secret-mounting docker runs | auth-gated | `DOCKER_PRIVESC_OK=1` |
 | `block-merged-pr-commit` | `git commit` onto a branch whose PR already merged | auth-gated (hygiene) | `MERGED_PR_COMMIT_OK=1` |
 | `check-cr-marker-on-pr-create` | `gh pr create` while a CR marker exists | auth-gated | clean `/pr-check` (clears the marker) |
 | `block-unresolved-cr-merge` | `gh pr merge` — two sub-gates: unresolved CR threads, and CI not green | auth-gated | `CR_MERGE_GATE_OK=1` / `CI_MERGE_GATE_OK=1` (independent); `CR_PROFILE=none` skips the CR sub-gate |
 | `guard-implementor-dispatch` | expensive implementor-shaped `Agent` dispatches while the 5h Claude bank is hot | auth-gated cost guard (fail-open; blocks only at ≥80% bank + provably live window, warns at ≥65%) | `IMPL_GUARD_DISABLE=1` / `IMPL_GUARD_OK=1` |
+| `guard-console-dispatch` | a CONSOLE session dispatching ship-flow-shaped `Agent` work (≥2 of worktree/pr-open/cr-gate marker families) as an in-process subagent | workflow fence (fail-open; console-shaped AND ≥2-family match required) | `CONSOLE_DISPATCH_DISABLE=1` / `CONSOLE_DISPATCH_OK=1` |
 | `block-graphify-egress` + `scripts/guardrails/graphify-fence.sh` | any `graphify` run — corpus × provider egress policy | HARD (fail-closed EXIT trap) | none for hard-deny cells; narrow per-cell opt-ins only (`GRAPHIFY_SALUS_LOCAL_OK`, `GRAPHIFY_CLIPPINGS_GLM_OK`) |
 | `auto-arm-on-cap` / `auto-arm-on-subagent-cap` | usage cap approaching / subagent hit a cap | watchdog (fail-open; blocks once to force a handover, after arming a resume) | `AUTO_ARM_DISABLE=1` (+ `AUTO_ARM_SUBAGENT_DISABLE=1`) |
 | `auto-approve-safe-bash` | safe read-only Bash shapes | not a veto — only ever emits *allow* | comment out its stanza to disable |
-| `check-update-available` | SessionStart (throttled; a plain `git fetch` of your himmel clone's own remote — nothing else is contacted, no data sent) | advisory | `UPDATE_CHECK_DISABLE=1` |
+| `check-update-available` | SessionStart (throttled; a plain `git fetch` of your himmel clone's own remote — nothing else is contacted, no data sent — run DETACHED, so session start never waits on it) | advisory | `UPDATE_CHECK_DISABLE=1` |
 | `inject-initiative` | SessionStart | advisory (opt-in; injects the drive-to-ship directive) | unset `HIMMEL_INITIATIVE` (default OFF) |
 
 ### 3.3 Merge & publish gates
@@ -444,18 +459,25 @@ written only into `.env` is not read (`load-dotenv.sh` bridges neither).
 
 | Knob | Default | Set in | Effect |
 |---|---|---|---|
-| `ZAI_API_KEY` | unset (lane absent) | `.env` | enables the GLM lanes (`glm`, `glm-subagent`); legacy aliases `GLM_API_KEY`/`Z_AI_API_KEY` also accepted by the critic panel |
-| `CLIPROXY_API_KEY` | unset (lane absent) | `.env` | enables the claudex lane |
+| `ZAI_API_KEY` | unset (lane absent) | `.env` | makes the `glm` lane *detectable*; the registry marks it dormant, so dispatching it also needs `GLM_LANE_OK=1`. Legacy aliases `GLM_API_KEY`/`Z_AI_API_KEY` also accepted by the critic panel |
+| `CLIPROXY_API_KEY` | unset (lane absent) | `.env` | makes the `claudex` lane *detectable*; the registry marks it dormant, so dispatching it also needs `CLAUDEX_LANE_OK=1` |
 | `OPENROUTER_API_KEY` | unset (lane absent) | `.env` | enables the openrouter-free lane |
 | `GEMINI_API_KEY`/`GOOGLE_API_KEY`, `OMNIROUTE_API_KEY` | unset | `.env` | auth for the gemini helper (`scripts/gemini/invoke.sh`) and the `claude-routed` launcher — both real, but *outside* the `lanes.json` registry (`/lanes` does not list them) |
 | `scripts/lanes/lanes.local.json` | absent | `node scripts/lanes/set-lane-override.mjs <lane> <always\|never>` | per-machine forced lane override — the sanctioned way to turn a lane off (`never`) without touching the shared registry |
 | `LANES_REGISTRY` | unset | env | full registry-path override (test/CI; skips the local overlay) |
+| `HIMMEL_IMPL_LANE` | registry/overlay `defaultImplLane` | env | preferred implementation lane for `scripts/telegram/dispatch-lane.sh`; an explicit `--lane` still wins, and an unavailable selection is refused rather than substituted |
 | `GLM_MODEL` / `GLM_CONTEXT_WINDOW`, `ROUTED_MODEL` / `ROUTED_CONTEXT_WINDOW`, `OMNIROUTE_PORT` | `glm-5.2[1m]` / 1M / … | env | lane launcher tuning (`scripts/claude-glm`, `scripts/claude-routed`) |
 | `CLAUDE_LANE_AUTO_RESEED` | ON | shell | `0` stops the lane config dirs (`~/.claude-glm`, `~/.claude-routed`, `~/.claude-codex`) auto-reseeding from `~/.claude` |
 | `CLAUDEX_BANK_WARN_PCT` / `CLAUDEX_BANK_REFUSE_PCT` / `CLAUDEX_BANK_OK` | 80 / 90 / unset | env | claudex codex-weekly-bank preflight thresholds/override |
 | `IMPL_GUARD_HARD` / `IMPL_GUARD_WARN` / `IMPL_GUARD_CACHE_*` | 80 / 65 / … | env | implementor-dispatch cost-guard thresholds |
 | `HIMMEL_QUOTA_GAUGE_LEDGER` | `~/.himmel/quota-gauge.jsonl` | env | cross-lane quota observation ledger path |
 | `GLM_EXTERNAL_WRITES_OK` / `CODEX_EXTERNAL_WRITES_OK` | unset | shell | bypass the external-write fences on dispatched lane workers |
+
+Implementation chunks are dispatched by backgrounding
+`bash scripts/telegram/dispatch-lane.sh --brief-file <path> --name <slug>`
+with the Bash tool's `run_in_background: true`. The script resolves available
+impl lanes from the registry, enforces the lane timeout, and prints one final
+status/diff/outbox report; no wrapper subagent or polling loop is needed.
 
 **Telegram bridge** (all read at poller start — restart the bridge after any
 change; token and access config live *outside* the repo):
@@ -473,7 +495,7 @@ change; token and access config live *outside* the repo):
 | `BRIDGE_ROOT` | `~/.claude/handover/bridge` | env | bridge session-state root |
 | `CR_PUBLIC_REPO` | `yotamleo/Himmel` | env | the pinned public repo `/mergepub` may merge into |
 | `TELEGRAM_OWN_POLLER` / `HIMMEL_MCP_TELEGRAM` | OFF | shell | opt a Claude session into the vendored telegram plugin (poll-owner / send-only). Never run both the plugin poller and the bun bridge — one `getUpdates` consumer per token |
-| `TELEGRAM_CHAT_ID` / `TELEGRAM_GROUP_CHAT_ID` | unset (silent no-op) | `.env` (bridged) | targets for the opt-in jira-nudge and session-status relays |
+| `TELEGRAM_CHAT_ID` / `TELEGRAM_GROUP_CHAT_ID` | unset (silent no-op) | `.env` (bridged) | targets for the opt-in jira-nudge and session-status relays. An explicitly EMPTY `TELEGRAM_GROUP_CHAT_ID` in the process env also suppresses the session-status hooks — it never falls back to `.env` (HIMMEL-1926) |
 
 **Session nudges & ambient context** (all advisory, all default-OFF except
 the statusline segment):
@@ -514,9 +536,11 @@ Two scopes, deliberately split (`docs/setup/new-machine.md`):
   the non-hook user config: statusline, `env` block, `enabledPlugins`, and
   marketplaces.
 - **Project scope** (the repo's `.claude/settings.json`, checked in): the
-  himmel-dev guardrail stack — 7 PreToolUse matcher groups (10 script
-  invocations), 1 PostToolUse, 2 SessionStart — and the permission
-  allow/deny lists. `inject-initiative` is intentionally wired at **both**
+  himmel-dev guardrail stack — 11 PreToolUse matcher groups, 3 PostToolUse,
+  3 SessionStart, plus `Stop`, `SessionEnd` and the permission/notification
+  taps — and the permission allow/deny lists. Most groups run a single
+  *chained* dispatch that executes several scripts in order, so the group
+  count is well below the guardrail count; the file is the inventory. `inject-initiative` is intentionally wired at **both**
   scopes; a session-id dedup absorbs the double fire.
 
 The permission model in the project file: a literal-command **allow** list

@@ -36,6 +36,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || { echo "FAIL: node required" >&2; exit 1; }
@@ -51,15 +52,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # HIMMEL-1446 r2 (glm-1): cmdUninstall now removes PATH launchers from binDir.
 # Isolate binDir for the WHOLE suite so an accept-case never touches the
@@ -108,7 +100,7 @@ build_fixture() {
   mkdir -p "$_d/scripts/install"
   cat > "$_d/scripts/uninstall.sh" <<STUB
 #!/usr/bin/env bash
-printf 'uninstall.sh: %s\n' "\$*" >> "$_d/uninstall-calls.log"
+printf 'uninstall.sh: %s HIMMEL_UNINSTALL_REAL_HOME=%s\n' "\$*" "\${HIMMEL_UNINSTALL_REAL_HOME:-unset}" >> "$_d/uninstall-calls.log"
 exit 0
 STUB
   chmod +x "$_d/scripts/uninstall.sh"
@@ -143,20 +135,28 @@ grepq "$ps1_usage" -F -- '-Yes' \
 echo "ok: caseA flag-assertion guard -- uninstall.sh/uninstall.ps1 usage surfaces carry the --yes/-Yes flag the wizard always derives"
 
 # ── Case B: --dry-run -> prints the plan, asks/executes nothing ────────────
+# HIMMEL-2126: win32 launches uninstall.ps1 through resolvePowershell(), which
+# now PREFERS pwsh over PowerShell 5.1 — so pwsh is scrubbed from PATH here
+# (this box's own pwsh must not leak in) to pin the loud-fallback branch;
+# caseB2 below covers the pwsh-preferred branch with pwsh injected instead.
 stubB="$work/caseB"; mkdir -p "$stubB"
-cB=$(build_path "$stubB" bash git jq python3 npm -- )
+cB=$(build_path "$stubB" bash git jq python3 npm -- pwsh)
 hB="$work/hB"; mkdir -p "$hB"
 fixtureB="$work/caseB-fixture"; build_fixture "$fixtureB"
 set +e
-out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$cB" HOME="$hB" USERPROFILE="$(winpath "$hB")" HIMMELCTL_CACHE_DIR="$(winpath "$hB.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hB.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureB")" \
       "$node_bin" "$wizard" uninstall --dry-run \
       </dev/null 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseB: dry-run should exit 0 (got rc=$rc): $out"
 if is_win32; then
-  grepq "$out" -E 'derived:.*powershell -ExecutionPolicy Bypass -File .*uninstall\.ps1 -Yes$' \
-    || fail "caseB(win32): expected 'powershell -ExecutionPolicy Bypass -File ...uninstall.ps1 -Yes' (got: $out)"
+  grepq "$out" -iE 'derived:.*powershell' \
+    || fail "caseB(win32): expected a PowerShell 5.1 fallback (pwsh scrubbed) (got: $out)"
+  grepq "$out" -F -- '-ExecutionPolicy Bypass -File' \
+    || fail "caseB(win32): expected -ExecutionPolicy Bypass -File (got: $out)"
+  grepq "$out" -F -- 'uninstall.ps1 -Yes' \
+    || fail "caseB(win32): expected uninstall.ps1 -Yes (got: $out)"
 else
   grepq "$out" -E 'derived:.*bash .*uninstall\.sh --yes$' \
     || fail "caseB(posix): expected 'bash .../uninstall.sh --yes' (got: $out)"
@@ -165,7 +165,36 @@ grepq "$out" 'Proceed?' \
   && fail "caseB: --dry-run must NOT show the confirm prompt (got: $out)"
 [ -f "$fixtureB/uninstall-calls.log" ] \
   && fail "caseB: --dry-run must NOT execute uninstall.sh/uninstall.ps1 (got: $(cat "$fixtureB/uninstall-calls.log"))"
-echo "ok: caseB --dry-run -> derived plan printed, nothing asked or executed"
+# HIMMEL-2505: no call log at all is also proof the child never saw
+# HIMMEL_UNINSTALL_REAL_HOME=1 — the dry-run/plan path returns before
+# cmdUninstall's confirmed spawn (the only call site that sets it) ever runs.
+echo "ok: caseB --dry-run -> derived plan printed, nothing asked or executed, HIMMEL_UNINSTALL_REAL_HOME never set"
+
+# ── Case B2 (HIMMEL-2126): --dry-run on win32 prefers pwsh when it is
+# resolvable — a stub pwsh is injected onto PATH (posix is a no-op: caseB
+# already covers it, and there is no pwsh/powershell branch there).
+if is_win32; then
+  stubB2="$work/caseB2"; mkdir -p "$stubB2"
+  cB2=$(build_path "$stubB2" bash git jq python3 npm pwsh -- )
+  hB2="$work/hB2"; mkdir -p "$hB2"
+  fixtureB2="$work/caseB2-fixture"; build_fixture "$fixtureB2"
+  set +e
+  outB2=$(PATH="$cB2" HOME="$hB2" USERPROFILE="$(winpath "$hB2")" HIMMELCTL_CACHE_DIR="$(winpath "$hB2.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hB2.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+        HIMMELCTL_REPO_ROOT="$(winpath "$fixtureB2")" \
+        "$node_bin" "$wizard" uninstall --dry-run \
+        </dev/null 2>&1); rcB2=$?
+  set -e
+  [ "$rcB2" -eq 0 ] || fail "caseB2: dry-run should exit 0 (got rc=$rcB2): $outB2"
+  grepq "$outB2" -F -- 'pwsh' \
+    || fail "caseB2(win32): expected pwsh to be preferred when resolvable (got: $outB2)"
+  grepq "$outB2" -F -- '-ExecutionPolicy Bypass -File' \
+    || fail "caseB2(win32): expected -ExecutionPolicy Bypass -File (got: $outB2)"
+  grepq "$outB2" -F -- 'uninstall.ps1 -Yes' \
+    || fail "caseB2(win32): expected uninstall.ps1 -Yes (got: $outB2)"
+  echo "ok: caseB2 win32 -> pwsh preferred over PowerShell 5.1 when resolvable"
+else
+  echo "ok: caseB2 -> (skipped: posix has no pwsh/powershell branch, covered by caseB)"
+fi
 
 # ── Case C: interactive confirm decline -> uninstall NOT invoked ───────────
 stubC="$work/caseC"; mkdir -p "$stubC"
@@ -173,7 +202,7 @@ cC=$(build_path "$stubC" bash git jq python3 npm -- )
 hC="$work/hC"; mkdir -p "$hC"
 fixtureC="$work/caseC-fixture"; build_fixture "$fixtureC"
 set +e
-out=$(PATH="$cC" HOME="$hC" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cC" HOME="$hC" USERPROFILE="$(winpath "$hC")" HIMMELCTL_CACHE_DIR="$(winpath "$hC.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hC.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureC")" \
       "$node_bin" "$wizard" uninstall \
       <<<"n" 2>&1); rc=$?
@@ -193,7 +222,7 @@ cD=$(build_path "$stubD" bash git jq python3 npm -- )
 hD="$work/hD"; mkdir -p "$hD"
 fixtureD="$work/caseD-fixture"; build_fixture "$fixtureD"
 set +e
-out=$(PATH="$cD" HOME="$hD" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cD" HOME="$hD" USERPROFILE="$(winpath "$hD")" HIMMELCTL_CACHE_DIR="$(winpath "$hD.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hD.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureD")" \
       "$node_bin" "$wizard" uninstall \
       <<<"" 2>&1); rc=$?
@@ -207,8 +236,13 @@ if is_win32; then
 else
   grep -q -- '--yes' "$fixtureD/uninstall-calls.log" \
     || fail "caseD(posix): expected uninstall.sh to be called with --yes (got: $(cat "$fixtureD/uninstall-calls.log"))"
+  # HIMMEL-2505: this confirmed WET spawn must pass HIMMEL_UNINSTALL_REAL_HOME=1
+  # so uninstall.sh's own live-operator-HOME fence doesn't refuse the machine
+  # the operator just confirmed offboarding.
+  grep -q 'HIMMEL_UNINSTALL_REAL_HOME=1' "$fixtureD/uninstall-calls.log" \
+    || fail "caseD(posix): expected HIMMEL_UNINSTALL_REAL_HOME=1 in the child env (got: $(cat "$fixtureD/uninstall-calls.log"))"
 fi
-echo "ok: caseD interactive confirm accept (blank Enter) -> uninstall script invoked with --yes/-Yes"
+echo "ok: caseD interactive confirm accept (blank Enter) -> uninstall script invoked with --yes/-Yes, HIMMEL_UNINSTALL_REAL_HOME=1"
 
 # ── Case E: closed stdin (no answer) -> declines safely, never runs unattended ─
 stubE="$work/caseE"; mkdir -p "$stubE"
@@ -216,7 +250,7 @@ cE=$(build_path "$stubE" bash git jq python3 npm -- )
 hE="$work/hE"; mkdir -p "$hE"
 fixtureE="$work/caseE-fixture"; build_fixture "$fixtureE"
 set +e
-out=$(PATH="$cE" HOME="$hE" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$cE" HOME="$hE" USERPROFILE="$(winpath "$hE")" HIMMELCTL_CACHE_DIR="$(winpath "$hE.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hE.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureE")" \
       "$node_bin" "$wizard" uninstall \
       </dev/null 2>&1); rc=$?
@@ -253,7 +287,7 @@ STUB
 # UNMARKED third-party file at a known launcher name -> left untouched.
 printf 'third-party\n' > "$binF/himmelctl.cmd"
 set +e
-out=$(PATH="$cF" HOME="$hF" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cF" HOME="$hF" USERPROFILE="$(winpath "$hF")" HIMMELCTL_CACHE_DIR="$(winpath "$hF.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hF.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureF")" \
       HIMMELCTL_BIN_DIR="$(winpath "$binF")" \
       "$node_bin" "$wizard" uninstall \
@@ -307,7 +341,7 @@ cat > "$binG/himmelctl" <<'STUB'
 exec node "/x/himmelctl.js" "$@"
 STUB
 set +e
-out=$(PATH="$cG" HOME="$hG" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cG" HOME="$hG" USERPROFILE="$(winpath "$hG")" HIMMELCTL_CACHE_DIR="$(winpath "$hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hG.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureG")" \
       HIMMELCTL_BIN_DIR="$(winpath "$binG")" \
       "$node_bin" "$wizard" uninstall \

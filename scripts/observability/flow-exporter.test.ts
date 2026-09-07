@@ -3,29 +3,44 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderMetrics, createExporterCache, parseHostDetectorJson, runGitDivergence, readShippedGraphCommitTime, renderSessionsJson } from "./flow-exporter";
-import { serializeSessionRun, type SessionEndReason, type SessionRunRow, type SubagentOutcome } from "./session-run-ledger";
+import { renderMetrics, createExporterCache, parseHostDetectorJson, runGitDivergence, readShippedGraphCommitTime, renderSessionsJson, defaultPidLiveness, hookChainMetrics, defaultHookChainSkipLogPaths, hookChainSkipLogUnreadableMetrics } from "./flow-exporter";
+import { serializeSessionRun, type SessionCloseEvidence, type SessionEndReason, type SessionRunRow, type SubagentOutcome } from "./session-run-ledger";
 import { serializeFlowRunEnd, serializeFlowRunStart, type FlowRunEnd, type FlowRunStart } from "../telegram/flow-run-ledger";
 import { serializeQuotaGauge, type QuotaGaugeRecord } from "../telegram/quota-gauge";
 
 let tmp: string;
 let previousFetchHealthState: string | undefined;
 let previousSessionLedger: string | undefined;
+let previousToolCensus: string | undefined;
+let previousHookChainSkipLog: string | undefined;
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "flow-exporter-"));
   previousFetchHealthState = process.env.HIMMEL_FETCH_HEALTH_STATE;
   process.env.HIMMEL_FETCH_HEALTH_STATE = join(tmp, "missing-fetch-health.json");
+  // HIMMEL-1462: same isolation for the tool-call census — no scrape under
+  // test may read the developer's REAL ~/.himmel/tool-call-census.jsonl.
+  previousToolCensus = process.env.HIMMEL_TOOL_CENSUS;
+  process.env.HIMMEL_TOOL_CENSUS = join(tmp, "missing-tool-census.jsonl");
   // HIMMEL-1052: point the session ledger at a missing tmp path for every test
   // that does not exercise it, so a scrape under test never reads (or depends
   // on) the developer's REAL ~/.himmel/session-runs.jsonl.
   previousSessionLedger = process.env.HIMMEL_SESSION_RUNS_LEDGER;
   process.env.HIMMEL_SESSION_RUNS_LEDGER = join(tmp, "missing-session-runs.jsonl");
+  // HIMMEL-2478/2480: same isolation for the hook-chain skip log — no scrape
+  // under test may read the developer's REAL
+  // <checkout>/.claude/logs/hook-chain-skips.jsonl.
+  previousHookChainSkipLog = process.env.RUN_HOOK_CHAIN_SKIP_LOG;
+  process.env.RUN_HOOK_CHAIN_SKIP_LOG = join(tmp, "missing-hook-chain-skips.jsonl");
 });
 afterEach(() => {
   if (previousFetchHealthState === undefined) delete process.env.HIMMEL_FETCH_HEALTH_STATE;
   else process.env.HIMMEL_FETCH_HEALTH_STATE = previousFetchHealthState;
   if (previousSessionLedger === undefined) delete process.env.HIMMEL_SESSION_RUNS_LEDGER;
   else process.env.HIMMEL_SESSION_RUNS_LEDGER = previousSessionLedger;
+  if (previousToolCensus === undefined) delete process.env.HIMMEL_TOOL_CENSUS;
+  else process.env.HIMMEL_TOOL_CENSUS = previousToolCensus;
+  if (previousHookChainSkipLog === undefined) delete process.env.RUN_HOOK_CHAIN_SKIP_LOG;
+  else process.env.RUN_HOOK_CHAIN_SKIP_LOG = previousHookChainSkipLog;
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -123,16 +138,18 @@ test("golden scrape folds active and rotated flow ledgers", async () => {
   expect(body).toBe(`# HELP flow_run_last_success_timestamp Epoch seconds of the last complete run end row in the 14d ledger window.
 # TYPE flow_run_last_success_timestamp gauge
 flow_run_last_success_timestamp{flow="pipeline-harvest"} ${epoch("2026-07-12T10:00:00Z")}
-# HELP flow_run_outcome_total Runs by outcome in the sliding 14d ledger window; exporter restarts and window slides can reset this counter.
+# HELP flow_run_outcome_total Runs by outcome in the sliding 14d ledger window; exporter restarts and window slides can reset this counter. \`stalled\` = an unpaired start past its deadline whose process is alive or unprobeable; \`abandoned\` = the same, but the pid was confirmed dead on this host (HIMMEL-2211).
 # TYPE flow_run_outcome_total counter
 flow_run_outcome_total{flow="pipeline-harvest",outcome="complete"} 1
 flow_run_outcome_total{flow="pipeline-harvest",outcome="truncated"} 0
 flow_run_outcome_total{flow="pipeline-harvest",outcome="error"} 1
 flow_run_outcome_total{flow="pipeline-harvest",outcome="stalled"} 0
+flow_run_outcome_total{flow="pipeline-harvest",outcome="abandoned"} 0
 flow_run_outcome_total{flow="pipeline-synthesize",outcome="complete"} 0
 flow_run_outcome_total{flow="pipeline-synthesize",outcome="truncated"} 1
 flow_run_outcome_total{flow="pipeline-synthesize",outcome="error"} 0
 flow_run_outcome_total{flow="pipeline-synthesize",outcome="stalled"} 0
+flow_run_outcome_total{flow="pipeline-synthesize",outcome="abandoned"} 0
 # HELP flow_run_items_processed Last ended run items_processed value; null is omitted.
 # TYPE flow_run_items_processed gauge
 flow_run_items_processed{flow="pipeline-harvest"} 3
@@ -149,6 +166,14 @@ flow_run_in_flight{flow="pipeline-synthesize"} 0
 flow_cadence_seconds{flow="pipeline-harvest"} 86400
 flow_cadence_seconds{flow="pipeline-silent"} 60
 flow_cadence_seconds{flow="pipeline-synthesize"} 3600
+# hook_chain_budget_events_recent: skip log absent, reporting 0
+# HELP hook_chain_budget_events_recent Hook-chain members that blew their time budget in the last 10 minutes, by action (\`skip\` = the guard silently did not evaluate the tool call, \`deny\` = the tool call was refused fail-closed). Folded from the skip log scripts/hooks/run-hook-with-bash.js writes. A GAUGE over a sliding window, deliberately NOT a window-folded counter: a folded counter reads its own window slide as a reset, which is how increase() invents phantom spikes (HIMMEL-2478). Both actions are always emitted, 0 included, so a quiet box renders Normal instead of Grafana NoData.
+# TYPE hook_chain_budget_events_recent gauge
+hook_chain_budget_events_recent{action="deny"} 0
+hook_chain_budget_events_recent{action="skip"} 0
+# HELP hook_chain_skip_log_unreadable Count of hook-chain skip logs that exist but could not be read, plus 1 if the .claude/worktrees directory exists but could not be enumerated. Always emitted, 0 when healthy. Non-zero means this early-warning signal is degraded and hook_chain_budget_events_recent may be under-counting — the budget alerts cannot be trusted while this is set.
+# TYPE hook_chain_skip_log_unreadable gauge
+hook_chain_skip_log_unreadable 0
 # agent_tree_*/orphan_* omitted: platform has no Windows process tree API
 # HELP flow_exporter_scrape_duration_seconds Wall-clock duration of this exporter scrape.
 # TYPE flow_exporter_scrape_duration_seconds gauge
@@ -269,6 +294,278 @@ test("fetch-health state is passive and fail-soft", async () => {
   expect(missing).not.toContain("clip_fetch_source_");
 });
 
+test("tool-call census exports per-tool call/error and per-class denial counters (HIMMEL-1462)", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const census = join(tmp, "tool-call-census.jsonl");
+  writeLines(ledger, []);
+  writeLines(census, [
+    JSON.stringify({
+      session_id: "s1", project: "himmel",
+      started_at: "2026-07-13T09:00:00.000Z", ended_at: "2026-07-13T11:00:00.000Z",
+      tool_calls: { Bash: { calls: 7, errors: 2 }, mcp__qmd__query: { calls: 3, errors: 0 } },
+      total_calls: 10, total_errors: 2, denials: { "block-read-secrets": 1 },
+    }),
+    JSON.stringify({
+      session_id: "s2", project: "himmel",
+      started_at: "2026-07-13T10:00:00.000Z", ended_at: "2026-07-13T11:30:00.000Z",
+      tool_calls: { Bash: { calls: 5, errors: 0 } },
+      total_calls: 5, total_errors: 0, denials: { "auto-mode-classifier": 2 },
+    }),
+    // Outside the 24h window: must not contribute a sample or a series.
+    JSON.stringify({
+      session_id: "s3", project: "luna",
+      started_at: "2026-07-09T10:00:00.000Z", ended_at: "2026-07-09T11:00:00.000Z",
+      tool_calls: { Bash: { calls: 99, errors: 9 } },
+      total_calls: 99, total_errors: 9, denials: {},
+    }),
+    // Dated hours into the future: past the clock-jitter grace, so it must
+    // not count against a window it has not entered.
+    JSON.stringify({
+      session_id: "s4", project: "future",
+      started_at: "2026-07-13T20:00:00.000Z", ended_at: "2026-07-13T21:00:00.000Z",
+      tool_calls: { Bash: { calls: 41, errors: 4 } },
+      total_calls: 41, total_errors: 4, denials: {},
+    }),
+    "{not-json",
+  ]);
+
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    toolCensusPath: census,
+  });
+
+  expect(body).toContain("# TYPE himmel_tool_calls_total counter");
+  expect(body).toContain('himmel_tool_calls_total{project="himmel",tool="Bash"} 12');
+  expect(body).toContain('himmel_tool_calls_total{project="himmel",tool="mcp__qmd__query"} 3');
+  expect(body).toContain('himmel_tool_errors_total{project="himmel",tool="Bash"} 2');
+  expect(body).toContain('himmel_tool_errors_total{project="himmel",tool="mcp__qmd__query"} 0');
+  expect(body).toContain('himmel_tool_denials_total{class="auto-mode-classifier",project="himmel"} 2');
+  expect(body).toContain('himmel_tool_denials_total{class="block-read-secrets",project="himmel"} 1');
+  expect(body).not.toContain('project="luna"');
+  expect(body).not.toContain('project="future"');
+  expect(body).toContain("# himmel_tool_* partial: 1 unparseable census row(s) skipped");
+
+  const missing = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    toolCensusPath: join(tmp, "absent-census.jsonl"),
+  });
+  expect(missing).not.toContain("himmel_tool_");
+});
+
+test("hook-chain budget events count skip/deny rows in the trailing 10m window, dropping stale/future rows silently and counting malformed/unparseable/unknown-action rows as partial (HIMMEL-2478/2480/2485)", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const skipLog = join(tmp, "hook-chain-skips.jsonl");
+  writeLines(ledger, []);
+  writeLines(skipLog, [
+    // Inside the 10m window (NOW = 12:00:00Z, cutoff = 11:50:00Z): counted.
+    JSON.stringify({ ts: "2026-07-13T11:55:00.000Z", action: "skip", member: "block-edit-live-settings.sh", budget: 3043, elapsed: 3054, reason: "ETIMEDOUT" }),
+    JSON.stringify({ ts: "2026-07-13T11:56:30.000Z", action: "skip", member: "check-worktree-isolation.sh", budget: 3000, elapsed: 3100, reason: "ETIMEDOUT" }),
+    JSON.stringify({ ts: "2026-07-13T11:59:59.000Z", action: "deny", member: "block-read-secrets.sh", budget: 3043, elapsed: 3200, reason: "ETIMEDOUT" }),
+    // Older than the 10m window: the normal path, excluded silently — must
+    // NOT bump the partial comment (that would flag routine traffic as drift).
+    JSON.stringify({ ts: "2026-07-13T11:00:00.000Z", action: "skip", member: "old.sh", budget: 3000, elapsed: 3050, reason: "ETIMEDOUT" }),
+    // Past the 5m future-jitter grace (NOW+5m = 12:05:00Z): also the normal
+    // path (clock jitter), excluded silently.
+    JSON.stringify({ ts: "2026-07-13T12:10:00.000Z", action: "skip", member: "future.sh", budget: 3000, elapsed: 3050, reason: "ETIMEDOUT" }),
+    // Unparseable JSON: schema drift, must bump the partial comment.
+    "{not-json",
+    // Missing/unparseable ts: schema drift too, not a normal out-of-window
+    // row — must also bump the partial comment (HIMMEL-2480 CR finding 3).
+    JSON.stringify({ ts: "not-a-date", action: "skip", member: "badts.sh", budget: 3000, elapsed: 3050, reason: "ETIMEDOUT" }),
+    // Unknown action: also schema drift now — must bump the partial comment
+    // rather than silently reading as a healthy 0 (HIMMEL-2480 CR finding 3).
+    JSON.stringify({ ts: "2026-07-13T11:57:00.000Z", action: "warn", member: "weird.sh", budget: 3000, elapsed: 3050, reason: "ETIMEDOUT" }),
+  ]);
+
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    hookChainSkipLogPath: skipLog,
+  });
+
+  expect(body).toContain("# TYPE hook_chain_budget_events_recent gauge");
+  expect(body).toContain('hook_chain_budget_events_recent{action="deny"} 1');
+  expect(body).toContain('hook_chain_budget_events_recent{action="skip"} 2');
+  expect(body).toContain("# hook_chain_budget_events_recent partial: 3 malformed or unrecognised skip-log row(s) skipped");
+  // HIMMEL-2478/2480 CR follow-up: the skip log itself was fully readable
+  // (only individual rows were malformed) so the health gauge stays 0.
+  expect(body).toContain("hook_chain_skip_log_unreadable 0");
+});
+
+test("hook-chain budget events emit both actions at 0 plus the absent-log comment when the skip log does not exist (HIMMEL-2478/2480)", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, []);
+
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    hookChainSkipLogPath: join(tmp, "absent-hook-chain-skips.jsonl"),
+  });
+
+  expect(body).toContain("# hook_chain_budget_events_recent: skip log absent, reporting 0");
+  expect(body).toContain('hook_chain_budget_events_recent{action="deny"} 0');
+  expect(body).toContain('hook_chain_budget_events_recent{action="skip"} 0');
+  // HIMMEL-2478/2480 CR follow-up: absence is not a read failure — the
+  // health gauge stays 0 too.
+  expect(body).toContain("hook_chain_skip_log_unreadable 0");
+});
+
+test("hook-chain budget events omit the whole family (no series, only the omitted comment) when the skip log exists but cannot be read (HIMMEL-2478/2480)", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, []);
+  // A directory at the skip-log path: existsSync() is true (so this takes the
+  // read path, not the absent path) but readFileSync() throws EISDIR — the
+  // most portable way to force a read failure across POSIX and Windows
+  // without depending on filesystem permissions.
+  const skipLog = join(tmp, "unreadable-hook-chain-skips.jsonl");
+  mkdirSync(skipLog, { recursive: true });
+
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    hookChainSkipLogPath: skipLog,
+  });
+
+  expect(body).toMatch(/# hook_chain_budget_events_recent omitted: /);
+  expect(body).not.toMatch(/^hook_chain_budget_events_recent\{/m);
+  // HIMMEL-2478/2480 CR follow-up: the family got omitted, but the health
+  // gauge is what makes that visible to an alert instead of only a comment.
+  expect(body).toContain("hook_chain_skip_log_unreadable 1");
+});
+
+test("hook-chain budget events fold the primary checkout's log with every worktree's own log (HIMMEL-2478 finding 1)", () => {
+  // A fake repoRoot laid out like the real checkout: a primary
+  // .claude/logs/hook-chain-skips.jsonl plus two worktrees each with their
+  // own — never the developer's real .claude/worktrees. This is the positive
+  // control for the glob itself: reverting defaultHookChainSkipLogPaths to
+  // return only the primary path (the pre-fix behaviour) drops the two
+  // worktree rows below and this test fails.
+  const repoRoot = join(tmp, "fake-checkout");
+  const primaryLog = join(repoRoot, ".claude", "logs", "hook-chain-skips.jsonl");
+  const wtALog = join(repoRoot, ".claude", "worktrees", "wt-a", ".claude", "logs", "hook-chain-skips.jsonl");
+  const wtBLog = join(repoRoot, ".claude", "worktrees", "wt-b", ".claude", "logs", "hook-chain-skips.jsonl");
+  mkdirSync(join(repoRoot, ".claude", "logs"), { recursive: true });
+  mkdirSync(join(repoRoot, ".claude", "worktrees", "wt-a", ".claude", "logs"), { recursive: true });
+  mkdirSync(join(repoRoot, ".claude", "worktrees", "wt-b", ".claude", "logs"), { recursive: true });
+  writeLines(primaryLog, [
+    JSON.stringify({ ts: "2026-07-13T11:55:00.000Z", action: "skip", member: "primary.sh", budget: 3000, elapsed: 3050, reason: "ETIMEDOUT" }),
+  ]);
+  writeLines(wtALog, [
+    JSON.stringify({ ts: "2026-07-13T11:56:00.000Z", action: "skip", member: "wt-a.sh", budget: 3000, elapsed: 3050, reason: "ETIMEDOUT" }),
+    JSON.stringify({ ts: "2026-07-13T11:57:00.000Z", action: "deny", member: "wt-a-2.sh", budget: 3000, elapsed: 3200, reason: "ETIMEDOUT" }),
+  ]);
+  writeLines(wtBLog, [
+    JSON.stringify({ ts: "2026-07-13T11:58:00.000Z", action: "deny", member: "wt-b.sh", budget: 3000, elapsed: 3200, reason: "ETIMEDOUT" }),
+  ]);
+
+  const { paths, worktreesDirUnreadable } = defaultHookChainSkipLogPaths({}, repoRoot);
+  expect(paths.sort()).toEqual([primaryLog, wtALog, wtBLog].sort());
+  expect(worktreesDirUnreadable).toBe(false);
+
+  const { lines } = hookChainMetrics(paths, NOW);
+  expect(lines).toContain('hook_chain_budget_events_recent{action="deny"} 2');
+  expect(lines).toContain('hook_chain_budget_events_recent{action="skip"} 2');
+});
+
+test("hook-chain budget events explicit path option reads exactly that file, never a sibling log (HIMMEL-2478 finding 1)", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, []);
+  const targetLog = join(tmp, "target-hook-chain-skips.jsonl");
+  const siblingLog = join(tmp, "sibling-hook-chain-skips.jsonl");
+  writeLines(targetLog, [
+    JSON.stringify({ ts: "2026-07-13T11:55:00.000Z", action: "skip", member: "target.sh", budget: 3000, elapsed: 3050, reason: "ETIMEDOUT" }),
+  ]);
+  writeLines(siblingLog, [
+    JSON.stringify({ ts: "2026-07-13T11:56:00.000Z", action: "deny", member: "sibling.sh", budget: 3000, elapsed: 3200, reason: "ETIMEDOUT" }),
+    JSON.stringify({ ts: "2026-07-13T11:57:00.000Z", action: "deny", member: "sibling-2.sh", budget: 3000, elapsed: 3200, reason: "ETIMEDOUT" }),
+  ]);
+
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    hookChainSkipLogPath: targetLog,
+  });
+
+  expect(body).toContain('hook_chain_budget_events_recent{action="skip"} 1');
+  expect(body).toContain('hook_chain_budget_events_recent{action="deny"} 0');
+});
+
+test("hook-chain budget events keep the other logs' counts when one log in the fold is unreadable (HIMMEL-2478 finding 1)", () => {
+  const readableA = join(tmp, "readable-a-hook-chain-skips.jsonl");
+  const readableC = join(tmp, "readable-c-hook-chain-skips.jsonl");
+  const unreadableB = join(tmp, "unreadable-b-hook-chain-skips.jsonl");
+  writeLines(readableA, [
+    JSON.stringify({ ts: "2026-07-13T11:55:00.000Z", action: "skip", member: "a.sh", budget: 3000, elapsed: 3050, reason: "ETIMEDOUT" }),
+  ]);
+  writeLines(readableC, [
+    JSON.stringify({ ts: "2026-07-13T11:56:00.000Z", action: "deny", member: "c.sh", budget: 3000, elapsed: 3200, reason: "ETIMEDOUT" }),
+  ]);
+  // A directory at the path forces readFileSync() to throw EISDIR without
+  // depending on filesystem permissions (same trick as the single-log test).
+  mkdirSync(unreadableB, { recursive: true });
+
+  const { lines, comments, unreadableCount } = hookChainMetrics([readableA, unreadableB, readableC], NOW);
+
+  expect(lines).toContain('hook_chain_budget_events_recent{action="skip"} 1');
+  expect(lines).toContain('hook_chain_budget_events_recent{action="deny"} 1');
+  expect(comments.some((c) => c.includes("1 skip log(s) unreadable"))).toBe(true);
+  // HIMMEL-2478/2480 CR follow-up: unreadableCount is what feeds the new
+  // hook_chain_skip_log_unreadable health gauge.
+  expect(unreadableCount).toBe(1);
+});
+
+test("hook_chain_skip_log_unreadable gauge is 1 when the worktrees directory exists but cannot be enumerated, not when it is simply absent (HIMMEL-2478/2480 CR follow-up)", () => {
+  // A FILE at .claude/worktrees (not a directory): existsSync() is true, so
+  // defaultHookChainSkipLogPaths takes the enumerate path, but readdirSync()
+  // throws ENOTDIR — the same portable-across-platforms trick as the EISDIR
+  // unreadable-log fixtures above, without depending on filesystem
+  // permissions.
+  const unreadableRoot = join(tmp, "fake-checkout-unreadable-worktrees");
+  mkdirSync(join(unreadableRoot, ".claude", "logs"), { recursive: true });
+  writeFileSync(join(unreadableRoot, ".claude", "worktrees"), "not a directory");
+
+  const unreadable = defaultHookChainSkipLogPaths({}, unreadableRoot);
+  expect(unreadable.worktreesDirUnreadable).toBe(true);
+  expect(unreadable.paths).toEqual([join(unreadableRoot, ".claude", "logs", "hook-chain-skips.jsonl")]);
+  expect(hookChainSkipLogUnreadableMetrics(0, unreadable.worktreesDirUnreadable)).toContain("hook_chain_skip_log_unreadable 1");
+
+  // No .claude/worktrees directory at all — normal for an adopter that has
+  // never created one, and must NOT count as unreadable.
+  const absentRoot = join(tmp, "fake-checkout-no-worktrees");
+  mkdirSync(join(absentRoot, ".claude", "logs"), { recursive: true });
+
+  const absent = defaultHookChainSkipLogPaths({}, absentRoot);
+  expect(absent.worktreesDirUnreadable).toBe(false);
+  expect(absent.paths).toEqual([join(absentRoot, ".claude", "logs", "hook-chain-skips.jsonl")]);
+  expect(hookChainSkipLogUnreadableMetrics(0, absent.worktreesDirUnreadable)).toContain("hook_chain_skip_log_unreadable 0");
+});
+
 test("stall inference separates expired unpaired starts from in-flight starts", async () => {
   const ledger = join(tmp, "flow-runs.jsonl");
   const config = join(tmp, "observability.json");
@@ -296,6 +593,228 @@ test("active ledger without config uses default six-hour stall deadline", async 
   });
   expect(body).toContain('flow_run_outcome_total{flow="unconfigured-flow",outcome="stalled"} 1');
   expect(body).toContain('flow_run_in_flight{flow="unconfigured-flow"} 0');
+});
+
+test("HIMMEL-2149: a stalled run past FLOW_STALLED_ALERT_TTL_SECONDS drops out of flow_run_outcome_total{outcome=stalled}", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, [
+    // Default 6h stall deadline. Fired 7h before NOW: became stalled 1h ago,
+    // well inside the 24h alert TTL.
+    serializeFlowRunStart(flowStart("hermes-invoke", "recent", "2026-07-13T05:00:00Z")),
+    // Fired 31h before NOW: became stalled 25h ago (31h age - 6h deadline),
+    // past the 24h alert TTL — must not count even though it is still inside
+    // the 14d ledger window.
+    serializeFlowRunStart(flowStart("hermes-invoke", "old", "2026-07-12T05:00:00Z")),
+  ]);
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+  });
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="stalled"} 1');
+});
+
+test("HIMMEL-2149: the stall alert TTL is measured from when a run BECAME stalled, not from raw age — a stall deadline >= the TTL must still let a recently-stalled run count", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  // 25h declared stall_deadline_seconds, ABOVE the 24h alert TTL.
+  writeFileSync(config, JSON.stringify({ flows: [{ name: "slow-flow", stall_deadline_seconds: 25 * 60 * 60 }] }));
+  writeLines(ledger, [
+    // Fired 26h before NOW: just became stalled 1h ago (26h age - 25h
+    // deadline), inside the 24h alert TTL measured from deadness, not from
+    // raw age.
+    serializeFlowRunStart(flowStart("slow-flow", "just-stalled", "2026-07-12T10:00:00Z")),
+  ]);
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json") });
+  expect(body).toContain('flow_run_outcome_total{flow="slow-flow",outcome="stalled"} 1');
+});
+
+// HIMMEL-2211: liveness split. hermes-invoke-1787956038-3242214 (pid 3242214,
+// dead) sent 53 Telegram pages in one night because the pre-2211 fold could
+// not tell a real stall from an abandoned run. These tests pin both
+// directions: a confirmed-dead pid must go silent (abandoned), and a
+// confirmed-alive pid must still page (stalled) — the fail-safe fallbacks
+// (foreign host, no pid) must never downgrade a row on their own.
+
+test("HIMMEL-2211: a ghost row (confirmed-dead pid, same host) becomes abandoned, not stalled", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  // Default 6h stall deadline. Fired 7h before NOW: expired, same as the
+  // HIMMEL-2149 tests above.
+  writeLines(ledger, [
+    serializeFlowRunStart({ ...flowStart("hermes-invoke", "ghost", "2026-07-13T05:00:00Z"), pid: 3242214 }),
+  ]);
+  const probed: number[] = [];
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    localHost: "test-host",
+    pidLivenessRunner: (pids) => { probed.push(...pids); return new Set(); }, // reports every candidate dead
+  });
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="abandoned"} 1');
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="stalled"} 0');
+  expect(probed).toEqual([3242214]);
+});
+
+test("HIMMEL-2211: positive control — a real stall (confirmed-alive pid) still pages", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, [
+    serializeFlowRunStart({ ...flowStart("hermes-invoke", "real-stall", "2026-07-13T05:00:00Z"), pid: 4242214 }),
+  ]);
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    localHost: "test-host",
+    pidLivenessRunner: (pids) => new Set(pids), // reports every candidate alive
+  });
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="stalled"} 1');
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="abandoned"} 0');
+});
+
+test("HIMMEL-2211: fail-safe — a row from another host stays stalled and is never probed", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, [
+    serializeFlowRunStart({ ...flowStart("hermes-invoke", "foreign", "2026-07-13T05:00:00Z"), host: "other-host", pid: 3242214 }),
+  ]);
+  const probed: number[] = [];
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    localHost: "test-host",
+    pidLivenessRunner: (pids) => { probed.push(...pids); return new Set(); },
+  });
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="stalled"} 1');
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="abandoned"} 0');
+  expect(probed).toEqual([]);
+});
+
+test("HIMMEL-2211: fail-safe — a start row with no pid stays stalled", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, [
+    serializeFlowRunStart({ ...flowStart("hermes-invoke", "nopid", "2026-07-13T05:00:00Z"), pid: null }),
+  ]);
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    localHost: "test-host",
+    pidLivenessRunner: () => new Set(),
+  });
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="stalled"} 1');
+  expect(body).toContain('flow_run_outcome_total{flow="hermes-invoke",outcome="abandoned"} 0');
+});
+
+test("HIMMEL-2211: an in-flight start is never probed for liveness", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, [
+    // Fired 2 minutes before NOW: well inside the default 6h deadline.
+    serializeFlowRunStart({ ...flowStart("hermes-invoke", "fresh", "2026-07-13T11:58:00Z"), pid: 3242214 }),
+  ]);
+  const probed: number[] = [];
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: ledger,
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    localHost: "test-host",
+    pidLivenessRunner: (pids) => { probed.push(...pids); return new Set(pids); },
+  });
+  expect(body).toContain('flow_run_in_flight{flow="hermes-invoke"} 1');
+  expect(probed).toEqual([]);
+});
+
+// HIMMEL-2211: only ESRCH is confirmed death. An unprobeable pid (any error
+// other than ESRCH/EPERM) must fail safe to alive, same as EPERM — treating
+// it as dead would silently downgrade a real stall to `abandoned` and mute
+// a page-severity alert.
+test("HIMMEL-2211: defaultPidLiveness treats ESRCH as dead and every other outcome (EPERM, an unprobeable error, or no throw) as alive", () => {
+  const realKill = process.kill;
+  try {
+    process.kill = ((pid: number) => {
+      if (pid === 1) throw { code: "EINVAL" }; // unprobeable, not confirmed dead
+      if (pid === 2) throw { code: "EPERM" }; // exists, not ours
+      if (pid === 3) throw { code: "ESRCH" }; // genuinely gone
+      return true; // pid 4: no throw
+    }) as typeof process.kill;
+    const alive = defaultPidLiveness([1, 2, 3, 4], "linux");
+    expect(alive.has(1)).toBe(true);
+    expect(alive.has(2)).toBe(true);
+    expect(alive.has(3)).toBe(false);
+    expect(alive.has(4)).toBe(true);
+  } finally {
+    process.kill = realKill;
+  }
+});
+
+test("HIMMEL-2211: defaultPidLiveness (win32) treats an empty tasklist parse as unprobeable, not dead", () => {
+  const realSpawnSync = Bun.spawnSync;
+  try {
+    // exit 0, empty stdout: the parse yields zero running pids, so it also
+    // cannot contain our own process.pid — the self-pid sentinel fires. Must
+    // fail safe to "every candidate alive" (unprobeable, not confirmed dead).
+    Bun.spawnSync = (() => ({ exitCode: 0, stdout: Buffer.from("") })) as typeof Bun.spawnSync;
+    const empty = defaultPidLiveness([10, 20, 30], "win32");
+    expect(empty.has(10)).toBe(true);
+    expect(empty.has(20)).toBe(true);
+    expect(empty.has(30)).toBe(true);
+  } finally {
+    Bun.spawnSync = realSpawnSync;
+  }
+});
+
+test("HIMMEL-2211: defaultPidLiveness (win32) self-pid sentinel — a PARTIAL parse missing our own pid must not downgrade any candidate", () => {
+  const realSpawnSync = Bun.spawnSync;
+  try {
+    // exit 0, well-formed CSV that DOES list some candidate pids (the
+    // truncated-snapshot shape) but is MISSING our own process.pid. The old
+    // `running.size === 0` guard would NOT fire here (running.size > 0), so
+    // this is exactly the bug the sentinel replaces: a partial parse
+    // silently downgrading a real stall to `abandoned`. Our own pid is
+    // definitionally alive, so its absence proves the snapshot is
+    // incomplete — every candidate must report alive.
+    Bun.spawnSync = (() => ({
+      exitCode: 0,
+      stdout: Buffer.from('"System Idle Process","0","Services","0","8 K"\r\n"node.exe","10","Console","1","12,345 K"\r\n"node.exe","30","Console","1","6,789 K"\r\n'),
+    })) as typeof Bun.spawnSync;
+    const partial = defaultPidLiveness([10, 20, 30], "win32");
+    expect(partial.has(10)).toBe(true);
+    expect(partial.has(20)).toBe(true);
+    expect(partial.has(30)).toBe(true);
+  } finally {
+    Bun.spawnSync = realSpawnSync;
+  }
+});
+
+test("HIMMEL-2211: defaultPidLiveness (win32) — a COMPLETE snapshot (contains our own pid) still filters real candidates normally", () => {
+  const realSpawnSync = Bun.spawnSync;
+  try {
+    // exit 0, CSV containing our own process.pid (proving completeness) plus
+    // only SOME candidate pids: the sentinel does not fire, so real
+    // liveness detection still downgrades the pid tasklist doesn't list.
+    Bun.spawnSync = (() => ({
+      exitCode: 0,
+      stdout: Buffer.from(`"System Idle Process","0","Services","0","8 K"\r\n"node.exe","10","Console","1","12,345 K"\r\n"node.exe","30","Console","1","6,789 K"\r\n"bun.exe","${process.pid}","Console","1","1,234 K"\r\n`),
+    })) as typeof Bun.spawnSync;
+    const complete = defaultPidLiveness([10, 20, 30], "win32");
+    expect(complete.has(10)).toBe(true);
+    expect(complete.has(20)).toBe(false);
+    expect(complete.has(30)).toBe(true);
+  } finally {
+    Bun.spawnSync = realSpawnSync;
+  }
 });
 
 test("lane quota fanout emits real bank readings per lanes.json lane and omits sourceless lanes", async () => {
@@ -919,6 +1438,61 @@ test("scheduled-task scrape is platform-gated and TTL-cached", async () => {
   expect(linux).not.toContain("scheduled_task_exists");
 });
 
+test("HIMMEL-2075: expected_disabled_tasks emits scheduled_task_expected_disabled for allowlisted tasks only", async () => {
+  const config = join(tmp, "observability.json");
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeFileSync(config, JSON.stringify({
+    expected_tasks: ["himmel-pipeline-harvest", "himmel-pipeline-synthesize"],
+    expected_disabled_tasks: ["himmel-pipeline-synthesize"],
+  }));
+  writeLines(ledger, []);
+  const runner = () => [
+    { task: "himmel-pipeline-harvest", exists: 1 as const, enabled: 1 as const, next_run_timestamp: null },
+    { task: "himmel-pipeline-synthesize", exists: 1 as const, enabled: 0 as const, next_run_timestamp: null },
+  ];
+
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", schedulerRunner: runner, cache: createExporterCache() });
+
+  expect(body).toContain('scheduled_task_expected_disabled{task="himmel-pipeline-synthesize"} 1');
+  // Not in the allowlist: omitted entirely, never emitted as 0 — PromQL's
+  // `unless` treats an absent series as "not excluded", which is what's
+  // wanted for a task that IS expected to be enabled.
+  expect(body).not.toContain('scheduled_task_expected_disabled{task="himmel-pipeline-harvest"}');
+});
+
+test("HIMMEL-2075: expected_disabled_tasks with no expected_tasks emits no scheduled_task_* family", async () => {
+  const config = join(tmp, "observability.json");
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeFileSync(config, JSON.stringify({ expected_disabled_tasks: ["himmel-pipeline-synthesize"] }));
+  writeLines(ledger, []);
+
+  const body = await renderMetrics({ nowMs: NOW, configPath: config, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", cache: createExporterCache() });
+
+  expect(body).not.toContain("scheduled_task_expected_disabled");
+});
+
+test("HIMMEL-2075 CR fix: malformed expected_disabled_tasks (non-array, mixed-type elements) fails soft rather than throwing", async () => {
+  const ledger = join(tmp, "flow-runs.jsonl");
+  writeLines(ledger, []);
+  const runner = () => [{ task: "himmel-pipeline-harvest", exists: 1 as const, enabled: 1 as const, next_run_timestamp: null }];
+
+  // A single string instead of an array — observability.json is
+  // operator-edited JSON, not trusted from the static ObservabilityConfig
+  // type. Must not throw at buildScheduledTaskLines' .filter() call.
+  const nonArrayConfig = join(tmp, "observability-non-array.json");
+  writeFileSync(nonArrayConfig, JSON.stringify({ expected_tasks: ["himmel-pipeline-harvest"], expected_disabled_tasks: "himmel-pipeline-harvest" }));
+  const nonArrayBody = await renderMetrics({ nowMs: NOW, configPath: nonArrayConfig, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", schedulerRunner: runner, cache: createExporterCache() });
+  expect(nonArrayBody).not.toContain("scheduled_task_expected_disabled");
+
+  // A mixed-type array — non-string elements must be dropped rather than
+  // leaking an invalid Prometheus label value.
+  const mixedConfig = join(tmp, "observability-mixed.json");
+  writeFileSync(mixedConfig, JSON.stringify({ expected_tasks: ["himmel-pipeline-harvest"], expected_disabled_tasks: [123, "himmel-pipeline-harvest", null] }));
+  const mixedBody = await renderMetrics({ nowMs: NOW, configPath: mixedConfig, flowLedgerPath: ledger, quotaLedgerPath: join(tmp, "none"), lanesPath: join(tmp, "no-lanes.json"), platform: "win32", schedulerRunner: runner, cache: createExporterCache() });
+  expect(mixedBody).toContain('scheduled_task_expected_disabled{task="himmel-pipeline-harvest"} 1');
+  expect(mixedBody).not.toContain('scheduled_task_expected_disabled{task="123"}');
+});
+
 test("host detector JSON parser normalizes detector output", () => {
   const parsed = parseHostDetectorJson(JSON.stringify({
     trees: [
@@ -1035,6 +1609,11 @@ function subagentEndRow(subagentId: string, parent: string, endedAt: string, out
   return { v: 1, kind: "subagent", ev: "end", subagent_id: subagentId, parent_session_id: parent, ended_at: endedAt, outcome };
 }
 
+// HIMMEL-2294
+function sessionCloseRow(sessionId: string, closedAt: string, evidence: SessionCloseEvidence = "queue_lock_release"): SessionRunRow {
+  return { v: 1, kind: "session", ev: "close", session_id: sessionId, closed_at: closedAt, evidence };
+}
+
 // A transcript whose mtime is set explicitly: mtime IS the liveness oracle, so
 // every session fixture below states its last activity rather than inheriting
 // whatever wall clock the test host happens to have.
@@ -1116,6 +1695,187 @@ test("staleness threshold is operator-tunable via sessions.stale_after_seconds",
   expect(body).toContain('session_dead_total{host="test-host"} 0');
 });
 
+test("HIMMEL-2075: a session dead past SESSION_DEAD_ALERT_TTL_SECONDS drops out of session_dead_total", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  writeLines(ledger, [
+    // No transcript: falls back to the session's own age. 1h old — dead
+    // (past the 15m default staleness) but well inside the 24h alert TTL.
+    sessionStart("recent-dead-1", "2026-07-13T11:00:00Z", null),
+    // 30h old — dead, but past the 24h alert TTL, so it must not count
+    // toward the alerting gauge even though it is still in the 14d window.
+    sessionStart("stale-dead-1", "2026-07-12T06:00:00Z", null),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+});
+
+test("HIMMEL-2075 CR fix (codex-1): the alert TTL is measured from when a session BECAME dead, not from raw activity — a staleness threshold >= the TTL must still let a recently-dead session count", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  // 25h staleness threshold, ABOVE the 24h alert TTL.
+  writeFileSync(config, JSON.stringify({ sessions: { stale_after_seconds: 25 * 60 * 60 } }));
+  writeLines(ledger, [
+    // No transcript: falls back to age. 26h old — just became dead 1h ago
+    // (26h age - 25h staleness), well inside the 24h alert TTL measured
+    // from deadness, not from raw age.
+    sessionStart("just-dead-1", "2026-07-12T10:00:00Z", null),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+});
+
+test("HIMMEL-2294: a close-evidence row suppresses a stale unpaired session from session_dead_total", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  // CR fix (codex-1) round 2: this needs a REAL transcript so
+  // last_activity_seconds is non-null — declaredClosed now fails closed on a
+  // null (missing/unreadable transcript), so a fixture with no transcript
+  // could never legitimately test suppression. Last write at 09:03, 2
+  // minutes before the 09:05 close row: the session finished work, then ran
+  // its close protocol — well inside the default 15m staleAfterSeconds
+  // grace, so the close declaration is honoured.
+  const idleBeforeClose = transcriptWithMtime("idle-before-close.jsonl", "2026-07-13T09:03:00Z");
+  writeLines(ledger, [
+    sessionStart("closed-1", "2026-07-13T09:00:00Z", idleBeforeClose),
+    sessionCloseRow("closed-1", "2026-07-13T09:05:00Z"),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 0');
+});
+
+test("HIMMEL-2294: a close-evidence row does NOT suppress the alert when it stranded a subagent", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  // Real transcript activity (see previous test) so declaredClosed would be
+  // true on its own — the point of this test is that stranding still forces
+  // the session to count despite a validly-honoured close row.
+  const idleBeforeClose = transcriptWithMtime("idle-before-close-2.jsonl", "2026-07-13T09:03:00Z");
+  writeLines(ledger, [
+    sessionStart("closed-2", "2026-07-13T09:00:00Z", idleBeforeClose),
+    sessionCloseRow("closed-2", "2026-07-13T09:05:00Z"),
+    // Started, never ended — a real loss even though the parent declared
+    // closable.
+    subagentStart("sub-stranded", "closed-2", "explorer", "2026-07-13T09:01:00Z"),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+});
+
+test("HIMMEL-2294 CR fix (codex-1): a close row whose session went idle shortly after closed_at is still suppressed", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  // Transcript's last write is 2 minutes after closed_at — well inside the
+  // default 15m staleAfterSeconds grace (the wrap message / release output
+  // written right after the close protocol runs).
+  const idleSoonAfterClose = transcriptWithMtime("idle-soon-after-close.jsonl", "2026-07-13T09:07:00Z");
+  writeLines(ledger, [
+    sessionStart("close-grace-1", "2026-07-13T09:00:00Z", idleSoonAfterClose),
+    sessionCloseRow("close-grace-1", "2026-07-13T09:05:00Z"),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 0');
+});
+
+test("HIMMEL-2294 CR fix (codex-1): a close row whose session kept advancing well past closed_at + staleAfterSeconds is COUNTED again", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  // Session declared closable at 09:05, then kept writing transcript until
+  // 09:30 — 25 minutes later, past the default 15m staleAfterSeconds grace.
+  // It plainly did not close: the declaration is stale and must not
+  // permanently suppress alerting for this session.
+  const keptWorking = transcriptWithMtime("kept-working-past-close.jsonl", "2026-07-13T09:30:00Z");
+  writeLines(ledger, [
+    sessionStart("close-stale-1", "2026-07-13T09:00:00Z", keptWorking),
+    sessionCloseRow("close-stale-1", "2026-07-13T09:05:00Z"),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+});
+
+test("HIMMEL-2294 CR fix (codex-1): a close row with a malformed/missing closed_at is not valid evidence — session is COUNTED (fail-closed)", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  writeLines(ledger, [
+    serializeSessionRun(sessionStart("close-malformed-1", "2026-07-13T09:00:00Z", null)),
+    JSON.stringify({ v: 1, kind: "session", ev: "close", session_id: "close-malformed-1", closed_at: "not-a-date", evidence: "queue_lock_release" }),
+  ]);
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+});
+
+test("HIMMEL-2294 CR fix (codex-1) round 2: a close row is not valid evidence when last_activity_seconds is null (missing/unreadable transcript) — session is COUNTED (fail-closed)", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  // No transcript path at all: last_activity_seconds is null, and closed_at
+  // itself is perfectly valid — isolating this from the malformed-closed_at
+  // case above. The age_seconds fallback would make lastActivityMs equal the
+  // session's 09:00 START time, which always predates closed_at, so the old
+  // code declared this closed FOREVER. A start time is not activity
+  // evidence, so this must be COUNTED. Measured on this machine's live
+  // ledger: 579 of 943 session start rows have a missing transcript file, so
+  // this null path is the MAJORITY case, not a corner case.
+  writeLines(ledger, [
+    sessionStart("close-no-transcript-1", "2026-07-13T09:00:00Z", null),
+    sessionCloseRow("close-no-transcript-1", "2026-07-13T09:05:00Z"),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+});
+
+test("HIMMEL-2294 regression: a dead session with no close row is counted exactly as before this ticket", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  writeLines(ledger, [
+    sessionStart("no-close-1", "2026-07-13T09:00:00Z", null),
+  ].map(serializeSessionRun));
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain('session_dead_total{host="test-host"} 1');
+});
+
+test("HIMMEL-2294: a close row does not change the dashboard-facing SessionView.status", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  writeLines(ledger, [
+    sessionStart("closed-3", "2026-07-13T09:00:00Z", null),
+    sessionCloseRow("closed-3", "2026-07-13T09:05:00Z"),
+  ].map(serializeSessionRun));
+
+  const view = JSON.parse(renderSessionsJson({ nowMs: NOW, configPath: config, sessionLedgerPath: ledger }));
+  const closed3 = view.sessions.find((s: { session_id: string }) => s.session_id === "closed-3");
+
+  // Still `dead` — the close row suppresses the ALERTING gauge above, never
+  // the per-session detail view.
+  expect(closed3.status).toBe("dead");
+});
+
 test("subagents count as active only under a running parent; outcomes fold by subagent_type", async () => {
   const ledger = join(tmp, "session-runs.jsonl");
   const config = join(tmp, "observability.json");
@@ -1160,7 +1920,7 @@ test("malformed and out-of-window session rows are skipped without failing the s
   const live = transcriptWithMtime("live.jsonl", "2026-07-13T11:55:00Z");
   writeLines(ledger, [
     "not json at all",
-    JSON.stringify({ v: 2, kind: "session", ev: "start", session_id: "wrong-version", started_at: "2026-07-13T11:00:00Z" }),
+    JSON.stringify({ v: 99, kind: "session", ev: "start", session_id: "wrong-version", started_at: "2026-07-13T11:00:00Z" }),
     JSON.stringify({ v: 1, kind: "session", ev: "start", started_at: "2026-07-13T11:00:00Z" }),
     serializeSessionRun(sessionStart("ancient-1", "2026-06-01T00:00:00Z", live)),
     serializeSessionRun(sessionStart("live-1", "2026-07-13T09:00:00Z", live)),
@@ -1170,6 +1930,22 @@ test("malformed and out-of-window session rows are skipped without failing the s
 
   expect(body).toContain('session_active_total{host="test-host"} 1');
   expect(body).toContain("session_runs_ledger_rows 1");
+});
+
+test("v1 and v2 rows coexist in one ledger — v2 only ADDS fields (HIMMEL-2022)", async () => {
+  const ledger = join(tmp, "session-runs.jsonl");
+  const config = join(tmp, "observability.json");
+  writeFileSync(config, "{}");
+  const live = transcriptWithMtime("live.jsonl", "2026-07-13T11:55:00Z");
+  writeLines(ledger, [
+    serializeSessionRun(sessionStart("v1-legacy", "2026-07-13T09:00:00Z", live)),
+    serializeSessionRun({ ...sessionStart("v2-enriched", "2026-07-13T09:30:00Z", live), v: 2, source: "startup", permission_mode: "auto" }),
+  ]);
+
+  const body = await sessionScrape(ledger, config);
+
+  expect(body).toContain("session_runs_ledger_rows 2");
+  expect(body).toContain('session_active_total{host="test-host"} 2');
 });
 
 test("hostile host / subagent_type values cannot inject an exposition line", async () => {

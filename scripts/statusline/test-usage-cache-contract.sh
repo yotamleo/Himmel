@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Contract test: usage-cache-producer.sh -> all THREE shipped cap-guard
-# consumers (HIMMEL-718 Phase 2 Task 2.2).
+# Contract test: usage-cache-producer.sh -> all FOUR shipped cap-guard
+# consumers (HIMMEL-718 Phase 2 Task 2.2; HIMMEL-1841).
 #
 # The producer writes the consumer cache; the consumers must read it
 # UNCHANGED. If any consumer chokes here, the fix goes in the PRODUCER
@@ -16,6 +16,9 @@
 #   3. scripts/handover/resume-slot.sh      --cache <c> --max-age 0
 #      shape guard (~line 154): at least one of five_hour/seven_day must
 #      be a JSON object, else "schema mismatch" die.
+#   4. scripts/lib/bank-preflight.sh        via CADENCE_BANK_CACHE=<c>
+#      reads numeric .five_hour/.seven_day.utilization plus the Branch-B
+#      primaries_refreshed_at provenance stamp.
 #
 # Hermetic: own temp dirs, env-overridden cache/state/handover/ledger
 # paths; never touches the real ~/.claude or /tmp/claude. Git-Bash-safe,
@@ -51,9 +54,10 @@ COMPOSER="$STATUSLINE_DIR/hud-custom-lines.sh"   # HIMMEL-718 Task 2.3 real driv
 CAP_RESET="$STATUSLINE_DIR/../handover/cap-reset-time.sh"
 AUTO_ARM="$STATUSLINE_DIR/../hooks/auto-arm-on-cap.sh"
 RESUME_SLOT="$STATUSLINE_DIR/../handover/resume-slot.sh"
+PREFLIGHT="$STATUSLINE_DIR/../lib/bank-preflight.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "FATAL: jq required for this test"; exit 1; }
-for f in "$PRODUCER" "$CAP_RESET" "$AUTO_ARM" "$RESUME_SLOT"; do
+for f in "$PRODUCER" "$CAP_RESET" "$AUTO_ARM" "$RESUME_SLOT" "$PREFLIGHT"; do
   [ -f "$f" ] || { echo "FATAL: missing script under contract: $f"; exit 1; }
 done
 
@@ -88,6 +92,18 @@ produce_cache() {
     bash "$PRODUCER" <<EOF
 {"rate_limits":{"five_hour":{"utilization":$five,"resets_at":"2027-01-01T13:30:00+00:00"},"seven_day":{"utilization":$seven,"resets_at":"2027-01-04T09:00:00+00:00"}}}
 EOF
+}
+
+produce_cache_oauth() { # <workdir> <five> <seven>
+  local w="$1" five="$2" seven="$3"
+  export CLAUDE_USAGE_CACHE="$w/cache.json"; export HUD_USAGE_SNAPSHOT="$w/hud.json"
+  printf '%s' '{"five_hour":{"utilization":1},"seven_day":{"utilization":1},"extra_usage":{}}' > "$w/cache.json"
+  local stub="$w/stub.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'cat <<JSON' \
+    "{\"five_hour\":{\"utilization\":$five},\"seven_day\":{\"utilization\":$seven},\"extra_usage\":{\"utilization\":2}}" \
+    'JSON' > "$stub"
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub"; export USAGE_OAUTH_TTL=0
+  printf '%s' '{"model":{"display_name":"Claude"}}' | bash "$PRODUCER"
 }
 
 # produce_cache_via_composer <workdir> <five_util> <seven_util>
@@ -179,6 +195,31 @@ run_test "(4) consumers UNCHANGED premise: cache byte-identical across all three
   run_arm_hook "$S" "$W/cache.json" "$W/arm.log" "$H" "$W/stderr.log" || exit 1;
   bash "$RESUME_SLOT" --cache "$W/cache.json" --max-age 0 >/dev/null || exit 1;
   [ "$(cat "$W/cache.json")" = "$before" ] || exit 1;
+'
+
+run_test "(4a) producer(Branch B) -> bank-preflight: PROCEED below threshold" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4a.XXXXXX"); produce_cache_oauth "$W" 10 20;
+  v=$(CADENCE_BANK_CACHE="$W/cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/l.jsonl" bash "$PREFLIGHT" </dev/null);
+  [ "$v" = "PROCEED" ] || exit 1;
+'
+
+run_test "(4b) producer(Branch B) -> bank-preflight: SKIPPED-BANK above threshold" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4b.XXXXXX"); produce_cache_oauth "$W" 95 20;
+  v=$(CADENCE_BANK_CACHE="$W/cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/l.jsonl" bash "$PREFLIGHT" </dev/null);
+  [ "$v" = "SKIPPED-BANK" ] || exit 1;
+'
+
+run_test "(4c) HIMMEL-1866: partial fetch cannot make stale seven_day fresh" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-contract-4c.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  old=$(( $(date +%s) - 3600 ));
+  printf "%s" "{\"five_hour\":{\"utilization\":40},\"seven_day\":{\"utilization\":8},\"primaries_refreshed_at\":$old}" > "$CLAUDE_USAGE_CACHE";
+  stub="$W/stub.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"five_hour\":{\"utilization\":10}}" "JSON" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
+  printf "%s" "{\"model\":{\"display_name\":\"Claude\"}}" | bash "$PRODUCER";
+  v=$(CADENCE_BANK_CACHE="$CLAUDE_USAGE_CACHE" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_MAX_AGE=60 CADENCE_BANK_LEDGER="$W/l.jsonl" bash "$PREFLIGHT" </dev/null);
+  [ "$v" = "BANK-STALE" ] || exit 1;
 '
 
 # --- HIMMEL-718 Task 2.3: same contract, via the REAL composer driver ---------

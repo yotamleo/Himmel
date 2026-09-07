@@ -249,6 +249,24 @@ export function isVertexModelId(modelId) {
     return modelId.includes('@');
 }
 const ENTERPRISE_MODEL_IDS = new Set(['opusplan', 'sonnetplan', 'haikuplan']);
+const MINIMAX_ANTHROPIC_ENDPOINTS = new Set([
+    'https://api.minimax.io/anthropic',
+    'https://api.minimaxi.com/anthropic',
+]);
+function isMiniMaxAnthropicEndpoint(env = process.env) {
+    const baseUrl = env.ANTHROPIC_BASE_URL?.trim() || env.ANTHROPIC_API_BASE_URL?.trim();
+    if (!baseUrl) {
+        return false;
+    }
+    try {
+        const url = new URL(baseUrl);
+        const normalized = `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+        return MINIMAX_ANTHROPIC_ENDPOINTS.has(normalized);
+    }
+    catch {
+        return false;
+    }
+}
 export function isEnterpriseModelId(modelId) {
     if (!modelId) {
         return false;
@@ -261,6 +279,9 @@ export function getProviderLabel(stdin) {
     }
     if (process.env.CLAUDE_CODE_USE_VERTEX === '1') {
         return 'Vertex';
+    }
+    if (isMiniMaxAnthropicEndpoint()) {
+        return 'MiniMax';
     }
     if (isEnterpriseModelId(stdin.model?.id)) {
         return 'Enterprise';
@@ -289,8 +310,9 @@ export function getUsageFromStdin(stdin) {
     }
     const fiveHour = parseRateLimitPercent(rateLimits.five_hour?.used_percentage);
     const sevenDay = parseRateLimitPercent(rateLimits.seven_day?.used_percentage);
+    const hasScopedWindows = Array.isArray(rateLimits.model_scoped);
     const scopedWindows = parseScopedWindows(rateLimits.model_scoped);
-    if (fiveHour === null && sevenDay === null && scopedWindows.length === 0) {
+    if (fiveHour === null && sevenDay === null && !hasScopedWindows) {
         return null;
     }
     return {
@@ -298,7 +320,7 @@ export function getUsageFromStdin(stdin) {
         sevenDay,
         fiveHourResetAt: parseRateLimitResetAt(rateLimits.five_hour?.resets_at),
         sevenDayResetAt: parseRateLimitResetAt(rateLimits.seven_day?.resets_at),
-        ...(scopedWindows.length > 0 && { scopedWindows }),
+        ...(hasScopedWindows && { scopedWindows }),
     };
 }
 /**
@@ -307,7 +329,7 @@ export function getUsageFromStdin(stdin) {
  * the generic rate-limit windows. Malformed entries are dropped, and both the
  * retained entry count and label size are bounded because stdin is untrusted.
  */
-function parseScopedWindows(modelScoped) {
+export function parseScopedWindows(modelScoped) {
     if (!Array.isArray(modelScoped)) {
         return [];
     }

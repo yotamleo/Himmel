@@ -104,9 +104,35 @@ chmod +x "$work/bin/claude"
 # shellcheck disable=SC1091
 . "$repo_root/scripts/lib/hermetic-path.sh"
 
-for _tool in bash git jq python3 grep sed cat cp mv rm ln mkdir chmod diff wc tr head tail basename dirname mktemp sort cut; do
+# xargs: Arch co-locates node with coreutils in /usr/bin, so the toolchain
+# scrub drops it (same class as the HIMMEL-874 sed fix).
+for _tool in bash git jq python3 grep sed cat cp mv rm ln mkdir chmod diff wc tr head tail basename dirname mktemp sort cut xargs; do
   link_hermetic_tool "$_tool"
 done
+
+# Derive the expected suffix from an INDEPENDENT platform probe, never from
+# HERMETIC_EXE_SUFFIX — the very variable link_hermetic_tool writes with.
+# Reusing the writer's value makes this test tautological: if the detection in
+# hermetic-path.sh regressed to an empty suffix, the writer would emit
+# extensionless stubs, the expectation below would ALSO go extensionless and
+# still match, and the rejection branch would be skipped by its own
+# [ -n ... ] guard. The test could then never fail (HIMMEL-1686 CR).
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT*) hermetic_suffix='.exe' ;;
+  *)                                hermetic_suffix='' ;;
+esac
+[ -f "$work/bin/bash$hermetic_suffix" ] || fail "link_hermetic_tool self-test: platform-named bash stub was not created"
+# `find` with a literal -name match is REQUIRED here; do not "simplify" this to
+# [ -e "$work/bin/bash" ]. On MSYS/Git-Bash, test -e resolves bash -> bash.exe,
+# so the plain file test reports an extensionless stub that does not exist and
+# this check fires on every healthy Windows run. find matches real directory
+# entries and does not do the .exe fallback. (HIMMEL-1686 CR proposed the
+# [ -e ]/[ -L ] form on portability grounds; the premise is wrong -- BSD find
+# does support -maxdepth -- and the replacement breaks the suite on Windows.
+# Verified live: swapping it made the green baseline fail.)
+if [ -n "$hermetic_suffix" ] && [ -n "$(find "$work/bin" -maxdepth 1 -name bash -print -quit)" ]; then
+  fail "link_hermetic_tool self-test: extensionless bash stub was created on Windows"
+fi
 
 # ── HIMMEL-874 unit test: link_hermetic_tool's two failure-fallback branches ──
 # Force `ln -s` to fail deterministically (a stub `ln` fronting PATH — the
@@ -119,14 +145,14 @@ ut="$work/ut-link"; mkdir -p "$ut/bin" "$ut/stub"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$ut/stub/ln"; chmod +x "$ut/stub/ln"
 
 PATH="$ut/stub:$PATH" link_hermetic_tool jq "$ut/bin"
-[ -f "$ut/bin/jq" ] || fail "link_hermetic_tool self-test: wrapper-fallback did not create jq wrapper"
-[ -x "$ut/bin/jq" ] || fail "link_hermetic_tool self-test: jq wrapper is not executable"
-"$ut/bin/jq" --version >/dev/null 2>&1 || fail "link_hermetic_tool self-test: jq wrapper does not proxy correctly"
+[ -f "$ut/bin/jq$hermetic_suffix" ] || fail "link_hermetic_tool self-test: wrapper-fallback did not create jq wrapper"
+[ -x "$ut/bin/jq$hermetic_suffix" ] || fail "link_hermetic_tool self-test: jq wrapper is not executable"
+"$ut/bin/jq$hermetic_suffix" --version >/dev/null 2>&1 || fail "link_hermetic_tool self-test: jq wrapper does not proxy correctly"
 
 PATH="$ut/stub:$PATH" link_hermetic_tool bash "$ut/bin"
-[ -f "$ut/bin/bash" ] || fail "link_hermetic_tool self-test: bash copy-fallback did not create bash"
-[ -x "$ut/bin/bash" ] || fail "link_hermetic_tool self-test: bash copy is not executable"
-[ "$("$ut/bin/bash" -c 'echo ok')" = "ok" ] || fail "link_hermetic_tool self-test: bash copy-fallback produced a non-working bash"
+[ -f "$ut/bin/bash$hermetic_suffix" ] || fail "link_hermetic_tool self-test: bash copy-fallback did not create bash"
+[ -x "$ut/bin/bash$hermetic_suffix" ] || fail "link_hermetic_tool self-test: bash copy is not executable"
+[ "$("$ut/bin/bash$hermetic_suffix" -c 'echo ok')" = "ok" ] || fail "link_hermetic_tool self-test: bash copy-fallback produced a non-working bash"
 echo "ok: link_hermetic_tool wrapper-fallback (jq) + bash copy-fallback verified under forced ln failure"
 
 # Hermeticity (HIMMEL-752 CR): scrub every dir carrying a real qmd, bun, npm,
@@ -212,6 +238,62 @@ cp "$s" "$work/before.json"
 HOME="$base_home" bash "$adopt" --profile core --scope project --target "$proj" >/dev/null
 diff -q "$work/before.json" "$s" >/dev/null || fail "core/project not idempotent"
 echo "ok: core/project idempotent on re-run"
+
+# ── 1b. HIMMEL-2435: self-copy guard ─────────────────────────────────────────
+# A brand-new adopter clones himmel and runs the installer FROM INSIDE that
+# clone (TARGET == HIMMEL_ROOT). do_core() mutates its TARGET, so this can't
+# be reproduced by pointing --target at the live checkout ($repo_root) --
+# that would mutate this worktree's real .claude/settings.json etc. Instead
+# build a standalone, disposable clone (a full copy of this worktree's
+# CURRENT tracked-file content, not the committed HEAD blob -- so it carries
+# whatever adopt.sh is on disk right now: the original for this red-first
+# run, the guarded version once the fix lands) and run its OWN adopt.sh
+# against itself.
+fakeClone="$work/fake-himmel-clone"; mkdir -p "$fakeClone"
+( cd "$repo_root" && git ls-files -z ) | xargs -0 cp --parents -t "$fakeClone"
+[ -f "$fakeClone/scripts/adopt.sh" ] || fail "HIMMEL-2435 fixture: scripts/adopt.sh did not land in the fake clone"
+
+# case A (the important one, red-first): the documented flow -- cd into the
+# clone and run `adopt.sh --scope project`, TARGET defaulting to $PWD (the
+# clone itself). Before the fix this dies on the self-copy `cp` error on the
+# very first portable file.
+homeA2435="$work/home-2435a"; mkdir -p "$homeA2435"
+set +e
+outA2435=$( cd "$fakeClone" && HOME="$homeA2435" bash scripts/adopt.sh --scope project 2>&1 ); rcA2435=$?
+set -e
+[ "$rcA2435" -eq 0 ] || fail "HIMMEL-2435 case A: the documented adopter flow (adopt.sh --scope project run from inside the clone) should exit 0 (got rc=$rcA2435): $outA2435"
+grepq "$outA2435" -i "already in place" \
+  || fail "HIMMEL-2435 case A: expected a skip note, not silence or the self-copy cp abort (got: $outA2435)"
+grepq "$outA2435" "are the same file" \
+  && fail "HIMMEL-2435 case A: must NOT hit the self-copy cp error (got: $outA2435)"
+echo "ok: HIMMEL-2435 case A the documented adopter flow (adopt.sh --scope project from inside the clone) completes rc=0 with a skip note, not the self-copy cp abort"
+
+# case B: the by-hand route -- `adopt.sh --scope project --target <the
+# clone>`, invoked from elsewhere. Same single guard (inside copy_portable())
+# must cover this call shape too, not just the documented one above.
+homeB2435="$work/home-2435b"; mkdir -p "$homeB2435"
+set +e
+outB2435=$(HOME="$homeB2435" bash "$fakeClone/scripts/adopt.sh" --scope project --target "$fakeClone" 2>&1); rcB2435=$?
+set -e
+[ "$rcB2435" -eq 0 ] || fail "HIMMEL-2435 case B: --target <the clone> (by-hand route) should exit 0 (got rc=$rcB2435): $outB2435"
+grepq "$outB2435" -i "already in place" \
+  || fail "HIMMEL-2435 case B: expected the skip note on the by-hand --target route too (got: $outB2435)"
+echo "ok: HIMMEL-2435 case B the by-hand route (adopt.sh --scope project --target <clone>) hits the same guard"
+
+# negative control (load-bearing): a genuinely DIFFERENT target must still
+# get its portable core copied -- a guard that skipped unconditionally (or
+# compared paths by content instead of identity) would also pass A and B.
+diffTarget2435="$work/diff-target-2435"; mkdir -p "$diffTarget2435"
+homeC2435="$work/home-2435c"; mkdir -p "$homeC2435"
+set +e
+outC2435=$(HOME="$homeC2435" bash "$fakeClone/scripts/adopt.sh" --scope project --target "$diffTarget2435" 2>&1); rcC2435=$?
+set -e
+[ "$rcC2435" -eq 0 ] || fail "HIMMEL-2435 negative control: a genuinely different --target should still succeed (got rc=$rcC2435): $outC2435"
+[ -f "$diffTarget2435/scripts/worktree.sh" ] \
+  || fail "HIMMEL-2435 negative control: the guard must not over-skip -- a genuinely different target should still get its portable core copied (missing $diffTarget2435/scripts/worktree.sh)"
+grepq "$outC2435" -i "already in place" \
+  && fail "HIMMEL-2435 negative control: a genuinely different target should NOT print the self-copy skip note (got: $outC2435)"
+echo "ok: HIMMEL-2435 negative control a genuinely different --target still gets its portable core copied (the guard does not over-skip)"
 
 # ── 2. merge preserves existing settings ─────────────────────────────────────
 proj2="$work/proj2"; mkdir -p "$proj2/.claude"
@@ -498,6 +580,17 @@ case "$1" in
 esac
 STUB
 chmod +x "$mbin/bun"
+# The stub answers the pin check with the pin adopt.sh will actually check:
+# the ambient QMD_FORK_REF override when one is set (the same precedence
+# _qmd_fork_ref uses, and the shape HIMMEL-2452's own positive control ran),
+# otherwise the compiled-in default read out of qmd-bin.sh. A hardcoded copy
+# drifts on the next pin bump and silently fails this case before it reaches
+# the migration branch it asserts on (HIMMEL-2452).
+QMD_STUB_HEAD_SHA="${QMD_FORK_REF:-$(sed -n 's/.*QMD_FORK_REF:-\([0-9a-f]\{40\}\).*/\1/p' \
+  "$repo_root/scripts/lib/qmd-bin.sh" | head -1)}"
+[ -n "$QMD_STUB_HEAD_SHA" ] \
+  || fail "could not read QMD_FORK_REF out of scripts/lib/qmd-bin.sh"
+export QMD_STUB_HEAD_SHA
 cat > "$mbin/git" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = "-C" ]; then shift 2; fi
@@ -511,7 +604,7 @@ case "$1" in
   # Only the exact `rev-parse HEAD` query the pin check performs gets the
   # SHA; other rev-parse forms keep the silent-success default (coderabbit
   # finding, HIMMEL-934 CR round).
-  rev-parse) [ "${2:-}" = "HEAD" ] && echo "1032a648447a54eb73df138a3861dd7a9a64c595"; exit 0 ;;
+  rev-parse) [ "${2:-}" = "HEAD" ] && echo "${QMD_STUB_HEAD_SHA:-}"; exit 0 ;;
   *) exit 0 ;;
 esac
 STUB
@@ -698,6 +791,204 @@ grepq "$out" 'BUN_INSTALL_STUB_RAN' || fail "build_jira_cli bun real-invocation:
 grepq "$out" 'BUN_BUILD_STUB_RAN'   || fail "build_jira_cli bun real-invocation: bun run build did not run"
 grepq "$out" 'jira CLI built' || fail "build_jira_cli bun real-invocation: missing success message"
 echo "ok: build_jira_cli bun branch real-invocation runs install + build (F5)"
+
+# ── 19b. HIMMEL-2441: install_precommit_hooks places the git gate hooks ──────
+# A stub `pre-commit` in a dedicated $pcbin dir (put FIRST on PATH, ahead of
+# any real pre-commit the dev box might have installed via pipx/uv outside
+# the qmd/bun/npm/node/uv/pipx scrub list) logs its argv to a file and exits
+# 0 or 1 on demand — this proves adopt.sh actually shells out to `pre-commit
+# install ...` against $TARGET, not just that it prints a message. Scoped to
+# this block only (PATH= prefix per invocation, never exported) so the stub
+# can never leak into an earlier scenario or run against a real repo — every
+# $TARGET below is a disposable temp dir this block git-inits itself.
+pcbin="$work/pcbin"; mkdir -p "$pcbin"
+pchome="$work/pchome"; mkdir -p "$pchome"
+
+# default: no --skip-hooks -> pre-commit install runs against $TARGET with
+# all 3 hook types, adopt reports success, rc=0.
+cat > "$pcbin/pre-commit" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$work/pre-commit.argv"
+exit 0
+STUB
+chmod +x "$pcbin/pre-commit"
+: > "$work/pre-commit.argv"
+pctarget19b1="$work/pctarget19b1"; mkdir -p "$pctarget19b1"
+( cd "$pctarget19b1" && HOME="$pchome" git init -q )
+set +e
+out=$(PATH="$pcbin:$work/bin:$qmd_free_path" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$pctarget19b1" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2441 default: adopt should exit 0 (got $rc): $out"
+grepq "$(cat "$work/pre-commit.argv")" \
+  'install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push' \
+  || fail "HIMMEL-2441 default: pre-commit install was not invoked with all 3 hook types (argv: $(cat "$work/pre-commit.argv"))"
+grepq "$out" 'git hooks installed (pre-commit, commit-msg, pre-push).' \
+  || fail "HIMMEL-2441 default: missing the git-hooks-installed message (got: $out)"
+echo "ok: HIMMEL-2441 default adopt wires pre-commit/commit-msg/pre-push hooks into \$TARGET"
+
+# --skip-hooks: pre-commit is never invoked.
+: > "$work/pre-commit.argv"
+pctarget19b2="$work/pctarget19b2"; mkdir -p "$pctarget19b2"
+( cd "$pctarget19b2" && HOME="$pchome" git init -q )
+set +e
+out=$(PATH="$pcbin:$work/bin:$qmd_free_path" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$pctarget19b2" --skip-hooks 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2441 --skip-hooks: adopt should exit 0 (got $rc): $out"
+[ ! -s "$work/pre-commit.argv" ] || fail "HIMMEL-2441 --skip-hooks: pre-commit stub was invoked (argv: $(cat "$work/pre-commit.argv"))"
+grepq "$out" 'git hooks: skipped (--skip-hooks)' \
+  || fail "HIMMEL-2441 --skip-hooks: missing the skip message (got: $out)"
+echo "ok: HIMMEL-2441 --skip-hooks opts out, pre-commit never invoked"
+
+# non-git target: no .git in $TARGET -> skip, pre-commit never invoked.
+: > "$work/pre-commit.argv"
+pctarget19b3="$work/pctarget19b3"; mkdir -p "$pctarget19b3"
+set +e
+out=$(PATH="$pcbin:$work/bin:$qmd_free_path" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$pctarget19b3" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2441 non-git target: adopt should exit 0 (got $rc): $out"
+[ ! -s "$work/pre-commit.argv" ] || fail "HIMMEL-2441 non-git target: pre-commit stub was invoked (argv: $(cat "$work/pre-commit.argv"))"
+grepq "$out" 'git hooks: skipping (' \
+  || fail "HIMMEL-2441 non-git target: missing the non-git skip message (got: $out)"
+echo "ok: HIMMEL-2441 non-git \$TARGET skips git-hooks install, pre-commit never invoked"
+
+# --dry-run: prints the DRY line, pre-commit never invoked.
+: > "$work/pre-commit.argv"
+pctarget19b4="$work/pctarget19b4"; mkdir -p "$pctarget19b4"
+( cd "$pctarget19b4" && HOME="$pchome" git init -q )
+set +e
+out=$(PATH="$pcbin:$work/bin:$qmd_free_path" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$pctarget19b4" --dry-run 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2441 --dry-run: adopt should exit 0 (got $rc): $out"
+[ ! -s "$work/pre-commit.argv" ] || fail "HIMMEL-2441 --dry-run: pre-commit stub was invoked (argv: $(cat "$work/pre-commit.argv"))"
+grepq "$out" "DRY: (cd $pctarget19b4 && pre-commit install --allow-missing-config" \
+  || fail "HIMMEL-2441 --dry-run: missing the DRY git-hooks line (got: $out)"
+echo "ok: HIMMEL-2441 --dry-run prints the git-hooks DRY line, pre-commit never invoked"
+
+# pre-commit install fails (stub exits 1): WARN-not-fail, adopt still rc=0.
+cat > "$pcbin/pre-commit" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$work/pre-commit.argv"
+exit 1
+STUB
+chmod +x "$pcbin/pre-commit"
+: > "$work/pre-commit.argv"
+pctarget19b5="$work/pctarget19b5"; mkdir -p "$pctarget19b5"
+( cd "$pctarget19b5" && HOME="$pchome" git init -q )
+set +e
+out=$(PATH="$pcbin:$work/bin:$qmd_free_path" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$pctarget19b5" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2441 install-fails: adopt must exit 0 (WARN-not-fail), got rc=$rc: $out"
+grepq "$out" 'WARNING: git hook install failed' \
+  || fail "HIMMEL-2441 install-fails: missing the WARNING message (got: $out)"
+echo "ok: HIMMEL-2441 a failing pre-commit install WARNs, adopt continues (rc=0)"
+
+# HIMMEL-2441/2483 [codex-1, CR round 2]: a real `uv tool install pre-commit`
+# can succeed while its bin dir isn't on PATH yet -- prove adopt.sh resolves
+# the bootstrapped binary to an absolute path instead of trusting a bare
+# `pre-commit` call that would silently miss it. No real pre-commit anywhere
+# on PATH (pc_free_path additionally scrubs any dir carrying one, on top of
+# the suite-wide qmd/bun/npm/node/uv/pipx scrub); a stubbed `uv` on PATH
+# answers `tool install pre-commit --quiet` by writing an argv-logging
+# `pre-commit` into $HOME/.local/bin — the UV_TOOL_BIN_DIR default — which is
+# deliberately NOT added to PATH, so `command -v pre-commit` still fails
+# after the "install" and adopt.sh must fall back to the candidate bin dir.
+pc_free_path=$(scrub_path "$qmd_free_path" pre-commit)
+uvbin="$work/uvbin"; mkdir -p "$uvbin"
+cat > "$uvbin/uv" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "tool" ] && [ "$2" = "install" ] && [ "$3" = "pre-commit" ]; then
+  mkdir -p "$HOME/.local/bin"
+  cat > "$HOME/.local/bin/pre-commit" <<'INNER'
+#!/usr/bin/env bash
+echo "$*" >> "$HOME/pre-commit-2483.argv"
+exit 0
+INNER
+  chmod +x "$HOME/.local/bin/pre-commit"
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$uvbin/uv"
+rm -f "$pchome/pre-commit-2483.argv" "$pchome/.local/bin/pre-commit"
+pctarget19b6="$work/pctarget19b6"; mkdir -p "$pctarget19b6"
+( cd "$pctarget19b6" && HOME="$pchome" git init -q )
+set +e
+out=$(PATH="$uvbin:$work/bin:$pc_free_path" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$pctarget19b6" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2441/2483 PATH-less bootstrap: adopt should exit 0 (got $rc): $out"
+[ -f "$pchome/pre-commit-2483.argv" ] \
+  || fail "HIMMEL-2441/2483 PATH-less bootstrap: bootstrapped pre-commit in \$HOME/.local/bin was never invoked (got: $out)"
+grepq "$(cat "$pchome/pre-commit-2483.argv")" \
+  'install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push' \
+  || fail "HIMMEL-2441/2483 PATH-less bootstrap: pre-commit install was not invoked with all 3 hook types (argv: $(cat "$pchome/pre-commit-2483.argv"))"
+grepq "$out" 'git hooks installed (pre-commit, commit-msg, pre-push).' \
+  || fail "HIMMEL-2441/2483 PATH-less bootstrap: missing the git-hooks-installed message (got: $out)"
+echo "ok: HIMMEL-2441/2483 a PATH-less uv bootstrap still resolves pre-commit to an absolute path"
+
+# Clean up the PATH-less-bootstrap fixture so it cannot affect any later
+# scenario — none of this is on the ambient exported PATH.
+rm -f "$pchome/pre-commit-2483.argv" "$pchome/.local/bin/pre-commit"
+rmdir "$pchome/.local/bin" "$pchome/.local" 2>/dev/null || true
+
+# HIMMEL-2441/2483 [round-3 panel, Important #1]: --dry-run must describe the
+# planned pre-commit install regardless of host state. No real pre-commit
+# anywhere (reuses $uvbin/$pc_free_path from the row above) and a uv stub
+# present -- in --dry-run the bootstrap's own `run uv tool install ...` never
+# actually executes the stub (it just prints its DRY: line), so resolution
+# afterward necessarily finds nothing real either. adopt.sh must still print
+# the planned `pre-commit install` DRY: line (literal name) instead of
+# WARNing and going silent -- the plan is what matters in dry-run, not
+# whether the plan's binary actually exists yet.
+pctarget19b7="$work/pctarget19b7"; mkdir -p "$pctarget19b7"
+( cd "$pctarget19b7" && HOME="$pchome" git init -q )
+rm -f "$pchome/pre-commit-2483.argv" "$pchome/.local/bin/pre-commit"
+set +e
+out=$(PATH="$uvbin:$work/bin:$pc_free_path" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$pctarget19b7" --dry-run 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2441/2483 --dry-run PATH-less: adopt should exit 0 (got $rc): $out"
+[ ! -f "$pchome/pre-commit-2483.argv" ] \
+  || fail "HIMMEL-2441/2483 --dry-run PATH-less: pre-commit stub was invoked during --dry-run (argv: $(cat "$pchome/pre-commit-2483.argv"))"
+grepq "$out" 'DRY: uv tool install pre-commit' \
+  || fail "HIMMEL-2441/2483 --dry-run PATH-less: missing the uv bootstrap DRY line (got: $out)"
+grepq "$out" "DRY: (cd $pctarget19b7 && pre-commit install --allow-missing-config" \
+  || fail "HIMMEL-2441/2483 --dry-run PATH-less: missing the planned pre-commit install DRY line (got: $out)"
+echo "ok: HIMMEL-2441/2483 --dry-run describes the planned pre-commit install even when resolution finds nothing"
+
+rm -f "$pchome/pre-commit-2483.argv" "$pchome/.local/bin/pre-commit"
+rmdir "$pchome/.local/bin" "$pchome/.local" 2>/dev/null || true
+
+# HIMMEL-2441/2483 [round-4 panel, codex-1]: the "neither uv nor pipx"
+# branch WARNed and returned unconditionally, so --dry-run output still
+# depended on host tooling in this one last case. No pre-commit, uv, or pipx
+# anywhere on PATH ($pc_free_path is already uv/pipx/pre-commit-free -- it's
+# $qmd_free_path, itself scrubbed of uv/pipx, further scrubbed of
+# pre-commit; $work/bin only carries the hermetic bash/jq/claude stubs).
+# adopt.sh must still print the WARNING (useful info, kept) AND fall through
+# to the planned `pre-commit install` DRY: line, rc=0.
+pctarget19b8="$work/pctarget19b8"; mkdir -p "$pctarget19b8"
+( cd "$pctarget19b8" && HOME="$pchome" git init -q )
+set +e
+out=$(PATH="$work/bin:$pc_free_path" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$pctarget19b8" --dry-run 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2441/2483 --dry-run no-tool-at-all: adopt should exit 0 (got $rc): $out"
+grepq "$out" "WARNING: git hooks: 'pre-commit' not found and neither uv nor pipx is available" \
+  || fail "HIMMEL-2441/2483 --dry-run no-tool-at-all: missing the no-uv/pipx WARNING (got: $out)"
+grepq "$out" "DRY: (cd $pctarget19b8 && pre-commit install --allow-missing-config" \
+  || fail "HIMMEL-2441/2483 --dry-run no-tool-at-all: missing the planned pre-commit install DRY line (got: $out)"
+echo "ok: HIMMEL-2441/2483 --dry-run with no pre-commit/uv/pipx at all still WARNs AND prints the plan"
+
+# Remove the stub so it cannot affect any later scenario in this file — $pcbin
+# was only ever added to PATH via a per-invocation prefix above (never
+# exported), so this is belt-and-braces, not load-bearing.
+rm -f "$pcbin/pre-commit"
 
 # ── 20. HIMMEL-887 T10: himmelctl wizard + machine-setup shim suites ──────────
 # A plain `bash scripts/test-adopt.sh` run also exercises the himmelctl install

@@ -52,6 +52,16 @@ check "active + enforcement Write -> deny" block \
 check "active + allowed Write -> allow" allow \
     '{"tool_name":"Write","tool_input":{"file_path":"scripts/foo.sh"}}' \
     "$HOOK" HIMMEL_LESSON_LOOP=1 LESSON_FENCE_POLICY="$T/enforcement-paths.json"
+# HIMMEL-2170: apply_patch (Codex's create/edit envelope) reaches the fence
+# too now that it's in this wrapper's own matcher case (fence-side extraction
+# + classification is scripts/guardrails/test-lesson-write-fence.sh's job,
+# not duplicated here).
+check "active + apply_patch fenced target -> deny" block \
+    '{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: scripts/guardrails/x.sh\n+hi\n*** End Patch\n"}}' \
+    "$HOOK" HIMMEL_LESSON_LOOP=1 LESSON_FENCE_POLICY="$T/enforcement-paths.json"
+check "active + apply_patch non-fenced target -> allow" allow \
+    '{"tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch\n*** Add File: scripts/foo.sh\n+hi\n*** End Patch\n"}}' \
+    "$HOOK" HIMMEL_LESSON_LOOP=1 LESSON_FENCE_POLICY="$T/enforcement-paths.json"
 
 echo "== fence-missing-while-active (opposite polarity from block-graphify-egress) =="
 mkdir -p "$T/nofence/hooks"

@@ -32,7 +32,7 @@ if ! printf '%s\n' "$staged" | grep -E '^CLAUDE\.md$|^AGENTS\.md$|^scripts/agent
     exit 0
 fi
 
-[ -f "$GEN" ] || { echo "→ agents-md-fresh: generator missing ($GEN) — fail-closed" >&2; exit 2; }
+[ -f "$GEN" ] || { echo "→ agents-md-fresh: generator missing ($GEN) — fail-closed" >&2; exit 2; }  # fail-open-ok: unreadable generator fails node --check → rc≠0,1 → "cannot evaluate" exit 2 (fail-closed)
 
 # Validate the STAGED index content — the bytes that will actually be committed
 # — NOT the working tree. A partial `git add CLAUDE.md` (without the regenerated

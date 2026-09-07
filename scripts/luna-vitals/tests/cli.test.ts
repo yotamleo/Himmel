@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
-import { join } from "path";
-import { mkdtempSync } from "fs";
-import { tmpdir } from "os";
+import { join } from "node:path";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 
 const ROOT = join(import.meta.dir, "..");
 const FX = join(import.meta.dir, "fixtures");

@@ -1,5 +1,5 @@
 ---
-description: Auto-dispatch N tickets from Jira as parallel subagents — emits plan + confirms before fanout (HIMMEL-134).
+description: Auto-dispatch N tickets from Jira as parallel subagents — emits plan + confirms before fanout.
 argument-hint: [--limit N] [--project HIMMEL|LUNA] [--status STATUS] [--priority ORDER]
 ---
 

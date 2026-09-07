@@ -75,7 +75,17 @@ mkdir -p "$HANDOVER_DIR"
 git init -q "$TMP/statedocs"
 # A near future time keeps these proxy fixtures inside the HIMMEL-1475
 # explicit-HH:MM long-gap limit.
-FUTURE_TIME=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))')
+#
+# Recomputed PER CALL (HIMMEL-1879), not captured once: this suite can run
+# longer than the 30-minute offset, and past that point the target rolls to
+# TOMORROW, lands >60 min out, and the guard refuses rc=9 on cases that assert
+# rc=0 -- a wall-clock race in the fixture, not a behaviour under test
+# (observed at T6c/T7/T8/T9 on a loaded box, 2026-08-20; the same fragility
+# test-arm-resume-queue-lock.sh already avoids with a function). Nothing here
+# asserts that two calls picked the SAME minute, so a fresh value per call is
+# free. The long-gap guard keeps its dedicated coverage in
+# test-arm-resume-long-gap.sh.
+future_time() { python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=30)).strftime("%H:%M"))'; }
 
 make_handover() {
     local path="$HANDOVER_DIR/handover-$RANDOM.md"
@@ -127,7 +137,7 @@ chmod +x "$SCHED_STUB/schtasks" "$SCHED_STUB/atq" "$SCHED_STUB/at" "$SCHED_STUB/
 #     HIMMEL_HEADROOM_PROXY/HEADROOM_BIN are explicitly unset above.
 # ---------------------------------------------------------------------------
 HO=$(make_handover)
-out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T1 flag-off dry-run exits 0" 0 "$rc"
 assert_not_contains "T1 no ANTHROPIC_BASE_URL" "ANTHROPIC_BASE_URL" "$out"
@@ -145,7 +155,7 @@ assert_not_contains "T1 no detached proxy start" 'cmd /c "' "$out"
 #     pinned by T5/T6 via the OSTYPE override.
 # ---------------------------------------------------------------------------
 HO=$(make_handover)
-out=$(HIMMEL_HEADROOM_PROXY=1 PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(HIMMEL_HEADROOM_PROXY=1 PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T2 flag-on dry-run exits 0" 0 "$rc"
 assert_contains "T2 livez check present" "-s -m 5 http://127.0.0.1:8787/livez" "$out"
@@ -224,7 +234,7 @@ cp "$LIB" "$ENVROOT/scripts/lib/headroom-proxy.sh"
 printf 'HIMMEL_HEADROOM_PROXY=1\n' > "$ENVROOT/.env"
 HO=$(make_handover)
 out=$(env -u HIMMEL_HEADROOM_PROXY PATH="$SCHED_STUB:$PATH" \
-    bash "$ENVROOT/scripts/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$ENVROOT/scripts/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T3b .env fallback dry-run exits 0" 0 "$rc"
 assert_contains "T3b .env fallback activates the proxy lines" "-s -m 5 http://127.0.0.1:8787/livez" "$out"
@@ -235,7 +245,7 @@ assert_contains "T3b .env fallback activates the proxy lines" "-s -m 5 http://12
 #      NOT the same as unset -- it does not fall through to the file).
 HO=$(make_handover)
 out=$(HIMMEL_HEADROOM_PROXY=0 PATH="$SCHED_STUB:$PATH" \
-    bash "$ENVROOT/scripts/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$ENVROOT/scripts/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T3c process-env=0 dry-run exits 0" 0 "$rc"
 assert_not_contains "T3c process-env=0 overrides a truthy .env (stays inactive)" "livez" "$out"
@@ -246,7 +256,7 @@ assert_not_contains "T3c process-env=0 overrides a truthy .env (stays inactive)"
 #     unset and wrongly consult the file).
 HO=$(make_handover)
 out=$(HIMMEL_HEADROOM_PROXY='' PATH="$SCHED_STUB:$PATH" \
-    bash "$ENVROOT/scripts/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$ENVROOT/scripts/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T3d set-but-empty process env dry-run exits 0" 0 "$rc"
 assert_not_contains "T3d set-but-empty env does NOT fall through to .env" "livez" "$out"
@@ -266,7 +276,7 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
 esac
 HO=$(make_handover)
 out=$(HIMMEL_HEADROOM_PROXY=1 HEADROOM_BIN="$CUSTOM_HB" PATH="$SCHED_STUB:$PATH" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T4 HEADROOM_BIN override dry-run exits 0" 0 "$rc"
 assert_contains "T4 custom headroom bin path baked into launcher" "$EXPECTED_HB" "$out"
@@ -284,7 +294,7 @@ mkdir -p "$MBIN_DIR"
 MBIN="$MBIN_DIR/headroom.exe"
 HO=$(make_handover)
 out=$(HIMMEL_HEADROOM_PROXY=1 HEADROOM_BIN="$MBIN" PATH="$SCHED_STUB:$PATH" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T4b metachar HEADROOM_BIN dry-run exits 0" 0 "$rc"
 case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
@@ -323,7 +333,7 @@ EXPECTED_CURL_Q=$(printf '%q' "$(command -v curl)")
 
 # T5a: flag ON -- the one-line compound tail carries the proxy markers.
 HO=$(make_handover)
-out=$(mac_env env HIMMEL_HEADROOM_PROXY=1 bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(mac_env env HIMMEL_HEADROOM_PROXY=1 bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T5a macOS/crontab flag-on dry-run exits 0" 0 "$rc"
 assert_contains "T5a crontab entry" "crontab entry" "$out"
@@ -338,7 +348,7 @@ assert_contains "T5a marker timestamp is fire-time (literal date sub)" 'arm=HIMM
 # T5b: flag OFF -- no-regression guard on the crontab path (negative-marker
 # set aligned with T1/T6b, CR round).
 HO=$(make_handover)
-out=$(mac_env bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(mac_env bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T5b macOS/crontab flag-off dry-run exits 0" 0 "$rc"
 assert_not_contains "T5b no ANTHROPIC_BASE_URL" "ANTHROPIC_BASE_URL" "$out"
@@ -357,7 +367,7 @@ lin_env() { env PATH="$LINBIN:$PATH" OSTYPE="linux-gnu" "$@"; }
 
 # T6a: flag ON -- the heredoc body carries the proxy markers.
 HO=$(make_handover)
-out=$(lin_env env HIMMEL_HEADROOM_PROXY=1 bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(lin_env env HIMMEL_HEADROOM_PROXY=1 bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T6a linux/at flag-on dry-run exits 0" 0 "$rc"
 assert_contains "T6a at -t heredoc" "would at -t" "$out"
@@ -372,7 +382,7 @@ assert_contains "T6a mode=bare-fallback marker baked in" "mode=bare-fallback" "$
 # T6b: flag OFF -- no-regression guard on the at path (negative-marker set
 # aligned with T1/T5b, CR round).
 HO=$(make_handover)
-out=$(lin_env bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+out=$(lin_env bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T6b linux/at flag-off dry-run exits 0" 0 "$rc"
 assert_not_contains "T6b no ANTHROPIC_BASE_URL" "ANTHROPIC_BASE_URL" "$out"
@@ -388,13 +398,13 @@ mkdir -p "$TMP/head room"
 EXPECTED_POSIX_HB=$(printf '%q' "$POSIX_HB")
 HO=$(make_handover)
 out=$(lin_env env HIMMEL_HEADROOM_PROXY=1 HEADROOM_BIN="$POSIX_HB" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T6c linux/at metachar HEADROOM_BIN dry-run exits 0" 0 "$rc"
 assert_contains "T6c at heredoc bakes the %q-quoted bin" "$EXPECTED_POSIX_HB proxy --port 8787" "$out"
 HO=$(make_handover)
 out=$(mac_env env HIMMEL_HEADROOM_PROXY=1 HEADROOM_BIN="$POSIX_HB" \
-    bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T6c macOS/crontab metachar HEADROOM_BIN dry-run exits 0" 0 "$rc"
 assert_contains "T6c crontab entry bakes the %q-quoted bin" "$EXPECTED_POSIX_HB proxy --port 8787" "$out"
@@ -415,7 +425,7 @@ printf 'HIMMEL_HEADROOM_PROXY=1\n' > "$LIBFAIL/.env"
 #     (fallback disabled without the parser).
 HO=$(make_handover)
 out=$(env -u HIMMEL_HEADROOM_PROXY PATH="$SCHED_STUB:$PATH" \
-    bash "$LIBFAIL/scripts/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$LIBFAIL/scripts/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T7a absent lib: arm still works (rc 0)" 0 "$rc"
 assert_contains "T7a absent lib: source-failure WARN emitted" "headroom-proxy lib failed to load" "$out"
@@ -424,7 +434,7 @@ assert_not_contains "T7a absent lib: truthy .env fallback disabled" "livez" "$ou
 #     does not depend on the lib).
 HO=$(make_handover)
 out=$(HIMMEL_HEADROOM_PROXY=1 PATH="$SCHED_STUB:$PATH" \
-    bash "$LIBFAIL/scripts/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$LIBFAIL/scripts/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T7b absent lib + process env: arm exits 0" 0 "$rc"
 assert_contains "T7b absent lib + process env: proxy lines present" "livez" "$out"
@@ -432,7 +442,7 @@ assert_contains "T7b absent lib + process env: proxy lines present" "livez" "$ou
 printf 'if [ broken\nthen (\n' > "$LIBFAIL/scripts/lib/headroom-proxy.sh"
 HO=$(make_handover)
 out=$(env -u HIMMEL_HEADROOM_PROXY PATH="$SCHED_STUB:$PATH" \
-    bash "$LIBFAIL/scripts/handover/arm-resume.sh" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+    bash "$LIBFAIL/scripts/handover/arm-resume.sh" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
 rc=$?
 assert_rc "T7c broken lib: arm still works (rc 0)" 0 "$rc"
 assert_contains "T7c broken lib: source-failure WARN emitted" "headroom-proxy lib failed to load" "$out"
@@ -463,7 +473,7 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         mkdir -p "$T8_TMPDIR"
         HO=$(make_handover)
         out=$(TMPDIR="$T8_TMPDIR" HIMMEL_HEADROOM_PROXY=1 PATH="$CYGFAIL_STUB:$SCHED_STUB:$PATH" \
-            bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+            bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
         rc=$?
         assert_rc "T8 cygpath failure on headroom conversion exits 4" 4 "$rc"
         assert_contains "T8 ERR names the failed conversion" "cygpath -w failed converting" "$out"
@@ -497,7 +507,7 @@ if env PATH="$RESTRICTED_PATH" bash -c 'command -v curl' >/dev/null 2>&1; then
 else
     HO=$(make_handover)
     out=$(env PATH="$RESTRICTED_PATH" HIMMEL_HEADROOM_PROXY=1 \
-        bash "$ARM" --time "$FUTURE_TIME" --handover "$HO" --dry-run 2>&1)
+        bash "$ARM" --time "$(future_time)" --handover "$HO" --dry-run 2>&1)
     rc=$?
     assert_rc "T9 curl-missing arm still exits 0" 0 "$rc"
     assert_contains "T9 arm-time WARN about missing curl" "curl not on PATH" "$out"

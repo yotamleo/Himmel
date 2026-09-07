@@ -1,0 +1,20 @@
+# Pre-fix reconstruction of HIMMEL-1776 instance 2 (scripts/graphify/
+# refresh-graph-map.sh, provider resolution). An unresolvable endpoint host
+# fell through the case arm to the "anthropic-custom" sentinel, which then
+# reached the egress-matrix eval — where a wildcard cell matched it and the
+# verdict came back allow. An endpoint the guard could NOT classify silently
+# took the name of one it could.
+#
+# Expected: lint-fail-open.sh fires fail-open(sentinel-not-denied) here.
+if [ -z "${ANTHROPIC_BASE_URL:-}" ]; then
+    EFFECTIVE_PROVIDER="anthropic"
+else
+    endpoint_host="$(_endpoint_host "$ANTHROPIC_BASE_URL")" || endpoint_host=""
+    case "$endpoint_host" in
+        api.anthropic.com) EFFECTIVE_PROVIDER="anthropic" ;;
+        *) EFFECTIVE_PROVIDER="anthropic-custom" ;;
+    esac
+fi
+verdict_line="$(node "$MX_EVAL" "$CORPUS_CLASS" "$EFFECTIVE_PROVIDER" extraction)" \
+    || { echo "matrix eval failed" >&2; exit 2; }
+echo "verdict: $verdict_line"

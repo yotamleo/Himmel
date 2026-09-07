@@ -36,7 +36,7 @@ function baseContext() {
       pathLevels: 1,
       elementOrder: ['project', 'context', 'usage'],
       gitStatus: { enabled: true, showDirty: true, showAheadBehind: false, showFileStats: false, branchOverflow: 'truncate', pushWarningThreshold: 0, pushCriticalThreshold: 0 },
-      display: { showModel: true, showProject: true, showContextBar: true, contextValue: 'percent', showConfigCounts: true, showCost: false, showDuration: true, showSpeed: false, showTokenBreakdown: true, showUsage: true, usageValue: 'percent', usageBarEnabled: false, showResetLabel: true, showTools: true, showSkills: false, showMcp: false, showAgents: true, showTodos: true, showSessionTokens: true, showSessionName: false, showClaudeCodeVersion: false, showMemoryUsage: false, showPromptCache: false, promptCacheTtlSeconds: 300, showOutputStyle: false, mergeGroups: [['context', 'usage']], autocompactBuffer: 'enabled', usageThreshold: 0, sevenDayThreshold: 80, environmentThreshold: 0, customLine: '' },
+      display: { showModel: true, showProject: true, showContextBar: true, contextValue: 'percent', showConfigCounts: true, showCost: false, showDuration: true, showSpeed: false, showTokenBreakdown: true, showUsage: true, usageValue: 'percent', usageBarEnabled: false, showResetLabel: true, showTools: true, showSkills: false, showMcp: false, showAgents: true, showTodos: true, showSessionTokens: true, showSessionName: false, showClaudeCodeVersion: false, showMemoryUsage: false, showPromptCache: false, showOutputStyle: false, mergeGroups: [['context', 'usage']], autocompactBuffer: 'enabled', usageThreshold: 0, sevenDayThreshold: 80, environmentThreshold: 0, customLine: '' },
       colors: {
         context: 'green',
         usage: 'brightBlue',
@@ -99,7 +99,7 @@ test('renderSessionTokensLine renders basic input/output without cache', () => {
   assert.ok(!line.includes('cache:'));
 });
 
-test('renderSessionTokensLine includes cache when cache tokens > 0', () => {
+test('renderSessionTokensLine breaks out cache-write and cache-read separately', () => {
   const ctx = baseContext();
   ctx.transcript.sessionTokens = {
     inputTokens: 1000,
@@ -108,7 +108,9 @@ test('renderSessionTokensLine includes cache when cache tokens > 0', () => {
     cacheReadTokens: 100000,
   };
   const line = stripAnsi(renderSessionTokensLine(ctx) ?? '');
-  assert.ok(line.includes('cache: 600k'));
+  assert.ok(line.includes('cache-w: 500k'));
+  assert.ok(line.includes('cache-r: 100k'));
+  assert.ok(!line.includes('cache:'));
 });
 
 test('renderSessionTokensLine formats million-level tokens', () => {
@@ -138,7 +140,7 @@ test('renderSessionTokensLine formats sub-1000 tokens as raw numbers', () => {
   assert.ok(line.includes('out: 200'));
 });
 
-test('renderSessionTokensLine shows cache only when cacheReadTokens > 0', () => {
+test('renderSessionTokensLine shows cache-read only when cacheReadTokens > 0', () => {
   const ctx = baseContext();
   ctx.transcript.sessionTokens = {
     inputTokens: 1000,
@@ -147,5 +149,19 @@ test('renderSessionTokensLine shows cache only when cacheReadTokens > 0', () => 
     cacheReadTokens: 50000,
   };
   const line = stripAnsi(renderSessionTokensLine(ctx) ?? '');
-  assert.ok(line.includes('cache: 50k'));
+  assert.ok(line.includes('cache-r: 50k'));
+  assert.ok(!line.includes('cache-w:'));
+});
+
+test('renderSessionTokensLine shows cache-write only when cacheCreationTokens > 0', () => {
+  const ctx = baseContext();
+  ctx.transcript.sessionTokens = {
+    inputTokens: 1000,
+    outputTokens: 500,
+    cacheCreationTokens: 75000,
+    cacheReadTokens: 0,
+  };
+  const line = stripAnsi(renderSessionTokensLine(ctx) ?? '');
+  assert.ok(line.includes('cache-w: 75k'));
+  assert.ok(!line.includes('cache-r:'));
 });

@@ -162,8 +162,8 @@ tags:
 clip $1
 EOF
 }
-comp_clip e1.md "Gina P" "https://one.com/x" "voice-ui" "telegram-tg-group_-1003985279697-1782605997"
-comp_clip e2.md "Hal R"  "https://two.org/y" "voice-ui" "tg-group_-1003985279697-1782605414-7"
+comp_clip e1.md "Gina P" "https://one.com/x" "voice-ui" "telegram-tg-group_-1001234567890-1782605997"
+comp_clip e2.md "Hal R"  "https://two.org/y" "voice-ui" "tg-group_-1001234567890-1782605414-7"
 DIGEST_E="$E/.synthesize-stubs.telegram-digest.json"
 
 echo "Test 5: composite telegram_msg_id (no chat_id) → digest with derived chat + numeric reply_to"
@@ -171,7 +171,7 @@ node "$TOOL" "$E" --apply >/dev/null 2>&1
 if [ -f "$DIGEST_E" ]; then f=yes; else f=no; fi
 assert "digest written from composite-id telegram clips" "yes" "$f"
 chat_e=$(node -e 'const j=require(process.argv[1]); console.log(j.replies[0].chat_id)' "$DIGEST_E" 2>/dev/null)
-assert "chat derived from the composite id" "-1003985279697" "$chat_e"
+assert "chat derived from the composite id" "-1001234567890" "$chat_e"
 reply_e=$(node -e 'const j=require(process.argv[1]); console.log(j.replies[0].reply_to)' "$DIGEST_E" 2>/dev/null)
 assert "reply_to is the numeric message id (most recent)" "1782605997" "$reply_e"
 

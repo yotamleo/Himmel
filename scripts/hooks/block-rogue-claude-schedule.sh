@@ -51,15 +51,25 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 2
 fi
 
-input=$(cat)
-tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null || true)
+# HIMMEL-2123: bash builtin `read` instead of `$(cat)`, and tool_name +
+# command in ONE jq call (via `<<<`, no printf fork) instead of two separate
+# `printf | jq` pipelines. `// ""` (empty STRING), not `// empty` (a
+# zero-output jq GENERATOR): in a `+`-concatenation, one operand collapsing
+# to `empty` zeroes out the WHOLE expression, not just that field. Windows
+# jq.exe writes CRLF, so strip the stray CR off $tool (same shape as
+# require-quiet-run.sh, HIMMEL-2060).
+input=""
+IFS= read -r -d '' input 2>/dev/null || true
+result=$(jq -r '(.tool_name // "") + "\n" + (.tool_input.command // "")' <<<"$input" 2>/dev/null || true)
+tool="${result%%$'\n'*}"
+tool="${tool%$'\r'}"
+cmd="${result#*$'\n'}"
 
 case "$tool" in
     Bash|PowerShell) ;;
     *) exit 0 ;;
 esac
 
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
 [ -z "$cmd" ] && exit 0
 
 # Lower-case once so every match below is plain (case-insensitive) without
@@ -69,47 +79,69 @@ cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null ||
 # command-position check) would match the start of ANY line — a benign multi-line
 # `git commit -m "...claude...<newline>at 0430..."` would false-block. Flattening
 # makes `^`/`$` mean true start/end of the whole command and keeps unrelated
-# tokens on different lines from jointly tripping the AND-gate.
-cmd_lc=$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]' | tr '\n\r' '  ')
+# tokens on different lines from jointly tripping the AND-gate. HIMMEL-2123: one
+# `tr` call (a single SET1/SET2 mapping covers both the case fold and the
+# newline/CR fold) instead of two chained `tr` invocations; `printf` (not `<<<`)
+# feeds it since no risk either way here but keeping the exact prior byte
+# content is simplest to reason about.
+cmd_lc=$(printf '%s' "$cmd" | tr '[:upper:]\n\r' '[:lower:]  ')
 
 # Allow short-circuit: the command routes through a sanctioned arming tool,
 # which already handles cwd + workspace-trust + dedup. (arm-resume.sh runs its
 # OWN schtasks/at/crontab in a CHILD process the hook never sees, so this only
 # guards against a future caller that mentions both in one tool command.)
-if printf '%s' "$cmd_lc" | grep -qE 'arm-resume\.sh|pipeline-cadence\.sh|schedule-resume\.sh'; then
+#
+# HIMMEL-1741: every match below is the bash builtin `[[ =~ ]]` (or a `[[ ==
+# *glob* ]]` for the two fixed-string tests), NOT `printf | grep`. The old form
+# forked a PAIR of processes per check and this hook runs up to nine of them on
+# every Bash/PowerShell tool call — ~667 ms a pair on Windows with Defender
+# real-time scanning, i.e. most of the hook's cost. Both engines are POSIX ERE
+# and the pattern text is UNCHANGED; patterns are held in variables and left
+# UNQUOTED on the right of `=~` (a quoted pattern is matched literally in bash
+# >= 3.2). Per-rule equivalence cases live in the paired test suite.
+SANCTIONED_ARM_RE='arm-resume\.sh|pipeline-cadence\.sh|schedule-resume\.sh'
+if [[ $cmd_lc =~ $SANCTIONED_ARM_RE ]]; then
     exit 0
 fi
 
 # (a) Does the command register a scheduler job?
 is_scheduler_create() {
-    local c="$1"
+    local c="$1" re
     # schtasks /create — both tokens present (order-independent in the command).
-    if printf '%s' "$c" | grep -q 'schtasks' && printf '%s' "$c" | grep -q '/create'; then
+    # Fixed strings (no regex metachars), so a glob `==` is the exact
+    # equivalent of the old `grep -q`.
+    if [[ $c == *schtasks* && $c == */create* ]]; then
         return 0
     fi
-    if printf '%s' "$c" | grep -qE 'register-scheduled(task|job)'; then return 0; fi
+    re='register-scheduled(task|job)'
+    if [[ $c =~ $re ]]; then return 0; fi
     # crontab as a command (write or install); `crontab -l` reads — harmless
     # here because (b) launches_claude won't be true for a pure read.
-    if printf '%s' "$c" | grep -qE '(^|[[:space:];|&(])crontab([[:space:]]|$)'; then return 0; fi
+    re='(^|[[:space:];|&(])crontab([[:space:]]|$)'
+    if [[ $c =~ $re ]]; then return 0; fi
     # POSIX `at <timespec>` / `at -t|-f|...`. The `at` must sit at a command
     # position (line start or right after a ; & | ( separator, modulo spaces) so
     # prose like `git commit -m "... claude at 0430"` — where `at` follows a word
     # — is not mistaken for the scheduler.
-    if printf '%s' "$c" | grep -qE '([;&|(]|^)[[:space:]]*at[[:space:]]+(-[a-z]|now|noon|midnight|[0-9])'; then return 0; fi
+    re='([;&|(]|^)[[:space:]]*at[[:space:]]+(-[a-z]|now|noon|midnight|[0-9])'
+    if [[ $c =~ $re ]]; then return 0; fi
     return 1
 }
 
 # (b) Does the command launch the claude EXECUTABLE (not just a .claude/ path)?
 launches_claude() {
-    local c="$1"
+    local c="$1" re
     # claude.exe / claude.cmd / claude.ps1
-    if printf '%s' "$c" | grep -qE 'claude\.(exe|cmd|ps1)'; then return 0; fi
+    re='claude\.(exe|cmd|ps1)'
+    if [[ $c =~ $re ]]; then return 0; fi
     # a /claude or \claude binary PATH — the slash/backslash must sit IMMEDIATELY
     # before `claude`, so `~/.claude/...` (a `.` precedes claude) never matches.
-    if printf '%s' "$c" | grep -qE '[/\]claude([[:space:]"'\''`]|$)'; then return 0; fi
+    re='[/\]claude([[:space:]"'\''`]|$)'
+    if [[ $c =~ $re ]]; then return 0; fi
     # a bare `claude "<prompt>"` at a command position OR right after a quote
     # (e.g. a schtasks /tr "claude ..." value).
-    if printf '%s' "$c" | grep -qE '(^|[[:space:];|&("'\''])claude[[:space:]"'\'']'; then return 0; fi
+    re='(^|[[:space:];|&("'\''])claude[[:space:]"'\'']'
+    if [[ $c =~ $re ]]; then return 0; fi
     return 1
 }
 

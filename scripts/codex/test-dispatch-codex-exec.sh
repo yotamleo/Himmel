@@ -62,10 +62,16 @@ exit 0
 EOF
 chmod +x "$REAP_STUB"
 
+# HIMMEL-2023: every dispatch now writes flow-run-ledger rows. Point the lib
+# at a temp ledger so the suite never appends to the operator's real
+# ~/.himmel/flow-runs.jsonl.
+LEDGER="$TMP/flow-runs.jsonl"
+
 run_dispatch() {  # run_dispatch <args...> ; sets $RC and $OUT
   set +e
   OUT="$(CODEX_BIN="$CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
       CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+      HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" \
       bash "$DISPATCH" "$@" 2>&1)"
   RC=$?
   set -e
@@ -377,15 +383,22 @@ chmod +x "$SLOW_CODEX_STUB"
 set +e
 OUT="$(CODEX_BIN="$SLOW_CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
     CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+    HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" \
     bash "$DISPATCH" --worktree "$WT" do-it 2>&1)"
 RC=$?
 set -e
 assert_rc 0 "registry-test dispatch exits 0" "registry rc=$RC out=$OUT"
-case "$(cat "$TMP/jobs-during.txt" 2>/dev/null)" in
-  *.json) pass "job registry file present during the run" ;;
-  *) fail "job registry file missing during run: $(cat "$TMP/jobs-during.txt" 2>/dev/null)" ;;
-esac
-if [ -z "$(ls -A "$JOBS_DIR" 2>/dev/null)" ]; then
+# Line-wise, not a whole-string glob: HIMMEL-2023 adds a sibling failed/ dir
+# that earlier nonzero-exit cases leave behind, and `ls` sorts it AFTER the
+# digit-prefixed job file.
+if grep -q '\.json$' "$TMP/jobs-during.txt" 2>/dev/null; then
+  pass "job registry file present during the run"
+else
+  fail "job registry file missing during run: $(cat "$TMP/jobs-during.txt" 2>/dev/null)"
+fi
+# The SUCCESS path still removes its own entry; only failed/ survives, and it
+# holds no live-job *.json (HIMMEL-2023 keeps evidence out of the live glob).
+if [ -z "$(ls "$JOBS_DIR"/*.json 2>/dev/null)" ]; then
   pass "job registry file removed after the run (EXIT trap cleanup)"
 else
   fail "job registry file(s) left behind: $(ls "$JOBS_DIR")"
@@ -472,6 +485,225 @@ esac
 run_dispatch --worktree "$WT" do-it --reasoning-effort
 assert_rc 2 "trailing --reasoning-effort with no value refused" "trailing-reff rc=$RC out=$OUT"
 if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite trailing bare --reasoning-effort"; else pass "codex not invoked on trailing bare --reasoning-effort"; fi
+
+# --- 17: watchdog + ledger + evidence (HIMMEL-2023 / HIMMEL-1788 inst. 5) ----
+# 17a: the default budget must equal the codex-exec lane's own timeoutSeconds.
+# The dispatcher keeps the number as a literal (no JSON reader on its hot
+# path), so THIS assertion is what stops the two drifting apart.
+LANE_TIMEOUT="$(node -e '
+const l = require(process.argv[1]).lanes.find(x => x.id === "codex-exec");
+process.stdout.write(String(l.dispatch.timeoutSeconds));
+' "$SCRIPT_DIR/../lanes/lanes.json" 2>/dev/null)"
+# shellcheck disable=SC2016 # the sed script is a literal match against the dispatcher's source text, not an expansion
+SCRIPT_DEFAULT="$(sed -n 's/^EXEC_TIMEOUT="${CODEX_EXEC_TIMEOUT:-\([0-9]*\)}"$/\1/p' "$DISPATCH")"
+if [ -n "$LANE_TIMEOUT" ] && [ "$LANE_TIMEOUT" = "$SCRIPT_DEFAULT" ]; then
+  pass "default watchdog budget matches the codex-exec lane timeoutSeconds ($LANE_TIMEOUT)"
+else
+  fail "watchdog budget drift: lanes.json=$LANE_TIMEOUT dispatcher=$SCRIPT_DEFAULT"
+fi
+
+# 17b: a malformed budget REFUSES rather than degrading to an unbounded wait.
+: > "$LOG"; echo 0 > "$TMP/norm.rc"
+set +e
+OUT="$(CODEX_BIN="$CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+    CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+    HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT=nope \
+    bash "$DISPATCH" --worktree "$WT" do-it 2>&1)"
+RC=$?
+set -e
+assert_rc 2 "non-numeric CODEX_EXEC_TIMEOUT refused" "bad-timeout rc=$RC out=$OUT"
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite a malformed budget"; else pass "codex not invoked on a malformed budget"; fi
+
+# 17b1: an OVER-CEILING budget is refused too. A digit string `sleep` cannot
+# parse exits immediately, which the watchdog would read as its budget having
+# elapsed and kill a run that had just started (panel r3, dropped citation).
+# The 20-digit case also pins the length guard: bash's own `[ -gt ]` errors on
+# it, and reading that error as "not too large" would let it straight through.
+for bad_to in 86401 99999999999999999999; do
+  : > "$LOG"
+  set +e
+  OUT="$(CODEX_BIN="$CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+      CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+      HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT="$bad_to" \
+      bash "$DISPATCH" --worktree "$WT" do-it 2>&1)"
+  RC=$?
+  set -e
+  assert_rc 2 "over-ceiling CODEX_EXEC_TIMEOUT=$bad_to refused" "big-timeout $bad_to rc=$RC out=$OUT"
+  if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite CODEX_EXEC_TIMEOUT=$bad_to"; else pass "codex not invoked on CODEX_EXEC_TIMEOUT=$bad_to"; fi
+done
+# ...and the ceiling itself is still accepted.
+: > "$LOG"
+run_dispatch_to() {
+  set +e
+  OUT="$(CODEX_BIN="$CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+      CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+      HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT="$1" \
+      bash "$DISPATCH" --worktree "$WT" do-it 2>&1)"
+  RC=$?
+  set -e
+}
+run_dispatch_to 86400
+assert_rc 0 "CODEX_EXEC_TIMEOUT at the 86400 ceiling accepted" "ceiling rc=$RC out=$OUT"
+
+# 17b2: an unusable watchdog REFUSES before codex starts (panel r2 codex-1).
+# Without its flag file the watchdog would still kill the tree but this shell
+# could not tell that it had — the run would report the child's bare 143, keep
+# no evidence, and cancel the watchdog mid-escalation. TMPDIR pointed at a
+# non-directory makes mktemp fail without touching the real temp root.
+: > "$LOG"; echo 0 > "$TMP/norm.rc"
+printf 'not-a-dir\n' > "$TMP/notdir"
+set +e
+OUT="$(CODEX_BIN="$CODEX_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+    CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+    HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" TMPDIR="$TMP/notdir" \
+    bash "$DISPATCH" --worktree "$WT" do-it 2>&1)"
+RC=$?
+set -e
+assert_rc 2 "unusable watchdog flag file refuses the dispatch" "no-flagfile rc=$RC out=$OUT"
+case "$OUT" in
+  *"refusing to run codex with an unreadable watchdog verdict"*) pass "watchdog-flag refusal names the cause" ;;
+  *) fail "no-flagfile message missing: $OUT" ;;
+esac
+if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite an unusable watchdog flag file"; else pass "codex not invoked when the watchdog cannot report"; fi
+
+# 17c: a wedged run is TIMEBOXED, killed as a TREE, reported 124 + loudly, and
+# leaves evidence. The stub backgrounds a grandchild the way the real codex
+# CLI leaks its MCP fleet: signalling the child alone would leave it alive.
+: > "$LOG"; : > "$LEDGER"; rm -f "$TMP/grandchild.pid"
+HANG_STUB="$TMP/codex-hang-stub"
+cat > "$HANG_STUB" <<EOF
+#!/usr/bin/env bash
+echo "codex" >> "$LOG"
+sleep 120 &
+echo \$! > "$TMP/grandchild.pid"
+sleep 120
+EOF
+chmod +x "$HANG_STUB"
+set +e
+OUT="$(CODEX_BIN="$HANG_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+    CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+    HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT=2 \
+    bash "$DISPATCH" --worktree "$WT" do-it 2>&1)"
+RC=$?
+set -e
+assert_rc 124 "watchdog timeout exits 124" "timeout rc=$RC out=$OUT"
+case "$OUT" in
+  *"codex-exec: TIMEOUT after 2s - killed tree"*) pass "timeout is reported LOUDLY on stderr" ;;
+  *) fail "timeout message missing: $OUT" ;;
+esac
+GCHILD="$(cat "$TMP/grandchild.pid" 2>/dev/null)"
+if [ -z "$GCHILD" ]; then
+  fail "hang stub never recorded a grandchild pid"
+elif kill -0 "$GCHILD" 2>/dev/null; then
+  fail "grandchild $GCHILD survived the timeout kill (tree not killed)"
+  kill -9 "$GCHILD" 2>/dev/null
+else
+  pass "grandchild reaped by the timeout tree kill"
+fi
+if grep -q '"ev":"start".*"flow":"codex-exec"' "$LEDGER" 2>/dev/null \
+   || grep -q '"flow":"codex-exec".*"ev":"start"' "$LEDGER" 2>/dev/null; then
+  pass "flow-run-ledger carries a codex-exec start row"
+else
+  fail "no codex-exec start row in the ledger: $(cat "$LEDGER" 2>/dev/null)"
+fi
+if grep -q '"outcome":"timeout"' "$LEDGER" 2>/dev/null; then
+  pass "flow-run-ledger end row carries outcome=timeout"
+else
+  fail "no outcome=timeout end row: $(cat "$LEDGER" 2>/dev/null)"
+fi
+if [ -n "$(ls "$JOBS_DIR"/failed/*.json 2>/dev/null)" ]; then
+  pass "job registry entry preserved under failed/ on timeout"
+else
+  fail "timeout deleted the job registry evidence: $(ls -R "$JOBS_DIR" 2>/dev/null)"
+fi
+
+# 17d: a clean run writes outcome=complete and removes its own entry.
+rm -rf "$JOBS_DIR"; mkdir -p "$JOBS_DIR"; : > "$LEDGER"
+run_dispatch --worktree "$WT" do-it
+assert_rc 0 "clean run after the timeout case exits 0" "post-timeout rc=$RC out=$OUT"
+if grep -q '"outcome":"complete"' "$LEDGER" 2>/dev/null; then
+  pass "flow-run-ledger end row carries outcome=complete on success"
+else
+  fail "no outcome=complete end row: $(cat "$LEDGER" 2>/dev/null)"
+fi
+if [ -z "$(ls -A "$JOBS_DIR" 2>/dev/null)" ]; then
+  pass "clean run leaves no registry evidence behind"
+else
+  fail "clean run left registry entries: $(ls -R "$JOBS_DIR")"
+fi
+
+# 17e: a nonzero codex exit is outcome=error and ALSO preserves the evidence.
+: > "$LEDGER"
+cat > "$TMP/codex-fail-stub" <<EOF
+#!/usr/bin/env bash
+echo "codex" >> "$LOG"
+exit 9
+EOF
+chmod +x "$TMP/codex-fail-stub"
+set +e
+OUT="$(CODEX_BIN="$TMP/codex-fail-stub" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+    CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+    HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" \
+    bash "$DISPATCH" --worktree "$WT" do-it 2>&1)"
+RC=$?
+set -e
+assert_rc 9 "codex nonzero exit still propagates verbatim" "fail-stub rc=$RC out=$OUT"
+if grep -q '"outcome":"error"' "$LEDGER" 2>/dev/null; then
+  pass "flow-run-ledger end row carries outcome=error"
+else
+  fail "no outcome=error end row: $(cat "$LEDGER" 2>/dev/null)"
+fi
+if [ -n "$(ls "$JOBS_DIR"/failed/*.json 2>/dev/null)" ]; then
+  pass "job registry entry preserved under failed/ on a nonzero exit"
+else
+  fail "nonzero exit deleted the job registry evidence"
+fi
+
+# --- 18: stdin (HIMMEL-2023 B) ------------------------------------------------
+# `codex exec` reads stdin to EOF even with an argv prompt, so a never-closing
+# stdin is a hang before a token is spent. Two arms:
+#   18a a genuinely PIPED brief must still reach codex (the <&0 contract the
+#       lane's briefDelivery:"stdin" depends on - a blanket </dev/null here
+#       would silently no-op every brief);
+#   18b closed/empty stdin must read EOF and finish, never block.
+# The `[ -t 0 ] -> </dev/null` arm cannot be exercised hermetically (this
+# suite has no pty; Git Bash ships no `script`), and by construction it puts
+# the child in exactly the state 18b pins.
+rm -rf "$JOBS_DIR"; mkdir -p "$JOBS_DIR"
+STDIN_STUB="$TMP/codex-stdin-stub"
+cat > "$STDIN_STUB" <<EOF
+#!/usr/bin/env bash
+echo "codex" >> "$LOG"
+cat > "$TMP/codex.stdin"
+exit 0
+EOF
+chmod +x "$STDIN_STUB"
+run_stdin_dispatch() {  # run_stdin_dispatch <redirect-source>
+  set +e
+  OUT="$(CODEX_BIN="$STDIN_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" SBL_HELPER="$LOCK_LIB" \
+      CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+      HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT=20 \
+      bash "$DISPATCH" --worktree "$WT" do-it < "$1" 2>&1)"
+  RC=$?
+  set -e
+}
+printf 'the brief\n' > "$TMP/brief.txt"
+: > "$TMP/codex.stdin"
+run_stdin_dispatch "$TMP/brief.txt"
+assert_rc 0 "piped-brief dispatch exits 0" "stdin-brief rc=$RC out=$OUT"
+if [ "$(cat "$TMP/codex.stdin" 2>/dev/null)" = "the brief" ]; then
+  pass "a piped brief still crosses to codex on stdin"
+else
+  fail "piped brief lost: '$(cat "$TMP/codex.stdin" 2>/dev/null)'"
+fi
+: > "$TMP/codex.stdin"
+run_stdin_dispatch /dev/null
+assert_rc 0 "closed-stdin dispatch exits 0 without blocking" "stdin-null rc=$RC out=$OUT"
+if [ ! -s "$TMP/codex.stdin" ]; then
+  pass "closed stdin reaches codex as immediate EOF"
+else
+  fail "closed stdin delivered content: '$(cat "$TMP/codex.stdin")'"
+fi
 
 echo
 if [ "$fails" -ne 0 ]; then

@@ -23,6 +23,7 @@ HOOK="$HOOK_DIR/block-merged-pr-commit.sh"
 
 FAILED=0
 PASSED=0
+SKIPPED=0
 
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
@@ -228,7 +229,7 @@ if command -v timeout >/dev/null 2>&1 || command -v gtimeout >/dev/null 2>&1; th
     fi
 else
     echo "SKIP T11 hang-guard (no timeout/gtimeout available)"
-    PASSED=$((PASSED + 1))
+    SKIPPED=$((SKIPPED + 1))
 fi
 
 # T12: compound command with literal cd before commit → dir resolved correctly.
@@ -278,7 +279,7 @@ assert_rc "T14 dollar-VAR in -C arg fails open" 0 \
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo ""
-echo "Results: $PASSED passed, $FAILED failed"
+echo "Results: $PASSED passed, $FAILED failed, $SKIPPED skipped"
 if [ "$FAILED" -gt 0 ]; then
     exit 1
 fi

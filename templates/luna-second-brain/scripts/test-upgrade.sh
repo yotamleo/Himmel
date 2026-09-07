@@ -13,11 +13,13 @@ pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1 — $2"; FAILED=$((FAILED + 1)); }
 assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$2', got '$3'"; fi; }
 
-# The engine's real deps are a WORKING python + git + sha256sum (NOT node — it
-# is never invoked; the prior node gate was vestigial). A working python means
-# one whose stdout actually runs: on Windows `python3` is the Microsoft Store
-# stub (on PATH but emits nothing), so gate on real output, not `command -v`.
+# The engine's real deps are a WORKING python + git + a SHA-256 tool (NOT node
+# — it is never invoked; the prior node gate was vestigial). A working python
+# means one whose stdout actually runs: on Windows `python3` is the Microsoft
+# Store stub (on PATH but emits nothing), so gate on real output, not
+# `command -v`.
 PY=""
+SHA256=()
 _resolve_py() {
     for c in python3 python py; do
         command -v "$c" >/dev/null 2>&1 && [ "$("$c" -c 'print(1)' 2>/dev/null)" = "1" ] && { PY="$c"; return 0; }
@@ -26,12 +28,19 @@ _resolve_py() {
 }
 _resolve_py || { echo "SKIP all — no working python (python3/python/py) on PATH"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "SKIP all — git not on PATH"; exit 0; }
-command -v sha256sum >/dev/null 2>&1 || { echo "SKIP all — sha256sum not on PATH"; exit 0; }
+if command -v sha256sum >/dev/null 2>&1; then
+    SHA256=(sha256sum)
+elif command -v shasum >/dev/null 2>&1; then
+    SHA256=(shasum -a 256)
+else
+    echo "SKIP all — no SHA-256 tool (sha256sum/shasum) on PATH"
+    exit 0
+fi
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d -t luna-upgrade.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 
-sha_of() { if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else echo MISSING; fi; }
+sha_of() { if [ -f "$1" ]; then "${SHA256[@]}" "$1" | cut -d' ' -f1; else echo MISSING; fi; }
 
 # Build a minimal but representative template fixture at $1 with version $2.
 make_template() {
@@ -152,9 +161,9 @@ case "$out" in *already*current*) pass "T8 second run is a no-op" ;; *) fail "T8
 # T9: --dry-run mutates nothing.
 T="$TMP/t9-tmpl"; V="$TMP/t9-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.1.0"
 printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
-before=$(find "$V" -type f -exec sha256sum {} \; | sort)
+before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 run_upgrade --dry-run >/dev/null 2>&1; rc=$?
-after=$(find "$V" -type f -exec sha256sum {} \; | sort)
+after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 assert_eq "T9 dry-run rc" "0" "$rc"
 assert_eq "T9 dry-run made zero changes" "$before" "$after"
 
@@ -195,9 +204,9 @@ assert_eq "T12 the run still applied the owned file" "$(sha_of "$T/scripts/hooks
 # T13: vault AHEAD of template => no-op (downgrade protection), zero mutations.
 T="$TMP/t13-tmpl"; V="$TMP/t13-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "2.0.0"
 printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
-before=$(find "$V" -type f -exec sha256sum {} \; | sort)
+before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 out=$(run_upgrade --yes 2>&1); rc=$?
-after=$(find "$V" -type f -exec sha256sum {} \; | sort)
+after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 assert_eq "T13 vault-ahead rc" "0" "$rc"
 case "$out" in *already*current*) pass "T13 vault-ahead reports already-current" ;; *) fail "T13 vault-ahead reports already-current" "got: $out" ;; esac
 assert_eq "T13 vault-ahead made zero changes" "$before" "$after"
@@ -324,9 +333,9 @@ case "$out" in *"(v6.6.6)"*) fail "T22 must not pick the later glob match zzz-hi
 # mutates nothing (HIMMEL-423 Phase 3).
 T="$TMP/t23-tmpl"; V="$TMP/t23-vault"; make_template "$T" "2.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "1.0.0"
 printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
-before=$(find "$V" -type f -exec sha256sum {} \; | sort)
+before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 out=$(run_upgrade --check 2>&1); rc=$?
-after=$(find "$V" -type f -exec sha256sum {} \; | sort)
+after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 assert_eq "T23 --check behind rc" "0" "$rc"
 case "$out" in *"template v2.0.0 available"*) pass "T23 --check prints the upgrade-available nudge" ;; *) fail "T23 --check prints the upgrade-available nudge" "got: $out" ;; esac
 assert_eq "T23 --check made zero changes" "$before" "$after"
@@ -357,13 +366,36 @@ if [ -d "$LUNA" ] && [ -d "$LUNA/50-Journal" ]; then
     # Remove any nested .git to keep the copy a plain dir (avoid worktree confusion).
     rm -rf "$VC/.git"
     REALTMPL="$(cd "$HERE/.." && pwd)"   # this template's own root (scripts/..)
-    journal_before=$(find "$VC/50-Journal" -type f -exec sha256sum {} \; 2>/dev/null | sort)
+    journal_before=$(find "$VC/50-Journal" -type f -exec "${SHA256[@]}" {} \; 2>/dev/null | sort)
     claude_before=$(sha_of "$VC/_CLAUDE.md")
+    claude_title_before=$(head -n 1 "$VC/_CLAUDE.md")
     bash "$UPGRADE" --template-dir "$REALTMPL" --vault-dir "$VC" --yes >/dev/null 2>&1; rc=$?
-    journal_after=$(find "$VC/50-Journal" -type f -exec sha256sum {} \; 2>/dev/null | sort)
+    journal_after=$(find "$VC/50-Journal" -type f -exec "${SHA256[@]}" {} \; 2>/dev/null | sort)
     assert_eq "T11 acceptance rc" "0" "$rc"
     assert_eq "T11 journal bodies unchanged" "$journal_before" "$journal_after"
-    assert_eq "T11 _CLAUDE.md user content unchanged (no base => ours wins)" "$claude_before" "$(sha_of "$VC/_CLAUDE.md")"
+    # _CLAUDE.md contract depends on whether the vault carries a base snapshot
+    # (HIMMEL-1750): with NO base, ours wins and the file must be byte-stable;
+    # WITH a base, a legitimate template delta MAY merge in — byte-equality
+    # would then fail on every template _CLAUDE.md change (hit live when the
+    # Retrieval Routing section shipped). In that state assert what actually
+    # matters: the merge completed without conflict markers and the vault's
+    # user content (the vault-specific title line) survived.
+    if [ -f "$VC/.vault-template.base/_CLAUDE.md" ]; then
+        if grep -q '^<<<<<<<' "$VC/_CLAUDE.md"; then
+            fail "T11 _CLAUDE.md merged without conflict markers" "conflict markers present"
+        else
+            pass "T11 _CLAUDE.md merged without conflict markers"
+        fi
+        # Full-line equality, not substring (CR codex r5): a modified first
+        # line CONTAINING the old title as a fragment must fail.
+        if [ "$(head -n 1 "$VC/_CLAUDE.md")" = "$claude_title_before" ]; then
+            pass "T11 _CLAUDE.md user content survived the merge (title line intact)"
+        else
+            fail "T11 _CLAUDE.md user content survived the merge (title line intact)" "title line changed"
+        fi
+    else
+        assert_eq "T11 _CLAUDE.md user content unchanged (no base => ours wins)" "$claude_before" "$(sha_of "$VC/_CLAUDE.md")"
+    fi
     if [ -f "$VC/.vault-template.json" ]; then pass "T11 stamp written on real-vault copy"; else fail "T11 stamp written on real-vault copy" "no stamp"; fi
     assert_eq "T11 template-owned setup.sh updated to template" "$(sha_of "$REALTMPL/scripts/setup.sh")" "$(sha_of "$VC/scripts/setup.sh")"
 else

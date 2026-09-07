@@ -31,12 +31,19 @@ esac
 # abc123, this suite's head) so every UNRELATED case below is unaffected —
 # same "default keeps old assertions" convention cr-body-findings.sh's tests
 # use for the reviews REST endpoint.
+#
+# Every BOT node carries a non-empty `body` and a non-zero `comments.totalCount`
+# on purpose: HIMMEL-1824 taught the reader to DROP empty review shells
+# (`chat.auto_reply` and incremental passes mint COMMENTED objects with neither),
+# so a bodyless fixture classifies as `none` no matter which oid it names. That
+# is what silently disarmed the `fresh`/`stale` fixtures here — the stale-anchor
+# BLOCK stopped firing and the suite went red (HIMMEL-1374, found 2026-08-20).
 case "$*" in
   *"reviews(last:"*)
     case "${GH_STUB_FRESHNESS:-fresh}" in
-      fresh)   echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"abc123"},"state":"COMMENTED"}]}}}}}' ;;
-      stale)   echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"shaOLD"},"state":"COMMENTED"}]}}}}}' ;;
-      none)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"human","__typename":"User"},"commit":{"oid":"abc123"},"state":"COMMENTED"}]}}}}}' ;;
+      fresh)   echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"abc123"},"state":"COMMENTED","body":"looks fine","comments":{"totalCount":1}}]}}}}}' ;;
+      stale)   echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"},"commit":{"oid":"shaOLD"},"state":"COMMENTED","body":"found something earlier","comments":{"totalCount":2}}]}}}}}' ;;
+      none)    echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":1,"nodes":[{"author":{"login":"human","__typename":"User"},"commit":{"oid":"abc123"},"state":"COMMENTED","body":"a human review","comments":{"totalCount":1}}]}}}}}' ;;
       paged)   echo '{"data":{"repository":{"pullRequest":{"reviews":{"totalCount":150,"nodes":[]}}}}}' ;;
       fail)    echo "reviews boom" >&2; exit 1 ;;
     esac
@@ -50,7 +57,12 @@ case "$1 $2" in
     case "$*" in *'"'*) exit 1 ;; esac
     # api-error mode: pr view SUCCEEDS, later api calls fail (distinguishes
     # rc=3 selector-unresolvable from rc=0 downstream-API fail-open).
-    echo '{"number":42,"headRefOid":"abc123","url":"https://github.com/o/r/pull/42"}' ;;
+    # GH_STUB_HEAD lets a case pick a REAL 40-hex head (HIMMEL-1374): the
+    # walkthrough reader only accepts a >=7-hex commit token, which this
+    # suite's default 6-char "abc123" can never satisfy. Every other case
+    # keeps the default, and the statuses arm below matches on the "abc123"
+    # PREFIX so both spellings reach the same fixtures.
+    printf '{"number":42,"headRefOid":"%s","url":"https://github.com/o/r/pull/42"}\n' "${GH_STUB_HEAD:-abc123}" ;;
   "api graphql")
     case "$GH_STUB_MODE" in
       api-error) exit 1 ;;
@@ -68,9 +80,14 @@ case "$1 $2" in
   # matched `select(.name=="CodeRabbit")` on .check_runs. Shape below is copied
   # from a live /statuses response (newest-first; creator.id 136622811 =
   # coderabbitai[bot]).
-  "api repos/o/r/commits/abc123/statuses"*)
+  "api repos/o/r/commits/abc123"*)
     case "$GH_STUB_MODE" in
       api-error) exit 1 ;;
+      # HIMMEL-1374: the status read DEGRADES while threads/body stay clean —
+      # the fail-open half of the zero-PR-wide-reviews composition. Distinct
+      # from cr-degraded-unresolved, which also carries blocking thread
+      # evidence and would mask the fail-open with a legitimate block.
+      cr-degraded-clean) echo "statuses boom" >&2; exit 1 ;;
       # The verdict query flakes (a real 503 was observed live on this endpoint)
       # WHILE a coderabbit thread sits unresolved. The degraded verdict must not
       # short-circuit past that evidence (codex-1).
@@ -94,8 +111,16 @@ case "$1 $2" in
       cr-nearmiss) echo '[{"context":"CodeRabbit","state":"success","description":"No review changes requested","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       cr-failure) echo '[{"context":"CodeRabbit","state":"failure","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       # HIMMEL-1465: the rate-limit decline — same skipped-state projection as
-      # cr-skipped, but the ONE wording a clean critic panel may carry.
+      # cr-skipped. It was the ONE wording a clean critic panel could carry
+      # until HIMMEL-1760 gave this gate check-ci.sh's every-skip-wording parity.
       cr-ratelimited) echo '[{"context":"CodeRabbit","state":"success","description":"Review rate limited","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
+      # HIMMEL-1760: a THIRD skip wording, matching neither the rate-limit nor
+      # the automatic-reviews-disabled label arm ("review disabled" is its own
+      # _CRS_SKIP_RE alternative). Pins the contract as "every skip-classified
+      # description is panel-carriable" rather than "these two are" — the exact
+      # over-narrowing this ticket exists to undo. A future CodeRabbit skip
+      # phrasing lands here, and must behave like the enumerated ones.
+      cr-skipped-other) echo '[{"context":"CodeRabbit","state":"success","description":"Review disabled for this repository","created_at":"2026-07-16T19:10:05Z","creator":{"id":136622811,"login":"coderabbitai[bot]","type":"Bot"}}]' ;;
       # An impostor: right context + right login, WRONG creator.id. The whole
       # point of HIMMEL-1058's identity match — display names are spoofable,
       # the bot's user id is not.
@@ -123,6 +148,15 @@ case "$1 $2" in
       body-drift)   echo '[{"user":{"id":136622811,"login":"coderabbitai[bot]"},"commit_id":"abc123","body":"Outside diff range comments were noted but the count did not survive a format change"}]' ;;
       body-error)   exit 1 ;;
       *)            echo '[]' ;;
+    esac ;;
+  # CodeRabbit's WALKTHROUGH issue comment (HIMMEL-1824) — its second delivery
+  # channel, the one a CLEAN pass uses when it mints no review object at all.
+  # Default 'none' (an empty comment list) leaves every unrelated case exactly
+  # as it was; only the HIMMEL-1374 zero-PR-wide-reviews arm reads it.
+  "api repos/o/r/issues/42/comments"*)
+    case "${GH_STUB_WALKTHROUGH:-none}" in
+      clean) echo '[{"user":{"login":"coderabbitai[bot]","type":"Bot"},"body":"<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\nNo actionable comments were generated in the recent review.\n\nMerge Risk: Low - up to `abc123d`"}]' ;;
+      *)     echo '[]' ;;
     esac ;;
   *) echo '{}' ;;
 esac
@@ -185,7 +219,8 @@ GH_STUB_MODE=inflight      t cr-status-pending-blocks 2
 GH_STUB_MODE=cr-absent     t cr-status-absent-blocks 2
 # HIMMEL-1317: a DECLINED review must block for the same reason an absent one
 # does. Paired with its positive control so the block cannot be satisfied by
-# breaking `success` outright.
+# breaking `success` outright. Runs before any ledger fixture is written, so it
+# is also the no-panel-evidence negative control for the HIMMEL-1760 carry below.
 GH_STUB_MODE=cr-skipped    t cr-status-skipped-blocks 2
 GH_STUB_MODE=cr-completed  t cr-status-completed-allows 0
 # glm-1 (round 2): mirror check-ci's 34d near-miss guard here. Both gates read
@@ -212,7 +247,26 @@ GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-no-panel-blocks 2
 # matches ONLY by atHead's equality-first check, never by prefix resolution.
 printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"abc123","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
 GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-panel-carried-allows 0
+# HIMMEL-1760: the SAME evidence bar for the OTHER skip wording. check-ci.sh
+# carries every skip-classified description on a clean exact-head panel
+# (HIMMEL-1506); this gate carried only the rate-limit shape, so the
+# adaptive-limit lockout presentation ("automatic reviews are disabled")
+# hard-blocked merges check-ci had already certified. Parity, not relaxation —
+# the two gates must accept and refuse the same shapes.
+GH_STUB_MODE=cr-skipped t cr-status-autoreviews-disabled-panel-carried-allows 0
+# ...and a wording in NEITHER label arm behaves identically — the verdict comes
+# from the exact-head panel, never from the description (codex-1, panel r2).
+GH_STUB_MODE=cr-skipped-other t cr-status-other-skip-wording-panel-carried-allows 0
 # scrub the scratch ledger so no later case inherits the carry evidence
+rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
+GH_STUB_MODE=cr-skipped-other t cr-status-other-skip-wording-no-panel-blocks 2
+# ...and the evidence must be at the EXACT head: a clean panel recorded on a
+# DIFFERENT commit is not evidence about this one, so the block stands. (Both
+# heads are 6 chars — below atHead's 7-char isHex floor — so "def456" cannot
+# match "abc123" by prefix resolution either.)
+printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"def456","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
+GH_STUB_MODE=cr-skipped     t cr-status-autoreviews-disabled-panel-other-head-blocks 2
+GH_STUB_MODE=cr-ratelimited t cr-status-ratelimited-panel-other-head-blocks 2
 rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
 
 # ORDER: the verdict must be read BEFORE the thread query (coderabbit-10).
@@ -395,10 +449,45 @@ grep -qi "degraded" "$TMP/err-body-infra-error-fails-open" || { echo "FAIL body-
 # ── HIMMEL-1181: review-FRESHNESS (B2) — checks/threads/body all clean
 # (GH_STUB_MODE=clean), so these exercise the freshness gate in isolation ───
 GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-blocks 2
+# HIMMEL-2162: a clean exact-head critic panel carries a stale-anchor freshness
+# review too — parity with check-ci.sh's twin arm (HIMMEL-1718/2162), and the
+# DEFAULT behavior now (no knob needed). Same ledger fixture shape as the
+# ratelimited-panel-carried case below.
+printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"abc123","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-panel-carried-allows 0
+grep -qi "carries the gate" "$TMP/err-freshness-stale-panel-carried-allows" || { echo "FAIL freshness-stale panel-carry ALLOW-note missing"; fail=$((fail+1)); }
+rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
+# ...and evidence recorded at a DIFFERENT commit is not evidence about THIS
+# head — the block stands (fail-closed preserved).
+printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"def456","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=stale t freshness-stale-panel-other-head-blocks 2
+rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
 GH_STUB_MODE=clean GH_STUB_FRESHNESS=paged t freshness-paged-blocks 2
-# none = zero bot reviews on the PR at all (self-skip: absence of a bot
-# review is not evidence of staleness) — allow.
-GH_STUB_MODE=clean GH_STUB_FRESHNESS=none  t freshness-none-allows 0
+# none = zero bot reviews on the PR at all, at any head, ever.
+#
+# HIMMEL-1374 — this used to be an unconditional self-skip ("absence of a bot
+# review is not evidence of staleness"), which is what let PR #1463 read clean
+# while the App's status said "Review completed" over a PR nobody had reviewed.
+# With a genuine `success` status (GH_STUB_MODE=clean posts one) and no
+# walkthrough, the two signals contradict each other: BLOCK.
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=none  t freshness-none-with-completed-status-blocks 2
+grep -qi "no CodeRabbit review object at any head" "$TMP/out-freshness-none-with-completed-status-blocks" || { echo "FAIL freshness-none block reason missing the zero-reviews-ever shape"; fail=$((fail+1)); }
+# ...but the three shapes that legitimately reach `none` still allow:
+#  1. HIMMEL-1824 — a CLEAN pass mints no review object and reports through the
+#     walkthrough instead, so zero-reviews-PR-wide is the NORMAL shape there.
+#     Needs a real >=7-hex head: the walkthrough reader will not accept a
+#     commit token shorter than git's own abbreviation floor.
+GH_STUB_MODE=clean GH_STUB_FRESHNESS=none GH_STUB_WALKTHROUGH=clean \
+  GH_STUB_HEAD=abc123def4567890abc123def4567890abc123de t freshness-none-clean-walkthrough-allows 0
+#  2. HIMMEL-1465 — a RATE-LIMITED App never claims a completed review, so the
+#     clean exact-head critic panel still carries it (the live 2026-08-20 shape
+#     on PRs #1759/#1760). Ledger head matches this suite's default head.
+printf '%s\n' '{"kind":"avail","ts":"2026-08-03T00:00:00Z","branch":"feat/x","head":"abc123","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-5.5"}' > "$TMP/repo/.git/cr-critic-scores.jsonl"
+GH_STUB_MODE=cr-ratelimited GH_STUB_FRESHNESS=none t freshness-none-ratelimited-panel-carried-allows 0
+rm -f "$TMP/repo/.git/cr-critic-scores.jsonl"
+#  3. a DEGRADED status read is not evidence of anything — this gate's stated
+#     fail-open contract for infrastructure failures survives the new arm.
+GH_STUB_MODE=cr-degraded-clean GH_STUB_FRESHNESS=none t freshness-none-degraded-status-fails-open 0
 # rc 1 infrastructure failure (the reviews query itself errors) fails OPEN,
 # mirroring cr_degraded/body_degraded — a broken query is not evidence.
 GH_STUB_MODE=clean GH_STUB_FRESHNESS=fail  t freshness-infra-error-fails-open 0

@@ -31,6 +31,7 @@ habits inlined:
 - **Exact surface (guessing wrong burns turns):** verbs are `get`, `create`, `list`, `transition`, `transitions`, `comment`, `attach`, `edit`, `move`, `projects`, `project-create`, `link`. There is **no `search` verb** — `list` is the query verb: it takes `--label` (single-label filter, composed into JQL) and `--jql` (raw passthrough), while `create` takes `--labels` (comma-separated) to *set* labels on the new ticket. Title on `create` is `--title` (alias `--summary`, HIMMEL-1188); a multi-line description goes to a temp file + `--desc-file` (keeps the command single-line so the auto-approve hook matches).
 - **File deferred items as real tickets too — and file them the moment they surface.** Every work item — including DEFERRED / "Won't Do" / timeboxed eval items — gets a real Jira running number (`HIMMEL-N` / `LUNA-N`), never an internal `#N` placeholder, and never parked in a handover/response as "could file later": anything not in Jira falls out of the where-are-we ledger + morning-report surfaces and is silently lost. File in the same turn the item is identified; batch-file when several surface at once; proposals that need operator triage are still filed (as To Do), not held. File-then-close beats file-never-and-forget.
 - **Ad-hoc harness work gets a ticket too.** When a session turns into real implementation work (new scripts/logic, a multi-file change, a PR) — even one that surfaces mid-session from tooling friction, not planned feature work — file the ticket **before the first commit** and put `[HIMMEL-N]` in the commit subjects + PR. Conventional commits make the ticket *optional*, so "just a quick fix" silently ships ticketless; don't let it. Trivial conversational/single-line tweaks still don't need one (same judgement bar as feature work).
+- **Ticket discipline applies to EVERY repo, not just himmel (global-workflow application).** The commit-msg ticket gate is himmel-local infrastructure; other repos (ggs-local, salus, ...) don't carry it, and epic-tagged commits there (`[LUNA-101]`) satisfy traceability in LETTER while work items silently accumulate outside Jira — as PR comments, stale backlog prose files, or handover asides. The rule is repo-independent: **any discovered work item — same judgement bar as the bullet above, so trivial tweaks stay exempt — gets a real ticket in the project that owns its outcome, filed in the same turn it's identified**; PR comments are review context only; backlog/prose views must reference ticket keys or get pruned. Concretely for a foreign-repo session: run the CLI **with the himmel checkout as the working directory** — `node <himmel-root>/scripts/jira/dist/index.js create --project <KEY> --type Task --parent <epic> --title '…'` — because `loadEnv()` resolves `.env` from the *cwd's* git root, not from the CLI's own path: an absolute-path call issued while sitting in the foreign repo finds no `.env` and dies on `JIRA_BASE_URL is not set`. Then verify the `Created <KEY>-N` echo, and — once per repo, skipping it when that file already carries the line — add one line to that repo's CLAUDE.md pointing at this habit so the next session inherits it. Drifted twice in ggs-local before being named (LUNA-136) — by the second-drift rule the next occurrence anywhere gets a structural gate, not more prose.
 - **Project-boundary heuristic.** HIMMEL = himmel-repo infra (CLAUDE.md, hooks, gates, jira plugin, marketplace plugin code). LUNA = luna-vault content + clipper-pipeline calibration (code in `marketplace/plugins/obsidian-triage/` but functionally serves LUNA). When unsure, file where the DoD lands (where the change gets written), not where the code lives. Misfiled → use `jira move <KEY> --to-project <TARGET> --dry-run` (close source + recreate target + copy comments), never manual close+recreate.
 
 ## Git / CI attestation markers
@@ -38,7 +39,7 @@ habits inlined:
 All canonically documented — these are the structural gates. Linked, not restated:
 
 - Attestation trailers (`Platforms tested: <os>`, `Security reviewed: <token>`) belong in the **first** commit after genuinely testing + reviewing — see the [Git-workflow rule in `CLAUDE.md`](../CLAUDE.md#git-workflow) and [`docs/internals/enforcement.md`](internals/enforcement.md). Recovery when a gate fails: [`docs/internals/stuck-playbook.md`](internals/stuck-playbook.md).
-- Headless-claude ban + the `# headless-claude-ok:` marker → [HIMMEL-128 billing in `CLAUDE.md`](../CLAUDE.md#claude-invocation-billing-himmel-128) and [`docs/internals/enforcement.md`](internals/enforcement.md#claude-invocation-billing-himmel-128). The bounded-run primitive (`claude "<prompt>" < /dev/null`, no `-p`, stays on Max quota) is the sanctioned programmatic invocation.
+- Headless-claude ban + the `# headless-claude-ok:` marker → [HIMMEL-128 billing in `CLAUDE.md`](../CLAUDE.md#claude-invocation-billing) and [`docs/internals/enforcement.md`](internals/enforcement.md#claude-invocation-billing-himmel-128). The bounded-run primitive (`claude "<prompt>" < /dev/null`, no `-p`, stays on Max quota) is the sanctioned programmatic invocation.
 - Operator habits with no structural home, inlined:
   - **`-F` first-commit beats `--amend --trailer`** for attestation. Write the whole message (body + trailing `Platforms tested:` / `Security reviewed:` lines) to a temp file and `git commit -F <file>` — `git --trailer "K: v"` can append a stray trailing `:` that breaks the end-anchored security regex. Verify with `git log -1 --format=%B | tail`.
   - **`gh pr merge` right after a push returns "not mergeable"** (`mergeStateStatus: UNKNOWN`) — GitHub hasn't computed mergeability for the new head SHA yet. Poll `gh pr view <N> --json mergeable` until non-`UNKNOWN`, or wait ~8s, then retry.
@@ -55,7 +56,55 @@ All canonically documented — these are the structural gates. Linked, not resta
   - **Never resolve a conflict by reflex `--theirs`/`--ours`.** When a merge/rebase/cherry-pick conflicts — even when one side is a wholesale rewrite that "obviously" supersedes the other — write a one-paragraph diff-analysis before resolving: what each side added/changed, whether the removed content is load-bearing for anything the surviving side doesn't cover, and whether the removal is intentional and complete. Surface that reasoning even when the resolution turns out to be the obvious one — the analysis exists to catch the non-obvious cases, and "trivial — take theirs" hides the justification. Skip only for pure whitespace conflicts.
   - **Stale-base worktree: rebase onto `origin/main`, never `git reset --soft <local-main>`.** When a worktree branch has 0 commits and `main` advanced past its creation base (concurrent merges), `reset --soft` moves the branch ref forward but leaves the OLD files in the index → the commit **silently reverts** every change main gained since. Before the first commit, get even with the remote: `git fetch && git rebase origin/main` (or, with uncommitted work, `git stash push -u` → `git merge --ff-only main` → `git stash pop`). Then verify `git diff --name-only origin/main HEAD` shows ONLY your scope.
   - **Critic panels need periodic validation — and exactly ONE config.** External review-tool critics are never blind-trust: re-validate panel members periodically against diffs whose state you know, and name the failure modes when one degrades. The dangerous one is the INVERTED critic — it reports a dirty diff clean and a clean diff dirty, so a "tool-A-clean + tool-B-critical" split on the same diff is its signature; never clear a review marker on a NOT-CLEAN verdict just because another critic disagreed. Keep exactly one repo-root config file per review tool as the source of truth for BOTH its CI/App integration and its CLI invocation — a second per-lane copy drifts. And remember the gitignored-overlay-in-worktree trap ([environment-gotchas](internals/environment-gotchas.md#wsl-git-cannot-read-a-windows-created-worktree)) when a critic resurrects findings you deliberately disabled. Default the FINDING layer to the external critics with the session adjudicating inline; first-party (Claude) reviewer agents are the reserve for genuinely critical PRs, enabled by an explicit toggle (`CR_CLAUDE_AGENTS=1`) — never flipped autonomously in an unattended run.
-  - **CR sizing (HIMMEL-299, refined 2026-06-13):** **NEVER zero CR.** Even a docs/trivial PR gets, at minimum, ONE **docs-audit** subagent — a `pr-review-toolkit(-himmel)` `code-reviewer` scoped to a docs charter: (1) factual accuracy of every repo claim (hooks/gates/flags/paths/commands) checked against the actual code/config; (2) dead links resolve; (3) no stale file/flag/ticket references; (4) example blocks have correct paths + flags + syntax; (5) internal consistency. Out of scope: prose-style nitpicks. (`CLAUDE.md` changes → the `/claude-md-audit` lane.) Substantial docs/runbook PRs → 2 reviewers in parallel; real production-logic PRs → the full multi-agent set earns its keep (cross-file contract bugs the per-unit reviews structurally can't see). **Cost ladder, cheapest → most-expensive: docs-audit subagent → `/pr-check` → heavy CR (6 reviewers) → `/code-review ultra`.** `ultra` is the MOST expensive tier — MORE than heavy CR — so it is the top/last-resort escalation for the biggest/riskiest PRs, reached AFTER heavy CR, never as a cheaper first reach (HIMMEL-299 eval: ultra ADOPT, but billed + operator-triggered — the agent cannot launch it). Budget ~2 fix→re-CR rounds for a fresh tool. Any solo/holistic pass uses `pr-review-toolkit(-himmel)` `code-reviewer`; `caveman:cavecrew-reviewer` is a heavy-CR sixth opinion only, never the sole reviewer (HIMMEL-299: 2 false Criticals solo vs clean toolkit round).
+  - **CR sizing (HIMMEL-299, refined 2026-06-13):** **NEVER zero CR.** Even a docs/trivial PR gets, at minimum, ONE **docs-audit** subagent — a `pr-review-toolkit(-himmel)` `code-reviewer` scoped to a docs charter: (1) factual accuracy of every repo claim (hooks/gates/flags/paths/commands) checked against the actual code/config; (2) dead links resolve; (3) no stale file/flag/ticket references; (4) example blocks have correct paths + flags + syntax; (5) internal consistency. Out of scope: prose-style nitpicks. (`CLAUDE.md` changes → the `/claude-md-audit` lane.) Substantial docs/runbook PRs → 2 reviewers in parallel; real production-logic PRs → the full multi-agent set earns its keep (cross-file contract bugs the per-unit reviews structurally can't see). **Cost ladder, cheapest → most-expensive: docs-audit subagent → `/pr-check` → heavy CR (5 reviewers) → `/code-review ultra`.** `ultra` is the MOST expensive tier — MORE than heavy CR — so it is the top/last-resort escalation for the biggest/riskiest PRs, reached AFTER heavy CR, never as a cheaper first reach (HIMMEL-299 eval: ultra ADOPT, but billed + operator-triggered — the agent cannot launch it). Budget ~2 fix→re-CR rounds for a fresh tool. Any solo/holistic pass uses `pr-review-toolkit(-himmel)` `code-reviewer`.
+
+  - **RISING severity across CR rounds means STOP AND SIMPLIFY, not another
+    round.** Track severity across rounds, not per round: falling
+    (Critical → Important → Suggestion) is converging, keep going; flat or
+    RISING (or your own round-N fix showing up as a round-N+1 finding) means
+    the design is wrong — stop complying and re-scope rather than patching
+    again. Re-derive severity yourself, grouped by reviewer, rather than
+    trusting the label: panel severity is unreliable in BOTH directions in
+    the same round (a confident false Critical, a real bug filed as a
+    Suggestion by the same critic) — two critics naming the SAME line at
+    different severities is where the real defect usually is.
+  - **Four non-convergence signatures, not just "keep going N rounds":**
+    (1) severity DECREASING = the expected adversarial-onion case, cap at
+    ~2-3 rounds and defer the tail; (2) severity FLAT or RISING = a
+    systematic design gap being walked one instance at a time — close the
+    CLASS by enumeration (name every precondition, check each one) in a
+    single round instead of patching the next instance; (3) successive
+    rounds only TIGHTEN A BOUND on the same race = the bound is not the fix,
+    document the residual with its bound in the PR body and stop; (4) rounds
+    keep finding REAL, DISTINCT defects each pinnable by its own test = the
+    cap does NOT apply, keep going even with severity flat throughout. The
+    crisp terminal signal worth waiting for either way: the reviewer starts
+    arguing against an EARLIER ACCEPTED finding — the signal is exhausted,
+    stop there.
+  - **A `citation-guard-*` Critical is a POINTER, not the finding itself.**
+    The panel synthesizes it when a blocking finding's citation can't be
+    anchored to a diff line. Open the `## Dropped Citations` block and
+    adjudicate the WRAPPED finding on its own merits (grep the code, don't
+    trust the cited line) before dispositioning the wrapper — the wrapper's
+    own text ("N were rejected") is trivially satisfiable and says nothing
+    about the severity of what it wraps. A dropped citation is unverified,
+    never disproved.
+  - **A second panel run at the SAME head reports 0/0/0 because the ledger
+    dedups on `(head, finding_id)`** — that is a suppressed report, not a
+    retraction, and it burns a paid model call for nothing. Run the panel
+    exactly once per head; each fix moves the head, run the next round
+    there.
+  - **Machine-generated PRs (dependabot dep-bumps, regenerated-artifact
+    PRs) never get a CodeRabbit review.** Don't trigger `@coderabbitai
+    review` and don't park on the CR gate waiting for one — flag the PR for
+    manual merge, or run the merge gate with its CR-skip escape hatch for
+    that one run.
+  - **Tests pin OUR seams, never other products.** A suite case asserts our
+    integration and our wrapper's observable contract — never a permanent
+    case re-proving a third-party library's, runtime's, or API's own
+    behavior. Throwaway probes to design a fix are fine; at most one thin
+    named canary where our correctness genuinely hinges on upstream
+    behavior.
 
 ## Cross-platform & testing
 
@@ -63,6 +112,62 @@ Standing engineering requirements for anything himmel ships — not per-task:
 
 - **All code supports Windows + macOS + Linux.** Shell scripts must be **bash 3.2-safe** (macOS ships bash 3.2 — no `mapfile`, associative arrays, `${var^^}`, GNU-only `sed -i`/`date` flags) and shellcheck-clean. Hooks that run in a **PowerShell context** (e.g. SessionEnd) need a `.ps1` twin changed in **lockstep** with the `.sh`. Handle portable paths/env (`HOME` vs `USERPROFILE`/`LOCALAPPDATA`, forward-slash normalization, never hardcode `/tmp` vs `%TEMP%`). Test on the platforms the diff touches and attest (`Platforms tested: <os>` pre-push gate); when you can only test one, say so. A single-platform script breaks adopters silently.
 - **Tests must be hermetic — never touch the operator's real data.** For any tool that reads/mutates real user state (vaults, `~/.claude`, registries, backups, dotfiles): redirect `HOME` to a temp dir on EVERY engine invocation and pass explicit temp `--roots` / `--registry` so no default scan reaches real dirs; no real-path literals in tests. Assert positively in two directions — artifacts landed in the temp `HOME`, AND a snapshot check that the real `~/.claude/…` gained nothing (not a no-op "if real dir exists" scan, not a drift-prone hardcoded allowlist). Force failure paths with portable injections (parent-is-a-file to break `mkdir -p`/`cp`), not `chmod` (cosmetic on NTFS).
+
+## Verification method
+
+- **Verify the ARTIFACT, never the return code, a status field, or a usage
+  count.** Each of those is a *report about* the work, not proof of it — a
+  wrapper that exits 0, a wall-clock kill after the real edit already
+  landed, a client that never connected all produce success-shaped signals.
+  Ask "what artifact should exist if this worked?" and check for THAT: the
+  file written, the commit created, the row inserted, the PR state. A
+  "timeout"/"killed" notification often names the SUPERVISOR, not the
+  supervised work — check the underlying process or artifact before
+  concluding anything failed. A mutant that PASSES a negative control means
+  the CONTROL is vacuous, not that the fix was unnecessary — run the mutant
+  for every control, don't just write the assertion.
+- **Splice a probe from the suite's OWN setup, in the suite's OWN
+  directory — never `/tmp`.** A suite that resolves the script under test
+  relative to its own location returns a spurious rc (often 127) for a probe
+  placed elsewhere, which reads as a real failure. Pull the harness/setup
+  block plus the 1-2 cases you actually need into a throwaway script under
+  the suite's own directory, run it, then delete it. Never edit a script
+  while its own suite is running — an offset-shifting edit corrupts an
+  in-flight run and produces a spurious tail-of-log syntax error.
+- **A "no known package"/"not supported" message must come from actually
+  ASKING the tool** — its own package manager, its own capability probe —
+  never a hardcoded map. A FAILED query is not evidence of absence:
+  distinguish "asked, answer is no" from "could not ask" with different
+  return codes and different wording. Any parse of a human-readable label
+  needs `LC_ALL=C` on the command producing it — locale changes the literal
+  string being matched.
+- **Before trusting a before/after measurement, trace the caller chain and
+  confirm the code path under test actually ran.** A flag chosen for safety
+  (disabling an expensive pass) can silently disable the very pass being
+  measured — identical output across versions is the EXPECTED result of an
+  unrun pass, not evidence the fix does nothing. Find a positive control
+  that SHOULD move, and confirm it moves; a prediction that comes true is
+  not corroboration if it also comes true on the baseline — evaluate against
+  BOTH pins.
+- **A fix delivered through a projection (a snapshot writer, a build/generate
+  step) needs a SECOND control on the delivery path**, not just a control on
+  the rule — "the rule is right" and "the shipped thing is fixed" are
+  separate claims needing separate proof, because the delivery mechanism may
+  not run, may run on different input, or may replay a range instead of
+  regenerating from scratch. A fixture's SIZE is part of the control too — a
+  bug that only manifests above some input size is invisible to a suite
+  whose fixtures never grow past it.
+- **After merging upstream into a fork, attribute failures against BOTH a
+  pre-merge baseline AND a pristine-upstream control**, never raw counts —
+  merge-caused = merged − (baseline ∪ upstream). Most "new" failures after a
+  merge turn out to be new upstream tests failing on your platform, not new
+  breakage; the single-control version (baseline only) mis-blames the merge
+  for every one of those.
+- **A red CI job is not "the one test you know about" until you've read
+  every failing line and diffed that set against the PREVIOUS run's.** The
+  diff both proves your fix landed (an entry disappeared) and proves the
+  rest is pre-existing (unchanged entries) — neither claim is available from
+  reading the new run alone.
 
 ## Upstream & fork contributions
 
@@ -79,22 +184,76 @@ Canonical arming mechanics live in [`docs/internals/handover-system.md`](interna
 - **Chain ASAP — never park an arm hours out, never pause idle at a decision the model could make.** At a natural completion / context-saturation point, arm + chain the next session (ticket-named, cold-start-complete handover) instead of stopping: idle quota that isn't spent before its window resets simply evaporates. "The handover is written" is not the finish line — exhaust the planned queue in-session while budget remains, then re-arm for the SOONEST slot after true wrap (minutes out, not hours). If an arm exists and work continues past its slot, move/replace it BEFORE the fire time (double-fire risk — HIMMEL-856). Only truly pause when the next step needs an operator decision that can't be pre-teed. Where the fleet spans multiple surfaces (machines, WSL distros), the same discipline applies **per-surface**: after wrapping on any box, verify an armed continuation exists on every configured surface — an idle surface is wasted pipeline capacity.
 - **Metered-lane structure (the numbers churn; these don't).** For any paid/quota'd delegation lane: (a) preflight remaining quota before a long/expensive brief — a capped worker dies mid-run, though its uncommitted working tree SURVIVES, so recover the tree rather than restarting the task; (b) per-machine budgets for the same lane differ — exhausted on one box ≠ exhausted on another, route accordingly; (c) some providers have time-of-day peak windows in the PROVIDER's timezone, not yours; (d) route every dispatch through the repo's dispatch chokepoint script, never raw shell execs — a raw dispatch bypasses ACL preflight, model pins, ledger logging, quota preflight, and the hook surface.
 
+## Multi-agent coordination
+
+- **A ruling sent to a RUNNING (not stopped) agent can silently fail to
+  render in its context** — queued delivery to a running agent is lossy, not
+  merely doubtful. Demand quote-back for any consequential ruling (an echo
+  token in the next checkpoint); treat your own no-reply state as
+  **non-consent** and escalate the silence rather than acting on an
+  assumption of approval.
+- **A judge/coordinator session must not idle between notifications** —
+  actively sweep for blockage (expected branches pushed? PRs opened or
+  updated? reviews landed at head?) and act as an ENABLER: nudge a parked
+  lane with independently checkable facts, or supply what a blocked lane is
+  missing (a quota allocation, a dependency merge, a ruling), rather than
+  only reacting to completion notifications.
+- **When handing a diagnosis worth a ticket to another session, NAME who
+  files it** — "filing as X" or "yours to file". The standing
+  search-before-filing rule cannot catch a same-hour concurrent filing:
+  neither ticket exists yet when the other side's dupe-scan runs, so both
+  sides can file the identical bug independently within minutes.
+- **A failing lane is almost always OUR credential/config, not the provider
+  being down** — diagnose before rerouting to a second lane: is the local
+  process alive and listening? what does its own log say verbatim? is there
+  an asymmetric probe (a direct account/quota check) that separates
+  "provider down" from "our credential went stale"? A green-looking status
+  line that only checks a credential FILE EXISTS is not proof the credential
+  still works.
+- **A parked worker and a QUEUED worker look identical from the outside** —
+  check the lock/queue state before nudging a quiet lane; nudging a healthy,
+  queued worker creates a second-writer race on its branch. Structurally,
+  brief workers to COMMIT before their long verification runs, not after, so
+  a park lands on a durable commit instead of a dirty worktree. Nudging has
+  a ceiling of two attempts — after that, take over (stop the worker first,
+  so the takeover stays single-writer, then land its diff yourself).
+
 ## Permissions & bash command shape
 
 Canonical — linked, not restated:
 
-- Permission prompt/hang on a Bash command comes from the static matcher bailing on `$var`/`$(…)`/backticks/compound operators (it never reads the allow-list), NOT a missing allow rule. Fix is structural (the `auto-approve-safe-bash.sh` hook), not wider allow rules. Prefer literal single commands. See the [Bash-command-shape rule in `CLAUDE.md`](../CLAUDE.md#bash-command-shape-himmel-203), [`docs/internals/enforcement.md`](internals/enforcement.md), and [`docs/internals/stuck-playbook.md`](internals/stuck-playbook.md).
+- A permission prompt on a Bash command — a wait interactively, a silent DENY at rc=0 headless/auto (HIMMEL-1969) — comes from the static matcher bailing on `$var`/`$(…)`/backticks/compound operators (it never reads the allow-list), NOT a missing allow rule. Fix is structural (the `auto-approve-safe-bash.sh` hook), not wider allow rules. Prefer literal single commands. See the [ENFORCEMENT section of `CLAUDE.md`](../CLAUDE.md#enforcement-runs-automatically), [`docs/internals/enforcement.md`](internals/enforcement.md), and [`docs/internals/stuck-playbook.md`](internals/stuck-playbook.md).
 - The auto-mode classifier is a semantic layer on top of the allow-list (self-merge-to-main, attestation-amend, Jira writes under a workflow that didn't NAME Jira). Symptom→action recovery lives in [`docs/internals/stuck-playbook.md`](internals/stuck-playbook.md) — surfaced load-on-trigger by the `himmel-ops:stuck-playbook` skill.
 
 ## Memory & CLAUDE.md hygiene
 
-These shape what goes WHERE — the layer-selection discipline. The doctrine (4 rules, the layering model, the nesting trap, memory-as-map) is canonical in [`docs/internals/context-architecture.md`](internals/context-architecture.md); the layer-selection frame is in [`CLAUDE.md`](../CLAUDE.md#operator-conventions-calibrated-through-repeated-sessions) (HIMMEL-177 / HIMMEL-195) with worked examples in [`docs/internals/enforcement.md`](internals/enforcement.md#operator-conventions--worked-examples). Inlined habits:
+These shape what goes WHERE — the layer-selection discipline. The doctrine (4 rules, the layering model, the nesting trap, memory-as-map) is canonical in [`docs/internals/context-architecture.md`](internals/context-architecture.md); the layer-selection frame is in [`CLAUDE.md`](../CLAUDE.md#adding-a-rule--pick-the-cheapest-layer) (HIMMEL-177 / HIMMEL-195) with worked examples in [`docs/internals/enforcement.md`](internals/enforcement.md#operator-conventions--worked-examples). Inlined habits:
 
 - **No operational "when stuck" rules in `CLAUDE.md`.** It is loaded every session and is prunable under context pressure, so detail Claude needs *when stuck* may be gone exactly when needed; it is also per-user/per-repo. Put operational guidance in a repo-distributed load-on-trigger skill / `docs/internals/` playbook, or fix it structurally in code (then there's no rule to maintain). This very doc is the application of that principle.
 - **Verify universal-quantifier claims before writing them.** Don't write "each/every X has Y" in `CLAUDE.md` without running the count first (`ls X | wc` vs `ls test-X | wc`). If not 1:1, write "Most X have Y — add one for new X". A false universal misleads every future session. Pair a correctness reviewer with the CLAUDE.md best-practice audit on CLAUDE.md PRs — they catch different misses.
 - **Generic example names in public-facing docs.** In docs / command examples / templates that ship publicly, use generic placeholders (`work-vault`, `my-vault`, `project-x`), not real personal vault/project names — a real name leaks personal context with no added illustrative value. Pick generic names at **authoring time**, not just at propagation time (cheaper than catching it in a publish-time grep); flag any real personal name found in a propagation diff.
-- **Internal specs/plans/decision records are work artifacts, not reference docs.** Design docs, implementation plans, and decision records belong in your state repo (per the [Luna-area docs convention in `CLAUDE.md`](../CLAUDE.md#luna-area-docs-convention-himmel-138-locked-2026-05-25)), never in a code repo's `docs/` (operator-facing reference + OSS-public only) — they're work artifacts and some carry private context. The cross-repo source of truth is the **handover skill** (loaded in any repo), because a project-scoped `CLAUDE.md` is only loaded when cwd is in that repo, but specs get produced while working in other repos too.
+- **Internal specs/plans/decision records are work artifacts, not reference docs.** Design docs, implementation plans, and decision records belong in your state repo (per the ["Where artifacts land" rule in `CLAUDE.md`](../CLAUDE.md#where-artifacts-land)), never in a code repo's `docs/` (operator-facing reference + OSS-public only) — they're work artifacts and some carry private context. The cross-repo source of truth is the **handover skill** (loaded in any repo), because a project-scoped `CLAUDE.md` is only loaded when cwd is in that repo, but specs get produced while working in other repos too.
 - **Auto-memory confidence/staleness frontmatter (HIMMEL-257).** Files under `~/.claude/projects/<project>/memory/` carry optional top-level frontmatter fields: `confidence: high|medium|low` (`high` = operator-stated rule or behavior verified live; `medium` = point-in-time observation that can drift; `low` = known to conflict with current state — re-check before acting), `verified: YYYY-MM-DD` (last date the claim was checked against reality), and `supersedes: <memory-name>` (this memory replaces that one). The rule: **when a memory is recalled and found stale, re-check and update `verified:` (correcting the content), or delete it** — never act on a stale claim silently. Semantic memory without staleness marking structurally forgets wrong. The `MEMORY.md` index format is unchanged: one line per memory, no metadata there.
+
+## Writing density
+
+- **Name "mannered prose" as an anti-pattern.** Anthropic's Fable 5.1
+  prompting guide flags that Fable 5.1 can write denser than Fable 5 —
+  longer sentences, fewer paragraph breaks — and the fix is naming the
+  failure mode explicitly rather than relying on general brevity rules.
+  Mannered prose substitutes metaphor and flourish for direct statement:
+  the phrasing exists to display the writer, not to convey the idea. It is
+  orthogonal to verbosity — a *short* sentence can still be mannered ("this
+  point earns its keep" is not longer than "this point still matters").
+  This repo's Concise output style and `CLAUDE.md`'s simplicity rules
+  govern length and code density but do not name this diction failure
+  mode (HIMMEL-2586 audit).
+- **Drop this paragraph into your own `~/.claude/CLAUDE.md`** (a personal
+  file, not this repo's) to apply it to your own sessions:
+
+  > Avoid mannered prose — writing that substitutes metaphor and flourish
+  > for direct statement. Say what you mean; when a plain, literal phrase
+  > is available, use it instead of a dressed-up one.
 
 ## Telegram bridge
 

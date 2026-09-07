@@ -2,11 +2,11 @@
 
 Load-on-trigger reference for the moments Claude gets *stuck* on himmel's own
 guardrails: an auto-mode write was denied, a Bash command fell through to the
-classifier, a permission prompt hung, or a pre-push gate failed. These are
-**operational/recovery** rules — they used to live in the root `CLAUDE.md` but
-were migrated here (HIMMEL-211) because they are not session-time frame-shaping:
+classifier, a permission prompt denied a command, or a pre-push gate failed.
+These are **operational/recovery** rules — they used to live in the root
+`CLAUDE.md` but were migrated here (HIMMEL-211) because they are not session-time frame-shaping:
 they only matter at the moment of the symptom, and paying for them on every
-session is the bloat the [4 CLAUDE.md rules](#why-this-is-a-playbook-not-a-rule)
+session is the bloat the [4 CLAUDE.md rules](#why-this-is-a-playbook-not-a-claudemd-rule)
 warn against. The `himmel-ops:stuck-playbook` skill surfaces this file when the
 stuck condition is detected; it carries zero always-on token cost otherwise.
 
@@ -19,12 +19,21 @@ if a write is denied after following this playbook, defer to the operator.**
 
 ---
 
-## Symptom: a Bash command hangs on a permission prompt, then aborts (HIMMEL-203)
+## Symptom: a Bash command is stopped by a permission prompt (HIMMEL-203)
 
 Claude Code's native permission matcher **bails out and PROMPTS** on any command
 containing variable expansion (`$t`), command substitution `$(…)`, backticks, or
-compound operators — it never reads the allow-list. In headless/auto that hangs
-then aborts.
+compound operators — it never reads the allow-list. Interactively that prompt
+renders and waits. Headless/auto it does **not** hang: an undocumented ~3 s stdin
+watchdog ("no stdin data received in 3s, proceeding without it") drops the
+session to non-interactive, and a prompt that cannot render resolves as a **DENY
+at rc=0** — the session continues (`subtype:success`, `is_error:false`) with the
+action silently not performed. 4/4 live probes (HIMMEL-1969, 2026-08-22) denied
+that way, across three shapes: `-p --permission-mode manual`, `-p
+--permission-mode auto`, and a bare `claude "<prompt>"` with no `-p` on a
+never-delivering stdin pipe (the arm-resume/schtasks shape). The silent no-op —
+not a hang — is the failure mode to design for: verify the ARTIFACT, never the
+return code (the HIMMEL-1869 artifact-check rule).
 
 The `auto-approve-safe-bash` PreToolUse hook auto-grants read-only/inspection
 commands plus the allow-listed Jira CLI (incl. such loops/pipes with `$var` that
@@ -108,6 +117,77 @@ explicit in-session authorization on HIMMEL-222.
 The model-based classifier is an Anthropic layer; it cannot be made to read a
 repo authorization file. The durable fix is to never emit an unnecessary
 `--admin` so the veto never fires.
+
+---
+
+## Symptom: `/worktree` refuses the branch, or a stale worktree lingers
+
+`scripts/clean-garden.sh` (behind `/worktree`, `/clean`, `/clean_garden`) is the
+one orchestrator. Two refusals surprise people:
+
+- **"PR already MERGED"** — `/worktree` refuses to re-create a worktree on a
+  branch whose PR is merged, because the usual cause is a stale resume that
+  would re-open closed work. Deliberate reuse (rare — e.g. a follow-up that must
+  keep the branch name) bypasses with the session env var
+  `REUSE_MERGED_BRANCH_OK=1`, set in the LAUNCHING shell like every other hook
+  bypass. Prefer a fresh `type/slug` branch first; the bypass is the exception.
+- **Lingering merged-PR worktrees** — `/himmel-doctor` check **C7** flags them
+  read-only and points at `/clean`. There is no `--fix` for C7 by design:
+  pruning a worktree can discard uncommitted work, so it stays an explicit
+  `/clean` run.
+
+**Superseded commands** (do not use; they still exist in older transcripts and
+handovers): `/new-worktree` → `/worktree`, `/clean_gone` → `/clean`. The branch
+name must be `type/slug` with type in `feat|fix|chore|docs|refactor|test`.
+
+---
+
+## Symptom: `git commit`/`git push` to main is refused even with `--no-verify` (HIMMEL-2095)
+
+A `reference-transaction` hook (`scripts/hooks/check-main-ref-transaction.sh`,
+installed by `scripts/hooks/install-main-ref-transaction.sh`) refuses any
+update to `refs/heads/main` whose new commit is not already an ancestor of
+`refs/remotes/origin/main`. It exists because `d05ef8ca` (and three earlier
+instances) landed directly on private main via `git commit --no-verify` then
+`git push --no-verify` — that skips pre-commit, commit-msg AND pre-push
+wholesale, so no hook staged in those events could refuse it.
+`reference-transaction` is **not** one of the stages `--no-verify` disables,
+so `--no-verify` no longer works for this class of bypass. The refusal looks
+like:
+
+```text
+⛔ check-main-ref-transaction: refusing to update refs/heads/main -- the new
+commit is NOT already an ancestor of refs/remotes/origin/main:
+  refs/heads/main: <old-oid> -> <new-oid>
+...
+fatal: in 'prepared' phase, update aborted by the reference-transaction hook
+```
+
+**What to do:** make the commit on a `type/slug` branch and open a PR instead:
+
+```bash
+/worktree fix/<slug>                # or feat|chore|docs|refactor|test
+cd .claude/worktrees/<branch-name>   # commit there
+```
+
+Fast-forwards to already-published history (`git pull --ff-only`, `git fetch`
++ `git merge --ff-only`, `git reset --hard origin/main`) are unaffected — only
+a genuinely NEW local commit on main is refused.
+
+**Sanctioned one-off escape (leaves a trail):** `MAIN_REF_TRANSACTION_OK=1`,
+set as a per-command prefix (this hook is a direct child of `git
+commit`/`git push`, so — unlike `EDIT_ON_MAIN_OK` — a per-call prefix DOES
+reach it):
+
+```bash
+MAIN_REF_TRANSACTION_OK=1 git commit --no-verify -m "..."
+```
+
+Using it appends one line to `<git-common-dir>/main-ref-overrides.log`
+(shared by every linked worktree) and prints a warning to stderr — use it
+deliberately, not to dodge the guard routinely. A repo that commits straight
+to main by design (a personal vault, a state repo) opts out permanently the
+same way as every other main-branch guard: `touch <repo-root>/.single-writer`.
 
 ---
 

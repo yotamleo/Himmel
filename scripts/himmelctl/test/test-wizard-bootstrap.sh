@@ -74,15 +74,7 @@ bash_bin=$(command -v bash)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe/pwsh.exe misresolve MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 
 # build_path <stub_dir> <present_tools...> -- <absent_tools...>
 build_path() {
@@ -311,11 +303,13 @@ echo "ok: caseH(sh) non-Darwin host without apt-get -> fail-closed manual-instal
 
 # ── bootstrap.ps1 cases (skipped if pwsh isn't on this host, or when the
 # host isn't Windows — the winget.cmd/node.exe stubs are Windows-only) ─────
-# Prefer Windows PowerShell 5.1 (powershell.exe, always present on stock
-# Windows) over pwsh (PowerShell 7, a separate install) so the .ps1 cases run
-# on a stock Windows host; fall back to pwsh (HIMMEL-935 / CR #1126). The
-# variable keeps the pwsh_bin name for minimal churn; it holds whichever
-# interpreter was chosen.
+# ps51-ok: HIMMEL-2126 — this picks the interpreter that runs THESE test
+# fixtures, mirroring bootstrap.ps1's own real-world constraint (a stock,
+# node-less Windows box may not have pwsh installed yet): prefer Windows
+# PowerShell 5.1 (powershell.exe, always present on stock Windows) over pwsh
+# (PowerShell 7, a separate install) so the .ps1 cases run on a stock Windows
+# host; fall back to pwsh (HIMMEL-935 / CR #1126). The variable keeps the
+# pwsh_bin name for minimal churn; it holds whichever interpreter was chosen.
 pwsh_bin=""
 if command -v powershell >/dev/null 2>&1; then
   pwsh_bin=$(command -v powershell)

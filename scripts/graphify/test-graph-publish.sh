@@ -48,6 +48,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PUBLISH="$SCRIPT_DIR/graph-publish.sh"
 
+# Hermeticity (CodeRabbit, PR #2209): graph-publish.sh resolves
+# TICKET="${GRAPH_PUBLISH_TICKET:-HIMMEL-2095}", so the LAUNCHING shell wins
+# over the default this suite asserts. An inherited GRAPH_PUBLISH_TICKET would
+# flip the three ticket-ID assertions in case 6 for a reason that has nothing
+# to do with the code under test -- the HIMMEL-2642 class (a suite reading
+# live host state instead of its own fixture). Cleared once here, for every
+# case, rather than per-invocation.
+unset GRAPH_PUBLISH_TICKET
+
 PASS=0
 FAIL=0
 TMP_ROOT=""
@@ -289,7 +298,24 @@ pushed_content=$(git -C "$BARE" show "refs/heads/chore/graph-publish-t6-repo:gra
 assert_contains  "bare origin received the new content" '"id":1' "$pushed_content"
 commit_body=$(git -C "$BARE" log -1 --format='%B' refs/heads/chore/graph-publish-t6-repo)
 assert_contains  "commit carries Security reviewed trailer" "Security reviewed: ad-hoc" "$commit_body"
-assert_contains  "commit subject is conventional" "chore(graphify): publish refreshed t6-repo graph" "$commit_body"
+assert_contains  "commit subject is conventional" "chore(graphify): [HIMMEL-2095] publish refreshed t6-repo graph" "$commit_body"
+# HIMMEL-2095: the commit subject used to carry no ticket ID at all, so every
+# publish PR failed this repo's own CI commit-range gate (check-commit-msg.sh
+# requires one on every commit) -- the standing default is HIMMEL-2095,
+# overridable via --ticket / GRAPH_PUBLISH_TICKET.
+assert_contains  "commit subject carries a ticket ID" "HIMMEL-2095" "$commit_body"
+assert_contains  "gh pr create log carries the ticket ID (in the --title arg)" "HIMMEL-2095" "$log"
+# HIMMEL-2278 — the PR this script opens declares its own review class, and the
+# script NEVER posts a review-trigger comment on open. Both pins are on the gh
+# log: the body goes to `gh pr create --body <inline>`, so the whole PR body is
+# in "$log", and a trigger would have to be a `gh pr comment` / `gh api` POST.
+assert_contains  "PR body declares the machine-generated review class" "not CodeRabbit-reviewable" "$log"
+assert_contains  "PR body says the class is read from the diff shape" "from that diff shape" "$log"
+# The literal trigger phrase must not appear ANYWHERE in the log — not as a
+# comment the script posts, and not inside the body either, where GitHub would
+# read it as the very request the body is telling readers not to make.
+assert_not_contains "graph-publish never emits a CodeRabbit trigger phrase" "@coderabbitai" "$log"
+assert_not_contains "graph-publish posts no comment on open" "pr comment" "$log"
 
 # Test: refresh path — an existing open PR routes to gh pr edit -------------
 

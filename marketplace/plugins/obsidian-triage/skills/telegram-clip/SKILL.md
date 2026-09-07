@@ -1,6 +1,6 @@
 ---
 name: telegram-clip
-description: Use when a Telegram message (text, a bare URL, or a forward) arrives that is worth saving into the luna vault — files it as a LUNA-2 Web-Clipper-shaped clip note in Clippings/ so obsidian-triage:harvest-clips ingests it on its next pass. Triggers on /telegram-clip at the user prompt OR programmatic Skill-tool dispatch from the interactive telegram channel session when inbound content should be captured. Provenance (sender, ts, message-id) is preserved; idempotent per message-id. LUNA-58.
+description: Use when a Telegram message (text, URL, or forward) is worth saving — file it as a LUNA-2 clip in luna's Clippings/.
 ---
 
 # telegram-clip — Telegram → Clippings/ ingestion entry point (LUNA-58)

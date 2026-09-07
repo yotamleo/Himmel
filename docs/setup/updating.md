@@ -141,8 +141,8 @@ non-zero. There is no rollback or atomicity: items that already succeeded
 before the failure are **not** undone — only the not-yet-attempted items are
 skipped.
 
-After the chain — win or lose, these five never abort and always run,
-including on a chain failure — five pre-existing **best-effort advisory
+After the chain — win or lose, these never abort and always run,
+including on a chain failure — six **best-effort advisory
 steps** run: a codex plugin re-sync + hooks.json re-sanitize (HIMMEL-742), a
 statusLine hud re-wire (HIMMEL-718), a **plugin install-state report**
 (HIMMEL-434 — `marketplace update` only re-syncs *already-installed*
@@ -150,8 +150,54 @@ plugins, so it can't surface a himmel plugin that is missing or being served
 from a non-`@himmel` marketplace; the report prints the
 `claude plugin install …@himmel` / migrate commands for any gap; run it
 standalone with `bash scripts/himmel-update.sh --plugins-check`), a lean
-plugin-set reconcile (HIMMEL-1032), and stale cadence-runner / guardrail-mode
-block drift checks.
+plugin-set reconcile (HIMMEL-1032), stale cadence-runner / guardrail-mode
+block drift checks, and a **retired-plugin removal offer** (HIMMEL-2033 —
+`scripts/machine-setup/remove-retired-plugin.sh`: silent when the retired
+response-compression plugin is absent; on a TTY it asks `Remove now? [Y/n]`
+with the default being remove; a non-interactive run prints the advisory and
+the two manual commands and removes nothing).
+
+## Machine-local catch-up (HIMMEL-2134)
+
+A merged pin bump reaches this checkout's **repo**. It does not reach the
+**machine**. `git pull` updates `scripts/lib/graphify-bin.sh` and
+`scripts/setup/cli-proxy-lane.ps1`; it does not reinstall graphify, swap the
+running cli-proxy binary, or reload the qmd daemon.
+
+That staleness is invisible to `scripts/check-plugin-drift.sh`. For a
+`tag_release` / `mode: base` entry the guard reads `synced_base` — a literal in
+`scripts/upstreams.json` that `apply-drift-bump.sh` moves *together with* the
+in-repo pin — never the installed artifact. So the row flips to `CURRENT` the
+instant the bump merges, while the host keeps running the old build. No
+`BEHIND` row will ever tell you about it, which is why these steps are
+unconditional rather than drift-driven:
+
+- **graphify pin sync** (HIMMEL-1048) — reinstalls at the pinned version. When
+  live `graphify-mcp` processes hold the `uv` tool dir it refuses to force and
+  prints the exact reinstall command instead.
+- **cli-proxy-api host roll** (HIMMEL-2134) — rolls the proxy only when the
+  machine's version stamp is **strictly older** than the `$Version` pin. A host
+  at or ahead of the pin is left alone (never a downgrade), and a version that
+  cannot be compared — no `python3`, or a stamp that is not a version — is left
+  alone too, with the manual roll command printed instead.
+  `cli-proxy-lane.ps1` owns the risk when it does roll: pin-aware, refuses to
+  bounce under a live codex-lane client, staged rollback, health-gated on
+  `/v1/models`.
+- **installed-marketplaces catch-up** (HIMMEL-2134) —
+  `scripts/upstreams/update-marketplaces.sh` re-syncs the `mkt-manual` rows
+  (`autoUpdate` off) nothing else refreshes. Failure-isolated: every row is
+  attempted regardless of the previous row.
+- **qmd daemon-restart notice** (HIMMEL-2134) — a new qmd build on disk does not
+  reload the daemon already resident on :8181, and stopping that process is
+  termination an agent may not perform. The step prints the operator commands;
+  it never kills anything.
+
+`--only <item>` re-runs any single step (`pull`, `marketplace`, `jira_cli`,
+`qmd_fork`, `hermes`, `luna_template`, `graphify`, `cli_proxy`, `marketplaces`)
+without walking the chain — for the one thing that did not land.
+
+The nightly `/drift-fix` cadence runs this whole engine as its step 1A, so a
+machine that is on all day catches up without anyone asking.
 
 Plain `git pull` works too if you don't need the rest of the chain.
 
