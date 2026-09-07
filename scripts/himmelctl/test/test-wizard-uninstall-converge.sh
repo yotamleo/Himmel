@@ -56,6 +56,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 lint="$repo_root/scripts/install/manifest-lint.mjs"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -71,17 +72,17 @@ node_bin=$(command -v node)
 . "$repo_root/scripts/lib/hermetic-path.sh"
 
 work=$(mktemp -d)
-cleanup() { rm -rf "$work"; }
-trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
+# HIMMEL-2459 cases G/H add REAL git worktrees of this repo under $work
+# (git-common-dir identity, not a throwaway fixture) — `git worktree remove`
+# them BEFORE the plain rm -rf, then prune, so a bare rm -rf never leaves
+# stale `.git/worktrees/<name>` admin entries behind in the real repo.
+cleanup() {
+  git -C "$repo_root" worktree remove --force "$work/caseG-selfwt" 2>/dev/null || true
+  git -C "$repo_root" worktree remove --force "$work/caseH-selfwt" 2>/dev/null || true
+  rm -rf "$work"
+  git -C "$repo_root" worktree prune 2>/dev/null || true
 }
+trap cleanup EXIT
 
 # HIMMEL-1446 r2 (glm-1): cmdUninstall now removes PATH launchers from binDir.
 # Isolate binDir for the WHOLE suite so an accept-case never touches the
@@ -200,7 +201,7 @@ cA=$(build_path "$stubA" bash git jq python3 npm node)
 hA="$work/hA"; mkdir -p "$hA"
 fixtureA="$work/caseA-fixture"; build_fixture "$fixtureA"
 set +e
-out=$(PATH="$cA" HOME="$hA" HIMMELCTL_INTERACTIVE=0 \
+out=$(PATH="$cA" HOME="$hA" USERPROFILE="$(winpath "$hA")" HIMMELCTL_CACHE_DIR="$(winpath "$hA.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hA.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureA")" \
       "$node_bin" "$wizard" uninstall --dry-run \
       </dev/null 2>&1); rc=$?
@@ -230,7 +231,7 @@ cB=$(build_path "$stubB" bash git jq python3 npm node)
 hB="$work/hB"; mkdir -p "$hB"
 fixtureB="$work/caseB-fixture"; build_fixture "$fixtureB"
 set +e
-out=$(PATH="$cB" HOME="$hB" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cB" HOME="$hB" USERPROFILE="$(winpath "$hB")" HIMMELCTL_CACHE_DIR="$(winpath "$hB.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hB.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureB")" \
       "$node_bin" "$wizard" uninstall \
       <<<"" 2>&1); rc=$?
@@ -262,7 +263,7 @@ cat > "$hC/.claude/settings.json" <<'JSON'
 JSON
 fixtureC="$work/caseC-fixture"; build_fixture "$fixtureC"
 set +e
-out=$(PATH="$cC" HOME="$hC" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cC" HOME="$hC" USERPROFILE="$(winpath "$hC")" HIMMELCTL_CACHE_DIR="$(winpath "$hC.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hC.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureC")" \
       "$node_bin" "$wizard" uninstall \
       <<<"" 2>&1); rc=$?
@@ -296,7 +297,7 @@ cat > "$hE/.claude/settings.json" <<'JSON'
 JSON
 fixtureE="$work/caseE-fixture"; build_fixture_failing "$fixtureE"
 set +e
-out=$(PATH="$cE" HOME="$hE" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cE" HOME="$hE" USERPROFILE="$(winpath "$hE")" HIMMELCTL_CACHE_DIR="$(winpath "$hE.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hE.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureE")" \
       "$node_bin" "$wizard" uninstall \
       <<<"" 2>&1); rc=$?
@@ -326,7 +327,7 @@ cat > "$fixtureF/.claude/settings.json" <<'JSON'
 { "statusLine": { "command": "echo hi" } }
 JSON
 set +e
-out=$(PATH="$cF" HOME="$hF" HIMMELCTL_INTERACTIVE=1 \
+out=$(PATH="$cF" HOME="$hF" USERPROFILE="$(winpath "$hF")" HIMMELCTL_CACHE_DIR="$(winpath "$hF.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hF.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
       HIMMELCTL_REPO_ROOT="$(winpath "$fixtureF")" \
       "$node_bin" "$wizard" uninstall \
       <<<"" 2>&1); rc=$?
@@ -339,5 +340,69 @@ grepq "$out" -E 'WARN.*fixture-owned \(present, project\)' \
 [ -f "$hF/.claude/settings.json" ] \
   && fail "caseF: nothing should have written the fake HOME's settings.json (got a file at $hF/.claude/settings.json)"
 echo "ok: caseF project-scope residue (fixture-owned pre-wired only at <fixture>/.claude/settings.json, HOME clean) -> completeness WARN names it 'project', not silently missed"
+
+# ── Case G (HIMMEL-2459, red->green): the repo under test IS himmel's own
+# checkout. HIMMELCTL_REPO_ROOT points at a REAL `git worktree add` of THIS
+# SAME repo (not a throwaway non-git fixture like A-F) -- its git-common-dir
+# identity-matches himmelRoot()'s (bin.js's own __dirname-derived location),
+# the exact discriminator checkUninstallCompleteness's HIMMEL-2459 fix
+# applies. The worktree's own project-scope settings.json carries
+# fixture-owned's residue key (build_fixture's manifest + a hand-written
+# statusLine key) -- under the OLD unconditional per-scope probe this WARNs
+# (identical shape to case F), which is HIMMEL-2459's false positive: himmel's
+# own git-tracked settings.json is repo SOURCE, not uninstall residue. The
+# fake $HOME (user scope) stays clean throughout. Post-fix this must be
+# SILENT.
+gWt="$work/caseG-selfwt"
+git -C "$repo_root" worktree add --detach "$gWt" HEAD >/dev/null
+build_fixture "$gWt"
+mkdir -p "$gWt/.claude"
+cat > "$gWt/.claude/settings.json" <<'JSON'
+{ "statusLine": { "command": "echo hi" } }
+JSON
+stubG="$work/caseG"; mkdir -p "$stubG"
+cG=$(build_path "$stubG" bash git jq python3 npm node)
+hG="$work/hG"; mkdir -p "$hG"
+set +e
+out=$(PATH="$cG" HOME="$hG" USERPROFILE="$(winpath "$hG")" HIMMELCTL_CACHE_DIR="$(winpath "$hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hG.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$gWt")" \
+      "$node_bin" "$wizard" uninstall \
+      <<<"" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "caseG: accept should exit 0 (got rc=$rc): $out"
+[ -f "$gWt/uninstall-calls.log" ] \
+  || fail "caseG: a blank-Enter accept should invoke uninstall.sh/uninstall.ps1 (out: $out)"
+grepq "$out" -i 'WARN' \
+  && fail "caseG (HIMMEL-2459): running from himmel's OWN checkout must NOT WARN on its own git-tracked project-scope settings.json (got: $out)"
+echo "ok: caseG self-checkout project-scope residue -> no false WARN (HIMMEL-2459)"
+
+# ── Case H (HIMMEL-2459, REQUIRED control 3): even from himmel's own
+# checkout (same git-worktree-identity trick as case G), a genuine
+# USER-scope leftover -- the only kind uninstall.sh (user-scope only; see
+# checkUninstallCompleteness's own comment) could actually leave behind --
+# must still WARN. Without this the fix could silently degrade into "never
+# warn when run from himmel", trading HIMMEL-2459's false positive for a
+# worse false negative. Project scope here is clean (build_fixture's plain
+# manifest, no hand-written settings.json in the worktree); only the fake
+# $HOME carries the residue key.
+hWt="$work/caseH-selfwt"
+git -C "$repo_root" worktree add --detach "$hWt" HEAD >/dev/null
+build_fixture "$hWt"
+stubH="$work/caseH"; mkdir -p "$stubH"
+cH=$(build_path "$stubH" bash git jq python3 npm node)
+hH="$work/hH"; mkdir -p "$hH/.claude"
+cat > "$hH/.claude/settings.json" <<'JSON'
+{ "statusLine": { "command": "echo hi" } }
+JSON
+set +e
+out=$(PATH="$cH" HOME="$hH" USERPROFILE="$(winpath "$hH")" HIMMELCTL_CACHE_DIR="$(winpath "$hH.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$hH.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=1 \
+      HIMMELCTL_REPO_ROOT="$(winpath "$hWt")" \
+      "$node_bin" "$wizard" uninstall \
+      <<<"" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "caseH: accept should exit 0 even with a residue WARN (got rc=$rc): $out"
+grepq "$out" -E 'WARN.*fixture-owned \(present, user\)' \
+  || fail "caseH (HIMMEL-2459 control 3): a genuine user-scope leftover must still WARN even when run from himmel's own checkout (got: $out)"
+echo "ok: caseH self-checkout + genuine user-scope residue -> still WARNs (HIMMEL-2459 control 3)"
 
 echo "PASS"

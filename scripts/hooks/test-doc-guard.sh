@@ -25,19 +25,23 @@ HOOKS="$(cd "$(dirname "$0")" && pwd)"
 # check-platforms-tested.sh is tested).
 SCRIPT="$HOOKS/check-doc-guard.sh"
 
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HOOKS/../lib/fixture-tempdir.sh"
+
 # setup_repo: temp git repo WITH the .himmel-dev marker.
 setup_repo() {
-  R=$(mktemp -d); git -C "$R" init -q
+  R=$(fixture_mktemp_dir) || return 1; git -C "$R" init -q
   git -C "$R" config user.email t@t; git -C "$R" config user.name t
   : > "$R/.himmel-dev"
 }
 
-setup_repo_no_marker() { setup_repo; rm -f "$R/.himmel-dev"; }
+setup_repo_no_marker() { setup_repo || return 1; rm -f "$R/.himmel-dev"; }
 
 # setup_repo_with_origin: adds a bare origin with main for pre-push base resolution.
 setup_repo_with_origin() {
-  setup_repo
-  ORIGIN=$(mktemp -d); git -C "$ORIGIN" init -q --bare
+  setup_repo || return 1
+  ORIGIN=$(fixture_mktemp_dir) || return 1; git -C "$ORIGIN" init -q --bare
   git -C "$R" remote add origin "$ORIGIN"
   git -C "$R" commit -q --allow-empty -m init; git -C "$R" branch -M main
   git -C "$R" push -q origin main
@@ -69,50 +73,50 @@ run_test() {
 # ---------------------------------------------------------------------------
 
 run_test "blocks added command without catalog (rc=1)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   mkdir -p .claude/commands docs; : > .claude/commands/foo.md; : > docs/commands-catalog.md;
   git add .claude/commands/foo.md;
   expect_rc 1 bash "$SCRIPT"
 '
 
 run_test "passes added command WITH catalog staged (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   mkdir -p .claude/commands docs; : > .claude/commands/foo.md; : > docs/commands-catalog.md;
   git add .claude/commands/foo.md docs/commands-catalog.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "passes when modifying (not adding) a command (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   mkdir -p .claude/commands; : > .claude/commands/foo.md; git add . ; git commit -qm seed;
   echo x >> .claude/commands/foo.md; git add .claude/commands/foo.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "no-op without .himmel-dev marker (rc=0)" '
-  setup_repo_no_marker; cd "$R";
+  setup_repo_no_marker && cd "$R" || exit 1;
   mkdir -p .claude/commands; : > .claude/commands/foo.md; git add .claude/commands/foo.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "path-keying: target doc absent from tree, pair inert (rc=0)" '
-  setup_repo; cd "$R"; rm -f docs/commands-catalog.md 2>/dev/null;
+  setup_repo && cd "$R" || exit 1; rm -f docs/commands-catalog.md 2>/dev/null;
   mkdir -p .claude/commands; : > .claude/commands/foo.md; git add .claude/commands/foo.md;
   expect_rc 0 bash "$SCRIPT"
 '
 
 run_test "DOC_GUARD_OK=1 bypasses (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   mkdir -p .claude/commands; : > .claude/commands/foo.md; git add .claude/commands/foo.md;
   expect_rc 0 env DOC_GUARD_OK=1 bash "$SCRIPT"
 '
 
 run_test "DOC_GUARD_FORCE_ERR=1 exits 2" '
-  setup_repo; cd "$R"; expect_rc 2 env DOC_GUARD_FORCE_ERR=1 bash "$SCRIPT"
+  setup_repo && cd "$R" || exit 1; expect_rc 2 env DOC_GUARD_FORCE_ERR=1 bash "$SCRIPT"
 '
 
 run_test "pre-push passes when catalog updated in a LATER commit of range (rc=0)" '
-  setup_repo_with_origin; cd "$R"; git checkout -qb feat/x;
+  setup_repo_with_origin && cd "$R" || exit 1; git checkout -qb feat/x;
   mkdir -p .claude/commands docs;
   : > .claude/commands/foo.md; git add .; git commit -qm "add cmd";
   echo "- foo" >> docs/commands-catalog.md; git add .; git commit -qm "catalog";
@@ -120,7 +124,7 @@ run_test "pre-push passes when catalog updated in a LATER commit of range (rc=0)
 '
 
 run_test "pre-push blocks when range never touches catalog (rc=1)" '
-  setup_repo_with_origin; cd "$R";
+  setup_repo_with_origin && cd "$R" || exit 1;
   mkdir -p .claude/commands docs; : > docs/commands-catalog.md;
   git add .; git commit -qm "init catalog";
   git push -q origin main;
@@ -130,7 +134,7 @@ run_test "pre-push blocks when range never touches catalog (rc=1)" '
 '
 
 run_test "blocks added plugin manifest without llms.txt (rc=1)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   mkdir -p marketplace/plugins/foo/.claude-plugin; : > llms.txt;
   : > marketplace/plugins/foo/.claude-plugin/plugin.json;
   git add marketplace/plugins/foo/.claude-plugin/plugin.json;
@@ -138,7 +142,7 @@ run_test "blocks added plugin manifest without llms.txt (rc=1)" '
 '
 
 run_test "passes added plugin manifest WITH llms.txt staged (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   mkdir -p marketplace/plugins/foo/.claude-plugin; : > llms.txt;
   : > marketplace/plugins/foo/.claude-plugin/plugin.json;
   git add marketplace/plugins/foo/.claude-plugin/plugin.json llms.txt;
@@ -146,7 +150,7 @@ run_test "passes added plugin manifest WITH llms.txt staged (rc=0)" '
 '
 
 run_test "non-manifest file under a plugin does NOT require llms.txt (rc=0)" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   mkdir -p marketplace/plugins/foo/lib; : > llms.txt;
   : > marketplace/plugins/foo/lib/util.sh;
   git add marketplace/plugins/foo/lib/util.sh;
@@ -154,7 +158,7 @@ run_test "non-manifest file under a plugin does NOT require llms.txt (rc=0)" '
 '
 
 run_test "advise-row add does NOT block (rc=0): new file matching only advise row reaches block loop but exits clean" '
-  setup_repo; cd "$R";
+  setup_repo && cd "$R" || exit 1;
   mkdir -p scripts/hooks;
   : > scripts/hooks/newhook.sh; git add scripts/hooks/newhook.sh;
   expect_rc 0 bash "$SCRIPT"

@@ -15,8 +15,11 @@
 #     - NO CodeRabbit status on the head SHA at all ("absent")
 #     - the latest bot REVIEW is anchored to a commit other than the head SHA
 #       ("stale" — HIMMEL-1181, B2: a concluded STATUS does not mean a new
-#       review OBJECT was posted; see cr-review-freshness.sh) or the review
-#       window is indeterminate ("paged", >100 reviews with no bot match)
+#       review OBJECT was posted; see cr-review-freshness.sh) AND no clean
+#       exact-head critic panel carries it (HIMMEL-2162, parity with
+#       check-ci.sh's twin arm — a panel carry is the DEFAULT for this shape),
+#       or the review window is indeterminate ("paged", >100 reviews with no
+#       bot match)
 #   That last one is a deliberate break from the old "deny ONLY on positive
 #   evidence" stance (HIMMEL-1072, operator call 2026-07-16): an unreviewed head
 #   reading as green is what merged #1243 with 6 unresolved threads. Absence of a
@@ -78,100 +81,12 @@ _cmg_degrade() { echo "cr-merge-gate: degraded ($*) - failing open" >&2; }
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-ledger-evidence.sh"
 
-# _cmg_canon_nwo <value> — canonical lowercase "owner/name", rc 1 if <value> is
-# not one — as canonical "HOST/OWNER/NAME", host included. Two spellings would
-# otherwise smuggle a merge past the gate (coderabbit-9), because anything that
-# fails to compare equal to the local repo is treated as a foreign target and
-# NOT gated:
-#   - CASE: GitHub owner/name is case-insensitive, so `--repo O/R` is the SAME
-#     repo as origin `o/r`. A bare string compare called it foreign.
-#   - HOST: `gh` accepts `[HOST/]OWNER/REPO`, so `--repo github.com/o/r` is also
-#     the same repo; the 3-segment form was being binned as malformed.
-# The host is CARRIED, not dropped (coderabbit-11): `github.com/o/r` and
-# `ghe.corp/o/r` are DIFFERENT repos that share an owner/name, and dropping the
-# host made them compare equal — applying the local github availability answer to
-# a GHE target. A bare `owner/repo` has no host, so it defaults to github.com
-# (gh's own default host), which is what makes the common `--repo o/r` still
-# match a `github.com/...` origin.
-# Returns its answer in $_CMG_CANON rather than on stdout, and compares with a
-# scoped `nocasematch` instead of lowercasing through `tr`. That is a
-# PERFORMANCE contract, not a style choice: this gate runs in a PreToolUse hook
-# on every `gh pr merge`, and on Git Bash a single fork costs ~1s. The first
-# draft (`$(printf ... | tr ...)` twice per call) added ~3s to every merge and
-# pushed the test suite past a 150s timeout. Parameter expansion forks nothing.
-# (bash 3.2 has no ${v,,}, so nocasematch is the portable way to compare.)
-_cmg_canon_nwo() {
-    local v="${1:-}" host="github.com"
-    _CMG_CANON=""
-    case "$v" in
-        ''|*[!A-Za-z0-9._/-]*) return 1 ;;      # empty or malformed charset
-        */*/*/*) return 1 ;;                    # too many segments to be a repo spec
-        */*/*) host=${v%%/*}; v=${v#*/} ;;      # HOST/OWNER/REPO -> host + OWNER/REPO
-    esac
-    case "$v" in
-        /*|*/) return 1 ;;                      # leading/trailing slash
-        */*) ;;                                 # OWNER/NAME — the only accepted shape
-        *) return 1 ;;
-    esac
-    _CMG_CANON="$host/$v"
-    return 0
-}
-
-# _cmg_nwo_eq <a> <b> — rc 0 iff both name the same repo, case-insensitively
-# (GitHub owner/name is case-insensitive). nocasematch is saved and restored: a
-# sourced lib must not leave shell options changed under its caller.
-_cmg_nwo_eq() {
-    local rc=0 had=0
-    shopt -q nocasematch && had=1
-    shopt -s nocasematch
-    [[ "$1" == "$2" ]] || rc=1
-    [ "$had" -eq 1 ] || shopt -u nocasematch
-    return "$rc"
-}
-
-# _cmg_local_nwo — this clone's own <host>/<owner>/<name>, from origin. Empty
-# when there is no origin or it is unparseable. Handles both URL shapes:
-#   https://github.com/OWNER/NAME(.git)   git@github.com:OWNER/NAME(.git)
-# The HOST is kept (coderabbit-11): _cmg_canon_nwo compares host + owner/name, so
-# stripping it here would let a GHE origin be mistaken for its github.com
-# namesake. The output feeds straight back into _cmg_canon_nwo (a HOST/OWNER/NAME
-# is its 3-segment case), so both sides are canonicalized the same way.
-_cmg_local_nwo() {
-    local url rest host_nwo host path
-    url=$(git config --get remote.origin.url 2>/dev/null) || return 1
-    [ -n "$url" ] || return 1
-    rest=${url%.git}
-    case "$url" in
-        # Strip userinfo in BOTH shapes (coderabbit-15): an `ssh://git@github.com/
-        # o/r` origin otherwise yields `git@github.com/...`, whose `@` fails the
-        # canon charset check, so the LOCAL clone becomes unidentifiable and every
-        # `--repo` on it is waved through as foreign — a bypass on any ssh origin.
-        *://*) host_nwo=${rest#*://}; host_nwo=${host_nwo#*@} ;; # scheme://[user@]host/owner/name
-        *:*)   rest=${rest#*@};       host_nwo=${rest/://} ;;   # scp: [user@]host:owner/name -> host/owner/name
-        *) return 1 ;;
-    esac
-    # Strip an optional :PORT off the HOST segment (CodeRabbit port-normalization
-    # finding, PR #1470): a scheme-style origin with an explicit port —
-    # `ssh://git@ghe.example.com:2222/o/r` or an https origin on a custom port —
-    # leaves ":2222" glued onto host_nwo's host segment, and _cmg_canon_nwo's
-    # charset check rejects ':'. That makes the LOCAL clone unidentifiable, so a
-    # matching `--repo ghe.example.com/o/r` reads as foreign and the gate is
-    # silently skipped. Applied AFTER the case above, on the already-split
-    # host_nwo, so it is safe for BOTH branches: the scp branch's host_nwo can
-    # never contain ':' here (an scp URL's one colon is the host/path separator,
-    # already consumed by the `${rest/://}` substitution above), so this is a
-    # no-op for it — only the scheme-style branch can carry a port.
-    host=${host_nwo%%/*}
-    path=${host_nwo#*/}
-    host=${host%%:*}
-    host_nwo="$host/$path"
-    # host/owner/name (exactly three segments); reject anything else.
-    case "$host_nwo" in
-        */*/*/*|/*|*/) return 1 ;;
-        */*/*) printf '%s\n' "$host_nwo" ;;
-        *) return 1 ;;
-    esac
-}
+# _cmg_canon_nwo / _cmg_nwo_eq / _cmg_local_nwo — moved to scripts/lib/nwo.sh
+# (HIMMEL-2034) so the CodeRabbit TRIGGER path can reuse the same "is this OUR
+# repo?" answer instead of re-deriving origin-URL parsing. Names unchanged.
+# shellcheck source=scripts/lib/nwo.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/nwo.sh"
 
 cr_merge_gate() {
     [ "${CR_MERGE_GATE_OK:-0}" = "1" ] && return 0
@@ -298,36 +213,61 @@ cr_merge_gate() {
             skipped)
                 # HIMMEL-1317/1354: CodeRabbit posted success but SAID it did
                 # not review — either auto-reviews are disabled, or the review
-                # is rate limited. A declined review must not merge, for the
-                # same reason `absent` must not. Wording aligned with
+                # is rate limited. A declined review must not merge on its own,
+                # for the same reason `absent` must not. Wording aligned with
                 # check-ci.sh's twin arm so both gates agree.
                 #
-                # HIMMEL-1465: ONLY the rate-limited decline is panel-carriable.
-                # When the description is the rate-limit shape, a CLEAN critic
-                # panel at this head carries the gate (operator standing rule) —
-                # the same ledger evidence clear-cr-marker.sh gates 3-4 read,
-                # evaluated by cr_ledger_carries_gate. A carried panel does NOT
-                # merge here outright: it falls through to the thread + body
-                # gates below exactly like a `success`, so "0 unresolved threads"
-                # still binds. A rate-limited App with no clean panel, or any
-                # other skip wording, keeps the BLOCK. Evidence is required for
-                # the exception, so a description/ledger we cannot read falls
-                # back to the block (the default for `skipped`), not a fail-open
-                # allow.
-                local rl_desc rl_low rl_panel
+                # HIMMEL-1465/1506/1760: EVERY skip-classified description is
+                # panel-carriable, because every one of them means the same
+                # thing — the App's review signal is absent at this head. A
+                # CLEAN critic panel at this head carries the gate (operator
+                # standing rule) — the same ledger evidence clear-cr-marker.sh
+                # gates 3-4 read, evaluated by cr_ledger_carries_gate. A carried
+                # panel does NOT merge here outright: it falls through to the
+                # thread + body gates below exactly like a `success`, so "0
+                # unresolved threads" still binds. No clean panel at the EXACT
+                # head keeps the BLOCK — the PANEL is the evidence this arm
+                # requires, so an unreadable ledger falls back to the block (the
+                # default for `skipped`), never to a fail-open allow.
+                #
+                # The DESCRIPTION is not evidence, only a label: an absent or
+                # unreadable one is carriable exactly like any other skip
+                # wording, because it says the same thing (the App's signal is
+                # missing at this head) and the carry still rests entirely on
+                # the panel. That is check-ci.sh's behaviour too — its arm
+                # carries both "description is unreadable" (the read errored)
+                # and "description is absent" (empty), and only blocks when the
+                # panel does not carry. This gate collapses those two into one
+                # branch: `cr_signal_description` failing and returning empty
+                # are indistinguishable here, and both take the same verdict on
+                # both sides, so the accept/refuse sets still match.
+                #
+                # HIMMEL-1760: this arm used to carry ONLY the rate-limit
+                # wording, so the adaptive-limit lockout presentation ("Review
+                # skipped: automatic reviews are disabled", HIMMEL-1354) hard-
+                # blocked merges that check-ci.sh had already certified through
+                # its HIMMEL-1506 twin arm — three bounces on 2026-08-12, each
+                # escaped only by an operator CR_MERGE_GATE_OK. The wording set
+                # here now mirrors check-ci.sh's exactly (parity, not
+                # relaxation): the two gates must accept and refuse the same
+                # shapes, or a merge one blocks is waved through by the other.
+                local rl_desc rl_low rl_panel rl_why
                 rl_desc=$(cr_signal_description "$owner" "$name" "$head" 2>/dev/null || true)
                 rl_low=$(printf '%s' "$rl_desc" | tr '[:upper:]' '[:lower:]')
+                # Same vocabulary as check-ci.sh's skipped arm (which in turn
+                # mirrors cr-signal.sh's _CRS_SKIP_RE `rate.?limit`): the label
+                # only shapes the audit line, never the verdict.
                 case "$rl_low" in
-                    *rate?limit*|*ratelimit*) : ;;  # only rate-limit is panel-carriable
-                    *)
-                        echo "BLOCK: CodeRabbit SKIPPED the review on head $head of PR #$num — it posted success, but its description does not say the review completed. A DECLINED review is not a clean one. Known causes: automatic reviews are disabled on this repo (trigger one with a '@coderabbitai review' comment, wait for it to conclude, then re-check), or CodeRabbit is RATE LIMITED (HIMMEL-1354 — wait for the limit to reset; do NOT re-trigger in a loop). If this repo has no CodeRabbit, set CR_PROFILE=none. Bypass: CR_MERGE_GATE_OK=1."
-                        return 2 ;;
+                    *rate?limit*|*ratelimit*)     rl_why="is rate-limited" ;;
+                    '')                           rl_why="posted a skip whose description is absent or unreadable" ;;
+                    *automatic*reviews*disabled*) rl_why="reports automatic reviews are disabled" ;;
+                    *)                            rl_why="posted skip-classified wording" ;;
                 esac
                 if rl_panel=$(cr_ledger_carries_gate "$head"); then
-                    echo "ALLOW-note: CodeRabbit is rate-limited on head $head of PR #$num but the critic panel carries the gate ($rl_panel); the thread + body gates below still apply (HIMMEL-1465)." >&2
+                    echo "ALLOW-note: CodeRabbit $rl_why on head $head of PR #$num but the critic panel carries the gate ($rl_panel); the thread + body gates below still apply (HIMMEL-1465/1506)." >&2
                     # fall through to the thread + body gates (like a `success`)
                 else
-                    echo "BLOCK: CodeRabbit is rate-limited on head $head of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $rl_panel) — a rate-limited App with no clean panel is not a clean one. Wait for the App's limit to reset, or run /pr-check on this HEAD so a panel reviews it. Bypass: CR_MERGE_GATE_OK=1."
+                    echo "BLOCK: CodeRabbit $rl_why on head $head of PR #$num and the critic panel did NOT carry the gate at this head (ledger: $rl_panel) — a DECLINED App review with no clean panel is not a clean one. Wait for the App (rate limit: HIMMEL-1354, do NOT re-trigger in a loop; disabled auto-reviews: one '@coderabbitai review' comment), or run /pr-check on this HEAD so a panel reviews it. If this repo has no CodeRabbit, set CR_PROFILE=none. Bypass: CR_MERGE_GATE_OK=1."
                     return 2
                 fi
                 ;;
@@ -358,12 +298,58 @@ cr_merge_gate() {
     if [ "$fr_degraded" -eq 0 ]; then
         case "${fr_state%% *}" in
             stale)
-                echo "BLOCK: the latest bot review on PR #$num is anchored to ${fr_state##* }, not head $head — this head was never re-reviewed (auto-resolved threads mask it). Wait for a fresh review, or bypass with CR_MERGE_GATE_OK=1."
-                return 2 ;;
+                # HIMMEL-2162: bring this arm into parity with check-ci.sh's
+                # twin (HIMMEL-1718/2162) — a clean exact-head critic panel is
+                # the same evidence a fresh App review would be, so it carries
+                # here too, by DEFAULT. Before this, check-ci.sh could exit 0
+                # on a panel-carried stale anchor while a direct `gh pr merge`
+                # still hard-blocked on the very same PR — two gates
+                # disagreeing on the identical evidence. FAIL-CLOSED
+                # preserved: no clean panel row at this head still BLOCKs.
+                local st_oid st_panel
+                st_oid=${fr_state##* }
+                if st_panel=$(cr_ledger_carries_gate "$head"); then
+                    echo "ALLOW-note: the latest bot review on PR #$num is anchored to $st_oid, not head $head, but the critic panel carries the gate ($st_panel); the thread + body gates below still apply (HIMMEL-2162)." >&2
+                    # fall through to the thread + body gates (like `fresh`)
+                else
+                    echo "BLOCK: the latest bot review on PR #$num is anchored to $st_oid, not head $head — this head was never re-reviewed (auto-resolved threads mask it), and the critic panel did NOT carry the gate at this head (ledger: $st_panel). Wait for a fresh review, run /pr-check on this HEAD, or bypass with CR_MERGE_GATE_OK=1."
+                    return 2
+                fi
+                ;;
             paged)
                 echo "BLOCK: PR #$num has more reviews than one query window (100) and none of the newest 100 is the bot's — cannot certify review freshness. Check manually, or bypass with CR_MERGE_GATE_OK=1."
                 return 2 ;;
-            none|fresh) : ;;   # none = adopter self-skip (no bot review yet); fresh = anchored, proceed
+            # HIMMEL-1374, the twin of check-ci.sh's `none` arm (both gates
+            # must agree, or a merge blocked by one is waved through by the
+            # other). `none` = ZERO CodeRabbit reviews on the whole PR, at any
+            # head, ever. That is a benign adopter self-skip only while
+            # nothing CLAIMS a review happened — but section 1 above passed a
+            # genuine `success`, i.e. a "Review completed" description, which
+            # cannot possibly be incremental when there is no prior review to
+            # be incremental TO. Live instance PR #1463 @ d89dd41b.
+            #
+            # Composition, same as check-ci's arm:
+            #  - the rate-limited PANEL CARRY (HIMMEL-1465) leaves cr_state as
+            #    `skipped`, never `success`, so it still self-skips here;
+            #  - a DEGRADED status read leaves cr_state empty (fail-open is
+            #    this gate's contract for infrastructure failures);
+            #  - HIMMEL-1824: a clean pass mints no review object at all and
+            #    reports through the walkthrough, so consult that channel
+            #    before blocking. Fail-closed: an unreadable walkthrough is
+            #    not a certification.
+            none)
+                if [ "$cr_degraded" -eq 0 ] && [ "$cr_state" = "success" ] &&
+                   [ "$(cr_review_walkthrough "$owner" "$name" "$num" "$head" 2>/dev/null || true)" != "clean" ]; then
+                    echo "BLOCK: CodeRabbit's status on head $head of PR #$num reads a COMPLETED review, but this PR carries NO CodeRabbit review object at any head — ever — and no walkthrough certifies this head either. A completed review with nothing to be incremental to is not evidence that a review happened (HIMMEL-1374). Request '@coderabbitai full review' ONCE and wait for it, or bypass with CR_MERGE_GATE_OK=1."
+                    return 2
+                fi
+                ;;
+            # fresh-clean-no-object (HIMMEL-1824): CodeRabbit reviewed THIS
+            # head and found nothing, so it minted no review object and said so
+            # in the walkthrough instead. That is App evidence about this head,
+            # so it proceeds exactly like `fresh` — without it this gate BLOCKS
+            # every clean-reviewed head on the catch-all below.
+            fresh|fresh-clean-no-object) : ;;
             *)
                 echo "BLOCK: unrecognized review-freshness state '${fr_state%% *}' on head $head of PR #$num — cannot certify the review anchor. Check manually, or bypass with CR_MERGE_GATE_OK=1."
                 return 2 ;;

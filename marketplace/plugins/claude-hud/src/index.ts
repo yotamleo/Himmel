@@ -169,6 +169,13 @@ export async function main(overrides: Partial<MainDeps> = {}): Promise<void> {
               sevenDay: ext.sevenDay,
               sevenDayResetAt: ext.sevenDayResetAt ?? null,
             }),
+            // Likewise, model-scoped windows (e.g. Fable) are absent from stdin
+            // today (see #669); let an external feeder supply them until
+            // Claude Code forwards rate_limits.model_scoped itself. Stdin wins
+            // whenever it does carry scoped windows.
+            ...(usageData.scopedWindows == null && ext.scopedWindows != null && {
+              scopedWindows: ext.scopedWindows,
+            }),
           };
         }
       }

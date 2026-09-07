@@ -79,7 +79,10 @@ if [ "${1:-}" != "__himmel_detached" ]; then
     if [ -r "$_dlib" ]; then
         # shellcheck source=/dev/null
         . "$_dlib"
-        detach_run bash "${BASH_SOURCE[0]}" __himmel_detached "$_tmp"
+        # HIMMEL-2004: bounded Stop queue (see detach_queued); the relay curl
+        # further down stays on detach_run so the bot token in its URL is never
+        # written to a queue entry — the worker runs it inline instead.
+        detach_queued jira-nudge-on-end --cleanup "$_tmp" bash "${BASH_SOURCE[0]}" __himmel_detached "$_tmp"
     else
         rm -f "$_tmp"
     fi

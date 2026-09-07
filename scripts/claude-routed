@@ -101,8 +101,11 @@ if [ "$phi_rc" -eq 2 ]; then
   echo "claude-routed: guard config $CFG/phi-roots exists but is not a readable file — failing closed." >&2
   exit 3
 fi
-if [ -f "$CWD/.salus" ] || [ "$phi_rc" -eq 0 ]; then
-  echo "claude-routed: REFUSED - this workspace is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to the routed GLM backend." >&2
+# HIMMEL-2173: also accept .salus-profile (template machinery dropped by the
+# salus profile installer) — a defense for deployments that predate the
+# installer shipping the real .salus guard marker alongside it.
+if [ -f "$CWD/.salus" ] || [ -f "$CWD/.salus-profile" ] || [ "$phi_rc" -eq 0 ]; then
+  echo "claude-routed: REFUSED - this workspace is PHI-marked (.salus / .salus-profile / phi-roots). No override exists; PHI never goes to the routed GLM backend." >&2
   exit 3
 fi
 path_under_any "$CWD" "$CFG/egress-denylist"; deny_rc=$?

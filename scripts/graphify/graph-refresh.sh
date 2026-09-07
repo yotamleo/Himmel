@@ -57,7 +57,12 @@
 #   1  usage error (unknown corpus / unknown flag)
 #   2  environment error (refresh-graph-map.sh not found, or --vault is not a
 #      directory)
-#   3  one or more corpus refresh legs failed (runner exited non-zero)
+#   3  one or more corpus refresh legs FAILED (runner exited non-zero, not a
+#      bank skip) -- investigate
+#   4  no failures, but one or more legs were SKIPPED (bank at/over threshold,
+#      runner exited 3) and nothing else failed -- benign, retry later
+#      (HIMMEL-1948: a skip is NOT success; it must never read as exit 0 "OK",
+#      the false-clean an unattended cadence cannot tell from a real refresh)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -285,6 +290,30 @@ _fs_id() {
     return 1
 }
 
+# _fs_dir_id <path> — ONE stat call returning "dev:inode" ONLY when <path> is
+# (symlink-resolved via -L, like _fs_id) a directory; empty output otherwise.
+# HIMMEL-1704 round 2 (codex-1): a separate `[ -d ]` existence/type test
+# followed by a LATER `_fs_id` identity probe are two different stat-family
+# syscalls on the same pathname, and two separate syscalls can never be
+# atomic with each other in pure bash without holding a directory file
+# descriptor open across both -- an actor could swap the path for a symlink
+# in the gap between them. Folding "is it a directory" and "what is its
+# identity" into ONE combined stat call is the tightest closure achievable
+# here. GNU stat (-c, Linux/MSYS2/Git-Bash) first, BSD stat (-f, macOS)
+# second -- same fallback order as _fs_id.
+_fs_dir_id() {
+    local p="$1" out
+    out=$(stat -L -c '%F|%d:%i' "$p" 2>/dev/null) || out=""
+    case "$out" in
+        directory\|*:*) printf '%s' "${out#*|}"; return 0 ;;
+    esac
+    out=$(stat -L -f '%HT|%d:%i' "$p" 2>/dev/null) || out=""
+    case "$out" in
+        Directory\|*:*) printf '%s' "${out#*|}"; return 0 ;;
+    esac
+    return 1
+}
+
 # preflight_refuse <reason> — uniform refusal: stderr message naming the
 # override, exit 2 (same "vault not usable" code as the not-a-directory check).
 preflight_refuse() {
@@ -389,7 +418,18 @@ preflight_vault() {
     # disk, so this matches what the runner copy will stat).
     case "$CORPUS" in
         luna|both)
-            if [ ! -d "$class_path/60-Maps" ] || [ ! -d "$class_path/.obsidian" ]; then
+            # HIMMEL-1704 round 2 (codex-1): the existence/type test and the
+            # identity probe are now the SAME stat call (_fs_dir_id) -- a
+            # separate `[ -d ]` followed by a LATER `_fs_id` left a gap
+            # between two different syscalls on the same pathname, and an
+            # actor could swap 60-Maps for a symlink inside that gap (forcing
+            # PREFLIGHT_MAPS_ID empty, which silently omits --maps-id and
+            # makes the runner's re-check a no-op). One combined call is the
+            # tightest closure achievable in bash without a directory file
+            # descriptor. .obsidian is a shape sentinel only (never
+            # identity-pinned, since nothing reads/writes through it), so it
+            # keeps the plain `-d` test.
+            if ! PREFLIGHT_MAPS_ID="$(_fs_dir_id "$class_path/60-Maps")" || [ ! -d "$class_path/.obsidian" ]; then
                 preflight_refuse "vault is not a plausible luna vault (needs both a 60-Maps/ and an .obsidian/ directory): $VAULT"
             fi
             # (e) configured-identity containment (codex-adv-1 r3): a corpus
@@ -419,6 +459,43 @@ preflight_vault() {
     # checks never saw. On the degraded no-resolver path this is the lexical
     # canon (already WARNed above).
     PREFLIGHT_CANONICAL_VAULT="$class_path"
+    # HIMMEL-1704: the NAME above is still just a pathname -- a replace-
+    # between-check-and-use race (an actor with write access to the vault's
+    # PARENT swaps the validated directory entry for a symlink to HOME after
+    # this preflight returns but before refresh-graph-map.sh's cd/copy) can
+    # still route a different tree into extraction. $vault_id was already
+    # probed via _fs_id above (the same device+inode identity the HOME-guard
+    # compares); publish it too, so the caller can hand the runner the
+    # EXPECTED FILESYSTEM OBJECT, not just its name, and the runner can
+    # re-verify identity at the moment it actually reads (see
+    # --corpus-id/--maps-id below and refresh-graph-map.sh's _verify_fs_id).
+    PREFLIGHT_VAULT_ID="$vault_id"
+    # --maps-dir is always $VAULT/60-Maps, for BOTH legs. On the luna/both
+    # leg PREFLIGHT_MAPS_ID was already pinned above, right next to the
+    # sentinel that guarantees 60-Maps exists (HIMMEL-1704 codex-1 r1) --
+    # never re-probe it here (a second probe would just reopen the same gap
+    # this fix closes). On a himmel-only run there is no sentinel, so
+    # 60-Maps legitimately may not exist yet (first-ever publish); probe it
+    # best-effort here and leave PREFLIGHT_MAPS_ID empty when it doesn't --
+    # the caller then omits --maps-id and the runner's re-check is a no-op,
+    # matching today's behaviour for that case.
+    if [ -z "${PREFLIGHT_MAPS_ID:-}" ]; then
+        if PREFLIGHT_MAPS_ID="$(_fs_dir_id "$class_path/60-Maps")"; then
+            : # pinned
+        elif [ -e "$class_path/60-Maps" ]; then
+            # HIMMEL-1704 round 2 (codex-2): something IS at that path but
+            # could not be identity-probed as a directory -- a transient
+            # stat failure, a non-directory squatting on the name, or a race
+            # in progress. That is suspicious, not the legitimate "doesn't
+            # exist yet" case below; silently clearing PREFLIGHT_MAPS_ID here
+            # would fail OPEN by disabling the runner's use-time check
+            # exactly when something unexpected is happening. Fail CLOSED
+            # instead, matching the luna/both leg's posture above.
+            preflight_refuse "maps-dir exists but could not be identity-probed as a directory ($class_path/60-Maps) -- fail-closed (HIMMEL-1704)"
+        else
+            PREFLIGHT_MAPS_ID=""   # legitimately absent -- first-ever publish
+        fi
+    fi
 }
 
 CORPUS="both"
@@ -549,6 +626,19 @@ if [ "$DRY_RUN" -eq 1 ]; then
         RUNNER_ARGV=(bash "$REFRESH_SCRIPT" \
             --name "$R_NAME" --corpus-root "$R_CORPUS_ROOT" --maps-dir "$VAULT/60-Maps" \
             --title "$R_TITLE" --slug "$R_SLUG" --backend "$BACKEND" --corpus-tag "$R_TAG")
+        # HIMMEL-1704: --corpus-id is the vault's identity ONLY -- the himmel
+        # leg's corpus-root is $HIMMEL_ROOT, a different filesystem object the
+        # vault preflight never classified, so pinning it here would always
+        # mismatch. --maps-id applies to both legs (both publish into the same
+        # $VAULT/60-Maps). --maps-parent-id (round 3, codex-1) is the vault's
+        # OWN identity again, forwarded for both legs whenever the preflight
+        # has one: it lets the runner safely mkdir a not-yet-existing
+        # 60-Maps from within a verified vault cwd, instead of silently
+        # falling through to node's unguarded mkdirSync when --maps-id is
+        # empty (60-Maps absent at preflight time).
+        if [ "$c" = "luna" ] && [ -n "$PREFLIGHT_VAULT_ID" ]; then RUNNER_ARGV+=(--corpus-id "$PREFLIGHT_VAULT_ID"); fi
+        if [ -n "$PREFLIGHT_MAPS_ID" ]; then RUNNER_ARGV+=(--maps-id "$PREFLIGHT_MAPS_ID"); fi
+        if [ -n "$PREFLIGHT_VAULT_ID" ]; then RUNNER_ARGV+=(--maps-parent-id "$PREFLIGHT_VAULT_ID"); fi
         if [ "$c" = "luna" ]; then RUNNER_ARGV+=(--corpus-class luna-personal); fi
         printf 'DRY graph-refresh: [%s] ' "$c"
         print_argv "${RUNNER_ARGV[@]}"
@@ -562,6 +652,7 @@ fi
 # --- real run: fire refresh-graph-map.sh per corpus, serially -----------------
 echo "graph-refresh: refreshing $CORPUS serially on backend $BACKEND (vault: $VAULT)" >&2
 FAILURES=0
+SKIPPED=0
 for c in "${CORPORA[@]}"; do
     resolve_corpus_args "$c"
     # corpus-class is luna-leg-only (see the dry-run loop for the rationale);
@@ -574,6 +665,10 @@ for c in "${CORPORA[@]}"; do
             --slug "$R_SLUG" \
             --backend "$BACKEND" \
             --corpus-tag "$R_TAG")
+    # HIMMEL-1704: same identity-pin rule as the dry-run block above.
+    if [ "$c" = "luna" ] && [ -n "$PREFLIGHT_VAULT_ID" ]; then RUNNER_ARGV+=(--corpus-id "$PREFLIGHT_VAULT_ID"); fi
+    if [ -n "$PREFLIGHT_MAPS_ID" ]; then RUNNER_ARGV+=(--maps-id "$PREFLIGHT_MAPS_ID"); fi
+    if [ -n "$PREFLIGHT_VAULT_ID" ]; then RUNNER_ARGV+=(--maps-parent-id "$PREFLIGHT_VAULT_ID"); fi
     if [ "$c" = "luna" ]; then RUNNER_ARGV+=(--corpus-class luna-personal); fi
     echo "graph-refresh: [$c] refreshing (corpus-root $R_CORPUS_ROOT -> $VAULT/60-Maps/$R_SLUG.md)" >&2
     # The `if` guards the runner call from set -e so a failed leg is REPORTED and
@@ -591,8 +686,13 @@ for c in "${CORPORA[@]}"; do
         fi
     else
         leg_rc=$?
-        echo "graph-refresh: [$c] FAIL -- refresh-graph-map.sh exited $leg_rc" >&2
-        FAILURES=$((FAILURES + 1))
+        if [ "$leg_rc" -eq 3 ]; then
+            echo "graph-refresh: [$c] SKIPPED -- bank at/over threshold, extraction skipped for corpus '$c' (refresh-graph-map.sh exited 3; graphify-out left untouched, nothing published)" >&2
+            SKIPPED=$((SKIPPED + 1))
+        else
+            echo "graph-refresh: [$c] FAIL -- refresh-graph-map.sh exited $leg_rc" >&2
+            FAILURES=$((FAILURES + 1))
+        fi
     fi
 done
 
@@ -618,10 +718,32 @@ else
 fi
 
 # --- summary -----------------------------------------------------------------
+# Three outcomes per leg (OK / SKIPPED-bank / FAILED) must stay distinguishable
+# here too -- the per-leg lines above already do this, but the final summary is
+# the line an operator is most likely to actually read, so it must never call a
+# skipped leg "refreshed" (same false-success class CodeRabbit flagged on the
+# per-leg OK line, HIMMEL-1901 CR round 1). REFRESHED is derived, not tracked,
+# same as FAILURES/SKIPPED already are -- it's just the remainder.
+REFRESHED=$(( ${#CORPORA[@]} - FAILURES - SKIPPED ))
 echo
+SUMMARY=""
+[ "$REFRESHED" -gt 0 ] && SUMMARY="$REFRESHED refreshed"
+[ "$SKIPPED" -gt 0 ] && SUMMARY="${SUMMARY:+$SUMMARY, }$SKIPPED skipped"
+[ "$FAILURES" -gt 0 ] && SUMMARY="${SUMMARY:+$SUMMARY, }$FAILURES failed"
 if [ "$FAILURES" -gt 0 ]; then
-    echo "graph-refresh: $FAILURES of ${#CORPORA[@]} corpus(corpora) FAILED" >&2
+    echo "graph-refresh: $SUMMARY (of ${#CORPORA[@]} corpus(corpora)) -- FAILED" >&2
     exit 3
 fi
-echo "graph-refresh: refreshed ${#CORPORA[@]} corpus(corpora) OK"
+# A skip-only outcome (no failures, but at least one leg skipped for the bank)
+# is NOT success (HIMMEL-1948): it must never print the OK token or exit 0 --
+# that reads as "refreshed" on an unattended cadence, indistinguishable from a
+# real success, which is exactly how a month of skipped refreshes went
+# unnoticed. Distinct exit code 4 (not 3 -- 3 means a leg FAILED, and the
+# cadence/operator must be able to tell "bank was hot, retry later, benign"
+# from "a refresh broke, investigate").
+if [ "$SKIPPED" -gt 0 ]; then
+    echo "graph-refresh: $SUMMARY (of ${#CORPORA[@]} corpus(corpora)) -- SKIPPED" >&2
+    exit 4
+fi
+echo "graph-refresh: $SUMMARY (of ${#CORPORA[@]} corpus(corpora)) OK"
 exit 0

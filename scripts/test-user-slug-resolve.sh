@@ -156,6 +156,28 @@ assert_eq "verify gh rc=0" "0" "$rc"
 assert_contains "verify mentions forge source" "forge username via github CLI" "$out"
 assert_contains "verify reports gh slug" "octocat-hub" "$out"
 
+# Test 9: severity label on the unresolved diagnostic (HIMMEL-2537) ---
+# The default stays ERR so every pre-existing caller is unchanged; a caller
+# that CONTINUES past an unresolved slug passes WARN, because a block opening
+# with "ERR" above a run that then completes normally teaches the reader the
+# wrong thing about what just happened.
+echo "TEST: user_slug_verify severity label"
+( cd "$REPO" && { git config --unset user.name 2>/dev/null || true; } )
+# shellcheck disable=SC2030,SC2031
+out=$(USER_SLUG='' bash -c "set -uo pipefail; cd '$REPO'; . '$LIB'; user_slug_verify" 2>&1) && rc=0 || rc=$?
+assert_eq "default severity still rc=2" "2" "$rc"
+assert_contains "default severity is ERR" "ERR user-slug: cannot resolve" "$out"
+# shellcheck disable=SC2030,SC2031
+out=$(USER_SLUG='' bash -c "set -uo pipefail; cd '$REPO'; . '$LIB'; user_slug_verify WARN" 2>&1) && rc=0 || rc=$?
+assert_eq "WARN severity still rc=2" "2" "$rc"
+assert_contains "WARN severity relabels the diagnostic" "WARN user-slug: cannot resolve" "$out"
+assert_contains "WARN keeps the remedies" "gh auth login" "$out"
+if grepq "$out" -F -- "ERR user-slug"; then
+    fail "WARN must not also print the ERR label"
+else
+    pass "WARN replaces the ERR label rather than adding to it"
+fi
+
 echo
 echo "===================================="
 echo "test summary: $PASS passed, $FAIL failed"

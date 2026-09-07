@@ -13,7 +13,6 @@
     { "spec": "commit-commands@claude-plugins-official" },
     { "spec": "playground@claude-plugins-official" },
     { "spec": "skill-creator@claude-plugins-official" },
-    { "spec": "obsidian@obsidian-skills", "marketplaceAdd": "kepano/obsidian-skills" },
-    { "spec": "caveman@caveman", "marketplaceAdd": "JuliusBrussee/caveman" }
+    { "spec": "obsidian@obsidian-skills", "marketplaceAdd": "kepano/obsidian-skills" }
   ]
 }

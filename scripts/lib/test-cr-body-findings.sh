@@ -154,9 +154,9 @@ t() { # t <name> <GH_STUB_MODE> <expected-rc> [<expected-stdout-line>]
     pass=$((pass+1)); echo "ok   $name"
 }
 
-t outside-diff-pr1261-parses-at-head          outside-1261        0 "outside=2 nitpick=0 additional=0 prior_outside=0 markers=2 head_reviews=1"
-t nitpick-pr466-parses-at-head                nitpick-466         0 "outside=0 nitpick=1 additional=0 prior_outside=0 markers=1 head_reviews=1"
-t clean-body-all-zero                         clean               0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=1"
+t outside-diff-pr1261-parses-at-head          outside-1261        0 "outside=2 nitpick=0 additional=0 prior_outside=0 markers=2 head_reviews=1 substantive=1"
+t nitpick-pr466-parses-at-head                nitpick-466         0 "outside=0 nitpick=1 additional=0 prior_outside=0 markers=1 head_reviews=1 substantive=1"
+t clean-body-all-zero                         clean               0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=1 substantive=1"
 # anti-drift canaries — the whole point of this reader. rc 2: POSITIVE
 # evidence of an unparseable finding (the body SHOWS a section keyword but
 # won't parse), never a false 0/"pass" (which would be rc 1's territory —
@@ -166,35 +166,35 @@ t drift-canary-no-count-blocks                drift-canary        2
 t markers-without-section-blocks              markers-no-section  2
 # HIMMEL-1126 delta A2: an older head's outside-diff findings feed
 # prior_outside, not outside — there is no review AT head at all here.
-t prior-head-only-outside-not-counted-at-head prior-only          0 "outside=0 nitpick=0 additional=0 prior_outside=2 markers=0 head_reviews=0"
-t zero-reviews-at-head-allows                 zero-reviews        0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=0"
+t prior-head-only-outside-not-counted-at-head prior-only          0 "outside=0 nitpick=0 additional=0 prior_outside=2 markers=0 head_reviews=0 substantive=0"
+t zero-reviews-at-head-allows                 zero-reviews        0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=0 substantive=0"
 # INFRASTRUCTURE cannot-evaluate (rc 1) — the query itself gave nothing to
 # parse, distinct from the rc 2 canaries above which DID have a body to read.
 t non-array-payload-blocks                    non-array           1
 t gh-api-error-blocks                         error               1
 # HIMMEL-1058: right body, wrong creator id -> not CodeRabbit, all zero.
-t identity-wrong-user-id-treated-as-no-review identity-wrong-id   0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=0"
+t identity-wrong-user-id-treated-as-no-review identity-wrong-id   0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=0 substantive=0"
 # codex CR: `--paginate` on a >30-review PR emits TWO top-level arrays on the
 # stream, not one merged array — the flatten (`jq -s 'add // []'`) must
 # combine both pages' reviews into one result, not read the multi-document
 # stream as cannot-evaluate. Both reviews here are at HEAD and substantive, so
 # under HIMMEL-1582 the LATER page (the outside-diff review, id 1002) is the
 # chosen one; head_reviews=2 still proves both pages were flattened in.
-t two-page-reviews-flatten-and-pick-latest    two-page            0 "outside=2 nitpick=0 additional=0 prior_outside=0 markers=2 head_reviews=2"
+t two-page-reviews-flatten-and-pick-latest    two-page            0 "outside=2 nitpick=0 additional=0 prior_outside=0 markers=2 head_reviews=2 substantive=2"
 # HIMMEL-1582: latest SUBSTANTIVE head review wins, not the sum.
 # (1) false-BLOCK fix: older review outside(1), later substantive+clean ->
 #     outside=0 (the old SUM gave 1 and could never clear without moving head).
-t two-head-clean-latest-wins                  two-head-clean-latest   0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=2"
+t two-head-clean-latest-wins                  two-head-clean-latest   0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=2 substantive=2"
 # (2) false-GREEN guard (PR #1583 shape): older outside(1), later EMPTY body ->
 #     the empty later review is skipped, the older substantive one wins ->
 #     outside=1. Naive latest-wins on the empty body would false-GREEN to 0.
-t two-head-empty-latest-keeps-finding         two-head-empty-latest  0 "outside=1 nitpick=0 additional=0 prior_outside=0 markers=1 head_reviews=2"
+t two-head-empty-latest-keeps-finding         two-head-empty-latest  0 "outside=1 nitpick=0 additional=0 prior_outside=0 markers=1 head_reviews=2 substantive=1"
 # (3) prior_outside unchanged alongside the new head derivation: older-head
 #     outside=2 + a clean substantive review at head -> outside=0, prior_outside=2.
-t prior-plus-clean-head-prior-outside         prior-plus-clean-head  0 "outside=0 nitpick=0 additional=0 prior_outside=2 markers=0 head_reviews=1"
+t prior-plus-clean-head-prior-outside         prior-plus-clean-head  0 "outside=0 nitpick=0 additional=0 prior_outside=2 markers=0 head_reviews=1 substantive=1"
 # (4) all head reviews empty (none substantive) -> counts 0, head_reviews counts
 #     them, rc 0 — NOT silently green (a stderr note flags it; checked below).
-t two-head-all-empty-note                     two-head-all-empty     0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=2"
+t two-head-all-empty-note                     two-head-all-empty     0 "outside=0 nitpick=0 additional=0 prior_outside=0 markers=0 head_reviews=2 substantive=0"
 
 # zero-head-reviews note lands on stderr (both the truly-empty and the
 # prior-only-no-head-review cases).

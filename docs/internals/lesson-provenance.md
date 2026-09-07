@@ -301,7 +301,7 @@ lesson can never disable the gate that would catch it, because the gate
 itself sits outside the fence's write path.
 
 The deny-list — `scripts/guardrails/enforcement-paths.json`, the source of
-truth (14 entries: 9 prefix, 5 basename) — groups into these classes:
+truth (15 entries: 9 prefix, 6 basename) — groups into these classes:
 
 - **`guardrails`** — `scripts/guardrails/`: a lesson must not weaken the
   fences that would catch it.
@@ -316,9 +316,11 @@ truth (14 entries: 9 prefix, 5 basename) — groups into these classes:
   pre-commit/commit-msg/pre-push gate source of truth, and the secret-scan
   ruleset it consumes.
 - **`routing`** — `scripts/backends.json`: the block-backend-tier registry.
-- **`parity-guard`** — `parity_guard.py` / `glm-guard.ts` basenames: the
-  hermes file-tool fence and its shared guard primitive, reached wherever
-  they live (including the hermes checkout).
+- **`parity-guard`** — `parity_guard.py` / `glm-guard.ts` / `phi-egress-guard.ts`
+  basenames: the hermes file-tool fence and its shared guard primitive
+  (renamed from `glm-guard.ts` under HIMMEL-2622; both basenames stay
+  registered until a hermes copy of the old name is confirmed gone), reached
+  wherever they live (including the hermes checkout).
 - **`claude-md`** — `CLAUDE.md` / `AGENTS.md` basenames, root and every
   subtree: frame-shaping rules and their generated Codex/hermes mirror.
 

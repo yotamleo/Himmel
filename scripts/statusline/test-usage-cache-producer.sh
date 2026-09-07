@@ -72,7 +72,7 @@ run_test "(2) same run -> hud snapshot exactly-2-keys + rounded used_percentage 
   u=$(jq -r ".updated_at // empty" "$HUD_USAGE_SNAPSHOT"); [ -n "$u" ] || exit 1;
 '
 
-run_test "(3) no rate_limits + stubbed OAuth -> extra_usage merged, prior five/seven PRESERVED, hud gains balance_label" '
+run_test "(3) no rate_limits + stubbed OAuth -> fetched primary wins, missing primary falls back, hud gains balance_label" '
   W=$(mktemp -d); export HOME="$W/home"; mkdir -p "$HOME";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
   # pre-seed cache with good five_hour/seven_day, NO oauth_checked_at (=> OAuth stale => fetch)
@@ -81,13 +81,51 @@ run_test "(3) no rate_limits + stubbed OAuth -> extra_usage merged, prior five/s
   printf "%s\n" "#!/usr/bin/env bash" "[ -n \"\${OAUTH_MARKER:-}\" ] \&\& : > \"\$OAUTH_MARKER\"" "cat <<JSON" "{\"five_hour\":{\"utilization\":99},\"extra_usage\":{\"is_enabled\":true,\"used_credits\":350,\"monthly_limit\":5000,\"utilization\":7}}" "JSON" > "$stub";
   export OAUTH_MARKER="$W/marker"; chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
   printf "%s" "{\"model\":{\"display_name\":\"Claude\"}}" | bash "$PRODUCER";
-  # prior five_hour/seven_day preserved (NOT clobbered by fetched five_hour:99)
-  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "40" ] || exit 1;
+  # HIMMEL-1841: fetched primaries now WIN (the old order discarded them)
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "99" ] || exit 1;
+  # seven_day absent from the fetch -> prev survives via the // $p fallback
   [ "$(jq -r ".seven_day.utilization" "$CLAUDE_USAGE_CACHE")" = "8" ] || exit 1;
+  # Partial primary fetch has no aggregate freshness provenance.
+  jq -e ".primaries_refreshed_at" "$CLAUDE_USAGE_CACHE" >/dev/null && exit 1;
   # extra_usage merged from fetch
   [ "$(jq -r ".extra_usage.used_credits" "$CLAUDE_USAGE_CACHE")" = "350" ] || exit 1;
   # hud snapshot gains balance_label
   bl=$(jq -r ".balance_label // empty" "$HUD_USAGE_SNAPSHOT"); [ -n "$bl" ] || exit 1;
+'
+
+run_test "(3b) HIMMEL-1841: extra_usage-only fetch does NOT stamp primaries_refreshed_at" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-3b.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  printf "%s" "{\"five_hour\":{\"utilization\":40},\"seven_day\":{\"utilization\":8},\"extra_usage\":{}}" > "$CLAUDE_USAGE_CACHE";
+  stub="$W/stub.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"extra_usage\":{\"utilization\":7}}" "JSON" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
+  printf "%s" "{\"model\":{\"display_name\":\"Claude\"}}" | bash "$PRODUCER";
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "40" ] || exit 1;
+  jq -e ".primaries_refreshed_at" "$CLAUDE_USAGE_CACHE" >/dev/null && exit 1;
+  exit 0;
+'
+
+run_test "(3c) HIMMEL-1866: extra_usage-only fetch preserves primaries_refreshed_at" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-3c.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  printf "%s" "{\"five_hour\":{\"utilization\":40},\"seven_day\":{\"utilization\":8},\"extra_usage\":{},\"primaries_refreshed_at\":1234567890}" > "$CLAUDE_USAGE_CACHE";
+  stub="$W/stub.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"extra_usage\":{\"utilization\":7}}" "JSON" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
+  printf "%s" "{\"model\":{\"display_name\":\"Claude\"}}" | bash "$PRODUCER";
+  [ "$(jq -r ".primaries_refreshed_at" "$CLAUDE_USAGE_CACHE")" = "1234567890" ] || exit 1;
+'
+
+run_test "(3d) HIMMEL-1866: empty fetched window preserves prior utilization" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-3d.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  printf "%s" "{\"five_hour\":{\"utilization\":40},\"seven_day\":{\"utilization\":8},\"extra_usage\":{}}" > "$CLAUDE_USAGE_CACHE";
+  stub="$W/stub.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"five_hour\":{}}" "JSON" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
+  printf "%s" "{\"model\":{\"display_name\":\"Claude\"}}" | bash "$PRODUCER";
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "40" ] || exit 1;
 '
 
 run_test "(4) atomicity: temp+mv pattern present AND cache intact after failing OAuth stub (no partial/tmp file)" '

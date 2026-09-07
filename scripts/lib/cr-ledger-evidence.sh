@@ -15,7 +15,8 @@
 # This lib is the ONE reader for that evidence. The verdict it derives MIRRORS
 # scripts/cr/clear-cr-marker.sh gates 3-4 exactly — the same amend application,
 # the same atHead resolution (short SHAs resolved through git, never prefix
-# match), the same responder floor (>=1 `avail ... status=ok`), and the same
+# match — the HIMMEL-2190 prefix step only SKIPS heads that cannot match,
+# it never accepts one), the same responder floor (>=1 `avail ... status=ok`), and the same
 # blocking definition (crit|imp whose verdict is neither `disproved` nor a
 # TRACKED `deferred`). clear-cr-marker is the reference; this is the same
 # evaluation factored for the two MERGE gates. A future unification would move
@@ -113,6 +114,13 @@ cr_ledger_carries_gate() {
           // the resolve path, where prefix collisions are the actual risk.
           if (e.FULL_SHA === h) return true;
           if (!isHex(h)) return false;
+          // HIMMEL-2190: PREFIX PRE-FILTER, identical to clear-cr-marker.sh (see
+          // the long note there). git resolves an abbreviation by object-name
+          // prefix, so resolve(h) can only return FULL_SHA when h is a prefix of
+          // it; a non-prefix head needs no git call. Performance only - the
+          // resolve-then-compare decision for every surviving head is unchanged,
+          // and an ambiguous prefix still resolves to null and matches nothing.
+          if (!e.FULL_SHA.startsWith(h)) return false;
           return resolve(h) === e.FULL_SHA;
       };
       // A malformed record is a REFUSAL, not a skip: silently skipping

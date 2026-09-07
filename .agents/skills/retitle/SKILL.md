@@ -1,6 +1,6 @@
 ---
 name: retitle
-description: Infer a himmel-canonical session name (TICKET-ID + meaningful name) from the current branch and print a ready-to-paste built-in /rename line. Use when the user asks to retitle/rename the session or runs /retitle.
+description: Infer a himmel-canonical session name from the current branch and print a /rename line. Use for /retitle.
 ---
 
 # retitle

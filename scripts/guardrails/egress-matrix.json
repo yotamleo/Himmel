@@ -1,7 +1,7 @@
 {
   "version": 1,
   "jira": "HIMMEL-766",
-  "updated": "2026-07-08",
+  "updated": "2026-08-29",
   "doc": "docs/internals/egress-matrix.md",
   "semantics": {
     "evaluation": "first-match-wins over `rules`, then `default`. '*' matches any value.",
@@ -28,7 +28,9 @@
     "anthropic": { "region": "US", "note": "the operating harness itself (Claude sessions natively read the vaults); recording status quo, not a widening" },
     "openai-codex": { "region": "US", "note": "codex via hermes, paid usage bank" },
     "deepseek": { "region": "CN", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): dropped from vault + handover-state egress — bad extraction/enrichment results. Prior ratifications (2026-07-05, HIMMEL-343, HIMMEL-833) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code)." },
-    "zai-glm": { "region": "CN", "note": "GLM Coding Plan impl lanes" },
+    "zai-glm": { "region": "CN", "note": "DE-LISTED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP): dropped from vault + handover-state egress — the GLM Coding Plan auto-renew was cancelled 2026-08-12 and the plan lapsed 2026-08-17, so the lane is gone. Prior ratifications (HIMMEL-1122 extraction, HIMMEL-1167 enrichment, the luna-clippings §4.2 exception and the handover-state brief-scoped cell) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code — the `--backend glm` remap in refresh-graph-map.sh still serves it)." },
+    "openrouter": { "region": "US", "note": "OpenRouter metered aggregation (scripts/claude-openrouter — Claude 1M tier on the metered path, HIMMEL-1774). Declared as its OWN provider, same capability slot as the other cloud engines but a DIFFERENT provider and trust boundary: content transits OpenRouter before the model vendor, so reaching a Claude model through it is NOT covered by the anthropic cell. The launcher consults this matrix as a HARD gate (no --force bypass) and requires an EXPLICIT provider:\"openrouter\" rule — a wildcard allow does not authorize the lane" },
+    "moonshot": { "region": "CN", "note": "Kimi (kimi-k2.6) via graphify's native kimi backend, api.moonshot.ai. Adopted 2026-08-12 (HIMMEL-1748) as the GLM-lane replacement candidate — GLM Coding Plan auto-renew cancelled, lapses 2026-08-17 (HIMMEL-1749)." },
     "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): not pursuing the HIMMEL-765 pilot — bad results. Vault/handover cells demoted to explicit deny; himmel-code wildcard unaffected (public code)." },
     "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" }
   },
@@ -39,6 +41,11 @@
       "verdict": "conditional",
       "condition": "per-run explicit opt-in flag (621/622 spec §4.1: even local salus extraction needs a per-run opt-in)",
       "why": "PHI stays on-machine; opt-in prevents accidental bulk runs"
+    },
+    {
+      "corpus": "salus", "provider": "openrouter", "purpose": "*",
+      "verdict": "deny",
+      "why": "HIMMEL-1774 operator ruling: OpenRouter (like every cloud provider) NEVER receives PHI. DEFAULT stays deny; `hard` was deliberately REMOVED per the 2026-08-15 operator ruling — OpenRouter is an A-tier provider and adopters may already be routing through it, so this cell is operator-CONFIGURABLE (a future operator can ratify an open by editing this cell alone, the same one-line ratification path every provider cell uses). This is a deliberate configurability decision, NOT guardrail drift. Explicit row placed BEFORE the wildcard hard deny below so the ruling is legible in this file, not only implied"
     },
     {
       "corpus": "salus", "provider": "*", "purpose": "*",
@@ -56,6 +63,11 @@
       "why": "on-machine synthesis (chatterbox) — same reasoning as stt"
     },
     {
+      "corpus": "voice-audio", "provider": "openrouter", "purpose": "*",
+      "verdict": "deny",
+      "why": "HIMMEL-1774 operator ruling: captured audio never reaches OpenRouter. DEFAULT stays deny; `hard` was deliberately REMOVED per the 2026-08-15 operator ruling (A-tier provider, adopter portability) — the cell is operator-CONFIGURABLE, a deliberate ratification decision and NOT guardrail drift. Explicit row placed BEFORE the wildcard hard deny below (audio has no path for a corpus classifier, so the transit vendor is irrelevant — it stays denied)"
+    },
+    {
       "corpus": "voice-audio", "provider": "*", "purpose": "*",
       "verdict": "deny", "hard": true,
       "why": "HIMMEL-1522: the salus PHI deny keys on FILE PATHS, and speech has none — a mic streaming to a cloud API bypasses the PHI perimeter entirely, because there is no path for the guard to inspect. Audio cannot be classified before it is heard, so ALL captured audio is held at the salus tier. Flipping this needs a mechanism that can prove PHI is absent from speech BEFORE it is sent; no such mechanism exists, so no operator decision can be recorded here that opens it"
@@ -64,6 +76,11 @@
       "corpus": "*", "provider": "google-gemini", "purpose": "*",
       "verdict": "deny", "hard": true,
       "why": "gemini de-listed; GEMINI/GOOGLE keys stay unset (621/622 P.7)"
+    },
+    {
+      "corpus": "himmel-code", "provider": "openrouter", "purpose": "inference",
+      "verdict": "allow",
+      "why": "HIMMEL-1774 operator ruling: ALLOW himmel-code on the OpenRouter metered Claude 1M lane (scripts/claude-openrouter). Explicit row — himmel-code is also covered by the wildcard allow below, but the launcher's hard gate authorizes ONLY on an explicit provider:\"openrouter\" rule, so this row is what switches the lane from inert to usable. Scoped to inference (the launcher's only purpose); extraction/embedding stay default-deny"
     },
     {
       "corpus": "himmel-code", "provider": "*", "purpose": "*",
@@ -79,6 +96,11 @@
       "verdict": "allow", "why": "operating substrate (sessions read/write handovers natively)"
     },
     {
+      "corpus": "handover-state", "provider": "openrouter", "purpose": "inference",
+      "verdict": "allow",
+      "why": "HIMMEL-1774 operator ruling: ALLOW handover-state on the OpenRouter metered Claude lane. The lane runs the FULL Claude Code harness (a substrate-shaped session that reads/writes handovers natively), not a bulk pipeline — but unlike the anthropic cell, content transits a third party, so this stays scoped to inference and the vault corpora below remain denied"
+    },
+    {
       "corpus": "handover-state", "provider": "deepseek", "purpose": "extraction",
       "verdict": "deny",
       "why": "REVERSED 2026-07-22 (HIMMEL-1257): the 2026-07-09 HIMMEL-343 ratification (extend the 2026-07-05 DeepSeek luna override to the handover-state slice) is dropped — DeepSeek de-listed for bad results. Sanctioned set = GLM/Claude/Codex. Explicit deny keeps the reversal legible; not hard (a future operator decision could re-add)."
@@ -91,18 +113,22 @@
     },
     {
       "corpus": "handover-state", "provider": "zai-glm", "purpose": "inference",
-      "verdict": "conditional",
-      "condition": "brief-scoped: task briefs/excerpts through the guarded dispatch chokepoints only — never bulk corpus runs",
-      "why": "same as openai-codex row"
+      "verdict": "deny",
+      "why": "REVERSED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP branch): the brief-scoped worker cell (task briefs/excerpts through the guarded dispatch chokepoints) is dropped; openai-codex keeps the equivalent conditional cell above. The GLM (Z.ai) lane was DROPPED 2026-08-12 (HIMMEL-1749) — auto-renew cancelled, GLM Coding Plan lapsed 2026-08-17; Kimi (moonshot, HIMMEL-1748) is the replacement CN extraction lane. Explicit deny on the HIMMEL-1257 de-listing pattern keeps the reversal legible and reviewable; a deleted row would fall through to `default: deny` and lose the history of why the vendor was ever permitted. NOT hard — a future operator decision could re-add."
     },
     {
       "corpus": "handover-state", "provider": "alibaba", "purpose": "inference",
       "verdict": "deny",
-      "why": "REVERSED 2026-07-22 (HIMMEL-1257): Alibaba de-listed (bad results). The brief-scoped worker cell goes with the rest — the remaining handover-state inference cells (openai-codex, zai-glm conditional + anthropic/ollama) are now exactly the sanctioned worker set {Codex, GLM} + substrate."
+      "why": "REVERSED 2026-07-22 (HIMMEL-1257): Alibaba de-listed (bad results). The brief-scoped worker cell goes with the rest — as of 2026-07-22 the remaining handover-state inference cells (openai-codex, zai-glm conditional + anthropic/ollama) were exactly the sanctioned worker set {Codex, GLM} + substrate. SUPERSEDED 2026-08-29 (HIMMEL-2224): zai-glm was de-listed too, leaving {Codex} + substrate."
     },
     {
       "corpus": "luna-clippings", "provider": "local-ollama", "purpose": "*",
       "verdict": "allow", "why": "zero egress"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "openrouter", "purpose": "*",
+      "verdict": "deny",
+      "why": "HIMMEL-1774 operator ruling: DENY luna-clippings on OpenRouter (clipped public content included — the ruling denies every vault corpus; only himmel-code + handover-state are allowed). DEFAULT stays deny; deliberately OPERATOR-CONFIGURABLE per the 2026-08-15 ruling (A-tier provider, adopter portability) — an operator may ratify an open by editing this cell; that would be a deliberate ratification decision, not guardrail drift. Explicit row so a future wildcard openrouter allow cannot shadow it"
     },
     {
       "corpus": "luna-clippings", "provider": "anthropic", "purpose": "*",
@@ -115,9 +141,13 @@
     },
     {
       "corpus": "luna-clippings", "provider": "zai-glm", "purpose": "extraction",
-      "verdict": "conditional",
-      "condition": "only if the 621/622 G2.3 local-quality ladder forces it AND the operator provisions ZAI_API_KEY for it (spec §4.2 exception; never mid-run)",
-      "why": "pre-existing narrow exception for clipped public content"
+      "verdict": "deny",
+      "why": "REVERSED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP branch): the narrow 621/622 G2.3 local-quality-ladder exception for clipped public content (operator-provisioned ZAI_API_KEY, spec §4.2) is dropped; the GRAPHIFY_CLIPPINGS_GLM_OK fence opt-in no longer opens this cell. The GLM (Z.ai) lane was DROPPED 2026-08-12 (HIMMEL-1749) — auto-renew cancelled, GLM Coding Plan lapsed 2026-08-17; Kimi (moonshot, HIMMEL-1748) is the replacement CN extraction lane. Explicit deny on the HIMMEL-1257 de-listing pattern keeps the reversal legible and reviewable; a deleted row would fall through to `default: deny` and lose the history of why the vendor was ever permitted. NOT hard — a future operator decision could re-add."
+    },
+    {
+      "corpus": "luna-clippings", "provider": "moonshot", "purpose": "extraction",
+      "verdict": "allow+log",
+      "why": "operator ratification 2026-08-12 (HIMMEL-1748): the graphmap corpus copy spans Clippings/ (clipped public web content — the least-sensitive vault slice); same ratification as the luna-personal moonshot cell below. Ledgered per run."
     },
     {
       "corpus": "luna-clippings", "provider": "alibaba", "purpose": "embedding",
@@ -139,6 +169,11 @@
       "verdict": "allow", "why": "zero egress; the salus-grade fallback backend"
     },
     {
+      "corpus": "luna-personal", "provider": "openrouter", "purpose": "*",
+      "verdict": "deny",
+      "why": "HIMMEL-1774 operator ruling: DENY luna-personal on OpenRouter — personal journals/notes/maps never transit the aggregation vendor. DEFAULT stays deny; deliberately OPERATOR-CONFIGURABLE per the 2026-08-15 ruling (A-tier provider, adopter portability) — an operator may ratify an open by editing this cell; that would be a deliberate ratification decision, not guardrail drift. Explicit row so a future wildcard openrouter allow cannot shadow it"
+    },
+    {
       "corpus": "luna-personal", "provider": "anthropic", "purpose": "*",
       "verdict": "allow", "why": "operating substrate (Claude sessions read the vault natively every day)"
     },
@@ -149,8 +184,13 @@
     },
     {
       "corpus": "luna-personal", "provider": "zai-glm", "purpose": "extraction",
+      "verdict": "deny",
+      "why": "REVERSED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP branch): the 2026-07-17 HIMMEL-1122 ratification (luna non-Clippings graphify extraction on GLM, full note bodies to Z.ai, ledgered per run) is dropped. The vendor count for this exposure class drops back by one; moonshot (HIMMEL-1748) now carries it. The GLM (Z.ai) lane was DROPPED 2026-08-12 (HIMMEL-1749) — auto-renew cancelled, GLM Coding Plan lapsed 2026-08-17; Kimi (moonshot, HIMMEL-1748) is the replacement CN extraction lane. Explicit deny on the HIMMEL-1257 de-listing pattern keeps the reversal legible and reviewable; a deleted row would fall through to `default: deny` and lose the history of why the vendor was ever permitted. NOT hard — a future operator decision could re-add."
+    },
+    {
+      "corpus": "luna-personal", "provider": "moonshot", "purpose": "extraction",
       "verdict": "allow+log",
-      "why": "operator ratification 2026-07-17 (HIMMEL-1122): luna non-Clippings graphify extraction on GLM, ledgered per run. WIDENS THE PERMITTED PROVIDER SET — full luna non-Clippings note bodies may now reach a second, additional vendor (Z.ai) that could not receive them before; the vendor count for this exposure goes 1 -> 2. Corpus, purpose, region (CN) and content scope are UNCHANGED from the 2026-07-05 DeepSeek cell above, so the KIND of exposure is the same even though the number of vendors holding it is not. Measured on an identical corpus 2026-07-17: glm-5.2 link-recall 63-79% vs deepseek 26%, file coverage 100% vs 95%, at flat-rate Coding-Plan cost vs $3.14 per full-vault deepseek run — i.e. the incumbent was strictly worse AND paid. NOT a default: refresh-graph-map.sh stays claude-cli (HIMMEL-1049 claude-only adopter story); GLM is opt-in per run."
+      "why": "operator ratification 2026-08-12 (HIMMEL-1748, in-session; PR merge is the ratification record): luna non-Clippings graphify extraction on Kimi (Moonshot). WIDENS THE PERMITTED PROVIDER SET — full luna non-Clippings note bodies may reach a third vendor (Moonshot, CN region); vendor count for this exposure class goes 2 -> 3. Corpus, purpose, and content scope are UNCHANGED from the 2026-07-17 zai-glm cell above, so the KIND of exposure is the same. Motivation: the claude-cli cadence measurably drains the operator's interactive 5h usage bank (HIMMEL-1748), GLM 429s under its Coding Plan caps and the plan lapses 2026-08-17 (HIMMEL-1749). Gated on a measured trial vs the GLM link-recall band (63-79%, HIMMEL-1122) before the cadence flips. Ledgered per run; log obligation survives ratification, never plain allow."
     },
     {
       "corpus": "luna-personal", "provider": "deepseek", "purpose": "enrichment",
@@ -159,8 +199,8 @@
     },
     {
       "corpus": "luna-personal", "provider": "zai-glm", "purpose": "enrichment",
-      "verdict": "allow+log",
-      "why": "operator ratification 2026-07-17 (HIMMEL-1167): chat-note enrichment on GLM — full note bodies of luna/chats/* to Z.ai, plus the vault-wide top-200 tag vocabulary (tag names only) sent with each request as the allowed-tags list; exposure-identical in kind to the 2026-07-17 zai-glm EXTRACTION cell (HIMMEL-1122): same corpus, provider, CN region, and content scope — the vendor already holds this exposure class. Ledgered per run incl. vocab_tags; log obligation survives ratification, never plain allow"
+      "verdict": "deny",
+      "why": "REVERSED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP branch): the 2026-07-17 HIMMEL-1167 ratification (chat-note enrichment on GLM — full luna/chats/* bodies plus the vault-wide top-200 tag vocabulary to Z.ai) is dropped. No sanctioned CN enrichment lane remains; enrich-chat-notes.py's shipped default is claude (HIMMEL-1257). The GLM (Z.ai) lane was DROPPED 2026-08-12 (HIMMEL-1749) — auto-renew cancelled, GLM Coding Plan lapsed 2026-08-17; Kimi (moonshot, HIMMEL-1748) is the replacement CN extraction lane. Explicit deny on the HIMMEL-1257 de-listing pattern keeps the reversal legible and reviewable; a deleted row would fall through to `default: deny` and lose the history of why the vendor was ever permitted. NOT hard — a future operator decision could re-add."
     },
     {
       "corpus": "luna-personal", "provider": "alibaba", "purpose": "embedding",

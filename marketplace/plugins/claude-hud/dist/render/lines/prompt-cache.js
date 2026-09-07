@@ -1,4 +1,6 @@
+import { isDetectedPromptCacheTtl, PROMPT_CACHE_DEFAULT_TTL_SECONDS } from '../../constants.js';
 import { getContextColor, RESET, label, warning as warningColor } from '../colors.js';
+import { formatAbsoluteTime } from '../format-reset-time.js';
 import { t } from '../../i18n/index.js';
 function getPromptCacheWarningSeconds(ttlSeconds) {
     return Math.min(ttlSeconds, Math.max(60, Math.floor(ttlSeconds / 5)));
@@ -12,39 +14,44 @@ function colorPromptCacheValue(value, state, ctx) {
     }
     return `${getContextColor(0, ctx.config?.colors)}${value}${RESET}`;
 }
-export function formatPromptCacheCountdown(remainingMs) {
-    if (remainingMs <= 0) {
-        return t('status.expired');
-    }
-    const totalSeconds = Math.ceil(remainingMs / 1000);
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    if (hours > 0) {
-        return `${hours}h ${minutes}m ${seconds}s`;
-    }
-    return `${minutes}m ${seconds}s`;
-}
 export function renderPromptCacheLine(ctx, now = Date.now()) {
     const display = ctx.config?.display;
     if (!display?.showPromptCache) {
         return null;
     }
-    const lastAssistantResponseAt = ctx.transcript.lastAssistantResponseAt;
-    if (!lastAssistantResponseAt || Number.isNaN(lastAssistantResponseAt.getTime())) {
+    const anchorAt = ctx.transcript.promptCacheAnchorAt;
+    if (!anchorAt || Number.isNaN(anchorAt.getTime())) {
         return null;
     }
-    const ttlSeconds = (typeof display.promptCacheTtlSeconds === 'number'
+    // A detected transcript tier is authoritative. Preserve the existing config
+    // setting as a compatibility fallback for older or proxied transcripts that
+    // do not expose the per-tier cache creation fields.
+    const configuredTtl = typeof display.promptCacheTtlSeconds === 'number'
         && Number.isFinite(display.promptCacheTtlSeconds)
-        && display.promptCacheTtlSeconds > 0)
+        && display.promptCacheTtlSeconds > 0
         ? Math.floor(display.promptCacheTtlSeconds)
-        : 300;
-    const remainingMs = (lastAssistantResponseAt.getTime() + ttlSeconds * 1000) - now;
+        : PROMPT_CACHE_DEFAULT_TTL_SECONDS;
+    const ttlSeconds = isDetectedPromptCacheTtl(ctx.transcript.promptCacheTtlSeconds)
+        ? ctx.transcript.promptCacheTtlSeconds
+        : configuredTtl;
+    const expiresAt = new Date(anchorAt.getTime() + ttlSeconds * 1000);
+    const remainingMs = expiresAt.getTime() - now;
     const state = remainingMs <= 0
         ? 'expired'
         : remainingMs <= getPromptCacheWarningSeconds(ttlSeconds) * 1000
             ? 'warning'
             : 'active';
-    return `${label(t('label.promptCache'), ctx.config?.colors)} ${colorPromptCacheValue(`⏱ ${formatPromptCacheCountdown(remainingMs)}`, state, ctx)}`;
+    // Expiry time rather than a countdown: the statusline only repaints while
+    // Claude Code is active, so between turns — exactly when the cache is draining
+    // — a countdown freezes at whatever it last displayed and keeps reporting it.
+    // A clock time stays true however stale the render is.
+    const wallClockOpts = {
+        hourCycle: display.hourCycle ?? 'auto',
+        showSeconds: display.showClockSeconds ?? false,
+    };
+    const value = state === 'expired'
+        ? t('status.expired')
+        : formatAbsoluteTime(expiresAt, new Date(now), wallClockOpts, 'format.untilTime');
+    return `${label(t('label.promptCache'), ctx.config?.colors)} ${colorPromptCacheValue(`⏱ ${value}`, state, ctx)}`;
 }
 //# sourceMappingURL=prompt-cache.js.map

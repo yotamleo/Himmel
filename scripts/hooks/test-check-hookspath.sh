@@ -11,10 +11,26 @@
 #   1 — at least one case failed
 set -uo pipefail
 
-HOOK="$(cd "$(dirname "$0")" && pwd)/check-hookspath.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOOK="$SCRIPT_DIR/check-hookspath.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK"
 
+# Isolate the fixture repos from the machine's real git config (same pattern
+# as test-block-terminal-write-fence.sh). The operator's global ~/.gitconfig
+# sets core.hooksPath, and `git config --get` reads the MERGED config: T1
+# ("unset" locally) then resolves the GLOBAL hooks dir inside its throwaway
+# repo and fails for a reason the case is not about. An empty global config
+# and no system config make "unset" mean unset in every scope.
+ISOLATE_DIR=$(fixture_mktemp_dir) || exit 1
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL="$ISOLATE_DIR/.gitconfig"
+: > "$GIT_CONFIG_GLOBAL"
+
 FAILED=0
+FAILED_LABELS=""
 
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
@@ -23,6 +39,7 @@ assert_rc() {
     else
         echo "FAIL $label — expected rc=$expected, got rc=$actual"
         FAILED=$((FAILED + 1))
+        FAILED_LABELS="${FAILED_LABELS:+$FAILED_LABELS }$label"
     fi
 }
 
@@ -31,9 +48,9 @@ assert_rc() {
 make_repo() {
     local hooks_path_setting="$1"  # empty string = leave unset
     local dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b main
         git config user.email t@t
         git config user.name t
@@ -43,7 +60,7 @@ make_repo() {
         if [ -n "$hooks_path_setting" ]; then
             git config core.hooksPath "$hooks_path_setting"
         fi
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
@@ -58,12 +75,12 @@ run_in() {
 }
 
 # --- T1: core.hooksPath unset → OK (rc=0) ---
-d=$(make_repo "")
+d=$(make_repo "") || exit 1
 assert_rc "T1 unset"                                   0 "$(run_in "$d")"
 rm -rf "$d"
 
 # --- T2: core.hooksPath = existing path INSIDE repo → OK (rc=0) ---
-d=$(make_repo "")
+d=$(make_repo "") || exit 1
 mkdir -p "$d/custom-hooks"
 ( cd "$d" && git config core.hooksPath "$d/custom-hooks" )
 assert_rc "T2 set inside repo"                         0 "$(run_in "$d")"
@@ -72,7 +89,7 @@ rm -rf "$d"
 # --- T2b: core.hooksPath = RELATIVE path inside repo → OK (rc=0) ---
 # Mirrors the legit pre-commit-installed case where `.git/hooks` is
 # referenced relatively from worktree-pwd.
-d=$(make_repo "")
+d=$(make_repo "") || exit 1
 mkdir -p "$d/custom-hooks"
 ( cd "$d" && git config core.hooksPath custom-hooks )
 assert_rc "T2b set inside repo (relative)"             0 "$(run_in "$d")"
@@ -81,27 +98,27 @@ rm -rf "$d"
 # --- T3: core.hooksPath = NONEXISTENT path → FAIL (rc=1) ---
 # This is the HIMMEL-45 reproduction: post-rename, the old absolute
 # path no longer resolves to anything on disk.
-d=$(make_repo "/this/path/does/not/exist/anywhere")
+d=$(make_repo "/this/path/does/not/exist/anywhere") || exit 1
 assert_rc "T3 nonexistent path"                        1 "$(run_in "$d")"
 rm -rf "$d"
 
 # --- T4: core.hooksPath = existing path OUTSIDE repo → FAIL (rc=1) ---
-d=$(make_repo "")
-outside=$(mktemp -d)
+d=$(make_repo "") || exit 1
+outside=$(fixture_mktemp_dir) || exit 1
 mkdir -p "$outside/hooks"
 ( cd "$d" && git config core.hooksPath "$outside/hooks" )
 assert_rc "T4 outside repo"                            1 "$(run_in "$d")"
 rm -rf "$d" "$outside"
 
 # --- T5: HOOKSPATH_OK=1 bypass → OK silently (rc=0) ---
-d=$(make_repo "/this/path/does/not/exist/anywhere")
+d=$(make_repo "/this/path/does/not/exist/anywhere") || exit 1
 assert_rc "T5 bypass on bad path"                      0 "$(run_in "$d" "HOOKSPATH_OK=1")"
 rm -rf "$d"
 
 # --- T6: not in a git repo at all → OK (rc=0) ---
 # Outside any repo, `git config --get` returns nonzero / nothing. The
 # hook should not fail noisily in that case (covers CI sandboxes etc.).
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 assert_rc "T6 not a git repo"                          0 "$(run_in "$d")"
 rm -rf "$d"
 
@@ -111,7 +128,7 @@ rm -rf "$d"
 # primary repo's hooks dir (e.g. `<primary>/.git/hooks`) is the canonical
 # pre-commit install location and must NOT trip the gate even though
 # the path resolves outside the linked-worktree toplevel.
-d=$(make_repo "")
+d=$(make_repo "") || exit 1
 # Pre-populate the primary repo's `.git/hooks` so the path-exists check
 # in the hook passes. (git init creates it empty by default, but be
 # explicit in case of a future change.)
@@ -130,8 +147,8 @@ rm -rf "$d" "$linked_wt"
 # Sanity check: a truly out-of-tree absolute path must still be rejected.
 # We construct: a real worktree at $d, a primary-style sibling repo, and
 # an unrelated outside dir. Setting hooksPath to the outside dir must fail.
-d=$(make_repo "")
-outside=$(mktemp -d)
+d=$(make_repo "") || exit 1
+outside=$(fixture_mktemp_dir) || exit 1
 mkdir -p "$outside/hooks"
 ( cd "$d" && git config core.hooksPath "$outside/hooks" )
 assert_rc "T8 outside both worktree-top and git-common-dir" 1 "$(run_in "$d")"
@@ -152,7 +169,7 @@ rm -rf "$d" "$outside"
 # drive C: — almost never the worktree dir — → "does not exist" → rc=1.
 # The case-pattern fix is platform-independent; this assertion holds on
 # Linux too (literal "C:" in a directory name is legal POSIX).
-d=$(make_repo "")
+d=$(make_repo "") || exit 1
 mkdir -p "$d/C:custom-hooks"
 ( cd "$d" && git config core.hooksPath "C:custom-hooks" )
 assert_rc "T9 drive-relative path treated as relative" 0 "$(run_in "$d")"
@@ -170,7 +187,7 @@ rm -rf "$d"
 # case-sensitive, and we don't want to mask a real case-mismatch bug
 # on Linux/macOS).
 if [ "${OS-}" = "Windows_NT" ] || case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) true;; *) false;; esac; then
-    d=$(make_repo "")
+    d=$(make_repo "") || exit 1
     mkdir -p "$d/custom-hooks"
     # Downcase the absolute path. mktemp on Git Bash returns e.g.
     # `/tmp/tmp.XXXX` which canonicalises to `C:/Users/<user>/AppData/Local/Temp/...`
@@ -191,9 +208,11 @@ else
     echo "SKIP T10 (non-Windows)"
 fi
 
+rm -rf "$ISOLATE_DIR"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
-    echo "FAIL $FAILED case(s)"
+    echo "FAIL $FAILED case(s): $FAILED_LABELS"
     exit 1
 fi
 echo "---"

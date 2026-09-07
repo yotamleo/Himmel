@@ -32,6 +32,7 @@
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 state_lib="$repo_root/scripts/himmelctl/lib/state.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
 [ -f "$state_lib" ] || { echo "FAIL: $state_lib not found" >&2; exit 1; }
@@ -47,15 +48,6 @@ work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
 # CR fix: paths passed via the ENVIRONMENT (STATE_LIB_PATH/MANIFEST_PATH),
 # never interpolated into the node -e source string — a checkout path
 # containing an apostrophe or backslash would otherwise break the inline JS
@@ -68,7 +60,7 @@ target_dir="$work/target"; mkdir -p "$target_dir"
 home_dir="$work/home"; mkdir -p "$home_dir"
 cache_dir="$work/cache"
 
-out=$(cd "$target_dir" && HOME="$home_dir" HIMMELCTL_CACHE_DIR="$(winpath "$cache_dir")" "$node_bin" -e "
+out=$(cd "$target_dir" && HOME="$home_dir" USERPROFILE="$(winpath "$home_dir")" HIMMELCTL_CACHE_DIR="$(winpath "$cache_dir")" "$node_bin" -e "
 const state = require(process.env.STATE_LIB_PATH);
 const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_PATH, 'utf8'));
 
@@ -135,7 +127,7 @@ echo "$out" | jq -e '.after.targets | to_entries[0].value.profile == "luna"' >/d
 
 statePath="$cache_dir/state.json"
 [ -f "$statePath" ] || fail "case d: state.json was not written at $statePath"
-loaded=$(cd "$target_dir" && HOME="$home_dir" HIMMELCTL_CACHE_DIR="$(winpath "$cache_dir")" "$node_bin" -e "
+loaded=$(cd "$target_dir" && HOME="$home_dir" USERPROFILE="$(winpath "$home_dir")" HIMMELCTL_CACHE_DIR="$(winpath "$cache_dir")" "$node_bin" -e "
 const state = require(process.env.STATE_LIB_PATH);
 console.log(JSON.stringify(state.load()));
 ")
@@ -157,7 +149,7 @@ echo "ok: case d — reconcile mutates state in place and round-trips through sa
 # empirically during development (stash/pop the fix, rerun) — because that
 # ternary never inspects `existing.lastEnsured` itself, only whether
 # `existing` is truthy.
-outE=$(cd "$target_dir" && HOME="$home_dir" HIMMELCTL_CACHE_DIR="$(winpath "$cache_dir")" "$node_bin" -e "
+outE=$(cd "$target_dir" && HOME="$home_dir" USERPROFILE="$(winpath "$home_dir")" HIMMELCTL_CACHE_DIR="$(winpath "$cache_dir")" "$node_bin" -e "
 const state = require(process.env.STATE_LIB_PATH);
 const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_PATH, 'utf8'));
 const answers = {
@@ -224,7 +216,7 @@ echo "ok: case e — lastEnsured normalizes missing/undefined/non-string to null
 # entry, violating the schema's `overrides` object contract. The valid
 # override on pre-commit-hooks survives unchanged (case b) — this case
 # covers ONLY the malformed shapes. ──────────────────────────────────────
-outF=$(cd "$target_dir" && HOME="$home_dir" HIMMELCTL_CACHE_DIR="$(winpath "$cache_dir")" "$node_bin" -e "
+outF=$(cd "$target_dir" && HOME="$home_dir" USERPROFILE="$(winpath "$home_dir")" HIMMELCTL_CACHE_DIR="$(winpath "$cache_dir")" "$node_bin" -e "
 const state = require(process.env.STATE_LIB_PATH);
 const manifest = JSON.parse(require('fs').readFileSync(process.env.MANIFEST_PATH, 'utf8'));
 const answers = {

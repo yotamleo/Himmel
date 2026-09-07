@@ -97,7 +97,7 @@ test("renderSessionTokensLine uses translated labels in English", () => {
   assert.ok(line.includes("Tokens"), `expected 'Tokens' in ${line}`);
   assert.ok(line.includes("in:"), `expected 'in:' in ${line}`);
   assert.ok(line.includes("out:"), `expected 'out:' in ${line}`);
-  assert.ok(line.includes("cache:"), `expected 'cache:' in ${line}`);
+  assert.ok(line.includes("cache-r:"), `expected 'cache-r:' in ${line}`);
 });
 
 test("renderSessionTokensLine uses translated labels in Chinese", () => {
@@ -106,11 +106,11 @@ test("renderSessionTokensLine uses translated labels in Chinese", () => {
   assert.ok(line.includes("词元"), `expected '词元' in ${line}`);
   assert.ok(line.includes("输入:"), `expected '输入:' in ${line}`);
   assert.ok(line.includes("输出:"), `expected '输出:' in ${line}`);
-  assert.ok(line.includes("缓存:"), `expected '缓存:' in ${line}`);
+  assert.ok(line.includes("缓存读:"), `expected '缓存读:' in ${line}`);
   // No leftover English labels
   assert.ok(!line.includes("in:"), `unexpected bare 'in:' label in zh output: ${line}`);
   assert.ok(!line.includes("out:"), `unexpected bare 'out:' label in zh output: ${line}`);
-  assert.ok(!line.includes("cache:"), `unexpected bare 'cache:' label in zh output: ${line}`);
+  assert.ok(!line.includes("cache-r:"), `unexpected bare 'cache-r:' label in zh output: ${line}`);
   assert.ok(!line.includes("Tokens"), `unexpected bare 'Tokens' label in zh output: ${line}`);
   setLanguage("en");
 });
@@ -177,6 +177,7 @@ test("t() returns Traditional Chinese strings when language is zh-Hant", () => {
   assert.equal(t("format.cache"), "快取");
   assert.equal(t("format.out"), "輸出");
   assert.equal(t("format.absoluteTime"), "{time}");
+  assert.equal(t("format.untilTime"), "至 {time}");
   assert.equal(t("format.relativeTime"), "{value} 前");
   setLanguage("en");
 });
@@ -223,10 +224,10 @@ test("renderSessionTokensLine uses Traditional Chinese labels for zh-Hant", () =
   assert.ok(line.includes("Token"), `expected 'Token' in ${line}`);
   assert.ok(line.includes("輸入:"), `expected '輸入:' in ${line}`);
   assert.ok(line.includes("輸出:"), `expected '輸出:' in ${line}`);
-  assert.ok(line.includes("快取:"), `expected '快取:' in ${line}`);
+  assert.ok(line.includes("快取讀:"), `expected '快取讀:' in ${line}`);
   assert.ok(!line.includes("in:"), `unexpected bare 'in:' in zh-Hant output: ${line}`);
   assert.ok(!line.includes("out:"), `unexpected bare 'out:' in zh-Hant output: ${line}`);
-  assert.ok(!line.includes("cache:"), `unexpected bare 'cache:' in zh-Hant output: ${line}`);
+  assert.ok(!line.includes("cache-r:"), `unexpected bare 'cache-r:' in zh-Hant output: ${line}`);
   setLanguage("en");
 });
 

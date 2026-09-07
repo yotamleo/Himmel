@@ -21,6 +21,10 @@ if [ ! -f "$GUARD" ]; then
     exit 1
 fi
 
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/fixture-tempdir.sh"
+
 failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
@@ -28,7 +32,7 @@ fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
 setup_repo() {
     # $1 = branch
     local dir
-    dir="$(mktemp -d)"
+    dir="$(fixture_mktemp_dir)" || return 1
     git -C "$dir" init -q -b main
     git -C "$dir" config user.email t@t
     git -C "$dir" config user.name t
@@ -47,7 +51,7 @@ run_in() {
 }
 
 echo "== pr-create on main → refuse rc=2 =="
-d=$(setup_repo main)
+d=$(setup_repo main) || exit 1
 out=$(run_in "$d" pr-create); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i "refus.*main"; then
     pass "main refused"
@@ -57,14 +61,14 @@ fi
 rm -rf "$d"
 
 echo "== pr-create on clean feat → proceed rc=0 =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 out=$(run_in "$d" pr-create); rc=$?
 if [ "$rc" -eq 0 ]; then pass "clean feat proceed"; else fail "expected rc=0 got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== pr-create on dirty feat → warn rc=1 =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 echo dirty > "$d/file.txt"
 out=$(run_in "$d" pr-create); rc=$?
@@ -72,7 +76,7 @@ if [ "$rc" -eq 1 ] && grepq "$out" -i "dirty"; then pass "dirty warns"; else fai
 rm -rf "$d"
 
 echo "== pr-create on dirty feat with --allow-dirty → proceed rc=0 =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 echo dirty > "$d/file.txt"
 out=$(run_in "$d" pr-create --allow-dirty); rc=$?
@@ -80,7 +84,7 @@ if [ "$rc" -eq 0 ]; then pass "--allow-dirty proceeds"; else fail "expected rc=0
 rm -rf "$d"
 
 echo "== pr-create on merged branch → refuse rc=2 =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 git -C "$d" checkout -q main
 git -C "$d" merge --no-ff -q feat/x -m "merge"
@@ -90,7 +94,7 @@ if [ "$rc" -eq 2 ] && grepq "$out" -i "merg"; then pass "merged refused"; else f
 rm -rf "$d"
 
 echo "== pr-create on merged branch with --allow-merged-base → proceed rc=0 =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 git -C "$d" checkout -q main
 git -C "$d" merge --no-ff -q feat/x -m "merge"
@@ -100,31 +104,31 @@ if [ "$rc" -eq 0 ]; then pass "--allow-merged-base proceeds"; else fail "expecte
 rm -rf "$d"
 
 echo "== pr-merge --admin → refuse rc=2 =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 out=$(run_in "$d" pr-merge --admin 99); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i "admin"; then pass "admin refused"; else fail "expected rc=2 + 'admin' got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== pr-merge --admin with GH_ADMIN_MERGE_OK=1 → proceed rc=0 =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 out=$(cd "$d" && GH_ADMIN_MERGE_OK=1 bash "$GUARD" pr-merge --admin 99 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then pass "GH_ADMIN_MERGE_OK bypasses"; else fail "expected rc=0 got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== pr-merge without --admin → proceed rc=0 =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 out=$(run_in "$d" pr-merge 99 --squash); rc=$?
 if [ "$rc" -eq 0 ]; then pass "non-admin merge proceeds"; else fail "expected rc=0 got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== unknown verb → rc=2 with stderr =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 out=$(run_in "$d" pr-bogus); rc=$?
 if [ "$rc" -eq 2 ] && grepq "$out" -i "unknown"; then pass "unknown verb rejected"; else fail "expected rc=2 + unknown got rc=$rc out=$out"; fi
 rm -rf "$d"
 
 echo "== pr-create --allow-dirty --title foo → cleaned argv excludes --allow-dirty =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 echo dirty > "$d/file.txt"
 out=$(cd "$d" && bash "$GUARD" pr-create --allow-dirty --title foo 2>/dev/null); rc=$?
@@ -136,7 +140,7 @@ fi
 rm -rf "$d"
 
 echo "== pr-create --allow-merged-base --title foo → cleaned argv excludes --allow-merged-base =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 git -C "$d" checkout -q main
 git -C "$d" merge --no-ff -q feat/x -m "merge"
@@ -150,7 +154,7 @@ fi
 rm -rf "$d"
 
 echo "== pr-create rc=1 warn path → cleaned argv still on stdout =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 echo dirty > "$d/file.txt"
 stdout=$(cd "$d" && bash "$GUARD" pr-create --title foo 2>/dev/null); rc=$?
@@ -162,7 +166,7 @@ fi
 rm -rf "$d"
 
 echo "== pr-create refusal ordering: merged+dirty → refuse with merged message =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 git -C "$d" commit --allow-empty -q -m "feat"
 git -C "$d" checkout -q main
 git -C "$d" merge --no-ff -q feat/x -m "merge"
@@ -177,8 +181,8 @@ fi
 rm -rf "$d"
 
 echo "== pr-push behind origin/main → warn rc=1 =="
-origin=$(mktemp -d); git -C "$origin" init -q --bare -b main
-work=$(mktemp -d); git clone -q "$origin" "$work"
+origin=$(fixture_mktemp_dir) || exit 1; git -C "$origin" init -q --bare -b main
+work=$(fixture_mktemp_dir) || exit 1; git clone -q "$origin" "$work"
 git -C "$work" config user.email t@t; git -C "$work" config user.name t
 git -C "$work" commit --allow-empty -q -m "base"
 git -C "$work" push -q origin main
@@ -207,8 +211,8 @@ fi
 rm -rf "$work" "$origin"
 
 echo "== pr-push up-to-date → rc=0 =="
-origin=$(mktemp -d); git -C "$origin" init -q --bare -b main
-work=$(mktemp -d); git clone -q "$origin" "$work"
+origin=$(fixture_mktemp_dir) || exit 1; git -C "$origin" init -q --bare -b main
+work=$(fixture_mktemp_dir) || exit 1; git clone -q "$origin" "$work"
 git -C "$work" config user.email t@t; git -C "$work" config user.name t
 git -C "$work" commit --allow-empty -q -m "base"
 git -C "$work" push -q origin main
@@ -218,7 +222,7 @@ if [ "$rc" -eq 0 ]; then pass "up-to-date proceeds"; else fail "expected rc=0 go
 rm -rf "$work" "$origin"
 
 echo "== pr-merge --admin (allowed) → cleaned argv keeps --admin =="
-d=$(setup_repo feat/x)
+d=$(setup_repo feat/x) || exit 1
 stdout=$(cd "$d" && GH_ADMIN_MERGE_OK=1 bash "$GUARD" pr-merge --admin 99 --squash 2>/dev/null); rc=$?
 if [ "$rc" -eq 0 ] && grepq "$stdout" '^--admin$' && grepq "$stdout" '^99$' && grepq "$stdout" '^--squash$'; then
     pass "--admin forwarded (not stripped)"
@@ -238,7 +242,7 @@ fi
 rm -rf "$ngd"
 
 echo "== refuse paths emit nothing on stdout =="
-d=$(setup_repo main)
+d=$(setup_repo main) || exit 1
 stdout=$(cd "$d" && bash "$GUARD" pr-create --title foo 2>/dev/null); rc=$?
 if [ "$rc" -eq 2 ] && [ -z "$stdout" ]; then
     pass "refuse stdout empty"

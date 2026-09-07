@@ -77,6 +77,17 @@
 # existence-only test passes on the broken stub, which is the whole failure
 # class this closes.
 #
+# WITH --hourly (HIMMEL-2111) the SAME single task fires every hour instead of
+# once daily. Windows keeps the daily CalendarTrigger anchored at --time and
+# layers graphmap-cadence's Repetition fragment on top
+# (<Interval>PT1H</Interval><Duration>P1D</Duration><StopAtDurationEnd>false
+# </StopAtDurationEnd>) — the same "hourly forever" idiom HIMMEL-1948
+# established for graphmap's AST-himmel task, since schtasks has no bare
+# /sc HOURLY reachable from /xml. The POSIX/cron path emits `MM * * * *`
+# instead of `MM HH * * *`, using --time's minute as the fixed :MM past every
+# hour — --time's hour is then irrelevant for scheduling, but the flag still
+# validates as a full HH:MM so one flag serves both cadences.
+#
 # OPERATOR FLIP: this NEVER auto-arms. `arm` registers the task only when
 # explicitly invoked, exactly like graphmap-cadence — arming is the operator's
 # decision, not a side effect of installing the harness.
@@ -156,6 +167,9 @@ RUNNER_SCRIPT="$REINDEX_SCRIPT"
 REINDEX_TIME="05:00"
 FORCE=0
 DRY_RUN=0
+# --hourly (HIMMEL-2111): fire every hour instead of once daily. See the
+# header for the Windows Repetition / POSIX cron-line mechanics.
+HOURLY=0
 # Set when a --force arm has actually DELETED a previously armed task, so a
 # subsequent create failure can tell the operator the machine is now unarmed.
 REPLACED_EXISTING=0
@@ -185,12 +199,20 @@ Subcommands:
   disarm   Remove the task (idempotent; rc=0 if nothing was armed).
 
 Flags (arm only, except --dry-run):
-  --time <HH:MM>  Daily reindex time, 24h local (default 05:00)
+  --time <HH:MM>  Anchor time, 24h local (default 05:00). Daily cadence
+                  (the default): fires once, at this time, every day. With
+                  --hourly, only the minute is used — it becomes the fixed
+                  :MM the hourly cadence fires past every hour.
+  --hourly        Fire hourly instead of once daily (Windows: a Repetition
+                  fragment re-fires every hour for 24h, the same idiom
+                  graphmap-cadence uses for its AST-himmel task; POSIX: an
+                  hourly crontab line `MM * * * *`).
   --ship-to <h>   Arm ship-index.sh --host <h> instead of the bare reindex,
                   so the host PUSHES the fresh index to a receiving station
-                  on the same daily beat. Still ONE task: ship-index.sh's
-                  step 1 IS qmd-reindex.sh, so the ship follows a successful
-                  reindex rather than a blind clock.
+                  on the same cadence (daily by default, or hourly with
+                  --hourly). Still ONE task: ship-index.sh's step 1 IS
+                  qmd-reindex.sh, so the ship follows a successful reindex
+                  rather than a blind clock.
   --force         Replace an existing HIMMEL-Qmd-* task
   --dry-run       Print what would happen, touch nothing
                   (honored by arm AND disarm)
@@ -287,6 +309,7 @@ while [ $# -gt 0 ]; do
             fi
             REINDEX_TIME="$2"; shift 2 ;;
         --time=*)   REINDEX_TIME="${1#--time=}"; shift ;;
+        --hourly)   HOURLY=1; shift ;;
         --ship-to)
             if [ $# -lt 2 ]; then
                 echo "ERR qmd-cadence: --ship-to requires a value (ssh host)" >&2
@@ -337,6 +360,13 @@ fi
 # reindex two lines under a banner that had just said otherwise — and the one
 # thing that sentence exists to answer is which script actually runs.
 RUNNER_NAME=$(basename "$RUNNER_SCRIPT")
+# The banner's schedule line has to say hourly when it is (HIMMEL-2111) —
+# derived independently of RUNNER_DESC above, since --hourly changes how
+# often the task fires, not what it runs.
+CADENCE_DESC="daily $REINDEX_TIME"
+if [ "$HOURLY" -eq 1 ]; then
+    CADENCE_DESC="hourly, :${REINDEX_TIME#*:} past the hour"
+fi
 
 # Platform detect (same matrix as the sibling cadences).
 case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
@@ -457,7 +487,7 @@ status_one() {
         0)
             next=$(printf '%s\n' "$QUERY_OUT" | grep -i 'Next Run Time' | head -1 \
                 | sed 's/^[^:]*:[[:space:]]*//' || true)
-            echo "ARMED      $name${next:+ (next run: $next)}$(task_summary "$name")"
+            cadence_registered_status "$name" "${next:+ (next run: $next)}$(task_summary "$name")" || return 2
             ;;
         1)  echo "not armed  $name$(task_summary "$name")" ;;
         *)
@@ -530,6 +560,7 @@ cmd_disarm() {
     done <<< "$existing"
     if [ "$DRY_RUN" -eq 0 ]; then
         rm -f "$BAT_DIR/qmd-reindex.bat"
+        rm -f "$BAT_DIR/qmd-reindex.vbs"
     fi
     if [ "$found" -eq 0 ]; then
         echo "qmd-cadence: nothing armed — disarm is a no-op"
@@ -551,6 +582,9 @@ cmd_disarm() {
 emit_bat() {
     local himmel_win_esc="$1" payload="$2" log_win_esc="$3" git_bin_esc="${4:-}"
     printf 'rem %s %s\r\n' "$CADENCE_FORMAT_MARKER" "$CADENCE_RUNNER_FORMAT_VERSION"
+    # Pin editor hooks to the no-op `true` so a cadence child (stdin closed under
+    # schtasks) can never block on an editor prompt (HIMMEL-1753).
+    cadence_bat_editor_set
     if [ -n "$git_bin_esc" ]; then
         printf 'set "PATH=%s;%%PATH%%"\r\n' "$git_bin_esc"
     fi
@@ -581,6 +615,19 @@ schedule_daily_xml() {
     printf '      <ScheduleByDay>\n        <DaysInterval>1</DaysInterval>\n      </ScheduleByDay>'
 }
 
+# Repetition fragment (--hourly, HIMMEL-2111): re-fires every hour (PT1H) for a
+# full day (Duration P1D) — the standard Task Scheduler XML idiom for "hourly,
+# forever" (schtasks has no bare /sc HOURLY equivalent reachable from /xml).
+# StopAtDurationEnd=false: the repetition itself re-arms with the next day's
+# CalendarTrigger fire, so the task keeps firing hourly indefinitely. Same
+# fragment graphmap-cadence.sh uses for its AST-himmel task (HIMMEL-1948) —
+# see that script's repetition_xml for the base-type element-ordering
+# rationale (Repetition must precede the ScheduleByX fragment in the emitted
+# trigger, or `schtasks /create /xml` can reject it).
+repetition_xml() {
+    printf '      <Repetition>\n        <Interval>PT1H</Interval>\n        <Duration>P1D</Duration>\n        <StopAtDurationEnd>false</StopAtDurationEnd>\n      </Repetition>'
+}
+
 # Emit the task XML: a CalendarTrigger at the given local time, daily schedule,
 # StartWhenAvailable=true, and the .bat runner as the Exec Command. StartBoundary
 # date is a fixed past sentinel — the schedule fragment (not the date) governs
@@ -590,8 +637,27 @@ schedule_daily_xml() {
 # ASCII — keep it ASCII-only (a non-ASCII byte would need a real UTF-16LE +BOM
 # file; declaring UTF-8 is rejected on Win11).
 emit_task_xml() {
-    local command_raw="$1" start_time="$2" schedule_xml="$3" command
-    command=$(xml_escape "$command_raw")
+    local bat_win="$1" start_time="$2" schedule_xml="$3" repetition="${4:-}" vbs_win vbs_args
+    # HIMMEL-1753: Exec is a `wscript //B <shim>.vbs` wrapper around the .bat.
+    # The earlier hidden-powershell wrapper (-WindowStyle Hidden) was MEASURED to
+    # still allocate visible consoles; wscript //B hosting the .vbs shim (which
+    # runs the .bat hidden via WScript.Shell.Run and forwards its exit code via
+    # WScript.Quit) allocates zero consoles. The shim path is derived from the
+    # .bat path through cadence_vbs_path — the SAME helper cmd_arm writes the
+    # file with — so the referenced path and the written file can never disagree.
+    # //B is the WSH batch-mode flag (no error/prompt UI); the path is quoted so
+    # a BAT_DIR with spaces survives, then xml_escaped like any element text.
+    # WScript.Quit in the shim preserves HIMMEL-1706 exit-code fidelity (rc=42
+    # re-arm survives — proven in test-cadence-format.sh).
+    vbs_win=$(cadence_vbs_path "$bat_win")
+    vbs_args=$(xml_escape "//B \"${vbs_win}\"")
+    # Join repetition + schedule_xml with a real newline BEFORE the heredoc
+    # (mirrors graphmap-cadence's emit_task_xml): heredoc bodies get parameter
+    # expansion but not ANSI-C ($'\n') quote processing, so building the
+    # joined newline here keeps the emitted XML one-element-per-line instead
+    # of gluing `</Repetition>` and `<ScheduleByDay>` onto one line.
+    local trigger_body="$schedule_xml"
+    [ -n "$repetition" ] && trigger_body="${repetition}"$'\n'"${schedule_xml}"
     cat <<XML
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -602,7 +668,7 @@ emit_task_xml() {
     <CalendarTrigger>
       <StartBoundary>2020-01-01T${start_time}:00</StartBoundary>
       <Enabled>true</Enabled>
-${schedule_xml}
+${trigger_body}
     </CalendarTrigger>
   </Triggers>
   <Settings>
@@ -612,7 +678,8 @@ ${schedule_xml}
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${command}</Command>
+      <Command>wscript.exe</Command>
+      <Arguments>${vbs_args}</Arguments>
     </Exec>
   </Actions>
 </Task>
@@ -623,12 +690,12 @@ XML
 # Self-contained error handling; returns the schtasks rc so callers keep the
 # failure flow.
 schtasks_create_xml() {
-    local name="$1" schedule_xml="$2" start_time="$3" bat_win="$4" err_file="$5"
+    local name="$1" schedule_xml="$2" start_time="$3" bat_win="$4" err_file="$5" repetition="${6:-}"
     local xml_file xml_win rc
     if ! xml_file=$(mktemp -t qmd-cadence.xml.XXXXXX 2>"$err_file"); then
         return 1
     fi
-    emit_task_xml "$bat_win" "$start_time" "$schedule_xml" > "$xml_file"
+    emit_task_xml "$bat_win" "$start_time" "$schedule_xml" "$repetition" > "$xml_file"
     if ! xml_win=$(cygpath -w "$xml_file" 2>"$err_file"); then
         rm -f "$xml_file"
         return 1
@@ -804,6 +871,7 @@ qmd_invocation_desc() { qmd_bin_desc; }
 
 cmd_arm() {
     validate_arm_inputs
+    cadence_require_wsh "qmd-cadence" || exit 2
 
     # Resolve bash to an absolute Windows path so the .bat invokes the Git-Bash
     # interpreter directly — NOT the bare `bash` that resolves to the WSL
@@ -911,6 +979,10 @@ cmd_arm() {
     fi
 
     local bat="$BAT_DIR/qmd-reindex.bat"
+    # wscript //B shim (HIMMEL-1753) lives beside the .bat; disarm removes both.
+    # Derived from the .bat Windows path through cadence_vbs_path — the same
+    # helper emit_task_xml derives the referenced path with.
+    local vbs="$BAT_DIR/qmd-reindex.vbs"
 
     # Fire-time run log lives next to the .bat (cmd-escaped for the `>>` target).
     local bat_dir_win log_esc
@@ -929,36 +1001,81 @@ cmd_arm() {
         exit 4
     fi
 
-    local sched
+    local sched rep
     sched=$(schedule_daily_xml)
+    rep=""
+    [ "$HOURLY" -eq 1 ] && rep=$(repetition_xml)
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY qmd-cadence: would write $bat:"
         emit_bat "$himmel_win_esc" "$payload" "$log_esc" "$git_bin_esc" | sed 's/^/    /'
-        echo "DRY qmd-cadence: would schtasks /create /tn $TASK_REINDEX /xml <daily $REINDEX_TIME, StartWhenAvailable=true> /f"
-        emit_task_xml "$bat_win" "$REINDEX_TIME" "$sched" | sed 's/^/    /'
+        echo "DRY qmd-cadence: would write $vbs:"
+        cadence_vbs_wrapper "$bat_win" | sed 's/^/    /'
+        echo "DRY qmd-cadence: would schtasks /create /tn $TASK_REINDEX /xml <$CADENCE_DESC, StartWhenAvailable=true> /f"
+        emit_task_xml "$bat_win" "$REINDEX_TIME" "$sched" "$rep" | sed 's/^/    /'
         echo "qmd-cadence: dry-run complete (no changes made)"
         return 0
     fi
 
     mkdir -p "$BAT_DIR"
-    # Stage the .bat and promote (mv) it only after schtasks /create succeeds —
-    # the same discipline the POSIX path already applies to its runner. Writing
-    # it in place first would let a failed create (exit 4) leave the runner file
-    # carrying the NEW config while the scheduler does not have the new task: a
-    # silent half-state, and under --force the OLD task is already deleted by
-    # then. The task XML still references the FINAL $bat path, so promotion is
-    # what makes the pair consistent. Staged file is cleaned on both paths.
-    local tmp_bat="$bat.tmp.$$"
+    # Stage the .bat + .vbs shim and promote (mv) them only once complete —
+    # the same discipline the POSIX path applies to its runner. Writing in
+    # place would expose a half-written file to a task firing concurrently
+    # with a re-arm; staging in the same directory makes each promotion an
+    # atomic same-filesystem rename, so the FINAL paths only ever hold a
+    # complete file (old or new). Staged files are cleaned on every path.
+    local tmp_bat="$bat.tmp.$$" tmp_vbs="$vbs.tmp.$$"
     emit_bat "$himmel_win_esc" "$payload" "$log_esc" "$git_bin_esc" > "$tmp_bat"
+    cadence_vbs_wrapper "$bat_win" > "$tmp_vbs"
+
+    # HIMMEL-1753 (CR codex-1): publish the runner .bat AND its .vbs shim BEFORE
+    # registering the task. These tasks carry StartWhenAvailable=true, so a run
+    # missed while the PC was off can fire the moment the task is created — and
+    # if the shim were still staged at that point the task would reference a
+    # missing path (first arm) or the previous shim (re-arm). Promoting first
+    # means the only failure mode is an unarmed task beside an unused runner,
+    # which is inert; the reverse is an armed task pointing at nothing.
+    # HIMMEL-1753 round 2 (codex-1): the promotions are CHECKED — an unchecked
+    # mv that failed silently fell through to registering the task anyway, the
+    # exact armed-at-nothing state the ordering above exists to prevent. A
+    # non-regular final path is refused as well: `mv` onto a directory
+    # "succeeds" by moving the staged file INSIDE it, so the rename alone
+    # cannot catch a target the task could never run.
+    local final
+    for final in "$bat" "$vbs"; do
+        if [ -e "$final" ] && [ ! -f "$final" ]; then
+            echo "ERR qmd-cadence: $final exists and is not a regular file — refusing to publish" >&2
+            rm -f "$tmp_bat" "$tmp_vbs"
+            if [ "$REPLACED_EXISTING" -eq 1 ]; then
+                echo "    WARNING: --force already removed the previously armed task — NO qmd cadence is armed now." >&2
+            fi
+            exit 4
+        fi
+    done
+    if ! mv -f "$tmp_bat" "$bat"; then
+        echo "ERR qmd-cadence: failed to promote staged runner to $bat — no task armed" >&2
+        rm -f "$tmp_bat" "$tmp_vbs"
+        if [ "$REPLACED_EXISTING" -eq 1 ]; then
+            echo "    WARNING: --force already removed the previously armed task — NO qmd cadence is armed now." >&2
+        fi
+        exit 4
+    fi
+    if ! mv -f "$tmp_vbs" "$vbs"; then
+        echo "ERR qmd-cadence: failed to promote staged shim to $vbs — no task armed" >&2
+        rm -f "$tmp_vbs"
+        if [ "$REPLACED_EXISTING" -eq 1 ]; then
+            echo "    WARNING: --force already removed the previously armed task — NO qmd cadence is armed now." >&2
+        fi
+        exit 4
+    fi
 
     local err_file
     err_file=$(mktemp -t qmd-cadence.err.XXXXXX)
-    if ! schtasks_create_xml "$TASK_REINDEX" "$sched" "$REINDEX_TIME" "$bat_win" "$err_file"; then
+    if ! schtasks_create_xml "$TASK_REINDEX" "$sched" "$REINDEX_TIME" "$bat_win" "$err_file" "$rep"; then
         echo "ERR qmd-cadence: schtasks /create $TASK_REINDEX failed:" >&2
         cat "$err_file" >&2
-        rm -f "$err_file" "$tmp_bat"
-        echo "    existing runner .bat left untouched" >&2
+        rm -f "$err_file"
+        echo "    runner .bat + .vbs shim were published, but NO task was armed" >&2
         # Under --force the OLD task was already deleted above, so this failure
         # leaves the machine with NO cadence armed. Say so plainly: the .bat
         # line alone reads as "nothing changed", which is the opposite of true.
@@ -971,13 +1088,12 @@ cmd_arm() {
     fi
     if [ -s "$err_file" ]; then cat "$err_file" >&2; fi
     rm -f "$err_file"
-    mv -f "$tmp_bat" "$bat"
 
     cat <<EOF
 
 ================================================================
   QMD REINDEX CADENCE ARMED (HIMMEL-568)
-  $TASK_REINDEX  daily $REINDEX_TIME  -> $RUNNER_DESC
+  $TASK_REINDEX  $CADENCE_DESC  -> $RUNNER_DESC
   Scope:  all configured qmd collections
   qmd:    $(qmd_invocation_desc)
   Himmel: $HIMMEL_ROOT
@@ -1267,7 +1383,14 @@ cron_arm() {
     hh="${REINDEX_TIME%:*}"; mm="${REINDEX_TIME#*:}"
     local q_runner entry
     q_runner=$(cron_escape "$CRON_RUNNER")
-    entry="$mm $hh * * * $q_runner # $TASK_REINDEX"
+    if [ "$HOURLY" -eq 1 ]; then
+        # Hourly forever: fixed minute, every hour — mirrors graphmap-cadence's
+        # AST-himmel cron entry (HIMMEL-1948), the cron(5) idiom for "hourly"
+        # since cron has no repetition construct to layer on top like schtasks.
+        entry="$mm * * * * $q_runner # $TASK_REINDEX"
+    else
+        entry="$mm $hh * * * $q_runner # $TASK_REINDEX"
+    fi
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY qmd-cadence: would write $CRON_RUNNER:"
@@ -1307,7 +1430,7 @@ cron_arm() {
 
 ================================================================
   QMD REINDEX CADENCE ARMED (HIMMEL-568, cron)
-  $TASK_REINDEX  daily $REINDEX_TIME  -> $RUNNER_DESC
+  $TASK_REINDEX  $CADENCE_DESC  -> $RUNNER_DESC
   Scope:  all configured qmd collections
   qmd:    $(qmd_invocation_desc)
   Himmel: $HIMMEL_ROOT

@@ -353,5 +353,24 @@ assert_contains "$HOME_DIR/profiles/himmel_agent/config.yaml" "model_aliases:" "
 assert_contains "$HOME_DIR/profiles/himmel_agent/config.yaml" "alibaba-coding-plan" "(G) synced alias content matches root"
 assert_contains "$HOME_DIR/profiles/himmel_agent/config.yaml" "parity_guard.py" "(G) hook still wired after alias sync"
 
+echo "== scenario H: default root resolution with no HERMES_HOME/LOCALAPPDATA (HIMMEL-2437) =="
+# No real hermes install is reachable this way (resolve_home()'s default has
+# no fixture to seed), so this pins the RESOLVED path in the installer's own
+# "hermes home not found" error rather than a full provisioning run — the
+# cheapest seam available: resolve_home() is a plain shell function with no
+# other hook. Must land on $HOME/.hermes (Linux/macOS default — upstream
+# hermes' own default config home), NEVER $HOME/AppData/Local/hermes (a
+# Windows layout under a POSIX $HOME) and never $HOME/.local/share/hermes
+# (the pre-fix fallback here).
+DEFAULT_ROOT_HOME="$TMP/default-root-home"
+mkdir -p "$DEFAULT_ROOT_HOME"
+out=$(env -u HERMES_HOME -u LOCALAPPDATA HOME="$DEFAULT_ROOT_HOME" \
+  bash "$INSTALLER" 2>&1) && rc=0 || rc=$?
+if [ "$rc" -ne 0 ] && grep -qF "hermes home not found at $DEFAULT_ROOT_HOME/.hermes" <<<"$out"; then
+  pass "(H) default root resolves to \$HOME/.hermes when nothing overrides it"
+else
+  fail "(H) expected 'hermes home not found at $DEFAULT_ROOT_HOME/.hermes' (rc=$rc): $out"
+fi
+
 echo ""
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED" >&2; exit 1; fi

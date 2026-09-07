@@ -17,11 +17,11 @@ fi
 script_dir=$(cd "$(dirname "$0")" && pwd)
 ps1="$script_dir/normalize-worktree-acl.ps1"
 
-if command -v pwsh >/dev/null 2>&1; then
-    exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$ps1" "$1"
-fi
-if command -v powershell.exe >/dev/null 2>&1; then
-    exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ps1" "$1"
+# shellcheck source=/dev/null
+. "$script_dir/../lib/resolve-powershell.sh"
+
+if ps_bin=$(resolve_powershell); then
+    exec "$ps_bin" -NoProfile -ExecutionPolicy Bypass -File "$ps1" "$1"
 fi
 
 echo "normalize-worktree-acl.sh: PowerShell not found" >&2

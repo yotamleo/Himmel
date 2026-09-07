@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Smoke test for scripts/hooks/inject-doc-freshness.sh. Exit 0 if all pass.
 set -uo pipefail
-HOOK="$(cd "$(dirname "$0")" && pwd)/inject-doc-freshness.sh"
+HOOKS="$(cd "$(dirname "$0")" && pwd)"
+HOOK="$HOOKS/inject-doc-freshness.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$HOOKS/../lib/fixture-tempdir.sh"
 _fail=0
 chk() { local name="$1" cond="$2"; if eval "$cond"; then printf '  PASS  %s\n' "$name"; else printf '  FAIL  %s\n' "$name"; _fail=$((_fail+1)); fi; }
 
@@ -20,7 +24,7 @@ chk "leg on → exit 0 (fail-open)" "[ $rc -eq 0 ]"
 # triggers a <system-reminder> block when the session leg is on.
 # Fixture: temp repo with 4-col map + mapped doc; origin/main at the seed commit;
 # feature branch with a single feat: commit touching a mapped source.
-_em_tmp=$(mktemp -d)
+_em_tmp=$(fixture_mktemp_dir) || exit 1
 git -C "$_em_tmp" init -q -b main >/dev/null 2>&1 || git -C "$_em_tmp" init -q >/dev/null 2>&1
 git -C "$_em_tmp" config user.email t@t; git -C "$_em_tmp" config user.name t
 mkdir -p "$_em_tmp/scripts/hooks" "$_em_tmp/docs/internals"

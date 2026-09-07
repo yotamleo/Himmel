@@ -31,6 +31,19 @@ export async function getUpdates(token: string, offset: number, timeout = 30, f:
   if (!j.ok) throw new Error(`getUpdates not ok: ${j.description ?? res.status}`);
   return j.result ?? [];   // tolerate a malformed ok:true with no result array (never throw downstream)
 }
+// Resolve the bridge's own bot username (LUNA-158): the require-mention gate
+// needs it to recognize `@<botusername>` in group text. Best-effort — null on
+// any failure (network, non-ok, malformed result), so the caller can fail
+// open rather than the whole bridge refusing to start over a transient
+// getMe hiccup.
+export async function getMe(token: string, f: F = fetch): Promise<string | null> {
+  try {
+    const res = await f(API(token, "getMe"), { signal: AbortSignal.timeout(10_000) });
+    const j: any = await res.json().catch(() => ({}));
+    if (!j.ok || typeof j.result?.username !== "string") return null;
+    return j.result.username;
+  } catch { return null; }
+}
 // Best-effort "typing…" indicator (HIMMEL-260). No retries, failures swallowed —
 // a missed indicator is harmless; it must never disturb the poll loop.
 export async function sendChatAction(token: string, chat_id: number, f: F = fetch): Promise<void> {

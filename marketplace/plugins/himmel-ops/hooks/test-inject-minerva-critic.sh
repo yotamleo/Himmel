@@ -13,6 +13,14 @@ emit() { printf '%s' "$1" | bash "$SCRIPT"; }
 out=$(emit '{"tool_name":"Skill","tool_input":{"skill":"superpowers:brainstorming"}}')
 case "$out" in *spec-critic*|*minerva*) ;; *) echo "FAIL: brainstorming not injected (got '$out')"; fail=1;; esac
 
+# grilling (mattpocock) → routed into minerva Stage 1a (HIMMEL-2039)
+out=$(emit '{"tool_name":"Skill","tool_input":{"skill":"mattpocock-skills:grilling"}}')
+case "$out" in *minerva*) ;; *) echo "FAIL: grilling not routed to minerva (got '$out')"; fail=1;; esac
+
+# a skill merely CONTAINING "grilling" is not the grilling skill → no injection
+out=$(emit '{"tool_name":"Skill","tool_input":{"skill":"some:grilling-tips"}}')
+[ -z "$out" ] || { echo "FAIL: grilling-substring skill injected (got '$out')"; fail=1; }
+
 # writing-plans → inject plan-critic directive
 out=$(emit '{"tool_name":"Skill","tool_input":{"skill":"superpowers:writing-plans"}}')
 case "$out" in *plan-critic*|*minerva*) ;; *) echo "FAIL: writing-plans not injected (got '$out')"; fail=1;; esac

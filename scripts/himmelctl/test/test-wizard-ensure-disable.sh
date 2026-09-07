@@ -103,6 +103,31 @@
 #      `status --json` verb) forever, with no unwire descriptor to ever
 #      converge it. Asserted across TWO consecutive runs (not a one-shot
 #      fluke).
+#   q. (codex-2 review finding, HIMMEL-2349) pins the chosen asymmetric
+#      behaviour of the split-consent decline: a run with towardEnabled AND
+#      (via --prune) towardDisabled items, declined interactively at the
+#      FIRST (converge) prompt, aborts the ENTIRE run — the second
+#      (disable) confirm is never reached, so --prune's disable pass is
+#      skipped too, not just the converge. Asserts the decline message says
+#      so explicitly, and that NEITHER item is mutated (converge-item stays
+#      uninstalled, prune-item stays installed with its unwire spy log
+#      empty).
+#   r. (codex-4 review finding, HIMMEL-2349) describeDisableCommand()'s
+#      evidence line ("disabling would run: ...") quotes an argument
+#      containing a space (a target path under "target with space") —
+#      this string is consent evidence the operator reads before allowing
+#      a disable, so an unquoted, ambiguous rendering is an honesty defect.
+#   t. (CR fix, codex-1 round 6, HIMMEL-2349) the under-recorded EVIDENCE
+#      count must not count an item carrying a deliberate per-item override
+#      (target.items[id].overrides non-empty) — an override IS recorded
+#      operator intent, the opposite of an under-recorded record. PRIMARY:
+#      three removable items, all physically present, all carrying a
+#      deliberate override — `ensure --prune --yes` (no --profile) must NOT
+#      trip the guard, and the disable pass genuinely proceeds (markers
+#      gone). NEGATIVE CONTROL (mandatory): the identical fixture with the
+#      SAME three items but NO overrides — the guard DOES trip and --prune
+#      is held back, proving the primary case discriminates rather than
+#      passing vacuously.
 
 set -euo pipefail
 
@@ -116,6 +141,8 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+# shellcheck disable=SC1091
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 state_lib="$repo_root/scripts/himmelctl/lib/state.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -149,17 +176,16 @@ snapshot_file() {
 node_bin=$(command -v node)
 
 work=$(mktemp -d)
-cleanup() { rm -rf "$work"; }
+# case s (negative control): the mutated pre-v2 bin.js lives NEXT TO the real
+# one (not under $work) so its relative `./lib/...` and `../../hooks/...`
+# requires resolve to the exact same real files bin.js already uses -- no
+# directory-tree copy needed. The name carries $$ (this run's PID) because
+# himmel runs concurrent suites/`/pr-check`s: a fixed name would let two
+# runs' cleanup traps `rm -f` each other's fixture, or one overwrite the
+# other's copy mid-test. Always removed here, pass or fail.
+mutatedWizardInTree="$repo_root/scripts/himmelctl/.tmp-hazard-return2-test.$$.js"
+cleanup() { rm -rf "$work"; rm -f "$mutatedWizardInTree"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 write_cache() {
   cat > "$1" <<JSON
@@ -217,11 +243,11 @@ write_cache "$cacheDir/install-profile.json" adopter project none "" inline "" l
 logDisable="$work/disable-log.txt"; : > "$logDisable"
 
 runEnsure() {
-  ( cd "$targetDir" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HOME="$homeDir" DISABLE_LOG="$(winpath "$logDisable")" \
+  ( cd "$targetDir" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" DISABLE_LOG="$(winpath "$logDisable")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 runStatus() {
-  ( cd "$targetDir" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HOME="$homeDir" \
+  ( cd "$targetDir" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
       "$node_bin" "$wizard" status "$@" </dev/null )
 }
 
@@ -250,17 +276,35 @@ echo "ok: setup — both items converged (installed) under profile luna"
 # runs keeps cases a/b independently meaningful regardless of processing
 # order — case l (below) is where the fail-fast ordering ITSELF gets
 # tested directly. ──────────────────────────────────────────────────────
+# ── case a (part 0, HIMMEL-2349 split consent): the SAME reconcile WITHOUT
+# --prune must converge-only — the item flips desired:false (the reconcile
+# itself is unconditional) but stays PHYSICALLY WIRED, and its unwire
+# primitive never runs. This is the split-consent guarantee itself (default
+# `ensure` never disables), worth asserting permanently alongside case a's
+# own --prune-opted-in disable below, not just implied by it.
 set +e
-out2a=$(runEnsure --profile core --yes --items wiring-statusline 2>&1); rc2a=$?
+out2a0=$(runEnsure --profile core --yes --items wiring-statusline 2>&1); rc2a0=$?
 set -e
-[ "$rc2a" -eq 0 ] || fail "step 2a: ensure --items wiring-statusline should exit 0 (the per-item unwire succeeds) (got rc=$rc2a): $out2a"
+[ "$rc2a0" -eq 0 ] || fail "step 2a (part 0, no --prune): ensure --items wiring-statusline should exit 0 (got rc=$rc2a0): $out2a0"
+[ -f "$targetDir/wiring.marker" ] || fail "case a (part 0): wiring.marker should still exist — default ensure (no --prune) must not disable it"
+if grep -qF 'unwire-statusline' "$logDisable"; then
+  fail "case a (part 0): unwire-statusline.sh must NOT have run without --prune (spy log: $(cat "$logDisable"))"
+fi
+echo "ok: case a (part 0) — split consent: the SAME reconcile WITHOUT --prune leaves the item wired (unwire never runs)"
+
+# ── case a (part 1, HIMMEL-2349): --prune opts in — NOW the per-item unwire
+# actually runs and the marker is removed. ─────────────────────────────────
+set +e
+out2a=$(runEnsure --profile core --yes --prune --items wiring-statusline 2>&1); rc2a=$?
+set -e
+[ "$rc2a" -eq 0 ] || fail "step 2a: ensure --items wiring-statusline --prune should exit 0 (the per-item unwire succeeds) (got rc=$rc2a): $out2a"
 
 # ── case a: per-item item's unwire ran; marker removed ─────────────────────
 if ! grep -qF 'unwire-statusline' "$logDisable"; then
   fail "case a: unwire-statusline.sh should have been invoked (spy log: $(cat "$logDisable"))"
 fi
 [ ! -f "$targetDir/wiring.marker" ] || fail "case a: wiring.marker should be REMOVED after the per-item unwire runs"
-echo "ok: case a (part 1) — the per-item item's unwire primitive ran; its marker was removed"
+echo "ok: case a (part 1) — --prune opted in: the per-item item's unwire primitive ran; its marker was removed"
 
 # ── case a (part 2): a follow-up read, evaluated back under the ORIGINAL
 # profile (luna) where the item is desired again, shows it severity:red —
@@ -270,7 +314,7 @@ echo "ok: case a (part 1) — the per-item item's unwire primitive ran; its mark
 # CR fix: paths passed via the ENVIRONMENT (STATE_LIB_PATH/MANIFEST_PATH/
 # ANSWERS_PATH), never embedded in the node -e source string — a checkout
 # path containing an apostrophe would otherwise break the inline JS. ───────
-( cd "$targetDir" && HOME="$homeDir" HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" \
+( cd "$targetDir" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" \
     STATE_LIB_PATH="$(winpath "$state_lib")" \
     MANIFEST_PATH="$(winpath "$fixtureRepo/scripts/install/manifest.json")" \
     ANSWERS_PATH="$(winpath "$cacheDir/install-profile.json")" \
@@ -298,7 +342,7 @@ echo "ok: case a (part 2) — re-evaluated under its original profile, the disab
 # on purpose, to avoid re-triggering a real convergence), so the stored
 # profile can no longer be assumed to still be core by this point. ───────
 set +e
-out2b=$(runEnsure --profile core --yes --items full-offboard-item 2>&1); rc2b=$?
+out2b=$(runEnsure --profile core --yes --prune --items full-offboard-item 2>&1); rc2b=$?
 set -e
 [ "$rc2b" -ne 0 ] || fail "step 2b: ensure --items full-offboard-item should exit non-zero (the full-offboard-only item errors) (got rc=0): $out2b"
 
@@ -308,6 +352,20 @@ set -e
 grepq "$out2b" -F 'full-offboard-item' || fail "case b: the error should name 'full-offboard-item' (got: $out2b)"
 grepq "$out2b" -F 'himmelctl uninstall' || fail "case b: the error should point at 'himmelctl uninstall' (got: $out2b)"
 echo "ok: case b — the full-offboard-only item errors naming itself + pointing at 'himmelctl uninstall'; its marker is untouched"
+
+# ── case b2 (CR round 8, codex-1, HIMMEL-2349): the per-item disable
+# EVIDENCE line (describeDisableCandidate(), printed above the Step 4
+# dispatch that produced case b's error) must not promise a run that never
+# happens. full-offboard-item is 'present' here (same run as case b, same
+# $out2b) — Step 4's else-branch for it ERRORS + BREAKS instead of running
+# 'himmelctl uninstall', so the evidence line must say the run STOPS and
+# the operator must run it themselves, never "disabling would run: ...".
+if grepq "$out2b" -F 'would run'; then
+  fail "case b2: the full-offboard-only evidence line must NOT say 'would run' — Step 4 never runs 'himmelctl uninstall' for it, it errors + aborts (got: $out2b)"
+fi
+grepq "$out2b" -F 'the run will STOP and ask you to run '"'"'himmelctl uninstall'"'"' yourself' \
+  || fail "case b2: the evidence line must say the run stops and the operator must run 'himmelctl uninstall' themselves (got: $out2b)"
+echo "ok: case b2 — the full-offboard-only disable-evidence line does not claim a run that never happens; it says the run stops and names the manual command"
 
 # ── case c (CR fix): a DEGRADED (not fully present) removable item is
 # STILL queued for disable, and a "successful" unwire (exit 0) that leaves
@@ -355,8 +413,8 @@ write_cache "$cacheDeg/install-profile.json" adopter project none "" inline "" l
 logDeg="$work/disable-log-deg.txt"; : > "$logDeg"
 
 set +e
-outDeg=$( cd "$targetDeg" && HIMMELCTL_REPO_ROOT="$(winpath "$repoDeg")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheDeg")" HOME="$homeDeg" DISABLE_LOG="$(winpath "$logDeg")" \
-    "$node_bin" "$wizard" ensure --yes 2>&1 </dev/null ); rcDeg=$?
+outDeg=$( cd "$targetDeg" && HIMMELCTL_REPO_ROOT="$(winpath "$repoDeg")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheDeg")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDeg")-luna-config.json" HOME="$homeDeg" USERPROFILE="$(winpath "$homeDeg")" DISABLE_LOG="$(winpath "$logDeg")" \
+    "$node_bin" "$wizard" ensure --yes --prune 2>&1 </dev/null ); rcDeg=$?
 set -e
 [ "$rcDeg" -ne 0 ] || fail "case c: ensure should exit non-zero (the degraded item's unwire doesn't actually clear it) (got rc=0): $outDeg"
 grep -qF 'unwire-pretooluse-hooks' "$logDeg" || fail "case c: the degraded item's unwire primitive should have been invoked (queued despite not being fully 'present') (spy log: $(cat "$logDeg"))"
@@ -378,7 +436,7 @@ homeD="$work/homeD"; mkdir -p "$homeD"
 write_cache "$cacheD/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureD() {
-  ( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HOME="$homeD" \
+  ( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheD")-luna-config.json" HOME="$homeD" USERPROFILE="$(winpath "$homeD")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 # Converge full-offboard-item under luna (installs it: offboard.marker
@@ -390,12 +448,12 @@ set -e
 [ "$rcD0" -eq 0 ] || fail "case d setup: converging full-offboard-item under luna should exit 0 (got rc=$rcD0): $outD0"
 [ -f "$targetD/offboard.marker" ] || fail "case d setup: offboard.marker should exist after the initial luna converge"
 set +e
-runEnsureD --profile core --yes --items full-offboard-item >/dev/null 2>&1; rcD1=$?
+runEnsureD --profile core --yes --prune --items full-offboard-item >/dev/null 2>&1; rcD1=$?
 set -e
 [ "$rcD1" -ne 0 ] || fail "case d setup: reconciling to core should exit non-zero (full-offboard-item errors) (got rc=0)"
 
 set +e
-outDry=$(runEnsureD --dry-run --items full-offboard-item 2>&1); rcDry=$?
+outDry=$(runEnsureD --dry-run --prune --items full-offboard-item 2>&1); rcDry=$?
 set -e
 [ "$rcDry" -ne 0 ] || fail "case d: --dry-run must NOT silently return 0 when a full-offboard-only blocker exists (got rc=0): $outDry"
 grepq "$outDry" -F 'DRY:' || fail "case d: expected at least one DRY: line (got: $outDry)"
@@ -459,7 +517,7 @@ homeE="$work/homeE"; mkdir -p "$homeE"
 write_cache "$cacheE/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureE() {
-  ( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repoE")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" HOME="$homeE" ORDER_LOG="$(winpath "$orderLogE")" \
+  ( cd "$targetE" && HIMMELCTL_REPO_ROOT="$(winpath "$repoE")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheE")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheE")-luna-config.json" HOME="$homeE" USERPROFILE="$(winpath "$homeE")" ORDER_LOG="$(winpath "$orderLogE")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 orderLogE="$work/order-log-e.txt"; : > "$orderLogE"
@@ -475,7 +533,7 @@ set -e
 # Reconcile to core -> both flip desired:false while still physically
 # present -> toward-disabled dispatch for both, in REVERSE dependency order.
 set +e
-runEnsureE --profile core --yes >/dev/null 2>&1; rcE1=$?
+runEnsureE --profile core --yes --prune >/dev/null 2>&1; rcE1=$?
 set -e
 [ "$rcE1" -eq 0 ] || fail "case e: reconciling to core should converge both unwires cleanly (got rc=$rcE1)"
 
@@ -520,8 +578,8 @@ homeF="$work/homeF"; mkdir -p "$homeF"
 write_cache "$cacheF/install-profile.json" adopter project none "" inline "" lean
 
 set +e
-outF=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repoF")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheF")" HOME="$homeF" \
-    "$node_bin" "$wizard" ensure --dry-run 2>&1 </dev/null ); rcF=$?
+outF=$( cd "$targetF" && HIMMELCTL_REPO_ROOT="$(winpath "$repoF")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheF")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheF")-luna-config.json" HOME="$homeF" USERPROFILE="$(winpath "$homeF")" \
+    "$node_bin" "$wizard" ensure --dry-run --prune 2>&1 </dev/null ); rcF=$?
 set -e
 [ "$rcF" -ne 0 ] || fail "case f: --dry-run with an unrunnable unwire descriptor must NOT silently return 0 (got rc=0): $outF"
 grepq "$outF" -F 'unrunnable-unwire-item' || fail "case f: the DRY output should name unrunnable-unwire-item (got: $outF)"
@@ -580,7 +638,7 @@ write_cache "$cacheG/install-profile.json" adopter project none "" inline "" lea
 logG="$work/disable-log-g.txt"; : > "$logG"
 
 runEnsureG() {
-  ( cd "$targetG" && HIMMELCTL_REPO_ROOT="$(winpath "$repoG")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HOME="$homeG" DISABLE_LOG_G="$(winpath "$logG")" \
+  ( cd "$targetG" && HIMMELCTL_REPO_ROOT="$(winpath "$repoG")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheG")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheG")-luna-config.json" HOME="$homeG" USERPROFILE="$(winpath "$homeG")" DISABLE_LOG_G="$(winpath "$logG")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 
@@ -605,7 +663,7 @@ set -e
 stateSnapBefore=$(snapshot_file "$cacheG/state.json")
 profileSnapBefore=$(snapshot_file "$cacheG/install-profile.json")
 set +e
-outG1=$(runEnsureG --profile core --yes --items item-x 2>&1); rcG1=$?
+outG1=$(runEnsureG --profile core --yes --prune --items item-x 2>&1); rcG1=$?
 set -e
 [ "$rcG1" -eq 2 ] || fail "case g: --items item-x (dependent item-y excluded) should exit 2 (got rc=$rcG1): $outG1"
 grepq "$outG1" -F 'item-y' || fail "case g: the rejection should name the excluded dependent item-y (got: $outG1)"
@@ -704,7 +762,7 @@ homeH="$work/homeH"; mkdir -p "$homeH"
 write_cache "$cacheH/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureH() {
-  ( cd "$targetH" && HIMMELCTL_REPO_ROOT="$(winpath "$repoH")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheH")" HOME="$homeH" \
+  ( cd "$targetH" && HIMMELCTL_REPO_ROOT="$(winpath "$repoH")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheH")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheH")-luna-config.json" HOME="$homeH" USERPROFILE="$(winpath "$homeH")" \
       HIMMELCTL_SUDO_PASSWORD='h-env-secret' OTHER_MARKER_H='should-survive-h' \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
@@ -720,7 +778,7 @@ set -e
 # stdio is inherited, sharing ensure's own stdout — the SAME channel this
 # test captures).
 set +e
-outH1=$(runEnsureH --profile core --yes); rcH1=$?
+outH1=$(runEnsureH --profile core --yes --prune); rcH1=$?
 set -e
 [ "$rcH1" -eq 0 ] || fail "case h: reconciling to core should cleanly unwire leaky-item (got rc=$rcH1): $outH1"
 [ ! -f "$targetH/leaky.marker" ] || fail "case h: leaky.marker should be removed after the unwire runs"
@@ -779,16 +837,16 @@ grandchildPidFileI="$work/grandchild-unwire.pid"
 grandchildPidFileIW="$(winpath "$grandchildPidFileI")"
 
 set +e
-outI0=$(cd "$targetI" && HIMMELCTL_REPO_ROOT="$(winpath "$repoI")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheI2")" HOME="$homeI" \
+outI0=$(cd "$targetI" && HIMMELCTL_REPO_ROOT="$(winpath "$repoI")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheI2")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheI2")-luna-config.json" HOME="$homeI" USERPROFILE="$(winpath "$homeI")" \
     "$node_bin" "$wizard" ensure --profile luna --yes </dev/null); rcI0=$?
 set -e
 [ "$rcI0" -eq 0 ] || fail "case i setup: converging wedged-unwire-item under luna should exit 0 (got rc=$rcI0): $outI0"
 [ -f "$targetI/wedged.marker" ] || fail "case i setup: wedged.marker should exist after the initial luna converge"
 
 set +e
-outI1=$(cd "$targetI" && HIMMELCTL_REPO_ROOT="$(winpath "$repoI")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheI2")" HOME="$homeI" \
+outI1=$(cd "$targetI" && HIMMELCTL_REPO_ROOT="$(winpath "$repoI")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheI2")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheI2")-luna-config.json" HOME="$homeI" USERPROFILE="$(winpath "$homeI")" \
     GRANDCHILD_PID_FILE_I="$grandchildPidFileIW" INSTALL_TIMEOUT_SECS=1 \
-    "$node_bin" "$wizard" ensure --profile core --yes 2>&1 </dev/null); rcI1=$?
+    "$node_bin" "$wizard" ensure --profile core --yes --prune 2>&1 </dev/null); rcI1=$?
 set -e
 [ "$rcI1" -ne 0 ] || fail "case i: a timed-out unwire should exit non-zero (got rc=0): $outI1"
 grepq "$outI1" -F 'wedged-unwire-item' || fail "case i: the failure should name wedged-unwire-item (got: $outI1)"
@@ -863,7 +921,7 @@ homeJ="$work/homeJ"; mkdir -p "$homeJ"
 write_cache "$cacheJ/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureJ() {
-  ( cd "$targetJ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoJ")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheJ")" HOME="$homeJ" \
+  ( cd "$targetJ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoJ")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheJ")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheJ")-luna-config.json" HOME="$homeJ" USERPROFILE="$(winpath "$homeJ")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 # Converge item-x under luna (installs it: x.marker created; item-y is NOT
@@ -877,7 +935,7 @@ set -e
 # Reconcile to core: item-x drops out (unwound) while item-y comes in
 # (installed) -- ONE ensure call, both directions, in the SAME run.
 set +e
-outJ1=$(runEnsureJ --profile core --yes); rcJ1=$?
+outJ1=$(runEnsureJ --profile core --yes --prune); rcJ1=$?
 set -e
 [ "$rcJ1" -eq 0 ] || fail "case j: reconciling to core should cleanly disable item-x and install item-y (got rc=$rcJ1): $outJ1"
 [ ! -f "$targetJ/x.marker" ] || fail "case j: x.marker should be removed (item-x unwired)"
@@ -902,7 +960,7 @@ write_cache "$cacheK/install-profile.json" adopter project none "" inline "" lea
 logK="$work/disable-log-k.txt"; : > "$logK"
 
 runEnsureK() {
-  ( cd "$targetK" && HIMMELCTL_REPO_ROOT="$(winpath "$repoG")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheK")" HOME="$homeK" DISABLE_LOG_G="$(winpath "$logK")" \
+  ( cd "$targetK" && HIMMELCTL_REPO_ROOT="$(winpath "$repoG")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheK")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheK")-luna-config.json" HOME="$homeK" USERPROFILE="$(winpath "$homeK")" DISABLE_LOG_G="$(winpath "$logK")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 set +e
@@ -914,7 +972,7 @@ set -e
 # --items item-x,item-y (BOTH included) -- item-y is still desired under
 # core (it was never going to be disabled), so this must STILL reject.
 set +e
-outK1=$(runEnsureK --profile core --yes --items item-x,item-y 2>&1); rcK1=$?
+outK1=$(runEnsureK --profile core --yes --prune --items item-x,item-y 2>&1); rcK1=$?
 set -e
 [ "$rcK1" -eq 2 ] || fail "case k: --items item-x,item-y (item-y included but still desired) should exit 2 (got rc=$rcK1): $outK1"
 grepq "$outK1" -F 'item-y' || fail "case k: the rejection should name item-y (got: $outK1)"
@@ -999,7 +1057,7 @@ orderLogL="$work/order-log-l.txt"; : > "$orderLogL"
 installLogL="$work/install-log-l.txt"; : > "$installLogL"
 
 runEnsureL() {
-  ( cd "$targetL" && HIMMELCTL_REPO_ROOT="$(winpath "$repoL")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheL")" HOME="$homeL" \
+  ( cd "$targetL" && HIMMELCTL_REPO_ROOT="$(winpath "$repoL")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheL")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheL")-luna-config.json" HOME="$homeL" USERPROFILE="$(winpath "$homeL")" \
       ORDER_LOG_L="$(winpath "$orderLogL")" INSTALL_LOG_L="$(winpath "$installLogL")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
@@ -1022,7 +1080,7 @@ set -e
 # is rigged to fail); item-z flips toward-enabled (desired+red) at the
 # SAME time.
 set +e
-outL1=$(runEnsureL --profile core --yes 2>&1); rcL1=$?
+outL1=$(runEnsureL --profile core --yes --prune 2>&1); rcL1=$?
 set -e
 [ "$rcL1" -ne 0 ] || fail "case l: a failed unwire should exit non-zero (got rc=0): $outL1"
 grepq "$outL1" -F 'item-y' || fail "case l: the failure should name item-y (got: $outL1)"
@@ -1060,7 +1118,7 @@ write_cache "$cacheM/install-profile.json" adopter project none "" inline "" lea
 logM="$work/disable-log-m.txt"; : > "$logM"
 
 runEnsureM() {
-  ( cd "$targetM" && HIMMELCTL_REPO_ROOT="$(winpath "$repoG")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheM")" HOME="$homeM" DISABLE_LOG_G="$(winpath "$logM")" \
+  ( cd "$targetM" && HIMMELCTL_REPO_ROOT="$(winpath "$repoG")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheM")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheM")-luna-config.json" HOME="$homeM" USERPROFILE="$(winpath "$homeM")" DISABLE_LOG_G="$(winpath "$logM")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 # Converge both under luna (installs them: both markers created).
@@ -1076,7 +1134,7 @@ set -e
 # the ungated check must REJECT before any unwire, zero mutation.
 stateSnapBeforeM=$(snapshot_file "$cacheM/state.json")
 set +e
-outM1=$(runEnsureM --profile core --yes 2>&1); rcM1=$?
+outM1=$(runEnsureM --profile core --yes --prune 2>&1); rcM1=$?
 set -e
 [ "$rcM1" -eq 2 ] || fail "case m: an UNFILTERED ensure must REJECT (exit 2) when unwiring item-x would break the still-desired item-y (got rc=$rcM1): $outM1"
 grepq "$outM1" -F 'item-y' || fail "case m: the rejection should name the still-desired dependent item-y (got: $outM1)"
@@ -1162,7 +1220,7 @@ write_cache "$cacheN/install-profile.json" adopter project none "" inline "" lea
 logN="$work/disable-log-n.txt"; : > "$logN"
 
 runEnsureN() {
-  ( cd "$targetN" && HIMMELCTL_REPO_ROOT="$(winpath "$repoN")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheN")" HOME="$homeN" DISABLE_LOG_N="$(winpath "$logN")" \
+  ( cd "$targetN" && HIMMELCTL_REPO_ROOT="$(winpath "$repoN")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheN")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheN")-luna-config.json" HOME="$homeN" USERPROFILE="$(winpath "$homeN")" DISABLE_LOG_N="$(winpath "$logN")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 
@@ -1185,7 +1243,7 @@ set -e
 # (the check is ungated — round 19).
 stateSnapBeforeN=$(snapshot_file "$cacheN/state.json")
 set +e
-outN1=$(runEnsureN --profile core --yes 2>&1); rcN1=$?
+outN1=$(runEnsureN --profile core --yes --prune 2>&1); rcN1=$?
 set -e
 [ "$rcN1" -eq 2 ] || fail "case n: --profile core (transitive still-desired dependent item-c behind undesired item-b) should exit 2 (got rc=$rcN1): $outN1"
 grepq "$outN1" -F 'item-c' || fail "case n: the rejection should name the still-desired TRANSITIVE dependent item-c (got: $outN1)"
@@ -1264,7 +1322,7 @@ write_cache "$cacheO/install-profile.json" adopter project none "" inline "" lea
 logO="$work/disable-log-o.txt"; : > "$logO"
 
 runEnsureO() {
-  ( cd "$targetO" && HIMMELCTL_REPO_ROOT="$(winpath "$repoO")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheO")" HOME="$homeO" DISABLE_LOG_O="$(winpath "$logO")" \
+  ( cd "$targetO" && HIMMELCTL_REPO_ROOT="$(winpath "$repoO")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheO")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheO")-luna-config.json" HOME="$homeO" USERPROFILE="$(winpath "$homeO")" DISABLE_LOG_O="$(winpath "$logO")" \
       "$node_bin" "$wizard" ensure "$@" </dev/null )
 }
 
@@ -1285,7 +1343,7 @@ set -e
 # item-b, probes it ABSENT, and must STOP — never reaching item-c. Unwiring
 # item-a must PROCEED (rc 0, marker removed), NOT be falsely rejected.
 set +e
-outO1=$(runEnsureO --profile core --yes 2>&1); rcO1=$?
+outO1=$(runEnsureO --profile core --yes --prune 2>&1); rcO1=$?
 set -e
 [ "$rcO1" -eq 0 ] || fail "case o: unwiring item-a must PROCEED (exit 0) when the intermediate item-b is ABSENT — the chain is already broken, so blocking is a false rejection (got rc=$rcO1): $outO1"
 if grepq "$outO1" -F 'item-c'; then
@@ -1342,8 +1400,8 @@ homeP="$work/homeP"; mkdir -p "$homeP"
 write_cache "$cacheP/install-profile.json" adopter project none "" inline "" lean
 
 runEnsureP() {
-  ( cd "$targetP" && HIMMELCTL_REPO_ROOT="$(winpath "$repoP")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheP")" HOME="$homeP" \
-      "$node_bin" "$wizard" ensure --yes 2>&1 </dev/null )
+  ( cd "$targetP" && HIMMELCTL_REPO_ROOT="$(winpath "$repoP")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheP")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheP")-luna-config.json" HOME="$homeP" USERPROFILE="$(winpath "$homeP")" \
+      "$node_bin" "$wizard" ensure --yes --prune 2>&1 </dev/null )
 }
 
 set +e
@@ -1368,5 +1426,472 @@ outP2=$(runEnsureP); rcP2=$?
 set -e
 [ "$rcP2" -eq 0 ] || fail "case p: a SECOND ensure run must also exit 0 -- a permanently degraded full-offboard-only item must never wedge (got rc=$rcP2): $outP2"
 echo "ok: case p — a DEGRADED (not 'present') full-offboard-only item logs an advisory and lets the run proceed (exit 0), instead of permanently blocking every ensure"
+
+# ── case q (codex-2 review finding, HIMMEL-2349): declining the FIRST
+# (converge) confirm, when --prune is ALSO passed and there's a real
+# towardDisabled item, must abort the WHOLE run — the disable confirm is
+# never reached, so the item --prune would have removed stays untouched.
+# A fresh, self-contained 2-item fixture (independent of the earlier
+# cases' accumulated state): conv-item (profiles:["luna"] only,
+# install-only, no removable) and prune-item (profiles:["core"] only,
+# removable:per-item).
+# ────────────────────────────────────────────────────────────────────────
+repoQ="$work/repoQ"; mkdir -p "$repoQ/scripts/install" "$repoQ/scripts/lib"
+cat > "$repoQ/scripts/install/manifest.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "harness": "claude",
+  "items": [
+    {
+      "id": "conv-item", "kind": "wiring", "scopes": ["project"], "profiles": ["luna"], "deps": [],
+      "probe": { "type": "file-exists", "path": "conv.marker" },
+      "install": { "type": "wire", "target": "statusline" }
+    },
+    {
+      "id": "prune-item", "kind": "wiring", "scopes": ["project"], "profiles": ["core"], "deps": [],
+      "probe": { "type": "file-exists", "path": "prune.marker" },
+      "install": { "type": "wire", "target": "pretooluse-hooks" },
+      "unwire": { "type": "wire", "target": "pretooluse-hooks" },
+      "removable": "per-item"
+    }
+  ]
+}
+JSON
+cat > "$repoQ/scripts/lib/wire-statusline.sh" <<'SH'
+#!/usr/bin/env bash
+: > conv.marker
+exit 0
+SH
+cat > "$repoQ/scripts/lib/wire-pretooluse-hooks.sh" <<'SH'
+#!/usr/bin/env bash
+: > prune.marker
+exit 0
+SH
+cat > "$repoQ/scripts/lib/unwire-pretooluse-hooks.sh" <<'SH'
+#!/usr/bin/env bash
+[ -n "${UNWIRE_LOG:-}" ] && echo "unwire-prune-item" >> "$UNWIRE_LOG"
+rm -f prune.marker
+exit 0
+SH
+
+targetQ="$work/targetQ"; mkdir -p "$targetQ"
+cacheQ="$work/cacheQ"; mkdir -p "$cacheQ"
+homeQ="$work/homeQ"; mkdir -p "$homeQ"
+unwireLogQ="$work/unwire-log-q.txt"; : > "$unwireLogQ"
+write_cache "$cacheQ/install-profile.json" adopter project none "" inline "" lean
+
+runEnsureQ() {
+  ( cd "$targetQ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoQ")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheQ")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheQ")-luna-config.json" HOME="$homeQ" USERPROFILE="$(winpath "$homeQ")" UNWIRE_LOG="$(winpath "$unwireLogQ")" \
+      "$node_bin" "$wizard" ensure "$@" )
+}
+
+# setup: converge under profile core --yes -> prune-item installed, conv-item
+# stays absent (undesired under 'a').
+set +e
+outQsetup=$(runEnsureQ --profile core --yes </dev/null 2>&1); rcQsetup=$?
+set -e
+[ "$rcQsetup" -eq 0 ] || fail "case q setup: ensure --profile core --yes should converge prune-item (got rc=$rcQsetup): $outQsetup"
+[ -f "$targetQ/prune.marker" ] || fail "case q setup: prune.marker should exist after the initial profile-a converge"
+[ ! -f "$targetQ/conv.marker" ] || fail "case q setup: conv.marker should NOT exist yet (conv-item is undesired under profile core)"
+echo "ok: case q (setup) — prune-item converged under profile core; conv-item stays uninstalled"
+
+# reconcile to profile luna: conv-item flips desired:true (towardEnabled, needs
+# install), prune-item flips desired:false while still physically present
+# (towardDisabled, would be pruned IF --prune's own confirm were reached).
+# Interactive decline ("n") at the FIRST (converge) prompt must abort the
+# WHOLE run -- --prune's disable confirm below it must never be offered.
+set +e
+outQ=$(cd "$targetQ" && HIMMELCTL_REPO_ROOT="$(winpath "$repoQ")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheQ")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheQ")-luna-config.json" HOME="$homeQ" USERPROFILE="$(winpath "$homeQ")" UNWIRE_LOG="$(winpath "$unwireLogQ")" HIMMELCTL_INTERACTIVE=1 \
+    "$node_bin" "$wizard" ensure --profile luna --prune <<<"n" 2>&1); rcQ=$?
+set -e
+[ "$rcQ" -eq 0 ] || fail "case q: an interactive decline of the converge prompt should exit 0 (got rc=$rcQ): $outQ"
+grepq "$outQ" -F 'declined; nothing run' || fail "case q: expected the decline message (got: $outQ)"
+# a distinctive substring of the honest message, not just "prune" -- the
+# fixture's OWN item is named prune-item, so a bare case-insensitive
+# 'prune' match would pass vacuously even without this wording fix.
+grepq "$outQ" -F 'disable pass is skipped' || fail "case q: the decline message must ALSO make clear the pending --prune disable pass was skipped, not just the converge (got: $outQ)"
+if grepq "$outQ" -F 'Proceed with disabling'; then
+  fail "case q: the disable confirm must NEVER be reached after declining the converge confirm (got: $outQ)"
+fi
+[ ! -f "$targetQ/conv.marker" ] || fail "case q: conv-item must NOT have been installed after the decline"
+[ -f "$targetQ/prune.marker" ] || fail "case q: prune-item must STILL be present -- the disable pass never ran"
+[ ! -s "$unwireLogQ" ] || fail "case q: unwire-pretooluse-hooks.sh must NEVER have been invoked (spy log: $(cat "$unwireLogQ"))"
+echo "ok: case q — declining the converge confirm when --prune is ALSO passed aborts the whole run; the disable confirm is never reached and prune-item is left untouched"
+
+# ── case r (codex-4 review finding, HIMMEL-2349): describeDisableCommand()'s
+# evidence line ("disabling would run: ...") is what the operator reads to
+# decide whether to consent to a disable — an unquoted arg containing a
+# space renders ambiguously and isn't copy-pasteable, and on Windows a
+# space in a path is the common case (a target under "Program Files", a
+# username with a space), not the edge case. A fresh, self-contained 1-item
+# fixture (mirrors case p's pre-created-marker convention: the probe reads
+# 'present' directly off a hand-placed marker, no install ever run) whose
+# TARGET directory path itself contains a space, so unwireCommand()'s own
+# settings.json arg necessarily has a space in it too. ────────────────────
+repoR="$work/repoR"; mkdir -p "$repoR/scripts/install"
+cat > "$repoR/scripts/install/manifest.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "harness": "claude",
+  "items": [
+    {
+      "id": "space-item", "kind": "wiring", "scopes": ["project"], "profiles": ["luna", "all"], "deps": [],
+      "probe": { "type": "file-exists", "path": "space.marker" },
+      "install": { "type": "wire", "target": "statusline" },
+      "unwire": { "type": "wire", "target": "statusline" },
+      "removable": "per-item"
+    }
+  ]
+}
+JSON
+targetR="$work/target with space"; mkdir -p "$targetR"
+# vault.mode=none -> profile 'core', which EXCLUDES space-item
+# (profiles:["luna","all"]) -> desired:false from the first run, no
+# --profile reconcile needed to reach the toward-disabled evidence path
+# (mirrors case p's setup).
+: > "$targetR/space.marker"
+cacheR="$work/cacheR"; mkdir -p "$cacheR"
+homeR="$work/homeR"; mkdir -p "$homeR"
+write_cache "$cacheR/install-profile.json" adopter project none "" inline "" lean
+
+outR=$( cd "$targetR" && HIMMELCTL_REPO_ROOT="$(winpath "$repoR")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheR")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheR")-luna-config.json" HOME="$homeR" USERPROFILE="$(winpath "$homeR")" \
+    "$node_bin" "$wizard" ensure --yes 2>&1 </dev/null )
+grepq "$outR" -F 'disabling would run' || fail "case r: expected the disable evidence line (got: $outR)"
+# the settings.json arg must render single-quoted (shellQuote's own
+# convention — same helper displayCommand() already uses for the derived:
+# line) precisely BECAUSE the target path contains a space -- an unquoted
+# 'target with space' token would be ambiguous (3 words, not 1 path).
+grepq "$outR" -E "'[^']*target with space[^']*settings\.json'" \
+  || fail "case r: the disable evidence line must quote an arg containing a space so it's unambiguous/copy-pasteable (got: $outR)"
+echo "ok: case r — the disable-command evidence line quotes an argument containing a space (consent evidence stays unambiguous)"
+
+# ── case s (HIMMEL-2349 v2, console ruling 77): a hazardous --prune disable
+# pass must NOT veto an UNRELATED, safe converge in the same run. item-s-a
+# (profiles luna/all) is a prerequisite of item-s-c (profiles core/luna/all,
+# stays desired under core) -- unwiring item-s-a would break item-s-c, same
+# hazard shape as cases g/k/m/n. item-s-d (profiles core only) is a wholly
+# UNRELATED item with a runnable install that only becomes desired once we
+# reconcile to core. A plain `ensure --profile core --yes --prune` must:
+#  - reject the item-s-a prune (hazard message on stderr, item-s-a's marker
+#    + unwire spy log untouched)
+#  - STILL converge item-s-d (its install runs, d.marker appears)
+#  - exit 1 (not 2 -- a whole-run abort would be false, install ran; not 0 --
+#    the prune pass genuinely did not run)
+# This is the exact incident this ticket fixes: pre-v2, the hazard walk
+# `return 2`'d before item-s-d's install was ever attempted. ─────────────
+repoS="$work/repoS"; mkdir -p "$repoS/scripts/install" "$repoS/scripts/lib" "$repoS/scripts/machine-setup"
+cat > "$repoS/scripts/install/manifest.json" <<'JSON'
+{
+  "schemaVersion": 2,
+  "harness": "claude",
+  "items": [
+    {
+      "id": "item-s-a", "kind": "wiring", "scopes": ["project"], "profiles": ["luna", "all"], "deps": [],
+      "probe": { "type": "file-exists", "path": "s-a.marker" },
+      "install": { "type": "wire", "target": "statusline" },
+      "unwire": { "type": "wire", "target": "statusline" },
+      "removable": "per-item"
+    },
+    {
+      "id": "item-s-c", "kind": "wiring", "scopes": ["project"], "profiles": ["core", "luna", "all"], "deps": ["item-s-a"],
+      "probe": { "type": "file-exists", "path": "s-c.marker" },
+      "install": { "type": "wire", "target": "pretooluse-hooks" }
+    },
+    {
+      "id": "item-s-d", "kind": "plugin", "scopes": ["project"], "profiles": ["core"], "deps": [],
+      "probe": { "type": "file-exists", "path": "s-d.marker" },
+      "install": { "type": "plugins" }
+    }
+  ]
+}
+JSON
+cat > "$repoS/scripts/lib/wire-statusline.sh" <<'SH'
+#!/usr/bin/env bash
+: > s-a.marker
+exit 0
+SH
+cat > "$repoS/scripts/lib/wire-pretooluse-hooks.sh" <<'SH'
+#!/usr/bin/env bash
+: > s-c.marker
+exit 0
+SH
+cat > "$repoS/scripts/machine-setup/install-plugins.sh" <<'SH'
+#!/usr/bin/env bash
+: > s-d.marker
+exit 0
+SH
+cat > "$repoS/scripts/lib/unwire-statusline.sh" <<'SH'
+#!/usr/bin/env bash
+[ -n "${DISABLE_LOG_S:-}" ] && echo "unwire-item-s-a" >> "$DISABLE_LOG_S"
+rm -f s-a.marker
+exit 0
+SH
+
+targetS="$work/targetS"; mkdir -p "$targetS"
+cacheS="$work/cacheS"; mkdir -p "$cacheS"
+homeS="$work/homeS"; mkdir -p "$homeS"
+write_cache "$cacheS/install-profile.json" adopter project none "" inline "" lean
+logS="$work/disable-log-s.txt"; : > "$logS"
+
+runEnsureS() {
+  ( cd "$targetS" && HIMMELCTL_REPO_ROOT="$(winpath "$repoS")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheS")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheS")-luna-config.json" HOME="$homeS" USERPROFILE="$(winpath "$homeS")" DISABLE_LOG_S="$(winpath "$logS")" \
+      "$node_bin" "$wizard" ensure "$@" </dev/null )
+}
+
+# Setup: converge item-s-a + item-s-c under profile luna (item-s-d is
+# core-only, stays uninstalled -- it's the toward-ENABLED item this case
+# proves still converges).
+set +e
+outS0=$(runEnsureS --profile luna --yes); rcS0=$?
+set -e
+[ "$rcS0" -eq 0 ] || fail "case s setup: converging item-s-a/item-s-c under luna should exit 0 (got rc=$rcS0): $outS0"
+[ -f "$targetS/s-a.marker" ] || fail "case s setup: s-a.marker should exist after the initial luna converge"
+[ -f "$targetS/s-c.marker" ] || fail "case s setup: s-c.marker should exist after the initial luna converge"
+[ ! -f "$targetS/s-d.marker" ] || fail "case s setup: s-d.marker should NOT exist yet (item-s-d is not desired under luna)"
+
+# case s (PRIMARY): --profile core --yes --prune. item-s-a flips
+# toward-disabled (hazard: item-s-c still desired, depends on it);
+# item-s-d flips toward-enabled (fresh install). Exit code asserted
+# EXPLICITLY against both wrong values, not just != 0.
+set +e
+outS1=$(runEnsureS --profile core --yes --prune 2>&1); rcS1=$?
+set -e
+[ "$rcS1" -ne 2 ] || fail "case s: a hazardous prune must NOT abort the whole run (exit 2) -- that vetoes the unrelated, wanted converge (got rc=$rcS1): $outS1"
+[ "$rcS1" -ne 0 ] || fail "case s: the prune pass was genuinely rejected -- exit 0 would falsely claim full success (got rc=$rcS1): $outS1"
+[ "$rcS1" -eq 1 ] || fail "case s: expected exit 1 (got rc=$rcS1): $outS1"
+grepq "$outS1" -F 'item-s-a' || fail "case s: the hazard message should name item-s-a (got: $outS1)"
+grepq "$outS1" -F 'item-s-c' || fail "case s: the hazard message should name item-s-c (got: $outS1)"
+[ ! -s "$logS" ] || fail "case s: item-s-a's unwire must NOT have run (spy log: $(cat "$logS"))"
+[ -f "$targetS/s-a.marker" ] || fail "case s: s-a.marker must still exist -- item-s-a was never unwired despite the rejected prune"
+[ -f "$targetS/s-d.marker" ] || fail "case s: s-d.marker MUST exist -- the unrelated, safe converge must still have run despite the rejected prune pass (this is the exact incident HIMMEL-2349 v2 fixes)"
+# The hazard message must land on STDERR specifically, not merely somewhere
+# in combined output.
+set +e
+outS1err=$(runEnsureS --profile core --yes --prune 2>&1 1>/dev/null)
+set -e
+grepq "$outS1err" -F 'item-s-a' || fail "case s: the hazard message must be printed on STDERR (got stderr: $outS1err)"
+echo "ok: case s — a hazardous --prune disable pass is rejected WITHOUT vetoing an unrelated, safe converge in the same run (exit 1, item-s-a untouched, item-s-d installed)"
+
+# case s (NEGATIVE CONTROL): prove the assertions above actually discriminate
+# -- rerun the identical scenario against a MUTATED copy of bin.js that
+# restores the pre-v2 `return 2` (whole-run abort) behavior at the exact
+# hazard site, and confirm item-s-d does NOT get installed under it. If this
+# control did NOT fail here, the primary case's "s-d.marker MUST exist"
+# assertion above would not be proving anything.
+# bin.js requires sibling ./lib/* and ../../hooks/* by relative path -- the
+# mutated copy is written NEXT TO the real bin.js (see mutatedWizardInTree /
+# cleanup() above) so those resolve to the same real files, no tree copy.
+mutatedWizard="$mutatedWizardInTree"
+mutateScript="$work/mutate-hazard.js"
+# Single-quoted heredoc -- no bash interpolation of $/`` inside the JS body.
+cat > "$mutateScript" <<'JS'
+// Restores the pre-v2 hazard-walk behavior (hard `return 2`, aborting the
+// WHOLE ensure run) at the one site this ticket changed to a collect+continue.
+// Structural match (push-line followed by a bare `continue;`), not a literal
+// text match against the message string -- so this stays robust even if the
+// message wording is later edited, and fails LOUD (not silently) if the code
+// shape it depends on has moved.
+const fs = require('fs');
+const srcPath = process.argv[2];
+const outPath = process.argv[3];
+const lines = fs.readFileSync(srcPath, 'utf8').split('\n');
+const idx = lines.findIndex((l) => l.includes('pruneHazards.push(`would disable'));
+if (idx === -1) {
+  console.error('control fixture broken: hazard-collect line (pruneHazards.push) not found in ' + srcPath);
+  process.exit(1);
+}
+const nextLine = lines[idx + 1];
+if (nextLine.trim() !== 'continue;') {
+  console.error('control fixture broken: expected a bare `continue;` immediately after the hazard-collect line, got: ' + JSON.stringify(nextLine));
+  process.exit(1);
+}
+const pushLine = lines[idx];
+const openParen = pushLine.indexOf('(', pushLine.indexOf('pruneHazards.push'));
+const closeIdx = pushLine.lastIndexOf(');');
+if (openParen === -1 || closeIdx === -1) {
+  console.error('control fixture broken: could not locate push(...) parens on: ' + pushLine);
+  process.exit(1);
+}
+const inner = pushLine.slice(openParen + 1, closeIdx); // the `...` template literal, backticks included
+if (!inner.startsWith('`') || !inner.endsWith('`')) {
+  console.error('control fixture broken: unexpected pruneHazards.push argument shape: ' + inner);
+  process.exit(1);
+}
+const indent = pushLine.slice(0, pushLine.search(/\S/));
+lines[idx] = `${indent}console.error(\`himmelctl: ${inner.slice(1, -1)}\`);`;
+lines[idx + 1] = `${indent}return 2;`;
+fs.writeFileSync(outPath, lines.join('\n'));
+JS
+"$node_bin" "$mutateScript" "$wizard" "$mutatedWizard" || fail "case s (negative control): failed to build the mutated pre-v2 bin.js -- the hazard site's source shape has drifted from what this control expects"
+
+targetSn="$work/targetSn"; mkdir -p "$targetSn"
+cacheSn="$work/cacheSn"; mkdir -p "$cacheSn"
+homeSn="$work/homeSn"; mkdir -p "$homeSn"
+write_cache "$cacheSn/install-profile.json" adopter project none "" inline "" lean
+logSn="$work/disable-log-sn.txt"; : > "$logSn"
+runEnsureSn() {
+  ( cd "$targetSn" && HIMMELCTL_REPO_ROOT="$(winpath "$repoS")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheSn")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheSn")-luna-config.json" HOME="$homeSn" USERPROFILE="$(winpath "$homeSn")" DISABLE_LOG_S="$(winpath "$logSn")" \
+      "$node_bin" "$mutatedWizard" ensure "$@" </dev/null )
+}
+set +e
+outSn0=$(runEnsureSn --profile luna --yes); rcSn0=$?
+set -e
+[ "$rcSn0" -eq 0 ] || fail "case s (negative control) setup: converging item-s-a/item-s-c under luna via the MUTATED wizard should exit 0 (got rc=$rcSn0): $outSn0"
+[ -f "$targetSn/s-a.marker" ] || fail "case s (negative control) setup: s-a.marker should exist after the initial luna converge"
+
+set +e
+outSn1=$(runEnsureSn --profile core --yes --prune 2>&1); rcSn1=$?
+set -e
+[ "$rcSn1" -eq 2 ] || fail "case s (negative control): the MUTATED (pre-v2) wizard should still hard-abort with exit 2 (got rc=$rcSn1) -- if it doesn't, the mutation above didn't actually restore the old behavior: $outSn1"
+[ ! -f "$targetSn/s-d.marker" ] || fail "case s (negative control): s-d.marker must NOT exist -- under the pre-v2 return-2 behavior the converge never ran, proving the primary case's 's-d.marker MUST exist' assertion actually discriminates between old and new behavior"
+echo "ok: case s (negative control) — the pre-v2 return-2 behavior genuinely blocks the unrelated converge (item-s-d never installed), proving the primary case's assertions discriminate"
+
+# ═══════════════════════════════════════════════════════════════════════
+# case t (CR fix, codex-1 round 6, HIMMEL-2349): the under-recorded
+# EVIDENCE count must exclude items carrying a DELIBERATE per-item override
+# — recorded operator intent is the opposite of an under-recorded record.
+# state.json is hand-written directly (the only way to pre-seed a per-item
+# override in a hermetic fixture — no CLI flow sets one for an arbitrary
+# item), scope 'user' (a literal state.json key, unlike 'project' which
+# resolves to the invocation cwd) — same technique
+# test-wizard-recorded-profile.sh's cases f/f2 already establish for this
+# exact "3 present, not-desired" shape. Three items, both toward-disabled
+# fixtures below, differ ONLY in whether their persisted entries carry an
+# override.
+# ═══════════════════════════════════════════════════════════════════════
+manifestT='{
+  "schemaVersion": 2,
+  "harness": "claude",
+  "items": [
+    {
+      "id": "override-a", "kind": "wiring", "scopes": ["user"], "profiles": ["luna", "all"], "deps": [],
+      "probe": { "type": "file-exists", "path": "override-a.marker" },
+      "install": { "type": "wire", "target": "statusline" },
+      "unwire": { "type": "wire", "target": "statusline" },
+      "removable": "per-item"
+    },
+    {
+      "id": "override-b", "kind": "wiring", "scopes": ["user"], "profiles": ["luna", "all"], "deps": [],
+      "probe": { "type": "file-exists", "path": "override-b.marker" },
+      "install": { "type": "wire", "target": "pretooluse-hooks" },
+      "unwire": { "type": "wire", "target": "pretooluse-hooks" },
+      "removable": "per-item"
+    },
+    {
+      "id": "override-c", "kind": "wiring", "scopes": ["user"], "profiles": ["luna", "all"], "deps": [],
+      "probe": { "type": "file-exists", "path": "override-c.marker" },
+      "install": { "type": "wire", "target": "statusline" },
+      "unwire": { "type": "wire", "target": "statusline" },
+      "removable": "per-item"
+    }
+  ]
+}'
+setup_repoT() {
+  local dir="$1"
+  mkdir -p "$dir/scripts/install" "$dir/scripts/lib"
+  printf '%s' "$manifestT" > "$dir/scripts/install/manifest.json"
+  cat > "$dir/scripts/lib/wire-statusline.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$dir/scripts/lib/wire-pretooluse-hooks.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$dir/scripts/lib/unwire-statusline.sh" <<'SH'
+#!/usr/bin/env bash
+[ -n "${DISABLE_LOG_T:-}" ] && echo "unwire-statusline" >> "$DISABLE_LOG_T"
+rm -f override-a.marker override-c.marker
+exit 0
+SH
+  cat > "$dir/scripts/lib/unwire-pretooluse-hooks.sh" <<'SH'
+#!/usr/bin/env bash
+[ -n "${DISABLE_LOG_T:-}" ] && echo "unwire-pretooluse-hooks" >> "$DISABLE_LOG_T"
+rm -f override-b.marker
+exit 0
+SH
+  ( cd "$dir" && : > override-a.marker && : > override-b.marker && : > override-c.marker )
+}
+
+# ── PRIMARY: three present items, each carrying a deliberate override. ────
+repoT="$work/repoT"; setup_repoT "$repoT"
+cacheT="$work/cacheT"; mkdir -p "$cacheT"
+homeT="$work/homeT"; mkdir -p "$homeT"
+write_cache "$cacheT/install-profile.json" adopter user none "" inline "" lean
+cat > "$cacheT/state.json" <<'JSON'
+{
+  "schemaVersion": 1, "harness": "claude",
+  "targets": {
+    "user": {
+      "profile": "core", "scope": "user",
+      "items": {
+        "override-a": { "enabled": false, "overrides": { "consent": "no" } },
+        "override-b": { "enabled": false, "overrides": { "consent": "no" } },
+        "override-c": { "enabled": false, "overrides": { "consent": "no" } }
+      },
+      "lastEnsured": null
+    }
+  }
+}
+JSON
+logT="$work/disable-log-t.txt"; : > "$logT"
+
+runEnsureT() {
+  ( cd "$repoT" && HIMMELCTL_REPO_ROOT="$(winpath "$repoT")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheT")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheT")-luna-config.json" HOME="$homeT" USERPROFILE="$(winpath "$homeT")" DISABLE_LOG_T="$(winpath "$logT")" \
+      "$node_bin" "$wizard" ensure "$@" </dev/null )
+}
+
+set +e
+outT1=$(runEnsureT --prune --yes 2>&1); rcT1=$?
+set -e
+[ "$rcT1" -eq 0 ] || fail "case t (primary): ensure --prune --yes should exit 0 (got rc=$rcT1): $outT1"
+if grepq "$outT1" -F 'UNDER-RECORDED'; then
+  fail "case t (primary): a deliberate per-item override is recorded intent, not under-recording -- the guard must not fire (got: $outT1)"
+fi
+grepq "$outT1" -F 'converged' || fail "case t (primary): the completion summary should mention converged (got: $outT1)"
+for id in override-a override-b override-c; do
+  [ ! -f "$repoT/$id.marker" ] || fail "case t (primary): $id.marker should be GONE -- the disable pass must actually proceed for overridden-but-present items (got: $outT1)"
+done
+echo "ok: case t (primary) — three present items each carrying a deliberate override do NOT trip the under-recorded guard, and --prune genuinely disables all three"
+
+# ── NEGATIVE CONTROL: identical fixture, but the SAME three items carry NO
+# override -- proves the primary case's assertions discriminate rather than
+# passing vacuously (the guard's threshold is exactly 3). ──────────────────
+repoTn="$work/repoTn"; setup_repoT "$repoTn"
+cacheTn="$work/cacheTn"; mkdir -p "$cacheTn"
+homeTn="$work/homeTn"; mkdir -p "$homeTn"
+write_cache "$cacheTn/install-profile.json" adopter user none "" inline "" lean
+cat > "$cacheTn/state.json" <<'JSON'
+{
+  "schemaVersion": 1, "harness": "claude",
+  "targets": {
+    "user": {
+      "profile": "core", "scope": "user",
+      "items": {
+        "override-a": { "enabled": false, "overrides": {} },
+        "override-b": { "enabled": false, "overrides": {} },
+        "override-c": { "enabled": false, "overrides": {} }
+      },
+      "lastEnsured": null
+    }
+  }
+}
+JSON
+logTn="$work/disable-log-tn.txt"; : > "$logTn"
+
+runEnsureTn() {
+  ( cd "$repoTn" && HIMMELCTL_REPO_ROOT="$(winpath "$repoTn")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheTn")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheTn")-luna-config.json" HOME="$homeTn" USERPROFILE="$(winpath "$homeTn")" DISABLE_LOG_T="$(winpath "$logTn")" \
+      "$node_bin" "$wizard" ensure "$@" </dev/null )
+}
+
+set +e
+outTn1=$(runEnsureTn --prune --yes 2>&1); rcTn1=$?
+set -e
+[ "$rcTn1" -eq 0 ] || fail "case t (negative control): ensure --prune --yes should exit 0 (got rc=$rcTn1): $outTn1"
+grepq "$outTn1" -F 'UNDER-RECORDED' || fail "case t (negative control): without overrides, the SAME 3-present shape must still trip the under-recorded guard (got: $outTn1)"
+for id in override-a override-b override-c; do
+  [ -f "$repoTn/$id.marker" ] || fail "case t (negative control): $id.marker must still exist -- the guard should have held --prune back (got: $outTn1)"
+done
+echo "ok: case t (negative control) — the identical fixture WITHOUT overrides still trips the under-recorded guard and --prune is held back, proving the primary case discriminates"
 
 echo "PASS"

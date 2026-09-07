@@ -1,11 +1,12 @@
 ---
-description: Diagnose common himmel-harness health problems (node/caveman SessionStart wiring, shadowed claude-obsidian, dirty single-writer luna vault, bitbucket-vs-gh, handover-registry gaps, PATH-fragile bare-interpreter MCP servers), print a severity-grouped report, optionally heal the node wiring (--fix) and file ONE consolidated GitHub issue.
+description: Diagnose common himmel-harness health problems, print a severity-grouped report, optionally --fix and file one issue.
 ---
 
 Run `himmel-doctor` to surface the field problems that bite himmel installs —
-chiefly the macOS/Linux **`node: command not found` at SessionStart** (a caveman
-hook wired at a node path that a PATH-less GUI launch / a node upgrade made
-unresolvable), a **shadowed claude-obsidian** (prompt-type-hook error after
+chiefly **`node: command not found` from the user-level guardrail hooks**
+(C1-guardrail — a setup-time-baked node path that a node upgrade or a PATH-less
+GUI launch made unresolvable, so every tool call errors and the guardrails fail
+OPEN), a **shadowed claude-obsidian** (prompt-type-hook error after
 autoUpdate shadows the himmel pin), a **dirty single-writer luna vault** (e.g.
 after `/luna-upgrade`, which writes but never commits), a **Bitbucket repo** where
 `/commit-push-pr`'s hardcoded `gh` can't open a PR, and a **repo not in the
@@ -38,11 +39,15 @@ on a public/adopter clone the private tooling is absent so it prints `skipped` a
 OK. A WARN ("stale/unreadable refs") means the compare couldn't fetch fresh `origin/main`
 — a 0-finding result there is not a clean bill of health.
 
-It is read-only EXCEPT `--fix`, which heals the C1 node wiring by rewriting the
-caveman hooks in the **user-scope** `~/.claude/settings.json` (outside any repo —
-the on-main / repo-settings self-mod guards do not apply) to route through the
-runtime node wrapper `scripts/lib/run-node.sh`. On Windows `--fix` is a no-op (the
-`C:\Program Files\nodejs` path is stable; win11.ps1 owns it).
+It is read-only EXCEPT `--fix`, which heals the C1-guardrail node wiring by
+re-baking the 3 user-level guardrail hooks in the **user-scope**
+`~/.claude/settings.json` (outside any repo — the on-main / repo-settings
+self-mod guards do not apply) via `setup-hooks.{sh,ps1} --guardrail-mode global`.
+
+`C1-node` (the old SessionStart/UserPromptSubmit node-hook check, for the
+response-compression plugin himmel no longer carries) is
+**retired** (HIMMEL-2033). The remaining check ids were deliberately NOT
+renumbered.
 
 This command runs from **any directory** — resolve the himmel checkout the same
 way `/himmel-update` does, then run the doctor:
@@ -59,7 +64,7 @@ fi
 [ -f "$REPO/scripts/himmel-doctor.sh" ] || { echo "ERR: cannot locate himmel checkout — set HIMMEL_REPO" >&2; exit 1; }
 
 bash "$REPO/scripts/himmel-doctor.sh"                       # report only
-bash "$REPO/scripts/himmel-doctor.sh" --fix                 # also heal the node (C1) wiring
+bash "$REPO/scripts/himmel-doctor.sh" --fix                 # also re-bake the guardrail (C1-guardrail) node wiring
 bash "$REPO/scripts/himmel-doctor.sh" --file-issue --repo owner/name   # file ONE consolidated public GitHub issue
 ```
 
@@ -69,4 +74,4 @@ wiring (`--fix`) and/or (b) file a consolidated GitHub issue. Only on a yes re-r
 with `--fix` / `--file-issue --repo <public-repo>`. The issue repo resolves from
 `--repo` → `$HIMMEL_DOCTOR_ISSUE_REPO` → the github `origin` slug; for the
 operator's himmel, that public mirror is `yotamleo/Himmel`. Exit code is 1 if any
-FAIL finding is present (0 otherwise), so a `--fix` re-run that clears C1 returns 0.
+FAIL finding is present (0 otherwise), so a `--fix` re-run that clears C1-guardrail returns 0.

@@ -10,9 +10,10 @@ Code today (7+ upstream requests, none shipped). The one **verified** lever:
 > in `<file>` — ignoring `~/.claude.json` and every enabled plugin's MCP server.
 
 These profiles are minimal `--mcp-config` files, one per lane. A coding/armed
-session launches with `minimal` (just tokensave) instead of the whole fleet;
-browser/vault/research work launches with the matching profile. Zero capability
-loss — the servers are still one flag away, per session.
+session launches with `minimal` (just context7-remote in `profiles.json`)
+instead of the whole fleet; browser/vault/research work launches with the
+matching profile. Zero capability loss for the servers that remain — they are
+still one flag away, per session.
 
 ## Generate (per machine)
 
@@ -27,10 +28,17 @@ gitignored** — they carry your `OBSIDIAN_API_KEY` and `C:\Users\…` paths, wh
 must never hit git. Only the generator + `profiles.json` manifest + this README
 are committed.
 
-Every profile includes **tokensave** (the T0 always-on server) — if the
-generator exits with `unresolved server "tokensave"`, it isn't registered on
-this machine yet. Install + register it first:
-[`docs/setup/new-machine.md` §8](../../docs/setup/new-machine.md#8-mcp-servers).
+`minimal` resolves to **context7-remote** — it is a key in this generator's
+own `PLUGIN_SERVERS` map (above), so it resolves with no machine state, no
+registration, and no installer step, on a fresh clone with nothing installed.
+`graphify` is NOT a safe baseline pick, even though it's the one remaining
+optional MCP server himmel ships a CLI/skill for: `graphify-mcp` (and its
+`graphify` dep) is `offboard: advise` with no `install` descriptor in
+`scripts/install/manifest.json` — nothing provisions it, a `mcp-registered`
+probe only *detects* an existing registration, it doesn't create one. A
+profile can list `graphify` only once it has a real provisioning source.
+(tokensave used to fill the `minimal` role; it was dropped, HIMMEL-2581, and
+its installer provisioning removed, HIMMEL-2634 — this table reflects that.)
 
 ## Launch a lean session
 
@@ -38,13 +46,15 @@ this machine yet. Install + register it first:
 claude --strict-mcp-config --mcp-config .claude/mcp-profiles/local.minimal.json
 ```
 
+Servers as currently listed in `profiles.json`:
+
 | Profile | Servers | Use for |
 |---|---|---|
-| `minimal` | tokensave | Default coding / armed / overnight sessions |
-| `research` | tokensave, context7 (remote HTTP) | Library-docs / API work |
-| `browser` | tokensave, playwright, chrome-devtools | Browser automation / web debug |
-| `vault` | tokensave, obsidian-vault | luna / salus vault sessions |
-| `secrets` | tokensave, onepassword | Sessions that need 1Password |
+| `minimal` | context7-remote | Default coding / armed / overnight sessions |
+| `research` | context7 (remote HTTP) | Library-docs / API work |
+| `browser` | playwright, chrome-devtools | Browser automation / web debug |
+| `vault` | obsidian-vault | luna / salus vault sessions |
+| `secrets` | onepassword | Sessions that need 1Password |
 
 Edit `profiles.json` to add/rebalance a profile, then re-run the generator.
 
@@ -83,7 +93,9 @@ block). Verify after: open a fresh session, confirm the expected tools still res
 
 ## Tier model (fleet-map lives in `docs/tooling-catalog.md`)
 
-T0 always-on (tokensave) · T1 shared HTTP singleton (context7 remote, atlassian,
+T0 always-on (none currently — `minimal`'s sole member, context7-remote, is
+already a T1 singleton; see `minimal` above) · T1 shared HTTP singleton
+(context7 remote, atlassian,
 huggingface, vercel — 0 local procs) · T2 profile-scoped (browser, vault, secrets)
 · T3 env-gated opt-in (telegram-himmel, luna-correlate — HIMMEL-591, done) · TX
 CLI-first (jira over atlassian, gh over github, firecrawl).

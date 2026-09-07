@@ -195,9 +195,366 @@ case "$err" in
 esac
 rm -rf "$GUARDRAILLESS" 2>/dev/null || true
 
+# --- EMPTY/BLANK stdin (expect rc=2, fail closed) -- HIMMEL-2123 RETASK
+# R2123A (CodeRabbit App, PR #1912): this is a secrets FENCE
+# (scripts/hooks/CLAUDE.md fail-direction table), but `jq <<<""` on blank
+# stdin emitted zero values with zero errors, so every field came back
+# empty and the case statement's `*) exit 0` default silently ALLOWED --
+# same shape already fixed in block-destructive-commands.sh/
+# block-git-stash.sh.
+assert_rc "empty stdin"           2 "$(run_case '')"
+assert_rc "whitespace-only stdin" 2 "$(run_case '   ')"
+
 # --- BYPASS case (expect rc=0 with READ_SECRETS_OK=1) ---
 assert_rc "Bypass cat .env"                0 "$(run_case "$(j_bash 'cat .env')" "READ_SECRETS_OK=1")"
 assert_rc "Bypass Read .env"               0 "$(run_case "$(j_read '/proj/.env')" "READ_SECRETS_OK=1")"
+
+# --- NON-STRING sibling field (expect rc=2, fail closed) -- HIMMEL-2123
+# RETASK R2123A: the combined tool_name/file_path/path/command extraction
+# runs ONE jq call whose `+` is type-strict, so a non-string SIBLING field
+# present alongside the real one (a numeric `path` next to `file_path`, or a
+# non-string `command` next to a genuine one) threw a type error the whole
+# call's `|| true` swallowed, blanking every field -- including the one this
+# case actually cares about -- and silently disabling the guard for that
+# call. `|tostring` on every operand closes it.
+assert_rc "Read .env + numeric sibling path" 2 "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/home/user/.env","path":42}}')"
+assert_rc "Bash cat .env + array sibling command" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":"cat .env","file_path":["x"]}}')"
+
+# --- Embedded newline in file_path/path (expect rc=2) -- HIMMEL-2123
+# RETASK R2123A: the field separator between tool_name/file_path/path/command
+# is a raw SOH byte, not "\n" -- a literal newline INSIDE file_path/path (a
+# POSIX-legal, if rare, path component) used to truncate that field at the
+# split, so is_secret_path never saw the real basename. SOH can't
+# legitimately appear in a path, so the split stays exact regardless.
+assert_rc "Read path with embedded newline"  2 "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/a\n/.env"}}')"
+
+# --- SOH DELIMITER COLLISION (expect rc=2, fail closed) -- HIMMEL-2123
+# RETASK R2123A (panel, codex-1): the field separator itself (SOH) is a
+# real attack surface, not just a fix for Windows CRLF/embedded newlines --
+# a model-influenced file_path/path CAN legally be a JSON string containing
+# a literal SOH byte (spelled "\u0001" in valid JSON text; a RAW SOH byte
+# is itself invalid JSON and jq's own parser rejects it first, which is
+# also caught below, just via the generic parse-error branch). Embedding it
+# desyncs the split -- "/tmp/<SOH>/.env" would parse as file_path="/tmp/"
+# with ".env" shifted into `path` -- so it must fail CLOSED, deliberately
+# overriding the "unparseable -> allow" shape this hook otherwise has for
+# ordinary malformed JSON, because this is the fence's own threat model
+# (deliberate evasion), not an infra hiccup.
+assert_rc "Read file_path with escaped SOH (delimiter collision)" 2 "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/\u0001/.env"}}')"
+assert_rc "Grep path with escaped SOH (delimiter collision)"      2 "$(run_case '{"tool_name":"Grep","tool_input":{"path":"/tmp/\u0001/.env"}}')"
+# `command` is deliberately NOT guarded: it is read out as "everything
+# after the third separator" and never split further, so an embedded SOH
+# there cannot shift any OTHER field -- it becomes plain text inside $cmd,
+# same as any other stray byte a shell command can legally contain. Confirm
+# it splits safely rather than needing to fail closed: detection of an
+# actual secret read earlier in the same command still fires normally.
+assert_rc "Bash cat .env + trailing escaped SOH in command" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":"cat .env \u0001"}}')"
+
+# --- HIMMEL-2213: grep/sed/awk PATTERN argument is data, not a read target ---
+# Final design (round 5, after 4 rounds of adversarial panel review each
+# found a different way "the first non-flag/quoted argument is the pattern"
+# broke): the exemption applies ONLY to a QUOTED token that is EITHER (a)
+# immediately after the bare reader command with ZERO flags in between, OR
+# (b) immediately after an -e/--regexp flag (whose value is unambiguously
+# always a pattern, at any position). Every other flag before an otherwise-
+# implicit pattern — -f/--file, -m/-A/-B/-C, ripgrep's --ignore-file, or
+# any other tool-specific flag — is deliberately NOT special-cased: there is
+# no bounded flag-arity table across every supported tool, so a flag in that
+# position falls back to the ordinary (blocking) scan. See the hook's own
+# header "Known limitations" for the full history and rationale.
+assert_rc "Bash grep '.env' file.txt (pattern only, was FP-block)" 0 \
+    "$(run_case "$(j_bash "grep '.env' file.txt")")"
+assert_rc "Bash egrep '.env' file.txt" 0 "$(run_case "$(j_bash "egrep '.env' file.txt")")"
+assert_rc "Bash rg '.env' src/" 0 "$(run_case "$(j_bash "rg '.env' src/")")"
+assert_rc "Bash awk '.env' file.txt (pattern only)" 0 \
+    "$(run_case "$(j_bash "awk '.env' file.txt")")"
+# Any flag before the pattern — even one that takes no value at all, like
+# -r/-n — puts the pattern at position 1, not 0, so it is NOT exempt and
+# falls back to blocking. Deliberate scope limit (see header above).
+assert_rc "Bash grep -rn '.env' scripts/ (flag before pattern, out of scope)" 2 \
+    "$(run_case "$(j_bash "grep -rn '.env' scripts/")")"
+# Positive control (must still BLOCK): the SAME pattern, but the target
+# argument genuinely IS a secret file — proves the fix narrows only the
+# pattern position, not secret-path detection on real targets.
+assert_rc "Bash grep '.env' .env (pattern AND target both .env)" 2 \
+    "$(run_case "$(j_bash "grep '.env' .env")")"
+assert_rc "Bash awk '.env' .env (pattern AND target both .env)" 2 \
+    "$(run_case "$(j_bash "awk '.env' .env")")"
+# Still blocks: pattern is NOT secret-shaped, target genuinely is (unchanged
+# pre-existing behaviour — same case as line ~45, pinned again here for
+# contrast with the pattern-argument fix above).
+assert_rc "Bash grep TOKEN .env (real target, still blocks)" 2 \
+    "$(run_case "$(j_bash 'grep TOKEN .env')")"
+# Round 5 (panel review, codex-1): an UNQUOTED implicit pattern must ALSO
+# close the position-0 slot — otherwise a LATER quoted argument (the real
+# target file) wrongly claims it as if it were the pattern.
+assert_rc "Bash grep TOKEN '.env' (unquoted implicit pattern, '.env' is the real target)" 2 \
+    "$(run_case "$(j_bash "grep TOKEN '.env'")")"
+# Positive control: a bare unquoted pattern with no flags is out of the
+# exemption's scope entirely (never quoted, so never exempt) — still blocks,
+# same as before HIMMEL-2213.
+assert_rc "Bash grep .env file.txt (bare unquoted pattern, out of exemption scope)" 2 \
+    "$(run_case "$(j_bash "grep .env file.txt")")"
+# The HIMMEL-440 recursion into `bash -c '<body>'` shares the same fix: a
+# grep pattern inside a -c body must not false-positive either.
+assert_rc "Bash bash -c \"grep '.env' file.txt\" (recursed pattern)" 0 \
+    "$(run_case "$(j_bash "bash -c \"grep '.env' file.txt\"")")"
+assert_rc "Bash bash -c \"grep TOKEN .env\" (recursed real target)" 2 \
+    "$(run_case "$(j_bash "bash -c \"grep TOKEN .env\"")")"
+
+# --- -f/--file: never at position 0 (some flag always precedes its value),
+# so it needs no special case — the position rule alone blocks it.
+assert_rc "Bash grep -f .env file.txt (grep -f reads .env as pattern SOURCE, real leak)" 2 \
+    "$(run_case "$(j_bash "grep -f .env file.txt")")"
+assert_rc "Bash sed -f .env file.txt (sed -f reads .env as script SOURCE, real leak)" 2 \
+    "$(run_case "$(j_bash "sed -f .env file.txt")")"
+assert_rc "Bash awk -f .env file.txt (awk -f reads .env as program SOURCE, real leak)" 2 \
+    "$(run_case "$(j_bash "awk -f .env file.txt")")"
+assert_rc "Bash grep --file .env file.txt (long-form -f)" 2 \
+    "$(run_case "$(j_bash "grep --file .env file.txt")")"
+# Positive control: -f with a NON-secret pattern file still allows.
+assert_rc "Bash grep -f patterns.txt file.txt (non-secret -f file, allows)" 0 \
+    "$(run_case "$(j_bash "grep -f patterns.txt file.txt")")"
+# The recursed bash -c body shares the same behaviour.
+assert_rc "Bash bash -c \"grep -f .env file.txt\" (recursed -f, real leak)" 2 \
+    "$(run_case "$(j_bash "bash -c \"grep -f .env file.txt\"")")"
+
+# --- ripgrep's --ignore-file: same "no special case needed" story as -f —
+# never at position 0, so it always falls back to the ordinary scan,
+# quoted or not.
+assert_rc "Bash rg --ignore-file .env TOKEN src/ (unquoted flag value, real leak)" 2 \
+    "$(run_case "$(j_bash "rg --ignore-file .env TOKEN src/")")"
+assert_rc "Bash rg --ignore-file '.env' TOKEN src/ (quoted flag value, real leak)" 2 \
+    "$(run_case "$(j_bash "rg --ignore-file '.env' TOKEN src/")")"
+
+# --- Flags that take a separate value but are NOT -e/--regexp (-m, -A, ...):
+# deliberately NOT exempt at any position — an unquoted flag value (a count,
+# a string) would otherwise be indistinguishable from a genuine positional
+# pattern without a per-tool arity table (see header). The pattern that
+# follows is therefore no longer at position 0 either, so it now also
+# blocks — a documented, accepted scope limit, not a regression target.
+assert_rc "Bash grep -m 1 '.env' file.txt (flag before pattern, out of scope)" 2 \
+    "$(run_case "$(j_bash "grep -m 1 '.env' file.txt")")"
+assert_rc "Bash grep -A 3 '.env' file.txt (flag before pattern, out of scope)" 2 \
+    "$(run_case "$(j_bash "grep -A 3 '.env' file.txt")")"
+
+# --- -e/--regexp: the one exception. Its value is UNAMBIGUOUSLY always a
+# pattern (never a file), at any position, so it is exempt regardless — but
+# seeing it also means any subsequent argument is a real target, never an
+# implicit pattern.
+assert_rc "Bash grep -e TOKEN '.env' (explicit -e pattern, '.env' is the real target)" 2 \
+    "$(run_case "$(j_bash "grep -e TOKEN '.env'")")"
+assert_rc "Bash grep -e '.env' file.txt (the -e value itself is a pattern, allows)" 0 \
+    "$(run_case "$(j_bash "grep -e '.env' file.txt")")"
+assert_rc "Bash grep --regexp TOKEN '.env' (long-form -e)" 2 \
+    "$(run_case "$(j_bash "grep --regexp TOKEN '.env'")")"
+# Multiple -e patterns: each -e's own value is exempt; a later unquoted
+# operand still passes the ordinary (non-secret) scan.
+assert_rc "Bash grep -e '.env' -e OTHER file.txt (multiple -e patterns)" 0 \
+    "$(run_case "$(j_bash "grep -e '.env' -e OTHER file.txt")")"
+
+# --- Round 6 (panel review): the -e/--regexp exemption MUST be gated on
+# pattern_cmd — grep-family only. `-e` means something else entirely for
+# other readers (GNU cat's -e = -vE, unrelated to a pattern), and an
+# earlier cut applied the exemption unconditionally, false-ALLOWing a real
+# read: `cat -e .env` genuinely displays .env's content.
+assert_rc "Bash cat -e .env (cat's own -e is unrelated to grep's, must still block)" 2 \
+    "$(run_case "$(j_bash "cat -e .env")")"
+assert_rc "Bash cat -e file.txt (non-secret target, allows)" 0 \
+    "$(run_case "$(j_bash "cat -e file.txt")")"
+assert_rc "Bash bash -c \"cat -e .env\" (recursed, same gate)" 2 \
+    "$(run_case "$(j_bash "bash -c \"cat -e .env\"")")"
+
+# --- Round 7 (panel review): raw-text comparison against "prev" is
+# spoofable — an -f/--file VALUE can be crafted to equal "--regexp" (or the
+# command's own name), tricking a text-based check into treating it as a
+# real flag occurrence. Position and "was this consumed as -f's value" are
+# now tracked as explicit state, immune to what the consumed value's text
+# happens to say.
+assert_rc "Bash grep -f --regexp .env (--regexp is -f's VALUE, not a real flag; .env is the real target)" 2 \
+    "$(run_case "$(j_bash "grep -f --regexp .env")")"
+assert_rc "Bash grep -f grep '.env' (grep is -f's VALUE, not cmdtok; '.env' is the real target)" 2 \
+    "$(run_case "$(j_bash "grep -f grep '.env'")")"
+assert_rc "Bash bash -c \"grep -f --regexp .env\" (recursed, same fix)" 2 \
+    "$(run_case "$(j_bash "bash -c \"grep -f --regexp .env\"")")"
+# Positive control: the SAME shape with a non-secret final argument allows.
+assert_rc "Bash grep -f --regexp file.txt (non-secret target, allows)" 0 \
+    "$(run_case "$(j_bash "grep -f --regexp file.txt")")"
+
+# --- HIMMEL-2228: glued option tokens (--opt=<value> / -f<value> / -Param:<value>) ---
+# The tokenizer above only ever fed WHOLE tokens to is_secret_path. A GLUED
+# option — the flag and its value in one shell word — matched no secret glob
+# and was ALLOWED, even though the command genuinely opens and reads that
+# value as a file. glued_opt_secret() now splits the token at its first
+# '='/':'  (or past a bundled short 'f') and scans the value half,
+# unconditionally, outside the HIMMEL-2213 exemption chain.
+
+# BLOCK: the ticket's five repro shapes plus siblings.
+assert_rc "Bash grep '--file=.env' TOKEN file.txt (quoted glued long opt)" 2 \
+    "$(run_case "$(j_bash "grep '--file=.env' TOKEN file.txt")")"
+assert_rc "Bash grep '-f.env' TOKEN file.txt (quoted glued short opt)" 2 \
+    "$(run_case "$(j_bash "grep '-f.env' TOKEN file.txt")")"
+assert_rc "Bash grep --file=.env TOKEN file.txt (unquoted glued long opt)" 2 \
+    "$(run_case "$(j_bash "grep --file=.env TOKEN file.txt")")"
+assert_rc "Bash grep -f.env TOKEN file.txt (unquoted glued short opt)" 2 \
+    "$(run_case "$(j_bash "grep -f.env TOKEN file.txt")")"
+assert_rc "Bash grep '--file=.env' (quoted-at-position-0, 2213 exemption must not cover a glued value)" 2 \
+    "$(run_case "$(j_bash "grep '--file=.env'")")"
+assert_rc "Bash sed --file=.env file.txt (sed glued long opt)" 2 \
+    "$(run_case "$(j_bash "sed --file=.env file.txt")")"
+assert_rc "Bash awk -f.env file.txt (awk glued short opt)" 2 \
+    "$(run_case "$(j_bash "awk -f.env file.txt")")"
+assert_rc "Bash grep -rf.env TOKEN src/ (bundled short glue)" 2 \
+    "$(run_case "$(j_bash "grep -rf.env TOKEN src/")")"
+assert_rc "Bash rg --ignore-file=.env TOKEN src/ (ripgrep glued long opt)" 2 \
+    "$(run_case "$(j_bash "rg --ignore-file=.env TOKEN src/")")"
+
+# Recursed bash -c / sh -c bodies (HIMMEL-440 twin): the glued scan applies
+# inside the body too.
+assert_rc "Bash bash -c \"grep --file=.env TOKEN file.txt\" (recursed glued long opt)" 2 \
+    "$(run_case "$(j_bash "bash -c \"grep --file=.env TOKEN file.txt\"")")"
+assert_rc "Bash bash -c \"grep -f.env TOKEN file.txt\" (recursed glued short opt)" 2 \
+    "$(run_case "$(j_bash "bash -c \"grep -f.env TOKEN file.txt\"")")"
+assert_rc "Bash sh -c 'grep --file=.env TOKEN file.txt' (recursed, sh)" 2 \
+    "$(run_case "$(j_bash "sh -c 'grep --file=.env TOKEN file.txt'")")"
+
+# PowerShell glue: -Param:<value>.
+assert_rc "PowerShell Get-Content -Path:.env (glued colon)" 2 \
+    "$(run_case "$(j_pwsh 'Get-Content -Path:.env')")"
+assert_rc "PowerShell Select-String -Path:.env TOKEN (glued colon)" 2 \
+    "$(run_case "$(j_pwsh 'Select-String -Path:.env TOKEN')")"
+
+# ACCEPTED false positive, explicitly labelled: a glued -e/--regexp value is
+# scanned unconditionally even though its separate-token form is exempt.
+assert_rc "Bash grep --regexp=.env file.txt (ACCEPTED false positive: glued -e/--regexp value)" 2 \
+    "$(run_case "$(j_bash "grep --regexp=.env file.txt")")"
+
+# Positive control: the pre-existing space-separated form (grep -f .env
+# file.txt, pinned above in the HIMMEL-2213/round-7 sections) already proves
+# the must-still-block direction for the non-glued shape; these cases pin
+# the NEW glued shape specifically.
+
+# ALLOW: negative controls — benign glued options that must NOT start denying.
+assert_rc "Bash grep --color=auto TOKEN file.txt (unquoted benign glued opt)" 0 \
+    "$(run_case "$(j_bash "grep --color=auto TOKEN file.txt")")"
+assert_rc "Bash grep '--color=auto' TOKEN file.txt (quoted benign glued opt)" 0 \
+    "$(run_case "$(j_bash "grep '--color=auto' TOKEN file.txt")")"
+assert_rc "Bash grep --file=patterns.txt TOKEN file.txt (glued long opt, non-secret value)" 0 \
+    "$(run_case "$(j_bash "grep --file=patterns.txt TOKEN file.txt")")"
+assert_rc "Bash grep -fpatterns.txt TOKEN file.txt (glued short opt, non-secret value)" 0 \
+    "$(run_case "$(j_bash "grep -fpatterns.txt TOKEN file.txt")")"
+assert_rc "Bash grep --file=.env.example TOKEN file.txt (template carve-out survives the split)" 0 \
+    "$(run_case "$(j_bash "grep --file=.env.example TOKEN file.txt")")"
+assert_rc "Bash grep --exclude=README.md -r TOKEN src/ (glued long opt, non-secret value)" 0 \
+    "$(run_case "$(j_bash "grep --exclude=README.md -r TOKEN src/")")"
+assert_rc "Bash grep -m1 TOKEN file.txt (glued short opt with numeric value, not -f)" 0 \
+    "$(run_case "$(j_bash "grep -m1 TOKEN file.txt")")"
+assert_rc "Bash git log --pretty=format:%h (colon inside a long option's value)" 0 \
+    "$(run_case "$(j_bash "git log --pretty=format:%h")")"
+assert_rc "Bash docker run -v /a:/b img (colon inside a value, non-reader command)" 0 \
+    "$(run_case "$(j_bash "docker run -v /a:/b img")")"
+assert_rc "PowerShell Get-Content -Path:README.md (glued colon, non-secret value)" 0 \
+    "$(run_case "$(j_pwsh 'Get-Content -Path:README.md')")"
+# IMPORTANT and subtle: here -f CONSUMES --file=.env as its literal filename
+# (grep opens a file literally named "--file=.env", not the secret) — the
+# round-7 armed-state ordering (expect_file_val) must still win over the new
+# independent glued scan, so this stays rc=0.
+assert_rc "Bash grep -f --file=.env (armed expect_file_val consumption wins over the glued scan)" 0 \
+    "$(run_case "$(j_bash "grep -f --file=.env")")"
+
+# More BLOCK: the documented in-place false positive, the corrected header
+# claim about a short bundle whose earlier letter would really consume the
+# value, a split value that still needs the basename strip, and the
+# sole-argument short-glue form.
+assert_rc "Bash sed --in-place=.env file.txt (documented in-place false positive)" 2 \
+    "$(run_case "$(j_bash "sed --in-place=.env file.txt")")"
+assert_rc "Bash grep -m1f.env TOKEN file.txt (short-glue split still fires past an earlier letter, over-blocks)" 2 \
+    "$(run_case "$(j_bash "grep -m1f.env TOKEN file.txt")")"
+assert_rc "Bash grep -fconf/.env TOKEN file.txt (split value still gets the basename strip)" 2 \
+    "$(run_case "$(j_bash "grep -fconf/.env TOKEN file.txt")")"
+assert_rc "Bash grep -f.env (sole-argument glued short form)" 2 \
+    "$(run_case "$(j_bash "grep -f.env")")"
+
+# More ALLOW: the -e half of the armed-state gate (only -f was pinned above),
+# its recursed twin, and two non-reader commands carrying colon/-f shapes
+# that must not start denying just because they look glued.
+assert_rc "Bash grep -e --file=.env file.txt (armed expect_pattern_val wins over the glued scan)" 0 \
+    "$(run_case "$(j_bash "grep -e --file=.env file.txt")")"
+assert_rc "Bash bash -c \"grep -f --file=.env\" (recursed twin of the armed-state gate)" 0 \
+    "$(run_case "$(j_bash "bash -c \"grep -f --file=.env\"")")"
+assert_rc "Bash curl -H Authorization:Bearer x https://e.com (non-reader, colon shape)" 0 \
+    "$(run_case "$(j_bash "curl -H Authorization:Bearer x https://e.com")")"
+assert_rc "Bash ffmpeg -f mp4 -i in.mp4 out.mkv (non-reader, -f shape)" 0 \
+    "$(run_case "$(j_bash "ffmpeg -f mp4 -i in.mp4 out.mkv")")"
+
+# Denial TEXT, not just rc: the accepted-false-positive wording and the
+# offending token must actually appear via glued_hint.
+err=$(printf '%s' "$(j_bash 'grep --regexp=.env file.txt')" | bash "$HOOK" 2>&1 >/dev/null); rc=$?
+assert_rc "Bash grep --regexp=.env file.txt (denied, glued hint shown)" 2 "$rc"
+case "$err" in
+    *"--regexp=.env"*"ACCEPTED false positive"*) echo "PASS glued hint names the token and the accepted false positive" ;;
+    *) echo "FAIL glued hint text — got: $err"; FAILED=$((FAILED + 1)) ;;
+esac
+# Mirror: an ordinary (non-glued) denial must NOT show the glued hint.
+err=$(printf '%s' "$(j_bash 'cat .env')" | bash "$HOOK" 2>&1 >/dev/null); rc=$?
+assert_rc "Bash cat .env (denied, no glued hint)" 2 "$rc"
+case "$err" in
+    *"glues an option to its value"*) echo "FAIL cat .env denial wrongly shows glued hint"; FAILED=$((FAILED + 1)) ;;
+    *) echo "PASS cat .env denial has no glued hint" ;;
+esac
+
+# --- HIMMEL-2213: pattern_hint on quoted pattern-family denials ---
+# The quoted-pattern exemption is positional (see header): a flag before the
+# pattern (`grep -rn '.env' scripts/`, blocked above) still denies. The agent
+# has no way to know the two shapes that DO pass, so pattern_hint() names
+# them on that denial. pattern_hint_applies() gates it to pattern-family
+# commands (grep/egrep/fgrep/rg/ripgrep/ag/sed/awk/gawk/mawk/nawk) that also
+# have a token which is BOTH quoted (is_quoted_pattern_tok) AND secret-looking
+# (is_secret_path) — otherwise the hint is noise.
+err=$(printf '%s' "$(j_bash "grep -rn '.env' scripts/")" | bash "$HOOK" 2>&1 >/dev/null); rc=$?
+assert_rc "Bash grep -rn '.env' scripts/ (denied, pattern hint shown)" 2 "$rc"
+case "$err" in
+    *"pattern first, flags after it"*) echo "PASS pattern hint shown on quoted pattern-family denial" ;;
+    *) echo "FAIL pattern hint shown on quoted pattern-family denial — got: $err"; FAILED=$((FAILED + 1)) ;;
+esac
+
+# Non-pattern-family denial (cat) must NOT show the hint — pins the noise gate.
+err=$(printf '%s' "$(j_bash 'cat .env')" | bash "$HOOK" 2>&1 >/dev/null); rc=$?
+assert_rc "Bash cat .env (denied, no pattern hint)" 2 "$rc"
+case "$err" in
+    *"pattern first, flags after it"*) echo "FAIL cat .env denial wrongly shows pattern hint"; FAILED=$((FAILED + 1)) ;;
+    *) echo "PASS cat .env denial has no pattern hint" ;;
+esac
+
+# Pattern-family denial with NO quote at all must also NOT show the hint —
+# pins the other half of pattern_hint_applies' gate (it requires a quoted,
+# secret-looking token, not just a recognised command name).
+err=$(printf '%s' "$(j_bash 'grep TOKEN .env')" | bash "$HOOK" 2>&1 >/dev/null); rc=$?
+assert_rc "Bash grep TOKEN .env (denied, unquoted, no pattern hint)" 2 "$rc"
+case "$err" in
+    *"pattern first, flags after it"*) echo "FAIL grep TOKEN .env (unquoted) wrongly shows pattern hint"; FAILED=$((FAILED + 1)) ;;
+    *) echo "PASS grep TOKEN .env (unquoted) has no pattern hint" ;;
+esac
+
+# A <-redirect read of a secret whose only quoted token is an innocent
+# (non-secret-looking) pattern must still block — it's a genuine read — but
+# must NOT show the pattern hint: pattern_hint_applies() now requires a
+# quoted token that ALSO looks like a secret name, not just any quote char
+# anywhere in the command. Moving the pattern cannot fix a redirect, and a
+# hint pointing at the wrong recovery costs the same cycle it exists to save.
+err=$(printf '%s' "$(j_bash "grep 'x' < .env")" | bash "$HOOK" 2>&1 >/dev/null); rc=$?
+assert_rc "Bash grep 'x' < .env (redirect read, denied, no pattern hint)" 2 "$rc"
+case "$err" in
+    *"pattern first, flags after it"*) echo "FAIL grep 'x' < .env (redirect) wrongly shows pattern hint"; FAILED=$((FAILED + 1)) ;;
+    *) echo "PASS grep 'x' < .env (redirect) has no pattern hint" ;;
+esac
+
+# Both shapes the hint recommends must actually pass (exit 0) — proof the
+# hint doesn't recommend something the guard itself rejects.
+assert_rc "Bash grep '.env' -rn scripts/ (hint shape 1, pattern first)" 0 \
+    "$(run_case "$(j_bash "grep '.env' -rn scripts/")")"
+assert_rc "Bash grep -e '.env' -rn scripts/ (hint shape 2, explicit -e)" 0 \
+    "$(run_case "$(j_bash "grep -e '.env' -rn scripts/")")"
 
 # --- Direct tests of the shared predicate (scripts/guardrails/lib.sh) ---
 # Exercises is_secret_basename in isolation, independent of either hook's
@@ -248,6 +605,69 @@ assert_predicate "is_secret_basename 'C:\\Users\\x\\.ssh\\ID_RSA'"          0 'C
 assert_predicate "is_secret_basename '\\\\server\\share\\.env' (UNC)"       0 '\\server\share\.env'
 assert_predicate "is_secret_basename 'C:\\repo\\.env ' (backslash + space)" 0 'C:\repo\.env '
 assert_predicate "is_secret_basename 'C:\\repo\\.env.example' (template)"   1 'C:\repo\.env.example'
+
+# --- HIMMEL-1741: the case-fold is a bash builtin, not `printf | tr` ---
+# is_secret_basename ran a `printf | tr` fork pair PER TOKEN (the hot path in
+# block-read-secrets' clause tokenizer, ~667 ms a pair on Windows+Defender).
+# It is now a bash-3.2-safe builtin loop. These cases pin the fold across the
+# whole ASCII alphabet, digits/punctuation (which must pass through unchanged),
+# already-lowercase input (the no-op path), and NON-ASCII bytes (which must
+# neither fold nor hang the loop).
+assert_predicate "fold: full-alphabet non-secret ABCDEFGHIJKLMNOPQRSTUVWXYZ.md" 1 "ABCDEFGHIJKLMNOPQRSTUVWXYZ.md"
+assert_predicate "fold: mixed-case .eNv.LoCaL"                0 ".eNv.LoCaL"
+assert_predicate "fold: mixed-case Id_Ed25519 (digits kept)"  0 "Id_Ed25519"
+assert_predicate "fold: mixed-case CREDENTIALS.Json"          0 "CREDENTIALS.Json"
+assert_predicate "fold: mixed-case Secrets.Yml"               0 "Secrets.Yml"
+assert_predicate "fold: punctuation-only stem ---.PEM"        0 "---.PEM"
+assert_predicate "fold: MY-Secret_File.P12"                   0 "MY-Secret_File.P12"
+assert_predicate "fold: CONFIG.PFX"                           0 "CONFIG.PFX"
+assert_predicate "fold: uppercase template .ENV.TEMPLATE"     1 ".ENV.TEMPLATE"
+assert_predicate "fold: already-lowercase no-op app.config"   1 "app.config"
+assert_predicate "fold: non-ASCII basename passes through"    1 "Ünïcodé-RÉADME.md"
+assert_predicate "fold: non-ASCII + secret ext still blocks"  0 "Ünïcodé-KEY.PEM"
+assert_predicate "fold: empty basename (trailing separator)"  1 "/path/to/"
+# End-to-end through the Bash tokenizer, exercising the same builtin fold.
+assert_rc "Bash cat CONFIG.PFX (uppercase ext)" 2 "$(run_case "$(j_bash 'cat CONFIG.PFX')")"
+assert_rc "Bash cat Ünïcodé-RÉADME.md"          0 "$(run_case "$(j_bash 'cat Ünïcodé-RÉADME.md')")"
+
+# --- HIMMEL-1741 CR r1 (codex-adv): the fold must be LINEAR, not quadratic ---
+# is_secret_basename is NOT called only on short filesystem basenames —
+# block-read-secrets tokenizes every Bash/PowerShell command and calls it once
+# per TOKEN, so a base64 `-EncodedCommand` payload, a data: URI or a long JSON
+# blob lands here whole. The first builtin fold peeled one character at a time
+# and was O(n^2): an 8 KB uppercase-bearing token took 13,435 ms, versus 75 ms
+# for the `printf | tr` fork pair it replaced — a worse stall than the fork this
+# ticket removes, on a hook that fires on EVERY Read/Grep/Bash tool call.
+# These cases pin BOTH the verdict and a wall-clock bound, so a future rewrite
+# back into a character loop fails the suite instead of silently regressing.
+BIGTOK=""
+i=0
+while [ "$i" -lt 512 ]; do
+    BIGTOK="${BIGTOK}ABCDEFGHIJKLMNOP"   # 512 * 16 = 8192 uppercase chars
+    i=$((i + 1))
+done
+assert_predicate "linear fold: 8KB uppercase token is not a secret" 1 "$BIGTOK"
+assert_predicate "linear fold: 8KB uppercase token + .PEM still blocks" 0 "${BIGTOK}.PEM"
+
+fold_start=$(date +%s)
+is_secret_basename "$BIGTOK" || true
+is_secret_basename "${BIGTOK}${BIGTOK}" || true   # 16 KB
+fold_end=$(date +%s)
+fold_elapsed=$((fold_end - fold_start))
+# Generous bound: the linear fold is ~milliseconds; the quadratic one needed
+# 13 s for 8 KB alone (and ~4x that for 16 KB), so 10 s separates them by well
+# over an order of magnitude even on a heavily loaded Windows box.
+if [ "$fold_elapsed" -le 10 ]; then
+    echo "PASS fold stays linear on 8KB+16KB tokens (${fold_elapsed}s)"
+else
+    echo "FAIL fold is superlinear — 8KB+16KB tokens took ${fold_elapsed}s (expected <=10s); a character-loop fold was likely reintroduced"
+    FAILED=$((FAILED + 1))
+fi
+
+# The same shape end-to-end through the hook's clause tokenizer: a long
+# uppercase argument must not stall the guard, and must not change its verdict.
+assert_rc "Bash long uppercase arg (linear fold)" 0 "$(run_case "$(j_bash "node -e 1 --data $BIGTOK")")"
+assert_rc "Bash long uppercase arg + .env still blocks" 2 "$(run_case "$(j_bash "cat $BIGTOK .env")")"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

@@ -630,9 +630,13 @@ def main(argv=None):
     # pre-merge worktree run sees the old matrix and fails closed (default deny).
     verdict, vnote = egress_gate(root, cfg["egress"])
     if verdict not in ("allow", "allow+log"):
-        # Accept BOTH permitted verdicts: `allow+log` (the deepseek/zai-glm
-        # cells — matrix ledger obligation) and plain `allow` (the anthropic
-        # cell — Claude is the operating substrate). This tool calls
+        # Accept BOTH permitted verdicts: `allow+log` (a cell carrying the
+        # matrix ledger obligation) and plain `allow` (the anthropic cell —
+        # Claude is the operating substrate). As of HIMMEL-2224 only the
+        # anthropic cell is open here: deepseek was de-listed by HIMMEL-1257
+        # and zai-glm by HIMMEL-2224, so `--provider deepseek|glm` reaches this
+        # branch and is refused. Their PROVIDERS entries stay so the refusal is
+        # legible rather than a KeyError. This tool calls
         # ledger_append UNCONDITIONALLY below regardless of which verdict, so
         # the audit trail holds even for a plain-allow provider — accepting
         # `allow` never yields an unaudited enrichment run. Only

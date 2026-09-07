@@ -30,6 +30,10 @@
 #                     default -- the adoption verdict stays open (HIMMEL-621);
 #                     this switch only installs the CLI (never over an
 #                     existing foreign install -- see scripts/lib/graphify-bin.sh).
+#   -SkipHooks        Opt out of placing the git gate hooks (pre-commit,
+#                     commit-msg, pre-push) in -Target. On by default
+#                     (HIMMEL-2441) so a fresh adopt is gated from its first
+#                     commit; mirrors uninstall.ps1's own -SkipHooks.
 #
 # Idempotent: re-running adds nothing already present.
 
@@ -43,10 +47,17 @@ param(
     [string]$LunaTarget,
     [switch]$DryRun,
     [switch]$FillEnv,
-    [switch]$WithGraphify
+    [switch]$WithGraphify,
+    [switch]$SkipHooks
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Capture whether -LunaTarget was passed explicitly BEFORE the default fills it,
 # so `-Profile luna -LunaTarget` can honor it (HIMMEL-458 critic #3).
@@ -183,6 +194,105 @@ function Wire-StatuslineCore {
     & pwsh -NoProfile -File $wsl -SettingsPath $settings -HimmelPath $HimmelRoot
     # Parity with adopt.sh (set -e aborts on a non-zero helper): surface failure.
     if ($LASTEXITCODE -ne 0) { throw "wire-statusline failed (exit $LASTEXITCODE)" }
+}
+
+# Wire-UserClaudeMd (HIMMEL-2038): append himmel's "working principles" block
+# to a user-scope rule file. Those four defaults (think before coding /
+# simplicity first / surgical changes / goal-driven execution) used to live in
+# himmel's always-on project CLAUDE.md; they are general engineering defaults,
+# not himmel invariants, so adopters get them once at user scope instead of
+# paying for them in every himmel session. Self-contained (no PS lib-sourcing
+# equivalent exists for this -- mirrors how the qmd helpers above live inline
+# in this file rather than in a sourced lib.ps1).
+#
+# One TARGET per call, by design: Do-Core calls it twice -- once for Claude
+# Code's ~/.claude/CLAUDE.md, once for Codex's ~/.codex/AGENTS.md -- so a
+# Codex adopter isn't left with the principles nowhere. Hermes is not a
+# target: its himmel_agent profile SOUL already states the same four.
+#
+# The payload is extracted at RUN TIME from the marker range in
+# docs/setup/user-scope-claude-md-template.md (single source of truth), never
+# duplicated here.
+#
+# Idempotent / never destructive:
+#   - target exists AND already has the marker -> skip, unchanged.
+#   - target exists, no marker, but looks like it already states the
+#     principles by hand (heuristic phrase match) -> skip, unchanged.
+#   - target exists, no marker, no heuristic match -> APPEND (blank line +
+#     payload), never truncate/overwrite.
+#   - target absent -> create it with just the payload.
+# WARN-not-fail wrapper (this step must never abort the rest of adopt):
+# delegates to Wire-UserClaudeMdInner and catches any exception it throws.
+function Wire-UserClaudeMd {
+    param(
+        [string]$TemplatePath,
+        [string]$TargetPath
+    )
+    try {
+        Wire-UserClaudeMdInner -TemplatePath $TemplatePath -TargetPath $TargetPath
+    } catch {
+        Write-Host "  WARNING: user CLAUDE.md wiring failed - continuing. ($_)" -ForegroundColor Yellow
+    }
+}
+
+function Wire-UserClaudeMdInner {
+    param(
+        [string]$TemplatePath,
+        [string]$TargetPath
+    )
+    $marker = 'HIMMEL:working-principles'
+    # ponytail: distinctive-phrase heuristic, not a real "did the operator
+    # already say this" detector -- a hand-written CLAUDE.md phrasing the same
+    # idea without this exact phrase would still get appended to. Upgrade
+    # path: none planned, a rare double-append is cheaper to fix by hand than
+    # a stricter matcher is to build.
+    $heuristic = 'simplicity first'
+
+    if (-not (Test-Path $TemplatePath)) {
+        Write-Host "  user CLAUDE.md: template not found at $TemplatePath — skipping." -ForegroundColor Yellow
+        return
+    }
+    # -Encoding UTF8: Windows PowerShell 5.1 otherwise reads a BOM-less UTF-8
+    # template as ANSI and mojibakes the em dashes (PS 7 defaults to UTF-8).
+    $templateText = Get-Content $TemplatePath -Raw -Encoding UTF8
+    $beginTag = "<!-- BEGIN $marker -->"
+    $endTag = "<!-- END $marker -->"
+    $beginIdx = $templateText.IndexOf($beginTag)
+    $endIdx = $templateText.IndexOf($endTag)
+    if ($beginIdx -lt 0 -or $endIdx -lt 0) {
+        Write-Host "  user CLAUDE.md: markers not found in $TemplatePath — skipping." -ForegroundColor Yellow
+        return
+    }
+    $payload = $templateText.Substring($beginIdx, $endIdx + $endTag.Length - $beginIdx)
+
+    if (Test-Path $TargetPath) {
+        $existing = Get-Content $TargetPath -Raw -Encoding UTF8
+        # Exact BEGIN line, not the bare marker substring (mirrors user-claude-md.sh).
+        if ($existing -match [regex]::Escape($beginTag)) {
+            Write-Host "  user CLAUDE.md: working-principles block already present — skipping ($TargetPath)"
+            return
+        }
+        if ($existing -match [regex]::Escape($heuristic)) {
+            Write-Host "  user CLAUDE.md: no marker, but looks like working principles are already stated by hand (heuristic match on '$heuristic') — skipping, not appending ($TargetPath)"
+            return
+        }
+        if ($DryRun) {
+            Write-Host "DRY: append working-principles block → $TargetPath"
+            return
+        }
+        Add-Content -Path $TargetPath -Value "`n$payload" -Encoding utf8
+        Write-Host "  user CLAUDE.md: appended working-principles block → $TargetPath"
+        return
+    }
+
+    if ($DryRun) {
+        Write-Host "DRY: create $TargetPath with working-principles block"
+        return
+    }
+    $targetDir = Split-Path $TargetPath
+    if ($targetDir) { New-Item -ItemType Directory -Force -Path $targetDir | Out-Null }
+    Set-Content -Path $TargetPath -Value $payload -Encoding utf8
+    Write-Host "  user CLAUDE.md: created $TargetPath with working-principles block"
 }
 
 # env.HIMMEL_REPO — default-by-install (HIMMEL-453). Sibling of
@@ -443,11 +553,18 @@ function Wire-QmdCoreInner {
     if ($DryRun) {
         Write-Host "DRY: bash $HimmelRoot/scripts/lib/fix-qmd-stub.sh"
     } else {
+        # Resolve-QmdGitBash, never a bare `bash`: on Windows that is the
+        # System32 WSL stub, which exits 127 on this C:/ path (HIMMEL-1992).
+        $gitBash = Resolve-QmdGitBash
         $savedEAP = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            & bash "$HimmelRoot/scripts/lib/fix-qmd-stub.sh"
-            if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: fix-qmd-stub failed (rc=$LASTEXITCODE) - continuing." -ForegroundColor Yellow }
+            if (-not $gitBash) {
+                Write-Host "  WARNING: Git Bash not found - skipping fix-qmd-stub." -ForegroundColor Yellow
+            } else {
+                & $gitBash "$HimmelRoot/scripts/lib/fix-qmd-stub.sh"
+                if ($LASTEXITCODE -ne 0) { Write-Host "  WARNING: fix-qmd-stub failed (rc=$LASTEXITCODE) - continuing." -ForegroundColor Yellow }
+            }
         } finally {
             $ErrorActionPreference = $savedEAP
         }
@@ -549,6 +666,16 @@ function Wire-GraphifyCore {
             # posture keeps a nonzero `claude mcp get` (not-registered probe) from
             # terminating the adopt.
             Register-GraphifyMcp
+            # HIMMEL-2480: price the hook-guard entries in the ADOPTED repo
+            # ($Target, not this himmel clone) -- same delegation pattern as
+            # Install-Graphify above.
+            $gitBashPrice = Resolve-QmdGitBash
+            if ($gitBashPrice) {
+                & $gitBashPrice "$HimmelRoot/scripts/lib/graphify-bin.sh" price-hooks "$Target" | ForEach-Object { Write-Host $_ }
+            } else {
+                Write-Host "  graphify hook pricing: Git Bash not found - skipping." -ForegroundColor Yellow
+                Write-Host "  Manual: bash `"$HimmelRoot/scripts/lib/graphify-bin.sh`" price-hooks `"$Target`"" -ForegroundColor Yellow
+            }
         }
     } finally {
         $ErrorActionPreference = $savedEAP
@@ -647,6 +774,71 @@ function Build-JiraCli {
     }
 }
 
+function Install-PrecommitHooks {
+    # HIMMEL-2441: place the git gate hooks by default so an adopter's FIRST
+    # commit is actually gated -- mirrors setup.ps1's own [1/9]/[2/9] steps
+    # (install pre-commit if missing, then wire all three hook types) against
+    # $Target, via `python -m pre_commit` (matching setup.ps1/uninstall.ps1's
+    # own Windows mechanism rather than assuming a `pre-commit` exe on PATH).
+    # --allow-missing-config keeps this safe for a genuine external adopt
+    # target with no .pre-commit-config.yaml of its own: the hook wires in
+    # but no-ops on every commit until the adopter's own config exists,
+    # rather than hard-failing every commit (measured: a bare `pre-commit
+    # install` + commit with zero config exits 1; --allow-missing-config
+    # exits 0 and starts gating the moment a config is added, no reinstall
+    # needed). WARN-not-fail, matching Build-JiraCli's contract.
+    if ($SkipHooks) {
+        Write-Host "  git hooks: skipped (-SkipHooks)"
+        return
+    }
+    if (-not (Test-Path (Join-Path $Target '.git'))) {
+        Write-Host "  git hooks: skipping ($Target is not a git repo)"
+        return
+    }
+    # HIMMEL-2441/2483 [round-3 panel]: -DryRun must describe the planned
+    # install regardless of host state -- checked BEFORE the python
+    # Get-Command probe below, same as the .sh twin, so a dry-run's output
+    # doesn't depend on whether python happens to be installed.
+    if ($DryRun) {
+        Write-Host "DRY: (cd $Target && python -m pip install pre-commit --quiet && python -m pre_commit install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push)"
+        return
+    }
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        Write-Host "  WARNING: git hooks: 'python' not found -- skipping. Install Python 3.10+, then re-run." -ForegroundColor Yellow
+        return
+    }
+    Write-Host "──── Installing git gate hooks ($Target) ────"
+    # WARN-not-fail under EAP='Stop' + PSNativeCommandUseErrorActionPreference:
+    # decouple native exit from EAP so a failed pip/pre_commit invocation WARNs
+    # instead of throwing (same guard Build-JiraCli uses above).
+    $savedNativeEAP = $null
+    if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+        $savedNativeEAP = $PSNativeCommandUseErrorActionPreference
+    }
+    $global:PSNativeCommandUseErrorActionPreference = $false
+    $savedEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    Push-Location $Target
+    try {
+        python -m pip install pre-commit --quiet
+        $pipRc = $LASTEXITCODE
+        $installRc = 1
+        if ($pipRc -eq 0) {
+            python -m pre_commit install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push
+            $installRc = $LASTEXITCODE
+        }
+        if ($pipRc -eq 0 -and $installRc -eq 0) {
+            Write-Host "  git hooks installed (pre-commit, commit-msg, pre-push)."
+        } else {
+            Write-Host "  WARNING: git hook install failed -- continuing. Manual: (cd $Target && python -m pip install pre-commit && python -m pre_commit install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push)" -ForegroundColor Yellow
+        }
+    } finally {
+        Pop-Location
+        $ErrorActionPreference = $savedEAP
+        if ($null -ne $savedNativeEAP) { $global:PSNativeCommandUseErrorActionPreference = $savedNativeEAP }
+    }
+}
+
 function Do-Core {
     Require-Tools
     if ($Scope -eq 'project') {
@@ -662,6 +854,22 @@ function Do-Core {
         Set-SessionStartHook -SettingsPath $userSettings -Prefix $HimmelRoot -HookBasename 'inject-initiative.sh' -DryRun:$DryRun
         Write-Host "  worktree commands run from the himmel clone: bash $HimmelRoot/scripts/worktree.sh feat/slug"
     }
+    # HIMMEL-2038: the "working principles" defaults were demoted out of himmel's
+    # always-on project CLAUDE.md (general engineering defaults, not himmel
+    # invariants) -- adopters get them via this user-scope append instead. Runs
+    # in BOTH scopes on purpose: the principles live at user scope whichever way
+    # core was installed, so a project-scope adopter would otherwise pull the
+    # shortened CLAUDE.md and silently lose them. Idempotent, so re-running adopt
+    # is also the migration path. WARN-not-fail (see Wire-UserClaudeMd).
+    #
+    # TWO targets: Claude Code reads ~/.claude/CLAUDE.md, Codex reads
+    # ~/.codex/AGENTS.md -- installing only into the Claude-only file would
+    # leave a Codex adopter with the principles nowhere.
+    $userClaudeMdTemplate = Join-Path $HimmelRoot 'docs\setup\user-scope-claude-md-template.md'
+    $userClaudeMdTarget = Join-Path $HOME '.claude\CLAUDE.md'
+    Wire-UserClaudeMd -TemplatePath $userClaudeMdTemplate -TargetPath $userClaudeMdTarget
+    $userAgentsMdTarget = Join-Path $HOME '.codex\AGENTS.md'
+    Wire-UserClaudeMd -TemplatePath $userClaudeMdTemplate -TargetPath $userAgentsMdTarget
     Install-Plugins
     Build-JiraCli
     Wire-QmdCore
@@ -669,7 +877,7 @@ function Do-Core {
     Wire-StatuslineCore
     Wire-HimmelRepoCore
     if ($FillEnv) { FillEnv-Core }
-    Write-Host "  (optional) pre-commit gates: see $HimmelRoot\docs\setup\use-on-your-project.md"
+    Install-PrecommitHooks
 }
 
 function Do-Luna([string]$Dest) {

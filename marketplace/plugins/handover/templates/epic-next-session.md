@@ -1,5 +1,6 @@
 ---
 template_version: 2
+resume_cwd: <repo-root>
 ---
 # Next Session — #N <Epic Name>
 
@@ -33,15 +34,29 @@ Load context:
 [Any extra critical context here]
 ---
 
+## Operator-Gated Wrap
+
+If your only remaining dependency is an operator action, **wrap at once** — do
+not idle-wait. Append a RESUME BRIEF to this file (worktree, branch, base SHA,
+dirty paths, the verbatim operator block, the ordered remaining steps), release
+the queue lock, message the console `OPERATOR-GATED, wrapped, safe to close`,
+and end the turn. **Never idle-wait for the operator** — an idle leg holds the
+queue lock, burns its prompt cache and emits no signal, so it is
+indistinguishable from a crashed one. The console resumes it from that brief
+(`bash scripts/handover/leg-resume-brief.sh <this file>` regenerates the
+skeleton from git) instead of waking a cold session to ask.
+
+"End the turn" means the session actually **ends** — the harness exits. A
+message announcing that you are closing is not closing: a leg that says
+"safe to close" and stays resident holds its RAM, keeps its queue lock, and
+still reads as live in `ListAgents`. If you cannot end your own session,
+say exactly that in your final message so the console can list you for the
+operator instead of assuming you are gone.
+
 ## Overnight Mode Trigger
 
 If the user prompt includes the phrase **"overnight mode"** alongside this file path, run the full autonomous pipeline end-to-end without pausing for confirmation between phases.
 
-Standing instructions for the autonomous run (HIMMEL-281, Fable-5 preamble):
-<!-- source of truth: docs/handover/overnight-mode.md § Fable-5 launch preamble — edit there first, then sync the three template copies -->
-
-> When you have enough information to act, act. Do not re-derive facts already established in the conversation, re-litigate a decision the user has already made, or narrate options you will not pursue in user-facing messages. If you are weighing a choice, give a recommendation, not an exhaustive survey. This does not apply to thinking blocks.
-
-> You have ample context remaining. Do not stop, summarize, or suggest a new session on account of context limits. Continue the work.
+Standing instructions for the autonomous run: apply `docs/handover/overnight-mode.md` § Launch preamble — the single copy of the launch-preamble text (HIMMEL-1719). Do not inline it here.
 
 See [`docs/handover/overnight-mode.md`](../../../../docs/handover/overnight-mode.md) for the 11-phase pipeline, budget, block criteria, and lessons learned from HIMMEL-97.

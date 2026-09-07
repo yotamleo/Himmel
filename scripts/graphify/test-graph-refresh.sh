@@ -120,6 +120,12 @@ while [ $# -gt 0 ]; do
         *) shift ;;
     esac
 done
+# SKIP_REFRESH mirrors refresh-graph-map.sh's bank-skip: exit 3 for the named
+# corpus (HIMMEL-1948 Task 4 test 1 -- skip-only must NOT read as OK).
+if [ -n "${SKIP_REFRESH:-}" ] && [ "$name" = "$SKIP_REFRESH" ]; then
+    echo "fake-runner: skipping on $name (SKIP_REFRESH, bank at/over threshold)" >&2
+    exit 3
+fi
 if [ -n "${FAIL_REFRESH:-}" ] && [ "$name" = "$FAIL_REFRESH" ]; then
     echo "fake-runner: failing on $name (FAIL_REFRESH)" >&2
     exit 1
@@ -312,9 +318,25 @@ assert_rc "failure-propagation rc 3" 3 "$rc"
 assert_contains "luna OK despite himmel failure" "[luna] OK" "$out"
 assert_contains "himmel FAIL reported" "[himmel] FAIL" "$out"
 assert_eq "both legs still ran (serial continues)" "2" "$(wc -l < "$RUNNER_LOG" | tr -d ' ')"
-assert_contains "summary names the failure count" "1 of 2 corpus(corpora) FAILED" "$out"
+assert_contains "summary names the failure count" "1 failed (of 2 corpus(corpora)) -- FAILED" "$out"
 # A failed himmel leg must NOT print the publish hint (nothing to publish).
 assert_not_contains "no publish hint on failed himmel leg" "[himmel] NEXT" "$out"
+
+# ============================================================================
+# Test 9b: bank-skip only (no failures) -> exit 4, summary carries no OK token
+# (HIMMEL-1948 Task 1 -- the blocking sub-fix: a skipped leg must not read as
+# success on an unattended cadence).
+# ============================================================================
+echo "TEST: bank-skip only (no failures) -> exit 4, summary has no OK token"
+reset_runner_log
+rc=0; out=$(SKIP_REFRESH=himmel run_refresh both --vault "$VAULT" 2>&1) || rc=$?
+assert_rc "skip-only rc 4" 4 "$rc"
+assert_contains "luna OK despite himmel skip" "[luna] OK" "$out"
+assert_contains "himmel SKIPPED reported" "[himmel] SKIPPED" "$out"
+assert_eq "both legs still ran (serial continues)" "2" "$(wc -l < "$RUNNER_LOG" | tr -d ' ')"
+summary_line=$(printf '%s\n' "$out" | grep 'corpus(corpora)' | tail -1)
+assert_not_contains "summary line has no OK token" "OK" "$summary_line"
+assert_contains "summary line names the skip" "1 skipped" "$summary_line"
 
 # ============================================================================
 # Test 10: vault preflight — refuse a salus/PHI-marked vault (codex-adv-1)
@@ -577,6 +599,36 @@ else
     assert_contains "16g HOME guard probes the symlink-RESOLVED vault path" '_fs_id "$class_path"' "$region"
     # shellcheck disable=SC2016 # ditto -- expanding would defeat the assertion
     assert_not_contains "16g HOME guard no longer probes the lexical \$canon" '_fs_id "$canon"' "$region"
+fi
+
+# 17 (HIMMEL-1704, source-level pin — the runner-side behavioural test lives
+# in test-refresh-graph-map.sh's T49 and needs symlink support this box may
+# lack). preflight_vault() must PUBLISH the filesystem identity it already
+# probed (not just the pathname it always published), and the two RUNNER_ARGV
+# builders (dry-run + real-run) must forward it to refresh-graph-map.sh as
+# --corpus-id/--maps-id -- a check computed but never handed to the runner
+# closes nothing.
+region="$(sed -n '/^preflight_vault() {/,/^}/p' "$SCRIPT")"
+if [ -z "$region" ]; then
+    fail "17a preflight_vault() region not found in source"
+else
+    assert_contains "17a preflight_vault publishes PREFLIGHT_VAULT_ID" "PREFLIGHT_VAULT_ID=" "$region"
+    assert_contains "17a preflight_vault publishes PREFLIGHT_MAPS_ID" "PREFLIGHT_MAPS_ID=" "$region"
+fi
+argv_lines="$(grep -n 'RUNNER_ARGV=(bash' "$SCRIPT" | cut -d: -f1)"
+if [ -z "$argv_lines" ]; then
+    fail "17b no RUNNER_ARGV construction found in source"
+else
+    argv_count=0
+    for ln in $argv_lines; do
+        argv_count=$((argv_count + 1))
+        # The ~18 lines following each RUNNER_ARGV=(... start cover both the
+        # dry-run and real-run builders, whose argv arrays span a few lines.
+        block="$(sed -n "${ln},$((ln + 18))p" "$SCRIPT")"
+        assert_contains "17b RUNNER_ARGV builder #$argv_count forwards --corpus-id" "RUNNER_ARGV+=(--corpus-id" "$block"
+        assert_contains "17b RUNNER_ARGV builder #$argv_count forwards --maps-id" "RUNNER_ARGV+=(--maps-id" "$block"
+        assert_contains "17b RUNNER_ARGV builder #$argv_count forwards --maps-parent-id" "RUNNER_ARGV+=(--maps-parent-id" "$block"
+    done
 fi
 
 summary

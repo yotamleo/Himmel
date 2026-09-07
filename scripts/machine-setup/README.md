@@ -87,16 +87,20 @@ See [`docs/luna/end-session-wiki.md`](../../docs/luna/end-session-wiki.md) for o
 
 ---
 
-## Caveman plugin (Win11 only)
+## Retired-plugin removal offer (HIMMEL-2033)
 
-After first launch of Claude Code (which triggers plugin pull), the script applies a `shell: true` patch to `caveman-shrink/index.js` automatically on the next run. If you skip the script step, apply manually:
+`remove-retired-plugin.sh` offers to remove the response-compression plugin
+himmel no longer ships (`caveman@caveman` + its `caveman` marketplace). New
+installs never get it; machines provisioned before the removal still carry it.
+It is called from `scripts/himmel-update.sh` (so both `/himmel-update` and
+`himmelctl update` carry it) and from the `himmelctl install` pluginSet=full
+path — one helper, three entry points.
 
-```powershell
-$f = "$env:USERPROFILE\.claude\plugins\marketplaces\caveman\src\mcp-servers\caveman-shrink\index.js"
-(Get-Content $f -Raw).Replace("stdio: ['pipe', 'pipe', 'inherit'],`r`n  });", "stdio: ['pipe', 'pipe', 'inherit'],`r`n    shell: true,`r`n  });") | Set-Content $f -NoNewline
-```
-
-Must re-apply after every `git pull` in the caveman plugin directory.
+Contract: silent when the plugin is absent; on a TTY it prompts
+`Remove now? [Y/n]` with the default being **remove**; `n` keeps it with a
+one-line notice; a non-TTY / `--advisory-only` run prints the advisory and the
+two manual commands and removes **nothing**. Never hangs, never removes
+silently, safe to run on every update.
 
 ---
 

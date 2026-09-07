@@ -7,6 +7,80 @@
 
 _gh() { "${GH_CMD:-gh}" "$@"; }
 
+# ── CodeRabbit trigger at the seam (HIMMEL-1924) ─────────────────────────────
+_FORGE_GH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/cr-trigger-ledger.sh
+# shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
+. "$_FORGE_GH_LIB_DIR/cr-trigger-ledger.sh"
+# shellcheck source=scripts/lib/cr-available.sh
+# shellcheck disable=SC1091
+. "$_FORGE_GH_LIB_DIR/cr-available.sh"
+
+# cr_trigger_post_review requires its caller to define warn(). The two hooks
+# define their own before sourcing the ledger; no forge consumer does, so
+# supply one — but only when the caller hasn't, so a consumer's warn still wins.
+if ! declare -f warn >/dev/null 2>&1; then
+    warn() { echo "forge(github): $*" >&2; }
+fi
+
+# _gh_trigger_cr <pr-ref> — post `@coderabbitai review` at most once per head
+# SHA for a PR this process just opened or advanced.
+#
+# WHY HERE (HIMMEL-1924): CodeRabbit's `auto_review` is OFF (.coderabbit.yaml,
+# HIMMEL-1252), so the App reviews only on an explicit trigger comment.
+# HIMMEL-1906 posts that comment from two PostToolUse hooks matched against the
+# BASH COMMAND STRING the agent ran (`gh pr create`, `git push`). A PR opened or
+# advanced from INSIDE a script (graph-publish.sh, pr-open.sh, anything on this
+# seam) matches neither pattern, so no trigger was posted and the PR sat on
+# "Review skipped: automatic reviews are disabled" until a human commented
+# (PR #1725). This is the same trigger keyed on the REAL event — a PR head
+# advanced — instead of on what the agent typed.
+#
+# The hooks are KEPT, not replaced: they still cover the direct `gh pr create` /
+# `git push` invocations that never reach this lib. They and this seam share ONE
+# ledger keyed by (repo, PR, head SHA), so whichever fires first records the head
+# and the other becomes a no-op — a double trigger is impossible by construction,
+# not by convention.
+#
+# Bitbucket has no counterpart on purpose: CodeRabbit is GitHub-only, so
+# forge-bitbucket.sh stays untouched and the trigger is a structural no-op there
+# rather than a runtime check.
+#
+# Never blocks: every failure path returns 0. The create/edit already succeeded
+# by the time this runs, and check-ci's skipped/absent arms remain the backstop
+# that refuses green until a genuine review lands at head.
+_gh_trigger_cr() {
+    # The repo's ONE armed-CodeRabbit predicate (scripts/lib/cr-available.sh):
+    # honours CR_PROFILE=none and stays silent on a clone with no CodeRabbit App.
+    # This seam runs inside SHIPPED scripts an adopter executes, so an unarmed
+    # repo must not collect stray @coderabbitai comments on every PR it opens.
+    cr_app_configured || return 0
+
+    local meta num sha url repo
+    meta=$(_gh pr view "$1" --json number,headRefOid,url \
+              --jq '"\(.number) \(.headRefOid) \(.url)"' 2>/dev/null) || return 0
+    num=${meta%% *}; meta=${meta#* }
+    sha=${meta%% *}; url=${meta#* }
+    if [ -z "$num" ] || [ -z "$sha" ] || [ -z "$url" ] || [ "$url" = "$sha" ]; then
+        warn "WARNING: could not resolve the PR number/head/url for '$1' — post '@coderabbitai review' manually if this PR needs a review"
+        return 0
+    fi
+
+    repo=${url#*github.com/}
+    repo=${repo%%/pull/*}
+    if [ -z "$repo" ] || [ "$repo" = "$url" ]; then
+        warn "WARNING: could not parse owner/repo from '$url'; trigger the review manually"
+        return 0
+    fi
+
+    # scan_existing=0: the ledger's per-head key already owns the dedup, and the
+    # per-PR comment scan is repo-wide — it cannot tell which head an old comment
+    # targeted, so it would suppress a legitimate new-head trigger (the exact
+    # HIMMEL-1906 bug; see scripts/lib/cr-trigger-ledger.sh).
+    cr_trigger_post_review "$sha" "$num" "$repo" 0
+    return 0
+}
+
 gh_forge_auth_status() {
     _gh auth status >/dev/null 2>&1
 }
@@ -32,7 +106,11 @@ gh_forge_pr_find_open() {
 # create a PR; echo its URL. args: TITLE BODY BASE HEAD
 gh_forge_pr_create() {
     local title="$1" body="$2" base="$3" head="$4"
-    _gh pr create --title "$title" --body "$body" --base "$base" --head "$head"
+    _gh pr create --title "$title" --body "$body" --base "$base" --head "$head" || return $?
+    # HIMMEL-1924: the PR exists now — trigger CodeRabbit here, so a PR opened
+    # from inside a script gets a review without the agent having typed
+    # `gh pr create` (which is all the HIMMEL-1906 hooks can see).
+    _gh_trigger_cr "$head"
 }
 
 # update an existing PR body. args: NUMBER TITLE BODY. TITLE is unused here —
@@ -40,7 +118,13 @@ gh_forge_pr_create() {
 # the Bitbucket backend, whose PUT endpoint requires a title.
 gh_forge_pr_set_body() {
     local number="$1" body="$3"
-    _gh pr edit "$number" --body "$body"
+    _gh pr edit "$number" --body "$body" || return $?
+    # HIMMEL-1924: this is the seam's "advance an EXISTING PR" arm — every
+    # script that pushes then refreshes the body (graph-publish.sh,
+    # pr-open.sh) lands here with a head the ledger has not seen. A body
+    # refresh at an ALREADY-triggered head is a ledger no-op, so keying the
+    # trigger on the head SHA (not on this call) keeps it exactly-once.
+    _gh_trigger_cr "$number"
 }
 
 # echo MERGEABLE | CONFLICTING | UNKNOWN, or empty when no PR exists. args: REF

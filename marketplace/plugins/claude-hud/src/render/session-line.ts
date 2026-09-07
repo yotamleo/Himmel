@@ -10,7 +10,7 @@ import { renderSessionTimeLine } from './lines/session-time.js';
 import { renderAdvisorLine } from './lines/advisor.js';
 import { t } from '../i18n/index.js';
 import type { TimeFormatMode, UsageValueMode } from '../config.js';
-import { formatResetTime } from './format-reset-time.js';
+import { formatResetTime, type WallClockOptions } from './format-reset-time.js';
 import { formatTokens, formatContextValue } from '../utils/format.js';
 import { formatAuthSegment } from '../auth.js';
 import { createDebug } from '../debug.js';
@@ -54,6 +54,10 @@ export function renderSessionLine(ctx: RenderContext): string {
   const parts: FirstLinePart[] = [];
   const push = (text: string, key: FirstLineSegment | null = null) => parts.push({ key, text });
   const timeFormat: TimeFormatMode = display?.timeFormat ?? 'relative';
+  const wallClockOpts: WallClockOptions = {
+    hourCycle: display?.hourCycle ?? 'auto',
+    showSeconds: display?.showClockSeconds ?? false,
+  };
   const resetsKey = timeFormat === 'absolute' ? 'format.resets' : 'format.resetsIn';
   const contextValueMode = display?.contextValue ?? 'percent';
   const contextValue = formatContextValue(ctx, percent, contextValueMode);
@@ -176,7 +180,12 @@ export function renderSessionLine(ctx: RenderContext): string {
     const usageCompact = display?.usageCompact ?? false;
     const showResetLabel = display?.showResetLabel ?? true;
     const usageValueMode = display?.usageValue ?? 'percent';
-    const scopedWindows = ctx.usageData.scopedWindows ?? [];
+    // Only "hidden" when something was actually suppressed. With no scoped
+    // windows there is nothing to hide, and the ghost-placeholder fallback
+    // below has to keep behaving exactly as it does without this flag.
+    const scopedHidden = display?.showModelScopedUsage === false
+      && (ctx.usageData.scopedWindows?.length ?? 0) > 0;
+    const scopedWindows = scopedHidden ? [] : ctx.usageData.scopedWindows ?? [];
     const hasGenericWindowData = ctx.usageData.fiveHour !== null || ctx.usageData.sevenDay !== null;
     const hasWindowData = hasGenericWindowData || scopedWindows.length > 0;
     const scopedParts = scopedWindows.map((window) =>
@@ -188,6 +197,7 @@ export function renderSessionLine(ctx: RenderContext): string {
             timeFormat,
             colors,
             usageValueMode,
+            wallClockOpts,
           )
         : formatUsageWindowPart({
             label: window.label,
@@ -201,13 +211,14 @@ export function renderSessionLine(ctx: RenderContext): string {
             forceLabel: true,
             usageValueMode,
             windowDurationLabel: '7d',
+            wallClockOpts,
           }),
     );
 
     if (isLimitReached(ctx.usageData)) {
       const resetTime = ctx.usageData.fiveHour === 100
-        ? formatResetTime(ctx.usageData.fiveHourResetAt, timeFormat)
-        : formatResetTime(ctx.usageData.sevenDayResetAt, timeFormat);
+        ? formatResetTime(ctx.usageData.fiveHourResetAt, timeFormat, wallClockOpts)
+        : formatResetTime(ctx.usageData.sevenDayResetAt, timeFormat, wallClockOpts);
       if (usageCompact) {
         push(critical(`⚠ Limit${resetTime ? ` (${resetTime})` : ''}`, colors));
       } else {
@@ -233,11 +244,11 @@ export function renderSessionLine(ctx: RenderContext): string {
         const usageBarEnabled = display?.usageBarEnabled ?? true;
         if (usageCompact) {
           const fiveHourPart = fiveHour !== null
-            ? formatCompactWindowPart('5h', fiveHour, ctx.usageData.fiveHourResetAt, timeFormat, colors, usageValueMode)
+            ? formatCompactWindowPart('5h', fiveHour, ctx.usageData.fiveHourResetAt, timeFormat, colors, usageValueMode, wallClockOpts)
             : null;
           const sevenDayThreshold = display?.sevenDayThreshold ?? 80;
           const sevenDayPart = (sevenDay !== null && (fiveHour === null || sevenDay >= sevenDayThreshold))
-            ? formatCompactWindowPart('7d', sevenDay, ctx.usageData.sevenDayResetAt, timeFormat, colors, usageValueMode)
+            ? formatCompactWindowPart('7d', sevenDay, ctx.usageData.sevenDayResetAt, timeFormat, colors, usageValueMode, wallClockOpts)
             : null;
 
           if (fiveHourPart && sevenDayPart) {
@@ -261,10 +272,11 @@ export function renderSessionLine(ctx: RenderContext): string {
             showResetLabel,
             forceLabel: true,
             usageValueMode,
+            wallClockOpts,
           });
           push(weeklyOnlyPart);
           scopedParts.forEach((part) => push(part));
-        } else if (hasGenericWindowData || !hasWindowData) {
+        } else if (hasGenericWindowData || (!hasWindowData && !scopedHidden)) {
           const fiveHourPart = formatUsageWindowPart({
             label: '5h',
             percent: fiveHour,
@@ -275,6 +287,7 @@ export function renderSessionLine(ctx: RenderContext): string {
             timeFormat,
             showResetLabel,
             usageValueMode,
+            wallClockOpts,
           });
 
           const sevenDayThreshold = display?.sevenDayThreshold ?? 80;
@@ -290,6 +303,7 @@ export function renderSessionLine(ctx: RenderContext): string {
               showResetLabel,
               forceLabel: true,
               usageValueMode,
+              wallClockOpts,
             });
             push(`${label(t('label.usage'), colors)} ${fiveHourPart}`);
             push(sevenDayPart);
@@ -401,9 +415,10 @@ function formatCompactWindowPart(
   timeFormat: TimeFormatMode,
   colors?: RenderContext['config']['colors'],
   usageValueMode: UsageValueMode = 'percent',
+  wallClockOpts?: WallClockOptions,
 ): string {
   const usageDisplay = formatUsagePercent(percent, colors, usageValueMode);
-  const reset = formatResetTime(resetAt, timeFormat);
+  const reset = formatResetTime(resetAt, timeFormat, wallClockOpts);
   const styledLabel = label(`${windowLabel}:`, colors);
   return reset
     ? `${styledLabel} ${usageDisplay} ${label(`(${reset})`, colors)}`
@@ -435,6 +450,7 @@ function formatUsageWindowPart({
   forceLabel = false,
   usageValueMode = 'percent',
   windowDurationLabel,
+  wallClockOpts,
 }: {
   label: string;
   percent: number | null;
@@ -447,9 +463,10 @@ function formatUsageWindowPart({
   forceLabel?: boolean;
   usageValueMode?: UsageValueMode;
   windowDurationLabel?: string;
+  wallClockOpts?: WallClockOptions;
 }): string {
   const usageDisplay = formatUsagePercent(percent, colors, usageValueMode);
-  const reset = formatResetTime(resetAt, timeFormat);
+  const reset = formatResetTime(resetAt, timeFormat, wallClockOpts);
   const styledLabel = label(windowLabel, colors);
   // "resets in X" for relative/both; "resets X" for absolute (avoids "resets in at 14:30")
   const resetsKey = timeFormat === 'absolute' ? 'format.resets' : 'format.resetsIn';

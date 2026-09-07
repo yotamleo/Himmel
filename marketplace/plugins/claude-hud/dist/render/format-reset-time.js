@@ -1,4 +1,5 @@
 import { interpolate, t } from '../i18n/index.js';
+const DEFAULT_WALL_CLOCK_OPTIONS = { hourCycle: 'auto', showSeconds: false };
 /**
  * Formats a usage-window reset timestamp for display in the HUD.
  *
@@ -7,10 +8,11 @@ import { interpolate, t } from '../i18n/index.js';
  *   - `'relative'` (default) — duration until reset, e.g. `2h 30m`
  *   - `'absolute'`           — wall-clock time,       e.g. `at 14:30` (locale-aware)
  *   - `'both'`               — both combined,          e.g. `2h 30m, at 14:30` (locale-aware)
+ * @param opts    - Wall-clock rendering options (hourCycle, showSeconds); defaults preserve existing behavior.
  * @returns A formatted string, or an empty string when the reset is in the past
  *          or the date is unknown.
  */
-export function formatResetTime(resetAt, mode = 'relative') {
+export function formatResetTime(resetAt, mode = 'relative', opts = DEFAULT_WALL_CLOCK_OPTIONS) {
     if (!resetAt)
         return '';
     const now = new Date();
@@ -20,7 +22,7 @@ export function formatResetTime(resetAt, mode = 'relative') {
     if (mode === 'relative') {
         return formatRelative(diffMs);
     }
-    const absolute = formatAbsolute(resetAt, now);
+    const absolute = formatAbsoluteTime(resetAt, now, opts);
     if (mode === 'absolute') {
         return absolute;
     }
@@ -42,15 +44,25 @@ function formatRelative(diffMs) {
     }
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 }
-function formatAbsolute(resetAt, now) {
-    // The preposition + spacing live in each locale's "format.absoluteTime"
-    // pattern (en: "at {time}", zh: "{time}" — bare, preposition baked elsewhere).
-    const timeStr = resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    // Show the date only when the reset falls on a different calendar day
+/**
+ * Renders a timestamp as wall-clock time, e.g. `at 14:30`, adding a date
+ * component when it falls on a different calendar day than `now`.
+ *
+ * @param at   - The timestamp to render.
+ * @param now  - Reference for the same-day check.
+ * @param opts - Wall-clock rendering options (hourCycle, showSeconds).
+ */
+export function formatAbsoluteTime(resetAt, now, opts = DEFAULT_WALL_CLOCK_OPTIONS, pattern = 'format.absoluteTime') {
+    const timeOpts = { hour: '2-digit', minute: '2-digit' };
+    if (opts.showSeconds)
+        timeOpts.second = '2-digit';
+    if (opts.hourCycle !== 'auto')
+        timeOpts.hourCycle = opts.hourCycle;
+    const timeStr = resetAt.toLocaleTimeString([], timeOpts);
     if (resetAt.toDateString() === now.toDateString()) {
-        return interpolate(t('format.absoluteTime'), { time: timeStr });
+        return interpolate(t(pattern), { time: timeStr });
     }
     const dateStr = resetAt.toLocaleDateString([], { month: 'short', day: 'numeric' });
-    return interpolate(t('format.absoluteTime'), { time: `${dateStr} ${timeStr}` });
+    return interpolate(t(pattern), { time: `${dateStr} ${timeStr}` });
 }
 //# sourceMappingURL=format-reset-time.js.map

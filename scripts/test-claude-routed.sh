@@ -179,6 +179,12 @@ setup; KEY="omni-test-123"; touch "$WORK/.salus"
 t "salus refuses" 3
 t "salus refuses despite --force" 3 --force
 
+# --- T8b: .salus-profile marker ALONE (no .salus) -> refuse exit 3 (HIMMEL-2173
+# part 2 — a defense for salus deployments that predate part 1 shipping .salus).
+setup; KEY="omni-test-123"; touch "$WORK/.salus-profile"
+t "salus-profile-only refuses" 3
+t "salus-profile-only refuses despite --force" 3 --force
+
 # --- T9: denylisted cwd -> refuse without --force, proceed with it. Guard config
 # is DELIBERATELY read from ~/.config/claude-glm (shared source of truth), NOT a
 # per-lane ~/.config/claude-routed — a claude-glm denylist hit must refuse routed too.

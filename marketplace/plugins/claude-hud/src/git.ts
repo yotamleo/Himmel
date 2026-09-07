@@ -1,9 +1,7 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { createDebug } from './debug.js';
+import { createGitRunner, type GitCommandRunner } from './git-runner.js';
 
 const debug = createDebug('git');
-const execFileAsync = promisify(execFile);
 
 export interface LineDiff {
   added: number;
@@ -42,20 +40,26 @@ export interface GitStatus {
 export async function getGitBranch(cwd?: string): Promise<string | null> {
   if (!cwd) return null;
 
+  let runner: GitCommandRunner | undefined;
   try {
-    return await resolveGitRef(cwd);
+    runner = createGitRunner(cwd);
+    return await resolveGitRef(runner);
   } catch (err) {
     debug('Failed to get git branch:', err instanceof Error ? err.message : err);
     return null;
+  } finally {
+    await runner?.close();
   }
 }
 
 export async function getGitStatus(cwd?: string): Promise<GitStatus | null> {
   if (!cwd) return null;
 
+  let runner: GitCommandRunner | undefined;
   try {
+    runner = createGitRunner(cwd);
     // Get branch name
-    const branch = await resolveGitRef(cwd);
+    const branch = await resolveGitRef(runner);
     if (!branch) return null;
 
     // Check for dirty state and parse file stats
@@ -63,10 +67,9 @@ export async function getGitStatus(cwd?: string): Promise<GitStatus | null> {
     let fileStats: FileStats | undefined;
     let lineDiff: LineDiff | undefined;
     try {
-      const { stdout: statusOut } = await execFileAsync(
-        'git',
+      const { stdout: statusOut } = await runner.run(
         ['-c', 'core.quotePath=false', '--no-optional-locks', 'status', '--porcelain'],
-        { cwd, timeout: 1000, encoding: 'utf8', windowsHide: true }
+        1000,
       );
       const trimmed = statusOut.trim();
       isDirty = trimmed.length > 0;
@@ -80,10 +83,9 @@ export async function getGitStatus(cwd?: string): Promise<GitStatus | null> {
     // Get per-file and total line diffs
     if (isDirty) {
       try {
-        const { stdout: numstatOut } = await execFileAsync(
-          'git',
-          ['-c', 'core.quotePath=false', 'diff', '--numstat', 'HEAD'],
-          { cwd, timeout: 2000, encoding: 'utf8', windowsHide: true }
+        const { stdout: numstatOut } = await runner.run(
+          ['-c', 'core.quotePath=false', '--no-optional-locks', 'diff', '--numstat', 'HEAD'],
+          2000,
         );
         const trackedPaths = new Set(fileStats?.trackedFiles.map((file) => file.fullPath) ?? []);
         const { totalDiff, perFileDiff } = parseNumstat(numstatOut, trackedPaths);
@@ -100,10 +102,9 @@ export async function getGitStatus(cwd?: string): Promise<GitStatus | null> {
     let ahead = 0;
     let behind = 0;
     try {
-      const { stdout: revOut } = await execFileAsync(
-        'git',
+      const { stdout: revOut } = await runner.run(
         ['rev-list', '--left-right', '--count', '@{upstream}...HEAD'],
-        { cwd, timeout: 1000, encoding: 'utf8', windowsHide: true }
+        1000,
       );
       const parts = revOut.trim().split(/\s+/);
       if (parts.length === 2) {
@@ -117,10 +118,9 @@ export async function getGitStatus(cwd?: string): Promise<GitStatus | null> {
     // Build GitHub branch URL from remote
     let branchUrl: string | undefined;
     try {
-      const { stdout: remoteOut } = await execFileAsync(
-        'git',
+      const { stdout: remoteOut } = await runner.run(
         ['remote', 'get-url', 'origin'],
-        { cwd, timeout: 1000, encoding: 'utf8', windowsHide: true }
+        1000,
       );
       const remote = remoteOut.trim();
       const httpsBase = remote
@@ -138,14 +138,15 @@ export async function getGitStatus(cwd?: string): Promise<GitStatus | null> {
   } catch (err) {
     debug('getGitStatus failed:', err instanceof Error ? err.message : err);
     return null;
+  } finally {
+    await runner?.close();
   }
 }
 
-async function resolveGitRef(cwd: string): Promise<string | null> {
-  const { stdout: branchOut } = await execFileAsync(
-    'git',
+async function resolveGitRef(runner: GitCommandRunner): Promise<string | null> {
+  const { stdout: branchOut } = await runner.run(
     ['rev-parse', '--abbrev-ref', 'HEAD'],
-    { cwd, timeout: 1000, encoding: 'utf8', windowsHide: true }
+    1000,
   );
   const branch = branchOut.trim();
   if (branch && branch !== 'HEAD') {
@@ -153,10 +154,9 @@ async function resolveGitRef(cwd: string): Promise<string | null> {
   }
 
   try {
-    const { stdout: tagOut } = await execFileAsync(
-      'git',
+    const { stdout: tagOut } = await runner.run(
       ['describe', '--tags', '--exact-match', 'HEAD'],
-      { cwd, timeout: 1000, encoding: 'utf8', windowsHide: true }
+      1000,
     );
     const tag = tagOut.trim();
     if (tag) return tag;
@@ -164,10 +164,9 @@ async function resolveGitRef(cwd: string): Promise<string | null> {
     // Detached commits often are not tagged; fall back to a short commit id.
   }
 
-  const { stdout: shortShaOut } = await execFileAsync(
-    'git',
+  const { stdout: shortShaOut } = await runner.run(
     ['rev-parse', '--short', 'HEAD'],
-    { cwd, timeout: 1000, encoding: 'utf8', windowsHide: true }
+    1000,
   );
   const shortSha = shortShaOut.trim();
   return shortSha ? `detached:${shortSha}` : null;

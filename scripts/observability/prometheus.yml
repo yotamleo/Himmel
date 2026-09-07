@@ -17,6 +17,16 @@ scrape_configs:
           - 127.0.0.1:9090
 
   - job_name: flow-exporter
+    # HIMMEL-2211: the exporter's render shells out to schtasks, a host-detector
+    # PowerShell script, and git, and genuinely takes ~6.6s avg / ~9.9s peak
+    # (measured live over 24h). The default 10s scrape_timeout was getting hit
+    # 51 times/day (max_over_time(scrape_duration_seconds) == 10.0055s exactly),
+    # which marks the target DOWN and stales EVERY series it exports — the
+    # HimmelFlowRunStalled alert resolves, then re-fires on the next good
+    # scrape. That flap, not a real stall, is what produced 53 Telegram pages
+    # in one night. 30s is ~3x the observed peak and still well inside the 60s
+    # scrape_interval above.
+    scrape_timeout: 30s
     static_configs:
       - targets:
           - 127.0.0.1:9877

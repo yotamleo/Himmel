@@ -419,6 +419,7 @@ else
     echo "  PASS  safety arm does not use --time smart"
     pass=$((pass+1))
 fi
+assert_grep "safety arm marks its child (HIMMEL-812 depth limit)" "--safety-child" "$ARM_LOG"
 assert_grep "WARN names the wedge" "STATUSLINE WEDGED" "$STDERR_LOG"
 assert_grep "WARN demands a handover" "ACTION REQUIRED" "$STDERR_LOG"
 assert_grep "past resets_at falls back to now+5h" "fallback" "$STDERR_LOG"
@@ -458,6 +459,52 @@ else
     echo "  PASS  exit-2 block text not repeated on a post-escalation check"
     pass=$((pass+1))
 fi
+
+echo "Test 17c: AUTO_ARM_SAFETY_CHILD=1 — the stale escalation warns ONCE and does NOT arm (HIMMEL-812)"
+# The depth limit. A session relaunched BY a stale safety arm carries the mark
+# in its env; when its own cache wedges the same way, escalating again is what
+# turned one wedge into a chain of self-arming +5h sessions. AUTO_ARM_STALE_MIN_CHECKS=1
+# so the streak bound is met on the first check — the suppression sits AFTER it,
+# and this case is about what happens once escalation is genuinely due.
+S17C="$TMP/s17c"; mkdir -p "$S17C"
+H17C="$TMP/handovers17c"; mkdir -p "$H17C"
+rm -f "$ARM_LOG"
+C17C="$TMP/c17c.json"; write_cache "$C17C" 30 14
+touch -d '@1' "$C17C"
+AUTO_ARM_SAFETY_CHILD=1 AUTO_ARM_STATE_DIR="$S17C" AUTO_ARM_CACHE="$C17C" \
+    AUTO_ARM_STALE_MIN_CHECKS=1 AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$H17C" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+assert_rc "safety child's stale check warns visibly (exit 1), never blocks" 1 $?
+assert_file "safety child does NOT arm another resume" absent "$ARM_LOG"
+assert_grep "warn names the depth limit" "HIMMEL-812" "$STDERR_LOG"
+assert_grep "warn names the mark it found" "AUTO_ARM_SAFETY_CHILD=1" "$STDERR_LOG"
+assert_grep "warn orders a wind-down" "Wind down" "$STDERR_LOG"
+snap_count=$(count_glob "$H17C" 'auto-arm-status-stale-*.md')
+if [ "$snap_count" = "0" ]; then
+    echo "  PASS  suppressed escalation writes no snapshot"
+    pass=$((pass+1))
+else
+    echo "  FAIL  suppressed escalation writes no snapshot (got $snap_count)"
+    fail=$((fail+1))
+fi
+stale_markers=$(count_glob "$S17C" 'auto-arm-stale-escalated-*')
+if [ "$stale_markers" = "1" ]; then
+    echo "  PASS  suppression consumes the one-shot marker (warn does not repeat)"
+    pass=$((pass+1))
+else
+    echo "  FAIL  suppression consumes the one-shot marker (got $stale_markers)"
+    fail=$((fail+1))
+fi
+# The THRESHOLD path is untouched: a real, MEASURED cap crossing must still arm
+# for a safety child — the depth limit only bounds inference off a wedged cache.
+rm -f "$ARM_LOG" "$S17C/auto-arm-last-check"
+C17D="$TMP/c17d.json"; write_cache "$C17D" 95 14
+AUTO_ARM_SAFETY_CHILD=1 AUTO_ARM_STATE_DIR="$S17C" AUTO_ARM_CACHE="$C17D" \
+    AUTO_ARM_BIN="$ARM_STUB" ARM_LOG_PATH="$ARM_LOG" \
+    HANDOVER_DIR="$H17C" CLAUDE_PROJECT_DIR="" \
+    bash "$HOOK" </dev/null >/dev/null 2>"$STDERR_LOG"
+assert_file "threshold path still arms for a safety child" present "$ARM_LOG"
 
 echo "Test 18: stale resets_at still in the FUTURE — safety arm targets that slot"
 S="$TMP/s18"; mkdir -p "$S"

@@ -12,7 +12,20 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+# HIMMEL-2095: anchored to THIS SCRIPT's own location, not `git rev-parse
+# --show-toplevel` (which resolves against the CALLER's cwd instead). That
+# distinction was invisible as long as every check this suite exercises
+# existed identically in every checkout -- but check_c32 (HIMMEL-2095) is
+# new and, until this branch merges, lives ONLY in this worktree's copy of
+# scripts/himmel-doctor.sh. Invoked via an absolute path from a cwd outside
+# this worktree (e.g. the primary checkout), `--show-toplevel` silently
+# resolved to that OTHER repo's himmel-doctor.sh -- missing check_c32
+# entirely -- and every C32 assertion failed with an EMPTY actual value
+# (grep found nothing to report), while every pre-existing check still
+# passed because those are identical in both copies. Same fix shape as the
+# sibling test files in this directory (test-check-plugin-drift.sh,
+# test-plugin-test.sh: `ROOT="$(cd "$(dirname "$0")/.." && pwd)"`).
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DOC="$REPO_ROOT/scripts/himmel-doctor.sh"
 [ -f "$DOC" ] || { echo "FAIL: $DOC not found"; exit 1; }
 CADENCE_VER="$(sed -n 's/^CADENCE_RUNNER_FORMAT_VERSION=//p' "$REPO_ROOT/scripts/lib/cadence-format.sh" | head -1)"
@@ -22,6 +35,43 @@ STALE_CADENCE_VER=$((CADENCE_VER - 1))
 # real vault (HOME is redirected per-case, but C3 probes $LUNA_VAULT_PATH first).
 export LUNA_VAULT_PATH=""
 
+# Hermeticity: same reasoning for C26 and SALUS_VAULT_PATH — HOME is redirected
+# per-case, but C26 probes $SALUS_VAULT_PATH first and would otherwise pick up
+# an inherited value pointing at the operator's real salus vault.
+export SALUS_VAULT_PATH=""
+
+# Hermeticity: same reasoning for C27 and CLAUDE_GLM_CONFIG_DIR — HOME is
+# redirected per-case so the default ~/.config/claude-glm already resolves
+# under the per-case temp HOME, but an inherited CLAUDE_GLM_CONFIG_DIR from the
+# launching shell would otherwise point C27 at the operator's real config dir.
+export CLAUDE_GLM_CONFIG_DIR=""
+
+# Hermeticity (HIMMEL-2176): C28 reads himmelctl's own state.json (recorded
+# guardrail-block-global consent) at ${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}
+# — HOME is redirected per-case so the default already resolves under the
+# per-case temp HOME, but an inherited HIMMELCTL_CACHE_DIR from the launching
+# shell would otherwise point C28 at the operator's real himmelctl state.
+export HIMMELCTL_CACHE_DIR=""
+
+# Hermeticity (HIMMEL-2581): C31 resolves the codex config through
+# $CODEX_HOME (default $HOME/.codex) — HOME is redirected per-case so the
+# default already lands in the temp HOME, but an inherited CODEX_HOME from
+# the launching shell would otherwise point C31 at the operator's real codex
+# config, and whatever that config happens to wire would flip every
+# unrelated case unpredictably. Dedicated C31 cases set it per-case.
+export CODEX_HOME=""
+
+# Hermeticity (HIMMEL-2095): C33 resolves the graph-cadence ledger via
+# handover_root(), which honors $HANDOVER_DIR first, else falls back to
+# <repo-root>/handovers (git-toplevel-relative, NOT HOME-relative — the
+# per-case HOME redirection every other check's hermeticity leans on does
+# NOT reach this fallback). Left unset, C33 would read the REAL repo's
+# tracked handovers/ stub in every default case. Point it at a fixed, empty
+# scratch dir instead so C33 always reports "ledger absent" unless a
+# dedicated C33 case overrides it.
+HIMMEL_DOCTOR_NOOP_HANDOVER="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-tests-handover.XXXXXX")"
+export HANDOVER_DIR="$HIMMEL_DOCTOR_NOOP_HANDOVER"
+
 # Hermeticity: C14 reads OLLAMA_NO_CLOUD from the live env — never let an
 # inherited value from the launching shell leak into the default test runs.
 unset OLLAMA_NO_CLOUD
@@ -29,6 +79,59 @@ unset OLLAMA_NO_CLOUD
 # C19 performs local HTTP probes and reads the installed observability tree.
 # Keep every unrelated case hermetic; dedicated C19 cases opt back in.
 export DOCTOR_OBSERVABILITY_SKIP=1
+
+# Hermeticity (HIMMEL-2010): C20 now FAILS on node-major drift, and it reads the
+# REAL node/.nvmrc in every case that does not seam them — so on a drifted host
+# it would flip the exit code of every unrelated case here. Bypass it globally;
+# the C20 cases set NODE_MAJOR_DRIFT_OK=0 (and CI/GITHUB_ACTIONS empty) per-case.
+export NODE_MAJOR_DRIFT_OK=1
+
+# Hermeticity (HIMMEL-2024): C21 reads the operator's REAL hermes install
+# (LOCALAPPDATA/hermes) unless seamed — point it at a nonexistent dir globally
+# (check_c21's `[ ! -d ]` guard) so unrelated cases get a deterministic
+# "no hermes install found" INFO instead of leaking this machine's actual
+# active profile. Dedicated C21 cases seam it per-case with their own fixture.
+DOCTOR_HERMES_HOME_EMPTY="$(mktemp -d)/no-hermes"
+export DOCTOR_HERMES_HOME="$DOCTOR_HERMES_HOME_EMPTY"
+
+# C25 (HIMMEL-1820) performs a live platform process scan (PowerShell CIM on
+# Windows, ps on POSIX). Keep every unrelated case hermetic and
+# host-independent -- what real processes run must never flip a test verdict;
+# dedicated C25 cases opt back in via the shim seam.
+export DOCTOR_ORPHAN_SCAN_SKIP=1
+
+# Hermeticity (HIMMEL-2545): C29 scans the REAL /proc tree for claude
+# child-session launchers unless seamed -- this dev box routinely has several
+# such legs running right now (the exact HIMMEL-2545 bug), and every
+# unrelated case would otherwise pick up a WARN C29-child-session it is not
+# testing. Point at a nonexistent dir globally (check_c29's `[ ! -d ]` guard
+# reads that as a clean procfs-absent skip, never a false WARN); dedicated
+# C29 cases seam it per-case with their own stub tree.
+HIMMEL_DOCTOR_PROC_BASE="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-noproc.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }
+export HIMMEL_DOCTOR_PROC="$HIMMEL_DOCTOR_PROC_BASE/no-proc"
+
+# Hermeticity (HIMMEL-2515): C24's systemd probe and C30 both resolve through
+# systemctl via this seam -- and on THIS station it is not just present but
+# ENABLED and ACTIVE (a real, operator-depended-on telegram-bridge.service).
+# tool_dirs()'s PATH scrub does not save us here the way it does for gh/node:
+# systemctl lives in /usr/bin on this Arch/CachyOS box, the SAME dir every
+# other whitelisted tool (git, jq, sed, ...) resolves through, so TOOLS_PATH
+# would still find the real binary. Point the seam at a nonexistent absolute
+# path globally (`command -v` on an absolute path never falls through to
+# PATH, so this is a clean "systemctl absent" regardless of what tool_dirs()
+# picks up); dedicated C24/C30 cases override it per-case with their own fake
+# systemctl. Never invoke the REAL systemctl against telegram-bridge.service
+# from this suite -- read-only verification of it happens by hand, at most
+# once, outside the test run.
+#
+# Templated + guarded mktemp (CR round 1 E4): matches the C29 seam directly
+# above, not DOCTOR_HERMES_HOME_EMPTY's untemplated form near the top of this
+# file -- C29's is the more recent convention (this seam's own dedicated test
+# rows already use it), and it also drops the one shell-lint mktemp advisory
+# an untemplated `mktemp -d` draws here instead of leaving it for a reviewer
+# to raise.
+HIMMEL_DOCTOR_SYSTEMCTL_BASE="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-nosystemctl.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }
+export HIMMEL_DOCTOR_SYSTEMCTL="$HIMMEL_DOCTOR_SYSTEMCTL_BASE/no-systemctl"
 
 # Hermeticity (HIMMEL-969): C8's runner-home defaults resolve via
 # cadence_user_home (USERPROFILE via cygpath on Windows) — per-case HOME
@@ -63,6 +166,11 @@ printf '#!/bin/sh\necho Linux\n' > "$FAKEBIN/uname"; chmod +x "$FAKEBIN/uname"
 DOCTOR_WT_EMPTY="$FAKEROOT/doctor-wt-empty"; mkdir -p "$DOCTOR_WT_EMPTY"
 export DOCTOR_WORKTREE_ROOT="$DOCTOR_WT_EMPTY"
 
+# Keep unrelated cases from scanning this checkout's own local branches for
+# C23 (and making live gh calls). Dedicated C23 cases override this seam.
+DOCTOR_UNLANDED_EMPTY="$FAKEROOT/doctor-unlanded-empty"; mkdir -p "$DOCTOR_UNLANDED_EMPTY"
+export DOCTOR_UNLANDED_DIR="$DOCTOR_UNLANDED_EMPTY"
+
 # A fake node so "node resolvable" cases are deterministic regardless of whether
 # the host actually has node (a node-less Linux box would otherwise FAIL them).
 FAKENODE="$FAKEROOT/nodebin"; mkdir -p "$FAKENODE"
@@ -76,22 +184,7 @@ for _tool in bash sh git jq sort tail sed cat date mktemp mkdir dirname uname wc
     _p="$(command -v "$_tool" 2>/dev/null)" && ln -sf "$_p" "$NOGH/$_tool" 2>/dev/null
 done
 
-# Curated PATH WITHOUT node (same trick as NOGH): on apt-node systems
-# node shares /usr/bin with the tools above, so TOOLS_PATH cannot
-# exclude it by dropping dirs (HIMMEL-966).
-NONODE="$FAKEROOT/nonode"; mkdir -p "$NONODE"
-for _t in bash sh git jq sort tail sed cat date mktemp mkdir dirname uname wc tr head cp rm mv chmod grep basename find ls; do
-    _p="$(command -v "$_t" 2>/dev/null)" && ln -s "$_p" "$NONODE/$_t" 2>/dev/null
-done
-# Windows Git Bash symlinks to .exe tools don't execute — fall back to
-# TOOLS_PATH there (node is never in the coreutils dirs on those hosts).
-if PATH="$NONODE" bash -c 'git --version >/dev/null 2>&1 && ! command -v node >/dev/null 2>&1' 2>/dev/null; then
-    NODELESS_PATH="$NONODE"
-else
-    NODELESS_PATH="$TOOLS_PATH"
-fi
-
-# $1=claude dir, $2=JSON-encoded caveman SessionStart command
+# $1=claude dir, $2=JSON-encoded SessionStart hook command
 write_settings() {
     mkdir -p "$1"
     cat > "$1/settings.json" <<EOF
@@ -100,8 +193,33 @@ write_settings() {
   "UserPromptSubmit": [] } }
 EOF
 }
-DANGLING='"\"<node-path>\" \"<claude-dir>/hooks/caveman-activate.js\""'
-WRAPPER='"bash \"/x/scripts/lib/run-node.sh\" \"/y/hooks/caveman-activate.js\""'
+WRAPPER='"bash \"/x/scripts/lib/run-node.sh\" \"/y/hooks/session-start.js\""'
+
+# write_guardrail_settings <claude-dir> <node-path> — writes a settings.json
+# whose hooks.PreToolUse carries the 3 user-level guardrail entries in the
+# EXACT shape guardrail-block.mjs generates for --guardrail-mode global
+# (HIMMEL-2013), pointed at <node-path>; SessionStart/UserPromptSubmit stay empty.
+write_guardrail_settings() {
+    local claude_dir="$1" node_path="$2" bash_path wrapper
+    mkdir -p "$claude_dir"
+    bash_path="$(command -v bash)"
+    if command -v cygpath >/dev/null 2>&1; then bash_path="$(cygpath -m "$bash_path")"; fi
+    wrapper="$REPO_ROOT/scripts/hooks/guardrail-skip-in-himmel.js"
+    # MSYS_NO_PATHCONV: jq is a native exe; Git Bash would rewrite the C:/... node path inside --arg into a C;C:\... path list.
+    MSYS_NO_PATHCONV=1 jq -n \
+        --arg c1 "GUARDRAIL_BASH=\"$bash_path\" \"$node_path\" \"$wrapper\" \"$REPO_ROOT/scripts/hooks/auto-approve-safe-bash.sh\"" \
+        --arg c2 "GUARDRAIL_BASH=\"$bash_path\" \"$node_path\" \"$wrapper\" \"$REPO_ROOT/scripts/hooks/block-edit-on-main.sh\"" \
+        --arg c3 "GUARDRAIL_BASH=\"$bash_path\" \"$node_path\" \"$wrapper\" \"$REPO_ROOT/scripts/hooks/block-read-secrets.sh\"" \
+        '{ hooks: {
+            SessionStart: [],
+            UserPromptSubmit: [],
+            PreToolUse: [
+                { matcher: "Bash", hooks: [ { type: "command", command: $c1 } ] },
+                { matcher: "Edit|Write|MultiEdit|NotebookEdit", hooks: [ { type: "command", command: $c2 } ] },
+                { matcher: "Bash|PowerShell|Read|Grep", hooks: [ { type: "command", command: $c3 } ] }
+            ]
+        } }' > "$claude_dir/settings.json"
+}
 
 make_gh() { # $1=dir, $2=create|exists
     mkdir -p "$1"
@@ -116,56 +234,23 @@ EOF
     chmod +x "$1/gh"
 }
 
-echo "== STATIC: shipped settings-template.json carries no dangling <node-path> (HIMMEL-614) =="
-# A literal copy of the template must not leave a dangling <node-path> that C1
-# flags as fail-dangling. The caveman hooks ship in the run-node.sh wrapper form.
-_tmpl="$REPO_ROOT/docs/setup/settings-template.json"
-_cav_cmds="$(jq -r '[.hooks.UserPromptSubmit[]?.hooks[]?, .hooks.SessionStart[]?.hooks[]?]
-    | map(.command // "") | map(select(test("caveman-(activate|mode-tracker)\\.js"))) | .[]' "$_tmpl")"
-if grepq "$_cav_cmds" '<node-path>'; then
-    fail "template caveman cmd still carries <node-path>"
-elif [ -z "$_cav_cmds" ]; then
-    fail "template has no caveman hook commands to check"
-elif grepq "$_cav_cmds" 'run-node.sh'; then
-    pass "template caveman cmds are wrapper-form (no <node-path>)"
-else
-    fail "template caveman cmds are neither wrapper-form nor dangling: $_cav_cmds"
-fi
-
-echo "== clean (wrapper-form, node resolvable) -> exit 0, C1 OK =="
+echo "== clean settings (node resolvable) -> exit 0 =="
 t="$(mktemp -d)"; write_settings "$t/claude" "$WRAPPER"
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && grepq "$out" 'OK   C1-node'; then pass "clean -> rc0, C1 OK"; else fail "clean -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
-rm -rf "$t"
-
-echo "== dangling <node-path> -> C1 FAIL, exit 1 =="
-t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"
-out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if [ "$rc" -eq 1 ] && grepq "$out" 'FAIL C1-node'; then pass "dangling -> rc1, C1 FAIL"; else fail "dangling -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
-rm -rf "$t"
-
-echo "== --fix heals dangling (faked Linux uname) -> C1 OK =="
-t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"
-out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --fix --no-color 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && grepq "$out" 'OK   C1-node'; then pass "--fix -> healed, rc0"; else fail "--fix -> rc=$rc; $out"; fi
-# confirm the settings file now points at the wrapper
-if grep -q 'run-node.sh' "$t/claude/settings.json"; then pass "--fix wrote wrapper form"; else fail "--fix did not write wrapper"; fi
-rm -rf "$t"
-
-echo "== wrapper-form but NO node anywhere -> C1 FAIL (R4/P5) =="
-t="$(mktemp -d)"; write_settings "$t/claude" "$WRAPPER"
-out="$(PATH="$NODELESS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if [ "$rc" -eq 1 ] && grepq "$out" 'FAIL C1-node'; then pass "wrapper+no-node -> rc1 FAIL"; else fail "wrapper+no-node -> rc=$rc; $(printf '%s' "$out" | grep C1-node)"; fi
+if [ "$rc" -eq 0 ]; then pass "clean -> rc0"; else fail "clean -> rc=$rc; $(printf '%s' "$out" | grep FAIL)"; fi
+# write_settings' fixture carries no PreToolUse block at all -> guardrail-block.mjs
+# detects mode=project -> C1-guardrail has nothing to check (HIMMEL-2013).
+if grepq "$out" 'OK   C1-guardrail'; then pass "clean -> C1-guardrail OK (no guardrail block)"; else fail "clean -> $(printf '%s' "$out" | grep C1-guardrail)"; fi
 rm -rf "$t"
 
 echo "== --file-issue with gh stub -> creates with resolved repo =="
-t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"; make_gh "$t/gh" create
+t="$(mktemp -d)"; write_guardrail_settings "$t/claude" "$t/gone/node"; make_gh "$t/gh" create
 out="$(PATH="$t/gh:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --file-issue --repo me/repo --no-color 2>&1)"
 if grepq "$out" 'CREATE me/repo'; then pass "file-issue -> created"; else fail "file-issue -> $(printf '%s' "$out" | tail -3)"; fi
 rm -rf "$t"
 
 echo "== --file-issue dedup (existing open issue) -> skip create =="
-t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"; make_gh "$t/gh" exists
+t="$(mktemp -d)"; write_guardrail_settings "$t/claude" "$t/gone/node"; make_gh "$t/gh" exists
 out="$(PATH="$t/gh:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --file-issue --repo me/repo --no-color 2>&1)"
 if grepq "$out" 'already exists' && ! grepq "$out" 'CREATE'; then pass "dedup -> skipped"; else fail "dedup -> $(printf '%s' "$out" | tail -3)"; fi
 rm -rf "$t"
@@ -174,7 +259,7 @@ echo "== --file-issue with gh ABSENT -> graceful, no crash =="
 # Only run where the curated symlink PATH genuinely works (Linux) — Windows
 # Git Bash symlinks to .exe tools don't execute, so skip there cleanly.
 if PATH="$NOGH" bash -c 'git --version >/dev/null 2>&1 && jq --version >/dev/null 2>&1 && ! command -v gh >/dev/null 2>&1' 2>/dev/null; then
-    t="$(mktemp -d)"; write_settings "$t/claude" "$DANGLING"
+    t="$(mktemp -d)"; write_guardrail_settings "$t/claude" "$t/gone/node"
     out="$(PATH="$NOGH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --file-issue --repo me/repo --no-color 2>&1)"; rc=$?
     if grepq "$out" 'gh not found' && { [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; }; then pass "gh-absent -> graceful (rc=$rc)"; else fail "gh-absent -> rc=$rc; $(printf '%s' "$out" | tail -3)"; fi
     rm -rf "$t"
@@ -182,10 +267,39 @@ else
     pass "gh-absent -> (skipped: could not build a gh-less PATH on this host)"
 fi
 
-echo "== bare 'node' caveman cmd + node off PATH -> C1 WARN =="
-t="$(mktemp -d)"; write_settings "$t/claude" '"node \"X/hooks/caveman-activate.js\""'
-out="$(PATH="$NODELESS_PATH" RESOLVE_NODE_PROBE_DIRS="" RESOLVE_NODE_NVM_ROOT="$t/none" FNM_DIR="$t/none" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if grepq "$out" 'WARN C1-node'; then pass "bare-node -> C1 WARN"; else fail "bare-node -> $(printf '%s' "$out" | grep C1-node)"; fi
+echo "== C1-guardrail: guardrail block baked to a missing node -> FAIL C1-guardrail, rc 1 =="
+t="$(mktemp -d)"
+write_guardrail_settings "$t/claude" "$t/gone/node"
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if [ "$rc" -eq 1 ] && grepq "$out" 'FAIL C1-guardrail'; then pass "guardrail stale node -> rc1, FAIL C1-guardrail"; else fail "guardrail stale node -> rc=$rc; $(printf '%s' "$out" | grep C1-guardrail)"; fi
+rm -rf "$t"
+
+echo "== C1-guardrail: guardrail block baked to a present node -> OK C1-guardrail =="
+_real_node="$(command -v node 2>/dev/null || true)"
+if [ -n "$_real_node" ]; then
+    if command -v cygpath >/dev/null 2>&1; then _real_node="$(cygpath -m "$_real_node")"; fi
+    t="$(mktemp -d)"
+    write_guardrail_settings "$t/claude" "$_real_node"
+    out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'OK   C1-guardrail'; then pass "guardrail present node -> OK C1-guardrail"; else fail "guardrail present node -> $(printf '%s' "$out" | grep C1-guardrail)"; fi
+    rm -rf "$t"
+else
+    pass "guardrail present node -> (skipped: no node on PATH here)"
+fi
+
+echo "== C1-guardrail: --fix re-bakes the stale guardrail node (faked Linux uname) =="
+t="$(mktemp -d)"
+write_guardrail_settings "$t/claude" "$t/gone/node"
+PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --fix --no-color >/dev/null 2>&1
+# On a Windows host with a faked-Linux uname, setup-hooks.sh bakes a /c/...
+# node path that node's fs.existsSync can't see, so the post-fix re-check may
+# still FAIL here — the honest assertion is just that the STALE path is gone.
+if grep -q "$t/gone/node" "$t/claude/settings.json"; then
+    fail "--fix -> stale node path still present in settings.json"
+else
+    pass "--fix -> stale node path replaced"
+fi
+if grep -q 'guardrail-skip-in-himmel.js' "$t/claude/settings.json"; then pass "--fix -> guardrail wiring still present"; else fail "--fix -> guardrail wiring missing after re-bake"; fi
 rm -rf "$t"
 
 echo "== C2: shadowed claude-obsidian marketplace -> WARN =="
@@ -201,6 +315,68 @@ git -C "$v" init -q 2>/dev/null; git -C "$v" config user.email t@t; git -C "$v" 
 write_settings "$t/claude" "$WRAPPER"
 out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C3-luna'; then pass "C3 -> WARN (dirty single-writer)"; else fail "C3 -> $(printf '%s' "$out" | grep C3)"; fi
+rm -rf "$t"
+
+echo "== C26: no salus vault -> OK skipped =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c26.XXXXXX")"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C26-salus-marker' && grepq "$out" 'no salus vault found'; then pass "C26 -> OK (no vault)"; else fail "C26 no-vault -> $(printf '%s' "$out" | grep C26)"; fi
+rm -rf "$t"
+
+echo "== C26: salus vault with no .salus-profile -> OK skipped (not a salus deployment) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c26.XXXXXX")"; mkdir -p "$t/claude"; v="$t/home/Documents/salus"; mkdir -p "$v"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C26-salus-marker' && grepq "$out" 'not a salus-profile deployment'; then pass "C26 -> OK (no .salus-profile)"; else fail "C26 no-profile -> $(printf '%s' "$out" | grep C26)"; fi
+rm -rf "$t"
+
+echo "== C26: .salus-profile present, .salus absent -> WARN (armed-but-inert) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c26.XXXXXX")"; mkdir -p "$t/claude"; v="$t/home/Documents/salus"; mkdir -p "$v"
+: > "$v/.salus-profile"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C26-salus-marker' && grepq "$out" 'armed-but-inert'; then pass "C26 -> WARN (profile without .salus)"; else fail "C26 profile-only -> $(printf '%s' "$out" | grep C26)"; fi
+rm -rf "$t"
+
+echo "== C26: both .salus-profile and .salus present -> OK armed =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c26.XXXXXX")"; mkdir -p "$t/claude"; v="$t/home/Documents/salus"; mkdir -p "$v"
+: > "$v/.salus-profile"; : > "$v/.salus"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C26-salus-marker' && grepq "$out" 'PHI guards are armed'; then pass "C26 -> OK (both markers present)"; else fail "C26 both-markers -> $(printf '%s' "$out" | grep C26)"; fi
+rm -rf "$t"
+
+echo "== C27: no claude-glm config dir -> OK skipped =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c27.XXXXXX")"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C27-guard-signals' && grepq "$out" 'declared here'; then pass "C27 -> OK (no config dir)"; else fail "C27 no-dir -> $(printf '%s' "$out" | grep C27)"; fi
+rm -rf "$t"
+
+echo "== C27: config dir present, no phi-roots/egress-denylist files -> OK skipped =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c27.XXXXXX")"; mkdir -p "$t/claude"; mkdir -p "$t/home/.config/claude-glm"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C27-guard-signals' && grepq "$out" 'readable regular files'; then pass "C27 -> OK (nothing declared)"; else fail "C27 empty-dir -> $(printf '%s' "$out" | grep C27)"; fi
+rm -rf "$t"
+
+echo "== C27: readable phi-roots + egress-denylist -> OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c27.XXXXXX")"; mkdir -p "$t/claude"; mkdir -p "$t/home/.config/claude-glm"
+: > "$t/home/.config/claude-glm/phi-roots"; : > "$t/home/.config/claude-glm/egress-denylist"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C27-guard-signals' && grepq "$out" 'readable regular files'; then pass "C27 -> OK (both readable)"; else fail "C27 readable -> $(printf '%s' "$out" | grep C27)"; fi
+rm -rf "$t"
+
+echo "== C27: phi-roots exists but is a directory (not a readable regular file) -> WARN (inert signal) =="
+# A directory is the portable unreadable-policy fixture (same trick as
+# scripts/graphify/test-refresh-graph-map.sh T43e): [-f] fails on a directory
+# on every platform, unlike chmod 000 which does not reliably deny read to the
+# owner on Windows.
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c27.XXXXXX")"; mkdir -p "$t/claude"
+mkdir -p "$t/home/.config/claude-glm/phi-roots"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C27-guard-signals' && grepq "$out" 'not a readable regular file'; then pass "C27 -> WARN (phi-roots is a directory)"; else fail "C27 unreadable -> $(printf '%s' "$out" | grep C27)"; fi
 rm -rf "$t"
 
 echo "== C6: bare-interpreter MCP server -> WARN =="
@@ -301,6 +477,56 @@ if grepq "$out" 'WARN' && grepq "$out" 'C7-shipped' && grepq "$out" 'feat/shippe
     pass "C7 -> WARN (merged branch flagged)"
 else
     fail "C7 -> expected WARN C7-shipped feat/shipped; got: $(printf '%s' "$out" | grep C7)"
+fi
+rm -rf "$t"
+
+echo "== C7: untracked-only merged-PR worktree -> WARN C7-shipped with the UNTRACKED remediation =="
+t="$(mktemp -d)"
+make_wt_repo "$t/repo"
+_defbranch1c="$(git -C "$t/repo" rev-parse --abbrev-ref HEAD)"
+git -C "$t/repo" checkout -q -b feat/shipped-untracked
+git -C "$t/repo" checkout -q "$_defbranch1c"
+git -C "$t/repo" worktree add -q "$t/wt-shipped-untracked" "feat/shipped-untracked"
+# The HIMMEL-1692 headline shape: nothing tracked is modified, but a forgotten
+# untracked file (the real incident was a 502-line spec) sits in a merged
+# worktree. A tracked-only probe would call this clean and hand back the flat
+# "prune with /clean", which clean-garden may well refuse as forgotten work.
+printf 'a forgotten spec\n' > "$t/wt-shipped-untracked/FORGOTTEN-SPEC.md"
+make_gh_stub "$t/stub" "feat/shipped-untracked"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    FORGE=github GH_CMD="$t/stub/gh" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN' && grepq "$out" 'C7-shipped' && grepq "$out" 'feat/shipped-untracked' \
+    && grepq "$out" 'has UNTRACKED files' && grepq "$out" 'dry-run'; then
+    pass "C7 -> WARN (untracked-only merged branch gets the UNTRACKED remediation)"
+else
+    fail "C7 -> expected the UNTRACKED remediation for feat/shipped-untracked; got: $(printf '%s' "$out" | grep C7)"
+fi
+rm -rf "$t"
+
+echo "== C7: dirty merged-PR worktree -> WARN C7-shipped with 'will refuse' remediation =="
+t="$(mktemp -d)"
+make_wt_repo "$t/repo"
+_defbranch1b="$(git -C "$t/repo" rev-parse --abbrev-ref HEAD)"
+git -C "$t/repo" checkout -q -b feat/shipped-dirty
+git -C "$t/repo" checkout -q "$_defbranch1b"
+git -C "$t/repo" worktree add -q "$t/wt-shipped-dirty" "feat/shipped-dirty"
+# Dirty the worktree (HIMMEL-1692): /clean will refuse to prune this one, so
+# the C7 remediation must say so instead of pointing at /clean as if it works.
+printf 'uncommitted\n' >> "$t/wt-shipped-dirty/README.md"
+make_gh_stub "$t/stub" "feat/shipped-dirty"
+write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_WORKTREE_ROOT="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    FORGE=github GH_CMD="$t/stub/gh" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN' && grepq "$out" 'C7-shipped' && grepq "$out" 'feat/shipped-dirty' \
+    && grepq "$out" 'refuses to prune it' && grepq "$out" 'do NOT just commit in place'; then
+    pass "C7 -> WARN (dirty merged branch gets the 'will refuse' remediation)"
+else
+    fail "C7 -> expected WARN C7-shipped feat/shipped-dirty with dirty-worktree remediation; got: $(printf '%s' "$out" | grep C7)"
 fi
 rm -rf "$t"
 
@@ -952,6 +1178,2657 @@ else
     pass "C19 cmp/diff-unavailable -> (skipped: could not build a cmp/diff-less PATH on this host)"
 fi
 
+# ── C20: running node major vs .nvmrc (HIMMEL-1986 / HIMMEL-2010) ─────────────
+# The drift is a FAIL now (HIMMEL-2010) — the doctor still never edits .nvmrc or
+# switches a runtime, it just refuses to let the two disagree silently. CI and
+# NODE_MAJOR_DRIFT_OK=1 keep it visible as a non-fatal WARN.
+C20_NODE="$FAKEROOT/c20node"; mkdir -p "$C20_NODE"
+# Baked per case, not read from the env at run time: an env-expanding stub body
+# has to be single-quoted, which shellcheck reads as SC2016.
+c20_node_stub() { printf '#!/bin/sh\necho %s\n' "$1" > "$C20_NODE/node"; chmod +x "$C20_NODE/node"; }
+
+echo "== C20: node major != .nvmrc -> FAIL C20-node, fatal =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+printf '24\n' > "$t/nvmrc"; c20_node_stub v26.7.0
+out="$(DOCTOR_NVMRC="$t/nvmrc" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" NODE_MAJOR_DRIFT_OK=0 CI="" GITHUB_ACTIONS="" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" PATH="$C20_NODE:$PATH" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'FAIL C20-node' && grepq "$out" 'v26.7.0' && grepq "$out" 'pins 24' && [ "$rc" -eq 1 ]; then
+    pass "C20 -> FAIL (running major != pin, exit 1)"
+else
+    fail "C20 drift -> rc=$rc; $(printf '%s' "$out" | grep -A2 C20)"
+fi
+# The bypass and CI both downgrade the same finding to a non-fatal WARN.
+out="$(DOCTOR_NVMRC="$t/nvmrc" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" NODE_MAJOR_DRIFT_OK=1 CI="" GITHUB_ACTIONS="" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" PATH="$C20_NODE:$PATH" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'WARN C20-node' && grepq "$out" 'NODE_MAJOR_DRIFT_OK=1' && [ "$rc" -eq 0 ]; then
+    pass "C20 -> WARN under NODE_MAJOR_DRIFT_OK=1 (bypass honoured, exit 0)"
+else
+    fail "C20 bypass -> rc=$rc; $(printf '%s' "$out" | grep -A2 C20)"
+fi
+out="$(DOCTOR_NVMRC="$t/nvmrc" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" NODE_MAJOR_DRIFT_OK=0 CI=true GITHUB_ACTIONS="" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" PATH="$C20_NODE:$PATH" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'WARN C20-node' && grepq "$out" -F 'CI — advisory here' && [ "$rc" -eq 0 ]; then
+    pass "C20 -> WARN under \$CI (a runner's node is not this operator's to fix)"
+else
+    fail "C20 under CI -> rc=$rc; $(printf '%s' "$out" | grep -A2 C20)"
+fi
+# ...and it never edits the pin it complains about.
+if [ "$(cat "$t/nvmrc")" = "24" ]; then
+    pass "C20 left .nvmrc untouched (the bump is an operator decision)"
+else
+    fail "C20 rewrote .nvmrc to '$(cat "$t/nvmrc")'"
+fi
+rm -rf "$t"
+
+echo "== C20: node major == .nvmrc -> OK (negative control) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+printf 'v24\n' > "$t/nvmrc"; c20_node_stub v24.9.0
+out="$(DOCTOR_NVMRC="$t/nvmrc" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" PATH="$C20_NODE:$PATH" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'OK   C20-node' && ! grepq "$out" 'WARN C20-node' && [ "$rc" -eq 0 ]; then
+    pass "C20 -> OK (aligned major, no false drift)"
+else
+    fail "C20 aligned -> rc=$rc; $(printf '%s' "$out" | grep -A2 C20)"
+fi
+rm -rf "$t"
+
+echo "== C20: a version-shaped-but-unreadable node is never reported as aligned =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+printf '24\n' > "$t/nvmrc"; c20_node_stub v24-corrupt
+out="$(DOCTOR_NVMRC="$t/nvmrc" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" PATH="$C20_NODE:$PATH" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'INFO C20-node' && ! grepq "$out" 'matches the .nvmrc pin' && [ "$rc" -eq 0 ]; then
+    pass "C20 -> INFO (unreadable version, never a false 'aligned')"
+else
+    fail "C20 unreadable -> rc=$rc; $(printf '%s' "$out" | grep -A2 C20)"
+fi
+rm -rf "$t"
+
+# ── C21: hermes himmel_agent profile default vs lanes.json record ─────────────
+LANES_JSON="$REPO_ROOT/scripts/lanes/lanes.json"
+EXPECTED_MODEL="$(jq -r '.lanes[] | select(.id=="hermes-oneshot") | .profileDefaultModel // empty' "$LANES_JSON" 2>/dev/null)"
+
+# CRLF, like the operator's real %LOCALAPPDATA%/hermes files, to prove the
+# parser survives the only line ending the real fixture actually has.
+echo "== C21: hermes profile default matches lanes.json (CRLF fixture) -> OK =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+h="$t/hermes"; mkdir -p "$h/profiles/himmel_agent"
+printf 'himmel_agent\r\n' > "$h/active_profile"
+printf 'model:\r\n  default: %s\r\nother:\r\n  key: val\r\n' "$EXPECTED_MODEL" > "$h/profiles/himmel_agent/config.yaml"
+out="$(DOCTOR_HERMES_HOME="$h" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'OK   C21-hermes-profile' && [ "$rc" -eq 0 ]; then
+    pass "C21 -> OK (profile default matches lanes.json, CRLF fixture)"
+else
+    fail "C21 match -> rc=$rc; $(printf '%s' "$out" | grep -A2 C21)"
+fi
+rm -rf "$t"
+
+# Quoted + commented scalar (a YAML dumper's cosmetic re-write of the same
+# value) must not read as drift — an advisory check false-WARNing on a
+# no-op re-dump is the exact noise this check exists to avoid.
+echo "== C21: quoted + commented model.default (same value) -> OK, not a false WARN =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+h="$t/hermes"; mkdir -p "$h/profiles/himmel_agent"
+printf 'himmel_agent\n' > "$h/active_profile"
+printf 'model:\n  default: "%s"  # pinned\n' "$EXPECTED_MODEL" > "$h/profiles/himmel_agent/config.yaml"
+out="$(DOCTOR_HERMES_HOME="$h" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'OK   C21-hermes-profile' && [ "$rc" -eq 0 ]; then
+    pass "C21 -> OK (quoted + commented value parses to the same model)"
+else
+    fail "C21 quoted -> rc=$rc; $(printf '%s' "$out" | grep -A2 C21)"
+fi
+rm -rf "$t"
+
+echo "== C21: SINGLE-quoted model.default (same value) -> OK, not a false WARN =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+h="$t/hermes"; mkdir -p "$h/profiles/himmel_agent"
+printf 'himmel_agent\n' > "$h/active_profile"
+printf "model:\n  default: '%s'\n" "$EXPECTED_MODEL" > "$h/profiles/himmel_agent/config.yaml"
+out="$(DOCTOR_HERMES_HOME="$h" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'OK   C21-hermes-profile' && [ "$rc" -eq 0 ]; then
+    pass "C21 -> OK (single-quoted value parses to the same model)"
+else
+    fail "C21 single-quoted -> rc=$rc; $(printf '%s' "$out" | grep -A2 C21)"
+fi
+rm -rf "$t"
+
+echo "== C21: hermes profile default drifted from lanes.json -> WARN (never FAIL) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+h="$t/hermes"; mkdir -p "$h/profiles/himmel_agent"
+printf 'himmel_agent\n' > "$h/active_profile"
+printf 'model:\n  default: some/other-model\n' > "$h/profiles/himmel_agent/config.yaml"
+out="$(DOCTOR_HERMES_HOME="$h" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'WARN C21-hermes-profile' && grepq "$out" -F 'some/other-model' && [ "$rc" -eq 0 ]; then
+    pass "C21 -> WARN on drift, advisory only (exit 0)"
+else
+    fail "C21 drift -> rc=$rc; $(printf '%s' "$out" | grep -A2 C21)"
+fi
+rm -rf "$t"
+
+# HIMMEL-2437: with NO DOCTOR_HERMES_HOME/HERMES_HOME/LOCALAPPDATA override at
+# all, check_c21's own default-root resolution must land on $HOME/.hermes —
+# NEVER $HOME/AppData/Local/hermes (a Windows layout under a POSIX $HOME) and
+# never $HOME/.local/share/hermes (the old non-hermes-upstream fallback). The
+# suite's own global DOCTOR_HERMES_HOME hermeticity export is unset for this
+# ONE invocation via `env -u`; no hermes install exists under the scratch
+# HOME, so this stays the cheap "no hermes install found" INFO path while
+# still proving the RESOLVED default path.
+echo "== C21: no HERMES_HOME/LOCALAPPDATA override -> default root is \$HOME/.hermes =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/doctor-c21.XXXXXX")" || { echo "FAIL - mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(env -u DOCTOR_HERMES_HOME -u HERMES_HOME -u LOCALAPPDATA \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" -F "no hermes install found ($t/home/.hermes)" && [ "$rc" -eq 0 ]; then
+    pass "C21 -> default root resolves to \$HOME/.hermes when nothing overrides it (HIMMEL-2437)"
+else
+    fail "C21 default-root -> rc=$rc; $(printf '%s' "$out" | grep -A2 C21)"
+fi
+rm -rf "$t"
+
+# codex-1 (round-2 /pr-check finding): a lanes.json where only ONE of the two
+# hermes rows declares profileDefaultModel must WARN, not silently validate
+# against the one row that happens to have it (the undeclared row's model
+# would otherwise never be checked).
+echo "== C21: only ONE hermes row declares profileDefaultModel -> WARN, not a silent OK =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"
+lanes_one_missing="$t/lanes-one-missing.json"
+printf '{"lanes":[{"id":"hermes-oneshot","profileDefaultModel":"%s"},{"id":"hermes-critics"}]}\n' "$EXPECTED_MODEL" > "$lanes_one_missing"
+write_settings "$t/claude" "$WRAPPER"
+h="$t/hermes"; mkdir -p "$h/profiles/himmel_agent"
+printf 'himmel_agent\n' > "$h/active_profile"
+printf 'model:\n  default: %s\n' "$EXPECTED_MODEL" > "$h/profiles/himmel_agent/config.yaml"
+out="$(DOCTOR_HERMES_HOME="$h" DOCTOR_LANES_JSON="$lanes_one_missing" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'WARN C21-hermes-profile' && grepq "$out" -F 'only one of' && [ "$rc" -eq 0 ]; then
+    pass "C21 -> WARN (one row missing profileDefaultModel is never a silent OK)"
+else
+    fail "C21 one-missing -> rc=$rc; $(printf '%s' "$out" | grep -A2 C21)"
+fi
+rm -rf "$t"
+
+echo "== C21: no hermes install -> INFO, never a false OK/WARN =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_HERMES_HOME="$t/no-such-hermes-dir" \
+    DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'INFO C21-hermes-profile' && ! grepq "$out" 'OK   C21-hermes-profile' && ! grepq "$out" 'WARN C21-hermes-profile' && [ "$rc" -eq 0 ]; then
+    pass "C21 -> INFO (no hermes install, no false verdict)"
+else
+    fail "C21 no-install -> rc=$rc; $(printf '%s' "$out" | grep -A2 C21)"
+fi
+rm -rf "$t"
+
+# ── C23: unlanded local work (HIMMEL-2070) ───────────────────────────────────
+# make_c23_repo <dir> — a base "main" with an origin/main ref pointed at it
+# (no real remote needed; unlanded-work.sh's default --base is origin/main).
+make_c23_repo() {
+    local d="$1"
+    mkdir -p "$d"
+    git -C "$d" init -q
+    git -C "$d" config user.email t@t
+    git -C "$d" config user.name t
+    printf 'base\n' > "$d/base.md"
+    git -C "$d" add base.md
+    git -C "$d" commit -q -m init
+    git -C "$d" branch -M main
+    git -C "$d" update-ref refs/remotes/origin/main refs/heads/main
+}
+
+echo "== C23: no unlanded work -> OK C23-unlanded =="
+t="$(mktemp -d)"; make_c23_repo "$t/repo"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_UNLANDED_DIR="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C23-unlanded'; then pass "C23 -> OK (no unlanded branches)"; else fail "C23 -> $(printf '%s' "$out" | grep C23)"; fi
+rm -rf "$t"
+
+echo "== C23: fresh UNLANDED-LIVE branch, no PR -> INFO (not aged) =="
+t="$(mktemp -d)"; make_c23_repo "$t/repo"; write_settings "$t/claude" "$WRAPPER"
+git -C "$t/repo" checkout -q -b feat/fresh-unlanded
+printf 'work\n' > "$t/repo/work.md"; git -C "$t/repo" add work.md
+# "@<unix-ts> +0000" — the one date form every git build parses unconditionally
+# (this git build's GIT_AUTHOR_DATE rejects the approxidate keyword "now" outright:
+# `fatal: invalid date format: now`).
+GIT_AUTHOR_DATE="@$(date +%s) +0000" GIT_COMMITTER_DATE="@$(date +%s) +0000" git -C "$t/repo" commit -q -m "feat: add work"
+git -C "$t/repo" checkout -q main
+out="$(DOCTOR_UNLANDED_DIR="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    GH_CMD="$t/no-such-gh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C23-unlanded' && grepq "$out" -F 'none aged' && ! grepq "$out" 'WARN C23-unlanded'; then
+    pass "C23 -> INFO (fresh unlanded, not aged)"
+else
+    fail "C23 fresh -> $(printf '%s' "$out" | grep C23)"
+fi
+rm -rf "$t"
+
+echo "== C23: AGED UNLANDED-LIVE branch, no PR -> WARN C23-unlanded =="
+t="$(mktemp -d)"; make_c23_repo "$t/repo"; write_settings "$t/claude" "$WRAPPER"
+git -C "$t/repo" checkout -q -b feat/aged-unlanded
+printf 'work\n' > "$t/repo/work.md"; git -C "$t/repo" add work.md
+GIT_AUTHOR_DATE="@$(( $(date +%s) - 50*3600 )) +0000" GIT_COMMITTER_DATE="@$(( $(date +%s) - 50*3600 )) +0000" git -C "$t/repo" commit -q -m "feat: add old work"
+git -C "$t/repo" checkout -q main
+out="$(DOCTOR_UNLANDED_DIR="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    GH_CMD="$t/no-such-gh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C23-unlanded' && grepq "$out" -F 'aged unlanded'; then
+    pass "C23 -> WARN (aged unlanded branch)"
+else
+    fail "C23 aged -> $(printf '%s' "$out" | grep C23)"
+fi
+rm -rf "$t"
+
+echo "== C23: only a LANDED-ELSEWHERE branch (empty delta), no UNLANDED-LIVE -> INFO =="
+t="$(mktemp -d)"; make_c23_repo "$t/repo"; write_settings "$t/claude" "$WRAPPER"
+git -C "$t/repo" checkout -q -b feat/already-landed
+printf 'extra\n' > "$t/repo/extra.md"; git -C "$t/repo" add extra.md; git -C "$t/repo" commit -q -m "add extra"
+rm -f "$t/repo/extra.md"; git -C "$t/repo" add -A; git -C "$t/repo" commit -q -m "revert extra"
+git -C "$t/repo" checkout -q main
+out="$(DOCTOR_UNLANDED_DIR="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    GH_CMD="$t/no-such-gh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C23-unlanded' && grepq "$out" -F 'landed-elsewhere' && ! grepq "$out" 'WARN C23-unlanded'; then
+    pass "C23 -> INFO (landed-elsewhere only, no unlanded live work)"
+else
+    fail "C23 landed-elsewhere -> $(printf '%s' "$out" | grep C23)"
+fi
+rm -rf "$t"
+
+# codex-3 (HIMMEL-2070 CR round 1): an unresolvable --base (or any scan
+# failure) must not read as the same "no unlanded work" OK a genuinely clean
+# repo gets — unlanded-work.sh always exits 0 by contract, writing its
+# diagnostic to stderr instead, so a discarded stderr made an operational
+# failure indistinguishable from "nothing to report" here.
+echo "== C23: unresolvable base (no origin/main ref at all) -> INFO, not a false-clean OK =="
+t="$(mktemp -d)"; make_wt_repo "$t/repo"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_UNLANDED_DIR="$t/repo" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    GH_CMD="$t/no-such-gh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C23-unlanded' && grepq "$out" -F 'scan produced no data' && ! grepq "$out" 'OK   C23-unlanded'; then
+    pass "C23 -> INFO (unresolvable base, never a false-clean OK)"
+else
+    fail "C23 unresolvable-base -> $(printf '%s' "$out" | grep C23)"
+fi
+rm -rf "$t"
+
+# codex-3 (HIMMEL-2070 CR round 7): `cd` into a nonexistent scan_dir
+# short-circuits before unlanded-work.sh ever runs, so nothing lands on
+# stderr — the empty-TSV/empty-stderr combination must still read INFO, not
+# a false-clean OK, driven by the cd's own exit status.
+echo "== C23: DOCTOR_UNLANDED_DIR points at a nonexistent directory -> INFO, not a false-clean OK =="
+t="$(mktemp -d)"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_UNLANDED_DIR="$t/no-such-dir" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    GH_CMD="$t/no-such-gh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C23-unlanded' && grepq "$out" -F 'scan produced no data' && ! grepq "$out" 'OK   C23-unlanded'; then
+    pass "C23 -> INFO (cd-into-scan_dir failure, never a false-clean OK)"
+else
+    fail "C23 cd-failure -> $(printf '%s' "$out" | grep C23)"
+fi
+rm -rf "$t"
+
+# ── C24: expected-but-absent cadence tasks (HIMMEL-1680) ─────────────────────
+# fake_task_probe [--windows|--posix] <dir> <existing-task-names...> — a
+# scheduler-probe stub for either an EXPLICITLY named platform, or (with
+# neither flag) whichever platform this test process happens to run on:
+# schtasks on Windows/MSYS (is_windows() true), crontab elsewhere. Only the
+# "does <name> exist" shape is faked — good enough for check_c24, which only
+# ever asks that question.
+#
+# HIMMEL-2515 CR round 3 finding 1: sensing the CALLING PROCESS's own ambient
+# uname (the no-flag default) is safe ONLY for a caller whose matching doctor
+# invocation ALSO leaves is_windows() ambient (no $FAKEBIN pin on its PATH).
+# Any caller that pins the doctor to a specific platform via $FAKEBIN MUST
+# pass the matching --posix/--windows flag explicitly instead of relying on
+# the default — otherwise this fixture and the PINNED doctor invocation can
+# silently disagree about the platform: on a real Windows host, an unflagged
+# call here still senses Windows and writes a schtasks stub while a
+# $FAKEBIN-first ("echo Linux") doctor invocation takes the crontab branch
+# and finds none, falling through toward a missing or the operator's REAL
+# crontab. The flag makes the platform an explicit, hard-to-forget statement
+# at each call site instead of an ambient fact that can drift out of sync
+# with the doctor's own pin — see the fixture-pin RED/GREEN control below for
+# a reproduction of the silent-disagreement failure.
+# shellcheck disable=SC2016  # single-quoted $1/$2/$3 are emitted literally for the fake binary's own /bin/sh
+fake_task_probe() {
+    local platform=""
+    case "${1:-}" in
+        --windows) platform=windows; shift ;;
+        --posix)   platform=posix; shift ;;
+    esac
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    if [ -z "$platform" ]; then
+        if case "$(uname -s 2>/dev/null || echo x)" in MINGW*|MSYS*|CYGWIN*) true ;; *) false ;; esac; then
+            platform=windows
+        else
+            platform=posix
+        fi
+    fi
+    if [ "$platform" = windows ]; then
+        {
+            printf '#!/bin/sh\n'
+            printf 'if [ "$1" = "/query" ] && [ "$2" = "/tn" ]; then\n'
+            printf '    case " %s " in\n' "$*"
+            printf '        *" $3 "*) exit 0 ;;\n'
+            printf '        *) exit 1 ;;\n'
+            printf '    esac\n'
+            printf 'fi\n'
+            printf 'exit 0\n'
+        } > "$dir/schtasks"
+        chmod +x "$dir/schtasks"
+    else
+        {
+            printf '#!/bin/sh\n'
+            printf 'if [ "$1" = "-l" ]; then\n'
+            # The leading `:` is LOAD-BEARING when $@ is empty (the "no task
+            # names -> empty crontab" shape every C24-absent case relies on):
+            # a bare "if COND; then\nfi" with nothing between them is a shell
+            # SYNTAX ERROR (empty compound-command body), not an empty
+            # then-branch -- this crashed `crontab -l` with rc=2 on every
+            # POSIX host and was misread by check_c24's sched_unavailable
+            # probe as "the scheduler itself is unreachable", masking the
+            # intended WARN under a false INFO (the pre-existing baseline red
+            # row this PR turns green).
+            printf '    :\n'
+            for n in "$@"; do printf '    printf "%%s\\n" "0 0 * * * true # %s"\n' "$n"; done
+            printf 'fi\n'
+            printf 'exit 0\n'
+        } > "$dir/crontab"
+        chmod +x "$dir/crontab"
+    fi
+}
+
+# fake_systemctl <dir> <state> [mainpid] [nrestarts] — a stub `systemctl`
+# used by both C24's HimmelTelegramBridge probe and C30 (HIMMEL-2515). Never
+# touches anything real; only answers `--user is-enabled <unit>` and
+# `--user show <unit> -p <MainPID|NRestarts> --value`, the exact two shapes
+# check_c24/check_c30 invoke. <state> (every literal is-enabled text below
+# was VERIFIED against this box's real systemd 261 -- `man systemctl` Table 3
+# plus live is-enabled queries against real units in each state, none of
+# them telegram-bridge.service -- not assumed; see CR round 1 E1, which
+# caught an earlier "could not be found" guess that real systemd never
+# actually prints for a missing unit):
+#   enabled         — is-enabled prints "enabled", rc 0
+#   enabledruntime  — is-enabled prints "enabled-runtime", rc 0 (E1: also
+#                     counts as armed, same as "enabled" -- a runtime-only
+#                     enablement symlink, not a permanent one)
+#   disabled        — is-enabled prints "disabled", rc 1 (installed, not armed)
+#   notfound        — is-enabled prints "not-found" (verified literal, rc 4)
+#                     -- the unit file does not exist on this host at all
+#   busfail         — is-enabled prints THIS STATION's own real bus-failure
+#                     wording, rc 1 (transient/environment failure -- must
+#                     NOT read as absence). CR round 1 E5: captured from a
+#                     genuine forced failure, not guessed --
+#                     `XDG_RUNTIME_DIR=/nonexistent DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent
+#                     systemctl --user is-enabled telegram-bridge.service`
+#                     on this box (systemd 261) prints exactly:
+#                       "Failed to connect to user scope bus via local transport: No such file or directory"
+#                     An earlier version of this stub emitted the OLDER
+#                     systemd wording below instead, which the production
+#                     pattern at the time only matched by coincidence of
+#                     testing itself against its own guess -- the stub and
+#                     the code agreed with each other and both disagreed
+#                     with the real machine; this row would have passed
+#                     while proving nothing about the "unknown" branch
+#                     actually firing. Re-capture with the same reproduction
+#                     if this station's systemd version ever changes the
+#                     wording again.
+#   busfailold      — the OLDER systemd wording ("Failed to connect to bus:
+#                     ..."), covered by its own row so both forms are
+#                     verified by a test row, not just asserted in a comment.
+#   permdenied      — CR round 1 finding 2: an unrecognized/failed is-enabled
+#                     answer that is NEITHER a named enablement state NOR the
+#                     bus-unreachable wording above -- the shape that used to
+#                     fall through _systemd_user_unit_state's `*)` wildcard
+#                     into "disabled" (asserting the unit IS installed on no
+#                     evidence) before this ticket's fix made that bucket
+#                     "unknown" instead. This literal wording is INVENTED,
+#                     not captured from a real permission-denied is-enabled
+#                     invocation -- two attempts to force a genuine one on
+#                     this box (chmod 000 on a fixture unit file under
+#                     ~/.config/systemd/user, and chmod 000 on that directory
+#                     itself, each followed by daemon-reload) both had this
+#                     station's systemd fall back to "not-found" rather than
+#                     surfacing any permission string, so a real repro was not
+#                     obtained. The wording below follows systemd's
+#                     documented "Failed to X: %m" error-message shape (%m
+#                     expanding to the errno string), which is plausible but
+#                     UNVERIFIED -- treat it as a stand-in for "some
+#                     unrecognized failed answer", not as a verified literal.
+#
+# <mainpid>/<nrestarts> normally carry the literal `show -p ...` value to
+# print (any literal text works here already, e.g. "abc" -- so a
+# non-numeric-but-non-empty success case needs no sentinel at all), but
+# either may instead be one of two sentinels:
+#   FAIL  (CR round 2, HIMMEL-2515): makes the corresponding `--user show
+#         <unit> -p <MainPID|NRestarts> --value` query FAIL (rc 1, nothing
+#         on stdout) while `is-enabled` still answers per <state> as normal
+#         -- is-enabled and show are two separate invocations in
+#         check_c30/_c24_cron_has_task's caller, and this is what lets a
+#         test row fail ONLY the show query without touching the
+#         is-enabled gate above it.
+#   EMPTY (CR round 3, finding 2): makes the query SUCCEED (rc 0) but print
+#         nothing -- distinct from FAIL, and from a literal "0", because
+#         `${3:-0}`/`${4:-0}` cannot represent a genuinely empty value
+#         through normal argument defaulting (bash treats an empty arg the
+#         same as an unset one). Needed to prove a successful-but-unreadable
+#         query is read as UNDETERMINED, never as a live "MainPID=0".
+# shellcheck disable=SC2016  # $state/$mainpid/$nrestarts are meant to reach the fake binary's own /bin/sh unexpanded
+fake_systemctl() {
+    local dir="$1" state="$2" mainpid="${3:-0}" nrestarts="${4:-0}"
+    mkdir -p "$dir"
+    {
+        printf '#!/bin/sh\n'
+        printf 'state=%s\n' "$state"
+        printf 'mainpid=%s\n' "$mainpid"
+        printf 'nrestarts=%s\n' "$nrestarts"
+        cat <<'SCRIPT'
+if [ "$1" = "--user" ] && [ "$2" = "is-enabled" ]; then
+    case "$state" in
+        enabled) echo enabled; exit 0 ;;
+        enabledruntime) echo enabled-runtime; exit 0 ;;
+        disabled) echo disabled; exit 1 ;;
+        notfound) echo not-found; exit 4 ;;
+        busfail) echo "Failed to connect to user scope bus via local transport: No such file or directory" >&2; exit 1 ;;
+        busfailold) echo "Failed to connect to bus: No such file or directory" >&2; exit 1 ;;
+        permdenied) echo "Failed to get unit file state for telegram-bridge.service: Permission denied" >&2; exit 1 ;;
+    esac
+elif [ "$1" = "--user" ] && [ "$2" = "show" ]; then
+    shift 2; shift # drop --user show <unit>
+    prop="" prev=""
+    for a in "$@"; do
+        [ "$prev" = "-p" ] && prop="$a"
+        prev="$a"
+    done
+    case "$prop" in
+        MainPID)
+            if [ "$mainpid" = "FAIL" ]; then
+                echo "Failed to get properties: Transport endpoint is not connected" >&2
+                exit 1
+            fi
+            if [ "$mainpid" = "EMPTY" ]; then
+                printf '\n'
+            else
+                printf '%s\n' "$mainpid"
+            fi ;;
+        NRestarts)
+            if [ "$nrestarts" = "FAIL" ]; then
+                echo "Failed to get properties: Transport endpoint is not connected" >&2
+                exit 1
+            fi
+            if [ "$nrestarts" = "EMPTY" ]; then
+                printf '\n'
+            else
+                printf '%s\n' "$nrestarts"
+            fi ;;
+    esac
+    exit 0
+fi
+exit 1
+SCRIPT
+    } > "$dir/systemctl"
+    chmod +x "$dir/systemctl"
+}
+
+echo "== C24: no observability registry -> OK C24-cadence-registry =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'no cadence observability registry yet'; then
+    pass "C24 -> OK (no registry)"
+else
+    fail "C24 no-registry -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24: registry present, empty expected_tasks -> OK C24-cadence-registry =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/home/.himmel"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":[]}\n' > "$t/home/.himmel/observability.json"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'no cadence tasks expected'; then
+    pass "C24 -> OK (empty expected_tasks)"
+else
+    fail "C24 empty-expected -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24: malformed registry (invalid JSON) -> INFO, not a false-clean OK (codex-3) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/home/.himmel"; write_settings "$t/claude" "$WRAPPER"
+printf '{not valid json\n' > "$t/home/.himmel/observability.json"
+out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C24-cadence-registry' && grepq "$out" -F 'could not be parsed' && ! grepq "$out" 'OK   C24-cadence-registry'; then
+    pass "C24 -> INFO (malformed registry, never a false-clean OK)"
+else
+    fail "C24 malformed -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24: expected task present on the live scheduler -> OK C24-cadence-registry =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[{"name":"codex-sweep","cadence_seconds":14400}],"expected_tasks":["HIMMEL-CodexOrphanSweep"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe "$t/probe" "HIMMEL-CodexOrphanSweep"
+out="$(PATH="$t/probe:$PATH" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'expected cadence task(s) present' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (expected task present)"
+else
+    fail "C24 present -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24: expected task ABSENT from the live scheduler -> WARN C24-cadence-registry =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[{"name":"codex-sweep","cadence_seconds":14400}],"expected_tasks":["HIMMEL-CodexOrphanSweep"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe "$t/probe"
+out="$(PATH="$t/probe:$PATH" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'expected-but-absent cadence task(s): HIMMEL-CodexOrphanSweep'; then
+    pass "C24 -> WARN (expected task absent)"
+else
+    fail "C24 absent -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24: scheduler probe itself fails (access-denied/transient) -> INFO, not a false-mass-WARN (codex-1, CR round 3) =="
+t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[{"name":"codex-sweep","cadence_seconds":14400}],"expected_tasks":["HIMMEL-CodexOrphanSweep"]}\n' > "$t/home/.himmel/observability.json"
+if case "$(uname -s 2>/dev/null || echo x)" in MINGW*|MSYS*|CYGWIN*) true ;; *) false ;; esac; then
+    printf '#!/bin/sh\nexit 1\n' > "$t/probe/schtasks"; chmod +x "$t/probe/schtasks"
+else
+    printf '#!/bin/sh\necho "crontab: permission denied" >&2\nexit 1\n' > "$t/probe/crontab"; chmod +x "$t/probe/crontab"
+fi
+out="$(PATH="$t/probe:$PATH" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C24-cadence-registry' && grepq "$out" -F 'unreachable' && ! grepq "$out" 'WARN C24-cadence-registry' && ! grepq "$out" 'OK   C24-cadence-registry'; then
+    pass "C24 -> INFO (scheduler probe unavailable, never a false mass-WARN)"
+else
+    fail "C24 scheduler-unavailable -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+# ── C24 (HIMMEL-2515): HimmelTelegramBridge's systemd probe ──────────────────
+# CR round 1 finding 1: check_c24's task loop branches on is_windows() FIRST
+# (schtasks vs. systemd/crontab), before it ever looks at the task name -- so
+# on a real Windows/Git-Bash host every row below would take the schtasks
+# branch and never touch fake_systemctl at all. fake_task_probe already
+# writes whichever stub matches THIS host's real uname (schtasks on
+# MINGW/MSYS/CYGWIN, crontab elsewhere), so on Windows these rows would find
+# the (nameless) fake_task_probe call's task absent via schtasks and WARN --
+# exactly the failure the RED control below reproduces. Every row here
+# therefore puts $FAKEBIN (the "echo Linux" uname stub used since HIMMEL-2010
+# to exercise the non-Windows --fix path, defined near the top of this file)
+# FIRST on PATH, ahead of $t/probe -- this pins is_windows() to false
+# regardless of the real host, so the systemd probe these rows exist to test
+# is what actually runs, deterministically, on every platform.
+echo "== C24 (HIMMEL-2515, finding 1 RED/GREEN): the FAKEBIN uname pin is what makes the systemd rows below platform-independent =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-winsim.XXXXXX")" || { fail "C24 finding-1 control: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe" "$t/mingw"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"          # --posix pins the crontab stub regardless of the real host, same as every row below
+fake_systemctl "$t/probe" enabled 424242 0
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$t/mingw/uname"; chmod +x "$t/mingw/uname"
+# A real Windows host also has a real schtasks -- check_c24's pre-loop
+# sched_unavailable probe (`schtasks /query`) must succeed so the per-task
+# loop below is actually reached; only the PER-TASK query (`/query /tn
+# <name>`) reports the (never-armed-here) task absent, mirroring a genuine
+# schtasks that has never heard of this task name.
+# shellcheck disable=SC2016  # single-quoted $1/$2 are emitted literally for the fake binary's own /bin/sh
+{
+    printf '#!/bin/sh\n'
+    printf 'if [ "$1" = "/query" ] && [ "$2" = "/tn" ]; then exit 1; fi\n'
+    printf 'exit 0\n'
+} > "$t/mingw/schtasks"
+chmod +x "$t/mingw/schtasks"
+# RED control: simulate a Windows host (uname -> MINGW64_NT via $t/mingw)
+# WITHOUT the FAKEBIN pin -- is_windows() now reads true, check_c24 takes the
+# schtasks branch, finds no schtasks binary here (fake_task_probe wrote
+# crontab, since IT read the REAL host's uname), and counts the task
+# absent -- reproducing this finding's bug on a real Windows host.
+out_red="$(PATH="$t/mingw:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out_red" 'WARN C24-cadence-registry' && grepq "$out_red" -F 'HimmelTelegramBridge'; then
+    pass "C24 finding-1 RED control -> WARN under a simulated Windows host without the uname pin (confirms the bug)"
+else
+    fail "C24 finding-1 RED control -> did not reproduce the bug; got: $(printf '%s' "$out_red" | grep C24)"
+fi
+# GREEN: put $FAKEBIN first, ahead of BOTH the mingw stub and the probe dir --
+# this is the fix applied to every row below. is_windows() now reads false
+# regardless of the simulated host, so the systemd probe (fake_systemctl
+# enabled) is what actually gets exercised.
+out_green="$(PATH="$FAKEBIN:$t/mingw:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out_green" 'OK   C24-cadence-registry' && ! grepq "$out_green" 'WARN C24-cadence-registry'; then
+    pass "C24 finding-1 GREEN -> FAKEBIN-first uname pin forces the POSIX/systemd branch even under a simulated Windows host"
+else
+    fail "C24 finding-1 GREEN -> $(printf '%s' "$out_green" | grep C24)"
+fi
+rm -rf "$t"
+
+# ── C24 (HIMMEL-2515 CR round 3, finding 1): the FIXTURE must follow the
+# PINNED platform, not the test process's ambient host ─────────────────────
+# The RED/GREEN pair above proves the doctor's OWN is_windows() branch is
+# pinnable via $FAKEBIN. This pair proves the companion half: fake_task_probe
+# itself must be told the SAME platform, not left to sense the calling
+# process's real uname — otherwise a fixture written under one platform can
+# silently disagree with a doctor invocation pinned to a different one.
+echo "== C24 (HIMMEL-2515 CR round 3, finding 1): fake_task_probe must follow the PINNED platform, not the ambient host's uname =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-fixture-pin.XXXXXX")" || { fail "C24 fixture-pin: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe" "$t/mingw"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+# systemd reports "unknown" (bus unreachable) so check_c24 falls back to the
+# crontab probe -- the ONLY branch where the fixture's platform actually
+# matters (an "enabled"/"disabled" systemd answer never looks at crontab at
+# all, so it couldn't demonstrate this mismatch).
+fake_systemctl "$t/probe" busfail
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$t/mingw/uname"; chmod +x "$t/mingw/uname"
+# RED: call fake_task_probe with NO explicit platform flag while a fake
+# Windows uname sits FIRST on the CALLING process's own PATH -- exactly how
+# every call site in this block worked before this fix, sensing the ambient
+# host instead of the platform the doctor will be pinned to. It writes a
+# schtasks stub, no crontab. The doctor is then run PINNED to POSIX via
+# $FAKEBIN (as every row in this block is) with a curated $NOGH PATH tail
+# that has no real crontab reachable at all (never touch the operator's
+# real crontab from this suite) -- so if the fixture disagrees with the pin,
+# the crontab probe finds NOTHING to read, not even a stub.
+#
+# HIMMEL-2515 CR round 4 note: this scenario's OWN crontab is genuinely
+# unreachable (the mismatched fixture wrote schtasks, not crontab), which
+# used to trip the whole-function early return and read as a blanket
+# "scheduler unreachable" INFO regardless of what systemd said. Since round
+# 4 made that bail backend-specific, HimmelTelegramBridge (expected here)
+# has an alternate backend (systemctl IS reachable, even though its answer
+# is "unknown"/busfail) so the per-task loop still runs; with BOTH probes
+# inconclusive for this one task, it now lands in the pre-existing
+# INDETERMINATE bucket instead. The RED/GREEN distinction this row exists to
+# prove still holds: RED's mismatched fixture leaves the crontab probe with
+# nothing to find (INDETERMINATE); GREEN's correctly-pinned fixture gives
+# the crontab probe a real row to find (confirmed PRESENT) -- see below.
+PATH="$t/mingw:$PATH" fake_task_probe "$t/probe" HimmelTelegramBridge
+out_red="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out_red" 'OK   C24-cadence-registry' && grepq "$out_red" 'INFO C24-cadence-registry' && grepq "$out_red" -F 'UNDETERMINED' && grepq "$out_red" -F 'HimmelTelegramBridge' && ! grepq "$out_red" 'WARN C24-cadence-registry'; then
+    pass "C24 fixture-pin RED control -> an ambient-sensed fixture (Windows caller, POSIX-pinned doctor) mismatches: crontab probe finds nothing, task reads INDETERMINATE instead of the intended confirmed-present"
+else
+    fail "C24 fixture-pin RED control -> $(printf '%s' "$out_red" | grep C24)"
+fi
+# GREEN: same scenario, but fake_task_probe is told the platform EXPLICITLY
+# (--posix) instead of sensing the calling process's ambient uname -- the
+# fixture now matches the doctor's pin regardless of what host is really
+# running this suite (the fake Windows uname is still first on PATH here,
+# and it no longer matters).
+fake_task_probe --posix "$t/probe" HimmelTelegramBridge
+out_green="$(PATH="$FAKEBIN:$t/mingw:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out_green" 'OK   C24-cadence-registry' && grepq "$out_green" -F 'expected cadence task(s) present' && ! grepq "$out_green" 'WARN C24-cadence-registry' && ! grepq "$out_green" -F 'UNDETERMINED'; then
+    pass "C24 fixture-pin GREEN -> --posix ties the fixture to the pinned platform, matching the doctor regardless of the ambient host"
+else
+    fail "C24 fixture-pin GREEN -> $(printf '%s' "$out_green" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515): HimmelTelegramBridge armed via systemd, no crontab row -> present, OK (the ticket's bug: pre-fix this WARNs) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 systemd-present: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+fake_systemctl "$t/probe" enabled 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'expected cadence task(s) present' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (HimmelTelegramBridge present via systemd)"
+else
+    fail "C24 systemd-present -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515, CR round 1 E1): HimmelTelegramBridge enabled-runtime (not permanent 'enabled') -> STILL present, OK -- a narrower repeat of this ticket's own bug if misclassified =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 systemd-enabled-runtime: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+fake_systemctl "$t/probe" enabledruntime 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'expected cadence task(s) present' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (enabled-runtime counts as present, same as enabled)"
+else
+    fail "C24 systemd-enabled-runtime -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515): HimmelTelegramBridge NOT enabled via systemd, no crontab row -> still absent, WARN (fix must not blanket-excuse the task) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 systemd-disabled: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+fake_systemctl "$t/probe" disabled
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'HimmelTelegramBridge'; then
+    pass "C24 -> WARN (systemd reports NOT enabled, still counted absent)"
+else
+    fail "C24 systemd-disabled -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24: HimmelTelegramBridge expected, NO systemctl at all -> falls back to crontab probe, unchanged pre-fix behavior =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 no-systemctl: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/no-such-systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'HimmelTelegramBridge'; then
+    pass "C24 -> WARN (no systemctl on PATH, crontab-only fallback unchanged)"
+else
+    fail "C24 no-systemctl -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515): a NON-bridge task expected, systemctl reports enabled -> the systemd probe must NOT leak to other tasks (still WARN) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 no-leak: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[{"name":"codex-sweep","cadence_seconds":14400}],"expected_tasks":["HIMMEL-CodexOrphanSweep"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"
+fake_systemctl "$t/probe" enabled 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'HIMMEL-CodexOrphanSweep'; then
+    pass "C24 -> WARN (a non-bridge task stays crontab-only, systemd probe did not leak)"
+else
+    fail "C24 no-leak -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515): systemctl present but the user bus is unreachable -> falls back to crontab (crontab HAS the row -> OK, proves it was NOT read as absent) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 bus-unreachable: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe" "HimmelTelegramBridge"
+fake_systemctl "$t/probe" busfail
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (bus-unreachable fell back to crontab instead of being read as absent)"
+else
+    fail "C24 bus-unreachable -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (CR round 1 E5): same, but the OLDER systemd bus-failure wording ('Failed to connect to bus: ...') -> also falls back to crontab, not read as absent =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 bus-unreachable-old: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe" "HimmelTelegramBridge"
+fake_systemctl "$t/probe" busfailold
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (older bus-unreachable wording also falls back to crontab, not read as absent)"
+else
+    fail "C24 bus-unreachable-old -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515, CR round 1 finding 2): unrecognized/permission-error is-enabled output falls back to crontab like bus-unreachable (crontab HAS the row -> OK, not misread as 'disabled') =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 finding-2: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe" "HimmelTelegramBridge"
+fake_systemctl "$t/probe" permdenied
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (unrecognized/permission-error output falls back to crontab instead of being misread as 'disabled')"
+else
+    fail "C24 finding-2 -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C30 (HIMMEL-2515, CR round 1 finding 2): unrecognized/permission-error is-enabled output -> INFO, must NEVER claim 'installed but not enabled' (the probe proved nothing) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 finding-2: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" permdenied
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'installed but not enabled'; then
+    pass "C30 -> INFO (unrecognized is-enabled output never asserted as installed-but-disabled)"
+else
+    fail "C30 finding-2 -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515, CR round 1 finding 3): systemd bus unreachable AND no crontab row -> INDETERMINATE, never a false expected-but-absent WARN, never silently dropped =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-sysd.XXXXXX")" || { fail "C24 finding-3: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_task_probe --posix "$t/probe"          # no crontab row -- neither probe can confirm presence
+fake_systemctl "$t/probe" busfail
+out="$(PATH="$FAKEBIN:$t/probe:$PATH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" 'INFO C24-cadence-registry' && grepq "$out" -F 'UNDETERMINED' && grepq "$out" -F 'HimmelTelegramBridge'; then
+    pass "C24 -> INFO indeterminate (bus-unreachable + no crontab row is UNDETERMINED, never a false expected-but-absent WARN, never silently dropped)"
+else
+    fail "C24 finding-3 -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+# ── C24 (HIMMEL-2515, CR round 4): crontab availability must be PER-BACKEND,
+# not a whole-function early return ──────────────────────────────────────────
+# CR round 4 finding: check_c24 probed the scheduler ONCE before its per-task
+# loop and early-returned when it was unavailable -- so on a systemd-only
+# Linux host with no `crontab` on PATH at all, that return fired BEFORE the
+# per-task loop ever ran, and the systemd probe for HimmelTelegramBridge
+# added earlier in this ticket never executed. $NOGH (defined near the top of
+# this file) is the curated PATH used here instead of fake_task_probe's
+# crontab stub: it symlinks only a fixed tool list that does NOT include
+# crontab, so `command -v crontab` genuinely fails and this station's real
+# crontab is never touched -- distinct from every fake_task_probe row above,
+# which stubs a *working* crontab binary that merely reports no rows.
+echo "== C24 (HIMMEL-2515 CR round 4): HimmelTelegramBridge armed via systemd, crontab NOT ON PATH AT ALL -> present, OK (this is the finding: crontab-unavailable must not skip the whole check) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-nocron.XXXXXX")" || { fail "C24 nocron-present: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_systemctl "$t/probe" enabled 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" -F 'expected cadence task(s) present' && ! grepq "$out" 'WARN C24-cadence-registry'; then
+    pass "C24 -> OK (HimmelTelegramBridge present via systemd even with no crontab reachable on PATH at all)"
+else
+    fail "C24 nocron-present -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515 CR round 4): HimmelTelegramBridge NOT enabled via systemd, crontab NOT on PATH at all -> still absent, WARN (proves the fix does not blanket-excuse the bridge) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-nocron.XXXXXX")" || { fail "C24 nocron-absent: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_systemctl "$t/probe" disabled
+out="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" -F 'HimmelTelegramBridge'; then
+    pass "C24 -> WARN (systemd reports NOT enabled -- genuinely absent even with crontab unreachable entirely)"
+else
+    fail "C24 nocron-absent -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515 CR round 4): mixed registry -- bridge armed via systemd + a crontab-ONLY sibling task, crontab NOT on PATH at all -> bridge PRESENT, sibling task INDETERMINATE (never joins the WARN, never silently dropped) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-nocron.XXXXXX")" || { fail "C24 nocron-mixed: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[{"name":"codex-sweep","cadence_seconds":14400}],"expected_tasks":["HimmelTelegramBridge","HIMMEL-CodexOrphanSweep"]}\n' > "$t/home/.himmel/observability.json"
+fake_systemctl "$t/probe" enabled 424242 0
+out="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+# CR round 5: pre-fix, this INDETERMINATE line hardcoded the bridge's cause
+# (systemd bus unreachable) and remedy (check telegram-bridge.service) even
+# though HIMMEL-CodexOrphanSweep is a crontab-ONLY sibling -- crontab, not
+# systemd, is what's unreachable here. Assert the corrected per-task
+# attribution: names crontab, recommends `crontab -l`, and never sends this
+# sibling's operator to check the bridge's unit. Scoped to just this
+# INDETERMINATE line's own remedy (via grep -A1, not a pipe -- see this
+# file's pipefail note near grepq's definition) rather than the whole $out,
+# because C30 legitimately prints 'telegram-bridge.service' elsewhere in its
+# own unrelated MainPID remedy.
+c24_indet_ctx="$(grep -A1 -F 'UNDETERMINED enablement (crontab itself is unreachable, and these tasks have no other backend): HIMMEL-CodexOrphanSweep' <<< "$out")"
+if ! grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" 'OK   C24-cadence-registry' && grepq "$out" 'INFO C24-cadence-registry' && [ -n "$c24_indet_ctx" ] && grepq "$c24_indet_ctx" -F 'crontab -l' && ! grepq "$c24_indet_ctx" 'telegram-bridge.service'; then
+    pass "C24 -> bridge present via systemd, crontab-only sibling task INDETERMINATE naming CRONTAB (not systemd) as its cause, recommending crontab -l (not systemctl)"
+else
+    fail "C24 nocron-mixed -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+echo "== C24 (HIMMEL-2515 CR round 5): HimmelTelegramBridge indeterminate for BOTH reasons -- systemd bus unreachable AND crontab itself unreachable -- must say so honestly, not pick one =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c24-nocron.XXXXXX")" || { fail "C24 both-causes: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/home/.himmel" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+printf '{"flows":[],"expected_tasks":["HimmelTelegramBridge"]}\n' > "$t/home/.himmel/observability.json"
+fake_systemctl "$t/probe" busfail
+out="$(PATH="$FAKEBIN:$t/probe:$NOGH" HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'WARN C24-cadence-registry' && grepq "$out" 'INFO C24-cadence-registry' && grepq "$out" -F 'HimmelTelegramBridge has UNDETERMINED enablement — neither backend could answer' && grepq "$out" -F 'systemctl --user is-enabled telegram-bridge.service, and crontab -l'; then
+    pass "C24 -> HimmelTelegramBridge INDETERMINATE names BOTH backends (systemd unknown + crontab unreachable), recommends both remedies"
+else
+    fail "C24 both-causes -> $(printf '%s' "$out" | grep C24)"
+fi
+rm -rf "$t"
+
+# ── C25: orphaned scratchpad watcher sweep (HIMMEL-1820) ──────────────────────
+# The shim seam replaces the platform producer (PowerShell CIM / ps) with a
+# fixture emitter of pid|ppid|cmdline lines, so the bash-side detection --
+# scratchpad-pattern match, parent-liveness, dead-parent naming -- runs for
+# real, identically on every host. No fixture row uses ppid 1: the
+# reparented-to-init heuristic is POSIX-only and must stay deterministic here.
+C25DIR="$FAKEROOT/c25"; mkdir -p "$C25DIR"
+cat > "$C25DIR/fixture-orphans" <<'EOF'
+100|99|bash /c/Users/x/.claude/projects/sess-1/watch-branches.sh
+99|98|bash --live-session
+4242|9999|bash /c/Users/x/.claude-glm/projects/sess-2/poll.sh
+5150|4242|sleep 5
+6200|6100|bash run.sh | tee C:\Users\x\.claude\projects\sess-3\watch.log
+EOF
+printf '#!/bin/sh\ncat "%s"\n' "$C25DIR/fixture-orphans" > "$C25DIR/shim-orphans"
+chmod +x "$C25DIR/shim-orphans"
+
+echo "== C25: scratchpad watcher with a dead parent -> WARN naming the dead parent =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" DOCTOR_ORPHAN_SCAN_SKIP=0 DOCTOR_ORPHAN_SCAN_SHIM="$C25DIR/shim-orphans" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" 'WARN C25-orphans' \
+    && grepq "$out" 'pid 4242 (parent pid 9999 is dead)' \
+    && grepq "$out" 'pid 6200 (parent pid 6100 is dead)' \
+    && grepq "$out" 'sess-2/poll.sh'; then
+    pass "C25 -> WARN names each dead parent (9999, 6100), never-fatal"
+else
+    fail "C25 orphan -> rc=$rc; $(printf '%s' "$out" | grep C25)"
+fi
+if grepq "$out" 'watch-branches.sh'; then
+    fail "C25 flagged pid 100 whose parent (99) is alive"
+else
+    pass "C25 -> live-parent watcher (pid 100) not flagged"
+fi
+rm -rf "$t"
+
+echo "== C25: a | inside the command line survives the field split =="
+# Row 6200 above only MATCHES the scratchpad pattern after its first | -- if
+# the pid|ppid|cmd split truncated the command at an embedded pipe, that row
+# would silently vanish from the findings.
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" DOCTOR_ORPHAN_SCAN_SKIP=0 DOCTOR_ORPHAN_SCAN_SHIM="$C25DIR/shim-orphans" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'pid 6200' && grepq "$out" 'watch.log'; then
+    pass "C25 -> text after an embedded | in a command line is still scanned"
+else
+    fail "C25 -> command line truncated at an embedded |: $(printf '%s' "$out" | grep C25)"
+fi
+rm -rf "$t"
+
+echo "== C25: no scratchpad watchers -> OK =="
+cat > "$C25DIR/fixture-clean" <<'EOF'
+100|99|bash /usr/bin/top
+200|199|node /opt/app/server.js
+300|299|bash /c/Users/x/projects/himmel/scripts/lib/watch-loop.sh
+EOF
+printf '#!/bin/sh\ncat "%s"\n' "$C25DIR/fixture-clean" > "$C25DIR/shim-clean"
+chmod +x "$C25DIR/shim-clean"
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" DOCTOR_ORPHAN_SCAN_SKIP=0 DOCTOR_ORPHAN_SCAN_SHIM="$C25DIR/shim-clean" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
+if grepq "$out" 'OK   C25-orphans' && ! grepq "$out" 'WARN C25-orphans' && [ "$rc" -eq 0 ]; then
+    pass "C25 -> OK (no scratchpad references at all)"
+else
+    fail "C25 clean -> rc=$rc; $(printf '%s' "$out" | grep C25)"
+fi
+rm -rf "$t"
+
+echo "== C25: scan failure -> loud WARN, never a false clean =="
+printf '#!/bin/sh\nexit 3\n' > "$C25DIR/shim-fail"; chmod +x "$C25DIR/shim-fail"
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" DOCTOR_ORPHAN_SCAN_SKIP=0 DOCTOR_ORPHAN_SCAN_SHIM="$C25DIR/shim-fail" \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C25-orphans' && grepq "$out" 'cannot evaluate'; then
+    pass "C25 -> scan failure emits a loud cannot-evaluate WARN"
+else
+    fail "C25 scan-failure -> $(printf '%s' "$out" | grep C25)"
+fi
+rm -rf "$t"
+
+echo "== C25: skip seam -> OK skipped =="
+t="$(mktemp -d)"; mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" DOCTOR_ORPHAN_SCAN_SKIP=1 \
+    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
+    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C25-orphans' && grepq "$out" 'skipped by test seam'; then
+    pass "C25 -> skip seam reports OK skipped"
+else
+    fail "C25 skip -> $(printf '%s' "$out" | grep C25)"
+fi
+rm -rf "$t"
+
+echo "== C25 STATIC: check_c25 body must not terminate processes itself =="
+_c25_body="$(awk '/^check_c25\(\)/{found=1} found{print} found && /^\}$/{exit}' "$DOC")"
+_static25=0
+for _verb in "Stop-Process" "kill -"; do
+    if grepq "$_c25_body" -F "$_verb"; then
+        fail "C25 STATIC: found forbidden verb '$_verb' in check_c25 body"
+        _static25=1
+    fi
+done
+if [ "$_static25" -eq 0 ]; then
+    pass "C25 STATIC: no self-terminate verbs in check_c25 body"
+fi
+
+# write_himmelctl_state <cache_dir> <consent> — writes <cache_dir>/state.json
+# carrying ONLY the guardrail-block-global override C28 reads (HIMMEL-2176).
+# <consent> is 'yes'/'no'/'' (empty -> overrides:{}, i.e. never asked).
+write_himmelctl_state() {
+    local cache_dir="$1" consent="$2"
+    mkdir -p "$cache_dir"
+    if [ -n "$consent" ]; then
+        jq -n --arg c "$consent" '{schemaVersion:1,harness:"claude",targets:{user:{profile:"core",scope:"user",items:{"guardrail-block-global":{enabled:true,overrides:{consent:$c}}},lastEnsured:null}}}' > "$cache_dir/state.json"
+    else
+        jq -n '{schemaVersion:1,harness:"claude",targets:{user:{profile:"core",scope:"user",items:{"guardrail-block-global":{enabled:true,overrides:{}}},lastEnsured:null}}}' > "$cache_dir/state.json"
+    fi
+}
+
+echo "== C28: guardrail-block-global wired -> OK (defers to C1-guardrail) =="
+_real_node2="$(command -v node 2>/dev/null || true)"
+if [ -n "$_real_node2" ]; then
+    if command -v cygpath >/dev/null 2>&1; then _real_node2="$(cygpath -m "$_real_node2")"; fi
+    t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c28.XXXXXX")" || { fail "C28 wired: mktemp -d failed"; exit 1; }
+    write_guardrail_settings "$t/claude" "$_real_node2"
+    out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'OK   C28-guardrail-consent' && grepq "$out" 'is wired'; then
+        pass "C28 -> OK (wired, defers to C1-guardrail)"
+    else
+        fail "C28 wired -> $(printf '%s' "$out" | grep C28)"
+    fi
+    rm -rf "$t"
+else
+    pass "C28 wired -> (skipped: no node on PATH here)"
+fi
+
+echo "== C28: not wired, no recorded consent -> WARN (never asked, the HIMMEL-2176 gap) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c28.XXXXXX")" || { fail "C28 no-consent: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMELCTL_CACHE_DIR="$t/nostate" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C28-guardrail-consent' && grepq "$out" 'never asked'; then
+    pass "C28 -> WARN (no recorded consent — the honest gap)"
+else
+    fail "C28 no-consent -> $(printf '%s' "$out" | grep C28)"
+fi
+rm -rf "$t"
+
+echo "== C28: no user-level settings.json at all, no recorded consent -> WARN (HIMMEL-2176 panel finding — used to falsely OK this) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c28.XXXXXX")" || { fail "C28 no-settings: mktemp -d failed"; exit 1; }
+# Deliberately do NOT call write_settings — $t/claude/settings.json stays
+# absent (gb is present: this checkout's own guardrail-block.mjs). A fresh
+# machine with guardrails available but no settings.json and no recorded
+# consent is exactly the never-asked gap C28 exists to report — it must
+# not be conflated with the "$gb absent, nothing to check" OK case.
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMELCTL_CACHE_DIR="$t/nostate" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C28-guardrail-consent' && grepq "$out" 'never asked'; then
+    pass "C28 -> WARN (no settings.json at all — the honest never-asked gap)"
+else
+    fail "C28 no-settings -> $(printf '%s' "$out" | grep C28)"
+fi
+rm -rf "$t"
+
+echo "== C28: not wired, recorded decline -> OK (operator already decided) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c28.XXXXXX")" || { fail "C28 declined: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+write_himmelctl_state "$t/state" no
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMELCTL_CACHE_DIR="$t/state" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C28-guardrail-consent' && grepq "$out" 'recorded decline'; then
+    pass "C28 -> OK (recorded decline, no nag)"
+else
+    fail "C28 declined -> $(printf '%s' "$out" | grep C28)"
+fi
+rm -rf "$t"
+
+echo "== C28: not wired, recorded consent=yes -> WARN (ensure should have converged it) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c28.XXXXXX")" || { fail "C28 consent-yes: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+write_himmelctl_state "$t/state" yes
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMELCTL_CACHE_DIR="$t/state" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C28-guardrail-consent' && grepq "$out" 'still NOT wired'; then
+    pass "C28 -> WARN (consent=yes but still unwired)"
+else
+    fail "C28 consent-yes -> $(printf '%s' "$out" | grep C28)"
+fi
+rm -rf "$t"
+
+# c29_mkproc <root> <pid> <session-name> <comm> [environ-entries...] -- writes
+# a fake /proc/<pid>/comm, /proc/<pid>/cmdline (a claude invocation naming
+# <session-name> via `-n`, NUL-separated argv like the real kernel file), and
+# /proc/<pid>/environ (NUL-separated KEY=VALUE entries, same shape
+# context-fill.sh's own mkproc()/launched_as_child_session() test fixture
+# uses). <comm> lets a case impersonate the konsole LAUNCHER (comm=konsole)
+# whose cmdline also quotes `claude ... -n HIMMEL-...` (HIMMEL-2545 panel
+# finding: that launcher process is not claude, and must never be flagged).
+# HIMMEL-2545: the WARN must read THIS file, never the doctor's own
+# environment.
+c29_mkproc() {
+    local root="$1" pid="$2" name="$3" comm="$4"; shift 4
+    mkdir -p "$root/$pid"
+    printf '%s\n' "$comm" > "$root/$pid/comm"
+    printf 'claude\0--model\0claude-fable-5-1\0-n\0%s\0load doc.md and continue\0' "$name" > "$root/$pid/cmdline"
+    : > "$root/$pid/environ"
+    local v
+    for v in "$@"; do printf '%s\0' "$v" >> "$root/$pid/environ"; done
+}
+
+echo "== C29: child-session marker with no persistence flag -> WARN, names the pid =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 positive: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5001 "HIMMEL-2545-leg" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session' && grepq "$out" 'pid 5001' && grepq "$out" 'HIMMEL-2545-leg'; then
+    pass "C29 -> WARN names pid 5001 and the session"
+else
+    fail "C29 positive -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 CONTROL: same marker WITH persistence forced -> no WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 control-persistence: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5002 "HIMMEL-2545-leg" claude 'CLAUDE_CODE_CHILD_SESSION=1' 'CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1'
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C29-child-session' && ! grepq "$out" 'WARN C29-child-session'; then
+    pass "C29 -> OK (persistence already forced, no nag)"
+else
+    fail "C29 control-persistence -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 CONTROL: claude process with NEITHER var -> no WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 control-neither: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5003 "HIMMEL-2545-leg" claude
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C29-child-session' && ! grepq "$out" 'WARN C29-child-session'; then
+    pass "C29 -> OK (a plain human-launched session, neither var set)"
+else
+    fail "C29 control-neither -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 CONTROL: absent proc root -> clean skip, never a false WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 control-absent: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/no-such-proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C29-child-session' && ! grepq "$out" 'WARN C29-child-session'; then
+    pass "C29 -> OK (no procfs on this platform, clean skip)"
+else
+    fail "C29 control-absent -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 CONTROL: konsole LAUNCHER (not claude) whose cmdline quotes claude -n HIMMEL-... -> no WARN =="
+# Live false positive (HIMMEL-2545 panel finding): headed-arm.sh's konsole
+# process has a cmdline naming `claude ... -n HIMMEL-...` (that is the
+# command it was told to run) and ALSO inherits CLAUDE_CODE_CHILD_SESSION=1
+# from whatever armed it, with no persistence flag of its own -- identical
+# environ shape to the genuinely-broken case above, differing ONLY in comm.
+# Without the comm==claude gate this fires on every correctly-launched
+# headed session via its own launcher.
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 control-launcher: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5004 "HIMMEL-2545-leg" konsole 'CLAUDE_CODE_CHILD_SESSION=1'
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C29-child-session' && ! grepq "$out" 'WARN C29-child-session'; then
+    pass "C29 -> OK (konsole launcher, not claude, never flagged)"
+else
+    fail "C29 control-launcher -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+echo "== C29: EMPTY persistence value is absent, not present -> still WARN (HIMMEL-2545 r3-codex-4) =="
+# Aligns C29 with context-fill.sh's launched_as_child_session() contract:
+# CLAUDE_CODE_FORCE_SESSION_PERSISTENCE= with nothing after the = is
+# meaningless (no launcher in this diff ever sets it that way) and must be
+# treated as absent - the WARN must still fire, not be suppressed by a
+# bare existence match.
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 empty-persistence: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5005 "HIMMEL-2545-leg" claude 'CLAUDE_CODE_CHILD_SESSION=1' 'CLAUDE_CODE_FORCE_SESSION_PERSISTENCE='
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session' && grepq "$out" 'pid 5005'; then
+    pass "C29 -> WARN fires on an empty persistence value"
+else
+    fail "C29 empty-persistence -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 (r11-codex-3): a DECOY -n name inside prompt text, positioned BEFORE the genuine -n option -> WARN names the REAL session, never the decoy =="
+# The old extraction (grep -Eo against the FLATTENED cmdline) would match
+# "-n HIMMEL-decoy" the instant that substring appears anywhere in the
+# space-joined text, including inside an earlier PROMPT argument that is
+# not an option at all. The fixture below writes the decoy as ONE combined
+# argv element (a prompt-shaped string containing "-n HIMMEL-decoy"),
+# positioned BEFORE the genuine, POSITIONAL "-n" / "HIMMEL-real" pair - a
+# fix that is still reading the flattened string would report the decoy;
+# the positional NUL-separated walk must report the real session.
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 decoy-name: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+mkdir -p "$t/proc/5006"
+printf '%s\n' claude > "$t/proc/5006/comm"
+printf 'claude\0--model\0claude-fable-5-1\0load context for -n HIMMEL-decoy and continue\0-n\0HIMMEL-real\0' > "$t/proc/5006/cmdline"
+printf 'CLAUDE_CODE_CHILD_SESSION=1\0' > "$t/proc/5006/environ"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session' && grepq "$out" 'pid 5006' && grepq "$out" 'HIMMEL-real' && ! grepq "$out" 'HIMMEL-decoy'; then
+    pass "C29 -> WARN names the genuine session (HIMMEL-real), never the decoy prompt text"
+else
+    fail "C29 decoy-name -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+# ── C30: telegram-bridge liveness (HIMMEL-2515) ───────────────────────────────
+# Reuses fake_systemctl (defined above, alongside C24's HimmelTelegramBridge
+# rows). check_c30 must never touch the REAL telegram-bridge.service -- every
+# case below points HIMMEL_DOCTOR_SYSTEMCTL at a fake binary or a nonexistent
+# path, never at the real "systemctl" on PATH.
+
+echo "== C30: unit enabled, active, live MainPID -> OK naming the pid and NRestarts =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 live: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled "$$" 2
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F "pid $$" && grepq "$out" -F '2 restart'; then
+    pass "C30 -> OK, names pid $$ and 2 restarts"
+else
+    fail "C30 live -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 1 E1): unit enabled-runtime, active, live MainPID -> STILL OK naming the pid (same as permanent 'enabled') =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 enabled-runtime: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabledruntime "$$" 0
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F "pid $$"; then
+    pass "C30 -> OK, enabled-runtime names pid $$ (not misread as 'no unit installed')"
+else
+    fail "C30 enabled-runtime -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30: unit enabled but MainPID=0 -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 mainpid-zero: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled 0 3
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C30-bridge-liveness' && grepq "$out" -F 'MainPID=0'; then
+    pass "C30 -> WARN (MainPID=0, armed but not running)"
+else
+    fail "C30 mainpid-zero -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30: unit enabled, MainPID names a pid that is NOT alive -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 dead-pid: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+# A guaranteed-dead pid: spawn a trivial child, reap it, then CONFIRM with
+# kill -0 that the pid is actually gone (never assume a bare high number is
+# unused -- pid reuse is a real risk, so this verifies rather than guesses).
+dead_pid=""
+for _try in 1 2 3 4 5; do
+    ( exit 0 ) & _cand=$!
+    wait "$_cand" 2>/dev/null
+    if ! kill -0 "$_cand" 2>/dev/null; then dead_pid="$_cand"; break; fi
+done
+if [ -z "$dead_pid" ]; then
+    fail "C30 dead-pid: could not obtain a confirmed-dead pid after 5 tries"
+else
+    fake_systemctl "$t/probe" enabled "$dead_pid" 1
+    out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'WARN C30-bridge-liveness' && grepq "$out" -F "MainPID=$dead_pid"; then
+        pass "C30 -> WARN (MainPID $dead_pid is enabled but the pid is dead)"
+    else
+        fail "C30 dead-pid -> $(printf '%s' "$out" | grep C30)"
+    fi
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 2): unit enabled, but the MainPID show query FAILS -> INFO/undetermined, must NEVER read as MainPID=0/WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 mainpid-query-fails: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled FAIL 0
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && grepq "$out" -F 'MainPID query failed' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'MainPID=0'; then
+    pass "C30 -> INFO (MainPID query failure never read as MainPID=0/armed-but-not-running)"
+else
+    fail "C30 mainpid-query-fails -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 3, finding 2): unit enabled, MainPID query SUCCEEDS but returns EMPTY -> INFO/undetermined, must NEVER read as a live MainPID=0/WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 mainpid-empty-success: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled EMPTY 0
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && grepq "$out" -F 'unreadable value' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'MainPID=0'; then
+    pass "C30 -> INFO (a SUCCESSFUL query that returned no value is undetermined, never a false MainPID=0/armed-but-not-running)"
+else
+    fail "C30 mainpid-empty-success -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+# The "other direction" for this finding -- a SUCCESSFUL query that returns
+# a literal numeric "0" must STILL WARN, unlike the unreadable-value case
+# above -- is already covered by the pre-existing "unit enabled but
+# MainPID=0 -> WARN" row further up this file; no need to duplicate it here.
+
+echo "== C30 (CR round 2): unit enabled, live MainPID, but the NRestarts show query FAILS -> STILL OK (liveness known), restart count reported unknown =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 nrestarts-query-fails: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled "$$" FAIL
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F "pid $$" && grepq "$out" -F 'restart count unknown' && ! grepq "$out" -F '0 restart' && ! grepq "$out" 'WARN C30-bridge-liveness'; then
+    pass "C30 -> OK, pid $$ reported, NRestarts degraded to unknown rather than falsely claiming 0"
+else
+    fail "C30 nrestarts-query-fails -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (item 4, CR round 3): unit enabled, live MainPID, NRestarts show query SUCCEEDS but returns a non-numeric value -> STILL OK, wording must not name a query FAILURE that never happened =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 nrestarts-nonnumeric-success: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" enabled "$$" EMPTY
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F "pid $$" && grepq "$out" -F 'no usable restart count' && ! grepq "$out" -F 'NRestarts query failed' && ! grepq "$out" 'WARN C30-bridge-liveness'; then
+    pass "C30 -> OK, pid $$ reported, a SUCCESSFUL-but-unreadable NRestarts is worded distinctly from a query FAILURE that did not happen"
+else
+    fail "C30 nrestarts-nonnumeric-success -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30: no unit installed on this host (systemctl present, is-enabled -> not-found) -> OK, says NOT INSTALLED, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 no-unit: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" notfound
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F 'no telegram-bridge.service installed' && ! grepq "$out" -F 'installed but not enabled' && ! grepq "$out" 'WARN C30-bridge-liveness'; then
+    pass "C30 -> OK, says NOT installed (never a WARN)"
+else
+    fail "C30 no-unit -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 1 E2): unit INSTALLED but disabled (not not-found) -> OK, but the message must say INSTALLED-not-enabled, never the not-found wording =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 installed-disabled: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" disabled
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C30-bridge-liveness' && grepq "$out" -F 'installed but not enabled' && ! grepq "$out" -F 'no telegram-bridge.service installed' && ! grepq "$out" 'WARN C30-bridge-liveness'; then
+    pass "C30 -> OK, distinctly says INSTALLED-but-disabled (never the not-found wording)"
+else
+    fail "C30 installed-disabled -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 1 E5): systemctl present but the user bus is unreachable (this station's real wording) -> INFO, NEVER read as absent/disabled =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 bus-unreachable: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" busfail
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && grepq "$out" -F 'bus unreachable' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'installed but not enabled'; then
+    pass "C30 -> INFO (bus-unreachable skipped cleanly, never misread as installed-but-disabled)"
+else
+    fail "C30 bus-unreachable -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (CR round 1 E5): same, but the OLDER systemd bus-failure wording -> also INFO, never misread =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 bus-unreachable-old: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/probe"; write_settings "$t/claude" "$WRAPPER"
+fake_systemctl "$t/probe" busfailold
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/probe/systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C30-bridge-liveness' && grepq "$out" -F 'bus unreachable' && ! grepq "$out" 'WARN C30-bridge-liveness' && ! grepq "$out" -F 'installed but not enabled'; then
+    pass "C30 -> INFO (older bus-unreachable wording also skipped cleanly)"
+else
+    fail "C30 bus-unreachable-old -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+echo "== C30 (item 3, CR round 3): systemctl absent entirely -> OK, wording scoped to SYSTEMD persistence, never a whole-host absence claim (a Windows scheduled task is C24's concern, not this check's) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c30.XXXXXX")" || { fail "C30 no-systemctl: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(HIMMEL_DOCTOR_SYSTEMCTL="$t/no-such-systemctl" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if { grepq "$out" 'OK   C30-bridge-liveness' || grepq "$out" 'INFO C30-bridge-liveness'; } \
+   && ! grepq "$out" 'WARN C30-bridge-liveness' \
+   && grepq "$out" -F 'systemd-unit bridge persistence' \
+   && ! grepq "$out" -F 'no bridge persistence possible here'; then
+    pass "C30 -> OK/INFO (no systemctl on this host, wording scoped to systemd — never claims no persistence is possible at all)"
+else
+    fail "C30 no-systemctl -> $(printf '%s' "$out" | grep C30)"
+fi
+rm -rf "$t"
+
+# ── C31: codex still wires the dropped tokensave server (HIMMEL-2581) ────────
+# tokensave was evaluated and dropped (it lost to plain Grep+Read on every
+# measured op). The finding is now inverted from the old HIMMEL-2578 check:
+# an ENABLED [mcp_servers.tokensave] table in the codex config is itself the
+# WARN, and the remedy is to remove it by hand. One seam: CODEX_HOME (codex's
+# OWN env var, not a test-only invention) selects the config file. THIS
+# station may or may not wire tokensave, so the WARN row is not observable
+# here live: every case below drives it from a stub config. The real
+# ~/.codex/config.toml is never mutated by this suite.
+#
+# write_codex_config <dir> <mode> — writes <dir>/config.toml.
+#   wired      the table shape read off this station's REAL ~/.codex/config.toml
+#              (verified 2026-09-06 — `args` first, then an absolute `command`),
+#              surrounded by the same kind of neighbouring [mcp_servers.*] and
+#              per-tool sub-tables a real wired config carries. The point of
+#              copying the real shape is that the parser must not be validated
+#              against a wording only this suite and the parser agree on.
+#   wired-comment  same as wired but with a trailing TOML comment on the
+#              parent-table header line (`[mcp_servers.tokensave] # ...`) —
+#              a valid TOML header, still wired.
+#   subtables  ONLY per-tool [mcp_servers.tokensave.tools.*] tables and NO
+#              parent table. The real config carries 80+ of these, and they
+#              declare no `command` — codex spawns nothing from them, so this
+#              is NOT wired.
+#   commented  the parent table present but commented out — also not wired.
+#   unwired    a real-shaped config wiring a DIFFERENT MCP server only.
+#   wired-disabled  the parent table carries `enabled = false` in its own
+#              body, followed by the same per-tool sub-tables `wired` emits
+#              — proves the body scan still stops at the next table header.
+#   wired-disabled-large  same as wired-disabled, but with several THOUSAND
+#              filler key lines between `enabled = false` and the next table
+#              header. This size is the entire point (HIMMEL-1430 regression
+#              guard): `enabled = false` lands on line 4 of the body while a
+#              large remainder is still unwritten, which is exactly the
+#              shape that turns a `printf | grep -q` pipeline's SUCCESSFUL
+#              early-exit match into a pipefail failure via SIGPIPE. Do not
+#              "simplify" this down to a small fixture — that silently
+#              deletes the regression coverage.
+#   wired-subtable-disabled  the parent table is enabled (no `enabled` key),
+#              but a per-tool sub-table carries its OWN `enabled = false` —
+#              negative control: that must NOT read as the parent disabled.
+#   wired-quoted-key  same as `wired` but the header spells the key as the
+#              TOML literal-string form `[mcp_servers.'tokensave']`.
+#   wired-spaced-dot  same as `wired` but the header has whitespace around
+#              the dotted-key separator: `[mcp_servers . tokensave]`.
+#   wired-spaced-brackets  same as `wired` but with whitespace immediately
+#              inside both the opening and closing brackets:
+#              `[ mcp_servers.tokensave ]`.
+#   wired-quoted-first  same as `wired` but the FIRST segment is a
+#              basic-string key: `["mcp_servers".tokensave]`.
+#   wired-pathological  same as `wired` but combines several dimensions at
+#              once — whitespace inside both brackets, a quoted first
+#              segment, a literal-string second segment, and a trailing
+#              comment: `[ "mcp_servers" . 'tokensave' ]  # local`.
+#   wired-disabled-quoted-basic  same as `wired-disabled` but the disabled
+#              key is spelled as the TOML basic-string form `"enabled"`.
+#   wired-disabled-quoted-literal  same as `wired-disabled` but the disabled
+#              key is spelled as the TOML literal-string form `'enabled'`.
+#   wired-disabled-string  same as `wired-disabled` but the VALUE is the TOML
+#              string `"false"`, not the boolean `false` — negative control:
+#              only the KEY spelling is widened, never the value, so this
+#              must still read as wired/enabled (WARN), never disabled.
+write_codex_config() {
+    local dir="$1" mode="$2"
+    mkdir -p "$dir"
+    cat > "$dir/config.toml" <<'TOML'
+model = "gpt-5.1-codex-max"
+
+[mcp_servers.graphify]
+args = ["mcp"]
+command = "/home/example/.local/bin/graphify"
+TOML
+    case "$mode" in
+        wired)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-comment)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave] # local server
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        subtables)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        commented)
+            cat >> "$dir/config.toml" <<'TOML'
+
+# [mcp_servers.tokensave]
+# args = ["serve"]
+# command = "/home/example/.local/bin/tokensave"
+TOML
+            ;;
+        unwired) : ;;
+        wired-disabled)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+enabled = false
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-disabled-large)
+            {
+                cat <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+enabled = false
+TOML
+                seq 1 5000 | sed 's/^/filler_key_/; s/$/ = "x"/'
+                cat <<'TOML'
+
+[mcp_servers.other]
+command = "/home/example/.local/bin/other"
+TOML
+            } >> "$dir/config.toml"
+            ;;
+        wired-subtable-disabled)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+enabled = false
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-quoted-key)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.'tokensave']
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-spaced-dot)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers . tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-spaced-brackets)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[ mcp_servers.tokensave ]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-quoted-first)
+            cat >> "$dir/config.toml" <<'TOML'
+
+["mcp_servers".tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-pathological)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[ "mcp_servers" . 'tokensave' ]  # local
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-disabled-quoted-basic)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+"enabled" = false
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-disabled-quoted-literal)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+'enabled' = false
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        wired-disabled-string)
+            cat >> "$dir/config.toml" <<'TOML'
+
+[mcp_servers.tokensave]
+args = ["serve"]
+command = "/home/example/.local/bin/tokensave"
+enabled = "false"
+
+[mcp_servers.tokensave.tools.tokensave_affected]
+approval_mode = "auto"
+
+[mcp_servers.tokensave.tools.tokensave_blame]
+approval_mode = "auto"
+TOML
+            ;;
+        *) fail "write_codex_config: unknown mode '$mode'"; return 1 ;;
+    esac
+}
+
+# Sanity: the fixture's own wired table must be byte-identical to the shape the
+# doctor's parser is asked to recognise on a REAL station. Asserted here rather
+# than assumed, so a future edit to either side cannot quietly drift them apart.
+c31_fx="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 fixture: mktemp -d failed"; exit 1; }
+write_codex_config "$c31_fx" wired
+if grepq "$(cat "$c31_fx/config.toml")" -F '[mcp_servers.tokensave]
+args = ["serve"]' && grepq "$(cat "$c31_fx/config.toml")" -E '^command = "/[^"]*/tokensave"$'; then
+    pass "C31 fixture — the wired stub carries this station's real table shape (bare [mcp_servers.tokensave], args before an absolute command)"
+else
+    fail "C31 fixture: the wired stub drifted from the real ~/.codex/config.toml shape -> $(cat "$c31_fx/config.toml")"
+fi
+rm -rf "$c31_fx"
+
+echo "== C31: codex wires an ENABLED tokensave table -> WARN naming the removal remedy VERBATIM =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-dropped' \
+   && grepq "$out" -F 'HIMMEL-2581' \
+   && grepq "$out" -F "remove the [mcp_servers.tokensave] table" \
+   && grepq "$out" -F "$t/codex/config.toml"; then
+    pass "C31 -> WARN naming the removal remedy verbatim"
+else
+    fail "C31 wired -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: a valid TOML trailing comment on the header must not read as unwired -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-comment: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-comment
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-dropped' && ! grepq "$out" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (a trailing TOML comment on the header is still a valid wired table)"
+else
+    fail "C31 wired-comment -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: the WARN remedy shell-escapes a codex config path containing spaces (copy-pasteability contract) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 spaces-path: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/my codex"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/my codex" wired
+cfg_q="$(printf '%q' "$t/my codex/config.toml")"
+out="$(CODEX_HOME="$t/my codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-dropped' \
+   && grepq "$out" -F "from $cfg_q" \
+   && ! grepq "$out" -F "from $t/my codex/config.toml by hand"; then
+    pass "C31 -> WARN remedy shell-escapes a codex config path with spaces"
+else
+    fail "C31 spaces-path -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: the codex config wires some OTHER server but not tokensave -> OK, NEVER a WARN (nothing to remove) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 unwired: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" unwired
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-dropped' && grepq "$out" -F 'does not wire tokensave' && ! grepq "$out" 'WARN C31-tokensave-dropped'; then
+    pass "C31 -> OK (tokensave was never wired for codex — nothing to remove)"
+else
+    fail "C31 unwired -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: ONLY per-tool [mcp_servers.tokensave.tools.*] sub-tables, no parent table -> NOT wired -> OK, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 subtables: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" subtables
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-dropped' && grepq "$out" -F 'does not wire tokensave' && ! grepq "$out" 'WARN C31-tokensave-dropped'; then
+    pass "C31 -> OK (per-tool sub-tables declare no command — a substring match on '[mcp_servers.tokensave' would have warned here)"
+else
+    fail "C31 subtables -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: the parent table present but COMMENTED OUT -> NOT wired -> OK, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 commented: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" commented
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-dropped' && grepq "$out" -F 'does not wire tokensave' && ! grepq "$out" 'WARN C31-tokensave-dropped'; then
+    pass "C31 -> OK (a commented-out table is not wiring)"
+else
+    fail "C31 commented -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: no codex config at all -> OK, says so distinctly, never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 no-config: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(CODEX_HOME="$t/no-such-codex-home" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C31-tokensave-dropped' && grepq "$out" -F 'no codex config' \
+   && ! grepq "$out" -F 'does not wire tokensave' && ! grepq "$out" 'WARN C31-tokensave-dropped'; then
+    pass "C31 -> OK, 'no codex config' is worded distinctly from a config that simply does not wire tokensave"
+else
+    fail "C31 no-config -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+# A config that cannot be READ says nothing about what it wires. Reading a
+# failed grep as "not wired" would assert an OK from evidence that never
+# established it — the same finding class C30's MainPID-query rows exist for.
+if [ "$(id -u 2>/dev/null || echo 0)" = "0" ]; then
+    echo "== C31: unreadable config -> SKIPPED (running as root: mode 000 is still readable) =="
+else
+    echo "== C31: the codex config exists but is UNREADABLE -> INFO/undetermined, never OK-not-wired and never a WARN =="
+    t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 unreadable: mktemp -d failed"; exit 1; }
+    mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+    write_codex_config "$t/codex" wired
+    chmod 000 "$t/codex/config.toml"
+    out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'INFO C31-tokensave-dropped' && grepq "$out" -F 'not readable' \
+       && ! grepq "$out" 'OK   C31-tokensave-dropped' && ! grepq "$out" 'WARN C31-tokensave-dropped'; then
+        pass "C31 -> INFO (an unreadable config is undetermined — never a clean OK, never a WARN)"
+    else
+        fail "C31 unreadable -> $(printf '%s' "$out" | grep C31)"
+    fi
+    chmod 600 "$t/codex/config.toml"
+    rm -rf "$t"
+fi
+
+echo "== C31: enabled = false on the tokensave table -> OK (disabled), never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'OK   C31-tokensave-dropped' && grepq "$c31_line" -F 'disabled' && ! grepq "$c31_line" 'WARN C31-tokensave-dropped'; then
+    pass "C31 -> OK (table present but enabled = false — nothing to remove)"
+else
+    fail "C31 wired-disabled -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: \"enabled\" (basic-string key) = false on the tokensave table -> OK (disabled), never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled-quoted-basic: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled-quoted-basic
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'OK   C31-tokensave-dropped' && grepq "$c31_line" -F 'disabled' && ! grepq "$c31_line" 'WARN C31-tokensave-dropped'; then
+    pass "C31 -> OK (basic-string key \"enabled\" = false — nothing to remove)"
+else
+    fail "C31 wired-disabled-quoted-basic -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: 'enabled' (literal-string key) = false on the tokensave table -> OK (disabled), never a WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled-quoted-literal: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled-quoted-literal
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'OK   C31-tokensave-dropped' && grepq "$c31_line" -F 'disabled' && ! grepq "$c31_line" 'WARN C31-tokensave-dropped'; then
+    pass "C31 -> OK (literal-string key 'enabled' = false — nothing to remove)"
+else
+    fail "C31 wired-disabled-quoted-literal -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: enabled = \"false\" (a TOML STRING, not the boolean) -> still WARN (value-not-key negative control) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled-string: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled-string
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'WARN C31-tokensave-dropped' && ! grepq "$c31_line" -F 'disabled'; then
+    pass "C31 -> WARN (enabled = \"false\" is the TOML string, not the boolean — only the KEY spelling is widened, never the value)"
+else
+    fail "C31 wired-disabled-string -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: enabled = false on a LARGE tokensave table body -> OK (disabled), never a WARN (HIMMEL-1430 regression guard) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-disabled-large: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-disabled-large
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'OK   C31-tokensave-dropped' && grepq "$c31_line" -F 'disabled' && ! grepq "$c31_line" 'WARN C31-tokensave-dropped'; then
+    pass "C31 -> OK (large disabled body — the enabled=false match must not be lost to an early-exit pipeline race under pipefail)"
+else
+    fail "C31 wired-disabled-large -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: enabled = false in a SUB-table only (parent enabled) -> still WARN (negative control for the range scan) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-subtable-disabled: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-subtable-disabled
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'WARN C31-tokensave-dropped' && ! grepq "$c31_line" -F 'disabled'; then
+    pass "C31 -> WARN (a sub-table's own enabled = false must not disable the parent table)"
+else
+    fail "C31 wired-subtable-disabled -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: a literal-string header key [mcp_servers.'tokensave'] is recognised as wiring -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-quoted-key: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-quoted-key
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-dropped' && ! grepq "$out" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (literal-string header key [mcp_servers.'tokensave'] recognised as wired)"
+else
+    fail "C31 wired-quoted-key -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: whitespace around the dotted-key separator [mcp_servers . tokensave] is recognised as wiring -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-spaced-dot: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-spaced-dot
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C31-tokensave-dropped' && ! grepq "$out" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (whitespace around the dotted-key separator recognised as wired)"
+else
+    fail "C31 wired-spaced-dot -> $(printf '%s' "$out" | grep C31)"
+fi
+rm -rf "$t"
+
+echo "== C31: whitespace immediately inside both brackets [ mcp_servers.tokensave ] is recognised as wiring -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-spaced-brackets: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-spaced-brackets
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'WARN C31-tokensave-dropped' && ! grepq "$c31_line" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (whitespace immediately inside both brackets recognised as wired)"
+else
+    fail "C31 wired-spaced-brackets -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: a quoted FIRST segment [\"mcp_servers\".tokensave] is recognised as wiring -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-quoted-first: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-quoted-first
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'WARN C31-tokensave-dropped' && ! grepq "$c31_line" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (quoted first segment recognised as wired)"
+else
+    fail "C31 wired-quoted-first -> $c31_line"
+fi
+rm -rf "$t"
+
+echo "== C31: a pathological but valid combined spelling [ \"mcp_servers\" . 'tokensave' ]  # local is recognised as wiring -> WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c31.XXXXXX")" || { fail "C31 wired-pathological: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+write_codex_config "$t/codex" wired-pathological
+out="$(CODEX_HOME="$t/codex" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+c31_line="$(printf '%s' "$out" | grep 'C31-tokensave-dropped')"
+if grepq "$c31_line" 'WARN C31-tokensave-dropped' && ! grepq "$c31_line" -F 'does not wire tokensave'; then
+    pass "C31 -> WARN (combined whitespace + quoting + trailing-comment spelling recognised as wired)"
+else
+    fail "C31 wired-pathological -> $c31_line"
+fi
+rm -rf "$t"
+
+# write_c32_shim DEST -- writes a C32 test fixture matching the REAL
+# installer's shim shape (round 5): 100% STATIC content, marker only, no
+# per-checkout data embedded in the file AT ALL. check_c32 never reads
+# anything from a hook file beyond the plain marker-presence grep; the
+# target value comes from HIMMEL_DOCTOR_MAIN_REF_TARGET below (which stands
+# in for `git config --local --get himmel-main-ref.target` in production).
+write_c32_shim() {
+    local dest="$1"
+    mkdir -p "$(dirname "$dest")"
+    printf '#!/usr/bin/env bash\n# himmel-main-ref-transaction-v1\nexit 0\n' > "$dest"
+    chmod +x "$dest"
+}
+
+echo "== C32 (HIMMEL-2095, panel round 10, CodeRabbit PR #2195): git < 2.31 does NOT fail on an unsupported --path-format -- it ECHOES the option as output and still exits 0, returning a garbled/relative value -- must WARN UNVERIFIED, never a false OK (this repo's declared minimum is git 2.30, docs/setup/new-machine.md) =="
+# The first fix pass for this finding assumed an unsupported --path-format
+# makes `rev-parse` FAIL (exit nonzero) -- proven WRONG on this station
+# (git 2.55): `git rev-parse --totally-unknown-option --git-path hooks`
+# prints the unknown option back as its own output line, THEN the
+# (relative, since the format request was never honoured) resolved path,
+# and still exits 0. `rev-parse` echoes options it does not recognise; it
+# does not reject them. This shim reproduces THAT mechanism precisely,
+# not a hard failure: it strips --path-format=absolute out of the argv,
+# echoes it back as its own line (matching git's own observed behaviour
+# byte-for-byte), then execs the REAL git with the remaining args -- which
+# for `rev-parse --git-path hooks` (no format flag) genuinely returns a
+# RELATIVE path with rc=0, exactly reproducing the two-line, rc=0, non-
+# absolute value a real 2.30 station would produce. Every OTHER git
+# invocation (rev-parse --show-toplevel for this file's own REPO_ROOT,
+# rev-parse --git-dir for check_c32's own repo probe, and everything else
+# every other check in this suite runs) passes through unaffected, since
+# none of them pass --path-format=absolute.
+c32ver_fakegit_dir="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32-fakegit.XXXXXX")" || { fail "C32 git-2.30: mktemp -d (fakegit) failed"; exit 1; }
+c32ver_real_git="$(command -v git)"
+cat > "$c32ver_fakegit_dir/git" <<GITSHIM
+#!/usr/bin/env bash
+saw_path_format=0
+args=()
+for a in "\$@"; do
+    if [ "\$a" = "--path-format=absolute" ]; then
+        saw_path_format=1
+        continue
+    fi
+    args+=("\$a")
+done
+if [ "\$saw_path_format" -eq 1 ]; then
+    echo "--path-format=absolute"
+fi
+exec "$c32ver_real_git" "\${args[@]}"
+GITSHIM
+chmod +x "$c32ver_fakegit_dir/git"
+# Sanity-check the shim itself reproduces the coordinator's own probe
+# before trusting it as this test's RED/GREEN instrument.
+c32ver_probe="$(PATH="$c32ver_fakegit_dir:$PATH" git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-path hooks 2>&1)"
+c32ver_probe_lines="$(printf '%s\n' "$c32ver_probe" | wc -l)"
+if [ "$c32ver_probe_lines" -ne 2 ] || ! grepq "$c32ver_probe" '^--path-format=absolute$'; then
+    fail "C32 git-2.30 shim sanity: does not reproduce the echo-back shape (got: $c32ver_probe)"
+fi
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 git-2.30: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+out="$(PATH="$c32ver_fakegit_dir:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C32-main-ref-guard' && ! grepq "$out" 'OK   C32-main-ref-guard' && grepq "$out" -F 'UNVERIFIED'; then
+    pass "C32 -> WARN UNVERIFIED (git echoes an unsupported --path-format and exits 0 -- the garbled non-absolute value is rejected, never read as OK or as 'not a git repo')"
+else
+    fail "C32 git-2.30 -> $(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t" "$c32ver_fakegit_dir"
+
+echo "== C32 (HIMMEL-2095): reference-transaction guard installed, target resolves -> OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 installed: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/hooks"; write_settings "$t/claude" "$WRAPPER"
+write_c32_shim "$t/hooks/reference-transaction"
+out="$(HIMMEL_DOCTOR_MAIN_REF_HOOKS_DIR="$t/hooks" HIMMEL_DOCTOR_MAIN_REF_TARGET="$REPO_ROOT/scripts/hooks/check-main-ref-transaction.sh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C32-main-ref-guard' && ! grepq "$out" 'WARN C32-main-ref-guard'; then
+    pass "C32 -> OK (Himmel's marker present, configured target resolves)"
+else
+    fail "C32 installed -> $(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t"
+
+echo "== C32 (HIMMEL-2095): guard installed, but its configured TARGET check script is missing -> WARN, not OK (the shim fails open silently; this check is the only thing that catches it) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 broken-target: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/hooks"; write_settings "$t/claude" "$WRAPPER"
+write_c32_shim "$t/hooks/reference-transaction"
+out="$(HIMMEL_DOCTOR_MAIN_REF_HOOKS_DIR="$t/hooks" HIMMEL_DOCTOR_MAIN_REF_TARGET="/nonexistent/does-not-exist/check-main-ref-transaction.sh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C32-main-ref-guard' && ! grepq "$out" 'OK   C32-main-ref-guard' && grepq "$out" -F 'fails OPEN' && grepq "$out" -F '/nonexistent/does-not-exist/check-main-ref-transaction.sh'; then
+    pass "C32 -> WARN (installed but configured target missing, names the broken target path)"
+else
+    fail "C32 broken-target -> $(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t"
+
+echo "== C32 (HIMMEL-2095, panel round 9): configured target is a READABLE DIRECTORY, not a regular file -> WARN, not OK (the shim would fail-CLOSED on this shape, so certifying it as protecting is worse than the missing-file case) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 target-is-directory: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/hooks"; write_settings "$t/claude" "$WRAPPER"
+write_c32_shim "$t/hooks/reference-transaction"
+mkdir -p "$t/target-is-a-directory"
+# `[ -r DIR ]` is TRUE for a readable directory -- a bare readability check
+# (this test's RED control, run against the code as committed before this
+# fix) reports this shape as a resolvable target and OK-protecting, even
+# though the real shim's `exec bash "$target"` would fail on a directory
+# argument and fail-CLOSE the hook (every ref update refused) instead of
+# the documented fail-open. GREEN requires BOTH readable AND a regular
+# file before reporting OK.
+out="$(HIMMEL_DOCTOR_MAIN_REF_HOOKS_DIR="$t/hooks" HIMMEL_DOCTOR_MAIN_REF_TARGET="$t/target-is-a-directory" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C32-main-ref-guard' && ! grepq "$out" 'OK   C32-main-ref-guard' && grepq "$out" -F 'not-a-regular-file'; then
+    pass "C32 -> WARN (configured target is a directory, not a regular file -- never reported as protecting)"
+else
+    fail "C32 target-is-directory -> $(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t"
+
+echo "== C32 (HIMMEL-2095): guard marker present + target resolves, but NOT EXECUTABLE -> WARN, not OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 not-executable: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/hooks"; write_settings "$t/claude" "$WRAPPER"
+write_c32_shim "$t/hooks/reference-transaction"
+chmod -x "$t/hooks/reference-transaction"
+out="$(HIMMEL_DOCTOR_MAIN_REF_HOOKS_DIR="$t/hooks" HIMMEL_DOCTOR_MAIN_REF_TARGET="$REPO_ROOT/scripts/hooks/check-main-ref-transaction.sh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C32-main-ref-guard' && ! grepq "$out" 'OK   C32-main-ref-guard' && grepq "$out" -F 'NOT EXECUTABLE'; then
+    pass "C32 -> WARN (marker + resolvable target, but not executable -- git would silently ignore it)"
+else
+    fail "C32 not-executable -> $(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t"
+
+echo "== C32 (HIMMEL-2095, codex-2, panel round 3): marker present, but NO target configured at all -> WARN as UNVERIFIED, never fall through to OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 no-target-configured: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/hooks"; write_settings "$t/claude" "$WRAPPER"
+write_c32_shim "$t/hooks/reference-transaction"
+# HIMMEL_DOCTOR_MAIN_REF_TARGET set to EMPTY (not unset -- presence, not
+# non-emptiness, matches check_c32's own `${VAR+set}` test) deterministically
+# forces the "no target configured" branch regardless of what this real
+# checkout's own `git config himmel-main-ref.target` actually holds. This
+# reproduces the ORIGINAL panel-round-2 finding in its current form: an
+# empty target_path used to skip the unreadable-target WARN entirely and
+# fall through to an unconditional OK -- a broken/unconfigured shim
+# certifying itself as protecting.
+out="$(HIMMEL_DOCTOR_MAIN_REF_HOOKS_DIR="$t/hooks" HIMMEL_DOCTOR_MAIN_REF_TARGET="" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C32-main-ref-guard' && ! grepq "$out" 'OK   C32-main-ref-guard' && grepq "$out" -F 'no target is configured'; then
+    pass "C32 -> WARN (no target configured -> UNVERIFIED, never silently OK)"
+else
+    fail "C32 no-target-configured -> $(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t"
+
+echo "== C32 (HIMMEL-2095, codex-1, panel round 3): the hook FILE's content is irrelevant beyond the marker -- nothing in it is ever read, parsed, or executed for the target =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 no-eval: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/hooks"; write_settings "$t/claude" "$WRAPPER"
+canary="$t/PWNED_CANARY"
+rm -f "$canary"
+# Two earlier rounds each carried the target INSIDE the hook file's TEXT --
+# an `eval`-ed shell assignment (round 2), then a literal comment line
+# (round 2's own fix, broken by an embedded newline in round 3) -- and each
+# broke a different way. Round 3's redesign removes the question rather
+# than patching it a third time: the target lives ONLY in git config now
+# (see install-main-ref-transaction.sh's header), and check_c32 never reads
+# hook-file content beyond the plain marker grep. Proven here: the fixture
+# file carries hostile, command-substitution-shaped TEXT in the OLD
+# `target=$(...)` shape -- UNCOMMENTED, a literal `target=` assignment, not
+# decoration. This case exists to catch the round-2 RCE coming back (a
+# marker-carrying hook executing arbitrary commands during a read-only
+# himmel-doctor run) -- panel round 9 caught that an earlier draft of this
+# fixture had this same line commented out (`# target=$(...)`), so it began
+# with `# ` and could never match check_c32's own eval-based parser had one
+# ever been restored: the case would have stayed green even with the RCE
+# back, proving nothing while reading as coverage. Verified BOTH ways by
+# hand (not committed, since restoring the eval path here would itself be
+# the round-2 bug): with a temporary eval-based parser reinstated in
+# check_c32, this exact fixture creates the canary and the case goes RED;
+# with the real (git-config-only, never-reads-the-file) parser, it stays
+# GREEN. The REAL target for this case comes from
+# HIMMEL_DOCTOR_MAIN_REF_TARGET (standing in for git config), pointed at a
+# real, readable script. The canary must never appear, and the verdict
+# must correctly reflect the real target, proving check_c32 reads NEITHER
+# the marker line's neighbours NOR anything else in the file -- and, unlike
+# the earlier draft, that this is actually exercised, not merely written
+# down.
+# shellcheck disable=SC2016 # the $(...) inside this printf is literal decorative text for the fixture file, never expanded here
+printf '#!/usr/bin/env bash\n# himmel-main-ref-transaction-v1\ntarget=$(touch %s; echo /nonexistent/never-reached.sh)\nexit 0\n' "$canary" > "$t/hooks/reference-transaction"
+chmod +x "$t/hooks/reference-transaction"
+out="$(HIMMEL_DOCTOR_MAIN_REF_HOOKS_DIR="$t/hooks" HIMMEL_DOCTOR_MAIN_REF_TARGET="$REPO_ROOT/scripts/hooks/check-main-ref-transaction.sh" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if [ ! -f "$canary" ] && grepq "$out" 'OK   C32-main-ref-guard'; then
+    pass "C32 -> never executes/parses hostile file content (no canary), verdict follows the configured target only (OK, real readable script)"
+else
+    fail "C32 no-eval -> canary_exists=$([ -f "$canary" ] && echo yes || echo no) out=$(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t"
+
+echo "== C32 (HIMMEL-2095): guard NOT installed (no reference-transaction file) -> WARN with the install remedy =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 missing: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/hooks"; write_settings "$t/claude" "$WRAPPER"
+out="$(HIMMEL_DOCTOR_MAIN_REF_HOOKS_DIR="$t/hooks" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+# Both WARN branches of check_c32 share generic words ("NOT", and even
+# "install-main-ref-transaction.sh" -- the foreign-hook branch's remedy also
+# names the installer). Pin the MISSING branch's own distinguishing phrase
+# and, as a negative twin, rule out the foreign-hook branch's phrase -- a
+# loose `-F 'install-main-ref-transaction.sh'` check here would pass even if
+# check_c32 emitted the foreign-hook message by mistake (CR finding).
+if grepq "$out" 'WARN C32-main-ref-guard' && grepq "$out" -F 'guard NOT installed at' && ! grepq "$out" -F "is NOT Himmel's main-branch reference-transaction guard"; then
+    pass "C32 -> WARN (missing, names the installer as remedy, not the foreign-hook branch)"
+else
+    fail "C32 missing -> $(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t"
+
+echo "== C32 (HIMMEL-2095): a FOREIGN reference-transaction hook (no marker) -> WARN, never claimed as ours =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C32 foreign: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/hooks"; write_settings "$t/claude" "$WRAPPER"
+printf '#!/usr/bin/env bash\n# some other tool'"'"'s hook\nexit 0\n' > "$t/hooks/reference-transaction"
+out="$(HIMMEL_DOCTOR_MAIN_REF_HOOKS_DIR="$t/hooks" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+# `-F 'NOT'` alone is too loose -- BOTH WARN branches say "NOT" ("is NOT
+# Himmel's HIMMEL-2095 guard" vs "guard NOT installed at"), so that
+# assertion would pass even if check_c32 emitted the MISSING-hook message
+# for a hook that is actually present-but-foreign (the exact confusion this
+# case exists to catch). Pin the foreign branch's own phrase and rule out
+# the missing branch's phrase as a negative twin.
+if grepq "$out" 'WARN C32-main-ref-guard' && grepq "$out" -F "is NOT Himmel's main-branch reference-transaction guard" && ! grepq "$out" -F 'guard NOT installed at'; then
+    pass "C32 -> WARN (foreign hook present, not claimed as Himmel's, not the missing-hook branch)"
+else
+    fail "C32 foreign -> $(printf '%s' "$out" | grep C32)"
+fi
+rm -rf "$t"
+
+# =============================================================================
+# C33: graphify graph staleness (HIMMEL-2095)
+# =============================================================================
+
+echo "== C33: no handover root resolvable -> OK, never WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 no-root: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude"; write_settings "$t/claude" "$WRAPPER"
+# A HANDOVER_DIR pointed at a non-existent path fails handover_root() closed
+# (rc=2) — the exact "no handover root" case this row must not WARN on.
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/does-not-exist" bash "$DOC" --no-color 2>&1)"
+c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+if grepq "$c33_line" 'OK   C33-graph-stale' && grepq "$c33_line" -F 'no handover root'; then
+    pass "C33 -> OK (no handover root resolvable)"
+else
+    fail "C33 no-root -> $c33_line"
+fi
+rm -rf "$t"
+
+echo "== C33: handover root resolvable but no ledger file -> OK, never WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 no-ledger: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover"; write_settings "$t/claude" "$WRAPPER"
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+if grepq "$c33_line" 'OK   C33-graph-stale' && grepq "$c33_line" -F 'ledger absent'; then
+    pass "C33 -> OK (handover root resolvable, ledger absent — not yet armed)"
+else
+    fail "C33 no-ledger -> $c33_line"
+fi
+rm -rf "$t"
+
+echo "== C33: ledger present but EMPTY (readable) -> OK, the benign half of the split =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 empty-ledger: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+: > "$t/handover/.graph-cadence/ledger.jsonl"
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+if grepq "$c33_line" 'OK   C33-graph-stale' && grepq "$c33_line" -F 'present but empty'; then
+    pass "C33 -> OK (ledger readable and genuinely empty — cadence armed but never fired)"
+else
+    fail "C33 empty-ledger -> $c33_line"
+fi
+rm -rf "$t"
+
+# PR-B panel r3, codex-1. The row above and this one are the SAME `tail`
+# returning an empty string; only its exit status tells them apart. Before the
+# fix both landed on the OK above, so C33 reported a ledger it could not read
+# as "has not completed a run yet" -- healthy. Asserting the WARN alone would
+# not have caught that: the OK row was already green and stayed green. What
+# makes this pair load-bearing is that they pin the SPLIT, not either verdict.
+#
+# Skipped for root and on filesystems where the mode does not deny the owner
+# (Git Bash / Windows): chmod 000 is the fixture's whole mechanism, and where
+# it does not bite the file is READABLE, so the test would assert a WARN the
+# code correctly does not emit. Probing the fixture rather than the platform
+# keeps it honest about what it actually established -- this is codex-3's
+# class (HIMMEL-2655), applied here at the point it was learned rather than
+# repeated as a new instance of it.
+echo "== C33: ledger present but UNREADABLE -> WARN, never the empty-ledger OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 unreadable: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+printf '{"ts":"%s","head":"aaa","graph_head":"bbb","merges_behind":2,"action":"skipped","pr":null,"duration_s":1,"error":null}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$t/handover/.graph-cadence/ledger.jsonl"
+chmod 000 "$t/handover/.graph-cadence/ledger.jsonl" 2>/dev/null || true
+if [ "$(id -u 2>/dev/null || echo 0)" = "0" ]; then
+    echo "  SKIP: C33 unreadable-ledger — running as root, chmod 000 does not deny read"
+elif tail -n 1 "$t/handover/.graph-cadence/ledger.jsonl" >/dev/null 2>&1; then
+    echo "  SKIP: C33 unreadable-ledger — chmod 000 did not deny this filesystem, fixture cannot be built"
+else
+    out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+    c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+    if grepq "$c33_line" 'WARN C33-graph-stale' && grepq "$c33_line" -F 'could not be READ'; then
+        pass "C33 -> WARN (unreadable ledger: undetermined, never a silent OK)"
+    else
+        fail "C33 unreadable -> $c33_line"
+    fi
+    if grepq "$c33_line" -F 'present but empty'; then
+        fail "C33 unreadable -> reported as the EMPTY-ledger OK, the exact codex-1 defect"
+    else
+        pass "C33 unreadable is not misreported as the empty-ledger case"
+    fi
+fi
+chmod 644 "$t/handover/.graph-cadence/ledger.jsonl" 2>/dev/null || true
+rm -rf "$t"
+
+echo "== C33: fresh healthy ledger row -> OK, reports commits-behind + age =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 healthy: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+printf '{"ts":"%s","head":"aaa","graph_head":"bbb","merges_behind":2,"action":"skipped","pr":null,"duration_s":1,"error":null}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$t/handover/.graph-cadence/ledger.jsonl"
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+if grepq "$c33_line" 'OK   C33-graph-stale' && grepq "$c33_line" -F '2 commits behind main'; then
+    pass "C33 -> OK (fresh row: commits-behind reported, no staleness)"
+else
+    fail "C33 healthy -> $c33_line"
+fi
+rm -rf "$t"
+
+echo "== C33: last recorded action=failed -> WARN immediately, regardless of age =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 failed-action: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+printf '{"ts":"%s","head":"aaa","graph_head":"bbb","merges_behind":40,"action":"failed","pr":null,"duration_s":5,"error":"boom"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$t/handover/.graph-cadence/ledger.jsonl"
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+if grepq "$c33_line" 'WARN C33-graph-stale' && grepq "$c33_line" -F 'FAILED'; then
+    pass "C33 -> WARN (last recorded action=failed)"
+else
+    fail "C33 failed-action -> $c33_line"
+fi
+# WARN never FAILs the scripted exit code (mirrors C7/C8/C9/C10's own
+# contract) — assert the overall run still exits 0.
+rc=0; CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "C33 WARN never flips himmel-doctor's own exit code"
+else
+    fail "C33 WARN flipped the exit code" "rc=$rc"
+fi
+rm -rf "$t"
+
+echo "== C33: last row is old (beyond 3x the armed interval) -> WARN on age alone =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 stale-age: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+OLD_EPOCH=$(( $(date -u +%s) - 100000 ))
+OLD_TS="$(date -u -d "@$OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$OLD_EPOCH" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+if [ -z "$OLD_TS" ]; then
+    fail "C33 stale-age: could not derive a portable old timestamp — skipping this case's assertion"
+else
+    printf '{"ts":"%s","head":"aaa","graph_head":"bbb","merges_behind":40,"action":"merged","pr":null,"duration_s":5,"error":null}\n' \
+        "$OLD_TS" > "$t/handover/.graph-cadence/ledger.jsonl"
+    out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+    c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+    if grepq "$c33_line" 'WARN C33-graph-stale' && grepq "$c33_line" -F '3x the armed interval'; then
+        pass "C33 -> WARN (last run older than 3x the armed cadence interval)"
+    else
+        fail "C33 stale-age -> $c33_line"
+    fi
+fi
+rm -rf "$t"
+
+echo "== C33: jq not on PATH -> WARN, never falls through to OK (codex-8: 'cannot tell' is not 'healthy') =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 no-jq: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+printf '{"ts":"%s","head":"aaa","graph_head":"bbb","merges_behind":2,"action":"skipped","pr":null,"duration_s":1,"error":null}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$t/handover/.graph-cadence/ledger.jsonl"
+# Shadow PATH: symlink every REAL /usr/bin entry except jq into a private
+# dir, then use ONLY that dir (plus /bin) as PATH -- `command -v jq` inside
+# the doctor's own subprocess must genuinely fail, not merely be told to.
+NOJQ_BIN="$t/nojq-bin"
+mkdir -p "$NOJQ_BIN"
+for f in /usr/bin/*; do
+    b="${f##*/}"
+    [ "$b" = "jq" ] && continue
+    [ -x "$f" ] && ln -s "$f" "$NOJQ_BIN/$b" 2>/dev/null
+done
+# PATH is ONLY the shadow dir -- NOT also /bin: on a merged-/usr distro
+# (Arch/CachyOS et al.) /bin is a symlink to /usr/bin, so appending it would
+# silently reintroduce the very jq this test exists to hide.
+#
+# CodeRabbit (PR #2209): guard the curated PATH like this file's two other
+# curated-PATH cases already do (the gh-absent case, and C19's cmp/diff case
+# at line ~1131, which both document that Git Bash .exe symlinks do not
+# execute). Because PATH is replaced WHOLESALE, the `bash "$DOC"` lookup
+# itself has to resolve inside $NOJQ_BIN -- so where the symlinks are inert
+# the doctor never runs at all and this case fails for an environment reason
+# rather than a code one. That is the same false-red the sibling cases were
+# guarded against, and this case (added on this branch) simply had not
+# inherited the convention.
+#
+# Probe the curated PATH itself rather than sniffing the platform: it must be
+# able to run bash AND must genuinely lack jq. Both halves matter -- without
+# the second, a shadow dir that accidentally still exposed jq would "pass" the
+# probe and then assert a WARN the doctor is right not to emit.
+if PATH="$NOJQ_BIN" bash -c 'command -v bash >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1' 2>/dev/null; then
+    out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" PATH="$NOJQ_BIN" bash "$DOC" --no-color 2>&1)"
+    c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+    if grepq "$c33_line" 'WARN C33-graph-stale' && grepq "$c33_line" -F 'jq not on PATH'; then
+        pass "C33 -> WARN (jq missing, never a silent OK)"
+    else
+        fail "C33 no-jq -> $c33_line"
+    fi
+else
+    echo "  SKIP: C33 no-jq — the curated shadow PATH cannot run bash without jq here (Git Bash .exe symlinks are inert), so the fixture cannot be built"
+fi
+rm -rf "$t"
+
+echo "== C33: unparseable/unrecognized ledger row action -> WARN, never OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 bad-action: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+printf '{"ts":"%s","head":"aaa","graph_head":"bbb","merges_behind":2,"action":"some-future-action-this-doctor-does-not-know","pr":null,"duration_s":1,"error":null}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$t/handover/.graph-cadence/ledger.jsonl"
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+if grepq "$c33_line" 'WARN C33-graph-stale' && grepq "$c33_line" -F 'unrecognized or undetermined'; then
+    pass "C33 -> WARN (unrecognized action value, never a silent OK)"
+else
+    fail "C33 bad-action -> $c33_line"
+fi
+rm -rf "$t"
+
+echo "== C33: RECOGNIZED action but a MISSING timestamp -> WARN (age cannot be established), never OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 no-ts: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+printf '{"head":"aaa","graph_head":"bbb","merges_behind":2,"action":"skipped","pr":null,"duration_s":1,"error":null}\n' \
+    > "$t/handover/.graph-cadence/ledger.jsonl"
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+if grepq "$c33_line" 'WARN C33-graph-stale' && grepq "$c33_line" -F 'missing or unparseable timestamp'; then
+    pass "C33 -> WARN (recognized action, missing ts -- age undetermined, never a silent OK)"
+else
+    fail "C33 no-ts -> $c33_line"
+fi
+rm -rf "$t"
+
+echo "== C33: RECOGNIZED action but an INVALID (unparseable) timestamp -> WARN, never OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c33.XXXXXX")" || { fail "C33 bad-ts: mktemp -d failed"; exit 1; }
+mkdir -p "$t/claude" "$t/handover/.graph-cadence"; write_settings "$t/claude" "$WRAPPER"
+printf '{"ts":"not-a-real-timestamp","head":"aaa","graph_head":"bbb","merges_behind":2,"action":"merged","pr":null,"duration_s":1,"error":null}\n' \
+    > "$t/handover/.graph-cadence/ledger.jsonl"
+out="$(CLAUDE_DIR="$t/claude" HOME="$t/home" HANDOVER_DIR="$t/handover" bash "$DOC" --no-color 2>&1)"
+c33_line="$(printf '%s' "$out" | grep 'C33-graph-stale')"
+if grepq "$c33_line" 'WARN C33-graph-stale' && grepq "$c33_line" -F 'missing or unparseable timestamp'; then
+    pass "C33 -> WARN (recognized action, unparseable ts -- age undetermined, never a silent OK)"
+else
+    fail "C33 bad-ts -> $c33_line"
+fi
+rm -rf "$t"
+
+# ── C34: HIMMEL-2653 cost-guard wiring ─────────────────────────────────────
+# check_c32 reads TRACKED REPO FILES (hooks.json, the two guard scripts,
+# context-fill.sh) through $REPO_ROOT, not operator machine state, so there
+# is no HOME/CLAUDE_DIR seam to redirect. himmel-doctor.sh resolves
+# REPO_ROOT via `git rev-parse --show-toplevel` FIRST and only falls back to
+# $HIMMEL_REPO when that fails (see its own top-of-file resolution) — so
+# each fixture below runs from a non-git cwd (a fresh mktemp -d, never
+# nested under this checkout) with HIMMEL_REPO pointing at a from-scratch
+# fake repo tree. The other checks source their own libs from
+# $REPO_ROOT/scripts/lib/*, which do not exist in these minimal fixtures;
+# those sourcing lines fail loudly to stderr (the script has no `set -e`,
+# so it keeps running) and are irrelevant here — only the C34 line matters.
+c32_fixture_base() {
+    local root="$1"
+    mkdir -p "$root/scripts/hooks" "$root/marketplace/plugins/himmel-ops/hooks"
+}
+run_doctor_fake_repo() {
+    # run_doctor_fake_repo <fake-repo-root> <home-scratch-dir>
+    (cd "$1" && HIMMEL_REPO="$1" CLAUDE_DIR="$2/claude" HOME="$2" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null)
+}
+
+echo "== C34: everything wired (real copies of the 3 target files) -> all three rows OK =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C34 all-wired: mktemp -d failed"; exit 1; }
+c32_fixture_base "$t"
+cp "$REPO_ROOT/scripts/hooks/guard-subagent-model.sh" "$t/scripts/hooks/guard-subagent-model.sh"
+cp "$REPO_ROOT/scripts/hooks/guard-implementor-dispatch.sh" "$t/scripts/hooks/guard-implementor-dispatch.sh"
+cp "$REPO_ROOT/scripts/context-fill.sh" "$t/scripts/context-fill.sh"
+cp "$REPO_ROOT/marketplace/plugins/himmel-ops/hooks/hooks.json" "$t/marketplace/plugins/himmel-ops/hooks/hooks.json"
+out="$(run_doctor_fake_repo "$t" "$t/home")"
+c32_lines="$(printf '%s' "$out" | grep 'C34-cost-guards')"
+if grepq "$c32_lines" 'OK   C34-cost-guards: guard-subagent-model.sh exists and is registered' \
+   && grepq "$c32_lines" 'OK   C34-cost-guards: guard-implementor-dispatch.sh is weekly' \
+   && grepq "$c32_lines" 'OK   C34-cost-guards: context-fill.sh supports --warn-at'; then
+    pass "C34 -> all three rows OK when everything is wired"
+else
+    fail "C34 all-wired -> $c32_lines"
+fi
+rm -rf "$t"
+
+echo "== C34: guard-subagent-model.sh missing entirely -> WARN naming the missing script =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C34 script-missing: mktemp -d failed"; exit 1; }
+c32_fixture_base "$t"
+cp "$REPO_ROOT/scripts/hooks/guard-implementor-dispatch.sh" "$t/scripts/hooks/guard-implementor-dispatch.sh"
+cp "$REPO_ROOT/scripts/context-fill.sh" "$t/scripts/context-fill.sh"
+printf '{}' > "$t/marketplace/plugins/himmel-ops/hooks/hooks.json"
+out="$(run_doctor_fake_repo "$t" "$t/home")"
+c32_line="$(printf '%s' "$out" | grep 'C34-cost-guards' | grep -F 'guard-subagent-model')"
+if grepq "$c32_line" 'WARN C34-cost-guards' && grepq "$c32_line" -F 'missing or unreadable'; then
+    pass "C34 -> WARN naming the missing guard-subagent-model.sh"
+else
+    fail "C34 script-missing -> $c32_line"
+fi
+rm -rf "$t"
+
+echo "== C34: guard-subagent-model.sh present but NOT referenced in hooks.json -> WARN naming the missing registration =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C34 not-registered: mktemp -d failed"; exit 1; }
+c32_fixture_base "$t"
+cp "$REPO_ROOT/scripts/hooks/guard-subagent-model.sh" "$t/scripts/hooks/guard-subagent-model.sh"
+cp "$REPO_ROOT/scripts/hooks/guard-implementor-dispatch.sh" "$t/scripts/hooks/guard-implementor-dispatch.sh"
+cp "$REPO_ROOT/scripts/context-fill.sh" "$t/scripts/context-fill.sh"
+printf '{"hooks":{"PreToolUse":[]}}' > "$t/marketplace/plugins/himmel-ops/hooks/hooks.json"
+out="$(run_doctor_fake_repo "$t" "$t/home")"
+c32_line="$(printf '%s' "$out" | grep 'C34-cost-guards' | grep -F 'guard-subagent-model')"
+if grepq "$c32_line" 'WARN C34-cost-guards' && grepq "$c32_line" -F 'not registered under a PreToolUse entry whose matcher includes Agent in marketplace/plugins/himmel-ops/hooks/hooks.json'; then
+    pass "C34 -> WARN naming the missing hooks.json registration"
+else
+    fail "C34 not-registered -> $c32_line"
+fi
+rm -rf "$t"
+
+echo "== C34: guard-subagent-model.sh mentioned under the WRONG matcher -> WARN, not the false OK (CR round 3, HIMMEL-2653) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C34 wrong-matcher: mktemp -d failed"; exit 1; }
+c32_fixture_base "$t"
+cp "$REPO_ROOT/scripts/hooks/guard-subagent-model.sh" "$t/scripts/hooks/guard-subagent-model.sh"
+cp "$REPO_ROOT/scripts/hooks/guard-implementor-dispatch.sh" "$t/scripts/hooks/guard-implementor-dispatch.sh"
+cp "$REPO_ROOT/scripts/context-fill.sh" "$t/scripts/context-fill.sh"
+printf '{"hooks":{"PreToolUse":[{"matcher":"Bash|PowerShell","hooks":[{"command":"guard-subagent-model.sh"}]}]}}' > "$t/marketplace/plugins/himmel-ops/hooks/hooks.json"
+out="$(run_doctor_fake_repo "$t" "$t/home")"
+c32_line="$(printf '%s' "$out" | grep 'C34-cost-guards' | grep -F 'guard-subagent-model')"
+if grepq "$c32_line" 'WARN C34-cost-guards' && ! grepq "$c32_line" 'OK   C34-cost-guards'; then
+    pass "C34 -> WARN (not OK) when the guard is mentioned only under a non-Agent matcher"
+else
+    fail "C34 wrong-matcher -> $c32_line"
+fi
+rm -rf "$t"
+
+echo "== C34: guard-subagent-model.sh mentioned only under a non-PreToolUse event -> WARN, not the false OK (CR round 3, HIMMEL-2653) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C34 wrong-event: mktemp -d failed"; exit 1; }
+c32_fixture_base "$t"
+cp "$REPO_ROOT/scripts/hooks/guard-subagent-model.sh" "$t/scripts/hooks/guard-subagent-model.sh"
+cp "$REPO_ROOT/scripts/hooks/guard-implementor-dispatch.sh" "$t/scripts/hooks/guard-implementor-dispatch.sh"
+cp "$REPO_ROOT/scripts/context-fill.sh" "$t/scripts/context-fill.sh"
+printf '{"hooks":{"SessionStart":[{"hooks":[{"command":"guard-subagent-model.sh"}]}]}}' > "$t/marketplace/plugins/himmel-ops/hooks/hooks.json"
+out="$(run_doctor_fake_repo "$t" "$t/home")"
+c32_line="$(printf '%s' "$out" | grep 'C34-cost-guards' | grep -F 'guard-subagent-model')"
+if grepq "$c32_line" 'WARN C34-cost-guards' && ! grepq "$c32_line" 'OK   C34-cost-guards'; then
+    pass "C34 -> WARN (not OK) when the guard is mentioned only under a non-PreToolUse event"
+else
+    fail "C34 wrong-event -> $c32_line"
+fi
+rm -rf "$t"
+
+echo "== C34: guard-implementor-dispatch.sh present but does not mention seven_day -> WARN (dispatch gate is five-hour-blind) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C34 five-hour-blind: mktemp -d failed"; exit 1; }
+c32_fixture_base "$t"
+cp "$REPO_ROOT/scripts/hooks/guard-subagent-model.sh" "$t/scripts/hooks/guard-subagent-model.sh"
+cp "$REPO_ROOT/scripts/context-fill.sh" "$t/scripts/context-fill.sh"
+printf '#!/usr/bin/env bash\n# no weekly bank awareness here\nexit 0\n' > "$t/scripts/hooks/guard-implementor-dispatch.sh"
+printf '{"hooks":{"PreToolUse":[{"matcher":"Agent","hooks":[{"command":"guard-subagent-model.sh"}]}]}}' > "$t/marketplace/plugins/himmel-ops/hooks/hooks.json"
+out="$(run_doctor_fake_repo "$t" "$t/home")"
+c32_line="$(printf '%s' "$out" | grep 'C34-cost-guards' | grep -F 'five-hour-blind')"
+if grepq "$c32_line" 'WARN C34-cost-guards' && grepq "$c32_line" -F 'five-hour-blind'; then
+    pass "C34 -> WARN naming the five-hour-blind guard"
+else
+    fail "C34 five-hour-blind -> $c32_line"
+fi
+rm -rf "$t"
+
+echo "== C34: context-fill.sh present but no --warn-at support -> INFO, not WARN =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C34 no-warn-at: mktemp -d failed"; exit 1; }
+c32_fixture_base "$t"
+cp "$REPO_ROOT/scripts/hooks/guard-subagent-model.sh" "$t/scripts/hooks/guard-subagent-model.sh"
+cp "$REPO_ROOT/scripts/hooks/guard-implementor-dispatch.sh" "$t/scripts/hooks/guard-implementor-dispatch.sh"
+printf '#!/usr/bin/env bash\n# no fill-threshold flag here\nexit 0\n' > "$t/scripts/context-fill.sh"
+printf '{"hooks":{"PreToolUse":[{"matcher":"Agent","hooks":[{"command":"guard-subagent-model.sh"}]}]}}' > "$t/marketplace/plugins/himmel-ops/hooks/hooks.json"
+out="$(run_doctor_fake_repo "$t" "$t/home")"
+c32_line="$(printf '%s' "$out" | grep 'C34-cost-guards' | grep -F 'warn-at')"
+if grepq "$c32_line" 'INFO C34-cost-guards' && ! grepq "$c32_line" 'WARN C34-cost-guards'; then
+    pass "C34 -> INFO (not WARN) when context-fill.sh lacks --warn-at"
+else
+    fail "C34 no-warn-at -> $c32_line"
+fi
+rm -rf "$t"
+
+
+# codex CR round 2 (panel finding codex-1): every C36 case below now pins its
+# platform explicitly rather than relying on the ambient host -- the POSIX
+# cases put $FAKEBIN first (the same "echo Linux" uname stub the C24 GREEN
+# rows use) so is_windows() reads false and the TMPDIR override actually
+# takes effect even when the SUITE runs on a real Windows host, and the
+# simulated-MINGW cases explicitly unset any inherited TEMP/TMP with `env -u`
+# rather than assuming the ambient host has none.
+echo "== C36: no .git under the temp dir -> OK, no stray-git warning (GREEN) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c36.XXXXXX")" || { fail "C36 clean: mktemp -d failed"; exit 1; }
+out="$(PATH="$FAKEBIN:$PATH" TMPDIR="$t" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C36-stray-tmp-git' && ! grepq "$out" 'WARN C36-stray-tmp-git'; then
+    pass "C36 clean temp dir -> OK, no warning"
+else
+    fail "C36 clean -> $(printf '%s' "$out" | grep C36-stray-tmp-git)"
+fi
+rm -rf "$t"
+
+echo "== C36: EMPTY .git directly under the temp dir -> WARN naming rmdir (RED) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c36.XXXXXX")" || { fail "C36 empty: mktemp -d failed"; exit 1; }
+mkdir -p "$t/.git"
+out="$(PATH="$FAKEBIN:$PATH" TMPDIR="$t" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C36-stray-tmp-git' && grepq "$out" -F "rmdir $t/.git"; then
+    pass "C36 empty .git -> WARN naming the rmdir remedy"
+else
+    fail "C36 empty -> $(printf '%s' "$out" | grep C36-stray-tmp-git)"
+fi
+rm -rf "$t"
+
+echo "== C36: NON-EMPTY .git directly under the temp dir -> WARN, stop, not deleted =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c36.XXXXXX")" || { fail "C36 nonempty: mktemp -d failed"; exit 1; }
+mkdir -p "$t/.git"
+: > "$t/.git/HEAD"
+out="$(PATH="$FAKEBIN:$PATH" TMPDIR="$t" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C36-stray-tmp-git' && grepq "$out" -F 'NOT deleted' && ! grepq "$out" -F 'rmdir'; then
+    pass "C36 non-empty .git -> WARN, stop, not deleted (no rmdir remedy)"
+else
+    fail "C36 nonempty -> $(printf '%s' "$out" | grep C36-stray-tmp-git)"
+fi
+rm -rf "$t"
+
+echo "== C36: removing the empty .git clears the warning (RED -> GREEN) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c36.XXXXXX")" || { fail "C36 clear: mktemp -d failed"; exit 1; }
+mkdir -p "$t/.git"
+out="$(PATH="$FAKEBIN:$PATH" TMPDIR="$t" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+grepq "$out" 'WARN C36-stray-tmp-git' || fail "C36 clear: precondition WARN did not fire"
+rmdir "$t/.git"
+out="$(PATH="$FAKEBIN:$PATH" TMPDIR="$t" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C36-stray-tmp-git' && ! grepq "$out" 'WARN C36-stray-tmp-git'; then
+    pass "C36 clear -> rmdir clears the warning back to OK"
+else
+    fail "C36 clear -> $(printf '%s' "$out" | grep C36-stray-tmp-git)"
+fi
+rm -rf "$t"
+
+echo "== C36 windows: MINGW host reads TEMP, not TMPDIR, for the stray-.git check =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c36-win.XXXXXX")" || { fail "C36 windows TEMP: mktemp -d failed"; exit 1; }
+mkdir -p "$t/mingw" "$t/temp/.git" "$t/decoy"
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$t/mingw/uname"; chmod +x "$t/mingw/uname"
+out="$(env PATH="$t/mingw:$PATH" TEMP="$t/temp" TMP="$t/temp" TMPDIR="$t/decoy" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C36-stray-tmp-git' && grepq "$out" -F "rmdir $t/temp/.git" && ! grepq "$out" -F "$t/decoy"; then
+    pass "C36 windows TEMP -> WARN naming the TEMP path's rmdir, TMPDIR ignored"
+else
+    fail "C36 windows TEMP -> $(printf '%s' "$out" | grep C36-stray-tmp-git)"
+fi
+rm -rf "$t"
+
+echo "== C36 windows: MINGW host falls back to TMP when TEMP is unset =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c36-win.XXXXXX")" || { fail "C36 windows TMP fallback: mktemp -d failed"; exit 1; }
+mkdir -p "$t/mingw" "$t/tmp/.git"
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$t/mingw/uname"; chmod +x "$t/mingw/uname"
+out="$(env -u TEMP PATH="$t/mingw:$PATH" TMP="$t/tmp" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C36-stray-tmp-git' && grepq "$out" -F "rmdir $t/tmp/.git"; then
+    pass "C36 windows TMP fallback -> WARN naming the TMP path's rmdir"
+else
+    fail "C36 windows TMP fallback -> $(printf '%s' "$out" | grep C36-stray-tmp-git)"
+fi
+rm -rf "$t"
+
+echo "== C36 windows: neither TEMP nor TMP set -> INFO, cannot resolve =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c36-win.XXXXXX")" || { fail "C36 windows no-temp: mktemp -d failed"; exit 1; }
+mkdir -p "$t/mingw"
+printf '#!/bin/sh\necho MINGW64_NT-10.0\n' > "$t/mingw/uname"; chmod +x "$t/mingw/uname"
+out="$(env -u TEMP -u TMP PATH="$t/mingw:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C36-stray-tmp-git' && ! grepq "$out" 'WARN C36-stray-tmp-git' && ! grepq "$out" 'OK   C36-stray-tmp-git'; then
+    pass "C36 windows no-temp -> INFO, cannot resolve the system temp dir"
+else
+    fail "C36 windows no-temp -> $(printf '%s' "$out" | grep C36-stray-tmp-git)"
+fi
+rm -rf "$t"
+
+# CodeRabbit (PR #2229): a temp dir with a space in it must produce a
+# copy-pasteable (shell-escaped) rmdir remedy, not a broken one.
+echo "== C36: EMPTY .git under a temp dir path containing a space -> rmdir remedy is shell-escaped =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c36.XXXXXX")" || { fail "C36 spaced path: mktemp -d failed"; exit 1; }
+t_spaced="$t/has space"
+mkdir -p "$t_spaced/.git"
+out="$(PATH="$FAKEBIN:$PATH" TMPDIR="$t_spaced" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+expected_q="$(printf '%q' "$t_spaced/.git")"
+if grepq "$out" 'WARN C36-stray-tmp-git' && grepq "$out" -F "rmdir $expected_q"; then
+    pass "C36 spaced path -> WARN naming a shell-escaped rmdir remedy"
+else
+    fail "C36 spaced path -> $(printf '%s' "$out" | grep C36-stray-tmp-git)"
+fi
+rm -rf "$t"
+
+rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
+
 rm -rf "$FAKEROOT"
+# r4-codex-4: HIMMEL_DOCTOR_PROC_BASE (the C29 procfs-absent hermeticity
+# seam) was created near the top of this file and never removed, leaking a
+# temp dir per run - cleaned up here alongside FAKEROOT, this file's own
+# established end-of-run cleanup convention (it has no EXIT trap).
+rm -rf "$HIMMEL_DOCTOR_PROC_BASE"
+# Same reasoning for HIMMEL_DOCTOR_SYSTEMCTL_BASE (HIMMEL-2515, CR round 1
+# E4) -- templated like HIMMEL_DOCTOR_PROC_BASE above, so it gets the same
+# cleanup.
+rm -rf "$HIMMEL_DOCTOR_SYSTEMCTL_BASE"
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

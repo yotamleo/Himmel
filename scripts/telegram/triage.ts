@@ -1,6 +1,7 @@
 import { spawn } from "bun";
 import { join } from "node:path";
 import { BASH_BIN, REPO_ROOT, killTree } from "./run";
+import { SPAWN_OWN_GROUP } from "../lib/kill-tree.mjs";
 
 export type TriageVerdict = "ignore" | "ack" | "spawn-low" | "spawn-high";
 // The only model the triage seam ever injects is the spawn-low haiku override
@@ -8,6 +9,12 @@ export type TriageVerdict = "ignore" | "ack" | "spawn-low" | "spawn-high";
 // mints a different override is a compile error at the producer, not a silent
 // fall-through to the default model.
 export type TriageModelOverride = "haiku";
+// The models the RUN path can be pinned to. Wider than TriageModelOverride on
+// purpose: triage still only ever emits "haiku", but the operator's explicit
+// `model:` tag (LUNA-101) can name any of these. Keeping the two types distinct
+// preserves the compile-time guarantee above at the triage producer while
+// letting the run path carry an operator choice.
+export type ModelOverride = "haiku" | "sonnet" | "opus";
 export type TriageInvokeFn = (args: string[], prompt: string) => Promise<string>;
 // fromOperator (HIMMEL-1296 CR codex-adv-1): the sender's ROLE, which selects
 // the prompt framing. Defaults false — the conservative side: an unwired caller
@@ -92,8 +99,47 @@ function triagePrompt(text: string, fromOperator: boolean): string {
   ].join("\n");
 }
 
-async function defaultInvoke(args: string[], prompt: string, timeoutMs: number): Promise<string> {
-  const p = spawn([...args, prompt], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+// HIMMEL-2751. invoke.sh spawns hermes as `run_hermes > >(tee "$capture_log")
+// 2>&1 &` for its own HIMMEL-2049 iteration-budget scan, which merges hermes'
+// stderr INTO stdout by construction. That means invoke.sh's OWN stderr is
+// structurally empty for any plain non-zero hermes exit — the
+// `stderr.slice(-512)` this file used to reject with was therefore always
+// empty, and every real failure logged as a bare `triage exited 1:` with
+// nothing after the colon. Behind that empty colon the station ran 100%
+// fail-open on group messages for two days (missing DEEPSEEK_API_KEY after the
+// 2026-09-04 Linux move) before anyone noticed, because the log carried no
+// evidence of WHY. Both streams are reported now, and the failure classes that
+// are the OPERATOR's to fix (bad/missing credentials, rate limiting) are named
+// outright rather than left to be read out of a truncated tail.
+const REFUSAL_CLASSES: Array<[RegExp, string]> = [
+  [/no usable credentials|api[_ -]?key|unauthorized|forbidden|\b401\b|\b403\b|authentication/i,
+   "lane refusal: missing or rejected provider credentials"],
+  [/rate.?limit|\b429\b|quota|too many requests/i,
+   "lane refusal: rate limited or out of quota"],
+];
+
+function outputTail(s: string): string {
+  const t = s.trim();
+  return t ? t.slice(-512) : "(empty)";
+}
+
+// argv is safe to log in full: the only args are the model/provider flags
+// above -- invoke.sh takes no credential flag, so nothing secret ever rides
+// on this command line.
+export function classifierFailureMessage(argv: string[], code: number | null, stdout: string, stderr: string): string {
+  const named = REFUSAL_CLASSES.find(([re]) => re.test(`${stdout}\n${stderr}`))?.[1];
+  return `triage exited ${code}${named ? ` — ${named}` : ""}; argv: ${argv.join(" ")}; stderr: ${outputTail(stderr)}; stdout: ${outputTail(stdout)}`;
+}
+
+// Exported so a test can drive the REAL spawn path (a stub script on argv)
+// rather than the injected-`deps.invoke` path -- the injected path never
+// exercises the error message this ticket is about, so a unit test of
+// classifierFailureMessage alone would not be a control over the spawn path.
+export async function defaultInvoke(args: string[], prompt: string, timeoutMs: number): Promise<string> {
+  // SPAWN_OWN_GROUP (HIMMEL-1956): the timeout path below calls killTree,
+  // whose POSIX half signals the group -- the hermes python grandchild this
+  // comment already worries about on Windows survives on POSIX without it.
+  const p = spawn([...args, prompt], { ...SPAWN_OWN_GROUP, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   let timedOut = false;
   return await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -110,7 +156,7 @@ async function defaultInvoke(args: string[], prompt: string, timeoutMs: number):
       p.exited,
     ]).then(([stdout, stderr, code]) => {
       if (timedOut) return;
-      if (code !== 0) reject(new Error(`triage exited ${code}: ${stderr.slice(-512)}`));
+      if (code !== 0) reject(new Error(classifierFailureMessage(args, code, stdout, stderr)));
       else resolve(stdout);
     }).catch(reject).finally(() => { clearTimeout(timer); });
   });
@@ -156,6 +202,14 @@ export async function classifyForSpawn(text: string, deps: TriageDeps = {}): Pro
   } catch (e) {
     // sessionLabel (HIMMEL-721 CR): correlate the fail-open to the session so a
     // dropped-to-spawn-high chatter is traceable in the log alongside the poller state.
+    //
+    // HIMMEL-2751 console ruling: this fail-open is DELIBERATELY silent to the
+    // group. poller.ts routes any triage error to spawn-high, so the message
+    // is still answered -- by the full model instead of haiku -- rather than
+    // lost; a per-message chat notice would just be noise for a condition that
+    // costs spend, not work. This log line is therefore the WHOLE
+    // operator-visible surface of the failure, which is why the message it
+    // carries (classifierFailureMessage, above) now has to carry the reason.
     console.error(`[telegram-triage] fail-open for ${label}: ${e}`);
     return "spawn-high";
   }

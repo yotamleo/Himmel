@@ -6,7 +6,7 @@ set -euo pipefail
 PIN="marketplace/plugins/telegram-himmel/UPSTREAM_PIN"
 CACHE="$HOME/.claude/plugins/cache/claude-plugins-official/telegram"
 
-[ -f "$PIN" ] || { echo "drift-check: $PIN missing — skipping"; exit 0; }
+[ -f "$PIN" ] || { echo "drift-check: $PIN missing — skipping"; exit 0; }  # fail-open-ok: set -euo pipefail turns an unreadable PIN into a hard hook failure — fail-closed, just terse
 version="$(sed -n 's/^version=//p' "$PIN" | head -1)"
 want_sha="$(sed -n 's/^server_sha256=//p' "$PIN" | head -1)"
 

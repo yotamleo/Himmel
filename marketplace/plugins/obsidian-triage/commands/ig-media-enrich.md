@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, Write
-description: Instagram media enrichment rung (HIMMEL-770) AFTER ig-embed-enrich. For IG clips the harvest layer parked with `ig_media_pending: true` (caption rung failed or thin body), download the reel/carousel media via gallery-dl (burner cookies), transcribe reels locally with faster-whisper, copy carousel slides into `Clippings/_media/`, read the slide images, and apply an agent-written slide digest via the mechanical `--apply-digest` applier. Videos never enter the vault. Lean-invoke.
+description: Instagram media enrichment — download parked IG reels/carousels, transcribe locally, apply a slide digest. Lean-invoke.
 argument-hint: "[vault-path] [--limit N] [--dry-run] [--include-evidence] [--whisper-model M]"
 ---
 

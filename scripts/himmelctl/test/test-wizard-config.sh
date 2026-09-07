@@ -54,6 +54,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 resolve_mjs="$repo_root/scripts/lanes/resolve.mjs"
 probe_mjs="$repo_root/scripts/lanes/probe.mjs"
@@ -72,15 +73,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # build_fixture <dir> — a throwaway HIMMELCTL_REPO_ROOT target carrying REAL
 # copies of the primitives `config` shells out to, so a live run against the
@@ -103,7 +95,7 @@ run_cfg() {
   local _fixture="$1"; shift
   local _h="$work/home-$$-$RANDOM"; mkdir -p "$_h"
   set +e
-  CFG_OUT=$(HOME="$_h" HIMMELCTL_REPO_ROOT="$(winpath "$_fixture")" \
+  CFG_OUT=$(HOME="$_h" USERPROFILE="$(winpath "$_h")" HIMMELCTL_CACHE_DIR="$(winpath "$_h.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_h.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$_fixture")" \
     "$node_bin" "$wizard" config "$@" 2>&1)
   CFG_RC=$?
   set -e
@@ -224,7 +216,7 @@ echo "ok: caseE --dry-run makes ZERO writes for both initiative and lanes surfac
 fxL="$work/fixtureL"; build_fixture "$fxL"
 _hL="$work/home-L-$$-$RANDOM"; mkdir -p "$_hL"
 set +e
-outL=$(HOME="$_hL" HIMMELCTL_REPO_ROOT="$(winpath "$fxL")" \
+outL=$(HOME="$_hL" USERPROFILE="$(winpath "$_hL")" HIMMELCTL_CACHE_DIR="$(winpath "$_hL.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hL.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxL")" \
   "$node_bin" "$wizard" --dry-run config set initiative.execute on 2>&1)
 rcL=$?
 set -e
@@ -259,7 +251,7 @@ cat > "$_hM/.claude/himmel/install-profile.json" <<'JSON'
 {"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
 JSON
 set +e
-outM=$(HOME="$_hM" HIMMELCTL_REPO_ROOT="$(winpath "$fxM")" \
+outM=$(HOME="$_hM" USERPROFILE="$(winpath "$_hM")" HIMMELCTL_CACHE_DIR="$(winpath "$_hM/.claude/himmel")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hM/.himmel/config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxM")" \
   "$node_bin" "$wizard" --items config status 2>&1)
 rcM=$?
 set -e
@@ -311,7 +303,7 @@ fxG="$work/fixtureG"; build_fixture "$fxG"
 _hG="$work/homeG"; mkdir -p "$_hG"
 _pathG="$stubG:$PATH"
 set +e
-outG=$(PATH="$_pathG" HOME="$_hG" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
+outG=$(PATH="$_pathG" HOME="$_hG" USERPROFILE="$(winpath "$_hG")" HIMMELCTL_CACHE_DIR="$(winpath "$_hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hG.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
   "$node_bin" "$wizard" config set hooks.plugin.github on 2>&1); rcG=$?
 set -e
 [ "$rcG" -eq 0 ] || fail "caseG: hooks.plugin.github on should exit 0 (got rc=$rcG): $outG"
@@ -320,7 +312,7 @@ grep -qF 'claude: plugin enable github' "$callsG" \
   || fail "caseG: expected 'plugin enable github' (got: $(cat "$callsG"))"
 : > "$callsG"
 set +e
-outG=$(PATH="$_pathG" HOME="$_hG" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
+outG=$(PATH="$_pathG" HOME="$_hG" USERPROFILE="$(winpath "$_hG")" HIMMELCTL_CACHE_DIR="$(winpath "$_hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hG.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
   "$node_bin" "$wizard" config set hooks.plugin.github off 2>&1); rcG=$?
 set -e
 [ "$rcG" -eq 0 ] || fail "caseG: hooks.plugin.github off should exit 0 (got rc=$rcG): $outG"
@@ -328,7 +320,7 @@ grep -qF 'claude: plugin disable github' "$callsG" \
   || fail "caseG: expected 'plugin disable github' (got: $(cat "$callsG"))"
 : > "$callsG"
 set +e
-outG=$(PATH="$_pathG" HOME="$_hG" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
+outG=$(PATH="$_pathG" HOME="$_hG" USERPROFILE="$(winpath "$_hG")" HIMMELCTL_CACHE_DIR="$(winpath "$_hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hG.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
   "$node_bin" "$wizard" config set hooks.plugin.github on --dry-run 2>&1); rcG=$?
 set -e
 [ "$rcG" -eq 0 ] || fail "caseG: dry-run hooks.plugin should exit 0 (got rc=$rcG): $outG"
@@ -351,7 +343,7 @@ echo "ok: caseH invalid value / unknown path both rejected with rc=2"
 
 # ── Case I: interactive, closed stdin -> quits immediately, never hangs ────
 set +e
-outI=$(HOME="$work/homeI" HIMMELCTL_REPO_ROOT="$(winpath "$fxA")" \
+outI=$(HOME="$work/homeI" USERPROFILE="$(winpath "$work/homeI")" HIMMELCTL_CACHE_DIR="$(winpath "$work/homeI.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/homeI.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxA")" \
   "$node_bin" "$wizard" config </dev/null 2>&1); rcI=$?
 set -e
 [ "$rcI" -eq 0 ] || fail "caseI: closed-stdin interactive config should exit 0 (got rc=$rcI): $outI"
@@ -407,7 +399,7 @@ case "$(uname -s)" in
       *\\*)
         _hK="$work/homeK"; mkdir -p "$_hK"
         set +e
-        outK=$(HOME="$_hK" HIMMELCTL_REPO_ROOT="$winroot" \
+        outK=$(HOME="$_hK" USERPROFILE="$(winpath "$_hK")" HIMMELCTL_CACHE_DIR="$(winpath "$_hK.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hK.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$winroot" \
           "$node_bin" "$wizard" config set initiative.execute on 2>&1); rcK=$?
         set -e
         [ "$rcK" -eq 0 ] || fail "caseK: backslash-root set should exit 0 (got rc=$rcK): $outK"

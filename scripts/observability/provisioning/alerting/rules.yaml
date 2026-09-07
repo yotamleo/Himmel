@@ -8,9 +8,94 @@
 # one, change the other, and re-run
 # `promtool test rules scripts/observability/alerts.rules.test.yml`.
 #
-# noDataState: NoData (default) is deliberate everywhere — an
-# uninstrumented or unconfigured flow renders as a dark dashboard tile, not
-# a false alert (design §1.3's "dark tile, not healthy or unhealthy").
+# No `deleteRules:` block, and none is needed here: Grafana file provisioning
+# is additive/update-only and this stack's Grafana DB is persistent, so a
+# rule DELETED from this file would linger in Grafana forever — that is what
+# deleteRules exists for. It does not apply to this change: HIMMEL-2478/2480
+# only flips noDataState on existing uids, adding none and removing none —
+# verified live, GET /api/v1/provisioning/alert-rules returned exactly the
+# same uids this file declares. Add a deleteRules: entry the day a uid is
+# actually removed from this file, not before.
+#
+# noDataState RULE (HIMMEL-2478/2480, rewritten after a measured false-alert
+# bug below): the criterion is what the HEALTHY case returns, not whether
+# refId A happens to be a bare selector. NoData is correct ONLY when the
+# healthy query still returns a PRESENT series valued 0 — so an EMPTY result
+# means the underlying data is genuinely missing (dark data), and that
+# absence is itself the alarm, distinct from "nothing happened".
+# himmel_flow_truncated is the example:
+# `increase(flow_run_outcome_total{outcome="truncated"}[15m])` returns a
+# series, valued 0, for every flow with observed runs — it goes empty only
+# when no flow_run_outcome_total series exists at all, i.e. the exporter is
+# reporting no flow data whatsoever. THAT is the alarm; "nothing was
+# truncated" is what the 0 value means, and is not what absence signals here.
+# (refId A here is an `increase()` over a window, not a bare selector —
+# bare-selector-ness was never the real criterion, just a proxy that happens
+# to hold for some rules and visibly fails for this one.)
+# When refId A instead embeds a comparison (`== 0`, `> N`, an `unless`/set
+# operation, etc.), that comparison is a PromQL FILTER: the query returns an
+# EMPTY vector in the HEALTHY case, and noDataState: NoData then turns
+# "healthy" into a firing DatasourceNoData alert. Reliable code smell: refId
+# B's evaluator is `gt -1` (i.e. "alert on anything A returned, since A
+# already decided") — that shape is only written when A is already doing the
+# filtering, so `gt -1` on refId B marks a rule that must NEVER use
+# noDataState: NoData.
+#
+# Known design residual (HIMMEL-2485): all seven NoData rules below
+# (himmel_flow_truncated, himmel_flow_error, himmel_orphan_processes,
+# himmel_session_dead, himmel_hook_chain_budget_pressure,
+# himmel_hook_chain_budget_denials, himmel_hook_chain_log_unreadable) fire
+# independently on that same one dark-data condition — a dead exporter —
+# which is already covered correctly by himmel_watcher_down's `up == 0`.
+# Replacing the incidental NoData states with one deliberate dark-data rule
+# is tracked there, not fixed here.
+#
+# This was not hypothetical: 9 of the original 14 rules had exactly this
+# shape — himmel_flow_last_success_age, himmel_scheduled_task_disabled,
+# himmel_watcher_down, himmel_kernel_pool_critical,
+# himmel_agent_tree_ram_runaway, example-ws_inbox_backlog_rising,
+# himmel_kernel_pool_high, himmel_kernel_pool_leak_rate,
+# himmel_commit_pressure — each now marked noDataState: OK below with its
+# own HIMMEL-2478/2480 comment. Live proof: Grafana's own /metrics reported
+# grafana_alerting_alerts{state="nodata"} 9 and
+# grafana_alerting_alerts{state="alerting"} 0, its alertmanager API showed 6
+# active DatasourceNoData alerts, and
+# grafana_alerting_notifications_total{integration="telegram"} was 203 over
+# 39.0h uptime (~125 Telegram messages/day) against ~2/day of genuine alerts
+# measured by replaying the flow-run ledger. himmel_watcher_down
+# (`up{...} == 0`) is the clearest case: it is empty precisely when every
+# watcher is up, so "watcher down" paged continuously while everything was
+# healthy.
+#
+# Verified per rule, not assumed: for each of the 9, the underlying metric
+# was queried WITHOUT its comparison, against live Prometheus, and every one
+# returned a healthy series count (flow_run_last_success_timestamp 10,
+# scheduled_task_enabled 9, agent_tree_rss_bytes{class!="other"} 6,
+# up{job=~"flow-exporter|windows_exporter"} 2, luna_inbox_backlog 2 plus 2 at
+# `offset 3d`, 1 each for the three kernel-pool expressions and
+# commit-pressure). Controls: `up` alone -> 3 series, a nonexistent metric ->
+# 0. So not one of the 9 is empty because the series is absent, mislabelled,
+# or scrape-gapped — every one is empty because its filter matched nothing,
+# i.e. healthy. Absence is therefore never the signal for these 9, which is
+# exactly the condition under which OK is the correct noDataState. A
+# genuinely dead exporter is still caught: it yields `up == 0`, a PRESENT
+# series, not absence.
+#
+# himmel_flow_stalled uses noDataState: KeepLast instead (HIMMEL-2211): a
+# scrape gap makes that query return no data, which would otherwise route
+# Grafana to the NoData state and bypass keepFiringFor entirely — re-flapping
+# the alert on exactly the outage the grace period was added to absorb. The
+# dark-tile intent still holds under KeepLast: with no prior state, a
+# never-seen flow stays Normal rather than firing. A truly dead exporter is
+# still covered, by the separate himmel_watcher_down `up == 0` rule (here /
+# alerts.rules.yml's matching rule). The himmel_hook_chain_budget_* rules and
+# himmel_hook_chain_log_unreadable use noDataState: NoData (HIMMEL-2478/2480)
+# — see their own comments below; unlike the 9 OK rules, their refId A is a
+# bare metric selector with the threshold in refId B, and the series
+# genuinely goes absent when hookChainMetrics/defaultHookChainSkipLogPaths
+# cannot read the skip log (or enumerate the worktrees directory) — absence
+# there IS the alarm.
+#
 # execErrState: Alerting — a genuine query execution failure (e.g. the
 # Prometheus datasource unreachable) pages rather than silently going quiet,
 # distinct from a query that legitimately returns nothing.
@@ -88,6 +173,39 @@ groups:
       # backstop), and ambiguous orphan classes. HimmelSessionDead stays page
       # unless it proves noisy; the flat 4h Telegram route intentionally has no
       # severity routing.
+      # HIMMEL-2211: `for`/`keepFiringFor` kept in lockstep with
+      # alerts.rules.yml's HimmelFlowRunStalled — see that file's comment for
+      # the full 53-pages-in-one-night root cause (dead-pid ghost rows now
+      # exported as `abandoned` by flow-exporter.ts, plus the 10s Prometheus
+      # scrape_timeout that was flapping this alert 51x/day, fixed in
+      # prometheus.yml). Note: Grafana's file-provisioning schema for a
+      # Grafana-managed rule uses camelCase `keepFiringFor` here (the
+      # AlertRuleExport struct), NOT the snake_case `keep_firing_for` used by
+      # the HTTP provisioning API / Prometheus-style rule files.
+      # noDataState: KeepLast (NOT the file's usual NoData default) — a scrape
+      # gap on THIS rule must not bypass keepFiringFor via the NoData state
+      # (see the file-header comment). This is the one deliberate divergence
+      # in this file; do not "fix" it back to NoData for consistency.
+      #
+      # This IS a real asymmetry with the alerts.rules.yml twin, and it is
+      # intentional, not drift: under KeepLast, a prolonged no-data outage
+      # holds this alert in its last state indefinitely, whereas the
+      # Prometheus twin's `keep_firing_for: 30m` bounds the same grace at
+      # 30m. The two rules stay byte-identical in EXPRESSION (see above) but
+      # deliberately differ in this no-data mechanic. The alternatives are
+      # worse: `NoData` re-flaps the alert on every scrape gap (the 53-page
+      # bug this ticket fixes), and `OK` resolves it on a gap, which is the
+      # same flap plus silence on top. Unbounded-firing is the fail-safe
+      # direction and matches this branch's governing principle — when the
+      # exporter cannot tell us whether the stall cleared, keep alerting
+      # rather than go quiet. A genuinely prolonged outage is separately and
+      # correctly caught by himmel_watcher_down's `up == 0` rule below, so
+      # the stale-firing window here is never the only signal that something
+      # is wrong. Note this stack has NO Alertmanager — alerts.rules.yml is
+      # promtool-evaluated but delivers nothing, Grafana is the sole delivery
+      # path — so the file-header's lockstep requirement is on the
+      # EXPRESSION only; `for`/`keepFiringFor`/`noDataState` are already
+      # Grafana-specific mechanics with no Prometheus-side delivery to match.
       - uid: himmel_flow_stalled
         title: "Flow run stalled"
         condition: B
@@ -114,9 +232,10 @@ groups:
                 - evaluator: { type: gt, params: [0] }
               datasource: { type: __expr__, uid: __expr__ }
               refId: B
-        noDataState: NoData
+        noDataState: KeepLast
         execErrState: Alerting
-        for: 0m
+        for: 10m
+        keepFiringFor: 30m
         labels:
           severity: page
         annotations:
@@ -142,7 +261,9 @@ groups:
                 - evaluator: { type: gt, params: [0] }
               datasource: { type: __expr__, uid: __expr__ }
               refId: B
-        noDataState: NoData
+        # HIMMEL-2478/2480: refId A filters in PromQL (`> on (flow) ...`) —
+        # empty vector is the healthy case, not absence. See file header.
+        noDataState: OK
         execErrState: Alerting
         for: 0m
         labels:
@@ -158,7 +279,12 @@ groups:
             relativeTimeRange: { from: 300, to: 0 }
             datasourceUid: prometheus
             model:
-              expr: (scheduled_task_enabled == 0) or on (task) (scheduled_task_exists == 0)
+              # HIMMEL-2075: `unless` is scoped to ONLY the `enabled == 0`
+              # arm, not the whole OR — an allowlisted task that gets
+              # DELETED entirely (scheduled_task_exists == 0) must still
+              # page; the allowlist only exempts the disabled state, not
+              # exists coverage. Kept byte-identical to alerts.rules.yml.
+              expr: ((scheduled_task_enabled == 0) unless on (task) (scheduled_task_expected_disabled == 1)) or on (task) (scheduled_task_exists == 0)
               instant: true
               refId: A
           - refId: B
@@ -170,7 +296,9 @@ groups:
                 - evaluator: { type: gt, params: [-1] }
               datasource: { type: __expr__, uid: __expr__ }
               refId: B
-        noDataState: NoData
+        # HIMMEL-2478/2480: refId A filters in PromQL (`== 0` / `unless`) —
+        # empty vector is the healthy case, not absence. See file header.
+        noDataState: OK
         execErrState: Alerting
         for: 0m
         labels:
@@ -186,12 +314,20 @@ groups:
             relativeTimeRange: { from: 300, to: 0 }
             datasourceUid: prometheus
             model:
-              # Single conservative default across every class (6 GiB) — no
-              # per-class threshold config surface exists yet in
-              # observability.json/flow-exporter.ts (host-detector config
-              # plumbing, out of HIMMEL-924's scope). Tune here and in
-              # alerts.rules.yml.
-              expr: agent_tree_rss_bytes > 6442450944
+              # HIMMEL-2075: base 6 GiB + 1 GiB per active subagent above 2
+              # (subagent_active_total), so ordinary overnight-swarm fanout
+              # doesn't page on the flat default. `or vector(0)` guards the
+              # sum against an absent subagent_active_total series; clamp_min
+              # floors the count at 2 pre-scalar() (clamp_min needs an
+              # instant vector) so the multiplier can never go negative.
+              # HIMMEL-2149: class="other" is host-detectors.ps1's explicit
+              # catch-all for everything NOT descended from a recognized
+              # agent root — the rest of the desktop, not an agent tree — so
+              # it dwarfed any per-agent-scaled threshold on a normal
+              # desktop. Excluded from the alert only, not from the
+              # dashboard series.
+              # Kept byte-identical to alerts.rules.yml; tune both together.
+              expr: agent_tree_rss_bytes{class!="other"} > (6442450944 + 1073741824 * scalar(clamp_min(sum(subagent_active_total) or vector(0), 2) - 2))
               instant: true
               refId: A
           - refId: B
@@ -203,7 +339,9 @@ groups:
                 - evaluator: { type: gt, params: [-1] }
               datasource: { type: __expr__, uid: __expr__ }
               refId: B
-        noDataState: NoData
+        # HIMMEL-2478/2480: refId A filters in PromQL (`> (6442450944 + ...)`)
+        # — empty vector is the healthy case, not absence. See file header.
+        noDataState: OK
         execErrState: Alerting
         for: 10m
         labels:
@@ -240,8 +378,14 @@ groups:
         labels:
           severity: warn
         annotations:
-          summary: '{{ $labels.class }} orphan count is {{ $values.A }}'
+          summary: '{{ $labels.class }} orphan count is {{ $values.A.Value }}'
 
+      # HIMMEL-2365: `for: 5m` still paged 11 times/24h on load-induced
+      # scrape-miss bursts (102 misses/24h, mostly singletons under suite
+      # load; 91 pending vs 11 firing shows most already resolved before 5m
+      # — the rest were bursts long enough to cross it). `for: 10m` absorbs
+      # a bigger burst while staying well under the 15m ceiling for a real
+      # exporter death.
       - uid: himmel_watcher_down
         title: "Watcher down"
         condition: B
@@ -262,15 +406,18 @@ groups:
                 - evaluator: { type: gt, params: [-1] }
               datasource: { type: __expr__, uid: __expr__ }
               refId: B
-        noDataState: NoData
+        # HIMMEL-2478/2480: refId A filters in PromQL (`== 0`) — empty vector
+        # is the healthy case (every watcher up), not absence. The clearest
+        # instance of the bug; see file header.
+        noDataState: OK
         execErrState: Alerting
-        for: 5m
+        for: 10m
         labels:
           severity: page
         annotations:
           summary: 'Exporter job {{ $labels.job }} is down'
 
-      - uid: himmel_luna_inbox_backlog_rising
+      - uid: example-ws_inbox_backlog_rising
         title: "Luna inbox backlog rising"
         condition: B
         data:
@@ -290,7 +437,9 @@ groups:
                 - evaluator: { type: gt, params: [-1] }
               datasource: { type: __expr__, uid: __expr__ }
               refId: B
-        noDataState: NoData
+        # HIMMEL-2478/2480: refId A filters in PromQL (`> 0`) — empty vector
+        # is the healthy case, not absence. See file header.
+        noDataState: OK
         execErrState: Alerting
         for: 1h
         labels:
@@ -300,6 +449,20 @@ groups:
 
       # HIMMEL-1635 follow-up to the HIMMEL-1052 session families — kept
       # semantically equivalent to alerts.rules.yml's HimmelSessionDead.
+      # HIMMEL-2075: the exporter now caps how long a dead session counts
+      # toward session_dead_total at SESSION_DEAD_ALERT_TTL_SECONDS (24h),
+      # exporter-side (flow-exporter.ts) — this rule's expression is
+      # unchanged.
+      # HIMMEL-2149: severity downgraded page -> warn — see alerts.rules.yml's
+      # matching comment for the full reasoning (the himmel end-row hook is
+      # already on the HIMMEL-2004 detach/enqueue path; the remaining loss is
+      # HIMMEL-2148, upstream of this repo's hooks; neither pid nor
+      # transcript data can honestly distinguish crash from lost-row).
+      # HIMMEL-2365: `for: 0m` fired on every 0->1 crossing and the resolve
+      # right after closed the group, so Telegram got a FIRING+RESOLVED pair
+      # per episode (48/24h, 38/6h). `for: 10m` debounces that; the
+      # exporter's own cleanup/TTL usually clears a false-positive well
+      # inside 10m.
       - uid: himmel_session_dead
         title: "Session dead"
         condition: B
@@ -322,8 +485,250 @@ groups:
               refId: B
         noDataState: NoData
         execErrState: Alerting
-        for: 0m
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'Host {{ $labels.host }} has {{ $values.A.Value }} dead session(s)'
+
+      # HIMMEL-1604 kernel pool + commit pressure — expression strings kept
+      # byte-identical to alerts.rules.yml's four Himmel{KernelPool*,
+      # CommitPressure} rules. Change one, change the other.
+      - uid: himmel_kernel_pool_high
+        title: "Kernel pool high"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: windows_memory_pool_nonpaged_bytes + windows_memory_pool_paged_bytes > 12884901888
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        # HIMMEL-2478/2480: refId A filters in PromQL (`> 12884901888`) —
+        # empty vector is the healthy case, not absence. See file header.
+        noDataState: OK
+        execErrState: Alerting
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'Kernel pool total exceeds 12 GiB on {{ $labels.instance }}'
+
+      - uid: himmel_kernel_pool_critical
+        title: "Kernel pool critical"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: windows_memory_pool_nonpaged_bytes + windows_memory_pool_paged_bytes > 19327352832
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        # HIMMEL-2478/2480: refId A filters in PromQL (`> 19327352832`) —
+        # empty vector is the healthy case, not absence. See file header.
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
         labels:
           severity: page
         annotations:
-          summary: 'Host {{ $labels.host }} has {{ $values.A }} dead session(s)'
+          summary: 'Kernel pool total exceeds 18 GiB on {{ $labels.instance }} — only a reboot reclaims it'
+
+      # relativeTimeRange spans 2h so the [1h:5m] subquery always has a full
+      # window of samples inside Grafana's own query range.
+      - uid: himmel_kernel_pool_leak_rate
+        title: "Kernel pool leak rate"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 7200, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: deriv((windows_memory_pool_nonpaged_bytes + windows_memory_pool_paged_bytes)[1h:5m]) * 3600 > 1073741824
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        # HIMMEL-2478/2480: refId A filters in PromQL (`> 1073741824`) —
+        # empty vector is the healthy case, not absence. See file header.
+        noDataState: OK
+        execErrState: Alerting
+        for: 1h
+        labels:
+          severity: warn
+        annotations:
+          summary: 'Kernel pool on {{ $labels.instance }} is growing faster than 1 GiB/h'
+
+      - uid: himmel_commit_pressure
+        title: "Commit pressure"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 900, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: windows_memory_committed_bytes / windows_memory_commit_limit > 0.85
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [-1] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        # HIMMEL-2478/2480: refId A filters in PromQL (`> 0.85`) — empty
+        # vector is the healthy case, not absence. See file header.
+        noDataState: OK
+        execErrState: Alerting
+        for: 15m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'Committed memory exceeds 85% of the commit limit on {{ $labels.instance }}'
+
+      # HIMMEL-2478/2480: hook-chain budget pressure — see alerts.rules.yml's
+      # matching rule for the full calibration evidence (measured against the
+      # real 6179-row skip log, first-fires 131/104 minutes ahead of the
+      # 2026-09-03 spawn-storm hang; agent_tree_process_count rejected as the
+      # signal — it peaked with no hang at all).
+      #
+      # noDataState: NoData (this file's usual default, kept here) — refId A
+      # is a bare metric selector (`hook_chain_budget_events_recent{action=…}`)
+      # with the threshold in refId B's evaluator, so a HEALTHY quiet box
+      # still gets a PRESENT series valued 0 and renders Normal, same shape
+      # as the 9 rules below that were flipped to OK. The difference: this
+      # series' absence is NOT a healthy filter match, it is
+      # hookChainMetrics (flow-exporter.ts) failing to READ the skip log —
+      # existsSync false still emits both actions at 0 (comment below), but a
+      # read that throws returns zero series for the whole family. That
+      # absence is a fault worth alerting on, exactly the "dark data" case
+      # NoData exists for (see file header) — not the reachable-in-healthy-
+      # state case the 9 OK rules have. This puts these two (plus
+      # himmel_hook_chain_log_unreadable below) into the same known residual
+      # as the other four NoData rules (HIMMEL-2485): a dead exporter makes
+      # them fire alongside himmel_watcher_down's `up == 0`.
+      - uid: himmel_hook_chain_budget_pressure
+        title: "Hook chain budget pressure"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: hook_chain_budget_events_recent{action="skip"}
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [10] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: '{{ $values.A.Value }} hook-chain members skipped their budget in the last 10m — early warning for a spawn-storm hang'
+
+      - uid: himmel_hook_chain_budget_denials
+        title: "Hook chain budget denials"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: hook_chain_budget_events_recent{action="deny"}
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [2] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: '{{ $values.A.Value }} hook-chain must-run guards were denied fail-closed in the last 10m'
+
+      # HIMMEL-2478/2480 CR follow-up: hook_chain_skip_log_unreadable is the
+      # health gauge for the reader above (hookChainMetrics /
+      # defaultHookChainSkipLogPaths in flow-exporter.ts). Both used to
+      # surface a degraded read only as a `#` scrape comment — not alertable
+      # — so a per-log read failure or a present-but-unreadable
+      # .claude/worktrees directory could leave hook_chain_budget_events_recent
+      # silently under-counting while every rule above still read Normal.
+      # refId A is a bare metric selector, same shape as the two rules above,
+      # so noDataState: NoData for the same reason: the healthy case is a
+      # PRESENT series valued 0, and its absence means the exporter itself is
+      # gone — genuinely the alarm, not a healthy filter match. `for: 10m`
+      # matches alerts.rules.yml's HimmelHookChainLogUnreadable.
+      - uid: himmel_hook_chain_log_unreadable
+        title: "Hook chain log unreadable"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: hook_chain_skip_log_unreadable
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: NoData
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: '{{ $values.A.Value }} hook-chain skip log(s) unreadable — hook_chain_budget_events_recent may be under-counting'

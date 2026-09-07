@@ -34,7 +34,7 @@ Add to luna's `.pre-commit-config.yaml` (himmel is private — pre-commit
 clones with the operator's normal git credentials):
 
 ```yaml
-  - repo: https://github.com/yotamleo/Himmel
+  - repo: https://github.com/yotamleo/himmel
     rev: <himmel commit SHA>   # pin; bump with `pre-commit autoupdate --bleeding-edge`
     hooks:
       - id: pr-lane-isolation

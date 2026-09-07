@@ -3,7 +3,7 @@
 # test-e2e-symmetry.sh -- END-TO-END install -> uninstall roundtrip for the
 # settings.json wiring (HIMMEL-469). Unlike the hermetic unit suites (which test
 # one helper in isolation), this drives the REAL setup `[9/10]` wire sequence and
-# the REAL `uninstall.sh [6/6]` against a sandbox settings.json, then asserts the
+# the REAL `uninstall.sh [6/7]` against a sandbox settings.json, then asserts the
 # round trip leaves it byte-clean of himmel wiring while preserving the operator's
 # own keys.
 #
@@ -56,14 +56,20 @@ check "install: env.HIMMEL_REPO set" "$(jq -r '.env.HIMMEL_REPO' "$SETTINGS")" "
 check "install: rtk guard preserved" "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("rtk-hook-guard"))] | length' "$SETTINGS")" "1"
 check "install: MCP allow preserved" "$(jq -r '.permissions.allow[0]' "$SETTINGS")" "mcp__obsidian-vault__obsidian_simple_search"
 
-echo "==== PHASE UNINSTALL (the real uninstall.sh [6/6]) ===="
+echo "==== PHASE UNINSTALL (the real uninstall.sh [6/7]) ===="
 # Drive the REAL uninstall.sh with the settings target redirected to the sandbox,
-# everything else skipped + non-interactive. Telegram/bridge point at empty temp
-# dirs so steps 1-2 no-op.
+# everything else skipped + non-interactive. Telegram/bridge/cache point at empty
+# temp dirs so steps 1-2-7 no-op — EVERY removal target lives under $td, never the
+# real $HOME (HIMMELCTL_CACHE_DIR was missing this before HIMMEL-2505 and would
+# have pointed [7/7] at the real ~/.claude/himmel). This runs against the real,
+# unspoofed $HOME (no HOME= override, unlike the hermetic unit suites), so it must
+# also pass HIMMEL_UNINSTALL_REAL_HOME=1 or uninstall.sh's own wet-run fence would
+# refuse it whenever this box's $HOME looks like a live operator profile.
 out=$(HIMMEL_USER_SETTINGS="$SETTINGS" TELEGRAM_CHANNEL_DIR="$td/none" BRIDGE_ROOT="$td/noneb" \
+  HIMMELCTL_CACHE_DIR="$td/nonec" HIMMEL_UNINSTALL_REAL_HOME=1 \
   bash "$repo_root/scripts/uninstall.sh" --yes --keep-telegram-state --skip-tasks --skip-plugins --skip-hooks </dev/null 2>&1) || true
 
-printf '%s\n' "$out" | grep -q '\[6/6\] Unwiring' && check "uninstall: [6/6] ran" yes yes || check "uninstall: [6/6] ran" no yes
+printf '%s\n' "$out" | grep -q '\[6/7\] Unwiring' && check "uninstall: [6/7] ran" yes yes || check "uninstall: [6/7] ran" no yes
 check "uninstall: PreToolUse himmel hooks gone" \
   "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)"))] | length' "$SETTINGS")" "0"
 check "uninstall: SessionStart inject-initiative gone" \

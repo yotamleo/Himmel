@@ -17,7 +17,17 @@ Three modes:
            guard hook -> ADD the canonical parity_guard pre_tool_call entry
            WITHOUT clobbering any other hooks the profile already has.
 
+`set` optionally also wires the END-side hook (HIMMEL-2021): pass
+<node_bin> <repo_root> and the block gains an `on_session_finalize` entry
+running himmel's end-side hooks through run-hook-with-bash.js --chain
+--lifecycle. on_session_finalize (not on_session_end) is the once-per-identity
+teardown; on_session_end is turn-scoped and would fire every turn. Only
+himmel_agent gets it -- `ensure` (the universal guard pass over OTHER
+profiles) never writes an end hook, because himmel owns only himmel_agent's
+hooks block.
+
 Usage: wire_parity_guard.py <mode> <config.yaml> <guard_path> <interpreter>
+                            [<node_bin> <repo_root>]      # set mode only
        (swap ignores guard_path/interpreter.)
 Idempotent. Exit 0 on success/skip, non-zero only on bad input.
 """
@@ -50,14 +60,58 @@ def _list_item(interp: str, guard: str) -> str:
     )
 
 
-def canonical_block(interp: str, guard: str) -> str:
-    return "hooks:\n" + _hook_body(interp, guard)
+# The end-side members that make sense on hermes. refresh-where-are-we-on-end
+# leaves the next session's ledger current; telegram-session-end is the
+# operator-reaching relay. Both are enqueue-and-exit through the HIMMEL-2004
+# Stop queue, so neither does real work inside the hook's timeout. Deliberately
+# NOT here: end-session-wiki (self-guards off on Windows and its config path is
+# Claude-scoped), jira-nudge-on-end (its window is a Claude session's commits)
+# and session-run-hook.ts (the census is Claude-scoped).
+END_MEMBERS = (
+    "scripts/hooks/refresh-where-are-we-on-end.sh",
+    "scripts/hooks/telegram-session-end.sh",
+)
 
 
-def do_set(cfg_path: str, guard: str, interp: str) -> None:
+def _end_body(node: str, repo: str) -> str:
+    """The `on_session_finalize` sub-block, 2-space indented.
+
+    ONE entry, not one per member: run-hook-with-bash.js --chain runs every
+    member from a single node launch (HIMMEL-2002/2003) and resolves Git Bash
+    itself, which a bare `bash` from hermes on Windows would not (the
+    System32 WSL-stub trap). --lifecycle marks the chain ADVISORY: every member
+    runs, stderr is forwarded, and the chain always exits 0, so an end hook can
+    never colour a hermes teardown."""
+    # Forward slashes throughout the repo half: hermes splits the command with
+    # posix shlex, where a backslash inside double quotes is only special before
+    # a quote or another backslash — survivable, but not worth relying on. The
+    # interpreter path is left exactly as the installer resolved it.
+    repo = repo.replace("\\", "/").rstrip("/")
+    launcher = f"{repo}/scripts/hooks/run-hook-with-bash.js"
+    members = " ".join(f'"{repo}/{m}"' for m in END_MEMBERS)
+    command = f'"{node}" "{launcher}" --chain --lifecycle {members}'
+    # A YAML single-quoted scalar escapes an apostrophe by doubling it. An
+    # interpreter or checkout path containing one (a Windows profile named
+    # O'Brien) would otherwise close the scalar early and yield invalid YAML.
+    command = command.replace("'", "''")
+    return (
+        "  on_session_finalize:\n"
+        f"  - command: '{command}'\n"
+        "    timeout: 20\n"
+    )
+
+
+def canonical_block(interp: str, guard: str, end_hook=None) -> str:
+    block = "hooks:\n" + _hook_body(interp, guard)
+    if end_hook:
+        block += _end_body(*end_hook)
+    return block
+
+
+def do_set(cfg_path: str, guard: str, interp: str, end_hook=None) -> None:
     with open(cfg_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
-    block = canonical_block(interp, guard)
+    block = canonical_block(interp, guard, end_hook)
     start = None
     for i, ln in enumerate(lines):
         if ln.startswith("hooks:") and not ln[:1].isspace():
@@ -155,11 +209,12 @@ def main() -> int:
         return 2
     mode, cfg_path = sys.argv[1], sys.argv[2]
     if mode == "set":
-        if len(sys.argv) != 5:
-            print("set mode needs: <config> <guard> <interpreter>",
-                  file=sys.stderr)
+        if len(sys.argv) not in (5, 7):
+            print("set mode needs: <config> <guard> <interpreter> "
+                  "[<node_bin> <repo_root>]", file=sys.stderr)
             return 2
-        do_set(cfg_path, sys.argv[3], sys.argv[4])
+        end_hook = tuple(sys.argv[5:7]) or None
+        do_set(cfg_path, sys.argv[3], sys.argv[4], end_hook)
     elif mode == "ensure":
         if len(sys.argv) != 5:
             print("ensure mode needs: <config> <guard> <interpreter>",

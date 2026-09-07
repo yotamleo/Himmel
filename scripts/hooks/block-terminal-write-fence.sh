@@ -23,15 +23,23 @@
 #       denied UNLESS the named opt-in CODEX_EXTERNAL_WRITES_OK=1 is set (mirrors
 #       HERMES_EXTERNAL_WRITES_OK / GLM_EXTERNAL_WRITES_OK semantics).
 #
-#   (b) WRITE-ON-MAIN — a write-shaped terminal command (redirect > / >>, tee,
-#       Set-Content/Out-File/Add-Content, sed -i, cp/mv/rm on a path, git commit)
-#       whose effective repo (tool_input.cwd if present, else process cwd) is
-#       checked out on its DEFAULT branch (main/master) is refused, UNLESS the
-#       repo root carries a .single-writer marker (same opt-out as
-#       block-edit-on-main.sh). A feature/worker-branch cwd is ALLOWED — normal
-#       worktree work is never blocked. Conservative on false positives: a
-#       command that is not confidently write-shaped is ALLOWED (the charter is
-#       the known write shapes, not a general sandbox).
+#   (b) WRITE-ON-MAIN — as of HIMMEL-2526, DESTINATION-based rather than
+#       cwd-only: a write-shaped terminal command (redirect > / >>, tee,
+#       sed -i, cp/mv/rm/touch) has its actual TARGET PATH(s) resolved and
+#       refused when a target lands inside a protected checkout (on
+#       main/master, or the PRIMARY checkout on a feature branch), regardless
+#       of the cwd's own branch — closing the gap where a subagent wrote into
+#       the primary checkout from an unrelated cwd and this class never saw
+#       it. The git-commit and PowerShell-writer (Set-Content/Out-File/
+#       Add-Content) arms have no extractable target, so they keep this
+#       lane's ORIGINAL HIMMEL-745 cwd predicate (is_on_main on
+#       tool_input.cwd, fail-open on a feature branch or an unreadable
+#       branch, honouring a repo-root .single-writer marker) — a deliberate,
+#       documented carve-out (codex-lane parity), not an oversight; see
+#       block-write-into-main-checkout.sh's header for the split. This class
+#       now lives in that shared script (sourced below), so it can be reused
+#       byte-identically by the Claude Bash PreToolUse chain instead of a
+#       second copy drifting.
 #
 # Known limitations (accidental-shape guard, like block-glm-external-writes /
 # block-read-secrets): a write verb displaced from command position (env-prefix
@@ -138,13 +146,26 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
 fi
 
 # ------------------------------------------------------------------ class (b)
-# Write-on-main lock (port of the terminal branch of parity_guard's
-# _edit_on_main_reason). Only fires when the command is CONFIDENTLY write-shaped
-# AND the effective repo is on its default branch AND no .single-writer opt-out.
-
-# True (rc 0) iff at least one redirect / tee target is a REAL file (not
-# /dev/null and not a temp path). $TMP-redirects and > /dev/null are NOT writes
-# worth fencing (per the charter's precision list).
+# Write-on-main lock. As of HIMMEL-2526 this class is DESTINATION-based
+# (redirect/tee/sed -i/cp/mv/rm/touch targets resolved and checked against
+# main_checkout_verdict) rather than the old cwd-only "is this command
+# write-shaped AND is the cwd's repo on main" test — the shared logic now
+# lives in block-write-into-main-checkout.sh (sourced by every terminal-write
+# lane, Bash chain included) so the two lanes cannot drift. is_temp_or_devnull
+# stays HERE (not moved) so the sourced script — self-sufficient for its own
+# direct-exec mode too — can reuse this exact copy via its `declare -f` guard
+# instead of duplicating it when running in THIS process.
+#
+# CODEX-LANE PARITY (unchanged in this PR): the git-commit / PowerShell-writer
+# arms have no extractable destination, so they stay on this lane's original
+# HIMMEL-745 cwd predicate (is_on_main, fail-open on a feature branch or an
+# unreadable branch) — block-write-into-main-checkout.sh ports that exact
+# logic for the SOURCED case; see its header for the full rationale.
+# shellcheck disable=SC2329,SC2317
+# SC2329 ("never invoked") / SC2317 ("unreachable") — same false positive, different shellcheck versions: this function is called
+# from block-write-into-main-checkout.sh once sourced below — shellcheck's
+# per-file analysis cannot see that a followed (SC1091) file calls BACK into
+# a function defined in the file that sourced it.
 is_temp_or_devnull() {
     # The '$tmp'* / '%temp%'* branches keep the $ / % literal on purpose (they
     # match an unexpanded env-var temp ref in the payload text), so SC2016 is
@@ -159,74 +180,10 @@ is_temp_or_devnull() {
     esac
 }
 
-redirect_real_target() {
-    local c="$1" chunk tok
-    # Redirect targets: >>? then the following token. `2>&1` / `>&2` yield no
-    # target token (the char after > is & / a digit-then-&, excluded), so they
-    # are not treated as file writes.
-    while IFS= read -r chunk; do
-        [ -z "$chunk" ] && continue
-        tok=$(printf '%s' "$chunk" | sed -E 's/^>>?[[:space:]]*//')
-        [ -z "$tok" ] && continue
-        is_temp_or_devnull "$tok" || return 0
-    done < <(printf '%s' "$c" | grep -oE '>>?[[:space:]]*[^[:space:];&|<>()]+' || true)
-    # tee targets: `tee [-a] <file>` (also matches `| tee file`).
-    while IFS= read -r chunk; do
-        [ -z "$chunk" ] && continue
-        tok=$(printf '%s' "$chunk" | sed -E 's/^tee[[:space:]]+(-a[[:space:]]+)?//')
-        [ -z "$tok" ] && continue
-        is_temp_or_devnull "$tok" || return 0
-    done < <(printf '%s' "$c" | grep -oE 'tee[[:space:]]+(-a[[:space:]]+)?[^[:space:];&|<>()]+' || true)
-    return 1
-}
-
-write_shaped() {
-    local c="$1"
-    # git commit at command position (flag-tolerant; `commit` as the verb so
-    # commit-graph / commit-tree do not match). `git(\.exe)?` catches the
-    # Windows-lane git.exe form (CR parity with class (a)).
-    printf '%s' "$c" | grep -qE '(^|[;&|(])[[:space:]]*git(\.exe)?([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)' && return 0
-    # sed -i (in-place edit).
-    printf '%s' "$c" | grep -qE '(^|[;&|(])[[:space:]]*sed[[:space:]]+[^;&|]*-i' && return 0
-    # PowerShell file writers at command position (not matched inside quoted /
-    # logged text like `echo set-content …` — CR false-positive fix).
-    printf '%s' "$c" | grep -qE '(^|[;&|(])[[:space:]]*(set-content|out-file|add-content)([[:space:]]|$)' && return 0
-    # cp / mv / rm targeting a path (at command position).
-    printf '%s' "$c" | grep -qE '(^|[;&|(])[[:space:]]*(cp|mv|rm)[[:space:]]+[^[:space:]]' && return 0
-    # redirect / tee to a real (non-devnull, non-temp) file.
-    redirect_real_target "$c" && return 0
-    return 1
-}
-
-if [ "$LIB_OK" = 1 ] && command -v git >/dev/null 2>&1 && write_shaped "$cmd_lc"; then
-    # Effective repo dir: tool payload cwd, else the hook process cwd.
-    cwd=$(printf '%s' "$input" | jq -r '.tool_input.cwd // .cwd // empty' 2>/dev/null || true)
-    [ -z "$cwd" ] && cwd="$PWD"
-
-    branch_rc=0
-    is_on_main "$cwd" || branch_rc=$?
-    # rc 0 = on default branch -> candidate for the lock; rc 1 (feature branch /
-    # detached) or rc 2 (branch unreadable) -> ALLOW (fail-open on the hygiene
-    # class so normal worktree work is never blocked).
-    if [ "$branch_rc" -eq 0 ]; then
-        repo_root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)
-        # .single-writer opt-out (mirrors block-edit-on-main.sh): a repo that
-        # commits straight to main by design (personal vaults / state repos).
-        if [ -z "$repo_root" ] || [ ! -f "$repo_root/.single-writer" ]; then
-            {
-                echo "⛔ block-terminal-write-fence: refusing a write-shaped terminal command —"
-                echo "    the effective repo is checked out on its default branch (main/master)."
-                echo "    (command: $cmd)"
-                echo "    (cwd: $cwd)"
-                echo ""
-                echo "    Feature work belongs in a worktree per CLAUDE.md, not on the primary"
-                echo "    main checkout (write-on-main class, HIMMEL-745). To proceed:"
-                echo "      - run the command from a type/slug worktree, or"
-                echo "      - touch \"$repo_root/.single-writer\" if this repo commits to main by design."
-            } >&2
-            exit 2
-        fi
-    fi
+if [ "$LIB_OK" = 1 ]; then
+    # shellcheck source=./block-write-into-main-checkout.sh
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/block-write-into-main-checkout.sh"
 fi
 
 exit 0

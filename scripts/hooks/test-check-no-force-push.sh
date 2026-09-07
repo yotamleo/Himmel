@@ -22,6 +22,9 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$SCRIPT_DIR/check-no-force-push.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
 
 PASS=0; FAIL=0; TMP_ROOT=""
 # shellcheck disable=SC2329,SC2317
@@ -42,20 +45,22 @@ assert_contains() {
     if grepq "$haystack" -F -- "$needle"; then pass "$n"; else fail "$n" "missing: $needle"; fi
 }
 
-TMP_ROOT=$(mktemp -d); if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
+TMP_ROOT=$(fixture_mktemp_dir) || exit 1
+if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
 
 # tmp repo with 3 commits on main + 1 diverging commit on feat/x.
 REPO="$TMP_ROOT/repo"
-git init -q --initial-branch=main "$REPO" 2>/dev/null || git init -q "$REPO"
+mkdir -p "$REPO" || exit 1
 (
-    cd "$REPO" || exit 99
+    fixture_enter_git_init_dir "$REPO" || exit 1
+    git init -q --initial-branch=main 2>/dev/null || git init -q
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "c1"
     git branch -m main 2>/dev/null || true
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "c2"
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "c3"
     git checkout -q -b feat/x
     git -c user.email=t@test.com -c user.name=test commit -q --allow-empty -m "c4-divergent"
-)
+) || exit 1
 SHA_C2=$(git -C "$REPO" rev-parse main~1)
 SHA_C3=$(git -C "$REPO" rev-parse main)
 SHA_C4=$(git -C "$REPO" rev-parse feat/x)

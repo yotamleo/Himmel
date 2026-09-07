@@ -1,6 +1,6 @@
 ---
 name: handover-arm-resume
-description: Arm the OS scheduler to relaunch claude at a given time with a given handover. Dedup-guarded. Use when the user asks to arm a resume / schedule a relaunch or run /handover-arm-resume.
+description: Arm the OS scheduler to relaunch claude at a given time with a given handover. Use for /handover-arm-resume.
 ---
 
 # handover-arm-resume
@@ -24,7 +24,10 @@ was stripped. A `--force` replace is also transactional — the old slot is
 deleted only after the new job is registered and verified, so a later
 refusal or failure can no longer leave you with no arm at all.
 `--dedup-any` opts into the broad "any existing slot blocks" mode the
-unattended auto-arm watchdogs use. This shells the SANCTIONED arm path —
+unattended auto-arm watchdogs use. `--context 1m|standard` (HIMMEL-2658) is
+an arming-time choice, never inherited from the operator's model setting —
+defaults to `1m` on a `*-console.md` handover, `standard` on every other
+arm. This shells the SANCTIONED arm path —
 never hand-roll `schtasks`/`at`
 (blocked by block-rogue-claude-schedule). See
 `.claude/commands/handover-arm-resume.md` for the time sentinels + exit codes.

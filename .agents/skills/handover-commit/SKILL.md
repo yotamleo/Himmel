@@ -1,6 +1,6 @@
 ---
 name: handover-commit
-description: Auto-commit *.md changes in the handover root (Mode B / external HANDOVER_DIR only). Use when the user asks to commit handover state or run /handover-commit.
+description: Auto-commit *.md changes in the handover root (external HANDOVER_DIR only). Use for /handover-commit.
 ---
 
 # handover-commit

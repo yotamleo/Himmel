@@ -1,6 +1,6 @@
 ---
 name: handover-flush
-description: Session-end consolidation sweep across handover/* branches — push unpushed, open missing PRs, report merged. Use when the user asks to flush handover branches or run /handover-flush.
+description: Session-end sweep across handover/* branches — push, open missing PRs, report merged. Use for /handover-flush.
 ---
 
 # handover-flush

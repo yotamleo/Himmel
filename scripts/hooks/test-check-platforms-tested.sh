@@ -7,7 +7,11 @@
 # Usage: bash scripts/hooks/test-check-platforms-tested.sh
 set -uo pipefail
 
-HOOK="$(cd "$(dirname "$0")" && pwd)/check-platforms-tested.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+HOOK="$SCRIPT_DIR/check-platforms-tested.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK"
 
 FAILED=0
@@ -27,9 +31,9 @@ assert_rc() {
 make_repo() {
     local files="$1" msg="$2"
     local dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b main
         git config user.email t@t
         git config user.name t
@@ -45,7 +49,7 @@ make_repo() {
         git add -A
         # shellcheck disable=SC2086 # files is space-separated
         git -c commit.gpgsign=false commit -q -m "$msg"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
@@ -60,45 +64,90 @@ run_in() {
 }
 
 # --- BLOCK cases (rc=1) ---
-d=$(make_repo "scripts/foo.sh" "feat: add foo")
+d=$(make_repo "scripts/foo.sh" "feat: add foo") || exit 1
 assert_rc "sensitive .sh + no attestation"            1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "x.ps1" "feat: add ps1")
+d=$(make_repo "x.ps1" "feat: add ps1") || exit 1
 assert_rc "sensitive .ps1 + no attestation"           1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "scripts/sub/foo.sh" "feat: nested sh")
+d=$(make_repo "scripts/sub/foo.sh" "feat: nested sh") || exit 1
 assert_rc "scripts/ nested + no attestation"          1 "$(run_in "$d")"
 rm -rf "$d"
 
 # --- ALLOW cases (rc=0) ---
-d=$(make_repo "src/foo.ts" "feat: ts only")
+d=$(make_repo "src/foo.ts" "feat: ts only") || exit 1
 assert_rc "non-sensitive file"                        0 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "README.md" "docs: readme")
+d=$(make_repo "README.md" "docs: readme") || exit 1
 assert_rc "docs only"                                 0 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: linux, windows\n')")
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: linux, windows\n')") || exit 1
 assert_rc "sensitive + attestation linux+windows"     0 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: gitbash (msys2), wsl\n')")
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: gitbash (msys2), wsl\n')") || exit 1
 assert_rc "sensitive + attestation gitbash/wsl"       0 "$(run_in "$d")"
 rm -rf "$d"
 
 # Post-CR: empty / unrecognised values do NOT satisfy the gate.
-d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested:\n')")
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested:\n')") || exit 1
 assert_rc "sensitive + empty attestation = block"     1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: yes\n')")
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: yes\n')") || exit 1
 assert_rc "sensitive + unrecognised value = block"    1 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\n[skip platforms-check]\n')")
+# --- HIMMEL-1975: ATTEST_RE is POSIX ERE, token FIRST ---------------------
+# The predicate was `^[[:space:]]*Platforms tested:.*\b<token>\b`, carrying the
+# two defects HIMMEL-1372 fixed in check-cr-marker-on-pr-create.sh.
+#
+# (a) `.*` let the token sit ANYWHERE on the line, so a line that names a
+#     platform only to say it was NOT tested satisfied the gate. This case is
+#     red-provable on every platform: it PASSED (rc=0) before the fix.
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: none — could not try linux\n')") || exit 1
+assert_rc "attestation with the token buried in prose = block" 1 "$(run_in "$d")"
+rm -rf "$d"
+
+# (b) the real form must keep passing — token first, prose after, which is the
+#     shape the sibling security-review gate already demands and the shape the
+#     ALLOW cases above already use.
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: windows-gitbash — ran the shell suites\n')") || exit 1
+assert_rc "token first + trailing prose"              0 "$(run_in "$d")"
+rm -rf "$d"
+
+# (c) a token that is merely a PREFIX of another word is still not a platform.
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\nPlatforms tested: linuxish\n')") || exit 1
+assert_rc "token that is a prefix of a longer word = block" 1 "$(run_in "$d")"
+rm -rf "$d"
+
+# (d) the predicate must be backslash-free, asserted against the SOURCE. `\b`
+#     is a GNU extension: on BSD grep (macOS — a platform this repo targets)
+#     it matches a LITERAL `b`, so `.*\b(linux|…)\b` needed a literal `b` on
+#     both sides and NO correct attestation matched — the gate blocked every
+#     attested push on a whole platform, and no GNU-grep box can observe it at
+#     runtime. "POSIX ERE only" IS the contract, so the source is where it is
+#     pinned (same argument, same shape as test 7 of
+#     test-check-cr-marker-on-pr-create.sh).
+attest_line=$(grep -F 'ATTEST_RE=' "$HOOK" || true)
+if [ -z "$attest_line" ]; then
+    echo "FAIL ATTEST_RE: could not locate the ATTEST_RE assignment in $HOOK"
+    FAILED=$((FAILED + 1))
+elif [ "${attest_line//\\/}" != "$attest_line" ]; then
+    # Bash pattern removal, not `grep '[\]'`: a bracket expression holding a
+    # backslash is dialect-dependent, and a grep that errored on it would exit
+    # non-zero — indistinguishable, in an `elif`, from "no backslash found".
+    echo "FAIL ATTEST_RE contains a backslash escape (GNU-only, inert on BSD grep): $attest_line"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS ATTEST_RE is backslash-free (POSIX bracket classes only)"
+fi
+
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\n[skip platforms-check]\n')") || exit 1
 assert_rc "sensitive + skip marker"                   0 "$(run_in "$d")"
 rm -rf "$d"
 
@@ -111,11 +160,11 @@ rm -rf "$d"
 # accept `\s`), so it is NOT a red-provable regression test here — it pins the
 # documented "leading whitespace is allowed" contract and would catch the
 # regression on macOS/BSD.
-d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\n    [skip platforms-check]\n')")
+d=$(make_repo "scripts/foo.sh" "$(printf 'feat: foo\n\n    [skip platforms-check]\n')") || exit 1
 assert_rc "sensitive + INDENTED skip marker (BSD-grep safe)" 0 "$(run_in "$d")"
 rm -rf "$d"
 
-d=$(make_repo "scripts/foo.sh" "feat: foo")
+d=$(make_repo "scripts/foo.sh" "feat: foo") || exit 1
 assert_rc "sensitive + env bypass"                    0 "$(run_in "$d" "PLATFORMS_TESTED_OK=1")"
 rm -rf "$d"
 
@@ -136,9 +185,9 @@ rm -rf "$d"
 # The fixture mirrors that exact shape: bulk in the older commit, the
 # attestation in the newest. It FAILS against the pre-fix hook (rc=1) — that
 # is the point of it.
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git init -q -b main
     git config user.email t@t
     git config user.name t
@@ -212,14 +261,14 @@ rm -rf "$d"
 # diffed against local main) this re-flagged the origin-only sensitive file
 # as belonging to the push. Post-HIMMEL-113 (diff against origin/main)
 # the gate ignores it correctly.
-d=$(mktemp -d)
-origin=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
+origin=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$origin" || exit 1
+    fixture_enter_git_init_dir "$origin" || exit 1
     git init -q --bare -b main
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git clone -q "$origin" . >/dev/null 2>&1
     git config user.email t@t
     git config user.name t
@@ -245,7 +294,7 @@ origin=$(mktemp -d)
     git reset -q --hard HEAD~1
     git checkout -q feat/x
     git fetch -q origin main >/dev/null 2>&1
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 # Skip the in-hook fetch so the test is offline-deterministic; we already
 # fetched origin/main above.
 assert_rc "linked-worktree: feat non-sensitive, ignore origin-only sh" 0 "$(run_in "$d" "PLATFORMS_TESTED_NO_FETCH=1")"
@@ -253,14 +302,14 @@ rm -rf "$d" "$origin"
 
 # Same setup but feature branch touches a SENSITIVE file (genuine gate
 # should still trigger).
-d=$(mktemp -d)
-origin=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
+origin=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$origin" || exit 1
+    fixture_enter_git_init_dir "$origin" || exit 1
     git init -q --bare -b main
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git clone -q "$origin" . >/dev/null 2>&1
     git config user.email t@t
     git config user.name t
@@ -282,27 +331,28 @@ origin=$(mktemp -d)
     git reset -q --hard HEAD~1
     git checkout -q feat/x
     git fetch -q origin main >/dev/null 2>&1
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 assert_rc "linked-worktree: feat has sensitive sh, still blocks"      1 "$(run_in "$d" "PLATFORMS_TESTED_NO_FETCH=1")"
 rm -rf "$d" "$origin"
 
 # PLATFORMS_TESTED_NO_FETCH=1 with no origin (offline workflow) falls
 # back to local main and behaves like before.
-d=$(make_repo "scripts/foo.sh" "feat: add foo")
+d=$(make_repo "scripts/foo.sh" "feat: add foo") || exit 1
 assert_rc "no-fetch + no origin -> fall back to local main"           1 "$(run_in "$d" "PLATFORMS_TESTED_NO_FETCH=1")"
 rm -rf "$d"
 
 # Main-branch push: skip. Make a repo where HEAD is main.
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git init -q -b main
     git config user.email t@t
     git config user.name t
+    mkdir -p scripts
     echo r > scripts/foo.sh
     git add -A
     git -c commit.gpgsign=false commit -q -m "feat: foo"
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 assert_rc "on main branch — skip"                     0 "$(run_in "$d")"
 rm -rf "$d"
 
@@ -313,9 +363,9 @@ rm -rf "$d"
 # BLOCKS, and a push while sitting on master is skipped.
 make_master_repo() {
     local files="$1" msg="$2" dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b master
         git config user.email t@t
         git config user.name t
@@ -330,18 +380,18 @@ make_master_repo() {
         done
         git add -A
         git -c commit.gpgsign=false commit -q -m "$msg"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
-d=$(make_master_repo "scripts/foo.sh" "feat: add foo")
+d=$(make_master_repo "scripts/foo.sh" "feat: add foo") || exit 1
 assert_rc "master-default: sensitive .sh + no attestation = block (base resolved to master)" 1 "$(run_in "$d" "PLATFORMS_TESTED_NO_FETCH=1")"
 rm -rf "$d"
 
 # On master branch: skip (master is a protected default too).
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git init -q -b master
     git config user.email t@t
     git config user.name t
@@ -349,7 +399,7 @@ d=$(mktemp -d)
     echo r > scripts/foo.sh
     git add -A
     git -c commit.gpgsign=false commit -q -m "feat: foo"
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 assert_rc "on master branch — skip"                   0 "$(run_in "$d")"
 rm -rf "$d"
 
@@ -361,9 +411,9 @@ rm -rf "$d"
 # offline/shallow workflows are preserved.
 make_no_default_repo() {
     local files="$1" msg="$2" dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b feat/x   # HEAD on a feature branch; no main/master ref ever created
         git config user.email t@t
         git config user.name t
@@ -371,11 +421,11 @@ make_no_default_repo() {
         for f in $files; do mkdir -p "$(dirname "$f")"; echo x > "$f"; done
         git add -A
         git -c commit.gpgsign=false commit -q -m "$msg"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
-d=$(make_no_default_repo "scripts/foo.sh" "feat: add foo")
+d=$(make_no_default_repo "scripts/foo.sh" "feat: add foo") || exit 1
 assert_rc "unresolvable base, online -> fail CLOSED (exit 2)"         2 "$(run_in "$d")"
 assert_rc "unresolvable base, NO_FETCH -> skip + warn (exit 0)"       0 "$(run_in "$d" "PLATFORMS_TESTED_NO_FETCH=1")"
 rm -rf "$d"
@@ -383,7 +433,7 @@ rm -rf "$d"
 # --- HIMMEL-323 item 2: branch resolved via lib.sh::_branch (worktree-correct) ---
 # Non-git dir: _branch returns rc=2 -> hook fails CLOSED (exit 2) with a clear
 # diagnostic, rather than letting `set -e` abort on git's opaque exit 128.
-ngd=$(mktemp -d)
+ngd=$(fixture_mktemp_dir) || exit 1
 assert_rc "non-git dir -> rc=2 fail-closed (cannot read branch)"     2 "$(run_in "$ngd")"
 rm -rf "$ngd"
 
@@ -393,10 +443,10 @@ rm -rf "$ngd"
 # (feat/x), see the sensitive .sh, and BLOCK — never read the primary's 'main'
 # and skip. Pins worktree-correct behaviour so future branch-resolution changes
 # can't silently regress it.
-origin=$(mktemp -d); base=$(mktemp -d)
-( cd "$origin" || exit 1; git init -q --bare -b main ) >/dev/null 2>&1
+origin=$(fixture_mktemp_dir) || exit 1; base=$(fixture_mktemp_dir) || exit 1
+( fixture_enter_git_init_dir "$origin" || exit 1; git init -q --bare -b main ) >/dev/null 2>&1 || exit 1
 (
-    cd "$base" || exit 1
+    fixture_enter_git_init_dir "$base" || exit 1
     git clone -q "$origin" . >/dev/null 2>&1
     git config user.email t@t
     git config user.name t
@@ -406,7 +456,7 @@ origin=$(mktemp -d); base=$(mktemp -d)
     mkdir -p "${base}-wt/scripts"; echo 'echo hi' > "${base}-wt/scripts/new.sh"
     git -C "${base}-wt" add -A
     git -C "${base}-wt" -c commit.gpgsign=false commit -q -m "feat: shell, no attestation"
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 wtgd="${base}/.git/worktrees/$(basename "${base}-wt")"
 rc_wt=$( cd "${base}-wt" && env GIT_DIR="$wtgd" PLATFORMS_TESTED_NO_FETCH=1 bash "$HOOK" >/dev/null 2>&1; echo $? )
 assert_rc "linked worktree (primary on main): reads worktree branch + blocks" 1 "$rc_wt"
@@ -417,9 +467,9 @@ rm -rf "$origin" "$base" "${base}-wt"
 # An orphan/unrelated-history branch has no merge base, so `git diff base...HEAD`
 # exits non-zero. The old `|| true` swallowed that to an empty changed-set -> a
 # silent PASS on a branch never inspected. Now it fails CLOSED (exit 2).
-d=$(mktemp -d)
+d=$(fixture_mktemp_dir) || exit 1
 (
-    cd "$d" || exit 1
+    fixture_enter_git_init_dir "$d" || exit 1
     git init -q -b main
     git config user.email t@t
     git config user.name t
@@ -428,7 +478,7 @@ d=$(mktemp -d)
     git rm -rfq . 2>/dev/null || true
     mkdir -p scripts; echo 'echo x' > scripts/foo.sh
     git add -A; git -c commit.gpgsign=false commit -q -m "feat: orphan sensitive"
-) >/dev/null 2>&1
+) >/dev/null 2>&1 || exit 1
 assert_rc "orphan branch (no merge base) -> fail CLOSED (exit 2)"    2 "$(run_in "$d" "PLATFORMS_TESTED_NO_FETCH=1")"
 rm -rf "$d"
 

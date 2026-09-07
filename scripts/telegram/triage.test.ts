@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyForSpawn, parseTriageVerdict, type TriageVerdict } from "./triage";
+import { classifyForSpawn, defaultInvoke, parseTriageVerdict, type TriageVerdict } from "./triage";
 import { BASH_BIN, REPO_ROOT, resolveBash } from "./run";
 
 test("parseTriageVerdict accepts the four strict single-token verdicts", () => {
@@ -164,6 +165,55 @@ test("TELEGRAM_TRIAGE_TIMEOUT_MS falls back to the default on garbage / non-posi
     } finally {
       delete process.env.TELEGRAM_TRIAGE_TIMEOUT_MS;
     }
+  }
+});
+
+// HIMMEL-2751. On main this test FAILS: the rejection message is the bare
+// `triage exited 1: ` because invoke.sh merges hermes' stderr INTO stdout (its
+// own HIMMEL-2049 iteration-budget scan), so invoke.sh's stderr is empty by
+// construction and the old `stderr.slice(-512)` had nothing to slice. This
+// drives the REAL spawn path (defaultInvoke against a stub script on argv),
+// not the injected deps.invoke path used by the other tests above -- the
+// injected path never touches the code under test here, so it would not be a
+// control over the spawn path.
+test("defaultInvoke reports stdout+argv on a stderr-empty non-zero exit (HIMMEL-2751)", async () => {
+  // #!/usr/bin/env bash stubs are not directly executable on win32.
+  if (process.platform === "win32") return;
+
+  const stubDir = mkdtempSync(join(tmpdir(), "himmel-triage-stub-"));
+  const stubPath = join(stubDir, "stub.sh");
+  try {
+    writeFileSync(
+      stubPath,
+      [
+        "#!/usr/bin/env bash",
+        "echo \"hermes -z: agent failed: No usable credentials found for provider 'deepseek'. Set DEEPSEEK_API_KEY.\"",
+        "exit 1",
+      ].join("\n") + "\n",
+    );
+    chmodSync(stubPath, 0o755);
+
+    const argv = [BASH_BIN, stubPath];
+    let message = "";
+    try {
+      await defaultInvoke(argv, "classify me", 10_000);
+      // Sentinel: a non-throwing run falls through to the assertions below and
+      // fails loudly on the first one, rather than silently passing because
+      // `message` was never assigned.
+      message = "<resolved without throwing>";
+    } catch (e) {
+      message = String((e as Error).message);
+    }
+
+    expect(message).toContain("triage exited 1");
+    expect(message).toContain("No usable credentials");
+    expect(message).toContain(argv.join(" "));
+    expect(message).toContain("stderr: (empty)");
+    expect(message).toContain("lane refusal: missing or rejected provider credentials");
+    // must NOT be main's shape: a bare colon with nothing after it
+    expect(message).not.toMatch(/^triage exited 1:\s*$/);
+  } finally {
+    rmSync(stubDir, { recursive: true, force: true });
   }
 });
 

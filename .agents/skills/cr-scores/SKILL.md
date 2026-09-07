@@ -1,6 +1,6 @@
 ---
 name: cr-scores
-description: Print the per-critic agreed/availability scorecard and surface drop advice. Use when the user asks for CR critic scores or runs /cr-scores.
+description: Print the per-critic agreed/availability scorecard and drop advice. Use for CR critic scores or /cr-scores.
 ---
 
 # cr-scores

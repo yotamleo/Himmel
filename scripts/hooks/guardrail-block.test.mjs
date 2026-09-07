@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs, { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
 import { install as installStatusData, statusDetail, sanitizedGitEnv, findPackOffset, readObject, readHeadBlob, applyDelta, readHeadOid } from './guardrail-block.mjs';
@@ -24,13 +24,29 @@ const NODE = process.execPath;
 // resolve. The deadBash negative test still uses its own nonexistent path.
 function makeBashStub() {
   const dir = mkdtempSync(join(tmpdir(), 'gblock-bash-stub-'));
-  const stub = join(dir, 'bash');
+  const stub = join(dir, process.platform === 'win32' ? 'bash.exe' : 'bash');
   writeFileSync(stub, '#!/bin/sh\nexit 0\n');
   chmodSync(stub, 0o755);
   return stub;
 }
 const BASH = makeBashStub();
 process.on('exit', () => { try { rmSync(dirname(BASH), { recursive: true, force: true }); } catch { /* best-effort tmp cleanup */ } });
+
+test('bash fixture uses an executable suffix only on Windows', () => {
+  // Assert the produced BASENAME against a per-platform LITERAL. Rebuilding
+  // `expected` with the same `platform === 'win32' ? 'bash.exe' : 'bash'`
+  // ternary makeBashStub uses would be tautological — both sides evaluate the
+  // identical expression, so the assertion could never fail and would give the
+  // HIMMEL-1686 fix no regression cover at all. Comparing to a literal DOES
+  // fail if the suffix is ever dropped, which is the whole point.
+  const base = basename(BASH);
+  if (process.platform === 'win32') {
+    assert.equal(base, 'bash.exe');
+  } else {
+    assert.equal(base, 'bash');
+  }
+  assert.equal(statSync(BASH).isFile(), true);
+});
 const GUARDS = [
   ['auto-approve-safe-bash.sh', 'Bash'],
   ['block-edit-on-main.sh', 'Edit|Write|MultiEdit|NotebookEdit'],
@@ -232,7 +248,7 @@ function realShapedFixture() {
     hooks: {
       PreToolUse: [
         { matcher: 'Bash', hooks: [{ type: 'command', command: 'bash scripts/hooks/rtk-hook-guard.sh' }] },
-        { matcher: 'Bash', hooks: [{ type: 'command', command: 'node caveman-user-hook.js' }] },
+        { matcher: 'Bash', hooks: [{ type: 'command', command: 'node foreign-user-hook.js' }] },
         { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo unrelated bash hook' }] },
       ],
       SessionEnd: [{ hooks: [{ type: 'command', command: 'echo end' }] }],
@@ -288,7 +304,7 @@ test('real-shaped fixture preserves foreign hooks and session hooks while adding
   assertThreeWrapped(data);
   assert.equal(foreignHooks(data).length, 3);
   assert.ok(foreignHooks(data).some((hook) => hook.command.includes('rtk-hook-guard.sh')));
-  assert.ok(foreignHooks(data).some((hook) => hook.command.includes('caveman')));
+  assert.ok(foreignHooks(data).some((hook) => hook.command.includes('foreign-user-hook')));
   assert.equal(data.hooks.SessionEnd.length, 1);
   assert.equal(data.hooks.SessionStart.length, 1);
 });

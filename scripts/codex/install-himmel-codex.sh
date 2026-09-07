@@ -118,6 +118,36 @@ else
   bash "$SCRIPT_DIR/sanitize-plugin-hooks.sh" || echo "WARN: sanitize step failed (non-fatal)" >&2
 fi
 
+# --- 4. lint the effective Codex hook set for the pwsh runner (HIMMEL-1982) --
+# Windows-only, advisory: codex-cli runs every hook as `pwsh -NoProfile -Command
+# "<cmd>"`, where a bare `bash ...` resolves to the WSL launcher stub (hangs to
+# the 600s default) and a command starting with a quoted path is a pwsh string
+# expression (ParserError, exit 1). The probe enumerates what Codex would
+# ACTUALLY load — global + project + every enabled plugin — so hook-set drift and
+# both traps surface on `/himmel-update`, which runs THIS script, not the .ps1
+# twin that already carried this phase (HIMMEL-1981). Never fails the install.
+echo ""
+echo "--- 4. lint the effective Codex hook set for the Windows pwsh runner (HIMMEL-1982) ---"
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    if command -v pwsh >/dev/null 2>&1; then
+      # pwsh is native, so both paths must be Windows-shaped. MSYS usually
+      # rewrites path-looking argv on the way out, but MSYS_NO_PATHCONV /
+      # MSYS2_ARG_CONV_EXCL disable that — convert explicitly instead.
+      probe_win="$SCRIPT_DIR/probe-codex-hooks.ps1"; root_win="$REPO_ROOT"
+      if command -v cygpath >/dev/null 2>&1; then
+        probe_win="$(cygpath -m "$probe_win")"
+        root_win="$(cygpath -m "$REPO_ROOT")"
+      fi
+      pwsh -NoProfile -File "$probe_win" -Project "$root_win" -NoFail \
+        || echo "WARN: hook lint step failed (non-fatal)" >&2
+    else
+      echo "skip: pwsh not on PATH (the probe is PowerShell-only)."
+    fi
+    ;;
+  *) echo "skip: not Windows (the pwsh-runner traps are Windows-only)." ;;
+esac
+
 echo ""
 if [ "$DRY_RUN" = "1" ]; then
   echo "DRY-RUN: $changed change(s) would be made. Re-run without --dry-run to apply."

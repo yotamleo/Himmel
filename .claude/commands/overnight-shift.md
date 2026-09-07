@@ -1,5 +1,5 @@
 ---
-description: Auto-dispatch N tickets from Jira as parallel subagents — emits plan + confirms before fanout (HIMMEL-134).
+description: Auto-dispatch N tickets from Jira as parallel subagents — emits plan + confirms before fanout.
 argument-hint: [--limit N] [--project HIMMEL|LUNA] [--status STATUS] [--priority ORDER]
 ---
 
@@ -42,17 +42,95 @@ dispatch step from `docs/handover/overnight-mode.md`.
    without an explicit go.
 
 4. **Fan out subagents (only when operator confirms).**
-   For each non-epic ticket in the plan, dispatch a Task subagent
-   in parallel (single message, multiple Agent tool calls):
+
+   **Stop-marker check, before this step starts at all (HIMMEL-2724 lead 4):**
+   the dispatch loop below polls `/stop`'s marker before EVERY subagent
+   dispatch, but the first check happens here, before the loop even begins —
+   a stop armed between confirmation and fanout must not start a single
+   ticket:
+
+   ```bash
+   if bash scripts/overnight/stop-marker.sh check; then
+       echo "stop marker set — halting before any dispatch"
+       exit 0
+   fi
+   ```
+
+   When this branch fires, report EVERY non-epic ticket in the confirmed
+   plan as `blocked` (reason: `stop marker armed`) — name each ticket ID
+   explicitly, the same reporting contract the mid-loop halt below requires.
+   Never let "no tickets started" stand in for the list; the morning report
+   needs the IDs, not just the count.
+
+   **Route every ticket through the same validator `/fanout` uses (HIMMEL-2722
+   item 1) — one routing implementation, not two** (`marketplace/plugins/himmel-ops/commands/fanout.md`
+   already said this dispatch loop should). Build one entry per non-epic
+   ticket in the confirmed plan — `{id, type: "implementation", destructive:
+   <classified>, effort: "medium", why: "<ticket title>"}` (architecture-heavy
+   tickets still get a `Plan` agent pass first; that does not change the
+   item's `type`) — into a scratch JSON array, then resolve models against the
+   live roster:
+
+   **Classify `destructive` from the ticket — never hardcode `false` (CR
+   finding, deferred once to HIMMEL-2749, fixed here on the second round):**
+   `true` when the ticket's title/description matches an irreversible-
+   operation pattern (delete, remove, drop, purge, wipe, truncate,
+   force-push, uninstall, destroy) or the operator flagged it destructive
+   during the step-3 confirm; `false` otherwise. **Fail CLOSED on
+   ambiguity** — when unsure, `destructive: true`, so `fanout-plan.mjs`'s
+   judgement-tier requirement (Fable) engages instead of a possibly-
+   irreversible ticket silently dispatching as ordinary `implementation`
+   work.
+
+   ```bash
+   node scripts/lanes/fanout-plan.mjs /path/to/items.json
+   ```
+
+   - Exit 0 → the plan (JSON), one resolved `model` per ticket — pass it to
+     the Agent tool's `model` param verbatim (never blank, never "inherit").
+   - Exit 1 → REFUSED (unknown type, a lane not in the live roster, a dormant
+     lane, OR a `destructive: true` item still typed `implementation` — that
+     last one is the classifier working as intended). This should not happen
+     for a plain, correctly-classified `implementation` item on a live
+     machine; if it does, escalate to the operator (a destructive item may
+     need `type: "judgement"` / Fable, or a human call on whether it is
+     actually destructive) — never hand-pick a model or reclassify it just to
+     route around the refusal.
+   - Exit 2 → items file didn't parse.
+
+   **Dispatch loop — one Agent tool call issued at a time, each preceded by
+   a poll (HIMMEL-2724 lead 4):** the stop-marker contract requires a
+   checkpoint before every dispatch, so walk the confirmed, plan-resolved
+   ticket list in order, issuing exactly one `Agent` call per iteration:
+
+   ```bash
+   if bash scripts/overnight/stop-marker.sh check; then
+       echo "stop marker set — halting before next dispatch: <KEY> and <N remaining> not started"
+       exit 0
+   fi
+   ```
+
+   then issue that one ticket's `Agent` call. **This gates STARTS, not
+   runtime overlap:** a subagent already dispatched keeps running in the
+   background while the loop polls and dispatches the next one — the halt
+   boundary is "no NEW ticket starts once the marker is set," not "every
+   ticket runs to completion before the next begins." Do not read "one at a
+   time" as requiring the previous subagent to finish first.
 
    - `description`: `Implement <KEY>` (3-5 words).
    - `subagent_type`: `general-purpose` (the default). For architecture-heavy
      tickets, run the built-in `Plan` agent first to design the implementation plan.
+   - `model`: the `model` `fanout-plan.mjs` resolved for this ticket's item id.
    - `isolation`: `worktree` (each subagent gets its own copy of the
      repo on the target branch).
    - `prompt`: The subagent prompt from the plan + the standard
      loop-step contract from the resume file (worktree → impl + tests
      → commit + push → PR → audit → merge → prune).
+
+   If the marker is set partway through, report exactly which tickets were
+   dispatched and which were skipped (never silently drop a ticket from the
+   morning report — a skipped one is `blocked` with reason `stop marker
+   armed`, not simply absent).
 
    Each subagent runs the implementation independently. Per-agent
    guardrails are inherited from the existing PreToolUse hooks:
@@ -90,12 +168,24 @@ dispatch step from `docs/handover/overnight-mode.md`.
       ```
 
    c. **Dispatch fresh fix subagents** — for each row in the dispatch
-      plan, dispatch ONE new Task subagent (`isolation: worktree`) on that
+      plan, **poll the stop marker before that dispatch** (same contract as
+      step 4 — HIMMEL-2724 lead 4):
+
+      ```bash
+      if bash scripts/overnight/stop-marker.sh check; then
+          echo "stop marker set — halting before next fix dispatch: <KEY> and remaining rows not started"
+          break
+      fi
+      ```
+
+      then dispatch ONE new Task subagent (`isolation: worktree`) on that
       branch with the spec's `FIX_INSTRUCTION` (scoped: fix the mechanical
       finding ONLY, keep the same attestation trailers, push). Single-writer
       holds — each fix subagent writes ONLY its own branch; the parent never
       edits a branch. Re-collect their results into a *fixed* TSV
-      (`KEY \t BRANCH \t PR \t STATUS \t OUTCOME`).
+      (`KEY \t BRANCH \t PR \t STATUS \t OUTCOME`); a row skipped by the
+      marker stays in its pre-fix `blocked`/`partial` state rather than being
+      silently dropped from the reconcile step.
 
    d. **Reconcile** — merge the re-collected fixes back into the report
       rows. Auto-fixed-green becomes `done`; a fix that still fails (or a

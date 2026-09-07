@@ -1,0 +1,20 @@
+{
+  "scripts/cr/clear-cr-marker.sh": {
+    "seam_env_vars": ["CR_REQUIRE_CROSS_MODEL"]
+  },
+  "scripts/handover/merge-on-green.sh": {
+    "seam_env_vars": ["ARMAUTOMERGE", "MERGE_ON_GREEN_LOG"]
+  },
+  "scripts/lanes/stop-worker.sh": {
+    "seam_env_vars": ["STOP_WORKER_GRACE_SECS", "STOP_WORKER_BRIDGE_ROOT_OVERRIDE"]
+  },
+  "scripts/lib/bank-preflight.sh": {
+    "seam_env_vars": ["FLEET_CAP_OK", "FLEET_PS_CMD", "FLEET_PROC", "HIMMEL_FLEET_CAP"]
+  },
+  "scripts/handover/arm-resume.sh": {
+    "seam_env_vars": ["FLEET_CAP_OK", "FLEET_PS_CMD", "FLEET_PROC", "HIMMEL_FLEET_CAP"]
+  },
+  "scripts/handover/console-kit/headed-arm-leg.sh": {
+    "seam_env_vars": ["FLEET_CAP_OK", "FLEET_PS_CMD", "FLEET_PROC", "HIMMEL_FLEET_CAP", "HEADED_ARM_LEG_PREFLIGHT"]
+  }
+}

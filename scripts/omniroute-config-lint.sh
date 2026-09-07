@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # omniroute-config-lint.sh — structural WS6-dedup enforcement for the self-hosted
 # OmniRoute router config (HIMMEL-654 WS2, child HIMMEL-666). himmel already runs
-# its own rtk hook + caveman compression, so OmniRoute's bundled compression stack
-# must be provably OFF ("one optimizer per boundary"). This lint is a POSITIVE
+# its own rtk hook, and no other optimizer may claim a token boundary without
+# clearing docs/token-economy.md's measurement gate — so OmniRoute's bundled
+# compression stack must be provably OFF ("one optimizer per boundary"). NOTE:
+# the cavemanConfig/cavemanOutputMode keys below are OmniRoute's OWN schema
+# names for its bundled engines; they are unrelated to the response-compression
+# plugin himmel removed in HIMMEL-2033, and must stay asserted here.
+# This lint is a POSITIVE
 # assertion over the authoritative engine-key set from the WS2 Task-1 source-read
 # (OmniRoute pin b729a8f / v3.8.43): every expected key must be PRESENT and
 # explicitly disabled — an OMITTED default-on engine fails just like an enabled one.

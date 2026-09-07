@@ -1,0 +1,20 @@
+# Pre-fix reconstruction (round 2, codex-adv-2) of the HIMMEL-1776
+# instance-2 family with a SINGLE-QUOTED sentinel. The round-1 assignment
+# regex only parsed double-quoted literals, so EFFECTIVE_PROVIDER set in
+# single quotes produced no literal for the detector to track — the
+# un-denied fallback sailed past. Proven RED against the round-1 detector
+# (missed).
+#
+# Expected: lint-fail-open.sh fires fail-open(sentinel-not-denied) here.
+if [ -z "${ANTHROPIC_BASE_URL:-}" ]; then
+    EFFECTIVE_PROVIDER="anthropic"
+else
+    endpoint_host="$(_endpoint_host "$ANTHROPIC_BASE_URL")" || endpoint_host=""
+    case "$endpoint_host" in
+        api.anthropic.com) EFFECTIVE_PROVIDER="anthropic" ;;
+        *) EFFECTIVE_PROVIDER='anthropic-custom' ;;
+    esac
+fi
+verdict_line="$(node "$MX_EVAL" "$CORPUS_CLASS" "$EFFECTIVE_PROVIDER" extraction)" \
+    || { echo "matrix eval failed" >&2; exit 2; }
+echo "verdict: $verdict_line"

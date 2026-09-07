@@ -1,0 +1,17 @@
+# Pre-fix reconstruction of HIMMEL-1776 instance 1 (scripts/graphify/
+# refresh-graph-map.sh, _corpus_is_salus_root). The phi-roots denylist was
+# existence-checked with [ -f ] and then read. A file that EXISTS but cannot
+# be READ made the loop yield nothing, and "no entries" read as "no PHI
+# roots" — the allow path, on the exact corpus class where a mislabel is
+# catastrophic. The fix pairs -f with -r and hard-denies on unreadable.
+#
+# Expected: lint-fail-open.sh fires fail-open(unreadable-config) here.
+canon="$(cd "$1" 2>/dev/null && pwd -P)" || exit 1
+for cfg in "$HOME/.config/claude-glm/phi-roots" "$HOME/.config/claude-glm/egress-denylist"; do
+    [ -f "$cfg" ] || continue
+    while IFS= read -r p || [ -n "$p" ]; do
+        [ -n "$p" ] || continue
+        case "$canon/" in "$p"/*) echo SALUS; exit 0 ;; esac
+    done < "$cfg"
+done
+echo NOT-SALUS

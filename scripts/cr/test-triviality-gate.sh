@@ -42,6 +42,28 @@ check "$(vverdict "$(classify_triviality "$docs_multi")")" trivial
 check "$(vverdict "$(classify_triviality "$code_one")")" trivial
 # 3. single-file 3-line code change -> nontrivial
 check "$(vverdict "$(classify_triviality "$code_three")")" nontrivial
+
+# HIMMEL-1950 — the boundary everyone gets wrong. The rule counts +/- BODY
+# lines, not edited lines: a ONE-line edit is 2 diff lines and IS trivial, a
+# TWO-line edit is 4 diff lines and is NOT. Getting this backwards is what makes
+# people believe a small change "should" have been cheap-pathed when it was not.
+code_one_edited='diff --git a/src/foo.py b/src/foo.py
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -1,1 +1,1 @@
+-old line
++new line'
+check "$(vverdict "$(classify_triviality "$code_one_edited")")" trivial
+
+code_two_edited='diff --git a/src/foo.py b/src/foo.py
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -1,2 +1,2 @@
+-old one
+-old two
++new one
++new two'
+check "$(vverdict "$(classify_triviality "$code_two_edited")")" nontrivial
 # 4. mixed docs+code -> nontrivial
 check "$(vverdict "$(classify_triviality "$mixed")")" nontrivial
 # 5. 1-line change to scripts/hooks/foo.sh -> nontrivial
@@ -145,5 +167,53 @@ cli_rc=$?
 set -e
 check "$cli_out" trivial
 [ "$cli_rc" -eq 0 ] || { echo "FAIL: cli exit $cli_rc want 0"; fail=1; }
+
+# HIMMEL-2420: sweep across the ~64 KiB here-string deadlock band instead of
+# pinning one fixture size. `done <<< "$diff_text"` wedges MSYS bash forever
+# when the content sits between the real pipe capacity (65,536 B) and bash's
+# own switch-to-tempfile threshold (~65,670 B on this host): bash writes the
+# here-string into a pipe, and the reader is the SAME process, so nothing
+# ever drains it. That threshold is host-specific, so a single magic size is
+# vacuous elsewhere - step 5 fixtures by one body-line width (65 B) instead,
+# so at least one always lands inside the band wherever it sits.
+#
+# Each probe runs the CLI form in a SUBPROCESS, fixture on a FILE via stdin,
+# under a guaranteed-kill deadline: a regression must FAIL this suite, not
+# hang it. `-k` is load-bearing - SIGTERM is not delivered to a shell blocked
+# this way, so a plain `timeout 30` would never return either; `-k 5 30` sends
+# TERM at 30s and a guaranteed SIGKILL 5s later. `timeout` is GNU/Linux-only;
+# macOS coreutils ships it as `gtimeout` (both accept `-k` the same way).
+tbin="$(command -v timeout 2>/dev/null)" || tbin=""
+[ -n "$tbin" ] || tbin="$(command -v gtimeout 2>/dev/null)" || tbin=""
+if [ -z "$tbin" ]; then
+  echo "SKIP: HIMMEL-2420 deadlock sweep needs 'timeout' or 'gtimeout' (macOS: brew install coreutils) -- skipped"
+else
+  sweep_files=()
+  for sweep_n in 1005 1006 1007 1008 1009; do
+    f="$(mktemp -t "cr-triviality-sweep-$sweep_n.XXXXXX")"
+    {
+      printf 'diff --git a/scripts/example_module.py b/scripts/example_module.py\n'
+      printf -- '--- a/scripts/example_module.py\n'
+      printf '+++ b/scripts/example_module.py\n'
+      printf '@@ -1,0 +1,%d @@\n' "$sweep_n"
+      printf '+%063d\n' $(seq 1 "$sweep_n")
+    } > "$f"
+    sweep_bytes=$(wc -c < "$f")
+    echo "HIMMEL-2420 sweep: N=$sweep_n -> $sweep_bytes B"
+    set +e
+    sweep_out=$("$tbin" -k 5 30 bash "$DIR/triviality-gate.sh" < "$f" 2>/dev/null)
+    sweep_rc=$?
+    set -e
+    if [ "$sweep_rc" -ne 0 ]; then
+      echo "FAIL: sweep fixture N=$sweep_n ($sweep_bytes B) did not classify: rc=$sweep_rc (124 = TERM deadline fired, 137 = SIGKILL deadline fired = the HIMMEL-2420 wedge)"
+      fail=1
+    elif [ "$sweep_out" != "nontrivial" ]; then
+      echo "FAIL: sweep fixture N=$sweep_n ($sweep_bytes B) rc=0 but got '$sweep_out' want nontrivial"
+      fail=1
+    fi
+    sweep_files+=("$f")
+  done
+  rm -f "${sweep_files[@]}"
+fi
 
 [ "$fail" -eq 0 ] && echo "PASS test-triviality-gate" || exit 1

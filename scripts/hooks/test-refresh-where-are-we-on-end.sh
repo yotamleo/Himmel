@@ -2,9 +2,15 @@
 # Smoke test for scripts/hooks/refresh-where-are-we-on-end.sh (HIMMEL-572).
 #
 # Usage: bash scripts/hooks/test-refresh-where-are-we-on-end.sh
-# Hermetic: HIMMEL_REPO points at the real repo (so resolve-node works) but the
-# STATE DIR is a temp override and the refresh is a STUB — no real jira/gh/git
-# network, no writes to the repo's own .where-are-we.
+# Hermetic: HIMMEL_REPO points at a throwaway root carrying only a COPY of
+# scripts/where-are-we and deliberately NO .env (see HERMETIC_ROOT below —
+# HIMMEL-2519). resolve-node.sh is sourced relative to the HOOK's own path,
+# not $HIMMEL_REPO, so it needs nothing from this root at all; the copy
+# exists only so a case that ever invokes the real collect.mjs (none
+# currently do — every ON case here stubs HIMMEL_WHERE_ARE_WE_COLLECT_CMD)
+# would still resolve it. The STATE DIR is a temp override and the refresh is
+# a STUB — no real jira/gh/git network, no writes to the repo's own
+# .where-are-we, and no leak of the operator's real .env into a gate case.
 #
 # Exit: 0 = all cases pass, 1 = at least one failed.
 set -uo pipefail
@@ -22,10 +28,32 @@ fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# --- Hermetic HIMMEL_REPO: scripts/ only, deliberately NO .env --------------
+# WHY (HIMMEL-2519): the hook sources scripts/lib/load-dotenv.sh, which treats
+# a KEY as "absent" when it is unset OR EMPTY (HIMMEL-1922, deliberate) and
+# fills any absent key from $HIMMEL_REPO/.env. Pointing HIMMEL_REPO at the REAL
+# repo root — as this suite used to — means an operator .env that sets
+# HIMMEL_WHERE_ARE_WE clobbers every case below that passes an EMPTY value for
+# "OFF" (a real value overwrites empty, since empty reads as absent). A
+# NON-empty value like 'false' is immune (it never reads as absent), which is
+# why "OFF via 'false' grammar" already passed. A real repo root's .env can
+# equally supply HIMMEL_WHERE_ARE_WE_STALE_HOURS whenever a case leaves it
+# unset — this hermetic root removes that exposure too, not just the OFF
+# cases. Copying (not symlinking) that one subtree — dock.mjs's CLI-entry
+# guard (`import.meta.url === pathToFileURL(process.argv[1]).href`) breaks
+# under a `scripts/` symlink, since Node resolves import.meta.url through
+# symlinks to the REALPATH while argv[1] stays the invoked path (caught while
+# building the sibling inject-where-are-we suite's fix) — means .env, which
+# lives at the repo ROOT, is never part of the copy.
+HERMETIC_ROOT="$TMP/hermetic-repo"
+mkdir -p "$HERMETIC_ROOT/scripts"
+cp -a "$REPO_ROOT/scripts/where-are-we" "$HERMETIC_ROOT/scripts/where-are-we"
+[ -e "$HERMETIC_ROOT/.env" ] && { echo "FATAL: hermetic root unexpectedly has a .env" >&2; exit 1; }
+
 # --- Case 1: OFF → no refresh, exit 0 ---------------------------------------
 state1="$TMP/s1"; mkdir -p "$state1"
 sentinel1="$TMP/sentinel1"
-HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state1" \
+HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state1" \
     HIMMEL_WHERE_ARE_WE="" \
     HIMMEL_WHERE_ARE_WE_COLLECT_CMD="touch '$sentinel1'" \
     bash "$HOOK" </dev/null >/dev/null 2>&1; rc1=$?
@@ -44,7 +72,7 @@ fi
 # refresh then stamps the marker. Poll for both (HIMMEL-576 detach conversion).
 state2="$TMP/s2"; mkdir -p "$state2"
 sentinel2="$TMP/sentinel2"
-HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2" \
+HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2" \
     HIMMEL_WHERE_ARE_WE=1 \
     HIMMEL_WHERE_ARE_WE_COLLECT_CMD="touch '$sentinel2'" \
     bash "$HOOK" </dev/null >/dev/null 2>&1; rc2=$?
@@ -60,7 +88,7 @@ fi
 # --- Case 2b: OFF via falsy grammar ('false') -------------------------------
 state2b="$TMP/s2b"; mkdir -p "$state2b"
 sentinel2b="$TMP/sentinel2b"
-HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state2b" \
+HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state2b" \
     HIMMEL_WHERE_ARE_WE=false \
     HIMMEL_WHERE_ARE_WE_COLLECT_CMD="touch '$sentinel2b'" \
     bash "$HOOK" </dev/null >/dev/null 2>&1; rc2b=$?
@@ -74,7 +102,7 @@ fi
 # --- Case 3: ON but refresh FAILS → marker NOT stamped (no freshness lie) ----
 # Detached: give the child a moment to run+fail, then assert the marker is absent.
 state3="$TMP/s3"; mkdir -p "$state3"
-HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state3" \
+HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state3" \
     HIMMEL_WHERE_ARE_WE=1 \
     HIMMEL_WHERE_ARE_WE_COLLECT_CMD="exit 1" \
     bash "$HOOK" </dev/null >/dev/null 2>&1; rc3=$?
@@ -110,7 +138,7 @@ if command -v timeout >/dev/null 2>&1; then
     state5="$TMP/s5"; mkdir -p "$state5"
     sentinel5="$TMP/sentinel5"
     _t0=$(date +%s)
-    timeout 20 env HIMMEL_REPO="$REPO_ROOT" WHERE_ARE_WE_STATE_DIR="$state5" \
+    timeout 20 env HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state5" \
         HIMMEL_WHERE_ARE_WE=1 \
         HIMMEL_WHERE_ARE_WE_TEST_DELAY=12 \
         HIMMEL_WHERE_ARE_WE_COLLECT_CMD="touch '$sentinel5'" \

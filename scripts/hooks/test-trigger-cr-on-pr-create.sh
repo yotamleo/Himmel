@@ -20,6 +20,15 @@
 #   8. multi-line command, INDENTED `gh pr create` line -> POSTS.
 #   9. jq absent -> no post + a manual-trigger warning (never guess a PR URL
 #      from tool_input).
+#
+# HIMMEL-1975 (matcher re-converged with the PreToolUse twin) adds:
+#  14. `{ … ; }`, `if`, `!`, a leading reserved word, and the wrapper commands
+#      (`sudo`/`env`/`timeout`/`xargs`) all trigger -> POSTS.
+#  15. the widening is not "match anywhere": a grep search, a commit message, a
+#      pipeline grep and a comment stay negative -> no post.
+#  16. an argument-less invocation ending on a metacharacter (`gh pr create;`,
+#      `>`, `&&`) triggers -> POSTS (this twin had the whitespace-only
+#      end-of-token class until now).
 set -euo pipefail
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
@@ -70,6 +79,11 @@ TMP_ROOT=$(mktemp -d)
 # ─── stubbed gh (no network) ────────────────────────────────────────────────
 # Dispatches on the subcommand the hook issues:
 #   gh api repos/<o>/<r>/issues/<n>/comments   -> dump $FAKE_GH_COMMENTS_FILE
+#   gh pr view <n> --repo <o>/<r> --json headRefOid --jq .headRefOid
+#                                               -> $FAKE_GH_HEAD_SHA (exit 1 if unset,
+#                                                  simulating an unresolvable head —
+#                                                  the hook then falls back to the
+#                                                  pre-HIMMEL-1906 per-PR scan)
 #   gh pr comment <n> --repo <o>/<r> --body X  -> append X to $FAKE_GH_COMMENT_LOG
 #                                                  (exit 1 if FAKE_GH_COMMENT_FAIL=1)
 GHSTUB_DIR="$TMP_ROOT/ghbin"
@@ -80,6 +94,13 @@ set -euo pipefail
 if [ "${1:-}" = "api" ]; then
     cat "${FAKE_GH_COMMENTS_FILE:-/dev/null}" 2>/dev/null || true
     exit 0
+fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+    if [ -n "${FAKE_GH_HEAD_SHA:-}" ]; then
+        printf '%s\n' "$FAKE_GH_HEAD_SHA"
+        exit 0
+    fi
+    exit 1
 fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "comment" ]; then
     if [ "${FAKE_GH_COMMENT_FAIL:-0}" = "1" ]; then
@@ -106,12 +127,36 @@ COMMENTS_FILE="$TMP_ROOT/existing.txt"
 export FAKE_GH_COMMENT_LOG="$COMMENT_LOG"
 export FAKE_GH_COMMENTS_FILE="$COMMENTS_FILE"
 
+# Per-head-SHA ledger (HIMMEL-1906): point cr-trigger-ledger.sh at a throwaway
+# file instead of this repo's real .git/ — see cr_trigger_ledger_path's
+# CR_TRIGGER_LEDGER_PATH override.
+LEDGER_PATH="$TMP_ROOT/cr-triggered-heads"
+export CR_TRIGGER_LEDGER_PATH="$LEDGER_PATH"
+
+# Foreign-repo guard (HIMMEL-2034): the hook now posts only on a repo whose
+# CodeRabbit gate is ours — the cwd's armed origin, or a repo named in
+# CR_TRIGGER_REPOS. Every fixture below is a PR on acme/widget, which is
+# nobody's origin, so allowlist it once here; the foreign-repo test overrides
+# this to an unrelated value to exercise the refusal.
+export CR_TRIGGER_REPOS="acme/widget"
+
+# Fixture git repos below (test F3/F4) exercise the ARMED-ORIGIN path, which
+# reads real `git config` — pin git's perf settings the same way every other
+# fixture-building suite does (HIMMEL-1589).
+# shellcheck source=../lib/git-test-env.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/git-test-env.sh"
+git_test_env_pin_perf
+
 # Per-test reset: empty the posted-comment log, clear existing comments, clear
-# the fail flag.
+# the fail flag, clear the ledger, clear the fake head SHA (tests default to
+# the pre-HIMMEL-1906 fallback path unless a test sets FAKE_GH_HEAD_SHA).
 reset_state() {
     : > "$COMMENT_LOG"
     : > "$COMMENTS_FILE"
     export FAKE_GH_COMMENT_FAIL=0
+    rm -f "$LEDGER_PATH"
+    unset FAKE_GH_HEAD_SHA 2>/dev/null || true
 }
 
 # Run the hook with a given command string + tool_response.stdout, capturing its
@@ -194,6 +239,26 @@ else
     fail "expected rc=0 and 0 posts, got rc=$rc posted=$(posted_count)" "out: $out"
 fi
 
+# Test 4c: a scan_existing match must NOT record the head (HIMMEL-1906 r4) ----
+# The comment scan is repo-wide and cannot tell which head an old trigger
+# targeted. If it RECORDED the head, a reused/reopened PR number carrying a
+# stale trigger would mark this head permanently done and the ledger would
+# no-op every later push for it — no review would ever land, and the merge
+# gate would refuse green with no way to re-trigger. Skipping the record keeps
+# the failure in the cheap direction (a later push may post a duplicate).
+echo "TEST: existing trigger comment -> no post AND the head is NOT recorded"
+reset_state
+export FAKE_GH_HEAD_SHA="deadbeef0004"
+printf '@coderabbitai review\n' > "$COMMENTS_FILE"
+run_hook "gh pr create --base main" "https://github.com/acme/widget/pull/204"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] \
+   && ! grep -qF "deadbeef0004" "$LEDGER_PATH" 2>/dev/null; then
+    pass "did not post, and left the head unrecorded so a later push can re-trigger"
+else
+    fail "expected rc=0, 0 posts, and NO ledger row for deadbeef0004" \
+        "out: $out; ledger: $(cat "$LEDGER_PATH" 2>/dev/null)"
+fi
+
 # Test 5: anchoring — echo string literal -> no post -------------------------
 echo "TEST: echo \"gh pr create …\" (string literal, not command position) -> no post"
 reset_state
@@ -256,9 +321,11 @@ NOJQ_BIN="$TMP_ROOT/nojqbin"
 mkdir -p "$NOJQ_BIN"
 REAL_BASH=$(command -v bash)
 # Minimal PATH that hides jq but keeps what the hook (and the gh stub, should
-# a regression let the hook reach it) needs. Wrapper scripts, not symlinks —
-# Git Bash "symlinks" are file copies, and a copied bash.exe loses its DLLs.
-for tool in bash cat grep head tail sed; do
+# a regression let the hook reach it) needs. `dirname` is needed for the
+# SCRIPT_DIR computation that locates cr-trigger-ledger.sh (HIMMEL-1906),
+# reached before the jq check. Wrapper scripts, not symlinks — Git Bash
+# "symlinks" are file copies, and a copied bash.exe loses its DLLs.
+for tool in bash cat grep head tail sed dirname; do
     real=$(command -v "$tool")
     printf '#!%s\nexec %s "$@"\n' "$REAL_BASH" "$real" > "$NOJQ_BIN/$tool"
     chmod +x "$NOJQ_BIN/$tool"
@@ -301,6 +368,180 @@ if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
 else
     fail "expected rc=0 and 1 post for 'gh pr  create', got rc=$rc posted=$(posted_count)" "out: $out"
 fi
+
+# Test 12: ledger path — a resolvable head SHA POSTS and RECORDS it -----------
+echo "TEST: resolvable head SHA -> posts via the ledger path and records the SHA"
+reset_state
+export FAKE_GH_HEAD_SHA="deadbeef0001"
+run_hook "gh pr create --base main" "https://github.com/acme/widget/pull/201"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ] && grep -qxF "acme/widget 201 deadbeef0001" "$LEDGER_PATH"; then
+    pass "posted once and recorded the head SHA in the ledger"
+else
+    fail "expected rc=0, 1 post, and the SHA in the ledger" "out: $out; ledger: $(cat "$LEDGER_PATH" 2>/dev/null)"
+fi
+
+# Test 13: ledger dedup — a SECOND create for the SAME head SHA -> no-op ------
+# This is the per-head-SHA dedup itself, exercised through the create hook
+# (the sibling push hook's suite exercises it as "second request on the same
+# head"). No existing-comment scan is even reached: the ledger check alone
+# stops the second post.
+echo "TEST: second gh pr create for the SAME head SHA -> ledger no-op, no second post"
+reset_state
+export FAKE_GH_HEAD_SHA="deadbeef0002"
+run_hook "gh pr create --base main" "https://github.com/acme/widget/pull/202"
+first_rc=$rc
+run_hook "gh pr create --base main" "https://github.com/acme/widget/pull/202"
+if [ "$first_rc" -eq 0 ] && [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+    pass "the same head SHA triggered exactly one post across two create events"
+else
+    fail "expected exactly 1 post across two events for the same head, got posted=$(posted_count)" "out: $out"
+fi
+
+# Test 14: ordinary command positions the old anchor missed -> POSTS ---------
+# HIMMEL-1975, the same set the PreToolUse twin's suite pins. Here a miss is
+# not a bypassed block but a PR that never gets a CodeRabbit review at its
+# head — the exact failure HIMMEL-1362 exists to close, and one the merge gate
+# then refuses green on with nothing able to re-trigger it.
+echo "TEST: brace/reserved-word/wrapper command positions -> POSTS"
+pos_pr=300
+# shellcheck disable=SC2016  # literal shell syntax in a command STRING
+for pos_cmd in \
+    '{ gh pr create --base main; }' \
+    'if gh pr create --base main; then echo ok; fi' \
+    '! gh pr create --base main' \
+    'then gh pr create --base main' \
+    'sudo gh pr create --base main' \
+    'env FOO=1 gh pr create --base main' \
+    'timeout 60 gh pr create --base main' \
+    'xargs -I{} gh pr create --base main'
+do
+    reset_state
+    pos_pr=$((pos_pr + 1))
+    run_hook "$pos_cmd" "https://github.com/acme/widget/pull/$pos_pr"
+    if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+        pass "posted for '$pos_cmd'"
+    else
+        fail "'$pos_cmd' did not trigger (rc=$rc posted=$(posted_count))" "out: $out"
+    fi
+done
+
+# Test 15: the widening did NOT become "match anywhere" -> no post -----------
+# A spurious trigger comment is worse than a missing one here: the gate's
+# skipped/absent arms backstop a MISSING review, nothing catches a comment
+# posted on a PR nobody meant to touch.
+echo "TEST: quoted/searched occurrences stay negative after the widening"
+neg_pr=400
+for neg_cmd in \
+    'grep -n "gh pr create" scripts/hooks/x.sh' \
+    'git commit -m "fix gh pr create matcher"' \
+    "cat foo | grep 'gh pr create'" \
+    '# TODO: gh pr create later'
+do
+    reset_state
+    neg_pr=$((neg_pr + 1))
+    run_hook "$neg_cmd" "https://github.com/acme/widget/pull/$neg_pr"
+    if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ]; then
+        pass "posted nothing for '$neg_cmd'"
+    else
+        fail "'$neg_cmd' triggered a post (rc=$rc posted=$(posted_count))" "out: $out"
+    fi
+done
+
+# Test 16: argument-less invocation ending on a metacharacter -> POSTS -------
+# The end-of-token class was `[[:space:]]` in THIS twin until HIMMEL-1975 (the
+# sibling widened it on HIMMEL-1372 and the pair drifted), so `gh pr create;`
+# and `$(gh pr create)` were silently skipped here while the PreToolUse gate
+# blocked them.
+echo "TEST: metacharacter end-of-token invocations -> POSTS"
+meta_pr=500
+# shellcheck disable=SC2016  # literal $( in a command STRING, not an expansion
+for meta_cmd in 'gh pr create;' 'gh pr create>out.txt' 'gh pr create&&echo done'; do
+    reset_state
+    meta_pr=$((meta_pr + 1))
+    run_hook "$meta_cmd" "https://github.com/acme/widget/pull/$meta_pr"
+    if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+        pass "posted for '$meta_cmd'"
+    else
+        fail "'$meta_cmd' did not trigger (rc=$rc posted=$(posted_count))" "out: $out"
+    fi
+done
+
+
+# Test F: a PR on a FOREIGN repo -> NO post, advisory on stderr --------------
+# HIMMEL-2034: `gh pr create` from this machine opened an UPSTREAM PR
+# (JuliusBrussee/caveman#896) and this hook commented `@coderabbitai review` on
+# it — someone else's repo, someone else's reviewer bot. The hook parses
+# owner/repo out of whatever URL gh printed, so the guard has to be on the
+# PARSED repo, not on the command shape.
+echo "TEST: PR URL on a FOREIGN repo -> no post, advisory on stderr"
+reset_state
+saved_allow="$CR_TRIGGER_REPOS"
+export CR_TRIGGER_REPOS="acme/widget"
+run_hook "gh pr create --base main --title t --body b" "https://github.com/upstream/notours/pull/896"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] && grepq "$out" -F 'not triggering CodeRabbit'; then
+    if grepq "$out" -F 'hermes/codex critic'; then
+        pass "foreign-repo PR: posted nothing, named the sanctioned critic path in the advisory"
+    else
+        fail "foreign-repo PR refused, but the advisory did not name the critic fallback" "out: $out"
+    fi
+else
+    fail "expected rc=0, 0 posts and a foreign-repo advisory, got rc=$rc posted=$(posted_count)" "out: $out"
+fi
+
+# Test F3/F4: the ARMED-ORIGIN path (a), with NO allowlist ------------------
+# codex-1 (CR round 1): every other fixture reaches the post through
+# CR_TRIGGER_REPOS, so path (a) — `git config --local himmel.coderabbit true`
+# AND the PR repo equalling this clone's origin — was untested, and it is the
+# path a real himmel checkout actually takes. These two run the hook with cwd
+# inside a throwaway repo, with CR_TRIGGER_REPOS unset and CR_APP unset, so
+# cr_app_configured reads the real git config and _cmg_local_nwo the real
+# origin.
+armed_repo="$TMP_ROOT/armedrepo"
+mkdir -p "$armed_repo"
+git -C "$armed_repo" init -q
+git -C "$armed_repo" remote add origin "https://github.com/acme/widget.git"
+git -C "$armed_repo" config --local himmel.coderabbit true
+
+# run_hook_in <dir> <command> <response-stdout> — run_hook with a different cwd.
+run_hook_in() {
+    local dir="$1" command_str="$2" response_stdout="$3" payload
+    payload=$(jq -nc --arg cmd "$command_str" --arg out "$response_stdout"         '{tool_name:"Bash",tool_input:{command:$cmd},tool_response:{stdout:$out,stderr:""}}')
+    rc=0
+    out=$(cd "$dir" && printf '%s' "$payload" | bash "$HOOK" 2>&1) || rc=$?
+}
+
+echo "TEST: armed origin (himmel.coderabbit=true) + PR on that origin -> posts"
+reset_state
+saved_allow="$CR_TRIGGER_REPOS"
+unset CR_TRIGGER_REPOS
+run_hook_in "$armed_repo" "gh pr create --base main" "https://github.com/acme/widget/pull/900"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+    pass "an armed clone posts on its OWN origin with no allowlist entry"
+else
+    fail "expected rc=0 and 1 post from an armed clone on its own origin, got rc=$rc posted=$(posted_count)" "out: $out"
+fi
+
+echo "TEST: armed origin + PR on a DIFFERENT repo -> no post (arming alone is not enough)"
+reset_state
+run_hook_in "$armed_repo" "gh pr create --base main" "https://github.com/upstream/notours/pull/901"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 0 ] && grepq "$out" -F 'not triggering CodeRabbit'; then
+    pass "an armed clone still refuses a PR opened on someone else's repo"
+else
+    fail "expected rc=0, 0 posts and an advisory for a cross-repo PR from an armed clone, got rc=$rc posted=$(posted_count)" "out: $out"
+fi
+export CR_TRIGGER_REPOS="$saved_allow"
+
+# Test F2: the allowlist is what makes a non-origin repo postable ------------
+echo "TEST: a foreign repo NAMED in CR_TRIGGER_REPOS -> posts"
+reset_state
+export CR_TRIGGER_REPOS="acme/widget, upstream/notours"
+run_hook "gh pr create --base main --title t --body b" "https://github.com/Upstream/NotOurs/pull/897"
+if [ "$rc" -eq 0 ] && [ "$(posted_count)" -eq 1 ]; then
+    pass "an allowlisted repo posts, and the match is case-insensitive"
+else
+    fail "expected rc=0 and 1 post for an allowlisted repo, got rc=$rc posted=$(posted_count)" "out: $out"
+fi
+export CR_TRIGGER_REPOS="$saved_allow"
 
 # Summary --------------------------------------------------------------------
 echo

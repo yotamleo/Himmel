@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_COUNTS = Object.freeze({
-  PreToolUse: 9,
-  SessionStart: 3,
+  PreToolUse: 12,
+  SessionStart: 5,
   SessionEnd: 3,
   Notification: 1,
 });
@@ -36,11 +36,29 @@ const EXPECTED_HOOKS = Object.freeze([
   { event: 'PreToolUse', script: 'block-glm-external-writes.sh', failClosedWhen: 'HIMMEL_GLM_WORKER=1' },
   { event: 'PreToolUse', script: 'block-graphify-egress.sh' },
   { event: 'PreToolUse', script: 'block-rogue-codex-wsl.sh' },
+  { event: 'PreToolUse', script: 'block-rogue-codex-exec.sh' },
   { event: 'PreToolUse', script: 'block-lesson-enforcement-writes.sh', failClosedWhen: 'HIMMEL_LESSON_LOOP=1' },
   { event: 'PreToolUse', script: 'guard-implementor-dispatch.sh' },
+  { event: 'PreToolUse', script: 'guard-console-dispatch.sh' },
+  { event: 'PreToolUse', script: 'guard-subagent-model.sh' },
   { event: 'SessionStart', script: 'inject-where-are-we.sh' },
   { event: 'SessionStart', script: 'inject-doc-freshness.sh' },
   { event: 'SessionStart', script: 'inject-worktree-nudge.sh' },
+  // HIMMEL-1666: pins every $CLAUDE_PROJECT_DIR-relative hook to its
+  // git-committed content before any tool call in the session can run, so
+  // run-hook-with-bash.js can detect a worker rewriting a guard's on-disk
+  // content mid-session (the vector HIMMEL-1649's --fail-closed-when does not
+  // cover — that closes only the DELETE case). See run-hook-with-bash.js's
+  // "hook integrity" section for the read side.
+  { event: 'SessionStart', script: 'record-hook-integrity.sh' },
+  // HIMMEL-2526: records the PRIMARY checkout's tracked `git status
+  // --porcelain` output at session start, keyed by session_id, so
+  // detect-dirty-primary.sh (a PostToolUse hook in the PROJECT chain, not
+  // this one — a Bash-mediated write bypasses block-edit-on-main.sh's
+  // Edit/Write/MultiEdit/NotebookEdit matcher) can later notice the
+  // checkout going dirty in a way that hook never sees. Placed directly
+  // after record-hook-integrity.sh, matching hooks.json's document order.
+  { event: 'SessionStart', script: 'record-primary-baseline.sh' },
   { event: 'SessionEnd', script: 'refresh-where-are-we-on-end.sh' },
   { event: 'SessionEnd', script: 'jira-nudge-on-end.sh' },
   { event: 'SessionEnd', script: 'telegram-session-end.sh' },
@@ -123,8 +141,113 @@ function unwiredCommand(expected) {
   return `bash -c 'h="$CLAUDE_PROJECT_DIR/scripts/hooks/${expected.script}"; if [ -f "$h" ]; then exec bash "$h"; fi'`;
 }
 
+// RUN via `command -p sh` (not sourced via `.`, not exec'd via a bare `node`).
+//
+// WHY not `.` (dot-source): POSIX leaves `.` with operands beyond the
+// filename UNSPECIFIED, and dash — /bin/sh on Debian/Ubuntu — DROPS them:
+//   dash -c '. /tmp/probe.sh a b'   -> COUNT=0 ARGS=      rc=0
+//   dash -c 'sh  /tmp/probe.sh a b' -> COUNT=2 ARGS=a b   rc=0
+//   bash -c '. /tmp/probe.sh a b'   -> COUNT=2 ARGS=a b   rc=0
+// The dot-wired form silently dropped run-hook-with-bash.js and every hook
+// argument under dash — every guardrail this plugin wires was SILENTLY OFF
+// on any Debian/Ubuntu box (HIMMEL-2758). Running run-node.sh as a child
+// process instead of sourcing it fixes this: a child process always
+// receives its own argv regardless of which shell launches it.
+//
+// WHY `sh` and not a bare `node`: that launcher was unresolvable whenever
+// node fell off PATH (the nvm-windows migration window that dropped these
+// SessionEnd hooks silently — HIMMEL-2047). run-node.sh resolves node at
+// runtime (resolve-node.sh's resolve_node()) and execs it — the same helper
+// HIMMEL-2015 gave individual project hook scripts, applied here to the
+// launcher itself.
+//
+// WHY `sh` and not `bash`: HIMMEL-1516 banned the bare `bash` token from
+// this inventory because of Windows PATH roulette (the WSL stub, the 0-byte
+// Store alias, the "Select an app to open 'bash'" modal). `sh` is not that:
+// Claude Code already runs the whole hook command through `sh -c`, so `sh`
+// is exactly as resolvable as the command line carrying it, and there is no
+// System32 `sh.exe` decoy to land on. run-node.sh already supports direct
+// execution — the `$0` case in scripts/lib/run-node.sh (and its
+// byte-identical plugin copy) — so no library change was needed for path
+// resolution.
+//
+// WHY `command -p sh` and not a bare `sh`: swapping the `.` BUILTIN for an
+// external launcher adds a PATH lookup the dot form never needed, and a
+// plugin runs in whatever environment the host gave it — including a GUI or
+// agent launch with a pinned minimal PATH, the exact case resolve-node.sh
+// exists for. Measured on a bash-`/bin/sh` station, PATH=/nonexistent, outer
+// shell started by ABSOLUTE path:
+//   bash -c '. "$RUN_NODE" --version'             -> rc=0   v24.20.0
+//   bash -c 'sh "$RUN_NODE" --version'            -> rc=127 sh: command not found
+//   bash -c 'command -p sh "$RUN_NODE" --version' -> rc=0   v24.20.0
+// The `.` form survived because resolve_node() step 3 probes ABSOLUTE
+// well-known locations and never consults PATH for node at all. A bare-`sh`
+// wiring would therefore have traded a dash-only silent no-op for a
+// restricted-PATH rc=127 — and unlike the project writer there is no
+// bare-node fallback branch here at all, so the whole chain would simply be
+// dead. `command -p` is the POSIX-specified "search the standard utilities
+// PATH" form, so the launcher resolves from the system default whatever PATH
+// was inherited (critic-panel [codex-1], HIMMEL-2758 CR round 4).
+//
+// VENDORED into the plugin (marketplace/plugins/himmel-ops/hooks/run-node.sh
+// + resolve-node.sh, byte-identical to scripts/lib/'s copies — same pattern
+// run-hook-with-bash.js already uses), NOT sourced from
+// $CLAUDE_PROJECT_DIR/scripts/lib/: that path is attacker-controlled for any
+// project the plugin is active in, and CR round 2's critic-panel finding
+// [codex-1] (Critical) is right that sourcing an arbitrary project file
+// there — unconditionally, ahead of run-hook-with-bash.js's own
+// `--optional` existsSync gate — would let an untrusted opened repo execute
+// code on every hook event. Routing through ${CLAUDE_PLUGIN_ROOT} instead
+// keeps the launcher itself plugin-trusted, exactly like
+// run-hook-with-bash.js already is, and also resolves [codex-2] (Important):
+// a vendored copy ships WITH the plugin, so it is present for every
+// marketplace consumer — unlike a project-local scripts/lib/run-node.sh,
+// which most installs never have. No if/then/else bare-node fallback is
+// needed here either: a vendored file is exactly as guaranteed-present as
+// run-hook-with-bash.js already is.
 function wiredCommand(expected) {
+  const launcher = 'command -p sh "${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js"';
+  if (expected.source === 'plugin') {
+    return `${launcher} "\${CLAUDE_PLUGIN_ROOT}/hooks/${expected.script}"`;
+  }
+  const failClosed = expected.failClosedWhen
+    ? ` --fail-closed-when "${expected.failClosedWhen}"`
+    : '';
+  return `${launcher} --optional${failClosed} "$CLAUDE_PROJECT_DIR/scripts/hooks/${expected.script}"`;
+}
+
+// Pre-HIMMEL-2047 wired form: bare `node`, unresolvable if node is off PATH.
+// Recognised (as unwired, in rewritePluginHooksText below) so an
+// already-wired-the-old-way entry still migrates to wiredCommand() above.
+function legacyWiredCommand(expected) {
   const launcher = 'node "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js"';
+  if (expected.source === 'plugin') {
+    return `${launcher} "\${CLAUDE_PLUGIN_ROOT}/hooks/${expected.script}"`;
+  }
+  const failClosed = expected.failClosedWhen
+    ? ` --fail-closed-when "${expected.failClosedWhen}"`
+    : '';
+  return `${launcher} --optional${failClosed} "$CLAUDE_PROJECT_DIR/scripts/hooks/${expected.script}"`;
+}
+
+// The two SUPERSEDED run-node.sh launcher tokens. Both are recognised (as
+// unwired, in rewritePluginHooksText below) so an already-wired-the-old-way
+// entry still migrates to wiredCommand() above.
+//
+//   `.`   pre-HIMMEL-2758: POSIX-unspecified for operands beyond the filename,
+//         and dash (the plugin's worst case: /bin/sh on Debian/Ubuntu) drops
+//         them, silently no-op'ing every guardrail this plugin wires.
+//   `sh`  the first HIMMEL-2758 shape, superseded WITHIN the same ticket: a
+//         bare `sh` is a PATH lookup, so a host whose PATH excludes the
+//         shell's directory killed the whole chain at rc=127.
+//
+// See wiredCommand's header for both measured A/Bs.
+function legacySourcedLauncher(token) {
+  return `${token} "\${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh" "\${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js"`;
+}
+
+function legacyDotWiredCommand(expected, token = '.') {
+  const launcher = legacySourcedLauncher(token);
   if (expected.source === 'plugin') {
     return `${launcher} "\${CLAUDE_PLUGIN_ROOT}/hooks/${expected.script}"`;
   }
@@ -159,7 +282,10 @@ export function rewritePluginHooksText(text) {
     }
     if (entry.hook.command === wiredCommand(expected)) return { expected, wired: true };
     if (entry.hook.command === unwiredCommand(expected)) return { expected, wired: false };
-    fail(`${entry.path} command inventory mismatch: expected ${expected.script}, found ${entry.hook.command}`);
+    if (entry.hook.command === legacyWiredCommand(expected)) return { expected, wired: false };
+    if (entry.hook.command === legacyDotWiredCommand(expected, '.')) return { expected, wired: false };
+    if (entry.hook.command === legacyDotWiredCommand(expected, 'sh')) return { expected, wired: false };
+    return fail(`${entry.path} command inventory mismatch: expected ${expected.script}, found ${entry.hook.command}`);
   });
 
   let commandIndex = 0;
