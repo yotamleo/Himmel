@@ -101,9 +101,15 @@ ARGV_FILE="$SANDBOX/argv.txt"
 # run RC SAY [ENV=VAL ...] — run the hook against a guard that exits RC after
 # printing SAY (pass '' for a silent guard). Stderr is dropped: the hook's whole
 # product is what it puts on STDOUT for the session to read.
+#
+# QMD_STALENESS_CACHE_TTL=0 disables the HIMMEL-1844 TTL cache for every case in
+# this suite, so each one drives the ROUTER directly instead of reading whatever
+# a previous case left in the cache file. It is set BEFORE "$@" so a case that
+# wants the cache can still override it — which the cache section at the end
+# does. Every direct `env … bash "$SANDBOX/hooks/…"` call below carries it too.
 run() {
     local rc="$1" say="$2"; shift 2
-    env FAKE_RC="$rc" FAKE_SAY="$say" FAKE_ARGV_FILE="$ARGV_FILE" "$@" \
+    env FAKE_RC="$rc" FAKE_SAY="$say" FAKE_ARGV_FILE="$ARGV_FILE" QMD_STALENESS_CACHE_TTL=0 "$@" \
         bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null
 }
 
@@ -225,7 +231,7 @@ if [ "$stub_ok" -ne 1 ]; then
 else
     # A guard that returns promptly: the fallback must route exactly like the
     # `timeout` path, not merely avoid crashing.
-    out=$(env FAKE_RC=3 FAKE_SAY='GUARD-BANNER-3' FAKE_ARGV_FILE="$ARGV_FILE" \
+    out=$(env FAKE_RC=3 FAKE_SAY='GUARD-BANNER-3' FAKE_ARGV_FILE="$ARGV_FILE" QMD_STALENESS_CACHE_TTL=0 \
         PATH="$NOTIMEOUT_BIN" bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null)
     has "fallback still relays a verdict" "$out" "GUARD-BANNER-3"
     # A guard that HANGS. Takes the full 15s budget on purpose — this is the
@@ -245,7 +251,7 @@ else
     printf '#!/bin/sh\nif [ $# -eq 0 ]; then echo "usage: mktemp template" >&2; exit 1; fi\nexec "%s" "$@"\n' \
         "$real_mktemp" > "$BSDTMP_BIN/mktemp"
     chmod +x "$BSDTMP_BIN/mktemp"
-    out=$(env FAKE_RC=3 FAKE_SAY='GUARD-BANNER-3' FAKE_ARGV_FILE="$ARGV_FILE" \
+    out=$(env FAKE_RC=3 FAKE_SAY='GUARD-BANNER-3' FAKE_ARGV_FILE="$ARGV_FILE" QMD_STALENESS_CACHE_TTL=0 \
         PATH="$BSDTMP_BIN" bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null)
     has "a BSD mktemp still lets the guard run" "$out" "GUARD-BANNER-3"
     hasnt "and does not degrade to a permanent UNVERIFIED" "$out" "UNVERIFIED this session"
@@ -265,7 +271,7 @@ else
         && [ -n "$ping_bin" ] && [ -n "$ps_bin" ] && [ -n "$awk_bin" ]; then
         native_req="$NATIVE_WINPID_FILE"   # empty elsewhere → the guard skips it
     fi
-    out=$(env FAKE_RC=0 FAKE_SAY='' FAKE_HANG=25 FAKE_ARGV_FILE="$ARGV_FILE" \
+    out=$(env FAKE_RC=0 FAKE_SAY='' FAKE_HANG=25 FAKE_ARGV_FILE="$ARGV_FILE" QMD_STALENESS_CACHE_TTL=0 \
         FAKE_CHILD_PID_FILE="$CHILD_PID_FILE" \
         FAKE_NATIVE_WINPID_FILE="$native_req" FAKE_PING_BIN="$ping_bin" \
         FAKE_PS_BIN="$ps_bin" FAKE_AWK_BIN="$awk_bin" \
@@ -332,13 +338,13 @@ else
     # and fails on any GNU-style invocation, exactly like the real timeout.exe.
     printf '#!/bin/sh\necho "Invalid value for timeout (/T)" >&2\nexit 1\n' > "$WINTIMEOUT_BIN/timeout"
     chmod +x "$WINTIMEOUT_BIN/timeout"
-    out=$(env FAKE_RC=3 FAKE_SAY='GUARD-BANNER-3' FAKE_ARGV_FILE="$ARGV_FILE" \
+    out=$(env FAKE_RC=3 FAKE_SAY='GUARD-BANNER-3' FAKE_ARGV_FILE="$ARGV_FILE" QMD_STALENESS_CACHE_TTL=0 \
         PATH="$WINTIMEOUT_BIN" bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null)
     has "the guard still runs under a non-GNU timeout" "$out" "GUARD-BANNER-3"
     hasnt "and is NOT misreported as operator misconfiguration" "$out" "MISCONFIGURED"
     # The bound must survive too: a non-GNU timeout routes to the poll loop, not
     # to an unbounded call, so a hung guard is still REPORTED.
-    out=$(env FAKE_RC=0 FAKE_SAY='' FAKE_HANG=25 FAKE_ARGV_FILE="$ARGV_FILE" \
+    out=$(env FAKE_RC=0 FAKE_SAY='' FAKE_HANG=25 FAKE_ARGV_FILE="$ARGV_FILE" QMD_STALENESS_CACHE_TTL=0 \
         PATH="$WINTIMEOUT_BIN" bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null)
     has "a hang is still bounded and reported" "$out" "UNVERIFIED this session"
     has "and still named as a timeout" "$out" "timed out"
@@ -358,10 +364,146 @@ done
 # relocated into the wiring.
 mkdir -p "$SANDBOX/bare/hooks"
 cp "$HOOK" "$SANDBOX/bare/hooks/qmd-staleness-notice.sh"
-out=$(bash "$SANDBOX/bare/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null)
+out=$(QMD_STALENESS_CACHE_TTL=0 bash "$SANDBOX/bare/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null)
 is0 "a missing guard still exits 0" "$?"
 has "a missing guard is REPORTED, not silent" "$out" "UNVERIFIED this session"
 has "and named as the wiring fault it is" "$out" "staleness guard is missing"
+
+echo "== TTL cache: the probe runs out of band (HIMMEL-1844) =="
+# The cases above disable the cache to reach the router. These four are the
+# cache's own contract — what the session-start path serves, and where the
+# deferred verdict surfaces. What is NOT pinned here: that a detached process is
+# fast, or how `qmd status` behaves. The seam is ours — cache in, cache out.
+# QMD_STALENESS_CACHE_DIR names the STATE dir; the hook keeps its cache in a
+# private `qmd-staleness/` subdir of it, which it creates and owns. The fixtures
+# below write straight into that subdir, so they mkdir it themselves.
+CACHE_STATE_DIR="$SANDBOX/cache"
+CACHE_DIR="$CACHE_STATE_DIR/qmd-staleness"
+CACHE="$CACHE_DIR/qmd-staleness-notice.out"
+# The hook resolves detach.sh as ../lib/ from its own location, exactly as it
+# resolves the guard, so the sandbox needs the real one at that relative path.
+mkdir -p "$SANDBOX/lib"
+cp "$(cd "$(dirname "$0")" && pwd)/../lib/detach.sh" "$SANDBOX/lib/detach.sh"
+
+# runc RC SAY [ENV=VAL ...] — like run(), but with the cache ENABLED and pointed
+# at the sandbox.
+runc() {
+    local rc="$1" say="$2"; shift 2
+    env FAKE_RC="$rc" FAKE_SAY="$say" FAKE_ARGV_FILE="$ARGV_FILE" \
+        QMD_STALENESS_CACHE_DIR="$CACHE_STATE_DIR" "$@" \
+        bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null
+}
+# wait_for_cache PATTERN — bounded poll for the detached refresh to publish.
+# The ONE place this suite waits on the out-of-band leg. It returns the instant
+# the file matches, so the 20s ceiling is only ever paid by a real failure.
+wait_for_cache() {
+    local i=0
+    while [ "$i" -lt 20 ]; do
+        if [ -s "$CACHE" ] && grep -q "$1" "$CACHE" 2>/dev/null; then return 0; fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# 1. A fresh cache is served and the slow path never runs — the whole point.
+rm -rf "$CACHE_DIR"; mkdir -p "$CACHE_DIR"
+printf 'CACHED-NOTICE\n' > "$CACHE"
+# The fixture has to obey the guard it is testing: a plain `>` uses the ambient
+# umask, so under the very common 002 this file would be 0664 — group-writable,
+# correctly refused, and case 1 would fail against a working implementation. Case
+# 7 below creates that condition ON PURPOSE; here it is noise.
+chmod go-w "$CACHE" 2>/dev/null || true
+: > "$ARGV_FILE"
+out=$(runc 3 'GUARD-BANNER-3')
+has "a fresh cache is served" "$out" "CACHED-NOTICE"
+hasnt "and the guard did not speak this session" "$out" "GUARD-BANNER-3"
+empty "the guard was never invoked at all" "$(cat "$ARGV_FILE" 2>/dev/null)"
+
+# 2. A cold cache is silent for exactly ONE session, and the verdict it could
+#    not produce in time reaches the NEXT session start. The second run's guard
+#    is rc 0 (silent), so anything on stdout can only have come from the cache.
+rm -rf "$CACHE_DIR"; mkdir -p "$CACHE_DIR"
+out=$(runc 3 'GUARD-BANNER-3')
+empty "a cold cache costs one silent session" "$out"
+if wait_for_cache 'GUARD-BANNER-3'; then
+    has "the deferred verdict reaches the NEXT session start" "$(runc 0 '')" "GUARD-BANNER-3"
+else
+    fail "the deferred verdict reaches the NEXT session start" "refresh never published"
+fi
+
+# 3. A STALE cache still speaks. Silence would be the regression this hook
+#    exists to prevent, so the last verdict is served while the refresh runs.
+printf 'OLD-NOTICE\n' > "$CACHE"
+chmod go-w "$CACHE" 2>/dev/null || true   # umask 002 would make this 0664 (see case 1)
+sleep 2   # age the cache past the 1s TTL used below
+out=$(runc 4 'GUARD-BANNER-4' QMD_STALENESS_CACHE_TTL=1)
+has "a stale cache still speaks" "$out" "OLD-NOTICE"
+hasnt "without waiting for the probe" "$out" "GUARD-BANNER-4"
+if wait_for_cache 'GUARD-BANNER-4'; then
+    pass "and the refresh replaces it out of band"
+else
+    fail "and the refresh replaces it out of band" "cache still holds the old notice"
+fi
+
+# 4. Served-from-cache output is the SAME output, not a summary of it.
+rm -rf "$CACHE_DIR"; mkdir -p "$CACHE_DIR"
+inline=$(runc 5 'GUARD-BANNER-5' QMD_STALENESS_CACHE_TTL=0)
+runc 5 'GUARD-BANNER-5' >/dev/null 2>&1
+if wait_for_cache 'GUARD-BANNER-5' && [ "$inline" = "$(runc 5 'GUARD-BANNER-5')" ]; then
+    pass "the cached notice is byte-identical to the inline one"
+else
+    fail "the cached notice is byte-identical to the inline one" "differs from the inline probe"
+fi
+
+# 5. A cache that is not ours is not context. The file's contents go verbatim
+#    into a <system-reminder>, so a cache this user does not own is an injection
+#    channel. Ownership cannot be forged from a single-user suite, but the
+#    symlink half of the same guard can be driven directly. MSYS `ln -s` copies
+#    instead of linking unless winsymlinks is on, so the case skips where a real
+#    symlink cannot be made rather than asserting against a copy.
+rm -rf "$CACHE_DIR"; mkdir -p "$CACHE_DIR"
+printf 'HOSTILE-NOTICE\n' > "$SANDBOX/hostile.out"
+if ln -s "$SANDBOX/hostile.out" "$CACHE" 2>/dev/null && [ -L "$CACHE" ]; then
+    hasnt "a symlinked cache is not served into the session" "$(runc 0 '')" "HOSTILE-NOTICE"
+else
+    pass "symlinked-cache case SKIPPED (no real symlinks on this platform)"
+fi
+
+# 6. A cache DIR this user does not own disables the cache: the hook probes
+#    inline rather than reading or writing a path someone else controls, and it
+#    still speaks. Foreign ownership is not forgeable from a single-user suite;
+#    a non-directory at that path trips the same guard and is.
+printf 'not a directory\n' > "$SANDBOX/not-a-dir"
+has "an untrusted cache dir falls back to an inline probe" \
+    "$(runc 3 'GUARD-BANNER-3' QMD_STALENESS_CACHE_DIR="$SANDBOX/not-a-dir")" \
+    "GUARD-BANNER-3"
+
+# 7. Owning the cache is not enough — a cache another local user can WRITE is
+#    the same injection channel without ever changing hands. MSYS derives the
+#    mode from the ACL and ignores chmod, so the case skips where the condition
+#    cannot be created (checked by reading the mode back, not by guessing the OS).
+rm -rf "$CACHE_DIR"; mkdir -p "$CACHE_DIR"
+printf 'WRITABLE-NOTICE\n' > "$CACHE"
+chmod 666 "$CACHE" 2>/dev/null || true
+cache_mode=$(stat -c %a "$CACHE" 2>/dev/null || stat -f %Lp "$CACHE" 2>/dev/null || echo "")
+case "$cache_mode" in
+    *[2367]) hasnt "a world-writable cache is not served" "$(runc 0 '')" "WRITABLE-NOTICE" ;;
+    *)       pass "world-writable-cache case SKIPPED (chmod is a no-op here)" ;;
+esac
+
+# 8. A host with NO state dir at all still initializes the cache. Every fixture
+#    above creates the dir first, which hid the case that matters most: a fresh
+#    machine. Refusing a missing state dir instead of creating it would leave
+#    such a machine on the slow inline probe in every session forever — the exact
+#    outcome this ticket exists to remove.
+rm -rf "$CACHE_STATE_DIR"
+empty "a host with no state dir is silent for one session" "$(runc 3 'GUARD-BANNER-3')"
+if wait_for_cache 'GUARD-BANNER-3'; then
+    pass "and initializes the cache from cold"
+else
+    fail "and initializes the cache from cold" "no cache after the refresh"
+fi
 
 if [ "$FAILED" -gt 0 ]; then echo "FAIL: $FAILED case(s)"; exit 1; fi
 echo "OK"; exit 0

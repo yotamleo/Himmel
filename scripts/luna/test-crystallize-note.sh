@@ -17,6 +17,10 @@ FAILED=0
 pass() { printf 'PASS: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; FAILED=1; }
 
+# The suite exercises the native ambient path by default even when invoked from
+# a live lane worker; the dedicated lane-config case below sets the variable back.
+unset CLAUDE_CONFIG_DIR
+
 write_note() {
     # $1 = path
     cat > "$1" <<'EOF'
@@ -81,6 +85,25 @@ mark_crystallized() { # <note>
     ' "$1" > "$1.tmp" && mv "$1.tmp" "$1"
 }
 
+# --- Case 0: proxied lane config defers to native-auth reheal -----------------
+SB="$(mktemp -d "${TMPDIR:-/tmp}/crystallize-note.XXXXXX")"
+NOTE="$SB/note.md"; TR="$SB/t.jsonl"; MARK="$SB/marker.txt"
+write_note "$NOTE"; printf '{}\n' > "$TR"
+mkdir -p "$SB/home/.claude" "$SB/lane-config"
+SHA_BEFORE="$( { sha256sum "$NOTE" 2>/dev/null || shasum -a 256 "$NOTE"; } | awk '{print $1}')"
+STDERR_OUT="$SB/stderr.txt"
+RC=0
+env HOME="$SB/home" CLAUDE_CONFIG_DIR="$SB/lane-config" \
+    CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success CRYSTALLIZE_MARKER="$MARK" \
+    CRYSTALLIZE_PID_DIR="$SB/pids" bash "$CRYS" "$NOTE" "$TR" 2>"$STDERR_OUT" || RC=$?
+SHA_AFTER="$( { sha256sum "$NOTE" 2>/dev/null || shasum -a 256 "$NOTE"; } | awk '{print $1}')"
+if [ "$RC" = "0" ]; then pass "lane-config: exits 0 for deferred synthesis"; else fail "lane-config: exit was $RC"; fi
+if [ "$SHA_BEFORE" = "$SHA_AFTER" ]; then pass "lane-config: note stays byte-unchanged"; else fail "lane-config: note changed despite deferral"; fi
+if grep -q '^crystallized: false$' "$NOTE"; then pass "lane-config: crystallized stays false for reheal"; else fail "lane-config: crystallized flag changed"; fi
+if [ ! -s "$MARK" ]; then pass "lane-config: claude was not launched"; else fail "lane-config: claude launched into the proxy"; fi
+if grep -q 'crystallize-note: DEFERRED' "$STDERR_OUT" 2>/dev/null; then pass "lane-config: emits an explanatory deferral line"; else fail "lane-config: no deferral message on stderr"; fi
+rm -rf "$SB"
+
 # --- Case 1: success — sections filled, crystallized true, identity preserved --
 SB="$(mktemp -d)"
 NOTE="$SB/note.md"; TR="$SB/t.jsonl"
@@ -91,6 +114,7 @@ ENVD="$SB/env.txt"
 # (the script — not the stub — now owns the flag + timestamp, HIMMEL-590 T1d).
 env CRYSTALLIZE_CLAUDE_BIN="$STUB" STUB_MODE=success \
     CRYSTALLIZE_PID_DIR="$SB/pids" CRYSTALLIZE_ENV_DUMP="$ENVD" \
+    ANTHROPIC_BASE_URL="http://ambient-proxy.invalid" \
     CRYSTALLIZE_NOW="2026-06-28T12:00:00Z" \
     bash "$CRYS" "$NOTE" "$TR"
 if grep -q '^crystallized: true$' "$NOTE"; then pass "success: crystallized: true set (by script, from body diff)"; else fail "success: crystallized not flipped"; fi
@@ -99,6 +123,7 @@ if grep -q '^crystallized_at: 2026-06-28T12:00:00Z$' "$NOTE"; then pass "success
 if [ "$ID_BEFORE" = "$(identity_lines "$NOTE")" ]; then pass "success: identity frontmatter byte-stable"; else fail "success: identity frontmatter changed"; fi
 if grep -q '^CLAUDE_END_SESSION_WIKI=0$' "$ENVD" 2>/dev/null; then pass "recursion-guard: CLAUDE_END_SESSION_WIKI=0 exported to claude"; else fail "recursion-guard: end-session-wiki env not set"; fi
 if grep -q '^HIMMEL_WHERE_ARE_WE=0$' "$ENVD" 2>/dev/null; then pass "recursion-guard: HIMMEL_WHERE_ARE_WE=0 exported (HIMMEL-572 fold-in)"; else fail "recursion-guard: where-are-we env not set"; fi
+if grep -q '^ANTHROPIC_BASE_URL=<unset>$' "$ENVD" 2>/dev/null; then pass "native-auth pin: ambient ANTHROPIC_BASE_URL cleared before launch"; else fail "native-auth pin: ambient ANTHROPIC_BASE_URL reached claude"; fi
 rm -rf "$SB"
 
 # --- Case 2: fail — note unchanged, crystallized stays false -----------------

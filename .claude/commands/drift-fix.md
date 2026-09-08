@@ -1,5 +1,5 @@
 ---
-description: Resolve upstream fork-drift end-to-end — run the drift guard, mechanically bump every auto-bumpable pin, land it on PRIVATE main, then open a PUBLIC PR and STOP for the operator to merge. The payload of the nightly drift-fix cadence (HIMMEL-1323).
+description: Resolve upstream fork-drift end-to-end — bump auto-bumpable pins, land on private main, open a PUBLIC PR, STOP.
 argument-hint: [--dry-run] [--no-public]
 ---
 
@@ -37,8 +37,56 @@ git status --porcelain
 ```
 
 A dirty tree means someone is mid-work. **Abort** with that fact reported —
-never stash, reset, or commit someone else's changes. Confirm `main` is at
-`origin/main`; if not, report and abort.
+never stash, reset, or commit someone else's changes.
+
+The `main == origin/main` confirmation happens in step 1A, **after** the catch-up
+pull, not here (HIMMEL-2134). Asserting it before pulling would abort every night
+the machine simply had not pulled yet — the ordinary case, and the exact case
+step 1A exists to fix.
+
+## 1A. Catch this machine up first (HIMMEL-2134)
+
+```bash
+bash scripts/himmel-update.sh
+```
+
+**Why here, and why before reading drift.** There are two separate kinds of
+staleness and only one of them is a `BEHIND` row:
+
+- **repo pin vs upstream** — what the guard in step 2 reads, repaired by a PR.
+- **this machine vs the repo** — invisible to the guard. For a `tag_release` /
+  `mode: base` entry the guard reads `synced_base`, a literal in
+  `scripts/upstreams.json` that `apply-drift-bump.sh` moves *together with* the
+  in-repo pin. So the row flips to `CURRENT` the instant a bump merges, while
+  the binary installed on this machine is still the old one. Last night's own
+  merged bump is exactly this case.
+
+`himmel-update.sh` is the engine for that second kind (graphify, cli-proxy-api,
+qmd, the marketplaces, hermes, the jira dist). Running it first means step 2
+reads drift against a machine that is actually current — and its own
+`--only <item>` flag is how you re-run a single step that did not land.
+
+**Its outcome is ADVISORY to this runbook: never abort the drift leg on a
+non-zero rc.** A failed luna-template upgrade must not stop a graphify pin bump,
+and a `skipped` item is not a failure at all. It produces no repo diff and
+therefore never opens a PR.
+
+The one failure that WOULD matter is chain item 1, the `git pull` itself — every
+argument for running this first assumes the machine actually caught up. So after
+it finishes, make the confirmation step 1 deferred:
+
+```bash
+git rev-parse main origin/main
+```
+
+**They must match.** If they do not, the catch-up pull did not land (a diverged
+branch, a non-ff, a dirty tree it refused) — report that and abort the run.
+Everything downstream would be reasoning about a checkout that is not what
+`origin/main` says it is.
+
+`--dry-run`: use `bash scripts/himmel-update.sh --check` instead — it reports
+and mutates nothing. The `main == origin/main` confirmation then only tells you
+whether the machine is current, so report it rather than aborting on it.
 
 ## 2. Read the drift
 
@@ -60,14 +108,25 @@ carry an in-repo pin this runbook can move. A `BEHIND` line reads:
 
 → name `graphify`, target version `v0.9.28`.
 
+Do not read "installed 0.9.25" as a probe of the installed binary. That message
+is one shared template (`"$repo latest tag $latest; installed $local_ver"`)
+printed for EVERY `tag_release` BEHIND case. For `mode: probe` (rtk,
+twitter-cli) `$local_ver` really is a live binary read; for `mode: base`
+(graphify, cli-proxy-api) it is the `synced_base` literal from the registry. The
+installed artifact on this machine is step 1A's business, never the guard's.
+
 Also collect every `BEHIND` line whose name is a **`tag_release` / `mode: probe`**
 entry (rtk, twitter-cli). Those have no repo pin at all — their drift is an
 out-of-date binary on THIS machine, repaired in step A below. This is the half a
 CI job could never do, and the reason the cadence runs locally.
 
-**Ignore** everything else, and say which you ignored and why:
-- `mode: checkout` entries (hermes-agent) and `mkt:*` marketplaces — a checkout
-  to pull or a marketplace to re-sync, neither of which is a version bump.
+Also collect every `BEHIND` **`mkt:<name>`** row — an installed marketplace that
+has moved upstream. Repaired in step 2B. This runbook used to ignore these, and
+they went unrepaired for as long as the registry has had them (issue #518).
+
+**Ignore** the rest, and say which you ignored and why:
+- `mode: checkout` entries (hermes-agent) — a checkout to pull, not a version
+  bump; step 1A's hermes step is what moves it.
 - `commit_head` / vendored forks — a re-sync + delta audit, not a version bump.
 
 ## 2A. Upgrade the installed vendor CLIs
@@ -120,6 +179,58 @@ deliberately and the run summary is how they learn it fired.
 
 Never edit `scripts/upstreams.json` to flip an entry's `unattended` flag to get
 past an rc 3. That flag is an operator decision, not an obstacle.
+
+## 2B. Confirm the marketplace rows were repaired
+
+**Step 1A already repaired them** — `himmel-update.sh`'s advisory block runs
+`scripts/upstreams/update-marketplaces.sh` over exactly these `mkt-manual` rows.
+Do NOT run that sweep again here: it is a second round of network updates for
+work already done, and its per-row failures were already reported in 1A's
+output.
+
+So this step is a READ, not a repair. **Classify on POSITIVE EVIDENCE from 1A's
+output — never on a row's absence from it.** Absence has too many causes: a
+dirty-tree refusal before the chain even starts, a `--check` run, a `--only`
+run, a `cannot run` rc 2 (no `claude` CLI, no `python3`, unreadable registry),
+or a missing helper. In every one of those the sweep touched nothing while
+mentioning nothing, and "not mentioned" would read as "nothing owed".
+
+First, establish that the sweep RAN TO COMPLETION. Either of these two lines in
+1A's output proves it, and nothing else does:
+
+- `update-marketplaces: updated: …` — it swept rows.
+- `update-marketplaces: no manual-tier marketplaces installed — nothing to
+  update.` — it looked and there were none to sweep. This is a clean rc-0 run,
+  not a failure: a `BEHIND mkt:*` row can still exist here, because
+  `autoUpdate:true` rows are outside this helper's scope by design.
+
+**If NEITHER line is present, the sweep did not complete: report EVERY
+`BEHIND mkt:*` row as UNREPAIRED**, name the cause 1A printed instead (the
+`CANNOT RUN` line, the dirty-tree refusal, a skipped step), and stop
+classifying. Once one of them IS present:
+
+- the name appears after `updated:` → repaired. Note it and move on.
+- the name appears after `update-marketplaces: FAILED:` → a real failure. Name
+  it in the run summary with the manual re-run
+  (`bash scripts/upstreams/update-marketplaces.sh` from the primary checkout, or
+  `claude plugin marketplace update <name>` for the one row) and continue with
+  the bump work — a marketplace failure never blocks a pin bump.
+- the sweep ran and the name is in neither list → it is `autoUpdate:true`
+  (Claude Code refreshes it at session start) or it is `himmel` (chain item 2,
+  reported separately in 1A's status table). Nothing is owed here.
+
+Machine-local either way: no repo diff, no PR, and not a reason to open one.
+
+Only run the sweep directly if step 1A was skipped (`--dry-run`, or an abort
+before it). **Under `--dry-run` it MUST carry `--check`** —
+`bash scripts/upstreams/update-marketplaces.sh --check` — otherwise the bare
+form updates real marketplaces during a run that promised to change nothing.
+Its rc table is: `0` all selected rows updated or none
+needed it; `1` at least one FAILED and the others were still attempted (report
+the named rows); `2` cannot run — no `claude` CLI, no `python3`, or an
+unreadable/malformed `known_marketplaces.json`, which is **never** clean
+("could not look" is not "looked and found nothing"). `--check` lists the rows
+and calls the CLI zero times.
 
 ## 3. Branch first
 
@@ -275,8 +386,10 @@ End every run — including the no-op ones — with:
 
 ```text
 drift-fix <date>
-  guard:    <exit code> — <n> BEHIND (<n> pinned, <n> installed-tool)
+  machine:  <himmel-update chain status: n updated / n skipped / n failed>  (step 1A)
+  guard:    <exit code> — <n> BEHIND (<n> pinned, <n> installed-tool, <n> marketplace)
   upgraded: <tool> <old> -> <new>      (or: none)
+  markets:  <name> ...                 (or: none — and name any that FAILED)
   awaiting: <tool> <old> -> <new> — operator-triggered: bash scripts/upstreams/apply-tool-upgrade.sh <tool>
   bumped:   <name> <old> -> <new>      (or: none)
   skipped:  <name> (<why>) ...

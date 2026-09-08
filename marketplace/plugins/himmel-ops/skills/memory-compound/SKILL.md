@@ -1,6 +1,6 @@
 ---
 name: memory-compound
-description: Use when the per-project auto-memory store (`~/.claude/projects/<project-slug>/memory/`: the always-loaded `MEMORY.md` index + one topic file per fact) is approaching or over its load budget (~24.4KB) — the harness emits a size-limit warning at session load when over budget (e.g. "MEMORY.md is NN KB (limit 24.4KB)"), content past the limit is silently dropped = partial recall. Losslessly compounds the DURABLE gotchas out of the auto-memory into qmd-searchable luna / himmel reference notes (read-many → propagation review → write-once → qmd gate → slim index → delete sources), so the always-loaded index stays lean and adopter-generic learnings land in himmel docs (memory + vault never propagate to other users). Lean-invoke, operator-run on demand — NOT an always-on hook (HIMMEL-569).
+description: Use when the per-project auto-memory nears its ~24.4KB budget — compound durable gotchas into qmd-searchable notes.
 ---
 
 # memory-compound — distil auto-memory into searchable substrate (HIMMEL-569)

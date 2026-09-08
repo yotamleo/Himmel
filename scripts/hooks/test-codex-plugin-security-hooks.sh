@@ -8,11 +8,11 @@
 # CLAUDE_PROJECT_DIR, so under Codex `$h` resolves empty, `[ -f "$h" ]` is false,
 # and the guard SILENTLY NO-OPS (root-equivalent docker mounts + merged-PR
 # commits go unguarded). Fix: wire both into .codex/hooks.json via
-# run-hook.cmd --sandbox (the wrapper derives the repo root from its OWN
+# run-hook.sh --sandbox (the wrapper derives the repo root from its OWN
 # location, harness-agnostically), like the other already-wired security hooks.
 #
 # This suite asserts, for BOTH guards:
-#   1) they are wired into .codex/hooks.json through run-hook.cmd, under a
+#   1) they are wired into .codex/hooks.json through run-hook.sh, under a
 #      Bash-inclusive matcher (static — RED before the fix);
 #   2) invoking that wired command with the Codex plugin-hook env simulated
 #      (CLAUDE_PROJECT_DIR UNSET, CLAUDE_PLUGIN_ROOT set) actually FIRES the
@@ -22,7 +22,7 @@
 # Hermetic: docker/podman are never invoked (the guard only inspects the
 # command string); the forge is stubbed (GH_CMD), so no network. bash 3.2-safe.
 #
-# The Windows (cmd.exe) branch of run-hook.cmd is covered by the .ps1 twin.
+# The Windows run-hook.cmd wrapper is covered by the .ps1 twin.
 set -uo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -45,11 +45,11 @@ wired_cmd() {
     '.hooks.PreToolUse[]?.hooks[]?.command // empty | select(contains($g))' \
     "$HOOKS_JSON" 2>/dev/null | head -1
 }
-# Extract the matcher of the PreToolUse block containing that guard.
-wired_matcher() {
+# Extract every matcher of the PreToolUse blocks containing that guard.
+wired_matchers() {
   jq -r --arg g "$1" \
-    '.hooks.PreToolUse[]? | select(([.hooks[]?.command // ""] | join(" ")) | contains($g)) | .matcher' \
-    "$HOOKS_JSON" 2>/dev/null | head -1
+    '[.hooks.PreToolUse[]? | select(([.hooks[]?.command // ""] | join(" ")) | contains($g)) | .matcher] | join("|")' \
+    "$HOOKS_JSON" 2>/dev/null
 }
 
 # Run a guard via its WIRED .codex/hooks.json command, simulating the Codex
@@ -81,12 +81,12 @@ assert_no_deny() {
   esac
 }
 
-# ── 1) Static wiring: both guards routed through run-hook.cmd, Bash matcher ──
+# ── 1) Static wiring: both guards routed through run-hook.sh, Bash matcher ──
 for g in block-docker-privesc.sh block-merged-pr-commit.sh; do
   c="$(wired_cmd "$g")"
   if [ -n "$c" ]; then ok "$g wired into .codex/hooks.json"; else bad "$g wired into .codex/hooks.json"; fi
-  case "$c" in *run-hook.cmd*) ok "$g routed through run-hook.cmd";; *) bad "$g routed through run-hook.cmd (got: ${c:-<none>})";; esac
-  m="$(wired_matcher "$g")"
+  case "$c" in *run-hook.sh*) ok "$g routed through run-hook.sh";; *) bad "$g routed through run-hook.sh (got: ${c:-<none>})";; esac
+  m="$(wired_matchers "$g")"
   case "$m" in
     *Bash*PowerShell*|*PowerShell*Bash*) ok "$g matches both Bash and PowerShell";;
     *) bad "$g matches both Bash and PowerShell (got: ${m:-<none>})";;

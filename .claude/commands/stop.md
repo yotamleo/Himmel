@@ -1,12 +1,14 @@
 ---
-description: Graceful-halt marker for in-progress /overnight-shift sessions (HIMMEL-137).
+description: Graceful-halt marker for in-progress /overnight-shift sessions.
 argument-hint: [--hard | --reset]
 ---
 
-Sets the `~/.claude/.overnight-stop` marker that the overnight-mode
-dispatcher polls between Phase 3 subagent dispatches. When set, the
-dispatcher finishes the in-flight subagent + halts gracefully before
-starting the next one — no partial state.
+Sets the `~/.claude/.overnight-stop` marker. `/overnight-shift`'s dispatch
+loop (`.claude/commands/overnight-shift.md` step 4, and the fix-dispatch
+loop in step 5c) polls it before every subagent dispatch — HIMMEL-2724
+lead 4. When set, the dispatcher finishes the in-flight subagent(s) +
+halts gracefully before starting the next one — no partial state, and the
+tickets not yet started are reported, never silently dropped.
 
 ## Modes
 
@@ -37,9 +39,10 @@ starting the next one — no partial state.
 
 ## Dispatcher contract (consumers)
 
-Any long-running dispatch loop (overnight-mode Phase 3, future
-`/overnight-shift` fanout, autonomous loops) MUST poll the marker
-between dispatches:
+`/overnight-shift`'s dispatch loop polls the marker between dispatches
+(HIMMEL-2724 lead 4) — this is the reference implementation. Any other
+long-running dispatch loop (overnight-mode Phase 3's manual runbook,
+autonomous loops) MUST poll the marker the same way, between dispatches:
 
 ```bash
 if bash scripts/overnight/stop-marker.sh check; then

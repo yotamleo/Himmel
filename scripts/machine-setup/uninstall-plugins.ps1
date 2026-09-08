@@ -55,6 +55,16 @@ $cfg = Get-Content $Template -Raw | ConvertFrom-Json
 $failures = 0
 
 # ── Uninstall plugins ───────────────────────────────────────────────────────
+# HIMMEL-2733: this already covers the two-tier union install-plugins.ps1
+# installs (enabledPlugins-true UNION onDemandPlugins keys) without any change
+# here -- every onDemandPlugins key MUST also appear in enabledPlugins (as
+# `false`; check-template-himmel-plugins.sh enforces it), and this loop
+# already iterates ALL enabledPlugins keys regardless of value (the
+# HIMMEL-2694 true-only filter was never ported to this .ps1 twin -- a
+# pre-existing, documented bash-only fix; see test-uninstall-plugins-scope.sh,
+# which has no .ps1 counterpart). That gap means a plain `false`-flagged,
+# never-installed entry also gets attempted here and WARNs, same as before
+# this ticket -- unrelated to HIMMEL-2733, not fixed by it.
 Write-Host '──── Uninstalling plugins ────'
 foreach ($spec in $cfg.enabledPlugins.PSObject.Properties.Name) {
     Write-Host "  uninstall: $spec"

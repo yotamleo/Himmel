@@ -83,6 +83,10 @@ fields_for() {
 violations=""
 for f in "${files[@]}"; do
     [ -f "$f" ] || continue
+    if [ ! -r "$f" ]; then
+        echo "⛔ check-gh-json-fields: staged file '$f' is unreadable — refusing to skip the --json field scan on it (fail-closed)." >&2
+        exit 1
+    fi
     # Skip this gate and its own test — both embed deliberately-bogus
     # field names as fixtures. Match repo-relative paths, not basenames,
     # so a file dropped elsewhere cannot inherit the exemption.

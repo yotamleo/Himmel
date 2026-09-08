@@ -10,6 +10,38 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const WIRER = join(HERE, 'wire-plugin-hook-bash.mjs');
 const PLUGIN_HOOKS = join(HERE, '..', '..', 'marketplace', 'plugins', 'himmel-ops', 'hooks', 'hooks.json');
 
+// HIMMEL-2047/HIMMEL-2758: an independent restatement of
+// wire-plugin-hook-bash.mjs's own wired-form prefix, not imported from it —
+// so this spec pins the expected output rather than circularly re-running the
+// generator it is meant to check. The launcher RUNS (via `command -p sh`, not
+// sourced via `.` — dash drops `.`'s operands, HIMMEL-2758) run-node.sh VENDORED into the
+// plugin itself (${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh, byte-identical to
+// scripts/lib/run-node.sh — see test-plugin-hook-bash-wiring.sh's drift
+// check), never $CLAUDE_PROJECT_DIR — see wiredCommand()'s own header
+// comment for why (CR round 2, [codex-1]/[codex-2]).
+const WIRED_PREFIX = 'command -p sh "${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js" ';
+
+// The two SUPERSEDED launcher tokens. A command in either shape must still be
+// recognised as owned (unwired) and MIGRATED to the current form on the next
+// rewrite, exactly like the pre-HIMMEL-2047 bare-`node` legacyWiredCommand()
+// already migrates.
+//
+//   `.`   pre-HIMMEL-2758: dash drops its operands.
+//   `sh`  the first HIMMEL-2758 shape, superseded within the same ticket: a
+//         bare `sh` is a PATH lookup, so a host whose PATH excludes the
+//         shell's directory killed the whole chain at rc=127.
+const LEGACY_LAUNCHER_TOKENS = ['.', 'sh'];
+function legacyPrefix(token) {
+  return `${token} "\${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh" "\${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js" `;
+}
+
+// FULL dot-wired command for one project-source hook script (no
+// --fail-closed-when) — the shape wire-plugin-hook-bash.mjs's
+// legacyDotWiredCommand() recognises as owned/unwired and migrates.
+function legacyDotWiredCommand(script, token = '.') {
+  return `${legacyPrefix(token)}--optional "$CLAUDE_PROJECT_DIR/scripts/hooks/${script}"`;
+}
+
 function commands(pluginHooks) {
   return Object.values(pluginHooks.hooks).flatMap((groups) =>
     groups.flatMap((group) => group.hooks.map((hook) => hook.command))
@@ -26,7 +58,7 @@ function unwire(text) {
       commandHook.command = 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/inject-minerva-critic.sh"';
       continue;
     }
-    const match = command.match(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"$/);
+    const match = command.match(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"/);
     assert.ok(match, `could not extract project hook script from ${command}`);
     const script = match[1];
     if (script === 'block-lesson-enforcement-writes.sh') {
@@ -60,17 +92,17 @@ function invoke(...args) {
   return spawnSync(process.execPath, [WIRER, ...args], { encoding: 'utf8' });
 }
 
-test('rewrites the exact 16-command plugin inventory through the installed launcher', () => {
+test('rewrites the exact 21-command plugin inventory through the installed launcher', () => {
   withFixture((fixture) => {
     const before = JSON.parse(readFileSync(fixture, 'utf8'));
     const result = invoke(fixture);
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 16 hook command\(s\)/);
-    assert.equal(commands(after).length, 16);
+    assert.match(result.stdout, /rewrote 21 hook command\(s\)/);
+    assert.equal(commands(after).length, 21);
     for (const command of commands(after)) {
-      assert.match(command, /^node "\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/run-hook-with-bash\.js" /);
+      assert.ok(command.startsWith(WIRED_PREFIX));
       assert.doesNotMatch(command, /(^|\s)bash(\s|$)/);
     }
 
@@ -83,6 +115,42 @@ test('rewrites the exact 16-command plugin inventory through the installed launc
     };
     assert.deepEqual(scrub(after), scrub(before));
   });
+});
+
+// HIMMEL-2758 migration: a command still wired by either superseded launcher
+// token must be recognised as owned (not refused as an inventory mismatch) and
+// rewritten to the current form on the next pass.
+for (const token of LEGACY_LAUNCHER_TOKENS) {
+  test(`migrates a superseded \`${token}\`-wired plugin command to the command -p sh form`, () => {
+    withFixture((fixture) => {
+      const pluginHooks = JSON.parse(readFileSync(fixture, 'utf8'));
+      // PreToolUse[1] is block-docker-privesc.sh (EXPECTED_HOOKS[1]): project-
+      // source, no --fail-closed-when — the plain legacyDotWiredCommand shape.
+      const group = pluginHooks.hooks.PreToolUse[1];
+      group.hooks[0].command = legacyDotWiredCommand('block-docker-privesc.sh', token);
+      writeFileSync(fixture, `${JSON.stringify(pluginHooks, null, 2)}\n`);
+
+      const result = invoke(fixture);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /rewrote 21 hook command\(s\)/);
+
+      const after = JSON.parse(readFileSync(fixture, 'utf8'));
+      const rewritten = after.hooks.PreToolUse[1].hooks[0].command;
+      assert.ok(rewritten.startsWith(WIRED_PREFIX), `\`${token}\`-wired plugin entry migrated to the command -p sh form`);
+      assert.ok(rewritten.includes('block-docker-privesc.sh'));
+    });
+  });
+}
+
+// HIMMEL-2758: the live plugin hooks.json must never carry either superseded
+// launcher — the dot form dash drops operands from, nor the bare `sh` form
+// that dies at rc=127 under a restricted PATH.
+test('no hook command in the live plugin hooks.json matches a superseded launcher prefix', () => {
+  const live = JSON.parse(readFileSync(PLUGIN_HOOKS, 'utf8'));
+  for (const token of LEGACY_LAUNCHER_TOKENS) {
+    const stale = commands(live).filter((c) => c.startsWith(legacyPrefix(token)));
+    assert.deepEqual(stale, [], `every run-node.sh launch must use \`command -p sh\`, not \`${token}\` (HIMMEL-2758)`);
+  }
 });
 
 test('is idempotent after the first plugin rewrite', () => {

@@ -1,0 +1,65 @@
+{
+  "_comment": "HIMMEL-2348 deliverable 2. Machine-readable mirror of docs/setup/operator-profile-tbd-delta.md's table, keyed by the doc's OWN row number (column 1) rather than by delta.* path -- a path key can hold only one entry, and row 4 cites TWO paths (profile.bridge.installPersistence and delta.cadences.extraArmedTasks, the same path row 2 also cites), so a path-keyed map cannot represent both. `entries[N]` -> {label, ticket, paths[]} where paths is every delta.*/profile.* path the row's 'Captured how' column cites. `himmelctl gaps` renders group (b) (reference-only, no wizard question can produce it yet) from `entries`. Checked structurally against the doc by test-wizard-gaps.sh case f: every doc row number must appear here with a matching ticket, and vice versa -- ROW-LEVEL, not a path/ticket set union, so a dropped row fails even when its path/ticket happen to also appear via another row. Don't hand-wave this back in sync.",
+  "entries": {
+    "1": {
+      "label": "Armed cadences beyond the pipeline family (graphmap, qmd, drift-fix, codex-sweep, ggs, repo-sync)",
+      "ticket": "HIMMEL-2302",
+      "paths": ["delta.cadences.taskDetail"]
+    },
+    "2": {
+      "label": "Scheduled tasks that exist but aren't in any of the 7 cadence ids (HIMMEL-BootPreflight, HIMMEL-ForkResync when armed)",
+      "ticket": "HIMMEL-2325",
+      "paths": ["delta.cadences.extraArmedTasks"]
+    },
+    "3": {
+      "label": "Observability registry stack (~/.himmel/observability.json — flows[], expected_tasks[], expected_disabled_tasks[])",
+      "ticket": "HIMMEL-2326",
+      "paths": ["delta.observability"]
+    },
+    "4": {
+      "label": "Bridge persistence artifact detail (the actual HimmelTelegramBridge scheduled task / telegram-bridge.service unit, beyond the yes/no installPersistence answer)",
+      "ticket": "HIMMEL-2328",
+      "paths": ["profile.bridge.installPersistence", "delta.cadences.extraArmedTasks"]
+    },
+    "5": {
+      "label": "Guardrail env posture — which SESSION-ONLY bypass/threshold vars are set in the invoking shell",
+      "ticket": "HIMMEL-2331",
+      "paths": ["delta.envKeys.guardrailEnvPosture"]
+    },
+    "6": {
+      "label": "Codex/hermes profile install completion (auth provisioned, model pulled) beyond the lane opt-in consent",
+      "ticket": "HIMMEL-2328",
+      "paths": ["delta.lanes.liveLaneIds"]
+    },
+    "7": {
+      "label": "Handover registry entries — repo names + count in ~/.claude/handover/registry.json",
+      "ticket": "HIMMEL-2299",
+      "paths": ["delta.handover.registryEntryNames"]
+    },
+    "8": {
+      "label": "HUD config (claude-hud.json presence, its top-level key names, whether statusLine.command references it)",
+      "ticket": "HIMMEL-2329",
+      "paths": ["delta.hud"]
+    },
+    "9": {
+      "label": "Repo-root .env key names beyond the generated secrets-manifest block",
+      "ticket": "HIMMEL-2305",
+      "paths": ["delta.envKeys.keysBeyondGeneratedBlock"]
+    },
+    "10": {
+      "label": "Lane readiness gates (passesRequired probation counters) and the full dormant-lane roster",
+      "ticket": "HIMMEL-2330",
+      "paths": ["delta.lanes.readinessGates"]
+    },
+    "11": {
+      "label": "Plugin drift from the lean floor (enabledBeyondTemplate / templateTrueButDisabled)",
+      "ticket": "HIMMEL-2328",
+      "paths": ["delta.plugins"]
+    },
+    "12": {
+      "label": "alwaysOn inference gap — inferred from armed cadences/bridge persistence, never asked-and-recorded",
+      "ticket": "HIMMEL-2325",
+      "paths": ["delta.alwaysOnInferred"]
+    }
+  }
+}

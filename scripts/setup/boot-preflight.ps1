@@ -58,11 +58,16 @@
 #
 # REGISTRATION (operator-run - this script never arms itself; the
 # interactive session's rogue-schedule guard blocks a live Claude session
-# from doing it, and by design the operator arms boot-time persistence):
+# from doing it, and by design the operator arms boot-time persistence).
+# Every run publishes a wscript //B shim beside its log (HIMMEL-1753:
+# powershell.exe -WindowStyle Hidden was MEASURED to still allocate a
+# visible console — the shape this repo's cadence tasks moved off — while
+# wscript hosting a shim that runs this script hidden allocates zero), so
+# registration is one line against that shim:
 #
 #   Register-ScheduledTask -TaskName 'HIMMEL-BootPreflight' `
 #     -Trigger (New-ScheduledTaskTrigger -AtLogOn) `
-#     -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File "<repo>\scripts\setup\boot-preflight.ps1"') `
+#     -Action (New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '//B "<userhome>\.claude\boot-preflight\boot-preflight.vbs"') `
 #     -Description 'HIMMEL boot readiness check (HIMMEL-1163)'
 #
 # Usage:
@@ -322,7 +327,35 @@ $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
 $LogDir = Join-Path $userHome '.claude\boot-preflight'
 $LogPath = Join-Path $LogDir 'boot-preflight.log'
 
-$RegisterHint = "Register-ScheduledTask -TaskName 'HIMMEL-BootPreflight' -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File `"$RepoRoot\scripts\setup\boot-preflight.ps1`"') -Description 'HIMMEL boot readiness check (HIMMEL-1163)'"
+# HIMMEL-1753 (glm-4): the hint registers wscript.exe //B against a .vbs shim,
+# NOT powershell.exe -WindowStyle Hidden — that shape was MEASURED to still
+# allocate a visible console (cadence-format.sh v11), and wscript //B hosting a
+# shim that runs this script hidden allocates zero. A hint pointing at a shim
+# nothing creates would be a dangling reference, so this script publishes the
+# shim itself on every run — same writer/referencer path agreement as the
+# cadence emitters — staged to a temp beside the final path and moved into
+# place so the final path only ever holds a complete file.
+$ShimPath = Join-Path $LogDir 'boot-preflight.vbs'
+try {
+  if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+  $shimTmp = Join-Path $LogDir 'boot-preflight.vbs.tmp'
+  # Mirror of cadence-format.sh cadence_vbs_wrapper: WScript.Shell.Run with a
+  # hidden window, waiting, exit code forwarded through WScript.Quit. The .ps1
+  # path is quoted with doubled quotes per VBScript string-literal rules, so a
+  # repo path with spaces runs as one command. ASCII-only, like every
+  # generated wscript shim (OEM codepage parsing would mojibake UTF-8).
+  $shimBody = @(
+    "' himmel boot-preflight wrapper (HIMMEL-1753) - generated DO NOT EDIT; runs the ps1 hidden, returns its exit code."
+    'Set sh = CreateObject("WScript.Shell")'
+    ('WScript.Quit sh.Run("powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""' + (Join-Path $RepoRoot 'scripts\setup\boot-preflight.ps1') + '""", 0, True)')
+  ) -join "`r`n"
+  Set-Content -LiteralPath $shimTmp -Value $shimBody -Encoding ASCII
+  Move-Item -LiteralPath $shimTmp -Destination $ShimPath -Force
+} catch {
+  [Console]::Error.WriteLine("[boot-preflight] could not publish wscript shim at $ShimPath`: $_")
+}
+
+$RegisterHint = "Register-ScheduledTask -TaskName 'HIMMEL-BootPreflight' -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Action (New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '//B `"$ShimPath`"') -Description 'HIMMEL boot readiness check (HIMMEL-1163)'"
 
 # --- 1. orphan-sweep arm: check + belt-and-suspenders re-assert ---
 $SweepTaskName = 'HIMMEL-CodexOrphanSweep'

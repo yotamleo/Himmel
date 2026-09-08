@@ -1,0 +1,977 @@
+{
+  "_schema": "known-findings v1 (HIMMEL-2058). One entry per recurring CR finding CLASS. `kind`: fix = a real defect class with a canonical fix; rebuttal = a false-premise class with a canonical rebuttal (critics are told not to re-raise it unless the code regressed); checklist = a judgment class the self-review asks about. `detector` runs in scripts/cr/known-findings.sh --diff (deterministic, no LLM): added-line-regex = POSIX-ERE over ADDED lines of files matching `globs`; twin-missing = a .sh/.ps1 twin exists but is not in the diff; no-test-change = non-test sources under `globs` changed and no test-*.sh/*.test.* file did; removed-flag-in-docs = a `--flag` token deleted from source still appears in a doc that also names that source file; md-fence-no-lang = an added ``` fence with no language in a .md; hook-header-no-fail-direction = a NEW scripts/hooks/*.sh whose header never states fail-open/fail-closed; files under a testdata/ dir are fixture data and never scanned. `learning_match` is the regex --refresh uses to attribute CodeRabbit learnings-export rows (sums their Usage into evidence.learnings_uses). `evidence.ledger` is rewritten by --refresh from the CR ledger (findings whose file matches `globs`, verdicts resolved through amends). Hand-edit everything else; keep ids stable (they are cited in PR comments).",
+  "refreshed_at": "2026-09-02",
+  "classes": [
+    {
+      "id": "errexit-false-positive",
+      "kind": "rebuttal",
+      "title": "errexit hazards claimed in scripts that do not (or do not relevantly) use set -e",
+      "source": "coderabbit-learning",
+      "globs": [
+        "scripts/**/*.sh",
+        "templates/**/*.sh"
+      ],
+      "detector": null,
+      "learning_match": "errexit|set -e|bare `wait`|rm -f <missing",
+      "canonical": "House style is `set -uo pipefail` WITHOUT errexit (shell-lint flags `set -e` itself). In a file that does not enable errexit, an errexit-interaction finding has no premise. In a file that DOES set -e: a failing command in a NON-FINAL position of an `&&` list is exempt; bare `wait` (no operand) returns 0 even when jobs failed; `rm -f <missing-path>` succeeds. Reply with the file's prologue line and the construct's actual status, then mark disproved.",
+      "coverage": ".coderabbit.yaml path_instructions cover NON-errexit files only; the errexit-file carve-out is HIMMEL-1684 (open). CodeRabbit learnings (3 entries, ~1.8k uses) suppress most re-raises in practice: 2 App re-raises since 2026-08-10, one of them legitimate (a `set -e` caller).",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 1791,
+        "cr_app_finding_comments_since_2026-08-10": 2,
+        "ledger": {
+          "findings": 3162,
+          "agreed": 799,
+          "disproved": 425,
+          "deferred": 294,
+          "other": 31,
+          "unadjudicated": 1613,
+          "models": {
+            "kimi": 25,
+            "gptoss": 22,
+            "codex": 2293,
+            "qwen3coder": 32,
+            "code-reviewer": 1,
+            "codex-adv": 283,
+            "coderabbit": 124,
+            "qwenor": 15,
+            "lagunaor": 19,
+            "glm": 348
+          },
+          "disproved_pct": 27
+        },
+        "learnings_rows": 3
+      }
+    },
+    {
+      "id": "octal-leading-zero",
+      "kind": "rebuttal",
+      "title": "leading-zero operands: decimal in `[ ]`, octal only in arithmetic contexts",
+      "source": "coderabbit-learning",
+      "globs": [
+        "scripts/**/*.sh",
+        "templates/**/*.sh"
+      ],
+      "detector": {
+        "type": "added-line-regex",
+        "pattern": "\\$\\(\\([^)]*[A-Z][A-Z0-9_]+[^)]*\\)\\)|(^|[^$])\\(\\([^)]*[A-Z][A-Z0-9_]+[^)]*(<|>|-[lg][te])",
+        "exclude": "10#"
+      },
+      "learning_match": "octal|leading zero",
+      "canonical": "`[ \"$a\" -gt \"$b\" ]` compares digit strings as DECIMAL — leading zeros (`date +%m` = 08) never trigger octal there; disprove. Only `$(( ))`, `(( ))` and `let` are octal contexts: there, normalise an operand that can carry a leading zero (date fields, env/user input) with `$((10#$var))` — that is the one legitimate fix in this class.",
+      "coverage": ".coderabbit.yaml path_instructions (bracket-decimal rule) + learning (552 uses). The 2 App re-raises since 2026-08-10 were both real arithmetic-context cases on env input, so the detector only flags arithmetic on env-shaped (UPPERCASE) operands without 10#.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 566,
+        "cr_app_finding_comments_since_2026-08-10": 2,
+        "ledger": {
+          "findings": 3162,
+          "agreed": 799,
+          "disproved": 425,
+          "deferred": 294,
+          "other": 31,
+          "unadjudicated": 1613,
+          "models": {
+            "kimi": 25,
+            "gptoss": 22,
+            "codex": 2293,
+            "qwen3coder": 32,
+            "code-reviewer": 1,
+            "codex-adv": 283,
+            "coderabbit": 124,
+            "qwenor": 15,
+            "lagunaor": 19,
+            "glm": 348
+          },
+          "disproved_pct": 27
+        },
+        "learnings_rows": 3
+      }
+    },
+    {
+      "id": "handover-root-bootstrap",
+      "kind": "rebuttal",
+      "title": "handover-path.sh / handover_root demanded of a script that touches no handover path",
+      "source": "coderabbit-learning",
+      "globs": [
+        "scripts/**/*.sh"
+      ],
+      "detector": {
+        "type": "added-line-regex",
+        "pattern": "(\\$repo_root|\\$REPO_ROOT|\\./|\\$HOME|~)/handovers/|[\"']handovers/[A-Za-z]",
+        "exclude": "handover_root|handover-path|^[[:space:]]*#"
+      },
+      "learning_match": "handover_root|handover-path\\.sh",
+      "canonical": "The scripts/handover/CLAUDE.md rule (source scripts/lib/handover-path.sh, call handover_root) binds a script that READS, WRITES or RESOLVES handover state at runtime. A pure test, a helper that only mentions scripts/handover/ in a comment, a hook that pattern-matches the string 'handovers/', and BRIDGE_ROOT lane-session state (a different root) are out of scope — disprove with one line naming what the script actually touches. Four sub-shapes recur, and all are out of scope unless the script itself resolves handover state: (a) TRANSITIVE — the script only invokes another script that resolves the root (handover-bridge.sh -> append-cr-findings.sh); (b) REPO_ROOT — deriving a checkout root is not handover state (test-machine-setup-hermetic.sh); (c) 'resolves or creates filesystem paths' / Git common-directory state, which is CR-ledger state under .git, not handover state (panel-first-pass.sh, git-show-safe.sh); (d) the BLANKET form, 'add the bootstrap to every new or modified shell script', which carries no premise at all. The detector flags the opposite, real defect: a literal handovers/ path built in a script instead of handover_root.",
+      "coverage": ".coderabbit.yaml handover-root carve-out covers a test that redirects HANDOVER_DIR but not a test that touches no handover path (HIMMEL-1684 gap 2, open). Still the single most-raised class in the measured window despite being the #1 learning: 8 App raises across 6 PRs, hand-counted over 2026-08-20..09-02 (a subset of the since-08-10 field above, which this refresh therefore raises from 3 to 8 as a measured lower bound), and CodeRabbit WITHDREW every one on rebuttal. The learning is applied 1009 times yet does not suppress the raise — which is why the rebuttal now enumerates the four sub-shapes instead of restating the rule.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 1009,
+        "cr_app_finding_comments_since_2026-08-10": 8,
+        "ledger": {
+          "findings": 3152,
+          "agreed": 797,
+          "disproved": 421,
+          "deferred": 292,
+          "other": 31,
+          "unadjudicated": 1611,
+          "models": {
+            "kimi": 23,
+            "gptoss": 21,
+            "codex": 2290,
+            "qwen3coder": 32,
+            "code-reviewer": 1,
+            "codex-adv": 281,
+            "coderabbit": 124,
+            "qwenor": 15,
+            "lagunaor": 19,
+            "glm": 346
+          },
+          "disproved_pct": 27
+        },
+        "learnings_rows": 5
+      }
+    },
+    {
+      "id": "mktemp-no-template",
+      "kind": "fix",
+      "title": "bare `mktemp` / `mktemp -d` without a template (BSD/macOS portability)",
+      "source": "coderabbit-learning",
+      "globs": [
+        "scripts/**/*.sh",
+        "templates/**/*.sh",
+        "marketplace/**/*.sh"
+      ],
+      "detector": {
+        "type": "added-line-regex",
+        "pattern": "(^|[^[:alnum:]_-])mktemp([[:space:]]+-[A-Za-z]+)*[[:space:]]*($|\\)|\\||&|;)"
+      },
+      "learning_match": "mktemp",
+      "canonical": "Use `mktemp -d \"${TMPDIR:-/tmp}/<name>.XXXXXX\"` (or `mktemp \"${TMPDIR:-/tmp}/<name>.XXXXXX\"`), and capture its failure before building paths on the result. Same regex as shell-lint [mktemp].",
+      "coverage": "shell-lint [mktemp] (advisory; only catches it when shell-lint is actually run) + .coderabbit.yaml portability rule. 6 App re-raises since 2026-08-10 — every one a real bare call in a NEW test suite, i.e. the rule exists but was not run pre-panel; that is the gap this step closes. Note the learnings store holds two CONTRADICTING entries (220 uses: template required; 75 uses: bare -d works on macOS) — the house rule is the template.",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 305,
+        "cr_app_finding_comments_since_2026-08-10": 6,
+        "ledger": {
+          "findings": 3188,
+          "agreed": 802,
+          "disproved": 432,
+          "deferred": 294,
+          "other": 32,
+          "unadjudicated": 1628,
+          "models": {
+            "kimi": 25,
+            "gptoss": 22,
+            "codex": 2309,
+            "qwen3coder": 33,
+            "code-reviewer": 1,
+            "codex-adv": 283,
+            "coderabbit": 124,
+            "qwenor": 15,
+            "lagunaor": 19,
+            "glm": 357
+          },
+          "disproved_pct": 28
+        },
+        "learnings_rows": 4
+      }
+    },
+    {
+      "id": "gnu-only-utility",
+      "kind": "fix",
+      "title": "GNU-only command or flag in cross-platform shell (timeout, find -maxdepth, sed -i, date -d, readlink -f, grep -P, \\s, hardcoded /usr/bin/cat)",
+      "source": "cr-app-comments",
+      "globs": [
+        "scripts/**/*.sh",
+        "templates/**/*.sh",
+        "marketplace/**/*.sh"
+      ],
+      "detector": {
+        "type": "added-line-regex",
+        "pattern": "(^|[^[:alnum:]_./-])timeout[[:space:]]+(-[a-z]+[[:space:]]+[^[:space:]]+[[:space:]]+)*[0-9]+[smhd]?[[:space:]]|find[[:space:]][^|;]*-maxdepth|(^|[^[:alnum:]_-])(sed[[:space:]]+-i([[:space:]]|$)|date[[:space:]]+(-d|--date)|readlink[[:space:]]+-f|grep[[:space:]]+-[A-Za-z]*P|stat[[:space:]]+(-c|--format))|(grep[[:space:]]+-[A-Za-z]*E|egrep|sed[[:space:]]+-[A-Za-z]*E)[^|]*\\\\[sdw]|(^|[^A-Za-z0-9_./-])/usr/bin/cat([^A-Za-z0-9_/-]|$)",
+        "exclude": "gnu-ok:|_TIMEOUT_BIN|\\$\\{?TIMEOUT|^[[:space:]]*#"
+      },
+      "learning_match": "BSD|macOS|GNU|\\[\\[:space:\\]\\]",
+      "canonical": "Scripts run on Git Bash, macOS (bash 3.2, BSD userland) and Linux. Pair a GNU flag with its BSD alternative on the same line, use the repo's resolver for `timeout` (`_TIMEOUT_BIN` / scripts/lib/proc-tree.sh watchdog), prefer `[[:space:]]` over `\\s`, Bash file tests over `find -maxdepth`, and mark a deliberate GNU-only line with `# gnu-ok: <why>`. Never hardcode an absolute /usr/bin/<coreutil> path for a utility macOS keeps in /bin instead: /usr/bin/cat is ENOENT there — invoke the bare name and let PATH resolve it, or resolve once with command -v. Utilities macOS keeps in /usr/bin (sed, awk, grep, head, tail, cut, sort, find, stat) are deliberately NOT flagged — /usr/bin/sed is not a portability bug there. BSD grep also lacks BRE \\| alternation: use grep -E with a plain |.",
+      "coverage": "shell-lint GNU_FLAG_PAT + PCRE_CLASS cover sed/date/readlink/grep -P/stat/\\s; bare `timeout N` and `find -maxdepth` were NOT covered (3+ App re-raises each since 2026-08-10) — this detector adds them. 20 App re-raises in the class since 2026-08-10 (largest real-defect class). 2026-09-02 refresh: 3 further portability raises in the window — /usr/bin/cat absent on macOS (CodeRabbit App finding, PR #2107: \"/usr/bin/cat does not exist on macOS; macOS ships cat at /bin/cat only\" — the only /usr/bin/<coreutil> entry this detector asserts, deliberately; the list grows one evidenced finding at a time rather than from an unverified enumeration of the macOS /bin layout), a GNU-only hard-link identity check, and BSD grep \\| alternation (the latter two prose-only, no detector).",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 516,
+        "cr_app_finding_comments_since_2026-08-10": 20,
+        "ledger": {
+          "findings": 3188,
+          "agreed": 802,
+          "disproved": 432,
+          "deferred": 294,
+          "other": 32,
+          "unadjudicated": 1628,
+          "models": {
+            "kimi": 25,
+            "gptoss": 22,
+            "codex": 2309,
+            "qwen3coder": 33,
+            "code-reviewer": 1,
+            "codex-adv": 283,
+            "coderabbit": 124,
+            "qwenor": 15,
+            "lagunaor": 19,
+            "glm": 357
+          },
+          "disproved_pct": 28
+        },
+        "learnings_rows": 14
+      }
+    },
+    {
+      "id": "bash32-portability",
+      "kind": "fix",
+      "title": "bash 4+ construct (mapfile/readarray, declare -A, ${v,,}, |&, &>>)",
+      "source": "coderabbit-learning",
+      "globs": [
+        "scripts/**/*.sh",
+        "templates/**/*.sh",
+        "marketplace/**/*.sh"
+      ],
+      "detector": {
+        "type": "added-line-regex",
+        "pattern": "(^|[^[:alnum:]_])(declare[[:space:]]+-[A-Za-z]*A[A-Za-z]*|mapfile|readarray)([^[:alnum:]_]|$)|\\$\\{[A-Za-z_][A-Za-z0-9_]*,,|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\^\\^|[[:space:]]\\|&[[:space:]]|[[:space:]]&>>",
+        "exclude": "^[[:space:]]*#"
+      },
+      "learning_match": "mapfile|associative|bash 3\\.2",
+      "canonical": "Use a `while IFS= read -r` loop instead of mapfile, parallel indexed arrays or case tables instead of associative arrays, `tr` for case folding, `2>&1 |` / `>> f 2>&1` for the bash-4 redirection shorthands.",
+      "coverage": "shell-lint BASH32 + .coderabbit.yaml path_instructions; 2 App re-raises since 2026-08-10.",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 2,
+        "ledger": {
+          "findings": 3188,
+          "agreed": 802,
+          "disproved": 432,
+          "deferred": 294,
+          "other": 32,
+          "unadjudicated": 1628,
+          "models": {
+            "kimi": 25,
+            "gptoss": 22,
+            "codex": 2309,
+            "qwen3coder": 33,
+            "code-reviewer": 1,
+            "codex-adv": 283,
+            "coderabbit": 124,
+            "qwenor": 15,
+            "lagunaor": 19,
+            "glm": 357
+          },
+          "disproved_pct": 28
+        },
+        "learnings_rows": 0
+      }
+    },
+    {
+      "id": "ps1-twin-parity",
+      "kind": "checklist",
+      "title": "a .sh/.ps1 twin changed without its counterpart",
+      "source": "coderabbit-learning",
+      "globs": [
+        "scripts/**/*.sh",
+        "scripts/**/*.ps1",
+        "templates/**/*.sh",
+        "templates/**/*.ps1"
+      ],
+      "detector": {
+        "type": "twin-missing"
+      },
+      "learning_match": "twin|parity|same-named",
+      "canonical": "Same-named .sh/.ps1 pairs are behavioural twins: change both in lockstep, or say in the PR why the twin is unaffected. Standalone .ps1 files (no .sh twin) carry no parity duty.",
+      "coverage": ".coderabbit.yaml **/*.ps1 instruction tells CodeRabbit to flag drift — nothing checks it BEFORE the panel. 5 App re-raises since 2026-08-10; learnings 91 + 8 + 3 uses.",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 138,
+        "cr_app_finding_comments_since_2026-08-10": 5,
+        "ledger": {
+          "findings": 3490,
+          "agreed": 927,
+          "disproved": 472,
+          "deferred": 325,
+          "other": 41,
+          "unadjudicated": 1725,
+          "models": {
+            "kimi": 27,
+            "gptoss": 22,
+            "codex": 2484,
+            "qwen3coder": 38,
+            "code-reviewer": 1,
+            "codex-adv": 351,
+            "coderabbit": 134,
+            "qwenor": 16,
+            "lagunaor": 22,
+            "glm": 395
+          },
+          "disproved_pct": 27
+        },
+        "learnings_rows": 13
+      }
+    },
+    {
+      "id": "ps1-bom-policy",
+      "kind": "rebuttal",
+      "title": "UTF-8 BOM: required on a non-ASCII .ps1, an error on any .sh",
+      "source": "coderabbit-learning",
+      "globs": [
+        "**/*.ps1",
+        "scripts/**/*.sh"
+      ],
+      "detector": null,
+      "learning_match": "BOM",
+      "canonical": "Windows PowerShell 5.1 decodes a no-BOM UTF-8 .ps1 as cp1252, so a .ps1 with non-ASCII bytes MUST carry a UTF-8 BOM (HIMMEL-1432); a shell file must NOT (breaks the shebang, SC1082). A 'repository no-BOM convention for .ps1' claim is a stale learning (91 uses, pre-1432) — disprove by citing shell-lint [PS1-NO-BOM].",
+      "coverage": "shell-lint [BOM] / [PS1-NO-BOM] / [PS1-ENCODING]; 0 App re-raises since 2026-08-10. Kept so nobody 'fixes' toward the stale learning.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 98,
+        "cr_app_finding_comments_since_2026-08-10": 0,
+        "ledger": {
+          "findings": 3480,
+          "agreed": 925,
+          "disproved": 468,
+          "deferred": 323,
+          "other": 41,
+          "unadjudicated": 1723,
+          "models": {
+            "kimi": 25,
+            "gptoss": 21,
+            "codex": 2481,
+            "qwen3coder": 38,
+            "code-reviewer": 1,
+            "codex-adv": 349,
+            "coderabbit": 134,
+            "qwenor": 16,
+            "lagunaor": 22,
+            "glm": 393
+          },
+          "disproved_pct": 27
+        },
+        "learnings_rows": 4
+      }
+    },
+    {
+      "id": "test-coverage-gap",
+      "kind": "checklist",
+      "title": "source changed, no test changed",
+      "source": "cr-app-comments",
+      "globs": [
+        "scripts/**/*.sh",
+        "scripts/**/*.mjs",
+        "scripts/**/*.js",
+        "scripts/**/*.ts",
+        "scripts/**/*.py",
+        "scripts/**/*.ps1",
+        "marketplace/**/*.sh",
+        "marketplace/**/*.mjs"
+      ],
+      "detector": {
+        "type": "no-test-change"
+      },
+      "learning_match": null,
+      "canonical": "Every new flag, branch and exit code in the diff gets a case in the paired suite (`test-<name>.sh` beside the script, or the *.test.* file); assert the behaviour, not the stub. If the change is genuinely untestable here, say so in the PR body so the panel does not ask.",
+      "coverage": "No structural check — 16 App re-raises since 2026-08-10 (and the pragmatist critic lens names it); the biggest judgment class.",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 16,
+        "ledger": {
+          "findings": 4630,
+          "agreed": 1380,
+          "disproved": 636,
+          "deferred": 428,
+          "other": 57,
+          "unadjudicated": 2129,
+          "models": {
+            "kimi": 30,
+            "gptoss": 28,
+            "codex": 3183,
+            "qwen3coder": 50,
+            "code-reviewer": 1,
+            "codex-adv": 507,
+            "coderabbit": 158,
+            "qwenor": 16,
+            "lagunaor": 28,
+            "glm": 625,
+            "claude": 4
+          },
+          "disproved_pct": 25
+        },
+        "learnings_rows": 0
+      }
+    },
+    {
+      "id": "docs-flag-drift",
+      "kind": "checklist",
+      "title": "a removed/renamed `--flag` is still documented",
+      "source": "cr-app-comments",
+      "globs": [
+        "scripts/**",
+        ".claude/commands/**",
+        "marketplace/**"
+      ],
+      "detector": {
+        "type": "removed-flag-in-docs",
+        "doc_roots": [
+          "docs",
+          "README.md",
+          "CLAUDE.md",
+          ".claude/commands",
+          "marketplace/plugins"
+        ]
+      },
+      "learning_match": "stale|outdated|no longer",
+      "canonical": "For every identifier, flag, exit code or path the diff removes or renames, grep docs/, README.md, CLAUDE.md and the command runbooks and update the prose in the same PR (doc-freshness step 2.7 only covers the mapped pairs).",
+      "coverage": "doc-freshness advise rows cover a handful of mapped source→doc pairs; 21 App re-raises since 2026-08-10 were stale/contradicting prose — the single largest CodeRabbit class now.",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 250,
+        "cr_app_finding_comments_since_2026-08-10": 21,
+        "ledger": {
+          "findings": 5022,
+          "agreed": 1542,
+          "disproved": 698,
+          "deferred": 461,
+          "other": 60,
+          "unadjudicated": 2261,
+          "models": {
+            "kimi": 31,
+            "gptoss": 30,
+            "codex": 3372,
+            "qwen3coder": 57,
+            "code-reviewer": 1,
+            "codex-adv": 580,
+            "coderabbit": 205,
+            "qwenor": 22,
+            "lagunaor": 29,
+            "glm": 690,
+            "claude": 5
+          },
+          "disproved_pct": 25
+        },
+        "learnings_rows": 15
+      }
+    },
+    {
+      "id": "grep-q-pipe-under-pipefail",
+      "kind": "fix",
+      "title": "`<producer> | grep -q` under `set -o pipefail` (early exit SIGPIPEs the producer; a negated guard inverts)",
+      "source": "ledger",
+      "globs": [
+        "scripts/**/*.sh",
+        "templates/**/*.sh",
+        "marketplace/**/*.sh"
+      ],
+      "detector": {
+        "type": "added-line-regex",
+        "pattern": "\\|[[:space:]]*grep[[:space:]]+(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)",
+        "exclude": "^[[:space:]]*#|pipefail-ok:"
+      },
+      "learning_match": null,
+      "canonical": "With pipefail, `grep -q` exits on the first match, the producer takes SIGPIPE writing the rest, and the PIPELINE status is non-zero — so `if ! cmd | grep -q …` flips on large inputs and a successful match can read as failure (HIMMEL-1430). Capture instead: `out=$(cmd | grep -E …); [ -n \"$out\" ]`, or `grep -q … <<< \"$small\"` for inputs well under 64 KiB (larger here-strings wedge Git Bash, HIMMEL-2027). Mark a deliberate pipe with `# pipefail-ok: <why>`.",
+      "coverage": "No structural check; shell-lint does not flag it. Raised by the panel on this very PR (round 4 codex-1) and previously on test-cr-tune.sh (HIMMEL-1430) — added to the catalogue from the refresh loop this PR introduces.",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 0,
+        "ledger": {
+          "findings": 3188,
+          "agreed": 802,
+          "disproved": 432,
+          "deferred": 294,
+          "other": 32,
+          "unadjudicated": 1628,
+          "models": {
+            "kimi": 25,
+            "gptoss": 22,
+            "codex": 2309,
+            "qwen3coder": 33,
+            "code-reviewer": 1,
+            "codex-adv": 283,
+            "coderabbit": 124,
+            "qwenor": 15,
+            "lagunaor": 19,
+            "glm": 357
+          },
+          "disproved_pct": 28
+        },
+        "learnings_rows": 0
+      }
+    },
+    {
+      "id": "jq-alternative-swallows-false",
+      "kind": "fix",
+      "title": "jq's `//` swallows `false` as well as `null` — use has()/type for presence, not `// empty`",
+      "source": "ledger",
+      "globs": [
+        "scripts/**/*.sh",
+        "scripts/**/*.mjs",
+        "scripts/**/*.js",
+        "templates/**/*.sh",
+        "marketplace/**/*.sh"
+      ],
+      "detector": {
+        "type": "added-line-regex",
+        "pattern": "\\.[A-Za-z0-9_]*(ok|OK|enabled|Enabled|disabled|active|valid|present|found|force|quiet|verbose|dry_run|autoUpdate|agent_id)[[:space:]]*//[[:space:]]*(empty|\"\"|false)",
+        "exclude": "^[[:space:]]*#|has\\(|jq-alt-ok:"
+      },
+      "learning_match": "jq[^.]*//[[:space:]]*empty|alternative operator",
+      "canonical": "jq's `//` treats `false` exactly like `null`, so `.field // empty` is NOT a presence test — it silently swallows a legitimate `false`, and the caller takes the absent branch while reporting success. Ask the question you mean: presence -> `has(\"field\")`; presence plus a type contract -> `(.field | type) == \"string\"` (better than has(), because it also rejects malformed values); a value that may legitimately be false -> read it explicitly, `if has(\"f\") then (.f|tostring) else \"absent\" end`. Do NOT over-correct into treating ANY present value as the signal: on #2071 that flipped a malformed payload (true / 123 / {}) into a DENY, and a fail-open workflow guard must ALLOW on an unreadable payload. Key the fix on the field's documented contract, not on 'stop using //'. Mark a deliberate benign default with `# jq-alt-ok: <why>`.",
+      "coverage": "No structural check; shell-lint does not parse jq filters. The detector is deliberately NARROW — restricted to boolean-ish field names — because the broad `.field // (empty|\"\")` form matches 147 lines repo-wide (293 raw `// empty` occurrences), nearly all legitimate string defaults; a detector that fires on every PR buries the signal. Measured cost of the narrow form: 5 repo-wide hits, 3 of them in files that document this very trap. Ratified as a class by the 01R console 2026-09-01 (HIMMEL-2361). CR round 3 removed a `| type` clause from this exclude: it was unnecessary — the safe spelling `(.f | type) == \"string\"` carries no `//`, so the main pattern never matched it anyway — and, being a WHOLE-LINE match, it silently suppressed the genuinely buggy `.f // empty | type`, which still swallows false. The sibling `has(` clause has the same whole-line shape and may suppress a true positive too (`if has(\"f\") then .f // empty` still swallows false: has() establishes presence, it does not stop `//` treating false as absent); that one is NOT removed here because it may cover a real safe form — tracked for verification in HIMMEL-2453.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 1,
+        "ledger": null,
+        "learnings_rows": 0,
+        "sightings": [
+          "scripts/hooks/block-subagent-park.sh — `.agent_id // empty` read a payload carrying \"agent_id\": false as ABSENT, so the guard silently did not fire: fail-open and invisible (HIMMEL-2140, PR #2071, CodeRabbit round 1). Fixed to (.agent_id | type) == \"string\".",
+          "scripts/machine-setup/test-machine-setup-hermetic.sh — an autoupdate_true helper would have reported a seeded autoUpdate: false as absent, mis-grading a parity case (HIMMEL-2353 / 2356).",
+          "scripts/hooks/orchestrator-inline-guard.sh:186 — live `.agent_id // empty`, documented as fail-SAFE there (an unrecognised value merely declines to exempt a worker): a sighting to document, NOT a defect to patch."
+        ]
+      }
+    },
+    {
+      "id": "non-ascii-bracket-expression",
+      "kind": "fix",
+      "title": "non-ASCII literal inside a grep/sed/awk bracket expression never matches under the default locale — use an alternation",
+      "source": "ledger",
+      "globs": [
+        "scripts/**/*.sh",
+        "templates/**/*.sh",
+        "marketplace/**/*.sh"
+      ],
+      "detector": {
+        "type": "added-line-regex",
+        "pattern": "(grep|sed|awk|=~)[^#]*\\[[^\\]]*[^\\x00-\\x7F][^\\]]*\\]",
+        "exclude": "^[[:space:]]*#|non-ascii-ok:"
+      },
+      "learning_match": "bracket expression|non-ASCII|em dash|em-dash",
+      "canonical": "A bracket expression containing a multi-byte literal (em dash U+2014, arrows, box-drawing) is locale-dependent: under Git Bash with LANG unset the class silently never matches, so the guard is green forever. Measured on the repo's own skip marker `<name>: SKIPPED — 0 cases ran`: `[—-]` matched nothing while the alternation `(—|-)` matched the same line (HIMMEL-2359, PR #2070). Spell it as an alternation — ERE `(—|-)`, BRE `\\(—\\|-\\)` — or match the byte sequence under LC_ALL=C, or normalise the text first. The same trap bites the matcher you write to FIND this bug: PCRE `[\\x80-\\xff]` under a UTF-8 locale is a CODEPOINT class U+0080-U+00FF and so cannot match U+2014 — run that sweep under LC_ALL=C, and positive-control it on a planted line before trusting a zero. Mark a deliberate non-ASCII class with `# non-ascii-ok: <why>`.",
+      "coverage": "No structural check; shellcheck does not model locale-dependent bracket expressions. Tree sweep 2026-09-02 (LC_ALL=C, positive-controlled): 0 real occurrences — the 26 apparent file hits are all prose comments and JSON string literals, not matcher bracket expressions, which is why the detector is scoped to a grep/sed/awk/=~ context rather than to any `[...]`. Same family as HIMMEL-2236 (pwsh_unicode awk %c locale). Detector-flavour note: `added-line-regex` patterns are compiled by `ere()` in known-findings.sh — POSIX class names ([:space:], [:alnum:], [:alpha:], [:digit:]) are substituted, then the result is handed to JavaScript's `new RegExp`. That is the ONLY consumer of `detector.pattern`; nothing feeds it to `grep -E`. So `\\x00`/`\\x7F` here are ECMAScript escapes, fully specified rather than implementation-dependent, and the negated class `[^\\x00-\\x7F]` means exactly 'any non-ASCII code unit'.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 0,
+        "ledger": null,
+        "learnings_rows": 0,
+        "sightings": [
+          "HIMMEL-2356 leg / PR #2070 — verified against a real suite marker line: bracket class no match, alternation match.",
+          "HIMMEL-2447 (this refresh) — the tree sweep's own first pattern returned a vacuous zero for exactly this reason; caught by a positive control."
+        ]
+      }
+    },
+    {
+      "id": "md-fence-no-lang",
+      "kind": "fix",
+      "title": "fenced code block without a language tag (markdownlint MD040)",
+      "source": "cr-app-comments",
+      "globs": [
+        "**/*.md"
+      ],
+      "detector": {
+        "type": "md-fence-no-lang"
+      },
+      "learning_match": null,
+      "canonical": "Open every fence with a language (`bash`, `text`, `json`, `mermaid`); CodeRabbit runs markdownlint-cli2 and files MD040 on each bare fence.",
+      "coverage": "No markdownlint in pre-commit; ~8 App re-raises since 2026-08-10 (MD040 + MD051 fragment links).",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 8,
+        "ledger": {
+          "findings": 407,
+          "agreed": 170,
+          "disproved": 55,
+          "deferred": 13,
+          "other": 4,
+          "unadjudicated": 165,
+          "models": {
+            "gptoss": 1,
+            "codex": 235,
+            "qwen3coder": 4,
+            "codex-adv": 40,
+            "coderabbit": 62,
+            "qwenor": 2,
+            "lagunaor": 3,
+            "glm": 58,
+            "claude": 2
+          },
+          "disproved_pct": 23
+        },
+        "learnings_rows": 0
+      }
+    },
+    {
+      "id": "hook-fail-direction",
+      "kind": "checklist",
+      "title": "new hook without a stated fail-open/fail-closed direction + bypass",
+      "source": "ledger",
+      "globs": [
+        "scripts/hooks/*.sh",
+        "scripts/hooks/*.mjs"
+      ],
+      "detector": {
+        "type": "hook-header-no-fail-direction"
+      },
+      "learning_match": "fail-open|fail-closed|fail open|fail closed",
+      "canonical": "Decide by failure DIRECTION (scripts/hooks/CLAUDE.md): security fences fail closed; watchdogs and workflow nudges fail open on their own infrastructure errors. State it in the header, deny + name the exact replacement, and document the single-run bypass env var in the deny message.",
+      "coverage": "scripts/hooks/CLAUDE.md prose only. Ledger: scripts/hooks is the largest finding bucket (521 rows); 10 App re-raises on fail-open/closed since 2026-08-10.",
+      "prompt": false,
+      "evidence": {
+        "learnings_uses": 163,
+        "cr_app_finding_comments_since_2026-08-10": 10,
+        "ledger": {
+          "findings": 751,
+          "agreed": 209,
+          "disproved": 72,
+          "deferred": 96,
+          "other": 3,
+          "unadjudicated": 371,
+          "models": {
+            "gptoss": 5,
+            "kimi": 4,
+            "qwen3coder": 3,
+            "codex": 588,
+            "codex-adv": 52,
+            "coderabbit": 16,
+            "qwenor": 1,
+            "glm": 82
+          },
+          "disproved_pct": 19
+        },
+        "learnings_rows": 12
+      }
+    },
+    {
+      "id": "test-fixture-stub-fidelity",
+      "kind": "rebuttal",
+      "title": "stub-fidelity / over-verification findings against a test fixture",
+      "source": "ledger",
+      "globs": [
+        "**/test-*.sh",
+        "**/testdata/**",
+        "**/*.test.ts",
+        "**/*.test.mjs",
+        "**/tests/**"
+      ],
+      "detector": null,
+      "learning_match": "fixture|stub|test-\\*\\.sh",
+      "canonical": "A fixture stub models only the behaviour under test; the suite asserts outcomes via marker files and captured output. 'The stub does not mimic X' is a finding only when X is on the path the case asserts — otherwise disprove, citing the assertion the case actually makes.",
+      "coverage": "cr-tune already clusters this bucket (test-fixture); no prompt-side carve-out existed before this entry. Ledger: the test-fixture bucket disproves at ~29% vs ~21% overall.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 39,
+        "cr_app_finding_comments_since_2026-08-10": 0,
+        "ledger": {
+          "findings": 630,
+          "agreed": 197,
+          "disproved": 124,
+          "deferred": 28,
+          "other": 8,
+          "unadjudicated": 273,
+          "models": {
+            "kimi": 10,
+            "gptoss": 5,
+            "qwen3coder": 9,
+            "codex": 370,
+            "codex-adv": 20,
+            "coderabbit": 60,
+            "qwenor": 2,
+            "lagunaor": 7,
+            "glm": 147
+          },
+          "disproved_pct": 35
+        },
+        "learnings_rows": 21
+      }
+    },
+    {
+      "id": "docs-prose-relitigation",
+      "kind": "rebuttal",
+      "title": "doc-wording findings that contradict the implementing script",
+      "source": "ledger",
+      "globs": [
+        "docs/**/*.md",
+        ".claude/commands/*.md",
+        "**/CLAUDE.md",
+        "**/README.md"
+      ],
+      "detector": null,
+      "learning_match": "decision record|private state repo|<state-repo>|HANDOVER_DIR",
+      "canonical": "A doc that states the implemented contract is not wrong because a reviewer expected another design, and parameterised paths (<state-repo>/…, $HANDOVER_DIR, C:/Users/<you>/…) are deliberately unresolvable here. Critic (diff only, no tools): raise a doc-vs-code contradiction only when the contradicting code is IN the diff, or the inconsistency is prose-vs-prose within the diff — cite both lines. Adjudicator: before agreeing, open the script the prose describes and agree only when you can cite the line it contradicts.",
+      "coverage": ".coderabbit.yaml docs/**/*.md instruction covers the parameterised-path half. Ledger: .md findings disprove at ~26% (43/165 adjudicated), .claude/commands/pr-check.md at ~28%.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 193,
+        "cr_app_finding_comments_since_2026-08-10": 0,
+        "ledger": {
+          "findings": 281,
+          "agreed": 124,
+          "disproved": 36,
+          "deferred": 9,
+          "other": 1,
+          "unadjudicated": 111,
+          "models": {
+            "gptoss": 1,
+            "codex": 170,
+            "qwen3coder": 4,
+            "codex-adv": 25,
+            "coderabbit": 44,
+            "qwenor": 2,
+            "lagunaor": 1,
+            "glm": 32,
+            "claude": 2
+          },
+          "disproved_pct": 21
+        },
+        "learnings_rows": 3
+      }
+    },
+    {
+      "id": "worker-worktree-plugin-profile",
+      "kind": "fix",
+      "title": "spawn-glm/spawn-claudex: plugin-profile resolution and failure teardown target the worker worktree, never the dispatcher",
+      "source": "coderabbit-learning",
+      "globs": [
+        "scripts/telegram/spawn-*.ts"
+      ],
+      "detector": null,
+      "learning_match": "plugin-profile resolution",
+      "canonical": "Plugin-profile resolution in scripts/telegram/spawn-glm.ts and spawn-claudex.ts must run against the WORKER worktree, not the dispatcher's checkout — the dispatcher's profile answers the wrong question and masks worker-side misconfiguration. On a resolution failure, teardown is limited to a newly minted, owned profile directory; never remove a shared or pre-existing profile dir.",
+      "coverage": "CodeRabbit learnings only (top unmatched rows 2026-08-27: 55-use resolution row + 22-use teardown row). No shell-lint or .coderabbit.yaml rule covers this; detector would need TS AST awareness — left null, learning_match carries attribution.",
+      "prompt": true,
+      "evidence": {
+        "ledger": {
+          "findings": 71,
+          "agreed": 28,
+          "disproved": 15,
+          "deferred": 9,
+          "other": 0,
+          "unadjudicated": 19,
+          "models": {
+            "codex": 28,
+            "qwen3coder": 2,
+            "lagunaor": 1,
+            "coderabbit": 3,
+            "glm": 27,
+            "codex-adv": 10
+          },
+          "disproved_pct": 29
+        },
+        "learnings_uses": 77,
+        "learnings_rows": 2
+      }
+    },
+    {
+      "id": "scheduler-task-xml-encoding",
+      "kind": "rebuttal",
+      "title": "UTF-16 / BOM claims about scheduled-task XML in the schtasks emitter family",
+      "source": "ledger",
+      "globs": [
+        "scripts/handover/arm-resume.sh",
+        "scripts/handover/schedule-resume.sh",
+        "scripts/handover/hop.sh",
+        "scripts/sync/repo-sync-cadence.sh",
+        "scripts/sync/repo-sync-runner.sh",
+        "scripts/cleanup/codex-sweep-cadence.sh",
+        "scripts/graphify/ggs-cadence.sh",
+        "scripts/graphify/graph-refresh.sh",
+        "scripts/graphify/refresh-graph-map.sh"
+      ],
+      "detector": null,
+      "learning_match": "UTF-?16|schtasks /(XML|create)|Task Scheduler encoding",
+      "canonical": "These scripts drive Windows Task Scheduler through the schtasks CLI, not by hand-writing task XML. A finding of the form 'task XML is UTF-16, so this read/write/compare is broken' has been raised and DISPROVEN four separate times on this family (HIMMEL-2115). Disproof method, and the only one that counts: a LIVE Task Scheduler round-trip - register a task, read it back, including a non-ASCII path variant. The suite's fake scheduler stub is NOT evidence either way; it is precisely what makes the claim look plausible, so re-deriving the claim from the stub is not a new finding. Raise it only with a live round-trip that actually fails, and cite that run. SCOPE: this rebuttal covers the schtasks emitter family ONLY. Genuine encoding defects elsewhere still stand - notably NUL-byte / UTF-16 corruption truncating a scanned stream (HIMMEL-2194, a REAL leak-gate soundness hole). Never cite this class outside `globs`.",
+      "coverage": "Nothing structural enforces it: the emitters shell out to schtasks and the suite substitutes a stub, so neither the code nor the tests can refute the claim on their own - only a live round-trip can. Evidence: HIMMEL-2115 (PR #1991) burned four CR rounds re-disproving it on one branch. Filed as HIMMEL-2202.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 1,
+        "cr_app_finding_comments_since_2026-08-10": 0,
+        "learnings_rows": 1,
+        "hand_measured": {
+          "branch": "fix/himmel-2115-repo-sync-cadence",
+          "rounds_raised": 4,
+          "rounds_disproven": 4,
+          "source_ticket": "HIMMEL-2115",
+          "note": "hand-counted from the 28h leg report; evidence.ledger is left unset until --refresh mines it"
+        },
+        "ledger": {
+          "findings": 346,
+          "agreed": 106,
+          "disproved": 56,
+          "deferred": 30,
+          "other": 7,
+          "unadjudicated": 147,
+          "models": {
+            "codex": 220,
+            "codex-adv": 54,
+            "coderabbit": 9,
+            "qwenor": 6,
+            "lagunaor": 1,
+            "glm": 56
+          },
+          "disproved_pct": 28
+        }
+      }
+    },
+    {
+      "id": "pr-check-anchor-handshake-escalation",
+      "kind": "rebuttal",
+      "title": "PR_CHECK_ANCHOR_DELEGATED handshake called forgeable => privilege escalation",
+      "source": "coderabbit-learning",
+      "globs": [
+        "scripts/cr/pr-check-context.sh"
+      ],
+      "detector": null,
+      "learning_match": "forgeable because|replace the anchor",
+      "canonical": "`pr-check-context.sh` reads its trust anchor from the environment: `anchor=\"${HIMMEL_REPO:-}\"`. Any actor who can set `PR_CHECK_ANCHOR_DELEGATED` can equally set `HIMMEL_REPO=/attacker/checkout`, which redirects every anchor-side decision into attacker-controlled code BEFORE the handshake is ever consulted -- strictly weaker than an attack the actor can already mount, so forging the handshake grants no additional capability. A one-time unguessable token does not change this: the anchor process that would MINT the token is itself selected by `HIMMEL_REPO` -- against an environment-controlling actor, the attacker mints the token. The one shape that WOULD be a real escalation -- the repo under review injecting the variable without owning the launching shell -- is already closed: the script loads no `.env`, and its only `source` is `\"$HIMMEL_ROOT/scripts/guardrails/lib.sh\"`, where `HIMMEL_ROOT` derives from the script's own location and is fail-closed against not being a himmel checkout. SCOPE: this rebuts the ESCALATION premise only (forging the handshake gains capability). It does NOT cover the narrower, REAL residual -- the handshake binds to the anchor PATH only, not to (branch, head), so a STALE `PR_CHECK_ANCHOR_DELEGATED` surviving in the same shell is accepted at any branch/head and silently suppresses the delegation ledger row while still reporting `delegated=yes` (HIMMEL-2378, open). Raise that one with a concrete stale-value repro; do not re-raise this one.",
+      "coverage": "Raised 3 times across CR panel rounds on PR #2078 (HIMMEL-2335, branch fix/himmel-2335-prcheck-anchor: codex-2 12:13 / codex-4 14:05 / codex-1 19:29 on 2026-09-01, each 'forgeable because ... HIMMEL_REPO') plus once by the CodeRabbit App (its own added learning: 'an actor that controls the launching environment can replace the anchor through HIMMEL_REPO') -- every round disproved or deferred with this exact reasoning; the CodeRabbit round's own disposition deferred only the narrower stale-value residual to HIMMEL-2378.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 1,
+        "cr_app_finding_comments_since_2026-08-10": 1,
+        "learnings_rows": 1,
+        "hand_measured": {
+          "branch": "fix/himmel-2335-prcheck-anchor",
+          "rounds_raised": 3,
+          "rounds_disproven": 3,
+          "source_ticket": "HIMMEL-2335",
+          "note": "hand-counted from .git/cr-critic-scores.jsonl and PR #2078's CodeRabbit App review comment; evidence.ledger is left unset until --refresh mines it"
+        },
+        "ledger": {
+          "findings": 21,
+          "agreed": 6,
+          "disproved": 1,
+          "deferred": 3,
+          "other": 0,
+          "unadjudicated": 11,
+          "models": {
+            "codex": 20,
+            "coderabbit": 1
+          },
+          "disproved_pct": 10
+        }
+      }
+    },
+    {
+      "id": "cr-avail-artifact-perspective-scoping",
+      "kind": "rebuttal",
+      "title": "CR-ledger availability rows claimed to need artifact/perspective scoping",
+      "source": "critic-panel",
+      "globs": [
+        "scripts/cr/handover-bridge.sh",
+        "scripts/cr/clear-cr-marker.sh",
+        "scripts/cr/ledger-append.sh"
+      ],
+      "detector": null,
+      "learning_match": "availByModel|collapsed by model|avail(ability)?[^\n]{0,40}(artifact|perspective)",
+      "canonical": "The availability supersession identity is (head, model) ONLY, and that is deliberate, not an oversight. ledger-append.sh states it inline (HIMMEL-1613): \"availability is a property of the critic+commit pair, so a critic down at one head is down regardless of which review arm (artifact/perspective) probed it\". Matching on those conjuncts was the BUG HIMMEL-1640 removed -- it left stale `unavailable` evidence alive when the `ok` came back on a different arm. clear-cr-marker.sh does the same plain last-write-wins per model, and any consumer that scopes differently would report an effective availability the GATE disagrees with, which is a harder failure to diagnose than the collision being alleged. Verify the cited code keys on (head, model) and mark disproved. SCOPE: this rebuts the availability claim only. The sibling claim about AMEND rows omitting branch is REAL and separately tracked (HIMMEL-2405) -- amend rows carry an empty `branch`, so that one cannot be fixed in a consumer either, but it is not this class.",
+      "coverage": "Raised twice on PR #2097 (HIMMEL-2321, branch fix/himmel-2321-runbook-twins): round 2 codex-2 and round 4 codex-1, both against scripts/cr/handover-bridge.sh, both disproved with the HIMMEL-1613/1640 reasoning above.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 0,
+        "learnings_rows": 0,
+        "hand_measured": {
+          "branch": "fix/himmel-2321-runbook-twins",
+          "rounds_raised": 2,
+          "rounds_disproven": 2,
+          "source_ticket": "HIMMEL-2321",
+          "note": "hand-counted from this branch panel rounds; evidence.ledger left unset until --refresh mines it"
+        },
+        "ledger": {
+          "findings": 67,
+          "agreed": 7,
+          "disproved": 7,
+          "deferred": 14,
+          "other": 1,
+          "unadjudicated": 38,
+          "models": {
+            "codex-adv": 1,
+            "glm": 9,
+            "codex": 57
+          },
+          "disproved_pct": 24
+        }
+      }
+    },
+    {
+      "id": "test-setup-unchecked-vacuous-green",
+      "kind": "checklist",
+      "title": "test setup or child-process status unchecked — the suite cannot fail (vacuous green)",
+      "source": "cr-app-comments",
+      "globs": [
+        "scripts/**/test-*.sh",
+        "scripts/**/tests/**/*.sh",
+        "templates/**/test-*.sh",
+        "marketplace/**/test-*.sh"
+      ],
+      "detector": null,
+      "learning_match": "fail closed|vacuous|unchecked|positive control",
+      "canonical": "A test whose SETUP can fail silently reports success for the wrong reason. Three shapes recur: (a) `TMP=$(mktemp -d ...)` with the status unchecked — on failure TMP is empty and every later \"$TMP/x\" path resolves to /x or the cwd; (b) a required tool (jq, node) assumed present, so the assertion never runs; (c) a child suite invoked with its exit status discarded, so a child that never completed reads as a pass. Check the setup and exit non-zero naming what was missing, and give every negative control a positive control proving the matcher can fire at all. This is the repo's own vacuous-verdict doctrine applied to test scaffolding: a zero from a probe you have not positive-controlled is not evidence.",
+      "coverage": "No structural check: shell-lint does not flag an unchecked mktemp assignment and .coderabbit.yaml has no instruction for it. 3 App raises in the measured window (2026-08-20..09-02) — unchecked mktemp/jq in a positive control, unchecked mktemp for TMP_ROOT, and check_hermetic ignoring a child suite's exit status. All three were legitimate.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 3,
+        "ledger": null,
+        "learnings_rows": 0
+      }
+    },
+    {
+      "id": "exit-contract-drift",
+      "kind": "checklist",
+      "title": "an exit code gains a second meaning without its documented contract being updated",
+      "source": "cr-app-comments",
+      "globs": [
+        "scripts/**/*.sh",
+        "scripts/**/*.ps1",
+        "docs/**/*.md",
+        ".agents/**/*.md"
+      ],
+      "detector": null,
+      "learning_match": "exit contract|exit code|rc=[0-9]",
+      "canonical": "Scripts here publish their exit codes in a header comment (`# Exit: 0 ok, 2 usage, ...`) and runbooks branch on them. When a change makes an existing code reachable by a second path, or adds a new one, the header AND every doc that branches on it move in the same commit — otherwise a caller keeps treating one code as one condition. State the full set of conditions for that code, not only the new one.",
+      "coverage": "No structural check; docs-flag-drift covers a removed --flag still documented, not an exit code whose MEANING widened. 2 App raises in the window: rc=21 documented only for a non-clean fence when a certification failure also returns it, and exit 5 gaining a second meaning in coderabbit-review.sh without its documented contract moving.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 2,
+        "ledger": null,
+        "learnings_rows": 0
+      }
+    },
+    {
+      "id": "suggestion-verdict-flow",
+      "kind": "rebuttal",
+      "title": "Suggestion findings need a verdict for the marker gate even though they never enter blocking counts — the flow is documented",
+      "source": "cr-app-comments",
+      "globs": [
+        ".agents/**/*.md",
+        ".claude/commands/*.md",
+        "scripts/cr/*.sh",
+        "docs/internals/*.md"
+      ],
+      "detector": null,
+      "learning_match": "Suggestion finding|adjudication flow|blocking count",
+      "canonical": "Both facts are true at once and the runbooks already say so, so a finding that one contradicts the other rests on a false premise. Suggestions never enter the BLOCKING severity counts (a Suggestion-only round is 0 Critical / 0 Important), and they still require an explicit verdict, because clear-cr-marker.sh gate 4 refuses on ANY finding carrying an empty verdict regardless of severity — the panel writes its own rows with verdict:\"\". That was adjudicated as HIMMEL-2339 (option (a): the gate is right, the runbook sentence was aligned to it) after it cost a full round on #2057. Any of fixed / deferred / disproved is a valid disposition; a truthful `deferred` with a reason is the right answer for a real-but-out-of-scope suggestion.",
+      "coverage": "Documented in both /pr-check runbook twins after HIMMEL-2339 landed. 2 App raises on #2105 alone ('Define an adjudication flow for Suggestion findings', 'Amend Suggestion rows too'), plus the original round on #2057 — the class exists so a third PR does not pay for it.",
+      "prompt": true,
+      "evidence": {
+        "learnings_uses": 0,
+        "cr_app_finding_comments_since_2026-08-10": 2,
+        "ledger": null,
+        "learnings_rows": 0
+      }
+    }
+  ],
+  "learnings_export": {
+    "rows": 227,
+    "total_uses": 4824,
+    "unmatched_rows": 139
+  }
+}

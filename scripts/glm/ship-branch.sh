@@ -3,7 +3,7 @@
 # checkout (HIMMEL-750).
 #
 # The claude-down ship lane's push half. The GLM worker stays FULLY quarantined
-# (poisonPushUrl + the worker no-push prompt + the external-writes deny hook are
+# (the worker no-push prompt + the external-writes deny hook are
 # UNCHANGED); this script - run from the main checkout, which legitimately owns
 # the attestation trailers and push credentials - performs the push AFTER
 # pr-check-external.sh recorded external_cr_verdict:pass. A prior adversarial

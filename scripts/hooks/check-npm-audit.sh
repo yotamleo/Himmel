@@ -7,7 +7,11 @@ set -euo pipefail
 # only), so plugins under marketplace/ and plugins/ are covered too — not just
 # the packages under scripts/. The node_modules pathspec exclude is defensive:
 # `git ls-files` already omits untracked nested worktrees + dependency trees.
-if ! pkgs_raw=$(git ls-files '*package.json' ':(exclude)*/node_modules/*'); then
+# Bench FIXTURES are excluded (HIMMEL-1723): their package.json/lockfiles are
+# benchmark INPUTS — deliberately incomplete or stale as part of the task —
+# and `npm audit` completing an incomplete fixture lockfile MUTATES fixture
+# bytes mid-push (the stash-conflict abort this exclusion fixes).
+if ! pkgs_raw=$(git ls-files '*package.json' ':(exclude)*/node_modules/*' ':(exclude)scripts/lanes/bench/fixtures/*'); then
     echo "ERROR: 'git ls-files' failed — cannot enumerate packages to audit." >&2
     exit 1
 fi

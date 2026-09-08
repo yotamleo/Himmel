@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, Write
-description: X/Twitter media enrichment rung (HIMMEL-1226), parity with ig-media-enrich. For X clips whose body references video.twimg.com / pbs.twimg.com media and which carry no media_enriched_at:, download the tweet's video / GIF / images via gallery-dl (burner cookies), transcribe videos locally with faster-whisper, screenshot soundless GIF-like videos, copy images into Clippings/_media/, read them, and apply an agent-written slide digest via the mechanical --apply-digest applier. Videos never enter the vault. Lean-invoke.
+description: X/Twitter media enrichment — download tweet video/GIF/images, transcribe locally, apply a slide digest.
 argument-hint: "[vault-path] [--limit N] [--dry-run] [--include-evidence] [--include-done] [--whisper-model M]"
 ---
 

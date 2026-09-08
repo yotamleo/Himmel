@@ -4,6 +4,12 @@
 #   PHI-egress floor + skin scaffolds). Lockstep with setup.sh --medical.
 param([switch]$Medical)
 
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 # --- [0/6] git state ---
 # Lockstep with setup.sh: a non-repo download is initialized + scaffold-committed;
 # a local vault with no remote gets a .single-writer marker; a clone/remote is

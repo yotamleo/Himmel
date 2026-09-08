@@ -3,7 +3,14 @@
 // the real registry, ledger, or repo. Run: node --test "scripts/lanes/tests/**/*.test.mjs"
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { trailingPasses, laneStates } from '../lane-readiness.mjs';
+import { spawnSync } from 'node:child_process';
+import { writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { trailingPasses, laneStates, remedyFor, REMEDY_HINTS } from '../lane-readiness.mjs';
+
+const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '../lane-readiness.mjs');
 
 // Build one verify-return end-row as verify-return.mjs writes it; only the
 // fields the probe reads are load-bearing.
@@ -96,4 +103,55 @@ test('a malformed gate (zero, negative, NaN, non-number) never downs a lane', ()
 test('a registry without a lanes array yields no states', () => {
   assert.deepEqual(laneStates({}, ''), []);
   assert.deepEqual(laneStates(null, ''), []);
+});
+
+// --- remedy hints (HIMMEL-2782) --------------------------------------------
+
+test('remedyFor names the claudex-on-Linux fix verbatim', () => {
+  assert.equal(remedyFor('claudex'), 'bash scripts/setup/cli-proxy-lane.sh --status');
+  assert.equal(REMEDY_HINTS.claudex, 'bash scripts/setup/cli-proxy-lane.sh --status');
+});
+
+test('remedyFor a lane with no hint returns undefined', () => {
+  assert.equal(remedyFor('glm'), undefined);
+  assert.equal(remedyFor('sonnet'), undefined);
+});
+
+test('CLI: down lane with a hint prints the hint on stderr, not stdout, and the stdout line stays a clean two-token verdict', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lane-readiness-'));
+  const registryPath = join(dir, 'lanes.json');
+  writeFileSync(registryPath, JSON.stringify({ lanes: [gated('claudex', 10), { id: 'sonnet' }] }));
+  const result = spawnSync(process.execPath, [SCRIPT], {
+    env: { ...process.env, LANES_REGISTRY: registryPath, HIMMEL_FLOW_RUNS_LEDGER: join(dir, 'no-such-ledger.jsonl') },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, 'claudex down\nsonnet ready\n');
+  assert.match(result.stderr, /lane-readiness: claudex is down — remedy: bash scripts\/setup\/cli-proxy-lane\.sh --status/);
+});
+
+test('CLI: down lane with no registered hint prints nothing extra on stderr', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lane-readiness-'));
+  const registryPath = join(dir, 'lanes.json');
+  writeFileSync(registryPath, JSON.stringify({ lanes: [gated('glm', 10)] }));
+  const result = spawnSync(process.execPath, [SCRIPT], {
+    env: { ...process.env, LANES_REGISTRY: registryPath, HIMMEL_FLOW_RUNS_LEDGER: join(dir, 'no-such-ledger.jsonl') },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, 'glm down\n');
+  assert.equal(result.stderr, '');
+});
+
+test('CLI: a ready lane never prints a remedy hint even if one is registered', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lane-readiness-'));
+  const registryPath = join(dir, 'lanes.json');
+  writeFileSync(registryPath, JSON.stringify({ lanes: [{ id: 'claudex' }] }));
+  const result = spawnSync(process.execPath, [SCRIPT], {
+    env: { ...process.env, LANES_REGISTRY: registryPath, HIMMEL_FLOW_RUNS_LEDGER: join(dir, 'no-such-ledger.jsonl') },
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, 'claudex ready\n');
+  assert.equal(result.stderr, '');
 });

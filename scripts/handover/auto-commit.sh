@@ -34,11 +34,23 @@
 #   5  push failed (commit landed locally, push didn't)
 #   6  branch create/checkout failed
 #   7  single-writer repo parked off its default branch — refused
+#   8  leg-split refused — this commit would add a SECOND never-committed
+#      numbered handover file for the same leg series (HIMMEL-1830/1831).
+#      Override: HANDOVER_LEG_SPLIT_OK=1.
 #
 # .single-writer marker at the handover repo root (HIMMEL-571) → commit
 # directly on the default branch (no per-ticket branch, no PR), the same
 # path as HANDOVER_DIRECT_MAIN. Refuses (exit 7) if the repo is parked on a
 # non-default branch rather than entangle handover state onto a feature branch.
+#
+# HIMMEL-1830/1831 leg-split guard: refuses (exit 8) when the staged *.md
+# additions include TWO never-committed files sharing the same session stem
+# (e.g. "foo-25.md" + "foo-26.md", or "foo.md" + "foo-2.md") — the shape
+# that orphaned session-25's STATE behind session-26's ORDERS. Keyed on the
+# normalized parent directory plus FULL stem, so same-named series in parallel
+# ticket directories do not collide. Renames/deletions are excluded by the
+# index's diff-filter=A. HANDOVER_LEG_SPLIT_OK=1 overrides for a genuinely
+# deliberate two-file leg.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -78,6 +90,9 @@ Environment:
   HANDOVER_DIRECT_MAIN=1    Skip branching; commit on the current branch
                             (v1 behavior). Default opt-out kept until the
                             branched path is fully validated.
+  HANDOVER_LEG_SPLIT_OK=1   Override the HIMMEL-1830/1831 leg-split guard
+                            (exit 8): allow committing two never-committed
+                            numbered files for the same series in one commit.
 
 A `.single-writer` marker at the handover repo root forces direct-on-default-
 branch commits (no branch, no PR) and refuses (exit 7) if the repo is parked
@@ -378,20 +393,147 @@ else
     target_branch=$(_compute_branch_name "$MESSAGE" "$branch_prefix")
 fi
 
+# _hp_collect_or_die <callback-fn> <git-subcommand-and-args...> -- runs
+# `git -C "$handover_repo" "$@" -z -- "$rel_root"` and feeds each
+# NUL-delimited path to <callback-fn>. A process-substitution loop
+# (`< <(git ...)`) does NOT propagate the command's exit status to the
+# caller -- `set -e`/`pipefail` never see it, so a git failure (corrupt repo,
+# transient error) would otherwise look identical to "no output" and every
+# caller below would silently proceed as if nothing changed (codex CR
+# finding, HIMMEL-1831). Routed through a temp file instead so the exit
+# status is checked explicitly and a git error fails LOUDLY.
+_hp_collect_or_die() {
+    local _cb="$1" _hp_tmp
+    shift
+    _hp_tmp=$(mktemp) || { echo "ERR auto-commit: could not create temp file for git read" >&2; exit 1; }
+    if ! git -C "$handover_repo" "$@" -z -- "$rel_root" > "$_hp_tmp"; then
+        rm -f "$_hp_tmp"
+        echo "ERR auto-commit: could not read git output (git $*)" >&2
+        exit 1
+    fi
+    while IFS= read -r -d '' f; do
+        "$_cb" "$f"
+    done < "$_hp_tmp"
+    rm -f "$_hp_tmp"
+}
+
 # Pre-check: any *.md changes under root? Bail early if not — this also
-# avoids a no-op branch switch that would surprise the operator.
-# Use --untracked-files=all (-u) so newly created files surface as
-# individual paths; without it, git collapses untracked directories to
-# a single entry ("?? handovers/") and our `.md$` grep misses every
-# file inside.
-mdchanges=$(git -C "$handover_repo" status --porcelain --untracked-files=all -- "$rel_root" | grep -E '\.md$' || true)
-if [ -z "$mdchanges" ] && [ "$DRY_RUN" -eq 0 ]; then
+# avoids a no-op branch switch that would surprise the operator. Keep paths
+# NUL-delimited through collection; porcelain's quoted newline paths are not
+# safe to filter with a line-oriented `grep '\.md$'`.
+mdchange_paths=()
+# shellcheck disable=SC2329,SC2317  # invoked indirectly via _hp_collect_or_die's "$_cb" "$f"
+_collect_mdchange_path() {
+    case "$1" in
+        *.md) mdchange_paths[${#mdchange_paths[@]}]="$1" ;;
+    esac
+}
+_hp_collect_or_die _collect_mdchange_path diff --name-only
+_hp_collect_or_die _collect_mdchange_path diff --cached --name-only
+_hp_collect_or_die _collect_mdchange_path ls-files --others --exclude-standard
+if [ "${#mdchange_paths[@]}" -eq 0 ] && [ "$DRY_RUN" -eq 0 ]; then
     echo "auto-commit: no *.md changes to commit — nothing to do."
     exit 0
 fi
 
+# HIMMEL-1830/1831 leg-split guard collector. Paths arrive NUL-delimited and
+# stay in Bash arrays, so a legal newline inside a path cannot split one index
+# entry into two. Bash 3.2 has no associative arrays; parallel indexed arrays
+# keep the parent-dir + stem key paired with each staged path.
+leg_split_keys=()
+leg_split_paths=()
+leg_split_dupe_keys=()
+leg_split_found=0
+
+_leg_split_reset() {
+    leg_split_keys=()
+    leg_split_paths=()
+    leg_split_dupe_keys=()
+    leg_split_found=0
+}
+
+# shellcheck disable=SC2329,SC2317  # invoked indirectly via _hp_collect_or_die's "$_cb" "$f"
+_leg_split_add_path() {
+    local f="$1" base parent key i j
+    case "$f" in
+        *.md) ;;
+        *) return 0 ;;
+    esac
+    base="${f##*/}"
+    _hp_session_stem_num "$base" || return 0
+    if [ "$f" = "$base" ]; then
+        parent="."
+    else
+        parent="${f%/*}"
+    fi
+    key="${parent}/${_HP_STEM}"
+
+    i=0
+    while [ "$i" -lt "${#leg_split_keys[@]}" ]; do
+        if [ "${leg_split_keys[$i]}" = "$key" ]; then
+            leg_split_found=1
+            j=0
+            while [ "$j" -lt "${#leg_split_dupe_keys[@]}" ]; do
+                [ "${leg_split_dupe_keys[$j]}" = "$key" ] && break
+                j=$(( j + 1 ))
+            done
+            if [ "$j" -eq "${#leg_split_dupe_keys[@]}" ]; then
+                leg_split_dupe_keys[${#leg_split_dupe_keys[@]}]="$key"
+            fi
+            break
+        fi
+        i=$(( i + 1 ))
+    done
+    leg_split_keys[${#leg_split_keys[@]}]="$key"
+    leg_split_paths[${#leg_split_paths[@]}]="$f"
+}
+
+_leg_split_print() {
+    local key i
+    for key in "${leg_split_dupe_keys[@]}"; do
+        printf "    series '%s':\n" "$key"
+        i=0
+        while [ "$i" -lt "${#leg_split_keys[@]}" ]; do
+            if [ "${leg_split_keys[$i]}" = "$key" ]; then
+                printf '      - %q\n' "${leg_split_paths[$i]}"
+            fi
+            i=$(( i + 1 ))
+        done
+    done
+}
+
+# _leg_split_unstage_all -- unstages EVERYTHING under $rel_root on a
+# refusal. A narrower cleanup that unstaged only the two colliding paths
+# (CR round 1) still left every OTHER *.md file this invocation staged
+# sitting in the index, where a later unrelated commit could sweep them in
+# too (CR round 2, codex-1 Important) -- a refusal commits nothing, so
+# nothing under root should remain staged, full stop, whether staged by
+# THIS run's `git add -A` or from before it (the retry shape, T-ls6). Warns
+# rather than silently swallowing a reset failure (CR round 2, codex-2
+# Suggestion): the guard's refusal message promises nothing gets committed,
+# and a failed reset would leave that promise only half true.
+_leg_split_unstage_all() {
+    if ! git -C "$handover_repo" reset HEAD -- "$rel_root" >/dev/null 2>&1; then
+        echo "WARN auto-commit: could not unstage '$rel_root' after the leg-split refusal -- check 'git status' before committing anything else here." >&2
+    fi
+}
+
+# Dry-run cannot stage, so preview the union that `git add -A` would turn into
+# additions: additions already in the index plus untracked files under root.
+# The real commit path below always rebuilds this set from the post-stage index.
+if [ "${HANDOVER_LEG_SPLIT_OK:-}" != "1" ] && [ "$DRY_RUN" -eq 1 ]; then
+    _hp_collect_or_die _leg_split_add_path diff --cached --name-only --diff-filter=A
+    _hp_collect_or_die _leg_split_add_path ls-files --others --exclude-standard
+fi
+
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY auto-commit: mode=B root=$root repo=$handover_repo"
+    if [ "$leg_split_found" -eq 1 ]; then
+        echo "DRY auto-commit: would REFUSE (exit 8): second never-committed handover file for the same leg series (HIMMEL-1830/1831):"
+        _leg_split_print
+        echo "DRY auto-commit: override with HANDOVER_LEG_SPLIT_OK=1 if this is a deliberate two-file leg"
+        exit 0
+    fi
     if [ "$sw_parked" -eq 1 ]; then
         echo "DRY auto-commit: would REFUSE (exit 7): single-writer repo on non-default branch '$sw_current' — checkout '$sw_default' first"
         exit 0
@@ -402,10 +544,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
         echo "DRY auto-commit: ${direct_reason} — would commit on current branch"
     fi
     echo "DRY auto-commit: would stage *.md under $root (rel: $rel_root)"
-    if [ -z "$mdchanges" ]; then
+    if [ "${#mdchange_paths[@]}" -eq 0 ]; then
         echo "DRY auto-commit: no *.md changes to commit"
     else
-        while IFS= read -r _line; do echo "  $_line"; done <<< "$mdchanges"
+        for _line in "${mdchange_paths[@]}"; do printf '  %q\n' "$_line"; done
     fi
     echo "DRY auto-commit: would commit with message: 'handover: ${MESSAGE}'"
     if [ "$DO_PUSH" -eq 1 ]; then
@@ -439,15 +581,47 @@ fi
 git -C "$handover_repo" add -A -- "$rel_root"
 
 # Filter to only *.md changes — if the operator scribbled non-md files,
-# unstage them so this commit stays handover-scoped.
-non_md_staged=$(git -C "$handover_repo" diff --cached --name-only --relative=. | grep -Ev '\.md$' || true)
-if [ -n "$non_md_staged" ]; then
-    echo "auto-commit: dropping non-md files from staged set:" >&2
-    while IFS= read -r _line; do echo "  $_line" >&2; done <<< "$non_md_staged"
-    while IFS= read -r f; do
-        [ -z "$f" ] && continue
-        git -C "$handover_repo" reset HEAD -- "$f" >/dev/null
-    done <<< "$non_md_staged"
+# unstage them so this commit stays handover-scoped. Runs BEFORE the
+# leg-split guard below (CR finding, codex-1 Important): the guard's own
+# exit 8 refusal happens right after `git add -A`, so if this ran AFTER the
+# guard, a refusal would leave unrelated non-.md files sitting staged in
+# the index even though nothing gets committed.
+#
+# Routed through _hp_collect_or_die/NUL-delimited paths, not a line-oriented
+# `git diff --name-only | grep` (CR finding, Critical): git C-quotes a path
+# containing a newline in its default line-oriented output, so a
+# newline-named non-.md file's quoted-and-escaped line never matches the
+# unquoted `reset -- "$f"` call that follows it and stays staged.
+_non_md_found=0
+# shellcheck disable=SC2329,SC2317  # invoked indirectly via _hp_collect_or_die's "$_cb" "$f"
+_unstage_if_non_md() {
+    case "$1" in
+        *.md) return 0 ;;
+    esac
+    if [ "$_non_md_found" -eq 0 ]; then
+        echo "auto-commit: dropping non-md files from staged set:" >&2
+        _non_md_found=1
+    fi
+    echo "  $1" >&2
+    git -C "$handover_repo" reset HEAD -- "$1" >/dev/null
+}
+_hp_collect_or_die _unstage_if_non_md diff --cached --name-only
+
+# Leg-split guard (HIMMEL-1830/1831): inspect the REAL post-stage additions,
+# including files that were already staged before this invocation. `-z` plus
+# read -d '' preserves every legal path byte except Git's NUL separator.
+if [ "${HANDOVER_LEG_SPLIT_OK:-}" != "1" ]; then
+    _leg_split_reset
+    _hp_collect_or_die _leg_split_add_path diff --cached --name-only --diff-filter=A
+    if [ "$leg_split_found" -eq 1 ]; then
+        echo "ERR auto-commit: refusing — this commit would create a SECOND handover file for the same leg (HIMMEL-1830/1831):" >&2
+        _leg_split_print >&2
+        echo "    One leg writes ONE file (state first, then orders, in the SAME doc)." >&2
+        echo "    If these genuinely are two separate legs' work, commit them separately." >&2
+        echo "    Override (rare, deliberate two-file leg): HANDOVER_LEG_SPLIT_OK=1" >&2
+        _leg_split_unstage_all
+        exit 8
+    fi
 fi
 
 # Anything left?

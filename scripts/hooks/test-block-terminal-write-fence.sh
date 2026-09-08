@@ -15,7 +15,14 @@ GUARD="$HOOKS/block-terminal-write-fence.sh"
 command -v git >/dev/null 2>&1 || { echo "SKIP: git not on PATH"; exit 0; }
 command -v jq  >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
 
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+# NOT a bare `mktemp -d`: class (b) is DESTINATION-based since HIMMEL-2526
+# (block-write-into-main-checkout.sh, sourced below), so a /tmp-rooted fixture
+# tree would have every destination row's resolved target silently exempted
+# by is_temp_or_devnull's `*/tmp/*` pattern — making the redirect-deny rows
+# vacuous (they'd pass as "allow" for the wrong reason). Root under the REAL
+# HOME instead, captured BEFORE HOME is overridden below.
+_REAL_HOME="$HOME"
+T="$(mktemp -d "${_REAL_HOME}/.himmel-2526-tfixture-XXXXXX")"; trap 'rm -rf "$T"' EXIT
 # Isolate git from the real user/system config so branch reads are deterministic.
 export HOME="$T"
 export GIT_CONFIG_NOSYSTEM=1
@@ -31,6 +38,17 @@ mkrepo "$T/mainrepo"  "main"
 mkrepo "$T/featrepo"  "feat/x"
 MAIN="$T/mainrepo"
 FEAT="$T/featrepo"
+# A SEPARATE, deliberately /tmp-rooted fixture (unlike $T above) — used by
+# exactly one row below to assert the RATIFIED is_temp_or_devnull `*/tmp/*`
+# exemption on purpose, not by accident.
+# The `/tmp/` prefix is HARDCODED, not `${TMPDIR:-/tmp}` and not a bare
+# `mktemp -d`: this row asserts a `*/tmp/*` pattern match, and on macOS both
+# of those resolve TMPDIR to `/var/folders/.../T/`, which matches neither
+# `*/tmp/*` nor `*/temp/*` — the row would fail there for an unrelated reason.
+TMPMAIN_ROOT="$(mktemp -d /tmp/himmel-2526-fence-tmpmain.XXXXXX)" || exit 1
+trap 'rm -rf "$T" "$TMPMAIN_ROOT"' EXIT
+mkrepo "$TMPMAIN_ROOT/mainrepo" "main"
+TMPMAIN="$TMPMAIN_ROOT/mainrepo"
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
@@ -83,6 +101,14 @@ check "echo mentioning set-content on main allowed" allow "{\"tool_name\":\"Bash
 check "git commit on main denied"        block "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m wip\",\"cwd\":\"$MAIN\"}}"
 check "git commit on feature allowed"    allow "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m wip\",\"cwd\":\"$FEAT\"}}"
 check "redirect to real file on main denied" block "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hi > out.txt\",\"cwd\":\"$MAIN\"}}"
+# RATIFIED exemption (not a bug): a repo whose OWN root sits beneath /tmp is
+# is_temp_or_devnull-exempt at the resolved-destination level, same as a
+# literal /tmp/... target — the destination-based class (b) genuinely ALLOWS
+# a redirect into a repo on main when that repo lives under /tmp. This row
+# exists specifically to pin that documented behaviour, not to prove class
+# (b) is broken: redirect into a repo beneath /tmp -> ALLOW (ratified
+# exemption, is_temp_or_devnull :155 in block-terminal-write-fence.sh).
+check "redirect into a repo beneath /tmp allowed (ratified exemption, is_temp_or_devnull :155)" allow "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo hi > out.txt\",\"cwd\":\"$TMPMAIN\"}}"
 # $TMP is a literal token in the payload the guard must treat as a temp path.
 # shellcheck disable=SC2016
 check "redirect into \$TMP allowed" allow '{"tool_name":"Bash","tool_input":{"command":"echo hi > $TMP/scratch.txt","cwd":"'"$MAIN"'"}}'

@@ -33,6 +33,9 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 AUDIT_SH="$SCRIPT_DIR/check-npm-audit.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
 
 FAILED=0
 
@@ -53,9 +56,9 @@ assert_eq() {
 # and a TRACKED-but-nested node_modules package.json (defensive-exclude case).
 make_repo() {
     local dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b main
         git config user.email t@t
         git config user.name t
@@ -83,11 +86,11 @@ make_repo() {
         echo '{"name":"forced"}' > vendor/node_modules/forced/package.json
         git add -f vendor/node_modules/forced/package.json
         git -c commit.gpgsign=false commit -q -m "add nested node_modules pkg"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
-REPO=$(make_repo)
+REPO=$(make_repo) || exit 1
 trap 'rm -rf "$REPO"' EXIT
 
 EXPECTED_ALL=$(printf '%s\n' \
@@ -101,7 +104,7 @@ EXPECTED_ALL=$(printf '%s\n' \
 # Case 1: NEW enumeration (the `git ls-files` enumeration line in
 # check-npm-audit.sh) finds all 6 committed packages and excludes both
 # node_modules entries.
-new_out=$( cd "$REPO" && git ls-files '*package.json' ':(exclude)*/node_modules/*' | sort )
+new_out=$( cd "$REPO" && git ls-files '*package.json' ':(exclude)*/node_modules/*' ':(exclude)scripts/lanes/bench/fixtures/*' | sort )
 assert_eq "new git-ls-files enumeration finds all 6 committed packages" "$EXPECTED_ALL" "$new_out"
 
 # Case 2: the 4 formerly-missed packages ARE in the new output (explicit) —
@@ -151,7 +154,7 @@ fi
 # Case 7: git-failure path fails closed — run the script outside any git repo
 # so `git ls-files` errors, and assert it exits 1 (not 0). mktemp -d is not a
 # git repo; GIT_CEILING_DIRECTORIES stops git walking up into a real repo.
-nongit=$(mktemp -d)
+nongit=$(fixture_mktemp_dir) || exit 1
 audit_rc=0
 ( cd "$nongit" && GIT_CEILING_DIRECTORIES="$nongit" bash "$AUDIT_SH" >/dev/null 2>&1 ) || audit_rc=$?
 rm -rf "$nongit"
@@ -169,9 +172,9 @@ assert_eq "git-failure path fails closed (exit 1)" "1" "$audit_rc"
 # commit a package-lock.json (selects the `npm ci` branch).
 make_install_repo() {
     local mode="$1" dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b main
         git config user.email t@t
         git config user.name t
@@ -182,7 +185,7 @@ make_install_repo() {
         fi
         git add -A
         git -c commit.gpgsign=false commit -q -m "init"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
@@ -190,7 +193,7 @@ make_install_repo() {
 # exits 1 when "$1" matches the $NPM_FAIL_ON regex.
 make_npm_stub() {
     local dir
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     cat > "$dir/npm" <<'STUB'
 #!/usr/bin/env bash
 echo "$1" >> "$NPM_LOG"
@@ -203,11 +206,11 @@ STUB
     echo "$dir"
 }
 
-NPM_STUB=$(make_npm_stub)
+NPM_STUB=$(make_npm_stub) || exit 1
 
 # Case 8: node_modules missing + package-lock.json present → self-install
 # triggers via `npm ci`, then `npm audit` runs; gate passes (exit 0).
-repo_lock=$(make_install_repo lock)
+repo_lock=$(make_install_repo lock) || exit 1
 log_lock=$(mktemp)
 rc=0
 ( cd "$repo_lock" && PATH="$NPM_STUB:$PATH" NPM_LOG="$log_lock" NPM_FAIL_ON="" bash "$AUDIT_SH" >/dev/null 2>&1 ) || rc=$?
@@ -219,7 +222,7 @@ rm -rf "$repo_lock"; rm -f "$log_lock"
 # Case 9: node_modules + package-lock.json BOTH missing, no bun signals →
 # gate FAILS LOUD (exit 1) with an actionable ENOLOCK message. No npm
 # operations should run (no install, no audit). Fail-closed.
-repo_nolock=$(make_install_repo nolock)
+repo_nolock=$(make_install_repo nolock) || exit 1
 rc=0
 out_nolock=$( cd "$repo_nolock" && PATH="$NPM_STUB:$PATH" NPM_LOG="/dev/null" bash "$AUDIT_SH" 2>&1 ) || rc=$?
 assert_eq "no-lockfile npm pkg → gate blocks (exit 1)" "1" "$rc"
@@ -234,7 +237,7 @@ rm -rf "$repo_nolock"
 
 # Case 10: install FAILS (npm ci errors) → gate blocks (exit 1) and `npm audit`
 # is NEVER reached (continue skips it). Fail-closed parity with the license twin.
-repo_fail=$(make_install_repo lock)
+repo_fail=$(make_install_repo lock) || exit 1
 log_fail=$(mktemp)
 rc=0
 ( cd "$repo_fail" && PATH="$NPM_STUB:$PATH" NPM_LOG="$log_fail" NPM_FAIL_ON="ci|install" bash "$AUDIT_SH" >/dev/null 2>&1 ) || rc=$?
@@ -252,9 +255,9 @@ rm -rf "$NPM_STUB"
 
 make_bun_repo() {
     local mode="$1" dir  # mode: "lockfile" | "scripts"
-    dir=$(mktemp -d)
+    dir=$(fixture_mktemp_dir) || return 1
     (
-        cd "$dir" || exit 1
+        fixture_enter_git_init_dir "$dir" || exit 1
         git init -q -b main
         git config user.email t@t
         git config user.name t
@@ -267,12 +270,12 @@ make_bun_repo() {
         fi
         git add -A
         git -c commit.gpgsign=false commit -q -m "init"
-    )
+    ) || { rm -rf "$dir"; return 1; }
     echo "$dir"
 }
 
 # Case 11: bun.lock present → gate prints skip notice, exits 0 (not an npm error).
-repo_bun_lock=$(make_bun_repo lockfile)
+repo_bun_lock=$(make_bun_repo lockfile) || exit 1
 rc=0
 out_bun_lock=$( cd "$repo_bun_lock" && bash "$AUDIT_SH" 2>&1 ) || rc=$?
 assert_eq "bun.lock present → gate exits 0 (skip, not error)" "0" "$rc"
@@ -287,7 +290,7 @@ rm -rf "$repo_bun_lock"
 
 # Case 12: no bun.lock but package.json scripts use 'bun install' → skip notice,
 # exits 0. Covers fresh-checkout where bun.lock is gitignored.
-repo_bun_scripts=$(make_bun_repo scripts)
+repo_bun_scripts=$(make_bun_repo scripts) || exit 1
 rc=0
 out_bun_scripts=$( cd "$repo_bun_scripts" && bash "$AUDIT_SH" 2>&1 ) || rc=$?
 assert_eq "bun-install-scripts, no bun.lock → gate exits 0 (skip, not error)" "0" "$rc"

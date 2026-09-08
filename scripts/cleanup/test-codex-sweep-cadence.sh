@@ -49,6 +49,10 @@ assert_rc() {
     local name="$1" want="$2" got="$3"
     if [ "$got" = "$want" ]; then pass "$name"; else fail "$name" "expected rc=$want, got rc=$got"; fi
 }
+assert_registry() {
+    local name="$1" expression="$2"
+    if jq -e "$expression" "$HIMMEL_OBSERVABILITY_CONFIG" >/dev/null 2>&1; then pass "$name"; else fail "$name" "registry assertion failed: $expression"; fi
+}
 summary() {
     echo
     echo "===================================="
@@ -63,6 +67,7 @@ if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); 
 REAL_BASH="$(command -v bash)"
 
 export HOME="$TMP_ROOT/home"
+export HIMMEL_OBSERVABILITY_CONFIG="$TMP_ROOT/observability.json"
 mkdir -p "$HOME"
 
 # ============================================================================
@@ -157,16 +162,22 @@ case "$mode" in
             xml_posix=$(cygpath -u "$xmlpath" 2>/dev/null || echo "$xmlpath")
             cat "$xml_posix" > "$STATE/tasks/$tn"
             # Immediate-fire regression probe (round-3 CR fix, HIMMEL-892):
-            # read the runner .bat at its FINAL path (as embedded in the
-            # just-created task's <Command>) and copy it to a probe file --
-            # proves the runner is fully published BEFORE the task can
-            # possibly exist to fire it (the exact publish-before-create
-            # ordering this fix guarantees).
-            cmd_win=$(grep -o '<Command>[^<]*</Command>' "$xml_posix" | sed -e 's/<Command>//' -e 's#</Command>##')
-            if [ -n "$cmd_win" ]; then
-                cmd_posix=$(cygpath -u "$cmd_win" 2>/dev/null || echo "$cmd_win")
-                if [ -f "$cmd_posix" ]; then
-                    cp "$cmd_posix" "$STATE/create-time-runner-probe.bat"
+            # read the referenced .vbs shim and the .bat it launches at their
+            # FINAL paths. Both must be fully published BEFORE the task can
+            # possibly exist to fire them. HIMMEL-1753: <Arguments> is now
+            # `//B "<shim>.vbs"`; the shim's Run call carries the .bat path.
+            args_elem=$(grep -o '<Arguments>[^<]*</Arguments>' "$xml_posix" | sed -e 's/<Arguments>//' -e 's#</Arguments>##')
+            args_unescaped=$(printf '%s' "$args_elem" | sed -e 's/&amp;/\&/g' -e 's/&lt;/</g' -e 's/&gt;/>/g')
+            vbs_win=$(printf '%s' "$args_unescaped" | sed -e 's#^//B "##' -e 's#"$##')
+            if [ -n "$vbs_win" ]; then
+                vbs_posix=$(cygpath -u "$vbs_win" 2>/dev/null || echo "$vbs_win")
+                if [ -f "$vbs_posix" ]; then
+                    cp "$vbs_posix" "$STATE/create-time-shim-probe.vbs"
+                    bat_win=$(sed -n 's/^WScript.Quit sh.Run("""\(.*\)""", 0, True)\r*$/\1/p' "$vbs_posix")
+                    bat_posix=$(cygpath -u "$bat_win" 2>/dev/null || echo "$bat_win")
+                    if [ -f "$bat_posix" ]; then
+                        cp "$bat_posix" "$STATE/create-time-runner-probe.bat"
+                    fi
                 fi
             fi
         else
@@ -232,6 +243,10 @@ FAKE
 cat >>"$FAKE_PWSH" <<'FAKE'
 argv="$*"
 case "$argv" in
+    *HKLM:*|*HKCU:*)
+        echo "ABSENT"
+        exit 0
+        ;;
     *Get-ScheduledTaskInfo*)
         if [ -e "$STATE/verify-probe-fail" ]; then
             echo "fake-pwsh: simulated probe failure" >&2
@@ -272,10 +287,20 @@ esac
 FAKE
 chmod +x "$FAKE_PWSH"
 
+# Keep the new shared WSH preflight hermetic. This suite's fake PowerShell now
+# also answers both registry-policy reads; the host stub accepts the zero-exit
+# smoke .vbs without depending on the operator's WSH installation or policy.
+FAKE_WSCRIPT="$TMP_ROOT/wscript-fake.exe"
+printf '#!/bin/sh\nexit 0\n' > "$FAKE_WSCRIPT"
+chmod +x "$FAKE_WSCRIPT"
+export CADENCE_WSCRIPT_BIN="$FAKE_WSCRIPT"
+export CADENCE_WSH_POWERSHELL="$FAKE_PWSH"
+
 reset_state() {
     rm -rf "$STATE"
     mkdir -p "$STATE/tasks"
     rm -rf "$BAT_DIR"
+    rm -f "$HIMMEL_OBSERVABILITY_CONFIG"
 }
 
 # Self-contained payload root (HIMMEL-1309). The default run_sc used to arm
@@ -314,13 +339,39 @@ else
 fi
 calls=$(cat "$STATE/calls.log" 2>/dev/null || echo MISSING)
 assert_contains "schtasks invoked with /create /tn HIMMEL-CodexOrphanSweep /xml" "/create /tn HIMMEL-CodexOrphanSweep /xml" "$calls"
+assert_registry "arm registers codex-sweep at its honest 4-hour cadence" 'any(.flows[]; .name == "codex-sweep" and .cadence_seconds == 14400)'
+assert_registry "arm registers the scheduled task as expected" 'any(.expected_tasks[]; . == "HIMMEL-CodexOrphanSweep")'
 
 bat=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
-assert_contains "bat stamps the format version (HIMMEL-588)" "himmel-cadence-runner-format: 9" "$bat"
+vbs=$(cat "$BAT_DIR/codex-sweep.vbs" 2>/dev/null || echo MISSING)
+# The expected version is SOURCED, never retyped (HIMMEL-2044): a hardcoded
+# literal here bounces this suite on every format bump for no coverage gain --
+# the assertion that matters is "the runner stamps the CURRENT format".
+# shellcheck source=../lib/cadence-format.sh
+# shellcheck disable=SC1091
+. "$(dirname "$0")/../lib/cadence-format.sh"
+FMT="$CADENCE_RUNNER_FORMAT_VERSION"
+assert_contains "bat stamps the format version (HIMMEL-588)" "himmel-cadence-runner-format: $FMT" "$bat"
+assert_contains "shim creates WScript.Shell" 'CreateObject("WScript.Shell")' "$vbs"
+assert_contains "shim launches the runner hidden and waits" 'codex-sweep.bat""", 0, True)' "$vbs"
+assert_contains "shim forwards the runner exit code" "WScript.Quit sh.Run" "$vbs"
 assert_contains "bat fires sweep-codex-orphans.ps1 -Kill" "sweep-codex-orphans.ps1" "$bat"
 assert_contains "bat fires reap-mcp-fleet.ps1 -Kill" "reap-mcp-fleet.ps1" "$bat"
 assert_contains "bat fires reap-superseded-fleets.ps1 -Kill (HIMMEL-1309 third leg)" "reap-superseded-fleets.ps1" "$bat"
 assert_contains "bat passes -Kill to the sweep payload" "sweep-codex-orphans.ps1" "$bat"
+# HIMMEL-1389 (the #1454 fix, carried to the sibling emitters): a payload that
+# resolves to a .cmd/.bat shim is TRANSFERRED to, not called — the rc capture,
+# the two later legs and the PAYLOAD_FAILED exit would silently never run.
+if grepq "$bat" -E 'call "[^"]*" -NoProfile -ExecutionPolicy Bypass -File "[^"]*sweep-codex-orphans\.ps1"'; then
+    pass "bat call-prefixes the sweep payload invocation (HIMMEL-1389)"
+else
+    fail "bat call-prefixes the sweep payload invocation (HIMMEL-1389)" "$bat"
+fi
+if [ "$(printf '%s\n' "$bat" | grep -cE '^call "')" = 3 ]; then
+    pass "all three payload legs are call-prefixed (HIMMEL-1389)"
+else
+    fail "all three payload legs are call-prefixed (HIMMEL-1389)" "$bat"
+fi
 if grepq "$bat" -E 'sweep-codex-orphans\.ps1"[^\r\n]*-Kill'; then
     pass "sweep payload line carries -Kill"
 else
@@ -336,9 +387,22 @@ if grepq "$bat" -E 'reap-superseded-fleets\.ps1"[^\r\n]*-Kill'; then
 else
     fail "supersede payload line missing -Kill"
 fi
-assert_contains "bat stamps sweep exit rc" "sweep exit rc=%ERRORLEVEL%" "$bat"
-assert_contains "bat stamps reap exit rc" "reap exit rc=%ERRORLEVEL%" "$bat"
-assert_contains "bat stamps supersede exit rc" "supersede exit rc=%ERRORLEVEL%" "$bat"
+assert_contains "bat initializes aggregate payload failure state" 'set "PAYLOAD_FAILED=0"' "$bat"
+assert_contains "bat stamps captured sweep exit rc" "sweep exit rc=%PAYLOAD_RC%" "$bat"
+assert_contains "bat stamps captured reap exit rc" "reap exit rc=%PAYLOAD_RC%" "$bat"
+assert_contains "bat stamps captured supersede exit rc" "supersede exit rc=%PAYLOAD_RC%" "$bat"
+_failure_guards=$(printf '%s' "$bat" | grep -c 'if not "%PAYLOAD_RC%"=="0" set "PAYLOAD_FAILED=1"' || true)
+if [ "$_failure_guards" -eq 3 ]; then
+    pass "every payload leg contributes to the aggregate task result"
+else
+    fail "expected one aggregate failure guard after each payload leg" "got=$_failure_guards"
+fi
+_bat_last=$(printf '%s' "$bat" | tr -d '\r' | tail -n 1)
+if [ "$_bat_last" = 'exit /b %PAYLOAD_FAILED%' ]; then
+    pass "bat returns aggregate failure only after all payload legs run"
+else
+    fail "bat does not return aggregate payload result as its final action" "last=$_bat_last"
+fi
 # Leg ORDER is load-bearing (HIMMEL-1309): the superseded-fleet check runs LAST,
 # after both orphan sweeps have removed everything whose supervisor is already
 # gone, so it only ever adjudicates fleets under a still-LIVE app-server.
@@ -355,20 +419,27 @@ done
 # exact same successful-default-arm scenario (reset_state; run_sc arm) with
 # no state divergence from T1 above, so they are the same code path -- merged
 # into T1's single arm call instead of re-arming twice more.
-if ls "$BAT_DIR"/.codex-sweep.bat.* >/dev/null 2>&1; then
-    fail "temp runner file left behind after success" "$(ls "$BAT_DIR"/.codex-sweep.bat.* 2>/dev/null)"
+if compgen -G "$BAT_DIR/.codex-sweep.bat.*" >/dev/null || compgen -G "$BAT_DIR/.codex-sweep.vbs.*" >/dev/null; then
+    fail "temp runner or shim file left behind after success"
 else
-    pass "no temp runner file left behind after success (FIX 1c)"
+    pass "no temp runner or shim file left behind after success (FIX 1c)"
+fi
+if [ -f "$STATE/create-time-shim-probe.vbs" ]; then
+    pass "shim was readable at its final path at /create time"
+else
+    fail "shim NOT readable at its final path at /create time -- publish-before-create ordering broken"
 fi
 if [ -f "$STATE/create-time-runner-probe.bat" ]; then
-    pass "runner was readable at its final path at /create time (publish-before-create ordering holds, FIX 1d)"
+    pass "runner was readable through the shim at /create time (publish-before-create ordering holds, FIX 1d)"
 else
-    fail "runner NOT readable at its final path at /create time -- publish-before-create ordering broken"
+    fail "runner NOT readable through the shim at /create time -- publish-before-create ordering broken"
 fi
+shim_probe=$(cat "$STATE/create-time-shim-probe.vbs" 2>/dev/null || echo MISSING)
+assert_contains "create-time shim probe launches the final runner hidden" 'codex-sweep.bat""", 0, True)' "$shim_probe"
 probe=$(cat "$STATE/create-time-runner-probe.bat" 2>/dev/null || echo MISSING)
 assert_contains "create-time probe carries the full new runner content (sweep payload)" "sweep-codex-orphans.ps1" "$probe"
 assert_contains "create-time probe carries the full new runner content (reap payload)" "reap-mcp-fleet.ps1" "$probe"
-assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: 9" "$probe"
+assert_contains "create-time probe carries the format-version stamp (proves COMPLETE content, not partial)" "himmel-cadence-runner-format: $FMT" "$probe"
 
 echo "TEST: created XML carries InteractiveToken/LeastPrivilege + default 09:00 (T1b)"
 xml=$(cat "$STATE/tasks/HIMMEL-CodexOrphanSweep" 2>/dev/null || echo MISSING)
@@ -377,6 +448,19 @@ assert_contains "XML RunLevel LeastPrivilege" "<RunLevel>LeastPrivilege</RunLeve
 assert_contains "XML StartWhenAvailable" "<StartWhenAvailable>true</StartWhenAvailable>" "$xml"
 assert_contains "XML default time 09:00" "T09:00:00" "$xml"
 assert_contains "XML Actions Context=Author" '<Actions Context="Author">' "$xml"
+# HIMMEL-1753: Exec is a `wscript //B <shim>.vbs` wrapper around the .bat.
+# The hidden-powershell shape still allocated consoles; wscript allocates zero.
+# (codex-sweep previously threaded the resolved pwsh path as <Command> -- that
+# is gone; the resolved pwsh still drives the .bat's payload legs.) Element-
+# scoped (not whole-XML) checks so a wrapper regression that happened to still
+# mention the .bat somewhere else in the document wouldn't hide a broken Command.
+_command_elem=$(printf '%s' "$xml" | grep -o '<Command>[^<]*</Command>' | head -1)
+_arguments_elem=$(printf '%s' "$xml" | grep -o '<Arguments>[^<]*</Arguments>' | head -1)
+assert_contains "XML Exec Command is wscript.exe, not the bare .bat" "<Command>wscript.exe</Command>" "$_command_elem"
+assert_not_contains "XML Exec Command does not carry the shim path" "codex-sweep.vbs" "$_command_elem"
+assert_contains "XML Exec Arguments carries //B batch mode" "//B" "$_arguments_elem"
+assert_contains "XML Exec Arguments references the runner shim" "codex-sweep.vbs" "$_arguments_elem"
+assert_not_contains "XML Exec no longer uses hidden powershell" "-WindowStyle Hidden" "$xml"
 assert_contains "XML repeats every 4h by default (HIMMEL-1309)" "<Interval>PT4H</Interval>" "$xml"
 assert_contains "XML repetition spans the day" "<Duration>P1D</Duration>" "$xml"
 assert_contains "XML never cuts an in-flight sweep short" "<StopAtDurationEnd>false</StopAtDurationEnd>" "$xml"
@@ -543,8 +627,16 @@ reset_state
 mkdir -p "$BAT_DIR"
 printf 'SENTINEL-PRE-EXISTING-BAT\r\n' > "$BAT_DIR/codex-sweep.bat"
 touch "$STATE/verify-nextrun-none"
+# HIMMEL-1879: the self-delete must leave a POSITIVE trace. HOME is already
+# redirected under $TMP_ROOT, so the default ledger path is sandboxed.
+rm -f "$HOME/.himmel/flow-runs.jsonl"
 rc=0; out=$(run_sc arm 2>&1) || rc=$?
 assert_rc "post-arm verify NEXTRUN-NONE -> rc 4" 4 "$rc"
+ledger_1879=$(cat "$HOME/.himmel/flow-runs.jsonl" 2>/dev/null || echo MISSING)
+assert_contains "self-delete writes a flow-run row (HIMMEL-1879)" '"flow":"codex-sweep-cadence"' "$ledger_1879"
+assert_contains "the row's outcome names the self-deletion (HIMMEL-1879)" '"outcome":"self-deleted"' "$ledger_1879"
+assert_contains "the row carries the task name (HIMMEL-1879)" '"task_name":"HIMMEL-CodexOrphanSweep"' "$ledger_1879"
+assert_contains "the self-delete is announced loudly (HIMMEL-1879)" "CADENCE SELF-DELETED ITS OWN TASK" "$out"
 if [ ! -f "$STATE/tasks/HIMMEL-CodexOrphanSweep" ]; then
     pass "task deleted after failed post-arm verify"
 else
@@ -552,14 +644,18 @@ else
 fi
 deleted=$(cat "$STATE/deleted.log" 2>/dev/null || echo MISSING)
 assert_contains "rollback recorded a /delete call" "HIMMEL-CodexOrphanSweep" "$deleted"
+assert_registry "rc=4 self-delete keeps the flow registered" 'any(.flows[]; .name == "codex-sweep")'
+assert_registry "rc=4 self-delete keeps the vanished task expected" 'any(.expected_tasks[]; . == "HIMMEL-CodexOrphanSweep")'
 assert_contains "rollback NOTE names the --force re-arm recovery command (FIX B)" "re-arm with: bash scripts/cleanup/codex-sweep-cadence.sh arm" "$out"
 bat_after=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
+vbs_after=$(cat "$BAT_DIR/codex-sweep.vbs" 2>/dev/null || echo MISSING)
 assert_not_contains "pre-existing sentinel .bat is GONE after NEXTRUN-NONE rollback (publish happens before /create now, FIX 1b)" "SENTINEL-PRE-EXISTING-BAT" "$bat_after"
 assert_contains "bat holds the COMPLETE new runner content after NEXTRUN-NONE rollback (inert without the deleted task, FIX 1b)" "sweep-codex-orphans.ps1" "$bat_after"
-if ls "$BAT_DIR"/.codex-sweep.bat.* >/dev/null 2>&1; then
-    fail "temp runner file left behind after NEXTRUN-NONE rollback" "$(ls "$BAT_DIR"/.codex-sweep.bat.* 2>/dev/null)"
+assert_contains "shim stays published after NEXTRUN-NONE rollback" 'codex-sweep.bat""", 0, True)' "$vbs_after"
+if compgen -G "$BAT_DIR/.codex-sweep.bat.*" >/dev/null || compgen -G "$BAT_DIR/.codex-sweep.vbs.*" >/dev/null; then
+    fail "temp runner or shim file left behind after NEXTRUN-NONE rollback"
 else
-    pass "no temp runner file left behind after NEXTRUN-NONE rollback (FIX 1b)"
+    pass "no temp runner or shim file left behind after NEXTRUN-NONE rollback (FIX 1b)"
 fi
 rm -f "$STATE/verify-nextrun-none"
 
@@ -591,13 +687,15 @@ touch "$STATE/fail-create"
 rc=0; out=$(run_sc arm 2>&1) || rc=$?
 assert_rc "arm with /create failure -> rc 4" 4 "$rc"
 bat_after=$(cat "$BAT_DIR/codex-sweep.bat" 2>/dev/null || echo MISSING)
+vbs_after=$(cat "$BAT_DIR/codex-sweep.vbs" 2>/dev/null || echo MISSING)
 assert_not_contains "pre-existing sentinel .bat is GONE after /create failure (publish happens before /create now)" "SENTINEL-PRE-EXISTING-BAT" "$bat_after"
 assert_contains "bat holds the COMPLETE new runner content after /create failure" "sweep-codex-orphans.ps1" "$bat_after"
 assert_contains "bat holds the COMPLETE new runner content after /create failure (reap payload too, not partial)" "reap-mcp-fleet.ps1" "$bat_after"
-if ls "$BAT_DIR"/.codex-sweep.bat.* >/dev/null 2>&1; then
-    fail "temp runner file left behind after /create failure" "$(ls "$BAT_DIR"/.codex-sweep.bat.* 2>/dev/null)"
+assert_contains "shim holds the COMPLETE new wrapper after /create failure" 'codex-sweep.bat""", 0, True)' "$vbs_after"
+if compgen -G "$BAT_DIR/.codex-sweep.bat.*" >/dev/null || compgen -G "$BAT_DIR/.codex-sweep.vbs.*" >/dev/null; then
+    fail "temp runner or shim file left behind after /create failure"
 else
-    pass "no temp runner file left behind after /create failure"
+    pass "no temp runner or shim file left behind after /create failure"
 fi
 rm -f "$STATE/fail-create"
 
@@ -620,10 +718,10 @@ assert_contains "dry-run mentions schtasks /create" "/create /tn HIMMEL-CodexOrp
 calls=$(cat "$STATE/calls.log" 2>/dev/null || echo "")
 assert_not_contains "dry-run made no /create call" "/create " "$calls"
 assert_not_contains "dry-run made no /delete call" "/delete " "$calls"
-if [ ! -f "$BAT_DIR/codex-sweep.bat" ]; then
-    pass "dry-run wrote no .bat file"
+if [ ! -f "$BAT_DIR/codex-sweep.bat" ] && [ ! -f "$BAT_DIR/codex-sweep.vbs" ]; then
+    pass "dry-run wrote no runner or shim file"
 else
-    fail "dry-run wrote a .bat file"
+    fail "dry-run wrote a runner or shim file"
 fi
 
 # Test T7: hostile-but-legal BAT_DIR is cmd-escaped in the .bat --------------
@@ -649,6 +747,24 @@ assert_contains "LOG assignment is the real dir, fully quoted (% doubled, & ^ ve
     "$EVIL_LOG_EXPECTED" "$evil_bat"
 assert_not_contains "no caret-escaped ampersand" '^&' "$evil_bat"
 assert_not_contains "no doubled caret" '^^' "$evil_bat"
+
+# Test T7-quote: a literal ' and & in BAT_DIR round-trip through the wscript
+# Arguments XML layer and the generated VBScript Run path (HIMMEL-1753).
+echo "TEST: BAT_DIR with a literal ' and & round-trips through the wscript shim (T7-quote)"
+reset_state
+QUOTE_DIR="$TMP_ROOT/qt'dir&x"
+env SWEEP_SCHTASKS="$FAKE_SCHTASKS" SWEEP_BAT_DIR="$QUOTE_DIR" SWEEP_PWSH="$FAKE_PWSH" \
+    SWEEP_HIMMEL_ROOT="$FIXTURE_ROOT" HOME="$HOME" "$REAL_BASH" "$SCRIPT" arm >/dev/null
+xml=$(cat "$STATE/tasks/HIMMEL-CodexOrphanSweep" 2>/dev/null || echo MISSING)
+_arguments_elem=$(printf '%s' "$xml" | grep -o '<Arguments>[^<]*</Arguments>' | head -1)
+quote_vbs=$(cat "$QUOTE_DIR/codex-sweep.vbs" 2>/dev/null || echo MISSING)
+assert_contains "Arguments preserves the literal single quote in the shim path" \
+    "qt'dir" "$_arguments_elem"
+assert_not_contains "Arguments no longer applies PowerShell single-quote doubling" \
+    "qt''dir" "$_arguments_elem"
+assert_contains "Arguments XML-escapes the literal ampersand (& -> &amp;)" "&amp;" "$_arguments_elem"
+assert_contains "shim Run path preserves the literal single quote" "qt'dir" "$quote_vbs"
+assert_contains "shim Run path preserves the literal ampersand" "dir&x" "$quote_vbs"
 
 # Test T7b: no pwsh/powershell resolvable -> rc 2 -----------------------------
 
@@ -767,7 +883,7 @@ fi
 # FIRST against the still-armed state, then T12's real disarm + idempotent
 # second disarm consume the same arm without re-arming from scratch.
 
-echo "TEST: disarm --dry-run while armed -> rc 0, no /delete, .bat still present (T12b)"
+echo "TEST: disarm --dry-run while armed -> rc 0, no /delete, runner + shim still present (T12b)"
 reset_state
 run_sc arm >/dev/null
 rc=0; out=$(run_sc disarm --dry-run 2>&1) || rc=$?
@@ -775,10 +891,10 @@ assert_rc "disarm --dry-run while armed -> rc 0" 0 "$rc"
 assert_contains "disarm --dry-run mentions dry-run/no changes" "DRY" "$out"
 calls=$(cat "$STATE/calls.log" 2>/dev/null || echo "")
 assert_not_contains "disarm --dry-run made no /delete call" "/delete " "$calls"
-if [ -f "$BAT_DIR/codex-sweep.bat" ]; then
-    pass "disarm --dry-run left the .bat in place"
+if [ -f "$BAT_DIR/codex-sweep.bat" ] && [ -f "$BAT_DIR/codex-sweep.vbs" ]; then
+    pass "disarm --dry-run left the runner and shim in place"
 else
-    fail "disarm --dry-run removed the .bat"
+    fail "disarm --dry-run removed the runner or shim"
 fi
 if [ -f "$STATE/tasks/HIMMEL-CodexOrphanSweep" ]; then
     pass "disarm --dry-run left the task armed"
@@ -795,6 +911,13 @@ if [ ! -f "$STATE/tasks/HIMMEL-CodexOrphanSweep" ]; then
 else
     fail "disarm left the task behind"
 fi
+if [ ! -f "$BAT_DIR/codex-sweep.bat" ] && [ ! -f "$BAT_DIR/codex-sweep.vbs" ]; then
+    pass "disarm removed the runner and shim"
+else
+    fail "disarm left the runner or shim behind"
+fi
+assert_registry "deliberate disarm unregisters codex-sweep" 'all(.flows[]; .name != "codex-sweep")'
+assert_registry "deliberate disarm removes the expected task" 'all(.expected_tasks[]; . != "HIMMEL-CodexOrphanSweep")'
 rc=0; out=$(run_sc disarm 2>&1) || rc=$?
 assert_rc "second disarm -> rc 0 idempotent" 0 "$rc"
 assert_contains "second disarm -> no-op message" "nothing armed" "$out"

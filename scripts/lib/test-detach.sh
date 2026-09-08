@@ -80,6 +80,51 @@ else
     fail "no-setsid fallback: child never completed (disown dropped the work)"
 fi
 
+# --- Case 4: HIMMEL_DETACH_INLINE runs the work SYNCHRONOUSLY (HIMMEL-2004) ---
+# The bounded Stop worker sets this on every job it runs. If detach_run kept
+# detaching under it, the queued work would escape the worker the moment it
+# started and the concurrency bound would buy nothing. So here the marker MUST
+# already exist when the call returns — no polling.
+#
+# Each case below runs in a SUBSHELL: bash keeps a `VAR=v func` assignment set
+# after the call, so an inline prefix here would leak into the next case.
+MARKER4="$TMP/inline-done"
+(export HIMMEL_DETACH_INLINE=1; detach_run sh -c ": > '$MARKER4'")
+if [ -e "$MARKER4" ]; then
+    pass "HIMMEL_DETACH_INLINE=1 runs the work inline (nothing escapes the Stop worker)"
+else
+    fail "HIMMEL_DETACH_INLINE=1 still detached — queued work escapes the concurrency bound"
+fi
+
+# --- Case 5: detach_queued enqueues instead of spawning a tree (HIMMEL-2004) --
+# The whole point of the queue: N callers leave N entries for ONE worker rather
+# than N independent trees. Point the queue at a scratch dir so the real one is
+# untouched, and assert the call ENQUEUED rather than spawning its own child.
+# The log, not the entries dir, is the stable assertion: the worker this enqueue
+# starts may well have drained the entry before we look — so "it was queued" is
+# what this case can honestly check, and the queue's own suite
+# (scripts/hooks/stop-queue.test.mjs) owns what happens to the entry after that.
+QDIR="$TMP/queue"
+(export HIMMEL_STOP_QUEUE_DIR="$QDIR"; detach_queued detach-suite-case5 sh -c ':')
+if grep -q '"ev":"enqueued"' "$QDIR/queue.jsonl" 2>/dev/null; then
+    pass "detach_queued left a durable queue entry"
+else
+    fail "detach_queued wrote no queue entry (fell back to a detached tree?)"
+fi
+
+# --- Case 6: with the queue switched off, detach_queued still runs the work ----
+# Losing the bound is acceptable; losing the work is not. HIMMEL_STOP_QUEUE_OFF=1
+# is the documented escape hatch and must degrade to plain detach_run.
+MARKER6="$TMP/fallback-done"
+(export HIMMEL_STOP_QUEUE_OFF=1; detach_queued detach-suite-case6 sh -c ": > '$MARKER6'")
+i=0
+while [ ! -e "$MARKER6" ] && [ "$i" -lt 60 ]; do sleep 0.2; i=$((i + 1)); done
+if [ -e "$MARKER6" ]; then
+    pass "HIMMEL_STOP_QUEUE_OFF=1 falls back to detach_run (work still lands)"
+else
+    fail "HIMMEL_STOP_QUEUE_OFF=1 dropped the work instead of falling back"
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

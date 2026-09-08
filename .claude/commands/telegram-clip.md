@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, Write, Skill
-description: File a Telegram message (text / bare URL / forward) as a harvest-ready LUNA-2 clip note in the luna vault's Clippings/. Thin wrapper that delegates to the obsidian-triage:telegram-clip skill (LUNA-58 — see marketplace/plugins/obsidian-triage/skills/telegram-clip/SKILL.md for the runbook).
+description: File a Telegram message (text, bare URL, or forward) as a harvest-ready LUNA-2 clip note in luna's Clippings/.
 argument-hint: <message text or URL> [--vault <path>] [--dry-run]
 ---
 

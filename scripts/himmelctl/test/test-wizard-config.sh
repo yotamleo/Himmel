@@ -41,6 +41,13 @@
 #      (cygpath -w) still resolves the initiative set write to the INTENDED
 #      fixture .env, not a misresolved sibling. Git-Bash/MSYS/Cygwin only —
 #      self-skips on posix (no backslash separator).
+#   P. (HIMMEL-2733) `himmelctl profile` is a SEPARATE argv[0] special-case
+#      (same mechanism as `config`'s, added right after it in main()) that
+#      dispatches to plugin-profile.sh — proves it parses to subcommand
+#      `profile` (exact args forwarded, exact exit code propagated) and does
+#      not collide with the pre-existing config/scope/trust verb handling:
+#      `config get`, `scope status` and `trust status` still reach their own
+#      handlers and never touch the profile stub's call log.
 
 set -euo pipefail
 
@@ -54,6 +61,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 resolve_mjs="$repo_root/scripts/lanes/resolve.mjs"
 probe_mjs="$repo_root/scripts/lanes/probe.mjs"
@@ -72,15 +80,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # build_fixture <dir> — a throwaway HIMMELCTL_REPO_ROOT target carrying REAL
 # copies of the primitives `config` shells out to, so a live run against the
@@ -103,7 +102,7 @@ run_cfg() {
   local _fixture="$1"; shift
   local _h="$work/home-$$-$RANDOM"; mkdir -p "$_h"
   set +e
-  CFG_OUT=$(HOME="$_h" HIMMELCTL_REPO_ROOT="$(winpath "$_fixture")" \
+  CFG_OUT=$(HOME="$_h" USERPROFILE="$(winpath "$_h")" HIMMELCTL_CACHE_DIR="$(winpath "$_h.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_h.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$_fixture")" \
     "$node_bin" "$wizard" config "$@" 2>&1)
   CFG_RC=$?
   set -e
@@ -224,7 +223,7 @@ echo "ok: caseE --dry-run makes ZERO writes for both initiative and lanes surfac
 fxL="$work/fixtureL"; build_fixture "$fxL"
 _hL="$work/home-L-$$-$RANDOM"; mkdir -p "$_hL"
 set +e
-outL=$(HOME="$_hL" HIMMELCTL_REPO_ROOT="$(winpath "$fxL")" \
+outL=$(HOME="$_hL" USERPROFILE="$(winpath "$_hL")" HIMMELCTL_CACHE_DIR="$(winpath "$_hL.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hL.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxL")" \
   "$node_bin" "$wizard" --dry-run config set initiative.execute on 2>&1)
 rcL=$?
 set -e
@@ -259,7 +258,7 @@ cat > "$_hM/.claude/himmel/install-profile.json" <<'JSON'
 {"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
 JSON
 set +e
-outM=$(HOME="$_hM" HIMMELCTL_REPO_ROOT="$(winpath "$fxM")" \
+outM=$(HOME="$_hM" USERPROFILE="$(winpath "$_hM")" HIMMELCTL_CACHE_DIR="$(winpath "$_hM/.claude/himmel")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hM/.himmel/config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxM")" \
   "$node_bin" "$wizard" --items config status 2>&1)
 rcM=$?
 set -e
@@ -311,7 +310,7 @@ fxG="$work/fixtureG"; build_fixture "$fxG"
 _hG="$work/homeG"; mkdir -p "$_hG"
 _pathG="$stubG:$PATH"
 set +e
-outG=$(PATH="$_pathG" HOME="$_hG" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
+outG=$(PATH="$_pathG" HOME="$_hG" USERPROFILE="$(winpath "$_hG")" HIMMELCTL_CACHE_DIR="$(winpath "$_hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hG.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
   "$node_bin" "$wizard" config set hooks.plugin.github on 2>&1); rcG=$?
 set -e
 [ "$rcG" -eq 0 ] || fail "caseG: hooks.plugin.github on should exit 0 (got rc=$rcG): $outG"
@@ -320,7 +319,7 @@ grep -qF 'claude: plugin enable github' "$callsG" \
   || fail "caseG: expected 'plugin enable github' (got: $(cat "$callsG"))"
 : > "$callsG"
 set +e
-outG=$(PATH="$_pathG" HOME="$_hG" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
+outG=$(PATH="$_pathG" HOME="$_hG" USERPROFILE="$(winpath "$_hG")" HIMMELCTL_CACHE_DIR="$(winpath "$_hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hG.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
   "$node_bin" "$wizard" config set hooks.plugin.github off 2>&1); rcG=$?
 set -e
 [ "$rcG" -eq 0 ] || fail "caseG: hooks.plugin.github off should exit 0 (got rc=$rcG): $outG"
@@ -328,7 +327,7 @@ grep -qF 'claude: plugin disable github' "$callsG" \
   || fail "caseG: expected 'plugin disable github' (got: $(cat "$callsG"))"
 : > "$callsG"
 set +e
-outG=$(PATH="$_pathG" HOME="$_hG" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
+outG=$(PATH="$_pathG" HOME="$_hG" USERPROFILE="$(winpath "$_hG")" HIMMELCTL_CACHE_DIR="$(winpath "$_hG.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hG.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxG")" \
   "$node_bin" "$wizard" config set hooks.plugin.github on --dry-run 2>&1); rcG=$?
 set -e
 [ "$rcG" -eq 0 ] || fail "caseG: dry-run hooks.plugin should exit 0 (got rc=$rcG): $outG"
@@ -351,7 +350,7 @@ echo "ok: caseH invalid value / unknown path both rejected with rc=2"
 
 # ── Case I: interactive, closed stdin -> quits immediately, never hangs ────
 set +e
-outI=$(HOME="$work/homeI" HIMMELCTL_REPO_ROOT="$(winpath "$fxA")" \
+outI=$(HOME="$work/homeI" USERPROFILE="$(winpath "$work/homeI")" HIMMELCTL_CACHE_DIR="$(winpath "$work/homeI.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/homeI.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxA")" \
   "$node_bin" "$wizard" config </dev/null 2>&1); rcI=$?
 set -e
 [ "$rcI" -eq 0 ] || fail "caseI: closed-stdin interactive config should exit 0 (got rc=$rcI): $outI"
@@ -407,7 +406,7 @@ case "$(uname -s)" in
       *\\*)
         _hK="$work/homeK"; mkdir -p "$_hK"
         set +e
-        outK=$(HOME="$_hK" HIMMELCTL_REPO_ROOT="$winroot" \
+        outK=$(HOME="$_hK" USERPROFILE="$(winpath "$_hK")" HIMMELCTL_CACHE_DIR="$(winpath "$_hK.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hK.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$winroot" \
           "$node_bin" "$wizard" config set initiative.execute on 2>&1); rcK=$?
         set -e
         [ "$rcK" -eq 0 ] || fail "caseK: backslash-root set should exit 0 (got rc=$rcK): $outK"
@@ -460,5 +459,85 @@ run_cfg "$fxO" get lanes.haiku
 [ "$CFG_RC" -ne 0 ] \
   || fail "caseO: invalid-JSON lanes overlay must abort, not be silently empty (got rc=$CFG_RC): $CFG_OUT"
 echo "ok: caseO a malformed lanes overlay (bad JSON or wrong shape) aborts instead of reporting empty/crashing"
+
+# ── Case P (HIMMEL-2733): `profile` parses to its own subcommand, no collision
+# with config/scope/trust ────────────────────────────────────────────────────
+# `himmelctl profile` is dispatched by a SEPARATE `if (argv[0] === 'profile')`
+# check in main() (added right after the `config` special-case, before
+# parseArgs) that forwards its remaining argv verbatim to plugin-profile.sh —
+# a stub replaces the real script here so nothing touches the operator's
+# actual plugin set. build_fixture already gives this fixture a real `config`
+# setup (initiative/lanes primitives), so the SAME fixture proves both halves:
+# `profile` reaches the stub, and `config`/`scope`/`trust` are unaffected by
+# the new check (never mistaken for `profile`, never touch its call log).
+fxP="$work/fixtureP"; build_fixture "$fxP"
+mkdir -p "$fxP/scripts/machine-setup"
+cat > "$fxP/scripts/machine-setup/plugin-profile.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'plugin-profile.sh: %s\n' "$*" >> "$(dirname "$0")/../../profile-calls.log"
+{ printf 'argc:%s\n' "$#"; for a in "$@"; do printf '%s\n' "$a"; done; } >> "$(dirname "$0")/../../profile-args.log"
+exit 17
+STUB
+chmod +x "$fxP/scripts/machine-setup/plugin-profile.sh"
+_hP="$work/home-P-$$-$RANDOM"; mkdir -p "$_hP" "$_hP.himmelctl-cache" "$fxP/.claude" "$fxP/scripts/trust"
+# Faithful prerequisites for the positive handlers below: scope reads the real
+# install-profile cache shape; trust dispatches the real wiring script in
+# --check mode against an isolated, valid settings file.
+cat > "$_hP.himmelctl-cache/install-profile.json" <<'JSON'
+{"role":"adopter","tier":"standard","scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
+JSON
+printf '{}\n' > "$fxP/.claude/settings.json"
+cp "$repo_root/scripts/trust/wire-trust-hooks.mjs" "$fxP/scripts/trust/wire-trust-hooks.mjs"
+cp "$repo_root/scripts/trust/shadow-ledger.mjs" "$fxP/scripts/trust/shadow-ledger.mjs"
+cp "$repo_root/scripts/lib/settings-lock.mjs" "$fxP/scripts/lib/settings-lock.mjs"
+
+# P1: `himmelctl profile list` dispatches to the stub with EXACTLY ["list"]
+# forwarded (never "profile list"), and the stub's non-standard exit code (17,
+# not 0/1) propagates unchanged — proof this is real passthrough, not a
+# wrapper collapsing every outcome to a generic code.
+set +e
+outP1=$(HOME="$_hP" USERPROFILE="$(winpath "$_hP")" HIMMELCTL_CACHE_DIR="$(winpath "$_hP.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hP.himmelctl-cache/luna-config.json")" HIMMELCTL_BASH=bash \
+  HIMMELCTL_REPO_ROOT="$(winpath "$fxP")" \
+  "$node_bin" "$wizard" profile list </dev/null 2>&1)
+rcP1=$?
+set -e
+[ "$rcP1" -eq 17 ] || fail "caseP1: 'profile list' should propagate the stub's exact exit code 17 (got rc=$rcP1): $outP1"
+[ -f "$fxP/profile-args.log" ] || fail "caseP1: expected plugin-profile.sh to be invoked (out: $outP1)"
+args_loggedP1=$(cat "$fxP/profile-args.log")
+[ "$args_loggedP1" = "$(printf 'argc:1\nlist')" ] \
+  || fail "caseP1: expected plugin-profile.sh invoked with exactly ['list'] (got: '$args_loggedP1')"
+echo "ok: caseP1 'himmelctl profile list' parses to subcommand profile — exact args forwarded, exact exit code (17) propagated"
+rm -f "$fxP/profile-calls.log" "$fxP/profile-args.log"
+
+# P2: config/scope/trust are unaffected — none of them are swallowed by the
+# new `profile` check (never invoke the stub, never enter the config TUI).
+run_cfg "$fxP" get initiative
+[ "$CFG_RC" -eq 0 ] || fail "caseP2: 'config get initiative' should still work on a fixture that ALSO carries the profile stub (got rc=$CFG_RC): $CFG_OUT"
+grepq "$CFG_OUT" -F 'what would you like to configure' \
+  && fail "caseP2: 'config get initiative' wrongly entered the config TUI (got: $CFG_OUT)"
+[ -f "$fxP/profile-calls.log" ] \
+  && fail "caseP2: 'config get initiative' must never invoke plugin-profile.sh (got: $(cat "$fxP/profile-calls.log")))"
+
+for verb_pair in "scope status" "trust status"; do
+  read -r -a verb_argv <<< "$verb_pair"
+  set +e
+  outP2=$(HOME="$_hP" USERPROFILE="$(winpath "$_hP")" HIMMELCTL_CACHE_DIR="$(winpath "$_hP.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_hP.himmelctl-cache/luna-config.json")" HIMMELCTL_REPO_ROOT="$(winpath "$fxP")" CLAUDE_PROJECT_DIR="$(winpath "$fxP")" \
+    "$node_bin" "$wizard" "${verb_argv[@]}" </dev/null 2>&1)
+  rcP2=$?
+  set -e
+  [ "$rcP2" -eq 0 ] \
+    || fail "caseP2: '$verb_pair' should reach its handler and exit 0 (got rc=$rcP2): $outP2"
+  case "$verb_pair" in
+    "scope status")
+      [ "$outP2" = "project" ] \
+        || fail "caseP2: 'scope status' should print the cached scope exactly (got: $outP2)" ;;
+    "trust status")
+      grepq "$outP2" -F 'wire-trust-hooks: 0/7 entries wired' \
+        || fail "caseP2: 'trust status' should print the handler's concrete status (got: $outP2)" ;;
+  esac
+  [ -f "$fxP/profile-calls.log" ] \
+    && fail "caseP2: '$verb_pair' must never invoke plugin-profile.sh (got: $(cat "$fxP/profile-calls.log"))"
+done
+echo "ok: caseP2 config/scope/trust verb handling is unaffected by the new 'profile' dispatch — never misrouted, never touch the profile stub"
 
 echo "PASS"

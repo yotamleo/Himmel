@@ -59,6 +59,12 @@ describe('--list-commands introspection contract', () => {
     }
   });
 
+  it('emits the issue-link read and delete verbs', () => {
+    expect(listCommands(process.env)).toEqual(
+      expect.arrayContaining(['links', 'unlink']),
+    );
+  });
+
   it('does not emit a `help` command (would widen the blocked-set)', () => {
     expect(listCommands(process.env)).not.toContain('help');
   });

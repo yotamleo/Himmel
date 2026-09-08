@@ -41,6 +41,10 @@ export function isAmbiguousWideCodePoint(codePoint) {
         (codePoint >= 0x2700 && codePoint <= 0x27BF));
 }
 export function codePointCellWidth(codePoint, ambiguousWide) {
+    // Variation selectors modify the preceding glyph and never occupy a cell.
+    if ((codePoint >= 0xFE00 && codePoint <= 0xFE0F) || (codePoint >= 0xE0100 && codePoint <= 0xE01EF)) {
+        return 0;
+    }
     if (isWideCodePoint(codePoint))
         return 2;
     if (ambiguousWide && isAmbiguousWideCodePoint(codePoint))

@@ -174,8 +174,10 @@ target the template ships to — see HIMMEL-315 and
 shell scripts use when they only know about one root:
 
 - **Mode A — inline (default)**: `HANDOVER_DIR` unset → `<repo>/handovers/`.
-  Post-HIMMEL-124 this resolves to a near-empty `himmel/handovers/`
-  (just the README stub). Useful only for himmel-scoped legacy code.
+  Post-HIMMEL-124 this resolves to a near-empty `himmel/handovers/` — the
+  only tracked content is a pair of README stubs (`handovers/README.md` and
+  a per-user `handovers/<USER_SLUG>/README.md`) that mark the layout; no
+  handover state lives there. Useful only for himmel-scoped legacy code.
 - **Mode B — external**: `HANDOVER_DIR` set → that path. **Recommended
   default** post-HIMMEL-343: a `handovers/` folder **inside your
   luna-style vault** — state becomes part of the knowledge base
@@ -201,6 +203,18 @@ HIMMEL-133).
 `CR_MERGE_GATE_OK=1` into the relaunched session's environment, so an armed
 chain's `merge` leg can actually reach `merge-on-green.sh`; omitted (both
 vars absent) by default.
+
+**The live-worker guard is scoped to the bridge root, not the caller**
+(HIMMEL-1463, #1551).
+Before arming, `arm-resume.sh` census-checks for live lane workers and
+refuses to arm (`rc=10`) while any are running or unprobeable — but that
+census reads a SHARED bridge root with no per-session scoping, so a second,
+unrelated concurrent chain's workers can block an arm that has nothing to
+do with them. `ARM_WITH_LIVE_WORKERS=1` bypasses the refusal (and the
+worker-reconciliation/list failure cases that hit the same code path) —
+trace the blocking pid up to its root process before reaching for the
+override; a proven-ownership override is auditable, a habitual one defeats
+the guard on the day it is actually right.
 
 Scripts, commands, and skills must NOT hardcode `./handovers/`.
 Source `scripts/lib/handover-path.sh` and call `handover_root`
@@ -241,6 +255,45 @@ reconstruct-and-flag layer they lacked. Tests:
 `scripts/handover/test-breadcrumb.sh` (hermetic — temp `HANDOVER_DIR` + temp
 git repo + jira stub), incl. the epic-done self-test (deleted breadcrumb →
 flagged recovery; valid → deterministic).
+
+## Operator-gated wrap + resume briefs (HIMMEL-2369)
+
+On 2026-09-01 a leg sat idle for ~1.5h waiting on an operator settings edit,
+holding its queue lock and burning its prompt cache, until the console woke
+it (a cold re-prime) just to produce a state summary the console could have
+written from git. The `## Operator-Gated Wrap` clause now carried verbatim in
+every `*-next-session.md` template (`marketplace/plugins/handover/templates/`,
+asserted byte-identical by `scripts/handover/test-template-operator-gated-clause.sh`)
+tells a leg to wrap at once when its only remaining dependency is an operator
+action: append a resume brief, release the queue lock, and end the turn
+instead of idle-waiting.
+
+**Console Rulings clause (HIMMEL-2788):** the same templates also carry a
+`## Console Rulings` clause, asserted byte-identical by the same test suite,
+prefacing every leg brief with how rulings actually reach it — a claudex leg
+via the file inbox hook (`scripts/hooks/claudex-inbox-hook.sh`), a native leg
+via a direct `SendMessage` — so the doc's own `## Console Rulings` section is
+what a leg checks, not something it idle-waits or gets pasted. See
+[`lane-calibration.md`](lane-calibration.md#non-claude-lane-calibration)'s
+"claudex console reachability" note for the delivery mechanism itself.
+
+`scripts/handover/leg-resume-brief.sh <leg-doc> [--branch <name>] [--dry-run]`
+is the console-side half of that clause: it reconstructs everything about a
+leg's state that git already knows (worktree path, `git status --short`,
+merge-base + head SHAs and their subjects, dirty paths) and appends a
+`## RESUME BRIEF (generated ...)` section to the leg's own handover doc,
+never rewriting or truncating it. The branch is read from `--branch` or
+inferred from a single `feat/`|`fix/`|`chore/`|`docs/`|`refactor/`|`test/`
+token in the doc body (ambiguous or absent → exit 2, pass `--branch`
+explicitly). The ordered remaining steps are deliberately NOT filled in —
+they live only in the leg's own reasoning, so the script emits a TODO block
+instead of inventing them.
+
+The rule this encodes: **wake a cold leg only when its private context is
+the only source of a fact.** Anything git-recoverable is the console's job to
+write from git directly; only the leg's own un-externalized reasoning (the
+ordered next steps, judgment calls made mid-session) ever justifies paying
+for a fresh cold-start. Test: `bash scripts/handover/test-leg-resume-brief.sh`.
 
 ## Migration timeline + open work
 

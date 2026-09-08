@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, Write, Skill
-description: Aggregate actionable items across the luna vault (daily action items, _deferred.md backlog, synthesis proposals, promotion candidates, component inventory), cluster into a sequenced roadmap mapped to tools, dedup candidate tickets against open Jira, and write a 60-Maps/ roadmap note. Proposals only. Thin wrapper that delegates to the obsidian-triage:roadmap-clips skill (LUNA-59 — see marketplace/plugins/obsidian-triage/skills/roadmap-clips/SKILL.md for the runbook).
+description: Aggregate actionable items across the luna vault into a sequenced 60-Maps/ roadmap note. Proposals only.
 argument-hint: "[--vault <path>] [--dry-run]"
 ---
 

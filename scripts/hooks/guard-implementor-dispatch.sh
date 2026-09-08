@@ -15,9 +15,10 @@
 #   2. If no lane is available but the live 5-hour bank is near exhaustion,
 #      retain HIMMEL-920's HARD refusal / WARN advisory policy.
 #
-# Both policies fail open when their own evidence is unavailable. Lane routing
-# never blocks without a positively resolved lane. A bank HARD refusal requires
-# a fresh numeric utilization and a provably live five_hour resets_at window.
+# Lane routing never refuses toward a lane whose required bank windows are
+# unknown: missing/unreadable evidence is loud and skips that lane. A parent-bank
+# HARD refusal requires fresh numeric utilization for a window the parent lane
+# actually has and a provably live resets_at value.
 # Missing/unparseable resets_at downgrades HARD to the visible WARN advisory.
 #
 # Haiku always allows: it is already the cheap bulk-mechanical tier. Known
@@ -37,6 +38,12 @@
 #   IMPL_GUARD_CACHE_MAX_AGE_SECS  cache staleness bound (default 300)
 #   IMPL_GUARD_HARD                bank refusal threshold (default 80)
 #   IMPL_GUARD_WARN                bank advisory threshold (default 65)
+#   IMPL_GUARD_WEEKLY_HARD         seven-day bank refusal threshold (default 85)
+#   IMPL_GUARD_WEEKLY_WARN         seven-day bank advisory threshold (default 70)
+# The four threshold overrides above are validated as positive numbers; a
+# non-numeric, zero, or negative override is warned and replaced with its
+# documented default rather than reaching the awk ratio math below as a
+# divide-by-zero (HIMMEL-2653).
 #   IMPL_GUARD_BANK_STATUS_CMD     override the funded-bank probe command (tests stub it; default `bun scripts/lanes/bank-status.ts`)
 #   IMPL_GUARD_BANK_BUDGET_SECS    funded-bank probe wall-clock budget (default 4)
 #   IMPL_GUARD_READINESS_CMD       override the lane-readiness probe command (tests stub it; default `node scripts/lanes/lane-readiness.mjs`)
@@ -51,6 +58,22 @@ warn() { echo "guard-implementor-dispatch: $*" >&2; }
 # can exit on an early match, SIGPIPE the producer, and turn a true match into a
 # nondeterministic pipeline failure on large input (HIMMEL-1430).
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
+
+# valid_threshold <value> <default> <env-var-name> — echoes <value> if it is a
+# positive number, else warns and echoes <default>. Used on every operator
+# threshold override so a bad value (zero, negative, non-numeric) can never
+# reach the awk ratio math as a divide-by-zero — falling back to the default
+# keeps the guard active, which is the safe (fail-closed) direction.
+valid_threshold() {
+    local value="$1" default="$2" name="$3" ok
+    ok=$(awk -v v="$value" 'BEGIN{ print (v ~ /^[0-9]+(\.[0-9]+)?$/ && v+0 > 0) ? 1 : 0 }' 2>/dev/null)
+    if [ "$ok" = "1" ]; then
+        printf '%s' "$value"
+    else
+        warn "$name=$value is not a positive number — using default $default"
+        printf '%s' "$default"
+    fi
+}
 
 input=$(cat 2>/dev/null || true)
 
@@ -278,25 +301,24 @@ _run_bounded() {
     return "$rc"
 }
 
-# lane_funded <lane-id> — return 0 iff the lane's bank is FUNDED. FAIL-OPEN by
-# design: a missing helper, missing bun, a timeout, a non-zero exit, unparseable
-# output, or an explicit `unknown` state ALL resolve to FUNDED with one warning.
-# ONLY a live `spent` state returns non-zero. This guard never invents a new
-# hard-block — `spent` makes the caller SKIP this lane toward the other lane (or
-# the HIMMEL-920 fall-through); it never refuses toward the caller.
+# lane_funded <lane-id> — return 0 iff the lane's declared active access path is
+# positively FUNDED. Missing helpers, timeouts, non-zero exits, garbage, missing
+# lane lines, and explicit `unknown` verdicts all fail LOUD and skip the lane.
+# This never refuses toward the caller directly: it falls through to another
+# lane or the parent-bank guard, but never routes toward unmeasured capacity.
 lane_funded() {
-    local id="$1" cmd budget out rc state lid lstate
+    local id="$1" cmd budget out rc state lid lstate _detail
     budget="${IMPL_GUARD_BANK_BUDGET_SECS:-4}"
     if [ -n "${IMPL_GUARD_BANK_STATUS_CMD:-}" ]; then
         cmd="$IMPL_GUARD_BANK_STATUS_CMD"
     else
         if ! command -v bun >/dev/null 2>&1; then
-            warn "lane '$id' bank-status probe needs bun, which is not on PATH — treating it as funded (fail-open)"
-            return 0
+            warn "lane '$id' bank-status probe needs bun, which is not on PATH — bank UNKNOWN; skipping it"
+            return 1
         fi
         if [ ! -f "$repo_root/scripts/lanes/bank-status.ts" ]; then
-            warn "lane '$id' bank-status probe is missing ($repo_root/scripts/lanes/bank-status.ts) — treating it as funded (fail-open)"
-            return 0
+            warn "lane '$id' bank-status probe is missing ($repo_root/scripts/lanes/bank-status.ts) — bank UNKNOWN; skipping it"
+            return 1
         fi
         cmd="bun \"$repo_root/scripts/lanes/bank-status.ts\""
     fi
@@ -306,16 +328,16 @@ lane_funded() {
     # crashed can still have written a partial `<lane> spent` line, and the
     # `spent` arm below is the ONE arm that refuses a lane — so parsing first
     # let a half-dead probe skip a lane on evidence it never finished
-    # producing. Non-zero rc means "no verdict", which is fail-OPEN by this
-    # function's documented contract, whatever bytes landed on stdout.
+    # producing. Non-zero rc means "no verdict", so the lane is skipped,
+    # whatever bytes landed on stdout.
     if [ "$rc" -ne 0 ]; then
-        warn "lane '$id' bank-status probe did not finish cleanly (rc=$rc) — treating it as funded (fail-open)"
-        return 0
+        warn "lane '$id' bank-status probe did not finish cleanly (rc=$rc) — bank UNKNOWN; skipping it"
+        return 1
     fi
     # Parse `<lane-id> <state>` for this lane. A here-string (no pipeline) keeps
-    # this pipefail-safe (HIMMEL-1430).
+    # this pipefail-safe (HIMMEL-1430); the third variable absorbs status detail.
     state=""
-    while IFS=' ' read -r lid lstate; do
+    while IFS=' ' read -r lid lstate _detail; do
         [ -n "$lid" ] || continue
         if [ "$lid" = "$id" ]; then
             state="$lstate"
@@ -330,14 +352,17 @@ lane_funded() {
         funded)
             return 0
             ;;
+        unknown)
+            warn "lane '$id' bank is UNKNOWN — skipping it; inspect /lanes for the missing required window"
+            return 1
+            ;;
         *)
-            # No rc branch here — a non-zero rc already returned above.
             if [ -z "$state" ]; then
-                warn "lane '$id' bank-status probe returned no '$id' line — treating it as funded (fail-open)"
+                warn "lane '$id' bank-status probe returned no '$id' line — bank UNKNOWN; skipping it"
             else
-                warn "lane '$id' bank-status probe returned an unrecognised state ('$state') — treating it as funded (fail-open)"
+                warn "lane '$id' bank-status probe returned an unrecognised state ('$state') — bank UNKNOWN; skipping it"
             fi
-            return 0
+            return 1
             ;;
     esac
 }
@@ -466,7 +491,22 @@ shape="${subagent_type:-<no-subagent_type>}/${model:-<no-model>}"
 CACHE_PATH="${IMPL_GUARD_CACHE_PATH:-/tmp/claude/statusline-usage-cache.json}"
 MAX_AGE="${IMPL_GUARD_CACHE_MAX_AGE_SECS:-300}"
 HARD="${IMPL_GUARD_HARD:-80}"
+HARD=$(valid_threshold "$HARD" 80 IMPL_GUARD_HARD)
 WARN_T="${IMPL_GUARD_WARN:-65}"
+WARN_T=$(valid_threshold "$WARN_T" 65 IMPL_GUARD_WARN)
+# HIMMEL-2653: the fleet burned 73% of its weekly (seven_day) bank in ~1.5
+# days while this guard watched only five_hour, which sat at a quiet 45% the
+# whole time — the live dispatch gate was silent all day at the exact moment
+# the binding window was the slow-refilling one. The seven-day thresholds are
+# deliberately HIGHER than the five-hour ones: the five-hour window refills in
+# hours, so its 80/65 pair is tuned to be noisy early; the weekly window takes
+# a week to refill, so tripping it at the same sensitivity would nag on every
+# normal week of use. 85/70 fires only when the slower budget is genuinely the
+# one binding.
+WEEKLY_HARD="${IMPL_GUARD_WEEKLY_HARD:-85}"
+WEEKLY_HARD=$(valid_threshold "$WEEKLY_HARD" 85 IMPL_GUARD_WEEKLY_HARD)
+WEEKLY_WARN="${IMPL_GUARD_WEEKLY_WARN:-70}"
+WEEKLY_WARN=$(valid_threshold "$WEEKLY_WARN" 70 IMPL_GUARD_WEEKLY_WARN)
 
 _py_lib="$hook_dir/../lib/py-armor.sh"
 [ -f "$_py_lib" ] || _py_lib="${CLAUDE_PROJECT_DIR:-}/scripts/lib/py-armor.sh"
@@ -496,8 +536,29 @@ if [ "$age" -gt "$MAX_AGE" ]; then
     exit 0
 fi
 
-# jq validates the value; awk owns every float-safe threshold comparison.
-util=$(jq -r '
+# HIMMEL-2653: the two bank windows (five_hour, seven_day) are read and
+# validated IDENTICALLY and INDEPENDENTLY — an unusable/expired five_hour must
+# never suppress a usable seven_day verdict, and vice versa (the live gate's
+# whole failure mode was one window's silence masking the other's signal).
+# jq validates each value; awk owns every float-safe threshold/ratio
+# comparison. Only when BOTH windows end up unusable does the hook fail open.
+#
+# Per-window "why it doesn't count" reasons are BUILT here but only ever
+# WARNED when they actually explain the final verdict (the both-unusable
+# fail-open below): a five_hour-only cache (the pre-2653 shape) or a healthy
+# low-utilization seven_day that never trips must stay exactly as silent as
+# the single-window guard always was — printing "7-day window does not
+# contribute" on every ordinary call would be new noise on every existing
+# cache, not a fix.
+#
+# five_hour ---------------------------------------------------------------
+FIVE_USABLE=0
+FIVE_RESETS_LIVE=0
+FIVE_IS_HARD=0
+FIVE_IS_WARN=0
+FIVE_DISP=""
+FIVE_REASON=""
+five_util=$(jq -r '
     (.five_hour.utilization) as $u
     | if ($u == null) then "UNKNOWN"
       elif ($u | type) != "number" then "UNKNOWN"
@@ -505,43 +566,136 @@ util=$(jq -r '
       else ($u | tostring)
       end
 ' "$CACHE_PATH" 2>/dev/null)
-[ -n "$util" ] || util="UNKNOWN"
+[ -n "$five_util" ] || five_util="UNKNOWN"
 
-if [ "$util" = "UNKNOWN" ]; then
-    warn "usage cache utilization unusable (null / non-numeric / out-of-range) — cannot verify bank utilization for $shape; allowing"
+if [ "$five_util" = "UNKNOWN" ]; then
+    FIVE_REASON="5-hour bank utilization unusable (null / non-numeric / out-of-range) for $shape — 5-hour window does not contribute"
+else
+    five_resets_at=$(jq -r '
+        (.five_hour.resets_at // empty) as $r
+        | ($r | tostring) as $s
+        | if ($s | test("^[0-9]+$")) then $s
+          elif ($s | test("T")) then (try ($s | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601 | tostring) catch "")
+          else "" end
+    ' "$CACHE_PATH" 2>/dev/null)
+    five_expired=0
+    if [ -n "$five_resets_at" ]; then
+        now_epoch=$(date +%s)
+        if [ "$now_epoch" -ge "$five_resets_at" ] 2>/dev/null; then
+            FIVE_REASON="usage cache five_hour window expired (resets_at $five_resets_at <= now $now_epoch) — bank has reset since this value; 5-hour window does not contribute"
+            five_expired=1
+        else
+            FIVE_RESETS_LIVE=1
+        fi
+    fi
+    if [ "$five_expired" != "1" ]; then
+        FIVE_USABLE=1
+        FIVE_IS_HARD=$(awk -v v="$five_util" -v t="$HARD" 'BEGIN{print (v>=t)?1:0}')
+        FIVE_IS_WARN=$(awk -v v="$five_util" -v t="$WARN_T" 'BEGIN{print (v>=t)?1:0}')
+        FIVE_DISP=$(awk -v v="$five_util" 'BEGIN{printf "%.0f", v}')
+        # CR round 3 (HIMMEL-2653): explicit HARD->WARN downgrade, restored from
+        # the pre-2653 single-window guard verbatim (same eligible_deny / live-
+        # reset conditions). An eligible-but-not-live-reset HARD reading cannot
+        # actually refuse, so it must still surface as a WARN. Relying on
+        # FIVE_IS_WARN alone is NOT equivalent whenever WARN_T > HARD (an
+        # operator config the four thresholds are never validated against each
+        # other for) -- a util between HARD and WARN_T would then trip HARD but
+        # not WARN, and without this downgrade the guard would silently allow.
+        if [ "$FIVE_IS_HARD" = "1" ] && [ "$eligible_deny" = "1" ] && [ "$FIVE_RESETS_LIVE" != "1" ]; then
+            FIVE_IS_WARN=1
+        fi
+    fi
+fi
+
+# seven_day -----------------------------------------------------------------
+SEVEN_USABLE=0
+SEVEN_RESETS_LIVE=0
+SEVEN_IS_HARD=0
+SEVEN_IS_WARN=0
+SEVEN_DISP=""
+SEVEN_REASON=""
+seven_util=$(jq -r '
+    (.seven_day.utilization) as $u
+    | if ($u == null) then "UNKNOWN"
+      elif ($u | type) != "number" then "UNKNOWN"
+      elif ($u < 0 or $u > 100) then "UNKNOWN"
+      else ($u | tostring)
+      end
+' "$CACHE_PATH" 2>/dev/null)
+[ -n "$seven_util" ] || seven_util="UNKNOWN"
+
+if [ "$seven_util" = "UNKNOWN" ]; then
+    SEVEN_REASON="7-day bank utilization unusable (null / non-numeric / out-of-range, or absent) for $shape — 7-day window does not contribute"
+else
+    seven_resets_at=$(jq -r '
+        (.seven_day.resets_at // empty) as $r
+        | ($r | tostring) as $s
+        | if ($s | test("^[0-9]+$")) then $s
+          elif ($s | test("T")) then (try ($s | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601 | tostring) catch "")
+          else "" end
+    ' "$CACHE_PATH" 2>/dev/null)
+    seven_expired=0
+    if [ -n "$seven_resets_at" ]; then
+        now_epoch=$(date +%s)
+        if [ "$now_epoch" -ge "$seven_resets_at" ] 2>/dev/null; then
+            SEVEN_REASON="usage cache seven_day window expired (resets_at $seven_resets_at <= now $now_epoch) — bank has reset since this value; 7-day window does not contribute"
+            seven_expired=1
+        else
+            SEVEN_RESETS_LIVE=1
+        fi
+    fi
+    if [ "$seven_expired" != "1" ]; then
+        SEVEN_USABLE=1
+        SEVEN_IS_HARD=$(awk -v v="$seven_util" -v t="$WEEKLY_HARD" 'BEGIN{print (v>=t)?1:0}')
+        SEVEN_IS_WARN=$(awk -v v="$seven_util" -v t="$WEEKLY_WARN" 'BEGIN{print (v>=t)?1:0}')
+        SEVEN_DISP=$(awk -v v="$seven_util" 'BEGIN{printf "%.0f", v}')
+        # CR round 3 (HIMMEL-2653): same explicit HARD->WARN downgrade as the
+        # five_hour window above, applied to seven_day.
+        if [ "$SEVEN_IS_HARD" = "1" ] && [ "$eligible_deny" = "1" ] && [ "$SEVEN_RESETS_LIVE" != "1" ]; then
+            SEVEN_IS_WARN=1
+        fi
+    fi
+fi
+
+if [ "$FIVE_USABLE" != "1" ] && [ "$SEVEN_USABLE" != "1" ]; then
+    [ -n "$FIVE_REASON" ] && warn "$FIVE_REASON"
+    [ -n "$SEVEN_REASON" ] && warn "$SEVEN_REASON"
+    warn "neither the 5-hour nor the 7-day bank window is usable — cannot verify bank utilization for $shape; allowing"
     exit 0
 fi
 
-# A fresh file can still contain an expired preserved five_hour object. HARD
-# authority therefore requires a future resets_at. Missing/unparseable values
-# downgrade to WARN; a past reset proves the utilization is expired and allows.
-resets_at=$(jq -r '
-    (.five_hour.resets_at // empty) as $r
-    | ($r | tostring) as $s
-    | if ($s | test("^[0-9]+$")) then $s
-      elif ($s | test("T")) then (try ($s | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601 | tostring) catch "")
-      else "" end
-' "$CACHE_PATH" 2>/dev/null)
-resets_live=0
-if [ -n "$resets_at" ]; then
-    now_epoch=$(date +%s)
-    if [ "$now_epoch" -ge "$resets_at" ] 2>/dev/null; then
-        warn "usage cache five_hour window expired (resets_at $resets_at <= now $now_epoch) — bank has reset since this value; allowing"
-        exit 0
+# Fire on the binding window. HARD requires eligible_deny AND a live
+# resets_at; a HARD reading without a live reset still counts toward WARN via
+# the explicit HARD->WARN downgrade above (not merely *_IS_WARN's own
+# threshold check, which is NOT equivalent whenever WARN_T > HARD) — the same
+# downgrade the five-hour-only guard always had. When more than one window
+# trips a tier, report the one
+# proportionally further past its OWN threshold (a ratio, since the two
+# windows use different thresholds) so a barely-over-WARN five-hour reading
+# never outshouts a well-past-WARN weekly one, or vice versa.
+hard_window=""
+if [ "$eligible_deny" = "1" ]; then
+    if [ "$FIVE_IS_HARD" = "1" ] && [ "$FIVE_RESETS_LIVE" = "1" ]; then
+        hard_window="five_hour"
     fi
-    resets_live=1
+    if [ "$SEVEN_IS_HARD" = "1" ] && [ "$SEVEN_RESETS_LIVE" = "1" ]; then
+        if [ -z "$hard_window" ]; then
+            hard_window="seven_day"
+        else
+            hard_window=$(awk -v fu="$five_util" -v fh="$HARD" -v su="$seven_util" -v sh="$WEEKLY_HARD" \
+                'BEGIN{ print ((su/sh) > (fu/fh)) ? "seven_day" : "five_hour" }')
+        fi
+    fi
 fi
 
-is_hard=$(awk -v v="$util" -v t="$HARD" 'BEGIN{print (v>=t)?1:0}')
-is_warn=$(awk -v v="$util" -v t="$WARN_T" 'BEGIN{print (v>=t)?1:0}')
-util_disp=$(awk -v v="$util" 'BEGIN{printf "%.0f", v}')
-
-if [ "$is_hard" = "1" ] && [ "$eligible_deny" = "1" ] && [ "$resets_live" != "1" ]; then
-    is_warn=1
-fi
-if [ "$is_hard" = "1" ] && [ "$eligible_deny" = "1" ] && [ "$resets_live" = "1" ]; then
+if [ -n "$hard_window" ]; then
+    if [ "$hard_window" = "seven_day" ]; then
+        win_label="7-day"; win_disp="$SEVEN_DISP"; win_thresh="$WEEKLY_HARD"
+    else
+        win_label="5-hour"; win_disp="$FIVE_DISP"; win_thresh="$HARD"
+    fi
     cat >&2 <<EOF
-guard-implementor-dispatch: 5-hour bank at ${util_disp}% (>= HARD ${HARD}%) —
+guard-implementor-dispatch: ${win_label} bank at ${win_disp}% (>= HARD ${win_thresh}%) —
 refusing this implementor-shaped Agent dispatch ($shape, impl-shaped prompt
 detected).
 
@@ -557,8 +711,26 @@ EOF
     exit 2
 fi
 
-if [ "$is_warn" = "1" ]; then
-    reason=$(printf '%s' "guard-implementor-dispatch: 5-hour bank at ${util_disp}% (>= WARN ${WARN_T}%) — this $shape implementor dispatch is costly; consider himmel-ops:glm-subagent / codex:codex-rescue / /lanes instead. (IMPL_GUARD_OK=1 to silence)" | jq -Rs . 2>/dev/null) \
+warn_window=""
+if [ "$FIVE_IS_WARN" = "1" ]; then
+    warn_window="five_hour"
+fi
+if [ "$SEVEN_IS_WARN" = "1" ]; then
+    if [ -z "$warn_window" ]; then
+        warn_window="seven_day"
+    else
+        warn_window=$(awk -v fu="$five_util" -v fw="$WARN_T" -v su="$seven_util" -v sw="$WEEKLY_WARN" \
+            'BEGIN{ print ((su/sw) > (fu/fw)) ? "seven_day" : "five_hour" }')
+    fi
+fi
+
+if [ -n "$warn_window" ]; then
+    if [ "$warn_window" = "seven_day" ]; then
+        win_label="7-day"; win_disp="$SEVEN_DISP"; win_thresh="$WEEKLY_WARN"
+    else
+        win_label="5-hour"; win_disp="$FIVE_DISP"; win_thresh="$WARN_T"
+    fi
+    reason=$(printf '%s' "guard-implementor-dispatch: ${win_label} bank at ${win_disp}% (>= WARN ${win_thresh}%) — this $shape implementor dispatch is costly; consider himmel-ops:glm-subagent / codex:codex-rescue / /lanes instead. (IMPL_GUARD_OK=1 to silence)" | jq -Rs . 2>/dev/null) \
         || reason='"guard-implementor-dispatch: costly implementor dispatch — consider a cheaper lane"'
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":%s}}\n' "$reason"
 fi

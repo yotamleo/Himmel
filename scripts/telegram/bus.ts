@@ -74,13 +74,74 @@ export async function truncateFullyConsumed(file: string, cursorFile: string): P
 // to `any`, so every existing caller is unchanged. The parse itself stays
 // unchecked: these are JSON lines off disk, and T is the caller's assertion
 // about them, not a validation.
-export async function readNewLines<T = any>(file: string, cursorFile: string): Promise<T[]> {
+// HIMMEL-2580: raised when readNewLines finds its cursor past EOF and repairs
+// it. `cursor` is the stale offset, `size` the file's real length — the gap
+// between them is data that is no longer on disk. Optional at every call site;
+// an unwired caller still gets the reset and the log line, just no notice.
+export type CursorResetInfo = { file: string; cursor: number; size: number };
+export type OnCursorReset = (info: CursorResetInfo) => void | Promise<void>;
+
+// Extracted from readNewLines (HIMMEL-2580 CR: cursor repair must run BEFORE
+// ingestUpdates appends the tick's own new lines, or a reset-to-EOF discards
+// those too — see the call in poller.ts's main() loop). readNewLines still
+// calls this itself, so every other caller (session inboxes, existing tests)
+// is unaffected and behaves exactly as before: a beyond-EOF cursor there is
+// just repaired one step later, inside the same read.
+export async function repairCursorBeyondEof(file: string, cursorFile: string, onCursorReset?: OnCursorReset): Promise<boolean> {
+  let start = 0;
+  try { start = Number(await readFile(cursorFile, "utf8")) || 0; } catch {}
+  let buf = "";
+  try { buf = await readFile(file, "utf8"); }
+  catch (e) {
+    // ENOENT means an EMPTY inbox, not "can't tell" — and it is exactly the
+    // restore/shadow-copy class that caused HIMMEL-2580: inbound.jsonl itself
+    // is gone but a stale cursor survives beside it. Falling through with
+    // total=0 lets the ordinary start > total branch below fire and repair
+    // it (reset to 0, logged, notice raised) instead of this function
+    // silently bailing out and leaving ingestUpdates to recreate the file
+    // and readNewLines' own internal repair to reset the cursor to the new
+    // (small) post-append EOF — discarding this tick's just-ingested
+    // messages, the very bug the pre-ingest ordering exists to prevent. Any
+    // OTHER read error (EACCES, EISDIR, a transient I/O fault) must NOT be
+    // treated as empty: we cannot conclude the file has zero bytes from a
+    // permission or I/O failure, and resetting a good cursor on that guess
+    // would destroy state instead of repairing it — so still bail out.
+    if ((e as any)?.code !== "ENOENT") return false;
+  }
+  const total = Buffer.byteLength(buf, "utf8");
+  // start > total is NOT "nothing new" — the file shrank under the cursor, so
+  // the cursor is INVALID and every subsequent read would return [] forever
+  // (HIMMEL-2580: a restore dropped an older inbound.jsonl next to a newer
+  // cursor and 8 operator messages were silently dropped over ~10h). Reset to
+  // EOF, never to 0 — replaying a 345 KB inbox is its own incident — and make
+  // the loss visible: loudly in the log, and to the operator via the caller's
+  // notice seam, because the bytes between `total` and `start` are gone from
+  // disk and no lower layer can recover them. The notice is the point;
+  // clamping silently is the same bug in a different coat.
+  if (start > total) {
+    console.error(`[bus] cursor ${start} beyond EOF ${total} for ${file} — file shrank; resetting`);
+    await atomicWrite(cursorFile, String(total));
+    // The reset is what unwedges the bridge, so a notice that throws (Telegram
+    // down, chat unreachable) must not undo it — it is already committed above.
+    // But swallowing that failure silently would just move the drop one layer
+    // up (HIMMEL-2580 CR: the operator never learns recovery happened, and
+    // nothing here retries the notice) — this module's whole contract is
+    // "never a silent drop", so log it; the reset line above is the surviving
+    // record either way.
+    if (onCursorReset) { try { await onCursorReset({ file, cursor: start, size: total }); } catch (err) { console.error(`[bus] cursor repair for ${file} already succeeded (reset to ${total} above) but the operator notice failed:`, err); } }
+    return true;
+  }
+  return false;
+}
+
+export async function readNewLines<T = any>(file: string, cursorFile: string, onCursorReset?: OnCursorReset): Promise<T[]> {
+  if (await repairCursorBeyondEof(file, cursorFile, onCursorReset)) return [];
   let start = 0;
   try { start = Number(await readFile(cursorFile, "utf8")) || 0; } catch {}
   let buf = "";
   try { buf = await readFile(file, "utf8"); } catch { return []; }
   const total = Buffer.byteLength(buf, "utf8");
-  if (start >= total) return [];
+  if (start === total) return [];
   const slice = Buffer.from(buf, "utf8").subarray(start).toString("utf8");
   const lastNl = slice.lastIndexOf("\n");
   if (lastNl < 0) return [];

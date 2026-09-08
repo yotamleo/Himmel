@@ -6,6 +6,25 @@
 # AND admin-merge is authorized via GH_ADMIN_MERGE_OK=1.
 set -uo pipefail
 
+# HIMMEL-1977 — this suite was missed by the HIMMEL-1495 sweep that gave
+# test-merge-on-green.sh and test-cr-merge-gate.sh their startup scrub. An
+# operator shell launched with a documented bypass exported (CLAUDE.md: "hook
+# bypass = a session env var set in the LAUNCHING shell") decides the result
+# here, because run_case passes the ambient environment straight through to
+# pr-merge.sh. Measured 2026-08-21 on the same tree that is 43/0 in a clean
+# shell: `CR_MERGE_GATE_OK=1` alone makes it 40/1 — cr_merge_gate short-circuits
+# to allow, so "CR-gate block exits 5 before check" gets exit 0. That is the
+# whole of HIMMEL-1977: no fixture drift, no gate bug.
+# Each name below is scrubbed because a real case's verdict turns on it:
+#   CR_MERGE_GATE_OK  -> CR-gate block (exit 5)      [measured above]
+#   CI_MERGE_GATE_OK  -> CI-gate block (exit 6)
+#   CR_PROFILE/CR_APP -> disarm cr_app_configured, so the CR gate never runs
+#   GH_ADMIN_MERGE_OK -> the HIMMEL-224 --admin escalation cases
+#   FORGE             -> HIMMEL-326 forge seam; a non-github forge bypasses the
+#                        stub `gh` every assert reads
+# (GH_CMD needs no scrub: run_case pins GH_CMD=gh explicitly.)
+unset CR_MERGE_GATE_OK CI_MERGE_GATE_OK CR_PROFILE CR_APP GH_ADMIN_MERGE_OK FORGE
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_MERGE="$SCRIPT_DIR/pr-merge.sh"
 
@@ -173,6 +192,16 @@ STUB
         # must exist at the base for git merge-tree to run.
         git branch -M main
         git checkout -q -b "$branch" 2>/dev/null || git checkout -q "$branch"
+        # SETUP_CR_MARKER=1 (HIMMEL-1346): a pending CR marker for this branch,
+        # so the merge path's marker clear actually runs. Deliberately MALFORMED
+        # (no certified sha in field 2) so the real chokepoint refuses on its
+        # first gate — this case pins PR-MERGE's contract (it routes through
+        # clear-cr-marker.sh and reports a failure without failing the merge),
+        # never clear-cr-marker's own gate behaviour, and it touches no network.
+        if [ "${SETUP_CR_MARKER:-0}" = "1" ]; then
+            mkdir -p ".git/cr-pending/$(dirname "$branch")"
+            printf 'malformed-marker\n' > ".git/cr-pending/$branch"
+        fi
         # SETUP_MERGE_CONFLICT=1: build a real add/add conflict between this
         # branch and main so forge_pr_mergeable returns CONFLICTING.
         if [ "${SETUP_MERGE_CONFLICT:-0}" = "1" ]; then
@@ -377,6 +406,50 @@ if STUB_ALL_GREEN=1 STUB_HEAD_UNREADABLE=1 \
     # an afterthought (coderabbit-12).
     assert_log_lacks "api graphql" "unreadable head runs no CR gate"
     assert_log_lacks "api repos"   "unreadable head runs no CI gate"
+fi
+
+# --- HIMMEL-1346: the merge path clears the branch's pending CR marker -------
+# A marker outliving its merged branch blocks `gh pr create` on UNRELATED
+# branches (it lives in the shared git-common-dir; the pr-create guard resolves
+# the branch from the session cwd). pr-merge routes the clear through
+# clear-cr-marker.sh — never a raw rm — and a marker that will not clear is
+# reported, never a merge failure.
+if SETUP_CR_MARKER=1 run_case "handover/x-slug" 0 "marker present: clear attempted, merge still succeeds"; then
+    assert_log_has "pr merge 42 --squash" "marker path still merges"
+    assert_err_has "could not clear the CR marker for 'handover/x-slug'" \
+        "a refused marker clear is reported, not swallowed"
+fi
+# No marker → the chokepoint is not invoked and nothing is said about markers.
+if run_case "handover/x-slug" 0 "no marker: merge path unchanged"; then
+    if grep -qF -- "CR marker" "$LAST_ERR"; then
+        fail "no-marker case must not mention the CR marker (err: $(cat "$LAST_ERR"))"
+    else
+        pass
+    fi
+fi
+
+# --- HIMMEL-1977 hermeticity guard (the HIMMEL-1495 shape) -------------------
+# Prove the startup scrub holds: re-run this suite in a subprocess EXPORTING the
+# bypasses a guarded operator shell carries. The reinvoked copy's startup unset
+# must neutralize them, so it stays green and exits 0. Delete the `unset` above
+# and this guard goes red — CR_MERGE_GATE_OK=1 alone reproduces the 40/1 that
+# opened this ticket. Recursion-safe: the sentinel suppresses the guard in the
+# reinvoked copy. FORGE is deliberately NOT exported here: with the scrub gone
+# it would send every case at a real non-github forge CLI (slow network
+# failures, not a clean red), and the four exported names already fail the guard.
+# Cost: one extra full pass (~2x wall clock), the same price the two sibling
+# suites already pay for this guard — a per-case sentinel would need a branch on
+# every case block to save the ~20% of cases that follow the gate cases.
+if [ "${HIMMEL_1977_SELF:-0}" != "1" ]; then
+    _armed_log="$(mktemp)"
+    if CR_MERGE_GATE_OK=1 CI_MERGE_GATE_OK=1 CR_PROFILE=none GH_ADMIN_MERGE_OK=1 \
+        HIMMEL_1977_SELF=1 bash "$SCRIPT_DIR/test-pr-merge.sh" >"$_armed_log" 2>&1; then
+        pass
+    else
+        fail "hermetic-to-bypass-env (startup scrub missing?)"
+        sed 's/^/  armed: /' "$_armed_log" >&2
+    fi
+    rm -f "$_armed_log"
 fi
 
 # --- summary ---

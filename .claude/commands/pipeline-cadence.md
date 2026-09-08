@@ -1,5 +1,5 @@
 ---
-description: Arm/inspect/remove the recurring clip-pipeline cadence (daily /harvest-clips + /triage-clips, daily /synthesize-clips + /archive-clips, daily vault-lint) via schtasks (Windows) or cron (POSIX), interactive-claude shaped with per-leg --model pins. Dedup-guarded. HIMMEL-255/265/357/506/1383/1386.
+description: Arm/inspect/remove the recurring luna clip-pipeline cadence via schtasks or cron, per-leg --model pins.
 argument-hint: arm|status|disarm [--harvest-time HH:MM] [--synth-time HH:MM] [--health-time HH:MM] [--harvest-model M] [--synth-model M] [--health-model M] [--vault PATH] [--force] [--dry-run]
 ---
 
@@ -80,6 +80,13 @@ restores the auto-approve posture in the luna cwd. The fragment is created on
 - **Cron-safe by design:** every pipeline stage is idempotent (markers:
   `harvested_at`, `processed`, synthesis dedup window, `_done/` move), so a
   fired run that finds nothing to do exits clean.
+- **Bounded retry/resume (HIMMEL-1152):** a claude leg that exits non-zero
+  with a transient upstream signature in its own attempt log (`API Error:` +
+  server error / overloaded / 5xx / mid-response) is re-invoked up to twice
+  (60s then 180s backoff) and resumes through those same idempotent markers;
+  any other failure is not retried. Each attempt writes its own flow-run
+  ledger row pair tagged `attempt=N/3`, and the leg log carries a
+  `[retry N/2 …]` line.
 
 Run:
 

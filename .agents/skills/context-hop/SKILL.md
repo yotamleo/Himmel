@@ -1,6 +1,6 @@
 ---
 name: context-hop
-description: Mid-session jump to a fresh claude session when the context window approaches the soft budget. Sibling of handover-arm-resume. Use when the user asks to context-hop or run /context-hop.
+description: Jump mid-session to a fresh claude session when context nears the soft budget. Use for /context-hop.
 ---
 
 # context-hop

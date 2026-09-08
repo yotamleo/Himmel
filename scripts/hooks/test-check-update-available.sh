@@ -13,6 +13,8 @@
 #   6. Remote present but no tracking branch set → silent exit 0 (@{u} path).
 #   7. Throttle within interval → silent (no second run).
 #   8. Throttle after interval → runs again.
+#   9. Cold remote-tracking refs → silent this run; the detached fetch refreshes
+#      them so the NEXT check nudges (HIMMEL-1844).
 #
 # Uses UPDATE_CHECK_STATE_DIR to keep all state in a throwaway tmpdir.
 # Creates a local bare "upstream" repo and a clone with commits ahead
@@ -37,7 +39,22 @@ if [ ! -f "$HOOK" ]; then
 fi
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# Retry the teardown. Since HIMMEL-1844 the hook leaves a DETACHED `git fetch`
+# running, and on Windows a live handle makes `rm -rf` fail with "Device or
+# resource busy" — which, under `set -e`, turned a fully green run into exit 1.
+# The fetches here are against a local bare repo and finish in well under a
+# second; the last `|| true` keeps a teardown from ever failing the suite.
+# shellcheck disable=SC2329,SC2317  # invoked indirectly, via the EXIT trap.
+cleanup() {
+    local i=0
+    while [ "$i" -lt 5 ]; do
+        if rm -rf "$TMP" 2>/dev/null; then return 0; fi
+        sleep 1
+        i=$((i + 1))
+    done
+    rm -rf "$TMP" 2>/dev/null || true
+}
+trap cleanup EXIT
 
 pass=0
 fail=0
@@ -69,8 +86,14 @@ _repo_counter=0
 # Build a local "upstream" bare repo + a clone that is N commits behind it.
 # Sets globals: CHECKOUT_DIR (working clone).
 # Uses the repo's actual default branch name to stay portable.
+#
+# $2 (default 1) leaves the clone's remote-tracking refs ALREADY FETCHED. Since
+# HIMMEL-1844 the hook reads the behind-count from those local refs and refreshes
+# them with a DETACHED fetch, so "refs fetched by the previous check" is the
+# steady state every nudge case here is about. Pass 0 for the cold-refs case,
+# which is the one run that legitimately has nothing to report yet.
 make_repo_behind() {
-    local n="${1:-1}"
+    local n="${1:-1}" prefetch="${2:-1}"
     _repo_counter=$((_repo_counter + 1))
     local base="$TMP/repo_${n}_${_repo_counter}"
     local bare="$base/upstream.git"
@@ -113,6 +136,10 @@ make_repo_behind() {
         git -C "$work" push --quiet origin "$defbranch" 2>/dev/null
     fi
 
+    if [ "$prefetch" = "1" ]; then
+        git -C "$clone" fetch --quiet origin 2>/dev/null || true
+    fi
+
     CHECKOUT_DIR="$clone"
 }
 
@@ -152,7 +179,7 @@ assert_contains "behind=2: count in output" "2 commit" "$out"
 assert_contains "behind=2: /himmel-update mention" "/himmel-update" "$out"
 
 # ─── Test 5: no remote at all → silent (fetch-exit path) ───────────────────────────────────
-echo "Test 5: no remote → silent (fetch-exit path)"
+echo "Test 5: no remote → silent (@{u} path)"
 NOUPS="$TMP/noups"; mkdir -p "$NOUPS"
 git init --quiet "$NOUPS"
 git -C "$NOUPS" config user.email "t@t.t"
@@ -160,7 +187,10 @@ git -C "$NOUPS" config user.name "T"
 printf 'x\n' > "$NOUPS/f"
 git -C "$NOUPS" add f
 git -C "$NOUPS" commit --quiet -m "x"
-# No remote at all: git fetch origin fails → hook exits 0 at fetch step.
+# No remote at all: the detached fetch has nothing to talk to and @{u} does not
+# resolve → hook exits 0 with nothing on stdout. (Before HIMMEL-1844 this exited
+# one step earlier, at the synchronous fetch; the observable contract is the
+# same, which is the point — an unreachable remote is silent, never a stall.)
 SD="$TMP/s5"; mkdir -p "$SD"
 out=$(UPDATE_CHECK_STATE_DIR="$SD" CLAUDE_PROJECT_DIR="$NOUPS" bash "$HOOK" 2>/dev/null) || true
 assert_empty "no-remote: no output" "$out"
@@ -213,6 +243,27 @@ SD="$TMP/s8"; mkdir -p "$SD"
 # interval has elapsed), so we simulate "interval expired".
 out=$(UPDATE_CHECK_STATE_DIR="$SD" UPDATE_CHECK_INTERVAL=0 CLAUDE_PROJECT_DIR="$CHECKOUT_DIR" bash "$HOOK" 2>/dev/null) || true
 assert_contains "expired throttle (interval=0): nudge emitted" "system-reminder" "$out"
+
+# ─── Test 9: cold refs → silent now, armed for the next check ───────────────
+# The HIMMEL-1844 contract. The count comes from the LOCAL remote-tracking refs,
+# so a clone that has never fetched has nothing to report and says nothing —
+# it does not stall session start finding out. The fetch it kicks is detached,
+# and the NEXT check reads the refs it left behind. This is the one case that
+# waits on the out-of-band leg; the poll returns the moment the refs move.
+echo "Test 9: cold refs → silent this run, next check nudges"
+make_repo_behind 1 0
+SD="$TMP/s9"; mkdir -p "$SD"
+out=$(UPDATE_CHECK_STATE_DIR="$SD" CLAUDE_PROJECT_DIR="$CHECKOUT_DIR" bash "$HOOK" 2>/dev/null) || true
+assert_empty "cold refs: silent (nothing fetched yet to report)" "$out"
+i=0
+while [ "$i" -lt 20 ]; do
+    behind9=$(git -C "$CHECKOUT_DIR" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+    if [ "$behind9" != "0" ]; then break; fi
+    sleep 1
+    i=$((i + 1))
+done
+out=$(UPDATE_CHECK_STATE_DIR="$SD" UPDATE_CHECK_INTERVAL=0 CLAUDE_PROJECT_DIR="$CHECKOUT_DIR" bash "$HOOK" 2>/dev/null) || true
+assert_contains "next check nudges off the refs the detached fetch left" "system-reminder" "$out"
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo

@@ -101,22 +101,38 @@ ledger_counts() {
       const fs=require("fs"),e=process.env;
       const lines=fs.existsSync(e.LEDGER)?fs.readFileSync(e.LEDGER,"utf8").split("\n").filter(Boolean):[];
       const tip=String(e.TIP).toLowerCase();
+      // 7-64 hex chars (HIMMEL-2029): a SHA-1 repo full head is 40 hex, a
+      // SHA-256 repo full head is 64 - the old 7-40 ceiling rejected every
+      // 41-64-char head in a SHA-256 repo as "not a head" at all. Plain
+      // prefix matching, no extra length gate (codex-1 CR round 2 raised, and
+      // an attempted "shorter than tip.length" gate round 3 disproved: it
+      // rejected every real 40-63-char SHA-256 abbreviation, which a genuine
+      // abbreviated head legitimately can be). The cross-format concern round
+      // 2 raised - an unrelated commit whose full spelling happens to
+      // textually prefix this tip - needs an actual accidental hex-prefix
+      // collision across a 160+ bit hash, which is cryptographically
+      // negligible, not a realistic engineering risk; this audit is
+      // ADVISORY-ONLY besides (see the file header), so plain prefix
+      // matching is the correct, simpler tradeoff.
       const at=(h)=>{h=String(h||"").trim().toLowerCase();
-        return /^[0-9a-f]{7,40}$/.test(h)&&(h===tip||tip.indexOf(h)===0);};
-      // Amends key on target_head, NOT head — and the ledger stores the SAME
-      // commit in both short and full forms (ledger-append dedups findings by
-      // EXACT head string, so one finding can exist as both a short-head and a
-      // full-head row). An exact-string head match here silently skips an
-      // amend recorded in the other form and re-reports an already-corrected
-      // finding as blocking (codex-1/glm-5, CR round 2 — the chain runbook
-      // carries this exact trap). Heads are therefore compared by hex prefix
-      // in EITHER direction, the same posture as at() above. Advisory-safe:
+        return /^[0-9a-f]{7,64}$/.test(h)&&(h===tip||tip.indexOf(h)===0);};
+      // Amends key on target_head, NOT head. Current ledger-append writes
+      // normalize abbreviated heads to full SHAs, but legacy ledgers may still
+      // contain the SAME commit in both short and full forms. An exact-string
+      // head match here silently skips an amend recorded in the other form and
+      // re-reports an already-corrected finding as blocking (codex-1/glm-5, CR
+      // round 2 — the chain runbook carries this exact trap). Heads are
+      // therefore compared by hex prefix in EITHER direction, the same posture
+      // as at() above. Advisory-safe:
       // this only applies corrections, and the authoritative gate keeps its
       // own fail-closed read. Amends apply SEQUENTIALLY in ledger order, so a
       // set.head re-key updates o.head and later amends match the moved head
       // (mirrors ledger-append original-or-effective matching).
+      // Same posture as at() above - plain prefix matching, no extra length
+      // gate (an attempted one broke the ordinary short+full same-commit
+      // pairing this function exists for, CR round 3).
       const sameHead=(x,y)=>{x=String(x||"").trim().toLowerCase();y=String(y||"").trim().toLowerCase();
-        if(!/^[0-9a-f]{7,40}$/.test(x)||!/^[0-9a-f]{7,40}$/.test(y))return false;
+        if(!/^[0-9a-f]{7,64}$/.test(x)||!/^[0-9a-f]{7,64}$/.test(y))return false;
         return x.indexOf(y)===0||y.indexOf(x)===0;};
       const SEP=String.fromCharCode(31);
       const amends=[];

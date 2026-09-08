@@ -1,6 +1,6 @@
 ---
 name: shell-lint
-description: Pre-emptive advisory shell lint (shellcheck + BOM + errexit-leak) on staged shell before commit. Use when the user asks to lint shell or run /shell-lint.
+description: Advisory shell lint (shellcheck + BOM + errexit-leak) on staged shell before commit. Use for /shell-lint.
 ---
 
 # shell-lint

@@ -128,6 +128,22 @@ env -u CR_PROFILE -u CRITIC_PANEL_TIERS \
 check "T3: CRITICS_JSON row dispatched"                "$(grep -c 'slug=onlyme ' "$LOG3")" "1"
 check "T3: local overlay NOT merged (CRITICS_JSON wins)" "$(grep -c 'slug=other ' "$LOG3")" "0"
 
+# ---------------------------------------------------------------------------
+# T4 — HIMMEL-2546: the SHIPPED default registry (scripts/cr/critics.json, no
+# CRITICS_JSON/CRITICS_BASE_JSON/CRITICS_LOCAL_JSON override) actually dispatches
+# the codex row with the model the operator's codex CLI default now expects
+# (gpt-6-astra, re-pinned from gpt-5.6-sol). CR_PROFILE=paid selects the codex
+# row's tier; CR_TRIVIALITY_OVERRIDE=full stops the triviality gate from
+# stripping the paid tier for this tiny fixture diff.
+# ---------------------------------------------------------------------------
+LOG4="$tmp/t4.log"; : > "$LOG4"
+env -u CRITICS_JSON -u CRITICS_BASE_JSON -u CRITICS_LOCAL_JSON \
+    PANEL_TEST_LOG="$LOG4" CR_PROFILE="paid" CR_TRIVIALITY_OVERRIDE=full \
+    CRITIC_FIRST_PASS="$STUB" bash "$PANEL" >/dev/null 2>&1 <<< "$DIFF"
+check "T4: default registry dispatched codex"           "$(grep -c 'slug=codex ' "$LOG4")" "1"
+check "T4: default registry pinned codex to gpt-6-astra" "$(grep -c 'model=gpt-6-astra' "$LOG4")" "1"
+check "T4: default registry did NOT pin the retired id" "$(grep -c 'model=gpt-5.6-sol' "$LOG4")" "0"
+
 if [ "$fails" -eq 0 ]; then
     echo "ALL PASS"
 else

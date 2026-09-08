@@ -41,6 +41,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 manifest_path="$repo_root/scripts/install/manifest.json"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -56,15 +57,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 # write_cache <path> <role> <scope> <vault-mode> <vault-path> <handover-mode>
 #             <handover-path> <plugin-set> — a minimal valid Draft-A profile
@@ -101,9 +93,13 @@ JIRA_PROJECT_KEY=HIMMEL
 ENV
 
 # ── case a: --help / status --help both list the status subcommand ────────
-outHelp1=$("$node_bin" "$wizard" --help)
+outHelp1=$(HIMMELCTL_CACHE_DIR="$(winpath "$work/help.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/help.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" --help)
 grepq "$outHelp1" 'status' || fail "case a: bare --help should list the status subcommand (got: $outHelp1)"
-outHelp2=$("$node_bin" "$wizard" status --help)
+outHelp2=$(HIMMELCTL_CACHE_DIR="$(winpath "$work/help.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/help.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" status --help)
 grepq "$outHelp2" 'status' || fail "case a: 'status --help' should list the status subcommand (got: $outHelp2)"
 echo "ok: case a — --help / status --help list the status subcommand"
 
@@ -121,7 +117,7 @@ cacheBE="$work/cache-be"; mkdir -p "$cacheBE"
 write_cache "$cacheBE/install-profile.json" adopter project none "" inline "" lean
 
 runStatusBE() {
-  ( cd "$targetBE" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheBE")" HOME="$work/home" \
+  ( cd "$targetBE" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheBE")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheBE")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
       "$node_bin" "$wizard" status "$@" )
 }
 
@@ -138,7 +134,7 @@ echo "ok: case b — known-missing enabled item (pre-commit-hooks) reads red, ex
 
 # ── case f: no-prompt guard — stdin closed must not hang or error ──────────
 set +e
-( cd "$targetBE" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheBE")" HOME="$work/home" \
+( cd "$targetBE" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheBE")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheBE")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
       "$node_bin" "$wizard" status < /dev/null ) >/dev/null; rcF=$?
 set -e
 [ "$rcF" -eq 0 ] || fail "case f: status with closed stdin should exit 0, not hang/error (got rc=$rcF)"
@@ -177,7 +173,7 @@ JSON
 cacheC="$work/cache-c"; mkdir -p "$cacheC"
 write_cache "$cacheC/install-profile.json" adopter project none "" inline "" lean
 
-outC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HOME="$work/home" \
+outC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
       "$node_bin" "$wizard" status --items pre-commit-hooks,jira-cli-dist-build --json )
 count=$(echo "$outC" | jq '.items | length')
 [ "$count" -eq 2 ] || fail "case c: --items should scope the run to exactly 2 items (got $count): $outC"
@@ -185,7 +181,7 @@ echo "$outC" | jq -e '[.items[].id] == ["jira-cli-dist-build","pre-commit-hooks"
   || fail "case c: --items should scope the run to exactly the listed ids (got: $outC)"
 
 set +e
-errC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HOME="$work/home" \
+errC=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
       "$node_bin" "$wizard" status --items bogus-unknown-id 2>&1 )
 rcC=$?
 set -e
@@ -194,7 +190,7 @@ grepq "$errC" 'bogus-unknown-id' || fail "case c: the unknown-id error should na
 echo "ok: case c — --items scoping + unknown id exits 2 naming it"
 
 set +e
-errC2=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HOME="$work/home" \
+errC2=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
       "$node_bin" "$wizard" status --items "," 2>&1 )
 rcC2=$?
 set -e
@@ -207,7 +203,7 @@ targetD="$work/target-d"; mkdir -p "$targetD"
 cacheD="$work/cache-d-empty"; mkdir -p "$cacheD"
 
 set +e
-errD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HOME="$work/home" \
+errD=$( cd "$targetD" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheD")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheD")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
       "$node_bin" "$wizard" status 2>&1 )
 rcD=$?
 set -e

@@ -1,4 +1,4 @@
-import { join } from "path";
+import { join } from "node:path";
 import { validateRow, isValidISODate, type ReviewArtifact } from "./types";
 
 export async function writeSeries(

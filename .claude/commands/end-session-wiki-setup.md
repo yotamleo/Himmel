@@ -1,5 +1,5 @@
 ---
-description: Configure which Obsidian vault the end-session-wiki hook captures sessions into — by vault NAME (distributable, HIMMEL-403), an absolute vault_path, or the global LUNA_VAULT_PATH.
+description: Configure which Obsidian vault the end-session-wiki hook captures sessions into — by name, path, or LUNA_VAULT_PATH.
 argument-hint: (none — interactive)
 ---
 

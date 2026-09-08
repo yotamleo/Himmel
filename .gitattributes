@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto eol=lf
+.codex/run-hook.cmd text eol=crlf
+.codex/run-hook.sh text eol=lf
+graphify-out/graph.json -diff
+graphify-out/GRAPH_REPORT.md -diff

@@ -123,7 +123,8 @@ EOF
 
 # ─── hermes junior-tier update (HIMMEL-426) ──────────────────────────────────
 # Hermes (NousResearch/hermes-agent) is an EDITABLE install from a local git
-# checkout (default %LOCALAPPDATA%/hermes/hermes-agent), NOT a himmel plugin and
+# checkout (default %LOCALAPPDATA%/hermes/hermes-agent on Windows,
+# ~/.hermes/hermes-agent on Linux/macOS), NOT a himmel plugin and
 # NOT in this repo — so `git pull` of this checkout never updates it. This step
 # pulls that checkout and refreshes the editable install. Operator-personal +
 # à-la-carte: absent/unconfigured/offline is always a clean SKIP (never fails
@@ -137,12 +138,19 @@ EOF
 update_hermes() {
     local mode="$1"   # check | apply
     # HERMES_HOME is the hermes install ROOT (the runbook + operator env set it
-    # to %LOCALAPPDATA%\hermes) — config + venv + the editable git checkout, the
-    # last living in the hermes-agent/ subdir. So the checkout we pull is
-    # $root/hermes-agent. Default root: %LOCALAPPDATA%\hermes. We also tolerate
-    # HERMES_HOME pointing straight at the checkout (… /.git) for robustness.
+    # to %LOCALAPPDATA%\hermes on Windows, ~/.hermes on Linux/macOS) — config +
+    # venv + the editable git checkout, the last living in the hermes-agent/
+    # subdir. So the checkout we pull is $root/hermes-agent. Default root:
+    # $LOCALAPPDATA/hermes when LOCALAPPDATA is set (Windows), else
+    # $HOME/.hermes (upstream hermes' own default config home). We also
+    # tolerate HERMES_HOME pointing straight at the checkout (… /.git) for
+    # robustness.
     local root="${HERMES_HOME:-}"
-    [ -n "$root" ] || root="${LOCALAPPDATA:-$HOME/AppData/Local}/hermes"
+    if [ -z "$root" ]; then
+        if [ -n "${LOCALAPPDATA:-}" ]; then root="$LOCALAPPDATA/hermes"
+        else root="$HOME/.hermes"
+        fi
+    fi
     local src="$root/hermes-agent"
     [ -d "$src/.git" ] || { [ -d "$root/.git" ] && src="$root"; }
 
@@ -200,13 +208,96 @@ update_hermes() {
     # (CR fix: this used to `git pull --ff-only` in one shot and swallow BOTH
     # cases as a non-aborting warn, hiding a genuine broken update behind
     # "skipped").
-    if ! git -C "$src" fetch -q "$remote" "$merge_ref" 2>/dev/null; then
-        echo "    skip: could not reach origin (offline?)."
-        return 0
-    fi
-    if ! git -C "$src" merge --ff-only -q FETCH_HEAD 2>/dev/null; then
-        echo "    FAILED: hermes git pull was not fast-forward (local edits / diverged?) — resolve in $src." >&2
+    # Capture stderr (never discard it) so a genuine failure — invalid
+    # remote, deleted upstream ref, auth failure, repo corruption — can be
+    # told apart from an actually-unreachable remote (HIMMEL-2151 CR
+    # deferral: the old `2>/dev/null` treated EVERY fetch error as offline).
+    # `2>&1 >/dev/null` dups stderr into the capture pipe, THEN sends stdout
+    # (already empty under -q) to /dev/null — set -e safe via the &&/|| form.
+    # LC_ALL=C pins git's diagnostics to English, because the offline
+    # classification below matches English phrases.
+    local fetch_err fetch_rc
+    fetch_err=$(LC_ALL=C git -C "$src" fetch -q "$remote" "$merge_ref" 2>&1 >/dev/null) && fetch_rc=0 || fetch_rc=$?
+    if [ "$fetch_rc" -ne 0 ]; then
+        # Only genuine offline/transient-network errors get the clean skip;
+        # anything else (bad remote, deleted ref, auth, corruption) is a real
+        # failure and must abort the chain, not masquerade as "offline".
+        # Here-string, not `printf | grep -q` — under pipefail grep -q's
+        # early exit SIGPIPEs the producer and a genuine match can read as
+        # failure (HIMMEL-1430); git stderr is tiny, far under the 64 KiB
+        # here-string ceiling (HIMMEL-2027).
+        if grep -qiE 'could not resolve host|failed to connect|connection timed out|connection refused|operation timed out|network is unreachable|temporary failure in name resolution|could not resolve proxy|no route to host|couldn'"'"'t resolve host|network unreachable' <<< "$fetch_err"; then
+            echo "    skip: could not reach origin (offline?)."
+            return 0
+        fi
+        echo "    FAILED: hermes git fetch failed ($(printf '%s' "$fetch_err" | head -n1)) — resolve in $src." >&2
         return 1
+    fi
+    # A non-fast-forward FETCH_HEAD is not automatically a fault here
+    # (HIMMEL-2139): NousResearch FORCE-PUSHES hermes-agent's main — its own
+    # remote-tracking reflog records `forced-update` — so after every rewrite
+    # our HEAD stops being an ancestor of upstream and this merge fails
+    # PERMANENTLY, wedging the whole update chain until a human hand-resets
+    # the checkout. himmel keeps nothing inside this checkout (its tailoring
+    # lives in the sibling $HERMES_HOME/profiles/), so upstream is
+    # authoritative and orphaned upstream commits are re-fetchable by
+    # definition. We therefore resync — but ONLY when BOTH hold:
+    #   * the working tree is clean — uncommitted work is the one thing
+    #     `reset --hard` destroys irrecoverably; and
+    #   * no commit we hold is authored or committed by this checkout's own
+    #     identity — which keeps HIMMEL-893's contract that a local unpushed
+    #     commit is never silently discarded (test-himmel-update-hermes.sh
+    #     Case 5 still FAILs).
+    # These guards protect a DESTRUCTIVE operation, so every uncertain path —
+    # dirty tree, unknown identity, or a git command that errored — takes the
+    # FAILED arm and fails CLOSED. Known caveat: an operator commit made under
+    # a DIFFERENT identity than the one configured now reads as upstream churn;
+    # the rescue tag below is the backstop, and it is not best-effort — if the
+    # tag cannot be written we refuse to reset at all.
+    if ! git -C "$src" merge --ff-only -q FETCH_HEAD 2>/dev/null; then
+        local dirty email hist ours old_head dropped
+        dirty=$(git -C "$src" status --porcelain 2>/dev/null) || {
+            echo "    FAILED: hermes git pull was not fast-forward and the checkout state could not be read — resolve in $src." >&2
+            return 1
+        }
+        email=$(git -C "$src" config user.email 2>/dev/null || true)
+        ours=yes
+        if [ -z "$dirty" ] && [ -n "$email" ]; then
+            hist=$(git -C "$src" log --format='%ae%n%ce' FETCH_HEAD..HEAD 2>/dev/null) || {
+                echo "    FAILED: hermes git pull was not fast-forward and the local history could not be read — resolve in $src." >&2
+                return 1
+            }
+            # Case-INSENSITIVE: git stores an identity with the case it was
+            # configured with, so a checkout that committed as `Dev@Example.com`
+            # and now reads `dev@example.com` must still recognise its own work
+            # (a case-only difference must never read as upstream churn).
+            # Here-strings, not pipelines — a `| grep -c` would hide git's own
+            # exit status behind grep's, and pipefail turns a legitimate zero
+            # count into a pipeline failure.
+            hist=$(tr '[:upper:]' '[:lower:]' <<< "$hist")
+            email=$(tr '[:upper:]' '[:lower:]' <<< "$email")
+            # Exact whole-line match.
+            ours=no
+            case $'\n'"$hist"$'\n' in *$'\n'"$email"$'\n'*) ours=yes ;; esac
+        fi
+        if [ "$ours" != no ]; then
+            echo "    FAILED: hermes git pull was not fast-forward (local edits / diverged?) — resolve in $src." >&2
+            return 1
+        fi
+        old_head=$(git -C "$src" rev-parse --short HEAD 2>/dev/null || echo "?")
+        # Report how many commits the reset re-points, so an identity the
+        # checks did NOT recognise as ours is visible in the update log rather
+        # than silent — the residual case the rescue tag exists to cover.
+        dropped=$(git -C "$src" rev-list --count FETCH_HEAD..HEAD 2>/dev/null || echo "?")
+        git -C "$src" tag -f himmel-pre-resync >/dev/null 2>&1 || {
+            echo "    FAILED: could not record the rescue tag himmel-pre-resync — refusing to resync $src." >&2
+            return 1
+        }
+        git -C "$src" reset --hard -q FETCH_HEAD 2>/dev/null || {
+            echo "    FAILED: hermes resync to upstream HEAD failed — resolve in $src." >&2
+            return 1
+        }
+        echo "    upstream rewrote history — resynced $old_head -> $(git -C "$src" rev-parse --short HEAD 2>/dev/null || echo '?') ($dropped orphaned upstream commit(s) re-pointed; previous HEAD kept at tag himmel-pre-resync)."
     fi
     # Resolve the venv python at RUNTIME (HIMMEL-613): HERMES_PY wins only when
     # it still points at an executable, else probe $src/venv — a moved/rebuilt
@@ -451,6 +542,22 @@ reconcile_plugins() {
     return 0
 }
 
+# ─── retired-plugin removal offer (HIMMEL-2033) ─────────────────────────
+# Delegated to scripts/machine-setup/remove-retired-plugin.sh, which owns the
+# contract (silent when absent; prompt with DEFAULT=remove on a TTY; advisory
+# only and never a silent removal otherwise). Best-effort: never fails an update.
+offer_retired_plugin_removal() {
+    local mode="$1"   # check | apply
+    local script="$ROOT/scripts/machine-setup/remove-retired-plugin.sh"
+    [ -f "$script" ] || return 0
+    if [ "$mode" = apply ]; then
+        bash "$script" || true
+    else
+        bash "$script" --advisory-only || true
+    fi
+    return 0
+}
+
 # ─── the full dependency chain (HIMMEL-893) ──────────────────────────────────
 # Six MANAGED items — the things this file already updates (or, for jira/qmd/
 # luna below, already has a real recipe for elsewhere in this repo that this
@@ -636,11 +743,89 @@ update_qmd_fork() {
     fi
     if qmd_install; then
         STATUS_qmd_fork="updated"; DETAIL_qmd_fork="$(qmd_cmd --version 2>/dev/null)"
+        # HIMMEL-2134: installing the new build does NOT reload the RUNNING
+        # daemon. The shared qmd HTTP MCP daemon on :8181 is a long-lived
+        # process; ensure-qmd-daemon.{sh,ps1} only START one when nothing is
+        # serving — neither ever restarts one. So after a fork-ref bump the new
+        # code is on disk while every MCP call still hits the old build
+        # resident in memory, silently, with a green status line.
+        #
+        # Stopping it is process termination, which block-destructive-commands.sh
+        # refuses in an agent's own Bash text — correctly. This is NOT given a
+        # restart-stack.sh-style sanctioned carve-out: that carve-out is bounded
+        # by a hard allowlist of four NAMED himmel-observability-* SCHEDULED
+        # TASKS. The qmd daemon is a plain bun process that was never
+        # schtasks-registered, so identifying "the" one to stop would be a
+        # process-list pattern match — exactly the generic-kill-wrapper this
+        # repo has already refused to grow. Print the command, let the operator
+        # run it.
+        if qmd_daemon_serving; then
+            DETAIL_qmd_fork="${DETAIL_qmd_fork:+$DETAIL_qmd_fork }(daemon restart pending)"
+            QMD_DAEMON_RESTART_PENDING=1
+        fi
         return 0
     fi
     STATUS_qmd_fork="failed"
     DETAIL_qmd_fork="qmd_install failed — see: bash scripts/lib/qmd-bin.sh install"
     return 1
+}
+
+# True when a QMD-SHAPED MCP daemon is currently answering on the shared URL.
+#
+# Reuses the qmd plugin hook's own probe shape verbatim (an MCP `initialize`
+# POST, then a serverInfo.name == "qmd" match) rather than a raw TCP/port check
+# — the shape match is what makes a FOREIGN listener on 8181 read as "no qmd
+# daemon" instead of falsely counting as one. `localhost` (not 127.0.0.1) for
+# the same reason the hook uses it: on Windows it resolves to ::1 and an IPv4
+# probe gets connection-refused against a healthy daemon.
+#
+# Best-effort by construction: no curl, or no answer, means "no daemon we need
+# to warn about" — this only ever decides whether to PRINT an advisory.
+qmd_daemon_serving() {
+    local url body
+    url="${QMD_MCP_URL:-http://localhost:8181/mcp}"
+    command -v curl >/dev/null 2>&1 || return 1
+    body="$(curl -s -m 2 -X POST \
+        -H 'Content-Type: application/json' \
+        -H 'Accept: application/json, text/event-stream' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-update","version":"1"}}}' \
+        "$url" 2>/dev/null)" || return 1
+    printf '%s' "$body" | grep -Eq '"serverInfo"[[:space:]]*:[[:space:]]*\{[^}]*"name"[[:space:]]*:[[:space:]]*"qmd"'
+}
+
+# Advisory: print the operator command block when the qmd step installed new
+# code under a live daemon. Silent otherwise — a notice that prints on every
+# update is a notice nobody reads.
+report_qmd_daemon_restart() {
+    [ "${QMD_DAEMON_RESTART_PENDING:-0}" = "1" ] || return 0
+    echo ""
+    echo "==> qmd daemon restart REQUIRED (HIMMEL-2134)"
+    echo "    A new qmd build was installed, but the daemon on ${QMD_MCP_URL:-http://localhost:8181/mcp}"
+    echo "    is still serving the OLD code from memory. Stopping it is process"
+    echo "    termination, which an agent may not do — run this yourself:"
+    echo ""
+    # Scoped to the HTTP DAEMON's FULL argv shape ('qmd … mcp … --http'), not a
+    # bare 'qmd' and not 'qmd.*mcp' (CR round 1, codex-2). qmd also runs as a
+    # per-session STDIO MCP server whose command line matches 'qmd.*mcp' just as
+    # well — a looser pattern would have the operator forcibly terminate live
+    # stdio servers belonging to OTHER sessions. Only the --http daemon holds
+    # the stale code this notice is about.
+    # THREE commands, in order, and the first one only LOOKS (CR round 2,
+    # codex-1). A single force-stop one-liner with "review the matches first"
+    # underneath is advice nobody can act on — the processes are already gone by
+    # the time it is read. The pattern is scoped to the HTTP daemon's full argv
+    # shape ('qmd … mcp … --http'), not 'qmd.*mcp' (CR round 1, codex-2): qmd
+    # also runs as a per-session STDIO MCP server that the looser pattern
+    # matches just as well, and stopping those kills other sessions' servers.
+    echo "      # 1. LOOK — confirm these are the daemon, and only the daemon:"
+    echo "      pwsh -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"Name='bun.exe'\\\" | Where-Object { \$_.CommandLine -match 'qmd.*mcp.*--http' } | Select-Object ProcessId, CommandLine | Format-List\""
+    echo "      # 2. STOP — same filter, once the list above looks right:"
+    echo "      pwsh -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"Name='bun.exe'\\\" | Where-Object { \$_.CommandLine -match 'qmd.*mcp.*--http' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force }\""
+    echo "      # 3. RESTART:"
+    echo "      pwsh -NoProfile -File \"$ROOT/scripts/qmd/ensure-qmd-daemon.ps1\""
+    echo ""
+    echo "    (POSIX: stop the 'qmd mcp --http --daemon' process, then re-run"
+    echo "     bash marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh)"
 }
 
 # 5. hermes junior-tier update. Reuses update_hermes() (defined above) and
@@ -766,6 +951,253 @@ luna_template
 EOF
 }
 
+# ─── graphify pin sync (HIMMEL-1048) ─────────────────────────────────────────
+# Best-effort advisory: roll an EXISTING graphify install forward to the pinned
+# version so `himmelctl update` propagates a graphify pin bump to other machines.
+# The de-fork (HIMMEL-1048 / issue #469) made graphify a version-pinned upstream
+# PyPI install, so a pin bump only reaches a machine if something reinstalls at
+# the new pin — `git pull` alone updates graphify-bin.sh but not the installed
+# tool. Sources the ONE resolver impl; a missing/foreign install is handled
+# inside graphify_update (fresh install / never clobber). Never aborts the script.
+sync_graphify() {
+    local lib="$ROOT/scripts/lib/graphify-bin.sh"
+    echo "==> graphify pin sync (HIMMEL-1048)"
+    if [ ! -f "$lib" ]; then
+        echo "    skip: graphify-bin.sh not found ($lib)."
+        return 0
+    fi
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "    skip: uv not on PATH — graphify is uv-managed."
+        return 0
+    fi
+    # shellcheck source=lib/graphify-bin.sh
+    # shellcheck disable=SC1090,SC1091
+    if ! . "$lib" 2>/dev/null; then
+        echo "    warn: could not load graphify-bin.sh (non-fatal)." >&2
+        return 0
+    fi
+    # No blanket "(non-fatal)" here any more (HIMMEL-1274): that wording was
+    # actively wrong in the reported case — the step had left graphify BROKEN,
+    # not merely un-updated. graphify_update now reports its own outcome
+    # precisely (skipped / still-working / broken, with the repair command), so
+    # this caller must not paper over it with a generic reassurance. It stays
+    # advisory to the CHAIN (return 0) — himmel-update does not abort on it —
+    # but the operator-visible text comes from the step itself.
+    graphify_update || echo "    warn: graphify pin sync did not complete — see the message above for the resulting state." >&2
+    # HIMMEL-2480: re-apply the priced hooks — a hand-run `graphify install`
+    # (which the operator is told to do in several places) re-adds the stock,
+    # unpriced entries; this recurring sweep heals that.
+    graphify_price_hooks
+    return 0
+}
+
+# ─── cli-proxy-api host roll (HIMMEL-2134) ───────────────────────────────────
+# The Axis-B twin of sync_graphify, and the gap scripts/upstreams.json's own
+# cli-proxy-api note names outright: "NOTHING here restarts the running proxy --
+# bumping the pin does NOT swap a live instance ... the operator runs
+# cli-proxy-lane.ps1 -Install + -Restart to actually roll the host."
+#
+# So a merged pin bump reached this machine's REPO and never reached the proxy
+# serving 127.0.0.1:8317. That staleness is invisible to check-plugin-drift.sh:
+# for a tag_release/mode:base entry the guard reads `synced_base` (a literal in
+# upstreams.json that apply-drift-bump.sh moved with the pin), never the
+# installed artifact — so the row reads CURRENT the instant the bump merges,
+# while the host runs the old binary indefinitely.
+#
+# Unattended-safe because cli-proxy-lane.ps1 owns the dangerous parts itself:
+# it is pin-aware (a version stamp, so a no-op run downloads nothing), its
+# Assert-BounceSafe claudex-live guard REFUSES to bounce the proxy while a
+# client is actively connected (an in-flight codex-lane render would die), it
+# stages the swap with a rollback copy, and it health-gates on /v1/models
+# before declaring success. That set of properties is exactly what the qmd
+# daemon lacks, which is why THIS step may run automatically and the qmd one
+# only prints (see report_qmd_daemon_restart).
+#
+# ROLL ONLY WHEN THE PIN MOVED. `-Restart` bounces unconditionally, so calling
+# it on every himmel-update would drop a live codex render for no reason.
+# Compare the machine's version stamp to the in-repo pin first and skip when
+# they agree. Never aborts the script (advisory, like sync_graphify).
+# Compare two versions. THREE outcomes, because "cannot tell" must not collapse
+# into either answer (CR round 5, codex-2/codex-3):
+#   0 = $1 is strictly LOWER than $2  -> genuinely behind, safe to roll
+#   1 = $1 is equal to or higher      -> not behind, leave alone
+#   2 = CANNOT COMPARE                -> no python3, or a version that does not
+#                                        parse as one (a `custom`/`dev` stamp)
+#
+# rc 2 is the fix for two round-4 bugs that both ended in an unwanted roll:
+# graphify-bin.sh's shape (which this otherwise mirrors) defaults every
+# non-numeric component to 0, so an unparseable stamp compared as (0,0,0) and
+# read as "behind"; and a python3-less host fell through to a "pin is
+# authoritative" branch that rolled on ANY difference, including a newer
+# install. Both violated the never-downgrade guarantee. Now the caller treats
+# rc 1 and rc 2 alike — do not roll — so uncertainty can never move the host.
+_cli_proxy_version_cmp() {
+    [ -n "$1" ] && [ -n "$2" ] || return 2
+    command -v python3 >/dev/null 2>&1 || return 2
+    python3 - "$1" "$2" <<'PY' 2>/dev/null || return $?
+import re, sys
+def key(v):
+    v = v.strip().lstrip('vV')
+    # Build metadata is not ordering information (semver) -- drop it.
+    v = v.split('+', 1)[0]
+    # Split the PRERELEASE off before touching the numeric core, so the two are
+    # never confused. Splitting the whole string on [.\-+] at once was the bug
+    # behind two earlier rounds: it flattened '1.2.3-beta' and '1.custom' into
+    # the same shape, so the numeric validation could not tell a legitimate
+    # prerelease qualifier from a garbage component.
+    core, _, pre = v.partition('-')
+    nums = core.split('.')
+    # REJECT a core with more components than we compare, rather than silently
+    # discarding the tail: truncating would make '1.2.3.4' and '1.2.3.5' compare
+    # EQUAL, suppressing a roll that is genuinely needed. Same fail-loud rule as
+    # the non-numeric case below -- an unrecognised shape is cannot-compare,
+    # never a guess.
+    if len(nums) > 3:
+        sys.exit(2)
+    # EVERY component of the numeric core must be numeric -- not just the
+    # leading one. Validating only nums[0] let '1.custom' through: the tail
+    # degraded to 0, giving (1,0,0), which read as behind a real pin and rolled
+    # the host anyway.
+    if not nums or not all(re.match(r'^\d+$', p) for p in nums):
+        sys.exit(2)
+    nums = (nums + ['0', '0', '0'])[:3]
+    # A prerelease sorts BELOW the same stable version (semver), so an installed
+    # '7.2.142-rc1' is correctly BEHIND a stable '7.2.142' pin and gets rolled
+    # forward. That is convergence onto the pin, not a downgrade: the registry
+    # entry tracks stable tags with prereleases excluded, so the pin is always
+    # stable and a prerelease install is strictly older than it. Two
+    # prereleases of the same core compare EQUAL here, which resolves to
+    # "not behind" -> leave alone, the safe direction.
+    return tuple(int(p) for p in nums) + (0 if pre else 1,)
+sys.exit(0 if key(sys.argv[1]) < key(sys.argv[2]) else 1)
+PY
+}
+
+sync_cli_proxy() {
+    local mode="${1:-apply}"   # check | apply
+    local lane="$ROOT/scripts/setup/cli-proxy-lane.ps1"
+    local pin stamp_file installed ps cmp_rc
+    echo "==> cli-proxy-api host roll (HIMMEL-2134)"
+    if [ ! -f "$lane" ]; then
+        echo "    skip: cli-proxy-lane.ps1 not found ($lane)."
+        return 0
+    fi
+    # The pin literal is the SAME spot scripts/upstreams.json's version_pin
+    # template names ("$Version = '{version}'"), so this reads whatever
+    # apply-drift-bump.sh last wrote — there is no second copy to drift.
+    pin="$(grep -oE "^\\\$Version *= *'[0-9][0-9A-Za-z.+-]*'" "$lane" 2>/dev/null | head -1 | sed -E "s/.*'([^']*)'.*/\1/")"
+    if [ -z "$pin" ]; then
+        echo "    skip: could not read the \$Version pin from cli-proxy-lane.ps1."
+        return 0
+    fi
+    # cadence_user_home (lib/cadence-format.sh, already sourced): USERPROFILE via
+    # cygpath before $HOME on Windows Git-Bash — the same resolution PowerShell's
+    # own $HOME uses, which is what cli-proxy-lane.ps1 joins $Dir from. A bare
+    # $HOME would probe the MSYS dir and always report "not installed".
+    stamp_file="$(cadence_user_home)/.cli-proxy-api/cli-proxy-api.version"
+    if [ ! -f "$stamp_file" ]; then
+        echo "    skip: no cli-proxy-api install on this machine (no $stamp_file)."
+        echo "          first install is deliberate operator setup: pwsh -File \"$lane\" -Install -Start"
+        return 0
+    fi
+    installed="$(head -1 "$stamp_file" 2>/dev/null | tr -d '\r')"
+    if [ "$installed" = "$pin" ]; then
+        echo "    up-to-date: host at v$installed = pin."
+        return 0
+    fi
+    # NEVER DOWNGRADE, and never roll on an unverified direction (CR rounds
+    # 4+5). A bare `!=` treated an installed version NEWER than the pin as
+    # drift and rolled the host BACKWARDS while printing it as an upgrade — a
+    # local test build or hand-rolled hotfix silently reverted. Mirrors
+    # graphify_update's contract: himmel-update never downgrades or clobbers a
+    # non-behind install. rc 1 (not behind) and rc 2 (cannot compare) are
+    # treated ALIKE — the only path to a roll is a positively-established
+    # "behind".
+    if _cli_proxy_version_cmp "$installed" "$pin"; then cmp_rc=0; else cmp_rc=$?; fi
+    if [ "$cmp_rc" -eq 1 ]; then
+        echo "    not behind: host v${installed:-?} is not older than pin v$pin — leaving as-is (never downgrades)."
+        return 0
+    fi
+    if [ "$cmp_rc" -ne 0 ]; then
+        # Cannot compare: no python3, or a stamp that is not a version at all.
+        # Refuse to roll rather than guess a direction, and hand the operator
+        # the command so an intentional convergence is still one paste away.
+        echo "    cannot verify: host v${installed:-?} vs pin v$pin could not be compared" >&2
+        echo "                   (no python3, or the version stamp is not a version) — NOT rolling." >&2
+        echo "                   Roll it yourself if the pin is what you want:" >&2
+        echo "                   pwsh -NoProfile -File \"$lane\" -Install -Restart" >&2
+        return 0
+    fi
+    if [ "$mode" = "check" ]; then
+        echo "    behind: host v${installed:-?} < pin v$pin — run without --check to roll it."
+        return 0
+    fi
+    # pwsh only — the lane script is Windows-native (HIMMEL-2126: prefer pwsh,
+    # 5.1 only as a loud named fallback). No pwsh means no roll to make.
+    ps="$(command -v pwsh 2>/dev/null || true)"
+    if [ -z "$ps" ]; then
+        echo "    skip: pwsh not on PATH — cli-proxy-lane.ps1 is a Windows-native host script."
+        echo "          host is v${installed:-?}, pin is v$pin — roll it by hand when you are on the host."
+        return 0
+    fi
+    # cygpath -m before handing the path to a WINDOWS pwsh — the repo's standing
+    # convention (setup-hooks.sh, propagate-public.sh). $lane is built from
+    # $ROOT, which under Git-Bash is the MSYS `/c/...` form; MSYS argument
+    # conversion is not guaranteed (MSYS_NO_PATHCONV, or an argument shape it
+    # does not rewrite), and PowerShell cannot resolve `/c/...` — so every roll
+    # would fail to even find the lane script. `-m` yields the C:/… form pwsh
+    # accepts. Falls back to the original path where cygpath is absent (POSIX,
+    # where $lane is already native).
+    lane_native="$lane"
+    if command -v cygpath >/dev/null 2>&1; then
+        lane_native=$(cygpath -m "$lane" 2>/dev/null || printf '%s' "$lane")
+    fi
+    echo "    rolling host v${installed:-?} -> v$pin (-Install -Restart; health-gated, rolls back on failure)"
+    if "$ps" -NoProfile -File "$lane_native" -Install -Restart; then
+        echo "    cli-proxy-api rolled to v$pin."
+        return 0
+    fi
+    # A refusal here is usually Assert-BounceSafe declining to kill an in-flight
+    # codex-lane render — a correct refusal, not a breakage. Say so instead of
+    # implying the host is broken, and never retry with -Force from here: that
+    # override is an operator judgement call about their own live work.
+    echo "    warn: cli-proxy roll did not complete (host stays on v${installed:-?}) — see the message above." >&2
+    echo "          if it refused a bounce, a codex-lane client was connected; re-run when idle:" >&2
+    echo "          pwsh -NoProfile -File \"$lane\" -Install -Restart" >&2
+    # Return NON-ZERO so the caller decides what it means. The advisory block
+    # calls this with `|| true` — a failed roll must never abort a himmel
+    # update — but `--only cli_proxy` propagates it, because an operator who
+    # asked for exactly this one step is entitled to a truthful exit code.
+    # Swallowing it here made every failure (a refused bounce, but equally a
+    # failed download, rollback or health check) exit 0 and read as success.
+    return 1
+}
+
+# ─── installed marketplaces catch-up (HIMMEL-2134) ───────────────────────────
+# Chain item 2 re-syncs exactly ONE marketplace (himmel), where a failure must
+# abort the update. This is the rest of them — the `mkt-manual` rows that
+# check-plugin-drift.sh reports BEHIND and that /drift-fix step 2 deliberately
+# ignores (a marketplace re-sync is not a version bump, so the drift leg's PR
+# flow has nothing to carry). Advisory + failure-isolated: the helper attempts
+# every row regardless of what the previous row did, and a non-zero rc here
+# never aborts the himmel update.
+sync_marketplaces() {
+    local mode="${1:-apply}"   # check | apply
+    local helper="$ROOT/scripts/upstreams/update-marketplaces.sh"
+    echo "==> installed marketplaces catch-up (HIMMEL-2134)"
+    if [ ! -f "$helper" ]; then
+        echo "    skip: update-marketplaces.sh not found ($helper)."
+        return 0
+    fi
+    if [ "$mode" = "check" ]; then
+        HIMMEL_UPDATE_CLAUDE_BIN="${HIMMEL_UPDATE_CLAUDE_BIN:-claude}" bash "$helper" --check || true
+        return 0
+    fi
+    HIMMEL_UPDATE_CLAUDE_BIN="${HIMMEL_UPDATE_CLAUDE_BIN:-claude}" bash "$helper" \
+        || echo "    warn: one or more marketplaces did not update — see above (the others were still attempted)." >&2
+    return 0
+}
+
 # Test seam: source with HIMMEL_UPDATE_LIB=1 to load the functions above without
 # running any update mode (lets test-himmel-update-hermes.sh call update_hermes
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
@@ -783,6 +1215,65 @@ if [ "${1:-}" = "--plugins-check" ]; then
     report_plugin_gap
     warn_doc_guard_off "$ROOT"
     exit 0
+fi
+
+# ─── --only <item> mode (HIMMEL-2134) ────────────────────────────────────────
+# Run ONE step and stop. The point is re-running a single step after it was the
+# one thing that did not land — an operator who has just restarted the qmd
+# daemon by hand, or a cli-proxy roll that correctly refused to bounce a live
+# codex render and can now be retried — without paying for a full pull +
+# marketplace + jira-dist + luna-template cycle to reach it.
+#
+# Deliberately a SEPARATE early-exit mode (like --plugins-check), not a filter
+# threaded through the chain and the advisory block: the chain's abort-on-first-
+# failure ordering exists because its items genuinely depend on each other, and
+# a per-item filter would quietly turn that dependency chain into an arbitrary
+# subset with the same status table. One item, run directly, then report.
+#
+# `--only pull` still honours the dirty-tree pre-check (including the
+# HIMMEL_UPDATE_AUTOSTASH=1 opt-in, same as the main path) — it is the one
+# selectable item that touches the working tree.
+if [ "${1:-}" = "--only" ]; then
+    only_item="${2:-}"
+    if [ -z "$only_item" ]; then
+        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces" >&2
+        exit 2
+    fi
+    branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
+    only_rc=0
+    case "$only_item" in
+        pull)
+            if is_dirty "$ROOT"; then
+                if [ "${HIMMEL_UPDATE_AUTOSTASH:-}" = "1" ]; then
+                    echo "update --only pull: dirty tree — HIMMEL_UPDATE_AUTOSTASH=1, autostashing local changes around the pull." >&2
+                else
+                    echo "update --only pull: checkout has uncommitted changes — refusing to pull into a dirty tree." >&2
+                    echo "        (or set HIMMEL_UPDATE_AUTOSTASH=1 to autostash them around the pull)." >&2
+                    exit 1
+                fi
+            fi
+            update_pull || only_rc=1 ;;
+        marketplace)   update_marketplace apply || only_rc=1 ;;
+        jira_cli)      update_jira_cli apply    || only_rc=1 ;;
+        qmd_fork)      update_qmd_fork apply    || only_rc=1 ;;
+        hermes)        run_hermes_step apply    || only_rc=1 ;;
+        luna_template) update_luna_template apply || only_rc=1 ;;
+        # graphify and marketplaces report their own outcome inline and stay
+        # best-effort, matching their contract inside the advisory block.
+        # cli_proxy is the exception (CR: exact-head panel, codex-2): an
+        # operator who asked for exactly this one step is entitled to a truthful
+        # exit code, so a failed roll propagates here even though the advisory
+        # block still swallows it.
+        graphify)      sync_graphify ;;
+        cli_proxy)     sync_cli_proxy || only_rc=1 ;;
+        marketplaces)  sync_marketplaces ;;
+        *)
+            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces" >&2
+            exit 2 ;;
+    esac
+    report_qmd_daemon_restart
+    print_status_table
+    exit "$only_rc"
 fi
 
 # ─── --check / --dry-run mode ────────────────────────────────────────────────
@@ -816,6 +1307,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     fi
     report_plugin_gap
     reconcile_plugins check
+    offer_retired_plugin_removal check
     # `|| true` on each: check mode is READ-ONLY reporting and must never
     # abort under set -e. STATUS_* is already set as a side effect before
     # any of these return, so `|| true` just prevents a non-zero return
@@ -828,6 +1320,11 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     run_hermes_step check || true
     update_codex check || true
     update_luna_template check || true
+    # HIMMEL-2134 Axis-B rows: both are read-only in check mode (a version-stamp
+    # comparison and a registry listing) — neither rolls the proxy nor calls the
+    # claude CLI, so --check stays the zero-mutation dry-run it promises to be.
+    sync_cli_proxy check || true
+    sync_marketplaces check || true
     report_cadence_stale
     report_guardrail_block
     print_status_table
@@ -926,41 +1423,6 @@ if [ "$chain_rc" -eq 0 ]; then
     fi
 fi
 
-# ─── graphify pin sync (HIMMEL-1048) ─────────────────────────────────────────
-# Best-effort advisory: roll an EXISTING graphify install forward to the pinned
-# version so `himmelctl update` propagates a graphify pin bump to other machines.
-# The de-fork (HIMMEL-1048 / issue #469) made graphify a version-pinned upstream
-# PyPI install, so a pin bump only reaches a machine if something reinstalls at
-# the new pin — `git pull` alone updates graphify-bin.sh but not the installed
-# tool. Sources the ONE resolver impl; a missing/foreign install is handled
-# inside graphify_update (fresh install / never clobber). Never aborts the script.
-sync_graphify() {
-    local lib="$ROOT/scripts/lib/graphify-bin.sh"
-    echo "==> graphify pin sync (HIMMEL-1048)"
-    if [ ! -f "$lib" ]; then
-        echo "    skip: graphify-bin.sh not found ($lib)."
-        return 0
-    fi
-    if ! command -v uv >/dev/null 2>&1; then
-        echo "    skip: uv not on PATH — graphify is uv-managed."
-        return 0
-    fi
-    # shellcheck source=lib/graphify-bin.sh
-    # shellcheck disable=SC1090,SC1091
-    if ! . "$lib" 2>/dev/null; then
-        echo "    warn: could not load graphify-bin.sh (non-fatal)." >&2
-        return 0
-    fi
-    # No blanket "(non-fatal)" here any more (HIMMEL-1274): that wording was
-    # actively wrong in the reported case — the step had left graphify BROKEN,
-    # not merely un-updated. graphify_update now reports its own outcome
-    # precisely (skipped / still-working / broken, with the repair command), so
-    # this caller must not paper over it with a generic reassurance. It stays
-    # advisory to the CHAIN (return 0) — himmel-update does not abort on it —
-    # but the operator-visible text comes from the step itself.
-    graphify_update || echo "    warn: graphify pin sync did not complete — see the message above for the resulting state." >&2
-    return 0
-}
 
 # ─── dependency-readiness advisory (HIMMEL-1393) ─────────────────────────────
 # Best-effort mirror of himmel-doctor's C17 (scripts/himmel-doctor.sh):
@@ -993,6 +1455,29 @@ report_dependency_readiness() {
     return 0
 }
 
+# ─── working-principles backfill (HIMMEL-2038) ──────────────────────────────
+# An adopter who installed himmel before HIMMEL-2038 demoted the "working
+# principles" block out of the always-on project CLAUDE.md loses it silently
+# on the next pull unless they manually re-run adopt.sh. Best-effort mirror of
+# adopt.sh's own wire_user_claude_md calls (both user-scope targets) so a
+# routine himmel-update backfills it too. Never fails the update.
+backfill_user_claude_md() {
+    local lib="$ROOT/scripts/lib/user-claude-md.sh"
+    local template="$ROOT/docs/setup/user-scope-claude-md-template.md"
+
+    echo ""
+    echo "==> working-principles backfill (HIMMEL-2038)"
+    if [ ! -f "$lib" ]; then echo "    skip: user-claude-md.sh not found."; return 0; fi
+    if [ ! -f "$template" ]; then echo "    skip: user-scope-claude-md-template.md not found."; return 0; fi
+    # shellcheck source=scripts/lib/user-claude-md.sh
+    # shellcheck disable=SC1091
+    . "$lib"
+    wire_user_claude_md "$template" "$HOME/.claude/CLAUDE.md" >/dev/null 2>&1 || true
+    wire_user_claude_md "$template" "$HOME/.codex/AGENTS.md" >/dev/null 2>&1 || true
+    echo "    checked ~/.claude/CLAUDE.md and ~/.codex/AGENTS.md (idempotent, append-only)."
+    return 0
+}
+
 # ─── existing advisory steps (best-effort; ALWAYS run, chain outcome or not)─
 # None of these are managed CHAIN items (headroom is HIMMEL-890 pending; graphify
 # is now covered by the best-effort sync_graphify step above, HIMMEL-1048) — they
@@ -1003,11 +1488,19 @@ report_dependency_readiness() {
 update_codex apply
 rewire_statusline
 sync_graphify
+# `|| true`: a failed cli-proxy roll must never abort a himmel update. The
+# function now returns non-zero so `--only cli_proxy` can report it (above);
+# here the advisory contract still applies.
+sync_cli_proxy || true
+sync_marketplaces
 report_plugin_gap
 reconcile_plugins apply
+offer_retired_plugin_removal apply
 report_cadence_stale
 report_guardrail_block
 report_dependency_readiness
+backfill_user_claude_md
+report_qmd_daemon_restart
 
 print_status_table
 

@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import type { HudConfig } from './config.js';
 import { createDebug } from './debug.js';
 import type { ExternalUsageSnapshot, UsageData } from './types.js';
+import { parseScopedWindows } from './stdin.js';
 import { sanitizeDisplayText } from './utils/sanitize.js';
 
 const debug = createDebug('external-usage');
@@ -289,7 +290,13 @@ export function getUsageFromExternalSnapshot(
     const fiveHour = parseUsagePercent(parsed.five_hour?.used_percentage);
     const sevenDay = parseUsagePercent(parsed.seven_day?.used_percentage);
     const balanceLabel = sanitizeBalanceLabel(parsed.balance_label);
-    if (fiveHour === null && sevenDay === null && balanceLabel === null) {
+    const scopedWindows = parseScopedWindows(parsed.model_scoped);
+    if (
+      fiveHour === null
+      && sevenDay === null
+      && balanceLabel === null
+      && scopedWindows.length === 0
+    ) {
       return null;
     }
 
@@ -311,6 +318,9 @@ export function getUsageFromExternalSnapshot(
     };
     if (balanceLabel !== null) {
       usage.balanceLabel = balanceLabel;
+    }
+    if (scopedWindows.length > 0) {
+      usage.scopedWindows = scopedWindows;
     }
     return usage;
   } catch (err) {

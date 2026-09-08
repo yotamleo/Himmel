@@ -15,12 +15,12 @@ enable it, and where the deep docs live.
 
 | Subsystem | Status | Default | Enable with |
 |---|---|---|---|
-| [GLM offload lane](#glm-offload-lane) | shipped | **off** | `ZAI_API_KEY` |
+| [GLM offload lane](#glm-offload-lane) | dormant (operator-dropped 2026-08-19, HIMMEL-1967) | **off** | `ZAI_API_KEY` + `GLM_LANE_OK` |
 | [Quota-gauge (cross-lane quota observability)](#quota-gauge--cross-lane-quota-observability) | shipped | **on** (passive) | no setup — reads only |
 | [Escalation channel](#escalation-channel) | shipped | **off** | rides the GLM lane |
 | [Statusline](#statusline) | shipped | opt-in | `scripts/lib/wire-statusline.sh` |
 | [Clipper pipeline](#clipper-pipeline) | shipped | opt-in | luna vault + `/harvest-clips` |
-| [Mission Control / C&C](#mission-control--cc) | **planned** | — | WS8 (not yet shipped) |
+| [Mission Control / C&C](#mission-control--cc) | shipped (Phase 1, read-only) | opt-in | `bun scripts/fleet-control/server.ts serve` |
 
 ---
 
@@ -31,10 +31,14 @@ enable it, and where the deep docs live.
 under himmel's full hook/guardrail set. The worker spawns into its own git
 worktree, is inspected, and its output is validated before anything merges.
 
-**Gating (off by default).** The lane is inert unless you set `ZAI_API_KEY`
-(env or a config file). `scripts/telegram/glm-env.ts` **throws** if the key is
-absent, so `spawn-glm.ts` / the `claude-glm` launchers simply cannot start
-without it. There is no SessionStart auto-activation.
+**Gating (dormant by operator ruling).** The lane was dropped 2026-08-19
+(HIMMEL-1967): implementation work routes to native Claude subagents only, and
+this lane needs `GLM_LANE_OK` to opt back in, on top of `ZAI_API_KEY`.
+`scripts/telegram/glm-env.ts` **throws** if the key is absent, so `spawn-glm.ts`
+/ the `claude-glm` launchers simply cannot start without it — but per
+`scripts/lanes/lanes.json`'s `readiness.passesRequired`, the lane must also show
+10 consecutive verify-return passes before dispatch routes work toward it
+(the HIMMEL-1575 startup-hang class). There is no SessionStart auto-activation.
 
 **Safety.** Third-party lanes have no auto-mode classifier and usually run under
 `--permission-mode bypassPermissions`, so himmel substitutes a **deterministic
@@ -44,7 +48,8 @@ deny hook** (`scripts/hooks/block-glm-external-writes.sh`): on the GLM lane
 recoverable actions (the Jira CLI, `gh issue`, read-only `gh pr view`, qmd KB
 reads) are carved out.
 
-**Use it.** `bun scripts/telegram/spawn-glm.ts <task>` spawns a worker; see
+**Use it.** Once opted in via `GLM_LANE_OK` (and past the readiness bar above),
+`bun scripts/telegram/spawn-glm.ts <task>` spawns a worker; see
 **[glm-offload.md](glm-offload.md)** for the spawn→inspect→validate runbook and
 the batch fan-out pattern. Chunk large plans — GLM workers choke on 500+-line
 plans.
@@ -140,11 +145,26 @@ on a cadence.
 
 ## Mission Control / C&C
 
-**Status: planned (WS8), not yet shipped.** The command-and-control / "war room"
-surface for observing and steering the fleet is specced but not built. This
-section is a placeholder; it will document the shipped surface once WS8 lands.
-Until then, fleet state is surfaced through the `where-are-we` ledger and the
-`/morning-report` command.
+**What it is.** A read-only web console for observing the fleet — worker
+status per lane (GLM / Codex / Hermes / armed slots), pending escalations, and
+quota/posture gauges, with live updates over SSE so the page refetches as
+state changes.
+
+**Status: shipped (WS8 Phase 1, read-only).** Lives at
+**`scripts/fleet-control/`**. There is no dispatch or adjudication in the UI
+yet — the page's own banner says it plainly: "Read-only Phase 1 pane. Dispatch
+and adjudication controls remain disabled until Phase 2." Fleet state also
+remains available the older way, through the `where-are-we` ledger and the
+`/morning-report` command; the console reads that same ledger rather than
+replacing it. The adoptable, productized judge module is tracked separately
+under **HIMMEL-2311**.
+
+**Use it.** `bun scripts/fleet-control/server.ts serve` starts the server,
+binding **loopback only** (`127.0.0.1:7350` by default, override with
+`FLEET_CONTROL_PORT`). It serves `/` (the console), `/fleet` and
+`/escalations` (JSON) and `/events` (SSE); state and bridge roots resolve from
+`FLEET_CONTROL_STATE_ROOT` / `FLEET_CONTROL_BRIDGE_ROOT` (`BRIDGE_ROOT`),
+defaulting under `~/.claude/handover/bridge`.
 
 ---
 

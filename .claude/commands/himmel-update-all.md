@@ -1,6 +1,6 @@
 ---
 allowed-tools: Bash, Read, Skill
-description: Update BOTH surfaces in one shot — the himmel harness (/himmel-update) then the luna vault (/luna-upgrade). Pass --check to dry-run both without changing anything.
+description: Update BOTH surfaces in one shot — the himmel harness then the luna vault. Pass --check to dry-run both.
 argument-hint: [--check] [--vault <path>] [--template-dir <path>]
 ---
 

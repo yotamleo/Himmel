@@ -1,0 +1,16 @@
+// Pre-fix reconstruction of HIMMEL-1776 instance 3
+// (scripts/lanes/bench/bank-snapshot-core.mjs, evaluatePreflight). The
+// reading came back null when the lane was absent, flat-rate, or
+// unmeasurable — and `null >= 80` is false, so an UNKNOWN bank passed the
+// refuse gate as if it were comfortably funded.
+//
+// Expected: lint-fail-open.sh fires fail-open(pct-unguarded) here.
+export const CODEX_WEEKLY_REFUSE_PCT = 80;
+
+export function evaluatePreflight({ codexWeeklyPct }) {
+  const reasons = [];
+  if (codexWeeklyPct >= CODEX_WEEKLY_REFUSE_PCT) {
+    reasons.push(`codex weekly ${codexWeeklyPct}% >= ${CODEX_WEEKLY_REFUSE_PCT}%`);
+  }
+  return { proceed: reasons.length === 0, reasons };
+}

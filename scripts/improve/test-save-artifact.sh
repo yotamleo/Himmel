@@ -25,6 +25,9 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
 script="$repo_root/scripts/improve/save-artifact.sh"
+# shellcheck source=../lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$repo_root/scripts/lib/fixture-tempdir.sh"
 
 if [ ! -x "$script" ] && [ ! -f "$script" ]; then
     echo "FAIL: $script not found" >&2
@@ -50,11 +53,11 @@ assert_fail() {
 echo "Test 1: happy path Mode A (HANDOVER_DIR unset)"
 
 # Use a temp git repo so we don't pollute the real repo's .improve/.
-tmp_repo=$(mktemp -d)
+tmp_repo=$(fixture_mktemp_dir) || exit 1
 set +e
 (
     set -e
-    cd "$tmp_repo"
+    fixture_enter_git_init_dir "$tmp_repo"
     git init -q
     git -c user.name=test -c user.email=test@example.com commit --allow-empty -m init -q
     unset HANDOVER_DIR
@@ -76,7 +79,7 @@ rm -rf "$tmp_repo"
 
 # ---------- 2. Mode B ----------
 echo "Test 2: Mode B (HANDOVER_DIR set + exists)"
-tmp_handover=$(mktemp -d)
+tmp_handover=$(fixture_mktemp_dir) || exit 1
 out=$(HANDOVER_DIR="$tmp_handover" bash "$script" --original "x" --refined "y")
 if [ -f "$out" ] && grep -q "^mode: B$" "$out"; then
     assert_pass "Mode B writes under HANDOVER_DIR/.improve/"
@@ -121,7 +124,7 @@ fi
 
 # ---------- 5. Dry-run prints, writes nothing ----------
 echo "Test 5: dry-run prints body, writes nothing"
-tmp_handover=$(mktemp -d)
+tmp_handover=$(fixture_mktemp_dir) || exit 1
 out=$(HANDOVER_DIR="$tmp_handover" bash "$script" --original "x" --refined "y" --dry-run)
 if grepq "$out" "would write to" && [ ! -d "$tmp_handover/.improve" ]; then
     assert_pass "dry-run prints + writes nothing"
@@ -132,7 +135,7 @@ rm -rf "$tmp_handover"
 
 # ---------- 6. Slug derivation handles whitespace-only original ----------
 echo "Test 6: slug fallback when original is whitespace"
-tmp_handover=$(mktemp -d)
+tmp_handover=$(fixture_mktemp_dir) || exit 1
 out=$(HANDOVER_DIR="$tmp_handover" bash "$script" --original "   " --refined "y")
 case "$out" in
     *-draft-*.md)

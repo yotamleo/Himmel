@@ -11,27 +11,10 @@
         ]
       }
     ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"<himmel-path>/scripts/lib/run-node.sh\" \"<claude-dir>/hooks/caveman-mode-tracker.js\"",
-            "timeout": 5,
-            "statusMessage": "Tracking caveman mode..."
-          }
-        ]
-      }
-    ],
+    "UserPromptSubmit": [],
     "SessionStart": [
       {
         "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"<himmel-path>/scripts/lib/run-node.sh\" \"<claude-dir>/hooks/caveman-activate.js\"",
-            "timeout": 5,
-            "statusMessage": "Loading caveman mode..."
-          },
           {
             "type": "command",
             "command": "bash \"<himmel-path>/scripts/hooks/check-update-available.sh\"",
@@ -72,23 +55,25 @@
   "env": {
     "CLAUDE_HUD_ALLOW_EXTRA_CMD": "1"
   },
+  "_enabledPluginsComment": "HIMMEL-2733 two-tier profile. This map carries the ALWAYS tier (`true` — installed AND enabled on every himmel machine) plus every spec the installers must NOT enable (`false`). A `false` entry is one of two things, and `onDemandPlugins` below is what tells them apart: a spec LISTED there is the ON-DEMAND tier (installed by the installers, written here as `false`, reachable via `/profile enable <spec>`); a spec absent from it is simply NOT INSTALLED. Keep every on-demand spec present here as `false` — reconcile-enabled-plugins.sh writes this map verbatim, so an omitted spec would be appended as false anyway, and the presence-verify in install-plugins.sh reads this key.",
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,
-    "context7@claude-plugins-official": true,
+    "mattpocock-skills@claude-plugins-official": true,
+    "plannotator-effective-html@effective-html": true,
+    "context7@claude-plugins-official": false,
     "code-review@claude-plugins-official": false,
     "code-simplifier@claude-plugins-official": false,
     "skill-creator@claude-plugins-official": false,
     "github@claude-plugins-official": false,
     "feature-dev@claude-plugins-official": false,
     "claude-md-management@claude-plugins-official": false,
-    "security-guidance@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": false,
     "commit-commands@claude-plugins-official": false,
     "claude-code-setup@claude-plugins-official": false,
     "pr-review-toolkit@claude-plugins-official": false,
-    "coderabbit@claude-plugins-official": true,
-    "playwright@claude-plugins-official": true,
+    "playwright@claude-plugins-official": false,
     "ralph-loop@claude-plugins-official": false,
-    "typescript-lsp@claude-plugins-official": true,
+    "typescript-lsp@claude-plugins-official": false,
     "pyright-lsp@claude-plugins-official": false,
     "plugin-dev@claude-plugins-official": false,
     "agent-sdk-dev@claude-plugins-official": false,
@@ -96,27 +81,73 @@
     "playground@claude-plugins-official": false,
     "atlassian@claude-plugins-official": false,
     "obsidian@obsidian-skills": false,
+    "codex@openai-codex": false,
     "qmd@himmel": true,
-    "caveman@caveman": false,
-    "claude-obsidian@himmel": true,
     "handover@himmel": true,
-    "luna-correlate@himmel": true,
     "himmel-ops@himmel": true,
-    "obsidian-triage@himmel": true,
     "pr-review-toolkit-himmel@himmel": true,
-    "telegram-himmel@himmel": true
+    "claude-obsidian@himmel": false,
+    "luna-correlate@himmel": false,
+    "obsidian-triage@himmel": false,
+    "telegram-himmel@himmel": false
+  },
+  "_onDemandPluginsComment": "HIMMEL-2733 ON-DEMAND tier: INSTALLED by install-plugins.sh but left DISABLED, so the plugin is reachable (`/profile enable <spec>`, or a cadence's own force-enable fragment) without costing session-start context on every launch. `neededBy` names WHO wants it, so discovery can say 'enable X for Y'. Every key here MUST also appear in enabledPlugins as `false` (check-template-himmel-plugins.sh enforces that), and its marketplace MUST be in extraKnownMarketplaces.",
+  "onDemandPlugins": {
+    "context7@claude-plugins-official": {
+      "neededBy": "/find-docs and the context7-mcp skill — live library/API documentation lookups."
+    },
+    "typescript-lsp@claude-plugins-official": {
+      "neededBy": "TypeScript/JS work in this checkout (scripts/jira, marketplace/plugins/claude-hud) — go-to-definition and diagnostics."
+    },
+    "playwright@claude-plugins-official": {
+      "neededBy": "Browser-driven e2e work; the /run skill's browser-driven fallback."
+    },
+    "claude-obsidian@himmel": {
+      "neededBy": "The obsidian-vault MCP used by the obsidian-second-brain skill and /obsidian-health. Disabling the plugin is what disables that MCP."
+    },
+    "luna-correlate@himmel": {
+      "neededBy": "Cross-vault correlation over luna (HIMMEL_MCP_LUNA_CORRELATE workflows)."
+    },
+    "obsidian-triage@himmel": {
+      "neededBy": "/luna-ingest and the luna clip pipeline. The pipeline does NOT need it enabled here: scripts/luna/pipeline-cadence.sh force-enables it per run via a settings fragment (HIMMEL-1036), which is why it is safe on this tier."
+    },
+    "telegram-himmel@himmel": {
+      "neededBy": "The telegram MCP behind /telegram-clip and the Telegram connector legs. Disabling the plugin is what disables that MCP."
+    },
+    "codex@openai-codex": {
+      "neededBy": "The codex adversarial critic lane. scripts/cr/codex-adv-kickoff.sh resolves this plugin's CACHED companion (~/.claude/plugins/cache/openai-codex/*/codex-companion.mjs) by glob and degrades the lane to 'skipped' when the cache is absent (HIMMEL-2707) — so the lane needs the plugin INSTALLED, never enabled."
+    }
+  },
+  "_onDemandConnectorsComment": "HIMMEL-2733: on-demand capabilities himmel does NOT install and therefore cannot ship a disabled state for — they are per-machine toggles in the Chrome extension and in claude.ai's connector settings. Listed here so the tier is DISCOVERABLE and the install summary can name them; no installer reads this key to write anything.",
+  "onDemandConnectors": {
+    "claude-in-chrome": {
+      "neededBy": "The claude-in-chrome skill and its mcp__claude-in-chrome__* tools (browser automation).",
+      "enableVia": "Chrome extension → per-site permissions. Not installed or configured by himmel."
+    },
+    "google-workspace": {
+      "neededBy": "Gmail / Drive / Calendar lookups from a Claude session.",
+      "enableVia": "claude.ai → Settings → Connectors. Not installed or configured by himmel."
+    }
   },
   "extraKnownMarketplaces": {
     "obsidian-skills": {
       "source": { "source": "github", "repo": "kepano/obsidian-skills" },
       "autoUpdate": true
     },
-    "caveman": {
-      "source": { "source": "github", "repo": "JuliusBrussee/caveman" },
-      "autoUpdate": true
-    },
     "himmel": {
       "source": { "source": "directory", "path": "<himmel-path>/marketplace" },
+      "autoUpdate": true
+    },
+    "claude-plugins-official": {
+      "source": { "source": "github", "repo": "anthropics/claude-plugins-official" },
+      "autoUpdate": true
+    },
+    "effective-html": {
+      "source": { "source": "github", "repo": "plannotator/effective-html" },
+      "autoUpdate": true
+    },
+    "openai-codex": {
+      "source": { "source": "github", "repo": "openai/codex-plugin-cc" },
       "autoUpdate": true
     }
   },

@@ -1,6 +1,6 @@
 ---
 name: luna-upgrade-all
-description: Use when multiple luna-second-brain vaults need to be brought up to the current himmel template in one best-effort pass — dry-run-first sweep across all discovered vaults, per-vault operator-confirmed apply, backup/restore safety net, and a conflict-brainstorm layer that proposes a concrete _CLAUDE.md merge resolution instead of just failing. Triggers on /luna-upgrade-all at the user prompt OR programmatic Skill-tool dispatch. NEVER auto-applies; every apply is confirmed by the operator. Distinct from /luna-upgrade (single vault) and /himmel-update (harness self-update) — this is the MULTI-vault sweep layer above the proven single-vault engine (HIMMEL-462).
+description: Use to bring MULTIPLE luna vaults to the current himmel template — dry-run, per-vault confirm. /luna-upgrade-all.
 ---
 
 # luna-upgrade-all — multi-vault upgrade sweep (HIMMEL-462)

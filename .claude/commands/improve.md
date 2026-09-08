@@ -1,5 +1,5 @@
 ---
-description: Refine a draft prompt via hybrid clarifying-Q workflow. Writes an audit artifact to .improve/ + returns the refined prompt for resubmission. HIMMEL-127.
+description: Refine a draft prompt via a hybrid clarifying-Q workflow; writes an audit artifact and returns the refined prompt.
 argument-hint: <draft-prompt>
 ---
 
@@ -53,17 +53,6 @@ through directly when the operator wants the refined prompt to fire).
 # Refine a long handover-style prompt (paste inline).
 /improve $(cat draft-prompt.md)
 ```
-
-## UserPromptSubmit hook integration
-
-`scripts/hooks/improve-on-submit.sh` is a UserPromptSubmit hook gated by the
-`IMPROVE_ON_SUBMIT=1` env var (must be set in the launching shell — bypass
-convention per CLAUDE.md). When active, every prompt the operator submits
-gets context injected suggesting Claude run `/improve` on it first.
-
-**Default:** OFF. Operators opt in by launching Claude with
-`IMPROVE_ON_SUBMIT=1 claude`. Future child tickets will switch to
-length/keyword-based auto-firing once the manual workflow is validated.
 
 ## Failure modes
 

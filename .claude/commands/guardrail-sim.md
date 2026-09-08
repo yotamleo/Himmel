@@ -1,5 +1,5 @@
 ---
-description: Pre-flight guardrail simulator — feed planned Bash commands on stdin and it flags/rewrites the predictable himmel guardrail collisions (compound→single, WSL-bash→Git Bash, destructive-git, on-main-write) + a curated learnings file, before they stall a run (HIMMEL-475).
+description: Pre-flight guardrail simulator — feed planned Bash commands on stdin; flags/rewrites predictable guardrail hits.
 ---
 
 Pre-flight guardrail simulator (HIMMEL-475, C1 of the autonomy-resilience epic).

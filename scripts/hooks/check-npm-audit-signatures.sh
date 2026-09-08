@@ -14,6 +14,44 @@ if [ ${#pkgs[@]} -eq 0 ]; then
     exit 0
 fi
 
+# npm ships its own copy of the registry's public keys, and the bundle in npm
+# < 11 carries a key that EXPIRED 2025-01-29. On Debian/Ubuntu's apt npm (9.2.0)
+# `npm audit signatures` therefore fails EVERY package with EEXPIREDSIGNATUREKEY
+# — which reads like a supply-chain alarm when it is really a stale verifier,
+# and it refuses every push on an otherwise-healthy box (HIMMEL-2440). Check the
+# tool before believing its verdict. This does NOT weaken the check: an npm too
+# old to verify is refused, never waved through.
+NPM_MIN_MAJOR=11
+npm_checked=0
+npm_ok=0
+require_npm() {
+    if [ "$npm_checked" -eq 0 ]; then
+        npm_checked=1
+        local ver major
+        ver="$(npm --version 2>/dev/null | head -1 | tr -d '\r' || true)"
+        major="${ver%%.*}"
+        case "$major" in
+            ''|*[!0-9]*)
+                echo "ERROR: npm did not report a usable version (got: '$ver')." >&2
+                echo "       npm >= $NPM_MIN_MAJOR is required to verify registry signatures." >&2 ;;
+            *)
+                if [ "$major" -ge "$NPM_MIN_MAJOR" ]; then
+                    npm_ok=1
+                else
+                    echo "ERROR: npm $ver is too old to verify registry signatures — need npm >= $NPM_MIN_MAJOR." >&2
+                    echo "       npm < $NPM_MIN_MAJOR bundles a registry public key that expired 2025-01-29, so" >&2
+                    echo "       every package fails with EEXPIREDSIGNATUREKEY. That is a stale verifier," >&2
+                    echo "       not a tampered package. Debian/Ubuntu's apt npm is 9.2.0." >&2
+                    echo "       Fix: sudo npm install -g npm@$NPM_MIN_MAJOR" >&2
+                    echo "       Pin the major — npm@latest is npm 12, which refuses node 22.22.x with" >&2
+                    echo "       EBADENGINE. Re-check with \`npm --version\` (the upgrade lands in" >&2
+                    echo "       /usr/local/bin, so a shell that resolves /usr/bin first still sees 9)." >&2
+                fi ;;
+        esac
+    fi
+    [ "$npm_ok" -eq 1 ]
+}
+
 fail=0
 for pkg in "${pkgs[@]}"; do
     dir=$(dirname "$pkg")
@@ -59,6 +97,9 @@ for pkg in "${pkgs[@]}"; do
         fail=1
         continue
     fi
+    # Fail fast on an unusable npm rather than surfacing its expired-key error
+    # as if the packages were at fault.
+    if ! require_npm; then fail=1; continue; fi
     echo "→ npm audit signatures (production) in $dir"
     # --omit=dev: production-only, matching the sibling check-npm-audit.sh
     # contract and the hook's registered name "npm audit signatures

@@ -100,10 +100,17 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRY_RUN=0
 BASE_REF="${GRAPH_PUBLISH_BASE:-main}"
 DO_FETCH=1
+# --ticket (HIMMEL-2095): the commit subject used to carry no ticket ID, so
+# every publish PR failed this repo's own CI commit-range gate (check-commit-
+# msg.sh requires one on every commit) -- plausibly why the manual bypass
+# (a bare, ticketless `git commit` straight to main) was reached for at all.
+# Defaults to the standing ticket that tracks this publish flow; overridable
+# so the standing ticket can change without editing code.
+TICKET="${GRAPH_PUBLISH_TICKET:-HIMMEL-2095}"
 
 usage() {
     cat <<'EOF'
-usage: graph-publish.sh [--dry-run] [--base <branch>] [--no-fetch]
+usage: graph-publish.sh [--dry-run] [--base <branch>] [--no-fetch] [--ticket <ID>]
 
 Publishes a freshly-refreshed graphify-out/graph.json (+ GRAPH_REPORT.md) by
 opening/refreshing a PR — the operator-invoked step HIMMEL-1123's tracked
@@ -118,6 +125,9 @@ Optional:
                   or `main`.
   --no-fetch      Skip `git fetch origin <base>`; use whatever origin/<base>
                   is already known locally (offline mode).
+  --ticket <ID>   Ticket ID carried in the commit subject (this repo's
+                  commit-range gate requires one on every commit). Default:
+                  $GRAPH_PUBLISH_TICKET or HIMMEL-2095.
 EOF
 }
 
@@ -126,6 +136,7 @@ while [ $# -gt 0 ]; do
         --dry-run)  DRY_RUN=1; shift ;;
         --base)     BASE_REF="${2:?--base requires a value}"; shift 2 ;;
         --no-fetch) DO_FETCH=0; shift ;;
+        --ticket)   TICKET="${2:?--ticket requires a value}"; shift 2 ;;
         -h|--help)  usage; exit 0 ;;
         *) echo "ERR graph-publish: unknown arg: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -226,8 +237,8 @@ corpus_slug=$(printf '%s' "$corpus" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/-\{2,
 [ -n "$corpus_slug" ] || corpus_slug="repo"
 
 BRANCH="chore/graph-publish-${corpus_slug}"
-title="chore(graphify): publish refreshed ${corpus} graph"
-commit_msg="chore(graphify): publish refreshed ${corpus} graph
+title="chore(graphify): [${TICKET}] publish refreshed ${corpus} graph"
+commit_msg="chore(graphify): [${TICKET}] publish refreshed ${corpus} graph
 
 Republishes graphify-out/graph.json + GRAPH_REPORT.md for ${corpus}, regenerated locally via refresh-graph-map.sh (HIMMEL-1129). Not code — a regenerated data snapshot; ad-hoc-reviewed as low-risk per check-security-reviewed.sh's non-docs classification of graphify-out/*.json.
 
@@ -240,9 +251,16 @@ Publishes a refreshed graphify-out/graph.json + GRAPH_REPORT.md for **${corpus}*
 
 ${files_block}
 
+## Review class — MACHINE-GENERATED, not CodeRabbit-reviewable (HIMMEL-2278)
+
+Every path in this PR's diff is a tracked graphify-out artifact (\`graphify-out/graph.json\`, \`graphify-out/GRAPH_REPORT.md\`) — a regenerated data snapshot, zero code. The CodeRabbit App does not review this class, so **do not post a CodeRabbit review-trigger comment here, and do not park on the CR gate**: the review is never coming (precedents #2013 dependabot, #2035 this class; both ended in a manual operator merge after a dead poll). This body deliberately spells out no trigger phrase — a literal one here would fire the very request it is telling you not to make.
+
+\`check-ci.sh\` recognizes the class from that diff shape — not from a label or this text, which any PR could copy — and treats the absent App review as the expected state. Checks-green, CHANGES_REQUESTED and unresolved-thread gating still apply here in full.
+
 ## Ticket
 
 - HIMMEL-1129
+- HIMMEL-2278 (the machine-generated-PR review class)
 
 ---
 

@@ -4,6 +4,9 @@
 // (T16), and the in-process same-lane concurrent-append race (T17/AC6).
 // Injected deps only — no real $HOME writes, no network.
 import { expect, test, beforeEach, afterEach } from "bun:test";
+// BASH_BIN, never a bare "bash": on Windows the spawning process resolves it
+// through PATH straight to the System32 WSL stub (HIMMEL-1992/1279).
+import { BASH_BIN } from "./run";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -100,7 +103,7 @@ test("byte-identical bash<->TS serialization (T22)", () => {
   ];
   for (const { args, record } of cases) {
     const tsLine = serializeQuotaGauge(record);
-    const r = Bun.spawnSync(["bash", BASH_LIB, "--emit", ...args], { stdout: "pipe", stderr: "pipe" });
+    const r = Bun.spawnSync([BASH_BIN, BASH_LIB, "--emit", ...args], { stdout: "pipe", stderr: "pipe" });
     if (r.exitCode !== 0) {
       // Fallback where a bare `bash` resolves to a non-Git-Bash stub: the
       // bash smoke test carries the authoritative bash-side assertion.
@@ -147,7 +150,7 @@ test("T17/AC6 same-lane concurrent appendQuotaGauge race -> no loss/merge", asyn
       `  i=$((i+1))`,
       `done`,
     ].join("\n");
-    const sub = Bun.spawn(["bash", "-c", script], {
+    const sub = Bun.spawn([BASH_BIN, "-c", script], {
       stdout: "pipe", stderr: "pipe",
       env: { ...process.env, HIMMEL_QUOTA_GAUGE_LEDGER: f },
     });

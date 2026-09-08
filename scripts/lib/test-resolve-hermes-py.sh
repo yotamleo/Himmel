@@ -73,5 +73,51 @@ out="$( base_env; HERMES_HOME="$tmp/nope" resolve_hermes_py )"; rc=$?
 if [ "$rc" -eq 1 ] && [ -z "$out" ]; then pass "none -> rc1 empty"; else fail "none -> rc=$rc out='$out'"; fi
 rm -rf "$tmp"
 
+# HIMMEL-2582: with HERMES_HOME unset, the derived root used to be
+# ${LOCALAPPDATA:-$HOME/AppData/Local}/hermes — a WINDOWS path — on EVERY host,
+# so the resolver failed on any POSIX box that had not exported HERMES_HOME.
+# That is what made the bridge's triage fail open with "hermes interpreter not
+# found" on the Linux station (2026-09-05). On POSIX hermes lives at ~/.hermes;
+# the Windows default belongs under the LOCALAPPDATA branch only.
+echo "== HERMES_HOME UNSET on a POSIX layout defaults to \$HOME/.hermes =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+make_fake_py "$tmp/home/.hermes/hermes-agent/venv/bin/python"
+out="$( base_env; HOME="$tmp/home" resolve_hermes_py )"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/home/.hermes/hermes-agent/venv/bin/python" ]; then
+    pass "unset HERMES_HOME -> '$out'"
+else
+    fail "unset HERMES_HOME -> rc=$rc out='$out' (want \$HOME/.hermes/hermes-agent/venv/bin/python)"
+fi
+rm -rf "$tmp"
+
+# The POSIX default must not COST the Windows one: when LOCALAPPDATA is set
+# (the marker of a Windows host) that branch still wins, so a Git-Bash operator
+# with hermes under %LOCALAPPDATA%/hermes keeps resolving exactly as before.
+echo "== LOCALAPPDATA still wins when set (Windows host, HERMES_HOME unset) =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+make_fake_py "$tmp/appdata/hermes/hermes-agent/venv/Scripts/python.exe"
+make_fake_py "$tmp/home/.hermes/hermes-agent/venv/bin/python"
+out="$( base_env; HOME="$tmp/home" LOCALAPPDATA="$tmp/appdata" resolve_hermes_py )"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/appdata/hermes/hermes-agent/venv/Scripts/python.exe" ]; then
+    pass "LOCALAPPDATA wins -> '$out'"
+else
+    fail "LOCALAPPDATA wins -> rc=$rc out='$out' (want the %LOCALAPPDATA%/hermes tree)"
+fi
+rm -rf "$tmp"
+
+# An explicit HERMES_HOME still beats both defaults — that override is what the
+# station drop-in used as its recovery, and it must keep working.
+echo "== explicit HERMES_HOME still beats the POSIX default =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+make_fake_py "$tmp/explicit/hermes-agent/venv/bin/python"
+make_fake_py "$tmp/home/.hermes/hermes-agent/venv/bin/python"
+out="$( base_env; HOME="$tmp/home" HERMES_HOME="$tmp/explicit" resolve_hermes_py )"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/explicit/hermes-agent/venv/bin/python" ]; then
+    pass "explicit HERMES_HOME -> '$out'"
+else
+    fail "explicit HERMES_HOME -> rc=$rc out='$out'"
+fi
+rm -rf "$tmp"
+
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

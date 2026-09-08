@@ -1,6 +1,6 @@
 ---
 name: vault-lint
-description: Use when the operator wants to lint a vault, run a vault health check, perform a wiki audit, or find orphans and broken wikilinks. Filesystem-only, report-only (no auto-fix in v1). Runs a single deterministic Python pass that converges on large PARA vaults where agent-crawl lint does not. Vault-agnostic — works on any Obsidian vault, not just luna.
+description: Use to lint a vault, run a health check, or find orphans and broken wikilinks. Report-only, any Obsidian vault.
 ---
 
 Run the vault-lint engine against a vault root. Deterministic, report-only, filesystem-only.
@@ -8,10 +8,23 @@ Run the vault-lint engine against a vault root. Deterministic, report-only, file
 1. **Resolve the vault root.** Use the explicit `$ARGUMENTS` path if provided, else `cwd`. Abort
    if the path does not exist or has no `*.md` files.
 
-2. **Run the engine:**
+2. **Run the engine as a single literal command, absolute path, no `cd`.** The
+   cadence that runs this skill unattended fires with `cwd` set to the vault, not
+   a himmel checkout — a repo-relative path forces a `cd <repo> && python …`
+   paraphrase, which is a compound shape the cadence's engine-allow hook never
+   grants (HIMMEL-2046). Resolve the himmel repo root from the `$HIMMEL_REPO`
+   environment variable (auto-set on every adopted machine, HIMMEL-453/123) and
+   substitute its **literal value** into the command text — do not write
+   `$HIMMEL_REPO` or `${CLAUDE_PLUGIN_ROOT}` in the actual invocation: a `$`
+   token in the engine path is refused outright, and `CLAUDE_PLUGIN_ROOT`
+   resolves to the plugin's installed *cache* copy, not this repo, which the
+   hook does not trust either. If `$HIMMEL_REPO` is unset, ask the operator for
+   the himmel repo path (interactive) or abort the leg (unattended) rather than
+   guessing:
    ```bash
-   python "marketplace/plugins/obsidian-triage/skills/vault-lint/vault_lint.py" "<vault>"
+   python "<himmel-repo-root>/marketplace/plugins/obsidian-triage/skills/vault-lint/vault_lint.py" "<vault>"
    ```
+   e.g. `python "C:/Users/op/himmel/marketplace/plugins/obsidian-triage/skills/vault-lint/vault_lint.py" "<vault>"`.
    The engine loads `<vault>/.vault-lint.json` if present, otherwise uses its shipped defaults.
    It writes the report to the configured `report_path` (default `<vault>/_lint-report-{date}.md`,
    date-substituted) and prints a JSON summary to stdout.

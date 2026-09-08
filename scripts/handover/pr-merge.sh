@@ -120,6 +120,41 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
+# HIMMEL-1346 — clear this branch's pending CR marker through the sanctioned
+# chokepoint (scripts/cr/clear-cr-marker.sh, never a raw `rm`) so the merge does
+# not leave one behind: the marker lives in the SHARED git-common-dir and
+# check-cr-marker-on-pr-create.sh resolves the branch from the session cwd, so a
+# marker outliving its merged branch HARD-BLOCKS `gh pr create` on unrelated
+# branches.
+#
+# Ordering. AFTER the merge is impossible: deleteBranchOnMerge removes the
+# remote head branch, and the marker's endpoint binding then refuses (exit 16)
+# for every merged branch. So it runs before — and before the CR/CI gates
+# below, not between them and the merge (codex-1): the chokepoint runs its own
+# check-ci watch, which can take minutes, and inserting that between this
+# script's gates and its merge would widen exactly the window HIMMEL-1058's
+# head binding narrows. Nothing here depends on those gates: clear-cr-marker
+# re-derives its whole verdict (ledger + PR head + check-ci) itself.
+#
+# Best-effort: a marker that will not clear is reported, never a merge failure.
+# No marker => the chokepoint is not invoked at all (it would otherwise pay for
+# a check-ci watch to no-op).
+_cr_marker_common=$(git rev-parse --git-common-dir 2>/dev/null || true)
+_cr_clearer="$SCRIPT_DIR/../cr/clear-cr-marker.sh"
+if [ -n "$_cr_marker_common" ] && [ -f "$_cr_marker_common/cr-pending/$current_branch" ]; then
+    if [ ! -f "$_cr_clearer" ]; then
+        # Say so (codex-2): a pending marker left behind silently is the exact
+        # failure HIMMEL-1346 is about.
+        echo "pr-merge: clear-cr-marker.sh not found at $_cr_clearer — the CR marker for '$current_branch' stays pending (HIMMEL-1346). Merging anyway." >&2
+    else
+        _cr_clear_rc=0
+        bash "$_cr_clearer" "$current_branch" || _cr_clear_rc=$?
+        if [ "$_cr_clear_rc" -ne 0 ]; then
+            echo "pr-merge: could not clear the CR marker for '$current_branch' (clear-cr-marker exit $_cr_clear_rc) — it stays pending and will block \`gh pr create\` for branches resolved from a session cwd in this checkout (HIMMEL-1346). Merging anyway." >&2
+        fi
+    fi
+fi
+
 # HIMMEL-936: CR merge gate on the same predicate as the PreToolUse hook, so
 # machines without the plugin hook still get the gate on this path. Placed
 # before the mergeability check so a CR-blocked merge fails fast (exit 5).

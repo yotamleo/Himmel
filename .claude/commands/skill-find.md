@@ -1,5 +1,5 @@
 ---
-description: Embedding-indexed lookup over installed skills/commands/agents — eliminates wrong-namespace mistakes (HIMMEL-33).
+description: Embedding-indexed lookup over installed skills/commands/agents — eliminates wrong-namespace mistakes.
 argument-hint: <intent text> [--namespace <plugin>] [--limit N]
 ---
 

@@ -6,6 +6,12 @@
   Run: pwsh scripts/test-vault-git.ps1
 #>
 $ErrorActionPreference = 'Continue'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $TR = (Resolve-Path (Join-Path $here '..')).Path
 $failed = 0
@@ -27,6 +33,16 @@ $env:GIT_COMMITTER_NAME = 'luna-test'; $env:GIT_COMMITTER_EMAIL = 'lt@example.co
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("c4ps-" + [System.IO.Path]::GetRandomFileName())
 $V = Join-Path $tmp 'vault'
 New-Item -ItemType Directory -Force -Path $V | Out-Null
+
+# Isolate the fixture from the HOST's global git config (LUNA-131). A host that
+# sets core.hooksPath globally (a common multi-repo setup) makes `pre-commit
+# install` abort with "Cowardly refusing to install hooks with core.hooksPath
+# set", so the hook-install assert fails and Precondition B SKIPs every
+# hook-dependent case — a red/vacuous suite for a reason that has nothing to do
+# with the code under test. The identity the fixture needs is already supplied
+# by the GIT_* environment variables set above.
+$env:GIT_CONFIG_GLOBAL = Join-Path $tmp 'gitconfig-isolated'
+New-Item -ItemType File -Force -Path $env:GIT_CONFIG_GLOBAL | Out-Null
 try {
     foreach ($f in @('.gitignore', '.gitattributes', '.pre-commit-config.yaml', '.gitleaks.toml', '.env.example', '.vault-template.json', 'README.md', '_CLAUDE.md', 'index.md', 'log.md', 'Welcome.md')) {
         Copy-Item (Join-Path $TR $f) (Join-Path $V $f)

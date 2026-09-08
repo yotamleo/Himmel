@@ -20,6 +20,9 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 FENCE="$REPO_ROOT/scripts/guardrails/lesson-write-fence.sh"
 REAL_POLICY="$REPO_ROOT/scripts/guardrails/enforcement-paths.json"
+# shellcheck source=scripts/lib/fixture-tempdir.sh
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/fixture-tempdir.sh"
 
 for f in "$FENCE" "$REAL_POLICY"; do
     if [ ! -f "$f" ]; then echo "FAIL: $f not found"; exit 1; fi
@@ -32,12 +35,17 @@ pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
 
 # --- fixture workspace -------------------------------------------------------
-WS="$(mktemp -d)"
+WS="$(fixture_mktemp_dir)" || exit 1
 trap 'rm -rf "$WS"' EXIT
 
 REPO="$WS/repo"
 mkdir -p "$REPO"
-( cd "$REPO" && git init -q && git config user.email t@example.com && git config user.name test )
+(
+    fixture_enter_git_init_dir "$REPO" &&
+        git init -q &&
+        git config user.email t@example.com &&
+        git config user.name test
+) || exit 1
 # Normalize REPO to git's OWN toplevel form: on Windows, `mktemp -d` yields an
 # MSYS-mounted `/tmp/...` path while `git rev-parse --show-toplevel` always
 # prints the drive-lettered Windows form (`C:/Users/...`) - the two strings
@@ -101,6 +109,86 @@ run_hook() {
     if [ "$ok" = 1 ]; then pass "$name"; else fail "$name (rc=$rc) out=$out"; fi
 }
 
+# run_check_batch <cwd> <name1> <expect1> <path1> [<name2> <expect2> <path2> ...]
+# HIMMEL-2169: batches N cases that were each their OWN hook-mode run_hook
+# spawn into ONE `fence check <path>...` process, verifying each path's
+# verdict line (printed in argument order, one per input path) against its
+# expected allow|deny - same per-case pass/fail semantics as run_hook, minus
+# N-1 process spawns. VALID ONLY for cases that are pure path-classification
+# (Write/Edit/NotebookEdit/MultiEdit file_path/notebook_path shapes): check
+# mode calls classify_target directly and has no env gate, but it NEVER calls
+# evaluate_command - so a Bash/PowerShell command-string case (which exercises
+# evaluate_command/_scan_redirects/_operand_targets) cannot be represented
+# here and must stay a run_hook call.
+#
+# HIMMEL-2169 CR fix (codex-1, Important / codex-2, Suggestion): the earlier
+# version only checked each line's verdict PREFIX, not its reported path, so
+# a misassociated/misordered verdict line (`check` printing lines out of
+# argument order, or repeating one) would still read as a pass - losing the
+# per-case isolation the replaced individual run_hook spawns had. It also
+# discarded the batch process's own exit code. Now checks BOTH: an extra
+# "check-batch rc sanity" assertion per batch call (rc must be 2 iff any case
+# in the batch expects deny, else 0), and each per-case line's path field
+# (3rd tab-separated column) against the expected path, not just the verdict.
+run_check_batch() {
+    local cwd="$1"; shift
+    local -a names=() expects=() paths=()
+    while [ "$#" -gt 0 ]; do
+        names+=("$1"); expects+=("$2"); paths+=("$3")
+        shift 3
+    done
+    local n=${#paths[@]}
+    local out rc
+    out=$(cd "$cwd" && env LESSON_FENCE_POLICY="$POLICY_COPY" "$BASH_BIN" "$FENCE" check "${paths[@]}" 2>&1); rc=$?
+    local -a lines=()
+    while IFS= read -r _line; do lines+=("$_line"); done <<< "$out"
+    local i=0 expect_deny=0
+    while [ "$i" -lt "$n" ]; do
+        [ "${expects[$i]}" = deny ] && expect_deny=1
+        i=$((i+1))
+    done
+    local exp_rc=0; [ "$expect_deny" = 1 ] && exp_rc=2
+    if [ "$rc" = "$exp_rc" ]; then
+        pass "check-batch rc sanity (cwd=$cwd, n=$n)"
+    else
+        fail "check-batch rc sanity (cwd=$cwd, n=$n): got rc=$rc expected rc=$exp_rc out=$out"
+    fi
+    # CR fix (codex-2, round 4): the per-case loop below only ever examines
+    # lines[0..n-1] - it never notices EXTRA trailing lines, so `check` mode
+    # emitting a duplicate/unexpected trailing line (violating its
+    # one-line-per-input contract) would pass silently. Verify the line count
+    # matches exactly before trusting positional indexing.
+    if [ "${#lines[@]}" = "$n" ]; then
+        pass "check-batch line-count sanity (cwd=$cwd, n=$n)"
+    else
+        fail "check-batch line-count sanity (cwd=$cwd, n=$n): got ${#lines[@]} line(s), expected $n; out=$out"
+    fi
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        local nm="${names[$i]}" exp="${expects[$i]}" path="${paths[$i]}" line="${lines[$i]:-}"
+        local v c p extra
+        # Strict 3-field parse (CR fix, codex-2, round 3): a prefix-only match
+        # (verdict + one more tab) accepted a malformed 2-column line - e.g.
+        # `deny\t<expected-path>` with the class field missing entirely - as
+        # long as the trailing text happened to equal the expected path.
+        # Reading into exactly 4 vars over the real `verdict\tclass\tpath`
+        # contract requires all three fields present and nothing left over:
+        # a short line leaves `p` empty, an over-long one leaves `extra`
+        # non-empty, either denied here as malformed.
+        IFS=$'\t' read -r v c p extra <<< "$line"
+        if [ -z "$v" ] || [ -z "$c" ] || [ -z "$p" ] || [ -n "$extra" ]; then
+            fail "$nm (malformed check-mode output line: [$line])"
+        elif [ "$v" != "$exp" ]; then
+            fail "$nm (verdict mismatch: got [$v] expected [$exp]) line=[$line] out=$out"
+        elif [ "$p" != "$path" ]; then
+            fail "$nm (verdict OK but path mismatch: line reported [$p], expected [$path]) out=$out"
+        else
+            pass "$nm"
+        fi
+        i=$((i+1))
+    done
+}
+
 write_json() { # <path> <cwd>
     local p="$1" cwd="$2"
     p="${p//\\/\\\\}"; p="${p//\"/\\\"}"
@@ -117,44 +205,51 @@ pwsh_json() { # <command> <cwd>
     cmd="${cmd//\\/\\\\}"; cmd="${cmd//\"/\\\"}"
     printf '{"tool_name":"PowerShell","tool_input":{"command":"%s","cwd":"%s"}}' "$cmd" "$cwd"
 }
+# apply_patch_json <patch-text> <cwd> - HIMMEL-2170: Codex's create/edit
+# envelope. Unlike bash_json/pwsh_json, <patch-text> is genuinely multi-line
+# (an "*** Add/Update/Delete File:" header line plus a diff body), so this
+# also escapes embedded newlines as JSON `\n` (order matters: backslashes,
+# then quotes, then newlines - the same order write_json/bash_json already
+# use for their first two).
+apply_patch_json() {
+    local cmd="$1" cwd="$2"
+    cmd="${cmd//\\/\\\\}"; cmd="${cmd//\"/\\\"}"; cmd="${cmd//$'\n'/\\n}"
+    printf '{"tool_name":"apply_patch","tool_input":{"command":"%s","cwd":"%s"}}' "$cmd" "$cwd"
+}
 
 echo "== 1: inactive - settings.json Write payload -> exit 0 =="
 run_hook allow "1: inactive settings.json Write -> exit0" \
     "$(write_json "$REPO/.claude/settings.json" "$REPO")" 0
 
 echo "== 2: active Write - prefix classes deny =="
-for rel in \
-    "scripts/guardrails/x.sh" \
-    "scripts/hooks/y.sh" \
-    "scripts/lessons/validate-lesson.mjs" \
-    ".claude/settings.json" \
-    ".claude/settings.local.json" \
-    ".pre-commit-config.yaml" \
-    ".gitleaks.toml" \
-    ".codex/codex-hook-adapter.sh" \
-    "scripts/backends.json" \
-    "scripts/guardrails/newsub/x.sh"
-do
-    run_hook deny "2: prefix deny $rel" "$(write_json "$REPO/$rel" "$REPO")" 1
-done
+run_check_batch "$REPO" \
+    "2: prefix deny scripts/guardrails/x.sh" deny "$REPO/scripts/guardrails/x.sh" \
+    "2: prefix deny scripts/hooks/y.sh" deny "$REPO/scripts/hooks/y.sh" \
+    "2: prefix deny scripts/lessons/validate-lesson.mjs" deny "$REPO/scripts/lessons/validate-lesson.mjs" \
+    "2: prefix deny .claude/settings.json" deny "$REPO/.claude/settings.json" \
+    "2: prefix deny .claude/settings.local.json" deny "$REPO/.claude/settings.local.json" \
+    "2: prefix deny .pre-commit-config.yaml" deny "$REPO/.pre-commit-config.yaml" \
+    "2: prefix deny .gitleaks.toml" deny "$REPO/.gitleaks.toml" \
+    "2: prefix deny .codex/codex-hook-adapter.sh" deny "$REPO/.codex/codex-hook-adapter.sh" \
+    "2: prefix deny scripts/backends.json" deny "$REPO/scripts/backends.json" \
+    "2: prefix deny scripts/guardrails/newsub/x.sh" deny "$REPO/scripts/guardrails/newsub/x.sh"
 
 echo "== 3: active Write - basename classes deny (any depth / outside repo) =="
-run_hook deny "3: hooks.json (nested, plugin tree)" \
-    "$(write_json "$REPO/marketplace/plugins/himmel-ops/hooks/hooks.json" "$REPO")" 1
-run_hook deny "3: parity_guard.py (outside repo, hermes tree)" \
-    "$(write_json "$HERMES/parity_guard.py" "$HERMES")" 1
-run_hook deny "3: CLAUDE.md nested under docs/foo" \
-    "$(write_json "$REPO/docs/foo/CLAUDE.md" "$REPO")" 1
-run_hook deny "3: AGENTS.md at repo root" \
-    "$(write_json "$REPO/AGENTS.md" "$REPO")" 1
-run_hook deny "3: CLAUDE.md outside any repo" \
-    "$(write_json "$NONREPO/CLAUDE.md" "$NONREPO")" 1
+run_check_batch "$REPO" \
+    "3: hooks.json (nested, plugin tree)" deny "$REPO/marketplace/plugins/himmel-ops/hooks/hooks.json" \
+    "3: CLAUDE.md nested under docs/foo" deny "$REPO/docs/foo/CLAUDE.md" \
+    "3: AGENTS.md at repo root" deny "$REPO/AGENTS.md"
+run_check_batch "$HERMES" \
+    "3: parity_guard.py (outside repo, hermes tree)" deny "$HERMES/parity_guard.py"
+run_check_batch "$NONREPO" \
+    "3: CLAUDE.md outside any repo" deny "$NONREPO/CLAUDE.md"
 
 echo "== 4: active Write - allows =="
-run_hook allow "4: scripts/foo.sh" "$(write_json "$REPO/scripts/foo.sh" "$REPO")" 1
-run_hook allow "4: docs/internals/x.md" "$(write_json "$REPO/docs/internals/x.md" "$REPO")" 1
-run_hook allow "4: scripts/lanes/lanes.json" "$(write_json "$REPO/scripts/lanes/lanes.json" "$REPO")" 1
-run_hook allow "4: settings.json NOT under .claude/" "$(write_json "$REPO/config/settings.json" "$REPO")" 1
+run_check_batch "$REPO" \
+    "4: scripts/foo.sh" allow "$REPO/scripts/foo.sh" \
+    "4: docs/internals/x.md" allow "$REPO/docs/internals/x.md" \
+    "4: scripts/lanes/lanes.json" allow "$REPO/scripts/lanes/lanes.json" \
+    "4: settings.json NOT under .claude/" allow "$REPO/config/settings.json"
 
 echo "== 5: Edit / NotebookEdit / MultiEdit payload shapes =="
 run_hook deny "5: Edit file_path -> deny" \
@@ -165,6 +260,25 @@ run_hook deny "5: MultiEdit file_path -> deny" \
     "$(printf '{"tool_name":"MultiEdit","tool_input":{"file_path":"%s","cwd":"%s"}}' "$REPO/CLAUDE.md" "$REPO")" 1
 run_hook allow "5: Edit file_path non-enforcement -> allow" \
     "$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","cwd":"%s"}}' "$REPO/README.md" "$REPO")" 1
+# CR fix (codex-1, round 4, HIMMEL-2169): sections 2/3/4's active-Write cases
+# were all converted to check-mode batches, which never construct a
+# `tool_name":"Write"` payload at all. Edit/NotebookEdit/MultiEdit above share
+# the SAME hook-mode case arm (`Edit|Write|NotebookEdit|MultiEdit)`) as Write,
+# so this canary is redundant for classify_target correctness - but it is NOT
+# redundant for the dispatch itself: a regression that dropped "Write" from
+# that pattern list (falling through to the default `exit 0`) would leave
+# every active Write payload silently allowed, and nothing above would catch
+# it. One retained active hook-mode Write case closes that gap.
+#
+# CR fix (codex-1, round 5): a DENY-only canary proves the Write dispatch can
+# reach a deny, but not that it still ALLOWS a non-enforcement path - a
+# regression that made the Write arm unconditionally deny (independent of
+# classify_target's actual verdict) would pass this deny canary just as
+# easily. Add the ALLOW half too, so the canary pair covers both directions.
+run_hook deny "5: Write file_path -> deny (retains active Write-dispatch coverage)" \
+    "$(write_json "$REPO/scripts/hooks/y.sh" "$REPO")" 1
+run_hook allow "5: Write file_path non-enforcement -> allow (retains active Write-dispatch coverage)" \
+    "$(write_json "$REPO/README.md" "$REPO")" 1
 
 echo "== 6: Bash/PowerShell write-shapes deny =="
 run_hook deny "6: echo > scripts/hooks/a.sh" "$(bash_json "echo x > scripts/hooks/a.sh" "$REPO")" 1
@@ -250,24 +364,51 @@ msys_form() {
 # MSYS-native view for anything under Git-Bash's virtual /tmp mount and
 # would never exercise the drive-letter -> MSYS translation this test wants).
 MSYS_TARGET="$(msys_form "$REPO")/scripts/hooks/y.sh"
-if [ "$MSYS_TARGET" != "$REPO/scripts/hooks/y.sh" ]; then
-    run_hook deny "11: MSYS /c/... form -> deny" "$(write_json "$MSYS_TARGET" "$REPO")" 1
-else
-    printf '  SKIP  MSYS /c/... form (no drive-letter form observed on this host)\n'
-fi
-
 BACKSLASH_TARGET="$REPO/scripts/hooks/y.sh"
 BACKSLASH_TARGET="${BACKSLASH_TARGET//\//\\}"
-run_hook deny "11: backslash form -> deny" "$(write_json "$BACKSLASH_TARGET" "$REPO")" 1
 
 # Drive-RELATIVE Windows form (codex-adv HIMMEL-808): C:scripts\hooks\y.sh
 # with repo cwd means <repo>/scripts/hooks/y.sh on Windows — must deny on
 # every host (the old [A-Za-z]:* arm classified it absolute and _normalize
 # mangled it into a synthetic non-repo path -> allow).
+# HIMMEL-2169: batched into ONE check-mode call (pure path-classification,
+# all cwd=$REPO, all ABSOLUTE - no cwd-relative anchoring involved) - the
+# mixed-case/traversal cases further below (originally after the 845 block)
+# are folded in here too, since they share the same cwd and require no
+# ordering relative to 845.
+#
+# The two DRIVE-RELATIVE cases stay run_hook spawns below (CR fix, codex-1):
+# `_cross_drive_relative` checks the token's drive against the payload cwd's
+# drive; when the base drive is undeterminable it fails closed to DENY (same
+# final verdict as a correctly-resolved same-drive anchor), so batching them
+# would have kept the assertion GREEN while silently testing the wrong code
+# path - the cross-drive fallback instead of the HIMMEL-808 same-drive anchor
+# these cases exist to verify. Same reasoning as the relative-path-anchored
+# case below and the 845 same-drive pair further down: check mode anchors via
+# the real process `$PWD`, and this fixture's mktemp workspace lives under
+# Git-Bash's own virtual /tmp mount (see the "== 9:" comment above), whose
+# `cd`-then-getcwd() round-trip does not reliably reproduce the drive-lettered
+# $REPO form - only the fence's own `.tool_input.cwd` JSON field (hook mode)
+# anchors these deterministically.
+REPO11_ARGS=(
+    "11: backslash form -> deny" deny "$BACKSLASH_TARGET"
+    "11: mixed case final component -> deny" deny "$REPO/scripts/guardrails/X.SH"
+    "11: .. traversal -> deny" deny "$REPO/scripts/x/../hooks/y.sh"
+)
+if [ "$MSYS_TARGET" != "$REPO/scripts/hooks/y.sh" ]; then
+    run_check_batch "$REPO" "11: MSYS /c/... form -> deny" deny "$MSYS_TARGET" "${REPO11_ARGS[@]}"
+else
+    printf '  SKIP  MSYS /c/... form (no drive-letter form observed on this host)\n'
+    run_check_batch "$REPO" "${REPO11_ARGS[@]}"
+fi
+
 run_hook deny "11: drive-relative backslash form -> deny" \
     "$(write_json 'C:scripts\hooks\y.sh' "$REPO")" 1
 run_hook deny "11: drive-relative slash form -> deny" \
     "$(write_json 'C:scripts/hooks/y.sh' "$REPO")" 1
+
+run_hook deny "11: relative path anchored to payload cwd -> deny" \
+    "$(write_json "scripts/hooks/y.sh" "$REPO")" 1
 
 # --- HIMMEL-845: CROSS-drive drive-relative fail-open -----------------------
 # The HIMMEL-808 anchor above is exact ONLY when the payload cwd is on the
@@ -290,24 +431,41 @@ esac
 # matches NO enforcement prefix -> ALLOW. The real Windows resolution is
 # whatever Z:'s per-drive cwd is - e.g. <repo>/scripts, giving the enforcement
 # file <repo>/scripts/hooks/y.sh. Unprovable -> deny.
+#
+# NOT batched (CR fix, codex-1, round 3): `_cross_drive_relative` denies both
+# on a GENUINE token-drive-vs-base-drive mismatch AND when the base drive is
+# undeterminable (fail-closed fallback) - same final verdict, different code
+# path. Hook mode's JSON cwd field gives a deterministic, drive-lettered base
+# (REPO_DRIVE), so the original test exercises the genuine-mismatch branch;
+# under check mode's real $PWD (undeterminable on this fixture's Git-Bash
+# virtual /tmp mount, per the "== 9:" comment above and the "11:" section),
+# it would silently fall through to the undeterminable-fallback branch
+# instead - passing without exercising the mismatch detection this HIMMEL-845
+# fix specifically added. Same class of gap as the "11: drive-relative" pair.
 run_hook deny "845: cross-drive drive-relative (was fail-OPEN) -> deny" \
     "$(write_json "${OTHER_DRIVE}:hooks/y.sh" "$REPO/docs")" 1
 run_hook deny "845: cross-drive drive-relative, backslash form -> deny" \
     "$(write_json "${OTHER_DRIVE}:hooks\\y.sh" "$REPO/docs")" 1
 # (845-2) Bash-mode parity: the same shape reached through a command operand.
+# NOT batchable - check mode never calls evaluate_command, so a Bash command
+# string can only be exercised through the real hook-mode spawn.
 run_hook deny "845: cross-drive drive-relative in a Bash operand -> deny" \
     "$(bash_json "cp /tmp/payload ${OTHER_DRIVE}:hooks/y.sh" "$REPO/docs")" 1
 
 # (845-3) A drive-ROOTED absolute (`Z:/...`) is cwd-INDEPENDENT and must NOT be
 # swept up by the cross-drive deny - it still classifies normally (this one
 # resolves inside no git repo, so it allows exactly as before the fix).
-run_hook allow "845: drive-ROOTED other-drive absolute is not cross-drive -> allow" \
-    "$(write_json "${OTHER_DRIVE}:/elsewhere/scripts/hooks/y.sh" "$REPO")" 1
+run_check_batch "$REPO" \
+    "845: drive-ROOTED other-drive absolute is not cross-drive -> allow" allow "${OTHER_DRIVE}:/elsewhere/scripts/hooks/y.sh"
 
 # (845-4) SAME-drive drive-relative must keep anchoring exactly as before (the
 # deny half is covered by the two `11:` cases above; this is the ALLOW half,
 # proving the fix did not over-close). Only meaningful where the cwd's drive is
-# lexically determinable - i.e. a Windows/drive-lettered host.
+# lexically determinable - i.e. a Windows/drive-lettered host. NOT batchable
+# (relative-cwd-anchoring gap, same reasoning as the "11: relative path
+# anchored" case above - the ALLOW half specifically depends on $PWD's drive
+# being correctly detected post-cd, which this fixture's virtual /tmp mount
+# does not reliably reproduce).
 if [ -n "$REPO_DRIVE" ]; then
     run_hook allow "845: same-drive drive-relative non-enforcement -> allow" \
         "$(write_json "${REPO_DRIVE}:README.md" "$REPO")" 1
@@ -328,15 +486,6 @@ if [ "$rc" -eq 2 ] \
 else
     fail "845: check mode cross-drive rc=$rc out=$out"
 fi
-
-run_hook deny "11: mixed case final component -> deny" \
-    "$(write_json "$REPO/scripts/guardrails/X.SH" "$REPO")" 1
-
-run_hook deny "11: .. traversal -> deny" \
-    "$(write_json "$REPO/scripts/x/../hooks/y.sh" "$REPO")" 1
-
-run_hook deny "11: relative path anchored to payload cwd -> deny" \
-    "$(write_json "scripts/hooks/y.sh" "$REPO")" 1
 
 echo "== 12: CR-bypass fixes (round 2) - git -c hooksPath / cp,install -t / PS inline params =="
 run_hook deny "12: git config --unset core.hooksPath" \
@@ -506,6 +655,44 @@ run_hook allow "18: echo hi > /tmp/ok.txt (no procsub at all)" \
     "$(bash_json "echo hi > /tmp/ok.txt" "$REPO")" 1
 run_hook allow "18: cat scripts/hooks/a.sh (plain read, no procsub, still allowed)" \
     "$(bash_json "cat scripts/hooks/a.sh" "$REPO")" 1
+
+echo "== 19: apply_patch (Codex create/edit envelope, HIMMEL-2170) =="
+run_hook deny "19: Add File targeting a fenced path -> deny" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Add File: %s/scripts/hooks/y.sh\n+hi\n*** End Patch\n' "$REPO")" "$REPO")" 1
+run_hook deny "19: Update File targeting a fenced path -> deny" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Update File: %s/scripts/guardrails/x.sh\n@@\n-a\n+b\n*** End Patch\n' "$REPO")" "$REPO")" 1
+run_hook deny "19: Delete File targeting a fenced path -> deny" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Delete File: %s/.claude/settings.json\n*** End Patch\n' "$REPO")" "$REPO")" 1
+run_hook allow "19: Add File targeting a non-fenced path -> allow" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Add File: %s/scripts/foo.sh\n+hi\n*** End Patch\n' "$REPO")" "$REPO")" 1
+run_hook deny "19: malformed patch text (no Add/Update/Delete File line) -> deny (fail-closed under HIMMEL_LESSON_LOOP=1)" \
+    "$(apply_patch_json "not a patch at all, no File: lines here" "$REPO")" 1
+run_hook deny "19: multi-target, only ONE fenced -> deny" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Add File: %s/scripts/foo.sh\n+hi\n*** Update File: %s/scripts/hooks/y.sh\n@@\n-a\n+b\n*** End Patch\n' "$REPO" "$REPO")" "$REPO")" 1
+run_hook allow "19: multi-target, ALL non-fenced -> allow" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Add File: %s/scripts/foo.sh\n+hi\n*** Add File: %s/README.md\n+hi\n*** End Patch\n' "$REPO" "$REPO")" "$REPO")" 1
+run_hook allow "19: inactive (HIMMEL_LESSON_LOOP unset) -> exit 0 even for a fenced target" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Add File: %s/scripts/hooks/y.sh\n+hi\n*** End Patch\n' "$REPO")" "$REPO")" 0
+
+# HIMMEL-2170 CR round 1: "*** Move to: " is an OPTIONAL line immediately
+# following "*** Update File: " (verified against codex-rs/apply-patch/src/
+# parser.rs, openai/codex@18b9e7fd9e3f6670cc4f300338e44050b2c301e4 -
+# MOVE_TO_MARKER + the update_hunk/change_move grammar). An Update on an
+# ALLOWED source must still deny if the MOVE DESTINATION is fenced.
+run_hook deny "19: Update allowed-source + Move to fenced destination -> deny" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Update File: %s/scripts/foo.sh\n*** Move to: %s/scripts/hooks/y.sh\n@@\n-a\n+b\n*** End Patch\n' "$REPO" "$REPO")" "$REPO")" 1
+run_hook allow "19: Update allowed-source + Move to allowed destination -> allow" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Update File: %s/scripts/foo.sh\n*** Move to: %s/README.md\n@@\n-a\n+b\n*** End Patch\n' "$REPO" "$REPO")" "$REPO")" 1
+
+# CodeRabbit round (HIMMEL-2170): a Move-to that is NOT immediately preceded
+# by an Update File line is malformed patch syntax per the grammar (Move-to
+# is a sub-production of update_hunk only) - it must deny fail-closed, the
+# SAME as any other unparseable apply_patch, not be silently classified as
+# an ordinary target.
+run_hook deny "19: standalone Move-to (no preceding Update File) -> deny (malformed, fail-closed)" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Move to: %s/scripts/foo.sh\n*** End Patch\n' "$REPO")" "$REPO")" 1
+run_hook deny "19: Move-to after Delete File -> deny (malformed, fail-closed)" \
+    "$(apply_patch_json "$(printf '*** Begin Patch\n*** Delete File: %s/scripts/foo.sh\n*** Move to: %s/scripts/bar.sh\n*** End Patch\n' "$REPO" "$REPO")" "$REPO")" 1
 
 echo "== regression: real policy loads cleanly via check mode =="
 out=$(cd "$REPO_ROOT" && "$BASH_BIN" "$FENCE" check scripts/hooks/x .claude/settings.json README.md 2>&1); rc=$?

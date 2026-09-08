@@ -1,5 +1,5 @@
 ---
-description: Pre-emptive advisory shell lint — run shellcheck + UTF-8 BOM + errexit-leak checks on staged shell (or named files) BEFORE the commit attempt, so the loop fixes issues instead of bouncing off the pre-commit gate (HIMMEL-478).
+description: Advisory shell lint (shellcheck + BOM + errexit-leak) on staged shell BEFORE the commit attempt, not after it.
 ---
 
 Pre-emptive shell lint (HIMMEL-478, C4 of the autonomy-resilience epic). Run it

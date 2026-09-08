@@ -147,7 +147,7 @@ _qg_lib="$hook_dir/../lib/quota-gauge-ledger.sh"
 [ -f "$_qg_lib" ] || _qg_lib="$project_dir/scripts/lib/quota-gauge-ledger.sh"
 # shellcheck source=../lib/quota-gauge-ledger.sh
 # shellcheck disable=SC1090,SC1091
-. "$_qg_lib" 2>/dev/null || true
+. "$_qg_lib" 2>/dev/null || true  # fail-open-ok: watchdog — a missing/unreadable ledger lib must never block the tool call this hook is watching (scripts/hooks/CLAUDE.md fail-open-vs-fail-closed rule)
 # FAIL-OPEN wrapper: a failure here must NEVER touch this watchdog's exit
 # path or the $? the exit path sees. Guards on the helper being present,
 # swallows every error, always returns 0.
@@ -375,6 +375,24 @@ if [ "$cache_age" -gt "$MAX_CACHE_AGE" ]; then
     fi
     [ "$stale_count" -lt "$STALE_MIN_CHECKS" ] && exit 0
 
+    # ─── HIMMEL-812: depth limit — a safety child never re-arms ──────────
+    # The escalation below arms a +5h resume off a wedged cache. That child
+    # session wedges the same way ~30min in and escalates again, so the
+    # chain sustains itself (observed 2026-07-09: 12 stale snapshots, 4 from
+    # consecutive chained session ids). arm-resume.sh --safety-child marks
+    # the relaunch env, and finding that mark here means WE are the child:
+    # warn once (the same per-session marker keeps it one-shot) and do NOT
+    # arm. The snapshot the parent armed us on already says wind down; a
+    # second arm would only extend the chain. The THRESHOLD path below is
+    # untouched — a real cap crossing is measured, not inferred, and must
+    # still be able to park a child session at the reset.
+    if [ "${AUTO_ARM_SAFETY_CHILD:-}" = "1" ]; then
+        : > "$stale_marker" 2>/dev/null || true
+        rm -f "$stale_count_file" 2>/dev/null || true
+        warn "STATUSLINE WEDGED again (cache frozen ${cache_age}s) and this session IS an auto-arm safety child (AUTO_ARM_SAFETY_CHILD=1) — NOT arming another resume (HIMMEL-812 depth limit). Wind down instead: verify/commit in-flight work, write a short operator briefing, then STOP. Do not start backlog work and do not arm."
+        exit 1
+    fi
+
     # >>> WS9-QUOTA-GAUGE (HIMMEL-654): usage confirmed INVISIBLE (wedged cache).
     # Record the dim-lane observation (best-effort) before the safety arm.
     quota_gauge_note_claude "invisible" "" "" "" "statusline usage cache wedged (HIMMEL-275)"
@@ -491,13 +509,26 @@ PY
                 echo "    (clean or unknown)"
             fi
             echo
-            echo "## Resume instructions"
+            echo "## Resume instructions — WIND DOWN, do not resume the backlog"
             echo
-            echo "1. Run /handover-resume-armed to surface the origin session's transcript + stop point."
-            echo "2. Check TaskList / the session's task tracking for in-flight work."
-            echo "3. Check git status across .claude/worktrees/ for uncommitted work."
-            echo "4. A richer operator-facing handover may exist next to this file"
-            echo "   (the origin session was told to write one when this fired)."
+            echo "This snapshot is a SAFETY arm off a wedged usage cache, not a work"
+            echo "handover: nobody chose this resume and nobody knows what the bank had"
+            echo "left. Resuming the backlog from it is how one leg became a chain of"
+            echo "self-arming +5h sessions (HIMMEL-812). Your whole job is to land what"
+            echo "is already in flight and stop."
+            echo
+            echo "1. Verify and COMMIT in-flight work: git status here and across"
+            echo "   .claude/worktrees/. Commit or park it; do not start anything new."
+            echo "2. Write a SHORT operator briefing next to this file: what was in"
+            echo "   flight, what is committed, what the next session should pick up."
+            echo "   A richer handover may already exist next to this file (the origin"
+            echo "   session was told to write one when this fired) — extend it instead"
+            echo "   of writing a second numbered file."
+            echo "3. STOP. No backlog work, no new tickets, and do NOT arm another"
+            echo "   resume — this session is marked AUTO_ARM_SAFETY_CHILD=1, so the"
+            echo "   auto-arm hook will not arm one either."
+            echo "4. Context if you need it: /handover-resume-armed surfaces the origin"
+            echo "   session's transcript + stop point."
         } > "$1" 2>/dev/null
     }
     snapshot="$snapshot_dir/auto-arm-status-stale-$cache_mtime.md"
@@ -526,7 +557,9 @@ PY
     # not the arm that asked). arm-resume.sh's own always-clear-first fix
     # backstops this even if the ambient env carried a grant.
     warn "automerge grant NOT carried across automatic re-arm (per-arm opt-in, HIMMEL-1382)"
-    arm_out=$(ARM_RESUME_SAFETY_ARM=1 bash "$ARM_BIN" --dedup-any --time "$slot_hhmm" --handover "$snapshot" 2>&1)
+    # --safety-child (HIMMEL-812): marks the relaunch env so the child's own
+    # stale escalation warns instead of arming — the chain stops at depth 1.
+    arm_out=$(ARM_RESUME_SAFETY_ARM=1 bash "$ARM_BIN" --dedup-any --safety-child --time "$slot_hhmm" --handover "$snapshot" 2>&1)
     arm_rc=$?
     set -e
     case "$arm_rc" in

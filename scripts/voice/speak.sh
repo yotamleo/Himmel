@@ -50,9 +50,13 @@ else
     echo "speak: no python interpreter found (install python3) - cannot encode JSON" >&2
     exit 0
 fi
-body="$(VOICE_TEXT="$text" "$py" -c '
-import json, os
-t = os.environ["VOICE_TEXT"]
+# The text rides stdin, NOT an env var: an environment variable is bounded by
+# the OS (a few tens of KB on Windows), so a very long /speak input failed at
+# this step before it ever reached the daemon, which caps length itself. stdin
+# is unbounded, so only VOICE_NAME -- a short identifier -- stays in the env.
+body="$(printf '%s' "$text" | "$py" -c '
+import json, os, sys
+t = sys.stdin.read()
 payload = {"text": t}
 v = os.environ.get("VOICE_NAME")
 if v:

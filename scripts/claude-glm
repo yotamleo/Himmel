@@ -35,7 +35,8 @@ CONFIG_DIR="${HOME}/.claude-glm"
 # a previously-persisted forbidden key would linger past the fix (CR). A mismatch
 # forces exactly one re-seed, which re-sanitizes under the current rule.
 # v2 = strip env.ANTHROPIC_*/CLAUDE_CODE_USE_* case-insensitively (was: ANTHROPIC_* only, case-sensitive).
-SEED_VERSION="2"
+# v3 = also strip CLAUDE_CODE_OAUTH_TOKEN so seeded settings cannot override lane auth.
+SEED_VERSION="3"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/load-dotenv.sh
@@ -171,8 +172,11 @@ if [ "$phi_rc" -eq 2 ]; then
   echo "claude-glm: guard config $CFG/phi-roots exists but is not a readable file — failing closed." >&2
   exit 3
 fi
-if [ -f "$CWD/.salus" ] || [ "$phi_rc" -eq 0 ]; then
-  echo "claude-glm: REFUSED - this workspace is PHI-marked (.salus / phi-roots). No override exists; PHI never goes to a cloud GLM backend." >&2
+# HIMMEL-2173: also accept .salus-profile (template machinery dropped by the
+# salus profile installer) — a defense for deployments that predate the
+# installer shipping the real .salus guard marker alongside it.
+if [ -f "$CWD/.salus" ] || [ -f "$CWD/.salus-profile" ] || [ "$phi_rc" -eq 0 ]; then
+  echo "claude-glm: REFUSED - this workspace is PHI-marked (.salus / .salus-profile / phi-roots). No override exists; PHI never goes to a cloud GLM backend." >&2
   exit 3
 fi
 path_under_any "$CWD" "$CFG/egress-denylist"; deny_rc=$?
@@ -189,20 +193,18 @@ if [ "$deny_rc" -eq 0 ]; then
   fi
 fi
 
-sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_*/CLAUDE_CODE_USE_* (node: himmel dep)
-  # keep in sync with claude-glm.ps1 $SanitizerJs (byte-identical JS)
-  # CR: the seeded settings.json is an overlay claude reads at launch, so it must
-  # strip the SAME keys the --settings arg screen rejects, on the SAME terms —
-  # case-INSENSITIVELY and including CLAUDE_CODE_USE_* (BEDROCK/VERTEX/…). The old
-  # rule (case-sensitive, ANTHROPIC_* only) let the seed inject exactly the
-  # backend redirect the screen blocks, leaving a hole behind the guard.
+# keep in sync with claude-glm.ps1 $SanitizerJs (byte-identical JS)
+sanitize_settings() { # $1 src $2 dest — strip model + backend/auth env reroutes (node: himmel dep)
+  # CR: the seeded settings.json is an overlay claude reads at launch, so strip
+  # endpoint reroutes and Anthropic OAuth credentials before applying lane auth.
+  # Matching stays case-insensitive so mixed-case source keys cannot bypass it.
   node -e '
 const fs=require("fs");
 const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 delete j.model;
 if (j.env) for (const k of Object.keys(j.env)) {
   const u=k.toUpperCase();
-  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) delete j.env[k];
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0 || u==="CLAUDE_CODE_OAUTH_TOKEN") delete j.env[k];
 }
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 ' "$1" "$2"
@@ -320,10 +322,18 @@ config_seed_stale() { # rc=0 when any tracked source is newer than the sentinel,
 # torn config dir (the .seeded sentinel guards FAILED seeds, not CONCURRENT ones).
 # The lock is a DIRECTORY sibling of CONFIG_DIR (NOT under it, so the seeder's own
 # rm -rf sweeps can never delete it); mkdir is atomic on every platform incl. Git
-# Bash. The dir is kept EMPTY so the rmdir release is atomic and steal-safe.
+# Bash. The dir carries a per-invocation owner token; release checks that token
+# before removing it so a stale holder cannot delete a replacement owner's lock.
 LOCK="$CONFIG_DIR.seed-lock"
+SEED_LOCK_TOKEN="$$@$(hostname 2>/dev/null || echo unknown)-$RANDOM"
 SEED_LOCK_TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"   # seconds to wait before giving up
+case "$SEED_LOCK_TIMEOUT" in ''|*[!0-9]*) SEED_LOCK_TIMEOUT=60 ;; esac
+[ "$SEED_LOCK_TIMEOUT" -gt 0 ] 2>/dev/null || SEED_LOCK_TIMEOUT=60
+SEED_LOCK_TIMEOUT=$(( 10#$SEED_LOCK_TIMEOUT ))
 SEED_LOCK_STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"      # seconds after which a held lock is presumed abandoned
+case "$SEED_LOCK_STALE" in ''|*[!0-9]*) SEED_LOCK_STALE=120 ;; esac
+[ "$SEED_LOCK_STALE" -gt 0 ] 2>/dev/null || SEED_LOCK_STALE=120
+SEED_LOCK_STALE=$(( 10#$SEED_LOCK_STALE ))
 
 seed_lock_is_stale() { # rc=0 when LOCK exists and its mtime is older than SEED_LOCK_STALE seconds
   [ -d "$LOCK" ] || return 1
@@ -331,6 +341,16 @@ seed_lock_is_stale() { # rc=0 when LOCK exists and its mtime is older than SEED_
   lock_mt="$(stat -c %Y "$LOCK" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null)"
   [ -n "$lock_mt" ] || return 1
   [ "$(( $(date +%s) - lock_mt ))" -ge "$SEED_LOCK_STALE" ]
+}
+
+seed_lock_release() { # $1 = 1 to warn when our owned lock cannot be removed
+  local warn="$1" owner
+  owner="$(cat "$LOCK/owner" 2>/dev/null)"
+  [ "$owner" = "$SEED_LOCK_TOKEN" ] || return 0
+  rm -f "$LOCK/owner" 2>/dev/null
+  if ! rmdir "$LOCK" 2>/dev/null && [ "$warn" -eq 1 ]; then
+    echo "claude-glm: WARNING - failed to release seed lock $LOCK (not empty or busy); it self-heals via stale steal after ${SEED_LOCK_STALE}s but concurrent launches wait/time out until then." >&2
+  fi
 }
 
 seed_with_lock() {
@@ -343,14 +363,14 @@ seed_with_lock() {
     # winner's FRESH replacement lock can never be renamed away by a queued loser
     # (a fresh lock is never stale). A plain rmdir steal is a TOCTOU double-acquire:
     # two waiters both judge the dead lock stale, one rmdirs+re-acquires, the
-    # other's queued rmdir then deletes the winner's fresh EMPTY lock, both seed
+    # other's queued rmdir then deletes the winner's fresh lock, both seed
     # concurrently -- the torn config this lock exists to prevent. The renamed dir
-    # is removed best-effort; if it was non-empty (invariant violation) the orphan
-    # is harmless -- it is not the lock path. Accepted residual: a LIVE seeder
-    # holding the lock past SEED_LOCK_STALE gets stolen -- but seeds are sub-second
-    # copies, so a hold that long means a dead/hung holder in practice.
+    # and its old owner token are removed before the winner retries acquisition.
+    # Accepted residual: a LIVE seeder holding the lock past SEED_LOCK_STALE gets
+    # stolen -- but seeds are sub-second copies, so a hold that long means a
+    # dead/hung holder in practice.
     if seed_lock_is_stale && mv "$LOCK" "$LOCK.stale.$$" 2>/dev/null; then
-      rmdir "$LOCK.stale.$$" 2>/dev/null || true   # orphaned .stale dir is harmless (not the lock path)
+      rm -rf "$LOCK.stale.$$"
       continue
     fi
     if [ "$seed_lock_ticks" -ge "$seed_lock_max" ]; then
@@ -360,12 +380,14 @@ seed_with_lock() {
     sleep 0.5
     seed_lock_ticks=$(( seed_lock_ticks + 1 ))
   done
+  printf '%s\n' "$SEED_LOCK_TOKEN" > "$LOCK/owner" \
+    || { rm -rf "$LOCK"; seed_fail "record seed-lock ownership"; }
   # Release the lock on ANY exit while held (covers seed_fail's exit 4 path). This
   # trap release stays best-effort SILENT -- the exit path already carries its own
   # error. Accepted residual: an untrapped SIGINT/SIGTERM while holding leaks the
   # lock until the stale steal (~SEED_LOCK_STALE s) -- deliberate; adding INT/TERM
   # traps would change the launcher's existing signal semantics.
-  trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+  trap 'seed_lock_release 0' EXIT
   # Double-checked recheck UNDER the lock: the OUTER if was a cheap pre-check that
   # raced other launches; a concurrent winner may have just seeded while we waited,
   # so re-evaluate the same condition and skip a redundant reseed. RESEED=1 forces a
@@ -380,7 +402,7 @@ seed_with_lock() {
   trap - EXIT
   # Explicit release warns on failure (a non-empty/busy lock is an invariant
   # violation worth surfacing) but stays NON-FATAL: the seed itself succeeded.
-  rmdir "$LOCK" 2>/dev/null || echo "claude-glm: WARNING - failed to release seed lock $LOCK (not empty or busy); it self-heals via stale steal after ${SEED_LOCK_STALE}s but concurrent launches wait/time out until then." >&2
+  seed_lock_release 1
 }
 
 if [ ! -f "$CONFIG_DIR/.seeded" ] || [ "$RESEED" -eq 1 ] || config_seed_stale; then

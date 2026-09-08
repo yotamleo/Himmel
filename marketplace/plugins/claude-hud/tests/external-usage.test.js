@@ -418,3 +418,86 @@ test('getUsageFromExternalSnapshot returns null for invalid JSON', async () => {
     await cleanup();
   }
 });
+
+test('getUsageFromExternalSnapshot parses model-scoped windows', async () => {
+  const updatedAt = Date.UTC(2026, 3, 20, 12, 0, 0);
+  const { filePath, cleanup } = await withTempFile(JSON.stringify({
+    updated_at: new Date(updatedAt).toISOString(),
+    five_hour: { used_percentage: 42.4, resets_at: '2026-04-20T15:00:00.000Z' },
+    model_scoped: [
+      { display_name: 'Fable', utilization: 89.4, resets_at: '2026-04-27T12:00:00.000Z' },
+    ],
+  }));
+
+  try {
+    const usage = getUsageFromExternalSnapshot(makeConfig(filePath), updatedAt + 60_000);
+    assert.deepEqual(usage?.scopedWindows, [{
+      label: 'Fable',
+      percent: 89,
+      resetAt: new Date('2026-04-27T12:00:00.000Z'),
+    }]);
+    assert.equal(usage?.fiveHour, 42);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('getUsageFromExternalSnapshot accepts a scoped-only snapshot', async () => {
+  const updatedAt = Date.UTC(2026, 3, 20, 12, 0, 0);
+  const { filePath, cleanup } = await withTempFile(JSON.stringify({
+    updated_at: new Date(updatedAt).toISOString(),
+    model_scoped: [
+      { display_name: 'Fable', utilization: 57, resets_at: null },
+    ],
+  }));
+
+  try {
+    const usage = getUsageFromExternalSnapshot(makeConfig(filePath), updatedAt + 60_000);
+    assert.deepEqual(usage, {
+      fiveHour: null,
+      sevenDay: null,
+      fiveHourResetAt: null,
+      sevenDayResetAt: null,
+      scopedWindows: [{ label: 'Fable', percent: 57, resetAt: null }],
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test('getUsageFromExternalSnapshot drops malformed scoped entries and sanitizes labels', async () => {
+  const updatedAt = Date.UTC(2026, 3, 20, 12, 0, 0);
+  const { filePath, cleanup } = await withTempFile(JSON.stringify({
+    updated_at: new Date(updatedAt).toISOString(),
+    model_scoped: [
+      { display_name: '[31mFable[0m', utilization: 12, resets_at: null },
+      { display_name: '', utilization: 50, resets_at: null },
+      { display_name: 'Bad', utilization: 'oops', resets_at: null },
+      'not-an-object',
+    ],
+  }));
+
+  try {
+    const usage = getUsageFromExternalSnapshot(makeConfig(filePath), updatedAt + 60_000);
+    assert.deepEqual(usage?.scopedWindows, [{ label: 'Fable', percent: 12, resetAt: null }]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test('getUsageFromExternalSnapshot ignores a non-array model_scoped value', async () => {
+  const updatedAt = Date.UTC(2026, 3, 20, 12, 0, 0);
+  const { filePath, cleanup } = await withTempFile(JSON.stringify({
+    updated_at: new Date(updatedAt).toISOString(),
+    five_hour: { used_percentage: 10, resets_at: null },
+    model_scoped: { display_name: 'Fable', utilization: 12 },
+  }));
+
+  try {
+    const usage = getUsageFromExternalSnapshot(makeConfig(filePath), updatedAt + 60_000);
+    assert.equal(usage?.scopedWindows, undefined);
+    assert.equal(usage?.fiveHour, 10);
+  } finally {
+    await cleanup();
+  }
+});

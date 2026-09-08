@@ -70,7 +70,6 @@ additive, competing within a layer is substitutive.
 | hermes-agent (Nous) — junior + CR-critic + alpha main tier | agent runtime (D-adjacent — separate agent under himmel orchestration) | HIMMEL-272 (rubric pass + ADR comment, 2026-06-11); HIMMEL-277 (gemini-cli route spike; OAuth routes later VOIDED by operator); HIMMEL-278 (free routes WIRED 2026-06-12; live route SUPERSEDED 2026-06-24 → Codex/`gpt-5.5`); HIMMEL-557 (additive `himmel_agent` main-tier profile, **alpha**, 2026-06-24); CR-critic lane wired into `/pr-check`; route table + new-user how-to `docs/hermes-runbook.md`; `luna 30-Resources/Tech/nousresearch-hermes-agent.md`; install `%LOCALAPPDATA%/hermes` | pilot-pending | Junior-shaped chores (vault inbox capture, note-taking, summaries) ship on free inference without burning Max quota or operator babysitting; zero write-fence violations | `source-read-mandatory` (free Nous endpoint — prompts leave the machine; mitigations: curated read tier hot.md/index/CLAUDE.md/synthesis/60-Maps, write fence `Clippings/hermes-*.md` only, in-house fail-closed `lunavaultguard.py` guard hook — self-protecting, authored + read locally) | HIMMEL-272 ADR comment |
 | mksglu/context-mode | B (tool-output filtering) | HIMMEL-183 (primary eval, completed 2026-06-12); HIMMEL-170 AC (superseded passing rejection); `luna 30-Resources/Tech/mksglu-context-mode.md`, `…/token-optimizer-tools.md` | rejected | (tool-output sandboxing) — rejected ON-MERITS after full source read + sandbox test: 0% structural reduction on 4/5 noisiest himmel patterns (native Glob/Grep/Read/Bash pass through unchanged, advisory nudges only), net-negative always-on session overhead, 3 hook-stack interference vectors (deny short-circuits PreToolUse chain; unlocked settings.json read-modify-write; ~500-word Agent-prompt mutation per dispatch) | `source-read-mandatory` (98% claim measured: their own BENCHMARK.md says 96%, conditional on voluntary ctx_* routing — not interception) | HIMMEL-183 context-mode eval (operator's private handover repo) |
 | lightpanda-io/browser | headless-browser backend (infra, D-adjacent) | HIMMEL-284 (Docker-on-Windows eval, completed 2026-06-12, 14 days inside timebox); hermes `AGENT_BROWSER_ENGINE=lightpanda` (wired-adjacent, auto-fallback to Chrome); `docs/hermes-runbook.md` | rejected | (lightweight headless browser) — rejected NO-WORKLOAD after live Docker probe: viability CONFIRMED (image 68.5 MB vs Chrome 281 MB; 40.5 vs 88.8 MiB RSS; 0.68 s startup; CDP + puppeteer-core worked first try on Windows Docker; GitHub/blog pages render full text) but every candidate slot fails today — IG `/embed/captioned/` returns a 114-char shell (the shipped HIMMEL-280 plain-fetch rung gets full captions), clipper harvest needs no browser (LUNA-2 bodies), hermes junior-tier browsing is not yet a real workload. Re-open trigger: hermes browsing chores materialize → set `AGENT_BROWSER_ENGINE=lightpanda` (one env var, auto-fallback to Chrome) + PILOT-MEASURE. Beta caveats: CORS unimplemented, no screenshots, x.com loads shell-only pre-hydration, glibc-only binaries | `community-active → validate-before-adopt` (validated in throwaway Docker sandbox; no hook/secret surface, container-isolated; benchmark claims independently reproduced on memory, NOT on nav speed) | HIMMEL-284 lightpanda eval (operator's private handover repo) |
-| caveman | A (prompt / response shape) | `luna 30-Resources/Tech/token-optimizer-tools.md`; `docs/tooling-catalog.md` | rejected | (terser responses) — rejected: clashes with the docs-quality bar (caveman compression degrades the readable-docs output this repo requires) | `community-active → validate-before-adopt` | — |
 | ooples/token-optimizer-mcp | D (MCP / runtime) | `luna 30-Resources/Tech/token-optimizer-tools.md` | rejected | (MCP caching/compression) — rejected: no reproducible benchmark; relies on caching-style claims with no measured number we can verify | `source-read-mandatory` (claims -95%+, unverifiable) | — |
 | drona23/claude-token-efficient | A (prompt / response shape) | `luna 30-Resources/Tech/token-optimizer-tools.md` | rejected | (terse-response CLAUDE.md policy) — rejected: lower-leverage layer; overlaps existing CLAUDE.md hygiene, marginal outcome-per-session gain | `docs-claim-trusted` (drop-in CLAUDE.md, trivially reversible) | — |
 | alexgreensh/token-optimizer | C (setup / scaffolding) | `luna 30-Resources/Tech/token-optimizer-tools.md` | rejected | (ghost-token / compaction-drift audit) — rejected: lower-leverage layer; no benchmark, periodic-audit value unproven for this workload | `community-active → validate-before-adopt` | — |
@@ -90,7 +89,6 @@ searchable and borrowable instead of rebuilt. Status is always
 
 | Item | What we like | Status | Source |
 |------|--------------|--------|--------|
-| caveman | Response-mode compression — installed but default mode set `off` 2026-06-12 (operator: Fable-5 already outputs ~40% fewer tokens; clashes with Anthropic Fable-5 brevity guidance); `rejected` for the default token stack (row above); kept to borrow the compression ideas. Fable-5 prompt tuning re-applied 2026-07-02 (HIMMEL-300) after Fable access returned; HIMMEL-282 archives the Opus-4.8 inverse | parked-idea | `docs/tooling-catalog.md`; HIMMEL-199 |
 | worktree-isolation plugin | Generic marketplace extraction of our worktree-isolation pattern (`/worktree` `/clean` `/clean_garden`) so it works for any repo — extraction filed, not built | parked-idea | HIMMEL-234 |
 | emergence→self-improvement crystallization | Triggered pass that crystallizes emerging vault clusters into derived self-improvement candidates — design parked-documented, won't necessarily build | parked-idea | `docs/luna/emergence-crystallization.md`; HIMMEL-217 |
 | >100KB auto-externalize + BM25 retrieval | The one genuinely good context-mode pattern (its Part-3 design): oversized tool output auto-indexes into local FTS5 instead of truncating, model retrieves sections on demand — nothing lost, nothing flooding context. If himmel ever needs this shape, extend qmd (already local BM25+vec over markdown) rather than adopt context-mode | parked-idea | HIMMEL-183 ADR (operator's private handover repo) |
@@ -172,14 +170,13 @@ basis of the REJECT — only holds at Layer B.
 
 ### Rejected-tool rationale source
 
-`caveman`, `ooples`, and the `drona23 / alexgreensh / nadimtuhin` lower-leverage
-trio are recorded as `rejected` per the HIMMEL-201 spec. Their layer
-classifications and substitutive/leverage relationships are grounded in the
-luna 8-tool synthesis (`30-Resources/Tech/token-optimizer-tools.md`). Note:
-`caveman` is currently installed as a response-mode plugin
-(`docs/tooling-catalog.md`); its `rejected` status here is scoped to the
-HIMMEL-199 default-path question — it is not adopted into the default token
-stack because compression conflicts with this repo's docs-quality bar.
+`ooples` and the `drona23 / alexgreensh / nadimtuhin` lower-leverage trio are
+recorded as `rejected` per the HIMMEL-201 spec. Their layer classifications and
+substitutive/leverage relationships are grounded in the luna 8-tool synthesis
+(`30-Resources/Tech/token-optimizer-tools.md`). The response-mode compression
+plugin that also sat here as `rejected` (HIMMEL-199 default-path question:
+compression conflicts with this repo's docs-quality bar) was removed from himmel
+entirely in HIMMEL-2033 — do not re-adopt it without re-running the gate.
 
 ### Luna sources read
 

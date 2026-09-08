@@ -7,6 +7,12 @@
 # Run: pwsh -NoProfile -File scripts/setup/test-onboard-telegram.ps1
 
 $ErrorActionPreference = 'Continue'
+
+# Captured native stdout is decoded via [Console]::OutputEncoding -- the
+# legacy OEM codepage on default Windows installs, not UTF-8, so any
+# non-ASCII byte a native command emits is silently mis-decoded on capture
+# and written back corrupted (HIMMEL-2256; reference fix: gen-changelog.ps1).
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $script:Failed = 0
 $Cli = Join-Path $PSScriptRoot 'onboard-telegram.ps1'
 

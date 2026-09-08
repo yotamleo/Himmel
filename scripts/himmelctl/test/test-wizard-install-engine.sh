@@ -33,7 +33,7 @@
 #      delegation to it is behavior-preserving, not a capability regression.
 #   g. plugin-spec canonicalization: bin.js has no inline FULL_PLUGIN_ENABLE
 #      duplicate and loads scripts/machine-setup/full-plugin-enable.json; the
-#      data file carries the expected 14 unique plugin specs.
+#      data file carries the expected 13 unique plugin specs.
 #   h. a signal-terminated primitive (r.signal set, r.status null — a real
 #      OS signal kill does not reliably surface via Node's spawnSync.signal
 #      field on Windows, verified empirically; a child_process.spawnSync
@@ -186,15 +186,7 @@ cleanup() {
   rm -rf "$work"
 }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 
 # CR fix: exported ONCE, read via process.env inside every node -e script
 # below instead of being interpolated into the JS source string.
@@ -355,8 +347,8 @@ grep -q 'const FULL_PLUGIN_ENABLE = ' "$wizard" \
 grep -q "full-plugin-enable.json" "$wizard" \
   || fail "case g: bin.js must load the canonical full-plugin-enable.json"
 outG=$(jq -c '{count:(.plugins|length), unique:(.plugins|map(.spec)|unique|length), valid:(.plugins|all(.spec|type == "string" and length > 0))}' "$plugin_json")
-echo "$outG" | jq -e '.count == 14 and .unique == 14 and .valid == true' >/dev/null \
-  || fail "case g: full-plugin-enable.json must carry 14 unique valid plugin specs (got: $outG)"
+echo "$outG" | jq -e '.count == 13 and .unique == 13 and .valid == true' >/dev/null \
+  || fail "case g: full-plugin-enable.json must carry 13 unique valid plugin specs (got: $outG)"
 echo "ok: case g — bin.js loads the canonical full-plugin-enable.json; no inline duplicate remains"
 
 # ── case h: a signal-terminated primitive lands in failed[], never ran[] ───
@@ -511,7 +503,12 @@ echo "ok: case l — HIMMELCTL_SUDO_PASSWORD unset: the fail-fast 'sudo -n' form
 # -Command/-CommandArgsB64 in the captured powershell argv, decoded here and
 # asserted against case k's real buildEntry shape — while the password
 # appears NOWHERE in that argv, under ANY encoding. ────────────────────────
-outM=$(HIMMELCTL_SUDO_PASSWORD='m-secret-pw' "$node_bin" -e "
+# HIMMELCTL_POWERSHELL pins the resolved interpreter (HIMMEL-2126's
+# resolvePowershell(), same seam class as HIMMELCTL_BASH) so this case's
+# `cmd:'powershell'` assertion is deterministic regardless of whether THIS
+# host happens to have pwsh on PATH — case v below covers the pwsh-preferred
+# branch directly.
+outM=$(HIMMELCTL_SUDO_PASSWORD='m-secret-pw' HIMMELCTL_POWERSHELL='powershell' "$node_bin" -e "
 const cp = require('child_process');
 // CR fix (codex critic): FORCE the win32 dispatch path — same
 // process.platform monkey-patch technique case u already uses (this is
@@ -809,7 +806,17 @@ echo "ok: case s — a timeout kills the WHOLE process tree on this host's real 
 # direct child) + 'SIGKILL', the spawnOpts captured detached:true (required
 # so the negative-pid kill can never reach OUR OWN process group), and the
 # captured env already had HIMMELCTL_SUDO_PASSWORD stripped. ─────────────
-outT=$(HIMMELCTL_SUDO_PASSWORD='t-secret-mech' "$node_bin" -e "
+# HIMMEL-2289: HIMMELCTL_BASH pins the resolved bash, exactly as
+# HIMMELCTL_POWERSHELL pins the interpreter in case m/u. runHardenedSpawn now
+# resolves a `cmd:'bash'` entry to a CONCRETE Git Bash (never the bare name —
+# on Windows PATH resolves that to the System32 WSL launcher) and refuses to
+# run when nothing resolves. Without the pin, `process.platform` monkey-
+# patched to the OTHER platform makes the resolver scan candidate locations
+# that cannot exist on the host actually running the suite, so the entry is
+# refused before the stubbed spawnSync is ever reached and this case's
+# mechanism assertion never runs. The value is arbitrary — spawnSync is
+# stubbed here and never executes it.
+outT=$(HIMMELCTL_SUDO_PASSWORD='t-secret-mech' HIMMELCTL_BASH='bash' "$node_bin" -e "
 const cp = require('child_process');
 Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
 let captured = null;
@@ -855,7 +862,9 @@ echo "ok: case t — POSIX (simulated) timeout-cleanup: process.kill(-pid,'SIGKI
 # $TIMEOUT_EXIT_CODE) — runInstall classifies it as a timeout with the
 # standard "timed out after Ns" reason, the SAME shape case t proves for
 # the POSIX mechanism. ─────────────────────────────────────────────────────
-outU=$(HIMMELCTL_SUDO_PASSWORD='u-secret-mech' "$node_bin" -e "
+# HIMMELCTL_POWERSHELL pins the resolved interpreter (see case m's comment) so
+# this case's `cmd:'powershell'` assertion is deterministic.
+outU=$(HIMMELCTL_SUDO_PASSWORD='u-secret-mech' HIMMELCTL_POWERSHELL='powershell' HIMMELCTL_BASH='bash' "$node_bin" -e "
 const cp = require('child_process');
 Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 let callCount = 0;
@@ -901,6 +910,36 @@ echo "$outU" | jq -e '.envHasPassword == false' >/dev/null \
 echo "$outU" | jq -e '.result.failed | length == 1 and .[0].id == "wedged-win" and (.[0].reason | test("timed out after"))' >/dev/null \
   || fail "case u: job-run.ps1's own TIMEOUT_EXIT_CODE (4217) should classify as a timeout failure (got: $outU)"
 echo "ok: case u — win32 routes through a SINGLE job-run.ps1 call (Job Object owns tree-kill internally); its own timeout exit code classifies as a timeout, password stripped from env, no detached flag"
+
+# ── case v2 (HIMMEL-2126): win32 prefers pwsh over powershell.exe when both
+# are resolvable — exercises resolvePowershell()'s REAL PATH-based
+# resolution (no HIMMELCTL_POWERSHELL override, unlike cases m/u above)
+# against a hermetic PATH carrying only a fake pwsh + a fake powershell.exe,
+# so neither this host's real interpreters nor case m/u's pin can mask a
+# resolution-order regression. ──────────────────────────────────────────────
+fixtureV2="$work/caseV2-ps"; mkdir -p "$fixtureV2"
+printf '#!/bin/sh\necho fake pwsh\n' > "$fixtureV2/pwsh"; chmod +x "$fixtureV2/pwsh"
+printf '#!/bin/sh\necho fake powershell\n' > "$fixtureV2/powershell.exe"; chmod +x "$fixtureV2/powershell.exe"
+# NOTE: PATH is passed in its POSIX form (not winpath-converted) so MSYS's
+# own PATH auto-translation produces a single, correct Windows-form entry for
+# node.exe — pre-converting it ourselves makes MSYS re-split the drive-letter
+# colon and mangle it (HIMMEL-2126 repro during authoring).
+outV2=$(env -u HIMMELCTL_POWERSHELL PATH="$fixtureV2" HIMMELCTL_BASH='bash' "$node_bin" -e "
+const cp = require('child_process');
+Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+let captured = null;
+cp.spawnSync = function (cmd, args, opts) {
+  captured = { cmd, args, opts };
+  return { status: 0, signal: null, error: null };
+};
+const { runInstall } = require(process.env.INSTALL_ENGINE_LIB);
+const plan = [ { id: 'pwsh-pref', type: 'dep', cmd: 'bash', args: ['-c', 'true'] } ];
+runInstall(plan, { dryRun: false });
+console.log(JSON.stringify({ cmd: captured.cmd }));
+")
+echo "$outV2" | jq -e '.cmd | test("pwsh$")' >/dev/null \
+  || fail "case v2: win32 should prefer pwsh over powershell.exe when pwsh resolves on PATH (got: $outV2)"
+echo "ok: case v2 — win32 prefers pwsh over powershell.exe when both are resolvable (HIMMEL-2126)"
 
 # ── case v (CR fix, Job Object round — THE discriminating test): a
 # RE-PARENTING grandchild is verified genuinely dead after a timeout. Case
@@ -1079,7 +1118,7 @@ echo "ok: case w — a legitimate background descendant of a SUCCESSFUL install 
 # so the sentinel is the only channel that can carry it. Asserts it lands
 # in failed[] (never ran[]) with a reason that names the actual hazard.
 # ─────────────────────────────────────────────────────────────────────────
-outX=$("$node_bin" -e "
+outX=$(HIMMELCTL_BASH='bash' "$node_bin" -e "
 const cp = require('child_process');
 Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 cp.spawnSync = function () {
@@ -1096,5 +1135,44 @@ echo "$outX" | jq -e '.failed | length == 1 and .[0].id == "cleanup-failed-win"'
 echo "$outX" | jq -e '.failed[0].reason | test("KILL_ON_JOB_CLOSE")' >/dev/null \
   || fail "case x: the 4220 failure reason should name the actual hazard (failed to clear KILL_ON_JOB_CLOSE), not a bare 'exited 4220' (got: $outX)"
 echo "ok: case x — job-run.ps1's CLEANUP_FAILED_EXIT_CODE (4220) fails closed: a succeeded-but-uncleanable spawn is reported as a failure naming the hazard, never as a false green"
+
+# ── case y (HIMMEL-2289): runHardenedSpawn REFUSES a cmd:'bash' entry when no
+# usable bash resolves, instead of spawning the bare name. buildEntry() emits
+# the literal cmd:'bash' for every shell primitive; spawning that bare name
+# resolves through PATH — on Windows to C:\WINDOWS\system32\bash.exe, the WSL
+# launcher, which cannot read the Windows-form script path in entry.args at
+# all (and the win32 branch relays entry.cmd onward to job-run.ps1, so
+# PowerShell resolves the same stub). The refusal mirrors buildEntry()'s own
+# `unrunnable` refusal for the guardrail-block-global target.
+#
+# Un-resolving bash PORTABLY is the whole difficulty: neither an empty PATH
+# nor a scrubbed env does it — resolveBash() probes hardcoded
+# Git-for-Windows locations on win32 and /bin/bash, /usr/bin/bash on posix,
+# none of them PATH-gated (the HIMMEL-2176 trap list), and HIMMELCTL_BASH can
+# only PIN a bash, never remove one. So stub the resolver at the module
+# boundary: require run-hook-with-bash.js FIRST, overwrite its exported
+# resolveBash on the cached module, and only THEN require install-engine —
+# which destructures the export at load time and so picks up the stub. Same
+# platform-independent result on every host.
+outY=$("$node_bin" -e "
+const path = require('path');
+const cp = require('child_process');
+let spawned = 0;
+cp.spawnSync = function () { spawned++; return { status: 0, signal: null, error: null }; };
+const hookLib = path.join(path.dirname(path.dirname(path.dirname(process.env.INSTALL_ENGINE_LIB))), 'hooks', 'run-hook-with-bash.js');
+require(hookLib).resolveBash = function () { return null; };
+const { runInstall } = require(process.env.INSTALL_ENGINE_LIB);
+const plan = [ { id: 'no-bash', type: 'dep', cmd: 'bash', args: ['-c', 'true'] } ];
+console.log(JSON.stringify({ result: runInstall(plan, { dryRun: false }), spawned }));
+")
+echo "$outY" | jq -e '.result.ran | length == 0' >/dev/null \
+  || fail "case y: an entry that could not resolve a bash must NOT be reported as run (got: $outY)"
+echo "$outY" | jq -e '.result.failed | length == 1 and .[0].id == "no-bash"' >/dev/null \
+  || fail "case y: the unresolvable-bash entry should land in failed[] (got: $outY)"
+echo "$outY" | jq -e '.result.failed[0].reason | test("no usable bash found")' >/dev/null \
+  || fail "case y: the failure reason should name the missing bash, not a generic spawn error (got: $outY)"
+echo "$outY" | jq -e '.spawned == 0' >/dev/null \
+  || fail "case y: the entry must be REFUSED before any spawn — spawning the bare 'bash' is exactly the WSL-stub launch this resolution exists to prevent (got: $outY)"
+echo "ok: case y — a cmd:'bash' entry with no resolvable bash is refused before any spawn, naming the missing bash (HIMMEL-2289)"
 
 echo "PASS"

@@ -96,7 +96,17 @@ For each eligible X clip, the script:
 4. For **X Articles** (Draft.js content): converts blocks → markdown and
    appends as `## Crawled content` body section.
 5. For **quote tweets**: appends `## Crawled content` with the quoted
-   tweet text + author + url.
+   tweet text + author + url — **and**, when the clip body is thin, the
+   clipped author's OWN text as `## The Idea` first, through the same
+   body-fill + injection re-screen path as item 6 (HIMMEL-2621; the chooser
+   used to be exclusive, so a quote tweet recorded only the *quoted* author's
+   words and dropped its own — an entire long-form note for `is_note_tweet`).
+   A quoted post with no prose of its own (an X Article, or media with a bare
+   `t.co` stand-in for its text) renders the article title + preview, or a
+   `_(quoted media: N item(s))_` marker — never a bare shortener URL. The
+   forbidden thing is the SHORTENER, not the URL: a URL-only quote with no
+   article or media metadata keeps its link, and only a bare `t.co` (which
+   carries nothing on its own) degrades to `_(no quote text)_`.
 6. **Thin plain/note tweets (telegram stubs):** inserts a `## The Idea`
    section built from `tweet.text` (before `## Source`) + de-anonymizes
    `author`/`title`. A non-thin plain tweet (body already has the harvested raw
@@ -160,6 +170,34 @@ true` when it fires — no body change, no other markers touched (body stays
 byte-identical under the no-section G-3 guard). Idempotent: a clip already
 flagged is skipped. Run this once after upgrading, then the `twitter-cli-enrich`
 escalation picks up the newly-flagged clips.
+
+### Backfilling quote-tweet own-text (`--reenrich-quote-only`)
+
+Clips enriched *before* HIMMEL-2621 whose tweet carried a quote recorded only
+the quoted author's words; the `enriched_at` idempotence gate then skips them
+forever. `--reenrich-quote-only` re-processes exactly those — `enrichment_source:
+fxtwitter` + `tweet_has_quote: true` + **no** `## The Idea` + a **thin** body
+(`isThinTweetBody`) — and skips every other clip. The thinness requirement is
+load-bearing, not belt-and-braces: a clip that has no `## The Idea` but already
+carries the author's own prose elsewhere (a different heading, or plain prose
+before the first `## `) was never a casualty of the old chooser, and
+body-filling it would duplicate text it already has.
+
+```bash
+node fxtwitter-enrich.mjs --vault ~/Documents/luna --reenrich-quote-only --dry-run   # inspect selection
+node fxtwitter-enrich.mjs --vault ~/Documents/luna --reenrich-quote-only             # backfill
+```
+
+It re-fetches, adds `## The Idea` (through the normal body-fill + HIMMEL-256
+re-screen path) and **replaces** the stale quote-context `## Crawled content`
+section rather than adding a second one, so the article/media-shaped quotes that
+rendered as a bare `t.co` line come back as real content. `enriched_at` is
+bumped to the re-enrich date, never erased. Idempotent for the clips it exists
+to repair: once one has `## The Idea` it is no longer a target. The exception
+is a quote-RT whose author added no text of their own — there is nothing to
+body-fill, so it stays eligible and is re-fetched on each explicit invocation
+of the switch (harmless, but not a no-op). Tracked as HIMMEL-2628. Mutually
+exclusive with `--reflag`.
 
 ### When fxtwitter is NOT the right tool
 

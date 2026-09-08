@@ -8,8 +8,10 @@ import { homedir } from "node:os";
 // groups is keyed by chat_id string (HIMMEL-238); negative chat_ids cover
 // groups (-…) and channels (-100…). Values carry the fork's GroupPolicy:
 // a non-empty per-group allowFrom restricts senders (honored here);
-// requireMention is IGNORED by the bun bridge (it doesn't parse message
-// entities) — a present key without allowFrom admits every member.
+// requireMention (LUNA-158) opts a group into @mention-only mode — honored by
+// the bun bridge's poller.ts handleInbound via requireMentionForChat below
+// (no message-entities parsing; matches `@<botusername>` against the raw
+// text) — a present key without allowFrom admits every member.
 // vault (HIMMEL-321): an absolute Obsidian-vault path a document/PDF sent to
 // this chat is filed into. A group-level vault overrides the top-level
 // defaultVault (see vaultForChat).
@@ -17,8 +19,37 @@ import { homedir } from "node:os";
 // posts as the operator's for the triage floor. Off by default and per-group,
 // because the anonymous sender id is shared by every admin of the chat — see
 // isOperatorIdentity.
-export type GroupPolicy = { requireMention?: boolean; allowFrom?: string[]; vault?: string; trustAnonymousAdmins?: boolean };
+// cwd (LUNA-101): an absolute REPO path this chat's bounded run spawns in,
+// instead of the himmel checkout. Sibling of vault, not a replacement: a
+// cwd-routed chat is code-repo-routed, so it gets no Obsidian filing clause
+// (see cwdForChat).
+export type GroupPolicy = { requireMention?: boolean; allowFrom?: string[]; vault?: string; cwd?: string; trustAnonymousAdmins?: boolean };
 export type Access = { dmPolicy?: string; allowFrom?: string[]; groups?: Record<string, GroupPolicy>; defaultVault?: string };
+
+// The operator's own DM chat, or null when there is no usable one
+// (HIMMEL-2580). Some dispatcher notices are not about any incoming message —
+// the bridge inbox cursor is root-scoped, so a "your messages were dropped"
+// notice has no originating chat to reply into. In a DM Telegram's chat_id IS
+// the sender id, so the global allowFrom identity is that chat. Fails CLOSED
+// the same way isAllowed does: missing/empty/malformed → null, and the caller
+// degrades to log-only rather than guessing a chat to message.
+export function operatorChatId(access: Access | null | undefined): number | null {
+  const allow = access?.allowFrom;
+  // Array.isArray, exactly as isAllowed does (CR codex-1): a hand-edited
+  // access.json can carry a bare STRING there, and `"12345"[0]` indexes to the
+  // CHARACTER "1" — which parses as a perfectly valid chat id and would send
+  // the operator's notice to user 1.
+  if (!Array.isArray(allow) || allow.length === 0) return null;
+  const first = allow[0];
+  if (typeof first !== "string" && typeof first !== "number") return null;
+  const n = Number(first);
+  // A POSITIVE safe integer only (CR codex-1). 0 is not a chat and is what
+  // Number("") and Number(" ") both produce, so a blank entry fails closed
+  // here instead of addressing chat 0; a NEGATIVE id is a group/channel, and
+  // allowFrom holds user ids — a negative one there is malformed, and
+  // broadcasting a dispatcher notice into a group is the wrong failure.
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
 
 // Pure predicate. Fails CLOSED: missing/empty/malformed allowlist → false.
 export function isAllowed(access: Access | null | undefined, fromId: number | string): boolean {
@@ -103,6 +134,35 @@ export function isOperatorIdentity(access: Access | null | undefined, fromId: nu
 export function vaultForChat(access: Access | null | undefined, chatId: number | string): string | null {
   const g = access?.groups?.[String(chatId)];
   return g?.vault ?? access?.defaultVault ?? null;
+}
+
+// Resolve the repo cwd a chat's bounded run spawns in (LUNA-101). Deliberately
+// NOT a mirror of vaultForChat: there is no defaultCwd, because a default would
+// route every chat — DMs included — into that repo. Group's own `cwd`, else null
+// (→ the caller keeps the himmel checkout).
+// Rejects a non-string `cwd` at the boundary (CR CodeRabbit): access.json is
+// hand-edited, and a malformed value like `"cwd": 7` is TRUTHY — it would reach
+// the floor check and the child-process spawn as a number instead of being
+// refused here.
+// ABSOLUTE only (CR codex-1): the key is documented as an absolute repo path, and
+// nothing enforced it. A relative `"cwd": "ggs-local"` would resolve against the
+// POLLER's launch directory — so the same config would route to a different place
+// depending on where the bridge happened to be started from, and could grant
+// bypassPermissions over a directory the operator never named. Enforce what the
+// docs already promise. Accepts both POSIX and Windows shapes, since access.json
+// on this machine carries `C:/Users/…`.
+const ABSOLUTE_CWD = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/;
+export function cwdForChat(access: Access | null | undefined, chatId: number | string): string | null {
+  const cwd = access?.groups?.[String(chatId)]?.cwd;
+  if (typeof cwd !== "string" || !ABSOLUTE_CWD.test(cwd)) return null;
+  return cwd;
+}
+
+// Resolve whether `chatId`'s group opted into @mention-only mode (LUNA-158) —
+// straight boolean read of GroupPolicy.requireMention, defaulting to false so
+// a chat absent from `groups` (including every DM) is unaffected.
+export function requireMentionForChat(access: Access | null | undefined, chatId: number | string): boolean {
+  return access?.groups?.[String(chatId)]?.requireMention === true;
 }
 
 export const defaultAccessPath = () =>

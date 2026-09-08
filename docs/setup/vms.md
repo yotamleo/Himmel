@@ -235,9 +235,136 @@ ssh -p 2223 <windows_vm_user>@127.0.0.1
 
 ---
 
+## Linux host
+
+Provisioning path when the **himmel station itself runs Linux** (verified
+2026-09-04 on CachyOS, VirtualBox 7.2.16) — a different guest and workflow from
+the Windows-host `ubuntu_new` documented above under "Ubuntu VM". This guest is
+a Ubuntu **server** cloud image driven entirely by cloud-init; there is no
+desktop session, guest additions, or X11 on it.
+
+### VirtualBox Configuration
+
+| Setting | Value |
+|---------|-------|
+| Guest | `ubuntu_new` — Ubuntu 24.04 noble server cloud OVA (`noble-server-cloudimg-amd64.ova`) |
+| Resources | 4 CPU / 4 GB RAM |
+| Network | NAT (`--nic1 nat`) |
+| Port forwarding | Host `2222` → Guest `22`, added in a **separate** `modifyvm` call (below) |
+| Provisioning | cloud-init NoCloud seed ISO, attached at IDE port 1 device 0 |
+
+### Import + NIC
+
+```bash
+VBoxManage import noble-server-cloudimg-amd64.ova --vsys 0 --vmname ubuntu_new
+VBoxManage modifyvm ubuntu_new --nic1 nat
+VBoxManage modifyvm ubuntu_new --natpf1 "ssh,tcp,127.0.0.1,2222,,22"
+```
+
+Keep the NIC and the `natpf1` rule in **two separate `modifyvm` calls** — a
+combined `--nic1 nat --natpf1 ...` call aborts on a "rule exists" error (e.g. a
+re-run) and leaves the NIC on its prior (bridged) setting.
+
+### Cloud-init seed
+
+The station has no `genisoimage` / `cloud-localds`, and installing either needs
+sudo, so the NoCloud seed ISO (`cidata.iso`) is built with `pycdlib` instead,
+via `scripts/machine-setup/make-cloudinit-seed.py` (run it from the
+`~/.himmel/vm-venv` venv — see "vmsdk.py Python environment" below). The
+primary checkout's `.env` already carries `ubuntu_vm_pass`, so this needs no
+password flag at all:
+
+```bash
+~/.himmel/vm-venv/bin/python scripts/machine-setup/make-cloudinit-seed.py --user himmel
+```
+
+`user-data` provisions the `himmel` user with the host's
+`~/.ssh/id_ed25519.pub`, NOPASSWD sudo, and packages `git jq curl rsync
+openssh-server` — **not** `nodejs`; that's installed afterwards via `apt` (see
+"Snapshots" below). There is no `--password` argv flag — a plaintext argument
+would leak via shell history and `ps` — so pass `--password-hash` for a
+precomputed hash, or `--password-file <path>` for a plaintext file, hashed
+in-process and never printed or logged. Do **NOT** pass the plaintext as an
+inline env assignment (`ubuntu_vm_pass=... python ...`) — that lands it in
+shell history and the process environment just the same; rely on the `.env`
+fallback (above) instead. That password is for the **VirtualBox console
+only**: the guest's `ssh_pwauth` stays off (SSH accepts the pubkey alone)
+unless you also pass `--allow-password-ssh`. `--dry-run` prints the generated
+`user-data` (passwd line redacted) without writing the ISO. Attach the
+written ISO as a virtual DVD at IDE port 1 device 0:
+
+```bash
+VBoxManage storageattach ubuntu_new --storagectl IDE --port 1 --device 0 \
+  --type dvddrive --medium /path/to/cidata.iso
+```
+
+### Snapshots
+
+- `clean` — post-cloud-init baseline (guest booted, seed packages applied:
+  `git jq curl rsync openssh-server`; no `nodejs`).
+- `clean-tools` — `clean` + `nodejs` installed afterwards via `apt`.
+
+```bash
+VBoxManage snapshot ubuntu_new restore clean
+```
+
+### Connect
+
+```bash
+ssh -p 2222 -i ~/.ssh/id_ed25519 himmel@127.0.0.1
+```
+
+Stage a worktree for testing — **two** rsync calls, since `scripts` and
+`docs/setup` need different destination shapes (a single call syncing both
+source dirs to `/tmp/<name>/` would land `docs/setup` as `/tmp/<name>/setup`,
+not the `/tmp/<name>/docs/setup/` the fixtures expect):
+
+```bash
+rsync -az --delete --exclude .git -e "ssh -p 2222 -i ~/.ssh/id_ed25519" \
+  <worktree>/scripts himmel@127.0.0.1:/tmp/<name>/
+rsync -az --delete --mkpath -e "ssh -p 2222 -i ~/.ssh/id_ed25519" \
+  <worktree>/docs/setup himmel@127.0.0.1:/tmp/<name>/docs/
+```
+
+`--mkpath` (rsync ≥3.2.3; Ubuntu 24.04 ships 3.2.7) creates the missing
+`/tmp/<name>/docs/` destination directory — no separate guest-side `mkdir -p`
+needed. The guest needs `node` on `PATH` for the hermetic-PATH fixture, and
+this lands `docs/setup/settings-template.json` at
+`/tmp/<name>/docs/setup/settings-template.json` for `uninstall-plugins.sh` to
+find.
+
+### vmsdk.py Python environment
+
+`vmsdk.py` needs `paramiko` + `python-dotenv`. The station's system python is
+externally-managed (PEP 668) — `pip install` against it fails. Use a dedicated
+venv instead:
+
+```bash
+python3 -m venv ~/.himmel/vm-venv
+~/.himmel/vm-venv/bin/pip install paramiko python-dotenv pycdlib
+```
+
+Drive the guest with `~/.himmel/vm-venv/bin/python` (any script that imports
+`vmsdk`), not the bare system `python3`.
+
+### VBOXMANAGE_PATH
+
+On a Linux host `scripts/lib/vbox.py` now resolves `VBoxManage` via `PATH`
+(`shutil.which`) instead of hardcoding the Windows install path — no env var
+is needed once `VBoxManage` is on `PATH` (VirtualBox's Linux installer puts it
+there). An explicit `VBOXMANAGE_PATH` still wins over PATH resolution when set.
+
+### Operator rule
+
+Destructive suites (`uninstall`, install/uninstall symmetry) run **WET only
+inside this guest** — restore the `clean` snapshot first, never on a station.
+
+---
+
 ## Quick Reference
 
 | VM | Port | User var | Pass var | Key |
 |----|------|----------|----------|-----|
 | Ubuntu | 2222 | `ubuntu_vm_user` | `ubuntu_vm_pass` | `~/.ssh/id_ed25519` |
 | Windows (`win11_base_himmel`) | 2223 | `windows_vm_user` | `windows_vm_pass` | `~/.ssh/id_ed25519` → `administrators_authorized_keys` |
+| Ubuntu (Linux host, `ubuntu_new` cloud guest) | 2222 | `himmel` (cloud-init, key-only) | — | `~/.ssh/id_ed25519` |

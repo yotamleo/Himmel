@@ -68,14 +68,18 @@ guidance available the moment it is relevant (memory:
 - Full playbook: [`docs/internals/stuck-playbook.md`](../../../docs/internals/stuck-playbook.md)
 - Enforcement detail (hooks + gates + classifier): [`docs/internals/enforcement.md`](../../../docs/internals/enforcement.md)
 
-## minerva — brainstorm → critic → spec → critic → plan (`/minerva`)
+## minerva — grill → brainstorm → critic → spec → critic → plan (`/minerva`)
 
 `/minerva` (skill `himmel-ops:minerva`) runs the recurring idea→plan workflow as
 one pipeline with an adversarial critic between each stage, so every artifact is
 red-teamed before it advances:
 
-1. **Brainstorm → spec** — drives `superpowers:brainstorming`, halted before its
-   auto-handoff to writing-plans.
+1. **Grill → brainstorm → spec** — Stage 1a interrogates the idea as a design
+   tree, asking the whole settled frontier per round (each question with a
+   recommended answer) until the frontier is empty; Stage 1b then drives
+   `superpowers:brainstorming`, halted before its auto-handoff to writing-plans.
+   In `autonomous` mode the frontier is still written out, self-answered, and
+   carried into the spec as an explicit ASSUMPTIONS section for the spec-critic.
 2. **Spec critic** — a fresh adversarial subagent red-teams the spec (hidden
    assumptions, scope creep, feasibility, contradictions, missing success
    criteria); loop fix→re-critic, cap 2 rounds.
@@ -102,7 +106,9 @@ system-wide and works in any repo, with no `superpowers` fork.
 `superpowers:brainstorming` or `superpowers:writing-plans` is invoked by ANY
 path without going through `/minerva`, the hook injects a scoped directive so the
 critic loop still fires (spec-critic after brainstorming, plan-critic after
-writing-plans). It is advisory context, not a permission change, and is
+writing-plans). It also routes `mattpocock-skills:grilling` into minerva Stage 1a
+(HIMMEL-2039), so grill / stress-test / brainstorm all share one front door
+without forking the upstream plugin. It is advisory context, not a permission change, and is
 **fail-open** — it never blocks a Skill call. Disable it with
 `MINERVA_HOOK_DISABLE=1` in the shell that launched Claude Code.
 
@@ -128,3 +134,24 @@ Lean-invoke, operator-run on demand (HIMMEL-177) — NOT an always-on hook: the
 durable-vs-disposable classification, dedupe, and placement need judgement. The
 over-budget load warning is the natural cue. Documented pass:
 [`docs/luna/compounding.md` §"A second loop: auto-memory → vault"](../../../docs/luna/compounding.md#a-second-loop-auto-memory--vault).
+
+## fanout — route work items by type, not by habit (`/fanout`)
+
+`/fanout` fans N work items out to the lane the CLAUDE.md "Subagent policy"
+invariant actually calls for (judgement/destructive → Fable; multi-step
+reasoning → Opus; well-specified implementation → Sonnet by default, or an
+explicit non-dormant lane; scoped research → Sonnet; bulk mechanical → Haiku,
+never spawns further), instead of leaving tier selection to per-dispatch
+judgement (HIMMEL-1829 — the gap `/overnight-shift` left: it dispatches with
+no model named at all).
+
+The refusal is a real mechanism, not prose: `scripts/lanes/fanout-plan.mjs`
+validates every item against the LIVE lane roster
+(`scripts/lanes/resolve.mjs --json`) and exits 1 — no plan emitted — on an
+unknown type, a lane absent from this machine's roster or marked dormant
+(HIMMEL-1967: impl routes to native Claude subagents only), a `bulk` item
+asking to spawn further, or (the specific defect that produced the ticket) a
+`destructive: true` item routed to anything but `judgement`/Fable. The command
+shows the validated plan and confirms before dispatching, one `Agent` call per
+item, each brief carrying the context/why/done-looks-like triple, a RETASK
+block, the concurrency discipline, and the attestation-trailer requirement.

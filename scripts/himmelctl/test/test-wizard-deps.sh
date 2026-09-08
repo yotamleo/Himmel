@@ -83,6 +83,7 @@ set -euo pipefail
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 repo_root=$(git rev-parse --show-toplevel)
+. "$repo_root/scripts/himmelctl/test/_hermetic-home.sh"  # HIMMEL-2350: shared winpath() -- dies loud on empty input/output instead of silently falling through to the operator's real home
 wizard="$repo_root/scripts/himmelctl/bin.js"
 deps_engine_lib="$repo_root/scripts/himmelctl/lib/deps-engine.js"
 [ -f "$wizard" ] || { echo "FAIL: $wizard not found" >&2; exit 1; }
@@ -101,15 +102,6 @@ node_bin=$(command -v node)
 work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
-
-# winpath <path> — echo <path> unchanged on posix, or its Windows form on
-# git-bash/MSYS/Cygwin (node.exe misresolves MSYS /tmp-style paths).
-winpath() {
-  case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) cygpath -m "$1" 2>/dev/null || printf '%s' "$1" ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
 
 DEPS_ENGINE_LIB="$(winpath "$deps_engine_lib")"
 export DEPS_ENGINE_LIB
@@ -304,7 +296,9 @@ echo "ok: case i — versionGte: below/equal/above a floor, and a v-prefixed act
 # ═══════════════════════════════ e2e cases ══════════════════════════════════
 
 # ── case j: --help / deps with no args list the deps verbs ────────────────
-outJ=$("$node_bin" "$wizard" --help)
+outJ=$(HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-help.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-help.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" --help)
 grepq "$outJ" 'deps status' || fail "case j: --help should list 'deps status' (got: $outJ)"
 grepq "$outJ" 'deps ensure' || fail "case j: --help should list 'deps ensure' (got: $outJ)"
 grepq "$outJ" 'deps upgrade' || fail "case j: --help should list 'deps upgrade' (got: $outJ)"
@@ -312,12 +306,16 @@ echo "ok: case j — --help lists deps status|ensure|upgrade"
 
 # ── case k: deps with no verb / an unknown verb -> exit 2 ─────────────────
 set +e
-errK1=$("$node_bin" "$wizard" deps 2>&1); rcK1=$?
+errK1=$(HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-caseK.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-caseK.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" deps 2>&1); rcK1=$?
 set -e
 [ "$rcK1" -eq 2 ] || fail "case k: 'deps' with no verb should exit 2 (got rc=$rcK1): $errK1"
 grepq "$errK1" -F 'status|ensure|upgrade' || fail "case k: error should name the verb requirement (got: $errK1)"
 set +e
-errK2=$("$node_bin" "$wizard" deps bogus 2>&1); rcK2=$?
+errK2=$(HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-caseK.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-caseK.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" deps bogus 2>&1); rcK2=$?
 set -e
 [ "$rcK2" -eq 2 ] || fail "case k: 'deps bogus' should exit 2 (got rc=$rcK2): $errK2"
 echo "ok: case k — 'deps' with no verb or an unknown verb exits 2"
@@ -427,6 +425,8 @@ runDeps() {
   # a stray HIMMELCTL_INTERACTIVE=1 in the caller's shell) must not be able
   # to change these cases' non-interactive assertions mid-suite.
   HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" HIMMELCTL_INTERACTIVE=0 PATH="$depsPath" \
+    HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-runDeps.himmelctl-cache")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-runDeps.himmelctl-cache/luna-config.json")" \
     "$node_bin" "$wizard" deps "$@"
 }
 
@@ -530,7 +530,10 @@ rm -f "$installLog"
 # stub-only) for exactly this reason.
 depsPathQ="$stubQ:$PATH"
 set +e
-outQ=$(HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" PATH="$depsPathQ" "$node_bin" "$wizard" deps ensure --yes </dev/null 2>&1); rcQ=$?
+outQ=$(HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" PATH="$depsPathQ" \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-caseQ.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-caseQ.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" deps ensure --yes </dev/null 2>&1); rcQ=$?
 set -e
 [ "$rcQ" -eq 0 ] || fail "case q: ensure with nothing missing should exit 0 (got rc=$rcQ): $outQ"
 grepq "$outQ" -F 'nothing to converge' || fail "case q: expected the nothing-to-converge message (got: $outQ)"
@@ -592,5 +595,596 @@ grepq "$outT" -F 'prompt to pull qmd embedding/rerank models' || fail "case t: e
 [ -f "$installLog" ] && fail "case t: --dry-run must NOT execute the upgrade script"
 [ -f "$modelsLog" ] && fail "case t: --dry-run must NOT execute the model pull"
 echo "ok: case t — upgrade --dry-run prints DRY lines naming every planned dep + recipe + the model-pull prompt, executes nothing"
+
+# ═══════════════ HIMMEL-2438: `deps ensure` on stock Ubuntu ════════════════
+#
+# himmelctl deps ensure --yes installed 0/4 declared deps on a stock Ubuntu
+# box (HIMMEL-2438): apt-get ran unprivileged with no explanation, gitleaks
+# had no apt recipe at all, bun's freshly-installed binary was invisible to
+# the same run's later deps (qmd) and to the post-install re-probe, and a
+# converged-but-off-PATH install was double-counted as both "installed" and
+# "failed". Cases u-aa below cover the five fixes.
+
+# ── case u: deps.json's declared order keeps bun before qmd — the plan order
+# `missing.map(...)` in cmdDepsEnsure derives from is order-preserving by
+# construction (deps.map(...).filter(...)), so this is a property of the
+# DECLARATION, not something cmdDepsEnsure computes itself. Asserted against
+# the REAL deps.json (not a synthetic fixture) since the invariant is about
+# that file's own declared order. ───────────────────────────────────────────
+outU=$(HIMMELCTL_REAL_REPO_ROOT="$repo_root" "$node_bin" -e "
+const { loadDeps } = require(process.env.DEPS_ENGINE_LIB);
+const deps = loadDeps(process.env.HIMMELCTL_REAL_REPO_ROOT);
+console.log(JSON.stringify(deps.filter((d) => d.id === 'bun' || d.id === 'qmd').map((d) => d.id)));
+")
+echo "$outU" | jq -e '. == ["bun","qmd"]' >/dev/null \
+  || fail "case u: expected deps.json's declared order to place bun before qmd (preserved by the order-preserving filter/map construction ensure's plan uses) (got: $outU)"
+echo "ok: case u — deps.json declares bun before qmd; the order-preserving plan construction keeps it that way"
+
+# ── case bb: deps.json — gitleaks installs via the package manager on linux
+# (HIMMEL-2438 defect 2: it used to be manager:"hint" with no apt recipe at
+# all, despite shellcheck already using the same apt-get path), keeping its
+# macos brew / win32 winget recipes untouched. ─────────────────────────────
+gitleaksLinuxManager=$(jq -r '.deps[] | select(.id=="gitleaks") | .install.linux.manager' "$repo_root/scripts/install/deps.json")
+[ "$gitleaksLinuxManager" = "ensure-tools" ] \
+  || fail "case bb: gitleaks's linux install manager should be 'ensure-tools' (got: $gitleaksLinuxManager)"
+gitleaksMacManager=$(jq -r '.deps[] | select(.id=="gitleaks") | .install.macos.manager' "$repo_root/scripts/install/deps.json")
+[ "$gitleaksMacManager" = "brew" ] \
+  || fail "case bb: gitleaks's macos install manager should stay 'brew' (got: $gitleaksMacManager)"
+gitleaksWinManager=$(jq -r '.deps[] | select(.id=="gitleaks") | .install.win32.manager' "$repo_root/scripts/install/deps.json")
+[ "$gitleaksWinManager" = "winget" ] \
+  || fail "case bb: gitleaks's win32 install manager should stay 'winget' (got: $gitleaksWinManager)"
+echo "ok: case bb — deps.json: gitleaks installs via ensure-tools on linux, brew on macos, winget on win32 (unchanged)"
+
+# ═════════════ ensure-tools.sh cases (sourced in a fresh subshell) ═════════
+#
+# Every case below sources scripts/setup/ensure-tools.sh in a NEW bash
+# process under a stub-prepended PATH — real sudo/apt-get/curl on THIS
+# station are never reached because the stub dir is prepended ahead of the
+# real PATH, so `command -v` always resolves the stub first. Coreutils
+# (mktemp/grep/tail/rm/chmod/cat) are left to resolve from the real PATH —
+# only the specific privileged/network primitives are stubbed.
+ensureToolsScript="$repo_root/scripts/setup/ensure-tools.sh"
+
+# run_ensure_tools <PATH> <HOME> <tool...> — sources ensure-tools.sh in a
+# fresh bash -c and calls ensure_tools "$@" with the given tools; combined
+# stdout+stderr.
+run_ensure_tools() {
+  local _path="$1" _home="$2"; shift 2
+  PATH="$_path" HOME="$_home" bash -c '. "$1"; shift; ensure_tools "$@"' _ "$ensureToolsScript" "$@" 2>&1
+}
+
+# mk_ensure_tools_path <target-tool> <dest-dir> — links bash/mktemp/grep/
+# tail/rm into <dest-dir> (created here) from the CURRENT real PATH, then
+# echoes "<dest-dir>:<PATH with every dir carrying <target-tool> dropped>".
+# Needed because THIS station has git/jq/python3/shellcheck/gitleaks all
+# genuinely installed (same merged /usr/bin as every coreutil) — a bare
+# stub-dir PREPEND (test-setup-preflight.sh's simpler convention) would let
+# `command -v "$t"` still resolve the REAL tool further down PATH, so
+# ensure_tools' own "already present" guard would skip the install path
+# before ever reaching sudo/apt-get — proving nothing. Dropping the whole
+# dir that carries <target-tool> takes the coreutils sourced from that same
+# dir down with it, hence relinking the specific ones ensure_tools' own
+# privileged path needs.
+mk_ensure_tools_path() {
+  local _target="$1" _dir="$2" _tool
+  mkdir -p "$_dir"
+  for _tool in bash mktemp grep tail rm; do
+    link_hermetic_tool "$_tool" "$_dir"
+  done
+  printf '%s' "$_dir:$(scrub_path "$PATH" "$_target")"
+}
+
+# ── case v: privilege probe — non-root, sudo present but NOT passwordless
+# (`sudo -n true` fails, e.g. a password is required) -> the adopter is told
+# the EXACT privileged command to run themselves, and apt-get is NEVER
+# invoked (HIMMEL-2438 defect 1: apt-get used to run unprivileged and fail
+# with a mystery "install manually" message that never named the real
+# cause). ────────────────────────────────────────────────────────────────
+vdir="$work/case-v-bin"
+vhpath=$(mk_ensure_tools_path shellcheck "$vdir")
+vlog="$work/case-v-priv.log"
+printf '#!/bin/sh\necho 1000\n' > "$vdir/id"; chmod +x "$vdir/id"
+# sudo exists but refuses the non-interactive probe. ANY invocation is
+# logged; a call OTHER than the "-n true" probe proves the probe was
+# skipped and a privileged call was attempted anyway — fail loud.
+cat > "$vdir/sudo" <<SUDO
+#!/usr/bin/env bash
+echo "sudo \$*" >> "$(winpath "$vlog")"
+if [ "\$1" = "-n" ] && [ "\$2" = "true" ] && [ "\$#" -eq 2 ]; then exit 1; fi
+exit 1
+SUDO
+chmod +x "$vdir/sudo"
+cat > "$vdir/apt-get" <<AG
+#!/usr/bin/env bash
+echo "apt-get \$*" >> "$(winpath "$vlog")"
+exit 0
+AG
+chmod +x "$vdir/apt-get"
+rm -f "$vlog"
+outV=$(run_ensure_tools "$vhpath" "$work/case-v-home" shellcheck)
+grep -qF 'apt-get' "$vlog" 2>/dev/null && fail "case v: apt-get must NEVER be invoked once the non-interactive sudo probe refuses (got: $(cat "$vlog"))"
+grepq "$(cat "$vlog" 2>/dev/null)" -F 'sudo -n true' || fail "case v: expected the non-interactive probe 'sudo -n true' to have run (got: $(cat "$vlog" 2>/dev/null))"
+grepq "$outV" -F 'sudo apt-get install -y shellcheck' \
+  || fail "case v: expected the exact privileged command named in the message (got: $outV)"
+echo "ok: case v — no passwordless sudo: names the exact privileged command, never calls apt-get"
+
+# ── case w: privilege probe succeeds (`sudo -n true` works) -> the actual
+# apt-get calls are routed through `sudo -n` (never bare sudo, which could
+# hang the run on a password prompt). ──────────────────────────────────────
+wdir="$work/case-w-bin"
+whpath=$(mk_ensure_tools_path shellcheck "$wdir")
+wsudoLog="$work/case-w-sudo.log"
+printf '#!/bin/sh\necho 1000\n' > "$wdir/id"; chmod +x "$wdir/id"
+cat > "$wdir/sudo" <<SUDO
+#!/usr/bin/env bash
+echo "sudo \$*" >> "$(winpath "$wsudoLog")"
+if [ "\$1" = "-n" ]; then shift; fi
+if [ "\$1" = "true" ] && [ "\$#" -eq 1 ]; then exit 0; fi
+exec "\$@"
+SUDO
+chmod +x "$wdir/sudo"
+waptLog="$work/case-w-aptget.log"
+cat > "$wdir/apt-get" <<AG
+#!/usr/bin/env bash
+echo "apt-get \$*" >> "$(winpath "$waptLog")"
+exit 0
+AG
+chmod +x "$wdir/apt-get"
+rm -f "$wsudoLog" "$waptLog"
+outW=$(run_ensure_tools "$whpath" "$work/case-w-home" shellcheck)
+grepq "$(cat "$wsudoLog" 2>/dev/null)" -F 'sudo -n true' || fail "case w: expected the passwordless probe to have run (got: $(cat "$wsudoLog" 2>/dev/null))"
+grepq "$(cat "$wsudoLog" 2>/dev/null)" -F 'sudo -n apt-get install -y shellcheck' \
+  || fail "case w: expected the real install call to be routed through 'sudo -n' (got: $(cat "$wsudoLog" 2>/dev/null))"
+[ -f "$waptLog" ] || fail "case w: expected apt-get to have actually run (no log file)"
+grepq "$outW" -F "installing 'shellcheck' via apt-get" || fail "case w: expected the installing message (got: $outW)"
+echo "ok: case w — passwordless sudo: the real install call is routed through 'sudo -n'"
+
+# ── case x: apt-get install FAILS (package genuinely missing on this distro)
+# -> the failure message surfaces apt-get's own last non-empty stderr line
+# instead of swallowing it, and — for a tool with no fallback hint — still
+# ends with the honest "install manually" (HIMMEL-2438 defect 1: stderr used
+# to be redirected straight to /dev/null, so the adopter never learned WHY
+# the install failed). ─────────────────────────────────────────────────────
+xdir="$work/case-x-bin"
+xhpath=$(mk_ensure_tools_path shellcheck "$xdir")
+printf '#!/bin/sh\necho 1000\n' > "$xdir/id"; chmod +x "$xdir/id"
+cat > "$xdir/sudo" <<'SUDO'
+#!/usr/bin/env bash
+if [ "$1" = "-n" ]; then shift; fi
+if [ "$1" = "true" ] && [ "$#" -eq 1 ]; then exit 0; fi
+exec "$@"
+SUDO
+chmod +x "$xdir/sudo"
+cat > "$xdir/apt-get" <<'AG'
+#!/usr/bin/env bash
+if [ "$1" = "update" ]; then exit 0; fi
+echo "Reading package lists..." >&2
+echo "" >&2
+echo "E: Unable to locate package shellcheck" >&2
+exit 100
+AG
+chmod +x "$xdir/apt-get"
+outX=$(run_ensure_tools "$xhpath" "$work/case-x-home" shellcheck)
+grepq "$outX" -F "'apt-get install shellcheck' failed" || fail "case x: expected the failure message to name the failed command (got: $outX)"
+grepq "$outX" -F 'E: Unable to locate package shellcheck' \
+  || fail "case x: expected apt-get's own last non-empty stderr line surfaced (got: $outX)"
+grepq "$outX" -F "install 'shellcheck' manually" || fail "case x: shellcheck has no fallback hint -- expected the generic manual-install fallback (got: $outX)"
+echo "ok: case x — apt-get install failure surfaces its own stderr tail instead of swallowing it"
+
+# ── case y: gitleaks — installable via the SAME apt-get path shellcheck
+# uses (HIMMEL-2438 defect 2), and its failure message (older distro, no
+# package) carries the old 'hint' manager's tarball guidance as a per-tool
+# fallback, not a bare "install manually". ─────────────────────────────────
+ydir="$work/case-y-bin"
+yhpath=$(mk_ensure_tools_path gitleaks "$ydir")
+printf '#!/bin/sh\necho 1000\n' > "$ydir/id"; chmod +x "$ydir/id"
+cat > "$ydir/sudo" <<'SUDO'
+#!/usr/bin/env bash
+if [ "$1" = "-n" ]; then shift; fi
+if [ "$1" = "true" ] && [ "$#" -eq 1 ]; then exit 0; fi
+exec "$@"
+SUDO
+chmod +x "$ydir/sudo"
+yaptLog="$work/case-y-aptget.log"
+cat > "$ydir/apt-get" <<AG
+#!/usr/bin/env bash
+echo "apt-get \$*" >> "$(winpath "$yaptLog")"
+if [ "\$1" = "update" ]; then exit 0; fi
+echo "E: Unable to locate package gitleaks" >&2
+exit 100
+AG
+chmod +x "$ydir/apt-get"
+rm -f "$yaptLog"
+outY=$(run_ensure_tools "$yhpath" "$work/case-y-home" gitleaks)
+grepq "$(cat "$yaptLog" 2>/dev/null)" -F 'apt-get install -y gitleaks' \
+  || fail "case y: expected gitleaks to be routed through the SAME apt-get install path as shellcheck (got: $(cat "$yaptLog" 2>/dev/null))"
+grepq "$outY" -F "'apt-get install gitleaks' failed" || fail "case y: expected the failure message to name gitleaks (got: $outY)"
+grepq "$outY" -F 'E: Unable to locate package gitleaks' || fail "case y: expected apt-get's stderr tail surfaced (got: $outY)"
+grepq "$outY" -F 'install gitleaks from its official release tarball, then re-run' \
+  || fail "case y: expected the old hint-manager's tarball guidance as gitleaks's fallback hint (got: $outY)"
+echo "ok: case y — gitleaks: apt-get install attempted, failure carries the tarball fallback hint"
+
+# ── case z: bun already installed at ~/.bun/bin -> idempotent, no re-run of
+# the official installer (HIMMEL-2438: a re-run used to append a SECOND
+# identical PATH block to ~/.bashrc every time). curl must never be invoked.
+zdir="$work/case-z-bin"; mkdir -p "$zdir"
+zcurlLog="$work/case-z-curl.log"
+cat > "$zdir/curl" <<CURL
+#!/usr/bin/env bash
+echo "curl \$*" >> "$(winpath "$zcurlLog")"
+exit 1
+CURL
+chmod +x "$zdir/curl"
+zhome="$work/case-z-home"; mkdir -p "$zhome/.bun/bin"
+printf '#!/usr/bin/env bash\necho stub-bun\n' > "$zhome/.bun/bin/bun"; chmod +x "$zhome/.bun/bin/bun"
+rm -f "$zcurlLog"
+outZ=$(PATH="$zdir:$PATH" HOME="$zhome" bash -c '. "$1"; _ensure_install_bun' _ "$ensureToolsScript" 2>&1)
+[ -f "$zcurlLog" ] && fail "case z: bun already installed -- the official installer (curl) must NOT be re-run (got: $(cat "$zcurlLog"))"
+grepq "$outZ" -F 'bun is already installed at ~/.bun/bin' \
+  || fail "case z: expected the already-installed notice (got: $outZ)"
+# shellcheck disable=SC2016
+grepq "$outZ" -F 'export PATH="$HOME/.bun/bin:$PATH"' \
+  || fail "case z: expected the shell-rc hint with the export line (got: $outZ)"
+echo "ok: case z — bun already installed: idempotent, no reinstall, PATH hint printed"
+
+# ── case aa: cmdDepsEnsure re-resolves PATH for THIS run (HIMMEL-2438 defect
+# 3) and the honest counter (defect 5 in bin.js's own report): a dep whose
+# install recipe lands its binary in $HOME/.bun/bin (mirrors bun's own
+# official installer) is invisible to the caller's PATH, but the
+# post-install re-probe must resolve it via the augmented PATH instead of
+# reporting the CR-fixed "installed but still not found on PATH" false
+# failure — and must say so explicitly (present via the augmented PATH, not
+# the caller's own), not just silently count it a win. A SEPARATE, isolated
+# fixture repo (not the shared one cases l-t use) so this doesn't perturb
+# their counts. ─────────────────────────────────────────────────────────────
+fixtureRepoAA="$work/repo-aa"
+mkdir -p "$fixtureRepoAA/scripts/install" "$fixtureRepoAA/scripts/lib"
+installLogAA="$work/install-calls-aa.log"
+homeAA="$work/case-aa-home"; mkdir -p "$homeAA"
+cat > "$fixtureRepoAA/scripts/install/deps.json" <<JSON
+{
+  "schemaVersion": 1,
+  "deps": [
+    {
+      "id": "hometool",
+      "cmd": "hometool-not-on-path",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": null,
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "script", "script": "scripts/lib/fake-hometool-install.sh", "args": [] },
+        "macos": { "manager": "script", "script": "scripts/lib/fake-hometool-install.sh", "args": [] },
+        "win32": { "manager": "script", "script": "scripts/lib/fake-hometool-install.sh", "args": [] }
+      }
+    }
+  ]
+}
+JSON
+cat > "$fixtureRepoAA/scripts/lib/fake-hometool-install.sh" <<STUB
+#!/usr/bin/env bash
+printf 'install\n' >> "$(winpath "$installLogAA")"
+mkdir -p "\$HOME/.bun/bin"
+printf '#!/usr/bin/env bash\necho stub-hometool\n' > "\$HOME/.bun/bin/hometool-not-on-path"
+chmod +x "\$HOME/.bun/bin/hometool-not-on-path"
+STUB
+chmod +x "$fixtureRepoAA/scripts/lib/fake-hometool-install.sh"
+
+stubAA="$work/bin-aa"; mkdir -p "$stubAA"
+link_hermetic_tool bash "$stubAA"
+depsPathAA="$stubAA:$(scrub_path "$PATH" hometool-not-on-path)"
+
+set +e
+outAA=$(HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepoAA")" HIMMELCTL_INTERACTIVE=0 PATH="$depsPathAA" HOME="$(winpath "$homeAA")" USERPROFILE="$(winpath "$homeAA")" \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-caseAA.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-caseAA.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" deps ensure --yes </dev/null 2>&1); rcAA=$?
+set -e
+[ "$rcAA" -eq 0 ] || fail "case aa: ensure --yes should exit 0 once the augmented-PATH re-probe finds hometool (got rc=$rcAA): $outAA"
+[ -f "$installLogAA" ] || fail "case aa: expected hometool's install script to have run (no log file)"
+grepq "$outAA" -F 'himmelctl: PATH for this run also includes' \
+  || fail "case aa: expected the augmented-PATH announcement line (got: $outAA)"
+grepq "$outAA" -F '.bun/bin' || fail "case aa: the announcement should name ~/.bun/bin (got: $outAA)"
+grepq "$outAA" -F '1 installed, 0 failed' \
+  || fail "case aa: hometool should be counted installed, not a false PATH failure (got: $outAA)"
+grepq "$outAA" -F 'hometool: installed to' || fail "case aa: expected the honest not-on-caller's-PATH message (got: $outAA)"
+grepq "$outAA" -F 'not on your PATH; add' || fail "case aa: expected the shell-rc hint (got: $outAA)"
+echo "ok: case aa — cmdDepsEnsure re-resolves PATH mid-run; a dep landing in ~/.bun/bin is verified + honestly reported, not falsely failed"
+
+# ── case cc: a dep a PRIOR run already installed into $HOME/.bun/bin (CR
+# round 1, codex-1) — present via the augmented PATH from the START of the
+# run, never on the caller's own PATH — must NOT appear in the `--dry-run`
+# plan or the "about to install" list; `ensure --yes` (it's the only
+# declared dep) reports "nothing to converge" and NEVER invokes the install
+# script. Distinct from case aa: there, the binary doesn't exist until the
+# install script CREATES it during THIS run; here, it already exists BEFORE
+# the run starts, so it must never be re-planned at all. A SEPARATE isolated
+# fixture (own repo/home/log), same convention as case aa. ────────────────
+fixtureRepoCC="$work/repo-cc"
+mkdir -p "$fixtureRepoCC/scripts/install" "$fixtureRepoCC/scripts/lib"
+installLogCC="$work/install-calls-cc.log"
+homeCC="$work/case-cc-home"; mkdir -p "$homeCC/.bun/bin"
+printf '#!/usr/bin/env bash\necho stub-hometool\n' > "$homeCC/.bun/bin/hometool-not-on-path"
+chmod +x "$homeCC/.bun/bin/hometool-not-on-path"
+cat > "$fixtureRepoCC/scripts/install/deps.json" <<JSON
+{
+  "schemaVersion": 1,
+  "deps": [
+    {
+      "id": "hometool",
+      "cmd": "hometool-not-on-path",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": null,
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "script", "script": "scripts/lib/fake-hometool-install.sh", "args": [] },
+        "macos": { "manager": "script", "script": "scripts/lib/fake-hometool-install.sh", "args": [] },
+        "win32": { "manager": "script", "script": "scripts/lib/fake-hometool-install.sh", "args": [] }
+      }
+    }
+  ]
+}
+JSON
+cat > "$fixtureRepoCC/scripts/lib/fake-hometool-install.sh" <<STUB
+#!/usr/bin/env bash
+printf 'install\n' >> "$(winpath "$installLogCC")"
+STUB
+chmod +x "$fixtureRepoCC/scripts/lib/fake-hometool-install.sh"
+
+stubCC="$work/bin-cc"; mkdir -p "$stubCC"
+link_hermetic_tool bash "$stubCC"
+depsPathCC="$stubCC:$(scrub_path "$PATH" hometool-not-on-path)"
+
+rm -f "$installLogCC"
+set +e
+outCCdry=$(HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepoCC")" HIMMELCTL_INTERACTIVE=0 PATH="$depsPathCC" HOME="$(winpath "$homeCC")" USERPROFILE="$(winpath "$homeCC")" \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-caseCC-dry.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-caseCC-dry.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" deps ensure --dry-run </dev/null 2>&1); rcCCdry=$?
+set -e
+[ "$rcCCdry" -eq 0 ] || fail "case cc (dry-run): should exit 0 -- hometool is already present via the augmented PATH, nothing to plan (got rc=$rcCCdry): $outCCdry"
+grepq "$outCCdry" -F 'nothing to converge' || fail "case cc (dry-run): expected 'nothing to converge' -- a PRIOR run's install must not be re-planned (got: $outCCdry)"
+grepq "$outCCdry" -F 'DRY:' && fail "case cc (dry-run): a dep already present via the augmented PATH must NOT appear in the DRY plan (got: $outCCdry)"
+grepq "$outCCdry" -F 'hometool' && fail "case cc (dry-run): hometool must not be named at all -- it never needed converging (got: $outCCdry)"
+
+set +e
+outCC=$(HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepoCC")" HIMMELCTL_INTERACTIVE=0 PATH="$depsPathCC" HOME="$(winpath "$homeCC")" USERPROFILE="$(winpath "$homeCC")" \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-caseCC.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-caseCC.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" deps ensure --yes </dev/null 2>&1); rcCC=$?
+set -e
+[ "$rcCC" -eq 0 ] || fail "case cc: ensure --yes should exit 0 (got rc=$rcCC): $outCC"
+grepq "$outCC" -F 'nothing to converge' || fail "case cc: expected 'nothing to converge' (got: $outCC)"
+grepq "$outCC" -F 'about to install' && fail "case cc: must NEVER print 'about to install' for a dep already present via the augmented PATH (got: $outCC)"
+[ -f "$installLogCC" ] && fail "case cc: the install script must NEVER run -- hometool was already present via the augmented PATH from the START of the run (got: $(cat "$installLogCC"))"
+echo "ok: case cc — a dep a PRIOR run already installed into ~/.bun/bin reads present from the START of the run (never replanned, never re-installed)"
+
+# ── case dd: augmentPathForRun (the extracted pure PATH-augmentation
+# helper) — an EMPTY originalPath must not leave a trailing path.delimiter
+# or an empty PATH segment (CR round 1, codex-2: the old
+# `dirsToAdd.join(delim) + delim + originalPath` formula did exactly that
+# whenever originalPath was ""; a trailing/empty segment means an implicit-
+# cwd PATH lookup). Unit-tested directly via require() — bin.js's own CLI
+# auto-run is guarded behind `require.main === module`, so requiring it here
+# never triggers main() — because the trailing-delimiter shape is NOT
+# observable from a live e2e invocation: the "PATH for this run also
+# includes" announcement only lists dirsToAdd by NAME, never the joined PATH
+# string itself, so a PATH="" e2e run cannot prove this one way or the
+# other. ─────────────────────────────────────────────────────────────────
+# The expectations are DERIVED from node's own path.delimiter / path.join
+# rather than hard-coded as ":"-joined POSIX strings: under Windows node
+# the delimiter is ";" and path.join emits backslashes, so literal
+# expectations would fail there for a reason that has nothing to do with
+# the behaviour under test (this suite runs under Git Bash on Windows too
+# -- see winpath above).
+outDD=$(BIN_JS_LIB="$(winpath "$wizard")" "$node_bin" -e "
+const path = require('path');
+const { augmentPathForRun } = require(process.env.BIN_JS_LIB);
+const pre = path.join('/usr', 'bin');
+const empty = augmentPathForRun('/home/x', '');
+const nonEmpty = augmentPathForRun('/home/x', pre);
+const dirs = [path.join('/home/x', '.bun', 'bin'), path.join('/home/x', '.local', 'bin')];
+console.log(JSON.stringify({ empty, nonEmpty, sep: path.delimiter, dirs, pre }));
+")
+echo "$outDD" | jq -e '. as $o | $o.empty.path == ($o.dirs | join($o.sep))' >/dev/null \
+  || fail "case dd: an empty originalPath should produce exactly the added dirs joined by path.delimiter, with no trailing delimiter (got: $outDD)"
+echo "$outDD" | jq -e '. as $o | ($o.empty.path | endswith($o.sep)) | not' >/dev/null \
+  || fail "case dd: the augmented PATH must not end with a trailing delimiter (got: $outDD)"
+echo "$outDD" | jq -e '. as $o | ($o.empty.path | split($o.sep) | all(. != ""))' >/dev/null \
+  || fail "case dd: the augmented PATH must not contain an empty (implicit-cwd) segment (got: $outDD)"
+echo "$outDD" | jq -e '. as $o | $o.nonEmpty.path == (($o.dirs | join($o.sep)) + $o.sep + $o.pre)' >/dev/null \
+  || fail "case dd: a non-empty originalPath should be appended after the added dirs, unchanged (got: $outDD)"
+echo "ok: case dd — augmentPathForRun: an empty originalPath never leaves a trailing delimiter or an empty PATH segment"
+
+# ══════ HIMMEL-2438 wet-run findings (ubuntu_new clean-tools guest) ═════
+#
+# The shellcheck and gitleaks deps now install via `sudo -n apt-get` (proven above), but
+# bun's official installer failed on stock Ubuntu 24.04 with "error: unzip is
+# required to install bun" (curl+tar ship by default, unzip does not) —
+# ensure-tools printed only a bare "installer failed" with no cause, qmd then
+# failed downstream on "bun not found", and the counter still printed "bun:
+# installed but still not found on PATH" for a recipe that actually FAILED
+# (ensure_tools() always exits 0 by contract, so that wording was never
+# actually confirmed). Cases ee/ff/hh/gg below cover the three additions.
+
+# ── case ee: bun's installer prerequisite (unzip) is auto-installed via the
+# SAME apt-get path shellcheck/gitleaks already use, BEFORE curl (bun's own
+# installer) ever runs. ─────────────────────────────────────────────────────
+eedir="$work/case-ee-bin"
+eehpath=$(mk_ensure_tools_path unzip "$eedir")
+printf '#!/bin/sh\necho 1000\n' > "$eedir/id"; chmod +x "$eedir/id"
+cat > "$eedir/sudo" <<'SUDO'
+#!/usr/bin/env bash
+if [ "$1" = "-n" ]; then shift; fi
+if [ "$1" = "true" ] && [ "$#" -eq 1 ]; then exit 0; fi
+exec "$@"
+SUDO
+chmod +x "$eedir/sudo"
+eeaptLog="$work/case-ee-aptget.log"
+# The stub apt-get "installs" unzip by dropping a stub binary into THIS SAME
+# dir (first on PATH), so a subsequent `command -v unzip` resolves it.
+cat > "$eedir/apt-get" <<AG
+#!/usr/bin/env bash
+echo "apt-get \$*" >> "$(winpath "$eeaptLog")"
+if [ "\$1" = "install" ] && [ "\$3" = "unzip" ]; then
+  printf '#!/usr/bin/env bash\necho stub-unzip\n' > "$eedir/unzip"
+  chmod +x "$eedir/unzip"
+fi
+exit 0
+AG
+chmod +x "$eedir/apt-get"
+eecurlLog="$work/case-ee-curl.log"
+cat > "$eedir/curl" <<CURL
+#!/usr/bin/env bash
+echo "curl \$*" >> "$(winpath "$eecurlLog")"
+exit 1
+CURL
+chmod +x "$eedir/curl"
+eehome="$work/case-ee-home"; mkdir -p "$eehome"
+rm -f "$eeaptLog" "$eecurlLog"
+outEE=$(PATH="$eehpath" HOME="$eehome" bash -c '. "$1"; _ensure_install_bun' _ "$ensureToolsScript" 2>&1 || true)
+grepq "$(cat "$eeaptLog" 2>/dev/null)" -F 'apt-get install -y unzip' \
+  || fail "case ee: expected apt-get to be asked to install unzip BEFORE the bun installer runs (got: $(cat "$eeaptLog" 2>/dev/null))"
+[ -f "$eecurlLog" ] || fail "case ee: expected the bun installer (curl) to have been attempted AFTER unzip was installed (no log file)"
+grepq "$outEE" -F "installing 'unzip' via apt-get (required by bun's installer)" \
+  || fail "case ee: expected ensure-tools to ANNOUNCE the unzip pre-install it performed (got: $outEE)"
+echo "ok: case ee — bun's installer prerequisite (unzip) is auto-installed via the same apt-get path before curl ever runs"
+
+# ── case ff: bun's installer needs unzip, but no passwordless sudo is
+# available -> the adopter is told the EXACT privileged command (same
+# wording pattern as the shellcheck/gitleaks privilege probe), and curl
+# (bun's own installer) is NEVER invoked. ──────────────────────────────────
+ffdir="$work/case-ff-bin"
+ffhpath=$(mk_ensure_tools_path unzip "$ffdir")
+printf '#!/bin/sh\necho 1000\n' > "$ffdir/id"; chmod +x "$ffdir/id"
+cat > "$ffdir/sudo" <<'SUDO'
+#!/usr/bin/env bash
+exit 1
+SUDO
+chmod +x "$ffdir/sudo"
+cat > "$ffdir/apt-get" <<'AG'
+#!/usr/bin/env bash
+exit 0
+AG
+chmod +x "$ffdir/apt-get"
+ffcurlLog="$work/case-ff-curl.log"
+cat > "$ffdir/curl" <<CURL
+#!/usr/bin/env bash
+echo "curl \$*" >> "$(winpath "$ffcurlLog")"
+exit 1
+CURL
+chmod +x "$ffdir/curl"
+ffhome="$work/case-ff-home"; mkdir -p "$ffhome"
+rm -f "$ffcurlLog"
+outFF=$(PATH="$ffhpath" HOME="$ffhome" bash -c '. "$1"; _ensure_install_bun' _ "$ensureToolsScript" 2>&1 || true)
+[ -f "$ffcurlLog" ] && fail "case ff: bun's own installer (curl) must NEVER run when its unzip prerequisite can't be satisfied (got: $(cat "$ffcurlLog"))"
+grepq "$outFF" -F 'sudo apt-get install -y unzip' \
+  || fail "case ff: expected the exact privileged command for unzip named in the message (got: $outFF)"
+echo "ok: case ff — bun's unzip prerequisite: no passwordless sudo -- names the exact command, never runs the installer"
+
+# ── case hh: bun's official installer BODY fails (network OK, install
+# script errors) -- the failure message now surfaces the installer's own
+# last non-empty stderr line (wet-run fix (B), same shape as the apt/dnf
+# stderr surfacing above), not just the generic manual-install hint. This
+# case isolates the installer-BODY path, so the unzip prerequisite has to
+# be a no-op -- and it is made one HERMETICALLY, by SHADOWING unzip with a
+# stub ahead of the real PATH, rather than by relying on this station
+# happening to have unzip installed. On a host without it,
+# _ensure_bun_prereq_unzip would otherwise go down the real sudo/apt-get
+# path and install a package on the test machine. (Shadowing, not
+# mk_ensure_tools_path's scrub: this case needs unzip PRESENT, and the
+# scrub would drop the whole /usr/bin that also carries the coreutils the
+# installer-body path itself uses.) The fail-loud sudo/apt-get stubs are
+# there for the same reason -- they PROVE the prerequisite short-circuited
+# instead of assuming it, and they shadow the real ones either way.
+hhdir="$work/case-hh-bin"; mkdir -p "$hhdir"
+printf '#!/bin/sh\nexit 0\n' > "$hhdir/unzip"; chmod +x "$hhdir/unzip"
+hhprivLog="$work/case-hh-priv.log"
+cat > "$hhdir/sudo" <<SUDO
+#!/usr/bin/env bash
+echo "sudo \$*" >> "$(winpath "$hhprivLog")"
+exit 1
+SUDO
+chmod +x "$hhdir/sudo"
+cat > "$hhdir/apt-get" <<AG
+#!/usr/bin/env bash
+echo "apt-get \$*" >> "$(winpath "$hhprivLog")"
+exit 1
+AG
+chmod +x "$hhdir/apt-get"
+cat > "$hhdir/curl" <<'CURL'
+#!/usr/bin/env bash
+cat <<'INSTALLER'
+echo "some setup output"
+echo "fatal: unsupported platform xyz" >&2
+exit 1
+INSTALLER
+CURL
+chmod +x "$hhdir/curl"
+hhhome="$work/case-hh-home"; mkdir -p "$hhhome"
+rm -f "$hhprivLog"
+outHH=$(PATH="$hhdir:$PATH" HOME="$hhhome" bash -c '. "$1"; _ensure_install_bun' _ "$ensureToolsScript" 2>&1 || true)
+[ -f "$hhprivLog" ] && fail "case hh: unzip is already present, so NO privileged command may run -- the prerequisite check must short-circuit (got: $(cat "$hhprivLog"))"
+[ -x "$hhhome/.bun/bin/bun" ] && fail "case hh: the installer body failed -- bun must not be present (got a bun binary anyway)"
+grepq "$outHH" -F 'fatal: unsupported platform xyz' \
+  || fail "case hh: expected the installer's own last non-empty stderr line surfaced (got: $outHH)"
+grepq "$outHH" -F 'install bun manually' || fail "case hh: expected the existing manual-install fallback to remain (got: $outHH)"
+echo "ok: case hh — bun installer BODY failure surfaces its own stderr tail, keeps the manual-install fallback"
+
+# ── case gg: bin.js honest counter — an ensure-tools-manager recipe ALWAYS
+# exits 0 (ensure_tools() is documented to "always return 0; the caller
+# re-checks `command -v`"), so its OWN exit code can never prove "claimed
+# success" the way a script/brew/pip/winget recipe's exit code does (case p,
+# above, already proves the OLD wording stays correct for a script-manager
+# dep). For manager:"ensure-tools", the honest wording instead points at
+# ensure-tools.sh's own diagnostic lines. A throwaway fixture repo ships its
+# OWN scripts/setup/ensure-tools.sh (a no-op stub `ensure_tools() { return
+# 0; }`, mirroring the real contract exactly) so buildDepEntry's manager:
+# "ensure-tools" case dispatches through it just like production. ─────────
+fixtureRepoGG="$work/repo-gg"
+mkdir -p "$fixtureRepoGG/scripts/install" "$fixtureRepoGG/scripts/setup"
+cat > "$fixtureRepoGG/scripts/install/deps.json" <<JSON
+{
+  "schemaVersion": 1,
+  "deps": [
+    {
+      "id": "ghosttool",
+      "cmd": "ghosttool-never-lands",
+      "versionProbe": { "args": ["--version"] },
+      "minVersion": null,
+      "bootstrap": false,
+      "install": {
+        "linux": { "manager": "ensure-tools" },
+        "macos": { "manager": "ensure-tools" },
+        "win32": { "manager": "ensure-tools" }
+      }
+    }
+  ]
+}
+JSON
+cat > "$fixtureRepoGG/scripts/setup/ensure-tools.sh" <<'STUB'
+#!/usr/bin/env bash
+# No-op stub mirroring the real ensure_tools() contract exactly: it ALWAYS
+# returns 0, regardless of whether the tool actually landed (the real
+# function's own documented behaviour).
+ensure_tools() { return 0; }
+STUB
+chmod +x "$fixtureRepoGG/scripts/setup/ensure-tools.sh"
+
+stubGG="$work/bin-gg"; mkdir -p "$stubGG"
+link_hermetic_tool bash "$stubGG"
+depsPathGG="$stubGG:$(scrub_path "$PATH" ghosttool-never-lands)"
+
+set +e
+outGG=$(HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepoGG")" HIMMELCTL_INTERACTIVE=0 PATH="$depsPathGG" \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/deps-caseGG.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/deps-caseGG.himmelctl-cache/luna-config.json")" \
+  "$node_bin" "$wizard" deps ensure --yes </dev/null 2>&1); rcGG=$?
+set -e
+[ "$rcGG" -eq 1 ] || fail "case gg: ensure --yes should exit 1 -- the no-op recipe never lands ghosttool (got rc=$rcGG): $outGG"
+grepq "$outGG" -F 'ghosttool: not present after its install recipe ran — see the ensure-tools lines above' \
+  || fail "case gg: expected the new ensure-tools-manager wording, not the old PATH-specific one (got: $outGG)"
+grepq "$outGG" -F 'ghosttool: installed but still not found on PATH' \
+  && fail "case gg: the old PATH-specific wording must NOT be used for an ensure-tools-manager recipe -- its own exit code can never prove 'claimed success' (got: $outGG)"
+echo "ok: case gg — an ensure-tools-manager recipe's ambiguous exit-0 gets the new 'not present after its install recipe ran' wording, not the PATH-specific one"
 
 echo "PASS"

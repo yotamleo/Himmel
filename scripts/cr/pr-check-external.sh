@@ -16,25 +16,28 @@
 #      flaky free critic must not clear the gate)
 #   4. zero critics responded         -> FAIL (defensive)
 #   5. Critical>0 or Important>0      -> NOT CLEAN
-# CodeRabbit pass (HIMMEL-932): a third cross-model finding source run on an
-# otherwise-clean panel. A missing CLI (exit 3) fails OPEN (never blocks); an
-# attempted-but-failed review (any other non-zero, e.g. exit 1) fails CLOSED
-# (HIMMEL-1222, HIMMEL-1126 parity). Only exit 0 findings feed the gate as
-# blocking candidates ([coderabbit-N]), same merge contract as the interactive
-# /pr-check step 3.2.
+# CodeRabbit is the GitHub APP ONLY (HIMMEL-2704, operator ruling 2026-09-07).
+# There is no local CodeRabbit pass on this path any more: the App reviews the
+# PR AFTER `gh pr create`, and its verdict is read post-PR by check-ci.sh (the
+# commit status via cr-signal.sh + zero unresolved review threads). The CLI leg
+# that used to run here (HIMMEL-932) is retired along with
+# scripts/cr/coderabbit-review.sh; every CodeRabbit signal now arrives on the
+# PR, where it is commented on and tracked in GitHub.
 # Review floor (HIMMEL-1224) — stated once, per path, not left implied by which
 # gate happens to fail-close:
 #   * interactive /pr-check (a Claude session is present): the Claude self-review
 #     backstop is the floor. It fails OPEN on the ABSENCE of external lanes
-#     (codex/glm/CodeRabbit) and fails CLOSED on a lane that ATTEMPTED and failed;
+#     (codex/glm/…) and fails CLOSED on a lane that ATTEMPTED and failed;
 #     distinct from SKIP_CR (a no-review bypass).
 #   * THIS external path (Claude-FREE): there is NO Claude backstop, so the floor
 #     is "the paid codex critic responded" (GATE 3). It fails CLOSED when codex is
 #     absent rather than degrading to a lone flaky free critic. For a diff that
 #     changes the CR/merge gate infrastructure ITSELF, the floor is RAISED to a
-#     quorum (codex AND CodeRabbit both responded — the gate-infra quorum below).
-# Lane outages are surfaced IN the verdict (critics=N; coderabbit=<state>), so a
-# recorded 'pass' shows how much review actually ran — not merely that it passed.
+#     quorum of two responding cross-model reviewers — which this path can no
+#     longer reach at all (see the gate-infra refusal below), so a gate-infra
+#     diff is not clearable here.
+# Lane outages are surfaced IN the verdict (critics=N), so a recorded 'pass'
+# shows how much review actually ran — not merely that it passed.
 #
 # The CR marker is NOT touched here; the marker clear is bound to the pushed SHA
 # in ship-branch.sh.
@@ -127,9 +130,7 @@ reviewed_short="$(git rev-parse --short "$BRANCH" 2>/dev/null || echo "$reviewed
 diff_file="$(mktemp -t pr-check-ext-diff.XXXXXX)"
 panel_out="$(mktemp -t pr-check-ext-out.XXXXXX)"
 panel_err="$(mktemp -t pr-check-ext-err.XXXXXX)"
-coderabbit_out="$(mktemp -t pr-check-ext-cr.XXXXXX)"
-cr_err="$(mktemp -t pr-check-ext-crerr.XXXXXX)"
-trap 'rm -f "$diff_file" "$panel_out" "$panel_err" "$coderabbit_out" "$cr_err"' EXIT
+trap 'rm -f "$diff_file" "$panel_out" "$panel_err"' EXIT
 
 # 3-dot diff against origin/<base>. Fail-closed if it cannot be computed (a bad
 # ref / no merge base) rather than reviewing an empty diff by accident.
@@ -236,89 +237,31 @@ if [ "$nc" -ne 0 ] || [ "$ni" -ne 0 ]; then
     exit 1
 fi
 
-# CodeRabbit pass (HIMMEL-932): third cross-model finding source, availability-
-# gated FAIL-OPEN. Runs ONLY on an otherwise-clean panel - a panel that already
-# found Critical/Important has blocked the branch at GATE 5 regardless, so
-# spending a (paid, minutes-long) CodeRabbit review there is waste. The codex
-# fail-closed posture at GATE 3 is untouched; this seat is its fail-open peer.
-# Wrapper contract: stdout = findings, stderr = one panel-availability line;
-# exit 0 = review completed, 1 = review failed (fail-closed, HIMMEL-1222), 3 = CLI absent (skip),
-# 4 = rate-limited/quota-exhausted (HIMMEL-1219; a MISSING-review signal, not a failure).
-cr_rc=0
-bash "$SCRIPT_DIR/coderabbit-review.sh" --branch "$BRANCH" --base "$BASE" \
-    > "$coderabbit_out" 2> "$cr_err" || cr_rc=$?
-# Surface the wrapper's stderr: the skip note on exit 3, the panel-availability
-# line on exit 1 (a machine without the CLI / a failed review is not a critic
-# drop-out - the operator just sees the availability state).
-cat "$cr_err" >&2
-# HIMMEL-1224: record the CodeRabbit availability state — surfaced in the verdict
-# (critics=N; coderabbit=<state>) and consumed by the gate-infra quorum below.
-# "ok" only when the review actually RAN (rc=0); absent (rc=3) / unavailable
-# (rc=4) are MISSING-review signals, never a responded reviewer.
-coderabbit_state="unknown"
-case "$cr_rc" in
-    0)
-        coderabbit_state="ok"
-        # Review completed. The wrapper passes the CLI's --agent stream through
-        # (JSONL: status/heartbeat/complete lines PLUS '"type":"finding"' lines),
-        # so gate on finding lines, not on non-empty stdout. Severity map matches
-        # the interactive /pr-check step 3.2: critical/major block ([coderabbit-N]
-        # candidates); minor = Suggestion tier, surfaced but non-blocking. A
-        # finding with a missing/unknown severity blocks (fail-closed - no
-        # adjudicator on this Claude-absent path). Non-empty output with NO
-        # recognizable JSONL at all = format drift - also fail-closed.
-        cr_blocking=$(grep '"type":"finding"' "$coderabbit_out" 2>/dev/null | grep -cv '"severity":"minor"' || true)
-        cr_minor=$(grep '"type":"finding"' "$coderabbit_out" 2>/dev/null | grep -c '"severity":"minor"' || true)
-        if [ -s "$coderabbit_out" ] && ! grep -q '"type":"' "$coderabbit_out" 2>/dev/null; then
-            echo "pr-check-external: NOT CLEAN - CodeRabbit output in unrecognized format (fail-closed):" >&2
-            cat "$coderabbit_out" >&2
-            exit 1
-        fi
-        if [ "${cr_blocking:-0}" -gt 0 ]; then
-            echo "pr-check-external: NOT CLEAN - CodeRabbit critical/major findings (blocking candidates [coderabbit-N]):" >&2
-            grep '"type":"finding"' "$coderabbit_out" | grep -v '"severity":"minor"' >&2
-            exit 1
-        fi
-        if [ "${cr_minor:-0}" -gt 0 ]; then
-            echo "pr-check-external: CodeRabbit minor findings (Suggestion tier - non-blocking):" >&2
-            grep '"type":"finding"' "$coderabbit_out" | grep '"severity":"minor"' >&2
-        fi
-        ;;  # clean / minor-only: fall through to the verdict.
-    3)
-        coderabbit_state="absent"
-        : ;;  # CLI absent - skip note already surfaced above; continue fail-open.
-    4)
-        coderabbit_state="unavailable"
-        # Rate-limited/quota-exhausted (HIMMEL-1219) — a MISSING-review signal,
-        # NOT a failure, so do NOT fall through to the generic "review failed"
-        # message below (that would mislabel a rate-limit). The wrapper's stderr
-        # already carried the retry-later note + `panel-availability: coderabbit
-        # unavailable (rc=4)` (surfaced above); continue fail-open, same posture
-        # as the absent-CLI (3) and failed-review (1) arms.
-        : ;;
-    *)
-        echo "pr-check-external: NOT CLEAN - CodeRabbit review was attempted but failed (rc=$cr_rc) -> fail-closed (HIMMEL-1126/1222 parity); a machine without the CLI (exit 3) is the fail-open path" >&2
-        exit 1
-        ;;
-esac
-
-# GATE 6 — gate-infrastructure quorum (HIMMEL-1224). A diff that changes the
-# CR/merge gate machinery is reviewed by the very gate it changes, so on this
-# Claude-absent path a lone codex reviewer (GATE 3) is not enough: require a
-# SECOND trusted cross-model reviewer (CodeRabbit) to have RESPONDED. CodeRabbit
-# absent (rc=3) or rate-limited (rc=4) does NOT meet quorum — a change to the
-# gate itself must not clear on one reviewer. Non-gate diffs keep the
-# single-codex floor. The interactive /pr-check (with its Claude backstop) is the
-# path for gate-infra changes when the external lane cannot reach two reviewers.
+# GATE 6 — gate-infrastructure diffs are NOT clearable on this path
+# (HIMMEL-1224, narrowed by HIMMEL-2704). A diff that changes the CR/merge gate
+# machinery is reviewed by the very gate it changes, so on this Claude-absent
+# path a lone codex reviewer (GATE 3) is not enough: 1224 required a SECOND
+# trusted cross-model reviewer to have RESPONDED, and CodeRabbit's CLI was that
+# second seat. With CodeRabbit now App-only (HIMMEL-2704) there is no local
+# CodeRabbit pass, and critics.json's panel is codex-only (the `glm` row was
+# retired 2026-08-18, HIMMEL-1904) — so the quorum has no second seat left to
+# fill and CANNOT be met here, for any diff, ever. Stating that outright is the
+# same disposition 1224 already produced whenever the CLI was absent (the
+# overwhelmingly common case), so this is not a loosening: it is the refusal
+# 1224 wrote, minus a probe that can no longer succeed. Non-gate diffs keep the
+# single-codex floor, unchanged. The interactive /pr-check (Claude backstop) is
+# the path for gate-infra changes; the CodeRabbit App still reviews the PR after
+# `gh pr create`, so such a change is not merged unreviewed — it is merely not
+# CLEARED by this pre-PR script. Re-open the quorum by adding a second non-Claude
+# panel row to scripts/cr/critics.json.
 gate_infra_touched="$(printf '%s\n' "$changed_files" | grep -E '^(scripts/cr/|scripts/glm/ship-branch\.sh|scripts/hooks/|scripts/handover/merge-on-green\.sh|scripts/check-ci\.sh|\.claude/commands/pr-check\.md|\.agents/skills/pr-check/SKILL\.md)' || true)"
-if [ -n "$gate_infra_touched" ] && [ "$coderabbit_state" != "ok" ]; then
-    echo "pr-check-external: NOT CLEAN - gate-infrastructure diff requires a quorum (codex + CodeRabbit both responded), but coderabbit=$coderabbit_state. A change to the gate itself must not clear on a single reviewer; use the interactive /pr-check (Claude backstop) or retry when CodeRabbit recovers. Gate files touched:" >&2
+if [ -n "$gate_infra_touched" ]; then
+    echo "pr-check-external: NOT CLEAN - gate-infrastructure diff requires a quorum of two responding cross-model reviewers, and this path has only one (codex). CodeRabbit is the GitHub App only since HIMMEL-2704, so there is no local CodeRabbit seat to fill the second, and scripts/cr/critics.json's panel carries no other non-Claude row. A change to the gate itself must not clear on a single reviewer: use the interactive /pr-check (Claude backstop), or add a second non-Claude panel row to critics.json. Gate files touched:" >&2
     printf '%s\n' "$gate_infra_touched" | sed 's/^/  - /' >&2
     exit 1
 fi
-[ -n "$gate_infra_touched" ] && echo "pr-check-external: gate-infrastructure diff - quorum met (codex + CodeRabbit both responded)" >&2
 
-echo "pr-check-external: CLEAN - Critical=0 Important=0, codex responded ($responders critics), coderabbit=$coderabbit_state @ $reviewed_short" >&2
+echo "pr-check-external: CLEAN - Critical=0 Important=0, codex responded ($responders critics) @ $reviewed_short" >&2
 
 # Record the verdict into the spawn-glm session meta.json (mirror d1-verdict.sh's
 # node -e merge; string args are injection-safe). DISTINCT key external_cr_verdict
@@ -342,16 +285,16 @@ if [ -n "$SESSION_DIR" ]; then
     # nothing; the non-zero exit here also stops the misleading green.)
     if ! node -e '
 const fs = require("fs");
-const [mp, sha, critics, coderabbit] = process.argv.slice(1);
+const [mp, sha, critics] = process.argv.slice(1);
 const m = JSON.parse(fs.readFileSync(mp, "utf8"));
-m.external_cr_verdict = `pass (sha=${sha}; critics=${critics}; coderabbit=${coderabbit})`;
+m.external_cr_verdict = `pass (sha=${sha}; critics=${critics})`;
 fs.writeFileSync(mp, JSON.stringify(m, null, 2) + "\n");
-' "$META" "$reviewed_sha" "$responders" "$coderabbit_state"; then
+' "$META" "$reviewed_sha" "$responders"; then
         echo "pr-check-external: FAIL - could not persist external_cr_verdict to $META (write failed) - fail-closed, no pass recorded" >&2
         exit 1
     fi
     echo "pr-check-external: wrote external_cr_verdict to $META" >&2
 fi
 
-printf 'external_cr_verdict: pass (%s; coderabbit=%s)\n' "$reviewed_short" "$coderabbit_state"
+printf 'external_cr_verdict: pass (%s)\n' "$reviewed_short"
 exit 0

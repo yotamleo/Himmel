@@ -1,0 +1,9 @@
+{
+  "description": "Paths excluded from the public-propagation mirror.",
+  "privatePaths": [
+    "handovers/",
+    "docs/internals/",
+    ".env",
+    "scripts/secrets/"
+  ]
+}

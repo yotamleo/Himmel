@@ -256,6 +256,21 @@ function Write-Step {
   Write-Host "[observability] $Message"
 }
 
+# HIMMEL-2209: override the real Get-UserEnvVar/Set-UserEnvVar (defined in
+# install-stack.ps1, dot-sourced above) with an in-memory fake so
+# Set-GrafanaTelegramEnvVar can be exercised without a real
+# [Environment]::...('User') round trip touching this machine's actual
+# Windows user environment.
+$Global:FakeUserEnv = @{}
+function Get-UserEnvVar {
+  param([string]$Name)
+  if ($Global:FakeUserEnv.ContainsKey($Name)) { $Global:FakeUserEnv[$Name] } else { $null }
+}
+function Set-UserEnvVar {
+  param([string]$Name, [string]$Value)
+  $Global:FakeUserEnv[$Name] = $Value
+}
+
 # ---- replica of install-stack.ps1's orchestration (try/catch/finally +
 #      reporting) driving the REAL dot-sourced functions the same way the
 #      actual script's imperative body does -----------------------------------
@@ -1081,6 +1096,77 @@ $Global:FakeTasks = @{ 'crosstask' = @{ State = 'Running'; Def = 'NEW-DEF:crosst
 Check "Running but principal does NOT match (this run requested S4U, task shows Interactive) -> `$false, not cross-confirmed" ((Confirm-TaskStillRunning -TaskName 'crosstask' -ExpectedHidden:$true) -eq $false)
 $Global:FakeTasks = @{ 'crosstask2' = @{ State = 'Running'; Def = 'NEW-DEF:crosstask2'; LogonType = 'S4U' } }
 Check "reverse direction: this run requested Interactive (ExpectedHidden `$false) but task shows S4U -> `$false too" ((Confirm-TaskStillRunning -TaskName 'crosstask2' -ExpectedHidden:$false) -eq $false)
+
+# HIMMEL-2209: re-assert the fake User-env override here, defensively --
+# Test 29 above re-dot-sources install-stack.ps1's raw functions (to pin a
+# Write-Step regression) which also re-defines the REAL Get-UserEnvVar/
+# Set-UserEnvVar over this file's fakes; without this, the tests below would
+# silently hit this machine's actual Windows user environment instead.
+function Get-UserEnvVar {
+  param([string]$Name)
+  if ($Global:FakeUserEnv.ContainsKey($Name)) { $Global:FakeUserEnv[$Name] } else { $null }
+}
+function Set-UserEnvVar {
+  param([string]$Name, [string]$Value)
+  $Global:FakeUserEnv[$Name] = $Value
+}
+
+Write-Host "Test 33 [HIMMEL-2209]: Get-HimmelEnvValue parses himmel's own .env text correctly, including quote-pair stripping"
+$envText33 = "GRAFANA_TELEGRAM_BOT_TOKEN=123:abc`nGRAFANA_TELEGRAM_CHAT_ID=`"-100555`"`n"
+Check 'unquoted value parsed as-is' ((Get-HimmelEnvValue -EnvText $envText33 -KeyName 'GRAFANA_TELEGRAM_BOT_TOKEN') -eq '123:abc')
+Check 'quoted value strips the matching quote pair' ((Get-HimmelEnvValue -EnvText $envText33 -KeyName 'GRAFANA_TELEGRAM_CHAT_ID') -eq '-100555')
+Check 'missing key returns $null' ((Get-HimmelEnvValue -EnvText $envText33 -KeyName 'NOT_PRESENT') -eq $null)
+
+# [codex-1, /pr-check panel round 1]: .NET's \s matches \n, so a naive \s*
+# right before the capture group could consume a bare "KEY=" line's own
+# newline and let the value capture land on the FOLLOWING line's content
+# instead of reporting empty -- e.g. seeding the bot token to the literal
+# text of the next .env line. Horizontal-whitespace-only ([ \t]) keeps the
+# match on KEY's own line.
+$envText33b = "GRAFANA_TELEGRAM_BOT_TOKEN=`nGRAFANA_TELEGRAM_CHAT_ID=-100555`n"
+Check 'a bare "KEY=" line does NOT bleed into the next line''s content (regression: [codex-1])' ((Get-HimmelEnvValue -EnvText $envText33b -KeyName 'GRAFANA_TELEGRAM_BOT_TOKEN') -eq $null) "got=$(Get-HimmelEnvValue -EnvText $envText33b -KeyName 'GRAFANA_TELEGRAM_BOT_TOKEN')"
+Check 'the following key is unaffected and still parses' ((Get-HimmelEnvValue -EnvText $envText33b -KeyName 'GRAFANA_TELEGRAM_CHAT_ID') -eq '-100555')
+
+Write-Host "Test 34 [HIMMEL-2209]: present key in himmel's .env -> Set-GrafanaTelegramEnvVar seeds it (unset var, no bridge fallback involved)"
+$Global:FakeUserEnv = @{}
+Set-GrafanaTelegramEnvVar -VarName 'GRAFANA_TELEGRAM_BOT_TOKEN' -EnvText $envText33
+Check 'present key -> seeded into the (fake) User scope' ($Global:FakeUserEnv['GRAFANA_TELEGRAM_BOT_TOKEN'] -eq '123:abc') "got=$($Global:FakeUserEnv['GRAFANA_TELEGRAM_BOT_TOKEN'])"
+
+Write-Host "Test 35 [HIMMEL-2209, the case that matters most]: key ABSENT from .env -> WARNS loudly and leaves the var UNSET, with NO fallback to any bridge source"
+$Global:FakeUserEnv = @{}
+$warnings35 = Set-GrafanaTelegramEnvVar -VarName 'GRAFANA_TELEGRAM_CHAT_ID' -EnvText 'SOME_OTHER_KEY=x' 3>&1
+Check 'missing key -> var stays unset (not seeded from anywhere)' (-not $Global:FakeUserEnv.ContainsKey('GRAFANA_TELEGRAM_CHAT_ID'))
+Check 'missing key -> a warning was produced' (@($warnings35 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] }).Count -ge 1) "warnings=$($warnings35 -join ' | ')"
+
+# Whitespace-only quoted value must be treated the same as absent (mirrors
+# Get-HimmelEnvValue's IsNullOrEmpty-after-unquote-retrim check).
+$Global:FakeUserEnv = @{}
+$warnings35b = Set-GrafanaTelegramEnvVar -VarName 'GRAFANA_TELEGRAM_BOT_TOKEN' -EnvText 'GRAFANA_TELEGRAM_BOT_TOKEN="   "' 3>&1
+Check 'whitespace-only quoted value -> treated as absent, var stays unset' (-not $Global:FakeUserEnv.ContainsKey('GRAFANA_TELEGRAM_BOT_TOKEN'))
+Check 'whitespace-only quoted value -> a warning was produced' (@($warnings35b | Where-Object { $_ -is [System.Management.Automation.WarningRecord] }).Count -ge 1)
+
+Write-Host "Test 36 [HIMMEL-2209]: an already-set User-scope value is never overwritten, even when .env has a different value"
+$Global:FakeUserEnv = @{ 'GRAFANA_TELEGRAM_BOT_TOKEN' = 'operator-set-token' }
+Set-GrafanaTelegramEnvVar -VarName 'GRAFANA_TELEGRAM_BOT_TOKEN' -EnvText 'GRAFANA_TELEGRAM_BOT_TOKEN=would-overwrite'
+Check 'operator-set value survives untouched' ($Global:FakeUserEnv['GRAFANA_TELEGRAM_BOT_TOKEN'] -eq 'operator-set-token')
+$Global:FakeUserEnv = @{}
+
+Write-Host "Test 37 [HIMMEL-2209, pins /pr-check panel round 2 codex-1]: a User-scope registry failure is non-fatal -- warns and returns, never throws/aborts the installer"
+function Get-UserEnvVar { param([string]$Name) throw 'FAKE: registry access denied' }
+$threw37 = $false
+$warnings37 = $null
+try {
+  $warnings37 = Set-GrafanaTelegramEnvVar -VarName 'GRAFANA_TELEGRAM_BOT_TOKEN' -EnvText 'GRAFANA_TELEGRAM_BOT_TOKEN=x' 3>&1
+} catch {
+  $threw37 = $true
+}
+Check 'a registry read failure does not throw/propagate (non-fatal contract)' ($threw37 -eq $false)
+Check 'a registry read failure still warns' ((@($warnings37 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] }).Count -ge 1))
+# Restore the fake for any test that might run after this one (defensive, matches the Test-29-adjacent re-assert convention).
+function Get-UserEnvVar {
+  param([string]$Name)
+  if ($Global:FakeUserEnv.ContainsKey($Name)) { $Global:FakeUserEnv[$Name] } else { $null }
+}
 
 Write-Host "Results: $Pass passed, $Fail failed"
 if ($Fail -ne 0) { exit 1 }
