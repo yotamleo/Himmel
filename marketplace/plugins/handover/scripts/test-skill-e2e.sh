@@ -87,5 +87,16 @@ for t in "$ROOT/marketplace/plugins/handover/templates/"*-next-session.md; do
 done
 if [ "$missing_rc" -eq 0 ]; then ok "all next-session templates declare resume_cwd:"; else ko "$missing_rc next-session templates missing resume_cwd:"; fi
 
+# 10. Task legs carry the one canonical handover threshold policy
+# (HIMMEL-2779): fill OR per-turn input tokens, whichever arrives first.
+TASK_NEXT="$ROOT/marketplace/plugins/handover/templates/task-next-session.md"
+if grep -qF '45% context fill OR 90,000 input tokens this turn, whichever comes first' "$TASK_NEXT" \
+   && grep -qF 'scripts/context-fill.sh --warn-at 45' "$TASK_NEXT" \
+   && grep -qF 'scripts/context-fill.sh --warn-at 90000' "$TASK_NEXT"; then
+  ok "task-next-session template carries the 45%/90,000 leg handover policy"
+else
+  ko "task-next-session template is missing the 45%/90,000 leg handover policy"
+fi
+
 echo "Total: pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

@@ -1,30 +1,27 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2015  # A && B || C is intentional in check()/contains()/ends_with()/not_contains(), as in scripts/handover/test-headed-arm.sh
 # scripts/handover/console-kit/test-headed-arm-leg.sh - suite for
-# headed-arm-leg.sh (HIMMEL-2766): the versioned LEG launcher that pins the
-# standard 200k context window unless the launching shell set LEG_CONTEXT=1m.
+# headed-arm-leg.sh (HIMMEL-2766/HIMMEL-2779): the versioned LEG launcher that
+# pins the standard --autocompact 200000 ceiling. LEG_CONTEXT=1m is refused:
+# absence of a [1m] suffix is not proof of the ceiling, because autocompact is
+# the cost-driving argv lever.
 #
 # Asserts:
 #   1-2. usage/arg-shape: too few args -> exit 2, with and without --dry-run.
-#   3-6. --dry-run argv: default (standard, no LEG_CONTEXT), LEG_CONTEXT=1m,
-#        LEG_CONTEXT=1m with a Fable-family model (the wrapper does not
-#        special-case Fable - documented only, headed-arm.sh's own suite
-#        already covers the no-op strip), and an off-value LEG_CONTEXT
-#        (e.g. "standard" or a typo) staying on standard - fail toward the
-#        cheaper, already-correct default.
+#   3-6. --dry-run argv: default standard succeeds; LEG_CONTEXT=1m is refused
+#        for ordinary and Fable-family models; off-values (e.g. "standard" or
+#        a typo) stay on the cheaper, already-correct standard ceiling.
 #   7. --dry-run reports LEG_REPO folded into HEADED_ARM_REPO.
 #   8-9. full (non-dry) launch via the same KONSOLE_CMD/PGREP_CMD/
 #        HEADED_ARM_PROC seams headed-arm.sh's own suite uses (the wrapper
-#        execs the real headed-arm.sh, so this proves the non-dry path
-#        builds the SAME argv --dry-run predicted): default -> --autocompact
-#        200000, no [1m] suffix; LEG_CONTEXT=1m -> --autocompact auto, [1m]
-#        suffix.
+#        execs the real headed-arm.sh, so this proves the non-dry path carries
+#        --autocompact 200000); LEG_CONTEXT=1m refuses before headed-arm runs.
 #   10. IMPL_GUARD_OK=1 reaches the konsole invocation's own process
 #       environment (the leg-only env headed-arm.sh's child-env block does
 #       not set).
 #   11. LEG_REPO reaches headed-arm.sh's --workdir.
-#   12. RED control: a mutant copy with the LEG_CONTEXT branch disabled must
-#       fail case 4's assertion - proves that assertion is not vacuous.
+#   12. RED control: a mutant headed-arm renderer with --autocompact removed is
+#       refused on the full non-dry launch path before konsole runs.
 #   13. HIMMEL-2765: bank-preflight.sh reporting SKIPPED-FLEET refuses the
 #       launch (rc<>0, headed-arm.sh never invoked) - the launcher-side half
 #       of the fleet-size cap; scripts/lib/test-bank-preflight.sh covers the
@@ -37,6 +34,9 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/headed-arm-leg.sh"
 HEADED_ARM="$HERE/../headed-arm.sh"
+# The suite owns every launcher input; an ambient leg shell must not silently
+# turn default-native cases into claudex cases.
+unset LEG_LANE LEG_CONTEXT LEG_REPO HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -51,10 +51,10 @@ PAST=$(( $(date +%s) - 100 ))
 
 # mk_launch_stubs <dir> <name> - konsole/pgrep/proc stubs, same shape
 # headed-arm.sh's own suite (test-headed-arm.sh) uses: konsole records its
-# FULL argv AND, filtered to just IMPL_GUARD_OK (codex-1 review finding:
-# dumping the WHOLE inherited environment to disk would also write any
-# exported credentials into the fixture directory), whether it was set in
-# its own environment - the IMPL_GUARD_OK propagation case needs that, since
+# FULL argv AND, filtered to the two non-secret guard vars (codex-1 review
+# finding: dumping the WHOLE inherited environment to disk would also write
+# exported credentials into the fixture directory), whether they reached its
+# own environment - the IMPL_GUARD_OK propagation case needs that, since
 # argv alone never carries an inherited env var - touches a confirmable
 # marker, then stays alive; pgrep reports a match once
 # that marker exists (so the post-launch visibility poll resolves
@@ -69,7 +69,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep '^IMPL_GUARD_OK=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|HEADED_ARM_REQUIRED_AUTOCOMPACT)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -171,12 +171,13 @@ not_contains "dry-run default: no [1m] suffix in the would-exec line" "$out" "[1
 contains "dry-run default: reports IMPL_GUARD_OK=1" "$out" "IMPL_GUARD_OK=1"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
-check "dry-run LEG_CONTEXT=1m: exit 0" "$rc" "0"
-ends_with "dry-run LEG_CONTEXT=1m: context=1m" "$out" "1m"
+check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
+contains "dry-run LEG_CONTEXT=1m: refusal names the required ceiling" "$out" "--autocompact 200000"
+contains "dry-run LEG_CONTEXT=1m: refusal points to the standard leg setting" "$out" "unset LEG_CONTEXT"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
-check "dry-run LEG_CONTEXT=1m, Fable model: exit 0" "$rc" "0"
-ends_with "dry-run LEG_CONTEXT=1m, Fable model: wrapper still resolves context=1m (no special-case - headed-arm.sh strips the suffix, not this wrapper)" "$out" "1m"
+check "dry-run LEG_CONTEXT=1m, Fable model: refused with exit 2" "$rc" "2"
+contains "dry-run LEG_CONTEXT=1m, Fable model: still checks autocompact, not the model suffix" "$out" "--autocompact 200000"
 
 for off in "standard" "yes" "true" "1M" ""; do
   rc=0; out="$(LEG_CONTEXT="$off" bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
@@ -226,38 +227,33 @@ not_contains "full launch, default context, pre-suffixed model: suffix stripped 
 d9="$tmp/c9"; mk_launch_stubs "$d9" "HIMMEL-8888-leg"; mkdir -p "$tmp/repo9"
 rc=0
 LEG_CONTEXT=1m run_leg "$d9" "$tmp/repo9" "HIMMEL-8888-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
-wait_record "$d9" || true
 rec9="$(cat "$d9/record" 2>/dev/null || true)"
-check "full launch, LEG_CONTEXT=1m: exit 0" "$rc" "0"
-contains "full launch, LEG_CONTEXT=1m: --autocompact auto" "$rec9" "--autocompact auto"
-contains "full launch, LEG_CONTEXT=1m: [1m] suffix on the model" "$rec9" "claude-sonnet-5[1m]"
+check "full launch, LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
+check "full launch, LEG_CONTEXT=1m: headed-arm was never invoked" "$rec9" ""
 
 # --- 10. IMPL_GUARD_OK reaches the konsole invocation's own environment ----
-env9="$(cat "$d9/env-record" 2>/dev/null || true)"
-contains "full launch: IMPL_GUARD_OK=1 in the konsole invocation's env" "$env9" "IMPL_GUARD_OK=1"
+env8="$(cat "$d8/env-record" 2>/dev/null || true)"
+contains "full launch: IMPL_GUARD_OK=1 in the konsole invocation's env" "$env8" "IMPL_GUARD_OK=1"
+not_contains "full launch: internal autocompact requirement does not leak into the launched leg" "$env8" "HEADED_ARM_REQUIRED_AUTOCOMPACT="
 
-# --- 12. RED control: disable the LEG_CONTEXT branch and confirm case 4's
-# assertion (ends with "1m") now correctly fails against the mutant - proves
-# it is not a vacuous check.
-mutant="$tmp/mutant-headed-arm-leg.sh"
-# shellcheck disable=SC2016  # single-quoted on purpose: this is a literal
-# source-text match against $SCRIPT's own LEG_CONTEXT branch, not a shell
-# expansion.
-sed 's/if \[ "\${LEG_CONTEXT:-}" = "1m" \]; then/if false; then/' "$SCRIPT" > "$mutant"
+# --- 12. RED control: mutate the ACTUAL headed-arm launch renderer to drop
+# --autocompact, then drive the wrapper's full non-dry path. The shared argv
+# guard must refuse with exit 2 before konsole runs; this proves the policy is
+# enforced on resolved launch argv rather than only on the wrapper's dry-run
+# context report.
+mutant="$tmp/mutant-headed-arm.sh"
+# shellcheck disable=SC2016  # literal source-text mutation, not shell expansion
+sed 's/ --autocompact "$AUTOCOMPACT"//' "$HEADED_ARM" > "$mutant"
 chmod 755 "$mutant"
+d12="$tmp/c12"; mk_launch_stubs "$d12" "HIMMEL-4444-leg"; mkdir -p "$tmp/repo12"
 mrc=0
-mout="$(LEG_CONTEXT=1m bash "$mutant" --dry-run HIMMEL-x some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || mrc=$?
-# codex-1 (round 2) review finding: a mutant that crashed outright (empty
-# output, non-zero exit) would ALSO pass a bare "does not end with 1m"
-# check - that proves nothing about the LEG_CONTEXT branch. Require the
-# mutant to run cleanly AND positively report "standard", not merely the
-# absence of "1m".
-if [ "$mrc" -eq 0 ] && grepq "$mout" -E -e 'standard$'; then
-  echo "ok - RED control: mutant with the LEG_CONTEXT branch disabled runs cleanly and stays on standard, proving case 4's assertion is not vacuous"
-else
-  echo "FAIL - RED control: mutant (LEG_CONTEXT branch disabled) did not cleanly report standard (rc=$mrc, out=[$mout]) -- case 4's assertion would not catch a real regression"
-  fails=$((fails+1))
-fi
+mout="$(IMPL_GUARD_OK='' HEADED_ARM_LEG_TARGET="$mutant" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d12/konsole" PGREP_CMD="$d12/pgrep" LEG_REPO="$tmp/repo12" \
+  HEADED_ARM_LOCK_DIR="$d12/locks" HEADED_ARM_PROC="$d12/proc" \
+  bash "$SCRIPT" "HIMMEL-4444-leg" "some/doc.md" "$d12/signal-never" "$PAST" "$d12/log" "claude-sonnet-5" 2>&1)" || mrc=$?
+check "RED control: renderer without --autocompact is refused on full launch path" "$mrc" "2"
+contains "RED control: refusal names the missing resolved argv pair" "$mout" "resolved argv lacks --autocompact 200000"
+check "RED control: konsole was never invoked" "$(cat "$d12/record" 2>/dev/null || true)" ""
 
 # --- 13. HIMMEL-2765: SKIPPED-FLEET refuses the launch --------------------
 # Points HEADED_ARM_LEG_PREFLIGHT at the SKIPPED-FLEET stub instead of the

@@ -251,12 +251,22 @@ When you are ready to add Jira:
 
 ## Pre-commit hooks (config is optional; wiring is automatic)
 
-himmel's pre-commit gates work independently of Claude Code. `adopt.sh`/
-`adopt.ps1` already wire the pre-commit, commit-msg and pre-push hook types
-into your target by default (`--allow-missing-config`, so it no-ops safely
-until you add a config; opt out with `--skip-hooks`/`-SkipHooks`) —
-what's still up to you is which hooks actually run. The most useful one
-for a generic repo:
+himmel's Git gates work independently of Claude Code. `adopt.sh` first uses
+pre-commit, trying `uv`, `pipx`, then `python3 -m pip install --user pre-commit`
+when it is missing. Framework mode wires `pre-commit`, `commit-msg`, and
+`pre-push` with `--allow-missing-config`: your config determines which gates
+and lint hooks run, and an absent config makes them no-op. If bootstrap or
+hook installation fails (including a PEP 668 `externally-managed-environment`
+refusal), Bash adoption falls back to native hooks enforcing exactly three
+invariants: ticketed conventional commit messages, worktree isolation, and no
+direct push to main. Native mode **does not include lint hooks**; its scripts
+are copied into the target so it stays gated without the himmel clone. If
+native placement also fails, adoption exits non-zero with the reason.
+`--skip-hooks` skips both modes; `--dry-run` describes placement without
+writing hooks. The PowerShell adopter currently has framework mode only
+(`-SkipHooks` opts out).
+
+For framework mode, a useful gate for a generic repo is:
 
 ```yaml
 # .pre-commit-config.yaml

@@ -147,4 +147,115 @@ set -e
 [ "$(jq -r '.enabledPlugins["foo@mp"]' "$SETTINGS3")" = "true" ] || fail "HIMMEL-2324: drifted plugin was not force-enabled"
 echo "ok: HIMMEL-2324 — pre-planted link at the predictable force-enable temp path is not written through"
 
+# HIMMEL-2753: a CLI child must not consume the next loop record. The same
+# three-source fixture runs with and without stdin draining; neither is dry-run.
+mkdir -p "$TMP/registration-bin" "$TMP/home"
+cat > "$TMP/registration.json" <<'JSON'
+{
+  "extraKnownMarketplaces": {
+    "one": {"source": {"source": "github", "repo": "owner/one"}},
+    "two": {"source": {"source": "github", "repo": "owner/two"}},
+    "three": {"source": {"source": "github", "repo": "owner/three"}}
+  },
+  "enabledPlugins": {"first@one": true, "second@two": true, "third@three": true}
+}
+JSON
+cat > "$TMP/registration-bin/claude" <<'STUB'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$STUB_LOG"
+case "$*" in
+  'plugin marketplace add '*)
+    if [ "$STUB_MODE" = drain ]; then cat >/dev/null; fi
+    if [ "$4" = owner/two ]; then
+      if [ "$STUB_MODE" = fail ]; then echo 'network unreachable' >&2; exit 7; fi
+      if [ "$STUB_MODE" = misleading ]; then echo 'cache already exists; registration failed' >&2; exit 7; fi
+      if [ "$STUB_MODE" = retry ] && [ ! -f "$STUB_LOG.retried" ]; then
+        touch "$STUB_LOG.retried"
+        echo 'clone timed out' >&2
+        exit 7
+      fi
+    fi
+    ;;
+  'plugin install '*)
+    if [ "$STUB_MODE" = drain ]; then cat >/dev/null; fi
+    ;;
+  'plugin marketplace list --json')
+    case "$STUB_MODE" in
+      list-fail) echo 'registry unavailable' >&2; exit 9 ;;
+      malformed) printf 'not json\n' ;;
+      missing) printf '[{"name":"one","source":"github","repo":"owner/one"}]\n' ;;
+      *) printf '[{"name":"one","source":"github","repo":"owner/one"},{"name":"two","source":"github","repo":"owner/two"},{"name":"three","source":"github","repo":"owner/three"}]\n' ;;
+    esac
+    ;;
+  'plugin list')
+    case "$STUB_MODE" in
+      missing|list-fail|malformed) printf 'first@one\n' ;;
+      *) printf 'first@one\nsecond@two\nthird@three\n' ;;
+    esac
+    ;;
+  *) echo "unexpected claude call: $*" >&2; exit 99 ;;
+esac
+STUB
+cat > "$TMP/registration-bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+printf 'sleep %s\n' "$*" >> "$STUB_LOG"
+STUB
+chmod +x "$TMP/registration-bin/claude" "$TMP/registration-bin/sleep"
+
+registration_run() {
+  local mode="$1"
+  REG_LOG="$TMP/$mode.argv"
+  REG_RC=0
+  REG_OUT=$(HOME="$TMP/home" CLAUDE_CONFIG_DIR="$TMP/home/.claude" \
+    PATH="$TMP/registration-bin:$PATH" STUB_LOG="$REG_LOG" STUB_MODE="$mode" \
+    HIMMEL_RECONCILE_PLUGINS=0 bash "$SUT" --scope project \
+    --template "$TMP/registration.json" --settings "$TMP/absent.json" 2>&1) || REG_RC=$?
+}
+REG_FAILURES=0
+reg_check() {
+  local label="$1"; shift
+  if "$@"; then echo "ok: $label"; else
+    echo "FAIL: $label (installer rc=$REG_RC; argv=$REG_LOG)"
+    REG_FAILURES=$((REG_FAILURES + 1))
+  fi
+}
+for mode in no-drain drain; do
+  registration_run "$mode"
+  reg_check "$mode exits successfully" test "$REG_RC" -eq 0
+  reg_check "$mode visits all three marketplaces" test "$(grep -c '^plugin marketplace add ' "$REG_LOG")" -eq 3
+  reg_check "$mode visits all three plugins" test "$(grep -c '^plugin install ' "$REG_LOG")" -eq 3
+  for src in one two three; do
+    reg_check "$mode registers owner/$src" grep -qxF "plugin marketplace add owner/$src --scope project" "$REG_LOG"
+  done
+done
+registration_run misleading
+reg_check 'benign-looking error text cannot certify registration' test "$REG_RC" -ne 0
+reg_check 'benign-looking registration failure prevents plugin installs' test "$(grep -c '^plugin install ' "$REG_LOG" || true)" -eq 0
+registration_run fail
+reg_check 'registration failure exits nonzero even when plugins already present' test "$REG_RC" -ne 0
+reg_check 'failed marketplace is named immediately' grepq "$REG_OUT" 'ERROR:.*marketplace'
+reg_check 'failed source is named' grepq "$REG_OUT" 'owner/two'
+reg_check 'CLI failure cause is surfaced' grepq "$REG_OUT" 'network unreachable'
+reg_check 'failure prevents all plugin installs' test "$(grep -c '^plugin install ' "$REG_LOG" || true)" -eq 0
+reg_check 'registration retries only once' test "$(grep -c '^plugin marketplace add owner/two ' "$REG_LOG")" -eq 2
+reg_check 'retry waits once' test "$(grep -c '^sleep ' "$REG_LOG" || true)" -eq 1
+registration_run retry
+reg_check 'transient registration failure recovers' test "$REG_RC" -eq 0
+reg_check 'transient registration is retried' test "$(grep -c '^plugin marketplace add owner/two ' "$REG_LOG")" -eq 2
+reg_check 'retry delay is disclosed' grepq "$REG_OUT" 'retry.*[0-9].*second'
+reg_check 'all successful outcomes are printed' test "$(grep -c 'marketplace registered:' <<< "$REG_OUT" || true)" -eq 3
+for mode in missing list-fail malformed; do
+  registration_run "$mode"
+  reg_check "$mode missing plugins remain fatal" test "$REG_RC" -ne 0
+  if [ "$mode" = missing ]; then
+    reg_check 'missing plugins grouped by marketplace two' grepq "$REG_OUT" '1 missing plugin(s).*two.*NOT registered'
+    reg_check 'missing plugins grouped by marketplace three' grepq "$REG_OUT" '1 missing plugin(s).*three.*NOT registered'
+  else
+    reg_check "$mode registry status is unknown, not absent" grepq "$REG_OUT" 'registration UNKNOWN'
+    reg_check "$mode does not falsely claim unregistered" test "$(grep -c 'NOT registered' <<< "$REG_OUT" || true)" -eq 0
+  fi
+done
+[ "$REG_FAILURES" -eq 0 ] || fail "HIMMEL-2753: $REG_FAILURES registration assertions failed"
+
 echo "PASS"

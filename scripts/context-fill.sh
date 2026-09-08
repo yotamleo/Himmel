@@ -82,7 +82,8 @@ spend budget).
   (no flag)      human-readable readout on stdout
   --percent      the integer percent alone, for threshold checks
   --cache-path   the resolved snapshot path (debug / test seam)
-  --warn-at N    handover-nudge threshold, human mode only (default 50)
+  --warn-at N    handover-nudge threshold, human mode only (default 50):
+                 1-100 = context-fill percent; >100 = input tokens this turn
 
 exit 0 = fresh   exit 3 = STALE   exit 4 = UNKNOWN
 stdout is empty on 3 and 4 by design.
@@ -95,7 +96,8 @@ env:
                                   (HIMMEL-2342), default 60
   CONTEXT_FILL_TRANSCRIPT        override the resolved transcript path
   CLAUDE_CONFIG_DIR              honoured the same way the HUD honours it
-  CONTEXT_FILL_WARN_AT           handover-nudge threshold, default 50
+  CONTEXT_FILL_WARN_AT           handover-nudge threshold, default 50;
+                                  1-100 = percent, >100 = input tokens this turn
                                   (--warn-at wins over this env var)
 USAGE
 }
@@ -255,6 +257,39 @@ json_str() { sed -n 's/.*[{,][[:space:]]*"'"$1"'":"\([^"]*\)".*/\1/p' <<<"$2" | 
 
 round() { awk -v n="$1" 'BEGIN{printf "%.0f", n}'; }
 
+# Print the absolute input tokens on the latest assistant turn in this session's
+# OWN transcript. Claude Code reports uncached input, cache creation, and cache
+# reads separately; all three are input resident on that turn. output_tokens is
+# deliberately excluded. Parse the JSONL rather than grepping arbitrary assistant
+# content: a response can itself quote usage-shaped JSON before message.usage. A
+# malformed/incomplete line is skipped rather than returned as a partial sum; the
+# newest complete assistant message wins.
+last_assistant_input_tokens() {
+  command -v node >/dev/null 2>&1 || return 1
+  node - "$1" <<'NODE'
+const fs = require('fs');
+const path = process.argv[2];
+let latest;
+for (const line of fs.readFileSync(path, 'utf8').split('\n')) {
+  if (!line) continue;
+  let row;
+  try { row = JSON.parse(line); } catch { continue; }
+  if (!row || typeof row !== 'object' || row.type !== 'assistant') continue;
+  const usage = row.message && row.message.usage;
+  if (!usage) continue;
+  const counters = [
+    usage.input_tokens,
+    usage.cache_read_input_tokens,
+    usage.cache_creation_input_tokens,
+  ];
+  if (counters.every((value) => Number.isSafeInteger(value) && value >= 0)) {
+    latest = counters.reduce((sum, value) => sum + value, 0);
+  }
+}
+if (latest !== undefined) process.stdout.write(`${latest}\n`);
+NODE
+}
+
 # True when $1 is a plain decimal percentage in 0-100. Used for every percentage
 # this script reports: a number it cannot vouch for is not a measurement.
 valid_pct() { awk -v v="$1" 'BEGIN{ exit !(v ~ /^[0-9]+(\.[0-9]+)?$/ && v+0 >= 0 && v+0 <= 100) }'; }
@@ -315,10 +350,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# HIMMEL-2653: legs are supposed to hand over at 50% context fill; nothing told
-# them when they crossed it. Flag beats env beats default, validated exactly
-# like MAX_AGE_SECONDS above (non-numeric/non-positive/>100 -> warn and fall
-# back to 50, never die - a bad threshold must not break the readout).
+# HIMMEL-2653/HIMMEL-2779: flag beats env beats default. Values 1-100 retain
+# the original percentage meaning; larger values are absolute per-turn input
+# token thresholds (input + cache-read + cache-create from the latest assistant
+# message in this session's own transcript). A bad threshold warns and falls
+# back to 50%, never breaking the readout.
 WARN_AT="${warn_at_arg:-${CONTEXT_FILL_WARN_AT:-50}}"
 case "$WARN_AT" in
   ''|*[!0-9]*)
@@ -326,9 +362,14 @@ case "$WARN_AT" in
     WARN_AT=50
     ;;
 esac
-if [ "$WARN_AT" -le 0 ] || [ "$WARN_AT" -gt 100 ]; then
-  printf 'context-fill: --warn-at/CONTEXT_FILL_WARN_AT=%s out of range (1-100) - using 50\n' "$WARN_AT" >&2
+if [ "$WARN_AT" -le 0 ]; then
+  printf 'context-fill: --warn-at/CONTEXT_FILL_WARN_AT=%s must be positive - using 50\n' "$WARN_AT" >&2
   WARN_AT=50
+fi
+if [ "$WARN_AT" -le 100 ]; then
+  WARN_AT_KIND="percent"
+else
+  WARN_AT_KIND="tokens"
 fi
 
 cache_path="$(resolve_cache_path)" || exit $?
@@ -440,6 +481,11 @@ if [ "$mode" = "percent" ]; then
   exit 0
 fi
 
+input_tokens_this_turn=""
+if usage_transcript="$(resolve_transcript)"; then
+  input_tokens_this_turn="$(last_assistant_input_tokens "$usage_transcript")" || input_tokens_this_turn=""
+fi
+
 # Exact resident-token count when the HUD recorded the per-counter usage; the
 # four counters together are the tokens sitting in the window. Printed only
 # when all four are present, so the figure is never a partial sum.
@@ -458,14 +504,22 @@ printf 'context-fill: %s%% of the CONTEXT WINDOW used' "$used_pct"
 if [ -n "$window" ]; then printf ' (%s-token window)' "$window"; fi
 printf ' - %s%% free' "$free_pct"
 if [ -n "$tokens" ]; then printf ', %s tokens resident' "$tokens"; fi
+if [ -n "$input_tokens_this_turn" ]; then printf ', %s input tokens this turn' "$input_tokens_this_turn"; fi
 printf '\n'
 printf '  session: %s | snapshot age: %ss\n' "${session_name:-unnamed}" "$age"
 printf '  NOTE: this is context-window FILL, NOT the <total_tokens> spend budget.\n'
 
-# HIMMEL-2653: name the crossing so a leg reads it without doing the
-# arithmetic itself. Human mode only - a leg polling --percent in a loop must
-# not gain a line (mirrors the lag-diagnostic printf above, same reasoning).
-if [ "$used_pct" -ge "$WARN_AT" ]; then
-  printf 'context-fill: WARNING - %s%% of the context window used (>= %s%% handover threshold). himmel'"'"'s rule is to hand over to a fresh session at 50%% fill; every later turn re-reads this whole context.\n' \
-    "$used_pct" "$WARN_AT" >&2
+# HIMMEL-2653/HIMMEL-2779: name the crossing so a leg reads it without doing
+# the arithmetic itself. Human mode only - a leg polling --percent in a loop
+# must not gain a line (mirrors the lag-diagnostic printf above).
+if [ "$WARN_AT_KIND" = "percent" ] && [ "$used_pct" -ge "$WARN_AT" ]; then
+  printf 'context-fill: WARNING - %s%% of the context window used (>= %s%% handover threshold). himmel'"'"'s rule is to hand over to a fresh session at %s%% fill; every later turn re-reads this whole context.\n' \
+    "$used_pct" "$WARN_AT" "$WARN_AT" >&2
+elif [ "$WARN_AT_KIND" = "tokens" ]; then
+  if [ -z "$input_tokens_this_turn" ]; then
+    printf 'context-fill: WARNING - cannot evaluate the %s-token handover threshold: this transcript has no complete assistant message.usage input counters.\n' "$WARN_AT" >&2
+  elif [ "$input_tokens_this_turn" -ge "$WARN_AT" ]; then
+    printf 'context-fill: WARNING - %s input tokens this turn (>= %s-token handover threshold). Hand over to a fresh session before the next turn re-reads this input.\n' \
+      "$input_tokens_this_turn" "$WARN_AT" >&2
+  fi
 fi

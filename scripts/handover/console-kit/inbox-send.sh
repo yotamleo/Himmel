@@ -137,6 +137,25 @@ else
 fi
 
 if [ -n "$doc" ]; then
+    # All mirror writers use the canonical doc path as the lock key. Keep
+    # lock artifacts outside the vault, in a private per-user temp directory.
+    doc="$(realpath -e -- "$doc")" || exit 2
+    lock_dir="${TMPDIR:-/tmp}/himmel-inbox-doc-$UID"
+    # shellcheck disable=SC2174 # Only the final, per-user directory is ours.
+    if ! mkdir -m 700 -p "$lock_dir" || [ -L "$lock_dir" ] || [ ! -O "$lock_dir" ]; then
+        printf 'inbox-send: cannot secure doc lock directory\n' >&2
+        exit 2
+    fi
+    # mkdir -m only sets the mode at creation; a pre-existing directory (from
+    # an older run, or a looser umask) is accepted above but never
+    # tightened. Chmod it explicitly every time (CodeRabbit, HIMMEL-2790).
+    chmod 700 "$lock_dir" || { printf 'inbox-send: cannot secure doc lock directory\n' >&2; exit 2; }
+    lock_key="$(printf '%s' "$doc" | sha256sum)" || exit 2
+    lock_key="${lock_key%% *}"
+    if ! { exec 9>"$lock_dir/$lock_key.lock"; } || ! flock -x 9; then
+        printf 'inbox-send: cannot lock %s\n' "$doc" >&2
+        exit 2
+    fi
     if grep -q '^## Console Rulings' "$doc"; then
         # Insert as the LAST line of the FIRST "## Console Rulings" section:
         # right before the next "## " heading, or at EOF if none follows.
@@ -175,6 +194,7 @@ if [ -n "$doc" ]; then
             printf '%s\n' "$bullet"
         } >> "$doc" || { printf 'inbox-send: failed to update %s\n' "$doc" >&2; exit 2; }
     fi
+    exec 9>&-
 fi
 
 printf '%s\n' "$bullet" >> "$inbox" || exit 2

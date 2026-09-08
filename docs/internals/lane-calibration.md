@@ -120,6 +120,8 @@ undelivered bullets as `additionalContext`, no operator paste required. See
 "Claudex file inbox" note for the RETASK-token equivalence this relies on, and
 `scripts/hooks/claudex-inbox-hook.sh` for the delivery hook itself.
 
+**Console wake-up budget (HIMMEL-2767):** Every Monitor event, message, or tick wakes a full-context turn; the default tick cadence is **60 minutes**, not 25, and `tick.sh` emits one batched line. The one-shot `bank-monitor.sh` instead runs from a Bash polling loop every **300 seconds** so its 30-minute ring accumulates samples; that sampling interval is distinct from the console tick cadence and adds no scheduler. An unchanged cache emits `state=stale` once, preserving the last measured projections until sampling resumes; each usage window resets its own history independently (HIMMEL-2815). The console batches rulings into one message per decision point, never one per thought. `ar-watch`, `pubci`, and vault monitors stay in Bash; their cost is the **EMIT**, so filters emit terminal-state changes only. Report at MILESTONES only (LIVE, FINDING, READY, BLOCKED, HALTED, WRAPPED); no progress chatter; acks to a rotation are one line.
+
 ## ox-alpha — the current hermes `himmel_agent` default (HIMMEL-2024)
 
 The `hermes-oneshot` lane takes its model from the `himmel_agent` hermes
@@ -299,7 +301,7 @@ measured** — do not assume a `standard` leg makes its children compact early.
 | lane | default mode | override |
 |---|---|---|
 | console arm (`*-console.md`) | `1m` | `--context standard` |
-| leg / worker arm | `standard` | `--context 1m` |
+| leg / worker arm | `standard` | none — the resolved argv must carry `--autocompact 200000` |
 | subagent of either | inherits the parent | none — set it on the parent's arm |
 
 ### The leg launcher pins the default, it does not just document it (HIMMEL-2766)
@@ -308,28 +310,29 @@ Legs were already pinned to the standard (200k-autocompact) context mode by
 the table above — but the fact lived only in prose, one convention every
 ad-hoc console-kit copy of the leg launcher had to remember correctly.
 `scripts/handover/console-kit/headed-arm-leg.sh` makes it structural: a thin
-wrapper around `headed-arm.sh` whose own resolved `--context` argument can
-**never** be `1m` unless the *launching shell* sets `LEG_CONTEXT=1m` — any
-other value (unset, empty, a typo) resolves to `standard`, failing toward the
-cheaper, already-correct default. The pin governs the CONTEXT the wrapper
-resolves, not the raw model string: a caller that hands the wrapper an
-already-`[1m]`-suffixed model gets it forwarded unchanged, and it is
-`headed-arm.sh`'s own contract — not this wrapper's — that strips the literal
-suffix before deciding the final `--autocompact` value
-(`scripts/handover/console-kit/test-headed-arm-leg.sh` asserts this
-end-to-end). It also adds the leg-only `IMPL_GUARD_OK=1` env the console lane
-does not need, and folds `LEG_REPO` onto `headed-arm.sh`'s own
+wrapper around `headed-arm.sh` whose resolved leg launch must carry the
+cost-driving `--autocompact 200000` pair. `LEG_CONTEXT=1m` now refuses with
+exit 2 instead of weakening the leg ceiling; absence of a `[1m]` model suffix
+is not equivalent because Fable-family launches can strip that suffix while
+still receiving `--autocompact auto`. Scheduled worker legs opt into the same
+guard with `arm-resume.sh --tier leg`; `--tier leg --context 1m` refuses before
+scheduler work. A caller that hands the headed wrapper an already-`[1m]`-
+suffixed model still gets it forwarded unchanged, and `headed-arm.sh` strips
+the literal suffix under standard mode (`scripts/handover/console-kit/
+test-headed-arm-leg.sh` asserts this end-to-end). The wrapper also adds the
+leg-only `IMPL_GUARD_OK=1` env and folds `LEG_REPO` onto `headed-arm.sh`'s own
 `HEADED_ARM_REPO` seam.
 
-**The hand-over percentage tracks the autocompact threshold, not the
-underlying window** — `context_window_size` itself reports 1000000
-regardless of mode (see "What a plain launch reports" above); what a mode
-actually changes is WHEN auto-compaction fires, `--autocompact 200000` vs
-`--autocompact auto`. The safe hand-over point is read off Claude Code's own
-reported context-fill percentage relative to that operative threshold:
-**58% on a leg running the standard 200k-autocompact threshold; 40% on a leg
-running the `1m` mode's `auto` threshold.** A leg brief states its context
-mode explicitly so the hand-over percentage it quotes is never ambiguous.
+**Leg handover is whichever limit arrives first: 45% context fill OR 90,000
+total input tokens on the latest turn.** The absolute turn count is
+`message.usage.input_tokens + cache_read_input_tokens +
+cache_creation_input_tokens` from the last assistant message in that session's
+own transcript; it excludes output tokens and is not cumulative spend.
+`scripts/context-fill.sh` prints that count alongside fill, keeps `--percent`
+as the bare integer compatibility surface, and interprets `--warn-at 1..100`
+as percent versus values above 100 as token counts. The handover skill's task
+leg template tells a leg to check both `--warn-at 45` and `--warn-at 90000`
+after substantial turns.
 
 ### Fleet-size cap — a provisional 4, grounded in the incident (HIMMEL-2765)
 

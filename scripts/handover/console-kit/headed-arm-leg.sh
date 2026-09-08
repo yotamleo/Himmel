@@ -1,25 +1,23 @@
 #!/usr/bin/env bash
 # scripts/handover/console-kit/headed-arm-leg.sh - versioned LEG launcher
 # (HIMMEL-2766). A thin wrapper around scripts/handover/headed-arm.sh that
-# pins every leg arm to the standard (200k-autocompact) context mode - the
-# window itself measures 1M regardless (docs/internals/lane-calibration.md
-# "What a plain launch reports") - and adds the leg-only env the console
-# lane does not need.
+# pins every leg arm to the standard --autocompact 200000 ceiling - the window
+# itself measures 1M regardless (docs/internals/lane-calibration.md "What a
+# plain launch reports") - and adds the leg-only env the console lane does not
+# need.
 #
 # WHY (console correction 12:1x on HIMMEL-2766, on the ticket): legs were
 # ALREADY on the standard window today - the HIMMEL-2658 mechanism is the
 # model-id suffix (`<model>[1m]` + `--autocompact auto` = 1M; no suffix =
 # standard - see docs/internals/lane-calibration.md "Context mode" and
 # headed-arm.sh's own --context handling, which this wrapper reuses rather
-# than forking). What was missing was a PIN: this wrapper's own RESOLVED
-# --context argument to headed-arm.sh can never be 1m unless the launching
-# shell explicitly opts in. That opt-in is LEG_CONTEXT=1m - nothing else
-# (not a flag, not a config file) - so a leg brief can quote the rule
-# verbatim and a reviewer can grep for it. It governs the resolved context,
-# not the raw model string: a caller handing this wrapper an
-# already-[1m]-suffixed model gets it forwarded unchanged regardless of
-# LEG_CONTEXT - stripping a literal suffix is headed-arm.sh's own contract,
-# not this wrapper's (test-headed-arm-leg.sh asserts this end-to-end).
+# than forking). What was missing was a fail-closed PIN: the resolved leg argv
+# must carry the cost-driving `--autocompact 200000`, not merely lack a [1m]
+# model suffix. LEG_CONTEXT=1m therefore refuses with an actionable exit 2.
+# The raw model string is still headed-arm.sh's concern: a caller handing this
+# wrapper an already-[1m]-suffixed model gets it forwarded unchanged, and
+# headed-arm.sh strips it under standard mode (test-headed-arm-leg.sh asserts
+# this end-to-end).
 #
 # Folds the two prior ad-hoc kit-local copies (headed-arm-leg.sh,
 # headed-arm-leg-cwd.sh - identical except an LEG_REPO override) into ONE
@@ -67,9 +65,8 @@
 # launched process via HEADED_ARM_LAUNCHER_ENV. An empty/omitted MODEL
 # defaults to gpt-6-astra for this lane (native's own default,
 # claude-fable-5-1, is a Claude tier and would defeat the point of
-# switching lanes). Context stays this wrapper's normal standard/1m pin
-# (LEG_CONTEXT=1m still applies) - standard resolves to
-# --autocompact 200000, which is the leg's ceiling; scripts/claude-codex's
+# switching lanes). Context stays this wrapper's standard pin:
+# --autocompact 200000 is the leg's ceiling; scripts/claude-codex's
 # own CLAUDE_CODE_AUTO_COMPACT_WINDOW=272000 default never applies because
 # `exec claude "$@"` forwards the CLI flag, which wins. An unknown lane
 # name is a usage error (exit 2), not a silent fallback to native.
@@ -118,14 +115,23 @@ NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HEADED_ARM="${HEADED_ARM_LEG_TARGET:-$HERE/../headed-arm.sh}"
 
-# Context pin (HIMMEL-2766): standard by default; 1m ONLY when the
-# LAUNCHING shell set LEG_CONTEXT=1m exactly. Any other value (unset,
-# empty, "standard", a typo) stays on standard - fail toward the cheaper,
-# already-correct default rather than toward the expensive one.
+# Context resolution (HIMMEL-2766/HIMMEL-2779): off-values stay standard;
+# the one old 1m opt-in is resolved explicitly so the argv guard below can
+# reject it with a useful message rather than silently ignoring operator input.
 if [ "${LEG_CONTEXT:-}" = "1m" ]; then
     CONTEXT="1m"
+    RESOLVED_AUTOCOMPACT="auto"
 else
     CONTEXT="standard"
+    RESOLVED_AUTOCOMPACT="200000"
+fi
+
+# HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
+# model suffix. Fail before dry-run reporting or preflight when context already
+# resolves wrong; headed-arm.sh separately validates the exact argv it launches.
+if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
+    echo "headed-arm-leg: refusing leg launch: resolved argv lacks the required --autocompact 200000 ceiling (got --autocompact $RESOLVED_AUTOCOMPACT). unset LEG_CONTEXT and retry; use a console arm, not a leg, for 1m context." >&2
+    exit 2
 fi
 
 # LEG_REPO folds onto headed-arm.sh's own HEADED_ARM_REPO override seam -
@@ -141,6 +147,10 @@ fi
 # invocation inside headed-arm.sh, which only unsets the three HIMMEL-2545
 # vars and otherwise inherits its own environment as-is.
 export IMPL_GUARD_OK=1
+# headed-arm.sh builds one argv array for both native and recorder launches and
+# refuses exit 2 if this exact pair is absent. This is the final resolved-argv
+# guard; the context-value check above gives the earlier operator-facing error.
+export HEADED_ARM_REQUIRED_AUTOCOMPACT=200000
 
 # claudex lane (HIMMEL-2782): see the --lane header comment above.
 if [ "$LANE" = "claudex" ]; then

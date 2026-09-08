@@ -3564,6 +3564,8 @@ Run after any edit to `lib.sh` or `guard-gh.sh` before pushing.
 
 ## `scripts/uninstall.sh` — wet-run REAL_HOME fence (HIMMEL-2505)
 
+POSIX plugin teardown verifies outcomes (HIMMEL-2796/2804/2800): removal tries plugin scopes plus the install-profile scope and re-lists marketplaces; a listed marketplace is repaired only after a scoped uninstall fails and is never transiently cleaned up; marketplaces-only previews subtract only exact plugin/scope/project handoff rows (legacy marketplace-only rows remain usable for scope replay, not subtraction). PowerShell parity is tracked separately by HIMMEL-2783.
+
 Consent regression coverage (HIMMEL-2755, HIMMEL-2807): non-interactive uninstall without `--yes` refuses with rc=2; run `scripts/himmelctl/test/test-uninstall-confirm.sh`, `scripts/himmelctl/test/test-wizard-uninstall.sh`, `scripts/himmelctl/test/test-wizard-uninstall-converge.sh`, and `scripts/test-e2e-symmetry.sh` (real `--yes` settings roundtrip) when changing that contract.
 
 Not a hook — a guard the script carries on itself, listed here for the same
