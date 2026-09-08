@@ -139,7 +139,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "Graphify-Labs/graphify",
-      "synced_base": "0.9.55",
+      "synced_base": "0.9.56",
       "latest_source": "release",
       "version_pin": { "file": "scripts/lib/graphify-bin.sh", "template": "GRAPHIFY_VERSION:-{version}" },
       "tier": "A",
@@ -150,7 +150,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "router-for-me/CLIProxyAPI",
-      "synced_base": "7.2.151",
+      "synced_base": "7.2.154",
       "version_pin": { "file": "scripts/setup/cli-proxy-lane.ps1", "template": "$Version = '{version}'" },
       "tier": "A",
       "note": "CLIProxyAPI codex-lane proxy (HOST process on 127.0.0.1:8317; installed + run by scripts/setup/cli-proxy-lane.ps1). Added to the nightly drift machinery (HIMMEL-1451) so a new upstream release SURFACES as a drift finding instead of needing manual surgery: v7.2.77 threw ~3-min bursts of instant upstream 502s every ~25 min that killed codex-adv renders (Claude Code retries 502s but the companion's render turn does not), and the validated fix was a manual swap to v7.2.113 -- both legs completed clean that night. AUTO-BUMP policy is deliberately SURFACE-ONLY and matches the existing rows' conservatism: apply-drift-bump.sh moves the in-repo pin literal ($Version in cli-proxy-lane.ps1) and synced_base TOGETHER; the drift leg lands that as a PR. Since HIMMEL-2134 (#1928), himmel-update.sh's advisory sync_cli_proxy step DOES roll the host itself, machine-local and pin-aware: every run compares the host's live version stamp to this pin and, when genuinely behind, runs cli-proxy-lane.ps1 -Install -Restart -- never downgrades and never guesses on an uncomparable stamp (rc 1/2 both leave the host alone), and the lane's own Assert-BounceSafe refuses to bounce a live codex-lane render rather than kill it. -Force is the override for the refused-bounce case specifically (it bypasses Assert-BounceSafe only); no pwsh on PATH or an unparseable stamp instead want a plain manual -Install -Restart run on the host, or an immediate roll ahead of the next update. Default tag-mode (highest stable tag, prereleases excluded -- CLIProxyAPI tags are monotonic, so no latest_source override is needed); synced_base lacks the leading 'v' but the guard normalizes both sides before comparing (v7.2.115 tag == 7.2.115 base). tracked_repo is the TRUE upstream (router-for-me/CLIProxyAPI)."

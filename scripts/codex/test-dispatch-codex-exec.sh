@@ -2,7 +2,7 @@
 # Hermetic tests for dispatch-codex-exec.sh (HIMMEL-781).
 # No real codex install: CODEX_BIN + CODEX_ACL_NORMALIZE inject stubs that
 # record their argv/cwd/order. Asserts the lane invariants: ACL preflight
-# before codex + fail-closed, gpt-5.5 pin (unless caller-named), the
+# before codex + fail-closed, critic-model default (unless caller-named), the
 # --background refusal, the workspace-redirect/sandbox-widening deny-list,
 # and the --reasoning-effort passthrough (HIMMEL-905).
 set -euo pipefail
@@ -10,6 +10,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DISPATCH="$SCRIPT_DIR/dispatch-codex-exec.sh"
 LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
+CRITIC_MODEL="$(node -e 'process.stdout.write(require(process.argv[1]).panel.find(x => x.slug === "codex").model)' "$SCRIPT_DIR/../cr/critics.json")"
+unset CODEX_CRITICS_FILE
 
 fails=0
 pass() { echo "  ok: $1"; }
@@ -122,12 +124,12 @@ assert_rc 2 "--background refused with exit 2" "background rc=$RC out=$OUT"
 case "$OUT" in *"--background refused"*) pass "--background refusal names the rule";; *) fail "background out: $OUT";; esac
 if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite --background"; else pass "codex not invoked on --background"; fi
 
-# --- 4: default dispatch pins gpt-5.5 and runs preflight first ----------------
+# --- 4: default dispatch follows the critic and runs preflight first ---------
 : > "$LOG"; echo 0 > "$TMP/norm.rc"
 run_dispatch --worktree "$WT" do-the-task
 assert_rc 0 "default dispatch exits 0" "default rc=$RC out=$OUT"
 case "$(cat "$TMP/codex.args")" in
-  "exec --model gpt-5.5 --sandbox workspace-write do-the-task") pass "gpt-5.5 pin + sandbox pin injected" ;;
+  "exec --model $CRITIC_MODEL --sandbox workspace-write do-the-task") pass "$CRITIC_MODEL pin + sandbox pin injected" ;;
   *) fail "codex args: $(cat "$TMP/codex.args")" ;;
 esac
 case "$(tr '\n' ' ' < "$LOG")" in
@@ -146,7 +148,7 @@ case "$(basename "$(cat "$TMP/codex.cwd")")" in
   *) fail "codex cwd: $(cat "$TMP/codex.cwd")" ;;
 esac
 
-# --- 6: caller-named --model overrides the pin (with WARN) --------------------
+# --- 6: caller-named --model overrides without a warning for plain IDs -------
 : > "$LOG"
 run_dispatch --worktree "$WT" --model qwen-plus do-it
 assert_rc 0 "caller model dispatch exits 0" "caller-model rc=$RC out=$OUT"
@@ -154,7 +156,51 @@ case "$(cat "$TMP/codex.args")" in
   "exec --sandbox workspace-write --model qwen-plus do-it") pass "caller model preserved, sandbox still pinned" ;;
   *) fail "caller-model codex args: $(cat "$TMP/codex.args")" ;;
 esac
-case "$OUT" in *"WARN caller-named model"*) pass "caller model warns";; *) fail "caller-model out: $OUT";; esac
+case "$OUT" in *WARN*) fail "plain caller model unexpectedly warns: $OUT";; *) pass "plain caller model does not warn";; esac
+
+# Each model flag spelling preserves the override and warns only on variants.
+for model_args in '--model fixture-codex' '--model=fixture-codex' '-m fixture-codex' '-mfixture-codex'; do
+  # shellcheck disable=SC2086 # deliberately exercise both one- and two-token forms
+  run_dispatch --worktree "$WT" $model_args do-it
+  assert_rc 0 "variant override accepted: $model_args" "variant rc=$RC out=$OUT"
+  case "$OUT" in *"WARN"*"codex-variant"*) pass "variant warning: $model_args";; *) fail "missing variant warning: $OUT";; esac
+done
+run_dispatch --worktree "$WT" --model gpt-6-astra do-it
+case "$OUT" in *WARN*) fail "explicit plain model warned: $OUT";; *) pass "explicit gpt-6-astra remains warning-free";; esac
+
+# A different registry model must actually change the rendered codex argv.
+printf '%s\n' '{"panel":[{"slug":"codex","model":"fixture-next","provider":"openai-codex","route_provider":"openai-codex","tier":"paid"}]}' > "$TMP/critics.json"
+export CODEX_CRITICS_FILE="$TMP/critics.json"
+run_dispatch --worktree "$WT" do-it
+assert_rc 0 "alternate critic registry accepted" "critic drift rc=$RC out=$OUT"
+case "$(cat "$TMP/codex.args")" in
+  'exec --model fixture-next --sandbox workspace-write do-it') pass "dispatch default follows changed critic model" ;;
+  *) fail "critic drift argv: $(cat "$TMP/codex.args")" ;;
+esac
+run_dispatch --worktree "$WT" --model explicit-model do-it
+case "$(cat "$TMP/codex.args")" in
+  'exec --sandbox workspace-write --model explicit-model do-it') pass "explicit model wins over critic registry" ;;
+  *) fail "override argv: $(cat "$TMP/codex.args")" ;;
+esac
+for invalid_registry in 'not json' '{"panel":[]}' '{"panel":[{"slug":"codex","model":""}]}' \
+    '{"panel":[{"slug":"codex","model":"fixture --sandbox danger-full-access"}]}' \
+    '{"panel":[{"slug":"codex","model":"*"}]}'; do
+  printf '%s\n' "$invalid_registry" > "$TMP/critics.json"
+  : > "$LOG"
+  run_dispatch --worktree "$WT" do-it
+  assert_rc 2 "invalid registry refuses rather than silently drifting" "invalid registry=$invalid_registry rc=$RC out=$OUT"
+  if grep -q codex "$LOG"; then fail "codex invoked despite invalid model registry"; else pass "invalid registry never reaches codex"; fi
+done
+run_dispatch --worktree "$WT" --model explicit-model do-it
+assert_rc 0 "explicit override does not depend on registry parsing" "override with malformed registry rc=$RC out=$OUT"
+export CODEX_CRITICS_FILE="$TMP/missing-critics.json"
+run_dispatch --worktree "$WT" do-it
+assert_rc 0 "unreadable registry uses fallback" "missing registry rc=$RC out=$OUT"
+case "$(cat "$TMP/codex.args")" in
+  'exec --model gpt-6-astra --sandbox workspace-write do-it') pass "unreadable registry uses named fallback model" ;;
+  *) fail "fallback argv: $(cat "$TMP/codex.args")" ;;
+esac
+unset CODEX_CRITICS_FILE
 
 # --- 6.5: workspace-redirect + sandbox-widening flags refused (codex-adv r2) --
 for bad in "-C" "--cd" "--cd=/tmp/elsewhere" "--add-dir" "--add-dir=/tmp/x" \
@@ -182,7 +228,7 @@ done
 run_dispatch --worktree "$WT" --sandbox workspace-write do-it
 assert_rc 0 "--sandbox workspace-write allowed" "sandbox-ok rc=$RC out=$OUT"
 case "$(cat "$TMP/codex.args")" in
-  "exec --model gpt-5.5 --sandbox workspace-write do-it") pass "workspace-write passed through with pin" ;;
+  "exec --model $CRITIC_MODEL --sandbox workspace-write do-it") pass "workspace-write passed through with pin" ;;
   *) fail "sandbox-ok codex args: $(cat "$TMP/codex.args")" ;;
 esac
 # attached short forms of the ALLOWED values still register (no double pin)
@@ -190,7 +236,7 @@ esac
 run_dispatch --worktree "$WT" -sworkspace-write do-it
 assert_rc 0 "-sworkspace-write (attached) allowed" "s-attach rc=$RC out=$OUT"
 case "$(cat "$TMP/codex.args")" in
-  "exec --model gpt-5.5 -sworkspace-write do-it") pass "-s attached registers have_sandbox (no injected --sandbox)" ;;
+  "exec --model $CRITIC_MODEL -sworkspace-write do-it") pass "-s attached registers have_sandbox (no injected --sandbox)" ;;
   *) fail "s-attach codex args: $(cat "$TMP/codex.args")" ;;
 esac
 : > "$LOG"
@@ -418,7 +464,7 @@ esac
 run_dispatch --worktree "$WT" --reasoning-effort high do-it
 assert_rc 0 "--reasoning-effort two-word form exits 0" "reff-two rc=$RC out=$OUT"
 case "$(cat "$TMP/codex.args")" in
-  'exec --model gpt-5.5 --sandbox workspace-write -c model_reasoning_effort="high" do-it') pass "--reasoning-effort translated to -c override, stripped from passthrough" ;;
+  "exec --model $CRITIC_MODEL --sandbox workspace-write -c model_reasoning_effort=\"high\" do-it") pass "--reasoning-effort translated to -c override, stripped from passthrough" ;;
   *) fail "reff-two codex args: $(cat "$TMP/codex.args")" ;;
 esac
 
@@ -427,7 +473,7 @@ esac
 run_dispatch --worktree "$WT" --reasoning-effort=xhigh do-it
 assert_rc 0 "--reasoning-effort= equals form exits 0" "reff-eq rc=$RC out=$OUT"
 case "$(cat "$TMP/codex.args")" in
-  'exec --model gpt-5.5 --sandbox workspace-write -c model_reasoning_effort="xhigh" do-it') pass "--reasoning-effort= translated to -c override" ;;
+  "exec --model $CRITIC_MODEL --sandbox workspace-write -c model_reasoning_effort=\"xhigh\" do-it") pass "--reasoning-effort= translated to -c override" ;;
   *) fail "reff-eq codex args: $(cat "$TMP/codex.args")" ;;
 esac
 
@@ -455,7 +501,7 @@ if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite --reasonin
 : > "$LOG"
 run_dispatch --worktree "$WT" do-it
 case "$(cat "$TMP/codex.args")" in
-  "exec --model gpt-5.5 --sandbox workspace-write do-it") pass "no --reasoning-effort -> no -c override injected" ;;
+  "exec --model $CRITIC_MODEL --sandbox workspace-write do-it") pass "no --reasoning-effort -> no -c override injected" ;;
   *) fail "no-reff codex args: $(cat "$TMP/codex.args")" ;;
 esac
 
@@ -473,7 +519,7 @@ if grep -q codex "$LOG" 2>/dev/null; then fail "codex invoked despite raw -c alo
 run_dispatch --worktree "$WT" --reasoning-effort medium
 assert_rc 0 "--reasoning-effort as sole arg exits 0 (empty positional rebuild)" "reff-only rc=$RC out=$OUT"
 case "$(cat "$TMP/codex.args")" in
-  'exec --model gpt-5.5 --sandbox workspace-write -c model_reasoning_effort="medium"') pass "empty-args rebuild after stripping the only two tokens" ;;
+  "exec --model $CRITIC_MODEL --sandbox workspace-write -c model_reasoning_effort=\"medium\"") pass "empty-args rebuild after stripping the only two tokens" ;;
   *) fail "reff-only codex args: $(cat "$TMP/codex.args")" ;;
 esac
 
@@ -713,7 +759,7 @@ else
   fail "explicit stdin brief lost or changed"
 fi
 case "$(cat "$TMP/codex.args")" in
-  "exec --model gpt-5.5 --sandbox workspace-write do-it") pass "wrapper strips --stdin-brief from codex argv" ;;
+  "exec --model $CRITIC_MODEL --sandbox workspace-write do-it") pass "wrapper strips --stdin-brief from codex argv" ;;
   *) fail "stdin-brief codex args: $(cat "$TMP/codex.args")" ;;
 esac
 run_stdin_dispatch "$TMP/brief.txt"
@@ -764,31 +810,33 @@ case "$OUT" in
 esac
 
 # 18f: dispatch completion must include the stdout relay, not just codex.
-# Delay tee after draining stdin to make the background-forwarding race
-# deterministic; invoke directly (command substitution would wait on its pipe).
-mkdir -p "$TMP/slow-tee-bin"
-cat > "$TMP/slow-tee-bin/tee" <<EOF
+# Delay the forwarding cat after draining stdin to make the race deterministic;
+# invoke directly (command substitution would wait on its pipe). Only the
+# relay's two-argument invocation is intercepted, not library uses of cat.
+REAL_CAT="$(command -v cat)"
+mkdir -p "$TMP/slow-relay-bin"
+cat > "$TMP/slow-relay-bin/cat" <<EOF
 #!/usr/bin/env bash
-payload=\$(cat)
+if [ "\$#" -ne 2 ] || [ "\$2" != - ]; then exec "$REAL_CAT" "\$@"; fi
+payload=\$("$REAL_CAT" "\$@")
 sleep 1
-printf '%s\n' "\$payload" > "\$1"
 printf '%s\n' "\$payload"
-printf done > "$TMP/tee.done"
+printf done > "$TMP/relay.done"
 EOF
-chmod +x "$TMP/slow-tee-bin/tee"
+chmod +x "$TMP/slow-relay-bin/cat"
 cat > "$STDIN_STUB" <<'EOF'
 #!/usr/bin/env bash
 printf 'final output\n'
 EOF
 set +e
-PATH="$TMP/slow-tee-bin:$PATH" CODEX_BIN="$STDIN_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" \
+PATH="$TMP/slow-relay-bin:$PATH" CODEX_BIN="$STDIN_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" \
     CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
     HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT=5 \
     bash "$DISPATCH" --worktree "$WT" do-it > "$TMP/relay.stdout" 2> "$TMP/relay.stderr"
 RC=$?
 set -e
 assert_rc 0 "slow stdout relay preserves codex exit status" "relay rc=$RC"
-if [ -f "$TMP/tee.done" ] && [ "$(cat "$TMP/relay.stdout")" = 'final output' ]; then
+if [ -f "$TMP/relay.done" ] && [ "$(cat "$TMP/relay.stdout")" = 'final output' ]; then
   pass "dispatch waits for stdout forwarding to finish"
 else
   fail "dispatch exited before stdout forwarding finished"
@@ -798,9 +846,10 @@ sleep 2
 
 # 18g: a failed relay must not turn a successful codex into false success.
 # Drain stdin first so codex can exit normally, then fail without forwarding.
-cat > "$TMP/slow-tee-bin/tee" <<'EOF'
+cat > "$TMP/slow-relay-bin/cat" <<EOF
 #!/usr/bin/env bash
-cat > /dev/null
+if [ "\$#" -ne 2 ] || [ "\$2" != - ]; then exec "$REAL_CAT" "\$@"; fi
+"$REAL_CAT" "\$@" > /dev/null
 exit 23
 EOF
 for child_rc in 0 7; do
@@ -810,7 +859,7 @@ printf 'final output\n'
 exit $child_rc
 EOF
   set +e
-  PATH="$TMP/slow-tee-bin:$PATH" CODEX_BIN="$STDIN_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" \
+  PATH="$TMP/slow-relay-bin:$PATH" CODEX_BIN="$STDIN_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" \
       CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
       HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT=5 \
       bash "$DISPATCH" --worktree "$WT" do-it > "$TMP/relay.stdout" 2> "$TMP/relay.stderr"
@@ -822,6 +871,79 @@ EOF
     assert_rc 7 "codex failure takes precedence over relay failure" "failed codex and relay rc=$RC (expected 7)"
   fi
 done
+
+# A finished codex does not disarm the watchdog while the relay is stalled.
+cat > "$TMP/slow-relay-bin/cat" <<EOF
+#!/usr/bin/env bash
+if [ "\$#" -ne 2 ] || [ "\$2" != - ]; then exec "$REAL_CAT" "\$@"; fi
+"$REAL_CAT" "\$@" > /dev/null
+sleep 120
+EOF
+cat > "$STDIN_STUB" <<'EOF'
+#!/usr/bin/env bash
+printf 'final output\n'
+exit 0
+EOF
+rm -rf "$JOBS_DIR"; mkdir -p "$JOBS_DIR"
+set +e
+PATH="$TMP/slow-relay-bin:$PATH" CODEX_BIN="$STDIN_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" \
+    CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+    HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT=2 \
+    bash "$DISPATCH" --worktree "$WT" do-it > "$TMP/relay.stdout" 2> "$TMP/relay.stderr"
+RC=$?
+set -e
+assert_rc 124 "watchdog bounds stalled relay after codex exits" "stalled relay rc=$RC"
+assert_timeout_reason 'timeout after 2s'
+
+# --- 19: large binary stdout stays byte-exact with bounded presence storage ---
+# A full-retention tee fails the size assertion; dropped/reordered/NUL-stripped
+# output fails the SHA-256 comparison. Snapshot before the dispatch EXIT cleanup.
+mkdir -p "$TMP/presence-tmp"
+node -e 'const fs = require("fs"); const b = Buffer.alloc(6 * 1024 * 1024); for (let i = 0; i < b.length; i++) b[i] = i % 256; fs.writeFileSync(process.argv[1], b)' "$TMP/payload.bin"
+cat > "$STDIN_STUB" <<EOF
+#!/usr/bin/env bash
+cat "$TMP/payload.bin"
+for ((i=0; i<100; i++)); do
+  [ "\$(wc -c < "$TMP/large.stdout")" -eq 6291456 ] && break
+  sleep 0.05
+done
+wc -c "\$TMPDIR"/* > "$TMP/presence-sizes"
+exit \${LARGE_CHILD_RC:-0}
+EOF
+for child_rc in 0 7; do
+  set +e
+  TMPDIR="$TMP/presence-tmp" LARGE_CHILD_RC="$child_rc" \
+      CODEX_BIN="$STDIN_STUB" CODEX_ACL_NORMALIZE="$NORM_STUB" \
+      CODEX_JOBS_DIR="$JOBS_DIR" CODEX_REAP_HELPER="$REAP_STUB" \
+      HIMMEL_FLOW_RUNS_LEDGER="$LEDGER" CODEX_EXEC_TIMEOUT=15 \
+      bash "$DISPATCH" --worktree "$WT" do-it > "$TMP/large.stdout" 2> "$TMP/large.stderr"
+  RC=$?
+  set -e
+  assert_rc "$child_rc" "large stdout preserves child rc=$child_rc" "large output rc=$RC"
+  if node - "$TMP/payload.bin" "$TMP/large.stdout" "$TMP/presence-sizes" <<'NODE'
+const fs = require('fs'), crypto = require('crypto');
+const [input, output, sizes] = process.argv.slice(2);
+const hash = f => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+if (hash(input) !== hash(output)) { console.error('stdout SHA-256 mismatch'); process.exit(1); }
+const rows = fs.readFileSync(sizes, 'utf8').trim().split('\n');
+const total = Number(rows[rows.length - 1].trim().split(/\s+/)[0]);
+if (total !== 1) { console.error(`presence storage=${total} bytes, expected 1`); process.exit(1); }
+NODE
+  then pass "6 MiB binary stdout hash matches; presence storage is one byte (rc=$child_rc)"
+  else fail "large stdout forwarding or bounded presence tracking (rc=$child_rc)"; fi
+done
+
+# Timeout must win over a late nonzero child exit after stdout was observed.
+cat > "$STDIN_STUB" <<'EOF'
+#!/usr/bin/env bash
+trap 'exit 7' TERM
+printf 'event\n'
+while :; do sleep 0.1; done
+EOF
+rm -rf "$JOBS_DIR"; mkdir -p "$JOBS_DIR"
+run_stdin_dispatch /dev/null
+assert_rc 124 "timeout wins over late child rc=7" "late child rc=$RC out=$OUT"
+assert_timeout_reason 'timeout after 2s'
 
 echo
 if [ "$fails" -ne 0 ]; then

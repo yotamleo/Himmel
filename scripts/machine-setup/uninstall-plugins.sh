@@ -21,6 +21,8 @@
 #   --marketplaces-only  Run only the marketplace phase.
 #   --scope-map PATH     INTERNAL scope handoff: <marketplace>\t<scope>, plus a
 #                        third <project path> field for project and local rows.
+#                        Additional <plugin id>\t<scope>[\t<project path>] rows
+#                        identify exact removals for marketplaces-only previews.
 #                        --dry-run writes this file too: use an ephemeral path,
 #                        never a persisted retry cache.
 #
@@ -170,8 +172,26 @@ ownership_jq() {
           or ($exclusive | split("\n") | index($m)) != null));
     '"$filter"
 }
+marketplace_source() {
+  local name="$1" source_type source
+  source_type="$(jq -r --arg m "$name" '.extraKnownMarketplaces[$m].source.source' "$TEMPLATE")"
+  case "$source_type" in
+    github) jq -r --arg m "$name" '.extraKnownMarketplaces[$m].source.repo' "$TEMPLATE" ;;
+    directory)
+      source="$(jq -r --arg m "$name" '.extraKnownMarketplaces[$m].source.path' "$TEMPLATE")"
+      printf '%s\n' "${source//<himmel-path>/$REPO_ROOT}"
+      ;;
+    *)
+      echo "WARN: cannot repair marketplace $name (unsupported source type \"$source_type\")" >&2
+      return 1
+      ;;
+  esac
+}
+
 FAILURES=0
 BLOCKED=0
+MKT_JSON=""
+RETRIED_MARKETPLACES=""
 TRANSIENT_MARKETPLACES=""
 REMOVED_SCOPES=""
 SCOPE_MAP_PERSIST_FAILED=0
@@ -310,18 +330,7 @@ EOF_FOREIGN
 $TARGETS
 EOF_TARGETS
         [[ -n "$REPAIR_SCOPES" ]] || continue
-        SOURCE_TYPE="$(jq -r --arg m "$M" '.extraKnownMarketplaces[$m].source.source' "$TEMPLATE")"
-        case "$SOURCE_TYPE" in
-          github) SOURCE="$(jq -r --arg m "$M" '.extraKnownMarketplaces[$m].source.repo' "$TEMPLATE")" ;;
-          directory)
-            SOURCE="$(jq -r --arg m "$M" '.extraKnownMarketplaces[$m].source.path' "$TEMPLATE")"
-            SOURCE="${SOURCE//<himmel-path>/$REPO_ROOT}"
-            ;;
-          *)
-            echo "WARN: cannot repair marketplace $M (unsupported source type \"$SOURCE_TYPE\")" >&2
-            continue
-            ;;
-        esac
+        SOURCE="$(marketplace_source "$M")" || continue
         echo "  repair: re-adding marketplace $M (installed plugins still reference it)"
         while IFS= read -r REPAIR_SCOPE; do
           [[ -n "$REPAIR_SCOPE" ]] || continue
@@ -345,17 +354,37 @@ EOF_MARKETPLACES
     echo "  uninstall: $ID"
     _rc=0
     run claude plugin uninstall "$ID" --scope "$PLUGIN_SCOPE" || _rc=$?
+    # WHY (HIMMEL-2804): a listed name proves no scope. Try uninstall first
+    # so healthy registrations need no add; repair a failed scope once, without
+    # ever treating a pre-existing marketplace as transient cleanup material.
+    if [[ $_rc -ne 0 ]] && printf '%s\n' "$MKT_JSON" | jq -e --arg m "${ID##*@}" 'type == "array" and any(.[]; .name == $m)' >/dev/null 2>&1; then
+      REPAIR_PAIR="${ID##*@}"$'\t'"$PLUGIN_SCOPE"
+      case $'\n'"$RETRIED_MARKETPLACES" in
+        *$'\n'"$REPAIR_PAIR"$'\n'*) ;;
+        *)
+          RETRIED_MARKETPLACES="${RETRIED_MARKETPLACES}${REPAIR_PAIR}"$'\n'
+          if SOURCE="$(marketplace_source "${ID##*@}")" &&
+              run claude plugin marketplace add "$SOURCE" --scope "$PLUGIN_SCOPE"; then
+            _rc=0
+            run claude plugin uninstall "$ID" --scope "$PLUGIN_SCOPE" || _rc=$?
+          fi
+          ;;
+      esac
+    fi
     if [[ $_rc -ne 0 ]]; then
       echo "    WARN: uninstall failed (rc=$_rc) — not installed at scope $PLUGIN_SCOPE, or a transient failure" >&2
       FAILURES=$((FAILURES + 1))
     else
       # WHY (HIMMEL-2754): project/local scopes only belong to this project;
       # user rows retain the two-field handoff format.
-      REMOVED_SCOPES="${REMOVED_SCOPES}${ID##*@}"$'\t'"${PLUGIN_SCOPE}"
+      SCOPE_ROW="$PLUGIN_SCOPE"
       if [[ "$PLUGIN_SCOPE" == "project" || "$PLUGIN_SCOPE" == "local" ]]; then
-        REMOVED_SCOPES="${REMOVED_SCOPES}"$'\t'"$CURRENT_PROJECT"
+        SCOPE_ROW="${SCOPE_ROW}"$'\t'"$CURRENT_PROJECT"
       fi
-      REMOVED_SCOPES="${REMOVED_SCOPES}"$'\n'
+      REMOVED_SCOPES="${REMOVED_SCOPES}${ID##*@}"$'\t'"${SCOPE_ROW}"$'\n'
+      # WHY (HIMMEL-2800): marketplace rows alone cannot distinguish a partial
+      # plugin phase. Keep them compatible and append exact plugin identities.
+      REMOVED_SCOPES="${REMOVED_SCOPES}${ID}"$'\t'"${SCOPE_ROW}"$'\n'
       persist_scope_map
     fi
   done <<EOF_TARGETS
@@ -408,6 +437,20 @@ if [[ $PLUGINS_ONLY -eq 0 ]]; then
     if ! PREVIEW_TARGETS="$(select_targets "$REMAINING_JSON" indices)"; then
       echo "ERROR: could not compute the dry-run plugin subtraction — halting rather than previewing a marketplace removal against an unresolved plugin set (HIMMEL-2754)" >&2
       exit 1
+    fi
+    # WHY (HIMMEL-2800): a prior partial run proves only its recorded IDs,
+    # scopes and projects, not every currently selected plugin of a marketplace.
+    if [[ $MARKETPLACES_ONLY -eq 1 ]]; then
+      PREVIEW_TARGETS="$(printf '%s\n' "$REMAINING_JSON" | jq -r \
+        --arg targets "$PREVIEW_TARGETS" --arg removed "$REMOVED_SCOPES" \
+        --arg project "$CURRENT_PROJECT" '
+        ($targets | split("\n") | map(select(length > 0) | tonumber)) as $targets
+        | ($removed | split("\n") | map(split("\t"))) as $removed
+        | to_entries[] | select(.key as $i | ($targets | index($i)) != null)
+        | .value as $row
+        | select(any($removed[]; .[0] == $row.id and .[1] == $row.scope
+            and ($row.scope == "user" or .[2] == $project)))
+        | .key')"
     fi
     REMAINING_JSON="$(printf '%s\n' "$REMAINING_JSON" | jq --arg targets "$PREVIEW_TARGETS" '
       ($targets | split("\n") | map(select(length > 0) | tonumber)) as $targets
@@ -473,19 +516,31 @@ EOF_TRANSIENT
     done <<EOF_SCOPES
 $REMOVED_SCOPES
 EOF_SCOPES
-    MKT_SCOPES="${MKT_SCOPES:-$SCOPE}"
+    # WHY (HIMMEL-2796): plugin scopes do not reveal registration scopes;
+    # include the install profile even when inferred candidates are nonempty.
+    case $'\n'"$MKT_SCOPES" in
+      *$'\n'"$SCOPE"$'\n'*) ;;
+      *) MKT_SCOPES="${MKT_SCOPES}${SCOPE}"$'\n' ;;
+    esac
     echo "  marketplace remove: $M"
     while IFS= read -r MKT_SCOPE; do
       [[ -n "$MKT_SCOPE" ]] || continue
-      _rc=0
-      run claude plugin marketplace remove "$M" --scope "$MKT_SCOPE" || _rc=$?
-      if [[ $_rc -ne 0 ]]; then
-        echo "    WARN: marketplace remove failed (rc=$_rc) — not registered at scope $MKT_SCOPE, or a transient failure" >&2
-        FAILURES=$((FAILURES + 1))
-      fi
+      run claude plugin marketplace remove "$M" --scope "$MKT_SCOPE" || true
     done <<EOF_MKT_SCOPES
 $MKT_SCOPES
 EOF_MKT_SCOPES
+    # Count one unresolved outcome, not expected failures at empty scopes.
+    # A preview cannot re-read the effects of commands it never executed.
+    if [[ $DRY_RUN -eq 0 ]]; then
+      AFTER_MKT_JSON="$(claude plugin marketplace list --json 2>/dev/null)" || AFTER_MKT_JSON=""
+      if ! printf '%s\n' "$AFTER_MKT_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        echo "    WARN: cannot verify marketplace $M removal — marketplace enumeration unavailable" >&2
+        FAILURES=$((FAILURES + 1))
+      elif printf '%s\n' "$AFTER_MKT_JSON" | jq -e --arg m "$M" 'any(.[]; .name == $m)' >/dev/null; then
+        echo "    WARN: marketplace $M is still registered after removal attempts" >&2
+        FAILURES=$((FAILURES + 1))
+      fi
+    fi
   done <<EOF_MARKETPLACES
 $OWNED_MARKETPLACES
 EOF_MARKETPLACES

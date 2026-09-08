@@ -11,8 +11,9 @@
 # append/strip, and the Fable-family carve-out (the CLI silently strips
 # [1m] there, so arm-resume.sh must never claim to have applied it).
 #
-# Uses --dry-run throughout so no real scheduler job is ever created. Harness
-# shields, helpers, and the scheduler stub are copied verbatim from
+# Uses --dry-run except for one stateful-at-stub case that exercises the real
+# scheduling path without touching the host scheduler. Harness shields,
+# helpers, and the scheduler stubs are copied from
 # scripts/handover/test-arm-resume-tier.sh (do not invent a new hermetic
 # pattern) — this suite is that one's --context sibling, not a replacement.
 #
@@ -338,6 +339,69 @@ out=$(run_arm --time "$(future_time)" --handover "$HO_G" --model 'claude-fable-5
 rc=$?
 assert_rc "g: [1m]-suffixed Fable model, no --fable-ok, still refused" 20 "$rc"
 assert_contains "g: stderr names --fable-ok" '--fable-ok' "$out"
+
+# ---------------------------------------------------------------------------
+# (h) HIMMEL-2779: --tier leg makes the standard autocompact ceiling
+#     structural. The exact argv pair matters; absence of [1m] is not enough.
+# ---------------------------------------------------------------------------
+HO_H1=$(make_handover)
+out=$(run_arm --time "$(future_time)" --handover "$HO_H1" --tier leg --context standard --dry-run 2>&1)
+rc=$?
+assert_rc "h1: --tier leg + standard exits 0" 0 "$rc"
+assert_contains "h1: leg argv carries the exact ceiling" '--autocompact 200000' "$out"
+
+HO_H2=$(make_handover)
+out=$(run_arm --time "$(future_time)" --handover "$HO_H2" --tier leg --context 1m --dry-run 2>&1)
+rc=$?
+assert_rc "h2: --tier leg + 1m refuses with exit 2" 2 "$rc"
+assert_contains "h2: refusal names the required argv pair" '--autocompact 200000' "$out"
+assert_contains "h2: refusal points to the standard context choice" '--context standard' "$out"
+
+HO_H3=$(make_handover)
+out=$(run_arm --time "$(future_time)" --handover "$HO_H3" --tier --dry-run 2>&1)
+rc=$?
+assert_rc "h3: --tier missing a value refuses with exit 2" 2 "$rc"
+assert_contains "h3: missing-value refusal is actionable" '--tier requires leg' "$out"
+
+HO_H4=$(make_handover)
+out=$(run_arm --time "$(future_time)" --handover "$HO_H4" --tier console --dry-run 2>&1)
+rc=$?
+assert_rc "h4: unknown --tier value refuses with exit 2" 2 "$rc"
+assert_contains "h4: unknown tier names the accepted value" '--tier must be leg' "$out"
+
+# (i) Real non-dry-run path through a stateful at/atq stub. The stub records the
+# actual job body and makes it queryable so arm-resume's post-create verify is
+# earned; no host scheduler is touched.
+REAL_SCHED="$TMP/real-sched-stub"
+mkdir -p "$REAL_SCHED"
+cat > "$REAL_SCHED/at" <<'EOF'
+#!/usr/bin/env bash
+state="$(dirname "$0")/job.body"
+case "${1:-}" in
+  -c) [ -f "$state" ] && cat "$state" ;;
+  -r) rm -f "$state" ;;
+  *) cat > "$state" ;;
+esac
+EOF
+cat > "$REAL_SCHED/atq" <<'EOF'
+#!/usr/bin/env bash
+[ -s "$(dirname "$0")/job.body" ] && printf '1\t2099-01-01 00:00 a test\n'
+exit 0
+EOF
+cat > "$REAL_SCHED/powershell" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$REAL_SCHED/at" "$REAL_SCHED/atq" "$REAL_SCHED/powershell"
+
+HO_I=$(make_handover)
+out=$(FLEET_CAP_OK=1 ARM_WITH_LIVE_WORKERS=1 SCHTASKS_CMD="$REAL_SCHED/schtasks" PATH="$REAL_SCHED:$PATH" \
+  bash "$ARM" --time "$(future_time)" --handover "$HO_I" --tier leg --context standard 2>&1)
+rc=$?
+assert_rc "i: --tier leg real non-dry arm succeeds through scheduler stubs" 0 "$rc"
+job_body="$(cat "$REAL_SCHED/job.body" 2>/dev/null || true)"
+assert_contains "i: scheduled job body carries exact leg ceiling" '--autocompact 200000' "$job_body"
+assert_contains "i: success is post-verify earned" 'RESUME ARMED for' "$out"
 
 echo "---"
 echo "Run scripts/handover/test-arm-resume-tier.sh separately for the --model/"

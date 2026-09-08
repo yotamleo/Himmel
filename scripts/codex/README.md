@@ -129,9 +129,12 @@ The wrapper enforces the three invariants from the HIMMEL-741 diagnosis:
    subdirectories that missed the sandbox SID inheritance; the sandbox then
    fails with access denials that look like a broken `codex exec`. The
    preflight is a no-op on non-Windows platforms.
-2. **Model pinned to `gpt-5.5`.** Codex-variant model names (e.g.
-   `gpt-5.5-codex`) return HTTP 400 under ChatGPT-plan auth; the plain name
-   routes correctly. A caller-named `--model` overrides the pin with a WARN.
+2. **Model follows the codex critic in `scripts/cr/critics.json` (HIMMEL-2811).**
+   The registry is read with Node.js; only an unreadable file uses the named
+   fallback (`gpt-6-astra`). Readable but invalid data refuses the dispatch.
+   `CODEX_CRITICS_FILE` overrides the registry path for tests. A caller-named
+   `--model` bypasses registry lookup and wins unchanged; only `-codex`-suffixed
+   variant names warn about HTTP 400 under ChatGPT-plan auth.
 3. **`--background` refused.** Companion background jobs die silently
    (upstream bug); use the default wait behavior and pair long runs with
    `scripts/codex/companion-liveness.sh`.
@@ -148,8 +151,8 @@ The wrapper enforces the three invariants from the HIMMEL-741 diagnosis:
    the raw flag from the passthrough, and translates it into a trusted
    `-c model_reasoning_effort="<value>"` override (the caller's own raw
    `-c`/`--config` stays refused per invariant 4 above). Does **not** change
-   the `gpt-5.5` model pin — GPT-5.6 availability is not yet verified
-   in-repo.
+   model selection. Accepted values remain the shared filter's enum; model-
+   specific effort compatibility is a separate concern (HIMMEL-2585).
 
 Tests: `scripts/codex/test-dispatch-codex-exec.sh` (hermetic; stubs the codex
 CLI via `CODEX_BIN` and the preflight via `CODEX_ACL_NORMALIZE`).
@@ -202,6 +205,14 @@ TUI (HIMMEL-1788 instance 5). Now:
   `~/.himmel/flow-runs.jsonl` (`flow: "codex-exec"`), `outcome` one of
   `complete` / `timeout` / `error` - the same feed
   `dispatch-codex-wsl.sh` already fed.
+
+Stdout presence tracking retains **at most one byte** in a private temporary
+file (HIMMEL-2806). The owned relay forwards that byte plus the rest of stdout
+unchanged, including binary output, and is awaited before dispatch completion.
+Relay failure propagates when codex succeeds; a codex failure takes precedence
+over relay failure, and timeout takes precedence over both. Empty stdout and
+stdout observed before timeout retain their distinct registry `reason` values;
+the registered PID remains the actual codex child, not the relay.
 
 A raw `codex exec` outside this chokepoint gets none of it, which is why
 `scripts/hooks/block-rogue-codex-exec.sh` refuses it (bypass

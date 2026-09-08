@@ -11,9 +11,9 @@
 # unlike the PostToolUse half, this member prints PLAIN TEXT, not a
 # hookSpecificOutput envelope (same contract as inject-initiative.sh).
 #
-# Shares the same cursor file as the PostToolUse hook (both call
-# inbox_new_bullets for the same session name), so a bullet is delivered
-# exactly once regardless of which event fires first — never twice.
+# Shares the same cursor and session lock as the PostToolUse hook. Both
+# commit only after successful delivery; concurrent invocations serialize.
+# A failed delivery stays pending for the next invocation.
 #
 # Fail OPEN: a lifecycle member is always advisory (HIMMEL-2003) and this
 # script never exits non-zero.
@@ -32,8 +32,14 @@ CLAUDE_PROJECT_DIR="${CLAUDE_PROJECT_DIR:-}"
 name="$(current_session_name 2>/dev/null)" || exit 0
 [ -n "$name" ] || exit 0
 
-bullets="$(inbox_new_bullets "$name" 2>/dev/null)"
-[ -n "$bullets" ] || exit 0
+# shellcheck disable=SC2317,SC2329 # Callback invoked by inbox_with_lock.
+deliver_inbox() {
+    inbox_peek "$1" || return 1
+    if [ -n "$inbox_bullets" ]; then
+        printf 'Claudex inbox — console ruling(s) delivered on resume, no operator paste needed:\n%s\n' "$inbox_bullets" || return 1
+    fi
+    inbox_commit
+}
 
-printf 'Claudex inbox — console ruling(s) delivered on resume, no operator paste needed:\n%s\n' "$bullets"
+inbox_with_lock "$name" deliver_inbox 2>/dev/null
 exit 0

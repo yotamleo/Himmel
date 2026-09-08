@@ -86,24 +86,33 @@ run() {
 # ── Helper: run a `claude` CLI step with LOUD, classified diagnostics ─────────
 # Replaces the old muted `|| echo "(non-zero — transient failure)"`: on a
 # non-zero step, surface WHICH step failed and the CLI's own output, instead of
-# a one-line shrug that hid the cause. Classification is ADVISORY ONLY — it never
-# changes pass/fail. The end presence-verify is authoritative, so an unmatched
-# failure falls through (never aborts the loop, never false-fatals an idempotent
-# re-run). A benign "already installed/registered" match stays a quiet line.
+# a one-line shrug that hid the cause. Return failures to the caller: registration
+# retries once then aborts; plugin installs remain advisory with presence-verify
+# authoritative. A benign "already installed/registered" match stays a quiet line.
 run_step() {
   if [[ $DRY_RUN -eq 1 ]]; then echo "DRY: $*"; return 0; fi
   # `|| rc=$?` (not `; rc=$?`): under `set -e` a bare `out=$(failing_cmd)` aborts
   # the script at the assignment before we can classify — the `||` absorbs it.
   local out rc=0
-  out=$("$@" 2>&1) || rc=$?
+  out=$("$@" 2>&1 </dev/null) || rc=$?
   [[ $rc -eq 0 ]] && return 0
-  if printf '%s' "$out" | grep -qiE 'already (installed|registered|exists)'; then
+  # Benign-idempotency TEXT is trusted only for plugin installs, where the end
+  # presence-verify is an authoritative second gate. Registration has no such
+  # gate, and a genuine clone failure can itself say "already exists" (git's
+  # "destination path '…' already exists and is not an empty directory") — the
+  # very failure HIMMEL-2753 is about — so there a non-zero exit is a failure,
+  # full stop. Nothing is lost: measured on this RC (2026-09-07), a duplicate
+  # `claude plugin marketplace add` exits 0 ("Marketplace 'x' already on disk"),
+  # so an idempotent re-run never reaches this branch.
+  # $3 is the CLI verb: callers are `claude plugin install …` / `claude plugin
+  # marketplace add …`, so $3 is `install` or `marketplace`.
+  if [[ "$3" == install ]] && grep -qiE 'already (installed|registered|exists)' <<< "$out"; then
     echo "    (already present, skipping): $*"
-  else
-    echo "    !! step FAILED (exit $rc): $*" >&2
-    printf '%s\n' "$out" | sed 's/^/       | /' >&2
+    return 0
   fi
-  return 0   # advisory; presence-verify below is the authoritative gate
+  echo "    !! step FAILED (exit $rc): $*" >&2
+  printf '%s\n' "$out" | sed 's/^/       | /' >&2
+  return "$rc"
 }
 
 # ── Expand <himmel-path> in template ─────────────────────────────────────────
@@ -111,7 +120,9 @@ EXPANDED=$(sed "s|<himmel-path>|$HIMMEL_PATH|g" "$TEMPLATE")
 
 # ── Register marketplaces ───────────────────────────────────────────────────
 echo "──── Registering marketplaces ────"
-echo "$EXPANDED" | jq -r '
+# Materialize first so a jq error cannot silently look like an empty loop, and
+# keep accounting in this shell rather than the old pipeline's subshell.
+SOURCES=$(echo "$EXPANDED" | jq -r '
   .extraKnownMarketplaces
   | to_entries[]
   | .value.source
@@ -120,11 +131,27 @@ echo "$EXPANDED" | jq -r '
     elif .source == "url"       then .url
     else "UNKNOWN:" + (.|tostring)
     end
-' | tr -d '\r' | while read -r SRC; do
+' | tr -d '\r')
+FAILED_MARKETPLACES=()
+while IFS= read -r SRC; do
   [[ -z "$SRC" || "$SRC" == UNKNOWN:* ]] && { echo "  skip: $SRC"; continue; }
   echo "  marketplace add: $SRC"
-  run_step claude plugin marketplace add "$SRC" --scope "$SCOPE"
-done
+  if ! run_step claude plugin marketplace add "$SRC" --scope "$SCOPE"; then
+    echo "  marketplace retry in 2 seconds: $SRC" >&2
+    sleep 2
+    if ! run_step claude plugin marketplace add "$SRC" --scope "$SCOPE"; then
+      echo "  ERROR: marketplace registration failed: $SRC" >&2
+      FAILED_MARKETPLACES+=("$SRC")
+      continue
+    fi
+  fi
+  if [[ $DRY_RUN -eq 0 ]]; then echo "  marketplace registered: $SRC"; fi
+done <<< "$SOURCES"
+if [[ ${#FAILED_MARKETPLACES[@]} -gt 0 ]]; then
+  echo "ERROR: ${#FAILED_MARKETPLACES[@]} marketplace registration(s) failed; plugin installs not attempted:" >&2
+  printf '    %s\n' "${FAILED_MARKETPLACES[@]}" >&2
+  exit 1
+fi
 
 # ── Enable marketplace auto-update (HIMMEL-365) ──────────────────────────────
 # `claude plugin marketplace add` writes each settings.json extraKnownMarketplaces
@@ -245,7 +272,7 @@ SPECS=$(echo "$EXPANDED" | jq -r '
 while IFS= read -r SPEC; do
   [[ -z "$SPEC" ]] && continue
   echo "  install: $SPEC"
-  run_step claude plugin install "$SPEC" --scope "$SCOPE"
+  run_step claude plugin install "$SPEC" --scope "$SCOPE" || true
 done <<< "$SPECS"
 
 # ── Verify (post-install presence check, HIMMEL-361) ─────────────────────────
@@ -343,9 +370,34 @@ done <<< "$SPECS"
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "ERROR: ${#MISSING[@]} plugin(s) not present after install:" >&2
-  for SPEC in "${MISSING[@]}"; do
-    echo "    $SPEC — retry: claude plugin install $SPEC --scope $SCOPE" >&2
-  done
+  # A broken/unsupported list command is UNKNOWN, never evidence of absence.
+  MARKETPLACES_VALID=0
+  if MARKETPLACES=$(claude plugin marketplace list --json 2>&1 </dev/null); then
+    if jq -e 'type == "array" and all(.[]; type == "object" and (.name | type == "string"))' \
+         <<< "$MARKETPLACES" >/dev/null 2>&1; then
+      MARKETPLACES_VALID=1
+    fi
+  fi
+  MISSING_MARKETPLACES=$(printf '%s\n' "${MISSING[@]}" | sed 's/.*@//' | sort -u)
+  while IFS= read -r NAME; do
+    COUNT=0
+    for SPEC in "${MISSING[@]}"; do
+      if [[ "${SPEC##*@}" == "$NAME" ]]; then COUNT=$((COUNT + 1)); fi
+    done
+    STATUS="registration UNKNOWN (marketplace list unavailable or invalid)"
+    if [[ $MARKETPLACES_VALID -eq 1 ]]; then
+      if jq -e --arg name "$NAME" 'any(.[]; .name == $name)' <<< "$MARKETPLACES" >/dev/null; then
+        STATUS="registered"
+      else
+        STATUS="NOT registered"
+      fi
+    fi
+    echo "    $COUNT missing plugin(s) from marketplace '$NAME': $STATUS" >&2
+    for SPEC in "${MISSING[@]}"; do
+      [[ "${SPEC##*@}" == "$NAME" ]] || continue
+      echo "      $SPEC — retry: claude plugin install $SPEC --scope $SCOPE" >&2
+    done
+  done <<< "$MISSING_MARKETPLACES"
   exit 1
 fi
 

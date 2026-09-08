@@ -9,8 +9,8 @@
 #   1. ACL preflight: normalize-worktree-acl.sh <worktree> runs before the
 #      codex CLI is invoked and aborts the dispatch on failure (Windows
 #      aged-worktree SID gap; the preflight is a no-op on other platforms).
-#   2. Model pinned to gpt-5.5 unless the caller names one explicitly
-#      (codex-variant model names 400 under ChatGPT-plan auth).
+#   2. Model defaults to the codex critic in scripts/cr/critics.json unless
+#      caller-named (codex-variant model names 400 under ChatGPT-plan auth).
 #   3. --background refused (upstream: background jobs die silently; use the
 #      default --wait behavior + scripts/codex/companion-liveness.sh).
 #   4. Workspace-redirect (-C/--cd/--add-dir) and sandbox-widening flags
@@ -47,9 +47,8 @@
 #      model_reasoning_effort="<value>"` override appended to pin_args (the
 #      caller-supplied `-c`/`--config` flag itself stays refused above; only
 #      this wrapper-computed override is emitted). Does NOT change the
-#      model pin below - GPT-5.6 availability is not verified in-repo, so
-#      gpt-5.5 stays pinned; this flag only lets a gpt-5.5 (or a caller-named
-#      model) run at a non-default reasoning effort.
+#      model selection below; this flag only lets the default (or a
+#      caller-named model) run at a non-default reasoning effort.
 #   8. Watchdog + ledger (HIMMEL-2023, HIMMEL-1788 instance 5): the wait below
 #      used to be UNBOUNDED, so a wedged headless run was invisible - no
 #      timeout, no kill, and (unlike the codex-wsl twin) no flow-run-ledger
@@ -84,6 +83,8 @@
 #
 # Environment:
 #   CODEX_BIN            Override the codex CLI (tests inject a stub).
+#   CODEX_CRITICS_FILE   Override the model registry path (tests). Default-model
+#                        resolution requires node; explicit overrides do not.
 #   CODEX_ACL_NORMALIZE  Override the preflight script path (tests).
 #   SBL_HELPER           Override the shared-branch-lock.sh path (tests).
 #   CODEX_JOBS_DIR        Override the job registry dir (tests; default
@@ -367,20 +368,57 @@ if ! cd "$WORKTREE"; then
     exit 1
 fi
 
-# Invariant 2: pin gpt-5.5 unless the caller named a model explicitly.
-# HIMMEL-2546 re-pinned the critic path (scripts/cr/critics.json etc.) from
-# gpt-5.6-sol to gpt-6-astra; this dormant lane's own gpt-5.5 pin is
-# deliberately untouched.
+# Invariant 2 (HIMMEL-2811): share the critic's model source. HIMMEL-2546
+# left this lane's pin divergent; that stale default later 404'd. Only an
+# unreadable registry permits the named fallback; invalid content must refuse.
+FALLBACK_MODEL="gpt-6-astra"
+CRITICS_FILE="${CODEX_CRITICS_FILE:-$SCRIPT_DIR/../cr/critics.json}"
 # Sandbox pin (codex-adv r4): ambient $CODEX_HOME/config.toml can default the
 # sandbox to danger-full-access - always pass an EXPLICIT safe --sandbox when
 # the caller did not name one, so ambient config cannot widen the run.
 pin_args=""
 if [ "$have_model" -eq 1 ]; then
-    echo "dispatch-codex-exec.sh: WARN caller-named model overrides the gpt-5.5 pin (codex-variant names 400 on ChatGPT auth)" >&2
+    # Inspect only model values, not prompt text; leave caller argv untouched.
+    model_value=""
+    model_next=0
+    for arg in "$@"; do
+        if [ "$model_next" -eq 1 ]; then
+            model_value="$arg"
+            model_next=0
+        else
+            case "$arg" in
+                --model|-m) model_next=1; continue ;;
+                --model=*) model_value="${arg#--model=}" ;;
+                -m=*) model_value="${arg#-m=}" ;;
+                -m?*) model_value="${arg#-m}" ;;
+                *) continue ;;
+            esac
+        fi
+        case "$model_value" in
+            *-codex) echo "dispatch-codex-exec.sh: WARN codex-variant model '$model_value' may return 400 on ChatGPT auth" >&2 ;;
+        esac
+    done
     EFFECTIVE_MODEL="caller-named"
 else
-    pin_args="--model gpt-5.5"
-    EFFECTIVE_MODEL="gpt-5.5"
+    EFFECTIVE_MODEL="$FALLBACK_MODEL"
+    if [ -r "$CRITICS_FILE" ]; then
+        if ! EFFECTIVE_MODEL="$(node -e '
+const fs = require("fs");
+try {
+    const registry = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const model = registry.panel.find(row => row.slug === "codex").model;
+    // pin_args is word-split below: reject whitespace, glob and flag injection.
+    if (typeof model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model)) throw new Error("invalid codex model");
+    process.stdout.write(model);
+} catch (error) {
+    console.error("dispatch-codex-exec.sh: cannot read codex critic model: " + error.message);
+    process.exit(2);
+}
+' "$CRITICS_FILE")"; then
+            exit 2
+        fi
+    fi
+    pin_args="--model $EFFECTIVE_MODEL"
 fi
 if [ "$have_sandbox" -eq 0 ]; then
     pin_args="$pin_args --sandbox workspace-write"
@@ -424,8 +462,8 @@ if ! TIMEOUT_FLAG="$(mktemp 2>/dev/null)" || [ -z "$TIMEOUT_FLAG" ]; then
     exit 2
 fi
 # Observe stdout (JSON events with --json), not stderr startup diagnostics.
-# tee preserves the caller's output stream; this private scratch log is removed
-# by the EXIT trap and is only sampled by the watchdog at kill time.
+# Retain only its first byte (HIMMEL-2806); the watchdog samples non-emptiness,
+# not content. The owned relay forwards that byte and then the remaining stdin.
 if ! EVENT_LOG="$(mktemp 2>/dev/null)" || [ -z "$EVENT_LOG" ]; then
     echo "dispatch-codex-exec.sh: cannot create the event log - refusing to run codex without timeout diagnostics" >&2
     exit 2
@@ -436,7 +474,10 @@ fi
 set -m
 # Own the relay separately so completion includes forwarded stdout without
 # replacing the real codex PID in the job registry or process-tree watchdog.
-exec 3> >(tee "$EVENT_LOG")
+# A one-byte read cannot overread the pipe, including binary/NUL output.
+# Both stages belong to OUTPUT_PID's process group; && propagates either
+# failure and keeps the existing wait/watchdog lifetime contract intact.
+exec 3> >(dd bs=1 count=1 of="$EVENT_LOG" 2>/dev/null && cat "$EVENT_LOG" -)
 OUTPUT_PID=$!
 if [ "$STDIN_BRIEF" -eq 0 ]; then
     # shellcheck disable=SC2086,SC2090  # pin_args is a fixed, space-safe flag list built above; embedded quotes (HIMMEL-905 -c override) are intentional, single argv tokens once split

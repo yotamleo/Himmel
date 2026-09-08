@@ -167,6 +167,10 @@ is a delivery mechanism, not a new authority — an inbox bullet still has to
 carry the token to authorize anything wider than the sealed brief, exactly
 like a bus message would.
 
+- **Cursor locking (HIMMEL-2790):** a session-keyed `flock` beside the cursor serializes peek/deliver/commit; missing `flock` retains unlocked, fail-open delivery.
+- **Delivery confirmation (HIMMEL-2791):** PostToolUse, SessionStart, and direct stdout callers commit only after successful serialization/output; failures leave rulings pending (this confirms the local write, not downstream consumption).
+- **Document mirroring (HIMMEL-2795):** `--doc` writers serialize on a canonical-path hash lock in a private user directory under `${TMPDIR:-/tmp}`; other doc writers must use the same lock to participate, and missing/failed `flock` aborts before mirroring or inbox append.
+
 ## 4. What this does NOT do (residual risk, priced)
 
 - **Compromised parent (vector 3) is unmitigated by the channel, by design.**

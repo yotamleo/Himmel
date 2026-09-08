@@ -1384,8 +1384,11 @@ out=$(HOME="$U_HOME" PATH="$U_BIN:$HBIN" HIMMEL_UNINSTALL_REPO_ROOT="$U_REPO" \
     TELEGRAM_CHANNEL_DIR="$CHANNEL" BRIDGE_ROOT="$BRIDGE" HIMMELCTL_CACHE_DIR="$U_CACHE" \
     bash "$CLI" --yes --skip-tasks --skip-hooks </dev/null 2>&1); rc=$?
 calls=$(cat "$CLAUDE_CALL_LOG")
+# WHY (HIMMEL-2796): plugin scopes do not reveal registration scopes, so
+# removal also tries the install-profile scope (user) alongside the
+# preserved project scope — the persisted project scope must still survive.
 if [ "$rc" -eq 0 ] && grep -qxF 'plugin marketplace remove himmel --scope project' <<< "$calls" &&
-    ! grep -qxF 'plugin marketplace remove himmel --scope user' <<< "$calls"; then
+    grep -qxF 'plugin marketplace remove himmel --scope user' <<< "$calls"; then
     echo 'ok - U8 marketplace removal retains project scope across children'
 else
     echo 'FAIL - U8: marketplace removal lost project scope between children'; FAILED=$((FAILED + 1))
@@ -1410,7 +1413,9 @@ rm "$U_REPO/.git/hooks/commit-msg"
 u_run
 assert_rc 'U9 retry completes teardown' 0 "$rc"
 assert_has 'U9 retry removes marketplace at preserved project scope' 'plugin marketplace remove himmel --scope project' "$calls"
-assert_not_has 'U9 retry never falls back to user scope for himmel' 'plugin marketplace remove himmel --scope user' "$calls"
+# WHY (HIMMEL-2796): also tries the install-profile scope (user) — plugin
+# scopes alone do not prove where a marketplace is registered.
+assert_has 'U9 retry also tries install-profile user scope for himmel' 'plugin marketplace remove himmel --scope user' "$calls"
 if [ ! -e "$U_CACHE" ]; then
     echo 'PASS U9 successful retry removes cache and handoff'
 else
@@ -1452,7 +1457,9 @@ rm "$U_REPO/.git/hooks/commit-msg"
 u_run
 assert_rc 'U11 retry completes teardown' 0 "$rc"
 assert_has 'U11 retry removes m1 marketplace at project scope' 'plugin marketplace remove m1 --scope project' "$calls"
-assert_not_has 'U11 retry never removes m1 marketplace at user scope' 'plugin marketplace remove m1 --scope user' "$calls"
+# WHY (HIMMEL-2796): also tries the install-profile scope (user) for m1 —
+# plugin scopes alone do not prove where a marketplace is registered.
+assert_has 'U11 retry also tries m1 at install-profile user scope' 'plugin marketplace remove m1 --scope user' "$calls"
 assert_has 'U11 retry removes m2 marketplace at user scope' 'plugin marketplace remove m2 --scope user' "$calls"
 
 # U12 — a symlinked cache gets an ephemeral handoff and leaves its target alone.
@@ -1546,7 +1553,9 @@ rm "$U_REPO/.git/hooks/commit-msg"
 u_run --dry-run
 assert_rc 'U15 dry retry completes preview' 0 "$rc"
 assert_has 'U15 dry retry previews m1 marketplace at project scope' 'DRY: claude plugin marketplace remove m1 --scope project' "$out"
-assert_not_has 'U15 dry retry never previews m1 marketplace at user scope' 'DRY: claude plugin marketplace remove m1 --scope user' "$out"
+# WHY (HIMMEL-2796): the preview also covers the install-profile scope
+# (user) — plugin scopes alone do not prove where a marketplace is registered.
+assert_has 'U15 dry retry also previews m1 at install-profile user scope' 'DRY: claude plugin marketplace remove m1 --scope user' "$out"
 if [ -f "$U_CACHE/uninstall-scope-map" ] && cmp -s "$TMP/u15-scope-map-before" "$U_CACHE/uninstall-scope-map"; then
     echo 'PASS U15 persisted scope map survives byte-identical'
 else

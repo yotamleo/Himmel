@@ -362,46 +362,49 @@ else
 fi
 
 # G-hooks-5 — WHY (HIMMEL-2754): an unreadable hook is unresolved, not absent.
-if [ "$(id -u)" -ne 0 ]; then
-    mkdir -p "$TMP/hooks-unreadable/.git/objects" "$TMP/hooks-unreadable/.git/refs" "$TMP/hooks-unreadable/.git/hooks"
-    printf 'ref: refs/heads/main\n' > "$TMP/hooks-unreadable/.git/HEAD"
-    printf '# pre-commit framework hook\n' > "$TMP/hooks-unreadable/.git/hooks/commit-msg"
-    chmod 000 "$TMP/hooks-unreadable/.git/hooks/commit-msg"
+# HIMMEL-2805: probe chmod's effect; root and ACL passthrough may still read.
+mkdir -p "$TMP/hooks-unreadable/.git/objects" "$TMP/hooks-unreadable/.git/refs" "$TMP/hooks-unreadable/.git/hooks"
+printf 'ref: refs/heads/main\n' > "$TMP/hooks-unreadable/.git/HEAD"
+printf '# pre-commit framework hook\n' > "$TMP/hooks-unreadable/.git/hooks/commit-msg"
+if chmod 000 "$TMP/hooks-unreadable/.git/hooks/commit-msg" 2>/dev/null && [ ! -r "$TMP/hooks-unreadable/.git/hooks/commit-msg" ]; then
     REPO_ROOT="$TMP/hooks-unreadable"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null repo_has_framework_hooks; hooks_rc=$?
     REPO_ROOT="$_hooks_saved_repo"
-    chmod 600 "$TMP/hooks-unreadable/.git/hooks/commit-msg"
-    rm -rf "$TMP/hooks-unreadable"
     if [ "$hooks_rc" -eq 2 ]; then
         echo 'PASS G-hooks-5 (rc=2)'
     else
         echo "FAIL G-hooks-5 — expected rc=2, got rc=$hooks_rc"
         FAILED=$((FAILED + 1))
     fi
+elif [ "$(id -u)" -eq 0 ]; then
+    echo 'SKIP G-hooks-5 (root can read mode-000 files)'
 else
-    echo 'skip - G-hooks-5 (root can read mode-000 files)'
+    echo 'SKIP G-hooks-5 (chmod 000 did not deny read on this filesystem; fixture cannot be built)'
 fi
+chmod 600 "$TMP/hooks-unreadable/.git/hooks/commit-msg"
+rm -rf "$TMP/hooks-unreadable"
 
 # G-hooks-6 — WHY (HIMMEL-2754): an unenumerable hooks directory is unresolved.
-if [ "$(id -u)" -ne 0 ]; then
-    mkdir -p "$TMP/hooks-unsearchable/.git/objects" "$TMP/hooks-unsearchable/.git/refs" "$TMP/hooks-unsearchable/.git/hooks"
-    printf 'ref: refs/heads/main\n' > "$TMP/hooks-unsearchable/.git/HEAD"
-    printf '# pre-commit framework hook\n' > "$TMP/hooks-unsearchable/.git/hooks/commit-msg"
-    chmod 000 "$TMP/hooks-unsearchable/.git/hooks"
+mkdir -p "$TMP/hooks-unsearchable/.git/objects" "$TMP/hooks-unsearchable/.git/refs" "$TMP/hooks-unsearchable/.git/hooks"
+printf 'ref: refs/heads/main\n' > "$TMP/hooks-unsearchable/.git/HEAD"
+printf '# pre-commit framework hook\n' > "$TMP/hooks-unsearchable/.git/hooks/commit-msg"
+if chmod 000 "$TMP/hooks-unsearchable/.git/hooks" 2>/dev/null && { [ ! -r "$TMP/hooks-unsearchable/.git/hooks" ] || [ ! -x "$TMP/hooks-unsearchable/.git/hooks" ]; }; then
     REPO_ROOT="$TMP/hooks-unsearchable"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null repo_has_framework_hooks; hooks_rc=$?
     REPO_ROOT="$_hooks_saved_repo"
-    chmod 700 "$TMP/hooks-unsearchable/.git/hooks"
-    rm -rf "$TMP/hooks-unsearchable"
     if [ "$hooks_rc" -eq 2 ]; then
         echo 'PASS G-hooks-6 (rc=2)'
     else
         echo "FAIL G-hooks-6 — expected rc=2, got rc=$hooks_rc"
         FAILED=$((FAILED + 1))
     fi
+elif [ "$(id -u)" -eq 0 ]; then
+    echo 'SKIP G-hooks-6 (root can enumerate mode-000 directories)'
 else
-    echo 'skip - G-hooks-6 (root can enumerate mode-000 directories)'
+    echo 'SKIP G-hooks-6 (chmod 000 did not deny read/search on this filesystem; fixture cannot be built)'
 fi
+chmod 700 "$TMP/hooks-unsearchable/.git/hooks"
+rm -rf "$TMP/hooks-unsearchable"
 
 # G-hooks-7 — RED 8 (HIMMEL-2754): a grep read error is unresolved.
 mkdir -p "$TMP/hooks-grep-error/.git/hooks"

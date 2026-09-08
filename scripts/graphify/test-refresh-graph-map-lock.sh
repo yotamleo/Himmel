@@ -639,5 +639,198 @@ wait "$EPID"; rc_e=$?
 [ -d "$OUT10/.extraction.lock" ] && fail "T10 process E left the extraction lock behind" \
   || pass "T10 process E released the extraction lock on exit"
 
+# --- T11 (HIMMEL-2731): mkdir -> owner acquisition race, now a passing
+# regression against the shipped exclusive-owner-publication protocol.
+#
+# Source the marker-delimited shipped extraction protocol, then pause contender
+# A after its successful mkdir but before its owner write. B reclaims the
+# ownerless directory and enters using the replacement. When A resumes, its
+# noclobber owner write can no longer overwrite B's -- it hits EEXIST (or
+# ENOENT if B has already released and reaped the directory) and A loops back
+# to the wait loop instead of entering. The explicit re-read below verifies
+# that ruling directly: whichever contender's _extraction_lock_acquire returns
+# 0 must see its own token in "owner", never a token it did not write itself.
+echo "T11: paused mkdir winner must not overlap its successor"
+PROTOCOL11="$WS/extraction-lock-protocol.sh"
+if ! python3 - "$SCRIPT" "$PROTOCOL11" <<'PY'
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1]).read_text()
+start_marker = "# >>> HIMMEL-2731 extraction lock protocol"
+end_marker = "# <<< HIMMEL-2731 extraction lock protocol"
+try:
+    start = source.index(start_marker)
+    end = source.index(end_marker, start)
+except ValueError as error:
+    raise SystemExit(f"T11 extraction protocol marker missing: {error}")
+pathlib.Path(sys.argv[2]).write_text(source[start:end] + "\n")
+PY
+then
+  fail "T11 setup: could not slice the shipped extraction lock protocol"
+  exit 1
+fi
+for function11 in _extraction_lock_release _extraction_lock_takeover _extraction_lock_acquire; do
+  if ! grep -q "^${function11}()" "$PROTOCOL11"; then
+    fail "T11 setup: sliced protocol is missing ${function11}()"
+    exit 1
+  fi
+done
+
+LOCK11="$WS/t11/.extraction.lock"
+mkdir -p "$WS/t11"
+LOG11="$WS/t11-critical.log"
+PAUSED11="$WS/t11-a-paused"
+RESUME11="$WS/t11-a-resume"
+A_ENTERED11="$WS/t11-a-entered"
+B_ENTERED11="$WS/t11-b-entered"
+
+cat > "$WS/t11-a.sh" <<'WORKER_A'
+#!/usr/bin/env bash
+set -u
+source "$PROTOCOL11"
+EXTRACTION_LOCK="$LOCK11"
+EXTRACTION_LOCK_TIMEOUT_SECONDS=10
+EXTRACTION_LOCK_STALE_SECONDS=7200
+EXTRACTION_LOCK_HELD=0
+EXTRACTION_LOCK_TOKEN=""
+mkdir() {
+  if [ "$1" = "$EXTRACTION_LOCK" ] && [ ! -e "$PAUSED11" ]; then
+    command mkdir "$@" || return $?
+    : > "$PAUSED11"
+    i=0
+    while [ ! -e "$RESUME11" ] && [ "$i" -lt 500 ]; do
+      command sleep 0.01
+      i=$((i + 1))
+    done
+    [ -e "$RESUME11" ] || return 125
+    return 0
+  fi
+  command mkdir "$@"
+}
+if _extraction_lock_acquire; then
+  # Model the proposed post-write verification explicitly.
+  owner=$(cat "$EXTRACTION_LOCK/owner" 2>/dev/null) || owner=""
+  [ -n "$EXTRACTION_LOCK_TOKEN" ] || exit 4
+  [ "$owner" = "$EXTRACTION_LOCK_TOKEN" ] || exit 3
+  printf '%s enter\n' "$EXTRACTION_LOCK_TOKEN" >> "$LOG11"
+  : > "$A_ENTERED11"
+  command sleep 0.2
+  printf '%s leave\n' "$EXTRACTION_LOCK_TOKEN" >> "$LOG11"
+  _extraction_lock_release
+  exit 0
+fi
+exit 2
+WORKER_A
+
+cat > "$WS/t11-b.sh" <<'WORKER_B'
+#!/usr/bin/env bash
+set -u
+source "$PROTOCOL11"
+EXTRACTION_LOCK="$LOCK11"
+EXTRACTION_LOCK_TIMEOUT_SECONDS=10
+EXTRACTION_LOCK_STALE_SECONDS=7200
+EXTRACTION_LOCK_HELD=0
+EXTRACTION_LOCK_TOKEN=""
+# Compress the five-poll ownerless grace period without changing its ordering.
+sleep() { command sleep 0.02; }
+if _extraction_lock_acquire; then
+  owner=$(cat "$EXTRACTION_LOCK/owner" 2>/dev/null) || owner=""
+  [ -n "$EXTRACTION_LOCK_TOKEN" ] || exit 4
+  [ "$owner" = "$EXTRACTION_LOCK_TOKEN" ] || exit 3
+  printf '%s enter\n' "$EXTRACTION_LOCK_TOKEN" >> "$LOG11"
+  : > "$B_ENTERED11"
+  i=0
+  while [ ! -e "$A_ENTERED11" ] && [ "$i" -lt 500 ]; do
+    command sleep 0.01
+    i=$((i + 1))
+  done
+  saw_a=0
+  [ -e "$A_ENTERED11" ] && saw_a=1
+  printf '%s leave\n' "$EXTRACTION_LOCK_TOKEN" >> "$LOG11"
+  _extraction_lock_release
+  [ "$saw_a" -eq 1 ] && exit 0
+  exit 5
+fi
+exit 2
+WORKER_B
+chmod +x "$WS/t11-a.sh" "$WS/t11-b.sh"
+
+wait_pid11() {
+  local pid11="$1" i11=0
+  while kill -0 "$pid11" 2>/dev/null && [ "$i11" -lt 1000 ]; do
+    sleep 0.01
+    i11=$((i11 + 1))
+  done
+  if kill -0 "$pid11" 2>/dev/null; then
+    kill "$pid11" 2>/dev/null || true
+    wait "$pid11" 2>/dev/null || true
+    return 124
+  fi
+  wait "$pid11"
+}
+
+PROTOCOL11="$PROTOCOL11" LOCK11="$LOCK11" LOG11="$LOG11" \
+  PAUSED11="$PAUSED11" RESUME11="$RESUME11" A_ENTERED11="$A_ENTERED11" \
+  B_ENTERED11="$B_ENTERED11" \
+  bash "$WS/t11-a.sh" > "$WS/t11-a.out" 2> "$WS/t11-a.err" &
+APID11=$!
+i=0
+while [ ! -e "$PAUSED11" ] && [ "$i" -lt 200 ]; do sleep 0.01; i=$((i + 1)); done
+[ -e "$PAUSED11" ] || fail "T11 setup: A did not pause after mkdir"
+
+PROTOCOL11="$PROTOCOL11" LOCK11="$LOCK11" LOG11="$LOG11" \
+  PAUSED11="$PAUSED11" RESUME11="$RESUME11" A_ENTERED11="$A_ENTERED11" \
+  B_ENTERED11="$B_ENTERED11" \
+  bash "$WS/t11-b.sh" > "$WS/t11-b.out" 2> "$WS/t11-b.err" &
+BPID11=$!
+i=0
+while [ ! -e "$B_ENTERED11" ] && kill -0 "$BPID11" 2>/dev/null && [ "$i" -lt 500 ]; do
+  sleep 0.01
+  i=$((i + 1))
+done
+[ -e "$B_ENTERED11" ] || fail "T11 setup: B did not take over and enter"
+: > "$RESUME11"
+
+wait_pid11 "$APID11"; rc_a11=$?
+wait_pid11 "$BPID11"; rc_b11=$?
+echo "  diagnostic: T11 contender statuses A=$rc_a11 B=$rc_b11"
+[ "$rc_a11" -ne 124 ] && [ "$rc_b11" -ne 124 ] || fail "T11 worker exceeded its bounded wait (A=$rc_a11 B=$rc_b11)"
+# A must actually complete (retry-after-LOST, then win once B releases) --
+# without this, a regression that makes A give up early (exit 2/3/4) would
+# leave B's log alone, still balanced and non-overlapping, and this test
+# would pass without ever exercising the retry it exists to prove.
+[ "$rc_a11" -eq 0 ] || fail "T11 contender A failed to complete after its retry (rc=$rc_a11)"
+
+depth11=0
+overlap11=0
+malformed11=0
+events11=0
+seen11=" "
+active11=""
+while read -r token11 action11 extra11; do
+  events11=$((events11 + 1))
+  [ -n "$token11" ] && [ -z "$extra11" ] || malformed11=1
+  case "$action11" in
+    enter)
+      case "$seen11" in *" $token11 "*) malformed11=1 ;; esac
+      seen11="$seen11$token11 "
+      depth11=$((depth11 + 1))
+      if [ "$depth11" -eq 1 ]; then active11="$token11"; else overlap11=1; fi
+      ;;
+    leave)
+      [ "$depth11" -gt 0 ] || malformed11=1
+      if [ "$depth11" -eq 1 ] && [ "$token11" != "$active11" ]; then malformed11=1; fi
+      depth11=$((depth11 - 1))
+      ;;
+    *) malformed11=1 ;;
+  esac
+done < "$LOG11"
+[ "$events11" -gt 0 ] || fail "T11 critical-section log is empty"
+[ "$malformed11" -eq 0 ] && [ "$depth11" -eq 0 ] && pass "T11 log has nonempty tokens and balanced enter/leave events" \
+  || fail "T11 malformed/unbalanced critical-section log: $(tr '\n' ';' < "$LOG11")"
+[ "$overlap11" -eq 0 ] && pass "T11 critical-section log has no overlapping enter/leave interval" \
+  || fail "T11 RED: mutual exclusion violated: $(tr '\n' ';' < "$LOG11")"
+
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

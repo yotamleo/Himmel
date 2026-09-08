@@ -17,7 +17,7 @@
 #
 # Cost model (HIMMEL-2767): fires on EVERY tool call in EVERY session,
 # native ones included. The real work is scripts/lib/claudex-inbox.sh's
-# inbox_new_bullets, which is a stat/size compare on the no-op path — see
+# inbox_with_lock, which serializes cursor checks when an inbox exists — see
 # its header. This script adds only cheap guards on top and never starts jq
 # unless there is actually new content to format.
 #
@@ -39,17 +39,18 @@ CLAUDE_PROJECT_DIR="${CLAUDE_PROJECT_DIR:-}"
 name="$(current_session_name 2>/dev/null)" || exit 0
 [ -n "$name" ] || exit 0
 
-# Checked BEFORE consuming bullets: inbox_new_bullets advances the delivery
-# cursor as a side effect, so checking jq only after calling it would consume
-# (and silently lose) any pending ruling on a jq-less host -- this host never
-# recovers those bullets, since the cursor has already moved past them.
 command -v jq >/dev/null 2>&1 || exit 0
 
-bullets="$(inbox_new_bullets "$name" 2>/dev/null)"
-[ -n "$bullets" ] || exit 0
+# shellcheck disable=SC2317,SC2329 # Callback invoked by inbox_with_lock.
+deliver_inbox() {
+    inbox_peek "$1" || return 1
+    if [ -n "$inbox_bullets" ]; then
+        jq -nc --arg ctx "$inbox_bullets" \
+            '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:("Claudex inbox — console ruling(s) delivered, no operator paste needed:\n" + $ctx)}}' \
+            2>/dev/null || return 1
+    fi
+    inbox_commit
+}
 
-jq -nc --arg ctx "$bullets" \
-    '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:("Claudex inbox — console ruling(s) delivered, no operator paste needed:\n" + $ctx)}}' \
-    2>/dev/null
-
+inbox_with_lock "$name" deliver_inbox 2>/dev/null
 exit 0
