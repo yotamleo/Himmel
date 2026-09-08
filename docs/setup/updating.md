@@ -157,6 +157,78 @@ response-compression plugin is absent; on a TTY it asks `Remove now? [Y/n]`
 with the default being remove; a non-interactive run prints the advisory and
 the two manual commands and removes nothing).
 
+## Release channels (HIMMEL-2705)
+
+By default, `scripts/himmel-update.sh`'s pull step is exactly what it has
+always been: `git pull --ff-only` on whatever branch you have checked out.
+Nothing below changes that unless you opt in.
+
+Opting a station into a release channel makes the pull step follow a tagged
+release instead of your branch tip:
+
+- **`channel: stable`** — follows the highest `vX.Y.Z` release tag (no
+  `-pre.N` suffix).
+- **`channel: pre`** — follows the highest tag overall, `-pre.N` prereleases
+  included (a stable tag still outranks a `-pre.N` of the same
+  major.minor.patch; `-pre.10` outranks `-pre.9` — compared numerically, not
+  as text).
+
+Set it two ways, checked in this order (first one set wins):
+
+1. **`HIMMEL_UPDATE_CHANNEL=stable`** or **`HIMMEL_UPDATE_CHANNEL=pre`** —
+   env var, per-invocation or exported.
+2. **`channel` in your install profile** —
+   `${HIMMELCTL_CACHE_DIR:-~/.claude/himmel}/install-profile.json`, the same
+   cache `himmelctl install` writes its answers to. `himmelctl install`
+   defaults a **new** adopter's profile to `channel: stable`; it never
+   overwrites a profile that already has a `channel` value.
+
+Neither set → the channel is unset and the pull step is unchanged plain
+`git pull --ff-only`.
+
+On a channel, `--check` (or apply mode's pull step) fetches tags and
+resolves the highest matching one, then compares it to `HEAD`:
+
+- Already on that tag → up to date, nothing to do.
+- `HEAD` an ancestor of the tag (behind) → `--check` reports
+  `behind stable vX.Y.Z (at <describe>)`; apply mode runs
+  `git switch --detach vX.Y.Z` (never `git checkout` — this repo hard-refuses
+  that shape).
+- `HEAD` a descendant of the tag (ahead — you're on newer work than the last
+  release) → left alone, reported `not behind — leaving as-is`. A channel
+  never downgrades you.
+- `HEAD` and the tag diverged (neither is an ancestor of the other) → the
+  pull step fails loud rather than guess which one you want.
+- No tag exists yet on the channel → `stable` with no release tags prints
+  exactly `no stable release yet — nothing to follow` and exits `0`; it does
+  **not** fall back to pulling the branch.
+
+Apply mode never moves a dirty checkout onto a tag — `git switch --detach`
+refuses on uncommitted changes the same as a plain pull would, and
+**`HIMMEL_UPDATE_AUTOSTASH=1` does not apply here**: autostash's
+stash/pull/restore semantics are specific to `git pull`, not `git switch`, so
+a channel-following station must commit or stash by hand before updating.
+
+`--check` never moves `HEAD` or touches the working tree on a channel, same
+guarantee as the unset-channel path — it does fetch tags from `origin` first
+(writing Git objects/refs, same as any `git fetch`), but never switches,
+pulls, or otherwise changes what you're on.
+
+## After upgrading
+
+A pull that moves you to a new release — whether the plain branch pull or a
+channel detaching onto a new tag — is not the end of the update. Two things
+still need doing:
+
+- **Project-scope adopters must re-run `adopt.sh`.** A pull changes the files
+  in this checkout; it does not re-wire a project that adopted himmel at an
+  earlier commit. Re-run the same adopt command you used originally so the
+  project's `.claude/settings.json` and hooks pick up whatever this release
+  changed.
+- **Read the release notes for the version you landed on.** Any upgrade step
+  specific to that release — a one-time migration, a config field that moved,
+  a dependency bump — is carried in that release's notes, not repeated here.
+
 ## Machine-local catch-up (HIMMEL-2134)
 
 A merged pin bump reaches this checkout's **repo**. It does not reach the

@@ -6,7 +6,7 @@
 # (the offline unit tests are the CI gate). Documented + manual by design.
 #
 # Usage:
-#   BITBUCKET_SMOKE_WS=example-ws bash scripts/bitbucket/tests/live-smoke.sh
+#   BITBUCKET_SMOKE_WS=example-ws bash scripts/bitbucket/tests/live-smoke.sh # leak-allow: hostname doc example workspace for the live-smoke usage comment
 #
 # Requires BITBUCKET_EMAIL + BITBUCKET_API_TOKEN (repo-root .env or env).
 # Creates repo <ws>/forge-smoke, drives repo view → src commits → pr create →

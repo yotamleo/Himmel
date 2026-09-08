@@ -49,11 +49,11 @@ beforeEach(() => {
 describe('repo-context-cli — bitbucket forge', () => {
   it('repo view JSON {workspace, repo_slug} → owner=workspace name=repo_slug', () => {
     writeStub(
-      `process.stdout.write(JSON.stringify({ workspace: 'example-ws', repo_slug: 'demo', full_name: 'example-ws/demo', default_branch: 'main' })); process.exit(0);`,
+      `process.stdout.write(JSON.stringify({ workspace: 'example-ws', repo_slug: 'demo', full_name: 'example-ws/demo', default_branch: 'main' })); process.exit(0);`, // leak-allow: hostname test fixture stubbed bitbucket repo-view JSON response
     );
     const r = spawnSync(process.execPath, [CLI], { env: envBb(), cwd: workDir, encoding: 'utf8' });
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/owner=example-ws name=demo/);
+    expect(r.stdout).toMatch(/owner=example-ws name=demo/); // leak-allow: hostname asserts the fixture workspace parsed as owner
   });
 
   it('missing repo_slug → exit 1', () => {

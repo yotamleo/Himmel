@@ -97,8 +97,8 @@ check("ineligible: non-http scheme", not mod.firecrawl_eligible("ftp://example.c
 # G-1 privacy gate — never ship internal/private URLs to a 3rd-party scraper.
 check("ineligible: localhost", not mod.firecrawl_eligible("http://localhost/x"))
 check("ineligible: 127.0.0.1", not mod.firecrawl_eligible("http://127.0.0.1/x"))
-check("ineligible: RFC1918 192.168", not mod.firecrawl_eligible("http://192.168.1.5/x"))
-check("ineligible: RFC1918 10.x", not mod.firecrawl_eligible("http://10.0.0.9/x"))
+check("ineligible: RFC1918 192.168", not mod.firecrawl_eligible("http://192.168.1.5/x"))  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+check("ineligible: RFC1918 10.x", not mod.firecrawl_eligible("http://10.0.0.9/x"))  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
 check("ineligible: .internal TLD", not mod.firecrawl_eligible("https://wiki.internal/x"))
 check("ineligible: basic-auth userinfo", not mod.firecrawl_eligible("https://user:pass@example.com/x"))
 check("eligible: public IP literal still ok", mod.firecrawl_eligible("http://93.184.216.34/x"))

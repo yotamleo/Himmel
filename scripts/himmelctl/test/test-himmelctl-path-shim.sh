@@ -439,4 +439,54 @@ grepq "$(cat "$binH2/himmelctl.js")" 'caseH2-repo' \
   || fail "caseH2: non-worktree install must target repoRoot (primary == self)"
 echo "ok: caseH2 non-worktree primary install targets repoRoot unchanged"
 
+# ── I: HIMMEL-2836 — a failed adopt.sh must not skip the PATH shim ──────────
+# RED control (pre-fix order): applyHimmelctlPathShim ran AFTER the
+# `if (rc !== 0) return rc` early return, so a failing adopt.sh (e.g. the
+# HIMMEL-2837 plugin SSH-clone class) left no himmelctl launcher on PATH and
+# the adopter had no way to run `himmelctl ensure` to resume.
+fixtureI="$work/caseI-checkout"
+binI="$work/caseI-bin"
+homeI="$work/caseI-home"
+stubI="$work/caseI-tools"
+mkdir -p "$fixtureI/scripts/himmelctl" "$homeI" "$stubI"
+cat > "$fixtureI/scripts/himmelctl/bin.js" <<'STUB'
+'use strict';
+const fs = require('fs');
+fs.appendFileSync(process.env.SHIM_CALL_LOG, `install:${process.argv.slice(2).join('|')}\n`);
+STUB
+printf '#!/usr/bin/env bash\necho "adopt.sh: simulated failure" >&2\nexit 1\n' > "$fixtureI/scripts/adopt.sh"
+chmod +x "$fixtureI/scripts/adopt.sh"
+cat > "$work/adopter-profile.json" <<'JSON'
+{
+  "role": "adopter",
+  "scope": "user",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": [],
+  "lanesMeaningful": true,
+  "alwaysOn": false
+}
+JSON
+for tool in bash git jq python3 npm; do link_hermetic_tool "$tool" "$stubI"; done
+install_path="$(winpath "$binI"):$(winpath "$stubI"):$PATH"
+set +e
+out=$(PATH="$install_path" HOME="$(winpath "$homeI")" USERPROFILE="$(winpath "$homeI")" \
+  HIMMELCTL_BASH="$bash_bin" HIMMELCTL_INTERACTIVE=0 \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/caseI-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseI-cache")-luna-config.json" \
+  HIMMELCTL_REPO_ROOT="$(winpath "$fixtureI")" \
+  HIMMELCTL_BIN_DIR="$(winpath "$binI")" HIMMELCTL_SHIM_PLATFORM=linux \
+  "$node_bin" "$wizard" install --from-profile "$(winpath "$work/adopter-profile.json")" \
+  </dev/null 2>&1); rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "caseI: install must propagate adopt.sh's non-zero rc unchanged (got rc=$rc): $out"
+[ -x "$binI/himmelctl" ] || fail "caseI: PATH shim must be applied even though adopt.sh failed: $out"
+[ -f "$binI/himmelctl.js" ] || fail "caseI: launcher loader must be written even though adopt.sh failed"
+grepq "$out" 'himmelctl ensure' || fail "caseI: failure message must tell the adopter himmelctl ensure is on PATH to resume: $out"
+SHIM_CALL_LOG="$(winpath "$work/caseI-shim-calls.log")" \
+  PATH="$(winpath "$binI"):$PATH" "$binI/himmelctl" status
+[ "$(cat "$work/caseI-shim-calls.log")" = 'install:status' ] \
+  || fail "caseI: shim written after a failed adopt.sh must still target this checkout"
+echo "ok: caseI failed adopt.sh still applies the PATH shim and points the adopter at himmelctl ensure"
+
 echo "PASS"

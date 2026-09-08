@@ -105,6 +105,20 @@
       },
       "homepage": "https://github.com/yotamleo/claude-obsidian",
       "license": "MIT"
+    },
+    {
+      "name": "plannotator-effective-html",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/plannotator/effective-html.git",
+        "sha": "d95debbaef15af1d201fc6c10c77cf92b524a0d6"
+      },
+      "description": "[plannotator, vendor + attribution only, no carried delta] Effective HTML annotation/plugin tooling. Sourced via an explicit HTTPS git url (NOT the `github` shorthand, which clones over SSH and fails host-key verification on a fresh machine with no github.com in ~/.ssh/known_hosts — HIMMEL-2837, same class as HIMMEL-549). Pinned to an upstream commit SHA per himmel supply-chain policy. Upstream companion PR open: https://github.com/plannotator/effective-html/pull/26 (switches their own marketplace.json to the same explicit-url source).",
+      "author": {
+        "name": "plannotator",
+        "url": "https://github.com/plannotator"
+      },
+      "homepage": "https://github.com/plannotator/effective-html"
     }
   ]
 }

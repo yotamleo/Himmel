@@ -1,7 +1,7 @@
 # Welcome
 
 This vault was instantiated from the
-[luna-brain](https://github.com/yotamleo/Himmel/tree/main/templates/luna-second-brain) skeleton. The
+[luna-brain](https://github.com/yotamleo/Himmel/tree/main/templates/luna-second-brain) skeleton. The <!-- leak-allow: hostname welcome doc naming the public skeleton this vault came from -->
 skeleton ships a PARA folder layout, daily/weekly templates, and a
 Claude operating manual.
 

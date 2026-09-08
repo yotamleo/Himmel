@@ -185,7 +185,7 @@ assert_rc "16 bash redirect using literal \$HOME denies" 2 \
 # Regression case: the old regex stopped matching at the first whitespace
 # even inside quotes, truncating the token before it could canonicalise to
 # settings.json at all — a live path legitimately contains a space on
-# Windows (a `C:\Users\Jane Doe\...` profile).
+# Windows (a `C:\Users\Jane Doe\...` profile).  # leak-allow: home-path doc example
 SPACE_PRIMARY="$SANDBOX/pri mary"
 mkrepo "$SPACE_PRIMARY"
 mkdir -p "$SPACE_PRIMARY/.claude"

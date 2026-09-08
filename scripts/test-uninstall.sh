@@ -533,6 +533,106 @@ assert_rc "dry-run [6/8] exits 0" 0 "$rc"
 assert_has "dry-run prints [6/8] DRY" "DRY: unwire statusLine" "$out"
 assert_rc "dry-run leaves settings unchanged" "$before" "$(cat "$HIMMEL_USER_SETTINGS")"
 
+# SC6P (HIMMEL-2776): project scope resolves from the install invocation's CWD,
+# not the himmel clone containing uninstall.sh. Omitting the project pass must
+# fail these residue/output assertions independently of the plugin-scope rows.
+PROJECT="$TMP/adopted project"
+mkdir -p "$PROJECT/.claude"
+seed_settings
+cp "$HIMMEL_USER_SETTINGS" "$TMP/user-before.json"
+# Hand-derived surviving user keys, formatted as the existing jq writers emit.
+jq -n '{env:{KEEP_ME:"1"},hooks:{PreToolUse:[
+    {matcher:"Bash",hooks:[{type:"command",command:"bash /opt/rtk-hook-guard.sh"}]},
+    {matcher:"*",hooks:[{type:"command",command:"bash C:/h/scripts/hooks/auto-arm-on-cap.sh"}]}
+  ],SessionStart:[{hooks:[{type:"command",command:"bash C:/h/scripts/hooks/check-update-available.sh"}]}]},
+  permissions:{allow:["mcp__obsidian-vault__obsidian_simple_search"]}}' > "$TMP/user-expected.json"
+jq '.hooks.PreToolUse = [range(0;10) | {matcher:"Bash",hooks:[{type:"command",command:"bash $CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh"}]}]' \
+    "$HIMMEL_USER_SETTINGS" > "$PROJECT/.claude/settings.json"
+cp "$PROJECT/.claude/settings.json" "$TMP/project-before.json"
+project_uninstall() {
+    (cd "$PROJECT" && TELEGRAM_CHANNEL_DIR="$TMP/none-project" BRIDGE_ROOT="$TMP/none-project-bridge" PATH="$TMP/project-bin:$HBIN" \
+        bash "$CLI" --skip-tasks --skip-plugins --skip-hooks "$@" </dev/null 2>&1)
+}
+out=$(project_uninstall); rc=$?
+assert_rc "SC6P no consent aborts" 2 "$rc"
+assert_rc "SC6P no consent preserves project" "$(cat "$TMP/project-before.json")" "$(cat "$PROJECT/.claude/settings.json")"
+out=$(project_uninstall --dry-run); rc=$?
+assert_rc "SC6P dry-run exits 0" 0 "$rc"
+assert_has "SC6P dry-run names project" "DRY: project settings: would unwire $PROJECT/.claude/settings.json" "$out"
+assert_rc "SC6P dry-run preserves project" "$(cat "$TMP/project-before.json")" "$(cat "$PROJECT/.claude/settings.json")"
+out=$(project_uninstall --yes --skip-settings); rc=$?
+assert_rc "SC6P skip exits 0" 0 "$rc"
+assert_rc "SC6P skip preserves project" "$(cat "$TMP/project-before.json")" "$(cat "$PROJECT/.claude/settings.json")"
+out=$(project_uninstall --yes); rc=$?
+assert_rc "SC6P project unwire exits 0" 0 "$rc"
+assert_has "SC6P project outcome" "project settings: unwired $PROJECT/.claude/settings.json" "$out"
+assert_rc "SC6P project residue is zero" 0 "$(jq '[.statusLine, .env.HIMMEL_REPO, .env.LUNA_VAULT_PATH, .env.HANDOVER_DIR, .hooks.PreToolUse[].hooks[]] | map(select(. != null)) | length' "$PROJECT/.claude/settings.json")"
+assert_rc "SC6P preserves unrelated env" 1 "$(jq -r '.env.KEEP_ME' "$PROJECT/.claude/settings.json")"
+cmp -s "$TMP/user-expected.json" "$HIMMEL_USER_SETTINGS"; rc=$?
+assert_rc "SC6P user behavior byte-identical" 0 "$rc"
+rm "$PROJECT/.claude/settings.json"
+out=$(project_uninstall --yes); rc=$?
+assert_rc "SC6P absent project exits 0" 0 "$rc"
+assert_has "SC6P absent project outcome" "project settings: none found" "$out"
+# A failed user pass must halt before touching project settings.
+cp "$TMP/project-before.json" "$PROJECT/.claude/settings.json"
+printf 'invalid json\n' > "$HIMMEL_USER_SETTINGS"
+out=$(project_uninstall --yes); rc=$?
+assert_rc "SC6P invalid user halts" 2 "$rc"
+assert_rc "SC6P halted project unchanged" "$(cat "$TMP/project-before.json")" "$(cat "$PROJECT/.claude/settings.json")"
+cp "$TMP/user-before.json" "$HIMMEL_USER_SETTINGS"
+printf 'invalid json\n' > "$PROJECT/.claude/settings.json"
+out=$(project_uninstall --yes); rc=$?
+assert_rc "SC6P invalid project halts" 2 "$rc"
+assert_not_has "SC6P invalid project never claims unwired" "project settings: unwired" "$out"
+assert_not_has "SC6P invalid project never completes" "Uninstall complete." "$out"
+# Identity controls use a disposable source checkout, never live repo settings.
+# Removing the own-checkout exemption must change these seeded bytes.
+REAL_CLI="$CLI"
+SOURCE_FIXTURE="$TMP/source-checkout"
+mkdir -p "$SOURCE_FIXTURE/scripts" "$SOURCE_FIXTURE/.claude" "$TMP/project-bin"
+cp "$CLI" "$SOURCE_FIXTURE/scripts/uninstall.sh"
+ln -s "$(dirname "$REAL_CLI")/lib" "$SOURCE_FIXTURE/scripts/lib"
+link_hermetic_tool git "$TMP/project-bin"
+git init -q "$SOURCE_FIXTURE"
+cp "$TMP/project-before.json" "$SOURCE_FIXTURE/.claude/settings.json"
+git -C "$SOURCE_FIXTURE" add scripts/uninstall.sh .claude/settings.json
+git -C "$SOURCE_FIXTURE" -c user.name=Test -c user.email=test@example.invalid commit -qm 'test: fixture'
+CLI="$SOURCE_FIXTURE/scripts/uninstall.sh"
+PROJECT="$SOURCE_FIXTURE"
+seed_settings
+out=$(project_uninstall --yes); rc=$?
+assert_rc "SC6P own source checkout exits 0" 0 "$rc"
+assert_has "SC6P own source checkout kept" "himmel's own checkout" "$out"
+cmp -s "$TMP/project-before.json" "$PROJECT/.claude/settings.json"; rc=$?
+assert_rc "SC6P own tracked settings unchanged" 0 "$rc"
+git -C "$SOURCE_FIXTURE" worktree add -q --detach "$TMP/source-linked" HEAD
+PROJECT="$TMP/source-linked"
+out=$(project_uninstall --yes); rc=$?
+assert_rc "SC6P linked source checkout exits 0" 0 "$rc"
+assert_has "SC6P linked source checkout kept" "himmel's own checkout" "$out"
+cmp -s "$TMP/project-before.json" "$PROJECT/.claude/settings.json"; rc=$?
+assert_rc "SC6P linked tracked settings unchanged" 0 "$rc"
+CLI="$REAL_CLI"
+PROJECT="$TMP/adopted project"
+# An adopter may track their settings: tracked does not mean himmel-owned.
+git init -q "$PROJECT"
+cp "$TMP/project-before.json" "$PROJECT/.claude/settings.json"
+git -C "$PROJECT" add .claude/settings.json
+out=$(project_uninstall --yes); rc=$?
+assert_rc "SC6P tracked adopter unwire exits 0" 0 "$rc"
+assert_has "SC6P tracked adopter unwired" "project settings: unwired" "$out"
+# Refuse settings symlinks instead of following one into unrelated settings.
+rm "$PROJECT/.claude/settings.json"
+ln -s "$TMP/project-before.json" "$PROJECT/.claude/settings.json"
+cp "$TMP/project-before.json" "$TMP/symlink-before.json"
+out=$(project_uninstall --yes); rc=$?
+assert_rc "SC6P symlink target refused" 2 "$rc"
+cmp -s "$TMP/symlink-before.json" "$TMP/project-before.json"; rc=$?
+assert_rc "SC6P symlink destination unchanged" 0 "$rc"
+# Restore the existing user fixture for the subsequent suites.
+seed_settings
+
 # ── SC7 (HIMMEL-2458): steps 4+5 must never SILENTLY skip ───────────────────
 # A stock Ubuntu account has two PATH layers — ~/.profile owns ~/.local/bin
 # (login shells only) and ~/.bashrc owns ~/.bun/bin while early-returning for
@@ -1341,6 +1441,90 @@ assert_has 'U4b first failure is hooks' 'Halted at: [5/8]' "$out"
 assert_not_has 'U4b no marketplace removals' 'plugin marketplace remove' "$calls"
 rm "$U_BIN/git"
 U_REPO="$U_CHECKOUT"
+
+# U4c — HIMMEL-2839 native-gate removal + HIMMEL-2841 RED control: a
+# native-only repo (three HIMMEL-2771 marker hooks, one foreign hook, plus
+# the pre-existing .sample) with pre-commit absent from PATH completes all 8
+# steps and removes only the marker-bearing files. Under the pre-fix code
+# (no native-gate removal at all, and repo_has_framework_hooks matching the
+# bare substring "pre-commit" — which the marker text itself contains) this
+# halted at [5/8] with rc=2 and left steps 6-8 undone; run against that code
+# this test fails.
+u_fixture u4c
+rm -f "$U_REPO/.git/hooks/commit-msg"
+for hook in commit-msg pre-commit pre-push; do
+    printf '#!/usr/bin/env bash\n# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.\nexit 0\n' \
+        > "$U_REPO/.git/hooks/$hook"
+    chmod 755 "$U_REPO/.git/hooks/$hook"
+done
+printf '#!/usr/bin/env bash\nexit 0\n' > "$U_REPO/.git/hooks/post-checkout"
+chmod 755 "$U_REPO/.git/hooks/post-checkout"
+u_run
+assert_rc 'U4c native-only completes all 8 steps' 0 "$rc"
+assert_has 'U4c completion reported' 'Uninstall complete.' "$out"
+assert_not_has 'U4c no halted steps' 'skipped — halted' "$out"
+assert_has 'U4c framework-absent noted' "note: \`pre-commit\` not found and this repo carries no framework hooks — nothing to uninstall" "$out"
+for hook in commit-msg pre-commit pre-push; do
+    assert_has "U4c removed $hook reported" "removed native gate: $U_REPO/.git/hooks/$hook" "$out"
+    if [ ! -e "$U_REPO/.git/hooks/$hook" ]; then echo "PASS U4c $hook removed"
+    else echo "FAIL U4c $hook survived"; FAILED=$((FAILED + 1)); fi
+done
+if [ -f "$U_REPO/.git/hooks/post-checkout" ]; then echo 'PASS U4c foreign hook intact'
+else echo 'FAIL U4c foreign hook removed'; FAILED=$((FAILED + 1)); fi
+if [ -f "$U_REPO/.git/hooks/pre-commit.sample" ]; then echo 'PASS U4c sample intact'
+else echo 'FAIL U4c sample removed'; FAILED=$((FAILED + 1)); fi
+
+# U4d — HIMMEL-2839 --dry-run: lists the native gates it would remove and
+# removes nothing (byte-identical hooks dir before/after). HIMMEL-2841: does
+# not misreport them as framework hooks and halt either, even though the
+# marker text on disk still contains the substring "pre-commit" (dry-run
+# never deletes, so the old detection bug is live here regardless of the
+# native-removal step's own ordering).
+u_fixture u4d
+for hook in commit-msg pre-commit pre-push; do
+    printf '#!/usr/bin/env bash\n# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.\nexit 0\n' \
+        > "$U_REPO/.git/hooks/$hook"
+    chmod 755 "$U_REPO/.git/hooks/$hook"
+done
+U4D_BEFORE="$TMP/u4d-hooks-before.txt"
+(cd "$U_REPO/.git/hooks" && sha256sum -- * | sort) > "$U4D_BEFORE"
+u_run --dry-run
+assert_rc 'U4d dry-run completes' 0 "$rc"
+assert_not_has 'U4d no halted steps' 'skipped — halted' "$out"
+for hook in commit-msg pre-commit pre-push; do
+    assert_has "U4d dry-run would-remove $hook" "DRY: would remove native gate: $U_REPO/.git/hooks/$hook" "$out"
+done
+U4D_AFTER="$TMP/u4d-hooks-after.txt"
+(cd "$U_REPO/.git/hooks" && sha256sum -- * | sort) > "$U4D_AFTER"
+cmp -s "$U4D_BEFORE" "$U4D_AFTER"; same=$?
+assert_rc 'U4d hooks byte-identical across dry-run' 0 "$same"
+
+# U4e — HIMMEL-2839 fail-closed: an undeletable native gate hook fails the
+# step (rc != 0) and halts every later step — the step's own read-back is
+# the evidence, never `rm`'s return code alone.
+u_fixture u4e
+# U4d's dry-run left its native fixture (and U4c its foreign hook) on disk —
+# clean the persistent U_REPO hooks dir down to a single fixture file first.
+rm -f "$U_REPO/.git/hooks/post-checkout" "$U_REPO/.git/hooks/pre-commit" "$U_REPO/.git/hooks/pre-push"
+printf '#!/usr/bin/env bash\n# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.\nexit 0\n' \
+    > "$U_REPO/.git/hooks/commit-msg"
+chmod 755 "$U_REPO/.git/hooks/commit-msg"
+chmod a-w "$U_REPO/.git/hooks"
+if [ -w "$U_REPO/.git/hooks" ]; then
+    echo 'SKIP U4e fail-closed (root can write mode a-w dirs; fixture requires an unprivileged user)'
+    chmod 755 "$U_REPO/.git/hooks"
+    rm -f "$U_REPO/.git/hooks/commit-msg"
+else
+    u_run
+    assert_rc 'U4e undeletable native gate halts' 2 "$rc"
+    assert_has 'U4e first failure is hooks' 'Halted at: [5/8]' "$out"
+    assert_has 'U4e removal error reported' "could not remove native gate hook $U_REPO/.git/hooks/commit-msg" "$out"
+    for step in '[6/8] settings unwire' '[7/8] Claude marketplaces' '[8/8] himmelctl cache'; do
+        assert_has "U4e $step skipped" "$step: skipped — halted after an earlier failure" "$out"
+    done
+    chmod 755 "$U_REPO/.git/hooks"
+    rm -f "$U_REPO/.git/hooks/commit-msg"
+fi
 
 # WHY (HIMMEL-2754): settings and marketplace failures must preserve the
 # retry profile too — the same halt rule applies past the plugin/hook steps.

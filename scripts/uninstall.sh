@@ -11,9 +11,9 @@
 #         (machine-setup/uninstall-plugins.sh --plugins-only; the install
 #         profile supplies only the fallback scope — HIMMEL-2694)
 #   [5/8] uninstall git hooks (pre-commit/pre-push/commit-msg)
-#   [6/8] unwire ~/.claude/settings.json (statusLine, env.HIMMEL_REPO,
+#   [6/8] unwire user + current-project settings.json (statusLine, env.HIMMEL_REPO,
 #         env.LUNA_VAULT_PATH, env.HANDOVER_DIR, the UNIVERSAL hooks — what
-#         setup.sh/adopt wired)
+#         setup.sh/adopt wired; himmel's own project settings are kept)
 #   [7/8] remove Claude marketplaces (only when no installed plugins remain)
 #   [8/8] remove the himmelctl cache + state dir ~/.claude/himmel
 #         (install-profile.json, state.json — HIMMEL-2459)
@@ -46,7 +46,7 @@
 #   --skip-plugins         Keep Claude plugins + marketplaces installed.
 #   --skip-tasks           Keep HIMMEL-Resume-* / HimmelTelegramBridge jobs.
 #   --skip-hooks           Keep the repo's pre-commit git hooks.
-#   --skip-settings        Keep the user-scope ~/.claude/settings.json wiring
+#   --skip-settings        Keep user- and current-project settings.json wiring
 #                          (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, hooks).
 #   --source-only          Test seam (HIMMEL-2503): define the functions, then
 #                          stop before any action — `. uninstall.sh --source-only`.
@@ -554,7 +554,10 @@ report_unresolved() {
 # repo_has_framework_hooks — rc 0 iff this repo actually carries hooks that
 # `pre-commit uninstall` would have to remove (HIMMEL-2754): a set
 # core.hooksPath, or a non-.sample file in the resolved hooks directory whose text names
-# pre-commit. rc 1 = definitely none, including a missing directory resolved
+# pre-commit. HIMMEL-2841: a file carrying $NATIVE_GATE_MARKER is a HIMMEL-2771
+# native gate, never a framework hook, even though the marker text itself
+# contains the substring "pre-commit" — checked and skipped before that
+# substring test. rc 1 = definitely none, including a missing directory resolved
 # by git; rc 2 = missing directory whose location could not be resolved
 # because git was absent or rev-parse failed, or an existing hook file that
 # could not be read (including a grep error), or a hooks directory that exists but cannot be read or searched.
@@ -592,6 +595,10 @@ repo_has_framework_hooks() {
     case "$f" in *.sample) continue ;; esac
     if [ ! -f "$f" ]; then continue; fi
     if [ ! -r "$f" ]; then hooks_unreadable=1; continue; fi
+    # HIMMEL-2841: a native gate (HIMMEL-2771) is never a framework hook, even
+    # though its own marker text contains the substring "pre-commit" below —
+    # check for it FIRST so it can never be misidentified as a framework hook.
+    grep -qF "$NATIVE_GATE_MARKER" "$f" 2>/dev/null && continue
     grep_rc=0
     grep -q 'pre-commit' "$f" || grep_rc=$?
     case "$grep_rc" in
@@ -602,6 +609,124 @@ repo_has_framework_hooks() {
   done
   [ "$hooks_unreadable" -eq 1 ] && return 2
   return 1
+}
+
+# HIMMEL-2839: adopt.sh's install_native_hooks (HIMMEL-2771) places these
+# hooks directly, outside the pre-commit framework, when pre-commit cannot be
+# bootstrapped — `pre-commit uninstall` never recognizes them. This marker is
+# the exact literal adopt.sh writes as the first line of each such hook; it
+# must stay byte-identical to adopt.sh's copy so this step finds exactly what
+# adopt.sh placed, nothing more.
+NATIVE_GATE_MARKER='# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.'
+
+# resolve_native_hooks_dir — echo the hooks directory adopt.sh's
+# install_native_hooks would have written into for $REPO_ROOT: a single
+# `git rev-parse --git-path hooks`, which already honors core.hooksPath and
+# worktrees (verified: it returns a configured core.hooksPath verbatim), with
+# the same Windows-drive-letter-safe REPO_ROOT prefixing repo_has_framework_hooks
+# uses. Falls back to $REPO_ROOT/.git/hooks when git is absent or rev-parse
+# fails — the same best-effort guess repo_has_framework_hooks falls back to,
+# and still worth scanning: it is the plain non-worktree default either way.
+resolve_native_hooks_dir() {
+  local resolved hooks_dir=""
+  if command -v git >/dev/null 2>&1 && resolved="$(git -C "$REPO_ROOT" rev-parse --git-path hooks 2>/dev/null)"; then
+    hooks_dir="$resolved"
+    case "$hooks_dir" in
+      ""|/*|[A-Za-z]:[/\\]*) ;;
+      *) hooks_dir="$REPO_ROOT/$hooks_dir" ;;
+    esac
+  fi
+  [ -n "$hooks_dir" ] || hooks_dir="$REPO_ROOT/.git/hooks"
+  printf '%s\n' "$hooks_dir"
+}
+
+# remove_native_gate_hooks — remove every hook file in the resolved hooks dir
+# whose text carries $NATIVE_GATE_MARKER, and ONLY those: a `.sample`, an
+# adopter's own unrelated hook, or a pre-commit-framework-generated hook (none
+# of which carry the marker) is never touched. Prints "removed native gate:
+# <path>" per file removed ("DRY: would remove native gate: <path>" under
+# --dry-run, nothing removed), or "no native gates found" when none match.
+# The step's own read-back (HIMMEL-2839: a report of success with the hooks
+# still present is exactly the bug this closes) re-scans after removal and
+# fails if any marker-bearing file survives — never trusts `rm`'s rc alone.
+# rc 0 = clean (including "none found" and --dry-run); rc 1 = a matched file
+# could not be removed, one still carries the marker after the pass, or a
+# hook file / the hooks directory itself could not be read or scanned to
+# check (HIMMEL-2839 CR round 1/2: a grep read-error is not a nonmatch —
+# treating it as one let an unreadable, or otherwise unscannable, marker-
+# bearing hook survive both the removal loop and the verification re-scan
+# while the function still reported rc 0. Round 2: the `-r` precheck alone
+# does not cover a grep call that itself errors — e.g. a TOCTOU race after
+# the precheck — so both scans also discriminate grep's own exit status
+# (0 = matched, 1 = no match, anything else = a scan error) the same way
+# repo_has_framework_hooks already does for its own grep calls.)
+remove_native_gate_hooks() {
+  local hooks_dir f found=0 rc=0 grep_rc
+  hooks_dir="$(resolve_native_hooks_dir)"
+  if [ -d "$hooks_dir" ]; then
+    if [ ! -r "$hooks_dir" ] || [ ! -x "$hooks_dir" ]; then
+      echo "  ERROR: could not read hooks directory to scan for native gates: $hooks_dir" >&2
+      rc=1
+    else
+      for f in "$hooks_dir"/*; do
+        case "$f" in *.sample) continue ;; esac
+        [ -f "$f" ] || continue
+        if [ ! -r "$f" ]; then
+          echo "  ERROR: could not read hook file to check for native gate marker: $f" >&2
+          rc=1
+          continue
+        fi
+        grep_rc=0
+        grep -qF "$NATIVE_GATE_MARKER" "$f" || grep_rc=$?
+        case "$grep_rc" in
+          0) ;;
+          1) continue ;;
+          *)
+            echo "  ERROR: could not scan hook file for native gate marker: $f" >&2
+            rc=1
+            continue
+            ;;
+        esac
+        found=1
+        if [ "$DRY_RUN" -eq 1 ]; then
+          echo "  DRY: would remove native gate: $f"
+        elif rm -f "$f"; then
+          echo "  removed native gate: $f"
+        else
+          echo "  ERROR: could not remove native gate hook $f" >&2
+          rc=1
+        fi
+      done
+    fi
+  fi
+  if [ "$found" -eq 0 ] && [ "$rc" -eq 0 ]; then
+    echo "  no native gates found"
+  fi
+  if [ "$DRY_RUN" -eq 0 ] && [ -d "$hooks_dir" ] && [ -r "$hooks_dir" ] && [ -x "$hooks_dir" ]; then
+    for f in "$hooks_dir"/*; do
+      case "$f" in *.sample) continue ;; esac
+      [ -f "$f" ] || continue
+      if [ ! -r "$f" ]; then
+        echo "  ERROR: could not read hook file during verification: $f" >&2
+        rc=1
+        continue
+      fi
+      grep_rc=0
+      grep -qF "$NATIVE_GATE_MARKER" "$f" || grep_rc=$?
+      case "$grep_rc" in
+        0)
+          echo "  ERROR: native gate hook still present after removal: $f" >&2
+          rc=1
+          ;;
+        1) ;;
+        *)
+          echo "  ERROR: could not verify hook file is free of native gate marker: $f" >&2
+          rc=1
+          ;;
+      esac
+    done
+  fi
+  return "$rc"
 }
 
 # HIMMEL-2503: `. scripts/uninstall.sh --source-only` loads everything above —
@@ -685,8 +810,9 @@ fi
 if [ "$SKIP_SETTINGS" -eq 0 ]; then
   echo "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
   echo "     LUNA_VAULT_PATH, HANDOVER_DIR, UNIVERSAL hooks — non-himmel keys untouched)"
+  echo "     and current-project settings: $PWD/.claude/settings.json (himmel's own checkout excluded)"
 else
-  echo "  6. keep ~/.claude/settings.json wiring (--skip-settings)"
+  echo "  6. keep user- and current-project settings.json wiring (--skip-settings)"
 fi
 if [ "$SKIP_PLUGINS" -eq 0 ]; then
   echo "  7. remove Claude marketplaces with no remaining installed plugins"
@@ -990,69 +1116,122 @@ if [ "$HALTED" -eq 1 ]; then
   STEPS_INCOMPLETE+=("[5/8] git hooks: skipped — halted after an earlier failure")
 elif [ "$SKIP_HOOKS" -eq 1 ]; then
   echo "  kept (--skip-hooks)."
-elif ! _precommit_bin=$(resolve_tool pre-commit); then
-  repo_has_framework_hooks; _rc=$?
-  if [ "$_rc" -eq 0 ]; then
-    report_unresolved "[5/8] git hooks" pre-commit
-  elif [ "$_rc" -eq 2 ]; then
-    echo "  ERROR: cannot determine whether this repo carries framework hooks — the hooks directory did not resolve (git unavailable, or \`.git\` is a file and the rev-parse failed)." >&2
-    echo "  Re-run from a login shell (bash -l) with git on PATH." >&2
-    fail_step "[5/8] git hooks: hook location unresolved — installed framework hooks cannot be ruled out"
-  else
-    note_step "\`pre-commit\` not found and this repo carries no framework hooks — nothing to uninstall"
-  fi
 else
-  echo "  using: $_precommit_bin"
-  for _hook_type in "" "pre-push" "commit-msg"; do
-    if [ -n "$_hook_type" ]; then
-      _cmd_args=(--hook-type "$_hook_type")
-      _label="--hook-type $_hook_type"
+  # HIMMEL-2839: native gates (HIMMEL-2771) live outside the pre-commit
+  # framework — remove them independent of whether pre-commit resolves below.
+  if ! remove_native_gate_hooks; then
+    fail_step "[5/8] git hooks: native gate hook(s) survived removal"
+  fi
+  if ! _precommit_bin=$(resolve_tool pre-commit); then
+    repo_has_framework_hooks; _rc=$?
+    if [ "$_rc" -eq 0 ]; then
+      report_unresolved "[5/8] git hooks" pre-commit
+    elif [ "$_rc" -eq 2 ]; then
+      echo "  ERROR: cannot determine whether this repo carries framework hooks — the hooks directory did not resolve (git unavailable, or \`.git\` is a file and the rev-parse failed)." >&2
+      echo "  Re-run from a login shell (bash -l) with git on PATH." >&2
+      fail_step "[5/8] git hooks: hook location unresolved — installed framework hooks cannot be ruled out"
     else
-      _cmd_args=()
-      _label="pre-commit (default)"
+      note_step "\`pre-commit\` not found and this repo carries no framework hooks — nothing to uninstall"
     fi
-    if ! (cd "$REPO_ROOT" && run "$_precommit_bin" uninstall ${_cmd_args[@]+"${_cmd_args[@]}"}); then
-      echo "  WARN: pre-commit uninstall $_label failed." >&2
-      fail_step "[5/8] git hooks: pre-commit uninstall $_label failed"
-    fi
-  done
+  else
+    echo "  using: $_precommit_bin"
+    for _hook_type in "" "pre-push" "commit-msg"; do
+      if [ -n "$_hook_type" ]; then
+        _cmd_args=(--hook-type "$_hook_type")
+        _label="--hook-type $_hook_type"
+      else
+        _cmd_args=()
+        _label="pre-commit (default)"
+      fi
+      if ! (cd "$REPO_ROOT" && run "$_precommit_bin" uninstall ${_cmd_args[@]+"${_cmd_args[@]}"}); then
+        echo "  WARN: pre-commit uninstall $_label failed." >&2
+        fail_step "[5/8] git hooks: pre-commit uninstall $_label failed"
+      fi
+    done
+  fi
 fi
 echo ""
 
-# --- [6/8] unwire user-scope settings.json (HIMMEL-460) ----------------------
-# Symmetric inverse of setup.sh [9/10] + adopt --scope user: remove the
+# --- [6/8] unwire user/project settings.json (HIMMEL-460, HIMMEL-2776) -------
+# Symmetric inverse of setup.sh [9/10] + adopt: remove the
 # statusLine, env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR
 # (HIMMEL-839), and the UNIVERSAL hooks that himmel wired into
 # ~/.claude/settings.json. Each helper removes ONLY its own key/stanza
 # (refuses invalid JSON, preserves every non-himmel key: rtk guard, the
 # operator's own hooks, MCP config). --dry-run flows through to each.
 echo "[6/8] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks)..."
+# One sanctioned unwire sequence for both scopes; retain the user-scope order.
+unwire_settings() {
+  local settings="$1" helper
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $settings"
+    if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$settings" 1; then
+      fail_step "[6/8] settings unwire: unwire-pretooluse-hooks dry-run failed"
+    fi
+    return
+  fi
+  for helper in unwire-statusline unwire-himmel-repo unwire-luna-vault unwire-handover-dir unwire-pretooluse-hooks; do
+    if ! bash "$REPO_ROOT/scripts/lib/$helper.sh" "$settings"; then
+      echo "  WARN: $helper reported a problem; setup-state may remain." >&2
+      fail_step "[6/8] settings unwire: $helper failed"
+    fi
+  done
+}
+
+# Same project target as install-plugins.sh/adopt.sh: invocation CWD, not the
+# clone providing the helpers. Match checkUninstallCompleteness's identity
+# guard: direct inode equality, then git-common-dir for linked worktrees.
+# rc 2 means identity is unresolved, never permission to edit repo source.
+project_is_himmel_checkout() {
+  local source_root project_common source_common
+  source_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
+  [ "$PWD" -ef "$source_root" ] && return 0
+  [ -e "$PWD/.git" ] || return 1
+  project_common=$(git -C "$PWD" rev-parse --git-common-dir 2>/dev/null) || return 2
+  source_common=$(git -C "$source_root" rev-parse --git-common-dir 2>/dev/null) || return 2
+  case "$project_common" in /*|[A-Za-z]:[/\\]*) ;; *) project_common="$PWD/$project_common" ;; esac
+  case "$source_common" in /*|[A-Za-z]:[/\\]*) ;; *) source_common="$source_root/$source_common" ;; esac
+  [ "$project_common" -ef "$source_common" ]
+}
+
 _user_settings="$USER_SETTINGS"
+_project_settings="$PWD/.claude/settings.json"
 if [ "$HALTED" -eq 1 ]; then
   echo "  skipped (halted after an earlier failure)"
   STEPS_INCOMPLETE+=("[6/8] settings unwire: skipped — halted after an earlier failure")
 elif [ "$SKIP_SETTINGS" -eq 1 ]; then
   echo "  kept (--skip-settings)."
-elif [ ! -f "$_user_settings" ]; then
-  echo "  no $_user_settings — nothing to unwire."
-elif [ "$DRY_RUN" -eq 1 ]; then
-  # The single-key unwire helpers have no dry-run flag, so gate at this level to
-  # keep --dry-run a true no-op (SC6). unwire-pretooluse-hooks has its own flag.
-  echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $_user_settings"
-  if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$_user_settings" 1; then
-    echo "  WARN: unwire-pretooluse-hooks dry-run reported a problem." >&2
-    fail_step "[6/8] settings unwire: unwire-pretooluse-hooks dry-run failed"
-  fi
 else
-  for _unwire in unwire-statusline unwire-himmel-repo unwire-luna-vault unwire-handover-dir; do
-    if ! bash "$REPO_ROOT/scripts/lib/$_unwire.sh" "$_user_settings"; then
-      echo "  WARN: $_unwire reported a problem; setup-state may remain." >&2
-      fail_step "[6/8] settings unwire: $_unwire failed"
+  if [ -f "$_user_settings" ]; then
+    unwire_settings "$_user_settings"
+  else
+    echo "  no $_user_settings — nothing to unwire."
+  fi
+  if [ "$HALTED" -eq 1 ]; then
+    echo "  project settings: skipped (halted after an earlier failure)"
+  elif [ ! -e "$_project_settings" ] && [ ! -L "$_project_settings" ]; then
+    echo "  project settings: none found"
+  else
+    _project_identity=0
+    project_is_himmel_checkout || _project_identity=$?
+    if [ "$_project_identity" -eq 0 ]; then
+      echo "  project settings: kept $_project_settings (himmel's own checkout)"
+    elif [ "$_project_identity" -eq 2 ]; then
+      echo "  project settings: cannot resolve checkout identity — refusing to unwire" >&2
+      fail_step "[6/8] project settings: checkout identity unresolved"
+    elif [ -L "$PWD/.claude" ] || [ -L "$_project_settings" ] || [ ! -f "$_project_settings" ]; then
+      echo "  project settings: refusing non-regular or symlinked target $_project_settings" >&2
+      fail_step "[6/8] project settings: unsafe target"
+    else
+      unwire_settings "$_project_settings"
+      if [ "$HALTED" -eq 1 ]; then
+        echo "  project settings: unwire failed $_project_settings" >&2
+      elif [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY: project settings: would unwire $_project_settings"
+      else
+        echo "  project settings: unwired $_project_settings"
+      fi
     fi
-  done
-  if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$_user_settings"; then
-    echo "  WARN: unwire-pretooluse-hooks reported a problem." >&2
-    fail_step "[6/8] settings unwire: unwire-pretooluse-hooks failed"
   fi
 fi
 echo ""

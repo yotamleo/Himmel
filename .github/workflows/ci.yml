@@ -32,6 +32,23 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/check-no-secrets.sh
 
+  # Commit-time / pre-commit backstop for the 5 leak classes (HIMMEL-2561 /
+  # HIMMEL-2705 step 2): catches anything that slipped past the pre-commit
+  # hook (a --no-verify commit, a merge, a stale clone) by re-scanning the
+  # whole tracked tree. Public CI has no station-local denylist file, so the
+  # hostname class self-skips here (see leak-classes.sh header) — the other
+  # 4 classes still run.
+  leak-classes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # This is a pull_request workflow, so it checks out and executes
+          # contributor code. The default persists the GITHUB_TOKEN into
+          # .git/config, where that code can read it.
+          persist-credentials: false
+      - run: bash scripts/guardrails/leak-classes.sh --tree
+
   # Commit-message governance (HIMMEL-594/1483): every non-exempt commit in the
   # PR range must be conventional and ticket-traceable. Reuses the local
   # commit-msg gate (scripts/hooks/check-commit-msg.sh) over the range so CI and

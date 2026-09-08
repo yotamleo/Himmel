@@ -401,7 +401,9 @@ describe('it will not wire hooks that point at a recorder that is not there', ()
     const r = run([], f);
     assert.equal(r.status, 1);
     assert.match(r.stderr, /no recorder at/);
-    assert.match(r.stderr, /record nothing while reporting as wired/);
+    assert.match(r.stderr, /not part of the portable core yet/);
+    assert.match(r.stderr, /HIMMEL-2756/);
+    assert.match(r.stderr, /supported in a himmel checkout/);
     assert.equal(fs.readFileSync(f, 'utf8'), original, 'nothing is written');
   });
 

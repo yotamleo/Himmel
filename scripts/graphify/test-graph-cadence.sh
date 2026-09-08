@@ -29,6 +29,12 @@
 # Covers:
 #   1. Below --threshold: action=skipped, ledger row, rc=0, no worktree
 #      created, no ast-update/graph-publish/merge-on-green invoked.
+#   1b. origin/main does not track graphify-out/graph.json AT ALL (HIMMEL-2705
+#      step 1's permanent steady state) -> the LOCAL AST-only refresh still
+#      runs (worktree created, ast-update.sh invoked, action=refreshed,
+#      rc=0), while publish/merge cleanly no-op (merge-on-green.sh AND `gh`
+#      never invoked) -- distinct from Test 1's below-threshold skip (which
+#      creates no worktree at all) and from the _fail/exit-3 path.
 #   2. At/above --threshold: full pipeline runs; a real commit lands on the
 #      bare origin's chore/graph-publish-<slug> branch; merge-on-green.sh is
 #      invoked with that EXACT branch as its selector and ARMAUTOMERGE=1 in
@@ -291,6 +297,82 @@ done
 # result) -- so the true distance is n_filler + 1 (the graph-adding commit
 # itself, plus the n filler commits). 3 filler commits -> 4.
 assert_contains "ledger merges_behind is the true distance (seed-graph commit + 3 filler = 4)" '"merges_behind":4' "$LEDGER_LINE"
+
+# =============================================================================
+# Test 1b (HIMMEL-2705 step 1): origin/main does not track
+# graphify-out/graph.json at all -> clean skip, rc=0, no worktree, no
+# _fail/exit-3. This is the PERMANENT steady state after graphify-out/ was
+# retired from the git tree and gitignored outright -- unlike Test 1's
+# below-threshold skip, there is no graph.json on origin/main to diff
+# against in the first place.
+# =============================================================================
+echo "TEST: origin/main missing graphify-out/graph.json entirely -> local refresh still runs, publish/merge cleanly no-op (HIMMEL-2705)"
+REPO1B="$TMP_ROOT/t1b-primary"; BARE1B="$TMP_ROOT/t1b-origin.git"
+HOME1B="$TMP_ROOT/t1b-home"; LEDGER1B="$TMP_ROOT/t1b-ledger"
+mkdir -p "$HOME1B" "$LEDGER1B"
+git init -q --bare "$BARE1B" >/dev/null 2>&1
+git init -q --initial-branch=main "$REPO1B" 2>/dev/null || git init -q "$REPO1B"
+git -C "$REPO1B" config user.email t@test.com
+git -C "$REPO1B" config user.name test
+echo "seed" > "$REPO1B/README.md"
+git -C "$REPO1B" add -A
+git -C "$REPO1B" commit -q -m "chore: seed, no graphify-out at all"
+git -C "$REPO1B" remote add origin "$BARE1B"
+git -C "$REPO1B" push -q origin main
+: > "$FAKE_MERGE_LOG"
+: > "$FAKE_GH_LOG"
+rc=0
+out=$(HOME="$HOME1B" GRAPH_CADENCE_HIMMEL_ROOT="$REPO1B" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER1B" \
+      run_gc --threshold 10 2>&1) || rc=$?
+assert_eq        "untracked-graph rc=0 (local refresh + clean no-op, not a failure)" "0" "$rc"
+assert_contains  "untracked-graph message names HIMMEL-2705" "HIMMEL-2705" "$out"
+assert_contains  "untracked-graph message" "does not track graphify-out/graph.json" "$out"
+CORPUS_SLUG1B=$(corpus_slug_of "$REPO1B")
+WT1B="$HOME1B/.claude/graph-cadence/$CORPUS_SLUG1B"
+if [ -d "$WT1B" ]; then
+    pass "untracked-graph run DOES create the dedicated worktree (local refresh is no longer unreachable)"
+else
+    fail "untracked-graph run created no worktree -- local refresh (step 5) is still unreachable" "$(ls "$HOME1B/.claude/graph-cadence" 2>/dev/null)"
+fi
+if [ -f "$WT1B/graphify-out/graph.json" ]; then
+    pass "the local ast-update.sh refresh actually ran (graphify-out/graph.json written into the worktree)"
+else
+    fail "no graphify-out/graph.json found in the worktree -- ast-update.sh never ran" "$(ls "$WT1B/graphify-out" 2>/dev/null)"
+fi
+assert_eq "untracked-graph run never invoked merge-on-green (nothing to merge)" "" "$(cat "$FAKE_MERGE_LOG")"
+assert_eq "untracked-graph run never invoked gh (nothing to publish)" "" "$(cat "$FAKE_GH_LOG")"
+LEDGER_LINE1B=$(tail -n1 "$LEDGER1B/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
+assert_contains "ledger action=refreshed (real work happened, not a skip)" '"action":"refreshed"' "$LEDGER_LINE1B"
+assert_not_contains "ledger action is not skipped" '"action":"skipped"' "$LEDGER_LINE1B"
+assert_contains "ledger error=null (not the _fail/exit-3 path)" '"error":null' "$LEDGER_LINE1B"
+
+# =============================================================================
+# Test 1c (CodeRabbit, PR #2272): origin/main does not RESOLVE at all (empty
+# remote, no main branch ever pushed) -> must _fail/exit 3, never the Test 1b
+# clean-skip path. `cat-file -e origin/main:<path>` alone cannot distinguish
+# "path absent" from "ref absent"; this proves the ref-resolution check added
+# in graph-cadence.sh actually gates that distinction.
+# =============================================================================
+echo "TEST: origin/main itself unresolvable -> _fail, rc=3 (not misreported as skip)"
+REPO1C="$TMP_ROOT/t1c-primary"; BARE1C="$TMP_ROOT/t1c-origin.git"
+HOME1C="$TMP_ROOT/t1c-home"; LEDGER1C="$TMP_ROOT/t1c-ledger"
+mkdir -p "$HOME1C" "$LEDGER1C"
+git init -q --bare "$BARE1C" >/dev/null 2>&1
+git init -q --initial-branch=main "$REPO1C" 2>/dev/null || git init -q "$REPO1C"
+git -C "$REPO1C" config user.email t@test.com
+git -C "$REPO1C" config user.name test
+echo "seed" > "$REPO1C/README.md"
+git -C "$REPO1C" add -A
+git -C "$REPO1C" commit -q -m "chore: seed, remote has no main at all"
+git -C "$REPO1C" remote add origin "$BARE1C"
+: > "$FAKE_MERGE_LOG"
+rc=0
+out=$(HOME="$HOME1C" GRAPH_CADENCE_HIMMEL_ROOT="$REPO1C" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER1C" \
+      run_gc --threshold 10 2>&1) || rc=$?
+assert_eq        "unresolvable-origin/main rc=3 (_fail, not a skip)" "3" "$rc"
+assert_contains  "unresolvable-origin/main message" "does not resolve" "$out"
+LEDGER_LINE1C=$(tail -n1 "$LEDGER1C/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
+assert_contains "ledger action=failed" '"action":"failed"' "$LEDGER_LINE1C"
 
 # =============================================================================
 # Test 2: at/above threshold -> full pipeline, merged

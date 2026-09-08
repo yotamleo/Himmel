@@ -282,6 +282,15 @@ repos:
         always_run: true
         stages: [pre-commit]
 
+      - id: leak-classes
+        name: leak-class gate (home-path, mac, private-lan-ip, hostname, telegram token)
+        # HIMMEL-2561
+        language: system
+        entry: bash scripts/guardrails/leak-classes.sh --staged
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+
       - id: graph-artifact-branch
         name: block graphify-out/ commits off the /graph-publish flow
         # HIMMEL-2167
