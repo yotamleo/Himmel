@@ -239,6 +239,7 @@ FABLE_OK=""
 # block below, where CONTEXT_MODE and AUTOCOMPACT get their real values.
 CONTEXT_MODE=""
 AUTOCOMPACT=""
+TIER=""
 DEDUP_ANY=0
 WORKTREE_BRANCH=""
 WSL_DISTRO=""
@@ -254,7 +255,7 @@ _epoch_hhmm() { py_armor_capture -c 'import sys,datetime; print(datetime.datetim
 
 usage() {
     cat <<'EOF'
-Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--provisional-base-ok]
+Usage: arm-resume.sh --time <HH:MM> --handover <path> [--wsl-distro <name>] [--force] [--long-gap] [--dedup-any] [--dry-run] [--automerge] [--safety-child] [--model <name>] [--fable-ok <reason>] [--context <1m|standard>] [--tier leg] [--provisional-base-ok]
 
 Arms the OS scheduler to relaunch claude at the given time with a
 resume prompt referencing the given handover file. Dedup-guarded
@@ -338,6 +339,10 @@ Optional:
                      every other arm. The resolved mode, its source
                      (explicit vs. default) and the effective autocompact
                      value are always echoed to the arm log.
+  --tier leg         Mark this as a worker-leg arm. The resolved launch argv
+                     must carry the exact --autocompact 200000 ceiling;
+                     --context 1m is refused with exit 2. Omit for existing
+                     console/ordinary arm behavior.
   --provisional-base-ok
                      Arm anyway when the handover's `fence:` frontmatter
                      key names a fence scripts/console/base-status.sh
@@ -537,6 +542,25 @@ while [ $# -gt 0 ]; do
                     exit 2
                     ;;
             esac
+            shift
+            ;;
+        --tier)
+            if [ $# -lt 2 ] || [ -z "$2" ] || [ "${2#-}" != "$2" ]; then
+                echo "ERR arm-resume: --tier requires leg" >&2
+                exit 2
+            fi
+            if [ "$2" != "leg" ]; then
+                echo "ERR arm-resume: --tier must be leg, got: $2" >&2
+                exit 2
+            fi
+            TIER="$2"; shift 2
+            ;;
+        --tier=*)
+            TIER="${1#--tier=}"
+            if [ "$TIER" != "leg" ]; then
+                echo "ERR arm-resume: --tier must be leg, got: ${TIER:-<empty>}" >&2
+                exit 2
+            fi
             shift
             ;;
         --wsl-distro)
@@ -941,6 +965,26 @@ fi
 # Same stdout-not-stderr, guard-time-not-only-banner reasoning as the
 # MODEL_REASON echo above.
 echo "arm-resume: $CONTEXT_REASON (autocompact=$AUTOCOMPACT)"
+
+# HIMMEL-2779: worker legs are capped by the explicit CLI argv pair, not by a
+# model suffix (Fable-family launches can silently strip [1m]). Refuse before
+# any preflight or scheduler work when context resolution chose another value.
+if [ "$TIER" = "leg" ] && [ "$AUTOCOMPACT" != "200000" ]; then
+    echo "ERR arm-resume: --tier leg requires resolved argv to include --autocompact 200000 (got --autocompact $AUTOCOMPACT). Re-arm with --context standard; use an ordinary/console arm, not --tier leg, for 1m context." >&2
+    exit 2
+fi
+
+# Belt-and-suspenders at the final renderer: every platform calls this on the
+# actual command text immediately before it is scheduled. The value guard above
+# catches 1m; this catches a future renderer accidentally dropping the flag.
+_arm_require_leg_autocompact_argv() {
+    [ "$TIER" = "leg" ] || return 0
+    case "$1" in
+        *'--autocompact 200000 '*|*'--autocompact 200000'|*"--autocompact '200000'"*|*'--autocompact "200000"'*) return 0 ;;
+    esac
+    echo "ERR arm-resume: --tier leg resolved argv lacks --autocompact 200000. Refusing to schedule; re-run with --context standard after fixing the launch renderer." >&2
+    exit 2
+}
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -4410,6 +4454,7 @@ _crontab_schedule() {
         q_curl=$(printf '%q' "$HEADROOM_CURL")
         tail="{ unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID; export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1; $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }; if $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1; then echo \"\$(date) arm=$TASK_NAME mode=proxied\" >> $q_log; ANTHROPIC_BASE_URL=http://127.0.0.1:$HEADROOM_PROXY_PORT HEADROOM_OFFLINE=1 ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact; else echo \"\$(date) arm=$TASK_NAME mode=bare-fallback\" >> $q_log; ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact; fi; }"
     fi
+    _arm_require_leg_autocompact_argv "$tail"
     local q_flow_lib q_task q_note
     q_flow_lib=$(printf '%q' "$SCRIPT_DIR/../lib/flow-run-ledger.sh")
     q_task=$(printf '%q' "$TASK_NAME")
@@ -4793,6 +4838,7 @@ schedule_arm() {
                 local q_safety_child=""
                 [ "$SAFETY_CHILD" -eq 1 ] && q_safety_child="AUTO_ARM_SAFETY_CHILD=1 "
                 wsl_command="cd $q_cwd && unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM AUTO_ARM_SAFETY_CHILD CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID && export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 && ${q_safety_child}${q_automerge}claude$q_name $q_prompt$q_channels$q_model$q_autocompact"
+                _arm_require_leg_autocompact_argv "$wsl_command"
                 # The composed command sits INSIDE the .bat line's double
                 # quotes, where CMD treats ^ as a LITERAL character —
                 # caret-escaping here reaches bash verbatim and shatters the
@@ -5049,6 +5095,7 @@ schedule_arm() {
                 printf 'if not "%%FLOW_RUN_ID%%"=="" "%s" "%s" --append-end "armed-resume" "%%FLOW_RUN_ID%%" "" "%%FLOW_RUN_RC%%" "%%FLOW_RUN_OUTCOME%%" "" "%s" > NUL 2>&1\r\n' "$bw" "$fl" "$fr_note"
                 printf 'exit /b %%FLOW_RUN_RC%%\r\n'
             } > "$bat_path"
+            _arm_require_leg_autocompact_argv "$(tr -d '\r' < "$bat_path")"
 
             # HIMMEL-938 Part A: re-render START_DATE in the MACHINE's own
             # Windows short-date locale right before it's used as /sd —
@@ -5379,6 +5426,7 @@ else
     ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact
 fi"
                 fi
+                _arm_require_leg_autocompact_argv "$launch_lines"
                 local q_flow_lib q_task q_note
                 q_flow_lib=$(printf '%q' "$SCRIPT_DIR/../lib/flow-run-ledger.sh")
                 q_task=$(printf '%q' "$TASK_NAME")

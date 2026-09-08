@@ -368,6 +368,30 @@ INIT="execute,prcheck,pr,ticket,merge,public,handover"
 LAUNCHER="${HEADED_ARM_LAUNCHER:-claude}"
 LAUNCHER_ENV="${HEADED_ARM_LAUNCHER_ENV:-}"
 RECORDER="${HEADED_ARM_RECORDER:-0}"
+REQUIRED_AUTOCOMPACT="${HEADED_ARM_REQUIRED_AUTOCOMPACT:-}"
+unset HEADED_ARM_REQUIRED_AUTOCOMPACT
+LAUNCH_ARGV=("$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
+
+# HIMMEL-2779: headed-arm-leg.sh sets this required value. Validate the same
+# argv array both launch branches consume, so a future renderer cannot drop or
+# change the cost-driving pair while the wrapper still reports standard mode.
+if [ -n "$REQUIRED_AUTOCOMPACT" ]; then
+    _headed_required_found=0
+    _headed_i=0
+    while [ "$_headed_i" -lt "${#LAUNCH_ARGV[@]}" ]; do
+        if [ "${LAUNCH_ARGV[$_headed_i]}" = "--autocompact" ] \
+           && [ "$((_headed_i + 1))" -lt "${#LAUNCH_ARGV[@]}" ] \
+           && [ "${LAUNCH_ARGV[$((_headed_i + 1))]}" = "$REQUIRED_AUTOCOMPACT" ]; then
+            _headed_required_found=1
+            break
+        fi
+        _headed_i=$((_headed_i + 1))
+    done
+    if [ "$_headed_required_found" -ne 1 ]; then
+        echo "headed-arm-leg: refusing leg launch: resolved argv lacks --autocompact $REQUIRED_AUTOCOMPACT. Retry with standard leg context; use a console arm for 1m context." >&2
+        exit 2
+    fi
+fi
 
 # r10-codex-3: $LOG is used AFTER `cd "$REPO"` below - the konsole redirect
 # (`>> "$LOG"`), and every status line this script writes on every exit
@@ -885,7 +909,7 @@ if [ "$RECORDER" = "1" ]; then
     # HEADED_ARM_LEG_CLAUDEX_BIN override (e.g. a compiled binary or a python
     # entrypoint) that works fine under plain exec.
     BASH_BIN="$(command -v bash || echo /bin/bash)"
-    LAUNCH_CMD=$(printf '%q ' "$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
+    LAUNCH_CMD=$(printf '%q ' "${LAUNCH_ARGV[@]}")
     # shellcheck disable=SC2086  # LAUNCHER_ENV is a deliberately
     # word-split list of NAME=VALUE tokens (HEADED_ARM_LAUNCHER_ENV's
     # documented contract above), never a single value.
@@ -906,7 +930,7 @@ else
     "$KONSOLE" --separate --workdir "$REPO" -p "tabtitle=$NAME" \
         -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
             CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 $LAUNCHER_ENV \
-            "$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue" \
+            "${LAUNCH_ARGV[@]}" \
         >> "$LOG" 2>&1 &
 fi
 KPID=$!

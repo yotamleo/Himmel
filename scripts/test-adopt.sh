@@ -27,6 +27,38 @@ set -euo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
+# dir_is_empty <dir> — true (rc 0) iff <dir> has no entries, dotfiles
+# included, using only bash builtins/globs -- no `ls`. HIMMEL-2771 CR
+# round-2: under the hermetic PATH built below, `ls` is NOT guaranteed
+# reachable -- scrub_path() drops a PATH directory WHOLESALE to remove a
+# named tool, and on a box where `ls` shares a directory with one of the
+# scrubbed tools (e.g. /usr/bin holding node/npm/uv/bun), `ls` goes with it.
+# A missing `ls` makes `[ -z "$(ls -A "$dir")" ]` evaluate `[ -z "" ]` --
+# TRUE no matter what is actually in the directory, silently turning a
+# containment assertion into one that can never fail (already hit 3x per
+# scripts/lib/hermetic-path.sh: HIMMEL-2470/2520/2530). Without `nullglob`
+# an unmatched glob stays literal, so an unmatched literal must still be
+# filtered out -- but `[ -e "$f" ]` ALONE follows a symlink to test its
+# TARGET, so a DANGLING symlink (an unmatched-glob false positive's exact
+# opposite: a real directory entry whose target does not exist) is `-e`
+# false and was silently skipped, reporting an occupied directory as empty
+# (HIMMEL-2771 CR round-6, codex-2, confirmed -- this is what let the
+# round-5 cr2771r5-symlink-dangling control's whole subject, a dangling
+# symlink, slip past this assertion undetected). `[ -L "$f" ]` sees the
+# LINK ITSELF regardless of what it points at (or fails to), so an
+# unmatched literal is still excluded (no entry is ever a symlink) while a
+# genuine dangling entry now counts. "." and ".." are excluded by
+# construction (.[!.]* skips them, ..?* only matches a dotfile whose name
+# is LONGER than "..").
+dir_is_empty() {
+  local d="$1" f
+  for f in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+    { [ -e "$f" ] || [ -L "$f" ]; } || continue
+    return 1
+  done
+  return 0
+}
+
 repo_root=$(git rev-parse --show-toplevel)
 adopt="$repo_root/scripts/adopt.sh"
 [ -f "$adopt" ] || { echo "FAIL: $adopt not found" >&2; exit 1; }
@@ -178,6 +210,20 @@ echo "ok: link_hermetic_tool wrapper-fallback (jq) + bash copy-fallback verified
 # need a REAL node — they shell out to bin.js — so they cannot run under the
 # scrubbed PATH below. Capture the pre-scrub environment PATH here and pass it
 # to each of those suites explicitly.
+# HIMMEL-2771: pip bootstrap must stay offline while real Python still handles
+# the adopter's JSON/file operations.
+real_python3=$(command -v python3)
+rm -f "$work/bin/python3"
+cat > "$work/bin/python3" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "-m" ] && [ "\$2" = "pip" ]; then
+  echo 'pip unavailable in offline test fixture' >&2
+  exit 1
+fi
+exec "$real_python3" "\$@"
+STUB
+chmod +x "$work/bin/python3"
+
 saved_path="$PATH"
 qmd_free_path=$(scrub_path "$PATH" qmd bun npm node uv pipx)
 export PATH="$work/bin:$qmd_free_path"
@@ -827,6 +873,655 @@ grepq "$out" 'git hooks installed (pre-commit, commit-msg, pre-push).' \
   || fail "HIMMEL-2441 default: missing the git-hooks-installed message (got: $out)"
 echo "ok: HIMMEL-2441 default adopt wires pre-commit/commit-msg/pre-push hooks into \$TARGET"
 
+# HIMMEL-2771: collect all five controls so the first missing fallback does
+# not hide the behavioural failure. Each subshell retains the fail idiom.
+native_failures=0
+native_free_path=$(scrub_path "$qmd_free_path" pre-commit uv pipx)
+for native_case in missing framework pep668 unwritable behaviour; do
+  set +e
+  (
+    set -e
+    ntarget="$work/native-$native_case"
+    nbin="$work/native-bin-$native_case"
+    mkdir -p "$ntarget" "$nbin"
+    HOME="$pchome" git -C "$ntarget" init -q
+    HOME="$pchome" git -C "$ntarget" checkout -q -b feat/native-test
+    npath="$nbin:$work/bin:$native_free_path"
+    if [ "$native_case" = framework ]; then
+      npath="$pcbin:$npath"
+      : > "$work/pre-commit.argv"
+    fi
+    if [ "$native_case" = pep668 ]; then
+      cat > "$nbin/python3" <<STUB
+#!/usr/bin/env bash
+if [ "\$1" = "-m" ] && [ "\$2" = "pip" ]; then
+  echo 'error: externally-managed-environment' >&2
+  exit 1
+fi
+exec "$real_python3" "\$@"
+STUB
+      chmod +x "$nbin/python3"
+    fi
+    if [ "$native_case" = unwritable ]; then
+      chmod a-w "$ntarget/.git/hooks"
+      [ ! -w "$ntarget/.git/hooks" ] || fail "HIMMEL-2771 unwritable: fixture requires an unprivileged user"
+    fi
+    set +e
+    nout=$(PATH="$npath" HOME="$pchome" bash "$adopt" \
+      --profile core --scope project --target "$ntarget" 2>&1); nrc=$?
+    set -e
+    case "$native_case" in
+      missing|pep668)
+        [ "$nrc" -eq 0 ] || fail "HIMMEL-2771 $native_case: adopt exited $nrc"
+        if [ "$native_case" = pep668 ]; then
+          grepq "$nout" 'externally-managed-environment' \
+            || fail "HIMMEL-2771 pep668: refusal was not reported by name"
+        fi
+        for hook in commit-msg pre-commit pre-push; do
+          [ -x "$ntarget/.git/hooks/$hook" ] \
+            || fail "HIMMEL-2771 $native_case: executable $hook hook absent"
+        done
+        grepq "$nout" 'git gate hooks — placed (native, no pre-commit framework: lint hooks absent)' \
+          || fail "HIMMEL-2771 $native_case: native summary absent"
+        ;;
+      framework)
+        [ "$nrc" -eq 0 ] || fail "HIMMEL-2771 framework: adopt exited $nrc"
+        grepq "$(cat "$work/pre-commit.argv")" 'install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push' \
+          || fail "HIMMEL-2771 framework: install not called"
+        ! grepq "$nout" 'placed (native' || fail "HIMMEL-2771 framework: native fallback taken"
+        ;;
+      unwritable)
+        chmod u+w "$ntarget/.git/hooks"
+        [ "$nrc" -ne 0 ] || fail "HIMMEL-2771 unwritable: adopt exited 0 with no gates"
+        grepq "$nout" 'git gate hooks — FAILED (native:' \
+          || fail "HIMMEL-2771 unwritable: failure summary absent"
+        grepq "$nout" "cannot write $ntarget/.git/hooks/commit-msg" || fail "HIMMEL-2771 unwritable: failure reason absent"
+        ;;
+      behaviour)
+        [ "$nrc" -eq 0 ] || fail "HIMMEL-2771 behaviour: adopt exited $nrc"
+        HOME="$pchome" git -C "$ntarget" config user.name 'Native Test'
+        HOME="$pchome" git -C "$ntarget" config user.email 'native@example.invalid'
+        set +e
+        nout=$(HOME="$pchome" git -C "$ntarget" -c commit.gpgsign=false commit --allow-empty -m 'no ticket here at all' 2>&1); nrc=$?
+        set -e
+        [ "$nrc" -ne 0 ] || fail "HIMMEL-2771 behaviour: unticketed commit landed"
+        ! git -C "$ntarget" rev-parse --verify HEAD >/dev/null 2>&1 \
+          || fail "HIMMEL-2771 behaviour: rejected commit created HEAD"
+        # Also isolate the ticket check from the conventional-format check.
+        if HOME="$pchome" git -C "$ntarget" -c commit.gpgsign=false commit --allow-empty -m 'test: missing ticket' >/dev/null 2>&1; then
+          fail "HIMMEL-2771 behaviour: conventional unticketed commit landed"
+        fi
+        HOME="$pchome" git -C "$ntarget" -c commit.gpgsign=false commit --allow-empty -m 'test: HIMMEL-2771 [#2771] native gates' >/dev/null 2>&1 \
+          || fail "HIMMEL-2771 behaviour: ticketed commit refused"
+        git -C "$ntarget" rev-parse --verify HEAD >/dev/null \
+          || fail "HIMMEL-2771 behaviour: ticketed commit did not create HEAD"
+        ;;
+    esac
+    echo "ok: HIMMEL-2771 $native_case"
+  )
+  native_rc=$?
+  set -e
+  if [ "$native_rc" -ne 0 ]; then native_failures=$((native_failures + 1)); fi
+done
+[ "$native_failures" -eq 0 ] || fail "HIMMEL-2771 controls: $native_failures failed, $((5 - native_failures)) passed"
+
+# HIMMEL-2771: exercise the remaining bootstrap exits and Git's configured
+# hooks directory. User scope must also carry its own native gate payloads.
+for fallback_case in uv-fails pipx-fails unresolved user-hooks-path skip; do
+  ntarget="$work/fallback-$fallback_case"; nbin="$work/fallback-bin-$fallback_case"
+  mkdir -p "$ntarget" "$nbin"
+  HOME="$pchome" git -C "$ntarget" init -q
+  nscope=project; hook_dir="$ntarget/.git/hooks"; extra_flag=""
+  case "$fallback_case" in
+    uv-fails|pipx-fails|unresolved)
+      installer="${fallback_case%-fails}"; installer_rc=1
+      if [ "$fallback_case" = unresolved ]; then installer=uv; installer_rc=0; fi
+      printf '#!/usr/bin/env bash\nexit %s\n' "$installer_rc" > "$nbin/$installer"
+      chmod +x "$nbin/$installer"
+      ;;
+    user-hooks-path)
+      nscope=user; hook_dir="$ntarget/native hooks"
+      HOME="$pchome" git -C "$ntarget" config core.hooksPath 'native hooks'
+      ;;
+    skip) extra_flag=--skip-hooks ;;
+  esac
+  out=$(PATH="$nbin:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+    --profile core --scope "$nscope" --target "$ntarget" ${extra_flag:+"$extra_flag"} 2>&1) \
+    || fail "HIMMEL-2771 $fallback_case: adoption failed: $out"
+  if [ "$fallback_case" = skip ]; then
+    [ ! -e "$hook_dir/commit-msg" ] || fail "HIMMEL-2771 skip: native hook placed"
+  else
+    for hook in commit-msg pre-commit pre-push; do
+      [ -x "$hook_dir/$hook" ] || fail "HIMMEL-2771 $fallback_case: $hook absent"
+    done
+    printf 'test: HIMMEL-2771 [#2771] native gates\n' > "$ntarget/message"
+    ( cd "$ntarget" && HOME="$pchome" bash "$hook_dir/commit-msg" "$ntarget/message" ) \
+      || fail "HIMMEL-2771 $fallback_case: native message gate failed"
+  fi
+  echo "ok: HIMMEL-2771 $fallback_case"
+done
+
+# HIMMEL-2771 CR round-1 (Important, confirmed): install_native_hooks() must
+# not clobber a pre-existing hand-written hook, must stay idempotent about
+# its OWN generated hooks, and must refuse an absolute/shared core.hooksPath
+# rather than write dispatcher hooks into it (they resolve $(git rev-parse
+# --show-toplevel) at FIRE time, so a hooksPath shared by other repos would
+# break commits there the instant this repo adopts).
+
+# 1. An existing hand-written hook is preserved, not truncated.
+crtarget1="$work/cr2771-foreign"; crbin1="$work/cr2771-foreign-bin"
+mkdir -p "$crtarget1" "$crbin1"
+HOME="$pchome" git -C "$crtarget1" init -q
+foreign_hook_content='#!/usr/bin/env bash
+echo "ADOPTER OWN HOOK -- do not clobber me"
+'
+printf '%s' "$foreign_hook_content" > "$crtarget1/.git/hooks/commit-msg"
+chmod +x "$crtarget1/.git/hooks/commit-msg"
+set +e
+out=$(PATH="$crbin1:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget1" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2771 CR foreign-hook: adopt exited $rc: $out"
+[ -x "$crtarget1/.git/hooks/commit-msg" ] || fail "HIMMEL-2771 CR foreign-hook: native commit-msg hook absent"
+grepq "$(cat "$crtarget1/.git/hooks/commit-msg")" 'HIMMEL-2771: native invariant gate' \
+  || fail "HIMMEL-2771 CR foreign-hook: native hook was not written in place of the foreign one"
+[ -f "$crtarget1/.git/hooks/commit-msg.himmel-backup" ] \
+  || fail "HIMMEL-2771 CR foreign-hook: no backup of the adopter's original hook"
+diff <(printf '%s' "$foreign_hook_content") "$crtarget1/.git/hooks/commit-msg.himmel-backup" >/dev/null \
+  || fail "HIMMEL-2771 CR foreign-hook: backup content does not match the original byte-for-byte"
+grepq "$out" 'backed up to commit-msg.himmel-backup' \
+  || fail "HIMMEL-2771 CR foreign-hook: missing the backup progress message"
+echo "ok: HIMMEL-2771 CR foreign-hook is preserved as commit-msg.himmel-backup"
+
+# 2. Idempotent re-adopt: running adopt TWICE on a clean target must not
+# back up our own generated hook on the second run.
+crtarget2="$work/cr2771-idempotent"; crbin2="$work/cr2771-idempotent-bin"
+mkdir -p "$crtarget2" "$crbin2"
+HOME="$pchome" git -C "$crtarget2" init -q
+set +e
+out=$(PATH="$crbin2:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget2" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2771 CR idempotent (run 1): adopt exited $rc: $out"
+[ -x "$crtarget2/.git/hooks/commit-msg" ] || fail "HIMMEL-2771 CR idempotent (run 1): native hook absent"
+[ ! -e "$crtarget2/.git/hooks/commit-msg.himmel-backup" ] \
+  || fail "HIMMEL-2771 CR idempotent (run 1): unexpected backup on a clean target"
+set +e
+out2=$(PATH="$crbin2:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget2" 2>&1); rc2=$?
+set -e
+[ "$rc2" -eq 0 ] || fail "HIMMEL-2771 CR idempotent (run 2): adopt exited $rc2: $out2"
+[ -x "$crtarget2/.git/hooks/commit-msg" ] || fail "HIMMEL-2771 CR idempotent (run 2): native hook absent"
+[ ! -e "$crtarget2/.git/hooks/commit-msg.himmel-backup" ] \
+  || fail "HIMMEL-2771 CR idempotent (run 2): re-adopt backed up its OWN previously-placed hook"
+echo "ok: HIMMEL-2771 CR idempotent re-adopt creates no spurious backup"
+
+# 3. An absolute/shared core.hooksPath OUTSIDE the target is refused, not
+# written into -- this is the control that matters: asserting only the rc
+# would not catch a write that happened before the refusal.
+crtarget3="$work/cr2771-hookspath"; crbin3="$work/cr2771-hookspath-bin"
+croutside3="$work/cr2771-hookspath-outside"
+mkdir -p "$crtarget3" "$crbin3" "$croutside3"
+HOME="$pchome" git -C "$crtarget3" init -q
+HOME="$pchome" git -C "$crtarget3" config core.hooksPath "$croutside3"
+set +e
+out=$(PATH="$crbin3:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget3" 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "HIMMEL-2771 CR hookspath-outside: adopt exited 0 with a shared/outside hooksPath"
+grepq "$out" 'git gate hooks — FAILED (native:' \
+  || fail "HIMMEL-2771 CR hookspath-outside: missing the FAILED summary line"
+grepq "$out" 'core.hooksPath' \
+  || fail "HIMMEL-2771 CR hookspath-outside: FAILED line does not name core.hooksPath"
+# HIMMEL-2771: pure-shell -- `ls` is not guaranteed reachable under the hermetic PATH here (see dir_is_empty above).
+dir_is_empty "$croutside3" \
+  || fail "HIMMEL-2771 CR hookspath-outside: a hook was written into the outside hooksPath dir"
+echo "ok: HIMMEL-2771 CR hookspath-outside refuses to write into a shared/absolute hooksPath"
+
+# 4. A pre-existing <hook>.himmel-backup is REFUSED, not overwritten. Silently
+# clobbering it would destroy the adopter's real original -- the exact harm
+# the backup exists to prevent -- so the only assertion that matters is that
+# the prior backup survives byte-for-byte, not merely that adopt exited != 0.
+crtarget4="$work/cr2771-backup-exists"; crbin4="$work/cr2771-backup-exists-bin"
+mkdir -p "$crtarget4" "$crbin4"
+HOME="$pchome" git -C "$crtarget4" init -q
+prior_backup_content='#!/usr/bin/env bash
+echo "THE ADOPTERS REAL ORIGINAL -- never destroy me"
+'
+printf '%s' "$foreign_hook_content" > "$crtarget4/.git/hooks/commit-msg"
+chmod +x "$crtarget4/.git/hooks/commit-msg"
+printf '%s' "$prior_backup_content" > "$crtarget4/.git/hooks/commit-msg.himmel-backup"
+set +e
+out=$(PATH="$crbin4:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget4" 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "HIMMEL-2771 CR backup-exists: adopt exited 0 over an existing backup"
+grepq "$out" 'already exists' \
+  || fail "HIMMEL-2771 CR backup-exists: FAILED line does not name the existing backup"
+diff <(printf '%s' "$prior_backup_content") "$crtarget4/.git/hooks/commit-msg.himmel-backup" >/dev/null \
+  || fail "HIMMEL-2771 CR backup-exists: the adopter's prior backup was overwritten"
+echo "ok: HIMMEL-2771 CR backup-exists refuses rather than destroying the prior backup"
+
+# 5. A RELATIVE --target still gates. install_native_hooks() compares the
+# resolved hooks dir against $TARGET, and --target is taken verbatim (never
+# canonicalised at parse time), so a relative one reaches that comparison
+# unanchored -- this is the end-to-end control over that path.
+crrelbase="$work/cr2771-relbase"; crbin5="$work/cr2771-relbase-bin"
+mkdir -p "$crrelbase/reltarget" "$crbin5"
+HOME="$pchome" git -C "$crrelbase/reltarget" init -q
+set +e
+out=$( cd "$crrelbase" && PATH="$crbin5:$work/bin:$native_free_path" HOME="$pchome" \
+  bash "$adopt" --profile core --scope project --target reltarget 2>&1 ); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2771 CR relative-target: adopt exited $rc: $out"
+[ -x "$crrelbase/reltarget/.git/hooks/commit-msg" ] \
+  || fail "HIMMEL-2771 CR relative-target: native commit-msg hook absent"
+grepq "$(cat "$crrelbase/reltarget/.git/hooks/commit-msg")" 'HIMMEL-2771: native invariant gate' \
+  || fail "HIMMEL-2771 CR relative-target: hook is not the native gate"
+echo "ok: HIMMEL-2771 CR relative-target still places the native gate"
+
+# HIMMEL-2771 CR round-2 (confirmed): _native_hooks_canon() used LOGICAL
+# cd+pwd, so a core.hooksPath pointing at a path INSIDE the target that is
+# itself a symlink to a directory OUTSIDE it was accepted as "inside" and the
+# adopter wrote hooks THROUGH the symlink into the outside directory -- the
+# exact shared-hooks-directory escape the round-1 containment check exists to
+# prevent. Asserting only the rc would not catch a write that happened before
+# the refusal, so assert the outside directory stays empty.
+crtarget6="$work/cr2771r2-symlink"; crbin6="$work/cr2771r2-symlink-bin"
+croutside6="$work/cr2771r2-symlink-outside"
+mkdir -p "$crtarget6" "$crbin6" "$croutside6"
+HOME="$pchome" git -C "$crtarget6" init -q
+ln -s "$croutside6" "$crtarget6/hookslink"
+HOME="$pchome" git -C "$crtarget6" config core.hooksPath hookslink
+set +e
+out=$(PATH="$crbin6:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget6" 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "HIMMEL-2771 CR2 symlink-escape: adopt exited 0 with a hooksPath symlinked outside the target"
+grepq "$out" 'git gate hooks — FAILED (native:' \
+  || fail "HIMMEL-2771 CR2 symlink-escape: missing the FAILED summary line"
+grepq "$out" 'core.hooksPath' \
+  || fail "HIMMEL-2771 CR2 symlink-escape: FAILED line does not name core.hooksPath"
+# HIMMEL-2771: pure-shell -- `ls` is not guaranteed reachable under the hermetic PATH here (see dir_is_empty above).
+dir_is_empty "$croutside6" \
+  || fail "HIMMEL-2771 CR2 symlink-escape: a hook was written through the symlink into the outside dir"
+echo "ok: HIMMEL-2771 CR2 symlink-escape refuses a hooksPath symlinked outside the target"
+
+# HIMMEL-2771 CR round-3 (confirmed): _native_hooks_canon()'s walk-up reattaches
+# the not-yet-existing tail of a hooksPath UNCHANGED, so a tail containing ".."
+# was never folded -- the containment check then compared a string that still
+# held "..", which `mkdir -p` resolves past $TARGET. A hooksPath shaped like
+# "new/../../<outside>" reaches this: "new" does not exist, so the walk-up
+# strips the whole tail back to the target and reattaches it verbatim. As with
+# the round-2 symlink-escape control above, asserting only the rc would not
+# catch a write that happened before the refusal, so assert the outside
+# directory stays empty.
+crtarget10="$work/cr2771r3-dotdot"; crbin10="$work/cr2771r3-dotdot-bin"
+croutside10="$work/cr2771r3-dotdot-outside"
+mkdir -p "$crtarget10" "$crbin10" "$croutside10"
+HOME="$pchome" git -C "$crtarget10" init -q
+HOME="$pchome" git -C "$crtarget10" config core.hooksPath 'new/../../cr2771r3-dotdot-outside'
+set +e
+out=$(PATH="$crbin10:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget10" 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "HIMMEL-2771 CR3 dotdot-escape: adopt exited 0 with an unfolded ../.. hooksPath escaping the target"
+grepq "$out" 'git gate hooks — FAILED (native:' \
+  || fail "HIMMEL-2771 CR3 dotdot-escape: missing the FAILED summary line"
+grepq "$out" 'core.hooksPath' \
+  || fail "HIMMEL-2771 CR3 dotdot-escape: FAILED line does not name core.hooksPath"
+# HIMMEL-2771: pure-shell -- `ls` is not guaranteed reachable under the hermetic PATH here (see dir_is_empty above).
+dir_is_empty "$croutside10" \
+  || fail "HIMMEL-2771 CR3 dotdot-escape: a hook was written through the unfolded ../.. into the outside dir"
+echo "ok: HIMMEL-2771 CR3 dotdot-escape refuses a hooksPath whose unfolded ../.. tail escapes the target"
+
+# HIMMEL-2771 CR round-4 (confirmed): folding "." and ".." out of the
+# not-yet-existing tail (the round-3 fix above) can RE-EXPOSE a symlink the
+# walk-up never looked at. A hooksPath shaped "new/../hookslink" -- "new"
+# absent, "hookslink" a symlink INSIDE the target pointing OUTSIDE it --
+# reaches this: the walk-up strips the whole tail back to the target without
+# ever seeing "hookslink" (it does not exist as a path component until the
+# ".." fold puts it directly under the target), then the fold reattaches
+# "hookslink" as a plain string that nothing ever resolves, so the
+# containment check compares a string that never followed the symlink. As
+# with the round-2 and round-3 controls above, asserting only the rc would
+# not catch a write that happened before the refusal, so assert the outside
+# directory stays empty.
+crtarget11="$work/cr2771r4-dotdot-symlink"; crbin11="$work/cr2771r4-dotdot-symlink-bin"
+croutside11="$work/cr2771r4-dotdot-symlink-outside"
+mkdir -p "$crtarget11" "$crbin11" "$croutside11"
+HOME="$pchome" git -C "$crtarget11" init -q
+ln -s "$croutside11" "$crtarget11/hookslink"
+HOME="$pchome" git -C "$crtarget11" config core.hooksPath 'new/../hookslink'
+set +e
+out=$(PATH="$crbin11:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget11" 2>&1); rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "HIMMEL-2771 CR4 dotdot-symlink-escape: adopt exited 0 with a folded ../<symlink> hooksPath escaping the target"
+grepq "$out" 'git gate hooks — FAILED (native:' \
+  || fail "HIMMEL-2771 CR4 dotdot-symlink-escape: missing the FAILED summary line"
+grepq "$out" 'core.hooksPath' \
+  || fail "HIMMEL-2771 CR4 dotdot-symlink-escape: FAILED line does not name core.hooksPath"
+# HIMMEL-2771: pure-shell -- `ls` is not guaranteed reachable under the hermetic PATH here (see dir_is_empty above).
+dir_is_empty "$croutside11" \
+  || fail "HIMMEL-2771 CR4 dotdot-symlink-escape: a hook was written through the re-exposed symlink into the outside dir"
+echo "ok: HIMMEL-2771 CR4 dotdot-symlink-escape refuses a hooksPath whose ../ fold re-exposes a symlink out of the target"
+
+# HIMMEL-2771 CR round-5 (codex-1, confirmed): the containment check above
+# refused an ORDINARY linked worktree outright -- its default hooks dir lives
+# in the PRIMARY checkout's common git dir, outside $TARGET, with
+# core.hooksPath UNSET (not misconfigured -- this is Git's own default
+# layout, and himmel's own workflow mandates worktrees). Prove this on a real
+# linked worktree: `git worktree add` needs a real HEAD, so commit
+# --allow-empty first (same user.name/user.email/-c commit.gpgsign=false
+# idiom as the push-block control above). RED against the pre-fix code =
+# adopt exits 1 with the core.hooksPath FAILED line, naming a setting that
+# was never set.
+crprimary12="$work/cr2771r5-worktree-primary"; crwt12="$work/cr2771r5-worktree-wt"
+crbin12="$work/cr2771r5-worktree-bin"
+mkdir -p "$crprimary12" "$crbin12"
+HOME="$pchome" git -C "$crprimary12" init -q
+HOME="$pchome" git -C "$crprimary12" config user.name 'Native Test'
+HOME="$pchome" git -C "$crprimary12" config user.email 'native@example.invalid'
+HOME="$pchome" git -C "$crprimary12" -c commit.gpgsign=false commit -q --allow-empty \
+  -m 'test: HIMMEL-2771 [#2771] worktree-default primary commit'
+HOME="$pchome" git -C "$crprimary12" worktree add -q "$crwt12" -b cr2771r5-worktree-branch
+effective_hooks_dir12=$(HOME="$pchome" git -C "$crwt12" rev-parse --git-path hooks)
+case "$effective_hooks_dir12" in
+  /*) : ;;
+  *) effective_hooks_dir12="$crwt12/$effective_hooks_dir12" ;;
+esac
+set +e
+out=$(PATH="$crbin12:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crwt12" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] \
+  || fail "HIMMEL-2771 CR5 worktree-default: adopt exited $rc on an ordinary linked worktree with core.hooksPath unset: $out"
+grepq "$out" 'git gate hooks — placed (native' \
+  || fail "HIMMEL-2771 CR5 worktree-default: missing the native placed summary line: $out"
+for hook in commit-msg pre-commit pre-push; do
+  [ -x "$effective_hooks_dir12/$hook" ] \
+    || fail "HIMMEL-2771 CR5 worktree-default: $hook absent/non-executable in the worktree's effective hooks dir ($effective_hooks_dir12)"
+done
+echo "ok: HIMMEL-2771 CR5 worktree-default: adopt gates an ordinary linked worktree with core.hooksPath unset"
+
+# HIMMEL-2771 CR round-5 (codex-2, confirmed): the directory-level containment
+# check cannot see a per-file SYMLINK escape -- $hooks_dir itself is
+# legitimately inside the target; it is this one directory ENTRY that
+# escapes. Shape (a): a DANGLING symlink at $hooks_dir/commit-msg bypasses the
+# `-e` backup-need test entirely (a dangling symlink is not `-e`), so the
+# subsequent `cat >` follows the link and creates a file OUTSIDE $TARGET. As
+# with the containment controls above, asserting only rc would not catch a
+# write that happened before/during the escape, so assert the outside
+# directory stays empty AND that the hooks-dir entry is now a genuine regular
+# file (not still a symlink) carrying the marker.
+crtarget13="$work/cr2771r5-symlink-dangling"; crbin13="$work/cr2771r5-symlink-dangling-bin"
+croutside13="$work/cr2771r5-symlink-dangling-outside"
+mkdir -p "$crtarget13" "$crbin13" "$croutside13"
+HOME="$pchome" git -C "$crtarget13" init -q
+ln -s "$croutside13/pwned" "$crtarget13/.git/hooks/commit-msg"
+set +e
+out=$(PATH="$crbin13:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget13" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] \
+  || fail "HIMMEL-2771 CR5 symlink-dangling: adopt exited $rc: $out"
+# HIMMEL-2771: pure-shell -- `ls` is not guaranteed reachable under the hermetic PATH here (see dir_is_empty above).
+dir_is_empty "$croutside13" \
+  || fail "HIMMEL-2771 CR5 symlink-dangling: a file was created outside the target through the dangling symlink"
+[ -f "$crtarget13/.git/hooks/commit-msg" ] \
+  || fail "HIMMEL-2771 CR5 symlink-dangling: hooks-dir entry is not a regular file after adopt"
+[ ! -L "$crtarget13/.git/hooks/commit-msg" ] \
+  || fail "HIMMEL-2771 CR5 symlink-dangling: hooks-dir entry is still a symlink after adopt"
+grepq "$(cat "$crtarget13/.git/hooks/commit-msg")" 'HIMMEL-2771: native invariant gate' \
+  || fail "HIMMEL-2771 CR5 symlink-dangling: replacement entry is not the native gate"
+echo "ok: HIMMEL-2771 CR5 symlink-dangling: a dangling hook symlink is backed up (not followed) and replaced with a real file"
+
+# HIMMEL-2771 CR round-5 (codex-2, confirmed): shape (b) -- a symlink at
+# $hooks_dir/commit-msg pointing at an OUTSIDE file that already carries our
+# marker made the marker check (`grep -qF`, which follows the link) look like
+# "already ours" and skip the backup, so the subsequent `cat >` truncated a
+# file OUTSIDE $TARGET. Assert the outside file survives byte-for-byte (its
+# distinctive sentinel line, not just its existence) and that the hooks-dir
+# entry is now a genuine regular file.
+crtarget14="$work/cr2771r5-symlink-marker"; crbin14="$work/cr2771r5-symlink-marker-bin"
+croutside14="$work/cr2771r5-symlink-marker-outside.sh"
+mkdir -p "$crtarget14" "$crbin14"
+HOME="$pchome" git -C "$crtarget14" init -q
+sentinel14='echo "SENTINEL cr2771r5-symlink-marker: outside file must not be truncated"'
+cat > "$croutside14" <<OUTSIDEHOOK
+#!/usr/bin/env bash
+# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.
+$sentinel14
+OUTSIDEHOOK
+chmod +x "$croutside14"
+ln -s "$croutside14" "$crtarget14/.git/hooks/commit-msg"
+set +e
+out=$(PATH="$crbin14:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget14" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] \
+  || fail "HIMMEL-2771 CR5 symlink-marker: adopt exited $rc: $out"
+grepq "$(cat "$croutside14")" -F "$sentinel14" \
+  || fail "HIMMEL-2771 CR5 symlink-marker: outside file was truncated (sentinel line missing)"
+[ -f "$crtarget14/.git/hooks/commit-msg" ] \
+  || fail "HIMMEL-2771 CR5 symlink-marker: hooks-dir entry is not a regular file after adopt"
+[ ! -L "$crtarget14/.git/hooks/commit-msg" ] \
+  || fail "HIMMEL-2771 CR5 symlink-marker: hooks-dir entry is still a symlink after adopt"
+echo "ok: HIMMEL-2771 CR5 symlink-marker: a symlink to a marker-bearing outside file is backed up (not followed) and replaced with a real file"
+
+# HIMMEL-2771 CR round-6 (codex-1, confirmed): round-5's fix above teaches
+# adopt to ACCEPT the shared Git common-directory hooks layout, but the
+# payload (scripts/hooks/*.sh + guardrails/lib.sh) was copied only into
+# $TARGET (the linked worktree). Git's hooks are per-REPOSITORY, not
+# per-worktree, so that one hooks dir also serves the PRIMARY checkout (and
+# any sibling worktree) -- neither of which received a payload. Their shared
+# dispatcher resolves `$root/scripts/hooks/<script>` against ITS OWN
+# toplevel (the primary, not the adopted worktree), finds nothing, and every
+# commit/push there starts failing with a bash "No such file or directory"
+# error -- round 5 traded a false refusal for a real breakage of a checkout
+# the adopter never named. Drive the PRIMARY's own commit-msg dispatcher
+# directly rather than `git commit`: the pre-commit dispatcher fires too on
+# a real commit, and check-worktree-isolation.sh legitimately refuses
+# commits on the primary's default branch, which would make RED and GREEN
+# indistinguishable (both would fail).
+#
+# The cwd trap: the dispatcher does `root=$(git rev-parse --show-toplevel)`.
+# Git sets cwd to the repo toplevel when IT fires a hook, but here the hook
+# is invoked by hand, so an un-pinned cwd would still be THIS himmel
+# worktree -- which DOES carry scripts/hooks/check-commit-msg.sh -- and the
+# control would pass against the broken code for the wrong reason. Pin cwd
+# to the primary with a subshell.
+crprimary15="$work/cr2771r6-worktree-primary"; crwt15="$work/cr2771r6-worktree-wt"
+crbin15="$work/cr2771r6-worktree-bin"
+mkdir -p "$crprimary15" "$crbin15"
+HOME="$pchome" git -C "$crprimary15" init -q
+HOME="$pchome" git -C "$crprimary15" config user.name 'Native Test'
+HOME="$pchome" git -C "$crprimary15" config user.email 'native@example.invalid'
+HOME="$pchome" git -C "$crprimary15" -c commit.gpgsign=false commit -q --allow-empty \
+  -m 'test: HIMMEL-2771 [#2771] worktree-primary-gate primary commit'
+HOME="$pchome" git -C "$crprimary15" worktree add -q "$crwt15" -b cr2771r6-worktree-branch
+set +e
+out=$(PATH="$crbin15:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crwt15" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] \
+  || fail "HIMMEL-2771 CR6 worktree-primary-gate: adopt exited $rc against the linked worktree: $out"
+
+msgfile15="$work/cr2771r6-valid.msg"
+printf 'test: HIMMEL-2771 [#2771] worktree-primary-gate valid message\n' > "$msgfile15"
+set +e
+pout15=$( cd "$crprimary15" && HOME="$pchome" bash .git/hooks/commit-msg "$msgfile15" 2>&1 ); prc15=$?
+set -e
+[ "$prc15" -eq 0 ] \
+  || fail "HIMMEL-2771 CR6 worktree-primary-gate: PRIMARY's commit-msg dispatcher rejected a valid ticketed message (rc=$prc15): $pout15"
+grepq "$pout15" 'No such file or directory' \
+  && fail "HIMMEL-2771 CR6 worktree-primary-gate: PRIMARY's dispatcher hit the missing-script error: $pout15"
+
+msgfile15b="$work/cr2771r6-noticket.msg"
+printf 'no ticket here at all\n' > "$msgfile15b"
+set +e
+pout15b=$( cd "$crprimary15" && HOME="$pchome" bash .git/hooks/commit-msg "$msgfile15b" 2>&1 ); prc15b=$?
+set -e
+[ "$prc15b" -ne 0 ] \
+  || fail "HIMMEL-2771 CR6 worktree-primary-gate: an unticketed message exited 0 in the PRIMARY -- the gate did not actually run: $pout15b"
+echo "ok: HIMMEL-2771 CR6 worktree-primary-gate: the PRIMARY checkout's shared dispatcher finds its payload copy and genuinely gates"
+
+# HIMMEL-2771 CR round-6 (codex-2, confirmed): direct self-test of
+# dir_is_empty itself, because every containment control above -- including
+# the round-5 cr2771r5-symlink-dangling control, whose whole SUBJECT is a
+# dangling symlink -- trusts this helper's verdict. `[ -e "$f" ]` alone
+# follows a symlink to test its TARGET, so a dangling symlink is `-e` false
+# and was silently skipped: if the escape those controls guard against ever
+# landed as a dangling link, this helper would report the directory empty
+# while the escape happened. RED against the pre-fix helper = it reports the
+# dangling-symlink directory empty.
+cr2771r6dirempty="$work/cr2771r6-dir-is-empty-dangling"
+# Two SEPARATE directories, not one shared parent: a dangling symlink sitting
+# alongside a genuinely-existing entry (e.g. the plain-empty dir itself) would
+# still make the parent report non-empty via that OTHER entry, masking the
+# very bug this control exists to catch. The dangling-holder directory must
+# contain the dangling symlink and NOTHING else.
+mkdir -p "$cr2771r6dirempty/dangling-holder" "$cr2771r6dirempty/plain-empty"
+ln -s "$cr2771r6dirempty/plain-empty/nonexistent-target" "$cr2771r6dirempty/dangling-holder/dangling"
+if dir_is_empty "$cr2771r6dirempty/dangling-holder"; then
+  fail "HIMMEL-2771 CR6 dir-is-empty-dangling: dir_is_empty reported a directory containing only a dangling symlink as empty"
+fi
+dir_is_empty "$cr2771r6dirempty/plain-empty" \
+  || fail "HIMMEL-2771 CR6 dir-is-empty-dangling: dir_is_empty reported a genuinely empty directory as non-empty"
+echo "ok: HIMMEL-2771 CR6 dir-is-empty-dangling: dir_is_empty sees a dangling symlink as an occupied entry and a genuinely empty dir as empty"
+
+# HIMMEL-2771 CR round-2 (confirmed): a pre-existing foreign hook is backed up
+# to <hook>.himmel-backup but the generated dispatcher never ran it again, so
+# the adopter's own gate was silently disabled. This is the control that
+# matters -- it proves enforcement was preserved, not merely that a file was
+# kept: a presence-only assertion on .himmel-backup would pass today while
+# the check is dead.
+crtarget7="$work/cr2771r2-chain-fails"; crbin7="$work/cr2771r2-chain-fails-bin"
+mkdir -p "$crtarget7" "$crbin7"
+HOME="$pchome" git -C "$crtarget7" init -q
+HOME="$pchome" git -C "$crtarget7" checkout -q -b feat/native-test
+cat > "$crtarget7/.git/hooks/commit-msg" <<'FOREIGNHOOK'
+#!/usr/bin/env bash
+echo "ADOPTER HOOK REFUSES EVERYTHING" >&2
+exit 1
+FOREIGNHOOK
+chmod +x "$crtarget7/.git/hooks/commit-msg"
+set +e
+out=$(PATH="$crbin7:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget7" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2771 CR2 chain-fails: adopt exited $rc: $out"
+[ -f "$crtarget7/.git/hooks/commit-msg.himmel-backup" ] \
+  || fail "HIMMEL-2771 CR2 chain-fails: backup absent"
+HOME="$pchome" git -C "$crtarget7" config user.name 'Native Test'
+HOME="$pchome" git -C "$crtarget7" config user.email 'native@example.invalid'
+set +e
+cout=$(HOME="$pchome" git -C "$crtarget7" -c commit.gpgsign=false commit --allow-empty \
+  -m 'test: HIMMEL-2771 [#2771] chained backup fails' 2>&1); crc=$?
+set -e
+[ "$crc" -ne 0 ] \
+  || fail "HIMMEL-2771 CR2 chain-fails: an otherwise-valid ticketed commit LANDED even though the adopter's backed-up hook refuses everything"
+! git -C "$crtarget7" rev-parse --verify HEAD >/dev/null 2>&1 \
+  || fail "HIMMEL-2771 CR2 chain-fails: refused commit created HEAD"
+echo "ok: HIMMEL-2771 CR2 chain-fails: a chained backup hook can still fail the operation"
+
+# HIMMEL-2771 CR round-2: the flip side of chain-fails -- a chained backup
+# hook that PASSES must not break the himmel gate itself (no double-negative,
+# no rc-mangling that turns a real himmel-gate refusal into a pass).
+crtarget8="$work/cr2771r2-chain-passes"; crbin8="$work/cr2771r2-chain-passes-bin"
+mkdir -p "$crtarget8" "$crbin8"
+HOME="$pchome" git -C "$crtarget8" init -q
+HOME="$pchome" git -C "$crtarget8" checkout -q -b feat/native-test
+cat > "$crtarget8/.git/hooks/commit-msg" <<FOREIGNHOOK2
+#!/usr/bin/env bash
+echo ran >> "$crtarget8/adopter-hook-ran"
+exit 0
+FOREIGNHOOK2
+chmod +x "$crtarget8/.git/hooks/commit-msg"
+set +e
+out=$(PATH="$crbin8:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget8" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2771 CR2 chain-passes: adopt exited $rc: $out"
+[ -f "$crtarget8/.git/hooks/commit-msg.himmel-backup" ] \
+  || fail "HIMMEL-2771 CR2 chain-passes: backup absent"
+HOME="$pchome" git -C "$crtarget8" config user.name 'Native Test'
+HOME="$pchome" git -C "$crtarget8" config user.email 'native@example.invalid'
+set +e
+cout=$(HOME="$pchome" git -C "$crtarget8" -c commit.gpgsign=false commit --allow-empty \
+  -m 'test: HIMMEL-2771 [#2771] chained backup passes' 2>&1); crc=$?
+set -e
+[ "$crc" -eq 0 ] || fail "HIMMEL-2771 CR2 chain-passes: ticketed commit refused even though both gates pass: $cout"
+git -C "$crtarget8" rev-parse --verify HEAD >/dev/null \
+  || fail "HIMMEL-2771 CR2 chain-passes: ticketed commit did not create HEAD"
+[ -f "$crtarget8/adopter-hook-ran" ] \
+  || fail "HIMMEL-2771 CR2 chain-passes: adopter's backed-up hook never ran"
+set +e
+cout2=$(HOME="$pchome" git -C "$crtarget8" -c commit.gpgsign=false commit --allow-empty \
+  -m 'no ticket here at all' 2>&1); crc2=$?
+set -e
+[ "$crc2" -ne 0 ] \
+  || fail "HIMMEL-2771 CR2 chain-passes: unticketed commit landed -- himmel gate was masked by the passing backup hook: $cout2"
+echo "ok: HIMMEL-2771 CR2 chain-passes: a passing chained backup hook does not break the himmel gate"
+
+# HIMMEL-2771 CR round-2 (confirmed): git feeds pre-push its ref list on
+# STDIN, and running the himmel gate (which drains stdin -- see
+# check-push-target.sh's own header) before the backup left the backup
+# reading an already-drained, EOF stdin. A backed-up hook whose refusal
+# depends on the ref stream (the realistic shape -- check-push-target.sh
+# itself decides this way) would then see zero ref lines and fall through to
+# exit 0 regardless of what it should have refused. presence/rc-only checks
+# on the hook file do not catch this (a probe against the pre-fix payload
+# showed exactly that fallthrough); only a REAL `git push` supplies git's own
+# ref-stream protocol, so this control drives one against a real remote.
+crtarget9="$work/cr2771r2-push-block"; crbin9="$work/cr2771r2-push-block-bin"
+crremote9="$work/cr2771r2-push-block-remote.git"
+mkdir -p "$crtarget9" "$crbin9"
+HOME="$pchome" git init -q --bare "$crremote9"
+HOME="$pchome" git -C "$crtarget9" init -q
+HOME="$pchome" git -C "$crtarget9" checkout -q -b feat/native-test
+out=$(PATH="$crbin9:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtarget9" 2>&1); rc=$?
+[ "$rc" -eq 0 ] || fail "HIMMEL-2771 CR2 push-block: adopt exited $rc: $out"
+[ -x "$crtarget9/.git/hooks/pre-push" ] \
+  || fail "HIMMEL-2771 CR2 push-block: no native pre-push hook was installed"
+# No pre-existing pre-push hook here for adopt to back up (that mechanic is
+# already covered by chain-fails/chain-passes above) -- plant the "adopter's
+# own hook" directly as .himmel-backup, the exact file the dispatcher chains
+# to. It refuses a push whose DESTINATION ref is refs/heads/protected, a
+# decision that requires actually reading the ref stream, so a drained stdin
+# is indistinguishable from "nothing pushed" and the hook would wrongly allow
+# it -- unlike a stub that always/never refuses regardless of stdin content.
+cat > "$crtarget9/.git/hooks/pre-push.himmel-backup" <<'FOREIGNPUSHHOOK'
+#!/usr/bin/env bash
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/protected)
+      echo "ADOPTER PRE-PUSH HOOK REFUSES protected" >&2
+      exit 1
+      ;;
+  esac
+done
+exit 0
+FOREIGNPUSHHOOK
+chmod +x "$crtarget9/.git/hooks/pre-push.himmel-backup"
+HOME="$pchome" git -C "$crtarget9" config user.name 'Native Test'
+HOME="$pchome" git -C "$crtarget9" config user.email 'native@example.invalid'
+HOME="$pchome" git -C "$crtarget9" -c commit.gpgsign=false commit -q --allow-empty \
+  -m 'test: HIMMEL-2771 [#2771] push-block probe commit'
+HOME="$pchome" git -C "$crtarget9" remote add origin "$crremote9"
+set +e
+pout=$(HOME="$pchome" git -C "$crtarget9" push origin feat/native-test:refs/heads/protected 2>&1); prc=$?
+set -e
+[ "$prc" -ne 0 ] \
+  || fail "HIMMEL-2771 CR2 push-block: a REAL git push landed even though the chained backup hook refuses this ref (drained-stdin regression): $pout"
+grepq "$pout" 'ADOPTER PRE-PUSH HOOK REFUSES protected' \
+  || fail "HIMMEL-2771 CR2 push-block: push was refused but not by the adopter's chained backup hook: $pout"
+! HOME="$pchome" git -C "$crremote9" rev-parse --verify refs/heads/protected >/dev/null 2>&1 \
+  || fail "HIMMEL-2771 CR2 push-block: remote has refs/heads/protected even though the push was refused"
+echo "ok: HIMMEL-2771 CR2 push-block: a chained pre-push backup hook blocks a real git push"
+
 # --skip-hooks: pre-commit is never invoked.
 : > "$work/pre-commit.argv"
 pctarget19b2="$work/pctarget19b2"; mkdir -p "$pctarget19b2"
@@ -868,7 +1563,7 @@ grepq "$out" "DRY: (cd $pctarget19b4 && pre-commit install --allow-missing-confi
   || fail "HIMMEL-2441 --dry-run: missing the DRY git-hooks line (got: $out)"
 echo "ok: HIMMEL-2441 --dry-run prints the git-hooks DRY line, pre-commit never invoked"
 
-# pre-commit install fails (stub exits 1): WARN-not-fail, adopt still rc=0.
+# HIMMEL-2771: framework hook installation failure falls back to native gates.
 cat > "$pcbin/pre-commit" <<STUB
 #!/usr/bin/env bash
 echo "\$*" >> "$work/pre-commit.argv"
@@ -885,7 +1580,9 @@ set -e
 [ "$rc" -eq 0 ] || fail "HIMMEL-2441 install-fails: adopt must exit 0 (WARN-not-fail), got rc=$rc: $out"
 grepq "$out" 'WARNING: git hook install failed' \
   || fail "HIMMEL-2441 install-fails: missing the WARNING message (got: $out)"
-echo "ok: HIMMEL-2441 a failing pre-commit install WARNs, adopt continues (rc=0)"
+grepq "$out" "git gate hooks — placed (native, no pre-commit framework: lint hooks absent)" \
+  || fail "HIMMEL-2771 install-fails: native fallback absent"
+echo "ok: HIMMEL-2771 failing pre-commit install falls back to native gates (rc=0)"
 
 # HIMMEL-2441/2483 [codex-1, CR round 2]: a real `uv tool install pre-commit`
 # can succeed while its bin dir isn't on PATH yet -- prove adopt.sh resolves
@@ -964,14 +1661,8 @@ echo "ok: HIMMEL-2441/2483 --dry-run describes the planned pre-commit install ev
 rm -f "$pchome/pre-commit-2483.argv" "$pchome/.local/bin/pre-commit"
 rmdir "$pchome/.local/bin" "$pchome/.local" 2>/dev/null || true
 
-# HIMMEL-2441/2483 [round-4 panel, codex-1]: the "neither uv nor pipx"
-# branch WARNed and returned unconditionally, so --dry-run output still
-# depended on host tooling in this one last case. No pre-commit, uv, or pipx
-# anywhere on PATH ($pc_free_path is already uv/pipx/pre-commit-free -- it's
-# $qmd_free_path, itself scrubbed of uv/pipx, further scrubbed of
-# pre-commit; $work/bin only carries the hermetic bash/jq/claude stubs).
-# adopt.sh must still print the WARNING (useful info, kept) AND fall through
-# to the planned `pre-commit install` DRY: line, rc=0.
+# HIMMEL-2771: no installer can run in dry-run; describe both framework
+# bootstrap and the native fallback without writing any hooks.
 pctarget19b8="$work/pctarget19b8"; mkdir -p "$pctarget19b8"
 ( cd "$pctarget19b8" && HOME="$pchome" git init -q )
 set +e
@@ -979,11 +1670,12 @@ out=$(PATH="$work/bin:$pc_free_path" HOME="$pchome" bash "$adopt" \
       --profile core --scope project --target "$pctarget19b8" --dry-run 2>&1); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "HIMMEL-2441/2483 --dry-run no-tool-at-all: adopt should exit 0 (got $rc): $out"
-grepq "$out" "WARNING: git hooks: 'pre-commit' not found and neither uv nor pipx is available" \
-  || fail "HIMMEL-2441/2483 --dry-run no-tool-at-all: missing the no-uv/pipx WARNING (got: $out)"
+grepq "$out" "DRY: place executable native commit-msg, pre-commit, pre-push hooks" \
+  || fail "HIMMEL-2771 --dry-run: missing native placement plan (got: $out)"
+[ ! -e "$pctarget19b8/.git/hooks/commit-msg" ] || fail "HIMMEL-2771 --dry-run: wrote native hook"
 grepq "$out" "DRY: (cd $pctarget19b8 && pre-commit install --allow-missing-config" \
   || fail "HIMMEL-2441/2483 --dry-run no-tool-at-all: missing the planned pre-commit install DRY line (got: $out)"
-echo "ok: HIMMEL-2441/2483 --dry-run with no pre-commit/uv/pipx at all still WARNs AND prints the plan"
+echo "ok: HIMMEL-2771 --dry-run prints framework and native plans without placing hooks"
 
 # Remove the stub so it cannot affect any later scenario in this file — $pcbin
 # was only ever added to PATH via a per-invocation prefix above (never

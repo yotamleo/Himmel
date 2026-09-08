@@ -123,8 +123,9 @@ run_case
 assert_rc "P1 project plugins removed" 0 "$rc"
 for spec in handover@himmel notes@obsidian-skills review@claude-plugins-official; do
     assert_has "P1 $spec uses project scope" "plugin uninstall $spec --scope project" "$calls"
+    assert_not_has "P1 $spec never uninstalls at user scope" "plugin uninstall $spec --scope user" "$calls"
 done
-assert_not_has "P1 no user-scope calls" '--scope user' "$calls"
+assert_has "P1 marketplace also tries install-profile scope (HIMMEL-2796)" 'plugin marketplace remove himmel --scope user' "$calls"
 
 # WHY (HIMMEL-2694): local installs belong to their physical project too.
 reset_case
@@ -254,7 +255,8 @@ for preview_case in P7b P7c; do
         run_case --dry-run
     else
         preview_label="marketplaces-only dry-run with handoff"
-        printf 'himmel\tuser\n' > "$TMP/preview-scope-map"
+        run_case --plugins-only --dry-run --scope-map "$TMP/preview-scope-map"
+        assert_rc "P7c simulated plugin phase writes exact handoff" 0 "$rc"
         run_case --marketplaces-only --dry-run --scope-map "$TMP/preview-scope-map"
     fi
     if [ "$rc" -eq 0 ] && ! grep -qF 'SKIP:' <<< "$out" &&
@@ -348,7 +350,7 @@ printf '[{"id":"b@m2","scope":"user"}]\n' > "$STUB_PLUGINS_JSON"
 run_case --plugins-only --scope-map "$P8_SCOPE_MAP"
 assert_rc "P8 duplicate retry exits 0" 0 "$rc"
 assert_rc "P8 deduplicates repeated scope record" 1 "$(grep -xcF $'m2\tuser' "$P8_SCOPE_MAP")"
-printf 'm1\tproject\nm2\tuser\n' > "$TMP/p8-expected-scope-map"
+printf 'm1\tproject\nm2\tuser\nb@m2\tuser\n' > "$TMP/p8-expected-scope-map"
 cmp -s "$TMP/p8-expected-scope-map" "$P8_SCOPE_MAP"; p8_map_rc=$?
 assert_rc "P8 keeps prior records before current records" 0 "$p8_map_rc"
 

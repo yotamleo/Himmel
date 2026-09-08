@@ -22,7 +22,7 @@
 #   project  Copy the portable scripts into <target>, wire the PreToolUse hooks
 #            into <target>/.claude/settings.json, install plugins --scope project.
 #   user     Install plugins --scope user and wire ~/.claude/settings.json hooks
-#            to reference THIS himmel clone (scripts are not copied per-repo).
+#            to reference THIS himmel clone (native Git gates are copied).
 #
 # Flags:
 #   --target PATH       Where core lands (project scope) / vault dir for
@@ -122,6 +122,9 @@ PORTABLE_FILES=(
   scripts/hooks/auto-approve-safe-bash.sh
   scripts/hooks/block-edit-on-main.sh
   scripts/hooks/block-read-secrets.sh
+  scripts/hooks/check-commit-msg.sh
+  scripts/hooks/check-worktree-isolation.sh
+  scripts/hooks/check-push-target.sh
   scripts/guardrails/lib.sh
   scripts/guardrails/guard-gh.sh
   scripts/lib/py-armor.sh
@@ -484,6 +487,385 @@ build_jira_cli() {
   fi
 }
 
+# _native_hooks_canon <path> — print <path> resolved to an absolute,
+# PHYSICAL (symlink-free) form, tolerating a path that does not exist yet:
+# bash 3.2 / macOS ship no `realpath`, so this resolves component-by-component
+# from the root -- exactly what `realpath`/the kernel does, which is why it
+# has no unemulated corner: a ".." is applied to a path that has ALREADY been
+# physically resolved up to that point (so it pops the REAL parent, as the
+# kernel does), and every component that exists is resolved to its physical
+# form the MOMENT it is appended -- including one that only becomes reachable
+# after an earlier ".." fold. A component that does not exist yet cannot be a
+# symlink, so leaving it as the literal string and continuing is exact for
+# that component, not an approximation -- it is what makes the trailing
+# not-yet-created tail safe.
+#
+# Prior versions each hand-emulated one piece of this and left a different
+# piece unemulated -- that pattern is why this is a full rewrite rather than
+# a fourth patch (HIMMEL-2771 CR):
+#   - round-2: resolved only the deepest existing ancestor, via LOGICAL
+#     cd+pwd. A core.hooksPath symlink INSIDE the target pointing OUTSIDE it
+#     preserved the symlink instead of resolving it, passing containment.
+#   - round-3: switched that single resolution to PHYSICAL cd -P/pwd -P, but
+#     reattached the not-yet-created tail UNCHANGED, so an unfolded ".." in
+#     the tail (e.g. "new/../../outside" with "new" absent) was compared as a
+#     literal string that still held "..", passing containment even though
+#     `mkdir -p` resolves it and escapes $TARGET.
+#   - round-4: folded "." and ".." out of that tail lexically, but the fold
+#     could RE-EXPOSE a symlink the walk-up never looked at: with
+#     "new/../hookslink" ("new" absent, "hookslink" a symlink out of the
+#     target), the walk-up strips the whole tail back to the target without
+#     ever seeing "hookslink", then the fold reattaches it as a plain string
+#     that nothing ever resolves.
+# Component-wise resolution has no walk-up and no reattached tail, so none of
+# these three holes exist here: every component is resolved (or provably
+# cannot be a symlink) at the moment it becomes part of the accumulated path,
+# regardless of whether a ".." fold is what made it reachable.
+#
+# Used by install_native_hooks() to check a resolved core.hooksPath against
+# $TARGET.
+_native_hooks_canon() {
+  local p="$1" acc comp remaining resolved
+  # Anchor a relative input to $PWD before resolving -- resolution below
+  # walks component-by-component from "/", so an unanchored relative path
+  # would otherwise resolve against the wrong base entirely.
+  [[ "$p" == /* ]] || p="$PWD/$p"
+  acc="/"
+  remaining="$p"
+  while [[ -n "$remaining" ]]; do
+    remaining="${remaining#/}"
+    case "$remaining" in
+      */*) comp="${remaining%%/*}"; remaining="${remaining#*/}" ;;
+      *) comp="$remaining"; remaining="" ;;
+    esac
+    case "$comp" in
+      ""|.) : ;;
+      ..)
+        # Pop one component off $acc. $acc is already physically resolved up
+        # to this point (below), so this pops the REAL parent -- exactly what
+        # the kernel does for "..", including a ".." that only became
+        # meaningful after an earlier "new/.." was folded away. Already at
+        # "/" (or popping a single-component path) collapses back to "/",
+        # never "".
+        acc="${acc%/*}"
+        [[ -n "$acc" ]] || acc="/"
+        ;;
+      *)
+        if [[ "$acc" == "/" ]]; then
+          acc="/$comp"
+        else
+          acc="$acc/$comp"
+        fi
+        # Resolve $acc to its physical form the MOMENT it exists as a
+        # directory (or a symlink to one) -- this is what catches a symlink
+        # that only becomes reachable after an earlier ".." fold (HIMMEL-2771
+        # CR round-4): there is no separate walk-up pass that could run
+        # before this component exists and so never look at it. A component
+        # that does not exist yet cannot be a symlink, so leaving it as the
+        # literal string and continuing is exact, not an approximation.
+        if [[ -d "$acc" ]]; then
+          if resolved="$(cd -P "$acc" 2>/dev/null && pwd -P)"; then
+            acc="$resolved"
+          fi
+          # cd -P can fail here despite `-d` succeeding -- a search-permission
+          # denial on the directory, or (rarer) a symlink loop. Do not accept
+          # the unresolved literal AS IF it were physically resolved; leave
+          # $acc as the literal string and keep going, same as the
+          # does-not-exist-yet case. This cannot be leveraged to escape
+          # containment: whatever defeated `cd -P` here (no search
+          # permission, a loop) equally defeats the `mkdir -p`/hook-file write
+          # install_native_hooks() performs through this same component
+          # afterward, so nothing is ever actually written past it even if
+          # the string comparison downstream happened to read as "inside".
+        fi
+        ;;
+    esac
+  done
+  printf '%s\n' "$acc"
+}
+
+install_native_hooks() {
+  # HIMMEL-2771: resolve Git's effective hook directory (including worktrees
+  # and core.hooksPath), but keep hook payloads independent of this clone.
+  local hooks_dir hook script hooks_dir_canon target_canon backup marker
+  local common_dir common_dir_canon payload_dir payload_file
+  marker='# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.'
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "DRY: place executable native commit-msg, pre-commit, pre-push hooks in $TARGET (fallback if pre-commit is unavailable or fails)"
+    echo "DRY: copy native gate scripts and guardrails/lib.sh into $TARGET if needed"
+    return 0
+  fi
+  if ! hooks_dir=$(git -C "$TARGET" rev-parse --git-path hooks); then
+    echo "  git gate hooks — FAILED (native: cannot resolve hooks directory in $TARGET)" >&2
+    return 1
+  fi
+  [[ "$hooks_dir" == /* ]] || hooks_dir="$TARGET/$hooks_dir"
+  # CR: a SHARED/absolute core.hooksPath (e.g. a global ~/.githooks used by
+  # many repos) must be refused outright, not written into -- our dispatcher
+  # hooks resolve `git rev-parse --show-toplevel` at FIRE time, so placing
+  # them in a hooksPath outside $TARGET would break every OTHER repo sharing
+  # it (script path would not exist there -> bash exits 127 on every commit).
+  # A repo-relative hooksPath that resolves inside $TARGET (the existing
+  # `user-hooks-path` control) must keep working, so this is a boundary
+  # check, not a "must be under .git" check. Compared with trailing slashes
+  # so "/target-evil" cannot pass as inside "/target" via a naive prefix match.
+  hooks_dir_canon="$(_native_hooks_canon "$hooks_dir")"
+  target_canon="$(_native_hooks_canon "$TARGET")"
+  # HIMMEL-2771 CR round-5 (codex-1, confirmed): the boundary check above
+  # applies uniformly, but an ORDINARY linked worktree has no configured
+  # core.hooksPath at all -- its default hooks dir is Git's own per-repository
+  # `<common-git-dir>/hooks`, which lives in the PRIMARY checkout's .git, not
+  # under this worktree's $TARGET. Refusing that as "outside the target" is
+  # wrong on two counts: it blocks a Git-managed layout the boundary check was
+  # never meant to catch (shared only among worktrees OF THIS REPO, every one
+  # of which carries the same scripts/hooks/... in its tree -- accepting it
+  # does not weaken the shared-hooksPath property this check defends), and the
+  # resulting message names `core.hooksPath` as the culprit when it is unset,
+  # prescribing a remedy ("unset it") the adopter cannot perform. Branch on
+  # whether core.hooksPath is actually configured: `git config --get` exits
+  # non-zero when the key is absent, so treat that as "unset" rather than
+  # letting `set -e` kill the run.
+  if git -C "$TARGET" config --get core.hooksPath >/dev/null 2>&1; then
+    case "$hooks_dir_canon/" in
+      "$target_canon"/*) ;;
+      *)
+        echo "  git gate hooks — FAILED (native: core.hooksPath $hooks_dir_canon is outside $target_canon — unset it or set it to a path inside the target, then re-run)" >&2
+        return 1
+        ;;
+    esac
+  else
+    # Unset: accept the default hooks dir when it sits inside $TARGET (the
+    # common case) OR inside the git COMMON directory Git itself names via
+    # `rev-parse --git-common-dir` (the linked-worktree case). This is still a
+    # positive containment check against a path Git named, not "unset =>
+    # accept anything" -- a hooks dir that lands somewhere else with
+    # core.hooksPath unset is not a shape Git produces and must still be
+    # refused. `--git-common-dir` can be relative (e.g. plain ".git" in a
+    # non-worktree repo); anchor it to $TARGET exactly as $hooks_dir is
+    # anchored above.
+    common_dir="$(git -C "$TARGET" rev-parse --git-common-dir)"
+    [[ "$common_dir" == /* ]] || common_dir="$TARGET/$common_dir"
+    common_dir_canon="$(_native_hooks_canon "$common_dir")"
+    case "$hooks_dir_canon/" in
+      "$target_canon"/*|"$common_dir_canon"/*) ;;
+      *)
+        echo "  git gate hooks — FAILED (native: cannot resolve a safe hooks directory for $TARGET — default hooks dir $hooks_dir_canon is outside both the target ($target_canon) and its git common directory ($common_dir_canon); this is not a normal repository layout)" >&2
+        return 1
+        ;;
+    esac
+  fi
+  if ! mkdir -p "$hooks_dir"; then
+    echo "  git gate hooks — FAILED (native: cannot create hooks directory $hooks_dir)" >&2
+    return 1
+  fi
+  # HIMMEL-2771 CR round-6 (codex-1, confirmed): round-5's fix above teaches
+  # adopt to ACCEPT the shared common-dir hooks layout, but the payload
+  # (scripts/hooks/*.sh + guardrails/lib.sh) was copied only into $TARGET (the
+  # linked worktree). Git's hooks are per-repository, not per-worktree, so
+  # that one directory serves the primary checkout and every linked worktree,
+  # while the payload is copied only into $TARGET. The generated dispatchers
+  # resolve `$root/scripts/hooks/<script>` at FIRE time via
+  # `git rev-parse --show-toplevel`, so in the primary (and any sibling
+  # worktree) $root is NOT $TARGET and the script is absent -> every commit
+  # and push there starts failing with a bash "No such file" error. Do NOT
+  # copy into those other checkouts -- writing into directories the adopter
+  # never named is exactly the boundary this PR has spent five rounds
+  # defending, and it would not cover worktrees created LATER anyway. Instead,
+  # when the hooks dir is OUTSIDE $TARGET (the shared-common-dir case), stash
+  # a payload copy beside the shared hooks dir itself -- a subdirectory of
+  # .git/hooks/ is inert to Git (it only ever executes files named exactly
+  # like a hook) -- and teach the dispatcher (below) to fall back to it when
+  # $root/scripts/hooks/<script> is missing.
+  case "$hooks_dir_canon/" in
+    "$target_canon"/*) payload_dir="" ;;   # hooks live inside the target: $root always resolves
+    *)                 payload_dir="$hooks_dir/himmel-payload" ;;
+  esac
+  if [[ -n "$payload_dir" ]]; then
+    # Preserve the relative layout: check-worktree-isolation.sh and
+    # check-push-target.sh both `source "$SCRIPT_DIR/../guardrails/lib.sh"`,
+    # so a flat copy would break them.
+    for payload_file in scripts/hooks/check-commit-msg.sh scripts/hooks/check-worktree-isolation.sh scripts/hooks/check-push-target.sh scripts/guardrails/lib.sh; do
+      if ! mkdir -p "$payload_dir/$(dirname "$payload_file")" || ! cp "$HIMMEL_ROOT/$payload_file" "$payload_dir/$payload_file"; then
+        echo "  git gate hooks — FAILED (native: cannot copy $payload_file into $payload_dir)" >&2
+        return 1
+      fi
+    done
+    if ! chmod +x "$payload_dir/scripts/hooks/check-commit-msg.sh" \
+                  "$payload_dir/scripts/hooks/check-worktree-isolation.sh" \
+                  "$payload_dir/scripts/hooks/check-push-target.sh"; then
+      echo "  git gate hooks — FAILED (native: cannot chmod +x payload scripts in $payload_dir)" >&2
+      return 1
+    fi
+    echo "  git gate hooks — payload copied to $payload_dir (shared hooks directory serves other checkouts too; dispatchers fall back to it when their own \$root lacks scripts/hooks)"
+  fi
+  # User scope normally references this clone; native Git gates must survive
+  # its removal too. Project scope already copied these portable files.
+  if [[ "$SCOPE" == "user" && ! "$TARGET" -ef "$HIMMEL_ROOT" ]]; then
+    for script in scripts/hooks/check-commit-msg.sh scripts/hooks/check-worktree-isolation.sh scripts/hooks/check-push-target.sh scripts/guardrails/lib.sh; do
+      if ! mkdir -p "$TARGET/$(dirname "$script")" || ! cp "$HIMMEL_ROOT/$script" "$TARGET/$script"; then
+        echo "  git gate hooks — FAILED (native: cannot copy $script into $TARGET)" >&2
+        return 1
+      fi
+    done
+  fi
+  for hook in commit-msg pre-commit pre-push; do
+    case "$hook" in
+      commit-msg) script=check-commit-msg.sh ;;
+      pre-commit) script=check-worktree-isolation.sh ;;
+      pre-push) script=check-push-target.sh ;;
+    esac
+    # CR: `cat >` truncates unconditionally, which would silently destroy an
+    # adopter's own hand-written hook (pre-commit's own `install` migrates a
+    # pre-existing hook to `<hook>.legacy` instead of destroying it -- mirror
+    # that here). Skip the backup when the existing file is already OURS
+    # (marker match): re-running adopt must not keep re-backing-up our own
+    # generated hook, which would overwrite the adopter's REAL backup with a
+    # copy of our own output on a second run.
+    #
+    # HIMMEL-2771 CR round-5 (codex-2, confirmed): the directory-level
+    # containment check above cannot see a per-file SYMLINK escape --
+    # $hooks_dir itself is legitimately inside the target; it is this one
+    # directory ENTRY that escapes. A DANGLING symlink is not `-e`, so it
+    # skipped the backup branch entirely; a symlink to an outside file that
+    # happens to already carry our marker made `grep -qF` (which follows the
+    # link) look like "already ours" and skipped it too -- either way the
+    # `cat >` below then followed the link and created/truncated a file
+    # OUTSIDE $TARGET. Test for a symlink FIRST, before the `-e`/marker logic
+    # ever runs: our own generated hook is always a plain regular file we
+    # wrote with `cat >`, never a symlink, so a symlink here is never ours and
+    # must always be backed up, unconditionally.
+    if [[ -L "$hooks_dir/$hook" ]]; then
+      backup="$hooks_dir/$hook.himmel-backup"
+      # Same blind spot on the backup side: a DANGLING symlink at $backup is
+      # not `-e` either. Widen this guard to refuse a symlink at $backup too,
+      # whatever it points at (or fails to).
+      if [[ -e "$backup" || -L "$backup" ]]; then
+        echo "  git gate hooks — FAILED (native: $backup already exists — move it aside and re-run)" >&2
+        return 1
+      fi
+      # `mv` renames the LINK ITSELF -- it never follows it -- so this step
+      # reads/writes nothing outside $TARGET regardless of what the link
+      # points at (or whether it resolves at all).
+      if ! mv "$hooks_dir/$hook" "$backup"; then
+        echo "  git gate hooks — FAILED (native: cannot back up existing $hooks_dir/$hook)" >&2
+        return 1
+      fi
+      # The backup is now a symlink (possibly dangling) at
+      # <hook>.himmel-backup. The generated dispatcher below chains to it via
+      # `[ -x "$backup" ]`, which FOLLOWS the link: a dangling link is never
+      # -x, so it silently never runs (equivalent to "no prior hook", not a
+      # failure); a link still resolving to something executable runs exactly
+      # as before. So "still runs" is NOT an unconditional promise for a
+      # symlinked hook -- say so instead of the plain claim used below.
+      echo "  git gate hooks — existing $hook (a symlink) backed up to $hook.himmel-backup (chained after the himmel gate only if the link still resolves to something executable; a dangling link will not run)"
+    elif [[ -e "$hooks_dir/$hook" ]] && ! grep -qF "$marker" "$hooks_dir/$hook" 2>/dev/null; then
+      backup="$hooks_dir/$hook.himmel-backup"
+      if [[ -e "$backup" || -L "$backup" ]]; then
+        echo "  git gate hooks — FAILED (native: $backup already exists — move it aside and re-run)" >&2
+        return 1
+      fi
+      if ! mv "$hooks_dir/$hook" "$backup"; then
+        echo "  git gate hooks — FAILED (native: cannot back up existing $hooks_dir/$hook)" >&2
+        return 1
+      fi
+      echo "  git gate hooks — existing $hook backed up to $hook.himmel-backup (still runs: chained after the himmel gate)"
+    fi
+    # CR round-2: `exec` replaces the shell, so the adopter's backed-up hook
+    # (above) would never run again -- its bytes survive but nothing ever
+    # invokes it, silently switching off the adopter's own gate. Run the
+    # himmel gate first, then the backup if present, and fail the operation
+    # if EITHER exits non-zero -- neither may mask the other. Resolve the
+    # backup from the hook's OWN directory via $0, not the repo root: a
+    # core.hooksPath inside $TARGET means the hooks don't live in
+    # .git/hooks. `${0%/*}` returns $0 unchanged when it has no "/" (a bare
+    # basename), so compare against $0 to detect that case instead of
+    # trusting the result blindly (the same "unchanged means no-op happened"
+    # trap that _native_hooks_canon avoids above by keeping its accumulator
+    # rooted at "/", so its own `${acc%/*}` pop always has a "/" to strip).
+    if [[ "$hook" == pre-push ]]; then
+      # CR round-2: git feeds pre-push its ref list on STDIN, and
+      # check-push-target.sh drains it once (its own header says stdin
+      # cannot be re-read). Running the gate then the backup straight would
+      # leave the backup reading an already-drained, EOF stdin -- it would
+      # see zero ref lines and fall through to exit 0 no matter what it was
+      # meant to refuse (the exact "silently ungated" class HIMMEL-2771
+      # exists to close). Snapshot stdin ONCE into a temp file via `cat`
+      # (byte-for-byte, no command-substitution newline stripping) and feed
+      # BOTH the gate and the backup that same file. A terminal stdin (a
+      # manual invocation, never git's real shape) is treated as
+      # connected-but-empty rather than read, to avoid hanging on a TTY with
+      # no piped input; check-push-target.sh treats "empty" the same way
+      # whether or not it was actually read, so this is not a behaviour
+      # change for the real-push shape.
+      if ! cat > "$hooks_dir/$hook" <<HOOK
+#!/usr/bin/env bash
+$marker
+root=\$(git rev-parse --show-toplevel) || exit 1
+hook_dir=\${0%/*}
+[ "\$hook_dir" != "\$0" ] || hook_dir=.
+gate="\$root/scripts/hooks/$script"
+[ -f "\$gate" ] || gate="\$hook_dir/himmel-payload/scripts/hooks/$script"
+if [ ! -f "\$gate" ]; then
+  echo "himmel gate: $script not found in \$root/scripts/hooks or \$hook_dir/himmel-payload — re-run adopt.sh against this repository" >&2
+  exit 1
+fi
+reffile=\$(mktemp "\${TMPDIR:-/tmp}/himmel-prepush.XXXXXX") || exit 1
+trap 'rm -f "\$reffile"' EXIT
+if [ -t 0 ]; then
+  : > "\$reffile"
+else
+  cat > "\$reffile"
+fi
+bash "\$gate" "\$@" < "\$reffile"
+gate_rc=\$?
+backup="\$hook_dir/$hook.himmel-backup"
+backup_rc=0
+if [ -x "\$backup" ]; then
+  "\$backup" "\$@" < "\$reffile"
+  backup_rc=\$?
+fi
+[ "\$gate_rc" -eq 0 ] && [ "\$backup_rc" -eq 0 ]
+HOOK
+      then
+        echo "  git gate hooks — FAILED (native: cannot write $hooks_dir/$hook)" >&2
+        return 1
+      fi
+    else
+      if ! cat > "$hooks_dir/$hook" <<HOOK
+#!/usr/bin/env bash
+$marker
+root=\$(git rev-parse --show-toplevel) || exit 1
+hook_dir=\${0%/*}
+[ "\$hook_dir" != "\$0" ] || hook_dir=.
+gate="\$root/scripts/hooks/$script"
+[ -f "\$gate" ] || gate="\$hook_dir/himmel-payload/scripts/hooks/$script"
+if [ ! -f "\$gate" ]; then
+  echo "himmel gate: $script not found in \$root/scripts/hooks or \$hook_dir/himmel-payload — re-run adopt.sh against this repository" >&2
+  exit 1
+fi
+bash "\$gate" "\$@"
+gate_rc=\$?
+backup="\$hook_dir/$hook.himmel-backup"
+backup_rc=0
+if [ -x "\$backup" ]; then
+  "\$backup" "\$@"
+  backup_rc=\$?
+fi
+[ "\$gate_rc" -eq 0 ] && [ "\$backup_rc" -eq 0 ]
+HOOK
+      then
+        echo "  git gate hooks — FAILED (native: cannot write $hooks_dir/$hook)" >&2
+        return 1
+      fi
+    fi
+    if ! chmod +x "$hooks_dir/$hook"; then
+      echo "  git gate hooks — FAILED (native: cannot make $hooks_dir/$hook executable)" >&2
+      return 1
+    fi
+  done
+  echo "  git gate hooks — placed (native, no pre-commit framework: lint hooks absent)"
+}
+
 install_precommit_hooks() {
   # HIMMEL-2441: place the git gate hooks by default so an adopter's FIRST
   # commit is actually gated -- mirrors setup.sh's own [1/9]/[2/9] steps
@@ -504,57 +886,58 @@ install_precommit_hooks() {
   fi
   local precommit_bin="pre-commit"
   if ! command -v pre-commit >/dev/null 2>&1; then
-    # Guarded: this file runs under `set -e`, so a bare `run uv ...` that
-    # fails would abort the whole adopt — the opposite of this step's
-    # WARN-not-fail contract (CR: codex-1 @ c10471a6).
-    if command -v uv >/dev/null 2>&1; then
-      if ! run uv tool install pre-commit --quiet; then
-        echo "  WARNING: git hooks: 'uv tool install pre-commit' failed — skipping. Install pre-commit by hand, then re-run." >&2
-        return 0
+    # HIMMEL-2771: installer failure must fall back to native gates, never
+    # report a successful adoption with no gates. Try each available installer.
+    local installer install_output candidate
+    precommit_bin=""
+    for installer in uv pipx python3; do
+      command -v "$installer" >/dev/null 2>&1 || continue
+      case "$installer" in
+        uv)
+          if ! run uv tool install pre-commit --quiet; then
+            echo "  WARNING: git hooks: 'uv tool install pre-commit' failed — trying remaining installers." >&2
+          fi
+          ;;
+        pipx)
+          if ! run pipx install pre-commit; then
+            echo "  WARNING: git hooks: 'pipx install pre-commit' failed — trying remaining installers." >&2
+          fi
+          ;;
+        python3)
+          if [[ $DRY_RUN -eq 1 ]]; then
+            echo "DRY: python3 -m pip install --user pre-commit"
+          elif ! install_output=$(python3 -m pip install --user pre-commit 2>&1); then
+            if grep -q 'externally-managed-environment' <<< "$install_output"; then
+              echo "  WARNING: git hooks: pip refused (externally-managed-environment / PEP 668) — falling back to native gates." >&2
+            else
+              echo "  WARNING: git hooks: 'python3 -m pip install --user pre-commit' failed — falling back to native gates: $install_output" >&2
+            fi
+          fi
+          ;;
+      esac
+      # Bootstrap can succeed with its bin directory absent from this PATH.
+      precommit_bin="$(command -v pre-commit || true)"
+      if [[ -z "$precommit_bin" ]]; then
+        for candidate in \
+          "${UV_TOOL_BIN_DIR:-$HOME/.local/bin}/pre-commit" \
+          "${PIPX_BIN_DIR:-$HOME/.local/bin}/pre-commit" \
+          "$HOME/.local/bin/pre-commit" \
+          "$HOME/.local/pipx/venvs/pre-commit/bin/pre-commit"; do
+          if [[ -x "$candidate" ]]; then
+            precommit_bin="$candidate"
+            break
+          fi
+        done
       fi
-    elif command -v pipx >/dev/null 2>&1; then
-      if ! run pipx install pre-commit; then
-        echo "  WARNING: git hooks: 'pipx install pre-commit' failed — skipping. Install pre-commit by hand, then re-run." >&2
-        return 0
-      fi
-    else
-      echo "  WARNING: git hooks: 'pre-commit' not found and neither uv nor pipx is available — skipping. Install uv (curl -LsSf https://astral.sh/uv/install.sh | sh), then re-run." >&2
-      # --dry-run still wants the planned DRY: line below, WARNING and all --
-      # only fall through to the resolver (which is a DRY_RUN no-op that
-      # lands on the literal "pre-commit" name); a real run bails here.
-      [[ $DRY_RUN -eq 1 ]] || return 0
-    fi
-    # HIMMEL-2441/2483 [codex-1, CR round 2]: the bootstrap above can report
-    # success while its bin dir (~/.local/bin, or a $UV_TOOL_BIN_DIR /
-    # $PIPX_BIN_DIR override) is not yet on THIS shell's PATH -- a bare
-    # `pre-commit` call below would then silently fail even though the
-    # install just worked. Re-check PATH first (DRY_RUN's bootstrap was
-    # itself a no-op, so pre-commit may already be resolvable from
-    # elsewhere), then fall back to the known uv/pipx install-dir candidates.
-    precommit_bin="$(command -v pre-commit || true)"
-    if [[ -z "$precommit_bin" ]]; then
-      local candidate
-      for candidate in \
-        "${UV_TOOL_BIN_DIR:-$HOME/.local/bin}/pre-commit" \
-        "${PIPX_BIN_DIR:-$HOME/.local/bin}/pre-commit" \
-        "$HOME/.local/pipx/venvs/pre-commit/bin/pre-commit"; do
-        if [[ -x "$candidate" ]]; then
-          precommit_bin="$candidate"
-          break
-        fi
-      done
-    fi
-    if [[ -z "$precommit_bin" ]]; then
-      # --dry-run never actually ran the bootstrap above (`run` just printed
-      # its DRY: line), so resolution failing here is expected, not an error
-      # -- the plan is what matters, so fall through and describe it with the
-      # literal name rather than WARN-and-bail on a real install we never did.
-      if [[ $DRY_RUN -eq 1 ]]; then
-        precommit_bin="pre-commit"
-      else
-        echo "  WARNING: git hooks: pre-commit was installed but still can't be found on PATH, in \$UV_TOOL_BIN_DIR/\$HOME/.local/bin, \$PIPX_BIN_DIR/\$HOME/.local/bin, or \$HOME/.local/pipx/venvs/pre-commit/bin — skipping. Add its install dir to PATH, then re-run." >&2
-        return 0
-      fi
+      [[ -z "$precommit_bin" ]] || break
+    done
+    if [[ $DRY_RUN -eq 1 ]]; then
+      install_native_hooks
+      precommit_bin="${precommit_bin:-pre-commit}"
+    elif [[ -z "$precommit_bin" ]]; then
+      echo "  WARNING: git hooks: pre-commit is unavailable after bootstrap — falling back to native gates." >&2
+      install_native_hooks
+      return $?
     fi
   fi
   echo "──── Installing git gate hooks ($TARGET) ────"
@@ -565,7 +948,8 @@ install_precommit_hooks() {
   if ( cd "$TARGET" && "$precommit_bin" install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push ); then
     echo "  git hooks installed (pre-commit, commit-msg, pre-push)."
   else
-    echo "  WARNING: git hook install failed — continuing. Manual: (cd $TARGET && $precommit_bin install --allow-missing-config --hook-type pre-commit --hook-type commit-msg --hook-type pre-push)" >&2
+    echo "  WARNING: git hook install failed — falling back to native gates." >&2
+    install_native_hooks
   fi
 }
 
@@ -608,7 +992,7 @@ do_core() {
   wire_statusline_core
   wire_himmel_repo_core
   [[ $FILL_ENV -eq 1 ]] && fill_env_core
-  install_precommit_hooks
+  install_precommit_hooks || exit $?
 }
 
 do_luna() {

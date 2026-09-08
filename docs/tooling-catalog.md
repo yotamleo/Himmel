@@ -251,18 +251,17 @@ existing worktree, run `pwsh -NoProfile -File scripts\codex\normalize-worktree-a
 (or the `scripts/codex/normalize-worktree-acl.sh` wrapper from Git Bash). The
 helper refuses paths outside `.claude/worktrees/<name>` and resets only each
 top-level child directory, never the worktree root.
-**GPT-5.6 reasoning-effort knob (HIMMEL-905):** `scripts/codex/dispatch-codex-exec.sh`
+**Codex reasoning-effort knob (HIMMEL-905):** `scripts/codex/dispatch-codex-exec.sh`
 accepts an optional `--reasoning-effort <none|low|medium|high|xhigh|max>` passthrough
-(translated internally to `-c model_reasoning_effort=<value>`); the wrapper's own
-model pin stays `gpt-5.5` pending in-repo verification of GPT-5.6 availability.
-**Astra migration landmine (HIMMEL-2585):** `none` stops being a valid value the
-day this wrapper's pin moves to `gpt-6-astra` — OpenAI's "Using GPT-6 Astra"
-guide (Migration Quickstart → Reasoning effort) says "if you currently use
-`none` or `minimal`, start with `low` and compare results". Whoever moves the
-pin must drop `none` from the accepted set here and in the flag's own validation,
-not just swap the model string. Nothing to change while the pin stays `gpt-5.5`;
-the live Astra surfaces (`~/.codex/config.toml`, `scripts/cr/critics.json`) are
-already at `medium`/unset and unaffected.
+(translated internally to `-c model_reasoning_effort=<value>`). Its default model
+now follows the codex critic in `scripts/cr/critics.json` (HIMMEL-2811); explicit
+model overrides remain unchanged.
+**Astra effort compatibility follow-up (HIMMEL-2585):** the shared filter still
+accepts `none`; HIMMEL-2811 leaves that enum and explicit-override behavior intact.
+The recorded Astra migration guidance recommends `low` instead of `none`/`minimal`;
+use `low` or `medium` with Astra pending model-aware effort validation. The live
+Astra surfaces (`~/.codex/config.toml`, `scripts/cr/critics.json`) are already at
+`medium`/unset.
 
 ### himmel (local directory marketplace)
 
@@ -1039,7 +1038,7 @@ wrong (not on PATH) or bypasses the wrapper's guards (hook-blocked).
 |---|---|
 | GitHub Copilot CLI (`copilot-cli`, HIMMEL-772) | `bash scripts/copilot/dispatch-copilot.sh --worktree <wt> <args>` — enforces allow-list passthrough, worktree containment, granular grants |
 | hermes one-shot (`hermes-oneshot`) | `bash scripts/hermes/dispatch-trusted.sh <args>` (trusted-engine writes) or `scripts/hermes/invoke.sh` (untrusted default `todo` toolset) — the `/pr-check`-internal `hermes-critics`/`codex(paid)` critic lanes route through this same chokepoint; see the CR Scripts section below |
-| codex CLI sandbox (`codex-exec`, HIMMEL-741) | `bash scripts/codex/dispatch-codex-exec.sh --worktree <wt> [--stdin-brief] <args>` — ACL preflight fail-closed, `gpt-5.5` pin; stdin defaults to `/dev/null`, only explicit `--stdin-brief` passes a caller-supplied brief through (after optional `--shared-branch <branch>`, before codex args) |
+| codex CLI sandbox (`codex-exec`, HIMMEL-741) | `bash scripts/codex/dispatch-codex-exec.sh --worktree <wt> [--stdin-brief] <args>` — ACL preflight fail-closed, model from the codex critic in `scripts/cr/critics.json` (explicit override wins), bounded one-byte stdout presence tracking; stdin defaults to `/dev/null`, only explicit `--stdin-brief` passes a caller-supplied brief through (after optional `--shared-branch <branch>`, before codex args) |
 | codex WSL lane (`codex-wsl`, HIMMEL-999) | `bash scripts/codex/dispatch-codex-wsl.sh --distro <name> --clone <in-distro-abs-path> [--brief-file <path>] [args...]` — raw `wsl ... codex exec` is hook-blocked |
 | Antigravity CLI (`antigravity-cli`) | `agy -p <prompt>` (headless; PATH-installed CLI, no repo wrapper — permission flags only, no hook surface today) |
 | ollama, local (`ollama-local`) | `ollama run <model>` — bare model name only; zero-egress guarantee is structural (cloud requires the explicit `-cloud` suffix) |

@@ -119,5 +119,79 @@ else
     pass "--pending does not list a fully-delivered session"
 fi
 
+# HIMMEL-2795: force overlapping read-modify-write snapshots. Writer two
+# signals before flock (fixed) or mv (baseline); writer one pauses at mv.
+# flock is a required prerequisite for this case (CodeRabbit, HIMMEL-2790):
+# without it REAL_FLOCK is empty and the stub execs an empty command, so both
+# writers would fail before the race assertion ever runs.
+if ! REAL_FLOCK="$(command -v flock)"; then
+    printf 'SKIP: flock not installed — doc race test requires flock\n'
+else
+mkdir -p "$WORK/race-bin" "$WORK/race"
+DOC_RACE="$WORK/race"
+REAL_MV="$(command -v mv)"
+export DOC_RACE REAL_MV REAL_FLOCK
+cat > "$WORK/race-bin/mv" <<'STUB'
+#!/usr/bin/env bash
+if [ "$RACE_WRITER" = one ]; then
+    touch "$DOC_RACE/ready"
+    for ((i=0; i<1000; i++)); do
+        [ ! -f "$DOC_RACE/release" ] || exec "$REAL_MV" "$@"
+        sleep .01
+    done
+    exit 1
+fi
+touch "$DOC_RACE/second"
+exec "$REAL_MV" "$@"
+STUB
+cat > "$WORK/race-bin/flock" <<'STUB'
+#!/usr/bin/env bash
+[ "$RACE_WRITER" != two ] || touch "$DOC_RACE/second"
+exec "$REAL_FLOCK" "$@"
+STUB
+chmod +x "$WORK/race-bin/mv" "$WORK/race-bin/flock"
+wait_race_file() {
+    local i
+    for ((i=0; i<1000; i++)); do
+        [ ! -f "$1" ] || return 0
+        sleep .01
+    done
+    return 1
+}
+DOC_RACE_FILE="$WORK/concurrent.md"
+printf '# Leg\n## Console Rulings\n- existing\n## Results\nkeep this\n' > "$DOC_RACE_FILE"
+PATH="$WORK/race-bin:$PATH" RACE_WRITER=one bash "$SCRIPT" race-one 'writer one' --doc "$DOC_RACE_FILE" > "$WORK/one" &
+pid1=$!
+wait_race_file "$DOC_RACE/ready" || fail "doc race: first writer reached mv"
+PATH="$WORK/race-bin:$PATH" RACE_WRITER=two bash "$SCRIPT" race-two 'writer two' --doc "$DOC_RACE_FILE" > "$WORK/two" &
+pid2=$!
+wait_race_file "$DOC_RACE/second" || fail "doc race: second writer overlapped"
+touch "$DOC_RACE/release"
+wait "$pid1" || fail "doc race: first writer exited successfully"
+wait "$pid2" || fail "doc race: second writer exited successfully"
+if grep -qF 'writer one' "$DOC_RACE_FILE" && grep -qF 'writer two' "$DOC_RACE_FILE" && grep -qF 'keep this' "$DOC_RACE_FILE"; then
+    pass "concurrent doc mirrors preserve both rulings and existing results"
+else
+    fail "concurrent doc mirrors lost a ruling or existing results"
+fi
+fi
+
+# HIMMEL-2790 (CodeRabbit): a pre-existing, wrongly-permissioned lock
+# directory must be tightened to 700 — mkdir -m only sets the mode at
+# creation, so a leftover directory from an older run or a looser umask was
+# previously accepted as-is.
+LOCK_DIR="${TMPDIR:-/tmp}/himmel-inbox-doc-$UID"
+mkdir -p "$LOCK_DIR"
+chmod 755 "$LOCK_DIR"
+DOC_PERM="$WORK/perm.md"
+printf '# Leg\n## Console Rulings\n- existing\n' > "$DOC_PERM"
+bash "$SCRIPT" perm-leg 'perm ruling' --doc "$DOC_PERM" >/dev/null
+lock_mode="$(stat -c '%a' "$LOCK_DIR")"
+if [ "$lock_mode" = "700" ]; then
+    pass "pre-existing lock directory is tightened to 700"
+else
+    fail "pre-existing lock directory left at $lock_mode instead of 700"
+fi
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "SOME FAILED"; exit 1

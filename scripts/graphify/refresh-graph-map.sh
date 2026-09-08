@@ -709,6 +709,13 @@ case "$EXTRACTION_LOCK_STALE_SECONDS" in ''|*[!0-9]*) EXTRACTION_LOCK_STALE_SECO
 EXTRACTION_LOCK_HELD=0
 EXTRACTION_LOCK_TOKEN=""
 
+# >>> HIMMEL-2731 extraction lock protocol -- sliced VERBATIM out of this file
+# by test-refresh-graph-map-lock.sh (T11) and sourced there, so the contention
+# harness drives the shipped functions rather than a copy. Keep these three
+# functions contiguous between the markers, and keep them dependent only on
+# EXTRACTION_LOCK / EXTRACTION_LOCK_TIMEOUT_SECONDS /
+# EXTRACTION_LOCK_STALE_SECONDS / EXTRACTION_LOCK_HELD / EXTRACTION_LOCK_TOKEN.
+#
 # _extraction_lock_release -- same owner-tokened protocol as
 # _promote_lock_release (below): only removes the lock when it still holds
 # OUR token, so a former holder that was taken over while paused (stale
@@ -746,43 +753,49 @@ _extraction_lock_takeover() {
 # Returns 1 (never held) once the wait budget is exhausted -- the caller
 # refuses to enter extraction rather than double-run it.
 #
-# Residual (accepted, SAME class already documented + shipped for
-# PROMOTE_LOCK -- CR follow-up, codex-1 @ HIMMEL-1653 paid panel): the
-# missing-stamp grace window (~5 polls) treats a holder that mkdir'd but
-# has not yet written owner/acquired as crashed and takes over. A holder
-# merely PAUSED (not crashed) in that narrow window -- between its own
-# mkdir and its own writes -- can resume writing into what is now the
-# successor's directory (the path still resolves, post-takeover, to
-# whatever now occupies it). This is not new: it is the identical
-# mkdir+stamp+grace-window algorithm PROMOTE_LOCK already ships with (same
-# 5-poll grace, same rationale, same shared residual), applied here to a
-# second lock. Not hardened further here -- doing so is a real
-# lock-protocol redesign (e.g. writing owner+acquired atomically via a
-# staged rename instead of two separate writes), out of proportion to this
-# ticket, and would need the identical treatment on PROMOTE_LOCK to stay
-# consistent.
+# HIMMEL-2731: owner publication is now the SOLE definition of holding,
+# and it is exclusive (noclobber `set -C` create, see below). The
+# missing-stamp grace window (~5 polls) still treats a holder that
+# mkdir'd but has not yet published owner as crashed and takes over, and
+# a holder merely PAUSED (not crashed) in that window can still resume
+# after its directory was sidelined -- but its resumed write into what is
+# now the successor's directory either hits ENOENT (directory gone) or
+# EEXIST (successor already published), so it holds nothing and loops
+# back to the top of this wait loop instead of clobbering the successor.
+# Same mkdir+stamp+grace-window algorithm PROMOTE_LOCK ships with (below)
+# gets the identical owner-publication fix.
 #
-# Same class, second round (codex-2/codex-3 @ the same panel): the
-# `date -u +%s > "$EXTRACTION_LOCK/acquired" 2>/dev/null || true` write
-# below can itself fail (disk full, permissions) and is swallowed -- a
-# genuinely LIVE holder with no readable stamp reads identically to a
-# crashed one, so it hits the SAME 5-poll grace-window takeover this
-# comment already covers. Verified this is not a new gap either: promote
-# lock's own acquired-write (below) has the identical `|| true` swallow.
+# Residual (accepted, SAME class already documented + shipped for
+# PROMOTE_LOCK -- CR follow-up, codex-2/codex-3 @ HIMMEL-1653 paid panel):
+# the `date -u +%s > "$EXTRACTION_LOCK/acquired" 2>/dev/null || true`
+# write below can itself fail (disk full, permissions) and is swallowed
+# -- a genuinely LIVE, PUBLISHED holder with no readable stamp reads
+# identically to a crashed one, so its directory can still be sidelined
+# by the 5-poll grace-window takeover. Not hardened further here (a real
+# lock-protocol redesign, e.g. staging owner+acquired atomically together,
+# is out of proportion to this ticket; promote lock's own acquired-write
+# (below) has the identical `|| true` swallow and would need the same
+# treatment to stay consistent).
 _extraction_lock_acquire() {
   local waited=0 missing_polls=0 held_at now age token
   while :; do
     if mkdir "$EXTRACTION_LOCK" 2>/dev/null; then
       token="$$-$RANDOM"
-      if ! printf '%s\n' "$token" > "$EXTRACTION_LOCK/owner" 2>/dev/null; then
-        rm -rf "$EXTRACTION_LOCK" 2>/dev/null || true
-        echo "refresh-graph-map: extraction lock acquired but its owner token could not be written ($EXTRACTION_LOCK/owner) -- released again, nothing acquired" >&2
-        return 1
+      if ( set -C; printf '%s\n' "$token" > "$EXTRACTION_LOCK/owner" ) 2>/dev/null; then
+        date -u +%s > "$EXTRACTION_LOCK/acquired" 2>/dev/null || true
+        EXTRACTION_LOCK_TOKEN="$token"
+        EXTRACTION_LOCK_HELD=1
+        return 0
       fi
-      date -u +%s > "$EXTRACTION_LOCK/acquired" 2>/dev/null || true
-      EXTRACTION_LOCK_TOKEN="$token"
-      EXTRACTION_LOCK_HELD=1
-      return 0
+      # LOST: the noclobber owner write failed -- either a takeover moved
+      # the directory away while we were paused between mkdir and this
+      # write (ENOENT) or it raced us into a replacement whose new holder
+      # already published first (EEXIST). Holding is defined solely by
+      # winning that owner write, so we never held anything here; do not
+      # remove anything (it may be the successor's), just loop back to the
+      # top of the wait/stale-takeover loop below, still bounded by
+      # EXTRACTION_LOCK_TIMEOUT_SECONDS.
+      continue
     fi
     held_at=$(cat "$EXTRACTION_LOCK/acquired" 2>/dev/null) || held_at=""
     case "$held_at" in ''|*[!0-9]*) held_at="" ;; esac
@@ -812,6 +825,7 @@ _extraction_lock_acquire() {
     waited=$((waited + 1))
   done
 }
+# <<< HIMMEL-2731 extraction lock protocol
 
 # _promote_stage_cleanup -- remove an incomplete same-filesystem staging dir.
 # If a cache swap failed after sidelining the prior complete cache, restore it
@@ -888,15 +902,19 @@ _promote_lock_acquire() {
   while :; do
     if mkdir "$PROMOTE_LOCK" 2>/dev/null; then
       token="$$-$RANDOM"
-      if ! printf '%s\n' "$token" > "$PROMOTE_LOCK/owner" 2>/dev/null; then
-        rm -rf "$PROMOTE_LOCK" 2>/dev/null || true
-        echo "refresh-graph-map: promote lock acquired but its owner token could not be written ($PROMOTE_LOCK/owner) -- released again, nothing acquired" >&2
-        return 1
+      if ( set -C; printf '%s\n' "$token" > "$PROMOTE_LOCK/owner" ) 2>/dev/null; then
+        date -u +%s > "$PROMOTE_LOCK/acquired" 2>/dev/null || true
+        PROMOTE_LOCK_TOKEN="$token"
+        PROMOTE_LOCK_HELD=1
+        return 0
       fi
-      date -u +%s > "$PROMOTE_LOCK/acquired" 2>/dev/null || true
-      PROMOTE_LOCK_TOKEN="$token"
-      PROMOTE_LOCK_HELD=1
-      return 0
+      # LOST (HIMMEL-2731, same fix as _extraction_lock_acquire above): the
+      # noclobber owner write failed -- a takeover moved the directory away
+      # (ENOENT) or raced us into a replacement whose new holder already
+      # published first (EEXIST). We never held anything; do not remove
+      # anything, loop back to the top of the wait/stale-takeover loop,
+      # still bounded by PROMOTE_LOCK_TIMEOUT_SECONDS.
+      continue
     fi
     held_at=$(cat "$PROMOTE_LOCK/acquired" 2>/dev/null) || held_at=""
     case "$held_at" in ''|*[!0-9]*) held_at="" ;; esac

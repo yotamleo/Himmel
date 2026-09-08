@@ -61,6 +61,11 @@ ARGV_LOG="$TMP/argv.log"
 cat > "$STUB_DIR/claude" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${ARGV_LOG:-}" ] || exit 0
+if [ ! -s "$ARGV_LOG" ]; then
+    rm -f "${ARGV_LOG%/*}/marketplaces.json" "${ARGV_LOG%/*}/registrations" \
+        "${ARGV_LOG%/*}/successes" "${ARGV_LOG%/*}/repaired"
+    : > "${ARGV_LOG%/*}/successes"
+fi
 echo "$*" >> "$ARGV_LOG"
 scope="${STUB_SCOPE:-user}"
 state="${ARGV_LOG%/*}/plugins-$scope.json"
@@ -76,8 +81,39 @@ case "$*" in
         fi
         cat "$state"
         ;;
-    'plugin marketplace list --json') printf '%s\n' "${STUB_MARKETPLACES:-$default_mkt}" ;;
+    'plugin marketplace list --json')
+        if [ -f "${ARGV_LOG%/*}/marketplaces.json" ]; then
+            cat "${ARGV_LOG%/*}/marketplaces.json"
+        else
+            printf '%s\n' "${STUB_MARKETPLACES:-$default_mkt}"
+        fi
+        ;;
+    'plugin marketplace remove '*)
+        [[ "${STUB_REMOVE_NOOP:-0}" == 0 ]] || exit 0
+        mkt_state="${ARGV_LOG%/*}/marketplaces.json"
+        if [[ -n "${STUB_REGISTRATION_SCOPES:-}" ]]; then
+            [[ "${STUB_REMOVE_FAIL:-0}" == 0 ]] || exit 1
+            registrations="${ARGV_LOG%/*}/registrations"
+            [ -f "$registrations" ] || printf '%s\n' "$STUB_REGISTRATION_SCOPES" > "$registrations"
+            grep -Fxq "${6:-user}" "$registrations" || exit 1
+            grep -Fxv "${6:-user}" "$registrations" > "$registrations.next" || true
+            mv "$registrations.next" "$registrations"
+            printf 'removed %s\n' "${6:-user}" >> "${ARGV_LOG%/*}/successes"
+            [ ! -s "$registrations" ] || exit 0
+        fi
+        [ -f "$mkt_state" ] || printf '%s\n' "${STUB_MARKETPLACES:-$default_mkt}" > "$mkt_state"
+        jq --arg m "$4" '[.[] | select(.name != $m)]' "$mkt_state" > "$mkt_state.next"
+        mv "$mkt_state.next" "$mkt_state"
+        ;;
+    'plugin marketplace add '*)
+        if [[ -n "${STUB_REQUIRE_REPAIR_SCOPE:-}" ]]; then
+            printf '%s\n' "${6:-user}" >> "${ARGV_LOG%/*}/repaired"
+        fi
+        ;;
     'plugin uninstall '*)
+        if [[ -n "${STUB_REQUIRE_REPAIR_SCOPE:-}" && "${5:-user}" == "$STUB_REQUIRE_REPAIR_SCOPE" ]]; then
+            grep -Fxq "$STUB_REQUIRE_REPAIR_SCOPE" "${ARGV_LOG%/*}/repaired" 2>/dev/null || exit 1
+        fi
         if [[ "$3" == "good-b@mp" && -n "${SCOPE_MAP_WATCH:-}" && -n "${SCOPE_MAP_SNAPSHOT:-}" ]]; then
             cp "$SCOPE_MAP_WATCH" "$SCOPE_MAP_SNAPSHOT" 2>/dev/null || true
         fi
@@ -270,7 +306,7 @@ assert_rc "full run with a prior scope map exits 0" 0 "$rc"
 assert_has "full run: this run's own plugin still carries --scope user" "plugin uninstall good-a@mp1 --scope user" "$log"
 assert_has "full run: mp1 removed at this run's scope" "plugin marketplace remove mp1 --scope user" "$log"
 assert_has "full run: mp2 removed at the PRIOR run's persisted project scope" "plugin marketplace remove mp2 --scope project" "$log"
-assert_not_has "full run: mp2 never falls back to the install-profile scope" "plugin marketplace remove mp2 --scope user" "$log"
+assert_has "full run: mp2 also tries the install-profile scope (HIMMEL-2796)" "plugin marketplace remove mp2 --scope user" "$log"
 map_scopes=$(cat "$TMP/scope-map-prior")
 if printf '%s\n' "$map_scopes" | grep -qx "$(printf 'mp2\tproject\t%s' "$(pwd -P)")"; then
     echo "PASS full run: prior scope-map row survives"
@@ -473,7 +509,7 @@ log=$(cat "$ARGV_LOG")
 rm "$STUB_DIR/awk"
 assert_has "RED 10b: plugin removed at its installed scope" "plugin uninstall good-a@mp1 --scope project" "$log"
 assert_has "RED 10b: mp1 removed at this run's plugin scope" "plugin marketplace remove mp1 --scope project" "$log"
-assert_not_has "RED 10b: stale map never forces mp1 to fallback scope" "plugin marketplace remove mp1 --scope user" "$log"
+assert_has "RED 10b: install-profile scope supplements the retained plugin scope (HIMMEL-2796)" "plugin marketplace remove mp1 --scope user" "$log"
 
 # ── 17. RED control 11 (HIMMEL-2694): exclusive paths cannot traverse up. ──
 cat > "$TMP/settings-template-segments.json" <<'JSON'
@@ -557,6 +593,122 @@ assert_has "RED 16: project plugin uninstalled" "plugin uninstall good-a@mp --sc
 assert_has "RED 16: user plugin uninstalled" "plugin uninstall good-b@mp --scope user" "$log"
 assert_has "RED 16: transient marketplace removed at project scope" "plugin marketplace remove mp --scope project" "$log"
 assert_has "RED 16: transient marketplace removed at user scope" "plugin marketplace remove mp --scope user" "$log"
+
+# ── HIMMEL-2796: verify removal outcomes, not per-scope exit codes. ──────
+for plugins in \
+    "$(jq -nc --arg p "$(pwd -P)" '[{id:"good-a@mp",scope:"project",projectPath:$p}]')" \
+    "$(jq -nc --arg p "$(pwd -P)" '[{id:"good-a@mp",scope:"project",projectPath:$p},{id:"good-b@mp",scope:"user"}]')"; do
+    rm -f "$TMP/plugins-user.json"
+    : > "$ARGV_LOG"
+    out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_REGISTRATION_SCOPES=user \
+          STUB_PLUGINS="$plugins" bash "$script" --template "$TEMPLATE" 2>&1); rc=$?
+    log=$(cat "$ARGV_LOG")
+    assert_rc "2796: mismatched/spanning plugin scopes exit cleanly" 0 "$rc"
+    assert_has "2796: install-profile scope attempted" "plugin marketplace remove mp --scope user" "$log"
+    assert_rc "2796: exactly one successful removal" 1 "$(wc -l < "$TMP/successes" 2>/dev/null)"
+    assert_has "2796: no inflated failures" "Done: 0 failed call(s)" "$out"
+done
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_REGISTRATION_SCOPES=user \
+      STUB_REMOVE_FAIL=1 STUB_PLUGINS='[]' bash "$script" --template "$TEMPLATE" 2>&1); rc=$?
+assert_rc "2796: genuinely stuck registration exits 1" 1 "$rc"
+assert_has "2796: stuck registration warns" "WARN:" "$out"
+assert_has "2796: stuck registration counted once" "Done: 1 failed call(s)" "$out"
+
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_REMOVE_NOOP=1 \
+      STUB_PLUGINS='[]' bash "$script" --template "$TEMPLATE" 2>&1); rc=$?
+assert_rc "2796: successful no-op cannot claim removal" 1 "$rc"
+assert_has "2796: successful no-op reports observed registration" "still registered" "$out"
+
+# ── HIMMEL-2804: repair a missing scope without borrowing existing state. ─
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_REQUIRE_REPAIR_SCOPE=project \
+      STUB_PLUGINS="$(jq -nc --arg p "$(pwd -P)" '[{id:"good-a@mp",scope:"project",projectPath:$p},{id:"good-b@mp",scope:"user"}]')" \
+      bash "$script" --template "$TMP/settings-template-repair.json" --plugins-only 2>&1); rc=$?
+log=$(cat "$ARGV_LOG")
+assert_rc "2804: partially registered marketplace uninstalls cleanly" 0 "$rc"
+assert_has "2804: missing project scope repaired" "plugin marketplace add example/mp --scope project" "$log"
+assert_not_has "2804: pre-existing marketplace never transiently removed" "plugin marketplace remove" "$log"
+assert_rc "2804: no plugin remains after scoped repair" 0 "$(jq length "$TMP/plugins-user.json")"
+
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
+      STUB_PLUGINS="$(jq -nc --arg p "$(pwd -P)" '[{id:"good-a@mp",scope:"project",projectPath:$p},{id:"good-b@mp",scope:"user"}]')" \
+      bash "$script" --template "$TMP/settings-template-repair.json" --plugins-only 2>&1); rc=$?
+log=$(cat "$ARGV_LOG")
+assert_rc "2804: healthy registration uninstalls cleanly" 0 "$rc"
+assert_not_has "2804: healthy registration needs no adds" "plugin marketplace add" "$log"
+assert_not_has "2804: healthy registration needs no cleanup" "plugin marketplace remove" "$log"
+
+# ── HIMMEL-2800: subtract only exact plugin rows recorded in the handoff. ─
+printf 'mp\tuser\ngood-a@mp\tuser\n' > "$TMP/scope-map-partial"
+for mode in wet dry; do
+    rm -f "$TMP/plugins-user.json"
+    : > "$ARGV_LOG"
+    args=()
+    [[ "$mode" != dry ]] || args+=(--dry-run)
+    out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
+          STUB_PLUGINS='[{"id":"good-b@mp","scope":"user"}]' \
+          bash "$script" --template "$TEMPLATE" --marketplaces-only \
+          --scope-map "$TMP/scope-map-partial" "${args[@]}" 2>&1); rc=$?
+    assert_rc "2800: partial handoff blocks $mode run" 1 "$rc"
+    assert_has "2800: partial handoff names remaining dependency in $mode run" "SKIP: marketplace mp" "$out"
+done
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_PLUGINS='[]' \
+      bash "$script" --template "$TEMPLATE" --marketplaces-only --dry-run \
+      --scope-map "$TMP/scope-map-partial" 2>&1); rc=$?
+assert_rc "2800: completed wet run previews cleanly" 0 "$rc"
+assert_has "2800: completed wet run previews removal" "DRY: claude plugin marketplace remove mp" "$out"
+
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" STUB_PLUGINS='[{"id":"good-a@mp","scope":"user"}]' \
+      bash "$script" --template "$TEMPLATE" --plugins-only --dry-run \
+      --scope-map "$TMP/scope-map-simulated" 2>&1); rc=$?
+assert_rc "2800: simulated plugin phase succeeds" 0 "$rc"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
+      bash "$script" --template "$TEMPLATE" --marketplaces-only --dry-run \
+      --scope-map "$TMP/scope-map-simulated" 2>&1); rc=$?
+assert_rc "2800: complete simulated handoff previews cleanly" 0 "$rc"
+assert_has "2800: complete simulated handoff previews removal" "DRY: claude plugin marketplace remove mp" "$out"
+
+for map in none legacy; do
+    printf 'mp\tuser\n' > "$TMP/scope-map-legacy-preview"
+    args=()
+    [[ "$map" != legacy ]] || args+=(--scope-map "$TMP/scope-map-legacy-preview")
+    out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
+          bash "$script" --template "$TEMPLATE" --marketplaces-only --dry-run "${args[@]}" 2>&1); rc=$?
+    assert_rc "2800: $map handoff cannot hide installed plugins" 1 "$rc"
+done
+
+for recorded_scope in user project; do
+    rm -f "$TMP/plugins-user.json"
+    : > "$ARGV_LOG"
+    printf 'mp\tuser\ngood-a@mp\t%s\t%s\n' "$recorded_scope" "$TMP/other-project" > "$TMP/scope-map-wrong-identity"
+    out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
+          STUB_PLUGINS="$(jq -nc --arg p "$(pwd -P)" '[{id:"good-a@mp",scope:"project",projectPath:$p}]')" \
+          bash "$script" --template "$TEMPLATE" --marketplaces-only --dry-run \
+          --scope-map "$TMP/scope-map-wrong-identity" 2>&1); rc=$?
+    assert_rc "2800: wrong scope/project handoff ($recorded_scope) retains dependency" 1 "$rc"
+done
+rm -f "$TMP/plugins-user.json"
+: > "$ARGV_LOG"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
+      STUB_PLUGINS="$(jq -nc --arg p "$(pwd -P)" '[{id:"good-a@mp",scope:"project",projectPath:$p}]')" \
+      bash "$script" --template "$TEMPLATE" --plugins-only --dry-run \
+      --scope-map "$TMP/scope-map-project-simulated" 2>&1); rc=$?
+assert_rc "2800: project plugin preview writes handoff" 0 "$rc"
+out=$(PATH="$STUB_DIR:$PATH" ARGV_LOG="$ARGV_LOG" \
+      bash "$script" --template "$TEMPLATE" --marketplaces-only --dry-run \
+      --scope-map "$TMP/scope-map-project-simulated" 2>&1); rc=$?
+assert_rc "2800: matching project handoff previews removal" 0 "$rc"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

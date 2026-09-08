@@ -451,13 +451,15 @@ check "native lane (no CADENCE_BANK_LANE): still governed by the Claude bank che
 # codex-3 (HIMMEL-2782 CR fix): a CADENCE_BANK_STATUS_CMD override whose
 # path contains a space must not be word-split (same bug class as
 # FLEET_PS_CMD's own quoting fix, applied here to the codex-bank command).
+# HIMMEL-2799: spent distinguishes a successful call from the unknown-state
+# PROCEED fallback that a word-split invocation would silently reach.
 SPACE_DIR="$W/dir with space"
 mkdir -p "$SPACE_DIR"
 SPACE_STUB="$SPACE_DIR/bank-status.sh"
-printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' 'claudex funded measured weekly used=10% free=90%'" > "$SPACE_STUB"
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' 'claudex spent measured weekly used=99% free=1%'" > "$SPACE_STUB"
 chmod +x "$SPACE_STUB"
 printf '%s' "$HEALTHY_CACHE" > "$W/c.json"
-check "claudex lane, CADENCE_BANK_STATUS_CMD path contains a space -> PROCEED (not word-split into a bogus command)" PROCEED \
+check "claudex lane, CADENCE_BANK_STATUS_CMD path contains a space -> SKIPPED-BANK (not word-split into a bogus command)" SKIPPED-BANK \
   "$(CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
      CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
      FLEET_PS_CMD="$NO_FLEET" CADENCE_BANK_LANE=claudex CADENCE_BANK_STATUS_CMD="$SPACE_STUB" \

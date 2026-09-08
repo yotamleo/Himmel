@@ -26,8 +26,13 @@ CFG="$tmp/claude"; export CLAUDE_CONFIG_DIR="$CFG"
 mkdir -p "$CFG/projects/C--fixture-repo" "$CFG/plugins/claude-hud/context-cache"
 SID_A="aaaaaaaa-1111-2222-3333-444444444444"
 SID_B="bbbbbbbb-5555-6666-7777-888888888888"
-: > "$CFG/projects/C--fixture-repo/$SID_A.jsonl"
-: > "$CFG/projects/C--fixture-repo/$SID_B.jsonl"
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":11000,"output_tokens":999999,"cache_creation_input_tokens":22000,"cache_read_input_tokens":33000}}}' \
+  '{"type":"assistant","message":{"content":[{"type":"text","text":"quoted fixture: {\"input_tokens\":999999,\"cache_creation_input_tokens\":999999,\"cache_read_input_tokens\":999999}"}],"usage":{"input_tokens":12000,"output_tokens":888888,"cache_creation_input_tokens":23000,"cache_read_input_tokens":34000}}}' \
+  > "$CFG/projects/C--fixture-repo/$SID_A.jsonl"
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":90000,"output_tokens":777777,"cache_creation_input_tokens":1000,"cache_read_input_tokens":2000}}}' \
+  > "$CFG/projects/C--fixture-repo/$SID_B.jsonl"
 
 # now_ms - epoch milliseconds, the unit the HUD writes saved_at in.
 now_ms() { awk -v s="$(date +%s)" 'BEGIN{printf "%.0f", s*1000}'; }
@@ -112,6 +117,25 @@ contains "fresh: reports free percent"       "$out" "58% free"
 contains "fresh: sums resident tokens"       "$out" "100 tokens resident"
 contains "fresh: names the session"          "$out" "leg-A"
 contains "fresh: disclaims the spend budget" "$out" "NOT the <total_tokens> spend budget"
+fresh_stdout="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" 2>/dev/null)"
+fresh_first_line="${fresh_stdout%%$'\n'*}"
+expected_first_line="context-fill: 42% of the CONTEXT WINDOW used (500000-token window) - 58% free, 100 tokens resident, 69000 input tokens this turn"
+check "fresh: exact first line includes last assistant input total" \
+  "$fresh_first_line" "$expected_first_line"
+
+# Regression RED proof without reverting the working tree: a temporary mutant
+# keeps the FIRST complete assistant usage instead of the LAST. The exact-output
+# fixture must distinguish its 66,000 total from the required 69,000 total.
+usage_mutant="$tmp/context-fill-first-assistant-mutant.sh"
+sed 's/latest = counters.reduce/if (latest === undefined) latest = counters.reduce/' "$SCRIPT" > "$usage_mutant"
+mutant_stdout="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$usage_mutant" 2>/dev/null)"
+mutant_first_line="${mutant_stdout%%$'\n'*}"
+if [ "$mutant_first_line" != "$expected_first_line" ] && grepq "$mutant_first_line" -F -e '66000 input tokens this turn'; then
+  echo "ok - RED control: first-assistant mutant fails the exact latest-assistant output contract"
+else
+  echo "FAIL - RED control: latest-assistant fixture did not distinguish the first-assistant mutant: [$mutant_first_line]"
+  fails=$((fails+1))
+fi
 outp="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" --percent 2>/dev/null)"
 check "fresh: --percent prints the bare integer" "$outp" "42"
 
@@ -127,6 +151,9 @@ not_contains "isolation: session A never sees B's 91%"      "$out" "91%"
 not_contains "isolation: session A never sees B's name"     "$out" "leg-B"
 outb="$(CLAUDE_CODE_SESSION_ID="$SID_B" bash "$SCRIPT" --percent 2>/dev/null)"
 check "isolation: session B reads its own 91" "$outb" "91"
+outb_human="$(CLAUDE_CODE_SESSION_ID="$SID_B" bash "$SCRIPT" 2>/dev/null)"
+contains "isolation: session B reads its own 93,000-turn input" "$outb_human" "93000 input tokens this turn"
+not_contains "isolation: session B never reads A's 69,000-turn input" "$outb_human" "69000 input tokens this turn"
 
 # --- 4. stale snapshot -> loud STALE, empty stdout, no fabricated number -----
 # Backdate the transcript's mtime to match: this fixture represents a session
@@ -458,9 +485,35 @@ check "warn-at: --percent stdout is exactly 55" "$outp" "55"
 errp="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" --percent 2>&1 >/dev/null)"
 check "warn-at: --percent gains no stderr" "$errp" ""
 
-# --warn-at 90 at fill 55 -> below the raised threshold, no warning.
+# --warn-at 90 at fill 55 -> below the raised PERCENT threshold, no warning.
+# Values in 1-100 remain percentages for backwards compatibility.
 err="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" --warn-at 90 2>&1 >/dev/null)"
 not_contains "warn-at 90: fill 55 stays silent" "$err" "WARNING"
+
+# Values above 100 are absolute input-token thresholds. The transcript fixture's
+# latest assistant usage is exactly 12k input + 23k cache-create + 34k
+# cache-read = 69k; output_tokens is deliberately huge and must not be counted.
+err="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" --warn-at 69000 2>&1 >/dev/null)"
+contains "warn-at 69000: warns at the exact input-token threshold" "$err" "WARNING - 69000 input tokens this turn (>= 69000-token handover threshold)"
+err="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" --warn-at 70000 2>&1 >/dev/null)"
+not_contains "warn-at 70000: 69000 input tokens stays silent" "$err" "WARNING"
+
+# codex-1 (HIMMEL-2779): a literal JSONL `null` line parses cleanly via
+# JSON.parse but is not an object, so `row.type` on it throws unless guarded.
+# A transcript that happens to contain one (e.g. a truncated/corrupted write)
+# must not crash last_assistant_input_tokens() -- the null line is skipped and
+# the real latest-assistant totals are still used.
+SID_C="cccccccc-9999-8888-7777-666666666666"
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":11000,"output_tokens":999999,"cache_creation_input_tokens":22000,"cache_read_input_tokens":33000}}}' \
+  'null' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":12000,"output_tokens":888888,"cache_creation_input_tokens":23000,"cache_read_input_tokens":34000}}}' \
+  > "$CFG/projects/C--fixture-repo/$SID_C.jsonl"
+place "$SID_C" "$(snapshot 55 200000 45 "$(now_ms)" "leg-C")" > /dev/null
+out="$(CLAUDE_CODE_SESSION_ID="$SID_C" bash "$SCRIPT" --warn-at 69000 2>/dev/null)"; rc=$?
+check "warn-at 69000 with a null transcript line: does not crash (exit 0)" "$rc" "0"
+err="$(CLAUDE_CODE_SESSION_ID="$SID_C" bash "$SCRIPT" --warn-at 69000 2>&1 >/dev/null)"
+contains "warn-at 69000 with a null transcript line: still warns at the correct threshold" "$err" "WARNING - 69000 input tokens this turn (>= 69000-token handover threshold)"
 
 # --warn-at bogus -> falls back to 50, warns why, and still succeeds (fill 55
 # crosses the fallback threshold).

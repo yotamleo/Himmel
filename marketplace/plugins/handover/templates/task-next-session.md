@@ -16,6 +16,22 @@ gets rulings the normal way, via a direct `SendMessage`. Either way, this
 doc's own **## Console Rulings** section (appended below as rulings land) is
 the record — check it, don't wait on it.
 
+report at MILESTONES only (LIVE, FINDING, READY, BLOCKED, HALTED, WRAPPED); no progress chatter; acks to a rotation are one line.
+
+## Leg Handover Threshold
+
+After every substantial turn, read both thresholds:
+
+```bash
+bash scripts/context-fill.sh --warn-at 45
+bash scripts/context-fill.sh --warn-at 90000
+```
+
+Hand over before the next turn at **45% context fill OR 90,000 input tokens this turn, whichever comes first**. The token readout is the latest assistant
+turn's `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`
+from this session's own transcript; it is not cumulative spend and does not
+include output tokens.
+
 ## Progress
 
 - Done: ...
