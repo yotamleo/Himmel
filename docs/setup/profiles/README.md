@@ -30,6 +30,29 @@ Then commit the result. The capture is read-only (no arm/disarm, no writes
 to `~/.claude`, no scheduled-task mutation) and deterministic — two
 consecutive runs on an unchanged machine produce a byte-identical file.
 
+## `adopter-project.install-profile.json` / `adopter-user.install-profile.json`
+
+HIMMEL-2752. Unlike `operator.install-profile.json` above, these carry **no
+placeholders** — every field is a concrete, runnable value (`profile:
+"starter"`, `pluginSet: "lean"`, no lanes, `vault.mode: "none"`, `handover.mode:
+"inline"`, no `bridge` section) and pass both schema validation and `install
+--dry-run` on a bare checkout, first try. They're what `himmelctl install
+--scope project|user` loads under the hood (`docs/setup/new-machine.md` §
+"himmelctl install"):
+
+```bash
+node scripts/himmelctl/bin.js install --from-profile docs/setup/profiles/adopter-project.install-profile.json
+node scripts/himmelctl/bin.js install --from-profile docs/setup/profiles/adopter-user.install-profile.json
+```
+
+Only `scope` differs between the two. For anything beyond the lean default —
+a real vault, a bridge, extra lanes — copy one of these as a starting point
+rather than hand-writing a profile from scratch.
+
+The `profile` field's enum is `starter|luna|operator|custom` — `custom` is the
+escape hatch when none of the named presets fit and you want a free-form
+label instead of a validation refusal.
+
 ## Status: the v2 loader reads it; the paths are still placeholders
 
 Two separate things, previously conflated here.

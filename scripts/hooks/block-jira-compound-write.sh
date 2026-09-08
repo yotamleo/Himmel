@@ -32,9 +32,10 @@
 # input, no gateway script. A guard whose job is to improve a denial message
 # must never become the reason a sanctioned write cannot run.
 #
-# KNOWN, DELIBERATE GAP — a QUOTED CLI path (`node "/c/Users/John Smith/…/index.js"
-# create …`) is blanked by quote_mask, so this guard does not detect it and stays
-# silent. That is the correct behaviour, not an oversight: the gateway cannot vet
+# KNOWN, DELIBERATE GAP — a QUOTED CLI path is blanked by quote_mask, so this
+# guard does not detect it and stays silent, e.g.:
+# `node "/c/Users/John Smith/…/index.js" create …`  # leak-allow: home-path doc example
+# That is the correct behaviour, not an oversight: the gateway cannot vet
 # a quoted binary either (it tokenises on spaces, so `"path` never matches the
 # CLI), which means a checkout whose path contains whitespace has NO
 # gateway-approvable jira shape at all — even a literal single write. Bouncing it

@@ -351,7 +351,7 @@ if [ "$tool_name" = "Bash" ]; then
     # (see header). A quoted target (`"..."` or `'...'`) is matched as ONE
     # span — INCLUDING any spaces inside the quotes — rather than stopping at
     # the first whitespace: a live settings path legitimately contains a
-    # space on Windows (a `C:\Users\Jane Doe\...` profile), and the old
+    # space on Windows (a `C:\Users\Jane Doe\...` profile), and the old  # leak-allow: home-path doc example
     # whitespace-terminated regex silently truncated + allowed those.
     #
     # Known limitation, deliberately not chased (HIMMEL-2360 CR round 5,

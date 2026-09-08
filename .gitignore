@@ -10,23 +10,15 @@ node_modules/
 /.claude/settings.local.json
 # tokensave MCP code-graph state (local SQLite DB, session-generated — never commit).
 /.tokensave/
-# graphify knowledge-graph artifacts (HIMMEL-621). The DERIVED GRAPH is tracked
-# (HIMMEL-1123) — extraction is LLM-backed and genuinely expensive, so stations
-# that cannot afford to build it (win2: "no resources") pull it instead of
-# re-extracting. That is the cost-of-regeneration split: tokensave regenerates
-# free on local CPU and stays ignored above; a graph does not.
-# WSL needs no transport (HIMMEL-996 shares the Windows store over /mnt/c) —
-# this is for physically separate hosts.
-#
-# Ignore the CONTENTS, then re-include only the two portable artifacts. The
-# per-machine STAMPS stay local on purpose:
-#   .graphify_root  - an ABSOLUTE corpus path; committed, it makes the freshness
-#                     guard resolve win1's path on win2 and fail closed as
-#                     "corpus orphaned" (HIMMEL-1116 makes it portable).
-#   manifest.json   - mtimes are machine-local, and after a checkout every file
-#                     is checkout-fresh, so a pulled graph would read as FRESH
-#                     regardless of its real age.
-#   cache/          - graphify's semantic cache; local, and large.
+# graphify knowledge-graph artifacts (HIMMEL-621, REMOVED HIMMEL-2705 step 1
+# from the git tree entirely — this repo's derived graph no longer PUBLISHES
+# at all). Formerly (HIMMEL-1123) the two portable artifacts (graph.json,
+# GRAPH_REPORT.md) were tracked so stations that can't afford the LLM-backed
+# extraction (win2: "no resources") could pull them instead of re-extracting.
+# That cross-station-pull design is retired: the directory is now ignored
+# OUTRIGHT, nothing re-included. Working files stay on disk — the daily
+# HIMMEL-829 cadence keeps rebuilding them locally, and every place that
+# used to COMMIT or PR the graph now no-ops on this ignored path instead.
 graphify-out/*
 # .claudeignore
 # Claude Code prompt cache invalidated after every graphify extract Graphify writes output files (graph.json, graphify-out/) into the workspace. If those paths aren't ignored, every write invalidates Claude Code's prompt cache, forcing a full re-upload at cache-write rates on the next turn. Add them to .claudeignore:
@@ -132,6 +124,11 @@ scripts/cr/critics.local.json
 scripts/lanes/lanes.local.json
 # machine-local grok tool-schema cache dir — never commit (HIMMEL-876)
 /mcps/
+# scripts/lanes/bench/runs/ (HIMMEL-2560, REMOVED HIMMEL-2705 step 1): bench
+# RUN-OUTPUT JSONs moved to the luna state repo — the bench tooling still
+# writes fresh runs here locally, so the directory stays gitignored instead
+# of tracked. See scripts/lib/public-clone-paths.sh for the move rationale.
+scripts/lanes/bench/runs/
 # stray Corsair iCUE/CorsairLink driver log dropped in the repo root by the
 # host tooling — machine-local noise, never ours to commit (HIMMEL-1611).
 CorsairLink.log

@@ -21,7 +21,7 @@ clone path is exercised:
 
 ```bash
 cd /tmp
-gh repo clone yotamleo/Himmel/tree/main/templates/luna-second-brain luna-brain-smoke
+gh repo clone yotamleo/Himmel/tree/main/templates/luna-second-brain luna-brain-smoke  # leak-allow: hostname smoke-test doc's clone command for this project's public repo
 cd luna-brain-smoke
 bash scripts/setup.sh
 ```

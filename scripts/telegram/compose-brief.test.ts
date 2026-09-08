@@ -66,9 +66,9 @@ test("parseArgs: a newline in --write-set is refused", () => {
 });
 
 test("parseArgs: a normal path with spaces and slashes in --write-set is still accepted", () => {
-  const r = parseArgs(["--lane", "glm", "--model", "m", "--effort", "e", "--task-file", "/t", "--write-set", "C:\\Users\\dir with spaces\\file.ts", "--write-set", "scripts/telegram/foo.ts", "--out", "/t/o"]);
+  const r = parseArgs(["--lane", "glm", "--model", "m", "--effort", "e", "--task-file", "/t", "--write-set", "C:\\Users\\dir with spaces\\file.ts", "--write-set", "scripts/telegram/foo.ts", "--out", "/t/o"]); // leak-allow: home-path test fixture path with an embedded space
   expect(r.ok).toBe(true);
-  expect((r as any).args.writeSet).toEqual(["C:\\Users\\dir with spaces\\file.ts", "scripts/telegram/foo.ts"]);
+  expect((r as any).args.writeSet).toEqual(["C:\\Users\\dir with spaces\\file.ts", "scripts/telegram/foo.ts"]); // leak-allow: home-path test fixture path with an embedded space
 });
 
 test("isHelpFlag: detects --help and -h anywhere in argv", () => {

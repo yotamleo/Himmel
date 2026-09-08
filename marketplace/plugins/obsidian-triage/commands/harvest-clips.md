@@ -153,7 +153,7 @@ Canonicalize the source URL (see Phase 3). Then check:
 1. Deny if the URL matches any of (matching semantics below):
    - Exact hostname: `localhost`, `127.0.0.1`, `::1`.
    - **Host-suffix match (leading dot is the signal):** `.lan`, `.local`, `.internal`. A URL's hostname matches `.lan` iff it ends with the literal `.lan` AND has at least one preceding character — `app.lan` matches, `evil-lan.com` does NOT (the `-lan` doesn't have the leading-dot boundary). Implementation: `host == "lan" || host == *.lan` where `*` is one or more non-dot segments.
-   - Private RFC 1918 ranges: `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`. CIDR semantics, not glob — `172.15.x.x` and `172.32.x.x` are public and should NOT match.
+   - Private RFC 1918 ranges: `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`. CIDR semantics, not glob — `172.15.x.x` and `172.32.x.x` are public and should NOT match. <!-- leak-allow: private-lan-ip doc spec listing the RFC1918 ranges themselves -->
    - Any URL with basic-auth credentials in the userinfo component (`https://user:pass@host/`).
    - Any line in `<vault>/.harvest-deny` (one URL/glob pattern per line; `#` starts a comment). Glob semantics: `*` matches zero-or-more non-`/` characters; `**` matches across path segments.
 2. Allow override only if the URL matches a line in `<vault>/.harvest-allow` (same glob semantics).

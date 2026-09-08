@@ -692,7 +692,9 @@ the required-environment table (HIMMEL-460).
 
 Flags: `--dry-run` prints the derived plan without executing; `--from-profile
 <path>` replays a saved answer profile non-interactively (the wizard caches your
-answers, so the same install replays verbatim); `--contribute` layers the
+answers, so the same install replays verbatim); `--scope project|user` (below)
+runs non-interactively too, from a shipped profile rather than a saved one;
+`--contribute` layers the
 contributor-dev `setup.sh`/`setup.ps1` primitive on top of the install (never a
 question); `--lanes <csv|none>`,
 `--with-codex` and `--with-hermes` answer the lane question up front (all three
@@ -700,6 +702,21 @@ are refused alongside `--from-profile` — a saved profile already carries its
 lane selection and stays the sole authority on a replay). To offboard later:
 `node scripts/himmelctl/bin.js uninstall` — a thin wrapper over
 `scripts/uninstall.sh` / `uninstall.ps1` (§8.7).
+
+**Non-interactive install (HIMMEL-2752).** `--default-scope` only presets a
+*wizard* answer — the wizard still prompts. To skip the wizard entirely, run
+one of the shipped, placeholder-free adopter profiles:
+
+```bash
+node scripts/himmelctl/bin.js install --scope project   # or: --scope user
+```
+
+This is shorthand for `--from-profile
+docs/setup/profiles/adopter-<scope>.install-profile.json` — a plain `starter`,
+`pluginSet: lean` install with no lanes, no vault, and no telegram bridge (see
+`docs/setup/profiles/README.md`). Point `--from-profile` at your own saved or
+hand-authored profile instead for anything more; combining `--from-profile`
+with `--scope` overrides just that profile's `scope` field.
 
 **What the adopter profile does NOT do (HIMMEL-862 v1, deliberate).** Two
 things it reports rather than performs, because in both cases doing them would
