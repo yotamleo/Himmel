@@ -239,11 +239,11 @@ configs: `.claude/settings.json`, `.codex/hooks.json`, `.gemini/settings.json`
 (and `~/.claude/settings.json` if installed globally).
 
 **Quote the exe if its path contains a space.** Removing backslashes is not enough
-when the path itself has a space — e.g. `C:/Users/Jane Doe/.local/bin/graphify.exe`
+when the path itself has a space — e.g. `C:/Users/Jane Doe/.local/bin/graphify.exe` <!-- leak-allow: home-path doc example -->
 — because the command runs through a shell that word-splits an unquoted string
 (bash splits on the space; cmd.exe treats `C:/Users/Jane` as the program). Wrap the
 executable in quotes inside the command value (JSON-escaped, e.g.
-`"\"C:/Users/Jane Doe/.local/bin/graphify.exe\" hook-guard search"`), or install
+`"\"C:/Users/Jane Doe/.local/bin/graphify.exe\" hook-guard search"`), or install <!-- leak-allow: home-path doc example -->
 graphify to a space-free path.
 
 Re-install caveat: 0.9.18 `graphify install` (claude) no longer writes
@@ -1113,6 +1113,18 @@ its commit are printed before anything is written. The ordering rule generalises
 **an ambient pointer must not outrank the checkout you are running from** — a
 stale env var or a lucky scan hit is exactly the failure mode — while an
 explicit per-invocation flag still wins over both.
+
+## Editing `scripts/hooks/*.sh` needs the integrity bypass in the launching shell
+
+The hook-integrity guard (`block-edit-live-settings.sh` / `block-jira-compound-write.sh`
+and siblings) treats any `scripts/hooks/*.sh` file that differs from `HEAD` as
+tampering and blocks every subsequent Bash/Edit call in the session until the
+file is committed — including the very edit you are mid-way through. Set
+`HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1` in the shell that LAUNCHES the session
+(`HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 claude`) before touching any hook script; a
+per-call prefix does not reach the guard. Recovery once locked out: plain-copy
+the affected file(s) back to `HEAD`, relaunch with the bypass set, then
+re-apply the intended edit and commit it in the same step.
 
 ## pre-commit: `run --commit-msg-filename` reports Passed for a message the hook rejects
 

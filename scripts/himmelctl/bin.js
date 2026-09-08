@@ -1786,6 +1786,13 @@ function loadProfile(p) {
   if (obj.secretsWalk !== undefined) {
     checkEnum('secretsWalk', obj.secretsWalk, ['run', 'skip']);
   }
+  // HIMMEL-2705: `channel` picks the release channel scripts/himmel-update.sh
+  // follows — optional (absent means "unset", today's plain git-pull
+  // behavior, unchanged); when present it is closed/strict like every other
+  // field here.
+  if (obj.channel !== undefined) {
+    checkEnum('channel', obj.channel, ['stable', 'pre']);
+  }
   if (obj.bridge !== undefined) {
     if (!obj.bridge || typeof obj.bridge !== 'object' || Array.isArray(obj.bridge)) {
       profileError(p, "field 'bridge' must be an object when present");
@@ -3945,7 +3952,40 @@ async function cmdInstall(args) {
   // installed one. Gated on !dryRun (one guard, one source of truth for every
   // branch above): a dry run — from ANY of the three answer-producing
   // branches, interactive included — must make zero persistent changes.
-  if (!args.dryRun) writeCache(answers);
+  // HIMMEL-2705: new adopters default to the stable release channel
+  // (scripts/himmel-update.sh's channel seam). "New" is this STATION never
+  // having a cache before — checked BEFORE writeCache below, since install
+  // always fully replaces the cache with the resolved answers (no merge with
+  // whatever was there), so answers.channel === undefined is true on every
+  // re-install too (interactive re-run, or --from-profile against a
+  // channel-less profile) and cannot by itself distinguish "brand new
+  // station" from "existing station whose incoming answers happen to omit
+  // channel" (CR round 1, codex-2: the field-only check opted every such
+  // re-install into stable, contradicting "unset stays unset").
+  //
+  // A re-install (isNewAdopter=false) with channel-less incoming answers
+  // must carry the STATION's existing channel forward rather than dropping
+  // it — writeCache below replaces the whole file, so doing nothing here
+  // would silently erase a stable/pre station's setting on every reinstall
+  // that doesn't happen to restate it (CR round 2, codex-1). Read the prior
+  // cache's channel best-effort; an unreadable/malformed prior cache just
+  // means there is nothing to carry forward, not an install failure.
+  if (!args.dryRun) {
+    const isNewAdopter = !fs.existsSync(cachePath());
+    if (answers.channel === undefined) {
+      if (isNewAdopter) {
+        answers.channel = 'stable';
+      } else {
+        try {
+          const prior = JSON.parse(fs.readFileSync(cachePath(), 'utf8'));
+          if (typeof prior.channel === 'string') answers.channel = prior.channel;
+        } catch {
+          // unreadable/malformed prior cache: nothing to carry forward
+        }
+      }
+    }
+    writeCache(answers);
+  }
 
   // 5.5 (HIMMEL-2308): devOverlay is only valid inside a himmel checkout —
   // it layers the contributor-dev setup.sh/setup.ps1 primitive on top of the

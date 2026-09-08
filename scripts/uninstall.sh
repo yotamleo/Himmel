@@ -11,9 +11,9 @@
 #         (machine-setup/uninstall-plugins.sh --plugins-only; the install
 #         profile supplies only the fallback scope — HIMMEL-2694)
 #   [5/8] uninstall git hooks (pre-commit/pre-push/commit-msg)
-#   [6/8] unwire ~/.claude/settings.json (statusLine, env.HIMMEL_REPO,
+#   [6/8] unwire user + current-project settings.json (statusLine, env.HIMMEL_REPO,
 #         env.LUNA_VAULT_PATH, env.HANDOVER_DIR, the UNIVERSAL hooks — what
-#         setup.sh/adopt wired)
+#         setup.sh/adopt wired; himmel's own project settings are kept)
 #   [7/8] remove Claude marketplaces (only when no installed plugins remain)
 #   [8/8] remove the himmelctl cache + state dir ~/.claude/himmel
 #         (install-profile.json, state.json — HIMMEL-2459)
@@ -46,7 +46,7 @@
 #   --skip-plugins         Keep Claude plugins + marketplaces installed.
 #   --skip-tasks           Keep HIMMEL-Resume-* / HimmelTelegramBridge jobs.
 #   --skip-hooks           Keep the repo's pre-commit git hooks.
-#   --skip-settings        Keep the user-scope ~/.claude/settings.json wiring
+#   --skip-settings        Keep user- and current-project settings.json wiring
 #                          (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, hooks).
 #   --source-only          Test seam (HIMMEL-2503): define the functions, then
 #                          stop before any action — `. uninstall.sh --source-only`.
@@ -685,8 +685,9 @@ fi
 if [ "$SKIP_SETTINGS" -eq 0 ]; then
   echo "  6. unwire ~/.claude/settings.json (statusLine, HIMMEL_REPO,"
   echo "     LUNA_VAULT_PATH, HANDOVER_DIR, UNIVERSAL hooks — non-himmel keys untouched)"
+  echo "     and current-project settings: $PWD/.claude/settings.json (himmel's own checkout excluded)"
 else
-  echo "  6. keep ~/.claude/settings.json wiring (--skip-settings)"
+  echo "  6. keep user- and current-project settings.json wiring (--skip-settings)"
 fi
 if [ "$SKIP_PLUGINS" -eq 0 ]; then
   echo "  7. remove Claude marketplaces with no remaining installed plugins"
@@ -1019,40 +1020,86 @@ else
 fi
 echo ""
 
-# --- [6/8] unwire user-scope settings.json (HIMMEL-460) ----------------------
-# Symmetric inverse of setup.sh [9/10] + adopt --scope user: remove the
+# --- [6/8] unwire user/project settings.json (HIMMEL-460, HIMMEL-2776) -------
+# Symmetric inverse of setup.sh [9/10] + adopt: remove the
 # statusLine, env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR
 # (HIMMEL-839), and the UNIVERSAL hooks that himmel wired into
 # ~/.claude/settings.json. Each helper removes ONLY its own key/stanza
 # (refuses invalid JSON, preserves every non-himmel key: rtk guard, the
 # operator's own hooks, MCP config). --dry-run flows through to each.
 echo "[6/8] Unwiring ~/.claude/settings.json (statusLine, HIMMEL_REPO, LUNA_VAULT_PATH, HANDOVER_DIR, hooks)..."
+# One sanctioned unwire sequence for both scopes; retain the user-scope order.
+unwire_settings() {
+  local settings="$1" helper
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $settings"
+    if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$settings" 1; then
+      fail_step "[6/8] settings unwire: unwire-pretooluse-hooks dry-run failed"
+    fi
+    return
+  fi
+  for helper in unwire-statusline unwire-himmel-repo unwire-luna-vault unwire-handover-dir unwire-pretooluse-hooks; do
+    if ! bash "$REPO_ROOT/scripts/lib/$helper.sh" "$settings"; then
+      echo "  WARN: $helper reported a problem; setup-state may remain." >&2
+      fail_step "[6/8] settings unwire: $helper failed"
+    fi
+  done
+}
+
+# Same project target as install-plugins.sh/adopt.sh: invocation CWD, not the
+# clone providing the helpers. Match checkUninstallCompleteness's identity
+# guard: direct inode equality, then git-common-dir for linked worktrees.
+# rc 2 means identity is unresolved, never permission to edit repo source.
+project_is_himmel_checkout() {
+  local source_root project_common source_common
+  source_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)" || return 2
+  [ "$PWD" -ef "$source_root" ] && return 0
+  [ -e "$PWD/.git" ] || return 1
+  project_common=$(git -C "$PWD" rev-parse --git-common-dir 2>/dev/null) || return 2
+  source_common=$(git -C "$source_root" rev-parse --git-common-dir 2>/dev/null) || return 2
+  case "$project_common" in /*|[A-Za-z]:[/\\]*) ;; *) project_common="$PWD/$project_common" ;; esac
+  case "$source_common" in /*|[A-Za-z]:[/\\]*) ;; *) source_common="$source_root/$source_common" ;; esac
+  [ "$project_common" -ef "$source_common" ]
+}
+
 _user_settings="$USER_SETTINGS"
+_project_settings="$PWD/.claude/settings.json"
 if [ "$HALTED" -eq 1 ]; then
   echo "  skipped (halted after an earlier failure)"
   STEPS_INCOMPLETE+=("[6/8] settings unwire: skipped — halted after an earlier failure")
 elif [ "$SKIP_SETTINGS" -eq 1 ]; then
   echo "  kept (--skip-settings)."
-elif [ ! -f "$_user_settings" ]; then
-  echo "  no $_user_settings — nothing to unwire."
-elif [ "$DRY_RUN" -eq 1 ]; then
-  # The single-key unwire helpers have no dry-run flag, so gate at this level to
-  # keep --dry-run a true no-op (SC6). unwire-pretooluse-hooks has its own flag.
-  echo "DRY: unwire statusLine (himmel), env.HIMMEL_REPO, env.LUNA_VAULT_PATH, env.HANDOVER_DIR from $_user_settings"
-  if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$_user_settings" 1; then
-    echo "  WARN: unwire-pretooluse-hooks dry-run reported a problem." >&2
-    fail_step "[6/8] settings unwire: unwire-pretooluse-hooks dry-run failed"
-  fi
 else
-  for _unwire in unwire-statusline unwire-himmel-repo unwire-luna-vault unwire-handover-dir; do
-    if ! bash "$REPO_ROOT/scripts/lib/$_unwire.sh" "$_user_settings"; then
-      echo "  WARN: $_unwire reported a problem; setup-state may remain." >&2
-      fail_step "[6/8] settings unwire: $_unwire failed"
+  if [ -f "$_user_settings" ]; then
+    unwire_settings "$_user_settings"
+  else
+    echo "  no $_user_settings — nothing to unwire."
+  fi
+  if [ "$HALTED" -eq 1 ]; then
+    echo "  project settings: skipped (halted after an earlier failure)"
+  elif [ ! -e "$_project_settings" ] && [ ! -L "$_project_settings" ]; then
+    echo "  project settings: none found"
+  else
+    _project_identity=0
+    project_is_himmel_checkout || _project_identity=$?
+    if [ "$_project_identity" -eq 0 ]; then
+      echo "  project settings: kept $_project_settings (himmel's own checkout)"
+    elif [ "$_project_identity" -eq 2 ]; then
+      echo "  project settings: cannot resolve checkout identity — refusing to unwire" >&2
+      fail_step "[6/8] project settings: checkout identity unresolved"
+    elif [ -L "$PWD/.claude" ] || [ -L "$_project_settings" ] || [ ! -f "$_project_settings" ]; then
+      echo "  project settings: refusing non-regular or symlinked target $_project_settings" >&2
+      fail_step "[6/8] project settings: unsafe target"
+    else
+      unwire_settings "$_project_settings"
+      if [ "$HALTED" -eq 1 ]; then
+        echo "  project settings: unwire failed $_project_settings" >&2
+      elif [ "$DRY_RUN" -eq 1 ]; then
+        echo "DRY: project settings: would unwire $_project_settings"
+      else
+        echo "  project settings: unwired $_project_settings"
+      fi
     fi
-  done
-  if ! bash "$REPO_ROOT/scripts/lib/unwire-pretooluse-hooks.sh" "$_user_settings"; then
-    echo "  WARN: unwire-pretooluse-hooks reported a problem." >&2
-    fail_step "[6/8] settings unwire: unwire-pretooluse-hooks failed"
   fi
 fi
 echo ""

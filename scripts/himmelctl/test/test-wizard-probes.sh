@@ -4453,7 +4453,7 @@ echo "ok: bridge-health — a poller.ts token pathed to THIS checkout (native ba
 
 # CR round 3 fix (HIMMEL-2176, retask stage1-build-6d2e): [^\s"']* stopped at
 # the first space, truncating a poller.ts path under a checkout with a space
-# in it (e.g. 'C:\Users\John Doe\himmel\...') to a fragment that could never
+# in it (e.g. 'C:\Users\John Doe\himmel\...') to a fragment that could never  # leak-allow: home-path doc example
 # match the anchor — the healthy LOCAL poller then read as foreign and
 # bridge-health falsely reported zero pollers. A real Win32_Process
 # CommandLine quotes an argument containing a space, so the fixed extractor
@@ -4461,8 +4461,8 @@ echo "ok: bridge-health — a poller.ts token pathed to THIS checkout (native ba
 # covered: (1) bare, unpathed ('bun.exe poller.ts', outBH1 above); (2) an
 # unquoted, space-free path (outBHthisPathed/outBHthisNativeUpper above); (3)
 # this one — a quoted path containing a space.
-bh_space_root_w='C:/Users/John Doe/himmel/.claude/worktrees/feat-space-checkout'
-bh_space_root_native='C:\Users\John Doe\himmel\.claude\worktrees\feat-space-checkout'
+bh_space_root_w='C:/Users/John Doe/himmel/.claude/worktrees/feat-space-checkout'  # leak-allow: home-path test fixture
+bh_space_root_native='C:\Users\John Doe\himmel\.claude\worktrees\feat-space-checkout'  # leak-allow: home-path test fixture
 outBHspaceQuoted=$(run_bh "bun.exe \"${bh_space_root_native}\\scripts\\telegram\\poller.ts\"" win32 "$bh_space_root_w")
 echo "$outBHspaceQuoted" | jq -e '.actual == "present"' >/dev/null \
   || fail "bridge-health: a poller.ts path containing a space, quoted (the real Win32_Process shape), must still resolve to THIS checkout and read present (got: $outBHspaceQuoted)"

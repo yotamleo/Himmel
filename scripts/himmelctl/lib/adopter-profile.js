@@ -748,7 +748,7 @@ const HARDENING_CHECKLIST = [
       '',
       '# 4. scope the firewall rule to the networks you actually use —',
       '#    the rule the capability adds allows ANY remote address',
-      '#    (e.g. 192.168.1.0/24 for a typical home LAN)',
+      '#    (e.g. 192.168.1.0/24 for a typical home LAN)',  // leak-allow: private-lan-ip doc example RFC1918 CIDR for the firewall-rule snippet
       'Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -RemoteAddress <your-lan-subnet>',
       '',
       '# 5. validate the config BEFORE starting anything (prints nothing if OK)',

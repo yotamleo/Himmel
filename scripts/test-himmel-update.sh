@@ -382,6 +382,356 @@ printf 'HIMMEL_UPDATE_AUTOSTASH=1\n' > "$CHECKOUT_DIR/.env"
 out=$(HIMMEL_UPDATE_AUTOSTASH=0 bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || true
 assert_contains "live 0 overrides .env 1: refuses to pull" "refusing to pull into a dirty tree" "$out"
 
+# ─── channel-seam fixtures (HIMMEL-2705) ─────────────────────────────────────
+# Same shape as make_repo_behind, but the caller drives commits/tags itself via
+# channel_commit/channel_tag_here — channel resolution is tag-based, not a
+# fixed N-commits-behind count.
+make_repo_channel() {
+    _repo_counter=$((_repo_counter + 1))
+    local base="$TMP/chan_${_repo_counter}"
+    local bare="$base/upstream.git"
+    local clone="$base/checkout"
+    mkdir -p "$bare" "$clone"
+
+    git init --bare --quiet "$bare"
+    git init --quiet "$clone"
+    git -C "$clone" config user.email "test@test.test"
+    git -C "$clone" config user.name "Test"
+    git -C "$clone" remote add origin "$bare"
+    printf 'init\n' > "$clone/file.txt"
+    git -C "$clone" add file.txt
+    git -C "$clone" commit --quiet -m "init"
+    git -C "$clone" push --quiet -u origin HEAD:main 2>/dev/null
+
+    mkdir -p "$clone/scripts/guardrails" "$clone/scripts/lib"
+    cp "$SCRIPT" "$clone/scripts/himmel-update.sh"
+    local src_scripts; src_scripts="$(dirname "$SCRIPT")"
+    cp "$src_scripts/guardrails/lib.sh"        "$clone/scripts/guardrails/lib.sh"
+    cp "$src_scripts/lib/cadence-format.sh"    "$clone/scripts/lib/cadence-format.sh"
+    cp "$src_scripts/lib/resolve-hermes-py.sh" "$clone/scripts/lib/resolve-hermes-py.sh"
+    cp "$src_scripts/lib/load-dotenv.sh"       "$clone/scripts/lib/load-dotenv.sh"
+    # Overlaid, not committed — excluded from git status so is_dirty() (which
+    # channel apply-mode's dirty-tree refusal relies on) never sees the test
+    # harness's own script drop as a local edit.
+    printf 'scripts/\n' >> "$clone/.git/info/exclude"
+    CHECKOUT_DIR="$clone"
+    # HIMMEL-2705 codex-3: git init's local default branch name depends on
+    # the machine's init.defaultBranch config, not a fixed literal — capture
+    # the real name so callers assert against it instead of a hardcoded guess.
+    CHECKOUT_ORIG_BRANCH="$(git -C "$clone" symbolic-ref --short HEAD)"
+}
+
+channel_tag_here() {
+    git -C "$CHECKOUT_DIR" tag "$1"
+    git -C "$CHECKOUT_DIR" push --quiet origin "$1" 2>/dev/null
+}
+
+# An ANNOTATED tag (CR round 6, codex-2) — its ref points at a tag OBJECT,
+# not the commit directly, which is what exposed the peeled-`^{}` gap a
+# lightweight channel_tag_here() tag can never exercise.
+channel_annotated_tag_here() {
+    git -C "$CHECKOUT_DIR" tag -a "$1" -m "$1"
+    git -C "$CHECKOUT_DIR" push --quiet origin "$1" 2>/dev/null
+}
+
+channel_commit() {
+    printf '%s\n' "$1" >> "$CHECKOUT_DIR/file.txt"
+    git -C "$CHECKOUT_DIR" add file.txt
+    git -C "$CHECKOUT_DIR" commit --quiet -m "$1"
+    git -C "$CHECKOUT_DIR" push --quiet origin HEAD:main 2>/dev/null
+}
+
+run_channel_lib() {   # eval'd bash snippet, sourced with the lib seam
+    (
+        set -euo pipefail
+        cd "$CHECKOUT_DIR"
+        # shellcheck disable=SC1090
+        HIMMEL_UPDATE_LIB=1 . "$CHECKOUT_DIR/scripts/himmel-update.sh"
+        eval "$1"
+    )
+}
+
+# ─── Test 8: unset channel → pull path unchanged (no channel line, no tags) ──
+echo "Test 8: unset channel → --check output unchanged (no 'channel:' line)"
+make_repo_channel
+channel_tag_here "v0.1.0"
+out=$(bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
+if grepq "$out" "^channel:"; then
+    assert_fail "unset channel: --check must not print a 'channel:' line"
+else
+    assert_pass "unset channel: --check has no 'channel:' line"
+fi
+assert_contains "unset channel: plain branch/upstream report still runs" "upstream:" "$out"
+
+# ─── Test 9: stable channel, only pre tags exist → "no stable release yet" ───
+echo "Test 9: channel=stable, only -pre.N tags exist → no stable release yet"
+make_repo_channel
+channel_tag_here "v0.1.0-pre.1"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1)
+rc=$?
+assert_eq "stable, no stable tag: --check rc 0" "0" "$rc"
+assert_contains "stable, no stable tag: exact message" "no stable release yet — nothing to follow" "$out"
+
+# ─── Test 10: stable channel, v0.1.0 present, HEAD behind it → detach ────────
+echo "Test 10: channel=stable, HEAD behind v0.1.0 → --check reports behind, apply detaches"
+make_repo_channel
+INIT_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+channel_commit "work before release"
+channel_tag_here "v0.1.0"
+channel_commit "post-release change"
+git -C "$CHECKOUT_DIR" reset --quiet --hard "$INIT_SHA"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
+assert_contains "stable behind: exact wording" "behind stable v0.1.0 (at" "$out"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
+rc=$?
+assert_eq "stable behind: apply rc 0" "0" "$rc"
+assert_eq "stable behind: HEAD lands on the tag" "v0.1.0" "$(git -C "$CHECKOUT_DIR" describe --tags)"
+assert_eq "stable behind: HEAD is detached" "HEAD" "$(git -C "$CHECKOUT_DIR" rev-parse --abbrev-ref HEAD)"
+
+# ─── Test 11: pre channel picks the highest pre tag over an older stable ─────
+echo "Test 11: channel=pre → detaches at the highest -pre.N tag"
+make_repo_channel
+channel_tag_here "v0.1.0"
+channel_commit "pre release work"
+channel_tag_here "v0.2.0-pre.1"
+BEHIND_SHA=$(git -C "$CHECKOUT_DIR" rev-parse --short HEAD^)
+git -C "$CHECKOUT_DIR" reset --quiet --hard "$BEHIND_SHA"
+out=$(HIMMEL_UPDATE_CHANNEL=pre bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
+rc=$?
+assert_eq "pre channel: apply rc 0" "0" "$rc"
+assert_eq "pre channel: HEAD lands on the -pre.N tag" "v0.2.0-pre.1" "$(git -C "$CHECKOUT_DIR" describe --tags)"
+
+# ─── Test 12: pre.10 vs pre.9 compares numerically, not lexically ────────────
+echo "Test 12: pre.10 outranks pre.9 (numeric, not lexical, ordering)"
+make_repo_channel
+channel_tag_here "v0.1.0-pre.9"
+channel_tag_here "v0.1.0-pre.10"
+resolved=$(run_channel_lib '_channel_resolve_tag pre')
+assert_eq "pre.10 vs pre.9: highest resolves to pre.10" "v0.1.0-pre.10" "$resolved"
+max_ba=$(run_channel_lib '_channel_tag_max v0.1.0-pre.9 v0.1.0-pre.10')
+max_ab=$(run_channel_lib '_channel_tag_max v0.1.0-pre.10 v0.1.0-pre.9')
+assert_eq "_channel_tag_max(pre.9, pre.10) picks pre.10" "v0.1.0-pre.10" "$max_ba"
+assert_eq "_channel_tag_max(pre.10, pre.9) picks pre.10" "v0.1.0-pre.10" "$max_ab"
+
+# RED control: a naive LEXICAL comparison of the same two tags gets pre.9 and
+# pre.10 backwards ('9' > '1' as characters) — proving this test would catch a
+# regression to string comparison instead of numeric. The real code (asserted
+# above) must NOT reproduce this.
+# shellcheck disable=SC2050 # deliberately constant: proving lexical compare is wrong
+if [[ "v0.1.0-pre.9" > "v0.1.0-pre.10" ]]; then
+    assert_pass "RED control: lexical string compare picks the WRONG winner (pre.9 > pre.10)"
+else
+    assert_fail "RED control: expected lexical compare to be wrong here — fixture no longer demonstrates the bug class"
+fi
+
+# ─── Test 13: never downgrade — HEAD ahead of the resolved tag ──────────────
+echo "Test 13: HEAD ahead of the resolved tag → 'not behind — leaving as-is', no mutation"
+make_repo_channel
+channel_tag_here "v0.1.0"
+channel_commit "local work past the release"
+AHEAD_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
+assert_contains "never-downgrade: check reports leaving as-is" "not behind — leaving as-is" "$out"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
+rc=$?
+assert_eq "never-downgrade: apply rc 0" "0" "$rc"
+assert_eq "never-downgrade: HEAD unchanged (no downgrade to v0.1.0)" "$AHEAD_SHA" "$(git -C "$CHECKOUT_DIR" rev-parse HEAD)"
+
+# ─── Test 14: dirty checkout is refused, never moved ─────────────────────────
+echo "Test 14: channel apply refuses a dirty checkout, even with HIMMEL_UPDATE_AUTOSTASH=1"
+make_repo_channel
+INIT_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+channel_commit "work before release"
+channel_tag_here "v0.1.0"
+channel_commit "post-release change"
+git -C "$CHECKOUT_DIR" reset --quiet --hard "$INIT_SHA"
+BEHIND_SHA="$INIT_SHA"
+printf 'local-dirty-edit\n' > "$CHECKOUT_DIR/file.txt"
+rc=0
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
+assert_contains "channel dirty: refuses" "uncommitted changes" "$out"
+assert_eq "channel dirty: HEAD unchanged" "$BEHIND_SHA" "$(git -C "$CHECKOUT_DIR" rev-parse HEAD)"
+rc=0
+out=$(HIMMEL_UPDATE_AUTOSTASH=1 HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
+assert_contains "channel dirty + AUTOSTASH=1: still refuses (autostash doesn't apply to switch --detach)" "uncommitted changes" "$out"
+assert_eq "channel dirty + AUTOSTASH=1: HEAD still unchanged" "$BEHIND_SHA" "$(git -C "$CHECKOUT_DIR" rev-parse HEAD)"
+git -C "$CHECKOUT_DIR" restore file.txt 2>/dev/null || true
+
+# ─── Test 15: env beats profile ──────────────────────────────────────────────
+echo "Test 15: HIMMEL_UPDATE_CHANNEL env overrides the profile's channel"
+make_repo_channel
+channel_tag_here "v0.1.0"
+PROFILE_DIR="$TMP/th15-profile"
+mkdir -p "$PROFILE_DIR"
+printf '{"channel":"pre"}\n' > "$PROFILE_DIR/install-profile.json"
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
+assert_contains "profile alone: channel=pre picked up" "channel:  pre" "$out"
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
+assert_contains "env overrides profile: channel=stable wins" "channel:  stable" "$out"
+
+# ─── Test 16: --check never mutates ──────────────────────────────────────────
+echo "Test 16: channel --check never moves HEAD, even when behind"
+make_repo_channel
+channel_tag_here "v0.1.0"
+channel_commit "post-release change"
+BEHIND_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD^)
+git -C "$CHECKOUT_DIR" reset --quiet --hard "$BEHIND_SHA"
+HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check >/dev/null 2>&1 || true
+HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check >/dev/null 2>&1 || true
+assert_eq "channel --check: HEAD unchanged after two runs" "$BEHIND_SHA" "$(git -C "$CHECKOUT_DIR" rev-parse HEAD)"
+assert_eq "channel --check: still attached (not detached)" "$CHECKOUT_ORIG_BRANCH" "$(git -C "$CHECKOUT_DIR" rev-parse --abbrev-ref HEAD)"
+
+# ─── Test 17 (HIMMEL-2705 codex-1): malformed profile channel fails loud ────
+# jq's `// empty` coalesces both `null` and `false` to "absent" — a bare
+# `channel: false` must be rejected the same way a bad string is, not
+# silently treated as unset, and invalid JSON must not be swallowed either.
+echo "Test 17: profile channel — malformed JSON and non-string values fail loud, null/absent stay silently unset"
+make_repo_channel
+channel_tag_here "v0.1.0"
+PROFILE_DIR="$TMP/th17-profile"
+mkdir -p "$PROFILE_DIR"
+printf '{"channel":false}\n' > "$PROFILE_DIR/install-profile.json"
+rc=0
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
+assert_eq "profile channel:false: rc 2" "2" "$rc"
+assert_contains "profile channel:false: invalid channel message" "invalid channel" "$out"
+printf '{ not valid json' > "$PROFILE_DIR/install-profile.json"
+rc=0
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
+assert_eq "profile malformed JSON: rc 2" "2" "$rc"
+assert_contains "profile malformed JSON: not valid JSON message" "not valid JSON" "$out"
+printf '{"channel":null}\n' > "$PROFILE_DIR/install-profile.json"
+rc=0
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
+assert_eq "profile channel:null: rc 0 (treated as unset)" "0" "$rc"
+
+# ─── Test 18 (HIMMEL-2705 codex-1/codex-2, round 3): jq-missing and ─────────
+# non-object profile roots fail loud too. A profile FILE existing is the
+# signal that a channel *might* be set — without jq we cannot tell, so a
+# missing jq must not silently fall through to "unset" the way a missing
+# profile file legitimately does.
+echo "Test 18: profile channel — jq unavailable and a non-object JSON root both fail loud"
+make_repo_channel
+channel_tag_here "v0.1.0"
+PROFILE_DIR="$TMP/th18-profile"
+mkdir -p "$PROFILE_DIR"
+printf '{"channel":"stable"}\n' > "$PROFILE_DIR/install-profile.json"
+NO_JQ_BIN="$TMP/th18-no-jq-bin"
+mkdir -p "$NO_JQ_BIN"
+for f in /usr/bin/*; do
+    bn=$(basename "$f")
+    [ "$bn" = "jq" ] && continue
+    ln -s "$f" "$NO_JQ_BIN/$bn" 2>/dev/null || true
+done
+rc=0
+out=$(PATH="$NO_JQ_BIN" HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
+assert_eq "profile exists, jq missing: rc 2" "2" "$rc"
+assert_contains "profile exists, jq missing: message names jq" "jq is not installed" "$out"
+printf '[]' > "$PROFILE_DIR/install-profile.json"
+rc=0
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
+assert_eq "profile is a JSON array, not object: rc 2" "2" "$rc"
+assert_contains "profile is a JSON array: not a valid JSON object message" "not a valid JSON object" "$out"
+
+# ─── Test 19 (HIMMEL-2705 codex-1, round 4): channel resolved lazily, not ────
+# up front — a malformed channel must abort ONLY a mode that actually needs
+# the pull configuration; --plugins-check and unrelated --only items must
+# still succeed unconditionally, matching their own documented contract.
+echo "Test 19: malformed profile channel does not abort --plugins-check or an unrelated --only item"
+make_repo_channel
+PROFILE_DIR="$TMP/th19-profile"
+mkdir -p "$PROFILE_DIR"
+printf '{"channel":false}\n' > "$PROFILE_DIR/install-profile.json"
+rc=0
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --plugins-check 2>&1) || rc=$?
+assert_eq "malformed channel: --plugins-check still exits 0" "0" "$rc"
+rc=0
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only marketplace 2>&1) || rc=$?
+assert_eq "malformed channel: --only marketplace (unrelated item) still exits 0" "0" "$rc"
+rc=0
+out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1) || rc=$?
+assert_eq "malformed channel: --only pull (the item that DOES need it) still fails" "1" "$rc"
+assert_contains "malformed channel: --only pull failure names the channel problem" "invalid channel" "$out"
+
+# ─── Test 20 (HIMMEL-2705 codex-1, round 5): a stray LOCAL-only tag never ────
+# outranks or substitutes for an origin-advertised one — channel resolution
+# must be sourced from origin, not a plain `git tag --list` scan of every
+# local tag (which would also pick up a tag from some other remote, or one a
+# local `git tag` command created by mistake).
+echo "Test 20: a stray local-only tag (never pushed to origin) is not a channel candidate"
+make_repo_channel
+INIT_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+channel_commit "work before release"
+channel_tag_here "v0.1.0"
+git -C "$CHECKOUT_DIR" tag "v9.9.9"
+git -C "$CHECKOUT_DIR" reset --quiet --hard "$INIT_SHA"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1)
+assert_contains "stray local tag: resolves to the origin tag, not the local-only one" "behind stable v0.1.0" "$out"
+case "$out" in
+    *v9.9.9*) fail=$((fail + 1)); echo "  FAIL: stray local tag: v9.9.9 must not appear in --check output" ;;
+    *) pass=$((pass + 1)); echo "  PASS: stray local tag: v9.9.9 must not appear in --check output" ;;
+esac
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
+rc=$?
+assert_eq "stray local tag: apply rc 0" "0" "$rc"
+landed=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+expected=$(git -C "$CHECKOUT_DIR" rev-parse "refs/tags/v0.1.0^{commit}")
+assert_eq "stray local tag: HEAD lands on the origin tag's commit, not v9.9.9" "$expected" "$landed"
+
+# ─── Test 21 (HIMMEL-2705 codex-2, round 6): an ANNOTATED release tag ────────
+# resolves to its target COMMIT, not its own tag-object id — the narrowed
+# `git ls-remote --tags origin "$want"` query never returns the peeled
+# `^{}` entry on its own, so the unpeeled tag-object id never string-equals
+# `git rev-parse HEAD` even once HEAD is genuinely at the release, and
+# merge-base peels both sides to the same commit in EITHER direction —
+# so the mismatch used to be misreported as "HEAD ahead", not "already at".
+echo "Test 21: an ANNOTATED release tag resolves to its commit, not its tag-object id"
+make_repo_channel
+INIT_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+channel_commit "work before annotated release"
+channel_annotated_tag_here "v0.1.0"
+git -C "$CHECKOUT_DIR" reset --quiet --hard "$INIT_SHA"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1)
+assert_contains "annotated tag: --check reports behind" "behind stable v0.1.0" "$out"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --only pull 2>&1)
+rc=$?
+assert_eq "annotated tag: apply rc 0" "0" "$rc"
+landed=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+expected=$(git -C "$CHECKOUT_DIR" rev-parse "refs/tags/v0.1.0^{commit}")
+assert_eq "annotated tag: HEAD lands on the peeled commit" "$expected" "$landed"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1)
+assert_contains "annotated tag: second check reports up to date, not 'ahead'" "up to date — at stable v0.1.0" "$out"
+
+# ─── Test 22 (HIMMEL-2705 codex-1, round 6): an origin `ls-remote` failure ───
+# AFTER `git fetch --tags origin` already succeeded fails loud, instead of
+# being silently swallowed by a process-substitution loop into an empty
+# candidate list indistinguishable from "no release on this channel yet".
+echo "Test 22: origin ls-remote failure (network blip after fetch succeeds) fails loud, not 'no release yet'"
+make_repo_channel
+INIT_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+channel_commit "work before release"
+channel_tag_here "v0.1.0"
+git -C "$CHECKOUT_DIR" reset --quiet --hard "$INIT_SHA"
+REAL_GIT=$(command -v git)
+LSREMOTE_FAIL_BIN="$TMP/th22-git-shim"
+mkdir -p "$LSREMOTE_FAIL_BIN"
+cat > "$LSREMOTE_FAIL_BIN/git" <<SHIM
+#!/usr/bin/env bash
+if [ "\$1" = "ls-remote" ]; then
+    exit 1
+fi
+exec "$REAL_GIT" "\$@"
+SHIM
+chmod +x "$LSREMOTE_FAIL_BIN/git"
+rc=0
+out=$(PATH="$LSREMOTE_FAIL_BIN:$PATH" HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
+assert_eq "ls-remote failure: --check fails loud (rc 1)" "1" "$rc"
+assert_contains "ls-remote failure: names the query failure" "could not query origin" "$out"
+case "$out" in
+    *"no stable release yet"*) fail=$((fail + 1)); echo "  FAIL: ls-remote failure: must not be misreported as 'no stable release yet'" ;;
+    *) pass=$((pass + 1)); echo "  PASS: ls-remote failure: must not be misreported as 'no stable release yet'" ;;
+esac
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
 echo "RESULTS: $pass passed, $fail failed"
