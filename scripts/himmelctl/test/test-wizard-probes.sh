@@ -2325,7 +2325,11 @@ echo "$outLunaEmpty" | jq -e '.actual == "absent"' >/dev/null \
 echo "ok: luna-sources — an empty configured-sources list reads absent"
 
 # ── file-exists: {homePath} placeholder (obsidian-second-brain) — HIMMEL-1100
-osb_home_present="$work/osb-home-present"; mkdir -p "$osb_home_present/.claude/plugins/obsidian-second-brain/.git"
+# HIMMEL-2891: the skill is deployed (and loaded by Claude Code) from
+# ~/.claude/skills/, never ~/.claude/plugins/ — the probe path was pointed at
+# a location nothing ever clones to; a plugins-dir fixture here reads absent
+# post-fix (RED control for the probe-path fix).
+osb_home_present="$work/osb-home-present"; mkdir -p "$osb_home_present/.claude/skills/obsidian-second-brain/.git"
 outOSBp=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
