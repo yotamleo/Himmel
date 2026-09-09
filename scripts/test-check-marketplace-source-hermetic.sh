@@ -803,35 +803,22 @@ if run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
 fi
 echo "ok: enabled non-hermetic entry still fails"
 
-# Case 9 (HIMMEL-2863): the real docs/setup/settings-template.json currently
-# has a genuine pre-existing hermeticity gap on codex@openai-codex (disabled
-# but on-demand-installed, marketplace source "github" — HIMMEL-2867 tracks
-# fixing that source itself, out of this ticket's guard-logic scope). Assert
-# the guard's failure is scoped exactly to that known entry, and that the
-# not-on-demand disabled entry (obsidian@obsidian-skills) is correctly exempt.
-out=""
-if out="$(run_guard "$HERE/../docs/setup/settings-template.json" 2>&1)"; then
-  echo "FAIL: guard passed against the real settings-template.json — expected the known codex@openai-codex gap (HIMMEL-2867) to still fail"; exit 1
-fi
-case "$out" in
-  *codex@openai-codex*) ;;
-  *) echo "FAIL: guard's failure on the real template did not name codex@openai-codex"; exit 1 ;;
-esac
+# Case 9 (HIMMEL-2863): against the real docs/setup/settings-template.json,
+# obsidian@obsidian-skills (disabled, NOT on-demand — never installed) must
+# never appear in the guard's output, whatever the guard's overall rc is.
+# Deliberately does NOT assert the guard's overall pass/fail here (pr-check
+# round 3, codex-1): the real template currently also fails on the separate,
+# known codex@openai-codex gap (HIMMEL-2867, out of this ticket's scope) —
+# coupling this test to that rc would break the suite the moment HIMMEL-2867
+# lands despite the guard behaving correctly. Case 7b's synthetic fixture is
+# the regression test for the on-demand-entry-still-checked behavior itself.
+out="$(run_guard "$HERE/../docs/setup/settings-template.json" 2>&1)" || true
 case "$out" in
   *obsidian@obsidian-skills*)
     echo "FAIL: guard incorrectly flagged obsidian@obsidian-skills (disabled, not on-demand — never installed)"; exit 1
     ;;
   *) ;;
 esac
-# HIMMEL-2863 pr-check round 2, codex-1: assert the COMPLETE top-level
-# failure set is exactly the one known entry, not merely that it's present —
-# a line matching "  <spec> (" that is not a nested "label > name (" line.
-bad_entry_count="$(printf '%s\n' "$out" | grep -cE '^  [^ >]+@[^ ]+ \(')"
-if [ "$bad_entry_count" -ne 1 ]; then
-  echo "FAIL: expected exactly 1 top-level failing entry against the real settings-template.json, got $bad_entry_count:"
-  printf '%s\n' "$out" >&2
-  exit 1
-fi
-echo "ok: real settings-template.json fails exactly on the known on-demand gap (codex@openai-codex, HIMMEL-2867), not on the not-installed obsidian entry"
+echo "ok: real settings-template.json never flags obsidian@obsidian-skills (disabled, not on-demand — never installed)"
 
 echo "ALL PASS"
