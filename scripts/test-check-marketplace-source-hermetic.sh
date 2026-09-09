@@ -742,4 +742,48 @@ if ! run_guard "$tmp/does-not-exist.json" >/dev/null 2>&1; then
 fi
 echo "ok: missing input skips"
 
+# Case 7 (GREEN, HIMMEL-2863): an enabledPlugins entry whose value is `false`
+# (disabled) must PASS even when its marketplace source is non-hermetic — a
+# disabled entry installs nothing on a fresh clone, so it is out of scope for
+# this guard.
+cat > "$tmp/tmpl.json" <<'JSON'
+{
+  "enabledPlugins": {
+    "codex@openai-codex": false
+  },
+  "extraKnownMarketplaces": {
+    "openai-codex": {"source": {"source": "github", "repo": "openai/codex-plugin"}}
+  }
+}
+JSON
+if ! run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
+  echo "FAIL: guard failed on a disabled (false) entry with a non-hermetic marketplace source"; exit 1
+fi
+echo "ok: disabled non-hermetic entry passes (HIMMEL-2863)"
+
+# Case 8: an ENABLED entry with a non-hermetic source must still FAIL —
+# disabling is the only exemption, not the plugin id or marketplace itself.
+cat > "$tmp/tmpl.json" <<'JSON'
+{
+  "enabledPlugins": {
+    "codex@openai-codex": true
+  },
+  "extraKnownMarketplaces": {
+    "openai-codex": {"source": {"source": "github", "repo": "openai/codex-plugin"}}
+  }
+}
+JSON
+if run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
+  echo "FAIL: guard passed despite an ENABLED entry with a non-hermetic marketplace source"; exit 1
+fi
+echo "ok: enabled non-hermetic entry still fails"
+
+# Case 9 (HIMMEL-2863): the real docs/setup/settings-template.json — which has
+# disabled entries (codex@openai-codex, obsidian@obsidian-skills) on
+# non-hermetic github-sourced marketplaces — must PASS.
+if ! run_guard "$HERE/../docs/setup/settings-template.json" >/dev/null 2>&1; then
+  echo "FAIL: guard failed on the real settings-template.json"; exit 1
+fi
+echo "ok: real settings-template.json passes (HIMMEL-2863)"
+
 echo "ALL PASS"
