@@ -37,13 +37,17 @@
 # "check" and "create", works on NTFS/Git-Bash without relying on O_EXCL)
 # at:
 #   <handover-root>/.locks/queue/<queue-slug>.lock/
-# containing owner.json (current holder) and, after any takeover,
-# takeovers.log (append-only trail -- the "loud trail" the design
-# principles require instead of failing closed). <handover-root> is
-# resolved via scripts/lib/handover-path.sh's handover_root_ensure, so
-# this follows the same single-root convention every other
-# scripts/handover/*.sh script uses (Mode A inline vs Mode B external
-# HANDOVER_DIR) -- see scripts/handover/CLAUDE.md.
+# containing owner.json (current holder), `owner` (the mkdir-CAS arbiter),
+# `root` (the handover root this lock lives under -- HIMMEL-2861) and,
+# after any takeover, takeovers.log (append-only trail -- the "loud trail"
+# the design principles require instead of failing closed).
+# <handover-root> is resolved via scripts/lib/handover-path.sh's
+# handover_root_ensure, so this follows the same single-root convention
+# every other scripts/handover/*.sh script uses (Mode A inline vs Mode B
+# external HANDOVER_DIR) -- see scripts/handover/CLAUDE.md. Because that
+# resolution is CWD-dependent, release/heartbeat additionally search the
+# other roots this machine knows about -- see the CROSS-ROOT LOCK
+# RESOLUTION block below.
 #
 # QUEUE SLUG: the handover path relativized against the handover root (or
 # used as-is if it doesn't fall under the root), with path separators
@@ -102,11 +106,17 @@
 #                 owner.json rewrite)
 #              2  session token missing, no lock held for this queue, OR
 #                 held by a DIFFERENT session than the token -- refused
-#   release:   0  released (idempotent -- also rc 0 when nothing was held)
+#   release:   0  released
 #              1  usage error / environment failure / rm failed to clear
 #                 an existing lock dir (e.g. an open handle on Windows)
 #              2  session token missing or does not match the current
 #                 holder -- refused (QUEUE_LOCK_FORCE_RELEASE=1 overrides)
+#              3  no lock for this queue in ANY known handover root --
+#                 nothing was released (HIMMEL-2861; this was a silent
+#                 rc=0 before, which callers read as "released cleanly").
+#                 QUEUE_LOCK_FORCE_RELEASE=1 keeps its old rc=0 here: it
+#                 is a cleaner, and its callers loop over locks that may
+#                 already be gone.
 #   status:    0  free
 #              1  usage error / environment failure
 #              11 held, FRESH (owner.json printed to stdout; a CORRUPT
@@ -184,6 +194,12 @@ Usage: queue-lock.sh acquire   <handover-path> [session-id]
 acquire prints "release-token: <token>" on success -- capture it and pass
 it to heartbeat/release (both refuse without it). Lost the token?
 QUEUE_LOCK_FORCE_RELEASE=1 queue-lock.sh release <handover-path>
+
+release/heartbeat find the lock even when the cwd resolves a different
+handover root than the acquire did (HIMMEL-2861) -- they search the roots
+named by HANDOVER_DIR and ~/.claude/handover/registry.json for a lock
+owned by the given token, and WARN naming both roots. A release that finds
+no lock anywhere exits 3, not 0.
 
 status --sweep (HIMMEL-2369) enumerates every held lock under a handover
 ROOT's .locks/queue/ in one shot, flagging any whose heartbeat exceeds
@@ -271,11 +287,14 @@ _ql_json_field_str() {
 # NOTE: "/" folds to "__", so a path containing a literal "__" collides
 # with the same path using "/" at that spot -- theoretical only; the repo
 # handover naming convention never produces "__" in a path component.
-_ql_slug() {
-    local p="${1//\\//}"
+# _ql_slug_for_root <handover-path> <root> -- the slug the given root would
+# use for this handover. Split out of _ql_slug (HIMMEL-2861) because the
+# cross-root search has to ask that question of a root that is NOT the one
+# handover_root resolves here: the slug is the path relativized against ITS
+# root, so the same document slugs differently under two different roots.
+_ql_slug_for_root() {
+    local p="${1//\\//}" root="${2:-}"
     p="${p%.md}"
-    local root=""
-    root=$(handover_root 2>/dev/null) || root=""
     if [ -n "$root" ]; then
         root="${root//\\//}"
         case "$p" in
@@ -289,6 +308,12 @@ _ql_slug() {
     # fold above; the repo handover naming convention never produces two
     # distinct paths differing only in which separator they use.
     printf '%s' "$p" | tr -c 'A-Za-z0-9_-' '-'
+}
+
+_ql_slug() {
+    local root=""
+    root=$(handover_root 2>/dev/null) || root=""
+    _ql_slug_for_root "$1" "$root"
 }
 
 # _ql_write_owner -- ATOMIC owner.json write (HIMMEL-856 CR, C3): write to
@@ -324,6 +349,122 @@ _ql_lockdir() {
     local slug
     slug=$(_ql_slug "$ho")
     printf '%s/.locks/queue/%s.lock' "$root" "$slug"
+}
+
+# CROSS-ROOT LOCK RESOLUTION (HIMMEL-2861) ----------------------------------
+#
+# WHY: `acquire` runs with the queue's handover root in scope (in Mode B,
+# HANDOVER_DIR exported on the command line), but the matching `release` at
+# wrap is routinely issued from a leg's WORKTREE cwd with that env gone.
+# handover_root then resolves a DIFFERENT root -- the repo's inline
+# handovers/ -- the lookup misses a root it never looked in, and the caller
+# is told nothing was held (silently, rc=0) while the real lock stays HELD.
+# Six legs orphaned their locks that way on 2026-09-09; the console had to
+# force-release all six. Per the enforcement-strength convention
+# (HIMMEL-195) the second drift escalates to STRUCTURAL: the script itself
+# now looks in the other roots this machine knows about instead of relying
+# on every caller to remember the env prefix.
+#
+# SAFETY: reaching into another root is gated on the OWNER TOKEN -- a
+# candidate lock is accepted only when its owner.json session matches the
+# token the caller already had to supply. That is the same proof the
+# same-root path demands, so this widens WHERE the lock is looked for and
+# never WHOSE lock may be touched. The token-less force-release path gets
+# no search for exactly this reason (see queue_lock_release).
+
+# _ql_registry_path -- the handover repos registry. HANDOVER_REGISTRY is
+# the same override resolve-active-item.sh and arm-resume.sh honour.
+_ql_registry_path() {
+    printf '%s' "${HANDOVER_REGISTRY:-$HOME/.claude/handover/registry.json}"
+}
+
+# _ql_candidate_roots -- print, one per line, the handover roots worth
+# searching. HANDOVER_DIR first, then every registered repo's inline
+# handovers/ dir (a registry entry's "path" is the REPO root; its handover
+# root is that repo's handovers/ -- handover_root's own Mode A default, and
+# what HANDOVER_DIR points at in Mode B). Best effort by design: a missing,
+# unreadable or malformed registry just yields fewer candidates, never an
+# error -- the caller falls back to today's "nothing held" answer. Parsed
+# with grep/sed rather than jq/node so a lock script keeps zero hard runtime
+# deps; escaped backslashes in a Windows path are folded to "/" (accepted
+# by Git-Bash) so those entries resolve too.
+#
+# `grep -o`, not a `sed -n s///p`: sed matches at most ONCE per LINE and its
+# leading `.*` is greedy, so a registry written as compact single-line JSON
+# (perfectly valid, and what any programmatic rewriter emits) yielded only
+# the LAST repo -- every other repo's root silently dropped out of the
+# candidate list, which is precisely the "lock left unreleasable" failure
+# this whole block exists to fix. `grep -o` emits every occurrence on its
+# own line, so the parse no longer depends on how the JSON is formatted.
+_ql_candidate_roots() {
+    if [ -n "${HANDOVER_DIR:-}" ] && [ -d "$HANDOVER_DIR" ]; then
+        ( cd "$HANDOVER_DIR" && pwd )
+    fi
+    local reg
+    reg=$(_ql_registry_path)
+    [ -f "$reg" ] || return 0
+    local repo
+    grep -o '"path"[[:space:]]*:[[:space:]]*"[^"]*"' "$reg" 2>/dev/null \
+        | sed 's/^.*"\([^"]*\)"$/\1/' \
+        | sed 's#\\\\#/#g' \
+        | while IFS= read -r repo; do
+            [ -n "$repo" ] || continue
+            [ -d "$repo/handovers" ] || continue
+            ( cd "$repo/handovers" && pwd )
+        done
+}
+
+# _ql_search_roots <handover-path> <token> -- print the lock dir for this
+# queue found under a root OTHER than the cwd-resolved one and owned by
+# <token>, or nothing (rc 1). Emits exactly ONE WARN naming both roots when
+# it finds one, so the mismatch is visible in the leg's wrap output instead
+# of being silently papered over. The recorded root comes from the lock's
+# own `root` marker when present; a lock dir written by the pre-HIMMEL-2861
+# script has no marker, so the candidate root itself is named instead --
+# that is the whole backward-compat story for old lock dirs.
+_ql_search_roots() {
+    local ho="$1" token="$2"
+    [ -n "$token" ] || return 1
+    local cwd_root=""
+    cwd_root=$(handover_root 2>/dev/null) || cwd_root=""
+    local root slug cand recorded
+    while IFS= read -r root; do
+        [ -n "$root" ] || continue
+        [ "$root" = "$cwd_root" ] && continue
+        slug=$(_ql_slug_for_root "$ho" "$root")
+        cand="$root/.locks/queue/$slug.lock"
+        [ -f "$cand/owner.json" ] || continue
+        [ "$(_ql_json_field "$cand/owner.json" session)" = "$token" ] || continue
+        recorded=""
+        [ -f "$cand/root" ] && recorded=$(cat "$cand/root" 2>/dev/null)
+        [ -n "$recorded" ] || recorded="$root"
+        echo "WARN queue-lock: cwd resolves root ${cwd_root:-<unresolved>}, lock recorded root $recorded -- using $recorded" >&2
+        printf '%s' "$cand"
+        return 0
+    done <<EOF
+$(_ql_candidate_roots)
+EOF
+    return 1
+}
+
+# _ql_owner_matches <lockdir> <token> -- rc 0 when this lock dir's
+# owner.json names <token> as the holder. A missing dir, a missing or
+# unreadable owner.json, and a different holder all return non-zero, so
+# callers can use one test for "this is not my lock, wherever it is" and
+# let the existing corrupt-lock / refused-release branches below decide
+# what that means.
+_ql_owner_matches() {
+    [ -f "$1/owner.json" ] || return 1
+    [ "$(_ql_json_field "$1/owner.json" session)" = "$2" ]
+}
+
+# _ql_write_root_marker <lockdir> <root> -- record the root this lock
+# actually lives under. Best-effort ON PURPOSE: the cross-root search keys
+# off the owner token, not this file, and every pre-HIMMEL-2861 lock dir
+# lacks it, so a write failure costs one diagnostic line in a WARN -- never
+# the acquire, which by then holds a valid, released-normally lock.
+_ql_write_root_marker() {
+    printf '%s\n' "$2" > "$1/root" 2>/dev/null || true
 }
 
 # _ql_arms_registry_retire_fired <handover-path> -- HIMMEL-882 registry
@@ -604,9 +745,13 @@ queue_lock_acquire() {
         return 1
     fi
     session="${session:-$(_ql_default_session)}"
-    local host now
+    local host now lock_root
     host=$(_ql_hostname)
     now=$(_ql_now_iso)
+    # _ql_lockdir succeeded, so handover_root resolves too (its _ensure
+    # variant created the Mode A dir if it was missing). HIMMEL-2861: this
+    # is the root the lock is about to live under, recorded inside it.
+    lock_root=$(handover_root 2>/dev/null) || lock_root=""
 
     # Check the parent mkdir explicitly so a permission failure reports its
     # true cause instead of surfacing later as a misleading lock-mkdir
@@ -627,6 +772,7 @@ queue_lock_acquire() {
                 echo "queue-lock: acquire FAILED -- owner.json could not be written; the lock dir was removed, nothing is acquired" >&2
                 return 1
             fi
+            _ql_write_root_marker "$lockdir" "$lock_root"
             echo "queue-lock: acquired (session=$session host=$host)"
             _ql_arms_registry_retire_fired "$ho"
             echo "release-token: $session"
@@ -796,6 +942,7 @@ queue_lock_acquire() {
             printf '%s took over from session=%s host=%s started=%s heartbeat=%s reason=%s new_session=%s new_host=%s\n' \
                 "$now" "$o_session" "$o_host" "$o_started" "$o_heartbeat" "$reason" "$session" "$host" \
                 >> "$lockdir/takeovers.log"
+            _ql_write_root_marker "$lockdir" "$lock_root"
             _ql_takeover_claim_release "$claim" "$claim_token" || true
             echo "queue-lock: took over ($reason) -- previous holder: session=$o_session host=$o_host" >&2
             echo "queue-lock: acquired (session=$session host=$host)"
@@ -850,9 +997,23 @@ queue_lock_heartbeat() {
         } >&2
         return 2
     fi
-    if [ ! -d "$lockdir" ] || [ ! -f "$lockdir/owner.json" ]; then
-        echo "queue-lock: no lock held for this queue -- nothing to heartbeat" >&2
-        return 2
+    # HIMMEL-2861: the cwd may resolve a different root than the acquire did
+    # (a leg heartbeating from its worktree). Search the other roots this
+    # machine knows about whenever the lock HERE is not ours -- absent, yes,
+    # but also present-and-held-by-someone-else: two roots can carry the same
+    # slug, and refusing on the local stranger's lock would leave OUR lock in
+    # the other root unrefreshed until its TTL expired.
+    if ! _ql_owner_matches "$lockdir" "$session"; then
+        local hb_found
+        if hb_found=$(_ql_search_roots "$ho" "$session"); then
+            lockdir="$hb_found"
+        elif [ ! -d "$lockdir" ] || [ ! -f "$lockdir/owner.json" ]; then
+            echo "queue-lock: no lock held for this queue -- nothing to heartbeat" >&2
+            return 2
+        fi
+        # else: a lock IS held here, by someone else, and no lock of ours
+        # lives in any other root -- fall through to the holder check below
+        # for the unchanged rc=2 "held by session=..." refusal.
     fi
     local o_session o_host o_started
     o_session=$(_ql_json_field "$lockdir/owner.json" session)
@@ -921,8 +1082,29 @@ queue_lock_release() {
         } >&2
         return 2
     fi
-    if [ ! -d "$lockdir" ]; then
-        return 0
+    # HIMMEL-2861: same cross-root resolution as heartbeat, on the same
+    # "the lock here is not ours" trigger. When nothing of ours is found
+    # ANYWHERE this now exits 3 instead of the old silent 0 -- a lock the
+    # caller believes it released but did not is exactly the failure that
+    # went unnoticed six times on 2026-09-09, and rc=0 is what every leg and
+    # the console read as "released cleanly".
+    if ! _ql_owner_matches "$lockdir" "$session"; then
+        local rel_found
+        if rel_found=$(_ql_search_roots "$ho" "$session"); then
+            lockdir="$rel_found"
+        elif [ ! -d "$lockdir" ]; then
+            {
+                echo "queue-lock: no lock held for this queue in any known handover root -- nothing was released"
+                echo "searched: $(_ql_candidate_roots | tr '\n' ' ')"
+                echo "If a lock IS held elsewhere, re-run with the acquiring root exported: HANDOVER_DIR=<root> queue-lock.sh release <handover-path> <token>"
+            } >&2
+            return 3
+        fi
+        # else: a lock IS held here, by someone else, and no lock of ours
+        # lives in any other root -- fall through to the holder check below
+        # for the unchanged rc=2 "release refused -- held by session=..."
+        # (or, for a lock dir with no readable owner.json, the unchanged
+        # corrupt-lock cleanup).
     fi
     if [ -f "$lockdir/owner.json" ]; then
         local o_session
