@@ -2521,6 +2521,15 @@ if [ "$shard_given" -eq 1 ]; then
   # kill the run with a bash arithmetic error instead of this readable refusal.
   case "$_shard_i" in ''|*[!0-9]*) _shard_bad=1 ;; esac
   case "$_shard_n" in ''|*[!0-9]*) _shard_bad=1 ;; esac
+  # Bound the digit-string LENGTH before $(( )) converts it. Bash arithmetic
+  # is 64-bit and wraps SILENTLY on overflow (rc=0, no diagnostic), so a
+  # 20-digit <n> becomes a small positive number that then PASSES the range
+  # test below and selects a different partition — the run reports green over
+  # a split nobody asked for, which is precisely the silent misconfiguration
+  # this refusal exists to catch. Ten or more digits is refused outright: that
+  # is far below the wrap point and absurdly above any real shard count.
+  case "$_shard_i" in ??????????*) _shard_bad=1 ;; esac
+  case "$_shard_n" in ??????????*) _shard_bad=1 ;; esac
   if [ "$_shard_bad" -eq 0 ]; then
     shard_total=$((10#$_shard_n))
     shard_offset=$((10#$_shard_i - 1))

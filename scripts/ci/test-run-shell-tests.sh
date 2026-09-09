@@ -2914,9 +2914,14 @@ rm -rf "$sb22a"
 # 22d — malformed values are REFUSED at rc 2 (the runner's "bad configuration
 # value" code, the same one an invalid SUITE_TIER_MODE takes), never silently
 # ignored: a typo'd shard spec that fell through to a full run would multiply
-# the CI bill by n and hide the misconfiguration behind a green.
+# the CI bill by n and hide the misconfiguration behind a green. The three
+# oversized specs at the end are the RED control for the digit-length bound:
+# bash arithmetic wraps silently on 64-bit overflow (rc=0, no diagnostic), so
+# without that bound '1/18446744073709551618' converts to a valid-looking
+# '1/2' and quietly runs a partition nobody asked for.
 sb22d=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22d.XXXXXX"); mk_shard_sandbox "$sb22d" 3
-for spec22d in '0/3' '4/3' 'abc' '1/0' '1/2/3' '/3' '1/' '-1/3' '1/-3' 'x/y' '' '3'; do
+for spec22d in '0/3' '4/3' 'abc' '1/0' '1/2/3' '/3' '1/' '-1/3' '1/-3' 'x/y' '' '3' \
+               '1/18446744073709551618' '1/99999999999999999999' '99999999999999999999/3'; do
   out22d=$(bash "$RUNNER" --list --shard "$spec22d" "$sb22d" 2>&1); rc22d=$?
   if [ "$rc22d" -eq 2 ] && grepq "$out22d" -F -- '--shard'; then
     pass "22d: --shard '$spec22d' -> refused rc 2"
