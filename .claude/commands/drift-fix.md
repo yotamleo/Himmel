@@ -338,8 +338,11 @@ green CI is necessary, never sufficient.
 Watch CI to green, then hand the merge to the tooling that respects branch
 protection — never merge past it:
 
-- Armed auto-merge (`ARMAUTOMERGE=1`): `bash scripts/handover/merge-on-green.sh`
-- Otherwise: `scripts/handover/pr-merge.sh` (plain-first)
+Armed auto-merge (`ARMAUTOMERGE=1`, `scripts/handover/merge-on-green.sh`)
+hard-refuses (exit 12) any repo not confirmed PRIVATE, and `origin` has been
+public since the HIMMEL-2705 cutover — so that path is **unavailable** on this
+repo until HIMMEL-2869 lands; until then, use `scripts/handover/pr-merge.sh`
+(plain-first).
 
 **Never `--admin`, never a force-merge, never a branch-protection override.** If
 the merge is refused for want of an approval, that is the rule working: leave

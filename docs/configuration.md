@@ -69,7 +69,7 @@ flowchart TD
     R -->|findings| B
     R -->|clean| CM["CR marker cleared"]
     CM --> PR["gh pr create<br/>gate: blocked while marker exists"]
-    PR --> M{"merge gate<br/>block-unresolved-cr-merge:<br/>CI green + threads resolved<br/>(session-enforced — no branch protection, see §3.3)"}
+    PR --> M{"merge gate<br/>block-unresolved-cr-merge:<br/>CI green + threads resolved<br/>(session-level; branch protection also applies, see §3.3)"}
     M -->|"operator: gh pr merge"| MAIN["main<br/>(origin — the public repo)"]
     M -->|"operator: /mergepub pr sha12 via Telegram<br/>(never agent-run — merge-public-on-green.sh refuses inside a session)"| MAIN
     MAIN --> H["/handover<br/>state survives to the next session"]
@@ -85,7 +85,7 @@ Step-by-step, with the enforcing file:
 | Push | `git push` | pre-push stage: attestation trailers, npm audit, no-push-to-main, and `scripts/hooks/check-cr-before-push.sh` writes a **CR marker** recording that a review is owed |
 | Review | `/pr-check` | multi-agent panel (`.claude/commands/pr-check.md`); a clean result clears the marker |
 | Open PR | `gh pr create` | `scripts/hooks/check-cr-marker-on-pr-create.sh` blocks while the marker exists |
-| Merge | `gh pr merge`, or Telegram `/mergepub <pr> <sha12>` (`merge-public-on-green.sh`); armed auto-merge (`merge-on-green.sh`, `ARMAUTOMERGE=1`) is private-repo-only and currently refuses here (HIMMEL-2869) | `scripts/hooks/block-unresolved-cr-merge.sh` — CI green + zero unresolved review threads. There is **no GitHub branch protection on this repo**; this hook *is* the merge gate |
+| Merge | `gh pr merge`, or Telegram `/mergepub <pr> <sha12>` (`merge-public-on-green.sh`); armed auto-merge (`merge-on-green.sh`, `ARMAUTOMERGE=1`) is private-repo-only and currently refuses here (HIMMEL-2869) | `scripts/hooks/block-unresolved-cr-merge.sh` — CI green + zero unresolved review threads. Branch protection is also active on `main` (required status checks, squash-only + 1 approving review + code-owner review, `enforce_admins`, no force-push/deletion); this hook is one gate among several, not the whole gate |
 | Handover | `/handover` | state written to your handover store (`docs/internals/handover-system.md`) |
 
 ### 2.2 What happens on every tool call
@@ -293,7 +293,7 @@ per-hook behavior: [internals/enforcement.md](internals/enforcement.md).
 
 | Gate | Class | How it is satisfied |
 |---|---|---|
-| Private merge gate (`block-unresolved-cr-merge`) | auth-gated | CI green + zero unresolved review threads on the head SHA. **This hook is the whole gate — the repo has no GitHub branch protection** (`scripts/hooks/block-unresolved-cr-merge.sh`). As a session hook it gates merges issued *inside a Claude session*; an operator merging from a bare terminal or the GitHub UI is outside its reach — by design, since the operator is the authority it protects. It also fails **open** on degraded evaluation (missing `jq`, unparseable hook input) — a guardrail on the agent path, not a substitute for forge-side branch protection |
+| Session merge gate (`block-unresolved-cr-merge`) | auth-gated | CI green + zero unresolved review threads on the head SHA (`scripts/hooks/block-unresolved-cr-merge.sh`). Branch protection is also active on `main`: 10 required status checks (strict — branch must be up to date), `enforce_admins`, no force-push, no deletion, and — via the separate `protect-main` ruleset rather than classic branch protection — squash-only merges, 1 approving review, and code-owner review required. So this hook is one gate among several, not the whole gate. As a session hook it gates merges issued *inside a Claude session*; an operator merging from a bare terminal or the GitHub UI is outside its reach — by design, since the operator is the authority it protects. It also fails **open** on degraded evaluation (missing `jq`, unparseable hook input) — a guardrail layered on top of forge-side branch protection, not a replacement for it |
 | Private auto-merge (`scripts/handover/merge-on-green.sh`) | auth-gated, opt-in | `ARMAUTOMERGE` truthy **and** all of: same repo, repo verified private, PR base == default branch, `check-ci.sh` exit 0, base/privacy re-verified fresh pre-merge, audit log writable, merge pinned to the certified head SHA (`--match-head-commit`), MERGED state confirmed by polling |
 | Public merge (`scripts/merge-public-on-green.sh`, via Telegram `/mergepub`) | HARD human-authorization | operator-typed, non-forwarded `/mergepub <pr> <sha12>`; SHA must prefix-match the live head at read *and* fresh pre-merge re-verify; `check-ci.sh` exit 0 is the only pass; the script refuses outright if `CLAUDECODE` is set (i.e. if any agent tries to run it) |
 | `check-ci.sh` (the watcher those gates call) | mechanism, not a veto | exit 0 = green + threads resolved + no changes-requested; 1 = red; 2 = cannot evaluate; 3 = unresolved threads / changes requested; 4 = CodeRabbit concluded incrementally with no head review while a prior head had outside-diff findings (request a full review or `--escalate`) |
@@ -408,7 +408,8 @@ default subset:
   chokepoint hard-refuses (exit 12) any repo that is not confirmed PRIVATE,
   and `origin` has been public since the HIMMEL-2705 cutover — so on this
   repo the `1` branch does not merge at all, it refuses; the armed path stays
-  unavailable until the HIMMEL-2869 policy decision. The `public` leg is retired
+  unavailable on this repo until HIMMEL-2869 lands; until then the operator
+  merges at READY. The `public` leg is retired
   (HIMMEL-2705 cutover) — `origin` IS the public repo, so the `merge` leg above
   already lands the public change; `public` is a documented no-op kept only so
   the token still resolves.

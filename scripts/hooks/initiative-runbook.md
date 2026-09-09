@@ -51,8 +51,8 @@ Steps run in this canonical order; only the tokens on the pointer's
   allow-rule) — it gates on `check-ci.sh` green + a certified head SHA and
   merges only then, but it also hard-refuses (exit 12) any repo that is not
   confirmed PRIVATE, and `origin` has been public since the HIMMEL-2705
-  cutover — so on this repo the armed path is **unavailable** until the
-  HIMMEL-2869 policy decision. Use `scripts/handover/pr-merge.sh` instead
+  cutover — so on this repo the armed path is **unavailable** until
+  HIMMEL-2869 lands; until then, use `scripts/handover/pr-merge.sh` instead
   (plain-first; defer to the operator on real branch protection; never
   `--admin`). Advisory — branch protection still applies. A blocked gate on
   this branch parks it and moves to the next queue item — never retry-loop;

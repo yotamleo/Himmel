@@ -116,8 +116,8 @@ resolves fixtures repo-root-relative — run it from the repo root instead
 (`bun test scripts/telegram --dots`), never `cd scripts/telegram &&` first
 ([`docs/internals/environment-gotchas.md`](docs/internals/environment-gotchas.md)
 has the reproduction). The quiet reporters (`--dots`,
-`--test-reporter=dot`) are deliberate, not an oversight. Public CI runs on
-every PR — a green PR check-run **is** evidence a suite ran.
+`--test-reporter=dot`) are deliberate, not an oversight. Public CI runs the
+suite jobs on every PR — a green `shell-unit` run **is** evidence a suite ran.
 
 ### Where artifacts land
 - **Reference docs operators consume** → the owning repo's `docs/` (plugin specs
