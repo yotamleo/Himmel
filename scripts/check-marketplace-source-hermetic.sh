@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Hermetic marketplace-source guard (HIMMEL-2837): every plugin id ENABLED
-# (value === true; HIMMEL-2863 — a disabled entry installs nothing on a fresh
-# clone, so it is out of scope) in docs/setup/settings-template.json's
-# enabledPlugins, except the claude-plugins-official marketplace (Anthropic's
-# own, exempt), must
+# Hermetic marketplace-source guard (HIMMEL-2837): every plugin id that
+# install-plugins.sh actually INSTALLS on a fresh machine (HIMMEL-2863) —
+# enabledPlugins entries with value === true (the ALWAYS tier) UNION every
+# onDemandPlugins key (the ON-DEMAND tier: installed but left disabled, e.g.
+# codex@openai-codex) — except the claude-plugins-official marketplace
+# (Anthropic's own, exempt), must
 # resolve to a marketplace whose extraKnownMarketplaces source is "url"
 # (explicit HTTPS git clone) or "directory" (a local vendored path — e.g.
 # himmel's own marketplace) — never "github" (owner/repo shorthand, which
@@ -222,7 +223,15 @@ check_marketplace_dir() {
   rm -f "$mp_extract"
 }
 
-specs="$(jq -r '.enabledPlugins // {} | to_entries[] | select(.value == true) | .key' "$TEMPLATE_JSON" | tr -d '\r')"
+# The install set (install-plugins.sh:261-270, HIMMEL-2733) is
+# enabledPlugins-true (the ALWAYS tier) UNION onDemandPlugins' keys (the
+# ON-DEMAND tier — installed by install-plugins.sh but left disabled, e.g.
+# codex@openai-codex, so it still needs a hermetic marketplace source). A
+# `false` entry ABSENT from onDemandPlugins is genuinely never installed.
+specs="$(jq -r '
+  ((.enabledPlugins // {}) | to_entries[] | select(.value == true) | .key),
+  ((.onDemandPlugins // {}) | keys[])
+' "$TEMPLATE_JSON" | sort -u | tr -d '\r')"
 while IFS= read -r spec; do
   [ -z "$spec" ] && continue
   market="${spec##*@}"

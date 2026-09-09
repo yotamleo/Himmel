@@ -743,9 +743,10 @@ fi
 echo "ok: missing input skips"
 
 # Case 7 (GREEN, HIMMEL-2863): an enabledPlugins entry whose value is `false`
-# (disabled) must PASS even when its marketplace source is non-hermetic — a
-# disabled entry installs nothing on a fresh clone, so it is out of scope for
-# this guard.
+# AND absent from onDemandPlugins must PASS even when its marketplace source
+# is non-hermetic — install-plugins.sh's install set is enabledPlugins-true
+# UNION onDemandPlugins' keys (install-plugins.sh:261-270), so an entry in
+# neither set is genuinely never installed on a fresh clone.
 cat > "$tmp/tmpl.json" <<'JSON'
 {
   "enabledPlugins": {
@@ -757,9 +758,33 @@ cat > "$tmp/tmpl.json" <<'JSON'
 }
 JSON
 if ! run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
-  echo "FAIL: guard failed on a disabled (false) entry with a non-hermetic marketplace source"; exit 1
+  echo "FAIL: guard failed on a disabled, not-on-demand entry with a non-hermetic marketplace source"; exit 1
 fi
-echo "ok: disabled non-hermetic entry passes (HIMMEL-2863)"
+echo "ok: disabled, not-on-demand non-hermetic entry passes (HIMMEL-2863)"
+
+# Case 7b (RED, HIMMEL-2863 pr-check round 1, coderabbitai): an enabledPlugins
+# entry that is `false` but IS listed in onDemandPlugins is still INSTALLED by
+# install-plugins.sh (just left disabled) — its marketplace source must still
+# be checked. This is the exact regression shape the guard's original
+# enabled-only fix introduced (codex@openai-codex is disabled AND on-demand in
+# the real settings-template.json).
+cat > "$tmp/tmpl.json" <<'JSON'
+{
+  "enabledPlugins": {
+    "codex@openai-codex": false
+  },
+  "onDemandPlugins": {
+    "codex@openai-codex": {"neededBy": "test fixture"}
+  },
+  "extraKnownMarketplaces": {
+    "openai-codex": {"source": {"source": "github", "repo": "openai/codex-plugin"}}
+  }
+}
+JSON
+if run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
+  echo "FAIL: guard passed despite a disabled ON-DEMAND entry with a non-hermetic marketplace source"; exit 1
+fi
+echo "ok: disabled on-demand non-hermetic entry still fails"
 
 # Case 8: an ENABLED entry with a non-hermetic source must still FAIL —
 # disabling is the only exemption, not the plugin id or marketplace itself.
@@ -778,12 +803,26 @@ if run_guard "$tmp/tmpl.json" >/dev/null 2>&1; then
 fi
 echo "ok: enabled non-hermetic entry still fails"
 
-# Case 9 (HIMMEL-2863): the real docs/setup/settings-template.json — which has
-# disabled entries (codex@openai-codex, obsidian@obsidian-skills) on
-# non-hermetic github-sourced marketplaces — must PASS.
-if ! run_guard "$HERE/../docs/setup/settings-template.json" >/dev/null 2>&1; then
-  echo "FAIL: guard failed on the real settings-template.json"; exit 1
+# Case 9 (HIMMEL-2863): the real docs/setup/settings-template.json currently
+# has a genuine pre-existing hermeticity gap on codex@openai-codex (disabled
+# but on-demand-installed, marketplace source "github" — HIMMEL-2867 tracks
+# fixing that source itself, out of this ticket's guard-logic scope). Assert
+# the guard's failure is scoped exactly to that known entry, and that the
+# not-on-demand disabled entry (obsidian@obsidian-skills) is correctly exempt.
+out=""
+if out="$(run_guard "$HERE/../docs/setup/settings-template.json" 2>&1)"; then
+  echo "FAIL: guard passed against the real settings-template.json — expected the known codex@openai-codex gap (HIMMEL-2867) to still fail"; exit 1
 fi
-echo "ok: real settings-template.json passes (HIMMEL-2863)"
+case "$out" in
+  *codex@openai-codex*) ;;
+  *) echo "FAIL: guard's failure on the real template did not name codex@openai-codex"; exit 1 ;;
+esac
+case "$out" in
+  *obsidian@obsidian-skills*)
+    echo "FAIL: guard incorrectly flagged obsidian@obsidian-skills (disabled, not on-demand — never installed)"; exit 1
+    ;;
+  *) ;;
+esac
+echo "ok: real settings-template.json fails exactly on the known on-demand gap (codex@openai-codex, HIMMEL-2867), not on the not-installed obsidian entry"
 
 echo "ALL PASS"
