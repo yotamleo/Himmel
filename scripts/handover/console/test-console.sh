@@ -389,4 +389,29 @@ check "24 non-writable predecessor dir: next --doc exits non-zero" "$([ "$rc24" 
 check "24 non-writable predecessor dir: no launch line printed" "$(printf '%s\n' "$out24b" | grep -c '^launch: ')" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc24A" "$token24a" >/dev/null 2>&1
 
+# --- 25: next is ATOMIC on the HANDOFF-create abort path -- it must not
+# strand a successor stub the operator has to hand-delete before a retry.
+# Three steps, the third being the actual control: abort, no stub left,
+# THEN the identical retry with permissions restored must succeed -- proof
+# recovery works, not just that something got deleted.
+out25a="$(console new --bucket atomicsrc)"
+token25a="$(token_of "$out25a")"
+doc25A="$root/tester/atomicsrc/DEMO-nextleg-${today}A-console.md"
+doc25B="$root/tester/atomicdst/DEMO-nextleg-${today}B-console.md"
+handoff25A="$root/tester/atomicsrc/DEMO-nextleg-${today}A-console-HANDOFF.md"
+
+chmod 555 "$root/tester/atomicsrc"
+rc25=0
+console next --bucket atomicdst --doc "$doc25A" >/dev/null 2>&1 || rc25=$?
+check "25 step1: aborts non-zero" "$([ "$rc25" -ne 0 ] && echo yes)" "yes"
+check "25 step2: leaves no successor stub" "$([ -f "$doc25B" ] && echo yes || echo no)" "no"
+
+chmod 755 "$root/tester/atomicsrc"
+rc25b=0
+console next --bucket atomicdst --doc "$doc25A" >/dev/null 2>&1 || rc25b=$?
+check "25 step3 (the control): the identical retry now succeeds" "$rc25b" "0"
+check "25 step3: the retry actually wrote the successor doc" "$([ -f "$doc25B" ] && echo yes)" "yes"
+check "25 step3: the retry actually wrote the HANDOFF" "$([ -f "$handoff25A" ] && echo yes)" "yes"
+HANDOVER_DIR="$root" bash "$QL" release "$doc25A" "$token25a" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -554,6 +554,16 @@ cmd_next() {
             echo "handoff: $predecessor_handoff (exists — left unchanged)"
         else
             err "could not create HANDOFF at $predecessor_handoff — this is not a collision (the file does not exist); check permissions on $(dirname "$predecessor_handoff")"
+            # Make `next` atomic on this abort path: $doc was claimed by
+            # THIS invocation's own exclusive create above — a
+            # pre-existing successor doc would already have exited via the
+            # "already exists" guard, so reaching here means it is ours to
+            # remove, never a stub some other run left behind. Leaving it
+            # in place would otherwise strand the operator mid-handover: a
+            # retry after fixing permissions would hit that same
+            # already-exists guard and refuse, forcing a hand-delete at
+            # the worst possible moment (context nearly full).
+            rm -f "$doc"
             exit 1
         fi
     fi
