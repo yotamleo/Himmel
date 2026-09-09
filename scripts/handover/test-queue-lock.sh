@@ -1613,6 +1613,85 @@ else
     fail "T52: force-release under the right root regressed (rc=$rc: $out)"
 fi
 
+# --- T53: a COMPACT single-line registry yields EVERY repo, not just the ---
+# last (HIMMEL-2861 CR round 1, codex-1). A line-anchored `sed -n s///p`
+# matches at most once per line and its leading `.*` is greedy, so compact
+# JSON -- valid, and what any programmatic rewriter emits -- dropped every
+# repo but the last out of the candidate list, leaving those roots' locks
+# unreleasable from another cwd.
+X_REG_COMPACT="$TMPDIR_ROOT/2861-registry-compact.json"
+mkdir -p "$TMPDIR_ROOT/2861-decoy/handovers"
+printf '{"repos":{"decoy":{"path":"%s"},"state":{"path":"%s"}}}\n' \
+    "$TMPDIR_ROOT/2861-decoy" "$X_STATE" > "$X_REG_COMPACT"
+x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "compact-reg" 2>/dev/null \
+    | sed -n 's/^release-token: //p')"
+out="$(x_from_worktree "$X_REG_COMPACT" release "$x_tok")"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ]; then
+    pass "T53: a compact one-line registry still yields the state root (every entry parsed, not just the last)"
+else
+    fail "T53: compact registry dropped the non-final repo entry (rc=$rc: $out)"
+fi
+# The state repo is deliberately the LAST entry above; put it FIRST to prove
+# the parse is not simply picking one fixed position.
+printf '{"repos":{"state":{"path":"%s"},"decoy":{"path":"%s"}}}\n' \
+    "$X_STATE" "$TMPDIR_ROOT/2861-decoy" > "$X_REG_COMPACT"
+x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "compact-reg-2" 2>/dev/null \
+    | sed -n 's/^release-token: //p')"
+out="$(x_from_worktree "$X_REG_COMPACT" release "$x_tok")"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ]; then
+    pass "T53: ...and when the state repo is the FIRST compact entry too"
+else
+    fail "T53: compact registry dropped the leading repo entry (rc=$rc: $out)"
+fi
+
+# --- T54: a STRANGER's lock on the same slug in the cwd root does not -----
+# hide our own lock in another root (HIMMEL-2861 CR round 1, codex-2).
+# Two roots can carry the same slug; the cross-root search must trigger on
+# "the lock here is not ours", not merely on "there is no lock here".
+x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "mine-elsewhere" 2>/dev/null \
+    | sed -n 's/^release-token: //p')"
+# The stranger's lock is acquired by a REAL acquire from the worktree cwd,
+# not hand-placed: the slug is the doc path relativized against ITS OWN root,
+# so a hand-built path would land where the cwd root never looks and would
+# test nothing. Its lock dir is then the only one under that root.
+x_from_worktree "$X_REG_EMPTY" acquire "a-stranger" >/dev/null 2>&1
+X_WT_LOCKDIR="$(find "$X_WT/handovers/.locks/queue" -maxdepth 1 -name '*.lock' -type d 2>/dev/null | head -1)"
+if [ -n "$X_WT_LOCKDIR" ] && grepq "$(cat "$X_WT_LOCKDIR/owner.json" 2>/dev/null)" '"session":"a-stranger"'; then
+    pass "T54: setup -- a stranger holds this queue's slug under the WORKTREE's own root"
+else
+    fail "T54: setup -- the stranger's acquire under the worktree root did not take (dir='$X_WT_LOCKDIR')"
+fi
+
+out="$(x_from_worktree "$X_REG" heartbeat "$x_tok")"
+rc=$?
+if [ "$rc" -eq 0 ] && grepq "$(cat "$X_LOCKDIR/owner.json" 2>/dev/null)" '"session":"mine-elsewhere"'; then
+    pass "T54: heartbeat looks past a stranger's same-slug lock in the cwd root and refreshes ours"
+else
+    fail "T54: heartbeat stopped at the stranger's lock (rc=$rc: $out)"
+fi
+out="$(x_from_worktree "$X_REG" release "$x_tok")"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ] && [ -f "$X_WT_LOCKDIR/owner.json" ]; then
+    pass "T54: release takes OUR lock in the other root and leaves the stranger's untouched"
+else
+    fail "T54: release did not resolve past the stranger's lock (rc=$rc, stranger=$([ -f "$X_WT_LOCKDIR/owner.json" ] && echo intact || echo REMOVED): $out)"
+fi
+
+# --- T55: NEGATIVE CONTROL for T54 -- a stranger's lock with no lock of ---
+# ours anywhere still gets today's rc=2 refusal, never a silent pass and
+# never a cross-root steal.
+out="$(x_from_worktree "$X_REG" release "not-my-token")"
+rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" 'held by session=a-stranger' && [ -f "$X_WT_LOCKDIR/owner.json" ]; then
+    pass "T55: negative control -- a stranger's lock and no lock of ours still refuses rc=2, lock intact"
+else
+    fail "T55: expected rc=2 'held by session=a-stranger' with the lock intact (rc=$rc: $out)"
+fi
+rm -f "$X_WT_LOCKDIR/owner.json"
+rmdir "$X_WT_LOCKDIR" 2>/dev/null || true
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

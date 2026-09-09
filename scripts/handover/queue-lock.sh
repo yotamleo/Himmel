@@ -385,9 +385,17 @@ _ql_registry_path() {
 # what HANDOVER_DIR points at in Mode B). Best effort by design: a missing,
 # unreadable or malformed registry just yields fewer candidates, never an
 # error -- the caller falls back to today's "nothing held" answer. Parsed
-# with sed rather than jq/node so a lock script keeps zero hard runtime
+# with grep/sed rather than jq/node so a lock script keeps zero hard runtime
 # deps; escaped backslashes in a Windows path are folded to "/" (accepted
 # by Git-Bash) so those entries resolve too.
+#
+# `grep -o`, not a `sed -n s///p`: sed matches at most ONCE per LINE and its
+# leading `.*` is greedy, so a registry written as compact single-line JSON
+# (perfectly valid, and what any programmatic rewriter emits) yielded only
+# the LAST repo -- every other repo's root silently dropped out of the
+# candidate list, which is precisely the "lock left unreleasable" failure
+# this whole block exists to fix. `grep -o` emits every occurrence on its
+# own line, so the parse no longer depends on how the JSON is formatted.
 _ql_candidate_roots() {
     if [ -n "${HANDOVER_DIR:-}" ] && [ -d "$HANDOVER_DIR" ]; then
         ( cd "$HANDOVER_DIR" && pwd )
@@ -396,7 +404,8 @@ _ql_candidate_roots() {
     reg=$(_ql_registry_path)
     [ -f "$reg" ] || return 0
     local repo
-    sed -n 's/.*"path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$reg" 2>/dev/null \
+    grep -o '"path"[[:space:]]*:[[:space:]]*"[^"]*"' "$reg" 2>/dev/null \
+        | sed 's/^.*"\([^"]*\)"$/\1/' \
         | sed 's#\\\\#/#g' \
         | while IFS= read -r repo; do
             [ -n "$repo" ] || continue
@@ -436,6 +445,17 @@ _ql_search_roots() {
 $(_ql_candidate_roots)
 EOF
     return 1
+}
+
+# _ql_owner_matches <lockdir> <token> -- rc 0 when this lock dir's
+# owner.json names <token> as the holder. A missing dir, a missing or
+# unreadable owner.json, and a different holder all return non-zero, so
+# callers can use one test for "this is not my lock, wherever it is" and
+# let the existing corrupt-lock / refused-release branches below decide
+# what that means.
+_ql_owner_matches() {
+    [ -f "$1/owner.json" ] || return 1
+    [ "$(_ql_json_field "$1/owner.json" session)" = "$2" ]
 }
 
 # _ql_write_root_marker <lockdir> <root> -- record the root this lock
@@ -977,17 +997,23 @@ queue_lock_heartbeat() {
         } >&2
         return 2
     fi
-    if [ ! -d "$lockdir" ] || [ ! -f "$lockdir/owner.json" ]; then
-        # HIMMEL-2861: the cwd may resolve a different root than the acquire
-        # did (a leg heartbeating from its worktree). Look in the other
-        # roots this machine knows about for a lock owned by THIS token.
+    # HIMMEL-2861: the cwd may resolve a different root than the acquire did
+    # (a leg heartbeating from its worktree). Search the other roots this
+    # machine knows about whenever the lock HERE is not ours -- absent, yes,
+    # but also present-and-held-by-someone-else: two roots can carry the same
+    # slug, and refusing on the local stranger's lock would leave OUR lock in
+    # the other root unrefreshed until its TTL expired.
+    if ! _ql_owner_matches "$lockdir" "$session"; then
         local hb_found
         if hb_found=$(_ql_search_roots "$ho" "$session"); then
             lockdir="$hb_found"
-        else
+        elif [ ! -d "$lockdir" ] || [ ! -f "$lockdir/owner.json" ]; then
             echo "queue-lock: no lock held for this queue -- nothing to heartbeat" >&2
             return 2
         fi
+        # else: a lock IS held here, by someone else, and no lock of ours
+        # lives in any other root -- fall through to the holder check below
+        # for the unchanged rc=2 "held by session=..." refusal.
     fi
     local o_session o_host o_started
     o_session=$(_ql_json_field "$lockdir/owner.json" session)
@@ -1056,16 +1082,17 @@ queue_lock_release() {
         } >&2
         return 2
     fi
-    if [ ! -d "$lockdir" ]; then
-        # HIMMEL-2861: same cross-root resolution as heartbeat. When nothing
-        # is found ANYWHERE this now exits 3 instead of the old silent 0 --
-        # a lock the caller believes it released but did not is exactly the
-        # failure that went unnoticed six times on 2026-09-09, and rc=0 is
-        # what every leg and the console read as "released cleanly".
+    # HIMMEL-2861: same cross-root resolution as heartbeat, on the same
+    # "the lock here is not ours" trigger. When nothing of ours is found
+    # ANYWHERE this now exits 3 instead of the old silent 0 -- a lock the
+    # caller believes it released but did not is exactly the failure that
+    # went unnoticed six times on 2026-09-09, and rc=0 is what every leg and
+    # the console read as "released cleanly".
+    if ! _ql_owner_matches "$lockdir" "$session"; then
         local rel_found
         if rel_found=$(_ql_search_roots "$ho" "$session"); then
             lockdir="$rel_found"
-        else
+        elif [ ! -d "$lockdir" ]; then
             {
                 echo "queue-lock: no lock held for this queue in any known handover root -- nothing was released"
                 echo "searched: $(_ql_candidate_roots | tr '\n' ' ')"
@@ -1073,6 +1100,11 @@ queue_lock_release() {
             } >&2
             return 3
         fi
+        # else: a lock IS held here, by someone else, and no lock of ours
+        # lives in any other root -- fall through to the holder check below
+        # for the unchanged rc=2 "release refused -- held by session=..."
+        # (or, for a lock dir with no readable owner.json, the unchanged
+        # corrupt-lock cleanup).
     fi
     if [ -f "$lockdir/owner.json" ]; then
         local o_session
