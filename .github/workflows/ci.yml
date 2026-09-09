@@ -432,11 +432,17 @@ jobs:
       # to the crontab path and ~2 arm-resume cases diverged from a real install.
       # Install + enable it on Linux so CI mirrors the supported runtime
       # (HIMMEL-619). Scoped to Linux: no-op on the nightly windows/macOS legs.
+      # HIMMEL-2871: the runner image preinstalls third-party apt sources
+      # (Google Chrome, Microsoft, Azure CLI) we never use; when one of those
+      # goes inconsistent upstream, `apt-get update` exits 100 and this step
+      # kills the whole job before any suite runs. Drop those lists first so
+      # the update depends only on the Ubuntu archive we actually need.
       - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y at
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/microsoft-*.list /etc/apt/sources.list.d/azure-cli*.list
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y --no-install-recommends at
           sudo systemctl enable --now atd || sudo service atd start || true
       # HIMMEL-2742: same shape as HIMMEL-2587 (lanes-and-trust-suites) — a
       # suite in this corpus (test-wizard-luna-sections.sh) shells out to bun
