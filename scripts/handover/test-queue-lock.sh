@@ -50,6 +50,8 @@ XDG_RUNTIME_DIR="$TMPDIR_ROOT/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 export XDG_RUNTIME_DIR
+QUEUE_LOCK_SESSION_SCOPE="test-queue-lock-suite"
+export QUEUE_LOCK_SESSION_SCOPE
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS
 
 HO1="$HANDOVER_DIR/HIMMEL-856-test/next-session-1.md"
@@ -1900,6 +1902,109 @@ else
 fi
 XDG_RUNTIME_DIR="$P_XDG_BAD" HANDOVER_DIR="$P_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 \
     bash "$LIB" release "$P_DOC" >/dev/null 2>&1
+
+# --- T65: the token file is scoped to the SESSION, not the user -----------
+# CR round 1, codex-1 -- and a real regression, reproduced before it was
+# fixed: keyed on the handover path alone, ANY process running as this user
+# could issue a token-less release and be handed the holder's token, which
+# is exactly the hole C1 exists to close. himmel runs many concurrent legs
+# as one user, so this is the normal case here, not a corner one.
+S_ROOT="$TMPDIR_ROOT/2813-scope-root"
+mkdir -p "$S_ROOT/yotamleo/himmel"
+S_DOC="$S_ROOT/yotamleo/himmel/SCOPE-RESUME.md"
+: > "$S_DOC"
+S_LOCKDIR="$S_ROOT/.locks/queue/yotamleo__himmel__SCOPE-RESUME.lock"
+S_XDG="$TMPDIR_ROOT/2813-scope-xdg"
+mkdir -p "$S_XDG"
+chmod 700 "$S_XDG"
+
+# s_ql <scope> <verb> [args...] -- the script as a session with that scope.
+s_ql() {
+    local sc="$1"; shift
+    QUEUE_LOCK_SESSION_SCOPE="$sc" XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" \
+        bash "$LIB" "$@"
+}
+
+s_ql leg-A acquire "$S_DOC" "scoped-A" >/dev/null 2>&1
+out="$(s_ql leg-B release "$S_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 2 ] && [ -d "$S_LOCKDIR" ]; then
+    pass "T65: a DIFFERENT session cannot recall the holder's token -- refused rc=2, lock intact"
+else
+    fail "T65: another session released the holder's live lock (rc=$rc, lock=$([ -d "$S_LOCKDIR" ] && echo held || echo GONE): $out)"
+fi
+if ! grepq "$out" 'token read from'; then
+    pass "T65: ...and it was never handed a token file at all"
+else
+    fail "T65: the other session was handed a token: $out"
+fi
+out="$(s_ql leg-A release "$S_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$S_LOCKDIR" ] && grepq "$out" '^queue-lock: token read from '; then
+    pass "T65: the ACQUIRING session still recalls its own token and releases"
+else
+    fail "T65: the acquiring session lost its own recall (rc=$rc: $out)"
+fi
+
+# --- T66: forget removes only OUR token, never a new holder's -------------
+# CR round 1, codex-2: the forget runs AFTER the lock dir is removed, so a
+# fresh acquire can land in between and persist its own token to the same
+# path. An unconditional delete threw that away.
+s_ql leg-A acquire "$S_DOC" "forget-mine" >/dev/null 2>&1
+s66_file=""
+for f in "$S_XDG/himmel-queue-lock"/*; do
+    [ -f "$f" ] && s66_file="$f"
+done
+# Stand in for "a new holder acquired between the rm and the forget" by
+# putting a different token in the file the releasing session will look at.
+printf '%s\n' 'a-newer-holders-token' > "$s66_file"
+# The token goes on ARGV here: the point under test is the FORGET step, so
+# the release itself must succeed. (Recalling the substituted token instead
+# would be refused by the holder check -- correct, but a different test.)
+s_ql leg-A release "$S_DOC" "forget-mine" >/dev/null 2>&1
+t66_rc=$?
+if [ "$t66_rc" -eq 0 ] && [ -f "$s66_file" ] \
+    && [ "$(cat "$s66_file" 2>/dev/null)" = "a-newer-holders-token" ]; then
+    pass "T66: forget leaves a token file that no longer holds OUR token untouched"
+else
+    fail "T66: the release (rc=$t66_rc) deleted a newer holder's token file"
+fi
+rm -f "$s66_file"
+
+# --- T67: no resolvable session scope -> the feature turns ITSELF off -----
+# The safe degradation is the pre-HIMMEL-2813 argv-only behaviour, never a
+# user-wide file. Forced here by emptying both env scopes and putting a
+# failing `ps` first on PATH, so the POSIX-session-id fallback cannot
+# resolve either.
+S_STUB="$TMPDIR_ROOT/2813-stub-bin"
+mkdir -p "$S_STUB"
+printf '#!/bin/sh\nexit 1\n' > "$S_STUB/ps"
+chmod +x "$S_STUB/ps"
+out="$(QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" PATH="$S_STUB:$PATH" \
+    XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" \
+    bash "$LIB" acquire "$S_DOC" "no-scope-sess" 2>&1)"
+rc=$?
+s67_written=0
+for f in "$S_XDG/himmel-queue-lock"/*; do
+    [ -f "$f" ] && s67_written=1
+done
+if [ "$rc" -eq 0 ] && grepq "$out" '^release-token: no-scope-sess$' && [ "$s67_written" -eq 0 ]; then
+    pass "T67: with no resolvable scope, acquire still succeeds and persists NOTHING"
+else
+    fail "T67: expected a clean acquire with no token written (rc=$rc written=$s67_written: $out)"
+fi
+out="$(QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" PATH="$S_STUB:$PATH" \
+    XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" \
+    bash "$LIB" release "$S_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" 'release requires the session token'; then
+    pass "T67: ...and a token-less release degrades to the unchanged rc=2 refusal"
+else
+    fail "T67: expected the pre-2813 rc=2 refusal (rc=$rc: $out)"
+fi
+QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" PATH="$S_STUB:$PATH" \
+    XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 \
+    bash "$LIB" release "$S_DOC" >/dev/null 2>&1
 
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"

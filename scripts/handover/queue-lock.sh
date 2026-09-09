@@ -494,6 +494,19 @@ EOF
 # outcome is the pre-HIMMEL-2813 one: the token is unavailable and the
 # caller force-releases.
 #
+# SCOPED TO THE SESSION, NOT JUST THE USER (CR round 1, codex-1). Keying the
+# file on the handover path alone made it readable by ANY process running as
+# this user: a sibling leg that never acquired could run a token-less release
+# and be handed the holder's token -- reopening the precise hole C1 exists to
+# close ("a token-less release could rm another session's LIVE lock"), and
+# himmel runs many concurrent legs as one user. The digest therefore covers a
+# SESSION SCOPE as well as the path, so a different session resolves a
+# different filename and simply finds nothing. When no scope can be
+# established the feature turns ITSELF OFF -- nothing is persisted and
+# nothing is recalled -- rather than falling back to a user-wide file: the
+# safe degradation is the pre-HIMMEL-2813 argv-only behaviour, never a
+# weaker token contract.
+#
 # The digest is a filename key, not a security primitive -- only collision
 # resistance matters. It uses sha256, with the sha256sum / shasum -a 256
 # fallback pair the rest of the repo already uses (context-fill.sh's
@@ -502,6 +515,37 @@ EOF
 # sha1 tooling.
 
 _ql_token_dir() { printf '%s/himmel-queue-lock' "${XDG_RUNTIME_DIR:-/tmp}"; }
+
+# _ql_session_scope -- an id shared by every invocation of ONE session and by
+# no other, or rc 1 when none can be established. In order:
+#   QUEUE_LOCK_SESSION_SCOPE  explicit, for callers that know their own scope
+#                             (and for this repo's tests)
+#   CLAUDE_CODE_SESSION_ID    the natural per-session id under Claude Code,
+#                             which is where the autocompact this feature
+#                             exists for actually happens
+#   the POSIX session id      stable across invocations within one terminal /
+#                             login session, and distinct for legs launched
+#                             into their own windows
+# Honest limit: two sessions sharing ONE terminal share a POSIX session id and
+# would share a token file. Under Claude Code that case does not arise --
+# CLAUDE_CODE_SESSION_ID outranks the SID and is per-session -- and a caller
+# that needs the guarantee elsewhere sets QUEUE_LOCK_SESSION_SCOPE.
+_ql_session_scope() {
+    if [ -n "${QUEUE_LOCK_SESSION_SCOPE:-}" ]; then
+        printf '%s' "$QUEUE_LOCK_SESSION_SCOPE"
+        return 0
+    fi
+    if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
+        printf '%s' "$CLAUDE_CODE_SESSION_ID"
+        return 0
+    fi
+    local sid
+    sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d '[:space:]')
+    case "$sid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf 'sid%s' "$sid"
+}
 
 _ql_digest_of() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -546,9 +590,12 @@ _ql_token_dir_ensure() {
 # spelling and a POSIX spelling of the same document key alike -- the same
 # normalisation _ql_slug_for_root applies.
 _ql_token_file() {
-    local p="${1//\\//}" dir h
+    local p="${1//\\//}" dir scope h
     dir=$(_ql_token_dir)
-    h=$(_ql_digest_of "$p") || return 1
+    # No resolvable session scope -> no token file at all (see the SCOPED TO
+    # THE SESSION note above): persist and recall both become no-ops.
+    scope=$(_ql_session_scope) || return 1
+    h=$(_ql_digest_of "$scope|$p") || return 1
     [ -n "$h" ] || return 1
     printf '%s/%s' "$dir" "$h"
 }
@@ -579,11 +626,18 @@ _ql_token_recall() {
     printf '%s' "$t"
 }
 
-# _ql_token_forget <handover-path> -- drop the token file once the lock it
-# releases is gone.
+# _ql_token_forget <handover-path> <token> -- drop the token file once the
+# lock it releases is gone, but ONLY while it still holds OUR token (CR round
+# 1, codex-2). This runs AFTER the lock dir is removed, so a fresh acquire
+# can land in between and persist its own token to the same path; an
+# unconditional delete would then throw away the NEW holder's recovery file.
+# Comparing the content first means the worst case is leaving our own stale
+# file behind, never destroying somebody else's.
 _ql_token_forget() {
     local f
     f=$(_ql_token_file "$1") || return 0
+    [ -f "$f" ] || return 0
+    [ "$(cat "$f" 2>/dev/null)" = "$2" ] || return 0
     rm -f "$f" 2>/dev/null || true
     return 0
 }
@@ -1277,7 +1331,7 @@ queue_lock_release() {
         echo "queue-lock: failed to remove lock dir '$lockdir' -- it still exists (open handle on Windows? permission?); NOT released" >&2
         return 1
     fi
-    _ql_token_forget "$ho"
+    _ql_token_forget "$ho" "$session"
     _ql_emit_close_evidence
     return 0
 }
