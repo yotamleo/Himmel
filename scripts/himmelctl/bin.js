@@ -4529,7 +4529,12 @@ function applyHimmelctlPathShim(args) {
 
   try {
     fs.mkdirSync(binDir, { recursive: true });
-    const jsBody = `'use strict';\n// ${SHIM_MARKER}\nrequire(${JSON.stringify(target)});\n`;
+    // HIMMEL-2883: re-exec bin.js as a child process rather than require()ing
+    // it — a require() runs with require.main === himmelctl.js, so bin.js's
+    // own `if (require.main === module)` guard (HIMMEL-2438) never fires and
+    // main() silently never runs (rc 0, no output). A child process always
+    // has its own require.main === itself, so the guard passes as intended.
+    const jsBody = `'use strict';\n// ${SHIM_MARKER}\nconst { status } = require('child_process').spawnSync(process.execPath, [${JSON.stringify(target)}, ...process.argv.slice(2)], { stdio: 'inherit' });\nprocess.exit(status === null ? 1 : status);\n`;
     if (!writeMarkedLauncher(path.join(binDir, 'himmelctl.js'), jsBody)) return false;
     if (platform === 'win32') {
       const cmdBody = `@echo off\r\nREM ${SHIM_MARKER}\r\nnode "%~dp0himmelctl.js" %*\r\n`;

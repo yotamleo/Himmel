@@ -489,4 +489,30 @@ SHIM_CALL_LOG="$(winpath "$work/caseI-shim-calls.log")" \
   || fail "caseI: shim written after a failed adopt.sh must still target this checkout"
 echo "ok: caseI failed adopt.sh still applies the PATH shim and points the adopter at himmelctl ensure"
 
+# ── J: HIMMEL-2883 — the generated launcher RE-EXECS bin.js, so bin.js's own
+# `require.main === module` guard (HIMMEL-2438) still fires. Pre-fix the
+# generated himmelctl.js did `require(target)`, which runs with
+# require.main === himmelctl.js (the launcher), not the target — so a
+# guarded main() never ran: silent no-op, empty stdout, rc 0. The other
+# fixtures in this file stub bin.js with UNGUARDED top-level code (it runs
+# the instant it's require()'d), which would mask exactly this bug class —
+# this fixture mirrors the real guard shape instead.
+fixtureJ="$work/caseJ-checkout"; binJ="$work/caseJ-bin"; mkdir -p "$binJ"
+build_update_fixture "$fixtureJ"
+cat > "$fixtureJ/scripts/himmelctl/bin.js" <<'STUB'
+'use strict';
+function main() {
+  process.stdout.write('himmelctl: guarded main ran\n');
+}
+if (require.main === module) {
+  main();
+}
+STUB
+run_update "$fixtureJ" "$binJ" linux "$(winpath "$binJ"):$PATH" >/dev/null
+outJ=$("$binJ/himmelctl" --help 2>&1); rcJ=$?
+[ -n "$outJ" ] || fail "caseJ: generated launcher produced no output — the require.main===module guard (HIMMEL-2438) swallowed main() (rc=$rcJ)"
+[ "$rcJ" -eq 0 ] || fail "caseJ: generated launcher should exit 0 (got rc=$rcJ): $outJ"
+grepq "$outJ" 'guarded main ran' || fail "caseJ: generated launcher did not run the guarded main() (got: $outJ)"
+echo "ok: caseJ generated launcher re-execs bin.js so the require.main===module guard (HIMMEL-2438) still fires"
+
 echo "PASS"
