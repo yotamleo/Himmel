@@ -313,6 +313,21 @@ else
     fail "T1j home-path WSL/lowercase forms (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1k: a bare-root "/users/..." with no drive prefix is NOT a home-dir leak
+# -- it's how GitHub/REST API paths are documented in comments (e.g.
+# "/users/{user}/settings/billing/actions"). Public #581 round-2 regression:
+# T1j's case-insensitivity fix over-widened to match this too. Only the
+# drive-prefixed WSL/Git-Bash forms (T1j) should go case-insensitive.
+r=$(new_repo)
+printf '// the GitHub billing API (/users/{user}/settings/billing/actions)\n' > "$r/api.txt"  # leak-allow: home-path test fixture
+git -C "$r" add api.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ]; then
+    pass "T1k home-path: bare-root /users/{user}/... API path NOT flagged"
+else
+    fail "T1k home-path: bare-root /users/ false-positived (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== redaction =="
 
 # T6: the reported line carries only the first 4 chars of the match + an

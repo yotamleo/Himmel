@@ -409,7 +409,13 @@ check_home_path() {
     # case-insensitive on the drive letter and "Users" segment, and cover
     # /mnt/<drive>/Users/ (WSL) alongside /<drive>/Users/ (Git Bash) --
     # real Git Bash and WSL logs use both, and the repo targets Windows.
-    local re='(^|[^A-Za-z0-9_.$/\\-])(/home/|/[Uu]sers/|/mnt/[A-Za-z]/[Uu]sers/|/[A-Za-z]/[Uu]sers/|[A-Za-z]:/[Uu]sers/|[A-Za-z]:\\\\[Uu]sers\\\\|[A-Za-z]:\\[Uu]sers\\)(([A-Za-z0-9_.${}%<>-]+( [A-Za-z0-9_.${}%<>-]+)*)([/\\]|\\\\)|([A-Za-z0-9_.${}%<>-]+)($|[^A-Za-z0-9_.${}%<>-]))'
+    # A bare-root "/users/" (no drive prefix) is NOT a real home-dir form on
+    # any OS this repo targets -- macOS is always capitalized "/Users/", and
+    # lowercase "/users/" at the root is common in unrelated text (e.g. a
+    # GitHub REST API path "/users/{user}/settings/..."), so it must stay
+    # case-sensitive; only the drive-prefixed WSL/Git-Bash forms go
+    # case-insensitive (public #581 CodeRabbit round 2, false-positive fix).
+    local re='(^|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu]sers/|/[A-Za-z]/[Uu]sers/|[A-Za-z]:/[Uu]sers/|[A-Za-z]:\\\\[Uu]sers\\\\|[A-Za-z]:\\[Uu]sers\\)(([A-Za-z0-9_.${}%<>-]+( [A-Za-z0-9_.${}%<>-]+)*)([/\\]|\\\\)|([A-Za-z0-9_.${}%<>-]+)($|[^A-Za-z0-9_.${}%<>-]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.
