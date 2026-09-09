@@ -437,10 +437,13 @@ jobs:
       # goes inconsistent upstream, `apt-get update` exits 100 and this step
       # kills the whole job before any suite runs. Drop those lists first so
       # the update depends only on the Ubuntu archive we actually need.
+      # No `.list`/`.sources` suffix on the glob: ubuntu-24.04 runner images
+      # ship these as deb822 `.sources` files, not legacy one-line `.list`
+      # files, and a suffix-anchored glob silently matched nothing.
       - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
         if: runner.os == 'Linux'
         run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list /etc/apt/sources.list.d/microsoft-*.list /etc/apt/sources.list.d/azure-cli*.list
+          sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
           sudo apt-get update -o Acquire::Retries=3
           sudo apt-get install -y --no-install-recommends at
           sudo systemctl enable --now atd || sudo service atd start || true
