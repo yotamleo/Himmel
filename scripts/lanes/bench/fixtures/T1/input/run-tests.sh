@@ -56,8 +56,8 @@ check cfgval_13 "commit msg skip-ci" 0
 check cfgval_13 "commit msg normal" 1
 check cfgval_14 "critical failure" 0
 check cfgval_14 "minor issue" 1
-check envchk_01 "10.0.0.5" 0
-check envchk_01 "192.168.1.5" 1
+check envchk_01 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check envchk_01 "203.0.113.5" 1
 check envchk_02 "tag: latest" 0
 check envchk_02 "tag: v1" 1
 check envchk_03 "status draft" 0
@@ -96,8 +96,8 @@ check argparse_05 "commit msg skip-ci" 0
 check argparse_05 "commit msg normal" 1
 check argparse_06 "critical failure" 0
 check argparse_06 "minor issue" 1
-check argparse_07 "10.0.0.5" 0
-check argparse_07 "192.168.1.5" 1
+check argparse_07 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check argparse_07 "203.0.113.5" 1
 check argparse_08 "tag: latest" 0
 check argparse_08 "tag: v1" 1
 check argparse_09 "status draft" 0
@@ -136,8 +136,8 @@ check netguard_11 "commit msg skip-ci" 0
 check netguard_11 "commit msg normal" 1
 check netguard_12 "critical failure" 0
 check netguard_12 "minor issue" 1
-check netguard_13 "10.0.0.5" 0
-check netguard_13 "192.168.1.5" 1
+check netguard_13 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check netguard_13 "203.0.113.5" 1
 check netguard_14 "tag: latest" 0
 check netguard_14 "tag: v1" 1
 check logfilt_01 "status draft" 0
@@ -176,8 +176,8 @@ check statemach_03 "commit msg skip-ci" 0
 check statemach_03 "commit msg normal" 1
 check statemach_04 "critical failure" 0
 check statemach_04 "minor issue" 1
-check statemach_05 "10.0.0.5" 0
-check statemach_05 "192.168.1.5" 1
+check statemach_05 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check statemach_05 "203.0.113.5" 1
 check statemach_06 "tag: latest" 0
 check statemach_06 "tag: v1" 1
 check statemach_07 "status draft" 0
@@ -216,8 +216,8 @@ check secscan_10 "commit msg skip-ci" 0
 check secscan_10 "commit msg normal" 1
 check secscan_11 "critical failure" 0
 check secscan_11 "minor issue" 1
-check secscan_12 "10.0.0.5" 0
-check secscan_12 "192.168.1.5" 1
+check secscan_12 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check secscan_12 "203.0.113.5" 1
 check secscan_13 "tag: latest" 0
 check secscan_13 "tag: v1" 1
 check permchk_01 "status draft" 0
@@ -256,8 +256,8 @@ check relgate_04 "commit msg skip-ci" 0
 check relgate_04 "commit msg normal" 1
 check relgate_05 "critical failure" 0
 check relgate_05 "minor issue" 1
-check relgate_06 "10.0.0.5" 0
-check relgate_06 "192.168.1.5" 1
+check relgate_06 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check relgate_06 "203.0.113.5" 1
 check relgate_07 "tag: latest" 0
 check relgate_07 "tag: v1" 1
 check relgate_08 "status draft" 0
@@ -296,8 +296,8 @@ check ffchk_11 "commit msg skip-ci" 0
 check ffchk_11 "commit msg normal" 1
 check ffchk_12 "critical failure" 0
 check ffchk_12 "minor issue" 1
-check ffchk_13 "10.0.0.5" 0
-check ffchk_13 "192.168.1.5" 1
+check ffchk_13 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check ffchk_13 "203.0.113.5" 1
 check pathsan_01 "tag: latest" 0
 check pathsan_01 "tag: v1" 1
 check pathsan_02 "status draft" 0
@@ -336,8 +336,8 @@ check inputguard_05 "commit msg skip-ci" 0
 check inputguard_05 "commit msg normal" 1
 check inputguard_06 "critical failure" 0
 check inputguard_06 "minor issue" 1
-check inputguard_07 "10.0.0.5" 0
-check inputguard_07 "192.168.1.5" 1
+check inputguard_07 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check inputguard_07 "203.0.113.5" 1
 check inputguard_08 "tag: latest" 0
 check inputguard_08 "tag: v1" 1
 check inputguard_09 "status draft" 0
@@ -376,8 +376,8 @@ check cistatus_12 "commit msg skip-ci" 0
 check cistatus_12 "commit msg normal" 1
 check cistatus_13 "critical failure" 0
 check cistatus_13 "minor issue" 1
-check pkgfilt_01 "10.0.0.5" 0
-check pkgfilt_01 "192.168.1.5" 1
+check pkgfilt_01 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check pkgfilt_01 "203.0.113.5" 1
 check pkgfilt_02 "tag: latest" 0
 check pkgfilt_02 "tag: v1" 1
 check pkgfilt_03 "status draft" 0
@@ -416,8 +416,8 @@ check hostmatch_06 "commit msg skip-ci" 0
 check hostmatch_06 "commit msg normal" 1
 check hostmatch_07 "critical failure" 0
 check hostmatch_07 "minor issue" 1
-check hostmatch_08 "10.0.0.5" 0
-check hostmatch_08 "192.168.1.5" 1
+check hostmatch_08 "10.0.0.5" 0  # leak-allow: private-lan-ip fixture: verifies the 10/8-rejection check itself
+check hostmatch_08 "203.0.113.5" 1
 check hostmatch_09 "tag: latest" 0
 check hostmatch_09 "tag: v1" 1
 check hostmatch_10 "status draft" 0

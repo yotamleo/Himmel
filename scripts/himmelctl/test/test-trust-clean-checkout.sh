@@ -274,5 +274,36 @@ if ! cmp -s "$settings" "$work/original.json"; then
   fail=1
 fi
 
+# HIMMEL-2756: adopters cannot enable a recorder the portable core does not
+# ship. Both verbs must explain that limit without changing their exit codes
+# or writing settings; removing dead wiring remains supported.
+adopted="$work/adopted"
+adopted_w="$(winpath "$adopted")"
+mkdir -p "$adopted/.claude"
+printf '{}\n' > "$adopted/.claude/settings.json"
+cp "$adopted/.claude/settings.json" "$work/adopted-original.json"
+for verb in on status off; do
+  out=$(HIMMELCTL_CACHE_DIR="$(winpath "$cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cache/luna-config.json")" CLAUDE_PROJECT_DIR="$adopted_w" HIMMELCTL_REPO_ROOT="$root_w" "$node_bin" "$wizard" trust "$verb" 2>&1)
+  rc=$?
+  expected_rc=0
+  [ "$verb" = on ] && expected_rc=1
+  if [ "$rc" -ne "$expected_rc" ]; then
+    echo "FAIL - adopted project trust $verb exited $rc (expected $expected_rc)"
+    fail=1
+  fi
+  if [ "$verb" != off ]; then
+    for message in 'not part of the portable core yet' 'HIMMEL-2756' 'himmel checkout'; do
+      if ! grep -qF "$message" <<< "$out"; then
+        echo "FAIL - adopted project trust $verb omits: $message"
+        fail=1
+      fi
+    done
+  fi
+  if ! cmp -s "$work/adopted-original.json" "$adopted/.claude/settings.json"; then
+    echo "FAIL - adopted project trust $verb modified settings"
+    fail=1
+  fi
+done
+
 [ "$fail" -eq 0 ] || exit 1
 echo "ok - shipped .claude/settings.json satisfies both trust preconditions; trust status rc=0; off; on->off round-trips the unwired baseline byte-for-byte"

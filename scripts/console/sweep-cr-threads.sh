@@ -4,7 +4,7 @@
 #
 # Freezes an ad-hoc sweep that shipped a false-clean verdict: it queried
 # reviewThreads against the WRONG repo slug (yotamleo/himmel instead of
-# yotamleo/himmel). GitHub's GraphQL API answers an unknown
+# yotamleo/himmel). GitHub's GraphQL API answers an unknown # leak-allow: hostname comment naming the real repo slug from the incident it documents
 # owner/name/number with an `errors` array and a null `pullRequest` — NOT an
 # HTTP failure — so a naive `--jq '... | length'` over that response counts
 # zero threads, indistinguishable from a genuinely clean PR. This script

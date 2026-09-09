@@ -2679,7 +2679,7 @@ function normalizeForPollerAnchorMatch(p) {
 // CR round 3 fix (HIMMEL-2176, retask stage1-build-6d2e): a path token was
 // previously captured as the longest run of non-whitespace/non-quote chars
 // ending in 'poller.ts' — [^\s"']* stops at the first space, so a checkout
-// under a path WITH a space (e.g. 'C:\Users\John Doe\himmel\...\poller.ts',
+// under a path WITH a space (e.g. 'C:\Users\John Doe\himmel\...\poller.ts', // leak-allow: home-path doc example
 // the same class of path install-engine.js's own positional-arg fix already
 // treats as a supported reality here, not a hypothetical) truncated to a
 // fragment ('Doe\himmel\...\poller.ts') that can never equal

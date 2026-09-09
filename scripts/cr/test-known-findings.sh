@@ -137,8 +137,8 @@ before_sum="$(cksum < "$HERE/known-findings.json")"
   echo '{"kind":"amend","ts":"2026-08-01T00:03:00Z","branch":"b","target_head":"aaaa111","finding_id":"codex-1","set":{"verdict":"agreed"},"reason":"t"}'
 } > "$tmp/ledger.jsonl"
 printf 'Learning,Repository,File,Pull Request,URL,Created By,Usage,Last Used,Created At,Updated At\n' > "$tmp/learn.csv"
-printf '"In Bash scripts using `set -e`, a bare `wait` returns zero, ""quoted"".",himmel,scripts/a.sh,1,,u,"250","x","y","z"\n' >> "$tmp/learn.csv"
-printf '"Totally novel learning about widgets\nspanning two lines.",himmel,scripts/b.sh,2,,u,"7","x","y","z"\n' >> "$tmp/learn.csv"
+printf '"In Bash scripts using `set -e`, a bare `wait` returns zero, ""quoted"".",himmel,scripts/a.sh,1,,u,"250","x","y","z"\n' >> "$tmp/learn.csv"  # leak-allow: hostname test fixture CR-learnings CSV row's repository field
+printf '"Totally novel learning about widgets\nspanning two lines.",himmel,scripts/b.sh,2,,u,"7","x","y","z"\n' >> "$tmp/learn.csv"  # leak-allow: hostname test fixture CR-learnings CSV row's repository field
 r="$(KNOWN_FINDINGS_FILE="$tmp/kf.json" CR_LEDGER="$tmp/ledger.jsonl" bash "$SCRIPT" --refresh --learnings "$tmp/learn.csv" 2>&1)"; rrc=$?
 check "refresh: exit 0" "$rrc" "0"
 contains "refresh: hook class sees 2 ledger findings (amend resolved)" "$r" "hook-fail-direction: ledger findings=2 agreed=1 disproved=1"
@@ -172,8 +172,8 @@ contains "prompt: anchor-handshake rebuttal present" "$p" "[pr-check-anchor-hand
 cp "$HERE/known-findings.json" "$tmp/kf-anchor.json"
 printf 'Learning,Repository,File,Pull Request,URL,Created By,Usage,Last Used,Created At,Updated At\n' > "$tmp/anchor-learn.csv"
 {
-  printf '"In `scripts/cr/pr-check-context.sh`, `HIMMEL_REPO` and `PR_CHECK_ANCHOR_DELEGATED` are process-environment inputs. The repository under review does not load `.env` files or source repository-supplied paths before the anchor is selected; `scripts/guardrails/lib.sh` is sourced only from `HIMMEL_ROOT`, which derives from the executing script location and is validated as a Himmel checkout. Therefore, an actor that controls the launching environment can replace the anchor through `HIMMEL_REPO` before any delegation-handshake check runs.",himmel,scripts/cr/pr-check-context.sh,2078,,coderabbitai,"9","x","y","z"\n'
-  printf '"In `scripts/cr/pr-check-context.sh`, the `PR_CHECK_ANCHOR_DELEGATED` identity handshake currently verifies only the anchor path. A stale value from an earlier run can be accepted on a different branch or HEAD, suppressing delegation and ledger logging while reporting delegated=yes.",himmel,scripts/cr/pr-check-context.sh,2078,,coderabbitai,"4","x","y","z"\n'
+  printf '"In `scripts/cr/pr-check-context.sh`, `HIMMEL_REPO` and `PR_CHECK_ANCHOR_DELEGATED` are process-environment inputs. The repository under review does not load `.env` files or source repository-supplied paths before the anchor is selected; `scripts/guardrails/lib.sh` is sourced only from `HIMMEL_ROOT`, which derives from the executing script location and is validated as a Himmel checkout. Therefore, an actor that controls the launching environment can replace the anchor through `HIMMEL_REPO` before any delegation-handshake check runs.",himmel,scripts/cr/pr-check-context.sh,2078,,coderabbitai,"9","x","y","z"\n'  # leak-allow: hostname test fixture reproducing the real HIMMEL-2377 CR learning row
+  printf '"In `scripts/cr/pr-check-context.sh`, the `PR_CHECK_ANCHOR_DELEGATED` identity handshake currently verifies only the anchor path. A stale value from an earlier run can be accepted on a different branch or HEAD, suppressing delegation and ledger logging while reporting delegated=yes.",himmel,scripts/cr/pr-check-context.sh,2078,,coderabbitai,"4","x","y","z"\n'  # leak-allow: hostname test fixture for the stale-value-residual CR learning row, same incident
 } >> "$tmp/anchor-learn.csv"
 ar="$(KNOWN_FINDINGS_FILE="$tmp/kf-anchor.json" CR_LEDGER="$tmp/absent-ledger.jsonl" bash "$SCRIPT" --refresh --learnings "$tmp/anchor-learn.csv" 2>&1)"; arrc=$?
 [ "$arrc" -eq 0 ] || printf '  (refresh output: %s)

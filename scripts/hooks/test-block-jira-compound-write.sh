@@ -778,7 +778,7 @@ run_hook Bash "hits=\"\$(grep -rn 'jira/dist/index.js create' scripts/)\" ; echo
 #         checkout has NO approvable jira shape — bouncing it would hand the
 #         agent advice it has already followed. Fail open = status quo, never a
 #         wrong block.
-run_hook Bash "node \"/c/Users/John Smith/himmel/scripts/jira/dist/index.js\" create --desc \"\$(cat /tmp/a.md)\" ; echo x"
+run_hook Bash "node \"/c/Users/John Smith/himmel/scripts/jira/dist/index.js\" create --desc \"\$(cat /tmp/a.md)\" ; echo x"  # leak-allow: home-path test fixture
 [ "$RC" -eq 0 ] && pass "quoted CLI path stays silent (documented gap)" || fail "quoted CLI path bounced with unactionable guidance (rc=$RC)"
 
 # --- 15. missing dependencies (jq/cat) → FAIL OPEN. A guard that only improves a
