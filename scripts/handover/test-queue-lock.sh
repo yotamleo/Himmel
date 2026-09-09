@@ -1657,7 +1657,10 @@ x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "mine-elsewhere" 2>
 # so a hand-built path would land where the cwd root never looks and would
 # test nothing. Its lock dir is then the only one under that root.
 x_from_worktree "$X_REG_EMPTY" acquire "a-stranger" >/dev/null 2>&1
-X_WT_LOCKDIR="$(find "$X_WT/handovers/.locks/queue" -maxdepth 1 -name '*.lock' -type d 2>/dev/null | head -1)"
+X_WT_LOCKDIR=""
+for x_d in "$X_WT/handovers/.locks/queue/"*.lock; do
+    if [ -d "$x_d" ]; then X_WT_LOCKDIR="$x_d"; break; fi
+done
 if [ -n "$X_WT_LOCKDIR" ] && grepq "$(cat "$X_WT_LOCKDIR/owner.json" 2>/dev/null)" '"session":"a-stranger"'; then
     pass "T54: setup -- a stranger holds this queue's slug under the WORKTREE's own root"
 else
