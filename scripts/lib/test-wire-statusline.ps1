@@ -63,6 +63,8 @@ if (Test-Path $dropped) {
     Check ($body.Contains($repoRoot)) "6c real himmel path substituted"
     $sj = Get-Content (Join-Path $sdir 'settings.json') -Raw | ConvertFrom-Json
     Check ($sj.statusLine.command -eq "node `"$repoRoot/marketplace/plugins/claude-hud/dist/index.js`"") "6d command node w/ real path"
+    $dj = $body | ConvertFrom-Json
+    Check ($dj.display.showPromptCache -eq $true) "6e dropped config has showPromptCache: true"
 }
 
 Get-ChildItem $tmp -Recurse | Remove-Item -Force -Recurse

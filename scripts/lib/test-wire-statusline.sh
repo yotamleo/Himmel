@@ -80,6 +80,7 @@ jq -e . "$dropped" >/dev/null 2>&1 || fail "dropped config not valid JSON"
 grep -q '<himmel-path>' "$dropped" && fail "placeholder <himmel-path> left in dropped config"
 grep -qF "$REPO_ROOT" "$dropped" || fail "real himmel path not substituted into dropped config"
 [ "$(jq -r .statusLine.command "$sdir/settings.json")" = "node \"$REPO_ROOT/marketplace/plugins/claude-hud/dist/index.js\"" ] || fail "command not node w/ real path"
+[ "$(jq -r .display.showPromptCache "$dropped")" = "true" ] || fail "dropped config missing showPromptCache: true"
 echo "ok 10 hud config dropped + substituted"
 
 # 11. config drop is idempotent too (deterministic)
