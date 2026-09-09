@@ -63,7 +63,7 @@ $Cfg     = Join-Path $Dir 'config.yaml'
 $Vbs     = Join-Path $Dir 'start-hidden.vbs'   # GUI-subsystem launcher the logon task runs (HIMMEL-1822)
 $ApiKey  = 'himmel-local-claudex'   # local proxy token; must match config.yaml api-keys
 $Port    = 8317
-$Version = '7.2.154'
+$Version = '7.2.155'
 $Release = "https://github.com/router-for-me/CLIProxyAPI/releases/download/v$Version/CLIProxyAPI_${Version}_windows_amd64.zip"
 
 function Test-OAuth {
