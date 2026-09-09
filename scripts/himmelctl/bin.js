@@ -605,8 +605,9 @@ function parseArgs(argv) {
       // (schemaVersion 2) or migrated role (legacy) — same refusal-not-
       // precedence posture as the lane flags above.
       if (args.contribute !== OPTION_DEFAULTS.contribute) {
-        console.error(`himmelctl: ${OPTION_FLAGS.contribute} cannot be combined with --from-profile`);
-        console.error('  (the profile already carries its devOverlay answer — edit the profile, or drop --from-profile)');
+        const combinedWith = args.fromProfile !== null ? '--from-profile' : '--scope';
+        console.error(`himmelctl: ${OPTION_FLAGS.contribute} cannot be combined with ${combinedWith}`);
+        console.error(`  (the profile already carries its devOverlay answer — edit the profile, or drop ${combinedWith})`);
         process.exitCode = 2;
         return args;
       }
@@ -1715,7 +1716,7 @@ function loadProfile(p) {
   // cache (its [] is a harmless placeholder from a role that never answered
   // it); gating the v1 branch on role==='adopter' keeps that exemption.
   if (isV2 && obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
-    profileError(p, "legacy profile has lanes:[] without lanesMeaningful=true; the accepted spelling of an explicit empty allowlist is \"lanes\": [] with \"lanesMeaningful\": true ('--lanes none' is the CLI flag for this, not a profile value) — or re-run the installer and reconfirm lane selection");
+    profileError(p, "v2 profile has lanes:[] without lanesMeaningful=true; the accepted spelling of an explicit empty allowlist is \"lanes\": [] with \"lanesMeaningful\": true ('--lanes none' is the CLI flag for this, not a profile value) — or re-run the installer and reconfirm lane selection");
   }
   if (!isV2 && obj.role === 'adopter' && obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
     profileError(p, "legacy profile has lanes:[] without lanesMeaningful=true; the accepted spelling of an explicit empty allowlist is \"lanes\": [] with \"lanesMeaningful\": true ('--lanes none' is the CLI flag for this, not a profile value) — or re-run the installer and reconfirm lane selection");

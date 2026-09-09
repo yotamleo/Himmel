@@ -618,11 +618,24 @@ mkdir -p "$PROFILE_DIR"
 printf '{"channel":"stable"}\n' > "$PROFILE_DIR/install-profile.json"
 NO_JQ_BIN="$TMP/th18-no-jq-bin"
 mkdir -p "$NO_JQ_BIN"
-for f in /usr/bin/*; do
-    bn=$(basename "$f")
-    [ "$bn" = "jq" ] && continue
-    ln -s "$f" "$NO_JQ_BIN/$bn" 2>/dev/null || true
+# Mirror every directory on the REAL PATH (macOS keeps bash in /bin, not
+# /usr/bin), minus jq -- the point of the fixture is an absent jq, not an
+# absent interpreter.
+saved_ifs="$IFS"
+IFS=':'
+for d in $PATH; do
+    IFS="$saved_ifs"
+    [ -d "$d" ] || continue
+    for f in "$d"/*; do
+        [ -e "$f" ] || continue
+        bn=$(basename "$f")
+        [ "$bn" = "jq" ] && continue
+        [ -e "$NO_JQ_BIN/$bn" ] && continue
+        ln -s "$f" "$NO_JQ_BIN/$bn" 2>/dev/null || true
+    done
+    IFS=':'
 done
+IFS="$saved_ifs"
 rc=0
 out=$(PATH="$NO_JQ_BIN" HIMMELCTL_CACHE_DIR="$PROFILE_DIR" bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || rc=$?
 assert_eq "profile exists, jq missing: rc 2" "2" "$rc"

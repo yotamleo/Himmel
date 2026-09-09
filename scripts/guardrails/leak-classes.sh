@@ -405,7 +405,11 @@ check_home_path() {
     # doubled backslash, so a JSON/log-escaped path like
     # "C:\\Users\\Jane Smith\\Documents" is still caught (a literal double # leak-allow: home-path doc example
     # backslash in the file, not a single one). # leak-allow: home-path doc example
-    local re='(^|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/c/Users/|C:/Users/|C:\\\\Users\\\\|C:\\Users\\)(([A-Za-z0-9_.${}%<>-]+( [A-Za-z0-9_.${}%<>-]+)*)([/\\]|\\\\)|([A-Za-z0-9_.${}%<>-]+)($|[^A-Za-z0-9_.${}%<>-]))'
+    # CR (public #581): the drive-letter/WSL prefix alternatives are
+    # case-insensitive on the drive letter and "Users" segment, and cover
+    # /mnt/<drive>/Users/ (WSL) alongside /<drive>/Users/ (Git Bash) --
+    # real Git Bash and WSL logs use both, and the repo targets Windows.
+    local re='(^|[^A-Za-z0-9_.$/\\-])(/home/|/[Uu]sers/|/mnt/[A-Za-z]/[Uu]sers/|/[A-Za-z]/[Uu]sers/|[A-Za-z]:/[Uu]sers/|[A-Za-z]:\\\\[Uu]sers\\\\|[A-Za-z]:\\[Uu]sers\\)(([A-Za-z0-9_.${}%<>-]+( [A-Za-z0-9_.${}%<>-]+)*)([/\\]|\\\\)|([A-Za-z0-9_.${}%<>-]+)($|[^A-Za-z0-9_.${}%<>-]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.

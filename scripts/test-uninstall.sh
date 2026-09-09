@@ -1487,7 +1487,7 @@ for hook in commit-msg pre-commit pre-push; do
     chmod 755 "$U_REPO/.git/hooks/$hook"
 done
 U4D_BEFORE="$TMP/u4d-hooks-before.txt"
-(cd "$U_REPO/.git/hooks" && sha256sum -- * | sort) > "$U4D_BEFORE"
+(cd "$U_REPO/.git/hooks" && cksum -- * | sort) > "$U4D_BEFORE"
 u_run --dry-run
 assert_rc 'U4d dry-run completes' 0 "$rc"
 assert_not_has 'U4d no halted steps' 'skipped — halted' "$out"
@@ -1495,7 +1495,7 @@ for hook in commit-msg pre-commit pre-push; do
     assert_has "U4d dry-run would-remove $hook" "DRY: would remove native gate: $U_REPO/.git/hooks/$hook" "$out"
 done
 U4D_AFTER="$TMP/u4d-hooks-after.txt"
-(cd "$U_REPO/.git/hooks" && sha256sum -- * | sort) > "$U4D_AFTER"
+(cd "$U_REPO/.git/hooks" && cksum -- * | sort) > "$U4D_AFTER"
 cmp -s "$U4D_BEFORE" "$U4D_AFTER"; same=$?
 assert_rc 'U4d hooks byte-identical across dry-run' 0 "$same"
 

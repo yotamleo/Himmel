@@ -297,6 +297,22 @@ else
     fail "T1i home-path allowlisted-with-trailing-prose (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1j: home-path, WSL /mnt/<drive>/Users/ form and case-insensitive
+# drive-letter + "Users" segment -- CodeRabbit finding on public #581: the
+# prefix alternation was case-sensitive and had no /mnt/ form, so real WSL
+# and lowercase Git Bash logs (e.g. /mnt/c/Users/<name>, /c/users/<name>)
+# passed the gate unflagged.
+r=$(new_repo)
+printf 'see /mnt/c/Users/realname/project and /c/users/realname2/other\n' > "$r/wsl.txt"  # leak-allow: home-path test fixture
+git -C "$r" add wsl.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" \
+   && grepq "$SCAN_OUT" -F "wsl.txt:1"; then
+    pass "T1j home-path: /mnt/c/Users/ (WSL) and /c/users/ (lowercase) both flagged"  # leak-allow: home-path test fixture
+else
+    fail "T1j home-path WSL/lowercase forms (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== redaction =="
 
 # T6: the reported line carries only the first 4 chars of the match + an
