@@ -413,8 +413,11 @@ jobs:
   # job log while ubuntu stays the required gate. Tightening the new OSes to
   # gating-green is the data-driven follow-up (HIMMEL-494 phase 3).
   #
-  # This is the working matrix — 6-way sharded per OS (HIMMEL-2872) so the
-  # ubuntu legs finish in parallel instead of serially. `shell-unit` below is
+  # This is the working matrix — sharded per OS (HIMMEL-2872) so the ubuntu
+  # legs finish in parallel instead of serially. The shard COUNT is spelled in
+  # exactly two places, both below and both of which must agree: the `shard:`
+  # matrix list and the `--shard …/<n>` run argument. Deliberately not repeated
+  # here — a third copy is a third thing to forget. `shell-unit` below is
   # the aggregating gate that rolls this matrix up into the one required
   # check-run context branch protection names.
   shell-unit-shard:
@@ -424,13 +427,18 @@ jobs:
         os: ${{ (github.event_name == 'schedule' || inputs.force_all_os)
                && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]')
                || fromJSON('["ubuntu-latest"]') }}
-        # shard: [1..6] fans run-shell-tests.sh across 6 runners (HIMMEL-2872).
-        # The `6` here and the `/6` in the run step below are two spellings of
+        # shard: [1..8] fans run-shell-tests.sh across 8 runners (HIMMEL-2872).
+        # The `8` here and the `/8` in the run step below are two spellings of
         # the same number — GitHub Actions has no way to derive one from the
         # other (strategy.job-total counts os×shard, not shard alone), so a
         # change to the shard count must edit both or the split silently stops
-        # being a partition.
-        shard: [1, 2, 3, 4, 5, 6]
+        # being a partition. Went from 6 to 8 because 6 measured an 18m23s
+        # slowest shard (3m18s fastest) — round-robin, not the count, dumped
+        # the corpus's two heaviest suites onto one shard (719s of its 1065s);
+        # replaying measured durations predicts 9.9m at 8 but 10.7m at 12, so
+        # more shards isn't monotonically better — a duration-aware split is
+        # the real fix (follow-up).
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     steps:
@@ -480,7 +488,7 @@ jobs:
       # SUITE_CHANGED_SINCE: only on pull_request, where a base SHA exists —
       # a docs-only PR then skips the whole corpus (run-shell-tests.sh's own
       # docs-only fast lane); push/schedule/dispatch have no PR base to diff.
-      - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/6
+      - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/8
         env:
           FAIL_LOG_DIR: failed-suite-logs
           SUITE_TIER_MODE: ${{ (github.event_name == 'schedule' || inputs.force_all_os) && 'all' || 'fast' }}
