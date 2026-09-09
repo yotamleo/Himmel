@@ -18,8 +18,9 @@
 # ${TMPDIR:-/tmp}/himmel-console-<uid>, per-uid rather than a predictable
 # shared path), CONSOLE_HEADED_ARM, CONSOLE_ARM_FOREGROUND (test seam: run
 # the arm in the foreground instead of detaching it).
-# Flag seams: --name --arm --dry-run --model --bucket --prefix
-# --deadline-min --doc (next only). See `-h`/`--help` for the full surface.
+# Flag seams: --name (both commands; on next it selects which chain to
+# continue) --arm --dry-run --model --bucket --prefix --deadline-min --doc
+# (next only). See `-h`/`--help` for the full surface.
 #
 # Exit codes: 0 ok; 1 usage/state error (letters A-Z exhausted, no
 # predecessor found, an unresolved {{PLACEHOLDER}} survived a render); 2
@@ -48,9 +49,14 @@ usage() {
     cat <<'USAGE'
 usage: console.sh new  [--name <slug>] [--arm] [--dry-run] [--model <m>]
                        [--bucket <b>] [--prefix <P>] [--deadline-min <n>]
-       console.sh next [--doc <path>] [--arm] [--dry-run] [--model <m>]
-                       [--bucket <b>] [--prefix <P>] [--deadline-min <n>]
+       console.sh next [--doc <path>] [--name <slug>] [--arm] [--dry-run]
+                       [--model <m>] [--bucket <b>] [--prefix <P>]
+                       [--deadline-min <n>]
        console.sh -h|--help
+
+--name on next selects which chain to continue; defaults to the name
+implied by --doc's own basename when --doc is given and --name is not,
+else "console".
 USAGE
 }
 
@@ -139,6 +145,7 @@ case "$CMD" in
 esac
 
 NAME="console"
+NAME_GIVEN=0
 ARM=0
 DRY_RUN=0
 MODEL=""
@@ -150,12 +157,10 @@ DOC_ARG=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --name)
-            [ "$CMD" = new ] || { err "--name is only valid for 'new'"; usage >&2; exit 1; }
             [ "$#" -ge 2 ] || { usage >&2; exit 1; }
-            NAME="$2"; shift 2 ;;
+            NAME="$2"; NAME_GIVEN=1; shift 2 ;;
         --name=*)
-            [ "$CMD" = new ] || { err "--name is only valid for 'new'"; usage >&2; exit 1; }
-            NAME="${1#--name=}"; shift ;;
+            NAME="${1#--name=}"; NAME_GIVEN=1; shift ;;
         --doc)
             [ "$CMD" = next ] || { err "--doc is only valid for 'next'"; usage >&2; exit 1; }
             [ "$#" -ge 2 ] || { usage >&2; exit 1; }
@@ -206,6 +211,20 @@ elif [ -n "${JIRA_PROJECT_KEY:-}" ]; then
 else
     prefix="$(printf '%s' "$bucket" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9')"
 fi
+# `next` without an explicit --name derives the chain name from --doc's own
+# basename (<PREFIX>-nextleg-<DATE><LETTER>-<NAME>.md) — a cross-bucket
+# --doc flow must not force the operator to also repeat --name.
+if [ "$CMD" = next ] && [ "$NAME_GIVEN" -ne 1 ]; then
+    _doc_for_name="${DOC_ARG:-${CONSOLE_DOC:-}}"
+    if [ -n "$_doc_for_name" ]; then
+        _stem_for_name="$(basename "$_doc_for_name")"
+        _stem_for_name="${_stem_for_name%.md}"
+        if [[ "$_stem_for_name" =~ ^"$prefix"-nextleg-[0-9]{4}-[0-9]{2}-[0-9]{2}[A-Z]-(.+)$ ]]; then
+            NAME="${BASH_REMATCH[1]}"
+        fi
+    fi
+fi
+
 # slugify --name too: it lands in a file path and a session name, so a raw
 # '--name ../evil' or a name with spaces must not reach either verbatim.
 name="$(slugify "$NAME")"
@@ -217,12 +236,19 @@ date="$(date +%F)"
 state_dir="$root/$slug/$bucket"
 model="${MODEL:-${CONSOLE_MODEL:-claude-fable-5-1}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
-# Per-uid, not a predictable shared path: on a multi-user host another user
-# could pre-create a fixed /tmp/himmel-console and mkdir -p would happily
-# accept their existing dir, so the arm log/signal file would land under a
-# directory they control. CONSOLE_WORK_DIR still overrides this outright.
+# The uid suffix prevents collision between DIFFERENT users on a shared
+# host; it does NOT prevent deliberate pre-creation of this exact path by
+# another local user (mkdir -p accepts an existing dir regardless of who
+# made it). A stable path is required by design here — the arming side and
+# the touching side must agree on the signal path across separate
+# invocations — so a fresh mktemp per run is not available as a fix; real
+# hardening (ownership + symlink checks, or XDG_RUNTIME_DIR) is tracked
+# separately: HIMMEL-2881. CONSOLE_WORK_DIR still overrides this outright.
 workdir="${CONSOLE_WORK_DIR:-${TMPDIR:-/tmp}/himmel-console-$(id -u)}"
-deadline_epoch=$(( $(date +%s) + DEADLINE_MIN * 60 ))
+# 10# forces base-10: DEADLINE_MIN passed the digits-only check above, but a
+# leading zero (e.g. "08") is otherwise read as octal in arithmetic context,
+# and 8/9 are not valid octal digits.
+deadline_epoch=$(( $(date +%s) + 10#$DEADLINE_MIN * 60 ))
 template_dir="${CONSOLE_TEMPLATE_DIR:-$repo/docs/handover}"
 console_template="$template_dir/console-template.md"
 handoff_template="$template_dir/console-handoff-template.md"
@@ -268,8 +294,13 @@ cmd_new() {
     echo "session: $session"
     echo "kit: $kit"
 
+    # The lock is what makes a console single-writer — starting one without
+    # it is exactly the failure the lock exists to prevent. Abort before the
+    # launch line and before any arm; the written doc is left in place
+    # (harmless — a later `new` bumps the letter).
     if ! HANDOVER_DIR="$root" bash "$repo/scripts/handover/queue-lock.sh" acquire "$doc"; then
-        err "WARNING queue-lock acquire failed for $doc (doc already written)"
+        err "WARNING queue-lock acquire failed for $doc — refusing to launch without the lock (doc left in place)"
+        exit 1
     fi
 
     echo "launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""
@@ -339,9 +370,19 @@ cmd_next() {
     # HANDOFF sits beside the predecessor's OWN doc, not in $state_dir — a
     # --doc pointing outside $state_dir (a different bucket, a different
     # root entirely) must still get its HANDOFF written next to it.
-    local predecessor_dir predecessor_handoff
+    local predecessor_dir predecessor_handoff predecessor_handoff_ref
     predecessor_dir="$(dirname "$predecessor_doc")"
     predecessor_handoff="$predecessor_dir/${predecessor_stem}-HANDOFF.md"
+    # The successor doc must be able to actually RESOLVE this reference: a
+    # bare basename only works when the HANDOFF sits in the successor's own
+    # state_dir (the common case); a cross-bucket --doc needs the absolute
+    # path, since the successor would otherwise look for it next to itself
+    # and never find it.
+    if [ "$predecessor_dir" = "$state_dir" ]; then
+        predecessor_handoff_ref="$(basename "$predecessor_handoff")"
+    else
+        predecessor_handoff_ref="$predecessor_handoff"
+    fi
     local fill_signal="$workdir/sig-$session"
     local log="$workdir/launch-$session.log"
 
@@ -361,11 +402,20 @@ cmd_next() {
         return 0
     fi
 
+    # The successor doc is never re-rendered once it exists: unlike the
+    # HANDOFF just below (existence-guarded) and `new` (which bumps the
+    # letter), a second `next --doc <same predecessor>` would otherwise
+    # silently destroy whatever the successor already wrote.
+    if [ -f "$doc" ]; then
+        err "successor doc already exists, refusing to re-render it: $doc"
+        exit 1
+    fi
+
     mkdir -p "$state_dir"
     render_template "$console_template" "$doc" \
         LETTER "$successor_letter" \
         PREDECESSOR "$predecessor_base" \
-        PREDECESSOR_HANDOFF "$(basename "$predecessor_handoff")" \
+        PREDECESSOR_HANDOFF "$predecessor_handoff_ref" \
         SESSION_NAME "$session" \
         HANDOVER_ROOT "$root" \
         STATE_DIR "$state_dir" \

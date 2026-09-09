@@ -133,12 +133,15 @@ own end-of-session hook still writing — it prunes on the next sweep.
 At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
 
 1. `/console next --arm` — writes the successor stub, writes this console's
-   `-HANDOFF.md` skeleton, and arms the successor on `{{FILL_SIGNAL}}`.
+   `-HANDOFF.md` skeleton, and arms the successor. It prints the successor's
+   signal path on its `armed:` line — **that** is the path step 3 touches, not
+   this console's own `{{FILL_SIGNAL}}` (which fired when *this* session
+   launched and nothing is waiting on any more).
 2. Fill in the HANDOFF: current head, what is in flight (leg by leg, with
    nonces and lock tokens), operator rulings made today, the held queue in
    launch order, and what wrapped. **The HANDOFF wins over this file's Results
    tail** — write it as the successor's only required read.
-3. `touch {{FILL_SIGNAL}}` to fire the arm, hand your live legs to the
-   successor by name, release your lock, and stop.
+3. `touch` the signal path step 1 printed to fire the arm, hand your live legs
+   to the successor by name, release your lock, and stop.
 
 ## Results (newest at the bottom)

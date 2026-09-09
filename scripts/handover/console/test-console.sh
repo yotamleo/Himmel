@@ -114,6 +114,7 @@ console next --bucket outsidedst --doc "$doc6bSrc" >/dev/null
 check "6b next --doc still writes the successor stub into its own state_dir" "$([ -f "$doc6bDst" ] && echo yes)" "yes"
 check "6b next --doc writes the HANDOFF beside the predecessor" "$([ -f "$handoff6bSrc" ] && echo yes)" "yes"
 check "6b next --doc does not write the HANDOFF into the successor's state_dir" "$([ -f "$handoff6bWrong" ] && echo yes || echo no)" "no"
+check "6b successor stub names a resolvable (absolute) HANDOFF reference" "$(grep -cF "$handoff6bSrc" "$doc6bDst")" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc6bSrc" "$token6ba" >/dev/null 2>&1
 
 # --- 7: next --arm with a stub arm target ------------------------------
@@ -176,5 +177,60 @@ token10="$(token_of "$out10")"
 after10_outside="$(find "$root" -type f -not -path "$root/.locks/*" -not -path "$root/tester/namebucket/*" | sort)"
 check "10 nothing written outside state_dir" "$before10" "$after10_outside"
 HANDOVER_DIR="$root" bash "$QL" release "$docNameSlug" "$token10" >/dev/null 2>&1
+
+# --- 11: next --doc <A> twice never re-renders an existing successor ----
+out11a="$(console new --bucket dupenext)"
+token11a="$(token_of "$out11a")"
+doc11A="$root/tester/dupenext/DEMO-nextleg-${today}A-console.md"
+doc11B="$root/tester/dupenext/DEMO-nextleg-${today}B-console.md"
+
+console next --bucket dupenext --doc "$doc11A" >/dev/null
+check "11 first next --doc writes B" "$([ -f "$doc11B" ] && echo yes)" "yes"
+sum11B_before="$(cksum < "$doc11B")"
+rc11=0
+console next --bucket dupenext --doc "$doc11A" >/dev/null 2>&1 || rc11=$?
+check "11 second next --doc <same A> exits non-zero" "$([ "$rc11" -ne 0 ] && echo yes)" "yes"
+sum11B_after="$(cksum < "$doc11B")"
+check "11 second next --doc <same A> leaves B byte-identical" "$sum11B_before" "$sum11B_after"
+HANDOVER_DIR="$root" bash "$QL" release "$doc11A" "$token11a" >/dev/null 2>&1
+
+# --- 12: named chains can hand over -------------------------------------
+out12a="$(console new --bucket nightbucket --name night)"
+token12a="$(token_of "$out12a")"
+doc12A="$root/tester/nightbucket/DEMO-nextleg-${today}A-night.md"
+check "12 new --name night writes A-night doc" "$([ -f "$doc12A" ] && echo yes)" "yes"
+
+console next --bucket nightbucket --name night >/dev/null
+doc12B="$root/tester/nightbucket/DEMO-nextleg-${today}B-night.md"
+check "12 next --name night writes B-night doc" "$([ -f "$doc12B" ] && echo yes)" "yes"
+HANDOVER_DIR="$root" bash "$QL" release "$doc12A" "$token12a" >/dev/null 2>&1
+
+# --- 12b: next --doc alone derives a non-default name from the basename -
+out12ba="$(console new --bucket nightsrc --name night)"
+token12ba="$(token_of "$out12ba")"
+doc12bA="$root/tester/nightsrc/DEMO-nextleg-${today}A-night.md"
+console next --bucket nightdst --doc "$doc12bA" >/dev/null
+doc12bB="$root/tester/nightdst/DEMO-nextleg-${today}B-night.md"
+check "12b next --doc (no --name) derives the chain name from the doc basename" "$([ -f "$doc12bB" ] && echo yes)" "yes"
+HANDOVER_DIR="$root" bash "$QL" release "$doc12bA" "$token12ba" >/dev/null 2>&1
+
+# --- 13: a failed queue-lock acquire aborts before the launch line -------
+lockfail_doc="$root/tester/lockfail/DEMO-nextleg-${today}A-console.md"
+foreign_out="$(HANDOVER_DIR="$root" bash "$QL" acquire "$lockfail_doc" foreign-session)"
+foreign_token="$(token_of "$foreign_out")"
+rc13=0
+out13="$(console new --bucket lockfail 2>&1)" || rc13=$?
+check "13 queue-lock acquire failure prints no launch line" "$(printf '%s\n' "$out13" | grep -c '^launch: ')" "0"
+check "13 queue-lock acquire failure exits non-zero" "$([ "$rc13" -ne 0 ] && echo yes)" "yes"
+HANDOVER_DIR="$root" bash "$QL" release "$lockfail_doc" "$foreign_token" >/dev/null 2>&1
+
+# --- 14: --deadline-min with a leading zero is not read as octal --------
+out14a="$(console new --bucket deadlinetest --dry-run --arm --deadline-min 8)"
+out14b="$(console new --bucket deadlinetest --dry-run --arm --deadline-min 08)"
+dl_a="$(printf '%s\n' "$out14a" | sed -n 's/.*deadline=\([0-9]*\).*/\1/p' | head -n 1)"
+dl_b="$(printf '%s\n' "$out14b" | sed -n 's/.*deadline=\([0-9]*\).*/\1/p' | head -n 1)"
+diff14=$(( dl_b - dl_a ))
+[ "$diff14" -ge 0 ] || diff14=$(( -diff14 ))
+check "14 --deadline-min 08 parses like 8 (no octal error)" "$([ "$diff14" -le 2 ] && echo yes)" "yes"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
