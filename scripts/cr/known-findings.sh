@@ -162,7 +162,7 @@ if (MODE === "diff") {
         const isEntryPoint = base === "bin";
         if (!tests.some(t => {
           const tDir = path.posix.dirname(t);
-          if (tDir !== dir && !tDir.startsWith(dir + "/")) return false;
+          if (dir !== "." && tDir !== dir && !tDir.startsWith(dir + "/")) return false;
           return isEntryPoint || pair.test(baseName(t));
         })) where.push(f);
       }

@@ -30,8 +30,15 @@ SCRIPT="$REPO_ROOT/scripts/guardrails/leak-classes.sh"
 . "$REPO_ROOT/scripts/lib/red-control.sh"
 
 failures=0
+skips=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
+skip() { printf '  SKIP  %s\n' "$1"; skips=$((skips+1)); }
+# T9j/T9k-T9m build filenames containing ", newline, TAB, CR -- all rejected
+# by NTFS. Skip those fixture blocks LOUDLY under Windows Git-Bash (MINGW/
+# MSYS/CYGWIN) rather than let mkdir/git add fail silently into a false
+# green (HIMMEL-2864 finding 2).
+is_windows_ntfs() { case "$(uname -s 2>/dev/null || echo x)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; *) return 1 ;; esac; }
 
 if ! WS="$(mktemp -d "${TMPDIR:-/tmp}/leak-classes-test.XXXXXX")"; then
     echo "test-leak-classes: mktemp -d failed" >&2
@@ -713,6 +720,9 @@ fi
 # git ("b/weird\"quote.txt"), which the same plain ${f#b/} strip does not
 # match at all -- the finding used to cite the raw, still-escaped header text
 # instead of the real filename. It must now cite the real, unescaped name.
+if is_windows_ntfs; then
+    skip "T9j (windows: NTFS filename)"
+else
 r=$(new_repo)
 printf 'home path /home/alexphantom/leak here\n' > "$r/weird\"quote.txt"  # leak-allow: home-path test fixture
 git -C "$r" add .
@@ -722,6 +732,7 @@ if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F 'weird"quote.txt:1' \
     pass "T9j --staged: a quote-containing filename is unquoted before being cited in a finding"
 else
     fail "T9j --staged quoted-path finding attribution (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
 fi
 
 # T9k: a filename ending in a literal trailing newline byte must decode to
@@ -733,6 +744,9 @@ fi
 # trailing newline byte would silently vanish right there and the file would
 # wrongly inherit the shorter name's exemption (/pr-check panel round 1,
 # codex-1).
+if is_windows_ntfs; then
+    skip "T9k (windows: NTFS filename)"
+else
 r=$(new_repo)
 printf 'short.txt\n' > "$r/.leak-classes-ignore"
 nlname=$'short.txt\n'
@@ -744,6 +758,7 @@ if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path"; then
 else
     fail "T9k --staged trailing-newline sentinel (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
+fi
 
 # T9l: a filename containing a literal (non-trailing) TAB byte gets fully
 # C-quoted by git with a backslash-t escape ("b/weird\ttab.txt"); the escape
@@ -754,6 +769,9 @@ fi
 # shell word, so inlining it directly on the replacement side of a
 # double-quoted `${var//pattern/replacement}` silently fails to decode at
 # all).
+if is_windows_ntfs; then
+    skip "T9l (windows: NTFS filename)"
+else
 r=$(new_repo)
 printf '%s\n' 'weird\ttab.txt' > "$r/.leak-classes-ignore"
 tabname=$'weird\ttab.txt'
@@ -765,6 +783,7 @@ if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path"; then
 else
     fail "T9l --staged embedded-tab decode (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
+fi
 
 # T9m: a filename containing a literal carriage-return byte gets fully
 # C-quoted by git with a backslash-r escape ("b/weird\rcr.txt"); the escape
@@ -772,6 +791,9 @@ fi
 # `\` and `r` (/pr-check panel round 2, codex-1: unquote_diff_path decoded
 # only \\ \" \t \n, leaving git's other named C escapes -- \r \a \b \v \f --
 # undecoded and open to the same collision as T9l's \t case).
+if is_windows_ntfs; then
+    skip "T9m (windows: NTFS filename)"
+else
 r=$(new_repo)
 printf '%s\n' 'weird\rcr.txt' > "$r/.leak-classes-ignore"
 crname=$'weird\rcr.txt'
@@ -782,6 +804,7 @@ if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path"; then
     pass "T9m --staged: a decoded name's embedded \\r escape becomes a real CR byte, not a literal backslash-r collision with an unrelated exact-file ignore entry"
 else
     fail "T9m --staged embedded-cr decode (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
 fi
 
 echo "== the real pre-commit hook fires (not just the script directly) =="
@@ -1138,7 +1161,11 @@ fi
 echo
 echo "== summary =="
 if [ "$failures" -eq 0 ]; then
-    echo "ALL PASS"
+    if [ "$skips" -gt 0 ]; then
+        echo "ALL PASS ($skips skipped)"
+    else
+        echo "ALL PASS"
+    fi
     exit 0
 else
     echo "$failures FAILURE(S)"
