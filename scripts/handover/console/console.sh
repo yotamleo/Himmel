@@ -123,7 +123,7 @@ find_free_letter() {
 # (constant for the whole invocation), not passed positionally.
 do_arm() {
     local session="$1" doc="$2" fill_signal="$3" log="$4" arm
-    mkdir -p "$workdir"
+    mkdir -p "$(dirname "$log")"
     arm="${CONSOLE_HEADED_ARM:-$HERE/../headed-arm.sh}"
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
         bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
@@ -245,6 +245,13 @@ fill_percent="${CONSOLE_FILL_PERCENT:-45}"
 # hardening (ownership + symlink checks, or XDG_RUNTIME_DIR) is tracked
 # separately: HIMMEL-2881. CONSOLE_WORK_DIR still overrides this outright.
 workdir="${CONSOLE_WORK_DIR:-${TMPDIR:-/tmp}/himmel-console-$(id -u)}"
+# Namespaced by chain identity (slug+bucket), NOT just session name: the
+# session name is keyed on <PREFIX>-nextleg-<date><letter>-<name> only (the
+# established, fleet-wide convention — out of scope to change), so two
+# chains that differ just by bucket but share prefix/date/letter/name would
+# otherwise collide on the SAME signal/log path and touching one chain's
+# signal could arm the other's successor.
+chain_dir="$workdir/${slug}-${bucket}"
 # 10# forces base-10: DEADLINE_MIN passed the digits-only check above, but a
 # leading zero (e.g. "08") is otherwise read as octal in arithmetic context,
 # and 8/9 are not valid octal digits.
@@ -257,14 +264,14 @@ kit="$repo/scripts/handover/console-kit"
 # --- new --------------------------------------------------------------
 cmd_new() {
     [ -f "$console_template" ] || { err "missing template $console_template"; exit 2; }
-    local letter
-    letter="$(find_free_letter)" || { err "all 26 letters (A-Z) are taken for today's '$name' console in $state_dir"; exit 1; }
-    local doc="$state_dir/${prefix}-nextleg-${date}${letter}-${name}.md"
-    local session="${prefix}-nextleg-${date}${letter}-${name}"
-    local fill_signal="$workdir/sig-$session"
-    local log="$workdir/launch-$session.log"
 
     if [ "$DRY_RUN" -eq 1 ]; then
+        local letter
+        letter="$(find_free_letter)" || { err "all 26 letters (A-Z) are taken for today's '$name' console in $state_dir"; exit 1; }
+        local doc="$state_dir/${prefix}-nextleg-${date}${letter}-${name}.md"
+        local session="${prefix}-nextleg-${date}${letter}-${name}"
+        local fill_signal="$chain_dir/sig-$session"
+        local log="$chain_dir/launch-$session.log"
         echo "would-doc: $doc"
         echo "would-session: $session"
         echo "would-kit: $kit"
@@ -277,6 +284,28 @@ cmd_new() {
     fi
 
     mkdir -p "$state_dir"
+    # Claim a letter by ATOMIC EXCLUSIVE CREATE, never scan-then-create (the
+    # repo's own convention — see headed-arm.sh's codex-2 note): two
+    # concurrent `new` runs racing a plain find_free_letter could both pick
+    # the same free letter, and the second would truncate the first's doc
+    # before either took its queue lock. `set -C` (noclobber) makes `: >`
+    # refuse an existing target instead of overwriting it; on a collision
+    # (either a real pre-existing doc or a losing race) this advances to the
+    # next letter rather than failing.
+    local letter doc claimed=0
+    set -C
+    for letter in {A..Z}; do
+        doc="$state_dir/${prefix}-nextleg-${date}${letter}-${name}.md"
+        if : 2>/dev/null > "$doc"; then
+            claimed=1
+            break
+        fi
+    done
+    set +C
+    [ "$claimed" -eq 1 ] || { err "all 26 letters (A-Z) are taken for today's '$name' console in $state_dir"; exit 1; }
+    local session="${prefix}-nextleg-${date}${letter}-${name}"
+    local fill_signal="$chain_dir/sig-$session"
+    local log="$chain_dir/launch-$session.log"
     render_template "$console_template" "$doc" \
         LETTER "$letter" \
         PREDECESSOR "none — first console of the chain" \
@@ -333,10 +362,12 @@ resolve_predecessor() {
     # already returns matches in sorted order, so the last one iterated is
     # the same "newest by name" `find | sort | tail -n 1` picked. An
     # unmatched glob expands to the literal pattern (no nullglob here), so
-    # each candidate is existence-checked before it can win.
-    local pattern="$state_dir/${prefix}-nextleg-*-${name}.md"
+    # each candidate is existence-checked before it can win. The directory
+    # and name stay QUOTED and only the wildcard is bare: building the whole
+    # pattern into one variable and leaving `$pattern` unquoted word-splits
+    # on IFS (a space in the handover root, say) before globbing ever runs.
     local newest="" cand
-    for cand in $pattern; do
+    for cand in "$state_dir/${prefix}-nextleg-"*"-${name}.md"; do
         [ -f "$cand" ] && newest="$cand"
     done
     [ -n "$newest" ] || return 1
@@ -383,8 +414,8 @@ cmd_next() {
     else
         predecessor_handoff_ref="$predecessor_handoff"
     fi
-    local fill_signal="$workdir/sig-$session"
-    local log="$workdir/launch-$session.log"
+    local fill_signal="$chain_dir/sig-$session"
+    local log="$chain_dir/launch-$session.log"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         echo "would-doc: $doc"
@@ -405,13 +436,20 @@ cmd_next() {
     # The successor doc is never re-rendered once it exists: unlike the
     # HANDOFF just below (existence-guarded) and `new` (which bumps the
     # letter), a second `next --doc <same predecessor>` would otherwise
-    # silently destroy whatever the successor already wrote.
-    if [ -f "$doc" ]; then
+    # silently destroy whatever the successor already wrote. Claimed the
+    # same atomic-exclusive-create way `new` claims a letter (closes the
+    # same check-then-write race), but a collision here is an ERROR, not an
+    # advance — `next` computes exactly one successor letter, never a range
+    # to retry across.
+    mkdir -p "$state_dir"
+    set -C
+    if ! : 2>/dev/null > "$doc"; then
+        set +C
         err "successor doc already exists, refusing to re-render it: $doc"
         exit 1
     fi
+    set +C
 
-    mkdir -p "$state_dir"
     render_template "$console_template" "$doc" \
         LETTER "$successor_letter" \
         PREDECESSOR "$predecessor_base" \

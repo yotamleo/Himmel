@@ -44,10 +44,15 @@ root="$tmp/handovers"
 mkdir -p "$root"
 today="$(date +%F)"
 
-console() {  # console <args...> -- invoke console.sh with cwd pinned to the
-             # fixture repo and a fixed temp handover identity.
-    ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO bash "$C" "$@" )
+console_root() {  # console_root <root> <args...> -- invoke console.sh with
+                  # cwd pinned to the fixture repo, against an ARBITRARY
+                  # handover root (used by cases exercising a non-default
+                  # root, e.g. one containing a space).
+    local r="$1"; shift
+    ( cd "$fixture_repo" && HANDOVER_DIR="$r" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO bash "$C" "$@" )
 }
+
+console() { console_root "$root" "$@"; }
 
 token_of() { printf '%s\n' "$1" | sed -n 's/^release-token: //p'; }
 
@@ -120,7 +125,10 @@ HANDOVER_DIR="$root" bash "$QL" release "$doc6bSrc" "$token6ba" >/dev/null 2>&1
 # --- 7: next --arm with a stub arm target ------------------------------
 doc7A="$root/tester/armrepo/DEMO-nextleg-${today}A-console.md"
 session7B="DEMO-nextleg-${today}B-console"
-log7B="$tmp/work/launch-${session7B}.log"
+# Signal/log live under a chain-identity subdir ($slug-$bucket), not
+# $workdir directly -- see codex-2 round-2 (bucket-only-differing chains
+# must not collide on the same signal/log path).
+log7B="$tmp/work/tester-armrepo/launch-${session7B}.log"
 
 cat > "$tmp/stub-arm.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -232,5 +240,48 @@ dl_b="$(printf '%s\n' "$out14b" | sed -n 's/.*deadline=\([0-9]*\).*/\1/p' | head
 diff14=$(( dl_b - dl_a ))
 [ "$diff14" -ge 0 ] || diff14=$(( -diff14 ))
 check "14 --deadline-min 08 parses like 8 (no octal error)" "$([ "$diff14" -le 2 ] && echo yes)" "yes"
+
+# --- 15: fallback discovery survives a space in the handover root -------
+# Predecessor dated YESTERDAY (portable epoch-based computation: GNU `date
+# -d @epoch`, falling back to BSD `date -r epoch`), so the today-letter loop
+# in resolve_predecessor misses and the glob fallback is what actually runs.
+root_sp="$tmp/adj sp"
+mkdir -p "$root_sp/tester/spacerepo"
+yesterday_epoch=$(( $(date +%s) - 86400 ))
+yesterday="$(date -u -d "@$yesterday_epoch" +%F 2>/dev/null || date -u -r "$yesterday_epoch" +%F 2>/dev/null)"
+predoc15="$root_sp/tester/spacerepo/DEMO-nextleg-${yesterday}A-console.md"
+: > "$predoc15"
+console_root "$root_sp" next --bucket spacerepo >/dev/null 2>&1
+doc15B="$root_sp/tester/spacerepo/DEMO-nextleg-${today}B-console.md"
+check "15 fallback discovery survives a space in the handover root" "$([ -f "$doc15B" ] && echo yes)" "yes"
+
+# --- 16: new advances past an already-claimed letter --------------------
+# Closes the check-then-write race: two concurrent `new` runs could
+# otherwise both pick the same free letter, and the second would truncate
+# the first's doc before either took its queue lock.
+mkdir -p "$root/tester/racetest"
+racetest_docA="$root/tester/racetest/DEMO-nextleg-${today}A-console.md"
+printf 'pre-existing content that must survive\n' > "$racetest_docA"
+sum_racetestA_before="$(cksum < "$racetest_docA")"
+out16="$(console new --bucket racetest)"
+token16="$(token_of "$out16")"
+racetest_docB="$root/tester/racetest/DEMO-nextleg-${today}B-console.md"
+check "16 new advances past an already-claimed letter" "$([ -f "$racetest_docB" ] && echo yes)" "yes"
+sum_racetestA_after="$(cksum < "$racetest_docA")"
+check "16 the already-claimed doc is left untouched" "$sum_racetestA_before" "$sum_racetestA_after"
+HANDOVER_DIR="$root" bash "$QL" release "$racetest_docB" "$token16" >/dev/null 2>&1
+
+# --- 17: chains differing only by --bucket get different signal/log paths
+# The session-name shape (<PREFIX>-nextleg-<date><letter>-<name>) is
+# unchanged and thus identical between these two calls; only the work-dir
+# path is namespaced by chain identity (slug+bucket).
+out17a="$(console new --bucket bucketa --dry-run --arm)"
+out17b="$(console new --bucket bucketb --dry-run --arm)"
+sig17a="$(printf '%s\n' "$out17a" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+sig17b="$(printf '%s\n' "$out17b" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+log17a="$(printf '%s\n' "$out17a" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 1)"
+log17b="$(printf '%s\n' "$out17b" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 1)"
+check "17 signal path differs when only --bucket differs" "$([ -n "$sig17a" ] && [ "$sig17a" != "$sig17b" ] && echo yes)" "yes"
+check "17 log path differs when only --bucket differs" "$([ -n "$log17a" ] && [ "$log17a" != "$log17b" ] && echo yes)" "yes"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
