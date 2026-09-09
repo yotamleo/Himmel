@@ -25,7 +25,10 @@ C="$HERE/console.sh"
 REPO_REAL="$(cd "$HERE/../../.." && pwd)"
 QL="$REPO_REAL/scripts/handover/queue-lock.sh"
 
-tmp="$(mktemp -d)"
+# Templated (BSD/macOS mktemp requires one); refuse loudly on failure BEFORE
+# the EXIT trap is registered — an empty $tmp would otherwise make the trap
+# clean up the wrong thing.
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/console-test.XXXXXX")" || { echo "test-console: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 
 fails=0

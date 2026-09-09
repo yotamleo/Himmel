@@ -298,8 +298,16 @@ resolve_predecessor() {
         cand="$state_dir/${prefix}-nextleg-${date}${l}-${name}.md"
         [ -f "$cand" ] && { printf '%s' "$cand"; return 0; }
     done
-    local newest
-    newest="$(find "$state_dir" -maxdepth 1 -type f -name "${prefix}-nextleg-*-${name}.md" 2>/dev/null | sort | tail -n 1)"
+    # Glob instead of `find -maxdepth` (GNU-only): bash pathname expansion
+    # already returns matches in sorted order, so the last one iterated is
+    # the same "newest by name" `find | sort | tail -n 1` picked. An
+    # unmatched glob expands to the literal pattern (no nullglob here), so
+    # each candidate is existence-checked before it can win.
+    local pattern="$state_dir/${prefix}-nextleg-*-${name}.md"
+    local newest="" cand
+    for cand in $pattern; do
+        [ -f "$cand" ] && newest="$cand"
+    done
     [ -n "$newest" ] || return 1
     printf '%s' "$newest"
 }

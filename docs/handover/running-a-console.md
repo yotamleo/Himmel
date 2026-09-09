@@ -47,7 +47,7 @@ bullet** — releasing the lock at wrap requires it.
 
 Finally it prints the launch line. Run it in a terminal of its own:
 
-```
+```text
 claude --model <model> --autocompact auto -n <session-name> "load <doc> and continue"
 ```
 
