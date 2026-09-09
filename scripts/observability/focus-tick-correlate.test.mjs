@@ -12,12 +12,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(HERE, 'focus-tick-correlate.mjs');
 
 let TMP;
-before(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'focus-tick-correlate-')); });
+before(() => { TMP = makeTmpDir('focus-tick-correlate-'); });
 after(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 let fixtureCounter = 0;

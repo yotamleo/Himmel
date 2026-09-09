@@ -2,8 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -83,7 +83,7 @@ test('aggregate() flags an unresolvable transcript as missing (spec §6.1 hard i
 });
 
 test('CLI: aggregate-tokens.mjs exits 0 and emits cost-annotated rows for a fully-resolved runs/ dir', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-aggregate-cli-'));
+  const runsDir = makeTmpDir('bench-aggregate-cli-');
   writeRunManifest(runsDir, buildRunRecord({
     run_id: 'T7-haiku-1', task: 'T7', cell: 'haiku', rep: 1, model: 'claude-haiku-4-5',
     effort: 'low', prompt_sha256: 'h', fixture_path: '/tmp/a', transcript_path: HAIKU_SAMPLE,
@@ -100,7 +100,7 @@ test('CLI: aggregate-tokens.mjs exits 0 and emits cost-annotated rows for a full
 });
 
 test('CLI: aggregate-tokens.mjs exits NONZERO when a dispatch has no resolvable transcript', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-aggregate-cli-missing-'));
+  const runsDir = makeTmpDir('bench-aggregate-cli-missing-');
   writeRunManifest(runsDir, buildRunRecord({
     run_id: 'T7-luna-1', task: 'T7', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
     effort: 'high', prompt_sha256: 'h', fixture_path: '/tmp/nonexistent-fixture-path-xyz',

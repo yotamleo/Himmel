@@ -33,12 +33,18 @@ import json, sys
 m = json.load(open(sys.argv[1]))
 for p in m.get("plugins", []):
     s = p.get("source")
-    if isinstance(s, dict) and s.get("source") in ("github", "url") and s.get("ref"):
+    if isinstance(s, dict) and s.get("source") in ("github", "url") and (s.get("ref") or s.get("sha")):
         print(p["name"])
 PY
 )"
 if grepq "$pins" -x "claude-obsidian"; then ok "parser finds claude-obsidian pin"; else bad "parser missing claude-obsidian"; fi
 if grepq "$pins" -x "obsidian"; then bad "obsidian pin still present — should have been dropped (HIMMEL-435)"; else ok "obsidian (kepano) pin absent — dropped as expected"; fi
+# HIMMEL-2854: plannotator-effective-html is pinned by `sha`, not `ref`
+# (marketplace/.claude-plugin/marketplace.json) — a predicate that only
+# checks `ref` silently drops it from the pinned-remotes inventory this
+# mirror feeds, even though the production parser (check-plugin-drift.sh)
+# already accepts `ref or sha`.
+if grepq "$pins" -x "plannotator-effective-html"; then ok "parser finds plannotator-effective-html SHA-only pin"; else bad "parser missing plannotator-effective-html (SHA-only pin)"; fi
 
 # 3. Every fork UPSTREAM_PIN carries the generic fields the checker reads.
 for pin in "$ROOT"/marketplace/plugins/*/UPSTREAM_PIN; do
@@ -77,9 +83,9 @@ def repo_of(s):
     return ""
 for p in m.get("plugins", []):
     s = p.get("source")
-    if isinstance(s, dict) and s.get("source") in ("github", "url") and s.get("ref"):
+    if isinstance(s, dict) and s.get("source") in ("github", "url") and (s.get("ref") or s.get("sha")):
         o = ups.get(p["name"]) or {}
-        print("|".join([p["name"], repo_of(s), s["ref"],
+        print("|".join([p["name"], repo_of(s), s.get("ref") or s.get("sha"),
                         o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", "")]))
 PY
 )"

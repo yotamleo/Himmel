@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -95,7 +95,7 @@ test('bank annotation keeps "free" attached to its window across MULTI-reading d
 });
 
 test('bank-status CLI reports GLM 5h and Codex weekly headroom', { skip: BUN_SKIP }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-'));
+  const dir = makeTmpDir('lane-bank-');
   const registry = fixtureRegistry(dir);
   const cache = codexCacheFile(dir, 14);
   const ledger = join(dir, 'quota-gauge.jsonl');
@@ -114,7 +114,7 @@ test('bank-status CLI reports GLM 5h and Codex weekly headroom', { skip: BUN_SKI
 });
 
 test('bank-status CLI names an unreadable Codex bank instead of silently reporting unknown', { skip: BUN_SKIP }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-missing-'));
+  const dir = makeTmpDir('lane-bank-missing-');
   const registry = fixtureRegistry(dir);
   const out = execFileSync('bun', [BANK_STATUS], {
     encoding: 'utf8',
@@ -145,7 +145,7 @@ function glmLedgerLine({ usedPct, resetAt }) {
 test('bank-status CLI reports an exhausted GLM lane as spent, not funded', { skip: BUN_SKIP }, () => {
   // Regression (HIMMEL-1678): when the GLM read was deleted, an exhausted GLM
   // A LIVE required-window reading at/over the threshold must be spent.
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-glm-spent-'));
+  const dir = makeTmpDir('lane-bank-glm-spent-');
   const registry = fixtureRegistry(dir);
   const ledger = join(dir, 'quota-gauge.jsonl');
   writeFileSync(ledger, glmLedgerLine({ usedPct: 80, resetAt: new Date(Date.now() + 3600_000).toISOString() }) + '\n');
@@ -170,7 +170,7 @@ test('bank-status CLI reports an expired GLM resets_at window as flat-rate, not 
   // "unmeasurable" either (HIMMEL-1678): the z.ai plan is flat-rate, so the
   // honest state is not-applicable — `unknown` read like a defect while the
   // lane is always-available.
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-glm-expired-'));
+  const dir = makeTmpDir('lane-bank-glm-expired-');
   const registry = fixtureRegistry(dir);
   const ledger = join(dir, 'quota-gauge.jsonl');
   writeFileSync(ledger, glmLedgerLine({ usedPct: 80, resetAt: new Date(Date.now() - 3600_000).toISOString() }) + '\n');
@@ -190,7 +190,7 @@ test('bank-status CLI reports an expired GLM resets_at window as flat-rate, not 
 });
 
 test('/lanes output surfaces limit structure, binding windows, and measured bank data', { skip: BUN_SKIP }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-output-'));
+  const dir = makeTmpDir('lane-output-');
   const registry = fixtureRegistry(dir);
   const cache = codexCacheFile(dir, 14);
   const ledger = join(dir, 'quota-gauge.jsonl');
@@ -374,7 +374,7 @@ function writeRegistry(dir, lanes) {
 }
 
 test('bank-status CLI: a subscription path declaring no windows is unknown, not fail-open funded', { skip: BUN_SKIP }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-emptywin-'));
+  const dir = makeTmpDir('lane-bank-emptywin-');
   const registry = writeRegistry(dir, [
     { id: 'nosub', quota: { bank: 'glm', accessPaths: [{ kind: 'subscription', windows: [] }], activeAccessPath: 0 } },
   ]);
@@ -395,7 +395,7 @@ test('bank-status CLI: a subscription path declaring no windows is unknown, not 
 });
 
 test('bank-status CLI: an active metered-api-key path stays funded even when the subscription ledger is dead', { skip: BUN_SKIP }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-metered-'));
+  const dir = makeTmpDir('lane-bank-metered-');
   const registry = writeRegistry(dir, [
     { id: 'payg', quota: { bank: 'glm', accessPaths: [{ kind: 'subscription', windows: ['5h'] }, { kind: 'metered-api-key', provider: 'z.ai', windows: [] }], activeAccessPath: 1 } },
   ]);
@@ -414,7 +414,7 @@ test('bank-status CLI: an active metered-api-key path stays funded even when the
 });
 
 test('bank-status CLI: out-of-range activeAccessPath reports unknown with a stderr diagnostic', { skip: BUN_SKIP }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-oor-'));
+  const dir = makeTmpDir('lane-bank-oor-');
   const registry = writeRegistry(dir, [
     { id: 'oor', quota: { bank: 'codex', accessPaths: [{ kind: 'subscription', windows: ['weekly'] }, { kind: 'metered-api-key', windows: [] }], activeAccessPath: 3 } },
   ]);
@@ -428,7 +428,7 @@ test('bank-status CLI: out-of-range activeAccessPath reports unknown with a stde
 });
 
 test('bank-status CLI: a lane with no accessPaths at all is unknown, whatever the bank read', { skip: BUN_SKIP }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-nopath-'));
+  const dir = makeTmpDir('lane-bank-nopath-');
   const registry = writeRegistry(dir, [{ id: 'nopath', quota: { bank: 'glm' } }]);
   const ledger = join(dir, 'quota-gauge.jsonl');
   writeFileSync(ledger, glmLedgerLine({ usedPct: 2, resetAt: new Date(Date.now() + 3600_000).toISOString() }) + '\n');
@@ -453,7 +453,7 @@ test('the SHIPPED lanes.json stays guardable end-to-end against the reader contr
   // ["5h"]. This test reads the SHIPPED registry and feeds each bank a
   // fixture its reader really emits; any declared window no reader emits, or
   // an out-of-range activeAccessPath, flips a lane to unknown and fails here.
-  const dir = mkdtempSync(join(tmpdir(), 'lane-bank-shipped-'));
+  const dir = makeTmpDir('lane-bank-shipped-');
   const ledger = join(dir, 'quota-gauge.jsonl');
   const cache = join(dir, 'statusline-cache.json');
   const codexCache = codexCacheFile(dir, 14);

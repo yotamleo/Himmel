@@ -12,10 +12,10 @@
 // by-key read (an open PR / a ledger breadcrumb seeds it into activeKeys).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { jiraQueries, main } from '../collect.mjs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 const statusOf = (q) => q[q.indexOf('--status') + 1];
 const isStatusQuery = (q) => q.includes('--status');
@@ -58,7 +58,7 @@ test('jiraQueries: sanitizes keys so a malformed entry cannot inject JQL', () =>
 });
 
 test('main: derives active in-flight ticket keys from the ledger and scopes the by-key read to them', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-jira-limit-'));
+  const dir = makeTmpDir('waw-jira-limit-');
   const ledger = join(dir, 'ledger.jsonl');
   writeFileSync(ledger, [
     JSON.stringify({ ts: '2026-01-01T00:00:00Z', source: 'jira', key: 'HIMMEL-1', kind: 'ticket', status: 'in-progress' }),
@@ -77,7 +77,7 @@ test('main: derives active in-flight ticket keys from the ledger and scopes the 
 });
 
 test('main: a footprint-bearing To-Do ticket surfaces as a to-do record via the by-key read (end-to-end, no blanket To-Do read)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-jira-todo-'));
+  const dir = makeTmpDir('waw-jira-todo-');
   const ledger = join(dir, 'ledger.jsonl');
   // Prior-pass breadcrumb: HIMMEL-9 was in-progress, so it is a non-terminal
   // ledger key and activeTicketKeys seeds it into the by-key read.

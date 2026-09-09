@@ -1116,8 +1116,10 @@ explicit per-invocation flag still wins over both.
 
 ## Editing `scripts/hooks/*.sh` needs the integrity bypass in the launching shell
 
-The hook-integrity guard (`block-edit-live-settings.sh` / `block-jira-compound-write.sh`
-and siblings) treats any `scripts/hooks/*.sh` file that differs from `HEAD` as
+The hook-integrity guard (`scripts/hooks/record-hook-integrity.sh` pins HEAD
+blob hashes at session start; `scripts/hooks/hook-integrity.js`, run via
+`run-hook-with-bash.js`, compares on-disk hashes against them) treats any
+`scripts/hooks/*.sh` file that differs from `HEAD` as
 tampering and blocks every subsequent Bash/Edit call in the session until the
 file is committed — including the very edit you are mid-way through. Set
 `HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1` in the shell that LAUNCHES the session

@@ -1,9 +1,9 @@
 // scripts/lanes/tests/resolve.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { delimiter } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -51,10 +51,10 @@ test('free-bank CLI lanes (copilot/agy/ollama) resolve via PATH (HIMMEL-780)', (
   }
 });
 test('buildCtx pathHas does real PATH/PATHEXT lookup (HIMMEL-780 follow-through)', () => {
-  const bin = mkdtempSync(join(tmpdir(), 'lanes-bin-'));
+  const bin = makeTmpDir('lanes-bin-');
   writeFileSync(join(bin, 'copilot.cmd'), '@echo off\n');
   writeFileSync(join(bin, 'agy'), '#!/bin/sh\n');
-  const repo = mkdtempSync(join(tmpdir(), 'lanes-repo-'));
+  const repo = makeTmpDir('lanes-repo-');
   const { pathHas } = buildCtx(repo, { PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD' });
   if (process.platform === 'win32') {
     assert.equal(pathHas('copilot'), true, 'PATHEXT .cmd shim should resolve on Windows');
@@ -66,8 +66,8 @@ test('buildCtx pathHas does real PATH/PATHEXT lookup (HIMMEL-780 follow-through)
   assert.equal(pathHas('missing-cli'), false);
 });
 test('buildCtx installed.hermes accepts only a real interpreter, matching resolve-hermes-py.sh', () => {
-  const repo = mkdtempSync(join(tmpdir(), 'lanes-repo-'));
-  const home = mkdtempSync(join(tmpdir(), 'lanes-hermes-'));
+  const repo = makeTmpDir('lanes-repo-');
+  const home = makeTmpDir('lanes-hermes-');
   // installed.hermes must mean "invoke.sh will find an interpreter". The shell
   // resolver tests `[ -x ]`, so anything it would reject must be rejected here
   // too -- otherwise the lane resolves and dispatch exits 3 after provisioning.
@@ -95,18 +95,18 @@ test('buildCtx installed.hermes accepts only a real interpreter, matching resolv
 
   // Pins the round-10 removal: a hermes/hermes-agent shim on PATH must NOT make
   // the lane resolve, because resolve-hermes-py.sh never reads PATH.
-  const bin = mkdtempSync(join(tmpdir(), 'lanes-shim-'));
+  const bin = makeTmpDir('lanes-shim-');
   for (const nm of ['hermes', 'hermes.cmd', 'hermes-agent', 'hermes-agent.cmd']) {
     writeFileSync(join(bin, nm), 'shim');
     chmodSync(join(bin, nm), 0o755);
   }
-  const shimEnv = { PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD', HERMES_HOME: mkdtempSync(join(tmpdir(), 'lanes-empty-')) };
+  const shimEnv = { PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD', HERMES_HOME: makeTmpDir('lanes-empty-') };
   const shimCtx = buildCtx(repo, shimEnv);
   assert.equal(shimCtx.pathHas('hermes'), true, 'fixture must really put a shim on PATH');
   assert.equal(shimCtx.installed.hermes, false, 'a PATH shim is not an interpreter');
 });
 test('every "installed" probe names a tool buildCtx actually populates (HIMMEL-780 lockstep guard)', () => {
-  const populated = Object.keys(buildCtx(mkdtempSync(join(tmpdir(), 'lanes-ctx-')), {}).installed);
+  const populated = Object.keys(buildCtx(makeTmpDir('lanes-ctx-'), {}).installed);
   for (const l of REG.lanes) {
     if (l.probe?.kind !== 'installed') continue;
     assert.ok(populated.includes(l.probe.tool),
@@ -169,7 +169,7 @@ test('absent profile allowlist preserves the pre-profile inventory', () => {
 });
 
 test('/lanes text distinguishes suppressed-by-profile while --json stays effective-only', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lanes-profile-'));
+  const dir = makeTmpDir('lanes-profile-');
   const file = join(dir, 'registry.json');
   writeFileSync(file, JSON.stringify({
     profileAllowlist: [],
@@ -190,7 +190,7 @@ test('/lanes text distinguishes suppressed-by-profile while --json stays effecti
 // HIMMEL-1967 — a registry-declared dormant lane must show as dormant in the
 // /lanes text (not silently listed as if it were routable).
 test('/lanes text flags a dormant lane with its reason and opt-in env', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lanes-dormant-'));
+  const dir = makeTmpDir('lanes-dormant-');
   const file = join(dir, 'registry.json');
   writeFileSync(file, JSON.stringify({
     lanes: [
@@ -538,7 +538,7 @@ test('applyLaneOverride: force-on extends a LEGACY scope-less allowlist too', ()
 });
 test('writeProfileAllowlist: malformed overlays are refused without changing file bytes', () => {
   for (const raw of ['{"lanes":{"bad":true}}\n', '[{"id":"a"}]\n']) {
-    const dir = mkdtempSync(join(tmpdir(), 'lanes-malformed-'));
+    const dir = makeTmpDir('lanes-malformed-');
     const file = join(dir, 'lanes.local.json');
     writeFileSync(file, raw);
     assert.throws(

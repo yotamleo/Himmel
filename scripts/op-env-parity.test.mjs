@@ -3,10 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from './lib/test-tmpdir.mjs';
 import { parseEnvKeys, parseOpKeys, diffKeys, formatReport } from './op-env-parity.mjs';
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'op-env-parity.mjs');
@@ -19,7 +19,7 @@ function runCli(args, { input } = {}) {
 
 /** Make a throwaway temp dir with named files; returns { dir, path(name) } and auto-cleanup via t.after. */
 function tmpFiles(t, files) {
-  const dir = mkdtempSync(join(tmpdir(), 'op-env-parity-test-'));
+  const dir = makeTmpDir('op-env-parity-test-');
   for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   return { dir, path: (name) => join(dir, name) };

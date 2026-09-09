@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WIRER = join(HERE, 'wire-plugin-hook-bash.mjs');
@@ -77,7 +77,7 @@ function unwire(text) {
 }
 
 function withFixture(run, { wired = false } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'wire-plugin-hook-bash-'));
+  const dir = makeTmpDir('wire-plugin-hook-bash-');
   const fixture = join(dir, 'hooks.json');
   try {
     const source = readFileSync(PLUGIN_HOOKS, 'utf8');

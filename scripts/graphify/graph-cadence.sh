@@ -585,8 +585,20 @@ fi
 # just runs every fire, throttled only by this cadence's own external
 # schedule (6h, HIMMEL-2095) -- exactly what the .gitignore promise says.
 PUBLISH_POSSIBLE=1
+GRAPH_JSON_OBJECT_UNREADABLE=0
 if ! git -C "$HIMMEL_ROOT" cat-file -e "origin/main:graphify-out/graph.json" 2>/dev/null; then
     PUBLISH_POSSIBLE=0
+    # cat-file -e alone cannot tell "path absent" (the HIMMEL-2705 retired
+    # steady state, handled by the plain message below) apart from "path IS
+    # tracked but its object could not be read" (corrupt/partial clone,
+    # missing objects -- PR #2272 round-3). ls-tree only reads the TREE
+    # object, so it still lists the path even when the blob itself is
+    # unreadable -- distinguish the two and say so loudly; PUBLISH_POSSIBLE
+    # stays 0 either way (fail closed).
+    if [ -n "$(git -C "$HIMMEL_ROOT" ls-tree origin/main -- graphify-out/graph.json 2>/dev/null)" ]; then
+        GRAPH_JSON_OBJECT_UNREADABLE=1
+        echo "graph-cadence: WARN graphify-out/graph.json is listed in origin/main's tree but its object could not be read (corrupt or partial clone?) -- treating as unpublishable this run, NOT the permanent HIMMEL-2705 retired-path skip" >&2
+    fi
 fi
 
 if [ "$PUBLISH_POSSIBLE" -eq 1 ]; then
@@ -613,6 +625,8 @@ if [ "$PUBLISH_POSSIBLE" -eq 1 ]; then
         exit 0
     fi
     echo "graph-cadence: $MERGES_BEHIND commit(s) behind origin/main (threshold $THRESHOLD) -- refreshing"
+elif [ "$GRAPH_JSON_OBJECT_UNREADABLE" -eq 1 ]; then
+    : # already reported by the loud WARN above; nothing more to say here
 else
     echo "graph-cadence: origin/main does not track graphify-out/graph.json (HIMMEL-2705 step 1: retired from the git tree) -- publish/merge will no-op this run, but the local AST-only refresh (step 5) still runs"
 fi

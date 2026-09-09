@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 import {
   ENTRIES, install, recorderCapabilities, remove, statusOf, writeAtomic,
@@ -24,7 +25,7 @@ const SCRIPT = path.join(HERE, '..', 'wire-trust-hooks.mjs');
 const REAL_RECORDER = path.join(HERE, '..', 'shadow-ledger.mjs');
 
 let TMP;
-before(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wire-trust-')); });
+before(() => { TMP = makeTmpDir('wire-trust-'); });
 after(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 // A settings file shaped like the real one: existing hooks that are NOT ours,

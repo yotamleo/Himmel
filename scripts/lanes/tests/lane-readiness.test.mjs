@@ -4,8 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { trailingPasses, laneStates, remedyFor, REMEDY_HINTS } from '../lane-readiness.mjs';
@@ -118,7 +118,7 @@ test('remedyFor a lane with no hint returns undefined', () => {
 });
 
 test('CLI: down lane with a hint prints the hint on stderr, not stdout, and the stdout line stays a clean two-token verdict', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-readiness-'));
+  const dir = makeTmpDir('lane-readiness-');
   const registryPath = join(dir, 'lanes.json');
   writeFileSync(registryPath, JSON.stringify({ lanes: [gated('claudex', 10), { id: 'sonnet' }] }));
   const result = spawnSync(process.execPath, [SCRIPT], {
@@ -131,7 +131,7 @@ test('CLI: down lane with a hint prints the hint on stderr, not stdout, and the 
 });
 
 test('CLI: down lane with no registered hint prints nothing extra on stderr', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-readiness-'));
+  const dir = makeTmpDir('lane-readiness-');
   const registryPath = join(dir, 'lanes.json');
   writeFileSync(registryPath, JSON.stringify({ lanes: [gated('glm', 10)] }));
   const result = spawnSync(process.execPath, [SCRIPT], {
@@ -144,7 +144,7 @@ test('CLI: down lane with no registered hint prints nothing extra on stderr', ()
 });
 
 test('CLI: a ready lane never prints a remedy hint even if one is registered', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'lane-readiness-'));
+  const dir = makeTmpDir('lane-readiness-');
   const registryPath = join(dir, 'lanes.json');
   writeFileSync(registryPath, JSON.stringify({ lanes: [{ id: 'claudex' }] }));
   const result = spawnSync(process.execPath, [SCRIPT], {

@@ -5,12 +5,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { readRecords } from '../lib/ledger.mjs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 const N = 8;   // number of concurrent worker processes
 const K = 25;  // records per worker
@@ -54,7 +54,7 @@ if (result.dropped > 0) {
 }
 
 test('concurrent append: N*K records, no torn lines, no loss', { timeout: 120000 }, async () => {
-  const tmpDir = mkdtempSync(join(tmpdir(), 'waw-conc-'));
+  const tmpDir = makeTmpDir('waw-conc-');
   const ledgerPath = join(tmpDir, 'ledger.jsonl');
 
   // Write the worker source to a temp file so we can pass it via stdin

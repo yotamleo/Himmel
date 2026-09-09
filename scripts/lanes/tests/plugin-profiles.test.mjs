@@ -2,9 +2,9 @@
 // HIMMEL-1040 — resolver invariants for the named plugin-profile registry.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { resolveProfile, validateRegistry, parseAddPlugins, loadRegistry, readEnabledPluginIds, resolveProfileByName } from '../plugin-profiles.mjs';
@@ -153,8 +153,8 @@ test('opts.installed cannot disable the floor or an enabled profile plugin', () 
 // INCLUSION of the seeded ids (and the fail-closed behaviour), not exact equality —
 // asserting equality would be asserting the test host's own config.
 test('readEnabledPluginIds unions USER + PROJECT + LOCAL settings layers', () => {
-  const home = mkdtempSync(join(tmpdir(), 'pp-home-'));
-  const cwd = mkdtempSync(join(tmpdir(), 'pp-cwd-'));
+  const home = makeTmpDir('pp-home-');
+  const cwd = makeTmpDir('pp-cwd-');
   mkdirSync(join(home, '.claude'), { recursive: true });
   mkdirSync(join(cwd, '.claude'), { recursive: true });
   writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'user@m': true } }));
@@ -170,8 +170,8 @@ test('readEnabledPluginIds unions USER + PROJECT + LOCAL settings layers', () =>
 test('readEnabledPluginIds honours an explicit configDir (the child\'s effective CLAUDE_CONFIG_DIR)', () => {
   // The child reads whatever CLAUDE_CONFIG_DIR it inherits — not always <home>/.claude.
   // Scanning the wrong dir would miss an uncatalogued plugin enabled in the ACTIVE one.
-  const home = mkdtempSync(join(tmpdir(), 'pp-home4-'));
-  const alt = mkdtempSync(join(tmpdir(), 'pp-altcfg-'));
+  const home = makeTmpDir('pp-home4-');
+  const alt = makeTmpDir('pp-altcfg-');
   mkdirSync(join(home, '.claude'), { recursive: true });
   writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'home-only@m': true } }));
   writeFileSync(join(alt, 'settings.json'), JSON.stringify({ enabledPlugins: { 'altcfg-only@m': true } }));
@@ -183,8 +183,8 @@ test('readEnabledPluginIds honours an explicit configDir (the child\'s effective
 test('readEnabledPluginIds walks ANCESTORS (a worktree inherits the main checkout layers)', () => {
   // himmel worktrees live INSIDE the main checkout, so an ancestor's settings are
   // active for the worker — reading only the leaf dir would miss them.
-  const home = mkdtempSync(join(tmpdir(), 'pp-home3-'));
-  const root = mkdtempSync(join(tmpdir(), 'pp-root-'));
+  const home = makeTmpDir('pp-home3-');
+  const root = makeTmpDir('pp-root-');
   const leaf = join(root, '.claude', 'worktrees', 'glm+x');
   mkdirSync(join(root, '.claude'), { recursive: true });
   mkdirSync(leaf, { recursive: true });
@@ -194,8 +194,8 @@ test('readEnabledPluginIds walks ANCESTORS (a worktree inherits the main checkou
 });
 
 test('readEnabledPluginIds: an ABSENT layer is no-opinion; an UNPARSEABLE layer FAILS CLOSED', () => {
-  const home = mkdtempSync(join(tmpdir(), 'pp-home2-'));
-  const cwd = mkdtempSync(join(tmpdir(), 'pp-cwd2-'));
+  const home = makeTmpDir('pp-home2-');
+  const cwd = makeTmpDir('pp-cwd2-');
   // absent layers must not throw (the normal case: most repos have no settings.local.json)
   assert.doesNotThrow(() => readEnabledPluginIds(home, cwd));
   // a layer that EXISTS but cannot be parsed must throw — we cannot know the
@@ -210,7 +210,7 @@ test('readEnabledPluginIds: an ABSENT layer is no-opinion; an UNPARSEABLE layer 
 });
 
 test('resolveProfileByName FAILS CLOSED on an invalid registry (guard, not just --validate)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'pp-reg-'));
+  const dir = makeTmpDir('pp-reg-');
   const bad = join(dir, 'bad.json');
   // floor id missing from catalog => the complete-map guarantee cannot hold
   writeFileSync(bad, JSON.stringify({ floor: ['a@m', 'b@m'], catalog: ['a@m'], profiles: { operator: null, 'lane-impl': { enable: [] } } }));
@@ -372,9 +372,9 @@ test('CLI: node plugin-profiles.mjs bare prints exactly the three shipped floor 
   // happens to be on that machine. Point it at a clean tmpdir fixture instead,
   // the same pattern the codex-adv-1 regression test below already uses.
   const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
-  const home = mkdtempSync(join(tmpdir(), 'pp-cli-bare-home-'));
+  const home = makeTmpDir('pp-cli-bare-home-');
   const configDir = join(home, '.claude');
-  const cwd = mkdtempSync(join(tmpdir(), 'pp-cli-bare-cwd-'));
+  const cwd = makeTmpDir('pp-cli-bare-cwd-');
   const run = spawnSync(process.execPath, [cli, 'bare'], {
     encoding: 'utf8',
     cwd,
@@ -508,9 +508,9 @@ test('validateRegistry: mcpCatalog url/command/args — ordinary filesystem path
 
 test('regression (finding 1, codex-adv-1): CLI uses the child effective CLAUDE_CONFIG_DIR for its installed-plugin baseline', () => {
   const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
-  const home = mkdtempSync(join(tmpdir(), 'pp-cli-home-'));
-  const configDir = mkdtempSync(join(tmpdir(), 'pp-cli-config-'));
-  const cwd = mkdtempSync(join(tmpdir(), 'pp-cli-cwd-'));
+  const home = makeTmpDir('pp-cli-home-');
+  const configDir = makeTmpDir('pp-cli-config-');
+  const cwd = makeTmpDir('pp-cli-cwd-');
   mkdirSync(join(home, '.claude'), { recursive: true });
   writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'wrong-user-config@somewhere': true } }));
   writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'sneaky@somewhere': true } }));

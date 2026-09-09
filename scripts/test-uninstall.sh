@@ -662,6 +662,13 @@ for hook in commit-msg pre-commit pre-push; do
     if [ ! -x "$H_PROJECT/.git/hooks/$hook" ]; then echo "FAIL SC6H $hook seeded"; FAILED=$((FAILED + 1)); fi
 done
 mkdir -p "$TMP/h-home"
+# HIMMEL-2843: adopt.sh (HIMMEL-2814) reliably populates
+# <hooks_dir>/himmel-payload — the shared fallback copy of scripts/hooks the
+# native gate dispatchers use — alongside the marker-bearing hook files
+# themselves. Seed it here so the same [5/8] run proves it is removed too.
+mkdir -p "$H_PROJECT/.git/hooks/himmel-payload"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$H_PROJECT/.git/hooks/himmel-payload/pre-commit-hook.sh"
+chmod 755 "$H_PROJECT/.git/hooks/himmel-payload/pre-commit-hook.sh"
 out=$(cd "$H_PROJECT" && HOME="$TMP/h-home" PATH="$H_BIN:$HBIN" \
     TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel" BRIDGE_ROOT="$TMP/h-none-bridge" \
     HIMMELCTL_CACHE_DIR="$TMP/h-cache" \
@@ -673,6 +680,245 @@ for hook in commit-msg pre-commit pre-push; do
     if [ ! -e "$H_PROJECT/.git/hooks/$hook" ]; then echo "PASS SC6H $hook removed"
     else echo "FAIL SC6H $hook survived"; FAILED=$((FAILED + 1)); fi
 done
+assert_has "SC6H removed native payload reported" "removed native payload: $H_PROJECT/.git/hooks/himmel-payload" "$out"
+if [ ! -e "$H_PROJECT/.git/hooks/himmel-payload" ]; then echo "PASS SC6H payload dir removed"
+else echo "FAIL SC6H payload dir survived"; FAILED=$((FAILED + 1)); fi
+
+# ── SC6I (HIMMEL-2843): no payload dir present → no payload line, no error ──
+H_PROJECT2="$TMP/h-project2"
+mkdir -p "$H_PROJECT2"
+git init -q "$H_PROJECT2"
+mkdir -p "$H_PROJECT2/.git/hooks"
+out=$(cd "$H_PROJECT2" && HOME="$TMP/h-home" PATH="$H_BIN:$HBIN" \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel" BRIDGE_ROOT="$TMP/h-none-bridge" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache" \
+    bash "$H_CHECKOUT/scripts/uninstall.sh" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6I absent-payload run exits 0" 0 "$rc"
+assert_not_has "SC6I no payload line when absent" "native payload" "$out"
+
+# ── SC6I dry-run (HIMMEL-2843): payload present, --dry-run previews only ───
+H_PROJECT3="$TMP/h-project3"
+mkdir -p "$H_PROJECT3"
+git init -q "$H_PROJECT3"
+mkdir -p "$H_PROJECT3/.git/hooks/himmel-payload"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$H_PROJECT3/.git/hooks/himmel-payload/pre-commit-hook.sh"
+chmod 755 "$H_PROJECT3/.git/hooks/himmel-payload/pre-commit-hook.sh"
+out=$(cd "$H_PROJECT3" && HOME="$TMP/h-home" PATH="$H_BIN:$HBIN" \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel" BRIDGE_ROOT="$TMP/h-none-bridge" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache" \
+    bash "$H_CHECKOUT/scripts/uninstall.sh" --dry-run --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6I dry-run exits 0" 0 "$rc"
+assert_has "SC6I dry-run previews payload removal" "DRY: would remove native payload: $H_PROJECT3/.git/hooks/himmel-payload" "$out"
+if [ -e "$H_PROJECT3/.git/hooks/himmel-payload" ]; then echo "PASS SC6I dry-run payload dir preserved"
+else echo "FAIL SC6I dry-run payload dir removed"; FAILED=$((FAILED + 1)); fi
+
+# ── SC6J (HIMMEL-2843 CR #2288): configured core.hooksPath → an unrelated
+# himmel-payload under it must survive. adopt.sh's install_native_hooks only
+# ever writes <hooks_dir>/himmel-payload when core.hooksPath is UNSET
+# (hooks_path_configured==0); when it IS configured, adopt.sh sets
+# payload_dir="" and never writes there. So a himmel-payload directory found
+# under a CONFIGURED core.hooksPath was never adopt.sh's to begin with —
+# removing it would delete a directory this repo does not own. The marker
+# hook files themselves are still removed either way (they are always
+# scanned for and owned by their own marker line, independent of
+# core.hooksPath), only the unconditional payload-dir removal must gate on
+# this.
+H_PROJECT4="$TMP/h-project4"
+mkdir -p "$H_PROJECT4"
+git init -q "$H_PROJECT4"
+H_EXTHOOKS="$TMP/h-exthooks"
+mkdir -p "$H_EXTHOOKS/himmel-payload"
+printf 'unrelated external data, not written by adopt.sh\n' > "$H_EXTHOOKS/himmel-payload/unrelated-file.txt"
+for hook in commit-msg pre-commit pre-push; do
+    printf '#!/usr/bin/env bash\n# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.\nexit 0\n' \
+        > "$H_EXTHOOKS/$hook"
+    chmod 755 "$H_EXTHOOKS/$hook"
+done
+git -C "$H_PROJECT4" config core.hooksPath "$H_EXTHOOKS"
+# repo_has_framework_hooks (line ~588) treats ANY configured core.hooksPath
+# as "assume framework hooks present" without scanning it — realistic and
+# unrelated to this fixture's actual concern, but it means [5/8] needs a
+# resolvable `pre-commit` on PATH here (unlike SC6H/SC6I above) or it takes
+# the report_unresolved/fail_step branch instead of exercising the
+# native-gate + payload-dir logic this case targets.
+H_BIN4="$TMP/h-bin4"
+mkdir -p "$H_BIN4"
+link_hermetic_tool git "$H_BIN4"
+link_hermetic_tool pre-commit "$H_BIN4"
+out=$(cd "$H_PROJECT4" && HOME="$TMP/h-home" PATH="$H_BIN4:$HBIN" \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel" BRIDGE_ROOT="$TMP/h-none-bridge" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache" \
+    bash "$H_CHECKOUT/scripts/uninstall.sh" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6J configured-hooksPath run exits 0" 0 "$rc"
+for hook in commit-msg pre-commit pre-push; do
+    assert_has "SC6J removed $hook reported under configured hooksPath" "removed native gate: $H_EXTHOOKS/$hook" "$out"
+    if [ ! -e "$H_EXTHOOKS/$hook" ]; then echo "PASS SC6J $hook removed"
+    else echo "FAIL SC6J $hook survived"; FAILED=$((FAILED + 1)); fi
+done
+assert_not_has "SC6J no payload removal line under configured hooksPath" "native payload" "$out"
+if [ -e "$H_EXTHOOKS/himmel-payload/unrelated-file.txt" ]; then echo "PASS SC6J unrelated himmel-payload survived"
+else echo "FAIL SC6J unrelated himmel-payload was removed"; FAILED=$((FAILED + 1)); fi
+
+# ── SC6K (HIMMEL-2854): [5/8] from a non-git HOOKS_REPO_ROOT (e.g. a --scope
+# user offboard run from a plain $HOME) must skip the repo-hook teardown
+# cleanly instead of fail_step-ing three times out of `pre-commit uninstall`
+# run inside a non-repo cwd — which also HALTS every later step (HIMMEL-2754
+# halt semantics), so [6/8]+ never ran either. pre-commit and git both
+# resolvable here (unlike the plain SC7 "tool absent" cases below) is the
+# point: this is a real repo carrying no git metadata at all, not a missing
+# toolchain.
+H_BIN5="$TMP/h-bin5"
+mkdir -p "$H_BIN5"
+link_hermetic_tool git "$H_BIN5"
+link_hermetic_tool pre-commit "$H_BIN5"
+H_NONGIT="$TMP/h-nongit"
+mkdir -p "$H_NONGIT"
+out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel5" BRIDGE_ROOT="$TMP/h-none-bridge5" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache5" HIMMEL_UNINSTALL_REPO_ROOT="$H_NONGIT" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6K non-git HOOKS_REPO_ROOT exits 0" 0 "$rc"
+assert_has "SC6K skip line names the non-git work tree" \
+    "skipped: $H_NONGIT is not a git work tree — no repo-local hooks to remove (run from the adopted project to remove its hooks)" "$out"
+assert_not_has "SC6K no git-hooks fail_step" "git hooks:" "$out"
+assert_has "SC6K step 6 still ran" "kept (--skip-settings)." "$out"
+assert_has "SC6K completion reported" "Uninstall complete." "$out"
+
+# ── SC6L (HIMMEL-2854): a git repo `rev-parse --is-inside-work-tree` refuses
+# for a reason OTHER than "no repo here" (safe.directory dubious ownership,
+# simulated deterministically via git's own GIT_TEST_ASSUME_DIFFERENT_OWNER
+# test hook rather than an actual UID mismatch) must NOT take the SC6K clean
+# skip — that repo may still carry installed hooks. It must fail_step (and
+# HALT later steps), distinguishing "confirmed no repo" from "inspection
+# failed" per the codex-1 /pr-check finding.
+H_DUBIOUS="$TMP/h-dubious"
+mkdir -p "$H_DUBIOUS"
+(cd "$H_DUBIOUS" && "$H_BIN5/git" init -q)
+out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel6" BRIDGE_ROOT="$TMP/h-none-bridge6" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache6" HIMMEL_UNINSTALL_REPO_ROOT="$H_DUBIOUS" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6L dubious-ownership HOOKS_REPO_ROOT exits 2" 2 "$rc"
+assert_has "SC6L error names the hooks-repo git status as unresolved" \
+    "could not confirm whether $H_DUBIOUS is a git work tree" "$out"
+assert_has "SC6L surfaces the git dubious-ownership message" \
+    "detected dubious ownership" "$out"
+assert_not_has "SC6L does not take the non-git clean-skip line" \
+    "is not a git work tree — no repo-local hooks to remove" "$out"
+assert_has "SC6L later step 6 halted as a consequence" \
+    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
+
+# ── SC6M (HIMMEL-2854, codex-1 round 3): a `.git` dir that IS present but
+# corrupted (missing HEAD) makes `rev-parse --is-inside-work-tree` fail with
+# the SAME "not a git repository" wording git uses for a genuinely absent
+# repo — that text alone cannot tell "no repo here" apart from "repo here,
+# but damaged," and a damaged repo can still carry installed hooks. Only the
+# physical absence of `.git` may take the SC6K clean skip.
+H_CORRUPT="$TMP/h-corrupt"
+mkdir -p "$H_CORRUPT/.git/hooks"
+printf '#!/bin/sh\n' > "$H_CORRUPT/.git/hooks/pre-commit"
+out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel7" BRIDGE_ROOT="$TMP/h-none-bridge7" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache7" HIMMEL_UNINSTALL_REPO_ROOT="$H_CORRUPT" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6M corrupted-.git HOOKS_REPO_ROOT exits 2" 2 "$rc"
+assert_has "SC6M error names the hooks-repo git status as unresolved" \
+    "could not confirm whether $H_CORRUPT is a git work tree" "$out"
+assert_not_has "SC6M does not take the non-git clean-skip line" \
+    "is not a git work tree — no repo-local hooks to remove" "$out"
+assert_has "SC6M later step 6 halted as a consequence" \
+    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
+
+# ── SC6N (HIMMEL-2854, codex-1 round 4): HOOKS_REPO_ROOT can itself be a
+# SUBDIRECTORY of the real repo root — dubious ownership rejects rev-parse
+# from a subdirectory exactly like it does from the root, but `.git` lives
+# only at the ancestor, so a single non-recursive check at HOOKS_REPO_ROOT
+# alone would wrongly take the SC6K clean skip and leave the ancestor
+# repo's installed hooks untouched.
+H_SUBDIR_PARENT="$TMP/h-subdir-parent"
+mkdir -p "$H_SUBDIR_PARENT/sub/dir"
+(cd "$H_SUBDIR_PARENT" && "$H_BIN5/git" init -q)
+out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel8" BRIDGE_ROOT="$TMP/h-none-bridge8" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache8" HIMMEL_UNINSTALL_REPO_ROOT="$H_SUBDIR_PARENT/sub/dir" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6N dubious-ownership subdirectory HOOKS_REPO_ROOT exits 2" 2 "$rc"
+assert_has "SC6N error names the hooks-repo git status as unresolved" \
+    "could not confirm whether $H_SUBDIR_PARENT/sub/dir is a git work tree" "$out"
+assert_not_has "SC6N does not take the non-git clean-skip line" \
+    "is not a git work tree — no repo-local hooks to remove" "$out"
+assert_has "SC6N later step 6 halted as a consequence" \
+    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
+
+# ── SC6O (HIMMEL-2859, codex-1 round 6): a RELATIVE HIMMEL_UNINSTALL_REPO_ROOT
+# reaches dirname's textual fixed point (".") without ever resolving to the
+# real absolute ancestor chain. $PWD sits one level below the real repo root
+# ($H_RELROOT/mid), and HOOKS_REPO_ROOT ("leaf", relative) is one level below
+# that — the walk must resolve to an absolute physical path FIRST so it climbs
+# past "." to $H_RELROOT and finds `.git` there, instead of stopping at "."
+# having only ever checked leaf/.git and ./.git.
+H_RELROOT="$TMP/h-relroot"
+mkdir -p "$H_RELROOT/mid/leaf"
+(cd "$H_RELROOT" && "$H_BIN5/git" init -q)
+out=$(cd "$H_RELROOT/mid" && HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel9" BRIDGE_ROOT="$TMP/h-none-bridge9" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache9" HIMMEL_UNINSTALL_REPO_ROOT="leaf" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6O relative HOOKS_REPO_ROOT exits 2" 2 "$rc"
+assert_has "SC6O error names the hooks-repo git status as unresolved" \
+    "could not confirm whether leaf is a git work tree" "$out"
+assert_not_has "SC6O does not take the non-git clean-skip line (textual fixed point missed the real ancestor)" \
+    "is not a git work tree — no repo-local hooks to remove" "$out"
+assert_has "SC6O later step 6 halted as a consequence" \
+    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
+
+# ── SC6Q (HIMMEL-2857 i): a DANGLING `.git` symlink (target absent) is
+# indistinguishable from confirmed absence under `[ -e ]` alone — the walk
+# must classify it as found-but-unresolvable, not confirmed-absent.
+H_DANGLING="$TMP/h-dangling"
+mkdir -p "$H_DANGLING"
+ln -s "$TMP/nonexistent-target" "$H_DANGLING/.git"
+out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
+    TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel11" BRIDGE_ROOT="$TMP/h-none-bridge11" \
+    HIMMELCTL_CACHE_DIR="$TMP/h-cache11" HIMMEL_UNINSTALL_REPO_ROOT="$H_DANGLING" \
+    bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+assert_rc "SC6Q dangling .git symlink exits 2" 2 "$rc"
+assert_has "SC6Q error names the dangling symlink" \
+    "dangling .git symlink" "$out"
+assert_has "SC6Q error names the hooks-repo git status as unresolved" \
+    "could not confirm whether $H_DANGLING is a git work tree" "$out"
+assert_not_has "SC6Q does not take the non-git clean-skip line" \
+    "is not a git work tree — no repo-local hooks to remove" "$out"
+assert_has "SC6Q later step 6 halted as a consequence" \
+    "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
+
+# ── SC6R (HIMMEL-2857 ii): an ancestor directory whose metadata this process
+# cannot fully inspect (read permission removed; search/execute kept so the
+# starting HOOKS_REPO_ROOT stays reachable — an ancestor with search denied
+# too would make HOOKS_REPO_ROOT itself unreachable via any path, collapsing
+# into a different, already-covered failure) must be classified unresolved,
+# not confirmed-absent — `[ -e ]` can't tell "absent" from "denied" apart.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "SKIP SC6R inaccessible ancestor: running as root, chmod cannot deny access"
+else
+    H_UNREAD_ROOT="$TMP/h-unread-root"
+    mkdir -p "$H_UNREAD_ROOT/blocked/leaf"
+    chmod 100 "$H_UNREAD_ROOT/blocked"
+    out=$(HOME="$TMP/h-home" PATH="$H_BIN5:$HBIN" \
+        TELEGRAM_CHANNEL_DIR="$TMP/h-none-channel12" BRIDGE_ROOT="$TMP/h-none-bridge12" \
+        HIMMELCTL_CACHE_DIR="$TMP/h-cache12" HIMMEL_UNINSTALL_REPO_ROOT="$H_UNREAD_ROOT/blocked/leaf" \
+        bash "$CLI" --yes --skip-tasks --skip-plugins --skip-settings </dev/null 2>&1); rc=$?
+    chmod 0755 "$H_UNREAD_ROOT/blocked"
+    assert_rc "SC6R inaccessible ancestor exits 2" 2 "$rc"
+    assert_has "SC6R error names the inaccessible ancestor" \
+        "inaccessible ancestor" "$out"
+    assert_has "SC6R error names the hooks-repo git status as unresolved" \
+        "could not confirm whether $H_UNREAD_ROOT/blocked/leaf is a git work tree" "$out"
+    assert_not_has "SC6R does not take the non-git clean-skip line" \
+        "is not a git work tree — no repo-local hooks to remove" "$out"
+    assert_has "SC6R later step 6 halted as a consequence" \
+        "[6/8] settings unwire: skipped — halted after an earlier failure" "$out"
+fi
 
 # ── SC7 (HIMMEL-2458): steps 4+5 must never SILENTLY skip ───────────────────
 # A stock Ubuntu account has two PATH layers — ~/.profile owns ~/.local/bin
@@ -1471,6 +1717,12 @@ case "$3 $4 $5" in
         IFS= read -r gitdir < "$2/.git"
         [ "$gitdir" = "gitdir: ${2%/*}/u-gitdir" ] || exit 1
         printf '../u-gitdir/hooks\n'
+        ;;
+    'rev-parse --is-inside-work-tree'*)
+        # HIMMEL-2854: [5/8]'s new non-git-cwd check probes this before the
+        # hooks resolution above — a real worktree (this fixture's .git FILE
+        # points at a real gitdir) genuinely is inside a work tree.
+        printf 'true\n'
         ;;
     *) exit 1 ;;
 esac

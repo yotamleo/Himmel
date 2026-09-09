@@ -6,8 +6,8 @@
 // bank-status-core.mjs directly.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -240,7 +240,7 @@ test('per-limit resetsAt stay DISTINCT through the detail line (HIMMEL-1725)', (
 });
 
 test('bank-status CLI: fresh cache measured, missing/stale cache unmeasurable â€” never funded', { skip: BUN_SKIP }, () => {
-  const dir = mkdtempSync(join(tmpdir(), 'codex-bank-cache-cli-'));
+  const dir = makeTmpDir('codex-bank-cache-cli-');
   const registry = fixtureRegistry(dir);
   const cache = join(dir, 'codex-bank.json');
   writeFileSync(cache, JSON.stringify({
@@ -274,7 +274,7 @@ test('bank-status CLI: fresh cache measured, missing/stale cache unmeasurable â€
 });
 
 test('probe: bounded handshake against a STUB app-server writes the cache AND kills the stub', { skip: BUN_SKIP }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'codex-bank-probe-ok-'));
+  const dir = makeTmpDir('codex-bank-probe-ok-');
   const pidFile = join(dir, 'stub.pid');
   const cache = join(dir, 'codex-bank.json');
   const run = spawnSync('bun', [PROBE], {
@@ -310,7 +310,7 @@ test('probe: bounded handshake against a STUB app-server writes the cache AND ki
 });
 
 test('probe: a silent app-server times out, writes no cache, and is still killed', { skip: BUN_SKIP }, async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'codex-bank-probe-to-'));
+  const dir = makeTmpDir('codex-bank-probe-to-');
   const pidFile = join(dir, 'stub.pid');
   const cache = join(dir, 'codex-bank.json');
   const run = spawnSync('bun', [PROBE], {

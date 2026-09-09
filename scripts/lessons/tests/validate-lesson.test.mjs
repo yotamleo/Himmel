@@ -2,10 +2,10 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import {
   validateRecord, validateMarkdown, validateJsonlText, parseYamlSubset, extractFrontmatter,
   extractLessonsJsonl,
@@ -446,7 +446,7 @@ test('CLI: .md with malformed ## Lessons section → exit 1, section-level label
 // --- CLI (spawned end-to-end) ---
 
 const SCRIPT = fileURLToPath(new URL('../validate-lesson.mjs', import.meta.url));
-const CLI_TMP = mkdtempSync(join(tmpdir(), 'lessons-cli-test-'));
+const CLI_TMP = makeTmpDir('lessons-cli-test-');
 after(() => rmSync(CLI_TMP, { recursive: true, force: true }));
 
 const runCliProc = (args, input) =>

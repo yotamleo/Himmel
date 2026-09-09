@@ -3,10 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { run } from '../index.mjs';
 import { UsageError } from '../lib/errors.mjs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 const fix = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'sample.jsonl');
 
@@ -43,7 +43,7 @@ test('--for KEY md renders an item-card with status and next', () => {
 });
 
 test('--for KEY md uses the dash fallback when the item has no status', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-cli-'));
+  const dir = makeTmpDir('waw-cli-');
   const p = join(dir, 'l.jsonl');
   writeFileSync(p, JSON.stringify({ ts: '1', source: 'handover', key: 'HIMMEL-3', kind: 'ticket', next_action: 'do thing' }) + '\n');
   const out = run(['--ledger', p, '--for', 'HIMMEL-3']);
@@ -61,7 +61,7 @@ test('run([]) throws a UsageError with the --ledger-required message', () => {
 });
 
 test('run on a malformed ledger throws a non-UsageError (unexpected runtime error)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-cli-'));
+  const dir = makeTmpDir('waw-cli-');
   const p = join(dir, 'bad.jsonl');
   writeFileSync(p, 'not json\n');
   let thrown = null;
