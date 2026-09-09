@@ -3745,8 +3745,15 @@ structure but with the binding INVERTED (public-pinned, not private-only) — se
    `CLAUDECODE` env marker is present; the bridge spawns this script's env
    WITHOUT that marker, so this can only fire on an agent-initiated call.
 Deliberately a SEPARATE script from `merge-on-green.sh`, not a shared "which
-repo class" switch — the private-only guard there is a safety boundary, and a
-flag that inverts a safety boundary is the failure mode this avoids. Supports
+repo class" switch — the repo guard there is a safety boundary, and a flag that
+inverts a safety boundary is the failure mode this avoids. HIMMEL-2869 widened
+that guard to admit ONE named public origin under live-verified branch
+protection, which does not soften this reasoning: the two bindings still point
+opposite ways — this script's pin NARROWS what a human-only,
+`CLAUDECODE`-self-refusing chokepoint may touch, while merge-on-green's WIDENS a
+boundary an agent runs under. That is why merge-on-green deliberately does NOT
+reuse this script's `CR_PUBLIC_REPO`: an env-overridable constant costs nothing
+on a narrowing pin and would be a widening seam on the other. Supports
 `--dry-run` (every gate runs, no merge fires) for manual/terminal shakedown; the
 Telegram command grammar has no dry-run variant. The repo name itself carries
 no secret (himmel is a single public repo) — only the activation flag +
