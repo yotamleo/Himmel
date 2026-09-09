@@ -1715,10 +1715,17 @@ function loadProfile(p) {
   // legacy-placeholder refusal must still NOT fire for a legacy contributor
   // cache (its [] is a harmless placeholder from a role that never answered
   // it); gating the v1 branch on role==='adopter' keeps that exemption.
-  if (isV2 && obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
+  // CR (public #581): also gate BOTH checks on droppedDormantLanes.length===0
+  // -- an originally non-empty lanes list that the dormant-lane filter above
+  // emptied out is not "an explicit empty allowlist" the profile author
+  // never marked meaningful; it is a real selection that aged out. Without
+  // this guard, exactly the profile the HIMMEL-2352 carve-out above exists to
+  // save (all-dormant lanes, no lanesMeaningful field) still dies here with a
+  // different error message than the one HIMMEL-2352 fixed.
+  if (isV2 && obj.lanes.length === 0 && obj.lanesMeaningful !== true && droppedDormantLanes.length === 0) {
     profileError(p, "v2 profile has lanes:[] without lanesMeaningful=true; the accepted spelling of an explicit empty allowlist is \"lanes\": [] with \"lanesMeaningful\": true ('--lanes none' is the CLI flag for this, not a profile value) — or re-run the installer and reconfirm lane selection");
   }
-  if (!isV2 && obj.role === 'adopter' && obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
+  if (!isV2 && obj.role === 'adopter' && obj.lanes.length === 0 && obj.lanesMeaningful !== true && droppedDormantLanes.length === 0) {
     profileError(p, "legacy profile has lanes:[] without lanesMeaningful=true; the accepted spelling of an explicit empty allowlist is \"lanes\": [] with \"lanesMeaningful\": true ('--lanes none' is the CLI flag for this, not a profile value) — or re-run the installer and reconfirm lane selection");
   }
   // HIMMEL-2300: optional, like the luna/secretsWalk/bridge sections just

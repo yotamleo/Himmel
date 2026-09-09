@@ -21,8 +21,16 @@ clone path is exercised:
 
 ```bash
 cd /tmp
-git clone --branch main --single-branch https://github.com/yotamleo/Himmel.git luna-brain-smoke  # leak-allow: hostname smoke-test doc's clone command for this project's public repo
-cd luna-brain-smoke/templates/luna-second-brain
+# Clone the monorepo, then COPY the template out into its own directory and
+# git init it there -- a real luna-brain adopter clone is a standalone repo,
+# not a subdirectory of Himmel, and setup.sh's own `git rev-parse
+# --show-toplevel` call must resolve to the template's own root, not
+# Himmel's, for this smoke test to exercise what an adopter actually gets.
+git clone --branch main --single-branch --depth 1 https://github.com/yotamleo/Himmel.git luna-brain-monorepo-tmp  # leak-allow: hostname smoke-test doc's clone command for this project's public repo
+cp -r luna-brain-monorepo-tmp/templates/luna-second-brain luna-brain-smoke
+rm -rf luna-brain-monorepo-tmp
+cd luna-brain-smoke
+git init
 bash scripts/setup.sh
 ```
 

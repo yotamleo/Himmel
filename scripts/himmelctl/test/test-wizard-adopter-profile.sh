@@ -664,6 +664,57 @@ grepq "$outB" -F "dormant in v1" \
   && fail "case D3b: an unknown id must not be described as dormant: $outB"
 echo "ok: case D3 — a pre-2352 profile naming ollama/copilot still loads (dropped with a note naming its opt-in env); a genuinely unknown lane still fails loud"
 
+# D3c (public #581 CodeRabbit): a profile naming ONLY dormant lanes, with no
+# lanesMeaningful field. Filtering empties obj.lanes to [] here — the same
+# shape the D3a pre-2352 default hits, minus the lanesMeaningful:true D3a sets
+# explicitly. Regression check: the v2 lanes:[] hard-fail below the dormant
+# carve-out must not re-brick exactly the profile the carve-out exists to
+# save, just with a different error message than the pre-2352 "unknown lane"
+# one HIMMEL-2352 already fixed.
+profD3c="$work/d3c-all-dormant-v2.json"
+cat > "$profD3c" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "scope": "project",
+  "vault": { "mode": "none" },
+  "handover": { "mode": "inline" },
+  "pluginSet": "lean",
+  "lanes": ["ollama", "copilot"],
+  "alwaysOn": false,
+  "devOverlay": false
+}
+JSON
+set +e
+outC=$(run_d3 "$profD3c"); rcC=$?
+set -e
+[ "$rcC" -eq 0 ] || fail "case D3c: an all-dormant v2 lanes list (no lanesMeaningful) must still LOAD, not be re-bricked by the lanes:[] gate below the dormant carve-out (got rc=$rcC): $outC"
+grepq "$outC" -F "profile names lane 'ollama', which is dormant in v1" \
+  || fail "case D3c: the drop must still be announced: $outC"
+
+# D3d — the legacy (v1) twin of D3c: an adopter profile naming only dormant
+# lanes, no schemaVersion, no lanesMeaningful.
+profD3d="$work/d3d-all-dormant-legacy.json"
+cat > "$profD3d" <<'JSON'
+{
+  "role": "adopter",
+  "scope": "project",
+  "vault": { "mode": "none" },
+  "handover": { "mode": "inline" },
+  "pluginSet": "lean",
+  "lanes": ["ollama", "copilot"],
+  "alwaysOn": false,
+  "devOverlay": false
+}
+JSON
+set +e
+outD=$(run_d3 "$profD3d"); rcD=$?
+set -e
+[ "$rcD" -eq 0 ] || fail "case D3d: an all-dormant legacy adopter lanes list must still LOAD (got rc=$rcD): $outD"
+grepq "$outD" -F "profile names lane 'ollama', which is dormant in v1" \
+  || fail "case D3d: the drop must still be announced: $outD"
+echo "ok: case D3c/D3d — an all-dormant lanes list (no lanesMeaningful) still loads on both v2 and legacy profiles"
+
 # ── Case E: hardening PRINTED, never EXECUTED ───────────────────────────────
 # A sentinel `powercfg` stub: if the installer ever shelled out to it, the
 # sentinel file would exist. This is the assertion the whole rescope turns on.

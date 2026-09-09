@@ -297,20 +297,34 @@ else
     fail "T1i home-path allowlisted-with-trailing-prose (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
-# T1j: home-path, WSL /mnt/<drive>/Users/ form and case-insensitive
+# T1j/T1j2: home-path, WSL /mnt/<drive>/Users/ form and case-insensitive
 # drive-letter + "Users" segment -- CodeRabbit finding on public #581: the
 # prefix alternation was case-sensitive and had no /mnt/ form, so real WSL
 # and lowercase Git Bash logs (e.g. /mnt/c/Users/<name>, /c/users/<name>)
-# passed the gate unflagged.
+# passed the gate unflagged. Split into two INDEPENDENT fixtures/assertions
+# (CodeRabbit round-2: a single fixture combining both forms would let either
+# alternative silently fail to match while the other still flags the file,
+# masking a regression in either one).
 r=$(new_repo)
-printf 'see /mnt/c/Users/realname/project and /c/users/realname2/other\n' > "$r/wsl.txt"  # leak-allow: home-path test fixture
+printf 'see /mnt/c/Users/realname/project\n' > "$r/wsl.txt"  # leak-allow: home-path test fixture
 git -C "$r" add wsl.txt
 scan "$r" --tree
 if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" \
    && grepq "$SCAN_OUT" -F "wsl.txt:1"; then
-    pass "T1j home-path: /mnt/c/Users/ (WSL) and /c/users/ (lowercase) both flagged"  # leak-allow: home-path test fixture
+    pass "T1j home-path: /mnt/c/Users/ (WSL) flagged"  # leak-allow: home-path test fixture
 else
-    fail "T1j home-path WSL/lowercase forms (rc=$SCAN_RC) out=$SCAN_OUT"
+    fail "T1j home-path WSL form (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+r=$(new_repo)
+printf 'see /c/users/realname2/other\n' > "$r/gitbash.txt"  # leak-allow: home-path test fixture
+git -C "$r" add gitbash.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" \
+   && grepq "$SCAN_OUT" -F "gitbash.txt:1"; then
+    pass "T1j2 home-path: /c/users/ (lowercase Git Bash) flagged"  # leak-allow: home-path test fixture
+else
+    fail "T1j2 home-path lowercase Git Bash form (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
 # T1k: a bare-root "/users/..." with no drive prefix is NOT a home-dir leak
