@@ -6,15 +6,14 @@ import assert from 'node:assert/strict';
 import {
   chmodSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -25,7 +24,7 @@ import {
   summarizeSkillCosts,
 } from '../skill-cost.mjs';
 
-const ROOT = mkdtempSync(join(tmpdir(), 'skill-cost-'));
+const ROOT = makeTmpDir('skill-cost-');
 const CWD = join(ROOT, 'repo');
 const CONFIG_DIR = join(ROOT, 'config');
 const LONG_DESCRIPTION = 'x'.repeat(1600);
@@ -166,7 +165,7 @@ test('a junction-backed user skill is counted and marked symlinked', (t) => {
 });
 
 test('an entry that throws EACCES/EPERM is skipped, not fatal to the scan, and is surfaced as skipped', (t) => {
-  const permRoot = mkdtempSync(join(tmpdir(), 'skill-cost-perm-'));
+  const permRoot = makeTmpDir('skill-cost-perm-');
   let unreadablePath;
   t.after(() => {
     if (unreadablePath) {
@@ -220,7 +219,7 @@ test('a denied containing directory fails the stat itself, and is skipped and su
   // working - it never exercises statThroughLink. Denying the containing
   // DIRECTORY's search/execute bit is what makes statSync(skillMd) itself
   // throw, which is the code path scanSkillDirectory calls BEFORE makeEntry.
-  const permRoot = mkdtempSync(join(tmpdir(), 'skill-cost-perm-dir-'));
+  const permRoot = makeTmpDir('skill-cost-perm-dir-');
   let unreadableDir;
   t.after(() => {
     if (unreadableDir) {
@@ -271,7 +270,7 @@ test('a denied containing directory fails the stat itself, and is skipped and su
 });
 
 test('a self-referential (cyclic) symlink throws ELOOP and is skipped and surfaced too', (t) => {
-  const permRoot = mkdtempSync(join(tmpdir(), 'skill-cost-perm-eloop-'));
+  const permRoot = makeTmpDir('skill-cost-perm-eloop-');
   t.after(() => rmSync(permRoot, { recursive: true, force: true }));
   const permCwd = join(permRoot, 'repo');
   const permConfigDir = join(permRoot, 'config');
@@ -328,7 +327,7 @@ test('makeEntry surfaces ENOENT unconditionally, unlike directoryEntries/statThr
   // sanctioned fallback: create the file, delete it, then call makeEntry on
   // the now-gone path - a real ENOENT from a real readFileSync, just without
   // pretending the deletion happened concurrently with the scan.
-  const permRoot = mkdtempSync(join(tmpdir(), 'skill-cost-perm-vanish-'));
+  const permRoot = makeTmpDir('skill-cost-perm-vanish-');
   t.after(() => rmSync(permRoot, { recursive: true, force: true }));
   const skillMd = join(permRoot, 'vanishing', 'SKILL.md');
   write(skillMd, skill([
@@ -390,7 +389,7 @@ test('--max-desc refuses an over-cap description and names the file and length',
 });
 
 test('lintPositionalArgs refuses a bare $<digit> in ANY command\'s fenced code, argument-hint or not (HIMMEL-2051)', (t) => {
-  const dir = mkdtempSync(join(tmpdir(), 'skill-cost-posargs-'));
+  const dir = makeTmpDir('skill-cost-posargs-');
   t.after(() => rmSync(dir, { recursive: true, force: true }));
 
   const withArgHint = join(dir, 'with-arg-hint.md');
@@ -601,7 +600,7 @@ test('CLI exits 3 (not 0, not 2) when a path is skipped, in all three modes', (t
   // chmod 000 does not deny access for the owning process on this platform
   // (see the tests above), but a self-referential junction reliably raises
   // ELOOP here, so this regression actually executes instead of skipping.
-  const permRoot = mkdtempSync(join(tmpdir(), 'skill-cost-perm-cli-'));
+  const permRoot = makeTmpDir('skill-cost-perm-cli-');
   t.after(() => rmSync(permRoot, { recursive: true, force: true }));
   const permCwd = join(permRoot, 'repo');
   const permConfigDir = join(permRoot, 'config');

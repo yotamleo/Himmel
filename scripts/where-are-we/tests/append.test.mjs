@@ -1,11 +1,11 @@
 // scripts/where-are-we/tests/append.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readRecords } from '../lib/ledger.mjs';
 import { acquireLock, releaseLock, appendRecords } from '../lib/append.mjs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 const VALID1 = { ts: '2026-06-21T00:00:00Z', source: 'jira', key: 'HIMMEL-1', kind: 'ticket' };
 const VALID2 = { ts: '2026-06-21T00:01:00Z', source: 'pr', key: '#42', kind: 'pr' };
@@ -13,7 +13,7 @@ const INVALID_NO_KIND = { ts: '2026-06-21T00:02:00Z', source: 'jira', key: 'HIMM
 
 // Test 1: writes valid records
 test('appendRecords writes valid records and returns correct stats', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-append-'));
+  const dir = makeTmpDir('waw-append-');
   const ledger = join(dir, 'ledger.jsonl');
   const result = appendRecords(ledger, [VALID1, VALID2]);
   assert.equal(result.appended, 2);
@@ -27,7 +27,7 @@ test('appendRecords writes valid records and returns correct stats', () => {
 
 // Test 2: validate-before-append drops invalid records
 test('appendRecords drops invalid records and records drop reasons', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-append-'));
+  const dir = makeTmpDir('waw-append-');
   const ledger = join(dir, 'ledger.jsonl');
   const batch = [VALID1, INVALID_NO_KIND, VALID2];
   const result = appendRecords(ledger, batch);
@@ -44,7 +44,7 @@ test('appendRecords drops invalid records and records drop reasons', () => {
 
 // Test 3: lock lifecycle (direct)
 test('acquireLock creates lock dir; releaseLock removes it; release on absent is no-op', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-append-'));
+  const dir = makeTmpDir('waw-append-');
   const ledger = join(dir, 'ledger.jsonl');
   const lockDir = ledger + '.lock';
 
@@ -60,7 +60,7 @@ test('acquireLock creates lock dir; releaseLock removes it; release on absent is
 
 // Test 4: lock lifecycle (black-box via appendRecords)
 test('appendRecords releases lock on success', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-append-'));
+  const dir = makeTmpDir('waw-append-');
   const ledger = join(dir, 'ledger.jsonl');
   const lockDir = ledger + '.lock';
   appendRecords(ledger, [VALID1]);
@@ -69,7 +69,7 @@ test('appendRecords releases lock on success', () => {
 
 // Test 5: mutual exclusion — acquireLock times out when lock is held
 test('acquireLock throws on timeout when lock is already held', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-append-'));
+  const dir = makeTmpDir('waw-append-');
   const ledger = join(dir, 'ledger.jsonl');
   const lockDir = ledger + '.lock';
 
@@ -90,7 +90,7 @@ test('acquireLock throws on timeout when lock is already held', () => {
 
 // Test 6.1: non-EEXIST mkdir error surfaces immediately (does NOT spin-wait/timeout)
 test('acquireLock re-throws non-EEXIST mkdir errors immediately (ENOENT branch)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-append-'));
+  const dir = makeTmpDir('waw-append-');
   // Place the ledger inside a sub-directory that does NOT exist.
   // mkdirSync(ledgerPath + '.lock') will fail with ENOENT because the parent
   // directory 'no-such-subdir' is missing — that is a non-EEXIST code and must
@@ -115,7 +115,7 @@ test('acquireLock re-throws non-EEXIST mkdir errors immediately (ENOENT branch)'
 
 // Test 6: release-on-error — finally block releases lock even when appendFileSync throws
 test('appendRecords releases lock when append throws (finally path)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-append-'));
+  const dir = makeTmpDir('waw-append-');
   // Make the ledger path itself a directory so appendFileSync throws EISDIR
   const ledger = join(dir, 'ledger.jsonl');
   mkdirSync(ledger);

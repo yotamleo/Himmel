@@ -2,13 +2,13 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../sample-audit.mjs', import.meta.url));
-const TMP = mkdtempSync(join(tmpdir(), 'sample-audit-test-'));
+const TMP = makeTmpDir('sample-audit-test-');
 after(() => rmSync(TMP, { recursive: true, force: true }));
 
 const run = (args, input, env) => spawnSync(process.execPath, [SCRIPT, ...args], {

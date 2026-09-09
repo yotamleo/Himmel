@@ -1,13 +1,13 @@
 // scripts/where-are-we/tests/ledger.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, appendFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendRecord, readRecords } from '../lib/ledger.mjs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 test('append writes one newline-terminated line per record; read round-trips', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-'));
+  const dir = makeTmpDir('waw-');
   const p = join(dir, 'ledger.jsonl');
   appendRecord(p, { ts: '2026-06-21T00:00:00Z', source: 'jira', key: 'HIMMEL-1', kind: 'ticket' });
   appendRecord(p, { ts: '2026-06-21T00:01:00Z', source: 'pr', key: '#2', kind: 'pr' });
@@ -21,11 +21,11 @@ test('append writes one newline-terminated line per record; read round-trips', (
 });
 
 test('read of absent file returns empty array', () => {
-  assert.deepEqual(readRecords(join(mkdtempSync(join(tmpdir(), 'waw-')), 'none.jsonl')), []);
+  assert.deepEqual(readRecords(join(makeTmpDir('waw-'), 'none.jsonl')), []);
 });
 
 test('read tolerates blank lines — actual blank line between records is skipped', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-'));
+  const dir = makeTmpDir('waw-');
   const p = join(dir, 'l.jsonl');
   // Write two real records with a genuine blank line between them via direct fs write
   appendRecord(p, { ts: 't1', source: 'jira', key: 'K1', kind: 'ticket' });
@@ -38,7 +38,7 @@ test('read tolerates blank lines — actual blank line between records is skippe
 });
 
 test('malformed JSON line throws with correct 1-based line number', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-'));
+  const dir = makeTmpDir('waw-');
   const p = join(dir, 'bad.jsonl');
   appendRecord(p, { ts: 't', source: 'jira', key: 'K', kind: 'ticket' }); // line 1 — valid
   appendFileSync(p, 'not json\n'); // line 2 — malformed
@@ -56,7 +56,7 @@ test('malformed JSON line throws with correct 1-based line number', () => {
 // Reading a directory as a file fails with a non-ENOENT code (EISDIR on POSIX,
 // EISDIR/EPERM on Windows) — assert it threw and was NOT swallowed as "absent".
 test('read of a path that is a directory re-throws (not treated as absent)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-'));
+  const dir = makeTmpDir('waw-');
   let thrown = null;
   try { readRecords(dir); } catch (e) { thrown = e; }
   assert.ok(thrown !== null, 'reading a directory must throw, not return []');

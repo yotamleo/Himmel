@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 import {
   append, canonical, chainHash, classify, collectionHealth, healthPath,
@@ -30,7 +31,7 @@ let TMP;
 // per test case behind in the system temp dir on every run.
 const CASE_DIRS = [];
 before(() => {
-  TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-ledger-'));
+  TMP = makeTmpDir('shadow-ledger-');
   process.env.HIMMEL_TRUST_LEDGER_DIR = TMP;
 });
 after(() => {
@@ -40,7 +41,7 @@ after(() => {
 });
 
 function freshDir() {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'shadow-ledger-case-'));
+  const d = makeTmpDir('shadow-ledger-case-');
   CASE_DIRS.push(d);
   return d;
 }

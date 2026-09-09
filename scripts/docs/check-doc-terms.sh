@@ -128,6 +128,10 @@ for doc in $DOCS; do
     | sed -e 's/[.,;:)]*$//' -e 's/^(//' \
     | sort -u)
 
+  # A code span can hold a glob (`docs/setup/*.md`) meant as literal prose, not
+  # a pattern to expand — set -f so the unquoted split below never lets the
+  # invoking cwd's contents change which token gets tested.
+  set -f
   for tok in $tokens; do
     case "$tok" in
       # Repo paths: anything rooted at a real top-level directory must exist.
@@ -141,9 +145,14 @@ for doc in $DOCS; do
       # Env vars / flags spelled in SCREAMING_SNAKE must appear somewhere in
       # the tracked tree — the doc must not invent a knob.
       [A-Z][A-Z0-9_]*)
-        case " $GENERIC_ENV " in *" $tok "*) continue ;; esac
+        # A code span may show an assignment (`KNOB=value`) rather than a bare
+        # identifier — split at the first `=` before the existence test, so
+        # the check asks whether KNOB is real, not whether the literal
+        # "KNOB=value" string appears anywhere.
+        name=${tok%%=*}
+        case " $GENERIC_ENV " in *" $name "*) continue ;; esac
         # Two-plus segments, or long enough to not be an English word in caps.
-        case "$tok" in
+        case "$name" in
           *_*)
             # -w, not a bare substring search: without identifier boundaries a
             # misspelled TICKET_ID_PATTER validates against the real
@@ -151,7 +160,7 @@ for doc in $DOCS; do
             # to catch. git grep's word characters include _, so a prefix of a
             # longer knob is not a whole word and no longer counts as evidence.
             # shellcheck disable=SC2086  # $EXCLUDES is a deliberate word list
-            if ! git -C "$ROOT" grep -qIw --fixed-strings -- "$tok" -- $EXCLUDES 2>/dev/null; then
+            if ! git -C "$ROOT" grep -qIw --fixed-strings -- "$name" -- $EXCLUDES 2>/dev/null; then
               report "$doc: names env var \`$tok\`, which appears nowhere else in the tree"
             fi
             ;;
@@ -159,6 +168,7 @@ for doc in $DOCS; do
         ;;
     esac
   done
+  set +f
 done
 
 if [ "$fail" -eq 0 ]; then

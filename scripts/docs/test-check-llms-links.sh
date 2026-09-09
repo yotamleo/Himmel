@@ -295,6 +295,33 @@ run_check llms.txt
 expect 1 "RED link: tracked, but dropped by DETECTOR_DROP"
 expect_says "targets a DETECTOR_DROP path" "RED link: names the DETECTOR_DROP drop"
 
+# HIMMEL-2847: a link to the bare carved-out DIRECTORY (no trailing slash) must
+# be rejected too. path_in_token_list anchored the trailing-slash token to the
+# directory's CONTENTS only, so `docs/specs` (no slash) skipped both carve-out
+# checks and then passed `git ls-files` through its tracked descendant.
+setup_repo || exit 1
+stub_carve_outs
+mkdir -p "$R/docs/specs"
+echo 'spec' > "$R/docs/specs/plan.md"
+git -C "$R" add docs/specs/plan.md scripts/lib/public-clone-paths.sh
+git -C "$R" commit -q -m specs-dir
+printf '[specs](docs/specs)\n' > "$R/llms.txt"
+run_check llms.txt
+expect 1 "HIMMEL-2847: a link to the bare carved-out directory is rejected"
+expect_says "targets a DETECTOR_DROP path" "HIMMEL-2847: names the DETECTOR_DROP class for the bare directory"
+
+# A sibling path that merely shares the carved-out directory's name as a
+# prefix must still be accepted — the bare-directory match has to be anchored
+# on the full token, not a naive string-prefix test.
+setup_repo || exit 1
+stub_carve_outs
+echo 'sibling' > "$R/docs/specs-other.md"
+git -C "$R" add docs/specs-other.md scripts/lib/public-clone-paths.sh
+git -C "$R" commit -q -m specs-sibling
+printf '[other](docs/specs-other.md)\n' > "$R/llms.txt"
+run_check llms.txt
+expect 0 "HIMMEL-2847: a sibling path sharing the carved-out directory's name prefix is still accepted"
+
 # PRIVATE_PATHS membership is ANCHORED, the same way propagate-public.sh
 # anchors it. Unanchored prefix matching would let the token `handovers` claim
 # docs/handovers-explained.md, which is a perfectly public file.

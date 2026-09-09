@@ -1,13 +1,12 @@
 // scripts/where-are-we/tests/collect.cli.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readRecords } from '../lib/ledger.mjs';
 import { jiraRecords, prRecords, gitRecords } from '../lib/collect.mjs';
 import { collectAll, main } from '../collect.mjs';
 import { UsageError } from '../lib/errors.mjs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 const NOW = '2026-01-01T00:00:00Z';
 
@@ -90,7 +89,7 @@ test('collectAll: partial data — only jira returns records', () => {
 // ---------------------------------------------------------------------------
 
 test('main: writes records to ledger and returns summary string', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-collect-cli-'));
+  const dir = makeTmpDir('waw-collect-cli-');
   const ledger = join(dir, 'ledger.jsonl');
 
   const summary = main(['--ledger', ledger, '--now', NOW], { readers: fixtureReaders });
@@ -108,7 +107,7 @@ test('main: writes records to ledger and returns summary string', () => {
 });
 
 test('main: returned summary reports M=0 for clean fixtures (no invalid records)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-collect-cli-'));
+  const dir = makeTmpDir('waw-collect-cli-');
   const ledger = join(dir, 'ledger.jsonl');
   const summary = main(['--ledger', ledger, '--now', NOW], { readers: fixtureReaders });
   assert.match(summary, /dropped=0/);
@@ -130,7 +129,7 @@ test('main([]) throws a UsageError for the missing-ledger case', () => {
 });
 
 test('main throws a non-UsageError on a runtime fault (ledger path is a directory)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-collect-cli-')); // a directory, not a file
+  const dir = makeTmpDir('waw-collect-cli-'); // a directory, not a file
   let thrown = null;
   try { main(['--ledger', dir, '--now', NOW], { readers: fixtureReaders }); } catch (e) { thrown = e; }
   assert.ok(thrown !== null, 'appending to a directory path must throw');
@@ -138,7 +137,7 @@ test('main throws a non-UsageError on a runtime fault (ledger path is a director
 });
 
 test('main: works with only --ledger (no --now, uses default)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-collect-cli-'));
+  const dir = makeTmpDir('waw-collect-cli-');
   const ledger = join(dir, 'ledger.jsonl');
   // Should not throw; now defaults to new Date().toISOString()
   const summary = main(['--ledger', ledger], { readers: fixtureReaders });
@@ -150,7 +149,7 @@ test('main: dropped > 0 branch — invalid record is counted and absent from led
   // validateRecord rejects key==='' (REQUIRED check: obj[f] === '').
   // So {key:'', status:'In Progress'} produces a dropped record, exercising the
   // `if (r.dropped > 0) console.error(...)` branch in main.
-  const dir = mkdtempSync(join(tmpdir(), 'waw-collect-cli-'));
+  const dir = makeTmpDir('waw-collect-cli-');
   const ledger = join(dir, 'ledger.jsonl');
 
   const summary = main(
@@ -179,7 +178,7 @@ test('main: dropped > 0 branch — invalid record is counted and absent from led
 });
 
 test('main: records in ledger have correct structure', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'waw-collect-cli-'));
+  const dir = makeTmpDir('waw-collect-cli-');
   const ledger = join(dir, 'ledger.jsonl');
   main(['--ledger', ledger, '--now', NOW], { readers: fixtureReaders });
   const stored = readRecords(ledger);

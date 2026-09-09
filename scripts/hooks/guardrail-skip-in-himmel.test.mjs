@@ -3,10 +3,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WRAPPER = join(HERE, 'guardrail-skip-in-himmel.js');
@@ -15,7 +16,7 @@ const GUARD = 'block-read-secrets.sh';
 // Run the wrapper; return {code, ran} where `ran` is whether the fake guardrail
 // executed (it drops a marker file). env overrides CLAUDE_PROJECT_DIR etc.
 function runWrapper({ projectDir, declares, bash, script }) {
-  const work = mkdtempSync(join(tmpdir(), 'gskip-'));
+  const work = makeTmpDir('gskip-');
   const proj = projectDir ?? join(work, 'proj');
   mkdirSync(join(proj, '.claude'), { recursive: true });
   writeFileSync(

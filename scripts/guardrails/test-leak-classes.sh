@@ -357,6 +357,34 @@ else
     fail "T1l home-path all-caps drive-prefixed form (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1m: a file:// URI's extra slash (file:///home/...) sits right where the
+# leading-context alternative needs to match "/" itself -- which the negated
+# class always excludes -- so the home-path detector used to miss it entirely
+# (CodeRabbit public #585 thread, HIMMEL-2854 item 6).
+r=$(new_repo)
+printf 'see file:///home/alexphantom/x for details\n' > "$r/fileuri.txt"  # leak-allow: home-path test fixture
+git -C "$r" add fileuri.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "fileuri.txt:1"; then
+    pass "T1m home-path: file:///home/... URI flagged"
+else
+    fail "T1m home-path file:// URI (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1n: control for T1m -- "home" here is an ordinary hostname label (no
+# file:// scheme), not a /home/ path; the file://-aware widening above must
+# not start matching this too (that is why simply dropping "/" from the
+# leading-context negated class would have been the wrong fix).
+r=$(new_repo)
+printf 'see http://home/alexphantom/x for details\n' > "$r/httphome.txt"  # leak-allow: home-path test fixture
+git -C "$r" add httphome.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1n home-path: http://home/... control stays clean (not a file:// URI)"
+else
+    fail "T1n home-path http control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== redaction =="
 
 # T6: the reported line carries only the first 4 chars of the match + an
@@ -664,6 +692,98 @@ else
     fail "T9h --staged gitattributes -diff bypass (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T9i: a filename containing a space gets a bare disambiguating TAB appended
+# after git's own "+++ b/<path>" header, which run_staged()'s plain ${f#b/}
+# strip used to take literally -- baking the tab into current_file. An
+# EXACT-FILE .leak-classes-ignore exemption for that filename therefore
+# stopped matching under --staged, so the exempted file was wrongly flagged
+# (HIMMEL-2831 #2 repro, verbatim).
+r=$(new_repo)
+printf 'file with space.txt\n' > "$r/.leak-classes-ignore"
+printf 'home path /home/alexphantom/leak here\n' > "$r/file with space.txt"  # leak-allow: home-path test fixture
+git -C "$r" add 'file with space.txt' .leak-classes-ignore
+scan "$r" --staged
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T9i --staged: exact-file ignore exemption still matches a filename with an embedded space"
+else
+    fail "T9i --staged quoted-path space exemption (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T9j: a filename containing a literal double-quote gets fully C-quoted by
+# git ("b/weird\"quote.txt"), which the same plain ${f#b/} strip does not
+# match at all -- the finding used to cite the raw, still-escaped header text
+# instead of the real filename. It must now cite the real, unescaped name.
+r=$(new_repo)
+printf 'home path /home/alexphantom/leak here\n' > "$r/weird\"quote.txt"  # leak-allow: home-path test fixture
+git -C "$r" add .
+scan "$r" --staged
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F 'weird"quote.txt:1' \
+   && ! grepq "$SCAN_OUT" -F '\"'; then
+    pass "T9j --staged: a quote-containing filename is unquoted before being cited in a finding"
+else
+    fail "T9j --staged quoted-path finding attribution (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T9k: a filename ending in a literal trailing newline byte must decode to
+# its real, full name -- not collide with a DIFFERENT, shorter exact-file
+# ignore entry that lacks that trailing newline. `$(...)` command
+# substitution unconditionally strips ALL trailing newlines from its own
+# captured output, so without unquote_diff_path()'s trailing sentinel (a `.`
+# appended by printf, stripped by the caller) a decoded name's own real
+# trailing newline byte would silently vanish right there and the file would
+# wrongly inherit the shorter name's exemption (/pr-check panel round 1,
+# codex-1).
+r=$(new_repo)
+printf 'short.txt\n' > "$r/.leak-classes-ignore"
+nlname=$'short.txt\n'
+printf 'home path /home/alexphantom/leak here\n' > "$r/$nlname"  # leak-allow: home-path test fixture
+git -C "$r" add -- "$nlname" .leak-classes-ignore
+scan "$r" --staged
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path"; then
+    pass "T9k --staged: a decoded name's real trailing newline byte is not swallowed by \$(...) and collapsed into a shorter, unrelated exact-file ignore entry"
+else
+    fail "T9k --staged trailing-newline sentinel (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T9l: a filename containing a literal (non-trailing) TAB byte gets fully
+# C-quoted by git with a backslash-t escape ("b/weird\ttab.txt"); the escape
+# must decode to a real TAB byte, not stay as the two literal characters
+# `\` and `t` -- which would wrongly collide with an exact-file ignore entry
+# written as that literal, undecoded text (self-discovered while verifying
+# codex-1 above: ANSI-C `$'...'` quoting is only expanded as a standalone
+# shell word, so inlining it directly on the replacement side of a
+# double-quoted `${var//pattern/replacement}` silently fails to decode at
+# all).
+r=$(new_repo)
+printf '%s\n' 'weird\ttab.txt' > "$r/.leak-classes-ignore"
+tabname=$'weird\ttab.txt'
+printf 'home path /home/alexphantom/leak here\n' > "$r/$tabname"  # leak-allow: home-path test fixture
+git -C "$r" add -- "$tabname" .leak-classes-ignore
+scan "$r" --staged
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path"; then
+    pass "T9l --staged: a decoded name's embedded \\t escape becomes a real TAB byte, not a literal backslash-t collision with an unrelated exact-file ignore entry"
+else
+    fail "T9l --staged embedded-tab decode (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T9m: a filename containing a literal carriage-return byte gets fully
+# C-quoted by git with a backslash-r escape ("b/weird\rcr.txt"); the escape
+# must decode to a real CR byte, not stay as the two literal characters
+# `\` and `r` (/pr-check panel round 2, codex-1: unquote_diff_path decoded
+# only \\ \" \t \n, leaving git's other named C escapes -- \r \a \b \v \f --
+# undecoded and open to the same collision as T9l's \t case).
+r=$(new_repo)
+printf '%s\n' 'weird\rcr.txt' > "$r/.leak-classes-ignore"
+crname=$'weird\rcr.txt'
+printf 'home path /home/alexphantom/leak here\n' > "$r/$crname"  # leak-allow: home-path test fixture
+git -C "$r" add -- "$crname" .leak-classes-ignore
+scan "$r" --staged
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path"; then
+    pass "T9m --staged: a decoded name's embedded \\r escape becomes a real CR byte, not a literal backslash-r collision with an unrelated exact-file ignore entry"
+else
+    fail "T9m --staged embedded-cr decode (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== the real pre-commit hook fires (not just the script directly) =="
 
 # T10: drives the ACTUAL `leak-classes` entry from this repo's own
@@ -827,6 +947,191 @@ if mutate_call_site '    check_hostname_hits "$content"' 'true # RED-control: ch
             --note "with the check_hostname_hits call site in scan_line() disabled, the denylisted token goes completely unreported" \
             && pass "RED-hostname RED confirmed" \
             || fail "RED-hostname RED control did not confirm (see FAIL line above)"
+    fi
+fi
+
+echo "== RED controls: HIMMEL-2831 #2 / HIMMEL-2854 #6 follow-ups =="
+
+# RED-home-path-file-uri (HIMMEL-2854 #6): revert check_home_path's
+# leading-context regex to its pre-fix form -- the file:// URI in T1m must
+# then go completely unreported.
+r=$(new_repo)
+printf 'see file:///home/alexphantom/x for details\n' > "$r/f.txt"  # leak-allow: home-path test fixture
+git -C "$r" add f.txt
+mutant="$WS/mutant-home-path-file-uri.sh"
+if mutate_call_site \
+    '(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])' \
+    '(^|[^A-Za-z0-9_.$/\\-])' \
+    "$mutant"; then
+    scan "$r" --tree
+    if [ "$SCAN_RC" -ne 1 ] || ! grepq "$SCAN_OUT" -F "home-path"; then
+        fail "RED-home-path-file-uri precondition failed: the REAL script did not hit on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+    else
+        red_control_run --cwd "$r" -- bash -c '
+            out=$(bash "$1" --tree 2>&1); rc=$?
+            case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+            echo "hit=$hit"
+            exit "$rc"
+        ' _ "$mutant"
+        red_control_assert --label "RED-home-path-file-uri" --expect-rc 0 \
+            --observed "$RED_CONTROL_OUT" \
+            --expect-wrong "hit=no" \
+            --correct "hit=yes" \
+            --note "reverting the leading-context regex to drop the file:// alternatives makes the file:///home/... URI in T1m go completely unreported" \
+            && pass "RED-home-path-file-uri RED confirmed" \
+            || fail "RED-home-path-file-uri RED control did not confirm (see FAIL line above)"
+    fi
+fi
+
+# RED-staged-unquote (HIMMEL-2831 #2): revert run_staged()'s "+++" header
+# parse to the pre-fix plain strip (no unquote_diff_path call) -- the
+# space-containing exact-file exemption in T9i must then go back to being
+# wrongly flagged.
+r=$(new_repo)
+printf 'file with space.txt\n' > "$r/.leak-classes-ignore"
+printf 'home path /home/alexphantom/leak here\n' > "$r/file with space.txt"  # leak-allow: home-path test fixture
+git -C "$r" add 'file with space.txt' .leak-classes-ignore
+mutant="$WS/mutant-staged-unquote.sh"
+if mutate_call_site \
+    'f="$(unquote_diff_path "${diff_line#+++ }")"' \
+    'f="${diff_line#+++ }"' \
+    "$mutant"; then
+    scan "$r" --staged
+    if [ "$SCAN_RC" -ne 0 ] || [ -n "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+        fail "RED-staged-unquote precondition failed: the REAL script did not stay clean on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+    else
+        red_control_run --cwd "$r" -- bash -c '
+            out=$(bash "$1" --staged 2>&1); rc=$?
+            case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+            echo "hit=$hit"
+            exit "$rc"
+        ' _ "$mutant"
+        red_control_assert --label "RED-staged-unquote" --expect-rc 1 \
+            --observed "$RED_CONTROL_OUT" \
+            --expect-wrong "hit=yes" \
+            --correct "hit=no" \
+            --note "reverting the +++ header parse to the plain \${f#b/} strip bakes git's trailing disambiguation tab into current_file, so the exact-file exemption for 'file with space.txt' stops matching and the file is wrongly flagged again" \
+            && pass "RED-staged-unquote RED confirmed" \
+            || fail "RED-staged-unquote RED control did not confirm (see FAIL line above)"
+    fi
+fi
+
+# RED-staged-unquote-trailing-newline (codex-1, /pr-check panel round 1):
+# revert unquote_diff_path()'s trailing sentinel -- both the printf that
+# appends it and the caller's strip of it -- so a decoded name's real
+# trailing newline byte is the last byte of the captured `$(...)` output
+# again, and gets silently stripped. The T9k fixture must then wrongly
+# inherit "short.txt"'s exemption.
+r=$(new_repo)
+printf 'short.txt\n' > "$r/.leak-classes-ignore"
+nlname=$'short.txt\n'
+printf 'home path /home/alexphantom/leak here\n' > "$r/$nlname"  # leak-allow: home-path test fixture
+git -C "$r" add -- "$nlname" .leak-classes-ignore
+step1="$WS/mutant-staged-trailing-newline.step1.sh"
+mutant="$WS/mutant-staged-trailing-newline.sh"
+if mutate_call_site "printf '%s.' \"\$s\"" "printf '%s' \"\$s\"" "$step1"; then
+    anchor2='f="${f%.}"'
+    before2=$(grep -cF "$anchor2" "$step1")
+    MUT_O="$anchor2" MUT_N='f="$f"' awk '
+        { line = $0
+          p = index(line, ENVIRON["MUT_O"])
+          if (p > 0) line = substr(line,1,p-1) ENVIRON["MUT_N"] substr(line, p+length(ENVIRON["MUT_O"]))
+          print line }
+    ' "$step1" > "$mutant"
+    after2=$(grep -cF "$anchor2" "$mutant" || true)
+    if [ "$before2" != "1" ] || [ "$after2" != "0" ]; then
+        fail "mutation anchor '$anchor2' did not match exactly once (before=$before2 after=$after2) -- a stale anchor would leave the mutant unmutated and its RED control would pass vacuously"
+    elif cmp -s "$SCRIPT" "$mutant"; then
+        fail "mutant for '$anchor2' is byte-identical to the original -- broken control"
+    else
+        scan "$r" --staged
+        if [ "$SCAN_RC" -ne 1 ] || ! grepq "$SCAN_OUT" -F "home-path"; then
+            fail "RED-staged-unquote-trailing-newline precondition failed: the REAL script did not hit on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+        else
+            red_control_run --cwd "$r" -- bash -c '
+                out=$(bash "$1" --staged 2>&1); rc=$?
+                case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+                echo "hit=$hit"
+                exit "$rc"
+            ' _ "$mutant"
+            red_control_assert --label "RED-staged-unquote-trailing-newline" --expect-rc 0 \
+                --observed "$RED_CONTROL_OUT" \
+                --expect-wrong "hit=no" \
+                --correct "hit=yes" \
+                --note "removing the trailing sentinel lets \$(...) strip the decoded name's own real trailing newline byte, so it collapses onto 'short.txt' and wrongly inherits its exemption" \
+                && pass "RED-staged-unquote-trailing-newline RED confirmed" \
+                || fail "RED-staged-unquote-trailing-newline RED control did not confirm (see FAIL line above)"
+        fi
+    fi
+fi
+
+# RED-staged-unquote-ctrlchar (self-discovered while verifying codex-1
+# above): revert the \t decode step in unquote_diff_path() to a no-op
+# (leave the literal backslash-t pair undecoded) -- the T9l fixture must
+# then wrongly inherit the literal, undecoded ignore entry's exemption.
+r=$(new_repo)
+printf '%s\n' 'weird\ttab.txt' > "$r/.leak-classes-ignore"
+tabname=$'weird\ttab.txt'
+printf 'home path /home/alexphantom/leak here\n' > "$r/$tabname"  # leak-allow: home-path test fixture
+git -C "$r" add -- "$tabname" .leak-classes-ignore
+mutant="$WS/mutant-staged-ctrlchar.sh"
+if mutate_call_site \
+    's="${s//\\t/$tab}"' \
+    's="${s//\\t/\\t}"' \
+    "$mutant"; then
+    scan "$r" --staged
+    if [ "$SCAN_RC" -ne 1 ] || ! grepq "$SCAN_OUT" -F "home-path"; then
+        fail "RED-staged-unquote-ctrlchar precondition failed: the REAL script did not hit on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+    else
+        red_control_run --cwd "$r" -- bash -c '
+            out=$(bash "$1" --staged 2>&1); rc=$?
+            case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+            echo "hit=$hit"
+            exit "$rc"
+        ' _ "$mutant"
+        red_control_assert --label "RED-staged-unquote-ctrlchar" --expect-rc 0 \
+            --observed "$RED_CONTROL_OUT" \
+            --expect-wrong "hit=no" \
+            --correct "hit=yes" \
+            --note "leaving the \\t escape undecoded makes the real-tab fixture collide with the literal-backslash-t ignore entry, wrongly exempting it" \
+            && pass "RED-staged-unquote-ctrlchar RED confirmed" \
+            || fail "RED-staged-unquote-ctrlchar RED control did not confirm (see FAIL line above)"
+    fi
+fi
+
+# RED-staged-unquote-cr (/pr-check panel round 2, codex-1): revert the \r
+# decode step in unquote_diff_path() to a no-op (leave the literal
+# backslash-r pair undecoded) -- the T9m fixture must then wrongly inherit
+# the literal, undecoded ignore entry's exemption. \a \b \v \f decode is the
+# byte-identical shape one line above/below this one and is not separately
+# RED-tested.
+r=$(new_repo)
+printf '%s\n' 'weird\rcr.txt' > "$r/.leak-classes-ignore"
+crname=$'weird\rcr.txt'
+printf 'home path /home/alexphantom/leak here\n' > "$r/$crname"  # leak-allow: home-path test fixture
+git -C "$r" add -- "$crname" .leak-classes-ignore
+mutant="$WS/mutant-staged-cr.sh"
+if mutate_call_site \
+    's="${s//\\r/$cr}"' \
+    's="${s//\\r/\\r}"' \
+    "$mutant"; then
+    scan "$r" --staged
+    if [ "$SCAN_RC" -ne 1 ] || ! grepq "$SCAN_OUT" -F "home-path"; then
+        fail "RED-staged-unquote-cr precondition failed: the REAL script did not hit on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+    else
+        red_control_run --cwd "$r" -- bash -c '
+            out=$(bash "$1" --staged 2>&1); rc=$?
+            case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+            echo "hit=$hit"
+            exit "$rc"
+        ' _ "$mutant"
+        red_control_assert --label "RED-staged-unquote-cr" --expect-rc 0 \
+            --observed "$RED_CONTROL_OUT" \
+            --expect-wrong "hit=no" \
+            --correct "hit=yes" \
+            --note "leaving the \\r escape undecoded makes the real-cr fixture collide with the literal-backslash-r ignore entry, wrongly exempting it" \
+            && pass "RED-staged-unquote-cr RED confirmed" \
+            || fail "RED-staged-unquote-cr RED control did not confirm (see FAIL line above)"
     fi
 fi
 

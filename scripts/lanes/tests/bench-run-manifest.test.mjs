@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -50,7 +50,7 @@ test('buildRunRecord defaults probe to false and round-trips probe: true (pipeli
 });
 
 test('writeRunManifest / readRunManifest round-trip through disk exactly', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-manifest-'));
+  const runsDir = makeTmpDir('bench-run-manifest-');
   const record = buildRunRecord({
     run_id: 'T7-haiku-2', task: 'T7', cell: 'haiku', rep: 2, model: 'claude-haiku-4-5',
     effort: 'low', prompt_sha256: 'deadbeef', fixture_path: '/tmp/y',
@@ -64,7 +64,7 @@ test('writeRunManifest / readRunManifest round-trip through disk exactly', () =>
 });
 
 test('listRunManifests returns every written record and nothing for an empty dir', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-manifest-list-'));
+  const runsDir = makeTmpDir('bench-run-manifest-list-');
   assert.deepEqual(listRunManifests(runsDir), []);
   writeRunManifest(runsDir, buildRunRecord({
     run_id: 'T1-luna-1', task: 'T1', cell: 'luna', rep: 1, model: 'gpt-5.6-luna',
@@ -131,7 +131,7 @@ test('checkPromptHashParity catches drift between two reps of the SAME cell', ()
 });
 
 test('CLI: write --prompt-file computes prompt_sha256 from the file and the manifest round-trips', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-manifest-cli-'));
+  const runsDir = makeTmpDir('bench-run-manifest-cli-');
   const promptFile = join(runsDir, 'prompt.md');
   const promptText = 'Bump the pinned tool version and add the CHANGELOG line.\n';
   writeFileSync(promptFile, promptText);
@@ -150,7 +150,7 @@ test('CLI: write --prompt-file computes prompt_sha256 from the file and the mani
 });
 
 test('CLI: check-parity exits nonzero on a mismatch and 0 when clean', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-manifest-cli-parity-'));
+  const runsDir = makeTmpDir('bench-run-manifest-cli-parity-');
   writeRunManifest(runsDir, buildRunRecord({
     run_id: 'T7-haiku-1', task: 'T7', cell: 'haiku', rep: 1, model: 'claude-haiku-4-5',
     effort: 'low', prompt_sha256: 'hash-a', fixture_path: '/tmp/a',
@@ -161,7 +161,7 @@ test('CLI: check-parity exits nonzero on a mismatch and 0 when clean', () => {
   }));
   assert.throws(() => execFileSync('node', [CLI, 'check-parity', '--runs-dir', runsDir], { encoding: 'utf8' }));
 
-  const cleanDir = mkdtempSync(join(tmpdir(), 'bench-run-manifest-cli-parity-clean-'));
+  const cleanDir = makeTmpDir('bench-run-manifest-cli-parity-clean-');
   writeRunManifest(cleanDir, buildRunRecord({
     run_id: 'T7-haiku-1', task: 'T7', cell: 'haiku', rep: 1, model: 'claude-haiku-4-5',
     effort: 'low', prompt_sha256: 'same', fixture_path: '/tmp/a',

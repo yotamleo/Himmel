@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 
 const require = createRequire(import.meta.url);
 const {
@@ -32,7 +33,7 @@ test('Windows resolver refuses WSL and WindowsApps bash aliases', () => {
 });
 
 test('Windows resolver refuses zero-byte alias files outside WindowsApps', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hook-bash-zero-byte-'));
+  const dir = makeTmpDir('hook-bash-zero-byte-');
   const alias = join(dir, 'bash.exe');
   try {
     writeFileSync(alias, '');
@@ -81,7 +82,7 @@ test('current platform resolves a concrete Bash executable', () => {
 });
 
 test('launcher executes a hook through the resolved Bash and forwards extra args', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hook-bash-launcher-'));
+  const dir = makeTmpDir('hook-bash-launcher-');
   const hook = join(dir, 'hook.sh');
   try {
     writeFileSync(hook, '#!/usr/bin/env bash\nprintf \'HOOK_FIRED:%s\\n\' "$BASH_VERSION"\nprintf \'ARGS:%s|%s\\n\' "$1" "$2"\n');
@@ -268,7 +269,7 @@ const MEMBERS = {
 };
 
 function chainFixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'hook-bash-chain-'));
+  const dir = makeTmpDir('hook-bash-chain-');
   for (const [name, body] of Object.entries(MEMBERS)) {
     // Every member drops a marker so "did it run?" is observable.
     writeFileSync(join(dir, name), `#!/usr/bin/env bash\n: > "$(dirname "$0")/ran-${name}"\n${body}\n`);
@@ -994,7 +995,7 @@ test('gitBlobSha1 matches `git hash-object`', () => {
 });
 
 test('verifyProjectHookIntegrity fails open with no CLAUDE_PROJECT_DIR, no session id, or no pin file', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hook-integrity-'));
+  const dir = makeTmpDir('hook-integrity-');
   try {
     const script = join(dir, 'scripts', 'hooks', 'guard.sh');
     withEnv({ CLAUDE_PROJECT_DIR: '' }, () => {
@@ -1010,8 +1011,8 @@ test('verifyProjectHookIntegrity fails open with no CLAUDE_PROJECT_DIR, no sessi
 });
 
 test('verifyProjectHookIntegrity denies a pinned script whose on-disk content drifted, allows an untouched one', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hook-integrity-'));
-  const integrityDir = mkdtempSync(join(tmpdir(), 'hook-integrity-pins-'));
+  const dir = makeTmpDir('hook-integrity-');
+  const integrityDir = makeTmpDir('hook-integrity-pins-');
   try {
     const scriptRel = 'scripts/hooks/guard.sh';
     const scriptPath = join(dir, ...scriptRel.split('/'));
@@ -1036,8 +1037,8 @@ test('verifyProjectHookIntegrity denies a pinned script whose on-disk content dr
 });
 
 test('verifyProjectHookIntegrity: HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 always allows', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hook-integrity-'));
-  const integrityDir = mkdtempSync(join(tmpdir(), 'hook-integrity-pins-'));
+  const dir = makeTmpDir('hook-integrity-');
+  const integrityDir = makeTmpDir('hook-integrity-pins-');
   try {
     const scriptRel = 'scripts/hooks/guard.sh';
     const scriptPath = join(dir, ...scriptRel.split('/'));
