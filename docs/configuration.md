@@ -294,7 +294,7 @@ per-hook behavior: [internals/enforcement.md](internals/enforcement.md).
 | Gate | Class | How it is satisfied |
 |---|---|---|
 | Session merge gate (`block-unresolved-cr-merge`) | auth-gated | CI green + zero unresolved review threads on the head SHA (`scripts/hooks/block-unresolved-cr-merge.sh`). Branch protection is also active on `main`: 10 required status checks (strict — branch must be up to date), `enforce_admins`, no force-push, no deletion, and — via the separate `protect-main` ruleset rather than classic branch protection — squash-only merges, 1 approving review, and code-owner review required. So this hook is one gate among several, not the whole gate. As a session hook it gates merges issued *inside a Claude session*; an operator merging from a bare terminal or the GitHub UI is outside its reach — by design, since the operator is the authority it protects. It also fails **open** on degraded evaluation (missing `jq`, unparseable hook input) — a guardrail layered on top of forge-side branch protection, not a replacement for it |
-| Private auto-merge (`scripts/handover/merge-on-green.sh`) | auth-gated, opt-in | `ARMAUTOMERGE` truthy **and** all of: same repo, repo verified private, PR base == default branch, `check-ci.sh` exit 0, base/privacy re-verified fresh pre-merge, audit log writable, merge pinned to the certified head SHA (`--match-head-commit`), MERGED state confirmed by polling |
+| Armed auto-merge (`scripts/handover/merge-on-green.sh`) | auth-gated, opt-in | `ARMAUTOMERGE` truthy **and** all of: same repo, PR base == default branch, `check-ci.sh` exit 0, audit log writable, merge pinned to the certified head SHA (`--match-head-commit`), MERGED state confirmed by polling — **and** a repo test satisfied either way: the repo is verified PRIVATE, **or** it is the ONE configured public origin (`HIMMEL_PUBLIC_ORIGIN_NWO`, a fixed literal in the script) and a live read shows branch protection with required status checks on the base branch (HIMMEL-2869). Any other public repo, and a protection read that is missing, empty or unreadable, refuse (exit 12). Base, privacy **and** protection are each re-verified fresh immediately pre-merge, never reused from the first pass |
 | Public merge (`scripts/merge-public-on-green.sh`, via Telegram `/mergepub`) | HARD human-authorization | operator-typed, non-forwarded `/mergepub <pr> <sha12>`; SHA must prefix-match the live head at read *and* fresh pre-merge re-verify; `check-ci.sh` exit 0 is the only pass; the script refuses outright if `CLAUDECODE` is set (i.e. if any agent tries to run it) |
 | `check-ci.sh` (the watcher those gates call) | mechanism, not a veto | exit 0 = green + threads resolved + no changes-requested; 1 = red; 2 = cannot evaluate; 3 = unresolved threads / changes requested; 4 = CodeRabbit concluded incrementally with no head review while a prior head had outside-diff findings (request a full review or `--escalate`) |
 
@@ -565,8 +565,10 @@ opt-in except the cap watchdogs (rung 2), which ship enabled with the hooks:
    with the hooks); kill with `AUTO_ARM_DISABLE=1`.
 3. **Arming** (`arm-resume.sh`, `/handover-arm-resume`, Telegram `/arm`) — a
    scheduled task relaunches `claude` with a handover at a chosen time.
-4. **Private auto-merge** (`ARMAUTOMERGE=1` + `merge-on-green.sh`) — merges a
-   green, thread-resolved private PR without a human click.
+4. **Armed auto-merge** (`ARMAUTOMERGE=1` + `merge-on-green.sh`) — merges a
+   green, thread-resolved PR without a human click, on a private repo or on
+   the one configured public origin under live-verified branch protection
+   (full condition list in [§3.3](#33-merge--publish-gates)).
 5. **Overnight mode** (`/overnight-shift --limit N`) — dispatches scoped
    tickets as parallel agents that branch, build, self-review, and open PRs.
    Halt with `/stop` (marker file polled between dispatches).
@@ -653,7 +655,7 @@ tables; this is the layer level.)
 | Layer | Off switch | Scope |
 |---|---|---|
 | Initiative mode | leave/unset `HIMMEL_INITIATIVE` (default OFF); per-repo override: `"env": { "HIMMEL_INITIATIVE": "" }` in that repo's `.claude/settings.json` | session start |
-| Private auto-merge | leave/unset `ARMAUTOMERGE` (default OFF) | per shell |
+| Armed auto-merge | leave/unset `ARMAUTOMERGE` (default OFF) | per shell |
 | Cap watchdogs (auto-arm) | `AUTO_ARM_DISABLE=1` (+ `AUTO_ARM_SUBAGENT_DISABLE=1`) | launching shell |
 | A scheduled resume | `scripts/handover/arm-resume.sh --dry-run` to inspect; delete the `HIMMEL-Resume-*` scheduled task (schtasks / `at` / crontab) | OS scheduler |
 | Recurring vault cadence | `scripts/luna/pipeline-cadence.sh disarm` | OS scheduler |
