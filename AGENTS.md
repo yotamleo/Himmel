@@ -172,20 +172,6 @@ escalate to a hook, gate or classifier, never to stronger prose. Frame + worked
 examples:
 [`docs/internals/context-architecture.md`](docs/internals/context-architecture.md).
 
-### Tests (the non-guessable invocations)
-Shell suites → `bash scripts/ci/run-shell-tests.sh` (`--list` prints the
-run/skip plan without running anything); it is long and noisy — run it in a
-subagent. Lanes suite →
-`node --test --test-reporter=dot "scripts/lanes/tests/**/*.test.mjs"`. Bun
-suites have a per-suite cwd rule: `scripts/luna-vitals` runs from its own
-directory (`cd scripts/luna-vitals && bun test --dots`), but `scripts/telegram`
-resolves fixtures repo-root-relative — run it from the repo root instead
-(`bun test scripts/telegram --dots`), never `cd scripts/telegram &&` first
-([`docs/internals/environment-gotchas.md`](docs/internals/environment-gotchas.md)
-has the reproduction). The quiet reporters (`--dots`,
-`--test-reporter=dot`) are deliberate, not an oversight. Public CI runs the
-suite jobs on every PR — a green `shell-unit` run **is** evidence a suite ran.
-
 ### Where artifacts land
 - **Reference docs operators consume** → the owning repo's `docs/` (plugin specs
   → `plugins/<plugin>/README.md`). `templates/luna-second-brain/` is
@@ -268,6 +254,7 @@ Docs not already linked from a rule above (relative to `docs/`):
 | File | Covers |
 |---|---|
 | `internals/harness-compat.md` | himmel under Codex / other harnesses |
+| `internals/testing.md` | non-guessable test invocations (`bash scripts/ci/run-shell-tests.sh`, lanes, bun) |
 | `operator-conventions.md` | durable operator working-habits |
 | `tool-adoption/rubric.md` | community-tool eval method |
 | `tooling-catalog.md` | tools/scripts/plugins in use |
