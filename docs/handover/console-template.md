@@ -6,7 +6,8 @@
 > console learned is in **{{PREDECESSOR_HANDOFF}}** (its handoff state), which
 > wins over this file where the two differ. Your session name is
 > **`{{SESSION_NAME}}`**. Your handover root is **`{{HANDOVER_ROOT}}`**; your
-> bucket is **`{{STATE_DIR}}`**; the repo you ship from is **`{{REPO}}`**.
+> bucket is **`{{BUCKET}}`** (at `{{STATE_DIR}}`); the repo you ship from is
+> **`{{REPO}}`**.
 > Handover line for consoles: **{{FILL_PERCENT}} % context fill, or 90 k input
 > tokens in one turn** — whichever comes first. Report at MILESTONES only.
 
@@ -20,15 +21,16 @@ Run these, in order, and write the result as the first bullet under
    "close these windows" list is stale by the time you read it — never relay a
    window as live without checking.
 2. **Sweep locks at the ROOT, not your bucket:**
-   `HANDOVER_DIR={{HANDOVER_ROOT}} bash {{REPO}}/scripts/handover/queue-lock.sh status --sweep {{HANDOVER_ROOT}}`.
+   `HANDOVER_DIR="{{HANDOVER_ROOT}}" bash "{{REPO}}/scripts/handover/queue-lock.sh" status --sweep "{{HANDOVER_ROOT}}"`.
    Sweeping the bucket instead of the root reports a false "no held locks".
    Expect the predecessor console's lock (until it wraps) plus one per live
-   leg. `IDLE-HELD?` on a leg waiting for CI is normal.
-3. **Primary head + remote:** `git -C {{REPO}} log -1 --format=%H` and
-   `git -C {{REPO}} remote -v`. Both go in the first bullet verbatim — every
+   leg. `IDLE-HELD?` on a leg waiting for CI is normal. (Every path below is
+   quoted for a reason — a handover root or repo path may contain a space.)
+3. **Primary head + remote:** `git -C "{{REPO}}" log -1 --format=%H` and
+   `git -C "{{REPO}}" remote -v`. Both go in the first bullet verbatim — every
    leg you dispatch is cut from that head, and every leg's PR targets that
    remote.
-4. **Bank preflight:** `bash {{REPO}}/scripts/lib/bank-preflight.sh`. It prints
+4. **Bank preflight:** `bash "{{REPO}}/scripts/lib/bank-preflight.sh"`. It prints
    the fleet size and the 5-hour / 7-day utilisation, then `PROCEED` or a
    refusal. A console that dispatches past a refusal strands its legs
    mid-flight.
@@ -43,7 +45,7 @@ Run these, in order, and write the result as the first bullet under
    launcher) and `inbox-send.sh` (rulings to a non-native lane).
 8. **Acquire your own lock on THIS document** and record the printed
    `release-token:` line in your first bullet:
-   `HANDOVER_DIR={{HANDOVER_ROOT}} bash {{REPO}}/scripts/handover/queue-lock.sh acquire <this file>`.
+   `HANDOVER_DIR="{{HANDOVER_ROOT}}" bash "{{REPO}}/scripts/handover/queue-lock.sh" acquire "<this file>"`.
 9. **Tell the predecessor you are live** so it can release its lock and wrap.
 
 ## Monitors
@@ -53,7 +55,7 @@ filters to terminal-state changes and emits nothing otherwise.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 60 min | `bash {{KIT}}/tick.sh --doc <this file> --token <your token> --legs "<leg docs>"` — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank |
+| tick | 60 min | `bash "{{KIT}}/tick.sh" --doc "<this file>" --token <your token> --legs "<leg docs>"` — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
@@ -74,7 +76,7 @@ ordinary Bash call.
    writer, never two legs at one artifact.
 3. **Name an explicit model** on every dispatch, and raise *effort* before
    tier. An unnamed model burns the scarcer parent quota.
-4. Launch: `setsid nohup bash {{KIT}}/headed-arm-leg.sh <session-name> <brief>
+4. Launch: `setsid nohup bash "{{KIT}}/headed-arm-leg.sh" <session-name> "<brief>"
    <signal-file> <deadline-epoch> <log> <model> >/dev/null 2>&1 &`. Headed,
    because a session launched without a TTY exits at the first idle
    cross-session message.
@@ -132,11 +134,13 @@ own end-of-session hook still writing — it prunes on the next sweep.
 
 At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
 
-1. `/console next --arm --doc {{STATE_DIR}}/{{SESSION_NAME}}.md` — writes the
-   successor stub, writes this console's `-HANDOFF.md` skeleton, and arms the
-   successor. **Name your own document explicitly.** Without `--doc`, `next`
-   hands over from the highest-lettered doc it finds, which is the wrong one
-   the moment another `new` has run or a successor already exists. It prints
+1. `/console next --arm --doc "{{STATE_DIR}}/{{SESSION_NAME}}.md" --bucket {{BUCKET}}`
+   — writes the successor stub, writes this console's `-HANDOFF.md` skeleton,
+   and arms the successor. **Name your own document and bucket explicitly.**
+   Without `--doc`, `next` hands over from the highest-lettered doc it finds,
+   which is the wrong one the moment another `new` has run or a successor
+   already exists; without `--bucket` it writes the successor into the default
+   repo bucket rather than this one. It prints
    the successor's signal path on its `armed:` line — **that** is the path
    step 3 touches, not this console's own `{{FILL_SIGNAL}}` (which fired when
    *this* session launched and nothing waits on it any more).

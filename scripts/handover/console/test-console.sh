@@ -233,10 +233,20 @@ check "13 queue-lock acquire failure exits non-zero" "$([ "$rc13" -ne 0 ] && ech
 HANDOVER_DIR="$root" bash "$QL" release "$lockfail_doc" "$foreign_token" >/dev/null 2>&1
 
 # --- 14: --deadline-min with a leading zero is not read as octal --------
-out14a="$(console new --bucket deadlinetest --dry-run --arm --deadline-min 8)"
-out14b="$(console new --bucket deadlinetest --dry-run --arm --deadline-min 08)"
+# A prior version of this case never checked either invocation actually
+# succeeded or that a deadline was parsed at all: two empty operands
+# subtract to 0, "passing" the tolerance check vacuously. Assert rc=0 and a
+# non-empty integer parse on BOTH sides before ever comparing them.
+rc14a=0
+out14a="$(console new --bucket deadlinetest --dry-run --arm --deadline-min 8)" || rc14a=$?
+check "14 --deadline-min 8 succeeds" "$rc14a" "0"
+rc14b=0
+out14b="$(console new --bucket deadlinetest --dry-run --arm --deadline-min 08)" || rc14b=$?
+check "14 --deadline-min 08 succeeds" "$rc14b" "0"
 dl_a="$(printf '%s\n' "$out14a" | sed -n 's/.*deadline=\([0-9]*\).*/\1/p' | head -n 1)"
 dl_b="$(printf '%s\n' "$out14b" | sed -n 's/.*deadline=\([0-9]*\).*/\1/p' | head -n 1)"
+check "14 deadline for --deadline-min 8 parsed as a non-empty integer" "$(printf '%s' "$dl_a" | grep -Ec '^[0-9]+$')" "1"
+check "14 deadline for --deadline-min 08 parsed as a non-empty integer" "$(printf '%s' "$dl_b" | grep -Ec '^[0-9]+$')" "1"
 diff14=$(( dl_b - dl_a ))
 [ "$diff14" -ge 0 ] || diff14=$(( -diff14 ))
 check "14 --deadline-min 08 parses like 8 (no octal error)" "$([ "$diff14" -le 2 ] && echo yes)" "yes"
@@ -283,5 +293,33 @@ log17a="$(printf '%s\n' "$out17a" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 
 log17b="$(printf '%s\n' "$out17b" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 1)"
 check "17 signal path differs when only --bucket differs" "$([ -n "$sig17a" ] && [ "$sig17a" != "$sig17b" ] && echo yes)" "yes"
 check "17 log path differs when only --bucket differs" "$([ -n "$log17a" ] && [ "$log17a" != "$log17b" ] && echo yes)" "yes"
+
+# --- 18: next --doc <missing predecessor> refuses rather than fabricate -
+before18="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
+missing_doc="$root/tester/missingrepo/DEMO-nextleg-${today}A-console.md"
+rc18=0
+console next --bucket missingrepo --doc "$missing_doc" >/dev/null 2>&1 || rc18=$?
+check "18 next --doc <missing predecessor> exits non-zero" "$([ "$rc18" -ne 0 ] && echo yes)" "yes"
+after18="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
+check "18 next --doc <missing predecessor> writes nothing" "$before18" "$after18"
+
+# --- 19: a RELATIVE --doc outside state_dir still yields an absolute
+# HANDOFF reference (canonicalised, not left relative to whatever cwd the
+# successor happens to launch from).
+out19a="$(console new --bucket relsrc)"
+token19a="$(token_of "$out19a")"
+doc19A="$root/tester/relsrc/DEMO-nextleg-${today}A-console.md"
+handoff19A="$root/tester/relsrc/DEMO-nextleg-${today}A-console-HANDOFF.md"
+doc19B="$root/tester/reldst/DEMO-nextleg-${today}B-console.md"
+# console() cd's into $fixture_repo before invoking console.sh, and
+# fixture_repo/root are both direct children of $tmp -- so this relative
+# path, taken from that cwd, resolves to the same file as doc19A.
+rel19_doc="../handovers/tester/relsrc/DEMO-nextleg-${today}A-console.md"
+console next --bucket reldst --doc "$rel19_doc" >/dev/null
+check "19 next --doc (relative) still writes the successor stub" "$([ -f "$doc19B" ] && echo yes)" "yes"
+check "19 next --doc (relative) writes the HANDOFF beside the predecessor" "$([ -f "$handoff19A" ] && echo yes)" "yes"
+check "19 successor stub names an ABSOLUTE HANDOFF reference" "$(grep -cF "$handoff19A" "$doc19B")" "1"
+check "19 successor stub does not embed the relative --doc literally" "$(grep -cF '../handovers' "$doc19B")" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc19A" "$token19a" >/dev/null 2>&1
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

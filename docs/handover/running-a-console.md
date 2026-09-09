@@ -105,14 +105,27 @@ The console pulls the primary and the leg closes out its ticket.
 Consoles hand over at **45 % context fill, or 90 k input tokens in one turn**.
 
 ```bash
-/console next --arm
+/console next --arm --doc <this console's own doc> --bucket <its bucket>
 ```
+
+**Name your own document and bucket explicitly.** Without `--doc`, `next`
+hands over from the highest-lettered doc it can find — the wrong one as soon
+as another `new` has run or a successor already exists; and without
+`--bucket`, a console started in a non-default bucket writes its successor
+into the default one. The rendered console doc carries the exact command with
+both already filled in.
 
 `next` writes the successor stub (letter bumped, pointed at this console and
 its HANDOFF) and the predecessor's `-HANDOFF.md` skeleton, and arms the
 successor on a signal file. Fill in the HANDOFF — head, what is in flight leg
 by leg with nonces and lock tokens, rulings made, the held queue in launch
-order, what wrapped — then `touch` the signal, release the lock, and stop.
+order, what wrapped — then `touch` the signal path that `next --arm` printed
+and hand your live legs over by name.
+
+**Release your lock only after the successor reports `LIVE`.** That message is
+the only evidence the arm actually fired and the successor completed ACTION
+ZERO; releasing on the `touch` alone leaves an unattended fleet if the launch
+failed.
 
 The HANDOFF is the successor's only required read. Written properly, the chain
 does not need the predecessor's transcript at all.

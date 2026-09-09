@@ -315,6 +315,7 @@ cmd_new() {
         STATE_DIR "$state_dir" \
         REPO "$repo" \
         PREFIX "$prefix" \
+        BUCKET "$bucket" \
         KIT "$kit" \
         FILL_SIGNAL "$fill_signal" \
         FILL_PERCENT "$fill_percent"
@@ -380,6 +381,15 @@ cmd_next() {
 
     local predecessor_doc predecessor_base predecessor_stem predecessor_prefix_part predecessor_letter
     predecessor_doc="$(resolve_predecessor)" || { err "no predecessor console doc found under $state_dir for '$name' — pass --doc <path>"; exit 1; }
+    # An explicit --doc / CONSOLE_DOC is used as given, with no existence
+    # check inside resolve_predecessor (the auto-discovery branches already
+    # only ever return a path that exists) — a typo with a plausible
+    # basename must not be allowed to happily create a successor and a
+    # HANDOFF for a console that was never there.
+    if [ ! -f "$predecessor_doc" ]; then
+        err "predecessor console doc does not exist: $predecessor_doc"
+        exit 1
+    fi
     predecessor_base="$(basename "$predecessor_doc")"
     predecessor_stem="${predecessor_base%.md}"
     predecessor_prefix_part="${predecessor_stem%-"$name"}"
@@ -403,6 +413,15 @@ cmd_next() {
     # root entirely) must still get its HANDOFF written next to it.
     local predecessor_dir predecessor_handoff predecessor_handoff_ref
     predecessor_dir="$(dirname "$predecessor_doc")"
+    # Canonicalise: a RELATIVE --doc outside $state_dir would otherwise
+    # leave predecessor_handoff_ref relative too, breaking the "absolute
+    # reference" promise below the moment the successor is launched from a
+    # different cwd. _arm_realpath (sourced via handover-path.sh) is the
+    # repo's own portable realpath — GNU `realpath -m`, else python
+    # pathlib, else unchanged — so this needs no GNU-only flag of its own.
+    # Canonicalising also makes the state_dir comparison below robust to a
+    # relative --doc that happens to point INSIDE state_dir.
+    predecessor_dir="$(_arm_realpath "$predecessor_dir")"
     predecessor_handoff="$predecessor_dir/${predecessor_stem}-HANDOFF.md"
     # The successor doc must be able to actually RESOLVE this reference: a
     # bare basename only works when the HANDOFF sits in the successor's own
@@ -459,6 +478,7 @@ cmd_next() {
         STATE_DIR "$state_dir" \
         REPO "$repo" \
         PREFIX "$prefix" \
+        BUCKET "$bucket" \
         KIT "$kit" \
         FILL_SIGNAL "$fill_signal" \
         FILL_PERCENT "$fill_percent"
@@ -475,6 +495,7 @@ cmd_next() {
             PREDECESSOR "$predecessor_base" \
             SUCCESSOR_DOC "$(basename "$doc")" \
             REPO "$repo" \
+            BUCKET "$bucket" \
             KIT "$kit"
         echo "handoff: $predecessor_handoff"
     fi
