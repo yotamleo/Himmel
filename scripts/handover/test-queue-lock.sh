@@ -131,13 +131,18 @@ else
     fail "T5: release by holder session rc=0 + gone (got rc=$rc, dir-exists=$([ -d "$lockdir" ] && echo yes || echo no))"
 fi
 
-# --- T6: release of an absent lock (with a token) is idempotent (rc 0) ------
-bash "$LIB" release "$HO1" "any-token" >/dev/null 2>&1
+# --- T6: release of an absent lock (with a token) reports it, rc 3 ---------
+# CONTRACT CHANGE (HIMMEL-2861): this used to be a silent rc=0 "idempotent"
+# release. Idempotency was indistinguishable from the failure it hid -- a
+# release that looked in the wrong handover root also found nothing and
+# also said 0, so six legs on 2026-09-09 reported a clean wrap over a lock
+# that was still HELD. Nothing-released is now its own exit code.
+out="$(bash "$LIB" release "$HO1" "any-token" 2>&1)"
 rc=$?
-if [ "$rc" -eq 0 ]; then
-    pass "T6: release of absent lock rc=0 (idempotent)"
+if [ "$rc" -eq 3 ]; then
+    pass "T6: release of absent lock rc=3 (nothing was released)"
 else
-    fail "T6: release of absent lock rc=0 (got $rc)"
+    fail "T6: release of absent lock rc=3 (got $rc: $out)"
 fi
 
 # --- T7: status free -> rc 0, "free" ----------------------------------------
@@ -1433,6 +1438,180 @@ else
     fail "T45: escaping did not neutralize the space/newline session values (out=$out)"
 fi
 rm -rf "$SPACE_LOCKDIR" "$NL_LOCKDIR"
+
+# --- T46-T52: cross-root release/heartbeat (HIMMEL-2861) --------------------
+# Six legs on 2026-09-09 wrapped with `release <doc> <token>` reporting
+# nothing held (rc=0) while the lock they had acquired stayed HELD: the
+# acquire ran with HANDOVER_DIR exported, the release at wrap was issued
+# from the leg's WORKTREE cwd WITHOUT it, handover_root then resolved that
+# repo's inline handovers/ instead, and the lookup missed a root it never
+# looked in. T46b is that reproduction -- RED against the pre-fix script.
+X_STATE="$TMPDIR_ROOT/2861-state"          # the state repo holding the real root
+mkdir -p "$X_STATE/handovers/yotamleo/himmel"
+X_ROOT="$(cd "$X_STATE/handovers" && pwd)" # the root the acquire runs under
+X_DOC="$X_ROOT/yotamleo/himmel/HIMMEL-2861-legN114-RESUME.md"
+: > "$X_DOC"
+X_LOCKDIR="$X_ROOT/.locks/queue/yotamleo__himmel__HIMMEL-2861-legN114-RESUME.lock"
+
+# The leg's worktree: its OWN inline handovers/ is what handover_root
+# resolves to once HANDOVER_DIR is gone.
+X_WT="$TMPDIR_ROOT/2861-worktree"
+mkdir -p "$X_WT/handovers"
+git -C "$X_WT" init -q >/dev/null 2>&1
+
+# Registries: one naming the state repo (so the fallback has a candidate),
+# one naming nobody (the negative control). HANDOVER_REGISTRY keeps both
+# hermetic -- the real $HOME registry is never read.
+X_REG="$TMPDIR_ROOT/2861-registry.json"
+printf '{"repos":{"state":{"path":"%s","user":"yotamleo","branch_prefix":"handover/"}}}\n' \
+    "$X_STATE" > "$X_REG"
+X_REG_EMPTY="$TMPDIR_ROOT/2861-registry-empty.json"
+printf '{"repos":{}}\n' > "$X_REG_EMPTY"
+
+# release/heartbeat exactly as a leg issues them at wrap: from the worktree
+# cwd, HANDOVER_DIR gone, token in hand.
+x_from_worktree() {
+    (
+        cd "$X_WT" || exit 9
+        unset HANDOVER_DIR
+        HANDOVER_REGISTRY="$1" bash "$LIB" "$2" "$X_DOC" "$3" 2>&1
+    )
+}
+
+x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "legN114" 2>/dev/null \
+    | sed -n 's/^release-token: //p')"
+if [ "$x_tok" = "legN114" ] && [ -f "$X_LOCKDIR/owner.json" ]; then
+    pass "T46: setup -- acquire under the state root holds the lock"
+else
+    fail "T46: setup -- acquire under the state root did not hold the lock (tok='$x_tok')"
+fi
+
+# --- T46a: NEGATIVE CONTROL -- no candidate root names the real root -------
+# The cross-root fallback must not conjure a lock out of nowhere: with a
+# registry that knows nothing, the same release still finds nothing. This
+# is what makes T46b evidence about the registry candidate specifically.
+out="$(x_from_worktree "$X_REG_EMPTY" release "$x_tok")"
+rc=$?
+if [ "$rc" -ne 0 ] && [ -f "$X_LOCKDIR/owner.json" ]; then
+    pass "T46a: negative control -- unknown root: release rc=$rc (non-zero) and the lock stays HELD"
+else
+    fail "T46a: negative control -- expected non-zero + lock intact (rc=$rc, lock=$([ -f "$X_LOCKDIR/owner.json" ] && echo held || echo GONE): $out)"
+fi
+
+# --- T46b: the HIMMEL-2861 reproduction -- release from the worktree cwd ---
+out="$(x_from_worktree "$X_REG" release "$x_tok")"
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "T46b: release from a worktree cwd without HANDOVER_DIR rc=0"
+else
+    fail "T46b: release from a worktree cwd without HANDOVER_DIR rc=0 (got $rc: $out)"
+fi
+if [ ! -d "$X_LOCKDIR" ]; then
+    pass "T46b: the lock under the ACQUIRE-time root is actually released"
+else
+    fail "T46b: the lock under the acquire-time root is STILL HELD -- the release looked in the wrong root ($out)"
+fi
+if grepq "$out" '^WARN queue-lock: cwd resolves root ' \
+    && grepq "$out" -F "$X_WT/handovers" && grepq "$out" -F "$X_ROOT"; then
+    pass "T46b: ONE WARN names both the cwd-resolved root and the recorded root"
+else
+    fail "T46b: WARN missing or does not name both roots: $out"
+fi
+if [ "$(printf '%s\n' "$out" | grep -c '^WARN queue-lock: cwd resolves root ')" -eq 1 ]; then
+    pass "T46b: the cross-root WARN is printed exactly once"
+else
+    fail "T46b: the cross-root WARN is not printed exactly once: $out"
+fi
+
+# --- T47: heartbeat resolves across roots the same way ---------------------
+x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "legN114hb" 2>/dev/null \
+    | sed -n 's/^release-token: //p')"
+out="$(x_from_worktree "$X_REG" heartbeat "$x_tok")"
+rc=$?
+if [ "$rc" -eq 0 ] && grepq "$(cat "$X_LOCKDIR/owner.json" 2>/dev/null)" '"session":"legN114hb"'; then
+    pass "T47: heartbeat from a worktree cwd refreshes the lock under the acquire-time root"
+else
+    fail "T47: heartbeat from a worktree cwd rc=0 expected (got $rc: $out)"
+fi
+HANDOVER_DIR="$X_ROOT" bash "$LIB" release "$X_DOC" "$x_tok" >/dev/null 2>&1
+
+# --- T48: a genuine no-lock release exits NON-ZERO -------------------------
+# Pre-2861 this was a silent rc=0, which every leg and the console read as
+# "released cleanly" -- the exact reason six orphaned locks went unnoticed.
+out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" release "$X_DOC" "nobody-holds-this" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    pass "T48: release with no lock anywhere exits non-zero (rc=$rc)"
+else
+    fail "T48: release with no lock anywhere still exits 0 -- a lost lock reads as clean"
+fi
+if grepq "$out" -i 'no lock held'; then
+    pass "T48: it says so on stderr"
+else
+    fail "T48: no 'no lock held' message: $out"
+fi
+
+# --- T49: BACKWARD COMPAT -- a lock dir written by the pre-2861 script -----
+# (no `root` marker file) must still status/heartbeat/release normally.
+x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "legacy-sess" 2>/dev/null \
+    | sed -n 's/^release-token: //p')"
+rm -f "$X_LOCKDIR/root"
+HANDOVER_DIR="$X_ROOT" bash "$LIB" status "$X_DOC" >/dev/null 2>&1
+t49_status_rc=$?
+HANDOVER_DIR="$X_ROOT" bash "$LIB" heartbeat "$X_DOC" "$x_tok" >/dev/null 2>&1
+t49_hb_rc=$?
+out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" release "$X_DOC" "$x_tok" 2>&1)"
+t49_rel_rc=$?
+if [ "$t49_status_rc" -eq 11 ] && [ "$t49_hb_rc" -eq 0 ] && [ "$t49_rel_rc" -eq 0 ] \
+    && [ ! -d "$X_LOCKDIR" ]; then
+    pass "T49: an old-format lock dir (no root marker) still status/heartbeat/releases (11/0/0)"
+else
+    fail "T49: old-format lock dir broke (status=$t49_status_rc heartbeat=$t49_hb_rc release=$t49_rel_rc: $out)"
+fi
+
+# --- T50: acquire records the resolved root inside the lock dir ------------
+x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "root-marker" 2>/dev/null \
+    | sed -n 's/^release-token: //p')"
+if [ -f "$X_LOCKDIR/root" ] && [ "$(cat "$X_LOCKDIR/root" 2>/dev/null)" = "$X_ROOT" ]; then
+    pass "T50: acquire records the resolved root in <lockdir>/root"
+else
+    fail "T50: <lockdir>/root missing or wrong (got '$(cat "$X_LOCKDIR/root" 2>/dev/null)', want '$X_ROOT')"
+fi
+
+# --- T51: the stdout contract survives -- release-token is the LAST line ---
+# The console kit greps this line out of the acquire output; a WARN or any
+# other addition must never land after it.
+HANDOVER_DIR="$X_ROOT" bash "$LIB" release "$X_DOC" "$x_tok" >/dev/null 2>&1
+out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "last-line" 2>/dev/null)"
+if [ "$(printf '%s\n' "$out" | tail -1)" = "release-token: last-line" ]; then
+    pass "T51: 'release-token: <token>' is still the LAST stdout line of acquire"
+else
+    fail "T51: acquire's last stdout line is not the release-token line (got: $out)"
+fi
+
+# --- T52: the force-release path is unchanged -- cwd root only, rc=0 -------
+# QUEUE_LOCK_FORCE_RELEASE has no token, so it gets no cross-root search
+# (nothing would prove the foreign lock is the caller's); it still exits 0
+# on nothing-found, which is what the console's sweep-and-force loop reads.
+out="$(
+    cd "$X_WT" || exit 9
+    unset HANDOVER_DIR
+    QUEUE_LOCK_FORCE_RELEASE=1 HANDOVER_REGISTRY="$X_REG" bash "$LIB" release "$X_DOC" 2>&1
+)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ -f "$X_LOCKDIR/owner.json" ]; then
+    pass "T52: force-release stays cwd-root-only and rc=0 on nothing-found (unchanged)"
+else
+    fail "T52: force-release path changed (rc=$rc, lock=$([ -f "$X_LOCKDIR/owner.json" ] && echo held || echo GONE): $out)"
+fi
+out="$(HANDOVER_DIR="$X_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 bash "$LIB" release "$X_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ] \
+    && grepq "$(cat "$X_ROOT/.locks/queue/takeovers.log" 2>/dev/null)" 'FORCED RELEASE of session=last-line'; then
+    pass "T52: force-release under the right root still releases and logs to takeovers.log"
+else
+    fail "T52: force-release under the right root regressed (rc=$rc: $out)"
+fi
 
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
