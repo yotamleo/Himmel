@@ -823,6 +823,15 @@ case "$out" in
     ;;
   *) ;;
 esac
+# HIMMEL-2863 pr-check round 2, codex-1: assert the COMPLETE top-level
+# failure set is exactly the one known entry, not merely that it's present —
+# a line matching "  <spec> (" that is not a nested "label > name (" line.
+bad_entry_count="$(printf '%s\n' "$out" | grep -cE '^  [^ >]+@[^ ]+ \(')"
+if [ "$bad_entry_count" -ne 1 ]; then
+  echo "FAIL: expected exactly 1 top-level failing entry against the real settings-template.json, got $bad_entry_count:"
+  printf '%s\n' "$out" >&2
+  exit 1
+fi
 echo "ok: real settings-template.json fails exactly on the known on-demand gap (codex@openai-codex, HIMMEL-2867), not on the not-installed obsidian entry"
 
 echo "ALL PASS"
