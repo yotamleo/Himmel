@@ -1340,6 +1340,11 @@ function buildSummary(answers, laneRows, opts) {
                 `${label} armed — ${arm.argvDisplay}`,
                 `${label} — would arm: ${arm.argvDisplay}`,
               ));
+            } else if (arm.alreadyArmed) {
+              // HIMMEL-2885: rc 3 is the script's own dedup refusal — already
+              // converged, not a failure. Reads as skipped, never manual —
+              // "re-run to retry" would loop forever against a healthy machine.
+              skipped.push(`${label} — already armed (rc 3)`);
             } else {
               manual.push({
                 what: `${label} — ${scriptBase} arm exited rc=${arm.rc}`,

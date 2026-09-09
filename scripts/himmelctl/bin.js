@@ -3270,8 +3270,12 @@ function applyLunaSectionsStep(answers) {
           const cmd = { argv: argv };
           const armRc = runSpawn(cmd);
           result.cadenceResults = result.cadenceResults || {};
-          result.cadenceResults[row.id] = { ran: true, rc: armRc, argvDisplay: displayCommand(cmd) };
-          if (armRc !== 0) result.rc = 1;
+          // HIMMEL-2885: rc 3 is the script's own dedup refusal — the unit is
+          // ALREADY armed, which is the converged state install wanted. Never
+          // pass --force here (that would re-arm/re-time the operator's
+          // existing crontab); read rc 3 as already-converged, not a failure.
+          result.cadenceResults[row.id] = { ran: true, rc: armRc, alreadyArmed: armRc === 3, argvDisplay: displayCommand(cmd) };
+          if (armRc !== 0 && armRc !== 3) result.rc = 1;
         } catch (e) {
           console.error(`himmelctl: WARN: ${row.id} cadence arm failed: ${e.message}`);
           result.cadenceResults = result.cadenceResults || {};

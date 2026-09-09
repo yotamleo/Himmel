@@ -791,6 +791,65 @@ grepq "$(cat "$profileApply")" 'TELEGRAM_AUTO_ACTIONS' \
 echo "ok: V12 TELEGRAM_AUTO_ACTIONS is absent from the bridge .env and the profile, both before and after the run"
 
 # ═══════════════════════════════════════════════════════════════════════════
+# caseArmRc3 (HIMMEL-2885) — pipeline-cadence.sh arm exits rc=3 (its own
+# dedup refusal: the unit is already armed) on an otherwise-healthy machine.
+# RED (pre-fix): rc=3 was treated as a failure — overall install rc=1, and
+# the cadence landed in `still manual` with a "re-run to retry" loop. Fixed:
+# rc=3 reads as already-converged — overall rc=0, cadence lands in `skipped`.
+# ═══════════════════════════════════════════════════════════════════════════
+
+stubArmRc3="$work/stubArmRc3"; mkdir -p "$stubArmRc3"
+make_python_stub "$stubArmRc3"
+pathArmRc3=$(build_path "$stubArmRc3" bash jq python3 npm -- python)
+make_git_stub "$stubArmRc3" "https://github.com/someone/other-repo.git"
+homeArmRc3="$work/homeArmRc3"; mkdir -p "$homeArmRc3"
+
+fixtureRepoArmRc3="$work/fixture-repo-armrc3"; mkdir -p "$fixtureRepoArmRc3/scripts/luna"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixtureRepoArmRc3/scripts/adopt.sh"
+chmod +x "$fixtureRepoArmRc3/scripts/adopt.sh"
+cat > "$fixtureRepoArmRc3/scripts/luna/pipeline-cadence.sh" <<STUB
+#!/usr/bin/env bash
+echo "ERR pipeline-cadence: HIMMEL-Pipeline-* crontab entries already armed" >&2
+exit 3
+STUB
+chmod +x "$fixtureRepoArmRc3/scripts/luna/pipeline-cadence.sh"
+
+vaultPathArmRc3="$(winpath "$work/vaultArmRc3")"
+configPathArmRc3="$(winpath "$work/config-armrc3.json")"
+profileArmRc3="$work/profileArmRc3.json"
+cat > "$profileArmRc3" <<JSON
+{
+  "role": "adopter", "tier": "standard", "scope": "user",
+  "vault": { "mode": "default-template", "path": "$vaultPathArmRc3" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean", "lanes": [], "lanesMeaningful": true, "alwaysOn": false,
+  "luna": { "cadenceEnabled": true, "phiDeclared": false },
+  "secretsWalk": "skip",
+  "bridge": { "enabled": false }
+}
+JSON
+
+set +e
+outArmRc3=$(PATH="$pathArmRc3" HOME="$homeArmRc3" USERPROFILE="$(winpath "$homeArmRc3")" HIMMELCTL_INTERACTIVE=0 \
+  HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepoArmRc3")" \
+  HIMMEL_LUNA_CONFIG_PATH="$configPathArmRc3" \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/cache-armrc3")" \
+  HIMMELCTL_BIN_DIR="$(winpath "$work/bin-armrc3")" \
+  "$node_bin" "$wizard" install --from-profile "$(winpath "$profileArmRc3")" </dev/null 2>&1)
+rcArmRc3=$?
+set -e
+[ "$rcArmRc3" -eq 0 ] || fail "caseArmRc3: an arm rc=3 (already converged) must not fail the overall install (got rc=$rcArmRc3): $outArmRc3"
+grepq "$outArmRc3" 'already armed (rc 3)' \
+  || fail "caseArmRc3: skipped section should read 'already armed (rc 3)' (got: $outArmRc3)"
+skippedBlockArmRc3=$(printf '%s' "$outArmRc3" | sed -n '/^skipped:/,/^$/p')
+grepq "$skippedBlockArmRc3" -F -- '  - luna cadence — already armed (rc 3)' \
+  || fail "caseArmRc3: 'already armed (rc 3)' should be under skipped:, not still manual (got skipped block: $skippedBlockArmRc3)"
+manualBlockArmRc3=$(printf '%s' "$outArmRc3" | sed -n '/^still manual/,$p')
+grepq "$manualBlockArmRc3" -F -- 'arm exited rc=3' \
+  && fail "caseArmRc3: rc=3 must NOT land in still manual (retry loop) (got: $manualBlockArmRc3)"
+echo "ok: caseArmRc3 cadence arm rc=3 (already armed) reads as skipped/converged; overall install rc stays 0"
+
+# ═══════════════════════════════════════════════════════════════════════════
 # caseSecretsProbe (RETASK stage1-build-6d2e) — the three luna-sources secrets
 # walk verdicts, precisely: a configured+healthy source reports ok/configured;
 # a configured-but-broken source surfaces the PROBE'S OWN reason and is never
