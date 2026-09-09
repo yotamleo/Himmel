@@ -71,7 +71,6 @@ flowchart TD
     CM --> PR["gh pr create<br/>gate: blocked while marker exists"]
     PR --> M{"merge gate<br/>block-unresolved-cr-merge:<br/>CI green + threads resolved<br/>(session-enforced — no branch protection, see §3.3)"}
     M -->|"operator: gh pr merge"| MAIN["main<br/>(origin — the public repo)"]
-    M -->|"ARMAUTOMERGE=1:<br/>merge-on-green.sh"| MAIN
     M -->|"operator: /mergepub pr sha12 via Telegram<br/>(never agent-run — merge-public-on-green.sh refuses inside a session)"| MAIN
     MAIN --> H["/handover<br/>state survives to the next session"]
 ```
@@ -86,7 +85,7 @@ Step-by-step, with the enforcing file:
 | Push | `git push` | pre-push stage: attestation trailers, npm audit, no-push-to-main, and `scripts/hooks/check-cr-before-push.sh` writes a **CR marker** recording that a review is owed |
 | Review | `/pr-check` | multi-agent panel (`.claude/commands/pr-check.md`); a clean result clears the marker |
 | Open PR | `gh pr create` | `scripts/hooks/check-cr-marker-on-pr-create.sh` blocks while the marker exists |
-| Merge | `gh pr merge`, `merge-on-green.sh` (`ARMAUTOMERGE=1`), or Telegram `/mergepub <pr> <sha12>` (`merge-public-on-green.sh`) | `scripts/hooks/block-unresolved-cr-merge.sh` — CI green + zero unresolved review threads. There is **no GitHub branch protection on this repo**; this hook *is* the merge gate |
+| Merge | `gh pr merge`, or Telegram `/mergepub <pr> <sha12>` (`merge-public-on-green.sh`); armed auto-merge (`merge-on-green.sh`, `ARMAUTOMERGE=1`) is private-repo-only and currently refuses here (HIMMEL-2869) | `scripts/hooks/block-unresolved-cr-merge.sh` — CI green + zero unresolved review threads. There is **no GitHub branch protection on this repo**; this hook *is* the merge gate |
 | Handover | `/handover` | state written to your handover store (`docs/internals/handover-system.md`) |
 
 ### 2.2 What happens on every tool call
@@ -359,7 +358,7 @@ each bridged var's own comment there names its bridging reader.
 | `CR_REQUIRE_CROSS_MODEL` | OFF | `.env` (bridged) | opt-in cross-model floor (HIMMEL-1237): require ≥1 non-Claude critic `avail … ok` at the SHA before the CR marker clears — makes the claude-only floor above insufficient. Bridged from `.env` by `scripts/cr/clear-cr-marker.sh` itself (gate 3b); a live-env value wins |
 | `CRITIC_TIMEOUT_SECS` / `CRITIC_PARALLEL` / `CRITIC_PANEL_TIERS` / `CR_TRIVIALITY_OVERRIDE` / `CR_USAGE_LOG` | 240s / sequential / `free` / heuristic / off | env | panel cost/scope tuning (`scripts/cr/critic-panel.sh`, `.claude/commands/pr-check.md`) |
 | `scripts/cr/critics.local.json` | — | file (gitignored) | per-machine critic overlay; `"drop": true` removes a base row |
-| `ARMAUTOMERGE` | OFF | env | arms `merge-on-green.sh` (private auto-merge — full condition list in [§3.3](#33-merge--publish-gates)) |
+| `ARMAUTOMERGE` | OFF | env | arms `merge-on-green.sh` (private auto-merge — full condition list in [§3.3](#33-merge--publish-gates)); refuses on this repo since `origin` is public (HIMMEL-2869) |
 | `MERGE_ON_GREEN_LOG` | `<gitdir>/merge-on-green.log` | env | auto-merge audit log path |
 
 **himmel's own review posture (HIMMEL-1299, operator decision 2026-07-28;
@@ -403,10 +402,13 @@ default subset:
 - The directive is **advisory**: it drives behavior at natural completion
   points but cannot widen what any hook allows
   (`scripts/hooks/inject-initiative.sh`). The `merge` leg, when active,
-  self-merges the PR once CR-clean — `ARMAUTOMERGE` selects *which
-  path* it takes (`1` = the CI-certified `merge-on-green.sh` chokepoint with
-  its full condition chain; unset = the plain `scripts/handover/pr-merge.sh`
-  squash-merge), not *whether* a merge happens. The `public` leg is retired
+  self-merges the PR once CR-clean via the plain
+  `scripts/handover/pr-merge.sh` squash-merge. `ARMAUTOMERGE=1` would instead
+  route it through the CI-certified `merge-on-green.sh` chokepoint, but that
+  chokepoint hard-refuses (exit 12) any repo that is not confirmed PRIVATE,
+  and `origin` has been public since the HIMMEL-2705 cutover — so on this
+  repo the `1` branch does not merge at all, it refuses; the armed path stays
+  unavailable until the HIMMEL-2869 policy decision. The `public` leg is retired
   (HIMMEL-2705 cutover) — `origin` IS the public repo, so the `merge` leg above
   already lands the public change; `public` is a documented no-op kept only so
   the token still resolves.
