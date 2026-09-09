@@ -2880,7 +2880,7 @@ SHEOF
 run_lines() { grep -F '[RUN ] ' <<< "$1" | sed 's/^\[RUN \] //'; }
 
 # 22a — the union of --list --shard i/3 equals plain --list, pairwise disjoint.
-sb22a=$(mktemp -d); mk_shard_sandbox "$sb22a" 7
+sb22a=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22a.XXXXXX"); mk_shard_sandbox "$sb22a" 7
 full22a=$(run_lines "$(bash "$RUNNER" --list "$sb22a" 2>&1)")
 s122a=$(run_lines "$(bash "$RUNNER" --list --shard 1/3 "$sb22a" 2>&1)")
 s222a=$(run_lines "$(bash "$RUNNER" --list --shard 2/3 "$sb22a" 2>&1)")
@@ -2915,7 +2915,7 @@ rm -rf "$sb22a"
 # value" code, the same one an invalid SUITE_TIER_MODE takes), never silently
 # ignored: a typo'd shard spec that fell through to a full run would multiply
 # the CI bill by n and hide the misconfiguration behind a green.
-sb22d=$(mktemp -d); mk_shard_sandbox "$sb22d" 3
+sb22d=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22d.XXXXXX"); mk_shard_sandbox "$sb22d" 3
 for spec22d in '0/3' '4/3' 'abc' '1/0' '1/2/3' '/3' '1/' '-1/3' '1/-3' 'x/y' '' '3'; do
   out22d=$(bash "$RUNNER" --list --shard "$spec22d" "$sb22d" 2>&1); rc22d=$?
   if [ "$rc22d" -eq 2 ] && grepq "$out22d" -F -- '--shard'; then
@@ -2935,7 +2935,7 @@ rm -rf "$sb22d"
 
 # 22e — a shard that is assigned NOTHING is a refusal, not a pass. This is the
 # n > run-list-length case, which is the shape a mis-sized CI matrix takes.
-sb22e=$(mktemp -d); mk_shard_sandbox "$sb22e" 2
+sb22e=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22e.XXXXXX"); mk_shard_sandbox "$sb22e" 2
 out22e=$(bash "$RUNNER" --shard 3/3 "$sb22e" 2>&1); rc22e=$?
 if [ "$rc22e" -eq 1 ] && grepq "$out22e" -F 'shard 3/3 ran 0 suites'; then
   pass "22e: an empty shard refuses (exit 1) and names itself"
@@ -2962,8 +2962,8 @@ rm -rf "$sb22e"
 # $GIT_FAKE_DIFF — a "docs-only" case that quietly stops being docs-only the
 # moment the checkout has an uncommitted change. Fixtures stay local to the
 # case that reads them, exactly as this file's header says.
-sb22f=$(mktemp -d); mk_docs_sandbox "$sb22f"
-fakebin22f=$(mktemp -d)
+sb22f=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22f.XXXXXX"); mk_docs_sandbox "$sb22f"
+fakebin22f=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22f-fakebin.XXXXXX")
 cat > "$fakebin22f/git" <<'SHEOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -3003,7 +3003,7 @@ rm -rf "$sb22f" "$fakebin22f"
 # discriminator is deliberate: a PRE-filter split of s1..s6 gives shard 1
 # {s1,s3,s5} -> {s3,s5} once s1 is skipped away, while the POST-filter split
 # this ticket specifies gives shard 1 {s2,s4,s6}.
-sb22g=$(mktemp -d); mk_shard_sandbox "$sb22g" 6
+sb22g=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22g.XXXXXX"); mk_shard_sandbox "$sb22g" 6
 g122g=$(run_lines "$(bash "$RUNNER" --list --skip-extra test-s1.sh --shard 1/2 "$sb22g" 2>&1)")
 g222g=$(run_lines "$(bash "$RUNNER" --list --skip-extra test-s1.sh --shard 2/2 "$sb22g" 2>&1)")
 want1_22g=$(printf '%s/test-s2.sh\n%s/test-s4.sh\n%s/test-s6.sh' "$sb22g" "$sb22g" "$sb22g")
@@ -3025,7 +3025,7 @@ rm -rf "$sb22g"
 
 # 22h — EXECUTION, not just planning: a shard runs only its own suites, and a
 # failure inside one shard reddens that shard alone.
-sb22h=$(mktemp -d); mk_shard_sandbox "$sb22h" 4
+sb22h=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22h.XXXXXX"); mk_shard_sandbox "$sb22h" 4
 cat > "$sb22h/test-s2.sh" <<'SHEOF'
 #!/usr/bin/env bash
 touch "${0%.sh}.sentinel"
