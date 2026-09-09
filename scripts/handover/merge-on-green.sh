@@ -11,7 +11,9 @@
 # specific standing allow-rule — `Bash(bash scripts/handover/merge-on-green.sh:*)`
 # — never a raw `gh pr merge` (still classifier-blocked) and never a permission
 # widening. It merges ONLY on: opt-in (ARMAUTOMERGE=1) AND a PRIVATE github repo
-# AND the PR targets that repo's DEFAULT branch (HIMMEL-1080, coderabbit public
+# — or, HIMMEL-2869, the ONE configured public origin, live-verified under
+# branch protection with required status checks — AND the PR targets that repo's
+# DEFAULT branch (HIMMEL-1080, coderabbit public
 # round: repo-bound alone still let it merge a PR against ANY base, even though
 # inject-initiative.sh documents the scope as "squash-merge to PRIVATE main")
 # AND check-ci.sh exit 0 (all checks green + all review threads resolved + no
@@ -87,6 +89,10 @@
 #       branch is not the repo's default branch (undeterminable counts too) —
 #       refused fail-closed. Also returned by the pre-merge re-verification of
 #       the same binding (see above) if the base changed after the gate.
+#       HIMMEL-2869: also returned when the repo is public and is NOT the
+#       configured public origin, or IS the configured public origin but its
+#       branch protection is unreadable or lacks required status checks —
+#       at either the guard-2b check or the pre-merge re-check.
 #   13  cannot resolve the PR, its head SHA, or a well-formed metadata line
 #       (six pipe-joined fields incl. the head branch) — refused
 #   14  check-ci gate not green (unresolved threads / red CI / changes requested)
@@ -122,6 +128,24 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH="gh"
 CHECK_CI="$SCRIPT_DIR/../check-ci.sh"
+# The ONE public repo armed auto-merge may target (HIMMEL-2869). Deliberately a
+# fixed literal, NOT environment-overridable: the GATE INTEGRITY paragraph above
+# forbids an env seam on a merge gate, and this one would be the WIDENING kind —
+# a contaminated launching environment could point the lever at an arbitrary
+# public repo, which is precisely what the one-named-repo relaxation exists to
+# prevent. Tests exercise this shipped value through the stub `gh`'s reported
+# nwo, never through an override.
+#
+# Not a reuse of `merge-public-on-green.sh`'s CR_PUBLIC_REPO (same default,
+# different name on purpose): that lever's binding is public-PINNED — the pin
+# NARROWS what a human-only, CLAUDECODE-self-refusing Telegram chokepoint may
+# touch, so an ambient override there costs nothing an agent could reach. Here
+# the binding WIDENS a safety boundary instead, so sharing that name or its
+# overridability would smuggle a widening seam in under a narrowing one's
+# reputation. docs/internals/enforcement.md already records keeping the two
+# scripts separate rather than building a shared "which repo class" switch;
+# this constant staying its own fixed literal is that decision holding.
+HIMMEL_PUBLIC_ORIGIN_NWO="yotamleo/Himmel"
 # The repo's ONE CodeRabbit-availability answer (scripts/lib/cr-available.sh).
 # Fixed in-repo sibling, resolved like CHECK_CI above and for the same reason.
 # shellcheck source=scripts/lib/cr-available.sh
@@ -191,6 +215,65 @@ audit_preflight() {
     [ -z "$logf" ] && return 0
     ( printf '' >>"$logf" ) 2>/dev/null && return 0
     return 1
+}
+
+# Branch-protection detail for the refusal message/audit line, set by
+# public_origin_merge_allowed below.
+PUBLIC_ORIGIN_REASON=""
+PUBLIC_ORIGIN_DETAIL=""
+
+# public_origin_merge_allowed <nwo> <default-branch> [reason-suffix]
+#
+# HIMMEL-2869. The private-only boundary (guard 2b / the pre-merge re-check)
+# widens to admit ONE named public repo — the configured public origin — and
+# ONLY while GitHub itself is enforcing required status checks on the branch
+# being merged into. That protection is the whole basis of the relaxation: on a
+# private repo the blast radius of a bad armed merge is internal, on a public
+# one it is not, so the lever leans on a server-side gate the agent cannot
+# weaken. Fail CLOSED on every unreadable field — a 404, an empty body, a
+# protection object without required_status_checks, or an empty contexts/checks
+# list all refuse, never "assume protected".
+#
+# Reads the CLASSIC protection endpoint, and reads ONLY required_status_checks
+# + enforce_admins from it. It deliberately infers NOTHING about reviews: on
+# this repo the approval requirement (1 approving review + code-owner review)
+# lives in a RULESET (`protect-main`), so `/branches/main/protection` returns
+# `required_pull_request_reviews: null` even though approvals ARE enforced.
+# That null is CORRECT — do not "fix" it, and do not gate this helper on
+# approvals. GitHub enforces the ruleset at `gh pr merge` time; a merge refused
+# there for want of an approval is a FINDING to report, never something to
+# bypass (which is also why this lever never passes `--admin`). Rulesets may
+# ADD to protection, never replace it, so the classic read stays authoritative
+# for the checks this gate requires.
+public_origin_merge_allowed() {
+    local nwo="$1" branch="$2" suffix="${3:-}" prot admins rest n_contexts n_checks
+    PUBLIC_ORIGIN_DETAIL=""
+    if [ "$nwo" != "$HIMMEL_PUBLIC_ORIGIN_NWO" ]; then
+        PUBLIC_ORIGIN_REASON="not-private${suffix}"
+        return 1
+    fi
+    PUBLIC_ORIGIN_REASON="not-protected${suffix}"
+    if [ -z "$branch" ]; then
+        PUBLIC_ORIGIN_DETAIL="no-branch"
+        return 1
+    fi
+    prot=$("$GH" api "repos/$nwo/branches/$branch/protection" \
+            --jq '"\(.enforce_admins.enabled // false)|\((.required_status_checks.contexts // []) | length)|\((.required_status_checks.checks // []) | length)"' 2>/dev/null || true)
+    if [ -z "$prot" ]; then
+        PUBLIC_ORIGIN_DETAIL="unreadable"
+        return 1
+    fi
+    admins=${prot%%|*}
+    rest=${prot#*|}
+    n_contexts=${rest%%|*}
+    n_checks=${rest##*|}
+    case "$n_contexts" in ''|*[!0-9]*) n_contexts=0 ;; esac
+    case "$n_checks" in ''|*[!0-9]*) n_checks=0 ;; esac
+    PUBLIC_ORIGIN_DETAIL="enforce_admins=$admins required_checks=$((n_contexts + n_checks))"
+    [ "$admins" = "true" ] || return 1
+    [ "$((n_contexts + n_checks))" -gt 0 ] || return 1
+    PUBLIC_ORIGIN_REASON=""
+    return 0
 }
 
 # 1. Opt-in guard — the operator's standing authorization (launching shell only).
@@ -306,13 +389,17 @@ fi
 # defaultBranchRef is NULLABLE (a repo can have no default branch) — coalesce
 # to "" (CodeRabbit) so a null field reads as "undeterminable" below instead of
 # jq's literal "null" string slipping past the -z check as a non-empty value.
+#
+# HIMMEL-2869: the boundary widens for ONE named public repo (the configured
+# public origin), and only while it is live-verified under branch protection
+# with required status checks — see public_origin_merge_allowed above.
 repo_meta=$("$GH" repo view "$nwo" --json isPrivate,defaultBranchRef \
         --jq '"\(.isPrivate)|\(.defaultBranchRef.name // "")"' 2>/dev/null || true)
 is_private=${repo_meta%%|*}
 default_branch=${repo_meta#*|}
-if [ "$is_private" != "true" ]; then
-    echo "merge-on-green: repo $nwo is not confirmed PRIVATE (isPrivate='${is_private:-<unknown>}') — refusing. Public propagation stays an operator/bridge step." >&2
-    audit "REFUSED reason=not-private repo=$nwo isPrivate=${is_private:-unknown}"
+if [ "$is_private" != "true" ] && ! public_origin_merge_allowed "$nwo" "$default_branch"; then
+    echo "merge-on-green: repo $nwo is not confirmed PRIVATE (isPrivate='${is_private:-<unknown>}') and is not the configured public origin ($HIMMEL_PUBLIC_ORIGIN_NWO) under branch protection with required status checks (${PUBLIC_ORIGIN_DETAIL:-n/a}) — refusing." >&2
+    audit "REFUSED reason=$PUBLIC_ORIGIN_REASON repo=$nwo isPrivate=${is_private:-unknown} protection=${PUBLIC_ORIGIN_DETAIL:-n/a}"
     exit 12
 fi
 
@@ -459,6 +546,12 @@ clear_cr_marker_for_branch() {
 # 2b's combined query). The private-only boundary (guard 2b) is subject to the
 # SAME CI-wait staleness window as the base binding — a repo made PUBLIC during
 # the check-ci watch would otherwise merge on the stale guard-2b isPrivate.
+#
+# HIMMEL-2869: the guard-2b widening is re-verified here too, and the
+# protection READ is re-done FRESH — never the guard-2b PUBLIC_ORIGIN_* result
+# — because branch protection can be weakened during check-ci.sh's multi-minute
+# watch exactly like isPrivate and the base can (the same staleness class the
+# comment above already describes for those two).
 fresh_base=$("$GH" pr view "$pr_num" --repo "$nwo" --json baseRefName --jq '.baseRefName' 2>/dev/null || true)
 fresh_repo_meta=$("$GH" repo view "$nwo" --json isPrivate,defaultBranchRef \
         --jq '"\(.isPrivate)|\(.defaultBranchRef.name // "")"' 2>/dev/null || true)
@@ -469,9 +562,9 @@ if [ -z "$fresh_base" ] || [ -z "$fresh_default" ]; then
     audit "REFUSED reason=base-branch-undeterminable pr_base=${fresh_base:-empty} default_branch=${fresh_default:-empty} repo=$nwo pr=#$pr_num"
     exit 12
 fi
-if [ "$fresh_private" != "true" ]; then
-    echo "merge-on-green: repo $nwo is no longer confirmed PRIVATE (isPrivate='${fresh_private:-<unknown>}') right before merging — refusing. A repo made public during the CI wait must not auto-merge." >&2
-    audit "REFUSED reason=not-private-premerge repo=$nwo isPrivate=${fresh_private:-unknown} pr=#$pr_num"
+if [ "$fresh_private" != "true" ] && ! public_origin_merge_allowed "$nwo" "$fresh_default" "-premerge"; then
+    echo "merge-on-green: repo $nwo is no longer confirmed PRIVATE (isPrivate='${fresh_private:-<unknown>}') and is not the configured public origin ($HIMMEL_PUBLIC_ORIGIN_NWO) under branch protection with required status checks (${PUBLIC_ORIGIN_DETAIL:-n/a}) right before merging — refusing. A repo made public, or a public origin whose protection weakened, during the CI wait must not auto-merge." >&2
+    audit "REFUSED reason=$PUBLIC_ORIGIN_REASON repo=$nwo isPrivate=${fresh_private:-unknown} protection=${PUBLIC_ORIGIN_DETAIL:-n/a} pr=#$pr_num"
     exit 12
 fi
 if [ "$fresh_base" != "$fresh_default" ] || [ "$fresh_base" != "$pr_base" ]; then
