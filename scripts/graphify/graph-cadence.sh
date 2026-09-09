@@ -125,7 +125,13 @@
 #                misconfigured base/privacy binding).
 #   refreshed -- ast-update.sh succeeded but graph-publish.sh found nothing
 #                new to publish (exit 5) -- the local rebuild produced
-#                byte-identical tracked output. Not a failure.
+#                byte-identical tracked output. Not a failure. ALSO this
+#                action, permanently, post-HIMMEL-2705-step-1: origin/main no
+#                longer tracks graphify-out/graph.json at all (retired from
+#                the git tree), so there is nothing to compare a rebuild
+#                against and nothing to publish -- the local, AST-only refresh
+#                still runs every fire (see step 5's own comment), and steps
+#                6-7 (publish/merge) cleanly no-op right after it succeeds.
 #   published -- graph-publish.sh opened/refreshed the PR (exit 0) but
 #                merge-on-green.sh did not land it this run, for a genuine,
 #                TIME-RESOLVING reason ONLY (rc 14: check-ci gate not green;
@@ -553,29 +559,63 @@ if ! git -C "$HIMMEL_ROOT" fetch origin >/dev/null 2>&1; then
 fi
 
 # --- 2. built_at_commit from the SHIPPED graph.json --------------------------
-_shipped_graph=$(git -C "$HIMMEL_ROOT" show origin/main:graphify-out/graph.json 2>/dev/null) \
-    || _fail "could not read origin/main:graphify-out/graph.json (does this repo track it? HIMMEL-1123)"
-GRAPH_HEAD=$(printf '%s' "$_shipped_graph" \
-    | grep -o '"built_at_commit"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
-    | sed -E 's/.*"built_at_commit"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
-[ -n "$GRAPH_HEAD" ] || _fail "graphify-out/graph.json has no (or an empty) built_at_commit field"
-
-# --- 3. staleness: commit distance, NOT --merges (see header) ---------------
-MERGES_BEHIND=$(git -C "$HIMMEL_ROOT" rev-list --count "${GRAPH_HEAD}..origin/main" 2>&1) \
-    || _fail "git rev-list --count ${GRAPH_HEAD}..origin/main failed: $MERGES_BEHIND"
-case "$MERGES_BEHIND" in
-    ''|*[!0-9]*) _fail "git rev-list produced a non-numeric count: $MERGES_BEHIND" ;;
-esac
-
-# --- 4. below threshold: skip ------------------------------------------------
-if [ "$MERGES_BEHIND" -lt "$THRESHOLD" ]; then
-    ACTION="skipped"
-    FINAL_RC=0
-    echo "graph-cadence: $MERGES_BEHIND commit(s) behind origin/main, below threshold $THRESHOLD -- skipping"
-    _write_ledger
-    exit 0
+# `cat-file -e origin/main:<path>` returns non-zero both when origin/main
+# resolves but the path is absent AND when origin/main itself does not
+# resolve (a genuine git/ref error `git fetch origin` alone doesn't rule
+# out -- CodeRabbit, PR #2272). Only the first case is the permanent
+# HIMMEL-2705 steady state; the second must still route through _fail so a
+# real ref/object-read failure is never misreported as a clean skip.
+if ! git -C "$HIMMEL_ROOT" rev-parse --verify -q origin/main >/dev/null; then
+    _fail "origin/main does not resolve after git fetch origin"
 fi
-echo "graph-cadence: $MERGES_BEHIND commit(s) behind origin/main (threshold $THRESHOLD) -- refreshing"
+# graphify-out/ was REMOVED from the git tree entirely and gitignored outright
+# (HIMMEL-2705 step 1) -- this repo's derived graph no longer publishes at
+# all, so origin/main never has graphify-out/graph.json to read. That is the
+# permanent steady state now, not a transient gap. PUBLISH_POSSIBLE gates
+# ONLY the origin-comparison staleness measurement (steps 3-4) and the
+# retired publish/merge legs (steps 6-7, renumbered below) -- it must NEVER
+# skip step 5, the local AST-only refresh, which has nothing to do with
+# whether origin has anything to compare against or publish to. An earlier
+# revision of this fix (this same PR, CR round 2) collapsed all of that into
+# one early `exit 0`, making step 5 -- the free, no-LLM-cost rebuild
+# .gitignore's own comment promises ("the daily HIMMEL-829 cadence keeps
+# rebuilding them locally") -- permanently unreachable. It is not gated on
+# staleness at all now: with no shipped graph left to measure distance
+# against, "stale" has no origin-side meaning any more, so the local refresh
+# just runs every fire, throttled only by this cadence's own external
+# schedule (6h, HIMMEL-2095) -- exactly what the .gitignore promise says.
+PUBLISH_POSSIBLE=1
+if ! git -C "$HIMMEL_ROOT" cat-file -e "origin/main:graphify-out/graph.json" 2>/dev/null; then
+    PUBLISH_POSSIBLE=0
+fi
+
+if [ "$PUBLISH_POSSIBLE" -eq 1 ]; then
+    _shipped_graph=$(git -C "$HIMMEL_ROOT" show origin/main:graphify-out/graph.json 2>/dev/null) \
+        || _fail "could not read origin/main:graphify-out/graph.json despite cat-file -e succeeding"
+    GRAPH_HEAD=$(printf '%s' "$_shipped_graph" \
+        | grep -o '"built_at_commit"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | sed -E 's/.*"built_at_commit"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')
+    [ -n "$GRAPH_HEAD" ] || _fail "graphify-out/graph.json has no (or an empty) built_at_commit field"
+
+    # --- 3. staleness: commit distance, NOT --merges (see header) -----------
+    MERGES_BEHIND=$(git -C "$HIMMEL_ROOT" rev-list --count "${GRAPH_HEAD}..origin/main" 2>&1) \
+        || _fail "git rev-list --count ${GRAPH_HEAD}..origin/main failed: $MERGES_BEHIND"
+    case "$MERGES_BEHIND" in
+        ''|*[!0-9]*) _fail "git rev-list produced a non-numeric count: $MERGES_BEHIND" ;;
+    esac
+
+    # --- 4. below threshold: skip (nothing to refresh-and-publish this run) --
+    if [ "$MERGES_BEHIND" -lt "$THRESHOLD" ]; then
+        ACTION="skipped"
+        FINAL_RC=0
+        echo "graph-cadence: $MERGES_BEHIND commit(s) behind origin/main, below threshold $THRESHOLD -- skipping"
+        _write_ledger
+        exit 0
+    fi
+    echo "graph-cadence: $MERGES_BEHIND commit(s) behind origin/main (threshold $THRESHOLD) -- refreshing"
+else
+    echo "graph-cadence: origin/main does not track graphify-out/graph.json (HIMMEL-2705 step 1: retired from the git tree) -- publish/merge will no-op this run, but the local AST-only refresh (step 5) still runs"
+fi
 
 # --- 5. dedicated worktree: create on demand, always resync to origin/main --
 mkdir -p "$(dirname "$WORKTREE_DIR")" || _fail "could not create $(dirname "$WORKTREE_DIR")"
@@ -785,6 +825,20 @@ if [ "$_ast_rc" -ne 0 ]; then
     _fail "ast-update.sh exited $_ast_rc: $(printf '%s' "$_ast_out" | tail -n 3 | tr '\n' ' ')"
 fi
 ACTION="refreshed"
+
+# --- 6a. retired publish/merge legs: clean no-op, not a skip ----------------
+# PUBLISH_POSSIBLE=0 (see step 2/PUBLISH_POSSIBLE above) means origin/main
+# does not track graphify-out/graph.json at all -- the permanent HIMMEL-2705
+# step 1 steady state. The local refresh above still ran (that IS the point
+# of decoupling it from this check); there is simply nothing left to open a
+# PR against or merge. This is a clean no-op of steps 7-8, not an error and
+# not ACTION="skipped" -- real work happened this run.
+if [ "$PUBLISH_POSSIBLE" -eq 0 ]; then
+    FINAL_RC=0
+    echo "graph-cadence: local refresh complete; origin/main does not track graphify-out/graph.json, so publish/merge have nothing to do -- no-op"
+    _write_ledger
+    exit 0
+fi
 
 # --- 7. graph-publish.sh (open/refresh the PR) -------------------------------
 _pub_out=$(cd "$WORKTREE_DIR" && "$GRAPH_PUBLISH" 2>&1)

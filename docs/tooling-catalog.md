@@ -1214,12 +1214,6 @@ committed.
 
 ---
 
-## Network Scripts (`scripts/net/`)
-
-- `scripts/net/router.sh` — **home router CLI** (HIMMEL-2055). curl-only client for the ASUS TUF-AX6000's stock ASUSWRT admin API (`login.cgi`/`appGet.cgi`/`applyapp.cgi`), so DHCP reservations and router facts stop being "operator at the LAN-only JS UI". Verbs: `status`, `clients`, `nvram <key>...`, `reservations`, `reserve <mac> <ip> [name]`, `unreserve <mac>`, `set --rc <service> key=val...`. Creds from `.env` (`ROUTER_WEB`/`ROUTER_USER`/`ROUTER_PASS`), never printed. Test: `scripts/net/test-router.sh` (offline, sources the script for the staticlist encode/decode + validator helpers).
-
----
-
 ## Luna Scripts (`scripts/luna/`)
 
 Scripts for luna vault maintenance and session import. Operator-invoked

@@ -43,12 +43,12 @@ describe('detectForge — origin URL', () => {
   });
 
   it('bitbucket https → bitbucket', () => {
-    repo = gitRepoWithOrigin('https://bitbucket.org/example-ws/repo.git');
+    repo = gitRepoWithOrigin('https://bitbucket.org/example-ws/repo.git'); // leak-allow: hostname test fixture bitbucket https origin for forge detection
     expect(detectForge(repo, {})).toBe('bitbucket');
   });
 
   it('bitbucket ssh → bitbucket', () => {
-    repo = gitRepoWithOrigin('git@bitbucket.org:example-ws/repo.git');
+    repo = gitRepoWithOrigin('git@bitbucket.org:example-ws/repo.git'); // leak-allow: hostname test fixture bitbucket ssh origin for forge detection
     expect(detectForge(repo, {})).toBe('bitbucket');
   });
 

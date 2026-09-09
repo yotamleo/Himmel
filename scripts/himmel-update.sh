@@ -586,7 +586,28 @@ STATUS_luna_template="not-attempted"; DETAIL_luna_template=""
 #    itself). Distinguishes up-to-date (HEAD unchanged) from updated so the
 #    status table is honest, not just "ran without error".
 update_pull() {
-    local before after autostash=""
+    local before after autostash="" channel
+    # HIMMEL-2705: resolved HERE, not up front for every mode — --plugins-check
+    # and every --only item but `pull` never call update_pull() at all, so a
+    # malformed HIMMEL_UPDATE_CHANNEL or profile value must not abort them (CR
+    # round 4, codex-1: channel validation belongs to the mode that actually
+    # needs the pull configuration). A resolution failure here is reported the
+    # same way any other chain-item failure is — through STATUS_pull/DETAIL_pull
+    # and a non-zero return — not a hard `exit`, so the status table still
+    # prints once at the end.
+    if ! channel=$(_resolve_update_channel); then
+        STATUS_pull="failed"; DETAIL_pull="could not resolve update channel — see the message above"
+        return 1
+    fi
+    # An explicit channel (env HIMMEL_UPDATE_CHANNEL, or the operator
+    # profile's `channel` key) replaces the plain `git pull --ff-only` with
+    # tag-following (_channel_follow, defined below). Unset (the default)
+    # falls straight through to the unchanged pull below — no station that
+    # has never opted in sees any behavior change.
+    if [ -n "$channel" ]; then
+        _channel_follow "$channel" apply
+        return $?
+    fi
     before=$(git rev-parse HEAD 2>/dev/null || echo "")
     # HIMMEL_UPDATE_AUTOSTASH=1 opts into stash->pull->restore around the pull so a
     # dirty tree (e.g. local skill-dev diffs to skills-lock.json/.gitignore) can be
@@ -1198,6 +1219,322 @@ sync_marketplaces() {
     return 0
 }
 
+# ─── release-channel seam (HIMMEL-2705) ──────────────────────────────────────
+# `channel: stable|pre` lets a station follow tagged releases (`vX.Y.Z`,
+# optionally `vX.Y.Z-pre.N`) instead of the current branch's tip. Unset (the
+# default) is untouched — update_pull() above only calls into this when
+# $UPDATE_CHANNEL is non-empty.
+#
+# Storage: the himmelctl install-answers cache
+# (${HIMMELCTL_CACHE_DIR:-~/.claude/himmel}/install-profile.json,
+# scripts/himmelctl/lib/helpers.js's cacheDir()) — NOT
+# scripts/install/capture-operator-profile.mjs (a docs-snapshot generator,
+# never read by live code; header says so explicitly) and NOT
+# scripts/himmelctl/lib/adopter-profile.js (pure logic, no data file; bash
+# cannot require() it anyway). install-profile.json is the one JSON file a
+# real adopter's machine actually has that himmel-update.sh can read without
+# node — via the same optional `jq` dependency already used elsewhere in this
+# script (report_plugin_gap et al.).
+_channel_profile_path() {
+    echo "${HIMMELCTL_CACHE_DIR:-$HOME/.claude/himmel}/install-profile.json"
+}
+
+# Resolves the effective channel: env > profile > default (unset, meaning
+# "today's plain git pull"). A malformed value at either layer fails loud
+# (rc 2, message on stderr) rather than silently falling through to the layer
+# below or to default — "fail LOUD rather than guess" per the ticket. No
+# profile FILE is treated as "no channel set" (a station that never installed
+# via himmelctl must see zero behavior change) — but once a profile exists,
+# we cannot tell whether it carries a channel without reading it, so a
+# missing jq or a malformed profile fails loud too (CR round 3, codex-1): a
+# stable/pre station silently missing jq must not silently start pulling
+# branch-tip commits again.
+_resolve_update_channel() {
+    local env_val="${HIMMEL_UPDATE_CHANNEL:-}"
+    if [ -n "$env_val" ]; then
+        case "$env_val" in
+            stable|pre) echo "$env_val"; return 0 ;;
+            *)
+                echo "update: HIMMEL_UPDATE_CHANNEL must be 'stable' or 'pre' (got '$env_val')" >&2
+                return 2 ;;
+        esac
+    fi
+    local profile
+    profile=$(_channel_profile_path)
+    if [ -f "$profile" ]; then
+        if ! command -v jq >/dev/null 2>&1; then
+            echo "update: profile $profile exists but jq is not installed — cannot read channel; install jq" >&2
+            return 2
+        fi
+        if ! jq -e . "$profile" >/dev/null 2>&1; then
+            echo "update: profile $profile is not valid JSON — cannot read channel" >&2
+            return 2
+        fi
+        # A separate check from the syntax check above: valid JSON with a
+        # non-object root (e.g. a bare `[]` or `"x"`) passes `jq -e .` but
+        # would fail INSIDE the .channel lookup below, where `|| echo ""`
+        # (CR round 3, codex-2) would silently swallow that failure as "no
+        # channel set" instead of erroring loud.
+        if ! jq -e 'type == "object"' "$profile" >/dev/null 2>&1; then
+            echo "update: profile $profile is not a valid JSON object — cannot read channel" >&2
+            return 2
+        fi
+        # Absent key or explicit `null` both mean "no channel set" (a bare
+        # `null` is a normal way to spell "unset" in JSON); any OTHER
+        # non-string value (false, a number, an object...) is malformed the
+        # same way a bad string is, so it fails loud below rather than
+        # silently collapsing to "unset" like a missing key would.
+        local val
+        val=$(jq -r 'if .channel == null then "" elif (.channel | type) == "string" then .channel else "himmel_channel_badtype" end' "$profile" 2>/dev/null || echo "")
+        if [ "$val" = "himmel_channel_badtype" ]; then
+            local raw
+            raw=$(jq -c '.channel' "$profile" 2>/dev/null)
+            echo "update: profile $profile has an invalid channel $raw (must be 'stable' or 'pre')" >&2
+            return 2
+        fi
+        if [ -n "$val" ]; then
+            case "$val" in
+                stable|pre) echo "$val"; return 0 ;;
+                *)
+                    echo "update: profile $profile has an invalid channel '$val' (must be 'stable' or 'pre')" >&2
+                    return 2 ;;
+            esac
+        fi
+    fi
+    echo ""
+    return 0
+}
+
+# Strict `vX.Y.Z` / `vX.Y.Z-pre.N` tag matcher. Echoes "<major> <minor>
+# <patch> <pre>" (pre="NONE" when the tag has no -pre.N suffix); rc 1 if the
+# tag doesn't match at all (any other tag in the repo — unrelated to
+# releases — is silently ignored by callers, never treated as a candidate).
+_channel_tag_parts() {
+    local tag="$1"
+    if [[ "$tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)(-pre\.([0-9]+))?$ ]]; then
+        echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]} ${BASH_REMATCH[5]:-NONE}"
+        return 0
+    fi
+    return 1
+}
+
+# Echoes the greater of two already-matching tags. Semver, not lexical order —
+# no python dependency for adopters (unlike _cli_proxy_version_cmp above,
+# which this deliberately does not reuse: it treats any prerelease as
+# uniformly below stable without comparing prerelease numbers against each
+# other, and it shells out to python3). A stable tag always outranks any
+# -pre.N of the same major.minor.patch; two -pre.N tags compare N numerically
+# (pre.10 > pre.9), never lexically.
+_channel_tag_max() {
+    local a="$1" b="$2" pa pb
+    pa=$(_channel_tag_parts "$a") || return 2
+    pb=$(_channel_tag_parts "$b") || return 2
+    local a_maj a_min a_pat a_pre b_maj b_min b_pat b_pre
+    read -r a_maj a_min a_pat a_pre <<<"$pa"
+    read -r b_maj b_min b_pat b_pre <<<"$pb"
+    if [ "$a_maj" -ne "$b_maj" ]; then { [ "$a_maj" -gt "$b_maj" ] && echo "$a"; } || echo "$b"; return 0; fi
+    if [ "$a_min" -ne "$b_min" ]; then { [ "$a_min" -gt "$b_min" ] && echo "$a"; } || echo "$b"; return 0; fi
+    if [ "$a_pat" -ne "$b_pat" ]; then { [ "$a_pat" -gt "$b_pat" ] && echo "$a"; } || echo "$b"; return 0; fi
+    if [ "$a_pre" = "NONE" ] && [ "$b_pre" = "NONE" ]; then echo "$a"; return 0; fi
+    if [ "$a_pre" = "NONE" ]; then echo "$a"; return 0; fi
+    if [ "$b_pre" = "NONE" ]; then echo "$b"; return 0; fi
+    { [ "$a_pre" -ge "$b_pre" ] && echo "$a"; } || echo "$b"
+}
+
+# Tag names origin actually advertises (CR round 5, codex-1: a plain `git tag
+# --list` scans EVERY local tag, including ones from another remote or a
+# stray local `git tag` — an unrelated higher-version local tag could hijack
+# or block the resolved channel target even though `git fetch --tags origin`
+# ran first, since that fetch never clobbers a same-named local tag that
+# already points elsewhere. Querying origin directly makes it the sole
+# source of truth for which tag NAMES are candidates at all.
+_channel_origin_tag_names() {
+    local out sha ref
+    # Capture to a variable and check the real exit status (CR round 6,
+    # codex-1) — a `done < <(git ls-remote ...)` process substitution
+    # discards ls-remote's rc entirely, so a transient failure AFTER the
+    # earlier `git fetch --tags origin` succeeded produced an EMPTY name
+    # list indistinguishable from "no release on this channel yet",
+    # silently reporting up-to-date instead of failing loud.
+    out=$(git ls-remote --tags origin 'v*' 2>/dev/null) || return 1
+    [ -z "$out" ] && return 0
+    while IFS="$(printf '\t')" read -r sha ref; do
+        [ -z "$ref" ] && continue
+        case "$ref" in
+            *'^{}') continue ;;
+        esac
+        echo "${ref#refs/tags/}"
+    done <<EOF
+$out
+EOF
+}
+
+# The commit origin advertises for one tag NAME — never a local ref lookup,
+# for the same reason as above: a local tag object can be stale or poisoned
+# even when its NAME matches what origin advertises. Prefers the peeled
+# `^{}` entry (an annotated tag's target commit) over the direct entry (the
+# tag object itself). Queries BOTH refspecs explicitly (CR round 6, codex-2)
+# — `git ls-remote --tags origin "$want"` alone never returns the peeled
+# entry, only the glob form ('v*') does, so an annotated tag resolved to its
+# tag-OBJECT id rather than its commit id; that id then never string-equals
+# `git rev-parse HEAD` even when HEAD is genuinely AT the release, and
+# merge-base peels both sides to the same commit either direction, so the
+# mismatch was misreported as "HEAD ahead" instead of "already at".
+_channel_origin_tag_commit() {
+    local want="$1" out sha ref direct="" peeled=""
+    out=$(git ls-remote --tags origin "refs/tags/$want" "refs/tags/$want^{}" 2>/dev/null) || return 1
+    while IFS="$(printf '\t')" read -r sha ref; do
+        case "$ref" in
+            "refs/tags/$want") direct="$sha" ;;
+            "refs/tags/$want"'^{}') peeled="$sha" ;;
+        esac
+    done <<EOF
+$out
+EOF
+    if [ -n "$peeled" ]; then
+        echo "$peeled"
+    elif [ -n "$direct" ]; then
+        echo "$direct"
+    else
+        return 1
+    fi
+}
+
+# Highest origin-advertised tag on the given channel (caller fetches tags
+# first so the winning tag's objects are present locally — this function
+# itself only reasons about NAMES, hermetically testable with fixture tags
+# and no network). stable: only tags with no -pre.N suffix are candidates.
+# pre: both forms are candidates (a stable release still outranks a -pre.N
+# of the same version, via _channel_tag_max). Echoes the winning tag; rc 1 +
+# no output means no candidate tag exists at all on this channel; rc 2 means
+# the origin query itself failed (CR round 6, codex-1) — distinct from "no
+# candidate", since the caller must fail loud rather than report "no
+# release yet" for a query it never actually completed.
+_channel_resolve_tag() {
+    local channel="$1" tag best="" parts pre names
+    names=$(_channel_origin_tag_names) || return 2
+    while IFS= read -r tag; do
+        [ -z "$tag" ] && continue
+        parts=$(_channel_tag_parts "$tag") || continue
+        if [ "$channel" = "stable" ]; then
+            pre="${parts##* }"
+            [ "$pre" != "NONE" ] && continue
+        fi
+        if [ -z "$best" ]; then
+            best="$tag"
+        else
+            best=$(_channel_tag_max "$best" "$tag")
+        fi
+    done <<EOF
+$names
+EOF
+    [ -z "$best" ] && return 1
+    echo "$best"
+}
+
+# Core channel-follow logic, shared by --check (mode=check, read-only) and
+# the real apply chain (mode=apply, via update_pull() above). Sets
+# STATUS_pull/DETAIL_pull like update_pull()'s own plain-pull path so the
+# status table stays honest either way.
+_channel_follow() {
+    local channel="$1" mode="$2" tag describe tag_commit head_commit before
+
+    if ! git fetch --tags origin 2>/dev/null; then
+        if [ "$mode" = "check" ]; then
+            echo "update --check: could not reach origin for tags (offline or no remote configured)."
+            STATUS_pull="skipped"; DETAIL_pull="could not fetch tags from origin"
+            return 0
+        fi
+        STATUS_pull="failed"
+        DETAIL_pull="could not fetch tags from origin (offline or no remote configured) — resolve manually, then re-run"
+        return 1
+    fi
+
+    local resolve_rc=0
+    tag=$(_channel_resolve_tag "$channel") || resolve_rc=$?
+    if [ "$resolve_rc" -eq 2 ]; then
+        STATUS_pull="failed"
+        DETAIL_pull="could not query origin for $channel release tags — resolve manually, then re-run"
+        echo "update: could not query origin for $channel release tags (network or auth failure) — resolve manually, then re-run" >&2
+        return 1
+    fi
+    if [ "$resolve_rc" -ne 0 ]; then
+        local msg
+        if [ "$channel" = "stable" ]; then
+            msg="no stable release yet — nothing to follow"
+        else
+            msg="no pre release yet — nothing to follow"
+        fi
+        echo "$msg"
+        STATUS_pull="skipped"; DETAIL_pull="$msg"
+        return 0
+    fi
+
+    describe=$(git describe --tags --always 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "?")
+    # Origin-verified SHA, not a local `refs/tags/$tag` lookup (CR round 5,
+    # codex-1) — same reasoning as _channel_origin_tag_commit above.
+    tag_commit=$(_channel_origin_tag_commit "$tag" || echo "")
+    head_commit=$(git rev-parse HEAD 2>/dev/null || echo "")
+    if [ -z "$tag_commit" ] || [ -z "$head_commit" ]; then
+        STATUS_pull="failed"
+        DETAIL_pull="could not resolve $tag or HEAD to a commit — resolve manually, then re-run"
+        return 1
+    fi
+
+    if [ "$tag_commit" = "$head_commit" ]; then
+        echo "status:   up to date — at $channel $tag."
+        STATUS_pull="up-to-date"; DETAIL_pull="already at $tag ($channel)"
+        return 0
+    fi
+
+    if git merge-base --is-ancestor "$tag_commit" "$head_commit" 2>/dev/null; then
+        # HEAD is a descendant of the tag — never downgrade.
+        echo "status:   not behind — leaving as-is (HEAD ahead of $channel $tag, at $describe)."
+        STATUS_pull="up-to-date"; DETAIL_pull="not behind — leaving as-is (HEAD ahead of $tag)"
+        return 0
+    fi
+
+    if git merge-base --is-ancestor "$head_commit" "$tag_commit" 2>/dev/null; then
+        if [ "$mode" = "check" ]; then
+            echo "behind $channel $tag (at $describe)"
+            STATUS_pull="skipped"; DETAIL_pull="behind $channel $tag (at $describe) — run without --check to switch"
+            return 0
+        fi
+        # apply mode: never move a dirty checkout — unlike the plain-pull
+        # path above, this ignores HIMMEL_UPDATE_AUTOSTASH unconditionally.
+        # `git switch --detach` isn't a `git pull`; autostash's
+        # stash/pull/restore semantics don't apply to it, so channel mode
+        # always refuses on a dirty tree rather than silently stashing.
+        if is_dirty "$ROOT"; then
+            STATUS_pull="failed"
+            DETAIL_pull="checkout has uncommitted changes — refusing to switch onto $tag with a dirty tree; commit or stash your changes, then re-run"
+            return 1
+        fi
+        before="$describe"
+        # HIMMEL-2705: git switch --detach, NEVER git checkout <tag> — this
+        # repo hard-refuses `git checkout -- <path>` shapes; detach is also
+        # the semantically correct verb for "move onto a tag, no branch".
+        # Detach onto the origin-verified COMMIT, not the tag NAME (CR round
+        # 5, codex-1) — resolving "$tag" here would walk the local
+        # refs/tags/$tag ref again, the exact lookup tag_commit above
+        # deliberately bypassed.
+        if ! git switch --detach "$tag_commit" >/dev/null 2>&1; then
+            STATUS_pull="failed"
+            DETAIL_pull="git switch --detach $tag failed — resolve manually, then re-run"
+            return 1
+        fi
+        STATUS_pull="updated"; DETAIL_pull="${before:-?} -> $tag (channel=$channel, detached)"
+        return 0
+    fi
+
+    # Neither is an ancestor of the other — HEAD and the tag diverged (e.g. a
+    # local commit off a point release's history). Fail loud rather than
+    # guess which one the operator wants.
+    STATUS_pull="failed"
+    DETAIL_pull="cannot compare HEAD ($describe) to $channel $tag — histories diverged; resolve manually, then re-run"
+    return 1
+}
+
 # Test seam: source with HIMMEL_UPDATE_LIB=1 to load the functions above without
 # running any update mode (lets test-himmel-update-hermes.sh call update_hermes
 # directly with HERMES_HOME fixtures — no network, no repo mutation).
@@ -1277,33 +1614,51 @@ if [ "${1:-}" = "--only" ]; then
 fi
 
 # ─── --check / --dry-run mode ────────────────────────────────────────────────
-# Reports behind/ahead counts + plugin gap; pulls nothing. Exit 0 always.
+# Reports behind/ahead counts + plugin gap; pulls nothing. Exit 0 always —
+# except a malformed HIMMEL_UPDATE_CHANNEL or profile value, which still
+# exits 2 below (CR round 5, codex-2): that's a configuration failure to
+# report, not a repo-state fact --check can silently swallow into "0 behind".
 if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
-    git fetch --quiet origin 2>/dev/null || {
-        echo "update --check: could not reach origin (offline or no remote configured)."
-        report_plugin_gap
-        exit 0
-    }
-    upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || {
-        echo "update --check: no upstream configured for branch '$branch'."
-        report_plugin_gap
-        exit 0
-    }
-    behind=$(git rev-list --count "HEAD..$upstream" 2>/dev/null || echo "?")
-    ahead=$(git rev-list --count "$upstream..HEAD" 2>/dev/null || echo "?")
-    echo "branch:   $branch"
-    echo "upstream: $upstream"
-    echo "behind:   $behind"
-    echo "ahead:    $ahead"
-    if [ "$behind" = "0" ]; then
-        echo "status:   up to date — nothing to pull."
-        STATUS_pull="up-to-date"; DETAIL_pull="up to date"
-    elif [ "$behind" != "?" ]; then
-        echo "status:   $behind commit(s) behind — run /himmel-update (or bash scripts/himmel-update.sh) to pull."
-        STATUS_pull="skipped"; DETAIL_pull="$behind commit(s) behind — run without --check to pull"
+    # HIMMEL-2705: resolved here, not up front — --check is one of the two
+    # modes that actually needs the channel (CR round 4, codex-1), so a
+    # malformed value still exits loud here, same as before.
+    if ! UPDATE_CHANNEL=$(_resolve_update_channel); then
+        exit 2
+    fi
+    if [ -n "$UPDATE_CHANNEL" ]; then
+        # HIMMEL-2705: channel mode follows tags, not the branch's upstream —
+        # its own read-only fetch+compare, never the plain branch/upstream
+        # behind/ahead report below.
+        echo "branch:   $branch"
+        echo "channel:  $UPDATE_CHANNEL"
+        _channel_follow "$UPDATE_CHANNEL" check
     else
-        STATUS_pull="skipped"; DETAIL_pull="unknown (git rev-list failed)"
+        git fetch --quiet origin 2>/dev/null || {
+            echo "update --check: could not reach origin (offline or no remote configured)."
+            report_plugin_gap
+            exit 0
+        }
+        upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null) || {
+            echo "update --check: no upstream configured for branch '$branch'."
+            report_plugin_gap
+            exit 0
+        }
+        behind=$(git rev-list --count "HEAD..$upstream" 2>/dev/null || echo "?")
+        ahead=$(git rev-list --count "$upstream..HEAD" 2>/dev/null || echo "?")
+        echo "branch:   $branch"
+        echo "upstream: $upstream"
+        echo "behind:   $behind"
+        echo "ahead:    $ahead"
+        if [ "$behind" = "0" ]; then
+            echo "status:   up to date — nothing to pull."
+            STATUS_pull="up-to-date"; DETAIL_pull="up to date"
+        elif [ "$behind" != "?" ]; then
+            echo "status:   $behind commit(s) behind — run /himmel-update (or bash scripts/himmel-update.sh) to pull."
+            STATUS_pull="skipped"; DETAIL_pull="$behind commit(s) behind — run without --check to pull"
+        else
+            STATUS_pull="skipped"; DETAIL_pull="unknown (git rev-list failed)"
+        fi
     fi
     report_plugin_gap
     reconcile_plugins check

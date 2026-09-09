@@ -1,7 +1,7 @@
 # Getting Started
 
 New to himmel? This is the path from clone to your first PR-gated loop — about
-**15 minutes**, most of it just watching `setup.sh` run. The core install is
+**15 minutes**, most of it just watching the installer run. The core install is
 three commands, and you stay in control the whole way. The deeper
 [daily-loop walkthrough](daily-loop.md) that narrates every hook is *optional
 depth*, not a prerequisite — the steps below stand on their own.
@@ -21,87 +21,36 @@ depth*, not a prerequisite — the steps below stand on their own.
 
 ## 1. Install (≈3 min hands-on, plus install time)
 
-This guide is for **using himmel on your own project** — the common case. Bring
-himmel's hooks, guardrails, worktree workflow, and marketplace plugins/skills
-into a repo you already have, in one command. The full adopter guide is
-**[use-on-your-project.md](setup/use-on-your-project.md)** — start there.
-
-> **Developing himmel itself** — running the repo standalone with `setup.sh`,
-> hacking on the harness — is a different path. It's not covered here; see
-> [setup/new-machine.md](setup/new-machine.md#4-himmel-repo).
-
-**Prerequisites** (the wizard checks them and fails fast with hints):
-`git`, `bash` 3.2+ (**Git Bash** on Windows), `node` (node-less machine? the
-bootstrap step below installs it), `jq`, `python3`, and the
-[Claude Code](https://claude.com/claude-code) CLI on your `PATH`. `gh` is
-optional for the *install* — but the PR steps of the first loop below use it
-on a GitHub repo (on Bitbucket Cloud, himmel's bundled Bitbucket CLI takes
-its place), and the worktree-prune step uses it too. The optional extras
-mentioned below — the companion vault tooling, qmd search, the Telegram
-bridge, armed resume — additionally need [`bun`](https://bun.sh); the core
-loop does not. (The README's standalone/contributor path lists `bun` as a
-prerequisite because developing himmel itself uses it — that's the other
-install path, not this one. Likewise `uv`/`pipx`/pre-commit: the contributor
-path hard-requires one of them, but on *this* path the wizard only warns —
-the pre-commit gates are an optional add-on for your repo.)
-
-Clone once, then run the install wizard:
+Clone once, then run the installer against the repo you want the harness in:
 
 ```bash
 git clone https://github.com/yotamleo/himmel
-node himmel/scripts/himmelctl/bin.js install
+node himmel/scripts/himmelctl/bin.js install --scope project   # or --scope user
 ```
 
-Node-less machine? `bash himmel/scripts/himmelctl/bootstrap.sh` first
-(Windows: `powershell -ExecutionPolicy Bypass -File himmel\scripts\himmelctl\bootstrap.ps1`
-— built-in `powershell`, since a fresh machine may not have `pwsh`),
-then re-run `install`. The wizard asks a few questions (role, target repo,
-scope, vault, handover, plugins) and derives the `adopt.sh`/`adopt.ps1`
-invocation under the hood — for example, the most common outcome, `--profile core` at project scope:
+Node-less machine? Run `bash himmel/scripts/himmelctl/bootstrap.sh` first, then
+re-run `install`.
 
-```bash
-bash himmel/scripts/adopt.sh --profile core --scope project --target /path/to/your/repo
-# Windows:  pwsh -ExecutionPolicy Bypass -File himmel\scripts\adopt.ps1 -Profile core -Scope project -Target C:\path\to\repo
-#   (adopt.ps1 needs PowerShell 7 `pwsh` — its plugin/settings helpers invoke pwsh
-#    internally. Only the node-less BOOTSTRAP step above works in built-in powershell.)
-```
+That is the whole install for the common case. **The full guide is
+[setup/install.md](setup/install.md)** — prerequisites, what each scope and
+install profile actually lands, the Windows caveat, and the adaptation
+checklist for a repo that is not himmel. Already have himmel wired some older
+way? [setup/migrating.md](setup/migrating.md).
 
-Invoke `adopt.sh`/`adopt.ps1` directly for the manual or CI path. Full
-profile/scope matrix (`luna`, `all`, user scope) and the à-la-carte parts:
-[docs/setup/use-on-your-project.md](setup/use-on-your-project.md).
-
-When the Claude Code plugins (handover, triage, obsidian, …) get
-installed you choose where they're recorded: **user scope** (`~/.claude`, every
-project — the default) or **project scope** (this repo's `.claude/settings.json`,
-shared with anyone who clones it). The plugin step prompts you, or pass
-`--scope` — see [plugin scope](setup/new-machine.md#scope-user-vs-project).
+> **Developing himmel itself** — running the repo standalone, hacking on the
+> harness — is a different path: see
+> [setup/new-machine.md](setup/new-machine.md#4-himmel-repo).
 
 ## 2. Minimal config (≈1 minute)
 
-himmel needs almost nothing to start:
+**`USER_SLUG`** — your kebab-case handle (e.g. `jane-doe`). Skip it and himmel
+derives one from your `git config user.name`. That is the whole required
+configuration; luna, Telegram, [hermes](hermes-runbook.md) and Jira are all
+opt-in. The details, including the companion vault, are in
+[setup/install.md](setup/install.md#minimal-config).
 
-- **`USER_SLUG`** — your kebab-case handle (e.g. `jane-doe`). If you skip it,
-  himmel derives it from your `git config user.name`. That's it for the core.
-- **Everything else is optional.** luna (the companion vault), Telegram,
-  [hermes](hermes-runbook.md) (himmel's hermes lanes — a CR-critic reviewer for
-  `/pr-check` and a free-inference junior tier),
-  and Jira are all opt-in — the harness runs fully without any of them. Add Jira
-  later by filling `JIRA_*` in `.env` (see the
-  [env table](../README.md#quickstart)); the local CLI needs only four values
-  and **no cloud ID**.
-- **Want the companion vault?** himmel ships a ready-to-use AI-first Obsidian
-  vault skeleton at
-  [`templates/luna-second-brain/`](../templates/luna-second-brain/) — copy it
-  out into its own git repo and run its `scripts/setup.sh`. Its
-  [README](../templates/luna-second-brain/README.md#quickstart) has the
-  install steps. With the vault in place, each Claude session is auto-captured
-  into it — [point the capture at a specific vault](luna/end-session-wiki.md#choosing-the-target-vault)
-  if it doesn't live at the default `~/Documents/luna`. To import existing
-  sessions and understand how capture → triage → synthesize compound over time,
-  see the [compounding loop guide](luna/compounding.md).
-
-**For your first loop you need none of this** — the install wizard already did
-the work. Skip straight to step 3.
+**For your first loop you need none of this** — the installer already did the
+work. Skip straight to step 3.
 
 ## 3. Your first loop (≈5 minutes)
 
@@ -269,7 +218,7 @@ guard is yours to lift:
 | Browse the slash commands | [commands-catalog.md](commands-catalog.md) |
 | Browse every tool/script | [tooling-catalog.md](tooling-catalog.md) |
 | Run unattended overnight | [handover/overnight-mode.md](handover/overnight-mode.md) |
-| Adopt the core in another repo | [setup/use-on-your-project.md](setup/use-on-your-project.md) |
+| Adopt the core in another repo | [setup/install.md](setup/install.md) |
 | Full machine setup + gotchas | [setup/new-machine.md](setup/new-machine.md) |
 | Update the harness + upgrade the vault | [setup/updating.md](setup/updating.md) |
 | Uninstall / offboard himmel | `node scripts/himmelctl/bin.js uninstall` (execs [`scripts/uninstall.sh`](../scripts/uninstall.sh); see [updating.md](setup/updating.md#uninstalling--offboarding)) |

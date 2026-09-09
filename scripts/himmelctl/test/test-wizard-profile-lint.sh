@@ -129,6 +129,14 @@ make_fixture "$fixture"
 # `install --dry-run --from-profile`. Echoes combined output, returns rc.
 lint_profile() {
   local _profile="$1"
+  run_install --from-profile "$(winpath "$_profile")"
+}
+
+# run_install <install-args...> — same hermetic harness as lint_profile, but
+# takes arbitrary `install` args (HIMMEL-2752: needed to exercise --scope,
+# which does not always pair with --from-profile). Echoes combined output,
+# returns rc.
+run_install() {
   local _stub="$work/lint-stub-$RANDOM"; mkdir -p "$_stub"
   local _home="$work/lint-home-$RANDOM"; mkdir -p "$_home"
   local _p
@@ -136,7 +144,7 @@ lint_profile() {
   make_git_stub "$_stub" "https://github.com/someone/other-repo.git"
   PATH="$_p" HOME="$_home" USERPROFILE="$(winpath "$_home")" HIMMELCTL_CACHE_DIR="$(winpath "$_home.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$_home.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
     HIMMELCTL_REPO_ROOT="$(winpath "$fixture")" \
-    "$node_bin" "$wizard" install --dry-run --from-profile "$(winpath "$_profile")" \
+    "$node_bin" "$wizard" install --dry-run "$@" \
     </dev/null 2>&1
 }
 
@@ -207,5 +215,157 @@ else
   done
   echo "ok: case c — every checked-in docs/setup/profiles/*.install-profile.json lints clean (${#profileFiles[@]} file(s))"
 fi
+
+# ── HIMMEL-2752: honest bridge validation ───────────────────────────────────
+# d. bridge.enabled:false with NO envPath/whisperCli/whisperModel/
+#    installPersistence — a disabled section's members are now optional
+#    (absent = empty), so this must lint clean where it used to be refused.
+bridgeOffAbsent="$work/bridge-off-absent.install-profile.json"
+cat > "$bridgeOffAbsent" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "devOverlay": false,
+  "scope": "project",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": [],
+  "lanesMeaningful": true,
+  "alwaysOn": false,
+  "bridge": { "enabled": false }
+}
+JSON
+set +e
+outD=$(lint_profile "$bridgeOffAbsent"); rcD=$?
+set -e
+[ "$rcD" -eq 0 ] || fail "case d: bridge.enabled:false with no envPath/etc should lint clean (got rc=$rcD): $outD"
+echo "ok: case d — bridge.enabled:false with its dependent fields absent lints clean (honest validation, HIMMEL-2752)"
+
+# e. bridge.enabled:false but envPath is PRESENT with the wrong type — still
+#    refused. Proves "optional" means absent=empty, not unchecked-if-present.
+bridgeOffWrongType="$work/bridge-off-wrong-type.install-profile.json"
+cat > "$bridgeOffWrongType" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "devOverlay": false,
+  "scope": "project",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": [],
+  "lanesMeaningful": true,
+  "alwaysOn": false,
+  "bridge": { "enabled": false, "envPath": 12345 }
+}
+JSON
+set +e
+outE=$(lint_profile "$bridgeOffWrongType"); rcE=$?
+set -e
+[ "$rcE" -eq 2 ] || fail "case e: bridge.enabled:false with a wrong-typed envPath present should still be refused (got rc=$rcE): $outE"
+grepq "$outE" -i "envPath" \
+  || fail "case e: error should name 'envPath' (got: $outE)"
+echo "ok: case e — bridge.enabled:false does not exempt a present-but-wrong-typed field (rc=2)"
+
+# f. RED CONTROL: bridge.enabled:true with NO envPath — must still be
+#    refused. The honesty fix relaxes disabled sections only; an enabled
+#    bridge keeps its required fields.
+bridgeOnMissing="$work/bridge-on-missing.install-profile.json"
+cat > "$bridgeOnMissing" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "devOverlay": false,
+  "scope": "project",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": [],
+  "lanesMeaningful": true,
+  "alwaysOn": false,
+  "bridge": { "enabled": true }
+}
+JSON
+set +e
+outF=$(lint_profile "$bridgeOnMissing"); rcF=$?
+set -e
+[ "$rcF" -eq 2 ] || fail "case f (RED control): bridge.enabled:true with no envPath must still be refused (got rc=$rcF): $outF"
+grepq "$outF" -i "envPath" \
+  || fail "case f: error should name 'envPath' (got: $outF)"
+echo "ok: case f — RED control: bridge.enabled:true still requires envPath (rc=2, unchanged behavior)"
+
+# ── HIMMEL-2752: lanes refusal messages name the accepted spelling ─────────
+# g. lanesMeaningful present but not true — message must state the exact
+#    accepted spelling and disambiguate the CLI flag from the profile value.
+lanesBadMeaningful="$work/lanes-bad-meaningful.install-profile.json"
+cat > "$lanesBadMeaningful" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "devOverlay": false,
+  "scope": "project",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": [],
+  "lanesMeaningful": false,
+  "alwaysOn": false
+}
+JSON
+set +e
+outG=$(lint_profile "$lanesBadMeaningful"); rcG=$?
+set -e
+[ "$rcG" -eq 2 ] || fail "case g: lanesMeaningful:false should be refused (got rc=$rcG): $outG"
+grepq "$outG" -F '"lanes": [] with "lanesMeaningful": true' \
+  || fail "case g: error should name the accepted spelling verbatim (got: $outG)"
+grepq "$outG" -F -- "--lanes none" \
+  || fail "case g: error should note '--lanes none' is a CLI flag, not a profile value (got: $outG)"
+echo "ok: case g — lanesMeaningful refusal names the accepted spelling verbatim and disambiguates the CLI flag (HIMMEL-2752)"
+
+# h. legacy lanes:[] with lanesMeaningful absent — same accepted-spelling
+#    message on the sibling refusal path.
+lanesLegacyEmpty="$work/lanes-legacy-empty.install-profile.json"
+cat > "$lanesLegacyEmpty" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "devOverlay": false,
+  "scope": "project",
+  "vault": { "mode": "none", "path": "" },
+  "handover": { "mode": "inline", "path": "" },
+  "pluginSet": "lean",
+  "lanes": [],
+  "alwaysOn": false
+}
+JSON
+set +e
+outH=$(lint_profile "$lanesLegacyEmpty"); rcH=$?
+set -e
+[ "$rcH" -eq 2 ] || fail "case h: legacy lanes:[] without lanesMeaningful should be refused (got rc=$rcH): $outH"
+grepq "$outH" -F '"lanes": [] with "lanesMeaningful": true' \
+  || fail "case h: error should name the accepted spelling verbatim (got: $outH)"
+echo "ok: case h — legacy lanes:[] refusal names the accepted spelling verbatim (HIMMEL-2752)"
+
+# ── HIMMEL-2752: --scope as a real non-interactive selector ────────────────
+# i. --scope project alone (no --from-profile, no wizard) loads the SHIPPED
+#    adopter-project profile and derives a plan for it.
+set +e
+outI=$(run_install --scope project); rcI=$?
+set -e
+[ "$rcI" -eq 0 ] || fail "case i: --scope project should dry-run clean (got rc=$rcI): $outI"
+grepq "$outI" -F 'scope=project' \
+  || fail "case i: plan should reflect scope=project (got: $outI)"
+echo "ok: case i — --scope project loads the shipped adopter-project profile non-interactively (rc=0)"
+
+# j. --scope user --from-profile <adopter-project profile> overrides scope
+#    to user even though the given profile itself says project.
+set +e
+outJ=$(run_install --scope user --from-profile "$(winpath "$repo_root/docs/setup/profiles/adopter-project.install-profile.json")"); rcJ=$?
+set -e
+[ "$rcJ" -eq 0 ] || fail "case j: --scope user --from-profile <project profile> should dry-run clean (got rc=$rcJ): $outJ"
+grepq "$outJ" -F 'scope=user' \
+  || fail "case j: --scope should override the loaded profile's own scope to user (got: $outJ)"
+echo "ok: case j — --scope overrides a --from-profile profile's own scope (HIMMEL-2752)"
 
 echo "PASS"

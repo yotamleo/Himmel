@@ -590,7 +590,7 @@ install_native_hooks() {
   # HIMMEL-2771: resolve Git's effective hook directory (including worktrees
   # and core.hooksPath), but keep hook payloads independent of this clone.
   local hooks_dir hook script hooks_dir_canon target_canon backup marker
-  local common_dir common_dir_canon payload_dir payload_file
+  local common_dir common_dir_canon payload_dir payload_file hooks_path_configured
   marker='# HIMMEL-2771: native invariant gate; lint hooks require pre-commit.'
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "DRY: place executable native commit-msg, pre-commit, pre-push hooks in $TARGET (fallback if pre-commit is unavailable or fails)"
@@ -628,6 +628,7 @@ install_native_hooks() {
   # non-zero when the key is absent, so treat that as "unset" rather than
   # letting `set -e` kill the run.
   if git -C "$TARGET" config --get core.hooksPath >/dev/null 2>&1; then
+    hooks_path_configured=1
     case "$hooks_dir_canon/" in
       "$target_canon"/*) ;;
       *)
@@ -636,6 +637,7 @@ install_native_hooks() {
         ;;
     esac
   else
+    hooks_path_configured=0
     # Unset: accept the default hooks dir when it sits inside $TARGET (the
     # common case) OR inside the git COMMON directory Git itself names via
     # `rev-parse --git-common-dir` (the linked-worktree case). This is still a
@@ -673,15 +675,29 @@ install_native_hooks() {
   # copy into those other checkouts -- writing into directories the adopter
   # never named is exactly the boundary this PR has spent five rounds
   # defending, and it would not cover worktrees created LATER anyway. Instead,
-  # when the hooks dir is OUTSIDE $TARGET (the shared-common-dir case), stash
-  # a payload copy beside the shared hooks dir itself -- a subdirectory of
-  # .git/hooks/ is inert to Git (it only ever executes files named exactly
+  # stash a payload copy beside the shared hooks dir itself -- a subdirectory
+  # of .git/hooks/ is inert to Git (it only ever executes files named exactly
   # like a hook) -- and teach the dispatcher (below) to fall back to it when
   # $root/scripts/hooks/<script> is missing.
-  case "$hooks_dir_canon/" in
-    "$target_canon"/*) payload_dir="" ;;   # hooks live inside the target: $root always resolves
-    *)                 payload_dir="$hooks_dir/himmel-payload" ;;
-  esac
+  #
+  # HIMMEL-2814: the decision was originally keyed on containment
+  # ($hooks_dir_canon inside $target_canon => "no fallback needed"), which
+  # answers the wrong question -- it is true not only for a per-checkout
+  # core.hooksPath (genuinely NOT shared: each worktree has its own copy of
+  # that tracked, repo-relative path in its own tree) but ALSO for adopting
+  # the PRIMARY checkout with the default, unset core.hooksPath, where
+  # $hooks_dir is `$TARGET/.git/hooks` -- inside $TARGET, yet still Git's ONE
+  # per-repository hooks directory that every worktree added later shares.
+  # Key the decision on hooks_path_configured instead: unset core.hooksPath
+  # always means Git's shared per-repository hooks dir (whether it happens to
+  # sit inside or outside $TARGET), so always leave a fallback payload there;
+  # a configured core.hooksPath was already required above to resolve inside
+  # $TARGET, where it is per-checkout tracked content, not shared.
+  if [[ $hooks_path_configured -eq 1 ]]; then
+    payload_dir=""
+  else
+    payload_dir="$hooks_dir/himmel-payload"
+  fi
   if [[ -n "$payload_dir" ]]; then
     # Preserve the relative layout: check-worktree-isolation.sh and
     # check-push-target.sh both `source "$SCRIPT_DIR/../guardrails/lib.sh"`,
@@ -816,7 +832,10 @@ trap 'rm -f "\$reffile"' EXIT
 if [ -t 0 ]; then
   : > "\$reffile"
 else
-  cat > "\$reffile"
+  if ! cat > "\$reffile"; then
+    echo "himmel gate: failed to capture the pushed ref list on stdin — refusing to validate a possibly truncated list" >&2
+    exit 1
+  fi
 fi
 bash "\$gate" "\$@" < "\$reffile"
 gate_rc=\$?
