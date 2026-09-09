@@ -50,11 +50,12 @@ Steps run in this canonical order; only the tokens on the pointer's
   `bash scripts/handover/merge-on-green.sh` (exactly, to match the standing
   allow-rule) — it gates on `check-ci.sh` green + a certified head SHA and
   merges only then. It admits a NON-private repo only when that repo is the ONE
-  configured public origin AND a live read shows branch protection with
-  required status checks on the base branch (HIMMEL-2869); any other public
-  repo, and a protection read that is missing, empty or unreadable, still
-  refuse (exit 12). `origin` is that configured origin, so the armed path IS
-  available on this repo. The protection read is re-done fresh immediately
+  configured public origin AND a live read shows branch protection on the base
+  branch with BOTH `enforce_admins` enabled and a non-empty
+  required-status-checks list (HIMMEL-2869); any other public repo, and a
+  protection read that is missing, empty or unreadable, still refuse (exit 12).
+  `origin` is that configured origin, so the armed path IS available on this
+  repo. The protection read is re-done fresh immediately
   before merging, and every other gate is unchanged. Never `--admin`: the
   approval requirement lives in the ruleset and GitHub enforces it at merge
   time, so a merge refused for want of an approval is the rule working — leave

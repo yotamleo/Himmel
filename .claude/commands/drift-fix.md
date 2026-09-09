@@ -340,11 +340,11 @@ protection — never merge past it:
 
 Armed auto-merge (`ARMAUTOMERGE=1`, `scripts/handover/merge-on-green.sh`) admits
 a repo confirmed PRIVATE, or the ONE configured public origin when a live read
-shows branch protection with required status checks on the base branch
-(HIMMEL-2869) — `origin` is that origin, so the armed path is available here.
-Any other public repo, and an unreadable or check-less protection read, still
-refuse (exit 12). `scripts/handover/pr-merge.sh` (plain-first) remains the
-alternative.
+shows branch protection on the base branch with BOTH `enforce_admins` enabled
+and a non-empty required-status-checks list (HIMMEL-2869) — `origin` is that
+origin, so the armed path is available here. Any other public repo, and an
+unreadable or check-less protection read, still refuse (exit 12).
+`scripts/handover/pr-merge.sh` (plain-first) remains the alternative.
 
 **Never `--admin`, never a force-merge, never a branch-protection override.** If
 the merge is refused for want of an approval, that is the rule working: leave
