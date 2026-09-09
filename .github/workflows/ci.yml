@@ -4,13 +4,15 @@ on:
   # PR gating (HIMMEL-594): the cheap ubuntu-only jobs run on every PR so a
   # non-conventional commit, a secret, a shellcheck warning, or a failing shell
   # suite blocks merge. The EXPENSIVE multi-OS matrix stays nightly-only — the
-  # shell-unit matrix below expands to windows+macOS only on `schedule`
+  # shell-unit-shard matrix below expands to windows+macOS only on `schedule`
   # (or a dispatch with force_all_os), so a PR never triggers the paid legs.
+  # `shell-unit` itself (HIMMEL-2872) is the aggregating gate over that
+  # matrix — see its own comment block below.
   pull_request:
   # Post-merge verification (HIMMEL-511): re-run the cheap ubuntu gates when code
   # lands on main, catching anything that reached main outside the PR path. The
-  # shell-unit matrix stays ubuntu-only on `push` (the paid windows/macOS legs are
-  # schedule-only), so this adds no multi-OS cost.
+  # shell-unit-shard matrix stays ubuntu-only on `push` (the paid windows/macOS
+  # legs are schedule-only), so this adds no multi-OS cost.
   push:
     branches: [main]
   workflow_dispatch:
@@ -410,13 +412,25 @@ jobs:
   # scoped to the non-ubuntu legs): their per-suite PASS/FAIL is advisory in the
   # job log while ubuntu stays the required gate. Tightening the new OSes to
   # gating-green is the data-driven follow-up (HIMMEL-494 phase 3).
-  shell-unit:
+  #
+  # This is the working matrix — 6-way sharded per OS (HIMMEL-2872) so the
+  # ubuntu legs finish in parallel instead of serially. `shell-unit` below is
+  # the aggregating gate that rolls this matrix up into the one required
+  # check-run context branch protection names.
+  shell-unit-shard:
     strategy:
       fail-fast: false
       matrix:
         os: ${{ (github.event_name == 'schedule' || inputs.force_all_os)
                && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]')
                || fromJSON('["ubuntu-latest"]') }}
+        # shard: [1..6] fans run-shell-tests.sh across 6 runners (HIMMEL-2872).
+        # The `6` here and the `/6` in the run step below are two spellings of
+        # the same number — GitHub Actions has no way to derive one from the
+        # other (strategy.job-total counts os×shard, not shard alone), so a
+        # change to the shard count must edit both or the split silently stops
+        # being a partition.
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     steps:
@@ -466,7 +480,7 @@ jobs:
       # SUITE_CHANGED_SINCE: only on pull_request, where a base SHA exists —
       # a docs-only PR then skips the whole corpus (run-shell-tests.sh's own
       # docs-only fast lane); push/schedule/dispatch have no PR base to diff.
-      - run: bash scripts/ci/run-shell-tests.sh
+      - run: bash scripts/ci/run-shell-tests.sh --shard ${{ matrix.shard }}/6
         env:
           FAIL_LOG_DIR: failed-suite-logs
           SUITE_TIER_MODE: ${{ (github.event_name == 'schedule' || inputs.force_all_os) && 'all' || 'fast' }}
@@ -475,7 +489,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: shell-unit-failed-logs-${{ matrix.os }}
+          name: shell-unit-failed-logs-${{ matrix.os }}-shard${{ matrix.shard }}
           path: failed-suite-logs/
           if-no-files-found: ignore
           retention-days: 14
@@ -525,3 +539,41 @@ jobs:
       #
       # - name: Focus/tick correlator suite
       #   run: node --test scripts/observability/focus-tick-correlate.test.mjs
+
+  # Aggregating gate (HIMMEL-2872). Four things worth knowing before touching
+  # this job:
+  #
+  # 1. The single-value `os` matrix below is deliberate and load-bearing: it
+  #    is what makes the check-run context `shell-unit (ubuntu-latest)` rather
+  #    than a bare `shell-unit`, keeping the required branch-protection
+  #    context byte-for-byte identical to what it was before the work above
+  #    was sharded. Sharding the work must not rename the gate.
+  # 2. `needs.shell-unit-shard.result` is the matrix ROLLUP, `success` only
+  #    when every leg that CAN fail the matrix succeeded. A job-level
+  #    `continue-on-error` failure (the nightly windows/macOS legs) is NOT
+  #    counted against that rollup, so those legs stay advisory exactly as
+  #    they are today — this job never has to name any OS itself.
+  # 3. `if: always()` plus the explicit `!= success` test below is the
+  #    fail-CLOSED shape: `failure`, `cancelled` AND `skipped` all redden this
+  #    job. A bare `needs:` without `always()` would SKIP this job whenever a
+  #    shard failed — and a required check that never reports leaves the PR
+  #    hanging rather than red.
+  # 4. No checkout, no setup: this job is a verdict, not work.
+  shell-unit:
+    needs: shell-unit-shard
+    if: always()
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Every gating shell-unit shard must have passed
+        env:
+          SHARDS_RESULT: ${{ needs.shell-unit-shard.result }}
+        run: |
+          echo "shell-unit-shard matrix rollup: $SHARDS_RESULT"
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::shell-unit shards did not all pass (matrix rollup: $SHARDS_RESULT) — see the shell-unit-shard jobs on this run."
+            exit 1
+          fi
+          echo "OK: every gating shell-unit shard passed."
