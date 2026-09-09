@@ -630,6 +630,12 @@ STUB_CWD_FAIL=1 run_mog 12 "unresolvable cwd repo → exit 12 fail-closed"
 # enforce_admins off, the `checks` list shape, a DIFFERENT public repo, the
 # non-seam of the constant, the private-repo regression anchor, and the
 # pre-merge re-read catching protection weakened during the CI wait.
+#
+# jq availability is checked ONCE here, locally to this block (the file's
+# shared `have_jq` guard is computed further down, after this block, and this
+# block needs it before that point) — hoisted here rather than probed
+# separately in each of 2869-1b and 2869-7 below, which both need it.
+have_jq_2869=0; command -v jq >/dev/null 2>&1 && have_jq_2869=1
 
 # 2869-1. The configured public origin, under branch protection with required
 # status checks → proceeds to the merge exactly like a private repo would.
@@ -639,6 +645,28 @@ assert_merge_has "2869-1: merge pins the certified sha" "--match-head-commit pub
 assert_merge_has "2869-1: merge uses --squash" "--squash"
 assert_gh_has "2869-1: reads branch protection on the configured origin" "api repos/yotamleo/Himmel/branches/main/protection"
 assert_audit_has "2869-1: audit records the merge" "MERGED"
+
+# 2869-1b ([codex-1], CR round 1). Every other allow-path case above (2869-1,
+# 2869-3c) feeds the stub its PRE-JOINED "enforce_admins|contexts|checks"
+# string, so the script's own `--jq` filter never runs on the MERGE direction
+# at all — 2869-7 below is the only case that runs real JSON through the
+# real filter, and it is itself a refusal (null required_status_checks). A
+# filter mutated to reject every real response (e.g. contexts/checks length
+# forced to 0) would therefore leave the WHOLE suite green: it still refuses
+# 2869-7 "correctly" and never touches the pre-joined-string cases at all.
+# This case is the allow-direction twin of 2869-7: realistic GitHub-shaped
+# protection JSON (the actual `repos/.../branches/main/protection` response
+# shape, `strict` + a `contexts` array of real-looking check names) through
+# the script's OWN filter, asserting the result is one the gate ACCEPTS.
+if [ "$have_jq_2869" = "1" ]; then
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="jqok01" \
+        STUB_PROTECTION_JSON='{"enforce_admins":{"enabled":true},"required_status_checks":{"strict":true,"contexts":["lint","shell-unit (ubuntu-latest)","shellcheck"]}}' \
+        run_mog 0 "realistic protected-branch JSON through the real filter → merged"
+    assert_merge_has "2869-1b: merge pins the certified sha" "--match-head-commit jqok01"
+    assert_gh_has "2869-1b: reads branch protection on the configured origin" "api repos/yotamleo/Himmel/branches/main/protection"
+else
+    echo "  SKIP: jq not installed — realistic protected-branch-JSON allow case (HIMMEL-2869, [codex-1])"
+fi
 
 # 2869-2. Protection unreadable (404 / API failure) → refuse, no merge.
 STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
@@ -719,9 +747,10 @@ assert_audit_has "2869-6a: audits not-protected-premerge" "reason=not-protected-
 # response) must coalesce through the script's own `// []` filter to an empty
 # list, not slip past as "protected" — proven via REAL jq against synthetic
 # JSON, same technique as the STUB_DEFAULT_BRANCH_NULL cases further below.
-# jq availability is checked locally (the file's shared `have_jq` guard is
-# computed further down, after this block) rather than reusing that variable.
-have_jq_2869=0; command -v jq >/dev/null 2>&1 && have_jq_2869=1
+# The allow-direction twin of this refusal is 2869-1b above; both share the
+# ONE have_jq_2869 probe computed at the top of this HIMMEL-2869 block rather
+# than each probing separately (the file's own shared `have_jq` guard is
+# computed further down, after this block, so it isn't reused here either).
 if [ "$have_jq_2869" = "1" ]; then
     STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false \
         STUB_PROTECTION_JSON='{"enforce_admins":{"enabled":true},"required_status_checks":null}' \
