@@ -41,6 +41,17 @@ trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 HANDOVER_DIR="$TMPDIR_ROOT/handovers"
 mkdir -p "$HANDOVER_DIR"
 export HANDOVER_DIR
+
+# HIMMEL-2813: `acquire` persists the release token under XDG_RUNTIME_DIR,
+# so this suite MUST point that at a temp dir too -- otherwise every acquire
+# in every test writes into the operator's real /run/user/<uid>/ runtime dir.
+# Same hermeticity rule as HANDOVER_DIR above: never the real thing.
+XDG_RUNTIME_DIR="$TMPDIR_ROOT/xdg"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export XDG_RUNTIME_DIR
+QUEUE_LOCK_SESSION_SCOPE="test-queue-lock-suite"
+export QUEUE_LOCK_SESSION_SCOPE
 unset QUEUE_LOCK_TAKEOVER QUEUE_LOCK_TTL_SECONDS
 
 HO1="$HANDOVER_DIR/HIMMEL-856-test/next-session-1.md"
@@ -332,6 +343,12 @@ HO15="$HANDOVER_DIR/HIMMEL-856-test/next-session-15.md"
 : > "$HO15"
 LOCKDIR15="$HANDOVER_DIR/.locks/queue/HIMMEL-856-test__next-session-15.lock"
 bash "$LIB" acquire "$HO15" "session-t15" >/dev/null 2>&1
+# HIMMEL-2813: acquire now also PERSISTS the token, and a token-less
+# release legitimately recalls it. T15's contract is the one that did not
+# change -- with no token available ANYWHERE, release/heartbeat still
+# refuse rc=2 -- so drop the persisted copy first and assert exactly that.
+# (T56 covers the recall path, T61 the no-file refusal from the other side.)
+rm -f "$XDG_RUNTIME_DIR/himmel-queue-lock/"*
 err="$(bash "$LIB" release "$HO15" 2>&1 1>/dev/null)"
 rc=$?
 if [ "$rc" -eq 2 ] && [ -d "$LOCKDIR15" ]; then
@@ -344,6 +361,7 @@ if grepq "$err" 'session-t15' && grepq "$err" 'QUEUE_LOCK_FORCE_RELEASE'; then
 else
     fail "T15: refusal missing holder info / override hint: $err"
 fi
+rm -f "$XDG_RUNTIME_DIR/himmel-queue-lock/"*
 bash "$LIB" heartbeat "$HO15" >/dev/null 2>&1
 rc=$?
 if [ "$rc" -eq 2 ]; then
@@ -1694,6 +1712,296 @@ else
 fi
 rm -f "$X_WT_LOCKDIR/owner.json"
 rmdir "$X_WT_LOCKDIR" 2>/dev/null || true
+
+# --- T56-T64: per-session token persistence (HIMMEL-2813) ------------------
+# Two certifier legs lost their release token to a mid-leg autocompact on
+# 2026-09-07/08 and had to force-release, putting a routine wrap into
+# takeovers.log -- a file that is supposed to be the audit trail for genuine
+# takeovers. `acquire` now also writes the token to a per-user file, and a
+# token-less release/heartbeat reads it back. Every fixture below points
+# XDG_RUNTIME_DIR at a temp dir, so the real one is never touched.
+P_ROOT="$TMPDIR_ROOT/2813-root"
+mkdir -p "$P_ROOT/yotamleo/himmel"
+P_DOC="$P_ROOT/yotamleo/himmel/HIMMEL-2813-RESUME.md"
+: > "$P_DOC"
+P_LOCKDIR="$P_ROOT/.locks/queue/yotamleo__himmel__HIMMEL-2813-RESUME.lock"
+P_XDG="$TMPDIR_ROOT/2813-xdg"
+mkdir -p "$P_XDG"
+chmod 700 "$P_XDG"
+P_TOKDIR="$P_XDG/himmel-queue-lock"
+
+# p_ql <verb> [args...] -- the script with both temp roots in scope.
+p_ql() { XDG_RUNTIME_DIR="$P_XDG" HANDOVER_DIR="$P_ROOT" bash "$LIB" "$@"; }
+# p_token_file -- the single file under the token dir, or "" when empty.
+p_token_file() {
+    local f
+    for f in "$P_TOKDIR"/*; do
+        if [ -f "$f" ]; then printf '%s' "$f"; return 0; fi
+    done
+    return 1
+}
+
+# --- T56: acquire persists the token; a token-less release uses it ---------
+out="$(p_ql acquire "$P_DOC" "persist-a" 2>&1)"
+if grepq "$out" '^release-token: persist-a$' && [ -n "$(p_token_file)" ]; then
+    pass "T56: acquire persists the token to the per-session file"
+else
+    fail "T56: no token file after acquire (out=$out)"
+fi
+p56_file="$(p_token_file)"
+if [ "$(cat "$p56_file" 2>/dev/null)" = "persist-a" ]; then
+    pass "T56: the persisted file holds the SAME token acquire printed"
+else
+    fail "T56: persisted token mismatch (got '$(cat "$p56_file" 2>/dev/null)')"
+fi
+out="$(p_ql release "$P_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$P_LOCKDIR" ]; then
+    pass "T56: release with NO token on argv succeeds and releases the lock"
+else
+    fail "T56: token-less release failed (rc=$rc: $out)"
+fi
+if grepq "$out" "^queue-lock: token read from $P_TOKDIR/"; then
+    pass "T56: it SAYS on stderr which file the token came from"
+else
+    fail "T56: no 'token read from <path>' line: $out"
+fi
+if [ -z "$(p_token_file)" ]; then
+    pass "T56: the token file is removed on release"
+else
+    fail "T56: the token file survived the release ($(p_token_file))"
+fi
+
+# --- T57: the file is 0600 inside a 0700 dir ------------------------------
+# The token is a capability to release someone else's lock, and the /tmp
+# fallback below is world-writable, so the modes are load-bearing.
+p_ql acquire "$P_DOC" "persist-modes" >/dev/null 2>&1
+p57_file="$(p_token_file)"
+p57_dmode="$(stat -c '%a' "$P_TOKDIR" 2>/dev/null || stat -f '%Lp' "$P_TOKDIR" 2>/dev/null)"  # gnu-ok: GNU -c paired with BSD -f on this line
+p57_fmode="$(stat -c '%a' "$p57_file" 2>/dev/null || stat -f '%Lp' "$p57_file" 2>/dev/null)"  # gnu-ok: GNU -c paired with BSD -f on this line
+if [ "$p57_dmode" = "700" ] && [ "$p57_fmode" = "600" ]; then
+    pass "T57: token dir is 0700 and the token file is 0600"
+else
+    fail "T57: wrong modes (dir=$p57_dmode file=$p57_fmode)"
+fi
+
+# --- T58: an explicit argv token WINS over the file -----------------------
+# The persisted token is valid and sitting right there; a WRONG argv token
+# must still be refused rc=2, exactly as before HIMMEL-2813. This is what
+# makes the file a fallback rather than a bypass.
+out="$(p_ql release "$P_DOC" "not-the-holder" 2>&1)"
+rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" 'held by session=persist-modes'; then
+    pass "T58: a WRONG argv token is still refused rc=2 even with a valid token file present"
+else
+    fail "T58: expected rc=2 'held by session=persist-modes' (rc=$rc: $out)"
+fi
+if ! grepq "$out" 'token read from'; then
+    pass "T58: ...and the file was not even consulted (argv wins)"
+else
+    fail "T58: the file was consulted despite an argv token: $out"
+fi
+if [ -d "$P_LOCKDIR" ]; then
+    pass "T58: the lock is intact after the refusal"
+else
+    fail "T58: the refused release removed the lock"
+fi
+
+# --- T59: heartbeat recalls the token the same way ------------------------
+out="$(p_ql heartbeat "$P_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" '^queue-lock: token read from '; then
+    pass "T59: heartbeat with no argv token recalls the persisted one and says so"
+else
+    fail "T59: token-less heartbeat failed (rc=$rc: $out)"
+fi
+
+# --- T60: the happy path never touches takeovers.log ----------------------
+# The whole point of the ticket: a routine wrap must stop landing in the
+# file that is supposed to record genuine takeovers.
+if [ ! -f "$P_ROOT/.locks/queue/takeovers.log" ]; then
+    pass "T60: takeovers.log does not exist after acquire+heartbeat+token-less release"
+else
+    fail "T60: takeovers.log was written by the happy path: $(cat "$P_ROOT/.locks/queue/takeovers.log")"
+fi
+p_ql release "$P_DOC" >/dev/null 2>&1
+
+# --- T61: NO token file -> today's token-less refusal, unchanged ----------
+p_ql acquire "$P_DOC" "no-file-sess" >/dev/null 2>&1
+p61_file="$(p_token_file)"
+rm -f "$p61_file"
+out="$(p_ql release "$P_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" 'release requires the session token' \
+    && grepq "$out" 'QUEUE_LOCK_FORCE_RELEASE=1'; then
+    pass "T61: with no token file, the token-less refusal (rc=2 + override hint) is unchanged"
+else
+    fail "T61: expected the unchanged rc=2 refusal (rc=$rc: $out)"
+fi
+if [ -d "$P_LOCKDIR" ]; then
+    pass "T61: the lock is intact after that refusal"
+else
+    fail "T61: the refused release removed the lock"
+fi
+
+# --- T62: a STALE token file that does not match the holder --------------
+# Recalling it must change nothing about the outcome: the holder check still
+# refuses rc=2, it just names the file it tried.
+printf '%s\n' 'a-stale-token' > "$P_TOKDIR/$(basename "$p61_file")"
+out="$(p_ql release "$P_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" 'held by session=no-file-sess' && [ -d "$P_LOCKDIR" ]; then
+    pass "T62: a stale token file is recalled but still refused rc=2, lock intact"
+else
+    fail "T62: expected rc=2 'held by session=no-file-sess' with the lock intact (rc=$rc: $out)"
+fi
+
+# --- T63: force-release is unchanged and still logs to takeovers.log ------
+out="$(XDG_RUNTIME_DIR="$P_XDG" HANDOVER_DIR="$P_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 \
+    bash "$LIB" release "$P_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$P_LOCKDIR" ] \
+    && grepq "$(cat "$P_ROOT/.locks/queue/takeovers.log" 2>/dev/null)" 'FORCED RELEASE of session=no-file-sess'; then
+    pass "T63: force-release still releases and still logs the FORCED entry"
+else
+    fail "T63: force-release regressed (rc=$rc: $out)"
+fi
+if ! grepq "$out" 'token read from'; then
+    pass "T63: force-release never consults the token file (it needs no token)"
+else
+    fail "T63: force-release consulted the token file: $out"
+fi
+rm -f "$P_TOKDIR"/*
+
+# --- T64: a token dir that is NOT ours is refused, not used --------------
+# The /tmp fallback is world-writable. A dir another user pre-created there
+# would collect every token this host writes, so a dir whose mode is not
+# 0700 must be declined -- degrading to the pre-2813 argv-only behaviour
+# rather than leaking the token into it.
+P_XDG_BAD="$TMPDIR_ROOT/2813-xdg-bad"
+mkdir -p "$P_XDG_BAD/himmel-queue-lock"
+chmod 777 "$P_XDG_BAD/himmel-queue-lock"
+out="$(XDG_RUNTIME_DIR="$P_XDG_BAD" HANDOVER_DIR="$P_ROOT" \
+    bash "$LIB" acquire "$P_DOC" "bad-dir-sess" 2>&1)"
+rc=$?
+p64_written=0
+for f in "$P_XDG_BAD/himmel-queue-lock"/*; do
+    [ -f "$f" ] && p64_written=1
+done
+if [ "$rc" -eq 0 ] && grepq "$out" '^release-token: bad-dir-sess$' && [ "$p64_written" -eq 0 ]; then
+    pass "T64: a world-writable token dir is declined -- acquire still succeeds, no token written into it"
+else
+    fail "T64: token leaked into a 0777 dir, or acquire broke (rc=$rc written=$p64_written: $out)"
+fi
+out="$(XDG_RUNTIME_DIR="$P_XDG_BAD" HANDOVER_DIR="$P_ROOT" bash "$LIB" release "$P_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" 'release requires the session token'; then
+    pass "T64: ...and a token-less release there falls back to the unchanged rc=2 refusal"
+else
+    fail "T64: expected the unchanged rc=2 refusal from a declined token dir (rc=$rc: $out)"
+fi
+XDG_RUNTIME_DIR="$P_XDG_BAD" HANDOVER_DIR="$P_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 \
+    bash "$LIB" release "$P_DOC" >/dev/null 2>&1
+
+# --- T65: the token file is scoped to the SESSION, not the user -----------
+# CR round 1, codex-1 -- and a real regression, reproduced before it was
+# fixed: keyed on the handover path alone, ANY process running as this user
+# could issue a token-less release and be handed the holder's token, which
+# is exactly the hole C1 exists to close. himmel runs many concurrent legs
+# as one user, so this is the normal case here, not a corner one.
+S_ROOT="$TMPDIR_ROOT/2813-scope-root"
+mkdir -p "$S_ROOT/yotamleo/himmel"
+S_DOC="$S_ROOT/yotamleo/himmel/SCOPE-RESUME.md"
+: > "$S_DOC"
+S_LOCKDIR="$S_ROOT/.locks/queue/yotamleo__himmel__SCOPE-RESUME.lock"
+S_XDG="$TMPDIR_ROOT/2813-scope-xdg"
+mkdir -p "$S_XDG"
+chmod 700 "$S_XDG"
+
+# s_ql <scope> <verb> [args...] -- the script as a session with that scope.
+s_ql() {
+    local sc="$1"; shift
+    QUEUE_LOCK_SESSION_SCOPE="$sc" XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" \
+        bash "$LIB" "$@"
+}
+
+s_ql leg-A acquire "$S_DOC" "scoped-A" >/dev/null 2>&1
+out="$(s_ql leg-B release "$S_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 2 ] && [ -d "$S_LOCKDIR" ]; then
+    pass "T65: a DIFFERENT session cannot recall the holder's token -- refused rc=2, lock intact"
+else
+    fail "T65: another session released the holder's live lock (rc=$rc, lock=$([ -d "$S_LOCKDIR" ] && echo held || echo GONE): $out)"
+fi
+if ! grepq "$out" 'token read from'; then
+    pass "T65: ...and it was never handed a token file at all"
+else
+    fail "T65: the other session was handed a token: $out"
+fi
+out="$(s_ql leg-A release "$S_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 0 ] && [ ! -d "$S_LOCKDIR" ] && grepq "$out" '^queue-lock: token read from '; then
+    pass "T65: the ACQUIRING session still recalls its own token and releases"
+else
+    fail "T65: the acquiring session lost its own recall (rc=$rc: $out)"
+fi
+
+# --- T66: forget removes only OUR token, never a new holder's -------------
+# CR round 1, codex-2: the forget runs AFTER the lock dir is removed, so a
+# fresh acquire can land in between and persist its own token to the same
+# path. An unconditional delete threw that away.
+s_ql leg-A acquire "$S_DOC" "forget-mine" >/dev/null 2>&1
+s66_file=""
+for f in "$S_XDG/himmel-queue-lock"/*; do
+    [ -f "$f" ] && s66_file="$f"
+done
+# Stand in for "a new holder acquired between the rm and the forget" by
+# putting a different token in the file the releasing session will look at.
+printf '%s\n' 'a-newer-holders-token' > "$s66_file"
+# The token goes on ARGV here: the point under test is the FORGET step, so
+# the release itself must succeed. (Recalling the substituted token instead
+# would be refused by the holder check -- correct, but a different test.)
+s_ql leg-A release "$S_DOC" "forget-mine" >/dev/null 2>&1
+t66_rc=$?
+if [ "$t66_rc" -eq 0 ] && [ -f "$s66_file" ] \
+    && [ "$(cat "$s66_file" 2>/dev/null)" = "a-newer-holders-token" ]; then
+    pass "T66: forget leaves a token file that no longer holds OUR token untouched"
+else
+    fail "T66: the release (rc=$t66_rc) deleted a newer holder's token file"
+fi
+rm -f "$s66_file"
+
+# --- T67: no resolvable session scope -> the feature turns ITSELF off -----
+# The safe degradation is the pre-HIMMEL-2813 argv-only behaviour, never a
+# user-wide file. Emptying both scope sources is now sufficient: CR round 2
+# removed the POSIX-session-id fallback (it is shared across one terminal,
+# so it did not actually isolate sessions), which also removed the need for
+# a failing `ps` stub here.
+out="$(QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" \
+    XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" \
+    bash "$LIB" acquire "$S_DOC" "no-scope-sess" 2>&1)"
+rc=$?
+s67_written=0
+for f in "$S_XDG/himmel-queue-lock"/*; do
+    [ -f "$f" ] && s67_written=1
+done
+if [ "$rc" -eq 0 ] && grepq "$out" '^release-token: no-scope-sess$' && [ "$s67_written" -eq 0 ]; then
+    pass "T67: with no resolvable scope, acquire still succeeds and persists NOTHING"
+else
+    fail "T67: expected a clean acquire with no token written (rc=$rc written=$s67_written: $out)"
+fi
+out="$(QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" \
+    XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" \
+    bash "$LIB" release "$S_DOC" 2>&1)"
+rc=$?
+if [ "$rc" -eq 2 ] && grepq "$out" 'release requires the session token'; then
+    pass "T67: ...and a token-less release degrades to the unchanged rc=2 refusal"
+else
+    fail "T67: expected the pre-2813 rc=2 refusal (rc=$rc: $out)"
+fi
+QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" \
+    XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 \
+    bash "$LIB" release "$S_DOC" >/dev/null 2>&1
 
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
