@@ -326,13 +326,20 @@ cmd_new() {
     # refuse an existing target instead of overwriting it; on a collision
     # (either a real pre-existing doc or a losing race) this advances to the
     # next letter rather than failing.
-    local letter doc claimed=0
+    local letter doc create_error claimed=0
     set -C
     for letter in {A..Z}; do
         doc="$state_dir/${prefix}-nextleg-${date}${letter}-${name}.md"
-        if : 2>/dev/null > "$doc"; then
+        if create_error="$( { : > "$doc"; } 2>&1 )"; then
             claimed=1
             break
+        fi
+        # Only an existing document (or symlink reserved by another caller)
+        # is a collision. Other failures must keep their actual diagnostic.
+        if [ ! -f "$doc" ] && [ ! -L "$doc" ]; then
+            set +C
+            err "could not create console doc $doc: $create_error"
+            exit 1
         fi
     done
     set +C
@@ -469,7 +476,7 @@ cmd_next() {
     # HANDOFF sits beside the predecessor's OWN doc, not in $state_dir — a
     # --doc pointing outside $state_dir (a different bucket, a different
     # root entirely) must still get its HANDOFF written next to it.
-    local predecessor_dir predecessor_handoff predecessor_handoff_ref
+    local predecessor_dir predecessor_handoff predecessor_handoff_ref successor_doc_ref
     predecessor_dir="$(dirname "$predecessor_doc")"
     # Canonicalise: a RELATIVE --doc outside $state_dir would otherwise
     # leave predecessor_handoff_ref relative too, breaking the "absolute
@@ -488,8 +495,10 @@ cmd_next() {
     # and never find it.
     if [ "$predecessor_dir" = "$state_dir" ]; then
         predecessor_handoff_ref="$(basename "$predecessor_handoff")"
+        successor_doc_ref="$(basename "$doc")"
     else
         predecessor_handoff_ref="$predecessor_handoff"
+        successor_doc_ref="$doc"
     fi
     local fill_signal="$chain_dir/sig-$session"
     local log="$chain_dir/launch-$session.log"
@@ -570,7 +579,7 @@ cmd_next() {
             PREDECESSOR_LETTER "$predecessor_letter" \
             LETTER "$successor_letter" \
             PREDECESSOR "$predecessor_base" \
-            SUCCESSOR_DOC "$(basename "$doc")" \
+            SUCCESSOR_DOC "$successor_doc_ref" \
             REPO "$repo" \
             BUCKET "$bucket" \
             KIT "$kit"

@@ -31,6 +31,7 @@ QL="$REPO_REAL/scripts/handover/queue-lock.sh"
 # the EXIT trap is registered — an empty $tmp would otherwise make the trap
 # clean up the wrong thing.
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/console-test.XXXXXX")" || { echo "test-console: mktemp -d failed" >&2; exit 1; }
+tmp="$(cd "$tmp" && pwd -P)"
 trap 'rm -rf "$tmp"' EXIT
 
 fails=0
@@ -122,6 +123,14 @@ check "6b next --doc still writes the successor stub into its own state_dir" "$(
 check "6b next --doc writes the HANDOFF beside the predecessor" "$([ -f "$handoff6bSrc" ] && echo yes)" "yes"
 check "6b next --doc does not write the HANDOFF into the successor's state_dir" "$([ -f "$handoff6bWrong" ] && echo yes || echo no)" "no"
 check "6b successor stub names a resolvable (absolute) HANDOFF reference" "$(grep -cF "$handoff6bSrc" "$doc6bDst")" "1"
+# shellcheck disable=SC2016 # Match literal Markdown backticks, not command substitution.
+successor6b_ref="$(sed -n 's/^Run ACTION ZERO from `\([^`]*\)` unchanged.*/\1/p' "$handoff6bSrc")"
+check "6b HANDOFF names the absolute cross-bucket successor" "$successor6b_ref" "$doc6bDst"
+case "$successor6b_ref" in
+    /*) successor6b_path="$successor6b_ref" ;;
+    *) successor6b_path="$(dirname "$handoff6bSrc")/$successor6b_ref" ;;
+esac
+check "6b successor reference resolves from the HANDOFF directory" "$([ -f "$successor6b_path" ] && echo yes)" "yes"
 HANDOVER_DIR="$root" bash "$QL" release "$doc6bSrc" "$token6ba" >/dev/null 2>&1
 
 # --- 7: next --arm with a stub arm target ------------------------------
@@ -324,6 +333,34 @@ check "16 new advances past an already-claimed letter" "$([ -f "$racetest_docB" 
 sum_racetestA_after="$(cksum < "$racetest_docA")"
 check "16 the already-claimed doc is left untouched" "$sum_racetestA_before" "$sum_racetestA_after"
 HANDOVER_DIR="$root" bash "$QL" release "$racetest_docB" "$token16" >/dev/null 2>&1
+
+# --- 16b: exhaustion requires 26 real collisions, not arbitrary I/O errors.
+mkdir -p "$root/tester/exhausted"
+for letter16 in {A..Z}; do
+    printf 'claimed\n' > "$root/tester/exhausted/DEMO-nextleg-${today}${letter16}-console.md"
+done
+rc16b=0
+out16b="$(console new --bucket exhausted 2>&1)" || rc16b=$?
+check "16b all 26 claimed letters: exits 1" "$rc16b" "1"
+check "16b all 26 claimed letters: reports exhaustion" "$(printf '%s\n' "$out16b" | grep -c 'all 26 letters')" "1"
+
+# A directory at candidate A is EISDIR, not an existing console document.
+blocked16A="$root/tester/createerror/DEMO-nextleg-${today}A-console.md"
+mkdir -p "$blocked16A"
+rc16c=0
+out16c="$(LC_ALL=C console new --bucket createerror 2>&1)" || rc16c=$?
+check "16c non-collision at A: exits 1" "$rc16c" "1"
+check "16c non-collision at A: reports the underlying error" "$(printf '%s\n' "$out16c" | grep -ci 'is a directory')" "1"
+check "16c non-collision at A: never tries B" "$([ -e "$root/tester/createerror/DEMO-nextleg-${today}B-console.md" ] && echo yes || echo no)" "no"
+check "16c non-collision at A: does not report exhaustion" "$(printf '%s\n' "$out16c" | grep -c 'all 26 letters')" "0"
+
+# ENAMETOOLONG cannot be confused with any pre-existing candidate (even as root).
+long16_name="$(printf '%0260d' 0)"
+rc16d=0
+out16d="$(LC_ALL=C console new --bucket longname --name "$long16_name" 2>&1)" || rc16d=$?
+check "16d non-collision with no candidate: exits 1" "$rc16d" "1"
+check "16d non-collision with no candidate: reports the underlying error" "$(printf '%s\n' "$out16d" | grep -ci 'file name too long')" "1"
+check "16d non-collision with no candidate: does not report exhaustion" "$(printf '%s\n' "$out16d" | grep -c 'all 26 letters')" "0"
 
 # --- 17: chains differing only by --bucket get different signal/log paths
 # The session-name shape (<PREFIX>-nextleg-<date><letter>-<name>) is
