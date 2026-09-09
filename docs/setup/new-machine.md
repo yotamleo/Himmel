@@ -1536,8 +1536,9 @@ you ever want the per-turn review back.
 ### Install sequence
 
 ```bash
-# 1. obsidian-second-brain — manual clone (no marketplace)
-git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/plugins/obsidian-second-brain
+# 1. obsidian-second-brain — manual clone (no marketplace); Claude Code loads
+#    user skills from ~/.claude/skills/, not ~/.claude/plugins/ (HIMMEL-2891)
+git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/skills/obsidian-second-brain
 
 # 2. himmel marketplace (carries handover + obsidian-triage + claude-obsidian)
 # inside Claude Code:

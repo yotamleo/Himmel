@@ -393,7 +393,7 @@
       "scopes": ["user"],
       "profiles": ["luna", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "{homePath}/.claude/plugins/obsidian-second-brain/.git" },
+      "probe": { "type": "file-exists", "path": "{homePath}/.claude/skills/obsidian-second-brain/.git" },
       "removable": "full-offboard-only",
       "offboard": "advise"
     },
