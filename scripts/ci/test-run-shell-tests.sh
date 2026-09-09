@@ -2846,6 +2846,234 @@ fi
 rm -rf "$sb21f"
 
 # --------------------------------------------------------------------------
+# Case 22 (HIMMEL-2872) — --shard <i>/<n> partitions the run list.
+#
+# The shard split is what lets CI's shell-unit job fan out across a runner
+# matrix, so the property that has to hold is EXACTNESS, not "roughly even":
+# the union of shards 1..n must equal the unsharded run list and the shards
+# must be pairwise disjoint. Anything weaker silently drops suites off the
+# gate — the HIMMEL-1128 false-green class, reached through the parallelism
+# instead of through discovery.
+#
+# The split is taken AFTER SKIP_LIST/--skip-extra/tier/conditional/capability
+# filtering (22g pins that), so a host that skips a suite does not leave a
+# hole in one shard's share; and a shard that ends up running NOTHING is a
+# refusal, not a pass (22e) — except under the docs-only fast lane, where zero
+# is the whole corpus's honest answer (22f).
+# --------------------------------------------------------------------------
+echo "== Case 22 (HIMMEL-2872): --shard partitions the run list =="
+
+mk_shard_sandbox() {  # $1 = dir, $2 = count — test-s1.sh .. test-s<count>.sh
+  mkdir -p "$1"
+  local _i
+  for _i in $(seq 1 "$2"); do
+    cat > "$1/test-s${_i}.sh" <<'SHEOF'
+#!/usr/bin/env bash
+touch "${0%.sh}.sentinel"
+exit 0
+SHEOF
+    chmod +x "$1/test-s${_i}.sh"
+  done
+}
+
+# run_lines <output> — just the [RUN ] suite paths, one per line.
+run_lines() { grep -F '[RUN ] ' <<< "$1" | sed 's/^\[RUN \] //'; }
+
+# 22a — the union of --list --shard i/3 equals plain --list, pairwise disjoint.
+#
+# An unchecked mktemp -d here leaves the sandbox variable empty, and every
+# fixture write below then resolves against that empty path — the filesystem
+# root — instead of an isolated sandbox; fail (not a silent skip) is used so
+# a failed allocation reddens the suite rather than passing quietly.
+sb22a=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22a.XXXXXX") || { fail "22a: mktemp failed"; sb22a=""; }
+if [ -n "$sb22a" ]; then
+mk_shard_sandbox "$sb22a" 7
+full22a=$(run_lines "$(bash "$RUNNER" --list "$sb22a" 2>&1)")
+s122a=$(run_lines "$(bash "$RUNNER" --list --shard 1/3 "$sb22a" 2>&1)")
+s222a=$(run_lines "$(bash "$RUNNER" --list --shard 2/3 "$sb22a" 2>&1)")
+s322a=$(run_lines "$(bash "$RUNNER" --list --shard 3/3 "$sb22a" 2>&1)")
+union22a=$(printf '%s\n%s\n%s\n' "$s122a" "$s222a" "$s322a" | grep -v '^$' | sort)
+dupes22a=$(printf '%s\n%s\n%s\n' "$s122a" "$s222a" "$s322a" | grep -v '^$' | sort | uniq -d)
+if [ "$union22a" = "$(sort <<< "$full22a")" ] && [ -z "$dupes22a" ] \
+   && [ -n "$s122a" ] && [ -n "$s222a" ] && [ -n "$s322a" ]; then
+  pass "22a: shards 1..3 union to the full run list, pairwise disjoint, none empty"
+else
+  fail "22a: partition broken; full='$full22a' s1='$s122a' s2='$s222a' s3='$s322a' dupes='$dupes22a'"
+fi
+
+# 22b — deterministic: the same shard planned twice is byte-identical.
+again22b=$(run_lines "$(bash "$RUNNER" --list --shard 2/3 "$sb22a" 2>&1)")
+if [ "$s222a" = "$again22b" ]; then
+  pass "22b: --list --shard 2/3 is deterministic across invocations"
+else
+  fail "22b: shard 2/3 differed between runs; first='$s222a' second='$again22b'"
+fi
+
+# 22c — --shard 1/1 is inert: the same plan as no --shard at all.
+one22c=$(run_lines "$(bash "$RUNNER" --list --shard 1/1 "$sb22a" 2>&1)")
+if [ "$one22c" = "$full22a" ]; then
+  pass "22c: --shard 1/1 plans exactly the unsharded run list"
+else
+  fail "22c: --shard 1/1 diverged from the full plan; full='$full22a' got='$one22c'"
+fi
+rm -rf "$sb22a"
+fi
+
+# 22d — malformed values are REFUSED at rc 2 (the runner's "bad configuration
+# value" code, the same one an invalid SUITE_TIER_MODE takes), never silently
+# ignored: a typo'd shard spec that fell through to a full run would multiply
+# the CI bill by n and hide the misconfiguration behind a green. The three
+# oversized specs at the end are the RED control for the digit-length bound:
+# bash arithmetic wraps silently on 64-bit overflow (rc=0, no diagnostic), so
+# without that bound '1/18446744073709551618' converts to a valid-looking
+# '1/2' and quietly runs a partition nobody asked for.
+sb22d=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22d.XXXXXX") || { fail "22d: mktemp failed"; sb22d=""; }
+if [ -n "$sb22d" ]; then
+mk_shard_sandbox "$sb22d" 3
+for spec22d in '0/3' '4/3' 'abc' '1/0' '1/2/3' '/3' '1/' '-1/3' '1/-3' 'x/y' '' '3' \
+               '1/18446744073709551618' '1/99999999999999999999' '99999999999999999999/3'; do
+  out22d=$(bash "$RUNNER" --list --shard "$spec22d" "$sb22d" 2>&1); rc22d=$?
+  if [ "$rc22d" -eq 2 ] && grepq "$out22d" -F -- '--shard'; then
+    pass "22d: --shard '$spec22d' -> refused rc 2"
+  else
+    fail "22d: --shard '$spec22d' -> expected rc 2 with a --shard message, got rc=$rc22d; out: $out22d"
+  fi
+done
+# ...and a missing argument entirely.
+out22d2=$(bash "$RUNNER" --list "$sb22d" --shard 2>&1); rc22d2=$?
+if [ "$rc22d2" -eq 2 ] && grepq "$out22d2" -F -- '--shard'; then
+  pass "22d: --shard with no argument -> refused rc 2"
+else
+  fail "22d: --shard with no argument -> expected rc 2, got rc=$rc22d2; out: $out22d2"
+fi
+rm -rf "$sb22d"
+fi
+
+# 22e — a shard that is assigned NOTHING is a refusal, not a pass. This is the
+# n > run-list-length case, which is the shape a mis-sized CI matrix takes.
+sb22e=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22e.XXXXXX") || { fail "22e: mktemp failed"; sb22e=""; }
+if [ -n "$sb22e" ]; then
+mk_shard_sandbox "$sb22e" 2
+out22e=$(bash "$RUNNER" --shard 3/3 "$sb22e" 2>&1); rc22e=$?
+if [ "$rc22e" -eq 1 ] && grepq "$out22e" -F 'shard 3/3 ran 0 suites'; then
+  pass "22e: an empty shard refuses (exit 1) and names itself"
+else
+  fail "22e: expected exit 1 naming shard 3/3; rc=$rc22e out: $out22e"
+fi
+# The control: the two shards that DO get a suite still pass.
+out22e1=$(bash "$RUNNER" --shard 1/3 "$sb22e" 2>&1); rc22e1=$?
+out22e2=$(bash "$RUNNER" --shard 2/3 "$sb22e" 2>&1); rc22e2=$?
+if [ "$rc22e1" -eq 0 ] && [ "$rc22e2" -eq 0 ]; then
+  pass "22e: the non-empty shards of the same run still pass"
+else
+  fail "22e: expected shards 1/3 and 2/3 to pass; rc1=$rc22e1 rc2=$rc22e2; out1: $out22e1 out2: $out22e2"
+fi
+rm -rf "$sb22e"
+fi
+
+# 22f — the docs-only fast lane still reports a genuine pass PER SHARD. Every
+# shard legitimately runs zero suites there, so 22e's refusal must not fire.
+#
+# This case builds its OWN fake `git` rather than reaching for Case 15's
+# $fakebin15: that fixture is torn down at the end of Case 15, so a borrowed
+# PATH entry here contributes NOTHING, `command -v git` resolves to the real
+# system git, and the runner diffs the ACTUAL worktree instead of
+# $GIT_FAKE_DIFF — a "docs-only" case that quietly stops being docs-only the
+# moment the checkout has an uncommitted change. Fixtures stay local to the
+# case that reads them, exactly as this file's header says.
+sb22f=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22f.XXXXXX") || { fail "22f: mktemp failed"; sb22f=""; }
+fakebin22f=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22f-fakebin.XXXXXX") || { fail "22f: mktemp failed (fake git fixture)"; fakebin22f=""; }
+if [ -n "$sb22f" ] && [ -n "$fakebin22f" ]; then
+mk_docs_sandbox "$sb22f"
+cat > "$fakebin22f/git" <<'SHEOF'
+#!/usr/bin/env bash
+case "$1" in
+  rev-parse)
+    _ref=
+    for _a in "$@"; do _ref="$_a"; done
+    case "$_ref" in
+      -*) exit 1 ;;
+      *) printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n'; exit 0 ;;
+    esac
+    ;;
+  diff)
+    [ -f "${GIT_FAKE_DIFF:-}" ] && cat "${GIT_FAKE_DIFF:-}"
+    ;;
+  ls-files)
+    [ -f "${GIT_FAKE_UNTRACKED:-}" ] && cat "${GIT_FAKE_UNTRACKED:-}"
+    ;;
+esac
+exit 0
+SHEOF
+chmod +x "$fakebin22f/git"
+diff22f="$sb22f/diff.txt"; printf 'docs/foo.md\nREADME.md\n' > "$diff22f"
+ok22f=1
+for i22f in 1 2 3; do
+  out22f=$(GIT_FAKE_DIFF="$diff22f" PATH="$fakebin22f:$PATH" \
+    bash "$RUNNER" "$sb22f" --changed-since HEAD --shard "$i22f/3" 2>&1); rc22f=$?
+  if [ "$rc22f" -ne 0 ] || ! grepq "$out22f" -F "docs-only diff — 0 shell suites needed"; then
+    ok22f=0
+    fail "22f: shard $i22f/3 on a docs-only diff -> expected the fast-lane pass; rc=$rc22f out: $out22f"
+  fi
+done
+[ "$ok22f" -eq 1 ] && pass "22f: every shard reports the docs-only fast-lane pass, not the empty-shard refusal"
+rm -rf "$sb22f" "$fakebin22f"
+fi
+
+# 22g — the split is taken AFTER the skip filters, not over raw discovery.
+# Five run-eligible suites (s2..s6) across 2 shards must land 3/2. The
+# discriminator is deliberate: a PRE-filter split of s1..s6 gives shard 1
+# {s1,s3,s5} -> {s3,s5} once s1 is skipped away, while the POST-filter split
+# this ticket specifies gives shard 1 {s2,s4,s6}.
+sb22g=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22g.XXXXXX") || { fail "22g: mktemp failed"; sb22g=""; }
+if [ -n "$sb22g" ]; then
+mk_shard_sandbox "$sb22g" 6
+g122g=$(run_lines "$(bash "$RUNNER" --list --skip-extra test-s1.sh --shard 1/2 "$sb22g" 2>&1)")
+g222g=$(run_lines "$(bash "$RUNNER" --list --skip-extra test-s1.sh --shard 2/2 "$sb22g" 2>&1)")
+want1_22g=$(printf '%s/test-s2.sh\n%s/test-s4.sh\n%s/test-s6.sh' "$sb22g" "$sb22g" "$sb22g")
+want2_22g=$(printf '%s/test-s3.sh\n%s/test-s5.sh' "$sb22g" "$sb22g")
+if [ "$g122g" = "$want1_22g" ] && [ "$g222g" = "$want2_22g" ]; then
+  pass "22g: the shard split is over the filtered run list, not raw discovery"
+else
+  fail "22g: expected shard1={s2,s4,s6} shard2={s3,s5} (post-filter); got shard1='$g122g' shard2='$g222g'"
+fi
+# The skipped suite is still REPORTED by every shard — a shard's log must not
+# look like the suite does not exist.
+skip22g=$(bash "$RUNNER" --list --skip-extra test-s1.sh --shard 2/2 "$sb22g" 2>&1)
+if grepq "$skip22g" -F 'test-s1.sh' && grepq "$skip22g" -F '[SKIP]'; then
+  pass "22g: a skipped suite is still reported on a shard that was not assigned it"
+else
+  fail "22g: expected a [SKIP] line for test-s1.sh on shard 2/2; out: $skip22g"
+fi
+rm -rf "$sb22g"
+fi
+
+# 22h — EXECUTION, not just planning: a shard runs only its own suites, and a
+# failure inside one shard reddens that shard alone.
+sb22h=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22h.XXXXXX") || { fail "22h: mktemp failed"; sb22h=""; }
+if [ -n "$sb22h" ]; then
+mk_shard_sandbox "$sb22h" 4
+cat > "$sb22h/test-s2.sh" <<'SHEOF'
+#!/usr/bin/env bash
+touch "${0%.sh}.sentinel"
+exit 1
+SHEOF
+chmod +x "$sb22h/test-s2.sh"
+# Sorted run list is s1,s2,s3,s4 -> shard 1/2 = {s1,s3}, shard 2/2 = {s2,s4}.
+out22h1=$(bash "$RUNNER" --shard 1/2 "$sb22h" 2>&1); rc22h1=$?
+ran22h1=$([ -f "$sb22h/test-s2.sentinel" ] && echo yes || echo no)
+rm -f "$sb22h"/*.sentinel
+out22h2=$(bash "$RUNNER" --shard 2/2 "$sb22h" 2>&1); rc22h2=$?
+if [ "$rc22h1" -eq 0 ] && [ "$ran22h1" = no ] && [ "$rc22h2" -eq 1 ] \
+   && [ -f "$sb22h/test-s2.sentinel" ] && [ ! -f "$sb22h/test-s1.sentinel" ]; then
+  pass "22h: each shard executes only its own suites; a red suite reddens its shard alone"
+else
+  fail "22h: expected shard1 green without running s2, shard2 red running s2; rc1=$rc22h1 s2-in-shard1=$ran22h1 rc2=$rc22h2; out1: $out22h1 out2: $out22h2"
+fi
+rm -rf "$sb22h"
+fi
+
+# --------------------------------------------------------------------------
 # Final tally
 # --------------------------------------------------------------------------
 echo

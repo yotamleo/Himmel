@@ -43,6 +43,7 @@
 #                                                        # SUITE_REPORT_PR=N; HIMMEL-2383) —
 #                                                        # never default-on, never posted
 #                                                        # without one of these set
+#   --shard <i>/<n>      run only slice <i> of <n> of the final run list
 #
 #   Flags may appear before or after the scan-root.
 #   scan-root defaults to "scripts" when omitted.
@@ -61,8 +62,9 @@
 #             (a resolved-to-nothing scan root is a misconfiguration, not a
 #             pass — HIMMEL-1128), OR the run budget expired with suites still
 #             unrun; 2 — REFUSED, either another full-suite run already holds
-#             the machine lock (HIMMEL-1338) or SUITE_TIER_MODE was set to
-#             something other than fast/extended/all (HIMMEL-2120);
+#             the machine lock (HIMMEL-1338), SUITE_TIER_MODE was set to
+#             something other than fast/extended/all (HIMMEL-2120), or --shard
+#             was given a malformed <i>/<n> value (HIMMEL-2872);
 #             3 — ABORTED, the scan root vanished or was replaced under the
 #             live run (HIMMEL-2517); 4 — ABORTED, an rc=127 storm means
 #             almost nothing here could execute (HIMMEL-2517); 5 — EXPIRED,
@@ -2405,6 +2407,11 @@ suite_lock_release() {
 # --------------------------------------------------------------------------
 list_only=0
 scan=""
+# Shard selection (HIMMEL-2872). Flag-only, no env default: the CI workflow is
+# the only caller and an ambient SUITE_SHARD would be one more way for a stray
+# export to silently narrow an unrelated run's plan.
+shard_spec=""
+shard_given=0
 # OPT-IN conditional filter (HIMMEL-1589). Env is the default; the flag overrides.
 changed_since="${SUITE_CHANGED_SINCE:-}"
 # OPT-IN after-report PR comment (HIMMEL-2383). Env is the default; the flag
@@ -2450,6 +2457,15 @@ while [ "$#" -gt 0 ]; do
       report_pr="$2"
       shift 2
       ;;
+    --shard)
+      if [ "$#" -lt 2 ]; then
+        echo "run-shell-tests.sh: --shard requires an argument of the form <i>/<n>" >&2
+        exit 2
+      fi
+      shard_spec="$2"
+      shard_given=1
+      shift 2
+      ;;
     -*)
       echo "run-shell-tests.sh: unknown flag: $1" >&2
       exit 1
@@ -2479,6 +2495,54 @@ case "$report_pr" in
     fi
     ;;
 esac
+
+# Resolve --shard (HIMMEL-2872). <i>/<n> selects one slice of the FINAL run
+# list so CI can fan this job across n runners behind one aggregating check.
+#
+# REFUSED (rc 2, this runner's bad-configuration-value code — the same one an
+# invalid SUITE_TIER_MODE takes) rather than ignored: a typo'd spec that fell
+# through to a full run would multiply the CI bill by n while every shard
+# reported green over the same 466 suites, hiding the misconfiguration behind
+# a pass. $shard_given, not `[ -n "$shard_spec" ]`, so `--shard ''` is a
+# refusal too and not a silent no-op.
+shard_total=0     # 0 = sharding off, every suite runs
+shard_offset=0    # 0-based form of <i>, compared against the run-list index
+if [ "$shard_given" -eq 1 ]; then
+  _shard_bad=0
+  case "$shard_spec" in
+    */*/*) _shard_bad=1 ;;   # more than one separator
+    */*)   ;;                # the only accepted shape
+    *)     _shard_bad=1 ;;   # no separator at all
+  esac
+  _shard_i="${shard_spec%%/*}"
+  _shard_n="${shard_spec#*/}"
+  # Digits only — no sign, no whitespace, nothing empty. The `10#` below is
+  # what makes a leading zero safe: bare $((08)) is a base-8 literal and would
+  # kill the run with a bash arithmetic error instead of this readable refusal.
+  case "$_shard_i" in ''|*[!0-9]*) _shard_bad=1 ;; esac
+  case "$_shard_n" in ''|*[!0-9]*) _shard_bad=1 ;; esac
+  # Bound the digit-string LENGTH before $(( )) converts it. Bash arithmetic
+  # is 64-bit and wraps SILENTLY on overflow (rc=0, no diagnostic), so a
+  # 20-digit <n> becomes a small positive number that then PASSES the range
+  # test below and selects a different partition — the run reports green over
+  # a split nobody asked for, which is precisely the silent misconfiguration
+  # this refusal exists to catch. Ten or more digits is refused outright: that
+  # is far below the wrap point and absurdly above any real shard count.
+  case "$_shard_i" in ??????????*) _shard_bad=1 ;; esac
+  case "$_shard_n" in ??????????*) _shard_bad=1 ;; esac
+  if [ "$_shard_bad" -eq 0 ]; then
+    shard_total=$((10#$_shard_n))
+    shard_offset=$((10#$_shard_i - 1))
+    if [ "$shard_total" -lt 1 ] || [ "$shard_offset" -lt 0 ] || \
+       [ "$shard_offset" -ge "$shard_total" ]; then
+      _shard_bad=1
+    fi
+  fi
+  if [ "$_shard_bad" -eq 1 ]; then
+    printf "run-shell-tests.sh: --shard must be <i>/<n> with 1 <= i <= n and n >= 1, got '%s'\n" "$shard_spec" >&2
+    exit 2
+  fi
+fi
 
 # Apply default scan root after parsing so a leading --list doesn't collide.
 scan="${scan%/}"      # strip any trailing slash so the relpath prefix-strip works
@@ -2785,6 +2849,10 @@ if [ "$list_only" -eq 0 ]; then
 fi
 
 pass=0 fail=0 skip=0 ran=0
+# Counts run-eligible suites (post every skip filter) for the --shard split
+# below; advances for every one of them regardless of which shard claims it
+# (HIMMEL-2872).
+run_index=0
 # HIMMEL-2517 — how many failures were rc=127 (command or path not found).
 rc127=0
 failed_suites=""
@@ -2887,6 +2955,10 @@ if [ "$docs_only_skip_active" -eq 1 ]; then
   plan_narrowed=1
   plan_narrowed_why="${plan_narrowed_why}docs-only fast lane, "
 fi
+if [ "$shard_total" -gt 0 ]; then
+  plan_narrowed=1
+  plan_narrowed_why="${plan_narrowed_why}--shard ${shard_spec}, "
+fi
 plan_narrowed_why="${plan_narrowed_why%, }"
 
 # fd 3, not stdin. With `done < "$suites_file"` the loop BODY inherits the
@@ -2964,6 +3036,31 @@ while IFS= read -r suite <&3; do
     skip=$((skip + 1))
     printf '[SKIP] %s — capability: %s not on PATH — %s\n' "$suite" "$_cap_tool" "$_cap_reason"
     continue
+  fi
+
+  # Shard filter (HIMMEL-2872) — LAST, after every filter above, so the split
+  # is over the FINAL run list. Splitting raw discovery instead would let a
+  # host's SKIP_LIST/tier/capability skips fall unevenly across shards, so one
+  # runner carries the corpus while five idle.
+  #
+  # Round-robin on the run-list index, not a contiguous block. Discovery is
+  # `sort`ed and every filter above is deterministic, so shard i selects the
+  # same suites on every runner and the shards are an EXACT partition: their
+  # union is the unsharded run list and they are pairwise disjoint. Anything
+  # weaker drops suites off the gate while all n shards report green — the
+  # HIMMEL-1128 false-green class, reached through the parallelism instead of
+  # through discovery. Round-robin also balances by construction here: 466
+  # suites, a 52s maximum, and most of them under 5s.
+  #
+  # $run_index counts run-ELIGIBLE suites and advances for EVERY one of them,
+  # whether or not this shard claims it. That shared counter is precisely what
+  # makes the partition exact — a per-shard counter would not.
+  #
+  # A duration-ledger bin-pack is the follow-up; round-robin is v1.
+  if [ "$shard_total" -gt 0 ]; then
+    _shard_mine=$(( run_index % shard_total == shard_offset ))
+    run_index=$((run_index + 1))
+    [ "$_shard_mine" -eq 1 ] || continue
   fi
 
   if [ "$list_only" -eq 1 ]; then
@@ -3397,6 +3494,11 @@ if [ "$ran" -eq 0 ]; then
   if [ "$docs_only_skip_active" -eq 1 ]; then
     echo "OK: docs-only diff — 0 shell suites needed ($skip skipped)"
     exit 0
+  fi
+  if [ "$shard_total" -gt 0 ]; then
+    printf 'ERROR: shard %s ran 0 suites under scan root "%s" — refusing to report green. The run list held %s suite(s) across %s shard(s), so this shard was assigned nothing: either the shard count exceeds the run list, or every suite it was assigned was skipped. Both are misconfigurations, not a pass.\n' \
+      "$shard_spec" "$scan" "$run_index" "$shard_total" >&2
+    exit 1
   fi
   printf 'ERROR: no suites ran under scan root "%s" (all discovered suites were skipped) — refusing to report green.\n' "$scan" >&2
   exit 1
