@@ -125,6 +125,29 @@ out5="$(cd "$repo" && bash "$SCRIPT" --diff "HEAD~1...HEAD" 2>&1)"
 not_contains "diff5: bin.js entry point paired with any changed test/ dir file" "$out5" "scripts/himmelctl/bin.js"
 contains "diff5 RED control: a non-bin source in the same dir still needs its own pair" "$out5" "scripts/himmelctl/wizard.js"
 
+# Change 5 (HIMMEL-2864 finding 1): the containment check
+# (tDir !== dir && !tDir.startsWith(dir + "/")) must special-case dir === "."
+# for a truly ROOT-level bin.js entry point -- path.posix.dirname of a root
+# file is ".", so a test under test/ (dirname "test") satisfies neither
+# tDir !== dir NOR tDir.startsWith("./") without that case, wrongly flagging
+# it as unpaired. The shipped test-coverage-gap class's globs all require a
+# "scripts/" or "marketplace/" prefix, so this path is unreachable through
+# the default JSON (dormant per the ticket) -- exercised here with a minimal
+# custom class whose globs allow a bare "bin.js".
+cat > "$tmp/root-bin-kf.json" <<'KFJSON'
+{"classes":[{"id":"root-bin-gap","kind":"checklist","title":"t","source":"s","globs":["bin.js"],"detector":{"type":"no-test-change"},"learning_match":null,"canonical":"c","coverage":"c","prompt":false,"evidence":{}}]}
+KFJSON
+rootrepo="$tmp/rootrepo"; mkdir -p "$rootrepo/test"
+( cd "$rootrepo" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false ) || { echo "FAIL - root-bin fixture init"; exit 1; }
+printf '#!/usr/bin/env node\nconsole.log("root bin v1");\n' > "$rootrepo/bin.js"
+printf '#!/usr/bin/env bash\necho v1\n' > "$rootrepo/test/test-root.sh"
+( cd "$rootrepo" && git add -A && git commit -qm base ) || { echo "FAIL - root-bin fixture base commit"; exit 1; }
+printf '#!/usr/bin/env node\nconsole.log("root bin v2");\n' > "$rootrepo/bin.js"
+printf '#!/usr/bin/env bash\necho v2\n' > "$rootrepo/test/test-root.sh"
+( cd "$rootrepo" && git add -A && git commit -qm change ) || { echo "FAIL - root-bin fixture change commit"; exit 1; }
+out6="$(cd "$rootrepo" && KNOWN_FINDINGS_FILE="$tmp/root-bin-kf.json" bash "$SCRIPT" --diff "HEAD~1...HEAD" 2>&1)"
+not_contains "diff6: a ROOT-level bin.js (dir \".\") is paired by any changed test/ dir file" "$out6" "bin.js"
+
 # Empty / clean diff
 out3="$(cd "$repo" && bash "$SCRIPT" --diff "HEAD...HEAD" 2>&1)"; rc3=$?
 check "clean diff exits 0" "$rc3" "0"

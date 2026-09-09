@@ -8,14 +8,23 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const dirs = new Set();
+let exitHandlerRegistered = false;
+
 export function makeTmpDir(prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
-  process.on('exit', () => {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* best-effort cleanup */
-    }
-  });
+  dirs.add(dir);
+  if (!exitHandlerRegistered) {
+    exitHandlerRegistered = true;
+    process.on('exit', () => {
+      for (const d of dirs) {
+        try {
+          rmSync(d, { recursive: true, force: true });
+        } catch {
+          /* best-effort cleanup */
+        }
+      }
+    });
+  }
   return dir;
 }
