@@ -60,6 +60,17 @@ run_check() {
   OUT=$(CLAUDE_PROJECT_DIR="$R" bash "$SCRIPT" "$@" 2>&1) || RC=$?
 }
 
+# run_check_from <dir> <relative-doc>... — like run_check, but with the
+# script's own cwd pinned to <dir> rather than wherever the suite runs from.
+# HIMMEL-2847's glob-expansion case needs this: the bug only shows up when the
+# invoking cwd happens to contain files a glob-shaped code span would match.
+run_check_from() {
+  _dir=$1
+  shift
+  RC=0
+  OUT=$(cd "$_dir" && CLAUDE_PROJECT_DIR="$R" bash "$SCRIPT" "$@" 2>&1) || RC=$?
+}
+
 expect() {
   if [ "$RC" -eq "$1" ]; then
     ok
@@ -279,6 +290,43 @@ The install profile presets live in `docs/setup/profiles/`.
 DOC
 run_check doc.md
 expect 0 "reference: a trailing slash is stripped before the existence test"
+
+# HIMMEL-2847: a code span can spell an assignment (`KNOB=value`), not a bare
+# identifier. The existence test must ask about the KNOB, never about the
+# literal "KNOB=value" string, which appears nowhere by construction.
+setup_repo || exit 1
+# shellcheck disable=SC2016  # single-quoted on purpose: this is fixture source
+# text, not an expression to expand in the test's own shell.
+echo ': "${TICKET_ID_REQUIRED:=1}"' >> "$R/scripts/hooks/env-defaults.sh"
+git -C "$R" add scripts/hooks/env-defaults.sh
+git -C "$R" commit -q -m knob-default
+write_doc doc.md <<'DOC'
+Set the install profile knob `TICKET_ID_REQUIRED=0` to opt out.
+DOC
+run_check doc.md
+expect 0 "HIMMEL-2847: KNOB=value is split at '=' before the existence test"
+
+# HIMMEL-2847 (CodeRabbit #585 item 5): `for tok in $tokens` is an unquoted
+# split — a code span holding a glob must be judged as the LITERAL string
+# regardless of whether the invoking cwd happens to contain files the glob
+# would match. Before the fix, running from $R (which does) lets the glob
+# expand to real, tracked filenames and pass; that is the false green.
+setup_repo || exit 1
+mkdir -p "$R/docs/setup"
+echo x > "$R/docs/setup/alpha.md"
+echo y > "$R/docs/setup/beta.md"
+git -C "$R" add docs/setup/alpha.md docs/setup/beta.md
+git -C "$R" commit -q -m setup-mds
+write_doc doc.md <<'DOC'
+Any file under `docs/setup/*.md` documents one release channel.
+DOC
+run_check_from "$R" doc.md
+expect 1 "HIMMEL-2847: glob code span judged as literal even when cwd matches it"
+expect_says "does not exist in the tree" "HIMMEL-2847: glob is not silently expanded into real files"
+
+run_check_from "$HERE" doc.md
+expect 1 "HIMMEL-2847: glob code span judged as literal when cwd does not match it"
+expect_says "does not exist in the tree" "HIMMEL-2847: same verdict regardless of cwd"
 
 # --------------------------------------------------------------- multi-doc
 

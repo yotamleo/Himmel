@@ -417,7 +417,16 @@ check_home_path() {
     # case-insensitive (public #581 CodeRabbit round 2, false-positive fix) --
     # every letter of "users" is folded, not just the first, so forms like
     # C:/USERS/... are also caught (HIMMEL-2850, /pr-check panel round 1).
-    local re='(^|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([A-Za-z0-9_.${}%<>-]+( [A-Za-z0-9_.${}%<>-]+)*)([/\\]|\\\\)|([A-Za-z0-9_.${}%<>-]+)($|[^A-Za-z0-9_.${}%<>-]))'
+    # CR (public #585, HIMMEL-2854 item 6): a file:// URI's extra slash
+    # (file:///home/...) sits right where the leading-context alternative
+    # would need to match "/" itself -- which the negated class always
+    # excludes -- so neither alternative can ever match there. Two literal
+    # "file://" alternatives (anchored at start-of-string, or after a
+    # non-word char) let the scheme itself stand in for that boundary
+    # without loosening the negated class for anything else (so a bare
+    # "http://home/..." -- "home" as an ordinary hostname label, not a
+    # /home/ path -- still does not match).
+    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([A-Za-z0-9_.${}%<>-]+( [A-Za-z0-9_.${}%<>-]+)*)([/\\]|\\\\)|([A-Za-z0-9_.${}%<>-]+)($|[^A-Za-z0-9_.${}%<>-]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.
@@ -545,6 +554,64 @@ scan_line() {
     HITS=1
 }
 
+# unquote_diff_path <token> -- reverses the two things git's "+++ b/<path>"
+# header can do to a path that a plain ${f#b/} strip does not undo (HIMMEL-2831
+# #2): a bare disambiguating TAB appended after an otherwise-unquoted path
+# that contains a space, and full C-style quoting ("b/name" -> a double-quoted,
+# backslash-escaped string) for a path containing a ", \, or control
+# character. core.quotePath=false (set on the git diff invocation below) only
+# exempts bytes >0x80 from quoting -- ", \, and control characters are ALWAYS
+# quoted regardless of that setting, so this reversal is still needed for
+# those. Decodes every NAMED C-style escape git's quote_c_style() can emit
+# (\\ \" \t \n \r \a \b \v \f); an octal \NNN escape for a control byte with
+# no named form (e.g. NUL, ESC, DEL) is not decoded -- deferred, tracked on
+# HIMMEL-2831 alongside item #1, since such raw bytes are not representable
+# in a POSIX filename or are otherwise vanishingly unlikely (/pr-check panel
+# round 2, codex-1).
+unquote_diff_path() {
+    local s="$1"
+    # $'...' ANSI-C quoting is only expanded as a standalone word -- inside
+    # a double-quoted `${var//pattern/replacement}` (the shape every
+    # substitution below needs, since the assignment itself is
+    # double-quoted) a literal $'\n' etc. on the REPLACEMENT side is taken
+    # as five literal characters, not a real control byte (verified against
+    # bash 5.3.15; /pr-check panel round 1 follow-up). Pre-computing each
+    # control byte into its own unquoted assignment first, then referencing
+    # it as a plain "$var" below, sidesteps that: a plain variable
+    # expansion works the same regardless of the surrounding quote context.
+    local tab=$'\t' nl=$'\n' cr=$'\r' bell=$'\a' bs=$'\b' vt=$'\v' ff=$'\f' esc=$'\x01'
+    case "$s" in
+        *"$tab") s="${s%"$tab"}" ;;
+    esac
+    case "$s" in
+        \"*\")
+            s="${s#\"}"
+            s="${s%\"}"
+            # Order matters: turn literal backslashes into a placeholder
+            # first so the later \" / \t / \n / ... passes don't themselves
+            # get re-escaped, then restore the placeholder as a bare
+            # backslash.
+            s="${s//\\\\/$esc}"
+            s="${s//\\\"/\"}"
+            s="${s//\\t/$tab}"
+            s="${s//\\n/$nl}"
+            s="${s//\\r/$cr}"
+            s="${s//\\a/$bell}"
+            s="${s//\\b/$bs}"
+            s="${s//\\v/$vt}"
+            s="${s//\\f/$ff}"
+            s="${s//$esc/\\}"
+            ;;
+    esac
+    # A trailing sentinel, stripped by the caller: `$(...)` command
+    # substitution unconditionally strips ALL trailing newlines from its
+    # output, so a decoded `\n`-escaped path (e.g. a name ending in a
+    # literal newline byte) would otherwise lose it here and could
+    # wrongly inherit a different file's exact-file ignore exemption
+    # (/pr-check panel round 1, codex-1).
+    printf '%s.' "$s"
+}
+
 # ---- --staged: parse `git diff --cached -U0`, scan ADDED lines only ----
 run_staged() {
     local diff_line current_file="" skip_current=0 newline=0 in_hunk=0
@@ -577,7 +644,11 @@ run_staged() {
     # instead of being silently skipped — --tree's separate `grep -Iq`
     # binary skip is unaffected, since that check reads the actual bytes on
     # disk rather than trusting an attribute).
-    if ! diff_output="$(git -c diff.outputIndicatorNew=+ -c diff.outputIndicatorOld=- -c diff.outputIndicatorContext=' ' diff --no-color --no-ext-diff --no-textconv --no-renames --cached --text -U0 --)"; then
+    # core.quotePath=false: paired with unquote_diff_path() above -- this
+    # stops git from octal-escaping non-ASCII path bytes, leaving the rarer
+    # ", \, and control-character case (which git quotes regardless of this
+    # setting) as the only one unquote_diff_path() still has to reverse.
+    if ! diff_output="$(git -c core.quotePath=false -c diff.outputIndicatorNew=+ -c diff.outputIndicatorOld=- -c diff.outputIndicatorContext=' ' diff --no-color --no-ext-diff --no-textconv --no-renames --cached --text -U0 --)"; then
         echo "leak-classes: git diff --cached failed" >&2
         exit 2
     fi
@@ -594,7 +665,9 @@ run_staged() {
                 # "++ " (diff's own "+" marker plus a literal "++ ") -- not a
                 # header, and must still be scanned.
                 if [ "$in_hunk" -eq 0 ]; then
-                    local f="${diff_line#+++ }"
+                    local f
+                    f="$(unquote_diff_path "${diff_line#+++ }")"
+                    f="${f%.}"
                     case "$f" in
                         "b/"*) current_file="${f#b/}" ;;
                         "/dev/null") current_file="" ;;

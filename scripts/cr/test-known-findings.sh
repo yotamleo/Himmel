@@ -105,6 +105,26 @@ mkdir -p "$repo/scripts/testdata/kf" && cp "$FIX/change1.sh" "$repo/scripts/test
 out4="$(cd "$repo" && bash "$SCRIPT" --diff "HEAD~1...HEAD" 2>&1)"
 contains "diff3: testdata bait is skipped" "$out4" "no known class matches"
 
+# Change 4 (HIMMEL-2827): a `bin.js` CLI entry point has no natural like-named
+# test file — it's the dispatcher a whole test/ dir exercises (real case:
+# scripts/himmelctl/bin.js paired with scripts/himmelctl/test/test-wizard-questions.sh,
+# PR #2273). Any changed test under the entry point's own dir or a subdirectory
+# counts, without a stem-name pair. `wizard.js` in the same dir is a RED
+# control: it is NOT named `bin`, so it still needs its own exact-name pair
+# and must stay flagged even though the same test/ dir file changed.
+mkdir -p "$repo/scripts/himmelctl/test"
+printf '#!/usr/bin/env node\nconsole.log("bin v1");\n' > "$repo/scripts/himmelctl/bin.js"
+printf '#!/usr/bin/env node\nconsole.log("wizard v1");\n' > "$repo/scripts/himmelctl/wizard.js"
+printf '#!/usr/bin/env bash\necho v1\n' > "$repo/scripts/himmelctl/test/test-wizard-questions.sh"
+( cd "$repo" && git add -A && git commit -qm himmelctl-base ) || { echo "FAIL - fixture himmelctl base commit"; exit 1; }
+printf '#!/usr/bin/env node\nconsole.log("bin v2");\n' > "$repo/scripts/himmelctl/bin.js"
+printf '#!/usr/bin/env node\nconsole.log("wizard v2");\n' > "$repo/scripts/himmelctl/wizard.js"
+printf '#!/usr/bin/env bash\necho v2\n' > "$repo/scripts/himmelctl/test/test-wizard-questions.sh"
+( cd "$repo" && git add -A && git commit -qm change4 ) || { echo "FAIL - fixture change4 commit"; exit 1; }
+out5="$(cd "$repo" && bash "$SCRIPT" --diff "HEAD~1...HEAD" 2>&1)"
+not_contains "diff5: bin.js entry point paired with any changed test/ dir file" "$out5" "scripts/himmelctl/bin.js"
+contains "diff5 RED control: a non-bin source in the same dir still needs its own pair" "$out5" "scripts/himmelctl/wizard.js"
+
 # Empty / clean diff
 out3="$(cd "$repo" && bash "$SCRIPT" --diff "HEAD...HEAD" 2>&1)"; rc3=$?
 check "clean diff exits 0" "$rc3" "0"

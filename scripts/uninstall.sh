@@ -679,7 +679,7 @@ resolve_native_hooks_dir() {
 # (0 = matched, 1 = no match, anything else = a scan error) the same way
 # repo_has_framework_hooks already does for its own grep calls.)
 remove_native_gate_hooks() {
-  local hooks_dir f found=0 rc=0 grep_rc
+  local hooks_dir f found=0 rc=0 grep_rc payload_dir hooks_path_configured
   hooks_dir="$(resolve_native_hooks_dir)"
   if [ -d "$hooks_dir" ]; then
     if [ ! -r "$hooks_dir" ] || [ ! -x "$hooks_dir" ]; then
@@ -715,6 +715,36 @@ remove_native_gate_hooks() {
           rc=1
         fi
       done
+      # HIMMEL-2843: adopt.sh's install_native_hooks also drops a shared
+      # fallback copy of scripts/hooks at <hooks_dir>/himmel-payload for the
+      # dispatchers above to source — but ONLY when core.hooksPath is unset
+      # (adopt.sh's own hooks_path_configured gate: when core.hooksPath IS
+      # configured, adopt.sh sets payload_dir="" and never writes there,
+      # since a configured hooksPath can point at a directory shared with
+      # other repos/tools). Removal must mirror that exact gate: with
+      # core.hooksPath configured, a same-named himmel-payload under it was
+      # never ours to begin with, and deleting it risks destroying something
+      # unrelated (CodeRabbit #2288, scripts/uninstall.sh:723).
+      hooks_path_configured=0
+      if command -v git >/dev/null 2>&1 && git -C "$HOOKS_REPO_ROOT" config --get core.hooksPath >/dev/null 2>&1; then
+        hooks_path_configured=1
+      fi
+      if [ "$hooks_path_configured" -eq 0 ]; then
+        payload_dir="$hooks_dir/himmel-payload"
+        if [ -L "$payload_dir" ]; then
+          echo "  ERROR: himmel-payload is a symlink, refusing to remove: $payload_dir" >&2
+          rc=1
+        elif [ -d "$payload_dir" ]; then
+          if [ "$DRY_RUN" -eq 1 ]; then
+            echo "  DRY: would remove native payload: $payload_dir"
+          elif rm -rf -- "$payload_dir"; then
+            echo "  removed native payload: $payload_dir"
+          else
+            echo "  ERROR: could not remove native payload: $payload_dir" >&2
+            rc=1
+          fi
+        fi
+      fi
     fi
   fi
   if [ "$found" -eq 0 ] && [ "$rc" -eq 0 ]; then
@@ -1134,6 +1164,76 @@ if [ "$HALTED" -eq 1 ]; then
   STEPS_INCOMPLETE+=("[5/8] git hooks: skipped — halted after an earlier failure")
 elif [ "$SKIP_HOOKS" -eq 1 ]; then
   echo "  kept (--skip-hooks)."
+elif command -v git >/dev/null 2>&1 && ! _hooks_git_probe=$(LC_ALL=C git -C "$HOOKS_REPO_ROOT" rev-parse --is-inside-work-tree 2>&1); then
+  # HIMMEL-2854: a `--scope user` offboard run from a plain (non-git) $PWD has
+  # no repo-local hooks to remove — the native-gate scan and every
+  # `pre-commit uninstall` call below assume a git work tree and otherwise
+  # fail_step (and HALT every later step) for a directory that was never a
+  # git repo to begin with. But `rev-parse` also fails non-zero for a repo
+  # git refuses to trust (safe.directory dubious-ownership) or one whose
+  # metadata it could not read — those ARE git work trees that may still
+  # carry installed hooks. git's "not a git repository" wording is identical
+  # whether `.git` is genuinely absent or present-but-broken (e.g. a missing
+  # HEAD), so string-matching that text cannot tell them apart (codex-1,
+  # round 3) — check for a `.git` entry instead. A single check at
+  # HOOKS_REPO_ROOT is not enough either (codex-1, round 4): HOOKS_REPO_ROOT
+  # can itself be a SUBDIRECTORY of the real repo root (dubious-ownership
+  # rejects rev-parse the same way from a subdirectory), where `.git` lives
+  # only at the ancestor. Walk up, mirroring git's own repo-discovery search,
+  # so only a confirmed absence of `.git` anywhere in the ancestor chain
+  # takes the clean skip.
+  #
+  # HIMMEL-2859 (codex-1 round 6): a relative HOOKS_REPO_ROOT reaches
+  # dirname's textual fixed point (".") without ever visiting the real
+  # absolute ancestors above $PWD — resolve to an absolute physical path
+  # first; an unresolvable start (dir missing, or inaccessible) is never a
+  # clean skip.
+  # codex-1 (panel round 1): a relative HOOKS_REPO_ROOT is subject to CDPATH
+  # lookup, which can make `cd` print its resolved destination to stdout and
+  # contaminate the captured path — clear it for this cd only (not a special
+  # builtin, so the assignment does not persist past the command).
+  if _hooks_probe_dir="$(CDPATH='' cd -- "$HOOKS_REPO_ROOT" 2>/dev/null && pwd -P)" && [ -n "$_hooks_probe_dir" ]; then
+    # HIMMEL-2857 (codex-1 round 5): `[ -e ]` can't tell "confirmed absent"
+    # apart from "inspection failed" — a permission-denied ancestor (stat
+    # fails) or a dangling `.git` symlink (target absent) both read as
+    # absence and could walk past a real repo. Classify each level: (a)
+    # `.git` present → found; (b) `.git` a dangling symlink → found but
+    # unresolvable; (c) the directory itself unreadable/unsearchable →
+    # unresolvable. Only a chain where every level is inspectable and `.git`
+    # is confirmed absent may continue to the next ancestor.
+    _hooks_found_git=0
+    _hooks_unresolved_reason=""
+    while :; do
+      if [ -e "$_hooks_probe_dir/.git" ]; then
+        _hooks_found_git=1
+        break
+      elif [ -L "$_hooks_probe_dir/.git" ]; then
+        _hooks_found_git=1
+        _hooks_unresolved_reason=" (a dangling .git symlink at $_hooks_probe_dir/.git)"
+        break
+      elif ! [ -r "$_hooks_probe_dir" ] || ! [ -x "$_hooks_probe_dir" ]; then
+        _hooks_found_git=1
+        _hooks_unresolved_reason=" (an inaccessible ancestor directory: $_hooks_probe_dir)"
+        break
+      fi
+      _hooks_probe_parent="$(dirname "$_hooks_probe_dir")"
+      # Stop at any root spelling: "/", ".", and Git-for-Windows "C:/" —
+      # dirname never reaches "/" for a drive-letter root (it settles at a
+      # fixed point instead), so a bare `!= "/"` check spins forever (CodeRabbit).
+      [ "$_hooks_probe_parent" != "$_hooks_probe_dir" ] || break
+      _hooks_probe_dir="$_hooks_probe_parent"
+    done
+  else
+    _hooks_found_git=1
+    _hooks_unresolved_reason=" (HOOKS_REPO_ROOT could not be resolved to an absolute path: $HOOKS_REPO_ROOT)"
+  fi
+  if [ "$_hooks_found_git" -eq 0 ]; then
+    echo "  skipped: $HOOKS_REPO_ROOT is not a git work tree — no repo-local hooks to remove (run from the adopted project to remove its hooks)"
+  else
+    echo "  ERROR: could not confirm whether $HOOKS_REPO_ROOT is a git work tree — installed hooks cannot be ruled out.$_hooks_unresolved_reason" >&2
+    echo "  git said: $_hooks_git_probe" >&2
+    fail_step "[5/8] git hooks: hooks-repo git status unresolved"
+  fi
 else
   # HIMMEL-2839: native gates (HIMMEL-2771) live outside the pre-commit
   # framework — remove them independent of whether pre-commit resolves below.
@@ -1145,8 +1245,8 @@ else
     if [ "$_rc" -eq 0 ]; then
       report_unresolved "[5/8] git hooks" pre-commit
     elif [ "$_rc" -eq 2 ]; then
-      echo "  ERROR: cannot determine whether this repo carries framework hooks — the hooks directory did not resolve (git unavailable, or \`.git\` is a file and the rev-parse failed)." >&2
-      echo "  Re-run from a login shell (bash -l) with git on PATH." >&2
+      echo "  ERROR: cannot determine whether this repo carries framework hooks — the hooks directory did not resolve." >&2
+      echo "  Put git on PATH and re-run." >&2
       fail_step "[5/8] git hooks: hook location unresolved — installed framework hooks cannot be ruled out"
     else
       note_step "\`pre-commit\` not found and this repo carries no framework hooks — nothing to uninstall"

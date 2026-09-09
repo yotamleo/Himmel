@@ -6,8 +6,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BASH_BIN } from './lib/resolve-bash.mjs';
@@ -16,7 +16,7 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const DISPATCH = join(TEST_DIR, '..', 'bench', 'dispatch-luna.sh');
 
 function makeFixtureTaskDir(promptText) {
-  const taskDir = mkdtempSync(join(tmpdir(), 'bench-dispatch-luna-task-'));
+  const taskDir = makeTmpDir('bench-dispatch-luna-task-');
   mkdirSync(join(taskDir, 'input'), { recursive: true });
   writeFileSync(join(taskDir, 'input', 'a.txt'), 'hello\n');
   writeFileSync(join(taskDir, 'prompt.md'), promptText);
@@ -25,7 +25,7 @@ function makeFixtureTaskDir(promptText) {
 
 test('dispatch-luna.sh --dry-run prints the launcher argv, env, and cwd without launching anything', () => {
   const taskDir = makeFixtureTaskDir('Do the T7 task exactly as described.\n');
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-dispatch-luna-scratch-'));
+  const scratchRoot = makeTmpDir('bench-dispatch-luna-scratch-');
   const out = execFileSync(BASH_BIN, [DISPATCH, taskDir, 'T7-luna-1', '--dry-run'], {
     encoding: 'utf8',
     env: { ...process.env, BENCH_SCRATCH_ROOT: scratchRoot },
@@ -42,7 +42,7 @@ test('dispatch-luna.sh --dry-run prints the launcher argv, env, and cwd without 
 
 test('dispatch-luna.sh --dry-run honors an explicit --effort override', () => {
   const taskDir = makeFixtureTaskDir('Task text.\n');
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-dispatch-luna-scratch2-'));
+  const scratchRoot = makeTmpDir('bench-dispatch-luna-scratch2-');
   const out = execFileSync(BASH_BIN, [DISPATCH, taskDir, 'T7-luna-1', '--dry-run', '--effort', 'medium'], {
     encoding: 'utf8',
     env: { ...process.env, BENCH_SCRATCH_ROOT: scratchRoot },
@@ -51,9 +51,9 @@ test('dispatch-luna.sh --dry-run honors an explicit --effort override', () => {
 });
 
 test('dispatch-luna.sh refuses when prompt.md is missing', () => {
-  const taskDir = mkdtempSync(join(tmpdir(), 'bench-dispatch-luna-noprompt-'));
+  const taskDir = makeTmpDir('bench-dispatch-luna-noprompt-');
   mkdirSync(join(taskDir, 'input'), { recursive: true });
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-dispatch-luna-scratch3-'));
+  const scratchRoot = makeTmpDir('bench-dispatch-luna-scratch3-');
   assert.throws(() =>
     execFileSync(BASH_BIN, [DISPATCH, taskDir, 'T7-luna-1', '--dry-run'], {
       encoding: 'utf8',

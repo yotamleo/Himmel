@@ -2,8 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -110,7 +110,7 @@ test('CLI: preflight REFUSES (nonzero exit) when codex weekly breaches', () => {
 });
 
 test('CLI: snapshot writes a {codex,claude} JSON reading and delta applies the stale rule', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'bench-bank-snapshot-cli-'));
+  const dir = makeTmpDir('bench-bank-snapshot-cli-');
   const preOut = bankStatusLine('claudex', 'funded', 'measured weekly used=10% free=90%');
   const preFile = join(dir, 'pre.json');
   execFileSync('node', [CORE, 'snapshot', '--out', preFile], { input: preOut, encoding: 'utf8' });

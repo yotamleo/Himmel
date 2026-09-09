@@ -7,8 +7,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BASH_BIN } from './lib/resolve-bash.mjs';
@@ -37,7 +37,7 @@ function codexBankCacheFile(bankDir, usedPct) {
 }
 
 function baseEnv(extra) {
-  const bankDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-banks-'));
+  const bankDir = makeTmpDir('bench-run-batch-banks-');
   const codexCache = codexBankCacheFile(bankDir, 5);
   const claudeCache = join(bankDir, 'claude.json');
   const resetsAt = new Date(Date.now() + 3600_000).toISOString();
@@ -56,7 +56,7 @@ function baseEnv(extra) {
 }
 
 test('run-batch.sh matrix emits every task x cell x rep run-id', () => {
-  const tasksDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-tasks-'));
+  const tasksDir = makeTmpDir('bench-run-batch-tasks-');
   makeTask(tasksDir, 'T1', 'do T1\n');
   makeTask(tasksDir, 'T2', 'do T2\n');
   const out = execFileSync(BASH_BIN, [RUN_BATCH, 'matrix', '--tasks-dir', tasksDir, '--reps', '2'], { encoding: 'utf8' });
@@ -65,13 +65,13 @@ test('run-batch.sh matrix emits every task x cell x rep run-id', () => {
 });
 
 test('dispatch-luna: a run-id that fails --retry-cap times lands error-harness-final and the batch continues', () => {
-  const tasksDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-retry-tasks-'));
+  const tasksDir = makeTmpDir('bench-run-batch-retry-tasks-');
   makeTask(tasksDir, 'TA', 'always fails\n');
   makeTask(tasksDir, 'TB', 'always succeeds\n');
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-retry-runs-'));
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-run-batch-retry-scratch-'));
-  const stateDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-retry-state-'));
-  const configDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-retry-config-'));
+  const runsDir = makeTmpDir('bench-run-batch-retry-runs-');
+  const scratchRoot = makeTmpDir('bench-run-batch-retry-scratch-');
+  const stateDir = makeTmpDir('bench-run-batch-retry-state-');
+  const configDir = makeTmpDir('bench-run-batch-retry-config-');
   writeFileSync(join(configDir, 'TA-luna-1'), 'always-fail');
   // TB-luna-1 has no config file -> the fake launcher always succeeds for it.
 
@@ -100,12 +100,12 @@ test('dispatch-luna: a run-id that fails --retry-cap times lands error-harness-f
 });
 
 test('dispatch-luna: resumes by run-id — an already-complete manifest is never re-dispatched', () => {
-  const tasksDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-resume-tasks-'));
+  const tasksDir = makeTmpDir('bench-run-batch-resume-tasks-');
   makeTask(tasksDir, 'TR', 'resume test\n');
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-resume-runs-'));
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-run-batch-resume-scratch-'));
-  const stateDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-resume-state-'));
-  const configDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-resume-config-'));
+  const runsDir = makeTmpDir('bench-run-batch-resume-runs-');
+  const scratchRoot = makeTmpDir('bench-run-batch-resume-scratch-');
+  const stateDir = makeTmpDir('bench-run-batch-resume-state-');
+  const configDir = makeTmpDir('bench-run-batch-resume-config-');
 
   const env = baseEnv({
     BENCH_SCRATCH_ROOT: scratchRoot,
@@ -130,15 +130,15 @@ test('dispatch-luna: resumes by run-id — an already-complete manifest is never
 });
 
 test('dispatch-luna: the bank check runs before the first paid attempt', () => {
-  const tasksDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-bank-tasks-'));
+  const tasksDir = makeTmpDir('bench-run-batch-bank-tasks-');
   makeTask(tasksDir, 'B1', 'do B1\n');
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-bank-runs-'));
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-run-batch-bank-scratch-'));
-  const stateDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-bank-state-'));
-  const configDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-bank-config-'));
-  // mkdtempSync, not a bare join(): writeFileSync into a directory that was
+  const runsDir = makeTmpDir('bench-run-batch-bank-runs-');
+  const scratchRoot = makeTmpDir('bench-run-batch-bank-scratch-');
+  const stateDir = makeTmpDir('bench-run-batch-bank-state-');
+  const configDir = makeTmpDir('bench-run-batch-bank-config-');
+  // makeTmpDir is used here too, not a bare join(): writeFileSync into a directory that was
   // never created is an ENOENT, not a fixture.
-  const bankCache = codexBankCacheFile(mkdtempSync(join(tmpdir(), 'bench-bank-breach-')), 95); // codex weekly 95% >= 80% refuse threshold
+  const bankCache = codexBankCacheFile(makeTmpDir('bench-bank-breach-'), 95); // codex weekly 95% >= 80% refuse threshold
 
   const env = baseEnv({
     BENCH_SCRATCH_ROOT: scratchRoot,
@@ -164,14 +164,14 @@ test('dispatch-luna: a mid-batch bank breach aborts, and a healthy re-run comple
   // completed ones. The old single-invocation shape (bank breached from the
   // start, --bank-check-every 3) is unreachable now the check fires before
   // the FIRST paid attempt, so the breach is staged between invocations.
-  const tasksDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-abort-tasks-'));
+  const tasksDir = makeTmpDir('bench-run-batch-abort-tasks-');
   makeTask(tasksDir, 'R1', 'do R1\n');
   makeTask(tasksDir, 'R2', 'do R2\n');
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-abort-runs-'));
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-run-batch-abort-scratch-'));
-  const stateDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-abort-state-'));
-  const configDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-abort-config-'));
-  const bankDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-abort-banks-'));
+  const runsDir = makeTmpDir('bench-run-batch-abort-runs-');
+  const scratchRoot = makeTmpDir('bench-run-batch-abort-scratch-');
+  const stateDir = makeTmpDir('bench-run-batch-abort-state-');
+  const configDir = makeTmpDir('bench-run-batch-abort-config-');
+  const bankDir = makeTmpDir('bench-run-batch-abort-banks-');
   const healthyCache = codexBankCacheFile(bankDir, 5);
   const breachedCache = codexBankCacheFile(bankDir, 95);
 
@@ -208,9 +208,9 @@ test('dispatch-luna: a mid-batch bank breach aborts, and a healthy re-run comple
 });
 
 test('ingest-haiku writes a manifest for a manually-executed haiku run', () => {
-  const tasksDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-ingest-tasks-'));
+  const tasksDir = makeTmpDir('bench-run-batch-ingest-tasks-');
   makeTask(tasksDir, 'TH', 'haiku task\n');
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-ingest-runs-'));
+  const runsDir = makeTmpDir('bench-run-batch-ingest-runs-');
 
   // Deliberately NOT a POSIX-absolute-looking value (no leading '/'): Git
   // Bash auto-rewrites an argv value shaped like /tmp/x into a Windows path
@@ -236,9 +236,9 @@ test('ingest-haiku writes a manifest for a manually-executed haiku run', () => {
 });
 
 test('emit-manual-queue lists pending haiku run-ids with their literal prompt text', () => {
-  const tasksDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-queue-tasks-'));
+  const tasksDir = makeTmpDir('bench-run-batch-queue-tasks-');
   makeTask(tasksDir, 'TQ', 'THE LITERAL PROMPT TEXT\n');
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-run-batch-queue-runs-'));
+  const runsDir = makeTmpDir('bench-run-batch-queue-runs-');
   const out = execFileSync(BASH_BIN, [
     RUN_BATCH, 'emit-manual-queue', '--tasks-dir', tasksDir, '--runs-dir', runsDir, '--reps', '1',
   ], { encoding: 'utf8' });

@@ -150,9 +150,21 @@ if (MODE === "diff") {
       const tests = changed.filter(f => isTestFile(f) && files[f].added.length > 0);
       const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       for (const f of scoped.filter(x => !isTestFile(x) && files[x].added.length > 0)) {  // a pure deletion needs no new test (r10 codex-3)
-        const stem = esc(baseName(f).replace(/\.[^.]+$/, "")), dir = path.posix.dirname(f);
+        const base = baseName(f).replace(/\.[^.]+$/, ""), dir = path.posix.dirname(f);
+        const stem = esc(base);
         const pair = new RegExp(`^(test[-_]${stem}|${stem}[._]test)\\.[A-Za-z0-9]+$`);
-        if (!tests.some(t => pair.test(baseName(t)) && (path.posix.dirname(t) === dir || path.posix.dirname(t).startsWith(dir + "/")))) where.push(f);
+        // A `bin.*` CLI entry point has no natural like-named test file --
+        // it is the dispatcher a whole test/ dir exercises, not a `test-bin.*` unit
+        // (HIMMEL-2827: scripts/himmelctl/bin.js paired with
+        // scripts/himmelctl/test/test-wizard-questions.sh). Any changed test
+        // under the entry point own dir or a subdirectory counts, no
+        // stem-name pair required; every other stem still needs its exact pair.
+        const isEntryPoint = base === "bin";
+        if (!tests.some(t => {
+          const tDir = path.posix.dirname(t);
+          if (tDir !== dir && !tDir.startsWith(dir + "/")) return false;
+          return isEntryPoint || pair.test(baseName(t));
+        })) where.push(f);
       }
     } else if (d.type === "removed-flag-in-docs") {
       // flag → set of source stems it was removed from. A doc counts only when it

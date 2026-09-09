@@ -7,8 +7,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BASH_BIN } from './lib/resolve-bash.mjs';
@@ -26,7 +26,7 @@ function runBash(script, cwd) {
 }
 
 function makeFixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'bench-verify-common-'));
+  const dir = makeTmpDir('bench-verify-common-');
   const original = join(dir, 'original');
   const working = join(dir, 'working');
   mkdirSync(original, { recursive: true });
@@ -77,7 +77,7 @@ test('assert_only_paths_changed PASSES on a no-op (identical trees)', () => {
 });
 
 test('assert_no_hits passes with zero matches and fails when the pattern is found', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'bench-verify-common-nohits-'));
+  const dir = makeTmpDir('bench-verify-common-nohits-');
   writeFileSync(join(dir, 'clean.txt'), 'nothing interesting here\n');
   const script = `. "${LIB.replace(/\\/g, '/')}" && assert_no_hits "forbidden-pattern" .`;
   const ok = runBash(script, dir);
@@ -89,7 +89,7 @@ test('assert_no_hits passes with zero matches and fails when the pattern is foun
 });
 
 test('assert_bytes_equal passes on identical files and fails on a mismatch', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'bench-verify-common-bytes-'));
+  const dir = makeTmpDir('bench-verify-common-bytes-');
   writeFileSync(join(dir, 'x.bin'), 'same-bytes');
   writeFileSync(join(dir, 'y.bin'), 'same-bytes');
   writeFileSync(join(dir, 'z.bin'), 'different-bytes');
@@ -100,7 +100,7 @@ test('assert_bytes_equal passes on identical files and fails on a mismatch', () 
 });
 
 test('assert_json_parses passes on valid JSON and fails on invalid JSON', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'bench-verify-common-json-'));
+  const dir = makeTmpDir('bench-verify-common-json-');
   writeFileSync(join(dir, 'good.json'), '{"a":1}');
   writeFileSync(join(dir, 'bad.json'), '{not json');
   const okScript = `. "${LIB.replace(/\\/g, '/')}" && assert_json_parses good.json`;

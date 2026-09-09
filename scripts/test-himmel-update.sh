@@ -570,12 +570,20 @@ out=$(HIMMELCTL_CACHE_DIR="$PROFILE_DIR" HIMMEL_UPDATE_CHANNEL=stable bash "$CHE
 assert_contains "env overrides profile: channel=stable wins" "channel:  stable" "$out"
 
 # ─── Test 16: --check never mutates ──────────────────────────────────────────
+# HIMMEL-2827 (codex-3, PR #2273 round 3): the tag must land on a LATER
+# commit than the reset target, or HEAD ends up ON the tag (up-to-date)
+# instead of behind it, and the "even when behind" scenario this test
+# claims to cover never actually runs — same INIT_SHA-then-tag-then-reset
+# shape as Test 10.
 echo "Test 16: channel --check never moves HEAD, even when behind"
 make_repo_channel
+BEHIND_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD)
+channel_commit "work before release"
 channel_tag_here "v0.1.0"
 channel_commit "post-release change"
-BEHIND_SHA=$(git -C "$CHECKOUT_DIR" rev-parse HEAD^)
 git -C "$CHECKOUT_DIR" reset --quiet --hard "$BEHIND_SHA"
+out=$(HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
+assert_contains "channel --check behind: fixture actually reports behind" "behind stable v0.1.0 (at" "$out"
 HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check >/dev/null 2>&1 || true
 HIMMEL_UPDATE_CHANNEL=stable bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check >/dev/null 2>&1 || true
 assert_eq "channel --check: HEAD unchanged after two runs" "$BEHIND_SHA" "$(git -C "$CHECKOUT_DIR" rev-parse HEAD)"

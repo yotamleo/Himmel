@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
-import fs, { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync, rmSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import fs, { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync, rmSync, chmodSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 import { install as installStatusData, statusDetail, sanitizedGitEnv, findPackOffset, readObject, readHeadBlob, applyDelta, readHeadOid } from './guardrail-block.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +23,7 @@ const NODE = process.execPath;
 // writeHookStubs() stubbing the wrapper/script files so their baked paths
 // resolve. The deadBash negative test still uses its own nonexistent path.
 function makeBashStub() {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-bash-stub-'));
+  const dir = makeTmpDir('gblock-bash-stub-');
   const stub = join(dir, process.platform === 'win32' ? 'bash.exe' : 'bash');
   writeFileSync(stub, '#!/bin/sh\nexit 0\n');
   chmodSync(stub, 0o755);
@@ -54,7 +54,7 @@ const GUARDS = [
 ];
 
 function work() {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-'));
+  const dir = makeTmpDir('gblock-');
   const repo = join(dir, 'himmel');
   mkdirSync(join(repo, 'scripts', 'hooks'), { recursive: true });
   return { dir, repo, settings: join(dir, 'settings.json') };
@@ -1020,7 +1020,7 @@ function buildPackedRepo(repo) {
 // repo; the suite skips if git or sha256 is unavailable.
 function sha256GitAvailable() {
   if (!gitAvailable()) return false;
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-sha256-probe-'));
+  const dir = makeTmpDir('gblock-sha256-probe-');
   try {
     execFileSync('git', ['init', '-q', '--object-format=sha256'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
     return true;
@@ -1341,7 +1341,7 @@ test('findPackOffset: a non-monotonic fanout window (hi > total) returns null wi
 // REF_DELTA onto its OWN oid — a direct self-cycle git would never emit.
 
 function buildCycleRepo() {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-cycle-'));
+  const dir = makeTmpDir('gblock-cycle-');
   const commonDir = join(dir, 'git');
   const packDir = join(commonDir, 'objects', 'pack');
   mkdirSync(packDir, { recursive: true });
@@ -1578,7 +1578,7 @@ function gitObjectId(type, body) {
 // `swapOffsets` — to the OTHER blob's offset. Entries are sorted by oid bytes
 // (idx binary search) and the fanout is the true cumulative first-byte count.
 function buildTwoBlobPack(swapOffsets) {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-oid-'));
+  const dir = makeTmpDir('gblock-oid-');
   const commonDir = join(dir, 'git');
   const packDir = join(commonDir, 'objects', 'pack');
   mkdirSync(packDir, { recursive: true });
@@ -1647,7 +1647,7 @@ const HEAD_SHA1 = '0123456789abcdef0123456789abcdef01234567';
 const HEAD_SHA256 = '0123456789abcdef'.repeat(4); // 64 hex chars
 
 function buildHeadFixture({ head, looseRef, packedRef } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-head-'));
+  const dir = makeTmpDir('gblock-head-');
   const gitDir = join(dir, 'git');
   mkdirSync(gitDir, { recursive: true });
   writeFileSync(join(gitDir, 'HEAD'), head);
@@ -1898,7 +1898,7 @@ function commitBody(treeOid) {
 // contrast is what makes these tests non-vacuous (they fail against the unfixed
 // per-oid-width code, which would report the mixed DB as healthy).
 function buildMixedFormatRepo({ commitAlgo }) {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-mixed-'));
+  const dir = makeTmpDir('gblock-mixed-');
   const gitDir = join(dir, '.git');
   const commonDir = gitDir;
   mkdirSync(join(commonDir, 'objects'), { recursive: true });
@@ -1916,7 +1916,7 @@ function buildMixedFormatRepo({ commitAlgo }) {
 }
 
 test('readObject: rejects an oid whose byte width disagrees with the pinned repo width (HIMMEL-1472 R3)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-pin-'));
+  const dir = makeTmpDir('gblock-pin-');
   dropOnExit(dir);
   const commonDir = join(dir, '.git');
   mkdirSync(join(commonDir, 'objects'), { recursive: true });
@@ -1969,7 +1969,7 @@ test('readHeadBlob: a sha256 commit naming a 40-hex (sha1) tree degrades — mir
 // the pin rejects only MIXED formats, not valid same-format lookups (guards
 // against an over-broad pin silently degrading every healthy install).
 test('readHeadBlob: a consistent single-format (sha1) repo still resolves — no false degrade from the pin (HIMMEL-1472 R3)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-single-'));
+  const dir = makeTmpDir('gblock-single-');
   dropOnExit(dir);
   const gitDir = join(dir, '.git');
   const commonDir = gitDir;
@@ -2006,7 +2006,7 @@ test('readHeadBlob: a consistent single-format (sha1) repo still resolves — no
 // is `configFormat`, or omitted when null (a default sha1 repo, exactly like a
 // real `git init` with no object-format override).
 function buildConfigMismatchRepo({ algo, configFormat }) {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-cfg-'));
+  const dir = makeTmpDir('gblock-cfg-');
   const gitDir = join(dir, '.git');
   const commonDir = gitDir;
   mkdirSync(join(commonDir, 'objects'), { recursive: true });
@@ -2090,7 +2090,7 @@ function gitRevParseHeadExit(repo) {
 // must refuse. The chain is internally consistent in `algo`, so a degrade must
 // come from the config, not a bad object (non-vacuous).
 function buildRepoFormatRepo({ algo, config }) {
-  const dir = mkdtempSync(join(tmpdir(), 'gblock-repofmt-'));
+  const dir = makeTmpDir('gblock-repofmt-');
   const gitDir = join(dir, '.git');
   const commonDir = gitDir;
   mkdirSync(join(commonDir, 'objects'), { recursive: true });

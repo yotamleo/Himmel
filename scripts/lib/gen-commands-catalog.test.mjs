@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { makeTmpDir } from './test-tmpdir.mjs';
 
 import { frontmatterDescription, regenerateCatalog, loadGeneratedStaged } from './gen-commands-catalog.mjs';
 
@@ -348,7 +348,7 @@ test('write mode: normalizes section headers to 3 columns', () => {
 });
 
 test('loadGeneratedStaged reads the STAGED command frontmatter, ignoring an unstaged edit', () => {
-  const root = mkdtempSync(join(tmpdir(), 'gen-catalog-staged-'));
+  const root = makeTmpDir('gen-catalog-staged-');
   try {
     execFileSync('git', ['init', '-q'], { cwd: root });
     execFileSync('git', ['config', 'user.email', 'test@test'], { cwd: root });
@@ -394,7 +394,7 @@ test('write mode: a row missing the trailing pipe whose Notes cell legitimately 
 });
 
 test('loadGeneratedStaged skips a NESTED staged command file (codex-1, HIMMEL-2064 CR round: git\'s * pathspec crosses directories, readdirSync does not)', () => {
-  const root = mkdtempSync(join(tmpdir(), 'gen-catalog-nested-'));
+  const root = makeTmpDir('gen-catalog-nested-');
   try {
     execFileSync('git', ['init', '-q'], { cwd: root });
     execFileSync('git', ['config', 'user.email', 'test@test'], { cwd: root });

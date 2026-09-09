@@ -13,10 +13,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 
 import {
   DEFAULT_TTL_MS, DEFAULT_JOB_TIMEOUT_MS, MAX_ATTEMPTS, MAX_PAYLOAD_BYTES,
@@ -28,7 +28,7 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SELF = join(HERE, 'stop-queue.mjs');
 
-const scratch = () => mkdtempSync(join(tmpdir(), 'stop-queue-test-'));
+const scratch = () => makeTmpDir('stop-queue-test-');
 
 // A job that appends one line to a marker file, expressed as argv so it needs
 // no shell on any platform.

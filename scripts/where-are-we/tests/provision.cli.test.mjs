@@ -4,17 +4,17 @@
 // exercised here (same convention as index.mjs / collect.mjs / dock.mjs).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, main } from '../provision.mjs';
 import { readRecords } from '../lib/ledger.mjs';
 import { UsageError } from '../lib/errors.mjs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 
 const NOW = '2026-06-22T12:00:00Z';
 
 function withLedger(seedLines) {
-  const dir = mkdtempSync(join(tmpdir(), 'wa-l3-'));
+  const dir = makeTmpDir('wa-l3-');
   const ledger = join(dir, 'ledger.jsonl');
   if (seedLines != null) writeFileSync(ledger, seedLines);
   return { dir, ledger, cleanup: () => rmSync(dir, { recursive: true, force: true }) };

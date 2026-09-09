@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BASH_BIN } from './lib/resolve-bash.mjs';
@@ -13,7 +13,7 @@ const TEST_DIR = dirname(fileURLToPath(import.meta.url));
 const MATERIALIZE = join(TEST_DIR, '..', 'bench', 'materialize.sh');
 
 function makeFixtureTaskDir() {
-  const taskDir = mkdtempSync(join(tmpdir(), 'bench-materialize-task-'));
+  const taskDir = makeTmpDir('bench-materialize-task-');
   mkdirSync(join(taskDir, 'input', 'sub'), { recursive: true });
   writeFileSync(join(taskDir, 'input', 'a.txt'), 'hello\n');
   writeFileSync(join(taskDir, 'input', 'sub', 'b.txt'), 'world\n');
@@ -49,7 +49,7 @@ function runMaterialize(taskDir, runId, scratchRoot) {
 
 test('materialize.sh copies input/ contents to a fresh dir and leaves the source untouched', () => {
   const taskDir = makeFixtureTaskDir();
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-materialize-scratch-'));
+  const scratchRoot = makeTmpDir('bench-materialize-scratch-');
   const beforeChecksum = treeChecksum(join(taskDir, 'input'));
 
   const dest = runMaterialize(taskDir, 'T1-luna-1', scratchRoot);
@@ -63,7 +63,7 @@ test('materialize.sh copies input/ contents to a fresh dir and leaves the source
 
 test('two materialize.sh runs produce independent directories', () => {
   const taskDir = makeFixtureTaskDir();
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-materialize-scratch2-'));
+  const scratchRoot = makeTmpDir('bench-materialize-scratch2-');
 
   const destA = runMaterialize(taskDir, 'T1-luna-1', scratchRoot);
   const destB = runMaterialize(taskDir, 'T1-luna-1', scratchRoot); // same run-id, still independent
@@ -79,7 +79,7 @@ test('two materialize.sh runs produce independent directories', () => {
 });
 
 test('materialize.sh exits nonzero when the fixture has no input/ dir', () => {
-  const taskDir = mkdtempSync(join(tmpdir(), 'bench-materialize-noinput-'));
-  const scratchRoot = mkdtempSync(join(tmpdir(), 'bench-materialize-scratch3-'));
+  const taskDir = makeTmpDir('bench-materialize-noinput-');
+  const scratchRoot = makeTmpDir('bench-materialize-scratch3-');
   assert.throws(() => runMaterialize(taskDir, 'T1-luna-1', scratchRoot));
 });

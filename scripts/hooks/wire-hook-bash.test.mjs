@@ -1,12 +1,12 @@
 import { test as baseTest } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { assertOnlyHookCommandsChanged, assertPermissionsUnchanged, EXPECTED_SCRIPT_ORDER } from './wire-hook-bash.mjs';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WIRER = join(HERE, 'wire-hook-bash.mjs');
@@ -97,7 +97,7 @@ function unwire(text) {
 }
 
 function withFixture(run, { wired = false } = {}) {
-  const dir = mkdtempSync(join(tmpdir(), 'wire-hook-bash-'));
+  const dir = makeTmpDir('wire-hook-bash-');
   const fixture = join(dir, 'settings.json');
   try {
     const source = readFileSync(SETTINGS, 'utf8');

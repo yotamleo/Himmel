@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, openSync, writeSync, closeSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync, writeFileSync, existsSync, openSync, writeSync, closeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { makeTmpDir } from './test-tmpdir.mjs';
 
 import { acquireLock, withSettingsLock, lockPathFor } from './settings-lock.mjs';
 
 function tmpSettings(initial) {
-  const dir = mkdtempSync(join(tmpdir(), 'settings-lock-'));
+  const dir = makeTmpDir('settings-lock-');
   const settings = join(dir, 'settings.json');
   writeFileSync(settings, JSON.stringify(initial));
   return { dir, settings };

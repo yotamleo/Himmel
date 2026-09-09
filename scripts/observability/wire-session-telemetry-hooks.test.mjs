@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 
 import {
   install, remove, statusOf, writeAtomic,
@@ -24,7 +25,7 @@ const SCRIPT = path.join(HERE, 'wire-session-telemetry-hooks.mjs');
 const REAL_WRITER = path.join(HERE, 'session-run-hook.ts');
 
 let TMP;
-before(() => { TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wire-session-telemetry-')); });
+before(() => { TMP = makeTmpDir('wire-session-telemetry-'); });
 after(() => { try { fs.rmSync(TMP, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 // A settings file shaped like the real one: existing PreToolUse/PostToolUse/

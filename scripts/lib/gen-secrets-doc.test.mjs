@@ -6,8 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +21,7 @@ import {
   END_MARKER,
   FEATURE_IDS,
 } from './gen-secrets-doc.mjs';
+import { makeTmpDir } from './test-tmpdir.mjs';
 
 const ROOT = resolve(join(fileURLToPath(import.meta.url), '..', '..', '..'));
 const MANIFEST_PATH = join(ROOT, 'scripts/himmelctl/lib/secrets-manifest.json');
@@ -58,7 +58,7 @@ const SECRET_TO_LUNA_SOURCE = {
 // filesystem root. mkdtempSync throws on failure (never returns ''), so the
 // finally-block rmSync target is always a real, freshly created subdir.
 function makeTempDir(prefix) {
-  return mkdtempSync(join(tmpdir(), `${prefix}.`));
+  return makeTmpDir(`${prefix}.`);
 }
 
 // ── 1. Manifest validation ──────────────────────────────────────────────

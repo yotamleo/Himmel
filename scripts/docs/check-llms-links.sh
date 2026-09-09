@@ -120,7 +120,14 @@ path_in_token_list() {
   _list=$2
   for _tok in $_list; do
     case "$_tok" in
-      */) case "$_p" in "$_tok"*) return 0 ;; esac ;;
+      */)
+        case "$_p" in "$_tok"*) return 0 ;; esac
+        # The bare directory itself (no trailing slash) is a member of its own
+        # carve-out too — git ls-files on a directory path lists its tracked
+        # descendants, so without this the directory link slips past both
+        # carve-out checks and passes as merely "tracked".
+        [ "$_p" = "${_tok%/}" ] && return 0
+        ;;
       *)
         [ "$_p" = "$_tok" ] && return 0
         case "$_p" in "$_tok"/*) return 0 ;; esac

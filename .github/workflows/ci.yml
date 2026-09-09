@@ -280,6 +280,19 @@ jobs:
       # commands-catalog check just above it.
       - name: .env.example's generated secrets block matches secrets-manifest.json
         run: node scripts/lib/gen-secrets-doc.mjs check
+      # HIMMEL-2832/2848 — the v1 adopter docs' executable invariants
+      # (budget/forbidden-classes/link-resolution, qualified "profile" +
+      # live path/env references) were run by hand only; this wires them into
+      # CI. Both checkers read the tracked files directly (no git-diff/staged
+      # dependence), so they need no staging step and must stay ABOVE the
+      # destructive orphan checkout below, same as the checks just above.
+      - name: v1 adopter docs pass the llms.txt link/budget invariants
+        run: |
+          bash scripts/docs/check-llms-links.sh llms.txt
+          bash scripts/docs/check-llms-links.sh docs/setup/install.md
+          bash scripts/docs/check-llms-links.sh docs/setup/migrating.md
+      - name: v1 adopter docs pass the qualified-"profile" + live-reference invariants
+        run: bash scripts/docs/check-doc-terms.sh llms.txt docs/setup/install.md docs/setup/migrating.md
       # LOAD-BEARING — do not remove (HIMMEL-1305). These gates are pre-commit
       # hooks: each triggers off `git diff --cached` and exits 0 when its inputs
       # are not staged. A CI checkout's index is identical to HEAD, so without

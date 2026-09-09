@@ -2,8 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { INCOMPLETE_DATA_CATEGORIES, TASK_PROFILE, buildResultsTable, buildSummary, classifyRuns, renderReport } from '../bench/report.mjs';
@@ -69,7 +69,7 @@ test('renderReport throws loudly on a deliberate cross-cell prompt-hash mismatch
 });
 
 test('CLI: report.mjs exits nonzero on a cross-cell prompt-hash mismatch', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-report-cli-mismatch-'));
+  const runsDir = makeTmpDir('bench-report-cli-mismatch-');
   writeRunManifest(runsDir, buildRunRecord({
     run_id: 'T7-haiku-1', task: 'T7', cell: 'haiku', rep: 1, model: 'claude-haiku-4-5',
     effort: 'low', prompt_sha256: 'hash-a', fixture_path: '/tmp/a', verdict: 'pass',
@@ -82,7 +82,7 @@ test('CLI: report.mjs exits nonzero on a cross-cell prompt-hash mismatch', () =>
 });
 
 test('CLI: report.mjs exits 0 and renders a report for a complete runs/ dir', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-report-cli-clean-'));
+  const runsDir = makeTmpDir('bench-report-cli-clean-');
   const transcriptPath = join(runsDir, 'transcript.jsonl');
   writeFileSync(transcriptPath, USAGE_LINE);
   for (const task of Object.keys(TASK_PROFILE)) {
@@ -106,7 +106,7 @@ test('CLI: report.mjs exits 0 and renders a report for a complete runs/ dir', ()
 });
 
 test('CLI: an unresolvable transcript is surfaced per-run as UNKNOWN, not a hard exit', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-report-cli-unresolvable-'));
+  const runsDir = makeTmpDir('bench-report-cli-unresolvable-');
   const validTranscript = join(runsDir, 'valid.jsonl');
   const malformedTranscript = join(runsDir, 'malformed.jsonl');
   writeFileSync(validTranscript, USAGE_LINE);
@@ -123,7 +123,7 @@ test('CLI: an unresolvable transcript is surfaced per-run as UNKNOWN, not a hard
 });
 
 test('CLI: a marked probe manifest is excluded from stats and does not fail the report', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-report-cli-probe-'));
+  const runsDir = makeTmpDir('bench-report-cli-probe-');
   writeCompleteMatrix(runsDir);
   // A pipeline smoke-test dispatch for T7. verdict 'fail' on purpose: if the
   // probe leaked into the luna summary, T7's verdicts would disagree and the
@@ -141,7 +141,7 @@ test('CLI: a marked probe manifest is excluded from stats and does not fail the 
 });
 
 test('CLI: missing canonical runs and pending verdicts surface in-report, not as a hard exit', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-report-cli-incomplete-'));
+  const runsDir = makeTmpDir('bench-report-cli-incomplete-');
   writeCompleteMatrix(runsDir, {
     skip: new Set(['T10-luna-2']),
     verdictFor: (runId) => (runId === 'T7-luna-2' ? 'PENDING' : 'pass'),
@@ -154,7 +154,7 @@ test('CLI: missing canonical runs and pending verdicts surface in-report, not as
 });
 
 test('CLI: a genuinely unexpected (unmarked) manifest still fails the whole report', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-report-cli-unexpected-'));
+  const runsDir = makeTmpDir('bench-report-cli-unexpected-');
   writeCompleteMatrix(runsDir);
   // Off the canonical matrix AND not marked probe — this is the gate the
   // surfacing rework must keep (wrong --runs-dir / misnamed run-id).
@@ -190,7 +190,7 @@ test('classifyRuns: a run_id that disagrees with the task/cell/rep tuple is inva
 });
 
 test('CLI: a self-inconsistent manifest (run_id != tuple) is excluded and surfaced, not counted and not fatal', () => {
-  const runsDir = mkdtempSync(join(tmpdir(), 'bench-report-cli-inconsistent-'));
+  const runsDir = makeTmpDir('bench-report-cli-inconsistent-');
   writeCompleteMatrix(runsDir);
   // run_id says T7-luna-typo while the tuple claims the T7-luna-1 slot. The
   // verdict ('fail', against two real passes) and the divergent prompt hash
@@ -356,10 +356,10 @@ test('INVARIANT (round-4 guard): every incomplete-data category is surfaced AND 
   );
   for (const cat of INCOMPLETE_DATA_CATEGORIES) {
     const p = POISONS[cat.key];
-    const refDir = mkdtempSync(join(tmpdir(), `bench-inv-ref-${cat.key}-`));
+    const refDir = makeTmpDir(`bench-inv-ref-${cat.key}-`);
     p.reference(refDir);
     const refOut = execFileSync('node', [CLI, '--runs-dir', refDir], { encoding: 'utf8' });
-    const poisonDir = mkdtempSync(join(tmpdir(), `bench-inv-poison-${cat.key}-`));
+    const poisonDir = makeTmpDir(`bench-inv-poison-${cat.key}-`);
     p.poison(poisonDir);
     let out;
     try {

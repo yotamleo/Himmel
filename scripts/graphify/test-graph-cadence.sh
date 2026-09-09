@@ -300,11 +300,13 @@ assert_contains "ledger merges_behind is the true distance (seed-graph commit + 
 
 # =============================================================================
 # Test 1b (HIMMEL-2705 step 1): origin/main does not track
-# graphify-out/graph.json at all -> clean skip, rc=0, no worktree, no
-# _fail/exit-3. This is the PERMANENT steady state after graphify-out/ was
-# retired from the git tree and gitignored outright -- unlike Test 1's
-# below-threshold skip, there is no graph.json on origin/main to diff
-# against in the first place.
+# graphify-out/graph.json at all -> the LOCAL AST-only refresh still runs
+# (worktree created, ast-update.sh invoked, action=refreshed, rc=0), while
+# publish/merge cleanly no-op (merge-on-green.sh AND `gh` never invoked) --
+# not a clean skip and not _fail/exit-3. This is the PERMANENT steady state
+# after graphify-out/ was retired from the git tree and gitignored outright --
+# unlike Test 1's below-threshold skip, there is no graph.json on origin/main
+# to diff against in the first place.
 # =============================================================================
 echo "TEST: origin/main missing graphify-out/graph.json entirely -> local refresh still runs, publish/merge cleanly no-op (HIMMEL-2705)"
 REPO1B="$TMP_ROOT/t1b-primary"; BARE1B="$TMP_ROOT/t1b-origin.git"
@@ -373,6 +375,55 @@ assert_eq        "unresolvable-origin/main rc=3 (_fail, not a skip)" "3" "$rc"
 assert_contains  "unresolvable-origin/main message" "does not resolve" "$out"
 LEDGER_LINE1C=$(tail -n1 "$LEDGER1C/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
 assert_contains "ledger action=failed" '"action":"failed"' "$LEDGER_LINE1C"
+
+# =============================================================================
+# Test 1d (PR #2272 round-3, HIMMEL-2824): origin/main:graphify-out/graph.json
+# IS listed in the tree (unlike Test 1b's genuinely-retired path) but its blob
+# object cannot be read -- `git cat-file -e` alone cannot distinguish "path
+# absent" from "object unreadable" (corrupt/partial clone, missing objects).
+# The blob is also part of origin/main's tree that step 5 checks the dedicated
+# worktree out to, so a real corrupt clone still ends in a hard failure
+# (worktree add cannot materialize a tree with a missing object) -- this test
+# is NOT about avoiding that failure, only about the diagnostic step 2 branch
+# (PUBLISH_POSSIBLE=0) naming the real cause instead of misreporting it as the
+# permanent HIMMEL-2705 retired-path skip on the way there.
+# =============================================================================
+echo "TEST: origin/main lists graphify-out/graph.json but its blob object is unreadable -> loud warning names the object-read failure, not the retired-path message"
+REPO1D="$TMP_ROOT/t1d-primary"; BARE1D="$TMP_ROOT/t1d-origin.git"
+HOME1D="$TMP_ROOT/t1d-home"; LEDGER1D="$TMP_ROOT/t1d-ledger"
+mkdir -p "$HOME1D" "$LEDGER1D"
+git init -q --bare "$BARE1D" >/dev/null 2>&1
+git init -q --initial-branch=main "$REPO1D" 2>/dev/null || git init -q "$REPO1D"
+git -C "$REPO1D" config user.email t@test.com
+git -C "$REPO1D" config user.name test
+mkdir -p "$REPO1D/graphify-out"
+printf '{"nodes":[],"v":1,"built_at_commit":"seed"}' > "$REPO1D/graphify-out/graph.json"
+git -C "$REPO1D" add -A
+git -C "$REPO1D" commit -q -m "chore: seed with graph.json"
+git -C "$REPO1D" remote add origin "$BARE1D"
+git -C "$REPO1D" push -q origin main
+# Simulate a corrupt/partial clone: delete the LOOSE object backing the
+# blob's content while origin/main's tree stays intact -- `git fetch origin`
+# (graph-cadence.sh's own step 1) negotiates by ref SHA, not object
+# completeness, so a no-op fetch (same SHA already known) never
+# replenishes it. `ls-tree` only reads the tree object and keeps listing
+# the path; only reading the blob's own content fails.
+BLOB_SHA1D=$(git -C "$REPO1D" rev-parse HEAD:graphify-out/graph.json)
+BLOB_PATH1D="$REPO1D/.git/objects/${BLOB_SHA1D:0:2}/${BLOB_SHA1D:2}"
+[ -f "$BLOB_PATH1D" ] || { echo "FAIL: fixture setup: expected loose object $BLOB_PATH1D not found (packed?)"; exit 1; }
+rm -f "$BLOB_PATH1D"
+: > "$FAKE_MERGE_LOG"
+: > "$FAKE_GH_LOG"
+rc=0
+out=$(HOME="$HOME1D" GRAPH_CADENCE_HIMMEL_ROOT="$REPO1D" GRAPH_CADENCE_LEDGER_ROOT="$LEDGER1D" \
+      run_gc --threshold 10 2>&1) || rc=$?
+assert_eq        "unreadable-object still fails closed downstream (worktree add cannot check out a tree with a missing object)" "3" "$rc"
+assert_contains  "unreadable-object message names the object-read failure" "object could not be read" "$out"
+assert_not_contains "unreadable-object message is NOT the retired-path skip message" "does not track graphify-out/graph.json" "$out"
+assert_eq "unreadable-object run never invoked merge-on-green (publish gated off)" "" "$(cat "$FAKE_MERGE_LOG")"
+assert_eq "unreadable-object run never invoked gh (publish gated off)" "" "$(cat "$FAKE_GH_LOG")"
+LEDGER_LINE1D=$(tail -n1 "$LEDGER1D/.graph-cadence/ledger.jsonl" 2>/dev/null || echo MISSING)
+assert_contains "ledger action=failed" '"action":"failed"' "$LEDGER_LINE1D"
 
 # =============================================================================
 # Test 2: at/above threshold -> full pipeline, merged

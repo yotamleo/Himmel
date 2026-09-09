@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { assertDenyAskUnchanged, assertStrictNarrowing, tempPathFor, writeSettingsAtomic } from './narrow-allow.mjs';
+import { makeTmpDir } from '../lib/test-tmpdir.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const NARROWER = join(HERE, 'narrow-allow.mjs');
@@ -39,7 +39,7 @@ const FIXTURE = `{
 `;
 
 function withFixture(run, text = FIXTURE) {
-  const dir = mkdtempSync(join(tmpdir(), 'narrow-allow-'));
+  const dir = makeTmpDir('narrow-allow-');
   const fixture = join(dir, 'settings.json');
   try {
     writeFileSync(fixture, text);
