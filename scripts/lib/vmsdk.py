@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vbox
 
 HOST = "127.0.0.1"
-OWNER_REPO = "yotamleo/himmel"
+OWNER_REPO = "yotamleo/himmel"  # leak-allow: hostname the actual private repo this SDK clones from
 PAT_ENV = "himmel_github_token_vm"
 # Standard Git-for-Windows bash, used both to drive the host e2e (avoiding WSL's
 # bash, whose ssh can't read a Windows key path) and as the guest's git launcher.
@@ -589,7 +589,7 @@ class VM:
           with when=None raises VMError rather than silently ignoring a flag
           the caller believes is in effect.
         """
-        locate_cwd = cwd if cwd is not None else "~/Documents/github/himmel"
+        locate_cwd = cwd if cwd is not None else "~/Documents/github/himmel"  # leak-allow: hostname default guest working dir for the private repo checkout
         # long_gap only modifies a SCHEDULED arm (when is set): it forwards
         # arm-resume.sh's --long-gap past the HIMMEL-1475 long-gap guard. It is
         # meaningless for an immediate drive (when=None -> drive_claude), so

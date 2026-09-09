@@ -56,7 +56,7 @@ SEV_MEDIUM = "medium"
 # --- pinned facts (resolved during plan-critic; see plan "Pinned facts") -----
 SUDO_SENTINEL = "__SUDO_OK__"
 # Accepted-from sources that are NOT off-box (loopback + VBox NAT gateway).
-EXPECTED_AUTH_SOURCES = {"127.0.0.1", "::1", "10.0.2.2"}
+EXPECTED_AUTH_SOURCES = {"127.0.0.1", "::1", "10.0.2.2"}  # leak-allow: private-lan-ip VirtualBox NAT gateway, not a real leaked host
 # A world-bound listener on one of these ports is known-good (sshd).
 KNOWN_GOOD_LISTEN_PORTS = {"22"}
 # A burst of failed logins at/above this count raises a brute-force WARN.
@@ -72,7 +72,7 @@ EXPECTED_NOPASSWD_TEMPLATE = (
 # routable = off-box reachable.
 _NONROUTABLE_NETS = [
     ipaddress.ip_network(n) for n in (
-        "127.0.0.0/8", "::1/128", "169.254.0.0/16", "fe80::/10", "10.0.2.0/24",
+        "127.0.0.0/8", "::1/128", "169.254.0.0/16", "fe80::/10", "10.0.2.0/24",  # leak-allow: private-lan-ip VirtualBox NAT non-routable subnet
     )
 ]
 

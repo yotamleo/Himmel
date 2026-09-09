@@ -1,0 +1,34 @@
+# Path prefixes scripts/guardrails/leak-classes.sh --tree skips entirely
+# (HIMMEL-2561). One prefix per line, blank lines and # comments ignored.
+#
+# This is a general escape hatch, not a one-off: every entry below is either
+# (a) the one whole-directory vendored-code exception the HIMMEL-2561
+# handover explicitly permits, or (b) an exact-filename carve-out for a file
+# this ticket is forbidden to edit. Everything else that hits under --tree
+# must be genuinely fixed, not added here. (HIMMEL-2705 step 1 already
+# removed scripts/net/, archive/ and scripts/lanes/bench/runs/ from the
+# tree, so the carve-out this file once carried for those three
+# parallel-leg-owned paths no longer applies — nothing to scan there any
+# more.)
+
+# Vendored upstream code (tracked in scripts/upstreams.json), not
+# hand-written here — the one whole-directory exception the handover
+# permits, since rewriting or allow-commenting vendored third-party source
+# would be lost on the next upstream sync.
+templates/luna-second-brain/.obsidian/plugins/
+
+# These five files are on the HIMMEL-2561 handover's explicit do-not-touch
+# list (propagate-public.sh / propagation-drift.sh are retired-but-not-yet-
+# deleted propagation-time scripts N80 owns; gen-changelog.sh/.ps1 are N80's
+# files; .gitignore is N80's file). Each currently trips the hostname class
+# on the genericization identity tokens the retiring propagation system
+# reads out of the same denylist this scanner does — a real fix means
+# editing files this ticket is forbidden to touch. Exact filenames (not
+# directory prefixes) so no sibling file is silently exempted. Remove these
+# five entries once N80's cutover lands and either deletes these files or
+# frees them for a normal allow-comment fix.
+.gitignore
+scripts/gen-changelog.sh
+scripts/gen-changelog.ps1
+scripts/lib/propagation-drift.sh
+scripts/propagate-public.sh

@@ -444,9 +444,9 @@ function assertRecorderPresent(settingsPath) {
   const recorder = recorderPathFor(settingsPath);
   if (!existsSync(recorder)) {
     fail(
-      `no recorder at ${recorder} — these hooks would resolve to a file this project `
-      + 'does not have, and would record nothing while reporting as wired. '
-      + 'Run this from the himmel checkout, or pass that checkout\'s settings path.',
+      `no recorder at ${recorder} — the trust ledger is not part of the portable core yet `
+      + '(HIMMEL-2756 tracks shipping it for adopted projects). '
+      + 'Trust is currently supported in a himmel checkout; run this there, or pass that checkout\'s settings path.',
     );
   }
 }
@@ -696,7 +696,8 @@ async function main() {
         // the operator is actually going to get.
         + (!args.off && !existsSync(recorderPathFor(settingsPath))
           ? `  ⚠ no recorder at ${recorderPathFor(settingsPath)} — \`trust on\` would REFUSE here; `
-            + 'these hooks would record nothing while reporting as wired.\n'
+            + 'the trust ledger is not part of the portable core yet (HIMMEL-2756 tracks shipping it for adopted projects). '
+            + 'Trust is currently supported in a himmel checkout; run this there, or pass that checkout\'s settings path.\n'
           : '')
         // HIMMEL-1560: the recorder EXISTS but cannot be trusted to record
         // every verb. Same refusal `trust on` would give, reported rather than

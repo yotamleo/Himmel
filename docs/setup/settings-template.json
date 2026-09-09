@@ -59,7 +59,7 @@
   "enabledPlugins": {
     "superpowers@claude-plugins-official": true,
     "mattpocock-skills@claude-plugins-official": true,
-    "plannotator-effective-html@effective-html": true,
+    "plannotator-effective-html@himmel": true,
     "context7@claude-plugins-official": false,
     "code-review@claude-plugins-official": false,
     "code-simplifier@claude-plugins-official": false,
@@ -140,10 +140,6 @@
     },
     "claude-plugins-official": {
       "source": { "source": "github", "repo": "anthropics/claude-plugins-official" },
-      "autoUpdate": true
-    },
-    "effective-html": {
-      "source": { "source": "github", "repo": "plannotator/effective-html" },
       "autoUpdate": true
     },
     "openai-codex": {

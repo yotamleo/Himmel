@@ -13,7 +13,7 @@ import {
 
 describe('sanitizeBreadcrumbToken', () => {
   it('keeps safe filename chars', () => {
-    expect(sanitizeBreadcrumbToken('himmel_1.0')).toBe('himmel_1.0');
+    expect(sanitizeBreadcrumbToken('himmel_1.0')).toBe('himmel_1.0'); // leak-allow: hostname test fixture repo-key string exercising the sanitizer
   });
   it('replaces slashes (branch names) with dashes', () => {
     expect(sanitizeBreadcrumbToken('feat/jira-nudge')).toBe('feat-jira-nudge');
@@ -25,19 +25,19 @@ describe('sanitizeBreadcrumbToken', () => {
 
 describe('deriveRepoKey', () => {
   it('handles https remotes', () => {
-    expect(deriveRepoKey('https://github.com/yotamleo/himmel.git')).toBe('himmel');
+    expect(deriveRepoKey('https://github.com/yotamleo/himmel.git')).toBe('himmel'); // leak-allow: hostname test fixture https remote for repo-key derivation
   });
   it('handles ssh remotes', () => {
-    expect(deriveRepoKey('git@github.com:yotamleo/himmel.git')).toBe('himmel');
+    expect(deriveRepoKey('git@github.com:yotamleo/himmel.git')).toBe('himmel'); // leak-allow: hostname test fixture ssh remote for repo-key derivation
   });
   it('handles a remote with no .git suffix', () => {
-    expect(deriveRepoKey('https://github.com/yotamleo/himmel')).toBe('himmel');
+    expect(deriveRepoKey('https://github.com/yotamleo/himmel')).toBe('himmel'); // leak-allow: hostname test fixture remote URL without a .git suffix
   });
 });
 
 describe('breadcrumbFileName', () => {
   it('joins sanitized repo key and branch', () => {
-    expect(breadcrumbFileName('himmel', 'feat/x')).toBe('himmel__feat-x.log');
+    expect(breadcrumbFileName('himmel', 'feat/x')).toBe('himmel__feat-x.log'); // leak-allow: hostname test fixture verifying the breadcrumb filename join format
   });
 });
 

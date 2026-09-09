@@ -76,7 +76,7 @@ the failure mode:
 - **Owner:** {{OWNER_NAME}}
 - **Vault name:** {{VAULT_NAME}}
 - **Primary purpose:** {{VAULT_PURPOSE}}
-- **Instantiated from:** [luna-brain](https://github.com/yotamleo/Himmel/tree/main/templates/luna-second-brain) skeleton
+- **Instantiated from:** [luna-brain](https://github.com/yotamleo/Himmel/tree/main/templates/luna-second-brain) skeleton <!-- leak-allow: hostname template doc pointing at the public skeleton repo -->
 - **Created:** {{CREATED_DATE}}
 
 ---

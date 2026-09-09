@@ -1,69 +1,57 @@
 # himmel
 
-> A harness for running Claude Code as a managed, orchestrated, PR-gated, overnight-capable agent. himmel makes an agent's behaviour *structurally* safe and repeatable — hooks + gates + guardrails enforce the workflow at the tool-call layer rather than relying on the model to remember prose. Memory is Camp 2: durable, hand-editable markdown (the handover system + the companion luna vault) that compounds across sessions — no vector DB. Targets solo-operator / small-team work at Tier 3-4 Claude Code maturity (orchestrated + 24/7 autonomous).
+> A harness that runs Claude Code as a managed, PR-gated, overnight-capable agent: hooks, git gates and guardrails enforce the workflow at the tool-call layer instead of asking the model to remember prose. Memory is durable, hand-editable markdown — handover files plus an optional companion vault — not a vector DB.
 
-If you are an LLM **working inside** this repo, read CLAUDE.md first — it is the authoritative rule set and is loaded into every session. If you were just **pointed at this repo** to set it up, start with the next section. Either way the links below are the canonical docs; each owns its topic, so prefer reading the linked file over re-deriving from code.
+Working **inside** this repo? Read [CLAUDE.md](CLAUDE.md) first — it is the authoritative rule set and loads into every session. Just **pointed at** this repo to set it up? Start at Install. Everything below is a router: open the linked file rather than re-deriving from code.
 
-## If you were just pointed at this repo (install / doctor)
+## Install
 
-himmel is a harness *for* [Claude Code](https://claude.com/claude-code) — install that first (`curl -fsSL https://claude.ai/install.sh | bash`, or `irm https://claude.ai/install.ps1 | iex` on Windows). Prereqs for everything below: `git`, `bash` 3.2+ (Git Bash on Windows), `node`, `npm`, `bun`, `python3`, `jq` (`gh` optional); the setup/adopt scripts verify them and fail fast. The three things people ask for first — each is idempotent, non-destructive, and narrates what it does:
+himmel is a harness *for* [Claude Code](https://claude.com/claude-code) — install that first. The wizard checks the prerequisites (`git`, `bash` 3.2+, `node`, `jq`, `python3`; `gh` and `bun` optional) and fails fast with hints.
 
-1. **Add himmel to an existing repo** (most common) — the portable core: hooks + guardrails + worktree workflow + marketplace plugins/skills.
-   ```bash
-   git clone https://github.com/yotamleo/himmel
-   node himmel/scripts/himmelctl/bin.js install
-   # node-less machine, run first: bash himmel/scripts/himmelctl/bootstrap.sh
-   # (Windows: powershell -ExecutionPolicy Bypass -File himmel\scripts\himmelctl\bootstrap.ps1)
-   ```
-   The wizard runs `adopt.sh`/`adopt.ps1` under the hood — manual invocation
-   + à-la-carte parts: [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md).
-2. **Run / develop himmel standalone** — same wizard, contributor path: `git clone https://github.com/yotamleo/himmel && cd himmel && node scripts/himmelctl/bin.js install` (node-less: `bash scripts/himmelctl/bootstrap.sh` first). Under the hood it runs `bash scripts/setup.sh` (Windows: `powershell -ExecutionPolicy Bypass -File scripts\setup.ps1`) — verifies tools, installs the git hooks, builds the Jira CLI, registers the qmd index, writes a ready `.env` (add `--fill-env` for guided per-variable prompts with inline help). Walkthrough: [docs/setup/new-machine.md](docs/setup/new-machine.md#4-himmel-repo).
-3. **Diagnose an install that already exists** — run the `himmel-ops:himmel-doctor` skill (`/himmel-doctor`): a read-only, severity-grouped health report for the field problems that bite himmel installs (SessionStart `node: command not found`, a shadowed claude-obsidian plugin, a dirty single-writer luna vault, a repo missing from the handover registry, PATH-fragile MCP servers, un-pruned merged-PR worktrees). `--fix` heals the node wiring; everything else points you at the right command.
+```bash
+git clone https://github.com/yotamleo/himmel
+node himmel/scripts/himmelctl/bin.js install --scope project   # or --scope user
+# node-less machine? run first: bash himmel/scripts/himmelctl/bootstrap.sh
+```
 
-Lifecycle after install: update with the `himmel-ops:himmel-update` skill (`/himmel-update` — `git pull` + marketplace re-sync; `autoUpdate` does NOT deliver himmel), upgrade a luna vault with `/luna-upgrade`, and offboard with `node scripts/himmelctl/bin.js uninstall` (executes `scripts/uninstall.sh`). All three: [docs/setup/updating.md](docs/setup/updating.md).
+Four independent axes, each named exactly once here:
 
-## Start here
+- **Scope** — `project` wires the target repo's `.claude/settings.json` (commit it and everyone who clones the repo gets the harness); `user` wires `~/.claude/settings.json` (you, in every project on this machine). Change it later with `himmelctl scope set <project|user>`.
+- **Install profile** — `core` (hooks, git gates, worktree workflow, marketplace plugins), `luna` (companion-vault scaffold), or `all`. Item membership is data: `scripts/install/manifest.json`.
+- **Saved install-profile file** — a `*.install-profile.json` preset of every wizard answer, including the release channel. `--scope` loads a shipped adopter one; `--from-profile <file>` loads your own. Detail: [docs/setup/profiles/README.md](docs/setup/profiles/README.md).
+- **Release channel** — `stable` (highest `vX.Y.Z` tag) or `pre` (prereleases too), read from `HIMMEL_UPDATE_CHANNEL` or the saved install-profile file's `channel`; neither set means a plain `git pull`. Detail: [docs/setup/updating.md](docs/setup/updating.md).
 
-- [docs/getting-started.md](docs/getting-started.md): the ~15-minute onboarding path for **using himmel on your own project** — install, minimal config, your first PR-gated loop, and what himmel adds to a repo (every guard is opt-out). (Developing himmel itself standalone → [docs/setup/new-machine.md](docs/setup/new-machine.md#4-himmel-repo).)
-- [CLAUDE.md](CLAUDE.md): the authoritative repo rules — git workflow, Jira-via-plugin (not MCP), subagent policy, operator conventions, and the structural enforcement map. Read before acting.
-- [README.md](README.md): human overview — advantages, who-it's-for (Tier 3-4), Camp-2 memory stance, quickstart, the core loop.
+A fifth, unrelated axis: the **plugin profile** — `lean` vs `full` marketplace plugin sets, toggled with `/profile`, registry at `scripts/lanes/plugin-profiles.json`.
 
-## Workflows
+Full walkthrough plus the adaptation checklist for a non-himmel repo: [docs/setup/install.md](docs/setup/install.md). Coming from an older himmel install: [docs/setup/migrating.md](docs/setup/migrating.md).
 
-- [docs/daily-loop.md](docs/daily-loop.md): the narrated end-to-end loop (worktree → commit → PR → merge → clean → handover) with each hook/gate explained where it fires.
-- [docs/handover/overnight-mode.md](docs/handover/overnight-mode.md): autonomous end-to-end execution of a scoped ticket — the 11-phase pipeline, attestation discipline, block-only criteria, and the auto-mode classifier behaviour.
-- [docs/commands-catalog.md](docs/commands-catalog.md): the project-local slash commands under `.claude/commands/`.
+## Lifecycle verbs
 
-## Enforcement (structural, not prose)
+- `/himmel-doctor` — read-only, severity-grouped health report; `--fix` repairs the node wiring.
+- `/himmel-update` — harness `git pull` plus a marketplace re-sync. Claude Code's `autoUpdate` does **not** deliver himmel.
+- `node scripts/himmelctl/bin.js ensure` — reconcile a drifted install against the manifest, per item, with severities.
+- `node scripts/himmelctl/bin.js uninstall` — symmetric offboarding, both scopes.
+- `/luna-upgrade` — upgrade a companion vault to the current template.
 
-- [docs/configuration.md](docs/configuration.md): the canonical configuration + control-surface map — the delivery/gate/bridge/lane chains (mermaid), every gate classified HARD / auth-gated / advisory, every operator knob by surface (env, settings/hooks, initiative, arming, lanes, Telegram), and the per-layer off-switches.
-- [docs/internals/enforcement.md](docs/internals/enforcement.md): every PreToolUse/PostToolUse hook, the pre-commit/pre-push gates, the guardrail predicate matrix, and the Claude-invocation billing rules.
-- [docs/internals/stuck-playbook.md](docs/internals/stuck-playbook.md): guardrail-recovery escape-hatches — what to do when an auto-mode write is denied, a permission prompt hangs, or a pre-push gate fails.
+All four lifecycle paths: [docs/setup/updating.md](docs/setup/updating.md).
 
-## Subsystems
+## Enforcement
 
-- [docs/internals/handover-system.md](docs/internals/handover-system.md): the full cross-session handover system + user-slug resolution. Plugin: [marketplace/plugins/handover/README.md](marketplace/plugins/handover/README.md).
-- [docs/internals/jira-plugin.md](docs/internals/jira-plugin.md): the local Jira CLI (`scripts/jira/`) — preferred over the Atlassian MCP server — and the op↔MCP mapping.
-- [plugins/himmel-gh/README.md](plugins/himmel-gh/README.md): forge-agnostic git ops — the worktree→PR→merge loop, PR review threads, and luna-ingest route to `gh` on GitHub or the himmel Bitbucket CLI ([scripts/bitbucket/README.md](scripts/bitbucket/README.md)) on Bitbucket Cloud, chosen per-repo from `origin`.
-- [marketplace/plugins/claude-hud/VENDORED.md](marketplace/plugins/claude-hud/VENDORED.md): the vendored claude-hud statusline renderer (HIMMEL-718) — pinned upstream copy run as `node …/dist/index.js` (NOT an installable plugin here); pin record + drift-guard scope + fork-delta plan.
-- [docs/operator-conventions.md](docs/operator-conventions.md): durable operator working-habits (Jira CLI invocation, CR/merge habits, upstream-contribution gating, arming/chaining).
-- [docs/hermes-runbook.md](docs/hermes-runbook.md): hermes ([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)) in three tiers — a **CR-critic** lane wired into `/pr-check` and a free-inference **junior** lane (both working), plus an **alpha** `himmel_agent` main tier. Includes the new-user install + configure how-to. Config lives OUTSIDE the repo (`$HERMES_HOME` / `$HERMES_PY`; default `%LOCALAPPDATA%\hermes`), so it is part of himmel even when absent from a checkout; refreshed by `/himmel-update`.
-- [docs/luna/end-session-wiki.md](docs/luna/end-session-wiki.md): **luna session capture** — each Claude session is auto-captured into the companion luna vault as a structured note at session end: a *mechanical* note first, then a best-effort **detached LLM crystallizer** upgrades it into a real synthesis (`crystallized: true`). Import historical sessions with `/luna-backfill`; recover/upgrade older notes with `--reheal` (husk notes) or `--recrystallize` (content-bearing-but-uncrystallized notes, `--limit`-chunked).
-- [docs/internals/egress-matrix.md](docs/internals/egress-matrix.md): **graphify** knowledge-graph retrieval + its data-egress fence. The `graphify` CLI turns a vault/docs/code corpus into a queryable knowledge graph (god nodes, community detection, `query`/`explain`), exposed both as a CLI (pinned via `scripts/lib/graphify-bin.sh`) and as an **MCP server** auto-registered by adopt/setup (project + user scope). Graph *extraction* is LLM-backed, and graphify offers two distinct Anthropic backends: **`--backend claude`** is the pay-as-you-go Anthropic **API** path (needs `ANTHROPIC_API_KEY`), while **`--backend claude-cli`** shells the locally-installed `claude` CLI and authenticates via your existing Claude **subscription** — no extra API key. (Caveat: an `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` in the environment takes precedence over the subscription; where the effective endpoint is Anthropic that means pay-as-you-go API billing, and where it points at a gateway — as the `claude-glm` lane does — the run bills to that gateway instead. Either way it is no longer your plan.) himmel therefore defaults its own refresh to **`claude-cli`**, so a **claude-only adopter needs no extra API key**. A structural fence (`scripts/guardrails/graphify-fence.sh` + this matrix) governs which corpus may reach which provider, and it classifies the claude backend by its **effective endpoint** (`ANTHROPIC_BASE_URL`), not by name: on the supported Anthropic endpoint it is *warned, not blocked* for ordinary corpora; a recognized Z.ai/GLM gateway follows the stricter `zai-glm` policy; any **unverified** endpoint (unknown/lookalike host, plaintext http, scheme-less) is **hard-denied on every corpus**; a `claude-cli` run whose CLI has been rerouted away from Anthropic by a `CLAUDE_CODE_USE_*` selector (`_BEDROCK` / `_VERTEX` / `_FOUNDRY` / `_GATEWAY` / `_MANTLE` / `_ANTHROPIC_AWS` — these redirect the CLI to AWS/GCP/a gateway without touching `ANTHROPIC_BASE_URL`) is likewise **hard-denied on every corpus**, since none of those targets is a ratified matrix provider and corpus content must not reach them labelled as Anthropic (only *unset or empty* counts as off: `0` and `false` are still set, and the CLI may read them as on; the selectors bind `claude-cli` alone — `claude` is the HTTP API path and never execs the CLI); and PHI/salus stays **hard-blocked** throughout — an invariant no endpoint or flag can flip.
-- [docs/telegram-bridge.md](docs/telegram-bridge.md) + [docs/internals/telegram-bridge.md](docs/internals/telegram-bridge.md): the optional Telegram bridge — remote ticket dispatch/chat/voice, the fail-closed allowlist, and the `/arm` + `/mergepub` privileged surface (default OFF; `/mergepub` is the human-only public-merge authorization).
-- [docs/tooling-catalog.md](docs/tooling-catalog.md): every tool/script/plugin in active use.
-- [docs/internals/harness-compat.md](docs/internals/harness-compat.md): running himmel under Codex / other harnesses — the compatibility matrix + per-feature port/guard/accept decisions (HIMMEL-470).
+Structural, not prose: Claude Code PreToolUse/PostToolUse hooks plus `pre-commit` / `commit-msg` / `pre-push` git gates. **Do not read an enumerated hook list from any document — it drifts.** The live inventory is `.claude/settings.json` and `.pre-commit-config.yaml`; the classification of every gate as HARD / auth-gated / advisory, plus each layer's off-switch, is [docs/configuration.md](docs/configuration.md). Bypasses are session env vars set in the *launching* shell, never a per-call prefix.
 
-## Setup
+Data egress from graph extraction is fenced by one policy file, `scripts/guardrails/egress-matrix.json`.
 
-- [docs/setup/new-machine.md](docs/setup/new-machine.md): fresh-machine setup — required environment + per-platform (Linux / macOS / Windows Git Bash) install; the user-vs-project hook-scope model (§4b), the auto-arm **scheduler backend** per OS (§4c — Linux `at`/atd, macOS crontab via the ALPHA `macos.sh`, Windows schtasks; diagnose with `/himmel-doctor` C9), and the symmetric `uninstall.sh` teardown.
-- [.env.example](.env.example): the complete operator flag/configuration map (HIMMEL-787) — every flag grouped by how it reaches code: TOOL-LOADED (`.env` is enough: Jira/Bitbucket/Confluence CLI keys, offload-lane launcher keys), PROCESS-ENV (export or `settings.json` `"env"`; load-dotenv-bridged exceptions incl. `CR_PROFILE`, the initiative set, `HIMMEL_WHERE_ARE_WE`+`_STALE_HOURS`, doc-freshness and the nudge flags), SESSION-ONLY (guardrail bypasses + per-launch opt-ins, launching-shell only), and EXTERNAL-TOOLS (keys living in the tool's own `.env`).
-- [docs/setup/use-on-your-project.md](docs/setup/use-on-your-project.md): adopting the portable core (hooks + worktree workflow) in another repo.
-- [docs/setup/updating.md](docs/setup/updating.md): the update/upgrade lifecycle — `/himmel-update` (harness git pull + marketplace re-sync, incl. the hermes editable-checkout refresh), `/luna-upgrade` (vault template), why a plain `git pull` is required, and the symmetric `scripts/uninstall.sh` offboarding.
-- [docs/internals/environment-gotchas.md](docs/internals/environment-gotchas.md): Windows / Git-Bash / git-worktree / scheduler / Bash-tool / content-filter environment traps you may hit on a fresh machine (generic, adopter-facing).
+## Guide map
 
-## Optional
-
-- [docs/glm-offload.md](docs/glm-offload.md) + [docs/tooling-catalog.md](docs/tooling-catalog.md#claude-glm-scriptsclaude-glm-ps1-twin-himmel-665): the optional `claude-glm`/`claude-routed` flat-rate offload lanes. Their isolated config dirs auto-refresh from `~/.claude` when your settings/plugin profile changes (HIMMEL-819); set `CLAUDE_LANE_AUTO_RESEED=0` to opt out — the lanes and the auto-reseed are both optional and nothing blocks a plain `claude` setup without them.
-- [docs/tool-adoption/rubric.md](docs/tool-adoption/rubric.md): the decision method every community-tool evaluation runs through (goal/KPI, trust tiers, ADOPT/PILOT/REJECT).
-- [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md): dependency-license attribution (audited clean, fully permissive; MIT root license).
+- [README.md](README.md) — human overview: what you get, who it is for, the core loop.
+- [docs/why-himmel.md](docs/why-himmel.md) — the five failure modes the harness exists for.
+- [docs/getting-started.md](docs/getting-started.md) — install to first PR-gated loop, ~15 minutes.
+- [docs/daily-loop.md](docs/daily-loop.md) — one full loop (worktree → PR → merge → clean → handover), each gate explained where it fires.
+- [docs/architecture.md](docs/architecture.md) — the enforcement, handover, fleet and observability diagrams.
+- [docs/handover/overnight-mode.md](docs/handover/overnight-mode.md) — unattended end-to-end execution of a scoped ticket.
+- [docs/commands-catalog.md](docs/commands-catalog.md) · [docs/tooling-catalog.md](docs/tooling-catalog.md) — the slash commands, and every tool/script/plugin in use.
+- [docs/setup/new-machine.md](docs/setup/new-machine.md) — fresh-machine setup and the contributor path.
+- [.env.example](.env.example) — every operator flag, grouped by how it reaches code.
+- [marketplace/plugins/handover/README.md](marketplace/plugins/handover/README.md) — cross-session handover state.
+- [docs/telegram-bridge.md](docs/telegram-bridge.md) · [docs/hermes-runbook.md](docs/hermes-runbook.md) · [docs/glm-offload.md](docs/glm-offload.md) — optional remote-control and alternate-model lanes.
+- [docs/README.md](docs/README.md) — the full docs map. [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) — license attribution.

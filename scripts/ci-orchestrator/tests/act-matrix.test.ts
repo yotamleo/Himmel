@@ -1,9 +1,10 @@
 import { describe, test, expect } from "vitest";
 import { loadMatrix } from "../src/act-matrix.js";
 
-// The seven real jobs in .github/workflows/ci.yml (keyed "ci:<job>").
+// The eight real jobs in .github/workflows/ci.yml (keyed "ci:<job>").
 const REAL_JOBS = [
   "ci:secret-scan",
+  "ci:leak-classes",
   "ci:commit-lint",
   "ci:lint",
   "ci:node-suites",

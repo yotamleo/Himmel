@@ -359,7 +359,7 @@ fi
 
 # Case 5: no runners present anywhere → silent no-op (cadences not armed).
 out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/sweep-empty" \
-  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 if [ -z "$out" ]; then echo "ok: cadence absent → silent"; else echo "FAIL: cadence absent not silent"; printf '%s\n' "$out"; fail=1; fi
 
 # Case 6: codex-sweep.bat stamped current → shared probe returns its version.
@@ -374,7 +374,7 @@ if [ "$ver" = "$CADENCE_RUNNER_FORMAT_VERSION" ]; then echo "ok: codex-sweep sta
 mkdir -p "$tmp/cad-stale"
 printf '#!/bin/sh\necho old\n' > "$tmp/cad-stale/pipeline-harvest.sh"
 out=$(PIPELINE_BAT_DIR="$tmp/cad-stale" SWEEP_BAT_DIR="$tmp/sweep-empty" \
-  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 check "stale pipeline cadence nudged (message)" "pipeline-cadence runners are STALE" "$out"
 check "stale pipeline cadence nudged (rearm hint)" "bash scripts/luna/pipeline-cadence.sh arm --force" "$out"
 
@@ -383,7 +383,7 @@ mkdir -p "$tmp/cad-codex-stale"
 printf 'rem himmel-cadence-runner-format: %s\r\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
   > "$tmp/cad-codex-stale/codex-sweep.bat"
 out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/cad-codex-stale" \
-  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 check "stale codex-sweep cadence nudged (message)" "codex-sweep-cadence runners are STALE" "$out"
 check "stale codex-sweep cadence nudged (rearm hint)" "bash scripts/cleanup/codex-sweep-cadence.sh arm --force" "$out"
 
@@ -392,7 +392,7 @@ mkdir -p "$tmp/cad-graphmap-stale"
 printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho old\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
   > "$tmp/cad-graphmap-stale/graphmap-himmel.sh"
 out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/sweep-empty" \
-  GRAPHMAP_BAT_DIR="$tmp/cad-graphmap-stale" report_cadence_stale 2>&1)
+  GRAPHMAP_BAT_DIR="$tmp/cad-graphmap-stale" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 check "stale graphmap cadence nudged (message)" "graphmap-cadence runners are STALE" "$out"
 check "stale graphmap cadence nudged (rearm hint)" "bash scripts/luna/graphmap-cadence.sh arm --force" "$out"
 
@@ -402,7 +402,7 @@ mkdir -p "$tmp/cad-current"
 printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho cur\n' "$CADENCE_RUNNER_FORMAT_VERSION" \
     > "$tmp/cad-current/pipeline-harvest.sh"
 out=$(PIPELINE_BAT_DIR="$tmp/cad-current" SWEEP_BAT_DIR="$tmp/sweep-empty" \
-  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 if [ -z "$out" ]; then echo "ok: current cadence → silent"; else echo "FAIL: current cadence wrongly nudged"; printf '%s\n' "$out"; fail=1; fi
 
 # Case 11: malformed marker (present but no version number) → safe fallback to
@@ -410,7 +410,7 @@ if [ -z "$out" ]; then echo "ok: current cadence → silent"; else echo "FAIL: c
 mkdir -p "$tmp/cad-malformed"
 printf '#!/bin/sh\n# himmel-cadence-runner-format:\necho bad\n' > "$tmp/cad-malformed/pipeline-harvest.sh"
 out=$(PIPELINE_BAT_DIR="$tmp/cad-malformed" SWEEP_BAT_DIR="$tmp/sweep-empty" \
-  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 check "malformed stamp → stale fallback (message)" "pipeline-cadence runners are STALE" "$out"
 check "malformed stamp → stale fallback (rearm hint)" "bash scripts/luna/pipeline-cadence.sh arm --force" "$out"
 
@@ -424,7 +424,7 @@ printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho old\n' "$((CADENCE_R
 ver=$(cadence_runner_stamp "$tmp/cad-mixed")
 if [ "$ver" = "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" ]; then echo "ok: mixed versions → minimum wins"; else echo "FAIL: mixed-version probe got '$ver'"; fail=1; fi
 out=$(PIPELINE_BAT_DIR="$tmp/cad-mixed" SWEEP_BAT_DIR="$tmp/sweep-empty" \
-  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" report_cadence_stale 2>&1)
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 check "mixed-version cadence nudged" "pipeline-cadence runners are STALE" "$out"
 
 # Case 13: cadence_user_home — with USERPROFILE unset it echoes $HOME verbatim

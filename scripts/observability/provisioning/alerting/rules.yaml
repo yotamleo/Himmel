@@ -53,7 +53,7 @@
 # This was not hypothetical: 9 of the original 14 rules had exactly this
 # shape — himmel_flow_last_success_age, himmel_scheduled_task_disabled,
 # himmel_watcher_down, himmel_kernel_pool_critical,
-# himmel_agent_tree_ram_runaway, example-ws_inbox_backlog_rising,
+# himmel_agent_tree_ram_runaway, example-ws_inbox_backlog_rising, # leak-allow: hostname alert rule uid named in this file's own design-rationale comment
 # himmel_kernel_pool_high, himmel_kernel_pool_leak_rate,
 # himmel_commit_pressure — each now marked noDataState: OK below with its
 # own HIMMEL-2478/2480 comment. Live proof: Grafana's own /metrics reported
@@ -417,7 +417,7 @@ groups:
         annotations:
           summary: 'Exporter job {{ $labels.job }} is down'
 
-      - uid: example-ws_inbox_backlog_rising
+      - uid: example-ws_inbox_backlog_rising # leak-allow: hostname the actual Grafana alert rule uid this file defines
         title: "Luna inbox backlog rising"
         condition: B
         data:

@@ -322,22 +322,27 @@ export HOME
 
 # WHY (HIMMEL-2754): unresolved worktree hooks differ from definitely absent
 # hooks. No git command is needed: all rows use a PATH with only grep.
+# HIMMEL-2851: repo_has_framework_hooks/resolve_native_hooks_dir read
+# HOOKS_REPO_ROOT, not REPO_ROOT (HIMMEL-2849) — every row below must set
+# both so the fixture actually reaches the function under test.
 _hooks_saved_repo="$REPO_ROOT"
+_hooks_saved_hooks_repo="$HOOKS_REPO_ROOT"
 mkdir -p "$TMP/hooks-bin" "$TMP/hooks-worktree" "$TMP/hooks-repo/.git/hooks"
 ln -s "$(command -v grep)" "$TMP/hooks-bin/grep"
 printf 'gitdir: /unresolved/fixture\n' > "$TMP/hooks-worktree/.git"
 printf '# sample\n' > "$TMP/hooks-repo/.git/hooks/pre-commit.sample"
 for hooks_case in G-hooks-1 G-hooks-2 G-hooks-3; do
     case "$hooks_case" in
-        G-hooks-1) REPO_ROOT="$TMP/hooks-worktree"; hooks_expected=2 ;;
-        G-hooks-2) REPO_ROOT="$TMP/hooks-repo"; hooks_expected=1 ;;
+        G-hooks-1) REPO_ROOT="$TMP/hooks-worktree"; HOOKS_REPO_ROOT="$TMP/hooks-worktree"; hooks_expected=2 ;;
+        G-hooks-2) REPO_ROOT="$TMP/hooks-repo"; HOOKS_REPO_ROOT="$TMP/hooks-repo"; hooks_expected=1 ;;
         G-hooks-3)
             printf '# pre-commit framework hook\n' > "$TMP/hooks-repo/.git/hooks/pre-commit"
-            REPO_ROOT="$TMP/hooks-repo"; hooks_expected=0
+            REPO_ROOT="$TMP/hooks-repo"; HOOKS_REPO_ROOT="$TMP/hooks-repo"; hooks_expected=0
             ;;
     esac
     PATH="$TMP/hooks-bin" repo_has_framework_hooks; hooks_rc=$?
     REPO_ROOT="$_hooks_saved_repo"
+    HOOKS_REPO_ROOT="$_hooks_saved_hooks_repo"
     if [ "$hooks_rc" -eq "$hooks_expected" ]; then
         echo "PASS $hooks_case (rc=$hooks_rc)"
     else
@@ -352,8 +357,10 @@ mkdir -p "$TMP/hooks-resolved/.git/objects" "$TMP/hooks-resolved/.git/refs" "$TM
 printf 'ref: refs/heads/main\n' > "$TMP/hooks-resolved/.git/HEAD"
 rmdir "$TMP/hooks-resolved/.git/hooks"
 REPO_ROOT="$TMP/hooks-resolved"
+HOOKS_REPO_ROOT="$TMP/hooks-resolved"
 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null repo_has_framework_hooks; hooks_rc=$?
 REPO_ROOT="$_hooks_saved_repo"
+HOOKS_REPO_ROOT="$_hooks_saved_hooks_repo"
 if [ "$hooks_rc" -eq 1 ]; then
     echo 'PASS G-hooks-4 (rc=1)'
 else
@@ -368,8 +375,10 @@ printf 'ref: refs/heads/main\n' > "$TMP/hooks-unreadable/.git/HEAD"
 printf '# pre-commit framework hook\n' > "$TMP/hooks-unreadable/.git/hooks/commit-msg"
 if chmod 000 "$TMP/hooks-unreadable/.git/hooks/commit-msg" 2>/dev/null && [ ! -r "$TMP/hooks-unreadable/.git/hooks/commit-msg" ]; then
     REPO_ROOT="$TMP/hooks-unreadable"
+    HOOKS_REPO_ROOT="$TMP/hooks-unreadable"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null repo_has_framework_hooks; hooks_rc=$?
     REPO_ROOT="$_hooks_saved_repo"
+    HOOKS_REPO_ROOT="$_hooks_saved_hooks_repo"
     if [ "$hooks_rc" -eq 2 ]; then
         echo 'PASS G-hooks-5 (rc=2)'
     else
@@ -390,8 +399,10 @@ printf 'ref: refs/heads/main\n' > "$TMP/hooks-unsearchable/.git/HEAD"
 printf '# pre-commit framework hook\n' > "$TMP/hooks-unsearchable/.git/hooks/commit-msg"
 if chmod 000 "$TMP/hooks-unsearchable/.git/hooks" 2>/dev/null && { [ ! -r "$TMP/hooks-unsearchable/.git/hooks" ] || [ ! -x "$TMP/hooks-unsearchable/.git/hooks" ]; }; then
     REPO_ROOT="$TMP/hooks-unsearchable"
+    HOOKS_REPO_ROOT="$TMP/hooks-unsearchable"
     GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null repo_has_framework_hooks; hooks_rc=$?
     REPO_ROOT="$_hooks_saved_repo"
+    HOOKS_REPO_ROOT="$_hooks_saved_hooks_repo"
     if [ "$hooks_rc" -eq 2 ]; then
         echo 'PASS G-hooks-6 (rc=2)'
     else
@@ -416,8 +427,10 @@ exit 2
 STUB
 chmod +x "$TMP/hooks-bin/grep"
 REPO_ROOT="$TMP/hooks-grep-error"
+HOOKS_REPO_ROOT="$TMP/hooks-grep-error"
 PATH="$TMP/hooks-bin" repo_has_framework_hooks; hooks_rc=$?
 REPO_ROOT="$_hooks_saved_repo"
+HOOKS_REPO_ROOT="$_hooks_saved_hooks_repo"
 rm "$TMP/hooks-bin/grep"
 ln -s "$(command -v grep)" "$TMP/hooks-bin/grep"
 if [ "$hooks_rc" -eq 2 ]; then
@@ -447,6 +460,7 @@ for hooks_test_path in 'C:/fixture/.git/hooks' 'z:/fixture/.git/hooks' \
         mkdir -p "$hooks_test_path" || exit 3
         printf '# pre-commit framework hook\n' > "$hooks_test_path/commit-msg"
         REPO_ROOT="$TMP/hooks-drive-repo"
+        HOOKS_REPO_ROOT="$TMP/hooks-drive-repo"
         HOOKS_TEST_PATH="$hooks_test_path" PATH="$TMP/hooks-bin" repo_has_framework_hooks
     ); hooks_rc=$?
     if [ "$hooks_rc" -eq 0 ]; then

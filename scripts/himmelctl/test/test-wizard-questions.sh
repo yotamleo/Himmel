@@ -350,6 +350,10 @@ grepq "$cache_body" '"lanes": \[\]' \
   || fail "case5: cache should record the answered empty lane set (got: $cache_body)"
 grepq "$cache_body" '"alwaysOn": false' \
   || fail "case5: cache should record the answered alwaysOn=no (got: $cache_body)"
+# HIMMEL-2705: a fresh (no prior profile) interactive install defaults channel
+# to stable.
+grepq "$cache_body" '"channel": "stable"' \
+  || fail "case5: a new adopter's cache should default channel=stable (got: $cache_body)"
 # Now replay the cache non-interactively: ZERO prompts + byte-stable JSON.
 # Non-interactive --from-profile (T4) skips the confirm and shells out for
 # real, so HIMMELCTL_REPO_ROOT is pointed at a throwaway fixture carrying a
@@ -380,6 +384,101 @@ json_b=$(printf '%s' "$out_b" | sed -n '/^{/,/^}/p')
 got:      <$json_b>
 expected: <$cache_body>"
 echo "ok: case5 interactive writes v2 cache; --from-profile round-trips byte-stable, zero prompts"
+
+# ── Case 5b (HIMMEL-2705): an existing profile's explicit channel survives ──
+# a --from-profile replay untouched (never coerced to the stable default).
+stub5b="$work/case5b"; mkdir -p "$stub5b"
+c5bpath=$(build_path "$stub5b" bash jq python3 npm -- )
+h5b="$work/h5b"; mkdir -p "$h5b"
+fixture5b="$work/case5b-fixture"; mkdir -p "$fixture5b/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture5b/scripts/adopt.sh"
+chmod +x "$fixture5b/scripts/adopt.sh"
+profile5b="$work/case5b-profile.json"
+cat > "$profile5b" <<JSON
+{"schemaVersion":2,"profile":"starter","devOverlay":false,"scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false,"channel":"pre"}
+JSON
+set +e
+out_5b=$(PATH="$c5bpath" HOME="$h5b" USERPROFILE="$(winpath "$h5b")" HIMMELCTL_CACHE_DIR="$(winpath "$h5b.himmelctl-cache")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$h5b.himmelctl-cache/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+        HIMMELCTL_REPO_ROOT="$(winpath "$fixture5b")" \
+        "$node_bin" "$wizard" install --from-profile "$(winpath "$profile5b")" \
+        </dev/null 2>&1); rc_5b=$?
+set -e
+[ "$rc_5b" -eq 0 ] || fail "case5b: --from-profile with an explicit channel should succeed (got rc=$rc_5b): $out_5b"
+cachefile5b="$h5b.himmelctl-cache/install-profile.json"
+[ -f "$cachefile5b" ] || fail "case5b: cache file should be written (expected $cachefile5b)"
+cache_body_5b=$(cat "$cachefile5b")
+grepq "$cache_body_5b" '"channel": "pre"' \
+  || fail "case5b: an existing channel:pre must survive the replay unchanged (got: $cache_body_5b)"
+echo "ok: case5b --from-profile with an existing channel value never coerces it to the stable default"
+
+# ── Case 5c (HIMMEL-2705 codex-2): an EXISTING station's channel-less ────────
+# re-install must not be defaulted to stable — "new adopter" means this
+# station never having a prior cache, checked via fs.existsSync(cachePath()),
+# not merely answers.channel === undefined (which is also true for every
+# channel-less re-install of an existing station).
+stub5c="$work/case5c"; mkdir -p "$stub5c"
+c5cpath=$(build_path "$stub5c" bash jq python3 npm -- )
+h5c="$work/h5c"; mkdir -p "$h5c"
+fixture5c="$work/case5c-fixture"; mkdir -p "$fixture5c/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture5c/scripts/adopt.sh"
+chmod +x "$fixture5c/scripts/adopt.sh"
+cachedir5c="$h5c.himmelctl-cache"; mkdir -p "$cachedir5c"
+# Pre-seed a prior cache with NO channel key, simulating an existing station
+# that installed before HIMMEL-2705 (or on a channel-less profile already).
+cat > "$cachedir5c/install-profile.json" <<JSON
+{"schemaVersion":2,"profile":"starter","devOverlay":false,"scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
+JSON
+profile5c="$work/case5c-profile.json"
+cat > "$profile5c" <<JSON
+{"schemaVersion":2,"profile":"starter","devOverlay":false,"scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
+JSON
+set +e
+out_5c=$(PATH="$c5cpath" HOME="$h5c" USERPROFILE="$(winpath "$h5c")" HIMMELCTL_CACHE_DIR="$(winpath "$cachedir5c")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cachedir5c/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+        HIMMELCTL_REPO_ROOT="$(winpath "$fixture5c")" \
+        "$node_bin" "$wizard" install --from-profile "$(winpath "$profile5c")" \
+        </dev/null 2>&1); rc_5c=$?
+set -e
+[ "$rc_5c" -eq 0 ] || fail "case5c: --from-profile on an existing station should succeed (got rc=$rc_5c): $out_5c"
+cachefile5c="$cachedir5c/install-profile.json"
+cache_body_5c=$(cat "$cachefile5c")
+if grepq "$cache_body_5c" '"channel"'; then
+  fail "case5c: an existing station's channel-less re-install must not gain a channel key (got: $cache_body_5c)"
+fi
+echo "ok: case5c an existing station's channel-less --from-profile re-install is never coerced to the stable default"
+
+# ── Case 5d (HIMMEL-2705 codex-1, round 2): a channel-less re-install ────────
+# carries an EXISTING station's cached channel forward instead of dropping it
+# — writeCache replaces the whole file, so doing nothing here would silently
+# revert a stable/pre station to unset (branch-tip pull) on any reinstall
+# whose incoming profile doesn't happen to restate channel.
+stub5d="$work/case5d"; mkdir -p "$stub5d"
+c5dpath=$(build_path "$stub5d" bash jq python3 npm -- )
+h5d="$work/h5d"; mkdir -p "$h5d"
+fixture5d="$work/case5d-fixture"; mkdir -p "$fixture5d/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture5d/scripts/adopt.sh"
+chmod +x "$fixture5d/scripts/adopt.sh"
+cachedir5d="$h5d.himmelctl-cache"; mkdir -p "$cachedir5d"
+# Pre-seed a prior cache with channel:pre already set (an existing pre-channel
+# station).
+cat > "$cachedir5d/install-profile.json" <<JSON
+{"schemaVersion":2,"profile":"starter","devOverlay":false,"scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false,"channel":"pre"}
+JSON
+profile5d="$work/case5d-profile.json"
+cat > "$profile5d" <<JSON
+{"schemaVersion":2,"profile":"starter","devOverlay":false,"scope":"project","vault":{"mode":"none","path":""},"handover":{"mode":"inline","path":""},"pluginSet":"lean","lanes":[],"lanesMeaningful":true,"alwaysOn":false}
+JSON
+set +e
+out_5d=$(PATH="$c5dpath" HOME="$h5d" USERPROFILE="$(winpath "$h5d")" HIMMELCTL_CACHE_DIR="$(winpath "$cachedir5d")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cachedir5d/luna-config.json")" HIMMELCTL_INTERACTIVE=0 \
+        HIMMELCTL_REPO_ROOT="$(winpath "$fixture5d")" \
+        "$node_bin" "$wizard" install --from-profile "$(winpath "$profile5d")" \
+        </dev/null 2>&1); rc_5d=$?
+set -e
+[ "$rc_5d" -eq 0 ] || fail "case5d: --from-profile on an existing pre-channel station should succeed (got rc=$rc_5d): $out_5d"
+cachefile5d="$cachedir5d/install-profile.json"
+cache_body_5d=$(cat "$cachefile5d")
+grepq "$cache_body_5d" '"channel": "pre"' \
+  || fail "case5d: a channel-less re-install must carry the existing station's channel forward, not drop it (got: $cache_body_5d)"
+echo "ok: case5d an existing station's cached channel survives a channel-less --from-profile re-install"
 
 # ── Case 6: --from-profile on a v2 cache missing `profile`/bad schemaVersion ─
 stub6="$work/case6"; mkdir -p "$stub6"
