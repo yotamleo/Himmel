@@ -11,6 +11,8 @@ Do **not** use overnight mode when:
 - The work touches multiple independent subsystems (split into separate tickets first).
 - Destructive ops outside the worktree are required.
 
+For work that will need mid-flight decisions or will outlive one context window, run a **console** instead — it dispatches each ticket as its own session and hands itself over: [`running-a-console.md`](running-a-console.md).
+
 ## The 11 phases (+ step 0: queue lock)
 
 0. **Queue lock (HIMMEL-856)** — before Phase 1, run

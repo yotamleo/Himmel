@@ -192,6 +192,7 @@ Docs not already linked from a rule above (relative to `docs/`):
 | `tool-adoption/rubric.md` | community-tool eval method |
 | `tooling-catalog.md` | tools/scripts/plugins in use |
 | `commands-catalog.md` | project-local slash commands |
+| `handover/running-a-console.md` | starting + handing over a console (`/console new\|next`), vs `/overnight-shift` |
 
 ## graphify
 

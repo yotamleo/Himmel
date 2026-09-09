@@ -55,6 +55,7 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 
 | Command | Description | Notes |
 |---|---|---|
+| /console | Start a console session (new) or hand it over (next) — writes the doc, takes the queue lock, prints the launch line. | A console dispatches implementation legs as separate sessions, rules on their questions via the RETASK channel, relays merges, and arms its successor at 45 % fill — it implements nothing itself. `new` writes the console doc from `docs/handover/console-template.md` and acquires the queue lock on it; `next` writes the successor stub + this console's HANDOFF skeleton. Distinct from /overnight-shift (one session, in-process subagents, no lock or successor). HIMMEL-2873. |
 | /handover-arm-resume | Arm the OS scheduler to relaunch claude at a given time with a given handover. Dedup-guarded. | Arm the OS scheduler to relaunch claude at the given time with the given handover. Dedup-guarded. Direct schtasks/at invoke. HIMMEL-122. |
 | /handover-commit | Auto-commit *.md changes in the handover root (Mode B / external HANDOVER_DIR only). MVP. |  |
 | /handover-flush | Session-end consolidation sweep across handover/* branches. |  |
