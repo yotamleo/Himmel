@@ -24,6 +24,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 C="$HERE/console.sh"
 REPO_REAL="$(cd "$HERE/../../.." && pwd)"
 QL="$REPO_REAL/scripts/handover/queue-lock.sh"
+# shellcheck source=../../lib/permission-test.sh
+. "$HERE/../../lib/permission-test.sh"
 
 # Templated (BSD/macOS mktemp requires one); refuse loudly on failure BEFORE
 # the EXIT trap is registered — an empty $tmp would otherwise make the trap
@@ -175,14 +177,31 @@ leak_free() {
 # unrelated
 # leak, or a line that merely LOOKS token-shaped, still fails loudly.
 known_tokens=("$token1" "$token4" "$token6a" "$token6ba" "$token7a")
-leak_lines="$(grep -rniE "$BANNED" "$root" 2>/dev/null)"
-leak_residual="$(printf '%s\n' "$leak_lines" | grep -vE -- '-pid[0-9]+')"
-check "8 no leak under the temp handover root (excluding release-token lines)" \
+token_residual() {
+    local token
+    for token in "$@"; do
+        [ -n "$token" ] || { echo "empty release-token capture" >&2; return 2; }
+    done
+    # Match the entire indented token line in console-template.md, not a
+    # substring. Scan raw content, without grep's filename/line prefixes.
+    grep -vxFf <(printf '   %s\n' "$@") || [ "$?" -eq 1 ]
+}
+token_rc=0
+token_residual "${known_tokens[@]}" </dev/null || token_rc=$?
+check "8 every known release token was actually captured" "$token_rc" "0"
+leak_lines="$(grep -rhEi "$BANNED" "$root" 2>/dev/null)"
+leak_residual="$(printf '%s\n' "$leak_lines" | token_residual "${known_tokens[@]}")"
+check "8 no leak under the temp handover root (excluding exact release-token lines)" \
     "$(printf '%s\n' "$leak_residual" | grep -c .)" "0"
-token_lines="$(printf '%s\n' "$leak_lines" | grep -E -- '-pid[0-9]+')"
-unaccounted_token_lines="$(printf '%s\n' "$token_lines" | grep -vFf <(printf '%s\n' "${known_tokens[@]}"))"
-check "8 every release-token line found matches a token 'new' actually printed" \
-    "$(printf '%s\n' "$unaccounted_token_lines" | grep -c .)" "0"
+check "8 exact known token line is exempt" \
+    "$(printf '   %s\n' "$token1" | token_residual "${known_tokens[@]}")" ""
+# A legitimate token must not hide an unrelated banned value on the same line.
+mixed_line="   $token1 ${BANNED%%|*}"
+check "8 negative control: a known token plus a banned value remains a leak" \
+    "$(printf '%s\n' "$mixed_line" | token_residual "${known_tokens[@]}")" "$mixed_line"
+empty_rc=0
+printf '%s\n' "$mixed_line" | token_residual "$token1" "" >/dev/null 2>&1 || empty_rc=$?
+check "8 negative control: an empty token capture is rejected" "$empty_rc" "2"
 check "8 no leak in console.sh" "$(leak_free "$C")" "yes"
 check "8 no leak in test-console.sh" "$(leak_free "$HERE/test-console.sh")" "yes"
 check "8 no leak in console-template.md" "$(leak_free "$REPO_REAL/docs/handover/console-template.md")" "yes"
@@ -407,11 +426,13 @@ out24a="$(console new --bucket rodir)"
 token24a="$(token_of "$out24a")"
 doc24A="$root/tester/rodir/DEMO-nextleg-${today}A-console.md"
 chmod 555 "$root/tester/rodir"
-rc24=0
-out24b="$(console next --bucket rodst --doc "$doc24A" 2>&1)" || rc24=$?
+if test_dir_unwritable "$root/tester/rodir" "24 non-writable predecessor dir"; then
+    rc24=0
+    out24b="$(console next --bucket rodst --doc "$doc24A" 2>&1)" || rc24=$?
+    check "24 non-writable predecessor dir: next --doc exits non-zero" "$([ "$rc24" -ne 0 ] && echo yes)" "yes"
+    check "24 non-writable predecessor dir: no launch line printed" "$(printf '%s\n' "$out24b" | grep -c '^launch: ')" "0"
+fi
 chmod 755 "$root/tester/rodir"
-check "24 non-writable predecessor dir: next --doc exits non-zero" "$([ "$rc24" -ne 0 ] && echo yes)" "yes"
-check "24 non-writable predecessor dir: no launch line printed" "$(printf '%s\n' "$out24b" | grep -c '^launch: ')" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc24A" "$token24a" >/dev/null 2>&1
 
 # --- 25: next is ATOMIC on the HANDOFF-create abort path -- it must not
@@ -426,18 +447,46 @@ doc25B="$root/tester/atomicdst/DEMO-nextleg-${today}B-console.md"
 handoff25A="$root/tester/atomicsrc/DEMO-nextleg-${today}A-console-HANDOFF.md"
 
 chmod 555 "$root/tester/atomicsrc"
-rc25=0
-console next --bucket atomicdst --doc "$doc25A" >/dev/null 2>&1 || rc25=$?
-check "25 step1: aborts non-zero" "$([ "$rc25" -ne 0 ] && echo yes)" "yes"
-check "25 step2: leaves no successor stub" "$([ -f "$doc25B" ] && echo yes || echo no)" "no"
+if test_dir_unwritable "$root/tester/atomicsrc" "25 HANDOFF-create abort / no stub / retry"; then
+    rc25=0
+    console next --bucket atomicdst --doc "$doc25A" >/dev/null 2>&1 || rc25=$?
+    check "25 step1: aborts non-zero" "$([ "$rc25" -ne 0 ] && echo yes)" "yes"
+    check "25 step2: leaves no successor stub" "$([ -f "$doc25B" ] && echo yes || echo no)" "no"
 
-chmod 755 "$root/tester/atomicsrc"
-rc25b=0
-console next --bucket atomicdst --doc "$doc25A" >/dev/null 2>&1 || rc25b=$?
-check "25 step3 (the control): the identical retry now succeeds" "$rc25b" "0"
-check "25 step3: the retry actually wrote the successor doc" "$([ -f "$doc25B" ] && echo yes)" "yes"
-check "25 step3: the retry actually wrote the HANDOFF" "$([ -f "$handoff25A" ] && echo yes)" "yes"
+    chmod 755 "$root/tester/atomicsrc"
+    rc25b=0
+    console next --bucket atomicdst --doc "$doc25A" >/dev/null 2>&1 || rc25b=$?
+    check "25 step3 (the control): the identical retry now succeeds" "$rc25b" "0"
+    check "25 step3: the retry actually wrote the successor doc" "$([ -f "$doc25B" ] && echo yes)" "yes"
+    check "25 step3: the retry actually wrote the HANDOFF" "$([ -f "$handoff25A" ] && echo yes)" "yes"
+else
+    chmod 755 "$root/tester/atomicsrc"
+fi
 HANDOVER_DIR="$root" bash "$QL" release "$doc25A" "$token25a" >/dev/null 2>&1
+
+# --- 25b: the same abort / no stub / retry chain through HANDOFF rendering.
+# An unresolved placeholder fails after the successor was already rendered.
+render_tpl_dir="$tmp/render-failure-templates"
+mkdir -p "$render_tpl_dir" "$root/tester/rendersrc"
+cp "$REPO_REAL/docs/handover/console-template.md" "$render_tpl_dir/console-template.md"
+printf '{{BROKEN_PLACEHOLDER}}\n' > "$render_tpl_dir/console-handoff-template.md"
+doc25bA="$root/tester/rendersrc/DEMO-nextleg-${today}A-console.md"
+doc25bB="$root/tester/renderdst/DEMO-nextleg-${today}B-console.md"
+handoff25bA="$root/tester/rendersrc/DEMO-nextleg-${today}A-console-HANDOFF.md"
+printf 'predecessor\n' > "$doc25bA"
+rc25c=0
+out25c="$(CONSOLE_TEMPLATE_DIR="$render_tpl_dir" console next --bucket renderdst --doc "$doc25bA" 2>&1)" || rc25c=$?
+check "25b step1: render aborts with exit 1" "$rc25c" "1"
+check "25b step1: failure names the unresolved placeholder" "$(printf '%s\n' "$out25c" | grep -c 'unresolved placeholder {{BROKEN_PLACEHOLDER}}')" "1"
+check "25b step1: render failure prints no launch line" "$(printf '%s\n' "$out25c" | grep -c '^launch: ')" "0"
+check "25b step2: leaves no successor stub" "$([ -e "$doc25bB" ] && echo yes || echo no)" "no"
+check "25b step2: leaves no partial HANDOFF" "$([ -e "$handoff25bA" ] && echo yes || echo no)" "no"
+cp "$REPO_REAL/docs/handover/console-handoff-template.md" "$render_tpl_dir/console-handoff-template.md"
+rc25d=0
+CONSOLE_TEMPLATE_DIR="$render_tpl_dir" console next --bucket renderdst --doc "$doc25bA" >/dev/null 2>&1 || rc25d=$?
+check "25b step3 (the control): retry with repaired template succeeds" "$rc25d" "0"
+check "25b step3: retry wrote the successor doc" "$([ -s "$doc25bB" ] && echo yes)" "yes"
+check "25b step3: retry wrote the HANDOFF" "$([ -s "$handoff25bA" ] && echo yes)" "yes"
 
 # --- 26: {{RELEASE_TOKEN}} carries the REAL acquired token into the doc on
 # --arm -- the one path that had no other way to deliver it to the launched
