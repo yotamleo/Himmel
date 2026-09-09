@@ -59,7 +59,7 @@ SS_SSHD_WORLD = (
 )
 IP_ADDR = (
     "1: lo    inet 127.0.0.1/8 scope host lo\n"
-    "2: enp0s3    inet 10.0.2.15/24 brd 10.0.2.255 scope global enp0s3\n"
+    "2: enp0s3    inet 10.0.2.15/24 brd 10.0.2.255 scope global enp0s3\n"  # leak-allow: private-lan-ip VirtualBox NAT default guest IP fixture
 )
 IP_ADDR_ROUTABLE = (
     "1: lo    inet 127.0.0.1/8 scope host lo\n"
@@ -69,7 +69,7 @@ IP_ADDR_ROUTABLE = (
 # sudo fixtures: pty-merged prompt preamble MUST be present (D2/F2).
 SUDO_PROMPT = "[sudo] password for osboxes: "
 JOURNAL_LOCAL = SUDO_PROMPT + (
-    "Jun 21 10:00:00 h sshd[1]: Accepted publickey for osboxes from 10.0.2.2 port 5 ssh2\n"
+    "Jun 21 10:00:00 h sshd[1]: Accepted publickey for osboxes from 10.0.2.2 port 5 ssh2\n"  # leak-allow: private-lan-ip VirtualBox NAT host-side gateway fixture
     "Jun 21 10:01:00 h sshd[2]: Accepted password for osboxes from 127.0.0.1 port 6 ssh2\n"
 )
 JOURNAL_FOREIGN = SUDO_PROMPT + (
@@ -211,7 +211,7 @@ class TestListeningSockets(unittest.TestCase):
         fr = FakeRunner({"ss -tlnH": (0, SS_LOOPBACK_ONLY), "ip -o addr": (0, IP_ADDR)})
         r = vp.check_listening_sockets(fr)
         self.assertEqual(r.status, vp.PASS)
-        self.assertIn("10.0.2.15", r.detail)   # NIC in detail
+        self.assertIn("10.0.2.15", r.detail)   # NIC in detail  # leak-allow: private-lan-ip VirtualBox NAT default guest IP assertion
 
     def test_world_bound_unknown_port_fail(self):
         fr = FakeRunner({"ss -tlnH": (0, SS_WORLD_BAD), "ip -o addr": (0, IP_ADDR)})

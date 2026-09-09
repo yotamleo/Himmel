@@ -5,10 +5,11 @@
 #
 # Two plugin classes are checked, each against its TRUE upstream via `gh api`:
 #   1. Pinned remotes — any plugin in marketplace.json whose source is a git
-#      remote with a ref: {github, repo, ref} or {url, url, ref} (the explicit
-#      HTTPS url form claude-obsidian uses after HIMMEL-549). Two sub-cases:
-#        a. Plain pin (no override): drift = the pinned `ref` (a 40-hex SHA) !=
-#           the marketplace repo's default-branch HEAD. (kepano/obsidian.)
+#      remote with a ref or sha: {github, repo, ref} or {url, url, ref|sha}
+#      (the explicit HTTPS url form claude-obsidian and plannotator-effective-html
+#      use after HIMMEL-549 / HIMMEL-2837). Two sub-cases:
+#        a. Plain pin (no override): drift = the pinned `ref`/`sha` (a 40-hex SHA)
+#           != the marketplace repo's default-branch HEAD. (kepano/obsidian.)
 #        b. Fork-with-upstream override (scripts/plugin-upstreams.json): the
 #           marketplace `repo` is OUR fork, so a HEAD compare would only catch
 #           fork-vs-pin drift, never the real signal. The override names the TRUE
@@ -144,9 +145,10 @@ def repo_of(s):
     return ""
 for p in m.get("plugins", []):
     s = p.get("source")
-    if isinstance(s, dict) and s.get("source") in ("github", "url") and s.get("ref"):
+    if isinstance(s, dict) and s.get("source") in ("github", "url") and (s.get("ref") or s.get("sha")):
         o = ups.get(p["name"]) or {}
-        print("|".join([p["name"], repo_of(s), s["ref"],
+        ref = s.get("ref") or s.get("sha")
+        print("|".join([p["name"], repo_of(s), ref,
                         o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", "")]))
 PY
 )"

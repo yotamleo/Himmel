@@ -380,7 +380,7 @@ for bad in 'win2"&calc' 'win2;rm -rf /' 'win2|whoami' 'win2$(id)' 'win2`id`' 'wi
     assert_rc "rejects --ship-to '$bad'" 1 "$rc"
 done
 # And still accepts the shapes a real ssh target takes.
-for good in win2 my-host.example.com user@win2 10.0.0.5 host_1; do
+for good in win2 my-host.example.com user@win2 10.0.0.5 host_1; do  # leak-allow: private-lan-ip fixture: accepted-shape ssh-target list
     rc=0; run_cron arm --ship-to "$good" --dry-run >/dev/null 2>&1 || rc=$?
     assert_rc "accepts --ship-to '$good'" 0 "$rc"
 done

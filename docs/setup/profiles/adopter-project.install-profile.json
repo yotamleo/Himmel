@@ -1,0 +1,12 @@
+{
+  "alwaysOn": false,
+  "devOverlay": false,
+  "handover": { "mode": "inline", "path": "" },
+  "lanes": [],
+  "lanesMeaningful": true,
+  "pluginSet": "lean",
+  "profile": "starter",
+  "schemaVersion": 2,
+  "scope": "project",
+  "vault": { "mode": "none", "path": "" }
+}

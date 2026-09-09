@@ -64,8 +64,9 @@
 #   1  usage error
 #   2  required tool missing (git or gh)
 #   3  refused: no local graphify-out/graph.json on disk
-#   4  refused: repo does not track graphify-out/graph.json (HIMMEL-1123 not
-#      applied here — nothing to publish TO)
+#   4  refused: repo does not track graphify-out/graph.json (HIMMEL-2705 step
+#      1: graphify-out/ retired from the git tree, gitignored outright —
+#      nothing to publish TO, permanently)
 #   5  refused: nothing newer to publish (local graph == shipped graph)
 #   6  refused: working tree has uncommitted changes outside
 #      graphify-out/{graph.json,GRAPH_REPORT.md}
@@ -155,9 +156,13 @@ GRAPH_PATH="graphify-out/graph.json"
 REPORT_PATH="graphify-out/GRAPH_REPORT.md"
 corpus=$(basename "$repo_root")
 
-# --- 1. repo tracks the graph at all (HIMMEL-1123 applied here) -------------
+# --- 1. repo tracks the graph at all -----------------------------------------
+# graphify-out/ was REMOVED from the git tree entirely and gitignored outright
+# (HIMMEL-2705 step 1) -- this repo's derived graph no longer publishes at
+# all. That is the permanent steady state now, not a gap HIMMEL-1123 could
+# still close, so this refusal is expected to fire on every invocation.
 if ! git ls-files --error-unmatch "$GRAPH_PATH" >/dev/null 2>&1; then
-    echo "ERR graph-publish: this repo does not track $GRAPH_PATH (HIMMEL-1123 not applied here) — nothing to publish to." >&2
+    echo "ERR graph-publish: this repo does not track $GRAPH_PATH (HIMMEL-2705 step 1: graphify-out/ retired from the git tree, gitignored outright) — nothing to publish to." >&2
     exit 4
 fi
 

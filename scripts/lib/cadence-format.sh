@@ -135,8 +135,21 @@
 # runner to have missed and no re-arm is needed for existing cadences; this
 # bump exists only to add "upstream-watch" to CADENCE_RUNNER_BASENAMES below so
 # its own runner participates in the same staleness-stamp convention.
+# v17 (HIMMEL-2840): the three pipeline POSIX runners (pipeline-harvest,
+# pipeline-synthesize, pipeline-health) now stamp the FULL arm-time PATH
+# snapshot instead of prepending only the node directory
+# (`export PATH=<node_dir>:$PATH`) — the old line left every other arm-time
+# user bin dir (~/.local/bin uv tools, bun, cargo, go) off PATH under cron's
+# minimal PATH=/usr/bin:/bin, which is why the ig-media-enrich leg could not
+# find gallery-dl. One shared helper (runner_path_snapshot in
+# pipeline-cadence.sh) now feeds both the pipeline runners and the
+# pipeline-fetch-health runner, so the two can no longer disagree. An armed
+# v16 pipeline runner keeps firing with the old node-dir-only PATH; re-arm
+# with `pipeline-cadence.sh arm --force` to pick up the full snapshot. The
+# other cadences are unaffected but stamp v17 too, so one version still
+# answers "is this runner current".
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=16
+CADENCE_RUNNER_FORMAT_VERSION=17
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).

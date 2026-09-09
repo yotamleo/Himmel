@@ -301,15 +301,15 @@ gotchas (macOS bash 4, Windows MSYS_NO_PATHCONV, realpath fallbacks),
 per-platform shell setup — lives at
 [`docs/setup/new-machine.md`](docs/setup/new-machine.md).
 
-Adopting himmel in your own repo (or user scope) is one command —
-`node scripts/himmelctl/bin.js install` walks you through it
-interactively. Under the hood it runs
-`bash scripts/adopt.sh --profile core --scope project --target /path/to/repo`
-(brings the harness — hooks + guardrails + worktree commands + marketplace
-plugins/skills — over in one shot); invoke that directly for the manual or
-CI path. Full profile/scope matrix, the Windows `adopt.ps1` twin, and the
-à-la-carte parts:
-[`docs/setup/use-on-your-project.md`](docs/setup/use-on-your-project.md).
+Adopting himmel in your own repo (or user scope) is two commands —
+`git clone https://github.com/yotamleo/Himmel` then
+`node himmel/scripts/himmelctl/bin.js install --scope project` (or `--scope user`)
+brings the harness over in one shot: hooks, guardrails, worktree commands and
+marketplace plugins/skills. Drop `--scope` to walk the wizard interactively.
+What each scope and install profile actually lands, the Windows caveat, and the
+adaptation checklist for a repo that is not himmel:
+[`docs/setup/install.md`](docs/setup/install.md). Coming from an older himmel
+install: [`docs/setup/migrating.md`](docs/setup/migrating.md).
 
 **Lifecycle after install:** update the harness with `/himmel-update` (`git
 pull` + marketplace re-sync — Claude Code's own `autoUpdate` does **not**
