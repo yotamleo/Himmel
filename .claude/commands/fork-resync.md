@@ -173,6 +173,7 @@ Same as `/drift-fix` steps 6–9:
   refused, exit 12) or `scripts/handover/pr-merge.sh`. **The ≥1-approval rule
   applies to this cadence exactly as it does to a human PR** — green CI is
   necessary, never sufficient.
+  If the base branch's ruleset requires a review no automation identity can satisfy, `merge-on-green.sh` exits 17 (`policy-refused`) and the merge is a human admin action; see HIMMEL-2887.
   Never `--admin`, never a branch-protection override. A merge refused for want
   of an approval is the rule working: leave the PR open, report `awaiting
   approval`, and stop. That is a successful run — the re-sync is captured in a

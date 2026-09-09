@@ -61,6 +61,9 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #                        finds nothing. Prune cases point it at a fixture repo
 #                        or at the fixture worktree itself.
 #   STUB_DEFAULT_BRANCH  `defaultBranchRef.name` in the repo-meta query. Default main.
+#   STUB_MERGE_STATE     fresh mergeStateStatus. Default CLEAN.
+#   STUB_REVIEW_DECISION fresh reviewDecision. Default empty (no review rule).
+#   STUB_POLICY_FAIL=1   the fresh merge-policy query fails.
 #   STUB_BASE_PREMERGE   `baseRefName` in the FIX-1 pre-merge re-query (fires
 #                        after check-ci, before merging). Default = STUB_BASE.
 #   STUB_DEFAULT_BRANCH_PREMERGE  `defaultBranchRef.name` in the FIX-1 pre-merge
@@ -106,6 +109,7 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #                        case would prove nothing about the pre-merge re-read.
 #   STUB_CI_RC          exit code of the stub check-ci. Default 0.
 #   STUB_MERGE_FAIL=1   `gh pr merge` exits 1 (generic failure).
+#   STUB_MERGE_POLICY_REFUSED=1  merge exits 1 with GitHub's base-policy refusal.
 #   STUB_POST_STATE     PR state the post-merge re-query returns. Default MERGED.
 #   STUB_POST_STATE_FAIL=1  the post-merge state re-query fails (indeterminate).
 #   STUB_POST_HEAD      headRefOid the failure-recovery re-query
@@ -237,6 +241,9 @@ case "$verb" in
                 fi
                 printf '%s|https://github.com/%s/pull/%s|%s|%s|%s|%s' \
                     "${STUB_STATE-OPEN}" "$nwo" "${STUB_NUM:-77}" "${STUB_NUM:-77}" "${STUB_SHA-abc123def456}" "${STUB_BASE-main}" "${STUB_HEAD_BRANCH-feat/stub-head}" ;;
+            "mergeStateStatus,reviewDecision")
+                [ "${STUB_POLICY_FAIL:-0}" = "1" ] && { echo "gh: policy query failed" >&2; exit 1; }
+                printf '%s|%s' "${STUB_MERGE_STATE-CLEAN}" "${STUB_REVIEW_DECISION-}" ;;
             "baseRefName")
                 # FIX-1 pre-merge re-query (HIMMEL-1080 CR round-1, codex-adv):
                 # a fresh baseRefName read right before merging, independent of
@@ -343,6 +350,7 @@ case "$verb" in
         esac
         ;;
     "pr merge")
+        [ "${STUB_MERGE_POLICY_REFUSED:-0}" = "1" ] && { echo "Pull request $nwo#77 is not mergeable: the base branch policy prohibits the merge." >&2; exit 1; }
         [ "${STUB_MERGE_FAIL:-0}" = "1" ] && { echo "merge conflict / head moved" >&2; exit 1; }
         echo "merged"
         ;;
@@ -805,6 +813,31 @@ assert_audit_has "audit records MERGING intent"   "MERGING"
 assert_audit_has "audit records MERGED + sha"     "MERGED"
 assert_audit_has "audit records the certified sha" "sha=feedface99"
 
+# HIMMEL-2887: removing the fresh policy guard would call merge despite an
+# outstanding review rule. The call log proves refusal happens BEFORE merge.
+STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 17 "green checks but required review → exit 17 pre-merge"
+assert_audit_has "pre-merge policy: deterministic refusal" "REFUSED reason=policy-refused phase=premerge"
+if [ "$(grep -c '^pr merge ' "$LAST_GH_LOG")" -eq 0 ]; then pass; else fail "pre-merge policy: expected zero merge calls"; fi
+assert_audit_lacks "pre-merge policy: no merge intent" "MERGING"
+assert_gh_has "pre-merge policy: query pins resolved PR identity" "pr view 77 --repo owner/repo --json mergeStateStatus,reviewDecision"
+
+STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 17 "dry-run reports required review" -- --dry-run
+assert_gh_lacks "dry-run policy: no merge attempted" "pr merge"
+
+# Both halves matter: CLEAN with a review requirement, and BLOCKED without
+# REVIEW_REQUIRED, still defer the actual merge decision to GitHub.
+STUB_MERGE_STATE=CLEAN STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 0 "CLEAN policy → merge call"
+assert_merge_has "CLEAN policy: merge attempted" "pr merge 77 --repo owner/repo"
+STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=APPROVED run_mog 0 "BLOCKED but approved → merge call"
+assert_merge_has "approved policy: merge attempted" "pr merge 77 --repo owner/repo"
+
+STUB_POLICY_FAIL=1 run_mog 13 "unreadable pre-merge policy → exit 13"
+assert_gh_lacks "unreadable policy: no merge attempted" "pr merge"
+STUB_MERGE_STATE="" run_mog 13 "missing pre-merge state → exit 13"
+assert_gh_lacks "missing policy: no merge attempted" "pr merge"
+STUB_CI_RC=3 STUB_MERGE_STATE=BLOCKED STUB_REVIEW_DECISION=REVIEW_REQUIRED run_mog 14 "red checks take precedence over policy refusal"
+assert_gh_lacks "red checks: policy query not reached" "--json mergeStateStatus,reviewDecision"
+
 # 9b. Base-branch guard (HIMMEL-1080): PR based on the repo's default branch
 # still reaches the merge — the guard is additive, not a behavior change for
 # the (common) approved-target case.
@@ -907,6 +940,14 @@ STUB_MERGE_FAIL=1 STUB_POST_STATE=OPEN run_mog 15 "merge failure + PR OPEN → e
 assert_state_requery "failed merge re-queries PR state"
 assert_audit_has "unproven merge outcome is INDETERMINATE" "INDETERMINATE reason=merge-pending-unconfirmed"
 assert_audit_lacks "unproven merge outcome is not claimed as a refusal" "REFUSED"
+
+# HIMMEL-2887: an explicit base-policy rejection is definitive, not a queued
+# merge. Without the stderr classification this incorrectly exits 15 pending.
+STUB_MERGE_POLICY_REFUSED=1 STUB_POST_STATE=OPEN run_mog 17 "base branch policy prohibits the merge → exit 17"
+assert_merge_has "policy rejection: merge was attempted" "pr merge 77 --repo owner/repo"
+assert_audit_has "policy rejection: deterministic refusal" "REFUSED reason=policy-refused"
+assert_audit_lacks "policy rejection: never pending-unconfirmed" "INDETERMINATE"
+assert_err_has "policy rejection: surfaces GitHub's refusal" "base branch policy prohibits the merge"
 
 # 11b. gh exited non-zero but the PR is MERGED at the certified sha/base →
 # success (exit 0), audited with the gh exit for the record. (Historically the

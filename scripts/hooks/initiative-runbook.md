@@ -61,6 +61,7 @@ Steps run in this canonical order; only the tokens on the pointer's
   time, so a merge refused for want of an approval is the rule working — leave
   the PR open and report it. `scripts/handover/pr-merge.sh` (plain-first)
   remains the alternative. Advisory — branch protection still applies.
+  If the base branch's ruleset requires a review no automation identity can satisfy, `merge-on-green.sh` exits 17 (`policy-refused`) and the merge is a human admin action; see HIMMEL-2887.
   A blocked gate on this branch parks it and moves to the next queue item —
   never retry-loop;
   see

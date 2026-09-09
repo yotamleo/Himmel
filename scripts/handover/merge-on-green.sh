@@ -94,7 +94,8 @@
 #       branch protection is unreadable or lacks required status checks —
 #       at either the guard-2b check or the pre-merge re-check.
 #   13  cannot resolve the PR, its head SHA, or a well-formed metadata line
-#       (six pipe-joined fields incl. the head branch) — refused
+#       (six pipe-joined fields incl. the head branch), or cannot read the
+#       pre-merge policy — refused
 #   14  check-ci gate not green (unresolved threads / red CI / changes requested)
 #   15  merge failed (gh error, incl. a --match-head-commit head-moved abort, a
 #       branch-delete error where the PR did NOT reach MERGED, an indeterminate
@@ -109,6 +110,9 @@
 #       an unproven outcome is reported as pending-unconfirmed, never REFUSED)
 #   16  audit sink not writable, or the MERGING record could not be written —
 #       refused (an unauditable merge must not proceed)
+#   17  policy-refused: base branch policy explicitly prohibits the merge, or
+#       green checks still leave BLOCKED + REVIEW_REQUIRED before merging —
+#       refused; an unsatisfiable review rule needs a human admin action
 #
 # Environment:
 #   ARMAUTOMERGE           Must be truthy (1/true/on/yes) to enable at all.
@@ -235,14 +239,13 @@ PUBLIC_ORIGIN_DETAIL=""
 # list all refuse, never "assume protected".
 #
 # Reads the CLASSIC protection endpoint, and reads ONLY required_status_checks
-# + enforce_admins from it. It deliberately infers NOTHING about reviews: on
-# this repo the approval requirement (1 approving review + code-owner review)
-# lives in a RULESET (`protect-main`), so `/branches/main/protection` returns
-# `required_pull_request_reviews: null` even though approvals ARE enforced.
-# That null is CORRECT — do not "fix" it, and do not gate this helper on
-# approvals. GitHub enforces the ruleset at `gh pr merge` time; a merge refused
-# there for want of an approval is a FINDING to report, never something to
-# bypass (which is also why this lever never passes `--admin`). Rulesets may
+# + enforce_admins from it. It deliberately infers NOTHING about reviews:
+# rulesets can require approvals even when `/branches/main/protection` returns
+# `required_pull_request_reviews: null`. That null is CORRECT — do not "fix"
+# it or gate this helper on approvals. The pre-merge PR-policy read below
+# catches BLOCKED + REVIEW_REQUIRED; GitHub still enforces rulesets at merge
+# time. A refusal is reported as policy-refused, never bypassed (which is also
+# why this lever never passes `--admin`). Rulesets may
 # ADD to protection, never replace it, so the classic read stays authoritative
 # for the checks this gate requires.
 public_origin_merge_allowed() {
@@ -525,6 +528,24 @@ clear_cr_marker_for_branch() {
 # Not on --dry-run: clearing is a real mutation, and --dry-run must change
 # nothing.
 [ "$DRY_RUN" -eq 1 ] || clear_cr_marker_for_branch "$head_branch"
+
+# HIMMEL-2887: check-ci proved green, but a ruleset can still require a review
+# the automation identity cannot supply. Read the PR's effective policy, not
+# classic protection's nullable review field. Keep the base/privacy re-checks
+# below last, after this additional round-trip and the marker-clear work.
+policy_rc=0
+policy=$("$GH" pr view "$pr_num" --repo "$nwo" --json mergeStateStatus,reviewDecision \
+        --jq '"\(.mergeStateStatus)|\(.reviewDecision)"' 2>/dev/null) || policy_rc=$?
+if [ "$policy_rc" -ne 0 ] || [[ "$policy" != *'|'* ]] || [ -z "${policy%%|*}" ] || [ "${policy%%|*}" = "null" ]; then
+    echo "merge-on-green: cannot read the PR's pre-merge policy — refusing to guess." >&2
+    audit "REFUSED reason=policy-query-failed repo=$nwo pr=#$pr_num sha=$sha"
+    exit 13
+fi
+if [ "$policy" = "BLOCKED|REVIEW_REQUIRED" ]; then
+    echo "merge-on-green: PR #$pr_num is BLOCKED by a required review despite green checks — policy-refused. Leave the PR open; an unsatisfiable review rule requires a human admin action, never an automated bypass." >&2
+    audit "REFUSED reason=policy-refused phase=premerge mergeStateStatus=BLOCKED reviewDecision=REVIEW_REQUIRED repo=$nwo pr=#$pr_num sha=$sha"
+    exit 17
+fi
 
 # 3b. Base-branch re-verification (HIMMEL-1080 CR round-1, codex-adv) — guard 2c
 # above only proved the base binding at QUERY time, but check-ci.sh just above
@@ -1048,11 +1069,17 @@ record_after_report_pending_marker() {
 merge_rc=0
 merge_out=""
 merge_out=$("$GH" pr merge "$pr_num" --repo "$nwo" --squash --match-head-commit "$sha" 2>&1) || merge_rc=$?
-# A non-zero gh status is not authoritative: gh can merge remotely and then fail
-# afterwards (network blip, post-merge bookkeeping). Re-read the remote PR state
-# for EVERY non-zero status rather than keying correctness to one gh error
-# phrase. MERGED at the certified sha/base is success because the requested
-# operation landed. An unreadable state is explicitly indeterminate — never
+# HIMMEL-2887: this explicit rejection means gh did not accept a merge request;
+# unlike a lost response, it is not a pending outcome to poll or retry.
+if [ "$merge_rc" -ne 0 ] && [[ "$merge_out" == *"base branch policy prohibits the merge"* ]]; then
+    echo "merge-on-green: base branch policy refused PR #$pr_num (gh: $merge_out). Leave the PR open; an unsatisfiable review rule requires a human admin action, never an automated bypass." >&2
+    audit "REFUSED reason=policy-refused phase=merge gh_rc=$merge_rc repo=$nwo pr=#$pr_num sha=$sha"
+    exit 17
+fi
+# Other non-zero gh statuses are not authoritative: gh can merge remotely and
+# then fail afterwards (network blip, post-merge bookkeeping). Re-read the remote
+# PR state for those errors. MERGED at the certified sha/base is success because
+# the requested operation landed. An unreadable state is indeterminate — never
 # reinterpret an API failure as evidence that no merge ran.
 if [ "$merge_rc" -ne 0 ]; then
     # HIMMEL-1697 (codex adversarial review, HIMMEL-1394 round 4): POLL, do not
