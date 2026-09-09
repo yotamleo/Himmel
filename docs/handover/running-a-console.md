@@ -42,8 +42,11 @@ then writes `<root>/<user>/<bucket>/<PREFIX>-nextleg-<date>A-console.md` from
 writes `…B-console.md` — it never overwrites.
 
 It then acquires the queue lock on that document and prints the
-`release-token:` line. **Record that token in the console's first Results
-bullet** — releasing the lock at wrap requires it.
+`release-token:` line. **That token belongs to the console you are about to
+launch** — record it in the console's first Results bullet, because releasing
+the lock at wrap requires it. The console *adopts* this lock; it does not
+acquire a second one. (`new` takes the lock and then exits, so a console that
+tried to acquire again would be refused by its own startup lock.)
 
 Finally it prints the launch line. Run it in a terminal of its own:
 
@@ -61,7 +64,9 @@ writes the result as its first Results bullet: who is alive (`ListAgents`),
 what locks are held **at the handover root** (not just its own bucket — a
 bucket sweep reports a false "no held locks"), the primary's head and remote,
 `bank-preflight.sh`, the live leg processes, host load, and the kit path. Then
-it acquires its own lock and tells its predecessor it is live.
+it records the lock token `new` printed — confirming with `queue-lock.sh
+status` that the lock is held, and acquiring one only if it reports `free` —
+and tells its predecessor it is live.
 
 ## Dispatching legs
 
@@ -100,20 +105,26 @@ green at that exact head, zero unresolved review threads, attestation trailers
 in the first commit) → `GO` → the leg merges and reports `MERGED #<n> → <sha>`.
 The console pulls the primary and the leg closes out its ticket.
 
+An armed merge stops at "awaiting approval" wherever branch protection requires
+a review the automation identity cannot give — on a single-maintainer repo the
+only path through is the admin bypass, which the merge script refuses by
+design — so the console relays the merge to the operator and sends `MERGED`
+back when it lands.
+
 ## Handing over
 
 Consoles hand over at **45 % context fill, or 90 k input tokens in one turn**.
 
 ```bash
-/console next --arm --doc <this console's own doc> --bucket <its bucket>
+/console next --arm --doc <this console's own doc> --bucket <its bucket> --prefix <its prefix>
 ```
 
-**Name your own document and bucket explicitly.** Without `--doc`, `next`
-hands over from the highest-lettered doc it can find — the wrong one as soon
-as another `new` has run or a successor already exists; and without
-`--bucket`, a console started in a non-default bucket writes its successor
-into the default one. The rendered console doc carries the exact command with
-both already filled in.
+**Name your own document, bucket and prefix explicitly.** Without `--doc`,
+`next` hands over from the highest-lettered doc it can find — the wrong one as
+soon as another `new` has run or a successor already exists; without
+`--bucket` and `--prefix` it re-resolves those from the environment and writes
+the successor into the wrong bucket, or under the wrong key. The rendered
+console doc carries the exact command with all three already filled in.
 
 `next` writes the successor stub (letter bumped, pointed at this console and
 its HANDOFF) and the predecessor's `-HANDOFF.md` skeleton, and arms the

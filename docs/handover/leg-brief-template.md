@@ -52,7 +52,10 @@ template_version: 2
 > 4. **Ship:** `<type>(<scope>): [<TICKET>] <subject>`, attestation trailers in
 >    the FIRST commit (`Platforms tested: <os>`; `Security reviewed: <token>`)
 >    — never a reactive amend. Push → PR → review → `READY <pr> <head> GREEN`
->    to the console → console `GO` → merge.
+>    to the console → console `GO` → merge. On an agreed review finding, sweep
+>    the same class across every site before the next round and report the
+>    other sites, not just the cited line — a review round spent enumerating
+>    instances of a class you already understood is a round wasted.
 > 5. After merge: pull the primary; close the ticket out with the PR and merge
 >    sha; WRAP — release the lock (paste the line), send `WRAPPED`, print the
 >    closable-window banner, and EXIT.

@@ -343,4 +343,36 @@ check "21 doc contains the literal '&' path intact" "$([ "$(grep -cF "$root_amp"
 token21="$(token_of "$out21")"
 HANDOVER_DIR="$root_amp" bash "$QL" release "$doc21" "$token21" >/dev/null 2>&1
 
+# --- 22: the resolved prefix is validated for EVERY source, not just the
+# --prefix flag -- JIRA_PROJECT_KEY reaches the same path construction.
+before22="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
+rc22=0
+( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY='../OTHER' \
+    bash "$C" new --bucket envprefixtest ) >/dev/null 2>&1 || rc22=$?
+check "22 JIRA_PROJECT_KEY='../OTHER' is refused" "$([ "$rc22" -ne 0 ] && echo yes)" "yes"
+after22="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
+check "22 JIRA_PROJECT_KEY='../OTHER' writes nothing" "$before22" "$after22"
+
+# --- 23: HANDOFF creation is exclusive-create too, closing the same class
+# of race the successor-doc claim closed: two `next` runs targeting
+# DIFFERENT successor buckets but the SAME predecessor must not both
+# render (and thereby clobber) the one shared HANDOFF.
+out23a="$(console new --bucket handoffracesrc)"
+token23a="$(token_of "$out23a")"
+doc23A="$root/tester/handoffracesrc/DEMO-nextleg-${today}A-console.md"
+handoff23A="$root/tester/handoffracesrc/DEMO-nextleg-${today}A-console-HANDOFF.md"
+
+console next --bucket handoffracedst1 --doc "$doc23A" >/dev/null
+doc23B1="$root/tester/handoffracedst1/DEMO-nextleg-${today}B-console.md"
+check "23 first next writes its own successor" "$([ -f "$doc23B1" ] && echo yes)" "yes"
+check "23 first next creates the HANDOFF" "$([ -f "$handoff23A" ] && echo yes)" "yes"
+sum23_before="$(cksum < "$handoff23A")"
+
+console next --bucket handoffracedst2 --doc "$doc23A" >/dev/null
+doc23B2="$root/tester/handoffracedst2/DEMO-nextleg-${today}B-console.md"
+check "23 second next (different bucket, same predecessor) still writes its own successor" "$([ -f "$doc23B2" ] && echo yes)" "yes"
+sum23_after="$(cksum < "$handoff23A")"
+check "23 the shared HANDOFF is left byte-identical, not re-rendered" "$sum23_before" "$sum23_after"
+HANDOVER_DIR="$root" bash "$QL" release "$doc23A" "$token23a" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

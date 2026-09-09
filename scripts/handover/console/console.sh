@@ -203,6 +203,12 @@ if ! slug="$(user_slug)"; then
     exit 2
 fi
 repo="$(resolve_repo)"
+# bucket: --bucket, else $CONSOLE_BUCKET, else derived from the repo
+# basename — every branch already goes through `slugify` uniformly, so no
+# ONE source can bypass sanitization the others get (the class codex-3
+# round 5 flagged for --prefix). The only gap slugify itself doesn't close
+# is a source that slugifies to nothing (e.g. CONSOLE_BUCKET='###') —
+# refused once, after precedence settles, same principle as prefix below.
 if [ -n "$BUCKET" ]; then
     bucket="$(slugify "$BUCKET")"
 elif [ -n "${CONSOLE_BUCKET:-}" ]; then
@@ -210,25 +216,35 @@ elif [ -n "${CONSOLE_BUCKET:-}" ]; then
 else
     bucket="$(slugify "$(basename "$repo")")"
 fi
+if [ -z "$bucket" ]; then
+    err "resolved --bucket is empty after slugifying — pass an explicit --bucket with at least one alphanumeric character"
+    exit 1
+fi
+# prefix: --prefix, else $JIRA_PROJECT_KEY, else derived from bucket.
+# Validated ONCE here, on the RESOLVED value, after precedence settles —
+# not per-branch — so no source (flag, env, or a future derivation change)
+# can bypass it. Round 4 only validated the --prefix flag branch;
+# JIRA_PROJECT_KEY reached the same path construction unvalidated, the
+# exact asymmetry this round's codex-3 caught. Unlike --name/--bucket
+# (slugified), a malformed prefix is refused rather than silently
+# rewritten: a Jira-style project key is uppercase alphanumerics, and
+# '../OTHER' copied verbatim would escape the selected bucket entirely.
 if [ -n "$PREFIX" ]; then
-    # Unlike --name/--bucket (slugified), a mistyped --prefix is refused
-    # rather than silently rewritten: a Jira-style project key is uppercase
-    # alphanumerics (the auto-derived fallback below already builds one
-    # this way), and '--prefix ../OTHER' copied verbatim would otherwise
-    # escape the selected bucket entirely — the same path-escape class the
-    # --name fix closed, just missed on this sibling input.
-    case "$PREFIX" in
-        ''|*[!A-Z0-9]*)
-            err "--prefix must be non-empty uppercase alphanumeric (A-Z0-9), got '$PREFIX'"
-            exit 1
-            ;;
-    esac
     prefix="$PREFIX"
+    prefix_source="--prefix"
 elif [ -n "${JIRA_PROJECT_KEY:-}" ]; then
     prefix="$JIRA_PROJECT_KEY"
+    prefix_source="JIRA_PROJECT_KEY"
 else
     prefix="$(printf '%s' "$bucket" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9')"
+    prefix_source="derived from --bucket"
 fi
+case "$prefix" in
+    ''|*[!A-Z0-9]*)
+        err "resolved prefix ($prefix_source) must be non-empty uppercase alphanumeric (A-Z0-9), got '$prefix'"
+        exit 1
+        ;;
+esac
 # `next` without an explicit --name derives the chain name from --doc's own
 # basename (<PREFIX>-nextleg-<DATE><LETTER>-<NAME>.md) — a cross-bucket
 # --doc flow must not force the operator to also repeat --name.
@@ -504,9 +520,17 @@ cmd_next() {
     echo "doc: $doc"
     echo "session: $session"
 
-    if [ -f "$predecessor_handoff" ]; then
-        echo "handoff: $predecessor_handoff (exists — left unchanged)"
-    else
+    # Same class as the successor-doc race this round's codex-1 fixed: a
+    # plain `[ -f ]` check here is check-then-write, so two concurrent
+    # `next` runs targeting DIFFERENT successor buckets but the SAME
+    # predecessor (e.g. both via --doc) could both see "missing" and both
+    # render, the second clobbering the first's HANDOFF. Claimed the same
+    # exclusive-create way — but unlike the successor doc, losing the claim
+    # here is NOT an error: an existing HANDOFF is deliberately left
+    # unchanged and reported, exactly as before.
+    set -C
+    if : 2>/dev/null > "$predecessor_handoff"; then
+        set +C
         render_template "$handoff_template" "$predecessor_handoff" \
             PREDECESSOR_LETTER "$predecessor_letter" \
             LETTER "$successor_letter" \
@@ -516,6 +540,9 @@ cmd_next() {
             BUCKET "$bucket" \
             KIT "$kit"
         echo "handoff: $predecessor_handoff"
+    else
+        set +C
+        echo "handoff: $predecessor_handoff (exists — left unchanged)"
     fi
 
     echo "launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""
