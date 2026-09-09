@@ -96,7 +96,13 @@ render_template() {
     shift 2
     content="$(cat "$template")"
     while [ "$#" -gt 0 ]; do
-        content="${content//"{{$1}}"/$2}"
+        # The replacement ($2) is QUOTED: on bash 5.2+ with the
+        # patsub_replacement option, an UNQUOTED replacement in
+        # ${var//pat/repl} treats '&' as "insert the matched text" — a repo
+        # path or handover root containing '&' would silently corrupt the
+        # render (worse: it re-inserts a literal "{{...}}", which then trips
+        # the unresolved-placeholder guard below and deletes the output).
+        content="${content//"{{$1}}"/"$2"}"
         shift 2
     done
     printf '%s\n' "$content" > "$out"
@@ -205,6 +211,18 @@ else
     bucket="$(slugify "$(basename "$repo")")"
 fi
 if [ -n "$PREFIX" ]; then
+    # Unlike --name/--bucket (slugified), a mistyped --prefix is refused
+    # rather than silently rewritten: a Jira-style project key is uppercase
+    # alphanumerics (the auto-derived fallback below already builds one
+    # this way), and '--prefix ../OTHER' copied verbatim would otherwise
+    # escape the selected bucket entirely — the same path-escape class the
+    # --name fix closed, just missed on this sibling input.
+    case "$PREFIX" in
+        ''|*[!A-Z0-9]*)
+            err "--prefix must be non-empty uppercase alphanumeric (A-Z0-9), got '$PREFIX'"
+            exit 1
+            ;;
+    esac
     prefix="$PREFIX"
 elif [ -n "${JIRA_PROJECT_KEY:-}" ]; then
     prefix="$JIRA_PROJECT_KEY"

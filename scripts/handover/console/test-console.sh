@@ -322,4 +322,25 @@ check "19 successor stub names an ABSOLUTE HANDOFF reference" "$(grep -cF "$hand
 check "19 successor stub does not embed the relative --doc literally" "$(grep -cF '../handovers' "$doc19B")" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc19A" "$token19a" >/dev/null 2>&1
 
+# --- 20: --prefix is refused, not silently rewritten, on a path-escape --
+before20="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
+rc20=0
+console new --bucket prefixtest --prefix '../OTHER' >/dev/null 2>&1 || rc20=$?
+check "20 new --prefix '../OTHER' exits non-zero" "$([ "$rc20" -ne 0 ] && echo yes)" "yes"
+after20="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
+check "20 new --prefix '../OTHER' writes nothing" "$before20" "$after20"
+
+# --- 21: a value containing '&' renders through the template intact ----
+# (bash 5.2+'s patsub_replacement would otherwise treat an UNQUOTED '&' in
+# the replacement as "insert the matched text").
+root_amp="$tmp/hand&over"
+mkdir -p "$root_amp"
+out21="$(console_root "$root_amp" new --bucket ampbucket)"
+doc21="$root_amp/tester/ampbucket/DEMO-nextleg-${today}A-console.md"
+check "21 new with '&' in the handover root writes the doc" "$([ -f "$doc21" ] && echo yes)" "yes"
+check "21 doc has no surviving placeholder" "$(grep -c '{{' "$doc21" 2>/dev/null)" "0"
+check "21 doc contains the literal '&' path intact" "$([ "$(grep -cF "$root_amp" "$doc21")" -gt 0 ] && echo yes)" "yes"
+token21="$(token_of "$out21")"
+HANDOVER_DIR="$root_amp" bash "$QL" release "$doc21" "$token21" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

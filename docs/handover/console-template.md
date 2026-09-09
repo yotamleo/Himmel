@@ -134,13 +134,14 @@ own end-of-session hook still writing — it prunes on the next sweep.
 
 At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
 
-1. `/console next --arm --doc "{{STATE_DIR}}/{{SESSION_NAME}}.md" --bucket {{BUCKET}}`
+1. `/console next --arm --doc "{{STATE_DIR}}/{{SESSION_NAME}}.md" --bucket {{BUCKET}} --prefix {{PREFIX}}`
    — writes the successor stub, writes this console's `-HANDOFF.md` skeleton,
-   and arms the successor. **Name your own document and bucket explicitly.**
+   and arms the successor. **Name your own document bucket and prefix explicitly.**
    Without `--doc`, `next` hands over from the highest-lettered doc it finds,
    which is the wrong one the moment another `new` has run or a successor
-   already exists; without `--bucket` it writes the successor into the default
-   repo bucket rather than this one. It prints
+   already exists; without `--bucket` and `--prefix` it resolves those from the
+   environment and writes the successor into the wrong bucket, or under the
+   wrong key, rather than continuing this chain. It prints
    the successor's signal path on its `armed:` line — **that** is the path
    step 3 touches, not this console's own `{{FILL_SIGNAL}}` (which fired when
    *this* session launched and nothing waits on it any more).
