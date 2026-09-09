@@ -1973,14 +1973,11 @@ rm -f "$s66_file"
 
 # --- T67: no resolvable session scope -> the feature turns ITSELF off -----
 # The safe degradation is the pre-HIMMEL-2813 argv-only behaviour, never a
-# user-wide file. Forced here by emptying both env scopes and putting a
-# failing `ps` first on PATH, so the POSIX-session-id fallback cannot
-# resolve either.
-S_STUB="$TMPDIR_ROOT/2813-stub-bin"
-mkdir -p "$S_STUB"
-printf '#!/bin/sh\nexit 1\n' > "$S_STUB/ps"
-chmod +x "$S_STUB/ps"
-out="$(QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" PATH="$S_STUB:$PATH" \
+# user-wide file. Emptying both scope sources is now sufficient: CR round 2
+# removed the POSIX-session-id fallback (it is shared across one terminal,
+# so it did not actually isolate sessions), which also removed the need for
+# a failing `ps` stub here.
+out="$(QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" \
     XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" \
     bash "$LIB" acquire "$S_DOC" "no-scope-sess" 2>&1)"
 rc=$?
@@ -1993,7 +1990,7 @@ if [ "$rc" -eq 0 ] && grepq "$out" '^release-token: no-scope-sess$' && [ "$s67_w
 else
     fail "T67: expected a clean acquire with no token written (rc=$rc written=$s67_written: $out)"
 fi
-out="$(QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" PATH="$S_STUB:$PATH" \
+out="$(QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" \
     XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" \
     bash "$LIB" release "$S_DOC" 2>&1)"
 rc=$?
@@ -2002,7 +1999,7 @@ if [ "$rc" -eq 2 ] && grepq "$out" 'release requires the session token'; then
 else
     fail "T67: expected the pre-2813 rc=2 refusal (rc=$rc: $out)"
 fi
-QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" PATH="$S_STUB:$PATH" \
+QUEUE_LOCK_SESSION_SCOPE="" CLAUDE_CODE_SESSION_ID="" \
     XDG_RUNTIME_DIR="$S_XDG" HANDOVER_DIR="$S_ROOT" QUEUE_LOCK_FORCE_RELEASE=1 \
     bash "$LIB" release "$S_DOC" >/dev/null 2>&1
 

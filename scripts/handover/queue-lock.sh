@@ -517,19 +517,23 @@ EOF
 _ql_token_dir() { printf '%s/himmel-queue-lock' "${XDG_RUNTIME_DIR:-/tmp}"; }
 
 # _ql_session_scope -- an id shared by every invocation of ONE session and by
-# no other, or rc 1 when none can be established. In order:
+# no other, or rc 1 when none can be established. Exactly two sources, both
+# genuinely per-session:
 #   QUEUE_LOCK_SESSION_SCOPE  explicit, for callers that know their own scope
 #                             (and for this repo's tests)
-#   CLAUDE_CODE_SESSION_ID    the natural per-session id under Claude Code,
-#                             which is where the autocompact this feature
-#                             exists for actually happens
-#   the POSIX session id      stable across invocations within one terminal /
-#                             login session, and distinct for legs launched
-#                             into their own windows
-# Honest limit: two sessions sharing ONE terminal share a POSIX session id and
-# would share a token file. Under Claude Code that case does not arise --
-# CLAUDE_CODE_SESSION_ID outranks the SID and is per-session -- and a caller
-# that needs the guarantee elsewhere sets QUEUE_LOCK_SESSION_SCOPE.
+#   CLAUDE_CODE_SESSION_ID    the per-session id under Claude Code, which is
+#                             where the autocompact this feature exists for
+#                             actually happens
+# There is deliberately NO fallback below those (CR round 2, codex-1). An
+# earlier revision fell back to the POSIX session id, which is shared by
+# every process in one terminal -- so two agents launched from the same
+# terminal would have shared a token file, and a sibling's token-less
+# release could recall the holder's token: the very hole the scope was added
+# to close, reintroduced one layer down. A guarantee that quietly does not
+# hold in some deployments is worse than no feature, so when neither source
+# is set the persistence turns itself off and the caller keeps today's
+# argv-only behaviour. Any other caller that wants it sets
+# QUEUE_LOCK_SESSION_SCOPE explicitly and thereby states its own scope.
 _ql_session_scope() {
     if [ -n "${QUEUE_LOCK_SESSION_SCOPE:-}" ]; then
         printf '%s' "$QUEUE_LOCK_SESSION_SCOPE"
@@ -539,12 +543,7 @@ _ql_session_scope() {
         printf '%s' "$CLAUDE_CODE_SESSION_ID"
         return 0
     fi
-    local sid
-    sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d '[:space:]')
-    case "$sid" in
-        ''|*[!0-9]*) return 1 ;;
-    esac
-    printf 'sid%s' "$sid"
+    return 1
 }
 
 _ql_digest_of() {
