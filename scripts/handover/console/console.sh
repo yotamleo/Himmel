@@ -340,6 +340,40 @@ cmd_new() {
     local session="${prefix}-nextleg-${date}${letter}-${name}"
     local fill_signal="$chain_dir/sig-$session"
     local log="$chain_dir/launch-$session.log"
+
+    echo "doc: $doc"
+    echo "session: $session"
+    echo "kit: $kit"
+
+    # The lock is what makes a console single-writer — starting one without
+    # it is exactly the failure the lock exists to prevent. Abort before the
+    # launch line and before any arm; the written doc is left in place
+    # (harmless — a later `new` bumps the letter, and the letter claim above
+    # already reserved it regardless of what happens here).
+    #
+    # Acquired BEFORE the render (not after, as earlier rounds had it): the
+    # token this prints is embedded into the document itself via
+    # {{RELEASE_TOKEN}}, so ACTION ZERO can adopt it from the doc it already
+    # loaded instead of depending on operator scrollback — and on --arm,
+    # nothing else could ever have delivered it to the launched console at
+    # all (do_arm's own argv carries no token, and HIMMEL-2813's per-session
+    # token file is keyed to THIS process, not the one `--arm` launches).
+    # Only stdout is captured (not stderr): queue-lock.sh's own diagnostics
+    # ("stderr says which" on a takeover) still stream live; only the
+    # release-token line needs to reach the render. Printed back out below,
+    # in the same position this contract has always used, so nothing is
+    # silently swallowed.
+    local lock_out release_token
+    if ! lock_out="$(HANDOVER_DIR="$root" bash "$repo/scripts/handover/queue-lock.sh" acquire "$doc")"; then
+        err "WARNING queue-lock acquire failed for $doc — refusing to launch without the lock (doc left in place)"
+        exit 1
+    fi
+    release_token="$(printf '%s\n' "$lock_out" | sed -n 's/^release-token: //p')"
+    if [ -z "$release_token" ]; then
+        err "queue-lock acquire for $doc reported success but printed no release-token line — refusing to render a document with an empty or bogus token"
+        exit 1
+    fi
+
     render_template "$console_template" "$doc" \
         LETTER "$letter" \
         PREDECESSOR "none — first console of the chain" \
@@ -352,20 +386,10 @@ cmd_new() {
         BUCKET "$bucket" \
         KIT "$kit" \
         FILL_SIGNAL "$fill_signal" \
-        FILL_PERCENT "$fill_percent"
+        FILL_PERCENT "$fill_percent" \
+        RELEASE_TOKEN "$release_token"
 
-    echo "doc: $doc"
-    echo "session: $session"
-    echo "kit: $kit"
-
-    # The lock is what makes a console single-writer — starting one without
-    # it is exactly the failure the lock exists to prevent. Abort before the
-    # launch line and before any arm; the written doc is left in place
-    # (harmless — a later `new` bumps the letter).
-    if ! HANDOVER_DIR="$root" bash "$repo/scripts/handover/queue-lock.sh" acquire "$doc"; then
-        err "WARNING queue-lock acquire failed for $doc — refusing to launch without the lock (doc left in place)"
-        exit 1
-    fi
+    printf '%s\n' "$lock_out"
 
     echo "launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""
 
@@ -503,6 +527,11 @@ cmd_next() {
     fi
     set +C
 
+    # `next` never acquires a lock itself (the successor takes its own at
+    # ACTION ZERO) — so, unlike `new`, there is no real token to carry here.
+    # An honest, explicit placeholder rather than an empty string: the
+    # successor's own ACTION ZERO acquires and records it, exactly as the
+    # console-template's own instructions already tell it to.
     render_template "$console_template" "$doc" \
         LETTER "$successor_letter" \
         PREDECESSOR "$predecessor_base" \
@@ -515,7 +544,8 @@ cmd_next() {
         BUCKET "$bucket" \
         KIT "$kit" \
         FILL_SIGNAL "$fill_signal" \
-        FILL_PERCENT "$fill_percent"
+        FILL_PERCENT "$fill_percent" \
+        RELEASE_TOKEN "none yet — acquire your own at ACTION ZERO and record it here"
 
     echo "doc: $doc"
     echo "session: $session"

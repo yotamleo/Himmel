@@ -44,10 +44,17 @@ Run these, in order, and write the result as the first bullet under
    `tick.sh` (the batched console snapshot), `headed-arm-leg.sh` (the leg
    launcher) and `inbox-send.sh` (rulings to a non-native lane).
 8. **Adopt the queue lock on THIS document — do not acquire a fresh one.**
-   `/console new` already acquired it and printed a `release-token:` line;
-   that token is yours, and releasing at wrap requires it. Record it in your
-   first bullet. Acquiring again fails with `Work is owned elsewhere`, because
-   the lock is held by the (now exited) process that created this document.
+   Your release token is:
+
+   ```text
+   {{RELEASE_TOKEN}}
+   ```
+
+   `/console new` acquired the lock and that token is yours; releasing at wrap
+   requires it. Copy it into your first bullet. Acquiring again fails with
+   `Work is owned elsewhere`, because the lock is held by the (now exited)
+   process that created this document — and on the `--arm` path there is no
+   terminal to read the token from, which is why it is written here.
    Check the state rather than assuming it:
    `HANDOVER_DIR="{{HANDOVER_ROOT}}" bash "{{REPO}}/scripts/handover/queue-lock.sh" status "<this file>"`
    — `held` by that session is the expected, correct state. Only if it reports
