@@ -261,7 +261,7 @@ public_origin_merge_allowed() {
         return 1
     fi
     prot=$("$GH" api "repos/$nwo/branches/$branch/protection" \
-            --jq '"\(.enforce_admins.enabled // false)|\((.required_status_checks.contexts // []) | length)|\((.required_status_checks.checks // []) | length)"' 2>/dev/null || true)  # jq-alt-ok: every `//` default here is the FAIL-CLOSED answer, so swallowing false is harmless — absent, null and false all yield the value that REFUSES (enforce_admins must equal the string "true"; an empty contexts/checks list means zero required checks). has() would be weaker, not stronger: it would read a present-but-false enforce_admins as satisfied.
+            --jq '"\(.enforce_admins.enabled // false)|\((.required_status_checks.contexts // []) | if type == "array" then length else 0 end)|\((.required_status_checks.checks // []) | if type == "array" then length else 0 end)"' 2>/dev/null || true)  # jq-alt-ok: every `//` default here is the FAIL-CLOSED answer, so swallowing false is harmless — absent, null and false all yield the value that REFUSES (enforce_admins must equal the string "true"; an empty contexts/checks list means zero required checks). has() would be weaker, not stronger: it would read a present-but-false enforce_admins as satisfied.
     if [ -z "$prot" ]; then
         PUBLIC_ORIGIN_DETAIL="unreadable"
         return 1

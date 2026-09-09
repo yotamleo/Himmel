@@ -786,6 +786,36 @@ else
     echo "  SKIP: jq not installed — null required_status_checks case (HIMMEL-2869)"
 fi
 
+# HIMMEL-2876: jq length accepts strings and objects too. Removing either
+# array type-check must make these real-JSON refusal cases fail.
+if [ "$have_jq_2869" = "1" ]; then
+    STUB_NWO="yotamleo/Himmel" STUB_PRIVATE=false \
+        STUB_PROTECTION_JSON='{"enforce_admins":{"enabled":true},"required_status_checks":{"contexts":"lint"}}' \
+        run_mog 12 "string contexts must not count as required checks"
+    assert_audit_has "2876 contexts: not protected" "reason=not-protected"
+    assert_gh_lacks "2876 contexts: no merge attempted" "pr merge"
+
+    STUB_NWO="yotamleo/Himmel" STUB_PRIVATE=false \
+        STUB_PROTECTION_JSON='{"enforce_admins":{"enabled":true},"required_status_checks":{"checks":{"context":"lint"}}}' \
+        run_mog 12 "object checks must not count as required checks"
+    assert_audit_has "2876 checks: not protected" "reason=not-protected"
+    assert_gh_lacks "2876 checks: no merge attempted" "pr merge"
+
+    STUB_NWO="yotamleo/Himmel" STUB_PRIVATE=false \
+        STUB_PROTECTION_JSON='{"enforce_admins":{"enabled":true},"required_status_checks":{"checks":[{"context":"lint","app_id":123}]}}' \
+        run_mog 0 "real checks array still permits protected-origin merge"
+    assert_merge_has "2876 checks array: merge attempted" "pr merge 77 --repo yotamleo/Himmel"
+
+    STUB_NWO="yotamleo/Himmel" STUB_PRIVATE=false \
+        STUB_PROTECTION_JSON='{"enforce_admins":{"enabled":true},"required_status_checks":{"contexts":["lint"]}}' \
+        STUB_PROTECTION_JSON_PREMERGE='{"enforce_admins":{"enabled":true},"required_status_checks":{"contexts":"lint"}}' \
+        run_mog 12 "pre-merge protection re-read also rejects string contexts"
+    assert_audit_has "2876 premerge: not protected" "reason=not-protected-premerge"
+    assert_gh_lacks "2876 premerge: no merge attempted" "pr merge"
+else
+    echo "  SKIP: jq not installed — protection array type-check cases (HIMMEL-2876)"
+fi
+
 # 6. Cannot read head SHA → refuse (exit 13).
 STUB_SHA="" run_mog 13 "empty head SHA → exit 13"
 
