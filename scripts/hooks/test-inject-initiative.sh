@@ -350,7 +350,7 @@ if [ -n "$runbook" ] && [ -f "$runbook" ]; then
         assert_has "runbook documents the $tok leg" "^- \*\*$tok\*\*" "$rb"
     done
     assert_has "runbook keeps the merge-on-green directive" "merge-on-green.sh"        "$rb"
-    assert_has "runbook keeps the ship-mode public step"    "propagate-public.sh ship" "$rb"
+    assert_has "runbook marks the public step retired"      "RETIRED at the HIMMEL-2705 cutover" "$rb"
 else
     assert_fail "runbook path does not resolve to a file (got: $runbook)"
 fi
@@ -417,7 +417,7 @@ echo "Test 28: the runbook bodies stay OUT of the injected pointer"
 out=$(printf '{}' | HIMMEL_REPO="$repo_root" HIMMEL_INITIATIVE=plan,execute,prcheck,pr,ticket,merge,public,handover bash "$hook")
 assert_lacks "no tasklist-seed body inline"  "seed your native tasklist"   "$out"
 assert_lacks "no merge body inline"          "merge-on-green.sh"           "$out"
-assert_lacks "no public body inline"         "propagate-public.sh"         "$out"
+assert_lacks "no public body inline"         "RETIRED at the HIMMEL-2705"  "$out"
 assert_lacks "no execute body inline"        "subagent-driven-development" "$out"
 assert_lacks "no prcheck body inline"        "fix every finding"           "$out"
 assert_lacks "no pr body inline"             "open or refresh the PR"      "$out"

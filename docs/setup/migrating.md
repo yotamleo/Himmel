@@ -37,7 +37,7 @@ detection signal above, not a fault.
 |---|---|---|---|
 | **1.** Wired by the old `adopt.sh`, or copied by hand | Hook commands present in the target's `.claude/settings.json`, but `status` exits 2 | `install` (adopts in place), then `ensure` | Restore the backed-up `.claude/settings.json` |
 | **2.** A station set up by hand from the setup guide | Environment and tools are there, no repo wiring, `status` exits 2 | `install --scope user`, then `ensure` | Restore `~/.claude/settings.json` |
-| **3.** `origin` still points at the pre-cutover remote | `git remote -v` names the old host | **Pending the HIMMEL-2705 cutover** — see below | Re-point `origin` back |
+| **3.** `origin` still points at the pre-cutover remote | `git remote -v` names the old host | `git remote set-url origin <new-url>` + `git fetch --tags` — see below | Re-point `origin` back |
 | **4.** Older hook wiring under a current install record | `status` lists `red` items naming hooks | `ensure` | Restore the backed-up `.claude/settings.json` |
 
 ## State 1 — wired by the old `adopt.sh`, or copied by hand
@@ -172,8 +172,9 @@ knowing while migrating:
   `channel: stable`, and never overwrites a `channel` you already set.
 - `HIMMEL_UPDATE_CHANNEL` in the environment outranks that recorded value.
 
-State 3 is the caveat: until the cutover, a channel has no release tags to
-follow on the old remote.
+State 3 is the caveat: anyone still on the pre-cutover remote has no release
+tags to follow until they converge (`git remote set-url origin` +
+`git fetch --tags`, above).
 
 ## Windows
 

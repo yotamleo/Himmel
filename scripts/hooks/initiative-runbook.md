@@ -45,8 +45,8 @@ Steps run in this canonical order; only the tokens on the pointer's
 
 - **ticket** — transition the Jira ticket to the appropriate status.
 
-- **merge** — when CR is clean and the PR is open, squash-merge to PRIVATE main.
-  Armed auto-merge (`ARMAUTOMERGE=1` + private repo, HIMMEL-1042): run
+- **merge** — when CR is clean and the PR is open, squash-merge to main.
+  Armed auto-merge (`ARMAUTOMERGE=1`, HIMMEL-1042): run
   `bash scripts/handover/merge-on-green.sh` (exactly, to match the standing
   allow-rule) — it gates on `check-ci.sh` green + a certified head SHA and
   merges only then. Otherwise use `scripts/handover/pr-merge.sh` (plain-first;
@@ -55,16 +55,9 @@ Steps run in this canonical order; only the tokens on the pointer's
   moves to the next queue item — never retry-loop; see
   [Park protocol](../../docs/handover/overnight-mode.md#park-protocol-himmel-2128).
 
-- **public** — after merge, propagate to public END-TO-END: run
-  `bash scripts/propagate-public.sh ship <branch> <base>..<head> --commit-file <f> --title <t> --body-file <f>`
-  — exactly this helper (its fail-closed leak scan + byte-verify are the safety
-  gate; never a raw git push to the public remote), then babysit the PR with
-  `/cr-public` to CR-clean + CI-green. STOP at PR-ready and report the FULL
-  `/cr-public` exit-0 payload to the operator: PR URL + short head SHA +
-  check-ci verdict + diff-identity verdict + the ready-to-send
-  `/mergepub <pr> <sha12>` line + the GitHub-UI fallback link. The public
-  squash-merge stays HUMAN-authorized (Telegram `/mergepub <pr> <sha12>`, or the
-  GitHub UI) — never run it yourself.
+- **public** — RETIRED at the HIMMEL-2705 cutover (2026-09-09): `origin` IS the
+  public repo; a merge to `main` (the `merge` step above) is the public
+  landing. Nothing to run.
 
 - **handover** — write the handover.
 

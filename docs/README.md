@@ -75,8 +75,6 @@ Map of the `docs/` tree. New here? Start at **[getting-started.md](getting-start
 - [tool-adoption/registry.md](tool-adoption/registry.md) — every evaluated tool, recorded.
 - [tool-adoption/telemetry.md](tool-adoption/telemetry.md) — adoption-outcome telemetry for the registry.
 - [license-audit.md](license-audit.md) · [skills-taxonomy-audit.md](skills-taxonomy-audit.md) — audits.
-- [leak-scrub-runbook.md](leak-scrub-runbook.md) — what to do when sensitive data lands in the repo (and possibly the public mirror).
-- `internals/public-propagation.md` — operator-personal, PRIVATE-only: how the private repo syncs code to the public mirror. Not linked here — the file is in `PRIVATE_PATHS` (`scripts/lib/public-clone-paths.sh`) and never propagates, so a link would 404 in the public mirror (this map does).
 
 ## Historical / working records (not a navigation target)
 

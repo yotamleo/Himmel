@@ -21,7 +21,6 @@
 #   --no-prune           Skip the prune phase; just create.
 #   --no-install         Forwarded to _new-worktree.sh.
 #   --dry-run            Show what would happen, do nothing.
-#   --include-puborigin  Also account for puborigin's remote branches.
 #   --verbose, -v        Stream subprocess output.
 #   -h, --help           Print usage.
 set -euo pipefail
@@ -51,7 +50,6 @@ Flags:
   --no-prune            Skip prune; only create.
   --no-install          Forward to _new-worktree.sh (skip jira install).
   --dry-run             Show plan; do nothing.
-  --include-puborigin   Also report unmerged branches from puborigin.
   --verbose, -v         Stream subprocess output.
   -h, --help            This message.
 
@@ -73,7 +71,6 @@ PRUNE_ONLY=0
 NO_PRUNE=0
 NO_INSTALL=0
 DRY_RUN=0
-INCLUDE_PUBORIGIN=0
 VERBOSE=0
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -81,7 +78,6 @@ while [ $# -gt 0 ]; do
         --no-prune)   NO_PRUNE=1; shift ;;
         --no-install) NO_INSTALL=1; shift ;;
         --dry-run)           DRY_RUN=1; shift ;;
-        --include-puborigin) INCLUDE_PUBORIGIN=1; shift ;;
         --verbose|-v)        VERBOSE=1; shift ;;
         -h|--help)    print_help ;;
         -*)           echo "Unknown flag: $1" >&2; usage_err ;;
@@ -143,14 +139,11 @@ fi
 ORIGIN_NWO="$FORGE_NWO"
 ORIGIN_PR_CACHE=""
 ORIGIN_PR_CACHE_OK=0
-PUBORIGIN_NWO=""
-PUBORIGIN_PR_CACHE=""
-PUBORIGIN_PR_CACHE_OK=0
 
 # KNOWN LIMITATION: rows key on head.repo.full_name == nwo, so a PR opened
 # from a fork (head repo != base repo) is filtered out even though its base
 # is this repo. Local worktree/remote-tracking branches are pushed straight
-# to origin on this private repo, so a fork PR would only coincidentally
+# to origin on this repo, so a fork PR would only coincidentally
 # share a branch name with one of them — rare enough here not to warrant the
 # extra base.repo.full_name plumbing + matching-rule complexity. Revisit if
 # this repo starts taking fork PRs.
@@ -195,19 +188,6 @@ if [ "$HAVE_FORGE" -eq 1 ] && [ "$FORGE_KIND" = "github" ]; then
         echo "WARN clean-garden: could not determine origin's GitHub repo (gh repo view + remote URL parse both failed) — PR accounting degraded to unknown for origin" >&2
     fi
 fi
-if [ "$INCLUDE_PUBORIGIN" -eq 1 ]; then
-    if ! git -C "$PRIMARY_WORKTREE" remote get-url puborigin >/dev/null 2>&1; then
-        echo "WARN clean-garden: --include-puborigin requested but no puborigin remote exists" >&2
-    elif PUBORIGIN_NWO=$(github_nwo_from_remote puborigin); then
-        if PUBORIGIN_PR_CACHE=$(fetch_github_pr_cache "$PUBORIGIN_NWO" 2>/dev/null); then
-            PUBORIGIN_PR_CACHE_OK=1
-        else
-            echo "WARN clean-garden: GitHub PR cache failed for puborigin — accounting will keep uncertain work" >&2
-        fi
-    else
-        echo "WARN clean-garden: puborigin is not a GitHub remote — PR accounting unavailable" >&2
-    fi
-fi
 
 # Sets PR_STATE and PR_HEAD_MATCH for a branch tip. PR_STATE is one of
 # open/merged/closed/none when the cache is authoritative, or unknown when the
@@ -225,11 +205,6 @@ resolve_pr_state() {
             cache="$ORIGIN_PR_CACHE"
             cache_ok="$ORIGIN_PR_CACHE_OK"
             nwo="$ORIGIN_NWO"
-            ;;
-        puborigin)
-            cache="$PUBORIGIN_PR_CACHE"
-            cache_ok="$PUBORIGIN_PR_CACHE_OK"
-            nwo="$PUBORIGIN_NWO"
             ;;
         *) return 0 ;;
     esac
@@ -1181,9 +1156,6 @@ if [ "$NO_PRUNE" -eq 0 ]; then
     report_kept_worktrees
     echo "clean-garden: full accounting — remote orphans"
     report_remote_orphans origin
-    if [ "$INCLUDE_PUBORIGIN" -eq 1 ]; then
-        report_remote_orphans puborigin
-    fi
     # HIMMEL-1970: name the second population. These four counters come from
     # report_remote_orphans (refs/remotes/*), NOT from the kept worktrees — a
     # bare "N MERGED-CLEAN" next to "N kept worktrees" was read as "N merged

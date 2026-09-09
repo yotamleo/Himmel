@@ -98,7 +98,9 @@ written tracks the tip.
   needs four values and no cloud ID.
 - **Handover state** — run `/handover-setup` once to say where cross-session
   notes live: an inline folder in the repo, or a separate git repo via
-  `HANDOVER_DIR`.
+  `HANDOVER_DIR`. A fresh clone has no handover root until you do — until then
+  `handover_root` fails closed with a diagnostic (`scripts/lib/handover-path.sh`),
+  it does not crash, and nothing silently writes to the wrong place.
 
 ## Adapting himmel to a repo that is not himmel
 

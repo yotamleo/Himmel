@@ -27,8 +27,10 @@ Stages currently wired:
   checked against the field list `gh <sub> --json __bogus__` prints —
   offline, no API call). A typo'd field makes `gh` exit 1, which callers
   report as a generic "cannot evaluate", so the guarded path silently
-  never runs: that is how `/cr-public`'s HIMMEL-1202 bounded wait shipped
-  polling the nonexistent `headRefSha` (HIMMEL-1288). Non-literal
+  never runs: that is how the (retired, HIMMEL-2705) `/cr-public` command's
+  HIMMEL-1202 bounded wait shipped polling the nonexistent `headRefSha`
+  (HIMMEL-1288) — kept here as the worked example the guard exists to catch.
+  Non-literal
   field lists (`--json "$FIELDS"`) and subcommands with no `--json`
   support are skipped; a missing `gh` skips the gate loudly rather than
   blocking the commit.
@@ -144,8 +146,6 @@ Stages currently wired:
   **ON by default**, including for an adopter with no `.env` at all;
   `TICKET_ID_REQUIRED=0` is the explicit opt-out. Merge/revert commits and the configurable comma-list
   `TICKET_ID_EXEMPT_AUTHORS` (default `dependabot[bot],dependabot`) are exempt.
-  `propagate-public.sh ship/reship` defaults the same policy ON and checks the PR
-  title and/or commit file before any push or PR creation.
   The `.pre-commit-config.yaml` entry must keep `pass_filenames: true` — the
   commit-msg stage's filename argument IS the message file. Handed none, the
   hook falls back to `.git/COMMIT_EDITMSG`; only when that fallback does not
@@ -3725,8 +3725,8 @@ chokepoint enforces 7 gates, mirroring `merge-on-green.sh`'s (HIMMEL-1042)
 structure but with the binding INVERTED (public-pinned, not private-only) — see
 `scripts/merge-public-on-green.sh`'s header for the full exit-code reference:
 1. **Repo pin** — the PR's own URL must resolve to `CR_PUBLIC_REPO` (default
-   `yotamleo/Himmel`, the same env var `.claude/commands/cr-public.md` uses) —
-   never cwd-derived (the script runs from the bridge's private-checkout cwd).
+   `yotamleo/Himmel`) — never cwd-derived (the script runs from the bridge's
+   checkout cwd).
 2. **PR OPEN + base = default branch**, re-verified FRESH immediately before
    merging (the HIMMEL-1080 retarget-race lesson, ported verbatim).
 3. **Head identity** — the PR's `headRefOid` must prefix-match the
@@ -3748,9 +3748,10 @@ Deliberately a SEPARATE script from `merge-on-green.sh`, not a shared "which
 repo class" switch — the private-only guard there is a safety boundary, and a
 flag that inverts a safety boundary is the failure mode this avoids. Supports
 `--dry-run` (every gate runs, no merge fires) for manual/terminal shakedown; the
-Telegram command grammar has no dry-run variant. Not added to `PRIVATE_PATHS` —
-it is propagatable (no operator secrets; the repo name is already public
-knowledge) — only the activation flag + `allowFrom` are operator-personal.
+Telegram command grammar has no dry-run variant. The repo name itself carries
+no secret (himmel is a single public repo) — only the activation flag +
+`allowFrom` are operator-personal, and those stay out of the repo (`.env` /
+`access.json`).
 
 **Still HARD-blocked (out of scope):** editing `access.json`/`settings.json`,
 `--force`/`--dedup-any` arms, merging PRs *except via the head-SHA-bound
@@ -3980,11 +3981,14 @@ discriminator. `git fetch origin main:main` (bare local branch) and
 `git push origin HEAD:refs/heads/x` (fully-qualified non-tracking) stay
 allowed as well, and so do `git push origin HEAD:feat/x` and
 `HEAD:fix/x` — `feat` and `fix` are not remotes.
-`scripts/propagate-public.sh:2274`/`:2913` run
-`git -C … fetch -q origin "refs/heads/$b:refs/remotes/origin/$b"`, which this
-class denies **and is deliberately not exempted**: the hook inspects `Bash`
-*tool* calls, so the script's own child-process fetch is never seen, and the
-only reachable case is a worker-lane agent typing that command out by hand.
+The (now-retired, HIMMEL-2705) `scripts/propagate-public.sh:2274`/`:2913` used
+to run `git -C … fetch -q origin "refs/heads/$b:refs/remotes/origin/$b"`,
+which this class denies **and was deliberately not exempted**: the hook
+inspects `Bash` *tool* calls, so a script's own child-process fetch is never
+seen, and the only reachable case is a worker-lane agent typing that command
+out by hand — a shape several still-live scripts (e.g.
+`scripts/lib/forge-github.sh`) also use as a child process, unaffected by the
+same token.
 
 The destination and the remote are both matched against a
 **quoting-normalized** copy of the command text, not the raw bytes (codex-6,

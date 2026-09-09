@@ -53,10 +53,7 @@
 #
 # Environment:
 #   CR_PUBLIC_REPO             Pinned public repo, owner/name. Default
-#                               yotamleo/Himmel — the SAME env var
-#                               .claude/commands/cr-public.md uses, so one
-#                               override covers both the CR-babysit and the
-#                               merge chokepoint.
+#                               yotamleo/Himmel.
 #   MERGE_PUBLIC_ON_GREEN_LOG   Audit-log path override. Default:
 #                               "$(git rev-parse --git-dir)/merge-public-on-green.log".
 #
@@ -72,9 +69,9 @@
 #     overridable" holds only modulo PATH — auto-action.sh strips the bot token
 #     from the child env but inherits PATH; a hardened child PATH is a follow-up.
 #   * CR_PUBLIC_REPO redirects the WHOLE chokepoint to any repo the operator's
-#     credential can admin-merge; every gate then applies to THAT repo. Shared
-#     deliberately with cr-public.md so one override covers both — so "pinned"
-#     means "pinned per the bridge's env", not "hardcoded". MERGE_PUBLIC_ON_GREEN_LOG
+#     credential can admin-merge; every gate then applies to THAT repo — so
+#     "pinned" means "pinned per the bridge's env", not "hardcoded".
+#     MERGE_PUBLIC_ON_GREEN_LOG
 #     can only VOID the audit (e.g. /dev/null) or append arbitrarily — it can
 #     never weaken a merge gate (unwritable -> exit 17).
 set -uo pipefail
@@ -390,7 +387,7 @@ pr_state_now() { "$GH" pr view "$pr" --repo "$REPO" --json state --jq .state 2>/
 # the one unavoidable round-trip between the fresh read and this call (the
 # residual, irreducible TOCTOU window — see merge-on-green.sh's header for the
 # same lesson). `--admin` is correct here: public main is protected and the
-# operator's own admin credential is entitled to bypass it (cr-public.md).
+# operator's own admin credential is entitled to bypass it.
 merge_rc=0
 merge_out=$("$GH" pr merge "$pr" --repo "$REPO" --squash --admin --match-head-commit "$fresh_head" 2>&1) || merge_rc=$?
 if [ "$merge_rc" -eq 0 ]; then

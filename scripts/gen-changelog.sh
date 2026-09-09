@@ -51,11 +51,6 @@ VERSION_TAG_GLOB='v[0-9]*'
 # KEEP IN SYNC with scripts/gen-changelog.ps1 $versionTagRe.
 VERSION_TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
 
-# Public projection keeps this identity transform; the fenced private block below
-# overrides it with host-history genericization before changelog classification.
-# shellcheck disable=SC2317,SC2329 # invoked after the fenced override is removed publicly
-scrub_retired_names() { cat; }
-
 # render <heading> [<git-log-range>] — emit one version section. An empty range
 # means "all history" (the tagless case). Always emits a leading blank line so
 # the file ends with exactly one trailing newline (see the trailing-newline note
@@ -78,7 +73,7 @@ render() {
             changed) changed="${changed}- ${subj}"$'\n';;
             *)       other="${other}- ${subj}"$'\n';;
         esac
-    done < <(git log --no-merges --format='%s' ${range:+"$range"} | scrub_retired_names)
+    done < <(git log --no-merges --format='%s' ${range:+"$range"})
     echo
     echo "$heading"
     [ -n "$added" ]   && { echo; echo "### Added";   printf '%s' "$added"; }

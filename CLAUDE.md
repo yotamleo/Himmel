@@ -28,8 +28,7 @@ when it fires.
   (`block-edit-on-main`, `check-worktree-isolation`).
 - All changes via PR, ≥1 approval, no direct push (`check-push-target`).
 - Conventional commits; **every commit and every PR carries a ticket ID**
-  (`check-commit-msg`, the CI range gate, and `propagate-public.sh`'s own
-  `require_ticket_reference` on public PRs). Retro-filing is fine;
+  (`check-commit-msg` and the CI range gate). Retro-filing is fine;
   search Jira and extend an existing ticket before re-filing.
 - Attestation trailers (`Platforms tested: <os>` on shell/script diffs,
   `Security reviewed: <token>` on non-docs code) belong in the **FIRST commit**,
@@ -105,6 +104,20 @@ file; high-frequency + cheap → rule + skill; eval-shaped → a timeboxed ticke
 escalate to a hook, gate or classifier, never to stronger prose. Frame + worked
 examples:
 [`docs/internals/context-architecture.md`](docs/internals/context-architecture.md).
+
+### Tests (the non-guessable invocations)
+Shell suites → `bash scripts/ci/run-shell-tests.sh` (`--list` prints the
+run/skip plan without running anything); it is long and noisy — run it in a
+subagent. Lanes suite →
+`node --test --test-reporter=dot "scripts/lanes/tests/**/*.test.mjs"`. Bun
+suites have a per-suite cwd rule: `scripts/luna-vitals` runs from its own
+directory (`cd scripts/luna-vitals && bun test --dots`), but `scripts/telegram`
+resolves fixtures repo-root-relative — run it from the repo root instead
+(`bun test scripts/telegram --dots`), never `cd scripts/telegram &&` first
+([`docs/internals/environment-gotchas.md`](docs/internals/environment-gotchas.md)
+has the reproduction). The quiet reporters (`--dots`,
+`--test-reporter=dot`) are deliberate, not an oversight. Public CI runs on
+every PR — a green PR check-run **is** evidence a suite ran.
 
 ### Where artifacts land
 - **Reference docs operators consume** → the owning repo's `docs/` (plugin specs

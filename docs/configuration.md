@@ -38,9 +38,8 @@ layers:
   a live session can do at the tool-call layer: no edits on `main`, no secret
   reads, no PR creation while a review is owed, no merging over unresolved
   review threads.
-- **Chokepoint scripts** own the dangerous transitions: private auto-merge
-  (`scripts/handover/merge-on-green.sh`), public propagation
-  (`scripts/propagate-public.sh`), public merge
+- **Chokepoint scripts** own the dangerous transitions: auto-merge
+  (`scripts/handover/merge-on-green.sh`), human-authorized merge
   (`scripts/merge-public-on-green.sh` — human-authorized only, via Telegram).
 
 Everything above the guardrails is **opt-in autonomy**: initiative mode
@@ -56,14 +55,9 @@ switch ([§5](#5-off-switches)).
 
 ### 2.1 The delivery chain, end to end
 
-One piece of work travels: ticket → worktree → build → review loop → private
-PR → private merge → public propagation → public PR → **human-authorized**
-public merge → handover.
-
-> The propagation tail (`propagate-public.sh` → public PR → `/mergepub`)
-> applies only if you run a private/public repo **pair**, as himmel itself
-> does. A single-repo adopter's chain ends at the merge + handover — the
-> earlier stages are identical.
+One piece of work travels: ticket → worktree → build → review loop → PR →
+merge → handover. himmel is a single repo (`origin`, public since the
+HIMMEL-2705 cutover) — there is no propagation tail.
 
 ```mermaid
 flowchart TD
@@ -76,12 +70,10 @@ flowchart TD
     R -->|clean| CM["CR marker cleared"]
     CM --> PR["gh pr create<br/>gate: blocked while marker exists"]
     PR --> M{"merge gate<br/>block-unresolved-cr-merge:<br/>CI green + threads resolved<br/>(session-enforced — no branch protection, see §3.3)"}
-    M -->|"operator: gh pr merge"| MAIN["private main"]
+    M -->|"operator: gh pr merge"| MAIN["main<br/>(origin — the public repo)"]
     M -->|"ARMAUTOMERGE=1:<br/>merge-on-green.sh"| MAIN
-    MAIN --> PP["propagate-public.sh ship<br/>gates: leak scan + byte-verify<br/>(fail-closed, no bypass)"]
-    PP --> PUB["public PR<br/>babysat by /cr-public to CR-clean + CI-green"]
-    PUB --> MP["operator: /mergepub pr sha12 via Telegram<br/>(never agent-run — script refuses inside a session)"]
-    MP --> H["/handover<br/>state survives to the next session"]
+    M -->|"operator: /mergepub pr sha12 via Telegram<br/>(never agent-run — merge-public-on-green.sh refuses inside a session)"| MAIN
+    MAIN --> H["/handover<br/>state survives to the next session"]
 ```
 
 Step-by-step, with the enforcing file:
@@ -94,9 +86,7 @@ Step-by-step, with the enforcing file:
 | Push | `git push` | pre-push stage: attestation trailers, npm audit, no-push-to-main, and `scripts/hooks/check-cr-before-push.sh` writes a **CR marker** recording that a review is owed |
 | Review | `/pr-check` | multi-agent panel (`.claude/commands/pr-check.md`); a clean result clears the marker |
 | Open PR | `gh pr create` | `scripts/hooks/check-cr-marker-on-pr-create.sh` blocks while the marker exists |
-| Merge (private) | `gh pr merge` or `merge-on-green.sh` | `scripts/hooks/block-unresolved-cr-merge.sh` — CI green + zero unresolved review threads. There is **no GitHub branch protection on this repo**; this hook *is* the merge gate |
-| Propagate | `bash scripts/propagate-public.sh ship …` | built-in leak scan + blob-level byte-verify, fail-closed, no bypass flag |
-| Merge (public) | operator types `/mergepub <pr> <sha12>` in Telegram | `scripts/merge-public-on-green.sh` — refuses to run inside a Claude session, re-verifies SHA/base/CI/reviews immediately pre-merge |
+| Merge | `gh pr merge`, `merge-on-green.sh` (`ARMAUTOMERGE=1`), or Telegram `/mergepub <pr> <sha12>` (`merge-public-on-green.sh`) | `scripts/hooks/block-unresolved-cr-merge.sh` — CI green + zero unresolved review threads. There is **no GitHub branch protection on this repo**; this hook *is* the merge gate |
 | Handover | `/handover` | state written to your handover store (`docs/internals/handover-system.md`) |
 
 ### 2.2 What happens on every tool call
@@ -243,6 +233,7 @@ tries to close.
 | Gate | Stage | Class | Satisfied / bypassed by |
 |---|---|---|---|
 | `gitleaks` secret scan | pre-commit | HARD | remove/rotate the secret; inline `gitleaks:allow` on the same line |
+| `leak-classes` gate (home-path, mac, private-lan-ip, hostname, telegram token — `scripts/guardrails/leak-classes.sh`) | pre-commit (also runs in CI) | HARD | fix the finding; inline `# leak-allow: <class> <reason>` on the same line, or a path prefix in `.leak-classes-ignore` |
 | `shellcheck` | pre-commit | HARD | fix the script |
 | `worktree-isolation`, `merged-branch-check`, `hookspath-misconfig`, `lockfile-integrity`, `artifact-leakage`, `uv-lock-integrity`, `pip-hashes`, `mcp-plugin-refs` | pre-commit | HARD | fix the finding (`--no-verify` only) |
 | drift guards (`doc-guard`, `agents-md-fresh`, `lanes-inventory-guard`, `hud-drift`, `telegram-fork-drift`, `template-himmel-plugins`) | pre-commit (most carry no `stages:` pin, so today they fire at every installed stage, push included) | HARD | fix the finding |
@@ -305,7 +296,6 @@ per-hook behavior: [internals/enforcement.md](internals/enforcement.md).
 |---|---|---|
 | Private merge gate (`block-unresolved-cr-merge`) | auth-gated | CI green + zero unresolved review threads on the head SHA. **This hook is the whole gate — the repo has no GitHub branch protection** (`scripts/hooks/block-unresolved-cr-merge.sh`). As a session hook it gates merges issued *inside a Claude session*; an operator merging from a bare terminal or the GitHub UI is outside its reach — by design, since the operator is the authority it protects. It also fails **open** on degraded evaluation (missing `jq`, unparseable hook input) — a guardrail on the agent path, not a substitute for forge-side branch protection |
 | Private auto-merge (`scripts/handover/merge-on-green.sh`) | auth-gated, opt-in | `ARMAUTOMERGE` truthy **and** all of: same repo, repo verified private, PR base == default branch, `check-ci.sh` exit 0, base/privacy re-verified fresh pre-merge, audit log writable, merge pinned to the certified head SHA (`--match-head-commit`), MERGED state confirmed by polling |
-| Public propagation leak scan + byte-verify (`scripts/propagate-public.sh`) | HARD | no bypass. Leak scan (token regexes, operator denylist, home-path patterns) fails closed; ship additionally proves every propagated file byte-identical blob-by-blob before committing |
 | Public merge (`scripts/merge-public-on-green.sh`, via Telegram `/mergepub`) | HARD human-authorization | operator-typed, non-forwarded `/mergepub <pr> <sha12>`; SHA must prefix-match the live head at read *and* fresh pre-merge re-verify; `check-ci.sh` exit 0 is the only pass; the script refuses outright if `CLAUDECODE` is set (i.e. if any agent tries to run it) |
 | `check-ci.sh` (the watcher those gates call) | mechanism, not a veto | exit 0 = green + threads resolved + no changes-requested; 1 = red; 2 = cannot evaluate; 3 = unresolved threads / changes requested; 4 = CodeRabbit concluded incrementally with no head review while a prior head had outside-diff findings (request a full review or `--escalate`) |
 
@@ -413,11 +403,13 @@ default subset:
 - The directive is **advisory**: it drives behavior at natural completion
   points but cannot widen what any hook allows
   (`scripts/hooks/inject-initiative.sh`). The `merge` leg, when active,
-  self-merges the private PR once CR-clean — `ARMAUTOMERGE` selects *which
+  self-merges the PR once CR-clean — `ARMAUTOMERGE` selects *which
   path* it takes (`1` = the CI-certified `merge-on-green.sh` chokepoint with
   its full condition chain; unset = the plain `scripts/handover/pr-merge.sh`
-  squash-merge), not *whether* a merge happens. The `public` leg always stops
-  at PR-ready — the public merge stays human-authorized.
+  squash-merge), not *whether* a merge happens. The `public` leg is retired
+  (HIMMEL-2705 cutover) — `origin` IS the public repo, so the `merge` leg above
+  already lands the public change; `public` is a documented no-op kept only so
+  the token still resolves.
 
 | Knob | Default | Set in | Effect |
 |---|---|---|---|
@@ -574,10 +566,6 @@ opt-in except the cap watchdogs (rung 2), which ship enabled with the hooks:
 5. **Overnight mode** (`/overnight-shift --limit N`) — dispatches scoped
    tickets as parallel agents that branch, build, self-review, and open PRs.
    Halt with `/stop` (marker file polled between dispatches).
-6. **Public propagation** (`propagate-public.sh` + `/cr-public`) — the agent
-   can prepare and babysit a public PR, but the public **merge** is
-   structurally reserved to the operator (`/mergepub` via Telegram, or the
-   GitHub UI).
 
 ### 4.4 Lanes & delegation
 
@@ -679,9 +667,8 @@ tables; this is the layer level.)
 | Session vault capture | `CLAUDE_END_SESSION_WIKI=0` | env |
 
 What is **not** switchable from inside a session, by design: the
-`propagate-public.sh` leak scan and byte-verify, the graphify egress
-hard-deny cells, and the human-only public merge — those fail closed with no
-env override.
+`leak-classes.sh` leak-class gate, the graphify egress hard-deny cells, and
+the human-only public merge — those fail closed with no env override.
 
 ## 6. Deep-dive index
 

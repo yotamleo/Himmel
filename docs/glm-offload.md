@@ -485,9 +485,7 @@ inline exception. The mechanical tail, e.g. the doc-only 1.3, was fan-able.)
   2. **Ship rails** — attestation trailers in the first commit, the pre-push
      CR-marker, `gh pr create` only after a clean `/pr-check`. Workers produce
      branches; the main thread turns each into a shipped PR.
-  3. **Fork-mirror** — `scripts/propagate-public.sh prep` per merged fix (code
-     only; private paths auto-excluded).
-  4. **Ledger recalc** — the CR ledger append (`ledger-append.sh`; the
+  3. **Ledger recalc** — the CR ledger append (`ledger-append.sh`; the
      `cr-scores.sh` scorecard only *reads* it) runs on the main thread
      (single-writer), guarded by the auto-mode classifier. Never fan a ledger
      write into a worker.
@@ -507,8 +505,7 @@ wait   # each prints its 3-line inspect contract (session-dir / transcript-dir /
 #   1. inspect meta.json + outbox.jsonl + run.log
 #   2. review glm/<slug> diff through the CR loop  → fix findings
 #   3. attestation-commit → push → /pr-check → gh pr create → merge
-#   4. propagate-public ship → /cr-public to PR-ready → human /mergepub authorizes (HIMMEL-1213)
-#   5. CR ledger append (ledger-append.sh, main thread only; cr-scores.sh reads)
+#   4. CR ledger append (ledger-append.sh, main thread only; cr-scores.sh reads)
 ```
 
 **Concurrency bound.** Keep the parallel worker count modest — every worker
