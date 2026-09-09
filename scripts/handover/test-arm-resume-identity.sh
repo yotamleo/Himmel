@@ -94,6 +94,16 @@ export FLEET_PS_CMD="$FLEET_PS_STUB"
 HANDOVER_DIR="$TMP/statedocs/handovers"
 mkdir -p "$HANDOVER_DIR"
 export HANDOVER_DIR
+
+# HIMMEL-2813: `acquire` persists the release token under XDG_RUNTIME_DIR,
+# so this suite must pin that at a temp dir too -- otherwise every acquire
+# below writes into the operator's real /run/user/<uid>/ runtime dir. Same
+# hermeticity rule as HANDOVER_DIR above.
+XDG_RUNTIME_DIR="$TMP/xdg"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export XDG_RUNTIME_DIR
+
 export SKILL_TELEMETRY_DIR="$TMP/telemetry"
 export WORKSPACE_TRUST_CONFIG="$TMP/claude-trust.json"
 export WORKER_BRIDGE_ROOT="$TMP/bridge"

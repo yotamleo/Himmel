@@ -28,10 +28,14 @@
 # because separate script invocations cannot re-derive a stable
 # per-session id (a fresh pid would silently "prove" nothing), and a
 # token-less release could rm another session's LIVE lock -- the exact
-# incident class this script exists to prevent. Emergency override when
-# the token is lost: QUEUE_LOCK_FORCE_RELEASE=1 releases regardless,
-# loudly, and logs the forced release to the queue-level
-# .locks/queue/takeovers.log.
+# incident class this script exists to prevent. `acquire` ALSO persists the
+# token to a per-user file (HIMMEL-2813; see PER-SESSION TOKEN PERSISTENCE
+# below), which a token-less heartbeat/release reads back and names on
+# stderr -- the token contract is unchanged, that file just stops a
+# mid-session autocompact from being the only thing standing between a leg
+# and a clean wrap. Emergency override when the token is lost from BOTH:
+# QUEUE_LOCK_FORCE_RELEASE=1 releases regardless, loudly, and logs the
+# forced release to the queue-level .locks/queue/takeovers.log.
 #
 # LOCK LOCATION: a DIRECTORY (mkdir is atomic -- no TOCTOU race between
 # "check" and "create", works on NTFS/Git-Bash without relying on O_EXCL)
@@ -192,8 +196,11 @@ Usage: queue-lock.sh acquire   <handover-path> [session-id]
        queue-lock.sh status --sweep [<handover-dir>]
 
 acquire prints "release-token: <token>" on success -- capture it and pass
-it to heartbeat/release (both refuse without it). Lost the token?
-QUEUE_LOCK_FORCE_RELEASE=1 queue-lock.sh release <handover-path>
+it to heartbeat/release (both refuse without it). Lost the token to an
+autocompact? acquire also persisted it under
+<XDG_RUNTIME_DIR>/himmel-queue-lock/ (HIMMEL-2813), so a heartbeat/release
+with NO token on argv reads it back and says so on stderr. Only when THAT
+is gone too: QUEUE_LOCK_FORCE_RELEASE=1 queue-lock.sh release <handover-path>
 
 release/heartbeat find the lock even when the cwd resolves a different
 handover root than the acquire did (HIMMEL-2861) -- they search the roots
@@ -445,6 +452,140 @@ _ql_search_roots() {
 $(_ql_candidate_roots)
 EOF
     return 1
+}
+
+# PER-SESSION TOKEN PERSISTENCE (HIMMEL-2813) -------------------------------
+#
+# WHY: the release token exists in exactly one place -- the line `acquire`
+# printed into the session transcript -- and a mid-leg autocompact
+# SUMMARISES THAT AWAY. Two certifier legs lost theirs that way on
+# 2026-09-07/08 and had to QUEUE_LOCK_FORCE_RELEASE their own locks, which
+# writes a FORCED entry to takeovers.log: that file is meant to be the audit
+# trail for genuine takeovers, so routine wraps landing in it destroy the
+# signal it exists to carry. `acquire` therefore also writes the token to a
+# per-session file keyed by the handover path, and a token-less `release` /
+# `heartbeat` reads it back and SAYS on stderr that it did.
+#
+# THIS DOES NOT WEAKEN THE TOKEN CONTRACT (HIMMEL-856 C1). It is the same
+# token, stored where only this user can read it, and every refusal stays
+# exactly as it was: an argv token still WINS over the file, a WRONG argv
+# token is still refused rc=2 even when a valid file sits next to it, and a
+# missing/unreadable file leaves today's token-less refusal untouched. What
+# it removes is only the case where the sole copy of a VALID token was a
+# transcript line that no longer exists.
+#
+# WHERE: <XDG_RUNTIME_DIR>/himmel-queue-lock/<digest of the handover path>,
+# dir 0700, file 0600. XDG_RUNTIME_DIR is the right home -- it is already
+# per-user, 0700, and cleared at logout, so the token dies with the login
+# session like the lock it releases. The /tmp fallback for systems without
+# one is WORLD-WRITABLE, which is why _ql_token_dir_ensure below proves the
+# directory is ours before anything is written to or read from it: a
+# pre-created attacker-owned dir there would otherwise collect every token
+# this host writes, and a token is a capability to release someone else's
+# lock.
+#
+# RESIDUAL, stated rather than papered over: the check and the subsequent
+# write are two steps, so on the /tmp fallback an attacker who can swap the
+# directory between them still wins the race. Closing that needs
+# openat(O_NOFOLLOW)-style primitives bash does not have. It does not arise
+# under XDG_RUNTIME_DIR, whose 0700 parent is what makes the swap
+# impossible -- which is the reason that is the default and /tmp only the
+# fallback. The blast radius either way is one queue lock, and the worst
+# outcome is the pre-HIMMEL-2813 one: the token is unavailable and the
+# caller force-releases.
+#
+# The digest is a filename key, not a security primitive -- only collision
+# resistance matters. It uses sha256, with the sha256sum / shasum -a 256
+# fallback pair the rest of the repo already uses (context-fill.sh's
+# sha256_of), rather than the sha1 the ticket sketched: there is no portable
+# sha1 helper here to follow, and some hardened distributions no longer ship
+# sha1 tooling.
+
+_ql_token_dir() { printf '%s/himmel-queue-lock' "${XDG_RUNTIME_DIR:-/tmp}"; }
+
+_ql_digest_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+    else
+        return 1
+    fi
+}
+
+# _ql_token_dir_ensure <dir> -- create the token dir 0700 and prove it is
+# OURS before any token is written to or read from it. rc 1 (the caller then
+# degrades to today's argv-only behaviour) when it cannot be created, is a
+# SYMLINK, is not owned by this user, or is not mode 0700. Under
+# XDG_RUNTIME_DIR those hold by construction; the /tmp fallback is where
+# they must be checked, because a directory another user pre-created there
+# would hand them every token this host writes.
+_ql_token_dir_ensure() {
+    local dir="$1"
+    [ -L "$dir" ] && return 1
+    if [ ! -d "$dir" ]; then
+        ( umask 077; mkdir -p "$dir" ) 2>/dev/null || return 1
+        # Only ever tighten a dir WE just created. An unconditional chmod
+        # here would "repair" a hostile pre-created 0777 dir into a passing
+        # 0700 one and then trust it -- which defeats the entire check
+        # below, since the attacker still owns it and keeps their handle.
+        # An existing dir is validated as found, never fixed up.
+        chmod 700 "$dir" 2>/dev/null
+    fi
+    local om uid
+    om=$(stat -c '%u %a' "$dir" 2>/dev/null || stat -f '%u %Lp' "$dir" 2>/dev/null)  # gnu-ok: GNU -c paired with BSD -f on this line
+    [ -n "$om" ] || return 1
+    uid=$(id -u 2>/dev/null) || return 1
+    [ "${om%% *}" = "$uid" ] || return 1
+    [ "${om##* }" = "700" ] || return 1
+    return 0
+}
+
+# _ql_token_file <handover-path> -- the token file for this queue, or rc 1
+# when no digest tool exists. Backslashes fold to "/" first so a Git-Bash
+# spelling and a POSIX spelling of the same document key alike -- the same
+# normalisation _ql_slug_for_root applies.
+_ql_token_file() {
+    local p="${1//\\//}" dir h
+    dir=$(_ql_token_dir)
+    h=$(_ql_digest_of "$p") || return 1
+    [ -n "$h" ] || return 1
+    printf '%s/%s' "$dir" "$h"
+}
+
+# _ql_token_persist <handover-path> <token> -- best-effort ON PURPOSE: a
+# failure here costs the compaction safety net, never the acquire, which by
+# then holds a valid lock releasable with the printed token exactly as
+# before.
+_ql_token_persist() {
+    local f
+    _ql_token_dir_ensure "$(_ql_token_dir)" || return 0
+    f=$(_ql_token_file "$1") || return 0
+    ( umask 077; printf '%s\n' "$2" > "$f" ) 2>/dev/null || true
+    return 0
+}
+
+# _ql_token_recall <handover-path> -- print the persisted token (rc 0) or
+# nothing (rc 1). Names the file it came from on stderr, so a release that
+# succeeded on a RECALLED token is never mistaken for a token-less one.
+_ql_token_recall() {
+    local f t
+    _ql_token_dir_ensure "$(_ql_token_dir)" || return 1
+    f=$(_ql_token_file "$1") || return 1
+    [ -f "$f" ] || return 1
+    t=$(cat "$f" 2>/dev/null) || return 1
+    [ -n "$t" ] || return 1
+    echo "queue-lock: token read from $f" >&2
+    printf '%s' "$t"
+}
+
+# _ql_token_forget <handover-path> -- drop the token file once the lock it
+# releases is gone.
+_ql_token_forget() {
+    local f
+    f=$(_ql_token_file "$1") || return 0
+    rm -f "$f" 2>/dev/null || true
+    return 0
 }
 
 # _ql_owner_matches <lockdir> <token> -- rc 0 when this lock dir's
@@ -773,6 +914,7 @@ queue_lock_acquire() {
                 return 1
             fi
             _ql_write_root_marker "$lockdir" "$lock_root"
+            _ql_token_persist "$ho" "$session"
             echo "queue-lock: acquired (session=$session host=$host)"
             _ql_arms_registry_retire_fired "$ho"
             echo "release-token: $session"
@@ -943,6 +1085,7 @@ queue_lock_acquire() {
                 "$now" "$o_session" "$o_host" "$o_started" "$o_heartbeat" "$reason" "$session" "$host" \
                 >> "$lockdir/takeovers.log"
             _ql_write_root_marker "$lockdir" "$lock_root"
+            _ql_token_persist "$ho" "$session"
             _ql_takeover_claim_release "$claim" "$claim_token" || true
             echo "queue-lock: took over ($reason) -- previous holder: session=$o_session host=$o_host" >&2
             echo "queue-lock: acquired (session=$session host=$host)"
@@ -981,6 +1124,13 @@ queue_lock_heartbeat() {
     if ! lockdir=$(_ql_lockdir "$ho"); then
         echo "queue-lock: could not resolve handover root" >&2
         return 1
+    fi
+    # HIMMEL-2813: no token on argv -- try the per-session file before
+    # refusing. An argv token always wins (this only runs when there is
+    # none), and a recall that finds nothing falls through to the unchanged
+    # refusal below.
+    if [ -z "$session" ]; then
+        session=$(_ql_token_recall "$ho") || session=""
     fi
     # C1: the token is MANDATORY -- a token-less heartbeat could refresh
     # (and keep alive) another session's lock.
@@ -1064,6 +1214,14 @@ queue_lock_release() {
         # forcing session is a cleaner, not the holder wrapping up.
         return 0
     fi
+    # HIMMEL-2813: no token on argv -- try the per-session file before
+    # refusing. This runs AFTER the force-release block above, so that path
+    # is untouched, and only when argv carried nothing, so an explicit token
+    # always wins. A recall that finds nothing falls through to the
+    # unchanged refusal below.
+    if [ -z "$session" ]; then
+        session=$(_ql_token_recall "$ho") || session=""
+    fi
     # C1: the token is MANDATORY -- a token-less release would rm another
     # session's LIVE lock (the exact incident class this script prevents).
     # Separate script invocations cannot re-derive a stable per-session id,
@@ -1119,6 +1277,7 @@ queue_lock_release() {
         echo "queue-lock: failed to remove lock dir '$lockdir' -- it still exists (open handle on Windows? permission?); NOT released" >&2
         return 1
     fi
+    _ql_token_forget "$ho"
     _ql_emit_close_evidence
     return 0
 }
