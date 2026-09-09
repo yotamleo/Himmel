@@ -94,6 +94,16 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #                        STUB_DEFAULT_BRANCH_NULL uses, so a `required_status_checks:
 #                        null` payload proves the script's `// []` coalesce rather
 #                        than a hand-picked stub string.
+#   STUB_PROTECTION_JSON_PREMERGE  overrides the JSON replayed on the PRE-MERGE
+#                        protection read only. Unset, it falls back to
+#                        STUB_PROTECTION_JSON, so an existing single-JSON case is
+#                        unaffected. Exists because STUB_PROTECTION_JSON alone is
+#                        replayed verbatim on BOTH reads (coderabbit round-1
+#                        nitpick): without this seam, a case setting
+#                        STUB_PROTECTION_JSON together with STUB_PROTECTION_PREMERGE
+#                        would silently exercise UNCHANGED protection across both
+#                        reads — STUB_PROTECTION_PREMERGE would be dead, and the
+#                        case would prove nothing about the pre-merge re-read.
 #   STUB_CI_RC          exit code of the stub check-ci. Default 0.
 #   STUB_MERGE_FAIL=1   `gh pr merge` exits 1 (generic failure).
 #   STUB_POST_STATE     PR state the post-merge re-query returns. Default MERGED.
@@ -367,8 +377,15 @@ case "$verb" in
                     fi
                 else
                     [ "${STUB_PROTECTION_PREMERGE_FAIL:-0}" = "1" ] && { echo "gh: protection unreadable" >&2; exit 1; }
-                    if [ -n "${STUB_PROTECTION_JSON:-}" ]; then
-                        printf '%s' "$STUB_PROTECTION_JSON" | jq -r "$jqexpr"
+                    # STUB_PROTECTION_JSON_PREMERGE overrides the JSON replayed
+                    # on THIS (second) read only — `-` (not `:-`) so an
+                    # explicitly-empty override is preserved, mirroring
+                    # STUB_PROTECTION_PREMERGE's own relation to STUB_PROTECTION
+                    # just below. Falls back to STUB_PROTECTION_JSON when unset,
+                    # so existing single-JSON cases are unaffected.
+                    json_val_premerge="${STUB_PROTECTION_JSON_PREMERGE-${STUB_PROTECTION_JSON:-}}"
+                    if [ -n "$json_val_premerge" ]; then
+                        printf '%s' "$json_val_premerge" | jq -r "$jqexpr"
                     else
                         printf '%s' "${STUB_PROTECTION_PREMERGE-${STUB_PROTECTION-true|10|0}}"
                     fi
