@@ -326,13 +326,20 @@ cmd_new() {
     # refuse an existing target instead of overwriting it; on a collision
     # (either a real pre-existing doc or a losing race) this advances to the
     # next letter rather than failing.
-    local letter doc claimed=0
+    local letter doc create_error claimed=0
     set -C
     for letter in {A..Z}; do
         doc="$state_dir/${prefix}-nextleg-${date}${letter}-${name}.md"
-        if : 2>/dev/null > "$doc"; then
+        if create_error="$( { : > "$doc"; } 2>&1 )"; then
             claimed=1
             break
+        fi
+        # Only an existing document (or symlink reserved by another caller)
+        # is a collision. Other failures must keep their actual diagnostic.
+        if [ ! -f "$doc" ] && [ ! -L "$doc" ]; then
+            set +C
+            err "could not create console doc $doc: $create_error"
+            exit 1
         fi
     done
     set +C
@@ -469,7 +476,7 @@ cmd_next() {
     # HANDOFF sits beside the predecessor's OWN doc, not in $state_dir — a
     # --doc pointing outside $state_dir (a different bucket, a different
     # root entirely) must still get its HANDOFF written next to it.
-    local predecessor_dir predecessor_handoff predecessor_handoff_ref
+    local predecessor_dir predecessor_handoff predecessor_handoff_ref successor_doc_ref
     predecessor_dir="$(dirname "$predecessor_doc")"
     # Canonicalise: a RELATIVE --doc outside $state_dir would otherwise
     # leave predecessor_handoff_ref relative too, breaking the "absolute
@@ -488,8 +495,10 @@ cmd_next() {
     # and never find it.
     if [ "$predecessor_dir" = "$state_dir" ]; then
         predecessor_handoff_ref="$(basename "$predecessor_handoff")"
+        successor_doc_ref="$(basename "$doc")"
     else
         predecessor_handoff_ref="$predecessor_handoff"
+        successor_doc_ref="$doc"
     fi
     local fill_signal="$chain_dir/sig-$session"
     local log="$chain_dir/launch-$session.log"
@@ -526,6 +535,11 @@ cmd_next() {
         exit 1
     fi
     set +C
+
+    # This invocation owns the exclusively claimed stub. Any abort before
+    # both renders finish (including render_template's exit) must remove it
+    # so a repaired template or directory can be retried without hand cleanup.
+    trap 'rm -f "$doc"' EXIT
 
     # `next` never acquires a lock itself (the successor takes its own at
     # ACTION ZERO) — so, unlike `new`, there is no real token to carry here.
@@ -565,7 +579,7 @@ cmd_next() {
             PREDECESSOR_LETTER "$predecessor_letter" \
             LETTER "$successor_letter" \
             PREDECESSOR "$predecessor_base" \
-            SUCCESSOR_DOC "$(basename "$doc")" \
+            SUCCESSOR_DOC "$successor_doc_ref" \
             REPO "$repo" \
             BUCKET "$bucket" \
             KIT "$kit"
@@ -584,19 +598,10 @@ cmd_next() {
             echo "handoff: $predecessor_handoff (exists — left unchanged)"
         else
             err "could not create HANDOFF at $predecessor_handoff — this is not a collision (the file does not exist); check permissions on $(dirname "$predecessor_handoff")"
-            # Make `next` atomic on this abort path: $doc was claimed by
-            # THIS invocation's own exclusive create above — a
-            # pre-existing successor doc would already have exited via the
-            # "already exists" guard, so reaching here means it is ours to
-            # remove, never a stub some other run left behind. Leaving it
-            # in place would otherwise strand the operator mid-handover: a
-            # retry after fixing permissions would hit that same
-            # already-exists guard and refuse, forcing a hand-delete at
-            # the worst possible moment (context nearly full).
-            rm -f "$doc"
             exit 1
         fi
     fi
+    trap - EXIT
 
     echo "launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""
 

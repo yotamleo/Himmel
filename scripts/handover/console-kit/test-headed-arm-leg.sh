@@ -16,7 +16,7 @@
 #        HEADED_ARM_PROC seams headed-arm.sh's own suite uses (the wrapper
 #        execs the real headed-arm.sh, so this proves the non-dry path carries
 #        --autocompact 200000); LEG_CONTEXT=1m refuses before headed-arm runs.
-#   10. IMPL_GUARD_OK=1 reaches the konsole invocation's own process
+#   10. IMPL_GUARD_OK=1 and INLINE_IMPL_OK=1 reach konsole's own process
 #       environment (the leg-only env headed-arm.sh's child-env block does
 #       not set).
 #   11. LEG_REPO reaches headed-arm.sh's --workdir.
@@ -36,7 +36,7 @@ SCRIPT="$HERE/headed-arm-leg.sh"
 HEADED_ARM="$HERE/../headed-arm.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -51,7 +51,7 @@ PAST=$(( $(date +%s) - 100 ))
 
 # mk_launch_stubs <dir> <name> - konsole/pgrep/proc stubs, same shape
 # headed-arm.sh's own suite (test-headed-arm.sh) uses: konsole records its
-# FULL argv AND, filtered to the two non-secret guard vars (codex-1 review
+# FULL argv AND, filtered to the three non-secret guard vars (codex-1 review
 # finding: dumping the WHOLE inherited environment to disk would also write
 # exported credentials into the fixture directory), whether they reached its
 # own environment - the IMPL_GUARD_OK propagation case needs that, since
@@ -69,7 +69,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|HEADED_ARM_REQUIRED_AUTOCOMPACT)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HEADED_ARM_REQUIRED_AUTOCOMPACT)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -169,6 +169,7 @@ check "dry-run default: exit 0" "$rc" "0"
 ends_with "dry-run default: context=standard, no LEG_CONTEXT" "$out" "standard"
 not_contains "dry-run default: no [1m] suffix in the would-exec line" "$out" "[1m]"
 contains "dry-run default: reports IMPL_GUARD_OK=1" "$out" "IMPL_GUARD_OK=1"
+contains "dry-run default: reports INLINE_IMPL_OK=1" "$out" "INLINE_IMPL_OK=1"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
@@ -234,6 +235,7 @@ check "full launch, LEG_CONTEXT=1m: headed-arm was never invoked" "$rec9" ""
 # --- 10. IMPL_GUARD_OK reaches the konsole invocation's own environment ----
 env8="$(cat "$d8/env-record" 2>/dev/null || true)"
 contains "full launch: IMPL_GUARD_OK=1 in the konsole invocation's env" "$env8" "IMPL_GUARD_OK=1"
+contains "full launch: INLINE_IMPL_OK=1 in the konsole invocation's env" "$env8" "INLINE_IMPL_OK=1"
 not_contains "full launch: internal autocompact requirement does not leak into the launched leg" "$env8" "HEADED_ARM_REQUIRED_AUTOCOMPACT="
 
 # --- 12. RED control: mutate the ACTUAL headed-arm launch renderer to drop

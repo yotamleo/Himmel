@@ -141,12 +141,13 @@ if [ -n "${LEG_REPO:-}" ]; then
     export HEADED_ARM_REPO
 fi
 
-# IMPL_GUARD_OK=1: the leg-only env headed-arm.sh's own child-env block
-# (shared with the console lane) does not set. Exported into THIS process's
-# environment so it survives unchanged through konsole's `-e env -u ...`
-# invocation inside headed-arm.sh, which only unsets the three HIMMEL-2545
-# vars and otherwise inherits its own environment as-is.
+# IMPL_GUARD_OK=1 / INLINE_IMPL_OK=1: leg-only env for
+# guard-implementor-dispatch / orchestrator-inline-guard (HIMMEL-2879).
+# headed-arm.sh's shared console/leg child-env block does not set these.
+# Export into THIS process so both survive konsole's `-e env -u ...`, which
+# only unsets the three HIMMEL-2545 vars and otherwise inherits as-is.
 export IMPL_GUARD_OK=1
+export INLINE_IMPL_OK=1
 # headed-arm.sh builds one argv array for both native and recorder launches and
 # refuses exit 2 if this exact pair is absent. This is the final resolved-argv
 # guard; the context-value check above gives the earlier operator-facing error.
@@ -164,8 +165,8 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm-leg: would exec: %s %s %s %s %s %s %s %s\n' \
         "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s HEADED_ARM_REPO=%s\n' \
-        "$IMPL_GUARD_OK" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HEADED_ARM_REPO=%s\n' \
+        "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s\n' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"
     exit 0

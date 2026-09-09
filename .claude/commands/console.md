@@ -1,6 +1,6 @@
 ---
 description: Start a console session (new) or hand it over (next) — writes the doc, takes the queue lock, prints the launch line.
-argument-hint: new|next [--name <slug>] [--arm] [--dry-run] [--doc <path>] [--model <m>]
+argument-hint: new|next [--bucket <slug>] [--name <slug>] [--arm] [--dry-run] [--doc <path>] [--model <m>]
 ---
 
 A **console** is a long-running session that dispatches implementation legs,
@@ -20,7 +20,8 @@ bash scripts/handover/console/console.sh $ARGUMENTS
   overwrites.
 - `/console next` — from a running console, write the successor stub (letter
   bumped, pointed at this console and its HANDOFF) plus this console's
-  `-HANDOFF.md` skeleton. Run it at 45 % context fill.
+  `-HANDOFF.md` skeleton. Run it at 45 % context fill or after 90 k input
+  tokens in one turn.
 - `--arm` — also arm the session headed via `scripts/handover/headed-arm.sh`,
   on a signal file plus a deadline; prints the arm log path.
 - `--dry-run` — print what it would write, prefixed `would-`, and touch nothing.
