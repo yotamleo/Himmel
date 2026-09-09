@@ -73,8 +73,10 @@ Two ways to get himmel — pick based on what you're doing:
    + guardrails + worktree workflow + marketplace plugins/skills. Follow
    [`docs/getting-started.md`](docs/getting-started.md) for the ~15-minute
    walkthrough instead of this section, or see the eight-level
-   [adoption trail](https://yotamleo.github.io/Himmel/adoption-trail.html)
-   for what each stage of adoption changes.
+   [adoption trail](docs/adoption-trail.html) for what each stage of adoption
+   changes (also at
+   [yotamleo.github.io/Himmel/adoption-trail.html](https://yotamleo.github.io/Himmel/adoption-trail.html)
+   once GitHub Pages is enabled).
 2. **Run / develop himmel standalone** — the contributor path, heavier
    prereqs. The rest of this Quickstart documents this path.
 
