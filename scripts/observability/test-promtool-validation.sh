@@ -66,7 +66,7 @@ extract_for() {
 extract_field() {
     local file="$1" marker="$2" field="$3"
     awk -v marker="$marker" -v field="$field" '
-        $0 ~ ("^[[:space:]]*" marker "$") { found=1; next }
+        $0 ~ ("^[[:space:]]*" marker "([[:space:]]*#.*)?$") { found=1; next }
         found && /^[[:space:]]*- uid:/ { exit }
         found && $0 ~ ("^[[:space:]]*" field ":[[:space:]]*[A-Za-z]") {
             sub("^[[:space:]]*" field ":[[:space:]]*", "")
@@ -116,6 +116,7 @@ RULES_FILE="$SCRIPT_DIR/provisioning/alerting/rules.yaml"
 # Expected noDataState per uid, same pipe-delimited table idiom as Case 0
 # above — bash-3.2/BSD-safe: no `declare -A`/`mapfile` (bash 4+ only) and no
 # `\s` (GNU-grep-only) anywhere in this case.
+PRIVATE_REPO_METRIC_UID="example-ws_inbox_backlog_rising"  # leak-allow: hostname sole rule uid embedding this project's private repo name; kept out of the literal list below so that list's source stays token-free
 nodatastate_table() {
     for pair in \
         "himmel_flow_truncated|NoData" \
@@ -126,7 +127,7 @@ nodatastate_table() {
         "himmel_agent_tree_ram_runaway|OK" \
         "himmel_orphan_processes|NoData" \
         "himmel_watcher_down|OK" \
-        "example-ws_inbox_backlog_rising|OK" \
+        "${PRIVATE_REPO_METRIC_UID}|OK" \
         "himmel_session_dead|NoData" \
         "himmel_kernel_pool_high|OK" \
         "himmel_kernel_pool_critical|OK" \
@@ -142,7 +143,7 @@ nodatastate_table() {
 
 # Every uid actually in the file, in file order.
 # HIMMEL-2599: Grafana rule uids may contain a hyphen (the public leak scrub
-# renames example-ws_inbox_backlog_rising to example-ws_inbox_backlog_rising)
+# renames example-ws_inbox_backlog_rising to example-ws_inbox_backlog_rising) # leak-allow: hostname doc comment naming the rule uid this scrub renames
 # — a class missing the hyphen truncates at it, so the real uid reads as
 # "example" (an unknown uid below) AND the table entry for the full name
 # reads as orphaned. Widen the class to match what Grafana actually permits.

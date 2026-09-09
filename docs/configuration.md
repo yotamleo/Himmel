@@ -696,7 +696,7 @@ env override.
 | hermes lanes | [hermes-runbook.md](hermes-runbook.md) |
 | graphify + egress fence | [internals/egress-matrix.md](internals/egress-matrix.md) |
 | Machine setup (incl. hook scopes §4b, scheduler backends §4c) | [setup/new-machine.md](setup/new-machine.md) |
-| Adopting himmel in your repo | [setup/use-on-your-project.md](setup/use-on-your-project.md) |
+| Adopting himmel in your repo | [setup/install.md](setup/install.md) |
 | When a guardrail blocks you | [internals/stuck-playbook.md](internals/stuck-playbook.md) |
 | Full per-key `.env` reference | [.env.example](../.env.example) |
 | Every tool/script/plugin | [tooling-catalog.md](tooling-catalog.md) · [commands-catalog.md](commands-catalog.md) |

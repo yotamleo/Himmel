@@ -151,6 +151,10 @@ options:
   --from-profile <path>  install: run non-interactively from a saved profile cache;
                           gaps: read the profile from here instead of the cache
   --default-scope <s>    install question default: project|user (answer remains confirmable)
+  --scope <s>            install: non-interactive install (no wizard) from the shipped
+                          docs/setup/profiles/adopter-<s>.install-profile.json
+                          (project|user); combined with --from-profile, overrides that
+                          profile's own scope instead
   --contribute           install: layer the contributor-dev setup.sh/setup.ps1
                           primitive on top of the install (pre-commit gates,
                           .himmel-dev marker, doc-guard wiring, Jira/Bitbucket CLI
@@ -192,7 +196,7 @@ options:
 // each option (so passing the DEFAULT value explicitly is never flagged —
 // only a genuinely-set option outside the whitelist is).
 const ALLOWED_OPTIONS = {
-  install: ['fromProfile', 'defaultScope', 'contribute', 'dryRun', 'lanes', 'withCodex', 'withHermes'],
+  install: ['fromProfile', 'defaultScope', 'scope', 'contribute', 'dryRun', 'lanes', 'withCodex', 'withHermes'],
   uninstall: ['dryRun', 'yes'],
   update: ['dryRun'],
   status: ['items', 'json'],
@@ -229,7 +233,7 @@ const DEPS_VERB_ALLOWED_OPTIONS = {
   upgrade: ['dryRun', 'yes', 'withModels'],
 };
 const OPTION_FLAGS = {
-  fromProfile: '--from-profile', defaultScope: '--default-scope', contribute: '--contribute', dryRun: '--dry-run',
+  fromProfile: '--from-profile', defaultScope: '--default-scope', scope: '--scope', contribute: '--contribute', dryRun: '--dry-run',
   items: '--items', json: '--json', profile: '--profile', yes: '--yes',
   withModels: '--with-models',
   lanes: '--lanes', withCodex: '--with-codex', withHermes: '--with-hermes',
@@ -237,7 +241,7 @@ const OPTION_FLAGS = {
   preset: '--preset',
 };
 const OPTION_DEFAULTS = {
-  fromProfile: null, defaultScope: null, contribute: false, dryRun: false, items: null, json: false, profile: null, yes: false,
+  fromProfile: null, defaultScope: null, scope: null, contribute: false, dryRun: false, items: null, json: false, profile: null, yes: false,
   withModels: false,
   lanes: null, withCodex: false, withHermes: false,
   prune: false,
@@ -253,6 +257,7 @@ function parseArgs(argv) {
     subcommand: null,
     fromProfile: null, // reserved (T0: parse only)
     defaultScope: null, // install question default: project|user (null = project)
+    scope: null,       // install: --scope project|user (HIMMEL-2752) — non-interactive install of the shipped adopter-<scope> profile; overrides --from-profile's own scope when both are given
     contribute: false, // install: layer the dev overlay (HIMMEL-2308, --contribute)
     dryRun: false,
     items: null,       // status/ensure: --items comma list (null = no filter)
@@ -453,6 +458,19 @@ function parseArgs(argv) {
           return args;
         }
         break;
+      // HIMMEL-2752: --scope selects a non-interactive install (no wizard,
+      // no confirmation) of the shipped docs/setup/profiles/adopter-<scope>
+      // profile — unlike --default-scope, which only presets a WIZARD
+      // answer and still prompts. Combined with --from-profile it overrides
+      // that profile's own `scope` field instead (see cmdInstall step 0).
+      case '--scope':
+        args.scope = argv[++i];
+        if (['project', 'user'].indexOf(args.scope) === -1) {
+          console.error(`himmelctl: --scope must be one of project|user (got ${args.scope})`);
+          process.exitCode = 2;
+          return args;
+        }
+        break;
       case '--contribute':
         args.contribute = true;
         break;
@@ -570,11 +588,15 @@ function parseArgs(argv) {
     // file verbatim. Silently letting a lane flag override one field of it
     // would make the replayed install differ from the profile it names, so
     // the combination is refused outright rather than resolved by precedence.
-    if (args.subcommand === 'install' && args.fromProfile !== null) {
+    // HIMMEL-2838: bare --scope loads the same kind of shipped profile
+    // (cmdInstall step 0) and hits the identical silent-drop hazard, so it
+    // gets the same refusal, not just --from-profile.
+    if (args.subcommand === 'install' && (args.fromProfile !== null || args.scope !== null)) {
       for (const key of ['lanes', 'withCodex', 'withHermes']) {
         if (args[key] !== OPTION_DEFAULTS[key]) {
-          console.error(`himmelctl: ${OPTION_FLAGS[key]} cannot be combined with --from-profile`);
-          console.error('  (the profile already carries its lane selection — edit the profile, or drop --from-profile)');
+          const combinedWith = args.fromProfile !== null ? '--from-profile' : '--scope';
+          console.error(`himmelctl: ${OPTION_FLAGS[key]} cannot be combined with ${combinedWith}`);
+          console.error(`  (the profile already carries its lane selection — edit the profile, or drop ${combinedWith})`);
           process.exitCode = 2;
           return args;
         }
@@ -583,8 +605,9 @@ function parseArgs(argv) {
       // (schemaVersion 2) or migrated role (legacy) — same refusal-not-
       // precedence posture as the lane flags above.
       if (args.contribute !== OPTION_DEFAULTS.contribute) {
-        console.error(`himmelctl: ${OPTION_FLAGS.contribute} cannot be combined with --from-profile`);
-        console.error('  (the profile already carries its devOverlay answer — edit the profile, or drop --from-profile)');
+        const combinedWith = args.fromProfile !== null ? '--from-profile' : '--scope';
+        console.error(`himmelctl: ${OPTION_FLAGS.contribute} cannot be combined with ${combinedWith}`);
+        console.error(`  (the profile already carries its devOverlay answer — edit the profile, or drop ${combinedWith})`);
         process.exitCode = 2;
         return args;
       }
@@ -1682,7 +1705,7 @@ function loadProfile(p) {
   // profile marks the field meaningful so [] can safely mean explicit none;
   // legacy profiles that name lanes explicitly remain unambiguous and valid.
   if (obj.lanesMeaningful !== undefined && obj.lanesMeaningful !== true) {
-    profileError(p, `field 'lanesMeaningful' must be true when present (got ${JSON.stringify(obj.lanesMeaningful)})`);
+    profileError(p, `field 'lanesMeaningful' must be true when present (got ${JSON.stringify(obj.lanesMeaningful)}) — the only accepted spelling of "no lanes" is "lanes": [] with "lanesMeaningful": true ('--lanes none' is a CLI flag, not a profile value)`);
   }
   // HIMMEL-2308: lanes is asked UNIVERSALLY now, so a v2 profile's lanes:[]
   // must always carry lanesMeaningful=true — there is no role left to exempt.
@@ -1692,11 +1715,18 @@ function loadProfile(p) {
   // legacy-placeholder refusal must still NOT fire for a legacy contributor
   // cache (its [] is a harmless placeholder from a role that never answered
   // it); gating the v1 branch on role==='adopter' keeps that exemption.
-  if (isV2 && obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
-    profileError(p, "legacy profile has lanes:[] without lanesMeaningful=true; re-run the installer and reconfirm lane selection (use 'none' for an explicit empty allowlist)");
+  // CR (public #581): also gate BOTH checks on droppedDormantLanes.length===0
+  // -- an originally non-empty lanes list that the dormant-lane filter above
+  // emptied out is not "an explicit empty allowlist" the profile author
+  // never marked meaningful; it is a real selection that aged out. Without
+  // this guard, exactly the profile the HIMMEL-2352 carve-out above exists to
+  // save (all-dormant lanes, no lanesMeaningful field) still dies here with a
+  // different error message than the one HIMMEL-2352 fixed.
+  if (isV2 && obj.lanes.length === 0 && obj.lanesMeaningful !== true && droppedDormantLanes.length === 0) {
+    profileError(p, "v2 profile has lanes:[] without lanesMeaningful=true; the accepted spelling of an explicit empty allowlist is \"lanes\": [] with \"lanesMeaningful\": true ('--lanes none' is the CLI flag for this, not a profile value) — or re-run the installer and reconfirm lane selection");
   }
-  if (!isV2 && obj.role === 'adopter' && obj.lanes.length === 0 && obj.lanesMeaningful !== true) {
-    profileError(p, "legacy profile has lanes:[] without lanesMeaningful=true; re-run the installer and reconfirm lane selection (use 'none' for an explicit empty allowlist)");
+  if (!isV2 && obj.role === 'adopter' && obj.lanes.length === 0 && obj.lanesMeaningful !== true && droppedDormantLanes.length === 0) {
+    profileError(p, "legacy profile has lanes:[] without lanesMeaningful=true; the accepted spelling of an explicit empty allowlist is \"lanes\": [] with \"lanesMeaningful\": true ('--lanes none' is the CLI flag for this, not a profile value) — or re-run the installer and reconfirm lane selection");
   }
   // HIMMEL-2300: optional, like the luna/secretsWalk/bridge sections just
   // below — a contributor cache (askQuestions() never asks alwaysOn for that
@@ -1786,6 +1816,13 @@ function loadProfile(p) {
   if (obj.secretsWalk !== undefined) {
     checkEnum('secretsWalk', obj.secretsWalk, ['run', 'skip']);
   }
+  // HIMMEL-2705: `channel` picks the release channel scripts/himmel-update.sh
+  // follows — optional (absent means "unset", today's plain git-pull
+  // behavior, unchanged); when present it is closed/strict like every other
+  // field here.
+  if (obj.channel !== undefined) {
+    checkEnum('channel', obj.channel, ['stable', 'pre']);
+  }
   if (obj.bridge !== undefined) {
     if (!obj.bridge || typeof obj.bridge !== 'object' || Array.isArray(obj.bridge)) {
       profileError(p, "field 'bridge' must be an object when present");
@@ -1793,17 +1830,38 @@ function loadProfile(p) {
     if (typeof obj.bridge.enabled !== 'boolean') {
       profileError(p, `field 'bridge.enabled' must be a boolean (got ${JSON.stringify(obj.bridge.enabled)})`);
     }
-    if (typeof obj.bridge.envPath !== 'string') {
-      profileError(p, `field 'bridge.envPath' must be a string (got ${JSON.stringify(obj.bridge.envPath)})`);
-    }
-    if (typeof obj.bridge.whisperCli !== 'string') {
-      profileError(p, `field 'bridge.whisperCli' must be a string (got ${JSON.stringify(obj.bridge.whisperCli)})`);
-    }
-    if (typeof obj.bridge.whisperModel !== 'string') {
-      profileError(p, `field 'bridge.whisperModel' must be a string (got ${JSON.stringify(obj.bridge.whisperModel)})`);
-    }
-    if (typeof obj.bridge.installPersistence !== 'boolean') {
-      profileError(p, `field 'bridge.installPersistence' must be a boolean (got ${JSON.stringify(obj.bridge.installPersistence)})`);
+    // HIMMEL-2752: envPath/whisperCli/whisperModel/installPersistence are the
+    // bridge's OWN config — meaningless (and previously required anyway) when
+    // bridge.enabled is false. Absent is now accepted (treated as empty) in
+    // that case; present-but-wrong still fails loud, same as every other
+    // conditionally-required field in this validator (vault.path,
+    // handover.path just above).
+    if (obj.bridge.enabled) {
+      if (typeof obj.bridge.envPath !== 'string') {
+        profileError(p, `field 'bridge.envPath' must be a string (got ${JSON.stringify(obj.bridge.envPath)})`);
+      }
+      if (typeof obj.bridge.whisperCli !== 'string') {
+        profileError(p, `field 'bridge.whisperCli' must be a string (got ${JSON.stringify(obj.bridge.whisperCli)})`);
+      }
+      if (typeof obj.bridge.whisperModel !== 'string') {
+        profileError(p, `field 'bridge.whisperModel' must be a string (got ${JSON.stringify(obj.bridge.whisperModel)})`);
+      }
+      if (typeof obj.bridge.installPersistence !== 'boolean') {
+        profileError(p, `field 'bridge.installPersistence' must be a boolean (got ${JSON.stringify(obj.bridge.installPersistence)})`);
+      }
+    } else {
+      if (obj.bridge.envPath !== undefined && typeof obj.bridge.envPath !== 'string') {
+        profileError(p, `field 'bridge.envPath' must be a string (got ${JSON.stringify(obj.bridge.envPath)})`);
+      }
+      if (obj.bridge.whisperCli !== undefined && typeof obj.bridge.whisperCli !== 'string') {
+        profileError(p, `field 'bridge.whisperCli' must be a string (got ${JSON.stringify(obj.bridge.whisperCli)})`);
+      }
+      if (obj.bridge.whisperModel !== undefined && typeof obj.bridge.whisperModel !== 'string') {
+        profileError(p, `field 'bridge.whisperModel' must be a string (got ${JSON.stringify(obj.bridge.whisperModel)})`);
+      }
+      if (obj.bridge.installPersistence !== undefined && typeof obj.bridge.installPersistence !== 'boolean') {
+        profileError(p, `field 'bridge.installPersistence' must be a boolean (got ${JSON.stringify(obj.bridge.installPersistence)})`);
+      }
     }
   }
   // HIMMEL-2302: `cadences` is an OPTIONAL WHOLE SECTION, same pattern as
@@ -3849,7 +3907,16 @@ async function runPlan(answers, args) {
   // T4: execute the derived command VERBATIM; propagate its rc (skip the
   // post-install enable step if the core install itself failed).
   const rc = runSpawn(cmd);
-  if (rc !== 0) return rc;
+  // HIMMEL-2836: write the PATH shim BEFORE checking adopt.sh's rc — a failed
+  // core install (e.g. a plugin SSH-clone failure, same shape as HIMMEL-549)
+  // must not leave the adopter with no `himmelctl` on PATH to run
+  // `himmelctl ensure` and resume. Best-effort, same posture as adopt.sh's own
+  // git-hook placement (HIMMEL-2818): never blocks on or masks adopt.sh's rc.
+  const shimOk = applyHimmelctlPathShim(args);
+  if (rc !== 0) {
+    if (shimOk) console.error('himmelctl: install failed (see above), but the himmelctl launcher is on PATH — resolve the error, then run `himmelctl ensure` to resume.');
+    return rc;
+  }
   // HIMMEL-2460: the T5b wire/apply plan runs AFTER adopt.sh succeeds, as an
   // additional step — never instead of it.
   if (existingVaultPlan) {
@@ -3870,7 +3937,6 @@ async function runPlan(answers, args) {
   // (adopt.sh's/setup.sh's settings-template default, HIMMEL-816).
   const pluginResult = applyPluginStep(answers);
   const lunaResult = applyLunaSectionsStep(answers);
-  const shimOk = applyHimmelctlPathShim(args);
   await printContributorProfile(answers, overlayCmd ? displayCommand(overlayCmd) : undefined, args.dryRun);
   await printAdopterEpilogue(answers, displayCommand(cmd), args.dryRun, pluginResult, vaultScaffolded, lunaResult);
   printUninstallFooter();
@@ -3888,7 +3954,21 @@ async function cmdInstall(args) {
   //    schema exits 2 naming the field; unreadable/non-JSON throws to
   //    main()'s catch (exit 1). No stdin wait either way.
   let profileAnswers = null;
-  if (args.fromProfile) profileAnswers = loadProfile(args.fromProfile);
+  if (args.fromProfile) {
+    profileAnswers = loadProfile(args.fromProfile);
+    // HIMMEL-2752: --scope + --from-profile overrides the profile's own
+    // scope rather than being ignored — the profile stays the single
+    // authority for everything else, same posture as the lane flags above.
+    if (args.scope) profileAnswers.scope = args.scope;
+  } else if (args.scope) {
+    // HIMMEL-2752: --scope alone is a discoverable non-interactive door —
+    // it loads the shipped, placeholder-free adopter-<scope> profile
+    // instead of walking the wizard. Resolved from this script's own
+    // location (not repoRoot()/HIMMELCTL_REPO_ROOT, which points hermetic
+    // tests at a throwaway fixture repo with no docs/ tree) so it always
+    // finds the real checked-in file regardless of install target.
+    profileAnswers = loadProfile(path.join(__dirname, '..', '..', 'docs', 'setup', 'profiles', `adopter-${args.scope}.install-profile.json`));
+  }
 
   // 0.5 (HIMMEL-2308 CR round 3): --contribute outside a himmel checkout is
   // refused HERE, before any preflight/question side effect, so an invalid
@@ -3945,7 +4025,40 @@ async function cmdInstall(args) {
   // installed one. Gated on !dryRun (one guard, one source of truth for every
   // branch above): a dry run — from ANY of the three answer-producing
   // branches, interactive included — must make zero persistent changes.
-  if (!args.dryRun) writeCache(answers);
+  // HIMMEL-2705: new adopters default to the stable release channel
+  // (scripts/himmel-update.sh's channel seam). "New" is this STATION never
+  // having a cache before — checked BEFORE writeCache below, since install
+  // always fully replaces the cache with the resolved answers (no merge with
+  // whatever was there), so answers.channel === undefined is true on every
+  // re-install too (interactive re-run, or --from-profile against a
+  // channel-less profile) and cannot by itself distinguish "brand new
+  // station" from "existing station whose incoming answers happen to omit
+  // channel" (CR round 1, codex-2: the field-only check opted every such
+  // re-install into stable, contradicting "unset stays unset").
+  //
+  // A re-install (isNewAdopter=false) with channel-less incoming answers
+  // must carry the STATION's existing channel forward rather than dropping
+  // it — writeCache below replaces the whole file, so doing nothing here
+  // would silently erase a stable/pre station's setting on every reinstall
+  // that doesn't happen to restate it (CR round 2, codex-1). Read the prior
+  // cache's channel best-effort; an unreadable/malformed prior cache just
+  // means there is nothing to carry forward, not an install failure.
+  if (!args.dryRun) {
+    const isNewAdopter = !fs.existsSync(cachePath());
+    if (answers.channel === undefined) {
+      if (isNewAdopter) {
+        answers.channel = 'stable';
+      } else {
+        try {
+          const prior = JSON.parse(fs.readFileSync(cachePath(), 'utf8'));
+          if (typeof prior.channel === 'string') answers.channel = prior.channel;
+        } catch {
+          // unreadable/malformed prior cache: nothing to carry forward
+        }
+      }
+    }
+    writeCache(answers);
+  }
 
   // 5.5 (HIMMEL-2308): devOverlay is only valid inside a himmel checkout —
   // it layers the contributor-dev setup.sh/setup.ps1 primitive on top of the

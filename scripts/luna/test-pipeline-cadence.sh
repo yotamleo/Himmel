@@ -559,6 +559,14 @@ fi
 assert_contains "harvest runner stamps the format version (HIMMEL-588)" "# himmel-cadence-runner-format: $FMT" "$harvest_sh"
 assert_contains "synth runner stamps the format version (HIMMEL-588)"   "# himmel-cadence-runner-format: $FMT" "$synth_sh"
 assert_contains "health runner stamps the format version (HIMMEL-588)"  "# himmel-cadence-runner-format: $FMT" "$health_sh"
+# Same PATH-snapshot shape assertion as fetch-health above, but against the
+# REAL emit_runner output (not a reconstructed shape, HIMMEL-2840 CR round 1):
+# the old node-dir-only line was `export PATH=<node_dir>:$PATH` (no leading
+# semicolon), so this distinguishes the fix's `PATH=<snapshot>; export PATH`
+# shape from a regression back to the old prepend-only line.
+assert_contains "harvest runner restores arm-time PATH snapshot (HIMMEL-2840)" '; export PATH' "$harvest_sh"
+assert_contains "synth runner restores arm-time PATH snapshot (HIMMEL-2840)"   '; export PATH' "$synth_sh"
+assert_contains "health runner restores arm-time PATH snapshot (HIMMEL-2840)"  '; export PATH' "$health_sh"
 assert_contains "harvest runner cds into vault" "cd $VAULT || exit 1" "$harvest_sh"
 assert_contains "harvest runner runs /harvest-clips" "/harvest-clips" "$harvest_sh"
 assert_contains "harvest runner chains /triage-clips" "/triage-clips" "$harvest_sh"
@@ -605,6 +613,94 @@ for what in harvest synth health; do
         pass "$what runner has no headless claude flags"
     fi
 done
+
+# Test C4e: runner_path_snapshot unit (HIMMEL-2840) — the shared helper both
+# emitters call. Pure (string-only), so extract it the way xml_escape/
+# default_vault are tested above and call it standalone. Pins: (1) a node_dir
+# NOT already in the snapshot gets prepended (keeps #317's guarantee: nvm-
+# managed node found under cron's minimal PATH); (2) a node_dir ALREADY in the
+# snapshot is not prepended again (no duplicate PATH entry).
+# ============================================================================
+echo "TEST: runner_path_snapshot prepends node_dir only when missing (HIMMEL-2840)"
+RPS_SRC="$(sed -n '/^runner_path_snapshot()/,/^}/p' "$SCRIPT")"
+run_rps() { bash -c "$RPS_SRC"$'\n'"runner_path_snapshot \"\$1\" \"\$2\"" _ "$1" "$2"; }
+
+rps_missing=$(run_rps "/usr/bin:/bin" "/opt/nvm/node/bin")
+assert_contains "runner_path_snapshot prepends a node_dir absent from the snapshot" "/opt/nvm/node/bin" "$rps_missing"
+case "$rps_missing" in
+    "/opt/nvm/node/bin:"*) pass "runner_path_snapshot puts the missing node_dir FIRST" ;;
+    *) fail "runner_path_snapshot did not prepend the missing node_dir first" "$rps_missing" ;;
+esac
+
+rps_present=$(run_rps "/opt/nvm/node/bin:/usr/bin:/bin" "/opt/nvm/node/bin")
+occurrences=$(printf '%s' "$rps_present" | grep -o "/opt/nvm/node/bin" | wc -l | tr -d ' ')
+if [ "$occurrences" = "1" ]; then
+    pass "runner_path_snapshot does not duplicate a node_dir already on the snapshot"
+else
+    fail "runner_path_snapshot duplicated a node_dir already on the snapshot" "$rps_present"
+fi
+
+rps_no_node=$(run_rps "/usr/bin:/bin" "")
+assert_contains "runner_path_snapshot with no node_dir echoes the snapshot as-is" "/usr/bin:/bin" "$rps_no_node"
+
+# Test C4f: emitted runner PATH line resolves a stub tool that lives ONLY in
+# a fixture ~/.local/bin-shaped dir under env -i (HIMMEL-2840). RED control:
+# the OLD emit_runner line (`export PATH=<node_dir>:$PATH`, prepending only
+# node's directory) must FAIL this — it never puts the fixture dir on PATH at
+# all — proving the regression this ticket fixes stays caught. The fixture
+# dir is synthetic (never this station's real PATH); node_dir is a synthetic
+# path too, so the RED control needs no real node install.
+# ============================================================================
+echo "TEST: emitted runner PATH line resolves an arm-time-only ~/.local/bin stub under env -i (RED control, HIMMEL-2840)"
+if command -v env >/dev/null 2>&1 && [ -x /bin/sh ]; then
+    localbin_dir="$TMP_ROOT/c4f-localbin"
+    mkdir -p "$localbin_dir"
+    if command -v cygpath >/dev/null 2>&1; then localbin_dir=$(cygpath -u "$localbin_dir"); fi
+    localbin_stub="$localbin_dir/gallery-dl-stub"
+    printf '#!/bin/sh\nexit 0\n' > "$localbin_stub"
+    chmod +x "$localbin_stub"
+    fake_node_dir="$TMP_ROOT/c4f-fake-node-bin"
+    mkdir -p "$fake_node_dir"
+
+    # Snapshot PATH exactly as cron_arm computes it: the fixture ~/.local/bin
+    # dir is on the arming PATH (as it would be for a real `uv tool install`),
+    # node's dir is not — so the fix must fold node_dir in via
+    # runner_path_snapshot while STILL carrying the fixture dir through.
+    arm_time_path="$localbin_dir:/usr/bin:/bin"
+    q_new_path=$(run_rps "$arm_time_path" "$fake_node_dir")
+    new_shape="$TMP_ROOT/c4f-new-shape.sh"
+    {
+        printf '#!/bin/sh\n'
+        printf 'PATH=%s; export PATH\n' "$q_new_path"
+        printf 'command -v gallery-dl-stub >/dev/null 2>&1\n'
+    } > "$new_shape"
+    chmod +x "$new_shape"
+
+    # OLD shape (pre-fix emit_runner): node-dir-only prepend, never touches the
+    # fixture dir — this is the exact line HIMMEL-2840 replaces.
+    q_old_node_dir=$(printf '%q' "$fake_node_dir")
+    old_shape="$TMP_ROOT/c4f-old-shape.sh"
+    {
+        printf '#!/bin/sh\n'
+        # shellcheck disable=SC2016  # literal $PATH — the OLD runner shape expands it at fire time, not here
+        printf 'export PATH=%s:$PATH\n' "$q_old_node_dir"
+        printf 'command -v gallery-dl-stub >/dev/null 2>&1\n'
+    } > "$old_shape"
+    chmod +x "$old_shape"
+
+    if env -i PATH=/usr/bin:/bin /bin/sh "$new_shape" >/dev/null 2>&1; then
+        pass "GREEN: new PATH-snapshot shape resolves the arm-time-only stub under env -i"
+    else
+        fail "GREEN: new PATH-snapshot shape failed to resolve the stub" "path=$arm_time_path node_dir=$fake_node_dir"
+    fi
+    if env -i PATH=/usr/bin:/bin /bin/sh "$old_shape" >/dev/null 2>&1; then
+        fail "RED control: old node-dir-only prepend unexpectedly resolved the stub" "old_shape should never see $localbin_dir"
+    else
+        pass "RED control: old node-dir-only prepend fails to resolve the stub (the bug this ticket fixes)"
+    fi
+else
+    pass "emitted runner PATH-snapshot env -i execution skipped (host lacks env -i / /bin/sh)"
+fi
 
 # Test C4c: per-leg --model pins (HIMMEL-506) — every runner carries an
 # explicit --model right after the binary so the cadence never inherits the

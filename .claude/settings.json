@@ -1,0 +1,422 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp *)",
+      "Bash(rm *)",
+      "Bash(mkdir -p *)",
+      "Bash(git *)",
+      "Bash(rtk *)",
+      "Bash(gh *)",
+      "Bash(pre-commit *)",
+      "Bash(pip install *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(chmod *)",
+      "Bash(head *)",
+      "Bash(cat *)",
+      "PowerShell(New-Item *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(git *)",
+      "PowerShell(gh *)",
+      "PowerShell(npm *)",
+      "PowerShell(npx *)",
+      "PowerShell(node *)",
+      "PowerShell(Set-Location *)",
+      "PowerShell(Push-Location *)",
+      "PowerShell(Pop-Location)",
+      "PowerShell(pwsh -File scripts/telegram/restart-bridge.ps1 -FromLedger)",
+      "PowerShell(pwsh -File scripts/telegram/restart-bridge.ps1 -FromLedger -Kill)",
+      "mcp__obsidian-vault__obsidian_list_files_in_vault",
+      "mcp__obsidian-vault__obsidian_list_files_in_dir",
+      "mcp__obsidian-vault__obsidian_append_content",
+      "mcp__obsidian-vault__obsidian_patch_content",
+      "mcp__obsidian-vault__obsidian_get_file_contents",
+      "mcp__obsidian-vault__obsidian_batch_get_file_contents",
+      "mcp__obsidian-vault__obsidian_simple_search",
+      "mcp__obsidian-vault__obsidian_complex_search",
+      "mcp__obsidian-vault__obsidian_delete_file",
+      "Bash(bun scripts/telegram/spawn-glm.ts:*)",
+      "Bash(bun scripts/telegram/spawn-claudex.ts:*)",
+      "Bash(nohup bun scripts/telegram/spawn-glm.ts:*)",
+      "Bash(nohup bun scripts/telegram/spawn-claudex.ts:*)",
+      "Bash(bun test *)",
+      "Bash(bash -n *)",
+      "Bash(shellcheck *)",
+      "Bash(uv run --with shellcheck-py shellcheck *)",
+      "Bash(ssh -p *)",
+      "Bash(command -v *)",
+      "Bash(bash scripts/*)",
+      "Bash(bash tests/*)",
+      "Bash(bash marketplace/plugins/*)",
+      "Bash(claude plugin *)",
+      "Bash(sed *)",
+      "Bash(awk *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(wc *)",
+      "Bash(cut *)",
+      "Bash(tr *)",
+      "Bash(diff *)",
+      "Bash(cmp *)",
+      "Bash(tail *)",
+      "Bash(basename *)",
+      "Bash(dirname *)",
+      "Bash(realpath *)",
+      "Bash(date *)",
+      "Bash(echo *)",
+      "Bash(printf *)",
+      "Bash(test *)",
+      "Bash(mktemp *)",
+      "Bash(mv *)",
+      "Bash(jq *)",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell(Select-String *)",
+      "PowerShell(Measure-Object *)",
+      "PowerShell(Move-Item *)",
+      "PowerShell(Get-Date *)",
+      "PowerShell(Get-ScheduledTask *)",
+      "PowerShell(Get-ScheduledTaskInfo *)",
+      "PowerShell(Format-List *)",
+      "PowerShell(Format-Table *)",
+      "PowerShell(Select-Object *)",
+      "PowerShell(pwsh -NoProfile -File scripts/*)",
+      "Edit(.claude/worktrees/**)",
+      "Skill(*)",
+      "WebFetch(domain:code.claude.com)",
+      "Bash(schtasks /query *)",
+      "Bash(tasklist *)",
+      "mcp__plugin_qmd_qmd__query",
+      "mcp__plugin_qmd_qmd__get"
+    ],
+    "deny": [
+      "Bash(git push --force)",
+      "Bash(git push --force *)",
+      "Bash(git push -f*)",
+      "Bash(git push --mirror*)",
+      "Bash(git push --delete*)",
+      "Bash(git push origin --delete*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(git clean -d*)",
+      "Bash(git checkout -- *)",
+      "Bash(git rebase -i *)",
+      "Bash(git filter-branch *)",
+      "Bash(git reflog delete *)",
+      "Bash(rtk git push --force)",
+      "Bash(rtk git push --force *)",
+      "Bash(rtk git push -f*)",
+      "Bash(rtk git push --mirror*)",
+      "Bash(rtk git push --delete*)",
+      "Bash(rtk git reset --hard*)",
+      "Bash(rtk git clean -f*)",
+      "Bash(rtk git clean -d*)",
+      "Bash(gh repo delete *)",
+      "Bash(gh release delete *)",
+      "Bash(rm -r *)",
+      "Bash(rm -R *)",
+      "Bash(rm -rf *)",
+      "Bash(rm -Rf *)",
+      "PowerShell(Remove-Item * -Recurse -Force *)",
+      "Edit(.claude/worktrees/**/.env)",
+      "Edit(.claude/worktrees/**/.env.local)",
+      "Edit(.claude/worktrees/**/.env.*.local)",
+      "Edit(.claude/worktrees/**/.env.bak)",
+      "Edit(.claude/worktrees/**/.env.backup)",
+      "Edit(.claude/worktrees/**/.git/**)",
+      "Bash(rm -fr *)",
+      "Bash(rm -Fr *)",
+      "Bash(rm --recursive *)"
+    ],
+    "additionalDirectories": [
+      "~/Documents/github/himmel",
+      "~/.himmel",
+      "~/Documents/luna",
+      "~/AppData/Local/Python"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" --chain \"$CLAUDE_PROJECT_DIR/scripts/hooks/auto-approve-safe-bash.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/check-cr-marker-on-pr-create.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-jira-compound-write.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-tail-pipe-on-gates.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-read-secrets.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-destructive-commands.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-git-stash.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-rogue-claude-schedule.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-chokepoint-env-prefix.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/require-quiet-run.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-live-settings.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-write-into-main-checkout.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" --chain \"$CLAUDE_PROJECT_DIR/scripts/hooks/auto-approve-safe-bash.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/check-cr-marker-on-pr-create.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-jira-compound-write.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-tail-pipe-on-gates.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-read-secrets.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-destructive-commands.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-git-stash.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-rogue-claude-schedule.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-chokepoint-env-prefix.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/require-quiet-run.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-live-settings.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-write-into-main-checkout.sh\"; fi",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" --chain \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-read-secrets.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-destructive-commands.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-git-stash.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-rogue-claude-schedule.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-chokepoint-env-prefix.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" --chain \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-read-secrets.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-destructive-commands.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-git-stash.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-rogue-claude-schedule.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-chokepoint-env-prefix.sh\"; fi",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-read-secrets.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-read-secrets.sh\"; fi",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" --chain \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-live-settings.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-memory-capture.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" --chain \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-live-settings.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard-memory-capture.sh\"; fi",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/orchestrator-inline-guard.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/orchestrator-inline-guard.sh\"; fi",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_atlassian_atlassian__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-backend-tier.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-backend-tier.sh\"; fi",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/auto-arm-on-cap.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/auto-arm-on-cap.sh\"; fi",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" pre",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts\" subagent-start",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v graphify >/dev/null 2>&1 && exec graphify hook-guard search; exit 0",
+            "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Monitor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-subagent-park.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/block-subagent-park.sh\"; fi",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/auto-arm-on-subagent-cap.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/auto-arm-on-subagent-cap.sh\"; fi",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts\" subagent-end",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/trigger-cr-on-pr-create.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/trigger-cr-on-pr-create.sh\"; fi",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/trigger-cr-on-push.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/trigger-cr-on-push.sh\"; fi",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/detect-dirty-primary.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/detect-dirty-primary.sh\"; fi",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" post",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/check-hook-file-parse.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/check-hook-file-parse.sh\"; fi",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/claudex-inbox-hook.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/claudex-inbox-hook.sh\"; fi",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" ]; then command -p sh \"$CLAUDE_PROJECT_DIR/scripts/lib/run-node.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" --chain --lifecycle \"$CLAUDE_PROJECT_DIR/scripts/hooks/check-update-available.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-initiative.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/qmd-staleness-notice.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/graphify-freshness-advisory.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/claudex-inbox-sessionstart.sh\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" --chain --lifecycle \"$CLAUDE_PROJECT_DIR/scripts/hooks/check-update-available.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/inject-initiative.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/qmd-staleness-notice.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/graphify-freshness-advisory.sh\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/claudex-inbox-sessionstart.sh\"; fi",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" heartbeat",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts\" session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/stop-queue.mjs\" enqueue --key speak-reply -- node \"$CLAUDE_PROJECT_DIR/scripts/hooks/run-hook-with-bash.js\" \"$CLAUDE_PROJECT_DIR/scripts/hooks/speak-reply.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" postfail",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" denied",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" permreq",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/trust/shadow-ledger.mjs\" notify",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/stop-queue.mjs\" enqueue --key session-run-end -- bun \"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts\" session-end",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

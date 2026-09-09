@@ -3,7 +3,7 @@
 > **Prerequisites:**
 > 1. himmel installed and configured on your machine — see
 >    [docs/setup/new-machine.md](setup/new-machine.md) (or
->    [docs/setup/use-on-your-project.md](setup/use-on-your-project.md) if you're
+>    [docs/setup/install.md](setup/install.md) if you're
 >    adopting the portable core in your own repo).
 > 2. **An active Claude Code session in the repo root** — run `claude` in your
 >    terminal (or use your IDE's Claude extension). Need

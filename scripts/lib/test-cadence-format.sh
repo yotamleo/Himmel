@@ -156,10 +156,10 @@ echo "[test-cadence-format] runner format stamp"
 # literal here is the tripwire: a version bump is a deliberate act (it nudges
 # every armed operator to `arm --force`), so it should require touching this
 # line. Bump it in the same commit that bumps cadence-format.sh.
-if [ "$CADENCE_RUNNER_FORMAT_VERSION" = 16 ]; then
-  pass=$((pass + 1)); echo "  ok: CADENCE_RUNNER_FORMAT_VERSION is the expected 16"
+if [ "$CADENCE_RUNNER_FORMAT_VERSION" = 17 ]; then
+  pass=$((pass + 1)); echo "  ok: CADENCE_RUNNER_FORMAT_VERSION is the expected 17"
 else
-  fail=$((fail + 1)); echo "  FAIL: expected CADENCE_RUNNER_FORMAT_VERSION=16, got '$CADENCE_RUNNER_FORMAT_VERSION'"
+  fail=$((fail + 1)); echo "  FAIL: expected CADENCE_RUNNER_FORMAT_VERSION=17, got '$CADENCE_RUNNER_FORMAT_VERSION'"
 fi
 
 echo "[test-cadence-format] CADENCE_RUNNER_BASENAMES includes upstream-watch (HIMMEL-2367)"

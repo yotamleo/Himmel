@@ -47,7 +47,7 @@ test('lane-impl keeps its four-plugin surface and disables operator always-tier 
   assert.equal(p['pr-review-toolkit-himmel@himmel'], true);
   assert.equal(p['superpowers@claude-plugins-official'], false);
   assert.equal(p['mattpocock-skills@claude-plugins-official'], false);
-  assert.equal(p['plannotator-effective-html@effective-html'], false);
+  assert.equal(p['plannotator-effective-html@himmel'], false);
   assert.equal(p['claude-obsidian@himmel'], false);
   assert.equal(p['obsidian-triage@himmel'], false);
   assert.equal(p['skill-creator@claude-plugins-official'], false);
@@ -278,7 +278,7 @@ test('user profile matches the installer always tier and leaves on-demand plugin
   for (const id of [
     'superpowers@claude-plugins-official',
     'mattpocock-skills@claude-plugins-official',
-    'plannotator-effective-html@effective-html',
+    'plannotator-effective-html@himmel',
     'handover@himmel',
     'himmel-ops@himmel',
     'qmd@himmel',

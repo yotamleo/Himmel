@@ -293,10 +293,10 @@ class TestClone(unittest.TestCase):
             dest = vm.clone_himmel(ref="main", depth=1)
         self.assertEqual(dest, "~/himmel")
         joined = "\n".join(calls)
-        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel.git", joined)
+        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel.git", joined)  # leak-allow: hostname assertion on the token-embedded clone URL
         self.assertIn("--depth 1", joined)
         self.assertIn("--branch main", joined)
-        self.assertIn("set-url origin https://github.com/yotamleo/himmel.git", joined)
+        self.assertIn("set-url origin https://github.com/yotamleo/himmel.git", joined)  # leak-allow: hostname assertion on the post-clone origin rewrite
 
     def test_clone_refuses_existing_dest(self):
         vm = self._vm()
@@ -330,8 +330,8 @@ class TestClone(unittest.TestCase):
         joined = "\n".join(calls)
         self.assertIn(r"if exist C:\himmel", joined)
         self.assertIn(r'"C:\Program Files\Git\bin\bash.exe" -lc', joined)
-        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel.git", joined)
-        self.assertIn("set-url origin https://github.com/yotamleo/himmel.git", joined)
+        self.assertIn("x-access-token:TKN@github.com/yotamleo/himmel.git", joined)  # leak-allow: hostname Windows-path variant of the token-clone-URL assertion
+        self.assertIn("set-url origin https://github.com/yotamleo/himmel.git", joined)  # leak-allow: hostname Windows-path variant of the origin-rewrite assertion
 
 
 class TestProvisionE2E(unittest.TestCase):
@@ -939,7 +939,7 @@ class TestTriggerClaude(unittest.TestCase):
         prompt = dc.call_args[0][0]
         self.assertIn(guest, prompt)
         self.assertEqual(dc.call_args.kwargs.get("cwd"),
-                         "~/Documents/github/himmel")
+                         "~/Documents/github/himmel")  # leak-allow: hostname assertion on the default drive-claude working dir
 
     def test_same_basename_different_sources_distinct_guest_paths(self):
         """codex-adv CR: next-session-N.md exists in many buckets — two
@@ -1053,7 +1053,7 @@ class TestTriggerClaude(unittest.TestCase):
              mock.patch.object(vm, "run", side_effect=fake_run):
             vm.trigger_claude(str(self.local), when="22:30")
         joined = "\n".join(cmds)
-        self.assertIn("cd ~/Documents/github/himmel", joined)
+        self.assertIn("cd ~/Documents/github/himmel", joined)  # leak-allow: hostname assertion on the scheduled-arm default cwd
         self.assertNotIn("--cwd", joined)
 
     def test_scheduled_with_explicit_cwd_includes_cwd_flag(self):
@@ -1255,7 +1255,7 @@ class TestStation(unittest.TestCase):
         vm = self._vm()
         ssh_config_text = (
             "Host teststation\n"
-            "  HostName 10.0.0.5\n"
+            "  HostName 10.0.0.5\n"  # leak-allow: private-lan-ip ssh-config fixture host
             "  Port 2200\n"
             "  User testuser\n"
             "  IdentityFile ~/.ssh/id_ed25519_win2\n"
@@ -1277,7 +1277,7 @@ class TestStation(unittest.TestCase):
         self.assertIsInstance(client, _FakeSSH)
         self.assertEqual(len(calls), 1)
         kw = calls[0]
-        self.assertEqual(kw["hostname"], "10.0.0.5")
+        self.assertEqual(kw["hostname"], "10.0.0.5")  # leak-allow: private-lan-ip ssh-config fixture host assertion
         self.assertEqual(kw["port"], 2200)
         self.assertEqual(kw["username"], "testuser")
         self.assertIn("id_ed25519_win2", kw["key_filename"])

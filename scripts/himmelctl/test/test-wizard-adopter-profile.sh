@@ -435,14 +435,30 @@ grepq "$ep" 'cross-model CR floor — NOT satisfied' \
 echo "ok: caseC opt-in lanes appear only under their own flag; CR-floor disclosure reflects the RESULTING selection (opted-in-but-absent vs opted-in-and-present vs a later opted-in lane satisfying it)"
 
 # ── Case D: flag validation ─────────────────────────────────────────────────
+# HIMMEL-2838 hygiene: every conflict probe below tests a parse-time refusal
+# (parseArgs, before cmdInstall ever runs adopt.sh). A refusal that fails to
+# fire must not be able to fall through into a REAL, non-dry-run install —
+# that exact fallthrough once ran the real adopt.sh against this worktree
+# and rewrote its live .claude/settings.json (HIMMEL-2838 RED-verification
+# incident, 2026-09-08). --dry-run is the actual load-bearing guarantee
+# (runPlan returns at its `if (args.dryRun)` branch before runSpawn(cmd) —
+# bin.js ~3829-3901). Two more belts on top, since a future refactor could
+# move that guarantee: HIMMELCTL_REPO_ROOT points the plan derivation at a
+# throwaway fixture instead of this repo, and the subshell `cd`s into that
+# same fixture first — bin.js resolves project-scope settings.json via
+# process.cwd() (bin.js ~2144), NOT via HIMMELCTL_REPO_ROOT, so cwd is the
+# seam that actually mattered in the incident. Never copy the old unsandboxed
+# shape (bare HIMMELCTL_INTERACTIVE=0 + no --dry-run, no cwd/repo-root seam).
+fD_rc2="$work/d-rc2-fixture"; make_fixture "$fD_rc2"
 expect_rc2() {
   local _label="$1"; shift
   set +e
   local _o
-  _o=$(HIMMELCTL_INTERACTIVE=0 \
+  _o=$(cd "$fD_rc2" && HIMMELCTL_INTERACTIVE=0 \
     HIMMELCTL_CACHE_DIR="$(winpath "$work/caseD-expect-rc2.himmelctl-cache")" \
     HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseD-expect-rc2.himmelctl-cache/luna-config.json")" \
-    "$node_bin" "$wizard" install "$@" </dev/null 2>&1)
+    HIMMELCTL_REPO_ROOT="$(winpath "$fD_rc2")" \
+    "$node_bin" "$wizard" install --dry-run "$@" </dev/null 2>&1)
   local _rc=$?
   set -e
   [ "$_rc" -eq 2 ] || fail "caseD/$_label: expected rc=2, got $_rc: $_o"
@@ -461,10 +477,11 @@ for _dormant_pair in 'ollama:OLLAMA_LOCAL_LANE_OK' 'copilot:COPILOT_CLI_LANE_OK'
   _dl="${_dormant_pair%%:*}"; _de="${_dormant_pair##*:}"
   expect_rc2 "dormant-$_dl" --lanes "$_dl"
   set +e
-  dormant_out=$(HIMMELCTL_INTERACTIVE=0 \
+  dormant_out=$(cd "$fD_rc2" && HIMMELCTL_INTERACTIVE=0 \
     HIMMELCTL_CACHE_DIR="$(winpath "$work/caseD-dormant-$_dl.himmelctl-cache")" \
     HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseD-dormant-$_dl.himmelctl-cache/luna-config.json")" \
-    "$node_bin" "$wizard" install --lanes "$_dl" </dev/null 2>&1)
+    HIMMELCTL_REPO_ROOT="$(winpath "$fD_rc2")" \
+    "$node_bin" "$wizard" install --dry-run --lanes "$_dl" </dev/null 2>&1)
   set -e
   grepq "$dormant_out" "dormant in v1" \
     || fail "caseD: --lanes $_dl should be refused with dormant wording, not a bare unknown-lane message: $dormant_out"
@@ -486,10 +503,11 @@ capture "$sDnone" "$hDnone" "$fDnone" --lanes none
 # block above), so it is the value used here to exercise the CONFLICT check
 # itself without also tripping the lane-validity refusal.
 set +e
-conflict_out=$(HIMMELCTL_INTERACTIVE=0 \
+conflict_out=$(cd "$fD_rc2" && HIMMELCTL_INTERACTIVE=0 \
   HIMMELCTL_CACHE_DIR="$(winpath "$work/caseD-conflict.himmelctl-cache")" \
   HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseD-conflict.himmelctl-cache/luna-config.json")" \
-  "$node_bin" "$wizard" install \
+  HIMMELCTL_REPO_ROOT="$(winpath "$fD_rc2")" \
+  "$node_bin" "$wizard" install --dry-run \
   --from-profile "$work/definitely-not-here.json" --lanes none </dev/null 2>&1)
 conflict_rc=$?
 set -e
@@ -500,6 +518,41 @@ grepq "$conflict_out" 'cannot be combined with --from-profile' \
 grepq "$conflict_out" -iE 'ENOENT|no such file|not valid JSON|invalid profile' \
   && fail "caseD: the profile must not even be OPENED when the flags conflict: $conflict_out"
 echo "ok: caseD bad/opt-in/empty --lanes and --from-profile conflicts all exit 2 with the conflict message"
+
+# HIMMEL-2838: bare --scope loads a shipped profile the same way --from-profile
+# does (cmdInstall step 0), so it hits the identical silent-drop hazard for a
+# lane flag. RED control (pre-fix): parseArgs's refusal only checked
+# args.fromProfile !== null, so --scope + --with-codex was silently ACCEPTED
+# and the flag silently dropped (no error, lanes stayed []).
+expect_rc2 scope-conflict --scope project --with-codex
+expect_rc2 scope-conflict-lanes --scope project --lanes none
+
+set +e
+scope_conflict_out=$(cd "$fD_rc2" && HIMMELCTL_INTERACTIVE=0 \
+  HIMMELCTL_CACHE_DIR="$(winpath "$work/caseD-scope-conflict.himmelctl-cache")" \
+  HIMMEL_LUNA_CONFIG_PATH="$(winpath "$work/caseD-scope-conflict.himmelctl-cache/luna-config.json")" \
+  HIMMELCTL_REPO_ROOT="$(winpath "$fD_rc2")" \
+  "$node_bin" "$wizard" install --dry-run --scope project --with-codex </dev/null 2>&1)
+scope_conflict_rc=$?
+set -e
+[ "$scope_conflict_rc" -eq 2 ] \
+  || fail "caseD: --scope + --with-codex should exit 2 (got $scope_conflict_rc): $scope_conflict_out"
+grepq "$scope_conflict_out" 'cannot be combined with --scope' \
+  || fail "caseD: --scope + --with-codex should report the flag CONFLICT naming --scope: $scope_conflict_out"
+# pr-check round 1 [codex-2]: the recovery-hint line must name the flag that
+# actually conflicted, not hardcode --from-profile when --scope was it.
+grepq "$scope_conflict_out" 'drop --scope' \
+  || fail "caseD: --scope conflict recovery hint should say 'drop --scope', not --from-profile: $scope_conflict_out"
+grepq "$scope_conflict_out" 'drop --from-profile' \
+  && fail "caseD: --scope conflict recovery hint must not mention --from-profile, which was absent from this invocation: $scope_conflict_out"
+
+# ... and bare --scope alone (no lane flags) must still install normally,
+# proving the refusal fires only on the flag COMBINATION, not on --scope itself.
+sDscope="$work/d-scope"; mkdir -p "$sDscope"; hDscope="$work/d-scope-home"; mkdir -p "$hDscope"
+fDscope="$work/d-scope-fix"; make_fixture "$fDscope"
+capture "$sDscope" "$hDscope" "$fDscope" --scope project
+[ "$rc" -eq 0 ] || fail "caseD: --scope project alone (no lane flags) should still install (got rc=$rc): $out"
+echo "ok: caseD --scope + lane-flag conflict is refused the same way --from-profile is (HIMMEL-2838); bare --scope still installs"
 
 # ── Case D2: legacy empty lane placeholder requires reconfirmation ──────────
 sD2="$work/d2"; mkdir -p "$sD2"; hD2="$work/d2-home"; mkdir -p "$hD2"
@@ -610,6 +663,57 @@ grepq "$outB" -F 'contains unknown lane "not-a-real-lane"' \
 grepq "$outB" -F "dormant in v1" \
   && fail "case D3b: an unknown id must not be described as dormant: $outB"
 echo "ok: case D3 — a pre-2352 profile naming ollama/copilot still loads (dropped with a note naming its opt-in env); a genuinely unknown lane still fails loud"
+
+# D3c (public #581 CodeRabbit): a profile naming ONLY dormant lanes, with no
+# lanesMeaningful field. Filtering empties obj.lanes to [] here — the same
+# shape the D3a pre-2352 default hits, minus the lanesMeaningful:true D3a sets
+# explicitly. Regression check: the v2 lanes:[] hard-fail below the dormant
+# carve-out must not re-brick exactly the profile the carve-out exists to
+# save, just with a different error message than the pre-2352 "unknown lane"
+# one HIMMEL-2352 already fixed.
+profD3c="$work/d3c-all-dormant-v2.json"
+cat > "$profD3c" <<'JSON'
+{
+  "schemaVersion": 2,
+  "profile": "starter",
+  "scope": "project",
+  "vault": { "mode": "none" },
+  "handover": { "mode": "inline" },
+  "pluginSet": "lean",
+  "lanes": ["ollama", "copilot"],
+  "alwaysOn": false,
+  "devOverlay": false
+}
+JSON
+set +e
+outC=$(run_d3 "$profD3c"); rcC=$?
+set -e
+[ "$rcC" -eq 0 ] || fail "case D3c: an all-dormant v2 lanes list (no lanesMeaningful) must still LOAD, not be re-bricked by the lanes:[] gate below the dormant carve-out (got rc=$rcC): $outC"
+grepq "$outC" -F "profile names lane 'ollama', which is dormant in v1" \
+  || fail "case D3c: the drop must still be announced: $outC"
+
+# D3d — the legacy (v1) twin of D3c: an adopter profile naming only dormant
+# lanes, no schemaVersion, no lanesMeaningful.
+profD3d="$work/d3d-all-dormant-legacy.json"
+cat > "$profD3d" <<'JSON'
+{
+  "role": "adopter",
+  "scope": "project",
+  "vault": { "mode": "none" },
+  "handover": { "mode": "inline" },
+  "pluginSet": "lean",
+  "lanes": ["ollama", "copilot"],
+  "alwaysOn": false,
+  "devOverlay": false
+}
+JSON
+set +e
+outD=$(run_d3 "$profD3d"); rcD=$?
+set -e
+[ "$rcD" -eq 0 ] || fail "case D3d: an all-dormant legacy adopter lanes list must still LOAD (got rc=$rcD): $outD"
+grepq "$outD" -F "profile names lane 'ollama', which is dormant in v1" \
+  || fail "case D3d: the drop must still be announced: $outD"
+echo "ok: case D3c/D3d — an all-dormant lanes list (no lanesMeaningful) still loads on both v2 and legacy profiles"
 
 # ── Case E: hardening PRINTED, never EXECUTED ───────────────────────────────
 # A sentinel `powercfg` stub: if the installer ever shelled out to it, the

@@ -935,7 +935,14 @@ STUB
         [ "$nrc" -ne 0 ] || fail "HIMMEL-2771 unwritable: adopt exited 0 with no gates"
         grepq "$nout" 'git gate hooks — FAILED (native:' \
           || fail "HIMMEL-2771 unwritable: failure summary absent"
-        grepq "$nout" "cannot write $ntarget/.git/hooks/commit-msg" || fail "HIMMEL-2771 unwritable: failure reason absent"
+        # HIMMEL-2814: $ntarget is the PRIMARY checkout with core.hooksPath
+        # unset, so the fallback payload copy (now always attempted for
+        # Git's own shared per-repository hooks dir, per the gap-1 fix) is
+        # the FIRST write into the unwritable hooks dir and fails before the
+        # dispatcher-writing loop below it ever runs -- the failure reason
+        # moved from "cannot write .../commit-msg" to the payload mkdir/cp.
+        grepq "$nout" "cannot copy scripts/hooks/check-commit-msg.sh into $ntarget/.git/hooks/himmel-payload" \
+          || fail "HIMMEL-2771 unwritable: failure reason absent"
         ;;
       behaviour)
         [ "$nrc" -eq 0 ] || fail "HIMMEL-2771 behaviour: adopt exited $nrc"
@@ -1740,6 +1747,153 @@ for hook_mode in default skip; do
   fi
   echo "ok: HIMMEL-2818 $hook_mode: plugin failure stays fatal and hook placement respects the opt-out"
 done
+
+# HIMMEL-2814 gap 1 (mirror of cr2771r6-worktree-primary-gate, reversed): adopt
+# the PRIMARY checkout itself -- its resolved hooks dir is `$TARGET/.git/hooks`,
+# INSIDE $TARGET -- and only THEN add a SIBLING worktree, with no re-run of
+# adopt.sh against it. Pre-fix, install_native_hooks() keyed the fallback
+# payload decision on containment ("hooks dir inside $TARGET => no payload
+# needed"), true here even though this is Git's ONE per-repository hooks dir
+# that the sibling worktree shares. RED against the pre-fix code = the
+# sibling's dispatcher (same physical script file; only $root at fire-time
+# differs) finds neither $root/scripts/hooks (the branch it was created from
+# carries no tree copy) nor a payload, and refuses every commit with the
+# "not found ... re-run adopt.sh" message instead of genuinely gating.
+crprimaryG1="$work/cr2814g1-primary"; crwtG1="$work/cr2814g1-wt"
+crbinG1="$work/cr2814g1-bin"
+mkdir -p "$crprimaryG1" "$crbinG1"
+HOME="$pchome" git -C "$crprimaryG1" init -q
+HOME="$pchome" git -C "$crprimaryG1" config user.name 'Native Test'
+HOME="$pchome" git -C "$crprimaryG1" config user.email 'native@example.invalid'
+HOME="$pchome" git -C "$crprimaryG1" -c commit.gpgsign=false commit -q --allow-empty \
+  -m 'test: HIMMEL-2814 [#2814] gap1 primary commit'
+set +e
+out=$(PATH="$crbinG1:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crprimaryG1" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] \
+  || fail "HIMMEL-2814 gap1 shared-payload: adopt exited $rc against the PRIMARY checkout: $out"
+[ -x "$crprimaryG1/.git/hooks/himmel-payload/scripts/hooks/check-commit-msg.sh" ] \
+  || fail "HIMMEL-2814 gap1 shared-payload: no fallback payload was left beside the PRIMARY's own (shared) hooks dir"
+HOME="$pchome" git -C "$crprimaryG1" worktree add -q "$crwtG1" -b cr2814g1-worktree-branch
+
+# Resolve the hooks dir from the SIBLING's own view (it is the same physical
+# path as the primary's, since hooks are per-repository, not per-worktree --
+# but resolve it this way rather than assuming so, mirroring cr2771r5-worktree-default above).
+effective_hooks_dir_g1=$(HOME="$pchome" git -C "$crwtG1" rev-parse --git-path hooks)
+case "$effective_hooks_dir_g1" in
+  /*) : ;;
+  *) effective_hooks_dir_g1="$crwtG1/$effective_hooks_dir_g1" ;;
+esac
+
+msgfileG1="$work/cr2814g1-valid.msg"
+printf 'test: HIMMEL-2814 [#2814] gap1 worktree valid message\n' > "$msgfileG1"
+set +e
+woutG1=$( cd "$crwtG1" && HOME="$pchome" bash "$effective_hooks_dir_g1/commit-msg" "$msgfileG1" 2>&1 ); wrcG1=$?
+set -e
+[ "$wrcG1" -eq 0 ] \
+  || fail "HIMMEL-2814 gap1 shared-payload: SIBLING worktree's commit-msg dispatcher rejected a valid ticketed message added AFTER the primary adopt (rc=$wrcG1): $woutG1"
+grepq "$woutG1" 'not found in' \
+  && fail "HIMMEL-2814 gap1 shared-payload: sibling worktree hit the missing-script 'not found ... re-run adopt.sh' error: $woutG1"
+
+msgfileG1b="$work/cr2814g1-noticket.msg"
+printf 'no ticket here at all\n' > "$msgfileG1b"
+set +e
+woutG1b=$( cd "$crwtG1" && HOME="$pchome" bash "$effective_hooks_dir_g1/commit-msg" "$msgfileG1b" 2>&1 ); wrcG1b=$?
+set -e
+[ "$wrcG1b" -ne 0 ] \
+  || fail "HIMMEL-2814 gap1 shared-payload: an unticketed message exited 0 in the sibling worktree -- the gate did not actually run: $woutG1b"
+echo "ok: HIMMEL-2814 gap1 shared-payload: adopting the PRIMARY checkout leaves a fallback payload that gates a SIBLING worktree added afterward, with no re-run of adopt.sh"
+
+# HIMMEL-2814 gap 1, push variant (contract item 3): the same sibling
+# worktree's pre-push dispatcher genuinely gates a REAL `git push` (not just a
+# hand-invoked commit-msg dispatcher) via its fallback payload -- proving the
+# fix covers the pre-push hook too, not only commit-msg.
+crremoteG1="$work/cr2814g1-remote.git"
+HOME="$pchome" git init -q --bare "$crremoteG1"
+HOME="$pchome" git -C "$crwtG1" config user.name 'Native Test'
+HOME="$pchome" git -C "$crwtG1" config user.email 'native@example.invalid'
+HOME="$pchome" git -C "$crwtG1" -c commit.gpgsign=false commit -q --allow-empty \
+  -m 'test: HIMMEL-2814 [#2814] gap1 worktree push probe commit'
+HOME="$pchome" git -C "$crwtG1" remote add origin "$crremoteG1"
+
+set +e
+poutG1=$(HOME="$pchome" git -C "$crwtG1" push origin cr2814g1-worktree-branch:refs/heads/main 2>&1); prcG1=$?
+set -e
+[ "$prcG1" -ne 0 ] \
+  || fail "HIMMEL-2814 gap1 shared-payload push: a direct push to main from the SIBLING worktree landed"
+grepq "$poutG1" 'not found in' \
+  && fail "HIMMEL-2814 gap1 shared-payload push: sibling worktree's pre-push dispatcher hit the missing-script error instead of genuinely gating: $poutG1"
+grepq "$poutG1" "Direct push to 'main' is not allowed" \
+  || fail "HIMMEL-2814 gap1 shared-payload push: push was refused but not by the real check-push-target.sh gate: $poutG1"
+! HOME="$pchome" git -C "$crremoteG1" rev-parse --verify refs/heads/main >/dev/null 2>&1 \
+  || fail "HIMMEL-2814 gap1 shared-payload push: remote has refs/heads/main even though the push was refused"
+
+set +e
+poutG1b=$(HOME="$pchome" git -C "$crwtG1" push origin cr2814g1-worktree-branch:refs/heads/cr2814g1-ok 2>&1); prcG1b=$?
+set -e
+[ "$prcG1b" -eq 0 ] \
+  || fail "HIMMEL-2814 gap1 shared-payload push: a push to a non-main ref from the SIBLING worktree was refused: $poutG1b"
+echo "ok: HIMMEL-2814 gap1 shared-payload push: the SIBLING worktree's pre-push dispatcher (added after the primary adopt) genuinely gates a real git push via its fallback payload"
+
+# HIMMEL-2814 gap 2: the generated pre-push dispatcher's `cat > "$reffile"`
+# stdin-capture return status was unchecked -- a read error or a full
+# $TMPDIR would leave a TRUNCATED ref list that check-push-target.sh then
+# validates instead of the refs actually being pushed, letting a push that
+# should have been refused pass. Force the capture to fail by wrapping
+# `mktemp` so the reffile it returns is immediately made read-only: a real
+# `git push` then drives the dispatcher's real stdin-piping shape (the same
+# reason CR2 push-block above uses a real push rather than a hand-invocation),
+# and the truncated-write `cat >` genuinely fails. RED against the pre-fix
+# dispatcher = the push proceeds (validating an empty/truncated ref list)
+# instead of aborting with the named capture-failure message.
+crtargetG2="$work/cr2814g2-captured-fail"; crbinG2="$work/cr2814g2-bin"
+crremoteG2="$work/cr2814g2-remote.git"
+mkdir -p "$crtargetG2" "$crbinG2"
+HOME="$pchome" git init -q --bare "$crremoteG2"
+HOME="$pchome" git -C "$crtargetG2" init -q
+HOME="$pchome" git -C "$crtargetG2" checkout -q -b feat/native-test
+set +e
+out=$(PATH="$crbinG2:$work/bin:$native_free_path" HOME="$pchome" bash "$adopt" \
+  --profile core --scope project --target "$crtargetG2" 2>&1); rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "HIMMEL-2814 gap2 capture-checked: adopt exited $rc: $out"
+
+real_mktemp_g2=$(command -v mktemp) || fail "HIMMEL-2814 gap2 capture-checked: no system mktemp on PATH to wrap"
+cat > "$crbinG2/mktemp" <<MKTEMPSHIM
+#!/usr/bin/env bash
+f=\$("$real_mktemp_g2" "\$@") || exit 1
+chmod 0444 "\$f"
+printf '%s\n' "\$f"
+MKTEMPSHIM
+chmod +x "$crbinG2/mktemp"
+
+# HIMMEL-2814: confirm chmod 0444 actually blocks writes for the current user
+# before relying on it below to force the capture failure -- as root (or on a
+# filesystem where mode bits don't gate writes) this is a silent no-op and the
+# suite would then fail because the push simply succeeded, not because the
+# gate misbehaved. Same "fixture requires an unprivileged user" convention as
+# the HIMMEL-2771 unwritable-hooks-dir case above.
+probe_g2=$("$crbinG2/mktemp")
+if : > "$probe_g2" 2>/dev/null; then
+  fail "HIMMEL-2814 gap2 capture-checked: fixture requires an unprivileged user (chmod 0444 did not block a write to $probe_g2)"
+fi
+
+HOME="$pchome" git -C "$crtargetG2" config user.name 'Native Test'
+HOME="$pchome" git -C "$crtargetG2" config user.email 'native@example.invalid'
+HOME="$pchome" git -C "$crtargetG2" -c commit.gpgsign=false commit -q --allow-empty \
+  -m 'test: HIMMEL-2814 [#2814] gap2 capture-checked probe commit'
+HOME="$pchome" git -C "$crtargetG2" remote add origin "$crremoteG2"
+set +e
+poutG2=$(PATH="$crbinG2:$PATH" HOME="$pchome" git -C "$crtargetG2" push origin feat/native-test:refs/heads/cr2814g2-ok 2>&1); prcG2=$?
+set -e
+[ "$prcG2" -ne 0 ] \
+  || fail "HIMMEL-2814 gap2 capture-checked: push landed even though the ref-list capture into a read-only reffile should have failed: $poutG2"
+grepq "$poutG2" 'failed to capture the pushed ref list' \
+  || fail "HIMMEL-2814 gap2 capture-checked: push was refused but not with the named stdin-capture-failure message: $poutG2"
+! HOME="$pchome" git -C "$crremoteG2" rev-parse --verify refs/heads/cr2814g2-ok >/dev/null 2>&1 \
+  || fail "HIMMEL-2814 gap2 capture-checked: remote received the ref even though capture failed"
+echo "ok: HIMMEL-2814 gap2 capture-checked: a failed stdin-ref-list capture aborts the pre-push dispatcher instead of validating a truncated ref list"
 
 # ── 20. HIMMEL-887 T10: himmelctl wizard + machine-setup shim suites ──────────
 # A plain `bash scripts/test-adopt.sh` run also exercises the himmelctl install
