@@ -35,9 +35,9 @@
 #       repointed after the push). N is kept for display only.
 #   B = rev-parse of the diff base ref the lane classification used. The base
 #       is the PUSHED remote's default-branch tracking ref — origin's history
-#       is the wrong yardstick for any other remote (divergent origin/puborigin
+#       is the wrong yardstick for any other remote (divergent origin/<remote>
 #       histories: content already merged to origin/main diffs empty and would
-#       skip the marker for a public push).
+#       skip the marker for that remote's push).
 #
 # PRODUCERS resolve (N, R, S, E) ONLY from git's per-push data — never from
 # repo config (branch.<name>.remote / upstream: a spawn-* worktree has neither,
@@ -184,9 +184,10 @@ resolve_diff_base() {
     # The review diff must be measured against the PUSHED remote's base (see
     # the contract header, field B): for any remote other than origin, diffing
     # against origin/$db is the wrong yardstick — with divergent histories
-    # (origin vs puborigin) content already merged to origin/main diffs empty
-    # and would skip the marker entirely, ungating the target-repo PR. No
-    # network call — the tracking ref is local; missing/unfetched fails CLOSED.
+    # (origin vs the pushed remote) content already merged to origin/main
+    # diffs empty and would skip the marker entirely, ungating the target-repo
+    # PR. No network call — the tracking ref is local; missing/unfetched fails
+    # CLOSED.
     if [ -n "$push_remote_name" ] && [ "$push_remote_name" != "origin" ]; then
         if git rev-parse --verify --quiet "refs/remotes/$push_remote_name/$db" >/dev/null; then
             diff_base="refs/remotes/$push_remote_name/$db"

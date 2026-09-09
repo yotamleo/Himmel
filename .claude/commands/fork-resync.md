@@ -1,6 +1,6 @@
 ---
 description: Re-sync a carried FORK onto a newer upstream base — rebase + audit the additive delta; pushing is operator-only.
-argument-hint: [name] [--dry-run] [--no-public]
+argument-hint: [name] [--dry-run]
 ---
 
 The third repair path. `/drift-fix` handles the two easy classes — a version pin
@@ -27,10 +27,8 @@ is why this is a runbook and not a shell script.
    the re-sync, leave the entry BEHIND. A truthful BEHIND is the product here.
 2. **Never push to the fork remote unless the audit is clean.**
    `resync-fork.sh --push` enforces this, so do not work around it.
-3. **STOP at the public PR.** The public squash-merge is operator-authorized.
 
 `--dry-run` = report the rebase result, change nothing, push nothing.
-`--no-public` = stop after the private merge.
 
 ---
 
@@ -115,7 +113,7 @@ bash scripts/upstreams/resync-fork.sh <name> --push
 operator owns — the one genuinely irreversible-ish step in this runbook — and
 "the rebase audited clean" is not the same as "a human agreed to publish it".
 The nightly cadence has no approval to mutate a remote, exactly as it has no
-approval to merge the public PR.
+approval to merge the PR.
 
 So the two modes differ here, and only here:
 
@@ -163,12 +161,12 @@ must now read **CURRENT**. If it does not, the pin and the push disagree; abort.
 
 ## 7. Ticket, review, land
 
-Same as `/drift-fix` steps 6–11:
+Same as `/drift-fix` steps 6–9:
 - File or reuse a Jira ticket (`node <repo-root>/scripts/jira/dist/index.js`,
   absolute path, `--desc-file` for the body).
 - Commit with attestation trailers in the FIRST commit — `Platforms tested:` and
   `Security reviewed:` — earned by actually running step 5.
-- `/pr-check` until CR is clean, open the private PR, watch CI green.
+- `/pr-check` until CR is clean, open the PR, watch CI green.
 - Merge via `scripts/handover/merge-on-green.sh` (armed) or
   `scripts/handover/pr-merge.sh`. **The ≥1-approval rule applies to this cadence
   exactly as it does to a human PR** — green CI is necessary, never sufficient.
@@ -177,8 +175,6 @@ Same as `/drift-fix` steps 6–11:
   approval`, and stop. That is a successful run — the re-sync is captured in a
   reviewable PR, which matters more here than anywhere else in himmel, because a
   fork rebase rewrites a dependency every machine installs.
-- `bash scripts/propagate-public.sh ship …`, then `/cr-public`, then **STOP** and
-  hand the operator the `/mergepub <pr> <sha12>` line.
 
 The commit body must state plainly: which upstream tag, the fork commits
 rebased, that the delta was audited additive, and that the fork was pushed. A
@@ -198,8 +194,7 @@ fork-resync <date>
   pushed:        <new fork sha>                             (or: no — <why>)
   tests:         <suite> <pass/fail>
   pin moved:     <file> <old sha> -> <new sha>, synced_base <old> -> <new>
-  private:       <merged PR url>                            (or: <where it stopped>)
-  public:        <PR url> — awaiting /mergepub <pr> <sha12>
+  landed:        <merged PR url>                            (or: <where it stopped, e.g. awaiting approval>)
 ```
 
 "No fork drift" is the healthy result. Never manufacture a re-sync to show

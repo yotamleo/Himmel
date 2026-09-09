@@ -28,8 +28,7 @@ when it fires.
   (`block-edit-on-main`, `check-worktree-isolation`).
 - All changes via PR, ≥1 approval, no direct push (`check-push-target`).
 - Conventional commits; **every commit and every PR carries a ticket ID**
-  (`check-commit-msg`, the CI range gate, and `propagate-public.sh`'s own
-  `require_ticket_reference` on public PRs). Retro-filing is fine;
+  (`check-commit-msg` and the CI range gate). Retro-filing is fine;
   search Jira and extend an existing ticket before re-filing.
 - Attestation trailers (`Platforms tested: <os>` on shell/script diffs,
   `Security reviewed: <token>` on non-docs code) belong in the **FIRST commit**,
@@ -188,6 +187,7 @@ Docs not already linked from a rule above (relative to `docs/`):
 | File | Covers |
 |---|---|
 | `internals/harness-compat.md` | himmel under Codex / other harnesses |
+| `internals/testing.md` | non-guessable test invocations (`bash scripts/ci/run-shell-tests.sh`, lanes, bun) |
 | `operator-conventions.md` | durable operator working-habits |
 | `tool-adoption/rubric.md` | community-tool eval method |
 | `tooling-catalog.md` | tools/scripts/plugins in use |

@@ -1,6 +1,6 @@
 ---
-description: Resolve upstream fork-drift end-to-end — bump auto-bumpable pins, land on private main, open a PUBLIC PR, STOP.
-argument-hint: [--dry-run] [--no-public]
+description: Resolve upstream fork-drift end-to-end — bump auto-bumpable pins, open a PR, and land it on main once approved.
+argument-hint: [--dry-run]
 ---
 
 The repair half of the fork-drift loop. The nightly `fork-drift` GitHub Action
@@ -12,17 +12,14 @@ unrelated PRs. This runbook is what actually closes it.
 Normally fired unattended by `scripts/upstreams/drift-fix-cadence.sh` (daily,
 05:00 local). Safe to run by hand — the steps are identical.
 
-**Two rules that hold for every step below.**
+**The rule that holds for every step below.**
 
-1. **Never hand-edit a pin.** `scripts/upstreams/apply-drift-bump.sh` owns the
-   edit. It moves the in-repo pin literal and `synced_base` together, refuses a
-   downgrade, and restores both files byte-identical if anything is off. Editing
-   either spot yourself defeats all of that.
-2. **STOP at the public PR.** The public squash-merge is operator-authorized
-   (Telegram `/mergepub <pr> <sha12>` or the GitHub UI). Never merge it.
+**Never hand-edit a pin.** `scripts/upstreams/apply-drift-bump.sh` owns the
+edit. It moves the in-repo pin literal and `synced_base` together, refuses a
+downgrade, and restores both files byte-identical if anything is off. Editing
+either spot yourself defeats all of that.
 
 `--dry-run` = run steps 1–4 and report; change nothing.
-`--no-public` = stop after the private merge (step 9); skip 10–11.
 
 ---
 
@@ -283,7 +280,7 @@ was misread — abort and report; do not "try the next version".
 
 ## 6. Ticket
 
-Every private PR carries a Jira ticket. Search first:
+Every PR carries a Jira ticket. Search first:
 
 ```bash
 node <repo-root>/scripts/jira/dist/index.js list --jql "project = HIMMEL AND summary ~ 'graphify' AND statusCategory != Done" --limit 10
@@ -327,10 +324,10 @@ If a suite fails, fix it or abort. Never write a trailer for a run you did not d
 ## 8. Review gate
 
 Run `/pr-check` and loop — fix every finding, re-run — until CR is clean. The
-CR-marker hook HARD-blocks `gh pr create` until it is. Then open the private PR
+CR-marker hook HARD-blocks `gh pr create` until it is. Then open the PR
 referencing the ticket.
 
-## 9. Land on private main
+## 9. Land on main
 
 **The repo rule is ≥1 approval before merge, and this cadence does not get an
 exemption for being automated.** An unattended runbook that says "watch CI, then
@@ -341,8 +338,11 @@ green CI is necessary, never sufficient.
 Watch CI to green, then hand the merge to the tooling that respects branch
 protection — never merge past it:
 
-- Armed auto-merge (`ARMAUTOMERGE=1`, private repo): `bash scripts/handover/merge-on-green.sh`
-- Otherwise: `scripts/handover/pr-merge.sh` (plain-first)
+Armed auto-merge (`ARMAUTOMERGE=1`, `scripts/handover/merge-on-green.sh`)
+hard-refuses (exit 12) any repo not confirmed PRIVATE, and `origin` has been
+public since the HIMMEL-2705 cutover — so that path is **unavailable** on this
+repo until HIMMEL-2869 lands; until then, use `scripts/handover/pr-merge.sh`
+(plain-first).
 
 **Never `--admin`, never a force-merge, never a branch-protection override.** If
 the merge is refused for want of an approval, that is the rule working: leave
@@ -351,32 +351,8 @@ blocked merge is a successful run — the drift is captured in a reviewable PR,
 which was the point. Do not retry with a stronger flag, and do not "helpfully"
 self-approve.
 
-Then `git pull` on main. Stop here if `--no-public`.
-
-## 10. Propagate to public
-
-The drift guard's tracking issue lives on the PUBLIC repo, and it is the public
-pin the nightly Action reads — so a private-only bump leaves the issue open
-forever. Ship it with the helper (never a raw push to the public remote; its
-fail-closed leak scan and byte-verify are the safety gate):
-
-```bash
-bash scripts/propagate-public.sh ship <branch> <base>..<head> --commit-file <f> --title <t> --body-file <f>
-```
-
-## 11. Babysit, then STOP
-
-Run `/cr-public` to drive the public PR to CR-clean + CI-green. When it exits 0,
-report the FULL payload to the operator and **stop**:
-
-- PR URL, short head SHA
-- `check-ci` verdict + diff-identity verdict
-- the ready-to-send `/mergepub <pr> <sha12>` line
-- the GitHub-UI fallback link
-
-Do not merge the public PR. Once the operator does, the next nightly `fork-drift`
-run sees the pin current and **auto-closes the tracking issue** — that is the
-loop closing.
+Then `git pull` on main — the next nightly `fork-drift` run sees the pin
+current and **auto-closes the tracking issue**; that is the loop closing.
 
 ---
 
@@ -394,8 +370,7 @@ drift-fix <date>
   bumped:   <name> <old> -> <new>      (or: none)
   skipped:  <name> (<why>) ...
   ticket:   HIMMEL-<N>                 (or: none — nothing bumped)
-  private:  <merged PR url>            (or: <where it stopped>)
-  public:   <PR url> — awaiting /mergepub <pr> <sha12>
+  landed:   <merged PR url>            (or: <where it stopped, e.g. awaiting approval>)
 ```
 
 A no-op night is a successful run. Say "no drift" and exit 0 — do not invent

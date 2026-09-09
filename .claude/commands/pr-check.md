@@ -559,10 +559,10 @@ Steps:
    **Record the head the finding was RAISED AGAINST (HIMMEL-1294).** `--head`
    is the SHA the critic reviewed, not the SHA that fixes it. Keying a finding
    onto the fixing head makes gate 4 block a commit that already resolved it,
-   and the fix then requires an `amend` (below). On the `/cr-public` path,
-   where the public review lands against an earlier head than the private
-   commit carrying the fix, this is easy to get wrong — take the head from the
-   review, not from `git rev-parse HEAD`.
+   and the fix then requires an `amend` (below). Across multiple pushes, where a
+   review lands against an earlier head than the commit carrying the fix, this
+   is easy to get wrong — take the head from the review, not from
+   `git rev-parse HEAD`.
 
    **A genuinely out-of-scope blocking finding is DEFERRED, never downgraded
    (HIMMEL-1294).** When a `crit`/`imp` finding is real but out-of-diff,

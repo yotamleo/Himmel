@@ -90,7 +90,7 @@ tools. See
 shell-and-package install (Linux / macOS / Windows Git Bash).
 
 ```bash
-git clone https://github.com/yotamleo/Himmel
+git clone https://github.com/yotamleo/Himmel himmel
 cd himmel
 node scripts/himmelctl/bin.js install
 ```
@@ -112,7 +112,7 @@ luna, telegram, hermes, and Jira are all optional — the harness runs without t
 | `JIRA_PROJECT_KEY`   | required only for Jira ops | e.g. `HIMMEL`. The project the CLI creates/queries issues in. |
 | `JIRA_BASE_URL`      | required only for Jira ops | Your Atlassian site, e.g. `https://your-site.atlassian.net`. |
 | `JIRA_API_TOKEN` + `JIRA_EMAIL` | required only for Jira ops | API-token credentials. Never commit. `.env` is gitignored. |
-| `HANDOVER_DIR`       | recommended | Path to your external handover repo (Mode B). See handover docs. |
+| `HANDOVER_DIR`       | recommended | Path to your external handover repo (Mode B). See handover docs. Unset it and run `/handover-setup` once instead — a fresh clone has no handover root until then, and `handover_root` fails closed with a diagnostic rather than crashing or writing to the wrong place. |
 
 The local Jira CLI needs only those four (`JIRA_BASE_URL`, `JIRA_EMAIL`,
 `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`) — **no cloud ID**. `JIRA_CLOUD_ID` is
@@ -302,7 +302,7 @@ per-platform shell setup — lives at
 [`docs/setup/new-machine.md`](docs/setup/new-machine.md).
 
 Adopting himmel in your own repo (or user scope) is two commands —
-`git clone https://github.com/yotamleo/Himmel` then
+`git clone https://github.com/yotamleo/Himmel himmel` then
 `node himmel/scripts/himmelctl/bin.js install --scope project` (or `--scope user`)
 brings the harness over in one shot: hooks, guardrails, worktree commands and
 marketplace plugins/skills. Drop `--scope` to walk the wizard interactively.

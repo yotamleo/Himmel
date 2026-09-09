@@ -48,10 +48,8 @@ git -C "$REPO" add README
 git -C "$REPO" commit -q -m "base"
 git -C "$REPO" branch -m main 2>/dev/null || true
 git -C "$REPO" remote add origin https://github.com/owner/repo.git
-git -C "$REPO" remote add puborigin https://github.com/public/repo.git
 MAIN_SHA=$(git -C "$REPO" rev-parse main)
 git -C "$REPO" update-ref refs/remotes/origin/main "$MAIN_SHA"
-git -C "$REPO" update-ref refs/remotes/puborigin/main "$MAIN_SHA"
 
 mk_wt_commit() {
     local name="$1" branch="$2" wt
@@ -91,16 +89,13 @@ REMOTE_NEW=$(printf 'remote new\n' | git -C "$REPO" commit-tree "$TREE" -p "$REM
 REMOTE_CLOSED=$(printf 'remote closed\n' | git -C "$REPO" commit-tree "$TREE" -p "$MAIN_SHA")
 REMOTE_NONE=$(printf 'remote none\n' | git -C "$REPO" commit-tree "$TREE" -p "$MAIN_SHA")
 REMOTE_OPEN=$(printf 'remote open\n' | git -C "$REPO" commit-tree "$TREE" -p "$MAIN_SHA")
-REMOTE_PUBLIC=$(printf 'remote public\n' | git -C "$REPO" commit-tree "$TREE" -p "$MAIN_SHA")
 git -C "$REPO" update-ref refs/remotes/origin/chore/merged-clean "$REMOTE_MERGED"
 git -C "$REPO" update-ref refs/remotes/origin/chore/post-merge "$REMOTE_NEW"
 git -C "$REPO" update-ref refs/remotes/origin/chore/closed "$REMOTE_CLOSED"
 git -C "$REPO" update-ref refs/remotes/origin/chore/no-pr "$REMOTE_NONE"
 git -C "$REPO" update-ref refs/remotes/origin/chore/open "$REMOTE_OPEN"
-git -C "$REPO" update-ref refs/remotes/puborigin/chore/public-no-pr "$REMOTE_PUBLIC"
 
 GH_ROWS_ORIGIN="$TMP_ROOT_UNIX/origin.tsv"
-GH_ROWS_PUBLIC="$TMP_ROOT_UNIX/public.tsv"
 GH_CALLS="$TMP_ROOT_UNIX/gh-calls"
 {
     printf 'owner/repo\tfeat/open\topen\t%s\n' "$OPEN_SHA"
@@ -112,7 +107,6 @@ GH_CALLS="$TMP_ROOT_UNIX/gh-calls"
     printf 'owner/repo\tchore/closed\tclosed\t%s\n' "$REMOTE_CLOSED"
     printf 'owner/repo\tchore/open\topen\t%s\n' "$REMOTE_OPEN"
 } > "$GH_ROWS_ORIGIN"
-: > "$GH_ROWS_PUBLIC"
 : > "$GH_CALLS"
 
 STUB_DIR="$TMP_ROOT_UNIX/bin"
@@ -127,11 +121,6 @@ if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then
     cat "$GH_ROWS_ORIGIN"
     exit 0
 fi
-if echo "$args" | grep -q "api --paginate repos/public/repo/pulls"; then
-    printf 'puborigin\n' >> "$GH_CALLS"
-    cat "$GH_ROWS_PUBLIC"
-    exit 0
-fi
 if echo "$args" | grep -q -- "--state open"; then exit 0; fi
 exit 0
 STUB
@@ -144,7 +133,7 @@ run_clean() {
         # runs at INFO, where SC2030/SC2031 flag exactly this deliberate idiom.
         # shellcheck disable=SC2030,SC2031
         export PATH="${STUB_DIR}:${PATH}"
-        export GH_ROWS_ORIGIN GH_ROWS_PUBLIC GH_CALLS
+        export GH_ROWS_ORIGIN GH_CALLS
         cd "$REPO" || exit 1
         bash "$CLEAN_GARDEN" --prune-only "$@" 2>&1
     )
@@ -205,21 +194,6 @@ if [ "$origin_calls" -eq 1 ]; then
 else
     fail "expected one origin PR API call, got $origin_calls" "$out"
 fi
-if grepq "$out" -F "remote=puborigin"; then
-    fail "puborigin was reported without the opt-in flag" "$out"
-else
-    pass "puborigin is disabled by default"
-fi
-
-echo "RUN B: puborigin opt-in"
-pub_out=$(run_clean --include-puborigin)
-assert_line "puborigin opt-in reports remote orphan" "$pub_out" "remote=puborigin branch=chore/public-no-pr" "category=NO-PR"
-pub_calls=$(grep -c '^puborigin$' "$GH_CALLS")
-if [ "$pub_calls" -eq 1 ]; then
-    pass "puborigin PRs fetched once when requested"
-else
-    fail "expected one puborigin PR API call, got $pub_calls" "$pub_out"
-fi
 
 # --- HIMMEL-1596 checkpoint reap (F1/F2) --------------------------------------
 # prune_checkpoint_refs reads %(committerdate:unix), so a checkpoint's age is
@@ -254,7 +228,7 @@ run_clean_ttl() {
         # runs at INFO, where SC2030/SC2031 flag exactly this deliberate idiom.
         # shellcheck disable=SC2030,SC2031
         export PATH="${STUB_DIR}:${PATH}"
-        export GH_ROWS_ORIGIN GH_ROWS_PUBLIC GH_CALLS
+        export GH_ROWS_ORIGIN GH_CALLS
         if [ -n "$ttl" ]; then export CHECKPOINT_TTL_DAYS="$ttl"; else unset CHECKPOINT_TTL_DAYS; fi
         cd "$REPO" || exit 1
         bash "$CLEAN_GARDEN" --prune-only 2>&1
@@ -363,7 +337,7 @@ run_clean_race() {
         # Subshell-local by design, same as run_clean above (SC2030/SC2031).
         # shellcheck disable=SC2030,SC2031
         export PATH="${RACE_STUB_DIR}:${STUB_DIR}:${PATH}"
-        export GH_ROWS_ORIGIN GH_ROWS_PUBLIC GH_CALLS
+        export GH_ROWS_ORIGIN GH_CALLS
         export RACE_REAL_GIT RACE_WT RACE_FRESH_OID
         cd "$REPO" || exit 1
         bash "$CLEAN_GARDEN" --prune-only 2>&1
@@ -923,7 +897,7 @@ run_clean_g() {
         # shellcheck disable=SC2031  # subshell modification intentional in this test harness
         export PATH="${STUB_DIR}:${PATH}"
         # shellcheck disable=SC2030  # subshell modification intentional in this test harness
-        export GH_ROWS_ORIGIN="$G_ROWS" GH_ROWS_PUBLIC GH_CALLS
+        export GH_ROWS_ORIGIN="$G_ROWS" GH_CALLS
         export FORGE=github   # origin is a local path, not a github URL
         cd "$G_REPO" || exit 1
         bash "$CLEAN_GARDEN" --prune-only "$@" 2>&1

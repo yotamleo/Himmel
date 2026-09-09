@@ -43,8 +43,7 @@ $versionTagRe = '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
 # section. Empty/omitted range means "all history" (the tagless case). Always
 # starts with a leading blank line so the file ends with exactly one trailing
 # newline (see the join note below). Twin of the .sh's render(): classification
-# and the retired-name scrub must match exactly.
-# KEEP IN SYNC with scripts/gen-changelog.sh scrub_retired_names.
+# must match exactly.
 function render([string]$heading, [string]$range = '') {
     $added = @(); $fixed = @(); $changed = @(); $other = @()
 
