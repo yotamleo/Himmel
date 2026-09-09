@@ -75,6 +75,35 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #                        null JSON, so this proves the coalesce fix rather than
 #                        a hand-picked stub string.
 #   STUB_DEFAULT_BRANCH_PREMERGE_NULL=1  same, for the FIX-1 pre-merge query.
+#   STUB_PROTECTION      the guard-2b branch-protection read (HIMMEL-2869), as
+#                        the pre-joined shape the script's own --jq emits:
+#                        "<enforce_admins.enabled>|<#contexts>|<#checks>".
+#                        Default "true|10|0" (the live yotamleo/Himmel shape:
+#                        enforce_admins on, 10 required contexts). Only read on
+#                        the non-private path — a private repo never reaches it.
+#   STUB_PROTECTION_FAIL=1  the guard-2b `gh api .../protection` exits 1 (404 /
+#                        no protection / unreadable) → the guard must fail closed.
+#   STUB_PROTECTION_PREMERGE       same, for the pre-merge protection re-read.
+#                        Default = STUB_PROTECTION. Set it to simulate protection
+#                        being weakened during the check-ci watch.
+#   STUB_PROTECTION_PREMERGE_FAIL=1  the pre-merge protection re-read exits 1 →
+#                        refuse (protection removed during the CI wait).
+#   STUB_PROTECTION_JSON  raw protection JSON fed through the SCRIPT'S OWN --jq
+#                        filter (captured from argv) via real jq, instead of the
+#                        pre-joined STUB_PROTECTION string — the same technique
+#                        STUB_DEFAULT_BRANCH_NULL uses, so a `required_status_checks:
+#                        null` payload proves the script's `// []` coalesce rather
+#                        than a hand-picked stub string.
+#   STUB_PROTECTION_JSON_PREMERGE  overrides the JSON replayed on the PRE-MERGE
+#                        protection read only. Unset, it falls back to
+#                        STUB_PROTECTION_JSON, so an existing single-JSON case is
+#                        unaffected. Exists because STUB_PROTECTION_JSON alone is
+#                        replayed verbatim on BOTH reads (coderabbit round-1
+#                        nitpick): without this seam, a case setting
+#                        STUB_PROTECTION_JSON together with STUB_PROTECTION_PREMERGE
+#                        would silently exercise UNCHANGED protection across both
+#                        reads — STUB_PROTECTION_PREMERGE would be dead, and the
+#                        case would prove nothing about the pre-merge re-read.
 #   STUB_CI_RC          exit code of the stub check-ci. Default 0.
 #   STUB_MERGE_FAIL=1   `gh pr merge` exits 1 (generic failure).
 #   STUB_POST_STATE     PR state the post-merge re-query returns. Default MERGED.
@@ -184,6 +213,7 @@ mog_build_fixture() {
 echo "$*" >> "$GH_LOG"
 verb="$1 $2"
 repo_arg="${3:-}"
+api_path="${2:-}"
 json=""
 jqexpr=""
 while [ $# -gt 0 ]; do case "$1" in --json) json="${2:-}";; --jq) jqexpr="${2:-}";; esac; shift; done
@@ -315,6 +345,53 @@ case "$verb" in
     "pr merge")
         [ "${STUB_MERGE_FAIL:-0}" = "1" ] && { echo "merge conflict / head moved" >&2; exit 1; }
         echo "merged"
+        ;;
+    "api repos/"*)
+        # HIMMEL-2869 — public_origin_merge_allowed's branch-protection read.
+        # Match ONLY the classic protection endpoint; anything else this stub
+        # does not recognize fails closed like every other unhandled shape.
+        case "$api_path" in
+            */branches/*/protection)
+                if [ -z "$jqexpr" ]; then
+                    echo "gh stub: 'api repos/.../protection' missing required --jq expression" >&2
+                    exit 93
+                fi
+                # Queried TWICE per run when the widened path is reached: guard
+                # 2b (query time) and the pre-merge re-check (HIMMEL-2869 mirrors
+                # the isPrivate/defaultBranchRef routing above). Routed by call
+                # ORDER via the gh argv log — this call is already appended at
+                # the top of the stub, so the match count is 1 on the first call,
+                # 2 on the second.
+                n=$(grep -c '/protection' "$GH_LOG" 2>/dev/null || echo 1)
+                if [ "${n:-1}" -le 1 ]; then
+                    [ "${STUB_PROTECTION_FAIL:-0}" = "1" ] && { echo "gh: protection unreadable" >&2; exit 1; }
+                    if [ -n "${STUB_PROTECTION_JSON:-}" ]; then
+                        # Real protection JSON through the SCRIPT'S OWN --jq
+                        # filter via real jq, same technique STUB_DEFAULT_BRANCH_NULL
+                        # uses — proves the script's own `// []` coalesce.
+                        printf '%s' "$STUB_PROTECTION_JSON" | jq -r "$jqexpr"
+                    else
+                        # `-` not `:-`: an explicitly-empty STUB_PROTECTION must
+                        # be preserved so a fail-closed empty-body case is reachable.
+                        printf '%s' "${STUB_PROTECTION-true|10|0}"
+                    fi
+                else
+                    [ "${STUB_PROTECTION_PREMERGE_FAIL:-0}" = "1" ] && { echo "gh: protection unreadable" >&2; exit 1; }
+                    # STUB_PROTECTION_JSON_PREMERGE overrides the JSON replayed
+                    # on THIS (second) read only — `-` (not `:-`) so an
+                    # explicitly-empty override is preserved, mirroring
+                    # STUB_PROTECTION_PREMERGE's own relation to STUB_PROTECTION
+                    # just below. Falls back to STUB_PROTECTION_JSON when unset,
+                    # so existing single-JSON cases are unaffected.
+                    json_val_premerge="${STUB_PROTECTION_JSON_PREMERGE-${STUB_PROTECTION_JSON:-}}"
+                    if [ -n "$json_val_premerge" ]; then
+                        printf '%s' "$json_val_premerge" | jq -r "$jqexpr"
+                    else
+                        printf '%s' "${STUB_PROTECTION_PREMERGE-${STUB_PROTECTION-true|10|0}}"
+                    fi
+                fi ;;
+            *) echo "gh stub: unhandled 'api' path: $api_path" >&2; exit 90 ;;
+        esac
         ;;
     *) echo "gh stub: unsupported command: $*" >&2; exit 90 ;;
 esac
@@ -560,6 +637,146 @@ assert_gh_lacks "cross-repo: no merge attempted" "pr merge"
 
 # 5c. Cannot resolve cwd repo → fail closed (exit 12).
 STUB_CWD_FAIL=1 run_mog 12 "unresolvable cwd repo → exit 12 fail-closed"
+
+# ── HIMMEL-2869: public-origin merge relaxation ──────────────────────────────
+# Guard 2b's private-only boundary widens to admit ONE named public repo (the
+# configured public origin, `public_origin_merge_allowed`'s
+# HIMMEL_PUBLIC_ORIGIN_NWO) while GitHub itself is enforcing required status
+# checks on the branch being merged into. These cases exercise the widened
+# path and every fail-closed edge: unreadable protection, no required checks,
+# enforce_admins off, the `checks` list shape, a DIFFERENT public repo, the
+# non-seam of the constant, the private-repo regression anchor, and the
+# pre-merge re-read catching protection weakened during the CI wait.
+#
+# jq availability is checked ONCE here, locally to this block (the file's
+# shared `have_jq` guard is computed further down, after this block, and this
+# block needs it before that point) — hoisted here rather than probed
+# separately in each of 2869-1b and 2869-7 below, which both need it.
+have_jq_2869=0; command -v jq >/dev/null 2>&1 && have_jq_2869=1
+
+# 2869-1. The configured public origin, under branch protection with required
+# status checks → proceeds to the merge exactly like a private repo would.
+STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="pubok01" \
+    run_mog 0 "configured public origin under branch protection → merged"
+assert_merge_has "2869-1: merge pins the certified sha" "--match-head-commit pubok01"
+assert_merge_has "2869-1: merge uses --squash" "--squash"
+assert_gh_has "2869-1: reads branch protection on the configured origin" "api repos/yotamleo/Himmel/branches/main/protection"
+assert_audit_has "2869-1: audit records the merge" "MERGED"
+
+# 2869-1b ([codex-1], CR round 1). Every other allow-path case above (2869-1,
+# 2869-3c) feeds the stub its PRE-JOINED "enforce_admins|contexts|checks"
+# string, so the script's own `--jq` filter never runs on the MERGE direction
+# at all — 2869-7 below is the only case that runs real JSON through the
+# real filter, and it is itself a refusal (null required_status_checks). A
+# filter mutated to reject every real response (e.g. contexts/checks length
+# forced to 0) would therefore leave the WHOLE suite green: it still refuses
+# 2869-7 "correctly" and never touches the pre-joined-string cases at all.
+# This case is the allow-direction twin of 2869-7: realistic GitHub-shaped
+# protection JSON (the actual `repos/.../branches/main/protection` response
+# shape, `strict` + a `contexts` array of real-looking check names) through
+# the script's OWN filter, asserting the result is one the gate ACCEPTS.
+if [ "$have_jq_2869" = "1" ]; then
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="jqok01" \
+        STUB_PROTECTION_JSON='{"enforce_admins":{"enabled":true},"required_status_checks":{"strict":true,"contexts":["lint","shell-unit (ubuntu-latest)","shellcheck"]}}' \
+        run_mog 0 "realistic protected-branch JSON through the real filter → merged"
+    assert_merge_has "2869-1b: merge pins the certified sha" "--match-head-commit jqok01"
+    assert_gh_has "2869-1b: reads branch protection on the configured origin" "api repos/yotamleo/Himmel/branches/main/protection"
+else
+    echo "  SKIP: jq not installed — realistic protected-branch-JSON allow case (HIMMEL-2869, [codex-1])"
+fi
+
+# 2869-2. Protection unreadable (404 / API failure) → refuse, no merge.
+STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
+    run_mog 12 "public origin, protection unreadable → exit 12"
+assert_gh_lacks "2869-2: no merge attempted" "pr merge"
+assert_audit_has "2869-2: audits not-protected" "reason=not-protected"
+
+# 2869-2b. The empty-body twin of 2869-2's 404: a protection endpoint that
+# answers with NOTHING (rather than a non-zero gh exit) must refuse exactly
+# like one that errors, never be read as "protected". The stub preserves an
+# explicitly-empty STUB_PROTECTION (`-`, not `:-`) so this path is reachable.
+STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION="" \
+    run_mog 12 "public origin, empty protection body → exit 12"
+assert_gh_lacks "2869-2b: no merge attempted" "pr merge"
+assert_audit_has "2869-2b: audits not-protected" "reason=not-protected"
+
+# 2869-3. Protection present but NO required status checks → refuse. This is
+# the gate the whole relaxation leans on.
+STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION="true|0|0" \
+    run_mog 12 "public origin, no required checks → exit 12"
+assert_gh_lacks "2869-3: no merge attempted" "pr merge"
+assert_audit_has "2869-3: audits not-protected" "reason=not-protected"
+
+# 2869-3b. enforce_admins off → refuse, even with required checks present.
+STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION="false|10|0" \
+    run_mog 12 "public origin, enforce_admins off → exit 12"
+assert_gh_lacks "2869-3b: no merge attempted" "pr merge"
+assert_audit_has "2869-3b: audits not-protected" "reason=not-protected"
+
+# 2869-3c. GitHub's newer `checks` list (instead of `contexts`) also satisfies
+# the gate — both required-status-check shapes count.
+STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION="true|0|10" STUB_SHA="checksok01" \
+    run_mog 0 "public origin, protection via 'checks' list → merged"
+assert_merge_has "2869-3c: merge pins the certified sha" "--match-head-commit checksok01"
+
+# 2869-4. Some OTHER public repo — not the configured origin — refuses on
+# identity alone, before spending an API read on protection.
+STUB_NWO="someone/Himmel" STUB_CWD_NWO="someone/Himmel" STUB_PRIVATE=false \
+    run_mog 12 "other public repo → exit 12"
+assert_gh_lacks "2869-4: no merge attempted" "pr merge"
+assert_audit_has "2869-4: audits not-private" "reason=not-private"
+assert_gh_lacks "2869-4: refuses on identity before reading protection" "/protection"
+
+# 2869-4b. The constant is deliberately NOT env-overridable: a stray
+# HIMMEL_PUBLIC_ORIGIN_NWO in the ambient environment must not widen the gate.
+STUB_NWO="someone/Himmel" STUB_CWD_NWO="someone/Himmel" STUB_PRIVATE=false HIMMEL_PUBLIC_ORIGIN_NWO="someone/Himmel" \
+    run_mog 12 "ambient HIMMEL_PUBLIC_ORIGIN_NWO does not widen the gate → exit 12"
+assert_gh_lacks "2869-4b: no merge attempted" "pr merge"
+assert_audit_has "2869-4b: audits not-private" "reason=not-private"
+
+# 2869-5. Regression anchor: a private repo is unaffected, and does not pay
+# the protection round-trip at all.
+STUB_PRIVATE=true STUB_NWO="acme/private-repo" STUB_CWD_NWO="acme/private-repo" STUB_SHA="privok01" \
+    run_mog 0 "private repo unaffected → merged"
+assert_gh_lacks "2869-5: private repo never reads protection" "/protection"
+
+# 2869-6. Pre-merge re-read: guard 2b passes, but protection is GONE by the
+# pre-merge re-check (the CI wait window) → refuse.
+STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="protrace01" \
+    STUB_PROTECTION="true|10|0" STUB_PROTECTION_PREMERGE_FAIL=1 \
+    run_mog 12 "protection removed during the CI wait → exit 12"
+assert_gh_lacks "2869-6: no merge attempted" "pr merge"
+assert_audit_has "2869-6: audits not-protected-premerge" "reason=not-protected-premerge"
+
+# 2869-6a. Same window, but protection stays readable and merely loses its
+# required checks rather than the endpoint disappearing.
+STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="protrace02" \
+    STUB_PROTECTION="true|10|0" STUB_PROTECTION_PREMERGE="true|0|0" \
+    run_mog 12 "required checks removed during the CI wait → exit 12"
+assert_gh_lacks "2869-6a: no merge attempted" "pr merge"
+assert_audit_has "2869-6a: audits not-protected-premerge" "reason=not-protected-premerge"
+
+# 2869-6b. Existing case 9e2 below ("repo made PUBLIC during the CI wait") uses
+# the default STUB_NWO=owner/repo — not the configured origin — so it must
+# still refuse for not-private-premerge; verified there, nothing to add here.
+
+# 2869-7. `required_status_checks: null` (the field absent from the API
+# response) must coalesce through the script's own `// []` filter to an empty
+# list, not slip past as "protected" — proven via REAL jq against synthetic
+# JSON, same technique as the STUB_DEFAULT_BRANCH_NULL cases further below.
+# The allow-direction twin of this refusal is 2869-1b above; both share the
+# ONE have_jq_2869 probe computed at the top of this HIMMEL-2869 block rather
+# than each probing separately (the file's own shared `have_jq` guard is
+# computed further down, after this block, so it isn't reused here either).
+if [ "$have_jq_2869" = "1" ]; then
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false \
+        STUB_PROTECTION_JSON='{"enforce_admins":{"enabled":true},"required_status_checks":null}' \
+        run_mog 12 "null required_status_checks → exit 12 not-protected"
+    assert_gh_lacks "2869-7: no merge attempted" "pr merge"
+    assert_audit_has "2869-7: audits not-protected" "reason=not-protected"
+else
+    echo "  SKIP: jq not installed — null required_status_checks case (HIMMEL-2869)"
+fi
 
 # 6. Cannot read head SHA → refuse (exit 13).
 STUB_SHA="" run_mog 13 "empty head SHA → exit 13"
@@ -1737,6 +1954,77 @@ if [ "${HIMMEL_1495_SELF:-0}" != "1" ]; then
         fail "RC-2 setup: mutation of the startup unset line was not reproduced cleanly (pre=$rc2_pre post=$rc2_post diff_lines=$rc2_diff)"
     fi
     rm -f "$rc2_mutant"
+fi
+
+# RC-4 (HIMMEL-2869) — the guard-2b widening ("&& ! public_origin_merge_allowed
+# ...") is a single conditional line; prove it is load-bearing rather than
+# vacuously present. Revert JUST that line to the pre-2869 private-only form
+# and confirm case 2869-1's fixture (the configured public origin, protected —
+# which the real script merges) now refuses with the OLD reason instead.
+# shellcheck disable=SC2016  # literal match/replacement against
+# merge-on-green.sh's own source text (unexpanded $is_private/$nwo/etc.) --
+# not a shell expansion.
+rc4_widened_line='if [ "$is_private" != "true" ] && ! public_origin_merge_allowed "$nwo" "$default_branch"; then'
+# shellcheck disable=SC2016  # same reason as above -- literal source text.
+rc4_reverted_line='if [ "$is_private" != "true" ]; then'
+rc4_mutant=$(mktemp "${TMPDIR:-/tmp}/mog-2869-rc4-mutant.XXXXXX")
+if [ -z "$rc4_mutant" ] || [ ! -f "$rc4_mutant" ]; then
+    fail "RC-4 setup: mktemp produced no mutant-script file — refusing to build the fixture on an empty root"
+else
+    awk -v line="$rc4_widened_line" -v repl="$rc4_reverted_line" \
+        '$0==line{print repl; next}{print}' "$MOG" > "$rc4_mutant"
+    rc4_pre=$(grep -Fxc -- "$rc4_widened_line" "$MOG")
+    rc4_post=$(grep -Fxc -- "$rc4_widened_line" "$rc4_mutant")
+    # A SUBSTITUTION (one line replaced by a different line), not a deletion
+    # like RC-2's — `diff` reports that as one `<` (old line) plus one `>`
+    # (new line), i.e. 2, the same shape RC-1's own substitution mutant checks
+    # for above; a bare deletion (RC-2's shape) would be 1.
+    rc4_diff=$(diff "$MOG" "$rc4_mutant" | grep -c '^[<>]')
+    if [ "$rc4_pre" -eq 1 ] && [ "$rc4_post" -eq 0 ] && [ "$rc4_diff" -eq 2 ]; then
+        rc4_tmp=$(mktemp -d "${TMPDIR:-/tmp}/mog-2869-rc4-fixture.XXXXXX")
+        if [ -z "$rc4_tmp" ] || [ ! -d "$rc4_tmp" ]; then
+            fail "RC-4 fixture setup: mktemp -d produced no sandbox — refusing to build fixture paths on an empty root"
+        else
+            rc4_gh="$rc4_tmp/gh.log"; : > "$rc4_gh"
+            rc4_clear="$rc4_tmp/clear.log"; : > "$rc4_clear"
+            rc4_audit="$rc4_tmp/audit.log"
+            MOG_SRC="$rc4_mutant" mog_build_fixture "$rc4_tmp"
+            red_control_run --cwd "$rc4_tmp" \
+                --env GH_LOG="$rc4_gh" --env CLEAR_LOG="$rc4_clear" --env MERGE_ON_GREEN_LOG="$rc4_audit" \
+                --env PATH="$rc4_tmp/bin:$PATH" --env MERGE_ON_GREEN_SLEEP_CMD=: \
+                --env ARMAUTOMERGE=1 --env STUB_NWO="yotamleo/Himmel" --env STUB_CWD_NWO="yotamleo/Himmel" \
+                --env STUB_PRIVATE=false --env STUB_SHA="pubok01" \
+                -- bash "$rc4_tmp/scripts/handover/merge-on-green.sh"
+            # Discriminate on whether the MERGE FIRED, not on the audit
+            # reason= field: the mutant touches ONLY the `if` line, not the
+            # audit call below it — which still reads $PUBLIC_ORIGIN_REASON,
+            # a variable public_origin_merge_allowed (now unreached,
+            # short-circuited by the reverted condition) never populates. That
+            # field reads "" on BOTH the wrong side (refused) and the correct
+            # side (merged, no REFUSED line at all) — zero discriminating
+            # power, the exact "looks identical to one that genuinely
+            # exercised the mutation" trap red-control.sh's own header warns
+            # about. Anchored like merge_line() above (`^pr merge( |$)`), not
+            # a bare substring, so a `--json`-shaped mention could never
+            # satisfy it.
+            rc4_merged=no
+            grep -Eq '^pr merge( |$)' "$rc4_gh" 2>/dev/null && rc4_merged=yes
+            if red_control_assert --label "RC-4" --expect-rc 12 \
+                --observed     "rc=$RED_CONTROL_RC merged=$rc4_merged" \
+                --expect-wrong "rc=12 merged=no" \
+                --correct      "rc=0 merged=yes" \
+                --note "without the guard-2b widening, the configured public origin's protected-branch merge (case 2869-1's fixture) never fires at all"
+            then
+                pass
+            else
+                fail "RC-4 mutant: RED control did not hold (see the RED-control diagnostic above)"
+            fi
+            rm -rf "$rc4_tmp"
+        fi
+    else
+        fail "RC-4 setup: mutation of the guard-2b widening line was not reproduced cleanly (pre=$rc4_pre post=$rc4_post diff_lines=$rc4_diff)"
+    fi
+    rm -f "$rc4_mutant"
 fi
 
 

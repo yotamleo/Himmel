@@ -167,9 +167,12 @@ Same as `/drift-fix` steps 6–9:
 - Commit with attestation trailers in the FIRST commit — `Platforms tested:` and
   `Security reviewed:` — earned by actually running step 5.
 - `/pr-check` until CR is clean, open the PR, watch CI green.
-- Merge via `scripts/handover/merge-on-green.sh` (armed) or
-  `scripts/handover/pr-merge.sh`. **The ≥1-approval rule applies to this cadence
-  exactly as it does to a human PR** — green CI is necessary, never sufficient.
+- Merge via `scripts/handover/merge-on-green.sh` (armed — it admits a
+  confirmed-private repo, or the ONE configured public origin under
+  live-verified branch protection, HIMMEL-2869; a fork that is neither is
+  refused, exit 12) or `scripts/handover/pr-merge.sh`. **The ≥1-approval rule
+  applies to this cadence exactly as it does to a human PR** — green CI is
+  necessary, never sufficient.
   Never `--admin`, never a branch-protection override. A merge refused for want
   of an approval is the rule working: leave the PR open, report `awaiting
   approval`, and stop. That is a successful run — the re-sync is captured in a
