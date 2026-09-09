@@ -542,7 +542,20 @@ cmd_next() {
         echo "handoff: $predecessor_handoff"
     else
         set +C
-        echo "handoff: $predecessor_handoff (exists — left unchanged)"
+        # `: >` under noclobber fails for ANY reason, not just a genuine
+        # collision — including a non-writable predecessor directory. Only
+        # a REAL pre-existing file gets the "left unchanged" treatment; any
+        # other failure means the create never happened for a real reason,
+        # so this must abort (before the launch line and before any arm)
+        # rather than silently claim a HANDOFF exists when it does not —
+        # the successor would otherwise launch without its only required
+        # read.
+        if [ -f "$predecessor_handoff" ]; then
+            echo "handoff: $predecessor_handoff (exists — left unchanged)"
+        else
+            err "could not create HANDOFF at $predecessor_handoff — this is not a collision (the file does not exist); check permissions on $(dirname "$predecessor_handoff")"
+            exit 1
+        fi
     fi
 
     echo "launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""

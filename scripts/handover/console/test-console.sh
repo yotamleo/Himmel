@@ -375,4 +375,18 @@ sum23_after="$(cksum < "$handoff23A")"
 check "23 the shared HANDOFF is left byte-identical, not re-rendered" "$sum23_before" "$sum23_after"
 HANDOVER_DIR="$root" bash "$QL" release "$doc23A" "$token23a" >/dev/null 2>&1
 
+# --- 24: a non-writable predecessor directory aborts, rather than being
+# misread as "HANDOFF already exists" -- `: >` under noclobber fails for
+# ANY reason, not just a genuine collision.
+out24a="$(console new --bucket rodir)"
+token24a="$(token_of "$out24a")"
+doc24A="$root/tester/rodir/DEMO-nextleg-${today}A-console.md"
+chmod 555 "$root/tester/rodir"
+rc24=0
+out24b="$(console next --bucket rodst --doc "$doc24A" 2>&1)" || rc24=$?
+chmod 755 "$root/tester/rodir"
+check "24 non-writable predecessor dir: next --doc exits non-zero" "$([ "$rc24" -ne 0 ] && echo yes)" "yes"
+check "24 non-writable predecessor dir: no launch line printed" "$(printf '%s\n' "$out24b" | grep -c '^launch: ')" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc24A" "$token24a" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
