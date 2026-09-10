@@ -264,6 +264,42 @@ the re-run.
 
 ---
 
+## Symptom: a new test suite's one-line invocation is refused as a recursive-delete deny (HIMMEL-2898)
+
+A one-line `bash <suite> … | grep … | tail` can get refused by the
+destructive-command classifier even though the line names no delete flag of
+its own: many suites' standard cleanup trap (`rm -rf "$TMPDIR"` or similar)
+lives in the suite's own source, and the classifier reads that trap text when
+the suite is unfamiliar and the invocation is compound (piped/redirected).
+Confirmed once (HIMMEL-2898 item 4, N125's `test-finding-reraise.sh`); the
+same suite ran clean when invoked through `quiet-run.sh`.
+
+**What to do:** run every suite — new or old — only through `bash
+scripts/quiet-run.sh <name> -- bash <suite>` as **one literal command**, never
+a hand-rolled compound. This is already the sanctioned shape in every leg
+brief.
+
+---
+
+## Symptom: a message or log bullet quoting a guarded flag is refused by `block-destructive-commands`
+
+`inbox-send.sh <session> '<text>'` and a `printf`-built log bullet are Bash
+commands like any other, so `block-destructive-commands` inspects the **whole
+command string**, including a quoted TEXT argument — not just the binary
+being invoked. Quoting a guarded flag (e.g. naming the force-push flag, or
+echoing a suite's `rm -rf` cleanup line) gets refused even though the flag
+never runs. Confirmed twice (HIMMEL-2898 item 5): a leg's `inbox-send.sh`
+call and a console's `printf` log bullet, both denied for quoting text only.
+
+**What to do:** write the text with the **Write tool** first, then pass it by
+path — `inbox-send.sh <session> --file <path>` for a message, `cat >>` from a
+Write-tool file for a doc/log bullet — never inline a guarded spelling into a
+Bash argv. Treat `--file` as the **default** for any `inbox-send.sh` message
+longer than one line or quoting any command, not a fallback for when the bare
+form fails.
+
+---
+
 ## Why this is a playbook, not a `CLAUDE.md` rule
 
 Root `CLAUDE.md` is **state, not a prompt** — frame-shaping invariants only, paid
