@@ -326,11 +326,18 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
   // parity while test-finding-reraise.sh covers the shared panel helper.
   const foldWhitespace=(v)=>String(v==null?"":v).toLowerCase().replace(/\s+/g," ").trim();
   const normalizeFileAnchor=(v)=>String(v==null?"":v).replace(/\s+/g," ").trim().replace(/\\/g,"/").replace(/^\.\//,"").replace(/:(?:l)?\d+(?:-\d+)?$/i,"");
-  const normalizeClaim=(v)=>foldWhitespace(String(v==null?"":v).replace(/^\s*-\s*\[[^\]]+\]\s*:\s*/,"").replace(/\s*\[[^\]\r\n]+:\d+(?:-\d+)?\]\s*$/,"") );
+  // HIMMEL-2901: case inside code is identity, case in prose is noise - keep
+  // backtick spans and identifier-shaped tokens (camelCase, snake_case, dotted)
+  // case-intact, fold everything else. Parity with finding-fingerprint.js.
+  const isCodeToken=(t)=>{const c=t.replace(/^[^A-Za-z0-9_$.]+/,"").replace(/[^A-Za-z0-9_$.]+$/,"");
+    return c?(/[a-z][A-Z]/.test(c)||c.includes("_")||/^[A-Za-z0-9_$]+(?:\.[A-Za-z0-9_$]+)+$/.test(c)):false;};
+  const foldClaimCase=(v)=>String(v).split(/(`[^`]*`)/).map((p,i)=>i%2===1?p:p.split(/(\s+)/).map(t=>isCodeToken(t)?t:t.toLowerCase()).join("")).join("");
+  const foldClaim=(v)=>foldClaimCase(String(v==null?"":v).replace(/\s+/g," ").trim());
+  const normalizeClaim=(v)=>foldClaim(String(v==null?"":v).replace(/^\s*-\s*\[[^\]]+\]\s*:\s*/,"").replace(/\s*\[[^\]\r\n]+:\d+(?:-\d+)?\]\s*$/,"") );
   const findingFingerprint=(slug,file,text)=>{
     const s=foldWhitespace(slug), a=normalizeFileAnchor(file), c=normalizeClaim(text);
     if(!s||!c) return "";
-    return "fp1:"+crypto.createHash("sha256").update([s,a,c].join(String.fromCharCode(31)),"utf8").digest("hex");
+    return "fp2:"+crypto.createHash("sha256").update([s,a,c].join(String.fromCharCode(31)),"utf8").digest("hex");
   };
   const led=e.LEDGER;
   // HIMMEL-2078: batch rows carry spec.text straight from a caller-built JSON

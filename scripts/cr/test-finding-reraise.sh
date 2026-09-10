@@ -28,10 +28,10 @@ assert_lacks() {
     case "$1" in *"$2"*) fail "$3 (unexpected '$2')" ;; *) pass "$3" ;; esac
 }
 assert_fingerprint() {
-    if grep -qE '^fp1:[0-9a-f]{64}$' <<< "$1"; then
+    if grep -qE '^fp2:[0-9a-f]{64}$' <<< "$1"; then
         pass "$2"
     else
-        fail "$2 (got '$1', want fp1:<64 lowercase hex>)"
+        fail "$2 (got '$1', want fp2:<64 lowercase hex>)"
     fi
 }
 
@@ -690,6 +690,98 @@ run_panel 5 "$us_claim" imp "$tmp/us5.out" "$tmp/us5.err"
 assert_eq "$?" "0" "bystander-amend panel run succeeds"
 assert_has "$(cat "$tmp/us5.out")" "## Important Issues (0 found)" \
     "amending a row that is not the origin leaves the inherited ceiling intact"
+
+# HIMMEL-2901 item 3: case inside code-bearing fragments is identity. Folding
+# the whole claim to lowercase made `Foo` and `foo` at the same anchor one
+# fingerprint, so each inherited the other's disposition. Prose case still
+# folds — that is the dedup value the fold exists for.
+checkout_branch code-case
+head_cc3="$(advance_head code-case-r3)"
+set_registry critic-a
+# shellcheck disable=SC2016  # backticks here are markdown code spans in the claim text, not command substitution
+cc_claim='Check the `Foo` handler [scripts/cr/case.sh:10]'
+run_panel 3 "$cc_claim" imp "$tmp/cc3.out" "$tmp/cc3.err"
+assert_eq "$?" "0" "code-case seed panel run succeeds"
+id_cc3="$(finding_id_at code-case "$head_cc3")"
+fp_cc3="$(ledger_value code-case "$head_cc3" fingerprint)"
+assert_fingerprint "$fp_cc3" "code-case seed persists a versioned fingerprint"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch code-case --head "$head_cc3" \
+        --id "$id_cc3" --set verdict=disproved --reason 'the Foo handler claim is disproved'
+) >/dev/null 2>"$tmp/cc3-amend.err"
+assert_eq "$?" "0" "code-case fixture accepts the disproof"
+
+head_cc4="$(advance_head code-case-r4)"
+# shellcheck disable=SC2016  # backticks here are markdown code spans in the claim text, not command substitution
+run_panel 4 'Check the `foo` handler [scripts/cr/case.sh:20]' imp "$tmp/cc4.out" "$tmp/cc4.err"
+assert_eq "$?" "0" "backtick-case panel run succeeds"
+assert_has "$(cat "$tmp/cc4.out")" "## Important Issues (1 found)" \
+    "a different identifier case inside backticks is a different claim"
+assert_lacks "$(cat "$tmp/cc4.out")" "RE-RAISE (" "backtick case does not inherit the other claim's disposition"
+if [ "$(ledger_value code-case "$head_cc4" fingerprint)" != "$fp_cc3" ]; then
+    pass "backtick identifier case is fingerprint-significant"
+else
+    fail "backtick identifier case is fingerprint-significant"
+fi
+
+head_cc5="$(advance_head code-case-r5)"
+# shellcheck disable=SC2016  # backticks here are markdown code spans in the claim text, not command substitution
+run_panel 5 'CHECK   the `Foo` HANDLER [scripts/cr/case.sh:30]' imp "$tmp/cc5.out" "$tmp/cc5.err"
+assert_eq "$?" "0" "prose-case panel run succeeds"
+assert_has "$(cat "$tmp/cc5.out")" "RE-RAISE (r3 disproved)" \
+    "prose case and whitespace still fold onto the same fingerprint"
+assert_eq "$(ledger_value code-case "$head_cc5" fingerprint)" "$fp_cc3" \
+    "prose-only case changes keep the fingerprint stable"
+
+# Identifier shapes outside backticks are code too: camelCase and snake_case
+# carry meaning that lowercasing destroys.
+checkout_branch bare-identifier-case
+head_bi3="$(advance_head bare-identifier-r3)"
+set_registry critic-a
+bi_claim='The fooBar token and FOO_BAR constant disagree [scripts/cr/case.sh:50]'
+run_panel 3 "$bi_claim" imp "$tmp/bi3.out" "$tmp/bi3.err"
+assert_eq "$?" "0" "bare-identifier seed panel run succeeds"
+id_bi3="$(finding_id_at bare-identifier-case "$head_bi3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch bare-identifier-case --head "$head_bi3" \
+        --id "$id_bi3" --set verdict=disproved --reason 'the identifier claim is disproved'
+) >/dev/null 2>"$tmp/bi3-amend.err"
+assert_eq "$?" "0" "bare-identifier fixture accepts the disproof"
+advance_head bare-identifier-r4 >/dev/null
+run_panel 4 'The foobar token and foo_bar constant disagree [scripts/cr/case.sh:60]' imp \
+    "$tmp/bi4.out" "$tmp/bi4.err"
+assert_eq "$?" "0" "bare-identifier case panel run succeeds"
+assert_has "$(cat "$tmp/bi4.out")" "## Important Issues (1 found)" \
+    "camelCase and snake_case identifier case is fingerprint-significant"
+assert_lacks "$(cat "$tmp/bi4.out")" "RE-RAISE (" "differing identifiers do not inherit a disposition"
+advance_head bare-identifier-r5 >/dev/null
+run_panel 5 'the fooBar token and FOO_BAR constant DISAGREE [scripts/cr/case.sh:70]' imp \
+    "$tmp/bi5.out" "$tmp/bi5.err"
+assert_eq "$?" "0" "bare-identifier prose-case panel run succeeds"
+assert_has "$(cat "$tmp/bi5.out")" "RE-RAISE (r3 disproved)" \
+    "identical identifiers with different prose case still fold onto one fingerprint"
+
+# The writer's standalone fingerprint copy must agree with the shared helper on
+# the case rules too, or a row it writes never matches a claim the panel reads.
+checkout_branch code-case-parity
+head_ccp="$(advance_head code-case-parity-seed)"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" finding --branch code-case-parity --head "$head_ccp" \
+        --model critic-a --id code-case-parity-1 --severity imp --file scripts/cr/case.sh --line 10 \
+        --verdict disproved --round 3 \
+        --text '- [code-case-parity-1]: Check the `Foo` handler in fooBar [scripts/cr/case.sh:10]'
+) >/dev/null 2>"$tmp/code-case-parity-seed.err"
+assert_eq "$?" "0" "code-case parity fixture writes through the standalone writer"
+advance_head code-case-parity-current >/dev/null
+# shellcheck disable=SC2016  # backticks here are markdown code spans in the claim text, not command substitution
+run_panel 4 'CHECK the `Foo` HANDLER in fooBar [scripts/cr/case.sh:90]' imp \
+    "$tmp/ccp.out" "$tmp/ccp.err"
+assert_eq "$?" "0" "code-case parity panel run succeeds"
+assert_has "$(cat "$tmp/ccp.out")" "RE-RAISE (r3 disproved)" \
+    "writer and panel helper agree on which fragments keep their case"
 
 # Sanity: every current panel run wrote one durable finding row; none was
 # silently dropped merely because it rendered in the already-dispositioned block.
