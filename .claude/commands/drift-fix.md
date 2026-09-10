@@ -344,6 +344,7 @@ shows branch protection on the base branch with BOTH `enforce_admins` enabled
 and a non-empty required-status-checks list (HIMMEL-2869) — `origin` is that
 origin, so the armed path is available here. Any other public repo, and an
 unreadable or check-less protection read, still refuse (exit 12).
+`merge-on-green.sh` exits 17 (`policy-refused`) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks or an explicit GitHub base-branch policy rejection at merge time; if no automation identity can satisfy the required review, the merge is a human admin action (HIMMEL-2887).
 `scripts/handover/pr-merge.sh` (plain-first) remains the alternative.
 
 **Never `--admin`, never a force-merge, never a branch-protection override.** If

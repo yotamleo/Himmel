@@ -61,6 +61,7 @@ Steps run in this canonical order; only the tokens on the pointer's
   time, so a merge refused for want of an approval is the rule working — leave
   the PR open and report it. `scripts/handover/pr-merge.sh` (plain-first)
   remains the alternative. Advisory — branch protection still applies.
+  `merge-on-green.sh` exits 17 (`policy-refused`) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks or an explicit GitHub base-branch policy rejection at merge time; if no automation identity can satisfy the required review, the merge is a human admin action (HIMMEL-2887).
   A blocked gate on this branch parks it and moves to the next queue item —
   never retry-loop;
   see
