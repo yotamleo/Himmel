@@ -519,13 +519,16 @@ git -C "$V" init -q
 git -C "$V" config user.email "test@example.com"
 git -C "$V" config user.name "Test"
 git -C "$V" add -A
-git -C "$V" commit -q -m "initial stamp 0.9.0"
+git -C "$V" commit -q -m "initial stamp 0.9.0"; t29_commit1_rc=$?
+assert_eq "T29 setup: initial commit landed" "0" "$t29_commit1_rc"
 # The vault-local edit, COMMITTED (git status is clean afterwards) — matches
 # the real incident, not an uncommitted-dirty-tree case (already guarded
 # elsewhere).
 printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
 git -C "$V" add -A
-git -C "$V" commit -q -m "add local allowlist line"
+git -C "$V" commit -q -m "add local allowlist line"; t29_commit2_rc=$?
+assert_eq "T29 setup: local-edit commit landed" "0" "$t29_commit2_rc"
+assert_eq "T29 setup: working tree is clean (matches the incident's shape, not a dirty-tree case)" "" "$(git -C "$V" status --porcelain)"
 # Bump the template so an upgrade is available, and change its .gitleaks.toml
 # too (a genuine incoming template change, not just a version bump).
 printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"

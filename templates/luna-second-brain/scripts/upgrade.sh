@@ -245,6 +245,16 @@ fi
 # template-driven). A vault with no git repo, or no such commit (never
 # upgraded via a git-tracked flow), has no baseline to compare against, so
 # falls back to the pre-existing overwrite behavior.
+#
+# Known limitation (not fixed here — flagged by CR, out of scope for a
+# minimal refuse-or-print fix): if a local edit to a template-owned file is
+# committed in the SAME commit that also advances the stamp (e.g. a batching
+# autosync), that commit becomes STAMP_COMMIT itself, so the baseline it
+# reads back already contains the edit. A later run then sees no divergence
+# from that (already-edited) baseline and would silently accept the
+# template's write. Detecting this needs a baseline independent of the
+# vault's own commit history (e.g. a per-file content snapshot alongside
+# .vault-template.json), which is a larger change than this ticket scopes.
 STAMP_COMMIT=""
 # `git rev-parse --is-inside-work-tree`, not `[ -d "$VAULT_DIR/.git" ]`: a
 # worktree or a submodule has a `.git` FILE (a `gitdir: <path>` pointer), not
@@ -264,9 +274,33 @@ has_local_edit() {
     local rel="$1" dst="$2" print="${3:-0}"
     [ -n "$STAMP_COMMIT" ] || return 1
     [ -f "$dst" ] || return 1
+    # `./$rel`, not a bare `$rel`: `git show <rev>:<path>` resolves a path
+    # relative to the CURRENT DIRECTORY only when it starts with `./` —
+    # a bare path is repo-root-relative, which is the WRONG root whenever
+    # VAULT_DIR is a subdirectory of a larger enclosing repo (verified: a
+    # bare path there errors "path exists, but not <rel>" and git's own
+    # hint names the `./` form).
+    #
+    # Existence check FIRST, and distinct from retrieval below: a file
+    # genuinely absent at STAMP_COMMIT (a new template-owned file) must
+    # return 1 same as always, but an OPERATIONAL failure retrieving a file
+    # that does exist there (a broken git object, or mktemp below failing to
+    # give us anywhere to write) must NOT be read the same way — silently
+    # falling through to "no local edit" on an error is the exact silent-
+    # overwrite failure mode this function exists to close, just via a
+    # different path. Fail CLOSED (withhold) on an operational error instead.
+    if ! git -C "$VAULT_DIR" cat-file -e "$STAMP_COMMIT:./$rel" 2>/dev/null; then
+        return 1
+    fi
     local committed; committed="$(mktemp)"
-    if ! git -C "$VAULT_DIR" show "$STAMP_COMMIT:$rel" > "$committed" 2>/dev/null; then
-        rm -f "$committed"; return 1
+    if [ -z "$committed" ] || [ ! -e "$committed" ]; then
+        [ "$print" = 1 ] && echo "  could not verify local edits for $rel (mktemp failed) — withholding the write as a precaution"
+        return 0
+    fi
+    if ! git -C "$VAULT_DIR" show "$STAMP_COMMIT:./$rel" > "$committed" 2>/dev/null; then
+        rm -f "$committed"
+        [ "$print" = 1 ] && echo "  could not verify local edits for $rel (git show failed) — withholding the write as a precaution"
+        return 0
     fi
     local committed_sha dst_sha
     committed_sha="$(sha_of "$committed")"
