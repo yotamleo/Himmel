@@ -224,6 +224,12 @@ exec "$real_python3" "\$@"
 STUB
 chmod +x "$work/bin/python3"
 
+# HIMMEL-2892: wire-statusline.sh drops the hud config under
+# ${CLAUDE_CONFIG_DIR:-$HOME/.claude}. Every case here already fakes HOME, but a
+# RUNNER that exports CLAUDE_CONFIG_DIR would win over that and take the drop to
+# their real config dir — pin it at a throwaway dir for the whole suite.
+export CLAUDE_CONFIG_DIR="$work/claude-config"
+
 saved_path="$PATH"
 qmd_free_path=$(scrub_path "$PATH" qmd bun npm node uv pipx)
 export PATH="$work/bin:$qmd_free_path"

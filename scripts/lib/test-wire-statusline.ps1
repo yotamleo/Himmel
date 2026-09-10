@@ -14,6 +14,14 @@ $script:fail = 0
 function Check([bool]$cond, [string]$msg) {
     if ($cond) { Write-Host "ok $msg" } else { Write-Host "FAIL $msg"; $script:fail = 1 }
 }
+# HIMMEL-2892: the hud config now lands under ${CLAUDE_CONFIG_DIR:-~/.claude},
+# never beside the settings file -- so this suite pins CLAUDE_CONFIG_DIR at a
+# throwaway dir for the WHOLE run. Without the pin it would write into the
+# RUNNER'S real config dir. Restored on exit.
+$prevClaudeConfigDir = $env:CLAUDE_CONFIG_DIR
+$cfgDir = Join-Path $tmp 'config-dir'
+$env:CLAUDE_CONFIG_DIR = $cfgDir
+
 # Invoke the helper the way production callers do (-File) so $LASTEXITCODE is real.
 function Wire([string]$path, [string]$himmel) {
     & pwsh -NoProfile -File $helper -SettingsPath $path -HimmelPath $himmel *> $null
@@ -51,12 +59,12 @@ $rc = Wire "$tmp\s5.json" 'C:\fake\himmel'
 Check ($rc -ne 0) "5a invalid json exits non-zero"
 Check ((Get-Content "$tmp\s5.json" -Raw).Trim() -eq '{not valid') "5b invalid json not clobbered"
 
-# 6 hud config dropped next to settings.json with <himmel-path> SUBSTITUTED.
+# 6 hud config dropped under CLAUDE_CONFIG_DIR with <himmel-path> SUBSTITUTED.
 # Uses the REAL himmel clone so the source himmel-config.json exists.
 $sdir = Join-Path $tmp 'cfgdrop'
 Wire (Join-Path $sdir 'settings.json') $repoRoot | Out-Null
-$dropped = Join-Path $sdir 'plugins/claude-hud/config.json'
-Check (Test-Path $dropped) "6a hud config dropped"
+$dropped = Join-Path $cfgDir 'plugins/claude-hud/config.json'
+Check (Test-Path $dropped) "6a hud config dropped under CLAUDE_CONFIG_DIR"
 if (Test-Path $dropped) {
     $body = Get-Content $dropped -Raw
     Check (-not ($body -match '<himmel-path>')) "6b placeholder substituted"
@@ -67,6 +75,19 @@ if (Test-Path $dropped) {
     Check ($dj.display.showPromptCache -eq $true) "6e dropped config has showPromptCache: true"
 }
 
+# 7 HIMMEL-2892: a PROJECT settings path leaves NOTHING under the project dir.
+# The 2026-09-09 dogfood incident: a project-scope install dropped an untracked
+# .claude/plugins/claude-hud/config.json inside the repo.
+$proj7 = Join-Path $tmp 'proj7'
+New-Item -ItemType Directory -Force (Join-Path $proj7 '.claude') | Out-Null
+$cfg7 = Join-Path $tmp 'cfg7'
+$env:CLAUDE_CONFIG_DIR = $cfg7
+Wire (Join-Path $proj7 '.claude/settings.json') $repoRoot | Out-Null
+Check (-not (Test-Path (Join-Path $proj7 '.claude/plugins'))) "7a nothing dropped inside the project dir"
+Check (Test-Path (Join-Path $cfg7 'plugins/claude-hud/config.json')) "7b hud config landed under CLAUDE_CONFIG_DIR"
+$env:CLAUDE_CONFIG_DIR = $cfgDir
+
+$env:CLAUDE_CONFIG_DIR = $prevClaudeConfigDir
 Get-ChildItem $tmp -Recurse | Remove-Item -Force -Recurse
 Remove-Item $tmp -Force
 if ($script:fail) { Write-Host "FAILURES"; exit 1 } else { Write-Host "ALL PASS"; exit 0 }
