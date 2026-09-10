@@ -214,28 +214,37 @@ echo "ok: case a2 — a checkout path with a space is refused and both remedy co
 # The bug HIMMEL-2905 closes is a FALSE red on a platform CI does not run (the
 # shell suites are ubuntu-only), so it cannot be reproduced by running this
 # suite here. Exercise overlay_remedy_ok() itself instead, against synthetic
-# renderings, with and without a `uname` that reports Git Bash. The LAST check
-# is the RED control: before the fix the POSIX literal was asserted
-# unconditionally, so a POSIX rendering under a Git-Bash uname PASSED — which
-# is precisely the false red a contributor hits. The stub lives inside this
-# case only; nothing below it runs with a doctored PATH.
+# renderings under a STUBBED uname — BOTH arms stubbed, never the host's own
+# (CR round 1, [codex-1]): asserting the POSIX arm against the real `uname`
+# would itself fail under Git Bash, where the Windows arm is selected — the
+# very platform this case exists to protect. The LAST check is the RED control:
+# before the fix the POSIX literal was asserted unconditionally, so a POSIX
+# rendering under a Git-Bash uname PASSED, which is precisely the false red a
+# contributor hits. Each stub lives inside its own subshell; nothing below this
+# case runs with a doctored PATH.
 a4_posix_line="derived: bash /x/scripts/setup.sh"
 a4_pwsh_line="derived: /usr/bin/pwsh -ExecutionPolicy Bypass -File /x/scripts/setup.ps1"
 a4_posix_lit="bash /x/scripts/setup.sh"
 a4_win_re='-ExecutionPolicy Bypass -File .*setup[.]ps1'
-a4_stub="$work/a4-uname-stub"; mkdir -p "$a4_stub"
-printf '#!/usr/bin/env bash\nprintf "MINGW64_NT-10.0-22631\\n"\n' > "$a4_stub/uname"
-chmod +x "$a4_stub/uname"
-overlay_remedy_ok "$a4_posix_line" "$a4_posix_lit" "$a4_win_re" \
-  || fail "case a4: on POSIX the bash rendering must satisfy the remedy assertion"
-overlay_remedy_ok "$a4_pwsh_line" "$a4_posix_lit" "$a4_win_re" \
-  && fail "case a4: on POSIX the pwsh rendering must NOT satisfy it — the two arms must be distinguishable"
+a4_posix_stub="$work/a4-uname-posix"; mkdir -p "$a4_posix_stub"
+printf '#!/usr/bin/env bash\nprintf "Linux\\n"\n' > "$a4_posix_stub/uname"
+a4_win_stub="$work/a4-uname-mingw"; mkdir -p "$a4_win_stub"
+printf '#!/usr/bin/env bash\nprintf "MINGW64_NT-10.0-22631\\n"\n' > "$a4_win_stub/uname"
+chmod +x "$a4_posix_stub/uname" "$a4_win_stub/uname"
 # shellcheck disable=SC2030,SC2031  # deliberately subshell-LOCAL: the uname stub must not leak past this case
-( PATH="$a4_stub:$PATH"; hash -r 2>/dev/null || true
+( PATH="$a4_posix_stub:$PATH"; hash -r 2>/dev/null || true
+  overlay_remedy_ok "$a4_posix_line" "$a4_posix_lit" "$a4_win_re" ) \
+  || fail "case a4: under a POSIX uname the bash rendering must satisfy the remedy assertion"
+# shellcheck disable=SC2030,SC2031  # deliberately subshell-LOCAL: the uname stub must not leak past this case
+( PATH="$a4_posix_stub:$PATH"; hash -r 2>/dev/null || true
+  overlay_remedy_ok "$a4_pwsh_line" "$a4_posix_lit" "$a4_win_re" ) \
+  && fail "case a4: under a POSIX uname the pwsh rendering must NOT satisfy it — the two arms must be distinguishable"
+# shellcheck disable=SC2030,SC2031  # deliberately subshell-LOCAL: the uname stub must not leak past this case
+( PATH="$a4_win_stub:$PATH"; hash -r 2>/dev/null || true
   overlay_remedy_ok "$a4_pwsh_line" "$a4_posix_lit" "$a4_win_re" ) \
   || fail "case a4: under a Git-Bash uname the pwsh rendering must satisfy the remedy assertion"
 # shellcheck disable=SC2030,SC2031  # deliberately subshell-LOCAL: the uname stub must not leak past this case
-( PATH="$a4_stub:$PATH"; hash -r 2>/dev/null || true
+( PATH="$a4_win_stub:$PATH"; hash -r 2>/dev/null || true
   overlay_remedy_ok "$a4_posix_line" "$a4_posix_lit" "$a4_win_re" ) \
   && fail "case a4: under a Git-Bash uname the POSIX rendering must FAIL — asserting it unconditionally is the false red HIMMEL-2905 fixes"
 echo "ok: case a4 — the remedy assertion selects its arm from uname (Git Bash asserts the pwsh rendering, POSIX the bash one)"
