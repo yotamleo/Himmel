@@ -326,6 +326,79 @@ printf '4\n' > "$git_dir/cr-review-rounds/deferred.round"
 assert_eq "$?" "0" "settled deferred re-raise does not consume the HIMMEL-2780 cap"
 assert_lacks "$(cat "$tmp/cap.err")" "no valid defer ticket" "settled cap path does not request another ticket"
 
+# A disposition at Suggestion severity does not authorize silently suppressing
+# the same claim when a later critic raises it as Important.
+checkout_branch deferred
+advance_head d11-severity-escalation >/dev/null
+run_panel 11 "$deferred_claim" imp "$tmp/d11.out" "$tmp/d11.err"
+assert_eq "$?" "0" "severity-escalated deferred panel run succeeds"
+assert_has "$(cat "$tmp/d11.out")" "## Important Issues (1 found)" "deferred Suggestion re-raised as Important requires adjudication"
+assert_lacks "$(cat "$tmp/d11.out")" "RE-RAISE (" "severity escalation remains in the active findings block"
+
+# Same/lower severities remain suppressed against the ORIGINAL adjudicated
+# ceiling. An inherited lower-severity row must not narrow that ceiling for the
+# next round; only a later increase above it becomes active.
+checkout_branch severity-ceiling
+head_sc3="$(advance_head severity-ceiling-r3)"
+set_registry critic-a
+severity_claim='Severity ceiling claim [scripts/cr/severity.sh:30]'
+run_panel 3 "$severity_claim" imp "$tmp/sc3.out" "$tmp/sc3.err"
+assert_eq "$?" "0" "severity ceiling seed panel run succeeds"
+id_sc3="$(finding_id_at severity-ceiling "$head_sc3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch severity-ceiling --head "$head_sc3" \
+        --id "$id_sc3" --set verdict=disproved --reason 'Important claim disproved'
+) >/dev/null 2>"$tmp/sc3-amend.err"
+assert_eq "$?" "0" "severity ceiling fixture accepts Important disproof"
+head_sc4="$(advance_head severity-ceiling-r4)"
+run_panel 4 "$severity_claim" sug "$tmp/sc4.out" "$tmp/sc4.err"
+assert_eq "$?" "0" "lower severity panel run succeeds"
+assert_has "$(cat "$tmp/sc4.out")" "## Suggestions (0 found)" "lower Suggestion remains suppressed"
+assert_eq "$(ledger_value severity-ceiling "$head_sc4" disposition_severity)" "imp" "lower re-raise persists original Important severity ceiling"
+advance_head severity-ceiling-r5 >/dev/null
+run_panel 5 "$severity_claim" imp "$tmp/sc5.out" "$tmp/sc5.err"
+assert_eq "$?" "0" "same severity panel run succeeds"
+assert_has "$(cat "$tmp/sc5.out")" "## Important Issues (0 found)" "same Important severity remains suppressed after lower inherited row"
+advance_head severity-ceiling-r6 >/dev/null
+run_panel 6 "$severity_claim" crit "$tmp/sc6.out" "$tmp/sc6.err"
+assert_eq "$?" "0" "higher severity panel run succeeds"
+assert_has "$(cat "$tmp/sc6.out")" "## Critical Issues (1 found)" "Critical escalation above original Important ceiling is active"
+assert_lacks "$(cat "$tmp/sc6.out")" "RE-RAISE (" "Critical escalation requires renewed adjudication"
+
+# Missing or unknown adjudicated severity is conservative: there is no safe
+# ceiling to compare, so a current canonical finding remains active.
+checkout_branch severity-unknown
+head_su3="$(advance_head severity-unknown-seed)"
+unknown_claim='Unknown severity claim [scripts/cr/severity.sh:70]'
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" finding --branch severity-unknown --head "$head_su3" \
+        --model critic-a --id severity-unknown-1 --severity mystery --file scripts/cr/severity.sh --line 70 \
+        --verdict disproved --round 3 --text "- [severity-unknown-1]: $unknown_claim"
+) >/dev/null 2>"$tmp/severity-unknown-seed.err"
+assert_eq "$?" "0" "unknown severity fixture writes"
+advance_head severity-unknown-current >/dev/null
+run_panel 4 "$unknown_claim" imp "$tmp/severity-unknown.out" "$tmp/severity-unknown.err"
+assert_eq "$?" "0" "unknown prior severity panel run succeeds"
+assert_has "$(cat "$tmp/severity-unknown.out")" "## Important Issues (1 found)" "unknown prior severity fails active"
+assert_lacks "$(cat "$tmp/severity-unknown.out")" "RE-RAISE (" "unknown prior severity is not inherited"
+
+checkout_branch severity-missing
+head_sm3="$(advance_head severity-missing-seed)"
+missing_claim='Missing severity claim [scripts/cr/severity.sh:80]'
+missing_fp="$(MODEL=critic-a FILE_=scripts/cr/severity.sh TEXT_="- [severity-missing-1]: $missing_claim" HELPER="$HERE/finding-fingerprint.js" node -e '
+const {findingFingerprint}=require(process.env.HELPER);
+process.stdout.write(findingFingerprint(process.env.MODEL,process.env.FILE_,process.env.TEXT_));
+')"
+printf '{"kind":"finding","ts":"2020-01-01T00:00:00Z","branch":"severity-missing","head":"%s","model":"critic-a","finding_id":"severity-missing-1","file":"scripts/cr/severity.sh","line":80,"verdict":"disproved","round":3,"disposition_round":3,"fingerprint":"%s","artifact":"diff","perspective":"off","text":"- [severity-missing-1]: %s"}\n' \
+    "$head_sm3" "$missing_fp" "$missing_claim" >> "$ledger"
+advance_head severity-missing-current >/dev/null
+run_panel 4 "$missing_claim" imp "$tmp/severity-missing.out" "$tmp/severity-missing.err"
+assert_eq "$?" "0" "missing prior severity panel run succeeds"
+assert_has "$(cat "$tmp/severity-missing.out")" "## Important Issues (1 found)" "missing prior severity fails active"
+assert_lacks "$(cat "$tmp/severity-missing.out")" "RE-RAISE (" "missing prior severity is not inherited"
+
 # Branch, critic, and artifact/perspective are controls outside the fingerprint
 # equality itself. Each mismatch must leave the current finding active.
 checkout_branch other-branch

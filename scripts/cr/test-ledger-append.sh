@@ -983,4 +983,33 @@ CR_LEDGER="$RLGB" bash "$LA" finding --batch-file "$RLGBF" 2>"$tmp/round-legacy-
 check "batch retry dedups a legacy text row lacking additive fields" "$?" "0"
 check "batch legacy retry writes no replacement row" "$(wc -l < "$RLGB" | tr -d ' ')" "1"
 
+# Batch round metadata follows the positive-integer CLI contract. Invalid rows
+# are refused individually while valid siblings still append (batch partial
+# success, not all-or-nothing).
+BRVF="$tmp/batch-round-validation-rows.jsonl"
+BRVL="$tmp/batch-round-validation.jsonl"
+BRV_HEAD=$(printf '%040d' 78901)
+# shellcheck disable=SC2016  # JavaScript template literals, not shell expansion.
+HEAD_="$BRV_HEAD" OUT="$BRVF" node -e '
+const fs=require("fs"),e=process.env;
+const base={branch:"b",head:e.HEAD_,model:"critic-a",severity:"imp",file:"f",line:1,verdict:"",text:"- [round-validation]: claim [f:1]"};
+const rows=[];
+for(const [label,value] of [["zero",0],["negative",-1],["fractional",1.5],["nonnumeric","nope"]]){
+  rows.push({...base,id:`round-${label}`,round:value});
+  rows.push({...base,id:`disposition-round-${label}`,disposition_round:value});
+}
+rows.push({...base,id:"round-number",round:2});
+rows.push({...base,id:"round-string",round:"3"});
+rows.push({...base,id:"disposition-round-number",disposition_round:4});
+rows.push({...base,id:"disposition-round-string",disposition_round:"5"});
+rows.push({...base,id:"round-absent"});
+fs.writeFileSync(e.OUT,rows.map(JSON.stringify).join("\n")+"\n");
+'
+CR_LEDGER="$BRVL" bash "$LA" finding --batch-file "$BRVF" 2>"$tmp/batch-round-validation.err"
+check "batch invalid round metadata yields partial-success rc3" "$?" "3"
+check "batch invalid round rows are refused and valid/absent controls append" "$(L="$BRVL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").filter(Boolean).map(JSON.parse);console.log(r.map(x=>x.finding_id).sort().join(","))')" "disposition-round-number,disposition-round-string,round-absent,round-number,round-string"
+check "batch numeric/string round controls normalize to numbers" "$(L="$BRVL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").filter(Boolean).map(JSON.parse);console.log(r.filter(x=>x.round!==undefined).map(x=>typeof x.round+":"+x.round).sort().join(","))')" "number:2,number:3"
+check "batch numeric/string disposition-round controls normalize to numbers" "$(L="$BRVL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").filter(Boolean).map(JSON.parse);console.log(r.filter(x=>x.disposition_round!==undefined).map(x=>typeof x.disposition_round+":"+x.disposition_round).sort().join(","))')" "number:4,number:5"
+check "batch absent round metadata remains absent" "$(L="$BRVL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").filter(Boolean).map(JSON.parse).find(x=>x.finding_id==="round-absent");console.log(("round" in r)+","+("disposition_round" in r))')" "false,false"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

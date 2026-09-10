@@ -22,6 +22,10 @@ function validRound(value) {
   return /^[1-9][0-9]*$/.test(String(value == null ? '' : value));
 }
 
+function severityRank(value) {
+  return { sug: 1, imp: 2, crit: 3 }[String(value || '')] || 0;
+}
+
 function validDeferred(row) {
   return row.verdict === 'deferred' &&
     /^[A-Z][A-Z0-9]*-[0-9]+$/.test(String(row.deferred_to || '')) &&
@@ -46,7 +50,19 @@ for (const row of ledgerRows) {
     const sourceKey = findingKey(row.head, row.finding_id, row.artifact, row.perspective);
     states.set(sourceKey, state);
     if (state.fingerprint && state.verdict) {
-      latest.set(dispositionKey(state), { ...state, _sourceKey: sourceKey });
+      const key = dispositionKey(state);
+      const previous = latest.get(key);
+      const event = { ...state, _sourceKey: sourceKey };
+      if (!event.disposition_severity) {
+        const previousRound = previous && (previous.disposition_round || previous.round);
+        if (previous && validRound(state.disposition_round) &&
+            String(previousRound) === String(state.disposition_round)) {
+          event.disposition_severity = previous.disposition_severity || previous.severity;
+        } else {
+          event.disposition_severity = state.severity;
+        }
+      }
+      latest.set(key, event);
     }
     continue;
   }
@@ -80,7 +96,7 @@ for (const row of ledgerRows) {
   }
 
   if (Object.prototype.hasOwnProperty.call(row.set, 'verdict') && target.fingerprint && target.verdict) {
-    const event = { ...target, _sourceKey: targetKey };
+    const event = { ...target, disposition_severity: target.severity, _sourceKey: targetKey };
     if (validRound(target.round)) event.disposition_round = Number(target.round);
     latest.set(dispositionKey(event), event);
     continue;
@@ -91,12 +107,17 @@ for (const row of ledgerRows) {
   // still authoritative; never revive an older verdict over a newer row.
   if (target.fingerprint &&
       (Object.prototype.hasOwnProperty.call(row.set, 'reason') ||
-       Object.prototype.hasOwnProperty.call(row.set, 'deferred_to'))) {
+       Object.prototype.hasOwnProperty.call(row.set, 'deferred_to') ||
+       Object.prototype.hasOwnProperty.call(row.set, 'severity'))) {
     const key = dispositionKey(target);
     const current = latest.get(key);
     if (current && current._sourceKey === targetKey) {
       if (Object.prototype.hasOwnProperty.call(row.set, 'reason')) current.reason = target.reason;
       if (Object.prototype.hasOwnProperty.call(row.set, 'deferred_to')) current.deferred_to = target.deferred_to;
+      if (Object.prototype.hasOwnProperty.call(row.set, 'severity')) {
+        current.severity = target.severity;
+        current.disposition_severity = target.severity;
+      }
     }
   }
 }
@@ -116,7 +137,11 @@ for (const line of input) {
     ? latest.get([e.REVIEW_BRANCH, fingerprint, artifact, perspective].join(keySep))
     : null;
   const sourceRound = prior && (prior.disposition_round || prior.round);
+  const dispositionSeverity = prior && (prior.disposition_severity || prior.severity);
+  const currentSeverityRank = severityRank(severity);
+  const dispositionSeverityRank = severityRank(dispositionSeverity);
   const suppress = Boolean(prior && validRound(sourceRound) &&
+    currentSeverityRank && dispositionSeverityRank && currentSeverityRank <= dispositionSeverityRank &&
     (prior.verdict === 'disproved' || validDeferred(prior)));
 
   const row = {
@@ -137,6 +162,7 @@ for (const line of input) {
   if (suppress) {
     row.verdict = prior.verdict;
     row.disposition_round = Number(sourceRound);
+    row.disposition_severity = dispositionSeverity;
     if (prior.reason) row.reason = prior.reason;
     if (prior.deferred_to) row.deferred_to = prior.deferred_to;
     const ticket = prior.verdict === 'deferred' && prior.deferred_to ? ` [${prior.deferred_to}]` : '';

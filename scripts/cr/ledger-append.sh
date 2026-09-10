@@ -480,6 +480,14 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
         process.stderr.write("ledger-append.sh: batch row "+sid+" is missing required field(s) ("+missingFields.join(",")+") - refusing this row.\n");
         anyFail=true; continue;
       }
+      const positiveInteger=(v)=>(typeof v==="number"&&Number.isInteger(v)&&v>0)
+          ||(typeof v==="string"&&/^[1-9][0-9]*$/.test(v));
+      const invalidRoundFields=["round","disposition_round"].filter(f=>f in spec&&!positiveInteger(spec[f]));
+      if(invalidRoundFields.length){
+        process.stderr.write("ledger-append.sh: batch row "+sid+" has invalid positive-integer field(s) ("
+          +invalidRoundFields.map(f=>f+"="+JSON.stringify(spec[f])).join(",")+") - refusing this row.\n");
+        anyFail=true; continue;
+      }
       const keyRow=(o)=>o.kind==="finding"&&headsMatch(o.head,shead)&&o.finding_id===sid
           &&(o.artifact||"diff")===artifact&&(o.perspective||"off")===perspective;
       const rec={kind:"finding",ts:spec.ts||e.TS,branch:spec.branch,head:shead,model:spec.model,
@@ -492,6 +500,7 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       if(spec.round) rec.round=Number(spec.round);
       if(spec.disposition_round) rec.disposition_round=Number(spec.disposition_round);
       else if(spec.verdict&&spec.round) rec.disposition_round=Number(spec.round);
+      if(spec.disposition_severity) rec.disposition_severity=spec.disposition_severity;
       if(spec.text){
         const fullText=scrubSecrets(String(spec.text).replace(/[\r\n]/g," "));
         rec.fingerprint=findingFingerprint(spec.model,spec.file,fullText);
@@ -527,7 +536,8 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
         // claims sharing the same 500-char display prefix still refuse), but
         // ignored when either side predates fingerprints or omits text.
         const compareFingerprint=("fingerprint" in priorEff)&&("fingerprint" in rec);
-        const norm=(o)=>{const c={...o}; delete c.ts; if(!compareFingerprint) delete c.fingerprint; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
+        const compareDispositionSeverity=("disposition_severity" in priorEff)&&("disposition_severity" in rec);
+        const norm=(o)=>{const c={...o}; delete c.ts; if(!compareFingerprint) delete c.fingerprint; if(!compareDispositionSeverity) delete c.disposition_severity; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
         if(norm(priorEff)!==norm(rec)){
           const priorWithVerdict={...priorEff,verdict:rec.verdict};
           if(rec.reason) priorWithVerdict.reason=rec.reason;
@@ -709,7 +719,8 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       // claims sharing the same 500-char display prefix still refuse), but
       // ignored when either side predates fingerprints or omits text.
       const compareFingerprint=("fingerprint" in priorEff)&&("fingerprint" in rec);
-      const norm=(o)=>{const c={...o}; delete c.ts; if(!compareFingerprint) delete c.fingerprint; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
+      const compareDispositionSeverity=("disposition_severity" in priorEff)&&("disposition_severity" in rec);
+      const norm=(o)=>{const c={...o}; delete c.ts; if(!compareFingerprint) delete c.fingerprint; if(!compareDispositionSeverity) delete c.disposition_severity; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
       if(norm(priorEff)!==norm(rec)){
         const priorWithVerdict={...priorEff,verdict:rec.verdict};
         if(rec.reason) priorWithVerdict.reason=rec.reason;
