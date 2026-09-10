@@ -29,8 +29,9 @@
 #                   watch can go green before a slower workflow has created
 #                   its check run at all. One settle round bounds that window;
 #                   a workflow that registers even later is out of scope.
-#   --max-wait <sec> bound on each `gh pr checks --watch` round (default 540;
-#                   0 = unbounded, today's behaviour). HIMMEL-2062: CodeRabbit
+#   --max-wait <sec> bound on each `gh pr checks --watch` round (default 900,
+#                   HIMMEL-2907 — the measured slowest shell-unit shard runs
+#                   12m16s-12m45s; 0 = unbounded, today's behaviour). HIMMEL-2062: CodeRabbit
 #                   leaves its rollup row "pending"/"Review queued" long after
 #                   every other check — and, when armed, its own gate status —
 #                   is decidable, so the watch keeps polling well past a 10-
@@ -113,8 +114,8 @@
 #   CHECK_CI_SLEEP_CMD     — the command every wall-clock wait in this script
 #                            goes through (default `sleep`); hermetic suites set
 #                            it to `:` so a simulated poll costs no real seconds
-#   CHECK_CI_MAX_WAIT      — default for --max-wait (flag wins; default 540, 0 =
-#                            unbounded; HIMMEL-2062)
+#   CHECK_CI_MAX_WAIT      — default for --max-wait (flag wins; default 900, 0 =
+#                            unbounded; HIMMEL-2062, raised in HIMMEL-2907)
 #   CR_ESCALATE_WAIT       — --escalate total wait budget (default 600)
 #   CR_ESCALATE_POLL       — --escalate seconds between re-reads (default 120)
 #   CR_PROFILE=none        — this repo has no CodeRabbit: skip the required-signal
@@ -168,7 +169,7 @@ env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings + revi
      CR_BOT_LOGINS sets the review-author logins the freshness gate treats as the bot (default coderabbitai)
      CR_ESCALATE_WAIT / CR_ESCALATE_POLL tune --escalate for absent or stale-anchor reviews (defaults 600 / 120 seconds)
      CHECK_CI_SLEEP_CMD replaces the command every wall-clock wait runs (default sleep; hermetic suites set it to :)
-     CHECK_CI_MAX_WAIT sets --max-wait's default (default 540 seconds, 0 = unbounded; HIMMEL-2062)
+     CHECK_CI_MAX_WAIT sets --max-wait's default (default 900 seconds, 0 = unbounded; HIMMEL-2062, raised in HIMMEL-2907)
 note: "armed" above means the required-CodeRabbit-signal + body-findings + review-freshness gates are active —
       DISARMED by default. On a repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
       CR_APP=1|0 overrides; CR_PROFILE=none outranks both. On a disarmed repo the CodeRabbit-conditional
@@ -197,7 +198,9 @@ ESCALATE=0
 _cr_head_status_ok=0
 GRACE=180
 SETTLE="${CHECK_CI_SETTLE:-30}"
-MAX_WAIT="${CHECK_CI_MAX_WAIT:-540}"
+# Default 900s (HIMMEL-2907): the measured slowest shell-unit shard runs
+# 12m16s-12m45s, over the prior 540s default.
+MAX_WAIT="${CHECK_CI_MAX_WAIT:-900}"
 POLL="${CHECK_CI_POLL_INTERVAL:-10}"
 # Sleep seam (HIMMEL-1953). EVERY wall-clock wait below goes through this one
 # command word so a hermetic suite can inject `:` and never burn real seconds on
@@ -428,7 +431,25 @@ watch_decidable() {
     return 0
 }
 
+# _pending_checks_report — HIMMEL-2907: names (and counts) the checks still in
+# the "pending" bucket, for the one-time cap-extension notice and the
+# cannot-evaluate line below — a reader should see "shell-unit-shard (ubuntu-
+# latest, 7)" instead of a bare "checks still pending". Fail-safe like
+# watch_decidable: an unreadable/unparsable probe reports zero names rather
+# than fabricating any; callers fall back to generic wording.
+_pending_checks_report() {
+    # shellcheck disable=SC2016  # jq expression, not a shell expansion
+    pr_checks --json bucket,name --jq \
+        '[.[] | select(.bucket == "pending")] as $p | "\($p | length)", ($p | map(.name) | join(", "))' \
+        2>/dev/null
+}
+
 watch_round() {
+    # $1 — extensions still allowed this call (HIMMEL-2907): 1 (default, the
+    # outer caller) permits ONE more full --max-wait round on a cap-with-
+    # pending verdict before refusing; the recursive self-call below passes 0
+    # so a second cap-with-pending exits 2 instead of extending forever.
+    local extend_ok="${1:-1}"
     # Runs one `gh pr checks --watch --fail-fast`, BOUNDED (HIMMEL-2062):
     # foreground would block a session's tool wrapper past its own timeout
     # even after the verdict is decidable, because CodeRabbit's rollup row can
@@ -705,10 +726,27 @@ watch_round() {
     fi
 
     # Cap ONLY: a cap reached with non-CodeRabbit work still pending is not a
-    # decidable verdict — refuse rather than certify green over an unfinished
-    # check. The "decidable" stop already proved this true, so it never hits.
+    # decidable verdict on its own. HIMMEL-2907: nothing failed here (the
+    # check above already returned otherwise) — a slow-but-healthy shard
+    # still mid-run must not read as "cannot evaluate" on the FIRST cap. So
+    # extend once: run one more full --max-wait round before refusing. Only a
+    # SECOND cap-with-pending (extend_ok=0, the recursive call below) exits 2
+    # — the "decidable" stop already proved a bare terminal-check set never
+    # hits this branch, so it never hits.
     if [ "$stopped" = cap ] && ! watch_decidable; then
-        echo "check-ci: watch cap reached with non-CodeRabbit checks still pending — cannot evaluate the gate; re-run (raise --max-wait). Do NOT infer state from log absence — verify directly: gh pr view <PR> --json state (HIMMEL-2206)" >&2
+        local report pending_n pending_names
+        report=$(_pending_checks_report)
+        pending_n=${report%%$'\n'*}
+        case "$pending_n" in
+            ''|*[!0-9]*) pending_n=0; pending_names="" ;;
+            *) pending_names=${report#*$'\n'} ;;
+        esac
+        if [ "$extend_ok" -eq 1 ]; then
+            echo "check-ci: WAITING ${pending_n} pending (${pending_names:-unnamed}) — extending once (HIMMEL-2907)" >&2
+            watch_round 0
+            return $?
+        fi
+        echo "check-ci: watch cap reached with non-CodeRabbit checks still pending (${pending_names:-unnamed}) — cannot evaluate the gate; re-run (raise --max-wait). Do NOT infer state from log absence — verify directly: gh pr view <PR> --json state (HIMMEL-2206)" >&2
         exit 2
     fi
 
