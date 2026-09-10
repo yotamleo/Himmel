@@ -426,35 +426,38 @@ d14="$tmp/c14"; mk_stub "$d14" 1  # konsole stub unused either way; the real ass
 mkdir -p "$d14/locks/HIMMEL-donedeal.lock"
 date +%s > "$d14/locks/HIMMEL-donedeal.lock/acquired"
 _fake_claude_proc "$d14" "HIMMEL-donedeal"
-# HIMMEL-2877: the stub marks its own first call (an existence-only sync
-# file, same pattern as mk_matcher_pgrep above) so the releaser below fires
-# the instant the launcher's claim-retry loop has actually started polling,
-# instead of guessing a fixed wall-clock delay that can land before the
-# loop starts or after its ~2s budget expires under CI load.
-cat > "$d14/pgrep" <<'PGREP_EOF'
+# HIMMEL-2877 (panel round 1, codex-1): a SEPARATE background releaser that
+# reacts to a sync file still races the very check it exists to
+# synchronize with - whichever session_confirmed() call the releaser
+# reacted to necessarily observed "no match" (that observation is what
+# triggered the reaction, in a different process), so a claim_lock()
+# attempted in that SAME iteration can still win before the releaser's own
+# writes land. No fixed delay, sync file or write-order can close that:
+# the releaser is fundamentally a second process reacting after the fact.
+#
+# The only way to make the flip and the lock-release indivisible is to do
+# both from the SAME statement in the SAME process as the check itself -
+# so the pgrep stub counts its own invocations and, once a chosen call
+# arrives, releases the lock and reports the match synchronously, before
+# returning. Nothing else can run in between because there is no "in
+# between": it is one shell script, no backgrounding. Calls 1-2 are the
+# pre-loop dedup check (line ~575) and the retry loop's first genuine
+# no-match/claim-fails iteration (lock still real); call 3 is the retry
+# loop's second iteration, where THIS SAME invocation removes the lock and
+# reports the match - the loop's if/exit-0 branch returns immediately on a
+# match, so claim_lock() is never even reached on that iteration.
+cat > "$d14/pgrep" <<PGREP_EOF
 #!/usr/bin/env bash
-: > "$(dirname "$0")/first-pgrep-call"
-if [ -e "$(dirname "$0")/session-now-running" ]; then echo 9001; exit 0; fi
+n=\$(( \$(cat "$d14/pgrep-calls" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "\$n" > "$d14/pgrep-calls"
+if [ "\$n" -ge 3 ]; then
+    rm -rf "$d14/locks/HIMMEL-donedeal.lock"
+    echo 9001
+    exit 0
+fi
 exit 1
 PGREP_EOF
 chmod 755 "$d14/pgrep"
-# HIMMEL-2877: flip pgrep-match BEFORE clearing the lock (the old order was
-# reversed). The claim-retry loop always checks pgrep before ever
-# attempting to claim the lock in the SAME iteration, so with the match
-# already true, the lock can never be observed free without that same (or
-# an earlier) iteration having already taken the "already running" exit.
-# The old order raced: a scheduling gap between clearing the lock and
-# setting the flag let a contender claim the freed lock first and fall
-# through to the DIFFERENT "appeared after this arm claimed the lock" log
-# line - or, with a wider gap, actually invoke konsole for a real duplicate
-# launch. Reproduced both outcomes with an exaggerated gap; this order
-# closes it regardless of gap width (see HIMMEL-2877 commit body).
-(
-  n=0
-  while [ ! -e "$d14/first-pgrep-call" ] && [ "$n" -lt 100 ]; do sleep 0.02; n=$((n+1)); done
-  : > "$d14/session-now-running"
-  rm -rf "$d14/locks/HIMMEL-donedeal.lock"
-) &
 rc14=0
 KONSOLE_CMD="$d14/konsole" PGREP_CMD="$d14/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d14/locks" HEADED_ARM_PROC="$d14/proc" \
   bash "$SCRIPT" "HIMMEL-donedeal" "doc14.md" "$d14/signal-never" "$PAST" "$d14/log" >/dev/null 2>&1 || rc14=$?
