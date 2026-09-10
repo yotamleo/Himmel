@@ -1181,7 +1181,7 @@ _append_panel_ledger() {
         _apl_batch_file="$PANEL_SPOOL_DIR/.finding-batch.jsonl"
         : > "$_apl_batch_file"
         if [ -s "$PANEL_SPOOL_DIR/.finding-enriched.jsonl" ]; then
-            cp "$PANEL_SPOOL_DIR/.finding-enriched.jsonl" "$_apl_batch_file"
+            cp "$PANEL_SPOOL_DIR/.finding-enriched.jsonl" "$_apl_batch_file" || _apl_failed=1
         fi
         # Hand node the spool CONTENT on stdin and take the JSONL back on
         # stdout - never a PATH through the environment. Git-Bash rewrites
