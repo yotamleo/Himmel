@@ -333,8 +333,10 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     return c?(/[a-z][A-Z]/.test(c)||c.includes("_")||/^[A-Za-z0-9_$]+(?:\.[A-Za-z0-9_$]+)+$/.test(c)):false;};
   // HIMMEL-2906: classify identifier COMPONENTS inside an expression
   // (`config.LOGLEVEL(value)`) rather than the whole token — parity with
-  // foldTokenCase in finding-fingerprint.js.
-  const foldTokenCase=(t)=>t.split(/([^A-Za-z0-9_$.]+)/).map((p,i)=>i%2===1?p:(isCodeToken(p)?p:p.toLowerCase())).join("");
+  // foldTokenCase in finding-fingerprint.js. codex-1 round 1: separator spans
+  // fold too (a non-ASCII letter is itself outside [A-Za-z0-9_$.]), or
+  // case-only Unicode prose escapes the fold.
+  const foldTokenCase=(t)=>t.split(/([^A-Za-z0-9_$.]+)/).map((p,i)=>i%2===0&&isCodeToken(p)?p:p.toLowerCase()).join("");
   const foldClaimCase=(v)=>String(v).split(/(`[^`]*`)/).map((p,i)=>i%2===1?p:p.split(/(\s+)/).map(t=>foldTokenCase(t)).join("")).join("");
   const foldClaim=(v)=>foldClaimCase(String(v==null?"":v).replace(/\s+/g," ").trim());
   const normalizeClaim=(v)=>foldClaim(String(v==null?"":v).replace(/^\s*-\s*\[[^\]]+\]\s*:\s*/,"").replace(/\s*\[[^\]\r\n]+:\d+(?:-\d+)?\]\s*$/,"") );

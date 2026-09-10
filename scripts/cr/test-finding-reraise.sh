@@ -871,6 +871,27 @@ assert_eq "$?" "0" "prose-caps lowercase panel run succeeds"
 assert_has "$(cat "$tmp/pc4.out")" "RE-RAISE (r3 disproved)" \
     "an ALL-CAPS prose word outside backticks still folds onto the lowercase claim"
 
+# codex-1, HIMMEL-2906 round 1: a non-ASCII letter is itself outside
+# [A-Za-z0-9_$.], so leaving component-splitting's separator spans unfolded
+# let case-only Unicode prose escape the fold entirely.
+checkout_branch unicode-prose-still-folds
+head_up3="$(advance_head unicode-prose-r3)"
+set_registry critic-a
+run_panel 3 'Échec critique detected [scripts/cr/case.sh:170]' imp "$tmp/up3.out" "$tmp/up3.err"
+assert_eq "$?" "0" "unicode-prose seed panel run succeeds"
+id_up3="$(finding_id_at unicode-prose-still-folds "$head_up3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch unicode-prose-still-folds --head "$head_up3" \
+        --id "$id_up3" --set verdict=disproved --reason 'the Echec claim is disproved'
+) >/dev/null 2>"$tmp/up3-amend.err"
+assert_eq "$?" "0" "unicode-prose fixture accepts the disproof"
+advance_head unicode-prose-r4 >/dev/null
+run_panel 4 'échec critique detected [scripts/cr/case.sh:180]' imp "$tmp/up4.out" "$tmp/up4.err"
+assert_eq "$?" "0" "unicode-prose lowercase panel run succeeds"
+assert_has "$(cat "$tmp/up4.out")" "RE-RAISE (r3 disproved)" \
+    "a non-ASCII prose word outside backticks still folds onto the lowercase claim"
+
 # The writer's standalone fingerprint copy must agree with the shared helper on
 # the case rules too, or a row it writes never matches a claim the panel reads.
 checkout_branch code-case-parity

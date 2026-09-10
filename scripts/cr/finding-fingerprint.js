@@ -33,9 +33,14 @@ function isCodeToken(token) {
 // bracket or comma is exactly the kind of boundary that should not merge two
 // components' case decisions.
 function foldTokenCase(token) {
+  // codex-1, HIMMEL-2906 round 1: the separator spans (whatever falls
+  // outside [A-Za-z0-9_$.]) are prose too — a non-ASCII letter like `É` is
+  // itself outside that class, so leaving separators unfolded let case-only
+  // Unicode prose (`Échec` vs `échec`) escape the fold. Every piece lowercases
+  // unless it is itself an identifier-shaped component.
   return token
     .split(/([^A-Za-z0-9_$.]+)/)
-    .map((piece, index) => (index % 2 === 1 ? piece : (isCodeToken(piece) ? piece : piece.toLowerCase())))
+    .map((piece, index) => (index % 2 === 0 && isCodeToken(piece) ? piece : piece.toLowerCase()))
     .join('');
 }
 
