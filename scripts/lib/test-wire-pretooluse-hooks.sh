@@ -175,6 +175,22 @@ check "quote in basename: re-wire repoints at the new clone path" \
   "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f3" 2>/dev/null)" \
   'bash "C:/moved/scripts/hooks/we\"ird-hook.sh"'
 
+# 8f4. HIMMEL-2913: an entry wired by a PREVIOUS release carries the RAW
+# (unescaped) basename in its command -- shesc() on the basename postdates
+# HIMMEL-2905. A needle derived only from the escaped form cannot match that
+# legacy text, so a re-wire APPENDS the repaired hook beside the old malformed
+# one instead of replacing it. RED before the fix: 2 hook objects survive.
+s8f4="$td/s8f4.json"
+legacy_cmd='bash "C:/old/scripts/hooks/we"ird-hook.sh"'
+jq -n --arg cmd "$legacy_cmd" \
+  '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":$cmd}]}]}}' > "$s8f4"
+( . "$wire"; wire_sessionstart_hook "$s8f4" "C:/himmel" 'we"ird-hook.sh' 0 >/dev/null 2>&1 ) || true
+check "legacy raw basename: dedup replaces, not appends" \
+  "$(jq -r '[.hooks.SessionStart[].hooks[]] | length' "$s8f4" 2>/dev/null)" "1"
+check "legacy raw basename: repointed to the escaped command" \
+  "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f4" 2>/dev/null)" \
+  'bash "C:/himmel/scripts/hooks/we\"ird-hook.sh"'
+
 # 8g. NEGATIVE control for 8f (load-bearing): the project-scope prefix is the
 # LITERAL, unexpanded `$CLAUDE_PROJECT_DIR` -- Claude Code expands it at
 # hook-fire time. Escaping it (`\$CLAUDE_PROJECT_DIR`) or single-quoting it

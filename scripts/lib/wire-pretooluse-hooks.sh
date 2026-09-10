@@ -205,15 +205,19 @@ wire_sessionstart_hook() {
   # the needle from the same shesc() the command uses makes disagreement
   # impossible, and `contains` needs no regex-escaping at all, which the old
   # `${basename//./[.]}` only ever did for `.` anyway.
+  # HIMMEL-2913: an entry wired by a PREVIOUS release (pre-2905) carries the
+  # RAW, unescaped basename, which $needle alone cannot match, so $legacy
+  # widens the dedup to also catch and replace that older text.
   # shellcheck disable=SC2016  # a jq program: $pfx/$hook/$cmd are jq bindings
   printf '%s' "$base" | jq --arg pfx "$pfx" --arg hook "$basename" \
     "$WIRE_HOOK_CMD_JQ"'
     hookcmd($pfx; $hook) as $cmd
     | ("scripts/hooks/" + shesc($hook)) as $needle
+    | ("scripts/hooks/" + $hook) as $legacy
     | .hooks = (.hooks // {})
     | .hooks.SessionStart = ((.hooks.SessionStart // [])
         | map(.hooks = ((.hooks // [])
-            | map(select((.command // "") | contains($needle) | not))))
+            | map(select((.command // "") | (contains($needle) or contains($legacy)) | not))))
         | map(select((.hooks | length) > 0)))
     | (.hooks.SessionStart | map(has("matcher") | not) | index(true)) as $idx
     | if $idx == null

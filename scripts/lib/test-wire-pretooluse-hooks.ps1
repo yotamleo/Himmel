@@ -111,6 +111,18 @@ Set-SessionStartHook -SettingsPath $s9c -Prefix 'C:/moved' -HookBasename 'we"ird
 Check 'quote in basename: re-wire dedups' (JqVal $s9c '[.hooks.SessionStart[].hooks[]] | length') '1'
 Check 'quote in basename: re-wire repoints' (JqVal $s9c '.hooks.SessionStart[0].hooks[0].command') 'bash "C:/moved/scripts/hooks/we\"ird-hook.sh"'
 
+# 9c. HIMMEL-2913: an entry wired by a PREVIOUS release carries the RAW
+# (unescaped) basename in its command -- shesc() on the basename postdates
+# HIMMEL-2905. A needle derived only from the escaped form cannot match that
+# legacy text, so a re-wire APPENDS the repaired hook beside the old malformed
+# one instead of replacing it. RED before the fix: 2 hook objects survive.
+$s9d = Join-Path $td 's9d.json'
+$legacyCmd = 'bash "C:/old/scripts/hooks/we"ird-hook.sh"'
+& jq -n --arg cmd $legacyCmd '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":$cmd}]}]}}' | Set-Content $s9d -Encoding utf8
+Set-SessionStartHook -SettingsPath $s9d -Prefix 'C:/himmel' -HookBasename 'we"ird-hook.sh' | Out-Null
+Check 'legacy raw basename: dedup replaces, not appends' (JqVal $s9d '[.hooks.SessionStart[].hooks[]] | length') '1'
+Check 'legacy raw basename: repointed to the escaped command' (JqVal $s9d '.hooks.SessionStart[0].hooks[0].command') 'bash "C:/himmel/scripts/hooks/we\"ird-hook.sh"'
+
 # 10. NEGATIVE control for 9 (load-bearing): the project-scope prefix is the
 # literal, UNEXPANDED $CLAUDE_PROJECT_DIR that Claude Code expands at hook-fire
 # time. Escaping its `$` would point every project-scope hook at a path that
