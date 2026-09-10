@@ -376,6 +376,13 @@ cmd_new() {
         exit 1
     fi
     release_token="$(printf '%s\n' "$lock_out" | sed -n 's/^release-token: //p')"
+    # HIMMEL-2910: acquire now prints the token backticked
+    # ("release-token: `<token>`"), so this extraction would otherwise embed
+    # the backticks into {{RELEASE_TOKEN}} too -- strip a matched pair.
+    # Tolerates the pre-2910 bare form too -- a no-op when there are no
+    # backticks to strip.
+    release_token="${release_token#\`}"
+    release_token="${release_token%\`}"
     if [ -z "$release_token" ]; then
         err "queue-lock acquire for $doc reported success but printed no release-token line — refusing to render a document with an empty or bogus token"
         exit 1

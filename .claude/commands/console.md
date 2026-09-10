@@ -26,7 +26,8 @@ bash scripts/handover/console/console.sh $ARGUMENTS
   on a signal file plus a deadline; prints the arm log path.
 - `--dry-run` — print what it would write, prefixed `would-`, and touch nothing.
 
-Record the printed `release-token:` line in the console's first Results bullet:
+Record the printed `release-token: ` line — now backticked around the token
+itself (HIMMEL-2910) — in the console's first Results bullet verbatim:
 releasing the lock at wrap requires it.
 
 Linux/macOS only — `--arm` launches through konsole. The Windows station arms

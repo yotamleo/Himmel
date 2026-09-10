@@ -21,7 +21,11 @@
 #
 # TOKEN CONTRACT (HIMMEL-856 CR, C1): `acquire` records a session token in
 # owner.json (the given session-id, or a generated "<hostname>-pid<pid>")
-# and PRINTS it as the last stdout line: "release-token: <token>". The
+# and PRINTS it as the last stdout line: "release-token: `<token>`" (the
+# token itself backticked -- HIMMEL-2910: a bare, unquoted token copy-pasted
+# into a handover doc followed by sentence punctuation reads as part of the
+# "secret" to gitleaks' generic-api-key rule; the backticks delimit the
+# capture so the copy-paste shape is safe by construction). The
 # caller must capture that line and pass the token to `heartbeat` and
 # `release` -- both REFUSE (rc=2, holder info printed) without it or with
 # a token that does not match the current holder. The token is mandatory
@@ -96,7 +100,7 @@
 # EXIT CODES:
 #   acquire:   0  lock acquired (fresh dir, stale takeover, or forced
 #                 takeover -- stderr says which); the last stdout line is
-#                 "release-token: <token>"
+#                 "release-token: `<token>`"
 #              1  usage error, OR a genuine environment failure (handover
 #                 root unresolvable, mkdir failed for a reason other than
 #                 "already held", owner.json could not be written -- the
@@ -195,8 +199,10 @@ Usage: queue-lock.sh acquire   <handover-path> [session-id]
        queue-lock.sh status    <handover-path>
        queue-lock.sh status --sweep [<handover-dir>]
 
-acquire prints "release-token: <token>" on success -- capture it and pass
-it to heartbeat/release (both refuse without it). Lost the token to an
+acquire prints "release-token: `<token>`" (backticked -- HIMMEL-2910) on
+success -- capture it and pass it to heartbeat/release (both refuse without
+it, and both accept the token with or without surrounding backticks). Lost
+the token to an
 autocompact? acquire also persisted it under
 <XDG_RUNTIME_DIR>/himmel-queue-lock/ (HIMMEL-2813), so a heartbeat/release
 with NO token on argv reads it back and says so on stderr. Only when THAT
@@ -256,6 +262,25 @@ _ql_hostname() {
 }
 
 _ql_default_session() { printf '%s-pid%s' "$(_ql_hostname)" "$$"; }
+
+# _ql_strip_backticks <token> -- HIMMEL-2910: acquire prints the token
+# backticked ("release-token: `<token>`") so a leg copy-pasting the line
+# into a markdown handover doc can't have gitleaks capture trailing
+# punctuation into the "secret". heartbeat/release therefore accept the
+# token exactly as printed -- backticked -- as well as the pre-2910 bare
+# form, so a caller need not hand-strip anything either way. Strips ONLY
+# when BOTH a leading and trailing backtick are present (never a single
+# stray one), so a token that itself starts or ends with a backtick -- never
+# actually produced by this script, but not to rule out for an external
+# caller -- is not silently mangled.
+_ql_strip_backticks() {
+    local t="$1"
+    if [ "${#t}" -ge 2 ] && [ "${t#\`}" != "$t" ] && [ "${t%\`}" != "$t" ]; then
+        t="${t#\`}"
+        t="${t%\`}"
+    fi
+    printf '%s' "$t"
+}
 
 # JSON escape/extract now delegate to the shared pure-bash helpers in
 # scripts/lib/handover-path.sh (_hp_json_escape / _hp_json_field, HIMMEL-882
@@ -970,7 +995,7 @@ queue_lock_acquire() {
             _ql_token_persist "$ho" "$session"
             echo "queue-lock: acquired (session=$session host=$host)"
             _ql_arms_registry_retire_fired "$ho"
-            echo "release-token: $session"
+            echo "release-token: \`$session\`"
             return 0
         elif [ ! -e "$lockdir/owner" ]; then
             # Owner create failed with NO winner branded (ENOSPC/ACL/IO --
@@ -1143,7 +1168,7 @@ queue_lock_acquire() {
             echo "queue-lock: took over ($reason) -- previous holder: session=$o_session host=$o_host" >&2
             echo "queue-lock: acquired (session=$session host=$host)"
             _ql_arms_registry_retire_fired "$ho"
-            echo "release-token: $session"
+            echo "release-token: \`$session\`"
             return 0
         fi
         # Lost the rm->mkdir gap to a fresh acquirer -- it owns the lock.
@@ -1185,11 +1210,12 @@ queue_lock_heartbeat() {
     if [ -z "$session" ]; then
         session=$(_ql_token_recall "$ho") || session=""
     fi
+    session="$(_ql_strip_backticks "$session")"
     # C1: the token is MANDATORY -- a token-less heartbeat could refresh
     # (and keep alive) another session's lock.
     if [ -z "$session" ]; then
         {
-            echo "queue-lock: heartbeat requires the session token printed by acquire (release-token: <token>)"
+            echo "queue-lock: heartbeat requires the session token printed by acquire (release-token: \`<token>\`)"
             echo "usage: queue-lock.sh heartbeat <handover-path> <session-token>"
             if [ -f "$lockdir/owner.json" ]; then
                 echo "current holder:"
@@ -1275,13 +1301,14 @@ queue_lock_release() {
     if [ -z "$session" ]; then
         session=$(_ql_token_recall "$ho") || session=""
     fi
+    session="$(_ql_strip_backticks "$session")"
     # C1: the token is MANDATORY -- a token-less release would rm another
     # session's LIVE lock (the exact incident class this script prevents).
     # Separate script invocations cannot re-derive a stable per-session id,
     # so a re-derived default would "prove" nothing.
     if [ -z "$session" ]; then
         {
-            echo "queue-lock: release requires the session token printed by acquire (release-token: <token>)"
+            echo "queue-lock: release requires the session token printed by acquire (release-token: \`<token>\`)"
             echo "usage: queue-lock.sh release <handover-path> <session-token>"
             if [ -f "$lockdir/owner.json" ]; then
                 echo "current holder:"

@@ -21,6 +21,17 @@ set -uo pipefail
 # so the status is grep's own verdict alone. (HIMMEL-1430.)
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
+# _tq_bare_token <release-token-line-value> -- HIMMEL-2910: acquire now
+# prints the token backticked ("release-token: `<token>`"); this recovers
+# the bare token from either that shape or the pre-2910 bare one, the way
+# every real consumer (console.sh, the console-kit) must.
+_tq_bare_token() {
+    local t="$1"
+    t="${t#\`}"
+    t="${t%\`}"
+    printf '%s' "$t"
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$SCRIPT_DIR/queue-lock.sh"
 # shellcheck source=../lib/py-armor.sh
@@ -76,11 +87,34 @@ if [ -f "$lockdir/owner.json" ] \
 else
     fail "T1: owner.json missing/incomplete ($(cat "$lockdir/owner.json" 2>/dev/null || echo 'MISSING'))"
 fi
-if grepq "$out" '^release-token: session-a$'; then
-    pass "T1: acquire prints the release-token line"
+# shellcheck disable=SC2016  # backticks are a literal part of the expected output, not command substitution
+if grepq "$out" '^release-token: `session-a`$'; then
+    pass "T1: acquire prints the release-token line, token backticked (HIMMEL-2910)"
 else
-    fail "T1: acquire output missing 'release-token: session-a' (got: $out)"
+    fail "T1: acquire output missing 'release-token: \`session-a\`' (got: $out)"
 fi
+
+# --- T1b-T1d (HIMMEL-2910): the backticked release-token line is a safe
+# copy-paste shape, and every reader tolerates BOTH it and the pre-2910
+# bare form.
+if [ "$(_tq_bare_token "$(printf '%s\n' "$out" | sed -n 's/^release-token: //p')")" = "session-a" ]; then
+    pass "T1b: a reader recovers the bare token from the backticked line"
+else
+    fail "T1b: bare-token recovery from the backticked line failed (out=$out)"
+fi
+if [ "$(_tq_bare_token 'release-token-old-style')" = "release-token-old-style" ]; then
+    pass "T1c: the reader is a no-op on an already-bare token (old bare line still parses)"
+else
+    fail "T1c: the reader mangled an already-bare token"
+fi
+bash "$LIB" release "$HO1" '`session-a`' >/dev/null 2>&1
+t1d_rc=$?
+if [ "$t1d_rc" -eq 0 ] && [ ! -d "$lockdir" ]; then
+    pass "T1d: release accepts the token AS PRINTED -- backticks and all -- not just the stripped bare form"
+else
+    fail "T1d: release rejected the backticked-argv token (rc=$t1d_rc)"
+fi
+bash "$LIB" acquire "$HO1" "session-a" >/dev/null 2>&1
 
 # --- T2: second acquire while FRESH -> rc 2, holder info + override hint ----
 err="$(bash "$LIB" acquire "$HO1" "session-b" 2>&1 1>/dev/null)"
@@ -691,6 +725,21 @@ else
 fi
 bash "$LIB" release "$HO24" "session-t24" >/dev/null 2>&1
 
+# --- T24b (HIMMEL-2910): the TAKEOVER path also prints the backticked line -
+# T24 only checked stderr; this checks stdout on the same stale-takeover
+# branch (queue_lock_acquire's second release-token print site).
+mkdir -p "$LOCKDIR24"
+printf '{"session":"dead-session-2","host":"old-host","handover":"%s","started":"2020-01-01T00:00:00Z","heartbeat":"2020-01-01T00:00:00Z"}\n' \
+    "$HO24" > "$LOCKDIR24/owner.json"
+t24b_out="$(bash "$LIB" acquire "$HO24" "session-t24b" 2>/dev/null)"
+# shellcheck disable=SC2016  # backticks are a literal part of the expected output, not command substitution
+if [ "$(printf '%s\n' "$t24b_out" | tail -1)" = 'release-token: `session-t24b`' ]; then
+    pass "T24b: the takeover-path acquire also prints the backticked release-token line"
+else
+    fail "T24b: takeover-path release-token line not backticked (got: $t24b_out)"
+fi
+bash "$LIB" release "$HO24" "session-t24b" >/dev/null 2>&1
+
 # --- T25: concurrent rewriters lose no record (round-2 High) ---------------
 # Two acquires on DIFFERENT handovers race the SAME arms.jsonl (one
 # registry per handover root); pre-mutex, both did read-filter-rewrite-mv
@@ -735,7 +784,8 @@ HO26="$HANDOVER_DIR/HIMMEL-856-test/next-session-26.md"
 printf '{"host":"%s","handover":"%s","fire-at":"202601010000","task-name":"HIMMEL-Resume-t26-failopen"}\n' \
     "$THIS_HOST" "$HO26" > "$ARMS_REGISTRY"
 t26_out=$(bash -c '. "$1"; mkdir -p "$2.tmp.$$"; queue_lock_acquire "$3" "sess-t26"; rc=$?; rmdir "$2.tmp.$$" 2>/dev/null; echo "RC=$rc"' _ "$LIB" "$ARMS_REGISTRY" "$HO26" 2>&1)
-if grepq "$t26_out" 'RC=0' && grepq "$t26_out" 'release-token: sess-t26'; then
+# shellcheck disable=SC2016  # backticks are a literal part of the expected output, not command substitution
+if grepq "$t26_out" 'RC=0' && grepq "$t26_out" 'release-token: `sess-t26`'; then
     pass "T26: acquire still succeeds when the registry rewrite cannot start"
 else
     fail "T26: acquire failed on a registry write failure (out=$t26_out)"
@@ -1498,6 +1548,7 @@ x_from_worktree() {
 
 x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "legN114" 2>/dev/null \
     | sed -n 's/^release-token: //p')"
+x_tok="$(_tq_bare_token "$x_tok")"
 if [ "$x_tok" = "legN114" ] && [ -f "$X_LOCKDIR/owner.json" ]; then
     pass "T46: setup -- acquire under the state root holds the lock"
 else
@@ -1544,6 +1595,7 @@ fi
 # --- T47: heartbeat resolves across roots the same way ---------------------
 x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "legN114hb" 2>/dev/null \
     | sed -n 's/^release-token: //p')"
+x_tok="$(_tq_bare_token "$x_tok")"
 out="$(x_from_worktree "$X_REG" heartbeat "$x_tok")"
 rc=$?
 if [ "$rc" -eq 0 ] && grepq "$(cat "$X_LOCKDIR/owner.json" 2>/dev/null)" '"session":"legN114hb"'; then
@@ -1573,6 +1625,7 @@ fi
 # (no `root` marker file) must still status/heartbeat/release normally.
 x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "legacy-sess" 2>/dev/null \
     | sed -n 's/^release-token: //p')"
+x_tok="$(_tq_bare_token "$x_tok")"
 rm -f "$X_LOCKDIR/root"
 HANDOVER_DIR="$X_ROOT" bash "$LIB" status "$X_DOC" >/dev/null 2>&1
 t49_status_rc=$?
@@ -1590,6 +1643,7 @@ fi
 # --- T50: acquire records the resolved root inside the lock dir ------------
 x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "root-marker" 2>/dev/null \
     | sed -n 's/^release-token: //p')"
+x_tok="$(_tq_bare_token "$x_tok")"
 if [ -f "$X_LOCKDIR/root" ] && [ "$(cat "$X_LOCKDIR/root" 2>/dev/null)" = "$X_ROOT" ]; then
     pass "T50: acquire records the resolved root in <lockdir>/root"
 else
@@ -1601,8 +1655,9 @@ fi
 # other addition must never land after it.
 HANDOVER_DIR="$X_ROOT" bash "$LIB" release "$X_DOC" "$x_tok" >/dev/null 2>&1
 out="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "last-line" 2>/dev/null)"
-if [ "$(printf '%s\n' "$out" | tail -1)" = "release-token: last-line" ]; then
-    pass "T51: 'release-token: <token>' is still the LAST stdout line of acquire"
+# shellcheck disable=SC2016  # backticks are a literal part of the expected output, not command substitution
+if [ "$(printf '%s\n' "$out" | tail -1)" = 'release-token: `last-line`' ]; then
+    pass "T51: 'release-token: \`<token>\`' is still the LAST stdout line of acquire"
 else
     fail "T51: acquire's last stdout line is not the release-token line (got: $out)"
 fi
@@ -1643,6 +1698,7 @@ printf '{"repos":{"decoy":{"path":"%s"},"state":{"path":"%s"}}}\n' \
     "$TMPDIR_ROOT/2861-decoy" "$X_STATE" > "$X_REG_COMPACT"
 x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "compact-reg" 2>/dev/null \
     | sed -n 's/^release-token: //p')"
+x_tok="$(_tq_bare_token "$x_tok")"
 out="$(x_from_worktree "$X_REG_COMPACT" release "$x_tok")"
 rc=$?
 if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ]; then
@@ -1656,6 +1712,7 @@ printf '{"repos":{"state":{"path":"%s"},"decoy":{"path":"%s"}}}\n' \
     "$X_STATE" "$TMPDIR_ROOT/2861-decoy" > "$X_REG_COMPACT"
 x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "compact-reg-2" 2>/dev/null \
     | sed -n 's/^release-token: //p')"
+x_tok="$(_tq_bare_token "$x_tok")"
 out="$(x_from_worktree "$X_REG_COMPACT" release "$x_tok")"
 rc=$?
 if [ "$rc" -eq 0 ] && [ ! -d "$X_LOCKDIR" ]; then
@@ -1670,6 +1727,7 @@ fi
 # "the lock here is not ours", not merely on "there is no lock here".
 x_tok="$(HANDOVER_DIR="$X_ROOT" bash "$LIB" acquire "$X_DOC" "mine-elsewhere" 2>/dev/null \
     | sed -n 's/^release-token: //p')"
+x_tok="$(_tq_bare_token "$x_tok")"
 # The stranger's lock is acquired by a REAL acquire from the worktree cwd,
 # not hand-placed: the slug is the doc path relativized against ITS OWN root,
 # so a hand-built path would land where the cwd root never looks and would
@@ -1743,7 +1801,8 @@ p_token_file() {
 
 # --- T56: acquire persists the token; a token-less release uses it ---------
 out="$(p_ql acquire "$P_DOC" "persist-a" 2>&1)"
-if grepq "$out" '^release-token: persist-a$' && [ -n "$(p_token_file)" ]; then
+# shellcheck disable=SC2016  # backticks are a literal part of the expected output, not command substitution
+if grepq "$out" '^release-token: `persist-a`$' && [ -n "$(p_token_file)" ]; then
     pass "T56: acquire persists the token to the per-session file"
 else
     fail "T56: no token file after acquire (out=$out)"
@@ -1888,7 +1947,8 @@ p64_written=0
 for f in "$P_XDG_BAD/himmel-queue-lock"/*; do
     [ -f "$f" ] && p64_written=1
 done
-if [ "$rc" -eq 0 ] && grepq "$out" '^release-token: bad-dir-sess$' && [ "$p64_written" -eq 0 ]; then
+# shellcheck disable=SC2016  # backticks are a literal part of the expected output, not command substitution
+if [ "$rc" -eq 0 ] && grepq "$out" '^release-token: `bad-dir-sess`$' && [ "$p64_written" -eq 0 ]; then
     pass "T64: a world-writable token dir is declined -- acquire still succeeds, no token written into it"
 else
     fail "T64: token leaked into a 0777 dir, or acquire broke (rc=$rc written=$p64_written: $out)"
@@ -1985,7 +2045,8 @@ s67_written=0
 for f in "$S_XDG/himmel-queue-lock"/*; do
     [ -f "$f" ] && s67_written=1
 done
-if [ "$rc" -eq 0 ] && grepq "$out" '^release-token: no-scope-sess$' && [ "$s67_written" -eq 0 ]; then
+# shellcheck disable=SC2016  # backticks are a literal part of the expected output, not command substitution
+if [ "$rc" -eq 0 ] && grepq "$out" '^release-token: `no-scope-sess`$' && [ "$s67_written" -eq 0 ]; then
     pass "T67: with no resolvable scope, acquire still succeeds and persists NOTHING"
 else
     fail "T67: expected a clean acquire with no token written (rc=$rc written=$s67_written: $out)"

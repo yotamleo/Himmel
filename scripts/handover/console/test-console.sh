@@ -57,7 +57,16 @@ console_root() {  # console_root <root> <args...> -- invoke console.sh with
 
 console() { console_root "$root" "$@"; }
 
-token_of() { printf '%s\n' "$1" | sed -n 's/^release-token: //p'; }
+# HIMMEL-2910: acquire prints the token backticked
+# ("release-token: `<token>`"); strip a matched pair so callers get the bare
+# token either way -- a no-op on the pre-2910 bare form.
+token_of() {
+    local t
+    t="$(printf '%s\n' "$1" | sed -n 's/^release-token: //p')"
+    t="${t#\`}"
+    t="${t%\`}"
+    printf '%s' "$t"
+}
 
 # --- 1/2/3/4: new, placeholder cleanliness, lock lifecycle, idempotent bump
 docA="$root/tester/demorepo/DEMO-nextleg-${today}A-console.md"
