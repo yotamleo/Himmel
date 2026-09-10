@@ -99,6 +99,13 @@ $s9b = Join-Path $td 's9b.json'
 Set-SessionStartHook -SettingsPath $s9b -Prefix '/opt/we"ird/clone' -HookBasename 'inject-initiative.sh' | Out-Null
 Check 'quote in prefix: SessionStart path is shell-escaped' (JqVal $s9b '.hooks.SessionStart[0].hooks[0].command') 'bash "/opt/we\"ird/clone/scripts/hooks/inject-initiative.sh"'
 
+# 9b. CodeRabbit on PR #612: the hook BASENAME goes through the same escaper.
+# It is an ARGUMENT of Set-SessionStartHook, not a hardcoded literal like the
+# trio's names, so leaving it unescaped covered only half the composer's input.
+$s9c = Join-Path $td 's9c.json'
+Set-SessionStartHook -SettingsPath $s9c -Prefix 'C:/himmel' -HookBasename 'we"ird-hook.sh' | Out-Null
+Check 'quote in basename: basename is shell-escaped' (JqVal $s9c '.hooks.SessionStart[0].hooks[0].command') 'bash "C:/himmel/scripts/hooks/we\"ird-hook.sh"'
+
 # 10. NEGATIVE control for 9 (load-bearing): the project-scope prefix is the
 # literal, UNEXPANDED $CLAUDE_PROJECT_DIR that Claude Code expands at hook-fire
 # time. Escaping its `$` would point every project-scope hook at a path that

@@ -151,6 +151,19 @@ check "quote in prefix: SessionStart path round-trips" \
   "$(bash -c "printf '%s\n' ${cmd8f2#bash }" 2>/dev/null)" \
   '/opt/we"ird/clone/scripts/hooks/inject-initiative.sh'
 
+# 8f2. CodeRabbit on PR #612: the hook BASENAME goes through the same escaper.
+# It is an ARGUMENT of wire_sessionstart_hook (and of the --sessionstart CLI),
+# not a hardcoded literal like the trio's names, so leaving it unescaped made
+# the rule cover only half its own input. Same two properties as 8f.
+s8f3="$td/s8f3.json"
+( . "$wire"; wire_sessionstart_hook "$s8f3" "C:/himmel" 'we"ird-hook.sh' 0 >/dev/null 2>&1 ) || true
+cmd8f3=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f3" 2>/dev/null)
+if bash -n -c "$cmd8f3" 2>/dev/null; then echo "ok - quote in basename: command parses as shell"
+else echo "FAIL - quote in basename: command does not parse as shell: [$cmd8f3]"; fails=$((fails+1)); fi
+check "quote in basename: path round-trips through the shell" \
+  "$(bash -c "printf '%s\n' ${cmd8f3#bash }" 2>/dev/null)" \
+  'C:/himmel/scripts/hooks/we"ird-hook.sh'
+
 # 8g. NEGATIVE control for 8f (load-bearing): the project-scope prefix is the
 # LITERAL, unexpanded `$CLAUDE_PROJECT_DIR` -- Claude Code expands it at
 # hook-fire time. Escaping it (`\$CLAUDE_PROJECT_DIR`) or single-quoting it

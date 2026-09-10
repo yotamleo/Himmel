@@ -43,6 +43,8 @@ param(
 # The ONE exemption is the project-scope prefix, the literal UNEXPANDED
 # `$CLAUDE_PROJECT_DIR` that Claude Code expands at hook-fire time -- escaping
 # its `$` would point every project-scope hook at a path that does not exist.
+# $rel, the hook BASENAME, gets no exemption: it is an ARGUMENT of the public
+# Set-SessionStartHook, not a hardcoded literal (CodeRabbit, PR #612).
 $WireHookCmdJq = @'
   def shesc($p):
     $p | split("\\") | join("\\\\")
@@ -51,7 +53,7 @@ $WireHookCmdJq = @'
        | split("`")  | join("\\`");
   def hookcmd($pfx; $rel):
     "bash \"" + (if $pfx == "$CLAUDE_PROJECT_DIR" then $pfx else shesc($pfx) end)
-    + "/scripts/hooks/" + $rel + "\"";
+    + "/scripts/hooks/" + shesc($rel) + "\"";
 '@
 
 function Read-SettingsBase {

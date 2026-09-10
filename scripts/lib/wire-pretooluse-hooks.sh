@@ -64,7 +64,13 @@ set -euo pipefail
 # so escaping its `$` (or single-quoting the whole path) would point every
 # project-scope hook at a path that does not exist. That literal is a fixed,
 # metacharacter-free string by construction, so passing it through untouched is
-# safe. Escaping-in-double-quotes rather than switching to single quotes also
+# safe. $rel — the hook BASENAME — carries no such exemption and is escaped
+# unconditionally: it is an ARGUMENT of the public wire_sessionstart_hook (and
+# of the `--sessionstart` CLI), not a hardcoded literal like the trio's names,
+# so the rule has to cover it or it is only half a rule (CodeRabbit, PR #612).
+# Every real basename is metacharacter-free, so this changes no emitted command.
+#
+# Escaping-in-double-quotes rather than switching to single quotes also
 # keeps the emitted command byte-identical for every ordinary path, so the
 # consumers that pattern-match it (unwire, detect-hook-dup, setup-wire) and
 # every already-installed settings.json are unaffected.
@@ -77,7 +83,7 @@ WIRE_HOOK_CMD_JQ='
        | split("`")  | join("\\`");
   def hookcmd($pfx; $rel):
     "bash \"" + (if $pfx == "$CLAUDE_PROJECT_DIR" then $pfx else shesc($pfx) end)
-    + "/scripts/hooks/" + $rel + "\"";
+    + "/scripts/hooks/" + shesc($rel) + "\"";
 '
 
 # The merge program, shared verbatim with the PowerShell twin
