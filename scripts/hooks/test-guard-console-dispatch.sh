@@ -64,10 +64,14 @@ payload() {
         '{tool_name:"Agent",session_id:"sess-test",transcript_path:$tp,tool_input:{subagent_type:$st,description:$d,prompt:$p}}'
 }
 
+# HIMMEL-2916: feed stdin via redirection, never a pipe — a fail-open exit
+# (e.g. `command -v jq || exit 0`) can close the read end before the writer
+# finishes, turning the writer's EPIPE into the pipeline's rc under pipefail.
 run_hook() {
     local name="$1" json="$2"; shift 2
-    printf '%s' "$json" | env "$@" "$BASH_ABS" "$HOOK" \
-        >"$TMP/out-$name" 2>"$TMP/err-$name"
+    printf '%s' "$json" >"$TMP/in-$name"
+    env "$@" "$BASH_ABS" "$HOOK" \
+        <"$TMP/in-$name" >"$TMP/out-$name" 2>"$TMP/err-$name"
     echo "$?"
 }
 
@@ -239,10 +243,12 @@ assert_rc "non-Agent tool_name allowed" 0 "$RC10"
 RC11=$(run_hook missing-transcript "$(payload general-purpose 'ship it' "$SHIP_FLOW_PROMPT" "$MISSING_TRANSCRIPT")")
 assert_rc "missing/unreadable transcript + no env marker + full ship-flow prompt fails open" 0 "$RC11"
 
-RC12=$(printf '%s' 'not json at all' | env HIMMEL_SESSION_ROLE=console "$BASH_ABS" "$HOOK" >"$TMP/out-malformed" 2>"$TMP/err-malformed"; echo $?)
+printf '%s' 'not json at all' >"$TMP/in-malformed"
+RC12=$(env HIMMEL_SESSION_ROLE=console "$BASH_ABS" "$HOOK" <"$TMP/in-malformed" >"$TMP/out-malformed" 2>"$TMP/err-malformed"; echo $?)
 assert_rc "malformed JSON on stdin allows" 0 "$RC12"
 
-RC13=$(printf '' | env HIMMEL_SESSION_ROLE=console "$BASH_ABS" "$HOOK" >"$TMP/out-empty" 2>"$TMP/err-empty"; echo $?)
+: >"$TMP/in-empty"
+RC13=$(env HIMMEL_SESSION_ROLE=console "$BASH_ABS" "$HOOK" <"$TMP/in-empty" >"$TMP/out-empty" 2>"$TMP/err-empty"; echo $?)
 assert_rc "empty stdin allows" 0 "$RC13"
 
 STUB_NOJQ_DIR="$TMP/stub-no-jq"
@@ -251,8 +257,27 @@ STUB_PATH_NO_JQ=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r _d; do
     [ -n "$_d" ] || continue
     [ -x "$_d/jq" ] || [ -x "$_d/jq.exe" ] || printf '%s\n' "$_d"
 done | tr '\n' ':')
-RC14=$(printf '%s' "$(payload general-purpose 'ship it' "$SHIP_FLOW_PROMPT")" | env HIMMEL_SESSION_ROLE=console PATH="$STUB_PATH_NO_JQ" "$BASH_ABS" "$HOOK" >"$TMP/out-nojq" 2>"$TMP/err-nojq"; echo $?)
+printf '%s' "$(payload general-purpose 'ship it' "$SHIP_FLOW_PROMPT")" >"$TMP/in-nojq"
+RC14=$(env HIMMEL_SESSION_ROLE=console PATH="$STUB_PATH_NO_JQ" "$BASH_ABS" "$HOOK" <"$TMP/in-nojq" >"$TMP/out-nojq" 2>"$TMP/err-nojq"; echo $?)
 assert_rc "jq absent allows (fail-open)" 0 "$RC14"
+
+# HIMMEL-2916 regression control: an early-exit reader fed via a pipe can
+# inherit the writer's non-zero rc under pipefail; fed via redirect it cannot.
+STUB_EARLY_EXIT="$TMP/stub-early-exit.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$STUB_EARLY_EXIT"
+chmod +x "$STUB_EARLY_EXIT"
+BIG_PAYLOAD=$(printf 'x%.0s' {1..70000})
+RC_PIPE_SHAPE=$(printf '%s' "$BIG_PAYLOAD" | "$BASH_ABS" "$STUB_EARLY_EXIT" >/dev/null 2>&1; echo $?)
+if [ "$RC_PIPE_SHAPE" != 0 ]; then
+    echo "ok   RED: pipe shape into an early-exit reader does not reliably return 0 (rc=$RC_PIPE_SHAPE)"
+    pass=$((pass + 1))
+else
+    echo "FAIL RED: pipe shape unexpectedly returned rc=0 — payload too small to trip EPIPE on this runner"
+    fail=$((fail + 1))
+fi
+printf '%s' "$BIG_PAYLOAD" >"$TMP/in-early-exit"
+RC_REDIRECT_SHAPE=$("$BASH_ABS" "$STUB_EARLY_EXIT" <"$TMP/in-early-exit" >/dev/null 2>&1; echo $?)
+assert_rc "GREEN: redirect shape into an early-exit reader returns the reader's own rc" 0 "$RC_REDIRECT_SHAPE"
 
 echo "=== Overrides ==="
 
