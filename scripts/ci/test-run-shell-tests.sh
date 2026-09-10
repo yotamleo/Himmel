@@ -336,6 +336,10 @@ fi
 echo "== Case 8: find discovery error -> non-zero exit =="
 sb8=$(mktemp -d "${TMPDIR:-/tmp}/rst-case8.XXXXXX") || { fail "8: mktemp failed"; sb8=""; }
 fakebin=$(mktemp -d "${TMPDIR:-/tmp}/rst-case8-fakebin.XXXXXX") || { fail "8: mktemp failed (fake find fixture)"; fakebin=""; }
+# A lone successful allocation is cleaned up here rather than leaked when its
+# paired mktemp fails and the combined guard below skips the case body.
+[ -n "$sb8" ] && [ -z "$fakebin" ] && { rm -rf "$sb8"; sb8=""; }
+[ -z "$sb8" ] && [ -n "$fakebin" ] && { rm -rf "$fakebin"; fakebin=""; }
 if [ -n "$sb8" ] && [ -n "$fakebin" ]; then
 cat > "$sb8/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
@@ -368,6 +372,8 @@ fi
 echo "== Case 9: sort discovery error -> non-zero exit =="
 sb9=$(mktemp -d "${TMPDIR:-/tmp}/rst-case9.XXXXXX") || { fail "9: mktemp failed"; sb9=""; }
 fakebin9=$(mktemp -d "${TMPDIR:-/tmp}/rst-case9-fakebin.XXXXXX") || { fail "9: mktemp failed (fake sort fixture)"; fakebin9=""; }
+[ -n "$sb9" ] && [ -z "$fakebin9" ] && { rm -rf "$sb9"; sb9=""; }
+[ -z "$sb9" ] && [ -n "$fakebin9" ] && { rm -rf "$fakebin9"; fakebin9=""; }
 if [ -n "$sb9" ] && [ -n "$fakebin9" ]; then
 cat > "$sb9/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
