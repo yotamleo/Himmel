@@ -52,6 +52,10 @@
 # Usage: bash scripts/ci/test-run-shell-tests.sh
 #
 # Exit codes: 0 — all cases passed; 1 — at least one failed.
+#
+# HIMMEL-2915: every sandbox `mktemp -d` below is templated and checked —
+# a failed allocation leaves the variable empty, is reported via `fail`, and
+# the case body it would have populated is skipped instead of writing at "/".
 set -uo pipefail
 
 # shellcheck source=run-shell-tests-fixture.sh
@@ -67,7 +71,8 @@ set -uo pipefail
 # Case 1 — only test-pass.sh → exit 0
 # --------------------------------------------------------------------------
 echo "== Case 1: all-pass sandbox =="
-sb1=$(mktemp -d)
+sb1=$(mktemp -d "${TMPDIR:-/tmp}/rst-case1.XXXXXX") || { fail "1: mktemp failed"; sb1=""; }
+if [ -n "$sb1" ]; then
 mkdir -p "$sb1"
 cat > "$sb1/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
@@ -84,12 +89,14 @@ else
   fail "all-pass sandbox -> expected exit 0 got $rc1; output: $out1"
 fi
 rm -rf "$sb1"
+fi
 
 # --------------------------------------------------------------------------
 # Case 2 — test-fail.sh present → exit 1
 # --------------------------------------------------------------------------
 echo "== Case 2: failing suite present =="
-sb2=$(mktemp -d)
+sb2=$(mktemp -d "${TMPDIR:-/tmp}/rst-case2.XXXXXX") || { fail "2: mktemp failed"; sb2=""; }
+if [ -n "$sb2" ]; then
 cat > "$sb2/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
@@ -108,6 +115,7 @@ else
   fail "failing suite -> expected exit 1 got $rc2; output: $out2"
 fi
 rm -rf "$sb2"
+fi
 
 # --------------------------------------------------------------------------
 # Case 3 — --skip-extra test-skipme.sh → [SKIP], sentinel absent, exit 0
@@ -115,7 +123,8 @@ rm -rf "$sb2"
 echo "== Case 3: --skip-extra suppresses skipme, exit 0 =="
 # A dedicated sandbox with only test-pass.sh + test-skipme.sh — no test-fail.sh,
 # so the only way to exit non-zero is if the skip is NOT honoured.
-sb3=$(mktemp -d)
+sb3=$(mktemp -d "${TMPDIR:-/tmp}/rst-case3.XXXXXX") || { fail "3: mktemp failed"; sb3=""; }
+if [ -n "$sb3" ]; then
 cat > "$sb3/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
@@ -152,12 +161,14 @@ else
 fi
 
 rm -rf "$sb3"
+fi
 
 # --------------------------------------------------------------------------
 # Case 4 — --list <sandbox> → list-only, no execution, exit 0
 # --------------------------------------------------------------------------
 echo "== Case 4: --list <sandbox> lists only, no execution =="
-sb4=$(mktemp -d)
+sb4=$(mktemp -d "${TMPDIR:-/tmp}/rst-case4.XXXXXX") || { fail "4: mktemp failed"; sb4=""; }
+if [ -n "$sb4" ]; then
 cat > "$sb4/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
@@ -216,6 +227,7 @@ else
 fi
 
 rm -rf "$sb4"
+fi
 
 # --------------------------------------------------------------------------
 # Case 6 — trailing-slash scan-root: --skip-extra still matches (not un-skipped)
@@ -223,7 +235,8 @@ rm -rf "$sb4"
 # breaks the relpath strip, causing every SKIP entry to be missed.
 # --------------------------------------------------------------------------
 echo "== Case 6: trailing-slash scan-root does not un-skip --skip-extra entries =="
-sb6=$(mktemp -d)
+sb6=$(mktemp -d "${TMPDIR:-/tmp}/rst-case6.XXXXXX") || { fail "6: mktemp failed"; sb6=""; }
+if [ -n "$sb6" ]; then
 cat > "$sb6/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
@@ -260,6 +273,7 @@ else
 fi
 
 rm -rf "$sb6"
+fi
 
 # --------------------------------------------------------------------------
 # Case 7 — zero discovered suites must FAIL, not silently green (HIMMEL-1128).
@@ -279,13 +293,15 @@ else
 fi
 
 # 7b — empty scan root (exists, but contains no test-*.sh).
-sb7=$(mktemp -d)
+sb7=$(mktemp -d "${TMPDIR:-/tmp}/rst-case7.XXXXXX") || { fail "7: mktemp failed"; sb7=""; }
+if [ -n "$sb7" ]; then
 out7b=$(bash "$RUNNER" "$sb7" 2>&1)
 rc7b=$?
 if [ "$rc7b" -ne 0 ]; then
   pass "empty scan root -> non-zero exit ($rc7b)"
 else
   fail "empty scan root -> expected non-zero got 0; output: $out7b"
+fi
 fi
 
 # 7c — --list of a zero-discovered root must ALSO fail (the discovered==0 guard
@@ -299,6 +315,7 @@ else
   fail "--list non-existent scan root -> expected non-zero got 0; output: $out7c"
 fi
 
+if [ -n "$sb7" ]; then
 out7d=$(bash "$RUNNER" --list "$sb7" 2>&1)
 rc7d=$?
 if [ "$rc7d" -ne 0 ]; then
@@ -307,6 +324,7 @@ else
   fail "--list empty scan root -> expected non-zero got 0; output: $out7d"
 fi
 rm -rf "$sb7"
+fi
 
 # --------------------------------------------------------------------------
 # Case 8 — discovery error masked by a partial result (HIMMEL-1128, codex-adv).
@@ -316,14 +334,15 @@ rm -rf "$sb7"
 # when discovery itself errored, even though a suite ran.
 # --------------------------------------------------------------------------
 echo "== Case 8: find discovery error -> non-zero exit =="
-sb8=$(mktemp -d)
+sb8=$(mktemp -d "${TMPDIR:-/tmp}/rst-case8.XXXXXX") || { fail "8: mktemp failed"; sb8=""; }
+fakebin=$(mktemp -d "${TMPDIR:-/tmp}/rst-case8-fakebin.XXXXXX") || { fail "8: mktemp failed (fake find fixture)"; fakebin=""; }
+if [ -n "$sb8" ] && [ -n "$fakebin" ]; then
 cat > "$sb8/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
 SHEOF
 chmod +x "$sb8/test-pass.sh"
 # Fake `find` on PATH: prints one real suite path, then exits non-zero.
-fakebin=$(mktemp -d)
 cat > "$fakebin/find" <<SHEOF
 #!/usr/bin/env bash
 printf '%s\n' "$sb8/test-pass.sh"
@@ -339,6 +358,7 @@ else
   fail "find discovery error -> expected non-zero got 0; output: $out8"
 fi
 rm -rf "$sb8" "$fakebin"
+fi
 
 # --------------------------------------------------------------------------
 # Case 9 — sort discovery-stage error masked by a partial result (HIMMEL-1128,
@@ -346,14 +366,15 @@ rm -rf "$sb8" "$fakebin"
 # emits one suite and THEN exits non-zero must fail the runner, not green.
 # --------------------------------------------------------------------------
 echo "== Case 9: sort discovery error -> non-zero exit =="
-sb9=$(mktemp -d)
+sb9=$(mktemp -d "${TMPDIR:-/tmp}/rst-case9.XXXXXX") || { fail "9: mktemp failed"; sb9=""; }
+fakebin9=$(mktemp -d "${TMPDIR:-/tmp}/rst-case9-fakebin.XXXXXX") || { fail "9: mktemp failed (fake sort fixture)"; fakebin9=""; }
+if [ -n "$sb9" ] && [ -n "$fakebin9" ]; then
 cat > "$sb9/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
 SHEOF
 chmod +x "$sb9/test-pass.sh"
 # Fake `sort` on PATH: prints one real suite path, then exits non-zero.
-fakebin9=$(mktemp -d)
 cat > "$fakebin9/sort" <<SHEOF
 #!/usr/bin/env bash
 printf '%s\n' "$sb9/test-pass.sh"
@@ -369,6 +390,7 @@ else
   fail "sort discovery error -> expected non-zero got 0; output: $out9"
 fi
 rm -rf "$sb9" "$fakebin9"
+fi
 
 # --------------------------------------------------------------------------
 # Case 10 — all-skipped EXECUTION root must fail (ran==0), but --list of the
@@ -377,7 +399,8 @@ rm -rf "$sb9" "$fakebin9"
 # run>0, while --list legitimately prints the skip plan and exits 0.
 # --------------------------------------------------------------------------
 echo "== Case 10: all-skipped root -> execution fails, --list succeeds =="
-sb10=$(mktemp -d)
+sb10=$(mktemp -d "${TMPDIR:-/tmp}/rst-case10.XXXXXX") || { fail "10: mktemp failed"; sb10=""; }
+if [ -n "$sb10" ]; then
 cat > "$sb10/test-skipme.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
@@ -400,6 +423,7 @@ else
   fail "--list all-skipped root -> expected exit 0 got $rc10b; output: $out10b"
 fi
 rm -rf "$sb10"
+fi
 
 # --------------------------------------------------------------------------
 # Case 11 — known slow suites get path-specific budgets unless the operator
@@ -415,7 +439,8 @@ rm -rf "$sb10"
 # inheritance hole Case 14a closes.
 # --------------------------------------------------------------------------
 echo "== Case 11: known slow suite budget and explicit override =="
-sb11=$(mktemp -d -t himmel-suite-budget.XXXXXX)
+sb11=$(mktemp -d -t himmel-suite-budget.XXXXXX) || { fail "11: mktemp failed"; sb11=""; }
+if [ -n "$sb11" ]; then
 mkdir -p "$sb11/scripts/handover" "$sb11/bin"
 cat > "$sb11/scripts/handover/test-arm-resume-identity.sh" <<'SHEOF'
 #!/usr/bin/env bash
@@ -462,6 +487,7 @@ for bad in '' '0' 'abc'; do
   fi
 done
 rm -rf "$sb11"
+fi
 
 # --------------------------------------------------------------------------
 # Case 12 — conditional-suite filter (HIMMEL-1589).
@@ -509,7 +535,8 @@ SHEOF
 # and an empty untracked set, so the runner's changed_set is deterministic
 # regardless of the real worktree's dirty state. Exits 0 for both so the
 # runner's fail-open `&&` chain resolves to "filter active".
-fakebin12=$(mktemp -d)
+fakebin12=$(mktemp -d "${TMPDIR:-/tmp}/rst-case12-fakebin.XXXXXX") || { fail "12: mktemp failed (fake git fixture)"; fakebin12=""; }
+if [ -n "$fakebin12" ]; then
 cat > "$fakebin12/git" <<'SHEOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -538,7 +565,9 @@ SHEOF
 chmod +x "$fakebin12/git"
 
 # 12a — flag absent: conditional suite RUNS (filter is inert without the flag).
-sb12a=$(mktemp -d); mk_cond_sandbox "$sb12a"
+sb12a=$(mktemp -d "${TMPDIR:-/tmp}/rst-case12a.XXXXXX") || { fail "12a: mktemp failed"; sb12a=""; }
+if [ -n "$sb12a" ]; then
+mk_cond_sandbox "$sb12a"
 sentinel12a="$sb12a/scripts/prop-ran.sentinel"
 out12a=$(bash "$RUNNER" "$sb12a/scripts" 2>&1); rc12a=$?
 if [ "$rc12a" -eq 0 ] && [ -f "$sentinel12a" ]; then
@@ -547,9 +576,12 @@ else
   fail "12a: flag absent expected run (rc=0, sentinel); rc=$rc12a sentinel=$([ -f "$sentinel12a" ] && echo yes || echo no); out: $out12a"
 fi
 rm -rf "$sb12a"
+fi
 
 # 12b — flag + matching change (a propagation path): conditional suite RUNS.
-sb12b=$(mktemp -d); mk_cond_sandbox "$sb12b"
+sb12b=$(mktemp -d "${TMPDIR:-/tmp}/rst-case12b.XXXXXX") || { fail "12b: mktemp failed"; sb12b=""; }
+if [ -n "$sb12b" ]; then
+mk_cond_sandbox "$sb12b"
 sentinel12b="$sb12b/scripts/prop-ran.sentinel"
 diff12b="$sb12b/diff.txt"; printf 'scripts/propagate-public.sh\n' > "$diff12b"
 out12b=$(GIT_FAKE_DIFF="$diff12b" PATH="$fakebin12:$PATH" bash "$RUNNER" "$sb12b/scripts" --changed-since HEAD 2>&1); rc12b=$?
@@ -559,10 +591,13 @@ else
   fail "12b: expected run on matching change; rc=$rc12b sentinel=$([ -f "$sentinel12b" ] && echo yes || echo no); out: $out12b"
 fi
 rm -rf "$sb12b"
+fi
 
 # 12c — flag + NO matching change: conditional suite SKIPped with the reason.
 # A real path that does NOT match the propagation ERE.
-sb12c=$(mktemp -d); mk_cond_sandbox "$sb12c"
+sb12c=$(mktemp -d "${TMPDIR:-/tmp}/rst-case12c.XXXXXX") || { fail "12c: mktemp failed"; sb12c=""; }
+if [ -n "$sb12c" ]; then
+mk_cond_sandbox "$sb12c"
 sentinel12c="$sb12c/scripts/prop-ran.sentinel"
 diff12c="$sb12c/diff.txt"; printf 'scripts/ci/run-shell-tests.sh\n' > "$diff12c"
 out12c=$(GIT_FAKE_DIFF="$diff12c" PATH="$fakebin12:$PATH" bash "$RUNNER" "$sb12c/scripts" --changed-since HEAD 2>&1); rc12c=$?
@@ -582,9 +617,12 @@ else
   fail "12c: scripts/nested/test-propagate-public.sh was withheld by the conditional entry; out: $out12c"
 fi
 rm -rf "$sb12c"
+fi
 
 # 12d — bad ref: fail-open (REAL git, no fake). NOTE printed, every suite runs.
-sb12d=$(mktemp -d); mk_cond_sandbox "$sb12d"
+sb12d=$(mktemp -d "${TMPDIR:-/tmp}/rst-case12d.XXXXXX") || { fail "12d: mktemp failed"; sb12d=""; }
+if [ -n "$sb12d" ]; then
+mk_cond_sandbox "$sb12d"
 sentinel12d="$sb12d/scripts/prop-ran.sentinel"
 out12d=$(bash "$RUNNER" "$sb12d/scripts" --changed-since definitely-not-a-ref-xyz-1589 2>&1); rc12d=$?
 if [ "$rc12d" -eq 0 ] && [ -f "$sentinel12d" ] && grepq "$out12d" "running every suite"; then
@@ -593,6 +631,7 @@ else
   fail "12d: expected fail-open run-all; rc=$rc12d sentinel=$([ -f "$sentinel12d" ] && echo yes || echo no); out: $out12d"
 fi
 rm -rf "$sb12d"
+fi
 
 # 12e — option-shaped value (--changed-since --exit-code): MUST fail-open, never
 # silently skip. A raw --changed-since value interpolated into `git diff` is
@@ -604,7 +643,9 @@ rm -rf "$sb12d"
 # (an option is not a commit) so the FIXED runner fails-open, while `diff` with
 # no GIT_FAKE_DIFF returns empty+success, the exact state that fooled the
 # UNFIXED runner. No GIT_FAKE_DIFF is set on purpose.
-sb12e=$(mktemp -d); mk_cond_sandbox "$sb12e"
+sb12e=$(mktemp -d "${TMPDIR:-/tmp}/rst-case12e.XXXXXX") || { fail "12e: mktemp failed"; sb12e=""; }
+if [ -n "$sb12e" ]; then
+mk_cond_sandbox "$sb12e"
 sentinel12e="$sb12e/scripts/prop-ran.sentinel"
 out12e=$(PATH="$fakebin12:$PATH" bash "$RUNNER" "$sb12e/scripts" --changed-since --exit-code 2>&1); rc12e=$?
 if [ "$rc12e" -eq 0 ] && [ -f "$sentinel12e" ] && grepq "$out12e" "running every suite"; then
@@ -613,8 +654,10 @@ else
   fail "12e: expected fail-open run-all for option-shaped value; rc=$rc12e sentinel=$([ -f "$sentinel12e" ] && echo yes || echo no); out: $out12e"
 fi
 rm -rf "$sb12e"
+fi
 
 rm -rf "$fakebin12"
+fi
 
 # --------------------------------------------------------------------------
 # Case 13 — capability-conditional suites / SUITE_REQUIRE_TOOL (HIMMEL-1792).
@@ -646,7 +689,9 @@ SHEOF
 }
 
 # 13a — the real table entry; both branches must stay loud and attributed.
-sb13a=$(mktemp -d); mk_cap_sandbox "$sb13a"
+sb13a=$(mktemp -d "${TMPDIR:-/tmp}/rst-case13a.XXXXXX") || { fail "13a: mktemp failed"; sb13a=""; }
+if [ -n "$sb13a" ]; then
+mk_cap_sandbox "$sb13a"
 sentinel13a="$sb13a/scripts/cap-ran.sentinel"
 out13a=$(bash "$RUNNER" "$sb13a/scripts" 2>&1); rc13a=$?
 if command -v pwsh >/dev/null 2>&1; then
@@ -663,10 +708,13 @@ else
   fi
 fi
 rm -rf "$sb13a"
+fi
 
 # 13b — deterministic skip branch: a tool that cannot exist, injected via the
 # env override the runner exposes for exactly this.
-sb13b=$(mktemp -d); mk_cap_sandbox "$sb13b"
+sb13b=$(mktemp -d "${TMPDIR:-/tmp}/rst-case13b.XXXXXX") || { fail "13b: mktemp failed"; sb13b=""; }
+if [ -n "$sb13b" ]; then
+mk_cap_sandbox "$sb13b"
 sentinel13b="$sb13b/scripts/cap-ran.sentinel"
 out13b=$(SUITE_REQUIRE_TOOL="test-claude-openrouter-pwsh.sh  himmel-no-such-tool-1792  # deterministic absent-tool stub" \
   bash "$RUNNER" "$sb13b/scripts" 2>&1); rc13b=$?
@@ -685,6 +733,7 @@ else
   fail "13c: --list expected a capability [SKIP] plan line; rc=$rc13c out: $out13c"
 fi
 rm -rf "$sb13b"
+fi
 
 # --------------------------------------------------------------------------
 # Case 14 — tier suites / SUITE_TIER + SUITE_TIER_MODE (HIMMEL-2120).
@@ -717,7 +766,9 @@ TIER_FIXTURE='test-tier-extended.sh  extended  # fixture: HIMMEL-2120 tier test'
 # (same idiom as Case 11's SUITE_TIMEOUT isolation) so a SUITE_TIER_MODE
 # inherited from the launching shell (e.g. a run under SUITE_TIER_MODE=fast)
 # can't masquerade as "unset" and break this case.
-sb14a=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14a.XXXXXX"); mk_tier_sandbox "$sb14a"
+sb14a=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14a.XXXXXX") || { fail "14a: mktemp failed"; sb14a=""; }
+if [ -n "$sb14a" ]; then
+mk_tier_sandbox "$sb14a"
 out14a=$(SUITE_TIER="$TIER_FIXTURE" env -u SUITE_TIER_MODE bash "$RUNNER" "$sb14a" 2>&1); rc14a=$?
 if [ "$rc14a" -eq 0 ] && [ -f "$sb14a/pass-ran.sentinel" ] && [ -f "$sb14a/tier-ran.sentinel" ]; then
   pass "14a: mode unset -> extended-listed suite runs (filter inert)"
@@ -725,9 +776,12 @@ else
   fail "14a: expected both suites to run; rc=$rc14a out: $out14a"
 fi
 rm -rf "$sb14a"
+fi
 
 # 14b — mode=all: same as unset, both run.
-sb14b=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14b.XXXXXX"); mk_tier_sandbox "$sb14b"
+sb14b=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14b.XXXXXX") || { fail "14b: mktemp failed"; sb14b=""; }
+if [ -n "$sb14b" ]; then
+mk_tier_sandbox "$sb14b"
 out14b=$(SUITE_TIER="$TIER_FIXTURE" SUITE_TIER_MODE=all bash "$RUNNER" "$sb14b" 2>&1); rc14b=$?
 if [ "$rc14b" -eq 0 ] && [ -f "$sb14b/pass-ran.sentinel" ] && [ -f "$sb14b/tier-ran.sentinel" ]; then
   pass "14b: mode=all -> extended-listed suite runs"
@@ -735,10 +789,13 @@ else
   fail "14b: expected both suites to run; rc=$rc14b out: $out14b"
 fi
 rm -rf "$sb14b"
+fi
 
 # 14c — mode=fast: extended-listed suite SKIPped loudly; the unlisted suite
 # still runs (also covers "unlisted suite runs in fast" from the brief).
-sb14c=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14c.XXXXXX"); mk_tier_sandbox "$sb14c"
+sb14c=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14c.XXXXXX") || { fail "14c: mktemp failed"; sb14c=""; }
+if [ -n "$sb14c" ]; then
+mk_tier_sandbox "$sb14c"
 out14c=$(SUITE_TIER="$TIER_FIXTURE" SUITE_TIER_MODE=fast bash "$RUNNER" "$sb14c" 2>&1); rc14c=$?
 if [ "$rc14c" -eq 0 ] && [ -f "$sb14c/pass-ran.sentinel" ] && [ ! -f "$sb14c/tier-ran.sentinel" ] \
    && grepq "$out14c" "tier: extended (SUITE_TIER_MODE=fast)"; then
@@ -747,10 +804,13 @@ else
   fail "14c: expected loud tier skip + unlisted run; rc=$rc14c pass-ran=$([ -f "$sb14c/pass-ran.sentinel" ] && echo yes || echo no) tier-ran=$([ -f "$sb14c/tier-ran.sentinel" ] && echo yes || echo no); out: $out14c"
 fi
 rm -rf "$sb14c"
+fi
 
 # 14d — mode=extended: runs ONLY the extended-listed suite; the unlisted
 # suite is SKIPped.
-sb14d=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14d.XXXXXX"); mk_tier_sandbox "$sb14d"
+sb14d=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14d.XXXXXX") || { fail "14d: mktemp failed"; sb14d=""; }
+if [ -n "$sb14d" ]; then
+mk_tier_sandbox "$sb14d"
 out14d=$(SUITE_TIER="$TIER_FIXTURE" SUITE_TIER_MODE=extended bash "$RUNNER" "$sb14d" 2>&1); rc14d=$?
 if [ "$rc14d" -eq 0 ] && [ ! -f "$sb14d/pass-ran.sentinel" ] && [ -f "$sb14d/tier-ran.sentinel" ] \
    && grepq "$out14d" "tier: not extended-listed"; then
@@ -759,9 +819,12 @@ else
   fail "14d: expected extended-only run; rc=$rc14d pass-ran=$([ -f "$sb14d/pass-ran.sentinel" ] && echo yes || echo no) tier-ran=$([ -f "$sb14d/tier-ran.sentinel" ] && echo yes || echo no); out: $out14d"
 fi
 rm -rf "$sb14d"
+fi
 
 # 14e — invalid SUITE_TIER_MODE: loud error, exit 2.
-sb14e=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14e.XXXXXX"); mk_tier_sandbox "$sb14e"
+sb14e=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14e.XXXXXX") || { fail "14e: mktemp failed"; sb14e=""; }
+if [ -n "$sb14e" ]; then
+mk_tier_sandbox "$sb14e"
 out14e=$(SUITE_TIER_MODE=bogus bash "$RUNNER" "$sb14e" 2>&1); rc14e=$?
 if [ "$rc14e" -eq 2 ] && grepq "$out14e" "SUITE_TIER_MODE"; then
   pass "14e: invalid SUITE_TIER_MODE -> exit 2 with a loud error"
@@ -769,13 +832,16 @@ else
   fail "14e: expected exit 2 + error mentioning SUITE_TIER_MODE; rc=$rc14e out: $out14e"
 fi
 rm -rf "$sb14e"
+fi
 
 # 14f — composition (r2 F12): a suite both extended-listed AND SKIP_LISTed
 # never runs, even in mode=all where the tier table alone (with no mode
 # narrowing anything) would otherwise let it run — isolates that SKIP_LIST
 # wins independent of SUITE_TIER_MODE. The sandbox's unlisted test-pass.sh
 # still runs under mode=all, so ran>0 and rc stays 0.
-sb14f=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14f.XXXXXX"); mk_tier_sandbox "$sb14f"
+sb14f=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14f.XXXXXX") || { fail "14f: mktemp failed"; sb14f=""; }
+if [ -n "$sb14f" ]; then
+mk_tier_sandbox "$sb14f"
 out14f=$(SUITE_TIER="$TIER_FIXTURE" SUITE_TIER_MODE=all \
   bash "$RUNNER" "$sb14f" --skip-extra test-tier-extended.sh 2>&1); rc14f=$?
 if [ "$rc14f" -eq 0 ] && [ -f "$sb14f/pass-ran.sentinel" ] && [ ! -f "$sb14f/tier-ran.sentinel" ] \
@@ -785,6 +851,7 @@ else
   fail "14f: expected SKIP_LIST to win over tier; rc=$rc14f tier-ran=$([ -f "$sb14f/tier-ran.sentinel" ] && echo yes || echo no); out: $out14f"
 fi
 rm -rf "$sb14f"
+fi
 
 # 14g — composition (r2 F12): an extended-listed suite whose required tool is
 # absent still loud-skips ON THE TOOL in extended mode — proves tier is
@@ -793,7 +860,9 @@ rm -rf "$sb14f"
 # extended-listed, tool-satisfied suite keeps ran>0 in mode=extended (where
 # the sandbox's unlisted test-pass.sh is itself tier-skipped), so a passing
 # run here is evidence of the composition, not an all-skipped sandbox.
-sb14g=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14g.XXXXXX"); mk_tier_sandbox "$sb14g"
+sb14g=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14g.XXXXXX") || { fail "14g: mktemp failed"; sb14g=""; }
+if [ -n "$sb14g" ]; then
+mk_tier_sandbox "$sb14g"
 cat > "$sb14g/test-tier-extended-ok.sh" <<'SHEOF'
 #!/usr/bin/env bash
 touch "$(dirname "$0")/tier-ok-ran.sentinel"
@@ -812,6 +881,7 @@ else
   fail "14g: expected a capability skip for the extended-listed suite; rc=$rc14g tier-ran=$([ -f "$sb14g/tier-ran.sentinel" ] && echo yes || echo no); out: $out14g"
 fi
 rm -rf "$sb14g"
+fi
 
 # 14h — subtree scan (r2 codex-1): the production SUITE_TIER table lists
 # repo-root-relative paths ("scripts/handover/..."), but a subtree scan (e.g.
@@ -822,7 +892,8 @@ rm -rf "$sb14g"
 # skipping them) and fail OPEN to the fast tier. Reproduce that shape with a
 # fixture: the suite lives under a subdirectory, the table lists it with that
 # subdirectory prefix, and the scan root IS the subdirectory.
-sb14h=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14h.XXXXXX")
+sb14h=$(mktemp -d "${TMPDIR:-/tmp}/himmel-tier-14h.XXXXXX") || { fail "14h: mktemp failed"; sb14h=""; }
+if [ -n "$sb14h" ]; then
 mkdir -p "$sb14h/sub"; mk_tier_sandbox "$sb14h/sub"
 tier14h='sub/test-tier-extended.sh  extended  # fixture: HIMMEL-2120 subtree-scan tier test'
 out14h=$(SUITE_TIER="$tier14h" SUITE_TIER_MODE=fast bash "$RUNNER" "$sb14h/sub" 2>&1); rc14h=$?
@@ -833,6 +904,7 @@ else
   fail "14h: expected subtree-scan tier classification to hold; rc=$rc14h pass-ran=$([ -f "$sb14h/sub/pass-ran.sentinel" ] && echo yes || echo no) tier-ran=$([ -f "$sb14h/sub/tier-ran.sentinel" ] && echo yes || echo no); out: $out14h"
 fi
 rm -rf "$sb14h"
+fi
 
 # --------------------------------------------------------------------------
 # Case 15 — docs-only fast lane (HIMMEL-2166).
@@ -864,7 +936,8 @@ SHEOF
   chmod +x "$1/test-pass.sh" "$1/test-pass2.sh"
 }
 
-fakebin15=$(mktemp -d)
+fakebin15=$(mktemp -d "${TMPDIR:-/tmp}/rst-case15-fakebin.XXXXXX") || { fail "15: mktemp failed (fake git fixture)"; fakebin15=""; }
+if [ -n "$fakebin15" ]; then
 cat > "$fakebin15/git" <<'SHEOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -888,7 +961,9 @@ SHEOF
 chmod +x "$fakebin15/git"
 
 # 15a — docs-only diff: BOTH suites [SKIP]ped, exit 0, ran=0 reported as a pass.
-sb15a=$(mktemp -d); mk_docs_sandbox "$sb15a"
+sb15a=$(mktemp -d "${TMPDIR:-/tmp}/rst-case15a.XXXXXX") || { fail "15a: mktemp failed"; sb15a=""; }
+if [ -n "$sb15a" ]; then
+mk_docs_sandbox "$sb15a"
 diff15a="$sb15a/diff.txt"; printf 'docs/foo.md\nREADME.md\n' > "$diff15a"
 out15a=$(GIT_FAKE_DIFF="$diff15a" PATH="$fakebin15:$PATH" bash "$RUNNER" "$sb15a" --changed-since HEAD 2>&1); rc15a=$?
 if [ "$rc15a" -eq 0 ] && [ ! -f "$sb15a/pass-ran.sentinel" ] && [ ! -f "$sb15a/pass2-ran.sentinel" ] \
@@ -899,10 +974,13 @@ else
   fail "15a: expected docs-only skip-all + exit 0; rc=$rc15a pass-ran=$([ -f "$sb15a/pass-ran.sentinel" ] && echo yes || echo no) pass2-ran=$([ -f "$sb15a/pass2-ran.sentinel" ] && echo yes || echo no); out: $out15a"
 fi
 rm -rf "$sb15a"
+fi
 
 # 15b — mixed diff: one non-docs path among docs paths -> fast lane inert,
 # both suites run normally.
-sb15b=$(mktemp -d); mk_docs_sandbox "$sb15b"
+sb15b=$(mktemp -d "${TMPDIR:-/tmp}/rst-case15b.XXXXXX") || { fail "15b: mktemp failed"; sb15b=""; }
+if [ -n "$sb15b" ]; then
+mk_docs_sandbox "$sb15b"
 diff15b="$sb15b/diff.txt"; printf 'docs/foo.md\nscripts/ci/run-shell-tests.sh\n' > "$diff15b"
 out15b=$(GIT_FAKE_DIFF="$diff15b" PATH="$fakebin15:$PATH" bash "$RUNNER" "$sb15b" --changed-since HEAD 2>&1); rc15b=$?
 if [ "$rc15b" -eq 0 ] && [ -f "$sb15b/pass-ran.sentinel" ] && [ -f "$sb15b/pass2-ran.sentinel" ] \
@@ -912,10 +990,13 @@ else
   fail "15b: expected both suites to run (fast lane inert); rc=$rc15b pass-ran=$([ -f "$sb15b/pass-ran.sentinel" ] && echo yes || echo no) pass2-ran=$([ -f "$sb15b/pass2-ran.sentinel" ] && echo yes || echo no); out: $out15b"
 fi
 rm -rf "$sb15b"
+fi
 
 # 15c — empty diff (no tracked or untracked paths at all): NOT docs-only —
 # nothing to base that claim on — so both suites run as normal.
-sb15c=$(mktemp -d); mk_docs_sandbox "$sb15c"
+sb15c=$(mktemp -d "${TMPDIR:-/tmp}/rst-case15c.XXXXXX") || { fail "15c: mktemp failed"; sb15c=""; }
+if [ -n "$sb15c" ]; then
+mk_docs_sandbox "$sb15c"
 diff15c="$sb15c/diff.txt"; : > "$diff15c"
 out15c=$(GIT_FAKE_DIFF="$diff15c" PATH="$fakebin15:$PATH" bash "$RUNNER" "$sb15c" --changed-since HEAD 2>&1); rc15c=$?
 if [ "$rc15c" -eq 0 ] && [ -f "$sb15c/pass-ran.sentinel" ] && [ -f "$sb15c/pass2-ran.sentinel" ] \
@@ -925,8 +1006,10 @@ else
   fail "15c: expected both suites to run (empty diff is not docs-only); rc=$rc15c pass-ran=$([ -f "$sb15c/pass-ran.sentinel" ] && echo yes || echo no) pass2-ran=$([ -f "$sb15c/pass2-ran.sentinel" ] && echo yes || echo no); out: $out15c"
 fi
 rm -rf "$sb15c"
+fi
 
 rm -rf "$fakebin15"
+fi
 
 
 # --------------------------------------------------------------------------
@@ -997,7 +1080,8 @@ fi
 # never fires under --list.
 # --------------------------------------------------------------------------
 echo "== Case 19: --pr / SUITE_REPORT_PR after-report posting =="
-sb19=$(mktemp -d "${TMPDIR:-/tmp}/rst-case19.XXXXXX")
+sb19=$(mktemp -d "${TMPDIR:-/tmp}/rst-case19.XXXXXX") || { fail "19: mktemp failed"; sb19=""; }
+if [ -n "$sb19" ]; then
 cat > "$sb19/test-pass.sh" <<'SHEOF'
 #!/usr/bin/env bash
 exit 0
@@ -1129,6 +1213,7 @@ else
 fi
 
 rm -rf "$sb19"
+fi
 
 
 # --------------------------------------------------------------------------
