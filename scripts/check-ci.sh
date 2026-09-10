@@ -428,7 +428,25 @@ watch_decidable() {
     return 0
 }
 
+# _pending_checks_report — HIMMEL-2907: names (and counts) the checks still in
+# the "pending" bucket, for the one-time cap-extension notice and the
+# cannot-evaluate line below — a reader should see "shell-unit-shard (ubuntu-
+# latest, 7)" instead of a bare "checks still pending". Fail-safe like
+# watch_decidable: an unreadable/unparsable probe reports zero names rather
+# than fabricating any; callers fall back to generic wording.
+_pending_checks_report() {
+    # shellcheck disable=SC2016  # jq expression, not a shell expansion
+    pr_checks --json bucket,name --jq \
+        '[.[] | select(.bucket == "pending")] as $p | "\($p | length)", ($p | map(.name) | join(", "))' \
+        2>/dev/null
+}
+
 watch_round() {
+    # $1 — extensions still allowed this call (HIMMEL-2907): 1 (default, the
+    # outer caller) permits ONE more full --max-wait round on a cap-with-
+    # pending verdict before refusing; the recursive self-call below passes 0
+    # so a second cap-with-pending exits 2 instead of extending forever.
+    local extend_ok="${1:-1}"
     # Runs one `gh pr checks --watch --fail-fast`, BOUNDED (HIMMEL-2062):
     # foreground would block a session's tool wrapper past its own timeout
     # even after the verdict is decidable, because CodeRabbit's rollup row can
@@ -705,10 +723,27 @@ watch_round() {
     fi
 
     # Cap ONLY: a cap reached with non-CodeRabbit work still pending is not a
-    # decidable verdict — refuse rather than certify green over an unfinished
-    # check. The "decidable" stop already proved this true, so it never hits.
+    # decidable verdict on its own. HIMMEL-2907: nothing failed here (the
+    # check above already returned otherwise) — a slow-but-healthy shard
+    # still mid-run must not read as "cannot evaluate" on the FIRST cap. So
+    # extend once: run one more full --max-wait round before refusing. Only a
+    # SECOND cap-with-pending (extend_ok=0, the recursive call below) exits 2
+    # — the "decidable" stop already proved a bare terminal-check set never
+    # hits this branch, so it never hits.
     if [ "$stopped" = cap ] && ! watch_decidable; then
-        echo "check-ci: watch cap reached with non-CodeRabbit checks still pending — cannot evaluate the gate; re-run (raise --max-wait). Do NOT infer state from log absence — verify directly: gh pr view <PR> --json state (HIMMEL-2206)" >&2
+        local report pending_n pending_names
+        report=$(_pending_checks_report)
+        pending_n=${report%%$'\n'*}
+        case "$pending_n" in
+            ''|*[!0-9]*) pending_n=0; pending_names="" ;;
+            *) pending_names=${report#*$'\n'} ;;
+        esac
+        if [ "$extend_ok" -eq 1 ]; then
+            echo "check-ci: WAITING ${pending_n} pending (${pending_names:-unnamed}) — extending once (HIMMEL-2907)" >&2
+            watch_round 0
+            return $?
+        fi
+        echo "check-ci: watch cap reached with non-CodeRabbit checks still pending (${pending_names:-unnamed}) — cannot evaluate the gate; re-run (raise --max-wait). Do NOT infer state from log absence — verify directly: gh pr view <PR> --json state (HIMMEL-2206)" >&2
         exit 2
     fi
 

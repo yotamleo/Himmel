@@ -494,6 +494,23 @@ case " $* " in
         # "CHECKCI_OK\n<pending names>" shape.
         case " $* " in
             *"bucket,name"*)
+                # HIMMEL-2907: _pending_checks_report's --jq is a DIFFERENT
+                # shape over these SAME --json bucket,name fields —
+                # "<count>\n<names>", no CHECKCI_OK sentinel — distinguished
+                # here by its unique "length" substring (nested inside the
+                # bucket,name match so the plain fail-bucket-count probe,
+                # which also says "length" but never "bucket,name", is
+                # untouched) so the WAITING/cannot-evaluate naming cases get
+                # real pending-check data instead of watch_decidable's shape.
+                case " $* " in
+                    *"length"*)
+                        case "$GH_STUB_MODE" in
+                            blocking-cr-decidable) printf '1\nCodeRabbit\n' ;;
+                            blocking-cr-substring) printf '1\ncoderabbit-extra\n' ;;
+                            *) printf '1\nunit-tests\n' ;;
+                        esac
+                        exit 0 ;;
+                esac
                 case "$GH_STUB_MODE" in
                     blocking-cr-decidable) printf 'CHECKCI_OK\nCodeRabbit\n' ;;
                     # codex-2, HIMMEL-2062 CR round 1: a pending check whose
@@ -529,7 +546,7 @@ case " $* " in
             # shapes (0 failed) — the cap/decidable path must not misread the
             # generic default (1 failed, meant for the red-confirm caller) as
             # a red verdict. blocking-cap-red is the one case that IS red.
-            blocking-cr-decidable|blocking-cap-pending|blocking-cr-substring) echo 0 ;;
+            blocking-cr-decidable|blocking-cap-pending|blocking-cr-substring|blocking-cap-extend) echo 0 ;;
             blocking-cap-red) echo 1 ;;
             *) echo 1 ;;
         esac
@@ -616,6 +633,19 @@ case "$GH_STUB_MODE" in
         exit 8 ;;
     blocking-cap-red)
         if [ "$is_watch" -eq 1 ]; then sleep 3; echo "X ci fail"; exit 1; fi
+        exit 8 ;;
+    blocking-cap-extend)
+        # HIMMEL-2907: round 1 runs past the cap exactly like blocking-cap-
+        # pending (a healthy shard still mid-run); round 2 — check-ci.sh's
+        # one-time extension — resolves green immediately, the same shape a
+        # real slow-but-healthy shard finishing during the extra --max-wait
+        # window would produce.
+        if [ "$is_watch" -eq 1 ]; then
+            w=$(cat "$GH_STUB_WATCH" 2>/dev/null); w=${w:-0}
+            echo $((w+1)) > "$GH_STUB_WATCH"
+            if [ "$w" -eq 0 ]; then sleep 3; fi
+            echo "All checks were successful"; exit 0
+        fi
         exit 8 ;;
     *)
         echo "gh stub: unknown GH_STUB_MODE '$GH_STUB_MODE'" >&2; exit 99 ;;
@@ -2085,6 +2115,44 @@ else
     fail "106b the TERM trap itself actually executes on early stop" "term-trap-fired marker never appeared — the trap did not run"
 fi
 
+# --- HIMMEL-2907: a cap reached with nothing failed extends ONCE for one more
+# full --max-wait round before refusing — a slow-but-healthy shard (shell-unit
+# shard 7, 12m16s-12m45s) must not read as "cannot evaluate" on the first cap.
+
+# 2907-a — RED control: the pending shard finishes during the one-time
+# extension (round 1 hits the cap with the check still running; round 2 —
+# the extension — resolves green). Today this is rc 2; after the fix rc 0,
+# with the WAITING notice naming the count and the still-pending job.
+run blocking-cap-extend --max-wait 1
+assert_rc 0 "2907-a a slow-but-healthy shard resolves after the one-time extension"
+assert_err_has "WAITING 1 pending (unit-tests) — extending once (HIMMEL-2907)" "2907-a WAITING notice names the pending count and job"
+assert_out_has "all checks green + all review threads resolved" "2907-a eventual green verdict"
+
+# 2907-b — negative control: a check that stays pending PAST the extension
+# (blocking-cap-pending, same stub cases 97/100/101 exercise) must still exit
+# 2 — exactly ONE "WAITING" notice is emitted, proving the extension is not
+# infinite — and the final cannot-evaluate line names the pending job.
+run blocking-cap-pending --max-wait 1
+assert_rc 2 "2907-b a check that never resolves still exits 2 after the one extension"
+waiting_count=$(printf '%s' "$ERR" | grep -c "WAITING")
+if [ "$waiting_count" -eq 1 ]; then
+    pass "2907-b extends exactly once, not infinitely"
+else
+    fail "2907-b extends exactly once, not infinitely" "WAITING appeared $waiting_count times, want 1"
+fi
+assert_err_has "still pending (unit-tests)" "2907-b the exit-2 line names the pending job"
+
+# 2907-c — negative control: a FAILED check alongside a pending one at cap
+# must red_exit immediately (the failed-bucket probe is checked before the
+# extend decision) — no WAITING notice, no extension.
+run blocking-cap-red --max-wait 1
+assert_rc 1 "2907-c a failed check at cap still exits 1 immediately"
+if printf '%s' "$ERR" | grep -iF -- "WAITING" >/dev/null; then
+    fail "2907-c no WAITING notice on a genuinely red cap" "stderr: $ERR"
+else
+    pass "2907-c no WAITING notice on a genuinely red cap"
+fi
+
 # --- HIMMEL-2278: the machine-generated-PR class ----------------------------
 #
 # Baseline for every case here: `cr-absent` — checks green, threads clean, and
@@ -2329,5 +2397,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 144 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 144"; exit 1; fi
+if [ "$COUNT" -ne 147 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 147"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1
