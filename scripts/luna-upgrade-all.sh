@@ -403,7 +403,10 @@ has_conflict_line() {
 # locally since its last upgrade — upgrade.sh withheld the write).
 has_local_edit_line() {
     local text="$1"
-    printf '%s\n' "$text" | grep -qE '^ +LOCAL-EDIT'
+    # Here-string, not `printf | grep -q` (pipefail-ok would still need a
+    # justification comment; a here-string is simply immune to the
+    # early-exit-SIGPIPE pipefail trap on this small dry-run-plan input).
+    grep -qE '^ +LOCAL-EDIT' <<< "$text"
 }
 
 # ---------------------------------------------------------------------------

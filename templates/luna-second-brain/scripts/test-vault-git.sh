@@ -292,7 +292,7 @@ UNEXCLUDED_FIXTURE
     ;;
   *)
     assert_eq "D14b block attributable to shellcheck" "yes" \
-      "$(yn "$(printf '%s' "$d14_out" | grep -qE 'SC[0-9]{4}' && echo 0 || echo 1)")"
+      "$(yn "$(grep -qE 'SC[0-9]{4}' <<< "$d14_out" && echo 0 || echo 1)")"
     ;;
   esac
   assert_eq "D15 unexcluded script NOT committed" "$d14_before" "$(git_in "$VC" rev-parse HEAD)"
