@@ -151,7 +151,8 @@ fi
 # skip-terminals it, writing nothing.
 # Exit 0 = nothing left agreed; exit 3 = one or more rows are still-open (the
 # caller's round was not actually clean for that finding); exit 1 = a
-# malformed ledger row or a ledger write failure.
+# malformed ledger row or a ledger write failure; exit 2 = --head does not
+# resolve to a commit; exit 5 = the CR ledger file itself is missing.
 if [ "$verb" = "promote" ]; then
     if ! full_head="$(git rev-parse --verify --quiet "$head_sha^{commit}" 2>/dev/null)" || [ -z "$full_head" ]; then
         echo "review-round: --head $head_sha does not resolve to a commit" >&2
