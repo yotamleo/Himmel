@@ -10,7 +10,8 @@
 # differs from everything. Such a control prints "RED confirmed" while proving
 # nothing, and looks identical to one that genuinely exercised the mutation.
 # Confirmed twice on 2026-09-05 (T7 in scripts/cr/test-pr-check-context.sh,
-# fixed in PR #2135; case 18m in scripts/ci/test-run-shell-tests.sh).
+# fixed in PR #2135; case 18m, now in scripts/ci/test-run-shell-tests-
+# discovery.sh, which HIMMEL-2895 split out of test-run-shell-tests.sh).
 #
 # The contract a valid control must establish, all four points:
 #   (a) the mutant RAN         -- its exit status is captured and asserted

@@ -930,10 +930,10 @@ rm -rf "$fakebin15"
 
 
 # --------------------------------------------------------------------------
-# Case 2267 — _suite_timeout_for's three HIMMEL-2267 timeout-table arms
-# (scripts/test-propagate-public.sh, scripts/ci/test-run-shell-tests.sh,
-# scripts/ci/test-suite-concurrency.sh) are new/revised on this branch and
-# had no assertion. Each arm uses a dual "path|*/path" pattern because the
+# Case 2267 — _suite_timeout_for's HIMMEL-2267 timeout-table arms
+# (scripts/test-propagate-public.sh, scripts/ci/test-suite-concurrency.sh, and
+# until HIMMEL-2895 this file's own 1200s arm) were new/revised on that branch
+# and had no assertion. Each arm uses a dual "path|*/path" pattern because the
 # real caller passes a scan-root-prefixed path (see the comment above
 # tier_lookup): a pattern that fails to match doesn't error, it silently
 # falls through to the 600s default and the suite gets killed mid-run same
@@ -962,10 +962,32 @@ else
   }
   check_timeout_2267 "scripts/test-propagate-public.sh" "2700"
   check_timeout_2267 "/repo/scripts/test-propagate-public.sh" "2700"
-  check_timeout_2267 "scripts/ci/test-run-shell-tests.sh" "1200"
-  check_timeout_2267 "/repo/scripts/ci/test-run-shell-tests.sh" "1200"
   check_timeout_2267 "scripts/ci/test-suite-concurrency.sh" "1500"
   check_timeout_2267 "/repo/scripts/ci/test-suite-concurrency.sh" "1500"
+
+  # HIMMEL-2895. The third HIMMEL-2267 arm was this file's own 1200s budget,
+  # sized to a 712s measurement of the pre-split 3086-line suite. The split
+  # left six suites whose slowest is 114s, so every one of them falls under
+  # the 600s default with ~5x headroom -- and the arm is GONE rather than
+  # replaced by six smaller ones, because every entry in this table RAISES a
+  # budget (the lowest is 650) and an arm BELOW the default would tighten the
+  # cap and manufacture the exact false CAP EXCEEDED the table exists to
+  # delete. Asserted rather than merely deleted so that re-adding one is a
+  # deliberate act with a measurement behind it.
+  for p2267 in test-run-shell-tests \
+               test-run-shell-tests-timing \
+               test-run-shell-tests-discovery \
+               test-run-shell-tests-rotation \
+               test-run-shell-tests-rotation-guards \
+               test-run-shell-tests-rotation-cursor; do
+    check_timeout_2267 "scripts/ci/$p2267.sh" "600"
+    check_timeout_2267 "/repo/scripts/ci/$p2267.sh" "600"
+  done
+
+  # A path in no arm at all still gets the default -- the control that keeps
+  # the six assertions above from passing merely because the case fell
+  # through for the wrong reason.
+  check_timeout_2267 "scripts/ci/test-not-in-any-arm-2895.sh" "600"
 fi
 
 # --------------------------------------------------------------------------

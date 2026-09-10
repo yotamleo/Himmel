@@ -299,15 +299,19 @@ _suite_timeout_for() {
       # EXCEEDED is the exact failure class this entry deletes;
       # SUITE_RUN_BUDGET stays the runaway backstop.
       printf '2700' ;;
-    scripts/ci/test-run-shell-tests.sh|*/scripts/ci/test-run-shell-tests.sh)
-      # HIMMEL-2267. This is the runner's own self-test, and it grew past the
-      # 600s default today: three separate changes landed in it (#2038's
-      # W-cases, #2036, and HIMMEL-2260's Case 18, the last worth ~53s alone).
-      # Measured standalone by the HIMMEL-2260 leg on 2026-08-30, 18:39-18:50:
-      # 712s, rc=0, 104 PASS. That measurement was taken on 2260's own branch
-      # and already includes its Case 18 additions, so it is current for
-      # post-merge main. 712 * ~1.5 -> 1200s.
-      printf '1200' ;;
+    # NO ARM for scripts/ci/test-run-shell-tests*.sh (HIMMEL-2895). It used to
+    # carry a 1200s arm (HIMMEL-2267: 712s measured standalone by the
+    # HIMMEL-2260 leg on 2026-08-30, x ~1.5). HIMMEL-2895 split that one
+    # 3086-line file into six suites and measured each standalone on linux
+    # (idle, 2026-09-10): core 10s, -timing 41s, -discovery 4s, -rotation
+    # 111s, -rotation-guards 114s, -rotation-cursor 102s -- 382s total, same
+    # as the single file, but a 114s maximum. Every one of them is under the
+    # 600s default with ~5x headroom, so the arm is gone rather than replaced
+    # by six smaller ones: every entry in this table RAISES a budget (the
+    # lowest is 650), and an arm BELOW the default would tighten the cap and
+    # manufacture the exact false CAP EXCEEDED this table exists to delete.
+    # Case 2267 in test-run-shell-tests.sh pins all six at the default, so
+    # re-adding an arm is a deliberate act with a measurement behind it.
     scripts/ci/test-suite-concurrency.sh|*/scripts/ci/test-suite-concurrency.sh)
       # HIMMEL-2267. New today (landed via #2038). It had been seen only as
       # "CAP EXCEEDED at 604s" in a scoped run -- a truncation floor, never a
@@ -949,9 +953,11 @@ EOF
 # Only the EXECUTION path takes it: `--list` reads the tree and runs nothing,
 # so making it queue behind a live run would be friction with no payoff.
 #
-# RE-ENTRANCY is not optional. scripts/ci/test-run-shell-tests.sh invokes this
-# runner fifteen times, and the full suite runs that test — so a lock that did
-# not recognise its own descendants would deadlock the very suite it protects.
+# RE-ENTRANCY is not optional. The scripts/ci/test-run-shell-tests*.sh family
+# — six suites since HIMMEL-2895 split the original file — invokes this runner
+# roughly twenty times between them, and the full suite runs those tests, so a
+# lock that did not recognise its own descendants would deadlock the very
+# suites it protects.
 # The holder exports HIMMEL_SUITE_LOCK_HELD with the lock path it owns; a
 # nested invocation targeting that same path passes through. Comparing the
 # PATH rather than a bare "am I nested" flag keeps a nested run that was

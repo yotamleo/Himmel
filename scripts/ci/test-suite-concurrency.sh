@@ -1089,9 +1089,11 @@ fi
 # --------------------------------------------------------------------------
 # Case 3 -- the lock is RE-ENTRANT for nested runs.
 #
-# scripts/ci/test-run-shell-tests.sh invokes the runner fifteen times and is
-# itself part of the full suite. If the holder's own descendants could not
-# pass through, the lock would deadlock the suite it exists to protect.
+# The scripts/ci/test-run-shell-tests*.sh family — six suites since
+# HIMMEL-2895 split the original file — invokes the runner roughly twenty
+# times between them and is itself part of the full suite. If the holder's own
+# descendants could not pass through, the lock would deadlock the suites it
+# exists to protect.
 # --------------------------------------------------------------------------
 echo "== Case 3: nested run under the holder passes through =="
 sb3=$(new_sandbox)
