@@ -334,6 +334,18 @@ else
     echo "FAIL LG4 fixture epoch round-trips to $_lg4_0005_roundtrip, not 00:05 -- fixture date may sit inside a DST gap/fold"
     FAILED=$((FAILED + 1))
 fi
+# HIMMEL-2914: the round-trip guards above (here and the DST replay below)
+# only prove the CONSTRUCTION handles a given date correctly -- they say
+# nothing about the CALL SITE below still passing the literal 6 15 rather
+# than, say, a reintroduced $(date +%m) "$(date +%d)". Assert the anchor
+# independently, so that regression fails on every ordinary day too.
+_lg4_0005_anchor=$(python3 -c "import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%m-%d'))" "$_lg4_0005_epoch")
+if [ "$_lg4_0005_anchor" = "06-15" ]; then
+    echo "PASS LG4 fixture anchor resolves to June 15, independent of the DST replay"
+else
+    echo "FAIL LG4 fixture anchor resolved to $_lg4_0005_anchor, not 06-15 -- the real-fixture call site no longer pins June 15"
+    FAILED=$((FAILED + 1))
+fi
 # HIMMEL-2908: the round-trip guard just above is honest but weak -- it only
 # fires if the suite happens to run ON a real DST transition day, since on
 # an ordinary day a reintroduced datetime.date.today() round-trips cleanly
@@ -438,7 +450,7 @@ _lg4_midnight_reason=$(lg4_wrap_hhmm "$_lg4_0000_epoch" 2>&1)
 _lg4_midnight_rc=$?
 assert_rc "LG4 fixture exact midnight signals skip" 10 "$_lg4_midnight_rc"
 assert_contains "LG4 fixture exact midnight names the skip reason" "exact local midnight has no earlier same-day HH:MM" "$_lg4_midnight_reason"
-unset _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch _lg4_0230_epoch _lg4_0005_roundtrip _lg4_0005_hhmm _lg4_0005_rolled _lg4_1234_hhmm _lg4_midnight_reason _lg4_midnight_rc
+unset _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch _lg4_0230_epoch _lg4_0005_roundtrip _lg4_0005_anchor _lg4_0005_hhmm _lg4_0005_rolled _lg4_1234_hhmm _lg4_midnight_reason _lg4_midnight_rc
 
 # HIMMEL-2877 (E1): WRAP_HHMM used to be captured ONCE here, before LG1-LG3
 # run below - each of which shells out to python3 and arm-resume, taking
