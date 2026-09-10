@@ -112,8 +112,13 @@ grepq "$outA" -F "$work_leaf" \
   || fail "case a: the refusal must NAME the checkout it refused (expected the fixture root $work_leaf in the path): $outA"
 grepq "$outA" -F 'a-clone' \
   || fail "case a: the refusal must NAME the checkout it refused (expected the a-clone leaf in the path): $outA"
+# Forward-slashed on every platform (CR round 2, [codex-1]): the line tells the
+# operator to run `bash <path>`, and a native-separator Windows path is not
+# pasteable into that shell, so bin.js normalizes it for display. Asserting the
+# forward-slashed form is therefore asserting the CONTRACT, not accommodating a
+# platform — it is what makes the printed remedy runnable under Git Bash.
 grepq "$outA" -F 'scripts/setup.sh' \
-  || fail "case a: the remedy must name scripts/setup.sh (the contributor primitive): $outA"
+  || fail "case a: the remedy must name scripts/setup.sh, forward-slashed so the printed 'bash <path>' line is pasteable: $outA"
 grepq "$outA" -F 'install --scope user' \
   || fail "case a: the remedy must name 'install --scope user': $outA"
 [ ! -f "$homeA/himmelctl-cache/install-profile.json" ] \

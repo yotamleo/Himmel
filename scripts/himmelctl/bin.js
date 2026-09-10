@@ -2263,6 +2263,16 @@ function projectTargetDir() {
   return path.resolve(process.cwd());
 }
 
+// Forward-slash a path for DISPLAY in a diagnostic that tells the operator to
+// run something (HIMMEL-2892 CR round 2, [codex-1]). path.join/resolve emit
+// native separators, so on Windows the printed `bash C:\\...\\scripts\\setup.sh`
+// is not pasteable into the Git Bash shell the same line names — the shell eats
+// `\s` — and it is the same collapse wire-pretooluse-hooks.sh forward-slashes
+// its hook commands to avoid. Display only; nothing compares against this.
+function displayPath(p) {
+  return String(p).split(path.sep).join('/');
+}
+
 // realpath, falling back to the resolved path when the entry cannot be
 // stat'ed (a not-yet-created dir, a permission gap) — never throws.
 function realpathOrSelf(p) {
@@ -4099,9 +4109,9 @@ async function cmdInstall(args) {
   // against. A dry run is refused too — a preview of an install that cannot
   // legally run is not a useful preview.
   if ((answers.scope || 'project') === 'project' && projectTargetIsHimmelCheckout()) {
-    console.error(`himmelctl: --scope project is not valid inside the himmel checkout (${projectTargetDir()})`);
+    console.error(`himmelctl: --scope project is not valid inside the himmel checkout (${displayPath(projectTargetDir())})`);
     console.error('  its .claude/settings.json is the SOURCE this installer generates from, never a target.');
-    console.error(`  use: bash ${path.join(repoRoot(), 'scripts', contributeOverlayFilename())}   (contributor gates), then: node scripts/himmelctl/bin.js install --scope user`);
+    console.error(`  use: bash ${displayPath(path.join(repoRoot(), 'scripts', contributeOverlayFilename()))}   (contributor gates), then: node scripts/himmelctl/bin.js install --scope user`);
     return 1;
   }
 
