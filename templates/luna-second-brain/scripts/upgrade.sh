@@ -214,19 +214,34 @@ fi
 # no associative arrays). A stamp without a `files` map (any vault last
 # upgraded before this version) yields an empty map and the git baseline
 # carries, exactly as before; the first upgrade under this version writes one.
+# BASELINE_ERROR / BASELINE_ERROR_REASON are also set by the git-log checks
+# below (HIMMEL-2886/2903); initialized here so a snapshot-load failure isn't
+# clobbered back to 0 by that later block.
+BASELINE_ERROR=0
+BASELINE_ERROR_REASON=""
 SNAPSHOT_MAP=""
 if [ -f "$STAMP" ]; then
-    SNAPSHOT_MAP="$("$PYTHON" - "$STAMP" 2>/dev/null <<'PY'
+    # HIMMEL-2918: the python heredoc's rc distinguishes the one legitimate
+    # empty map (no `files` key at all — a legacy stamp, rc 0) from an
+    # unreadable/malformed one (rc != 0: a JSON/read error, a non-dict top
+    # level, or a `files` value that isn't a dict). Collapsing those was
+    # fail-OPEN: an empty SNAPSHOT_MAP is indistinguishable from "nothing to
+    # withhold", reverting every file to the poisonable git fallback
+    # HIMMEL-2903 exists to replace. Fail CLOSED instead, the same way a
+    # failing `git log` already does below.
+    if ! SNAPSHOT_MAP="$("$PYTHON" - "$STAMP" 2>/dev/null <<'PY'
 import json, sys
 try:
     d = json.load(open(sys.argv[1], encoding="utf-8"))
 except Exception:
-    sys.exit(0)
+    sys.exit(1)
 if not isinstance(d, dict):
-    sys.exit(0)
+    sys.exit(1)
+if "files" not in d:
+    sys.exit(0)  # legacy stamp, no `files` key at all — fall back to git.
 files = d.get("files")
 if not isinstance(files, dict):
-    sys.exit(0)
+    sys.exit(1)  # present but unusable (e.g. explicit `"files": null`) — an error, not legacy.
 for rel in sorted(files):
     sha = files[rel]
     # A rel with a tab/newline in it would corrupt the row format; such a path
@@ -234,7 +249,11 @@ for rel in sorted(files):
     if isinstance(sha, str) and isinstance(rel, str) and not (set("\t\n\r") & set(rel)):
         print("%s\t%s" % (rel, sha))
 PY
-)"
+)"; then
+        SNAPSHOT_MAP=""
+        BASELINE_ERROR=1
+        BASELINE_ERROR_REASON="snapshot unreadable"
+    fi
 fi
 
 # snapshot_sha <rel>: echo the recorded "sha256:<hex>" for <rel>, or nothing.
@@ -309,8 +328,8 @@ STAMP_COMMIT=""
 # means "no baseline" means the pre-HIMMEL-2886 silent overwrite, which is the
 # exact failure this detection exists to close. has_local_edit fails CLOSED on
 # a cat-file/show error already; this makes the `git log` step consistent.
-BASELINE_ERROR=0
-BASELINE_ERROR_REASON=""
+# (Initialized above, before the snapshot-load block, so a snapshot failure
+# there isn't clobbered back to 0 here — HIMMEL-2918.)
 # `git rev-parse --is-inside-work-tree`, not `[ -d "$VAULT_DIR/.git" ]`: a
 # worktree or a submodule has a `.git` FILE (a `gitdir: <path>` pointer), not
 # a directory, so the directory-only check silently fell back to the
@@ -510,6 +529,20 @@ record_snapshot() {
     [ -n "$SNAPSHOT_FILE" ] || return 0
     s="$(sha_of "$dst")"
     [ "$s" = "MISSING" ] && return 0
+    # HIMMEL-2918: a failing sha256sum still leaves `cut` exiting 0 on no
+    # input, so `s` can come back "" here — checked only against MISSING
+    # above, an empty (or otherwise malformed) digest slipped past silently
+    # and produced an incomplete <rel><TAB> row that the stamp writer's
+    # `if tab and rel and sha` later drops without warning. Reject anything
+    # that isn't a 64-char lowercase hex digest before it is ever written.
+    case "$s" in
+        *[!0-9a-f]*|"") s="" ;;
+    esac
+    if [ -z "$s" ] || [ "${#s}" -ne 64 ]; then
+        SNAPSHOT_FAILURES=$((SNAPSHOT_FAILURES+1))
+        echo "  WARN: could not record the content snapshot for $rel (invalid digest)" >&2
+        return 0
+    fi
     # A dropped row is not cosmetic: the stamp is rewritten wholesale, so a
     # file whose row never lands loses its snapshot entry and silently reverts
     # to the poisonable git baseline. Count the failure and let the stamp guard
