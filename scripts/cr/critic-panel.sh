@@ -1035,6 +1035,7 @@ global_id=0
 agg_crit=""
 agg_imp=""
 agg_sug=""
+agg_reraise=""
 agg_drop=""
 agg_drop_blocking=""
 # member_parsed record separator (HIMMEL-1871 round 6): \034, matching the
@@ -1172,11 +1173,16 @@ _append_panel_ledger() {
     # spool fields (file paths, severities) flow through JSON.stringify rather
     # than hand-built quoting.
     _apl_have_findings=0
+    [ -s "$PANEL_SPOOL_DIR/.finding-enriched.jsonl" ] && _apl_have_findings=1
     for _apl_spool in "$PANEL_SPOOL_DIR"/finding.*; do
         if [ -f "$_apl_spool" ]; then _apl_have_findings=1; fi
     done
     if [ "$_apl_have_findings" -eq 1 ]; then
         _apl_batch_file="$PANEL_SPOOL_DIR/.finding-batch.jsonl"
+        : > "$_apl_batch_file"
+        if [ -s "$PANEL_SPOOL_DIR/.finding-enriched.jsonl" ]; then
+            cp "$PANEL_SPOOL_DIR/.finding-enriched.jsonl" "$_apl_batch_file"
+        fi
         # Hand node the spool CONTENT on stdin and take the JSONL back on
         # stdout - never a PATH through the environment. Git-Bash rewrites
         # POSIX-looking paths in env vars when it spawns a native node.exe; it
@@ -1189,7 +1195,7 @@ _append_panel_ledger() {
         # boundary as a path now, so there is nothing left to rewrite.
         if { for _apl_spool in "$PANEL_SPOOL_DIR"/finding.*; do
                  if [ -f "$_apl_spool" ]; then cat "$_apl_spool"; fi
-             done; } | REVIEW_BRANCH="$REVIEW_BRANCH" REVIEW_HEAD="$REVIEW_HEAD" node -e '
+             done; } | REVIEW_BRANCH="$REVIEW_BRANCH" REVIEW_HEAD="$REVIEW_HEAD" CR_REVIEW_ROUND="${CR_REVIEW_ROUND:-}" node -e '
             const e=process.env;
             const lines=require("fs").readFileSync(0,"utf8").split("\n").filter(Boolean);
             const out=[];
@@ -1204,11 +1210,12 @@ _append_panel_ledger() {
               if(!id) continue;
               const row={branch:e.REVIEW_BRANCH,head:e.REVIEW_HEAD,
                 model,id,severity,file,line:ln,verdict:""};
+              if(/^[1-9][0-9]*$/.test(e.CR_REVIEW_ROUND||"")) row.round=Number(e.CR_REVIEW_ROUND);
               if(text) row.text=text;
               out.push(JSON.stringify(row));
             }
             process.stdout.write(out.length?out.join("\n")+"\n":"");
-        ' > "$_apl_batch_file"; then
+        ' >> "$_apl_batch_file"; then
             if [ -s "$_apl_batch_file" ]; then
                 CR_LEDGER="$PANEL_LEDGER" bash "$LEDGER_APPEND" finding --batch-file "$_apl_batch_file" || _apl_failed=1
             fi
@@ -1949,11 +1956,41 @@ ROWSEOF
     done
 fi
 
+# Match current findings against the latest durable disposition for the same
+# branch + fingerprint + artifact + perspective. On success the helper writes
+# one enriched JSONL batch for persistence and active/reraise render spools. If
+# lookup fails, leave the original aggregates and raw finding spools untouched:
+# findings remain active and visible rather than being silently suppressed.
+_have_panel_findings=0
+for _rf_spool in "$PANEL_SPOOL_DIR"/finding.*; do
+    [ -f "$_rf_spool" ] && _have_panel_findings=1
+done
+if [ "$_have_panel_findings" -eq 1 ]; then
+    if { for _rf_spool in "$PANEL_SPOOL_DIR"/finding.*; do
+             [ -f "$_rf_spool" ] && cat "$_rf_spool"
+         done; } | CR_LEDGER="$PANEL_LEDGER" REVIEW_BRANCH="$REVIEW_BRANCH" REVIEW_HEAD="$REVIEW_HEAD" \
+             CR_REVIEW_ROUND="${CR_REVIEW_ROUND:-}" PANEL_SPOOL_DIR="$PANEL_SPOOL_DIR" \
+             node "$SCRIPT_DIR/finding-reraise.js" > "$PANEL_SPOOL_DIR/.finding-enriched.jsonl"; then
+        agg_crit="$(cat "$PANEL_SPOOL_DIR/.active-crit")"
+        agg_imp="$(cat "$PANEL_SPOOL_DIR/.active-imp")"
+        agg_sug="$(cat "$PANEL_SPOOL_DIR/.active-sug")"
+        agg_reraise="$(cat "$PANEL_SPOOL_DIR/.reraises")"
+        for _rf_spool in "$PANEL_SPOOL_DIR"/finding.*; do
+            [ -f "$_rf_spool" ] && rm -f "$_rf_spool"
+        done
+    else
+        echo "critic-panel.sh: disposition lookup failed; leaving every finding active" >&2
+        rm -f "$PANEL_SPOOL_DIR/.finding-enriched.jsonl" "$PANEL_SPOOL_DIR/.active-crit" \
+            "$PANEL_SPOOL_DIR/.active-imp" "$PANEL_SPOOL_DIR/.active-sug" "$PANEL_SPOOL_DIR/.reraises"
+    fi
+fi
+
 # Count bullets per section
-nc=0; ni=0; ns=0; nd=0
+nc=0; ni=0; ns=0; nr=0; nd=0
 [ -n "$agg_crit" ] && nc="$(printf '%s\n' "$agg_crit" | grep -c '^- ')" || nc=0
 [ -n "$agg_imp"  ] && ni="$(printf '%s\n' "$agg_imp"  | grep -c '^- ')" || ni=0
 [ -n "$agg_sug"  ] && ns="$(printf '%s\n' "$agg_sug"  | grep -c '^- ')" || ns=0
+[ -n "$agg_reraise" ] && nr="$(printf '%s\n' "$agg_reraise" | grep -c '^- ')" || nr=0
 [ -n "$agg_drop" ] && nd="$(printf '%s\n' "$agg_drop" | grep -c '^- ')" || nd=0
 
 # Rejected blocking citations are a completed response, not member unavailability:
@@ -2067,6 +2104,11 @@ if [ "$responded" -ge 1 ]; then
     printf '\n'
     printf '## Suggestions (%d found)\n' "$ns"
     [ -n "$agg_sug" ] && printf '%s\n' "$agg_sug"
+    if [ "$nr" -gt 0 ]; then
+        printf '\n'
+        printf '## Already Dispositioned Re-raises (%d found)\n' "$nr"
+        printf '%s\n' "$agg_reraise"
+    fi
     if [ "$nd" -gt 0 ]; then
         printf '\n'
         printf '## Dropped Citations (%d dropped)\n' "$nd"

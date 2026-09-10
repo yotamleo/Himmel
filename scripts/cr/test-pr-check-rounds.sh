@@ -38,8 +38,9 @@ chmod +x "$fx/scripts/cr/panel-first-pass.sh" "$fx/scripts/cr/ledger-append.sh" 
 SCRIPT="$fx/scripts/cr/panel-first-pass.sh"
 
 PANEL_CALLS="$tmp/panel-calls"
+PANEL_ROUNDS="$tmp/panel-rounds"
 CLEAR_CALLS="$tmp/clear-calls"
-export PANEL_CALLS CLEAR_CALLS
+export PANEL_CALLS PANEL_ROUNDS CLEAR_CALLS
 cat > "$fx/scripts/cr/critic-panel.sh" <<'STUB'
 #!/usr/bin/env bash
 head_sha=""
@@ -53,6 +54,7 @@ while [ $# -gt 0 ]; do
 done
 cat >/dev/null
 printf '%s\n' "$head_sha" >> "$PANEL_CALLS"
+printf '%s\n' "${CR_REVIEW_ROUND:-<absent>}" >> "$PANEL_ROUNDS"
 ledger="$(git rev-parse --git-common-dir)/cr-critic-scores.jsonl"
 CR_LEDGER="$ledger" bash "$(dirname "$0")/ledger-append.sh" avail \
     --branch "$branch" --head "$head_sha" --model stub --status ok || exit $?
@@ -158,6 +160,7 @@ git -C "$repo" push -q origin feature
 out3="$(cd "$repo" && bash "$SCRIPT" --head "$head3" --branch feature 2>"$tmp/err3")"; rc3=$?
 assert_eq "$rc3" "0" "merge-forward run succeeds"
 assert_has "$out3" "pr-check: round 3 of 3 on feature" "merge-forward retains the branch counter"
+assert_eq "$(cat "$PANEL_ROUNDS")" "$(printf '1\n2\n3')" "panel receives each persisted branch review round"
 
 git -C "$repo" checkout -q -b other main
 printf 'other\n' > "$repo/other.txt"

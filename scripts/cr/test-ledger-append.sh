@@ -902,4 +902,64 @@ check "batch mode scrubs a secret in text" "$(L="$BFT" node -e 'const o=require(
 check "batch mode scrubs a token split across an embedded newline" "$(L="$BFT" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.finding_id==="bt-5");console.log(o.text.includes("apikeyvalue1234567890")+","+o.text.includes("[REDACTED]"))')" "false,true"  # gitleaks:allow (fake fixture)
 check "batch mode scrubs a token split across a lone carriage return" "$(L="$BFT" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.finding_id==="bt-6");console.log(o.text.includes("zxywvutsrqponmlkjihg")+","+o.text.includes("[REDACTED]"))')" "false,true"  # gitleaks:allow (fake fixture)
 
+# HIMMEL-2896: fingerprint the complete claim before the 500-character display
+# cap. Claims whose persisted text is identical but whose suffix differs must
+# not collide. Single-row and batch writers must derive the same fingerprint.
+FP_PREFIX="$(printf 'x%.0s' $(seq 1 520))"
+FP_TEXT_A="${FP_PREFIX}A [f:11]"
+FP_TEXT_B="${FP_PREFIX}B [f:22]"
+FPS="$tmp/fingerprint-single.jsonl"
+CR_LEDGER="$FPS" bash "$LA" finding --branch b --head FP1 --model critic-a --id fp-1 --severity imp --file f --line 11 --verdict '' --round 4 --text "$FP_TEXT_A"
+FPB="$tmp/fingerprint-batch.jsonl"
+FPBF="$tmp/fingerprint-batch-rows.jsonl"
+FP_TEXT_A="$FP_TEXT_A" FP_TEXT_B="$FP_TEXT_B" BHEAD="$BHEAD" OUT="$FPBF" node -e '
+const fs=require("fs"),e=process.env;
+const base={branch:"b",head:e.BHEAD,model:"critic-a",severity:"imp",file:"f",verdict:"",round:4};
+fs.writeFileSync(e.OUT,[{...base,id:"fp-a",line:11,text:e.FP_TEXT_A},{...base,id:"fp-b",line:22,text:e.FP_TEXT_B}].map(JSON.stringify).join("\n")+"\n");
+'
+CR_LEDGER="$FPB" bash "$LA" finding --batch-file "$FPBF"
+check "fingerprint single/batch parity" "$(A="$FPS" B="$FPB" node -e 'const fs=require("fs");const a=JSON.parse(fs.readFileSync(process.env.A,"utf8"));const b=fs.readFileSync(process.env.B,"utf8").trim().split("\n").map(JSON.parse)[0];console.log(a.fingerprint===b.fingerprint)')" "true"
+check "long claims persist the same capped display text" "$(L="$FPB" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").map(JSON.parse);console.log(r[0].text===r[1].text)')" "true"
+check "long claim suffix remains fingerprint-significant before truncation" "$(L="$FPB" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").map(JSON.parse);console.log(r[0].fingerprint!==r[1].fingerprint)')" "true"
+
+# Review round is observation metadata, not finding content identity. A retry at
+# the same head preserves the first observed round in both writer paths.
+RSL="$tmp/round-single.jsonl"
+CR_LEDGER="$RSL" bash "$LA" finding --branch b --head ROUND1 --model critic-a --id round-1 --severity imp --file f --line 9 --verdict '' --round 4 --text '- [round-1]: stable retry claim [f:9]'
+CR_LEDGER="$RSL" bash "$LA" finding --branch b --head ROUND1 --model critic-a --id round-1 --severity imp --file f --line 9 --verdict '' --round 5 --text '- [round-1]: stable retry claim [f:9]' 2>"$tmp/round-single.err"
+check "single same-head retry ignores changed round" "$?" "0"
+check "single same-head retry preserves first round" "$(L="$RSL" node -e 'const r=JSON.parse(require("fs").readFileSync(process.env.L,"utf8"));console.log(r.round+","+require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").length)')" "4,1"
+
+RBB="$tmp/round-batch-rows.jsonl"
+RBL="$tmp/round-batch.jsonl"
+RHEAD=$(printf '%040d' 67890)
+printf '{"branch":"b","head":"%s","model":"critic-a","id":"round-b","severity":"imp","file":"f","line":9,"verdict":"","round":4,"text":"- [round-b]: stable retry claim [f:9]"}\n' "$RHEAD" > "$RBB"
+printf '{"branch":"b","head":"%s","model":"critic-a","id":"round-b","severity":"imp","file":"f","line":9,"verdict":"","round":5,"text":"- [round-b]: stable retry claim [f:9]"}\n' "$RHEAD" >> "$RBB"
+CR_LEDGER="$RBL" bash "$LA" finding --batch-file "$RBB" 2>"$tmp/round-batch.err"
+check "batch same-head retry ignores changed round" "$?" "0"
+check "batch same-head retry preserves first round" "$(L="$RBL" node -e 'const r=JSON.parse(require("fs").readFileSync(process.env.L,"utf8"));console.log(r.round+","+require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").length)')" "4,1"
+
+RVL="$tmp/round-verdict.jsonl"
+CR_LEDGER="$RVL" bash "$LA" finding --branch b --head ROUND2 --model critic-a --id round-v --severity imp --file f --line 10 --verdict '' --round 4 --text '- [round-v]: adjudicated retry claim [f:10]'
+CR_LEDGER="$RVL" bash "$LA" finding --branch b --head ROUND2 --model critic-a --id round-v --severity imp --file f --line 10 --verdict disproved --round 5 2>"$tmp/round-verdict.err"
+check "verdict-only retry may supply a later round" "$?" "0"
+check "verdict-only later round appends amend and preserves producer round" "$(L="$RVL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").map(JSON.parse);console.log(r.filter(x=>x.kind==="finding").length+","+r.filter(x=>x.kind==="amend").length+","+r[0].round)')" "1,1,4"
+
+# Pre-fingerprint rows remain idempotent when a new writer supplies additive
+# fingerprint/round metadata; append-only compatibility preserves the old row.
+LEGACY_TEXT='- [legacy-round]: legacy claim [f:12]'
+RLG="$tmp/round-legacy.jsonl"
+printf '{"kind":"finding","ts":"2020-01-01T00:00:00Z","branch":"b","head":"LEGACY1","model":"critic-a","finding_id":"legacy-round","severity":"imp","file":"f","line":12,"verdict":"","artifact":"diff","perspective":"off","text":"%s"}\n' "$LEGACY_TEXT" > "$RLG"
+CR_LEDGER="$RLG" bash "$LA" finding --branch b --head LEGACY1 --model critic-a --id legacy-round --severity imp --file f --line 12 --verdict '' --round 6 --text "$LEGACY_TEXT" 2>"$tmp/round-legacy.err"
+check "single retry dedups a legacy text row lacking additive fields" "$?" "0"
+check "single legacy retry writes no replacement row" "$(wc -l < "$RLG" | tr -d ' ')" "1"
+
+RLGB="$tmp/round-legacy-batch.jsonl"
+printf '{"kind":"finding","ts":"2020-01-01T00:00:00Z","branch":"b","head":"%s","model":"critic-a","finding_id":"legacy-batch","severity":"imp","file":"f","line":12,"verdict":"","artifact":"diff","perspective":"off","text":"%s"}\n' "$RHEAD" "$LEGACY_TEXT" > "$RLGB"
+RLGBF="$tmp/round-legacy-batch-rows.jsonl"
+printf '{"branch":"b","head":"%s","model":"critic-a","id":"legacy-batch","severity":"imp","file":"f","line":12,"verdict":"","round":6,"text":"%s"}\n' "$RHEAD" "$LEGACY_TEXT" > "$RLGBF"
+CR_LEDGER="$RLGB" bash "$LA" finding --batch-file "$RLGBF" 2>"$tmp/round-legacy-batch.err"
+check "batch retry dedups a legacy text row lacking additive fields" "$?" "0"
+check "batch legacy retry writes no replacement row" "$(wc -l < "$RLGB" | tr -d ' ')" "1"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

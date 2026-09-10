@@ -164,7 +164,7 @@ else
     # CR_USAGE_LOG=1 (HIMMEL-485): each critic logs a chars/4 ESTIMATED usage
     # ledger record. No CRITIC_PANEL_TIERS here (HIMMEL-558): the panel
     # resolves tiers from the exported CR_PROFILE.
-    panel_findings=$(printf '%s' "$diff_out" | CR_USAGE_LOG=1 bash "$HIMMEL_ROOT/scripts/cr/critic-panel.sh" --head "$HEAD_SHA" --branch "$BRANCH" --base "$db" --base-sha "$db_sha" 2>"$panel_tmp")
+    panel_findings=$(printf '%s' "$diff_out" | CR_USAGE_LOG=1 CR_REVIEW_ROUND="$review_round" bash "$HIMMEL_ROOT/scripts/cr/critic-panel.sh" --head "$HEAD_SHA" --branch "$BRANCH" --base "$db" --base-sha "$db_sha" 2>"$panel_tmp")
     panel_rc=$?
     panel_avail_lines=$(cat "$panel_tmp"); rm -f "$panel_tmp"
     if [ "$panel_rc" -eq 7 ]; then
@@ -196,7 +196,7 @@ PINABORT
             retry_diff=$(rtk proxy git diff "$db_sha...$HEAD_SHA" 2>/dev/null) || retry_diff=""
             if [ -n "$retry_diff" ]; then
                 retry_tmp=$(mktemp -t cr-panel-avail.XXXXXX)
-                panel_findings=$(printf '%s' "$retry_diff" | CR_USAGE_LOG=1 bash "$HIMMEL_ROOT/scripts/cr/critic-panel.sh" --head "$HEAD_SHA" --branch "$BRANCH" --base "$db" --base-sha "$db_sha" 2>"$retry_tmp")
+                panel_findings=$(printf '%s' "$retry_diff" | CR_USAGE_LOG=1 CR_REVIEW_ROUND="$review_round" bash "$HIMMEL_ROOT/scripts/cr/critic-panel.sh" --head "$HEAD_SHA" --branch "$BRANCH" --base "$db" --base-sha "$db_sha" 2>"$retry_tmp")
                 panel_rc=$?
                 panel_avail_lines=$(cat "$retry_tmp"); rm -f "$retry_tmp"
                 # The retry is a SECOND panel invocation, so it has its own
