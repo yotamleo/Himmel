@@ -331,13 +331,18 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
   // case-intact, fold everything else. Parity with finding-fingerprint.js.
   const isCodeToken=(t)=>{const c=t.replace(/^[^A-Za-z0-9_$]+/,"").replace(/[^A-Za-z0-9_$]+$/,"");
     return c?(/[a-z][A-Z]/.test(c)||c.includes("_")||/^[A-Za-z0-9_$]+(?:\.[A-Za-z0-9_$]+)+$/.test(c)):false;};
-  const foldClaimCase=(v)=>String(v).split(/(`[^`]*`)/).map((p,i)=>i%2===1?p:p.split(/(\s+)/).map(t=>isCodeToken(t)?t:t.toLowerCase()).join("")).join("");
+  // HIMMEL-2906: classify identifier COMPONENTS inside an expression
+  // (`config.LOGLEVEL(value)`) rather than the whole token — parity with
+  // foldTokenCase in finding-fingerprint.js.
+  const foldTokenCase=(t)=>t.split(/([^A-Za-z0-9_$.]+)/).map((p,i)=>i%2===1?p:(isCodeToken(p)?p:p.toLowerCase())).join("");
+  const foldClaimCase=(v)=>String(v).split(/(`[^`]*`)/).map((p,i)=>i%2===1?p:p.split(/(\s+)/).map(t=>foldTokenCase(t)).join("")).join("");
   const foldClaim=(v)=>foldClaimCase(String(v==null?"":v).replace(/\s+/g," ").trim());
   const normalizeClaim=(v)=>foldClaim(String(v==null?"":v).replace(/^\s*-\s*\[[^\]]+\]\s*:\s*/,"").replace(/\s*\[[^\]\r\n]+:\d+(?:-\d+)?\]\s*$/,"") );
   const findingFingerprint=(slug,file,text)=>{
     const s=foldWhitespace(slug), a=normalizeFileAnchor(file), c=normalizeClaim(text);
     if(!s||!c) return "";
-    return "fp2:"+crypto.createHash("sha256").update([s,a,c].join(String.fromCharCode(31)),"utf8").digest("hex");
+    // fp3 (HIMMEL-2906): old fp1/fp2 rows keep their identity, append-only.
+    return "fp3:"+crypto.createHash("sha256").update([s,a,c].join(String.fromCharCode(31)),"utf8").digest("hex");
   };
   const led=e.LEDGER;
   // HIMMEL-2078: batch rows carry spec.text straight from a caller-built JSON

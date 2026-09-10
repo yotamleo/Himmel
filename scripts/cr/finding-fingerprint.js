@@ -25,12 +25,26 @@ function isCodeToken(token) {
     /^[A-Za-z0-9_$]+(?:\.[A-Za-z0-9_$]+)+$/.test(core);
 }
 
+// HIMMEL-2906: an identifier embedded in an expression — `config.LOGLEVEL(value)`
+// — fails isCodeToken on the WHOLE token: edge-trimming only strips the two
+// outer edges, so the trailing `)` survives internally and breaks the anchored
+// dotted-name regex. Split on everything outside identifier/dot characters so
+// each component (`config.LOGLEVEL`, `value`) is classified on its own; a
+// bracket or comma is exactly the kind of boundary that should not merge two
+// components' case decisions.
+function foldTokenCase(token) {
+  return token
+    .split(/([^A-Za-z0-9_$.]+)/)
+    .map((piece, index) => (index % 2 === 1 ? piece : (isCodeToken(piece) ? piece : piece.toLowerCase())))
+    .join('');
+}
+
 function foldClaimCase(value) {
   return String(value)
     .split(/(`[^`]*`)/)
     .map((part, index) => (index % 2 === 1
       ? part
-      : part.split(/(\s+)/).map((token) => (isCodeToken(token) ? token : token.toLowerCase())).join('')))
+      : part.split(/(\s+)/).map((token) => foldTokenCase(token)).join('')))
     .join('');
 }
 
@@ -75,11 +89,12 @@ function findingFingerprint(slug, file, text) {
   const digest = crypto.createHash('sha256')
     .update(`${normalizedSlug}${normalizedAnchor}${normalizedClaim}`, 'utf8')
     .digest('hex');
-  // fp2 (HIMMEL-2901): the claim fold changed, so a pre-2901 fp1 row must
-  // never match a claim hashed under the new rules. The ledger is append-only:
-  // old rows keep their fp1 identity and simply stop inheriting across the
+  // fp3 (HIMMEL-2906): the claim fold changed again (component-level case
+  // classification inside expressions), so a pre-2906 fp2 row must never
+  // match a claim hashed under the new rules. The ledger is append-only: old
+  // rows keep their fp1/fp2 identity and simply stop inheriting across the
   // version boundary.
-  return `fp2:${digest}`;
+  return `fp3:${digest}`;
 }
 
 module.exports = {

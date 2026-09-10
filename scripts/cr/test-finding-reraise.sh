@@ -28,10 +28,10 @@ assert_lacks() {
     case "$1" in *"$2"*) fail "$3 (unexpected '$2')" ;; *) pass "$3" ;; esac
 }
 assert_fingerprint() {
-    if grep -qE '^fp2:[0-9a-f]{64}$' <<< "$1"; then
+    if grep -qE '^fp3:[0-9a-f]{64}$' <<< "$1"; then
         pass "$2"
     else
-        fail "$2 (got '$1', want fp2:<64 lowercase hex>)"
+        fail "$2 (got '$1', want fp3:<64 lowercase hex>)"
     fi
 }
 
@@ -790,6 +790,86 @@ run_panel 5 'THE HANDLER reads config.LOGLEVEL. [scripts/cr/case.sh:95]' imp "$t
 assert_eq "$?" "0" "dotted-sentence prose-case panel run succeeds"
 assert_has "$(cat "$tmp/ds5.out")" "RE-RAISE (r3 disproved)" \
     "prose case around an identical dotted identifier still folds onto one fingerprint"
+
+# HIMMEL-2906: an identifier embedded in an expression is still an identifier —
+# isCodeToken classified the WHOLE token, so the trailing `)` in
+# `config.LOGLEVEL(value)` broke the anchored dotted-name regex and both cases
+# folded together (fp2). fp3 classifies components split on non-identifier
+# characters instead.
+checkout_branch expression-identifier-case
+head_ei3="$(advance_head expression-identifier-r3)"
+set_registry critic-a
+ei_claim='The handler reads config.LOGLEVEL(value) [scripts/cr/case.sh:100]'
+run_panel 3 "$ei_claim" imp "$tmp/ei3.out" "$tmp/ei3.err"
+assert_eq "$?" "0" "expression-identifier seed panel run succeeds"
+id_ei3="$(finding_id_at expression-identifier-case "$head_ei3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch expression-identifier-case --head "$head_ei3" \
+        --id "$id_ei3" --set verdict=disproved --reason 'the LOGLEVEL(value) claim is disproved'
+) >/dev/null 2>"$tmp/ei3-amend.err"
+assert_eq "$?" "0" "expression-identifier fixture accepts the disproof"
+advance_head expression-identifier-r4 >/dev/null
+run_panel 4 'The handler reads config.loglevel(value) [scripts/cr/case.sh:110]' imp "$tmp/ei4.out" "$tmp/ei4.err"
+assert_eq "$?" "0" "expression-identifier case panel run succeeds"
+assert_has "$(cat "$tmp/ei4.out")" "## Important Issues (1 found)" \
+    "an identifier embedded in a call expression is fingerprint-significant"
+assert_lacks "$(cat "$tmp/ei4.out")" "RE-RAISE (" \
+    "a differing embedded identifier does not inherit a disposition through the call expression"
+advance_head expression-identifier-r5 >/dev/null
+run_panel 5 'THE HANDLER reads config.LOGLEVEL(value) [scripts/cr/case.sh:100]' imp "$tmp/ei5.out" "$tmp/ei5.err"
+assert_eq "$?" "0" "expression-identifier prose-case panel run succeeds"
+assert_has "$(cat "$tmp/ei5.out")" "RE-RAISE (r3 disproved)" \
+    "prose case around an identical embedded identifier still folds onto one fingerprint"
+
+# Bracket/comma-joined components each keep their own case verdict — a
+# separator between two identifier-shaped fragments must not merge their case
+# decisions into one whole-token classification.
+checkout_branch bracket-comma-identifier-case
+head_bc3="$(advance_head bracket-comma-r3)"
+set_registry critic-a
+bc_claim='items[0].fooBar, other_Thing disagree [scripts/cr/case.sh:120]'
+run_panel 3 "$bc_claim" imp "$tmp/bc3.out" "$tmp/bc3.err"
+assert_eq "$?" "0" "bracket-comma seed panel run succeeds"
+id_bc3="$(finding_id_at bracket-comma-identifier-case "$head_bc3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch bracket-comma-identifier-case --head "$head_bc3" \
+        --id "$id_bc3" --set verdict=disproved --reason 'the fooBar/other_Thing claim is disproved'
+) >/dev/null 2>"$tmp/bc3-amend.err"
+assert_eq "$?" "0" "bracket-comma fixture accepts the disproof"
+advance_head bracket-comma-r4 >/dev/null
+run_panel 4 'items[0].foobar, other_thing disagree [scripts/cr/case.sh:130]' imp "$tmp/bc4.out" "$tmp/bc4.err"
+assert_eq "$?" "0" "bracket-comma case panel run succeeds"
+assert_has "$(cat "$tmp/bc4.out")" "## Important Issues (1 found)" \
+    "each bracket/comma-joined component is fingerprint-significant on its own"
+assert_lacks "$(cat "$tmp/bc4.out")" "RE-RAISE (" \
+    "differing bracket/comma-joined components do not inherit a disposition"
+advance_head bracket-comma-r5 >/dev/null
+run_panel 5 'ITEMS[0].fooBar, other_Thing DISAGREE [scripts/cr/case.sh:140]' imp "$tmp/bc5.out" "$tmp/bc5.err"
+assert_eq "$?" "0" "bracket-comma prose-case panel run succeeds"
+assert_has "$(cat "$tmp/bc5.out")" "RE-RAISE (r3 disproved)" \
+    "prose case around identical bracket/comma-joined components still folds onto one fingerprint"
+
+# The deliberate 2901 rule stands: an ALL-CAPS word outside backticks is
+# indistinguishable from prose emphasis, so it still folds even under fp3.
+checkout_branch prose-caps-still-fold
+head_pc3="$(advance_head prose-caps-r3)"
+set_registry critic-a
+run_panel 3 'CACHE cleanup needed [scripts/cr/case.sh:150]' imp "$tmp/pc3.out" "$tmp/pc3.err"
+assert_eq "$?" "0" "prose-caps seed panel run succeeds"
+id_pc3="$(finding_id_at prose-caps-still-fold "$head_pc3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch prose-caps-still-fold --head "$head_pc3" \
+        --id "$id_pc3" --set verdict=disproved --reason 'the CACHE claim is disproved'
+) >/dev/null 2>"$tmp/pc3-amend.err"
+assert_eq "$?" "0" "prose-caps fixture accepts the disproof"
+advance_head prose-caps-r4 >/dev/null
+run_panel 4 'cache cleanup needed [scripts/cr/case.sh:160]' imp "$tmp/pc4.out" "$tmp/pc4.err"
+assert_eq "$?" "0" "prose-caps lowercase panel run succeeds"
+assert_has "$(cat "$tmp/pc4.out")" "RE-RAISE (r3 disproved)" \
+    "an ALL-CAPS prose word outside backticks still folds onto the lowercase claim"
 
 # The writer's standalone fingerprint copy must agree with the shared helper on
 # the case rules too, or a row it writes never matches a claim the panel reads.
