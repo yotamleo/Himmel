@@ -185,8 +185,9 @@ function Set-SessionStartHook {
     $pfx = $Prefix.Replace('\', '/')
     # The command is composed by jq (hookcmd), never by PowerShell string
     # interpolation, so it carries exactly the same shell escaping as the
-    # PreToolUse trio and the bash twin (HIMMEL-2905).
-    $basepat = "scripts/hooks/" + ($HookBasename -replace '\.', '[.]')
+    # PreToolUse trio and the bash twin (HIMMEL-2905). The dedup test is built
+    # from the SAME escaped string inside the same jq program (CR round 3), so
+    # the two can never disagree and no regex-escaping is needed.
     if ($DryRun) { Write-Host "DRY: merge SessionStart hook $HookBasename into $SettingsPath (prefix: $Prefix)"; return }
 
     # Captured native stdout is decoded via [Console]::OutputEncoding, the
@@ -212,10 +213,11 @@ function Set-SessionStartHook {
         $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
         $filter = $WireHookCmdJq + @'
 hookcmd($pfx; $hook) as $cmd
+| ("scripts/hooks/" + shesc($hook)) as $needle
 | .hooks = (.hooks // {})
 | .hooks.SessionStart = ((.hooks.SessionStart // [])
     | map(.hooks = ((.hooks // [])
-        | map(select((.command // "") | test($basepat) | not))))
+        | map(select((.command // "") | contains($needle) | not))))
     | map(select((.hooks | length) > 0)))
 | (.hooks.SessionStart | map(has("matcher") | not) | index(true)) as $idx
 | if $idx == null
@@ -223,7 +225,7 @@ hookcmd($pfx; $hook) as $cmd
   else .hooks.SessionStart[$idx].hooks += [{"type":"command","command":$cmd}]
   end
 '@
-        $out = $base | jq --indent 2 --arg pfx $pfx --arg hook $HookBasename --arg basepat $basepat $filter
+        $out = $base | jq --indent 2 --arg pfx $pfx --arg hook $HookBasename $filter
         if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq transform failed" }
         Write-SettingsAtomic -SettingsPath $SettingsPath -Json ($out -join "`n")
         Write-Host "  wired SessionStart $HookBasename -> $SettingsPath"

@@ -105,6 +105,11 @@ Check 'quote in prefix: SessionStart path is shell-escaped' (JqVal $s9b '.hooks.
 $s9c = Join-Path $td 's9c.json'
 Set-SessionStartHook -SettingsPath $s9c -Prefix 'C:/himmel' -HookBasename 'we"ird-hook.sh' | Out-Null
 Check 'quote in basename: basename is shell-escaped' (JqVal $s9c '.hooks.SessionStart[0].hooks[0].command') 'bash "C:/himmel/scripts/hooks/we\"ird-hook.sh"'
+# ...and the DEDUP needle is derived from that same escaped string, so a
+# re-wire still REPLACES rather than appending (CR round 3, [codex-1]).
+Set-SessionStartHook -SettingsPath $s9c -Prefix 'C:/moved' -HookBasename 'we"ird-hook.sh' | Out-Null
+Check 'quote in basename: re-wire dedups' (JqVal $s9c '[.hooks.SessionStart[].hooks[]] | length') '1'
+Check 'quote in basename: re-wire repoints' (JqVal $s9c '.hooks.SessionStart[0].hooks[0].command') 'bash "C:/moved/scripts/hooks/we\"ird-hook.sh"'
 
 # 10. NEGATIVE control for 9 (load-bearing): the project-scope prefix is the
 # literal, UNEXPANDED $CLAUDE_PROJECT_DIR that Claude Code expands at hook-fire

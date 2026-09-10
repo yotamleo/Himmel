@@ -182,8 +182,9 @@ wire_sessionstart_hook() {
   local pfx="${prefix//'\'//}"
   # The command is composed by jq (hookcmd), not by bash string interpolation,
   # so the SessionStart hook carries exactly the same shell escaping as the
-  # PreToolUse trio and the PowerShell twin (HIMMEL-2905).
-  local basepat="scripts/hooks/${basename//./[.]}"
+  # PreToolUse trio and the PowerShell twin (HIMMEL-2905). The dedup test is
+  # built from the SAME escaped string, inside the same jq program, so the two
+  # can never disagree — see the filter below.
   if [[ "$dry_run" -eq 1 ]]; then
     echo "DRY: merge SessionStart hook $basename into $settings (prefix: $prefix)"
     return
@@ -196,14 +197,23 @@ wire_sessionstart_hook() {
     return 1
   fi
   [ -z "$(printf '%s' "$base" | tr -d '[:space:]')" ] && base="{}"
-  # shellcheck disable=SC2016  # a jq program: $pfx/$hook/$cmd/$basepat are jq bindings
-  printf '%s' "$base" | jq --arg pfx "$pfx" --arg hook "$basename" --arg basepat "$basepat" \
+  # Dedup is a LITERAL substring test on the ESCAPED basename, not a regex on
+  # the raw one (CR round 3, [codex-1]). Escaping the basename in the command
+  # (the CodeRabbit fix above) left the old `test("scripts/hooks/<raw>[.]sh")`
+  # pattern unable to match its own output, so a re-run APPENDED a duplicate
+  # instead of replacing — measured: 2 hook objects after two wires. Deriving
+  # the needle from the same shesc() the command uses makes disagreement
+  # impossible, and `contains` needs no regex-escaping at all, which the old
+  # `${basename//./[.]}` only ever did for `.` anyway.
+  # shellcheck disable=SC2016  # a jq program: $pfx/$hook/$cmd are jq bindings
+  printf '%s' "$base" | jq --arg pfx "$pfx" --arg hook "$basename" \
     "$WIRE_HOOK_CMD_JQ"'
     hookcmd($pfx; $hook) as $cmd
+    | ("scripts/hooks/" + shesc($hook)) as $needle
     | .hooks = (.hooks // {})
     | .hooks.SessionStart = ((.hooks.SessionStart // [])
         | map(.hooks = ((.hooks // [])
-            | map(select((.command // "") | test($basepat) | not))))
+            | map(select((.command // "") | contains($needle) | not))))
         | map(select((.hooks | length) > 0)))
     | (.hooks.SessionStart | map(has("matcher") | not) | index(true)) as $idx
     | if $idx == null

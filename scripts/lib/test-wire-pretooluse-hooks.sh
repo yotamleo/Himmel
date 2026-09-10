@@ -163,6 +163,17 @@ else echo "FAIL - quote in basename: command does not parse as shell: [$cmd8f3]"
 check "quote in basename: path round-trips through the shell" \
   "$(bash -c "printf '%s\n' ${cmd8f3#bash }" 2>/dev/null)" \
   'C:/himmel/scripts/hooks/we"ird-hook.sh'
+# ...and the DEDUP test must still recognise the command it just wrote (CR
+# round 3, [codex-1]). Escaping the basename without re-deriving the needle
+# from the same escaped string left the pattern unable to match its own
+# output, so a re-run APPENDED instead of replacing. RED before that fix:
+# 2 hook objects here, at the OLD path.
+( . "$wire"; wire_sessionstart_hook "$s8f3" "C:/moved" 'we"ird-hook.sh' 0 >/dev/null 2>&1 ) || true
+check "quote in basename: re-wire dedups (no double-wire)" \
+  "$(jq -r '[.hooks.SessionStart[].hooks[]] | length' "$s8f3" 2>/dev/null)" "1"
+check "quote in basename: re-wire repoints at the new clone path" \
+  "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f3" 2>/dev/null)" \
+  'bash "C:/moved/scripts/hooks/we\"ird-hook.sh"'
 
 # 8g. NEGATIVE control for 8f (load-bearing): the project-scope prefix is the
 # LITERAL, unexpanded `$CLAUDE_PROJECT_DIR` -- Claude Code expands it at
