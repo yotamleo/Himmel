@@ -262,10 +262,89 @@ FAR_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()+datetime.
 # census BEFORE it parses --time, so on a loaded box that preamble by itself can
 # outlast a 5-minute target between the call and its consumption. 20 min is
 # still comfortably inside the 60-minute ceiling, so long_gap=0 is unchanged.
-# FAR/WRAP are deliberately still captured once -- their whole point is a fixed
+# FAR is deliberately still captured once -- its whole point is a fixed
 # distance. LG-fix below pins both halves so this cannot silently regress.
 near_hhmm() { python3 -c 'import datetime; print((datetime.datetime.now()+datetime.timedelta(minutes=20)).strftime("%H:%M"))'; }
-WRAP_HHMM=$(python3 -c 'import datetime; print((datetime.datetime.now()-datetime.timedelta(minutes=10)).strftime("%H:%M"))')
+
+# LG4 needs an HH:MM that is already past on the SAME local day. Subtracting ten
+# minutes at 00:01..00:09 produces yesterday's 23:5x after strftime discards the
+# date; arm-resume then correctly interprets that HH:MM as future TODAY and does
+# not enter its rollover path. Clamp that crossed-date case to 00:00. At the
+# exact 00:00 minute there is no strictly earlier same-day HH:MM, so signal a
+# named skip instead of pretending the rollover assertions ran.
+lg4_wrap_hhmm() {
+    python3 - "$1" <<'PY'
+import datetime
+import sys
+
+now = datetime.datetime.fromtimestamp(int(sys.argv[1])).astimezone()
+if now.hour == 0 and now.minute == 0:
+    print("exact local midnight has no earlier same-day HH:MM", file=sys.stderr)
+    raise SystemExit(10)
+
+candidate = now - datetime.timedelta(minutes=10)
+if candidate.date() != now.date():
+    candidate = now.replace(hour=0, minute=0, second=0, microsecond=0)
+print(candidate.strftime("%H:%M"))
+PY
+}
+
+read -r _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch < <(python3 -c '
+import datetime
+now = datetime.datetime.now()
+print(
+    int(now.replace(hour=0, minute=5, second=0, microsecond=0).timestamp()),
+    int(now.replace(hour=12, minute=34, second=0, microsecond=0).timestamp()),
+    int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()),
+)
+')
+_lg4_0005_hhmm=$(lg4_wrap_hhmm "$_lg4_0005_epoch")
+if [ "$_lg4_0005_hhmm" = "00:00" ]; then
+    echo "PASS LG4 fixture local 00:05 stays inside today (00:00)"
+else
+    echo "FAIL LG4 fixture local 00:05 expected 00:00, got $_lg4_0005_hhmm"
+    FAILED=$((FAILED + 1))
+fi
+_lg4_0005_rolled=$(python3 - "$_lg4_0005_epoch" "$_lg4_0005_hhmm" <<'PY'
+import datetime
+import sys
+
+now = datetime.datetime.fromtimestamp(int(sys.argv[1])).astimezone()
+hh, mm = (int(x) for x in sys.argv[2].split(":"))
+candidate = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+print(1 if candidate <= now else 0)
+PY
+)
+if [ "$_lg4_0005_rolled" = "1" ]; then
+    echo "PASS LG4 fixture local 00:05 genuinely enters the rollover condition"
+else
+    echo "FAIL LG4 fixture local 00:05 did not enter the rollover condition"
+    FAILED=$((FAILED + 1))
+fi
+_lg4_1234_hhmm=$(lg4_wrap_hhmm "$_lg4_1234_epoch")
+if [ "$_lg4_1234_hhmm" = "12:24" ]; then
+    echo "PASS LG4 fixture ordinary time preserves now-minus-10 (12:24)"
+else
+    echo "FAIL LG4 fixture ordinary time expected 12:24, got $_lg4_1234_hhmm"
+    FAILED=$((FAILED + 1))
+fi
+_lg4_midnight_reason=$(lg4_wrap_hhmm "$_lg4_0000_epoch" 2>&1)
+_lg4_midnight_rc=$?
+assert_rc "LG4 fixture exact midnight signals skip" 10 "$_lg4_midnight_rc"
+assert_contains "LG4 fixture exact midnight names the skip reason" "exact local midnight has no earlier same-day HH:MM" "$_lg4_midnight_reason"
+unset _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch _lg4_0005_hhmm _lg4_0005_rolled _lg4_1234_hhmm _lg4_midnight_reason _lg4_midnight_rc
+
+LG4_SKIP_REASON=
+WRAP_HHMM=$(lg4_wrap_hhmm "$(python3 -c 'import time; print(int(time.time()))')" 2>"$TMP/lg4-wrap-reason")
+_lg4_wrap_rc=$?
+if [ "$_lg4_wrap_rc" -eq 10 ]; then
+    LG4_SKIP_REASON=$(<"$TMP/lg4-wrap-reason")
+elif [ "$_lg4_wrap_rc" -ne 0 ]; then
+    echo "FAIL LG4 fixture helper failed unexpectedly (rc=$_lg4_wrap_rc)"
+    FAILED=$((FAILED + 1))
+    LG4_SKIP_REASON="fixture helper failed unexpectedly"
+fi
+unset _lg4_wrap_rc
 
 # ---------------------------------------------------------------------------
 # LG1: gap > 60 min, no --long-gap -> REFUSED (rc 9) + the loud WARN.
@@ -306,27 +385,31 @@ assert_not_contains "LG3 no rc-9 refusal text under --long-gap" "rc=9" "$out"
 #      (no +1 day) would compute a ~-10 min gap -> <=60 -> NOT refused, failing
 #      this case. This is the "550 min, not negative" correctness guard.
 # ---------------------------------------------------------------------------
-HO=$(make_handover "$WORK_REPO")
-out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$WRAP_HHMM" --handover "$HO" --dry-run 2>&1)
-rc=$?
-assert_rc "LG4 past-time wrap refused (positive gap, rc 9)" 9 "$rc"
-assert_contains "LG4 wrap refusal still cites the directive" "ALWAYS-CONTINUE" "$out"
-# HIMMEL-2247: the rolled path must carry BOTH messages. The ALWAYS-CONTINUE
-# WARN is the guardrail citation; the HIMMEL-2147 "already past for today" ERR
-# line is the up-front rollover context. A regression that drops either one
-# (e.g. re-making them an if/else) fails here.
-assert_contains "LG4 wrap refusal still asks if the queue is empty" "is the queue actually empty" "$out"
-assert_contains "LG4 wrap refusal names the rollover up front" "already past for today" "$out"
-# HIMMEL-2247 (CR round 1): ORDER is the contract, not just presence. The
-# HIMMEL-2147 rollover line must come UP FRONT, PREFIXING the WARN — the
-# regression was exactly a swap of prefix for replace. This pattern also
-# pins the FULL citation text, which a bare "ALWAYS-CONTINUE" match does not.
-case "$out" in
-    *"already past for today"*"ALWAYS-CONTINUE directive says arm <=30-60 min while work remains"*)
-        lg4_order="ROLLOVER-FIRST" ;;
-    *) lg4_order="WARN-FIRST-OR-MISSING" ;;
-esac
-assert_contains "LG4 rollover context precedes the full ALWAYS-CONTINUE citation" "ROLLOVER-FIRST" "$lg4_order"
+if [ -n "$LG4_SKIP_REASON" ]; then
+    echo "SKIP LG4 — $LG4_SKIP_REASON"
+else
+    HO=$(make_handover "$WORK_REPO")
+    out=$(PATH="$SCHED_STUB:$PATH" bash "$ARM" --time "$WRAP_HHMM" --handover "$HO" --dry-run 2>&1)
+    rc=$?
+    assert_rc "LG4 past-time wrap refused (positive gap, rc 9)" 9 "$rc"
+    assert_contains "LG4 wrap refusal still cites the directive" "ALWAYS-CONTINUE" "$out"
+    # HIMMEL-2247: the rolled path must carry BOTH messages. The ALWAYS-CONTINUE
+    # WARN is the guardrail citation; the HIMMEL-2147 "already past for today" ERR
+    # line is the up-front rollover context. A regression that drops either one
+    # (e.g. re-making them an if/else) fails here.
+    assert_contains "LG4 wrap refusal still asks if the queue is empty" "is the queue actually empty" "$out"
+    assert_contains "LG4 wrap refusal names the rollover up front" "already past for today" "$out"
+    # HIMMEL-2247 (CR round 1): ORDER is the contract, not just presence. The
+    # HIMMEL-2147 rollover line must come UP FRONT, PREFIXING the WARN — the
+    # regression was exactly a swap of prefix for replace. This pattern also
+    # pins the FULL citation text, which a bare "ALWAYS-CONTINUE" match does not.
+    case "$out" in
+        *"already past for today"*"ALWAYS-CONTINUE directive says arm <=30-60 min while work remains"*)
+            lg4_order="ROLLOVER-FIRST" ;;
+        *) lg4_order="WARN-FIRST-OR-MISSING" ;;
+    esac
+    assert_contains "LG4 rollover context precedes the full ALWAYS-CONTINUE citation" "ROLLOVER-FIRST" "$lg4_order"
+fi
 
 # ---------------------------------------------------------------------------
 # LG5: ARM_RESUME_SAFETY_ARM=1 (automated safety arm) is EXEMPT — a far HH:MM
@@ -457,5 +540,9 @@ if [ "$FAILED" -gt 0 ]; then
     exit 1
 fi
 echo "---"
-echo "PASS all cases"
+if [ -n "$LG4_SKIP_REASON" ]; then
+    echo "PASS all runnable cases (LG4 skipped)"
+else
+    echo "PASS all cases"
+fi
 exit 0
