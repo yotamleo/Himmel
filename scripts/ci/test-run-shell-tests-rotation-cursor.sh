@@ -113,7 +113,10 @@ rm -rf "$sb17"
 # not a hand-computed path.
 # --------------------------------------------------------------------------
 echo "== Case 17l/17m: rotation-cursor key no longer collides across scan roots =="
-sb17lm=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate-key.XXXXXX")
+sb17lm=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate-key.XXXXXX") || {
+  echo "FAIL: Case 17l/17m sandbox: mktemp -d failed"
+  exit 1
+}
 home17lm="$sb17lm/home"
 mkdir -p "$home17lm"
 rootA17lm="$sb17lm/roots/a/b"
