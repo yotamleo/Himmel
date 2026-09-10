@@ -134,16 +134,21 @@ fi
 # re-raised at --head: a DIFFERENT finding row on the same branch, at --head,
 # sharing the same stored `fingerprint` (ledger-append.sh already computes
 # this at write time — promote reads it, never recomputes it) whose OWN
-# effective verdict is still live (empty/agreed/conflict/unaddressed, never
-# fixed/disproved/deferred — codex-2, HIMMEL-2911 CR round 1: a matching
-# occurrence that is itself already dispositioned is not an open re-raise).
-# Terminal rows (fixed/disproved/deferred) are left untouched; conflict/
-# unaddressed were never agreed and are only WARNed. A finding whose stored
-# fingerprint is empty (pre-fingerprint row, or no --text was ever supplied)
-# cannot be safely checked for re-raise, so it is conservatively left agreed
-# (counted as still-open) rather than guessed at. Idempotent: a second run
-# sees the fixed amend via the same effective-state merge and skip-terminals
-# it, writing nothing.
+# effective verdict is still live (empty/agreed/conflict/unaddressed/deferred,
+# never fixed/disproved — codex-2, HIMMEL-2911 CR round 1: a matching
+# occurrence that is itself already fixed/disproved is not an open re-raise;
+# codex-1, HIMMEL-2911 CR round 3: `deferred` stays live — it means the issue
+# is REAL and tracked, so it must not let an older occurrence be stamped
+# fixed) — or (c) --head is not actually a git descendant of that finding own
+# head (codex-2, HIMMEL-2911 CR round 3: an unrelated or divergent --head
+# never reviewed past that commit, so its absence there is not evidence of
+# anything). Terminal rows (fixed/disproved/deferred) are left untouched;
+# conflict/unaddressed were never agreed and are only WARNed. A finding whose
+# stored fingerprint is empty (pre-fingerprint row, or no --text was ever
+# supplied) cannot be safely checked for re-raise, so it is conservatively
+# left agreed (counted as still-open) rather than guessed at. Idempotent: a
+# second run sees the fixed amend via the same effective-state merge and
+# skip-terminals it, writing nothing.
 # Exit 0 = nothing left agreed; exit 3 = one or more rows are still-open (the
 # caller's round was not actually clean for that finding); exit 1 = a
 # malformed ledger row or a ledger write failure.
@@ -188,6 +193,26 @@ function resolvesToHead(value) {
   }
   return resolveCache.get(h) === e.FULL_HEAD;
 }
+// codex-2, HIMMEL-2911 CR round 3: "not re-raised at --head" is only
+// meaningful evidence of a fix when --head actually descends from the
+// finding own commit — otherwise an unrelated or divergent clean head
+// (a stale/incomparable --head) would let a later, never-reviewed commit
+// findings get marked fixed with no real evidence either way.
+const ancestorCache = new Map();
+function isAncestorOfHead(commit) {
+  const h = String(commit || "");
+  if (!h) return false;
+  if (h === e.FULL_HEAD) return true;
+  if (!ancestorCache.has(h)) {
+    let ok = false;
+    try {
+      cp.execFileSync("git", ["merge-base", "--is-ancestor", h, e.FULL_HEAD], {stdio: "ignore"});
+      ok = true;
+    } catch { ok = false; }
+    ancestorCache.set(h, ok);
+  }
+  return ancestorCache.get(h);
+}
 // Merge every amend.set for a (target_head, finding_id, artifact, perspective)
 // key in ledger (chronological) order — a later amend field wins, a field a
 // later amend never touched keeps its earlier value. Same shape as
@@ -202,10 +227,13 @@ const findingRows = rows.filter((o) => o.kind === "finding" && o.branch === e.BR
 const atHead = findingRows.filter((o) => resolvesToHead(o.head));
 // Only a LIVE occurrence at --head is a genuine re-raise (codex-2, HIMMEL-2911
 // CR round 1): a matching finding at --head that is itself already
-// fixed/disproved/deferred is a DISPOSITIONED instance, not an open one, and
-// must not keep an older agreed row still-open forever just because its
-// fingerprint once reappeared.
-const liveVerdicts = new Set(["", "agreed", "conflict", "unaddressed"]);
+// fixed/disproved is a DISPOSITIONED instance, not an open one, and must not
+// keep an older agreed row still-open forever just because its fingerprint
+// once reappeared. deferred stays LIVE (codex-1, HIMMEL-2911 CR round 3):
+// deferred means the issue is REAL and tracked, never fixed, so a deferred
+// reappearance must not let an older agreed occurrence of the SAME issue be
+// promoted to fixed — that would be a false claim the code changed.
+const liveVerdicts = new Set(["", "agreed", "conflict", "unaddressed", "deferred"]);
 const fpAtHead = new Map();
 for (const o of atHead) {
   if (!o.fingerprint) continue;
@@ -232,6 +260,10 @@ for (const row of findingRows) {
     // disposition (a follow-up fix at a fresh head, or a deferral), the same
     // way the round-4 cap defers a same-head pending suggestion instead of
     // fabricating a fix for it.
+    action = "still-open";
+  } else if (!isAncestorOfHead(row.head)) {
+    // Not an ancestor of --head: the clean round at --head never actually
+    // reviewed past this commit, so its absence there proves nothing.
     action = "still-open";
   } else {
     const fp = effective.fingerprint || "";

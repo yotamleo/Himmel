@@ -374,6 +374,41 @@ CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
     --branch promote --head "$promote_head_a" --id find-d \
     --set verdict=deferred --set deferred_to=HIMMEL-9010 --reason "deferred by hand"
 
+# (h) agreed at an earlier head, its fingerprint reappears at the clean head
+# but that reappearance is deferred, not resolved (codex-1, HIMMEL-2911 CR
+# round 3) -> still-open: deferred means the issue is still real.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_a" --model stub --id find-h \
+    --severity sug --file promote.txt --line 7 --verdict "" \
+    --text "tidy up the promote fixture theta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_a" --id find-h \
+    --set verdict=agreed --reason "leg agrees with theta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_b" --model stub --id find-h2 \
+    --severity sug --file promote.txt --line 7 --verdict "" \
+    --text "tidy up the promote fixture theta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_b" --id find-h2 \
+    --set verdict=deferred --set deferred_to=HIMMEL-9011 --reason "tracked, out of scope"
+
+# (i) agreed on a DIVERGENT commit that is not an ancestor of the clean head
+# (codex-2, HIMMEL-2911 CR round 3) -> still-open even with no fingerprint
+# match: --head never reviewed past that commit, so its absence proves nothing.
+git -C "$repo" checkout -q -b promote-divergent main
+printf 'divergent\n' > "$repo/divergent.txt"
+git -C "$repo" add divergent.txt
+git -C "$repo" commit -q -m divergent
+promote_head_divergent="$(git -C "$repo" rev-parse promote-divergent)"
+git -C "$repo" checkout -q promote
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_divergent" --model stub --id find-i \
+    --severity sug --file divergent.txt --line 1 --verdict "" \
+    --text "tidy up the promote fixture iota"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_divergent" --id find-i \
+    --set verdict=agreed --reason "leg agrees with iota"
+
 # (f) agreed AT the clean head itself (codex-1, HIMMEL-2911 CR round 1) ->
 # still-open: no later commit could have fixed a finding raised THIS round.
 CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
@@ -410,6 +445,8 @@ assert_has "$promote_out1" "skip-terminal find-c@" "promote (c) already-fixed ro
 assert_has "$promote_out1" "skip-terminal find-d@" "promote (d) deferred row is skipped"
 assert_has "$promote_out1" "still-open find-f@" "promote (f) same-head agreed finding is never auto-fixed"
 assert_has "$promote_out1" "promoted find-g@" "promote (g) an earlier agreed finding promotes when its head-H reappearance is already disproved"
+assert_has "$promote_out1" "still-open find-h@" "promote (h) a deferred head-H reappearance keeps the earlier agreed finding still-open"
+assert_has "$promote_out1" "still-open find-i@" "promote (i) a finding on a non-ancestor commit is never promoted"
 promote_ledger_content="$(cat "$promote_ledger" 2>/dev/null)"
 assert_has "$promote_ledger_content" '"finding_id":"find-a"' "promoted amend targets find-a"
 assert_has "$promote_ledger_content" '"verdict":"fixed"' "promote writes a fixed verdict"
