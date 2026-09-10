@@ -468,6 +468,38 @@ check "the original finding line is untouched" "$(L="$AM" node -e 'const o=requi
 check "amend records the target + the set" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.target_head+","+o.finding_id+","+o.set.severity)')" "AH1,codex-adv-1,sug"
 check "amend records the reason" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.reason)')" "out of diff, pre-existing, already public"
 
+# HIMMEL-2909: amend without --branch used to write branch:"" — a
+# branch-scoped read then sees the finding but not its disposition. It must
+# inherit the branch of the finding row it targets (never "").
+check "amend without --branch inherits the finding's branch" "$(L="$AM" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "b"
+
+# Control: an explicit --branch is never overridden by inheritance.
+BR="$tmp/branch-inherit.jsonl"; : > "$BR"
+CR_LEDGER="$BR" bash "$LA" finding --branch origin-branch --head BH1 --model m --id find-br-1 --severity imp --file f --line 3 --verdict agreed
+CR_LEDGER="$BR" bash "$LA" amend --branch explicit-branch --head BH1 --id find-br-1 --set severity=sug --reason "explicit branch must win"
+check "amend with an explicit --branch keeps it (never overridden)" "$(L="$BR" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="amend");console.log(o.branch)')" "explicit-branch"
+
+# Negative: the target finding row itself carries no branch (a legacy
+# pre-branch row) and the cwd is not on a branch (detached HEAD) — no branch
+# to inherit and no fallback, so this must refuse loudly rather than write "".
+DET="$tmp/detached-repo"; mkdir -p "$DET"
+git -C "$DET" init -q
+git -C "$DET" -c user.email=t@t.example -c user.name=t commit -q --allow-empty -m init
+git -C "$DET" checkout -q --detach HEAD
+NB="$tmp/no-branch-target.jsonl"; : > "$NB"
+CR_LEDGER="$NB" bash "$LA" finding --head NBH1 --model m --id find-nb-1 --severity imp --file f --line 3 --verdict agreed
+(cd "$DET" && CR_LEDGER="$NB" bash "$LA" amend --head NBH1 --id find-nb-1 --set severity=sug --reason "no branch to inherit, detached HEAD") 2>"$tmp/no-branch.err"
+check "amend refuses when the target has no branch and HEAD is detached (HIMMEL-2909)" "$?" "3"
+check "amend refusal on a branchless target names the reason" "$(grep -c 'is not on a branch' "$tmp/no-branch.err")" "1"
+check "amend refusal on a branchless target wrote nothing" "$(wc -l < "$NB" | tr -d ' ')" "1"
+
+# Negative (ticket-exact fixture): no matching finding row at all, also run
+# from a detached HEAD — must still refuse (the pre-existing "nothing
+# amended" refusal), never fall through to writing an empty branch.
+(cd "$DET" && CR_LEDGER="$NB" bash "$LA" amend --head NBH1 --id no-such-finding --set severity=sug --reason x) 2>"$tmp/no-match-detached.err"
+check "amend with no matching row + detached HEAD still refuses" "$?" "3"
+check "amend with no matching row + detached HEAD wrote nothing" "$(wc -l < "$NB" | tr -d ' ')" "1"
+
 # The whole point of the verb: it must NEVER report success without writing.
 CR_LEDGER="$AM" bash "$LA" amend --head AH1 --id no-such-finding --set severity=sug --reason x 2>"$tmp/noop.err"
 check "amend with no target exits non-zero" "$?" "3"
