@@ -3100,19 +3100,22 @@ PATH="$mvshim:$PATH" MV_HITS="$sbw19e/mv-hits" MV_TRIGGER="$sbw19e/mv-trigger" M
 w19e_pid=$!
 
 _spin=0
-while [ ! -d "$lockw19e.q/$w19e_pid" ] && [ "$_spin" -lt 100 ]; do
+while ! grep -q '^started=.' "$lockw19e.q/$w19e_pid/owner" 2>/dev/null && [ "$_spin" -lt 100 ]; do
   sleep 0.1
   _spin=$((_spin + 1))
 done
-if [ ! -d "$lockw19e.q/$w19e_pid" ]; then
-  fail "W19e setup -- the waiter under test never took its own ticket within 10s; cannot run the case"
+if ! grep -q '^started=.' "$lockw19e.q/$w19e_pid/owner" 2>/dev/null; then
+  fail "W19e setup -- the waiter under test never branded its own ticket within 10s; cannot run the case"
   kill "$w19e_pid" "$w19e_helper_pid" 2>/dev/null
   wait "$w19e_pid" 2>/dev/null
   wait "$w19e_helper_pid" 2>/dev/null
 else
   w19e_started_orig=$(grep '^started=' "$lockw19e.q/$w19e_pid/owner" 2>/dev/null | cut -d= -f2)
-  rm -rf "$lockw19e.q/$w19e_pid"
+  # Arm the shim BEFORE deleting the ticket (codex-2): the restore's brand
+  # call happens strictly after the delete, so this leaves no gap where it
+  # could slip through undelayed.
   : > "$sbw19e/mv-trigger"
+  rm -rf "$lockw19e.q/$w19e_pid"
 
   _spin=0
   while ! grep -q '^started=.' "$lockw19e.q/$w19e_pid/owner" 2>/dev/null && [ "$_spin" -lt 50 ]; do
