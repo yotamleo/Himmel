@@ -1895,6 +1895,71 @@ grepq "$poutG2" 'failed to capture the pushed ref list' \
   || fail "HIMMEL-2814 gap2 capture-checked: remote received the ref even though capture failed"
 echo "ok: HIMMEL-2814 gap2 capture-checked: a failed stdin-ref-list capture aborts the pre-push dispatcher instead of validating a truncated ref list"
 
+# ── 21. HIMMEL-2892: the hook block MERGES into an existing settings.json ────
+# Regression control for the 2026-09-09 dogfood incident: `himmelctl install
+# --scope project` inside a repo whose .claude/settings.json already carried a
+# hand-curated hook block REGENERATED that block from the manifest (98+/38-):
+# foreign matchers dropped, a himmel matcher collapsed to the canonical string,
+# adopter timeouts reset 60 -> 15, ordering shuffled. Ownership rule this
+# asserts: himmel owns ONLY the `command` string of an entry it installed
+# (so a moved clone / broken backslash path is still repaired in place —
+# section 9 above). The adopter owns everything else — the stanza's `matcher`,
+# its POSITION in the array, the entry's `timeout`, and every foreign matcher
+# or co-located foreign entry, all of which must survive byte-for-byte.
+p2892="$work/proj-2892"; mkdir -p "$p2892/.claude"
+cat > "$p2892/.claude/settings.json" <<'JSON'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher":"WebFetch|WebSearch","hooks":[{"type":"command","command":"bash \"/opt/foreign/hooks/foreign-guard.sh\"","timeout":90}]},
+      {"matcher":"Edit|Write|MultiEdit|NotebookEdit|PowerShell","hooks":[
+        {"type":"command","command":"bash \"/old/clone/scripts/hooks/block-edit-on-main.sh\"","timeout":60},
+        {"type":"command","command":"bash \"/opt/foreign/hooks/co-located.sh\"","timeout":45}
+      ]}
+    ]
+  }
+}
+JSON
+cp "$p2892/.claude/settings.json" "$work/2892-seed.json"
+HOME="$base_home" bash "$adopt" --profile core --scope project --target "$p2892" >/dev/null
+s2892="$p2892/.claude/settings.json"
+
+# (a) the foreign matcher stanza survives byte-for-byte, at index 0.
+before_a=$(jq -Sc '.hooks.PreToolUse[0]' "$work/2892-seed.json")
+after_a=$(jq -Sc '.hooks.PreToolUse[0]' "$s2892")
+[ "$before_a" = "$after_a" ] \
+  || fail "HIMMEL-2892 (a): the foreign PreToolUse stanza was not preserved byte-for-byte at its original index — before=$before_a after=$after_a"
+
+# (b) the foreign entry co-located under a himmel-owned matcher survives
+#     byte-for-byte, still the SECOND entry of that stanza.
+before_b=$(jq -Sc '.hooks.PreToolUse[1].hooks[1]' "$work/2892-seed.json")
+after_b=$(jq -Sc '.hooks.PreToolUse[1].hooks[1]' "$s2892")
+[ "$before_b" = "$after_b" ] \
+  || fail "HIMMEL-2892 (b): the co-located foreign hook entry was not preserved byte-for-byte in place — before=$before_b after=$after_b"
+
+# (c) the himmel-owned entry is UPDATED IN PLACE, not regenerated: adopter's
+#     matcher kept (never collapsed to the canonical string), adopter's timeout
+#     kept, only the command repointed at this install's prefix.
+[ "$(jq -r '.hooks.PreToolUse[1].matcher' "$s2892")" = "Edit|Write|MultiEdit|NotebookEdit|PowerShell" ] \
+  || fail "HIMMEL-2892 (c): the adopter's matcher was collapsed to the canonical one (got: $(jq -r '.hooks.PreToolUse[1].matcher' "$s2892"))"
+[ "$(jq -r '.hooks.PreToolUse[1].hooks[0].timeout' "$s2892")" = "60" ] \
+  || fail "HIMMEL-2892 (c): the adopter's timeout was reset (got: $(jq -r '.hooks.PreToolUse[1].hooks[0].timeout' "$s2892"))"
+c2892=$(jq -r '.hooks.PreToolUse[1].hooks[0].command' "$s2892")
+# shellcheck disable=SC2016  # literal $CLAUDE_PROJECT_DIR (the project-scope prefix), not an expansion
+case "$c2892" in
+  'bash "$CLAUDE_PROJECT_DIR/scripts/hooks/block-edit-on-main.sh"') : ;;
+  *) fail "HIMMEL-2892 (c): the himmel-owned command was not repointed at this install's prefix (got: $c2892)" ;;
+esac
+
+# (d) exactly ONE block-edit-on-main entry (merged in place, not appended
+#     alongside the existing one), and the two hooks that were genuinely ABSENT
+#     are appended as fresh stanzas -> 2 seeded + 2 appended = 4.
+[ "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("block-edit-on-main"))] | length' "$s2892")" = "1" ] \
+  || fail "HIMMEL-2892 (d): expected exactly one block-edit-on-main entry after the merge"
+[ "$(jq '.hooks.PreToolUse | length' "$s2892")" = "4" ] \
+  || fail "HIMMEL-2892 (d): expected 4 PreToolUse stanzas (2 seeded + the 2 genuinely-absent himmel hooks appended), got $(jq '.hooks.PreToolUse | length' "$s2892")"
+echo "ok: HIMMEL-2892 the hook block merges into an existing settings.json (foreign matcher + co-located entry + adopter matcher/timeout preserved; himmel command repointed in place)"
+
 # ── 20. HIMMEL-887 T10: himmelctl wizard + machine-setup shim suites ──────────
 # A plain `bash scripts/test-adopt.sh` run also exercises the himmelctl install
 # wizard + the T7/T8 bootstrap/deprecation-shim suites, so a regression in any

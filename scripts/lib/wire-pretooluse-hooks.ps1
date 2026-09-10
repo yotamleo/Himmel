@@ -10,6 +10,11 @@
 # install, never double-wires). Forward-slashes + quotes the hook path so a
 # Windows backslash path does not collapse when the hook command is parsed.
 #
+# The PreToolUse block MERGES; it is never regenerated (HIMMEL-2892). himmel
+# owns exactly one field of an entry it installed -- that entry's `command`.
+# The stanza's matcher, its position, the entry's timeout, and every foreign
+# stanza or co-located foreign entry survive byte-for-byte.
+#
 # Dot-source to get the functions, or invoke directly:
 #   pwsh -File wire-pretooluse-hooks.ps1 -SettingsPath <path> -Prefix <prefix> [-DryRun]
 
@@ -54,11 +59,21 @@ function Set-PretooluseHooks {
     )
     if (-not (Get-Command jq -ErrorAction SilentlyContinue)) { throw "wire-pretooluse-hooks: jq required" }
     $pfx = $Prefix.Replace('\', '/')
-    $desired = @"
+    # One spec per himmel-owned hook -- twin of the bash lib's $specs. `pat`
+    # identifies an entry THIS installer owns, `cmd` is the command it must
+    # carry after the merge, `stanza` is appended only when the target carries
+    # no such entry at all (HIMMEL-2892).
+    $specs = @"
 [
-  {"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/auto-approve-safe-bash.sh\""}]},
-  {"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/block-edit-on-main.sh\""}]},
-  {"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/block-read-secrets.sh\""}]}
+  {"pat":"scripts/hooks/auto-approve-safe-bash[.]sh",
+   "cmd":"bash \"$pfx/scripts/hooks/auto-approve-safe-bash.sh\"",
+   "stanza":{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/auto-approve-safe-bash.sh\""}]}},
+  {"pat":"scripts/hooks/block-edit-on-main[.]sh",
+   "cmd":"bash \"$pfx/scripts/hooks/block-edit-on-main.sh\"",
+   "stanza":{"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/block-edit-on-main.sh\""}]}},
+  {"pat":"scripts/hooks/block-read-secrets[.]sh",
+   "cmd":"bash \"$pfx/scripts/hooks/block-read-secrets.sh\"",
+   "stanza":{"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/block-read-secrets.sh\""}]}}
 ]
 "@
     if ($DryRun) { Write-Host "DRY: merge 3 PreToolUse hook stanzas into $SettingsPath (prefix: $Prefix)"; return }
@@ -84,18 +99,31 @@ function Set-PretooluseHooks {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
+        # Verbatim twin of WIRE_PRETOOLUSE_MERGE_JQ in wire-pretooluse-hooks.sh
+        # -- keep the two byte-identical. MERGE, never regenerate: the first
+        # entry matching a spec has its `command` rewritten in place (matcher,
+        # position, timeout and every foreign entry survive untouched), later
+        # duplicates are dropped, and a canonical stanza is appended only when
+        # nothing matched (HIMMEL-2892).
         $filter = @'
-.hooks = (.hooks // {})
-| .hooks.PreToolUse = (
-    ((.hooks.PreToolUse // [])
-      | map(.hooks = ((.hooks // [])
-          | map(select((.command // "")
-                | test("scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)[.]sh") | not))))
-      | map(select((.hooks | length) > 0)))
-    + $add
-  )
+  def wire($spec):
+    (reduce .[] as $st ({seen: false, out: []};
+       (reduce ($st.hooks // [])[] as $h ({seen: .seen, hooks: []};
+          if (($h.command // "") | test($spec.pat))
+          then (if .seen
+                then .
+                else {seen: true, hooks: (.hooks + [$h | .command = $spec.cmd])}
+                end)
+          else {seen: .seen, hooks: (.hooks + [$h])}
+          end)) as $r
+       | {seen: $r.seen,
+          out: (.out + (if ($r.hooks | length) > 0 then [$st | .hooks = $r.hooks] else [] end))}
+     )) as $acc
+    | if $acc.seen then $acc.out else ($acc.out + [$spec.stanza]) end;
+  .hooks = (.hooks // {})
+  | .hooks.PreToolUse = (reduce $specs[] as $spec ((.hooks.PreToolUse // []); wire($spec)))
 '@
-        $out = $base | jq --indent 2 --argjson add $desired $filter
+        $out = $base | jq --indent 2 --argjson specs $specs $filter
         if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq transform failed" }
         Write-SettingsAtomic -SettingsPath $SettingsPath -Json ($out -join "`n")
         Write-Host "  wired PreToolUse hooks -> $SettingsPath"
