@@ -747,10 +747,11 @@ Steps:
    bash "<himmel_dir>/scripts/cr/review-round.sh" promote --branch '<branch>' --head <head>
    ```
    Paste its summary line. Exit 0 = done. Exit 3 = it printed each
-   `still-open <id>@<sha>` finding that re-raised at this head — name those in
-   the report and leave them `agreed` (never hand-amend a re-raised finding to
-   `fixed`). Any other non-zero (a malformed ledger row, an unresolvable
-   `--head`, or a ledger write failure) is an infrastructure failure, not a
+   `still-open <id>@<sha>` finding it left `agreed` — a genuine re-raise, a
+   same-head or non-ancestor commit, or a finding it could not safely check —
+   name those in the report and never hand-amend one of them to `fixed`. Any
+   other non-zero (a malformed ledger row, an unresolvable `--head`, or a
+   ledger write failure) is an infrastructure failure, not a
    per-finding one: STOP, report the exact stderr line, repair the cause, and
    re-run `promote` — never hand-amend anything as a workaround.
 
