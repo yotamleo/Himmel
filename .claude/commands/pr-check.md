@@ -741,6 +741,17 @@ Steps:
      a commit landed after the review, so re-run `/pr-check` on the new HEAD.
      Do NOT fall back to `rm`.
 
+   **Promote agreed findings to fixed (HIMMEL-2911).** Once the marker cleared
+   above, terminalize every finding still `agreed` on this branch:
+   ```bash
+   bash "<himmel_dir>/scripts/cr/review-round.sh" promote --branch '<branch>' --head <head>
+   ```
+   Paste its summary line. Exit 0 = done. Exit 3 = it printed each
+   `still-open <id>@<sha>` finding that re-raised at this head — name those in
+   the report and leave them `agreed`. Any other non-zero: fall back to a hand
+   `ledger-append.sh amend --set verdict=fixed` for the finding it could not
+   resolve.
+
 6. If either `N > 0`, or step 4.8 reported `threads_rc != 0`:
    - Leave the marker in place.
    - Surface the Critical / Important findings (and any unresolved-thread count) to the user.
