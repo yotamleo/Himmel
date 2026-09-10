@@ -30,8 +30,11 @@ paths = [
 # generic-api-key rule flags the line ("release-token: `...`") on entropy, and
 # that refusal silently stalls the github-sync autosync commit (2026-09-09,
 # console 03F: staged for 40 min, three missed syncs). Anchored to that exact
-# shape only.
+# shape, plus one optional trailing sentence-punctuation character (HIMMEL-2910:
+# a leg's bare, unbacktick-quoted `release-token=<token>.` let gitleaks capture
+# the trailing "." into the secret, missing the anchor) — a suffixed real
+# credential is still caught, only that shape.
 regexes = [
   '''^himmel-local-claudex$''',
-  '''^[a-z0-9]+-[a-z0-9]+-pid[0-9]+$''',
+  '''^[a-z0-9]+-[a-z0-9]+-pid[0-9]+[.,;:)]?$''',
 ]

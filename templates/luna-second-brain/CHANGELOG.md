@@ -8,6 +8,27 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.22] — 2026-09-10
+
+### Fixed
+- **`test-vault-git.sh`'s D11e near-miss assertion avoids a pipefail SIGPIPE
+  risk (HIMMEL-2910 follow-up).** `grep -q` under `set -o pipefail` can
+  SIGPIPE its producer on an early match, flipping a real gitleaks-blocked
+  finding to read as a test failure; captures the pipeline into a variable
+  first instead of piping into `grep -q` directly.
+
+## [0.4.21] — 2026-09-10
+
+### Fixed
+- **`.gitleaks.toml`'s release-token allowlist tolerates trailing sentence
+  punctuation (HIMMEL-2910).** The anchored regex added in HIMMEL-2886
+  (`^[a-z0-9]+-[a-z0-9]+-pid[0-9]+$`) missed a token followed by punctuation
+  — a leg writing `release-token=<token>.` (no backticks) into its LIVE
+  bullet let gitleaks' generic-api-key rule capture the trailing `.` into
+  the secret, stalling a real autosync commit for 30 min. Widened to allow
+  one optional trailing `[.,;:)]` character; a suffixed real credential is
+  still caught.
+
 ## [0.4.16] — 2026-09-10
 
 ### Fixed

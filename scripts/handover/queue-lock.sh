@@ -21,7 +21,11 @@
 #
 # TOKEN CONTRACT (HIMMEL-856 CR, C1): `acquire` records a session token in
 # owner.json (the given session-id, or a generated "<hostname>-pid<pid>")
-# and PRINTS it as the last stdout line: "release-token: <token>". The
+# and PRINTS it as the last stdout line: "release-token: `<token>`" (the
+# token itself backticked -- HIMMEL-2910: a bare, unquoted token copy-pasted
+# into a handover doc followed by sentence punctuation reads as part of the
+# "secret" to gitleaks' generic-api-key rule; the backticks delimit the
+# capture so the copy-paste shape is safe by construction). The
 # caller must capture that line and pass the token to `heartbeat` and
 # `release` -- both REFUSE (rc=2, holder info printed) without it or with
 # a token that does not match the current holder. The token is mandatory
@@ -96,7 +100,7 @@
 # EXIT CODES:
 #   acquire:   0  lock acquired (fresh dir, stale takeover, or forced
 #                 takeover -- stderr says which); the last stdout line is
-#                 "release-token: <token>"
+#                 "release-token: `<token>`"
 #              1  usage error, OR a genuine environment failure (handover
 #                 root unresolvable, mkdir failed for a reason other than
 #                 "already held", owner.json could not be written -- the
@@ -195,8 +199,10 @@ Usage: queue-lock.sh acquire   <handover-path> [session-id]
        queue-lock.sh status    <handover-path>
        queue-lock.sh status --sweep [<handover-dir>]
 
-acquire prints "release-token: <token>" on success -- capture it and pass
-it to heartbeat/release (both refuse without it). Lost the token to an
+acquire prints "release-token: `<token>`" (backticked -- HIMMEL-2910) on
+success -- capture it and pass it to heartbeat/release (both refuse without
+it, and both accept the token with or without surrounding backticks). Lost
+the token to an
 autocompact? acquire also persisted it under
 <XDG_RUNTIME_DIR>/himmel-queue-lock/ (HIMMEL-2813), so a heartbeat/release
 with NO token on argv reads it back and says so on stderr. Only when THAT
@@ -256,6 +262,45 @@ _ql_hostname() {
 }
 
 _ql_default_session() { printf '%s-pid%s' "$(_ql_hostname)" "$$"; }
+
+# _ql_strip_backticks <token> -- HIMMEL-2910: acquire prints the token
+# backticked ("release-token: `<token>`") so a leg copy-pasting the line
+# into a markdown handover doc can't have gitleaks capture trailing
+# punctuation into the "secret". Strips ONLY when BOTH a leading and
+# trailing backtick are present (never a single stray one), so a token
+# that itself starts or ends with a backtick -- never actually produced by
+# this script, but not to rule out for an external caller -- is not
+# silently mangled. A candidate this reduces to empty (e.g. the 2-char
+# literal "``") is exactly the case _ql_token_matches below exists to
+# refuse rather than treat as "no token given" -- see its comment.
+_ql_strip_backticks() {
+    local t="$1"
+    if [ "${#t}" -ge 2 ] && [ "${t#\`}" != "$t" ] && [ "${t%\`}" != "$t" ]; then
+        t="${t#\`}"
+        t="${t%\`}"
+    fi
+    printf '%s' "$t"
+}
+
+# _ql_token_matches <candidate> <owner-value> -- rc 0 when <candidate> IS
+# the holder's token, accepting it either exactly as stored (the pre-2910
+# bare form, or a recalled token, or a caller-chosen id that happens to
+# itself start/end with a backtick) OR with one matched pair of backticks
+# stripped (the copy-paste shape acquire now prints). Tried in that order
+# and ONLY that order -- CR round 2 (codex-1): normalizing <candidate>
+# before this comparison, as an earlier revision did, collapses the 2-char
+# literal "``" to empty and made an explicitly wrong argv token
+# indistinguishable from "no token was given", which then fell through to
+# a token-file RECALL instead of being refused. Comparing both forms
+# against the SAME unmodified <candidate> here means a degenerate explicit
+# token still fails both comparisons and is correctly refused, while an
+# exact match (including one on a self-backticked id, CR round 1) is
+# always tried FIRST and never overridden by the stripped form.
+_ql_token_matches() {
+    local candidate="$1" owner="$2"
+    [ "$candidate" = "$owner" ] && return 0
+    [ "$(_ql_strip_backticks "$candidate")" = "$owner" ]
+}
 
 # JSON escape/extract now delegate to the shared pure-bash helpers in
 # scripts/lib/handover-path.sh (_hp_json_escape / _hp_json_field, HIMMEL-882
@@ -441,7 +486,7 @@ _ql_search_roots() {
         slug=$(_ql_slug_for_root "$ho" "$root")
         cand="$root/.locks/queue/$slug.lock"
         [ -f "$cand/owner.json" ] || continue
-        [ "$(_ql_json_field "$cand/owner.json" session)" = "$token" ] || continue
+        _ql_token_matches "$token" "$(_ql_json_field "$cand/owner.json" session)" || continue
         recorded=""
         [ -f "$cand/root" ] && recorded=$(cat "$cand/root" 2>/dev/null)
         [ -n "$recorded" ] || recorded="$root"
@@ -642,14 +687,15 @@ _ql_token_forget() {
 }
 
 # _ql_owner_matches <lockdir> <token> -- rc 0 when this lock dir's
-# owner.json names <token> as the holder. A missing dir, a missing or
-# unreadable owner.json, and a different holder all return non-zero, so
-# callers can use one test for "this is not my lock, wherever it is" and
-# let the existing corrupt-lock / refused-release branches below decide
-# what that means.
+# owner.json names <token> as the holder (HIMMEL-2910: via
+# _ql_token_matches, so a backticked <token> matches its bare stored form
+# too). A missing dir, a missing or unreadable owner.json, and a different
+# holder all return non-zero, so callers can use one test for "this is not
+# my lock, wherever it is" and let the existing corrupt-lock /
+# refused-release branches below decide what that means.
 _ql_owner_matches() {
     [ -f "$1/owner.json" ] || return 1
-    [ "$(_ql_json_field "$1/owner.json" session)" = "$2" ]
+    _ql_token_matches "$2" "$(_ql_json_field "$1/owner.json" session)"
 }
 
 # _ql_write_root_marker <lockdir> <root> -- record the root this lock
@@ -970,7 +1016,7 @@ queue_lock_acquire() {
             _ql_token_persist "$ho" "$session"
             echo "queue-lock: acquired (session=$session host=$host)"
             _ql_arms_registry_retire_fired "$ho"
-            echo "release-token: $session"
+            echo "release-token: \`$session\`"
             return 0
         elif [ ! -e "$lockdir/owner" ]; then
             # Owner create failed with NO winner branded (ENOSPC/ACL/IO --
@@ -1143,7 +1189,7 @@ queue_lock_acquire() {
             echo "queue-lock: took over ($reason) -- previous holder: session=$o_session host=$o_host" >&2
             echo "queue-lock: acquired (session=$session host=$host)"
             _ql_arms_registry_retire_fired "$ho"
-            echo "release-token: $session"
+            echo "release-token: \`$session\`"
             return 0
         fi
         # Lost the rm->mkdir gap to a fresh acquirer -- it owns the lock.
@@ -1189,7 +1235,7 @@ queue_lock_heartbeat() {
     # (and keep alive) another session's lock.
     if [ -z "$session" ]; then
         {
-            echo "queue-lock: heartbeat requires the session token printed by acquire (release-token: <token>)"
+            echo "queue-lock: heartbeat requires the session token printed by acquire (release-token: \`<token>\`)"
             echo "usage: queue-lock.sh heartbeat <handover-path> <session-token>"
             if [ -f "$lockdir/owner.json" ]; then
                 echo "current holder:"
@@ -1222,10 +1268,16 @@ queue_lock_heartbeat() {
     o_session=$(_ql_json_field "$lockdir/owner.json" session)
     o_host=$(_ql_json_field "$lockdir/owner.json" host)
     o_started=$(_ql_json_field "$lockdir/owner.json" started)
-    if [ "$session" != "$o_session" ]; then
+    # HIMMEL-2910: _ql_token_matches, not a bare `!=`, so a backticked argv
+    # token matches its bare owner.json form too (see the helper's comment
+    # for why an EARLIER, now-removed revision that stripped $session before
+    # this point was wrong). On a match, normalize to the owner's own
+    # canonical value -- nothing downstream needs $session's original form.
+    if ! _ql_token_matches "$session" "$o_session"; then
         echo "queue-lock: heartbeat refused -- held by session=$o_session, not '$session'" >&2
         return 2
     fi
+    session="$o_session"
     if ! _ql_write_owner "$lockdir" "$o_session" "$o_host" "$ho" "$o_started" "$(_ql_now_iso)"; then
         echo "queue-lock: heartbeat FAILED -- owner.json could not be rewritten atomically (the previous heartbeat stays in effect)" >&2
         return 1
@@ -1281,7 +1333,7 @@ queue_lock_release() {
     # so a re-derived default would "prove" nothing.
     if [ -z "$session" ]; then
         {
-            echo "queue-lock: release requires the session token printed by acquire (release-token: <token>)"
+            echo "queue-lock: release requires the session token printed by acquire (release-token: \`<token>\`)"
             echo "usage: queue-lock.sh release <handover-path> <session-token>"
             if [ -f "$lockdir/owner.json" ]; then
                 echo "current holder:"
@@ -1320,10 +1372,16 @@ queue_lock_release() {
     if [ -f "$lockdir/owner.json" ]; then
         local o_session
         o_session=$(_ql_json_field "$lockdir/owner.json" session)
-        if [ -n "$o_session" ] && [ "$o_session" != "$session" ]; then
+        # HIMMEL-2910: _ql_token_matches, not a bare `!=` -- see the
+        # heartbeat function's identical comment. Normalize to the owner's
+        # canonical value on a match so _ql_token_forget below compares the
+        # PERSISTED file's exact content, not whatever form the caller
+        # happened to pass.
+        if [ -n "$o_session" ] && ! _ql_token_matches "$session" "$o_session"; then
             echo "queue-lock: release refused -- held by session=$o_session, not '$session' (QUEUE_LOCK_FORCE_RELEASE=1 to force)" >&2
             return 2
         fi
+        [ -n "$o_session" ] && session="$o_session"
     fi
     rm -rf "$lockdir" 2>/dev/null
     if [ -d "$lockdir" ]; then
