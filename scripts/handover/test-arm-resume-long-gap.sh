@@ -300,15 +300,27 @@ PY
 # to a fixed mid-year date instead: no tzdata table places a DST transition
 # in mid-June, so this never lands in a gap or fold, on any date the suite
 # actually runs on.
-read -r _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch < <(python3 -c '
+#
+# HIMMEL-2908: extracted so the SAME construction can be replayed below
+# against a known DST spring-forward day (deterministic guard), not just
+# the pinned mid-June anchor. Also emits an epoch for local 02:30, unused
+# by the mid-June fixtures but consumed by that replay.
+lg4_fixture_epochs() {
+    python3 - "$1" "$2" "$3" <<'PY'
 import datetime
-now = datetime.datetime(datetime.date.today().year, 6, 15)
+import sys
+
+year, month, day = (int(x) for x in sys.argv[1:4])
+anchor = datetime.datetime(year, month, day)
 print(
-    int(now.replace(hour=0, minute=5, second=0, microsecond=0).timestamp()),
-    int(now.replace(hour=12, minute=34, second=0, microsecond=0).timestamp()),
-    int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()),
+    int(anchor.replace(hour=0, minute=5, second=0, microsecond=0).timestamp()),
+    int(anchor.replace(hour=12, minute=34, second=0, microsecond=0).timestamp()),
+    int(anchor.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()),
+    int(anchor.replace(hour=2, minute=30, second=0, microsecond=0).timestamp()),
 )
-')
+PY
+}
+read -r _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch _lg4_0230_epoch < <(lg4_fixture_epochs "$(date +%Y)" 6 15)
 # HIMMEL-2877: regression guard for the fixture itself, independent of
 # lg4_wrap_hhmm - round-trip the epoch back through localtime and confirm
 # it still reads 00:05. A future edit that reintroduces a "today"-based
@@ -322,6 +334,58 @@ else
     echo "FAIL LG4 fixture epoch round-trips to $_lg4_0005_roundtrip, not 00:05 -- fixture date may sit inside a DST gap/fold"
     FAILED=$((FAILED + 1))
 fi
+# HIMMEL-2908: the round-trip guard just above is honest but weak -- it only
+# fires if the suite happens to run ON a real DST transition day, since on
+# an ordinary day a reintroduced datetime.date.today() round-trips cleanly
+# too. Make the catch deterministic by replaying lg4_fixture_epochs against
+# a KNOWN spring-forward day (Europe/Berlin's last Sunday of March, where
+# local 02:00-02:59 do not exist) regardless of what day the suite actually
+# runs on. TZ is set only for these subprocess invocations, never exported
+# for the rest of the suite.
+if _lg4_dst_tzdata_missing=$(python3 -c '
+import sys
+try:
+    from zoneinfo import ZoneInfo
+    ZoneInfo("Europe/Berlin")
+except Exception as e:
+    print(e)
+    sys.exit(1)
+' 2>&1); then
+    read -r _lg4_dst_year _lg4_dst_month _lg4_dst_day < <(python3 -c '
+import datetime
+year = datetime.date.today().year
+d = datetime.date(year, 3, 31)
+while d.weekday() != 6:
+    d -= datetime.timedelta(days=1)
+print(d.year, d.month, d.day)
+')
+    read -r _lg4_dst_0005_epoch _lg4_dst_1234_epoch _lg4_dst_0000_epoch _lg4_dst_0230_epoch < <(TZ=Europe/Berlin lg4_fixture_epochs "$_lg4_dst_year" "$_lg4_dst_month" "$_lg4_dst_day")
+    _lg4_dst_0005_roundtrip=$(TZ=Europe/Berlin python3 -c "import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%H:%M'))" "$_lg4_dst_0005_epoch")
+    if [ "$_lg4_dst_0005_roundtrip" = "00:05" ]; then
+        echo "PASS LG4 DST transition-day fixture epoch (00:05) round-trips cleanly outside the gap"
+    else
+        echo "FAIL LG4 DST transition-day fixture epoch (00:05) round-tripped to $_lg4_dst_0005_roundtrip, not 00:05"
+        FAILED=$((FAILED + 1))
+    fi
+    _lg4_dst_1234_roundtrip=$(TZ=Europe/Berlin python3 -c "import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%H:%M'))" "$_lg4_dst_1234_epoch")
+    if [ "$_lg4_dst_1234_roundtrip" = "12:34" ]; then
+        echo "PASS LG4 DST transition-day fixture epoch (12:34) round-trips cleanly outside the gap"
+    else
+        echo "FAIL LG4 DST transition-day fixture epoch (12:34) round-tripped to $_lg4_dst_1234_roundtrip, not 12:34"
+        FAILED=$((FAILED + 1))
+    fi
+    _lg4_dst_0230_roundtrip=$(TZ=Europe/Berlin python3 -c "import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%H:%M'))" "$_lg4_dst_0230_epoch")
+    if [ "$_lg4_dst_0230_roundtrip" != "02:30" ]; then
+        echo "PASS LG4 DST transition-day guard fires: local 02:30 (inside the spring-forward gap) round-trips to $_lg4_dst_0230_roundtrip, not 02:30 -- a reintroduced today-based fixture landing here would be caught deterministically"
+    else
+        echo "FAIL LG4 DST transition-day guard did not fire: local 02:30 round-tripped cleanly to 02:30 -- a reintroduced today-based fixture landing in this gap would silently pass"
+        FAILED=$((FAILED + 1))
+    fi
+    unset _lg4_dst_year _lg4_dst_month _lg4_dst_day _lg4_dst_0005_epoch _lg4_dst_1234_epoch _lg4_dst_0000_epoch _lg4_dst_0230_epoch _lg4_dst_0005_roundtrip _lg4_dst_1234_roundtrip _lg4_dst_0230_roundtrip
+else
+    echo "SKIP LG4 DST transition-day guard: Europe/Berlin tzdata unavailable ($_lg4_dst_tzdata_missing)"
+fi
+unset _lg4_dst_tzdata_missing
 _lg4_0005_hhmm=$(lg4_wrap_hhmm "$_lg4_0005_epoch")
 if [ "$_lg4_0005_hhmm" = "00:00" ]; then
     echo "PASS LG4 fixture local 00:05 stays inside today (00:00)"
@@ -356,7 +420,7 @@ _lg4_midnight_reason=$(lg4_wrap_hhmm "$_lg4_0000_epoch" 2>&1)
 _lg4_midnight_rc=$?
 assert_rc "LG4 fixture exact midnight signals skip" 10 "$_lg4_midnight_rc"
 assert_contains "LG4 fixture exact midnight names the skip reason" "exact local midnight has no earlier same-day HH:MM" "$_lg4_midnight_reason"
-unset _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch _lg4_0005_roundtrip _lg4_0005_hhmm _lg4_0005_rolled _lg4_1234_hhmm _lg4_midnight_reason _lg4_midnight_rc
+unset _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch _lg4_0230_epoch _lg4_0005_roundtrip _lg4_0005_hhmm _lg4_0005_rolled _lg4_1234_hhmm _lg4_midnight_reason _lg4_midnight_rc
 
 # HIMMEL-2877 (E1): WRAP_HHMM used to be captured ONCE here, before LG1-LG3
 # run below - each of which shells out to python3 and arm-resume, taking
