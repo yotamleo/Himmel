@@ -8,6 +8,23 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.26] — 2026-09-10
+
+### Fixed
+- **The HIMMEL-2903 snapshot now fails closed on load, and on a failed digest
+  capture, too (HIMMEL-2918).** Two gaps left from that ticket's round-3 CR
+  findings: (1) the stamp's `files` map reader treated a JSON/read error, a
+  non-dict top level, and a `files` value that wasn't a dict all the same as
+  the one legitimate empty case — a legacy stamp with no `files` key at all —
+  silently reverting every file to the poisonable git fallback. It now
+  withholds instead, the same way a failing `git log` already does. (2)
+  `record_snapshot` checked the digest only against the literal `MISSING`; a
+  failing `sha256sum` still leaves an empty string, which was appended
+  successfully and then dropped without warning by the stamp writer,
+  producing an incomplete map under a clean exit code. It now validates the
+  digest and counts the failure, so the partial-upgrade guard refuses the
+  stamp.
+
 ## [0.4.25] — 2026-09-10
 
 ### Fixed

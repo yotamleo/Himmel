@@ -864,5 +864,146 @@ t36_out=$(PATH="$t36_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir
 assert_eq "T36 an unreadable snapshot leaves the stamp byte-identical" "$t36_stamp_before" "$(sha_of "$V/.vault-template.json")"
 assert_eq "T36 the existing snapshot survives intact" "$t36_keys_before" "$(snap_keys "$V/.vault-template.json")"
 if [ "$t36_rc" -ne 0 ]; then pass "T36 exits non-zero rather than stamping"; else fail "T36 exits non-zero rather than stamping" "rc=0, out: $t36_out"; fi
+
+# ---------------------------------------------------------------------------
+# T37 (HIMMEL-2918, round-3 pair item 1): a stamp whose `files` value is
+# present but unusable (a string, not a dict) must fail CLOSED, not be read
+# as an empty map — which would silently revert to the git fallback, exactly
+# the scenario T30 exists to close. Same poisoning as T30 (the local edit and
+# the stamp advance land in ONE commit, so the git baseline the fallback would
+# read already carries the edit and cannot see it as a divergence): if the
+# malformed `files` value were misread as "nothing to withhold", the poisoned
+# git baseline would let the edit through.
+T="$TMP/t37-tmpl"; V="$TMP/t37-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+stamp_vault "$V" "0.1.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial"
+# Upgrade #1 brings the vault to 0.9.0 AND records the content snapshot.
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1
+t37_snap_before=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("files",{}).get(".gitleaks.toml",""))' "$V/.vault-template.json" 2>/dev/null)
+if [ -n "$t37_snap_before" ]; then pass "T37 setup: the vault carries a content snapshot to corrupt"; else fail "T37 setup: the vault carries a content snapshot to corrupt" "empty"; fi
+# The POISONING commit: the vault-local edit and the advanced stamp land in
+# ONE commit, so the commit the git path resolves as the baseline already
+# carries the edit.
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "autosync: local allowlist line + stamp 0.9.0"
+t37_stamp_commit=$(git -C "$V" log -1 --format=%H -- .vault-template.json)
+git -C "$V" show "$t37_stamp_commit:./.gitleaks.toml" > "$TMP/t37-git-baseline" 2>/dev/null
+assert_eq "T37 setup: the git baseline is poisoned (it already carries the edit)" "$(sha_of "$V/.gitleaks.toml")" "$(sha_of "$TMP/t37-git-baseline")"
+# Corrupt the stamp's `files` value in place: present, but not a dict.
+"$PY" - "$V/.vault-template.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+d["files"] = "not-a-dict"
+with open(p, "w", encoding="utf-8") as fh:
+    json.dump(d, fh)
+PY
+# A newer template that changes the same file.
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t37_pre_sha=$(sha_of "$V/.gitleaks.toml")
+t37_out=$(bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t37_rc=$?
+assert_eq "T37 a malformed files map withholds the write (fails closed)" "$t37_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
+case "$t37_out" in
+    *"could not determine the upgrade baseline (snapshot unreadable) — withholding .gitleaks.toml as a precaution"*)
+        pass "T37 names the unreadable snapshot in the withheld line" ;;
+    *) fail "T37 names the unreadable snapshot in the withheld line" "got: $t37_out" ;;
+esac
+if [ "$t37_rc" -ne 0 ]; then pass "T37 apply exits non-zero (not a clean upgrade)"; else fail "T37 apply exits non-zero (not a clean upgrade)" "rc=0"; fi
+
+# ---------------------------------------------------------------------------
+# T37b (HIMMEL-2918): the one LEGITIMATE empty map — a legacy stamp with no
+# `files` key at all (predates the snapshot) — must still fall back to the
+# git baseline exactly as before this ticket. T37 above proves the failure
+# cases now withhold; this proves the fix didn't also break the one case that
+# is supposed to fall through.
+T="$TMP/t37b-tmpl"; V="$TMP/t37b-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+stamp_vault "$V" "0.9.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial stamp 0.9.0"
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "local edit after the stamp"
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t37b_dry=$(bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --dry-run 2>&1)
+case "$t37b_dry" in
+    *"local edits withheld (not overwritten): .gitleaks.toml"*"[baseline: git]"*)
+        pass "T37b a legacy stamp (no files key) still falls back to the git baseline" ;;
+    *) fail "T37b a legacy stamp (no files key) still falls back to the git baseline" "got: $t37b_dry" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# T38 (HIMMEL-2918, round-3 pair item 2): record_snapshot must fail CLOSED on
+# an empty digest, not just on the literal "MISSING". A sha256sum failure mid-
+# run still leaves `cut` exiting 0 on no input, so sha_of returns "" — the
+# row for that file would be appended anyway and silently dropped later by
+# the stamp writer's `if tab and rel and sha`, leaving an incomplete map under
+# a clean rc.
+#
+# A stub that fails EVERY sha256sum call against the target file is too
+# blunt: sha_of(dst) is also called earlier, by the plan/execute diff check
+# and by has_local_edit's snapshot-baseline comparison — breaking those turns
+# an empty digest into a false LOCAL-EDIT withhold, which also exits non-zero
+# and would make this case pass for the wrong reason (the vacuous-control
+# trap HIMMEL-2903 was already caught in once). A normal run calls sha256sum
+# on the target file exactly 5 times — the diff check + the snapshot compare,
+# once each in the plan pass and again in the execute pass, then record_snapshot's
+# own capture last — so the stub only fails the 5th call, passing the first 4
+# through to the real sha256sum.
+T="$TMP/t38-tmpl"; V="$TMP/t38-vault"
+t35_fixture "$T" "$V"
+t38_keys_before=$(snap_keys "$V/.vault-template.json")
+if [ "${t38_keys_before:-0}" -gt 0 ]; then pass "T38 setup: the vault carries a complete content snapshot"; else fail "T38 setup: the vault carries a complete content snapshot" "keys=$t38_keys_before"; fi
+t38_stamp_before=$(sha_of "$V/.vault-template.json")
+t38_target="$V/.gitleaks.toml"
+t38_stub="$TMP/t38-stub"; mkdir -p "$t38_stub"
+t38_real_sha256sum="$(command -v sha256sum)"
+t38_count_file="$TMP/t38-count"; : > "$t38_count_file"
+# shellcheck disable=SC2016  # the single-quoted lines are the STUB's source, not this shell's
+{
+    echo '#!/usr/bin/env bash'
+    printf 'target=%s\n' "$t38_target"
+    printf 'countfile=%s\n' "$t38_count_file"
+    echo 'match=0'
+    echo 'for a in "$@"; do [ "$a" = "$target" ] && match=1; done'
+    echo 'if [ "$match" = 1 ]; then'
+    printf '%s\n' '    printf "x\n" >> "$countfile"'
+    echo '    n=$(wc -l < "$countfile")'
+    echo '    if [ "$n" -ge 5 ]; then echo "sha256sum: simulated read failure" >&2; exit 1; fi'
+    echo 'fi'
+    printf 'exec "%s" "$@"\n' "$t38_real_sha256sum"
+} > "$t38_stub/sha256sum"
+chmod +x "$t38_stub/sha256sum"
+# Precondition: the stub really does pass a NON-target file through untouched
+# (or the case proves nothing).
+t38_other=$(PATH="$t38_stub:$PATH" sha256sum "$T/.gitleaks.toml" 2>/dev/null | cut -d' ' -f1)
+if [ -n "$t38_other" ]; then pass "T38 setup: the stub passes other files through"; else fail "T38 setup: the stub passes other files through" "empty"; fi
+t38_out=$(PATH="$t38_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t38_rc=$?
+t38_calls=$(wc -l < "$t38_count_file")
+assert_eq "T38 setup: the target file's sha256sum was called exactly 5 times, and the 5th failed" "5" "$t38_calls"
+assert_eq "T38 the pre-existing stamp is left byte-identical" "$t38_stamp_before" "$(sha_of "$V/.vault-template.json")"
+assert_eq "T38 the pre-existing snapshot map is untouched" "$t38_keys_before" "$(snap_keys "$V/.vault-template.json")"
+if [ "$t38_rc" -ne 0 ]; then pass "T38 exits non-zero rather than stamping an incomplete snapshot"; else fail "T38 exits non-zero rather than stamping an incomplete snapshot" "rc=0, out: $t38_out"; fi
+case "$t38_out" in
+    *"could not record the content snapshot for .gitleaks.toml"*)
+        pass "T38 warns about the unrecordable digest" ;;
+    *) fail "T38 warns about the unrecordable digest" "got: $t38_out" ;;
+esac
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi
