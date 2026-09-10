@@ -43,7 +43,10 @@ set -uo pipefail
 # Case 17 -- resume rotation (HIMMEL-2243), the cursor file's own path. 17a-17j are in the -rotation and -rotation-guards siblings.
 # --------------------------------------------------------------------------
 echo "== Case 17 (cursor path): symlink refusal and key encoding (17k-17m) =="
-sb17=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate.XXXXXX")
+sb17=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate.XXXXXX") || {
+  echo "FAIL: Case 17 sandbox: mktemp -d failed"
+  exit 1
+}
 order17="$sb17/order.log"
 mk_rotate_sandbox "$sb17" "$order17"
 

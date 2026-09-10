@@ -139,6 +139,14 @@ rst_tally() {
 # this builder is here rather than copied into each of them.
 mk_rotate_sandbox() {
   local _d="$1" _order="$2" _c _dur
+  # Refuse an empty or non-existent target rather than writing the six suites
+  # to "/test-a.sh" and truncating "/order.log": every caller builds both
+  # paths from a `mktemp -d` whose failure leaves the variable EMPTY, and this
+  # is the last place that can still catch it (codex-1, HIMMEL-2895).
+  if [ -z "$_d" ] || [ ! -d "$_d" ]; then
+    echo "FAIL: mk_rotate_sandbox: '$_d' is not a directory"
+    return 1
+  fi
   : > "$_order"
   for _c in a b c d e f; do
     _dur=1

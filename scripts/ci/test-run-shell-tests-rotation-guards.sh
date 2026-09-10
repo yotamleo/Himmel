@@ -44,7 +44,10 @@ set -uo pipefail
 # Case 17 -- resume rotation (HIMMEL-2243), the cases where rotation must disable itself. 17a-17f and 17k-17m are in the -rotation and -rotation-cursor siblings.
 # --------------------------------------------------------------------------
 echo "== Case 17 (guards): rotation disables itself rather than guessing (17g-17j) =="
-sb17=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate.XXXXXX")
+sb17=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate.XXXXXX") || {
+  echo "FAIL: Case 17 sandbox: mktemp -d failed"
+  exit 1
+}
 order17="$sb17/order.log"
 cursor17="$sb17/rotate.cursor"
 mk_rotate_sandbox "$sb17" "$order17"

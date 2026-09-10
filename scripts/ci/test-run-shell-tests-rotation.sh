@@ -46,7 +46,10 @@ set -uo pipefail
 # Case 17 -- resume rotation (HIMMEL-2243), the contract proper. 17g-17m are in the -rotation-guards and -rotation-cursor siblings.
 # --------------------------------------------------------------------------
 echo "== Case 17: resume rotation (17a-17f) =="
-sb17=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate.XXXXXX")
+sb17=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate.XXXXXX") || {
+  echo "FAIL: Case 17 sandbox: mktemp -d failed"
+  exit 1
+}
 order17="$sb17/order.log"
 cursor17="$sb17/rotate.cursor"
 mk_rotate_sandbox "$sb17" "$order17"
