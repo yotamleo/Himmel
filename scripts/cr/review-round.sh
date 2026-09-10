@@ -149,6 +149,10 @@ fi
 # left agreed (counted as still-open) rather than guessed at. Idempotent: a
 # second run sees the fixed amend via the same effective-state merge and
 # skip-terminals it, writing nothing.
+# A row whose effective verdict is EMPTY (no amend at all) is also still-open,
+# tagged `(unadjudicated)`: nobody looked, so the round cannot be certified
+# clean over it either — never counted as WARN (that means a human already
+# disagreed) and never silently skipped (HIMMEL-2917).
 # Exit 0 = nothing left agreed; exit 3 = one or more rows are still-open (the
 # caller's round was not actually clean for that finding); exit 1 = a
 # malformed ledger row or a ledger write failure; exit 2 = --head does not
@@ -252,6 +256,7 @@ for (const row of findingRows) {
   let action;
   if (verdict === "fixed" || verdict === "disproved" || verdict === "deferred") action = "skip-terminal";
   else if (verdict === "conflict" || verdict === "unaddressed") action = "warn-unadjudicated";
+  else if (verdict === "") action = "still-open-unadjudicated";
   else if (verdict !== "agreed") continue;
   else if (resolvesToHead(row.head)) {
     // codex-1, HIMMEL-2911 CR round 1: a finding raised (and agreed) AT the
@@ -323,6 +328,10 @@ process.stdout.write(JSON.stringify({malformed: 0}));
                 ;;
             still-open)
                 echo "still-open ${id}@${row_head8}"
+                still_open=$((still_open + 1))
+                ;;
+            still-open-unadjudicated)
+                echo "still-open ${id}@${row_head8} (unadjudicated)"
                 still_open=$((still_open + 1))
                 ;;
             skip-terminal)
