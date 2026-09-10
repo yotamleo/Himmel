@@ -310,6 +310,7 @@ STAMP_COMMIT=""
 # exact failure this detection exists to close. has_local_edit fails CLOSED on
 # a cat-file/show error already; this makes the `git log` step consistent.
 BASELINE_ERROR=0
+BASELINE_ERROR_REASON=""
 # `git rev-parse --is-inside-work-tree`, not `[ -d "$VAULT_DIR/.git" ]`: a
 # worktree or a submodule has a `.git` FILE (a `gitdir: <path>` pointer), not
 # a directory, so the directory-only check silently fell back to the
@@ -319,11 +320,25 @@ if git -C "$VAULT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     # ("does not have any commits yet"). That is a legitimately absent
     # baseline, not an operational failure — without this gate the first
     # upgrade of a freshly `git init`-ed vault would withhold every file.
-    if ! git -C "$VAULT_DIR" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-        : # no commits yet — no baseline, same as a vault with no repo at all
+    #
+    # The gate reads the EXACT rc, not merely non-zero: `rev-parse --verify -q`
+    # exits 1 for "HEAD names no commit" (an unborn branch, or a HEAD ref with
+    # nothing behind it — git itself cannot tell those apart, and both are a
+    # genuinely absent baseline), and exits otherwise (128) for an operational
+    # failure such as an unreadable refs backend. Collapsing the two would let
+    # a refs-layer error masquerade as a fresh vault and fail OPEN, which is
+    # the same hole this block closes one step further down.
+    git -C "$VAULT_DIR" rev-parse --verify -q HEAD >/dev/null 2>&1
+    head_rc=$?
+    if [ "$head_rc" -eq 1 ]; then
+        : # HEAD names no commit — no baseline, like a vault with no repo
+    elif [ "$head_rc" -ne 0 ]; then
+        BASELINE_ERROR=1
+        BASELINE_ERROR_REASON="git rev-parse failed"
     elif ! STAMP_COMMIT="$(git -C "$VAULT_DIR" log -1 --format=%H -- .vault-template.json 2>/dev/null)"; then
         STAMP_COMMIT=""
         BASELINE_ERROR=1
+        BASELINE_ERROR_REASON="git log failed"
     fi
 fi
 
@@ -375,7 +390,7 @@ has_local_edit() {
 
     # (2) git baseline. A failed `git log` is not a proven absence of one.
     if [ "$BASELINE_ERROR" = 1 ]; then
-        [ "$print" = 1 ] && echo "  could not determine the upgrade baseline (git log failed) — withholding $rel as a precaution"
+        [ "$print" = 1 ] && echo "  could not determine the upgrade baseline ($BASELINE_ERROR_REASON) — withholding $rel as a precaution"
         return 0
     fi
     [ -n "$STAMP_COMMIT" ] || return 1
@@ -718,12 +733,19 @@ if [ "$ASSUME_YES" != 1 ]; then
 fi
 
 # --- Execute pass ---
-# A failed mktemp is not fatal: the run proceeds and simply writes no snapshot,
-# so the NEXT run falls back to the git baseline (the pre-HIMMEL-2903 shape).
+# Without a scratch file there is no snapshot to record — and because the stamp
+# is REWRITTEN wholesale below, a run that proceeds anyway would strip whatever
+# `files` map the vault already had, silently demoting it back to the poisonable
+# git baseline this change exists to replace. So refuse HERE, before the first
+# write: nothing has been touched yet, so the abort leaves the vault exactly as
+# it was and a re-run is clean.
 SNAPSHOT_FILE="$(mktemp 2>/dev/null)"
 if [ -z "$SNAPSHOT_FILE" ] || [ ! -e "$SNAPSHOT_FILE" ]; then
-    SNAPSHOT_FILE=""
-    echo "  WARN: could not create a temp file for the content snapshot; this run's stamp will carry none (the next run falls back to the vault's git history)." >&2
+    echo "upgrade: could not create a temp file for the content snapshot — aborting before any change." >&2
+    echo "  Proceeding would rewrite $STAMP without its content snapshot, dropping the" >&2
+    echo "  local-edit baseline the vault already has. No files were modified; free up" >&2
+    echo "  temp space (or set TMPDIR to a writable directory) and re-run." >&2
+    exit 2
 fi
 PLAN=()
 n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0 n_local_edit=0

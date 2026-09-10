@@ -686,5 +686,96 @@ fi
 bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1; t32_rc=$?
 assert_eq "T32 first upgrade of a commitless vault still writes the template file" "$(sha_of "$T/.gitleaks.toml")" "$(sha_of "$V/.gitleaks.toml")"
 assert_eq "T32 first upgrade of a commitless vault exits 0" "0" "$t32_rc"
+
+# ---------------------------------------------------------------------------
+# T33 (HIMMEL-2903, CR round 1 codex-1): the HEAD gate must read the EXACT rc.
+# `rev-parse --verify -q HEAD` exits 1 for "HEAD names no commit" (T32's
+# legitimately absent baseline) but 128 for an operational refs failure — an
+# unreadable refs backend, say. Collapsing the two lets a refs-layer error
+# masquerade as a fresh vault and fail OPEN, the same hole the git-log gate
+# closes one step down. Simulated with a PATH stub `git` that fails ONLY for
+# `rev-parse --verify` (so `--is-inside-work-tree` still succeeds and the
+# block is actually entered).
+T="$TMP/t33-tmpl"; V="$TMP/t33-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+stamp_vault "$V" "0.9.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial stamp 0.9.0"
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "local edit after the stamp"
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t33_stub="$TMP/t33-stub"; mkdir -p "$t33_stub"
+t33_real_git="$(command -v git)"
+# shellcheck disable=SC2016  # the single-quoted lines are the STUB's source, not this shell's
+{
+    echo '#!/usr/bin/env bash'
+    echo 'saw_rp=0; saw_verify=0'
+    echo 'for a in "$@"; do'
+    echo '    [ "$a" = "rev-parse" ] && saw_rp=1'
+    echo '    [ "$a" = "--verify" ] && saw_verify=1'
+    echo 'done'
+    echo 'if [ "$saw_rp" = 1 ] && [ "$saw_verify" = 1 ]; then echo "fatal: simulated refs failure" >&2; exit 128; fi'
+    printf 'exec "%s" "$@"\n' "$t33_real_git"
+} > "$t33_stub/git"
+chmod +x "$t33_stub/git"
+# The stub must fail rev-parse --verify with 128 (NOT 1 — a 1 would be the
+# legitimate no-commit answer and would prove nothing) and leave the
+# work-tree probe working, or the case passes for the wrong reason.
+t33_verify_rc=$(PATH="$t33_stub:$PATH" git -C "$V" rev-parse --verify -q HEAD >/dev/null 2>&1; echo $?)
+assert_eq "T33 setup: the stub fails rev-parse --verify with 128, not 1" "128" "$t33_verify_rc"
+assert_eq "T33 setup: the stub leaves --is-inside-work-tree working" "true" "$(PATH="$t33_stub:$PATH" git -C "$V" rev-parse --is-inside-work-tree 2>/dev/null)"
+t33_pre_sha=$(sha_of "$V/.gitleaks.toml")
+t33_out=$(PATH="$t33_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t33_rc=$?
+assert_eq "T33 an operational rev-parse failure withholds the write (fails closed)" "$t33_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
+case "$t33_out" in
+    *"could not determine the upgrade baseline (git rev-parse failed) — withholding .gitleaks.toml as a precaution"*)
+        pass "T33 names rev-parse (not git log) as the failed baseline step" ;;
+    *) fail "T33 names rev-parse (not git log) as the failed baseline step" "got: $t33_out" ;;
+esac
+if [ "$t33_rc" -ne 0 ]; then pass "T33 apply exits non-zero (not a clean upgrade)"; else fail "T33 apply exits non-zero (not a clean upgrade)" "rc=0"; fi
+
+# ---------------------------------------------------------------------------
+# T34 (HIMMEL-2903, CR round 1 codex-2): a snapshot scratch file that cannot be
+# created must ABORT before the first write. The stamp is rewritten wholesale,
+# so proceeding would strip the `files` map the vault already has — silently
+# demoting it back to the poisonable git baseline. Simulated by pointing TMPDIR
+# at a path that is not a directory, which is what makes mktemp fail.
+T="$TMP/t34-tmpl"; V="$TMP/t34-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"
+stamp_vault "$V" "0.1.0"
+# A first upgrade under the current template records the snapshot to protect.
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1
+t34_files_before=$("$PY" -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("files",{})))' "$V/.vault-template.json" 2>/dev/null)
+if [ "${t34_files_before:-0}" -gt 0 ]; then
+    pass "T34 setup: the vault carries a content snapshot to protect"
+else
+    fail "T34 setup: the vault carries a content snapshot to protect" "files keys=$t34_files_before"
+fi
+t34_stamp_before=$(sha_of "$V/.vault-template.json")
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t34_notdir="$TMP/t34-not-a-dir"; printf 'x\n' > "$t34_notdir"
+# Precondition: mktemp really does fail under this TMPDIR (otherwise the case
+# would "pass" without ever exercising the abort).
+t34_mktemp_rc=$(TMPDIR="$t34_notdir" mktemp >/dev/null 2>&1; echo $?)
+if [ "$t34_mktemp_rc" -ne 0 ]; then pass "T34 setup: mktemp fails under the broken TMPDIR"; else fail "T34 setup: mktemp fails under the broken TMPDIR" "rc=0"; fi
+t34_gitleaks_before=$(sha_of "$V/.gitleaks.toml")
+t34_out=$(TMPDIR="$t34_notdir" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t34_rc=$?
+assert_eq "T34 a failed snapshot scratch file aborts rather than writing" "$t34_gitleaks_before" "$(sha_of "$V/.gitleaks.toml")"
+assert_eq "T34 the existing stamp (and its snapshot) is left intact" "$t34_stamp_before" "$(sha_of "$V/.vault-template.json")"
+assert_eq "T34 the abort exits 2" "2" "$t34_rc"
+case "$t34_out" in
+    *"aborting before any change"*) pass "T34 says it aborted before changing anything" ;;
+    *) fail "T34 says it aborted before changing anything" "got: $t34_out" ;;
+esac
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi
