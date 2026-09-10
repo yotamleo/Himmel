@@ -99,36 +99,26 @@ set -e
   || fail "case a: --scope project inside the himmel clone should exit non-zero (got rc=$rcA): $outA"
 grepq "$outA" 'not valid inside the himmel checkout' \
   || fail "case a: the refusal must say project scope is not valid inside the himmel checkout: $outA"
-# The refusal names projectTargetDir() -- node's own path.resolve(cwd), which
-# under Git Bash on Windows is a NATIVE Windows path (C:\Users\...\a-clone)
-# while $cloneA is the POSIX form. Comparing the full paths would fail on the
-# platform this suite explicitly supports (CR round 1, [codex-2]), and no
-# single normalisation matches both node's backslashes and cygpath -m's forward
-# slashes. Assert on the two separator-free segments instead: they are
-# byte-identical in either path form, and the mktemp suffix makes the pair
-# specific to THIS run's fixture rather than any generic message.
-work_leaf=$(basename "$work")
-grepq "$outA" -F "$work_leaf" \
-  || fail "case a: the refusal must NAME the checkout it refused (expected the fixture root $work_leaf in the path): $outA"
-grepq "$outA" -F 'a-clone' \
-  || fail "case a: the refusal must NAME the checkout it refused (expected the a-clone leaf in the path): $outA"
-# Forward-slashed on every platform (CR round 2, [codex-1]): the line tells the
-# operator to run `bash <path>`, and a native-separator Windows path is not
-# pasteable into that shell, so bin.js normalizes it for display. Asserting the
-# forward-slashed form is therefore asserting the CONTRACT, not accommodating a
-# platform — it is what makes the printed remedy runnable under Git Bash.
-grepq "$outA" -F 'scripts/setup.sh' \
-  || fail "case a: the remedy must name scripts/setup.sh, forward-slashed so the printed 'bash <path>' line is pasteable: $outA"
-grepq "$outA" -F 'install --scope user' \
-  || fail "case a: the remedy must name 'install --scope user': $outA"
-# CR round 3 [codex-1]: the remedy's node command must be ABSOLUTE. The refusal
-# fires from whatever subdirectory the operator ran it in — which is where they
-# paste it back — and a relative `node scripts/himmelctl/bin.js` only resolves
-# from the checkout root.
-grepq "$outA" -F 'scripts/himmelctl/bin.js install --scope user' \
-  || fail "case a: the remedy's node command must carry a path to bin.js, not a bare relative one: $outA"
-grepq "$outA" -E "node '?$cloneA/scripts/himmelctl/bin\.js'? install --scope user" \
-  || fail "case a: the remedy's bin.js path must be ABSOLUTE (rooted at the checkout), so it resolves from any subdirectory: $outA"
+# EVERY fixture path compared against bin.js output goes through winpath first
+# (CR round 4, [codex-1] — and rounds 1/2/3 were all this same class). bin.js
+# prints paths via displayPath(): node's own path.resolve(), forward-slashed,
+# which under Git Bash on Windows is `C:/Users/...` while the raw shell
+# variable is the POSIX `/tmp/...`. winpath() is the suite-wide `cygpath -m`
+# bridge that produces exactly that forward-slashed native form, and is the
+# identity on Linux — so ONE normalisation makes every assertion below a plain
+# full-path comparison on both platforms. Do not hand-roll a per-assertion
+# workaround instead; that is what kept regressing.
+cloneA_w=$(winpath "$cloneA")
+grepq "$outA" -F "$cloneA_w" \
+  || fail "case a: the refusal must NAME the checkout it refused ($cloneA_w): $outA"
+grepq "$outA" -F "bash $cloneA_w/scripts/setup.sh" \
+  || fail "case a: the remedy must name the checkout's own scripts/setup.sh (the contributor primitive): $outA"
+# The node command must be ABSOLUTE (CR round 3): the refusal fires from
+# whatever subdirectory the operator ran it in — which is where they paste it
+# back — and a relative `node scripts/himmelctl/bin.js` only resolves from the
+# checkout root.
+grepq "$outA" -F "node $cloneA_w/scripts/himmelctl/bin.js install --scope user" \
+  || fail "case a: the remedy's node command must be ABSOLUTE, rooted at the checkout, so it resolves from any subdirectory: $outA"
 [ ! -f "$homeA/himmelctl-cache/install-profile.json" ] \
   || fail "case a: a REFUSED install must not write an install-profile cache (a 'scope: project' record would survive it)"
 echo "ok: case a — --scope project inside the himmel clone is refused with the remedy, and writes no cache"
@@ -166,9 +156,10 @@ outA2=$(run_install "$cloneA2" "$homeA2" "$cloneA2" --scope project); rcA2=$?
 set -e
 [ "$rcA2" -ne 0 ] \
   || fail "case a2: --scope project inside a himmel clone whose path contains a space should still be refused (got rc=$rcA2): $outA2"
-grepq "$outA2" -F "'$cloneA2/scripts/setup.sh'" \
+cloneA2_w=$(winpath "$cloneA2")
+grepq "$outA2" -F "bash '$cloneA2_w/scripts/setup.sh'" \
   || fail "case a2: a setup.sh path containing a space must be SHELL-QUOTED in the remedy, or the printed command runs the wrong thing: $outA2"
-grepq "$outA2" -F "'$cloneA2/scripts/himmelctl/bin.js'" \
+grepq "$outA2" -F "node '$cloneA2_w/scripts/himmelctl/bin.js'" \
   || fail "case a2: the bin.js path containing a space must be SHELL-QUOTED in the remedy too: $outA2"
 echo "ok: case a2 — a checkout path with a space is refused and both remedy commands stay shell-quoted"
 
