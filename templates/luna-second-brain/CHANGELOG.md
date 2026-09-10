@@ -8,7 +8,7 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.4.24] — 2026-09-10
+## [0.4.25] — 2026-09-10
 
 ### Fixed
 - **The local-edit baseline is a per-file content snapshot in the stamp; the
@@ -31,11 +31,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   exits 1 for "HEAD names no commit" (a legitimately absent baseline — the
   first upgrade of a freshly `git init`-ed vault proceeds as before) and
   otherwise for an operational refs failure, which withholds like any other.
-- **A snapshot scratch file that cannot be created aborts the run
-  (HIMMEL-2903).** The stamp is rewritten wholesale, so proceeding without a
-  snapshot would strip the `files` map a vault already has and silently demote
-  it to the poisonable git baseline. The abort happens before the first write,
-  so nothing is modified and a re-run is clean.
+- **Snapshot persistence fails closed at every step (HIMMEL-2903).** The stamp
+  is rewritten wholesale, so any run that proceeds without a complete snapshot
+  strips the `files` map a vault already has and silently demotes it to the
+  poisonable git baseline. A scratch file that cannot be CREATED aborts before
+  the first write (nothing is modified, a re-run is clean); a row that cannot
+  be APPENDED, or a scratch file that cannot be READ BACK at stamp time, leaves
+  the existing stamp untouched and exits non-zero rather than writing a weaker
+  one.
 - **The withheld-file line names which baseline spoke.** Every "local edits
   withheld" line ends in `[baseline: snapshot]` or `[baseline: git]`, and the
   snapshot form prints the recorded and on-disk shas.

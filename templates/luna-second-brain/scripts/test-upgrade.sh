@@ -777,5 +777,92 @@ case "$t34_out" in
     *"aborting before any change"*) pass "T34 says it aborted before changing anything" ;;
     *) fail "T34 says it aborted before changing anything" "got: $t34_out" ;;
 esac
+
+
+# ---------------------------------------------------------------------------
+# T35/T36 (HIMMEL-2903, CR round 2): snapshot persistence must fail CLOSED on
+# BOTH sides of the scratch file. The stamp is rewritten wholesale, so a run
+# that records the snapshot only partially (append fails) or cannot read it
+# back (read fails) would replace a complete baseline with a partial or absent
+# one — the poisoned-baseline hole reopened from the other end.
+#
+# Isolating that needs a failure that touches ONLY the snapshot scratch file:
+# a blanket read-only TMPDIR breaks the file writes and the _CLAUDE.md 3-way
+# too, so the run fails for an unrelated reason and the case proves nothing.
+# Hence a PATH stub `mktemp` that recognises the snapshot's OWN template
+# (`luna-upgrade-snapshot.XXXXXX`) and hands back a file with a hostile mode,
+# passing every other mktemp call through untouched.
+#
+# mk_mktemp_stub <dir> <mode> — a stub that chmods only the snapshot file.
+mk_mktemp_stub() {
+    local dir="$1" mode="$2" real; real="$(command -v mktemp)"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2016  # the single-quoted lines are the STUB's source, not this shell's
+    {
+        echo '#!/usr/bin/env bash'
+        printf 'real=%s\n' "$real"
+        printf 'mode=%s\n' "$mode"
+        echo 'for a in "$@"; do'
+        echo '    if [ "$a" = "luna-upgrade-snapshot.XXXXXX" ]; then'
+        echo '        f="$("$real" "$@")" || exit $?'
+        echo '        chmod "$mode" "$f" || exit 1'
+        printf '%s\n' '        printf "%s\\n" "$f"'
+        echo '        exit 0'
+        echo '    fi'
+        echo 'done'
+        echo 'exec "$real" "$@"'
+    } > "$dir/mktemp"
+    chmod +x "$dir/mktemp"
+}
+
+# t35_fixture <tmpl> <vault> — a vault already carrying a complete snapshot,
+# plus a newer template that changes one overwrite-class file.
+t35_fixture() {
+    local t="$1" v="$2"
+    make_template "$t" "0.9.0"
+    printf 'gitleaks-content-v1\n' > "$t/.gitleaks.toml"
+    mkdir -p "$v"; cp -r "$t/." "$v/"
+    stamp_vault "$v" "0.1.0"
+    bash "$UPGRADE" --template-dir "$t" --vault-dir "$v" --yes >/dev/null 2>&1
+    printf '{"metadata":{"version":"1.0.0"}}\n' > "$t/marketplace/.claude-plugin/marketplace.json"
+    printf 'gitleaks-content-v2\n' > "$t/.gitleaks.toml"
+}
+
+snap_keys() { "$PY" -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("files",{})))' "$1" 2>/dev/null; }
+
+# --- T35: the APPEND half. A read-only scratch file (0444) means every
+# record_snapshot row is dropped; the run must refuse to stamp.
+T="$TMP/t35-tmpl"; V="$TMP/t35-vault"
+t35_fixture "$T" "$V"
+t35_keys_before=$(snap_keys "$V/.vault-template.json")
+if [ "${t35_keys_before:-0}" -gt 0 ]; then pass "T35 setup: the vault carries a complete content snapshot"; else fail "T35 setup: the vault carries a complete content snapshot" "keys=$t35_keys_before"; fi
+t35_stamp_before=$(sha_of "$V/.vault-template.json")
+t35_stub="$TMP/t35-stub"; mk_mktemp_stub "$t35_stub" 0444
+# Precondition: the stub really does hand back an unappendable snapshot file,
+# and really does pass a NON-snapshot mktemp through writable (or the case
+# would be the blanket-failure control it exists to replace).
+t35_probe=$(PATH="$t35_stub:$PATH" mktemp -t luna-upgrade-snapshot.XXXXXX)
+if printf 'x\n' >> "$t35_probe" 2>/dev/null; then fail "T35 setup: the stub's snapshot file rejects appends" "append succeeded"; else pass "T35 setup: the stub's snapshot file rejects appends"; fi
+t35_other=$(PATH="$t35_stub:$PATH" mktemp)
+if printf 'x\n' >> "$t35_other" 2>/dev/null; then pass "T35 setup: the stub passes other mktemp calls through writable"; else fail "T35 setup: the stub passes other mktemp calls through writable" "append failed"; fi
+t35_out=$(PATH="$t35_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t35_rc=$?
+assert_eq "T35 an unrecordable snapshot leaves the stamp byte-identical" "$t35_stamp_before" "$(sha_of "$V/.vault-template.json")"
+assert_eq "T35 the existing snapshot survives intact" "$t35_keys_before" "$(snap_keys "$V/.vault-template.json")"
+if [ "$t35_rc" -ne 0 ]; then pass "T35 exits non-zero rather than stamping"; else fail "T35 exits non-zero rather than stamping" "rc=0, out: $t35_out"; fi
+
+# --- T36: the READ half. A write-only scratch file (0200) records fine but
+# cannot be read back at stamp time; the stamp must not be written without it.
+T="$TMP/t36-tmpl"; V="$TMP/t36-vault"
+t35_fixture "$T" "$V"
+t36_keys_before=$(snap_keys "$V/.vault-template.json")
+t36_stamp_before=$(sha_of "$V/.vault-template.json")
+t36_stub="$TMP/t36-stub"; mk_mktemp_stub "$t36_stub" 0200
+t36_probe=$(PATH="$t36_stub:$PATH" mktemp -t luna-upgrade-snapshot.XXXXXX)
+if printf 'x\n' >> "$t36_probe" 2>/dev/null; then pass "T36 setup: the stub's snapshot file accepts appends"; else fail "T36 setup: the stub's snapshot file accepts appends" "append failed"; fi
+if cat "$t36_probe" >/dev/null 2>&1; then fail "T36 setup: the stub's snapshot file rejects reads" "read succeeded"; else pass "T36 setup: the stub's snapshot file rejects reads"; fi
+t36_out=$(PATH="$t36_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t36_rc=$?
+assert_eq "T36 an unreadable snapshot leaves the stamp byte-identical" "$t36_stamp_before" "$(sha_of "$V/.vault-template.json")"
+assert_eq "T36 the existing snapshot survives intact" "$t36_keys_before" "$(snap_keys "$V/.vault-template.json")"
+if [ "$t36_rc" -ne 0 ]; then pass "T36 exits non-zero rather than stamping"; else fail "T36 exits non-zero rather than stamping" "rc=0, out: $t36_out"; fi
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

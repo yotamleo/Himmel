@@ -504,12 +504,20 @@ sha_of() { if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else echo MISSIN
 SNAPSHOT_FILE=""
 trap '[ -n "${SNAPSHOT_FILE:-}" ] && rm -f "$SNAPSHOT_FILE"; true' EXIT
 
+SNAPSHOT_FAILURES=0
 record_snapshot() {
     local rel="$1" dst="$2" s
     [ -n "$SNAPSHOT_FILE" ] || return 0
     s="$(sha_of "$dst")"
     [ "$s" = "MISSING" ] && return 0
-    printf '%s\t%s\n' "$rel" "$s" >> "$SNAPSHOT_FILE"
+    # A dropped row is not cosmetic: the stamp is rewritten wholesale, so a
+    # file whose row never lands loses its snapshot entry and silently reverts
+    # to the poisonable git baseline. Count the failure and let the stamp guard
+    # below refuse the write, the same way a failed file write does.
+    if ! printf '%s\t%s\n' "$rel" "$s" >> "$SNAPSHOT_FILE"; then
+        SNAPSHOT_FAILURES=$((SNAPSHOT_FAILURES+1))
+        echo "  WARN: could not record the content snapshot for $rel" >&2
+    fi
 }
 
 # Capture the vault's prior PLUGINS-SETUP.md sha BEFORE any overwrite, so the
@@ -739,7 +747,7 @@ fi
 # git baseline this change exists to replace. So refuse HERE, before the first
 # write: nothing has been touched yet, so the abort leaves the vault exactly as
 # it was and a re-run is clean.
-SNAPSHOT_FILE="$(mktemp 2>/dev/null)"
+SNAPSHOT_FILE="$(mktemp -t luna-upgrade-snapshot.XXXXXX 2>/dev/null)"
 if [ -z "$SNAPSHOT_FILE" ] || [ ! -e "$SNAPSHOT_FILE" ]; then
     echo "upgrade: could not create a temp file for the content snapshot — aborting before any change." >&2
     echo "  Proceeding would rewrite $STAMP without its content snapshot, dropping the" >&2
@@ -792,10 +800,11 @@ fi
 # target version — leave the stamp behind so a re-run re-processes (and
 # re-alerts) instead of a "current" stamp silently masking the gap. The stamp
 # is the last write, so an aborted run also re-runs cleanly (idempotent).
-if [ "$WRITE_FAILURES" -gt 0 ] || [ "$n_local_edit" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "$CLAUDE_MERGE_RESULT" = "error" ]; then
+if [ "$WRITE_FAILURES" -gt 0 ] || [ "$n_local_edit" -gt 0 ] || [ "$SNAPSHOT_FAILURES" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "$CLAUDE_MERGE_RESULT" = "error" ]; then
     echo "" >&2
     echo "upgrade: NOT writing the version stamp — the vault is partially upgraded" >&2
     echo "  (write failures: $WRITE_FAILURES; local edits withheld: $n_local_edit;" >&2
+    echo "  snapshot failures: $SNAPSHOT_FAILURES;" >&2
     echo "  _CLAUDE.md: ${CLAUDE_MERGE_RESULT:-ok}). Resolve the issues above and re-run;" >&2
     echo "  template-owned writes are idempotent." >&2
     exit 1
@@ -811,14 +820,19 @@ stamp = {"template": "luna-second-brain", "version": ver, "upgraded_at": now}
 # autosyncs the stamp should not see a spurious diff every upgrade.
 files = {}
 if snap_p:
+    # An unreadable scratch file must NOT degrade to "no snapshot": the stamp
+    # below is rewritten wholesale, so writing it without the map would strip
+    # the baseline the vault already has. Fail instead — the caller prints the
+    # re-run message and the existing stamp (with its existing map) survives.
     try:
         with open(snap_p, encoding="utf-8") as fh:
             for line in fh:
                 rel, tab, sha = line.rstrip("\n").partition("\t")
                 if tab and rel and sha:
                     files[rel] = "sha256:" + sha
-    except OSError:
-        files = {}
+    except OSError as e:
+        sys.stderr.write("upgrade: could not read the content snapshot (%s)\n" % e)
+        sys.exit(3)
 if files:
     stamp["files"] = dict(sorted(files.items()))
 with open(stamp_p, "w", encoding="utf-8") as fh:
