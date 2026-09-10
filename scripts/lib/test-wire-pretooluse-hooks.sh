@@ -77,6 +77,58 @@ s8c="$td/s8c.json"; printf '\t\n ' > "$s8c"
 ( . "$wire"; wire_sessionstart_hook "$s8c" "C:/himmel" "inject-initiative.sh" 0 >/dev/null )
 check "whitespace file -> SessionStart inject" "$(jq -r '[.hooks.SessionStart[].hooks[].command | select(test("inject-initiative"))] | length' "$s8c")" "1"
 
+# 8d. HIMMEL-2892 CR round 1 [codex-1]: dedup is per (hook, MATCHER). A hook
+# registered under two DISTINCT matchers is two genuinely different
+# registrations -- keeping only the first silently drops the second's tool
+# coverage. RED before the fix: the `Write` stanza vanished, leaving Write
+# unprotected while the retained matcher still read `Edit`.
+s8d="$td/s8d.json"
+cat > "$s8d" <<'JSON'
+{"hooks":{"PreToolUse":[
+  {"matcher":"Edit","hooks":[{"type":"command","command":"bash \"/old/scripts/hooks/block-edit-on-main.sh\""}]},
+  {"matcher":"Write","hooks":[{"type":"command","command":"bash \"/old/scripts/hooks/block-edit-on-main.sh\""}]}
+]}}
+JSON
+bash "$wire" "$s8d" "C:/himmel" >/dev/null
+check "distinct matchers: Edit registration kept" \
+  "$(jq -r '[.hooks.PreToolUse[] | select(.matcher=="Edit") | .hooks[].command | select(test("block-edit-on-main"))] | length' "$s8d")" "1"
+check "distinct matchers: Write registration kept" \
+  "$(jq -r '[.hooks.PreToolUse[] | select(.matcher=="Write") | .hooks[].command | select(test("block-edit-on-main"))] | length' "$s8d")" "1"
+check "distinct matchers: both repointed at this install" \
+  "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("block-edit-on-main")) | select(test("C:/himmel"))] | length' "$s8d")" "2"
+check "distinct matchers: no canonical stanza appended" \
+  "$(jq -r '[.hooks.PreToolUse[] | select(.matcher=="Edit|Write|MultiEdit|NotebookEdit")] | length' "$s8d")" "0"
+
+# 8e. negative control for 8d: a TRUE double-wire -- the same hook twice under
+# the SAME matcher -- is still deduped to one. Without this, 8d would pass on a
+# merge that simply stopped deduping at all.
+s8e="$td/s8e.json"
+cat > "$s8e" <<'JSON'
+{"hooks":{"PreToolUse":[
+  {"matcher":"Edit","hooks":[
+    {"type":"command","command":"bash \"/old/scripts/hooks/block-edit-on-main.sh\""},
+    {"type":"command","command":"bash \"/other/scripts/hooks/block-edit-on-main.sh\""}
+  ]}
+]}}
+JSON
+bash "$wire" "$s8e" "C:/himmel" >/dev/null
+check "same matcher twice: deduped to one" \
+  "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("block-edit-on-main"))] | length' "$s8e")" "1"
+
+# 8f. CodeRabbit round 1: a prefix containing a `"` must still wire. The specs
+# JSON is built with `jq -n --arg pfx`, not by interpolating the prefix into
+# JSON TEXT — a POSIX path may legally contain a quote, and the old textual
+# form produced malformed JSON that `jq --argjson specs` rejected. RED control
+# (measured on the pre-fix lib): the run printed "wired PreToolUse hooks ->"
+# and left the file UNWIRED — a SILENT false success, not a loud abort, which
+# is why this asserts the file content and never the exit line.
+s8f="$td/s8f.json"
+printf '%s' '{}' > "$s8f"
+bash "$wire" "$s8f" '/opt/we"ird/clone' >/dev/null 2>&1 || true
+check "quote in prefix: block still wired" "$(jq -r '.hooks.PreToolUse | length' "$s8f" 2>/dev/null)" "3"
+check "quote in prefix: prefix survives verbatim in the command" \
+  "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(contains("/opt/we\"ird/clone"))] | length' "$s8f" 2>/dev/null)" "3"
+
 # 9. invalid JSON -> refused, file unchanged.
 s9="$td/s9.json"
 printf '%s' 'nope {' > "$s9"

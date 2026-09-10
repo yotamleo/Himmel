@@ -101,6 +101,14 @@ work=$(mktemp -d)
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
 
+# HIMMEL-2892: run from a THROWAWAY directory, never the himmel checkout this
+# suite lives in. `install` resolves a project-scope target to $PWD, so a case
+# answering scope=project from the checkout root aimed the installer at the
+# repo itself -- which bin.js's himmel-clone guard now refuses outright. The cd
+# also closes the older hermeticity hole that same fact created: a non-dry-run
+# project install here spawned adopt.sh against the live checkout.
+derive_cwd="$work/suite-cwd"; mkdir -p "$derive_cwd"; cd "$derive_cwd"
+
 # HIMMEL-1446 r3: a non-dry-run install (the stamped accept cases, e.g. caseM)
 # reaches applyHimmelctlPathShim(), whose default binDir is the operator's REAL
 # ~/.local/bin (win32 ignores HOME entirely). Isolate binDir for the WHOLE

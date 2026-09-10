@@ -12,7 +12,9 @@
 #        command: 'node "<himmel>/marketplace/plugins/claude-hud/dist/index.js"' }
 #   2. .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"  (merged, other env keys preserved)
 #   3. Drops the hud config (himmel-config.json with <himmel-path> substituted)
-#      to <settings-dir>/plugins/claude-hud/config.json.
+#      to ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json --
+#      the config dir, always, never the settings file's own directory
+#      (HIMMEL-2892: it is per-user config, not per-project).
 # Idempotent, atomic (temp + move), non-destructive (other keys preserved;
 # file + parent dir created if absent). Normalizes JSON through `jq --indent 2`
 # when jq is on PATH (matches win11.ps1's Write-SettingsJson), else falls back
@@ -23,6 +25,24 @@ param(
     [string]$SettingsPath,
     [string]$HimmelPath
 )
+
+# The Claude Code config dir -- twin of the bash lib's
+# _wire_statusline_config_dir(), and of the hud's own getClaudeConfigDir()
+# (marketplace/plugins/claude-hud/src/claude-config-dir.ts): CLAUDE_CONFIG_DIR
+# wins, TRIMMED, with a leading `~` expanded; otherwise <home>/.claude.
+# IsNullOrWhiteSpace already treated a whitespace-only value as unset; the
+# explicit Trim() below extends that to a PADDED value, so a directory written
+# here is the same one the hud reads it back from. $env:HOME is unset on
+# Windows PowerShell 5.1, so USERPROFILE is the fallback there.
+function Get-ClaudeConfigDir {
+    $homeDir = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
+    $d = $env:CLAUDE_CONFIG_DIR
+    if ([string]::IsNullOrWhiteSpace($d)) { return (Join-Path $homeDir '.claude') }
+    $d = $d.Trim()
+    if ($d -eq '~') { return $homeDir }
+    if ($d.StartsWith('~/')) { return (Join-Path $homeDir $d.Substring(2)) }
+    return $d
+}
 
 function Set-HimmelStatusLine {
     param(
@@ -106,12 +126,16 @@ function Set-HimmelStatusLine {
         Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
         Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
 
-        # (3) Drop the hud config next to settings.json, substituting this clone's
+        # (3) Drop the hud config under the CONFIG DIR, substituting this clone's
         # path for the <himmel-path> placeholder. Guarded on the source existing so
         # tests wiring against a synthetic himmel path stay a pure statusLine/env op.
+        # HIMMEL-2892: the destination is ${CLAUDE_CONFIG_DIR:-~/.claude}, never
+        # $settingsDir -- even for a PROJECT settings path. The hud reads its
+        # config from the config dir, so a copy beside a project's
+        # .claude/settings.json is inert AND an untracked file inside a repo.
         $hudSrc = "$himmelFwd/marketplace/plugins/claude-hud/config/himmel-config.json"
         if (Test-Path $hudSrc) {
-            $hudDir = Join-Path $settingsDir 'plugins/claude-hud'
+            $hudDir = Join-Path (Get-ClaudeConfigDir) 'plugins/claude-hud'
             New-Item -ItemType Directory -Force $hudDir | Out-Null
             $hudCfg = (Get-Content $hudSrc -Raw).Replace('<himmel-path>', $himmelFwd).Replace("`r`n", "`n")
             $hudPath = Join-Path $hudDir 'config.json'

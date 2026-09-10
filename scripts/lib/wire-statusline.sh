@@ -16,15 +16,47 @@
 #   3. Drops the hud config: reads
 #      marketplace/plugins/claude-hud/config/himmel-config.json from the himmel
 #      clone, substitutes every <himmel-path> with this clone's path, and writes
-#      it to <settings-dir>/plugins/claude-hud/config.json — the config path is
-#      derived RELATIVE to the settings file's own directory (normally
-#      ${CLAUDE_CONFIG_DIR:-~/.claude}, but whatever dir the caller's settings
-#      path lives in).
+#      it to ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json
+#      (CLAUDE_CONFIG_DIR trimmed, whitespace-only treated as unset — matching
+#      the hud's own getClaudeConfigDir).
+#      That path is the CONFIG DIR, always — never derived from the settings
+#      file's own directory (HIMMEL-2892). The hud config is per-USER config,
+#      not per-project: deriving it relative to the settings path dropped an
+#      untracked .claude/plugins/claude-hud/config.json INSIDE the repo on
+#      every project-scope install.
 #
 # Idempotent (re-running yields the same result), atomic (temp file + mv), and
 # non-destructive (all other keys / all other env keys preserved; file + parent
 # dir created if absent). Requires jq. Paths are forward-slashed.
 set -euo pipefail
+
+# The Claude Code config dir — mirror of the HUD's own getClaudeConfigDir()
+# (marketplace/plugins/claude-hud/src/claude-config-dir.ts): CLAUDE_CONFIG_DIR
+# wins, with a leading `~` expanded; otherwise $HOME/.claude.
+#
+# The value is TRIMMED first, exactly as the consumer does
+# (`process.env.CLAUDE_CONFIG_DIR?.trim()`), and a whitespace-only value is
+# therefore treated as UNSET. Without the trim the two disagree: the installer
+# would write the hud config under a padded — i.e. different — directory from
+# the one the hud reads it back from, and a whitespace-only value would make
+# bash resolve a RELATIVE directory literally named with spaces. The
+# PowerShell twin already had this via IsNullOrWhiteSpace.
+_wire_statusline_config_dir() {
+  local d="${CLAUDE_CONFIG_DIR:-}"
+  # Strip leading and trailing whitespace (bash 3.2-safe: no ${var@Q}, no =~).
+  d="${d#"${d%%[![:space:]]*}"}"
+  d="${d%"${d##*[![:space:]]}"}"
+  if [ -z "$d" ]; then
+    printf '%s\n' "$HOME/.claude"
+    return 0
+  fi
+  # shellcheck disable=SC2088  # matching/stripping a literal '~/' prefix, not expanding one
+  case "$d" in
+    '~') d="$HOME" ;;
+    '~/'*) d="$HOME/${d#\~/}" ;;
+  esac
+  printf '%s\n' "$d"
+}
 
 wire_statusline() {
   local settings="$1" himmel="$2"
@@ -61,12 +93,17 @@ wire_statusline() {
     > "$settings.statusline.tmp" || { rm -f "$settings.statusline.tmp"; return 1; }
   mv "$settings.statusline.tmp" "$settings" || return 1
 
-  # (3) Drop the hud config next to settings.json, substituting this clone's
+  # (3) Drop the hud config under the CONFIG DIR, substituting this clone's
   # path for the <himmel-path> placeholder. Guarded on the source existing so
   # tests wiring against a synthetic himmel path stay a pure statusLine/env op.
+  # HIMMEL-2892: the destination is ${CLAUDE_CONFIG_DIR:-~/.claude}, never
+  # $settings_dir — even when the caller passes a PROJECT settings path. The
+  # hud reads its config from the config dir, so a copy beside a project's
+  # .claude/settings.json is both inert and an untracked file dropped inside
+  # someone's repo (observed on the himmel checkout itself, 2026-09-09).
   local hud_src="${himmel_fwd}/marketplace/plugins/claude-hud/config/himmel-config.json"
   if [ -f "$hud_src" ]; then
-    local hud_dir="$settings_dir/plugins/claude-hud"
+    local hud_dir; hud_dir="$(_wire_statusline_config_dir)/plugins/claude-hud"
     mkdir -p "$hud_dir"
     local hud_cfg; hud_cfg="$(cat "$hud_src")"
     hud_cfg="${hud_cfg//<himmel-path>/$himmel_fwd}"

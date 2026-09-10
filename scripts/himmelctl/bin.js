@@ -2256,6 +2256,71 @@ function contributeCheckoutOk() {
   return fs.existsSync(path.join(scriptsDir, contributeOverlayFilename()));
 }
 
+// HIMMEL-2892: the project-scope target himmelctl hands adopt.sh — adopt.sh's
+// own `--target` default is $PWD, so this is that same resolution, and the
+// same one settingsPathForScope('project') mirrors.
+function projectTargetDir() {
+  return path.resolve(process.cwd());
+}
+
+// Forward-slash a path for DISPLAY in a diagnostic that tells the operator to
+// run something (HIMMEL-2892 CR round 2, [codex-1]). path.join/resolve emit
+// native separators, so on Windows the printed `bash C:\\...\\scripts\\setup.sh`
+// is not pasteable into the Git Bash shell the same line names — the shell eats
+// `\s` — and it is the same collapse wire-pretooluse-hooks.sh forward-slashes
+// its hook commands to avoid. Display only; nothing compares against this.
+function displayPath(p) {
+  return String(p).split(path.sep).join('/');
+}
+
+// realpath, falling back to the resolved path when the entry cannot be
+// stat'ed (a not-yet-created dir, a permission gap) — never throws.
+function realpathOrSelf(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+// git's COMMON dir for `dir` — the one identity a checkout shares with every
+// worktree linked to it. Absolute, realpath'd; null when `dir` is not a git
+// work tree, or when git is absent/stubbed and prints nothing (a hermetic
+// suite's `git` stub). Never throws.
+function gitCommonDir(dir) {
+  const r = spawnSync('git', ['-C', dir, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  const out = (r.stdout || '').trim();
+  if (!out) return null;
+  return realpathOrSelf(path.resolve(dir, out));
+}
+
+// HIMMEL-2892: is the project-scope target this himmel clone, or a worktree of
+// it? The identity marker is the clone THIS himmelctl runs from (repoRoot(),
+// honoring HIMMELCTL_REPO_ROOT), not a content heuristic: an adopter repo that
+// merely VENDORS himmel's portable core carries copies of scripts/hooks/* and
+// scripts/guardrails/lib.sh and must NOT be caught, while the one tree whose
+// .claude/settings.json is literally the source this installer generates the
+// hook block from is, by construction, exactly this one.
+//
+// Three tests, cheapest first. The path tests cover the clone itself and any
+// directory beneath it — which is where himmel keeps its own worktrees
+// (.claude/worktrees/). The git-common-dir test covers a worktree created
+// ELSEWHERE (`git worktree add ../sibling`): it is not under repoRoot() but its
+// .claude/settings.json is the very same tracked file (CR round 1, [codex-3]).
+// It is the LAST test and requires BOTH sides to resolve: a stubbed or absent
+// git yields null for both, and two nulls must never compare equal into a false
+// refusal.
+function projectTargetIsHimmelCheckout() {
+  const target = realpathOrSelf(projectTargetDir());
+  const clone = realpathOrSelf(repoRoot());
+  if (target === clone) return true;
+  if (target.startsWith(clone + path.sep)) return true;
+  const targetGit = gitCommonDir(target);
+  const cloneGit = gitCommonDir(clone);
+  return Boolean(targetGit) && Boolean(cloneGit) && targetGit === cloneGit;
+}
+
 // Shell-quote one arg for DISPLAY only (the spawn below uses argv directly,
 // no shell — this only affects the printed `derived:` line).
 function shellQuote(a) {
@@ -4027,6 +4092,44 @@ async function cmdInstall(args) {
     console.error('  (or set HIMMELCTL_INTERACTIVE=1 to answer prompts interactively)');
     return 1;
   }
+  // 5.2 (HIMMEL-2892): the himmel checkout is not a project TARGET. Its
+  // .claude/settings.json is the SOURCE this installer generates the hook
+  // block from (CLAUDE.md: "the live inventory is .claude/settings.json") —
+  // hand-curated across many tickets, not a generated artifact — and its
+  // project-scope items (pre-commit gates, the jira dist build,
+  // guardrail-scope, doc-guard-map) are what scripts/setup.sh, the
+  // contributor primitive, installs. Project scope here rewrote that file
+  // from the manifest (2026-09-09 dogfood: 98+/38-, matchers dropped,
+  // timeouts 60 → 15) and dropped a hud config inside the repo.
+  //
+  // Fires on the RESOLVED answers, so it covers every source of scope
+  // (--scope, --from-profile, the interactive wizard's own default) — and is
+  // placed BEFORE writeCache below on purpose: a refused install must leave
+  // no `scope: project` record behind for a later status/ensure to converge
+  // against. A dry run is refused too — a preview of an install that cannot
+  // legally run is not a useful preview.
+  if ((answers.scope || 'project') === 'project' && projectTargetIsHimmelCheckout()) {
+    console.error(`himmelctl: --scope project is not valid inside the himmel checkout (${displayPath(projectTargetDir())})`);
+    console.error('  its .claude/settings.json is the SOURCE this installer generates from, never a target.');
+    // The contributor primitive is rendered from deriveOverlayCommand() — the
+    // SAME derivation that actually spawns it — rather than assumed to be
+    // `bash <script>` (CodeRabbit round 1). On Windows the primitive is
+    // setup.ps1, and `bash setup.ps1` is not a runnable command; the derived
+    // form carries pwsh + -ExecutionPolicy Bypass -File there, and bash on
+    // POSIX. Deriving it also means the printed line can never drift from the
+    // command himmelctl would really run.
+    //
+    // Both paths are shell-quoted and ABSOLUTE (CR round 3, [codex-1]): a
+    // checkout path containing a space breaks an unquoted path operand, and
+    // the relative `node scripts/himmelctl/bin.js` only resolves from the
+    // checkout root — while the refusal fires from whatever subdirectory the
+    // operator ran it in, which is exactly where they will paste it back.
+    const setupCmd = displayCommand(deriveOverlayCommand());
+    const binCmd = shellQuote(displayPath(path.join(repoRoot(), 'scripts', 'himmelctl', 'bin.js')));
+    console.error(`  use: ${setupCmd}   (contributor gates), then: node ${binCmd} install --scope user`);
+    return 1;
+  }
+
   // HIMMEL-2436: cache the resolved answers regardless of source — replaying a
   // profile (--from-profile) is still an install, and the resulting machine
   // should be as introspectable via `status`/`ensure` as an interactively-

@@ -10,6 +10,12 @@
 # install, never double-wires). Forward-slashes + quotes the hook path so a
 # Windows backslash path does not collapse when the hook command is parsed.
 #
+# The PreToolUse block MERGES; it is never regenerated (HIMMEL-2892). himmel
+# owns exactly one field of an entry it installed -- that entry's `command`.
+# The stanza's matcher, its position, the entry's timeout, and every foreign
+# stanza or co-located foreign entry survive byte-for-byte. A hook registered
+# under two DISTINCT matchers keeps both registrations (dedup is per matcher).
+#
 # Dot-source to get the functions, or invoke directly:
 #   pwsh -File wire-pretooluse-hooks.ps1 -SettingsPath <path> -Prefix <prefix> [-DryRun]
 
@@ -54,13 +60,26 @@ function Set-PretooluseHooks {
     )
     if (-not (Get-Command jq -ErrorAction SilentlyContinue)) { throw "wire-pretooluse-hooks: jq required" }
     $pfx = $Prefix.Replace('\', '/')
-    $desired = @"
-[
-  {"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/auto-approve-safe-bash.sh\""}]},
-  {"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/block-edit-on-main.sh\""}]},
-  {"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/block-read-secrets.sh\""}]}
-]
-"@
+    # One spec per himmel-owned hook -- twin of the bash lib's $specs. `pat`
+    # identifies an entry THIS installer owns, `cmd` is the command it must
+    # carry after the merge, `stanza` is appended only when the target carries
+    # no such entry at all (HIMMEL-2892).
+    #
+    # Built by `jq -n --arg pfx`, never by interpolating $pfx into JSON TEXT
+    # (CodeRabbit round 1): a path may contain a `"`, which makes hand-written
+    # JSON malformed; jq then rejects --argjson outright and the settings file
+    # goes unwired while the caller reads success. The jq program below is the
+    # bash twin's, verbatim.
+    $specsProgram = @'
+    def spec($name; $matcher):
+      ("bash \"" + $pfx + "/scripts/hooks/" + $name + ".sh\"") as $cmd
+      | { pat: ("scripts/hooks/" + $name + "[.]sh"),
+          cmd: $cmd,
+          stanza: { matcher: $matcher, hooks: [ { type: "command", command: $cmd } ] } };
+    [ spec("auto-approve-safe-bash"; "Bash"),
+      spec("block-edit-on-main"; "Edit|Write|MultiEdit|NotebookEdit"),
+      spec("block-read-secrets"; "Bash|PowerShell|Read|Grep") ]
+'@
     if ($DryRun) { Write-Host "DRY: merge 3 PreToolUse hook stanzas into $SettingsPath (prefix: $Prefix)"; return }
 
     # Captured native stdout is decoded via [Console]::OutputEncoding, the
@@ -83,19 +102,39 @@ function Set-PretooluseHooks {
     try {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        # jq builds the specs so the prefix is ESCAPED, not interpolated (see
+        # $specsProgram above). Inside the encoding guard: jq output is captured.
+        $specs = (& jq -n --arg pfx $pfx $specsProgram) -join "`n"
+        if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq failed to build the hook specs" }
         $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
+        # Verbatim twin of WIRE_PRETOOLUSE_MERGE_JQ in wire-pretooluse-hooks.sh
+        # -- keep the two byte-identical. MERGE, never regenerate: every entry
+        # matching a spec has its `command` rewritten in place (matcher,
+        # position, timeout and every foreign entry survive untouched), and a
+        # canonical stanza is appended only when nothing matched (HIMMEL-2892).
+        # Dedup is per (spec, MATCHER): a hook registered under two DISTINCT
+        # matchers keeps both registrations; only a repeat under a matcher
+        # already carrying it is dropped (CR round 1, [codex-1]).
         $filter = @'
-.hooks = (.hooks // {})
-| .hooks.PreToolUse = (
-    ((.hooks.PreToolUse // [])
-      | map(.hooks = ((.hooks // [])
-          | map(select((.command // "")
-                | test("scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)[.]sh") | not))))
-      | map(select((.hooks | length) > 0)))
-    + $add
-  )
+  def wire($spec):
+    (reduce .[] as $st ({seen: [], out: []};
+       ($st.matcher) as $m
+       | (reduce ($st.hooks // [])[] as $h ({seen: .seen, hooks: []};
+            if (($h.command // "") | test($spec.pat))
+            then (if (.seen | any(. == $m))
+                  then .
+                  else {seen: (.seen + [$m]), hooks: (.hooks + [$h | .command = $spec.cmd])}
+                  end)
+            else {seen: .seen, hooks: (.hooks + [$h])}
+            end)) as $r
+       | {seen: $r.seen,
+          out: (.out + (if ($r.hooks | length) > 0 then [$st | .hooks = $r.hooks] else [] end))}
+     )) as $acc
+    | if ($acc.seen | length) > 0 then $acc.out else ($acc.out + [$spec.stanza]) end;
+  .hooks = (.hooks // {})
+  | .hooks.PreToolUse = (reduce $specs[] as $spec ((.hooks.PreToolUse // []); wire($spec)))
 '@
-        $out = $base | jq --indent 2 --argjson add $desired $filter
+        $out = $base | jq --indent 2 --argjson specs $specs $filter
         if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq transform failed" }
         Write-SettingsAtomic -SettingsPath $SettingsPath -Json ($out -join "`n")
         Write-Host "  wired PreToolUse hooks -> $SettingsPath"

@@ -22,25 +22,91 @@
 # than appending a duplicate -- so a re-run repairs a bad install and never
 # double-wires, even when the clone path changed (SC8).
 #
+# The PreToolUse block MERGES; it is never regenerated (HIMMEL-2892). himmel
+# owns exactly ONE field of an entry it installed -- that entry's `command`
+# string, which is what makes the moved-clone/backslash repair above possible.
+# A hook registered under two DISTINCT matchers keeps BOTH registrations (dedup
+# is per matcher, not per hook -- CR round 1, [codex-1]); only a repeat under a
+# matcher that already carries it is dropped as a double-wire.
+# Everything else belongs to the adopter and survives byte-for-byte: the
+# stanza's `matcher` (never collapsed to the canonical string), the stanza's
+# POSITION in the array, the entry's `timeout` and any other key it carries,
+# and every foreign stanza or co-located foreign entry. A canonical stanza is
+# APPENDED only for a himmel hook the target carries no entry for at all.
+# Before this, the trio was deleted and three canonical stanzas re-appended --
+# which silently rewrote a hand-curated hook block on any adopter who had one
+# (the 2026-09-09 dogfood incident: matchers dropped, timeouts 60 -> 15).
+#
 # Reads NO script globals (the dry-run flag is an explicit param). Requires jq.
 # Source it to call the functions directly, or invoke via bash (the BASH_SOURCE
 # guard below dispatches `wire-pretooluse-hooks.sh <settings> <prefix>`).
 set -euo pipefail
+
+# The merge program, shared verbatim with the PowerShell twin
+# (wire-pretooluse-hooks.ps1) so the two can never drift. For each spec, walk
+# the PreToolUse array in order and rewrite the `command` of every entry that
+# matches the spec's `pat` IN PLACE (its object, its stanza and their key order
+# untouched). If no entry matched at all, the spec's canonical stanza is
+# appended.
+#
+# Dedup is per (spec, MATCHER), not per spec (HIMMEL-2892 CR round 1,
+# [codex-1]). A hook registered under two DISTINCT matchers -- e.g.
+# block-edit-on-main under a bare `Edit` stanza AND a bare `Write` one -- is two
+# genuinely different registrations, and keeping only the first silently drops
+# the second's tool coverage (the pre-merge code never had this failure mode: it
+# deleted both and appended one canonical stanza covering every tool). So a
+# matcher is recorded the first time it carries the spec, and only a REPEAT
+# under a matcher already carrying it is dropped as a true double-wire. A stanza
+# left with no entries goes with them.
+# shellcheck disable=SC2016  # a jq program: $spec/$st/$h/$r/$acc/$m/$specs are jq bindings, not shell expansions
+WIRE_PRETOOLUSE_MERGE_JQ='
+  def wire($spec):
+    (reduce .[] as $st ({seen: [], out: []};
+       ($st.matcher) as $m
+       | (reduce ($st.hooks // [])[] as $h ({seen: .seen, hooks: []};
+            if (($h.command // "") | test($spec.pat))
+            then (if (.seen | any(. == $m))
+                  then .
+                  else {seen: (.seen + [$m]), hooks: (.hooks + [$h | .command = $spec.cmd])}
+                  end)
+            else {seen: .seen, hooks: (.hooks + [$h])}
+            end)) as $r
+       | {seen: $r.seen,
+          out: (.out + (if ($r.hooks | length) > 0 then [$st | .hooks = $r.hooks] else [] end))}
+     )) as $acc
+    | if ($acc.seen | length) > 0 then $acc.out else ($acc.out + [$spec.stanza]) end;
+  .hooks = (.hooks // {})
+  | .hooks.PreToolUse = (reduce $specs[] as $spec ((.hooks.PreToolUse // []); wire($spec)))
+'
 
 wire_pretooluse_hooks() {
   local settings="$1" prefix="$2" dry_run="${3:-0}"
   command -v jq >/dev/null 2>&1 || { echo "wire-pretooluse-hooks: jq required" >&2; return 1; }
   # shellcheck disable=SC1003  # '\' is a literal backslash to replace, not a quote escape
   local pfx="${prefix//'\'//}"   # forward-slash any backslashes in the prefix
-  local desired
-  desired=$(cat <<JSON
-[
-  {"matcher":"Bash","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/auto-approve-safe-bash.sh\""}]},
-  {"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/block-edit-on-main.sh\""}]},
-  {"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/block-read-secrets.sh\""}]}
-]
-JSON
-)
+  # One spec per himmel-owned hook. `pat` identifies an entry THIS installer
+  # owns (by the hook path it installs); `cmd` is the command such an entry
+  # must carry after the merge; `stanza` is the canonical stanza appended when
+  # the target carries no such entry at all.
+  #
+  # Built with `jq -n --arg pfx`, never by interpolating $pfx into JSON TEXT
+  # (CodeRabbit round 1): a POSIX path may legally contain a `"`, which makes
+  # hand-written JSON malformed, and `jq --argjson specs` then rejects the
+  # argument outright — the settings file goes unwired. Passing the prefix as a
+  # jq --arg lets jq do the escaping, for quotes, backslashes and newlines
+  # alike. Shared verbatim with the PowerShell twin.
+  local specs
+  # shellcheck disable=SC2016  # a jq program: $pfx/$cmd/$name/$matcher are jq bindings, not shell expansions
+  specs=$(jq -n --arg pfx "$pfx" '
+    def spec($name; $matcher):
+      ("bash \"" + $pfx + "/scripts/hooks/" + $name + ".sh\"") as $cmd
+      | { pat: ("scripts/hooks/" + $name + "[.]sh"),
+          cmd: $cmd,
+          stanza: { matcher: $matcher, hooks: [ { type: "command", command: $cmd } ] } };
+    [ spec("auto-approve-safe-bash"; "Bash"),
+      spec("block-edit-on-main"; "Edit|Write|MultiEdit|NotebookEdit"),
+      spec("block-read-secrets"; "Bash|PowerShell|Read|Grep") ]
+  ') || return 1
   if [[ "$dry_run" -eq 1 ]]; then
     echo "DRY: merge 3 PreToolUse hook stanzas into $settings (prefix: $prefix)"
     return
@@ -53,22 +119,8 @@ JSON
     return 1
   fi
   [ -z "$(printf '%s' "$base" | tr -d '[:space:]')" ] && base="{}"
-  # Drop only the himmel hook OBJECTS (not whole stanzas) from each existing
-  # PreToolUse entry, then drop any stanza left empty, then append the fresh
-  # stanzas. Hook-object granularity preserves a non-himmel hook (rtk-hook-guard,
-  # the operator's own) even when it is co-located in the SAME hooks[] array as a
-  # himmel hook -- a stanza-level filter would take it down with the himmel one.
-  printf '%s' "$base" | jq --argjson add "$desired" '
-    .hooks = (.hooks // {})
-    | .hooks.PreToolUse = (
-        ((.hooks.PreToolUse // [])
-          | map(.hooks = ((.hooks // [])
-              | map(select((.command // "")
-                    | test("scripts/hooks/(auto-approve-safe-bash|block-edit-on-main|block-read-secrets)[.]sh") | not))))
-          | map(select((.hooks | length) > 0)))
-        + $add
-      )
-  ' > "$settings.wirehooks.tmp" && mv "$settings.wirehooks.tmp" "$settings"
+  printf '%s' "$base" | jq --argjson specs "$specs" "$WIRE_PRETOOLUSE_MERGE_JQ" \
+    > "$settings.wirehooks.tmp" && mv "$settings.wirehooks.tmp" "$settings"
   echo "  wired PreToolUse hooks -> $settings"
 }
 

@@ -63,6 +63,14 @@ export HIMMELCTL_BASH=bash
 work=$(mktemp -d "${TMPDIR:-/tmp}/wizard-cadence-per-unit.XXXXXX")
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT
+
+# HIMMEL-2892: run from a THROWAWAY directory, never the himmel checkout this
+# suite lives in. `install` resolves a project-scope target to $PWD, so a case
+# answering scope=project from the checkout root aimed the installer at the
+# repo itself -- which bin.js's himmel-clone guard now refuses outright. The cd
+# also closes the older hermeticity hole that same fact created: a non-dry-run
+# project install here spawned adopt.sh against the live checkout.
+cadence_cwd="$work/suite-cwd"; mkdir -p "$cadence_cwd"; cd "$cadence_cwd"
 luna_config_lib_w="$(winpath "$luna_config_lib")"
 
 build_path() {
