@@ -127,20 +127,23 @@ fi
 # not re-running it), every `finding` row on --branch whose LATEST amend
 # (joined on target_head + finding_id + artifact + perspective — NOT branch,
 # since pre-HIMMEL-2911 rows can carry branch:"") is `agreed` is promoted to
-# `fixed` UNLESS it is re-raised at --head: another finding row on the same
-# branch, at --head, sharing the same stored `fingerprint` (ledger-append.sh
-# already computes this at write time — promote reads it, never recomputes
-# it). A row's own identity (head, finding_id, artifact, perspective) is
-# excluded from its own re-raise check, so a finding raised and agreed AT
-# --head itself (never re-raised anywhere else) is promoted too — the
-# acceptance bar is "no agreed row survives a clean round", not merely "no
-# agreed row from an earlier head survives". Terminal rows (fixed/disproved/
-# deferred) are left untouched; conflict/unaddressed were never agreed and are
-# only WARNed. A finding whose stored fingerprint is empty (pre-fingerprint
-# row, or no --text was ever supplied) cannot be safely checked for re-raise,
-# so it is conservatively left agreed (counted as still-open) rather than
-# guessed at. Idempotent: a second run sees the fixed amend via the same
-# effective-state merge and skip-terminals it, writing nothing.
+# `fixed` UNLESS (a) its OWN row is recorded exactly at --head — a finding
+# raised and agreed in the very round being certified clean has had no later
+# commit that could have fixed it, so it is left agreed rather than stamped
+# resolved on zero evidence (codex-1, HIMMEL-2911 CR round 1) — or (b) it is
+# re-raised at --head: a DIFFERENT finding row on the same branch, at --head,
+# sharing the same stored `fingerprint` (ledger-append.sh already computes
+# this at write time — promote reads it, never recomputes it) whose OWN
+# effective verdict is still live (empty/agreed/conflict/unaddressed, never
+# fixed/disproved/deferred — codex-2, HIMMEL-2911 CR round 1: a matching
+# occurrence that is itself already dispositioned is not an open re-raise).
+# Terminal rows (fixed/disproved/deferred) are left untouched; conflict/
+# unaddressed were never agreed and are only WARNed. A finding whose stored
+# fingerprint is empty (pre-fingerprint row, or no --text was ever supplied)
+# cannot be safely checked for re-raise, so it is conservatively left agreed
+# (counted as still-open) rather than guessed at. Idempotent: a second run
+# sees the fixed amend via the same effective-state merge and skip-terminals
+# it, writing nothing.
 # Exit 0 = nothing left agreed; exit 3 = one or more rows are still-open (the
 # caller's round was not actually clean for that finding); exit 1 = a
 # malformed ledger row or a ledger write failure.
@@ -197,10 +200,18 @@ for (const o of rows) {
 }
 const findingRows = rows.filter((o) => o.kind === "finding" && o.branch === e.BRANCH);
 const atHead = findingRows.filter((o) => resolvesToHead(o.head));
+// Only a LIVE occurrence at --head is a genuine re-raise (codex-2, HIMMEL-2911
+// CR round 1): a matching finding at --head that is itself already
+// fixed/disproved/deferred is a DISPOSITIONED instance, not an open one, and
+// must not keep an older agreed row still-open forever just because its
+// fingerprint once reappeared.
+const liveVerdicts = new Set(["", "agreed", "conflict", "unaddressed"]);
 const fpAtHead = new Map();
 for (const o of atHead) {
   if (!o.fingerprint) continue;
   const idKey = [o.head, o.finding_id, o.artifact || "diff", o.perspective || "off"].join(SEP);
+  const effectiveAtHead = Object.assign({}, o, amendsByKey.get(idKey) || {});
+  if (!liveVerdicts.has(String(effectiveAtHead.verdict || "").trim())) continue;
   if (!fpAtHead.has(o.fingerprint)) fpAtHead.set(o.fingerprint, new Set());
   fpAtHead.get(o.fingerprint).add(idKey);
 }
@@ -213,7 +224,16 @@ for (const row of findingRows) {
   if (verdict === "fixed" || verdict === "disproved" || verdict === "deferred") action = "skip-terminal";
   else if (verdict === "conflict" || verdict === "unaddressed") action = "warn-unadjudicated";
   else if (verdict !== "agreed") continue;
-  else {
+  else if (resolvesToHead(row.head)) {
+    // codex-1, HIMMEL-2911 CR round 1: a finding raised (and agreed) AT the
+    // very head being asserted clean has had no later commit that could have
+    // fixed it — promoting it here would stamp an untouched, still-present
+    // issue as resolved on zero evidence. Leave it agreed; it needs a real
+    // disposition (a follow-up fix at a fresh head, or a deferral), the same
+    // way the round-4 cap defers a same-head pending suggestion instead of
+    // fabricating a fix for it.
+    action = "still-open";
+  } else {
     const fp = effective.fingerprint || "";
     const present = fp ? fpAtHead.get(fp) : null;
     const reraised = !fp || (present && [...present].some((k) => k !== idKey));

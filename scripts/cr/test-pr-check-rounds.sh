@@ -374,12 +374,42 @@ CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
     --branch promote --head "$promote_head_a" --id find-d \
     --set verdict=deferred --set deferred_to=HIMMEL-9010 --reason "deferred by hand"
 
+# (f) agreed AT the clean head itself (codex-1, HIMMEL-2911 CR round 1) ->
+# still-open: no later commit could have fixed a finding raised THIS round.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_b" --model stub --id find-f \
+    --severity sug --file promote.txt --line 5 --verdict "" \
+    --text "tidy up the promote fixture zeta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_b" --id find-f \
+    --set verdict=agreed --reason "leg agrees with zeta"
+
+# (g) agreed at an earlier head, its fingerprint reappears at the clean head
+# but that reappearance is already disproved (codex-2, HIMMEL-2911 CR round
+# 1) -> promoted: a DISPOSITIONED occurrence is not a live re-raise.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_a" --model stub --id find-g \
+    --severity sug --file promote.txt --line 6 --verdict "" \
+    --text "tidy up the promote fixture eta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_a" --id find-g \
+    --set verdict=agreed --reason "leg agrees with eta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_b" --model stub --id find-g2 \
+    --severity sug --file promote.txt --line 6 --verdict "" \
+    --text "tidy up the promote fixture eta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_b" --id find-g2 \
+    --set verdict=disproved --reason "not reproducible at this head"
+
 promote_out1="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" promote --branch promote --head "$promote_head_b")"; promote_rc1=$?
 assert_eq "$promote_rc1" "3" "promote exits 3 while a re-raised finding is still open"
 assert_has "$promote_out1" "promoted find-a@" "promote (a) not-re-raised agreed finding is promoted"
 assert_has "$promote_out1" "still-open find-b@" "promote (b) re-raised agreed finding stays open"
 assert_has "$promote_out1" "skip-terminal find-c@" "promote (c) already-fixed row is skipped"
 assert_has "$promote_out1" "skip-terminal find-d@" "promote (d) deferred row is skipped"
+assert_has "$promote_out1" "still-open find-f@" "promote (f) same-head agreed finding is never auto-fixed"
+assert_has "$promote_out1" "promoted find-g@" "promote (g) an earlier agreed finding promotes when its head-H reappearance is already disproved"
 promote_ledger_content="$(cat "$promote_ledger" 2>/dev/null)"
 assert_has "$promote_ledger_content" '"finding_id":"find-a"' "promoted amend targets find-a"
 assert_has "$promote_ledger_content" '"verdict":"fixed"' "promote writes a fixed verdict"
