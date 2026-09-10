@@ -55,7 +55,13 @@ fi
 # full-suite run happening elsewhere on the box and refuse with rc 2 — a red
 # suite that says nothing about the behaviour under test. Lock ACQUISITION is
 # covered on purpose in test-suite-concurrency.sh, against its own sandbox.
-SUITE_LOCK_SANDBOX=$(mktemp -d)
+# The template is not decoration: a bare `mktemp -d` is not portable to
+# BSD/macOS, and every path below is built on this result, so a failure has to
+# stop the suite here rather than surface as a sandbox rooted at "/suite.lock".
+SUITE_LOCK_SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/himmel-rst-fixture.XXXXXX") || {
+  echo "FAIL: could not create the fixture sandbox (mktemp -d failed)"
+  exit 1
+}
 export SUITE_LOCK_DIR="$SUITE_LOCK_SANDBOX/suite.lock"
 # Same reasoning for the rotation cursor (HIMMEL-2243): no case in the family
 # may write the real $HOME/.himmel cursor. Case 17 -- the three
