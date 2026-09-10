@@ -315,7 +315,7 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
   // script without adjacent JS files. test-ledger-append.sh locks single/batch
   // parity while test-finding-reraise.sh covers the shared panel helper.
   const foldWhitespace=(v)=>String(v==null?"":v).toLowerCase().replace(/\s+/g," ").trim();
-  const normalizeFileAnchor=(v)=>foldWhitespace(v).replace(/\\/g,"/").replace(/^\.\//,"").replace(/:(?:l)?\d+(?:-\d+)?$/i,"");
+  const normalizeFileAnchor=(v)=>String(v==null?"":v).replace(/\s+/g," ").trim().replace(/\\/g,"/").replace(/^\.\//,"").replace(/:(?:l)?\d+(?:-\d+)?$/i,"");
   const normalizeClaim=(v)=>foldWhitespace(String(v==null?"":v).replace(/^\s*-\s*\[[^\]]+\]\s*:\s*/,"").replace(/\s*\[[^\]\r\n]+:\d+(?:-\d+)?\]\s*$/,"") );
   const findingFingerprint=(slug,file,text)=>{
     const s=foldWhitespace(slug), a=normalizeFileAnchor(file), c=normalizeClaim(text);
@@ -522,9 +522,12 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
         // write for the same id DOES carry text and must still be compared,
         // so a genuinely different finding under the same id keeps refusing.
         const ignoreText=!("text" in rec);
-        // Additive observation metadata is not part of the historical content
-        // comparison. Same-head retries preserve the first stored values.
-        const norm=(o)=>{const c={...o}; delete c.ts; delete c.fingerprint; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
+        // Round fields are observation metadata, not historical content.
+        // Fingerprint is compared when BOTH rows have one (so different full
+        // claims sharing the same 500-char display prefix still refuse), but
+        // ignored when either side predates fingerprints or omits text.
+        const compareFingerprint=("fingerprint" in priorEff)&&("fingerprint" in rec);
+        const norm=(o)=>{const c={...o}; delete c.ts; if(!compareFingerprint) delete c.fingerprint; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
         if(norm(priorEff)!==norm(rec)){
           const priorWithVerdict={...priorEff,verdict:rec.verdict};
           if(rec.reason) priorWithVerdict.reason=rec.reason;
@@ -701,9 +704,12 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       // --batch-file block above - ignore text only when rec (the incoming
       // write) omits it, never unconditionally.
       const ignoreText=!("text" in rec);
-      // Additive observation metadata is not part of the historical content
-      // comparison. Same-head retries preserve the first stored values.
-      const norm=(o)=>{const c={...o}; delete c.ts; delete c.fingerprint; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
+      // Round fields are observation metadata, not historical content.
+      // Fingerprint is compared when BOTH rows have one (so different full
+      // claims sharing the same 500-char display prefix still refuse), but
+      // ignored when either side predates fingerprints or omits text.
+      const compareFingerprint=("fingerprint" in priorEff)&&("fingerprint" in rec);
+      const norm=(o)=>{const c={...o}; delete c.ts; if(!compareFingerprint) delete c.fingerprint; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
       if(norm(priorEff)!==norm(rec)){
         const priorWithVerdict={...priorEff,verdict:rec.verdict};
         if(rec.reason) priorWithVerdict.reason=rec.reason;

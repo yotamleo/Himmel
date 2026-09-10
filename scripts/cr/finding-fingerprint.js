@@ -10,7 +10,9 @@ function foldWhitespace(value) {
 }
 
 function normalizeFileAnchor(file) {
-  return foldWhitespace(file)
+  return String(file == null ? '' : file)
+    .replace(/\s+/g, ' ')
+    .trim()
     .replace(/\\/g, '/')
     .replace(/^\.\//, '')
     .replace(/:(?:l)?\d+(?:-\d+)?$/i, '');

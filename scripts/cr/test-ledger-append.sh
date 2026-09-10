@@ -922,6 +922,27 @@ check "fingerprint single/batch parity" "$(A="$FPS" B="$FPB" node -e 'const fs=r
 check "long claims persist the same capped display text" "$(L="$FPB" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").map(JSON.parse);console.log(r[0].text===r[1].text)')" "true"
 check "long claim suffix remains fingerprint-significant before truncation" "$(L="$FPB" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").map(JSON.parse);console.log(r[0].fingerprint!==r[1].fingerprint)')" "true"
 
+# When both rows carry fingerprints, they remain part of content comparison:
+# the same dedup key must loudly refuse claims that differ only after the
+# persisted 500-character display prefix.
+FPC="$tmp/fingerprint-collision-single.jsonl"
+CR_LEDGER="$FPC" bash "$LA" finding --branch b --head FPC1 --model critic-a --id fp-collision --severity imp --file f --line 11 --verdict '' --round 4 --text "$FP_TEXT_A"
+CR_LEDGER="$FPC" bash "$LA" finding --branch b --head FPC1 --model critic-a --id fp-collision --severity imp --file f --line 11 --verdict '' --round 5 --text "$FP_TEXT_B" 2>"$tmp/fingerprint-collision-single.err"
+check "single same-key long-suffix collision refuses" "$?" "3"
+check "single long-suffix refusal preserves the first row" "$(wc -l < "$FPC" | tr -d ' ')" "1"
+
+FPCB="$tmp/fingerprint-collision-batch.jsonl"
+FPCBF="$tmp/fingerprint-collision-batch-rows.jsonl"
+FPC_HEAD=$(printf '%040d' 56789)
+FP_TEXT_A="$FP_TEXT_A" FP_TEXT_B="$FP_TEXT_B" HEAD_="$FPC_HEAD" OUT="$FPCBF" node -e '
+const fs=require("fs"),e=process.env;
+const base={branch:"b",head:e.HEAD_,model:"critic-a",id:"fp-collision",severity:"imp",file:"f",line:11,verdict:""};
+fs.writeFileSync(e.OUT,[{...base,round:4,text:e.FP_TEXT_A},{...base,round:5,text:e.FP_TEXT_B}].map(JSON.stringify).join("\n")+"\n");
+'
+CR_LEDGER="$FPCB" bash "$LA" finding --batch-file "$FPCBF" 2>"$tmp/fingerprint-collision-batch.err"
+check "batch same-key long-suffix collision refuses" "$?" "3"
+check "batch long-suffix refusal preserves the first row" "$(wc -l < "$FPCB" | tr -d ' ')" "1"
+
 # Review round is observation metadata, not finding content identity. A retry at
 # the same head preserves the first observed round in both writer paths.
 RSL="$tmp/round-single.jsonl"

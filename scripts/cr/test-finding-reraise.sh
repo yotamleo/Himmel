@@ -370,6 +370,68 @@ run_panel 4 "$deferred_claim" sug "$tmp/control.out" "$tmp/control.err"
 assert_eq "$?" "0" "artifact/perspective control panel run succeeds"
 assert_has "$(cat "$tmp/control.out")" "## Suggestions (1 found)" "different artifact/perspective controls stay visible"
 
+# File systems and Git can distinguish path case. Claim/slug case still folds,
+# but Foo.js and foo.js are different fingerprint anchors.
+checkout_branch path-case
+head_case_seed="$(advance_head path-case-seed)"
+set_registry critic-a
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" finding --branch path-case --head "$head_case_seed" \
+        --model critic-a --id case-1 --severity imp --file scripts/cr/Foo.js --line 10 \
+        --verdict disproved --round 3 --text '- [case-1]: Case-sensitive anchor claim [scripts/cr/Foo.js:10]'
+) >/dev/null 2>"$tmp/path-case-seed.err"
+assert_eq "$?" "0" "path-case fixture writes the uppercase anchor"
+advance_head path-case-current >/dev/null
+run_panel 4 'case-sensitive anchor claim [scripts/cr/foo.js:80]' imp "$tmp/path-case.out" "$tmp/path-case.err"
+assert_eq "$?" "0" "different path-case panel run succeeds"
+assert_has "$(cat "$tmp/path-case.out")" "## Important Issues (1 found)" "Foo.js and foo.js remain distinct anchors"
+assert_lacks "$(cat "$tmp/path-case.out")" "RE-RAISE (" "different path case does not inherit disposition"
+
+checkout_branch path-case-parity
+head_case_parity="$(advance_head path-case-parity-seed)"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" finding --branch path-case-parity --head "$head_case_parity" \
+        --model critic-a --id case-parity-1 --severity imp --file ./scripts/cr/Foo.js --line 10 \
+        --verdict disproved --round 3 --text '- [case-parity-1]: Case-sensitive anchor claim [./scripts/cr/Foo.js:10]'
+) >/dev/null 2>"$tmp/path-case-parity-seed.err"
+assert_eq "$?" "0" "same-case parity fixture writes through the standalone writer"
+advance_head path-case-parity-current >/dev/null
+run_panel 4 'CASE-sensitive   anchor CLAIM [scripts/cr/Foo.js:90]' imp "$tmp/path-case-parity.out" "$tmp/path-case-parity.err"
+assert_eq "$?" "0" "same-case parity panel run succeeds"
+assert_has "$(cat "$tmp/path-case-parity.out")" "RE-RAISE (r3 disproved)" "same path case normalizes identically across writer and panel helper"
+
+# Re-key amendments remain addressed by the original append-only target key.
+# A later verdict invoked through the corrected effective head still stores the
+# original target_head, so the reader must not move its working map.
+checkout_branch rekey-map
+rekey_old="1111111111111111111111111111111111111111"
+rekey_new="2222222222222222222222222222222222222222"
+rekey_claim='Re-keyed finding remains fixed [scripts/cr/rekey.sh:10]'
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" finding --branch rekey-map --head "$rekey_old" \
+        --model critic-a --id rekey-1 --severity imp --file scripts/cr/rekey.sh --line 10 \
+        --verdict disproved --round 3 --text "- [rekey-1]: $rekey_claim"
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch rekey-map --head "$rekey_old" \
+        --id rekey-1 --set head="$rekey_new" --reason 'correct effective head'
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch rekey-map --head "$rekey_new" \
+        --id rekey-1 --set verdict=fixed --reason 'fix through effective head'
+) >/dev/null 2>"$tmp/rekey-map.err"
+assert_eq "$?" "0" "re-key plus effective-head fixed amendments succeed"
+rekey_target="$(LEDGER="$ledger" node -e '
+const rows=require("fs").readFileSync(process.env.LEDGER,"utf8").trim().split("\n").map(JSON.parse);
+const row=rows.filter(r=>r.kind==="amend"&&r.finding_id==="rekey-1"&&r.set&&r.set.verdict==="fixed").pop()||{};
+process.stdout.write(String(row.target_head||""));
+')"
+assert_eq "$rekey_target" "$rekey_old" "effective-head verdict persists the original target_head"
+advance_head rekey-map-current >/dev/null
+run_panel 4 "$rekey_claim" imp "$tmp/rekey-map.out" "$tmp/rekey-map-panel.err"
+assert_eq "$?" "0" "re-key regression panel run succeeds"
+assert_has "$(cat "$tmp/rekey-map.out")" "## Important Issues (1 found)" "re-keyed latest fixed disposition remains active"
+assert_lacks "$(cat "$tmp/rekey-map.out")" "RE-RAISE (" "re-key map is not moved away from original target key"
+
 # Legacy/textless findings have no fingerprint and are ignored safely rather
 # than guessed into a match.
 checkout_branch legacy
