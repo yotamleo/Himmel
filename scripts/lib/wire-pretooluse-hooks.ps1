@@ -211,13 +211,17 @@ function Set-SessionStartHook {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
+        # HIMMEL-2913: an entry wired by a PREVIOUS release (pre-2905) carries
+        # the RAW, unescaped basename, which $needle alone cannot match, so
+        # $legacy widens the dedup to also catch and replace that older text.
         $filter = $WireHookCmdJq + @'
 hookcmd($pfx; $hook) as $cmd
 | ("scripts/hooks/" + shesc($hook)) as $needle
+| ("scripts/hooks/" + $hook) as $legacy
 | .hooks = (.hooks // {})
 | .hooks.SessionStart = ((.hooks.SessionStart // [])
     | map(.hooks = ((.hooks // [])
-        | map(select((.command // "") | contains($needle) | not))))
+        | map(select((.command // "") | (contains($needle) or contains($legacy)) | not))))
     | map(select((.hooks | length) > 0)))
 | (.hooks.SessionStart | map(has("matcher") | not) | index(true)) as $idx
 | if $idx == null
