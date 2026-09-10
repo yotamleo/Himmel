@@ -35,7 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **`luna-upgrade-all apply` no longer silently overwrites a vault-local edit to a
   template-owned config file (HIMMEL-2886).** For an "overwrite"-class file the vault
   has committed a local edit to since its last stamped upgrade, the run now withholds
-  that one write, prints `local edits overwritten: <file> (backup: <path>)` with the
+  that one write, prints `local edits withheld (not overwritten): <file> (backup: <path>)` with the
   lost hunk's diff, and does not classify the run `clean-upgrade` (or write the version
   stamp) until the edit is reconciled by hand.
 

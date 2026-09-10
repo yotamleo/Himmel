@@ -538,15 +538,15 @@ case "$t29_dry" in
     *) fail "T29 dry-run surfaces LOCAL-EDIT for .gitleaks.toml" "got: $t29_dry" ;;
 esac
 case "$t29_dry" in
-    *"local edits overwritten: .gitleaks.toml"*) pass "T29 dry-run prints local-edits-overwritten line" ;;
-    *) fail "T29 dry-run prints local-edits-overwritten line" "got: $t29_dry" ;;
+    *"local edits withheld (not overwritten): .gitleaks.toml"*) pass "T29 dry-run prints local-edits-withheld line" ;;
+    *) fail "T29 dry-run prints local-edits-withheld line" "got: $t29_dry" ;;
 esac
 
 t29_out=$(bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --backup-dir "$TMP/t29-backup" --yes 2>&1)
 t29_rc=$?
 assert_eq "T29 apply does NOT overwrite the locally-edited file" "$t29_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
 case "$t29_out" in
-    *"local edits overwritten: .gitleaks.toml (backup: $TMP/t29-backup/.gitleaks.toml)"*)
+    *"local edits withheld (not overwritten): .gitleaks.toml (backup: $TMP/t29-backup/.gitleaks.toml)"*)
         pass "T29 apply names the backup path" ;;
     *) fail "T29 apply names the backup path" "got: $t29_out" ;;
 esac

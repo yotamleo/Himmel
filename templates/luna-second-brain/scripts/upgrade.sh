@@ -246,16 +246,20 @@ fi
 # upgraded via a git-tracked flow), has no baseline to compare against, so
 # falls back to the pre-existing overwrite behavior.
 STAMP_COMMIT=""
-if [ -d "$VAULT_DIR/.git" ]; then
+# `git rev-parse --is-inside-work-tree`, not `[ -d "$VAULT_DIR/.git" ]`: a
+# worktree or a submodule has a `.git` FILE (a `gitdir: <path>` pointer), not
+# a directory, so the directory-only check silently fell back to the
+# pre-existing overwrite behavior for exactly those vaults.
+if git -C "$VAULT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     STAMP_COMMIT="$(git -C "$VAULT_DIR" log -1 --format=%H -- .vault-template.json 2>/dev/null)"
 fi
 
 # has_local_edit <rel> <dst> [print]: exit 0 iff <dst> differs from what was
 # committed at STAMP_COMMIT for <rel>. No stamp commit, or the file didn't
 # exist there (new template-owned file), means no baseline => not a local
-# edit. With [print]=1, also emits the "local edits overwritten" line + a
-# unified diff of the lost hunk — called once per file (the planning pass
-# only; the execute pass re-detects the same files but must not re-print).
+# edit. With [print]=1, also emits the "local edits withheld" line + a
+# unified diff of the withheld hunk — called once per file (the planning
+# pass only; the execute pass re-detects the same files but must not re-print).
 has_local_edit() {
     local rel="$1" dst="$2" print="${3:-0}"
     [ -n "$STAMP_COMMIT" ] || return 1
@@ -269,9 +273,9 @@ has_local_edit() {
     dst_sha="$(sha_of "$dst")"
     if [ "$committed_sha" != "$dst_sha" ]; then
         if [ "$print" = 1 ]; then
-            local backup_note="n/a — dry-run"
+            local backup_note="none (no --backup-dir given for this run)"
             [ -n "$BACKUP_DIR" ] && backup_note="$BACKUP_DIR/$rel"
-            echo "  local edits overwritten: $rel (backup: $backup_note)"
+            echo "  local edits withheld (not overwritten): $rel (backup: $backup_note)"
             if command -v diff >/dev/null 2>&1; then
                 diff -u "$committed" "$dst" | sed 's/^/    /'
             fi
