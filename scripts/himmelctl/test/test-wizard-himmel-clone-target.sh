@@ -55,7 +55,7 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 
 node_bin=$(command -v node)
 
-work=$(mktemp -d)
+work=$(mktemp -d "${TMPDIR:-/tmp}/wizard-himmel-clone-target.XXXXXX") || exit 1
 cleanup() { chmod -R u+w "$work" 2>/dev/null || true; command rm -rf -- "$work"; }
 trap cleanup EXIT
 
