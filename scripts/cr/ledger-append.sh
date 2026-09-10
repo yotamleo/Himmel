@@ -67,6 +67,7 @@ esac
 
 branch="" head="" model="" responding_model="" id="" severity="" file="" line="" verdict="" status="" artifact="diff" perspective="off"
 prompt_chars="" response_chars="" reason="" detail="" deferred_to="" set_pairs="" attempt_num="" duration_secs="" batch_file="" text=""
+round="" disposition_round=""
 while [ $# -gt 0 ]; do case "$1" in
   --branch) branch="$2"; shift 2;; --head) head="$2"; shift 2;;
   --model) model="$2"; shift 2;; --responding-model) responding_model="$2"; shift 2;;
@@ -79,6 +80,8 @@ while [ $# -gt 0 ]; do case "$1" in
   --reason) reason="$2"; shift 2;; --detail) detail="$2"; shift 2;;
   --deferred-to) deferred_to="$2"; shift 2;;
   --text) text="$2"; shift 2;;
+  --round) round="$2"; shift 2;;
+  --disposition-round) disposition_round="$2"; shift 2;;
   --set) set_pairs="$set_pairs$2"$'\n'; shift 2;;
   --attempt) attempt_num="$2"; shift 2;; --duration-secs) duration_secs="$2"; shift 2;;
   --batch-file) batch_file="$2"; shift 2;;
@@ -130,6 +133,12 @@ fi
 
 case "$artifact" in diff|spec|plan) ;; *) echo "ledger-append.sh: --artifact must be diff|spec|plan" >&2; exit 2;; esac
 case "$perspective" in on|off) ;; *) echo "ledger-append.sh: --perspective must be on|off" >&2; exit 2;; esac
+for _round_value in "$round" "$disposition_round"; do
+  if [ -n "$_round_value" ] && ! expr "$_round_value" : '^[1-9][0-9]*$' >/dev/null 2>&1; then
+    echo "ledger-append.sh: --round/--disposition-round must be positive integers (got '$_round_value')" >&2
+    exit 2
+  fi
+done
 
 # A deferral is only honest if it is TRACKED. Validate the ticket key here so a
 # typo cannot silently produce a deferral the gate then rejects for reasons the
@@ -192,8 +201,8 @@ if [ "$kind" = "amend" ]; then
         esac ;;
       verdict=*)
         case "${_pair#verdict=}" in
-          agreed|disproved|conflict|unaddressed|deferred) ;;
-          *) echo "ledger-append.sh: --set verdict= must be agreed|disproved|conflict|unaddressed|deferred (got '${_pair#verdict=}')" >&2; exit 2;;
+          agreed|disproved|conflict|unaddressed|deferred|fixed) ;;
+          *) echo "ledger-append.sh: --set verdict= must be agreed|disproved|conflict|unaddressed|deferred|fixed (got '${_pair#verdict=}')" >&2; exit 2;;
         esac ;;
       head=*)
         # Re-keying is the point of this key (a finding mis-keyed onto the head
@@ -272,6 +281,11 @@ if [ -n "$detail" ]; then
   detail="$(printf '%s' "$detail" | cut -c1-200)"
 fi
 
+# Fingerprints use the complete scrubbed claim before the persisted display
+# text is capped. Only the digest is retained; the uncapped value never reaches
+# the ledger.
+raw_text=""
+
 # --text (HIMMEL-2078): the panel's own one-line prose bullet for a finding, so
 # an unadjudicated finding is still legible after the panel transcript is
 # gone. Same flatten-then-scrub-then-cap shape as --detail above, just a
@@ -279,6 +293,7 @@ fi
 if [ -n "$text" ]; then
   text="$(printf '%s' "$text" | tr '\n\r' '  ')"
   text="$(scrub_secrets "$text")"
+  raw_text="$text"
   text="$(printf '%s' "$text" | cut -c1-500)"
 fi
 
@@ -292,9 +307,21 @@ ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 KIND="$kind" BRANCH="$branch" HEAD_="$head" RAW_HEAD="$raw_head" MODEL="$model" RESPONDING_MODEL="$responding_model" ID="$id" SEV="$severity" \
 FILE="$file" LINE="$line" VERDICT="$verdict" STATUS="$status" BATCH_FILE="$batch_file" \
 PROMPT_CHARS="$prompt_chars" RESPONSE_CHARS="$response_chars" TS="$ts" LEDGER="$ledger" ARTIFACT="$artifact" PERSPECTIVE="$perspective" \
-ATTEMPT_NUM="$attempt_num" DURATION_SECS="$duration_secs" \
-REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" SET_PAIRS="$set_pairs" node -e '
-  const fs=require("fs"), cp=require("child_process"), e=process.env;
+ATTEMPT_NUM="$attempt_num" DURATION_SECS="$duration_secs" ROUND="$round" DISPOSITION_ROUND="$disposition_round" \
+REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TEXT="$raw_text" SET_PAIRS="$set_pairs" node -e '
+  const fs=require("fs"), cp=require("child_process"), crypto=require("crypto"), e=process.env;
+  // Keep this small inline copy in parity with finding-fingerprint.js. The
+  // writer is intentionally standalone: anchor/fixture flows copy this one
+  // script without adjacent JS files. test-ledger-append.sh locks single/batch
+  // parity while test-finding-reraise.sh covers the shared panel helper.
+  const foldWhitespace=(v)=>String(v==null?"":v).toLowerCase().replace(/\s+/g," ").trim();
+  const normalizeFileAnchor=(v)=>String(v==null?"":v).replace(/\s+/g," ").trim().replace(/\\/g,"/").replace(/^\.\//,"").replace(/:(?:l)?\d+(?:-\d+)?$/i,"");
+  const normalizeClaim=(v)=>foldWhitespace(String(v==null?"":v).replace(/^\s*-\s*\[[^\]]+\]\s*:\s*/,"").replace(/\s*\[[^\]\r\n]+:\d+(?:-\d+)?\]\s*$/,"") );
+  const findingFingerprint=(slug,file,text)=>{
+    const s=foldWhitespace(slug), a=normalizeFileAnchor(file), c=normalizeClaim(text);
+    if(!s||!c) return "";
+    return "fp1:"+crypto.createHash("sha256").update([s,a,c].join(String.fromCharCode(31)),"utf8").digest("hex");
+  };
   const led=e.LEDGER;
   // HIMMEL-2078: batch rows carry spec.text straight from a caller-built JSON
   // file, bypassing the bash-side --text scrub/flatten/cap above entirely —
@@ -453,6 +480,14 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" SET_PA
         process.stderr.write("ledger-append.sh: batch row "+sid+" is missing required field(s) ("+missingFields.join(",")+") - refusing this row.\n");
         anyFail=true; continue;
       }
+      const positiveInteger=(v)=>(typeof v==="number"&&Number.isInteger(v)&&v>0)
+          ||(typeof v==="string"&&/^[1-9][0-9]*$/.test(v));
+      const invalidRoundFields=["round","disposition_round"].filter(f=>f in spec&&!positiveInteger(spec[f]));
+      if(invalidRoundFields.length){
+        process.stderr.write("ledger-append.sh: batch row "+sid+" has invalid positive-integer field(s) ("
+          +invalidRoundFields.map(f=>f+"="+JSON.stringify(spec[f])).join(",")+") - refusing this row.\n");
+        anyFail=true; continue;
+      }
       const keyRow=(o)=>o.kind==="finding"&&headsMatch(o.head,shead)&&o.finding_id===sid
           &&(o.artifact||"diff")===artifact&&(o.perspective||"off")===perspective;
       const rec={kind:"finding",ts:spec.ts||e.TS,branch:spec.branch,head:shead,model:spec.model,
@@ -462,7 +497,15 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" SET_PA
       if(spec.reason) rec.reason=spec.reason;
       if(spec.detail) rec.detail=spec.detail;
       if(spec.deferred_to) rec.deferred_to=spec.deferred_to;
-      if(spec.text) rec.text=truncText(spec.text);
+      if(spec.round) rec.round=Number(spec.round);
+      if(spec.disposition_round) rec.disposition_round=Number(spec.disposition_round);
+      else if(spec.verdict&&spec.round) rec.disposition_round=Number(spec.round);
+      if(spec.disposition_severity) rec.disposition_severity=spec.disposition_severity;
+      if(spec.text){
+        const fullText=scrubSecrets(String(spec.text).replace(/[\r\n]/g," "));
+        rec.fingerprint=findingFingerprint(spec.model,spec.file,fullText);
+        rec.text=fullText.length>500?fullText.slice(0,500):fullText;
+      }
 
       const priorMatches=parsed.filter(o=>keyRow(o)||keyRow(effective(o)));
       if(priorMatches.length>1){
@@ -488,7 +531,13 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" SET_PA
         // write for the same id DOES carry text and must still be compared,
         // so a genuinely different finding under the same id keeps refusing.
         const ignoreText=!("text" in rec);
-        const norm=(o)=>{const c={...o}; delete c.ts; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
+        // Round fields are observation metadata, not historical content.
+        // Fingerprint is compared when BOTH rows have one (so different full
+        // claims sharing the same 500-char display prefix still refuse), but
+        // ignored when either side predates fingerprints or omits text.
+        const compareFingerprint=("fingerprint" in priorEff)&&("fingerprint" in rec);
+        const compareDispositionSeverity=("disposition_severity" in priorEff)&&("disposition_severity" in rec);
+        const norm=(o)=>{const c={...o}; delete c.ts; if(!compareFingerprint) delete c.fingerprint; if(!compareDispositionSeverity) delete c.disposition_severity; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
         if(norm(priorEff)!==norm(rec)){
           const priorWithVerdict={...priorEff,verdict:rec.verdict};
           if(rec.reason) priorWithVerdict.reason=rec.reason;
@@ -603,7 +652,13 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" SET_PA
     if(e.REASON) rec.reason=e.REASON;
     if(e.DETAIL) rec.detail=e.DETAIL;
     if(e.DEFERRED_TO) rec.deferred_to=e.DEFERRED_TO;
-    if(e.TEXT) rec.text=truncText(e.TEXT);
+    if(e.ROUND) rec.round=Number(e.ROUND);
+    if(e.DISPOSITION_ROUND) rec.disposition_round=Number(e.DISPOSITION_ROUND);
+    else if(e.VERDICT&&e.ROUND) rec.disposition_round=Number(e.ROUND);
+    if(e.RAW_TEXT){
+      rec.fingerprint=findingFingerprint(e.MODEL,e.FILE,e.RAW_TEXT);
+      rec.text=truncText(e.TEXT);
+    }
     // A re-append that CHANGES the record is the wedge this ticket is about:
     // the old code hit the dedup key, wrote nothing, and exited 0, so the
     // caller believed the severity had been corrected while the gate kept
@@ -659,7 +714,13 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" SET_PA
       // --batch-file block above - ignore text only when rec (the incoming
       // write) omits it, never unconditionally.
       const ignoreText=!("text" in rec);
-      const norm=(o)=>{const c={...o}; delete c.ts; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
+      // Round fields are observation metadata, not historical content.
+      // Fingerprint is compared when BOTH rows have one (so different full
+      // claims sharing the same 500-char display prefix still refuse), but
+      // ignored when either side predates fingerprints or omits text.
+      const compareFingerprint=("fingerprint" in priorEff)&&("fingerprint" in rec);
+      const compareDispositionSeverity=("disposition_severity" in priorEff)&&("disposition_severity" in rec);
+      const norm=(o)=>{const c={...o}; delete c.ts; if(!compareFingerprint) delete c.fingerprint; if(!compareDispositionSeverity) delete c.disposition_severity; delete c.round; delete c.disposition_round; if(ignoreText) delete c.text; return JSON.stringify(Object.keys(c).sort().map(k=>[k,c[k]]));};
       if(norm(priorEff)!==norm(rec)){
         const priorWithVerdict={...priorEff,verdict:rec.verdict};
         if(rec.reason) priorWithVerdict.reason=rec.reason;

@@ -746,6 +746,38 @@ check "LA: every row is stamped with the reviewed head" "$(printf '%s\n' "$ledge
 check "LA: every emitted finding self-appended" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^findings=//p')" "4"
 check "LA: raw finding verdicts are empty" "$(printf '%s\n' "$ledger_summary" | sed -n 's/^empty-verdicts=//p')" "yes"
 
+# Test LAC: once disposition classification succeeds, raw finding spools are
+# removed and the enriched JSONL is the only remaining source of finding rows.
+# A failed enriched->batch copy must therefore survive the later successful
+# empty raw-spool conversion and make the panel uncertified (rc 5), never rc 0.
+LAC_LEDGER="$tmp/panel-copy-fail-ledger.jsonl"
+: > "$LAC_LEDGER"
+LAC_BIN="$tmp/panel-copy-fail-bin"
+mkdir -p "$LAC_BIN"
+LAC_CP_LOG="$tmp/panel-copy-fail.log"
+REAL_CP="$(command -v cp)"
+cat > "$LAC_BIN/cp" <<CPEOF
+#!/usr/bin/env bash
+printf '%s|%s\n' "\${1:-}" "\${2:-}" >> "$LAC_CP_LOG"
+case "\${1:-}" in
+    */.finding-enriched.jsonl) exit 73 ;;
+esac
+exec "$REAL_CP" "\$@"
+CPEOF
+chmod +x "$LAC_BIN/cp"
+lac_rc=0
+PATH="$LAC_BIN:$PATH" CR_LEDGER="$LAC_LEDGER" CRITIC_LEDGER_APPEND="$HERE/ledger-append.sh" \
+    CRITICS_JSON="$tmp/critics-all.json" CRITIC_FIRST_PASS="$STUB" \
+    bash "$PANEL" <<< "$DIFF" > "$tmp/lac-out" 2> "$tmp/lac-err" || lac_rc=$?
+lac_out="$(cat "$tmp/lac-out")"
+lac_log="$(cat "$LAC_CP_LOG" 2>/dev/null)"
+check "LAC: enriched finding copy failure makes panel uncertified" "$lac_rc" "5"
+check_contains "LAC: critic produced a raw finding before persistence" "$lac_out" "[qwen3coder-1]:"
+check_contains "LAC: injected failure reached the enriched JSONL source" "$lac_log" "/.finding-enriched.jsonl|"
+check_contains "LAC: injected failure targeted the finding batch destination" "$lac_log" "/.finding-batch.jsonl"
+check_contains "LAC: panel reports failed ledger certification" "$(cat "$tmp/lac-err")" "CR-ledger append failed"
+check "LAC: failed copy writes no finding rows" "$(grep -c '\"kind\":\"finding\"' "$LAC_LEDGER" || true)" "0"
+
 # Test LAP: parallel mode self-appends the SAME ledger evidence as sequential
 # (HIMMEL-1494 r3; per-member spool files r4). The evidence path flows through
 # PER-MEMBER spool files (avail.<slug>/finding.<slug>), one per member, not a
