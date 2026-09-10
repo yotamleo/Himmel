@@ -44,24 +44,40 @@ try {
 
 const states = new Map();
 const latest = new Map();
+// HIMMEL-2901: "first seen" is the earliest round this fingerprint was ever
+// OBSERVED on this branch, derived rather than persisted. An inherited re-raise
+// carries its own observation round, so reading `round` off the latest event
+// would report a later re-raise as the first sighting.
+const firstSeen = new Map();
 for (const row of ledgerRows) {
   if (row.kind === 'finding') {
     const state = { ...row };
     const sourceKey = findingKey(row.head, row.finding_id, row.artifact, row.perspective);
     states.set(sourceKey, state);
+    if (state.fingerprint && validRound(state.round)) {
+      const seenKey = dispositionKey(state);
+      const seen = firstSeen.get(seenKey);
+      if (seen === undefined || Number(state.round) < seen) firstSeen.set(seenKey, Number(state.round));
+    }
     if (state.fingerprint && state.verdict) {
       const key = dispositionKey(state);
       const previous = latest.get(key);
       const event = { ...state, _sourceKey: sourceKey };
+      // A row that carries the PREVIOUS event's disposition round did not
+      // adjudicate anything: it inherited that disposition as a re-raise.
+      const previousRound = previous && (previous.disposition_round || previous.round);
+      const inherited = Boolean(previous && validRound(state.disposition_round) &&
+        String(previousRound) === String(state.disposition_round));
       if (!event.disposition_severity) {
-        const previousRound = previous && (previous.disposition_round || previous.round);
-        if (previous && validRound(state.disposition_round) &&
-            String(previousRound) === String(state.disposition_round)) {
-          event.disposition_severity = previous.disposition_severity || previous.severity;
-        } else {
-          event.disposition_severity = state.severity;
-        }
+        event.disposition_severity = inherited
+          ? (previous.disposition_severity || previous.severity)
+          : state.severity;
       }
+      // HIMMEL-2901: remember WHICH adjudication this inherited from, so a
+      // later correction to that original row still reaches the ceiling it
+      // handed down. `previous._originKey` collapses a chain of re-raises onto
+      // the one row that was actually adjudicated.
+      if (inherited) event._originKey = previous._originKey || previous._sourceKey;
       latest.set(key, event);
     }
     continue;
@@ -97,7 +113,10 @@ for (const row of ledgerRows) {
 
   if (Object.prototype.hasOwnProperty.call(row.set, 'verdict') && target.fingerprint && target.verdict) {
     const event = { ...target, disposition_severity: target.severity, _sourceKey: targetKey };
-    if (validRound(target.round)) event.disposition_round = Number(target.round);
+    // HIMMEL-2901: the amend states the round it adjudicated in. The producer
+    // round remains the fallback so pre-2901 amends keep rendering as before.
+    if (validRound(row.disposition_round)) event.disposition_round = Number(row.disposition_round);
+    else if (validRound(target.round)) event.disposition_round = Number(target.round);
     latest.set(dispositionKey(event), event);
     continue;
   }
@@ -111,11 +130,19 @@ for (const row of ledgerRows) {
        Object.prototype.hasOwnProperty.call(row.set, 'severity'))) {
     const key = dispositionKey(target);
     const current = latest.get(key);
-    if (current && current._sourceKey === targetKey) {
+    // HIMMEL-2901: the amended row is authoritative either because it IS the
+    // current event, or because the current event merely inherited its
+    // disposition from it. Any other row of the same fingerprint is a
+    // bystander and must not move the ceiling.
+    const isCurrent = Boolean(current && current._sourceKey === targetKey);
+    const isOrigin = Boolean(current && !isCurrent && current._originKey === targetKey);
+    if (isCurrent || isOrigin) {
       if (Object.prototype.hasOwnProperty.call(row.set, 'reason')) current.reason = target.reason;
       if (Object.prototype.hasOwnProperty.call(row.set, 'deferred_to')) current.deferred_to = target.deferred_to;
       if (Object.prototype.hasOwnProperty.call(row.set, 'severity')) {
-        current.severity = target.severity;
+        // The inherited row's own observed severity stays its own; only the
+        // DISPOSITION ceiling it carries forward is corrected.
+        if (isCurrent) current.severity = target.severity;
         current.disposition_severity = target.severity;
       }
     }
@@ -133,10 +160,12 @@ for (const line of input) {
   if (!id) continue;
 
   const fingerprint = findingFingerprint(model, file, text);
-  const prior = fingerprint
-    ? latest.get([e.REVIEW_BRANCH, fingerprint, artifact, perspective].join(keySep))
-    : null;
+  const priorKey = fingerprint
+    ? [e.REVIEW_BRANCH, fingerprint, artifact, perspective].join(keySep)
+    : '';
+  const prior = priorKey ? latest.get(priorKey) : null;
   const sourceRound = prior && (prior.disposition_round || prior.round);
+  const firstSeenRound = priorKey ? firstSeen.get(priorKey) : undefined;
   const dispositionSeverity = prior && (prior.disposition_severity || prior.severity);
   const currentSeverityRank = severityRank(severity);
   const dispositionSeverityRank = severityRank(dispositionSeverity);
@@ -166,7 +195,12 @@ for (const line of input) {
     if (prior.reason) row.reason = prior.reason;
     if (prior.deferred_to) row.deferred_to = prior.deferred_to;
     const ticket = prior.verdict === 'deferred' && prior.deferred_to ? ` [${prior.deferred_to}]` : '';
-    reraises.push(`${text} — RE-RAISE (r${sourceRound} ${prior.verdict})${ticket}`);
+    // HIMMEL-2901: name both rounds only when the finding was adjudicated in a
+    // later round than it was first seen in; otherwise one round is the truth.
+    const rounds = validRound(firstSeenRound) && String(firstSeenRound) !== String(sourceRound)
+      ? `first seen r${firstSeenRound} · dispositioned r${sourceRound}`
+      : `r${sourceRound}`;
+    reraises.push(`${text} — RE-RAISE (${rounds} ${prior.verdict})${ticket}`);
   } else if (active[severity]) {
     active[severity].push(text);
   }

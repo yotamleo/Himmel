@@ -28,10 +28,10 @@ assert_lacks() {
     case "$1" in *"$2"*) fail "$3 (unexpected '$2')" ;; *) pass "$3" ;; esac
 }
 assert_fingerprint() {
-    if grep -qE '^fp1:[0-9a-f]{64}$' <<< "$1"; then
+    if grep -qE '^fp2:[0-9a-f]{64}$' <<< "$1"; then
         pass "$2"
     else
-        fail "$2 (got '$1', want fp1:<64 lowercase hex>)"
+        fail "$2 (got '$1', want fp2:<64 lowercase hex>)"
     fi
 }
 
@@ -187,6 +187,8 @@ assert_has "$r5_out" "## Already Dispositioned Re-raises (1 found)" "r5 re-raise
 assert_has "$r5_out" "RE-RAISE (r4 disproved)" "r5 re-raise names the original round and verdict"
 assert_eq "$(ledger_value reraised "$head_r5" fingerprint)" "$fp_r4" "line/case/whitespace changes keep the fingerprint stable"
 assert_eq "$(ledger_value reraised "$head_r5" verdict)" "disproved" "r5 re-raise persists the inherited disposition"
+# HIMMEL-2901: this fixture amends with no adjudication round, so disposition_round
+# stays the producer round — the documented fallback that keeps pre-2901 rows rendering.
 assert_eq "$(ledger_value reraised "$head_r5" disposition_round)" "4" "r5 re-raise preserves the original disposition round"
 
 # A later explicit fixed disposition supersedes the old disproof. Fixed never
@@ -305,6 +307,7 @@ run_panel 9 'CACHE cleanup must retain 2 generations [scripts/cr/cache.sh:90]' s
 assert_eq "$?" "0" "r9 deferred re-raise panel run succeeds"
 assert_has "$(cat "$tmp/d9.out")" "RE-RAISE (r7 deferred)" "r9 still reports r7 rather than chaining through r8"
 assert_has "$(cat "$tmp/d9.out")" "## Suggestions (0 found)" "r9 deferred re-raise remains outside suggestion tally"
+# HIMMEL-2901: same no-adjudication-round fallback, carried across two re-raises.
 assert_eq "$(ledger_value deferred "$head_d9" disposition_round)" "7" "r9 durable row preserves r7 as disposition source"
 
 advance_head d10-changed-claim >/dev/null
@@ -551,6 +554,262 @@ process.stdout.write(String(finding.fingerprint||""));
 ')"
 assert_eq "$compat_shape" "1,1" "verdict-only compatibility uses an amend, not a duplicate finding"
 assert_fingerprint "$compat_fp" "original fingerprint survives verdict-only adjudication"
+
+# HIMMEL-2901 item 1: the round a verdict was ADJUDICATED in is its own field.
+# The finding keeps its first-seen observation round; the amend that sets the
+# verdict records the round of the /pr-check pass that wrote it, explicitly via
+# --disposition-round or from CR_REVIEW_ROUND. "First seen" is derived by the
+# reader as the earliest observation round across rows sharing this
+# branch+fingerprint, so an inherited re-raise never reports itself as first
+# seen. Rendering names both rounds only when they differ.
+checkout_branch adjudication-round
+head_ar4="$(advance_head adjudication-r4)"
+set_registry critic-a
+ar_claim='Adjudication round claim [scripts/cr/adjudication.sh:12]'
+run_panel 4 "$ar_claim" imp "$tmp/ar4.out" "$tmp/ar4.err"
+assert_eq "$?" "0" "adjudication-round seed panel run succeeds"
+id_ar4="$(finding_id_at adjudication-round "$head_ar4")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch adjudication-round --head "$head_ar4" \
+        --id "$id_ar4" --set verdict=disproved --disposition-round 5 \
+        --reason 'disproved in the r5 pass'
+) >/dev/null 2>"$tmp/ar-amend.err"
+assert_eq "$?" "0" "amend accepts an explicit adjudication round"
+head_ar6="$(advance_head adjudication-r6)"
+run_panel 6 "$ar_claim" imp "$tmp/ar6.out" "$tmp/ar6.err"
+assert_eq "$?" "0" "adjudication-round re-raise panel run succeeds"
+ar6_out="$(cat "$tmp/ar6.out")"
+assert_has "$ar6_out" "RE-RAISE (first seen r4 · dispositioned r5 disproved)" \
+    "re-raise names the first-seen round and the adjudication round when they differ"
+assert_has "$ar6_out" "## Important Issues (0 found)" "explicit adjudication round still suppresses the re-raise"
+assert_eq "$(ledger_value adjudication-round "$head_ar6" disposition_round)" "5" \
+    "durable re-raise row carries the adjudication round, not the producer round"
+assert_eq "$(ledger_value adjudication-round "$head_ar6" round)" "6" \
+    "durable re-raise row keeps its own observation round"
+
+# The next round must not report the r6 re-raise as first seen: first-seen is
+# the earliest observation of the fingerprint, r4.
+advance_head adjudication-r7 >/dev/null
+run_panel 7 "$ar_claim" imp "$tmp/ar7.out" "$tmp/ar7.err"
+assert_eq "$?" "0" "adjudication-round second re-raise panel run succeeds"
+assert_has "$(cat "$tmp/ar7.out")" "RE-RAISE (first seen r4 · dispositioned r5 disproved)" \
+    "first-seen round does not chain through the inherited re-raise"
+
+# CR_REVIEW_ROUND supplies the adjudication round when the flag is omitted:
+# an adjudication written during an r5 pass is an r5 disposition.
+checkout_branch adjudication-env
+head_ae3="$(advance_head adjudication-env-r3)"
+set_registry critic-a
+ae_claim='Ambient adjudication round claim [scripts/cr/adjudication.sh:40]'
+run_panel 3 "$ae_claim" imp "$tmp/ae3.out" "$tmp/ae3.err"
+assert_eq "$?" "0" "ambient adjudication seed panel run succeeds"
+id_ae3="$(finding_id_at adjudication-env "$head_ae3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" CR_REVIEW_ROUND=5 bash "$LEDGER_APPEND" amend --branch adjudication-env \
+        --head "$head_ae3" --id "$id_ae3" --set verdict=disproved --reason 'disproved during the r5 pass'
+) >/dev/null 2>"$tmp/ae-amend.err"
+assert_eq "$?" "0" "amend accepts an ambient adjudication round"
+head_ae6="$(advance_head adjudication-env-r6)"
+run_panel 6 "$ae_claim" imp "$tmp/ae6.out" "$tmp/ae6.err"
+assert_eq "$?" "0" "ambient adjudication re-raise panel run succeeds"
+assert_has "$(cat "$tmp/ae6.out")" "RE-RAISE (first seen r3 · dispositioned r5 disproved)" \
+    "CR_REVIEW_ROUND supplies the adjudication round when --disposition-round is omitted"
+assert_eq "$(ledger_value adjudication-env "$head_ae6" disposition_round)" "5" \
+    "ambient adjudication round reaches the durable row"
+
+# HIMMEL-2901 item 2: a severity correction to the ORIGINAL adjudication must
+# reach the inherited re-raise that now carries the ceiling. Without it, an
+# Important corrected to Suggestion keeps its Important ceiling forever and a
+# genuine later Important occurrence is wrongly suppressed.
+checkout_branch inherited-severity
+head_is3="$(advance_head inherited-severity-r3)"
+set_registry critic-a
+is_claim='Inherited ceiling claim [scripts/cr/inherit.sh:15]'
+run_panel 3 "$is_claim" imp "$tmp/is3.out" "$tmp/is3.err"
+assert_eq "$?" "0" "inherited-severity seed panel run succeeds"
+id_is3="$(finding_id_at inherited-severity "$head_is3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch inherited-severity --head "$head_is3" \
+        --id "$id_is3" --set verdict=disproved --reason 'Important claim disproved'
+) >/dev/null 2>"$tmp/is3-amend.err"
+assert_eq "$?" "0" "inherited-severity fixture accepts the Important disproof"
+head_is4="$(advance_head inherited-severity-r4)"
+run_panel 4 "$is_claim" imp "$tmp/is4.out" "$tmp/is4.err"
+assert_eq "$?" "0" "inherited-severity re-raise panel run succeeds"
+assert_has "$(cat "$tmp/is4.out")" "## Important Issues (0 found)" "the re-raise inherits the Important disproof"
+assert_eq "$(ledger_value inherited-severity "$head_is4" disposition_severity)" "imp" \
+    "the inherited row carries the Important ceiling"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch inherited-severity --head "$head_is3" \
+        --id "$id_is3" --set severity=sug --reason 'the original was over-rated; it is a Suggestion'
+) >/dev/null 2>"$tmp/is-severity-amend.err"
+assert_eq "$?" "0" "severity correction to the original adjudication writes"
+advance_head inherited-severity-r5 >/dev/null
+run_panel 5 "$is_claim" imp "$tmp/is5.out" "$tmp/is5.err"
+assert_eq "$?" "0" "corrected-ceiling panel run succeeds"
+assert_has "$(cat "$tmp/is5.out")" "## Important Issues (1 found)" \
+    "a severity correction to the original adjudication lowers the inherited ceiling"
+assert_lacks "$(cat "$tmp/is5.out")" "RE-RAISE (" \
+    "an Important above the corrected Suggestion ceiling requires renewed adjudication"
+
+# Negative control: an amend to a DIFFERENT row of the same fingerprint that is
+# not the origin of the active disposition must leave the ceiling alone.
+checkout_branch unrelated-severity
+head_us3="$(advance_head unrelated-severity-r3)"
+set_registry critic-a
+us_claim='Unrelated ceiling claim [scripts/cr/inherit.sh:60]'
+run_panel 3 "$us_claim" imp "$tmp/us3.out" "$tmp/us3.err"
+assert_eq "$?" "0" "unrelated-severity seed panel run succeeds"
+id_us3="$(finding_id_at unrelated-severity "$head_us3")"
+us_head_other="3333333333333333333333333333333333333333"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch unrelated-severity --head "$head_us3" \
+        --id "$id_us3" --set verdict=disproved --reason 'Important claim disproved'
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" finding --branch unrelated-severity --head "$us_head_other" \
+        --model critic-a --id unrelated-1 --severity imp --file scripts/cr/inherit.sh --line 60 \
+        --verdict '' --round 3 --text "- [unrelated-1]: $us_claim"
+) >/dev/null 2>"$tmp/us-seed.err"
+assert_eq "$?" "0" "unrelated-severity fixture seeds a same-fingerprint bystander row"
+advance_head unrelated-severity-r4 >/dev/null
+run_panel 4 "$us_claim" imp "$tmp/us4.out" "$tmp/us4.err"
+assert_eq "$?" "0" "unrelated-severity re-raise panel run succeeds"
+assert_has "$(cat "$tmp/us4.out")" "## Important Issues (0 found)" "the bystander does not disturb the inheritance"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch unrelated-severity --head "$us_head_other" \
+        --id unrelated-1 --set severity=sug --reason 'correct an unrelated row of the same claim'
+) >/dev/null 2>"$tmp/us-severity-amend.err"
+assert_eq "$?" "0" "bystander severity amendment writes"
+advance_head unrelated-severity-r5 >/dev/null
+run_panel 5 "$us_claim" imp "$tmp/us5.out" "$tmp/us5.err"
+assert_eq "$?" "0" "bystander-amend panel run succeeds"
+assert_has "$(cat "$tmp/us5.out")" "## Important Issues (0 found)" \
+    "amending a row that is not the origin leaves the inherited ceiling intact"
+
+# HIMMEL-2901 item 3: case inside code-bearing fragments is identity. Folding
+# the whole claim to lowercase made `Foo` and `foo` at the same anchor one
+# fingerprint, so each inherited the other's disposition. Prose case still
+# folds — that is the dedup value the fold exists for.
+checkout_branch code-case
+head_cc3="$(advance_head code-case-r3)"
+set_registry critic-a
+# shellcheck disable=SC2016  # backticks here are markdown code spans in the claim text, not command substitution
+cc_claim='Check the `Foo` handler [scripts/cr/case.sh:10]'
+run_panel 3 "$cc_claim" imp "$tmp/cc3.out" "$tmp/cc3.err"
+assert_eq "$?" "0" "code-case seed panel run succeeds"
+id_cc3="$(finding_id_at code-case "$head_cc3")"
+fp_cc3="$(ledger_value code-case "$head_cc3" fingerprint)"
+assert_fingerprint "$fp_cc3" "code-case seed persists a versioned fingerprint"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch code-case --head "$head_cc3" \
+        --id "$id_cc3" --set verdict=disproved --reason 'the Foo handler claim is disproved'
+) >/dev/null 2>"$tmp/cc3-amend.err"
+assert_eq "$?" "0" "code-case fixture accepts the disproof"
+
+head_cc4="$(advance_head code-case-r4)"
+# shellcheck disable=SC2016  # backticks here are markdown code spans in the claim text, not command substitution
+run_panel 4 'Check the `foo` handler [scripts/cr/case.sh:20]' imp "$tmp/cc4.out" "$tmp/cc4.err"
+assert_eq "$?" "0" "backtick-case panel run succeeds"
+assert_has "$(cat "$tmp/cc4.out")" "## Important Issues (1 found)" \
+    "a different identifier case inside backticks is a different claim"
+assert_lacks "$(cat "$tmp/cc4.out")" "RE-RAISE (" "backtick case does not inherit the other claim's disposition"
+if [ "$(ledger_value code-case "$head_cc4" fingerprint)" != "$fp_cc3" ]; then
+    pass "backtick identifier case is fingerprint-significant"
+else
+    fail "backtick identifier case is fingerprint-significant"
+fi
+
+head_cc5="$(advance_head code-case-r5)"
+# shellcheck disable=SC2016  # backticks here are markdown code spans in the claim text, not command substitution
+run_panel 5 'CHECK   the `Foo` HANDLER [scripts/cr/case.sh:30]' imp "$tmp/cc5.out" "$tmp/cc5.err"
+assert_eq "$?" "0" "prose-case panel run succeeds"
+assert_has "$(cat "$tmp/cc5.out")" "RE-RAISE (r3 disproved)" \
+    "prose case and whitespace still fold onto the same fingerprint"
+assert_eq "$(ledger_value code-case "$head_cc5" fingerprint)" "$fp_cc3" \
+    "prose-only case changes keep the fingerprint stable"
+
+# Identifier shapes outside backticks are code too: camelCase and snake_case
+# carry meaning that lowercasing destroys.
+checkout_branch bare-identifier-case
+head_bi3="$(advance_head bare-identifier-r3)"
+set_registry critic-a
+bi_claim='The fooBar token and FOO_BAR constant disagree [scripts/cr/case.sh:50]'
+run_panel 3 "$bi_claim" imp "$tmp/bi3.out" "$tmp/bi3.err"
+assert_eq "$?" "0" "bare-identifier seed panel run succeeds"
+id_bi3="$(finding_id_at bare-identifier-case "$head_bi3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch bare-identifier-case --head "$head_bi3" \
+        --id "$id_bi3" --set verdict=disproved --reason 'the identifier claim is disproved'
+) >/dev/null 2>"$tmp/bi3-amend.err"
+assert_eq "$?" "0" "bare-identifier fixture accepts the disproof"
+advance_head bare-identifier-r4 >/dev/null
+run_panel 4 'The foobar token and foo_bar constant disagree [scripts/cr/case.sh:60]' imp \
+    "$tmp/bi4.out" "$tmp/bi4.err"
+assert_eq "$?" "0" "bare-identifier case panel run succeeds"
+assert_has "$(cat "$tmp/bi4.out")" "## Important Issues (1 found)" \
+    "camelCase and snake_case identifier case is fingerprint-significant"
+assert_lacks "$(cat "$tmp/bi4.out")" "RE-RAISE (" "differing identifiers do not inherit a disposition"
+advance_head bare-identifier-r5 >/dev/null
+run_panel 5 'the fooBar token and FOO_BAR constant DISAGREE [scripts/cr/case.sh:70]' imp \
+    "$tmp/bi5.out" "$tmp/bi5.err"
+assert_eq "$?" "0" "bare-identifier prose-case panel run succeeds"
+assert_has "$(cat "$tmp/bi5.out")" "RE-RAISE (r3 disproved)" \
+    "identical identifiers with different prose case still fold onto one fingerprint"
+
+# A dotted identifier that ENDS a sentence is still an identifier: the trailing
+# period is prose punctuation, not part of the name (codex-1, round 1).
+checkout_branch dotted-sentence-end
+head_ds3="$(advance_head dotted-sentence-r3)"
+set_registry critic-a
+ds_claim='The handler reads config.LOGLEVEL. [scripts/cr/case.sh:80]'
+run_panel 3 "$ds_claim" imp "$tmp/ds3.out" "$tmp/ds3.err"
+assert_eq "$?" "0" "dotted-sentence seed panel run succeeds"
+id_ds3="$(finding_id_at dotted-sentence-end "$head_ds3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch dotted-sentence-end --head "$head_ds3" \
+        --id "$id_ds3" --set verdict=disproved --reason 'the LOGLEVEL claim is disproved'
+) >/dev/null 2>"$tmp/ds3-amend.err"
+assert_eq "$?" "0" "dotted-sentence fixture accepts the disproof"
+advance_head dotted-sentence-r4 >/dev/null
+run_panel 4 'The handler reads config.loglevel. [scripts/cr/case.sh:90]' imp "$tmp/ds4.out" "$tmp/ds4.err"
+assert_eq "$?" "0" "dotted-sentence case panel run succeeds"
+assert_has "$(cat "$tmp/ds4.out")" "## Important Issues (1 found)" \
+    "a sentence-ending dotted identifier keeps its case-significance"
+assert_lacks "$(cat "$tmp/ds4.out")" "RE-RAISE (" \
+    "a differing dotted identifier does not inherit a disposition through trailing punctuation"
+advance_head dotted-sentence-r5 >/dev/null
+run_panel 5 'THE HANDLER reads config.LOGLEVEL. [scripts/cr/case.sh:95]' imp "$tmp/ds5.out" "$tmp/ds5.err"
+assert_eq "$?" "0" "dotted-sentence prose-case panel run succeeds"
+assert_has "$(cat "$tmp/ds5.out")" "RE-RAISE (r3 disproved)" \
+    "prose case around an identical dotted identifier still folds onto one fingerprint"
+
+# The writer's standalone fingerprint copy must agree with the shared helper on
+# the case rules too, or a row it writes never matches a claim the panel reads.
+checkout_branch code-case-parity
+head_ccp="$(advance_head code-case-parity-seed)"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" finding --branch code-case-parity --head "$head_ccp" \
+        --model critic-a --id code-case-parity-1 --severity imp --file scripts/cr/case.sh --line 10 \
+        --verdict disproved --round 3 \
+        --text '- [code-case-parity-1]: Check the `Foo` handler in fooBar [scripts/cr/case.sh:10]'
+) >/dev/null 2>"$tmp/code-case-parity-seed.err"
+assert_eq "$?" "0" "code-case parity fixture writes through the standalone writer"
+advance_head code-case-parity-current >/dev/null
+# shellcheck disable=SC2016  # backticks here are markdown code spans in the claim text, not command substitution
+run_panel 4 'CHECK the `Foo` HANDLER in fooBar [scripts/cr/case.sh:90]' imp \
+    "$tmp/ccp.out" "$tmp/ccp.err"
+assert_eq "$?" "0" "code-case parity panel run succeeds"
+assert_has "$(cat "$tmp/ccp.out")" "RE-RAISE (r3 disproved)" \
+    "writer and panel helper agree on which fragments keep their case"
 
 # Sanity: every current panel run wrote one durable finding row; none was
 # silently dropped merely because it rendered in the already-dispositioned block.
