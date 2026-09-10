@@ -754,6 +754,13 @@ Steps:
    ledger write failure) is an infrastructure failure, not a
    per-finding one: STOP, report the exact stderr line, repair the cause, and
    re-run `promote` — never hand-amend anything as a workaround.
+   A `still-open <id>@<sha> (unadjudicated)` line (HIMMEL-2917) means a
+   finding row with no effective verdict after applying amendments — nobody
+   dispositioned it at all. A
+   finding fixed within THIS round must be amended `fixed` at step 4.5,
+   naming the fixing sha, never left with no verdict for `promote` to find
+   later. The summary line is not evidence the ledger is clean until every
+   row prints as `promoted` or `skip-terminal`.
 
 6. If either `N > 0`, or step 4.8 reported `threads_rc != 0`:
    - Leave the marker in place.

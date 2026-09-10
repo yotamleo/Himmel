@@ -437,6 +437,14 @@ CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
     --branch promote --head "$promote_head_b" --id find-g2 \
     --set verdict=disproved --reason "not reproducible at this head"
 
+# (m) no amend at all, no verdict on the finding row (the exact #617 shape:
+# HIMMEL-2917) -> still-open, tagged unadjudicated: nobody dispositioned it,
+# so the round is not certified clean over it either.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_a" --model stub --id find-m \
+    --severity sug --file promote.txt --line 9 --verdict "" \
+    --text "tidy up the promote fixture mu"
+
 promote_out1="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" promote --branch promote --head "$promote_head_b")"; promote_rc1=$?
 assert_eq "$promote_rc1" "3" "promote exits 3 while a re-raised finding is still open"
 assert_has "$promote_out1" "promoted find-a@" "promote (a) not-re-raised agreed finding is promoted"
@@ -447,6 +455,7 @@ assert_has "$promote_out1" "still-open find-f@" "promote (f) same-head agreed fi
 assert_has "$promote_out1" "promoted find-g@" "promote (g) an earlier agreed finding promotes when its head-H reappearance is already disproved"
 assert_has "$promote_out1" "still-open find-h@" "promote (h) a deferred head-H reappearance keeps the earlier agreed finding still-open"
 assert_has "$promote_out1" "still-open find-i@" "promote (i) a finding on a non-ancestor commit is never promoted"
+assert_has "$promote_out1" "$(printf 'still-open find-m@%s (unadjudicated)' "$(printf '%s' "$promote_head_a" | cut -c1-8)")" "promote (m) an unadjudicated finding (no verdict, no amend) is still-open, tagged (unadjudicated), not silently skipped"
 promote_ledger_content="$(cat "$promote_ledger" 2>/dev/null)"
 assert_has "$promote_ledger_content" '"finding_id":"find-a"' "promoted amend targets find-a"
 assert_has "$promote_ledger_content" '"verdict":"fixed"' "promote writes a fixed verdict"
@@ -462,6 +471,9 @@ assert_lacks "$promote_out2" "promoted find-a@" "second promote run does not re-
 assert_has "$promote_out2" "skip-terminal find-a@" "second promote run reports find-a as already terminal"
 find_a_amends_2="$(LEDGER="$promote_ledger" node -e 'const fs=require("fs"),e=process.env;let n=0;for(const l of fs.readFileSync(e.LEDGER,"utf8").trim().split("\n")){const o=JSON.parse(l);if(o.kind==="amend"&&o.finding_id==="find-a"&&o.set&&o.set.verdict==="fixed")n++}process.stdout.write(String(n))')"
 assert_eq "$find_a_amends_2" "1" "second promote run writes zero new amends for find-a"
+assert_has "$promote_out2" "still-open find-m@" "second promote run still reports find-m as unadjudicated"
+find_m_amends="$(LEDGER="$promote_ledger" node -e 'const fs=require("fs"),e=process.env;let n=0;for(const l of fs.readFileSync(e.LEDGER,"utf8").trim().split("\n")){const o=JSON.parse(l);if(o.kind==="amend"&&o.finding_id==="find-m")n++}process.stdout.write(String(n))')"
+assert_eq "$find_m_amends" "0" "an unadjudicated (empty-verdict) row is never written to"
 
 # CR_LEDGER pin (codex-1, HIMMEL-2911 CR round 4): an ambient CR_LEDGER in the
 # caller's environment must not redirect the amend write to a different file
