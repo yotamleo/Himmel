@@ -342,13 +342,26 @@ fi
 # local 02:00-02:59 do not exist) regardless of what day the suite actually
 # runs on. TZ is set only for these subprocess invocations, never exported
 # for the rest of the suite.
-if _lg4_dst_tzdata_missing=$(python3 -c '
+if _lg4_dst_tzdata_missing=$(TZ=Europe/Berlin python3 -c '
+import datetime
 import sys
+
 try:
     from zoneinfo import ZoneInfo
     ZoneInfo("Europe/Berlin")
 except Exception as e:
     print(e)
+    sys.exit(1)
+
+# codex-2 (HIMMEL-2908 pr-check round 1): the zoneinfo check above only
+# proves the tzdata TABLE exists, not that this Python/OS actually honors
+# TZ for naive datetime.timestamp()/fromtimestamp() (notably native Windows
+# Python, whose C runtime does not parse IANA TZ names) -- verify against a
+# fixed reference epoch (1970-01-01 00:00 UTC, pre-DST, so the expected
+# offset is a plain UTC+1) before trusting the assertions below.
+probe = datetime.datetime.fromtimestamp(0).strftime("%H:%M")
+if probe != "01:00":
+    print(f"TZ=Europe/Berlin not honored by this Python/OS (epoch 0 -> {probe}, expected 01:00)")
     sys.exit(1)
 ' 2>&1); then
     read -r _lg4_dst_year _lg4_dst_month _lg4_dst_day < <(python3 -c '
@@ -374,8 +387,13 @@ print(d.year, d.month, d.day)
         echo "FAIL LG4 DST transition-day fixture epoch (12:34) round-tripped to $_lg4_dst_1234_roundtrip, not 12:34"
         FAILED=$((FAILED + 1))
     fi
-    _lg4_dst_0230_roundtrip=$(TZ=Europe/Berlin python3 -c "import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%H:%M'))" "$_lg4_dst_0230_epoch")
-    if [ "$_lg4_dst_0230_roundtrip" != "02:30" ]; then
+    # codex-1 (HIMMEL-2908 pr-check round 1): assert success on `!=`, so a
+    # failed/empty conversion (which is also != "02:30") must be its own
+    # branch rather than silently reading as PASS.
+    if ! _lg4_dst_0230_roundtrip=$(TZ=Europe/Berlin python3 -c "import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%H:%M'))" "$_lg4_dst_0230_epoch"); then
+        echo "FAIL LG4 DST transition-day guard: round-trip conversion command failed for local 02:30"
+        FAILED=$((FAILED + 1))
+    elif [ "$_lg4_dst_0230_roundtrip" != "02:30" ]; then
         echo "PASS LG4 DST transition-day guard fires: local 02:30 (inside the spring-forward gap) round-trips to $_lg4_dst_0230_roundtrip, not 02:30 -- a reintroduced today-based fixture landing here would be caught deterministically"
     else
         echo "FAIL LG4 DST transition-day guard did not fire: local 02:30 round-tripped cleanly to 02:30 -- a reintroduced today-based fixture landing in this gap would silently pass"
