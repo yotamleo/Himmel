@@ -266,13 +266,13 @@ _ql_default_session() { printf '%s-pid%s' "$(_ql_hostname)" "$$"; }
 # _ql_strip_backticks <token> -- HIMMEL-2910: acquire prints the token
 # backticked ("release-token: `<token>`") so a leg copy-pasting the line
 # into a markdown handover doc can't have gitleaks capture trailing
-# punctuation into the "secret". heartbeat/release therefore accept the
-# token exactly as printed -- backticked -- as well as the pre-2910 bare
-# form, so a caller need not hand-strip anything either way. Strips ONLY
-# when BOTH a leading and trailing backtick are present (never a single
-# stray one), so a token that itself starts or ends with a backtick -- never
-# actually produced by this script, but not to rule out for an external
-# caller -- is not silently mangled.
+# punctuation into the "secret". Strips ONLY when BOTH a leading and
+# trailing backtick are present (never a single stray one), so a token
+# that itself starts or ends with a backtick -- never actually produced by
+# this script, but not to rule out for an external caller -- is not
+# silently mangled. A candidate this reduces to empty (e.g. the 2-char
+# literal "``") is exactly the case _ql_token_matches below exists to
+# refuse rather than treat as "no token given" -- see its comment.
 _ql_strip_backticks() {
     local t="$1"
     if [ "${#t}" -ge 2 ] && [ "${t#\`}" != "$t" ] && [ "${t%\`}" != "$t" ]; then
@@ -280,6 +280,26 @@ _ql_strip_backticks() {
         t="${t%\`}"
     fi
     printf '%s' "$t"
+}
+
+# _ql_token_matches <candidate> <owner-value> -- rc 0 when <candidate> IS
+# the holder's token, accepting it either exactly as stored (the pre-2910
+# bare form, or a recalled token, or a caller-chosen id that happens to
+# itself start/end with a backtick) OR with one matched pair of backticks
+# stripped (the copy-paste shape acquire now prints). Tried in that order
+# and ONLY that order -- CR round 2 (codex-1): normalizing <candidate>
+# before this comparison, as an earlier revision did, collapses the 2-char
+# literal "``" to empty and made an explicitly wrong argv token
+# indistinguishable from "no token was given", which then fell through to
+# a token-file RECALL instead of being refused. Comparing both forms
+# against the SAME unmodified <candidate> here means a degenerate explicit
+# token still fails both comparisons and is correctly refused, while an
+# exact match (including one on a self-backticked id, CR round 1) is
+# always tried FIRST and never overridden by the stripped form.
+_ql_token_matches() {
+    local candidate="$1" owner="$2"
+    [ "$candidate" = "$owner" ] && return 0
+    [ "$(_ql_strip_backticks "$candidate")" = "$owner" ]
 }
 
 # JSON escape/extract now delegate to the shared pure-bash helpers in
@@ -466,7 +486,7 @@ _ql_search_roots() {
         slug=$(_ql_slug_for_root "$ho" "$root")
         cand="$root/.locks/queue/$slug.lock"
         [ -f "$cand/owner.json" ] || continue
-        [ "$(_ql_json_field "$cand/owner.json" session)" = "$token" ] || continue
+        _ql_token_matches "$token" "$(_ql_json_field "$cand/owner.json" session)" || continue
         recorded=""
         [ -f "$cand/root" ] && recorded=$(cat "$cand/root" 2>/dev/null)
         [ -n "$recorded" ] || recorded="$root"
@@ -667,14 +687,15 @@ _ql_token_forget() {
 }
 
 # _ql_owner_matches <lockdir> <token> -- rc 0 when this lock dir's
-# owner.json names <token> as the holder. A missing dir, a missing or
-# unreadable owner.json, and a different holder all return non-zero, so
-# callers can use one test for "this is not my lock, wherever it is" and
-# let the existing corrupt-lock / refused-release branches below decide
-# what that means.
+# owner.json names <token> as the holder (HIMMEL-2910: via
+# _ql_token_matches, so a backticked <token> matches its bare stored form
+# too). A missing dir, a missing or unreadable owner.json, and a different
+# holder all return non-zero, so callers can use one test for "this is not
+# my lock, wherever it is" and let the existing corrupt-lock /
+# refused-release branches below decide what that means.
 _ql_owner_matches() {
     [ -f "$1/owner.json" ] || return 1
-    [ "$(_ql_json_field "$1/owner.json" session)" = "$2" ]
+    _ql_token_matches "$2" "$(_ql_json_field "$1/owner.json" session)"
 }
 
 # _ql_write_root_marker <lockdir> <root> -- record the root this lock
@@ -1203,11 +1224,6 @@ queue_lock_heartbeat() {
         echo "queue-lock: could not resolve handover root" >&2
         return 1
     fi
-    # HIMMEL-2910: strip a matched backtick pair from an ARGV token only --
-    # a recalled token (below) is already the exact raw value persisted at
-    # acquire time, so stripping it too would misidentify a session whose
-    # OWN id happens to start/end with a backtick (panel finding, round 1).
-    session="$(_ql_strip_backticks "$session")"
     # HIMMEL-2813: no token on argv -- try the per-session file before
     # refusing. An argv token always wins (this only runs when there is
     # none), and a recall that finds nothing falls through to the unchanged
@@ -1252,10 +1268,16 @@ queue_lock_heartbeat() {
     o_session=$(_ql_json_field "$lockdir/owner.json" session)
     o_host=$(_ql_json_field "$lockdir/owner.json" host)
     o_started=$(_ql_json_field "$lockdir/owner.json" started)
-    if [ "$session" != "$o_session" ]; then
+    # HIMMEL-2910: _ql_token_matches, not a bare `!=`, so a backticked argv
+    # token matches its bare owner.json form too (see the helper's comment
+    # for why an EARLIER, now-removed revision that stripped $session before
+    # this point was wrong). On a match, normalize to the owner's own
+    # canonical value -- nothing downstream needs $session's original form.
+    if ! _ql_token_matches "$session" "$o_session"; then
         echo "queue-lock: heartbeat refused -- held by session=$o_session, not '$session'" >&2
         return 2
     fi
+    session="$o_session"
     if ! _ql_write_owner "$lockdir" "$o_session" "$o_host" "$ho" "$o_started" "$(_ql_now_iso)"; then
         echo "queue-lock: heartbeat FAILED -- owner.json could not be rewritten atomically (the previous heartbeat stays in effect)" >&2
         return 1
@@ -1297,11 +1319,6 @@ queue_lock_release() {
         # forcing session is a cleaner, not the holder wrapping up.
         return 0
     fi
-    # HIMMEL-2910: strip a matched backtick pair from an ARGV token only --
-    # a recalled token (below) is already the exact raw value persisted at
-    # acquire time, so stripping it too would misidentify a session whose
-    # OWN id happens to start/end with a backtick (panel finding, round 1).
-    session="$(_ql_strip_backticks "$session")"
     # HIMMEL-2813: no token on argv -- try the per-session file before
     # refusing. This runs AFTER the force-release block above, so that path
     # is untouched, and only when argv carried nothing, so an explicit token
@@ -1355,10 +1372,16 @@ queue_lock_release() {
     if [ -f "$lockdir/owner.json" ]; then
         local o_session
         o_session=$(_ql_json_field "$lockdir/owner.json" session)
-        if [ -n "$o_session" ] && [ "$o_session" != "$session" ]; then
+        # HIMMEL-2910: _ql_token_matches, not a bare `!=` -- see the
+        # heartbeat function's identical comment. Normalize to the owner's
+        # canonical value on a match so _ql_token_forget below compares the
+        # PERSISTED file's exact content, not whatever form the caller
+        # happened to pass.
+        if [ -n "$o_session" ] && ! _ql_token_matches "$session" "$o_session"; then
             echo "queue-lock: release refused -- held by session=$o_session, not '$session' (QUEUE_LOCK_FORCE_RELEASE=1 to force)" >&2
             return 2
         fi
+        [ -n "$o_session" ] && session="$o_session"
     fi
     rm -rf "$lockdir" 2>/dev/null
     if [ -d "$lockdir" ]; then
