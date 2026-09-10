@@ -1437,11 +1437,14 @@ git -C "$T30_VAULT" init -q
 git -C "$T30_VAULT" config user.email "test@example.com"
 git -C "$T30_VAULT" config user.name "Test"
 git -C "$T30_VAULT" add -A
-git -C "$T30_VAULT" commit -q -m "initial stamp 0.9.0"
+git -C "$T30_VAULT" commit -q -m "initial stamp 0.9.0"; t30_commit1_rc=$?
+assert_eq "T30 setup: initial commit landed" "0" "$t30_commit1_rc"
 # Committed local edit (clean git status afterwards) — the actual incident shape.
 printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$T30_VAULT/.gitleaks.toml"
 git -C "$T30_VAULT" add -A
-git -C "$T30_VAULT" commit -q -m "add local allowlist line"
+git -C "$T30_VAULT" commit -q -m "add local allowlist line"; t30_commit2_rc=$?
+assert_eq "T30 setup: local-edit commit landed" "0" "$t30_commit2_rc"
+assert_eq "T30 setup: working tree is clean (matches the incident's shape)" "" "$(git -C "$T30_VAULT" status --porcelain)"
 # Bump the template so an upgrade is available, changing .gitleaks.toml too.
 printf '{"metadata":{"version":"1.0.0"}}\n' > "$T30_TMPL/marketplace/.claude-plugin/marketplace.json"
 printf 'gitleaks-content-v2\n' > "$T30_TMPL/.gitleaks.toml"

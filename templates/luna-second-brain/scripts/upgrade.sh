@@ -246,15 +246,16 @@ fi
 # upgraded via a git-tracked flow), has no baseline to compare against, so
 # falls back to the pre-existing overwrite behavior.
 #
-# Known limitation (not fixed here — flagged by CR, out of scope for a
-# minimal refuse-or-print fix): if a local edit to a template-owned file is
-# committed in the SAME commit that also advances the stamp (e.g. a batching
-# autosync), that commit becomes STAMP_COMMIT itself, so the baseline it
-# reads back already contains the edit. A later run then sees no divergence
-# from that (already-edited) baseline and would silently accept the
-# template's write. Detecting this needs a baseline independent of the
-# vault's own commit history (e.g. a per-file content snapshot alongside
-# .vault-template.json), which is a larger change than this ticket scopes.
+# Known limitation, tracked as HIMMEL-2903 (not fixed here — flagged by CR,
+# out of scope for a minimal refuse-or-print fix): if a local edit to a
+# template-owned file is committed in the SAME commit that also advances the
+# stamp (e.g. a batching autosync), that commit becomes STAMP_COMMIT itself,
+# so the baseline it reads back already contains the edit. A later run then
+# sees no divergence from that (already-edited) baseline and would silently
+# accept the template's write. Detecting this needs a baseline independent
+# of the vault's own commit history (e.g. a per-file content snapshot
+# alongside .vault-template.json), which is a larger change than this
+# ticket scopes.
 STAMP_COMMIT=""
 # `git rev-parse --is-inside-work-tree`, not `[ -d "$VAULT_DIR/.git" ]`: a
 # worktree or a submodule has a `.git` FILE (a `gitdir: <path>` pointer), not
@@ -289,8 +290,23 @@ has_local_edit() {
     # falling through to "no local edit" on an error is the exact silent-
     # overwrite failure mode this function exists to close, just via a
     # different path. Fail CLOSED (withhold) on an operational error instead.
-    if ! git -C "$VAULT_DIR" cat-file -e "$STAMP_COMMIT:./$rel" 2>/dev/null; then
-        return 1
+    local cat_err
+    if ! cat_err="$(git -C "$VAULT_DIR" cat-file -e "$STAMP_COMMIT:./$rel" 2>&1)"; then
+        case "$cat_err" in
+            *"does not exist"*)
+                # Legitimately absent at the stamp commit (a new
+                # template-owned file) — not a local edit.
+                return 1
+                ;;
+            *)
+                # Any OTHER cat-file failure (corrupt object, invalid
+                # STAMP_COMMIT, etc.) is an operational error, not a proven
+                # absence — fail CLOSED rather than silently allowing the
+                # write through on a failure we cannot interpret.
+                [ "$print" = 1 ] && echo "  could not verify local edits for $rel (git cat-file failed) — withholding the write as a precaution"
+                return 0
+                ;;
+        esac
     fi
     local committed; committed="$(mktemp)"
     if [ -z "$committed" ] || [ ! -e "$committed" ]; then
