@@ -1422,6 +1422,38 @@ assert_eq "T-RESOLVE: template-less checkout apply exits 0" 0 "$tr_d_rc"
 assert_eq "T-RESOLVE: HIMMEL_REPO beats the \$HOME scan" A "$tr_d_marker"
 
 # ===========================================================================
+# T30 (HIMMEL-2886): sweep must NOT classify a vault clean-upgrade when it has
+# a committed local edit to a template-owned "overwrite"-class file since its
+# last stamped upgrade — matching the real incident (luna-upgrade-all apply
+# on ~/Documents/luna, 2026-09-09): git status was CLEAN (the edit was
+# committed), yet the .gitleaks.toml/.pre-commit-config.yaml local hunks were
+# silently reverted and the run reported clean-upgrade.
+T30_TMPL="$TMP/t30-tmpl"; make_template "$T30_TMPL" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T30_TMPL/.gitleaks.toml"
+T30_ROOTS="$TMP/t30-roots"; mkdir -p "$T30_ROOTS"
+T30_VAULT="$T30_ROOTS/vault"
+make_luna_vault "$T30_VAULT" "0.9.0" "$T30_TMPL"
+git -C "$T30_VAULT" init -q
+git -C "$T30_VAULT" config user.email "test@example.com"
+git -C "$T30_VAULT" config user.name "Test"
+git -C "$T30_VAULT" add -A
+git -C "$T30_VAULT" commit -q -m "initial stamp 0.9.0"
+# Committed local edit (clean git status afterwards) — the actual incident shape.
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$T30_VAULT/.gitleaks.toml"
+git -C "$T30_VAULT" add -A
+git -C "$T30_VAULT" commit -q -m "add local allowlist line"
+# Bump the template so an upgrade is available, changing .gitleaks.toml too.
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T30_TMPL/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T30_TMPL/.gitleaks.toml"
+
+t30_sweep=$(run_engine sweep --porcelain --template-dir "$T30_TMPL" --roots "$T30_ROOTS" 2>&1)
+t30_line=$(printf '%s\n' "$t30_sweep" | grep "$T30_VAULT" | head -1)
+case "$t30_line" in
+    local-config-edits*) pass "T30 sweep classifies local-config-edits, not clean-upgrade" ;;
+    *) fail "T30 sweep classifies local-config-edits, not clean-upgrade" "got: $t30_line" ;;
+esac
+
+# ===========================================================================
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "All luna-upgrade-all tests passed."

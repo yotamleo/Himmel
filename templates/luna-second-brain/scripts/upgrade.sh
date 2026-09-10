@@ -24,6 +24,9 @@
 #                       (no banner, no plan, no changes), then exit 0.
 #   --dry-run           print the plan, make zero filesystem changes.
 #   --yes               skip the confirm prompt (used by the /luna-upgrade skill).
+#   --backup-dir DIR    (optional) the pre-computed backup dest for this run,
+#                       named in the local-edit-withheld message so an operator
+#                       can recover the pre-upgrade file (HIMMEL-2886).
 #
 # Version source = the template's marketplace/.claude-plugin/marketplace.json
 # metadata.version. The vault records its level in .vault-template.json; a
@@ -41,12 +44,14 @@ VAULT_DIR=""
 DRY_RUN=0
 ASSUME_YES=0
 CHECK_ONLY=0
+BACKUP_DIR=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --template-dir) TEMPLATE_DIR="${2:-}"; shift 2 ;;
         --vault-dir)    VAULT_DIR="${2:-}"; shift 2 ;;
+        --backup-dir)   BACKUP_DIR="${2:-}"; shift 2 ;;
         --dry-run)      DRY_RUN=1; shift ;;
         --check)        CHECK_ONLY=1; shift ;;
         --yes|-y)       ASSUME_YES=1; shift ;;
@@ -64,6 +69,8 @@ upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
                       (no banner, no plan, no changes), then exit 0.
   --dry-run           print the plan, make zero filesystem changes.
   --yes, -y           skip the confirm prompt.
+  --backup-dir DIR    (optional) pre-computed backup dest, named in the
+                      local-edit-withheld message.
 
 Refreshes template-owned files (scripts, .obsidian config, plugin assets, docs)
 WITHOUT touching user content (journal, notes, clips). Version source = the
@@ -228,6 +235,55 @@ if [ "$VAULT_VERSION" = "$TEMPLATE_VERSION" ] || ! ver_lt "$VAULT_VERSION" "$TEM
 fi
 
 # ---------------------------------------------------------------------------
+# Local-edit detection (HIMMEL-2886): an "overwrite"-class file the vault
+# itself has diverged on since its last stamped upgrade must not be silently
+# clobbered — the template's own committed history has no view of vault-local
+# edits, but the VAULT's git history does. STAMP_COMMIT is the last commit
+# that wrote .vault-template.json (i.e. the vault's last upgrade); comparing
+# a file's content there against its content NOW tells us whether the vault
+# edited it locally after that upgrade (vs. the file only ever having been
+# template-driven). A vault with no git repo, or no such commit (never
+# upgraded via a git-tracked flow), has no baseline to compare against, so
+# falls back to the pre-existing overwrite behavior.
+STAMP_COMMIT=""
+if [ -d "$VAULT_DIR/.git" ]; then
+    STAMP_COMMIT="$(git -C "$VAULT_DIR" log -1 --format=%H -- .vault-template.json 2>/dev/null)"
+fi
+
+# has_local_edit <rel> <dst> [print]: exit 0 iff <dst> differs from what was
+# committed at STAMP_COMMIT for <rel>. No stamp commit, or the file didn't
+# exist there (new template-owned file), means no baseline => not a local
+# edit. With [print]=1, also emits the "local edits overwritten" line + a
+# unified diff of the lost hunk — called once per file (the planning pass
+# only; the execute pass re-detects the same files but must not re-print).
+has_local_edit() {
+    local rel="$1" dst="$2" print="${3:-0}"
+    [ -n "$STAMP_COMMIT" ] || return 1
+    [ -f "$dst" ] || return 1
+    local committed; committed="$(mktemp)"
+    if ! git -C "$VAULT_DIR" show "$STAMP_COMMIT:$rel" > "$committed" 2>/dev/null; then
+        rm -f "$committed"; return 1
+    fi
+    local committed_sha dst_sha
+    committed_sha="$(sha_of "$committed")"
+    dst_sha="$(sha_of "$dst")"
+    if [ "$committed_sha" != "$dst_sha" ]; then
+        if [ "$print" = 1 ]; then
+            local backup_note="n/a — dry-run"
+            [ -n "$BACKUP_DIR" ] && backup_note="$BACKUP_DIR/$rel"
+            echo "  local edits overwritten: $rel (backup: $backup_note)"
+            if command -v diff >/dev/null 2>&1; then
+                diff -u "$committed" "$dst" | sed 's/^/    /'
+            fi
+        fi
+        rm -f "$committed"
+        return 0
+    fi
+    rm -f "$committed"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Per-file classification. Returns one of:
 #   overwrite | jsonmerge | skipexists | threeway | report | skip
 # Extensible per-profile (HIMMEL-389 scope §8): a future wiki profile keys off
@@ -275,7 +331,7 @@ PLUGINS_SETUP_PRIOR_SHA="$(sha_of "$VAULT_DIR/$PLUGINS_SETUP_REL")"
 # ---------------------------------------------------------------------------
 # Build + print plan, then execute (unless --dry-run). One pass over the
 # template-owned files; user content is never enumerated so it can't be touched.
-n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0
+n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0 n_local_edit=0
 WRITE_FAILURES=0
 declare -a PLAN
 
@@ -412,8 +468,13 @@ process() {
             skip) ;;
             overwrite)
                 if [ "$(sha_of "$src")" != "$(sha_of "$dst")" ]; then
-                    PLAN+=("WRITE        $rel"); n_write=$((n_write+1))
-                    [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
+                    if has_local_edit "$rel" "$dst" "$((1 - execute))"; then
+                        PLAN+=("LOCAL-EDIT   $rel (vault has local edits since last upgrade — NOT overwritten)")
+                        n_local_edit=$((n_local_edit+1))
+                    else
+                        PLAN+=("WRITE        $rel"); n_write=$((n_write+1))
+                        [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
+                    fi
                 else
                     n_skip_identical=$((n_skip_identical+1))
                 fi ;;
@@ -461,7 +522,7 @@ process 0
 if [ "${#PLAN[@]}" -eq 0 ]; then
     echo "No template-owned files differ — vault content is current. Writing version stamp."
 else
-    echo "Plan ($((n_write)) write, $n_jsonmerge json-merge, $n_threeway _CLAUDE.md, $n_report report, $n_skip_identical identical, $n_skip_exists user-kept):"
+    echo "Plan ($((n_write)) write, $n_jsonmerge json-merge, $n_threeway _CLAUDE.md, $n_report report, $n_skip_identical identical, $n_skip_exists user-kept, $n_local_edit local-edit-withheld):"
     printf '  %s\n' "${PLAN[@]}"
 fi
 echo ""
@@ -480,7 +541,7 @@ fi
 
 # --- Execute pass ---
 PLAN=()
-n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0
+n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0 n_local_edit=0
 WRITE_FAILURES=0
 CLAUDE_MERGE_RESULT=""
 process 1
@@ -524,11 +585,12 @@ fi
 # target version — leave the stamp behind so a re-run re-processes (and
 # re-alerts) instead of a "current" stamp silently masking the gap. The stamp
 # is the last write, so an aborted run also re-runs cleanly (idempotent).
-if [ "$WRITE_FAILURES" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "$CLAUDE_MERGE_RESULT" = "error" ]; then
+if [ "$WRITE_FAILURES" -gt 0 ] || [ "$n_local_edit" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "$CLAUDE_MERGE_RESULT" = "error" ]; then
     echo "" >&2
     echo "upgrade: NOT writing the version stamp — the vault is partially upgraded" >&2
-    echo "  (write failures: $WRITE_FAILURES; _CLAUDE.md: ${CLAUDE_MERGE_RESULT:-ok}). Resolve the" >&2
-    echo "  issues above and re-run; template-owned writes are idempotent." >&2
+    echo "  (write failures: $WRITE_FAILURES; local edits withheld: $n_local_edit;" >&2
+    echo "  _CLAUDE.md: ${CLAUDE_MERGE_RESULT:-ok}). Resolve the issues above and re-run;" >&2
+    echo "  template-owned writes are idempotent." >&2
     exit 1
 fi
 

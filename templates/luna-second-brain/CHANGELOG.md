@@ -8,6 +8,15 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.16] — 2026-09-10
+
+### Fixed
+- **`scripts/upgrade.sh` no longer silently overwrites a vault-local edit to a
+  template-owned config file (HIMMEL-2886).** See the luna-upgrade-all commit
+  for the full mechanism (STAMP_COMMIT-based local-edit detection); this bump
+  ships the fix in `scripts/upgrade.sh` itself, which is template-owned and
+  self-refreshes on every vault's next upgrade.
+
 ## [0.4.15] — 2026-09-10
 
 ### Added

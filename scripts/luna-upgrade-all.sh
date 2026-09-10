@@ -398,6 +398,15 @@ has_conflict_line() {
 }
 
 # ---------------------------------------------------------------------------
+# has_local_edit_line <text>: exit 0 if any plan line is a LOCAL-EDIT
+# (HIMMEL-2886: a template-owned "overwrite"-class file the vault edited
+# locally since its last upgrade — upgrade.sh withheld the write).
+has_local_edit_line() {
+    local text="$1"
+    printf '%s\n' "$text" | grep -qE '^ +LOCAL-EDIT'
+}
+
+# ---------------------------------------------------------------------------
 # cmd_sweep: discover vaults, classify, dry-run, emit table.
 cmd_sweep() {
     local vaults
@@ -482,6 +491,8 @@ cmd_sweep() {
 
                         if has_conflict_line "$dry_out"; then
                             state="conflict"
+                        elif has_local_edit_line "$dry_out"; then
+                            state="local-config-edits"
                         elif has_plan_lines "$dry_out"; then
                             state="clean-upgrade"
                         else
@@ -559,7 +570,7 @@ backup_vault() {
         # Plan lines start with 2 spaces then a class token; skip non-plan and REPORT
         case "$line" in
             "  "REPORT*) continue ;;
-            "  "WRITE*|"  "MERGE-JSON*|"  "MERGE-3WAY*)
+            "  "WRITE*|"  "MERGE-JSON*|"  "MERGE-3WAY*|"  "LOCAL-EDIT*)
                 # Strip leading whitespace, then grab the second space-delimited field
                 local stripped; stripped="$(printf '%s' "$line" | sed 's/^[[:space:]]*//')"
                 # Rel path is everything after the first whitespace-delimited token
@@ -750,7 +761,7 @@ cmd_apply() {
     # Run upgrade.sh --yes
     local upgrade_rc
     upgrade_rc=0
-    bash "$UPGRADE" --template-dir "$TEMPLATE_DIR" --vault-dir "$vault" --yes 2>&1 \
+    bash "$UPGRADE" --template-dir "$TEMPLATE_DIR" --vault-dir "$vault" --backup-dir "$backup_dest" --yes 2>&1 \
         || upgrade_rc=$?
 
     case "$upgrade_rc" in
