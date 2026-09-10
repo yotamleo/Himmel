@@ -322,6 +322,89 @@ calls="$(cat "$PANEL_CALLS" 2>/dev/null)"
 expected_prefix="$(printf '%s\n%s\n%s\n%s' "$head1" "$head2" "$head3" "$other_head")"
 assert_has "$calls" "$expected_prefix" "early rounds run the actual captured heads"
 
+# review-round.sh promote (HIMMEL-2911): agreed findings absent at a clean
+# round head become terminal `fixed` amends, idempotently.
+promote_ledger="$git_dir/cr-critic-scores.jsonl"
+git -C "$repo" checkout -q -b promote main
+printf 'promote-a\n' > "$repo/promote.txt"
+git -C "$repo" add promote.txt
+git -C "$repo" commit -q -m promote-a
+promote_head_a="$(git -C "$repo" rev-parse promote)"
+printf 'promote-b\n' >> "$repo/promote.txt"
+git -C "$repo" commit -q -am promote-b
+promote_head_b="$(git -C "$repo" rev-parse promote)"
+
+# (a) agreed, not re-raised at the clean head -> promoted to fixed.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_a" --model stub --id find-a \
+    --severity sug --file promote.txt --line 1 --verdict "" \
+    --text "tidy up the promote fixture alpha"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_a" --id find-a \
+    --set verdict=agreed --reason "leg agrees with alpha"
+
+# (b) agreed, re-raised (same fingerprint reappears) at the clean head -> still-open.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_a" --model stub --id find-b \
+    --severity sug --file promote.txt --line 2 --verdict "" \
+    --text "tidy up the promote fixture beta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_a" --id find-b \
+    --set verdict=agreed --reason "leg agrees with beta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_b" --model stub --id find-b2 \
+    --severity sug --file promote.txt --line 2 --verdict "" \
+    --text "tidy up the promote fixture beta"
+
+# (c) already terminal (fixed) -> untouched.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_a" --model stub --id find-c \
+    --severity sug --file promote.txt --line 3 --verdict "" \
+    --text "tidy up the promote fixture gamma"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_a" --id find-c \
+    --set verdict=fixed --reason "already fixed by hand"
+
+# (d) deferred -> untouched, deferred_to intact.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_a" --model stub --id find-d \
+    --severity sug --file promote.txt --line 4 --verdict "" \
+    --text "tidy up the promote fixture delta"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_a" --id find-d \
+    --set verdict=deferred --set deferred_to=HIMMEL-9010 --reason "deferred by hand"
+
+promote_out1="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" promote --branch promote --head "$promote_head_b")"; promote_rc1=$?
+assert_eq "$promote_rc1" "3" "promote exits 3 while a re-raised finding is still open"
+assert_has "$promote_out1" "promoted find-a@" "promote (a) not-re-raised agreed finding is promoted"
+assert_has "$promote_out1" "still-open find-b@" "promote (b) re-raised agreed finding stays open"
+assert_has "$promote_out1" "skip-terminal find-c@" "promote (c) already-fixed row is skipped"
+assert_has "$promote_out1" "skip-terminal find-d@" "promote (d) deferred row is skipped"
+promote_ledger_content="$(cat "$promote_ledger" 2>/dev/null)"
+assert_has "$promote_ledger_content" '"finding_id":"find-a"' "promoted amend targets find-a"
+assert_has "$promote_ledger_content" '"verdict":"fixed"' "promote writes a fixed verdict"
+assert_has "$promote_ledger_content" 'Promoted from agreed: no re-raise at clean round head' "promote amend carries the promotion reason"
+assert_has "$promote_ledger_content" '"deferred_to":"HIMMEL-9010"' "promote (d) leaves deferred_to intact"
+find_a_amends="$(LEDGER="$promote_ledger" node -e 'const fs=require("fs"),e=process.env;let n=0;for(const l of fs.readFileSync(e.LEDGER,"utf8").trim().split("\n")){const o=JSON.parse(l);if(o.kind==="amend"&&o.finding_id==="find-a"&&o.set&&o.set.verdict==="fixed")n++}process.stdout.write(String(n))')"
+assert_eq "$find_a_amends" "1" "promote (a) writes exactly one fixed amend"
+
+# (e) second run is idempotent: no new amend, same decisions.
+promote_out2="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" promote --branch promote --head "$promote_head_b")"; promote_rc2=$?
+assert_eq "$promote_rc2" "3" "second promote run still reports the unresolved re-raise"
+assert_lacks "$promote_out2" "promoted find-a@" "second promote run does not re-promote find-a"
+assert_has "$promote_out2" "skip-terminal find-a@" "second promote run reports find-a as already terminal"
+find_a_amends_2="$(LEDGER="$promote_ledger" node -e 'const fs=require("fs"),e=process.env;let n=0;for(const l of fs.readFileSync(e.LEDGER,"utf8").trim().split("\n")){const o=JSON.parse(l);if(o.kind==="amend"&&o.finding_id==="find-a"&&o.set&&o.set.verdict==="fixed")n++}process.stdout.write(String(n))')"
+assert_eq "$find_a_amends_2" "1" "second promote run writes zero new amends for find-a"
+
+# Negative control: a malformed ledger row refuses automatic promotion and writes nothing.
+promote_lines_before="$(wc -l < "$promote_ledger" | tr -d ' ')"
+printf 'not-json-at-all\n' >> "$promote_ledger"
+(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" promote --branch promote --head "$promote_head_b" >/dev/null 2>"$tmp/promote3.err"); promote_rc3=$?
+promote_lines_after="$(wc -l < "$promote_ledger" | tr -d ' ')"
+assert_eq "$promote_rc3" "1" "a malformed ledger row makes promote exit 1"
+assert_has "$(cat "$tmp/promote3.err")" "malformed CR ledger row" "malformed-ledger refusal names the reason"
+assert_eq "$promote_lines_after" "$((promote_lines_before + 1))" "malformed-ledger run appends nothing beyond the injected garbage line"
+
 if [ "$fails" -gt 0 ]; then
     printf 'FAIL test-pr-check-rounds (%s failures)\n' "$fails" >&2
     exit 1

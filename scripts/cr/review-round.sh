@@ -12,6 +12,7 @@ HIMMEL_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 usage() {
     echo "usage: review-round.sh start --branch <name>" >&2
     echo "       review-round.sh defer --branch <name> --head <sha> [--defer-to <ticket>]" >&2
+    echo "       review-round.sh promote --branch <name> --head <sha>" >&2
     exit 2
 }
 
@@ -33,6 +34,7 @@ done
 case "$verb" in
     start) [ -z "$head_sha" ] || usage ;;
     defer) [ -n "$head_sha" ] || usage ;;
+    promote) [ -n "$head_sha" ] || usage ;;
     *) usage ;;
 esac
 
@@ -114,6 +116,179 @@ if [ "$verb" = "start" ]; then
         exit 5
     fi
     printf '%s\n' "$round"
+    exit 0
+fi
+
+# promote (HIMMEL-2911): the /pr-check flow writes verdict=agreed as a leg-agrees
+# intermediate (write-verdicts.sh + step 4.5's ledger-append.sh amend) and
+# nothing ever promotes it to a terminal verdict — until now it was only ever
+# hand-amended to `fixed`. Given a CLEAN round at --head (the caller asserts
+# this — promote does not itself re-check the panel, same posture as `defer`
+# not re-running it), every `finding` row on --branch whose LATEST amend
+# (joined on target_head + finding_id + artifact + perspective — NOT branch,
+# since pre-HIMMEL-2911 rows can carry branch:"") is `agreed` is promoted to
+# `fixed` UNLESS it is re-raised at --head: another finding row on the same
+# branch, at --head, sharing the same stored `fingerprint` (ledger-append.sh
+# already computes this at write time — promote reads it, never recomputes
+# it). A row's own identity (head, finding_id, artifact, perspective) is
+# excluded from its own re-raise check, so a finding raised and agreed AT
+# --head itself (never re-raised anywhere else) is promoted too — the
+# acceptance bar is "no agreed row survives a clean round", not merely "no
+# agreed row from an earlier head survives". Terminal rows (fixed/disproved/
+# deferred) are left untouched; conflict/unaddressed were never agreed and are
+# only WARNed. A finding whose stored fingerprint is empty (pre-fingerprint
+# row, or no --text was ever supplied) cannot be safely checked for re-raise,
+# so it is conservatively left agreed (counted as still-open) rather than
+# guessed at. Idempotent: a second run sees the fixed amend via the same
+# effective-state merge and skip-terminals it, writing nothing.
+# Exit 0 = nothing left agreed; exit 3 = one or more rows are still-open (the
+# caller's round was not actually clean for that finding); exit 1 = a
+# malformed ledger row or a ledger write failure.
+if [ "$verb" = "promote" ]; then
+    if ! full_head="$(git rev-parse --verify --quiet "$head_sha^{commit}" 2>/dev/null)" || [ -z "$full_head" ]; then
+        echo "review-round: --head $head_sha does not resolve to a commit" >&2
+        exit 2
+    fi
+    ledger="$git_dir/cr-critic-scores.jsonl"
+    if [ ! -f "$ledger" ]; then
+        echo "review-round: CR ledger is missing at $ledger" >&2
+        exit 5
+    fi
+    decisions_tmp="$(mktemp -t cr-promote-decisions.XXXXXX)" || { echo "review-round: cannot create scratch state" >&2; exit 1; }
+    analysis="$(FULL_HEAD="$full_head" LEDGER="$ledger" BRANCH="$branch" DECISIONS_FILE="$decisions_tmp" node -e '
+const fs = require("fs"), cp = require("child_process"), e = process.env;
+const lines = fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean);
+const SEP = String.fromCharCode(31);
+let malformed = 0;
+const rows = [];
+for (const line of lines) {
+  let o;
+  try { o = JSON.parse(line); } catch { malformed++; continue; }
+  rows.push(o);
+}
+if (malformed !== 0) {
+  process.stdout.write(JSON.stringify({malformed}));
+  process.exit(0);
+}
+const resolveCache = new Map();
+function resolvesToHead(value) {
+  const h = String(value || "");
+  if (h === e.FULL_HEAD) return true;
+  if (!/^[0-9a-f]{7,64}$/i.test(h)) return false;
+  if (!resolveCache.has(h)) {
+    let resolved = "";
+    try {
+      resolved = cp.execFileSync("git", ["rev-parse", "--verify", "--quiet", h + "^{commit}"],
+        {encoding: "utf8", stdio: ["ignore", "pipe", "ignore"]}).trim();
+    } catch { resolved = ""; }
+    resolveCache.set(h, resolved);
+  }
+  return resolveCache.get(h) === e.FULL_HEAD;
+}
+// Merge every amend.set for a (target_head, finding_id, artifact, perspective)
+// key in ledger (chronological) order — a later amend field wins, a field a
+// later amend never touched keeps its earlier value. Same shape as
+// ledger-append.shs own amendsByKey/effective().
+const amendsByKey = new Map();
+for (const o of rows) {
+  if (o.kind !== "amend" || !o.set || typeof o.set !== "object") continue;
+  const k = [o.target_head, o.finding_id, o.artifact || "diff", o.perspective || "off"].join(SEP);
+  amendsByKey.set(k, Object.assign({}, amendsByKey.get(k) || {}, o.set));
+}
+const findingRows = rows.filter((o) => o.kind === "finding" && o.branch === e.BRANCH);
+const atHead = findingRows.filter((o) => resolvesToHead(o.head));
+const fpAtHead = new Map();
+for (const o of atHead) {
+  if (!o.fingerprint) continue;
+  const idKey = [o.head, o.finding_id, o.artifact || "diff", o.perspective || "off"].join(SEP);
+  if (!fpAtHead.has(o.fingerprint)) fpAtHead.set(o.fingerprint, new Set());
+  fpAtHead.get(o.fingerprint).add(idKey);
+}
+const outLines = [];
+for (const row of findingRows) {
+  const idKey = [row.head, row.finding_id, row.artifact || "diff", row.perspective || "off"].join(SEP);
+  const effective = Object.assign({}, row, amendsByKey.get(idKey) || {});
+  const verdict = String(effective.verdict || "").trim();
+  let action;
+  if (verdict === "fixed" || verdict === "disproved" || verdict === "deferred") action = "skip-terminal";
+  else if (verdict === "conflict" || verdict === "unaddressed") action = "warn-unadjudicated";
+  else if (verdict !== "agreed") continue;
+  else {
+    const fp = effective.fingerprint || "";
+    const present = fp ? fpAtHead.get(fp) : null;
+    const reraised = !fp || (present && [...present].some((k) => k !== idKey));
+    action = reraised ? "still-open" : "promote";
+  }
+  outLines.push(JSON.stringify({
+    action, id: row.finding_id, head: row.head, branch: row.branch,
+    artifact: row.artifact || "diff", perspective: row.perspective || "off", verdict,
+  }));
+}
+fs.writeFileSync(e.DECISIONS_FILE, outLines.length ? outLines.join("\n") + "\n" : "");
+process.stdout.write(JSON.stringify({malformed: 0}));
+' 2>/dev/null)"
+    node_rc=$?
+    malformed="$(printf '%s' "$analysis" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(String(JSON.parse(s).malformed)))' 2>/dev/null)" || malformed=""
+    if [ "$node_rc" -ne 0 ] || [ -z "$malformed" ]; then
+        rm -f "$decisions_tmp"
+        echo "review-round: could not evaluate the ledger for promotion" >&2
+        exit 1
+    fi
+    if [ "$malformed" -ne 0 ]; then
+        rm -f "$decisions_tmp"
+        echo "review-round: malformed CR ledger row(s) — refusing automatic promotion" >&2
+        exit 1
+    fi
+    head8="$(printf '%s' "$full_head" | cut -c1-8)"
+    promoted=0 still_open=0 skip_terminal=0 warn_count=0 write_fail=0
+    while IFS= read -r decision || [ -n "$decision" ]; do
+        [ -n "$decision" ] || continue
+        action="$(printf '%s' "$decision" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).action))' 2>/dev/null)" || action=""
+        id="$(printf '%s' "$decision" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).id))' 2>/dev/null)" || id=""
+        row_head="$(printf '%s' "$decision" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).head))' 2>/dev/null)" || row_head=""
+        row_branch="$(printf '%s' "$decision" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).branch))' 2>/dev/null)" || row_branch=""
+        row_artifact="$(printf '%s' "$decision" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).artifact))' 2>/dev/null)" || row_artifact=""
+        row_perspective="$(printf '%s' "$decision" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).perspective))' 2>/dev/null)" || row_perspective=""
+        row_verdict="$(printf '%s' "$decision" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).verdict))' 2>/dev/null)" || row_verdict=""
+        if [ -z "$action" ] || [ -z "$id" ] || [ -z "$row_head" ]; then
+            write_fail=1
+            break
+        fi
+        row_head8="$(printf '%s' "$row_head" | cut -c1-8)"
+        case "$action" in
+            promote)
+                if ! bash "$SCRIPT_DIR/ledger-append.sh" amend \
+                    --branch "$row_branch" --head "$row_head" --id "$id" \
+                    --artifact "$row_artifact" --perspective "$row_perspective" \
+                    --set verdict=fixed \
+                    --reason "Promoted from agreed: no re-raise at clean round head $head8 (HIMMEL-2911)"; then
+                    write_fail=1
+                    break
+                fi
+                echo "promoted ${id}@${row_head8}"
+                promoted=$((promoted + 1))
+                ;;
+            still-open)
+                echo "still-open ${id}@${row_head8}"
+                still_open=$((still_open + 1))
+                ;;
+            skip-terminal)
+                echo "skip-terminal ${id}@${row_head8} (verdict=${row_verdict})"
+                skip_terminal=$((skip_terminal + 1))
+                ;;
+            warn-unadjudicated)
+                echo "WARN unadjudicated ${id}@${row_head8} (verdict=${row_verdict})"
+                warn_count=$((warn_count + 1))
+                ;;
+        esac
+    done < "$decisions_tmp"
+    rm -f "$decisions_tmp"
+    if [ "$write_fail" -ne 0 ]; then
+        echo "review-round: ledger write failed during promotion" >&2
+        exit 1
+    fi
+    echo "review-round promote: $promoted promoted, $still_open still-open, $skip_terminal skip-terminal, $warn_count warn (head $head8)"
+    [ "$still_open" -eq 0 ] || exit 3
     exit 0
 fi
 
