@@ -99,8 +99,19 @@ set -e
   || fail "case a: --scope project inside the himmel clone should exit non-zero (got rc=$rcA): $outA"
 grepq "$outA" 'not valid inside the himmel checkout' \
   || fail "case a: the refusal must say project scope is not valid inside the himmel checkout: $outA"
-grepq "$outA" -F "$cloneA" \
-  || fail "case a: the refusal must NAME the checkout it refused ($cloneA): $outA"
+# The refusal names projectTargetDir() -- node's own path.resolve(cwd), which
+# under Git Bash on Windows is a NATIVE Windows path (C:\Users\...\a-clone)
+# while $cloneA is the POSIX form. Comparing the full paths would fail on the
+# platform this suite explicitly supports (CR round 1, [codex-2]), and no
+# single normalisation matches both node's backslashes and cygpath -m's forward
+# slashes. Assert on the two separator-free segments instead: they are
+# byte-identical in either path form, and the mktemp suffix makes the pair
+# specific to THIS run's fixture rather than any generic message.
+work_leaf=$(basename "$work")
+grepq "$outA" -F "$work_leaf" \
+  || fail "case a: the refusal must NAME the checkout it refused (expected the fixture root $work_leaf in the path): $outA"
+grepq "$outA" -F 'a-clone' \
+  || fail "case a: the refusal must NAME the checkout it refused (expected the a-clone leaf in the path): $outA"
 grepq "$outA" -F 'scripts/setup.sh' \
   || fail "case a: the remedy must name scripts/setup.sh (the contributor primitive): $outA"
 grepq "$outA" -F 'install --scope user' \
@@ -141,6 +152,30 @@ set -e
 grepq "$outC" 'not valid inside the himmel checkout' \
   && fail "case c: the refusal is project-scope only; it must not fire on --scope user: $outC"
 echo "ok: case c — the refusal is project-scope only (--scope user inside the clone still installs)"
+
+# ── case c2: a SIBLING worktree of the clone is caught too ─────────────────
+# CR round 1 [codex-3]: himmel keeps its own worktrees under .claude/worktrees/,
+# so the path tests cover them — but `git worktree add ../sibling` puts one
+# OUTSIDE repoRoot() while its .claude/settings.json is the very same tracked
+# file. The git-common-dir test is what closes that; this case is its control.
+if command -v git >/dev/null 2>&1; then
+  cloneC2="$work/c2-clone"; make_clone_fixture "$cloneC2"
+  git -C "$cloneC2" init -q
+  git -C "$cloneC2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  sibC2="$work/c2-sibling-worktree"
+  git -C "$cloneC2" worktree add -q -b c2-branch "$sibC2" >/dev/null 2>&1
+  homeC2="$work/c2-home"; mkdir -p "$homeC2"
+  set +e
+  outC2=$(run_install "$sibC2" "$homeC2" "$cloneC2" --scope project); rcC2=$?
+  set -e
+  [ "$rcC2" -ne 0 ] \
+    || fail "case c2: --scope project in a SIBLING worktree of the clone should be refused — its .claude/settings.json is the same tracked file (got rc=$rcC2): $outC2"
+  grepq "$outC2" 'not valid inside the himmel checkout' \
+    || fail "case c2: the sibling worktree should hit the himmel-checkout refusal: $outC2"
+  echo "ok: case c2 — a sibling worktree (outside repoRoot) is caught via the shared git common dir"
+else
+  echo "ok: case c2 skipped (git not on PATH)"
+fi
 
 # ── cases d/e: contributor membership ──────────────────────────────────────
 # Two items, identical but for contributorScopes, both scopes:["project"]:

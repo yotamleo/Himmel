@@ -25,6 +25,9 @@
 # The PreToolUse block MERGES; it is never regenerated (HIMMEL-2892). himmel
 # owns exactly ONE field of an entry it installed -- that entry's `command`
 # string, which is what makes the moved-clone/backslash repair above possible.
+# A hook registered under two DISTINCT matchers keeps BOTH registrations (dedup
+# is per matcher, not per hook -- CR round 1, [codex-1]); only a repeat under a
+# matcher that already carries it is dropped as a double-wire.
 # Everything else belongs to the adopter and survives byte-for-byte: the
 # stanza's `matcher` (never collapsed to the canonical string), the stanza's
 # POSITION in the array, the entry's `timeout` and any other key it carries,
@@ -41,27 +44,37 @@ set -euo pipefail
 
 # The merge program, shared verbatim with the PowerShell twin
 # (wire-pretooluse-hooks.ps1) so the two can never drift. For each spec, walk
-# the PreToolUse array in order: the FIRST entry whose command matches the
-# spec's `pat` has its `command` rewritten IN PLACE (its object, its stanza and
-# their key order untouched); any LATER duplicate is dropped (dedup), and a
-# stanza left with no entries goes with it. If no entry matched at all, the
-# spec's canonical stanza is appended.
-# shellcheck disable=SC2016  # a jq program: $spec/$st/$h/$r/$acc/$specs are jq bindings, not shell expansions
+# the PreToolUse array in order and rewrite the `command` of every entry that
+# matches the spec's `pat` IN PLACE (its object, its stanza and their key order
+# untouched). If no entry matched at all, the spec's canonical stanza is
+# appended.
+#
+# Dedup is per (spec, MATCHER), not per spec (HIMMEL-2892 CR round 1,
+# [codex-1]). A hook registered under two DISTINCT matchers -- e.g.
+# block-edit-on-main under a bare `Edit` stanza AND a bare `Write` one -- is two
+# genuinely different registrations, and keeping only the first silently drops
+# the second's tool coverage (the pre-merge code never had this failure mode: it
+# deleted both and appended one canonical stanza covering every tool). So a
+# matcher is recorded the first time it carries the spec, and only a REPEAT
+# under a matcher already carrying it is dropped as a true double-wire. A stanza
+# left with no entries goes with them.
+# shellcheck disable=SC2016  # a jq program: $spec/$st/$h/$r/$acc/$m/$specs are jq bindings, not shell expansions
 WIRE_PRETOOLUSE_MERGE_JQ='
   def wire($spec):
-    (reduce .[] as $st ({seen: false, out: []};
-       (reduce ($st.hooks // [])[] as $h ({seen: .seen, hooks: []};
-          if (($h.command // "") | test($spec.pat))
-          then (if .seen
-                then .
-                else {seen: true, hooks: (.hooks + [$h | .command = $spec.cmd])}
-                end)
-          else {seen: .seen, hooks: (.hooks + [$h])}
-          end)) as $r
+    (reduce .[] as $st ({seen: [], out: []};
+       ($st.matcher) as $m
+       | (reduce ($st.hooks // [])[] as $h ({seen: .seen, hooks: []};
+            if (($h.command // "") | test($spec.pat))
+            then (if (.seen | any(. == $m))
+                  then .
+                  else {seen: (.seen + [$m]), hooks: (.hooks + [$h | .command = $spec.cmd])}
+                  end)
+            else {seen: .seen, hooks: (.hooks + [$h])}
+            end)) as $r
        | {seen: $r.seen,
           out: (.out + (if ($r.hooks | length) > 0 then [$st | .hooks = $r.hooks] else [] end))}
      )) as $acc
-    | if $acc.seen then $acc.out else ($acc.out + [$spec.stanza]) end;
+    | if ($acc.seen | length) > 0 then $acc.out else ($acc.out + [$spec.stanza]) end;
   .hooks = (.hooks // {})
   | .hooks.PreToolUse = (reduce $specs[] as $spec ((.hooks.PreToolUse // []); wire($spec)))
 '

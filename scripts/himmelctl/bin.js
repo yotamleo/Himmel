@@ -2273,20 +2273,42 @@ function realpathOrSelf(p) {
   }
 }
 
-// HIMMEL-2892: is the project-scope target this himmel clone (or a directory
-// inside it, which includes its linked worktrees — himmel keeps those under
-// .claude/worktrees/)? The identity marker is the clone THIS himmelctl runs
-// from (repoRoot(), honoring HIMMELCTL_REPO_ROOT), not a content heuristic:
-// an adopter repo that merely VENDORS himmel's portable core carries copies
-// of scripts/hooks/* and scripts/guardrails/lib.sh and must NOT be caught,
-// while the one tree whose .claude/settings.json is literally the source this
-// installer generates the hook block from is, by construction, exactly this
-// one.
+// git's COMMON dir for `dir` — the one identity a checkout shares with every
+// worktree linked to it. Absolute, realpath'd; null when `dir` is not a git
+// work tree, or when git is absent/stubbed and prints nothing (a hermetic
+// suite's `git` stub). Never throws.
+function gitCommonDir(dir) {
+  const r = spawnSync('git', ['-C', dir, 'rev-parse', '--git-common-dir'], { encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  const out = (r.stdout || '').trim();
+  if (!out) return null;
+  return realpathOrSelf(path.resolve(dir, out));
+}
+
+// HIMMEL-2892: is the project-scope target this himmel clone, or a worktree of
+// it? The identity marker is the clone THIS himmelctl runs from (repoRoot(),
+// honoring HIMMELCTL_REPO_ROOT), not a content heuristic: an adopter repo that
+// merely VENDORS himmel's portable core carries copies of scripts/hooks/* and
+// scripts/guardrails/lib.sh and must NOT be caught, while the one tree whose
+// .claude/settings.json is literally the source this installer generates the
+// hook block from is, by construction, exactly this one.
+//
+// Three tests, cheapest first. The path tests cover the clone itself and any
+// directory beneath it — which is where himmel keeps its own worktrees
+// (.claude/worktrees/). The git-common-dir test covers a worktree created
+// ELSEWHERE (`git worktree add ../sibling`): it is not under repoRoot() but its
+// .claude/settings.json is the very same tracked file (CR round 1, [codex-3]).
+// It is the LAST test and requires BOTH sides to resolve: a stubbed or absent
+// git yields null for both, and two nulls must never compare equal into a false
+// refusal.
 function projectTargetIsHimmelCheckout() {
   const target = realpathOrSelf(projectTargetDir());
   const clone = realpathOrSelf(repoRoot());
   if (target === clone) return true;
-  return target.startsWith(clone + path.sep);
+  if (target.startsWith(clone + path.sep)) return true;
+  const targetGit = gitCommonDir(target);
+  const cloneGit = gitCommonDir(clone);
+  return Boolean(targetGit) && Boolean(cloneGit) && targetGit === cloneGit;
 }
 
 // Shell-quote one arg for DISPLAY only (the spawn below uses argv directly,

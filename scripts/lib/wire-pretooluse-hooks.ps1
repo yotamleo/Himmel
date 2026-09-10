@@ -13,7 +13,8 @@
 # The PreToolUse block MERGES; it is never regenerated (HIMMEL-2892). himmel
 # owns exactly one field of an entry it installed -- that entry's `command`.
 # The stanza's matcher, its position, the entry's timeout, and every foreign
-# stanza or co-located foreign entry survive byte-for-byte.
+# stanza or co-located foreign entry survive byte-for-byte. A hook registered
+# under two DISTINCT matchers keeps both registrations (dedup is per matcher).
 #
 # Dot-source to get the functions, or invoke directly:
 #   pwsh -File wire-pretooluse-hooks.ps1 -SettingsPath <path> -Prefix <prefix> [-DryRun]
@@ -100,26 +101,29 @@ function Set-PretooluseHooks {
         $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
         # Verbatim twin of WIRE_PRETOOLUSE_MERGE_JQ in wire-pretooluse-hooks.sh
-        # -- keep the two byte-identical. MERGE, never regenerate: the first
-        # entry matching a spec has its `command` rewritten in place (matcher,
-        # position, timeout and every foreign entry survive untouched), later
-        # duplicates are dropped, and a canonical stanza is appended only when
-        # nothing matched (HIMMEL-2892).
+        # -- keep the two byte-identical. MERGE, never regenerate: every entry
+        # matching a spec has its `command` rewritten in place (matcher,
+        # position, timeout and every foreign entry survive untouched), and a
+        # canonical stanza is appended only when nothing matched (HIMMEL-2892).
+        # Dedup is per (spec, MATCHER): a hook registered under two DISTINCT
+        # matchers keeps both registrations; only a repeat under a matcher
+        # already carrying it is dropped (CR round 1, [codex-1]).
         $filter = @'
   def wire($spec):
-    (reduce .[] as $st ({seen: false, out: []};
-       (reduce ($st.hooks // [])[] as $h ({seen: .seen, hooks: []};
-          if (($h.command // "") | test($spec.pat))
-          then (if .seen
-                then .
-                else {seen: true, hooks: (.hooks + [$h | .command = $spec.cmd])}
-                end)
-          else {seen: .seen, hooks: (.hooks + [$h])}
-          end)) as $r
+    (reduce .[] as $st ({seen: [], out: []};
+       ($st.matcher) as $m
+       | (reduce ($st.hooks // [])[] as $h ({seen: .seen, hooks: []};
+            if (($h.command // "") | test($spec.pat))
+            then (if (.seen | any(. == $m))
+                  then .
+                  else {seen: (.seen + [$m]), hooks: (.hooks + [$h | .command = $spec.cmd])}
+                  end)
+            else {seen: .seen, hooks: (.hooks + [$h])}
+            end)) as $r
        | {seen: $r.seen,
           out: (.out + (if ($r.hooks | length) > 0 then [$st | .hooks = $r.hooks] else [] end))}
      )) as $acc
-    | if $acc.seen then $acc.out else ($acc.out + [$spec.stanza]) end;
+    | if ($acc.seen | length) > 0 then $acc.out else ($acc.out + [$spec.stanza]) end;
   .hooks = (.hooks // {})
   | .hooks.PreToolUse = (reduce $specs[] as $spec ((.hooks.PreToolUse // []); wire($spec)))
 '@
