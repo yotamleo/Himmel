@@ -289,15 +289,39 @@ print(candidate.strftime("%H:%M"))
 PY
 }
 
+# HIMMEL-2877: these three fixtures used to be built on datetime.now() (i.e.
+# "today"). On a day the local zone falls into a DST spring-forward gap,
+# local wall-clock 00:05 (or the other two clock times) can be a NONEXISTENT
+# or ambiguous local time, and naive datetime.timestamp()'s handling of that
+# is platform/tzdata-dependent - it can silently round-trip to a different
+# HH:MM than the one asked for, drifting these assertions on transition
+# days only. None of these three cases care what day it is (lg4_wrap_hhmm
+# only reasons about hour/minute and same-day-vs-crossed-date), so pin them
+# to a fixed mid-year date instead: no tzdata table places a DST transition
+# in mid-June, so this never lands in a gap or fold, on any date the suite
+# actually runs on.
 read -r _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch < <(python3 -c '
 import datetime
-now = datetime.datetime.now()
+now = datetime.datetime(datetime.date.today().year, 6, 15)
 print(
     int(now.replace(hour=0, minute=5, second=0, microsecond=0).timestamp()),
     int(now.replace(hour=12, minute=34, second=0, microsecond=0).timestamp()),
     int(now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()),
 )
 ')
+# HIMMEL-2877: regression guard for the fixture itself, independent of
+# lg4_wrap_hhmm - round-trip the epoch back through localtime and confirm
+# it still reads 00:05. A future edit that reintroduces a "today"-based
+# construction would only drift on an actual DST gap/fold day; this catches
+# that class outright instead of leaving it to intermittently fail the
+# assertions below for a reason nobody would trace back to the fixture.
+_lg4_0005_roundtrip=$(python3 -c "import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime('%H:%M'))" "$_lg4_0005_epoch")
+if [ "$_lg4_0005_roundtrip" = "00:05" ]; then
+    echo "PASS LG4 fixture epoch round-trips to the intended 00:05 (no DST gap/fold drift)"
+else
+    echo "FAIL LG4 fixture epoch round-trips to $_lg4_0005_roundtrip, not 00:05 -- fixture date may sit inside a DST gap/fold"
+    FAILED=$((FAILED + 1))
+fi
 _lg4_0005_hhmm=$(lg4_wrap_hhmm "$_lg4_0005_epoch")
 if [ "$_lg4_0005_hhmm" = "00:00" ]; then
     echo "PASS LG4 fixture local 00:05 stays inside today (00:00)"
@@ -332,19 +356,33 @@ _lg4_midnight_reason=$(lg4_wrap_hhmm "$_lg4_0000_epoch" 2>&1)
 _lg4_midnight_rc=$?
 assert_rc "LG4 fixture exact midnight signals skip" 10 "$_lg4_midnight_rc"
 assert_contains "LG4 fixture exact midnight names the skip reason" "exact local midnight has no earlier same-day HH:MM" "$_lg4_midnight_reason"
-unset _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch _lg4_0005_hhmm _lg4_0005_rolled _lg4_1234_hhmm _lg4_midnight_reason _lg4_midnight_rc
+unset _lg4_0005_epoch _lg4_1234_epoch _lg4_0000_epoch _lg4_0005_roundtrip _lg4_0005_hhmm _lg4_0005_rolled _lg4_1234_hhmm _lg4_midnight_reason _lg4_midnight_rc
 
-LG4_SKIP_REASON=
-WRAP_HHMM=$(lg4_wrap_hhmm "$(python3 -c 'import time; print(int(time.time()))')" 2>"$TMP/lg4-wrap-reason")
-_lg4_wrap_rc=$?
-if [ "$_lg4_wrap_rc" -eq 10 ]; then
-    LG4_SKIP_REASON=$(<"$TMP/lg4-wrap-reason")
-elif [ "$_lg4_wrap_rc" -ne 0 ]; then
-    echo "FAIL LG4 fixture helper failed unexpectedly (rc=$_lg4_wrap_rc)"
-    FAILED=$((FAILED + 1))
-    LG4_SKIP_REASON="fixture helper failed unexpectedly"
-fi
-unset _lg4_wrap_rc
+# HIMMEL-2877 (E1): WRAP_HHMM used to be captured ONCE here, before LG1-LG3
+# run below - each of which shells out to python3 and arm-resume, taking
+# real wall-clock seconds under load. lg4_wrap_hhmm's "stays inside today"
+# vs. "rolls to tomorrow" clamp is a snapshot relative to the wall-clock AT
+# CAPTURE time, but the case needs it to still hold relative to arm-resume's
+# OWN `date +%s` read at CONSUMPTION time. A capture near a midnight
+# boundary (e.g. 00:03, clamped to "00:00") that is only actually consumed
+# minutes later (after LG1-3) is consumed against a `now` that has moved
+# forward - "00:00 today" can go from ~1430 min in the past (refused) to
+# well under the 60-min silent threshold, flipping LG4's expected rc=9 into
+# a spurious rc=0. This is the exact HIMMEL-1879/1756 class near_hhmm() was
+# already turned into a function to fix, a few lines up - recompute
+# immediately before use instead of capturing early.
+compute_wrap_hhmm() {
+    LG4_SKIP_REASON=
+    WRAP_HHMM=$(lg4_wrap_hhmm "$(python3 -c 'import time; print(int(time.time()))')" 2>"$TMP/lg4-wrap-reason")
+    local _rc=$?
+    if [ "$_rc" -eq 10 ]; then
+        LG4_SKIP_REASON=$(<"$TMP/lg4-wrap-reason")
+    elif [ "$_rc" -ne 0 ]; then
+        echo "FAIL LG4 fixture helper failed unexpectedly (rc=$_rc)"
+        FAILED=$((FAILED + 1))
+        LG4_SKIP_REASON="fixture helper failed unexpectedly"
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # LG1: gap > 60 min, no --long-gap -> REFUSED (rc 9) + the loud WARN.
@@ -385,6 +423,7 @@ assert_not_contains "LG3 no rc-9 refusal text under --long-gap" "rc=9" "$out"
 #      (no +1 day) would compute a ~-10 min gap -> <=60 -> NOT refused, failing
 #      this case. This is the "550 min, not negative" correctness guard.
 # ---------------------------------------------------------------------------
+compute_wrap_hhmm
 if [ -n "$LG4_SKIP_REASON" ]; then
     echo "SKIP LG4 — $LG4_SKIP_REASON"
 else

@@ -426,13 +426,38 @@ d14="$tmp/c14"; mk_stub "$d14" 1  # konsole stub unused either way; the real ass
 mkdir -p "$d14/locks/HIMMEL-donedeal.lock"
 date +%s > "$d14/locks/HIMMEL-donedeal.lock/acquired"
 _fake_claude_proc "$d14" "HIMMEL-donedeal"
-cat > "$d14/pgrep" <<'PGREP_EOF'
+# HIMMEL-2877 (panel round 1, codex-1): a SEPARATE background releaser that
+# reacts to a sync file still races the very check it exists to
+# synchronize with - whichever session_confirmed() call the releaser
+# reacted to necessarily observed "no match" (that observation is what
+# triggered the reaction, in a different process), so a claim_lock()
+# attempted in that SAME iteration can still win before the releaser's own
+# writes land. No fixed delay, sync file or write-order can close that:
+# the releaser is fundamentally a second process reacting after the fact.
+#
+# The only way to make the flip and the lock-release indivisible is to do
+# both from the SAME statement in the SAME process as the check itself -
+# so the pgrep stub counts its own invocations and, once a chosen call
+# arrives, releases the lock and reports the match synchronously, before
+# returning. Nothing else can run in between because there is no "in
+# between": it is one shell script, no backgrounding. Calls 1-2 are the
+# pre-loop dedup check (line ~575) and the retry loop's first genuine
+# no-match/claim-fails iteration (lock still real); call 3 is the retry
+# loop's second iteration, where THIS SAME invocation removes the lock and
+# reports the match - the loop's if/exit-0 branch returns immediately on a
+# match, so claim_lock() is never even reached on that iteration.
+cat > "$d14/pgrep" <<PGREP_EOF
 #!/usr/bin/env bash
-if [ -e "$(dirname "$0")/session-now-running" ]; then echo 9001; exit 0; fi
+n=\$(( \$(cat "$d14/pgrep-calls" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "\$n" > "$d14/pgrep-calls"
+if [ "\$n" -ge 3 ]; then
+    rm -rf "$d14/locks/HIMMEL-donedeal.lock"
+    echo 9001
+    exit 0
+fi
 exit 1
 PGREP_EOF
 chmod 755 "$d14/pgrep"
-( sleep 0.3; rm -rf "$d14/locks/HIMMEL-donedeal.lock"; : > "$d14/session-now-running" ) &
 rc14=0
 KONSOLE_CMD="$d14/konsole" PGREP_CMD="$d14/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d14/locks" HEADED_ARM_PROC="$d14/proc" \
   bash "$SCRIPT" "HIMMEL-donedeal" "doc14.md" "$d14/signal-never" "$PAST" "$d14/log" >/dev/null 2>&1 || rc14=$?
@@ -441,7 +466,7 @@ settle
 if [ -s "$d14/record" ]; then echo "FAIL - retry backs off on a genuine dedup: konsole must NOT be invoked"; fails=$((fails+1))
 else echo "ok - retry backs off on a genuine dedup: konsole not invoked"; fi
 log14="$(cat "$d14/log" 2>/dev/null || true)"
-contains "retry backs off on a genuine dedup: log says already running" "$log14" "already running"
+contains "retry backs off on a genuine dedup: log names the claim-retry loop's dedup line" "$log14" "a session named HIMMEL-donedeal is already running - not launching"
 
 # --- 15 (r2-codex-4). the suite's OWN mktemp failure must abort loudly,
 # never silently continue with an empty $tmp --------------------------------
