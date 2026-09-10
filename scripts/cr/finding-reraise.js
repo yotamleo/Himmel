@@ -63,15 +63,21 @@ for (const row of ledgerRows) {
       const key = dispositionKey(state);
       const previous = latest.get(key);
       const event = { ...state, _sourceKey: sourceKey };
+      // A row that carries the PREVIOUS event's disposition round did not
+      // adjudicate anything: it inherited that disposition as a re-raise.
+      const previousRound = previous && (previous.disposition_round || previous.round);
+      const inherited = Boolean(previous && validRound(state.disposition_round) &&
+        String(previousRound) === String(state.disposition_round));
       if (!event.disposition_severity) {
-        const previousRound = previous && (previous.disposition_round || previous.round);
-        if (previous && validRound(state.disposition_round) &&
-            String(previousRound) === String(state.disposition_round)) {
-          event.disposition_severity = previous.disposition_severity || previous.severity;
-        } else {
-          event.disposition_severity = state.severity;
-        }
+        event.disposition_severity = inherited
+          ? (previous.disposition_severity || previous.severity)
+          : state.severity;
       }
+      // HIMMEL-2901: remember WHICH adjudication this inherited from, so a
+      // later correction to that original row still reaches the ceiling it
+      // handed down. `previous._originKey` collapses a chain of re-raises onto
+      // the one row that was actually adjudicated.
+      if (inherited) event._originKey = previous._originKey || previous._sourceKey;
       latest.set(key, event);
     }
     continue;
@@ -124,11 +130,19 @@ for (const row of ledgerRows) {
        Object.prototype.hasOwnProperty.call(row.set, 'severity'))) {
     const key = dispositionKey(target);
     const current = latest.get(key);
-    if (current && current._sourceKey === targetKey) {
+    // HIMMEL-2901: the amended row is authoritative either because it IS the
+    // current event, or because the current event merely inherited its
+    // disposition from it. Any other row of the same fingerprint is a
+    // bystander and must not move the ceiling.
+    const isCurrent = Boolean(current && current._sourceKey === targetKey);
+    const isOrigin = Boolean(current && !isCurrent && current._originKey === targetKey);
+    if (isCurrent || isOrigin) {
       if (Object.prototype.hasOwnProperty.call(row.set, 'reason')) current.reason = target.reason;
       if (Object.prototype.hasOwnProperty.call(row.set, 'deferred_to')) current.deferred_to = target.deferred_to;
       if (Object.prototype.hasOwnProperty.call(row.set, 'severity')) {
-        current.severity = target.severity;
+        // The inherited row's own observed severity stays its own; only the
+        // DISPOSITION ceiling it carries forward is corrected.
+        if (isCurrent) current.severity = target.severity;
         current.disposition_severity = target.severity;
       }
     }

@@ -619,6 +619,78 @@ assert_has "$(cat "$tmp/ae6.out")" "RE-RAISE (first seen r3 · dispositioned r5 
 assert_eq "$(ledger_value adjudication-env "$head_ae6" disposition_round)" "5" \
     "ambient adjudication round reaches the durable row"
 
+# HIMMEL-2901 item 2: a severity correction to the ORIGINAL adjudication must
+# reach the inherited re-raise that now carries the ceiling. Without it, an
+# Important corrected to Suggestion keeps its Important ceiling forever and a
+# genuine later Important occurrence is wrongly suppressed.
+checkout_branch inherited-severity
+head_is3="$(advance_head inherited-severity-r3)"
+set_registry critic-a
+is_claim='Inherited ceiling claim [scripts/cr/inherit.sh:15]'
+run_panel 3 "$is_claim" imp "$tmp/is3.out" "$tmp/is3.err"
+assert_eq "$?" "0" "inherited-severity seed panel run succeeds"
+id_is3="$(finding_id_at inherited-severity "$head_is3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch inherited-severity --head "$head_is3" \
+        --id "$id_is3" --set verdict=disproved --reason 'Important claim disproved'
+) >/dev/null 2>"$tmp/is3-amend.err"
+assert_eq "$?" "0" "inherited-severity fixture accepts the Important disproof"
+head_is4="$(advance_head inherited-severity-r4)"
+run_panel 4 "$is_claim" imp "$tmp/is4.out" "$tmp/is4.err"
+assert_eq "$?" "0" "inherited-severity re-raise panel run succeeds"
+assert_has "$(cat "$tmp/is4.out")" "## Important Issues (0 found)" "the re-raise inherits the Important disproof"
+assert_eq "$(ledger_value inherited-severity "$head_is4" disposition_severity)" "imp" \
+    "the inherited row carries the Important ceiling"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch inherited-severity --head "$head_is3" \
+        --id "$id_is3" --set severity=sug --reason 'the original was over-rated; it is a Suggestion'
+) >/dev/null 2>"$tmp/is-severity-amend.err"
+assert_eq "$?" "0" "severity correction to the original adjudication writes"
+advance_head inherited-severity-r5 >/dev/null
+run_panel 5 "$is_claim" imp "$tmp/is5.out" "$tmp/is5.err"
+assert_eq "$?" "0" "corrected-ceiling panel run succeeds"
+assert_has "$(cat "$tmp/is5.out")" "## Important Issues (1 found)" \
+    "a severity correction to the original adjudication lowers the inherited ceiling"
+assert_lacks "$(cat "$tmp/is5.out")" "RE-RAISE (" \
+    "an Important above the corrected Suggestion ceiling requires renewed adjudication"
+
+# Negative control: an amend to a DIFFERENT row of the same fingerprint that is
+# not the origin of the active disposition must leave the ceiling alone.
+checkout_branch unrelated-severity
+head_us3="$(advance_head unrelated-severity-r3)"
+set_registry critic-a
+us_claim='Unrelated ceiling claim [scripts/cr/inherit.sh:60]'
+run_panel 3 "$us_claim" imp "$tmp/us3.out" "$tmp/us3.err"
+assert_eq "$?" "0" "unrelated-severity seed panel run succeeds"
+id_us3="$(finding_id_at unrelated-severity "$head_us3")"
+us_head_other="3333333333333333333333333333333333333333"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch unrelated-severity --head "$head_us3" \
+        --id "$id_us3" --set verdict=disproved --reason 'Important claim disproved'
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" finding --branch unrelated-severity --head "$us_head_other" \
+        --model critic-a --id unrelated-1 --severity imp --file scripts/cr/inherit.sh --line 60 \
+        --verdict '' --round 3 --text "- [unrelated-1]: $us_claim"
+) >/dev/null 2>"$tmp/us-seed.err"
+assert_eq "$?" "0" "unrelated-severity fixture seeds a same-fingerprint bystander row"
+advance_head unrelated-severity-r4 >/dev/null
+run_panel 4 "$us_claim" imp "$tmp/us4.out" "$tmp/us4.err"
+assert_eq "$?" "0" "unrelated-severity re-raise panel run succeeds"
+assert_has "$(cat "$tmp/us4.out")" "## Important Issues (0 found)" "the bystander does not disturb the inheritance"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch unrelated-severity --head "$us_head_other" \
+        --id unrelated-1 --set severity=sug --reason 'correct an unrelated row of the same claim'
+) >/dev/null 2>"$tmp/us-severity-amend.err"
+assert_eq "$?" "0" "bystander severity amendment writes"
+advance_head unrelated-severity-r5 >/dev/null
+run_panel 5 "$us_claim" imp "$tmp/us5.out" "$tmp/us5.err"
+assert_eq "$?" "0" "bystander-amend panel run succeeds"
+assert_has "$(cat "$tmp/us5.out")" "## Important Issues (0 found)" \
+    "amending a row that is not the origin leaves the inherited ceiling intact"
+
 # Sanity: every current panel run wrote one durable finding row; none was
 # silently dropped merely because it rendered in the already-dispositioned block.
 assert_eq "$(finding_count_at reraised "$head_r5")" "1" "disproved re-raise remains a durable current-head row"
