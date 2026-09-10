@@ -8,7 +8,7 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [0.4.26] — 2026-09-10
+## [0.4.27] — 2026-09-10
 
 ### Fixed
 - **The HIMMEL-2903 snapshot now fails closed on load, and on a failed digest
@@ -23,7 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   successfully and then dropped without warning by the stamp writer,
   producing an incomplete map under a clean exit code. It now validates the
   digest and counts the failure, so the partial-upgrade guard refuses the
-  stamp.
+  stamp. The loader also tests `files` key *presence* before reading its
+  value, so an explicit `"files": null` is rejected as unusable rather than
+  conflated with the legitimate "no `files` key at all" legacy case.
 
 ## [0.4.25] — 2026-09-10
 

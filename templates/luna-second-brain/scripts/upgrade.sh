@@ -237,11 +237,11 @@ except Exception:
     sys.exit(1)
 if not isinstance(d, dict):
     sys.exit(1)
-files = d.get("files")
-if files is None:
+if "files" not in d:
     sys.exit(0)  # legacy stamp, no `files` key at all — fall back to git.
+files = d.get("files")
 if not isinstance(files, dict):
-    sys.exit(1)
+    sys.exit(1)  # present but unusable (e.g. explicit `"files": null`) — an error, not legacy.
 for rel in sorted(files):
     sha = files[rel]
     # A rel with a tab/newline in it would corrupt the row format; such a path
