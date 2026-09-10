@@ -205,6 +205,53 @@ else
     VAULT_VERSION="0.0.0"
 fi
 
+# ---------------------------------------------------------------------------
+# Per-file content snapshot (HIMMEL-2903). The stamp carries a
+# `files: {"<rel>": "sha256:<hex>"}` map of what the template last wrote for
+# every "overwrite"-class file. That is a baseline the VAULT's own git history
+# cannot poison, so it is preferred over the STAMP_COMMIT baseline below.
+# Read once, into newline-separated "<rel><TAB><sha256:hex>" rows (bash 3.2 —
+# no associative arrays). A stamp without a `files` map (any vault last
+# upgraded before this version) yields an empty map and the git baseline
+# carries, exactly as before; the first upgrade under this version writes one.
+SNAPSHOT_MAP=""
+if [ -f "$STAMP" ]; then
+    SNAPSHOT_MAP="$("$PYTHON" - "$STAMP" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict):
+    sys.exit(0)
+files = d.get("files")
+if not isinstance(files, dict):
+    sys.exit(0)
+for rel in sorted(files):
+    sha = files[rel]
+    # A rel with a tab/newline in it would corrupt the row format; such a path
+    # cannot come from this script's own writer, so skip rather than trust it.
+    if isinstance(sha, str) and isinstance(rel, str) and not (set("\t\n\r") & set(rel)):
+        print("%s\t%s" % (rel, sha))
+PY
+)"
+fi
+
+# snapshot_sha <rel>: echo the recorded "sha256:<hex>" for <rel>, or nothing.
+snapshot_sha() {
+    local want="$1" rel sha
+    [ -n "$SNAPSHOT_MAP" ] || return 1
+    while IFS="$(printf '\t')" read -r rel sha; do
+        if [ "$rel" = "$want" ] && [ -n "$sha" ]; then
+            printf '%s' "$sha"
+            return 0
+        fi
+    done <<EOF
+$SNAPSHOT_MAP
+EOF
+    return 1
+}
+
 # semver-ish compare: return 0 iff $1 < $2.
 ver_lt() {
     [ "$1" = "$2" ] && return 1
@@ -246,35 +293,92 @@ fi
 # upgraded via a git-tracked flow), has no baseline to compare against, so
 # falls back to the pre-existing overwrite behavior.
 #
-# Known limitation, tracked as HIMMEL-2903 (not fixed here — flagged by CR,
-# out of scope for a minimal refuse-or-print fix): if a local edit to a
-# template-owned file is committed in the SAME commit that also advances the
-# stamp (e.g. a batching autosync), that commit becomes STAMP_COMMIT itself,
-# so the baseline it reads back already contains the edit. A later run then
-# sees no divergence from that (already-edited) baseline and would silently
-# accept the template's write. Detecting this needs a baseline independent
-# of the vault's own commit history (e.g. a per-file content snapshot
-# alongside .vault-template.json), which is a larger change than this
-# ticket scopes.
+# The git baseline is now the FALLBACK, not the primary one (HIMMEL-2903): it
+# is poisonable. If a local edit to a template-owned file is committed in the
+# SAME commit that also advances the stamp (e.g. a batching autosync — what the
+# luna github-sync plugin does every 10 min), that commit becomes STAMP_COMMIT
+# itself, so the baseline it reads back already contains the edit and a later
+# run sees no divergence. The per-file content snapshot in the stamp
+# (SNAPSHOT_MAP above) is independent of the vault's commit history and is
+# consulted first; the git baseline only answers for files the snapshot has no
+# entry for (a vault whose last upgrade predates the snapshot).
 STAMP_COMMIT=""
+# BASELINE_ERROR: `git log` FAILED operationally (shallow clone, corrupt index,
+# permission error) — distinct from "git ran and found no such commit" (rc 0,
+# empty stdout). Treating the two alike is fail-OPEN: an empty STAMP_COMMIT
+# means "no baseline" means the pre-HIMMEL-2886 silent overwrite, which is the
+# exact failure this detection exists to close. has_local_edit fails CLOSED on
+# a cat-file/show error already; this makes the `git log` step consistent.
+BASELINE_ERROR=0
 # `git rev-parse --is-inside-work-tree`, not `[ -d "$VAULT_DIR/.git" ]`: a
 # worktree or a submodule has a `.git` FILE (a `gitdir: <path>` pointer), not
 # a directory, so the directory-only check silently fell back to the
 # pre-existing overwrite behavior for exactly those vaults.
 if git -C "$VAULT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    STAMP_COMMIT="$(git -C "$VAULT_DIR" log -1 --format=%H -- .vault-template.json 2>/dev/null)"
+    # HEAD gate first: `git log` also exits 128 in a repo with NO commits yet
+    # ("does not have any commits yet"). That is a legitimately absent
+    # baseline, not an operational failure — without this gate the first
+    # upgrade of a freshly `git init`-ed vault would withhold every file.
+    if ! git -C "$VAULT_DIR" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        : # no commits yet — no baseline, same as a vault with no repo at all
+    elif ! STAMP_COMMIT="$(git -C "$VAULT_DIR" log -1 --format=%H -- .vault-template.json 2>/dev/null)"; then
+        STAMP_COMMIT=""
+        BASELINE_ERROR=1
+    fi
 fi
 
-# has_local_edit <rel> <dst> [print]: exit 0 iff <dst> differs from what was
-# committed at STAMP_COMMIT for <rel>. No stamp commit, or the file didn't
-# exist there (new template-owned file), means no baseline => not a local
-# edit. With [print]=1, also emits the "local edits withheld" line + a
-# unified diff of the withheld hunk — called once per file (the planning
+# withhold_notice <rel> <provenance>: the shared "local edits withheld" line.
+# <provenance> names WHICH baseline spoke (snapshot | git) so an operator
+# reading a --dry-run plan can tell the stamp's content snapshot from the
+# vault-git fallback in one word (HIMMEL-2903).
+withhold_notice() {
+    local rel="$1" prov="$2" backup_note="none (no --backup-dir given for this run)"
+    [ -n "$BACKUP_DIR" ] && backup_note="$BACKUP_DIR/$rel"
+    echo "  local edits withheld (not overwritten): $rel (backup: $backup_note) [baseline: $prov]"
+}
+
+# has_local_edit <rel> <dst> [print]: exit 0 iff <dst> differs from the
+# baseline for <rel> — i.e. the vault edited it since its last upgrade.
+# Baseline resolution order (HIMMEL-2903):
+#   1. the stamp's per-file content snapshot, when it has an entry for <rel>
+#      (authoritative: independent of the vault's commit history);
+#   2. else the content committed at STAMP_COMMIT (the vault's last stamped
+#      upgrade) — the pre-2903 behaviour, kept for vaults stamped before the
+#      snapshot existed, and fail-CLOSED when `git log` itself failed;
+#   3. no baseline at all (no repo, no stamp commit, new template-owned file)
+#      => not a local edit, the pre-existing overwrite behaviour.
+# A file recorded in the snapshot but absent on disk is NOT a local edit —
+# deleted files stay the existing code path's business.
+# With [print]=1, also emits the "local edits withheld" line (+ a unified diff
+# of the withheld hunk on the git path) — called once per file (the planning
 # pass only; the execute pass re-detects the same files but must not re-print).
 has_local_edit() {
     local rel="$1" dst="$2" print="${3:-0}"
-    [ -n "$STAMP_COMMIT" ] || return 1
     [ -f "$dst" ] || return 1
+
+    # (1) Snapshot baseline: the sha the template itself last wrote here.
+    local snap dst_sha
+    if snap="$(snapshot_sha "$rel")" && [ -n "$snap" ]; then
+        dst_sha="sha256:$(sha_of "$dst")"
+        if [ "$snap" != "$dst_sha" ]; then
+            if [ "$print" = 1 ]; then
+                withhold_notice "$rel" "snapshot"
+                # The snapshot is a hash, not content — there is nothing to
+                # diff against, so name both shas instead of printing nothing.
+                echo "    recorded at the last upgrade: $snap"
+                echo "    on disk now:                  $dst_sha"
+            fi
+            return 0
+        fi
+        return 1
+    fi
+
+    # (2) git baseline. A failed `git log` is not a proven absence of one.
+    if [ "$BASELINE_ERROR" = 1 ]; then
+        [ "$print" = 1 ] && echo "  could not determine the upgrade baseline (git log failed) — withholding $rel as a precaution"
+        return 0
+    fi
+    [ -n "$STAMP_COMMIT" ] || return 1
     # `./$rel`, not a bare `$rel`: `git show <rev>:<path>` resolves a path
     # relative to the CURRENT DIRECTORY only when it starts with `./` —
     # a bare path is repo-root-relative, which is the WRONG root whenever
@@ -318,14 +422,12 @@ has_local_edit() {
         [ "$print" = 1 ] && echo "  could not verify local edits for $rel (git show failed) — withholding the write as a precaution"
         return 0
     fi
-    local committed_sha dst_sha
+    local committed_sha
     committed_sha="$(sha_of "$committed")"
     dst_sha="$(sha_of "$dst")"
     if [ "$committed_sha" != "$dst_sha" ]; then
         if [ "$print" = 1 ]; then
-            local backup_note="none (no --backup-dir given for this run)"
-            [ -n "$BACKUP_DIR" ] && backup_note="$BACKUP_DIR/$rel"
-            echo "  local edits withheld (not overwritten): $rel (backup: $backup_note)"
+            withhold_notice "$rel" "git"
             if command -v diff >/dev/null 2>&1; then
                 diff -u "$committed" "$dst" | sed 's/^/    /'
             fi
@@ -376,6 +478,24 @@ write_file() {
 }
 
 sha_of() { if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else echo MISSING; fi; }
+
+# Snapshot accumulator (HIMMEL-2903): the execute pass records, for every
+# "overwrite"-class file, the sha of what is in the VAULT once the pass is
+# done — which is what the template just wrote, because the stamp is written
+# ONLY when the run fully succeeded (no withheld edits, no write failures).
+# That sha becomes the next run's baseline, immune to whatever the vault
+# afterwards commits alongside the stamp. A file the template owns but that
+# is absent in the vault records nothing.
+SNAPSHOT_FILE=""
+trap '[ -n "${SNAPSHOT_FILE:-}" ] && rm -f "$SNAPSHOT_FILE"; true' EXIT
+
+record_snapshot() {
+    local rel="$1" dst="$2" s
+    [ -n "$SNAPSHOT_FILE" ] || return 0
+    s="$(sha_of "$dst")"
+    [ "$s" = "MISSING" ] && return 0
+    printf '%s\t%s\n' "$rel" "$s" >> "$SNAPSHOT_FILE"
+}
 
 # Capture the vault's prior PLUGINS-SETUP.md sha BEFORE any overwrite, so the
 # reprint check (step 4) can tell whether the manual-install table changed.
@@ -531,7 +651,11 @@ process() {
                     fi
                 else
                     n_skip_identical=$((n_skip_identical+1))
-                fi ;;
+                fi
+                # Record the post-pass content regardless of the branch taken:
+                # written, identical, or withheld. A withheld file blocks the
+                # stamp write entirely, so its row never reaches a stamp.
+                if [ "$execute" = 1 ]; then record_snapshot "$rel" "$dst"; fi ;;
             skipexists)
                 if [ -f "$dst" ]; then
                     n_skip_exists=$((n_skip_exists+1))
@@ -594,6 +718,13 @@ if [ "$ASSUME_YES" != 1 ]; then
 fi
 
 # --- Execute pass ---
+# A failed mktemp is not fatal: the run proceeds and simply writes no snapshot,
+# so the NEXT run falls back to the git baseline (the pre-HIMMEL-2903 shape).
+SNAPSHOT_FILE="$(mktemp 2>/dev/null)"
+if [ -z "$SNAPSHOT_FILE" ] || [ ! -e "$SNAPSHOT_FILE" ]; then
+    SNAPSHOT_FILE=""
+    echo "  WARN: could not create a temp file for the content snapshot; this run's stamp will carry none (the next run falls back to the vault's git history)." >&2
+fi
 PLAN=()
 n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0 n_local_edit=0
 WRITE_FAILURES=0
@@ -648,12 +779,28 @@ if [ "$WRITE_FAILURES" -gt 0 ] || [ "$n_local_edit" -gt 0 ] || [ "$CLAUDE_MERGE_
     exit 1
 fi
 
-if ! "$PYTHON" - "$STAMP" "$TEMPLATE_VERSION" <<'PY'
+if ! "$PYTHON" - "$STAMP" "$TEMPLATE_VERSION" "$SNAPSHOT_FILE" <<'PY'
 import json, sys, datetime
-stamp_p, ver = sys.argv[1], sys.argv[2]
+stamp_p, ver, snap_p = sys.argv[1], sys.argv[2], sys.argv[3]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+stamp = {"template": "luna-second-brain", "version": ver, "upgraded_at": now}
+# files: the per-file content baseline for the next run (HIMMEL-2903). Sorted
+# so the stamp is byte-stable across runs that changed nothing — a vault that
+# autosyncs the stamp should not see a spurious diff every upgrade.
+files = {}
+if snap_p:
+    try:
+        with open(snap_p, encoding="utf-8") as fh:
+            for line in fh:
+                rel, tab, sha = line.rstrip("\n").partition("\t")
+                if tab and rel and sha:
+                    files[rel] = "sha256:" + sha
+    except OSError:
+        files = {}
+if files:
+    stamp["files"] = dict(sorted(files.items()))
 with open(stamp_p, "w", encoding="utf-8") as fh:
-    json.dump({"template": "luna-second-brain", "version": ver, "upgraded_at": now}, fh, indent=2)
+    json.dump(stamp, fh, indent=2)
     fh.write("\n")
 PY
 then

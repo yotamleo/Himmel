@@ -561,5 +561,130 @@ fi
 t29_stamp=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$V/.vault-template.json" 2>/dev/null)
 assert_eq "T29 stamp NOT advanced while a local edit is withheld" "0.9.0" "$t29_stamp"
 
+
+# ---------------------------------------------------------------------------
+# T30 (HIMMEL-2903): the local-edit baseline is a per-file content SNAPSHOT
+# recorded in the stamp, not the vault's git history — so an edit committed in
+# the SAME commit that advances the stamp (a batching autosync, exactly what
+# the luna github-sync plugin does every 10 min) is still caught. The git path
+# structurally cannot see this case: that commit IS the baseline it reads, and
+# it already contains the edit.
+T="$TMP/t30-tmpl"; V="$TMP/t30-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+stamp_vault "$V" "0.1.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial"
+# Upgrade #1 brings the vault to 0.9.0 AND records the content snapshot.
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1
+t30_snap=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("files",{}).get(".gitleaks.toml",""))' "$V/.vault-template.json" 2>/dev/null)
+assert_eq "T30 stamp records a content snapshot for .gitleaks.toml" "sha256:$(sha_of "$V/.gitleaks.toml")" "$t30_snap"
+# The POISONING commit: the vault-local edit and the advanced stamp land in ONE
+# commit, so the commit the git path resolves as the baseline already carries
+# the edit.
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "autosync: local allowlist line + stamp 0.9.0"
+t30_stamp_commit=$(git -C "$V" log -1 --format=%H -- .vault-template.json)
+git -C "$V" show "$t30_stamp_commit:./.gitleaks.toml" > "$TMP/t30-git-baseline" 2>/dev/null
+assert_eq "T30 setup: the git baseline is poisoned (it already carries the edit)" "$(sha_of "$V/.gitleaks.toml")" "$(sha_of "$TMP/t30-git-baseline")"
+# A newer template that changes the same file.
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t30_pre_sha=$(sha_of "$V/.gitleaks.toml")
+t30_dry=$(bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --dry-run 2>&1)
+case "$t30_dry" in
+    *"local edits withheld (not overwritten): .gitleaks.toml"*"[baseline: snapshot]"*)
+        pass "T30 dry-run withholds .gitleaks.toml naming the snapshot provenance" ;;
+    *) fail "T30 dry-run withholds .gitleaks.toml naming the snapshot provenance" "got: $t30_dry" ;;
+esac
+# A file whose content still MATCHES its snapshot is not a local edit — the
+# snapshot must not withhold every differing file indiscriminately.
+case "$t30_dry" in
+    *"withheld (not overwritten): marketplace/.claude-plugin/marketplace.json"*)
+        fail "T30 dry-run still WRITES an unedited snapshot-matching file" "marketplace.json was withheld" ;;
+    *"WRITE        marketplace/.claude-plugin/marketplace.json"*)
+        pass "T30 dry-run still WRITES an unedited snapshot-matching file" ;;
+    *) fail "T30 dry-run still WRITES an unedited snapshot-matching file" "got: $t30_dry" ;;
+esac
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1; t30_rc=$?
+assert_eq "T30 apply does NOT overwrite the edit the git baseline cannot see" "$t30_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
+if [ "$t30_rc" -ne 0 ]; then pass "T30 apply exits non-zero (not a clean upgrade)"; else fail "T30 apply exits non-zero (not a clean upgrade)" "rc=0"; fi
+
+# ---------------------------------------------------------------------------
+# T31 (HIMMEL-2903): an OPERATIONAL `git log` failure (shallow clone, corrupt
+# index, permission error) must fail CLOSED, like the cat-file/show steps
+# already do — not be read as "no baseline" and fall through to the pre-2886
+# silent overwrite. Simulated with a PATH stub `git` that fails ONLY for `log`.
+T="$TMP/t31-tmpl"; V="$TMP/t31-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+# A PRE-snapshot stamp (3 keys, no "files") — the git path is the only baseline.
+stamp_vault "$V" "0.9.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial stamp 0.9.0"
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "local edit after the stamp"
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t31_stub="$TMP/t31-stub"; mkdir -p "$t31_stub"
+t31_real_git="$(command -v git)"
+# shellcheck disable=SC2016  # the single-quoted lines are the STUB's source, not this shell's
+{
+    echo '#!/usr/bin/env bash'
+    echo 'for a in "$@"; do'
+    echo '    if [ "$a" = "log" ]; then echo "fatal: simulated git log failure" >&2; exit 128; fi'
+    echo 'done'
+    printf 'exec "%s" "$@"\n' "$t31_real_git"
+} > "$t31_stub/git"
+chmod +x "$t31_stub/git"
+# The stub must actually do what the case claims: fail for `log`, pass every
+# other subcommand through (a stub that broke ALL of git would "pass" this case
+# for the wrong reason).
+t31_log_rc=$(PATH="$t31_stub:$PATH" git -C "$V" log -1 --format=%H >/dev/null 2>&1; echo $?)
+assert_eq "T31 setup: the stub makes git log fail operationally" "128" "$t31_log_rc"
+assert_eq "T31 setup: the stub passes other subcommands through" "true" "$(PATH="$t31_stub:$PATH" git -C "$V" rev-parse --is-inside-work-tree 2>/dev/null)"
+t31_pre_sha=$(sha_of "$V/.gitleaks.toml")
+t31_out=$(PATH="$t31_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t31_rc=$?
+assert_eq "T31 a failing git log withholds the write (fails closed)" "$t31_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
+case "$t31_out" in
+    *"could not determine the upgrade baseline (git log failed) — withholding .gitleaks.toml as a precaution"*)
+        pass "T31 names the failed baseline in the withheld line" ;;
+    *) fail "T31 names the failed baseline in the withheld line" "got: $t31_out" ;;
+esac
+if [ "$t31_rc" -ne 0 ]; then pass "T31 apply exits non-zero (not a clean upgrade)"; else fail "T31 apply exits non-zero (not a clean upgrade)" "rc=0"; fi
+
+# ---------------------------------------------------------------------------
+# T32 (HIMMEL-2903): the fail-closed git-log gate must NOT fire on a vault whose
+# repo simply has no commits yet — `git log` exits 128 there too ("does not have
+# any commits yet"), but that is a legitimately absent baseline, not an
+# operational failure. A blanket rc!=0 check would withhold every file on the
+# first upgrade of a freshly `git init`-ed vault.
+T="$TMP/t32-tmpl"; V="$TMP/t32-vault"
+make_template "$T" "1.0.0"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"
+printf 'gitleaks-content-v1\n' > "$V/.gitleaks.toml"
+stamp_vault "$V" "0.9.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+if git -C "$V" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    fail "T32 setup: the vault repo has no commits yet" "HEAD resolves"
+else
+    pass "T32 setup: the vault repo has no commits yet"
+fi
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1; t32_rc=$?
+assert_eq "T32 first upgrade of a commitless vault still writes the template file" "$(sha_of "$T/.gitleaks.toml")" "$(sha_of "$V/.gitleaks.toml")"
+assert_eq "T32 first upgrade of a commitless vault exits 0" "0" "$t32_rc"
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

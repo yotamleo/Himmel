@@ -8,6 +8,31 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.23] — 2026-09-10
+
+### Fixed
+- **The local-edit baseline is a per-file content snapshot in the stamp; the
+  vault's git history is now only the fallback (HIMMEL-2903).**
+  `.vault-template.json` gained a `files: {"<rel>": "sha256:<hex>"}` map,
+  written at the end of every successful upgrade, recording what the template
+  put in each "overwrite"-class file. `scripts/upgrade.sh` compares against
+  that map first. The git baseline it replaces was poisonable: a vault-local
+  edit committed in the SAME commit that advances the stamp — what a batching
+  autosync does — became the baseline itself, so the next upgrade saw no
+  divergence and silently overwrote the edit. Vaults stamped before this
+  version have no map and keep the git behaviour until their next upgrade
+  writes one.
+- **A failing `git log` no longer fails open (HIMMEL-2903).** An operational
+  failure resolving the stamp commit (shallow clone, corrupt index, permission
+  error) used to be indistinguishable from "no stamp commit", which meant no
+  baseline, which meant the pre-HIMMEL-2886 silent overwrite. It now withholds
+  the write and says so, matching the `cat-file`/`show` steps. A repo with no
+  commits yet is still a legitimately absent baseline, not an error, so the
+  first upgrade of a freshly `git init`-ed vault proceeds as before.
+- **The withheld-file line names which baseline spoke.** Every "local edits
+  withheld" line ends in `[baseline: snapshot]` or `[baseline: git]`, and the
+  snapshot form prints the recorded and on-disk shas.
+
 ## [0.4.22] — 2026-09-10
 
 ### Fixed
