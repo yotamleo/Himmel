@@ -5,7 +5,8 @@
 // Checks per item:
 //   (a) exactly the six required keys (id, kind, scopes, profiles, deps,
 //       probe) plus any of the OPTIONAL_ITEM_KEYS (install, unwire,
-//       removable, offboard) — still closed: any other key is a lint error.
+//       removable, offboard, contributorScopes) — still closed: any other
+//       key is a lint error.
 //   (b) kind is never 'hardening' and is one of the fixed KIND vocabulary
 //   (c) probe.type is one of the fixed PROBE_TYPES vocabulary
 //   (d) ids are unique across the manifest
@@ -19,7 +20,8 @@
 //       different targets would wire one thing and unwire another).
 //   (h) removable === 'per-item' IFF 'unwire' is present (biconditional);
 //       removable, when present, is one of REMOVABLE_VALUES.
-//   (i) scopes ⊆ [project, user], profiles ⊆ [core, luna, all] (schema v2
+//   (i) scopes (and contributorScopes, when present) ⊆ [project, user],
+//       profiles ⊆ [core, luna, all] (schema v2
 //       value-enums).
 //   (j) deps[] form a DAG — no cycles (schema v2 DFS cycle detector).
 //   (k) offboard, when present, is one of OFFBOARD_VALUES (unwire|advise|
@@ -215,7 +217,11 @@ const ITEM_KEYS = ['id', 'kind', 'scopes', 'profiles', 'deps', 'probe'];
 // Optional schema-v2 consumer keys (HIMMEL-755 A1). Permitted by the
 // exact-key check but not required — items authored under schemaVersion:1
 // stay valid; items that DO carry them are shape-checked below.
-const OPTIONAL_ITEM_KEYS = ['install', 'unwire', 'removable', 'offboard'];
+// HIMMEL-2892: `contributorScopes` widens an item's scope membership for a
+// CONTRIBUTOR record only (state.js's itemMembership: answers.devOverlay).
+// Additive — never a substitute for `scopes`, and its entries obey the same
+// SCOPES_ENUM.
+const OPTIONAL_ITEM_KEYS = ['install', 'unwire', 'removable', 'offboard', 'contributorScopes'];
 const INSTALL_TYPES = ['adopt', 'setup', 'wire', 'plugins', 'qmd', 'dep', 'build', 'config', 'observability'];
 const UNWIRE_TYPES = ['wire'];
 const SCOPES_ENUM = ['project', 'user'];
@@ -797,6 +803,17 @@ function lint(manifest) {
       }
     } else {
       errors.push(`${label}: 'scopes' must be an array`);
+    }
+    // contributorScopes is OPTIONAL, but when present it obeys SCOPES_ENUM
+    // and must be an array — same posture as `scopes` above.
+    if (Object.prototype.hasOwnProperty.call(it, 'contributorScopes')) {
+      if (Array.isArray(it.contributorScopes)) {
+        for (const s of it.contributorScopes) {
+          if (!SCOPES_ENUM.includes(s)) errors.push(`${label}: contributorScopes entry '${s}' not in [${SCOPES_ENUM.join(', ')}]`);
+        }
+      } else {
+        errors.push(`${label}: 'contributorScopes' must be an array`);
+      }
     }
     if (Array.isArray(it.profiles)) {
       for (const p of it.profiles) {

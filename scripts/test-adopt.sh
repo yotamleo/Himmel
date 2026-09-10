@@ -2002,6 +2002,7 @@ run_wizard_suite himmelctl/test/test-wizard-status-cmd.sh      "test-wizard-stat
 run_wizard_suite himmelctl/test/test-wizard-status-golden.sh   "test-wizard-status-golden"
 run_wizard_suite himmelctl/test/test-wizard-status-multitarget.sh "test-wizard-status-multitarget"
 run_wizard_suite himmelctl/test/test-wizard-manifest-v2.sh     "test-wizard-manifest-v2"
+run_wizard_suite himmelctl/test/test-wizard-himmel-clone-target.sh "test-wizard-himmel-clone-target"
 run_wizard_suite himmelctl/test/test-wizard-statusreport.sh    "test-wizard-statusreport"
 run_wizard_suite himmelctl/test/test-wizard-reconcile.sh       "test-wizard-reconcile"
 run_wizard_suite himmelctl/test/test-wizard-install-engine.sh  "test-wizard-install-engine"

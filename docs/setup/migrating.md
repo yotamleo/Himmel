@@ -65,6 +65,12 @@ disk", per item, with a severity for each.
 Preview first if you want the plan without the writes: add `--dry-run` to
 either verb.
 
+This state is about **your own** repo. Inside a himmel checkout, `--scope
+project` is refused: that repo's `.claude/settings.json` is the source the
+installer generates from, not a target. Use `bash scripts/setup.sh` (the
+contributor gates) and then `install --scope user`; a contributor record
+probes the checkout's project-scope items from user scope.
+
 ## State 2 — a station set up by hand from the setup guide
 
 Same missing record, different scope: the machine has the environment

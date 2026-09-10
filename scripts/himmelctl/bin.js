@@ -2256,6 +2256,39 @@ function contributeCheckoutOk() {
   return fs.existsSync(path.join(scriptsDir, contributeOverlayFilename()));
 }
 
+// HIMMEL-2892: the project-scope target himmelctl hands adopt.sh — adopt.sh's
+// own `--target` default is $PWD, so this is that same resolution, and the
+// same one settingsPathForScope('project') mirrors.
+function projectTargetDir() {
+  return path.resolve(process.cwd());
+}
+
+// realpath, falling back to the resolved path when the entry cannot be
+// stat'ed (a not-yet-created dir, a permission gap) — never throws.
+function realpathOrSelf(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+// HIMMEL-2892: is the project-scope target this himmel clone (or a directory
+// inside it, which includes its linked worktrees — himmel keeps those under
+// .claude/worktrees/)? The identity marker is the clone THIS himmelctl runs
+// from (repoRoot(), honoring HIMMELCTL_REPO_ROOT), not a content heuristic:
+// an adopter repo that merely VENDORS himmel's portable core carries copies
+// of scripts/hooks/* and scripts/guardrails/lib.sh and must NOT be caught,
+// while the one tree whose .claude/settings.json is literally the source this
+// installer generates the hook block from is, by construction, exactly this
+// one.
+function projectTargetIsHimmelCheckout() {
+  const target = realpathOrSelf(projectTargetDir());
+  const clone = realpathOrSelf(repoRoot());
+  if (target === clone) return true;
+  return target.startsWith(clone + path.sep);
+}
+
 // Shell-quote one arg for DISPLAY only (the spawn below uses argv directly,
 // no shell — this only affects the printed `derived:` line).
 function shellQuote(a) {
@@ -4027,6 +4060,29 @@ async function cmdInstall(args) {
     console.error('  (or set HIMMELCTL_INTERACTIVE=1 to answer prompts interactively)');
     return 1;
   }
+  // 5.2 (HIMMEL-2892): the himmel checkout is not a project TARGET. Its
+  // .claude/settings.json is the SOURCE this installer generates the hook
+  // block from (CLAUDE.md: "the live inventory is .claude/settings.json") —
+  // hand-curated across many tickets, not a generated artifact — and its
+  // project-scope items (pre-commit gates, the jira dist build,
+  // guardrail-scope, doc-guard-map) are what scripts/setup.sh, the
+  // contributor primitive, installs. Project scope here rewrote that file
+  // from the manifest (2026-09-09 dogfood: 98+/38-, matchers dropped,
+  // timeouts 60 → 15) and dropped a hud config inside the repo.
+  //
+  // Fires on the RESOLVED answers, so it covers every source of scope
+  // (--scope, --from-profile, the interactive wizard's own default) — and is
+  // placed BEFORE writeCache below on purpose: a refused install must leave
+  // no `scope: project` record behind for a later status/ensure to converge
+  // against. A dry run is refused too — a preview of an install that cannot
+  // legally run is not a useful preview.
+  if ((answers.scope || 'project') === 'project' && projectTargetIsHimmelCheckout()) {
+    console.error(`himmelctl: --scope project is not valid inside the himmel checkout (${projectTargetDir()})`);
+    console.error('  its .claude/settings.json is the SOURCE this installer generates from, never a target.');
+    console.error(`  use: bash ${path.join(repoRoot(), 'scripts', contributeOverlayFilename())}   (contributor gates), then: node scripts/himmelctl/bin.js install --scope user`);
+    return 1;
+  }
+
   // HIMMEL-2436: cache the resolved answers regardless of source — replaying a
   // profile (--from-profile) is still an install, and the resulting machine
   // should be as introspectable via `status`/`ensure` as an interactively-

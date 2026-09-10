@@ -93,7 +93,24 @@ function itemMembership(item, profile, scope, cachedAnswers) {
   if (item.id === 'handover-wiring') {
     return Boolean(cachedAnswers.handover) && cachedAnswers.handover.mode !== 'none';
   }
-  return item.profiles.includes(profile) && item.scopes.includes(scope);
+  if (!item.profiles.includes(profile)) return false;
+  if (item.scopes.includes(scope)) return true;
+  // HIMMEL-2892: a CONTRIBUTOR's station has no project-scope record — the
+  // himmel checkout is not an adopt target (bin.js's cmdInstall refuses
+  // `--scope project` there) — yet the five scopes:["project"] items that
+  // scripts/setup.sh, the contributor primitive, installs (pre-commit gates,
+  // the jira/bitbucket dist builds, guardrail-scope, doc-guard-map) ARE
+  // genuinely present on it, and probes.js resolves every one of them
+  // against ctx.repoRoot under user scope. Without this they read
+  // "n/a — not enabled for this target (profile/scope)" forever on the one
+  // machine where they are green. `contributorScopes` widens membership for
+  // that record ONLY: strictly additive (an item without the key, or a
+  // record without devOverlay, behaves exactly as before), and gated on
+  // answers.devOverlay — the recorded contributor answer — so a plain
+  // adopter's user-scope status output is unchanged.
+  return Boolean(cachedAnswers.devOverlay)
+    && Array.isArray(item.contributorScopes)
+    && item.contributorScopes.includes(scope);
 }
 
 // Derive a fresh target entry from the manifest + cached wizard answers.
