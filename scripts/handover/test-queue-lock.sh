@@ -116,6 +116,25 @@ else
 fi
 bash "$LIB" acquire "$HO1" "session-a" >/dev/null 2>&1
 
+# --- T1e (HIMMEL-2910 round-1 CR fix): a RECALLED token whose own value
+# legitimately starts/ends with a backtick is not mangled by the strip --
+# it applies to an ARGV-supplied token only, never to one recovered from the
+# per-session persistence file (HIMMEL-2813), which is already the exact
+# raw value acquire stored in owner.json.
+HO1E="$HANDOVER_DIR/HIMMEL-856-test/next-session-1e.md"
+mkdir -p "$(dirname "$HO1E")"
+: > "$HO1E"
+LOCKDIR1E="$HANDOVER_DIR/.locks/queue/HIMMEL-856-test__next-session-1e.lock"
+# shellcheck disable=SC2016  # a literal backtick-quoted session id, not command substitution
+bash "$LIB" acquire "$HO1E" '`selfquoted`' >/dev/null 2>&1
+bash "$LIB" release "$HO1E" >/dev/null 2>&1
+t1e_rc=$?
+if [ "$t1e_rc" -eq 0 ] && [ ! -d "$LOCKDIR1E" ]; then
+    pass "T1e: a token-less release recalls a self-backticked session id unmangled and releases"
+else
+    fail "T1e: token-less release of a self-backticked session id failed (rc=$t1e_rc)"
+fi
+
 # --- T2: second acquire while FRESH -> rc 2, holder info + override hint ----
 err="$(bash "$LIB" acquire "$HO1" "session-b" 2>&1 1>/dev/null)"
 rc=$?

@@ -1203,6 +1203,11 @@ queue_lock_heartbeat() {
         echo "queue-lock: could not resolve handover root" >&2
         return 1
     fi
+    # HIMMEL-2910: strip a matched backtick pair from an ARGV token only --
+    # a recalled token (below) is already the exact raw value persisted at
+    # acquire time, so stripping it too would misidentify a session whose
+    # OWN id happens to start/end with a backtick (panel finding, round 1).
+    session="$(_ql_strip_backticks "$session")"
     # HIMMEL-2813: no token on argv -- try the per-session file before
     # refusing. An argv token always wins (this only runs when there is
     # none), and a recall that finds nothing falls through to the unchanged
@@ -1210,7 +1215,6 @@ queue_lock_heartbeat() {
     if [ -z "$session" ]; then
         session=$(_ql_token_recall "$ho") || session=""
     fi
-    session="$(_ql_strip_backticks "$session")"
     # C1: the token is MANDATORY -- a token-less heartbeat could refresh
     # (and keep alive) another session's lock.
     if [ -z "$session" ]; then
@@ -1293,6 +1297,11 @@ queue_lock_release() {
         # forcing session is a cleaner, not the holder wrapping up.
         return 0
     fi
+    # HIMMEL-2910: strip a matched backtick pair from an ARGV token only --
+    # a recalled token (below) is already the exact raw value persisted at
+    # acquire time, so stripping it too would misidentify a session whose
+    # OWN id happens to start/end with a backtick (panel finding, round 1).
+    session="$(_ql_strip_backticks "$session")"
     # HIMMEL-2813: no token on argv -- try the per-session file before
     # refusing. This runs AFTER the force-release block above, so that path
     # is untouched, and only when argv carried nothing, so an explicit token
@@ -1301,7 +1310,6 @@ queue_lock_release() {
     if [ -z "$session" ]; then
         session=$(_ql_token_recall "$ho") || session=""
     fi
-    session="$(_ql_strip_backticks "$session")"
     # C1: the token is MANDATORY -- a token-less release would rm another
     # session's LIVE lock (the exact incident class this script prevents).
     # Separate script invocations cannot re-derive a stable per-session id,
