@@ -309,7 +309,7 @@ process.stdout.write(JSON.stringify({malformed: 0}));
         row_head8="$(printf '%s' "$row_head" | cut -c1-8)"
         case "$action" in
             promote)
-                if ! bash "$SCRIPT_DIR/ledger-append.sh" amend \
+                if ! CR_LEDGER="$ledger" bash "$SCRIPT_DIR/ledger-append.sh" amend \
                     --branch "$row_branch" --head "$row_head" --id "$id" \
                     --artifact "$row_artifact" --perspective "$row_perspective" \
                     --set verdict=fixed \

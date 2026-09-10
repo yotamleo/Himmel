@@ -463,6 +463,22 @@ assert_has "$promote_out2" "skip-terminal find-a@" "second promote run reports f
 find_a_amends_2="$(LEDGER="$promote_ledger" node -e 'const fs=require("fs"),e=process.env;let n=0;for(const l of fs.readFileSync(e.LEDGER,"utf8").trim().split("\n")){const o=JSON.parse(l);if(o.kind==="amend"&&o.finding_id==="find-a"&&o.set&&o.set.verdict==="fixed")n++}process.stdout.write(String(n))')"
 assert_eq "$find_a_amends_2" "1" "second promote run writes zero new amends for find-a"
 
+# CR_LEDGER pin (codex-1, HIMMEL-2911 CR round 4): an ambient CR_LEDGER in the
+# caller's environment must not redirect the amend write to a different file
+# than the one promote just read and evaluated.
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch promote --head "$promote_head_a" --model stub --id find-j \
+    --severity sug --file promote.txt --line 8 --verdict "" \
+    --text "tidy up the promote fixture kappa"
+CR_LEDGER="$promote_ledger" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch promote --head "$promote_head_a" --id find-j \
+    --set verdict=agreed --reason "leg agrees with kappa"
+bogus_ledger="$tmp/bogus-ledger-shouldnt-be-used.jsonl"
+promote_out_env="$(cd "$repo" && CR_LEDGER="$bogus_ledger" bash "$fx/scripts/cr/review-round.sh" promote --branch promote --head "$promote_head_b")"
+assert_has "$promote_out_env" "promoted find-j@" "an ambient CR_LEDGER does not stop promote reading the real ledger"
+if [ -e "$bogus_ledger" ]; then fail "ambient CR_LEDGER redirected the amend write"; else pass "ambient CR_LEDGER never gets a write"; fi
+assert_has "$(cat "$promote_ledger" 2>/dev/null)" '"finding_id":"find-j"' "find-j's fixed amend lands in the real ledger promote evaluated"
+
 # Negative control: a malformed ledger row refuses automatic promotion and writes nothing.
 promote_lines_before="$(wc -l < "$promote_ledger" | tr -d ' ')"
 printf 'not-json-at-all\n' >> "$promote_ledger"
