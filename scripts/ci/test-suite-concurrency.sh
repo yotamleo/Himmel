@@ -3004,12 +3004,17 @@ else
   # stand-in for a TTL prune by another runner.
   rm -rf "$lockw19.q/$w19_pid"
 
+  # Wait for the BRANDED owner file, not the directory: the restore path
+  # (run-shell-tests.sh: mkdir -p, then _suite_lock_queue_brand's temp-write
+  # + mv) opens a window where the directory exists and owner does not --
+  # polling the directory alone reads a false-empty started= inside that
+  # window (HIMMEL-2921). Same 5s budget as before.
   _spin=0
-  while [ ! -d "$lockw19.q/$w19_pid" ] && [ "$_spin" -lt 50 ]; do
+  while ! grep -q '^started=.' "$lockw19.q/$w19_pid/owner" 2>/dev/null && [ "$_spin" -lt 50 ]; do
     sleep 0.1
     _spin=$((_spin + 1))
   done
-  if [ -d "$lockw19.q/$w19_pid" ]; then
+  if grep -q '^started=.' "$lockw19.q/$w19_pid/owner" 2>/dev/null; then
     pass "W19a: the vanished ticket was restored on the waiter's next poll"
     w19_started_restored=$(grep '^started=' "$lockw19.q/$w19_pid/owner" 2>/dev/null | cut -d= -f2)
     if [ -n "$w19_started_orig" ] && [ "$w19_started_restored" = "$w19_started_orig" ]; then
@@ -3017,6 +3022,8 @@ else
     else
       fail "W19b: restored started=$w19_started_restored, original was $w19_started_orig -- position was NOT preserved"
     fi
+  elif [ -d "$lockw19.q/$w19_pid" ]; then
+    fail "W19a: directory restored, owner never branded within 5s"
   else
     fail "W19a: the ticket was never restored within 5s; the waiter's queue position is lost"
   fi
@@ -3037,6 +3044,105 @@ else
 
   kill "$w19_helper_pid" 2>/dev/null
   wait "$w19_helper_pid" 2>/dev/null
+fi
+
+# --------------------------------------------------------------------------
+# Case W19e (HIMMEL-2921, RED control): replays the exact mkdir->mv window
+# the restore path opens -- a PATH shim delays a _suite_lock_queue_brand
+# `mv` by 0.5s, but ONLY once armed by a trigger file this case creates
+# right after deleting the ticket (never sooner), so it is always the
+# restore's own brand call that gets delayed -- never the initial join's or
+# an interceding heartbeat refresh, whichever happens to land second. W19's
+# own restore-wait above is the only thing standing between a correct
+# started= read and the empty-started= misread that failed CI shard 5. Its
+# own shim, not the shared race_shim_prepare one above (that shadows mkdir;
+# this needs mv) -- same MSYS +x rationale applies.
+# --------------------------------------------------------------------------
+echo "== Case W19e: the restore-wait survives the mkdir->mv window (HIMMEL-2921) =="
+sbw19e=$(new_sandbox)
+cat > "$sbw19e/test-pass.sh" <<'SHEOF'
+#!/usr/bin/env bash
+touch "$(dirname "$0")/ran"
+exit 0
+SHEOF
+lockw19e="$sbw19e/suite.lock"
+mvshim=$(mktemp -d "$WORK/shimXXXXXX")
+MV_REAL=$(command -v mv)
+export MV_REAL
+cat > "$mvshim/mv" <<'SHEOF'
+#!/usr/bin/env bash
+# Test shim, not a runtime component: shadows mv on PATH for one runner
+# invocation, delaying a _suite_lock_queue_brand call (`mv -f "$tmp"
+# "$dir/owner"` -- $2/$3, "-f" is $1) only once MV_TRIGGER exists -- armed
+# by the case right after it deletes the ticket, so the delayed call is
+# always the restore's own brand, deterministically.
+case "$2" in
+  */.brand.*.tmp) case "$3" in */owner)
+    if [ -f "${MV_TRIGGER:?}" ]; then
+      printf x >> "${MV_HITS:?}"
+      sleep "${MV_DELAY:?}"
+    fi
+  ;; esac ;;
+esac
+exec "${MV_REAL:?}" "$@"
+SHEOF
+chmod +x "$mvshim/mv"
+
+sleep 60 &
+w19e_helper_pid=$!
+mkdir -p "$lockw19e.q/$w19e_helper_pid"
+printf 'pid=%s\nhost=%s\nstarted=%s\n' "$w19e_helper_pid" "$(this_host)" "$(( $(date +%s) - 5 ))" \
+  > "$lockw19e.q/$w19e_helper_pid/owner"
+
+PATH="$mvshim:$PATH" MV_HITS="$sbw19e/mv-hits" MV_TRIGGER="$sbw19e/mv-trigger" MV_DELAY=0.5 \
+  SUITE_LOCK_DIR="$lockw19e" SUITE_LOCK_WAIT=8 SUITE_LOCK_WAIT_INTERVAL=1 \
+  bash "$RUNNER" "$sbw19e" >"$sbw19e/waiter.log" 2>&1 &
+w19e_pid=$!
+
+_spin=0
+while [ ! -d "$lockw19e.q/$w19e_pid" ] && [ "$_spin" -lt 100 ]; do
+  sleep 0.1
+  _spin=$((_spin + 1))
+done
+if [ ! -d "$lockw19e.q/$w19e_pid" ]; then
+  fail "W19e setup -- the waiter under test never took its own ticket within 10s; cannot run the case"
+  kill "$w19e_pid" "$w19e_helper_pid" 2>/dev/null
+  wait "$w19e_pid" 2>/dev/null
+  wait "$w19e_helper_pid" 2>/dev/null
+else
+  w19e_started_orig=$(grep '^started=' "$lockw19e.q/$w19e_pid/owner" 2>/dev/null | cut -d= -f2)
+  rm -rf "$lockw19e.q/$w19e_pid"
+  : > "$sbw19e/mv-trigger"
+
+  _spin=0
+  while ! grep -q '^started=.' "$lockw19e.q/$w19e_pid/owner" 2>/dev/null && [ "$_spin" -lt 50 ]; do
+    sleep 0.1
+    _spin=$((_spin + 1))
+  done
+
+  if [ -s "$sbw19e/mv-hits" ]; then
+    pass "W19e precondition: the shim replayed the restore's mkdir->mv window"
+  else
+    fail "W19e precondition: the shim never fired after the ticket was deleted -- the mkdir->mv window did not replay, this case proves nothing"
+  fi
+
+  if grep -q '^started=.' "$lockw19e.q/$w19e_pid/owner" 2>/dev/null; then
+    pass "W19a (mkdir->mv window): the vanished ticket was restored despite the mv delay"
+    w19e_started_restored=$(grep '^started=' "$lockw19e.q/$w19e_pid/owner" 2>/dev/null | cut -d= -f2)
+    if [ -n "$w19e_started_orig" ] && [ "$w19e_started_restored" = "$w19e_started_orig" ]; then
+      pass "W19b (mkdir->mv window): restored at the ORIGINAL arrival stamp, not misread mid-window"
+    else
+      fail "W19b (mkdir->mv window): restored started=$w19e_started_restored, original was $w19e_started_orig -- misread the mkdir->mv window"
+    fi
+  elif [ -d "$lockw19e.q/$w19e_pid" ]; then
+    fail "W19a (mkdir->mv window): directory restored, owner never branded within 5s -- restore-wait misread the mkdir->mv window"
+  else
+    fail "W19a (mkdir->mv window): the ticket was never restored within 5s"
+  fi
+
+  wait "$w19e_pid" 2>/dev/null
+  kill "$w19e_helper_pid" 2>/dev/null
+  wait "$w19e_helper_pid" 2>/dev/null
 fi
 
 # --------------------------------------------------------------------------
