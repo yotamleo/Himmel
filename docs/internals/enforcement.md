@@ -3752,7 +3752,7 @@ protection, which does not soften this reasoning: the two bindings still point
 opposite ways — this script's pin NARROWS what a human-only,
 `CLAUDECODE`-self-refusing chokepoint may touch, while merge-on-green's WIDENS a
 boundary an agent runs under.
-Unsatisfiable ruleset reviews stop the armed `merge-on-green.sh` path at `policy-refused` (exit 17), leaving merge to a human admin; on this repo the operator relaxed `protect-main` on 2026-09-09 (HIMMEL-2887).
+`merge-on-green.sh` exits 17 (`policy-refused`) on a fresh pre-merge `BLOCKED` + `REVIEW_REQUIRED` policy read after green checks or an explicit GitHub base-branch policy rejection at merge time; if no automation identity can satisfy the required review, the merge is a human admin action; on this repo the operator relaxed `protect-main` on 2026-09-09 (HIMMEL-2887).
 That is why merge-on-green deliberately does NOT
 reuse this script's `CR_PUBLIC_REPO`: an env-overridable constant costs nothing
 on a narrowing pin and would be a widening seam on the other. Supports
