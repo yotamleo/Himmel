@@ -23,6 +23,15 @@ paths = [
 # curl-auth-header false positive for this one literal only. Anchored (^…$)
 # so it suppresses ONLY the exact constant — a prefixed/suffixed bearer
 # credential (himmel-local-claudex-<real-secret>) is still caught.
+# queue-lock release tokens (himmel scripts/handover/queue-lock.sh) are written
+# into each leg's LIVE bullet on purpose (HIMMEL-2813 workaround: autocompact
+# loses them otherwise). Their default shape is <host>-<arch>-pid<N>, e.g.
+# `cachyos-x8664-pid199036` — a process id, not a credential — but the
+# generic-api-key rule flags the line ("release-token: `...`") on entropy, and
+# that refusal silently stalls the github-sync autosync commit (2026-09-09,
+# console 03F: staged for 40 min, three missed syncs). Anchored to that exact
+# shape only.
 regexes = [
   '''^himmel-local-claudex$''',
+  '''^[a-z0-9]+-[a-z0-9]+-pid[0-9]+$''',
 ]

@@ -503,5 +503,63 @@ assert_eq "T28 first-population seeds absent manifest.json" "$(sha_of "$T/.obsid
 assert_eq "T28 first-population seeds absent main.js"       "$(sha_of "$T/.obsidian/plugins/obsidian-local-rest-api/main.js")"       "$(sha_of "$V2/.obsidian/plugins/obsidian-local-rest-api/main.js")"
 assert_eq "T28 first-population seeds absent styles.css"    "$(sha_of "$T/.obsidian/plugins/obsidian-local-rest-api/styles.css")"    "$(sha_of "$V2/.obsidian/plugins/obsidian-local-rest-api/styles.css")"
 
+# ---------------------------------------------------------------------------
+# T29 (HIMMEL-2886): a template-owned "overwrite"-class file the vault
+# COMMITTED a local edit to since its last stamped upgrade must not be
+# silently clobbered — the actual incident (luna-upgrade-all apply on
+# ~/Documents/luna, 2026-09-09) had a CLEAN git status (the edit was
+# committed), so a dirty-tree check alone can't catch it; the fixture
+# reproduces that shape (git-tracked, clean, edit committed after the stamp).
+T="$TMP/t29-tmpl"; V="$TMP/t29-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+stamp_vault "$V" "0.9.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial stamp 0.9.0"; t29_commit1_rc=$?
+assert_eq "T29 setup: initial commit landed" "0" "$t29_commit1_rc"
+# The vault-local edit, COMMITTED (git status is clean afterwards) — matches
+# the real incident, not an uncommitted-dirty-tree case (already guarded
+# elsewhere).
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "add local allowlist line"; t29_commit2_rc=$?
+assert_eq "T29 setup: local-edit commit landed" "0" "$t29_commit2_rc"
+assert_eq "T29 setup: working tree is clean (matches the incident's shape, not a dirty-tree case)" "" "$(git -C "$V" status --porcelain)"
+# Bump the template so an upgrade is available, and change its .gitleaks.toml
+# too (a genuine incoming template change, not just a version bump).
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+
+t29_pre_sha=$(sha_of "$V/.gitleaks.toml")
+t29_dry=$(bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --dry-run 2>&1)
+case "$t29_dry" in
+    *"LOCAL-EDIT"*".gitleaks.toml"*) pass "T29 dry-run surfaces LOCAL-EDIT for .gitleaks.toml" ;;
+    *) fail "T29 dry-run surfaces LOCAL-EDIT for .gitleaks.toml" "got: $t29_dry" ;;
+esac
+case "$t29_dry" in
+    *"local edits withheld (not overwritten): .gitleaks.toml"*) pass "T29 dry-run prints local-edits-withheld line" ;;
+    *) fail "T29 dry-run prints local-edits-withheld line" "got: $t29_dry" ;;
+esac
+
+t29_out=$(bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --backup-dir "$TMP/t29-backup" --yes 2>&1)
+t29_rc=$?
+assert_eq "T29 apply does NOT overwrite the locally-edited file" "$t29_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
+case "$t29_out" in
+    *"local edits withheld (not overwritten): .gitleaks.toml (backup: $TMP/t29-backup/.gitleaks.toml)"*)
+        pass "T29 apply names the backup path" ;;
+    *) fail "T29 apply names the backup path" "got: $t29_out" ;;
+esac
+if [ "$t29_rc" -ne 0 ]; then
+    pass "T29 apply exits non-zero (not a clean upgrade)"
+else
+    fail "T29 apply exits non-zero (not a clean upgrade)" "rc=0, out: $t29_out"
+fi
+t29_stamp=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$V/.vault-template.json" 2>/dev/null)
+assert_eq "T29 stamp NOT advanced while a local edit is withheld" "0.9.0" "$t29_stamp"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

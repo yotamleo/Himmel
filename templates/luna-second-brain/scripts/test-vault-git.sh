@@ -238,6 +238,64 @@ else
     ;;
   esac
   assert_eq "D9 near-miss token NOT in committed tree" "$d8_before" "$(git_in "$VC" rev-parse HEAD)"
+  # D8's blocked near-miss file is still sitting UNCOMMITTED in the working
+  # tree — leaving it would re-trip gitleaks on every later autosync in this
+  # phase (D10+), for a reason unrelated to what each of those tests checks.
+  rm -f "$VC/30-Resources/proxy-token-extra.md"
+
+  # D10-D11 (HIMMEL-2886): the template carries the queue-lock release-token
+  # allowlist. Every leg writes a release token shaped `<host>-<arch>-pid<N>`
+  # into its handover doc's LIVE bullet (HIMMEL-2813); without this regex
+  # gitleaks' generic-api-key rule flags it on entropy and blocks the sync
+  # commit (console 03F lost 40 min / three syncs to exactly this, 2026-09-09,
+  # before the vault carried a LOCAL fix — this proves the TEMPLATE now ships
+  # it, so the next luna-upgrade converges every vault onto it).
+  # (No backticks/`$` in this literal: this test file is itself copied into
+  # the vault fixture's scripts/ tree and shellchecked there — SC2016 would
+  # fire on a single-quoted string that LOOKS like it wants to expand.)
+  printf 'release-token: cachyos-x8664-pid199036\n' >"$VC/30-Resources/release-token.md"
+  (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") >/dev/null 2>&1
+  assert_ok "D10 release-token allowlist: autosync commits (exit 0)" "$?"
+  assert_eq "D11 release-token note IS in committed tree" "1" \
+    "$(git_in "$VC" ls-tree -r HEAD --name-only | grep -c 'release-token\.md' || true)"
+
+  # D12-D13 (HIMMEL-2886): the template carries the console-kit shellcheck
+  # exclude. Archived console-kit scripts under handovers/**/specs/console-kit-*/
+  # are scratchpad copies, not shipped code; linting them stalled the vault's
+  # github-sync sweep (console 03F, 2026-09-07: one SC2086 warning = no commits).
+  mkdir -p "$VC/handovers/x/himmel/specs/console-kit-02I"
+  # Heredoc with a quoted delimiter (not printf/single-quoted) so this file's
+  # OWN shellcheck pass (it's copied into the fixture's scripts/ tree too)
+  # doesn't flag the intentionally-unquoted $HOME in the fixture's body.
+  cat <<'CONSOLE_KIT_FIXTURE' >"$VC/handovers/x/himmel/specs/console-kit-02I/foo.sh"
+#!/usr/bin/env bash
+echo $HOME
+CONSOLE_KIT_FIXTURE
+  (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") >/dev/null 2>&1
+  assert_ok "D12 console-kit shellcheck exclude: autosync commits (exit 0)" "$?"
+  assert_eq "D13 console-kit script IS in committed tree" "1" \
+    "$(git_in "$VC" ls-tree -r HEAD --name-only | grep -c 'console-kit-02I/foo\.sh' || true)"
+
+  # D14: negative control — the SAME shellcheck violation OUTSIDE the excluded
+  # path is still blocked (the exclude is scoped, not a blanket shellcheck
+  # disable).
+  d14_before=$(git_in "$VC" rev-parse HEAD)
+  cat <<'UNEXCLUDED_FIXTURE' >"$VC/check-something.sh"
+#!/usr/bin/env bash
+echo $HOME
+UNEXCLUDED_FIXTURE
+  d14_out=$( (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") 2>&1 ); d14_rc=$?
+  assert_nz "D14 same violation outside console-kit path still blocked" "$d14_rc"
+  case "$d14_out" in
+  *shellcheck*"command not found"* | *shellcheck*"executable file not found"*)
+    fail "D14b block attributable to shellcheck" "shellcheck unavailable — the lint never ran"
+    ;;
+  *)
+    assert_eq "D14b block attributable to shellcheck" "yes" \
+      "$(yn "$(grep -qE 'SC[0-9]{4}' <<< "$d14_out" && echo 0 || echo 1)")"
+    ;;
+  esac
+  assert_eq "D15 unexcluded script NOT committed" "$d14_before" "$(git_in "$VC" rev-parse HEAD)"
 
   # =========================================================================
   # Phase E — clone-with-remote (no marker, PAST unborn HEAD): autosync must

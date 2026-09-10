@@ -24,6 +24,9 @@
 #                       (no banner, no plan, no changes), then exit 0.
 #   --dry-run           print the plan, make zero filesystem changes.
 #   --yes               skip the confirm prompt (used by the /luna-upgrade skill).
+#   --backup-dir DIR    (optional) the pre-computed backup dest for this run,
+#                       named in the local-edit-withheld message so an operator
+#                       can recover the pre-upgrade file (HIMMEL-2886).
 #
 # Version source = the template's marketplace/.claude-plugin/marketplace.json
 # metadata.version. The vault records its level in .vault-template.json; a
@@ -41,12 +44,14 @@ VAULT_DIR=""
 DRY_RUN=0
 ASSUME_YES=0
 CHECK_ONLY=0
+BACKUP_DIR=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --template-dir) TEMPLATE_DIR="${2:-}"; shift 2 ;;
         --vault-dir)    VAULT_DIR="${2:-}"; shift 2 ;;
+        --backup-dir)   BACKUP_DIR="${2:-}"; shift 2 ;;
         --dry-run)      DRY_RUN=1; shift ;;
         --check)        CHECK_ONLY=1; shift ;;
         --yes|-y)       ASSUME_YES=1; shift ;;
@@ -64,6 +69,8 @@ upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
                       (no banner, no plan, no changes), then exit 0.
   --dry-run           print the plan, make zero filesystem changes.
   --yes, -y           skip the confirm prompt.
+  --backup-dir DIR    (optional) pre-computed backup dest, named in the
+                      local-edit-withheld message.
 
 Refreshes template-owned files (scripts, .obsidian config, plugin assets, docs)
 WITHOUT touching user content (journal, notes, clips). Version source = the
@@ -228,6 +235,109 @@ if [ "$VAULT_VERSION" = "$TEMPLATE_VERSION" ] || ! ver_lt "$VAULT_VERSION" "$TEM
 fi
 
 # ---------------------------------------------------------------------------
+# Local-edit detection (HIMMEL-2886): an "overwrite"-class file the vault
+# itself has diverged on since its last stamped upgrade must not be silently
+# clobbered — the template's own committed history has no view of vault-local
+# edits, but the VAULT's git history does. STAMP_COMMIT is the last commit
+# that wrote .vault-template.json (i.e. the vault's last upgrade); comparing
+# a file's content there against its content NOW tells us whether the vault
+# edited it locally after that upgrade (vs. the file only ever having been
+# template-driven). A vault with no git repo, or no such commit (never
+# upgraded via a git-tracked flow), has no baseline to compare against, so
+# falls back to the pre-existing overwrite behavior.
+#
+# Known limitation, tracked as HIMMEL-2903 (not fixed here — flagged by CR,
+# out of scope for a minimal refuse-or-print fix): if a local edit to a
+# template-owned file is committed in the SAME commit that also advances the
+# stamp (e.g. a batching autosync), that commit becomes STAMP_COMMIT itself,
+# so the baseline it reads back already contains the edit. A later run then
+# sees no divergence from that (already-edited) baseline and would silently
+# accept the template's write. Detecting this needs a baseline independent
+# of the vault's own commit history (e.g. a per-file content snapshot
+# alongside .vault-template.json), which is a larger change than this
+# ticket scopes.
+STAMP_COMMIT=""
+# `git rev-parse --is-inside-work-tree`, not `[ -d "$VAULT_DIR/.git" ]`: a
+# worktree or a submodule has a `.git` FILE (a `gitdir: <path>` pointer), not
+# a directory, so the directory-only check silently fell back to the
+# pre-existing overwrite behavior for exactly those vaults.
+if git -C "$VAULT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    STAMP_COMMIT="$(git -C "$VAULT_DIR" log -1 --format=%H -- .vault-template.json 2>/dev/null)"
+fi
+
+# has_local_edit <rel> <dst> [print]: exit 0 iff <dst> differs from what was
+# committed at STAMP_COMMIT for <rel>. No stamp commit, or the file didn't
+# exist there (new template-owned file), means no baseline => not a local
+# edit. With [print]=1, also emits the "local edits withheld" line + a
+# unified diff of the withheld hunk — called once per file (the planning
+# pass only; the execute pass re-detects the same files but must not re-print).
+has_local_edit() {
+    local rel="$1" dst="$2" print="${3:-0}"
+    [ -n "$STAMP_COMMIT" ] || return 1
+    [ -f "$dst" ] || return 1
+    # `./$rel`, not a bare `$rel`: `git show <rev>:<path>` resolves a path
+    # relative to the CURRENT DIRECTORY only when it starts with `./` —
+    # a bare path is repo-root-relative, which is the WRONG root whenever
+    # VAULT_DIR is a subdirectory of a larger enclosing repo (verified: a
+    # bare path there errors "path exists, but not <rel>" and git's own
+    # hint names the `./` form).
+    #
+    # Existence check FIRST, and distinct from retrieval below: a file
+    # genuinely absent at STAMP_COMMIT (a new template-owned file) must
+    # return 1 same as always, but an OPERATIONAL failure retrieving a file
+    # that does exist there (a broken git object, or mktemp below failing to
+    # give us anywhere to write) must NOT be read the same way — silently
+    # falling through to "no local edit" on an error is the exact silent-
+    # overwrite failure mode this function exists to close, just via a
+    # different path. Fail CLOSED (withhold) on an operational error instead.
+    local cat_err
+    if ! cat_err="$(git -C "$VAULT_DIR" cat-file -e "$STAMP_COMMIT:./$rel" 2>&1)"; then
+        case "$cat_err" in
+            *"does not exist"*)
+                # Legitimately absent at the stamp commit (a new
+                # template-owned file) — not a local edit.
+                return 1
+                ;;
+            *)
+                # Any OTHER cat-file failure (corrupt object, invalid
+                # STAMP_COMMIT, etc.) is an operational error, not a proven
+                # absence — fail CLOSED rather than silently allowing the
+                # write through on a failure we cannot interpret.
+                [ "$print" = 1 ] && echo "  could not verify local edits for $rel (git cat-file failed) — withholding the write as a precaution"
+                return 0
+                ;;
+        esac
+    fi
+    local committed; committed="$(mktemp)"
+    if [ -z "$committed" ] || [ ! -e "$committed" ]; then
+        [ "$print" = 1 ] && echo "  could not verify local edits for $rel (mktemp failed) — withholding the write as a precaution"
+        return 0
+    fi
+    if ! git -C "$VAULT_DIR" show "$STAMP_COMMIT:./$rel" > "$committed" 2>/dev/null; then
+        rm -f "$committed"
+        [ "$print" = 1 ] && echo "  could not verify local edits for $rel (git show failed) — withholding the write as a precaution"
+        return 0
+    fi
+    local committed_sha dst_sha
+    committed_sha="$(sha_of "$committed")"
+    dst_sha="$(sha_of "$dst")"
+    if [ "$committed_sha" != "$dst_sha" ]; then
+        if [ "$print" = 1 ]; then
+            local backup_note="none (no --backup-dir given for this run)"
+            [ -n "$BACKUP_DIR" ] && backup_note="$BACKUP_DIR/$rel"
+            echo "  local edits withheld (not overwritten): $rel (backup: $backup_note)"
+            if command -v diff >/dev/null 2>&1; then
+                diff -u "$committed" "$dst" | sed 's/^/    /'
+            fi
+        fi
+        rm -f "$committed"
+        return 0
+    fi
+    rm -f "$committed"
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # Per-file classification. Returns one of:
 #   overwrite | jsonmerge | skipexists | threeway | report | skip
 # Extensible per-profile (HIMMEL-389 scope §8): a future wiki profile keys off
@@ -275,7 +385,7 @@ PLUGINS_SETUP_PRIOR_SHA="$(sha_of "$VAULT_DIR/$PLUGINS_SETUP_REL")"
 # ---------------------------------------------------------------------------
 # Build + print plan, then execute (unless --dry-run). One pass over the
 # template-owned files; user content is never enumerated so it can't be touched.
-n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0
+n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0 n_local_edit=0
 WRITE_FAILURES=0
 declare -a PLAN
 
@@ -412,8 +522,13 @@ process() {
             skip) ;;
             overwrite)
                 if [ "$(sha_of "$src")" != "$(sha_of "$dst")" ]; then
-                    PLAN+=("WRITE        $rel"); n_write=$((n_write+1))
-                    [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
+                    if has_local_edit "$rel" "$dst" "$((1 - execute))"; then
+                        PLAN+=("LOCAL-EDIT   $rel (vault has local edits since last upgrade — NOT overwritten)")
+                        n_local_edit=$((n_local_edit+1))
+                    else
+                        PLAN+=("WRITE        $rel"); n_write=$((n_write+1))
+                        [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
+                    fi
                 else
                     n_skip_identical=$((n_skip_identical+1))
                 fi ;;
@@ -461,7 +576,7 @@ process 0
 if [ "${#PLAN[@]}" -eq 0 ]; then
     echo "No template-owned files differ — vault content is current. Writing version stamp."
 else
-    echo "Plan ($((n_write)) write, $n_jsonmerge json-merge, $n_threeway _CLAUDE.md, $n_report report, $n_skip_identical identical, $n_skip_exists user-kept):"
+    echo "Plan ($((n_write)) write, $n_jsonmerge json-merge, $n_threeway _CLAUDE.md, $n_report report, $n_skip_identical identical, $n_skip_exists user-kept, $n_local_edit local-edit-withheld):"
     printf '  %s\n' "${PLAN[@]}"
 fi
 echo ""
@@ -480,7 +595,7 @@ fi
 
 # --- Execute pass ---
 PLAN=()
-n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0
+n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0 n_local_edit=0
 WRITE_FAILURES=0
 CLAUDE_MERGE_RESULT=""
 process 1
@@ -524,11 +639,12 @@ fi
 # target version — leave the stamp behind so a re-run re-processes (and
 # re-alerts) instead of a "current" stamp silently masking the gap. The stamp
 # is the last write, so an aborted run also re-runs cleanly (idempotent).
-if [ "$WRITE_FAILURES" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "$CLAUDE_MERGE_RESULT" = "error" ]; then
+if [ "$WRITE_FAILURES" -gt 0 ] || [ "$n_local_edit" -gt 0 ] || [ "$CLAUDE_MERGE_RESULT" = "conflict" ] || [ "$CLAUDE_MERGE_RESULT" = "error" ]; then
     echo "" >&2
     echo "upgrade: NOT writing the version stamp — the vault is partially upgraded" >&2
-    echo "  (write failures: $WRITE_FAILURES; _CLAUDE.md: ${CLAUDE_MERGE_RESULT:-ok}). Resolve the" >&2
-    echo "  issues above and re-run; template-owned writes are idempotent." >&2
+    echo "  (write failures: $WRITE_FAILURES; local edits withheld: $n_local_edit;" >&2
+    echo "  _CLAUDE.md: ${CLAUDE_MERGE_RESULT:-ok}). Resolve the issues above and re-run;" >&2
+    echo "  template-owned writes are idempotent." >&2
     exit 1
 fi
 
