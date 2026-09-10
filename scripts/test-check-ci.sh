@@ -2153,6 +2153,14 @@ else
     pass "2907-c no WAITING notice on a genuinely red cap"
 fi
 
+# 2907-d — the default --max-wait is now 900s, covering the measured slowest
+# shell-unit shard (12m16s-12m45s) with margin.
+if grep -Fq 'CHECK_CI_MAX_WAIT:-900' "$SCRIPT"; then
+    pass "2907-d default --max-wait raised to 900s"
+else
+    fail "2907-d default --max-wait raised to 900s" "MAX_WAIT default is not 900 in $SCRIPT"
+fi
+
 # --- HIMMEL-2278: the machine-generated-PR class ----------------------------
 #
 # Baseline for every case here: `cr-absent` — checks green, threads clean, and

@@ -29,8 +29,9 @@
 #                   watch can go green before a slower workflow has created
 #                   its check run at all. One settle round bounds that window;
 #                   a workflow that registers even later is out of scope.
-#   --max-wait <sec> bound on each `gh pr checks --watch` round (default 540;
-#                   0 = unbounded, today's behaviour). HIMMEL-2062: CodeRabbit
+#   --max-wait <sec> bound on each `gh pr checks --watch` round (default 900,
+#                   HIMMEL-2907 — the measured slowest shell-unit shard runs
+#                   12m16s-12m45s; 0 = unbounded, today's behaviour). HIMMEL-2062: CodeRabbit
 #                   leaves its rollup row "pending"/"Review queued" long after
 #                   every other check — and, when armed, its own gate status —
 #                   is decidable, so the watch keeps polling well past a 10-
@@ -113,8 +114,8 @@
 #   CHECK_CI_SLEEP_CMD     — the command every wall-clock wait in this script
 #                            goes through (default `sleep`); hermetic suites set
 #                            it to `:` so a simulated poll costs no real seconds
-#   CHECK_CI_MAX_WAIT      — default for --max-wait (flag wins; default 540, 0 =
-#                            unbounded; HIMMEL-2062)
+#   CHECK_CI_MAX_WAIT      — default for --max-wait (flag wins; default 900, 0 =
+#                            unbounded; HIMMEL-2062, raised in HIMMEL-2907)
 #   CR_ESCALATE_WAIT       — --escalate total wait budget (default 600)
 #   CR_ESCALATE_POLL       — --escalate seconds between re-reads (default 120)
 #   CR_PROFILE=none        — this repo has no CodeRabbit: skip the required-signal
@@ -168,7 +169,7 @@ env: CR_PROFILE=none skips the required-CodeRabbit-signal + body-findings + revi
      CR_BOT_LOGINS sets the review-author logins the freshness gate treats as the bot (default coderabbitai)
      CR_ESCALATE_WAIT / CR_ESCALATE_POLL tune --escalate for absent or stale-anchor reviews (defaults 600 / 120 seconds)
      CHECK_CI_SLEEP_CMD replaces the command every wall-clock wait runs (default sleep; hermetic suites set it to :)
-     CHECK_CI_MAX_WAIT sets --max-wait's default (default 540 seconds, 0 = unbounded; HIMMEL-2062)
+     CHECK_CI_MAX_WAIT sets --max-wait's default (default 900 seconds, 0 = unbounded; HIMMEL-2062, raised in HIMMEL-2907)
 note: "armed" above means the required-CodeRabbit-signal + body-findings + review-freshness gates are active —
       DISARMED by default. On a repo that has the CodeRabbit App, arm it once:  git config --local himmel.coderabbit true
       CR_APP=1|0 overrides; CR_PROFILE=none outranks both. On a disarmed repo the CodeRabbit-conditional
@@ -197,7 +198,9 @@ ESCALATE=0
 _cr_head_status_ok=0
 GRACE=180
 SETTLE="${CHECK_CI_SETTLE:-30}"
-MAX_WAIT="${CHECK_CI_MAX_WAIT:-540}"
+# Default 900s (HIMMEL-2907): the measured slowest shell-unit shard runs
+# 12m16s-12m45s, over the prior 540s default.
+MAX_WAIT="${CHECK_CI_MAX_WAIT:-900}"
 POLL="${CHECK_CI_POLL_INTERVAL:-10}"
 # Sleep seam (HIMMEL-1953). EVERY wall-clock wait below goes through this one
 # command word so a hermetic suite can inject `:` and never burn real seconds on
