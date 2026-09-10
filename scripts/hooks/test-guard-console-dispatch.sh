@@ -266,7 +266,7 @@ assert_rc "jq absent allows (fail-open)" 0 "$RC14"
 STUB_EARLY_EXIT="$TMP/stub-early-exit.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$STUB_EARLY_EXIT"
 chmod +x "$STUB_EARLY_EXIT"
-BIG_PAYLOAD=$(printf 'x%.0s' {1..70000})
+BIG_PAYLOAD=$(printf '%4194304s' '' | tr ' ' x)
 RC_PIPE_SHAPE=$(printf '%s' "$BIG_PAYLOAD" | "$BASH_ABS" "$STUB_EARLY_EXIT" >/dev/null 2>&1; echo $?)
 if [ "$RC_PIPE_SHAPE" != 0 ]; then
     echo "ok   RED: pipe shape into an early-exit reader does not reliably return 0 (rc=$RC_PIPE_SHAPE)"
