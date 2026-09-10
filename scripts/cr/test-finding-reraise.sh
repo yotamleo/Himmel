@@ -187,6 +187,8 @@ assert_has "$r5_out" "## Already Dispositioned Re-raises (1 found)" "r5 re-raise
 assert_has "$r5_out" "RE-RAISE (r4 disproved)" "r5 re-raise names the original round and verdict"
 assert_eq "$(ledger_value reraised "$head_r5" fingerprint)" "$fp_r4" "line/case/whitespace changes keep the fingerprint stable"
 assert_eq "$(ledger_value reraised "$head_r5" verdict)" "disproved" "r5 re-raise persists the inherited disposition"
+# HIMMEL-2901: this fixture amends with no adjudication round, so disposition_round
+# stays the producer round — the documented fallback that keeps pre-2901 rows rendering.
 assert_eq "$(ledger_value reraised "$head_r5" disposition_round)" "4" "r5 re-raise preserves the original disposition round"
 
 # A later explicit fixed disposition supersedes the old disproof. Fixed never
@@ -305,6 +307,7 @@ run_panel 9 'CACHE cleanup must retain 2 generations [scripts/cr/cache.sh:90]' s
 assert_eq "$?" "0" "r9 deferred re-raise panel run succeeds"
 assert_has "$(cat "$tmp/d9.out")" "RE-RAISE (r7 deferred)" "r9 still reports r7 rather than chaining through r8"
 assert_has "$(cat "$tmp/d9.out")" "## Suggestions (0 found)" "r9 deferred re-raise remains outside suggestion tally"
+# HIMMEL-2901: same no-adjudication-round fallback, carried across two re-raises.
 assert_eq "$(ledger_value deferred "$head_d9" disposition_round)" "7" "r9 durable row preserves r7 as disposition source"
 
 advance_head d10-changed-claim >/dev/null
@@ -551,6 +554,70 @@ process.stdout.write(String(finding.fingerprint||""));
 ')"
 assert_eq "$compat_shape" "1,1" "verdict-only compatibility uses an amend, not a duplicate finding"
 assert_fingerprint "$compat_fp" "original fingerprint survives verdict-only adjudication"
+
+# HIMMEL-2901 item 1: the round a verdict was ADJUDICATED in is its own field.
+# The finding keeps its first-seen observation round; the amend that sets the
+# verdict records the round of the /pr-check pass that wrote it, explicitly via
+# --disposition-round or from CR_REVIEW_ROUND. "First seen" is derived by the
+# reader as the earliest observation round across rows sharing this
+# branch+fingerprint, so an inherited re-raise never reports itself as first
+# seen. Rendering names both rounds only when they differ.
+checkout_branch adjudication-round
+head_ar4="$(advance_head adjudication-r4)"
+set_registry critic-a
+ar_claim='Adjudication round claim [scripts/cr/adjudication.sh:12]'
+run_panel 4 "$ar_claim" imp "$tmp/ar4.out" "$tmp/ar4.err"
+assert_eq "$?" "0" "adjudication-round seed panel run succeeds"
+id_ar4="$(finding_id_at adjudication-round "$head_ar4")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch adjudication-round --head "$head_ar4" \
+        --id "$id_ar4" --set verdict=disproved --disposition-round 5 \
+        --reason 'disproved in the r5 pass'
+) >/dev/null 2>"$tmp/ar-amend.err"
+assert_eq "$?" "0" "amend accepts an explicit adjudication round"
+head_ar6="$(advance_head adjudication-r6)"
+run_panel 6 "$ar_claim" imp "$tmp/ar6.out" "$tmp/ar6.err"
+assert_eq "$?" "0" "adjudication-round re-raise panel run succeeds"
+ar6_out="$(cat "$tmp/ar6.out")"
+assert_has "$ar6_out" "RE-RAISE (first seen r4 · dispositioned r5 disproved)" \
+    "re-raise names the first-seen round and the adjudication round when they differ"
+assert_has "$ar6_out" "## Important Issues (0 found)" "explicit adjudication round still suppresses the re-raise"
+assert_eq "$(ledger_value adjudication-round "$head_ar6" disposition_round)" "5" \
+    "durable re-raise row carries the adjudication round, not the producer round"
+assert_eq "$(ledger_value adjudication-round "$head_ar6" round)" "6" \
+    "durable re-raise row keeps its own observation round"
+
+# The next round must not report the r6 re-raise as first seen: first-seen is
+# the earliest observation of the fingerprint, r4.
+advance_head adjudication-r7 >/dev/null
+run_panel 7 "$ar_claim" imp "$tmp/ar7.out" "$tmp/ar7.err"
+assert_eq "$?" "0" "adjudication-round second re-raise panel run succeeds"
+assert_has "$(cat "$tmp/ar7.out")" "RE-RAISE (first seen r4 · dispositioned r5 disproved)" \
+    "first-seen round does not chain through the inherited re-raise"
+
+# CR_REVIEW_ROUND supplies the adjudication round when the flag is omitted:
+# an adjudication written during an r5 pass is an r5 disposition.
+checkout_branch adjudication-env
+head_ae3="$(advance_head adjudication-env-r3)"
+set_registry critic-a
+ae_claim='Ambient adjudication round claim [scripts/cr/adjudication.sh:40]'
+run_panel 3 "$ae_claim" imp "$tmp/ae3.out" "$tmp/ae3.err"
+assert_eq "$?" "0" "ambient adjudication seed panel run succeeds"
+id_ae3="$(finding_id_at adjudication-env "$head_ae3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" CR_REVIEW_ROUND=5 bash "$LEDGER_APPEND" amend --branch adjudication-env \
+        --head "$head_ae3" --id "$id_ae3" --set verdict=disproved --reason 'disproved during the r5 pass'
+) >/dev/null 2>"$tmp/ae-amend.err"
+assert_eq "$?" "0" "amend accepts an ambient adjudication round"
+head_ae6="$(advance_head adjudication-env-r6)"
+run_panel 6 "$ae_claim" imp "$tmp/ae6.out" "$tmp/ae6.err"
+assert_eq "$?" "0" "ambient adjudication re-raise panel run succeeds"
+assert_has "$(cat "$tmp/ae6.out")" "RE-RAISE (first seen r3 · dispositioned r5 disproved)" \
+    "CR_REVIEW_ROUND supplies the adjudication round when --disposition-round is omitted"
+assert_eq "$(ledger_value adjudication-env "$head_ae6" disposition_round)" "5" \
+    "ambient adjudication round reaches the durable row"
 
 # Sanity: every current panel run wrote one durable finding row; none was
 # silently dropped merely because it rendered in the already-dispositioned block.

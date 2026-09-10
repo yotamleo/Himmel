@@ -44,11 +44,21 @@ try {
 
 const states = new Map();
 const latest = new Map();
+// HIMMEL-2901: "first seen" is the earliest round this fingerprint was ever
+// OBSERVED on this branch, derived rather than persisted. An inherited re-raise
+// carries its own observation round, so reading `round` off the latest event
+// would report a later re-raise as the first sighting.
+const firstSeen = new Map();
 for (const row of ledgerRows) {
   if (row.kind === 'finding') {
     const state = { ...row };
     const sourceKey = findingKey(row.head, row.finding_id, row.artifact, row.perspective);
     states.set(sourceKey, state);
+    if (state.fingerprint && validRound(state.round)) {
+      const seenKey = dispositionKey(state);
+      const seen = firstSeen.get(seenKey);
+      if (seen === undefined || Number(state.round) < seen) firstSeen.set(seenKey, Number(state.round));
+    }
     if (state.fingerprint && state.verdict) {
       const key = dispositionKey(state);
       const previous = latest.get(key);
@@ -97,7 +107,10 @@ for (const row of ledgerRows) {
 
   if (Object.prototype.hasOwnProperty.call(row.set, 'verdict') && target.fingerprint && target.verdict) {
     const event = { ...target, disposition_severity: target.severity, _sourceKey: targetKey };
-    if (validRound(target.round)) event.disposition_round = Number(target.round);
+    // HIMMEL-2901: the amend states the round it adjudicated in. The producer
+    // round remains the fallback so pre-2901 amends keep rendering as before.
+    if (validRound(row.disposition_round)) event.disposition_round = Number(row.disposition_round);
+    else if (validRound(target.round)) event.disposition_round = Number(target.round);
     latest.set(dispositionKey(event), event);
     continue;
   }
@@ -133,10 +146,12 @@ for (const line of input) {
   if (!id) continue;
 
   const fingerprint = findingFingerprint(model, file, text);
-  const prior = fingerprint
-    ? latest.get([e.REVIEW_BRANCH, fingerprint, artifact, perspective].join(keySep))
-    : null;
+  const priorKey = fingerprint
+    ? [e.REVIEW_BRANCH, fingerprint, artifact, perspective].join(keySep)
+    : '';
+  const prior = priorKey ? latest.get(priorKey) : null;
   const sourceRound = prior && (prior.disposition_round || prior.round);
+  const firstSeenRound = priorKey ? firstSeen.get(priorKey) : undefined;
   const dispositionSeverity = prior && (prior.disposition_severity || prior.severity);
   const currentSeverityRank = severityRank(severity);
   const dispositionSeverityRank = severityRank(dispositionSeverity);
@@ -166,7 +181,12 @@ for (const line of input) {
     if (prior.reason) row.reason = prior.reason;
     if (prior.deferred_to) row.deferred_to = prior.deferred_to;
     const ticket = prior.verdict === 'deferred' && prior.deferred_to ? ` [${prior.deferred_to}]` : '';
-    reraises.push(`${text} — RE-RAISE (r${sourceRound} ${prior.verdict})${ticket}`);
+    // HIMMEL-2901: name both rounds only when the finding was adjudicated in a
+    // later round than it was first seen in; otherwise one round is the truth.
+    const rounds = validRound(firstSeenRound) && String(firstSeenRound) !== String(sourceRound)
+      ? `first seen r${firstSeenRound} · dispositioned r${sourceRound}`
+      : `r${sourceRound}`;
+    reraises.push(`${text} — RE-RAISE (${rounds} ${prior.verdict})${ticket}`);
   } else if (active[severity]) {
     active[severity].push(text);
   }

@@ -140,6 +140,16 @@ for _round_value in "$round" "$disposition_round"; do
   fi
 done
 
+# HIMMEL-2901: an adjudication written during a /pr-check pass belongs to THAT
+# round, not to the round that produced the finding. --disposition-round states
+# it explicitly; CR_REVIEW_ROUND is the ambient fallback for the amend verb, so
+# a gate that already exports the round does not have to thread a flag through.
+# Ambient input is not a flag: an unusable value is ignored, never a refusal.
+if [ "$kind" = "amend" ] && [ -z "$disposition_round" ] &&
+   expr "${CR_REVIEW_ROUND:-}" : '^[1-9][0-9]*$' >/dev/null 2>&1; then
+  disposition_round="$CR_REVIEW_ROUND"
+fi
+
 # A deferral is only honest if it is TRACKED. Validate the ticket key here so a
 # typo cannot silently produce a deferral the gate then rejects for reasons the
 # caller has to reverse-engineer.
@@ -639,6 +649,12 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
     }
     const rec={kind:"amend",ts:e.TS,branch:e.BRANCH,target_head:target.head,finding_id:e.ID,
                artifact:e.ARTIFACT,perspective:e.PERSPECTIVE,set,reason:e.REASON};
+    // HIMMEL-2901: the round a verdict was ADJUDICATED in is not the round the
+    // finding was produced in. Record it on the amend event so the reader can
+    // render "first seen rN / dispositioned rM" instead of reporting the
+    // producer round as the disposition round. Only an amend that actually
+    // sets a verdict is an adjudication; a bookkeeping amend carries no round.
+    if(e.DISPOSITION_ROUND&&set.verdict) rec.disposition_round=Number(e.DISPOSITION_ROUND);
     fs.appendFileSync(led, JSON.stringify(rec)+"\n");
     process.stderr.write("ledger-append.sh: amended "+e.ID+" at "+e.HEAD_.slice(0,8)+" -> "
       +JSON.stringify(set)+"\n");

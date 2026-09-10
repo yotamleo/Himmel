@@ -1012,4 +1012,21 @@ check "batch numeric/string round controls normalize to numbers" "$(L="$BRVL" no
 check "batch numeric/string disposition-round controls normalize to numbers" "$(L="$BRVL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").filter(Boolean).map(JSON.parse);console.log(r.filter(x=>x.disposition_round!==undefined).map(x=>typeof x.disposition_round+":"+x.disposition_round).sort().join(","))')" "number:4,number:5"
 check "batch absent round metadata remains absent" "$(L="$BRVL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").filter(Boolean).map(JSON.parse).find(x=>x.finding_id==="round-absent");console.log(("round" in r)+","+("disposition_round" in r))')" "false,false"
 
+# HIMMEL-2901: an amend that sets a VERDICT records the round it adjudicated in,
+# explicitly or from the ambient CR_REVIEW_ROUND. A bookkeeping amend is not an
+# adjudication, so it records no round at all.
+ARL="$tmp/amend-round.jsonl"
+AR_HEAD=$(printf '%040d' 90123)
+CR_LEDGER="$ARL" bash "$LA" finding --branch b --head "$AR_HEAD" --model critic-a --id amend-round --severity imp --file f --line 20 --verdict '' --round 4 --text '- [amend-round]: adjudication round claim [f:20]'
+CR_LEDGER="$ARL" bash "$LA" amend --branch b --head "$AR_HEAD" --id amend-round --set verdict=disproved --disposition-round 5 --reason 'disproved in the r5 pass' 2>"$tmp/amend-round.err"
+check "amend accepts an explicit adjudication round" "$?" "0"
+CR_LEDGER="$ARL" CR_REVIEW_ROUND=7 bash "$LA" amend --branch b --head "$AR_HEAD" --id amend-round --set verdict=fixed --reason 'repaired during the r7 pass' 2>"$tmp/amend-round-env.err"
+check "amend accepts an ambient adjudication round" "$?" "0"
+CR_LEDGER="$ARL" CR_REVIEW_ROUND=9 bash "$LA" amend --branch b --head "$AR_HEAD" --id amend-round --set 'reason=bookkeeping only' --reason 'clarify the record' 2>"$tmp/amend-round-book.err"
+check "bookkeeping amend still writes" "$?" "0"
+check "verdict amends carry their adjudication round; a bookkeeping amend carries none" "$(L="$ARL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").map(JSON.parse);console.log(r.filter(x=>x.kind==="amend").map(x=>String(x.disposition_round)).join(","))')" "5,7,undefined"
+CR_LEDGER="$ARL" CR_REVIEW_ROUND=nope bash "$LA" amend --branch b --head "$AR_HEAD" --id amend-round --set verdict=disproved --reason 'ambient round is unusable' 2>"$tmp/amend-round-bad.err"
+check "an unusable ambient round is ignored, not refused" "$?" "0"
+check "an unusable ambient round records no adjudication round" "$(L="$ARL" node -e 'const r=require("fs").readFileSync(process.env.L,"utf8").trim().split("\n").map(JSON.parse);const a=r.filter(x=>x.kind==="amend").pop();console.log(String(a.disposition_round))')" "undefined"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
