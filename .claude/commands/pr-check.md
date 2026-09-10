@@ -748,9 +748,11 @@ Steps:
    ```
    Paste its summary line. Exit 0 = done. Exit 3 = it printed each
    `still-open <id>@<sha>` finding that re-raised at this head — name those in
-   the report and leave them `agreed`. Any other non-zero: fall back to a hand
-   `ledger-append.sh amend --set verdict=fixed` for the finding it could not
-   resolve.
+   the report and leave them `agreed` (never hand-amend a re-raised finding to
+   `fixed`). Any other non-zero (a malformed ledger row, an unresolvable
+   `--head`, or a ledger write failure) is an infrastructure failure, not a
+   per-finding one: STOP, report the exact stderr line, repair the cause, and
+   re-run `promote` — never hand-amend anything as a workaround.
 
 6. If either `N > 0`, or step 4.8 reported `threads_rc != 0`:
    - Leave the marker in place.
