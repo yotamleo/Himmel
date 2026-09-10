@@ -661,7 +661,27 @@ REASON="$reason" DETAIL="$detail" DEFERRED_TO="$deferred_to" TEXT="$text" RAW_TE
       if(k==="line") v=Number(v)||v;
       set[k]=v;
     }
-    const rec={kind:"amend",ts:e.TS,branch:e.BRANCH,target_head:target.head,finding_id:e.ID,
+    // HIMMEL-2909: --branch is not required on amend (unlike finding/avail/
+    // usage), so a caller that omits it used to write branch:"" — a
+    // branch-scoped read then sees the finding but not its disposition. `set`
+    // never carries `branch` (not in the allowed --set keys), so target.branch
+    // is always the original, un-amended branch of the targeted finding row —
+    // inherit it first. Fall back to the current checkout only when the
+    // target itself has none (a legacy pre-branch row); refuse rather than
+    // ever write "" again.
+    let branch=e.BRANCH;
+    if(!branch){
+      branch=target.branch||"";
+      if(!branch){
+        try{ branch=cp.execFileSync("git",["branch","--show-current"],{encoding:"utf8",stdio:["ignore","pipe","ignore"]}).trim(); }
+        catch{ branch=""; }
+      }
+      if(!branch){
+        process.stderr.write("ledger-append.sh: amend for "+e.ID+" has no --branch, the target finding row carries none, and the current checkout is not on a branch (detached HEAD) - refusing to write an empty branch (HIMMEL-2909).\n");
+        process.exit(3);
+      }
+    }
+    const rec={kind:"amend",ts:e.TS,branch,target_head:target.head,finding_id:e.ID,
                artifact:e.ARTIFACT,perspective:e.PERSPECTIVE,set,reason:e.REASON};
     // HIMMEL-2901: the round a verdict was ADJUDICATED in is not the round the
     // finding was produced in. Record it on the amend event so the reader can
