@@ -17,6 +17,9 @@
 # (`bash C:\Users\...\X.sh`) collapses when the hook command is parsed by a shell
 # (`\U`->`U`), so the hook silently never fires.
 #
+# The command is a SHELL string, so the path is also SHELL-ESCAPED for the
+# double-quoted context it lands in -- see WIRE_HOOK_CMD_JQ below (HIMMEL-2905).
+#
 # Dedup is by hook BASENAME with REPLACE semantics: re-running overwrites a
 # previously-wired (incl. broken backslash, or moved-clone) himmel hook rather
 # than appending a duplicate -- so a re-run repairs a bad install and never
@@ -41,6 +44,41 @@
 # Source it to call the functions directly, or invoke via bash (the BASH_SOURCE
 # guard below dispatches `wire-pretooluse-hooks.sh <settings> <prefix>`).
 set -euo pipefail
+
+# The hook-command composer, shared verbatim with the PowerShell twin
+# (wire-pretooluse-hooks.ps1) -- BOTH the PreToolUse specs and the SessionStart
+# hook object are built through it, so the two composers can never drift.
+#
+# HIMMEL-2892 round 6 / HIMMEL-2905: the JSON layer is escaped by jq, but the
+# `command` it carries is a SHELL string that Claude Code hands to a shell. It
+# lands inside DOUBLE quotes, where exactly four characters keep their meaning
+# -- `\`, `"`, `$` and a backtick -- so shesc() backslash-escapes those four
+# and nothing else. Before this, a checkout at e.g. `/opt/we"ird/clone` yielded
+# `bash "/opt/we"ird/clone/.../X.sh"`, whose unmatched quote is a syntax error:
+# the hook never ran and every installed guard was silently inert there.
+# (Backslashes are already forward-slashed by the callers; escaping them keeps
+# the rule complete for the double-quoted context rather than relying on that.)
+#
+# The ONE exemption is the project-scope prefix, which is the literal,
+# UNEXPANDED `$CLAUDE_PROJECT_DIR` -- Claude Code expands it at hook-fire time,
+# so escaping its `$` (or single-quoting the whole path) would point every
+# project-scope hook at a path that does not exist. That literal is a fixed,
+# metacharacter-free string by construction, so passing it through untouched is
+# safe. Escaping-in-double-quotes rather than switching to single quotes also
+# keeps the emitted command byte-identical for every ordinary path, so the
+# consumers that pattern-match it (unwire, detect-hook-dup, setup-wire) and
+# every already-installed settings.json are unaffected.
+# shellcheck disable=SC2016  # a jq program: $p/$pfx/$rel are jq bindings, not shell expansions
+WIRE_HOOK_CMD_JQ='
+  def shesc($p):
+    $p | split("\\") | join("\\\\")
+       | split("\"") | join("\\\"")
+       | split("$")  | join("\\$")
+       | split("`")  | join("\\`");
+  def hookcmd($pfx; $rel):
+    "bash \"" + (if $pfx == "$CLAUDE_PROJECT_DIR" then $pfx else shesc($pfx) end)
+    + "/scripts/hooks/" + $rel + "\"";
+'
 
 # The merge program, shared verbatim with the PowerShell twin
 # (wire-pretooluse-hooks.ps1) so the two can never drift. For each spec, walk
@@ -97,9 +135,9 @@ wire_pretooluse_hooks() {
   # alike. Shared verbatim with the PowerShell twin.
   local specs
   # shellcheck disable=SC2016  # a jq program: $pfx/$cmd/$name/$matcher are jq bindings, not shell expansions
-  specs=$(jq -n --arg pfx "$pfx" '
+  specs=$(jq -n --arg pfx "$pfx" "$WIRE_HOOK_CMD_JQ"'
     def spec($name; $matcher):
-      ("bash \"" + $pfx + "/scripts/hooks/" + $name + ".sh\"") as $cmd
+      hookcmd($pfx; $name + ".sh") as $cmd
       | { pat: ("scripts/hooks/" + $name + "[.]sh"),
           cmd: $cmd,
           stanza: { matcher: $matcher, hooks: [ { type: "command", command: $cmd } ] } };
@@ -136,7 +174,9 @@ wire_sessionstart_hook() {
   command -v jq >/dev/null 2>&1 || { echo "wire-pretooluse-hooks: jq required" >&2; return 1; }
   # shellcheck disable=SC1003
   local pfx="${prefix//'\'//}"
-  local cmd="bash \"${pfx}/scripts/hooks/${basename}\""
+  # The command is composed by jq (hookcmd), not by bash string interpolation,
+  # so the SessionStart hook carries exactly the same shell escaping as the
+  # PreToolUse trio and the PowerShell twin (HIMMEL-2905).
   local basepat="scripts/hooks/${basename//./[.]}"
   if [[ "$dry_run" -eq 1 ]]; then
     echo "DRY: merge SessionStart hook $basename into $settings (prefix: $prefix)"
@@ -150,8 +190,11 @@ wire_sessionstart_hook() {
     return 1
   fi
   [ -z "$(printf '%s' "$base" | tr -d '[:space:]')" ] && base="{}"
-  printf '%s' "$base" | jq --arg cmd "$cmd" --arg basepat "$basepat" '
-    .hooks = (.hooks // {})
+  # shellcheck disable=SC2016  # a jq program: $pfx/$hook/$cmd/$basepat are jq bindings
+  printf '%s' "$base" | jq --arg pfx "$pfx" --arg hook "$basename" --arg basepat "$basepat" \
+    "$WIRE_HOOK_CMD_JQ"'
+    hookcmd($pfx; $hook) as $cmd
+    | .hooks = (.hooks // {})
     | .hooks.SessionStart = ((.hooks.SessionStart // [])
         | map(.hooks = ((.hooks // [])
             | map(select((.command // "") | test($basepat) | not))))

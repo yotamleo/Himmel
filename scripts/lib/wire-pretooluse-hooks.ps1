@@ -8,7 +8,9 @@
 #
 # Dedup is by hook BASENAME with REPLACE semantics (a re-run repairs a bad/moved
 # install, never double-wires). Forward-slashes + quotes the hook path so a
-# Windows backslash path does not collapse when the hook command is parsed.
+# Windows backslash path does not collapse when the hook command is parsed, and
+# SHELL-ESCAPES it for the double-quoted context it lands in (HIMMEL-2905) --
+# see $WireHookCmdJq below.
 #
 # The PreToolUse block MERGES; it is never regenerated (HIMMEL-2892). himmel
 # owns exactly one field of an entry it installed -- that entry's `command`.
@@ -25,6 +27,32 @@ param(
     [string]$Prefix,
     [switch]$DryRun
 )
+
+# The hook-command composer, VERBATIM twin of WIRE_HOOK_CMD_JQ in
+# wire-pretooluse-hooks.sh -- keep the two byte-identical. Both the PreToolUse
+# specs and the SessionStart hook object are built through it.
+#
+# HIMMEL-2892 round 6 / HIMMEL-2905: jq escapes the JSON layer, but the
+# `command` it carries is a SHELL string Claude Code hands to a shell. It lands
+# inside DOUBLE quotes, where exactly four characters keep their meaning -- `\`,
+# `"`, `$` and a backtick -- so shesc() backslash-escapes those four and nothing
+# else. Before this, a checkout at e.g. `/opt/we"ird/clone` yielded
+# `bash "/opt/we"ird/clone/.../X.sh"`, whose unmatched quote is a syntax error:
+# the hook never ran and every installed guard was silently inert there.
+#
+# The ONE exemption is the project-scope prefix, the literal UNEXPANDED
+# `$CLAUDE_PROJECT_DIR` that Claude Code expands at hook-fire time -- escaping
+# its `$` would point every project-scope hook at a path that does not exist.
+$WireHookCmdJq = @'
+  def shesc($p):
+    $p | split("\\") | join("\\\\")
+       | split("\"") | join("\\\"")
+       | split("$")  | join("\\$")
+       | split("`")  | join("\\`");
+  def hookcmd($pfx; $rel):
+    "bash \"" + (if $pfx == "$CLAUDE_PROJECT_DIR" then $pfx else shesc($pfx) end)
+    + "/scripts/hooks/" + $rel + "\"";
+'@
 
 function Read-SettingsBase {
     param([Parameter(Mandatory = $true)][string]$SettingsPath, [string]$Who)
@@ -70,9 +98,9 @@ function Set-PretooluseHooks {
     # JSON malformed; jq then rejects --argjson outright and the settings file
     # goes unwired while the caller reads success. The jq program below is the
     # bash twin's, verbatim.
-    $specsProgram = @'
+    $specsProgram = $WireHookCmdJq + @'
     def spec($name; $matcher):
-      ("bash \"" + $pfx + "/scripts/hooks/" + $name + ".sh\"") as $cmd
+      hookcmd($pfx; $name + ".sh") as $cmd
       | { pat: ("scripts/hooks/" + $name + "[.]sh"),
           cmd: $cmd,
           stanza: { matcher: $matcher, hooks: [ { type: "command", command: $cmd } ] } };
@@ -153,7 +181,9 @@ function Set-SessionStartHook {
     )
     if (-not (Get-Command jq -ErrorAction SilentlyContinue)) { throw "wire-pretooluse-hooks: jq required" }
     $pfx = $Prefix.Replace('\', '/')
-    $cmd = "bash `"$pfx/scripts/hooks/$HookBasename`""
+    # The command is composed by jq (hookcmd), never by PowerShell string
+    # interpolation, so it carries exactly the same shell escaping as the
+    # PreToolUse trio and the bash twin (HIMMEL-2905).
     $basepat = "scripts/hooks/" + ($HookBasename -replace '\.', '[.]')
     if ($DryRun) { Write-Host "DRY: merge SessionStart hook $HookBasename into $SettingsPath (prefix: $Prefix)"; return }
 
@@ -178,8 +208,9 @@ function Set-SessionStartHook {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
         $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
-        $filter = @'
-.hooks = (.hooks // {})
+        $filter = $WireHookCmdJq + @'
+hookcmd($pfx; $hook) as $cmd
+| .hooks = (.hooks // {})
 | .hooks.SessionStart = ((.hooks.SessionStart // [])
     | map(.hooks = ((.hooks // [])
         | map(select((.command // "") | test($basepat) | not))))
@@ -190,7 +221,7 @@ function Set-SessionStartHook {
   else .hooks.SessionStart[$idx].hooks += [{"type":"command","command":$cmd}]
   end
 '@
-        $out = $base | jq --indent 2 --arg cmd $cmd --arg basepat $basepat $filter
+        $out = $base | jq --indent 2 --arg pfx $pfx --arg hook $HookBasename --arg basepat $basepat $filter
         if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq transform failed" }
         Write-SettingsAtomic -SettingsPath $SettingsPath -Json ($out -join "`n")
         Write-Host "  wired SessionStart $HookBasename -> $SettingsPath"
