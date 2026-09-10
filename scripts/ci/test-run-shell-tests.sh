@@ -67,77 +67,17 @@
 # Usage: bash scripts/ci/test-run-shell-tests.sh
 #
 # Exit codes: 0 — all cases passed; 1 — at least one failed.
+#
+# The shared fixtures (the sandboxed lock/rotation-cursor and its EXIT trap,
+# grepq, pass/fail/$failures, rst_tally, Case 17's mk_rotate_sandbox, the
+# red-control contract) live in run-shell-tests-fixture.sh — HIMMEL-2895 moved
+# them there so the suites this file is about to be split into share ONE copy
+# rather than six.
 set -uo pipefail
 
-# grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
-# pipeline. printf/echo-into-`grep -q` is a trap under this file's
-# `set -o pipefail`: grep -q exits the instant it matches, the producer
-# then takes SIGPIPE writing the remainder, and pipefail reports the
-# PIPELINE as failed — so a SUCCESSFUL match returns non-zero whenever
-# the match lands early in a large input. A here-string is not a pipeline,
-# so the status is grep's own verdict alone. (HIMMEL-1430.)
-grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
-
-RUNNER="$(cd "$(dirname "$0")" && pwd)/run-shell-tests.sh"
-
-if [ ! -f "$RUNNER" ]; then
-  echo "FAIL: runner not found at $RUNNER"
-  exit 1
-fi
-
-# Point every invocation below at a throwaway lock (HIMMEL-1338). Without
-# this, the cases here would contend for the real machine-wide lock with any
-# full-suite run happening elsewhere on the box and refuse with rc 2 — a red
-# suite that says nothing about the behaviour under test. Lock ACQUISITION is
-# covered on purpose in test-suite-concurrency.sh, against its own sandbox.
-SUITE_LOCK_SANDBOX=$(mktemp -d)
-export SUITE_LOCK_DIR="$SUITE_LOCK_SANDBOX/suite.lock"
-# Same reasoning for the rotation cursor (HIMMEL-2243): no case here may write
-# the real $HOME/.himmel cursor. Case 17 overrides this per sub-case with its
-# own cursor path to exercise rotation itself.
-#
-# Sharing ONE path across every case other than Case 17 is safe only because
-# none of them ever truncates: SUITE_RUN_BUDGET is set nowhere outside Case
-# 17, so the runner never reaches the write branch that would use this path.
-# Any FUTURE case that sets a truncating budget must pass its own
-# SUITE_ROTATE_STATE, exactly as every Case 17 sub-case does — otherwise it
-# inherits this shared sandbox path and its cursor write collides with
-# whatever else happens to share it.
-export SUITE_ROTATE_STATE="$SUITE_LOCK_SANDBOX/rotate.cursor"
-trap 'rm -rf "$SUITE_LOCK_SANDBOX"' EXIT
-
-# HIMMEL-2599: neutralize the ambient suite-control environment for every
-# nested $RUNNER invocation below. CI's shell-unit job (.github/workflows/ci.yml)
-# exports SUITE_TIER_MODE and SUITE_CHANGED_SINCE on every pull_request/push
-# leg (HIMMEL-2166) so the OUTER run-shell-tests.sh call narrows its own plan --
-# but this file's nested calls inherited them too, silently narrowing THEIR
-# plans (SUITE_TIER_MODE=fast tier-skips, --changed-since-shaped filtering) and
-# short-circuiting the very rotation/conditional-suite code paths under test.
-# Some cases already neutralize SUITE_TIER_MODE per-call (`env -u
-# SUITE_TIER_MODE`, HIMMEL-2120/2243) where they need it explicit and local;
-# unsetting both here once, for the whole file, closes the gap for every OTHER
-# call site instead of requiring each new case to remember its own `env -u`.
-# A case that wants to exercise these vars still sets them explicitly on its
-# own invocation, which overrides an unset ambient value the same way it would
-# override an inherited one.
-unset SUITE_TIER_MODE SUITE_CHANGED_SINCE
-
-# HIMMEL-2518/HIMMEL-2544: Case 18m-R's mutation control goes through the
-# RED-control contract helper rather than a hand-rolled inequality — the helper
-# asserts the mutant RAN, PRODUCED a value, and produced the SPECIFIC wrong
-# value predicted, the three properties a `!=` check cannot establish.
-# RED_CONTROL_TMPDIR keeps its stderr captures inside $SUITE_LOCK_SANDBOX, so
-# the EXIT trap above already cleans them.
-# shellcheck disable=SC2034  # read by red-control.sh, which the repo's lint
-# runs shellcheck WITHOUT -x and therefore cannot see.
-RED_CONTROL_TMPDIR="$SUITE_LOCK_SANDBOX"
-# shellcheck source=../lib/red-control.sh
+# shellcheck source=run-shell-tests-fixture.sh
 # shellcheck disable=SC1091
-. "$(cd "$(dirname "$0")" && pwd)/../lib/red-control.sh"
-
-failures=0
-pass() { printf '  PASS  %s\n' "$1"; }
-fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures + 1)); }
+. "$(cd "$(dirname "$0")" && pwd)/run-shell-tests-fixture.sh"
 
 # --------------------------------------------------------------------------
 # Each case builds its own minimal sandbox inline (only the suites that case
@@ -1144,18 +1084,7 @@ echo "== Case 17: resume rotation =="
 sb17=$(mktemp -d "${TMPDIR:-/tmp}/himmel-suite-rotate.XXXXXX")
 order17="$sb17/order.log"
 cursor17="$sb17/rotate.cursor"
-: > "$order17"
-for c in a b c d e f; do
-  dur=1
-  [ "$c" = "a" ] && dur=25
-  cat > "$sb17/test-$c.sh" <<SHEOF
-#!/usr/bin/env bash
-sleep $dur
-echo test-$c.sh >> "$order17"
-exit 0
-SHEOF
-  chmod +x "$sb17/test-$c.sh"
-done
+mk_rotate_sandbox "$sb17" "$order17"
 
 # 17a — truncation writes the cursor.
 echo "== Case 17a: truncation writes the cursor =="
@@ -3073,14 +3002,5 @@ fi
 rm -rf "$sb22h"
 fi
 
-# --------------------------------------------------------------------------
-# Final tally
-# --------------------------------------------------------------------------
-echo
-if [ "$failures" -eq 0 ]; then
-  echo "OK: all cases passed"
-  exit 0
-else
-  echo "FAIL: $failures case(s) failed"
-  exit 1
-fi
+
+rst_tally
