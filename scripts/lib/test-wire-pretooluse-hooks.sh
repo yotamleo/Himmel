@@ -126,8 +126,73 @@ s8f="$td/s8f.json"
 printf '%s' '{}' > "$s8f"
 bash "$wire" "$s8f" '/opt/we"ird/clone' >/dev/null 2>&1 || true
 check "quote in prefix: block still wired" "$(jq -r '.hooks.PreToolUse | length' "$s8f" 2>/dev/null)" "3"
-check "quote in prefix: prefix survives verbatim in the command" \
-  "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(contains("/opt/we\"ird/clone"))] | length' "$s8f" 2>/dev/null)" "3"
+# HIMMEL-2905: one layer further out than the JSON. The command is a SHELL
+# string, so the prefix must survive a shell round-trip too -- the pre-fix lib
+# emitted `bash "/opt/we"ird/clone/scripts/hooks/X.sh"`, whose unmatched quote
+# is a syntax error, so the hook (and with it every installed guard) was
+# silently inert on such a checkout. Assert the two properties that matter:
+# the command PARSES, and the single argument a shell would hand to bash is
+# exactly the intended path. RED before the fix: `bash -n -c` exits 2.
+cmd8f=$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s8f" 2>/dev/null)
+if bash -n -c "$cmd8f" 2>/dev/null; then echo "ok - quote in prefix: command parses as shell"
+else echo "FAIL - quote in prefix: command does not parse as shell: [$cmd8f]"; fails=$((fails+1)); fi
+# `${cmd8f#bash }` is the quoted path exactly as written; printf echoes what
+# the shell actually resolved it to -- no eval of the hook itself.
+check "quote in prefix: path round-trips through the shell" \
+  "$(bash -c "printf '%s\n' ${cmd8f#bash }" 2>/dev/null)" \
+  '/opt/we"ird/clone/scripts/hooks/auto-approve-safe-bash.sh'
+# ...and the SessionStart composer, which builds its command the same way.
+s8f2="$td/s8f2.json"
+( . "$wire"; wire_sessionstart_hook "$s8f2" '/opt/we"ird/clone' "inject-initiative.sh" 0 >/dev/null 2>&1 ) || true
+cmd8f2=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f2" 2>/dev/null)
+if bash -n -c "$cmd8f2" 2>/dev/null; then echo "ok - quote in prefix: SessionStart command parses as shell"
+else echo "FAIL - quote in prefix: SessionStart command does not parse as shell: [$cmd8f2]"; fails=$((fails+1)); fi
+check "quote in prefix: SessionStart path round-trips" \
+  "$(bash -c "printf '%s\n' ${cmd8f2#bash }" 2>/dev/null)" \
+  '/opt/we"ird/clone/scripts/hooks/inject-initiative.sh'
+
+# 8f2. CodeRabbit on PR #612: the hook BASENAME goes through the same escaper.
+# It is an ARGUMENT of wire_sessionstart_hook (and of the --sessionstart CLI),
+# not a hardcoded literal like the trio's names, so leaving it unescaped made
+# the rule cover only half its own input. Same two properties as 8f.
+s8f3="$td/s8f3.json"
+( . "$wire"; wire_sessionstart_hook "$s8f3" "C:/himmel" 'we"ird-hook.sh' 0 >/dev/null 2>&1 ) || true
+cmd8f3=$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f3" 2>/dev/null)
+if bash -n -c "$cmd8f3" 2>/dev/null; then echo "ok - quote in basename: command parses as shell"
+else echo "FAIL - quote in basename: command does not parse as shell: [$cmd8f3]"; fails=$((fails+1)); fi
+check "quote in basename: path round-trips through the shell" \
+  "$(bash -c "printf '%s\n' ${cmd8f3#bash }" 2>/dev/null)" \
+  'C:/himmel/scripts/hooks/we"ird-hook.sh'
+# ...and the DEDUP test must still recognise the command it just wrote (CR
+# round 3, [codex-1]). Escaping the basename without re-deriving the needle
+# from the same escaped string left the pattern unable to match its own
+# output, so a re-run APPENDED instead of replacing. RED before that fix:
+# 2 hook objects here, at the OLD path.
+( . "$wire"; wire_sessionstart_hook "$s8f3" "C:/moved" 'we"ird-hook.sh' 0 >/dev/null 2>&1 ) || true
+check "quote in basename: re-wire dedups (no double-wire)" \
+  "$(jq -r '[.hooks.SessionStart[].hooks[]] | length' "$s8f3" 2>/dev/null)" "1"
+check "quote in basename: re-wire repoints at the new clone path" \
+  "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8f3" 2>/dev/null)" \
+  'bash "C:/moved/scripts/hooks/we\"ird-hook.sh"'
+
+# 8g. NEGATIVE control for 8f (load-bearing): the project-scope prefix is the
+# LITERAL, unexpanded `$CLAUDE_PROJECT_DIR` -- Claude Code expands it at
+# hook-fire time. Escaping it (`\$CLAUDE_PROJECT_DIR`) or single-quoting it
+# would kill that expansion and point every project-scope hook at a
+# nonexistent path. Without this case, 8f would pass on a blanket escape.
+s8g="$td/s8g.json"
+bash "$wire" "$s8g" '$CLAUDE_PROJECT_DIR' >/dev/null
+# shellcheck disable=SC2016  # the literal, UNEXPANDED $CLAUDE_PROJECT_DIR is the assertion
+check "project scope: unexpanded \$CLAUDE_PROJECT_DIR kept verbatim" \
+  "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$s8g")" \
+  'bash "$CLAUDE_PROJECT_DIR/scripts/hooks/auto-approve-safe-bash.sh"'
+s8g2="$td/s8g2.json"
+# shellcheck disable=SC2016  # the literal, UNEXPANDED $CLAUDE_PROJECT_DIR is the assertion
+( . "$wire"; wire_sessionstart_hook "$s8g2" '$CLAUDE_PROJECT_DIR' "inject-initiative.sh" 0 >/dev/null )
+# shellcheck disable=SC2016  # the literal, UNEXPANDED $CLAUDE_PROJECT_DIR is the assertion
+check "project scope: SessionStart keeps the literal too" \
+  "$(jq -r '.hooks.SessionStart[0].hooks[0].command' "$s8g2")" \
+  'bash "$CLAUDE_PROJECT_DIR/scripts/hooks/inject-initiative.sh"'
 
 # 9. invalid JSON -> refused, file unchanged.
 s9="$td/s9.json"
