@@ -8,6 +8,15 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.22] — 2026-09-10
+
+### Fixed
+- **`test-vault-git.sh`'s D11e near-miss assertion avoids a pipefail SIGPIPE
+  risk (HIMMEL-2910 follow-up).** `grep -q` under `set -o pipefail` can
+  SIGPIPE its producer on an early match, flipping a real gitleaks-blocked
+  finding to read as a test failure; captures the pipeline into a variable
+  first instead of piping into `grep -q` directly.
+
 ## [0.4.21] — 2026-09-10
 
 ### Fixed

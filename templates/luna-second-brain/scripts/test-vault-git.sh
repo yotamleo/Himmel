@@ -287,8 +287,11 @@ else
   printf 'release-token: %s\n' 'cachyos-x8664-pid199037-abc' >"$VC/30-Resources/release-token-nearmiss.md"
   d11d_out=$( (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") 2>&1 ); d11d_rc=$?
   assert_nz "D11d release-token near-miss (suffixed) still blocked (non-zero)" "$d11d_rc"
-  printf '%s\n' "$d11d_out" | grep -qE 'leaks found: *[1-9][0-9]*'
-  assert_ok "D11e release-token near-miss block attributable to gitleaks (secret scan)" "$?"
+  # pipefail-ok note (known-findings grep-q-pipe-under-pipefail): captured
+  # into a variable first, not `| grep -q` directly, so a SIGPIPE'd printf
+  # under `set -o pipefail` can never flip this to non-zero on a real match.
+  d11e_leak=$(printf '%s\n' "$d11d_out" | grep -E 'leaks found: *[1-9][0-9]*')
+  assert_ok "D11e release-token near-miss block attributable to gitleaks (secret scan)" "$([ -n "$d11e_leak" ] && echo 0 || echo 1)"
   assert_eq "D11f release-token near-miss NOT in committed tree" "$d11_before" "$(git_in "$VC" rev-parse HEAD)"
   rm -f "$VC/30-Resources/release-token-nearmiss.md"
 
