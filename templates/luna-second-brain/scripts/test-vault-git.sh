@@ -259,6 +259,39 @@ else
   assert_eq "D11 release-token note IS in committed tree" "1" \
     "$(git_in "$VC" ls-tree -r HEAD --name-only | grep -c 'release-token\.md' || true)"
 
+  # D11b-D11c (HIMMEL-2910): the allowlist tolerates one trailing
+  # sentence-punctuation character after the token. A leg that writes the
+  # token bare (no backticks) into a LIVE bullet followed by sentence
+  # punctuation let gitleaks capture that trailing character into the
+  # secret, missing the pre-2910 anchor, and stalled a real autosync for
+  # 30 min (2026-09-10). This proves the widened regex still lets that
+  # shape through.
+  # Fixture split the same way D8's near-miss is (see its comment above):
+  # this file is ALSO scanned by himmel's own top-level gitleaks pre-commit
+  # hook (which carries none of the template's release-token allowlist), so
+  # the token-plus-punctuation literal is passed as a printf ARGUMENT rather
+  # than inlined into the format string -- byte-identical fixture content,
+  # without a "release-token: <secret-shaped-value>" line sitting in this
+  # test's own source for the generic-api-key rule to catch.
+  printf 'release-token: %s\n' 'cachyos-x8664-pid199037.' >"$VC/30-Resources/release-token-punct.md"
+  (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") >/dev/null 2>&1
+  assert_ok "D11b trailing-punctuation release-token allowlist: autosync commits (exit 0)" "$?"
+  assert_eq "D11c trailing-punctuation release-token note IS in committed tree" "1" \
+    "$(git_in "$VC" ls-tree -r HEAD --name-only | grep -c 'release-token-punct\.md' || true)"
+
+  # D11d-D11f (HIMMEL-2910): a real-looking suffixed near-miss of the SAME
+  # token shape must still be blocked -- the widened regex must not have
+  # opened the anchor past one optional trailing punctuation character.
+  # Same printf-argument split as D11b above, for the same reason.
+  d11_before=$(git_in "$VC" rev-parse HEAD)
+  printf 'release-token: %s\n' 'cachyos-x8664-pid199037-abc' >"$VC/30-Resources/release-token-nearmiss.md"
+  d11d_out=$( (cd "$VC" && LUNA_VAULT_AUTOSYNC=1 bash "$VC/scripts/vault-autosync.sh") 2>&1 ); d11d_rc=$?
+  assert_nz "D11d release-token near-miss (suffixed) still blocked (non-zero)" "$d11d_rc"
+  printf '%s\n' "$d11d_out" | grep -qE 'leaks found: *[1-9][0-9]*'
+  assert_ok "D11e release-token near-miss block attributable to gitleaks (secret scan)" "$?"
+  assert_eq "D11f release-token near-miss NOT in committed tree" "$d11_before" "$(git_in "$VC" rev-parse HEAD)"
+  rm -f "$VC/30-Resources/release-token-nearmiss.md"
+
   # D12-D13 (HIMMEL-2886): the template carries the console-kit shellcheck
   # exclude. Archived console-kit scripts under handovers/**/specs/console-kit-*/
   # are scratchpad copies, not shipped code; linting them stalled the vault's
