@@ -4111,7 +4111,14 @@ async function cmdInstall(args) {
   if ((answers.scope || 'project') === 'project' && projectTargetIsHimmelCheckout()) {
     console.error(`himmelctl: --scope project is not valid inside the himmel checkout (${displayPath(projectTargetDir())})`);
     console.error('  its .claude/settings.json is the SOURCE this installer generates from, never a target.');
-    console.error(`  use: bash ${displayPath(path.join(repoRoot(), 'scripts', contributeOverlayFilename()))}   (contributor gates), then: node scripts/himmelctl/bin.js install --scope user`);
+    // Both paths are shell-quoted and ABSOLUTE (CR round 3, [codex-1]): a
+    // checkout path containing a space breaks the unquoted `bash <path>`, and
+    // the relative `node scripts/himmelctl/bin.js` only resolves from the
+    // checkout root — while the refusal fires from whatever subdirectory the
+    // operator ran it in, which is exactly where they will paste it back.
+    const setupCmd = shellQuote(displayPath(path.join(repoRoot(), 'scripts', contributeOverlayFilename())));
+    const binCmd = shellQuote(displayPath(path.join(repoRoot(), 'scripts', 'himmelctl', 'bin.js')));
+    console.error(`  use: bash ${setupCmd}   (contributor gates), then: node ${binCmd} install --scope user`);
     return 1;
   }
 

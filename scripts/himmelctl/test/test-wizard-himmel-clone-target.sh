@@ -121,6 +121,14 @@ grepq "$outA" -F 'scripts/setup.sh' \
   || fail "case a: the remedy must name scripts/setup.sh, forward-slashed so the printed 'bash <path>' line is pasteable: $outA"
 grepq "$outA" -F 'install --scope user' \
   || fail "case a: the remedy must name 'install --scope user': $outA"
+# CR round 3 [codex-1]: the remedy's node command must be ABSOLUTE. The refusal
+# fires from whatever subdirectory the operator ran it in — which is where they
+# paste it back — and a relative `node scripts/himmelctl/bin.js` only resolves
+# from the checkout root.
+grepq "$outA" -F 'scripts/himmelctl/bin.js install --scope user' \
+  || fail "case a: the remedy's node command must carry a path to bin.js, not a bare relative one: $outA"
+grepq "$outA" -E "node '?$cloneA/scripts/himmelctl/bin\.js'? install --scope user" \
+  || fail "case a: the remedy's bin.js path must be ABSOLUTE (rooted at the checkout), so it resolves from any subdirectory: $outA"
 [ ! -f "$homeA/himmelctl-cache/install-profile.json" ] \
   || fail "case a: a REFUSED install must not write an install-profile cache (a 'scope: project' record would survive it)"
 echo "ok: case a — --scope project inside the himmel clone is refused with the remedy, and writes no cache"
@@ -145,6 +153,24 @@ set -e
 grepq "$outB" 'not valid inside the himmel checkout' \
   && fail "case b: the refusal must NOT fire on an adopter repo that merely vendors himmel's portable core: $outB"
 echo "ok: case b — a himmel-VENDORING adopter repo is not caught by the refusal (the detector is identity, not content)"
+
+# ── case a2: a checkout path containing a SPACE stays pasteable ────────────
+# CR round 3 [codex-1]: the remedy is `bash <path>` / `node <path>`, so an
+# unquoted path with a space produces a line that runs the wrong thing. Both
+# are shell-quoted; this is the control that proves it, and it is why the
+# fixture directory is deliberately named with a space in it.
+cloneA2="$work/a2 clone with space"; make_clone_fixture "$cloneA2"
+homeA2="$work/a2-home"; mkdir -p "$homeA2"
+set +e
+outA2=$(run_install "$cloneA2" "$homeA2" "$cloneA2" --scope project); rcA2=$?
+set -e
+[ "$rcA2" -ne 0 ] \
+  || fail "case a2: --scope project inside a himmel clone whose path contains a space should still be refused (got rc=$rcA2): $outA2"
+grepq "$outA2" -F "'$cloneA2/scripts/setup.sh'" \
+  || fail "case a2: a setup.sh path containing a space must be SHELL-QUOTED in the remedy, or the printed command runs the wrong thing: $outA2"
+grepq "$outA2" -F "'$cloneA2/scripts/himmelctl/bin.js'" \
+  || fail "case a2: the bin.js path containing a space must be SHELL-QUOTED in the remedy too: $outA2"
+echo "ok: case a2 — a checkout path with a space is refused and both remedy commands stay shell-quoted"
 
 # ── case c: scope control — user scope inside the clone is unaffected ───────
 cloneC="$work/c-clone"; make_clone_fixture "$cloneC"
