@@ -561,5 +561,308 @@ fi
 t29_stamp=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' "$V/.vault-template.json" 2>/dev/null)
 assert_eq "T29 stamp NOT advanced while a local edit is withheld" "0.9.0" "$t29_stamp"
 
+
+# ---------------------------------------------------------------------------
+# T30 (HIMMEL-2903): the local-edit baseline is a per-file content SNAPSHOT
+# recorded in the stamp, not the vault's git history — so an edit committed in
+# the SAME commit that advances the stamp (a batching autosync, exactly what
+# the luna github-sync plugin does every 10 min) is still caught. The git path
+# structurally cannot see this case: that commit IS the baseline it reads, and
+# it already contains the edit.
+T="$TMP/t30-tmpl"; V="$TMP/t30-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+stamp_vault "$V" "0.1.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial"
+# Upgrade #1 brings the vault to 0.9.0 AND records the content snapshot.
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1
+t30_snap=$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("files",{}).get(".gitleaks.toml",""))' "$V/.vault-template.json" 2>/dev/null)
+assert_eq "T30 stamp records a content snapshot for .gitleaks.toml" "sha256:$(sha_of "$V/.gitleaks.toml")" "$t30_snap"
+# The POISONING commit: the vault-local edit and the advanced stamp land in ONE
+# commit, so the commit the git path resolves as the baseline already carries
+# the edit.
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "autosync: local allowlist line + stamp 0.9.0"
+t30_stamp_commit=$(git -C "$V" log -1 --format=%H -- .vault-template.json)
+git -C "$V" show "$t30_stamp_commit:./.gitleaks.toml" > "$TMP/t30-git-baseline" 2>/dev/null
+assert_eq "T30 setup: the git baseline is poisoned (it already carries the edit)" "$(sha_of "$V/.gitleaks.toml")" "$(sha_of "$TMP/t30-git-baseline")"
+# A newer template that changes the same file.
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t30_pre_sha=$(sha_of "$V/.gitleaks.toml")
+t30_dry=$(bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --dry-run 2>&1)
+case "$t30_dry" in
+    *"local edits withheld (not overwritten): .gitleaks.toml"*"[baseline: snapshot]"*)
+        pass "T30 dry-run withholds .gitleaks.toml naming the snapshot provenance" ;;
+    *) fail "T30 dry-run withholds .gitleaks.toml naming the snapshot provenance" "got: $t30_dry" ;;
+esac
+# A file whose content still MATCHES its snapshot is not a local edit — the
+# snapshot must not withhold every differing file indiscriminately.
+case "$t30_dry" in
+    *"withheld (not overwritten): marketplace/.claude-plugin/marketplace.json"*)
+        fail "T30 dry-run still WRITES an unedited snapshot-matching file" "marketplace.json was withheld" ;;
+    *"WRITE        marketplace/.claude-plugin/marketplace.json"*)
+        pass "T30 dry-run still WRITES an unedited snapshot-matching file" ;;
+    *) fail "T30 dry-run still WRITES an unedited snapshot-matching file" "got: $t30_dry" ;;
+esac
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1; t30_rc=$?
+assert_eq "T30 apply does NOT overwrite the edit the git baseline cannot see" "$t30_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
+if [ "$t30_rc" -ne 0 ]; then pass "T30 apply exits non-zero (not a clean upgrade)"; else fail "T30 apply exits non-zero (not a clean upgrade)" "rc=0"; fi
+
+# ---------------------------------------------------------------------------
+# T31 (HIMMEL-2903): an OPERATIONAL `git log` failure (shallow clone, corrupt
+# index, permission error) must fail CLOSED, like the cat-file/show steps
+# already do — not be read as "no baseline" and fall through to the pre-2886
+# silent overwrite. Simulated with a PATH stub `git` that fails ONLY for `log`.
+T="$TMP/t31-tmpl"; V="$TMP/t31-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+# A PRE-snapshot stamp (3 keys, no "files") — the git path is the only baseline.
+stamp_vault "$V" "0.9.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial stamp 0.9.0"
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "local edit after the stamp"
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t31_stub="$TMP/t31-stub"; mkdir -p "$t31_stub"
+t31_real_git="$(command -v git)"
+# shellcheck disable=SC2016  # the single-quoted lines are the STUB's source, not this shell's
+{
+    echo '#!/usr/bin/env bash'
+    echo 'for a in "$@"; do'
+    echo '    if [ "$a" = "log" ]; then echo "fatal: simulated git log failure" >&2; exit 128; fi'
+    echo 'done'
+    printf 'exec "%s" "$@"\n' "$t31_real_git"
+} > "$t31_stub/git"
+chmod +x "$t31_stub/git"
+# The stub must actually do what the case claims: fail for `log`, pass every
+# other subcommand through (a stub that broke ALL of git would "pass" this case
+# for the wrong reason).
+t31_log_rc=$(PATH="$t31_stub:$PATH" git -C "$V" log -1 --format=%H >/dev/null 2>&1; echo $?)
+assert_eq "T31 setup: the stub makes git log fail operationally" "128" "$t31_log_rc"
+assert_eq "T31 setup: the stub passes other subcommands through" "true" "$(PATH="$t31_stub:$PATH" git -C "$V" rev-parse --is-inside-work-tree 2>/dev/null)"
+t31_pre_sha=$(sha_of "$V/.gitleaks.toml")
+t31_out=$(PATH="$t31_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t31_rc=$?
+assert_eq "T31 a failing git log withholds the write (fails closed)" "$t31_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
+case "$t31_out" in
+    *"could not determine the upgrade baseline (git log failed) — withholding .gitleaks.toml as a precaution"*)
+        pass "T31 names the failed baseline in the withheld line" ;;
+    *) fail "T31 names the failed baseline in the withheld line" "got: $t31_out" ;;
+esac
+if [ "$t31_rc" -ne 0 ]; then pass "T31 apply exits non-zero (not a clean upgrade)"; else fail "T31 apply exits non-zero (not a clean upgrade)" "rc=0"; fi
+
+# ---------------------------------------------------------------------------
+# T32 (HIMMEL-2903): the fail-closed git-log gate must NOT fire on a vault whose
+# repo simply has no commits yet — `git log` exits 128 there too ("does not have
+# any commits yet"), but that is a legitimately absent baseline, not an
+# operational failure. A blanket rc!=0 check would withhold every file on the
+# first upgrade of a freshly `git init`-ed vault.
+T="$TMP/t32-tmpl"; V="$TMP/t32-vault"
+make_template "$T" "1.0.0"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"
+printf 'gitleaks-content-v1\n' > "$V/.gitleaks.toml"
+stamp_vault "$V" "0.9.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+if git -C "$V" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    fail "T32 setup: the vault repo has no commits yet" "HEAD resolves"
+else
+    pass "T32 setup: the vault repo has no commits yet"
+fi
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1; t32_rc=$?
+assert_eq "T32 first upgrade of a commitless vault still writes the template file" "$(sha_of "$T/.gitleaks.toml")" "$(sha_of "$V/.gitleaks.toml")"
+assert_eq "T32 first upgrade of a commitless vault exits 0" "0" "$t32_rc"
+
+# ---------------------------------------------------------------------------
+# T33 (HIMMEL-2903, CR round 1 codex-1): the HEAD gate must read the EXACT rc.
+# `rev-parse --verify -q HEAD` exits 1 for "HEAD names no commit" (T32's
+# legitimately absent baseline) but 128 for an operational refs failure — an
+# unreadable refs backend, say. Collapsing the two lets a refs-layer error
+# masquerade as a fresh vault and fail OPEN, the same hole the git-log gate
+# closes one step down. Simulated with a PATH stub `git` that fails ONLY for
+# `rev-parse --verify` (so `--is-inside-work-tree` still succeeds and the
+# block is actually entered).
+T="$TMP/t33-tmpl"; V="$TMP/t33-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"; rm -f "$V/marketplace/.claude-plugin/marketplace.json"
+stamp_vault "$V" "0.9.0"
+git -C "$V" init -q
+git -C "$V" config user.email "test@example.com"
+git -C "$V" config user.name "Test"
+git -C "$V" add -A
+git -C "$V" commit -q -m "initial stamp 0.9.0"
+printf 'gitleaks-content-v1\nlocal-allowlist-line\n' > "$V/.gitleaks.toml"
+git -C "$V" add -A
+git -C "$V" commit -q -m "local edit after the stamp"
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t33_stub="$TMP/t33-stub"; mkdir -p "$t33_stub"
+t33_real_git="$(command -v git)"
+# shellcheck disable=SC2016  # the single-quoted lines are the STUB's source, not this shell's
+{
+    echo '#!/usr/bin/env bash'
+    echo 'saw_rp=0; saw_verify=0'
+    echo 'for a in "$@"; do'
+    echo '    [ "$a" = "rev-parse" ] && saw_rp=1'
+    echo '    [ "$a" = "--verify" ] && saw_verify=1'
+    echo 'done'
+    echo 'if [ "$saw_rp" = 1 ] && [ "$saw_verify" = 1 ]; then echo "fatal: simulated refs failure" >&2; exit 128; fi'
+    printf 'exec "%s" "$@"\n' "$t33_real_git"
+} > "$t33_stub/git"
+chmod +x "$t33_stub/git"
+# The stub must fail rev-parse --verify with 128 (NOT 1 — a 1 would be the
+# legitimate no-commit answer and would prove nothing) and leave the
+# work-tree probe working, or the case passes for the wrong reason.
+t33_verify_rc=$(PATH="$t33_stub:$PATH" git -C "$V" rev-parse --verify -q HEAD >/dev/null 2>&1; echo $?)
+assert_eq "T33 setup: the stub fails rev-parse --verify with 128, not 1" "128" "$t33_verify_rc"
+assert_eq "T33 setup: the stub leaves --is-inside-work-tree working" "true" "$(PATH="$t33_stub:$PATH" git -C "$V" rev-parse --is-inside-work-tree 2>/dev/null)"
+t33_pre_sha=$(sha_of "$V/.gitleaks.toml")
+t33_out=$(PATH="$t33_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t33_rc=$?
+assert_eq "T33 an operational rev-parse failure withholds the write (fails closed)" "$t33_pre_sha" "$(sha_of "$V/.gitleaks.toml")"
+case "$t33_out" in
+    *"could not determine the upgrade baseline (git rev-parse failed) — withholding .gitleaks.toml as a precaution"*)
+        pass "T33 names rev-parse (not git log) as the failed baseline step" ;;
+    *) fail "T33 names rev-parse (not git log) as the failed baseline step" "got: $t33_out" ;;
+esac
+if [ "$t33_rc" -ne 0 ]; then pass "T33 apply exits non-zero (not a clean upgrade)"; else fail "T33 apply exits non-zero (not a clean upgrade)" "rc=0"; fi
+
+# ---------------------------------------------------------------------------
+# T34 (HIMMEL-2903, CR round 1 codex-2): a snapshot scratch file that cannot be
+# created must ABORT before the first write. The stamp is rewritten wholesale,
+# so proceeding would strip the `files` map the vault already has — silently
+# demoting it back to the poisonable git baseline. Simulated by pointing TMPDIR
+# at a path that is not a directory, which is what makes mktemp fail.
+T="$TMP/t34-tmpl"; V="$TMP/t34-vault"
+make_template "$T" "0.9.0"
+printf 'gitleaks-content-v1\n' > "$T/.gitleaks.toml"
+mkdir -p "$V"; cp -r "$T/." "$V/"
+stamp_vault "$V" "0.1.0"
+# A first upgrade under the current template records the snapshot to protect.
+bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes >/dev/null 2>&1
+t34_files_before=$("$PY" -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("files",{})))' "$V/.vault-template.json" 2>/dev/null)
+if [ "${t34_files_before:-0}" -gt 0 ]; then
+    pass "T34 setup: the vault carries a content snapshot to protect"
+else
+    fail "T34 setup: the vault carries a content snapshot to protect" "files keys=$t34_files_before"
+fi
+t34_stamp_before=$(sha_of "$V/.vault-template.json")
+printf '{"metadata":{"version":"1.0.0"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"
+printf 'gitleaks-content-v2\n' > "$T/.gitleaks.toml"
+t34_notdir="$TMP/t34-not-a-dir"; printf 'x\n' > "$t34_notdir"
+# Precondition: mktemp really does fail under this TMPDIR (otherwise the case
+# would "pass" without ever exercising the abort).
+t34_mktemp_rc=$(TMPDIR="$t34_notdir" mktemp >/dev/null 2>&1; echo $?)
+if [ "$t34_mktemp_rc" -ne 0 ]; then pass "T34 setup: mktemp fails under the broken TMPDIR"; else fail "T34 setup: mktemp fails under the broken TMPDIR" "rc=0"; fi
+t34_gitleaks_before=$(sha_of "$V/.gitleaks.toml")
+t34_out=$(TMPDIR="$t34_notdir" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t34_rc=$?
+assert_eq "T34 a failed snapshot scratch file aborts rather than writing" "$t34_gitleaks_before" "$(sha_of "$V/.gitleaks.toml")"
+assert_eq "T34 the existing stamp (and its snapshot) is left intact" "$t34_stamp_before" "$(sha_of "$V/.vault-template.json")"
+assert_eq "T34 the abort exits 2" "2" "$t34_rc"
+case "$t34_out" in
+    *"aborting before any change"*) pass "T34 says it aborted before changing anything" ;;
+    *) fail "T34 says it aborted before changing anything" "got: $t34_out" ;;
+esac
+
+
+# ---------------------------------------------------------------------------
+# T35/T36 (HIMMEL-2903, CR round 2): snapshot persistence must fail CLOSED on
+# BOTH sides of the scratch file. The stamp is rewritten wholesale, so a run
+# that records the snapshot only partially (append fails) or cannot read it
+# back (read fails) would replace a complete baseline with a partial or absent
+# one — the poisoned-baseline hole reopened from the other end.
+#
+# Isolating that needs a failure that touches ONLY the snapshot scratch file:
+# a blanket read-only TMPDIR breaks the file writes and the _CLAUDE.md 3-way
+# too, so the run fails for an unrelated reason and the case proves nothing.
+# Hence a PATH stub `mktemp` that recognises the snapshot's OWN template
+# (`luna-upgrade-snapshot.XXXXXX`) and hands back a file with a hostile mode,
+# passing every other mktemp call through untouched.
+#
+# mk_mktemp_stub <dir> <mode> — a stub that chmods only the snapshot file.
+mk_mktemp_stub() {
+    local dir="$1" mode="$2" real; real="$(command -v mktemp)"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2016  # the single-quoted lines are the STUB's source, not this shell's
+    {
+        echo '#!/usr/bin/env bash'
+        printf 'real=%s\n' "$real"
+        printf 'mode=%s\n' "$mode"
+        echo 'for a in "$@"; do'
+        echo '    if [ "$a" = "luna-upgrade-snapshot.XXXXXX" ]; then'
+        echo '        f="$("$real" "$@")" || exit $?'
+        echo '        chmod "$mode" "$f" || exit 1'
+        printf '%s\n' '        printf "%s\\n" "$f"'
+        echo '        exit 0'
+        echo '    fi'
+        echo 'done'
+        echo 'exec "$real" "$@"'
+    } > "$dir/mktemp"
+    chmod +x "$dir/mktemp"
+}
+
+# t35_fixture <tmpl> <vault> — a vault already carrying a complete snapshot,
+# plus a newer template that changes one overwrite-class file.
+t35_fixture() {
+    local t="$1" v="$2"
+    make_template "$t" "0.9.0"
+    printf 'gitleaks-content-v1\n' > "$t/.gitleaks.toml"
+    mkdir -p "$v"; cp -r "$t/." "$v/"
+    stamp_vault "$v" "0.1.0"
+    bash "$UPGRADE" --template-dir "$t" --vault-dir "$v" --yes >/dev/null 2>&1
+    printf '{"metadata":{"version":"1.0.0"}}\n' > "$t/marketplace/.claude-plugin/marketplace.json"
+    printf 'gitleaks-content-v2\n' > "$t/.gitleaks.toml"
+}
+
+snap_keys() { "$PY" -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("files",{})))' "$1" 2>/dev/null; }
+
+# --- T35: the APPEND half. A read-only scratch file (0444) means every
+# record_snapshot row is dropped; the run must refuse to stamp.
+T="$TMP/t35-tmpl"; V="$TMP/t35-vault"
+t35_fixture "$T" "$V"
+t35_keys_before=$(snap_keys "$V/.vault-template.json")
+if [ "${t35_keys_before:-0}" -gt 0 ]; then pass "T35 setup: the vault carries a complete content snapshot"; else fail "T35 setup: the vault carries a complete content snapshot" "keys=$t35_keys_before"; fi
+t35_stamp_before=$(sha_of "$V/.vault-template.json")
+t35_stub="$TMP/t35-stub"; mk_mktemp_stub "$t35_stub" 0444
+# Precondition: the stub really does hand back an unappendable snapshot file,
+# and really does pass a NON-snapshot mktemp through writable (or the case
+# would be the blanket-failure control it exists to replace).
+t35_probe=$(PATH="$t35_stub:$PATH" mktemp -t luna-upgrade-snapshot.XXXXXX)
+if printf 'x\n' >> "$t35_probe" 2>/dev/null; then fail "T35 setup: the stub's snapshot file rejects appends" "append succeeded"; else pass "T35 setup: the stub's snapshot file rejects appends"; fi
+t35_other=$(PATH="$t35_stub:$PATH" mktemp)
+if printf 'x\n' >> "$t35_other" 2>/dev/null; then pass "T35 setup: the stub passes other mktemp calls through writable"; else fail "T35 setup: the stub passes other mktemp calls through writable" "append failed"; fi
+t35_out=$(PATH="$t35_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t35_rc=$?
+assert_eq "T35 an unrecordable snapshot leaves the stamp byte-identical" "$t35_stamp_before" "$(sha_of "$V/.vault-template.json")"
+assert_eq "T35 the existing snapshot survives intact" "$t35_keys_before" "$(snap_keys "$V/.vault-template.json")"
+if [ "$t35_rc" -ne 0 ]; then pass "T35 exits non-zero rather than stamping"; else fail "T35 exits non-zero rather than stamping" "rc=0, out: $t35_out"; fi
+
+# --- T36: the READ half. A write-only scratch file (0200) records fine but
+# cannot be read back at stamp time; the stamp must not be written without it.
+T="$TMP/t36-tmpl"; V="$TMP/t36-vault"
+t35_fixture "$T" "$V"
+t36_keys_before=$(snap_keys "$V/.vault-template.json")
+t36_stamp_before=$(sha_of "$V/.vault-template.json")
+t36_stub="$TMP/t36-stub"; mk_mktemp_stub "$t36_stub" 0200
+t36_probe=$(PATH="$t36_stub:$PATH" mktemp -t luna-upgrade-snapshot.XXXXXX)
+if printf 'x\n' >> "$t36_probe" 2>/dev/null; then pass "T36 setup: the stub's snapshot file accepts appends"; else fail "T36 setup: the stub's snapshot file accepts appends" "append failed"; fi
+if cat "$t36_probe" >/dev/null 2>&1; then fail "T36 setup: the stub's snapshot file rejects reads" "read succeeded"; else pass "T36 setup: the stub's snapshot file rejects reads"; fi
+t36_out=$(PATH="$t36_stub:$PATH" bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" --yes 2>&1); t36_rc=$?
+assert_eq "T36 an unreadable snapshot leaves the stamp byte-identical" "$t36_stamp_before" "$(sha_of "$V/.vault-template.json")"
+assert_eq "T36 the existing snapshot survives intact" "$t36_keys_before" "$(snap_keys "$V/.vault-template.json")"
+if [ "$t36_rc" -ne 0 ]; then pass "T36 exits non-zero rather than stamping"; else fail "T36 exits non-zero rather than stamping" "rc=0, out: $t36_out"; fi
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi
