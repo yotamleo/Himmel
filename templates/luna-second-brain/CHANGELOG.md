@@ -8,6 +8,28 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.15] — 2026-09-10
+
+### Added
+- **`.gitleaks.toml` carries the queue-lock release-token allowlist (HIMMEL-2886).**
+  Every leg writes a release token shaped `<host>-<arch>-pid<N>` into its handover
+  doc's LIVE bullet by design (HIMMEL-2813); without this anchored regex, gitleaks'
+  generic-api-key rule flags the line on entropy and blocks the vault's github-sync
+  autosync commit. Previously a vault-local fix only — `/luna-upgrade` silently
+  reverted it (pure overwrite, nothing printed) because the template didn't carry it.
+- **`.pre-commit-config.yaml` carries the console-kit shellcheck exclude (HIMMEL-2886).**
+  Archived console-kit scripts under `handovers/**/specs/console-kit-*/` are scratchpad
+  copies, not shipped code; linting them stalled the same autosync sweep. Same silent-
+  revert history as above.
+
+### Fixed
+- **`luna-upgrade-all apply` no longer silently overwrites a vault-local edit to a
+  template-owned config file (HIMMEL-2886).** For an "overwrite"-class file the vault
+  has committed a local edit to since its last stamped upgrade, the run now withholds
+  that one write, prints `local edits overwritten: <file> (backup: <path>)` with the
+  lost hunk's diff, and does not classify the run `clean-upgrade` (or write the version
+  stamp) until the edit is reconciled by hand.
+
 ## [0.3.1] — 2026-07-28
 
 ### Changed

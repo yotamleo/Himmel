@@ -46,6 +46,12 @@ repos:
     rev: v0.10.0.1
     hooks:
       - id: shellcheck
+        # Console kits under handovers/**/specs/console-kit-*/ are archived
+        # ad-hoc monitor/arm scripts copied out of a session scratchpad so
+        # they survive a host reboot — not shipped code. Linting them here
+        # stalled the Obsidian github-sync sweep on 2026-09-07 (the sweep
+        # commits with hooks on; one SC2009/SC2034 warning = no commits).
+        exclude: ^handovers/.*/specs/console-kit-[^/]+/
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
