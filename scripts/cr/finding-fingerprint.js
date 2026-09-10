@@ -15,7 +15,10 @@ function foldWhitespace(value) {
 // An ALL-CAPS word outside backticks is indistinguishable from prose emphasis
 // ("CACHE cleanup"), so it still folds; put a constant in backticks to keep it.
 function isCodeToken(token) {
-  const core = token.replace(/^[^A-Za-z0-9_$.]+/, '').replace(/[^A-Za-z0-9_$.]+$/, '');
+  // Trim surrounding prose punctuation, the dot included: a sentence-ending
+  // `config.LOGLEVEL.` is still a dotted identifier, and leaving the period on
+  // stopped the dotted rule matching it at all (codex-1, HIMMEL-2901 round 1).
+  const core = token.replace(/^[^A-Za-z0-9_$]+/, '').replace(/[^A-Za-z0-9_$]+$/, '');
   if (!core) return false;
   return /[a-z][A-Z]/.test(core) ||
     core.includes('_') ||

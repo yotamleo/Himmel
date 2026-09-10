@@ -763,6 +763,34 @@ assert_eq "$?" "0" "bare-identifier prose-case panel run succeeds"
 assert_has "$(cat "$tmp/bi5.out")" "RE-RAISE (r3 disproved)" \
     "identical identifiers with different prose case still fold onto one fingerprint"
 
+# A dotted identifier that ENDS a sentence is still an identifier: the trailing
+# period is prose punctuation, not part of the name (codex-1, round 1).
+checkout_branch dotted-sentence-end
+head_ds3="$(advance_head dotted-sentence-r3)"
+set_registry critic-a
+ds_claim='The handler reads config.LOGLEVEL. [scripts/cr/case.sh:80]'
+run_panel 3 "$ds_claim" imp "$tmp/ds3.out" "$tmp/ds3.err"
+assert_eq "$?" "0" "dotted-sentence seed panel run succeeds"
+id_ds3="$(finding_id_at dotted-sentence-end "$head_ds3")"
+(
+    cd "$repo" || exit 1
+    CR_LEDGER="$ledger" bash "$LEDGER_APPEND" amend --branch dotted-sentence-end --head "$head_ds3" \
+        --id "$id_ds3" --set verdict=disproved --reason 'the LOGLEVEL claim is disproved'
+) >/dev/null 2>"$tmp/ds3-amend.err"
+assert_eq "$?" "0" "dotted-sentence fixture accepts the disproof"
+advance_head dotted-sentence-r4 >/dev/null
+run_panel 4 'The handler reads config.loglevel. [scripts/cr/case.sh:90]' imp "$tmp/ds4.out" "$tmp/ds4.err"
+assert_eq "$?" "0" "dotted-sentence case panel run succeeds"
+assert_has "$(cat "$tmp/ds4.out")" "## Important Issues (1 found)" \
+    "a sentence-ending dotted identifier keeps its case-significance"
+assert_lacks "$(cat "$tmp/ds4.out")" "RE-RAISE (" \
+    "a differing dotted identifier does not inherit a disposition through trailing punctuation"
+advance_head dotted-sentence-r5 >/dev/null
+run_panel 5 'THE HANDLER reads config.LOGLEVEL. [scripts/cr/case.sh:95]' imp "$tmp/ds5.out" "$tmp/ds5.err"
+assert_eq "$?" "0" "dotted-sentence prose-case panel run succeeds"
+assert_has "$(cat "$tmp/ds5.out")" "RE-RAISE (r3 disproved)" \
+    "prose case around an identical dotted identifier still folds onto one fingerprint"
+
 # The writer's standalone fingerprint copy must agree with the shared helper on
 # the case rules too, or a row it writes never matches a claim the panel reads.
 checkout_branch code-case-parity
