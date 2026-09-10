@@ -27,13 +27,18 @@ param(
 )
 
 # The Claude Code config dir -- twin of the bash lib's
-# _wire_statusline_config_dir(): CLAUDE_CONFIG_DIR wins, with a leading `~`
-# expanded; otherwise <home>/.claude. $env:HOME is unset on Windows PowerShell
-# 5.1, so USERPROFILE is the fallback there.
+# _wire_statusline_config_dir(), and of the hud's own getClaudeConfigDir()
+# (marketplace/plugins/claude-hud/src/claude-config-dir.ts): CLAUDE_CONFIG_DIR
+# wins, TRIMMED, with a leading `~` expanded; otherwise <home>/.claude.
+# IsNullOrWhiteSpace already treated a whitespace-only value as unset; the
+# explicit Trim() below extends that to a PADDED value, so a directory written
+# here is the same one the hud reads it back from. $env:HOME is unset on
+# Windows PowerShell 5.1, so USERPROFILE is the fallback there.
 function Get-ClaudeConfigDir {
     $homeDir = if ($env:HOME) { $env:HOME } else { $env:USERPROFILE }
     $d = $env:CLAUDE_CONFIG_DIR
     if ([string]::IsNullOrWhiteSpace($d)) { return (Join-Path $homeDir '.claude') }
+    $d = $d.Trim()
     if ($d -eq '~') { return $homeDir }
     if ($d.StartsWith('~/')) { return (Join-Path $homeDir $d.Substring(2)) }
     return $d

@@ -122,4 +122,27 @@ env -u CLAUDE_CONFIG_DIR HOME="$home13" bash "$HELPER" "$proj13/.claude/settings
 [ ! -e "$proj13/.claude/plugins" ] || fail "hud config leaked into the project dir with CLAUDE_CONFIG_DIR unset"
 echo "ok 13 CLAUDE_CONFIG_DIR unset falls back to \$HOME/.claude"
 
+# 14. CR (CodeRabbit) round 1: CLAUDE_CONFIG_DIR is TRIMMED, matching the hud's
+# own getClaudeConfigDir (`process.env.CLAUDE_CONFIG_DIR?.trim()`). A PADDED
+# value must resolve to the same directory as the unpadded one — otherwise the
+# installer writes the config somewhere the hud never reads it.
+padded_cfg="$TMP/cfg14"
+proj14="$TMP/proj14"; mkdir -p "$proj14/.claude"
+CLAUDE_CONFIG_DIR="   $padded_cfg   " bash "$HELPER" "$proj14/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ -f "$padded_cfg/plugins/claude-hud/config.json" ] \
+  || fail "a PADDED CLAUDE_CONFIG_DIR must resolve to the same dir the hud reads (expected $padded_cfg)"
+[ ! -e "$TMP/   $padded_cfg" ] || fail "padded CLAUDE_CONFIG_DIR leaked its whitespace into the path"
+echo "ok 14 padded CLAUDE_CONFIG_DIR is trimmed"
+
+# 15. ...and a WHITESPACE-ONLY value is treated as UNSET (the hud's trim makes
+# it falsy). Without the trim, bash resolves a RELATIVE directory literally
+# named with spaces, under whatever the cwd happens to be.
+home15="$TMP/home15"; mkdir -p "$home15"
+proj15="$TMP/proj15"; mkdir -p "$proj15/.claude"
+CLAUDE_CONFIG_DIR="   " HOME="$home15" bash "$HELPER" "$proj15/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ -f "$home15/.claude/plugins/claude-hud/config.json" ] \
+  || fail "a whitespace-only CLAUDE_CONFIG_DIR must fall back to \$HOME/.claude"
+[ ! -e "$proj15/.claude/plugins" ] || fail "whitespace-only CLAUDE_CONFIG_DIR leaked the hud config into the project dir"
+echo "ok 15 whitespace-only CLAUDE_CONFIG_DIR falls back to \$HOME/.claude"
+
 echo "ALL PASS"

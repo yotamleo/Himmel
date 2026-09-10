@@ -4111,14 +4111,22 @@ async function cmdInstall(args) {
   if ((answers.scope || 'project') === 'project' && projectTargetIsHimmelCheckout()) {
     console.error(`himmelctl: --scope project is not valid inside the himmel checkout (${displayPath(projectTargetDir())})`);
     console.error('  its .claude/settings.json is the SOURCE this installer generates from, never a target.');
+    // The contributor primitive is rendered from deriveOverlayCommand() — the
+    // SAME derivation that actually spawns it — rather than assumed to be
+    // `bash <script>` (CodeRabbit round 1). On Windows the primitive is
+    // setup.ps1, and `bash setup.ps1` is not a runnable command; the derived
+    // form carries pwsh + -ExecutionPolicy Bypass -File there, and bash on
+    // POSIX. Deriving it also means the printed line can never drift from the
+    // command himmelctl would really run.
+    //
     // Both paths are shell-quoted and ABSOLUTE (CR round 3, [codex-1]): a
-    // checkout path containing a space breaks the unquoted `bash <path>`, and
+    // checkout path containing a space breaks an unquoted path operand, and
     // the relative `node scripts/himmelctl/bin.js` only resolves from the
     // checkout root — while the refusal fires from whatever subdirectory the
     // operator ran it in, which is exactly where they will paste it back.
-    const setupCmd = shellQuote(displayPath(path.join(repoRoot(), 'scripts', contributeOverlayFilename())));
+    const setupCmd = displayCommand(deriveOverlayCommand());
     const binCmd = shellQuote(displayPath(path.join(repoRoot(), 'scripts', 'himmelctl', 'bin.js')));
-    console.error(`  use: bash ${setupCmd}   (contributor gates), then: node ${binCmd} install --scope user`);
+    console.error(`  use: ${setupCmd}   (contributor gates), then: node ${binCmd} install --scope user`);
     return 1;
   }
 

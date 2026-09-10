@@ -115,6 +115,20 @@ bash "$wire" "$s8e" "C:/himmel" >/dev/null
 check "same matcher twice: deduped to one" \
   "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(test("block-edit-on-main"))] | length' "$s8e")" "1"
 
+# 8f. CodeRabbit round 1: a prefix containing a `"` must still wire. The specs
+# JSON is built with `jq -n --arg pfx`, not by interpolating the prefix into
+# JSON TEXT — a POSIX path may legally contain a quote, and the old textual
+# form produced malformed JSON that `jq --argjson specs` rejected. RED control
+# (measured on the pre-fix lib): the run printed "wired PreToolUse hooks ->"
+# and left the file UNWIRED — a SILENT false success, not a loud abort, which
+# is why this asserts the file content and never the exit line.
+s8f="$td/s8f.json"
+printf '%s' '{}' > "$s8f"
+bash "$wire" "$s8f" '/opt/we"ird/clone' >/dev/null 2>&1 || true
+check "quote in prefix: block still wired" "$(jq -r '.hooks.PreToolUse | length' "$s8f" 2>/dev/null)" "3"
+check "quote in prefix: prefix survives verbatim in the command" \
+  "$(jq -r '[.hooks.PreToolUse[].hooks[].command | select(contains("/opt/we\"ird/clone"))] | length' "$s8f" 2>/dev/null)" "3"
+
 # 9. invalid JSON -> refused, file unchanged.
 s9="$td/s9.json"
 printf '%s' 'nope {' > "$s9"

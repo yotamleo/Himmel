@@ -64,19 +64,22 @@ function Set-PretooluseHooks {
     # identifies an entry THIS installer owns, `cmd` is the command it must
     # carry after the merge, `stanza` is appended only when the target carries
     # no such entry at all (HIMMEL-2892).
-    $specs = @"
-[
-  {"pat":"scripts/hooks/auto-approve-safe-bash[.]sh",
-   "cmd":"bash \"$pfx/scripts/hooks/auto-approve-safe-bash.sh\"",
-   "stanza":{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/auto-approve-safe-bash.sh\""}]}},
-  {"pat":"scripts/hooks/block-edit-on-main[.]sh",
-   "cmd":"bash \"$pfx/scripts/hooks/block-edit-on-main.sh\"",
-   "stanza":{"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/block-edit-on-main.sh\""}]}},
-  {"pat":"scripts/hooks/block-read-secrets[.]sh",
-   "cmd":"bash \"$pfx/scripts/hooks/block-read-secrets.sh\"",
-   "stanza":{"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash \"$pfx/scripts/hooks/block-read-secrets.sh\""}]}}
-]
-"@
+    #
+    # Built by `jq -n --arg pfx`, never by interpolating $pfx into JSON TEXT
+    # (CodeRabbit round 1): a path may contain a `"`, which makes hand-written
+    # JSON malformed; jq then rejects --argjson outright and the settings file
+    # goes unwired while the caller reads success. The jq program below is the
+    # bash twin's, verbatim.
+    $specsProgram = @'
+    def spec($name; $matcher):
+      ("bash \"" + $pfx + "/scripts/hooks/" + $name + ".sh\"") as $cmd
+      | { pat: ("scripts/hooks/" + $name + "[.]sh"),
+          cmd: $cmd,
+          stanza: { matcher: $matcher, hooks: [ { type: "command", command: $cmd } ] } };
+    [ spec("auto-approve-safe-bash"; "Bash"),
+      spec("block-edit-on-main"; "Edit|Write|MultiEdit|NotebookEdit"),
+      spec("block-read-secrets"; "Bash|PowerShell|Read|Grep") ]
+'@
     if ($DryRun) { Write-Host "DRY: merge 3 PreToolUse hook stanzas into $SettingsPath (prefix: $Prefix)"; return }
 
     # Captured native stdout is decoded via [Console]::OutputEncoding, the
@@ -99,6 +102,10 @@ function Set-PretooluseHooks {
     try {
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $global:OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        # jq builds the specs so the prefix is ESCAPED, not interpolated (see
+        # $specsProgram above). Inside the encoding guard: jq output is captured.
+        $specs = (& jq -n --arg pfx $pfx $specsProgram) -join "`n"
+        if ($LASTEXITCODE -ne 0) { throw "wire-pretooluse-hooks: jq failed to build the hook specs" }
         $base = Read-SettingsBase -SettingsPath $SettingsPath -Who 'wire-pretooluse-hooks'
         # Verbatim twin of WIRE_PRETOOLUSE_MERGE_JQ in wire-pretooluse-hooks.sh
         # -- keep the two byte-identical. MERGE, never regenerate: every entry

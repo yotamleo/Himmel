@@ -111,6 +111,13 @@ grepq "$outA" 'not valid inside the himmel checkout' \
 cloneA_w=$(winpath "$cloneA")
 grepq "$outA" -F "$cloneA_w" \
   || fail "case a: the refusal must NAME the checkout it refused ($cloneA_w): $outA"
+# On POSIX the contributor primitive is `bash <clone>/scripts/setup.sh`. That
+# string is NOT hardcoded in bin.js — it is rendered from
+# deriveOverlayCommand(), the same derivation that would actually spawn it, so
+# on Windows the line carries pwsh + -ExecutionPolicy Bypass -File setup.ps1
+# instead of the unrunnable `bash …setup.ps1` (CodeRabbit round 1). Case a3
+# below is the platform-independent control for that; this asserts the POSIX
+# rendering the runner can actually observe.
 grepq "$outA" -F "bash $cloneA_w/scripts/setup.sh" \
   || fail "case a: the remedy must name the checkout's own scripts/setup.sh (the contributor primitive): $outA"
 # The node command must be ABSOLUTE (CR round 3): the refusal fires from
@@ -122,6 +129,22 @@ grepq "$outA" -F "node $cloneA_w/scripts/himmelctl/bin.js install --scope user" 
 [ ! -f "$homeA/himmelctl-cache/install-profile.json" ] \
   || fail "case a: a REFUSED install must not write an install-profile cache (a 'scope: project' record would survive it)"
 echo "ok: case a — --scope project inside the himmel clone is refused with the remedy, and writes no cache"
+
+# ── case a3: the remedy's contributor command is DERIVED, not hardcoded ────
+# Platform-independent control for the CodeRabbit round-1 finding: the Windows
+# branch cannot be exercised here (no pwsh, and process.platform is not
+# stubbable from a shell suite), so assert the SOURCE property that makes the
+# Windows rendering correct — the refusal renders deriveOverlayCommand() (which
+# already carries the pwsh/-File form on win32) rather than prefixing a literal
+# `bash ` to contributeOverlayFilename(), which yields the unrunnable
+# `bash …/setup.ps1` there. Same static-assertion shape as
+# test-wizard-noinstall-guard.sh.
+wizard_src=$(cat "$wizard")
+grepq "$wizard_src" -F 'const setupCmd = displayCommand(deriveOverlayCommand());' \
+  || fail "case a3: the refusal's contributor command must be rendered from deriveOverlayCommand(), so the Windows branch gets pwsh -File instead of an unrunnable 'bash <setup.ps1>'"
+grepq "$wizard_src" -E 'bash \$\{(setupCmd|.*contributeOverlayFilename)' \
+  && fail "case a3: the refusal must not prefix a literal 'bash ' to the contributor primitive — that is the Windows bug (setup.ps1 is not a bash script)"
+echo "ok: case a3 — the contributor command in the refusal is derived per-platform, never a hardcoded 'bash <script>'"
 
 # ── case b: negative control — a VENDORING adopter repo still installs ──────
 # This is the load-bearing half: the detector keys off the clone THIS

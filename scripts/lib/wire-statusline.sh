@@ -16,7 +16,9 @@
 #   3. Drops the hud config: reads
 #      marketplace/plugins/claude-hud/config/himmel-config.json from the himmel
 #      clone, substitutes every <himmel-path> with this clone's path, and writes
-#      it to ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json.
+#      it to ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json
+#      (CLAUDE_CONFIG_DIR trimmed, whitespace-only treated as unset — matching
+#      the hud's own getClaudeConfigDir).
 #      That path is the CONFIG DIR, always — never derived from the settings
 #      file's own directory (HIMMEL-2892). The hud config is per-USER config,
 #      not per-project: deriving it relative to the settings path dropped an
@@ -29,10 +31,21 @@
 set -euo pipefail
 
 # The Claude Code config dir — mirror of the HUD's own getClaudeConfigDir()
-# (and of scripts/context-fill.sh's config_dir()): CLAUDE_CONFIG_DIR wins,
-# with a leading `~` expanded; otherwise $HOME/.claude.
+# (marketplace/plugins/claude-hud/src/claude-config-dir.ts): CLAUDE_CONFIG_DIR
+# wins, with a leading `~` expanded; otherwise $HOME/.claude.
+#
+# The value is TRIMMED first, exactly as the consumer does
+# (`process.env.CLAUDE_CONFIG_DIR?.trim()`), and a whitespace-only value is
+# therefore treated as UNSET. Without the trim the two disagree: the installer
+# would write the hud config under a padded — i.e. different — directory from
+# the one the hud reads it back from, and a whitespace-only value would make
+# bash resolve a RELATIVE directory literally named with spaces. The
+# PowerShell twin already had this via IsNullOrWhiteSpace.
 _wire_statusline_config_dir() {
   local d="${CLAUDE_CONFIG_DIR:-}"
+  # Strip leading and trailing whitespace (bash 3.2-safe: no ${var@Q}, no =~).
+  d="${d#"${d%%[![:space:]]*}"}"
+  d="${d%"${d##*[![:space:]]}"}"
   if [ -z "$d" ]; then
     printf '%s\n' "$HOME/.claude"
     return 0

@@ -88,21 +88,25 @@ wire_pretooluse_hooks() {
   # owns (by the hook path it installs); `cmd` is the command such an entry
   # must carry after the merge; `stanza` is the canonical stanza appended when
   # the target carries no such entry at all.
+  #
+  # Built with `jq -n --arg pfx`, never by interpolating $pfx into JSON TEXT
+  # (CodeRabbit round 1): a POSIX path may legally contain a `"`, which makes
+  # hand-written JSON malformed, and `jq --argjson specs` then rejects the
+  # argument outright — the settings file goes unwired. Passing the prefix as a
+  # jq --arg lets jq do the escaping, for quotes, backslashes and newlines
+  # alike. Shared verbatim with the PowerShell twin.
   local specs
-  specs=$(cat <<JSON
-[
-  {"pat":"scripts/hooks/auto-approve-safe-bash[.]sh",
-   "cmd":"bash \"${pfx}/scripts/hooks/auto-approve-safe-bash.sh\"",
-   "stanza":{"matcher":"Bash","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/auto-approve-safe-bash.sh\""}]}},
-  {"pat":"scripts/hooks/block-edit-on-main[.]sh",
-   "cmd":"bash \"${pfx}/scripts/hooks/block-edit-on-main.sh\"",
-   "stanza":{"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/block-edit-on-main.sh\""}]}},
-  {"pat":"scripts/hooks/block-read-secrets[.]sh",
-   "cmd":"bash \"${pfx}/scripts/hooks/block-read-secrets.sh\"",
-   "stanza":{"matcher":"Bash|PowerShell|Read|Grep","hooks":[{"type":"command","command":"bash \"${pfx}/scripts/hooks/block-read-secrets.sh\""}]}}
-]
-JSON
-)
+  # shellcheck disable=SC2016  # a jq program: $pfx/$cmd/$name/$matcher are jq bindings, not shell expansions
+  specs=$(jq -n --arg pfx "$pfx" '
+    def spec($name; $matcher):
+      ("bash \"" + $pfx + "/scripts/hooks/" + $name + ".sh\"") as $cmd
+      | { pat: ("scripts/hooks/" + $name + "[.]sh"),
+          cmd: $cmd,
+          stanza: { matcher: $matcher, hooks: [ { type: "command", command: $cmd } ] } };
+    [ spec("auto-approve-safe-bash"; "Bash"),
+      spec("block-edit-on-main"; "Edit|Write|MultiEdit|NotebookEdit"),
+      spec("block-read-secrets"; "Bash|PowerShell|Read|Grep") ]
+  ') || return 1
   if [[ "$dry_run" -eq 1 ]]; then
     echo "DRY: merge 3 PreToolUse hook stanzas into $settings (prefix: $prefix)"
     return
