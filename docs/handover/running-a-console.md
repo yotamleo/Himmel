@@ -86,6 +86,27 @@ explicit model**: an unnamed one draws on the scarcer parent quota. Tier and
 effort guidance, including the console's own wake-up budget, is in
 [`../internals/lane-calibration.md`](../internals/lane-calibration.md).
 
+## Claudex legs: the inbox is the only channel
+
+A `--lane claudex` leg (`headed-arm-leg.sh`, HIMMEL-2782) runs under
+`~/.claude-codex`, which keeps it out of the session registry `ListAgents`
+reads on both ends — `SendMessage` reaches it in neither direction, even
+though its socket is alive. The only channel either way is the file inbox
+(`inbox-send.sh`, HIMMEL-2788): console → leg is `inbox-send.sh <leg-session>
+--file <path>`, delivered as `PostToolUse`/`SessionStart` additionalContext on
+the leg's next tool call; leg → console is the same script addressed to the
+console's own session name. `AskUserQuestion` reaches nobody on a claudex leg
+while the operator is away — every claudex brief must say so and give the leg
+the console's exact session name (HIMMEL-2898 item 1).
+
+Inbox delivery is **tool-call-gated**, so a leg that ends its turn on
+`BLOCKED` or a question goes idle and never sees the answer on its own.
+Standing rule (console 03H, 2026-09-10 01:18): every claudex leg arms a
+persistent `Monitor` on `tail -n 0 -F <handover-root>/inbox/<session>.md` at
+LIVE, before anything else — carry that line verbatim in the claudex brief
+preface. A structural fix (registry entry, or an idle-wake path) is still
+open on HIMMEL-2898 items 1 and 2.
+
 ## Rulings
 
 A leg that hits something it cannot decide reports to the console, not to the
