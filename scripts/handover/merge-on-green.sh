@@ -112,12 +112,25 @@
 #       refused (an unauditable merge must not proceed)
 #   17  policy-refused: base branch policy explicitly prohibits the merge, or
 #       green checks still leave BLOCKED + REVIEW_REQUIRED before merging —
-#       refused; an unsatisfiable review rule needs a human admin action
+#       refused; an unsatisfiable review rule needs a human admin action.
+#       HIMMEL-2919: also returned when HIMMEL_CONSOLE_LEG is truthy and the
+#       console's GO file for this PR at the certified head is missing, stale
+#       or unresolvable — checked after check-ci, before any merge call, on
+#       --dry-run too (see the console-GO gate below)
 #
 # Environment:
 #   ARMAUTOMERGE           Must be truthy (1/true/on/yes) to enable at all.
 #   MERGE_ON_GREEN_LOG     Audit-log path override. Default:
 #                          "$(git rev-parse --git-dir)/merge-on-green.log".
+#   HIMMEL_CONSOLE_LEG     Exported (=1) by console-kit/headed-arm-leg.sh into
+#                          every console-spawned leg. Truthy => the merge needs
+#                          <handover_root>/.locks/go/<pr>.<certified head sha>
+#                          containing head=<that sha>, written by the console
+#                          via console-kit/go.sh (HIMMEL-2919). Unset/falsy =>
+#                          no GO gate.
+#   HANDOVER_DIR           Where handover_root resolves that GO file
+#                          (scripts/lib/handover-path.sh); read only under
+#                          HIMMEL_CONSOLE_LEG.
 #
 # GATE INTEGRITY (coderabbit): `gh` and `check-ci.sh` are NOT environment-
 # overridable — a contaminated/inherited launching environment must not be able
@@ -474,6 +487,30 @@ if [ "$ci_rc" -ne 0 ]; then
     echo "merge-on-green: check-ci gate did not pass (exit $ci_rc) — not merging. Address the gate, then re-run." >&2
     audit "REFUSED reason=gate-not-green gate=check-ci:$ci_rc repo=$nwo pr=#$pr_num sha=$sha"
     exit 14
+fi
+
+# HIMMEL-2919 — console-GO gate. A console-spawned leg (headed-arm-leg.sh
+# exports HIMMEL_CONSOLE_LEG=1) merges ONLY on its console's GO: a file the
+# console writes with console-kit/go.sh under the handover root, bound to THIS
+# PR and to the head sha check-ci just certified — the same $sha
+# --match-head-commit pins below. The evidence is a file, never an env value
+# the leg could set on its own merge line. Placed before the marker clear so a
+# refused leg mutates nothing, and before the DRY_RUN branch so a dry run
+# reports the refusal too. Unset marker: skipped whole — the resolver is not
+# even sourced, so operator sessions are unchanged.
+if _truthy "${HIMMEL_CONSOLE_LEG:-}"; then
+    go_root=""
+    # shellcheck source=scripts/lib/handover-path.sh
+    # shellcheck disable=SC1091
+    if . "$SCRIPT_DIR/../lib/handover-path.sh" 2>/dev/null; then
+        go_root=$(handover_root 2>/dev/null) || go_root=""
+    fi
+    go_file="${go_root:-<unresolved handover root>}/.locks/go/$pr_num.$sha"
+    if [ -z "$go_root" ] || ! grep -qxF "head=$sha" "$go_file" 2>/dev/null; then
+        echo "merge-on-green: PR #$pr_num at $sha has no console GO ($go_file) — you are a console-spawned leg; send READY to your console and wait for GO; a GO for an older head is stale, never reuse it" >&2
+        audit "REFUSED reason=policy-refused phase=console-go repo=$nwo pr=#$pr_num sha=$sha go=$go_file"
+        exit 17
+    fi
 fi
 
 # MARKER CLEAR (HIMMEL-1346) — a merge used to leave the branch's cr-pending
