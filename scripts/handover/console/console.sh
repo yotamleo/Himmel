@@ -398,7 +398,7 @@ _console_dir_component_unsafe() {
     fi
     [ "$sticky" -eq 1 ] || return 0  # writable, no sticky bit: unsafe
     local owner
-    owner=$(stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null)
+    owner=$(stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
     [ -n "$owner" ] || return 0  # unreadable owner: fail closed, treat as unsafe
     [ "$owner" = "0" ] && return 1  # root-owned sticky dir: safe (e.g. plain /tmp)
     [ "$owner" = "$(id -u)" ] && return 1  # self-owned sticky dir: safe
