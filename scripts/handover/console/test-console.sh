@@ -877,4 +877,27 @@ out39="$( ( cd "$tmp39/insecure-ancestor/cwd-dir" && env -u XDG_RUNTIME_DIR \
 check "39 relative CONSOLE_WORK_DIR under an insecure ancestor: refuses with a distinct exit code" "$rc39" "3"
 check "39 relative CONSOLE_WORK_DIR under an insecure ancestor: stderr names the cause" "$(printf '%s\n' "$out39" | grep -ci parent)" "1"
 
+# --- 40: a symlink ANCESTOR of CONSOLE_WORK_DIR must be resolved ONCE and
+# the canonical form reused for every subsequent operation (HIMMEL-2881
+# round 6, codex-1 panel finding). console_workdir_ensure already refuses
+# $workdir itself being a symlink, but a symlink one level UP (workdir's
+# own last component still a plain, not-yet-existing directory) isn't
+# caught by that -- ancestor validation ran against the canonicalized path,
+# while creation/chain_dir previously kept the ORIGINAL, still-symlinked
+# spelling, so a swapped symlink between check and use could redirect
+# actual filesystem access to an unvalidated location. Proven here by
+# asserting the printed --dry-run --arm paths resolve through the REAL
+# target, never through the symlink spelling.
+tmp40="$tmp/c40"
+mkdir -p "$tmp40/real-target"
+chmod 0700 "$tmp40/real-target"
+ln -s "$tmp40/real-target" "$tmp40/linky"
+out40="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp40/linky/subdir" \
+    bash "$C" new --bucket wdparent40 --dry-run --arm ) 2>&1 )"; rc40=$?
+check "40 symlink ancestor in CONSOLE_WORK_DIR: dry-run succeeds" "$rc40" "0"
+check "40 symlink ancestor in CONSOLE_WORK_DIR: signal path resolves through the real target" "$(printf '%s\n' "$out40" | grep -c "signal=$tmp40/real-target/subdir/")" "1"
+check "40 symlink ancestor in CONSOLE_WORK_DIR: signal path never embeds the symlink spelling" "$(printf '%s\n' "$out40" | grep -c "signal=$tmp40/linky/")" "0"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

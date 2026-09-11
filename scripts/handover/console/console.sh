@@ -445,6 +445,23 @@ if _console_ancestor_unsafe "$_console_workdir_parent"; then
     err "refusing to use work dir '$workdir' — its parent directory '$_console_workdir_parent' (or an ancestor of it) is group- or world-writable without adequate sticky-bit/ownership protection, so another local user could replace it out from under this process (HIMMEL-2881)"
     exit 3
 fi
+# HIMMEL-2881 round 6 (codex-1 panel finding): ancestor validation above ran
+# against the CANONICALIZED path, but every use below this point (creation,
+# chain_dir) previously kept the ORIGINAL $workdir spelling -- if a symlink
+# in one of workdir's own path components resolved to a safe tree at
+# validation time, an attacker could repoint that symlink before the actual
+# create/access below, and the two would silently diverge. Adopting the
+# already-validated canonical path for every subsequent use closes that
+# window: what was checked is exactly what gets used. This MUST run before
+# the reassignment below: `realpath -m` resolves a symlink at $workdir's own
+# last component away entirely, so console_workdir_ensure's own -L check
+# would never see it once $workdir has already been replaced by its
+# resolved form (case 27's pre-created-symlink-as-workdir regression).
+if [ -L "$workdir" ]; then
+    err "refusing to use work dir '$workdir' — it is a SYMLINK, so this process does not control what it actually resolves to (HIMMEL-2881)"
+    exit 3
+fi
+workdir="$_console_workdir_abs"
 
 # console_workdir_ensure <dir> -- create at 0700 if absent, then ALWAYS
 # validate what actually exists at $d afterward -- never return early on a
