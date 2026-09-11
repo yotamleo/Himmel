@@ -237,9 +237,11 @@ vendors — the codex plugin, the claude CLI, hermes (see the hermes pin revert
 precedent, #1929) — deliberately track upstream LATEST, with our last
 reviewed version as an informal floor, never locked to a himmel fork/pin;
 upstream is already ≥ v1.0.6 here, so no pin or drift mechanism is needed.
-Smaller community forks (claude-obsidian, qmd) keep the opposite posture —
+Smaller community plugins (claude-obsidian, qmd) keep the opposite posture —
 pin-or-better plus a drift advisory (`scripts/check-plugin-drift.sh` /
-`scripts/plugin-upstreams.json`) — claude-obsidian is the exemplar. The
+`scripts/plugin-upstreams.json`) — claude-obsidian is the exemplar (a plain
+pin since its fork was retired at v2.2.0, HIMMEL-2925; qmd is the remaining
+fork). The
 SessionEnd `Hook cancelled` 5s-timeout noise (HIMMEL-2148) is tracked upstream
 at openai/codex-plugin-cc#474. The `yotamleo/codex-plugin-cc` fork and tag
 `v1.0.6-himmel.1` remain parked, unreferenced by any marketplace entry.
