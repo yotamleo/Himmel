@@ -2530,6 +2530,17 @@ checkout workers branch from having pulled the merge. Spec:
 > arm (settings-chain entries are `Bash`/`PowerShell`-only), and a `--chain`
 > member cannot carry `--fail-closed-when`.
 
+### `block-leg-askuserquestion.sh` — console-spawned-leg AskUserQuestion deny (HIMMEL-2923)
+
+Fires on `AskUserQuestion`, keyed on `HIMMEL_CONSOLE_LEG=1` (set by the
+console's launcher, `scripts/handover/console-kit/headed-arm-leg.sh`,
+HIMMEL-2919). A leg launched headed by a console runs in a window nobody
+answers — two legs parked on this call in 2026-09-10, one for 77 minutes.
+Second drift on prose → structural. Denies with a message naming SendMessage
+to the console as the replacement. Workflow nudge, not a security fence: fails
+open on missing `jq`, malformed, or empty stdin so it never locks an operator
+session out of the tool. Inert until HIMMEL-2919's launcher export lands.
+
 ### `block-backend-tier.sh` — service-agnostic backend-routing guard (HIMMEL-400)
 
 Fires on `mcp__plugin_atlassian_atlassian__*` tool calls (and any other
