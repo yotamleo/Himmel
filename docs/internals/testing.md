@@ -44,7 +44,7 @@ still exactly the unsharded run list.
 **Refresh** — replay one `shell-unit-shard` matrix run's logs (all shards at
 once), then replace the rows and update the `source:` line in the header:
 
-```
+```bash
 gh run view <run-id> --log \
   | sed -nE 's/.*\[(PASS|FAIL)\] ([^ ]+) \(([0-9]+)s\).*/\2\t\3/p' \
   | sort -u
