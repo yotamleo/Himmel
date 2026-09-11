@@ -5,8 +5,9 @@
 #
 # WHY a third script instead of extending the other two: apply-drift-bump.sh
 # moves a version PIN (a text literal); apply-tool-upgrade.sh upgrades an
-# INSTALLED BINARY. Neither fits a carried fork. himmel carries both SHA-pinned
-# forks (qmd) and installable-tag-pinned forks (claude-obsidian), each with its
+# INSTALLED BINARY. Neither fits a carried fork. himmel carries SHA-pinned
+# forks (qmd) and, historically, installable-tag-pinned forks (claude-obsidian,
+# retired at v2.2.0 — HIMMEL-2925), each with its
 # own delta on top of a recorded upstream base (`synced_base` in
 # scripts/upstreams.json). When upstream tags past that base, bumping
 # synced_base alone would claim the fork sits on a base it never rebased onto
@@ -16,11 +17,11 @@
 # to review. This script does the mechanical, verifiable half; a human (or an
 # agent session) drives the judgment call on the result.
 #
-# Some forks are deliberately NOT strictly additive. claude-obsidian removes
-# upstream hooks and patches locking, so its audit is expected to report
-# NON-ADDITIVE (rc=4). That is still a useful nightly result: the cadence stops
-# after this report, never pushes, and surfaces rebase feasibility + touched
-# paths for operator judgment.
+# Some forks are deliberately NOT strictly additive. qmd's carried delta is a
+# small reviewed set of real bugfixes against existing upstream files (HIMMEL-
+# 2136), so its audit is expected to report NON-ADDITIVE (rc=4). That is still
+# a useful nightly result: the cadence stops after this report, never pushes,
+# and surfaces rebase feasibility + touched paths for operator judgment.
 #
 # STRICTLY ADDITIVE, defined: every path touched by the fork's own delta
 # (the commits reachable from the pinned SHA but not from the recorded base)
@@ -63,8 +64,9 @@
 #              }
 #            declared on a kind=tag_release/mode=base entry (it needs
 #            `synced_base` as the resync's base tag). pin_ref_template is for
-#            an immutable installable TAG (for example claude-obsidian's
-#            marketplace ref); the tag is resolved to a commit before audit.
+#            an immutable installable TAG (for example an installable-tag-
+#            pinned plugin's marketplace ref); the tag is resolved to a commit
+#            before audit.
 # --target   upstream ref (tag or branch) to rebase onto. Default: the
 #            highest stable version tag on upstream_repo (same discipline as
 #            check-plugin-drift.sh — sort -V-shaped comparison, prereleases

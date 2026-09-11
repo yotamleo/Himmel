@@ -144,7 +144,7 @@ LEG_RESYNC="HIMMEL-ForkResync"
 # reason. The real runbooks live in .claude/commands/{drift-fix,fork-resync}.md
 # — these are only the invocations.
 PROMPT_DRIFT="Run /drift-fix to completion. This is the scheduled nightly upstream-drift repair cadence (HIMMEL-1323) - fully autonomous, no user prompts; follow the runbook exactly, STOP at the public PR, and report what landed."
-PROMPT_RESYNC="Run /fork-resync to completion. This is the scheduled nightly carried-fork re-sync cadence (HIMMEL-1323/HIMMEL-1435) - fully autonomous, no user prompts; audit every BEHIND scripts/upstreams.json entry with a fork block, including claude-obsidian (its carried delta is strictly additive; a non-additive result is a regression to report), then STOP at the end of step 3; NEVER run resync-fork.sh --push and do not open a branch or PR; report every result."
+PROMPT_RESYNC="Run /fork-resync to completion. This is the scheduled nightly carried-fork re-sync cadence (HIMMEL-1323/HIMMEL-1435) - fully autonomous, no user prompts; audit every BEHIND scripts/upstreams.json entry with a fork block (each entry's own note says whether a non-additive result is a regression to report or an expected known gap), then STOP at the end of step 3; NEVER run resync-fork.sh --push and do not open a branch or PR; report every result."
 
 # leg_prompt / leg_log / leg_runner <task-name> — the per-leg lookups, kept as
 # functions rather than an associative array (bash 3.2 has none; macOS ships 3.2).

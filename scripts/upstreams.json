@@ -20,17 +20,9 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "AgriciDaniel/claude-obsidian",
-      "synced_base": "v2.1.1",
+      "synced_base": "v2.2.0",
       "tier": "A",
-      "fork": {
-        "fork_repo": "https://github.com/yotamleo/claude-obsidian.git",
-        "upstream_repo": "https://github.com/AgriciDaniel/claude-obsidian.git",
-        "pin_file": "marketplace/.claude-plugin/marketplace.json",
-        "pin_ref_template": "\"ref\": \"{ref}\"",
-        "work_dir": "${HOME}/.himmel/fork-resync",
-        "note": "Nightly resync audit target. The marketplace pin is an installable fork tag, not a SHA, so resync-fork.sh resolves the tag to its commit and reports the rebased SHA; after operator review the fork tag must be re-cut and the marketplace ref updated. The carried delta at v2.1.1-himmel.1 is verified strictly additive (+10 -0: the PR-#178 test UTF-8 guards plus a README fork-attribution banner), so the resync audit should report ADDITIVE; collapse trigger is upstream merging #178 and tagging a release past v2.1.1, at which point drop the fork and repoint the marketplace pin upstream. unattended cadence stops after the report and never pushes. synced_base deliberately duplicates scripts/plugin-upstreams.json and tests require equality."
-      },
-      "note": "True fork yotamleo/claude-obsidian, installed from marketplace/.claude-plugin/marketplace.json at an immutable tag. Upstream release drift is also detected through scripts/plugin-upstreams.json; this row adds the fork-resync audit surface. Keep synced_base equal in both registries on every re-sync."
+      "note": "DE-FORKED in HIMMEL-2925: yotamleo/claude-obsidian carried a strictly-additive delta (PR #178 UTF-8 test-stdout guards, a README attribution banner) that upstream fully absorbed by v2.2.0 (#178 merged, #179 CRLF-frontmatter fix shipped) — resync-fork.sh then had nothing left to rebase (rc=4, conflicts against our own merged change), so the fork is retired (kept as an archive at yotamleo/claude-obsidian, not deleted) and marketplace.json pins straight to upstream. Installed from marketplace/.claude-plugin/marketplace.json at an immutable tag; keep synced_base equal to scripts/plugin-upstreams.json on every bump."
     },
     {
       "name": "claude-hud",
