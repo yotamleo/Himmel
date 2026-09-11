@@ -755,4 +755,67 @@ out33="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
 check "33 TMPDIR-fallback under an insecure TMPDIR: refuses with a distinct exit code" "$rc33" "3"
 check "33 TMPDIR-fallback under an insecure TMPDIR: stderr names the cause" "$(printf '%s\n' "$out33" | grep -ci parent)" "1"
 
+# --- 34: a sticky PARENT owned by neither root nor us must still be refused
+# (HIMMEL-2881 round 4, codex-1 panel finding) -- the round-3 fix exempted
+# any sticky directory, but the sticky bit only protects entries from users
+# who are NOT the directory's own owner; the owner can still rename/unlink
+# entries inside their own directory regardless of the sticky bit, so a
+# sticky directory owned by an attacker is not actually safe. A real
+# attacker-owned fixture cannot be built without root, so a PATH stub for
+# `stat` reports a foreign uid for this one fixture path while every other
+# `stat` call (including console.sh's own real ones on other paths) passes
+# through to the real binary unchanged.
+tmp34="$tmp/c34"
+mkdir -p "$tmp34/bin" "$tmp34/attacker-owned"
+chmod 1777 "$tmp34/attacker-owned"
+real_stat34="$(command -v stat)"
+cat > "$tmp34/bin/stat" <<STUB_EOF
+#!/usr/bin/env bash
+if [ "\$1" = "-c" ] && [ "\$3" = "$tmp34/attacker-owned" ]; then
+    case "\$2" in
+        %a) echo 1777; exit 0 ;;
+        %u) echo 31337; exit 0 ;;
+    esac
+fi
+exec "$real_stat34" "\$@"
+STUB_EOF
+chmod +x "$tmp34/bin/stat"
+out34="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp34/attacker-owned" \
+    PATH="$tmp34/bin:$PATH" \
+    bash "$C" new --bucket wdparent34 --dry-run ) 2>&1 )"; rc34=$?
+check "34 sticky but attacker-owned parent: refuses with a distinct exit code" "$rc34" "3"
+check "34 sticky but attacker-owned parent: stderr names the cause" "$(printf '%s\n' "$out34" | grep -ci parent)" "1"
+
+# --- 35 (control): a sticky parent owned by US (the real /tmp shape) must
+# still be accepted -- proves the round-4 ownership check does not regress
+# the plain /tmp case the round-3 sticky exemption exists for.
+tmp35="$tmp/c35"
+mkdir -p "$tmp35/self-owned"
+chmod 1777 "$tmp35/self-owned"
+rc35=0
+( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp35/self-owned" \
+    bash "$C" new --bucket wdparent35 --dry-run ) >/dev/null 2>&1 || rc35=$?
+check "35 sticky self-owned parent (real /tmp analogue): accepted" "$rc35" "0"
+
+# --- 36: an insecure GRANDPARENT must be refused even when the immediate
+# parent looks safe on its own (HIMMEL-2881 round 4, codex-2 panel finding)
+# -- checking only the immediate parent leaves the rest of the ancestor
+# chain unchecked; a local user with write access to a grandparent can
+# rename/replace it, substituting the entire subtree including an
+# otherwise-safe immediate parent.
+tmp36="$tmp/c36"
+mkdir -p "$tmp36/grandparent/parent"
+chmod 0777 "$tmp36/grandparent"
+chmod 0700 "$tmp36/grandparent/parent"
+out36="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp36/grandparent/parent/work" \
+    bash "$C" new --bucket wdparent36 --dry-run ) 2>&1 )"; rc36=$?
+check "36 insecure grandparent despite safe immediate parent: refuses with a distinct exit code" "$rc36" "3"
+check "36 insecure grandparent despite safe immediate parent: stderr names the cause" "$(printf '%s\n' "$out36" | grep -ci parent)" "1"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
