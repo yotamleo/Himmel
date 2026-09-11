@@ -3112,12 +3112,31 @@ if [ "$shard_total" -gt 0 ]; then
   # single pipeline cannot tell "no rows matched" (rc=0, empty) apart from
   # "sort died" (rc!=0) once pipefail has folded them together.
   #
-  # Stage 1 — the raw durations. awk exits non-zero only when it cannot READ
-  # the file, so rc!=0 and empty-output both mean "unusable ledger".
-  _shard_durations=$(awk -F'\t' '
-      /^[[:space:]]*#/ { next }
-      NF >= 2 && $1 != "" && $2 ~ /^[0-9]+$/ { print $2 + 0 }
-    ' "$_shard_ledger" 2>/dev/null) || _shard_durations=""
+  # Stage 0 — is the ledger there at all? The shell builtins answer that
+  # without running a tool, which is what keeps the answer DETERMINISTIC: a
+  # committed file is present and readable on every runner or on none of them,
+  # so every shard agrees. Once this passes, awk is reading a readable regular
+  # file, so an awk that then fails is the runner-local case, not a statement
+  # about the ledger — hence the refusal rather than a fallback in stage 1.
+  _shard_ledger_ok=0
+  if [ -f "$_shard_ledger" ] && [ -r "$_shard_ledger" ]; then
+    _shard_ledger_ok=1
+  fi
+
+  # Stage 1 — the raw durations. No output means no row parses, which is a
+  # property of the file and so a safe, matrix-wide fallback; a non-zero rc on
+  # a file we just proved readable means awk itself failed HERE.
+  _shard_durations=""
+  if [ "$_shard_ledger_ok" -eq 1 ]; then
+    _shard_durations=$(awk -F'\t' '
+        /^[[:space:]]*#/ { next }
+        NF >= 2 && $1 != "" && $2 ~ /^[0-9]+$/ { print $2 + 0 }
+      ' "$_shard_ledger") || {
+      printf 'ERROR: --shard: reading the duration ledger "%s" failed on this runner although the file is present and readable — refusing to report green. Falling back locally would leave this shard on a different partition from its siblings.\n' \
+        "$_shard_ledger" >&2
+      exit 1
+    }
+  fi
 
   # Stage 2 — the median, which is also the duration an absent suite is given.
   # Reached only when stage 1 found rows, so a failure here is the transient
@@ -3198,8 +3217,24 @@ if [ "$shard_total" -gt 0 ]; then
         "$_shard_plan_n" "$_shard_eligible_n" >&2
       exit 1
     fi
+    # Extracting THIS shard's share is the last stage that can fail, and it
+    # fails the same runner-local way: a truncated extraction would quietly
+    # hand the shard fewer suites than the plan gave it while the siblings ran
+    # their full share, which is the thinned-partition false green again. The
+    # count is checked against the plan itself rather than trusting rc alone,
+    # so a stage that dies after emitting some of its output is caught too.
     _shard_mine_list=$(printf '%s\n' "$_shard_plan" \
-      | awk -F'\t' -v me="$shard_offset" '$1 == me { print $2 }')
+      | awk -F'\t' -v me="$shard_offset" '$1 == me { print $2 }') \
+      || _shard_mine_list=""
+    _shard_mine_n=$(printf '%s' "$_shard_mine_list" | awk 'END { print NR }')
+    _shard_want_n=$(printf '%s' "$_shard_plan" \
+      | awk -F'\t' -v me="$shard_offset" '$1 == me { c++ } END { print c + 0 }') \
+      || _shard_want_n=-1
+    if [ "$_shard_mine_n" -ne "$_shard_want_n" ]; then
+      printf 'ERROR: --shard: extracting this shard from the bin-pack plan yielded %s of its %s suites — refusing to report green. A stage failed on this runner only, so running the short list would leave the matrix covering less than the full run list.\n' \
+        "$_shard_mine_n" "$_shard_want_n" >&2
+      exit 1
+    fi
     shard_assignment="${_shard_nl}${_shard_mine_list}${_shard_nl}"
     shard_binpack=1
   else

@@ -1743,4 +1743,65 @@ fi
 rm -rf "$sb22n"
 fi
 
+# 22o / 22p — the remaining two stages of the bin-pack block, same invariant as
+# 22m/22n (CR round 3, [codex-1] and [codex-2]). Every stage between "read the
+# ledger" and "this shard's list" can fail on ONE runner, and every one of them
+# must refuse rather than recover locally, because a local recovery puts this
+# shard on a partition its siblings are not using. 22o breaks the ledger read
+# itself on a file that is present and readable — which is what separates it
+# from 22k's absent/unparseable ledger, where every shard agrees and the
+# round-robin fallback is exact. 22p breaks the final extraction, the one stage
+# that runs AFTER the whole-plan completeness check.
+#
+# Both stubs key on a token unique to the one awk invocation they are aiming
+# at, so the runner's many other awk calls still exec the real tool: the ledger
+# read is the only program containing `NF >= 2`, and the extraction is the only
+# call passing `me=` on argv.
+# shellcheck disable=SC2016  # the format strings below are the STUB's source: its own "$@"/"$_a" must not expand here
+rst_awk_stub_22() {  # $1 = dir to create the stub in, $2 = argv token to fail on, $3 = the real awk
+  mkdir -p "$1"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'for _a in "$@"; do\n'
+    printf '  if printf %s "$_a" | grep -q %s; then exit 1; fi\n' "'%s'" "'$2'"
+    printf 'done\n'
+    printf 'exec %s "$@"\n' "$3"; } > "$1/awk"
+  chmod +x "$1/awk"
+}
+
+sb22o=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22o.XXXXXX") || { fail "22o: mktemp failed"; sb22o=""; }
+real_awk_22=$(command -v awk)
+if [ -n "$sb22o" ] && [ -n "$real_awk_22" ]; then
+mk_shard_sandbox "$sb22o" 4
+led22o="$sb22o/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t50\n' "$sb22o"
+  printf '%s/test-s2.sh\t7\n'  "$sb22o"; } > "$led22o"
+rst_awk_stub_22 "$sb22o/stub-read" 'NF >= 2' "$real_awk_22"
+o122o=$(PATH="$sb22o/stub-read:$PATH" SUITE_DURATIONS="$led22o" bash "$RUNNER" --list --shard 1/2 "$sb22o" 2>&1); rc122o=$?
+if [ "$rc122o" -ne 0 ] \
+   && [ -z "$(run_lines "$o122o")" ] \
+   && grepq "$o122o" -F 'present and readable'; then
+  pass "22o: a ledger read that fails on a present, readable file refuses, it does not fall back"
+else
+  fail "22o: broken ledger read did not refuse; rc=$rc122o shard1='$(run_lines "$o122o")' out: $o122o"
+fi
+o222o=$(SUITE_DURATIONS="$led22o" bash "$RUNNER" --list --shard 1/2 "$sb22o" 2>&1); rc222o=$?
+if [ "$rc222o" -eq 0 ] && [ -n "$(run_lines "$o222o")" ]; then
+  pass "22o: control — the same ledger and sandbox run clean when awk works"
+else
+  fail "22o: control did not run clean; rc=$rc222o out: $o222o"
+fi
+
+rst_awk_stub_22 "$sb22o/stub-extract" 'me=' "$real_awk_22"
+o122p=$(PATH="$sb22o/stub-extract:$PATH" SUITE_DURATIONS="$led22o" bash "$RUNNER" --list --shard 1/2 "$sb22o" 2>&1); rc122p=$?
+if [ "$rc122p" -ne 0 ] \
+   && [ -z "$(run_lines "$o122p")" ] \
+   && grepq "$o122p" -F 'refusing to report green'; then
+  pass "22p: a failed extraction of this shard's share refuses, after the plan itself validated"
+else
+  fail "22p: broken extraction did not refuse; rc=$rc122p shard1='$(run_lines "$o122p")' out: $o122p"
+fi
+rm -rf "$sb22o"
+fi
+
 rst_tally

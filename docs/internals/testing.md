@@ -48,14 +48,17 @@ still exactly the unsharded run list.
 - **A tool failure on one runner refuses instead of falling back.** Shards
   decide alone, so a fallback is only exact when *every* shard takes it. The
   unusable-ledger fallback above is safe precisely because it is read off a
-  committed file that every shard reads identically — they all reach the same
-  verdict. A dead `sort`, a full `TMPDIR` or a broken `PATH` is local to one
-  runner, so a shard recovering locally would run a round-robin partition while
-  its siblings ran a bin-packed one: some suites twice, others on no shard at
-  all, every shard still green. The runner therefore fails the shard, with
-  `refusing to report green` on stderr, in both places this can happen — the
-  median probe on an otherwise-parseable ledger, and a pack that placed fewer
-  suites than were eligible. Both are HIMMEL-1128's false-green class.
+  committed file that every shard reads identically — present-and-readable is
+  answered by shell builtins, with no tool involved, so every shard reaches the
+  same verdict. A dead `awk` or `sort`, a full `TMPDIR` or a broken `PATH` is
+  local to one runner, so a shard recovering locally would run a round-robin
+  partition while its siblings ran a bin-packed one: some suites twice, others
+  on no shard at all, every shard still green. The runner therefore fails the
+  shard, with `refusing to report green` on stderr, at every stage after that
+  builtin probe — reading the durations out of a ledger already proved present
+  and readable, the median probe, a pack that placed fewer suites than were
+  eligible, and the extraction of this shard's own share from the finished
+  plan. All four are HIMMEL-1128's false-green class.
 - `SUITE_DURATIONS=<path>` overrides the ledger path (the shard tests use it).
 
 **Refresh** — replay one `shell-unit-shard` matrix run's logs (all shards at
