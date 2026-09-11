@@ -966,14 +966,33 @@ scan_segment() {
                 # LATER segment of this payload (scan_text folds
                 # UNSET_NAMES back in before each scan_segment call) --
                 # `unset` is a shell builtin, never itself a chokepoint.
+                #
+                # codex-1 (pr-check round 2): `-f` targets a FUNCTION, never
+                # a variable -- alone, `unset -f NAME` leaves NAME's
+                # variable/environment state untouched; combined with -v (or
+                # given as a separate word alongside -v) bash refuses
+                # ("cannot simultaneously unset...") and touches nothing
+                # either (verified on real bash). A `-f` anywhere among this
+                # invocation's options therefore means no variable is
+                # cleared: fold no names forward.
                 k=$((j + 1))
+                saw_f=0
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
-                    -*) ;;
-                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]}" ;;
+                    -*) case "${W[$k]#-}" in *f*) saw_f=1 ;; esac ;;
                     esac
                     k=$((k + 1))
                 done
+                if [ "$saw_f" = 0 ]; then
+                    k=$((j + 1))
+                    while [ "$k" -lt "$nw" ]; do
+                        case "${W[$k]}" in
+                        -*) ;;
+                        *) UNSET_NAMES="$UNSET_NAMES ${W[$k]}" ;;
+                        esac
+                        k=$((k + 1))
+                    done
+                fi
                 return 0 ;;
             export)
                 # HIMMEL-2927: `export -n NAME` strips NAME's export
@@ -981,27 +1000,37 @@ scan_segment() {
                 # environment. Plain `export NAME[=val]` (no -n) still
                 # exports; leave that shape alone. bash's export flags are
                 # exactly -f/-n/-p, combinable and order-independent
-                # (`-np`, `-pn`, `-fn` all genuinely strip -n's effect --
-                # verified on bash), so a cluster is recognized by its
-                # CHARACTER SET, not by an exact "-n" match; a word outside
-                # that set is an unrecognized/invalid option and is left
-                # alone per this guard's fail-open posture (real bash
-                # errors on it rather than stripping anything).
+                # (`-np`, `-pn` genuinely strip -n's effect -- verified on
+                # bash), so a cluster is recognized by its CHARACTER SET,
+                # not by an exact "-n" match; a word outside that set is an
+                # unrecognized/invalid option and is left alone per this
+                # guard's fail-open posture (real bash errors on it rather
+                # than stripping anything).
+                #
+                # codex-1 (pr-check round 2): `-f` requires the target to be
+                # a FUNCTION -- combined with `-n` (same word, e.g. `-fn`,
+                # or a separate word, e.g. `-f -n`) real bash errors
+                # ("not a function") on a plain variable and strips
+                # nothing, same as `-f` alone (verified). So `-n` only
+                # strips when NO word in this invocation's options carried
+                # an `f`.
                 k=$((j + 1))
                 saw_n=0
+                saw_f=0
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
                     -*)
                         opt="${W[$k]#-}"
                         case "$opt" in
                         *[!fnp]*) break ;;
-                        *n*) saw_n=1 ;;
                         esac
+                        case "$opt" in *f*) saw_f=1 ;; esac
+                        case "$opt" in *n*) saw_n=1 ;; esac
                         k=$((k + 1)) ;;
                     *) break ;;
                     esac
                 done
-                if [ "$saw_n" = 1 ]; then
+                if [ "$saw_n" = 1 ] && [ "$saw_f" = 0 ]; then
                     while [ "$k" -lt "$nw" ]; do
                         case "${W[$k]}" in
                         -*) ;;

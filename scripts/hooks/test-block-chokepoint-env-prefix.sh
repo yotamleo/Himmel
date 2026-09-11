@@ -150,6 +150,16 @@ assert_allow "env -u registered name, non-chokepoint program"     "$(j "env -u H
 # nothing) must NOT be treated as -n -- fail-open on the unrecognized
 # shape, per this guard's documented posture.
 assert_allow "export -nx (invalid flag) stays allowed"            "$(j "export -nx HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+# codex-1 (pr-check round 2): `-f` requires the target to be a FUNCTION --
+# `unset -f NAME` on a variable-only NAME touches nothing, and `export -fn`/
+# `-nf`/`-f -n` errors ("not a function") on a plain variable and strips
+# nothing either (verified on real bash), same as `-f` alone. Both must stay
+# allowed: the guard must not treat a function-only op as clearing a
+# variable's environment state.
+assert_allow "unset -f (function-only) stays allowed"             "$(j "unset -f HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_allow "export -fn (combined with -f) stays allowed"        "$(j "export -fn HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_allow "export -nf (reordered, combined with -f) allowed"   "$(j "export -nf HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_allow "export -f -n (separate words) stays allowed"        "$(j "export -f -n HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
