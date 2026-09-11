@@ -119,6 +119,28 @@ ${SW_VAR}=9 bash $STOP_WORKER --list")"
 assert_deny "\$CLAUDE_PROJECT_DIR-qualified path"       "$(j "${MOG_VAR}=1 bash \"\$CLAUDE_PROJECT_DIR/$MERGE_ON_GREEN\"")"
 assert_deny "PowerShell tool carrying the same shape"   "$(jp "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
 
+# --- HIMMEL-2927: `env -u`/`--unset` and an in-shell `unset`/`export -n`
+# clear a registered seam with no assignment word, so the assignment
+# predicate above never fires -- same defect class as VAR=x, inside the
+# registered set. HIMMEL_CONSOLE_LEG is a registered seam of
+# merge-on-green.sh (chokepoints.json) and, since #630, is what makes
+# merge-on-green.sh require the console's GO file -- clearing it unguarded
+# silently disarms the HIMMEL-2919 gate. `unset`/`export -n` are cross-segment
+# by design (the shell effect crosses segments too), so the chokepoint's
+# segment can come later in the same payload. ---
+assert_deny "env -u clears a registered seam"                    "$(j "env -u HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN 1")"
+assert_deny "env --unset=NAME clears a registered seam"          "$(j "env --unset=HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN 1")"
+assert_deny "env --unset NAME (separate operand) clears a seam"  "$(j "env --unset HIMMEL_CONSOLE_LEG bash $MERGE_ON_GREEN 1")"
+assert_deny "in-shell unset; then the chokepoint"                 "$(j "unset HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "in-shell unset && then the chokepoint"               "$(j "unset HIMMEL_CONSOLE_LEG && bash $MERGE_ON_GREEN 1")"
+assert_deny "export -n; then the chokepoint"                      "$(j "export -n HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+# Over-match controls: these must stay ALLOWED -- the widened predicate is
+# scoped to REGISTERED seam names of a chokepoint actually in the SAME
+# payload, never a general env/unset ban.
+assert_allow "env -u UNREGISTERED name stays allowed"             "$(j "env -u SOME_OTHER_VAR bash $MERGE_ON_GREEN 1")"
+assert_allow "unset with no chokepoint in the payload"            "$(j "unset HIMMEL_CONSOLE_LEG; echo hi")"
+assert_allow "env -u registered name, non-chokepoint program"     "$(j "env -u HIMMEL_CONSOLE_LEG bash scripts/some/unregistered-script.sh")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied
