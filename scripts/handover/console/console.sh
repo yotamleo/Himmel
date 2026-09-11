@@ -331,13 +331,18 @@ fi
 # SAME validation rather than being trusted outright.
 workdir="${CONSOLE_WORK_DIR:-$_console_default_workdir}"
 
-# console_workdir_ensure <dir> -- create at 0700 if absent, then validate
-# regardless of how it came to exist. `mkdir -p` is a documented no-op on a
-# path that already exists, so a hostile pre-created directory (or symlink)
-# survives it untouched — the validation below is what actually has to catch
-# that, which is also why a passing directory is never chmod'd here: fixing
-# up an existing hostile dir's mode would let it pass while the attacker
-# still owns it, laundering exactly the thing this check exists to catch.
+# console_workdir_ensure <dir> -- create at 0700 if absent, then ALWAYS
+# validate what actually exists at $d afterward -- never return early on a
+# bare mkdir success. `mkdir -p` is a documented no-op on a path that already
+# exists (including one whose last component is a symlink resolving to a
+# directory), so a hostile dir/symlink planted in the TOCTOU window between
+# the existence check below and the mkdir call would otherwise be silently
+# trusted; falling through into the same checks a pre-existing directory gets
+# closes that race, since -L/-O/permission-bits are evaluated on whatever is
+# actually at $d now, not on what mkdir believes it created. This is also why
+# a passing directory is never chmod'd here: fixing up an existing hostile
+# dir's mode would let it pass while the attacker still owns it, laundering
+# exactly the thing this check exists to catch.
 console_workdir_ensure() {
     local d="$1"
     if [ ! -e "$d" ] && [ ! -L "$d" ]; then
@@ -346,7 +351,6 @@ console_workdir_ensure() {
             err "cannot create work dir '$d' — refusing to silently proceed without a directory this process actually controls (HIMMEL-2881)"
             exit 3
         fi
-        return 0
     fi
     if [ -L "$d" ]; then
         err "refusing to use work dir '$d' — it is a SYMLINK, so this process does not control what it actually resolves to (HIMMEL-2881)"

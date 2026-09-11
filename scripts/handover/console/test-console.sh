@@ -658,4 +658,41 @@ sig29a="$(printf '%s\n' "$out29a" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head 
 sig29b="$(printf '%s\n' "$out29b" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
 check "29 root spelled via a symlink alias yields the SAME signal path" "$([ -n "$sig29a" ] && [ "$sig29a" = "$sig29b" ] && echo yes)" "yes"
 
+# --- 30: work-dir creation TOCTOU (HIMMEL-2881 round 2, codex-1 panel
+# finding) -- if another local process wins the race between console.sh's
+# `[ ! -e ]` absence check and its `mkdir -p` call, planting a directory or
+# symlink first, `mkdir -p` treats the path as already-satisfied and returns
+# 0 without creating anything; console_workdir_ensure must not trust that
+# silent success and skip validation -- it must always re-check what is
+# actually at the path afterward. A real race cannot be scheduled
+# deterministically, so a PATH stub for `mkdir` simulates the race winner:
+# it plants a symlink at the exact target path (mirroring what a hostile
+# local user's pre-created symlink looks like once `mkdir -p` sees the path
+# as already existing) and exits 0 -- exactly what the real `mkdir -p` does
+# in that situation -- instead of ever actually creating the target
+# directory.
+tmp30="$tmp/c30"
+mkdir -p "$tmp30/bin" "$tmp30/elsewhere-30"
+target30="$tmp30/himmel-console-$(id -u)"
+real_mkdir30="$(command -v mkdir)"
+cat > "$tmp30/bin/mkdir" <<STUB_EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = "$target30" ]; then
+        ln -s "$tmp30/elsewhere-30" "$target30"
+        exit 0
+    fi
+done
+exec "$real_mkdir30" "\$@"
+STUB_EOF
+chmod +x "$tmp30/bin/mkdir"
+rc30=0
+out30="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO TMPDIR="$tmp30" \
+    PATH="$tmp30/bin:$PATH" \
+    bash "$C" new --bucket wdtoctou --dry-run ) 2>&1 )" || rc30=$?
+check "30 work-dir creation TOCTOU: refuses with a distinct exit code" "$rc30" "3"
+check "30 work-dir creation TOCTOU: stderr names the cause" "$(printf '%s\n' "$out30" | grep -ci symlink)" "1"
+check "30 work-dir creation TOCTOU: never followed into elsewhere-30" "$([ -n "$(find "$tmp30/elsewhere-30" -mindepth 1 2>/dev/null)" ] && echo yes || echo no)" "no"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
