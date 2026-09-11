@@ -6,7 +6,7 @@ import { type ActMatrix } from "../src/act-matrix.js";
 const MATRIX: ActMatrix = {
   "ci:lint": { fidelity: "act-faithful", os: ["linux"], heavy: false },
   "ci:security-scan": { fidelity: "needs-shim", os: ["linux"], heavy: true },
-  "ci:shell-unit": { fidelity: "act-faithful", os: ["linux", "windows", "macos"], heavy: true },
+  "ci:shell-unit-shard": { fidelity: "act-faithful", os: ["linux", "windows", "macos"], heavy: true },
 };
 
 function lanes(over: Partial<LaneAvailability> = {}): LaneAvailability {
@@ -64,27 +64,27 @@ describe("route — the decision table", () => {
   });
 
   test("win/mac required needsSecrets, with headroom → private-gha-hosted", () => {
-    const d = route({ ...base, job: job({ job: "shell-unit", os: "windows", required: true, needsSecrets: true, heavy: true }) });
+    const d = route({ ...base, job: job({ job: "shell-unit-shard", os: "windows", required: true, needsSecrets: true, heavy: true }) });
     expect(d.lane).toBe("private-gha-hosted");
   });
 
   test("win/mac required, NO private headroom → defer (never silently skip)", () => {
-    const d = route({ ...base, job: job({ job: "shell-unit", os: "windows", required: true, needsSecrets: true, heavy: true }), privateMinutesHeadroom: false });
+    const d = route({ ...base, job: job({ job: "shell-unit-shard", os: "windows", required: true, needsSecrets: true, heavy: true }), privateMinutesHeadroom: false });
     expect(d.lane).toBe("defer");
   });
 
   test("public-safe non-required, github up → public-fork", () => {
-    const d = route({ ...base, job: job({ job: "shell-unit", os: "windows", publicSafe: true, heavy: true }) });
+    const d = route({ ...base, job: job({ job: "shell-unit-shard", os: "windows", publicSafe: true, heavy: true }) });
     expect(d.lane).toBe("public-fork");
   });
 
   test("public-safe non-required, github DOWN → defer (fork needs github)", () => {
-    const d = route({ ...base, job: job({ job: "shell-unit", os: "windows", publicSafe: true, heavy: true }), githubUp: false });
+    const d = route({ ...base, job: job({ job: "shell-unit-shard", os: "windows", publicSafe: true, heavy: true }), githubUp: false });
     expect(d.lane).toBe("defer");
   });
 
   test("local-exec only when shared/drain AND load below threshold", () => {
-    const j = job({ job: "shell-unit", os: "windows", heavy: true }); // not act-eligible, not public-safe
+    const j = job({ job: "shell-unit-shard", os: "windows", heavy: true }); // not act-eligible, not public-safe
     expect(route({ ...base, job: j, workProfile: "drain", loadBelowThreshold: true }).lane).toBe("local-exec");
     expect(route({ ...base, job: j, workProfile: "drain", loadBelowThreshold: false }).lane).toBe("defer");
     expect(route({ ...base, job: j, workProfile: "focus", loadBelowThreshold: true }).lane).toBe("defer");

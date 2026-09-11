@@ -7,7 +7,7 @@ import { type JobAttrs } from "../src/ledger.js";
 const T0 = "2026-07-05T00:00:00Z";
 function job(over: Partial<JobAttrs> = {}): JobAttrs {
   return {
-    id: "j", headSha: "HEADSHA", runSha: "HEADSHA", workflow: "ci", job: "shell-unit", required: true,
+    id: "j", headSha: "HEADSHA", runSha: "HEADSHA", workflow: "ci", job: "shell-unit-shard", required: true,
     needsSecrets: true, publicSafe: false, os: "windows", heavy: true, deterministic: false,
     treeHash: "t", enqueuedAt: T0, ...over,
   };
@@ -85,7 +85,7 @@ describe("private-gha-hosted (dispatched, sparing)", () => {
     };
     const a = makePrivateGhaHostedAdapter({ exec, repo: "o/r" });
     const r = await a.dispatch(job());
-    expect(r.runId).toContain("dispatch-HEADSHA-shell-unit-windows");
+    expect(r.runId).toContain("dispatch-HEADSHA-shell-unit-shard-windows");
     expect(calls.some((c) => c.includes("workflow"))).toBe(true);
   });
 });

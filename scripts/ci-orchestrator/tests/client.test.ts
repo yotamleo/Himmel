@@ -5,11 +5,11 @@ import { type LaneAvailability } from "../src/routing.js";
 import { type ActMatrix } from "../src/act-matrix.js";
 
 const T0 = "2026-07-05T00:00:00Z";
-const MATRIX: ActMatrix = { "ci:shell-unit": { fidelity: "act-faithful", os: ["linux", "windows", "macos"], heavy: true } };
+const MATRIX: ActMatrix = { "ci:shell-unit-shard": { fidelity: "act-faithful", os: ["linux", "windows", "macos"], heavy: true } };
 
 function job(over: Partial<JobAttrs> = {}): JobAttrs {
   return {
-    id: "j", headSha: "HEAD", runSha: "HEAD", workflow: "ci", job: "shell-unit", required: false,
+    id: "j", headSha: "HEAD", runSha: "HEAD", workflow: "ci", job: "shell-unit-shard", required: false,
     needsSecrets: false, publicSafe: false, os: "windows", heavy: true, deterministic: false,
     treeHash: "t", enqueuedAt: T0, ...over,
   };

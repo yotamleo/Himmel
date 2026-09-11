@@ -1,0 +1,12 @@
+name: CI
+on:
+  pull_request:
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo scan
+  totally-new-job:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo new
