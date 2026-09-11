@@ -20,6 +20,39 @@ it in an interactive session.
 plan without executing anything — use it to check what a change would trigger
 before committing to the long run.
 
+## Shard assignment — the duration ledger (HIMMEL-2894)
+
+`--shard <i>/<n>` splits the corpus across CI's `shell-unit-shard` matrix. The
+split is **not** round-robin: `scripts/ci/suite-durations.tsv` is a committed
+`suite<TAB>seconds` ledger, and the runner packs the run list greedily
+longest-first — each suite goes to whichever shard is currently lightest. The
+plan is computed from the suite list alone, so every shard derives the same
+partition independently with no coordination, and the union of the shards is
+still exactly the unsharded run list.
+
+- **What it is.** A snapshot of one real matrix run's per-suite wall clock,
+  keyed by the suite path *exactly as the runner prints it*. It tunes balance
+  only — it can never change **which** suites run.
+- **A suite missing from it** is assigned the median of the rows present, so a
+  new suite is packed like an average one, never dropped.
+- **A row naming a suite that no longer exists** is ignored.
+- **A missing, unreadable, empty or malformed ledger** makes the runner print
+  one notice on stderr and fall back to round-robin. A stale ledger costs wall
+  clock, nothing else.
+- `SUITE_DURATIONS=<path>` overrides the ledger path (the shard tests use it).
+
+**Refresh** — replay one `shell-unit-shard` matrix run's logs (all shards at
+once), then replace the rows and update the `source:` line in the header:
+
+```
+gh run view <run-id> --log \
+  | sed -nE 's/.*\[(PASS|FAIL)\] ([^ ]+) \(([0-9]+)s\).*/\2\t\3/p' \
+  | sort -u
+```
+
+Refresh when the corpus has moved enough that the shard times skew; it is
+bumped on demand, not maintained by CI.
+
 ## Lanes suite
 
 ```

@@ -2967,6 +2967,194 @@ if [ "$shard_total" -gt 0 ]; then
 fi
 plan_narrowed_why="${plan_narrowed_why%, }"
 
+
+# suite_filter_reason <relpath> <suite-key> — the skip chain, in ONE place
+# (HIMMEL-2894). Sets $_filter_reason and returns 0 when the suite is filtered
+# OUT of the run list; returns 1, $_filter_reason empty, when it is eligible.
+# Precedence is unchanged: SKIP_LIST -> docs-only -> tier -> conditional ->
+# capability, and every message is byte-identical to the inline chain it
+# replaces (the caller still owns the `[SKIP] <suite> — <reason>` printf).
+#
+# It is a function rather than inline code because the --shard bin-pack below
+# has to know the FINAL run list BEFORE the loop that produces it, so it walks
+# the suite file through THIS function in a pre-pass. A second, hand-copied
+# filter chain would let the two passes disagree the first time a filter was
+# added to only one of them — and a suite the loop considers eligible but the
+# pre-pass never saw is assigned to NO shard, silently dropping off the gate
+# while all n shards report green. That is HIMMEL-1128's false-green class,
+# so the two passes share one implementation by construction.
+suite_filter_reason() {
+  local _relpath="$1" _key="$2" _reason _ere
+  _filter_reason=""
+
+  if _reason=$(is_skipped "$_key" "$_relpath"); then
+    _filter_reason="$_reason"
+    return 0
+  fi
+
+  # Docs-only fast lane (HIMMEL-2166): the whole corpus is irrelevant to a
+  # docs-only diff, so this outranks tier/conditional/capability — checked
+  # right after SKIP_LIST (a suite's SKIP_LIST reason is more informative than
+  # "docs-only" and still wins).
+  if [ "$docs_only_skip_active" -eq 1 ]; then
+    _filter_reason="docs-only diff (no code path changed)"
+    return 0
+  fi
+
+  # Tier suites (HIMMEL-2120): SUITE_TIER_MODE gates which tier runs. Checked
+  # right after SKIP_LIST and before SUITE_CONDITIONAL/SUITE_REQUIRE_TOOL —
+  # the stated precedence — so a suite both extended-listed and SKIP_LISTed
+  # never runs (SKIP_LIST already took it above), and an extended-listed
+  # suite whose required tool is absent still loud-skips on the tool in
+  # extended mode (this check only ever runs a suite forward to that check,
+  # never around it). Inert when SUITE_TIER_MODE=all (the default), matching
+  # a full run exactly regardless of table contents.
+  if tier_lookup "$_key"; then
+    if [ "$SUITE_TIER_MODE" = "fast" ]; then
+      _filter_reason="tier: extended (SUITE_TIER_MODE=fast) — ${_tier_reason}"
+      return 0
+    fi
+  elif [ "$SUITE_TIER_MODE" = "extended" ]; then
+    _filter_reason="tier: not extended-listed (SUITE_TIER_MODE=extended runs only extended-tier suites)"
+    return 0
+  fi
+
+  # Conditional suites (HIMMEL-1589): when --changed-since is active, a suite in
+  # SUITE_CONDITIONAL runs only if a changed path matches its ERE. Inert without
+  # the flag (conditional_filter_active=0), so a full run behaves exactly as
+  # before. Runs through --list too, so the skip plan reflects the filter.
+  if [ "$conditional_filter_active" -eq 1 ] && _ere=$(conditional_ere "$_key"); then
+    if ! conditional_matches "$_ere"; then
+      _filter_reason="conditional: no changed path matches ${_ere}"
+      return 0
+    fi
+  fi
+
+  # Capability-conditional suites (HIMMEL-1792): RUNS where the tool is on
+  # PATH, [SKIP]s loudly and attributed where it is not — never a silent
+  # never-run. Checked in --list too, so the plan shows the real per-host
+  # disposition.
+  if capability_lookup "$_key" && ! command -v "$_cap_tool" >/dev/null 2>&1; then
+    _filter_reason="capability: ${_cap_tool} not on PATH — ${_cap_reason}"
+    return 0
+  fi
+
+  return 1
+}
+
+# --------------------------------------------------------------------------
+# Shard assignment (HIMMEL-2894) — a greedy longest-first bin-pack over a
+# committed duration ledger, computed HERE so the loop below only has to ask
+# "is this suite mine?".
+#
+# HIMMEL-2872's v1 was `i % n` on the run-list index, which balances by
+# construction only while suites cost about the same. They do not. The
+# measured run (34408076490, n=6) put the corpus's two heaviest suites — 389s
+# and 330s — on the same shard by modulo luck, so the slowest shard ran 18m23s
+# against a 6m29s floor (the single longest suite; no split of any width beats
+# it). Replaying the same 466-row ledger: round-robin's slowest shard is 17.8m
+# at n=6 and never drops below 9.0m at any n tried, and it is not even
+# monotonic in n (12 shards is worse than 8) — so "it got slow, add shards" is
+# a dice roll against the modulo, not a tuning knob. Longest-first gives 7.5m
+# at n=6 and reaches the 6.5m floor at n=8.
+#
+# Greedy longest-first: sort the FINAL run list by duration descending, ties
+# by path, then hand each suite to the currently-lightest bin (ties to the
+# lowest shard index). Every shard derives the whole partition from the same
+# two inputs and keeps only its own bin — no coordination, no shared state,
+# and therefore the same EXACTNESS 22a/22g pin: the union of the bins is the
+# unsharded run list and the bins are pairwise disjoint. Because the sort key
+# is (duration, path) rather than list position, SUITE_ROTATE's reordering
+# cannot move a suite between shards either.
+#
+# The ledger is ADVISORY in both directions, because balance is an
+# optimisation and exactness is the gate:
+#   - missing, unreadable, empty or malformed -> round-robin, with one notice
+#     on stderr. A run must never fail over an absent optimisation.
+#   - a suite the ledger has never heard of -> the median of the rows it does
+#     have, and assigned like any other. Dropping an unknown suite would be
+#     HIMMEL-1128's false green reached through a lookup miss.
+#
+# Durations are floored at 1s. 172 of the measured ledger's 466 rows are 0s —
+# a suite that finishes inside the sampling resolution still costs a process
+# spawn — and a 0 adds nothing to a bin's load, so without the floor every one
+# of those 172 would pile onto whichever bin was lightest when the first of
+# them was placed. The floor is what makes them fan out.
+#
+# Keys are the suite path exactly as this runner PRINTS it in its [RUN ]/
+# [PASS] lines, which is also exactly what the ledger's regeneration command
+# harvests out of a job log — so the spelling written and the spelling matched
+# cannot drift apart. $SUITE_DURATIONS overrides the committed ledger path.
+# --------------------------------------------------------------------------
+shard_assignment=""   # newline-delimited suite paths belonging to THIS shard
+shard_binpack=0       # 1 = bin-pack in force; 0 = the round-robin fallback
+_shard_nl=$'\n'
+if [ "$shard_total" -gt 0 ]; then
+  _shard_ledger="${SUITE_DURATIONS:-$REPO_ROOT/scripts/ci/suite-durations.tsv}"
+  _shard_tab=$(printf '\t')
+  # One probe answers "usable?" and "what is the default?" together: the
+  # median exists iff at least one row parses as <path><TAB><non-negative
+  # integer>. Anything else — no file, no read permission, only comments,
+  # a merge conflict pasted over the top — leaves it empty and falls back.
+  _shard_median=$(awk -F'\t' '
+      /^[[:space:]]*#/ { next }
+      NF >= 2 && $1 != "" && $2 ~ /^[0-9]+$/ { print $2 + 0 }
+    ' "$_shard_ledger" 2>/dev/null \
+    | sort -n \
+    | awk '{ a[NR] = $1 } END { if (NR == 0) exit 1; print a[int((NR + 1) / 2)] }') \
+    || _shard_median=""
+
+  if [ -n "$_shard_median" ]; then
+    # Pre-pass: the FINAL run list, through the same filter chain the loop
+    # below uses. fd 4, for the same reason the loop uses fd 3.
+    _shard_eligible=""
+    while IFS= read -r _shard_suite <&4; do
+      [ -n "$_shard_suite" ] || continue
+      _shard_rel="${_shard_suite#"${scan}"/}"
+      if suite_filter_reason "$_shard_rel" "${scan_resolved}/${_shard_rel}"; then
+        continue
+      fi
+      _shard_eligible="${_shard_eligible}${_shard_suite}${_shard_nl}"
+    done 4< "$suites_file"
+
+    # Join -> sort -> pack. The %012d key is zero-padded so a plain reverse
+    # string sort on field 1 is a descending NUMERIC sort, which lets field 2
+    # break ties ascending by path in the same pass.
+    _shard_plan=$(printf '%s' "$_shard_eligible" \
+      | awk -v med="$_shard_median" '
+          FNR == NR {
+            if ($0 ~ /^[[:space:]]*#/) next
+            split($0, f, "\t")
+            if (f[1] != "" && f[2] ~ /^[0-9]+$/) dur[f[1]] = f[2] + 0
+            next
+          }
+          $0 != "" {
+            d = ($0 in dur) ? dur[$0] : med
+            if (d < 1) d = 1
+            printf "%012d\t%s\n", d, $0
+          }
+        ' "$_shard_ledger" - \
+      | LC_ALL=C sort -t "$_shard_tab" -k1,1r -k2,2 \
+      | awk -F'\t' -v n="$shard_total" '
+          BEGIN { for (i = 0; i < n; i++) load[i] = 0 }
+          {
+            best = 0
+            for (i = 1; i < n; i++) if (load[i] < load[best]) best = i
+            load[best] += $1 + 0
+            print best "\t" $2
+          }
+        ')
+
+    _shard_mine_list=$(printf '%s\n' "$_shard_plan" \
+      | awk -F'\t' -v me="$shard_offset" '$1 == me { print $2 }')
+    shard_assignment="${_shard_nl}${_shard_mine_list}${_shard_nl}"
+    shard_binpack=1
+  else
+    printf "run-shell-tests.sh: --shard: duration ledger '%s' is missing, unreadable, empty or malformed — falling back to round-robin assignment (balance only; the partition stays exact)\n" \
+      "$_shard_ledger" >&2
+  fi
+fi
+
 # fd 3, not stdin. With `done < "$suites_file"` the loop BODY inherits the
 # suite list as its stdin, so any suite that read from stdin consumed the
 # remaining suite paths — the runner then reported OK over a list it had
@@ -2985,86 +3173,46 @@ while IFS= read -r suite <&3; do
   relpath="${suite#"${scan}"/}"
   suite_key="${scan_resolved}/${relpath}"
 
-  if reason=$(is_skipped "$suite_key" "$relpath"); then
+  # Every skip filter, in one call (HIMMEL-2894). SKIP_LIST -> docs-only ->
+  # tier -> conditional -> capability, in that precedence, with the reason the
+  # chain chose. The --shard pre-pass above walks the same function, so the
+  # run list the loop produces and the run list the bin-pack partitioned are
+  # the same list by construction rather than by two chains staying in step.
+  if suite_filter_reason "$relpath" "$suite_key"; then
     skip=$((skip + 1))
-    printf '[SKIP] %s — %s\n' "$suite" "$reason"
+    printf '[SKIP] %s — %s\n' "$suite" "$_filter_reason"
     continue
   fi
 
-  # Docs-only fast lane (HIMMEL-2166): the whole corpus is irrelevant to a
-  # docs-only diff, so this outranks tier/conditional/capability — checked
-  # right after SKIP_LIST (a suite's SKIP_LIST reason is more informative than
-  # "docs-only" and still wins).
-  if [ "$docs_only_skip_active" -eq 1 ]; then
-    skip=$((skip + 1))
-    printf '[SKIP] %s — docs-only diff (no code path changed)\n' "$suite"
-    continue
-  fi
-
-  # Tier suites (HIMMEL-2120): SUITE_TIER_MODE gates which tier runs. Checked
-  # right after SKIP_LIST and before SUITE_CONDITIONAL/SUITE_REQUIRE_TOOL —
-  # the stated precedence (SKIP_LIST -> tier -> SUITE_CONDITIONAL ->
-  # SUITE_REQUIRE_TOOL) — so a suite both extended-listed and SKIP_LISTed
-  # never runs (SKIP_LIST already took it above), and an extended-listed
-  # suite whose required tool is absent still loud-skips on the tool in
-  # extended mode (this check only ever runs a suite forward to that check,
-  # never around it). Inert when SUITE_TIER_MODE=all (the default), matching
-  # a full run exactly regardless of table contents.
-  if tier_lookup "$suite_key"; then
-    if [ "$SUITE_TIER_MODE" = "fast" ]; then
-      skip=$((skip + 1))
-      printf '[SKIP] %s — tier: extended (SUITE_TIER_MODE=fast) — %s\n' "$suite" "$_tier_reason"
-      continue
-    fi
-  elif [ "$SUITE_TIER_MODE" = "extended" ]; then
-    skip=$((skip + 1))
-    printf '[SKIP] %s — tier: not extended-listed (SUITE_TIER_MODE=extended runs only extended-tier suites)\n' "$suite"
-    continue
-  fi
-
-  # Conditional suites (HIMMEL-1589): when --changed-since is active, a suite in
-  # SUITE_CONDITIONAL runs only if a changed path matches its ERE. Inert without
-  # the flag (conditional_filter_active=0), so a full run behaves exactly as
-  # before. Runs through --list too, so the skip plan reflects the filter.
-  if [ "$conditional_filter_active" -eq 1 ] && ere=$(conditional_ere "$suite_key"); then
-    if ! conditional_matches "$ere"; then
-      skip=$((skip + 1))
-      printf '[SKIP] %s — conditional: no changed path matches %s\n' "$suite" "$ere"
-      continue
-    fi
-  fi
-
-  # Capability-conditional suites (HIMMEL-1792): RUNS where the tool is on
-  # PATH, [SKIP]s loudly and attributed where it is not — never a silent
-  # never-run. Checked in --list too, so the plan shows the real per-host
-  # disposition.
-  if capability_lookup "$suite_key" && ! command -v "$_cap_tool" >/dev/null 2>&1; then
-    skip=$((skip + 1))
-    printf '[SKIP] %s — capability: %s not on PATH — %s\n' "$suite" "$_cap_tool" "$_cap_reason"
-    continue
-  fi
-
-  # Shard filter (HIMMEL-2872) — LAST, after every filter above, so the split
-  # is over the FINAL run list. Splitting raw discovery instead would let a
-  # host's SKIP_LIST/tier/capability skips fall unevenly across shards, so one
-  # runner carries the corpus while five idle.
+  # Shard filter (HIMMEL-2872, reassigned HIMMEL-2894) — LAST, after every
+  # filter above, so the split is over the FINAL run list. Splitting raw
+  # discovery instead would let a host's SKIP_LIST/tier/capability skips fall
+  # unevenly across shards, so one runner carries the corpus while five idle.
   #
-  # Round-robin on the run-list index, not a contiguous block. Discovery is
-  # `sort`ed and every filter above is deterministic, so shard i selects the
-  # same suites on every runner and the shards are an EXACT partition: their
+  # The decision itself was made before the loop started: $shard_assignment
+  # holds this shard's bin from the duration bin-pack, or $shard_binpack is 0
+  # and the v1 round-robin still applies. Both are an EXACT partition — their
   # union is the unsharded run list and they are pairwise disjoint. Anything
-  # weaker drops suites off the gate while all n shards report green — the
-  # HIMMEL-1128 false-green class, reached through the parallelism instead of
-  # through discovery. Round-robin also balances by construction here: 466
-  # suites, a 52s maximum, and most of them under 5s.
+  # weaker drops suites off the gate while all n shards report green, the
+  # HIMMEL-1128 false-green class reached through the parallelism instead of
+  # through discovery.
   #
   # $run_index counts run-ELIGIBLE suites and advances for EVERY one of them,
-  # whether or not this shard claims it. That shared counter is precisely what
-  # makes the partition exact — a per-shard counter would not.
-  #
-  # A duration-ledger bin-pack is the follow-up; round-robin is v1.
+  # whether or not this shard claims it. It is what the round-robin fallback
+  # divides, and what the empty-shard refusal below reports as the size of the
+  # run list, so it advances on both paths.
   if [ "$shard_total" -gt 0 ]; then
-    _shard_mine=$(( run_index % shard_total == shard_offset ))
+    if [ "$shard_binpack" -eq 1 ]; then
+      # Membership by newline-delimited containment: no fork per suite, and no
+      # separator a path could contain (discovery is newline-delimited, so a
+      # path with a newline in it never reached this list).
+      case "$shard_assignment" in
+        *"${_shard_nl}${suite}${_shard_nl}"*) _shard_mine=1 ;;
+        *)                                    _shard_mine=0 ;;
+      esac
+    else
+      _shard_mine=$(( run_index % shard_total == shard_offset ))
+    fi
     run_index=$((run_index + 1))
     [ "$_shard_mine" -eq 1 ] || continue
   fi
