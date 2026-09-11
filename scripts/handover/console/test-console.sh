@@ -695,4 +695,30 @@ check "30 work-dir creation TOCTOU: refuses with a distinct exit code" "$rc30" "
 check "30 work-dir creation TOCTOU: stderr names the cause" "$(printf '%s\n' "$out30" | grep -ci symlink)" "1"
 check "30 work-dir creation TOCTOU: never followed into elsewhere-30" "$([ -n "$(find "$tmp30/elsewhere-30" -mindepth 1 2>/dev/null)" ] && echo yes || echo no)" "no"
 
+# --- 31: XDG_RUNTIME_DIR itself group- or world-writable must NOT be
+# trusted for the default work dir (HIMMEL-2881 round 2, codex-1 panel
+# finding) -- console_workdir_ensure only validates the CHILD
+# ($XDG_RUNTIME_DIR/himmel-console) it creates; a local user with write
+# access to the PARENT can still unlink/replace that child after
+# validation completes (Unix permission semantics: write access to a
+# directory controls its entries regardless of the entries' own
+# permissions, absent a sticky bit like /tmp's). The selection must not
+# prefer $XDG_RUNTIME_DIR when the directory itself is group- or
+# world-writable; it must fall back to the uid-qualified TMPDIR path
+# instead, exactly as it already does for a non-owned $XDG_RUNTIME_DIR.
+tmp31="$tmp/c31"
+mkdir -p "$tmp31/xdg" "$tmp31/tmp"
+chmod 0777 "$tmp31/xdg"
+out31="$( ( cd "$fixture_repo" && env -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    XDG_RUNTIME_DIR="$tmp31/xdg" TMPDIR="$tmp31/tmp" \
+    bash "$C" new --bucket wdgwtest --dry-run --arm ) 2>&1 )"
+sig31="$(printf '%s\n' "$out31" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+case "$sig31" in
+    "$tmp31/xdg/himmel-console/"*) sig31_branch=rejected ;;
+    "$tmp31/tmp/himmel-console-$(id -u)/"*) sig31_branch=fallback ;;
+    *) sig31_branch="other:$sig31" ;;
+esac
+check "31 group/world-writable XDG_RUNTIME_DIR is not preferred" "$sig31_branch" "fallback"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

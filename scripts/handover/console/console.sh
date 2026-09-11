@@ -307,20 +307,46 @@ _console_sha256_8() {
 root_canon="$(_arm_realpath "$root")"
 root_digest="$(_console_sha256_8 "$root_canon")"
 
+# _console_group_or_world_writable <dir> -- true if <dir>'s own permission
+# bits allow group or other write. HIMMEL-2881 round 2 (codex-1 panel
+# finding): console_workdir_ensure only ever validates the CHILD it creates
+# ($XDG_RUNTIME_DIR/himmel-console); it never checks the PARENT
+# ($XDG_RUNTIME_DIR itself). Unix permission semantics mean write access to
+# a directory controls its entries regardless of the entries' own
+# permissions (absent a sticky bit, which /tmp has but an arbitrary
+# XDG_RUNTIME_DIR is not guaranteed to), so a group- or world-writable
+# parent lets another local user swap the child out from under this
+# process even after the child passed its own validation. A separate
+# helper (rather than folding this into console_workdir_ensure) keeps that
+# already-tested function's exact error-message wording untouched.
+_console_group_or_world_writable() {
+    local mode
+    mode=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
+    [ -n "$mode" ] || return 0  # unreadable bits: fail closed, treat as writable so the caller falls back
+    local oth="${mode: -1}" grp="${mode%?}"
+    grp="${grp: -1}"
+    case "$oth$grp" in
+        *2*|*3*|*6*|*7*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # HIMMEL-2881: the default work dir is a PREDICTABLE path
 # (${TMPDIR:-/tmp}/himmel-console-<uid>) another local user could pre-create
 # — as a directory they own, or as a symlink elsewhere — before this
 # process's first run; `mkdir -p` silently accepts an existing directory
 # regardless of who made it or what it actually resolves to. Prefer
 # $XDG_RUNTIME_DIR/himmel-console (already a per-user 0700 directory on
-# systemd hosts) when it is set AND already owned by this uid; otherwise
-# fall back to the uid-qualified /tmp path. Modeled directly on
-# headed-arm.sh's LOCKDIR hardening (HIMMEL-2545): `-L` before `-d` before
-# `-O` (plain test operators, no stat/uid comparison needed), then a
-# stat-based permission-bit check for the GNU/BSD split. Exit 3 is a new,
-# distinct code for this whole class of refusal — never conflated with the
-# exit-1 usage errors or the exit-2 unresolved-root/tooling errors above.
-if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
+# systemd hosts) when it is set AND already owned by this uid AND not
+# itself group- or world-writable; otherwise fall back to the uid-qualified
+# /tmp path. Modeled directly on headed-arm.sh's LOCKDIR hardening
+# (HIMMEL-2545): `-L` before `-d` before `-O` (plain test operators, no
+# stat/uid comparison needed), then a stat-based permission-bit check for
+# the GNU/BSD split. Exit 3 is a new, distinct code for this whole class of
+# refusal — never conflated with the exit-1 usage errors or the exit-2
+# unresolved-root/tooling errors above.
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ] \
+    && ! _console_group_or_world_writable "$XDG_RUNTIME_DIR"; then
     _console_default_workdir="$XDG_RUNTIME_DIR/himmel-console"
 else
     _console_default_workdir="${TMPDIR:-/tmp}/himmel-console-$(id -u)"
