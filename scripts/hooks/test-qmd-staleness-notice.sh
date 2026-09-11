@@ -496,6 +496,18 @@ case "$cache_mode" in
     *[2367]) hasnt "a world-writable cache is not served" "$(runc 0 '')" "WRITABLE-NOTICE" ;;
     *)       pass "world-writable-cache case SKIPPED (chmod is a no-op here)" ;;
 esac
+# The world-writable cache above is not "ok", so the hook's normal fallthrough
+# spawns a detached refresh exactly as it would for a stale cache (L275-294) —
+# but unlike cases 2-4 this case never calls wait_for_cache, so that child is
+# left running loose. On a loaded CI shard it can still be alive when case 8
+# starts: it shares this same CACHE_STATE_DIR, so it either steals case 8a's
+# lock (`mkdir "$CACHE.lock" || exit 0`, hook L255) or publishes its own
+# (empty, rc-0) output over case 8a's, and either way case 8a's synchronous
+# assertion sees no banner (HIMMEL-2920 follow-up: this raced #632 CI red).
+# Drain it — the lock is released in the same trap that publishes, so its
+# absence means the straggler is done.
+_i=0
+while [ -d "$CACHE.lock" ] && [ "$_i" -lt 60 ]; do sleep 1; _i=$((_i + 1)); done
 
 # 8. A host with NO state dir at all still initializes the cache. Every fixture
 #    above creates the dir first, which hid the case that matters most: a fresh
