@@ -3,7 +3,10 @@
     "seam_env_vars": ["CR_REQUIRE_CROSS_MODEL"]
   },
   "scripts/handover/merge-on-green.sh": {
-    "seam_env_vars": ["ARMAUTOMERGE", "MERGE_ON_GREEN_LOG"]
+    "seam_env_vars": ["ARMAUTOMERGE", "MERGE_ON_GREEN_LOG", "HIMMEL_CONSOLE_LEG", "HANDOVER_DIR"]
+  },
+  "scripts/handover/console-kit/go.sh": {
+    "seam_env_vars": ["HIMMEL_CONSOLE_LEG"]
   },
   "scripts/lanes/stop-worker.sh": {
     "seam_env_vars": ["STOP_WORKER_GRACE_SECS", "STOP_WORKER_BRIDGE_ROOT_OVERRIDE"]

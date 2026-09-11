@@ -17,6 +17,10 @@ set -uo pipefail
 # retained; this is the startup defense-in-depth + the CR_MERGE_GATE_OK scrub
 # for the day a sourced lib reads it.)
 unset ARMAUTOMERGE CR_MERGE_GATE_OK
+# HIMMEL-2919: a console-spawned leg's shell carries HIMMEL_CONSOLE_LEG=1, which
+# arms the console-GO gate — ambient, it would refuse every merge case below.
+# Its own line: RC-2 below mutates the line above by exact match.
+unset HIMMEL_CONSOLE_LEG
 
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
@@ -187,6 +191,8 @@ mog_build_fixture() {
     # the source fails, CR_STATE falls back to `unknown`, and every cr= assertion
     # below would pass while testing nothing.
     cp "$SCRIPT_DIR/../lib/cr-available.sh" "$tmp/scripts/lib/cr-available.sh"
+    # HIMMEL-2919: the console-GO gate resolves the GO file under handover_root.
+    cp "$SCRIPT_DIR/../lib/handover-path.sh" "$tmp/scripts/lib/handover-path.sh"
     if [ "${NO_CHECK_CI:-0}" != "1" ]; then
         printf '#!/usr/bin/env bash\nexit %s\n' "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
         chmod +x "$tmp/scripts/check-ci.sh"
@@ -2168,6 +2174,72 @@ else
     # a merge). A future change that made `broken` fail closed fails HERE.
     assert_audit_has "2380-5: a broken marker warns but does not block the merge" "MERGED repo="
 fi
+
+# --- 2919. Console-GO gate — a console-spawned leg (HIMMEL_CONSOLE_LEG=1) merges
+# only on a console-written GO file for the certified head ------------------
+GO_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/mog-go.XXXXXX")
+GO_ROOT=$(cd "$GO_ROOT" && pwd)
+GO_SHA=0123456789abcdef0123456789abcdef01234567
+GO_OLD=fedcba9876543210fedcba9876543210fedcba98
+GO_WRITER="$SCRIPT_DIR/console-kit/go.sh"
+no_merge_call() {
+    if [ "$(grep -c '^pr merge ' "$LAST_GH_LOG")" -eq 0 ]; then pass; else fail "$1 (expected zero merge calls)"; fi
+}
+
+# 2919-a — marker set, no GO file: refused before any merge call.
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
+    run_mog 17 "2919-a: console leg without a GO file → exit 17"
+assert_err_has "2919-a: stderr names the expected GO path" "has no console GO ($GO_ROOT/.locks/go/77.$GO_SHA)"
+assert_audit_has "2919-a: audited as a policy refusal" "REFUSED reason=policy-refused phase=console-go"
+assert_audit_lacks "2919-a: no merge intent recorded" "MERGING"
+no_merge_call "2919-a: no merge call"
+
+# 2919-a2 — same on --dry-run: a dry run must report the refusal, not "would merge".
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
+    run_mog 17 "2919-a2: dry-run console leg without a GO file → exit 17" -- --dry-run
+assert_audit_lacks "2919-a2: no DRYRUN would-merge line" "DRYRUN"
+
+# 2919-a3 — an unresolvable handover root fails CLOSED, never "no gate".
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT/absent" STUB_SHA="$GO_SHA" \
+    run_mog 17 "2919-a3: console leg with an unresolvable handover root → exit 17"
+no_merge_call "2919-a3: no merge call"
+
+# 2919-b — marker set, GO written by the console's own writer for the certified
+# head: proceeds exactly like the unmarked happy path (2919-d's gh log).
+HANDOVER_DIR="$GO_ROOT" bash "$GO_WRITER" 77 "$GO_SHA" >/dev/null 2>&1
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
+    run_mog 0 "2919-b: console leg with a GO for the certified head → merged"
+assert_merge_has "2919-b: merge pins the certified head" "--match-head-commit $GO_SHA"
+assert_audit_has "2919-b: MERGED recorded" "MERGED repo="
+GO_B_GHLOG=$(cat "$LAST_GH_LOG")
+
+# 2919-c — only a STALE GO (an older head) exists: refused.
+rm -f "$GO_ROOT/.locks/go/77.$GO_SHA"
+HANDOVER_DIR="$GO_ROOT" bash "$GO_WRITER" 77 "$GO_OLD" >/dev/null 2>&1
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
+    run_mog 17 "2919-c: console leg with only a stale GO → exit 17"
+assert_err_has "2919-c: stderr says a stale GO is never reused" "a GO for an older head is stale"
+no_merge_call "2919-c: no merge call"
+
+# 2919-c2 — the stale GO RENAMED onto the certified head's path still carries
+# head=<old sha>: the content binding refuses it.
+mv "$GO_ROOT/.locks/go/77.$GO_OLD" "$GO_ROOT/.locks/go/77.$GO_SHA"
+HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
+    run_mog 17 "2919-c2: a stale GO renamed to the certified path → exit 17"
+no_merge_call "2919-c2: no merge call"
+rm -f "$GO_ROOT/.locks/go/77.$GO_SHA"
+
+# 2919-d — marker unset, no GO file: the operator path is unchanged, and the gate
+# adds no gh call of its own (2919-b's gh log is byte-identical).
+HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" run_mog 0 "2919-d: marker unset, no GO → merged (operator path unchanged)"
+assert_audit_lacks "2919-d: no console-go refusal" "console-go"
+if [ "$(cat "$LAST_GH_LOG")" = "$GO_B_GHLOG" ]; then pass; else fail "2919-b/d: the gated merge's gh calls differ from the unmarked merge's"; fi
+
+# 2919-d2 — a falsy marker is the unset marker (same truthiness as ARMAUTOMERGE).
+HIMMEL_CONSOLE_LEG=0 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
+    run_mog 0 "2919-d2: HIMMEL_CONSOLE_LEG=0, no GO → merged"
+rm -rf "$GO_ROOT"
+
 echo
 echo "merge-on-green: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

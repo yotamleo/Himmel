@@ -148,6 +148,10 @@ fi
 # only unsets the three HIMMEL-2545 vars and otherwise inherits as-is.
 export IMPL_GUARD_OK=1
 export INLINE_IMPL_OK=1
+# HIMMEL_CONSOLE_LEG=1 (HIMMEL-2919): marks the launched process as a
+# console-spawned leg, both lanes. merge-on-green.sh then merges only on the
+# console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
+export HIMMEL_CONSOLE_LEG=1
 # headed-arm.sh builds one argv array for both native and recorder launches and
 # refuses exit 2 if this exact pair is absent. This is the final resolved-argv
 # guard; the context-value check above gives the earlier operator-facing error.
@@ -165,8 +169,8 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm-leg: would exec: %s %s %s %s %s %s %s %s\n' \
         "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HEADED_ARM_REPO=%s\n' \
-        "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s\n' \
+        "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s\n' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"
     exit 0

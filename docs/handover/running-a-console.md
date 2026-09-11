@@ -128,6 +128,12 @@ threat model and the verbatim block:
 green at that exact head, zero unresolved review threads, attestation trailers
 in the first commit) → `GO` → the leg merges and reports `MERGED #<n> → <sha>`.
 The console pulls the primary and the leg closes out its ticket.
+The console sends GO by first running `bash scripts/handover/console-kit/go.sh
+<pr> <full head sha>` — the file IS the GO, the SendMessage is the
+notification: a leg launched by `headed-arm-leg.sh` carries
+`HIMMEL_CONSOLE_LEG=1`, and `merge-on-green.sh` refuses it (exit 17) without a
+GO for the exact head it certifies, so a push after GO needs a fresh one
+(HIMMEL-2919).
 
 An armed merge stops at "awaiting approval" wherever branch protection requires
 a review the automation identity cannot give — on a single-maintainer repo the
