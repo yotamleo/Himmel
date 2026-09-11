@@ -1630,14 +1630,21 @@ rm -rf "$sb22l"
 fi
 
 
-# 22m — the bin-pack PLAN must be COMPLETE or not used at all (CR round 1,
-# [codex-1]). The join|sort|pack pipeline runs under `set -uo pipefail` with no
-# `set -e`, so a failing stage does not abort the run: it would leave the plan
-# empty or truncated, and the runner would then believe it had an assignment
-# and every shard would silently drop the suites the plan never placed, still
-# exiting 0 — HIMMEL-1128's false-green class, reached through a balance
-# optimisation. The runner now compares the plan's line count against the
-# eligible count and falls back to round-robin unless they match.
+# 22m — an INCOMPLETE bin-pack plan must fail the shard, never quietly change
+# its assignment (CR rounds 1 and 2, [codex-1] both times). The join|sort|pack
+# pipeline runs under `set -uo pipefail` with no `set -e`, so a failing stage
+# does not abort the run: it would leave the plan empty or truncated, and the
+# runner would then believe it had an assignment and silently drop every suite
+# the plan never placed, still exiting 0 — HIMMEL-1128's false-green class,
+# reached through a balance optimisation.
+#
+# Round 2 is why this REFUSES rather than falling back. Each shard is a
+# separate process deciding alone, and a pipeline stage dies on ONE runner, so
+# a local fallback would put this shard on round-robin while its siblings
+# bin-packed: two partitions in force at once, which duplicates some suites and
+# leaves others on no shard at all. The unusable-LEDGER fallback (22k) is safe
+# for the opposite reason — it is derived from a committed file every shard
+# reads identically, so they all fall back together.
 #
 # The control breaks exactly ONE stage: a `sort` stub that fails only for the
 # pack sort's own argv (-k1,1r) and execs the real sort for every other call,
@@ -1668,18 +1675,13 @@ mkdir -p "$stub22m"
   printf 'done\n'
   printf 'exec %s "$@"\n' "$real_sort_22m"; } > "$stub22m/sort"
 chmod +x "$stub22m/sort"
-# The pre-HIMMEL-2894 partition — what the fallback must reproduce exactly.
-rr122m=$(printf '%s/test-s1.sh\n%s/test-s3.sh\n%s/test-s5.sh' "$sb22m" "$sb22m" "$sb22m")
-rr222m=$(printf '%s/test-s2.sh\n%s/test-s4.sh\n%s/test-s6.sh' "$sb22m" "$sb22m" "$sb22m")
 o122m=$(PATH="$stub22m:$PATH" SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1); rc122m=$?
-o222m=$(PATH="$stub22m:$PATH" SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 2/2 "$sb22m" 2>&1)
-if [ "$rc122m" -eq 0 ] \
-   && [ "$(run_lines "$o122m")" = "$rr122m" ] \
-   && [ "$(run_lines "$o222m")" = "$rr222m" ] \
-   && grepq "$o122m" -F 'falling back to round-robin'; then
-  pass "22m: a failed pack stage falls back to round-robin — no suite is dropped"
+if [ "$rc122m" -ne 0 ] \
+   && [ -z "$(run_lines "$o122m")" ] \
+   && grepq "$o122m" -F 'refusing to report green'; then
+  pass "22m: a failed pack stage refuses — no suite is silently dropped"
 else
-  fail "22m: incomplete plan was used; rc=$rc122m shard1='$(run_lines "$o122m")' shard2='$(run_lines "$o222m")' out1: $o122m"
+  fail "22m: incomplete plan was used; rc=$rc122m shard1='$(run_lines "$o122m")' out1: $o122m"
 fi
 # The same sandbox WITHOUT the stub bin-packs: s1 (100s) ends up alone against
 # s3 (90s) plus the four 1s suites. That is what makes the case above evidence
@@ -1691,6 +1693,54 @@ else
   fail "22m: control did not bin-pack; shard1='$(run_lines "$o322m")' out: $o322m"
 fi
 rm -rf "$sb22m"
+fi
+
+
+# 22n — the OTHER transient stage: the median probe. It runs before the pack
+# pipeline and is the second place a runner-local tool failure could quietly
+# change this shard's assignment strategy. It is read in two stages precisely
+# so the two outcomes stay distinguishable: "no row parses" (rc=0, no output —
+# a property of the committed file, so 22k's round-robin fallback is safe) vs
+# "sort died on this runner" (rc!=0 — local, so falling back would strand this
+# shard on a partition its siblings never used). This case drives the second.
+#
+# The stub fails only on `-n`, which is the median probe's own argv and the
+# runner's ONLY numeric sort; discovery's plain `sort <file>` and the pack
+# sort's `-k1,1r` both still exec the real tool.
+sb22n=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22n.XXXXXX") || { fail "22n: mktemp failed"; sb22n=""; }
+real_sort_22n=$(command -v sort)
+if [ -n "$sb22n" ] && [ -n "$real_sort_22n" ]; then
+mk_shard_sandbox "$sb22n" 4
+led22n="$sb22n/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t50\n' "$sb22n"
+  printf '%s/test-s2.sh\t7\n'  "$sb22n"; } > "$led22n"
+stub22n="$sb22n/stub-bin"
+mkdir -p "$stub22n"
+# shellcheck disable=SC2016  # these lines are the STUB's source: its own "$@" must not expand here
+{ printf '#!/usr/bin/env bash\n'
+  printf 'for _a in "$@"; do\n'
+  printf '  case "$_a" in -n) exit 1 ;; esac\n'
+  printf 'done\n'
+  printf 'exec %s "$@"\n' "$real_sort_22n"; } > "$stub22n/sort"
+chmod +x "$stub22n/sort"
+o122n=$(PATH="$stub22n:$PATH" SUITE_DURATIONS="$led22n" bash "$RUNNER" --list --shard 1/2 "$sb22n" 2>&1); rc122n=$?
+if [ "$rc122n" -ne 0 ] \
+   && [ -z "$(run_lines "$o122n")" ] \
+   && grepq "$o122n" -F 'median could not be computed'; then
+  pass "22n: a failed median probe on a PARSEABLE ledger refuses, it does not fall back"
+else
+  fail "22n: median-probe failure did not refuse; rc=$rc122n shard1='$(run_lines "$o122n")' out: $o122n"
+fi
+# Non-vacuity: the same sandbox without the stub runs normally and says nothing
+# about a median, so the case above is evidence about the broken probe.
+o222n=$(SUITE_DURATIONS="$led22n" bash "$RUNNER" --list --shard 1/2 "$sb22n" 2>&1); rc222n=$?
+if [ "$rc222n" -eq 0 ] && [ -n "$(run_lines "$o222n")" ] && ! grepq "$o222n" -F 'median could not be computed'; then
+  pass "22n: control — the same ledger and sandbox run clean when sort works"
+else
+  fail "22n: control did not run clean; rc=$rc222n shard1='$(run_lines "$o222n")' out: $o222n"
+fi
+rm -rf "$sb22n"
 fi
 
 rst_tally
