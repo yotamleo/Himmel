@@ -979,10 +979,29 @@ scan_segment() {
                 # HIMMEL-2927: `export -n NAME` strips NAME's export
                 # attribute -- it no longer reaches a later chokepoint's
                 # environment. Plain `export NAME[=val]` (no -n) still
-                # exports; leave that shape alone.
+                # exports; leave that shape alone. bash's export flags are
+                # exactly -f/-n/-p, combinable and order-independent
+                # (`-np`, `-pn`, `-fn` all genuinely strip -n's effect --
+                # verified on bash), so a cluster is recognized by its
+                # CHARACTER SET, not by an exact "-n" match; a word outside
+                # that set is an unrecognized/invalid option and is left
+                # alone per this guard's fail-open posture (real bash
+                # errors on it rather than stripping anything).
                 k=$((j + 1))
-                if [ "$k" -lt "$nw" ] && [ "${W[$k]}" = "-n" ]; then
-                    k=$((k + 1))
+                saw_n=0
+                while [ "$k" -lt "$nw" ]; do
+                    case "${W[$k]}" in
+                    -*)
+                        opt="${W[$k]#-}"
+                        case "$opt" in
+                        *[!fnp]*) break ;;
+                        *n*) saw_n=1 ;;
+                        esac
+                        k=$((k + 1)) ;;
+                    *) break ;;
+                    esac
+                done
+                if [ "$saw_n" = 1 ]; then
                     while [ "$k" -lt "$nw" ]; do
                         case "${W[$k]}" in
                         -*) ;;

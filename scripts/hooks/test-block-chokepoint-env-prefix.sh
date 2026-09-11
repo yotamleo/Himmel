@@ -134,12 +134,22 @@ assert_deny "env --unset NAME (separate operand) clears a seam"  "$(j "env --uns
 assert_deny "in-shell unset; then the chokepoint"                 "$(j "unset HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 assert_deny "in-shell unset && then the chokepoint"               "$(j "unset HIMMEL_CONSOLE_LEG && bash $MERGE_ON_GREEN 1")"
 assert_deny "export -n; then the chokepoint"                      "$(j "export -n HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+# codex-1 (pr-check round 1): export's flags (-f/-n/-p) combine and
+# reorder freely -- `-np`/`-pn` genuinely strip the export attribute in
+# real bash (verified), same as a bare `-n`, so a combined cluster must
+# be recognized too, not just the exact word "-n".
+assert_deny "export -np (combined cluster); then the chokepoint"  "$(j "export -np HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "export -pn (reordered cluster); then the chokepoint" "$(j "export -pn HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 # Over-match controls: these must stay ALLOWED -- the widened predicate is
 # scoped to REGISTERED seam names of a chokepoint actually in the SAME
 # payload, never a general env/unset ban.
 assert_allow "env -u UNREGISTERED name stays allowed"             "$(j "env -u SOME_OTHER_VAR bash $MERGE_ON_GREEN 1")"
 assert_allow "unset with no chokepoint in the payload"            "$(j "unset HIMMEL_CONSOLE_LEG; echo hi")"
 assert_allow "env -u registered name, non-chokepoint program"     "$(j "env -u HIMMEL_CONSOLE_LEG bash scripts/some/unregistered-script.sh")"
+# codex-1 control: an invalid export flag (real bash errors, strips
+# nothing) must NOT be treated as -n -- fail-open on the unrecognized
+# shape, per this guard's documented posture.
+assert_allow "export -nx (invalid flag) stays allowed"            "$(j "export -nx HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
