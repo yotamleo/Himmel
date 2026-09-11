@@ -357,6 +357,48 @@ fi
 # SAME validation rather than being trusted outright.
 workdir="${CONSOLE_WORK_DIR:-$_console_default_workdir}"
 
+# _console_parent_unsafe <dir> -- true if <dir> is group- or world-writable
+# AND lacks the sticky bit. HIMMEL-2881 round 3 (codex-1 panel finding):
+# console_workdir_ensure (below) validates only $workdir itself, in every
+# one of its three origins -- the XDG_RUNTIME_DIR default, a CONSOLE_WORK_DIR
+# override, or the TMPDIR fallback. The XDG_RUNTIME_DIR case alone got a
+# parent check (the `if` above deciding whether to prefer it) in round 2;
+# the override and TMPDIR-fallback parents were left unchecked, so another
+# local user with write access to either parent could still swap the
+# (already-validated) work dir out from under this process, same as the
+# XDG_RUNTIME_DIR case. A sticky bit changes that: it restores per-entry
+# protection inside an otherwise world-writable directory (only an entry's
+# owner, the directory owner, or root may rename/unlink it), which is
+# exactly what makes plain /tmp (mode 1777) a safe TMPDIR-fallback parent
+# despite being world-writable -- so this check must exempt sticky
+# directories, unlike the plain group/world-writable check the
+# XDG_RUNTIME_DIR preference above uses (XDG_RUNTIME_DIR is never expected
+# to need a sticky-bit exception: a systemd-provided one is 0700, and an
+# operator-provided one is a config choice, not a shared temp dir).
+_console_parent_unsafe() {
+    local mode
+    mode=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
+    [ -n "$mode" ] || return 0  # unreadable bits: fail closed, treat as unsafe
+    local sticky=0
+    if [ "${#mode}" -ge 4 ]; then
+        case "${mode:0:1}" in
+            1|3|5|7) sticky=1 ;;
+        esac
+    fi
+    [ "$sticky" -eq 1 ] && return 1
+    local oth="${mode: -1}" grp="${mode%?}"
+    grp="${grp: -1}"
+    case "$oth$grp" in
+        *2*|*3*|*6*|*7*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+_console_workdir_parent="$(dirname "$workdir")"
+if [ -d "$_console_workdir_parent" ] && _console_parent_unsafe "$_console_workdir_parent"; then
+    err "refusing to use work dir '$workdir' — its parent directory '$_console_workdir_parent' is group- or world-writable without a sticky bit, so another local user could replace it out from under this process (HIMMEL-2881)"
+    exit 3
+fi
+
 # console_workdir_ensure <dir> -- create at 0700 if absent, then ALWAYS
 # validate what actually exists at $d afterward -- never return early on a
 # bare mkdir success. `mkdir -p` is a documented no-op on a path that already

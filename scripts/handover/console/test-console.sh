@@ -721,4 +721,38 @@ case "$sig31" in
 esac
 check "31 group/world-writable XDG_RUNTIME_DIR is not preferred" "$sig31_branch" "fallback"
 
+# --- 32: a CONSOLE_WORK_DIR override sitting under a group/world-writable,
+# non-sticky PARENT must be refused (HIMMEL-2881 round 3, codex-1 panel
+# finding) -- console_workdir_ensure only ever validates the override path
+# itself, never its parent; an override is exactly as reachable by another
+# local user as the default path, so an insecure parent lets that user
+# swap the (validated) override directory out from under this process the
+# same way an insecure XDG_RUNTIME_DIR could. A sticky bit (as /tmp
+# normally has) would neutralize this, which is why the fixture parent is
+# deliberately NOT sticky (0777, not 1777).
+tmp32="$tmp/c32"
+mkdir -p "$tmp32/parent"
+chmod 0777 "$tmp32/parent"
+out32="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp32/parent/work" \
+    bash "$C" new --bucket wdparent32 --dry-run ) 2>&1 )"; rc32=$?
+check "32 CONSOLE_WORK_DIR under an insecure parent: refuses with a distinct exit code" "$rc32" "3"
+check "32 CONSOLE_WORK_DIR under an insecure parent: stderr names the cause" "$(printf '%s\n' "$out32" | grep -ci parent)" "1"
+
+# --- 33: the TMPDIR-fallback work dir's parent (normally /tmp, sticky) must
+# be checked the same way when TMPDIR itself is overridden to a
+# group/world-writable, non-sticky directory (HIMMEL-2881 round 3, codex-1
+# panel finding, TMPDIR half). No XDG_RUNTIME_DIR and no CONSOLE_WORK_DIR
+# override, so the default TMPDIR-fallback path is exercised directly.
+tmp33="$tmp/c33"
+mkdir -p "$tmp33/insecure-tmp"
+chmod 0777 "$tmp33/insecure-tmp"
+out33="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp33/insecure-tmp" \
+    bash "$C" new --bucket wdparent33 --dry-run ) 2>&1 )"; rc33=$?
+check "33 TMPDIR-fallback under an insecure TMPDIR: refuses with a distinct exit code" "$rc33" "3"
+check "33 TMPDIR-fallback under an insecure TMPDIR: stderr names the cause" "$(printf '%s\n' "$out33" | grep -ci parent)" "1"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
