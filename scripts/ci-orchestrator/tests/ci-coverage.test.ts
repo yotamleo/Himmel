@@ -13,6 +13,13 @@ describe("extractJobIds", () => {
     const yaml = "name: X\non:\n  push:\njobs:\n  a:\n    runs-on: ubuntu-latest\n  b:\n    runs-on: ubuntu-latest\n";
     expect(extractJobIds(yaml)).toEqual(["a", "b"]);
   });
+
+  // A column-0 comment or blank line is valid YAML inside the jobs: block
+  // and must not be mistaken for the next top-level key (HIMMEL-2880 CR).
+  test("does not stop at a column-0 comment or blank line inside jobs:", () => {
+    const yaml = "jobs:\n  a:\n    runs-on: ubuntu-latest\n\n# a column-0 comment\n  b:\n    runs-on: ubuntu-latest\n";
+    expect(extractJobIds(yaml)).toEqual(["a", "b"]);
+  });
 });
 
 describe("ci-coverage gate", () => {

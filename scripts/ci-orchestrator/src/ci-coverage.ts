@@ -10,13 +10,16 @@ import { readFileSync } from "node:fs";
 // package.json): job ids are exactly-2-space-indented keys under the
 // top-level `jobs:` line, which is how every job in this repo's ci.yml is
 // authored. A line at column 0 after `jobs:` ends the block (next top-level
-// key), so this only breaks if ci.yml stops being flow-style-free at depth 1.
+// key) — blank lines and column-0 comments are valid YAML inside the block
+// and don't end it, so this only breaks if ci.yml stops being flow-style-free
+// at depth 1.
 export function extractJobIds(yaml: string): string[] {
   const lines = yaml.split("\n");
   const jobsLine = lines.findIndex((l) => /^jobs:\s*$/.test(l));
   if (jobsLine === -1) throw new Error("no top-level 'jobs:' key found");
   const ids: string[] = [];
   for (const line of lines.slice(jobsLine + 1)) {
+    if (/^\s*$/.test(line) || /^\s*#/.test(line)) continue;
     if (/^\S/.test(line)) break;
     const m = line.match(/^ {2}([A-Za-z0-9_-]+):/);
     if (m) ids.push(m[1]);
