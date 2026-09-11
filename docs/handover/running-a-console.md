@@ -85,6 +85,9 @@ many readers but exactly one writer per artifact. And **every dispatch names an
 explicit model**: an unnamed one draws on the scarcer parent quota. Tier and
 effort guidance, including the console's own wake-up budget, is in
 [`../internals/lane-calibration.md`](../internals/lane-calibration.md).
+`headed-arm-leg.sh` exports `HIMMEL_CONSOLE_LEG=1`, which
+`block-leg-askuserquestion.sh` (HIMMEL-2923) uses to structurally deny
+`AskUserQuestion` on the leg, rather than relying on the brief's prose NEVER.
 
 ## Claudex legs: the inbox is the only channel
 

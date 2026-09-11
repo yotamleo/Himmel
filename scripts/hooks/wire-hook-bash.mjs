@@ -86,6 +86,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // chain above: it does not guard MultiEdit, and widening a guard's matcher is
   // not something a launch-count refactor gets to do.
   'orchestrator-inline-guard.sh',
+  // PreToolUse `AskUserQuestion` — its own matcher (HIMMEL-2923): denies a
+  // console-spawned leg (HIMMEL_CONSOLE_LEG=1, HIMMEL-2919's launcher export)
+  // from calling AskUserQuestion — nobody answers in that window.
+  'block-leg-askuserquestion.sh',
   // PreToolUse, one entry each.
   'block-backend-tier.sh',
   'auto-arm-on-cap.sh',
