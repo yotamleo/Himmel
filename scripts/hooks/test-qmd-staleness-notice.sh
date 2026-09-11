@@ -393,13 +393,18 @@ runc() {
         QMD_STALENESS_CACHE_DIR="$CACHE_STATE_DIR" "$@" \
         bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null
 }
-# wait_for_cache PATTERN — bounded poll for the detached refresh to publish.
-# The ONE place this suite waits on the out-of-band leg. It returns the instant
-# the file matches, so the 20s ceiling is only ever paid by a real failure.
+# wait_for_cache PATTERN [CEILING] — bounded poll for the detached refresh to
+# publish. The ONE place this suite waits on the out-of-band leg. It returns
+# the instant the file matches, so a passing case pays nothing extra; only a
+# real failure now costs the full ceiling. CEILING defaults to 60s (HIMMEL-2920
+# — a loaded CI shard needed more than the old 20s fixed wait for the detached
+# child to land, which read as "no cache after the refresh"). Every call site
+# here asserts the refresh DID publish, never that it didn't, so a longer
+# default costs nothing on the passing path.
 wait_for_cache() {
-    local i=0
-    while [ "$i" -lt 20 ]; do
-        if [ -s "$CACHE" ] && grep -q "$1" "$CACHE" 2>/dev/null; then return 0; fi
+    local pattern="$1" ceiling="${2:-60}" i=0
+    while [ "$i" -lt "$ceiling" ]; do
+        if [ -s "$CACHE" ] && grep -q "$pattern" "$CACHE" 2>/dev/null; then return 0; fi
         sleep 1
         i=$((i + 1))
     done
@@ -497,6 +502,23 @@ esac
 #    machine. Refusing a missing state dir instead of creating it would leave
 #    such a machine on the slow inline probe in every session forever — the exact
 #    outcome this ticket exists to remove.
+#
+# 8a. DETERMINISTIC proof first (HIMMEL-2920): drive the refresh child directly,
+#     with the same env the hook's own detach_run would give it, instead of
+#     waiting on a background spawn. This is the property case 8 exists to pin
+#     — a cold host initializes the cache — made independent of scheduling.
+rm -rf "$CACHE_STATE_DIR"
+env FAKE_RC=3 FAKE_SAY='GUARD-BANNER-3' FAKE_ARGV_FILE="$ARGV_FILE" \
+    QMD_STALENESS_CACHE_DIR="$CACHE_STATE_DIR" QMD_STALENESS_REFRESH=1 \
+    bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null >/dev/null 2>&1
+if [ -s "$CACHE" ] && grep -q 'GUARD-BANNER-3' "$CACHE" 2>/dev/null; then
+    pass "a cold host initializes the cache synchronously"
+else
+    fail "a cold host initializes the cache synchronously" "no cache after a direct refresh-child run"
+fi
+
+# 8b. The hook still SPAWNS that refresh in the background — a fresh cold host
+#     again, this time through the normal (asynchronous) hook path.
 rm -rf "$CACHE_STATE_DIR"
 empty "a host with no state dir is silent for one session" "$(runc 3 'GUARD-BANNER-3')"
 if wait_for_cache 'GUARD-BANNER-3'; then
