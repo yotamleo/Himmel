@@ -47,12 +47,29 @@ root="$tmp/handovers"
 mkdir -p "$root"
 today="$(date +%F)"
 
+# root_digest_of <canonical-root> -- mirrors console.sh's _console_sha256_8:
+# first 8 hex chars of the sha256 of the resolved, canonicalized handover
+# root (HIMMEL-2889). $root is already canonical here (built via `pwd -P`
+# above), so no realpath step is needed for fixture roots.
+root_digest_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -d' ' -f1 | cut -c1-8
+    else
+        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1 | cut -c1-8
+    fi
+}
+root_digest="$(root_digest_of "$root")"
+
 console_root() {  # console_root <root> <args...> -- invoke console.sh with
                   # cwd pinned to the fixture repo, against an ARBITRARY
                   # handover root (used by cases exercising a non-default
-                  # root, e.g. one containing a space).
+                  # root, e.g. one containing a space). CONSOLE_WORK_DIR is
+                  # pinned to an isolated fixture dir so the eager work-dir
+                  # hardening (HIMMEL-2881) never touches, and every case
+                  # here never collides on, the REAL live
+                  # /tmp/himmel-console-<uid> tree other running consoles use.
     local r="$1"; shift
-    ( cd "$fixture_repo" && HANDOVER_DIR="$r" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO bash "$C" "$@" )
+    ( cd "$fixture_repo" && HANDOVER_DIR="$r" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" bash "$C" "$@" )
 }
 
 console() { console_root "$root" "$@"; }
@@ -145,10 +162,11 @@ HANDOVER_DIR="$root" bash "$QL" release "$doc6bSrc" "$token6ba" >/dev/null 2>&1
 # --- 7: next --arm with a stub arm target ------------------------------
 doc7A="$root/tester/armrepo/DEMO-nextleg-${today}A-console.md"
 session7B="DEMO-nextleg-${today}B-console"
-# Signal/log live under a chain-identity subdir ($slug-$bucket), not
+# Signal/log live under a chain-identity subdir ($slug-$bucket-$digest), not
 # $workdir directly -- see codex-2 round-2 (bucket-only-differing chains
-# must not collide on the same signal/log path).
-log7B="$tmp/work/tester-armrepo/launch-${session7B}.log"
+# must not collide on the same signal/log path) and HIMMEL-2889 (chains under
+# DIFFERENT handover roots must not collide either, hence the root digest).
+log7B="$tmp/work/tester-armrepo-${root_digest}/launch-${session7B}.log"
 
 cat > "$tmp/stub-arm.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -384,6 +402,22 @@ log17b="$(printf '%s\n' "$out17b" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 
 check "17 signal path differs when only --bucket differs" "$([ -n "$sig17a" ] && [ "$sig17a" != "$sig17b" ] && echo yes)" "yes"
 check "17 log path differs when only --bucket differs" "$([ -n "$log17a" ] && [ "$log17a" != "$log17b" ] && echo yes)" "yes"
 
+# --- 17b: case 17's sibling -- chains under DIFFERENT handover roots that
+# otherwise agree on slug/bucket/prefix/date/letter/name must not collide
+# on the same signal/log path either (HIMMEL-2889). Same $root twice would
+# reuse letter A on the second call, so use two disjoint fixture roots.
+root17b1="$tmp/handovers-17b1"
+root17b2="$tmp/handovers-17b2"
+mkdir -p "$root17b1" "$root17b2"
+out17c="$(console_root "$root17b1" new --bucket samebucket --dry-run --arm)"
+out17d="$(console_root "$root17b2" new --bucket samebucket --dry-run --arm)"
+sig17c="$(printf '%s\n' "$out17c" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+sig17d="$(printf '%s\n' "$out17d" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+log17c="$(printf '%s\n' "$out17c" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 1)"
+log17d="$(printf '%s\n' "$out17d" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 1)"
+check "17b signal path differs when only HANDOVER_DIR differs" "$([ -n "$sig17c" ] && [ "$sig17c" != "$sig17d" ] && echo yes)" "yes"
+check "17b log path differs when only HANDOVER_DIR differs" "$([ -n "$log17c" ] && [ "$log17c" != "$log17d" ] && echo yes)" "yes"
+
 # --- 18: next --doc <missing predecessor> refuses rather than fabricate -
 before18="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
 missing_doc="$root/tester/missingrepo/DEMO-nextleg-${today}A-console.md"
@@ -573,5 +607,55 @@ check "26 the token embedded in the doc matches the printed token" "$token26_in_
 rc26=0
 HANDOVER_DIR="$root" bash "$QL" release "$doc26" "$token26_in_doc" >/dev/null 2>&1 || rc26=$?
 check "26 the control: release using the token read out of the document succeeds" "$rc26" "0"
+
+# --- 27: default work dir refuses a pre-created SYMLINK (HIMMEL-2881) --
+# Another local user could symlink the predictable default path elsewhere
+# before this process's first run; the eager work-dir hardening must catch
+# it regardless of --arm. TMPDIR is pointed at an isolated fixture dir (never
+# real /tmp) and XDG_RUNTIME_DIR is unset so the TMPDIR-fallback branch of
+# the resolution is the one under test.
+tmp27="$tmp/c27"
+mkdir -p "$tmp27/real-elsewhere"
+ln -s "$tmp27/real-elsewhere" "$tmp27/himmel-console-$(id -u)"
+rc27=0
+out27="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO TMPDIR="$tmp27" \
+    bash "$C" new --bucket wdlinktest --dry-run ) 2>&1 )" || rc27=$?
+check "27 symlinked default work dir: refuses with a distinct exit code" "$rc27" "3"
+check "27 symlinked default work dir: stderr names the cause" "$(printf '%s\n' "$out27" | grep -ci symlink)" "1"
+check "27 symlinked default work dir: never followed into real-elsewhere" "$([ -n "$(find "$tmp27/real-elsewhere" -mindepth 1 2>/dev/null)" ] && echo yes || echo no)" "no"
+
+# --- 28: default work dir refuses a directory owned by a DIFFERENT uid
+# (HIMMEL-2881) -- skipped cleanly (never faked) if this host offers no way
+# to arrange one without privileges we do not have.
+if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true >/dev/null 2>&1; then
+    echo "ok - SKIPPED: default work dir owned by another uid (no passwordless privilege escalation on this host to arrange one - sudo -n true failed)"
+else
+    tmp28="$tmp/c28"
+    mkdir -p "$tmp28/himmel-console-$(id -u)"
+    if sudo -n chown nobody:nobody "$tmp28/himmel-console-$(id -u)" >/dev/null 2>&1; then
+        rc28=0
+        out28="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+            HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO TMPDIR="$tmp28" \
+            bash "$C" new --bucket wdotheruid --dry-run ) 2>&1 )" || rc28=$?
+        check "28 default work dir owned by another uid: refuses with a distinct exit code" "$rc28" "3"
+        check "28 default work dir owned by another uid: stderr names the cause" "$(printf '%s\n' "$out28" | grep -ci owned)" "1"
+        sudo -n chown "$(id -u):$(id -g)" "$tmp28/himmel-console-$(id -u)" >/dev/null 2>&1
+    else
+        echo "ok - SKIPPED: default work dir owned by another uid (sudo -n chown to nobody:nobody failed - no usable privilege on this host)"
+    fi
+fi
+
+# --- 29: two spellings of the SAME handover root (a symlink alias) must
+# digest to the SAME chain dir (HIMMEL-2889) -- canonicalization has to
+# happen before hashing, or a symlinked root would silently degrade back
+# into the very collision the digest exists to prevent.
+root29_link="$tmp/handovers-symlink"
+ln -s "$root" "$root29_link"
+out29a="$(console_root "$root" new --bucket digestsame --dry-run --arm)"
+out29b="$(console_root "$root29_link" new --bucket digestsame --dry-run --arm)"
+sig29a="$(printf '%s\n' "$out29a" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+sig29b="$(printf '%s\n' "$out29b" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+check "29 root spelled via a symlink alias yields the SAME signal path" "$([ -n "$sig29a" ] && [ "$sig29a" = "$sig29b" ] && echo yes)" "yes"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -15,16 +15,22 @@
 # Env seams: HANDOVER_DIR / USER_SLUG / JIRA_PROJECT_KEY (via .env, see
 # load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL,
 # CONSOLE_FILL_PERCENT, CONSOLE_TEMPLATE_DIR, CONSOLE_WORK_DIR (default:
-# ${TMPDIR:-/tmp}/himmel-console-<uid>, per-uid rather than a predictable
-# shared path), CONSOLE_HEADED_ARM, CONSOLE_ARM_FOREGROUND (test seam: run
-# the arm in the foreground instead of detaching it).
+# $XDG_RUNTIME_DIR/himmel-console when set and owned by this uid, else
+# ${TMPDIR:-/tmp}/himmel-console-<uid>; an override is validated the same as
+# the default — see HIMMEL-2881 below), CONSOLE_HEADED_ARM,
+# CONSOLE_ARM_FOREGROUND (test seam: run the arm in the foreground instead of
+# detaching it).
 # Flag seams: --name (both commands; on next it selects which chain to
 # continue) --arm --dry-run --model --bucket --prefix --deadline-min --doc
 # (next only). See `-h`/`--help` for the full surface.
 #
 # Exit codes: 0 ok; 1 usage/state error (letters A-Z exhausted, no
 # predecessor found, an unresolved {{PLACEHOLDER}} survived a render); 2
-# unresolved handover root / user slug / a missing template file.
+# unresolved handover root / user slug / a missing template file / no
+# sha256 hasher available to derive the per-chain digest (HIMMEL-2889); 3
+# the work dir (default or CONSOLE_WORK_DIR) exists but is a symlink, is not
+# owned by this user, is group/other-writable, or could not be created
+# (HIMMEL-2881).
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+; --arm launches through
 # konsole (Linux/KDE, via headed-arm.sh), so no .ps1 twin — the Windows
@@ -270,22 +276,114 @@ date="$(date +%F)"
 state_dir="$root/$slug/$bucket"
 model="${MODEL:-${CONSOLE_MODEL:-claude-fable-5-1}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
-# The uid suffix prevents collision between DIFFERENT users on a shared
-# host; it does NOT prevent deliberate pre-creation of this exact path by
-# another local user (mkdir -p accepts an existing dir regardless of who
-# made it). A stable path is required by design here — the arming side and
-# the touching side must agree on the signal path across separate
-# invocations — so a fresh mktemp per run is not available as a fix; real
-# hardening (ownership + symlink checks, or XDG_RUNTIME_DIR) is tracked
-# separately: HIMMEL-2881. CONSOLE_WORK_DIR still overrides this outright.
-workdir="${CONSOLE_WORK_DIR:-${TMPDIR:-/tmp}/himmel-console-$(id -u)}"
-# Namespaced by chain identity (slug+bucket), NOT just session name: the
-# session name is keyed on <PREFIX>-nextleg-<date><letter>-<name> only (the
-# established, fleet-wide convention — out of scope to change), so two
-# chains that differ just by bucket but share prefix/date/letter/name would
-# otherwise collide on the SAME signal/log path and touching one chain's
-# signal could arm the other's successor.
-chain_dir="$workdir/${slug}-${bucket}"
+
+# _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small
+# per-script helper, matching the repo's own convention of duplicating this
+# rather than centralizing it (already inlined the same way in
+# queue-lock.sh's _ql_digest_of, artifact-sync.sh's sha256_of, and
+# arm-resume.sh). Fails closed (exit 2, alongside this script's other
+# unresolved-root/tooling cases) rather than silently falling back to an
+# unhashed or truncated root, which would reopen the exact collision this
+# digest exists to prevent.
+_console_sha256_8() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -d' ' -f1 | cut -c1-8
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1 | cut -c1-8
+    else
+        err "no sha256 hasher available (need sha256sum or shasum) to derive the per-chain work-dir digest"
+        exit 2
+    fi
+}
+
+# HIMMEL-2889: two consoles under DIFFERENT $HANDOVER_DIR roots that happen
+# to agree on slug/bucket/prefix/date/letter/name would otherwise collide on
+# the same signal/log path — touching one chain's signal could arm the
+# other's successor. Folding a digest of the RESOLVED, CANONICALIZED root
+# into the chain dir name fixes that; canonicalizing first (via the same
+# _arm_realpath already used to normalize the root elsewhere) means two
+# spellings of one root (a symlink alias, a trailing slash) still digest
+# identically instead of splitting one chain's history in two.
+root_canon="$(_arm_realpath "$root")"
+root_digest="$(_console_sha256_8 "$root_canon")"
+
+# HIMMEL-2881: the default work dir is a PREDICTABLE path
+# (${TMPDIR:-/tmp}/himmel-console-<uid>) another local user could pre-create
+# — as a directory they own, or as a symlink elsewhere — before this
+# process's first run; `mkdir -p` silently accepts an existing directory
+# regardless of who made it or what it actually resolves to. Prefer
+# $XDG_RUNTIME_DIR/himmel-console (already a per-user 0700 directory on
+# systemd hosts) when it is set AND already owned by this uid; otherwise
+# fall back to the uid-qualified /tmp path. Modeled directly on
+# headed-arm.sh's LOCKDIR hardening (HIMMEL-2545): `-L` before `-d` before
+# `-O` (plain test operators, no stat/uid comparison needed), then a
+# stat-based permission-bit check for the GNU/BSD split. Exit 3 is a new,
+# distinct code for this whole class of refusal — never conflated with the
+# exit-1 usage errors or the exit-2 unresolved-root/tooling errors above.
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ]; then
+    _console_default_workdir="$XDG_RUNTIME_DIR/himmel-console"
+else
+    _console_default_workdir="${TMPDIR:-/tmp}/himmel-console-$(id -u)"
+fi
+# CONSOLE_WORK_DIR is a durable test/operator seam, not an escape hatch from
+# this hardening: an override is exactly as reachable by another local user
+# guessing or being told the path as the default is, so it goes through the
+# SAME validation rather than being trusted outright.
+workdir="${CONSOLE_WORK_DIR:-$_console_default_workdir}"
+
+# console_workdir_ensure <dir> -- create at 0700 if absent, then validate
+# regardless of how it came to exist. `mkdir -p` is a documented no-op on a
+# path that already exists, so a hostile pre-created directory (or symlink)
+# survives it untouched — the validation below is what actually has to catch
+# that, which is also why a passing directory is never chmod'd here: fixing
+# up an existing hostile dir's mode would let it pass while the attacker
+# still owns it, laundering exactly the thing this check exists to catch.
+console_workdir_ensure() {
+    local d="$1"
+    if [ ! -e "$d" ] && [ ! -L "$d" ]; then
+        # shellcheck disable=SC2174
+        if ! mkdir -p -m 0700 "$d" 2>/dev/null; then
+            err "cannot create work dir '$d' — refusing to silently proceed without a directory this process actually controls (HIMMEL-2881)"
+            exit 3
+        fi
+        return 0
+    fi
+    if [ -L "$d" ]; then
+        err "refusing to use work dir '$d' — it is a SYMLINK, so this process does not control what it actually resolves to (HIMMEL-2881)"
+        exit 3
+    fi
+    if [ ! -d "$d" ]; then
+        err "refusing to use work dir '$d' — it is not a directory (HIMMEL-2881)"
+        exit 3
+    fi
+    if [ ! -O "$d" ]; then
+        err "refusing to use work dir '$d' — it is not owned by this user (HIMMEL-2881)"
+        exit 3
+    fi
+    local mode
+    mode=$(stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
+    if [ -z "$mode" ]; then
+        err "refusing to use work dir '$d' — could not read its permission bits (HIMMEL-2881)"
+        exit 3
+    fi
+    local oth="${mode: -1}" grp="${mode%?}"
+    grp="${grp: -1}"
+    case "$oth$grp" in
+        *2*|*3*|*6*|*7*)
+            err "refusing to use work dir '$d' — it is group- or world-writable (HIMMEL-2881)"
+            exit 3
+            ;;
+    esac
+}
+console_workdir_ensure "$workdir"
+
+# Namespaced by chain identity (slug+bucket+root digest), NOT just session
+# name: the session name is keyed on <PREFIX>-nextleg-<date><letter>-<name>
+# only (the established, fleet-wide convention — out of scope to change), so
+# two chains that differ just by bucket, or just by handover root, but share
+# everything else would otherwise collide on the SAME signal/log path and
+# touching one chain's signal could arm the other's successor.
+chain_dir="$workdir/${slug}-${bucket}-${root_digest}"
 # 10# forces base-10: DEADLINE_MIN passed the digits-only check above, but a
 # leading zero (e.g. "08") is otherwise read as octal in arithmetic context,
 # and 8/9 are not valid octal digits.
