@@ -393,13 +393,18 @@ runc() {
         QMD_STALENESS_CACHE_DIR="$CACHE_STATE_DIR" "$@" \
         bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null
 }
-# wait_for_cache PATTERN — bounded poll for the detached refresh to publish.
-# The ONE place this suite waits on the out-of-band leg. It returns the instant
-# the file matches, so the 20s ceiling is only ever paid by a real failure.
+# wait_for_cache PATTERN [CEILING] — bounded poll for the detached refresh to
+# publish. The ONE place this suite waits on the out-of-band leg. It returns
+# the instant the file matches, so a passing case pays nothing extra; only a
+# real failure now costs the full ceiling. CEILING defaults to 60s (HIMMEL-2920
+# — a loaded CI shard needed more than the old 20s fixed wait for the detached
+# child to land, which read as "no cache after the refresh"). Every call site
+# here asserts the refresh DID publish, never that it didn't, so a longer
+# default costs nothing on the passing path.
 wait_for_cache() {
-    local i=0
-    while [ "$i" -lt 20 ]; do
-        if [ -s "$CACHE" ] && grep -q "$1" "$CACHE" 2>/dev/null; then return 0; fi
+    local pattern="$1" ceiling="${2:-60}" i=0
+    while [ "$i" -lt "$ceiling" ]; do
+        if [ -s "$CACHE" ] && grep -q "$pattern" "$CACHE" 2>/dev/null; then return 0; fi
         sleep 1
         i=$((i + 1))
     done
@@ -491,12 +496,42 @@ case "$cache_mode" in
     *[2367]) hasnt "a world-writable cache is not served" "$(runc 0 '')" "WRITABLE-NOTICE" ;;
     *)       pass "world-writable-cache case SKIPPED (chmod is a no-op here)" ;;
 esac
+# The world-writable cache above is not "ok", so the hook's normal fallthrough
+# spawns a detached refresh exactly as it would for a stale cache (L275-294) —
+# but unlike cases 2-4 this case never calls wait_for_cache, so that child is
+# left running loose (HIMMEL-2920 follow-up: this raced #632 CI red — case 8a
+# saw no banner because this straggler either stole its lock or published its
+# own empty rc-0 output over it). Polling for the shared lock to clear cannot
+# fix this: an absent lock does not prove the straggler hasn't forked yet and
+# is merely a few instructions from taking it (codex CR finding). Case 8 gets
+# its own state dir instead, isolated from every earlier case, so no
+# straggler can ever reach it regardless of scheduling.
+CACHE_STATE_DIR="$SANDBOX/cache8"
+CACHE_DIR="$CACHE_STATE_DIR/qmd-staleness"
+CACHE="$CACHE_DIR/qmd-staleness-notice.out"
 
 # 8. A host with NO state dir at all still initializes the cache. Every fixture
 #    above creates the dir first, which hid the case that matters most: a fresh
 #    machine. Refusing a missing state dir instead of creating it would leave
 #    such a machine on the slow inline probe in every session forever — the exact
 #    outcome this ticket exists to remove.
+#
+# 8a. DETERMINISTIC proof first (HIMMEL-2920): drive the refresh child directly,
+#     with the same env the hook's own detach_run would give it, instead of
+#     waiting on a background spawn. This is the property case 8 exists to pin
+#     — a cold host initializes the cache — made independent of scheduling.
+rm -rf "$CACHE_STATE_DIR"
+env FAKE_RC=3 FAKE_SAY='GUARD-BANNER-3' FAKE_ARGV_FILE="$ARGV_FILE" \
+    QMD_STALENESS_CACHE_DIR="$CACHE_STATE_DIR" QMD_STALENESS_REFRESH=1 \
+    bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null >/dev/null 2>&1
+if [ -s "$CACHE" ] && grep -q 'GUARD-BANNER-3' "$CACHE" 2>/dev/null; then
+    pass "a cold host initializes the cache synchronously"
+else
+    fail "a cold host initializes the cache synchronously" "no cache after a direct refresh-child run"
+fi
+
+# 8b. The hook still SPAWNS that refresh in the background — a fresh cold host
+#     again, this time through the normal (asynchronous) hook path.
 rm -rf "$CACHE_STATE_DIR"
 empty "a host with no state dir is silent for one session" "$(runc 3 'GUARD-BANNER-3')"
 if wait_for_cache 'GUARD-BANNER-3'; then
