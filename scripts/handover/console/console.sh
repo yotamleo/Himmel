@@ -381,14 +381,26 @@ workdir="${CONSOLE_WORK_DIR:-$_console_default_workdir}"
 # expected to need a sticky-bit exception: a systemd-provided one is 0700,
 # and an operator-provided one is a config choice, not a shared temp dir).
 _console_dir_component_unsafe() {
+    local owner
+    owner=$(stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
+    [ -n "$owner" ] || return 0  # unreadable owner: fail closed, treat as unsafe
+    if [ "$owner" != "0" ] && [ "$owner" != "$(id -u)" ]; then
+        # HIMMEL-2881 round 5 (codex-1 panel finding): an attacker-owned
+        # directory is unsafe REGARDLESS of its current permission bits --
+        # its owner can chmod it to add write access (or already has owner
+        # write access even at e.g. mode 0755) at any point after this
+        # check runs, so ownership by neither root nor us is disqualifying
+        # on its own, before even looking at group/world-writable bits.
+        return 0
+    fi
     local mode
     mode=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
     [ -n "$mode" ] || return 0  # unreadable bits: fail closed, treat as unsafe
     local oth="${mode: -1}" grp="${mode%?}"
     grp="${grp: -1}"
     case "$oth$grp" in
-        *2*|*3*|*6*|*7*) : ;;  # group/world-writable -- fall through to the sticky+owner check
-        *) return 1 ;;  # not group/world-writable at all: safe regardless of sticky/owner
+        *2*|*3*|*6*|*7*) : ;;  # group/world-writable -- fall through to the sticky check
+        *) return 1 ;;  # trusted owner, not group/world-writable: safe
     esac
     local sticky=0
     if [ "${#mode}" -ge 4 ]; then
@@ -396,13 +408,8 @@ _console_dir_component_unsafe() {
             1|3|5|7) sticky=1 ;;
         esac
     fi
-    [ "$sticky" -eq 1 ] || return 0  # writable, no sticky bit: unsafe
-    local owner
-    owner=$(stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
-    [ -n "$owner" ] || return 0  # unreadable owner: fail closed, treat as unsafe
-    [ "$owner" = "0" ] && return 1  # root-owned sticky dir: safe (e.g. plain /tmp)
-    [ "$owner" = "$(id -u)" ] && return 1  # self-owned sticky dir: safe
-    return 0  # sticky but owned by neither root nor us: the owner can still rename/unlink our entry
+    [ "$sticky" -eq 1 ] && return 1  # trusted owner + sticky: non-owners can't rename/unlink our entry: safe
+    return 0  # trusted owner but group/world-writable without sticky: other non-owning local users could tamper
 }
 # _console_ancestor_unsafe <dir> -- true if <dir> or any of its existing
 # ancestors is unsafe per _console_dir_component_unsafe. HIMMEL-2881 round 4
@@ -425,7 +432,15 @@ _console_ancestor_unsafe() {
     done
     return 1
 }
-_console_workdir_parent="$(dirname "$workdir")"
+# HIMMEL-2881 round 5 (codex-2 panel finding): the ancestor walk is a
+# lexical `dirname` loop -- on a RELATIVE workdir (e.g. CONSOLE_WORK_DIR=work)
+# `dirname` stops at "." after one step ("." is its own dirname), so only the
+# current working directory itself is ever checked, never anything above it.
+# Canonicalizing to an absolute path first (the same _arm_realpath already
+# used to normalize the handover root above) makes the walk always reach the
+# real filesystem root regardless of how workdir was spelled.
+_console_workdir_abs="$(_arm_realpath "$workdir")"
+_console_workdir_parent="$(dirname "$_console_workdir_abs")"
 if _console_ancestor_unsafe "$_console_workdir_parent"; then
     err "refusing to use work dir '$workdir' — its parent directory '$_console_workdir_parent' (or an ancestor of it) is group- or world-writable without adequate sticky-bit/ownership protection, so another local user could replace it out from under this process (HIMMEL-2881)"
     exit 3

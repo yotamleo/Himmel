@@ -818,4 +818,63 @@ out36="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
 check "36 insecure grandparent despite safe immediate parent: refuses with a distinct exit code" "$rc36" "3"
 check "36 insecure grandparent despite safe immediate parent: stderr names the cause" "$(printf '%s\n' "$out36" | grep -ci parent)" "1"
 
+# --- 37: an attacker-owned parent that is NOT group/world-writable (e.g.
+# mode 0755) must still be refused (HIMMEL-2881 round 5, codex-1 panel
+# finding) -- the round-4 fix only added an ownership check on the STICKY
+# branch; a non-writable-by-group/other directory was still accepted
+# regardless of owner, but the owner of a directory can chmod it (or may
+# already have owner-only write access at 0755) at any time after this
+# check runs, so ownership by neither root nor us is disqualifying even
+# when the current bits look tight. Same stat PATH-stub technique as case 34
+# (no root available to build a real attacker-owned fixture).
+tmp37="$tmp/c37"
+mkdir -p "$tmp37/bin" "$tmp37/attacker-0755"
+chmod 0755 "$tmp37/attacker-0755"
+real_stat37="$(command -v stat)"
+cat > "$tmp37/bin/stat" <<STUB_EOF
+#!/usr/bin/env bash
+if [ "\$1" = "-c" ] && [ "\$2" = "%u" ] && [ "\$3" = "$tmp37/attacker-0755" ]; then
+    echo 31337; exit 0
+fi
+exec "$real_stat37" "\$@"
+STUB_EOF
+chmod +x "$tmp37/bin/stat"
+out37="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp37/attacker-0755" \
+    PATH="$tmp37/bin:$PATH" \
+    bash "$C" new --bucket wdparent37 --dry-run ) 2>&1 )"; rc37=$?
+check "37 attacker-owned non-writable (0755) parent: refuses with a distinct exit code" "$rc37" "3"
+check "37 attacker-owned non-writable (0755) parent: stderr names the cause" "$(printf '%s\n' "$out37" | grep -ci parent)" "1"
+
+# --- 38 (control): a self-owned, non-writable (0755) parent must still be
+# accepted -- proves the round-5 ownership-first reordering does not
+# regress the ordinary, non-shared TMPDIR-fallback case.
+tmp38="$tmp/c38"
+mkdir -p "$tmp38/self-0755"
+chmod 0755 "$tmp38/self-0755"
+rc38=0
+( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp38/self-0755" \
+    bash "$C" new --bucket wdparent38 --dry-run ) >/dev/null 2>&1 || rc38=$?
+check "38 self-owned non-writable (0755) parent: accepted" "$rc38" "0"
+
+# --- 39: a RELATIVE CONSOLE_WORK_DIR must still walk the real ancestor
+# chain above the current working directory (HIMMEL-2881 round 5, codex-2
+# panel finding) -- a lexical `dirname` loop on a relative path like "work"
+# stops at "." (dirname(".") is itself "."), so only the cwd is ever
+# checked; canonicalizing to an absolute path first is required to reach an
+# insecure ancestor sitting above cwd.
+tmp39="$tmp/c39"
+mkdir -p "$tmp39/insecure-ancestor/cwd-dir"
+chmod 0777 "$tmp39/insecure-ancestor"
+chmod 0700 "$tmp39/insecure-ancestor/cwd-dir"
+out39="$( ( cd "$tmp39/insecure-ancestor/cwd-dir" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="work" \
+    bash "$C" new --bucket wdparent39 --dry-run ) 2>&1 )"; rc39=$?
+check "39 relative CONSOLE_WORK_DIR under an insecure ancestor: refuses with a distinct exit code" "$rc39" "3"
+check "39 relative CONSOLE_WORK_DIR under an insecure ancestor: stderr names the cause" "$(printf '%s\n' "$out39" | grep -ci parent)" "1"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
