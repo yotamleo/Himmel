@@ -1629,4 +1629,68 @@ fi
 rm -rf "$sb22l"
 fi
 
+
+# 22m — the bin-pack PLAN must be COMPLETE or not used at all (CR round 1,
+# [codex-1]). The join|sort|pack pipeline runs under `set -uo pipefail` with no
+# `set -e`, so a failing stage does not abort the run: it would leave the plan
+# empty or truncated, and the runner would then believe it had an assignment
+# and every shard would silently drop the suites the plan never placed, still
+# exiting 0 — HIMMEL-1128's false-green class, reached through a balance
+# optimisation. The runner now compares the plan's line count against the
+# eligible count and falls back to round-robin unless they match.
+#
+# The control breaks exactly ONE stage: a `sort` stub that fails only for the
+# pack sort's own argv (-k1,1r) and execs the real sort for every other call,
+# so suite discovery (which sorts a FILE and hard-fails on a bad rc, "refusing
+# to report green") and the median probe (`sort -n`) both still work. A blanket
+# failing-sort stub is useless here — discovery aborts before the pack pipeline
+# is ever reached, so it would prove nothing about this path.
+sb22m=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22m.XXXXXX") || { fail "22m: mktemp failed"; sb22m=""; }
+real_sort_22m=$(command -v sort)
+if [ -n "$sb22m" ] && [ -n "$real_sort_22m" ]; then
+mk_shard_sandbox "$sb22m" 6
+led22m="$sb22m/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22m"
+  printf '%s/test-s2.sh\t1\n'   "$sb22m"
+  printf '%s/test-s3.sh\t90\n'  "$sb22m"
+  printf '%s/test-s4.sh\t1\n'   "$sb22m"
+  printf '%s/test-s5.sh\t1\n'   "$sb22m"
+  printf '%s/test-s6.sh\t1\n'   "$sb22m"; } > "$led22m"
+stub22m="$sb22m/stub-bin"
+mkdir -p "$stub22m"
+# The single quotes are the point: these lines are the STUB's source, so its
+# own "$@" and "$_a" must survive into the file unexpanded.
+# shellcheck disable=SC2016
+{ printf '#!/usr/bin/env bash\n'
+  printf 'for _a in "$@"; do\n'
+  printf '  case "$_a" in -k1,1r) exit 1 ;; esac\n'
+  printf 'done\n'
+  printf 'exec %s "$@"\n' "$real_sort_22m"; } > "$stub22m/sort"
+chmod +x "$stub22m/sort"
+# The pre-HIMMEL-2894 partition — what the fallback must reproduce exactly.
+rr122m=$(printf '%s/test-s1.sh\n%s/test-s3.sh\n%s/test-s5.sh' "$sb22m" "$sb22m" "$sb22m")
+rr222m=$(printf '%s/test-s2.sh\n%s/test-s4.sh\n%s/test-s6.sh' "$sb22m" "$sb22m" "$sb22m")
+o122m=$(PATH="$stub22m:$PATH" SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1); rc122m=$?
+o222m=$(PATH="$stub22m:$PATH" SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 2/2 "$sb22m" 2>&1)
+if [ "$rc122m" -eq 0 ] \
+   && [ "$(run_lines "$o122m")" = "$rr122m" ] \
+   && [ "$(run_lines "$o222m")" = "$rr222m" ] \
+   && grepq "$o122m" -F 'falling back to round-robin'; then
+  pass "22m: a failed pack stage falls back to round-robin — no suite is dropped"
+else
+  fail "22m: incomplete plan was used; rc=$rc122m shard1='$(run_lines "$o122m")' shard2='$(run_lines "$o222m")' out1: $o122m"
+fi
+# The same sandbox WITHOUT the stub bin-packs: s1 (100s) ends up alone against
+# s3 (90s) plus the four 1s suites. That is what makes the case above evidence
+# about the BROKEN STAGE rather than about a ledger that was never read.
+o322m=$(SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1)
+if [ "$(run_lines "$o322m")" = "$sb22m/test-s1.sh" ]; then
+  pass "22m: control — the same ledger bin-packs normally when sort works"
+else
+  fail "22m: control did not bin-pack; shard1='$(run_lines "$o322m")' out: $o322m"
+fi
+rm -rf "$sb22m"
+fi
+
 rst_tally

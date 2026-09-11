@@ -36,9 +36,20 @@ still exactly the unsharded run list.
 - **A suite missing from it** is assigned the median of the rows present, so a
   new suite is packed like an average one, never dropped.
 - **A row naming a suite that no longer exists** is ignored.
-- **A missing, unreadable, empty or malformed ledger** makes the runner print
-  one notice on stderr and fall back to round-robin. A stale ledger costs wall
-  clock, nothing else.
+- **Any row that does not parse** as `<suite path><TAB><non-negative integer>`
+  — a comment, a blank line, a truncated line, a merge-conflict marker — is
+  ignored exactly like an unknown row, row by row. Individual junk therefore
+  does *not* disable bin-packing; the suites it would have covered simply take
+  the median, which is the same treatment a brand-new suite gets. "Malformed"
+  in the fallback below means *no row in the file parses at all*.
+- **A ledger that is missing, unreadable, empty, or has no parseable row** makes
+  the runner print one notice on stderr and fall back to round-robin. A stale
+  ledger costs wall clock, nothing else.
+- **A bin-pack that does not place every eligible suite** falls back to
+  round-robin too, with its own stderr notice naming both counts. The runner
+  runs under `set -uo pipefail` without `-e`, so a failed stage of the pack
+  pipeline would otherwise leave a truncated plan, drop the unplaced suites off
+  every shard, and still exit 0 — the HIMMEL-1128 false-green class.
 - `SUITE_DURATIONS=<path>` overrides the ledger path (the shard tests use it).
 
 **Refresh** — replay one `shell-unit-shard` matrix run's logs (all shards at

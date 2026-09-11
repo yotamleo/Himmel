@@ -3108,6 +3108,7 @@ if [ "$shard_total" -gt 0 ]; then
     # Pre-pass: the FINAL run list, through the same filter chain the loop
     # below uses. fd 4, for the same reason the loop uses fd 3.
     _shard_eligible=""
+    _shard_eligible_n=0
     while IFS= read -r _shard_suite <&4; do
       [ -n "$_shard_suite" ] || continue
       _shard_rel="${_shard_suite#"${scan}"/}"
@@ -3115,6 +3116,7 @@ if [ "$shard_total" -gt 0 ]; then
         continue
       fi
       _shard_eligible="${_shard_eligible}${_shard_suite}${_shard_nl}"
+      _shard_eligible_n=$((_shard_eligible_n + 1))
     done 4< "$suites_file"
 
     # Join -> sort -> pack. The %012d key is zero-padded so a plain reverse
@@ -3143,12 +3145,27 @@ if [ "$shard_total" -gt 0 ]; then
             load[best] += $1 + 0
             print best "\t" $2
           }
-        ')
+        ') || _shard_plan=""
 
-    _shard_mine_list=$(printf '%s\n' "$_shard_plan" \
-      | awk -F'\t' -v me="$shard_offset" '$1 == me { print $2 }')
-    shard_assignment="${_shard_nl}${_shard_mine_list}${_shard_nl}"
-    shard_binpack=1
+    # The plan is accepted only if it PLACED EVERY ELIGIBLE SUITE. This runner
+    # runs under `set -uo pipefail` with no `-e`, so a failing stage of the
+    # pipeline above (an OOM-killed sort, a stubbed-out or broken tool on PATH,
+    # a full $TMPDIR) would not abort the run — it would leave $_shard_plan
+    # empty or truncated, and every shard would then silently drop the suites
+    # the plan never placed while still exiting 0. That is the HIMMEL-1128
+    # false-green class, and it is exactly what a balance optimisation is not
+    # allowed to cost. Counting is enough to catch it: the packer emits one
+    # line per input line, so a short count means a stage failed.
+    _shard_plan_n=$(printf '%s' "$_shard_plan" | awk 'END { print NR }')
+    if [ "$_shard_plan_n" -eq "$_shard_eligible_n" ]; then
+      _shard_mine_list=$(printf '%s\n' "$_shard_plan" \
+        | awk -F'\t' -v me="$shard_offset" '$1 == me { print $2 }')
+      shard_assignment="${_shard_nl}${_shard_mine_list}${_shard_nl}"
+      shard_binpack=1
+    else
+      printf "run-shell-tests.sh: --shard: the duration bin-pack placed %s of %s eligible suites — falling back to round-robin assignment (balance only; the partition stays exact)\n" \
+        "$_shard_plan_n" "$_shard_eligible_n" >&2
+    fi
   else
     printf "run-shell-tests.sh: --shard: duration ledger '%s' is missing, unreadable, empty or malformed — falling back to round-robin assignment (balance only; the partition stays exact)\n" \
       "$_shard_ledger" >&2
