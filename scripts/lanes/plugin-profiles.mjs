@@ -462,6 +462,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     const name = argv[0];
     if (!name) die(2, 'usage: plugin-profiles.mjs <profile> [--add-plugins a@m,b@m] | --mcp-servers | --mcp-config | --list | --validate');
     if (argv[1] === '--mcp-servers') {
+      if (argv.length > 2) die(2, `plugin-profiles: unknown argument "${argv[2]}"`);
       const registry = loadRegistry();
       const errs = validateRegistry(registry);
       if (errs.length) die(2, 'plugin-profiles: registry invalid:\n  - ' + errs.join('\n  - '));
@@ -469,6 +470,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
       process.exit(0);
     }
     if (argv[1] === '--mcp-config') {
+      if (argv.length > 2) die(2, `plugin-profiles: unknown argument "${argv[2]}"`);
       const registry = loadRegistry();
       const errs = validateRegistry(registry);
       if (errs.length) die(2, 'plugin-profiles: registry invalid:\n  - ' + errs.join('\n  - '));

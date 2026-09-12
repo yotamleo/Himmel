@@ -547,6 +547,27 @@ test('CLI: --mcp-config resolves leg-impl\'s qmd definition from the marketplace
   assert.deepEqual(JSON.parse(run.stdout), { mcpServers: { qmd: { type: 'http', url: 'http://localhost:8181/mcp' } } });
 });
 
+test('CLI: --mcp-servers / --mcp-config reject trailing argv instead of silently ignoring it', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const home = makeTmpDir('pp-cli-mcp-trailing-home-');
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  const mcpConfigRun = spawnSync(process.execPath, [cli, 'leg-impl', '--mcp-config', '--add-plugins', 'x@y'], { encoding: 'utf8', env });
+  assert.equal(mcpConfigRun.status, 2);
+  assert.match(mcpConfigRun.stderr, /unknown argument/);
+  const mcpServersRun = spawnSync(process.execPath, [cli, 'leg-impl', '--mcp-servers', 'extra'], { encoding: 'utf8', env });
+  assert.equal(mcpServersRun.status, 2);
+  assert.match(mcpServersRun.stderr, /unknown argument/);
+});
+
+test('CLI: --mcp-config alone (no trailing argv) still succeeds', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const cwd = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const home = makeTmpDir('pp-cli-mcp-trailing-ok-home-');
+  const run = spawnSync(process.execPath, [cli, 'leg-impl', '--mcp-config'], { encoding: 'utf8', cwd, env: { ...process.env, HOME: home, USERPROFILE: home } });
+  assert.equal(run.status, 0, run.stderr);
+  assert.ok(JSON.parse(run.stdout).mcpServers);
+});
+
 test('validateRegistry: a profile naming an id in both drop and enable is an error', () => {
   const bad = { ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, both: { enable: ['enabled@m'], drop: ['enabled@m'] } } };
   assert.ok(validateRegistry(bad).some((e) => /"both" drop id "enabled@m" is also in enable/.test(e)));
