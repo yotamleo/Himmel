@@ -5015,6 +5015,29 @@ else
   echo "SKIP: bridge-health (Linux) control (c) HIMMEL-2936: no evidence in the stub log that systemctl actually spawned on this host"
 fi
 
+# ── control (d) HIMMEL-2936 (codex-1 CR fix): a bare-token candidate whose
+# cwd resolves to a NESTED worktree checkout under this checkout's own root
+# (<checkoutRoot>/.claude/worktrees/<other>/...) must NOT be counted as this
+# checkout's own -- a plain prefix match would otherwise re-admit exactly the
+# cross-checkout false duplicate this fix exists to close, one level deeper ──
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "${repo_root}/.claude/worktrees/feat-some-other-checkout" "$bh_proc_root/9201/cwd"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxR=$(BH_PGREP_N=1 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxR" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match whose cwd is a NESTED worktree checkout must not be counted as this checkout's (got: $outBHlinuxR)"
+  echo "$outBHlinuxR" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (Linux): nested-worktree exclusion should read count 0 (got: $outBHlinuxR)"
+  echo "$outBHlinuxR" | jq -e '.detail | contains("9201")' >/dev/null \
+    || fail "bridge-health (Linux): detail should name the excluded nested-worktree pid 9201 (got: $outBHlinuxR)"
+  echo "ok: bridge-health (Linux) — sweep bare-token match whose cwd is a nested worktree checkout is excluded, count 0, detail names 9201 (HIMMEL-2936 codex-1)"
+else
+  echo "SKIP: bridge-health (Linux) control (d) HIMMEL-2936: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
+
 # ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
 # Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)
 # present when bridge.enabled; warn when enabled but persistence is absent.

@@ -2891,7 +2891,18 @@ function posixCandidateIsThisCheckout(cmdline, pid, thisCheckoutAnchor, checkout
   }
   const normCwd = normalizeForPollerAnchorMatch(cwd);
   const normRoot = normalizeForPollerAnchorMatch(checkoutRoot);
-  if (normCwd === normRoot || normCwd.startsWith(`${normRoot}/`)) return { counted: true };
+  if (normCwd === normRoot) return { counted: true };
+  if (normCwd.startsWith(`${normRoot}/`)) {
+    // A worktree's own directory lives nested under its primary checkout
+    // (<primary>/.claude/worktrees/<branch>/...), so a plain prefix match
+    // would also count a poller from a DIFFERENT, nested worktree checkout
+    // as this checkout's own -- the exact cross-checkout false duplicate
+    // this fix exists to close, one level deeper (CR gap, HIMMEL-2936).
+    if (normCwd.slice(normRoot.length).startsWith('/.claude/worktrees/')) {
+      return { counted: false, excludedNote: `pid ${pid} bare-token cwd is a nested worktree checkout (${cwd})` };
+    }
+    return { counted: true };
+  }
   return { counted: false, excludedNote: `pid ${pid} bare-token cwd is a different checkout (${cwd})` };
 }
 
