@@ -58,14 +58,18 @@ assert_contains() {
 # 541a866b34d8b93942b1556145e2e5d97c4ee390) executes - proves the control
 # can actually fail before asserting the fixed script blocks it.
 PRE_FIX="$SCRATCH/quiet-run-prefix.sh"
-git -C "$REPO_ROOT" show "$PRE_FIX_BASE:scripts/quiet-run.sh" > "$PRE_FIX"
-chmod +x "$PRE_FIX"
 mkdir -p "$SCRATCH/red-log" "$SCRATCH/green-log"
+if ! git -C "$REPO_ROOT" show "$PRE_FIX_BASE:scripts/quiet-run.sh" > "$PRE_FIX" 2>/dev/null; then
+    echo "FAIL: could not extract $PRE_FIX_BASE:scripts/quiet-run.sh (missing git object - shallow clone or squash merge?)" >&2
+    FAILED=$((FAILED + 1))
+else
+    chmod +x "$PRE_FIX"
 
-OUT=$(cd "$REPO_ROOT" && TMPDIR="$SCRATCH/red-log" bash "$PRE_FIX" suite -- bash scripts/hooks/test-x/../../evil.sh 2>&1)
-RC=$?
-assert_rc "RED: traversal executes against pre-fix script" 127 "$RC"
-assert_contains "RED: traversal exit=127 surfaced (i.e. it ran)" "exit=127" "$OUT"
+    OUT=$(cd "$REPO_ROOT" && TMPDIR="$SCRATCH/red-log" bash "$PRE_FIX" suite -- bash scripts/hooks/test-x/../../evil.sh 2>&1)
+    RC=$?
+    assert_rc "RED: traversal executes against pre-fix script" 127 "$RC"
+    assert_contains "RED: traversal exit=127 surfaced (i.e. it ran)" "exit=127" "$OUT"
+fi
 
 # 2. GREEN: same shape against the FIXED script is refused before exec -
 # rc=2, refusal line, and no log file created (proves it never reached exec).
@@ -119,27 +123,32 @@ assert_rc "suite with tracked test-*.sh" 0 "$RC"
 # to prove the bypass is real; GREEN proves the fixed script refuses it.
 GLOB_BASE="85af3389bc8782f669aaea7047cf03321736b1d9"
 GLOB_VULN="$SCRATCH/quiet-run-globvuln.sh"
-git -C "$REPO_ROOT" show "$GLOB_BASE:scripts/quiet-run.sh" > "$GLOB_VULN"
-chmod +x "$GLOB_VULN"
-
-GLOB_UNTRACKED_REL="scripts/hooks/test-*.sh"
-GLOB_UNTRACKED_ABS="$REPO_ROOT/$GLOB_UNTRACKED_REL"
-if [ -e "$GLOB_UNTRACKED_ABS" ]; then
-    echo "FAIL: $GLOB_UNTRACKED_ABS already exists - refusing to clobber a pre-existing file for this test" >&2
+if ! git -C "$REPO_ROOT" show "$GLOB_BASE:scripts/quiet-run.sh" > "$GLOB_VULN" 2>/dev/null; then
+    echo "FAIL: could not extract $GLOB_BASE:scripts/quiet-run.sh (missing git object - shallow clone or squash merge?)" >&2
     FAILED=$((FAILED + 1))
 else
-    printf '#!/usr/bin/env bash\necho hi\n' > "$GLOB_UNTRACKED_ABS"
-    chmod +x "$GLOB_UNTRACKED_ABS"
-    GLOB_CREATED=1
+    chmod +x "$GLOB_VULN"
 
-    OUT=$(cd "$REPO_ROOT" && bash "$GLOB_VULN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
-    RC=$?
-    assert_rc "RED: glob-pathspec bypass executes against pre-fix guard" 0 "$RC"
+    GLOB_UNTRACKED_REL="scripts/hooks/test-*.sh"
+    GLOB_UNTRACKED_ABS="$REPO_ROOT/$GLOB_UNTRACKED_REL"
+    if [ -e "$GLOB_UNTRACKED_ABS" ]; then
+        echo "FAIL: $GLOB_UNTRACKED_ABS already exists - refusing to clobber a pre-existing file for this test" >&2
+        FAILED=$((FAILED + 1))
+    elif ! printf '#!/usr/bin/env bash\necho hi\n' > "$GLOB_UNTRACKED_ABS" 2>/dev/null; then
+        echo "SKIP: filesystem rejects a literal '*' in a filename (e.g. Windows/NTFS) - glob-pathspec bypass fixture not applicable here" >&2
+    else
+        chmod +x "$GLOB_UNTRACKED_ABS"
+        GLOB_CREATED=1
 
-    OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
-    RC=$?
-    assert_rc "GREEN: glob-pathspec bypass refused by --literal-pathspecs fix" 2 "$RC"
-    assert_contains "GREEN: glob-pathspec refusal message" "requires a tracked test-*.sh" "$OUT"
+        OUT=$(cd "$REPO_ROOT" && bash "$GLOB_VULN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
+        RC=$?
+        assert_rc "RED: glob-pathspec bypass executes against pre-fix guard" 0 "$RC"
+
+        OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
+        RC=$?
+        assert_rc "GREEN: glob-pathspec bypass refused by --literal-pathspecs fix" 2 "$RC"
+        assert_contains "GREEN: glob-pathspec refusal message" "requires a tracked test-*.sh" "$OUT"
+    fi
 fi
 
 # 7. label "suite" with `node --test <tracked file>` is unaffected - the

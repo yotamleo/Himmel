@@ -1805,7 +1805,11 @@ with a `..` path component and, for the label `suite` when argv is
 `bash <path> …`, requires `<path>` to be a git-tracked `test-*.sh` — closing the
 gap where a `permissions.allow` tail-glob rule (HIMMEL-2959) admits the literal
 label + directory but quiet-run itself performed no path validation before
-exec.
+exec. The tracked-file check itself only applies inside a git repository —
+outside one (no `.git` discoverable) it prints a skip note and lets the
+command through unchecked, since there is no tracked-vs-untracked distinction
+to enforce; any OTHER `git rev-parse` failure (git absent, a transient error)
+still fails closed.
 
 ### `block-docker-privesc.sh` — root-equivalent container guard (HIMMEL-441)
 
