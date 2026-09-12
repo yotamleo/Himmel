@@ -2896,8 +2896,18 @@ function posixCandidateIsThisCheckout(cmdline, pid, thisCheckoutAnchor, checkout
   // anchor, which also has to match a case-insensitive Windows CommandLine.
   // Lowercasing here would fold e.g. /work/Himmel and /work/himmel together
   // and could count a foreign checkout as this one (CR gap, HIMMEL-2936).
-  const normCwd = cwd.replace(/\\/g, '/');
-  const normRoot = checkoutRoot.replace(/\\/g, '/');
+  // A checkout reached through a symlink (e.g. `~/himmel -> /data/himmel`)
+  // has checkoutRoot as the symlink path while the kernel's cwd readlink is
+  // always already the physical path -- realpath both sides so either one
+  // being a symlink doesn't defeat the match (HIMMEL-2947). A side that
+  // fails to resolve (racily-removed dir) keeps its normalized string, so
+  // the fail-safe exclusion below still applies rather than throwing.
+  let realCwd = cwd;
+  try { realCwd = fs.realpathSync(cwd); } catch (e) { /* keep the normalized string */ }
+  let realRoot = checkoutRoot;
+  try { realRoot = fs.realpathSync(checkoutRoot); } catch (e) { /* keep the normalized string */ }
+  const normCwd = realCwd.replace(/\\/g, '/');
+  const normRoot = realRoot.replace(/\\/g, '/');
   if (normCwd === normRoot) return { counted: true };
   if (normCwd.startsWith(`${normRoot}/`)) {
     // A worktree's own directory lives nested under its primary checkout
