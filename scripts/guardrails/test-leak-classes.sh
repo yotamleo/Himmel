@@ -932,7 +932,13 @@ run_class_red_control() {
         return
     fi
 
-    red_control_run --cwd "$repo" -- bash -c '
+    # Pin HIMMEL_LEAK_DENYLIST to a scratch, guaranteed-absent path (same
+    # convention as scan()'s own hermetic default) rather than inheriting
+    # whatever the calling shell has exported: a station denylist token that
+    # happens to be a substring of this class's fixture text would otherwise
+    # make check_hostname_hits() fire during the mutant run and flip its exit
+    # code for a reason unrelated to the class under test (HIMMEL-2829).
+    red_control_run --cwd "$repo" --env HIMMEL_LEAK_DENYLIST="$WS/no-such-denylist.txt" -- bash -c '
         out=$(bash "$1" --tree 2>&1); rc=$?
         case "$out" in *"'"$class"'"*) hit=yes ;; *) hit=no ;; esac
         echo "hit=$hit"
@@ -1000,6 +1006,28 @@ if mutate_call_site '    check_hostname_hits "$content"' 'true # RED-control: ch
             || fail "RED-hostname RED control did not confirm (see FAIL line above)"
     fi
 fi
+
+echo "== RED-control station-denylist independence (HIMMEL-2829) =="
+
+# T12: run_class_red_control()'s red_control_run call (used by the four
+# non-hostname classes above) passes no --env for HIMMEL_LEAK_DENYLIST, so it
+# inherits whatever the calling shell has exported. A station whose real
+# denylist happens to contain a token that is a literal substring of one of
+# those fixtures' own wording (here: "registered", already present in the
+# mac-address fixture "... registered.") makes check_hostname_hits() fire
+# during the mutant run purely by coincidence, flipping the mutant's exit
+# code away from the rc=0 a genuine miss produces -- so
+# red_control_assert's --expect-rc 0 wrongly FAILS the control for a reason
+# that has nothing to do with mac-address detection. Exported here as a
+# scratch, throwaway denylist -- never this station's real one.
+r=$(new_repo)
+printf 'Device MAC 3a:9f:2c:1e:88:04 registered.\n' > "$r/f.txt"  # leak-allow: mac-address test fixture
+git -C "$r" add f.txt
+dl="$WS/t12-contaminating-denylist.txt"
+printf 'registered\n' > "$dl"
+HIMMEL_LEAK_DENYLIST="$dl" run_class_red_control "T12-mac-address-under-station-denylist" "mac-address" \
+    '    if check_mac "$content" && ! line_allows "$content" mac-address; then' \
+    '    if false && check_mac "$content" && ! line_allows "$content" mac-address; then' "$r"
 
 echo "== RED controls: HIMMEL-2831 #2 / HIMMEL-2854 #6 follow-ups =="
 
