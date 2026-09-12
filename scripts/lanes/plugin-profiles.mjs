@@ -396,6 +396,22 @@ export function mcpServersForProfile(registry, name) {
 // or skipped entry — a leg silently missing its one allowed server is worse
 // than a leg that never launches. Returns the ready-to-write --mcp-config
 // object shape: {"mcpServers": {...}}.
+// A def loaded FROM a plugin manifest has ${CLAUDE_PLUGIN_ROOT} expanded by
+// Claude at launch; a def copied out into a standalone --mcp-config file does
+// not get that expansion, so a command/args/env value still containing the
+// literal token would silently break rather than resolve — refuse instead.
+const PLUGIN_ROOT_TOKEN = '${CLAUDE_PLUGIN_ROOT}';
+const hasToken = (v) => typeof v === 'string' && v.includes(PLUGIN_ROOT_TOKEN);
+function refuseIfPluginRootRef(name, def) {
+  let hit;
+  if (hasToken(def.command)) hit = 'command';
+  else if (Array.isArray(def.args) && def.args.some(hasToken)) hit = 'args';
+  else if (def.env && typeof def.env === 'object' && Object.values(def.env).some(hasToken)) hit = 'env';
+  if (hit) {
+    throw new Error(`plugin-profiles: mcpServers entry "${name}" cannot be copied out of its plugin manifest: field "${hit}" references ${PLUGIN_ROOT_TOKEN}, which only expands for a server Claude loads directly from a plugin`);
+  }
+}
+
 export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marketplaceDir }) {
   if (names.length === 0) return { mcpServers: {} };
   const readDefs = (path) => {
@@ -407,12 +423,19 @@ export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marke
   const repo = readDefs(repoMcpPath);
   const mcpServers = {};
   for (const name of names) {
-    if (Object.hasOwn(home, name)) { mcpServers[name] = home[name]; continue; }
-    if (Object.hasOwn(repo, name)) { mcpServers[name] = repo[name]; continue; }
-    const manifestPath = join(marketplaceDir, name, '.mcp.json');
-    const manifest = readDefs(manifestPath);
-    if (Object.hasOwn(manifest, name)) { mcpServers[name] = manifest[name]; continue; }
-    throw new Error(`plugin-profiles: mcpServers entry "${name}" is not defined in ${homeConfigPath}, ${repoMcpPath}, or ${manifestPath}`);
+    let def;
+    if (Object.hasOwn(home, name)) { def = home[name]; }
+    else if (Object.hasOwn(repo, name)) { def = repo[name]; }
+    else {
+      const manifestPath = join(marketplaceDir, name, '.mcp.json');
+      const manifest = readDefs(manifestPath);
+      if (!Object.hasOwn(manifest, name)) {
+        throw new Error(`plugin-profiles: mcpServers entry "${name}" is not defined in ${homeConfigPath}, ${repoMcpPath}, or ${manifestPath}`);
+      }
+      def = manifest[name];
+    }
+    refuseIfPluginRootRef(name, def);
+    mcpServers[name] = def;
   }
   return { mcpServers };
 }
@@ -439,6 +462,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     const name = argv[0];
     if (!name) die(2, 'usage: plugin-profiles.mjs <profile> [--add-plugins a@m,b@m] | --mcp-servers | --mcp-config | --list | --validate');
     if (argv[1] === '--mcp-servers') {
+      if (argv.length > 2) die(2, `plugin-profiles: unknown argument "${argv[2]}"`);
       const registry = loadRegistry();
       const errs = validateRegistry(registry);
       if (errs.length) die(2, 'plugin-profiles: registry invalid:\n  - ' + errs.join('\n  - '));
@@ -446,6 +470,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
       process.exit(0);
     }
     if (argv[1] === '--mcp-config') {
+      if (argv.length > 2) die(2, `plugin-profiles: unknown argument "${argv[2]}"`);
       const registry = loadRegistry();
       const errs = validateRegistry(registry);
       if (errs.length) die(2, 'plugin-profiles: registry invalid:\n  - ' + errs.join('\n  - '));
