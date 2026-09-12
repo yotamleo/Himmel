@@ -365,6 +365,28 @@ if [ "$rc" -eq 0 ] && [ -L "$WT/link" ] && [ -n "$file_cmd" ] &&
 else
     fail "(u2) rc=$rc target='$(cat "$WT/tracked.txt")' (expected regular file recovery with target untouched)"
 fi
+
+# --- (u3) recovering staged regular bytes over a HEAD symlink must not overwrite its target.
+rm "$WT/link"
+printf 'recover-staged\n' > "$WT/link"
+(cd "$WT" && git add link)
+printf 'different-worktree\n' > "$WT/link"
+out=$(run link 2>&1); rc=$?
+idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
+run_dir="${idx_path%/*}"
+help=$(bash "$SUT" --help)
+index_cmd=$(printf '%s\n' "$help" | sed -n "s/^Staged content: \`\(.*\)\` then \`\(.*\)\`\.$/\1 \&\& \2/p")
+index_cmd=${index_cmd//<RUN_DIR>/\"$run_dir\"}
+index_cmd=${index_cmd//<n>/1}
+index_cmd=${index_cmd//<path>/\"$WT\/link\"}
+if [ "$rc" -eq 0 ] && [ -L "$WT/link" ] && [ -n "$index_cmd" ] &&
+    (cd "$WT" && bash -c "$index_cmd") && [ ! -L "$WT/link" ] &&
+    [ "$(cat "$WT/link")" = recover-staged ] && [ "$(cat "$WT/tracked.txt")" = base ] &&
+    [ "$(git -C "$WT" show :link)" = recover-staged ]; then
+    pass "(u3) documented staged recovery replaces the HEAD symlink and stages saved bytes without changing its target"
+else
+    fail "(u3) rc=$rc target='$(cat "$WT/tracked.txt")' (expected staged regular file recovery with target untouched)"
+fi
 reset_wt
 (cd "$WT" && git reset -q --hard main)
 

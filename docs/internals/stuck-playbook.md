@@ -66,7 +66,7 @@ restoring. To recover, use the run directory and file number recorded in MANIFES
 
 Regular file: `rm -f <path> && cp -p <RUN_DIR>/<n>.worktree <path>`
 Symlink: `cp -RPp <RUN_DIR>/<n>.worktree <path>`
-Staged content: `cp -p <RUN_DIR>/<n>.index <path>` then `git add <path>`.
+Staged content: `rm -f <path> && cp -p <RUN_DIR>/<n>.index <path>` then `git add <path>`.
 
 Never try bare `git checkout -- <path>` or `git restore` yourself to work around this.
 
