@@ -1,19 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG } from "../dist/config.js";
 import { setLanguage } from "../dist/i18n/index.js";
 import { formatSessionDuration, main, resolveVcsStatus } from "../dist/index.js";
 
-function restoreEnvVar(name, value) {
-  if (value === undefined) {
-    delete process.env[name];
-    return;
+function skipIfSpawnBlocked(result, t) {
+  if (result.error?.code === "EPERM") {
+    t.skip("spawnSync is blocked by sandbox policy in this environment");
+    return true;
   }
-  process.env[name] = value;
+  return false;
 }
 
 function makeConfig(overrides = {}) {
@@ -151,38 +151,36 @@ test("main logs unknown error for non-Error throws", async () => {
   assert.ok(logs.some((line) => line.includes("Unknown error")));
 });
 
-test("index entrypoint runs when executed directly", async () => {
-  const originalArgv = [...process.argv];
-  const originalIsTTY = process.stdin.isTTY;
-  const originalLog = console.log;
-  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
-  const logs = [];
+test("index entrypoint runs when executed directly", async (t) => {
+  // bun's dynamic import() resolves distinct query-string suffixes to the
+  // same cached module and evaluates its top-level code only once per
+  // process (unlike Node's ESM loader, which treats each query string as a
+  // fresh module registration) — so the old re-import-with-cache-buster
+  // idiom can't force a second run of dist/index.js's auto-invoke guard
+  // under bun test. Spawning a real `node dist/index.js` child process (the
+  // plugin's actual documented invocation, matching the other CLI tests in
+  // tests/integration.test.js) sidesteps that entirely: each spawn is a
+  // fresh process with its own module graph.
   const { dir, cleanup } = await createTempConfigDir({ language: "en" });
 
   try {
-    process.env.CLAUDE_CONFIG_DIR = dir;
-    setLanguage("en");
-    const moduleUrl = new URL("../dist/index.js", import.meta.url);
-    process.argv[1] = fileURLToPath(moduleUrl);
-    Object.defineProperty(process.stdin, "isTTY", {
-      value: true,
-      configurable: true,
+    const result = spawnSync("node", ["dist/index.js"], {
+      cwd: path.resolve(process.cwd()),
+      input: "",
+      encoding: "utf8",
+      env: { ...process.env, CLAUDE_CONFIG_DIR: dir, LANG: "C" },
     });
-    console.log = (...args) => logs.push(args.join(" "));
-    await import(`${moduleUrl}?entry=${Date.now()}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    if (skipIfSpawnBlocked(result, t)) return;
+
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.ok(
+      result.stdout.includes("[claude-hud] Initializing..."),
+      result.stderr || result.stdout,
+    );
   } finally {
-    console.log = originalLog;
-    process.argv = originalArgv;
-    restoreEnvVar("CLAUDE_CONFIG_DIR", originalConfigDir);
-    Object.defineProperty(process.stdin, "isTTY", {
-      value: originalIsTTY,
-      configurable: true,
-    });
     await cleanup();
   }
-
-  assert.ok(logs.some((line) => line.includes("[claude-hud] Initializing...")));
 });
 
 test("main executes the happy path", async () => {

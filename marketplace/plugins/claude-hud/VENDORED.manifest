@@ -346,7 +346,7 @@ e08fe93072cd361cceb5049480dbd16a816532df  src/windows-git-worker.ts
 9fb0280926c9d0048c3d0f7f4a076eb27104acab  tests/claudex-lane.test.js
 9ca8b68e5e5ece7454caf319808e5ad903e32183  tests/config.test.js
 9258e1ec365f2aa55e55f18f793e444595886085  tests/context-cache.test.js
-2fcb2db7370b613fdb0d315b5a38ae3ac2ca4bbb  tests/core.test.js
+d03daa482aefa6e5298f274c07332440ce708bcd  tests/core.test.js
 d740f68a6d1a8022ab8e769fbf52ece0ea78678d  tests/cost-coverage.test.js
 57e563f59d5d435d4bd00e239b45f219c054627f  tests/custom-line-cmd.test.js
 7391d19f97cafb89d51a0fb39423459c3e5304d8  tests/daily-cost.test.js
@@ -363,7 +363,7 @@ d1c485d742ba019e64c22aa5c1b0e3a90a14159b  tests/git-runner.test.js
 62755edd38e81af7e2230b5ce521b7e459b5a04a  tests/git.test.js
 edc35d9c69a071a5eb77720c3b5912d59ffa42f6  tests/i18n.test.js
 3fd1825c8c1940bcade7b34fb97d1599f389f59d  tests/identity-coverage.test.js
-9f00f99c70e0e3de8e52dc02589f5cee94ffa469  tests/index.test.js
+a99fd9e192b1dc0c699b756eafc9cdac81665c1d  tests/index.test.js
 82c0691ad72f9262cf87c86754b35130a3f6f5ec  tests/integration.test.js
 ec57a4788527bb09049b8d3e8a57576ae8371a2d  tests/jj.test.js
 97eea31e309ace99950a6bb76baf3bf970d4da07  tests/label-align.test.js
