@@ -136,6 +136,17 @@
 # guard has no business re-implementing). Over-deny is the safe direction
 # for a guard; a false ALLOW is the defect class this ticket exists for.
 #
+# HIMMEL-2933 (the third clearing shape): a plain or exported ASSIGNMENT in
+# an earlier segment -- `SEAM=0;` / `export SEAM=;` / `export SEAM=0 &&` --
+# clears a registered seam with no `unset`/`export -n`/`env -u` in sight
+# either. A segment consumed ENTIRELY as leading assignment words (no
+# command word ever reached) is folded into UNSET_NAMES the same way
+# `unset`/`export -n` are; `export NAME[=val]`, `-n` or not, is folded
+# unconditionally too (`export` never leads into a command position, so
+# every non-option word after it is a name, fail-closed, no value
+# inspection -- `export SEAM=1` denies too, a documented arming-direction
+# over-deny).
+#
 # The round-2 '(' carve-out is CLOSED: an unquoted '(' / ')' / backtick
 # (and `$(` / backtick inside double quotes) opens a fresh command
 # position via segmentation, so subshell, $(...), and backtick-wrapped
@@ -1003,40 +1014,29 @@ scan_segment() {
                 done
                 return 0 ;;
             export)
-                # HIMMEL-2927 (ruling, pr-check round 5): same fail-closed
-                # simplification as `unset` above. If this export segment
-                # carries `-n` ANYWHERE in its leading run of option-shaped
-                # words (every word starting with `-`, `--` included,
-                # combined forms included, up to the first word that does
-                # NOT start with `-`), then every remaining word that does
-                # not start with `-` is a candidate name -- full stop, no
-                # charset check, no invalid-option branch. An invalid
-                # cluster (`export -n -x NAME`) is denied too, same
-                # documented over-deny posture. Plain `export NAME[=val]`
-                # (no `-n` anywhere in the leading cluster) is left alone --
-                # that shape still exports; falls through to the unchanged
-                # assignment path below.
+                # HIMMEL-2927/HIMMEL-2933 (ruling, pr-check round 5 + the
+                # 2933 extension): same fail-closed simplification as
+                # `unset` above, now applied whether or not `-n` is present.
+                # `export -n NAME` un-exports NAME (the child no longer
+                # inherits it -- the unset direction); `export NAME[=val]`
+                # (over)writes NAME's exported value, and `export NAME`
+                # alone re-exports its CURRENT value unchanged -- but with
+                # no value inspection, either shape is recorded the same
+                # fail-closed way (documented arming-direction over-deny:
+                # `export SEAM=1` denies too). `export` never leads into a
+                # command position of its own, so every remaining
+                # non-option word (name stripped of its optional `=value`)
+                # is a candidate, full stop -- no charset check, no
+                # invalid-option branch.
                 k=$((j + 1))
-                saw_n=0
-                m=$k
-                while [ "$m" -lt "$nw" ]; do
-                    case "${W[$m]}" in
-                    -*)
-                        case "${W[$m]#-}" in *n*) saw_n=1 ;; esac
-                        m=$((m + 1)) ;;
-                    *) break ;;
+                while [ "$k" -lt "$nw" ]; do
+                    case "${W[$k]}" in
+                    -*) ;;
+                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]%%=*}" ;;
                     esac
+                    k=$((k + 1))
                 done
-                if [ "$saw_n" = 1 ]; then
-                    while [ "$k" -lt "$nw" ]; do
-                        case "${W[$k]}" in
-                        -*) ;;
-                        *) UNSET_NAMES="$UNSET_NAMES ${W[$k]%%=*}" ;;
-                        esac
-                        k=$((k + 1))
-                    done
-                    return 0
-                fi
+                return 0
                 ;;
             esac
             # The invoked-program token of this segment. Words beyond it
@@ -1046,6 +1046,18 @@ scan_segment() {
             ;;
         esac
     done
+    # HIMMEL-2933: a segment consumed ENTIRELY as leading assignment words
+    # (phase never left "start", no command word was ever reached) is a
+    # bare shell assignment -- `SEAM=0;` / `SEAM=0 OTHER=1;` with nothing
+    # after -- which bash runs in the CURRENT shell, so it persists to
+    # every LATER segment exactly like `unset`/`export -n` (HIMMEL-2927).
+    # Fold this segment's collected names into the same accumulator. `env`/
+    # `interp` phases exhausting the same way do NOT persist (an env-scoped
+    # assignment with no trailing command doesn't export or set anything)
+    # and are excluded by the phase check.
+    if [ "$phase" = "start" ] && [ "$asg_ok" = "1" ]; then
+        UNSET_NAMES="$UNSET_NAMES $names"
+    fi
     return 0
 }
 
