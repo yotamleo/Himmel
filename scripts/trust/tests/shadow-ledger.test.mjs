@@ -498,7 +498,7 @@ describe('classification', () => {
   test('runner commands never record their second token', () => {
     for (const [cmd, secret] of [
       ['npx https://alice:TOKEN123@github.com/acme/private-tool', 'TOKEN123'],
-      ['node /home/alice/clients/acme/deploy.mjs', 'acme'],
+      ['node /home/alice/clients/acme/deploy.mjs', 'acme'], // leak-allow: home-path test fixture
       ['bun /srv/secret-client/run.ts', 'secret-client'],
       ['dotnet /opt/AcmeCorp/Private.dll', 'AcmeCorp'],
     ]) {

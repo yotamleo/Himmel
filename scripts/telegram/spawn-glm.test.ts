@@ -358,15 +358,15 @@ test("own-branch (flag-less) path is untouched — mints its own branch with -b,
 // would make the test tautological.
 const CWD_FIXTURE = process.platform === "win32"
   ? {
-      worktree: "C:\\Users\\alice\\Documents\\github\\himmel\\.claude\\worktrees\\glm+a",
+      worktree: "C:\\Users\\alice\\Documents\\github\\himmel\\.claude\\worktrees\\glm+a", // leak-allow: home-path test fixture
       worktreeEscaped: "C--Users-alice-Documents-github-himmel--claude-worktrees-glm-a",
-      underscore: "C:\\Users\\alice\\Documents\\github\\my_docs",
+      underscore: "C:\\Users\\alice\\Documents\\github\\my_docs", // leak-allow: home-path test fixture
       underscoreEscaped: "C--Users-alice-Documents-github-my-docs",
     }
   : {
-      worktree: "/home/alice/Documents/github/himmel/.claude/worktrees/glm+a",
+      worktree: "/home/alice/Documents/github/himmel/.claude/worktrees/glm+a", // leak-allow: home-path test fixture
       worktreeEscaped: "-home-alice-Documents-github-himmel--claude-worktrees-glm-a",
-      underscore: "/home/alice/Documents/github/my_docs",
+      underscore: "/home/alice/Documents/github/my_docs", // leak-allow: home-path test fixture
       underscoreEscaped: "-home-alice-Documents-github-my-docs",
     };
 
@@ -2120,7 +2120,7 @@ test("composeGlmOutboxWriteHint: documents only the fixed base64url helper contr
 });
 
 test("toPermissionPath: Windows absolute path -> POSIX //<drive>/... form", () => {
-  expect(toPermissionPath("C:\\Users\\alice\\repo")).toBe("//c/Users/alice/repo");
+  expect(toPermissionPath("C:\\Users\\alice\\repo")).toBe("//c/Users/alice/repo"); // leak-allow: home-path test fixture
   expect(toPermissionPath("D:\\a\\b\\c")).toBe("//d/a/b/c");
 });
 
