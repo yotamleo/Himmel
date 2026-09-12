@@ -14,7 +14,7 @@ bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 
 if bash -n "$SCRIPT"; then ok "syntax (bash -n)"; else bad "syntax"; fi
 
-TMP=$(mktemp -d)
+TMP=$(mktemp -d) || { echo "FAIL - mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 # T1: bank refuses (SKIPPED-BANK) — the script must exit 1 WITHOUT ever
@@ -45,9 +45,20 @@ else
     bad "T1 bank refusal — rc=$rc out=$out"
 fi
 
-# T2: bank proceeds (real bank-preflight.sh — a local read, non-billing) but
-# claude reports a version below the 2.1.269 floor — the script must refuse.
-mkdir -p "$TMP/t2/bin"
+# T2: bank proceeds — a deterministic PROCEED stub, same pattern as T1, so
+# this non-billing test never depends on the REAL bank's live state (it did
+# fail this way once: the ambient bank hit its 85% cap mid-session and T2/T3
+# both read the real scripts/lib/bank-preflight.sh, which returned
+# SKIPPED-BANK instead of PROCEED) — but claude reports a version below the
+# 2.1.269 floor, so the script must refuse.
+mkdir -p "$TMP/t2/scripts/lib" "$TMP/t2/bin"
+cp "$SCRIPT" "$TMP/t2/scripts/plugin-eval-preflight.sh"
+cat > "$TMP/t2/scripts/lib/bank-preflight.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "PROCEED"
+exit 0
+EOF
+chmod +x "$TMP/t2/scripts/lib/bank-preflight.sh"
 cat > "$TMP/t2/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "--version" ]; then
@@ -58,7 +69,7 @@ echo "claude: unexpected invocation $*" >&2
 exit 1
 EOF
 chmod +x "$TMP/t2/bin/claude"
-out=$(cd "$ROOT" && PATH="$TMP/t2/bin:$PATH" bash scripts/plugin-eval-preflight.sh 2>&1)
+out=$(PATH="$TMP/t2/bin:$PATH" bash "$TMP/t2/scripts/plugin-eval-preflight.sh" 2>&1)
 rc=$?
 if [ "$rc" -eq 1 ] && grep -q "2.1.268" <<< "$out" && grep -q "2.1.269" <<< "$out"; then
     ok "T2 below-floor version (2.1.268) refuses"
@@ -66,10 +77,17 @@ else
     bad "T2 below-floor version — rc=$rc out=$out"
 fi
 
-# T3: bank proceeds, claude reports a version at the floor — the script must
-# PROCEED (still non-billing: PROCEED means "safe to run", it does not itself
-# run `claude plugin eval`).
-mkdir -p "$TMP/t3/bin"
+# T3: bank proceeds (same deterministic stub as T2), claude reports a
+# version at the floor — the script must PROCEED (still non-billing: PROCEED
+# means "safe to run", it does not itself run `claude plugin eval`).
+mkdir -p "$TMP/t3/scripts/lib" "$TMP/t3/bin"
+cp "$SCRIPT" "$TMP/t3/scripts/plugin-eval-preflight.sh"
+cat > "$TMP/t3/scripts/lib/bank-preflight.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "PROCEED"
+exit 0
+EOF
+chmod +x "$TMP/t3/scripts/lib/bank-preflight.sh"
 cat > "$TMP/t3/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "--version" ]; then
@@ -80,7 +98,7 @@ echo "claude: unexpected invocation $*" >&2
 exit 1
 EOF
 chmod +x "$TMP/t3/bin/claude"
-out=$(cd "$ROOT" && PATH="$TMP/t3/bin:$PATH" bash scripts/plugin-eval-preflight.sh 2>&1)
+out=$(PATH="$TMP/t3/bin:$PATH" bash "$TMP/t3/scripts/plugin-eval-preflight.sh" 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ] && grep -q "PROCEED" <<< "$out"; then
     ok "T3 at-floor version (2.1.269) proceeds"

@@ -151,9 +151,13 @@ Three suites ship under HIMMEL-2931:
   `_tools.json` describing the real tool schema so the model knows a
   `collections` parameter exists) so no run ever touches the real qmd daemon.
   Whoever next changes the `qmd` tool surface owns keeping this mock in sync.
-  **Unrun (bank):** the first attempt aborted before grading (the mock lacked
-  `_tools.json`, since fixed); bank hit the 85% five-hour cap before a
-  corrected run could confirm the fix.
+  **Passed clean** (2026-09-12 run, score 1.00, 3/3 runs, $0.39) after two
+  fixes: the mock initially lacked `_tools.json` (since fixed), and the
+  grader's `input_match` regex (`"collections"[\s\S]*"himmel"`) would also
+  pass a call whose `collections` array held extra collections, or was empty
+  with "himmel" appearing elsewhere in the JSON-stringified input — tightened
+  to `"collections":\s*\[\s*"himmel"\s*\]` to assert the scope is exactly
+  `["himmel"]`.
 
 ### Assumptions this round shipped on (unanswered by the operator)
 
