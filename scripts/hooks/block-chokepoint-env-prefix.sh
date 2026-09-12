@@ -163,8 +163,10 @@
 # a segment containing the literal `$[` anywhere has every `NAME=` word in
 # it folded into UNSET_NAMES too, no bracket-depth tracking, same fail-closed
 # direction. `local` is function-scoped and cannot precede a top-level
-# chokepoint, so it is not modelled; `mapfile`/`readarray` target arrays,
-# never a scalar seam, so they are not modelled either.
+# chokepoint, so it is not modelled. `mapfile`/`readarray` (HIMMEL-2943) DO
+# fold: `mapfile NAME` converts a scalar seam into an array bash does not
+# export to children, same clearing effect as `unset` -- word-bounded scan
+# over every remaining word, same as `let`/`read`, no option-shape model.
 #
 # The round-2 '(' carve-out is CLOSED: an unquoted '(' / ')' / backtick
 # (and `$(` / backtick inside double quotes) opens a fresh command
@@ -1141,6 +1143,29 @@ scan_segment() {
                 # `let` arm above, for consistency -- no option-shape
                 # modelling anywhere in this collapse, every remaining word
                 # goes through the scan unconditionally.
+                k=$((j + 1))
+                while [ "$k" -lt "$nw" ]; do
+                    for n in $ALL_SEAM_VARS; do
+                        [ -n "$n" ] || continue
+                        if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
+                            UNSET_NAMES="$UNSET_NAMES $n"
+                        fi
+                    done
+                    k=$((k + 1))
+                done
+                return 0 ;;
+            mapfile|readarray)
+                # HIMMEL-2943 (residual deferred off HIMMEL-2939 round 5,
+                # codex-1): `mapfile NAME <<< 0` (readarray is its alias)
+                # reads stdin into array NAME, converting a scalar seam
+                # variable into an array -- bash does not export arrays to
+                # child processes, so a later chokepoint loses the seam with
+                # no name folded into UNSET_NAMES. Same STOP-parsing-grammar
+                # ruling as the `let`/`read` arms above (round 5): no
+                # option-shape model, every remaining word goes through the
+                # word-bounded scan unconditionally, so a value-taking
+                # option's own operand (`-C callback`, `-c quantum`) is
+                # scanned too -- documented over-deny, costs nothing.
                 k=$((j + 1))
                 while [ "$k" -lt "$nw" ]; do
                     for n in $ALL_SEAM_VARS; do

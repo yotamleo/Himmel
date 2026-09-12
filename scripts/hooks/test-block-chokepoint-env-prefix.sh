@@ -284,6 +284,24 @@ assert_allow "read NAME_LONGER (word boundary -- shares the PREFIX, not equal)" 
 assert_deny "let -- '--NAME' (arithmetic prefix-decrement operand; dash-skip hid it)" "$(j "let -- '--HIMMEL_CONSOLE_LEG'; bash $MERGE_ON_GREEN 1")"
 assert_allow "let -- x=1 (control -- no seam name present)" "$(j "let -- x=1; bash $MERGE_ON_GREEN 1")"
 
+# --- HIMMEL-2943 (residual deferred off HIMMEL-2939 round 5, codex-1):
+# `mapfile`/`readarray` were left unmodelled on the theory that they "target
+# arrays, never a scalar seam" -- but `mapfile -t NAME <<< 0` converts a
+# scalar seam into an array bash does not export to children, clearing it
+# from a later chokepoint's view exactly like `unset` does. Same word-bounded
+# scan as the `let`/`read` arms, no option-shape modelling (round 5's STOP
+# ruling applies here too): every remaining word after `mapfile`/`readarray`
+# goes through the scan unconditionally, so a value-taking option's operand
+# (`-C callback`, `-c quantum`) is scanned too, documented over-deny. ---
+assert_deny "mapfile -t NAME <<< 0 converts the seam to an array"        "$(j "mapfile -t HIMMEL_CONSOLE_LEG <<< 0; bash $MERGE_ON_GREEN 1")"
+assert_deny "readarray NAME <<< 0 (readarray alias) converts the seam"   "$(j "readarray HIMMEL_CONSOLE_LEG <<< 0; bash $MERGE_ON_GREEN 1")"
+assert_deny "mapfile -t -n 1 NAME < f (name after value-taking options)" "$(j "mapfile -t -n 1 HIMMEL_CONSOLE_LEG < f; bash $MERGE_ON_GREEN 1")"
+assert_deny "mapfile -C cb -c 1 NAME (name after -C/-c and their values)" "$(j "mapfile -C cb -c 1 HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "readarray -O 0 -t NAME (name after -O and its value)"       "$(j "readarray -O 0 -t HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_allow "mapfile -t lines <<< x (non-seam name) stays allowed"      "$(j "mapfile -t lines <<< x; bash $MERGE_ON_GREEN 1")"
+assert_allow "mapfile -t (no name -> default MAPFILE, not a seam)"      "$(j "mapfile -t; bash $MERGE_ON_GREEN 1")"
+assert_allow "echo mapfile NAME (word, not the command) stays allowed"  "$(j "echo mapfile HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied
