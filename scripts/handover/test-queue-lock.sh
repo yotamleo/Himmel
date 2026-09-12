@@ -1740,6 +1740,57 @@ else
     fail "T53: compact registry dropped the leading repo entry (rc=$rc: $out)"
 fi
 
+# --- T53b: registry paths decode JSON escapes (HIMMEL-2868) ---------------
+x_escape_roots() (
+    unset HANDOVER_DIR
+    export HANDOVER_REGISTRY="$X_REG_COMPACT"
+    # shellcheck source=queue-lock.sh
+    . "$LIB"
+    _ql_candidate_roots
+)
+for x_escape in slash quote unicode; do
+    case "$x_escape" in
+        slash) x_repo="$TMPDIR_ROOT/2868-slash"; x_json="${x_repo//\//\\/}" ;;
+        quote) x_repo="$TMPDIR_ROOT/2868-repo\"x"; x_json="${x_repo//\"/\\\"}" ;;
+        unicode) x_repo="$TMPDIR_ROOT/2868-repoA"; x_json="${x_repo%A}\\u0041" ;;
+    esac
+    mkdir -p "$x_repo/handovers"
+    printf '{"repos":{"escaped":{"path":"%s"}}}\n' "$x_json" > "$X_REG_COMPACT"
+    out="$(x_escape_roots)"
+    if [ "$out" = "$x_repo/handovers" ]; then
+        pass "T53b: $x_escape JSON escape yields the registered handover root"
+    else
+        fail "T53b: $x_escape JSON escape yields the registered handover root"
+    fi
+done
+
+# Invalid/unsupported entries must not hide a valid sibling or resolve to
+# a different directory after losing an escape (including unrepresentable NUL).
+x_good="$TMPDIR_ROOT/2868-good"
+mkdir -p "$x_good/handovers"
+x_u="\\u"
+for x_bad in '\q' "\\" '\u12' '\u00xz' "${x_u}0080" '\uD800' "${x_u}0000"; do
+    printf '{"repos":{"bad":{"path":"%s%s"},"good":{"path":"%s"}}}\n' \
+        "$x_good" "$x_bad" "$x_good" > "$X_REG_COMPACT"
+    out="$(x_escape_roots)"
+    if [ "$out" = "$x_good/handovers" ]; then
+        pass "T53c: unsupported escape $x_bad drops only its candidate"
+    else
+        fail "T53c: unsupported escape $x_bad changed the candidate roots"
+    fi
+done
+x_repo="$TMPDIR_ROOT/2868-line"$'\n'"break"
+mkdir -p "$x_repo/handovers"
+x_json="${x_repo//$'\n'/\\n}"
+printf '{"repos":{"bad":{"path":"%s"},"good":{"path":"%s"}}}\n' \
+    "$x_json" "$x_good" > "$X_REG_COMPACT"
+out="$(x_escape_roots)"
+if [ "$out" = "$x_good/handovers" ]; then
+    pass "T53c: decoded newline never splits a root into unrelated candidates"
+else
+    fail "T53c: decoded newline split a root into unrelated candidates"
+fi
+
 # --- T54: a STRANGER's lock on the same slug in the cwd root does not -----
 # hide our own lock in another root (HIMMEL-2861 CR round 1, codex-2).
 # Two roots can carry the same slug; the cross-root search must trigger on

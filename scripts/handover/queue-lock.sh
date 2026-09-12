@@ -456,10 +456,14 @@ _ql_candidate_roots() {
     reg=$(_ql_registry_path)
     [ -f "$reg" ] || return 0
     local repo
-    grep -o '"path"[[:space:]]*:[[:space:]]*"[^"]*"' "$reg" 2>/dev/null \
-        | sed 's/^.*"\([^"]*\)"$/\1/' \
-        | sed 's#\\\\#/#g' \
+    grep -o '"path"[[:space:]]*:[[:space:]]*"\(\\.\|[^"\\]\)*"' "$reg" 2>/dev/null \
+        | sed 's/^"path"[[:space:]]*:[[:space:]]*"//; s/"$//' \
         | while IFS= read -r repo; do
+            _hp_json_unescape "$repo"
+            [ "$_HP_UNESC_OK" -eq 1 ] || continue
+            repo="${_HP_UNESC//\\//}"
+            # Roots are line-delimited; never split one path into candidates.
+            case "$repo" in *$'\n'*) continue ;; esac
             [ -n "$repo" ] || continue
             [ -d "$repo/handovers" ] || continue
             ( cd "$repo/handovers" && pwd )
