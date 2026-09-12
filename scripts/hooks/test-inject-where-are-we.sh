@@ -86,7 +86,7 @@ if [ "${1:-}" = "--selftest-hermetic" ]; then
     HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$st" \
         WHERE_ARE_WE_BRANCH_OVERRIDE=main \
         HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null
-    exit 0
+    exit $?
 fi
 
 echo "== suite hermeticity (HIMMEL-2940) =="
@@ -96,13 +96,14 @@ echo "== suite hermeticity (HIMMEL-2940) =="
 # own preamble runs), not via the lean-leg case's own override further down.
 # Each recursion gets its own `mktemp -d` fixture dir, so the raw outputs
 # differ by that random path alone even with no leak — normalize it out
-# before comparing.
-leaked="$(HIMMEL_LEAN_LEG=1 bash "$0" --selftest-hermetic | sed -E 's#[^ ]*/selftest#SELFTEST_DIR#g')"
-clean="$(bash "$0" --selftest-hermetic | sed -E 's#[^ ]*/selftest#SELFTEST_DIR#g')"
-if [ "$leaked" = "$clean" ] && [ -n "$leaked" ]; then
+# before comparing. `pipefail` (set above) makes $? after the sed pipe
+# reflect the bash recursion's own exit status, not sed's.
+leaked="$(HIMMEL_LEAN_LEG=1 bash "$0" --selftest-hermetic | sed -E 's#[^ ]*/selftest#SELFTEST_DIR#g')"; leaked_rc=$?
+clean="$(bash "$0" --selftest-hermetic | sed -E 's#[^ ]*/selftest#SELFTEST_DIR#g')"; clean_rc=$?
+if [ "$leaked_rc" -eq 0 ] && [ "$clean_rc" -eq 0 ] && [ "$leaked" = "$clean" ] && [ -n "$leaked" ]; then
     pass "suite is hermetic to a lean-leg caller"
 else
-    fail "suite is hermetic to a lean-leg caller (leaked='$leaked' clean='$clean')"
+    fail "suite is hermetic to a lean-leg caller (leaked_rc=$leaked_rc clean_rc=$clean_rc leaked='$leaked' clean='$clean')"
 fi
 
 # --- Case 1: OFF → no output, exit 0 ----------------------------------------

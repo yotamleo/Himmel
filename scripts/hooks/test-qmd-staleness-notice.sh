@@ -124,7 +124,7 @@ run() {
 # with a controlled ambient env, never the full ~50-case suite.
 if [ "${1:-}" = "--selftest-hermetic" ]; then
     run 3 'GUARD-BANNER-SELFTEST'
-    exit 0
+    exit $?
 fi
 
 echo "== suite hermeticity (HIMMEL-2940) =="
@@ -132,12 +132,12 @@ echo "== suite hermeticity (HIMMEL-2940) =="
 # preamble unset above has a chance to clear it — so this recurses with that
 # var set exactly the way a lean-leg caller sets it (before this file's own
 # preamble runs), not via a case override.
-leaked="$(HIMMEL_LEAN_LEG=1 bash "$0" --selftest-hermetic)"
-clean="$(bash "$0" --selftest-hermetic)"
-if [ "$leaked" = "$clean" ] && [ -n "$leaked" ]; then
+leaked="$(HIMMEL_LEAN_LEG=1 bash "$0" --selftest-hermetic)"; leaked_rc=$?
+clean="$(bash "$0" --selftest-hermetic)"; clean_rc=$?
+if [ "$leaked_rc" -eq 0 ] && [ "$clean_rc" -eq 0 ] && [ "$leaked" = "$clean" ] && [ -n "$leaked" ]; then
     pass "suite is hermetic to a lean-leg caller"
 else
-    fail "suite is hermetic to a lean-leg caller (leaked='$leaked' clean='$clean')"
+    fail "suite is hermetic to a lean-leg caller (leaked_rc=$leaked_rc clean_rc=$clean_rc leaked='$leaked' clean='$clean')"
 fi
 
 echo "== silent paths (only these two) =="
