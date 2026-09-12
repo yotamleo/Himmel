@@ -64,9 +64,9 @@ that wants the deterministic rule uses the label `suite`; any other label
 simply falls back to today's classifier path — no regression. Unlisted suite
 directories also retain that path. The matcher's handling of the env prefix
 and of a tail glob is unproven until the console's first native
-`--profile leg-impl` dispatch. These profile rules serve native legs only;
-until HIMMEL-2962 composes the launchers, claudex legs receive only
-operator-managed user-scope rules preserved by `sanitize_settings`.
+`--profile leg-impl` dispatch. These profile rules also reach claudex legs
+through `--lane claudex --profile leg-impl` (HIMMEL-2962); operator-managed
+user-scope rules remain preserved by `sanitize_settings`.
 
 `leg-impl`'s `mcpServers: ["qmd"]` (HIMMEL-2935) layers `--mcp-config` +
 `--strict-mcp-config` onto the same profile, stripping USER-level MCP servers
@@ -86,10 +86,13 @@ follow-up to this lever.
 `--profile` also exports `HIMMEL_LEAN_LEG=1`, which silences the three advisory
 SessionStart hooks (graphify freshness, qmd staleness, where-are-we) for that
 session only — a leg has one ticket and a console to report to, and never acts
-on an advisory. It applies the profile by replacing `headed-arm.sh`'s launcher
-binary with `scripts/lanes/leg-claude-launcher.sh`, which prepends `--settings`
-and `--append-system-prompt-file`; that is why `--profile` and `--lane claudex`
-are mutually exclusive (both claim the same seam) and refuse with exit 2.
+on an advisory. `--profile` composes with `--lane claudex` through
+`scripts/lanes/leg-claude-launcher.sh` and its `LEG_CLAUDE_BIN` exec target:
+settings, preface and optional strict MCP config reach `scripts/claude-codex`
+without changing native argv. Every `--lane claudex` launch also appends
+[`leg-preface-claudex.md`](../handover/leg-preface-claudex.md), concatenated
+after the profile preface when both apply, making document-channel
+coordination independent of a hand-pasted brief.
 
 Until HIMMEL-2782 reconciles launcher wiring, consumers invoking
 `plugin-profiles.mjs` directly must run it with the child's effective `cwd` and

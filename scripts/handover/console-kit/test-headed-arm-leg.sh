@@ -37,7 +37,7 @@ SCRIPT="$HERE/headed-arm-leg.sh"
 HEADED_ARM="$HERE/../headed-arm.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -70,7 +70,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -363,7 +363,9 @@ wait_record "$d16" || true
 rec16="$(cat "$d16/record" 2>/dev/null || true)"
 check "full launch, --lane claudex: exit 0" "$rc" "0"
 contains "full launch, --lane claudex: wrapped in script(1) with the SAME log path, appending (-a)" "$rec16" "script -q -a -f $d16/log -c"
-contains "full launch, --lane claudex: the claude-codex stub path reaches the recorded argv" "$rec16" "$claudex_stub"
+contains "full launch, --lane claudex: the preface shim reaches the recorded argv" "$rec16" "leg-claude-launcher.sh"
+contains "full launch, --lane claudex: the shim retains the claudex backend" \
+  "$(cat "$d16/env-record" 2>/dev/null || true)" "LEG_CLAUDE_BIN=$claudex_stub"
 not_contains "full launch, --lane claudex: launcher not force-wrapped in bash (execs via its own shebang)" "$rec16" "bash $claudex_stub"
 contains "full launch, --lane claudex: --model defaults to gpt-6-astra" "$rec16" "--model gpt-6-astra"
 contains "full launch, --lane claudex: --autocompact 200000 (standard context ceiling)" "$rec16" "--autocompact 200000"
@@ -548,7 +550,11 @@ rc=0
 node - "$composed" "$HERE/../../../docs/handover/leg-preface.md" <<'NODE' || rc=$?
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const [dir, preface] = process.argv.slice(2);
+const [dir, profilePreface] = process.argv.slice(2);
+const preface = `${dir}/HIMMEL-composed.leg-preface.md`;
+const claudexPreface = profilePreface.replace('leg-preface.md', 'leg-preface-claudex.md');
+assert.strictEqual(fs.readFileSync(preface, 'utf8'),
+  fs.readFileSync(profilePreface, 'utf8') + fs.readFileSync(claudexPreface, 'utf8'));
 assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\n'), [
   '--settings', `${dir}/HIMMEL-composed.leg-settings.json`,
   '--append-system-prompt-file', preface,
@@ -560,7 +566,25 @@ assert.ok(settings.permissions.allow.includes('Bash(bash scripts/handover/merge-
 assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-mcp.json`, 'utf8')),
   {mcpServers: {qmd: {type: 'http', url: 'http://localhost:8181/mcp'}}});
 NODE
-check "composition: all profile flags, argv order and gate settings survive" "$rc" "0"
+check "composition: both prefaces, all profile flags, argv order and gate settings survive" "$rc" "0"
+
+# Without a profile, claudex gains exactly the coordination preface pair.
+rc=0
+HEADED_ARM_LEG_TARGET="$composed/headed" HEADED_ARM_LEG_CLAUDEX_BIN="$composed/claude-codex" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  bash "$SCRIPT" --lane claudex HIMMEL-unprofiled "some/doc.md" "$composed/signal" "$PAST" "$composed/log" >/dev/null 2>&1 || rc=$?
+check "unprofiled claudex: launcher succeeds" "$rc" "0"
+rc=0
+node - "$composed" "$HERE/../../../docs/handover/leg-preface-claudex.md" <<'NODE' || rc=$?
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const [dir, preface] = process.argv.slice(2);
+assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\n'), [
+  '--append-system-prompt-file', preface,
+  '--model', 'gpt-6-astra', '--autocompact', '200000', '-n', 'HIMMEL-unprofiled', 'load some/doc.md and continue',
+]);
+NODE
+check "unprofiled claudex: exactly one added preface pair, other argv unchanged" "$rc" "0"
 
 # --- 18 (HIMMEL-2935). --profile's mcpServers allowlist: --mcp-config +
 # --strict-mcp-config narrow the leg's MCP surface to exactly the named

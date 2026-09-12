@@ -17,6 +17,8 @@ is the part that is different for every leg: who this leg is, what it is doing,
 and what it must not touch. If you dispatch a leg **without** `--profile`, the
 preface is not injected, so paste it into the brief yourself or the leg is
 under-briefed.
+Claudex briefs no longer paste the coordination paragraph: `--lane claudex`
+always appends [`leg-preface-claudex.md`](leg-preface-claudex.md).
 
 ---
 
