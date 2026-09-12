@@ -64,7 +64,7 @@ saves the outgoing content for every dirty path — a plain copy, not a diff —
 to a fresh `${TMPDIR:-/tmp}/restore-to-head.XXXXXX/` directory before
 restoring. To recover, use the run directory and file number recorded in MANIFEST:
 
-Regular file: `cp -p <RUN_DIR>/<n>.worktree <path>`
+Regular file: `rm -f <path> && cp -p <RUN_DIR>/<n>.worktree <path>`
 Symlink: `cp -RPp <RUN_DIR>/<n>.worktree <path>`
 Staged content: `cp -p <RUN_DIR>/<n>.index <path>` then `git add <path>`.
 

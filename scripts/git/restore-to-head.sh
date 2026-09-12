@@ -31,7 +31,7 @@ dirty path's worktree content and staged index content first. Refuses glob
 arguments, untracked paths, directories, and paths outside the current worktree.
 
 Recovery (use the run directory and file number recorded in MANIFEST):
-Regular file: `cp -p <RUN_DIR>/<n>.worktree <path>`
+Regular file: `rm -f <path> && cp -p <RUN_DIR>/<n>.worktree <path>`
 Symlink: `cp -RPp <RUN_DIR>/<n>.worktree <path>`
 Staged content: `cp -p <RUN_DIR>/<n>.index <path>` then `git add <path>`.
 EOF

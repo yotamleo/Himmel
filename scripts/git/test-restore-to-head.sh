@@ -346,6 +346,25 @@ if [ "$rc" -eq 0 ] && [ "$(readlink "$WT/link")" = "tracked.txt" ] && [ -L "$wt_
 else
     fail "(u) rc=$rc wt_path='$wt_path' (expected HEAD link restored and backup symlink targeting tracked2.txt)"
 fi
+
+# --- (u2) recovering a regular file over a HEAD symlink must not overwrite its target.
+rm "$WT/link"
+printf 'recover-regular\n' > "$WT/link"
+out=$(run link 2>&1); rc=$?
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+run_dir="${wt_path%/*}"
+help=$(bash "$SUT" --help)
+file_cmd=$(printf '%s\n' "$help" | sed -n "s/^Regular file: \`\(.*\)\`$/\1/p")
+file_cmd=${file_cmd//<RUN_DIR>/\"$run_dir\"}
+file_cmd=${file_cmd//<n>/1}
+file_cmd=${file_cmd//<path>/\"$WT\/link\"}
+if [ "$rc" -eq 0 ] && [ -L "$WT/link" ] && [ -n "$file_cmd" ] &&
+    bash -c "$file_cmd" && [ ! -L "$WT/link" ] &&
+    [ "$(cat "$WT/link")" = recover-regular ] && [ "$(cat "$WT/tracked.txt")" = base ]; then
+    pass "(u2) documented regular-file recovery replaces the HEAD symlink without changing its target"
+else
+    fail "(u2) rc=$rc target='$(cat "$WT/tracked.txt")' (expected regular file recovery with target untouched)"
+fi
 reset_wt
 (cd "$WT" && git reset -q --hard main)
 
