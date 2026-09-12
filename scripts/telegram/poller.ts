@@ -8,9 +8,18 @@ import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, typ
 import { getUpdates, getMe, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { installTimestampedLogging } from "./log-timestamp";
 import { cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, loadAccess, operatorChatId, requireMentionForChat, vaultForChat, type Access } from "./gate";
-import { runSession, buildPrompt, BASH_BIN, type BusPaths, type PermissionMode } from "./run";
+import { runSession, buildPrompt, BASH_BIN, REPO_ROOT, type BusPaths, type PermissionMode } from "./run";
 import { classifyForSpawn, type TriageVerdict, type TriageModelOverride, type ModelOverride } from "./triage";
 import { transcribe } from "./transcribe";
+// HIMMEL-2961: resolve the bridge's own plugin profile per dispatch (lever-b,
+// HIMMEL-1040), the same seam spawn-claudex.ts already uses — instead of the
+// previous hardcoded `undefined` (no --settings => full operator ~/.claude
+// injected into every cold bridge run, unlean). Entry-point inventory (RULING
+// 2, HIMMEL-2961): auto-action.ts spawns no claude, and hermes is dormant
+// with no plugin-profile seam — the bridge dispatch below is the ONLY wired
+// entry point.
+import { resolveProfileSettings } from "./spawn-glm";
+import { loadRegistry, validateRegistry, mcpServersForProfile, collectMcpServerDefs } from "../lanes/plugin-profiles.mjs";
 
 // Retry backoff for a capped session (ms). On a cap, settle retry_at = now + RETRY_MS
 // so deliverAllPending's isRetryDue re-runs the session later instead of re-spawning a
@@ -1076,7 +1085,33 @@ export function hasReadOnlyFloor(cwd: string): boolean {
   }
   return false;
 }
-export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: undefined, extraEnv?: Record<string, string>) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn, isHeld: (s: string) => boolean = () => false, cwdFor?: CwdForFn): RunFn {
+// HIMMEL-2961: the bridge's own lean plugin profile — see plugin-profiles.json's
+// "telegram" entry for the full enable/mcpServers rationale (obsidian-triage +
+// claude-obsidian cover the Telegram content workload; telegram-himmel and
+// luna-correlate are deliberately excluded; qmd is the sole mcpServers entry).
+const TELEGRAM_PROFILE = "telegram";
+
+// Resolves the telegram profile's mcpServers allowlist (["qmd"]) into a
+// --mcp-config JSON payload, mirroring resolveProfileSettings's --settings
+// convention (an inline JSON string, not a file path — the claude CLI accepts
+// both). undefined when the profile declares no allowlist at all (distinct
+// from an explicit [], which would still apply --strict-mcp-config with zero
+// servers). Throws on an invalid registry, exactly like resolveProfileByName.
+function resolveTelegramMcpConfig(cwd: string): string | undefined {
+  const registry = loadRegistry();
+  const errors = validateRegistry(registry);
+  if (errors.length) throw new Error(`plugin-profiles: registry invalid:\n  - ${errors.join("\n  - ")}`);
+  const names = mcpServersForProfile(registry, TELEGRAM_PROFILE);
+  if (names === undefined) return undefined;
+  const cfg = collectMcpServerDefs(names, {
+    homeConfigPath: join(homedir(), ".claude.json"),
+    repoMcpPath: join(cwd, ".mcp.json"),
+    marketplaceDir: join(REPO_ROOT, "marketplace", "plugins"),
+  });
+  return JSON.stringify(cfg);
+}
+
+export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: undefined, extraEnv?: Record<string, string>, mcpConfig?: string) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn, isHeld: (s: string) => boolean = () => false, cwdFor?: CwdForFn): RunFn {
   const retryAt = () => new Date(Date.now() + RETRY_MS).toISOString();
   const noticed = new Set<string>();
   const safeNotify = async (session: string, retryAtIso: string, kind: NotifyKind) => {
@@ -1147,7 +1182,21 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
       filingVault = vault;
     }
     const paths: BusPaths = { inbox: join(sd, "inbox.pending.jsonl"), outbox: join(sd, "outbox.jsonl"), context: join(sd, "context.md"), cwd: repoCwd, sessionCwd };
-    const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, filingVault, !!routedCwd), sessionCwd, permissionMode, undefined, modelOverride, undefined, undefined, extraEnv), deadlineMs), undefined, retryAt);
+    // HIMMEL-2961: the profile itself (TELEGRAM_PROFILE's enable list) is the
+    // BRIDGE's own fixed lean set, independent of which cwd/vault this dispatch
+    // routes into — but the deny-by-default baseline (opts.installed) must be
+    // discovered from sessionCwd, not repoCwd (CR codex-1): resolveProfileSettings
+    // widens the deny-by-default set with whatever is enabled in the passed
+    // cwd's OWN settings ancestry. When routedCwd/vault sends this spawn into a
+    // directory other than the himmel checkout (grow-tent repo, luna vault),
+    // discovering off repoCwd would miss plugins enabled only in THAT
+    // directory's settings — leaving them unmentioned in the injected map and
+    // free to inherit "enabled" from Claude Code's own resolution for the
+    // actual session cwd, defeating deny-by-default for exactly the routed
+    // spawns that most need it.
+    const settings = resolveProfileSettings(TELEGRAM_PROFILE, [], sessionCwd);
+    const mcpConfig = resolveTelegramMcpConfig(repoCwd);
+    const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, filingVault, !!routedCwd), sessionCwd, permissionMode, undefined, modelOverride, settings, undefined, extraEnv, mcpConfig), deadlineMs), undefined, retryAt);
     // run.log (HIMMEL-262): persist the run's output tail — before this, a dead
     // run's stdout/stderr vanished and failures were undebuggable
     const logHead = `[${new Date().toISOString()}] session=${session} code=${res.code} capped=${res.capped} blocked=${res.blocked ?? false} pid=${res.pid}\n`;

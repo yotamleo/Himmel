@@ -83,6 +83,23 @@ built-in tool schemas and skill/agent listings — outside what a plugin or MCP
 lever can touch. Treat that residual as a separate, harder problem, not a
 follow-up to this lever.
 
+`telegram` (HIMMEL-2961) is the profile the bridge (`scripts/telegram/poller.ts`)
+resolves for every cold `claude` spawn dispatched from a Telegram message,
+via `resolveProfileSettings` (the same seam `spawn-claudex.ts` already uses)
+plus a poller-local `--mcp-config`/`--strict-mcp-config` helper built from
+`mcpServersForProfile`/`collectMcpServerDefs`. Its plugin set mirrors
+`lane-content` (floor + `claude-obsidian` + `obsidian-triage` +
+`pr-review-toolkit-himmel`) and its `mcpServers: ["qmd"]` matches `leg-impl`'s
+allowlist. Measured (`profile-context-probe.mjs`): `telegram` = 32541
+first-turn tokens against `contextBudget: 45000`, below the unleaned
+`bare` baseline of 33493 — so unlike `leg-impl`'s token-reduction win, this
+profile's value is deny-by-default correctness (no ambient full `~/.claude`
+plugin/MCP surface leaking into an unattended bridge run), not a token cut.
+Only the bridge entry point is wired; `scripts/telegram/auto-action.{ts,sh}`
+never spawns `claude` itself (it shells out to `hermes`), and the hermes
+gateway has no plugin-profile seam at all — both are out of scope until one
+exists to wire.
+
 `--profile` also exports `HIMMEL_LEAN_LEG=1`, which silences the three advisory
 SessionStart hooks (graphify freshness, qmd staleness, where-are-we) for that
 session only — a leg has one ticket and a console to report to, and never acts

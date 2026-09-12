@@ -49,6 +49,17 @@
     ],
     "contextBudget": 45000
   },
+  "telegram": {
+    "enabled": [
+      "claude-obsidian@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "obsidian-triage@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
+  },
   "bare": {
     "enabled": [
       "handover@himmel",
