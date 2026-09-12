@@ -556,7 +556,10 @@ printf 'v2\n' > "$seed19/f.txt"; git -C "$seed19" add f.txt; git -C "$seed19" co
 git -C "$seed19" push --quiet origin "HEAD:$defbranch19"
 stub19="$tmp/stub19"
 mk_systemctl_stub "$stub19"
-out=$(PATH="$stub19:$PATH" HERMES_HOME="$tmp/emptylist19" update_hermes apply 2>&1)
+apply_rc19=0
+out=$(PATH="$stub19:$PATH" HERMES_HOME="$tmp/emptylist19" update_hermes apply 2>&1) || apply_rc19=$?
+if [ "$apply_rc19" -eq 0 ]; then echo "ok: empty list-units output -> update_hermes apply exits 0"; else echo "FAIL: update_hermes apply exited $apply_rc19"; printf '%s\n' "$out"; fail=1; fi
+if grep -q -- '--user list-units' "$stub19/systemctl.log" 2>/dev/null; then echo "ok: empty list-units output -> list-units was actually invoked"; else echo "FAIL: list-units was never invoked — case 19 proves nothing"; cat "$stub19/systemctl.log" 2>/dev/null; fail=1; fi
 if grepq "$out" -E 'warn: could not list hermes-gateway units'; then echo "FAIL: empty list-units output produced a warn: line"; fail=1; else echo "ok: empty list-units output -> no warn: line"; fi
 restarts19=$(grep -c -- '--user restart' "$stub19/systemctl.log" 2>/dev/null) || true
 restarts19=${restarts19:-0}
