@@ -1775,7 +1775,7 @@ mkdir -p "$sb22q/stub-q"
   printf 'for _a in "$@"; do\n'
   printf '  if grep -qF -- %s <<< "$_a"; then\n' "'%012d'"
   printf '    _ledger="${@: -1}"\n'
-  printf '    _short=$(mktemp "${TMPDIR:-/tmp}/rst-case22q-short.XXXXXX")\n'
+  printf '    _short=$(mktemp "%s/rst-case22q-short.XXXXXX")\n' "$sb22q"
   printf '    head -n 2 "$_ledger" > "$_short"\n'
   printf '    set -- "${@:1:$(($#-1))}" "$_short"\n'
   printf '    exec %s "$@"\n' "$real_awk_22q"
