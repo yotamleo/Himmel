@@ -981,22 +981,33 @@ scan_segment() {
                 # HIMMEL_CONSOLE_LEG (verified). Scanning the WHOLE word
                 # list for `f` (an earlier fix did this) wrongly skipped
                 # exactly that clear.
+                #
+                # coderabbitai (real review, PR #635): bash validates ALL
+                # options before acting on any of them -- an invalid option
+                # (anything outside -f/-v/-n, e.g. `unset -x NAME`) makes
+                # bash refuse the WHOLE invocation and touch nothing
+                # (verified: NAME stays set). The option-scan loop already
+                # `break`s on that word, but the operand loop below used to
+                # run anyway from that same `k`, still recording later bare
+                # words into UNSET_NAMES -- an over-denial. `invalid_opt`
+                # tracks that case so the operand loop is skipped entirely.
                 k=$((j + 1))
                 saw_f=0
+                invalid_opt=0
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
                     --) k=$((k + 1)); break ;;
                     -*)
                         opt="${W[$k]#-}"
                         case "$opt" in
-                        *[!fvn]*) break ;;
+                        *[!fvn]*) invalid_opt=1; break ;;
                         esac
                         case "$opt" in *f*) saw_f=1 ;; esac
                         k=$((k + 1)) ;;
                     *) break ;;
                     esac
                 done
-                if [ "$saw_f" = 0 ]; then
+                if [ "$invalid_opt" = 0 ] && [ "$saw_f" = 0 ]; then
                     while [ "$k" -lt "$nw" ]; do
                         case "${W[$k]}" in
                         -*) ;;
@@ -1026,15 +1037,22 @@ scan_segment() {
                 # nothing, same as `-f` alone (verified). So `-n` only
                 # strips when NO word in this invocation's options carried
                 # an `f`.
+                #
+                # coderabbitai (real review, PR #635): same validate-then-
+                # execute rule as `unset` above -- `export -n -x NAME`
+                # errors on the invalid `-x` and never strips NAME's export
+                # attribute (verified). `invalid_opt` skips the operand
+                # loop in that case instead of still recording NAME.
                 k=$((j + 1))
                 saw_n=0
                 saw_f=0
+                invalid_opt=0
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
                     -*)
                         opt="${W[$k]#-}"
                         case "$opt" in
-                        *[!fnp]*) break ;;
+                        *[!fnp]*) invalid_opt=1; break ;;
                         esac
                         case "$opt" in *f*) saw_f=1 ;; esac
                         case "$opt" in *n*) saw_n=1 ;; esac
@@ -1042,7 +1060,7 @@ scan_segment() {
                     *) break ;;
                     esac
                 done
-                if [ "$saw_n" = 1 ] && [ "$saw_f" = 0 ]; then
+                if [ "$invalid_opt" = 0 ] && [ "$saw_n" = 1 ] && [ "$saw_f" = 0 ]; then
                     while [ "$k" -lt "$nw" ]; do
                         case "${W[$k]}" in
                         -*) ;;

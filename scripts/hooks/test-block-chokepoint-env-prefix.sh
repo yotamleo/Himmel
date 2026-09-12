@@ -168,6 +168,15 @@ assert_allow "export -f -n (separate words) stays allowed"        "$(j "export -
 assert_deny "unset -- NAME -f (trailing -f is a name, not a flag)" "$(j "unset -- HIMMEL_CONSOLE_LEG -f; bash $MERGE_ON_GREEN 1")"
 assert_deny "unset NAME -f (no --, trailing -f is still a name)"  "$(j "unset HIMMEL_CONSOLE_LEG -f; bash $MERGE_ON_GREEN 1")"
 
+# coderabbitai (real review, PR #635): bash validates ALL options before
+# acting on any -- an invalid option (outside -f/-v/-n for unset, -f/-n/-p
+# for export) makes bash refuse the WHOLE invocation and touch nothing
+# (verified on real bash: NAME stays set/exported). The option-scan loop
+# breaks on the invalid word, but the operand loop used to run anyway from
+# that same position and still record a later bare NAME -- an over-denial.
+assert_allow "unset -x NAME (invalid option aborts, NAME untouched)"      "$(j "unset -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_allow "export -n -x NAME (invalid option aborts, export intact)"  "$(j "export -n -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied
