@@ -86,7 +86,14 @@
 #      file>` to headed-arm.sh's fixed argv. headed-arm.sh itself is untouched.
 #   2. The same shim prepends `--append-system-prompt-file <leg-preface>`, so
 #      the invariant leg rules ride the system prompt instead of being retyped
-#      into every brief.
+#      into every brief. (HIMMEL-2985) On the native lane this leg-preface is
+#      itself a per-leg concatenation of docs/handover/leg-preface.md and the
+#      brief's own contract (the brief up to but excluding its `## Results`
+#      tail, or the whole file if it has none) - written next to the launch
+#      log at real-launch time, same as the claudex lane already did with its
+#      own coordination preface. Because it rides the system prompt, this
+#      contract survives every compaction; only the `load <brief> and
+#      continue` first turn is still compactable.
 #   3. HIMMEL_LEAN_LEG=1 is exported, which silences the three advisory
 #      SessionStart hooks (where-are-we, qmd staleness, graphify freshness) a
 #      leg never acts on. inject-initiative.sh deliberately still speaks.
@@ -250,7 +257,11 @@ if [ -n "$PROFILE" ]; then
     fi
     # The shim reads these; export so they survive konsole's `-e env -u ...`.
     export LEG_PROFILE_SETTINGS="$PROFILE_SETTINGS"
-    export LEG_PROFILE_PREFACE="$LEG_PREFACE"
+    # (HIMMEL-2985) Per-leg path, like PROFILE_SETTINGS above - the claudex
+    # lane below overrides this to the same shape for its own coordination
+    # preface; content is written only at real-launch time further down.
+    LEG_PROFILE_PREFACE="$(dirname "$LOG")/$NAME.leg-preface.md"
+    export LEG_PROFILE_PREFACE
     export HEADED_ARM_LAUNCHER="$LEG_SHIM"
     # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
     # the exact value 1 leans - the hooks are fail-open by construction.
@@ -327,6 +338,18 @@ if [ -n "$PROFILE" ]; then
     if [ "$LANE" = "claudex" ]; then
         if ! cat "$LEG_PREFACE" "$CLAUDEX_PREFACE" > "$LEG_PROFILE_PREFACE"; then
             echo "headed-arm-leg: --lane claudex: cannot write preface to $LEG_PROFILE_PREFACE" >&2
+            exit 2
+        fi
+        chmod 600 "$LEG_PROFILE_PREFACE" 2>/dev/null || true
+    else
+        # (HIMMEL-2985) Native lane: the leg preface plus the brief's own
+        # contract, so the brief's rules ride the system prompt and survive
+        # compaction by construction - the brief's first USER turn does not.
+        # awk stops at the Results tail (or never, printing the whole file)
+        # rather than mapfile, for bash 3.2 (macOS ships 3.2; see the
+        # Platform guard above).
+        if ! { cat "$LEG_PREFACE"; printf '\n---\n\n'; awk '/^## Results/{exit} {print}' "$DOC"; } > "$LEG_PROFILE_PREFACE"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot write preface to $LEG_PROFILE_PREFACE" >&2
             exit 2
         fi
         chmod 600 "$LEG_PROFILE_PREFACE" 2>/dev/null || true

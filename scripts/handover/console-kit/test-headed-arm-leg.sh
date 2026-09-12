@@ -50,6 +50,13 @@ ends_with()    { grepq "$2" -E -e "$3\$" && echo "ok - $1" || { echo "FAIL - $1:
 
 PAST=$(( $(date +%s) - 100 ))
 
+# HIMMEL-2985: real (non-dry) native --profile launches now read DOC to build
+# the per-leg preface, so the "some/doc.md" placeholder every other case uses
+# (never opened before this ticket) must be a real, readable file wherever a
+# --profile launch actually reaches that write.
+some_doc="$tmp/some-doc.md"
+printf '%s\n' '# fixture doc' > "$some_doc"
+
 # mk_launch_stubs <dir> <name> - konsole/pgrep/proc stubs, same shape
 # headed-arm.sh's own suite (test-headed-arm.sh) uses: konsole records its
 # FULL argv AND, filtered to the three non-secret guard vars (codex-1 review
@@ -430,7 +437,7 @@ HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
 HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
 KONSOLE_CMD="$d17/konsole" PGREP_CMD="$d17/pgrep" \
 LEG_REPO="$tmp/repo17" HEADED_ARM_LOCK_DIR="$d17/locks" HEADED_ARM_PROC="$d17/proc" \
-  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-leg" "some/doc.md" "$d17/signal-never" "$PAST" "$d17/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-leg" "$some_doc" "$d17/signal-never" "$PAST" "$d17/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d17" || true
 rec17="$(cat "$d17/record" 2>/dev/null || true)"
 env17="$(cat "$d17/env-record" 2>/dev/null || true)"
@@ -446,6 +453,45 @@ else
 fi
 contains "full launch --profile: the settings JSON is a real enabledPlugins map" \
   "$(cat "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null || true)" "enabledPlugins"
+
+# 17b-2 (HIMMEL-2985). The brief's own contract must ride the system-prompt
+# preface, not only the compactable first user turn: a native-lane --profile
+# launch's per-leg <name>.leg-preface.md is docs/handover/leg-preface.md +
+# the fixture brief up to (excluding) its `## Results` tail. Real (non-dry)
+# launch, same stub shape as 17b - this is the writer of the file, not the
+# shim (the shim only fails closed if it is missing).
+d17b="$tmp/c17b"; mk_launch_stubs "$d17b" "HIMMEL-9999-red"; mkdir -p "$tmp/repo17b"
+fixture17b="$tmp/fixture-brief.md"
+cat > "$fixture17b" <<'FIXTURE_EOF'
+# HIMMEL-9999 - fixture brief
+
+**Contract:**
+1. Do the thing the ticket asks for.
+
+## Results (newest at the bottom)
+
+- 00:00 this bullet must never reach the system-prompt preface.
+FIXTURE_EOF
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17b/konsole" PGREP_CMD="$d17b/pgrep" \
+LEG_REPO="$tmp/repo17b" HEADED_ARM_LOCK_DIR="$d17b/locks" HEADED_ARM_PROC="$d17b/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-red" "$fixture17b" "$d17b/signal-never" "$PAST" "$d17b/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b" || true
+check "brief-preface: full launch exit 0" "$rc" "0"
+preface17b="$d17b/HIMMEL-9999-red.leg-preface.md"
+if [ -s "$preface17b" ]; then
+  echo "ok - brief-preface: <name>.leg-preface.md written next to the launch log"
+else
+  echo "FAIL - brief-preface: no leg-preface.md next to the launch log"; fails=$((fails+1))
+fi
+prefacecontent17b="$(cat "$preface17b" 2>/dev/null || true)"
+contains "brief-preface: carries the standing leg-preface heading" "$prefacecontent17b" \
+  "$(head -1 "$HERE/../../../docs/handover/leg-preface.md")"
+contains "brief-preface: carries the fixture's Contract line" "$prefacecontent17b" "**Contract:**"
+not_contains "brief-preface: does NOT carry the Results tail" "$prefacecontent17b" \
+  "this bullet must never reach the system-prompt preface"
 
 # 17c. Omitting --profile changes nothing: no shim, no lean flag, and a
 # dry-run report byte-identical to the pre-HIMMEL-2830 three-line form. This
@@ -655,7 +701,7 @@ full_launch_mcp() {
   HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
   KONSOLE_CMD="$d/konsole" PGREP_CMD="$d/pgrep" \
   LEG_REPO="$tmp/repo18$suf" HEADED_ARM_LOCK_DIR="$d/locks" HEADED_ARM_PROC="$d/proc" \
-    bash "$SCRIPT" --profile "$prof" "$name" "some/doc.md" "$d/signal-never" "$PAST" "$d/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+    bash "$SCRIPT" --profile "$prof" "$name" "$some_doc" "$d/signal-never" "$PAST" "$d/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
   wait_record "$d" || true
 }
 
