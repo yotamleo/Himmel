@@ -8,6 +8,13 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.29] — 2026-09-12
+
+### Fixed
+- The upgrade suite's structural bash-3.2 heredoc checker now honours a
+  `<<-` opener's tab-indented terminator instead of silently skipping it
+  (HIMMEL-2956, follow-up to HIMMEL-2952).
+
 ## [0.4.28] — 2026-09-12
 
 ### Fixed
