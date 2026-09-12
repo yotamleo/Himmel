@@ -85,6 +85,15 @@ many readers but exactly one writer per artifact. And **every dispatch names an
 explicit model**: an unnamed one draws on the scarcer parent quota. Tier and
 effort guidance, including the console's own wake-up budget, is in
 [`../internals/lane-calibration.md`](../internals/lane-calibration.md).
+Pass **`--profile leg-impl`** (HIMMEL-2830) on a native-lane leg: it narrows
+the leg's plugin set, appends the standing rules from
+[`leg-preface.md`](leg-preface.md) to its system prompt — which is why the v3
+brief template no longer repeats them — and exports `HIMMEL_LEAN_LEG=1` to
+quiet the advisory SessionStart hooks. A leg dispatched WITHOUT the flag is
+unchanged in every respect, including its argv, so the preface must then be
+pasted into the brief. Detail:
+[`../internals/lane-calibration.md`](../internals/lane-calibration.md).
+
 `headed-arm-leg.sh` exports `HIMMEL_CONSOLE_LEG=1`, which
 `block-leg-askuserquestion.sh` (HIMMEL-2923) uses to structurally deny
 `AskUserQuestion` on the leg, rather than relying on the brief's prose NEVER.

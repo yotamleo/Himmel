@@ -70,7 +70,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -369,6 +369,124 @@ contains "full launch, --lane claudex: --model defaults to gpt-6-astra" "$rec16"
 contains "full launch, --lane claudex: --autocompact 200000 (standard context ceiling)" "$rec16" "--autocompact 200000"
 contains "full launch, --lane claudex: CLAUDEX_LANE_OK=1 reaches the konsole argv" "$rec16" "CLAUDEX_LANE_OK=1"
 contains "full launch, --lane claudex: CLAUDE_CODE_EFFORT_LEVEL=medium reaches the konsole argv" "$rec16" "CLAUDE_CODE_EFFORT_LEVEL=medium"
+
+# --- 17 (HIMMEL-2830). --profile <name>: a plugin profile + the standing leg
+# preface, applied WITHOUT editing headed-arm.sh. headed-arm.sh builds a fixed
+# claude argv with no pass-through for extra flags, so the only seam is its
+# launcher binary: --profile points HEADED_ARM_LAUNCHER at
+# scripts/lanes/leg-claude-launcher.sh, which prepends --settings and
+# --append-system-prompt-file and execs the real claude. Three things must
+# hold, and each is a separate case below: the child really does get both
+# flags; omitting --profile changes nothing; and --profile on --lane claudex
+# is refused rather than silently losing one of the two launchers.
+
+# 17a. The shim itself, driven directly: this is the only place the CHILD
+# cmdline is observable (the konsole stub records the launch command but never
+# execs it), so it is where "the child carries both flags" is actually proven.
+SHIM="$HERE/../../lanes/leg-claude-launcher.sh"
+shim_rec="$tmp/shim-claude"
+# shellcheck disable=SC2016 # literal $* belongs to the stub script, not this one
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >> "$(dirname "$0")/shim-record"' > "$shim_rec"
+chmod 755 "$shim_rec"
+: > "$tmp/settings.json"
+: > "$tmp/preface.md"
+rc=0
+LEG_CLAUDE_BIN="$shim_rec" LEG_PROFILE_SETTINGS="$tmp/settings.json" LEG_PROFILE_PREFACE="$tmp/preface.md" \
+  bash "$SHIM" --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-9999-leg "load doc" || rc=$?
+shimout="$(cat "$tmp/shim-record" 2>/dev/null || true)"
+check "shim: exit 0" "$rc" "0"
+check "shim: prepends both flags and preserves the rest of argv in order" "$shimout" \
+  "--settings $tmp/settings.json --append-system-prompt-file $tmp/preface.md --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-9999-leg load doc"
+
+# The transparency control: with no profile env set the shim must be a
+# pass-through, byte for byte. A shim that reordered or dropped --model or
+# --autocompact here would defeat the ceiling guard the rest of this suite
+# exists to enforce.
+rm -f "$tmp/shim-record"
+rc=0
+LEG_CLAUDE_BIN="$shim_rec" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' \
+  bash "$SHIM" --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-9999-leg "load doc" || rc=$?
+check "shim: no profile env -> argv byte-identical (transparent exec)" \
+  "$(cat "$tmp/shim-record" 2>/dev/null || true)" \
+  "--model claude-sonnet-5 --autocompact 200000 -n HIMMEL-9999-leg load doc"
+
+# Fail closed: a settings path that does not exist must refuse, not launch a
+# leg with the full plugin roster while the log says it was profiled.
+rc=0
+out="$(LEG_CLAUDE_BIN="$shim_rec" LEG_PROFILE_SETTINGS="$tmp/no-such-settings.json" bash "$SHIM" --model x 2>&1)" || rc=$?
+check "shim: a missing settings file refuses with exit 2" "$rc" "2"
+contains "shim: refusal names the missing file" "$out" "$tmp/no-such-settings.json"
+
+# 17b. Full (non-dry) launch with --profile: the shim is what headed-arm.sh
+# renders as the launcher, the resolved settings JSON is written next to the
+# launch log, and HIMMEL_LEAN_LEG=1 reaches the launched process's own
+# environment (that is what silences the advisory SessionStart hooks).
+d17="$tmp/c17"; mk_launch_stubs "$d17" "HIMMEL-3333-leg"; mkdir -p "$tmp/repo17"
+rc=0
+IMPL_GUARD_OK='' HIMMEL_LEAN_LEG='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17/konsole" PGREP_CMD="$d17/pgrep" \
+LEG_REPO="$tmp/repo17" HEADED_ARM_LOCK_DIR="$d17/locks" HEADED_ARM_PROC="$d17/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-leg" "some/doc.md" "$d17/signal-never" "$PAST" "$d17/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17" || true
+rec17="$(cat "$d17/record" 2>/dev/null || true)"
+env17="$(cat "$d17/env-record" 2>/dev/null || true)"
+check "full launch --profile: exit 0" "$rc" "0"
+contains "full launch --profile: the launcher is the profile shim" "$rec17" "leg-claude-launcher.sh"
+contains "full launch --profile: the ceiling guard still holds" "$rec17" "--autocompact 200000"
+contains "full launch --profile: HIMMEL_LEAN_LEG=1 reaches the launched environment" "$env17" "HIMMEL_LEAN_LEG=1"
+contains "full launch --profile: the shim is told where the settings live" "$env17" "LEG_PROFILE_SETTINGS=$d17/HIMMEL-3333-leg.leg-settings.json"
+if [ -s "$d17/HIMMEL-3333-leg.leg-settings.json" ]; then
+  echo "ok - full launch --profile: settings JSON written next to the launch log"
+else
+  echo "FAIL - full launch --profile: no settings JSON next to the launch log"; fails=$((fails+1))
+fi
+contains "full launch --profile: the settings JSON is a real enabledPlugins map" \
+  "$(cat "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null || true)" "enabledPlugins"
+
+# 17c. Omitting --profile changes nothing: no shim, no lean flag, and a
+# dry-run report byte-identical to the pre-HIMMEL-2830 three-line form. This
+# is the case that keeps every console that never passes --profile working.
+env8b="$(cat "$d8/env-record" 2>/dev/null || true)"
+not_contains "no --profile: launcher is unchanged (no shim)" "$rec8" "leg-claude-launcher.sh"
+not_contains "no --profile: no HIMMEL_LEAN_LEG in the launched environment" "$env8b" "HIMMEL_LEAN_LEG=1"
+
+noprof="$(LEG_PROFILE='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)"
+noprof_lines="$(printf '%s\n' "$noprof" | wc -l | tr -d '[:space:]')"
+check "no --profile: dry-run report is still exactly three lines" "$noprof_lines" "3"
+not_contains "no --profile: dry-run report has no profile line" "$noprof" "profile="
+
+prof="$(bash "$SCRIPT" --dry-run --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
+prof_lines="$(printf '%s\n' "$prof" | wc -l | tr -d '[:space:]')"
+check "--profile: dry-run report adds exactly one line" "$prof_lines" "4"
+contains "--profile: dry-run names the profile, the settings path and the lean flag" "$prof" \
+  "profile=leg-impl settings=$tmp/HIMMEL-9999-leg.leg-settings.json"
+contains "--profile: dry-run reports lean=1" "$prof" "lean=1"
+if [ -e "$tmp/HIMMEL-9999-leg.leg-settings.json" ]; then
+  echo "FAIL - --profile: --dry-run wrote the settings file (it must only report)"; fails=$((fails+1))
+else
+  echo "ok - --profile: --dry-run writes nothing"
+fi
+
+# LEG_PROFILE is the env equivalent, and the flag wins over it.
+envprof="$(LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
+contains "LEG_PROFILE=leg-impl is honoured like the flag" "$envprof" "profile=leg-impl"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --profile no-such-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)" || rc=$?
+check "an unknown profile name is refused with exit 2" "$rc" "2"
+
+rc=0; out="$(timeout 5 bash "$SCRIPT" --profile 2>&1)" || rc=$?  # gnu-ok: bounds a usage-path regression; this suite exercises Linux/KDE-only headed-arm.sh
+check "usage: --profile with no value -> exit 2 (not an infinite loop)" "$rc" "2"
+
+# 17d. --profile + --lane claudex: both replace the launcher binary, so one
+# would silently win. Refuse instead.
+rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "--profile with --lane claudex: exit 2" "$rc" "2"
+contains "--profile with --lane claudex: the refusal says why in one line" "$out" \
+  "--profile is not available on --lane claudex"
+rc=0; out="$(LEG_LANE=claudex LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "the same conflict via the env equivalents: exit 2" "$rc" "2"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

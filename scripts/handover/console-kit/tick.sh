@@ -19,16 +19,22 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
     cat <<'USAGE'
-usage: tick.sh [--verbose] [--doc PATH] [--token TOKEN] [--legs "DOC ..."]
-               [--handover-dir DIR] [--repo DIR]
+usage: tick.sh [--verbose] [--burn] [--doc PATH] [--token TOKEN]
+               [--legs "DOC ..."] [--handover-dir DIR] [--repo DIR]
 
 env equivalents: DOC TOKEN LEGS HANDOVER_DIR REPO
 Relative DOC/LEGS resolve under the handover root; include the bucket prefix
 when HANDOVER_DIR names a global state root.
+
+--burn adds a per-leg context-burn field (first-turn/avg-ctx, via
+scripts/lanes/leg-burn.sh) for every doc in --legs. OPT-IN because it scans
+the Claude Code transcript root, which a plain tick must never do: a tick runs
+on a wake-up budget and this reads every project's transcripts.
 USAGE
 }
 
 verbose=0
+burn=0
 DOC="${DOC:-}"
 TOKEN="${TOKEN:-}"
 LEGS="${LEGS:-}"
@@ -37,6 +43,7 @@ REPO="${REPO:-$(cd "$HERE/../../.." && pwd)}"
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --verbose) verbose=1; shift ;;
+        --burn) burn=1; shift ;;
         --doc|--token|--legs|--handover-dir|--repo)
             [ "$#" -ge 2 ] || { usage >&2; exit 2; }
             case "$1" in
@@ -197,6 +204,28 @@ if [ -n "$root" ] && [ -d "$root/inbox" ]; then
 fi
 [ -n "$inbox_summary" ] || inbox_summary=none
 
+# --burn (HIMMEL-2830): what each leg is actually paying per API call. The
+# session name is the leg doc's stem without the -RESUME suffix - the same
+# string headed-arm-leg.sh passes to `claude -n`, which is what leg-burn.sh
+# matches on. A leg with no transcript yet (armed, not started) reports "?"
+# rather than failing the tick.
+burn_summary=""
+if [ "$burn" -eq 1 ]; then
+    for leg in $LEGS; do
+        stem="${leg##*/}"; stem="${stem%.md}"; stem="${stem%-RESUME}"
+        burn_label="$(leg_label "$leg")"
+        burn_line="$(bash "$REPO/scripts/lanes/leg-burn.sh" "$stem" 2>/dev/null)" || burn_line=""
+        if [ -n "$burn_line" ]; then
+            burn_ft="$(printf '%s\n' "$burn_line" | sed -n 's/.*first-turn=\([^ ]*\).*/\1/p')"
+            burn_avg="$(printf '%s\n' "$burn_line" | sed -n 's/.*avg-ctx=\([^ ]*\).*/\1/p')"
+            burn_summary="$(csv_add "$burn_summary" "$burn_label:${burn_ft:-?}/${burn_avg:-?}")"
+        else
+            burn_summary="$(csv_add "$burn_summary" "$burn_label:?")"
+        fi
+    done
+    [ -n "$burn_summary" ] || burn_summary=none
+fi
+
 if [ "$verbose" -eq 1 ]; then
     printf 'TICK %s\n' "$clock"
     printf 'heartbeat: %s\n' "$hb"
@@ -209,7 +238,20 @@ if [ "$verbose" -eq 1 ]; then
     printf 'fill: %s\n' "$fill"
     printf 'leg tails: %s\n' "$tails_summary"
     printf 'inbox size/cursor: %s\n' "$inbox_summary"
+    # Printed only under --burn, so a plain --verbose tick is unchanged. An if,
+    # not a `[ ] &&` one-liner: this is the last statement of the branch, so a
+    # false test would become the script's exit status.
+    if [ "$burn" -eq 1 ]; then
+        printf 'leg burn (first-turn/avg-ctx): %s\n' "$burn_summary"
+    fi
 else
-    printf 'TICK %s hb=%s legs=%s procs=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
-        "$clock" "$hb" "$legs_summary" "$procs" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
+    # The burn field is APPENDED only under --burn: a default tick line stays
+    # byte-identical to what every console already parses.
+    if [ "$burn" -eq 1 ]; then
+        printf 'TICK %s hb=%s legs=%s procs=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$procs" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
+    else
+        printf 'TICK %s hb=%s legs=%s procs=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$procs" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
+    fi
 fi

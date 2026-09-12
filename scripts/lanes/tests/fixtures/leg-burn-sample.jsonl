@@ -1,0 +1,20 @@
+{"type":"custom-title","customTitle":"leg-burn-fixture-legN000","sessionId":"fixture-0000"}
+{"type":"user","message":{"role":"user","content":"load the brief and continue"}}
+{"type":"attachment","attachment":{"type":"skill_listing","content":"..."}}
+{"type":"assistant","message":{"id":"msg_A","role":"assistant","content":[{"type":"text","text":"thinking out loud"}],"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200,"output_tokens":50}}}
+{"type":"assistant","message":{"id":"msg_A","role":"assistant","content":[{"type":"tool_use","id":"tu_1","name":"Bash","input":{}}],"usage":{"input_tokens":3,"cache_read_input_tokens":1000,"cache_creation_input_tokens":200,"output_tokens":50}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"ok"}]}}
+{"type":"assistant","message":{"id":"msg_B","role":"assistant","content":[{"type":"text","text":"a text-only turn, the thing token discipline forbids"}],"usage":{"input_tokens":1,"cache_read_input_tokens":2000,"cache_creation_input_tokens":0,"output_tokens":100}}}
+{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto"}}
+{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"summary of the conversation so far"}}
+{"type":"assistant","message":{"id":"msg_C","role":"assistant","content":[{"type":"tool_use","id":"tu_2","name":"Read","input":{}}],"usage":{"input_tokens":0,"cache_read_input_tokens":500,"cache_creation_input_tokens":50,"output_tokens":25}}}
+{"type":"assistant","message":{"id":"msg_C","role":"assistant","content":[{"type":"tool_use","id":"tu_3","name":"Grep","input":{}}],"usage":{"input_tokens":0,"cache_read_input_tokens":500,"cache_creation_input_tokens":50,"output_tokens":25}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_2","content":"ok"}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_3","content":"ok"}]}}
+{"type":"attachment","attachment":{"type":"hook_success","content":"..."}}
+{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual"}}
+{"type":"assistant","message":{"id":"msg_D","role":"assistant","content":[{"type":"text","text":"second text-only turn"}],"usage":{"input_tokens":0,"cache_read_input_tokens":100,"cache_creation_input_tokens":0,"output_tokens":10}}}
+{"type":"pr-link","prNumber":999}
+{"type":"mode","mode":"normal","sessionId":"fixture-0000"}
+{"type":"last-prompt","prompt":"continue"}
+{"type":"agent-name","agentName":"leg-burn-fixture-legN000","sessionId":"fixture-0000"}

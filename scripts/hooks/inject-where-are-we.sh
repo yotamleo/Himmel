@@ -36,6 +36,19 @@ trap 'exit 0' ERR
 # Drain stdin so the hook contract doesn't break the runtime if it pipes a payload.
 if [ -t 0 ]; then :; else cat >/dev/null 2>&1 || true; fi
 
+# HIMMEL-2830 / HIMMEL-2928: a leg launched by headed-arm-leg.sh --profile
+# carries HIMMEL_LEAN_LEG=1. SessionStart output is not paid once - it sits in
+# the fixed context floor that is re-read on EVERY API call of that session
+# (measured: 0.8k chars of a 74.3k first-turn floor on leg N158), and a leg never
+# acts on an advisory: it has one ticket, one contract and a console to report
+# to. So a lean leg hears nothing here. Fail-open by construction: ONLY the
+# exact value 1 leans, so an unset, empty or typo'd variable keeps today's
+# output for every ordinary session. inject-initiative.sh deliberately does NOT
+# take this guard - a leg does need the runbook pointer.
+if [ "${HIMMEL_LEAN_LEG:-}" = 1 ]; then
+    exit 0
+fi
+
 # --- Resolve the himmel root (never trust CWD) ------------------------------
 _wa_root="${HIMMEL_REPO:-}"
 if [ -z "$_wa_root" ]; then

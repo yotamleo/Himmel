@@ -37,6 +37,20 @@
 # (scripts/luna/ship-index.sh), never a local rebuild.
 set -uo pipefail
 
+# HIMMEL-2830 / HIMMEL-2928: a leg launched by headed-arm-leg.sh --profile
+# carries HIMMEL_LEAN_LEG=1. SessionStart output is not paid once - it sits in
+# the fixed context floor that is re-read on EVERY API call of that session
+# (measured: 5.4k chars of a 74.3k first-turn floor on leg N158), and a leg never
+# acts on an advisory: it has one ticket, one contract and a console to report
+# to. So a lean leg hears nothing here. Fail-open by construction: ONLY the
+# exact value 1 leans, so an unset, empty or typo'd variable keeps today's
+# output for every ordinary session. inject-initiative.sh deliberately does NOT
+# take this guard - a leg does need the runbook pointer.
+if [ "${HIMMEL_LEAN_LEG:-}" = 1 ]; then
+    if [ -t 0 ]; then :; else cat >/dev/null 2>&1 || true; fi
+    exit 0
+fi
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── TTL cache: the probe runs OUT OF BAND (HIMMEL-1844) ────────────────────

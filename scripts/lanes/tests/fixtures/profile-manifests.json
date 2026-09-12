@@ -20,6 +20,15 @@
     ],
     "contextBudget": 45000
   },
+  "leg-impl": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 35000
+  },
   "lane-review": {
     "enabled": [
       "handover@himmel",

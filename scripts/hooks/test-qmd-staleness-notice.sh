@@ -143,6 +143,15 @@ has "rc 6 is labelled UNVERIFIED" "$out" "UNVERIFIED this session"
 has "rc 6 relays the guard's diagnostic" "$out" "could not read the Documents block"
 hasnt "rc 6 does not assert staleness" "$out" "may be STALE"
 
+echo "== HIMMEL-2830: a lean leg hears no advisory at all =="
+# A leg launched by headed-arm-leg.sh --profile carries HIMMEL_LEAN_LEG=1. This
+# banner is the largest SessionStart block a leg pays for (~5.4k chars of a
+# ~75k first-turn floor, re-read on every API call) and a leg never acts on it.
+empty "HIMMEL_LEAN_LEG=1 silences a real staleness verdict" "$(run 3 'GUARD-BANNER-LEAN' HIMMEL_LEAN_LEG=1)"
+# Fail-open: ONLY the exact value 1 leans, so an unset/typo'd variable can never
+# silently delete the warning from an ordinary session.
+has "HIMMEL_LEAN_LEG=0 keeps today's verdict (fail-open)" "$(run 3 'GUARD-BANNER-LEAN' HIMMEL_LEAN_LEG=0)" "GUARD-BANNER-LEAN"
+
 echo "== verdicts speak up =="
 for rc in 3 4 5 8; do
     out=$(run "$rc" "GUARD-BANNER-$rc")

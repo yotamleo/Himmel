@@ -32,6 +32,24 @@ injects an explicit lean surface of `handover@himmel`, `himmel-ops@himmel`,
 such as superpowers, mattpocock-skills, and plannotator-effective-html are
 explicitly disabled there.
 
+`leg-impl` (HIMMEL-2830) is the profile a console leg gets from
+`headed-arm-leg.sh --profile leg-impl`. **There is exactly one leg profile, and
+that is deliberate:** it resolves to the same plugin set as `lane-impl` today
+because the measured leg floor is schema-shaped, not roster-shaped (~40k of a
+74.3k first-turn floor is tool and MCP schemas, ~9k the base system prompt), so
+sibling profiles for docs or upstream work would either resolve to `bare` and
+break `/pr-check` — whose CR gate dispatches
+`pr-review-toolkit-himmel:code-reviewer` — or duplicate `leg-impl` exactly. What
+distinguishes it is `contextBudget: 35000`, the number a leg is expected to
+start under; measure a real leg against it with `scripts/lanes/leg-burn.sh`.
+`--profile` also exports `HIMMEL_LEAN_LEG=1`, which silences the three advisory
+SessionStart hooks (graphify freshness, qmd staleness, where-are-we) for that
+session only — a leg has one ticket and a console to report to, and never acts
+on an advisory. It applies the profile by replacing `headed-arm.sh`'s launcher
+binary with `scripts/lanes/leg-claude-launcher.sh`, which prepends `--settings`
+and `--append-system-prompt-file`; that is why `--profile` and `--lane claudex`
+are mutually exclusive (both claim the same seam) and refuse with exit 2.
+
 Until HIMMEL-2782 reconciles launcher wiring, consumers invoking
 `plugin-profiles.mjs` directly must run it with the child's effective `cwd` and
 `CLAUDE_CONFIG_DIR`. Library consumers must pass the live installed set from

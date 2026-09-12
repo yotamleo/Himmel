@@ -20,7 +20,7 @@ contains() {
     case "$2" in *"$3"*) pass "$1" ;; *) fail "$1 (missing '$3' in '$2')" ;; esac
 }
 
-mkdir -p "$W/repo/scripts/handover" "$W/repo/scripts/lib" "$W/handover/inbox/.cursor" "$W/bin" "$W/himmel-shell-suite-test.lock"
+mkdir -p "$W/repo/scripts/handover" "$W/repo/scripts/lib" "$W/repo/scripts/lanes" "$W/handover/inbox/.cursor" "$W/bin" "$W/himmel-shell-suite-test.lock"
 
 cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -35,6 +35,16 @@ cat > "$W/repo/scripts/context-fill.sh" <<'STUB'
 #!/usr/bin/env bash
 [ "${FILL_STALE:-0}" -eq 0 ] || exit 3
 printf '%s\n' 28
+STUB
+# HIMMEL-2830: --burn shells out to the real leg-burn.sh. Stub it so the suite
+# never touches ~/.claude/projects: N61 has a transcript, N66 does not.
+cat > "$W/repo/scripts/lanes/leg-burn.sh" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  HIMMEL-111-legN61)
+    printf 'leg-burn x.jsonl: calls=4 avg-ctx=128.1k first-turn=74.3k out=185 compactions=2 text-only=2\n' ;;
+  *) printf 'leg-burn: no transcript found for session name: %s\n' "$1" >&2; exit 2 ;;
+esac
 STUB
 cat > "$W/bin/date" <<'STUB'
 #!/usr/bin/env bash
@@ -63,7 +73,7 @@ cat > "$W/bin/bun" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' 'claudex funded measured 5h used=12% free=88%; weekly used=34% free=66%'
 STUB
-chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/bin/"*
+chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/repo/scripts/lanes/leg-burn.sh" "$W/bin/"*
 
 printf '%s\n' '{"five_hour":{"utilization":30},"seven_day":{"utilization":28}}' > "$W/bank.json"
 printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-111-legN61.md"
@@ -115,6 +125,25 @@ contains 'context-fill rc=3 becomes unknown' "$out" 'fill=?'
 case "$out" in *FILL_RC*) fail 'context-fill failure does not print FILL_RC chatter' ;; *) pass 'context-fill failure does not print FILL_RC chatter' ;; esac
 missing_lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$missing_lines" = 1 ]; then pass 'degraded run still emits one line'; else fail "degraded run emitted $missing_lines lines"; fi
+
+# --- HIMMEL-2830: --burn is opt-in and additive --------------------------
+# The whole point of the flag is that consoles which already parse the tick
+# line keep parsing it, so the no-flag case above is the real assertion and
+# these three only pin what --burn adds.
+burn_out="$(bash "$SUT" --burn --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66')"; rc=$?
+if [ "$rc" -eq 0 ]; then pass '--burn exits 0'; else fail "--burn exits 0 (rc=$rc)"; fi
+contains '--burn appends first-turn/avg-ctx per leg' "$burn_out" 'burn=N61:74.3k/128.1k,N66:?'
+burn_lines="$(printf '%s\n' "$burn_out" | wc -l | tr -d '[:space:]')"
+if [ "$burn_lines" = 1 ]; then pass '--burn still emits one line'; else fail "--burn emitted $burn_lines lines"; fi
+
+# A leg with no transcript must degrade to "?", never abort the tick: an armed
+# leg that has not spoken yet is the normal case on the first tick after arming.
+case "$burn_out" in *'no transcript found'*) fail '--burn leaks leg-burn stderr into the tick line' ;; *) pass '--burn keeps leg-burn stderr out of the line' ;; esac
+
+# And without the flag the field is absent entirely, not empty.
+noburn_out="$(bash "$SUT" --legs 'HIMMEL-111-legN61')"
+case "$noburn_out" in *burn=*) fail 'burn= appears without --burn' ;; *) pass 'burn= is absent without --burn' ;; esac
+contains '--verbose --burn labels the burn line' "$(bash "$SUT" --verbose --burn --legs 'HIMMEL-111-legN61')" 'leg burn (first-turn/avg-ctx): N61:74.3k/128.1k'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
