@@ -562,3 +562,12 @@ directive. What belongs here is the rationale: batching exists because CR rounds
 are where a top-tier parent quietly burns its scarce weekly quota on mechanical
 edits, and because a worker lane on a shared branch can absorb several findings
 per dispatch instead of one round-trip each.
+
+### Tier-return marker (HIMMEL-2977, G10)
+
+A child returning work as above its tier — "return it" from the escalation
+rule above, made machine-countable — ends its final message with
+`> **Tier-return:** <reason>`. `scripts/lanes/tier-return-sweep.mjs --since
+<ISO>` walks subagent transcripts, takes each one's model from its first
+assistant message, and reports `<model> <returned>/<dispatched>` per model;
+G10 (escalations: Sonnet dispatches returned as above tier) reads its output.

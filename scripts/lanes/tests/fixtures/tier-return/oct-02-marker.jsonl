@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-10-01T11:00:00Z","message":{"id":"msg_o2a","model":"claude-sonnet-5-20260115","content":[{"type":"text","text":"Looking at the ambiguous spec."}]}}
+{"type":"assistant","timestamp":"2026-10-01T11:05:00Z","message":{"id":"msg_o2b","model":"claude-sonnet-5-20260115","content":[{"type":"text","text":"Two readings conflict; escalating.\n\n> **Tier-return:** needs judgment on X"}]}}

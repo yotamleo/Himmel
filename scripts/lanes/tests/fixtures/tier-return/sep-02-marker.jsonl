@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-09-20T10:00:00Z","message":{"id":"msg_s2a","model":"claude-sonnet-5-20260115","content":[{"type":"text","text":"Reviewing the ambiguous ticket."}]}}
+{"type":"assistant","timestamp":"2026-09-20T10:05:00Z","message":{"id":"msg_s2b","model":"claude-sonnet-5-20260115","content":[{"type":"text","text":"Scope conflict; escalating rather than guessing.\n\n> **Tier-return:** needs judgment on X"}]}}
