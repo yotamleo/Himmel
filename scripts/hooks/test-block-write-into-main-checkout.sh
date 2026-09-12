@@ -459,6 +459,37 @@ check_both_reason "23b-xi git -C \"\$(pwd)\" commit (unresolvable -C, cwd=wt) fa
 check_both "23b-xii git -C commit --git-dir=primary/.git commit (-C value is literally \"commit\", masks --git-dir from the scan) denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C commit --git-dir=$FIX/primary/.git commit -m x\",\"cwd\":\"$FIX/wt\"}}"
 
+# 23b-xiii (HIMMEL-2949): same shape as 23b-xii but for --work-tree's OWN
+# operand instead of -C's — neither scan loop skips it, so when that operand
+# is literally the string "commit", the "stop at commit" break check fires
+# one token early and the LATER -C (which real git honours) is never seen.
+# Confirmed against real git: `git --work-tree commit -C <primary> status`
+# from the worktree cwd reports "On branch main" (the PRIMARY's branch).
+check_both_reason "23b-xiii git --work-tree commit -C primary commit (--work-tree's operand is literally \"commit\", masks a later -C) denies, names the -C target" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree commit -C $FIX/primary commit -q -m x\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary"
+
+# 23b-xiv (HIMMEL-2949): the `--work-tree=<p>` compound-token form does not
+# have a separate operand to mask anything, but pins that a LITERAL value of
+# "commit" inside the compound token does not itself confuse the scan, and a
+# later --git-dir is still honoured.
+check_both "23b-xiv git --work-tree=commit --git-dir=primary/.git commit (compound --work-tree= form, --git-dir still resolves) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree=commit --git-dir=$FIX/primary/.git commit -q -m x\",\"cwd\":\"$FIX/wt\"}}"
+
+# 23b-xv (HIMMEL-2949 control): a legitimate standalone `--work-tree <p>` (no
+# --git-dir, no -C) stays a no-op for target resolution per the :970 design
+# note — HEAD still moves in whatever repo cwd resolves to, so this must keep
+# ALLOWing exactly like row 23.
+check_both "23b-xv git --work-tree \$FIX/wt commit (cwd=wt, standalone --work-tree) still allows (control)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree $FIX/wt commit -q -m x\",\"cwd\":\"$FIX/wt\"}}"
+
+# 23b-xvi (HIMMEL-2949 control): --work-tree's operand "commit" must not be
+# mistaken for the subcommand even when a -C ALSO appears earlier and already
+# resolves harmlessly to cwd — the fix must not overreact and start denying
+# a genuinely allowed shape.
+check_both "23b-xvi git -C wt --work-tree commit commit (-C already resolves to wt, --work-tree operand is \"commit\") still allows (control)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C $FIX/wt --work-tree commit commit -q -m x\",\"cwd\":\"$FIX/wt\"}}"
+
 # 24. handovers/ carve-out (main_checkout_verdict's own exemption).
 check_both "24 cat > primary/handovers/x.md (handovers carve-out)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat > $FIX/primary/handovers/x.md\",\"cwd\":\"$FIX/primary\"}}"

@@ -1011,6 +1011,14 @@ _bwimc_git_commit_target() {
         if [ "$t" = "-C" ]; then
             i=$((i+1)); v="${toks[$i]:-}"
             r=$(_bwimc_resolve_abs "$v" "$dir") && dir="$r" || _BWIMC_GIT_TARGET_UNRESOLVED=1
+        # HIMMEL-2949: `--work-tree <p>` (two tokens) must skip its own
+        # operand too, exactly like `-C` above — otherwise an operand that
+        # happens to equal the literal string "commit" trips the break check
+        # one token early and a LATER -C is silently never seen. A standalone
+        # --work-tree does not redirect the target itself (see the design
+        # note above this function), so only the operand is skipped here.
+        elif [ "$t" = "--work-tree" ]; then
+            i=$((i+1))
         fi
         i=$((i+1))
     done
@@ -1027,6 +1035,8 @@ _bwimc_git_commit_target() {
             # the break check above one token early and a LATER --git-dir is
             # silently never seen.
             -C) i=$((i+1)) ;;
+            # HIMMEL-2949: same masking risk from `--work-tree`'s own operand.
+            --work-tree) i=$((i+1)) ;;
             --git-dir=*) gitdir_raw="${t#--git-dir=}" ;;
             --git-dir) i=$((i+1)); gitdir_raw="${toks[$i]:-}" ;;
         esac
