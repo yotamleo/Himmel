@@ -5061,6 +5061,69 @@ else
 fi
 rm -f "$bh_posix_state/no-unit"
 
+# ── control (f) HIMMEL-2947: the checkout is reached through a SYMLINK --
+# ctx.repoRoot is the symlink path, a bare-token candidate's cwd readlink is
+# the REAL (physical) path the symlink points at (exactly what the kernel
+# hands back, since cwd readlinks are always already-canonical) -- must still
+# be counted as this checkout's own poller ──────────────────────────────────
+sym_real_root="$work/sym-real-root"; rm -rf "$sym_real_root"; mkdir -p "$sym_real_root"
+sym_link_root="$work/sym-link-root"; rm -f "$sym_link_root"; ln -sf "$sym_real_root" "$sym_link_root"
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "$sym_real_root" "$bh_proc_root/9201/cwd"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxT=$(BH_PGREP_N=1 run_bh_posix "$sym_link_root")
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxT" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match must be counted when the checkout root is a symlink and the cwd readlink is the real path it resolves to (got: $outBHlinuxT)"
+  echo "$outBHlinuxT" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): symlinked-checkout-root match should read count 1 (got: $outBHlinuxT)"
+  echo "ok: bridge-health (Linux) — bare-token sweep match is counted when the checkout root is a symlink and cwd is its real target (HIMMEL-2947)"
+else
+  echo "SKIP: bridge-health (Linux) control (f) HIMMEL-2947: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
+
+# ── control (g) HIMMEL-2947: the mirror of (f) -- ctx.repoRoot is the REAL
+# (physical) path, a bare-token candidate's cwd readlink is the SYMLINK path
+# pointing at it -- must also be counted ────────────────────────────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "$sym_link_root" "$bh_proc_root/9201/cwd"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxU=$(BH_PGREP_N=1 run_bh_posix "$sym_real_root")
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxU" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match must be counted when the cwd readlink is a symlink resolving to the checkout's real root (got: $outBHlinuxU)"
+  echo "$outBHlinuxU" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): symlinked-cwd match should read count 1 (got: $outBHlinuxU)"
+  echo "ok: bridge-health (Linux) — bare-token sweep match is counted when cwd is a symlink resolving to the checkout's real root (HIMMEL-2947)"
+else
+  echo "SKIP: bridge-health (Linux) control (g) HIMMEL-2947: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
+
+# ── control (h) HIMMEL-2947: a bare-token candidate whose cwd readlink target
+# does not exist on disk (racily-removed directory) must not throw -- falls
+# back to the uncanonicalized comparison and stays excluded, fail-safe ──────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "$work/himmel-2947-does-not-exist" "$bh_proc_root/9201/cwd"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxV=$(BH_PGREP_N=1 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxV" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match whose cwd target does not exist must not be counted and must not throw (got: $outBHlinuxV)"
+  echo "$outBHlinuxV" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (Linux): nonexistent-cwd-target exclusion should read count 0 (got: $outBHlinuxV)"
+  echo "$outBHlinuxV" | jq -e '.detail | contains("9201")' >/dev/null \
+    || fail "bridge-health (Linux): detail should name the excluded pid 9201 (got: $outBHlinuxV)"
+  echo "ok: bridge-health (Linux) — sweep bare-token match whose cwd target does not exist is excluded fail-safe without throwing, count 0, detail names 9201 (HIMMEL-2947)"
+else
+  echo "SKIP: bridge-health (Linux) control (h) HIMMEL-2947: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
+
 # ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
 # Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)
 # present when bridge.enabled; warn when enabled but persistence is absent.
