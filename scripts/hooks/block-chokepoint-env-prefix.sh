@@ -376,7 +376,14 @@ segment_cmd() {
         \()
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
             if [ "$confused" = "0" ]; then
-                if [ "$i" -gt 0 ] && [ "${s:$((i - 1)):1}" = '$' ]; then
+                # HIMMEL-2929 codex-1: bash parses a leading `((` as the
+                # arithmetic compound command (same-shell, never a subshell),
+                # not two touching subshells -- an adjacent run of `(` stays
+                # neutral just like `$(`, so `((HIMMEL_CONSOLE_LEG=0))` still
+                # folds forward instead of being scoped away at the `))`.
+                if { [ "$i" -gt 0 ] && [ "${s:$((i - 1)):1}" = '$' ]; } ||
+                   { [ "$i" -gt 0 ] && [ "${s:$((i - 1)):1}" = '(' ]; } ||
+                   [ "${s:$((i + 1)):1}" = "(" ]; then
                     PKIND[pk]='n'
                 else
                     PKIND[pk]='r'; pdepth=$((pdepth + 1))
