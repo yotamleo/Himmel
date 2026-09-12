@@ -9,6 +9,7 @@ import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand, shouldRunCustomLine } from "./custom-line-cmd.js";
 import { getClaudeCodeVersion } from "./version.js";
 import { getMemoryUsage } from "./memory.js";
+import { getAllSessionsCacheEconomics } from "./cache-economics.js";
 import { readAuthInfo } from "./auth.js";
 import { resolveEffortLevel } from "./effort.js";
 import { applyContextWindowFallback } from "./context-cache.js";
@@ -38,6 +39,7 @@ export type MainDeps = {
   runCustomLineCommand: typeof runCustomLineCommand;
   getClaudeCodeVersion: typeof getClaudeCodeVersion;
   getMemoryUsage: typeof getMemoryUsage;
+  getAllSessionsCacheEconomics: typeof getAllSessionsCacheEconomics;
   readAuthInfo: typeof readAuthInfo;
   applyContextWindowFallback: typeof applyContextWindowFallback;
   render: typeof render;
@@ -103,6 +105,7 @@ export async function main(overrides: Partial<MainDeps> = {}): Promise<void> {
     runCustomLineCommand,
     getClaudeCodeVersion,
     getMemoryUsage,
+    getAllSessionsCacheEconomics,
     readAuthInfo,
     applyContextWindowFallback,
     render,
@@ -208,6 +211,9 @@ export async function main(overrides: Partial<MainDeps> = {}): Promise<void> {
       config.display.showAuth || config.display.showAuthUser
         ? deps.readAuthInfo()
         : null;
+    const allSessionsCacheEconomics = config.display.showPromptCacheEconomics
+      ? await deps.getAllSessionsCacheEconomics()
+      : null;
 
     const ctx: RenderContext = {
       stdin,
@@ -228,6 +234,7 @@ export async function main(overrides: Partial<MainDeps> = {}): Promise<void> {
       effortLevel: effortInfo?.level,
       effortSymbol: effortInfo?.symbol,
       authInfo,
+      allSessionsCacheEconomics,
     };
 
     deps.render(ctx);

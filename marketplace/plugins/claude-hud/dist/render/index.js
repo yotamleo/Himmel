@@ -4,7 +4,7 @@ import { renderToolsLine } from './tools-line.js';
 import { renderSkillsLine, renderMcpLine } from './skills-mcp-line.js';
 import { renderAgentsLine } from './agents-line.js';
 import { renderTodosLine } from './todos-line.js';
-import { renderIdentityLine, renderProjectLine, renderAddedDirsLine, renderGitFilesLine, renderEnvironmentLine, renderPromptCacheLine, renderUsageLine, renderMemoryLine, renderSessionTokensLine, renderCompactionsLine, renderSessionTimeLine, } from './lines/index.js';
+import { renderIdentityLine, renderProjectLine, renderAddedDirsLine, renderGitFilesLine, renderEnvironmentLine, renderPromptCacheLine, renderUsageLine, renderMemoryLine, renderSessionTokensLine, renderCompactionsLine, renderPromptCacheEconomicsLine, renderSessionTimeLine, } from './lines/index.js';
 import { dim, RESET } from './colors.js';
 import { getTerminalWidth, UNKNOWN_TERMINAL_WIDTH } from '../utils/terminal.js';
 import { codePointCellWidth, isCjkAmbiguousWide } from './width.js';
@@ -498,6 +498,11 @@ export function render(ctx) {
         const compactionsLine = renderCompactionsLine(ctx);
         if (compactionsLine) {
             lines.push(compactionsLine);
+        }
+        // Cache economics (opt-in): session + all-sessions r/w/hit/net/cost.
+        const cacheEconomicsLine = renderPromptCacheEconomicsLine(ctx);
+        if (cacheEconomicsLine) {
+            lines.push(cacheEconomicsLine);
         }
         // Advisor is rendered inline on the project line; see renderProjectLine.
         if (showSeparators) {

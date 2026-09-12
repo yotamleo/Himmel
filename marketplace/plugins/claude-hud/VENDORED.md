@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   fdc1f10bf6ada8051cb67498590fd7782dff76b4e29a151895bf7398d9f8f458  # sha256 over VENDORED.manifest
+vendored_tree_hash:   5cfecacb09d70aae86c682f380f1271398ee41e08cabdcd4cc503783fe16d4eb  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -92,6 +92,28 @@ protected: editing it without bumping the pin trips the guard.
   assertion to the spawned-child test, matching every other `spawnSync`
   test in `tests/integration.test.js`. Verified green under both
   `node --test` and `bun test`.
+
+- **Prompt-cache economics line (HIMMEL-2878, 2026-09-12, opt-in, off by
+  default):** a new statusline row — `session r:<reads> w:<writes> hit:<pct>%
+  net <±$net> cost <$total>` plus an `all` row aggregating every historical
+  session transcript — ported from the legacy bash statusline's
+  `build_cache_lines`/`read_session_cache_stats`/
+  `read_all_sessions_cache_stats`/`format_tokens`/`get_model_savings_rate`
+  (`scripts/statusline/bin/statusline.sh`, untouched by this change). Gated
+  behind a new `display.showPromptCacheEconomics` config key (default
+  `false`); rendered only when set. v1 scope: the unbounded "all" window
+  only, no week/month periods; existing lines are unchanged. New files
+  `src/cache-economics.ts` (all-sessions aggregator, 30s file-cached like the
+  bash original, reusing `parseTranscript`'s per-file accumulation rather
+  than reimplementing the bash's jq dedup) and
+  `src/render/lines/prompt-cache-economics.ts`; wiring in `src/config.ts`,
+  `src/types.ts`, `src/index.ts`, `src/render/index.ts`,
+  `src/render/lines/index.ts`, `src/i18n/*`. Pricing deliberately reuses
+  `src/cost.ts`'s existing `MODEL_PRICING` table and cache-rate defaulting
+  (now exported as `resolveEffectiveCachePricing`) instead of duplicating the
+  bash's own hardcoded (and differently-priced) cache-rate table; an unknown
+  model renders `net —` / `cost —` rather than the bash's `?`-suffix
+  convention. Tests: `tests/prompt-cache-economics.test.js`.
 
 - **Landed (Phase 3.3, HIMMEL-718, `extra-cmd`=B — see the plan §Decisions):** a
   generic `customLineCommand` capability. When `display.customLineCommand` is set

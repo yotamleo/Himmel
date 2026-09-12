@@ -9,6 +9,7 @@ import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand, shouldRunCustomLine } from "./custom-line-cmd.js";
 import { getClaudeCodeVersion } from "./version.js";
 import { getMemoryUsage } from "./memory.js";
+import { getAllSessionsCacheEconomics } from "./cache-economics.js";
 import { readAuthInfo } from "./auth.js";
 import { resolveEffortLevel } from "./effort.js";
 import { applyContextWindowFallback } from "./context-cache.js";
@@ -70,6 +71,7 @@ export async function main(overrides = {}) {
         runCustomLineCommand,
         getClaudeCodeVersion,
         getMemoryUsage,
+        getAllSessionsCacheEconomics,
         readAuthInfo,
         applyContextWindowFallback,
         render,
@@ -159,6 +161,9 @@ export async function main(overrides = {}) {
         const authInfo = config.display.showAuth || config.display.showAuthUser
             ? deps.readAuthInfo()
             : null;
+        const allSessionsCacheEconomics = config.display.showPromptCacheEconomics
+            ? await deps.getAllSessionsCacheEconomics()
+            : null;
         const ctx = {
             stdin,
             transcript,
@@ -178,6 +183,7 @@ export async function main(overrides = {}) {
             effortLevel: effortInfo?.level,
             effortSymbol: effortInfo?.symbol,
             authInfo,
+            allSessionsCacheEconomics,
         };
         deps.render(ctx);
     }

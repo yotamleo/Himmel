@@ -15,6 +15,9 @@ export const en = {
     "label.lastReply": "Last reply",
     "label.advisor": "Advisor",
     "label.compactions": "Compactions",
+    "label.cacheEconomicsSession": "session",
+    "label.cacheEconomicsAll": "all",
+    "label.cacheEconomicsCost": "cost",
     // Status
     "status.limitReached": "Limit reached",
     "status.allTodosComplete": "All todos complete",

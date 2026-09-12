@@ -15,6 +15,9 @@ export type MessageKey =
   | "label.lastReply"
   | "label.advisor"
   | "label.compactions"
+  | "label.cacheEconomicsSession"
+  | "label.cacheEconomicsAll"
+  | "label.cacheEconomicsCost"
   // Status
   | "status.limitReached"
   | "status.allTodosComplete"

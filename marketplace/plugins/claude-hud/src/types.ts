@@ -1,6 +1,7 @@
 import type { HudConfig } from './config.js';
 import type { GitStatus } from './git.js';
 import type { AuthInfo } from './auth.js';
+import type { CacheEconomicsTotals } from './cache-economics.js';
 
 export interface StdinData {
   session_id?: string;
@@ -218,4 +219,7 @@ export interface RenderContext {
   // Auth method + account for the current login (see auth.ts). Only populated
   // when display.showAuth or display.showAuthUser is enabled.
   authInfo?: AuthInfo | null;
+  // All-sessions cache economics aggregate (see cache-economics.ts). Only
+  // populated when display.showPromptCacheEconomics is enabled.
+  allSessionsCacheEconomics?: CacheEconomicsTotals | null;
 }

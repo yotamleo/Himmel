@@ -1,7 +1,7 @@
 import type { SessionTokenUsage, StdinData } from './types.js';
 import { isBedrockModelId, isClaudexLane, isVertexModelId } from './stdin.js';
 
-type ModelPricing = {
+export type ModelPricing = {
   inputUsdPerMillion: number;
   outputUsdPerMillion: number;
   // Undefined keeps the existing cache multipliers. Null means the
@@ -74,7 +74,7 @@ function calculateUsd(tokens: number, usdPerMillion: number): number {
   return (tokens * usdPerMillion) / TOKENS_PER_MILLION;
 }
 
-function getModelPricing(stdin: StdinData): ModelPricing | null {
+export function getModelPricing(stdin: StdinData): ModelPricing | null {
   const candidates = [
     stdin.model?.display_name?.trim(),
     stdin.model?.id?.trim(),
@@ -92,6 +92,23 @@ function getModelPricing(stdin: StdinData): ModelPricing | null {
   }
 
   return null;
+}
+
+export interface EffectiveCachePricing {
+  inputUsdPerMillion: number;
+  cacheReadUsdPerMillion: number;
+  cacheWriteUsdPerMillion: number;
+}
+
+// Cache convention shared with estimateSessionCost: a model that does not
+// publish explicit cache rates is priced at the standard prompt-caching
+// multipliers off its input rate (write = 1.25x, read = 0.1x).
+export function resolveEffectiveCachePricing(pricing: ModelPricing): EffectiveCachePricing {
+  const cacheWriteUsdPerMillion = pricing.cacheWriteUsdPerMillion === undefined
+    ? pricing.inputUsdPerMillion * CACHE_WRITE_MULTIPLIER
+    : pricing.cacheWriteUsdPerMillion ?? 0;
+  const cacheReadUsdPerMillion = pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion * CACHE_READ_MULTIPLIER;
+  return { inputUsdPerMillion: pricing.inputUsdPerMillion, cacheReadUsdPerMillion, cacheWriteUsdPerMillion };
 }
 
 export function estimateSessionCost(
@@ -126,10 +143,7 @@ export function estimateSessionCost(
   }
 
   const inputUsd = calculateUsd(sessionTokens.inputTokens, pricing.inputUsdPerMillion);
-  const cacheWriteUsdPerMillion = pricing.cacheWriteUsdPerMillion === undefined
-    ? pricing.inputUsdPerMillion * CACHE_WRITE_MULTIPLIER
-    : pricing.cacheWriteUsdPerMillion ?? 0;
-  const cacheReadUsdPerMillion = pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion * CACHE_READ_MULTIPLIER;
+  const { cacheReadUsdPerMillion, cacheWriteUsdPerMillion } = resolveEffectiveCachePricing(pricing);
   const cacheCreationUsd = calculateUsd(sessionTokens.cacheCreationTokens, cacheWriteUsdPerMillion);
   const cacheReadUsd = calculateUsd(sessionTokens.cacheReadTokens, cacheReadUsdPerMillion);
   const outputUsd = calculateUsd(sessionTokens.outputTokens, pricing.outputUsdPerMillion);
