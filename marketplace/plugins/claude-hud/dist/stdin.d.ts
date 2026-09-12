@@ -13,6 +13,7 @@ export declare function getTotalTokens(stdin: StdinData): number;
 export declare function getContextPercent(stdin: StdinData, autoCompactWindow?: number | null): number;
 export declare function getBufferedPercent(stdin: StdinData, autoCompactWindow?: number | null): number;
 export declare function getModelName(stdin: StdinData): string;
+export declare function isClaudexLane(env?: NodeJS.ProcessEnv): boolean;
 /**
  * Resolves the model name to display, respecting `display.modelSource` config.
  *
@@ -23,7 +24,6 @@ export declare function getModelName(stdin: StdinData): string;
  *                      Detects proxy redirects (cc-switch, LiteLLM, etc.) that
  *                      serve a different model than what Claude Code requested.
  */
-export declare function isClaudexLane(env?: NodeJS.ProcessEnv): boolean;
 export declare function resolveModelName(stdin: StdinData, transcript: TranscriptData | undefined, modelSource?: 'auto' | 'stdin' | 'transcript'): string;
 export declare function isBedrockModelId(modelId?: string): boolean;
 export declare function isVertexModelId(modelId?: string): boolean;

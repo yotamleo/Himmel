@@ -262,6 +262,10 @@ function isClaudeModel(model?: string): boolean {
   return lower.startsWith('claude-') || lower.startsWith('anthropic.');
 }
 
+export function isClaudexLane(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.CLAUDEX_LANE_OK === '1';
+}
+
 /**
  * Resolves the model name to display, respecting `display.modelSource` config.
  *
@@ -272,10 +276,6 @@ function isClaudeModel(model?: string): boolean {
  *                      Detects proxy redirects (cc-switch, LiteLLM, etc.) that
  *                      serve a different model than what Claude Code requested.
  */
-export function isClaudexLane(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.CLAUDEX_LANE_OK === '1';
-}
-
 export function resolveModelName(
   stdin: StdinData,
   transcript: TranscriptData | undefined,

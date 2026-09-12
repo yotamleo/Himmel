@@ -102,11 +102,12 @@ test("claudex lane control: without the env, the same fixture renders exactly as
   const projectDir = path.join(homeDir, "dev", "apps", "my-project");
   await mkdir(projectDir, { recursive: true });
   try {
+    const { CLAUDEX_LANE_OK: _claudexLaneOk, ...controlEnv } = process.env;
     const result = spawnSync("node", ["dist/index.js"], {
       cwd: path.resolve(process.cwd()),
       input: basicStdin(fixturePath, projectDir),
       encoding: "utf8",
-      env: { ...process.env, HOME: homeDir, LANG: "C" },
+      env: { ...controlEnv, HOME: homeDir, LANG: "C" },
     });
 
     if (skipIfSpawnBlocked(result, t)) return;

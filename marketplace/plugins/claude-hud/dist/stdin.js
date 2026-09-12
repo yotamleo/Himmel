@@ -209,6 +209,9 @@ function isClaudeModel(model) {
     const lower = model.toLowerCase();
     return lower.startsWith('claude-') || lower.startsWith('anthropic.');
 }
+export function isClaudexLane(env = process.env) {
+    return env.CLAUDEX_LANE_OK === '1';
+}
 /**
  * Resolves the model name to display, respecting `display.modelSource` config.
  *
@@ -219,9 +222,6 @@ function isClaudeModel(model) {
  *                      Detects proxy redirects (cc-switch, LiteLLM, etc.) that
  *                      serve a different model than what Claude Code requested.
  */
-export function isClaudexLane(env = process.env) {
-    return env.CLAUDEX_LANE_OK === '1';
-}
 export function resolveModelName(stdin, transcript, modelSource = 'stdin') {
     const stdinModel = getModelName(stdin);
     // The claudex lane drives Codex, not Claude — stdin's model fields describe

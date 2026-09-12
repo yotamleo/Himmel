@@ -236,10 +236,10 @@ fcaf80fad275bc7d47e55cfc9b820e0a8a23e759  dist/render/width.js.map
 839e1980af2ca3108d574994b0f87b72c03b41ba  dist/speed-tracker.d.ts.map
 b1ae3ee8e27b5d0e41d5bee86521fd760224f592  dist/speed-tracker.js
 d954805c3d2bc6b3c5201341e44b09bc3eb16759  dist/speed-tracker.js.map
-a8ee685344e2dbbb4d2931e3c549a13e6b465369  dist/stdin.d.ts
-32f7811386da9baafe132d17f004417b5a593c2c  dist/stdin.d.ts.map
-cec5888d3901a82f8971ea70d55b3850dbb895a2  dist/stdin.js
-50a64cc8e25350a1cd934b8a0f8ceb4ab3ddba90  dist/stdin.js.map
+950a2b6b40e2406bc928dceb0c392065fe1a5e0e  dist/stdin.d.ts
+f25e2e55d93aafe503d3e2070a0dc8f4bd24f025  dist/stdin.d.ts.map
+680354c0102c7b5c66c935c1b0529121fb152f46  dist/stdin.js
+e95e9a46e98a44636690db52ede3c0160dbcaad1  dist/stdin.js.map
 7e342402ab6dc9d97ed24358f826fa9c1a2c72d4  dist/transcript.d.ts
 2fc98d7f83d6cbebdc223b9bf3f5ff6e39823bce  dist/transcript.d.ts.map
 d66bc9669d63c33655ddb35ee4405747279d25b5  dist/transcript.js
@@ -331,7 +331,7 @@ f6d50c977b08d63020250cc5dd208ffd60fd6fd9  src/render/session-line.ts
 ff25922ed3f163717bc29a1a40cdb6babc16e3fa  src/render/vcs-status.ts
 4a93d0f66c076d233f06f623842aa648b6c4b828  src/render/width.ts
 2e563b1f77d671393d133524c0033ac00da10659  src/speed-tracker.ts
-65cbd9f17adf440d38b209b2385b9d80f8ccf1b6  src/stdin.ts
+078fe65d67a9de0b8032b00ed83386046b1961ac  src/stdin.ts
 bcfab6bc7c030e9bc6d73c424f7e7b3cb13e3389  src/transcript.ts
 f72ff20b1ab1b4a8755a67116b36fc148b07e35b  src/types.ts
 70e138749326988c54eadad1b94e22fe7d38105f  src/utils/format.ts
@@ -343,7 +343,7 @@ cf7a1214b92903a056a21e8fb1eadbc9bdf6aae4  src/version.ts
 e08fe93072cd361cceb5049480dbd16a816532df  src/windows-git-worker.ts
 46482fe99425cd12b3b889d4a881531ba7d5a37c  tests/auth.test.js
 48edacaf0d2f6e8ff2ca360d10d34b5988b0a708  tests/build-output.test.js
-1e0d3576fc59840f40510663ba7fd6dace0ea2bc  tests/claudex-lane.test.js
+9fb0280926c9d0048c3d0f7f4a076eb27104acab  tests/claudex-lane.test.js
 9ca8b68e5e5ece7454caf319808e5ad903e32183  tests/config.test.js
 9258e1ec365f2aa55e55f18f793e444595886085  tests/context-cache.test.js
 2fcb2db7370b613fdb0d315b5a38ae3ac2ca4bbb  tests/core.test.js
