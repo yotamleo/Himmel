@@ -252,14 +252,34 @@ check_both "7 mv primary/scripts/x.sh wt/ (source inside primary denies)" block 
 check_both "8 rm primary/scripts/x.sh" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm $FIX/primary/scripts/x.sh\",\"cwd\":\"$FIX/primary\"}}"
 
-# 9. touch.
-check_both "9 touch primary/.single-writer" block \
+# 9 (HIMMEL-2946): touch creating the repo-root .single-writer opt-out itself
+# must ALLOW — this is the exact catch-22 the hook's own deny text (line
+# 842/1054) recommends as the remedy, then refused (not yet present in
+# primary — .single-writer is only in the exclude file, not touched on disk).
+check_both "9 touch primary/.single-writer (creating the opt-out itself) allows (HIMMEL-2946)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $FIX/primary/.single-writer\",\"cwd\":\"$FIX/primary\"}}"
 
-# 10. redirect onto the .single-writer marker's own name (not yet present in
-# primary — .single-writer is only in the exclude file, not touched on disk).
-check_both "10 echo > primary/.single-writer" block \
+# 10 (HIMMEL-2946): redirect onto the same exact name — same exemption.
+check_both "10 echo > primary/.single-writer (creating the opt-out itself) allows (HIMMEL-2946)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo x > $FIX/primary/.single-writer\",\"cwd\":\"$FIX/primary\"}}"
+
+# 10b (HIMMEL-2946): the exemption is EXACT-BASENAME-AT-ROOT only — a
+# subdirectory entry of the same basename must still deny.
+check_both "10b touch primary/scripts/.single-writer (not the repo root) still denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $FIX/primary/scripts/.single-writer\",\"cwd\":\"$FIX/primary\"}}"
+
+# 10c (HIMMEL-2946): near-miss basenames at the root must still deny — the
+# exemption is the exact string ".single-writer", not a prefix/suffix match.
+check_both "10c touch primary/.single-writer.bak (near-miss basename) still denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $FIX/primary/.single-writer.bak\",\"cwd\":\"$FIX/primary\"}}"
+check_both "10d echo > primary/.single-writerx (near-miss basename) still denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo x > $FIX/primary/.single-writerx\",\"cwd\":\"$FIX/primary\"}}"
+
+# 10e (HIMMEL-2946): the exemption is by DESTINATION, not cwd — an absolute
+# path into the primary's root marker from a DIFFERENT cwd (the worktree)
+# must allow exactly like row 9.
+check_both "10e touch \$FIX/primary/.single-writer from cwd=wt (destination-based, not cwd-based) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $FIX/primary/.single-writer\",\"cwd\":\"$FIX/wt\"}}"
 
 # 11. git commit, cwd = primary (main) — BOTH wirings agree (is_on_main and
 # main_checkout_verdict both fire on plain "on main").
@@ -438,6 +458,37 @@ check_both_reason "23b-xi git -C \"\$(pwd)\" commit (unresolvable -C, cwd=wt) fa
 # worktree containing (or merely naming) a "commit" entry must still deny.
 check_both "23b-xii git -C commit --git-dir=primary/.git commit (-C value is literally \"commit\", masks --git-dir from the scan) denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C commit --git-dir=$FIX/primary/.git commit -m x\",\"cwd\":\"$FIX/wt\"}}"
+
+# 23b-xiii (HIMMEL-2949): same shape as 23b-xii but for --work-tree's OWN
+# operand instead of -C's — neither scan loop skips it, so when that operand
+# is literally the string "commit", the "stop at commit" break check fires
+# one token early and the LATER -C (which real git honours) is never seen.
+# Confirmed against real git: `git --work-tree commit -C <primary> status`
+# from the worktree cwd reports "On branch main" (the PRIMARY's branch).
+check_both_reason "23b-xiii git --work-tree commit -C primary commit (--work-tree's operand is literally \"commit\", masks a later -C) denies, names the -C target" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree commit -C $FIX/primary commit -q -m x\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary"
+
+# 23b-xiv (HIMMEL-2949): the `--work-tree=<p>` compound-token form does not
+# have a separate operand to mask anything, but pins that a LITERAL value of
+# "commit" inside the compound token does not itself confuse the scan, and a
+# later --git-dir is still honoured.
+check_both "23b-xiv git --work-tree=commit --git-dir=primary/.git commit (compound --work-tree= form, --git-dir still resolves) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree=commit --git-dir=$FIX/primary/.git commit -q -m x\",\"cwd\":\"$FIX/wt\"}}"
+
+# 23b-xv (HIMMEL-2949 control): a legitimate standalone `--work-tree <p>` (no
+# --git-dir, no -C) stays a no-op for target resolution per the :970 design
+# note — HEAD still moves in whatever repo cwd resolves to, so this must keep
+# ALLOWing exactly like row 23.
+check_both "23b-xv git --work-tree \$FIX/wt commit (cwd=wt, standalone --work-tree) still allows (control)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree $FIX/wt commit -q -m x\",\"cwd\":\"$FIX/wt\"}}"
+
+# 23b-xvi (HIMMEL-2949 control): --work-tree's operand "commit" must not be
+# mistaken for the subcommand even when a -C ALSO appears earlier and already
+# resolves harmlessly to cwd — the fix must not overreact and start denying
+# a genuinely allowed shape.
+check_both "23b-xvi git -C wt --work-tree commit commit (-C already resolves to wt, --work-tree operand is \"commit\") still allows (control)" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C $FIX/wt --work-tree commit commit -q -m x\",\"cwd\":\"$FIX/wt\"}}"
 
 # 24. handovers/ carve-out (main_checkout_verdict's own exemption).
 check_both "24 cat > primary/handovers/x.md (handovers carve-out)" allow \

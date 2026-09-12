@@ -866,8 +866,23 @@ _bwimc_check_canon() {
     repo_root=$(main_checkout_verdict "$canon" 2>/dev/null) || vrc=$?
     case "$vrc" in
         0) return 0 ;;
-        1) _bwimc_deny "main" "$raw" "$canon" "$repo_root" ;;
-        2) _bwimc_deny "primary-feature" "$raw" "$canon" "$repo_root" ;;
+        1|2)
+            # HIMMEL-2946: the deny text below (and _bwimc_cwd_check_sourced's
+            # own copy) recommends `touch "$repo_root/.single-writer"` as the
+            # opt-out for a repo that commits to main by design — but creating
+            # that exact marker IS itself a write on main/primary-feature, so
+            # unexempted it refused its own remedy. Exempt ONLY the exact
+            # root-level basename; a subdirectory entry or a near-miss name
+            # (.single-writer.bak, .single-writerx) still denies.
+            if [ -n "$repo_root" ] && [ "$canon" = "$repo_root/.single-writer" ]; then
+                return 0
+            fi
+            if [ "$vrc" = 1 ]; then
+                _bwimc_deny "main" "$raw" "$canon" "$repo_root"
+            else
+                _bwimc_deny "primary-feature" "$raw" "$canon" "$repo_root"
+            fi
+            ;;
         *) _bwimc_deny "unreadable" "$raw" "$canon" "$repo_root" ;;
     esac
 }
@@ -996,6 +1011,14 @@ _bwimc_git_commit_target() {
         if [ "$t" = "-C" ]; then
             i=$((i+1)); v="${toks[$i]:-}"
             r=$(_bwimc_resolve_abs "$v" "$dir") && dir="$r" || _BWIMC_GIT_TARGET_UNRESOLVED=1
+        # HIMMEL-2949: `--work-tree <p>` (two tokens) must skip its own
+        # operand too, exactly like `-C` above — otherwise an operand that
+        # happens to equal the literal string "commit" trips the break check
+        # one token early and a LATER -C is silently never seen. A standalone
+        # --work-tree does not redirect the target itself (see the design
+        # note above this function), so only the operand is skipped here.
+        elif [ "$t" = "--work-tree" ]; then
+            i=$((i+1))
         fi
         i=$((i+1))
     done
@@ -1012,6 +1035,8 @@ _bwimc_git_commit_target() {
             # the break check above one token early and a LATER --git-dir is
             # silently never seen.
             -C) i=$((i+1)) ;;
+            # HIMMEL-2949: same masking risk from `--work-tree`'s own operand.
+            --work-tree) i=$((i+1)) ;;
             --git-dir=*) gitdir_raw="${t#--git-dir=}" ;;
             --git-dir) i=$((i+1)); gitdir_raw="${toks[$i]:-}" ;;
         esac
