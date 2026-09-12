@@ -94,6 +94,48 @@
 # misreading the verdict as the operand. No stage can drop or invent
 # a word again without breaking the encoding visibly.
 #
+# HIMMEL-2927 (the unassigned-clear class): `env -u NAME` / `env --unset
+# NAME` / `env --unset=NAME` clear a registered seam with no assignment
+# word, and an in-shell `unset NAME` / `export -n NAME` clears it with no
+# assignment word EITHER, from a DIFFERENT segment than the chokepoint's --
+# both defeat the INVARIANT's "assignment word" test above while producing
+# the exact same effect an env-prefixed VAR=x is denied for. This does not
+# loosen the INVARIANT; it names two more ways a segment's seam state can
+# change, both still resolved against the SAME registered-name set the
+# INVARIANT already checks:
+#   - inside `env`'s option state, `-u`/`--unset`'s operand (attached,
+#     "=", or the next word -- the same operand-class grammar HIMMEL-1803
+#     derives every other env option from) is added to that SEGMENT's
+#     names exactly like a leading assignment word would be -- still SAME
+#     SEGMENT, still gated on `env` being a recognized wrapper.
+#   - `unset NAME` / `export -n NAME`, as a segment's own invoked-program
+#     token, is NOT itself checked against the registry (neither is a
+#     chokepoint path); instead its argument names are recorded and carried
+#     to every LATER segment of the SAME top-level payload's scan_text
+#     walk (never earlier ones -- shell execution order is left to right,
+#     so an unset cannot retroactively clear a segment already run) --
+#     deliberately cross-segment, because unsetting/un-exporting a shell
+#     variable IS a cross-segment effect in the shell itself. Both paths
+#     still gate the deny on check_invocation's membership test against
+#     the matched chokepoint's OWN registered seam list, so a name that is
+#     not a registered seam of anything changes nothing (over-match stays
+#     closed the same way the assignment form closes it).
+#
+# `unset`/`export -n`'s OWN option scanning (scan_segment's `unset)` and
+# `export)` arms) went through three CR rounds each finding the next edge
+# a bash-option-VALIDITY model missed (-fn, the -f leading/trailing
+# boundary, `--`, `-x`) -- round 5's ruling stopped modelling validity at
+# all: for `unset`, or an `export` carrying `-n` anywhere in its leading
+# run of option-shaped words (`--` and combined forms included), every
+# remaining word that does not start with `-` is a candidate name, full
+# stop -- no charset check, no leading-vs-trailing distinction, no
+# invalid-option branch. This is DELIBERATELY fail-closed rather than
+# fail-open: an invalid invocation (`unset -x NAME`) is denied too
+# (documented over-deny -- real bash would refuse it and touch nothing
+# anyway, so denying it here costs nothing and removes a parser this
+# guard has no business re-implementing). Over-deny is the safe direction
+# for a guard; a false ALLOW is the defect class this ticket exists for.
+#
 # The round-2 '(' carve-out is CLOSED: an unquoted '(' / ')' / backtick
 # (and `$(` / backtick inside double quotes) opens a fresh command
 # position via segmentation, so subshell, $(...), and backtick-wrapped
@@ -461,6 +503,13 @@ deny() {  # deny <script-path> <var-name> -- both from OUR registry, never
 CR=$'\r'
 NL=$'\n'
 
+# HIMMEL-2927: names cleared by an in-shell `unset` or `export -n` seen so
+# far -- accumulates left-to-right across the whole payload, carried to
+# every LATER segment (see scan_text's fold and scan_segment's `unset`/
+# `export` case). `env -u`/`--unset` is scoped to that ONE invocation's
+# child instead -- it feeds the segment-local `names`, not this global.
+UNSET_NAMES=''
+
 # check_invocation <invoked-program word> <assignment-name list> -- the
 # invariant's deny point, and the registry's ONLY reader. Deny iff the
 # invoked-program token IS a registered chokepoint path (exact, or
@@ -530,7 +579,16 @@ env_short_cluster() {
         c=${word:i:1}
         case "$c" in
         i|0|v) i=$((i + 1)); continue ;;
-        u|C|P|a)
+        u)
+            # HIMMEL-2927: same operand shape as C|P|a below, but the
+            # caller records the operand as a candidate seam name.
+            if [ $((i + 1)) -lt "$n" ]; then
+                printf 'unset-attached\n%s\n' "${word:$((i + 1))}"
+            else
+                printf 'unset-next\n\n'
+            fi
+            return 0 ;;
+        C|P|a)
             if [ $((i + 1)) -lt "$n" ]; then
                 printf 'arg-attached\n\n'
             else
@@ -573,9 +631,15 @@ env_short_cluster() {
 #   flag   -- consumes nothing (-i/--ignore-environment, -0/--null,
 #             -v/--debug, --list-signal-handling, --help, --version).
 #   arg    -- mandatory operand, separate word or "--name=VAL" attached:
-#             DATA for the scan to step over (a var to unset, a dir, an
-#             argv[0], an alternate path) -- never command position
-#             (-u/--unset, -C/--chdir, --argv0).
+#             DATA for the scan to step over (a dir, an argv[0], an
+#             alternate path) -- never command position (-C/--chdir,
+#             --argv0).
+#   unset  -- mandatory operand, same shape as `arg` (separate word or
+#             "--name=VAL" attached), but the operand is also a candidate
+#             SEAM NAME (HIMMEL-2927): `env -u`/`--unset` clears it with no
+#             assignment word, the same effect an env-prefixed VAR=x is
+#             denied for -- so its operand is added to the segment's names
+#             like a leading assignment word would be (-u/--unset).
 #   optarg -- optional operand, "=" spelling ONLY (GNU getopt: an
 #             optional long-option argument cannot be a separate word;
 #             the next word stays an operand/command word)
@@ -590,7 +654,7 @@ ENV_LONG_OPTS='
 ignore-environment|flag
 null|flag
 debug|flag
-unset|arg
+unset|unset
 chdir|arg
 argv0|arg
 block-signal|optarg
@@ -664,6 +728,12 @@ EOF
         if [ "$hasval" = "1" ]; then printf 'consume-attached\n\n'
         elif [ "$cls" = "arg" ]; then printf 'consume-next\n\n'
         else printf 'flag\n\n'; fi ;;
+    unset)
+        # HIMMEL-2927: same operand shape as `arg`, but the caller records
+        # the operand as a candidate seam name (env -u/--unset clears it
+        # with no assignment word).
+        if [ "$hasval" = "1" ]; then printf 'unset-attached\n%s\n' "$val"
+        else printf 'unset-next\n\n'; fi ;;
     split)
         if [ "$hasval" = "1" ]; then printf 'split-attached\n%s\n' "$val"
         else printf 'split-next\n\n'; fi ;;
@@ -791,6 +861,18 @@ scan_segment() {
                     flag)             j=$((j + 1)); continue ;;
                     consume-next)     j=$((j + 2)); continue ;;
                     consume-attached) j=$((j + 1)); continue ;;
+                    unset-attached)
+                        # HIMMEL-2927: `--unset=NAME` clears NAME for THIS
+                        # env invocation's own command -- same segment,
+                        # recorded like a leading assignment word.
+                        names="$names $lo_operand"
+                        j=$((j + 1)); continue ;;
+                    unset-next)
+                        # HIMMEL-2927: `--unset NAME` (separate operand).
+                        if [ $((j + 1)) -lt "$nw" ]; then
+                            names="$names ${W[$((j + 1))]}"
+                        fi
+                        j=$((j + 2)); continue ;;
                     split-next)
                         j=$((j + 1))
                         [ "$j" -lt "$nw" ] || return 0
@@ -831,6 +913,17 @@ scan_segment() {
                     esac
                     case "$cluster_verdict" in
                     arg-next) j=$((j + 2)); continue ;;
+                    unset-attached)
+                        # HIMMEL-2927: attached `-uNAME` clears NAME for
+                        # THIS env invocation's own command -- same segment.
+                        names="$names $cluster_operand"
+                        j=$((j + 1)); continue ;;
+                    unset-next)
+                        # HIMMEL-2927: separate `-u NAME` (or mid-cluster).
+                        if [ $((j + 1)) -lt "$nw" ]; then
+                            names="$names ${W[$((j + 1))]}"
+                        fi
+                        j=$((j + 2)); continue ;;
                     split-attached)
                         rest=''
                         k=$((j + 1))
@@ -883,6 +976,68 @@ scan_segment() {
                 # Grouping/keyword openers start a fresh simple command:
                 # assignments after them DO lead it.
                 asg_ok=1; j=$((j + 1)); continue ;;
+            unset)
+                # HIMMEL-2927 (ruling, pr-check round 5): FAIL-CLOSED by
+                # construction, not by modelling unset's option grammar --
+                # three rounds each found the next edge a validity model
+                # missed (-fn, -f -n boundary, `--`, `-x`), so this stops
+                # re-implementing bash's option parser. Every remaining word
+                # that does NOT start with `-` is a candidate name; a word
+                # that starts with `-` (a bare `--` included) is skipped as
+                # option-shaped and nothing else about it is inspected --
+                # no charset check, no leading-vs-trailing boundary, no
+                # invalid-option branch. This also denies an INVALID
+                # invocation (`unset -x NAME`) -- a documented over-deny:
+                # real bash would refuse that invocation and touch nothing,
+                # so denying it here costs nothing and removes a whole class
+                # of parser edge to get wrong (over-deny is the safe
+                # direction for a guard; a false ALLOW is the defect class
+                # this ticket exists for).
+                k=$((j + 1))
+                while [ "$k" -lt "$nw" ]; do
+                    case "${W[$k]}" in
+                    -*) ;;
+                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]}" ;;
+                    esac
+                    k=$((k + 1))
+                done
+                return 0 ;;
+            export)
+                # HIMMEL-2927 (ruling, pr-check round 5): same fail-closed
+                # simplification as `unset` above. If this export segment
+                # carries `-n` ANYWHERE in its leading run of option-shaped
+                # words (every word starting with `-`, `--` included,
+                # combined forms included, up to the first word that does
+                # NOT start with `-`), then every remaining word that does
+                # not start with `-` is a candidate name -- full stop, no
+                # charset check, no invalid-option branch. An invalid
+                # cluster (`export -n -x NAME`) is denied too, same
+                # documented over-deny posture. Plain `export NAME[=val]`
+                # (no `-n` anywhere in the leading cluster) is left alone --
+                # that shape still exports; falls through to the unchanged
+                # assignment path below.
+                k=$((j + 1))
+                saw_n=0
+                m=$k
+                while [ "$m" -lt "$nw" ]; do
+                    case "${W[$m]}" in
+                    -*)
+                        case "${W[$m]#-}" in *n*) saw_n=1 ;; esac
+                        m=$((m + 1)) ;;
+                    *) break ;;
+                    esac
+                done
+                if [ "$saw_n" = 1 ]; then
+                    while [ "$k" -lt "$nw" ]; do
+                        case "${W[$k]}" in
+                        -*) ;;
+                        *) UNSET_NAMES="$UNSET_NAMES ${W[$k]%%=*}" ;;
+                        esac
+                        k=$((k + 1))
+                    done
+                    return 0
+                fi
+                ;;
             esac
             # The invoked-program token of this segment. Words beyond it
             # are arguments and never match (the finding-4 direction).
@@ -902,7 +1057,11 @@ scan_text() {
     [ "$depth" -le 5 ] || return 0
     while IFS= read -r seg; do
         [[ $seg =~ [^[:space:]] ]] || continue
-        scan_segment "$seg" "$inames" "$depth"
+        # HIMMEL-2927: an in-shell `unset`/`export -n` or an `env -u`/
+        # `--unset` in an EARLIER segment clears a name for every LATER
+        # segment in this same payload -- fold the accumulator in fresh
+        # each iteration so it reflects only what ran before this segment.
+        scan_segment "$seg" "$inames $UNSET_NAMES" "$depth"
     done <<<"$(segment_cmd "$text")"
     return 0
 }

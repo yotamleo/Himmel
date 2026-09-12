@@ -1751,7 +1751,12 @@ segment, and a seam assignment counts ONLY as a leading assignment of that
 SAME segment. Fails OPEN on anything unresolvable (missing `jq`,
 missing/malformed registry, an internal error) — a belt around chokepoints
 whose bare invocations are already governed by allow-rules + the classifier,
-never a general env-var ban. Known residual (accepted, unchanged posture,
+never a general env-var ban. Also denies clearing a registered seam with no
+assignment word: `env -u NAME`/`--unset NAME`/`--unset=NAME` (same segment,
+via `env`'s option grammar) and, cross-segment by design, an in-shell `unset
+NAME` or `export -n NAME` anywhere earlier in the payload — carried forward
+to every LATER segment only, never denying the invoked-program token itself
+(HIMMEL-2927). Known residual (accepted, unchanged posture,
 HIMMEL-912): deliberately case-varied paths/vars, a path assembled from
 shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 -exec` wrappers, and string reconstruction deeper than the bounded
