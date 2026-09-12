@@ -160,6 +160,13 @@ assert_allow "unset -f (function-only) stays allowed"             "$(j "unset -f
 assert_allow "export -fn (combined with -f) stays allowed"        "$(j "export -fn HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 assert_allow "export -nf (reordered, combined with -f) allowed"   "$(j "export -nf HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 assert_allow "export -f -n (separate words) stays allowed"        "$(j "export -f -n HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+# codex-1 (pr-check round 3): bash's option parsing for `unset` stops at the
+# first non-option word or at `--` -- a `-f` AFTER that boundary is a
+# literal NAME, not a flag, so the seam still gets cleared and must still
+# be denied. An earlier fix scanned the whole payload for `f` and wrongly
+# allowed these (verified on real bash: both still unset the name).
+assert_deny "unset -- NAME -f (trailing -f is a name, not a flag)" "$(j "unset -- HIMMEL_CONSOLE_LEG -f; bash $MERGE_ON_GREEN 1")"
+assert_deny "unset NAME -f (no --, trailing -f is still a name)"  "$(j "unset HIMMEL_CONSOLE_LEG -f; bash $MERGE_ON_GREEN 1")"
 
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"

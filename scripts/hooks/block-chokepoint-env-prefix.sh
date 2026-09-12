@@ -967,24 +967,36 @@ scan_segment() {
                 # UNSET_NAMES back in before each scan_segment call) --
                 # `unset` is a shell builtin, never itself a chokepoint.
                 #
-                # codex-1 (pr-check round 2): `-f` targets a FUNCTION, never
-                # a variable -- alone, `unset -f NAME` leaves NAME's
+                # codex-1 (pr-check round 2/3): `-f` targets a FUNCTION,
+                # never a variable -- alone, `unset -f NAME` leaves NAME's
                 # variable/environment state untouched; combined with -v (or
                 # given as a separate word alongside -v) bash refuses
                 # ("cannot simultaneously unset...") and touches nothing
-                # either (verified on real bash). A `-f` anywhere among this
-                # invocation's options therefore means no variable is
-                # cleared: fold no names forward.
+                # either (verified on real bash). Only a LEADING `-f`
+                # counts, though: bash's own option parsing stops at the
+                # first non-option word or at `--`, so a trailing `-f` is
+                # just a literal NAME to (fail to) unset, not a flag --
+                # `unset -- HIMMEL_CONSOLE_LEG -f` and
+                # `unset HIMMEL_CONSOLE_LEG -f` both still clear
+                # HIMMEL_CONSOLE_LEG (verified). Scanning the WHOLE word
+                # list for `f` (an earlier fix did this) wrongly skipped
+                # exactly that clear.
                 k=$((j + 1))
                 saw_f=0
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
-                    -*) case "${W[$k]#-}" in *f*) saw_f=1 ;; esac ;;
+                    --) k=$((k + 1)); break ;;
+                    -*)
+                        opt="${W[$k]#-}"
+                        case "$opt" in
+                        *[!fvn]*) break ;;
+                        esac
+                        case "$opt" in *f*) saw_f=1 ;; esac
+                        k=$((k + 1)) ;;
+                    *) break ;;
                     esac
-                    k=$((k + 1))
                 done
                 if [ "$saw_f" = 0 ]; then
-                    k=$((j + 1))
                     while [ "$k" -lt "$nw" ]; do
                         case "${W[$k]}" in
                         -*) ;;
