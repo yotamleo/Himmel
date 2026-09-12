@@ -4616,6 +4616,7 @@ other_checkout_posix="/home/testuser/github/himmel/.claude/worktrees/feat-some-o
 rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002"
 printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9002/cwd"
 rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
 outBHlinuxA=$(BH_PGREP_N=0 run_bh_posix)
 if bh_posix_log_has "show telegram-bridge.service"; then
@@ -4648,6 +4649,8 @@ rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9
 printf '9002 9003\n' > "$bh_proc_root/9001/task/9001/children"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9003/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9002/cwd"
+ln -sf "$repo_root" "$bh_proc_root/9003/cwd"
 rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
 outBHlinuxC=$(BH_PGREP_N=0 run_bh_posix)
 if bh_posix_log_has "show telegram-bridge.service"; then
@@ -4714,6 +4717,7 @@ fi
 
 rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9201/cwd"
 rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
 outBHlinuxE1=$(BH_PGREP_N=1 run_bh_posix)
 if bh_posix_log_has "pgrep -f"; then
@@ -4727,6 +4731,8 @@ fi
 rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201" "$bh_proc_root/9202"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9202/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9201/cwd"
+ln -sf "$repo_root" "$bh_proc_root/9202/cwd"
 rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
 outBHlinuxE2=$(BH_PGREP_N=2 run_bh_posix)
 if bh_posix_log_has "pgrep -f"; then
@@ -4746,6 +4752,7 @@ rm -f "$bh_posix_state/no-unit"
 rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001"
 printf '\n' > "$bh_proc_root/9001/task/9001/children"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9001/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9001/cwd"
 rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
 outBHlinuxF=$(BH_PGREP_N=0 run_bh_posix)
 if bh_posix_log_has "show telegram-bridge.service"; then
@@ -4766,6 +4773,7 @@ printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
 printf '9003\n' > "$bh_proc_root/9002/task/9002/children"
 printf '%s\0' bash wrapper.sh > "$bh_proc_root/9002/cmdline"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9003/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9003/cwd"
 rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
 outBHlinuxG=$(BH_PGREP_N=0 run_bh_posix)
 if bh_posix_log_has "show telegram-bridge.service"; then
@@ -4792,6 +4800,7 @@ printf '%s\0' bash wrapper.sh > "$bh_proc_root/9002/cmdline"
 printf '%s\0' bash wrapper.sh > "$bh_proc_root/9003/cmdline"
 printf '%s\0' bash wrapper.sh > "$bh_proc_root/9004/cmdline"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9005/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9005/cwd"
 rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
 outBHlinuxL=$(BH_PGREP_N=0 run_bh_posix)
 if bh_posix_log_has "show telegram-bridge.service"; then
@@ -4813,6 +4822,8 @@ rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9
 printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9002/cwd"
+ln -sf "$repo_root" "$bh_proc_root/9201/cwd"
 rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
 outBHlinuxH=$(BH_PGREP_N=1 run_bh_posix)
 if bh_posix_log_has "show telegram-bridge.service"; then
@@ -4856,6 +4867,7 @@ fi
 rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201" "$bh_proc_root/9202"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
 printf '%s\0' bun "${other_checkout_posix}/scripts/telegram/poller.ts" > "$bh_proc_root/9202/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9201/cwd"
 rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
 outBHlinuxJ=$(BH_PGREP_N=2 run_bh_posix)
 if bh_posix_log_has "pgrep -f"; then
@@ -4924,6 +4936,7 @@ cp "$bh_posix_stub/bun" "$bh_posix_stub_nopgrep/bun"
 rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002"
 printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
 printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9002/cwd"
 rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
 outBHlinuxN=$(PATH="$bh_posix_stub_nopgrep:$(scrub_path "$PATH" systemctl pgrep)" BH_STUB_LOG="$(winpath "$bh_posix_log")" BH_STUB_STATE="$(winpath "$bh_posix_state")" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
@@ -4939,6 +4952,114 @@ if bh_posix_log_has "show telegram-bridge.service"; then
 else
   echo "SKIP: bridge-health (Linux) case (n): no evidence in the stub log that systemctl actually spawned on this host"
 fi
+
+# ── control (a) HIMMEL-2936: system-wide sweep with two bare-token matches,
+# one whose /proc/<pid>/cwd resolves inside this checkout and one whose cwd
+# resolves to a DIFFERENT checkout -> only the in-checkout one counts,
+# present, and the detail names the excluded foreign-cwd pid ──────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201" "$bh_proc_root/9202"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9202/cmdline"
+ln -sf "$repo_root" "$bh_proc_root/9201/cwd"
+ln -sf "$other_checkout_posix" "$bh_proc_root/9202/cwd"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxO=$(BH_PGREP_N=2 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxO" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match whose cwd is a DIFFERENT checkout must not be counted as this checkout's (got: $outBHlinuxO)"
+  echo "$outBHlinuxO" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): cwd-verified sweep count should name 1, not 2 (got: $outBHlinuxO)"
+  echo "$outBHlinuxO" | jq -e '.detail | contains("9202")' >/dev/null \
+    || fail "bridge-health (Linux): detail should name the excluded foreign-cwd pid 9202 (got: $outBHlinuxO)"
+  echo "ok: bridge-health (Linux) — sweep bare-token match with a foreign cwd is excluded via cwd check, count 1, detail names 9202 (HIMMEL-2936)"
+else
+  echo "SKIP: bridge-health (Linux) control (a) HIMMEL-2936: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
+
+# ── control (b) HIMMEL-2936: system-wide sweep, one bare-token match whose
+# /proc/<pid>/cwd is unreadable (process exited / no cwd symlink) -> not
+# counted, fail-safe, detail names the pid ─────────────────────────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxP=$(BH_PGREP_N=1 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxP" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match with an unreadable cwd must not be counted (fail-safe) (got: $outBHlinuxP)"
+  echo "$outBHlinuxP" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (Linux): fail-safe exclusion should read count 0 (got: $outBHlinuxP)"
+  echo "$outBHlinuxP" | jq -e '.detail | contains("9201")' >/dev/null \
+    || fail "bridge-health (Linux): detail should name the excluded pid 9201 with the unreadable-cwd reason (got: $outBHlinuxP)"
+  echo "ok: bridge-health (Linux) — sweep bare-token match with an unreadable cwd is excluded fail-safe, count 0, detail names 9201 (HIMMEL-2936)"
+else
+  echo "SKIP: bridge-health (Linux) control (b) HIMMEL-2936: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
+
+# ── control (c) HIMMEL-2936: a tree-scoped child with an ABSOLUTE path token
+# matching the anchor is still counted exactly as before, with no cwd
+# fixture at all -- proves the anchored-path branch never reads cwd ────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002"
+printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+printf '%s\0' bun "${repo_root_w}/scripts/telegram/poller.ts" > "$bh_proc_root/9002/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxQ=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxQ" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): an absolute-path child matching the anchor must still be counted with no cwd read (got: $outBHlinuxQ)"
+  echo "$outBHlinuxQ" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): absolute-path match detail should name the count 1 (got: $outBHlinuxQ)"
+  echo "ok: bridge-health (Linux) — an absolute-path child matching the anchor is counted without any cwd read (HIMMEL-2936 control)"
+else
+  echo "SKIP: bridge-health (Linux) control (c) HIMMEL-2936: no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── control (d) HIMMEL-2936 (codex-1 CR fix): a bare-token candidate whose
+# cwd resolves to a NESTED worktree checkout under this checkout's own root
+# (<checkoutRoot>/.claude/worktrees/<other>/...) must NOT be counted as this
+# checkout's own -- a plain prefix match would otherwise re-admit exactly the
+# cross-checkout false duplicate this fix exists to close, one level deeper ──
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "${repo_root}/.claude/worktrees/feat-some-other-checkout" "$bh_proc_root/9201/cwd"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxR=$(BH_PGREP_N=1 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxR" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match whose cwd is a NESTED worktree checkout must not be counted as this checkout's (got: $outBHlinuxR)"
+  echo "$outBHlinuxR" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (Linux): nested-worktree exclusion should read count 0 (got: $outBHlinuxR)"
+  echo "$outBHlinuxR" | jq -e '.detail | contains("9201")' >/dev/null \
+    || fail "bridge-health (Linux): detail should name the excluded nested-worktree pid 9201 (got: $outBHlinuxR)"
+  echo "ok: bridge-health (Linux) — sweep bare-token match whose cwd is a nested worktree checkout is excluded, count 0, detail names 9201 (HIMMEL-2936 codex-1)"
+else
+  echo "SKIP: bridge-health (Linux) control (d) HIMMEL-2936: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
+
+# ── control (e) HIMMEL-2936 (CodeRabbit CR fix): a bare-token candidate whose
+# cwd matches this checkout's root ONLY case-insensitively must NOT be counted
+# -- POSIX paths are case-sensitive, so lowercasing the comparison (as the
+# pathed-token branch's anchor helper does, for Windows' benefit) would fold
+# a same-named-different-case DIFFERENT directory into this checkout ────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "${repo_root^^}" "$bh_proc_root/9201/cwd"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxS=$(BH_PGREP_N=1 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxS" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match whose cwd differs from this checkout's root only by case must not be counted (got: $outBHlinuxS)"
+  echo "$outBHlinuxS" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (Linux): case-mismatch exclusion should read count 0 (got: $outBHlinuxS)"
+  echo "$outBHlinuxS" | jq -e '.detail | contains("9201")' >/dev/null \
+    || fail "bridge-health (Linux): detail should name the excluded case-mismatched pid 9201 (got: $outBHlinuxS)"
+  echo "ok: bridge-health (Linux) — sweep bare-token match whose cwd differs only by case is excluded, count 0, detail names 9201 (HIMMEL-2936 CodeRabbit)"
+else
+  echo "SKIP: bridge-health (Linux) control (e) HIMMEL-2936: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
 
 # ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
 # Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)

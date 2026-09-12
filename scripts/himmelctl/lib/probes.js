@@ -2867,7 +2867,53 @@ function escapeEreMetachars(s) {
 // sweep, see its call site) — either way, identity is decided below by
 // pollerLineIsThisCheckout, never by the breadth of this pattern. Returns
 // { pids: [...verified] } or { error }.
-function posixVerifiedPgrepMatches(matchPattern, procRoot, env, anchor) {
+// A bare `poller.ts` token carries no path to anchor against, so a
+// same-named process from a DIFFERENT checkout launched the same
+// hand-launched way also matches the system-wide sweep (HIMMEL-2936,
+// following the sweep-widening in HIMMEL-2932). Before counting a
+// bare-token candidate, verify its own cwd -- not just its argv --
+// resolves inside this checkout. A pathed token is unaffected: identity
+// there is already decided by the anchor comparison below, no cwd read
+// needed.
+function posixCandidateIsThisCheckout(cmdline, pid, thisCheckoutAnchor, checkoutRoot, procRoot) {
+  const token = extractPollerToken(cmdline);
+  if (!token) return { counted: false };
+  const sepIdx = Math.max(token.lastIndexOf('/'), token.lastIndexOf('\\'));
+  if (sepIdx !== -1) {
+    return { counted: Boolean(thisCheckoutAnchor) && normalizeForPollerAnchorMatch(token) === thisCheckoutAnchor };
+  }
+  if (!checkoutRoot) return { counted: false };
+  let cwd;
+  try {
+    cwd = fs.readlinkSync(path.join(procRoot, String(pid), 'cwd'));
+  } catch (e) {
+    return { counted: false, excludedNote: `pid ${pid} bare-token cwd unreadable (${e.code || e.message})` };
+  }
+  // Case-SENSITIVE on purpose, unlike the pathed-token branch above: this
+  // compares two POSIX filesystem paths (a live cwd readlink, this
+  // checkout's own root), where Linux paths are case-sensitive by design —
+  // normalizeForPollerAnchorMatch's lowercasing exists for the pathed-token
+  // anchor, which also has to match a case-insensitive Windows CommandLine.
+  // Lowercasing here would fold e.g. /work/Himmel and /work/himmel together
+  // and could count a foreign checkout as this one (CR gap, HIMMEL-2936).
+  const normCwd = cwd.replace(/\\/g, '/');
+  const normRoot = checkoutRoot.replace(/\\/g, '/');
+  if (normCwd === normRoot) return { counted: true };
+  if (normCwd.startsWith(`${normRoot}/`)) {
+    // A worktree's own directory lives nested under its primary checkout
+    // (<primary>/.claude/worktrees/<branch>/...), so a plain prefix match
+    // would also count a poller from a DIFFERENT, nested worktree checkout
+    // as this checkout's own -- the exact cross-checkout false duplicate
+    // this fix exists to close, one level deeper (CR gap, HIMMEL-2936).
+    if (normCwd.slice(normRoot.length).startsWith('/.claude/worktrees/')) {
+      return { counted: false, excludedNote: `pid ${pid} bare-token cwd is a nested worktree checkout (${cwd})` };
+    }
+    return { counted: true };
+  }
+  return { counted: false, excludedNote: `pid ${pid} bare-token cwd is a different checkout (${cwd})` };
+}
+
+function posixVerifiedPgrepMatches(matchPattern, procRoot, env, anchor, checkoutRoot) {
   const pgrepBin = which('pgrep', env);
   if (!pgrepBin) return { pids: null };
   const r = spawnProbeSync(pgrepBin, ['-f', escapeEreMetachars(matchPattern)], { env, encoding: 'utf8' });
@@ -2875,12 +2921,15 @@ function posixVerifiedPgrepMatches(matchPattern, procRoot, env, anchor) {
   if (r.status !== 0 && r.status !== 1) return { error: new Error(`pgrep exited rc=${r.status}`) };
   const candidates = (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const verified = [];
+  const excludedNotes = [];
   for (const pid of candidates) {
     const cmdline = posixCmdline(pid, procRoot, env);
     if (cmdline === null) return { error: new Error(`could not read cmdline for pgrep-matched pid ${pid}`) };
-    if (pollerLineIsThisCheckout(cmdline, anchor)) verified.push(pid);
+    const verdict = posixCandidateIsThisCheckout(cmdline, pid, anchor, checkoutRoot, procRoot);
+    if (verdict.counted) verified.push(pid);
+    else if (verdict.excludedNote) excludedNotes.push(verdict.excludedNote);
   }
-  return { pids: verified };
+  return { pids: verified, excludedNotes };
 }
 
 // The system-wide sweep matches on this broad basename-only substring,
@@ -2936,9 +2985,13 @@ function probeBridgePollerCountPosix(ctx) {
         if (unreadable.length > 0) {
           return { actual: 'degraded', detail: `could not read cmdline for pid(s) ${unreadable.map((c) => c.pid).join(', ')} in telegram-bridge.service MainPID ${mainPid}'s process tree — process identity is UNVERIFIED, not assumed healthy` };
         }
-        const verifiedPids = new Set(
-          cmdlines.filter((c) => pollerLineIsThisCheckout(c.cmdline, thisCheckoutAnchor)).map((c) => c.pid),
-        );
+        const verifiedPids = new Set();
+        const treeExcludedNotes = [];
+        for (const c of cmdlines) {
+          const verdict = posixCandidateIsThisCheckout(c.cmdline, c.pid, thisCheckoutAnchor, ctx.repoRoot, procRoot);
+          if (verdict.counted) verifiedPids.add(c.pid);
+          else if (verdict.excludedNote) treeExcludedNotes.push(verdict.excludedNote);
+        }
 
         // MainPID can itself BE the poller (no wrapper) — a genuine
         // read failure here degrades, but a missing cmdline (MainPID has
@@ -2948,8 +3001,10 @@ function probeBridgePollerCountPosix(ctx) {
         if (mainCmdline.error) {
           return { actual: 'degraded', detail: `could not read cmdline for telegram-bridge.service MainPID ${mainPid}: ${mainCmdline.error.message} — process identity is UNVERIFIED, not assumed healthy` };
         }
-        if (mainCmdline.cmdline !== null && pollerLineIsThisCheckout(mainCmdline.cmdline, thisCheckoutAnchor)) {
-          verifiedPids.add(mainPid);
+        if (mainCmdline.cmdline !== null) {
+          const mainVerdict = posixCandidateIsThisCheckout(mainCmdline.cmdline, mainPid, thisCheckoutAnchor, ctx.repoRoot, procRoot);
+          if (mainVerdict.counted) verifiedPids.add(mainPid);
+          else if (mainVerdict.excludedNote) treeExcludedNotes.push(mainVerdict.excludedNote);
         }
 
         // HIMMEL-1555 duplicate-poller class: a manually-launched poller
@@ -2962,7 +3017,7 @@ function probeBridgePollerCountPosix(ctx) {
         // that constant's comment for why the sweep needs the broader,
         // unanchored pattern.
         if (pollerPath) {
-          const sweep = posixVerifiedPgrepMatches(POLLER_SWEEP_PATTERN, procRoot, env, thisCheckoutAnchor);
+          const sweep = posixVerifiedPgrepMatches(POLLER_SWEEP_PATTERN, procRoot, env, thisCheckoutAnchor, ctx.repoRoot);
           if (sweep.error) {
             return { actual: 'degraded', detail: `could not run the system-wide pgrep sweep for telegram-bridge.service: ${sweep.error.message} — process identity is UNVERIFIED, not assumed healthy` };
           }
@@ -2970,9 +3025,13 @@ function probeBridgePollerCountPosix(ctx) {
             return { actual: 'degraded', detail: 'no pgrep on PATH to run the system-wide sweep for telegram-bridge.service (HIMMEL-1555 class) — process identity is UNVERIFIED, not assumed healthy' };
           }
           sweep.pids.forEach((pid) => verifiedPids.add(pid));
+          if (sweep.excludedNotes) treeExcludedNotes.push(...sweep.excludedNotes);
         }
 
-        return posixPollerVerdict(verifiedPids.size, 'via systemd MainPID process tree + system-wide sweep');
+        const source = treeExcludedNotes.length > 0
+          ? `via systemd MainPID process tree + system-wide sweep; excluded: ${treeExcludedNotes.join('; ')}`
+          : 'via systemd MainPID process tree + system-wide sweep';
+        return posixPollerVerdict(verifiedPids.size, source);
       }
       // LoadState absent/not-found -- systemd genuinely doesn't know this unit; fall through to the pgrep -f fallback below.
     }
@@ -2987,11 +3046,14 @@ function probeBridgePollerCountPosix(ctx) {
   if (!pollerPath) {
     return { actual: 'degraded', detail: 'poller-count check needs ctx.repoRoot to anchor pgrep -f, none provided' };
   }
-  const fallback = posixVerifiedPgrepMatches(pollerPath, procRoot, env, thisCheckoutAnchor);
+  const fallback = posixVerifiedPgrepMatches(pollerPath, procRoot, env, thisCheckoutAnchor, ctx.repoRoot);
   if (fallback.error) {
     return { actual: 'degraded', detail: `pgrep poller-count query failed: ${fallback.error.message}` };
   }
-  return posixPollerVerdict(fallback.pids.length, 'via pgrep -f, no systemd unit found');
+  const fallbackSource = fallback.excludedNotes && fallback.excludedNotes.length > 0
+    ? `via pgrep -f, no systemd unit found; excluded: ${fallback.excludedNotes.join('; ')}`
+    : 'via pgrep -f, no systemd unit found';
+  return posixPollerVerdict(fallback.pids.length, fallbackSource);
 }
 
 function probeBridgePollerCount(ctx) {
