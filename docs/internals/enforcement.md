@@ -1777,7 +1777,14 @@ tried twice (HIMMEL-2929 rounds 1-2) and each attempt found the next false
 ALLOW at the next nesting shape — the collapse trades scoping precision on
 those shapes for never being wrong in the ALLOW direction; a subshell-scoped
 clear that shares a payload with an unrelated `$(...)` elsewhere is a
-documented over-deny. Known residual (accepted, unchanged posture,
+documented over-deny. The `eval`/`bash -c` recursion target (the re-parsed
+operand string) forces this same no-scope override unconditionally,
+regardless of what that string itself contains — a paren-scoped clear and
+its chokepoint call both living inside one `-c`/`eval` string (no `((`/`$(`/
+backtick of its own) is exactly a "`bash -c`/`eval` string" per the rule
+above and must never be modeled, even though the recursed substring alone
+would otherwise look like plain balanced parens (CodeRabbit, PR #643 @
+5ce5bbed). Known residual (accepted, unchanged posture,
 HIMMEL-912): deliberately case-varied paths/vars, a path assembled from
 shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 -exec` wrappers, and string reconstruction deeper than the bounded

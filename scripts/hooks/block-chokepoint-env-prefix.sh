@@ -299,8 +299,16 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
 # grammar (each attempt so far found the next edge case in the ALLOW
 # direction, the one direction this guard must never be wrong in), so this
 # guard deliberately over-denies those shapes rather than model them.
-# Otherwise (no arithmetic/command-sub/backtick anywhere in the text), a
-# bare '(' is a real subshell open, depth++ up to its matching ')' --
+# scan_text's eval/`-c` recursion (the only caller that ever passes depth > 0
+# -- see scan_text's own header) re-parses a STRING the ticket's own rule
+# says must never be modeled; a $2 of "1" forces no_scope regardless of
+# what that recursed string itself contains, so a paren-scoped clear inside
+# a `bash -c`/`eval` string can never fold away before its chokepoint call
+# (CodeRabbit, PR #643 @ 5ce5bbed -- the collapse's substring check alone
+# does not see inside a recursed call).
+# Otherwise (no arithmetic/command-sub/backtick anywhere in the text, and
+# not a forced recursion), a bare '(' is a real subshell open, depth++ up
+# to its matching ')' --
 # plain balanced counting, no kind stack. A stray ')' with nothing open
 # latches "confused": every later depth in this text reports 0
 # (fold-forward). A '(' left open at EOF is simply never popped, which
@@ -314,7 +322,7 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
 # Self-contained on purpose: the repo's shared tokenizer work is fenced
 # off (HIMMEL-1688) and this guard must not grow a dependency on it.
 segment_cmd() {
-    local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope=0
+    local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}"
     n=${#s}
     # shellcheck disable=SC2016  # glob literals, not expansions
     case "$s" in
@@ -1278,10 +1286,14 @@ scan_segment() {
 # HIMMEL-2929: a clear learned at paren-depth >=1 must not outlive its
 # subshell -- snapshot UNSET_NAMES on the way down each depth, restore it
 # on the way back up, so it folds back to what stood outside the `(...)`.
+# depth > 0 means this text IS an eval/`-c` string's re-parsed operand (the
+# only caller passing depth+1) -- force segment_cmd's no_scope regardless
+# of what that string itself contains (CodeRabbit, PR #643 @ 5ce5bbed).
 scan_text() {
-    local text="$1" inames="$2" depth="$3" line pdepth seg cur=0
+    local text="$1" inames="$2" depth="$3" line pdepth seg cur=0 force=0
     local -a PSNAP
     [ "$depth" -le 5 ] || return 0
+    [ "$depth" -gt 0 ] && force=1
     while IFS= read -r line; do
         pdepth=${line%%$'\t'*}
         seg=${line#*$'\t'}
@@ -1298,7 +1310,7 @@ scan_text() {
         # segment in this same payload -- fold the accumulator in fresh
         # each iteration so it reflects only what ran before this segment.
         scan_segment "$seg" "$inames $UNSET_NAMES" "$depth"
-    done <<<"$(segment_cmd "$text")"
+    done <<<"$(segment_cmd "$text" "$force")"
     return 0
 }
 

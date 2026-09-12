@@ -569,6 +569,16 @@ assert_deny "unbalanced open paren (no closing paren) stays fold-forward"  "$(j 
 assert_deny "command substitution \$( ) is not a subshell -- stays denied" "$(j "\$(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
 assert_deny "bash -c string is an unresolved form -- stays denied"        "$(j "bash -c 'unset HIMMEL_CONSOLE_LEG'; bash $MERGE_ON_GREEN 1")"
 assert_deny "a { } group is not a subshell -- stays denied"               "$(j "{ unset HIMMEL_CONSOLE_LEG; }; bash $MERGE_ON_GREEN 1")"
+# CodeRabbit (PR #643 @ 5ce5bbed): scan_segment's eval/`-c` recursion calls
+# scan_text on just the recursed string, which recomputed no_scope from ONLY
+# that substring -- a paren-scoped clear+chokepoint pair with no `((`/`$(`/
+# backtick INSIDE the -c/eval string got normal depth tracking and a false
+# ALLOW, breaking the ticket's own rule that a -c/eval string is never
+# modeled. Fix: any scan_text call at depth > 0 (the -c/eval recursion, the
+# only path that ever calls scan_text below depth 0) forces no_scope for
+# that whole recursed string, unconditionally.
+assert_deny "bash -c string recursion: paren-scoped clear+chokepoint inside the string stays denied" "$(j "bash -c '(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1'")"
+assert_deny "eval string recursion: paren-scoped clear+chokepoint inside the string stays denied"     "$(j "eval '(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1'")"
 
 # --- ALLOWED: fail-open proofs ---
 assert_allow "bare sanctioned invocation (no prefix)"    "$(j "bash $MERGE_ON_GREEN")"
