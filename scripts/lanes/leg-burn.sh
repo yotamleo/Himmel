@@ -78,7 +78,10 @@ else
     NEWEST=0
     while IFS= read -r f; do
         [ -n "$f" ] || continue
-        mt=$(date -r "$f" +%s 2>/dev/null || echo 0)
+        # GNU `date -r <file>` on Linux/git-bash; BSD `date -r` wants epoch
+        # SECONDS, not a path, so macOS falls through to BSD stat. Without the
+        # pair every mt is 0 and the LAST grep hit wins instead of the newest.
+        mt=$(date -r "$f" +%s 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo 0)
         if [ "$mt" -ge "$NEWEST" ]; then NEWEST="$mt"; TRANSCRIPT="$f"; fi
     done <<EOF
 $(grep -rlF "\"customTitle\":\"$ARG\"" "$PROJECTS" 2>/dev/null)
