@@ -45,6 +45,15 @@ if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
             ;;
     esac
     if TOPLEVEL_ERR=$(LC_ALL=C git rev-parse --show-toplevel 2>&1 1>/dev/null); then
+        REPO_TOPLEVEL=$(LC_ALL=C git rev-parse --show-toplevel)
+        while [ "${SUITE_PATH#./}" != "$SUITE_PATH" ]; do
+            SUITE_PATH="${SUITE_PATH#./}"
+        done
+        case "$SUITE_PATH" in
+            "$REPO_TOPLEVEL"/*)
+                SUITE_PATH="${SUITE_PATH#"$REPO_TOPLEVEL"/}"
+                ;;
+        esac
         TRACKED_MATCH=$(git --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null)
         if [ "$TRACKED_MATCH" != "$SUITE_PATH" ]; then
             echo "ERR quiet-run: label 'suite' requires a tracked test-*.sh, got: $SUITE_PATH" >&2

@@ -253,6 +253,24 @@ RC=$?
 assert_rc "directory-pathspec bypass refused" 2 "$RC"
 assert_contains "directory-pathspec bypass refusal message" "requires a tracked test-*.sh" "$OUT"
 
+# 11. label "suite" with a `./`-prefixed path to a tracked test-*.sh must
+# still pass - the same file that passes as a bare repo-relative path
+# (case 6) is illegitimately refused today because the tracked-file check
+# requires `git ls-files` output to equal SUITE_PATH byte-for-byte, and
+# ls-files normalizes away a leading "./" (HIMMEL-2970).
+OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash ./scripts/hooks/test-require-quiet-run.sh 2>&1)
+RC=$?
+assert_rc "suite with tracked test-*.sh via ./-prefixed path" 0 "$RC"
+
+# 12. label "suite" with an absolute path (resolving under the repo root) to
+# the same tracked test-*.sh must also pass - ls-files output is always
+# repo-relative, so an absolute SUITE_PATH can never equal it under the
+# current exact-match check (HIMMEL-2970).
+ABS_TRACKED="$REPO_ROOT/scripts/hooks/test-require-quiet-run.sh"
+OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$ABS_TRACKED" 2>&1)
+RC=$?
+assert_rc "suite with tracked test-*.sh via absolute path" 0 "$RC"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All quiet-run.sh guard cases passed."
