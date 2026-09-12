@@ -64,7 +64,11 @@ still exactly the unsharded run list.
   hold every eligible suite exactly once, and this shard's slice must be exactly
   the plan's rows for `i`. Whatever broke upstream surfaces there as a plan that
   is not the run list or a slice that does not match it, and the shard fails
-  with `refusing to report green` on stderr — one check, one message.
+  with `refusing to report green` on stderr — one check, one message. The same
+  check also asks whether the join actually finished (the pipeline's own exit
+  status) and whether it read the whole ledger (bytes consumed against
+  `wc -c`), since a clean short read can still produce a complete plan over
+  partially loaded durations and pass the completeness half alone.
 - `SUITE_DURATIONS=<path>` overrides the ledger path (the shard tests use it).
 
 **Refresh** — replay one `shell-unit-shard` matrix run's logs (all shards at

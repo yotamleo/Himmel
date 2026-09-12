@@ -1740,4 +1740,237 @@ fi
 rm -rf "$sb22m"
 fi
 
+# 22q-22r (HIMMEL-2930) — the ONE guard's other two directions. 22m-p each
+# kill a tool outright, so the plan comes out short and check 2 (completeness)
+# already catches it. These two let the join finish and emit a COMPLETE plan —
+# every eligible suite placed exactly once — so check 2 alone would pass them
+# silently; only folding the pipeline's own exit status and the bytes it
+# actually consumed into the same guard catches them. Same s1(100)/s3(90)
+# sandbox as 22m-p: the bin-pack answer is s1 ALONE on its shard, so anything
+# that starves s3 of its real duration (giving it the median instead) still
+# looks complete but is a DIFFERENT partition from what every sibling shard
+# would reach off the whole ledger — codex-1's exact false-green shape.
+sb22q=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22q.XXXXXX") || { fail "22q: mktemp failed"; sb22q=""; }
+real_awk_22q=$(command -v awk)
+if [ -n "$sb22q" ] && [ -n "$real_awk_22q" ]; then
+mk_shard_sandbox "$sb22q" 6
+led22q="$sb22q/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22q"
+  printf '%s/test-s2.sh\t1\n'   "$sb22q"
+  printf '%s/test-s3.sh\t90\n'  "$sb22q"
+  printf '%s/test-s4.sh\t1\n'   "$sb22q"
+  printf '%s/test-s5.sh\t1\n'   "$sb22q"
+  printf '%s/test-s6.sh\t1\n'   "$sb22q"; } > "$led22q"
+
+# Keyed on the join awk's own '%012d' format string (22n's token), so sort and
+# the packer/verify awks still exec the real tool. It hands the join a 2-line
+# PREFIX of the ledger instead of the whole file — an ordinary, non-crashing
+# clean short read, not a tool dying.
+# The single quotes here are the point, same as rst_tool_stub above: this is
+# the STUB's source, so its own "$@"/"$_ledger" must survive unexpanded.
+mkdir -p "$sb22q/stub-q"
+# shellcheck disable=SC2016
+{ printf '#!/usr/bin/env bash\n'
+  printf 'for _a in "$@"; do\n'
+  printf '  if grep -qF -- %s <<< "$_a"; then\n' "'%012d'"
+  printf '    _ledger="${@: -1}"\n'
+  printf '    _short=$(mktemp "%s/rst-case22q-short.XXXXXX")\n' "$sb22q"
+  printf '    head -n 2 "$_ledger" > "$_short"\n'
+  printf '    set -- "${@:1:$(($#-1))}" "$_short"\n'
+  printf '    exec %s "$@"\n' "$real_awk_22q"
+  printf '  fi\n'
+  printf 'done\n'
+  printf 'exec %s "$@"\n' "$real_awk_22q"; } > "$sb22q/stub-q/awk"
+chmod +x "$sb22q/stub-q/awk"
+
+o22q=$(PATH="$sb22q/stub-q:$PATH" SUITE_DURATIONS="$led22q" \
+  bash "$RUNNER" --list --shard 1/2 "$sb22q" 2>&1); rc22q=$?
+if [ "$rc22q" -ne 0 ] \
+   && [ -z "$(run_lines "$o22q")" ] \
+   && grepq "$o22q" -F 'refusing to report green' \
+   && grepq "$o22q" -F 'ledger bytes'; then
+  pass "22q: a clean short read (rc=0, still a complete plan) is caught by bytes consumed, not completeness"
+else
+  fail "22q: short read not refused; rc=$rc22q shard1='$(run_lines "$o22q")' out: $o22q"
+fi
+rm -rf "$sb22q"
+fi
+
+# 22r — the same join finishes normally (real awk, real output) but the
+# STUB itself exits non-zero once its END block has already printed. pipefail
+# is what surfaces this; completeness never sees it because the plan the join
+# emitted was whole.
+sb22r=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22r.XXXXXX") || { fail "22r: mktemp failed"; sb22r=""; }
+real_awk_22r=$(command -v awk)
+if [ -n "$sb22r" ] && [ -n "$real_awk_22r" ]; then
+mk_shard_sandbox "$sb22r" 6
+led22r="$sb22r/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22r"
+  printf '%s/test-s2.sh\t1\n'   "$sb22r"
+  printf '%s/test-s3.sh\t90\n'  "$sb22r"
+  printf '%s/test-s4.sh\t1\n'   "$sb22r"
+  printf '%s/test-s5.sh\t1\n'   "$sb22r"
+  printf '%s/test-s6.sh\t1\n'   "$sb22r"; } > "$led22r"
+
+mkdir -p "$sb22r/stub-r"
+# shellcheck disable=SC2016
+{ printf '#!/usr/bin/env bash\n'
+  printf 'for _a in "$@"; do\n'
+  printf '  if grep -qF -- %s <<< "$_a"; then\n' "'%012d'"
+  printf '    %s "$@"\n' "$real_awk_22r"
+  printf '    exit 7\n'
+  printf '  fi\n'
+  printf 'done\n'
+  printf 'exec %s "$@"\n' "$real_awk_22r"; } > "$sb22r/stub-r/awk"
+chmod +x "$sb22r/stub-r/awk"
+
+o22r=$(PATH="$sb22r/stub-r:$PATH" SUITE_DURATIONS="$led22r" \
+  bash "$RUNNER" --list --shard 1/2 "$sb22r" 2>&1); rc22r=$?
+if [ "$rc22r" -ne 0 ] \
+   && [ -z "$(run_lines "$o22r")" ] \
+   && grepq "$o22r" -F 'refusing to report green' \
+   && grepq "$o22r" -F 'pipeline exited'; then
+  pass "22r: a join that exits 7 after printing a complete plan is refused via the pipeline exit status"
+else
+  fail "22r: exit-after-print not refused; rc=$rc22r shard1='$(run_lines "$o22r")' out: $o22r"
+fi
+rm -rf "$sb22r"
+fi
+
+# 22s — the two new checks above change NOTHING about the normal path: the
+# same ledger and sandbox as 22l, no stub, byte-identical plan for two fixed
+# shard indices across repeated invocations. 22l's determinism property,
+# re-asserted with the bytes/rc bookkeeping now in the loop.
+sb22s=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22s.XXXXXX") || { fail "22s: mktemp failed"; sb22s=""; }
+if [ -n "$sb22s" ]; then
+mk_shard_sandbox "$sb22s" 7
+led22s="$sb22s/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t389\n' "$sb22s"
+  printf '%s/test-s2.sh\t330\n' "$sb22s"
+  printf '%s/test-s3.sh\t12\n'  "$sb22s"
+  printf '%s/test-s4.sh\t7\n'   "$sb22s"
+  printf '%s/test-s5.sh\t3\n'   "$sb22s"; } > "$led22s"
+s122s_1=$(run_lines "$(SUITE_DURATIONS="$led22s" bash "$RUNNER" --list --shard 1/3 "$sb22s" 2>&1)")
+s122s_2=$(run_lines "$(SUITE_DURATIONS="$led22s" bash "$RUNNER" --list --shard 1/3 "$sb22s" 2>&1)")
+s222s_1=$(run_lines "$(SUITE_DURATIONS="$led22s" bash "$RUNNER" --list --shard 2/3 "$sb22s" 2>&1)")
+s222s_2=$(run_lines "$(SUITE_DURATIONS="$led22s" bash "$RUNNER" --list --shard 2/3 "$sb22s" 2>&1)")
+if [ "$s122s_1" = "$s122s_2" ] && [ "$s222s_1" = "$s222s_2" ] \
+   && [ -n "$s122s_1" ] && [ -n "$s222s_1" ]; then
+  pass "22s: shard 1/3 and 2/3 are byte-identical across repeated invocations under the new checks"
+else
+  fail "22s: plan moved under the new checks; s1a='$s122s_1' s1b='$s122s_2' s2a='$s222s_1' s2b='$s222s_2'"
+fi
+rm -rf "$sb22s"
+fi
+
+# 22t (codex-2) — a ledger row naming a suite that no longer exists is still
+# ignored for ASSIGNMENT (it matches no eligible suite) but its duration
+# still enters the median unknown suites inherit, exactly as
+# docs/internals/testing.md states. Eligible: s1 (ledger 100s), s2/s3
+# (unknown -> median). Ledger also carries a row for test-s4.sh, which this
+# sandbox never creates — the deleted suite. Parsed durations are {100, 1};
+# sorted [1,100], median = vals[int((2+1)/2)] = vals[1] = 1. s2/s3 each
+# therefore weigh 1s, so longest-first packs s1 ALONE on its shard. Had the
+# deleted row been filtered out of the median (codex-2's bug) only {100}
+# would parse, median would be 100, and s2 or s3 would weigh as much as s1 —
+# pairing s1 with one of them instead. The placement is the number's proxy:
+# there is no other way to read a median out of --list.
+sb22t=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22t.XXXXXX") || { fail "22t: mktemp failed"; sb22t=""; }
+if [ -n "$sb22t" ]; then
+mk_shard_sandbox "$sb22t" 3
+led22t="$sb22t/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22t"
+  printf '%s/test-s4.sh\t1\n'   "$sb22t"; } > "$led22t"
+full22t=$(run_lines "$(SUITE_DURATIONS="$led22t" bash "$RUNNER" --list "$sb22t" 2>&1)")
+all22t=""
+for i22t in 1 2; do
+  all22t="${all22t}$(run_lines "$(SUITE_DURATIONS="$led22t" bash "$RUNNER" --list --shard "$i22t/2" "$sb22t" 2>&1)")
+"
+done
+union22t=$(printf '%s' "$all22t" | grep -v '^$' | sort)
+dupes22t=$(printf '%s' "$all22t" | grep -v '^$' | sort | uniq -d)
+if [ "$union22t" = "$(sort <<< "$full22t")" ] && [ -z "$dupes22t" ]; then
+  pass "22t: a deleted-suite ledger row does not drop or duplicate any suite"
+else
+  fail "22t: deleted-suite row broke the partition; union='$union22t' full='$full22t' dupes='$dupes22t'"
+fi
+own22t=""
+for i22t in 1 2; do
+  sh22t=$(run_lines "$(SUITE_DURATIONS="$led22t" bash "$RUNNER" --list --shard "$i22t/2" "$sb22t" 2>&1)")
+  if grepq "$sh22t" -Fx "$sb22t/test-s1.sh"; then own22t="$sh22t"; fi
+done
+if [ "$own22t" = "$sb22t/test-s1.sh" ]; then
+  pass "22t: s1 is alone on its shard — the deleted row's 1s entered the median (1s), not the 100s a filtered row would leave"
+else
+  fail "22t: expected s1 alone (median=1s from the deleted row); got '$own22t'"
+fi
+rm -rf "$sb22t"
+fi
+
+# 22u (codex-2) — a ledger whose LAST line has no trailing newline is still a
+# complete, whole file; the join's own +1-per-record byte accounting must not
+# charge that missing byte to the record it never had and refuse a clean read.
+sb22u=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22u.XXXXXX") || { fail "22u: mktemp failed"; sb22u=""; }
+if [ -n "$sb22u" ]; then
+mk_shard_sandbox "$sb22u" 3
+led22u="$sb22u/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22u"
+  printf '%s/test-s2.sh\t1\n'   "$sb22u"
+  printf '%s/test-s3.sh\t1' "$sb22u"; } > "$led22u"
+if [ -n "$(tail -c 1 "$led22u")" ]; then
+  o22u=$(SUITE_DURATIONS="$led22u" bash "$RUNNER" --list --shard 1/2 "$sb22u" 2>&1); rc22u=$?
+  if [ "$rc22u" -eq 0 ] \
+     && [ -n "$(run_lines "$o22u")" ] \
+     && ! grepq "$o22u" -F 'refusing to report green'; then
+    pass "22u: a ledger without a final trailing newline is not spuriously refused"
+  else
+    fail "22u: no-trailing-newline ledger wrongly refused; rc=$rc22u out: $o22u"
+  fi
+else
+  fail "22u: sandbox setup did not produce a no-trailing-newline ledger"
+fi
+rm -rf "$sb22u"
+fi
+
+# 22v (codex-1) — BSD/macOS wc right-pads a single -c count with leading
+# spaces; GNU coreutils never does. A stub standing in for that padding must
+# not desync the bytes-consumed comparison from a whole, matching read.
+sb22v=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22v.XXXXXX") || { fail "22v: mktemp failed"; sb22v=""; }
+real_wc_22v=$(command -v wc)
+if [ -n "$sb22v" ] && [ -n "$real_wc_22v" ]; then
+mk_shard_sandbox "$sb22v" 3
+led22v="$sb22v/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22v"
+  printf '%s/test-s2.sh\t1\n'   "$sb22v"
+  printf '%s/test-s3.sh\t1\n'   "$sb22v"; } > "$led22v"
+
+mkdir -p "$sb22v/stub-v"
+# shellcheck disable=SC2016
+{ printf '#!/usr/bin/env bash\n'
+  printf 'if [ "$1" = "-c" ] && [ "$#" -eq 1 ]; then\n'
+  printf '  n=$(%s -c)\n' "$real_wc_22v"
+  printf '  printf "%%8s\\n" "$n"\n'
+  printf '  exit 0\n'
+  printf 'fi\n'
+  printf 'exec %s "$@"\n' "$real_wc_22v"; } > "$sb22v/stub-v/wc"
+chmod +x "$sb22v/stub-v/wc"
+
+o22v=$(PATH="$sb22v/stub-v:$PATH" SUITE_DURATIONS="$led22v" \
+  bash "$RUNNER" --list --shard 1/2 "$sb22v" 2>&1); rc22v=$?
+if [ "$rc22v" -eq 0 ] \
+   && [ -n "$(run_lines "$o22v")" ] \
+   && ! grepq "$o22v" -F 'refusing to report green'; then
+  pass "22v: a padded wc -c count (BSD/macOS-style) does not desync the bytes check"
+else
+  fail "22v: padded wc -c wrongly refused; rc=$rc22v out: $o22v"
+fi
+rm -rf "$sb22v"
+fi
+
 rst_tally
