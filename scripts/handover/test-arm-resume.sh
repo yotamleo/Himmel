@@ -6004,6 +6004,10 @@ fi
 #   leaking the arming session's id.
 # ---------------------------------------------------------------------------
 if _sec_selected "2545" "HIMMEL-2545"; then
+# These payload previews use --dedup-any, so earlier real-arm fixtures must
+# not leave either backend's shared scheduler populated (HIMMEL-2968).
+: > "$TMP/sched-stub-t17.tasks"
+rm -f "$TMP/sched-stub-t17.atdir"/job-*
 _2545_UNSET='unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID'
 _2545_EXPORT='export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1'
 
