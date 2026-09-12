@@ -18,12 +18,14 @@ QUIET_RUN="$REPO_ROOT/scripts/quiet-run.sh"
 PRE_FIX_BASE="541a866b34d8b93942b1556145e2e5d97c4ee390"
 
 FAILED=0
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/test-quiet-run.XXXXXX")"
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/test-quiet-run.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 UNTRACKED_ABS=""
+GLOB_UNTRACKED_ABS=""
 # shellcheck disable=SC2329,SC2317
 cleanup() {
     rm -rf "$SCRATCH"
     [ -n "$UNTRACKED_ABS" ] && rm -f "$UNTRACKED_ABS"
+    [ -n "$GLOB_UNTRACKED_ABS" ] && rm -f "$GLOB_UNTRACKED_ABS"
 }
 trap cleanup EXIT
 
@@ -104,6 +106,34 @@ assert_contains "untracked suite refusal message" "requires a tracked test-*.sh"
 OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash scripts/hooks/test-require-quiet-run.sh 2>&1)
 RC=$?
 assert_rc "suite with tracked test-*.sh" 0 "$RC"
+
+# 6b. RED/GREEN: git ls-files pathspec-glob bypass (codex-1 finding, round 2).
+# A literal argv path containing pathspec-glob metacharacters (e.g. a filename
+# that is literally "test-*.sh") can satisfy a bare
+# `git ls-files --error-unmatch -- "$SUITE_PATH"` by glob-matching some OTHER
+# tracked test-*.sh file, even though the literal path bash actually executes
+# is an untracked, attacker-controlled file. --literal-pathspecs disables the
+# wildcard interpretation. RED runs against the pre-this-fix committed head
+# (which already has the tracked-file guard, but without --literal-pathspecs)
+# to prove the bypass is real; GREEN proves the fixed script refuses it.
+GLOB_BASE="85af3389bc8782f669aaea7047cf03321736b1d9"
+GLOB_VULN="$SCRATCH/quiet-run-globvuln.sh"
+git -C "$REPO_ROOT" show "$GLOB_BASE:scripts/quiet-run.sh" > "$GLOB_VULN"
+chmod +x "$GLOB_VULN"
+
+GLOB_UNTRACKED_REL="scripts/hooks/test-*.sh"
+GLOB_UNTRACKED_ABS="$REPO_ROOT/$GLOB_UNTRACKED_REL"
+printf '#!/usr/bin/env bash\necho hi\n' > "$GLOB_UNTRACKED_ABS"
+chmod +x "$GLOB_UNTRACKED_ABS"
+
+OUT=$(cd "$REPO_ROOT" && bash "$GLOB_VULN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
+RC=$?
+assert_rc "RED: glob-pathspec bypass executes against pre-fix guard" 0 "$RC"
+
+OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
+RC=$?
+assert_rc "GREEN: glob-pathspec bypass refused by --literal-pathspecs fix" 2 "$RC"
+assert_contains "GREEN: glob-pathspec refusal message" "requires a tracked test-*.sh" "$OUT"
 
 # 7. label "suite" with `node --test <tracked file>` is unaffected - the
 # tracked-file check applies only when argv is `bash <path> ...`; node
