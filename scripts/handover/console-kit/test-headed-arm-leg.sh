@@ -476,6 +476,8 @@ contains "LEG_PROFILE=leg-impl is honoured like the flag" "$envprof" "profile=le
 rc=0; out="$(bash "$SCRIPT" --dry-run --profile no-such-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)" || rc=$?
 check "an unknown profile name is refused with exit 2" "$rc" "2"
 
+# gnu-ok: `timeout` bounds a usage-path regression; this suite exercises
+# headed-arm.sh, which is Linux/KDE-only, and line 159 above uses the same shape.
 rc=0; out="$(timeout 5 bash "$SCRIPT" --profile 2>&1)" || rc=$?
 check "usage: --profile with no value -> exit 2 (not an infinite loop)" "$rc" "2"
 

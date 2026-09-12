@@ -19,7 +19,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BURN="$HERE/../leg-burn.sh"
 FIXTURE="$HERE/fixtures/leg-burn-sample.jsonl"
-TMP="$(mktemp -d)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/leg-burn-test.XXXXXX")" || { echo "test-leg-burn: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 PASS=0; FAIL=0
