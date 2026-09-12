@@ -70,6 +70,13 @@ and tells its predecessor it is live.
 
 ## Dispatching legs
 
+When drafting the brief's **Ship:** item, spell the attestation trailers'
+grammar rather than paraphrasing it: the token is the FIRST word after the
+colon — `Platforms tested: <os>`, `Security reviewed: manual — <what you
+checked>` (or `claude-code-security-review` / `pr-review-toolkit` / `ad-hoc`
+in place of `manual`) — a paraphrase the leg copies faithfully is how a
+non-conforming trailer reaches the pre-push gate (HIMMEL-2982).
+
 The console writes a brief from
 [`leg-brief-template.md`](leg-brief-template.md) and launches it headed:
 

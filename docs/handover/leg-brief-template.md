@@ -58,7 +58,10 @@ template_version: 3
 > 3. **Tests:** <the suite to write and the specific RED assertion to show
 >    first; the impacted suites you already know about, by name.>
 > 4. **Ship:** `<type>(<scope>): [<TICKET>] <subject>`, then the standing ship
->    sequence. The PR body carries one line
+>    sequence. Trailers go in the FIRST commit, token first after the colon:
+>    `Platforms tested: <os>` and `Security reviewed: manual — <what you
+>    checked>` (or `claude-code-security-review` / `pr-review-toolkit` /
+>    `ad-hoc` in place of `manual`). The PR body carries one line
 >    `leg-burn: calls= avg-ctx= first-turn= compactions=` from
 >    `bash scripts/lanes/leg-burn.sh <your session name>`, run just before
 >    opening the PR. <Anything else unusual: a PR body that must carry other
@@ -83,3 +86,15 @@ template_version: 3
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND the flag is a leg running on vibes. |
+
+## What the console must also do (2026-09-13)
+
+- (a) One plan task per leg, plus the stage-worker rule: run the context-fill
+  probe after every completed step (ruling A1) — at ≥60 % fill, or on noticing
+  a compaction, the leg commits what is done and hands off to a `b`-suffixed
+  successor brief rather than continuing.
+- (b) The console creates the leg's worktree before arming it, never after.
+- (c) Holding for the console's `GO` ends the leg's turn — never a Bash sleep
+  loop; a leg that blocks in one never wakes to receive it.
+- (d) `/pr-check` runs at the exact head the leg reports in its `READY` line,
+  not an earlier or later one.

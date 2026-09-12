@@ -131,6 +131,14 @@ trailer to the **PR body** instead of amending. See
 [`overnight-mode.md`](../handover/overnight-mode.md) § Auto-mode classifier &
 attestation.
 
+**What to do if the FIRST commit carries a trailer whose token doesn't
+conform** — a genuine `Security reviewed:` line whose text doesn't start with
+`manual` / `claude-code-security-review` / `pr-review-toolkit` / `ad-hoc`
+(`scripts/hooks/check-security-reviewed.sh`'s `TOKEN_RE`, HIMMEL-1681): the
+sanctioned recovery is a **follow-up commit** carrying a conforming trailer
+line — never `git commit --amend`, never a `git commit-tree` rebuild of the
+first commit; both are classifier-vetoed (HIMMEL-2982).
+
 ---
 
 ## Symptom: a PR merge was blocked (`--admin` / approval gate) (HIMMEL-224)

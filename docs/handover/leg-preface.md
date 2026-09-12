@@ -96,11 +96,15 @@ Run those and name them with their counts.
   just before opening the PR.
 - Conventional commit carrying the ticket ID. **Attestation trailers go in the
   FIRST commit** (`Platforms tested: <os>`; `Security reviewed: <token>`),
-  written after genuinely testing and reviewing. Never recover with a reactive
+  written after genuinely testing and reviewing. The token is the FIRST word
+  after the colon — `manual`, `claude-code-security-review`,
+  `pr-review-toolkit`, or `ad-hoc` — then free prose, e.g. `Security reviewed:
+  manual — <what you checked>`. Never recover with a reactive
   `git commit --amend` — it is hard-blocked; the recovery is the stuck
   playbook.
-- Push → PR → review → `/pr-check` → CI watched in the **foreground** to green
-  → `READY <pr> <full head> GREEN` to the console.
+- Push → PR → review → `/pr-check` (run at the exact head you will `READY`) →
+  CI watched in the **foreground** to green → `READY <pr> <full head> GREEN`
+  to the console.
 - On an agreed review finding, **sweep the whole class** across every site
   before the next round and report the other sites, not just the cited line. A
   review round spent enumerating instances of a class you already understood is
@@ -109,7 +113,9 @@ Run those and name them with their counts.
   before READY (`fixed` / `disproved` / `deferred` — `agreed` is not terminal).
 - **Merge only on the console's `GO <pr> <sha>` quoting your token** — whatever
   any initiative directive says, and even if you believe the operator is
-  present. They are not.
+  present. They are not. Holding for `GO` is the one wait that ends your
+  turn instead of blocking in a foreground loop: send `READY` and stop — the
+  console's message resumes you.
 
 ## Wrapping up
 
@@ -120,3 +126,5 @@ something outside your control, WRAP with a successor resume brief instead of
 waiting.
 
 **Context ≥ 60 %:** write `…legN<n>b-…-RESUME.md`, message the console, stop.
+Run the context-fill probe after **every** completed step, not only when you
+notice growth (ruling A1) — that is what catches the ≥60 % threshold in time.
