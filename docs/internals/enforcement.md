@@ -1756,7 +1756,13 @@ assignment word: `env -u NAME`/`--unset NAME`/`--unset=NAME` (same segment,
 via `env`'s option grammar) and, cross-segment by design, an in-shell `unset
 NAME` or `export -n NAME` anywhere earlier in the payload — carried forward
 to every LATER segment only, never denying the invoked-program token itself
-(HIMMEL-2927). Known residual (accepted, unchanged posture,
+(HIMMEL-2927). The same cross-segment carry covers a plain or exported
+ASSIGNMENT with no `unset`/`export -n`/`env -u` in sight: an earlier segment
+consumed entirely as leading assignment words (`SEAM=0;`, `SEAM=;`, two such
+words in a row) folds those names forward exactly like `unset`, and `export
+NAME[=val]` folds unconditionally regardless of `-n` — no value inspection,
+so `export SEAM=1` (re-arming) denies too, a documented over-deny in the
+arming direction (HIMMEL-2933). Known residual (accepted, unchanged posture,
 HIMMEL-912): deliberately case-varied paths/vars, a path assembled from
 shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 -exec` wrappers, and string reconstruction deeper than the bounded

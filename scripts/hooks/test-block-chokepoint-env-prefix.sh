@@ -146,7 +146,26 @@ assert_deny "export -pn (reordered cluster); then the chokepoint" "$(j "export -
 assert_allow "env -u UNREGISTERED name stays allowed"             "$(j "env -u SOME_OTHER_VAR bash $MERGE_ON_GREEN 1")"
 assert_allow "unset with no chokepoint in the payload"            "$(j "unset HIMMEL_CONSOLE_LEG; echo hi")"
 assert_allow "env -u registered name, non-chokepoint program"     "$(j "env -u HIMMEL_CONSOLE_LEG bash scripts/some/unregistered-script.sh")"
-assert_allow "export NAME=1 (no -n): unchanged assignment path"  "$(j "export HIMMEL_CONSOLE_LEG=1; bash $MERGE_ON_GREEN 1")"
+
+# --- HIMMEL-2933: the third way to clear a registered seam from an earlier
+# segment -- a plain or exported ASSIGNMENT, with no `unset`/`export -n`/
+# `env -u` in sight. `SEAM=0;`/`SEAM=;` is a segment consumed ENTIRELY as
+# leading assignment words with no command word ever reached -- bash runs
+# that in the current shell and it persists to every LATER segment, the
+# same cross-segment effect HIMMEL-2927 folds `unset`/`export -n` into.
+# `export SEAM=`/`export SEAM=0 &&` sets it AND exports it; `export SEAM`
+# alone (no `=`) re-exports an already-set value unchanged, but is recorded
+# anyway -- fail-closed, no value inspection, same posture as HIMMEL-2927. ---
+assert_deny "bare assignment; then the chokepoint (SEAM=0;)"      "$(j "HIMMEL_CONSOLE_LEG=0; bash $MERGE_ON_GREEN 1")"
+assert_deny "bare assignment to empty; then the chokepoint"       "$(j "HIMMEL_CONSOLE_LEG=; bash $MERGE_ON_GREEN 1")"
+assert_deny "two assignment words in the earlier segment"         "$(j "HIMMEL_CONSOLE_LEG=0 OTHER=1; bash $MERGE_ON_GREEN 1")"
+assert_deny "export to empty; then the chokepoint"                "$(j "export HIMMEL_CONSOLE_LEG=; bash $MERGE_ON_GREEN 1")"
+assert_deny "export SEAM=0 && the chokepoint"                     "$(j "export HIMMEL_CONSOLE_LEG=0 && bash $MERGE_ON_GREEN 1")"
+assert_deny "export NAME=1 (no -n): also denies (arming-direction over-deny)" "$(j "export HIMMEL_CONSOLE_LEG=1; bash $MERGE_ON_GREEN 1")"
+assert_deny "export bare NAME (already-set, no =): recorded fail-closed" "$(j "export HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+# Over-match controls: unaffected.
+assert_allow "unrelated bare assignment; then the chokepoint"     "$(j "OTHER_VAR=0; bash $MERGE_ON_GREEN 1")"
+assert_allow "chokepoint FIRST; bare assignment in a LATER segment" "$(j "bash $MERGE_ON_GREEN 1; HIMMEL_CONSOLE_LEG=0")"
 
 # HIMMEL-2927 ruling (pr-check round 5): unset/export option-VALIDITY
 # modelling is GONE. Three CR rounds each found the next edge a validity
