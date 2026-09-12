@@ -1451,4 +1451,293 @@ rm -rf "$sb22h"
 fi
 
 
+
+# Case 22-dur (HIMMEL-2894) — --shard assignment is a duration-aware bin-pack.
+#
+# Round-robin (HIMMEL-2872's v1) balances by construction only when every
+# suite costs about the same. It does not: run 34408076490 put the corpus's
+# two heaviest suites (389s + 330s) on the same shard by modulo luck, so the
+# slowest shard took 18m23s against a 6.5m floor. The assignment is now a
+# greedy longest-first bin-pack over a committed duration ledger.
+#
+# What must NOT change is 22a/22g's exactness: the union of the shards is
+# still the unsharded run list and the shards are still pairwise disjoint.
+# Balance is an optimisation; exactness is the gate. So the ledger is
+# advisory in every direction — missing, empty or malformed falls back to
+# round-robin with a notice (22k) rather than failing the run, and a suite
+# the ledger has never heard of is assigned a default, never dropped (22j).
+#
+# The ledger is keyed by the suite path exactly as the runner PRINTS it,
+# which is also exactly what the regeneration command harvests from a job
+# log — so the keys cannot drift from the spelling they are matched against.
+# $SUITE_DURATIONS overrides the committed ledger; these cases use it to
+# supply fixtures and to point at paths that do not exist.
+# --------------------------------------------------------------------------
+echo "== Case 22-dur (HIMMEL-2894): --shard assigns by a duration bin-pack =="
+
+# 22i — the discriminator. s1 and s3 are the two heaviest suites and share a
+# parity, so `i % 2` puts BOTH on shard 1 — the exact 18-minute shape the
+# measured run took. A longest-first bin-pack must separate them.
+sb22i=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22i.XXXXXX") || { fail "22i: mktemp failed"; sb22i=""; }
+if [ -n "$sb22i" ]; then
+mk_shard_sandbox "$sb22i" 6
+led22i="$sb22i/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22i"
+  printf '%s/test-s2.sh\t1\n'   "$sb22i"
+  printf '%s/test-s3.sh\t90\n'  "$sb22i"
+  printf '%s/test-s4.sh\t1\n'   "$sb22i"
+  printf '%s/test-s5.sh\t1\n'   "$sb22i"
+  printf '%s/test-s6.sh\t1\n'   "$sb22i"; } > "$led22i"
+a22i=$(run_lines "$(SUITE_DURATIONS="$led22i" bash "$RUNNER" --list --shard 1/2 "$sb22i" 2>&1)")
+b22i=$(run_lines "$(SUITE_DURATIONS="$led22i" bash "$RUNNER" --list --shard 2/2 "$sb22i" 2>&1)")
+# "Together" is the failure: whichever shard holds s1 must not also hold s3.
+same22i=0
+if grepq "$a22i" -Fx "$sb22i/test-s1.sh" && grepq "$a22i" -Fx "$sb22i/test-s3.sh"; then same22i=1; fi
+if grepq "$b22i" -Fx "$sb22i/test-s1.sh" && grepq "$b22i" -Fx "$sb22i/test-s3.sh"; then same22i=1; fi
+if [ "$same22i" -eq 0 ] && [ -n "$a22i" ] && [ -n "$b22i" ]; then
+  pass "22i: the two heaviest suites land on different shards (round-robin collides them)"
+else
+  fail "22i: expected the heaviest two split across shards; shard1='$a22i' shard2='$b22i'"
+fi
+
+# ...and the balance that split buys, stated as the property that motivated it:
+# the slower shard's predicted seconds must beat round-robin's 191s (s1+s3+s5).
+sum22i() {  # $1 = newline-separated suite paths -> their summed ledger seconds
+  local _t=0 _p _s
+  while IFS= read -r _p; do
+    [ -n "$_p" ] || continue
+    _s=$(awk -F'\t' -v k="$_p" '$1 == k { print $2 + 0; exit }' "$led22i")
+    _t=$(( _t + ${_s:-0} ))
+  done <<< "$1"
+  printf '%s\n' "$_t"
+}
+ta22i=$(sum22i "$a22i"); tb22i=$(sum22i "$b22i")
+slow22i=$ta22i; [ "$tb22i" -gt "$slow22i" ] && slow22i=$tb22i
+if [ "$slow22i" -lt 191 ]; then
+  pass "22i: slowest shard ${slow22i}s beats round-robin's 191s on the same ledger"
+else
+  fail "22i: slowest shard ${slow22i}s did not beat round-robin's 191s (shard1=${ta22i}s shard2=${tb22i}s)"
+fi
+rm -rf "$sb22i"
+fi
+
+# 22j — a suite the ledger has never heard of is still assigned to EXACTLY one
+# shard. A lookup miss that dropped the suite would take it off the gate while
+# every shard reported green — HIMMEL-1128's false-green class reached through
+# the ledger. This ledger covers s1..s3 only; s4..s6 are misses.
+sb22j=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22j.XXXXXX") || { fail "22j: mktemp failed"; sb22j=""; }
+if [ -n "$sb22j" ]; then
+mk_shard_sandbox "$sb22j" 6
+led22j="$sb22j/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t50\n' "$sb22j"
+  printf '%s/test-s2.sh\t40\n' "$sb22j"
+  printf '%s/test-s3.sh\t30\n' "$sb22j"; } > "$led22j"
+full22j=$(run_lines "$(SUITE_DURATIONS="$led22j" bash "$RUNNER" --list "$sb22j" 2>&1)")
+all22j=""
+for i22j in 1 2 3; do
+  all22j="${all22j}$(run_lines "$(SUITE_DURATIONS="$led22j" bash "$RUNNER" --list --shard "$i22j/3" "$sb22j" 2>&1)")
+"
+done
+union22j=$(printf '%s' "$all22j" | grep -v '^$' | sort)
+dupes22j=$(printf '%s' "$all22j" | grep -v '^$' | sort | uniq -d)
+missing22j=""
+for n22j in 4 5 6; do
+  grepq "$union22j" -Fx "$sb22j/test-s${n22j}.sh" || missing22j="${missing22j}s${n22j} "
+done
+if [ "$union22j" = "$(sort <<< "$full22j")" ] && [ -z "$dupes22j" ] && [ -z "$missing22j" ]; then
+  pass "22j: suites absent from the ledger are each assigned to exactly one shard"
+else
+  fail "22j: ledger-miss suites lost or duplicated; missing='$missing22j' dupes='$dupes22j' union='$union22j' full='$full22j'"
+fi
+rm -rf "$sb22j"
+fi
+
+# 22k — the ledger is ADVISORY. Missing, empty and malformed all land on the
+# HIMMEL-2872 round-robin partition — byte-identical to what the runner planned
+# before this ticket — by two different routes that must be indistinguishable
+# from the outside. A MISSING ledger is the runner's one fallback: shell
+# builtins decide it off a committed file, so every shard reaches the same
+# verdict and says so once on stderr. A ledger that is present but carries no
+# parseable row is not a fallback at all — it packs, every suite takes the
+# median of nothing (floored to 1s), and a pack with all durations equal
+# degenerates exactly to `i % n`, which is 22a/22h's property. Either way a
+# missing optimisation must never fail a run or silently change the corpus.
+sb22k=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22k.XXXXXX") || { fail "22k: mktemp failed"; sb22k=""; }
+if [ -n "$sb22k" ]; then
+mk_shard_sandbox "$sb22k" 6
+# The pre-HIMMEL-2894 partition for 6 suites over 2 shards, spelled out.
+rr1_22k=$(printf '%s/test-s1.sh\n%s/test-s3.sh\n%s/test-s5.sh' "$sb22k" "$sb22k" "$sb22k")
+rr2_22k=$(printf '%s/test-s2.sh\n%s/test-s4.sh\n%s/test-s6.sh' "$sb22k" "$sb22k" "$sb22k")
+empty22k="$sb22k/empty.tsv";  : > "$empty22k"
+bad22k="$sb22k/bad.tsv";      printf 'not a ledger at all\nstill not\n<<<merge conflict\n' > "$bad22k"
+miss22k="$sb22k/does-not-exist.tsv"
+for led22k in "$miss22k" "$empty22k" "$bad22k"; do
+  o1_22k=$(SUITE_DURATIONS="$led22k" bash "$RUNNER" --list --shard 1/2 "$sb22k" 2>&1); rc1_22k=$?
+  o2_22k=$(SUITE_DURATIONS="$led22k" bash "$RUNNER" --list --shard 2/2 "$sb22k" 2>&1)
+  if [ "$rc1_22k" -eq 0 ] \
+     && [ "$(run_lines "$o1_22k")" = "$rr1_22k" ] \
+     && [ "$(run_lines "$o2_22k")" = "$rr2_22k" ]; then
+    pass "22k: unusable ledger ($(basename "$led22k")) -> the round-robin partition, exactly"
+  else
+    fail "22k: unusable ledger ($(basename "$led22k")) diverged; rc=$rc1_22k shard1='$(run_lines "$o1_22k")' shard2='$(run_lines "$o2_22k")' out1: $o1_22k"
+  fi
+done
+# Only the MISSING ledger is the fallback, and only it announces itself. A
+# present-but-junk ledger reaches the same partition through the packer, so it
+# has nothing to announce — asserting the absence keeps the two routes honest
+# about which one actually ran.
+o1miss_22k=$(SUITE_DURATIONS="$miss22k" bash "$RUNNER" --list --shard 1/2 "$sb22k" 2>&1)
+o1bad_22k=$(SUITE_DURATIONS="$bad22k" bash "$RUNNER" --list --shard 1/2 "$sb22k" 2>&1)
+if grepq "$o1miss_22k" -F 'falling back to round-robin' \
+   && ! grepq "$o1bad_22k" -F 'falling back to round-robin'; then
+  pass "22k: the missing ledger announces the fallback; a junk one does not"
+else
+  fail "22k: fallback notice misplaced; miss: $o1miss_22k --- bad: $o1bad_22k"
+fi
+# ...but it does not pack SILENTLY either. A committed ledger that parses zero
+# rows still yields the right corpus, so nothing fails — which is exactly how a
+# broken one would go unnoticed. One notice keeps it visible in the shard log.
+o1empty_22k=$(SUITE_DURATIONS="$empty22k" bash "$RUNNER" --list --shard 1/2 "$sb22k" 2>&1)
+if grepq "$o1bad_22k" -F 'parsed 0 rows' \
+   && grepq "$o1empty_22k" -F 'parsed 0 rows' \
+   && ! grepq "$o1miss_22k" -F 'parsed 0 rows'; then
+  pass "22k: a present ledger parsing 0 rows says so once; a missing one does not (it has its own notice)"
+else
+  fail "22k: 0-row notice misplaced; bad: $o1bad_22k --- empty: $o1empty_22k --- miss: $o1miss_22k"
+fi
+rm -rf "$sb22k"
+fi
+
+# 22l — 22a/22b's exactness and determinism properties, RE-ASSERTED under the
+# bin-pack with a real ledger in play. 22a runs without one; this is the same
+# contract on the path CI actually takes. The 389/330 pair is the measured
+# corpus's own shape, scaled down to a 7-suite sandbox.
+sb22l=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22l.XXXXXX") || { fail "22l: mktemp failed"; sb22l=""; }
+if [ -n "$sb22l" ]; then
+mk_shard_sandbox "$sb22l" 7
+led22l="$sb22l/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t389\n' "$sb22l"
+  printf '%s/test-s2.sh\t330\n' "$sb22l"
+  printf '%s/test-s3.sh\t12\n'  "$sb22l"
+  printf '%s/test-s4.sh\t7\n'   "$sb22l"
+  printf '%s/test-s5.sh\t3\n'   "$sb22l"; } > "$led22l"
+full22l=$(run_lines "$(SUITE_DURATIONS="$led22l" bash "$RUNNER" --list "$sb22l" 2>&1)")
+s122l=$(run_lines "$(SUITE_DURATIONS="$led22l" bash "$RUNNER" --list --shard 1/3 "$sb22l" 2>&1)")
+s222l=$(run_lines "$(SUITE_DURATIONS="$led22l" bash "$RUNNER" --list --shard 2/3 "$sb22l" 2>&1)")
+s322l=$(run_lines "$(SUITE_DURATIONS="$led22l" bash "$RUNNER" --list --shard 3/3 "$sb22l" 2>&1)")
+union22l=$(printf '%s\n%s\n%s\n' "$s122l" "$s222l" "$s322l" | grep -v '^$' | sort)
+dupes22l=$(printf '%s\n%s\n%s\n' "$s122l" "$s222l" "$s322l" | grep -v '^$' | sort | uniq -d)
+if [ "$union22l" = "$(sort <<< "$full22l")" ] && [ -z "$dupes22l" ] \
+   && [ -n "$s122l" ] && [ -n "$s222l" ] && [ -n "$s322l" ]; then
+  pass "22l: under a ledger, shards 1..3 still union to the full run list, pairwise disjoint"
+else
+  fail "22l: bin-pack partition broken; full='$full22l' s1='$s122l' s2='$s222l' s3='$s322l' dupes='$dupes22l'"
+fi
+again22l=$(run_lines "$(SUITE_DURATIONS="$led22l" bash "$RUNNER" --list --shard 2/3 "$sb22l" 2>&1)")
+if [ "$s222l" = "$again22l" ]; then
+  pass "22l: the bin-pack is deterministic across invocations"
+else
+  fail "22l: shard 2/3 differed between runs; first='$s222l' second='$again22l'"
+fi
+# The heaviest suite is the whole of its shard: 389 > 330 + 12 + 7 + 3 + the
+# two ledger misses, so longest-first can never add a second suite to it. That
+# is the ticket's floor, expressed as a property rather than a wall clock.
+own22l=""
+for sh22l in "$s122l" "$s222l" "$s322l"; do
+  if grepq "$sh22l" -Fx "$sb22l/test-s1.sh"; then own22l="$sh22l"; fi
+done
+if [ "$own22l" = "$sb22l/test-s1.sh" ]; then
+  pass "22l: the 389s suite is the whole of its shard — the floor the ticket names"
+else
+  fail "22l: expected the 389s suite alone on its shard; got '$own22l'"
+fi
+rm -rf "$sb22l"
+fi
+
+
+# 22m–22p — the ONE guard, from four directions. The runner asks two questions
+# (is the ledger there? did the pack come out right?), and everything a tool
+# can do to the pack — die outright, exit early, emit half its output — has to
+# surface at the second one. These four cases each kill exactly ONE tool in the
+# join|sort|pack|verify chain and assert the same thing: rc != 0, an empty
+# assignment, and the single refusal message. Never a silent re-partition,
+# which is the HIMMEL-1128 false-green class this guard exists for.
+#
+# Each stub is keyed on a token unique to its target's own argv, so every other
+# sort and awk in the runner still execs the real tool:
+#   22m  sort -k1,1r   the pack sort            22o  awk 'load['   the packer
+#   22n  awk '%012d'   the join (and median)    22p  awk -v me=    the verify
+#
+# The unusable-LEDGER fallback (22k) is the opposite case and stays a fallback:
+# it is decided off a committed file by shell builtins, so every shard reaches
+# the same verdict and the round-robin partition it falls back to is exact
+# across the whole matrix. A tool dying is local to one runner, and a shard
+# recovering alone would run a partition none of its siblings shares.
+#
+# The single quotes in both writers are the point: those lines are the STUB's
+# source, so its own "$@" and "$_a" must survive into the file unexpanded.
+# shellcheck disable=SC2016
+rst_tool_stub() {  # $1 = dir to create in, $2 = tool name, $3 = argv token, $4 = the real tool
+  mkdir -p "$1"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'for _a in "$@"; do\n'
+    printf '  if printf %s "$_a" | grep -qF -- %s; then exit 1; fi\n' "'%s'" "'$3'"
+    printf 'done\n'
+    printf 'exec %s "$@"\n' "$4"; } > "$1/$2"
+  chmod +x "$1/$2"
+}
+
+# One sandbox for all four. s1 (100s) against s3 (90s) plus four 1s suites
+# means the bin-pack puts s1 ALONE on shard 1, where round-robin would give it
+# s1, s3 and s5 — so "the guard did not fire and we silently fell back" and
+# "the guard did not fire and we packed correctly" cannot be confused.
+sb22m=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22m.XXXXXX") || { fail "22m: mktemp failed"; sb22m=""; }
+real_sort_22m=$(command -v sort)
+real_awk_22m=$(command -v awk)
+if [ -n "$sb22m" ] && [ -n "$real_sort_22m" ] && [ -n "$real_awk_22m" ]; then
+mk_shard_sandbox "$sb22m" 6
+led22m="$sb22m/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22m"
+  printf '%s/test-s2.sh\t1\n'   "$sb22m"
+  printf '%s/test-s3.sh\t90\n'  "$sb22m"
+  printf '%s/test-s4.sh\t1\n'   "$sb22m"
+  printf '%s/test-s5.sh\t1\n'   "$sb22m"
+  printf '%s/test-s6.sh\t1\n'   "$sb22m"; } > "$led22m"
+
+rst_tool_stub "$sb22m/stub-m" sort '-k1,1r'  "$real_sort_22m"
+rst_tool_stub "$sb22m/stub-n" awk  '%012d'   "$real_awk_22m"
+rst_tool_stub "$sb22m/stub-o" awk  'load['   "$real_awk_22m"
+rst_tool_stub "$sb22m/stub-p" awk  'me='     "$real_awk_22m"
+
+for case22m in "m:the pack sort" "n:the join and its median" "o:the packer" "p:the verify"; do
+  id22m="22${case22m%%:*}"
+  what22m="${case22m#*:}"
+  o22m=$(PATH="$sb22m/stub-${case22m%%:*}:$PATH" SUITE_DURATIONS="$led22m" \
+    bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1); rc22m=$?
+  if [ "$rc22m" -ne 0 ] \
+     && [ -z "$(run_lines "$o22m")" ] \
+     && grepq "$o22m" -F 'refusing to report green'; then
+    pass "$id22m: killing $what22m refuses — no suite is silently dropped or re-partitioned"
+  else
+    fail "$id22m: killing $what22m did not refuse; rc=$rc22m shard1='$(run_lines "$o22m")' out: $o22m"
+  fi
+done
+
+# The non-vacuity control: the SAME sandbox and ledger, no stub on PATH. If
+# this ever stopped bin-packing, all four cases above would pass for the wrong
+# reason. s1 alone on shard 1 is the bin-pack answer; round-robin's would be
+# s1, s3, s5.
+o22mc=$(SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1); rc22mc=$?
+if [ "$rc22mc" -eq 0 ] && [ "$(run_lines "$o22mc")" = "$sb22m/test-s1.sh" ]; then
+  pass "22m-p: control — the same ledger and sandbox bin-pack normally with every tool working"
+else
+  fail "22m-p: control did not bin-pack; rc=$rc22mc shard1='$(run_lines "$o22mc")' out: $o22mc"
+fi
+rm -rf "$sb22m"
+fi
+
 rst_tally

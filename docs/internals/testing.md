@@ -20,6 +20,65 @@ it in an interactive session.
 plan without executing anything — use it to check what a change would trigger
 before committing to the long run.
 
+## Shard assignment — the duration ledger (HIMMEL-2894)
+
+`--shard <i>/<n>` splits the corpus across CI's `shell-unit-shard` matrix. The
+split is **not** round-robin: `scripts/ci/suite-durations.tsv` is a committed
+`suite<TAB>seconds` ledger, and the runner packs the run list greedily
+longest-first — each suite goes to whichever shard is currently lightest. The
+plan is computed from the suite list alone, so every shard derives the same
+partition independently with no coordination, and the union of the shards is
+still exactly the unsharded run list.
+
+- **What it is.** A snapshot of one real matrix run's per-suite wall clock,
+  keyed by the suite path *exactly as the runner prints it*. It tunes balance
+  only — it can never change **which** suites run.
+- **A suite missing from it** is assigned the median of the rows present, so a
+  new suite is packed like an average one, never dropped.
+- **A row naming a suite that no longer exists** is ignored for assignment —
+  it matches no eligible suite — though its duration still counts toward the
+  median that unknown suites inherit.
+- **Any row that does not parse** as `<suite path><TAB><non-negative integer>`
+  — a comment, a blank line, a truncated line, a merge-conflict marker — is
+  ignored exactly like an unknown row, row by row. Individual junk therefore
+  does *not* disable bin-packing; the suites it would have covered simply take
+  the median, which is the same treatment a brand-new suite gets.
+- **A ledger that is missing or unreadable** makes the runner print one notice
+  on stderr and fall back to round-robin. That is the runner's *only* fallback,
+  and it is safe precisely because shell builtins answer it off a committed
+  file with no tool involved, so every shard reaches the same verdict and the
+  round-robin partition holds matrix-wide.
+- **A ledger that is present but carries no parseable row** is not a fallback at
+  all: it packs, every suite takes the median of nothing (floored to 1s), and a
+  pack with all durations equal degenerates exactly to `i % n`. Same partition,
+  different route — and it prints its own one-line notice, so a committed
+  ledger that has been broken does not cost balance in silence.
+- **Anything else that goes wrong refuses instead of falling back.** Shards
+  decide alone, so a fallback is only exact when *every* shard takes it. A dead
+  `awk` or `sort`, a full `TMPDIR`, a broken `PATH` is local to one runner, so a
+  shard recovering there would run a round-robin partition while its siblings
+  ran a bin-packed one: some suites twice, others on no shard at all, every
+  shard still green — HIMMEL-1128's false-green class. So past that builtin
+  probe there is no recovery, and no per-stage classification either. The
+  correctness invariant is asked **once**, at the output: the finished plan must
+  hold every eligible suite exactly once, and this shard's slice must be exactly
+  the plan's rows for `i`. Whatever broke upstream surfaces there as a plan that
+  is not the run list or a slice that does not match it, and the shard fails
+  with `refusing to report green` on stderr — one check, one message.
+- `SUITE_DURATIONS=<path>` overrides the ledger path (the shard tests use it).
+
+**Refresh** — replay one `shell-unit-shard` matrix run's logs (all shards at
+once), then replace the rows and update the `source:` line in the header:
+
+```bash
+gh run view <run-id> --log \
+  | sed -nE 's/.*\[(PASS|FAIL)\] ([^ ]+) \(([0-9]+)s\).*/\2\t\3/p' \
+  | sort -u
+```
+
+Refresh when the corpus has moved enough that the shard times skew; it is
+bumped on demand, not maintained by CI.
+
 ## Lanes suite
 
 ```
