@@ -900,4 +900,50 @@ check "40 symlink ancestor in CONSOLE_WORK_DIR: dry-run succeeds" "$rc40" "0"
 check "40 symlink ancestor in CONSOLE_WORK_DIR: signal path resolves through the real target" "$(printf '%s\n' "$out40" | grep -c "signal=$tmp40/real-target/subdir/")" "1"
 check "40 symlink ancestor in CONSOLE_WORK_DIR: signal path never embeds the symlink spelling" "$(printf '%s\n' "$out40" | grep -c "signal=$tmp40/linky/")" "0"
 
+# --- 41: a MISSING intermediate ancestor of CONSOLE_WORK_DIR is skipped by
+# the ancestor-walk above (nothing to validate yet) and then created by a
+# single `mkdir -p` alongside the work dir itself, with no ownership check
+# of its own (HIMMEL-2881 round 7, codex-1 panel finding). A local attacker
+# who races to plant that ancestor between the walk and the create call gets
+# it silently adopted, then owns a directory in this process's path that was
+# never validated. A real race cannot be scheduled deterministically, so
+# (mirroring case 30's technique) a PATH stub for `mkdir` simulates the race
+# winner: the first time console.sh's own code tries to create anything
+# under the test's tmp tree, the stub plants the intermediate ancestor
+# itself at an insecure, self-owned mode (0777, no sticky bit) BEFORE
+# forwarding the original call to the real `mkdir` -- exactly what a raced
+# attacker directory would look like by the time this process next touches
+# that path.
+tmp41="$tmp/c41"
+mkdir -p "$tmp41/bin"
+chmod 0700 "$tmp41"
+mid41="$tmp41/mid"
+target41="$tmp41/mid/workdir"
+real_mkdir41="$(command -v mkdir)"
+cat > "$tmp41/bin/mkdir" <<STUB_EOF
+#!/usr/bin/env bash
+if [ ! -e "$tmp41/.raced41" ]; then
+    for a in "\$@"; do
+        case "\$a" in
+            "$tmp41"/*)
+                : > "$tmp41/.raced41"
+                "$real_mkdir41" -m 0777 -p "$mid41" 2>/dev/null
+                break
+                ;;
+        esac
+    done
+fi
+exec "$real_mkdir41" "\$@"
+STUB_EOF
+chmod +x "$tmp41/bin/mkdir"
+rc41=0
+out41="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$target41" \
+    PATH="$tmp41/bin:$PATH" \
+    bash "$C" new --bucket wdancestor41 --dry-run ) 2>&1 )"; rc41=$?
+check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: refuses with a distinct exit code" "$rc41" "3"
+check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: stderr names the cause" "$([ "$(printf '%s\n' "$out41" | grep -ci ancestor)" -ge 1 ] && echo yes || echo no)" "yes"
+check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: never created the work dir beneath the raced ancestor" "$([ -e "$target41" ] && echo yes || echo no)" "no"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

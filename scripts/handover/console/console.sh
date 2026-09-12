@@ -463,6 +463,39 @@ if [ -L "$workdir" ]; then
 fi
 workdir="$_console_workdir_abs"
 
+# _console_mkdir_chain_safe <dir> -- create <dir> and every missing ancestor
+# ONE COMPONENT AT A TIME (never a single `mkdir -p`), validating ownership
+# of each component the instant it exists -- whether because this call just
+# created it or because it was already there. HIMMEL-2881 round 7 (codex-1
+# panel finding): `_console_ancestor_unsafe` above only walks EXISTING
+# ancestors -- a missing one is skipped on the assumption that `mkdir -p`
+# will create it safely -- but `mkdir -p` silently adopts any ancestor an
+# attacker races into existence between that walk and this create step, with
+# NO ownership check of its own, and that attacker-owned ancestor can later
+# be used to replace the whole subtree beneath it. Building the chain
+# top-down with plain `mkdir` (no -p) closes the window: each `mkdir` either
+# succeeds (so this process owns the new directory, created at mode 0700 --
+# unconditionally safe) or fails because the component already exists, in
+# which case it is validated exactly like a pre-existing ancestor before
+# anything is created beneath it.
+_console_mkdir_chain_safe() {
+    local target="$1" prefix="$1" p
+    local -a missing=()
+    while [ ! -e "$prefix" ]; do
+        missing=("$prefix" "${missing[@]}")
+        prefix="$(dirname "$prefix")"
+        [ "$prefix" = "/" ] && break
+    done
+    for p in "${missing[@]}"; do
+        # shellcheck disable=SC2174
+        if ! mkdir -m 0700 "$p" 2>/dev/null; then
+            if [ -L "$p" ] || [ ! -d "$p" ] || _console_dir_component_unsafe "$p"; then
+                err "refusing to use work dir '$target' — could not safely create ancestor '$p': it was raced into existence by something this process does not control (HIMMEL-2881)"
+                exit 3
+            fi
+        fi
+    done
+}
 # console_workdir_ensure <dir> -- create at 0700 if absent, then ALWAYS
 # validate what actually exists at $d afterward -- never return early on a
 # bare mkdir success. `mkdir -p` is a documented no-op on a path that already
@@ -478,11 +511,7 @@ workdir="$_console_workdir_abs"
 console_workdir_ensure() {
     local d="$1"
     if [ ! -e "$d" ] && [ ! -L "$d" ]; then
-        # shellcheck disable=SC2174
-        if ! mkdir -p -m 0700 "$d" 2>/dev/null; then
-            err "cannot create work dir '$d' — refusing to silently proceed without a directory this process actually controls (HIMMEL-2881)"
-            exit 3
-        fi
+        _console_mkdir_chain_safe "$d"
     fi
     if [ -L "$d" ]; then
         err "refusing to use work dir '$d' — it is a SYMLINK, so this process does not control what it actually resolves to (HIMMEL-2881)"
