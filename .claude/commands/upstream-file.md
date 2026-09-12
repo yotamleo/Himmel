@@ -138,9 +138,12 @@ distinguishes from self-verification).
 - **Build in a linked worktree of the clone, never in the clone itself**
   (HIMMEL-2926): the clone is a primary checkout, so the first edit inside it
   is refused by `block-edit-on-main` (worktree-isolation shape). Cut a linked
-  worktree and edit there instead: `git -C <clone-path> worktree add
-  <clone-path>-wt-<slug> -b <branch> origin/<default>`. The clone itself
-  stays detached at `origin/<default>`; the worktree
+  worktree and edit there instead: `git -C <clone-path> checkout --detach
+  origin/<default>` (a fresh clone starts on a local `<default>` branch, not
+  detached — do this first so the claim below holds), then `git -C
+  <clone-path> worktree add <clone-path>-wt-<slug> -b <branch>
+  origin/<default>`. The clone itself now sits detached at
+  `origin/<default>`; the worktree
   (`<clone-path>-wt-<slug>`) is the cwd for every edit and for the separate
   `/pr-check` session below. The clone's own `.single-writer` opt-out does
   **not** fix this — `block-write-into-main-checkout` refuses to create that
@@ -154,8 +157,11 @@ distinguishes from self-verification).
   refs/remotes/fork/main for pushed remote 'fork'` (its own remedy: `git
   fetch fork`), then `cannot compute diff vs refs/remotes/fork/main (<sha>)
   … no merge base` (remedy: unshallow origin, re-fetch fork, retry the push
-  once — no `SKIP_CR`, no `--no-verify`). Recognise both texts verbatim;
-  cloning full depth up front avoids hitting them at all.
+  once — no `SKIP_CR`, no `--no-verify`). Recognise both texts verbatim.
+  Cloning full depth up front avoids the merge-base failure, but not the
+  missing-tracking-ref one — that one only goes away once `fork` is added
+  and fetched, which step 6 does before its first push regardless of clone
+  depth.
 - **Never cherry-pick a fork/vendored commit** — not even `-n`. Hand-apply the
   hunks and author a fresh commit message in the upstream repo's own style.
   Fork commits carry internal ticket IDs and internal diff context; a
@@ -286,8 +292,8 @@ after publication as redundant defense only.
 
 ## 6. File
 
-- Push to the EXISTING fork (`git remote add fork <fork-url>`; `git push -u
-  fork <branch>`); open cross-fork PRs: `gh pr create --repo <upstream> --head
+- Push to the EXISTING fork (`git remote add fork <fork-url>`; `git fetch
+  fork`; `git push -u fork <branch>`); open cross-fork PRs: `gh pr create --repo <upstream> --head
   <fork-owner>:<branch> --title "<title>" --body-file <path>` (body via file,
   never inline; `--title` is required — `gh pr create` errors non-interactively
   without it). `--head <user>:<branch>` takes the fork's OWNER login, not an
