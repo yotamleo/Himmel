@@ -45,6 +45,35 @@ run_hermes_check_bounded() {
   fi
 }
 
+# mk_systemctl_stub <dir> <unit>... — writes a fake `systemctl` into <dir>
+# that logs every invocation's argv (one line per call) to
+# <dir>/systemctl.log, answers `--user list-units ... --plain --no-legend`
+# with the given fixture unit lines, and answers `--user restart <unit>`
+# with rc=1 when <unit> equals $SYSTEMCTL_STUB_FAIL_UNIT (read at RUNTIME,
+# by the generated stub — not expanded here), else rc=0. Never the real
+# systemd bus, so safe to run against this station's live hermes-gateway
+# units (HIMMEL-2822 do-not).
+mk_systemctl_stub() {
+  local dir="$1"; shift
+  mkdir -p "$dir"
+  : > "$dir/units.txt"
+  local u
+  for u in "$@"; do
+    printf '%s loaded active running fixture\n' "$u" >> "$dir/units.txt"
+  done
+  cat > "$dir/systemctl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$dir/systemctl.log"
+if [ "\$1" = "--user" ] && [ "\$2" = "list-units" ]; then
+  cat "$dir/units.txt"
+elif [ "\$1" = "--user" ] && [ "\$2" = "restart" ]; then
+  [ "\$3" = "\${SYSTEMCTL_STUB_FAIL_UNIT:-}" ] && exit 1
+fi
+exit 0
+EOF
+  chmod +x "$dir/systemctl"
+}
+
 # HERMES_HOME is the install ROOT; the git checkout is its hermes-agent/ subdir.
 
 # Case 1: install root with no hermes-agent checkout → "not installed" skip.
@@ -353,6 +382,118 @@ if grepq "$out" "AppData"; then
 else
   echo "ok: default root resolution never falls back to \$HOME/AppData/Local on Linux/macOS"
 fi
+
+# ── restart_hermes_gateways() — HIMMEL-2822 ─────────────────────────────────
+# himmel-update fast-forwards the hermes-agent checkout but the running
+# hermes-gateway-*.service units keep old modules in memory until restarted
+# (09-08 ImportError incident). These cases drive update_hermes via a
+# systemctl STUB on PATH — never the real systemd bus (do-not: this station
+# has both units live).
+GW1=hermes-gateway-grow_agent.service
+GW2=hermes-gateway-himmel_agent.service
+
+# Case 13: apply path, checkout genuinely moves → ONE restart per listed
+# unit, and the output names each restarted unit.
+bare13="$tmp/bare13/NousResearch/hermes-agent.git"
+mkdir -p "$bare13"; git init -q --bare "$bare13"
+seed13="$tmp/seed13"
+git clone -q "$bare13" "$seed13"
+git -C "$seed13" config user.email "test@test.test"; git -C "$seed13" config user.name "Test"
+printf 'v1\n' > "$seed13/f.txt"; git -C "$seed13" add f.txt; git -C "$seed13" commit --quiet -m v1
+defbranch13=$(git -C "$seed13" rev-parse --abbrev-ref HEAD)
+git -C "$seed13" push --quiet origin "HEAD:$defbranch13"
+git clone -q "$bare13" "$tmp/moved13/hermes-agent"
+printf 'v2\n' > "$seed13/f.txt"; git -C "$seed13" add f.txt; git -C "$seed13" commit --quiet -m v2
+git -C "$seed13" push --quiet origin "HEAD:$defbranch13"
+want13=$(git -C "$seed13" rev-parse HEAD)
+stub13="$tmp/stub13"
+mk_systemctl_stub "$stub13" "$GW1" "$GW2"
+out=$(PATH="$stub13:$PATH" HERMES_HOME="$tmp/moved13" update_hermes apply 2>&1)
+got13=$(git -C "$tmp/moved13/hermes-agent" rev-parse HEAD)
+if [ "$got13" = "$want13" ]; then echo "ok: gateway-restart fixture: checkout genuinely moved"; else echo "FAIL: gateway-restart fixture HEAD was '$got13', expected '$want13'"; fail=1; fi
+check "checkout moved: restarted $GW1" "restarted $GW1" "$out"
+check "checkout moved: restarted $GW2" "restarted $GW2" "$out"
+restarts13=$(grep -c -- '--user restart' "$stub13/systemctl.log" 2>/dev/null) || true
+restarts13=${restarts13:-0}
+if [ "$restarts13" -eq 2 ]; then echo "ok: exactly one restart call per listed unit"; else echo "FAIL: expected 2 restart calls, stub log shows $restarts13"; cat "$stub13/systemctl.log" 2>/dev/null; fail=1; fi
+
+# Case 14: apply path, checkout already current (no move) → ZERO systemctl
+# calls — the control proving restart is gated on movement, not on every run.
+bare14="$tmp/bare14/NousResearch/hermes-agent.git"
+mkdir -p "$bare14"; git init -q --bare "$bare14"
+seed14="$tmp/seed14"
+git clone -q "$bare14" "$seed14"
+git -C "$seed14" config user.email "test@test.test"; git -C "$seed14" config user.name "Test"
+printf 'v1\n' > "$seed14/f.txt"; git -C "$seed14" add f.txt; git -C "$seed14" commit --quiet -m v1
+defbranch14=$(git -C "$seed14" rev-parse --abbrev-ref HEAD)
+git -C "$seed14" push --quiet origin "HEAD:$defbranch14"
+git clone -q "$bare14" "$tmp/current14/hermes-agent"
+stub14="$tmp/stub14"
+mk_systemctl_stub "$stub14" "$GW1" "$GW2"
+out=$(PATH="$stub14:$PATH" HERMES_HOME="$tmp/current14" update_hermes apply 2>&1)
+if [ -s "$stub14/systemctl.log" ]; then echo "FAIL: no-move apply invoked systemctl"; cat "$stub14/systemctl.log"; fail=1; else echo "ok: no-move apply -> zero systemctl calls"; fi
+
+# Case 15: --check mode never touches systemctl (read-only contract).
+bare15="$tmp/bare15/NousResearch/hermes-agent.git"
+mkdir -p "$bare15"; git init -q --bare "$bare15"
+seed15="$tmp/seed15"
+git clone -q "$bare15" "$seed15"
+git -C "$seed15" config user.email "test@test.test"; git -C "$seed15" config user.name "Test"
+printf 'v1\n' > "$seed15/f.txt"; git -C "$seed15" add f.txt; git -C "$seed15" commit --quiet -m v1
+defbranch15=$(git -C "$seed15" rev-parse --abbrev-ref HEAD)
+git -C "$seed15" push --quiet origin "HEAD:$defbranch15"
+git clone -q "$bare15" "$tmp/checkgw15/hermes-agent"
+stub15="$tmp/stub15"
+mk_systemctl_stub "$stub15" "$GW1" "$GW2"
+out=$(PATH="$stub15:$PATH" HERMES_HOME="$tmp/checkgw15" update_hermes check 2>&1)
+if [ -s "$stub15/systemctl.log" ]; then echo "FAIL: --check invoked systemctl"; cat "$stub15/systemctl.log"; fail=1; else echo "ok: --check -> zero systemctl calls"; fi
+
+# Case 16: apply path, checkout moves, NO systemctl anywhere on PATH (scrub
+# it — a curated symlink PATH, same NOGH trick as test-himmel-doctor.sh,
+# since this station's real systemctl must never run in this suite) → no
+# failure, and the output carries the loud advisory naming the exact
+# restart shape the operator must run by hand.
+bare16="$tmp/bare16/NousResearch/hermes-agent.git"
+mkdir -p "$bare16"; git init -q --bare "$bare16"
+seed16="$tmp/seed16"
+git clone -q "$bare16" "$seed16"
+git -C "$seed16" config user.email "test@test.test"; git -C "$seed16" config user.name "Test"
+printf 'v1\n' > "$seed16/f.txt"; git -C "$seed16" add f.txt; git -C "$seed16" commit --quiet -m v1
+defbranch16=$(git -C "$seed16" rev-parse --abbrev-ref HEAD)
+git -C "$seed16" push --quiet origin "HEAD:$defbranch16"
+git clone -q "$bare16" "$tmp/nosysctl16/hermes-agent"
+printf 'v2\n' > "$seed16/f.txt"; git -C "$seed16" add f.txt; git -C "$seed16" commit --quiet -m v2
+git -C "$seed16" push --quiet origin "HEAD:$defbranch16"
+NOSYSTEMCTL="$tmp/no-systemctl-path"; mkdir -p "$NOSYSTEMCTL"
+for _tool in bash sh git grep sed awk tr cut head tail cat mktemp mkdir dirname basename rm mv cp chmod wc sort ln uname id date env expr find xargs which python3 pip3 timeout readlink realpath; do
+  _p="$(command -v "$_tool" 2>/dev/null)" && ln -sf "$_p" "$NOSYSTEMCTL/$_tool" 2>/dev/null
+done
+rc=0
+out=$(PATH="$NOSYSTEMCTL" HERMES_HOME="$tmp/nosysctl16" update_hermes apply 2>&1) || rc=$?
+if [ "$rc" -eq 0 ]; then echo "ok: no-systemctl apply -> exit 0"; else echo "FAIL: no-systemctl apply -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
+check "no systemctl on PATH: loud advisory names exact restart shape" "systemctl --user restart hermes-gateway-<profile>\\.service" "$out"
+
+# Case 17: apply path, restart fails for ONE unit → reported FAILED-to-restart
+# with the by-hand command, chain NOT aborted (rc 0), and the OTHER unit
+# still restarts.
+bare17="$tmp/bare17/NousResearch/hermes-agent.git"
+mkdir -p "$bare17"; git init -q --bare "$bare17"
+seed17="$tmp/seed17"
+git clone -q "$bare17" "$seed17"
+git -C "$seed17" config user.email "test@test.test"; git -C "$seed17" config user.name "Test"
+printf 'v1\n' > "$seed17/f.txt"; git -C "$seed17" add f.txt; git -C "$seed17" commit --quiet -m v1
+defbranch17=$(git -C "$seed17" rev-parse --abbrev-ref HEAD)
+git -C "$seed17" push --quiet origin "HEAD:$defbranch17"
+git clone -q "$bare17" "$tmp/failrestart17/hermes-agent"
+printf 'v2\n' > "$seed17/f.txt"; git -C "$seed17" add f.txt; git -C "$seed17" commit --quiet -m v2
+git -C "$seed17" push --quiet origin "HEAD:$defbranch17"
+stub17="$tmp/stub17"
+mk_systemctl_stub "$stub17" "$GW1" "$GW2"
+rc=0
+out=$(PATH="$stub17:$PATH" HERMES_HOME="$tmp/failrestart17" SYSTEMCTL_STUB_FAIL_UNIT="$GW1" update_hermes apply 2>&1) || rc=$?
+if [ "$rc" -eq 0 ]; then echo "ok: one restart failing -> exit 0 (chain not aborted)"; else echo "FAIL: one restart failing -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
+check "failed restart names the by-hand command for $GW1" "systemctl --user restart $GW1" "$out"
+check "other unit still restarted" "restarted $GW2" "$out"
 
 # ── report_cadence_stale() — stale cadence runner nudge (HIMMEL-588/969) ─────
 # Same lib seams; *_BAT_DIR point at fixture runner dirs.
