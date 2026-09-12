@@ -40,25 +40,28 @@ still exactly the unsharded run list.
   — a comment, a blank line, a truncated line, a merge-conflict marker — is
   ignored exactly like an unknown row, row by row. Individual junk therefore
   does *not* disable bin-packing; the suites it would have covered simply take
-  the median, which is the same treatment a brand-new suite gets. "Malformed"
-  in the fallback below means *no row in the file parses at all*.
-- **A ledger that is missing, unreadable, empty, or has no parseable row** makes
-  the runner print one notice on stderr and fall back to round-robin. A stale
-  ledger costs wall clock, nothing else.
-- **A tool failure on one runner refuses instead of falling back.** Shards
-  decide alone, so a fallback is only exact when *every* shard takes it. The
-  unusable-ledger fallback above is safe precisely because it is read off a
-  committed file that every shard reads identically — present-and-readable is
-  answered by shell builtins, with no tool involved, so every shard reaches the
-  same verdict. A dead `awk` or `sort`, a full `TMPDIR` or a broken `PATH` is
-  local to one runner, so a shard recovering locally would run a round-robin
-  partition while its siblings ran a bin-packed one: some suites twice, others
-  on no shard at all, every shard still green. The runner therefore fails the
-  shard, with `refusing to report green` on stderr, at every stage after that
-  builtin probe — reading the durations out of a ledger already proved present
-  and readable, the median probe, a pack that placed fewer suites than were
-  eligible, and the extraction of this shard's own share from the finished
-  plan. All four are HIMMEL-1128's false-green class.
+  the median, which is the same treatment a brand-new suite gets.
+- **A ledger that is missing or unreadable** makes the runner print one notice
+  on stderr and fall back to round-robin. That is the runner's *only* fallback,
+  and it is safe precisely because shell builtins answer it off a committed
+  file with no tool involved, so every shard reaches the same verdict and the
+  round-robin partition holds matrix-wide.
+- **A ledger that is present but carries no parseable row** is not a fallback at
+  all: it packs, every suite takes the median of nothing (floored to 1s), and a
+  pack with all durations equal degenerates exactly to `i % n`. Same partition,
+  different route — only the missing-ledger route announces itself.
+- **Anything else that goes wrong refuses instead of falling back.** Shards
+  decide alone, so a fallback is only exact when *every* shard takes it. A dead
+  `awk` or `sort`, a full `TMPDIR`, a broken `PATH` is local to one runner, so a
+  shard recovering there would run a round-robin partition while its siblings
+  ran a bin-packed one: some suites twice, others on no shard at all, every
+  shard still green — HIMMEL-1128's false-green class. So past that builtin
+  probe there is no recovery, and no per-stage classification either. The
+  correctness invariant is asked **once**, at the output: the finished plan must
+  hold every eligible suite exactly once, and this shard's slice must be exactly
+  the plan's rows for `i`. Whatever broke upstream surfaces there as a plan that
+  is not the run list or a slice that does not match it, and the shard fails
+  with `refusing to report green` on stderr — one check, one message.
 - `SUITE_DURATIONS=<path>` overrides the ledger path (the shard tests use it).
 
 **Refresh** — replay one `shell-unit-shard` matrix run's logs (all shards at

@@ -3092,71 +3092,26 @@ _shard_nl=$'\n'
 if [ "$shard_total" -gt 0 ]; then
   _shard_ledger="${SUITE_DURATIONS:-$REPO_ROOT/scripts/ci/suite-durations.tsv}"
   _shard_tab=$(printf '\t')
-  # Falling back is only SAFE when every shard falls back with us. Each shard
-  # is a separate process on a separate runner deciding alone, so a fallback
-  # ONE shard takes and its siblings do not means two different partitions are
-  # in force at once: a suite can then be run twice, or — the one that matters
-  # — placed on no shard at all while every shard still exits 0. That is why
-  # the two ways this can go wrong are handled differently below:
+  # Shards decide alone on separate runners, so a fallback is exact only when
+  # EVERY shard takes it: one shard recovering from something its siblings
+  # never saw puts two partitions in force across one matrix, and a suite then
+  # runs twice or lands on no shard at all while every shard exits 0 — the
+  # HIMMEL-1128 false-green class. Hence exactly TWO decision points:
   #
-  #   * the ledger itself is unusable (absent, unreadable, or no row parses)
-  #     — a property of a COMMITTED FILE that every shard reads identically,
-  #     so every shard reaches the same verdict and the round-robin fallback
-  #     is exact across the matrix. Fall back, print a notice, keep running.
-  #   * a TOOL failed on this runner (an OOM-killed sort, a full $TMPDIR, a
-  #     broken PATH) — local, transient, and by definition not shared with the
-  #     siblings. There is no safe local recovery: refuse and fail the shard,
-  #     which surfaces as a red run rather than a quietly-thinned one.
+  #   1. Is the ledger THERE? Shell builtins, no tool, off a committed file,
+  #      so every shard answers identically. Absent: fall back to round-robin
+  #      with one notice. Present: bin-pack, with no other fallback below.
+  #   2. Did the pack come out RIGHT? Asked once, at the output, against the
+  #      run list the shell itself built. A sort that died, an awk that exited
+  #      early, a full $TMPDIR — each surfaces as a plan that is not the run
+  #      list or a slice that is not what the plan says. One refusal.
   #
-  # So the ledger is read in two stages instead of one pipeline, because a
-  # single pipeline cannot tell "no rows matched" (rc=0, empty) apart from
-  # "sort died" (rc!=0) once pipefail has folded them together.
-  #
-  # Stage 0 — is the ledger there at all? The shell builtins answer that
-  # without running a tool, which is what keeps the answer DETERMINISTIC: a
-  # committed file is present and readable on every runner or on none of them,
-  # so every shard agrees. Once this passes, awk is reading a readable regular
-  # file, so an awk that then fails is the runner-local case, not a statement
-  # about the ledger — hence the refusal rather than a fallback in stage 1.
-  _shard_ledger_ok=0
+  # Nothing in between classifies failures by stage or by rc: a stage that
+  # dies produces a plan that fails check 2.
   if [ -f "$_shard_ledger" ] && [ -r "$_shard_ledger" ]; then
-    _shard_ledger_ok=1
-  fi
-
-  # Stage 1 — the raw durations. No output means no row parses, which is a
-  # property of the file and so a safe, matrix-wide fallback; a non-zero rc on
-  # a file we just proved readable means awk itself failed HERE.
-  _shard_durations=""
-  if [ "$_shard_ledger_ok" -eq 1 ]; then
-    _shard_durations=$(awk -F'\t' '
-        /^[[:space:]]*#/ { next }
-        NF >= 2 && $1 != "" && $2 ~ /^[0-9]+$/ { print $2 + 0 }
-      ' "$_shard_ledger") || {
-      printf 'ERROR: --shard: reading the duration ledger "%s" failed on this runner although the file is present and readable — refusing to report green. Falling back locally would leave this shard on a different partition from its siblings.\n' \
-        "$_shard_ledger" >&2
-      exit 1
-    }
-  fi
-
-  # Stage 2 — the median, which is also the duration an absent suite is given.
-  # Reached only when stage 1 found rows, so a failure here is the transient
-  # case, not the unusable-ledger case.
-  _shard_median=""
-  if [ -n "$_shard_durations" ]; then
-    _shard_median=$(printf '%s\n' "$_shard_durations" \
-      | sort -n \
-      | awk '{ a[NR] = $1 } END { if (NR == 0) exit 1; print a[int((NR + 1) / 2)] }') \
-      || _shard_median=""
-    if [ -z "$_shard_median" ]; then
-      printf 'ERROR: --shard: the duration ledger "%s" parsed but its median could not be computed — refusing to report green. Falling back locally would leave this shard on a different partition from its siblings.\n' \
-        "$_shard_ledger" >&2
-      exit 1
-    fi
-  fi
-
-  if [ -n "$_shard_median" ]; then
-    # Pre-pass: the FINAL run list, through the same filter chain the loop
-    # below uses. fd 4, for the same reason the loop uses fd 3.
+    # The FINAL run list, through the same filter chain the main loop uses.
+    # fd 4, for the same reason the loop uses fd 3. This is built by builtins
+    # only, which is what makes it the trustworthy side of check 2.
     _shard_eligible=""
     _shard_eligible_n=0
     while IFS= read -r _shard_suite <&4; do
@@ -3169,23 +3124,39 @@ if [ "$shard_total" -gt 0 ]; then
       _shard_eligible_n=$((_shard_eligible_n + 1))
     done 4< "$suites_file"
 
-    # Join -> sort -> pack. The %012d key is zero-padded so a plain reverse
-    # string sort on field 1 is a descending NUMERIC sort, which lets field 2
-    # break ties ascending by path in the same pass.
-    _shard_plan=$(printf '%s' "$_shard_eligible" \
-      | awk -v med="$_shard_median" '
-          FNR == NR {
-            if ($0 ~ /^[[:space:]]*#/) next
+    # Join -> sort -> pack, one pipeline, no rc checks. The median an absent
+    # suite is given is computed INSIDE the join rather than by a probe of its
+    # own: a probe that died on one runner would hand that runner a different
+    # median and so a different — but internally complete — partition from its
+    # siblings, which check 2 could not see. Folded in here, a failure kills
+    # the whole pipeline and the plan comes out short instead.
+    #
+    # The %012d key is zero-padded so a plain reverse string sort on field 1
+    # is a descending NUMERIC sort, which lets field 2 break ties ascending by
+    # path in the same pass.
+    _shard_plan=$(_SHARD_ELIGIBLE="$_shard_eligible" awk '
+          /^[[:space:]]*#/ { next }
+          {
             split($0, f, "\t")
-            if (f[1] != "" && f[2] ~ /^[0-9]+$/) dur[f[1]] = f[2] + 0
-            next
+            if (f[1] != "" && f[2] ~ /^[0-9]+$/) { dur[f[1]] = f[2] + 0; vals[++nv] = f[2] + 0 }
           }
-          $0 != "" {
-            d = ($0 in dur) ? dur[$0] : med
-            if (d < 1) d = 1
-            printf "%012d\t%s\n", d, $0
+          END {
+            for (i = 2; i <= nv; i++) {
+              v = vals[i]; j = i - 1
+              while (j >= 1 && vals[j] > v) { vals[j + 1] = vals[j]; j-- }
+              vals[j + 1] = v
+            }
+            med = (nv > 0) ? vals[int((nv + 1) / 2)] : 1
+            if (med < 1) med = 1
+            n = split(ENVIRON["_SHARD_ELIGIBLE"], rows, "\n")
+            for (i = 1; i <= n; i++) {
+              if (rows[i] == "") continue
+              d = (rows[i] in dur) ? dur[rows[i]] : med
+              if (d < 1) d = 1
+              printf "%012d\t%s\n", d, rows[i]
+            }
           }
-        ' "$_shard_ledger" - \
+        ' "$_shard_ledger" \
       | LC_ALL=C sort -t "$_shard_tab" -k1,1r -k2,2 \
       | awk -F'\t' -v n="$shard_total" '
           BEGIN { for (i = 0; i < n; i++) load[i] = 0 }
@@ -3195,50 +3166,55 @@ if [ "$shard_total" -gt 0 ]; then
             load[best] += $1 + 0
             print best "\t" $2
           }
-        ') || _shard_plan=""
+        ')
 
-    # The plan is accepted only if it PLACED EVERY ELIGIBLE SUITE. This runner
-    # runs under `set -uo pipefail` with no `-e`, so a failing stage of the
-    # pipeline above (an OOM-killed sort, a stubbed-out or broken tool on PATH,
-    # a full $TMPDIR) would not abort the run — it would leave $_shard_plan
-    # empty or truncated, and every shard would then silently drop the suites
-    # the plan never placed while still exiting 0. That is the HIMMEL-1128
-    # false-green class, and it is exactly what a balance optimisation is not
-    # allowed to cost. Counting is enough to catch it: the packer emits one
-    # line per input line, so a short count means a stage failed.
-    #
-    # A short count is the TRANSIENT, runner-local case from the header note
-    # above — the ledger already parsed, so the siblings will have packed
-    # successfully. Falling back here would put this shard on a partition none
-    # of them shares, so refuse instead.
-    _shard_plan_n=$(printf '%s' "$_shard_plan" | awk 'END { print NR }')
-    if [ "$_shard_plan_n" -ne "$_shard_eligible_n" ]; then
-      printf 'ERROR: --shard: the duration bin-pack placed %s of %s eligible suites — refusing to report green. A stage of the pack pipeline failed on this runner only, so falling back would leave this shard on a different partition from its siblings.\n' \
-        "$_shard_plan_n" "$_shard_eligible_n" >&2
-      exit 1
-    fi
-    # Extracting THIS shard's share is the last stage that can fail, and it
-    # fails the same runner-local way: a truncated extraction would quietly
-    # hand the shard fewer suites than the plan gave it while the siblings ran
-    # their full share, which is the thinned-partition false green again. The
-    # count is checked against the plan itself rather than trusting rc alone,
-    # so a stage that dies after emitting some of its output is caught too.
-    _shard_mine_list=$(printf '%s\n' "$_shard_plan" \
-      | awk -F'\t' -v me="$shard_offset" '$1 == me { print $2 }') \
-      || _shard_mine_list=""
-    _shard_mine_n=$(printf '%s' "$_shard_mine_list" | awk 'END { print NR }')
-    _shard_want_n=$(printf '%s' "$_shard_plan" \
-      | awk -F'\t' -v me="$shard_offset" '$1 == me { c++ } END { print c + 0 }') \
-      || _shard_want_n=-1
-    if [ "$_shard_mine_n" -ne "$_shard_want_n" ]; then
-      printf 'ERROR: --shard: extracting this shard from the bin-pack plan yielded %s of its %s suites — refusing to report green. A stage failed on this runner only, so running the short list would leave the matrix covering less than the full run list.\n' \
-        "$_shard_mine_n" "$_shard_want_n" >&2
+    # This shard's slice, taken out of the plan by builtins alone. There is no
+    # tool here to die half-way and hand the shard a short list.
+    _shard_mine_list=""
+    _shard_mine_n=0
+    while IFS="$_shard_tab" read -r _shard_bin _shard_path; do
+      [ -n "$_shard_path" ] || continue
+      [ "$_shard_bin" = "$shard_offset" ] || continue
+      _shard_mine_list="${_shard_mine_list}${_shard_path}${_shard_nl}"
+      _shard_mine_n=$((_shard_mine_n + 1))
+    done <<< "$_shard_plan"
+
+    # Check 2, the whole correctness argument in one place: the plan must hold
+    # every eligible suite EXACTLY ONCE — that is 22a/22g's property, union ==
+    # the unsharded run list and the shards pairwise disjoint — and this
+    # shard's slice must be exactly the plan's rows for i. The eligible list
+    # goes in on stdin and the plan through the environment (no -v, whose
+    # escape processing would rewrite a backslash in a path); anything wrong,
+    # including awk itself dying, leaves the verdict unequal to what the shell
+    # counted, so the check is fail-closed and cannot pass vacuously.
+    _shard_verdict=$(printf '%s' "$_shard_eligible" \
+      | _SHARD_PLAN="$_shard_plan" awk -v me="$shard_offset" '
+          { want[$0] = 1; want_n++ }
+          END {
+            n = split(ENVIRON["_SHARD_PLAN"], rows, "\n")
+            for (i = 1; i <= n; i++) {
+              if (rows[i] == "") continue
+              t = index(rows[i], "\t")
+              if (t == 0) exit 1
+              bin = substr(rows[i], 1, t - 1)
+              suite = substr(rows[i], t + 1)
+              if (!(suite in want) || (suite in seen)) exit 1
+              seen[suite] = 1
+              placed++
+              if (bin == me) mine++
+            }
+            if (placed + 0 != want_n + 0) exit 1
+            print "OK " (want_n + 0) " " (mine + 0)
+          }
+        ')
+    if [ "$_shard_verdict" != "OK $_shard_eligible_n $_shard_mine_n" ]; then
+      printf 'ERROR: --shard: the duration bin-pack did not place every eligible suite exactly once, or this shard'"'"'s slice of the plan does not match it — refusing to report green. Recovering locally would leave this shard on a different partition from its siblings, so the run goes red rather than quietly thin.\n' >&2
       exit 1
     fi
     shard_assignment="${_shard_nl}${_shard_mine_list}${_shard_nl}"
     shard_binpack=1
   else
-    printf "run-shell-tests.sh: --shard: duration ledger '%s' is missing, unreadable, empty or malformed — falling back to round-robin assignment (balance only; the partition stays exact)\n" \
+    printf "run-shell-tests.sh: --shard: duration ledger '%s' is missing or unreadable — falling back to round-robin assignment (balance only; the partition stays exact)\n" \
       "$_shard_ledger" >&2
   fi
 fi

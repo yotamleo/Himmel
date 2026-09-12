@@ -1554,10 +1554,16 @@ fi
 rm -rf "$sb22j"
 fi
 
-# 22k — the ledger is ADVISORY. Missing, empty and malformed each fall back to
-# the HIMMEL-2872 round-robin partition — byte-identical to what the runner
-# planned before this ticket — and say so once on stderr. A missing
-# optimisation must never fail a run or silently change the corpus.
+# 22k — the ledger is ADVISORY. Missing, empty and malformed all land on the
+# HIMMEL-2872 round-robin partition — byte-identical to what the runner planned
+# before this ticket — by two different routes that must be indistinguishable
+# from the outside. A MISSING ledger is the runner's one fallback: shell
+# builtins decide it off a committed file, so every shard reaches the same
+# verdict and says so once on stderr. A ledger that is present but carries no
+# parseable row is not a fallback at all — it packs, every suite takes the
+# median of nothing (floored to 1s), and a pack with all durations equal
+# degenerates exactly to `i % n`, which is 22a/22h's property. Either way a
+# missing optimisation must never fail a run or silently change the corpus.
 sb22k=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22k.XXXXXX") || { fail "22k: mktemp failed"; sb22k=""; }
 if [ -n "$sb22k" ]; then
 mk_shard_sandbox "$sb22k" 6
@@ -1572,13 +1578,24 @@ for led22k in "$miss22k" "$empty22k" "$bad22k"; do
   o2_22k=$(SUITE_DURATIONS="$led22k" bash "$RUNNER" --list --shard 2/2 "$sb22k" 2>&1)
   if [ "$rc1_22k" -eq 0 ] \
      && [ "$(run_lines "$o1_22k")" = "$rr1_22k" ] \
-     && [ "$(run_lines "$o2_22k")" = "$rr2_22k" ] \
-     && grepq "$o1_22k" -F 'falling back to round-robin'; then
-    pass "22k: unusable ledger ($(basename "$led22k")) -> round-robin partition + one notice"
+     && [ "$(run_lines "$o2_22k")" = "$rr2_22k" ]; then
+    pass "22k: unusable ledger ($(basename "$led22k")) -> the round-robin partition, exactly"
   else
     fail "22k: unusable ledger ($(basename "$led22k")) diverged; rc=$rc1_22k shard1='$(run_lines "$o1_22k")' shard2='$(run_lines "$o2_22k")' out1: $o1_22k"
   fi
 done
+# Only the MISSING ledger is the fallback, and only it announces itself. A
+# present-but-junk ledger reaches the same partition through the packer, so it
+# has nothing to announce — asserting the absence keeps the two routes honest
+# about which one actually ran.
+o1miss_22k=$(SUITE_DURATIONS="$miss22k" bash "$RUNNER" --list --shard 1/2 "$sb22k" 2>&1)
+o1bad_22k=$(SUITE_DURATIONS="$bad22k" bash "$RUNNER" --list --shard 1/2 "$sb22k" 2>&1)
+if grepq "$o1miss_22k" -F 'falling back to round-robin' \
+   && ! grepq "$o1bad_22k" -F 'falling back to round-robin'; then
+  pass "22k: the missing ledger announces the fallback; a junk one packs silently"
+else
+  fail "22k: fallback notice misplaced; miss: $o1miss_22k --- bad: $o1bad_22k"
+fi
 rm -rf "$sb22k"
 fi
 
@@ -1630,31 +1647,46 @@ rm -rf "$sb22l"
 fi
 
 
-# 22m — an INCOMPLETE bin-pack plan must fail the shard, never quietly change
-# its assignment (CR rounds 1 and 2, [codex-1] both times). The join|sort|pack
-# pipeline runs under `set -uo pipefail` with no `set -e`, so a failing stage
-# does not abort the run: it would leave the plan empty or truncated, and the
-# runner would then believe it had an assignment and silently drop every suite
-# the plan never placed, still exiting 0 — HIMMEL-1128's false-green class,
-# reached through a balance optimisation.
+# 22m–22p — the ONE guard, from four directions. The runner asks two questions
+# (is the ledger there? did the pack come out right?), and everything a tool
+# can do to the pack — die outright, exit early, emit half its output — has to
+# surface at the second one. These four cases each kill exactly ONE tool in the
+# join|sort|pack|verify chain and assert the same thing: rc != 0, an empty
+# assignment, and the single refusal message. Never a silent re-partition,
+# which is the HIMMEL-1128 false-green class this guard exists for.
 #
-# Round 2 is why this REFUSES rather than falling back. Each shard is a
-# separate process deciding alone, and a pipeline stage dies on ONE runner, so
-# a local fallback would put this shard on round-robin while its siblings
-# bin-packed: two partitions in force at once, which duplicates some suites and
-# leaves others on no shard at all. The unusable-LEDGER fallback (22k) is safe
-# for the opposite reason — it is derived from a committed file every shard
-# reads identically, so they all fall back together.
+# Each stub is keyed on a token unique to its target's own argv, so every other
+# sort and awk in the runner still execs the real tool:
+#   22m  sort -k1,1r   the pack sort            22o  awk 'load['   the packer
+#   22n  awk '%012d'   the join (and median)    22p  awk -v me=    the verify
 #
-# The control breaks exactly ONE stage: a `sort` stub that fails only for the
-# pack sort's own argv (-k1,1r) and execs the real sort for every other call,
-# so suite discovery (which sorts a FILE and hard-fails on a bad rc, "refusing
-# to report green") and the median probe (`sort -n`) both still work. A blanket
-# failing-sort stub is useless here — discovery aborts before the pack pipeline
-# is ever reached, so it would prove nothing about this path.
+# The unusable-LEDGER fallback (22k) is the opposite case and stays a fallback:
+# it is decided off a committed file by shell builtins, so every shard reaches
+# the same verdict and the round-robin partition it falls back to is exact
+# across the whole matrix. A tool dying is local to one runner, and a shard
+# recovering alone would run a partition none of its siblings shares.
+#
+# The single quotes in both writers are the point: those lines are the STUB's
+# source, so its own "$@" and "$_a" must survive into the file unexpanded.
+# shellcheck disable=SC2016
+rst_tool_stub() {  # $1 = dir to create in, $2 = tool name, $3 = argv token, $4 = the real tool
+  mkdir -p "$1"
+  { printf '#!/usr/bin/env bash\n'
+    printf 'for _a in "$@"; do\n'
+    printf '  if printf %s "$_a" | grep -qF -- %s; then exit 1; fi\n' "'%s'" "'$3'"
+    printf 'done\n'
+    printf 'exec %s "$@"\n' "$4"; } > "$1/$2"
+  chmod +x "$1/$2"
+}
+
+# One sandbox for all four. s1 (100s) against s3 (90s) plus four 1s suites
+# means the bin-pack puts s1 ALONE on shard 1, where round-robin would give it
+# s1, s3 and s5 — so "the guard did not fire and we silently fell back" and
+# "the guard did not fire and we packed correctly" cannot be confused.
 sb22m=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22m.XXXXXX") || { fail "22m: mktemp failed"; sb22m=""; }
 real_sort_22m=$(command -v sort)
-if [ -n "$sb22m" ] && [ -n "$real_sort_22m" ]; then
+real_awk_22m=$(command -v awk)
+if [ -n "$sb22m" ] && [ -n "$real_sort_22m" ] && [ -n "$real_awk_22m" ]; then
 mk_shard_sandbox "$sb22m" 6
 led22m="$sb22m/durations.tsv"
 { printf '# suite\tseconds\n'
@@ -1664,144 +1696,37 @@ led22m="$sb22m/durations.tsv"
   printf '%s/test-s4.sh\t1\n'   "$sb22m"
   printf '%s/test-s5.sh\t1\n'   "$sb22m"
   printf '%s/test-s6.sh\t1\n'   "$sb22m"; } > "$led22m"
-stub22m="$sb22m/stub-bin"
-mkdir -p "$stub22m"
-# The single quotes are the point: these lines are the STUB's source, so its
-# own "$@" and "$_a" must survive into the file unexpanded.
-# shellcheck disable=SC2016
-{ printf '#!/usr/bin/env bash\n'
-  printf 'for _a in "$@"; do\n'
-  printf '  case "$_a" in -k1,1r) exit 1 ;; esac\n'
-  printf 'done\n'
-  printf 'exec %s "$@"\n' "$real_sort_22m"; } > "$stub22m/sort"
-chmod +x "$stub22m/sort"
-o122m=$(PATH="$stub22m:$PATH" SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1); rc122m=$?
-if [ "$rc122m" -ne 0 ] \
-   && [ -z "$(run_lines "$o122m")" ] \
-   && grepq "$o122m" -F 'refusing to report green'; then
-  pass "22m: a failed pack stage refuses — no suite is silently dropped"
+
+rst_tool_stub "$sb22m/stub-m" sort '-k1,1r'  "$real_sort_22m"
+rst_tool_stub "$sb22m/stub-n" awk  '%012d'   "$real_awk_22m"
+rst_tool_stub "$sb22m/stub-o" awk  'load['   "$real_awk_22m"
+rst_tool_stub "$sb22m/stub-p" awk  'me='     "$real_awk_22m"
+
+for case22m in "m:the pack sort" "n:the join and its median" "o:the packer" "p:the verify"; do
+  id22m="22${case22m%%:*}"
+  what22m="${case22m#*:}"
+  o22m=$(PATH="$sb22m/stub-${case22m%%:*}:$PATH" SUITE_DURATIONS="$led22m" \
+    bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1); rc22m=$?
+  if [ "$rc22m" -ne 0 ] \
+     && [ -z "$(run_lines "$o22m")" ] \
+     && grepq "$o22m" -F 'refusing to report green'; then
+    pass "$id22m: killing $what22m refuses — no suite is silently dropped or re-partitioned"
+  else
+    fail "$id22m: killing $what22m did not refuse; rc=$rc22m shard1='$(run_lines "$o22m")' out: $o22m"
+  fi
+done
+
+# The non-vacuity control: the SAME sandbox and ledger, no stub on PATH. If
+# this ever stopped bin-packing, all four cases above would pass for the wrong
+# reason. s1 alone on shard 1 is the bin-pack answer; round-robin's would be
+# s1, s3, s5.
+o22mc=$(SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1); rc22mc=$?
+if [ "$rc22mc" -eq 0 ] && [ "$(run_lines "$o22mc")" = "$sb22m/test-s1.sh" ]; then
+  pass "22m-p: control — the same ledger and sandbox bin-pack normally with every tool working"
 else
-  fail "22m: incomplete plan was used; rc=$rc122m shard1='$(run_lines "$o122m")' out1: $o122m"
-fi
-# The same sandbox WITHOUT the stub bin-packs: s1 (100s) ends up alone against
-# s3 (90s) plus the four 1s suites. That is what makes the case above evidence
-# about the BROKEN STAGE rather than about a ledger that was never read.
-o322m=$(SUITE_DURATIONS="$led22m" bash "$RUNNER" --list --shard 1/2 "$sb22m" 2>&1)
-if [ "$(run_lines "$o322m")" = "$sb22m/test-s1.sh" ]; then
-  pass "22m: control — the same ledger bin-packs normally when sort works"
-else
-  fail "22m: control did not bin-pack; shard1='$(run_lines "$o322m")' out: $o322m"
+  fail "22m-p: control did not bin-pack; rc=$rc22mc shard1='$(run_lines "$o22mc")' out: $o22mc"
 fi
 rm -rf "$sb22m"
-fi
-
-
-# 22n — the OTHER transient stage: the median probe. It runs before the pack
-# pipeline and is the second place a runner-local tool failure could quietly
-# change this shard's assignment strategy. It is read in two stages precisely
-# so the two outcomes stay distinguishable: "no row parses" (rc=0, no output —
-# a property of the committed file, so 22k's round-robin fallback is safe) vs
-# "sort died on this runner" (rc!=0 — local, so falling back would strand this
-# shard on a partition its siblings never used). This case drives the second.
-#
-# The stub fails only on `-n`, which is the median probe's own argv and the
-# runner's ONLY numeric sort; discovery's plain `sort <file>` and the pack
-# sort's `-k1,1r` both still exec the real tool.
-sb22n=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22n.XXXXXX") || { fail "22n: mktemp failed"; sb22n=""; }
-real_sort_22n=$(command -v sort)
-if [ -n "$sb22n" ] && [ -n "$real_sort_22n" ]; then
-mk_shard_sandbox "$sb22n" 4
-led22n="$sb22n/durations.tsv"
-{ printf '# suite\tseconds\n'
-  printf '%s/test-s1.sh\t50\n' "$sb22n"
-  printf '%s/test-s2.sh\t7\n'  "$sb22n"; } > "$led22n"
-stub22n="$sb22n/stub-bin"
-mkdir -p "$stub22n"
-# shellcheck disable=SC2016  # these lines are the STUB's source: its own "$@" must not expand here
-{ printf '#!/usr/bin/env bash\n'
-  printf 'for _a in "$@"; do\n'
-  printf '  case "$_a" in -n) exit 1 ;; esac\n'
-  printf 'done\n'
-  printf 'exec %s "$@"\n' "$real_sort_22n"; } > "$stub22n/sort"
-chmod +x "$stub22n/sort"
-o122n=$(PATH="$stub22n:$PATH" SUITE_DURATIONS="$led22n" bash "$RUNNER" --list --shard 1/2 "$sb22n" 2>&1); rc122n=$?
-if [ "$rc122n" -ne 0 ] \
-   && [ -z "$(run_lines "$o122n")" ] \
-   && grepq "$o122n" -F 'median could not be computed'; then
-  pass "22n: a failed median probe on a PARSEABLE ledger refuses, it does not fall back"
-else
-  fail "22n: median-probe failure did not refuse; rc=$rc122n shard1='$(run_lines "$o122n")' out: $o122n"
-fi
-# Non-vacuity: the same sandbox without the stub runs normally and says nothing
-# about a median, so the case above is evidence about the broken probe.
-o222n=$(SUITE_DURATIONS="$led22n" bash "$RUNNER" --list --shard 1/2 "$sb22n" 2>&1); rc222n=$?
-if [ "$rc222n" -eq 0 ] && [ -n "$(run_lines "$o222n")" ] && ! grepq "$o222n" -F 'median could not be computed'; then
-  pass "22n: control — the same ledger and sandbox run clean when sort works"
-else
-  fail "22n: control did not run clean; rc=$rc222n shard1='$(run_lines "$o222n")' out: $o222n"
-fi
-rm -rf "$sb22n"
-fi
-
-# 22o / 22p — the remaining two stages of the bin-pack block, same invariant as
-# 22m/22n (CR round 3, [codex-1] and [codex-2]). Every stage between "read the
-# ledger" and "this shard's list" can fail on ONE runner, and every one of them
-# must refuse rather than recover locally, because a local recovery puts this
-# shard on a partition its siblings are not using. 22o breaks the ledger read
-# itself on a file that is present and readable — which is what separates it
-# from 22k's absent/unparseable ledger, where every shard agrees and the
-# round-robin fallback is exact. 22p breaks the final extraction, the one stage
-# that runs AFTER the whole-plan completeness check.
-#
-# Both stubs key on a token unique to the one awk invocation they are aiming
-# at, so the runner's many other awk calls still exec the real tool: the ledger
-# read is the only program containing `NF >= 2`, and the extraction is the only
-# call passing `me=` on argv.
-# shellcheck disable=SC2016  # the format strings below are the STUB's source: its own "$@"/"$_a" must not expand here
-rst_awk_stub_22() {  # $1 = dir to create the stub in, $2 = argv token to fail on, $3 = the real awk
-  mkdir -p "$1"
-  { printf '#!/usr/bin/env bash\n'
-    printf 'for _a in "$@"; do\n'
-    printf '  if printf %s "$_a" | grep -q %s; then exit 1; fi\n' "'%s'" "'$2'"
-    printf 'done\n'
-    printf 'exec %s "$@"\n' "$3"; } > "$1/awk"
-  chmod +x "$1/awk"
-}
-
-sb22o=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22o.XXXXXX") || { fail "22o: mktemp failed"; sb22o=""; }
-real_awk_22=$(command -v awk)
-if [ -n "$sb22o" ] && [ -n "$real_awk_22" ]; then
-mk_shard_sandbox "$sb22o" 4
-led22o="$sb22o/durations.tsv"
-{ printf '# suite\tseconds\n'
-  printf '%s/test-s1.sh\t50\n' "$sb22o"
-  printf '%s/test-s2.sh\t7\n'  "$sb22o"; } > "$led22o"
-rst_awk_stub_22 "$sb22o/stub-read" 'NF >= 2' "$real_awk_22"
-o122o=$(PATH="$sb22o/stub-read:$PATH" SUITE_DURATIONS="$led22o" bash "$RUNNER" --list --shard 1/2 "$sb22o" 2>&1); rc122o=$?
-if [ "$rc122o" -ne 0 ] \
-   && [ -z "$(run_lines "$o122o")" ] \
-   && grepq "$o122o" -F 'present and readable'; then
-  pass "22o: a ledger read that fails on a present, readable file refuses, it does not fall back"
-else
-  fail "22o: broken ledger read did not refuse; rc=$rc122o shard1='$(run_lines "$o122o")' out: $o122o"
-fi
-o222o=$(SUITE_DURATIONS="$led22o" bash "$RUNNER" --list --shard 1/2 "$sb22o" 2>&1); rc222o=$?
-if [ "$rc222o" -eq 0 ] && [ -n "$(run_lines "$o222o")" ]; then
-  pass "22o: control — the same ledger and sandbox run clean when awk works"
-else
-  fail "22o: control did not run clean; rc=$rc222o out: $o222o"
-fi
-
-rst_awk_stub_22 "$sb22o/stub-extract" 'me=' "$real_awk_22"
-o122p=$(PATH="$sb22o/stub-extract:$PATH" SUITE_DURATIONS="$led22o" bash "$RUNNER" --list --shard 1/2 "$sb22o" 2>&1); rc122p=$?
-if [ "$rc122p" -ne 0 ] \
-   && [ -z "$(run_lines "$o122p")" ] \
-   && grepq "$o122p" -F 'refusing to report green'; then
-  pass "22p: a failed extraction of this shard's share refuses, after the plan itself validated"
-else
-  fail "22p: broken extraction did not refuse; rc=$rc122p shard1='$(run_lines "$o122p")' out: $o122p"
-fi
-rm -rf "$sb22o"
 fi
 
 rst_tally
