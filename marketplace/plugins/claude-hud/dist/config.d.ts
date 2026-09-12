@@ -134,6 +134,7 @@ export interface HudConfig {
         showMemoryUsage: boolean;
         showPromptCache: boolean;
         promptCacheTtlSeconds: number;
+        showPromptCacheEconomics: boolean;
         showSessionTokens: boolean;
         showOutputStyle: boolean;
         showSessionStartDate: boolean;

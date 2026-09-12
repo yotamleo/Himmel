@@ -15,6 +15,9 @@ export const zhHant = {
     "label.lastReply": "上次回覆",
     "label.advisor": "顧問",
     "label.compactions": "壓縮次數",
+    "label.cacheEconomicsSession": "工作階段",
+    "label.cacheEconomicsAll": "全部",
+    "label.cacheEconomicsCost": "費用",
     // Status
     "status.limitReached": "已達上限",
     "status.allTodosComplete": "全部完成",

@@ -45,7 +45,7 @@ function matchModelPricing(modelName) {
 function calculateUsd(tokens, usdPerMillion) {
     return (tokens * usdPerMillion) / TOKENS_PER_MILLION;
 }
-function getModelPricing(stdin) {
+export function getModelPricing(stdin) {
     const candidates = [
         stdin.model?.display_name?.trim(),
         stdin.model?.id?.trim(),
@@ -60,6 +60,16 @@ function getModelPricing(stdin) {
         }
     }
     return null;
+}
+// Cache convention shared with estimateSessionCost: a model that does not
+// publish explicit cache rates is priced at the standard prompt-caching
+// multipliers off its input rate (write = 1.25x, read = 0.1x).
+export function resolveEffectiveCachePricing(pricing) {
+    const cacheWriteUsdPerMillion = pricing.cacheWriteUsdPerMillion === undefined
+        ? pricing.inputUsdPerMillion * CACHE_WRITE_MULTIPLIER
+        : pricing.cacheWriteUsdPerMillion ?? 0;
+    const cacheReadUsdPerMillion = pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion * CACHE_READ_MULTIPLIER;
+    return { inputUsdPerMillion: pricing.inputUsdPerMillion, cacheReadUsdPerMillion, cacheWriteUsdPerMillion };
 }
 export function estimateSessionCost(stdin, sessionTokens, options) {
     if (!sessionTokens) {
@@ -84,10 +94,7 @@ export function estimateSessionCost(stdin, sessionTokens, options) {
         return null;
     }
     const inputUsd = calculateUsd(sessionTokens.inputTokens, pricing.inputUsdPerMillion);
-    const cacheWriteUsdPerMillion = pricing.cacheWriteUsdPerMillion === undefined
-        ? pricing.inputUsdPerMillion * CACHE_WRITE_MULTIPLIER
-        : pricing.cacheWriteUsdPerMillion ?? 0;
-    const cacheReadUsdPerMillion = pricing.cacheReadUsdPerMillion ?? pricing.inputUsdPerMillion * CACHE_READ_MULTIPLIER;
+    const { cacheReadUsdPerMillion, cacheWriteUsdPerMillion } = resolveEffectiveCachePricing(pricing);
     const cacheCreationUsd = calculateUsd(sessionTokens.cacheCreationTokens, cacheWriteUsdPerMillion);
     const cacheReadUsd = calculateUsd(sessionTokens.cacheReadTokens, cacheReadUsdPerMillion);
     const outputUsd = calculateUsd(sessionTokens.outputTokens, pricing.outputUsdPerMillion);

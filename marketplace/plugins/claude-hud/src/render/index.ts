@@ -17,6 +17,7 @@ import {
   renderMemoryLine,
   renderSessionTokensLine,
   renderCompactionsLine,
+  renderPromptCacheEconomicsLine,
   renderSessionTimeLine,
 } from './lines/index.js';
 import { dim, RESET } from './colors.js';
@@ -615,6 +616,12 @@ export function render(ctx: RenderContext): void {
     const compactionsLine = renderCompactionsLine(ctx);
     if (compactionsLine) {
       lines.push(compactionsLine);
+    }
+
+    // Cache economics (opt-in): session + all-sessions r/w/hit/net/cost.
+    const cacheEconomicsLine = renderPromptCacheEconomicsLine(ctx);
+    if (cacheEconomicsLine) {
+      lines.push(cacheEconomicsLine);
     }
 
     // Advisor is rendered inline on the project line; see renderProjectLine.

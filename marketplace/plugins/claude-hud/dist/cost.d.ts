@@ -1,4 +1,10 @@
 import type { SessionTokenUsage, StdinData } from './types.js';
+export type ModelPricing = {
+    inputUsdPerMillion: number;
+    outputUsdPerMillion: number;
+    cacheReadUsdPerMillion?: number;
+    cacheWriteUsdPerMillion?: number | null;
+};
 export interface SessionCostEstimate {
     totalUsd: number;
     inputUsd: number;
@@ -10,6 +16,13 @@ export interface SessionCostDisplay {
     totalUsd: number;
     source: 'native' | 'estimate';
 }
+export declare function getModelPricing(stdin: StdinData): ModelPricing | null;
+export interface EffectiveCachePricing {
+    inputUsdPerMillion: number;
+    cacheReadUsdPerMillion: number;
+    cacheWriteUsdPerMillion: number;
+}
+export declare function resolveEffectiveCachePricing(pricing: ModelPricing): EffectiveCachePricing;
 export declare function estimateSessionCost(stdin: StdinData, sessionTokens: SessionTokenUsage | undefined, options?: {
     allowRoutedCost?: boolean;
 }): SessionCostEstimate | null;

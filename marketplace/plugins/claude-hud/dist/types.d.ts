@@ -1,6 +1,7 @@
 import type { HudConfig } from './config.js';
 import type { GitStatus } from './git.js';
 import type { AuthInfo } from './auth.js';
+import type { CacheEconomicsTotals } from './cache-economics.js';
 export interface StdinData {
     session_id?: string;
     transcript_path?: string;
@@ -178,5 +179,6 @@ export interface RenderContext {
     effortLevel?: string;
     effortSymbol?: string;
     authInfo?: AuthInfo | null;
+    allSessionsCacheEconomics?: CacheEconomicsTotals | null;
 }
 //# sourceMappingURL=types.d.ts.map

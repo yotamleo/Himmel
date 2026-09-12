@@ -238,6 +238,8 @@ export interface HudConfig {
     // Compatibility fallback used only until transcript tier detection has a
     // real 5-minute or 1-hour cache write to follow.
     promptCacheTtlSeconds: number;
+    // Session + all-sessions cache read/write/hit-rate/net-savings/cost row.
+    showPromptCacheEconomics: boolean;
     showSessionTokens: boolean;
     showOutputStyle: boolean;
     showSessionStartDate: boolean;
@@ -355,6 +357,7 @@ export const DEFAULT_CONFIG: HudConfig = {
     showMemoryUsage: false,
     showPromptCache: false,
     promptCacheTtlSeconds: 300,
+    showPromptCacheEconomics: false,
     showSessionTokens: false,
     showOutputStyle: false,
     showSessionStartDate: false,
@@ -894,6 +897,9 @@ export function mergeConfig(userConfig: Partial<HudConfig>): HudConfig {
       migrated.display?.promptCacheTtlSeconds,
       DEFAULT_CONFIG.display.promptCacheTtlSeconds,
     ),
+    showPromptCacheEconomics: typeof migrated.display?.showPromptCacheEconomics === 'boolean'
+      ? migrated.display.showPromptCacheEconomics
+      : DEFAULT_CONFIG.display.showPromptCacheEconomics,
     showSessionTokens: typeof migrated.display?.showSessionTokens === 'boolean'
       ? migrated.display.showSessionTokens
       : DEFAULT_CONFIG.display.showSessionTokens,
