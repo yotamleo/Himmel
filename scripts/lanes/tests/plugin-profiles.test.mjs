@@ -473,6 +473,61 @@ test('collectMcpServerDefs: a name found nowhere refuses rather than hand-writin
   );
 });
 
+test('collectMcpServerDefs: refuses to copy a definition whose args reference ${CLAUDE_PLUGIN_ROOT}', () => {
+  const dir = makeTmpDir('pp-mcp-defs-pluginroot-args-');
+  const marketplaceDir = join(dir, 'marketplace', 'plugins');
+  mkdirSync(join(marketplaceDir, 'telegram-himmel'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'telegram-himmel', '.mcp.json'), JSON.stringify({
+    mcpServers: { 'telegram-himmel': { type: 'stdio', command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/server.js'] } },
+  }));
+  assert.throws(
+    () => collectMcpServerDefs(['telegram-himmel'], { homeConfigPath: join(dir, 'home.json'), repoMcpPath: join(dir, '.mcp.json'), marketplaceDir }),
+    /plugin-profiles:.*"telegram-himmel".*args.*CLAUDE_PLUGIN_ROOT/s,
+  );
+});
+
+test('collectMcpServerDefs: refuses a ${CLAUDE_PLUGIN_ROOT} reference in command or env too', () => {
+  const dir = makeTmpDir('pp-mcp-defs-pluginroot-cmdenv-');
+  const marketplaceDir = join(dir, 'marketplace', 'plugins');
+  mkdirSync(join(marketplaceDir, 'cmd-ref'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'cmd-ref', '.mcp.json'), JSON.stringify({
+    mcpServers: { 'cmd-ref': { type: 'stdio', command: '${CLAUDE_PLUGIN_ROOT}/bin/run', args: [] } },
+  }));
+  assert.throws(
+    () => collectMcpServerDefs(['cmd-ref'], { homeConfigPath: join(dir, 'home.json'), repoMcpPath: join(dir, '.mcp.json'), marketplaceDir }),
+    /plugin-profiles:.*"cmd-ref".*command.*CLAUDE_PLUGIN_ROOT/s,
+  );
+
+  mkdirSync(join(marketplaceDir, 'env-ref'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'env-ref', '.mcp.json'), JSON.stringify({
+    mcpServers: { 'env-ref': { type: 'stdio', command: 'node', args: ['server.js'], env: { FOO: '${CLAUDE_PLUGIN_ROOT}/data' } } },
+  }));
+  assert.throws(
+    () => collectMcpServerDefs(['env-ref'], { homeConfigPath: join(dir, 'home.json'), repoMcpPath: join(dir, '.mcp.json'), marketplaceDir }),
+    /plugin-profiles:.*"env-ref".*env.*CLAUDE_PLUGIN_ROOT/s,
+  );
+});
+
+test('collectMcpServerDefs: a command-based def with no ${CLAUDE_PLUGIN_ROOT} reference, and an http def, still copy through unchanged', () => {
+  const dir = makeTmpDir('pp-mcp-defs-control-');
+  const marketplaceDir = join(dir, 'marketplace', 'plugins');
+  mkdirSync(join(marketplaceDir, 'plain-cmd'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'plain-cmd', '.mcp.json'), JSON.stringify({
+    mcpServers: { 'plain-cmd': { type: 'stdio', command: 'node', args: ['/abs/server.js'], env: { FOO: 'bar' } } },
+  }));
+  mkdirSync(join(marketplaceDir, 'plain-http'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'plain-http', '.mcp.json'), JSON.stringify({
+    mcpServers: { 'plain-http': { type: 'http', url: 'http://localhost:9/mcp' } },
+  }));
+  const cfg = collectMcpServerDefs(['plain-cmd', 'plain-http'], { homeConfigPath: join(dir, 'home.json'), repoMcpPath: join(dir, '.mcp.json'), marketplaceDir });
+  assert.deepEqual(cfg, {
+    mcpServers: {
+      'plain-cmd': { type: 'stdio', command: 'node', args: ['/abs/server.js'], env: { FOO: 'bar' } },
+      'plain-http': { type: 'http', url: 'http://localhost:9/mcp' },
+    },
+  });
+});
+
 test('CLI: --mcp-servers prints the profile\'s allowlist, or null when the field is absent', () => {
   const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
   const okRun = spawnSync(process.execPath, [cli, 'leg-impl', '--mcp-servers'], { encoding: 'utf8' });
