@@ -1766,9 +1766,18 @@ arming direction (HIMMEL-2933). That cross-segment carry is SCOPED to the
 `( … )` subshell it was learned in: a clear at paren-depth ≥1 drops back out
 when its matching `)` closes, so `(unset SEAM); bash
 scripts/handover/merge-on-green.sh` still allows, while any unresolved paren
-(unmatched `)`, an unclosed subshell, `$( … )` command substitution, a `{ … }`
-group, or a `bash -c`/`eval` string) stays fail-closed at depth 0 exactly like
-today (HIMMEL-2929). Known residual (accepted, unchanged posture,
+(unmatched `)`, an unclosed subshell, a `{ … }` group, or a `bash -c`/`eval`
+string) stays fail-closed at depth 0 exactly like today (HIMMEL-2929). The
+paren-depth counter is plain balanced-single-`(`/`)` only, with one global
+override: if the command contains `((`, `$( … )` or a backtick ANYWHERE,
+depth tracking is disabled for the whole call and every clear folds forward
+as if no parens were present. Telling an arithmetic compound or command
+substitution's own parens apart from a real subshell's, paren-by-paren, was
+tried twice (HIMMEL-2929 rounds 1-2) and each attempt found the next false
+ALLOW at the next nesting shape — the collapse trades scoping precision on
+those shapes for never being wrong in the ALLOW direction; a subshell-scoped
+clear that shares a payload with an unrelated `$(...)` elsewhere is a
+documented over-deny. Known residual (accepted, unchanged posture,
 HIMMEL-912): deliberately case-varied paths/vars, a path assembled from
 shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 -exec` wrappers, and string reconstruction deeper than the bounded

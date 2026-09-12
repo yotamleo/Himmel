@@ -289,11 +289,20 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
 # '|', '(', ')' and backticks ('&&' / '||' / ';;' leave empty middle
 # segments, which callers skip; '(' covers subshells, function bodies, and
 # -- because '$' is an ordinary word char -- '$(...)' command substitution).
-# PAREN DEPTH (HIMMEL-2929, fail-closed): a bare '(' is a real subshell
-# open, depth++ up to its matching ')'; a '(' preceded by '$' is command
-# substitution, not a subshell -- depth-NEUTRAL on a kind stack so nesting
-# still matches, but it never folds a clear away. A stray ')' with nothing
-# open latches "confused": every later depth in this text reports 0
+# PAREN DEPTH (HIMMEL-2929, fail-closed, collapsed per operator ruling after
+# two rounds of false-ALLOW in a kind-tracking model): if the flat command
+# contains `((`, `$(` or a backtick ANYWHERE, depth tracking is disabled
+# entirely for the whole call -- every name folds forward as if no parens
+# were ever seen (depth 0, the safe DENY direction). Arithmetic compounds
+# and command substitution are same-shell/opaque constructs a plain paren
+# counter cannot tell apart from a real subshell without re-deriving bash's
+# grammar (each attempt so far found the next edge case in the ALLOW
+# direction, the one direction this guard must never be wrong in), so this
+# guard deliberately over-denies those shapes rather than model them.
+# Otherwise (no arithmetic/command-sub/backtick anywhere in the text), a
+# bare '(' is a real subshell open, depth++ up to its matching ')' --
+# plain balanced counting, no kind stack. A stray ')' with nothing open
+# latches "confused": every later depth in this text reports 0
 # (fold-forward). A '(' left open at EOF is simply never popped, which
 # already folds forward. Single-quoted spans are opaque;
 # double-quoted spans are opaque EXCEPT that '$(' and backticks inside
@@ -305,9 +314,12 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
 # Self-contained on purpose: the repo's shared tokenizer work is fenced
 # off (HIMMEL-1688) and this guard must not grow a dependency on it.
 segment_cmd() {
-    local s="$1" seg='' c i n sub pdepth=0 confused=0 pk=0
-    local -a PKIND
+    local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope=0
     n=${#s}
+    # shellcheck disable=SC2016  # glob literals, not expansions
+    case "$s" in
+    *'(('* | *'$('* | *'`'*) no_scope=1 ;;
+    esac
     i=0
     while [ "$i" -lt "$n" ]; do
         c=${s:i:1}
@@ -375,40 +387,18 @@ segment_cmd() {
             ;;
         \()
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
-            if [ "$confused" = "0" ]; then
-                # HIMMEL-2929 codex-1: bash parses a leading `((` as the
-                # arithmetic compound command (same-shell, never a subshell),
-                # not two touching subshells -- an adjacent run of `(` stays
-                # neutral just like `$(`, so `((HIMMEL_CONSOLE_LEG=0))` still
-                # folds forward instead of being scoped away at the `))`.
-                if { [ "$i" -gt 0 ] && [ "${s:$((i - 1)):1}" = '$' ]; } ||
-                   { [ "$i" -gt 0 ] && [ "${s:$((i - 1)):1}" = '(' ]; } ||
-                   [ "${s:$((i + 1)):1}" = "(" ] ||
-                   { [ "$pk" -gt 0 ] && [ "${PKIND[$((pk - 1))]}" = "n" ]; }; then
-                    # HIMMEL-2929 codex-1 (round 2): a paren opened while still
-                    # inside an already-neutral span -- `$( ... )` or `(( ... ))`
-                    # -- is grouping/nesting WITHIN that same-shell or opaque
-                    # construct, never a fresh real subshell, so it inherits
-                    # neutrality: `(( (HIMMEL_CONSOLE_LEG=0) ))` keeps every
-                    # paren neutral instead of the inner grouping paren being
-                    # misread as a real subshell that scopes the assignment away.
-                    PKIND[pk]='n'
-                else
-                    PKIND[pk]='r'; pdepth=$((pdepth + 1))
-                fi
-                pk=$((pk + 1))
+            if [ "$no_scope" = "0" ] && [ "$confused" = "0" ]; then
+                pdepth=$((pdepth + 1))
             fi
             i=$((i + 1))
             ;;
         \))
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
-            if [ "$confused" = "0" ]; then
-                if [ "$pk" -gt 0 ]; then
-                    pk=$((pk - 1))
-                    [ "${PKIND[pk]}" = "r" ] && pdepth=$((pdepth - 1))
-                    unset "PKIND[$pk]"
+            if [ "$no_scope" = "0" ] && [ "$confused" = "0" ]; then
+                if [ "$pdepth" -gt 0 ]; then
+                    pdepth=$((pdepth - 1))
                 else
-                    confused=1; pdepth=0
+                    confused=1
                 fi
             fi
             i=$((i + 1))

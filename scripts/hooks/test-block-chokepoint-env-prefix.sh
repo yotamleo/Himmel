@@ -550,9 +550,17 @@ assert_allow "subshell-scoped unset (dropped at the closing paren)"        "$(j 
 assert_allow "subshell-scoped export -n (dropped at the closing paren)"    "$(j "(export -n HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
 assert_allow "subshell-scoped bare assignment (dropped at the closing paren)" "$(j "(HIMMEL_CONSOLE_LEG=0); bash $MERGE_ON_GREEN 1")"
 assert_allow "subshell-scoped unset then && chokepoint"                    "$(j "(unset HIMMEL_CONSOLE_LEG) && bash $MERGE_ON_GREEN 1")"
-assert_deny "codex-1: \`((VAR=0))\` arithmetic assignment is same-shell, not a scoped subshell" "$(j "((HIMMEL_CONSOLE_LEG=0)); bash $MERGE_ON_GREEN 1")"
-assert_deny "adjacent \`((\` is the arithmetic command, not two real subshells" "$(j "((unset HIMMEL_CONSOLE_LEG)); bash $MERGE_ON_GREEN 1")"
-assert_deny "codex-1 round 2: a grouping paren nested inside \`((...))\` inherits neutrality, not real-subshell scoping" "$(j "(( (HIMMEL_CONSOLE_LEG=0) )); bash $MERGE_ON_GREEN 1")"
+# codex-1 rounds 1-2 each found a false ALLOW in a kind-tracking model that
+# tried to tell `((`/`$(` apart from a real subshell paren-by-paren (round 1:
+# an adjacent `((` run misread as two real subshells; round 2: a grouping
+# paren nested inside `((...))` misread as a fresh real subshell). Per
+# operator ruling, the mechanism is collapsed instead of patched again: any
+# `((`, `$(` or backtick ANYWHERE in the command disables scoping for the
+# whole call, so these stay (deliberately over-)denied rather than modelled.
+assert_deny "collapsed: \`((VAR=0))\` disables scoping for the whole command" "$(j "((HIMMEL_CONSOLE_LEG=0)); bash $MERGE_ON_GREEN 1")"
+assert_deny "collapsed: adjacent \`((\` disables scoping for the whole command" "$(j "((unset HIMMEL_CONSOLE_LEG)); bash $MERGE_ON_GREEN 1")"
+assert_deny "collapsed: a paren nested inside \`((...))\` disables scoping for the whole command" "$(j "(( (HIMMEL_CONSOLE_LEG=0) )); bash $MERGE_ON_GREEN 1")"
+assert_deny "collapsed: a subshell clear alongside an unrelated \$(...) elsewhere disables scoping" "$(j "(unset HIMMEL_CONSOLE_LEG); echo \$(true); bash $MERGE_ON_GREEN 1")"
 assert_deny "chokepoint invoked INSIDE the same subshell as the clear"     "$(j "(unset HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1)")"
 assert_deny "outer clear reaches into a later subshell's chokepoint"       "$(j "unset HIMMEL_CONSOLE_LEG; (bash $MERGE_ON_GREEN 1)")"
 assert_deny "outer clear reaches into a nested subshell's chokepoint"      "$(j "(unset HIMMEL_CONSOLE_LEG; (bash $MERGE_ON_GREEN 1))")"
