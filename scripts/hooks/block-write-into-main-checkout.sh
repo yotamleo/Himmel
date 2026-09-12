@@ -952,6 +952,65 @@ _bwimc_check_target() {
     _bwimc_check_abs "$abs" "$raw" "$eff"
 }
 
+# _bwimc_git_commit_target CLAUSE_SP CWD — HIMMEL-2884: `git … commit` is a
+# CWD predicate (see CODEX-LANE PARITY below), but `-C <path>` (repeatable —
+# each relative value resolves against the PREVIOUS one, git's own
+# semantics), `--git-dir=<p>`/`--git-dir <p>` and `--work-tree=<p>`/
+# `--work-tree <p>` redirect the commit at a DIFFERENT directory than the
+# session cwd. Walks the tokens between `git` and `commit` collecting those
+# three and echoes the effective directory the commit actually addresses.
+# An unresolvable value (dynamic/glob/empty) fails CLOSED to CWD and sets
+# _BWIMC_GIT_TARGET_UNRESOLVED=1 so the caller can note it in the deny text.
+# Not modelled (deliberately, per the ticket): GIT_DIR/GIT_WORK_TREE env,
+# `git -c key=val` (an inert option-with-value the outer regex already
+# tolerates), any verb but `commit`.
+# Sets globals _BWIMC_GIT_TARGET_DIR and _BWIMC_GIT_TARGET_UNRESOLVED instead
+# of echoing — must be called as a plain statement, never via `$(...)`, since
+# a command-substitution subshell would discard both globals on exit.
+_bwimc_git_commit_target() {
+    local clause_sp="$1" cwd="$2"
+    local toks=() t tl v r i n dir="$cwd" gitdir="" worktree_set=0
+    _BWIMC_GIT_TARGET_UNRESOLVED=0
+    while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$clause_sp")
+    n=${#toks[@]}
+    i=1
+    while [ "$i" -lt "$n" ]; do
+        t="${toks[$i]}"
+        _tolower_ascii "$t"
+        tl="$_TOLOWER_OUT"
+        [ "$tl" = "commit" ] && break
+        case "$t" in
+            -C)
+                i=$((i+1)); v="${toks[$i]:-}"
+                r=$(_bwimc_resolve_abs "$v" "$dir") && dir="$r" || _BWIMC_GIT_TARGET_UNRESOLVED=1
+                ;;
+            --git-dir=*)
+                r=$(_bwimc_resolve_abs "${t#--git-dir=}" "$dir") && gitdir="$r" || _BWIMC_GIT_TARGET_UNRESOLVED=1
+                ;;
+            --git-dir)
+                i=$((i+1)); v="${toks[$i]:-}"
+                r=$(_bwimc_resolve_abs "$v" "$dir") && gitdir="$r" || _BWIMC_GIT_TARGET_UNRESOLVED=1
+                ;;
+            --work-tree=*)
+                r=$(_bwimc_resolve_abs "${t#--work-tree=}" "$dir") && { dir="$r"; worktree_set=1; } || _BWIMC_GIT_TARGET_UNRESOLVED=1
+                ;;
+            --work-tree)
+                i=$((i+1)); v="${toks[$i]:-}"
+                r=$(_bwimc_resolve_abs "$v" "$dir") && { dir="$r"; worktree_set=1; } || _BWIMC_GIT_TARGET_UNRESOLVED=1
+                ;;
+        esac
+        i=$((i+1))
+    done
+    if [ "$worktree_set" != 1 ] && [ -n "$gitdir" ]; then
+        case "$gitdir" in
+            */.git) dir="${gitdir%/.git}" ;;
+            *) dir="$gitdir" ;;
+        esac
+    fi
+    [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ] && dir="$cwd"
+    _BWIMC_GIT_TARGET_DIR="$dir"
+}
+
 # CODEX-LANE PARITY: byte-identical port of block-terminal-write-fence.sh's
 # old inline class-(b) cwd check (its lines 201-229) for the git-commit / PS-
 # writer arms. Deny ONLY when the cwd's repo is on main/master; fail OPEN on
@@ -1841,10 +1900,14 @@ while IFS= read -r _bwimc_clause; do
         # `cd`/cwd-predicate class this script deliberately leaves alone.
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*git(\.exe)?([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+        _bwimc_git_commit_target "$_bwimc_clause_sp" "$_bwimc_cwd"
+        if [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ]; then
+            echo "    (note: a git -C/--git-dir/--work-tree value could not be resolved; checking the command's cwd instead)" >&2
+        fi
         if [ "$_bwimc_sourced" = 1 ]; then
-            _bwimc_cwd_check_sourced "$_bwimc_cwd"
+            _bwimc_cwd_check_sourced "$_BWIMC_GIT_TARGET_DIR"
         else
-            _bwimc_cwd_check_direct "$_bwimc_cwd"
+            _bwimc_cwd_check_direct "$_BWIMC_GIT_TARGET_DIR"
         fi
 
     elif [ "$_bwimc_sourced" = 1 ] && _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(set-content|out-file|add-content)([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then

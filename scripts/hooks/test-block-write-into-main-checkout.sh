@@ -343,6 +343,51 @@ check_both "22b whitespace-only quoted-span candidate does not false-deny an ord
 check_both "23 git commit cwd=wt (linked worktree)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m wip\",\"cwd\":\"$FIX/wt\"}}"
 
+# 23b. HIMMEL-2884: `git -C`/`--git-dir`/`--work-tree` must resolve the
+# EFFECTIVE commit target instead of always checking the session cwd
+# (CLAUDE.md prescribes `git -C <repo> commit` from a himmel-primary cwd, and
+# the unfixed arm refused that shape even when the addressed repo allows).
+# 23b-i: the ticket's own case — cwd is the primary, -C points at a
+# single-writer repo, both wirings must ALLOW.
+check_both "23b-i git -C swrepo commit (cwd=primary, -C target is single-writer) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C $FIX/swrepo commit -q -m x\",\"cwd\":\"$FIX/primary\"}}"
+
+# 23b-ii: cwd is the primary, -C points at the linked worktree (feat/x) —
+# allows, matching row 23's plain-cwd=wt case.
+check_both "23b-ii git -C wt commit (cwd=primary, -C target is the worktree) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C $FIX/wt commit -m x\",\"cwd\":\"$FIX/primary\"}}"
+
+# 23b-iii: the INVERSE of 23b-ii — cwd is the worktree, -C points BACK at the
+# primary (main, no .single-writer). Must deny, and the deny text must name
+# the RESOLVED -C target, not the cwd (today this false-ALLOWs: HIMMEL-2884).
+check_both_reason "23b-iii git -C primary commit (cwd=wt, -C target is primary main) denies, names the -C target" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C $FIX/primary commit -m x\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary"
+
+# 23b-iv: bare `git commit`, cwd=primary — unaffected control (no -C to
+# resolve; must keep denying exactly as row 11 already asserts).
+check_both "23b-iv git commit (cwd=primary, no -C) still denies (control)" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git commit -m x\",\"cwd\":\"$FIX/primary\"}}"
+
+# 23b-v: chained relative `-C` — each `-C` resolves against the PREVIOUS one
+# (git's own semantics), landing at $FIX itself (swrepo/..), which is not a
+# git repo at all -> main_checkout_verdict's own "not in a repo -> allow".
+check_both "23b-v git -C swrepo -C .. commit (chained relative -C lands outside any repo) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C $FIX/swrepo -C .. commit -m x\",\"cwd\":\"$FIX/primary\"}}"
+
+# 23b-vi: `--git-dir=<p> --work-tree=<p>` naming the single-writer repo
+# explicitly (no `-C` at all) — must resolve the same as 23b-i.
+check_both "23b-vi git --git-dir/--work-tree targeting swrepo allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --git-dir=$FIX/swrepo/.git --work-tree=$FIX/swrepo commit -m x\",\"cwd\":\"$FIX/primary\"}}"
+
+# 23b-vii: an UNRESOLVABLE `-C` value (a live command substitution) must fail
+# CLOSED back to checking the command's own cwd (still the primary here, so
+# still denies) rather than silently allowing because the value couldn't be
+# parsed.
+check_both_reason "23b-vii git -C \"\$(pwd)\" commit (unresolvable -C value) fails closed to cwd, notes the failure" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C \\\"\$(pwd)\\\" commit -m x\",\"cwd\":\"$FIX/primary\"}}" \
+    "could not be resolved"
+
 # 24. handovers/ carve-out (main_checkout_verdict's own exemption).
 check_both "24 cat > primary/handovers/x.md (handovers carve-out)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat > $FIX/primary/handovers/x.md\",\"cwd\":\"$FIX/primary\"}}"
