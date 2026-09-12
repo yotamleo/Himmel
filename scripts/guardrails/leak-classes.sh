@@ -447,6 +447,24 @@ check_home_path() {
     # the punctuation into the next occurrence's own "/" as if it were a
     # multi-word terminator). Non-ASCII bytes stay admitted -- only this
     # fixed ASCII punctuation set is excluded.
+    # HIMMEL-2828 regression fix (console-flagged, public #664): the same
+    # widened, non-ASCII-admitting word-char class also swallowed ERE
+    # metacharacters -- a line that itself DEFINES a home-path regex (e.g.
+    # `leak_pattern='(/Users/|[A-Za-z]:\Users\|...)'` in a guardrail script,
+    # or `grep -qE 'C:/Users/[A-Za-z0-9._-]+/'` in a test) got misread as a
+    # real path, because "|[A-Za-z]:" or "[A-Za-z0-9._-]+" is just as
+    # word-char-admissible as a real username. The class now also excludes
+    # `( [ . * + ? { } | ^ $` -- ERE syntax a real username never contains --
+    # and the single-word terminator accepts that same set, so the capture
+    # stops cleanly at the metacharacter instead of swallowing it (and, when
+    # that leaves nothing to capture -- e.g. right after "/Users/|" or
+    # "/home/[" -- the whole alternative fails to match at that position,
+    # same as it already does for the excluded punctuation above, rather
+    # than reporting a punctuation-only "name" like "|" or "[A-Za-z0-9._-]+"
+    # as a leak). A captured name immediately followed by a doc-style
+    # ellipsis ("..." or "…", e.g. a Windows 8.3 short-name placeholder like
+    # "C:\Users\RUNNER~1\...") is also not reported: an ellipsis right after
+    # the match marks truncated/placeholder example text, not a real path.
     # HIMMEL-2856: a Windows file:// URI's drive letter carries file://'s
     # own extra slash too (file:///C:/Users/... -> leading-context consumes
     # "file://", leaving "/C:/Users/..."), so the drive-prefixed forms also
@@ -457,7 +475,7 @@ check_home_path() {
     # match anyway -- but only because the leading-context group can also
     # consume just the ":" as its own non-word boundary char, landing on the
     # bare case-sensitive /Users/ alternative by coincidence, not by design.
-    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^]/\\[:space:]`"'\'',;:)]+( [^]/\\[:space:]`"'\'',;:)]+)*)([/\\]|\\\\)|([^]/\\[:space:]`"'\'',;:)]+)($|[]/\\[:space:]`"'\'',;:)]))'
+    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+( [^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+)*)([/\\]|\\\\)|([^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+)($|[]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.
@@ -470,10 +488,14 @@ check_home_path() {
             name="${BASH_REMATCH[7]}"
             term="${BASH_REMATCH[8]}"
         fi
-        if ! home_name_allowed "$name"; then
+        local rest="${remaining#*"$whole"}"
+        # A captured name immediately followed by a doc-style ellipsis is a
+        # truncated/placeholder example (e.g. "C:\Users\RUNNER~1\..."), not
+        # a real path -- don't report it, but still advance past it.
+        if [[ "$rest" != $'...'* && "$rest" != $'\xe2\x80\xa6'* ]] && ! home_name_allowed "$name"; then
             MATCHES+=("${BASH_REMATCH[2]}${name}${term}")
         fi
-        remaining="${remaining#*"$whole"}"
+        remaining="$rest"
     done
     [ "${#MATCHES[@]}" -gt 0 ]
 }

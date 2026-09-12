@@ -490,6 +490,60 @@ else
     fail "T1q home-path non-Users drive-letter control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1t: HIMMEL-2828 regression fix (console-flagged, public #664) -- a line
+# that itself DEFINES a home-path regex (in a guardrail script or its test)
+# used to be misread as a real leaked path, because ERE syntax like
+# "|[A-Za-z]:" or "[A-Za-z0-9._-]+" was just as word-char-admissible to the
+# old name-char class as a genuine username. Six shapes drawn from the real
+# false positives this regression produced on PR #664 (none of the six real
+# files are touched by this fixture or by the fix -- these are synthetic
+# stand-ins).
+r=$(new_repo)
+cat > "$r/regex-defs.txt" <<'FIXTURE_EOF'
+leak_pattern='(/Users/|[A-Za-z]:\Users\|[A-Za-z]:/Users/|\Users\|/home/[^/]+/|(^|[/\])AppData([/\]|$))'
+grep -qiE '\Users\|/Users/|AppData' "$OUT/report.md" 2>/dev/null \
+ABS_PATTERN='([A-Za-z]:[/\]+Users[/\]|/Users/|/root/|/home/[A-Za-z0-9._-]+/)'
+if LC_ALL=C grep -qE 'C:/Users/[A-Za-z0-9._-]+/' "$SCRIPT"; then
+if grep -qE 'C:\Users\[A-Za-z0-9_]+|/c/Users/[A-Za-z0-9_]+|/home/[A-Za-z0-9_]+/Documents' "$f"; then
+FIXTURE_EOF
+git -C "$r" add regex-defs.txt  # leak-allow: home-path test fixture
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1t home-path: six regex-literal/prose shapes (own name-capture, char classes, alternation) stay clean"
+else
+    fail "T1t home-path regex-definition false-positive control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1t2: the sixth false-positive shape is different in kind -- a doc-style
+# Windows 8.3 short-name placeholder immediately followed by a truncating
+# ellipsis (e.g. "RUNNER~1\...", or the Unicode ellipsis "…"), which is
+# suppressed by a separate check in the match loop (not the name-char class
+# T1t exercises above).
+r=$(new_repo)
+printf '// (C:\\Users\\RUNNER~1\\..., because "runneradmin" is over 8 characters) while\n' > "$r/ellipsis.ts"  # leak-allow: home-path test fixture
+git -C "$r" add ellipsis.ts
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1t2 home-path: RUNNER~1\\... doc-placeholder ellipsis stays clean"
+else
+    fail "T1t2 home-path ellipsis-placeholder control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1u: RED-preserving control for T1t/T1t2 -- a genuine, non-allowlisted home
+# path sitting on its own line in the same file as the regex-literal shapes
+# must still be flagged, proving the metachar exclusion doesn't blind the
+# scanner to a real leak just because regex syntax appears elsewhere nearby.
+r=$(new_repo)
+printf 'leak_pattern=(/Users/|[A-Za-z]:\\Users\\|/home/[^/]+/)\n' > "$r/mixed.txt"
+printf 'See /home/mallory/data for the real leak.\n' >> "$r/mixed.txt"  # leak-allow: home-path test fixture
+git -C "$r" add mixed.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "mixed.txt:2"; then
+    pass "T1u home-path: a genuine home path still flagged alongside a regex-literal line"
+else
+    fail "T1u home-path RED-preserving control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== redaction =="
 
 # T6: the reported line carries only the first 4 chars of the match + an
@@ -1157,6 +1211,103 @@ if mutate_call_site \
             --note "reverting the leading-context regex to drop the file:// alternatives makes the file:///home/... URI in T1m go completely unreported" \
             && pass "RED-home-path-file-uri RED confirmed" \
             || fail "RED-home-path-file-uri RED control did not confirm (see FAIL line above)"
+    fi
+fi
+
+# RED-home-path-metachars (HIMMEL-2828 regression fix, console-flagged
+# #664): revert the ERE-metacharacter exclusion this fix added to the
+# name-char class -- unlike the RED controls above, this fix REMOVES a false
+# positive rather than adding a detection, so the polarity is reversed: the
+# REAL (fixed) script must stay CLEAN on this fixture, and the MUTANT
+# (reverted to pre-fix) must misreport it as a leak. The exclusion appears
+# four times in one regex line (three negated-class copies, one positive
+# terminator copy); mutate_call_site's own single-occurrence contract can't
+# express that, so this control does its own occurrence-counted, index()-based
+# substring removal (same literal-substring technique mutate_call_site uses
+# internally, just applied per-line instead of first-match-only) rather than
+# reuse that helper.
+r=$(new_repo)
+printf '%s\n' "ABS_PATTERN='([A-Za-z]:[/\\]+Users[/\\]|/Users/|/root/|/home/[A-Za-z0-9._-]+/)'" > "$r/f.txt"  # leak-allow: home-path test fixture
+git -C "$r" add f.txt
+mutant="$WS/mutant-home-path-metachars.sh"
+old_frag='(.*+?{}|^$['
+before=$(grep -o -F "$old_frag" "$SCRIPT" | wc -l | tr -d ' ')
+if [ "$before" != "4" ]; then
+    fail "RED-home-path-metachars anchor '$old_frag' did not appear exactly 4 times (before=$before) -- a stale anchor would leave the mutant unmutated and this control would pass vacuously"
+else
+    MUT_O="$old_frag" awk '
+        { line = $0
+          o = ENVIRON["MUT_O"]
+          out = ""
+          while ((p = index(line, o)) > 0) {
+              out = out substr(line, 1, p-1)
+              line = substr(line, p + length(o))
+          }
+          out = out line
+          print out
+        }
+    ' "$SCRIPT" > "$mutant"
+    after=$(grep -o -F "$old_frag" "$mutant" | wc -l | tr -d ' ')
+    if [ "$after" != "0" ] || cmp -s "$SCRIPT" "$mutant"; then
+        fail "RED-home-path-metachars mutation did not take effect (after=$after)"
+    else
+        scan "$r" --tree
+        if [ "$SCAN_RC" -ne 0 ] || [ -n "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+            fail "RED-home-path-metachars precondition failed: the REAL (fixed) script does not stay clean on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+        else
+            red_control_run --cwd "$r" -- bash -c '
+                out=$(bash "$1" --tree 2>&1); rc=$?
+                case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+                echo "hit=$hit"
+                exit "$rc"
+            ' _ "$mutant"
+            red_control_assert --label "RED-home-path-metachars" --expect-rc 1 \
+                --observed "$RED_CONTROL_OUT" \
+                --expect-wrong "hit=yes" \
+                --correct "hit=no" \
+                --note "reverting the ERE-metacharacter exclusion makes the regex-literal ABS_PATTERN fixture get misread as a real home path again, proving the exclusion -- not the fixture -- is what keeps T1t clean" \
+                && pass "RED-home-path-metachars RED confirmed" \
+                || fail "RED-home-path-metachars RED control did not confirm (see FAIL line above)"
+        fi
+    fi
+fi
+
+# RED-home-path-ellipsis (HIMMEL-2828 regression fix, console-flagged #664):
+# revert the doc-ellipsis skip check in check_home_path's match loop -- the
+# RUNNER~1\... placeholder in T1t2 must then be reported as a leak.
+r=$(new_repo)
+printf '// (C:\\Users\\RUNNER~1\\..., because "runneradmin" is over 8 characters) while\n' > "$r/ellipsis.ts"  # leak-allow: home-path test fixture
+git -C "$r" add ellipsis.ts
+mutant="$WS/mutant-home-path-ellipsis.sh"
+# The anchor/replacement are derived from the live script rather than
+# hand-transcribed here: the real line embeds ANSI-C $'...' quoting (the
+# doc-ellipsis and Unicode-ellipsis literals), and hand-escaping that through
+# this file's own single-quoted literals would be exactly the kind of fragile
+# transcription mutate_call_site's own occurrence check exists to catch late,
+# not avoid entirely.
+ellipsis_anchor=$(grep -m1 -F '! home_name_allowed "$name"; then' "$SCRIPT")
+ellipsis_indent=$(printf '%s' "$ellipsis_anchor" | sed -E 's/^([[:space:]]*).*/\1/')
+ellipsis_replacement="${ellipsis_indent}if ! home_name_allowed \"\$name\"; then"
+if [ -z "$ellipsis_anchor" ]; then
+    fail "RED-home-path-ellipsis anchor not found in $SCRIPT (script shape changed?)"
+elif mutate_call_site "$ellipsis_anchor" "$ellipsis_replacement" "$mutant"; then
+    scan "$r" --tree
+    if [ "$SCAN_RC" -ne 0 ] || [ -n "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+        fail "RED-home-path-ellipsis precondition failed: the REAL (fixed) script does not stay clean on this fixture (rc=$SCAN_RC out=$SCAN_OUT)"
+    else
+        red_control_run --cwd "$r" -- bash -c '
+            out=$(bash "$1" --tree 2>&1); rc=$?
+            case "$out" in *"home-path"*) hit=yes ;; *) hit=no ;; esac
+            echo "hit=$hit"
+            exit "$rc"
+        ' _ "$mutant"
+        red_control_assert --label "RED-home-path-ellipsis" --expect-rc 1 \
+            --observed "$RED_CONTROL_OUT" \
+            --expect-wrong "hit=yes" \
+            --correct "hit=no" \
+            --note "reverting the doc-ellipsis skip check makes the RUNNER~1\\... placeholder in T1t2 get reported as a leaked home path again" \
+            && pass "RED-home-path-ellipsis RED confirmed" \
+            || fail "RED-home-path-ellipsis RED control did not confirm (see FAIL line above)"
     fi
 fi
 
