@@ -4525,7 +4525,22 @@ echo "ok: bridge-health — a supervisor-plus-child pair still reads as exactly 
 # real; a host where an extensionless bash-shebang stub can't spawn SKIPs
 # rather than faking a pass.
 bh_posix_stub="$work/bh-posix-stub"
-build_hermetic_bin "$bh_posix_stub" bun cat
+build_hermetic_bin "$bh_posix_stub" cat
+# bridge-health is a composite probe (accessResult + getMeResult +
+# pollerResult, see probeBridgeHealth) — runProbe below exercises the WHOLE
+# item, not poller-count in isolation, so the getMe sub-check's real `bun`
+# child process is on the critical path too. build_hermetic_bin only links
+# the REAL binary (by design, HIMMEL-2535); a real bun genuinely calling
+# Telegram's API would make this fixture's verdict depend on live network
+# reachability and a real bot token, neither of which this suite controls.
+# Fake it the same way the Windows-lane `$bh_stub/bun` above already does
+# (unconditional `ok:testbot`) so only the poller-count sub-result under
+# test varies across cases (a)-(e).
+cat > "$bh_posix_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+echo "ok:testbot"
+STUB
+chmod +x "$bh_posix_stub/bun"
 bh_posix_log="$work/bh-posix-stub.log"
 bh_posix_state="$work/bh-posix-stub-state"; mkdir -p "$bh_posix_state"
 bh_proc_root="$work/bh-proc-root"
