@@ -12,6 +12,12 @@
 # Exit: 0 = all cases pass, 1 = at least one failed.
 set -uo pipefail
 
+# The suite owns every case's env; an ambient leg shell (HIMMEL_LEAN_LEG=1
+# under --profile leg-impl, HIMMEL-2940) must not silently turn every
+# unmarked case into a lean-leg case. Only the two explicit lean cases below
+# set it themselves.
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
+
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
 # `set -o pipefail`: grep -q exits the instant it matches, the producer
@@ -71,6 +77,33 @@ seed_ledger() {
     mkdir -p "$dir"
     printf '%s\n' '{"ts":"2026-01-01T00:00:00Z","source":"jira","key":"HIMMEL-9","kind":"ticket","status":"in-progress"}' > "$dir/ledger.jsonl"
 }
+
+# --selftest-hermetic replays exactly one benign, non-silent (digest-route)
+# case and exits — used only by the guard case below, recursing into THIS
+# file once with a controlled ambient env, never the full numbered-case suite.
+if [ "${1:-}" = "--selftest-hermetic" ]; then
+    st="$TMP/selftest"; seed_ledger "$st"; touch "$st/.refreshed-at"
+    HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$st" \
+        WHERE_ARE_WE_BRANCH_OVERRIDE=main \
+        HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null
+    exit 0
+fi
+
+echo "== suite hermeticity (HIMMEL-2940) =="
+# A leg's ambient HIMMEL_LEAN_LEG=1 must not reach the hook invocation before
+# the preamble unset above has a chance to clear it — so this recurses with
+# that var set exactly the way a lean-leg caller sets it (before this file's
+# own preamble runs), not via the lean-leg case's own override further down.
+# Each recursion gets its own `mktemp -d` fixture dir, so the raw outputs
+# differ by that random path alone even with no leak — normalize it out
+# before comparing.
+leaked="$(HIMMEL_LEAN_LEG=1 bash "$0" --selftest-hermetic | sed -E 's#[^ ]*/selftest#SELFTEST_DIR#g')"
+clean="$(bash "$0" --selftest-hermetic | sed -E 's#[^ ]*/selftest#SELFTEST_DIR#g')"
+if [ "$leaked" = "$clean" ] && [ -n "$leaked" ]; then
+    pass "suite is hermetic to a lean-leg caller"
+else
+    fail "suite is hermetic to a lean-leg caller (leaked='$leaked' clean='$clean')"
+fi
 
 # --- Case 1: OFF → no output, exit 0 ----------------------------------------
 state1="$TMP/s1"; seed_ledger "$state1"

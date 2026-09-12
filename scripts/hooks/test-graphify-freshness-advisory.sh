@@ -2,6 +2,11 @@
 # test-graphify-freshness-advisory.sh — three-state contract (HIMMEL-1643)
 # shellcheck disable=SC2015,SC2164 # compact status assertions; fixture cd's are into mktemp -d dirs this script just created
 set -uo pipefail
+# The suite owns every case's env; an ambient leg shell (HIMMEL_LEAN_LEG=1
+# under --profile leg-impl, HIMMEL-2940) must not silently turn every
+# unmarked case into a lean-leg case. Only the two explicit T9/T9b lean
+# cases below set it themselves.
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOK="$HERE/graphify-freshness-advisory.sh"
 PASS=0; FAIL=0
@@ -19,6 +24,31 @@ mk_graph() { # $1=out-dir  $2=age-days
     # backdate graph.json by N days (python3 is already a hook dependency)
     python3 -c 'import os,sys,time; t=time.time()-float(sys.argv[2])*86400; os.utime(sys.argv[1],(t,t))' "$1/graph.json" "$2"
 }
+
+# --selftest-hermetic replays exactly one benign, non-silent (stale) case and
+# exits — used only by the guard case below, recursing into THIS file once
+# with a controlled ambient env, never the full numbered-case suite.
+if [ "${1:-}" = "--selftest-hermetic" ]; then
+    mk_graph "$tmp/selftest/graphify-out" 5
+    GRAPHIFY_ADVISORY_OUT="$tmp/selftest/graphify-out" bash "$HOOK"
+    exit 0
+fi
+
+echo "== suite hermeticity (HIMMEL-2940) =="
+# A leg's ambient HIMMEL_LEAN_LEG=1 must not reach the hook invocation before
+# the preamble unset above has a chance to clear it — so this recurses with
+# that var set exactly the way a lean-leg caller sets it (before this file's
+# own preamble runs), not via a T9-style case override.
+# Each recursion gets its own `mktemp -d` fixture dir, so the raw outputs
+# differ by that random path alone even with no leak — normalize it out
+# before comparing.
+leaked="$(HIMMEL_LEAN_LEG=1 bash "$0" --selftest-hermetic | sed -E 's#[^ ]*/selftest#SELFTEST_DIR#g')"
+clean="$(bash "$0" --selftest-hermetic | sed -E 's#[^ ]*/selftest#SELFTEST_DIR#g')"
+if [ "$leaked" = "$clean" ] && [ -n "$leaked" ]; then
+    pass "suite is hermetic to a lean-leg caller"
+else
+    fail "suite is hermetic to a lean-leg caller (leaked='$leaked' clean='$clean')"
+fi
 
 # T1 fresh -> silent, rc 0
 mk_graph "$tmp/fresh/graphify-out" 0
