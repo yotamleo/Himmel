@@ -10,6 +10,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 POSTPIN="$HERE/agg-postpin.sh"
+AGG_BURN="$HERE/agg-burn.sh"
 fails=0
 
 check() {
@@ -107,6 +108,25 @@ check "role-relay: a legN+relay title is not counted into the leg cohort" \
 # last statement made a clean run's own exit code depend on the warning firing).
 "$POSTPIN" --since 2026-01-01T00:00:00Z --role console >/dev/null 2>&1
 check_exit "exit-contract: a run with zero leg-burn failures exits 0" "$?" "0"
+
+# --- (f) HIMMEL-2987: agg-burn.sh's TOTAL line carries the price-weighted
+# cost-eq split. Reuses the existing shift/ fixture (110 assistant calls, all
+# input=100/cache_read=0/cache_creation=0/output=5, per leg-burn.sh directly):
+#   input=11.0k output=0.55k->0.6k cache-read=0.0k cache-create=0.0k
+#   cost-eq = 11000*1 + 0*0.1 + 0*1.25 + 550*5 = 13750 -> "13.8k"
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/shift"
+unset SCORECARD_LAUNCH_LOG_DIR
+
+BURN_TOTAL=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null | grep '^TOTAL cache-read=')
+check "agg-burn TOTAL: price-weighted cost-eq line" "$BURN_TOTAL" \
+    "TOTAL cache-read=0.0k cache-create=0.0k input=11.0k output=0.6k cost-eq=13.8k"
+
+# env override: output weight 5 -> 1 must move cost-eq (pins the weight is
+# read from env in agg-burn.sh too, not just leg-burn.sh)
+# 11000*1 + 0*0.1 + 0*1.25 + 550*1 = 11550 -> "11.6k"
+BURN_TOTAL_OVERRIDE=$(LEG_BURN_W_OUTPUT=1 "$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null | grep -o 'cost-eq=[^ ]*$')
+check "agg-burn TOTAL: output weight override changes cost-eq" \
+    "$BURN_TOTAL_OVERRIDE" "cost-eq=11.6k"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

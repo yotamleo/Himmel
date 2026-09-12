@@ -35,6 +35,8 @@ done
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LEG_BURN="$HERE/../../leg-burn.sh"
+# shellcheck source=../../lib/burn-weights.sh
+. "$HERE/../../lib/burn-weights.sh"
 PROJECTS="${SCORECARD_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel}"
 [ -d "$PROJECTS" ] || { echo "agg-burn: transcript root not found: $PROJECTS" >&2; exit 2; }
 
@@ -81,6 +83,10 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     first=$(printf '%s' "$line" | grep -o 'first-turn=[^ ]*' | cut -d= -f2)
     comp=$(printf '%s' "$line" | grep -o 'compactions=[0-9]*' | cut -d= -f2)
     txt=$(printf '%s' "$line" | grep -o 'text-only=[0-9]*' | cut -d= -f2)
+    out=$(printf '%s' "$line" | grep -o 'out=[^ ]*' | cut -d= -f2)
+    cr=$(printf '%s' "$line" | grep -o 'cache-read=[^ ]*' | cut -d= -f2)
+    cc=$(printf '%s' "$line" | grep -o 'cache-create=[^ ]*' | cut -d= -f2)
+    inp=$(printf '%s' "$line" | grep -o 'input=[^ ]*' | cut -d= -f2)
     model=$(grep -o '"model":"claude-[^"]*"' "$f" | sort | uniq -c | sort -rn | head -1 | sed 's/.*"model":"//; s/"$//')
 
     case "$f" in
@@ -91,7 +97,9 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
         *)
             name=$(title_of "$f"); role=$(role_of "$name"); prole=- ;;
     esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$role" "$prole" "${model:-unknown}" "$calls" "$(kn "$avg")" "$(kn "$first")" "$comp" "$txt" >> "$ROWS"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$role" "$prole" "${model:-unknown}" "$calls" "$(kn "$avg")" "$(kn "$first")" "$comp" "$txt" \
+        "$(kn "${out:-0}")" "$(kn "${cr:-0}")" "$(kn "${cc:-0}")" "$(kn "${inp:-0}")" >> "$ROWS"
 done
 
 printf 'role\tmodel\tsessions\tcalls\tavg_ctx_k(call-wtd)\tmax_session_avg_k\tavg_first_k\tcompactions\ttext_only\ttext_only_ratio\tctx_x_calls_Mtok\n'
@@ -101,6 +109,16 @@ function add(k){ n[k]++; c[k]+=$4; ctx[k]+=$4*$5; fsum[k]+=$6; cp[k]+=$7; tx[k]+
 END{
   for(k in n) printf "%s\t%d\t%d\t%.1f\t%.1f\t%.1f\t%d\t%d\t%.3f\t%.1f\n", k, n[k], c[k], (c[k]?ctx[k]/c[k]:0), pk[k], fsum[k]/n[k], cp[k], tx[k], (c[k]?tx[k]/c[k]:0), ctx[k]/1000
 }' "$ROWS" | sort
+
+# HIMMEL-2987: price-weighted TOTAL, over every row regardless of role/model -
+# raw sums first (columns 9-12, already in k-units via kn()), cost-eq computed
+# once at the end so per-session k-rounding never compounds.
+awk -F'\t' -v wi="$LEG_BURN_W_INPUT" -v wcr="$LEG_BURN_W_CACHE_READ" -v wcc="$LEG_BURN_W_CACHE_CREATE" -v wo="$LEG_BURN_W_OUTPUT" '
+{ out+=$9; cr+=$10; cc+=$11; inp+=$12 }
+END{
+  costeq = inp*wi + cr*wcr + cc*wcc + out*wo
+  printf "TOTAL cache-read=%.1fk cache-create=%.1fk input=%.1fk output=%.1fk cost-eq=%.1fk\n", cr, cc, inp, out, costeq
+}' "$ROWS"
 
 n_fail=$(wc -l < "$FAILS")
 if [ "$n_fail" -gt 0 ]; then
