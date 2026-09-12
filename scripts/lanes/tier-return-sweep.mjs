@@ -76,7 +76,7 @@ function endsWithTierReturn(text) {
 }
 
 const { since, projectsDir } = parseArgs(process.argv.slice(2));
-const root = projectsDir || `${process.env.HOME}/.claude/projects`;
+const root = projectsDir || `${process.env.CLAUDE_CONFIG_DIR || `${process.env.HOME}/.claude`}/projects`;
 const sinceEpoch = Date.parse(since);
 if (!Number.isFinite(sinceEpoch)) {
   console.error(`tier-return-sweep: invalid --since: ${since}`);

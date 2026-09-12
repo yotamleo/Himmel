@@ -18,3 +18,10 @@ test('a Tier-return marker quoted earlier in the message does not count as a ret
   const out = execFileSync('node', ['scripts/lanes/tier-return-sweep.mjs', '--since', '2026-09-01T00:00:00Z', '--projects-dir', 'scripts/lanes/tests/fixtures/tier-return-anchor'], { encoding: 'utf8' });
   assert.match(out, /^sonnet 0\/1$/m);
 });
+test('with no --projects-dir, falls back to $CLAUDE_CONFIG_DIR/projects rather than always $HOME/.claude/projects', () => {
+  const out = execFileSync('node', ['scripts/lanes/tier-return-sweep.mjs', '--since', '2026-09-01T00:00:00Z'], {
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_CONFIG_DIR: 'scripts/lanes/tests/fixtures/tier-return-configdir', HOME: '/nonexistent-home-for-test' },
+  });
+  assert.match(out, /^sonnet 4\/7$/m);
+});

@@ -33,6 +33,16 @@ OUT=$("$SCRIPT" --since 2026-01-15T00:00:00Z --repo yotamleo/Himmel 2>/dev/null)
 check_contains "operator-window: pre-window message excluded from operator_msgs" \
     "$OUT" "console_sessions=1 operator_msgs=1 per_session=1.0"
 
+# --- operator-window-fractional: an in-window user message whose timestamp
+# carries fractional seconds must still be counted (HIMMEL-2977 /pr-check
+# codex-1 fix: jq's fromdateiso8601 rejects a fractional-second suffix
+# unless it is stripped first, same as every bash-level to_epoch()).
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/operator-window-fractional"
+
+OUT=$("$SCRIPT" --since 2026-01-15T00:00:00Z --repo yotamleo/Himmel 2>/dev/null)
+check_contains "operator-window-fractional: fractional-second timestamp still counted" \
+    "$OUT" "console_sessions=1 operator_msgs=1 per_session=1.0"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "PASS - test-extra-metrics.sh: 0 failures"

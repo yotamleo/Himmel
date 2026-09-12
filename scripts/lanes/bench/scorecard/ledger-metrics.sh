@@ -32,15 +32,30 @@ done
 LEDGER="${SCORECARD_LEDGER:-$HOME/Documents/github/himmel/.git/cr-critic-scores.jsonl}"
 [ -f "$LEDGER" ] || { echo "ledger-metrics: no ledger at $LEDGER" >&2; exit 2; }
 
-RUN=$(mktemp -d "${TMPDIR:-/tmp}/ledger-metrics.XXXXXX")
+# GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
+# leg-burn.sh's backdate()/transcript_mtime GNU-first/BSD-fallback comment).
+to_epoch() {
+    date -d "$1" +%s 2>/dev/null && return 0
+    date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$(printf '%s' "$1" | sed 's/\.[0-9]*Z$/Z/')" +%s 2>/dev/null
+}
+SINCE_EPOCH=$(to_epoch "$SINCE") || { echo "ledger-metrics: bad --since: $SINCE" >&2; exit 2; }
+UNTIL_EPOCH_ARG=9999999999
+if [ -n "$UNTIL" ]; then
+    UNTIL_EPOCH_ARG=$(to_epoch "$UNTIL") || { echo "ledger-metrics: bad --until: $UNTIL" >&2; exit 2; }
+fi
+
+RUN=$(mktemp -d "${TMPDIR:-/tmp}/ledger-metrics.XXXXXX") || { echo "ledger-metrics: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$RUN"' EXIT
 
 gh pr list -R "$REPO" --state merged --limit 1000 --json number,title,mergedAt,headRefName \
-    --jq "[.[] | select(.mergedAt >= \"$SINCE\")]" > "$RUN/merged.json"
-if [ -n "$UNTIL" ]; then
-    jq "[.[] | select(.mergedAt < \"$UNTIL\")]" "$RUN/merged.json" > "$RUN/merged.filtered.json"
-    mv "$RUN/merged.filtered.json" "$RUN/merged.json"
+    --jq '.' > "$RUN/merged-all.json" || { echo "ledger-metrics: gh pr list failed" >&2; exit 1; }
+merged_count=$(jq 'length' "$RUN/merged-all.json" 2>/dev/null) || { echo "ledger-metrics: could not parse gh pr list output" >&2; exit 1; }
+if [ "${merged_count:-0}" -ge 1000 ]; then
+    echo "ledger-metrics: WARNING: gh pr list returned $merged_count merged PRs (== --limit 1000); older history may be truncated" >&2
 fi
+jq --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG" \
+    '[.[] | select((.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $since_epoch and (.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $until_epoch)]' \
+    "$RUN/merged-all.json" > "$RUN/merged.json" || { echo "ledger-metrics: window filter failed" >&2; exit 1; }
 
 jq -r '.[].headRefName' "$RUN/merged.json" | sort -u > "$RUN/merged-branches.txt"
 jq -r 'select((.artifact // "diff")=="diff") | select(.kind=="finding" or .kind=="attempt") |

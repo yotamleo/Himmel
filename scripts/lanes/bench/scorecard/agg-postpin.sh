@@ -94,11 +94,12 @@ cohort_ok() {
     base=$(basename "$1" .jsonl)
     log="$LAUNCH_LOG_DIR/$base.log"
     [ -f "$log" ] || return 1
-    grep -q "profile=$COHORT " "$log" 2>/dev/null || grep -q "profile=$COHORT\$" "$log" 2>/dev/null
+    awk -v c="profile=$COHORT" '{for(i=1;i<=NF;i++) if($i==c){f=1;exit}} END{exit !f}' "$log"
 }
 
-ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-postpin-rows.XXXXXX")
-trap 'rm -f "$ROWS"' EXIT
+ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-postpin-rows.XXXXXX") || { echo "agg-postpin: mktemp failed" >&2; exit 1; }
+FAILS=$(mktemp "${TMPDIR:-/tmp}/agg-postpin-fails.XXXXXX") || { echo "agg-postpin: mktemp failed" >&2; exit 1; }
+trap 'rm -f "$ROWS" "$FAILS"' EXIT
 
 find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     case "$f" in */subagents/*) continue ;; esac
@@ -117,7 +118,7 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
 
     cohort_ok "$f" || continue
 
-    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || continue
+    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; continue; }
     calls=$(printf '%s' "$line" | grep -o 'calls=[0-9]*' | cut -d= -f2)
     avg=$(printf '%s' "$line" | grep -o 'avg-ctx=[^ ]*' | cut -d= -f2)
     first=$(printf '%s' "$line" | grep -o 'first-turn=[^ ]*' | cut -d= -f2)
@@ -137,3 +138,6 @@ function add(k){ n[k]++; c[k]+=$3; ctx[k]+=$3*$4; fsum[k]+=$5; cp[k]+=$6; cs[k]+
 END{
   for(k in n) printf "%s\t%d\t%d\t%.1f\t%.1f\t%.1f\t%d\t%.1f\t%d\n", k, n[k], c[k], (c[k]?ctx[k]/c[k]:0), pk[k], fsum[k]/n[k], cp[k], ctx[k]/1000, cs[k]
 }' "$ROWS" | sort
+
+n_fail=$(wc -l < "$FAILS")
+[ "$n_fail" -gt 0 ] && echo "agg-postpin: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2

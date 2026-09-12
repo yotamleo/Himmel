@@ -62,8 +62,9 @@ role_of() {
 }
 ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
 
-ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-rows.XXXXXX")
-trap 'rm -f "$ROWS"' EXIT
+ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-rows.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
+FAILS=$(mktemp "${TMPDIR:-/tmp}/agg-burn-fails.XXXXXX") || { echo "agg-burn: mktemp failed" >&2; exit 1; }
+trap 'rm -f "$ROWS" "$FAILS"' EXIT
 
 find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     first_ts=$(ts_of "$f" head)
@@ -74,7 +75,7 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     [ "$last_epoch" -ge "$SINCE_EPOCH" ] || continue
     if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
 
-    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || continue
+    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; continue; }
     calls=$(printf '%s' "$line" | grep -o 'calls=[0-9]*' | cut -d= -f2)
     avg=$(printf '%s' "$line" | grep -o 'avg-ctx=[^ ]*' | cut -d= -f2)
     first=$(printf '%s' "$line" | grep -o 'first-turn=[^ ]*' | cut -d= -f2)
@@ -100,3 +101,6 @@ function add(k){ n[k]++; c[k]+=$4; ctx[k]+=$4*$5; fsum[k]+=$6; cp[k]+=$7; tx[k]+
 END{
   for(k in n) printf "%s\t%d\t%d\t%.1f\t%.1f\t%.1f\t%d\t%d\t%.3f\t%.1f\n", k, n[k], c[k], (c[k]?ctx[k]/c[k]:0), pk[k], fsum[k]/n[k], cp[k], tx[k], (c[k]?tx[k]/c[k]:0), ctx[k]/1000
 }' "$ROWS" | sort
+
+n_fail=$(wc -l < "$FAILS")
+[ "$n_fail" -gt 0 ] && echo "agg-burn: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2

@@ -52,6 +52,17 @@ WITH_COHORT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg --cohort leg-im
 check "cohort: --cohort leg-impl counts 1 of 3 (excludes no-log and leg-impl-other)" \
     "$(session_count "$WITH_COHORT" leg)" "1"
 
+# --- (b2) cohort-substring: a launch-log line whose field is a DIFFERENT
+# key that merely contains "profile=leg-impl" as a substring
+# (other-profile=leg-impl) must NOT match --cohort leg-impl (HIMMEL-2977
+# /pr-check codex-8 fix: exact-field match via awk, not substring grep).
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/cohort-substring"
+export SCORECARD_LAUNCH_LOG_DIR="$HERE/fixtures/cohort-substring/launch-logs"
+
+SUBSTRING_COHORT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg --cohort leg-impl 2>/dev/null)
+check "cohort-substring: other-profile=leg-impl does not false-positive match --cohort leg-impl" \
+    "$(session_count "$SUBSTRING_COHORT" leg)" "0"
+
 # --- (c) shift: 60 Fable + 50 Sonnet console-role calls -> counted_shifts=1
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/shift"
 unset SCORECARD_LAUNCH_LOG_DIR

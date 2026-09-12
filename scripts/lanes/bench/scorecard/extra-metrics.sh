@@ -36,7 +36,7 @@ done
 
 PROJECTS="${SCORECARD_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel}"
 [ -d "$PROJECTS" ] || { echo "extra-metrics: transcript root not found: $PROJECTS" >&2; exit 2; }
-RUN=$(mktemp -d "${TMPDIR:-/tmp}/extra-metrics.XXXXXX")
+RUN=$(mktemp -d "${TMPDIR:-/tmp}/extra-metrics.XXXXXX") || { echo "extra-metrics: mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$RUN"' EXIT
 
 # GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
@@ -96,7 +96,7 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     jq -r --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG" \
       'select(.type=="user" and (.isMeta|not) and (.isSidechain|not))
       | select(.timestamp != null)
-      | select((.timestamp | fromdateiso8601) >= $since_epoch and (.timestamp | fromdateiso8601) < $until_epoch)
+      | select((.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $since_epoch and (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $until_epoch)
       | .message.content | select(type=="string")
       | select(test("^\\s*<(task-notification|cross-session|system-reminder|local-command|command-name|bash-|user-memory)")|not)
       | select(test("^This session is being continued")|not) | "1"' "$f" 2>/dev/null | wc -l

@@ -57,10 +57,17 @@ title_of() { grep -o '"customTitle":"[^"]*"' "$1" 2>/dev/null | tail -1 | sed 's
 ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
 day_of() { printf '%s' "$1" | cut -c1-10; }
 
+FAILS=$(mktemp "${TMPDIR:-/tmp}/leg-over-by-day-fails.XXXXXX") || { echo "leg-over-by-day: mktemp failed" >&2; exit 1; }
+trap 'rm -f "$FAILS"' EXIT
+
 find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     case "$f" in */subagents/*) continue ;; esac
     name=$(title_of "$f")
-    case "$name" in *legN*) ;; *) continue ;; esac
+    case "$name" in
+        *-console*|*-relay*) continue ;;
+        *legN*) ;;
+        *) continue ;;
+    esac
 
     first_ts=$(ts_of "$f" head)
     [ -n "$first_ts" ] || continue
@@ -70,7 +77,7 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     [ "$last_epoch" -ge "$SINCE_EPOCH" ] || continue
     if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
 
-    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || continue
+    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; continue; }
     avg=$(printf '%s' "$line" | grep -o 'avg-ctx=[^ ]*' | cut -d= -f2)
     case "$avg" in
         *k) avg_n=$(awk -v n="${avg%k}" 'BEGIN{printf "%d", n*1000}') ;;
@@ -80,3 +87,6 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     [ "${avg_n:-0}" -gt "$THRESHOLD" ] && cls="over"
     printf '%s %s\n' "$(day_of "$first_ts")" "$cls"
 done | sort | uniq -c
+
+n_fail=$(wc -l < "$FAILS")
+[ "$n_fail" -gt 0 ] && echo "leg-over-by-day: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2
