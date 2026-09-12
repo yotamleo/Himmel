@@ -822,7 +822,7 @@ scan_segment() {
     local phase="${4:-start}"
     local env_endopts=0 lo_out lo_verdict lo_operand
     local cluster_out cluster_verdict cluster_operand
-    local bracket_rest
+    local bracket_rest wrest
     names="$inames"
     # HIMMEL-2939: `$[NAME=0]` (legacy arithmetic expansion) is not a
     # segmentation boundary the way `$(`/backtick are, so it never opens a
@@ -836,6 +836,21 @@ scan_segment() {
         # `$[NAME+=0]`, ...) -- the char run between the identifier and `=`
         # is now optional, not absent, matching every `let` operator form.
         while [[ $bracket_rest =~ ([A-Za-z_][A-Za-z0-9_]*)[-+*/%^\<\>\&|]{0,2}= ]]; do
+            UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[1]}"
+            bracket_rest="${bracket_rest#*"${BASH_REMATCH[0]}"}"
+        done
+        # HIMMEL-2939 CR round (codex-2): `++`/`--` prefix or postfix in a
+        # legacy `$[...]` arithmetic expansion WRITES the operand without
+        # ever producing a bare `=` -- `$[--HIMMEL_CONSOLE_LEG]` cleared the
+        # seam and the `=`-anchored fold above never saw it. Fold both
+        # orders as separate passes over the whole segment.
+        bracket_rest="$seg"
+        while [[ $bracket_rest =~ (\+\+|--)([A-Za-z_][A-Za-z0-9_]*) ]]; do
+            UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[2]}"
+            bracket_rest="${bracket_rest#*"${BASH_REMATCH[0]}"}"
+        done
+        bracket_rest="$seg"
+        while [[ $bracket_rest =~ ([A-Za-z_][A-Za-z0-9_]*)(\+\+|--) ]]; do
             UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[1]}"
             bracket_rest="${bracket_rest#*"${BASH_REMATCH[0]}"}"
         done
@@ -1077,15 +1092,20 @@ scan_segment() {
             let|declare|typeset|readonly)
                 # HIMMEL-2939: same fail-closed simplification as `unset`/
                 # `export` above -- every remaining word that does not start
-                # with `-` names a candidate: take the LEADING identifier only
-                # (declare -p NAME denies too, a documented over-deny). A
-                # trailing `%%=*` strip is not enough here -- `let` accepts
-                # compound arithmetic assignment (`NAME*=0`, `NAME+=0`, ...),
-                # none of which contain a bare `=` right after the name, so
-                # stripping from the first `=` left the operator glued onto
-                # the name and missed the registered var (CR round on
-                # HIMMEL-2939: codex-1). Matching the identifier PREFIX
-                # instead is correct for every remaining shape too.
+                # with `-` names a candidate: take the LEADING identifier
+                # (declare -p NAME denies too, a documented over-deny) as the
+                # baseline candidate, matching every remaining shape without
+                # inspecting `=`. Two more scans handle shapes the
+                # leading-only match cannot reach (CR round on HIMMEL-2939,
+                # codex-1/codex-2): a single `let` operand can comma-join
+                # multiple arithmetic assignments
+                # (`let 'x=0,HIMMEL_CONSOLE_LEG=0'` -- everything after the
+                # first comma is invisible to a leading-only match), and a
+                # PREFIX `++`/`--` (`let '++HIMMEL_CONSOLE_LEG'`) starts with
+                # the operator, not the identifier, so the leading-only match
+                # cannot see it either (a postfix form like `NAME++` is
+                # already covered, since the identifier IS the leading
+                # token there).
                 k=$((j + 1))
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
@@ -1094,6 +1114,16 @@ scan_segment() {
                         if [[ "${W[$k]}" =~ ^([A-Za-z_][A-Za-z0-9_]*) ]]; then
                             UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[1]}"
                         fi
+                        wrest="${W[$k]}"
+                        while [[ $wrest =~ ([A-Za-z_][A-Za-z0-9_]*)[-+*/%^\<\>\&|]{0,2}= ]]; do
+                            UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[1]}"
+                            wrest="${wrest#*"${BASH_REMATCH[0]}"}"
+                        done
+                        wrest="${W[$k]}"
+                        while [[ $wrest =~ (\+\+|--)([A-Za-z_][A-Za-z0-9_]*) ]]; do
+                            UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[2]}"
+                            wrest="${wrest#*"${BASH_REMATCH[0]}"}"
+                        done
                         ;;
                     esac
                     k=$((k + 1))

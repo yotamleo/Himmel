@@ -230,6 +230,19 @@ assert_allow "let x=1 (no seam) stays allowed"                   "$(j "let x=1; 
 assert_deny "let NAME*=0 (compound arithmetic op) assigns the seam"        "$(j "let HIMMEL_CONSOLE_LEG*=0; bash $MERGE_ON_GREEN 1")"
 assert_deny "legacy \$[NAME*=0] (compound arithmetic op) assigns the seam" "$(j "echo \$[HIMMEL_CONSOLE_LEG*=0]; bash $MERGE_ON_GREEN 1")"
 
+# --- HIMMEL-2939 CR round 2 (codex-1): a single `let` operand can comma-join
+# multiple arithmetic assignments -- everything after the first comma was
+# invisible to the leading-identifier-only match (codex-1). (codex-2):
+# `++`/`--` prefix or postfix WRITES the operand without ever producing a
+# bare `=`, so the `=`-anchored `let`/`declare` leading match and the
+# `$[...]` bracket-fold both missed it. Fixed by adding comma-joined and
+# prefix/postfix inc/dec fold passes at both sites. ---
+assert_deny "let comma-joined assignment (NAME after comma) assigns the seam" "$(j "let 'x=0,HIMMEL_CONSOLE_LEG=0'; bash $MERGE_ON_GREEN 1")"
+assert_deny "let prefix ++NAME assigns the seam"                    "$(j "let '++HIMMEL_CONSOLE_LEG'; bash $MERGE_ON_GREEN 1")"
+assert_deny "let postfix NAME-- assigns the seam"                   "$(j "let 'HIMMEL_CONSOLE_LEG--'; bash $MERGE_ON_GREEN 1")"
+assert_deny "legacy \$[--NAME] (prefix decrement) assigns the seam" "$(j "echo \$[--HIMMEL_CONSOLE_LEG]; bash $MERGE_ON_GREEN 1")"
+assert_deny "legacy \$[NAME++] (postfix increment) assigns the seam" "$(j "echo \$[HIMMEL_CONSOLE_LEG++]; bash $MERGE_ON_GREEN 1")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied
