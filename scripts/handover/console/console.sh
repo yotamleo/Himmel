@@ -15,16 +15,22 @@
 # Env seams: HANDOVER_DIR / USER_SLUG / JIRA_PROJECT_KEY (via .env, see
 # load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL,
 # CONSOLE_FILL_PERCENT, CONSOLE_TEMPLATE_DIR, CONSOLE_WORK_DIR (default:
-# ${TMPDIR:-/tmp}/himmel-console-<uid>, per-uid rather than a predictable
-# shared path), CONSOLE_HEADED_ARM, CONSOLE_ARM_FOREGROUND (test seam: run
-# the arm in the foreground instead of detaching it).
+# $XDG_RUNTIME_DIR/himmel-console when set and owned by this uid, else
+# ${TMPDIR:-/tmp}/himmel-console-<uid>; an override is validated the same as
+# the default — see HIMMEL-2881 below), CONSOLE_HEADED_ARM,
+# CONSOLE_ARM_FOREGROUND (test seam: run the arm in the foreground instead of
+# detaching it).
 # Flag seams: --name (both commands; on next it selects which chain to
 # continue) --arm --dry-run --model --bucket --prefix --deadline-min --doc
 # (next only). See `-h`/`--help` for the full surface.
 #
 # Exit codes: 0 ok; 1 usage/state error (letters A-Z exhausted, no
 # predecessor found, an unresolved {{PLACEHOLDER}} survived a render); 2
-# unresolved handover root / user slug / a missing template file.
+# unresolved handover root / user slug / a missing template file / no
+# sha256 hasher available to derive the per-chain digest (HIMMEL-2889); 3
+# the work dir (default or CONSOLE_WORK_DIR) exists but is a symlink, is not
+# owned by this user, is group/other-writable, or could not be created
+# (HIMMEL-2881).
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+; --arm launches through
 # konsole (Linux/KDE, via headed-arm.sh), so no .ps1 twin — the Windows
@@ -270,22 +276,292 @@ date="$(date +%F)"
 state_dir="$root/$slug/$bucket"
 model="${MODEL:-${CONSOLE_MODEL:-claude-fable-5-1}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
-# The uid suffix prevents collision between DIFFERENT users on a shared
-# host; it does NOT prevent deliberate pre-creation of this exact path by
-# another local user (mkdir -p accepts an existing dir regardless of who
-# made it). A stable path is required by design here — the arming side and
-# the touching side must agree on the signal path across separate
-# invocations — so a fresh mktemp per run is not available as a fix; real
-# hardening (ownership + symlink checks, or XDG_RUNTIME_DIR) is tracked
-# separately: HIMMEL-2881. CONSOLE_WORK_DIR still overrides this outright.
-workdir="${CONSOLE_WORK_DIR:-${TMPDIR:-/tmp}/himmel-console-$(id -u)}"
-# Namespaced by chain identity (slug+bucket), NOT just session name: the
-# session name is keyed on <PREFIX>-nextleg-<date><letter>-<name> only (the
-# established, fleet-wide convention — out of scope to change), so two
-# chains that differ just by bucket but share prefix/date/letter/name would
-# otherwise collide on the SAME signal/log path and touching one chain's
-# signal could arm the other's successor.
-chain_dir="$workdir/${slug}-${bucket}"
+
+# _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small
+# per-script helper, matching the repo's own convention of duplicating this
+# rather than centralizing it (already inlined the same way in
+# queue-lock.sh's _ql_digest_of, artifact-sync.sh's sha256_of, and
+# arm-resume.sh). Fails closed (exit 2, alongside this script's other
+# unresolved-root/tooling cases) rather than silently falling back to an
+# unhashed or truncated root, which would reopen the exact collision this
+# digest exists to prevent.
+_console_sha256_8() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -d' ' -f1 | cut -c1-8
+    elif command -v shasum >/dev/null 2>&1; then
+        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1 | cut -c1-8
+    else
+        err "no sha256 hasher available (need sha256sum or shasum) to derive the per-chain work-dir digest"
+        exit 2
+    fi
+}
+
+# HIMMEL-2889: two consoles under DIFFERENT $HANDOVER_DIR roots that happen
+# to agree on slug/bucket/prefix/date/letter/name would otherwise collide on
+# the same signal/log path — touching one chain's signal could arm the
+# other's successor. Folding a digest of the RESOLVED, CANONICALIZED root
+# into the chain dir name fixes that; canonicalizing first (via the same
+# _arm_realpath already used to normalize the root elsewhere) means two
+# spellings of one root (a symlink alias, a trailing slash) still digest
+# identically instead of splitting one chain's history in two.
+root_canon="$(_arm_realpath "$root")"
+root_digest="$(_console_sha256_8 "$root_canon")"
+
+# _console_group_or_world_writable <dir> -- true if <dir>'s own permission
+# bits allow group or other write. HIMMEL-2881 round 2 (codex-1 panel
+# finding): console_workdir_ensure only ever validates the CHILD it creates
+# ($XDG_RUNTIME_DIR/himmel-console); it never checks the PARENT
+# ($XDG_RUNTIME_DIR itself). Unix permission semantics mean write access to
+# a directory controls its entries regardless of the entries' own
+# permissions (absent a sticky bit, which /tmp has but an arbitrary
+# XDG_RUNTIME_DIR is not guaranteed to), so a group- or world-writable
+# parent lets another local user swap the child out from under this
+# process even after the child passed its own validation. A separate
+# helper (rather than folding this into console_workdir_ensure) keeps that
+# already-tested function's exact error-message wording untouched.
+_console_group_or_world_writable() {
+    local mode
+    mode=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
+    [ -n "$mode" ] || return 0  # unreadable bits: fail closed, treat as writable so the caller falls back
+    local oth="${mode: -1}" grp="${mode%?}"
+    grp="${grp: -1}"
+    case "$oth$grp" in
+        *2*|*3*|*6*|*7*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# HIMMEL-2881: the default work dir is a PREDICTABLE path
+# (${TMPDIR:-/tmp}/himmel-console-<uid>) another local user could pre-create
+# — as a directory they own, or as a symlink elsewhere — before this
+# process's first run; `mkdir -p` silently accepts an existing directory
+# regardless of who made it or what it actually resolves to. Prefer
+# $XDG_RUNTIME_DIR/himmel-console (already a per-user 0700 directory on
+# systemd hosts) when it is set AND already owned by this uid AND not
+# itself group- or world-writable; otherwise fall back to the uid-qualified
+# /tmp path. Modeled directly on headed-arm.sh's LOCKDIR hardening
+# (HIMMEL-2545): `-L` before `-d` before `-O` (plain test operators, no
+# stat/uid comparison needed), then a stat-based permission-bit check for
+# the GNU/BSD split. Exit 3 is a new, distinct code for this whole class of
+# refusal — never conflated with the exit-1 usage errors or the exit-2
+# unresolved-root/tooling errors above.
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] && [ -O "$XDG_RUNTIME_DIR" ] \
+    && ! _console_group_or_world_writable "$XDG_RUNTIME_DIR"; then
+    _console_default_workdir="$XDG_RUNTIME_DIR/himmel-console"
+else
+    _console_default_workdir="${TMPDIR:-/tmp}/himmel-console-$(id -u)"
+fi
+# CONSOLE_WORK_DIR is a durable test/operator seam, not an escape hatch from
+# this hardening: an override is exactly as reachable by another local user
+# guessing or being told the path as the default is, so it goes through the
+# SAME validation rather than being trusted outright.
+workdir="${CONSOLE_WORK_DIR:-$_console_default_workdir}"
+
+# _console_dir_component_unsafe <dir> -- true if <dir> is group- or
+# world-writable AND (lacks the sticky bit OR the sticky bit is present but
+# <dir> is owned by neither root nor us). HIMMEL-2881 round 3 (codex-1
+# panel finding): console_workdir_ensure (below) validates only $workdir
+# itself, in every one of its three origins -- the XDG_RUNTIME_DIR default,
+# a CONSOLE_WORK_DIR override, or the TMPDIR fallback. The XDG_RUNTIME_DIR
+# case alone got a parent check (the `if` above deciding whether to prefer
+# it) in round 2; the override and TMPDIR-fallback parents were left
+# unchecked, so another local user with write access to either parent could
+# still swap the (already-validated) work dir out from under this process,
+# same as the XDG_RUNTIME_DIR case. A sticky bit changes that: it restores
+# per-entry protection inside an otherwise world-writable directory -- but
+# ONLY against users who are neither the entry's owner, the directory's
+# owner, nor root; the directory's OWNER can still rename/unlink entries
+# inside their own directory regardless of the sticky bit (round 4,
+# codex-1 panel finding), so a sticky directory owned by an attacker is not
+# actually safe -- the exemption must also require the directory itself be
+# owned by root or by us. This is exactly what makes plain /tmp (mode 1777,
+# root-owned) a safe TMPDIR-fallback parent despite being world-writable,
+# and is why the plain group/world-writable check the XDG_RUNTIME_DIR
+# preference above uses needs no such exemption (XDG_RUNTIME_DIR is never
+# expected to need a sticky-bit exception: a systemd-provided one is 0700,
+# and an operator-provided one is a config choice, not a shared temp dir).
+_console_dir_component_unsafe() {
+    local owner
+    owner=$(stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
+    [ -n "$owner" ] || return 0  # unreadable owner: fail closed, treat as unsafe
+    if [ "$owner" != "0" ] && [ "$owner" != "$(id -u)" ]; then
+        # HIMMEL-2881 round 5 (codex-1 panel finding): an attacker-owned
+        # directory is unsafe REGARDLESS of its current permission bits --
+        # its owner can chmod it to add write access (or already has owner
+        # write access even at e.g. mode 0755) at any point after this
+        # check runs, so ownership by neither root nor us is disqualifying
+        # on its own, before even looking at group/world-writable bits.
+        return 0
+    fi
+    local mode
+    mode=$(stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
+    [ -n "$mode" ] || return 0  # unreadable bits: fail closed, treat as unsafe
+    local oth="${mode: -1}" grp="${mode%?}"
+    grp="${grp: -1}"
+    case "$oth$grp" in
+        *2*|*3*|*6*|*7*) : ;;  # group/world-writable -- fall through to the sticky check
+        *) return 1 ;;  # trusted owner, not group/world-writable: safe
+    esac
+    local sticky=0
+    if [ "${#mode}" -ge 4 ]; then
+        case "${mode:0:1}" in
+            1|3|5|7) sticky=1 ;;
+        esac
+    fi
+    [ "$sticky" -eq 1 ] && return 1  # trusted owner + sticky: non-owners can't rename/unlink our entry: safe
+    return 0  # trusted owner but group/world-writable without sticky: other non-owning local users could tamper
+}
+# _console_ancestor_unsafe <dir> -- true if <dir> or any of its existing
+# ancestors is unsafe per _console_dir_component_unsafe. HIMMEL-2881 round 4
+# (codex-2 panel finding): checking only the immediate parent leaves the
+# REST of the ancestor chain unchecked -- a local user with write access to
+# a GRANDPARENT (or higher) can rename/replace that ancestor, substituting
+# the entire subtree beneath it (including an immediate parent that, in
+# isolation, looks perfectly safe), so every existing ancestor up to the
+# filesystem root must be checked, not just the nearest one. A non-existent
+# ancestor is skipped (mirroring the existing single-parent check): `mkdir -p`
+# will create it, and its own ancestors are still walked and checked.
+_console_ancestor_unsafe() {
+    local d="$1" prev=""
+    while [ "$d" != "$prev" ]; do
+        if [ -d "$d" ] && _console_dir_component_unsafe "$d"; then
+            return 0
+        fi
+        prev="$d"
+        d="$(dirname "$d")"
+    done
+    return 1
+}
+# HIMMEL-2881 round 5 (codex-2 panel finding): the ancestor walk is a
+# lexical `dirname` loop -- on a RELATIVE workdir (e.g. CONSOLE_WORK_DIR=work)
+# `dirname` stops at "." after one step ("." is its own dirname), so only the
+# current working directory itself is ever checked, never anything above it.
+# Canonicalizing to an absolute path first (the same _arm_realpath already
+# used to normalize the handover root above) makes the walk always reach the
+# real filesystem root regardless of how workdir was spelled.
+_console_workdir_abs="$(_arm_realpath "$workdir")"
+_console_workdir_parent="$(dirname "$_console_workdir_abs")"
+if _console_ancestor_unsafe "$_console_workdir_parent"; then
+    err "refusing to use work dir '$workdir' — its parent directory '$_console_workdir_parent' (or an ancestor of it) is group- or world-writable without adequate sticky-bit/ownership protection, so another local user could replace it out from under this process (HIMMEL-2881)"
+    exit 3
+fi
+# HIMMEL-2881 round 6 (codex-1 panel finding): ancestor validation above ran
+# against the CANONICALIZED path, but every use below this point (creation,
+# chain_dir) previously kept the ORIGINAL $workdir spelling -- if a symlink
+# in one of workdir's own path components resolved to a safe tree at
+# validation time, an attacker could repoint that symlink before the actual
+# create/access below, and the two would silently diverge. Adopting the
+# already-validated canonical path for every subsequent use closes that
+# window: what was checked is exactly what gets used. This MUST run before
+# the reassignment below: `realpath -m` resolves a symlink at $workdir's own
+# last component away entirely, so console_workdir_ensure's own -L check
+# would never see it once $workdir has already been replaced by its
+# resolved form (case 27's pre-created-symlink-as-workdir regression).
+if [ -L "$workdir" ]; then
+    err "refusing to use work dir '$workdir' — it is a SYMLINK, so this process does not control what it actually resolves to (HIMMEL-2881)"
+    exit 3
+fi
+workdir="$_console_workdir_abs"
+
+# _console_mkdir_chain_safe <dir> -- create <dir> and every missing ancestor
+# ONE COMPONENT AT A TIME (never a single `mkdir -p`), validating ownership
+# of each component the instant it exists -- whether because this call just
+# created it or because it was already there. HIMMEL-2881 round 7 (codex-1
+# panel finding): `_console_ancestor_unsafe` above only walks EXISTING
+# ancestors -- a missing one is skipped on the assumption that `mkdir -p`
+# will create it safely -- but `mkdir -p` silently adopts any ancestor an
+# attacker races into existence between that walk and this create step, with
+# NO ownership check of its own, and that attacker-owned ancestor can later
+# be used to replace the whole subtree beneath it. Building the chain
+# top-down with plain `mkdir` (no -p) closes the window: each `mkdir` either
+# succeeds (so this process owns the new directory, created at mode 0700 --
+# unconditionally safe) or fails because the component already exists, in
+# which case it is validated exactly like a pre-existing ancestor before
+# anything is created beneath it.
+_console_mkdir_chain_safe() {
+    local target="$1" prefix="$1" p
+    local -a missing=()
+    while [ ! -e "$prefix" ]; do
+        missing=("$prefix" "${missing[@]}")
+        prefix="$(dirname "$prefix")"
+        [ "$prefix" = "/" ] && break
+    done
+    # HIMMEL-2881 round 8 (codex-1 panel finding on the round-7 fix): the
+    # scan above just stops at the first EXISTING directory and hands it to
+    # the create loop below as a trusted base -- but "existing" only means
+    # existing NOW, at scan time, not at the time the OUTER ancestor-unsafe
+    # walk (which ran before this function was ever called) last looked. An
+    # attacker who races a brand-new ancestor into existence in that window
+    # becomes this scan's stopping point and would otherwise never be
+    # checked at all. Re-running the same ancestor walk against it here --
+    # right before it is trusted -- closes that window.
+    if _console_ancestor_unsafe "$prefix"; then
+        err "refusing to use work dir '$target' — its ancestor '$prefix' (or one above it) is unsafe, and appeared after the initial check ran (HIMMEL-2881)"
+        exit 3
+    fi
+    for p in "${missing[@]}"; do
+        # shellcheck disable=SC2174
+        if ! mkdir -m 0700 "$p" 2>/dev/null; then
+            if [ -L "$p" ] || [ ! -d "$p" ] || _console_dir_component_unsafe "$p"; then
+                err "refusing to use work dir '$target' — could not safely create ancestor '$p': it was raced into existence by something this process does not control (HIMMEL-2881)"
+                exit 3
+            fi
+        fi
+    done
+}
+# console_workdir_ensure <dir> -- create at 0700 if absent, then ALWAYS
+# validate what actually exists at $d afterward -- never return early on a
+# bare mkdir success. `mkdir -p` is a documented no-op on a path that already
+# exists (including one whose last component is a symlink resolving to a
+# directory), so a hostile dir/symlink planted in the TOCTOU window between
+# the existence check below and the mkdir call would otherwise be silently
+# trusted; falling through into the same checks a pre-existing directory gets
+# closes that race, since -L/-O/permission-bits are evaluated on whatever is
+# actually at $d now, not on what mkdir believes it created. This is also why
+# a passing directory is never chmod'd here: fixing up an existing hostile
+# dir's mode would let it pass while the attacker still owns it, laundering
+# exactly the thing this check exists to catch.
+console_workdir_ensure() {
+    local d="$1"
+    if [ ! -e "$d" ] && [ ! -L "$d" ]; then
+        _console_mkdir_chain_safe "$d"
+    fi
+    if [ -L "$d" ]; then
+        err "refusing to use work dir '$d' — it is a SYMLINK, so this process does not control what it actually resolves to (HIMMEL-2881)"
+        exit 3
+    fi
+    if [ ! -d "$d" ]; then
+        err "refusing to use work dir '$d' — it is not a directory (HIMMEL-2881)"
+        exit 3
+    fi
+    if [ ! -O "$d" ]; then
+        err "refusing to use work dir '$d' — it is not owned by this user (HIMMEL-2881)"
+        exit 3
+    fi
+    local mode
+    mode=$(stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d" 2>/dev/null)  # gnu-ok: GNU stat -c is paired with the BSD stat -f fallback on this same line
+    if [ -z "$mode" ]; then
+        err "refusing to use work dir '$d' — could not read its permission bits (HIMMEL-2881)"
+        exit 3
+    fi
+    local oth="${mode: -1}" grp="${mode%?}"
+    grp="${grp: -1}"
+    case "$oth$grp" in
+        *2*|*3*|*6*|*7*)
+            err "refusing to use work dir '$d' — it is group- or world-writable (HIMMEL-2881)"
+            exit 3
+            ;;
+    esac
+}
+console_workdir_ensure "$workdir"
+
+# Namespaced by chain identity (slug+bucket+root digest), NOT just session
+# name: the session name is keyed on <PREFIX>-nextleg-<date><letter>-<name>
+# only (the established, fleet-wide convention — out of scope to change), so
+# two chains that differ just by bucket, or just by handover root, but share
+# everything else would otherwise collide on the SAME signal/log path and
+# touching one chain's signal could arm the other's successor.
+chain_dir="$workdir/${slug}-${bucket}-${root_digest}"
 # 10# forces base-10: DEADLINE_MIN passed the digits-only check above, but a
 # leading zero (e.g. "08") is otherwise read as octal in arithmetic context,
 # and 8/9 are not valid octal digits.

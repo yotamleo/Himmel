@@ -47,12 +47,29 @@ root="$tmp/handovers"
 mkdir -p "$root"
 today="$(date +%F)"
 
+# root_digest_of <canonical-root> -- mirrors console.sh's _console_sha256_8:
+# first 8 hex chars of the sha256 of the resolved, canonicalized handover
+# root (HIMMEL-2889). $root is already canonical here (built via `pwd -P`
+# above), so no realpath step is needed for fixture roots.
+root_digest_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        printf '%s' "$1" | sha256sum | cut -d' ' -f1 | cut -c1-8
+    else
+        printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1 | cut -c1-8
+    fi
+}
+root_digest="$(root_digest_of "$root")"
+
 console_root() {  # console_root <root> <args...> -- invoke console.sh with
                   # cwd pinned to the fixture repo, against an ARBITRARY
                   # handover root (used by cases exercising a non-default
-                  # root, e.g. one containing a space).
+                  # root, e.g. one containing a space). CONSOLE_WORK_DIR is
+                  # pinned to an isolated fixture dir so the eager work-dir
+                  # hardening (HIMMEL-2881) never touches, and every case
+                  # here never collides on, the REAL live
+                  # /tmp/himmel-console-<uid> tree other running consoles use.
     local r="$1"; shift
-    ( cd "$fixture_repo" && HANDOVER_DIR="$r" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO bash "$C" "$@" )
+    ( cd "$fixture_repo" && HANDOVER_DIR="$r" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" bash "$C" "$@" )
 }
 
 console() { console_root "$root" "$@"; }
@@ -145,10 +162,11 @@ HANDOVER_DIR="$root" bash "$QL" release "$doc6bSrc" "$token6ba" >/dev/null 2>&1
 # --- 7: next --arm with a stub arm target ------------------------------
 doc7A="$root/tester/armrepo/DEMO-nextleg-${today}A-console.md"
 session7B="DEMO-nextleg-${today}B-console"
-# Signal/log live under a chain-identity subdir ($slug-$bucket), not
+# Signal/log live under a chain-identity subdir ($slug-$bucket-$digest), not
 # $workdir directly -- see codex-2 round-2 (bucket-only-differing chains
-# must not collide on the same signal/log path).
-log7B="$tmp/work/tester-armrepo/launch-${session7B}.log"
+# must not collide on the same signal/log path) and HIMMEL-2889 (chains under
+# DIFFERENT handover roots must not collide either, hence the root digest).
+log7B="$tmp/work/tester-armrepo-${root_digest}/launch-${session7B}.log"
 
 cat > "$tmp/stub-arm.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -384,6 +402,22 @@ log17b="$(printf '%s\n' "$out17b" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 
 check "17 signal path differs when only --bucket differs" "$([ -n "$sig17a" ] && [ "$sig17a" != "$sig17b" ] && echo yes)" "yes"
 check "17 log path differs when only --bucket differs" "$([ -n "$log17a" ] && [ "$log17a" != "$log17b" ] && echo yes)" "yes"
 
+# --- 17b: case 17's sibling -- chains under DIFFERENT handover roots that
+# otherwise agree on slug/bucket/prefix/date/letter/name must not collide
+# on the same signal/log path either (HIMMEL-2889). Same $root twice would
+# reuse letter A on the second call, so use two disjoint fixture roots.
+root17b1="$tmp/handovers-17b1"
+root17b2="$tmp/handovers-17b2"
+mkdir -p "$root17b1" "$root17b2"
+out17c="$(console_root "$root17b1" new --bucket samebucket --dry-run --arm)"
+out17d="$(console_root "$root17b2" new --bucket samebucket --dry-run --arm)"
+sig17c="$(printf '%s\n' "$out17c" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+sig17d="$(printf '%s\n' "$out17d" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+log17c="$(printf '%s\n' "$out17c" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 1)"
+log17d="$(printf '%s\n' "$out17d" | sed -n 's/.*log=\([^ ]*\).*/\1/p' | head -n 1)"
+check "17b signal path differs when only HANDOVER_DIR differs" "$([ -n "$sig17c" ] && [ "$sig17c" != "$sig17d" ] && echo yes)" "yes"
+check "17b log path differs when only HANDOVER_DIR differs" "$([ -n "$log17c" ] && [ "$log17c" != "$log17d" ] && echo yes)" "yes"
+
 # --- 18: next --doc <missing predecessor> refuses rather than fabricate -
 before18="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
 missing_doc="$root/tester/missingrepo/DEMO-nextleg-${today}A-console.md"
@@ -573,5 +607,389 @@ check "26 the token embedded in the doc matches the printed token" "$token26_in_
 rc26=0
 HANDOVER_DIR="$root" bash "$QL" release "$doc26" "$token26_in_doc" >/dev/null 2>&1 || rc26=$?
 check "26 the control: release using the token read out of the document succeeds" "$rc26" "0"
+
+# --- 27: default work dir refuses a pre-created SYMLINK (HIMMEL-2881) --
+# Another local user could symlink the predictable default path elsewhere
+# before this process's first run; the eager work-dir hardening must catch
+# it regardless of --arm. TMPDIR is pointed at an isolated fixture dir (never
+# real /tmp) and XDG_RUNTIME_DIR is unset so the TMPDIR-fallback branch of
+# the resolution is the one under test.
+tmp27="$tmp/c27"
+mkdir -p "$tmp27/real-elsewhere"
+ln -s "$tmp27/real-elsewhere" "$tmp27/himmel-console-$(id -u)"
+rc27=0
+out27="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO TMPDIR="$tmp27" \
+    bash "$C" new --bucket wdlinktest --dry-run ) 2>&1 )" || rc27=$?
+check "27 symlinked default work dir: refuses with a distinct exit code" "$rc27" "3"
+check "27 symlinked default work dir: stderr names the cause" "$(printf '%s\n' "$out27" | grep -ci symlink)" "1"
+check "27 symlinked default work dir: never followed into real-elsewhere" "$([ -n "$(find "$tmp27/real-elsewhere" -mindepth 1 2>/dev/null)" ] && echo yes || echo no)" "no"
+
+# --- 28: default work dir refuses a directory owned by a DIFFERENT uid
+# (HIMMEL-2881) -- skipped cleanly (never faked) if this host offers no way
+# to arrange one without privileges we do not have.
+if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true >/dev/null 2>&1; then
+    echo "ok - SKIPPED: default work dir owned by another uid (no passwordless privilege escalation on this host to arrange one - sudo -n true failed)"
+else
+    tmp28="$tmp/c28"
+    mkdir -p "$tmp28/himmel-console-$(id -u)"
+    if sudo -n chown nobody:nobody "$tmp28/himmel-console-$(id -u)" >/dev/null 2>&1; then
+        rc28=0
+        out28="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+            HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO TMPDIR="$tmp28" \
+            bash "$C" new --bucket wdotheruid --dry-run ) 2>&1 )" || rc28=$?
+        check "28 default work dir owned by another uid: refuses with a distinct exit code" "$rc28" "3"
+        check "28 default work dir owned by another uid: stderr names the cause" "$(printf '%s\n' "$out28" | grep -ci owned)" "1"
+        sudo -n chown "$(id -u):$(id -g)" "$tmp28/himmel-console-$(id -u)" >/dev/null 2>&1
+    else
+        echo "ok - SKIPPED: default work dir owned by another uid (sudo -n chown to nobody:nobody failed - no usable privilege on this host)"
+    fi
+fi
+
+# --- 29: two spellings of the SAME handover root (a symlink alias) must
+# digest to the SAME chain dir (HIMMEL-2889) -- canonicalization has to
+# happen before hashing, or a symlinked root would silently degrade back
+# into the very collision the digest exists to prevent.
+root29_link="$tmp/handovers-symlink"
+ln -s "$root" "$root29_link"
+out29a="$(console_root "$root" new --bucket digestsame --dry-run --arm)"
+out29b="$(console_root "$root29_link" new --bucket digestsame --dry-run --arm)"
+sig29a="$(printf '%s\n' "$out29a" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+sig29b="$(printf '%s\n' "$out29b" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+check "29 root spelled via a symlink alias yields the SAME signal path" "$([ -n "$sig29a" ] && [ "$sig29a" = "$sig29b" ] && echo yes)" "yes"
+
+# --- 30: work-dir creation TOCTOU (HIMMEL-2881 round 2, codex-1 panel
+# finding) -- if another local process wins the race between console.sh's
+# `[ ! -e ]` absence check and its `mkdir -p` call, planting a directory or
+# symlink first, `mkdir -p` treats the path as already-satisfied and returns
+# 0 without creating anything; console_workdir_ensure must not trust that
+# silent success and skip validation -- it must always re-check what is
+# actually at the path afterward. A real race cannot be scheduled
+# deterministically, so a PATH stub for `mkdir` simulates the race winner:
+# it plants a symlink at the exact target path (mirroring what a hostile
+# local user's pre-created symlink looks like once `mkdir -p` sees the path
+# as already existing) and exits 0 -- exactly what the real `mkdir -p` does
+# in that situation -- instead of ever actually creating the target
+# directory.
+tmp30="$tmp/c30"
+mkdir -p "$tmp30/bin" "$tmp30/elsewhere-30"
+target30="$tmp30/himmel-console-$(id -u)"
+real_mkdir30="$(command -v mkdir)"
+cat > "$tmp30/bin/mkdir" <<STUB_EOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+    if [ "\$a" = "$target30" ]; then
+        ln -s "$tmp30/elsewhere-30" "$target30"
+        exit 0
+    fi
+done
+exec "$real_mkdir30" "\$@"
+STUB_EOF
+chmod +x "$tmp30/bin/mkdir"
+rc30=0
+out30="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO TMPDIR="$tmp30" \
+    PATH="$tmp30/bin:$PATH" \
+    bash "$C" new --bucket wdtoctou --dry-run ) 2>&1 )" || rc30=$?
+check "30 work-dir creation TOCTOU: refuses with a distinct exit code" "$rc30" "3"
+check "30 work-dir creation TOCTOU: stderr names the cause" "$(printf '%s\n' "$out30" | grep -ci symlink)" "1"
+check "30 work-dir creation TOCTOU: never followed into elsewhere-30" "$([ -n "$(find "$tmp30/elsewhere-30" -mindepth 1 2>/dev/null)" ] && echo yes || echo no)" "no"
+
+# --- 31: XDG_RUNTIME_DIR itself group- or world-writable must NOT be
+# trusted for the default work dir (HIMMEL-2881 round 2, codex-1 panel
+# finding) -- console_workdir_ensure only validates the CHILD
+# ($XDG_RUNTIME_DIR/himmel-console) it creates; a local user with write
+# access to the PARENT can still unlink/replace that child after
+# validation completes (Unix permission semantics: write access to a
+# directory controls its entries regardless of the entries' own
+# permissions, absent a sticky bit like /tmp's). The selection must not
+# prefer $XDG_RUNTIME_DIR when the directory itself is group- or
+# world-writable; it must fall back to the uid-qualified TMPDIR path
+# instead, exactly as it already does for a non-owned $XDG_RUNTIME_DIR.
+tmp31="$tmp/c31"
+mkdir -p "$tmp31/xdg" "$tmp31/tmp"
+chmod 0777 "$tmp31/xdg"
+out31="$( ( cd "$fixture_repo" && env -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    XDG_RUNTIME_DIR="$tmp31/xdg" TMPDIR="$tmp31/tmp" \
+    bash "$C" new --bucket wdgwtest --dry-run --arm ) 2>&1 )"
+sig31="$(printf '%s\n' "$out31" | sed -n 's/.*signal=\([^ ]*\).*/\1/p' | head -n 1)"
+case "$sig31" in
+    "$tmp31/xdg/himmel-console/"*) sig31_branch=rejected ;;
+    "$tmp31/tmp/himmel-console-$(id -u)/"*) sig31_branch=fallback ;;
+    *) sig31_branch="other:$sig31" ;;
+esac
+check "31 group/world-writable XDG_RUNTIME_DIR is not preferred" "$sig31_branch" "fallback"
+
+# --- 32: a CONSOLE_WORK_DIR override sitting under a group/world-writable,
+# non-sticky PARENT must be refused (HIMMEL-2881 round 3, codex-1 panel
+# finding) -- console_workdir_ensure only ever validates the override path
+# itself, never its parent; an override is exactly as reachable by another
+# local user as the default path, so an insecure parent lets that user
+# swap the (validated) override directory out from under this process the
+# same way an insecure XDG_RUNTIME_DIR could. A sticky bit (as /tmp
+# normally has) would neutralize this, which is why the fixture parent is
+# deliberately NOT sticky (0777, not 1777).
+tmp32="$tmp/c32"
+mkdir -p "$tmp32/parent"
+chmod 0777 "$tmp32/parent"
+out32="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp32/parent/work" \
+    bash "$C" new --bucket wdparent32 --dry-run ) 2>&1 )"; rc32=$?
+check "32 CONSOLE_WORK_DIR under an insecure parent: refuses with a distinct exit code" "$rc32" "3"
+check "32 CONSOLE_WORK_DIR under an insecure parent: stderr names the cause" "$(printf '%s\n' "$out32" | grep -ci parent)" "1"
+
+# --- 33: the TMPDIR-fallback work dir's parent (normally /tmp, sticky) must
+# be checked the same way when TMPDIR itself is overridden to a
+# group/world-writable, non-sticky directory (HIMMEL-2881 round 3, codex-1
+# panel finding, TMPDIR half). No XDG_RUNTIME_DIR and no CONSOLE_WORK_DIR
+# override, so the default TMPDIR-fallback path is exercised directly.
+tmp33="$tmp/c33"
+mkdir -p "$tmp33/insecure-tmp"
+chmod 0777 "$tmp33/insecure-tmp"
+out33="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp33/insecure-tmp" \
+    bash "$C" new --bucket wdparent33 --dry-run ) 2>&1 )"; rc33=$?
+check "33 TMPDIR-fallback under an insecure TMPDIR: refuses with a distinct exit code" "$rc33" "3"
+check "33 TMPDIR-fallback under an insecure TMPDIR: stderr names the cause" "$(printf '%s\n' "$out33" | grep -ci parent)" "1"
+
+# --- 34: a sticky PARENT owned by neither root nor us must still be refused
+# (HIMMEL-2881 round 4, codex-1 panel finding) -- the round-3 fix exempted
+# any sticky directory, but the sticky bit only protects entries from users
+# who are NOT the directory's own owner; the owner can still rename/unlink
+# entries inside their own directory regardless of the sticky bit, so a
+# sticky directory owned by an attacker is not actually safe. A real
+# attacker-owned fixture cannot be built without root, so a PATH stub for
+# `stat` reports a foreign uid for this one fixture path while every other
+# `stat` call (including console.sh's own real ones on other paths) passes
+# through to the real binary unchanged.
+tmp34="$tmp/c34"
+mkdir -p "$tmp34/bin" "$tmp34/attacker-owned"
+chmod 1777 "$tmp34/attacker-owned"
+real_stat34="$(command -v stat)"
+cat > "$tmp34/bin/stat" <<STUB_EOF
+#!/usr/bin/env bash
+if [ "\$1" = "-c" ] && [ "\$3" = "$tmp34/attacker-owned" ]; then
+    case "\$2" in
+        %a) echo 1777; exit 0 ;;
+        %u) echo 31337; exit 0 ;;
+    esac
+fi
+exec "$real_stat34" "\$@"
+STUB_EOF
+chmod +x "$tmp34/bin/stat"
+out34="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp34/attacker-owned" \
+    PATH="$tmp34/bin:$PATH" \
+    bash "$C" new --bucket wdparent34 --dry-run ) 2>&1 )"; rc34=$?
+check "34 sticky but attacker-owned parent: refuses with a distinct exit code" "$rc34" "3"
+check "34 sticky but attacker-owned parent: stderr names the cause" "$(printf '%s\n' "$out34" | grep -ci parent)" "1"
+
+# --- 35 (control): a sticky parent owned by US (the real /tmp shape) must
+# still be accepted -- proves the round-4 ownership check does not regress
+# the plain /tmp case the round-3 sticky exemption exists for.
+tmp35="$tmp/c35"
+mkdir -p "$tmp35/self-owned"
+chmod 1777 "$tmp35/self-owned"
+rc35=0
+( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp35/self-owned" \
+    bash "$C" new --bucket wdparent35 --dry-run ) >/dev/null 2>&1 || rc35=$?
+check "35 sticky self-owned parent (real /tmp analogue): accepted" "$rc35" "0"
+
+# --- 36: an insecure GRANDPARENT must be refused even when the immediate
+# parent looks safe on its own (HIMMEL-2881 round 4, codex-2 panel finding)
+# -- checking only the immediate parent leaves the rest of the ancestor
+# chain unchecked; a local user with write access to a grandparent can
+# rename/replace it, substituting the entire subtree including an
+# otherwise-safe immediate parent.
+tmp36="$tmp/c36"
+mkdir -p "$tmp36/grandparent/parent"
+chmod 0777 "$tmp36/grandparent"
+chmod 0700 "$tmp36/grandparent/parent"
+out36="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp36/grandparent/parent/work" \
+    bash "$C" new --bucket wdparent36 --dry-run ) 2>&1 )"; rc36=$?
+check "36 insecure grandparent despite safe immediate parent: refuses with a distinct exit code" "$rc36" "3"
+check "36 insecure grandparent despite safe immediate parent: stderr names the cause" "$(printf '%s\n' "$out36" | grep -ci parent)" "1"
+
+# --- 37: an attacker-owned parent that is NOT group/world-writable (e.g.
+# mode 0755) must still be refused (HIMMEL-2881 round 5, codex-1 panel
+# finding) -- the round-4 fix only added an ownership check on the STICKY
+# branch; a non-writable-by-group/other directory was still accepted
+# regardless of owner, but the owner of a directory can chmod it (or may
+# already have owner-only write access at 0755) at any time after this
+# check runs, so ownership by neither root nor us is disqualifying even
+# when the current bits look tight. Same stat PATH-stub technique as case 34
+# (no root available to build a real attacker-owned fixture).
+tmp37="$tmp/c37"
+mkdir -p "$tmp37/bin" "$tmp37/attacker-0755"
+chmod 0755 "$tmp37/attacker-0755"
+real_stat37="$(command -v stat)"
+cat > "$tmp37/bin/stat" <<STUB_EOF
+#!/usr/bin/env bash
+if [ "\$1" = "-c" ] && [ "\$2" = "%u" ] && [ "\$3" = "$tmp37/attacker-0755" ]; then
+    echo 31337; exit 0
+fi
+exec "$real_stat37" "\$@"
+STUB_EOF
+chmod +x "$tmp37/bin/stat"
+out37="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp37/attacker-0755" \
+    PATH="$tmp37/bin:$PATH" \
+    bash "$C" new --bucket wdparent37 --dry-run ) 2>&1 )"; rc37=$?
+check "37 attacker-owned non-writable (0755) parent: refuses with a distinct exit code" "$rc37" "3"
+check "37 attacker-owned non-writable (0755) parent: stderr names the cause" "$(printf '%s\n' "$out37" | grep -ci parent)" "1"
+
+# --- 38 (control): a self-owned, non-writable (0755) parent must still be
+# accepted -- proves the round-5 ownership-first reordering does not
+# regress the ordinary, non-shared TMPDIR-fallback case.
+tmp38="$tmp/c38"
+mkdir -p "$tmp38/self-0755"
+chmod 0755 "$tmp38/self-0755"
+rc38=0
+( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR -u CONSOLE_WORK_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    TMPDIR="$tmp38/self-0755" \
+    bash "$C" new --bucket wdparent38 --dry-run ) >/dev/null 2>&1 || rc38=$?
+check "38 self-owned non-writable (0755) parent: accepted" "$rc38" "0"
+
+# --- 39: a RELATIVE CONSOLE_WORK_DIR must still walk the real ancestor
+# chain above the current working directory (HIMMEL-2881 round 5, codex-2
+# panel finding) -- a lexical `dirname` loop on a relative path like "work"
+# stops at "." (dirname(".") is itself "."), so only the cwd is ever
+# checked; canonicalizing to an absolute path first is required to reach an
+# insecure ancestor sitting above cwd.
+tmp39="$tmp/c39"
+mkdir -p "$tmp39/insecure-ancestor/cwd-dir"
+chmod 0777 "$tmp39/insecure-ancestor"
+chmod 0700 "$tmp39/insecure-ancestor/cwd-dir"
+out39="$( ( cd "$tmp39/insecure-ancestor/cwd-dir" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="work" \
+    bash "$C" new --bucket wdparent39 --dry-run ) 2>&1 )"; rc39=$?
+check "39 relative CONSOLE_WORK_DIR under an insecure ancestor: refuses with a distinct exit code" "$rc39" "3"
+check "39 relative CONSOLE_WORK_DIR under an insecure ancestor: stderr names the cause" "$(printf '%s\n' "$out39" | grep -ci parent)" "1"
+
+# --- 40: a symlink ANCESTOR of CONSOLE_WORK_DIR must be resolved ONCE and
+# the canonical form reused for every subsequent operation (HIMMEL-2881
+# round 6, codex-1 panel finding). console_workdir_ensure already refuses
+# $workdir itself being a symlink, but a symlink one level UP (workdir's
+# own last component still a plain, not-yet-existing directory) isn't
+# caught by that -- ancestor validation ran against the canonicalized path,
+# while creation/chain_dir previously kept the ORIGINAL, still-symlinked
+# spelling, so a swapped symlink between check and use could redirect
+# actual filesystem access to an unvalidated location. Proven here by
+# asserting the printed --dry-run --arm paths resolve through the REAL
+# target, never through the symlink spelling.
+tmp40="$tmp/c40"
+mkdir -p "$tmp40/real-target"
+chmod 0700 "$tmp40/real-target"
+ln -s "$tmp40/real-target" "$tmp40/linky"
+out40="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$tmp40/linky/subdir" \
+    bash "$C" new --bucket wdparent40 --dry-run --arm ) 2>&1 )"; rc40=$?
+check "40 symlink ancestor in CONSOLE_WORK_DIR: dry-run succeeds" "$rc40" "0"
+check "40 symlink ancestor in CONSOLE_WORK_DIR: signal path resolves through the real target" "$(printf '%s\n' "$out40" | grep -c "signal=$tmp40/real-target/subdir/")" "1"
+check "40 symlink ancestor in CONSOLE_WORK_DIR: signal path never embeds the symlink spelling" "$(printf '%s\n' "$out40" | grep -c "signal=$tmp40/linky/")" "0"
+
+# --- 41: a MISSING intermediate ancestor of CONSOLE_WORK_DIR is skipped by
+# the ancestor-walk above (nothing to validate yet) and then created by a
+# single `mkdir -p` alongside the work dir itself, with no ownership check
+# of its own (HIMMEL-2881 round 7, codex-1 panel finding). A local attacker
+# who races to plant that ancestor between the walk and the create call gets
+# it silently adopted, then owns a directory in this process's path that was
+# never validated. A real race cannot be scheduled deterministically, so
+# (mirroring case 30's technique) a PATH stub for `mkdir` simulates the race
+# winner: the first time console.sh's own code tries to create anything
+# under the test's tmp tree, the stub plants the intermediate ancestor
+# itself at an insecure, self-owned mode (0777, no sticky bit) BEFORE
+# forwarding the original call to the real `mkdir` -- exactly what a raced
+# attacker directory would look like by the time this process next touches
+# that path.
+tmp41="$tmp/c41"
+mkdir -p "$tmp41/bin"
+chmod 0700 "$tmp41"
+mid41="$tmp41/mid"
+target41="$tmp41/mid/workdir"
+real_mkdir41="$(command -v mkdir)"
+cat > "$tmp41/bin/mkdir" <<STUB_EOF
+#!/usr/bin/env bash
+if [ ! -e "$tmp41/.raced41" ]; then
+    for a in "\$@"; do
+        case "\$a" in
+            "$tmp41"/*)
+                : > "$tmp41/.raced41"
+                "$real_mkdir41" -m 0777 -p "$mid41" 2>/dev/null
+                break
+                ;;
+        esac
+    done
+fi
+exec "$real_mkdir41" "\$@"
+STUB_EOF
+chmod +x "$tmp41/bin/mkdir"
+rc41=0
+out41="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$target41" \
+    PATH="$tmp41/bin:$PATH" \
+    bash "$C" new --bucket wdancestor41 --dry-run ) 2>&1 )"; rc41=$?
+check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: refuses with a distinct exit code" "$rc41" "3"
+check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: stderr names the cause" "$([ "$(printf '%s\n' "$out41" | grep -ci ancestor)" -ge 1 ] && echo yes || echo no)" "yes"
+check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: never created the work dir beneath the raced ancestor" "$([ -e "$target41" ] && echo yes || echo no)" "no"
+
+# --- 42: an ancestor an attacker races into existence AFTER the outer
+# ancestor-unsafe walk concludes "safe" but BEFORE _console_mkdir_chain_safe's
+# own missing-component scan runs is silently trusted as that scan's stopping
+# point, with no validation of its own (HIMMEL-2881 round 8, codex-1 panel
+# finding on the round-7 fix): the scan's `while [ ! -e "$prefix" ]` loop
+# just stops at the first EXISTING directory it meets and hands it to the
+# create loop as a trusted base -- but "existing" only means existing NOW,
+# at scan time, not at the time the outer walk last looked. A real race
+# cannot be scheduled deterministically, so (mirroring cases 30/34/37's
+# technique) a PATH stub for `stat` simulates the race winner: the instant
+# the outer ancestor-unsafe walk examines the LAST existing ancestor it will
+# see before concluding "safe", the stub plants the next-level-down ancestor
+# at an insecure, self-owned mode (0777, no sticky bit) as a side effect,
+# then returns the real `stat` output for the path it was actually asked
+# about -- exactly what a raced attacker directory materializing in that
+# exact window would look like.
+tmp42="$tmp/c42"
+mkdir -p "$tmp42/bin"
+chmod 0700 "$tmp42"
+mid42="$tmp42/mid"
+target42="$tmp42/mid/workdir"
+real_stat42="$(command -v stat)"
+cat > "$tmp42/bin/stat" <<STUB_EOF
+#!/usr/bin/env bash
+if [ ! -e "$tmp42/.raced42" ]; then
+    for a in "\$@"; do
+        if [ "\$a" = "$tmp42" ]; then
+            : > "$tmp42/.raced42"
+            mkdir -m 0777 "$mid42" 2>/dev/null
+            break
+        fi
+    done
+fi
+exec "$real_stat42" "\$@"
+STUB_EOF
+chmod +x "$tmp42/bin/stat"
+rc42=0
+out42="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$target42" \
+    PATH="$tmp42/bin:$PATH" \
+    bash "$C" new --bucket wdancestor42 --dry-run ) 2>&1 )"; rc42=$?
+check "42 ancestor raced in between the outer walk and the create scan: refuses with a distinct exit code" "$rc42" "3"
+check "42 ancestor raced in between the outer walk and the create scan: stderr names the cause" "$([ "$(printf '%s\n' "$out42" | grep -ci ancestor)" -ge 1 ] && echo yes || echo no)" "yes"
+check "42 ancestor raced in between the outer walk and the create scan: never created the work dir beneath the raced ancestor" "$([ -e "$target42" ] && echo yes || echo no)" "no"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
