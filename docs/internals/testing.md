@@ -149,7 +149,7 @@ Three suites ship under HIMMEL-2931:
   prompt asserting the `qmd` MCP `query` tool is called with a `collections`
   scope, against a suite-wide **mock** (`evals/mocks/qmd/`, including a
   `_tools.json` describing the real tool schema so the model knows a
-  `collections` parameter exists) so no run ever touches the real qmd daemon.
+  `collections` parameter exists) so no run ever touches the real qmd server.
   Whoever next changes the `qmd` tool surface owns keeping this mock in sync.
   **Passed clean** (2026-09-12 run, score 1.00, 3/3 runs, $0.39) after two
   fixes: the mock initially lacked `_tools.json` (since fixed), and the
