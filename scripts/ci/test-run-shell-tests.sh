@@ -1592,9 +1592,20 @@ o1miss_22k=$(SUITE_DURATIONS="$miss22k" bash "$RUNNER" --list --shard 1/2 "$sb22
 o1bad_22k=$(SUITE_DURATIONS="$bad22k" bash "$RUNNER" --list --shard 1/2 "$sb22k" 2>&1)
 if grepq "$o1miss_22k" -F 'falling back to round-robin' \
    && ! grepq "$o1bad_22k" -F 'falling back to round-robin'; then
-  pass "22k: the missing ledger announces the fallback; a junk one packs silently"
+  pass "22k: the missing ledger announces the fallback; a junk one does not"
 else
   fail "22k: fallback notice misplaced; miss: $o1miss_22k --- bad: $o1bad_22k"
+fi
+# ...but it does not pack SILENTLY either. A committed ledger that parses zero
+# rows still yields the right corpus, so nothing fails — which is exactly how a
+# broken one would go unnoticed. One notice keeps it visible in the shard log.
+o1empty_22k=$(SUITE_DURATIONS="$empty22k" bash "$RUNNER" --list --shard 1/2 "$sb22k" 2>&1)
+if grepq "$o1bad_22k" -F 'parsed 0 rows' \
+   && grepq "$o1empty_22k" -F 'parsed 0 rows' \
+   && ! grepq "$o1miss_22k" -F 'parsed 0 rows'; then
+  pass "22k: a present ledger parsing 0 rows says so once; a missing one does not (it has its own notice)"
+else
+  fail "22k: 0-row notice misplaced; bad: $o1bad_22k --- empty: $o1empty_22k --- miss: $o1miss_22k"
 fi
 rm -rf "$sb22k"
 fi

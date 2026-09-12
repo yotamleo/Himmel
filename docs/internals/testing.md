@@ -35,7 +35,9 @@ still exactly the unsharded run list.
   only — it can never change **which** suites run.
 - **A suite missing from it** is assigned the median of the rows present, so a
   new suite is packed like an average one, never dropped.
-- **A row naming a suite that no longer exists** is ignored.
+- **A row naming a suite that no longer exists** is ignored for assignment —
+  it matches no eligible suite — though its duration still counts toward the
+  median that unknown suites inherit.
 - **Any row that does not parse** as `<suite path><TAB><non-negative integer>`
   — a comment, a blank line, a truncated line, a merge-conflict marker — is
   ignored exactly like an unknown row, row by row. Individual junk therefore
@@ -49,7 +51,8 @@ still exactly the unsharded run list.
 - **A ledger that is present but carries no parseable row** is not a fallback at
   all: it packs, every suite takes the median of nothing (floored to 1s), and a
   pack with all durations equal degenerates exactly to `i % n`. Same partition,
-  different route — only the missing-ledger route announces itself.
+  different route — and it prints its own one-line notice, so a committed
+  ledger that has been broken does not cost balance in silence.
 - **Anything else that goes wrong refuses instead of falling back.** Shards
   decide alone, so a fallback is only exact when *every* shard takes it. A dead
   `awk` or `sort`, a full `TMPDIR`, a broken `PATH` is local to one runner, so a

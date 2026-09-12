@@ -3134,7 +3134,7 @@ if [ "$shard_total" -gt 0 ]; then
     # The %012d key is zero-padded so a plain reverse string sort on field 1
     # is a descending NUMERIC sort, which lets field 2 break ties ascending by
     # path in the same pass.
-    _shard_plan=$(_SHARD_ELIGIBLE="$_shard_eligible" awk '
+    _shard_plan=$(_SHARD_ELIGIBLE="$_shard_eligible" _SHARD_LEDGER="$_shard_ledger" awk '
           /^[[:space:]]*#/ { next }
           {
             split($0, f, "\t")
@@ -3148,6 +3148,14 @@ if [ "$shard_total" -gt 0 ]; then
             }
             med = (nv > 0) ? vals[int((nv + 1) / 2)] : 1
             if (med < 1) med = 1
+            # Not a decision point — the pack runs either way. With no row
+            # parsed every suite takes the same floored median, so the plan
+            # degenerates to round-robin; say so once, or a committed ledger
+            # that has been broken costs balance in silence.
+            if (nv == 0) {
+              printf "run-shell-tests.sh: --shard: duration ledger %s parsed 0 rows — partition degenerates to round-robin; refresh scripts/ci/suite-durations.tsv\n", \
+                ENVIRON["_SHARD_LEDGER"] > "/dev/stderr"
+            }
             n = split(ENVIRON["_SHARD_ELIGIBLE"], rows, "\n")
             for (i = 1; i <= n; i++) {
               if (rows[i] == "") continue

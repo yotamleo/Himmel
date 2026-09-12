@@ -13,10 +13,13 @@
 # STALENESS: this is a snapshot, bumped on demand, not a CI-maintained file. It
 # tunes balance only; it can never change which suites run. A suite absent from
 # it is assigned the median of the rows present and runs like any other — never
-# dropped. A row naming a suite that no longer exists is ignored. If the file is
-# missing, unreadable, empty or malformed the runner says so once on stderr and
-# falls back to round-robin. So a stale ledger costs wall clock, nothing else;
-# refresh it when the corpus has moved enough that the shard times skew.
+# dropped. A row naming a suite that no longer exists is ignored for assignment,
+# though its duration still counts toward that median. If the file is missing or
+# unreadable the runner says so once on stderr and falls back to round-robin; if
+# it is present but no row parses the runner says THAT once and packs anyway,
+# which with every duration equal is round-robin by another route. So a stale or
+# broken ledger costs wall clock, nothing else; refresh it when the corpus has
+# moved enough that the shard times skew.
 #
 # REFRESH — replay one shell-unit-shard matrix run's logs (all shards at once):
 #   gh run view <run-id> --log \
