@@ -1182,10 +1182,19 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
       filingVault = vault;
     }
     const paths: BusPaths = { inbox: join(sd, "inbox.pending.jsonl"), outbox: join(sd, "outbox.jsonl"), context: join(sd, "context.md"), cwd: repoCwd, sessionCwd };
-    // HIMMEL-2961: resolved off repoCwd (the himmel checkout), not sessionCwd —
-    // the profile is the BRIDGE's own lean set, independent of which cwd/vault
-    // this particular dispatch routes into.
-    const settings = resolveProfileSettings(TELEGRAM_PROFILE, [], repoCwd);
+    // HIMMEL-2961: the profile itself (TELEGRAM_PROFILE's enable list) is the
+    // BRIDGE's own fixed lean set, independent of which cwd/vault this dispatch
+    // routes into — but the deny-by-default baseline (opts.installed) must be
+    // discovered from sessionCwd, not repoCwd (CR codex-1): resolveProfileSettings
+    // widens the deny-by-default set with whatever is enabled in the passed
+    // cwd's OWN settings ancestry. When routedCwd/vault sends this spawn into a
+    // directory other than the himmel checkout (grow-tent repo, luna vault),
+    // discovering off repoCwd would miss plugins enabled only in THAT
+    // directory's settings — leaving them unmentioned in the injected map and
+    // free to inherit "enabled" from Claude Code's own resolution for the
+    // actual session cwd, defeating deny-by-default for exactly the routed
+    // spawns that most need it.
+    const settings = resolveProfileSettings(TELEGRAM_PROFILE, [], sessionCwd);
     const mcpConfig = resolveTelegramMcpConfig(repoCwd);
     const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, filingVault, !!routedCwd), sessionCwd, permissionMode, undefined, modelOverride, settings, undefined, extraEnv, mcpConfig), deadlineMs), undefined, retryAt);
     // run.log (HIMMEL-262): persist the run's output tail — before this, a dead
