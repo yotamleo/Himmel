@@ -677,7 +677,8 @@ cmd_new() {
         KIT "$kit" \
         FILL_SIGNAL "$fill_signal" \
         FILL_PERCENT "$fill_percent" \
-        RELEASE_TOKEN "$release_token"
+        RELEASE_TOKEN "$release_token" \
+        MODEL "$model"
 
     printf '%s\n' "$lock_out"
 
@@ -842,7 +843,8 @@ cmd_next() {
         KIT "$kit" \
         FILL_SIGNAL "$fill_signal" \
         FILL_PERCENT "$fill_percent" \
-        RELEASE_TOKEN "none yet — acquire your own at ACTION ZERO and record it here"
+        RELEASE_TOKEN "none yet — acquire your own at ACTION ZERO and record it here" \
+        MODEL "$model"
 
     echo "doc: $doc"
     echo "session: $session"
