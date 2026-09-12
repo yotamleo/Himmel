@@ -983,7 +983,7 @@ update_luna_template() {
         return 0
     fi
     STATUS_luna_template="failed"
-    DETAIL_luna_template="upgrade.sh exited $rc — see docs/luna, resolve any _CLAUDE.md.template-merge conflict"
+    if [ -f "$vault/_CLAUDE.md.template-merge" ]; then DETAIL_luna_template="upgrade.sh exited $rc — see docs/luna, resolve any _CLAUDE.md.template-merge conflict"; else DETAIL_luna_template="upgrade.sh exited $rc — ${out%%$'\n'*}"; fi
     return 1
 }
 

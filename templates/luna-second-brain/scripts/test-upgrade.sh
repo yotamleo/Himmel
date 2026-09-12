@@ -40,6 +40,78 @@ fi
 TMP=$(mktemp -d -t luna-upgrade.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 
+# Bash 3.2 scans quotes even inside a quoted heredoc nested in $(...). The
+# structural fallback covers the command-substitution/heredoc form used here,
+# including a newline between the substitution opener and the command.
+check_nested_heredoc_quotes() {
+    "$PY" - "$1" <<'PY'
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+pattern = re.compile(r"\$\([^)]*?<<(-?)\s*'([A-Za-z_][A-Za-z_0-9]*)'[^\n]*\n(.*?)^\2[ \t]*$", re.M | re.S)
+failed = False
+for match in pattern.finditer(text):
+    body = match.group(3)
+    for quote in ("'", "`"):
+        if body.count(quote) % 2:
+            line = text.count("\n", 0, match.start()) + 1
+            print("%s:%s: unbalanced %r in nested heredoc" % (sys.argv[1], line, quote))
+            failed = True
+sys.exit(1 if failed else 0)
+PY
+}
+
+cat > "$TMP/bash32-repro.sh" <<'REPRO'
+#!/usr/bin/env bash
+M="$(python3 - 2>/dev/null <<'PY'
+# this script's own writer
+PY
+)"
+echo "tail (paren)"
+REPRO
+check_nested_heredoc_quotes "$UPGRADE"; rc=$?
+assert_eq "T0 upgrade nested heredocs have balanced quotes" "0" "$rc"
+check_nested_heredoc_quotes "$TMP/bash32-repro.sh"; rc=$?
+assert_eq "T0 structural RED control rejects reporter repro" "1" "$rc"
+"$PY" - "$TMP" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+repro = (root / "bash32-repro.sh").read_text(encoding="utf-8")
+(root / "bash32-fixed.sh").write_text(repro.replace("script's", "script"), encoding="utf-8")
+(root / "bash32-backtick.sh").write_text(repro.replace("script's", "script`s"), encoding="utf-8")
+(root / "bash32-multiline.sh").write_text(repro.replace("$(python3", "$(\npython3"), encoding="utf-8")
+PY
+check_nested_heredoc_quotes "$TMP/bash32-fixed.sh"; rc=$?
+assert_eq "T0 structural control accepts repaired repro" "0" "$rc"
+for fixture in backtick multiline; do
+    check_nested_heredoc_quotes "$TMP/bash32-$fixture.sh"; rc=$?
+    assert_eq "T0 structural RED control rejects $fixture repro" "1" "$rc"
+done
+
+bash32="${BASH32:-}"
+if [ -z "$bash32" ]; then
+    for candidate in bash-3.2 bash32 bash3.2 bash /bin/bash; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            case "$("$candidate" --version 2>/dev/null)" in
+                *'version 3.2.'*) bash32="$candidate"; break ;;
+            esac
+        fi
+    done
+fi
+if [ -n "$bash32" ]; then
+    # The version variables must expand in the candidate interpreter.
+    # shellcheck disable=SC2016
+    if [ "$("$bash32" -c 'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"')" = "3.2" ]; then
+        "$bash32" -n "$UPGRADE"; rc=$?
+        assert_eq "T0 real bash 3.2 parses upgrade" "0" "$rc"
+        "$bash32" -n "$TMP/bash32-repro.sh" 2>/dev/null; rc=$?
+        assert_eq "T0 real bash 3.2 rejects reporter repro" "2" "$rc"
+    else
+        fail "T0 bash 3.2 interpreter" "$bash32 is not bash 3.2"
+    fi
+else
+    echo "SKIP T0 real bash 3.2 — not available; structural gate ran"
+fi
+
 sha_of() { if [ -f "$1" ]; then "${SHA256[@]}" "$1" | cut -d' ' -f1; else echo MISSING; fi; }
 
 # Build a minimal but representative template fixture at $1 with version $2.

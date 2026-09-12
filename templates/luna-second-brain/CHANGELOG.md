@@ -8,6 +8,11 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.28] — 2026-09-12
+
+### Fixed
+- `upgrade.sh` now parses under macOS bash 3.2 (GitHub #627 / HIMMEL-2952).
+
 ## [0.4.27] — 2026-09-10
 
 ### Fixed
