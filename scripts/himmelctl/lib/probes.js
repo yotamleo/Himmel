@@ -2814,8 +2814,12 @@ function probeBridgePollerCountPosix(ctx) {
         if (childPids === null) {
           return { actual: 'degraded', detail: `could not enumerate child processes of telegram-bridge.service MainPID ${props.MainPID} — process identity is UNVERIFIED, not assumed healthy` };
         }
-        const lines = childPids.map((pid) => posixCmdline(pid, procRoot, env)).filter(Boolean);
-        const n = lines.filter((line) => pollerLineIsThisCheckout(line, thisCheckoutAnchor)).length;
+        const cmdlines = childPids.map((pid) => ({ pid, cmdline: posixCmdline(pid, procRoot, env) }));
+        const unreadable = cmdlines.filter((c) => c.cmdline === null);
+        if (unreadable.length > 0) {
+          return { actual: 'degraded', detail: `could not read cmdline for child pid(s) ${unreadable.map((c) => c.pid).join(', ')} of telegram-bridge.service MainPID ${props.MainPID} — process identity is UNVERIFIED, not assumed healthy` };
+        }
+        const n = cmdlines.filter((c) => pollerLineIsThisCheckout(c.cmdline, thisCheckoutAnchor)).length;
         return posixPollerVerdict(n, 'via systemd MainPID children');
       }
       // LoadState absent/not-found -- systemd genuinely doesn't know this unit; fall through to the pgrep -f fallback below.

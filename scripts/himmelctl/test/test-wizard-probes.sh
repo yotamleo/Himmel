@@ -4644,6 +4644,26 @@ else
   echo "SKIP: bridge-health (Linux) case (d): no evidence in the stub log that systemctl actually spawned on this host"
 fi
 
+# ── case (d2): a child pid whose cmdline cannot be read -> degraded, never
+# silently dropped from the count (process identity must be UNVERIFIED, not
+# assumed healthy) ──────────────────────────────────────────────────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002"
+printf '9002 9003\n' > "$bh_proc_root/9001/task/9001/children"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
+# 9003 has no cmdline file at all -- simulates the process exiting between
+# the children-list read and the cmdline read, or a permission failure.
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxD2=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxD2" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-health (Linux): a child pid with an unreadable cmdline must read degraded, never be silently dropped from the count (got: $outBHlinuxD2)"
+  echo "$outBHlinuxD2" | jq -e '.detail | contains("could not read cmdline")' >/dev/null \
+    || fail "bridge-health (Linux): degraded detail should name the unreadable-cmdline cause (got: $outBHlinuxD2)"
+  echo "ok: bridge-health (Linux) — a child pid with an unreadable cmdline reads degraded, not silently dropped"
+else
+  echo "SKIP: bridge-health (Linux) case (d2): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
 # ── case (e): no systemd unit at all -> pgrep -f fallback over the resolved
 # poller path, same 0/1/>1 mapping ──────────────────────────────────────────
 rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
