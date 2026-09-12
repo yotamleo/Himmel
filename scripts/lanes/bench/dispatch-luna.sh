@@ -84,9 +84,16 @@ prompt_text="$(cat "$prompt_file")"
 
 fixture_path="$("$MATERIALIZE" "$task_dir" "$run_id")" || { echo "dispatch-luna.sh: materialize failed" >&2; exit 3; }
 
+# HIMMEL-2977 P0.4: dontAsk refuses anything not pre-allowed; pre-allow the
+# bench's tools. --allowedTools was tried first but the launcher's CLI parses
+# it as a variadic list that swallows the trailing prompt argument (verified:
+# "Error: Input must be provided either through stdin or as a prompt argument
+# when using --print"), so this uses --settings instead.
+ALLOWED_TOOLS='{"permissions":{"allow":["Bash","Read","Edit","Write","Glob","Grep"]}}'
+
 if [ "$DRY_RUN" -eq 1 ]; then
     prompt_bytes="$(printf '%s' "$prompt_text" | wc -c)"
-    echo "DRY-RUN argv: bash $LAUNCHER --permission-mode dontAsk <prompt.md contents, $prompt_bytes bytes>"
+    echo "DRY-RUN argv: bash $LAUNCHER --permission-mode dontAsk --settings \"$ALLOWED_TOOLS\" <prompt.md contents, $prompt_bytes bytes>"
     echo "DRY-RUN env: CODEX_MODEL=gpt-5.6-luna CLAUDE_CODE_EFFORT_LEVEL=$EFFORT"
     echo "DRY-RUN cwd: $fixture_path"
     echo "DRY-RUN stdin: closed"
@@ -122,7 +129,7 @@ started_ms="$(now_ms)"
 # lookup.
 set -m
 ( cd "$fixture_path" && CODEX_MODEL=gpt-5.6-luna CLAUDE_CODE_EFFORT_LEVEL="$EFFORT" \
-    "${BASH:-bash}" "$LAUNCHER" --permission-mode dontAsk "$prompt_text" ) < /dev/null > "$run_log" 2>&1 &
+    "${BASH:-bash}" "$LAUNCHER" --permission-mode dontAsk --settings "$ALLOWED_TOOLS" "$prompt_text" ) < /dev/null > "$run_log" 2>&1 &
 pid=$!
 set +m
 
@@ -151,16 +158,18 @@ duration_ms=$((ended_ms - started_ms))
 # $fixture_path, unique per run-id (materialize.sh mints a fresh scratch dir
 # every call), so the session's project slug names AT MOST one dispatch's
 # worth of transcripts. Slug algorithm mirrors scripts/luna/backfill-sessions.sh
-# :_path_to_slug (Claude Code's own path->slug encoding, verified empirically
-# against a real ~/.claude/projects listing): convert to Windows drive-letter
-# form first (cygpath -w — a no-op off Windows), then map every
-# non-[a-zA-Z0-9] char to '-', strip a leading '-'.
+# :_path_to_slug: convert to Windows drive-letter form first (cygpath -w — a
+# no-op off Windows), then map every non-[a-zA-Z0-9] char to '-'. HIMMEL-2979:
+# a leading '/' on a POSIX path encodes to a leading '-' in the real
+# ~/.claude-codex/projects directory name (verified empirically against a live
+# run) — an earlier version of this stripped that leading '-', which never
+# matched the real directory and left transcript_path unresolved.
 win_path="$fixture_path"
 if command -v cygpath >/dev/null 2>&1; then
     win_path="$(cygpath -w "$fixture_path" 2>/dev/null)"
     [ -n "$win_path" ] || win_path="$fixture_path"
 fi
-slug="$(printf '%s' "$win_path" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); gsub(/^-+/, ""); print}')"
+slug="$(printf '%s' "$win_path" | awk '{gsub(/[^a-zA-Z0-9]/, "-"); print}')"
 codex_home="${HOME:-$USERPROFILE}"
 proj_dir="$codex_home/.claude-codex/projects/$slug"
 transcript_path="-"
