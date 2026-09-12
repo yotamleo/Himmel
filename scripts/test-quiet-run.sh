@@ -210,6 +210,22 @@ OUT=$(cd "$NOTREPO" && GIT_CEILING_DIRECTORIES="$SCRATCH" bash quiet-run.sh suit
 RC=$?
 assert_rc "outside git repo: '..' still refused" 2 "$RC"
 
+# 9. A broken/invalid git repository pointer (codex-1, round 6) must fail
+# closed, not be treated as "no repo, skip the check" - git's diagnostic for
+# an invalid gitdir also contains the substring "not a git repository", but
+# with a different, more specific shape ("not a git repository: <path>")
+# than genuine absence ("not a git repository (or any parent/of the parent
+# directories)"). A caller with corrupted git metadata must not be able to
+# smuggle an untracked suite past the tracked-file check.
+BROKENGIT="$SCRATCH/brokengit"
+mkdir -p "$BROKENGIT/scripts"
+cp "$QUIET_RUN" "$BROKENGIT/quiet-run.sh"
+printf '#!/usr/bin/env bash\necho hi\n' > "$BROKENGIT/scripts/test-x.sh"
+OUT=$(cd "$BROKENGIT" && GIT_DIR="$SCRATCH/does-not-exist" bash quiet-run.sh suite -- bash scripts/test-x.sh 2>&1)
+RC=$?
+assert_rc "broken GIT_DIR: fails closed, not skipped" 2 "$RC"
+assert_contains "broken GIT_DIR: unexpected-failure message" "failed unexpectedly" "$OUT"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All quiet-run.sh guard cases passed."

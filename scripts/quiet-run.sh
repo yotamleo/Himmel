@@ -51,7 +51,7 @@ if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
         fi
     else
         case "$TOPLEVEL_ERR" in
-            *"not a git repository"*)
+            *"not a git repository (or any"*)
                 echo "quiet-run: not a git repo — skipping tracked-file check for label 'suite'" >&2
                 ;;
             *)
