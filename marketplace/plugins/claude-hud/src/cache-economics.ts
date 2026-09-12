@@ -118,8 +118,11 @@ export async function getAllSessionsCacheEconomics(
   const homeDir = deps.homeDir();
   const now = deps.now();
 
+  // computedAt <= now guards against a system-clock rollback pinning a
+  // stale cache as "fresh" indefinitely (a negative age would otherwise
+  // always satisfy the TTL check below).
   const cached = readCache(homeDir);
-  if (cached && now - cached.computedAt < ALL_SESSIONS_CACHE_TTL_MS) {
+  if (cached && cached.computedAt <= now && now - cached.computedAt < ALL_SESSIONS_CACHE_TTL_MS) {
     return { reads: cached.reads, writes: cached.writes, inputs: cached.inputs };
   }
 

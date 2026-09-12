@@ -33,9 +33,9 @@ f66a4e5c8dd00e104a8db3f04929d136840b4dae  claude-hud-preview-5-2.png
 6ac09470fadcadcd71e1245dc6aaeb5f9ce93092  dist/auth.js
 d0119f7e3343d6aa898133fe00d4e2714d7019c9  dist/auth.js.map
 92c0de02c457b0e3ceeb63f6672ae89f105d555e  dist/cache-economics.d.ts
-df13192cfb48809bccefa4188b1d020c64c78455  dist/cache-economics.d.ts.map
-cb886c1cd33ba9ab66c909518c9866c344920580  dist/cache-economics.js
-2cb2c2c259cfa47c2faf371c1280e808b14f7ec8  dist/cache-economics.js.map
+f047f2e824ef12e894fcaf84fa8551483d89818c  dist/cache-economics.d.ts.map
+80847e781f77ed2f960f7cc19edfb0b5f10418fb  dist/cache-economics.js
+9fe15f32181d754c807cdcbf60a2562931ee3a38  dist/cache-economics.js.map
 99f7599e59a5d0e9d917d29169b92c99f8d43ce3  dist/claude-config-dir.d.ts
 a4bb1524d33c440ab658eedb900d5280a859e72b  dist/claude-config-dir.d.ts.map
 ab6e334a7ddf9d93fbaaddb71bc3a51d371a114c  dist/claude-config-dir.js
@@ -288,7 +288,7 @@ e729470612b16874f7d1e9cb5d2d27bf72f471a7  package-lock.json
 17a5abeb1fd6c11df6994b19133871f4e928d091  package.json
 ae323f37c223573fbbe914b4713a349400dfe1e5  scripts/clean-dist.mjs
 0863b2b4dca6c18cacd3405970bedc4359bd0d2f  src/auth.ts
-b348e4a3fb3b3fa5dad6d6533ba8a719ca908641  src/cache-economics.ts
+bf332439326ebb8c06e09d08879530feb0134d96  src/cache-economics.ts
 01cc4f3dd092f61262bd424bbb931edacd4dba76  src/claude-config-dir.ts
 67a7cfbabcf1ad4233c26b3297639d42a37c3249  src/config-reader.ts
 ca1b7ac2651d6a105aac50e8bacb88e42a64c028  src/config.ts
@@ -379,7 +379,7 @@ ec57a4788527bb09049b8d3e8a57576ae8371a2d  tests/jj.test.js
 97eea31e309ace99950a6bb76baf3bf970d4da07  tests/label-align.test.js
 14bc863601019bd1ad8c1de043b08040738cc0bc  tests/memory-coverage.test.js
 d0efca32629ec29d4f5e93e8dc09eb25e0191eef  tests/memory.test.js
-574554de4c751e3f9c9727a2e8f702e6318b7bb2  tests/prompt-cache-economics.test.js
+a33e27765ed2b3924e99f450cf5d0de6e26d6904  tests/prompt-cache-economics.test.js
 0e9a01ca4f35379ebd90affee359f1963e964417  tests/prompt-cache.test.js
 1c919a07d73578fbcb62a52004caf0c10a32dd7a  tests/readme-options.test.js
 7701155cc56661c39c8950a05ce03bf96ba63c6e  tests/render-width.test.js

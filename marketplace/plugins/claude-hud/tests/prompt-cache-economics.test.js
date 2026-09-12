@@ -133,6 +133,35 @@ test('getAllSessionsCacheEconomics sums fixtures and caches for 30s', async () =
   assert.equal(third.reads, 999_999 + 200);
 });
 
+// (d.1) a system-clock rollback must not pin a stale cache as "fresh"
+// indefinitely: a cache written with a future computedAt (relative to the
+// rolled-back clock) is a negative-age cache, which must be treated as
+// stale rather than accepted by a naive `now - computedAt < TTL` check.
+test('getAllSessionsCacheEconomics recomputes when computedAt is in the future (clock rollback)', async () => {
+  const home = mkTmpDir();
+  const proj1 = path.join(home, '.claude', 'projects', 'proj1');
+  fs.mkdirSync(proj1, { recursive: true });
+
+  const usageLine = (u) => JSON.stringify({ type: 'assistant', message: { usage: u } }) + '\n';
+  const file1 = path.join(proj1, 'session1.jsonl');
+  fs.writeFileSync(file1, usageLine({
+    input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 50, cache_read_input_tokens: 100,
+  }));
+
+  const cacheDir = path.join(home, '.claude', 'plugins', 'claude-hud');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const cachePath = path.join(cacheDir, 'cache-economics-all.json');
+  const now = 1_000_000;
+  // A cache "computed" 1 hour ahead of `now` - as if the clock rolled back.
+  fs.writeFileSync(cachePath, JSON.stringify({
+    reads: 999, writes: 999, inputs: 999, computedAt: now + 3_600_000,
+  }));
+
+  const deps = { homeDir: () => home, now: () => now };
+  const result = await getAllSessionsCacheEconomics(deps);
+  assert.deepEqual(result, { reads: 100, writes: 50, inputs: 10 }, 'a future computedAt must be treated as stale, not trusted');
+});
+
 // (e) a model with no pricing entry -> net and cost both render as an
 // em dash placeholder, and rendering must not throw.
 test('renderPromptCacheEconomicsLine falls back to a placeholder for unknown model pricing', () => {

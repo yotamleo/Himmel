@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   5cfecacb09d70aae86c682f380f1271398ee41e08cabdcd4cc503783fe16d4eb  # sha256 over VENDORED.manifest
+vendored_tree_hash:   dd72076767f9befa5fc3972bfbb98cde7da492197a80fe9ae26ef3ba11695ee4  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
