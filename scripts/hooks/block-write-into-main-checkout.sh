@@ -1006,6 +1006,12 @@ _bwimc_git_commit_target() {
         tl="$_TOLOWER_OUT"
         [ "$tl" = "commit" ] && break
         case "$t" in
+            # codex-2 round 4 (HIMMEL-2884): this loop must also skip `-C`'s
+            # own operand, exactly like the first loop does — otherwise an
+            # operand that happens to equal the literal string "commit" trips
+            # the break check above one token early and a LATER --git-dir is
+            # silently never seen.
+            -C) i=$((i+1)) ;;
             --git-dir=*) gitdir_raw="${t#--git-dir=}" ;;
             --git-dir) i=$((i+1)); gitdir_raw="${toks[$i]:-}" ;;
         esac

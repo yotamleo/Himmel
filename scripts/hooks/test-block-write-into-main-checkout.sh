@@ -428,6 +428,17 @@ check_both_reason "23b-xi git -C \"\$(pwd)\" commit (unresolvable -C, cwd=wt) fa
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C \\\"\$(pwd)\\\" commit -m x\",\"cwd\":\"$FIX/wt\"}}" \
     "could not be resolved"
 
+# 23b-xii: codex CR round 4 (HIMMEL-2884) — the --git-dir scan loop has no
+# concept of `-C` at all, so when `-C`'s OWN VALUE happens to be the literal
+# string "commit", the loop's break check fires on that value one token too
+# early and never reaches a later --git-dir, silently dropping it. Real git
+# still resolves the repo via --git-dir regardless of -C's value (confirmed
+# against real git: `git -C commit --git-dir=<primary>/.git commit` reports
+# "On branch main" — the PRIMARY's branch — from a worktree cwd), so a
+# worktree containing (or merely naming) a "commit" entry must still deny.
+check_both "23b-xii git -C commit --git-dir=primary/.git commit (-C value is literally \"commit\", masks --git-dir from the scan) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C commit --git-dir=$FIX/primary/.git commit -m x\",\"cwd\":\"$FIX/wt\"}}"
+
 # 24. handovers/ carve-out (main_checkout_verdict's own exemption).
 check_both "24 cat > primary/handovers/x.md (handovers carve-out)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat > $FIX/primary/handovers/x.md\",\"cwd\":\"$FIX/primary\"}}"
