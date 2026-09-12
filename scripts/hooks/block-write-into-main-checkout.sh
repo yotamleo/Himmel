@@ -823,6 +823,7 @@ _bwimc_deny() {
         primary-feature) why="its repo is the PRIMARY checkout on a feature branch" ;;
         unreadable) why="its repo's branch state could not be read (failing closed)" ;;
         cannot-canonicalise) why="the target path could not be canonicalised (failing closed)" ;;
+        unresolved-git-target) why="a git -C/--git-dir/--work-tree value could not be resolved (failing closed)" ;;
     esac
     {
         echo "⛔ block-write-into-main-checkout: refusing a write-shaped command — $why."
@@ -950,6 +951,80 @@ _bwimc_check_target() {
     fi
     eff=$(_bwimc_mode_for_operand "$raw" "$mode")
     _bwimc_check_abs "$abs" "$raw" "$eff"
+}
+
+# _bwimc_git_commit_target CLAUSE_SP CWD — HIMMEL-2884: `git … commit` is a
+# CWD predicate (see CODEX-LANE PARITY below), but `-C <path>` (repeatable —
+# each relative value resolves against the PREVIOUS one, git's own
+# semantics) and `--git-dir=<p>`/`--git-dir <p>` redirect the commit at a
+# DIFFERENT directory than the session cwd. Walks the tokens between `git`
+# and `commit` collecting those and echoes the effective directory the
+# commit actually addresses. An unresolvable value (dynamic/glob/empty)
+# fails CLOSED to CWD and sets _BWIMC_GIT_TARGET_UNRESOLVED=1 so the caller
+# can note it in the deny text.
+# Two passes, per git's own semantics (git(1) / codex CR round 1, HIMMEL-2884):
+# pass 1 resolves every `-C` cumulatively to a single final base directory;
+# pass 2 resolves the LAST `--git-dir` against that FINAL base, regardless of
+# where it appears relative to a `-C` on the command line (`git
+# --git-dir=a.git -C c status` == `--git-dir=c/a.git status`).
+# A standalone `--work-tree=<p>`/`--work-tree <p>` (no `--git-dir`) is
+# deliberately NOT modelled as redirecting the target: real git still
+# discovers the repository by walking up from cwd in that case — HEAD moves
+# in whatever repo cwd resolves to, and `--work-tree` only supplies
+# working-tree file content there (verified against real git, codex CR
+# round 2, HIMMEL-2884). Only when `--git-dir` is ALSO given does
+# `--work-tree` matter at all, and even then `--git-dir` alone determines the
+# repository the commit updates, so it always wins.
+# Not modelled (deliberately, per the ticket): GIT_DIR/GIT_WORK_TREE env,
+# `git -c key=val` (an inert option-with-value the outer regex already
+# tolerates), any verb but `commit`.
+# Sets globals _BWIMC_GIT_TARGET_DIR and _BWIMC_GIT_TARGET_UNRESOLVED instead
+# of echoing — must be called as a plain statement, never via `$(...)`, since
+# a command-substitution subshell would discard both globals on exit.
+_bwimc_git_commit_target() {
+    local clause_sp="$1" cwd="$2"
+    local toks=() t tl v r i n dir="$cwd" gitdir_raw=""
+    _BWIMC_GIT_TARGET_UNRESOLVED=0
+    while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$clause_sp")
+    n=${#toks[@]}
+    i=1
+    while [ "$i" -lt "$n" ]; do
+        t="${toks[$i]}"
+        _tolower_ascii "$t"
+        tl="$_TOLOWER_OUT"
+        [ "$tl" = "commit" ] && break
+        if [ "$t" = "-C" ]; then
+            i=$((i+1)); v="${toks[$i]:-}"
+            r=$(_bwimc_resolve_abs "$v" "$dir") && dir="$r" || _BWIMC_GIT_TARGET_UNRESOLVED=1
+        fi
+        i=$((i+1))
+    done
+    i=1
+    while [ "$i" -lt "$n" ]; do
+        t="${toks[$i]}"
+        _tolower_ascii "$t"
+        tl="$_TOLOWER_OUT"
+        [ "$tl" = "commit" ] && break
+        case "$t" in
+            # codex-2 round 4 (HIMMEL-2884): this loop must also skip `-C`'s
+            # own operand, exactly like the first loop does — otherwise an
+            # operand that happens to equal the literal string "commit" trips
+            # the break check above one token early and a LATER --git-dir is
+            # silently never seen.
+            -C) i=$((i+1)) ;;
+            --git-dir=*) gitdir_raw="${t#--git-dir=}" ;;
+            --git-dir) i=$((i+1)); gitdir_raw="${toks[$i]:-}" ;;
+        esac
+        i=$((i+1))
+    done
+    if [ -n "$gitdir_raw" ]; then
+        r=$(_bwimc_resolve_abs "$gitdir_raw" "$dir") && case "$r" in
+            */.git) dir="${r%/.git}" ;;
+            *) dir="$r" ;;
+        esac || _BWIMC_GIT_TARGET_UNRESOLVED=1
+    fi
+    [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ] && dir="$cwd"
+    _BWIMC_GIT_TARGET_DIR="$dir"
 }
 
 # CODEX-LANE PARITY: byte-identical port of block-terminal-write-fence.sh's
@@ -1841,10 +1916,19 @@ while IFS= read -r _bwimc_clause; do
         # `cd`/cwd-predicate class this script deliberately leaves alone.
 
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*git(\.exe)?([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
+        _bwimc_git_commit_target "$_bwimc_clause_sp" "$_bwimc_cwd"
+        if [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ]; then
+            # HIMMEL-2884 codex-2: an unresolved -C/--git-dir/--work-tree value
+            # must deny outright, not fall back to checking the command's cwd
+            # — the cwd's own permission says nothing about where the
+            # unresolved value actually points, so falling back false-ALLOWed
+            # from any allowed cwd regardless of the real (unverifiable) target.
+            _bwimc_deny "unresolved-git-target" "$_bwimc_clause_sp" "$_BWIMC_GIT_TARGET_DIR" ""
+        fi
         if [ "$_bwimc_sourced" = 1 ]; then
-            _bwimc_cwd_check_sourced "$_bwimc_cwd"
+            _bwimc_cwd_check_sourced "$_BWIMC_GIT_TARGET_DIR"
         else
-            _bwimc_cwd_check_direct "$_bwimc_cwd"
+            _bwimc_cwd_check_direct "$_BWIMC_GIT_TARGET_DIR"
         fi
 
     elif [ "$_bwimc_sourced" = 1 ] && _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*(set-content|out-file|add-content)([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
