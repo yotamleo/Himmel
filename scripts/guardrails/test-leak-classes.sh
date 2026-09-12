@@ -434,7 +434,7 @@ fi
 # still saw the bare name. Confirm an allowlisted name stays allowlisted
 # when immediately followed by each of those shapes.
 r=$(new_repo)
-printf '"/home/ada", (/home/ada) and `/home/ada`\n' > "$r/quoted-allowed.txt"  # leak-allow: home-path test fixture
+printf '"/home/otheruser", (/home/otheruser) and `/home/otheruser`\n' > "$r/quoted-allowed.txt"  # leak-allow: home-path test fixture
 git -C "$r" add quoted-allowed.txt
 scan "$r" --tree
 if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
@@ -542,6 +542,41 @@ if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT"
     pass "T1u home-path: a genuine home path still flagged alongside a regex-literal line"
 else
     fail "T1u home-path RED-preserving control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1v (HIMMEL-2951): finishes HIMMEL-2825's ALLOW_HOME_NAMES drift for the
+# three residual names removed here (ada, somebody, yotamleo -- the fourth,
+# jarrod, stays allowlisted pending a vendored-tree follow-up). Same proof as
+# T1e: an unmarked home path under one of these formerly-allowlisted names is
+# now flagged like any other real name.
+r=$(new_repo)
+printf 'HOME=/home/ada\n' > "$r/removed-allowlist2.txt"  # leak-allow: home-path test fixture
+printf 'HOME=/home/somebody\n' >> "$r/removed-allowlist2.txt"  # leak-allow: home-path test fixture
+printf 'HOME=/home/yotamleo\n' >> "$r/removed-allowlist2.txt"  # leak-allow: home-path test fixture
+git -C "$r" add removed-allowlist2.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" &&
+    grepq "$SCAN_OUT" -F "removed-allowlist2.txt:1" &&
+    grepq "$SCAN_OUT" -F "removed-allowlist2.txt:2" &&
+    grepq "$SCAN_OUT" -F "removed-allowlist2.txt:3"; then
+    pass "T1v home-path: formerly-allowlisted names (ada, somebody, yotamleo) are now each flagged unless marked"
+else
+    fail "T1v home-path removed-allowlist-names control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1v2: ...and the same three names stay clean when their own fixture lines
+# carry the leak-allow marker -- proving the per-line convention is a working
+# replacement for all three, not just a removal.
+r=$(new_repo)
+printf 'HOME=/home/ada  # leak-allow: home-path test fixture\n' > "$r/marked2.txt"
+printf 'HOME=/home/somebody  # leak-allow: home-path test fixture\n' >> "$r/marked2.txt"
+printf 'HOME=/home/yotamleo  # leak-allow: home-path test fixture\n' >> "$r/marked2.txt"
+git -C "$r" add marked2.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1v2 home-path: same three formerly-allowlisted names stay clean with their own leak-allow marker"
+else
+    fail "T1v2 home-path marked-fixture control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
 echo "== redaction =="

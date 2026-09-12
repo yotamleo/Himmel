@@ -86,11 +86,14 @@
 #   <reason>` marker instead (scripts/telegram/spawn-glm.test.ts, scripts/
 #   trust/shadow-ledger.mjs + its test, scripts/himmelctl/lib/install-engine.js,
 #   scripts/parity/test-ps-twin-oem-encoding.ps1, docs/internals/
-#   environment-gotchas.md, and this file's own doc comments). jarrod, ada,
-#   somebody and yotamleo stay in this list for now -- their only fixture
-#   dependents sit under directories this batch may not touch (a vendored
-#   tree, and hook-integrity/lanes fences); tracked in a HIMMEL-2825
-#   follow-up ticket.
+#   environment-gotchas.md, and this file's own doc comments). HIMMEL-2951
+#   removed 3 more (ada, somebody, yotamleo -- yotamleo being the operator's
+#   real username, the highest-value one) the same way, across scripts/hooks/,
+#   scripts/lanes/tests/, and scripts/test-uninstall-guard.sh. jarrod stays in
+#   this list for now -- its only fixture dependents (13 lines in the
+#   vendored marketplace/plugins/claude-hud/tests/render.test.js) need the
+#   VENDORED.manifest re-hash + fork-delta ceremony first; tracked in
+#   HIMMEL-2958.
 #   leaktestuser, leaker, testop, testuser, test, osboxes, nulleak, name,
 #   yourname, wineonlyuser, shouldnotleak, realop, quarantoken, priorleak,
 #   posixuser, profileonlyuser, unixonlyuser, fakeuser, myvault, op, ops,
@@ -176,7 +179,7 @@ HOSTNAME_HITS=()
 # ---- home-path allowlist (see header for rationale) ----
 # shellcheck disable=SC2016 # single-quoted on purpose: $user/${user}/$env:username
 # are literal placeholder tokens this list matches against, not expansions.
-ALLOW_HOME_NAMES=' you user <user> $user ${user} me <me> example <you> %username% $env:username %s leaktestuser leaker testop testuser test osboxes nulleak name <name> yourname wineonlyuser shouldnotleak realop quarantoken priorleak posixuser profileonlyuser unixonlyuser fakeuser myvault op ops otheruser fakeop jarrod ada somebody yotamleo runneradmin fake-sensitive-scriptpath-marker ... parity mismatched plainhome whoever msysuser fixture runner other current-user '
+ALLOW_HOME_NAMES=' you user <user> $user ${user} me <me> example <you> %username% $env:username %s leaktestuser leaker testop testuser test osboxes nulleak name <name> yourname wineonlyuser shouldnotleak realop quarantoken priorleak posixuser profileonlyuser unixonlyuser fakeuser myvault op ops otheruser fakeop jarrod runneradmin fake-sensitive-scriptpath-marker ... parity mismatched plainhome whoever msysuser fixture runner other current-user '
 
 home_name_allowed() {
     local name="$1"
