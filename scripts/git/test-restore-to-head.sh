@@ -346,6 +346,47 @@ if [ "$rc" -eq 0 ] && [ "$(readlink "$WT/link")" = "tracked.txt" ] && [ -L "$wt_
 else
     fail "(u) rc=$rc wt_path='$wt_path' (expected HEAD link restored and backup symlink targeting tracked2.txt)"
 fi
+
+# --- (u2) recovering a regular file over a HEAD symlink must not overwrite its target.
+rm "$WT/link"
+printf 'recover-regular\n' > "$WT/link"
+out=$(run link 2>&1); rc=$?
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+run_dir="${wt_path%/*}"
+help=$(bash "$SUT" --help)
+file_cmd=$(printf '%s\n' "$help" | sed -n "s/^Regular file: \`\(.*\)\`$/\1/p")
+file_cmd=${file_cmd//<RUN_DIR>/\"$run_dir\"}
+file_cmd=${file_cmd//<n>/1}
+file_cmd=${file_cmd//<path>/\"$WT\/link\"}
+if [ "$rc" -eq 0 ] && [ -L "$WT/link" ] && [ -n "$file_cmd" ] &&
+    bash -c "$file_cmd" && [ ! -L "$WT/link" ] &&
+    [ "$(cat "$WT/link")" = recover-regular ] && [ "$(cat "$WT/tracked.txt")" = base ]; then
+    pass "(u2) documented regular-file recovery replaces the HEAD symlink without changing its target"
+else
+    fail "(u2) rc=$rc target='$(cat "$WT/tracked.txt")' (expected regular file recovery with target untouched)"
+fi
+
+# --- (u3) recovering staged regular bytes over a HEAD symlink must not overwrite its target.
+rm "$WT/link"
+printf 'recover-staged\n' > "$WT/link"
+(cd "$WT" && git add link)
+printf 'different-worktree\n' > "$WT/link"
+out=$(run link 2>&1); rc=$?
+idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
+run_dir="${idx_path%/*}"
+help=$(bash "$SUT" --help)
+index_cmd=$(printf '%s\n' "$help" | sed -n "s/^Staged content: \`\(.*\)\` then \`\(.*\)\`\.$/\1 \&\& \2/p")
+index_cmd=${index_cmd//<RUN_DIR>/\"$run_dir\"}
+index_cmd=${index_cmd//<n>/1}
+index_cmd=${index_cmd//<path>/\"$WT\/link\"}
+if [ "$rc" -eq 0 ] && [ -L "$WT/link" ] && [ -n "$index_cmd" ] &&
+    (cd "$WT" && bash -c "$index_cmd") && [ ! -L "$WT/link" ] &&
+    [ "$(cat "$WT/link")" = recover-staged ] && [ "$(cat "$WT/tracked.txt")" = base ] &&
+    [ "$(git -C "$WT" show :link)" = recover-staged ]; then
+    pass "(u3) documented staged recovery replaces the HEAD symlink and stages saved bytes without changing its target"
+else
+    fail "(u3) rc=$rc target='$(cat "$WT/tracked.txt")' (expected staged regular file recovery with target untouched)"
+fi
 reset_wt
 (cd "$WT" && git reset -q --hard main)
 
@@ -361,6 +402,118 @@ if [ "$rc" -eq 0 ] && [ "$content" = "base" ] && [ "$n_copies" -eq 0 ] && grep -
     pass "(v) unstaged deletion restored and recorded as deleted without a worktree copy"
 else
     fail "(v) rc=$rc content='$content' n_copies=$n_copies out='$out' (expected HEAD file restored and deleted manifest row)"
+fi
+reset_wt
+
+# --- (w) a failed second checkout must not discard the third path.
+FAULT_BIN="$TMP/fault-bin"
+mkdir -p "$FAULT_BIN"
+REAL_GIT=$(command -v git)
+export REAL_GIT
+cat > "$FAULT_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "$3" = checkout ] && [ "$6" = ':(literal)tracked2.txt' ]; then
+    lock=$("$REAL_GIT" -C "$2" rev-parse --git-path index.lock)
+    : > "$lock"
+    "$REAL_GIT" "$@"
+    rc=$?
+    rm "$lock"
+    exit "$rc"
+fi
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$FAULT_BIN/git"
+printf 'dirty-first\n' > "$WT/tracked.txt"
+printf 'dirty-second\n' > "$WT/tracked2.txt"
+printf 'dirty-third\n' > "$WT/tracked3.txt"
+out=$(cd "$WT" && PATH="$FAULT_BIN:$PATH" TMPDIR="$BACKUPS" bash "$SUT" tracked.txt tracked2.txt tracked3.txt 2>&1); rc=$?
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+run_dir="${wt_path%/*}"
+if [ "$rc" -eq 2 ] && [ "$(cat "$WT/tracked.txt")" = base ] &&
+    [ "$(cat "$WT/tracked2.txt")" = dirty-second ] && [ "$(cat "$WT/tracked3.txt")" = dirty-third ] &&
+    [ -f "$run_dir/2.worktree" ] && printf '%s\n' "$out" | grep -Fq "saved backups remain in '$run_dir'"; then
+    pass "(w) checkout failure stops before later paths change and names the saved backups"
+else
+    fail "(w) rc=$rc third='$(cat "$WT/tracked3.txt")' out='$out' (expected immediate stop with backup location)"
+fi
+reset_wt
+
+# --- (x) a run directory exists, but MANIFEST creation fails before restore.
+cat > "$FAULT_BIN/mktemp" <<'EOF'
+#!/usr/bin/env bash
+mkdir -p "$FAULT_RUN/MANIFEST" || exit 1
+printf '%s\n' "$FAULT_RUN"
+EOF
+chmod +x "$FAULT_BIN/mktemp"
+FAULT_RUN="$TMP/manifest-create"
+printf 'dirty-manifest\n' > "$WT/tracked.txt"
+out=$(cd "$WT" && PATH="$FAULT_BIN:$PATH" FAULT_RUN="$FAULT_RUN" bash "$SUT" tracked.txt 2>&1); rc=$?
+if [ -d "$FAULT_RUN" ] && [ -d "$FAULT_RUN/MANIFEST" ] &&
+    [ "$rc" -eq 2 ] && [ "$(cat "$WT/tracked.txt")" = dirty-manifest ] &&
+    printf '%s\n' "$out" | grep -q 'could not create deletion manifest'; then
+    pass "(x) failed MANIFEST creation aborts before discarding dirty bytes"
+else
+    fail "(x) rc=$rc content='$(cat "$WT/tracked.txt")' out='$out' (expected MANIFEST failure after run directory creation)"
+fi
+reset_wt
+
+# --- (y) fail append only AFTER successful MANIFEST creation, for both row types.
+cat > "$FAULT_BIN/mktemp" <<'EOF'
+#!/usr/bin/env bash
+mkdir -p "$FAULT_RUN" || exit 1
+printf '%s\n' "$FAULT_RUN"
+EOF
+cat > "$FAULT_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "$3" = diff ] && [ "$7" = --cached ]; then
+    [ -f "$FAULT_RUN/MANIFEST" ] && [ ! -s "$FAULT_RUN/MANIFEST" ] || exit 99
+    mv "$FAULT_RUN/MANIFEST" "$FAULT_RUN/created-manifest" || exit 99
+    mkdir "$FAULT_RUN/MANIFEST" || exit 99
+fi
+exec "$REAL_GIT" "$@"
+EOF
+for row in deleted present; do
+    FAULT_RUN="$TMP/manifest-append-$row"
+    if [ "$row" = deleted ]; then
+        rm "$WT/tracked.txt"
+    else
+        printf 'dirty-append\n' > "$WT/tracked.txt"
+    fi
+    out=$(cd "$WT" && PATH="$FAULT_BIN:$PATH" FAULT_RUN="$FAULT_RUN" bash "$SUT" tracked.txt 2>&1); rc=$?
+    if [ -f "$FAULT_RUN/created-manifest" ] && [ -d "$FAULT_RUN/MANIFEST" ] && [ "$rc" -eq 2 ] &&
+        { { [ "$row" = deleted ] && [ ! -e "$WT/tracked.txt" ]; } ||
+          { [ "$row" = present ] && [ "$(cat "$WT/tracked.txt")" = dirty-append ]; }; } &&
+        printf '%s\n' "$out" | grep -q 'aborting before restore'; then
+        pass "(y) failed $row MANIFEST append aborts before restore"
+    else
+        fail "(y) $row rc=$rc out='$out' (expected successful creation, failed append, and untouched path)"
+    fi
+    reset_wt
+done
+
+# --- (z) execute the usage's recovery commands, not a test-owned substitute.
+printf 'recover-dirty\n' > "$WT/tracked.txt"
+rm "$WT/tracked2.txt"
+ln -s "$WT/tracked3.txt" "$WT/tracked2.txt"
+out=$(run tracked.txt tracked2.txt 2>&1); rc=$?
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+run_dir="${wt_path%/*}"
+help=$(bash "$SUT" --help)
+file_cmd=$(printf '%s\n' "$help" | sed -n "s/^Regular file: \`\(.*\)\`$/\1/p")
+link_cmd=$(printf '%s\n' "$help" | sed -n "s/^Symlink: \`\(.*\)\`$/\1/p")
+file_cmd=${file_cmd//<RUN_DIR>/\"$run_dir\"}
+file_cmd=${file_cmd//<n>/1}
+file_cmd=${file_cmd//<path>/\"$WT\/tracked.txt\"}
+link_cmd=${link_cmd//<RUN_DIR>/\"$run_dir\"}
+link_cmd=${link_cmd//<n>/2}
+link_cmd=${link_cmd//<path>/\"$WT\/tracked2.txt\"}
+if [ "$rc" -eq 0 ] && [ -n "$file_cmd" ] && [ -n "$link_cmd" ] &&
+    bash -c "$file_cmd" && bash -c "$link_cmd" &&
+    [ "$(cat "$WT/tracked.txt")" = recover-dirty ] && [ -L "$WT/tracked2.txt" ] &&
+    [ "$(readlink "$WT/tracked2.txt")" = "$WT/tracked3.txt" ] && [ "$(cat "$WT/tracked3.txt")" = base3 ]; then
+    pass "(z) documented commands recover regular bytes and outgoing symlink identity and target"
+else
+    fail "(z) rc=$rc file_cmd='$file_cmd' link_cmd='$link_cmd' (expected executable recovery commands preserving bytes and link)"
 fi
 reset_wt
 

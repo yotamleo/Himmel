@@ -27,9 +27,13 @@ usage() {
 usage: restore-to-head.sh <path> [<path>...]
 
 Restores one or more tracked files to HEAD, saving a plain copy of each
-dirty path's worktree content and staged index content first (recoverable
-via `cp` / `git show`). Refuses glob arguments, untracked paths,
-directories, and paths outside the current worktree.
+dirty path's worktree content and staged index content first. Refuses glob
+arguments, untracked paths, directories, and paths outside the current worktree.
+
+Recovery (use the run directory and file number recorded in MANIFEST):
+Regular file: `rm -f <path> && cp -p <RUN_DIR>/<n>.worktree <path>`
+Symlink: `cp -RPp <RUN_DIR>/<n>.worktree <path>`
+Staged content: `rm -f <path> && cp -p <RUN_DIR>/<n>.index <path>` then `git add <path>`.
 EOF
 }
 
@@ -72,7 +76,10 @@ RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/restore-to-head.XXXXXX") || {
     exit 2
 }
 MANIFEST="$RUN_DIR/MANIFEST"
-: > "$MANIFEST"
+if ! : > "$MANIFEST"; then
+    echo "restore-to-head: could not create deletion manifest '$MANIFEST'" >&2
+    exit 2
+fi
 
 n=0
 for rel in "${RELS[@]}"; do
@@ -103,9 +110,15 @@ for rel in "${RELS[@]}"; do
         fi
     fi
     if [ "$wt_deleted" -eq 1 ]; then
-        echo "$n $rel deleted" >> "$MANIFEST"
+        if ! printf '%s %s deleted\n' "$n" "$rel" >> "$MANIFEST"; then
+            echo "restore-to-head: could not record deletion for '$rel' -- aborting before restore" >&2
+            exit 2
+        fi
     else
-        echo "$n $rel" >> "$MANIFEST"
+        if ! printf '%s %s\n' "$n" "$rel" >> "$MANIFEST"; then
+            echo "restore-to-head: could not update manifest for '$rel' -- aborting before restore" >&2
+            exit 2
+        fi
     fi
 
     saved_idx=""
@@ -122,7 +135,10 @@ for rel in "${RELS[@]}"; do
         echo "restore-to-head: '$rel' has staged content that differs from HEAD (saved separately: $saved_idx)" >&2
     fi
 
-    git -C "$TOPLEVEL" checkout HEAD -- ":(literal)$rel"
+    if ! git -C "$TOPLEVEL" checkout HEAD -- ":(literal)$rel"; then
+        echo "restore-to-head: could not restore '$rel'; saved backups remain in '$RUN_DIR'" >&2
+        exit 2
+    fi
     if [ "$wt_deleted" -eq 1 ]; then
         echo "restored $rel (worktree deletion recorded: $MANIFEST)"
     elif [ -n "$saved_wt" ]; then
