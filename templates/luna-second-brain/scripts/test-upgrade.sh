@@ -47,7 +47,12 @@ check_nested_heredoc_quotes() {
     "$PY" - "$1" <<'PY'
 import pathlib, re, sys
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-pattern = re.compile(r"\$\([^)]*?<<(-?)\s*'([A-Za-z_][A-Za-z_0-9]*)'[^\n]*\n(.*?)^\2[ \t]*$", re.M | re.S)
+# Group 1 captures the '-' of a <<- opener, or is None (not merely empty)
+# for plain <<. Bash strips leading TABS from a <<- terminator line only;
+# a plain << terminator must stay at column zero. (?(1)\t*) applies that
+# asymmetry: tabs before the terminator are permitted only when group 1
+# actually matched '-' (HIMMEL-2956).
+pattern = re.compile(r"\$\([^)]*?<<(-)?\s*'([A-Za-z_][A-Za-z_0-9]*)'[^\n]*\n(.*?)^(?(1)\t*)\2[ \t]*$", re.M | re.S)
 failed = False
 for match in pattern.finditer(text):
     body = match.group(3)
@@ -79,6 +84,25 @@ repro = (root / "bash32-repro.sh").read_text(encoding="utf-8")
 (root / "bash32-fixed.sh").write_text(repro.replace("script's", "script"), encoding="utf-8")
 (root / "bash32-backtick.sh").write_text(repro.replace("script's", "script`s"), encoding="utf-8")
 (root / "bash32-multiline.sh").write_text(repro.replace("$(python3", "$(\npython3"), encoding="utf-8")
+# <<- opener with a TAB-indented terminator: bash strips the leading tab,
+# so this is a real, unbalanced heredoc (HIMMEL-2956 negative control).
+tab_repro = repro.replace("<<'PY'", "<<-'PY'")
+tab_repro = tab_repro.replace("\n# this script's own writer\n", "\n\t# this script's own writer\n")
+tab_repro = tab_repro.replace("\nPY\n", "\n\tPY\n")
+(root / "bash32-tab-repro.sh").write_text(tab_repro, encoding="utf-8")
+# Same <<- + tab-terminator shape, but balanced — proves the fix matches
+# the tab terminator without spuriously flagging it every time.
+(root / "bash32-tab-fixed.sh").write_text(tab_repro.replace("script's", "script"), encoding="utf-8")
+# Plain << (no dash) with a TAB-indented "PY" line before the real,
+# column-zero terminator: bash never strips tabs for a plain heredoc, so
+# that tab-indented line is body text, not a terminator. The checker must
+# keep scanning past it to the real terminator and still catch the
+# unmatched apostrophe in the body (HIMMEL-2956 positive control).
+notab_guard = repro.replace(
+    "<<'PY'\n# this script's own writer\n",
+    "<<'PY'\n\tPY\n# this script's own writer\n",
+)
+(root / "bash32-notab-guard.sh").write_text(notab_guard, encoding="utf-8")
 PY
 check_nested_heredoc_quotes "$TMP/bash32-fixed.sh"; rc=$?
 assert_eq "T0 structural control accepts repaired repro" "0" "$rc"
@@ -86,6 +110,14 @@ for fixture in backtick multiline; do
     check_nested_heredoc_quotes "$TMP/bash32-$fixture.sh"; rc=$?
     assert_eq "T0 structural RED control rejects $fixture repro" "1" "$rc"
 done
+
+# HIMMEL-2956: <<- permits a TAB-indented terminator; plain << does not.
+check_nested_heredoc_quotes "$TMP/bash32-tab-repro.sh"; rc=$?
+assert_eq "T0 structural RED control rejects tab-indented <<- terminator repro" "1" "$rc"
+check_nested_heredoc_quotes "$TMP/bash32-tab-fixed.sh"; rc=$?
+assert_eq "T0 structural control accepts balanced <<- tab-terminator repro" "0" "$rc"
+check_nested_heredoc_quotes "$TMP/bash32-notab-guard.sh"; rc=$?
+assert_eq "T0 structural control still requires column-zero terminator for plain << (tab line is not a terminator)" "1" "$rc"
 
 bash32="${BASH32:-}"
 if [ -z "$bash32" ]; then
