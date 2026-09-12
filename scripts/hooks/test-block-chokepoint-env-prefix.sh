@@ -243,6 +243,36 @@ assert_deny "let postfix NAME-- assigns the seam"                   "$(j "let 'H
 assert_deny "legacy \$[--NAME] (prefix decrement) assigns the seam" "$(j "echo \$[--HIMMEL_CONSOLE_LEG]; bash $MERGE_ON_GREEN 1")"
 assert_deny "legacy \$[NAME++] (postfix increment) assigns the seam" "$(j "echo \$[HIMMEL_CONSOLE_LEG++]; bash $MERGE_ON_GREEN 1")"
 
+# --- HIMMEL-2939 CR round 4 (collapse, console ruling): three straight
+# rounds each found the next `let` arithmetic-operator shape (bare `=`,
+# compound `*=`, comma-join, prefix `++`, now postfix AFTER a comma) a
+# validity model missed -- codex-1 this round: `let 'x=0,NAME--'` still
+# escaped because the comma-joined scan only matched `=` or prefix
+# `++`/`--`, not postfix after a comma. Ruling: stop parsing `let`
+# grammar entirely -- any registered seam name occurring anywhere in a
+# remaining word, WORD-BOUNDED (the char before/after is not
+# [A-Za-z0-9_]), folds forward regardless of assignment shape. Documented
+# over-deny: reading the seam without clearing it denies too -- costs
+# nothing, and a false ALLOW is the defect class this ticket exists for.
+# The word-boundary control (a longer name sharing the registered name's
+# PREFIX) stays ALLOW. ---
+assert_deny "let comma-joined THEN postfix (NAME-- after comma) assigns the seam" "$(j "let 'x=0,HIMMEL_CONSOLE_LEG--'; bash $MERGE_ON_GREEN 1")"
+assert_deny "let x=NAME+1 (reads, does not clear -- documented over-deny)" "$(j "let 'x=HIMMEL_CONSOLE_LEG+1'; bash $MERGE_ON_GREEN 1")"
+assert_allow "let NAME_LONGER=0 (word boundary -- shares the registered name's PREFIX, not equal)" "$(j "let HIMMEL_CONSOLE_LEGACY=0; bash $MERGE_ON_GREEN 1")"
+
+# --- HIMMEL-2939 (collapse, round 4 continued -- console ruling named
+# `printf -v` and `read` for the SAME treatment as `let`/`declare`/`$[...]`):
+# both builtins also accept an ARRAY-ELEMENT operand (`NAME[0]`), which bash
+# assigns into NAME exactly like a bare `NAME` operand -- but the pre-collapse
+# code captured the whole word (`${W[$k]%%=*}`) as the candidate, so
+# `HIMMEL_CONSOLE_LEG[0]` was folded as the literal 8-byte-longer name
+# "HIMMEL_CONSOLE_LEG[0]", which never exact-matches the registered
+# "HIMMEL_CONSOLE_LEG" in check_invocation. Same fix: word-bounded substring
+# match against ALL_SEAM_VARS instead of whole-word capture. ---
+assert_deny "read NAME[0] (array-element assignment) assigns the seam"        "$(j "read HIMMEL_CONSOLE_LEG[0] <<< 0; bash $MERGE_ON_GREEN 1")"
+assert_deny "printf -v NAME[0] (array-element assignment) writes the seam"    "$(j "printf -v HIMMEL_CONSOLE_LEG[0] 0; bash $MERGE_ON_GREEN 1")"
+assert_allow "read NAME_LONGER (word boundary -- shares the PREFIX, not equal)" "$(j "read HIMMEL_CONSOLE_LEGACY <<< 0; bash $MERGE_ON_GREEN 1")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied
