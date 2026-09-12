@@ -43,6 +43,13 @@ SRC_SCRIPTS="$(dirname "$SCRIPT")"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# HIMMEL-2902: scope the profile lookup to this suite's own tmp dir and clear
+# any inherited channel so a station's real install profile (e.g. channel:
+# stable) cannot steer these plain-pull scenarios.
+export HIMMELCTL_CACHE_DIR="$TMP/himmelctl-cache"
+mkdir -p "$HIMMELCTL_CACHE_DIR"
+unset HIMMEL_UPDATE_CHANNEL
+
 pass=0
 fail=0
 assert_pass() { pass=$((pass + 1)); echo "  PASS: $1"; }
@@ -142,6 +149,32 @@ run_update_pull() {   # <clone> ; caller sets HIMMEL_UPDATE_AUTOSTASH in env
             "$(git stash list | wc -l | tr -d ' ')"
     )
 }
+
+# --selftest-hermetic builds one scenario and replays it through
+# run_update_pull, printing the result line — used only by the guard case
+# below, recursing into THIS file once with a controlled ambient env, never
+# the full suite.
+if [ "${1:-}" = "--selftest-hermetic" ]; then
+    build_scenario f.txt other.txt other-local
+    HIMMEL_UPDATE_AUTOSTASH=1 run_update_pull "$CLONE"
+    exit 0
+fi
+
+echo "== suite hermeticity (HIMMEL-2902) =="
+# A station's real install-profile.json (channel: stable) must not leak into
+# these plain-pull scenarios via an inherited HIMMELCTL_CACHE_DIR — this
+# recurses with a station-like profile ambient exactly the way a caller's
+# shell would carry it, before this file's own preamble override (above) runs.
+STATION_DIR="$TMP/station-profile"
+mkdir -p "$STATION_DIR"
+printf '{"channel":"stable"}\n' > "$STATION_DIR/install-profile.json"
+station="$(HIMMELCTL_CACHE_DIR="$STATION_DIR" bash "$0" --selftest-hermetic)"; station_rc=$?
+clean="$(bash "$0" --selftest-hermetic)"; clean_rc=$?
+if [ "$station_rc" -eq 0 ] && [ "$clean_rc" -eq 0 ] && [ "$station" = "$clean" ] && grepq "$station" 'status=updated'; then
+    assert_pass "suite is hermetic to a station install profile"
+else
+    assert_fail "suite is hermetic to a station install profile (station_rc=$station_rc clean_rc=$clean_rc station='$station' clean='$clean')"
+fi
 
 # ─── T1: default (env unset) + dirty → refuses ───────────────────────────────
 echo "T1: dirty tree, env unset → refuses to pull"
