@@ -42,6 +42,22 @@ break `/pr-check` — whose CR gate dispatches
 `pr-review-toolkit-himmel:code-reviewer` — or duplicate `leg-impl` exactly. What
 distinguishes it is `contextBudget: 35000`, the number a leg is expected to
 start under; measure a real leg against it with `scripts/lanes/leg-burn.sh`.
+
+`leg-impl`'s `mcpServers: ["qmd"]` (HIMMEL-2935) layers `--mcp-config` +
+`--strict-mcp-config` onto the same profile, stripping USER-level MCP servers
+(`graphify`, `obsidian-vault`, `context7`) a leg never calls. `qmd` is kept
+(not `[]`) because `--strict-mcp-config` drops *any* server absent from the
+allowlist, plugin-provided ones included — measured by dropping the connector
+tools entirely rather than degrading. This is lever 1 of HIMMEL-2928,
+completed: `first-turn` moved 74.3k (bare) → 73.0k (#642, profile only) →
+70.5k (this ticket, +MCP allowlist) — a 3.8k total saving, not the ≤35k this
+lever was hoped to reach. The ~40k this doc estimated as "tool and MCP
+schemas" below is **not** mostly MCP-server schemas: removing three full
+user-level MCP servers bought only 2.5k, so the true floor is dominated by
+built-in tool schemas and skill/agent listings — outside what a plugin or MCP
+lever can touch. Treat that residual as a separate, harder problem, not a
+follow-up to this lever.
+
 `--profile` also exports `HIMMEL_LEAN_LEG=1`, which silences the three advisory
 SessionStart hooks (graphify freshness, qmd staleness, where-are-we) for that
 session only — a leg has one ticket and a console to report to, and never acts

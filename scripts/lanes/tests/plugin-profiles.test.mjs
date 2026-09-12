@@ -7,7 +7,7 @@ import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { resolveProfile, validateRegistry, parseAddPlugins, loadRegistry, readEnabledPluginIds, resolveProfileByName } from '../plugin-profiles.mjs';
+import { resolveProfile, validateRegistry, parseAddPlugins, loadRegistry, readEnabledPluginIds, resolveProfileByName, mcpServersForProfile, collectMcpServerDefs } from '../plugin-profiles.mjs';
 
 const REG = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.json'), 'utf8'));
 const FLOOR = REG.floor;
@@ -417,6 +417,79 @@ test('validateRegistry: mcpCatalog shape + $VAR-reference rule (a literal is a c
   assert.ok(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: 'nope' } }).some((e) => /mcpCatalog entry "x" must be an object/.test(e)));
   assert.ok(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { env: { TOKEN: 'sk-literal-secret' } } } }).some((e) => /mcpCatalog entry "x" env\.TOKEN must be a \$VAR reference/.test(e)));
   assert.deepEqual(validateRegistry({ ...SCHEMA_REG, mcpCatalog: { x: { env: { TOKEN: '$TOKEN' }, headers: { Authorization: '$AUTH_HEADER' } } } }), []);
+});
+
+// ── mcpServers (HIMMEL-2935 / HIMMEL-2928 lever 1 second half) ──────────────
+// A per-leg MCP-server allowlist, orthogonal to mcpCatalog (T3.1, still
+// schema-only): mcpServers names servers to COPY from an external source
+// (readEnabledPluginIds's caller resolves those files), never definitions
+// stored in the registry itself.
+
+test('validateRegistry: mcpServers must be an array of non-empty strings, or absent', () => {
+  assert.ok(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, bad: { enable: [], mcpServers: 'qmd', contextBudget: 5000 } } }).some((e) => /"bad" mcpServers must be an array of non-empty strings/.test(e)));
+  assert.ok(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, bad: { enable: [], mcpServers: [''], contextBudget: 5000 } } }).some((e) => /"bad" mcpServers must be an array of non-empty strings/.test(e)));
+  assert.deepEqual(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, ok: { enable: [], mcpServers: ['qmd'], contextBudget: 5000 } } }), []);
+  assert.deepEqual(validateRegistry({ ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, ok: { enable: [], mcpServers: [], contextBudget: 5000 } } }), []);
+});
+
+test('mcpServersForProfile: absent field or operator -> undefined; present field -> the array (even empty)', () => {
+  assert.equal(mcpServersForProfile(SCHEMA_REG, 'operator'), undefined);
+  assert.equal(mcpServersForProfile(SCHEMA_REG, 'schema'), undefined, 'schema declares no mcpServers');
+  const withField = { ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles, m: { enable: [], mcpServers: ['qmd'], contextBudget: 5000 }, e: { enable: [], mcpServers: [], contextBudget: 5000 } } };
+  assert.deepEqual(mcpServersForProfile(withField, 'm'), ['qmd']);
+  assert.deepEqual(mcpServersForProfile(withField, 'e'), []);
+  assert.throws(() => mcpServersForProfile(SCHEMA_REG, 'no-such-profile'), /unknown profile/);
+});
+
+test('collectMcpServerDefs: empty names -> {mcpServers:{}} without touching any file', () => {
+  assert.deepEqual(collectMcpServerDefs([], { homeConfigPath: '/no/such/home.json', repoMcpPath: '/no/such/.mcp.json', marketplaceDir: '/no/such/marketplace' }), { mcpServers: {} });
+});
+
+test('collectMcpServerDefs: copies a definition byte-for-byte, home before repo before the per-plugin manifest', () => {
+  const dir = makeTmpDir('pp-mcp-defs-');
+  const home = join(dir, 'home.json');
+  const repo = join(dir, '.mcp.json');
+  const marketplaceDir = join(dir, 'marketplace', 'plugins');
+  writeFileSync(home, JSON.stringify({ mcpServers: { fromHome: { type: 'http', url: 'http://home' } } }));
+  writeFileSync(repo, JSON.stringify({ mcpServers: { fromRepo: { type: 'http', url: 'http://repo' }, fromHome: { type: 'http', url: 'http://repo-shadow' } } }));
+  mkdirSync(join(marketplaceDir, 'qmd'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'qmd', '.mcp.json'), JSON.stringify({ mcpServers: { qmd: { type: 'http', url: 'http://localhost:8181/mcp' } } }));
+
+  const cfg = collectMcpServerDefs(['fromHome', 'fromRepo', 'qmd'], { homeConfigPath: home, repoMcpPath: repo, marketplaceDir });
+  assert.deepEqual(cfg, {
+    mcpServers: {
+      fromHome: { type: 'http', url: 'http://home' }, // home wins over repo's shadowing entry
+      fromRepo: { type: 'http', url: 'http://repo' },
+      qmd: { type: 'http', url: 'http://localhost:8181/mcp' },
+    },
+  });
+});
+
+test('collectMcpServerDefs: a name found nowhere refuses rather than hand-writing a definition', () => {
+  const dir = makeTmpDir('pp-mcp-defs-missing-');
+  assert.throws(
+    () => collectMcpServerDefs(['no-such-server'], { homeConfigPath: join(dir, 'home.json'), repoMcpPath: join(dir, '.mcp.json'), marketplaceDir: join(dir, 'marketplace', 'plugins') }),
+    /mcpServers entry "no-such-server" is not defined/,
+  );
+});
+
+test('CLI: --mcp-servers prints the profile\'s allowlist, or null when the field is absent', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const okRun = spawnSync(process.execPath, [cli, 'leg-impl', '--mcp-servers'], { encoding: 'utf8' });
+  assert.equal(okRun.status, 0, okRun.stderr);
+  assert.deepEqual(JSON.parse(okRun.stdout), ['qmd']);
+  const bareRun = spawnSync(process.execPath, [cli, 'bare', '--mcp-servers'], { encoding: 'utf8' });
+  assert.equal(bareRun.status, 0, bareRun.stderr);
+  assert.equal(JSON.parse(bareRun.stdout), null);
+});
+
+test('CLI: --mcp-config resolves leg-impl\'s qmd definition from the marketplace plugin manifest', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.mjs');
+  const cwd = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'); // repo root: marketplace/plugins/qmd/.mcp.json lives here
+  const home = makeTmpDir('pp-cli-mcp-home-');
+  const run = spawnSync(process.execPath, [cli, 'leg-impl', '--mcp-config'], { encoding: 'utf8', cwd, env: { ...process.env, HOME: home, USERPROFILE: home } });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { mcpServers: { qmd: { type: 'http', url: 'http://localhost:8181/mcp' } } });
 });
 
 test('validateRegistry: a profile naming an id in both drop and enable is an error', () => {
