@@ -218,6 +218,14 @@ ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# Fleet-census shield (HIMMEL-2968): all real arms use scheduler stubs, so
+# the host's live session count must not refuse them at the fleet preflight.
+# Match test-arm-resume-queue-lock.sh's empty process-table fixture.
+FLEET_PS_STUB="$TMP/no-fleet-ps.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'true' > "$FLEET_PS_STUB"
+chmod +x "$FLEET_PS_STUB"
+export FLEET_PS_CMD="$FLEET_PS_STUB"
+
 # Global telemetry shield (HIMMEL-236): arm-resume emits to
 # ~/.claude/telemetry/skill-usage.jsonl by default, so without a
 # suite-level override every invocation below individually relies on
