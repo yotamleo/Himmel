@@ -2597,12 +2597,17 @@ csc_armed_dir="$work/csc-armed-dir"; mkdir -p "$csc_armed_dir"
 cat > "$csc_armed_dir/codex-sweep.bat" <<'BAT'
 rem himmel-cadence-runner-format: 7
 BAT
+# HIMMEL-2965: codex-sweep only ever arms a .bat, and only on Windows —
+# cadence_runner_stamp now reads only the CURRENT platform's runner
+# extension, so this fixture forces the Windows branch via the
+# CADENCE_RUNNER_PLATFORM_OS test seam to keep exercising the real
+# (Windows) codex-sweep path on a Linux CI host.
 outCSCp=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'codex-sweep-cadence');
 const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user',
-  env: Object.assign({}, process.env, { SWEEP_BAT_DIR: '$(winpath "$csc_armed_dir")' }) };
+  env: Object.assign({}, process.env, { SWEEP_BAT_DIR: '$(winpath "$csc_armed_dir")', CADENCE_RUNNER_PLATFORM_OS: 'windows' }) };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outCSCp" | jq -e '.actual == "present"' >/dev/null || fail "cmd:cadence_armed (codex-sweep-cadence) present via SWEEP_BAT_DIR: (got: $outCSCp)"
