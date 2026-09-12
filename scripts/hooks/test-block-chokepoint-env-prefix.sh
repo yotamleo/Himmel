@@ -200,6 +200,27 @@ assert_deny "unset NAME -f (both readings still clear the seam)"    "$(j "unset 
 assert_deny "unset -x NAME (documented over-deny -- bash refuses, touches nothing)" "$(j "unset -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 assert_deny "export -n -x NAME (documented over-deny -- bash refuses, touches nothing)" "$(j "export -n -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 
+# --- HIMMEL-2939 (the fourth clearing shape): six MORE ways an earlier
+# segment clears a registered seam with no `unset`/`export -n`/`env -u`/plain
+# assignment in sight -- `let`/`declare`/`typeset`/`printf -v`/`read` all
+# assign in the CURRENT shell, and the legacy `$[NAME=0]` arithmetic
+# construct assigns too. Same fail-closed posture as HIMMEL-2927/2933: no
+# option-validity model, every non-option word (after any `-v` for `printf`)
+# is a candidate name, folded into UNSET_NAMES for later segments. The
+# `$((SEAM=0))` control (already denied via the existing `$(` carve-out,
+# unrelated to this change) stays DENY. ---
+assert_deny "legacy \$[NAME=0] arithmetic assigns the seam"      "$(j "echo \$[HIMMEL_CONSOLE_LEG=0]; bash $MERGE_ON_GREEN 1")"
+assert_deny "let NAME=0 assigns the seam"                        "$(j "let HIMMEL_CONSOLE_LEG=0; bash $MERGE_ON_GREEN 1")"
+assert_deny "declare NAME=0 assigns the seam"                    "$(j "declare HIMMEL_CONSOLE_LEG=0; bash $MERGE_ON_GREEN 1")"
+assert_deny "typeset NAME= assigns the seam to empty"            "$(j "typeset HIMMEL_CONSOLE_LEG=; bash $MERGE_ON_GREEN 1")"
+assert_deny "printf -v NAME writes the seam"                     "$(j "printf -v HIMMEL_CONSOLE_LEG 0; bash $MERGE_ON_GREEN 1")"
+assert_deny "read NAME <<< 0 writes the seam"                    "$(j "read HIMMEL_CONSOLE_LEG <<< 0; bash $MERGE_ON_GREEN 1")"
+assert_deny "read -r a NAME b (name anywhere in read's word list)" "$(j "read -r a HIMMEL_CONSOLE_LEG b <<< '1 2 3'; bash $MERGE_ON_GREEN 1")"
+assert_deny "declare -p NAME (documented over-deny -- no -p inspection)" "$(j "declare -p HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "\$((NAME=0)) control (pre-existing, via the \$( carve-out)" "$(j "\$((HIMMEL_CONSOLE_LEG=0)); bash $MERGE_ON_GREEN 1")"
+# Over-match control: unaffected.
+assert_allow "let x=1 (no seam) stays allowed"                   "$(j "let x=1; bash $MERGE_ON_GREEN 1")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied

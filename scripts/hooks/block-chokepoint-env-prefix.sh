@@ -147,6 +147,25 @@
 # inspection -- `export SEAM=1` denies too, a documented arming-direction
 # over-deny).
 #
+# HIMMEL-2939 (the fourth clearing shape): `let`/`declare`/`typeset`/
+# `readonly` all assign in the CURRENT shell exactly like a plain assignment
+# word (HIMMEL-2933) does, `printf -v NAME` and `read NAME` write a shell
+# variable the same way, and the legacy `$[NAME=0]` arithmetic construct
+# assigns too, all with no `unset`/`export -n`/`env -u`/plain assignment in
+# sight. Same fail-closed posture, resolved against the SAME registered-name
+# set: for `let`/`declare`/`typeset`/`readonly`/`read`, every remaining word
+# that does not start with `-`, `=`-suffix stripped, is a candidate name
+# (declare -p NAME denies too -- documented over-deny, no option-validity
+# model); for `printf`, only `-v`'s operand (attached `-vNAME` or the next
+# word) is a candidate -- printf's other arguments are format/data, not
+# names. All fold into UNSET_NAMES for later segments exactly like `unset`
+# does. `$[...]` is not a segmentation boundary (unlike `$(`/backtick) --
+# a segment containing the literal `$[` anywhere has every `NAME=` word in
+# it folded into UNSET_NAMES too, no bracket-depth tracking, same fail-closed
+# direction. `local` is function-scoped and cannot precede a top-level
+# chokepoint, so it is not modelled; `mapfile`/`readarray` target arrays,
+# never a scalar seam, so they are not modelled either.
+#
 # The round-2 '(' carve-out is CLOSED: an unquoted '(' / ')' / backtick
 # (and `$(` / backtick inside double quotes) opens a fresh command
 # position via segmentation, so subshell, $(...), and backtick-wrapped
@@ -803,7 +822,20 @@ scan_segment() {
     local phase="${4:-start}"
     local env_endopts=0 lo_out lo_verdict lo_operand
     local cluster_out cluster_verdict cluster_operand
+    local bracket_rest
     names="$inames"
+    # HIMMEL-2939: `$[NAME=0]` (legacy arithmetic expansion) is not a
+    # segmentation boundary the way `$(`/backtick are, so it never opens a
+    # fresh command position to scan on its own -- fold every `NAME=` word
+    # found anywhere in a segment carrying the literal `$[`, no bracket-depth
+    # tracking (fail-closed, same direction as the assignment fold above).
+    if [[ $seg == *'$['* ]]; then
+        bracket_rest="$seg"
+        while [[ $bracket_rest =~ ([A-Za-z_][A-Za-z0-9_]*)= ]]; do
+            UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[1]}"
+            bracket_rest="${bracket_rest#*"${BASH_REMATCH[0]}"}"
+        done
+    fi
     # ':'-sentinel stream (r6): a blank line is a stream artifact (no
     # word); the line ':' is a zero-length word and MUST take its slot in
     # W -- real getopt consumes it as an operand (env -a '' SEAM=1 cmd
@@ -1038,6 +1070,54 @@ scan_segment() {
                 done
                 return 0
                 ;;
+            let|declare|typeset|readonly)
+                # HIMMEL-2939: same fail-closed simplification as `unset`/
+                # `export` above -- every remaining word that does not start
+                # with `-`, `=`-suffix stripped, is a candidate name, full
+                # stop (declare -p NAME denies too, a documented over-deny).
+                k=$((j + 1))
+                while [ "$k" -lt "$nw" ]; do
+                    case "${W[$k]}" in
+                    -*) ;;
+                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]%%=*}" ;;
+                    esac
+                    k=$((k + 1))
+                done
+                return 0 ;;
+            read)
+                # HIMMEL-2939: `read NAME [NAME2 ...]` assigns every operand
+                # name -- same fail-closed word scan (a `-p`/`-d` option's
+                # OWN operand is folded too, documented over-deny, no
+                # option-argument modelling).
+                k=$((j + 1))
+                while [ "$k" -lt "$nw" ]; do
+                    case "${W[$k]}" in
+                    -*) ;;
+                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]%%=*}" ;;
+                    esac
+                    k=$((k + 1))
+                done
+                return 0 ;;
+            printf)
+                # HIMMEL-2939: unlike unset/export/read, printf's other
+                # words are a format string and data, not names -- only
+                # `-v`'s operand (attached or the next word) is a candidate.
+                k=$((j + 1))
+                while [ "$k" -lt "$nw" ]; do
+                    case "${W[$k]}" in
+                    -v)
+                        if [ $((k + 1)) -lt "$nw" ]; then
+                            UNSET_NAMES="$UNSET_NAMES ${W[$((k + 1))]%%=*}"
+                        fi
+                        k=$((k + 2)); continue ;;
+                    -v?*)
+                        UNSET_NAMES="$UNSET_NAMES ${W[$k]#-v}"
+                        k=$((k + 1)); continue ;;
+                    -*) k=$((k + 1)); continue ;;
+                    *) break ;;
+                    esac
+                done
+                return 0 ;;
             esac
             # The invoked-program token of this segment. Words beyond it
             # are arguments and never match (the finding-4 direction).
