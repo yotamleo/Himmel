@@ -131,7 +131,7 @@
   },
   "extraKnownMarketplaces": {
     "obsidian-skills": {
-      "source": { "source": "github", "repo": "kepano/obsidian-skills" },
+      "source": { "source": "url", "url": "https://github.com/kepano/obsidian-skills.git" },
       "autoUpdate": true
     },
     "himmel": {
@@ -143,7 +143,7 @@
       "autoUpdate": true
     },
     "openai-codex": {
-      "source": { "source": "github", "repo": "openai/codex-plugin-cc" },
+      "source": { "source": "url", "url": "https://github.com/openai/codex-plugin-cc.git" },
       "autoUpdate": true
     }
   },
