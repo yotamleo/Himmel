@@ -226,6 +226,33 @@ RC=$?
 assert_rc "broken GIT_DIR: fails closed, not skipped" 2 "$RC"
 assert_contains "broken GIT_DIR: unexpected-failure message" "failed unexpectedly" "$OUT"
 
+# 10. Directory-pathspec bypass (codex-1, round 7): `git ls-files -- <path>`
+# matches a pathspec against index entries by directory-prefix too, not just
+# exact file paths. If the tracked history once held a directory literally
+# named like a test-*.sh file (e.g. "test-x.sh/inner.sh" tracked), an
+# attacker who replaces that directory in the working tree with an untracked
+# plain file of the same name could pass the old --error-unmatch check
+# (prefix match still succeeds) while the file bash actually executes is
+# untracked. Requiring the ls-files output to equal SUITE_PATH exactly closes
+# this. Built as a throwaway nested repo, not the real himmel history.
+DIRBYPASS="$SCRATCH/dirbypass"
+mkdir -p "$DIRBYPASS"
+git -C "$DIRBYPASS" init -q
+git -C "$DIRBYPASS" config user.email test@example.com
+git -C "$DIRBYPASS" config user.name test
+mkdir -p "$DIRBYPASS/test-x.sh"
+printf 'tracked\n' > "$DIRBYPASS/test-x.sh/inner.sh"
+git -C "$DIRBYPASS" add test-x.sh/inner.sh
+git -C "$DIRBYPASS" commit -q -m "tracked dir named like a test-*.sh file"
+rm -rf "${DIRBYPASS:?}/test-x.sh"
+printf '#!/usr/bin/env bash\necho pwned\n' > "$DIRBYPASS/test-x.sh"
+chmod +x "$DIRBYPASS/test-x.sh"
+cp "$QUIET_RUN" "$DIRBYPASS/quiet-run.sh"
+OUT=$(cd "$DIRBYPASS" && bash quiet-run.sh suite -- bash test-x.sh 2>&1)
+RC=$?
+assert_rc "directory-pathspec bypass refused" 2 "$RC"
+assert_contains "directory-pathspec bypass refusal message" "requires a tracked test-*.sh" "$OUT"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All quiet-run.sh guard cases passed."

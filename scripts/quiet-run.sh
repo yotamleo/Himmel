@@ -45,7 +45,8 @@ if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
             ;;
     esac
     if TOPLEVEL_ERR=$(LC_ALL=C git rev-parse --show-toplevel 2>&1 1>/dev/null); then
-        if ! git --literal-pathspecs ls-files --error-unmatch -- "$SUITE_PATH" >/dev/null 2>&1; then
+        TRACKED_MATCH=$(git --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null)
+        if [ "$TRACKED_MATCH" != "$SUITE_PATH" ]; then
             echo "ERR quiet-run: label 'suite' requires a tracked test-*.sh, got: $SUITE_PATH" >&2
             exit 2
         fi
