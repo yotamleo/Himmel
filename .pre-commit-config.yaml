@@ -57,6 +57,13 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: marketplace-source-hermetic
+        name: settings-template marketplace sources stay hermetic (url/directory, never github shorthand)
+        entry: bash scripts/check-marketplace-source-hermetic.sh
+        language: system
+        files: ^docs/setup/settings-template\.json$
+        pass_filenames: false
+
       - id: doc-guard
         name: command/skill added requires catalog update (himmel-dev only)
         entry: bash scripts/hooks/check-doc-guard.sh
