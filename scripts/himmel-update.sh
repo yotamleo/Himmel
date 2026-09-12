@@ -433,10 +433,21 @@ update_codex() {
 # cadence_user_home (emitter parity — USERPROFILE via cygpath before $HOME on
 # Windows Git-Bash, HIMMEL-645/969 — a bare $HOME would probe the MSYS dir).
 report_cadence_stale() {
-    local label bat_dir rearm ver uh
+    local label bat_dir rearm ver uh is_windows=0
     uh="$(cadence_user_home)"
+    case "$(cadence_runner_platform_ext)" in bat) is_windows=1 ;; esac
     while IFS='|' read -r label bat_dir rearm; do
         [ -n "$label" ] || continue
+        # codex-sweep-cadence only ever arms on Windows (its own arm refuses
+        # elsewhere, HIMMEL-2965) — on any other platform a leftover .bat/.sh
+        # twin is n/a, never a recipe that would itself refuse.
+        if [ "$label" = "codex-sweep-cadence" ] && [ "$is_windows" -eq 0 ]; then
+            if [ -f "$bat_dir/codex-sweep.bat" ] || [ -f "$bat_dir/codex-sweep.sh" ]; then
+                echo ""
+                echo "==> codex-sweep-cadence: Windows-only, n/a on this platform"
+            fi
+            continue
+        fi
         ver="$(cadence_runner_stamp "$bat_dir")" || continue
         [ "$ver" -lt "$CADENCE_RUNNER_FORMAT_VERSION" ] || continue
         echo ""
