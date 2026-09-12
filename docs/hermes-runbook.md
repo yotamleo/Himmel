@@ -292,7 +292,10 @@ applying it. The step resolves the install root from `HERMES_HOME` (else
 `%LOCALAPPDATA%\hermes`) and operates on its `hermes-agent/` subdir; it skips
 cleanly and never fails the himmel update when hermes isn't installed. After an
 update, **restart the hermes gateway** (`hermes gateway restart`, when no
-session is running) to pick up changes.
+session is running) to pick up changes — on Linux, `/himmel-update` now does
+this for you: it restarts any running `hermes-gateway-*.service` user units
+once the checkout actually moves, or prints the command to run by hand when
+`systemctl` isn't available.
 
 **Upstream force-pushes `main` (HIMMEL-2139).** So the checkout regularly stops
 being a fast-forward of upstream through no fault of ours, and the update step

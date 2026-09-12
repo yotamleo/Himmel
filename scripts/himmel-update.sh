@@ -216,6 +216,8 @@ update_hermes() {
     # (already empty under -q) to /dev/null — set -e safe via the &&/|| form.
     # LC_ALL=C pins git's diagnostics to English, because the offline
     # classification below matches English phrases.
+    local head_before
+    head_before=$(git -C "$src" rev-parse HEAD 2>/dev/null || echo "?")
     local fetch_err fetch_rc
     fetch_err=$(LC_ALL=C git -C "$src" fetch -q "$remote" "$merge_ref" 2>&1 >/dev/null) && fetch_rc=0 || fetch_rc=$?
     if [ "$fetch_rc" -ne 0 ]; then
@@ -323,6 +325,37 @@ update_hermes() {
     else
         echo "    note: hermes venv python not found — code pulled, but run 'pip install -e .' in the venv if pyproject changed."
     fi
+    local head_after
+    head_after=$(git -C "$src" rev-parse HEAD 2>/dev/null || echo "?")
+    restart_hermes_gateways "$head_before" "$head_after"
+    return 0
+}
+
+# restart_hermes_gateways <old_head> <new_head> — HIMMEL-2822: a running
+# hermes-gateway-*.service keeps stale modules in memory and lazily imports a
+# NEW one on the next agent turn, so a checkout move that leaves the gateway
+# running silently ImportErrors until a manual restart. No-op when the
+# checkout did not actually move; never aborts the update chain on a restart
+# failure (a stale-but-running gateway beats an aborted update).
+restart_hermes_gateways() {
+    local old_head="$1" new_head="$2"
+    [ "$old_head" = "$new_head" ] && return 0
+    if ! command -v systemctl >/dev/null 2>&1; then
+        echo "    note: hermes-gateway units may be running pre-pull code — systemctl not found; restart by hand: systemctl --user restart hermes-gateway-<profile>.service"
+        return 0
+    fi
+    local units unit
+    units=$(systemctl --user list-units 'hermes-gateway-*' --state=running --plain --no-legend 2>/dev/null | awk '{print $1}')
+    [ -z "$units" ] && return 0
+    echo "    hermes checkout moved — restarting running hermes-gateway units..."
+    while IFS= read -r unit; do
+        [ -z "$unit" ] && continue
+        if systemctl --user restart "$unit" >/dev/null 2>&1; then
+            echo "    restarted $unit"
+        else
+            echo "    warn: failed to restart $unit — run 'systemctl --user restart $unit' by hand." >&2
+        fi
+    done <<< "$units"
     return 0
 }
 
