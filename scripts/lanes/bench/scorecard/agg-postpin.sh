@@ -59,11 +59,12 @@ done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LEG_BURN="$HERE/../../leg-burn.sh"
 PROJECTS="${SCORECARD_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel}"
+[ -d "$PROJECTS" ] || { echo "agg-postpin: transcript root not found: $PROJECTS" >&2; exit 2; }
 LAUNCH_LOG_DIR="${SCORECARD_LAUNCH_LOG_DIR:-$HOME/.claude/launch-logs}"
 
 to_epoch() {
     date -d "$1" +%s 2>/dev/null && return 0
-    date -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null
+    date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$(printf '%s' "$1" | sed 's/\.[0-9]*Z$/Z/')" +%s 2>/dev/null
 }
 SINCE_EPOCH=$(to_epoch "$SINCE") || { echo "agg-postpin: bad --since: $SINCE" >&2; exit 2; }
 UNTIL_EPOCH=""
@@ -91,7 +92,7 @@ cohort_ok() {
     base=$(basename "$1" .jsonl)
     log="$LAUNCH_LOG_DIR/$base.log"
     [ -f "$log" ] || return 1
-    grep -q "profile=$COHORT" "$log" 2>/dev/null
+    grep -q "profile=$COHORT " "$log" 2>/dev/null || grep -q "profile=$COHORT\$" "$log" 2>/dev/null
 }
 
 ROWS=$(mktemp "${TMPDIR:-/tmp}/agg-postpin-rows.XXXXXX")

@@ -28,13 +28,13 @@ function parseArgs(argv) {
   return args;
 }
 
-function walkJsonl(dir) {
+function walkJsonl(dir, inSubagents) {
   const out = [];
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
     const st = statSync(p);
-    if (st.isDirectory()) out.push(...walkJsonl(p));
-    else if (name.endsWith('.jsonl')) out.push(p);
+    if (st.isDirectory()) out.push(...walkJsonl(p, inSubagents || name === 'subagents'));
+    else if (inSubagents && name.endsWith('.jsonl')) out.push(p);
   }
   return out;
 }
@@ -68,12 +68,23 @@ function textOf(msg) {
     .join('\n');
 }
 
+function endsWithTierReturn(text) {
+  const lines = text.split('\n');
+  let i = lines.length - 1;
+  while (i >= 0 && lines[i].trim() === '') i--;
+  return i >= 0 && /^> \*\*Tier-return:\*\* /.test(lines[i]);
+}
+
 const { since, projectsDir } = parseArgs(process.argv.slice(2));
 const root = projectsDir || `${process.env.HOME}/.claude/projects`;
 const sinceEpoch = Date.parse(since);
+if (!Number.isFinite(sinceEpoch)) {
+  console.error(`tier-return-sweep: invalid --since: ${since}`);
+  process.exit(2);
+}
 
 const counts = new Map();
-for (const file of walkJsonl(root)) {
+for (const file of walkJsonl(root, false)) {
   const msgs = readAssistantMessages(file);
   if (msgs.length === 0) continue;
   const first = msgs[0];
@@ -84,7 +95,7 @@ for (const file of walkJsonl(root)) {
   const model = shortModel(first.message?.model);
   const entry = counts.get(model) || { dispatched: 0, returned: 0 };
   entry.dispatched++;
-  if (/^> \*\*Tier-return:\*\* /m.test(textOf(last))) entry.returned++;
+  if (endsWithTierReturn(textOf(last))) entry.returned++;
   counts.set(model, entry);
 }
 

@@ -141,9 +141,11 @@ in the first commit) → `GO` → the leg merges and reports `MERGED #<n> → <s
 
 A PR on HIMMEL-2973/2976/2928/2974/2975 is READY only if its body cites
 `HIMMEL-2977 "GATE <previous lever> PASS <date>"` (for 2973:
-`P0 EXIT <date>`). Open HIMMEL-2977's comments and find that first line
-verbatim: a missing citation, a line not found, or a line whose status is not
-PASS = not READY.
+`P0 EXIT <date>` — this line carries no separate status word; its mere
+presence, verbatim, is the pass signal for 2973). Open HIMMEL-2977's comments
+and find that citation's line verbatim: a missing citation or a line not
+found is not READY; for the general `GATE ... <status> <date>` shape (every
+ticket except 2973), a found line whose status is not PASS is also not READY.
 The console pulls the primary and the leg closes out its ticket.
 The console sends GO by first running `bash scripts/handover/console-kit/go.sh
 <pr> <full head sha>` — the file IS the GO, the SendMessage is the

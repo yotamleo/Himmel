@@ -31,16 +31,24 @@ done
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LEG_BURN="$HERE/../../leg-burn.sh"
 PROJECTS="${SCORECARD_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel}"
+[ -d "$PROJECTS" ] || { echo "leg-over-by-day: transcript root not found: $PROJECTS" >&2; exit 2; }
 
 to_epoch() {
     date -d "$1" +%s 2>/dev/null && return 0
-    date -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null
+    date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$(printf '%s' "$1" | sed 's/\.[0-9]*Z$/Z/')" +%s 2>/dev/null
 }
 SINCE_EPOCH=$(to_epoch "$SINCE") || { echo "leg-over-by-day: bad --since: $SINCE" >&2; exit 2; }
 UNTIL_EPOCH=""
 if [ -n "$UNTIL" ]; then
     UNTIL_EPOCH=$(to_epoch "$UNTIL") || { echo "leg-over-by-day: bad --until: $UNTIL" >&2; exit 2; }
 fi
+case "$THRESHOLD_K" in
+    ''|*[!0-9]*) echo "leg-over-by-day: --threshold-k must be a plain non-negative integer: $THRESHOLD_K" >&2; exit 2 ;;
+esac
+case "$THRESHOLD_K" in
+    0) ;;
+    0*) echo "leg-over-by-day: --threshold-k must not have a leading zero: $THRESHOLD_K" >&2; exit 2 ;;
+esac
 THRESHOLD=$((THRESHOLD_K * 1000))
 
 title_of() { grep -o '"customTitle":"[^"]*"' "$1" 2>/dev/null | tail -1 | sed 's/.*:"//; s/"$//'; }

@@ -29,12 +29,33 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$SINCE" ] || { usage; exit 2; }
 
-H="${SCORECARD_HANDOVER_DIR:-$HOME/Documents/luna/handovers/yotamleo/himmel}"
-[ -d "$H" ] || { echo "leg-relaunch: no handover dir at $H" >&2; exit 2; }
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../../../lib/load-dotenv.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../../../lib/load-dotenv.sh"
+# shellcheck source=../../../lib/user-slug.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../../../lib/user-slug.sh"
+# shellcheck source=../../../lib/handover-path.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/../../../lib/handover-path.sh"
+load_dotenv HANDOVER_DIR USER_SLUG
+
+if [ -n "${SCORECARD_HANDOVER_DIR:-}" ]; then
+    H="$SCORECARD_HANDOVER_DIR"
+elif handover_base=$(handover_root 2>/dev/null) && handover_slug=$(user_slug 2>/dev/null); then
+    H="$handover_base/$handover_slug/himmel"
+else
+    H=""
+fi
+if ! { [ -n "$H" ] && [ -d "$H" ]; }; then
+    echo "leg-relaunch: no handover dir (set SCORECARD_HANDOVER_DIR, or configure HANDOVER_DIR/USER_SLUG via /handover-setup)" >&2
+    exit 2
+fi
 
 to_epoch() {
     date -d "$1" +%s 2>/dev/null && return 0
-    date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
+    date -j -u -f '%Y-%m-%d' "$1" +%s 2>/dev/null
 }
 SINCE_DAY=$(printf '%s' "$SINCE" | cut -c1-10)
 SINCE_EPOCH=$(to_epoch "$SINCE_DAY") || { echo "leg-relaunch: bad --since: $SINCE" >&2; exit 2; }

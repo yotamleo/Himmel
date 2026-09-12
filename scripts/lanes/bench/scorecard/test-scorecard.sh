@@ -45,11 +45,11 @@ export SCORECARD_PROJECTS_DIR="$HERE/fixtures/cohort"
 export SCORECARD_LAUNCH_LOG_DIR="$HERE/fixtures/cohort/launch-logs"
 
 WITHOUT_COHORT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg 2>/dev/null)
-check "cohort: without --cohort counts 2 sessions" \
-    "$(session_count "$WITHOUT_COHORT" leg)" "2"
+check "cohort: without --cohort counts 3 sessions" \
+    "$(session_count "$WITHOUT_COHORT" leg)" "3"
 
 WITH_COHORT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg --cohort leg-impl 2>/dev/null)
-check "cohort: --cohort leg-impl counts 1 of 2" \
+check "cohort: --cohort leg-impl counts 1 of 3 (excludes no-log and leg-impl-other)" \
     "$(session_count "$WITH_COHORT" leg)" "1"
 
 # --- (c) shift: 60 Fable + 50 Sonnet console-role calls -> counted_shifts=1
@@ -59,6 +59,15 @@ unset SCORECARD_LAUNCH_LOG_DIR
 SHIFT_OUT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console 2>/dev/null)
 COUNTED=$(printf '%s\n' "$SHIFT_OUT" | awk -F'\t' '$1=="console" && $2=="ALL" {print $NF}')
 check "shift: >=100 console-role calls -> counted_shifts=1" "$COUNTED" "1"
+
+# --- (d) shift: 10 console-role calls (< 100) -> counted_shifts=0, disproving
+# a hardcoded counted_shifts=1
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/shift-under"
+unset SCORECARD_LAUNCH_LOG_DIR
+
+SHIFT_UNDER_OUT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console 2>/dev/null)
+COUNTED_UNDER=$(printf '%s\n' "$SHIFT_UNDER_OUT" | awk -F'\t' '$1=="console" && $2=="ALL" {print $NF}')
+check "shift: <100 console-role calls -> counted_shifts=0" "$COUNTED_UNDER" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then
