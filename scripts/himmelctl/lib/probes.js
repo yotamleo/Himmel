@@ -2714,12 +2714,144 @@ function pollerLineIsThisCheckout(line, thisCheckoutAnchor) {
   return normalizeForPollerAnchorMatch(token) === thisCheckoutAnchor;
 }
 
+// ── Linux/macOS poller-count (HIMMEL-2890) ──────────────────────────────────
+// Unlike the Windows branch's binary present/absent (a foreign checkout's
+// commandline carries no path in the common bare-token shape, so "duplicate"
+// and "zero" collapse to the same "not exactly 1" bucket there), the ticket's
+// contract here is a genuine 3-way split: 1 = present (green), 0 = absent
+// (red, unit active but no poller), >1 = degraded (duplicate pollers,
+// HIMMEL-1555 class) — "same object shape [as Windows]" means the returned
+// `{actual, detail}` fields, not the same present/absent enum mapping.
+//
+// Prefers `systemctl --user show telegram-bridge.service` (MainPID +
+// ActiveState + LoadState) when systemd is present and knows the unit;
+// otherwise (no systemctl on PATH, or LoadState=not-found — genuinely no
+// unit registered) falls back to `pgrep -f <resolved poller path>`, per the
+// ticket's explicit adopters-running-the-bridge-by-hand case (e).
+//
+// Child enumeration: `/proc/<pid>/task/*/children` on Linux (walking every
+// thread's children file, since a single-threaded MainPID's own children
+// file lives at task/<mainpid>/children) — overridable via ctx.procRoot
+// (test-only seam) since a real hermetic test cannot fabricate genuine PIDs.
+// Where ctx.procRoot doesn't exist as a real directory (macOS has no /proc
+// at all), falls back to `pgrep -P <pid>` for children and `ps -o args= -p`
+// for each child's argv — HIMMEL-1532's existing checkout-path anchor
+// (extractPollerToken/pollerLineIsThisCheckout above) matches equally well
+// against a POSIX argv string as against a Windows CommandLine, so no new
+// matching logic is needed here.
+function posixProcRoot(ctx) {
+  return (ctx && ctx.procRoot) || '/proc';
+}
+
+function posixChildPids(pid, procRoot, env) {
+  if (fs.existsSync(procRoot)) {
+    const taskDir = path.join(procRoot, String(pid), 'task');
+    let tids;
+    try {
+      tids = fs.readdirSync(taskDir);
+    } catch (_e) {
+      return null;
+    }
+    const pids = new Set();
+    for (const tid of tids) {
+      try {
+        const raw = fs.readFileSync(path.join(taskDir, tid, 'children'), 'utf8');
+        raw.split(/\s+/).filter(Boolean).forEach((p) => pids.add(p));
+      } catch (_e) { /* thread exited between readdir and read — skip */ }
+    }
+    return Array.from(pids);
+  }
+  const pgrepBin = which('pgrep', env);
+  if (!pgrepBin) return null;
+  const r = spawnProbeSync(pgrepBin, ['-P', String(pid)], { env, encoding: 'utf8' });
+  if (r.error || (r.status !== 0 && r.status !== 1)) return null; // pgrep rc=1 == no matches, not a failure
+  return (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+function posixCmdline(pid, procRoot, env) {
+  if (fs.existsSync(procRoot)) {
+    try {
+      const raw = fs.readFileSync(path.join(procRoot, String(pid), 'cmdline'));
+      return raw.toString('utf8').split('\0').filter(Boolean).join(' ');
+    } catch (_e) {
+      return null;
+    }
+  }
+  const r = spawnProbeSync('ps', ['-o', 'args=', '-p', String(pid)], { env, encoding: 'utf8' });
+  if (r.error || r.status !== 0) return null;
+  return (r.stdout || '').trim();
+}
+
+function posixPollerVerdict(n, source) {
+  if (n === 1) return { actual: 'present', detail: `1 poller.ts process running for this checkout (${source}; a supervisor parent, if any, is not counted)` };
+  if (n === 0) return { actual: 'absent', detail: `0 poller.ts process(es) running for this checkout (${source}; expected exactly 1)` };
+  return { actual: 'degraded', detail: `${n} poller.ts processes running for this checkout (${source}; expected exactly 1 — duplicate pollers, HIMMEL-1555 class)` };
+}
+
+function probeBridgePollerCountPosix(ctx) {
+  const env = ctx.env || process.env;
+  const procRoot = posixProcRoot(ctx);
+  const thisCheckoutAnchor = ctx.repoRoot
+    ? normalizeForPollerAnchorMatch(path.join(ctx.repoRoot, 'scripts', 'telegram', 'poller.ts'))
+    : null;
+
+  const systemctlBin = which('systemctl', env);
+  if (systemctlBin) {
+    const show = spawnProbeSync(systemctlBin, ['--user', 'show', 'telegram-bridge.service', '-p', 'MainPID', '-p', 'ActiveState', '-p', 'LoadState'], { env, encoding: 'utf8' });
+    if (show.timedOut) return { actual: 'degraded', detail: `poller-count probe timed out after ${probeTimeoutSecs(show)}s` };
+    if (show.error) return { actual: 'degraded', detail: `spawn error: ${show.error.message}` };
+    if (show.status === 0) {
+      const props = {};
+      (show.stdout || '').split(/\r?\n/).forEach((line) => {
+        const m = /^([A-Za-z]+)=(.*)$/.exec(line);
+        if (m) props[m[1]] = m[2];
+      });
+      if (props.LoadState && props.LoadState !== 'not-found') {
+        if (props.ActiveState !== 'active' || !props.MainPID || props.MainPID === '0') {
+          return { actual: 'absent', detail: `telegram-bridge.service is not active (ActiveState=${props.ActiveState || 'unknown'}) — 0 poller.ts processes running for this checkout` };
+        }
+        const childPids = posixChildPids(props.MainPID, procRoot, env);
+        if (childPids === null) {
+          return { actual: 'degraded', detail: `could not enumerate child processes of telegram-bridge.service MainPID ${props.MainPID} — process identity is UNVERIFIED, not assumed healthy` };
+        }
+        const cmdlines = childPids.map((pid) => ({ pid, cmdline: posixCmdline(pid, procRoot, env) }));
+        const unreadable = cmdlines.filter((c) => c.cmdline === null);
+        if (unreadable.length > 0) {
+          return { actual: 'degraded', detail: `could not read cmdline for child pid(s) ${unreadable.map((c) => c.pid).join(', ')} of telegram-bridge.service MainPID ${props.MainPID} — process identity is UNVERIFIED, not assumed healthy` };
+        }
+        const n = cmdlines.filter((c) => pollerLineIsThisCheckout(c.cmdline, thisCheckoutAnchor)).length;
+        return posixPollerVerdict(n, 'via systemd MainPID children');
+      }
+      // LoadState absent/not-found -- systemd genuinely doesn't know this unit; fall through to the pgrep -f fallback below.
+    }
+  }
+
+  const pgrepBin = which('pgrep', env);
+  if (!pgrepBin) {
+    return {
+      actual: 'degraded',
+      detail: 'poller-count check unavailable — no telegram-bridge.service systemd unit and no pgrep on PATH; process identity is UNVERIFIED, not assumed healthy',
+    };
+  }
+  if (!ctx.repoRoot) {
+    return { actual: 'degraded', detail: 'poller-count check needs ctx.repoRoot to anchor pgrep -f, none provided' };
+  }
+  const pollerPath = path.join(ctx.repoRoot, 'scripts', 'telegram', 'poller.ts');
+  const r = spawnProbeSync(pgrepBin, ['-f', pollerPath], { env, encoding: 'utf8' });
+  if (r.timedOut) return { actual: 'degraded', detail: `poller-count probe timed out after ${probeTimeoutSecs(r)}s` };
+  if (r.error) return { actual: 'degraded', detail: `spawn error: ${r.error.message}` };
+  if (r.status !== 0 && r.status !== 1) return { actual: 'degraded', detail: `pgrep poller-count query exited rc=${r.status}` };
+  const n = (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).length;
+  return posixPollerVerdict(n, 'via pgrep -f, no systemd unit found');
+}
+
 function probeBridgePollerCount(ctx) {
   const platform = ctx.platform || process.platform;
   if (platform !== 'win32') {
+    if (platform === 'linux' || platform === 'darwin') return probeBridgePollerCountPosix(ctx);
     return {
       actual: 'degraded',
-      detail: `poller-count check not implemented on '${platform}' — Windows-CIM-only today (HIMMEL-2176); process identity is UNVERIFIED here, not assumed healthy`,
+      detail: `poller-count check not implemented on '${platform}' — Windows/Linux/macOS only today (HIMMEL-2176/HIMMEL-2890); process identity is UNVERIFIED here, not assumed healthy`,
     };
   }
   const env = ctx.env || process.env;
