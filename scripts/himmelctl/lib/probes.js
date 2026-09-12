@@ -2875,7 +2875,29 @@ function escapeEreMetachars(s) {
 // resolves inside this checkout. A pathed token is unaffected: identity
 // there is already decided by the anchor comparison below, no cwd read
 // needed.
-function posixCandidateIsThisCheckout(cmdline, pid, thisCheckoutAnchor, checkoutRoot, procRoot) {
+// Reads pid's cwd: a real /proc readlink when procRoot exists (Linux), else
+// an `lsof -a -p <pid> -d cwd -Fn` fallback (darwin has no /proc at all) —
+// same existsSync-gated shape as posixDirectChildPids/posixCmdline above.
+// `-Fn` emits one field per line, name-prefixed with 'n'.
+function posixCwd(pid, procRoot, env) {
+  if (fs.existsSync(procRoot)) {
+    try {
+      return { cwd: fs.readlinkSync(path.join(procRoot, String(pid), 'cwd')) };
+    } catch (e) {
+      return { error: e };
+    }
+  }
+  const lsofBin = which('lsof', env);
+  if (!lsofBin) return { error: new Error('lsof not found on PATH') };
+  const r = spawnProbeSync(lsofBin, ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { env, encoding: 'utf8' });
+  if (r.error) return { error: r.error };
+  if (r.status !== 0) return { error: new Error(`lsof exited rc=${r.status}`) };
+  const line = (r.stdout || '').split(/\r?\n/).find((l) => l.startsWith('n'));
+  if (!line) return { error: new Error('lsof returned no cwd line') };
+  return { cwd: line.slice(1) };
+}
+
+function posixCandidateIsThisCheckout(cmdline, pid, thisCheckoutAnchor, checkoutRoot, procRoot, env) {
   const token = extractPollerToken(cmdline);
   if (!token) return { counted: false };
   const sepIdx = Math.max(token.lastIndexOf('/'), token.lastIndexOf('\\'));
@@ -2883,12 +2905,12 @@ function posixCandidateIsThisCheckout(cmdline, pid, thisCheckoutAnchor, checkout
     return { counted: Boolean(thisCheckoutAnchor) && normalizeForPollerAnchorMatch(token) === thisCheckoutAnchor };
   }
   if (!checkoutRoot) return { counted: false };
-  let cwd;
-  try {
-    cwd = fs.readlinkSync(path.join(procRoot, String(pid), 'cwd'));
-  } catch (e) {
+  const cwdResult = posixCwd(pid, procRoot, env);
+  if (cwdResult.error) {
+    const e = cwdResult.error;
     return { counted: false, excludedNote: `pid ${pid} bare-token cwd unreadable (${e.code || e.message})` };
   }
+  const cwd = cwdResult.cwd;
   // Case-SENSITIVE on purpose, unlike the pathed-token branch above: this
   // compares two POSIX filesystem paths (a live cwd readlink, this
   // checkout's own root), where Linux paths are case-sensitive by design —
@@ -2935,7 +2957,7 @@ function posixVerifiedPgrepMatches(matchPattern, procRoot, env, anchor, checkout
   for (const pid of candidates) {
     const cmdline = posixCmdline(pid, procRoot, env);
     if (cmdline === null) return { error: new Error(`could not read cmdline for pgrep-matched pid ${pid}`) };
-    const verdict = posixCandidateIsThisCheckout(cmdline, pid, anchor, checkoutRoot, procRoot);
+    const verdict = posixCandidateIsThisCheckout(cmdline, pid, anchor, checkoutRoot, procRoot, env);
     if (verdict.counted) verified.push(pid);
     else if (verdict.excludedNote) excludedNotes.push(verdict.excludedNote);
   }
@@ -2998,7 +3020,7 @@ function probeBridgePollerCountPosix(ctx) {
         const verifiedPids = new Set();
         const treeExcludedNotes = [];
         for (const c of cmdlines) {
-          const verdict = posixCandidateIsThisCheckout(c.cmdline, c.pid, thisCheckoutAnchor, ctx.repoRoot, procRoot);
+          const verdict = posixCandidateIsThisCheckout(c.cmdline, c.pid, thisCheckoutAnchor, ctx.repoRoot, procRoot, env);
           if (verdict.counted) verifiedPids.add(c.pid);
           else if (verdict.excludedNote) treeExcludedNotes.push(verdict.excludedNote);
         }
@@ -3012,7 +3034,7 @@ function probeBridgePollerCountPosix(ctx) {
           return { actual: 'degraded', detail: `could not read cmdline for telegram-bridge.service MainPID ${mainPid}: ${mainCmdline.error.message} — process identity is UNVERIFIED, not assumed healthy` };
         }
         if (mainCmdline.cmdline !== null) {
-          const mainVerdict = posixCandidateIsThisCheckout(mainCmdline.cmdline, mainPid, thisCheckoutAnchor, ctx.repoRoot, procRoot);
+          const mainVerdict = posixCandidateIsThisCheckout(mainCmdline.cmdline, mainPid, thisCheckoutAnchor, ctx.repoRoot, procRoot, env);
           if (mainVerdict.counted) verifiedPids.add(mainPid);
           else if (mainVerdict.excludedNote) treeExcludedNotes.push(mainVerdict.excludedNote);
         }

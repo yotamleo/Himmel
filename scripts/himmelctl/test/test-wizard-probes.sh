@@ -4541,6 +4541,17 @@ cat > "$bh_posix_stub/bun" <<'STUB'
 echo "ok:testbot"
 STUB
 chmod +x "$bh_posix_stub/bun"
+# HIMMEL-2945: an `lsof` stub is on PATH here too (procRoot exists in every
+# Linux control below), purely so control (a) can assert it is NEVER invoked
+# -- proving the new darwin cwd fallback is genuinely gated on
+# fs.existsSync(procRoot) and not accidentally reached on Linux.
+cat > "$bh_posix_stub/lsof" <<'STUB'
+#!/usr/bin/env bash
+: "${BH_STUB_LOG:?}"
+echo "lsof $*" >> "$BH_STUB_LOG"
+exit 1
+STUB
+chmod +x "$bh_posix_stub/lsof"
 bh_posix_log="$work/bh-posix-stub.log"
 bh_posix_state="$work/bh-posix-stub-state"; mkdir -p "$bh_posix_state"
 bh_proc_root="$work/bh-proc-root"
@@ -4599,7 +4610,7 @@ run_bh_posix() {
   local repoRootOverride="${1:-$repo_root_w}"
   local platformOverride="${2:-linux}"
   local pathVal
-  pathVal="$bh_posix_stub:$(scrub_path "$PATH" systemctl pgrep)"
+  pathVal="$bh_posix_stub:$(scrub_path "$PATH" systemctl pgrep lsof)"
   PATH="$pathVal" BH_STUB_LOG="$(winpath "$bh_posix_log")" BH_STUB_STATE="$(winpath "$bh_posix_state")" \
     BH_PGREP_N="${BH_PGREP_N:-0}" "$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
@@ -4972,6 +4983,16 @@ if bh_posix_log_has "pgrep -f"; then
   echo "$outBHlinuxO" | jq -e '.detail | contains("9202")' >/dev/null \
     || fail "bridge-health (Linux): detail should name the excluded foreign-cwd pid 9202 (got: $outBHlinuxO)"
   echo "ok: bridge-health (Linux) — sweep bare-token match with a foreign cwd is excluded via cwd check, count 1, detail names 9202 (HIMMEL-2936)"
+  # HIMMEL-2945: procRoot exists here (the fake /proc-shaped bh_proc_root
+  # tree above), so the bare-token cwd check must read it via readlinkSync
+  # directly and never fall through to the darwin lsof path.
+  # grep for a LOG LINE starting with "lsof " (the stub's own `echo "lsof $*"`),
+  # not a bare substring match -- this worktree's own path contains the
+  # literal text "lsof" (…darwin-cwd-lsof-fallback), which shows up inside the
+  # pgrep -f pattern logged just above and would otherwise false-positive.
+  grep -q '^lsof ' "$bh_posix_log" 2>/dev/null \
+    && fail "bridge-health (Linux): the bare-token cwd check must not invoke lsof when procRoot exists (log: $(cat "$bh_posix_log" 2>/dev/null))"
+  echo "ok: bridge-health (Linux) — the bare-token cwd check never invokes lsof when procRoot exists (HIMMEL-2945)"
 else
   echo "SKIP: bridge-health (Linux) control (a) HIMMEL-2936: no evidence in the stub log that pgrep actually spawned on this host"
 fi
@@ -5123,6 +5144,146 @@ else
   echo "SKIP: bridge-health (Linux) control (h) HIMMEL-2947: no evidence in the stub log that pgrep actually spawned on this host"
 fi
 rm -f "$bh_posix_state/no-unit"
+
+# ── bridge-health poller-count — darwin, no /proc (HIMMEL-2945) ────────────
+# On darwin there is no systemd and no /proc at all, so probeBridgePollerCountPosix
+# falls straight to the pgrep -f fallback (no systemctl stub on this PATH ->
+# which('systemctl') finds nothing). posixDirectChildPids/posixCmdline already
+# fall back to pgrep/ps when fs.existsSync(procRoot) is false; a bare-token
+# sweep match's cwd verification (posixCandidateIsThisCheckout, HIMMEL-2936/
+# HIMMEL-2947) does not -- it unconditionally readlinkSync's procRoot/<pid>/cwd,
+# which always ENOENTs when procRoot doesn't exist, silently excluding every
+# genuine darwin poller. The fix adds an `lsof -a -p <pid> -d cwd -Fn` fallback,
+# mirroring the pgrep/ps shape.
+bh_darwin_stub="$work/bh-darwin-stub"
+build_hermetic_bin "$bh_darwin_stub" cat
+cat > "$bh_darwin_stub/bun" <<'STUB'
+#!/usr/bin/env bash
+echo "ok:testbot"
+STUB
+chmod +x "$bh_darwin_stub/bun"
+
+cat > "$bh_darwin_stub/pgrep" <<'STUB'
+#!/usr/bin/env bash
+: "${BH_STUB_LOG:?}"
+echo "pgrep $*" >> "$BH_STUB_LOG"
+n="${BH_PGREP_N:-0}"
+if [ "$n" -le 0 ]; then exit 1; fi
+i=1
+while [ "$i" -le "$n" ]; do echo "$((9200 + i))"; i=$((i + 1)); done
+exit 0
+STUB
+chmod +x "$bh_darwin_stub/pgrep"
+
+cat > "$bh_darwin_stub/ps" <<'STUB'
+#!/usr/bin/env bash
+: "${BH_STUB_LOG:?}"
+echo "ps $*" >> "$BH_STUB_LOG"
+echo "bun poller.ts"
+exit 0
+STUB
+chmod +x "$bh_darwin_stub/ps"
+
+cat > "$bh_darwin_stub/lsof" <<'STUB'
+#!/usr/bin/env bash
+: "${BH_STUB_LOG:?}"
+echo "lsof $*" >> "$BH_STUB_LOG"
+case "${BH_LSOF_MODE:-ok}" in
+  ok) echo "n${BH_LSOF_CWD:?}"; exit 0 ;;
+  fail) exit 1 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$bh_darwin_stub/lsof"
+
+# HIMMEL-2945 case (iii): a PATH with no lsof at all -- mirrors bh_posix_stub_nopgrep.
+bh_darwin_stub_nolsof="$work/bh-darwin-stub-nolsof"
+build_hermetic_bin "$bh_darwin_stub_nolsof" cat
+cp "$bh_darwin_stub/bun" "$bh_darwin_stub_nolsof/bun"
+cp "$bh_darwin_stub/pgrep" "$bh_darwin_stub_nolsof/pgrep"
+cp "$bh_darwin_stub/ps" "$bh_darwin_stub_nolsof/ps"
+
+bh_darwin_log="$work/bh-darwin-stub.log"
+bh_darwin_log_has() { [ -f "$bh_darwin_log" ] && grep -qF "$1" "$bh_darwin_log"; }
+# Deliberately never created -- darwin genuinely has no /proc.
+bh_darwin_proc_root="$work/bh-darwin-proc-root-nonexistent"
+
+run_bh_darwin() {
+  local stubDir="${1:-$bh_darwin_stub}"
+  local pathVal
+  pathVal="$stubDir:$(scrub_path "$PATH" systemctl pgrep ps lsof)"
+  PATH="$pathVal" BH_STUB_LOG="$(winpath "$bh_darwin_log")" \
+    BH_PGREP_N="${BH_PGREP_N:-0}" BH_LSOF_MODE="${BH_LSOF_MODE:-ok}" BH_LSOF_CWD="${BH_LSOF_CWD:-$repo_root}" \
+    "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'bridge-health');
+const ctx = { repoRoot: '$(winpath "$repo_root_w")', targetPath: '$(winpath "$bh_dir")', scope: 'project', platform: 'darwin', procRoot: '$(winpath "$bh_darwin_proc_root")', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+# ── case (i) HIMMEL-2945: bare-token candidate's cwd (read via lsof, since
+# procRoot doesn't exist) resolves inside this checkout -> counted. RED on
+# unmodified HEAD: posixCandidateIsThisCheckout unconditionally readlinkSync's
+# procRoot/<pid>/cwd with no fallback, which always ENOENTs here ────────────
+rm -f "$bh_darwin_log"
+outBHdarwinI=$(BH_PGREP_N=1 BH_LSOF_MODE=ok BH_LSOF_CWD="$repo_root" run_bh_darwin)
+if bh_darwin_log_has "pgrep -f"; then
+  echo "$outBHdarwinI" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (darwin): a bare-token candidate whose lsof-reported cwd is inside this checkout must be counted (got: $outBHdarwinI)"
+  echo "$outBHdarwinI" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (darwin): in-checkout cwd match should read count 1 (got: $outBHdarwinI)"
+  bh_darwin_log_has "lsof -a -p 9201 -d cwd -Fn" \
+    || fail "bridge-health (darwin): the cwd fallback should invoke lsof -a -p <pid> -d cwd -Fn (log: $(cat "$bh_darwin_log" 2>/dev/null))"
+  echo "ok: bridge-health (darwin) — no /proc: bare-token sweep match with an in-checkout cwd via the lsof fallback is counted, count 1 (HIMMEL-2945)"
+else
+  echo "SKIP: bridge-health (darwin) case (i) HIMMEL-2945: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+
+# ── case (ii) HIMMEL-2945: bare-token candidate's lsof-reported cwd resolves
+# to a DIFFERENT checkout -> excluded, detail names the pid ────────────────
+rm -f "$bh_darwin_log"
+outBHdarwinII=$(BH_PGREP_N=1 BH_LSOF_MODE=ok BH_LSOF_CWD="$other_checkout_posix" run_bh_darwin)
+if bh_darwin_log_has "pgrep -f"; then
+  echo "$outBHdarwinII" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (darwin): a bare-token candidate whose lsof-reported cwd is a DIFFERENT checkout must not be counted (got: $outBHdarwinII)"
+  echo "$outBHdarwinII" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (darwin): foreign-cwd exclusion should read count 0 (got: $outBHdarwinII)"
+  echo "$outBHdarwinII" | jq -e '.detail | contains("9201")' >/dev/null \
+    || fail "bridge-health (darwin): detail should name the excluded pid 9201 (got: $outBHdarwinII)"
+  echo "ok: bridge-health (darwin) — no /proc: bare-token sweep match with a foreign cwd via the lsof fallback is excluded, count 0, detail names 9201 (HIMMEL-2945)"
+else
+  echo "SKIP: bridge-health (darwin) case (ii) HIMMEL-2945: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+
+# ── case (iii) HIMMEL-2945: lsof itself is absent from PATH -> excluded
+# fail-safe, detail names lsof, never throws ────────────────────────────────
+rm -f "$bh_darwin_log"
+outBHdarwinIII=$(BH_PGREP_N=1 run_bh_darwin "$bh_darwin_stub_nolsof")
+if bh_darwin_log_has "pgrep -f"; then
+  echo "$outBHdarwinIII" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (darwin): with lsof absent from PATH, a bare-token candidate must be excluded fail-safe, never counted or thrown (got: $outBHdarwinIII)"
+  echo "$outBHdarwinIII" | jq -e '.detail | contains("lsof")' >/dev/null \
+    || fail "bridge-health (darwin): the excluded detail should name lsof as the reason the cwd could not be verified (got: $outBHdarwinIII)"
+  echo "ok: bridge-health (darwin) — no /proc, no lsof on PATH: bare-token candidate excluded fail-safe naming lsof, never throws (HIMMEL-2945)"
+else
+  echo "SKIP: bridge-health (darwin) case (iii) HIMMEL-2945: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+
+# ── case (iv) HIMMEL-2945: lsof is on PATH but exits nonzero (e.g. pid gone)
+# -> excluded fail-safe, never throws ───────────────────────────────────────
+rm -f "$bh_darwin_log"
+outBHdarwinIV=$(BH_PGREP_N=1 BH_LSOF_MODE=fail run_bh_darwin)
+if bh_darwin_log_has "pgrep -f"; then
+  echo "$outBHdarwinIV" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (darwin): a failed lsof cwd query must exclude the candidate fail-safe, never throw or count it (got: $outBHdarwinIV)"
+  echo "$outBHdarwinIV" | jq -e '.detail | contains("9201")' >/dev/null \
+    || fail "bridge-health (darwin): failed-lsof exclusion detail should still name the excluded pid 9201 (got: $outBHdarwinIV)"
+  echo "ok: bridge-health (darwin) — no /proc, lsof exits nonzero: bare-token candidate excluded fail-safe without throwing (HIMMEL-2945)"
+else
+  echo "SKIP: bridge-health (darwin) case (iv) HIMMEL-2945: no evidence in the stub log that pgrep actually spawned on this host"
+fi
 
 # ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
 # Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)
