@@ -273,6 +273,17 @@ assert_deny "read NAME[0] (array-element assignment) assigns the seam"        "$
 assert_deny "printf -v NAME[0] (array-element assignment) writes the seam"    "$(j "printf -v HIMMEL_CONSOLE_LEG[0] 0; bash $MERGE_ON_GREEN 1")"
 assert_allow "read NAME_LONGER (word boundary -- shares the PREFIX, not equal)" "$(j "read HIMMEL_CONSOLE_LEGACY <<< 0; bash $MERGE_ON_GREEN 1")"
 
+# --- HIMMEL-2939 CR round 5 (console ruling): the round-4 collapse still
+# skipped every dash-prefixed word (`-*) ;;`) in the let/declare/typeset/
+# readonly and read arms before scanning, reasoning it was an option/flag.
+# That skip is itself an unwanted grammar model: bash's `let` treats a
+# LEADING `--` on an operand, after the `--` option-terminator word, as the
+# prefix-decrement operator, not a flag -- `let -- '--HIMMEL_CONSOLE_LEG'`
+# genuinely decrements the seam (verified live). Fix: delete the skip: every
+# remaining word, dash-prefixed or not, goes through the word-bounded scan. ---
+assert_deny "let -- '--NAME' (arithmetic prefix-decrement operand; dash-skip hid it)" "$(j "let -- '--HIMMEL_CONSOLE_LEG'; bash $MERGE_ON_GREEN 1")"
+assert_allow "let -- x=1 (control -- no seam name present)" "$(j "let -- x=1; bash $MERGE_ON_GREEN 1")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied

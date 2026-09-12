@@ -1094,27 +1094,34 @@ scan_segment() {
                 # `++`/`--` or leading identifiers at all. Any registered
                 # seam var (across every chokepoint -- ALL_SEAM_VARS,
                 # computed once from the registry) occurring anywhere in a
-                # remaining non-option word, WORD-BOUNDED (the char
-                # before/after is not `[A-Za-z0-9_]`, so a longer name
-                # sharing the registered name's PREFIX does not match),
-                # folds forward regardless of assignment shape (`declare -p
-                # NAME` denies too, a documented over-deny). Documented
-                # over-deny: `let x=HIMMEL_CONSOLE_LEG+1` (reads the seam,
-                # does not clear it) denies too -- costs nothing; a false
-                # ALLOW is the defect class this ticket exists for.
+                # remaining word, WORD-BOUNDED (the char before/after is not
+                # `[A-Za-z0-9_]`, so a longer name sharing the registered
+                # name's PREFIX does not match), folds forward regardless of
+                # assignment shape (`declare -p NAME` denies too, a
+                # documented over-deny). Documented over-deny: `let
+                # x=HIMMEL_CONSOLE_LEG+1` (reads the seam, does not clear
+                # it) denies too -- costs nothing; a false ALLOW is the
+                # defect class this ticket exists for.
+                #
+                # CR round 5 (console ruling): round 4 still skipped every
+                # dash-prefixed word (`-*) ;;`) as if it were an option --
+                # that skip IS grammar modelling in disguise. `let`
+                # evaluates each operand as arithmetic, where a LEADING `--`
+                # after the `--` option-terminator is the prefix-decrement
+                # operator, not a flag: `let -- '--HIMMEL_CONSOLE_LEG'`
+                # genuinely decrements the seam (verified live) and the
+                # dash-skip hid it from the scan. Deleted: every remaining
+                # word, dash-prefixed or not, goes through the word-bounded
+                # scan unconditionally -- `-` is outside `[A-Za-z0-9_]`, so
+                # the word-boundary match already handles it correctly.
                 k=$((j + 1))
                 while [ "$k" -lt "$nw" ]; do
-                    case "${W[$k]}" in
-                    -*) ;;
-                    *)
-                        for n in $ALL_SEAM_VARS; do
-                            [ -n "$n" ] || continue
-                            if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
-                                UNSET_NAMES="$UNSET_NAMES $n"
-                            fi
-                        done
-                        ;;
-                    esac
+                    for n in $ALL_SEAM_VARS; do
+                        [ -n "$n" ] || continue
+                        if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
+                            UNSET_NAMES="$UNSET_NAMES $n"
+                        fi
+                    done
                     k=$((k + 1))
                 done
                 return 0 ;;
@@ -1129,19 +1136,19 @@ scan_segment() {
                 # ALL_SEAM_VARS instead of capturing the whole word (a
                 # `-p`/`-d` option's OWN operand is scanned too, documented
                 # over-deny, no option-argument modelling).
+                #
+                # CR round 5 (console ruling): same `-*) ;;` deletion as the
+                # `let` arm above, for consistency -- no option-shape
+                # modelling anywhere in this collapse, every remaining word
+                # goes through the scan unconditionally.
                 k=$((j + 1))
                 while [ "$k" -lt "$nw" ]; do
-                    case "${W[$k]}" in
-                    -*) ;;
-                    *)
-                        for n in $ALL_SEAM_VARS; do
-                            [ -n "$n" ] || continue
-                            if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
-                                UNSET_NAMES="$UNSET_NAMES $n"
-                            fi
-                        done
-                        ;;
-                    esac
+                    for n in $ALL_SEAM_VARS; do
+                        [ -n "$n" ] || continue
+                        if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
+                            UNSET_NAMES="$UNSET_NAMES $n"
+                        fi
+                    done
                     k=$((k + 1))
                 done
                 return 0 ;;
