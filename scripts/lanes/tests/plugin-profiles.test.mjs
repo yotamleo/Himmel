@@ -35,12 +35,6 @@ const GATE_RULES = [
   'Bash(bash scripts/cr/panel-first-pass.sh:*)',
   'Bash(bash scripts/cr/ledger-append.sh:*)',
   'Bash(bash scripts/check-ci.sh:*)',
-  'Bash(git push -u origin feat/*)',
-  'Bash(git push -u origin fix/*)',
-  'Bash(git push -u origin chore/*)',
-  'Bash(git push -u origin docs/*)',
-  'Bash(git push -u origin refactor/*)',
-  'Bash(git push -u origin test/*)',
 ];
 const SUITE_TAILS = [
   'bash scripts/test-*.sh',
@@ -100,6 +94,14 @@ for (const name of ['operator', 'user', 'bare']) {
   });
 }
 
+test('leg settings leave pushes on the classifier path', () => {
+  // A trailing wildcard also covers options such as --no-verify; rejecting
+  // that token in a rule string does not constrain the matched command.
+  for (const name of LEG_PROFILES) {
+    assert.ok(!resolveProfile(REG, name).permissions.allow.some((rule) => rule.startsWith('Bash(git push')));
+  }
+});
+
 test('absent/false gateAllow does not inject permissions into a leg', () => {
   for (const value of [undefined, false]) {
     const registry = structuredClone(REG);
@@ -118,6 +120,12 @@ const BAD_GATE_RULES = [
   ['absolute path', 'Bash(bash /tmp/test-suite.sh:*)'],
   ['dollar', 'Bash(bash scripts/check-ci.sh $PR)'],
   ['bare push', 'Bash(git push:*)'],
+  ['feat push wildcard absorbs hook-skipping options', 'Bash(git push -u origin feat/*)'],
+  ['fix push wildcard absorbs hook-skipping options', 'Bash(git push -u origin fix/*)'],
+  ['chore push wildcard absorbs hook-skipping options', 'Bash(git push -u origin chore/*)'],
+  ['docs push wildcard absorbs hook-skipping options', 'Bash(git push -u origin docs/*)'],
+  ['refactor push wildcard absorbs hook-skipping options', 'Bash(git push -u origin refactor/*)'],
+  ['test push wildcard absorbs hook-skipping options', 'Bash(git push -u origin test/*)'],
   ['leg-written GO', 'Bash(bash scripts/handover/console-kit/go.sh:*)'],
   ['unlisted script', 'Bash(bash scripts/uninstall.sh:*)'],
   ['blanket quiet-run', 'Bash(bash scripts/quiet-run.sh:*)'],

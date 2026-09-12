@@ -25,7 +25,6 @@ const ID_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/;
 // quiet-run rule the label AND directory are literal; a wildcard before the
 // suite basename can absorb a different executed program plus a fake tail.
 const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queue-lock)|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|ledger-append)|check-ci)\.sh:\*\)$/;
-const GATE_PUSH_RE = /^Bash\(git push -u origin (?:feat|fix|chore|docs|refactor|test)\/\*\)$/;
 const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (?:scripts\/(?:handover\/console-kit\/|(?:handover|cr|git|hooks|guardrails|lib|luna|ci)\/)?|templates\/luna-second-brain\/scripts\/)test-\*\.sh\)$/;
 const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content']);
 
@@ -38,8 +37,8 @@ function validateGateAllow(errors, rules) {
   for (const rule of rules) {
     if (typeof rule !== 'string' || /[\r\n]/.test(rule)
       || ['--force', '--no-verify', '--amend', 'reset --hard', 'origin main', '..', '$'].some((s) => rule.includes(s))
-      || ![GATE_SCRIPT_RE, GATE_PUSH_RE, GATE_SUITE_RE].some((re) => re.test(rule))) {
-      errors.push(`gateAllow rule ${JSON.stringify(rule)} must name a guarded himmel gate, a literal-directory test-* suite, or a type/slug push`);
+      || ![GATE_SCRIPT_RE, GATE_SUITE_RE].some((re) => re.test(rule))) {
+      errors.push(`gateAllow rule ${JSON.stringify(rule)} must name a guarded himmel gate or a literal-directory test-* suite`);
     }
   }
 }

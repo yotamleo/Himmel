@@ -49,10 +49,13 @@ start under; measure a real leg against it with `scripts/lanes/leg-burn.sh`.
 Matching allow rules are evaluated before the narrative-sensitive auto-mode
 classifier, giving deterministic routing; the deny list still wins and is
 untouched. `operator`, `user`, and `bare` keep byte-identical resolver output.
-The list covers guarded merge/lock/inbox/CR/CI scripts and six `type/slug`
-branch-push patterns, with git gates still enforced. `quiet-run.sh` itself can
-execute arbitrary argv, so its rules pin the label, separator, interpreter and
-suite directory: only the basename suffix after `test-` is a wildcard, and
+The list covers guarded merge/lock/inbox/CR/CI scripts. Push rules are omitted:
+a branch-suffix wildcard also admits trailing `--no-verify`, which skips the
+git hooks those rules would rely on. Pushes stay on the classifier path until
+a proven deny pair exists (HIMMEL-2962).
+`quiet-run.sh` itself can execute arbitrary argv, so its rules pin the label,
+separator, interpreter and suite directory: only the basename suffix after
+`test-` is a wildcard, and
 both plain and `SUITE_LOCK_WAIT=60` forms are listed. This supersedes the
 unsafe label/directory-glob proposal; each listed directory has tracked shell
 suites, while the empty direct `scripts/lanes/` set is omitted. Node suite
