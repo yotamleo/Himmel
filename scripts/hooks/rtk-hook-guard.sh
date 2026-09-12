@@ -48,7 +48,9 @@ out=$(printf '%s' "$payload" | rtk hook claude 2>/dev/null) || exit 0
 # Scan conservatively before extraction so missing jq / output-shape drift
 # cannot resurrect the wrapper. A false positive only loses token savings.
 config_dir="${CLAUDE_CONFIG_DIR:-}"
-config_dir="${config_dir%/}"
+while [ "$config_dir" != "/" ] && [ "${config_dir%/}" != "$config_dir" ]; do
+    config_dir="${config_dir%/}"
+done
 if [ "${config_dir##*/}" = ".claude-codex" ]; then
     case "$out" in
         *'"rtk git '*) exit 0 ;;

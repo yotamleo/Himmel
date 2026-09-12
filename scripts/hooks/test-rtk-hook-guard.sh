@@ -157,7 +157,7 @@ done
 # HIMMEL-2953: a git rewrite hides the executable from the claudex
 # classifier. Suppression must not grant permission or affect native savings.
 echo "Test 3b: claudex git stays in the original permission flow"
-for config in '/tmp/.claude-codex' '/tmp/.claude-codex/'; do
+for config in '/tmp/.claude-codex' '/tmp/.claude-codex/' '/tmp/.claude-codex//'; do
     out=$(CLAUDE_CONFIG_DIR="$config" run_hook 'git fetch origin')
     if [ -z "$out" ]; then
         assert_pass "claudex git rewrite suppressed: $config"
