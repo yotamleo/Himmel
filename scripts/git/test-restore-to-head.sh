@@ -39,7 +39,11 @@ mkdir -p "$PRIMARY"
     mkdir -p sub
     printf '#!/bin/sh\necho hi\n' > sub/a.sh
     printf '#!/bin/sh\necho bye\n' > sub/b.sh
-    git add tracked.txt tracked2.txt sub/a.sh sub/b.sh
+    mkdir -p other
+    printf '#!/bin/sh\necho other\n' > other/a.sh
+    printf 'base3\n' > tracked3.txt
+    printf '\000\001\002binbase\n' > bin.dat
+    git add tracked.txt tracked2.txt tracked3.txt sub/a.sh sub/b.sh other/a.sh bin.dat
     git commit -qm base
     git worktree add -q -b work "$WT" main
 )
@@ -155,6 +159,77 @@ if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'usage'; then
 else
     fail "(g) rc=$rc out='$out' (expected usage + non-zero)"
 fi
+
+# --- (i) backup write failure must NOT be followed by a discard (codex-1)
+RO="$TMP/ro"
+mkdir -p "$RO"
+chmod 555 "$RO"
+printf 'dirty\n' > "$WT/tracked.txt"
+out=$(cd "$WT" && TMPDIR="$RO" bash "$SUT" tracked.txt 2>&1); rc=$?
+content=$(cat "$WT/tracked.txt")
+chmod 755 "$RO"
+if [ "$rc" -ne 0 ] && [ "$content" = "dirty" ]; then
+    pass "(i) unwritable backup dir aborts before discarding the dirty file"
+else
+    fail "(i) rc=$rc content='$content' (expected refusal, file left dirty -- backup dir was unwritable)"
+fi
+reset_wt
+
+# --- (j) same basename in different directories -> distinct, non-colliding backups (codex-2)
+printf 'dirty-sub\n' > "$WT/sub/a.sh"
+printf 'dirty-other\n' > "$WT/other/a.sh"
+out=$(run sub/a.sh other/a.sh); rc=$?
+patches=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.patch')
+n_unique=$(printf '%s\n' "$patches" | sort -u | wc -l | tr -d ' ')
+ok_sub=0; ok_other=0
+for p in $patches; do
+    grep -q 'dirty-sub' "$p" 2>/dev/null && ok_sub=1
+    grep -q 'dirty-other' "$p" 2>/dev/null && ok_other=1
+done
+if [ "$rc" -eq 0 ] && [ "$n_unique" -eq 2 ] && [ "$ok_sub" -eq 1 ] && [ "$ok_other" -eq 1 ]; then
+    pass "(j) same-basename files in different dirs get distinct, non-colliding backups"
+else
+    fail "(j) rc=$rc n_unique=$n_unique ok_sub=$ok_sub ok_other=$ok_other out='$out'"
+fi
+reset_wt
+
+# --- (k) binary file diff is actually recoverable via the saved patch (codex-3)
+printf '\000\001\002bindirty\n' > "$WT/bin.dat"
+out=$(run bin.dat); rc=$?
+patch_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.patch' | head -1)
+recon="$TMP/recon"
+rm -rf "$recon"; mkdir -p "$recon"
+(cd "$recon" && git init -q -b main . && git config user.email t@t.t && git config user.name t && git config commit.gpgsign false && cp "$PRIMARY/bin.dat" . && git add bin.dat && git commit -qm base && git apply "$patch_path" && cmp -s bin.dat <(printf '\000\001\002bindirty\n'))
+recon_rc=$?
+if [ "$rc" -eq 0 ] && [ -n "$patch_path" ] && [ "$recon_rc" -eq 0 ]; then
+    pass "(k) binary file's saved patch reconstructs the dirty content exactly"
+else
+    fail "(k) rc=$rc patch_path='$patch_path' recon_rc=$recon_rc (binary diff not recoverable)"
+fi
+reset_wt
+
+# --- (l) a staged-only change (index != HEAD) is restored to HEAD, not left at index (codex-4)
+(cd "$WT" && printf 'staged-only\n' > tracked.txt && git add tracked.txt)
+out=$(run tracked.txt); rc=$?
+content=$(cat "$WT/tracked.txt")
+if [ "$rc" -eq 0 ] && [ "$content" = "base" ]; then
+    pass "(l) staged-only change restored all the way to HEAD"
+else
+    fail "(l) rc=$rc content='$content' (expected HEAD content 'base', script only compares to the index)"
+fi
+reset_wt
+(cd "$WT" && git reset -q --hard main)
+
+# --- (m) invocation from a subdirectory resolves paths correctly (codex-5)
+printf 'dirty-from-sub\n' > "$WT/sub/a.sh"
+out=$(cd "$WT/sub" && bash "$SUT" a.sh 2>&1); rc=$?
+content=$(cat "$WT/sub/a.sh")
+if [ "$rc" -eq 0 ] && [ "$content" != "dirty-from-sub" ]; then
+    pass "(m) invocation from a subdirectory correctly restores the file"
+else
+    fail "(m) rc=$rc content='$content' (expected restore to succeed when invoked from inside a subdirectory)"
+fi
+reset_wt
 
 echo "---"
 if [ "$FAILED" -gt 0 ]; then

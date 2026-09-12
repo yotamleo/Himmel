@@ -48,7 +48,7 @@ for arg in "$@"; do
     esac
     [ -d "$abs" ] && { echo "restore-to-head: '$arg' is a directory" >&2; exit 2; }
     rel="${abs#"$TOPLEVEL"/}"
-    git ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || {
+    git -C "$TOPLEVEL" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || {
         echo "restore-to-head: '$arg' is untracked -- refusing (never rm)" >&2; exit 2; }
     RELS+=("$rel")
 done
@@ -58,15 +58,19 @@ mkdir -p "$SAVE_DIR"
 STAMP=$(date +%s)
 
 for rel in "${RELS[@]}"; do
-    if [ -n "$(git diff -- "$rel")" ]; then
-        patch="$SAVE_DIR/${STAMP}-$(basename "$rel").patch"
-        git diff -- "$rel" > "$patch"
-        git checkout -- "$rel"
+    if [ -n "$(git -C "$TOPLEVEL" diff --binary HEAD -- "$rel")" ]; then
+        safe_name=$(printf '%s' "$rel" | tr '/' '_')
+        patch="$SAVE_DIR/${STAMP}-${safe_name}.patch"
+        if ! git -C "$TOPLEVEL" diff --binary HEAD -- "$rel" > "$patch" || [ ! -s "$patch" ]; then
+            echo "restore-to-head: could not write backup for '$rel' to '$patch' -- aborting without discarding it" >&2
+            exit 2
+        fi
+        git -C "$TOPLEVEL" checkout HEAD -- "$rel"
         echo "restored $rel (saved diff: $patch)"
     else
         echo "restore-to-head: '$rel' already matches HEAD -- no-op"
     fi
 done
 
-remaining=$(git diff --stat -- "${RELS[@]}")
+remaining=$(git -C "$TOPLEVEL" diff --stat HEAD -- "${RELS[@]}")
 [ -z "$remaining" ]
