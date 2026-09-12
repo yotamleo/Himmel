@@ -40,6 +40,9 @@
 
 set -euo pipefail
 
+# The native controls must not inherit the lane running this suite.
+unset CLAUDE_CONFIG_DIR
+
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
 # `set -o pipefail`: grep -q exits the instant it matches, the producer
@@ -150,6 +153,32 @@ for cmd in 'git status' 'sort -o out.txt in.txt' 'ls -a /tmp'; do
         assert_fail "expected rtk rewrite for '$cmd', got: $out"
     fi
 done
+
+# HIMMEL-2953: a git rewrite hides the executable from the claudex
+# classifier. Suppression must not grant permission or affect native savings.
+echo "Test 3b: claudex git stays in the original permission flow"
+for config in '/tmp/.claude-codex' '/tmp/.claude-codex/'; do
+    out=$(CLAUDE_CONFIG_DIR="$config" run_hook 'git fetch origin')
+    if [ -z "$out" ]; then
+        assert_pass "claudex git rewrite suppressed: $config"
+    else
+        assert_fail "expected empty claudex git output, got: $out"
+    fi
+done
+for config in '' '/tmp/.claude' '/tmp/.claude-codex-other'; do
+    out=$(CLAUDE_CONFIG_DIR="$config" run_hook 'git fetch origin')
+    if grepq "$out" '"rtk git fetch origin"'; then
+        assert_pass "native git rewrite preserved: $config"
+    else
+        assert_fail "expected native git rewrite, got: $out"
+    fi
+done
+out=$(CLAUDE_CONFIG_DIR='/tmp/.claude-codex' run_hook 'ls -a /tmp')
+if grepq "$out" '"rtk ls -a /tmp"'; then
+    assert_pass "claudex non-git rewrite preserved"
+else
+    assert_fail "expected claudex non-git rewrite, got: $out"
+fi
 
 # ---------- 4. rtk silent (compound shell command) ----------
 echo "Test 4: rtk emits nothing → guard emits nothing"

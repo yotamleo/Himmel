@@ -16,8 +16,8 @@
 # predicate rtk rejects (-not/-exec/-o/-a/-delete/!/\(…\)) or silently
 # drops (-prune), it suppresses the rewrite — empty output means the
 # original command runs unmodified through the normal permission flow.
-# Simple finds and every other command keep rtk's rewrite verbatim:
-# zero token regression.
+# Simple finds and other commands keep rtk's rewrite verbatim, except
+# claudex git rewrites (HIMMEL-2953; see the lane suppression below).
 #
 # Rejected-token set verified against rtk 0.40.0 (see
 # test-rtk-hook-guard.sh). -prune is included although rtk only warns
@@ -41,6 +41,19 @@ command -v rtk >/dev/null 2>&1 || exit 0
 
 out=$(printf '%s' "$payload" | rtk hook claude 2>/dev/null) || exit 0
 [ -n "$out" ] || exit 0
+
+# HIMMEL-2953: the claudex classifier cannot establish the executable behind
+# `rtk git`. Keep git in its original permission flow, never emit an allow.
+# CLAUDE_CONFIG_DIR is exported by claude-codex, including non-headed launches.
+# Scan conservatively before extraction so missing jq / output-shape drift
+# cannot resurrect the wrapper. A false positive only loses token savings.
+config_dir="${CLAUDE_CONFIG_DIR:-}"
+config_dir="${config_dir%/}"
+if [ "${config_dir##*/}" = ".claude-codex" ]; then
+    case "$out" in
+        *'"rtk git '*) exit 0 ;;
+    esac
+fi
 
 # Extract the rewritten command VALUE and scan only that (HIMMEL-264).
 # Scanning rtk's whole JSON output was brittle to output-shape drift: a
