@@ -365,6 +365,20 @@ report (WARN) — read from himmelctl's own `state.json`, never from a guess;
 an early revision short-circuited OK whenever the user-level settings file was
 merely absent, conflating "nothing to check" with "never asked" — the shipped
 check no longer does).
+
+**Cadence runner format twins are platform-specific (HIMMEL-2965):**
+`cadence_runner_stamp` (`scripts/lib/cadence-format.sh`, shared by C8 above and
+`himmel-update`'s post-pull STALE nudge) reads only the runner extension the
+CURRENT platform actually executes — `.sh` on Linux/macOS, `.bat` on Windows —
+never the other twin. A cadence copied between stations leaves a dormant,
+never-regenerated twin on whichever platform doesn't arm it; that twin is
+invisible to the staleness probe on purpose, so it can never pin a false-stale
+floor on the platform that actually runs the cadence. `codex-sweep-cadence`
+only ever arms on Windows (`scripts/cleanup/codex-sweep-cadence.sh` refuses
+`arm` elsewhere by design), so the advisory reports it `Windows-only, n/a on
+this platform` on other platforms instead of a `bash ... arm --force` recipe
+that would itself refuse.
+
 Prints a severity-grouped report (FAIL/WARN/INFO); `--file-issue
 [--repo owner/name]` files ONE deduped consolidated public GitHub issue (resolves
 the repo from `--repo` → `$HIMMEL_DOCTOR_ISSUE_REPO` → github origin). Exit 1 on any

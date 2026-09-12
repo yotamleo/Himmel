@@ -618,11 +618,16 @@ if grepq "$out" 'OK   C8-cadence: no armed cadence runners (skipped)'; then pass
 rm -rf "$t"
 
 echo "== C8: stale codex-sweep runner -> WARN + codex re-arm hint =="
+# HIMMEL-2965: codex-sweep only ever arms a .bat, and only on Windows —
+# cadence_runner_stamp now reads only the CURRENT platform's runner extension,
+# so this fixture forces the Windows branch via the CADENCE_RUNNER_PLATFORM_OS
+# test seam to keep exercising the real (Windows) codex-sweep path.
 t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/sweep"; write_settings "$t/claude" "$WRAPPER"
 printf 'rem himmel-cadence-runner-format: %s\r\n' "$STALE_CADENCE_VER" > "$t/sweep/codex-sweep.bat"
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" PIPELINE_BAT_DIR="$t/pipeline-empty" \
     SWEEP_BAT_DIR="$t/sweep" GRAPHMAP_BAT_DIR="$t/graphmap-empty" \
     DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" \
+    CADENCE_RUNNER_PLATFORM_OS=windows \
     bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C8-cadence: codex-sweep-cadence runners are stale' \
     && grepq "$out" 'bash scripts/cleanup/codex-sweep-cadence.sh arm --force'; then

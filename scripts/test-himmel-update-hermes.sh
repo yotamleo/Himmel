@@ -567,18 +567,35 @@ if [ "$restarts19" -eq 0 ]; then echo "ok: empty list-units output -> zero resta
 
 # ── report_cadence_stale() — stale cadence runner nudge (HIMMEL-588/969) ─────
 # Same lib seams; *_BAT_DIR point at fixture runner dirs.
+# HIMMEL-2965: cadence_runner_stamp now reads only the CURRENT platform's
+# runner extension (.sh on Linux/macOS, .bat on Windows).
+# CADENCE_RUNNER_PLATFORM_OS is the test seam that forces which platform
+# "current" means, mirroring scheduler_backend_os's SCHEDULER_BACKEND_OS
+# override — it lets these fixtures exercise both platform branches without
+# an actual Windows host.
 
 # Case 5: no runners present anywhere → silent no-op (cadences not armed).
 out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/sweep-empty" \
   GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 if [ -z "$out" ]; then echo "ok: cadence absent → silent"; else echo "FAIL: cadence absent not silent"; printf '%s\n' "$out"; fail=1; fi
 
-# Case 6: codex-sweep.bat stamped current → shared probe returns its version.
+# Case 6: codex-sweep.bat stamped current, read under a forced-Windows
+# platform (codex-sweep only ever arms .bat, and only on Windows) → shared
+# probe returns its version.
 mkdir -p "$tmp/cad-codex-current"
 printf 'rem himmel-cadence-runner-format: %s\r\n' "$CADENCE_RUNNER_FORMAT_VERSION" \
   > "$tmp/cad-codex-current/codex-sweep.bat"
-ver=$(cadence_runner_stamp "$tmp/cad-codex-current")
-if [ "$ver" = "$CADENCE_RUNNER_FORMAT_VERSION" ]; then echo "ok: codex-sweep stamp probed"; else echo "FAIL: codex-sweep stamp probe got '$ver'"; fail=1; fi
+ver=$(CADENCE_RUNNER_PLATFORM_OS=windows cadence_runner_stamp "$tmp/cad-codex-current")
+if [ "$ver" = "$CADENCE_RUNNER_FORMAT_VERSION" ]; then echo "ok: codex-sweep stamp probed (forced-Windows)"; else echo "FAIL: codex-sweep stamp probe got '$ver'"; fail=1; fi
+
+# Case 6b (HIMMEL-2965): the SAME .bat-only fixture, read as Linux → the
+# dormant Windows twin is invisible to the Linux reader (reads as "not
+# armed" there) instead of pinning a false-stale floor.
+if ver=$(CADENCE_RUNNER_PLATFORM_OS=linux cadence_runner_stamp "$tmp/cad-codex-current" 2>&1); then
+  echo "FAIL: Linux-platform probe unexpectedly saw the dormant .bat twin (got '$ver')"; fail=1
+else
+  echo "ok: Linux-platform probe ignores the dormant .bat twin (not armed)"
+fi
 
 # Case 7: pipeline runner with no format stamp (armed before HIMMEL-588) →
 # STALE nudge with pipeline re-arm hint.
@@ -589,14 +606,28 @@ out=$(PIPELINE_BAT_DIR="$tmp/cad-stale" SWEEP_BAT_DIR="$tmp/sweep-empty" \
 check "stale pipeline cadence nudged (message)" "pipeline-cadence runners are STALE" "$out"
 check "stale pipeline cadence nudged (rearm hint)" "bash scripts/luna/pipeline-cadence.sh arm --force" "$out"
 
-# Case 8: codex-sweep.bat stamped stale → STALE nudge with codex re-arm hint.
+# Case 8 (HIMMEL-2965 ask 2): codex-sweep is Windows-only by design — a
+# dormant stale .bat twin on a non-Windows platform must never surface the
+# arm --force recipe (arm always refuses there); an explicit n/a note fires
+# instead.
 mkdir -p "$tmp/cad-codex-stale"
 printf 'rem himmel-cadence-runner-format: %s\r\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
   > "$tmp/cad-codex-stale/codex-sweep.bat"
-out=$(PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/cad-codex-stale" \
+out=$(CADENCE_RUNNER_PLATFORM_OS=linux PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/cad-codex-stale" \
   GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
-check "stale codex-sweep cadence nudged (message)" "codex-sweep-cadence runners are STALE" "$out"
-check "stale codex-sweep cadence nudged (rearm hint)" "bash scripts/cleanup/codex-sweep-cadence.sh arm --force" "$out"
+check "codex-sweep on non-Windows prints the Windows-only n/a note" "codex-sweep-cadence: Windows-only, n/a on this platform" "$out"
+if grepq "$out" -F 'scripts/cleanup/codex-sweep-cadence.sh arm --force'; then
+  echo "FAIL: codex-sweep arm --force recipe printed on non-Windows"; fail=1
+else
+  echo "ok: codex-sweep arm --force recipe never printed on non-Windows"
+fi
+
+# Case 8b: the SAME stale codex-sweep fixture under a forced-Windows
+# platform → the real recipe still fires (codex-sweep genuinely arms there).
+out=$(CADENCE_RUNNER_PLATFORM_OS=windows PIPELINE_BAT_DIR="$tmp/cad-empty" SWEEP_BAT_DIR="$tmp/cad-codex-stale" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
+check "stale codex-sweep cadence nudged on Windows (message)" "codex-sweep-cadence runners are STALE" "$out"
+check "stale codex-sweep cadence nudged on Windows (rearm hint)" "bash scripts/cleanup/codex-sweep-cadence.sh arm --force" "$out"
 
 # Case 9: graphmap runner stamped stale → STALE nudge with graphmap re-arm hint.
 mkdir -p "$tmp/cad-graphmap-stale"
@@ -637,6 +668,24 @@ if [ "$ver" = "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" ]; then echo "ok: mixed v
 out=$(PIPELINE_BAT_DIR="$tmp/cad-mixed" SWEEP_BAT_DIR="$tmp/sweep-empty" \
   GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
 check "mixed-version cadence nudged" "pipeline-cadence runners are STALE" "$out"
+
+# Case 12b (HIMMEL-2965 ask 1): a dormant STALE .bat twin alongside a
+# CURRENT .sh runner for the SAME basename must not pin the Linux minimum —
+# only the current platform's extension is read, so the dormant cross-
+# platform twin never masks (or is masked by) the live one.
+mkdir -p "$tmp/cad-platform-twin"
+printf 'rem himmel-cadence-runner-format: %s\r\n' "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" \
+  > "$tmp/cad-platform-twin/pipeline-harvest.bat"
+printf '#!/bin/sh\n# himmel-cadence-runner-format: %s\necho cur\n' "$CADENCE_RUNNER_FORMAT_VERSION" \
+  > "$tmp/cad-platform-twin/pipeline-harvest.sh"
+ver=$(CADENCE_RUNNER_PLATFORM_OS=linux cadence_runner_stamp "$tmp/cad-platform-twin")
+if [ "$ver" = "$CADENCE_RUNNER_FORMAT_VERSION" ]; then echo "ok: Linux probe reads only the .sh twin (dormant .bat ignored)"; else echo "FAIL: Linux probe pinned by dormant .bat twin (got '$ver')"; fail=1; fi
+out=$(CADENCE_RUNNER_PLATFORM_OS=linux PIPELINE_BAT_DIR="$tmp/cad-platform-twin" SWEEP_BAT_DIR="$tmp/sweep-empty" \
+  GRAPHMAP_BAT_DIR="$tmp/graphmap-empty" QMD_CADENCE_BAT_DIR="$tmp/qmd-empty" report_cadence_stale 2>&1)
+if [ -z "$out" ]; then echo "ok: pipeline platform-twin fixture → no STALE line on Linux"; else echo "FAIL: pipeline platform-twin fixture wrongly nudged on Linux"; printf '%s\n' "$out"; fail=1; fi
+
+ver=$(CADENCE_RUNNER_PLATFORM_OS=windows cadence_runner_stamp "$tmp/cad-platform-twin")
+if [ "$ver" = "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" ]; then echo "ok: Windows probe reads only the .bat twin (stale)"; else echo "FAIL: Windows probe got '$ver'"; fail=1; fi
 
 # Case 13: cadence_user_home — with USERPROFILE unset it echoes $HOME verbatim
 # (the POSIX leg; the Windows USERPROFILE/cygpath leg is exercised by real
