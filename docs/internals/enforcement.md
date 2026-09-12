@@ -1762,7 +1762,13 @@ consumed entirely as leading assignment words (`SEAM=0;`, `SEAM=;`, two such
 words in a row) folds those names forward exactly like `unset`, and `export
 NAME[=val]` folds unconditionally regardless of `-n` — no value inspection,
 so `export SEAM=1` (re-arming) denies too, a documented over-deny in the
-arming direction (HIMMEL-2933). Known residual (accepted, unchanged posture,
+arming direction (HIMMEL-2933). That cross-segment carry is SCOPED to the
+`( … )` subshell it was learned in: a clear at paren-depth ≥1 drops back out
+when its matching `)` closes, so `(unset SEAM); bash
+scripts/handover/merge-on-green.sh` still allows, while any unresolved paren
+(unmatched `)`, an unclosed subshell, `$( … )` command substitution, a `{ … }`
+group, or a `bash -c`/`eval` string) stays fail-closed at depth 0 exactly like
+today (HIMMEL-2929). Known residual (accepted, unchanged posture,
 HIMMEL-912): deliberately case-varied paths/vars, a path assembled from
 shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 -exec` wrappers, and string reconstruction deeper than the bounded

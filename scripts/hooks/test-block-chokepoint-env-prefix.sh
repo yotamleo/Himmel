@@ -540,6 +540,26 @@ probe_env "-u '' (empty unset name; GNU rejects)"             env -u '' HM_1803_
 probe_env "-a '' (empty argv0; env without -a rejects)"       env -a '' HM_1803_PROBE=1 true
 probe_env "'' as the command word (exec fails)"               env '' HM_1803_PROBE=1 true
 
+# --- HIMMEL-2929: a seam cleared INSIDE a `( ... )` subshell cannot reach
+# the parent shell -- scope the clear to its own subshell span instead of
+# folding it forward past the closing paren. Fail-closed: the chokepoint
+# invoked in the SAME subshell as the clear, an outer clear reaching INTO a
+# later subshell, an unbalanced paren, and every unresolved form ($( ),
+# `{ }` groups, `bash -c` strings) all stay denied. ---
+assert_allow "subshell-scoped unset (dropped at the closing paren)"        "$(j "(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_allow "subshell-scoped export -n (dropped at the closing paren)"    "$(j "(export -n HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_allow "subshell-scoped bare assignment (dropped at the closing paren)" "$(j "(HIMMEL_CONSOLE_LEG=0); bash $MERGE_ON_GREEN 1")"
+assert_allow "subshell-scoped unset then && chokepoint"                    "$(j "(unset HIMMEL_CONSOLE_LEG) && bash $MERGE_ON_GREEN 1")"
+assert_allow "nested double-paren subshell still scopes"                   "$(j "((unset HIMMEL_CONSOLE_LEG)); bash $MERGE_ON_GREEN 1")"
+assert_deny "chokepoint invoked INSIDE the same subshell as the clear"     "$(j "(unset HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1)")"
+assert_deny "outer clear reaches into a later subshell's chokepoint"       "$(j "unset HIMMEL_CONSOLE_LEG; (bash $MERGE_ON_GREEN 1)")"
+assert_deny "outer clear reaches into a nested subshell's chokepoint"      "$(j "(unset HIMMEL_CONSOLE_LEG; (bash $MERGE_ON_GREEN 1))")"
+assert_deny "outer clear survives an unrelated sibling subshell"           "$(j "unset HIMMEL_CONSOLE_LEG; ( true ); bash $MERGE_ON_GREEN 1")"
+assert_deny "unbalanced open paren (no closing paren) stays fold-forward"  "$(j "(unset HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "command substitution \$( ) is not a subshell -- stays denied" "$(j "\$(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_deny "bash -c string is an unresolved form -- stays denied"        "$(j "bash -c 'unset HIMMEL_CONSOLE_LEG'; bash $MERGE_ON_GREEN 1")"
+assert_deny "a { } group is not a subshell -- stays denied"               "$(j "{ unset HIMMEL_CONSOLE_LEG; }; bash $MERGE_ON_GREEN 1")"
+
 # --- ALLOWED: fail-open proofs ---
 assert_allow "bare sanctioned invocation (no prefix)"    "$(j "bash $MERGE_ON_GREEN")"
 assert_allow "bare invocation, other chokepoint"         "$(j "bash $STOP_WORKER --list")"

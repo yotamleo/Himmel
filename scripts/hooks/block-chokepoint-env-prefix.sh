@@ -283,12 +283,19 @@ fi
 # A shell-word that opens an assignment: NAME= with a valid variable name.
 ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
 
-# segment_cmd <flat-command> -- print each command segment on its own line.
-# A segment is a span of text whose first word stands at COMMAND POSITION.
-# Splits on unquoted ';', '&', '|', '(', ')' and backticks ('&&' / '||' /
-# ';;' leave empty middle segments, which callers skip; '(' covers
-# subshells, function bodies, and -- because '$' is an ordinary word char
-# -- '$(...)' command substitution). Single-quoted spans are opaque;
+# segment_cmd <flat-command> -- print each command segment as
+# "<paren-depth>\t<segment>", one per line. A segment is a span of text
+# whose first word stands at COMMAND POSITION. Splits on unquoted ';', '&',
+# '|', '(', ')' and backticks ('&&' / '||' / ';;' leave empty middle
+# segments, which callers skip; '(' covers subshells, function bodies, and
+# -- because '$' is an ordinary word char -- '$(...)' command substitution).
+# PAREN DEPTH (HIMMEL-2929, fail-closed): a bare '(' is a real subshell
+# open, depth++ up to its matching ')'; a '(' preceded by '$' is command
+# substitution, not a subshell -- depth-NEUTRAL on a kind stack so nesting
+# still matches, but it never folds a clear away. A stray ')' with nothing
+# open latches "confused": every later depth in this text reports 0
+# (fold-forward). A '(' left open at EOF is simply never popped, which
+# already folds forward. Single-quoted spans are opaque;
 # double-quoted spans are opaque EXCEPT that '$(' and backticks inside
 # them still open real command positions (double quotes do not stop
 # substitution), so those split too, closing the quoted span before the
@@ -298,7 +305,8 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
 # Self-contained on purpose: the repo's shared tokenizer work is fenced
 # off (HIMMEL-1688) and this guard must not grow a dependency on it.
 segment_cmd() {
-    local s="$1" seg='' c i n sub
+    local s="$1" seg='' c i n sub pdepth=0 confused=0 pk=0
+    local -a PKIND
     n=${#s}
     i=0
     while [ "$i" -lt "$n" ]; do
@@ -326,22 +334,22 @@ segment_cmd() {
                     ;;
                 \`)
                     if [ "$sub" = "0" ]; then
-                        printf '%s\n' "$seg\""; seg=''; sub=1
+                        printf '%s\t%s\n' "$pdepth" "$seg\""; seg=''; sub=1
                     else
-                        printf '%s\n' "$seg"; seg='"'; sub=0
+                        printf '%s\t%s\n' "$pdepth" "$seg"; seg='"'; sub=0
                     fi
                     i=$((i + 1))
                     ;;
                 \$)
                     if [ "${s:$((i + 1)):1}" = "(" ]; then
-                        printf '%s\n' "$seg\""; seg=''; sub=1; i=$((i + 2))
+                        printf '%s\t%s\n' "$pdepth" "$seg\""; seg=''; sub=1; i=$((i + 2))
                     else
                         seg="$seg$c"; i=$((i + 1))
                     fi
                     ;;
                 \))
                     if [ "$sub" = "1" ]; then
-                        printf '%s\n' "$seg"; seg='"'; sub=0
+                        printf '%s\t%s\n' "$pdepth" "$seg"; seg='"'; sub=0
                     else
                         seg="$seg$c"
                     fi
@@ -349,7 +357,7 @@ segment_cmd() {
                     ;;
                 \;|\||\&)
                     if [ "$sub" = "1" ]; then
-                        printf '%s\n' "$seg"; seg=''
+                        printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
                     else
                         seg="$seg$c"
                     fi
@@ -365,15 +373,40 @@ segment_cmd() {
             seg="$seg$c"; i=$((i + 1))
             [ "$i" -lt "$n" ] && { seg="$seg${s:i:1}"; i=$((i + 1)); }
             ;;
-        \;|\&|\||\(|\)|\`)
-            printf '%s\n' "$seg"; seg=''; i=$((i + 1))
+        \()
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
+            if [ "$confused" = "0" ]; then
+                if [ "$i" -gt 0 ] && [ "${s:$((i - 1)):1}" = '$' ]; then
+                    PKIND[pk]='n'
+                else
+                    PKIND[pk]='r'; pdepth=$((pdepth + 1))
+                fi
+                pk=$((pk + 1))
+            fi
+            i=$((i + 1))
+            ;;
+        \))
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
+            if [ "$confused" = "0" ]; then
+                if [ "$pk" -gt 0 ]; then
+                    pk=$((pk - 1))
+                    [ "${PKIND[pk]}" = "r" ] && pdepth=$((pdepth - 1))
+                    unset "PKIND[$pk]"
+                else
+                    confused=1; pdepth=0
+                fi
+            fi
+            i=$((i + 1))
+            ;;
+        \;|\&|\||\`)
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; i=$((i + 1))
             ;;
         * )
             seg="$seg$c"; i=$((i + 1))
             ;;
         esac
     done
-    printf '%s\n' "$seg"
+    printf '%s\t%s\n' "$pdepth" "$seg"
 }
 
 # tokenize_seg <segment> -- the segment's shell WORDS, one per line, with
@@ -1237,10 +1270,23 @@ scan_segment() {
 # scan_text <command text> <inherited assignment names> <depth> -- segment
 # and scan; the recursion target for eval / -c strings (depth-capped:
 # deeper reconstruction is the documented determined-bypass residual).
+# HIMMEL-2929: a clear learned at paren-depth >=1 must not outlive its
+# subshell -- snapshot UNSET_NAMES on the way down each depth, restore it
+# on the way back up, so it folds back to what stood outside the `(...)`.
 scan_text() {
-    local text="$1" inames="$2" depth="$3" seg
+    local text="$1" inames="$2" depth="$3" line pdepth seg cur=0
+    local -a PSNAP
     [ "$depth" -le 5 ] || return 0
-    while IFS= read -r seg; do
+    while IFS= read -r line; do
+        pdepth=${line%%$'\t'*}
+        seg=${line#*$'\t'}
+        if [ "$pdepth" -gt "$cur" ]; then
+            PSNAP[pdepth]="$UNSET_NAMES"
+            cur=$pdepth
+        elif [ "$pdepth" -lt "$cur" ]; then
+            UNSET_NAMES="${PSNAP[$((pdepth + 1))]}"
+            cur=$pdepth
+        fi
         [[ $seg =~ [^[:space:]] ]] || continue
         # HIMMEL-2927: an in-shell `unset`/`export -n` or an `env -u`/
         # `--unset` in an EARLIER segment clears a name for every LATER
