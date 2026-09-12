@@ -75,6 +75,13 @@
       ],
       "contextBudget": 45000
     },
+    "leg-impl": {
+      "_comment": "HIMMEL-2830 / HIMMEL-2928 lever 1. Resolves to the same plugin set as lane-impl TODAY and that is deliberate, not an oversight: the differentiator is contextBudget. A headed leg re-pays its whole fixed context on every API call of a session that runs for hours, so its budget is the measured leg target (35000), not the lane-worker default (45000). Do NOT \"dedupe\" this into lane-impl — a lane worker and a headed leg are different callers with different floors, and headed-arm-leg.sh --profile names this one. Sibling profiles leg-docs and leg-upstream were designed and DROPPED: leg-docs would resolve to bare AND break /pr-check (its CR gate dispatches the pr-review-toolkit-himmel:code-reviewer agent, which a docs leg needs too), and /drift-fix, /fork-resync and /upstream-file are repo-local .claude/commands/*.md, not plugin-borne, so leg-upstream would be a second name for this exact manifest.",
+      "enable": [
+        "pr-review-toolkit-himmel@himmel"
+      ],
+      "contextBudget": 35000
+    },
     "lane-review": {
       "enable": [
         "pr-review-toolkit-himmel@himmel"

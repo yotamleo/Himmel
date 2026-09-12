@@ -112,4 +112,15 @@ case "$out" in *"INJECTED"*) pass "T8 checker text still visible (just neutraliz
 # harness-authored instruction.
 case "$out" in *"untrusted data"*) pass "T8 banner frames checker output as untrusted data";; *) fail "T8 missing untrusted-data framing: $out";; esac
 
+# T9 (HIMMEL-2830) a lean leg hears nothing, even when the graph IS stale.
+# The banner is ~3.9k chars of a leg's ~75k fixed context floor, re-read on
+# every API call of that session, for an advisory a leg never acts on.
+out=$(HIMMEL_LEAN_LEG=1 GRAPHIFY_ADVISORY_OUT="$tmp/stale/graphify-out" bash "$HOOK"); rc=$?
+[ "$rc" -eq 0 ] && [ -z "$out" ] && pass "T9 HIMMEL_LEAN_LEG=1 silences the stale banner" || fail "T9: rc=$rc out='$out'"
+# T9b fail-open: ONLY the exact value 1 leans. Any other value keeps today's
+# output, so an unset/typo'd variable can never silently delete a real warning
+# from an ordinary session.
+out=$(HIMMEL_LEAN_LEG=0 GRAPHIFY_ADVISORY_OUT="$tmp/stale/graphify-out" bash "$HOOK"); rc=$?
+case "$out" in *"graphify graph is STALE"*) pass "T9b HIMMEL_LEAN_LEG=0 keeps today's banner (fail-open)";; *) fail "T9b lean guard is not fail-open: $out";; esac
+
 echo "---"; echo "$PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

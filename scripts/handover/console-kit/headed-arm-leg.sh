@@ -70,14 +70,47 @@
 # own CLAUDE_CODE_AUTO_COMPACT_WINDOW=272000 default never applies because
 # `exec claude "$@"` forwards the CLI flag, which wins. An unknown lane
 # name is a usage error (exit 2), not a silent fallback to native.
+#
+# --profile (HIMMEL-2830 / HIMMEL-2928 lever 1): applies a named plugin profile
+# from scripts/lanes/plugin-profiles.json to the launched leg, plus the leg
+# preface (docs/handover/leg-preface.md) and the lean-SessionStart switch. Also
+# settable as LEG_PROFILE in the launching shell; the flag wins if both are
+# given, same precedence as --lane. Omitted, NOTHING changes: no settings file
+# is written, no env is exported, and the argv handed to headed-arm.sh is
+# byte-identical to what it was before this flag existed (a suite case pins
+# exactly that). Given, three things happen:
+#   1. plugin-profiles.mjs resolves the name to an enabledPlugins map, written
+#      as a settings JSON next to the launch log (the per-uid console work dir
+#      the console already owns), and HEADED_ARM_LAUNCHER is pointed at
+#      scripts/lanes/leg-claude-launcher.sh, which PREPENDS `--settings <that
+#      file>` to headed-arm.sh's fixed argv. headed-arm.sh itself is untouched.
+#   2. The same shim prepends `--append-system-prompt-file <leg-preface>`, so
+#      the invariant leg rules ride the system prompt instead of being retyped
+#      into every brief.
+#   3. HIMMEL_LEAN_LEG=1 is exported, which silences the three advisory
+#      SessionStart hooks (where-are-we, qmd staleness, graphify freshness) a
+#      leg never acts on. inject-initiative.sh deliberately still speaks.
+# WHY only leg-impl exists: the measured floor is schema-shaped, not
+# roster-shaped (~40k of a 74.3k first-turn floor is tool + MCP schemas), so a
+# second or third "profile by skill set" would resolve to the same manifest -
+# see the _comment in plugin-profiles.json.
+# --profile is REFUSED with exit 2 on --lane claudex: that lane replaces the
+# launcher binary with scripts/claude-codex, so both cannot own
+# HEADED_ARM_LAUNCHER. Silently letting one win would produce a leg that is
+# neither lean nor on the codex bank.
+# Seams: HEADED_ARM_LEG_PROFILES overrides the plugin-profiles.mjs resolver
+# path, HEADED_ARM_LEG_PREFACE the preface file, HEADED_ARM_LEG_SHIM the
+# launcher shim - all script-relative by default, all so the suite can drive
+# the real code against fixtures.
 set -u
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 DRY_RUN=0
 LANE="${LEG_LANE:-native}"
+PROFILE="${LEG_PROFILE:-}"
 while :; do
     case "${1:-}" in
         --dry-run) DRY_RUN=1; shift ;;
@@ -92,6 +125,15 @@ while :; do
                 exit 2
             fi
             LANE="$2"; shift 2 ;;
+        --profile)
+            # Same missing-value trap as --lane above: without this guard a
+            # trailing `--profile` re-matches forever under `set -u`.
+            if [ "$#" -lt 2 ]; then
+                usage
+                echo "headed-arm-leg: --profile requires a value (a profile name from scripts/lanes/plugin-profiles.json; run \`node scripts/lanes/plugin-profiles.mjs --list\`)" >&2
+                exit 2
+            fi
+            PROFILE="$2"; shift 2 ;;
         *) break ;;
     esac
 done
@@ -104,6 +146,15 @@ case "$LANE" in
         exit 2
         ;;
 esac
+
+# --profile and --lane claudex both want to own HEADED_ARM_LAUNCHER (see the
+# header). Refuse rather than pick a winner: either outcome is a leg the
+# operator did not ask for.
+if [ -n "$PROFILE" ] && [ "$LANE" = "claudex" ]; then
+    usage
+    echo "headed-arm-leg: --profile is not available on --lane claudex: both replace headed-arm.sh's launcher binary (the profile shim vs scripts/claude-codex), so only one can apply. Drop --profile, or run this leg on the native lane." >&2
+    exit 2
+fi
 
 if [ "$#" -lt 5 ]; then
     usage
@@ -166,6 +217,46 @@ if [ "$LANE" = "claudex" ]; then
     [ -z "$MODEL" ] && MODEL="gpt-6-astra"
 fi
 
+# --profile (HIMMEL-2830): resolve the plugin profile and point headed-arm.sh's
+# launcher seam at the shim that will apply it. Resolution happens even under
+# --dry-run (so a typo'd profile name fails the same way either way); only the
+# settings FILE is withheld until we know we are really launching.
+if [ -n "$PROFILE" ]; then
+    PROFILES_MJS="${HEADED_ARM_LEG_PROFILES:-$HERE/../../lanes/plugin-profiles.mjs}"
+    LEG_SHIM="${HEADED_ARM_LEG_SHIM:-$HERE/../../lanes/leg-claude-launcher.sh}"
+    LEG_PREFACE="${HEADED_ARM_LEG_PREFACE:-$HERE/../../../docs/handover/leg-preface.md}"
+    # Next to the launch log, i.e. inside the per-uid console work dir the
+    # console already owns and cleans - never /tmp world-readable, never the
+    # repo (it is generated, per-leg state).
+    PROFILE_SETTINGS="$(dirname "$LOG")/$NAME.leg-settings.json"
+    for _leg_need in "$PROFILES_MJS" "$LEG_SHIM" "$LEG_PREFACE"; do
+        if [ ! -f "$_leg_need" ]; then
+            echo "headed-arm-leg: --profile $PROFILE: required file missing: $_leg_need" >&2
+            exit 2
+        fi
+    done
+    # cwd matters: the resolver reads the machine's LIVE enabled-plugin set
+    # from every settings layer under it, and disables anything outside the
+    # catalog (deny-by-default beyond CATALOG). Resolve from the leg's repo.
+    _leg_resolve_cwd="${HEADED_ARM_REPO:-$HERE/../../..}"
+    [ -d "$_leg_resolve_cwd" ] || _leg_resolve_cwd="$HERE"
+    if ! PROFILE_JSON="$(cd "$_leg_resolve_cwd" && node "$PROFILES_MJS" "$PROFILE" 2>&1)"; then
+        echo "headed-arm-leg: --profile $PROFILE: resolver failed: $PROFILE_JSON" >&2
+        exit 2
+    fi
+    if [ -z "$PROFILE_JSON" ]; then
+        echo "headed-arm-leg: --profile $PROFILE: resolver produced no settings JSON" >&2
+        exit 2
+    fi
+    # The shim reads these; export so they survive konsole's `-e env -u ...`.
+    export LEG_PROFILE_SETTINGS="$PROFILE_SETTINGS"
+    export LEG_PROFILE_PREFACE="$LEG_PREFACE"
+    export HEADED_ARM_LAUNCHER="$LEG_SHIM"
+    # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
+    # the exact value 1 leans - the hooks are fail-open by construction.
+    export HIMMEL_LEAN_LEG=1
+fi
+
 if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm-leg: would exec: %s %s %s %s %s %s %s %s\n' \
         "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
@@ -173,7 +264,23 @@ if [ "$DRY_RUN" -eq 1 ]; then
         "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s\n' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"
+    # Printed ONLY under --profile: with the flag omitted this whole line is
+    # absent and the dry-run report is byte-identical to the pre-HIMMEL-2830
+    # one, matching the argv guarantee it describes.
+    if [ -n "$PROFILE" ]; then
+        printf 'headed-arm-leg: profile=%s settings=%s preface=%s lean=%s\n' \
+            "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$HIMMEL_LEAN_LEG"
+    fi
     exit 0
+fi
+
+# Real launch: now write the resolved settings the shim will pass to claude.
+if [ -n "$PROFILE" ]; then
+    if ! printf '%s\n' "$PROFILE_JSON" > "$PROFILE_SETTINGS"; then
+        echo "headed-arm-leg: --profile $PROFILE: cannot write settings to $PROFILE_SETTINGS" >&2
+        exit 2
+    fi
+    chmod 600 "$PROFILE_SETTINGS" 2>/dev/null || true
 fi
 
 # HIMMEL-2765: fleet-size cap. Checked at ARM time, before headed-arm.sh's own

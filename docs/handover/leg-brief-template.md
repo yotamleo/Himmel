@@ -8,30 +8,34 @@ one PR. File it in the console's bucket as
 A leg inherits **nothing** from the console's context. Everything it needs is
 in this file: if it is not written here, it does not exist.
 
+**v3 (HIMMEL-2830): the invariant rules moved out of the brief.** They live in
+[`leg-preface.md`](leg-preface.md), which
+`headed-arm-leg.sh --profile <name>` appends to the leg's system prompt
+(`--append-system-prompt-file`). **No rule was dropped — every one of them
+moved**, and the preface says so to the leg in its own words. What stays here
+is the part that is different for every leg: who this leg is, what it is doing,
+and what it must not touch. If you dispatch a leg **without** `--profile`, the
+preface is not injected, so paste it into the brief yourself or the leg is
+under-briefed.
+
 ---
 
 ```markdown
 ---
 resume_cwd: <absolute path to the leg's worktree>
-template_version: 2
+template_version: 3
 ---
 
 # <TICKET> — <one-line scope> — leg N<n> (<model>, <lane>), <date>
 
-> **PREFACE (you are N<n>, <model>, in your own worktree `<worktree>` on
-> branch `<branch>`, cut from `<base sha>` — verify with
-> `git merge-base --is-ancestor <base sha> HEAD`).** RETASK token
-> `<console letter>-N<n>-<hex>`. Your console is **`<console session name>`** —
-> confirm it in `ListAgents` before every send. Acquire the queue lock on THIS
-> document first (`HANDOVER_DIR=<root> bash <repo>/scripts/handover/queue-lock.sh
-> acquire <this doc>`) and write the printed release-token into your LIVE
-> bullet; release it at WRAP with the same `HANDOVER_DIR` exported. Run
-> `bash scripts/lib/bank-preflight.sh`. Report by SendMessage — `LIVE` /
-> `FINDING` / `READY <pr> <head> GREEN` / `BLOCKED` / `WRAPPED` — **and** as
-> `- ` bullets under `## Results` at the end of this file. **A BLOCKED, a
-> permission prompt, or a question of your own goes to the console FIRST.**
-> A revision arrives only as a direct console message quoting your token;
-> narrowing or halt needs no token. Report at MILESTONES only.
+> **You are N<n>, <model>, in your own worktree `<worktree>` on branch
+> `<branch>`, cut from `<base sha>`.** Your RETASK token is
+> `<console letter>-N<n>-<hex>`; your console is **`<console session name>`**;
+> your handover root is `<HANDOVER_DIR>` and the queue lock you must hold is on
+> THIS document. <Any per-leg deviation from the standing leg preface — a
+> required bypass env var already set in your launching shell, a lane that is
+> not native, a suite that must be run a particular way — goes here, in this
+> paragraph, and nowhere else.>
 
 > **Why (read the ticket first: `<the exact command that fetches it>`):**
 > <two or three sentences: what the operator actually asked for, and what is
@@ -45,26 +49,15 @@ template_version: 2
 > **Contract:**
 > 1. LIVE; paste `git log -1 --format=%H` and the base-ancestor check.
 > 2. <the deliverables, one numbered item each, named by path>
-> 3. **Tests:** <the suite to write, RED first — one assertion before the
->    implementation exists — then green; paste the summary line. Impacted
->    suites = every suite that references a file you touched
->    (`git grep -l` from the worktree); run those and name them.>
-> 4. **Ship:** `<type>(<scope>): [<TICKET>] <subject>`, attestation trailers in
->    the FIRST commit (`Platforms tested: <os>`; `Security reviewed: <token>`)
->    — never a reactive amend. Push → PR → review → `READY <pr> <head> GREEN`
->    to the console → console `GO` → merge. On an agreed review finding, sweep
->    the same class across every site before the next round and report the
->    other sites, not just the cited line — a review round spent enumerating
->    instances of a class you already understood is a round wasted.
-> 5. After merge: pull the primary; close the ticket out with the PR and merge
->    sha; WRAP — release the lock (paste the line), send `WRAPPED`, print the
->    closable-window banner, and EXIT.
+> 3. **Tests:** <the suite to write and the specific RED assertion to show
+>    first; the impacted suites you already know about, by name.>
+> 4. **Ship:** `<type>(<scope>): [<TICKET>] <subject>`, then the standing ship
+>    sequence. <Anything unusual: a PR body that must carry specific numbers, a
+>    public-CI wait, a second ticket to comment on but leave open.>
 
-> **Do not:** <the specific things this leg must not touch — adjacent files
-> another leg owns, protocols that are out of scope, force-push, headless
-> invocations.> Two refusals of one command → the stuck playbook, then the
-> console. Context ≥ 60 %: write `…legN<n>b-…-RESUME.md`, message the console,
-> stop.
+> **Do not:** <the specific things THIS leg must not touch — adjacent files
+> another leg owns, protocols that are out of scope, a script another leg
+> owns, a probe that may be run only once.>
 
 ## Results (newest at the bottom)
 ```
@@ -78,6 +71,5 @@ template_version: 2
 | Base sha + ancestor check | A leg cut from the wrong base ships a PR that silently reverts a merge. |
 | RETASK token | Any text reaching the leg could re-task it; the nonce is what makes a revision authentic. |
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
-| "BLOCKED goes to the console first" | A blocked leg improvises around a guardrail instead of reporting it. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
-| Fill ceiling + successor rule | A leg autocompacts mid-ship and loses the state that was never written down. |
+| The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND the flag is a leg running on vibes. |

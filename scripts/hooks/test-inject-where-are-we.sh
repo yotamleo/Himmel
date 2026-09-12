@@ -257,6 +257,31 @@ else
     fail "broken root -> expected exit 0, got rc=$rc4"
 fi
 
+# --- Case 5 (HIMMEL-2830): lean leg -> nothing, not even latest.md ----------
+# Same digest route as Case 2 (which injects a pointer), but under
+# HIMMEL_LEAN_LEG=1 the hook must produce no output AND no side effect: the
+# guard runs before the render, so latest.md is never written either.
+state5="$TMP/s5"; seed_ledger "$state5"; touch "$state5/.refreshed-at"
+out5="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state5" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=main HIMMEL_LEAN_LEG=1 \
+    HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc5=$?
+if [ "$rc5" = 0 ] && [ -z "$out5" ] && [ ! -e "$state5/latest.md" ]; then
+    pass "lean leg -> no injection and no latest.md write, exit 0"
+else
+    fail "lean leg -> expected empty+no latest.md+0, got rc=$rc5 out='$out5'"
+fi
+
+# --- Case 5b: fail-open — only the exact value 1 leans ----------------------
+state5b="$TMP/s5b"; seed_ledger "$state5b"; touch "$state5b/.refreshed-at"
+out5b="$(HIMMEL_REPO="$HERMETIC_ROOT" WHERE_ARE_WE_STATE_DIR="$state5b" \
+    WHERE_ARE_WE_BRANCH_OVERRIDE=main HIMMEL_LEAN_LEG=0 \
+    HIMMEL_WHERE_ARE_WE=1 bash "$HOOK" </dev/null 2>/dev/null)"; rc5b=$?
+if [ "$rc5b" = 0 ] && grepq "$out5b" -F 'digest not loaded'; then
+    pass "HIMMEL_LEAN_LEG=0 -> today's pointer still injected (fail-open)"
+else
+    fail "lean guard is not fail-open: rc=$rc5b out='$out5b'"
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]
