@@ -238,14 +238,14 @@ except Exception:
 if not isinstance(d, dict):
     sys.exit(1)
 if "files" not in d:
-    sys.exit(0)  # legacy stamp, no `files` key at all — fall back to git.
+    sys.exit(0)  # legacy stamp, no files key at all — fall back to git.
 files = d.get("files")
 if not isinstance(files, dict):
-    sys.exit(1)  # present but unusable (e.g. explicit `"files": null`) — an error, not legacy.
+    sys.exit(1)  # present but unusable (e.g. explicit "files": null) — an error, not legacy.
 for rel in sorted(files):
     sha = files[rel]
     # A rel with a tab/newline in it would corrupt the row format; such a path
-    # cannot come from this script's own writer, so skip rather than trust it.
+    # cannot come from the writer in this script, so skip rather than trust it.
     if isinstance(sha, str) and isinstance(rel, str) and not (set("\t\n\r") & set(rel)):
         print("%s\t%s" % (rel, sha))
 PY

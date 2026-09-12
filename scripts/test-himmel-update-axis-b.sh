@@ -186,6 +186,28 @@ assert_not_contains "--only did NOT run the jira dist rebuild" "\\[3/6\\]" "$OUT
 assert_contains "--only still prints the status table" "==> update chain status" "$OUT"
 
 echo ""
+echo "Test 2b: luna template failure reports the diagnostic, not a phantom conflict"
+make_mock_clone
+LUNA_CLONE="$CHECKOUT_DIR"
+LUNA_VAULT="$TMP/luna-vault"; mkdir -p "$LUNA_VAULT" "$LUNA_CLONE/templates/luna-second-brain/scripts"
+cat > "$LUNA_CLONE/templates/luna-second-brain/scripts/upgrade.sh" <<'UPGRADE'
+#!/usr/bin/env bash
+echo 'syntax error near unexpected token' >&2
+echo 'second diagnostic line' >&2
+exit 2
+UPGRADE
+git -C "$LUNA_CLONE" add -A
+git -C "$LUNA_CLONE" commit --quiet -m "failing upgrade fixture"
+OUT="$(LUNA_VAULT_PATH="$LUNA_VAULT" run_update "$LUNA_CLONE" "$TMP/luna-home" "$STUB1" --only luna_template)"; RC=$?
+assert_eq "luna parse failure exits nonzero" "1" "$RC"
+assert_contains "luna failure table carries the first diagnostic" 'luna_template  *failed  *upgrade.sh exited 2.*syntax error near unexpected token' "$OUT"
+assert_not_contains "luna failure without sidecar gives no conflict hint" 'resolve any _CLAUDE.md.template-merge conflict' "$OUT"
+: > "$LUNA_VAULT/_CLAUDE.md.template-merge"
+OUT="$(LUNA_VAULT_PATH="$LUNA_VAULT" run_update "$LUNA_CLONE" "$TMP/luna-home" "$STUB1" --only luna_template)"; RC=$?
+assert_eq "luna failure with sidecar still exits nonzero" "1" "$RC"
+assert_contains "luna failure with sidecar retains the conflict hint" 'resolve any _CLAUDE.md.template-merge conflict' "$OUT"
+
+echo ""
 echo "Test 3: --only pull honours the dirty-tree pre-check"
 printf 'dirty\n' >> "$CLONE1/file.txt"
 OUT="$(run_update "$CLONE1" "$FH1" "$STUB1" --only pull)"; RC=$?
