@@ -378,7 +378,7 @@ contains "full launch, --lane claudex: CLAUDE_CODE_EFFORT_LEVEL=medium reaches t
 # --append-system-prompt-file and execs the real claude. Three things must
 # hold, and each is a separate case below: the child really does get both
 # flags; omitting --profile changes nothing; and --profile on --lane claudex
-# is refused rather than silently losing one of the two launchers.
+# composes both launchers rather than silently losing one.
 
 # 17a. The shim itself, driven directly: this is the only place the CHILD
 # cmdline is observable (the konsole stub records the launch command but never
@@ -509,14 +509,58 @@ check "an unknown profile name is refused with exit 2" "$rc" "2"
 rc=0; out="$(timeout 5 bash "$SCRIPT" --profile 2>&1)" || rc=$?  # gnu-ok: bounds a usage-path regression; this suite exercises Linux/KDE-only headed-arm.sh
 check "usage: --profile with no value -> exit 2 (not an infinite loop)" "$rc" "2"
 
-# 17d. --profile + --lane claudex: both replace the launcher binary, so one
-# would silently win. Refuse instead.
+# 17d. HIMMEL-2962: composition must carry the profile through the claudex
+# backend, not silently select one launcher. Execute the real wrapper + shim
+# against recording endpoints (never launch Claude or a terminal).
 rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
-check "--profile with --lane claudex: exit 2" "$rc" "2"
-contains "--profile with --lane claudex: the refusal says why in one line" "$out" \
-  "--profile is not available on --lane claudex"
+check "--profile with --lane claudex: exit 0" "$rc" "0"
+contains "composed dry-run: profile settings reported" "$out" "profile=leg-impl settings="
+contains "composed dry-run: claudex lane retained" "$out" "lane=claudex"
 rc=0; out="$(LEG_LANE=claudex LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
-check "the same conflict via the env equivalents: exit 2" "$rc" "2"
+check "composition via the env equivalents: exit 0" "$rc" "0"
+
+composed="$tmp/composed launch"; mkdir -p "$composed"
+cat > "$composed/headed" <<'HEADED_EOF'
+#!/usr/bin/env bash
+read -r -a lane_env <<< "${HEADED_ARM_LAUNCHER_ENV:-}"
+exec env ${lane_env[@]+"${lane_env[@]}"} "$HEADED_ARM_LAUNCHER" --model "$6" --autocompact 200000 -n "$1" "load $2 and continue"
+HEADED_EOF
+cat > "$composed/claude-codex" <<'CLAUDEX_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$(dirname "$0")/args"
+printf '%s\n' "${CLAUDEX_LANE_OK:-}" "${CLAUDE_CODE_EFFORT_LEVEL:-}" > "$(dirname "$0")/lane-env"
+CLAUDEX_EOF
+cat > "$composed/profiles.mjs" <<'PROFILE_EOF'
+switch (process.argv[3]) {
+  case '--mcp-servers': console.log('["qmd"]'); break;
+  case '--mcp-config': console.log('{"mcpServers":{"qmd":{"type":"http","url":"http://localhost:8181/mcp"}}}'); break;
+  default: console.log('{"enabledPlugins":{},"permissions":{"allow":["Bash(bash scripts/handover/merge-on-green.sh:*)"]}}');
+}
+PROFILE_EOF
+chmod 755 "$composed/headed" "$composed/claude-codex"
+rc=0
+HEADED_ARM_LEG_TARGET="$composed/headed" HEADED_ARM_LEG_CLAUDEX_BIN="$composed/claude-codex" \
+HEADED_ARM_LEG_PROFILES="$composed/profiles.mjs" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" LEG_EFFORT=high \
+  bash "$SCRIPT" --lane claudex --profile leg-impl HIMMEL-composed "some/doc.md" "$composed/signal" "$PAST" "$composed/log" >/dev/null 2>&1 || rc=$?
+check "composition: real wrapper + shim reaches claudex" "$rc" "0"
+check "composition: lane env reaches the backend" "$(cat "$composed/lane-env" 2>/dev/null || true)" "$(printf '1\nhigh')"
+rc=0
+node - "$composed" "$HERE/../../../docs/handover/leg-preface.md" <<'NODE' || rc=$?
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const [dir, preface] = process.argv.slice(2);
+assert.deepStrictEqual(fs.readFileSync(`${dir}/args`, 'utf8').trimEnd().split('\n'), [
+  '--settings', `${dir}/HIMMEL-composed.leg-settings.json`,
+  '--append-system-prompt-file', preface,
+  '--mcp-config', `${dir}/HIMMEL-composed.leg-mcp.json`, '--strict-mcp-config',
+  '--model', 'gpt-6-astra', '--autocompact', '200000', '-n', 'HIMMEL-composed', 'load some/doc.md and continue',
+]);
+const settings = JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-settings.json`, 'utf8'));
+assert.ok(settings.permissions.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
+assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/HIMMEL-composed.leg-mcp.json`, 'utf8')),
+  {mcpServers: {qmd: {type: 'http', url: 'http://localhost:8181/mcp'}}});
+NODE
+check "composition: all profile flags, argv order and gate settings survive" "$rc" "0"
 
 # --- 18 (HIMMEL-2935). --profile's mcpServers allowlist: --mcp-config +
 # --strict-mcp-config narrow the leg's MCP surface to exactly the named

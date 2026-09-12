@@ -104,10 +104,9 @@
 # roster-shaped (~40k of a 74.3k first-turn floor is tool + MCP schemas), so a
 # second or third "profile by skill set" would resolve to the same manifest -
 # see the _comment in plugin-profiles.json.
-# --profile is REFUSED with exit 2 on --lane claudex: that lane replaces the
-# launcher binary with scripts/claude-codex, so both cannot own
-# HEADED_ARM_LAUNCHER. Silently letting one win would produce a leg that is
-# neither lean nor on the codex bank.
+# --profile composes with --lane claudex (HIMMEL-2962): the shim prepends
+# profile flags, then execs scripts/claude-codex via LEG_CLAUDE_BIN. The
+# backend and its guarded argument screen remain in the launch path.
 # Seams: HEADED_ARM_LEG_PROFILES overrides the plugin-profiles.mjs resolver
 # path, HEADED_ARM_LEG_PREFACE the preface file, HEADED_ARM_LEG_SHIM the
 # launcher shim - all script-relative by default, all so the suite can drive
@@ -156,15 +155,6 @@ case "$LANE" in
         exit 2
         ;;
 esac
-
-# --profile and --lane claudex both want to own HEADED_ARM_LAUNCHER (see the
-# header). Refuse rather than pick a winner: either outcome is a leg the
-# operator did not ask for.
-if [ -n "$PROFILE" ] && [ "$LANE" = "claudex" ]; then
-    usage
-    echo "headed-arm-leg: --profile is not available on --lane claudex: both replace headed-arm.sh's launcher binary (the profile shim vs scripts/claude-codex), so only one can apply. Drop --profile, or run this leg on the native lane." >&2
-    exit 2
-fi
 
 if [ "$#" -lt 5 ]; then
     usage
@@ -262,6 +252,9 @@ if [ -n "$PROFILE" ]; then
     export LEG_PROFILE_SETTINGS="$PROFILE_SETTINGS"
     export LEG_PROFILE_PREFACE="$LEG_PREFACE"
     export HEADED_ARM_LAUNCHER="$LEG_SHIM"
+    if [ "$LANE" = "claudex" ]; then
+        export LEG_CLAUDE_BIN="$CLAUDEX_BIN"
+    fi
     # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
     # the exact value 1 leans - the hooks are fail-open by construction.
     export HIMMEL_LEAN_LEG=1

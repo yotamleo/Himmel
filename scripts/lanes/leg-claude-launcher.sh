@@ -49,7 +49,9 @@
 #                           which is exactly why the file is never hand-typed
 #                           (see plugin-profiles.mjs's collectMcpServerDefs).
 # Seam: LEG_CLAUDE_BIN overrides the `claude` binary this execs (default:
-# `claude` from PATH) so a suite can point it at a recording stub.
+# `claude` from PATH). headed-arm-leg.sh sets it to scripts/claude-codex on
+# the claudex lane so all profile flags reach that backend (HIMMEL-2962);
+# suites can point it at a recording stub.
 #
 # Platform: POSIX bash 3.2+ (macOS ships 3.2) - hence the
 # ${PRE[@]+"${PRE[@]}"} empty-array expansion, which 3.2 needs under `set -u`.

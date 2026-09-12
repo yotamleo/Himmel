@@ -81,6 +81,29 @@ assert.deepStrictEqual(seeded.permissions, source.permissions);
 assert.ok(!Object.hasOwn(seeded, 'model'));
 NODE
 
+# HIMMEL-2962: profile flags already pass through the screen. Pin their
+# positions and operand boundaries at the actual claude exec, not the seeder.
+setup
+cat > "$BIN/claude" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$HOME/forwarded-args"
+MOCK
+for flag in --append-system-prompt-file --mcp-config --strict-mcp-config; do
+  args=(--model gpt-6-astra "$flag")
+  [ "$flag" = --strict-mcp-config ] || args+=("$WORK/profile file")
+  args+=(-n HIMMEL-forward "load doc and continue")
+  run_launcher "profile flag forwarded: $flag" "${args[@]}"
+  node - "$FAKEHOME/forwarded-args" "${args[@]}" <<'NODE' || FAILS=$((FAILS + 1))
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+assert.deepStrictEqual(fs.readFileSync(process.argv[2], 'utf8').trimEnd().split('\n'), process.argv.slice(3));
+NODE
+done
+for flag in --bare --safe-mode --setting-sources; do
+  run_launcher_expect "harness integrity flag still refused: $flag" 3 'REFUSED' "$flag"
+done
+run_launcher_expect 'backend settings override still refused' 3 'REFUSED' --settings '{"env":{"ANTHROPIC_BASE_URL":"https://other.invalid"}}'
+
 # A named model reaches the load-bearing seeded CLAUDE.md stanza at the file end.
 setup
 MODEL="gpt-5.6-terra"
