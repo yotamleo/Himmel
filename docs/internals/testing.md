@@ -112,6 +112,66 @@ The reproduction of the telegram failure mode lives in
 default reporter buries the PASS/FAIL summary line in per-case output and
 costs extra tail/grep round-trips to recover it.
 
+## Plugin evals (on-demand, billed)
+
+`claude plugin eval` runs an agent against a real Claude Code session, so
+every run is a billed call against the same 5-hour/weekly bank as
+interactive use (HIMMEL-128) — these suites are **on-demand only**, run via
+`/plugin-eval <plugin> <suite>` (`.claude/commands/plugin-eval.md`), never
+wired into CI or a cadence, and never "all suites" in one invocation. The
+command bank-preflights (`scripts/plugin-eval-preflight.sh`, refusing when
+`bank-preflight.sh` returns `SKIPPED-BANK`) and checks the `claude` version
+floor the subcommand needs (2.1.269) before ever shelling out.
+
+Three suites ship under HIMMEL-2931:
+
+- `marketplace/plugins/obsidian-triage/evals/telegram-clip-basic/` — a
+  Telegram-message-shaped prompt against a seeded fixture vault, graded on
+  the created clip's filename and frontmatter. **Passed clean** (2026-09-12
+  run, score 1) once invoked with `--scaffold` — its `case.yaml` declares
+  `context.scaffold_script: fixture.sh`, which `claude plugin eval` will not
+  run without that flag.
+- `marketplace/plugins/obsidian-triage/evals/read-link-vault-first/` — a
+  **RED control**: with the plugin, `/obsidian-triage:read-link` must read a
+  seeded fixture clip and never call `WebFetch` (`tool_used: WebFetch, min: 0,
+  max: 0, arm: both`); without the plugin, the same prompt has no reason to
+  stay off `WebFetch`. Both arms use a fixture vault under the suite dir —
+  never the real `~/Documents/luna`. **Finding (2026-09-12 run):** WITH
+  passed clean (score 1, vault content surfaced, 0 WebFetch calls). WITHOUT
+  scored 0.5 but *not* for the intended reason — Claude Code's slash-command
+  dispatcher intercepts the unrecognized `/obsidian-triage:read-link` line and
+  returns a synthetic "Unknown command" response before any model turn runs,
+  so the WITHOUT arm never gets a chance to reach for `WebFetch` at all. The
+  numeric delta is real but doesn't demonstrate the tool-use asymmetry this
+  control is meant to probe; a slash-command-first prompt structurally cannot
+  produce a meaningful no-plugin baseline under `--ablation with-without`.
+- `marketplace/plugins/qmd/evals/collections-scoping/` — a natural-language
+  prompt asserting the `qmd` MCP `query` tool is called with a `collections`
+  scope, against a suite-wide **mock** (`evals/mocks/qmd/`, including a
+  `_tools.json` describing the real tool schema so the model knows a
+  `collections` parameter exists) so no run ever touches the real qmd server.
+  Whoever next changes the `qmd` tool surface owns keeping this mock in sync.
+  **Passed clean** (2026-09-12 run, score 1.00, 3/3 runs, $0.39) after two
+  fixes: the mock initially lacked `_tools.json` (since fixed), and the
+  grader's `input_match` regex (`"collections"[\s\S]*"himmel"`) would also
+  pass a call whose `collections` array held extra collections, or was empty
+  with "himmel" appearing elsewhere in the JSON-stringified input — tightened
+  to `"collections":\s*\[\s*"himmel"\s*\]` to assert the scope is exactly
+  `["himmel"]`.
+
+### Assumptions this round shipped on (unanswered by the operator)
+
+1. On-demand only — no CI or API-key wiring for these suites.
+2. Agent-shaped eval targets (e.g. `pr-review-toolkit-himmel`) are out of
+   scope; only skill-invoked plugin surfaces are covered.
+3. The qmd mock lives at `marketplace/plugins/qmd/evals/mocks/`, owned by
+   whoever next changes the `qmd` tool surface.
+4. No marketplace-consistency gate (checking every plugin has a suite) is
+   introduced by this round.
+5. The Claude Code version floor (2.1.269) is enforced inside
+   `/plugin-eval`'s own preflight, not by a separate installed-version check
+   elsewhere.
+
 ## What counts as CI evidence
 
 Public CI runs the suite jobs on every PR, so a green **`shell-unit`**

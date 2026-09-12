@@ -1,0 +1,30 @@
+{
+  "tools": [
+    {
+      "name": "query",
+      "description": "Search the knowledge base using a query document. Scope to specific collections with the `collections` parameter (OR match).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Plain-text query, auto-expanded into lex/vec/hyde variants, fused and reranked."
+          },
+          "collections": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Filter to collections (OR match)."
+          },
+          "intent": {
+            "type": "string",
+            "description": "Background context to disambiguate the query."
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max results (default: 10)."
+          }
+        }
+      }
+    }
+  ]
+}
