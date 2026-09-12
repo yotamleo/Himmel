@@ -224,7 +224,7 @@ fi
 #    run the script, dirname for its `$(dirname "$0")` ROOT resolution) and
 #    deliberately excluding gh, then assert the precondition that gh really is
 #    unreachable under that PATH before trusting the run.
-NOGH_BIN="$(mktemp -d)"
+NOGH_BIN="$(mktemp -d "${TMPDIR:-/tmp}/nogh-bin.XXXXXX")"
 ln -s "$(command -v bash)" "$NOGH_BIN/bash"
 ln -s "$(command -v dirname)" "$NOGH_BIN/dirname"
 if PATH="$NOGH_BIN" command -v gh >/dev/null 2>&1; then
