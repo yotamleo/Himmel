@@ -18,7 +18,7 @@ QUIET_RUN="$REPO_ROOT/scripts/quiet-run.sh"
 PRE_FIX_BASE="541a866b34d8b93942b1556145e2e5d97c4ee390"
 
 FAILED=0
-SCRATCH="$(mktemp -d)"
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/test-quiet-run.XXXXXX")"
 UNTRACKED_ABS=""
 # shellcheck disable=SC2329,SC2317
 cleanup() {
