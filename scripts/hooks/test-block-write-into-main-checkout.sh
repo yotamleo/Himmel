@@ -252,14 +252,34 @@ check_both "7 mv primary/scripts/x.sh wt/ (source inside primary denies)" block 
 check_both "8 rm primary/scripts/x.sh" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm $FIX/primary/scripts/x.sh\",\"cwd\":\"$FIX/primary\"}}"
 
-# 9. touch.
-check_both "9 touch primary/.single-writer" block \
+# 9 (HIMMEL-2946): touch creating the repo-root .single-writer opt-out itself
+# must ALLOW — this is the exact catch-22 the hook's own deny text (line
+# 842/1054) recommends as the remedy, then refused (not yet present in
+# primary — .single-writer is only in the exclude file, not touched on disk).
+check_both "9 touch primary/.single-writer (creating the opt-out itself) allows (HIMMEL-2946)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $FIX/primary/.single-writer\",\"cwd\":\"$FIX/primary\"}}"
 
-# 10. redirect onto the .single-writer marker's own name (not yet present in
-# primary — .single-writer is only in the exclude file, not touched on disk).
-check_both "10 echo > primary/.single-writer" block \
+# 10 (HIMMEL-2946): redirect onto the same exact name — same exemption.
+check_both "10 echo > primary/.single-writer (creating the opt-out itself) allows (HIMMEL-2946)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo x > $FIX/primary/.single-writer\",\"cwd\":\"$FIX/primary\"}}"
+
+# 10b (HIMMEL-2946): the exemption is EXACT-BASENAME-AT-ROOT only — a
+# subdirectory entry of the same basename must still deny.
+check_both "10b touch primary/scripts/.single-writer (not the repo root) still denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $FIX/primary/scripts/.single-writer\",\"cwd\":\"$FIX/primary\"}}"
+
+# 10c (HIMMEL-2946): near-miss basenames at the root must still deny — the
+# exemption is the exact string ".single-writer", not a prefix/suffix match.
+check_both "10c touch primary/.single-writer.bak (near-miss basename) still denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $FIX/primary/.single-writer.bak\",\"cwd\":\"$FIX/primary\"}}"
+check_both "10d echo > primary/.single-writerx (near-miss basename) still denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo x > $FIX/primary/.single-writerx\",\"cwd\":\"$FIX/primary\"}}"
+
+# 10e (HIMMEL-2946): the exemption is by DESTINATION, not cwd — an absolute
+# path into the primary's root marker from a DIFFERENT cwd (the worktree)
+# must allow exactly like row 9.
+check_both "10e touch \$FIX/primary/.single-writer from cwd=wt (destination-based, not cwd-based) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"touch $FIX/primary/.single-writer\",\"cwd\":\"$FIX/wt\"}}"
 
 # 11. git commit, cwd = primary (main) — BOTH wirings agree (is_on_main and
 # main_checkout_verdict both fire on plain "on main").

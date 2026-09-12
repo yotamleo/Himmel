@@ -866,8 +866,23 @@ _bwimc_check_canon() {
     repo_root=$(main_checkout_verdict "$canon" 2>/dev/null) || vrc=$?
     case "$vrc" in
         0) return 0 ;;
-        1) _bwimc_deny "main" "$raw" "$canon" "$repo_root" ;;
-        2) _bwimc_deny "primary-feature" "$raw" "$canon" "$repo_root" ;;
+        1|2)
+            # HIMMEL-2946: the deny text below (and _bwimc_cwd_check_sourced's
+            # own copy) recommends `touch "$repo_root/.single-writer"` as the
+            # opt-out for a repo that commits to main by design — but creating
+            # that exact marker IS itself a write on main/primary-feature, so
+            # unexempted it refused its own remedy. Exempt ONLY the exact
+            # root-level basename; a subdirectory entry or a near-miss name
+            # (.single-writer.bak, .single-writerx) still denies.
+            if [ -n "$repo_root" ] && [ "$canon" = "$repo_root/.single-writer" ]; then
+                return 0
+            fi
+            if [ "$vrc" = 1 ]; then
+                _bwimc_deny "main" "$raw" "$canon" "$repo_root"
+            else
+                _bwimc_deny "primary-feature" "$raw" "$canon" "$repo_root"
+            fi
+            ;;
         *) _bwimc_deny "unreadable" "$raw" "$canon" "$repo_root" ;;
     esac
 }
