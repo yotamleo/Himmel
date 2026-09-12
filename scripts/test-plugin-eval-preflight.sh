@@ -14,7 +14,7 @@ bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 
 if bash -n "$SCRIPT"; then ok "syntax (bash -n)"; else bad "syntax"; fi
 
-TMP=$(mktemp -d) || { echo "FAIL - mktemp -d failed" >&2; exit 1; }
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/plugin-eval-preflight-test.XXXXXX") || { echo "FAIL - mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 # T1: bank refuses (SKIPPED-BANK) — the script must exit 1 WITHOUT ever
