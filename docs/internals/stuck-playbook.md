@@ -62,9 +62,13 @@ one literal command, no `cd`/`$()`/compound operators. It refuses globs,
 untracked paths, directories, and paths outside the current worktree, and it
 saves the outgoing content for every dirty path — a plain copy, not a diff —
 to a fresh `${TMPDIR:-/tmp}/restore-to-head.XXXXXX/` directory before
-restoring, so the discard is recoverable via `cp` (staged content that
-differs from HEAD is saved separately via `git show`). Never try bare
-`git checkout -- <path>` or `git restore` yourself to work around this.
+restoring. To recover, use the run directory and file number recorded in MANIFEST:
+
+Regular file: `cp -p <RUN_DIR>/<n>.worktree <path>`
+Symlink: `cp -RPp <RUN_DIR>/<n>.worktree <path>`
+Staged content: `cp -p <RUN_DIR>/<n>.index <path>` then `git add <path>`.
+
+Never try bare `git checkout -- <path>` or `git restore` yourself to work around this.
 
 ---
 
