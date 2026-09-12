@@ -430,7 +430,17 @@ check_home_path() {
     # without loosening the negated class for anything else (so a bare
     # "http://home/..." -- "home" as an ordinary hostname label, not a
     # /home/ path -- still does not match).
-    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^/\\[:space:]]+( [^/\\[:space:]]+)*)([/\\]|\\\\)|([^/\\[:space:]]+)($|[/\\[:space:]]))'
+    # HIMMEL-2828 follow-up (console-flagged): the word-char class also
+    # excludes a small set of trailing prose/doc-markup punctuation --
+    # backtick, quote, comma, semicolon, colon, or a closing paren/bracket --
+    # and the single-word terminator accepts that same set, so a quoted or
+    # doc-formatted name (e.g. "/home/ada", `/home/ada`) is captured as
+    # exactly "ada" instead of swallowing the punctuation (and, on a line
+    # with more than one occurrence, instead of the name run spilling across
+    # the punctuation into the next occurrence's own "/" as if it were a
+    # multi-word terminator). Non-ASCII bytes stay admitted -- only this
+    # fixed ASCII punctuation set is excluded.
+    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^]/\\[:space:]`"'\'',;:)]+( [^]/\\[:space:]`"'\'',;:)]+)*)([/\\]|\\\\)|([^]/\\[:space:]`"'\'',;:)]+)($|[]/\\[:space:]`"'\'',;:)]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.

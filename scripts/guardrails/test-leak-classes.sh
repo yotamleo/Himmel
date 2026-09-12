@@ -410,6 +410,36 @@ else
     fail "T1o home-path non-ASCII username (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1r (HIMMEL-2828 follow-up, console-flagged): the same widened, non-ASCII-
+# admitting single-word terminator that fixed T1o also swallows trailing
+# prose/doc-markup punctuation into the captured name -- a quote, comma, or
+# closing paren right after an allowlisted placeholder used to stop the old
+# ASCII-whitelist match before it, so the exact ALLOW_HOME_NAMES comparison
+# still saw the bare name. Confirm an allowlisted name stays allowlisted
+# when immediately followed by each of those shapes.
+r=$(new_repo)
+printf '"/home/ada", (/home/ada) and `/home/ada`\n' > "$r/quoted-allowed.txt"  # leak-allow: home-path test fixture
+git -C "$r" add quoted-allowed.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1r home-path: allowlisted name quoted/comma'd/parenthesized stays allowlisted"
+else
+    fail "T1r home-path punctuation-adjacent allowlisted name (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1s: RED-preserving control for T1r -- the same punctuation shapes around a
+# NON-allowlisted name must still be flagged, proving the stripped
+# comparison in T1r doesn't accidentally allowlist everything.
+r=$(new_repo)
+printf '"/home/mallory", (/home/mallory) and `/home/mallory`\n' > "$r/quoted-leak.txt"  # leak-allow: home-path test fixture
+git -C "$r" add quoted-leak.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "quoted-leak.txt:1"; then
+    pass "T1s home-path: non-allowlisted name still flagged despite quote/comma/paren punctuation"
+else
+    fail "T1s home-path punctuation-adjacent leak control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== redaction =="
 
 # T6: the reported line carries only the first 4 chars of the match + an
