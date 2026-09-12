@@ -348,7 +348,7 @@ if [ -n "$PROFILE" ]; then
         # awk stops at the Results tail (or never, printing the whole file)
         # rather than mapfile, for bash 3.2 (macOS ships 3.2; see the
         # Platform guard above).
-        if ! { cat "$LEG_PREFACE"; printf '\n---\n\n'; awk '/^## Results/{exit} {print}' "$DOC"; } > "$LEG_PROFILE_PREFACE"; then
+        if ! { cat "$LEG_PREFACE" && printf '\n---\n\n' && awk '/^## Results/{exit} {print}' "$DOC"; } > "$LEG_PROFILE_PREFACE"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot write preface to $LEG_PROFILE_PREFACE" >&2
             exit 2
         fi
