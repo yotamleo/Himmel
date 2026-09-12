@@ -540,6 +540,75 @@ probe_env "-u '' (empty unset name; GNU rejects)"             env -u '' HM_1803_
 probe_env "-a '' (empty argv0; env without -a rejects)"       env -a '' HM_1803_PROBE=1 true
 probe_env "'' as the command word (exec fails)"               env '' HM_1803_PROBE=1 true
 
+# --- HIMMEL-2929: a seam cleared INSIDE a `( ... )` subshell cannot reach
+# the parent shell -- scope the clear to its own subshell span instead of
+# folding it forward past the closing paren. Fail-closed: the chokepoint
+# invoked in the SAME subshell as the clear, an outer clear reaching INTO a
+# later subshell, an unbalanced paren, and every unresolved form ($( ),
+# `{ }` groups, `bash -c` strings) all stay denied. ---
+assert_allow "subshell-scoped unset (dropped at the closing paren)"        "$(j "(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_allow "subshell-scoped export -n (dropped at the closing paren)"    "$(j "(export -n HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_allow "subshell-scoped bare assignment (dropped at the closing paren)" "$(j "(HIMMEL_CONSOLE_LEG=0); bash $MERGE_ON_GREEN 1")"
+assert_allow "subshell-scoped unset then && chokepoint"                    "$(j "(unset HIMMEL_CONSOLE_LEG) && bash $MERGE_ON_GREEN 1")"
+# codex-1 rounds 1-2 each found a false ALLOW in a kind-tracking model that
+# tried to tell `((`/`$(` apart from a real subshell paren-by-paren (round 1:
+# an adjacent `((` run misread as two real subshells; round 2: a grouping
+# paren nested inside `((...))` misread as a fresh real subshell). Superseded
+# by the positive/whitelist rule (below): `((` is opaque because its first
+# paren fails the command-position test's adjacent-`(` disqualifier, and
+# anything nested inside an opaque paren is forced opaque too (stack-top
+# check) -- round 2's bug structurally, not via a blanket collapse.
+assert_deny "\`((VAR=0))\` -- adjacent-paren disqualifier keeps it opaque"    "$(j "((HIMMEL_CONSOLE_LEG=0)); bash $MERGE_ON_GREEN 1")"
+assert_deny "adjacent \`((\` -- both parens opaque, not two real subshells"    "$(j "((unset HIMMEL_CONSOLE_LEG)); bash $MERGE_ON_GREEN 1")"
+assert_deny "a paren nested inside \`((...))\` inherits opaque from the stack" "$(j "(( (HIMMEL_CONSOLE_LEG=0) )); bash $MERGE_ON_GREEN 1")"
+# No longer collapsed: this subshell closes cleanly before the unrelated
+# $(...), so real bash never sees the clear outside its own subshell --
+# the positive rule now recognizes that precisely instead of over-denying
+# every command that also happens to contain a $(...) anywhere else.
+assert_allow "a closed subshell clear survives an unrelated sibling \$(...)" "$(j "(unset HIMMEL_CONSOLE_LEG); echo \$(true); bash $MERGE_ON_GREEN 1")"
+assert_deny "chokepoint invoked INSIDE the same subshell as the clear"     "$(j "(unset HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1)")"
+assert_deny "outer clear reaches into a later subshell's chokepoint"       "$(j "unset HIMMEL_CONSOLE_LEG; (bash $MERGE_ON_GREEN 1)")"
+assert_deny "outer clear reaches into a nested subshell's chokepoint"      "$(j "(unset HIMMEL_CONSOLE_LEG; (bash $MERGE_ON_GREEN 1))")"
+assert_deny "outer clear survives an unrelated sibling subshell"           "$(j "unset HIMMEL_CONSOLE_LEG; ( true ); bash $MERGE_ON_GREEN 1")"
+assert_deny "unbalanced open paren (no closing paren) stays fold-forward"  "$(j "(unset HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "command substitution \$( ) is not a subshell -- stays denied" "$(j "\$(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_deny "bash -c string is an unresolved form -- stays denied"        "$(j "bash -c 'unset HIMMEL_CONSOLE_LEG'; bash $MERGE_ON_GREEN 1")"
+assert_deny "a { } group is not a subshell -- stays denied"               "$(j "{ unset HIMMEL_CONSOLE_LEG; }; bash $MERGE_ON_GREEN 1")"
+# CodeRabbit (PR #643 @ 5ce5bbed): scan_segment's eval/`-c` recursion calls
+# scan_text on just the recursed string, which recomputed no_scope from ONLY
+# that substring -- a paren-scoped clear+chokepoint pair with no `((`/`$(`/
+# backtick INSIDE the -c/eval string got normal depth tracking and a false
+# ALLOW, breaking the ticket's own rule that a -c/eval string is never
+# modeled. Fix: any scan_text call at depth > 0 (the -c/eval recursion, the
+# only path that ever calls scan_text below depth 0) forces no_scope for
+# that whole recursed string, unconditionally.
+assert_deny "bash -c string recursion: paren-scoped clear+chokepoint inside the string stays denied" "$(j "bash -c '(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1'")"
+assert_deny "eval string recursion: paren-scoped clear+chokepoint inside the string stays denied"     "$(j "eval '(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1'")"
+
+# --- HIMMEL-2929 round N (leg N190, positive/whitelist rewrite): the
+# blacklist ("any (( / $( / backtick anywhere disables scoping for the whole
+# call") gave way to a POSITIVE command-position rule -- a `(` opens a real
+# subshell (scopes) only when it is the first token of a command: at segment
+# start, or immediately after `;`, `&&`, `||`, `|`, `&`, `{`, `(`, or newline.
+# Every other paren shape is opaque (does not change pdepth) and must fold
+# forward / deny exactly as main does, with NO grammar-shape exception list --
+# `[[ ( ) ]]` and `case ... in (x))` are opaque for the mundane reason that the
+# word before the paren already consumed command position, not because they
+# are special-cased. Rows below are the 20-row probe corpus (RESUME doc);
+# literal duplicates of assertions already above are omitted.
+assert_allow "whitespace-padded genuine subshell (spaces inside the parens)" "$(j "( HIMMEL_CONSOLE_LEG=0 ); bash $MERGE_ON_GREEN 1")"
+assert_allow "prior assignment segment, then a genuine subshell"            "$(j "x=1; (unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_allow "genuine subshell after && following an unrelated command"    "$(j "true && (unset HIMMEL_CONSOLE_LEG) && bash $MERGE_ON_GREEN 1")"
+assert_deny "\$( ) as an argument to a preceding command word stays denied" "$(j "echo \$(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_deny "bare backtick command substitution stays denied"              "$(j "\`unset HIMMEL_CONSOLE_LEG\`; bash $MERGE_ON_GREEN 1")"
+assert_deny "legacy \$[(...)] arithmetic paren is not a subshell"           "$(j "echo \$[(HIMMEL_CONSOLE_LEG=0)]; bash $MERGE_ON_GREEN 1")"
+assert_deny "let '(...)' quoted arithmetic paren is not a subshell"        "$(j "let '(HIMMEL_CONSOLE_LEG=0)'; bash $MERGE_ON_GREEN 1")"
+assert_deny "array-assignment paren (declare -a a=(...)) is not a subshell" "$(j "declare -a a=( HIMMEL_CONSOLE_LEG=0 ); bash $MERGE_ON_GREEN 1")"
+assert_deny "[[ ( ) ]] grouping paren is not a subshell"                    "$(j "[[ ( HIMMEL_CONSOLE_LEG=0 ) ]]; bash $MERGE_ON_GREEN 1")"
+assert_deny "process substitution <(...) is not a subshell"                "$(j "cat <(unset HIMMEL_CONSOLE_LEG); bash $MERGE_ON_GREEN 1")"
+assert_deny "case pattern paren ( in (x)) is not a subshell"                "$(j "case x in (x) unset HIMMEL_CONSOLE_LEG;; esac; bash $MERGE_ON_GREEN 1")"
+assert_deny "function-body paren (f() (...)) is not command-position"      "$(j "f() ( unset HIMMEL_CONSOLE_LEG ); f; bash $MERGE_ON_GREEN 1")"
+
 # --- ALLOWED: fail-open proofs ---
 assert_allow "bare sanctioned invocation (no prefix)"    "$(j "bash $MERGE_ON_GREEN")"
 assert_allow "bare invocation, other chokepoint"         "$(j "bash $STOP_WORKER --list")"

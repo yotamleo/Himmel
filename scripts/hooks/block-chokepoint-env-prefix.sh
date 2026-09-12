@@ -283,22 +283,60 @@ fi
 # A shell-word that opens an assignment: NAME= with a valid variable name.
 ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*='
 
-# segment_cmd <flat-command> -- print each command segment on its own line.
-# A segment is a span of text whose first word stands at COMMAND POSITION.
-# Splits on unquoted ';', '&', '|', '(', ')' and backticks ('&&' / '||' /
-# ';;' leave empty middle segments, which callers skip; '(' covers
-# subshells, function bodies, and -- because '$' is an ordinary word char
-# -- '$(...)' command substitution). Single-quoted spans are opaque;
-# double-quoted spans are opaque EXCEPT that '$(' and backticks inside
-# them still open real command positions (double quotes do not stop
-# substitution), so those split too, closing the quoted span before the
-# split and reopening it after so surrounding literal text stays a quoted
-# word (never a fake command position). Backslash escapes stay opaque, so
-# a separator inside a value (VAR='a;b') never splits one assignment.
-# Self-contained on purpose: the repo's shared tokenizer work is fenced
-# off (HIMMEL-1688) and this guard must not grow a dependency on it.
+# segment_cmd <flat-command> -- print each command segment as
+# "<paren-depth>\t<segment>", one per line. A segment is a span of text
+# whose first word stands at COMMAND POSITION. Splits on unquoted ';', '&',
+# '|', '(', ')' and backticks ('&&' / '||' / ';;' leave empty middle
+# segments, which callers skip).
+# PAREN DEPTH (HIMMEL-2929, POSITIVE/whitelist rule -- operator ruling after
+# the blacklist collapse ("any `((`/`$(`/backtick anywhere disables scoping
+# for the whole call") converged on the wrong invariant: every new grammar
+# shape needed its own patch, never provably done. Inverted instead: a `(`
+# opens a real subshell (scopes: depth++, a fresh UNSET_NAMES snapshot
+# boundary) ONLY when it stands at COMMAND POSITION -- the first token of a
+# command, i.e. at segment start or immediately after `;`, `&&`, `||`, `|`,
+# `&`, `{`, `(`, a newline, or a scoping `(`'s open OR close. `cmdpos` tracks
+# this directly: it starts true, resets true after any of those triggers,
+# and goes false the moment any ordinary word character (including a
+# single/double-quoted word or a backslash escape) is consumed -- so a
+# keyword like `in` or `[[` disqualifies what follows for the mundane
+# reason that it was already consumed as a word, never via a keyword
+# exclusion list. A `(` that fails the command-position test is OPAQUE: it
+# does not touch pdepth, but its matching `)` is tracked too (a per-open
+# kind stack, S=scoping/O=opaque) so depth accounting never drifts. Three
+# more disqualifiers, checked only when cmdpos is otherwise true:
+#   - immediately preceded by `$`, `<`, `>` or `=` -- `$(...)` command
+#     substitution, `<(...)`/`>(...)` process substitution, an array
+#     assignment's `NAME=(...)` -- none of these fork a subshell.
+#   - immediately followed by another `(` -- `((...))` arithmetic evaluation
+#     opens with an ADJACENT pair, never a real subshell.
+#   - already nested inside an opaque paren (stack top = O) -- forces O
+#     unconditionally, so a grouping paren written INSIDE `((...))` (the
+#     codex-1 round-2 false ALLOW under the old kind-tracking attempt) can
+#     never be misread as a fresh real subshell: once opaque, everything
+#     inside stays opaque until that paren's own matching close.
+# A stray ')' with nothing open latches "confused": every later paren in
+# this text is left untouched (fold-forward, the safe direction) same as an
+# unmatched '(' left open at EOF. `no_scope` (scan_text's eval/`-c`
+# recursion, the only caller passing depth > 0 -- see scan_text's header)
+# forces every paren in the recursed text to O unconditionally: the
+# ticket's rule that a `bash -c`/`eval` string is never modeled holds
+# regardless of what parens that string contains (CodeRabbit, PR #643 @
+# 5ce5bbed). Single-quoted spans are opaque; double-quoted spans are opaque
+# EXCEPT that '$(' and backticks inside them still open real command
+# positions (double quotes do not stop substitution), so those split too,
+# closing the quoted span before the split and reopening it after so
+# surrounding literal text stays a quoted word (never a fake command
+# position) -- neither ever touches pdepth, same as their unquoted kin.
+# Backslash escapes stay opaque, so a separator inside a value (VAR='a;b')
+# never splits one assignment. Self-contained on purpose: the repo's shared
+# tokenizer work is fenced off (HIMMEL-1688) and this guard must not grow a
+# dependency on it.
 segment_cmd() {
-    local s="$1" seg='' c i n sub
+    local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}"
+    local cmdpos=1 kind='' lb='' nx=''
+    local -a pkind
+    local ptop=0
     n=${#s}
     i=0
     while [ "$i" -lt "$n" ]; do
@@ -310,6 +348,7 @@ segment_cmd() {
                 [ "${s:i:1}" = "'" ] && { seg="$seg'"; i=$((i + 1)); break; }
                 seg="$seg${s:i:1}"; i=$((i + 1))
             done
+            cmdpos=0
             ;;
         \")
             seg="$seg$c"; i=$((i + 1))
@@ -326,22 +365,22 @@ segment_cmd() {
                     ;;
                 \`)
                     if [ "$sub" = "0" ]; then
-                        printf '%s\n' "$seg\""; seg=''; sub=1
+                        printf '%s\t%s\n' "$pdepth" "$seg\""; seg=''; sub=1
                     else
-                        printf '%s\n' "$seg"; seg='"'; sub=0
+                        printf '%s\t%s\n' "$pdepth" "$seg"; seg='"'; sub=0
                     fi
                     i=$((i + 1))
                     ;;
                 \$)
                     if [ "${s:$((i + 1)):1}" = "(" ]; then
-                        printf '%s\n' "$seg\""; seg=''; sub=1; i=$((i + 2))
+                        printf '%s\t%s\n' "$pdepth" "$seg\""; seg=''; sub=1; i=$((i + 2))
                     else
                         seg="$seg$c"; i=$((i + 1))
                     fi
                     ;;
                 \))
                     if [ "$sub" = "1" ]; then
-                        printf '%s\n' "$seg"; seg='"'; sub=0
+                        printf '%s\t%s\n' "$pdepth" "$seg"; seg='"'; sub=0
                     else
                         seg="$seg$c"
                     fi
@@ -349,7 +388,7 @@ segment_cmd() {
                     ;;
                 \;|\||\&)
                     if [ "$sub" = "1" ]; then
-                        printf '%s\n' "$seg"; seg=''
+                        printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
                     else
                         seg="$seg$c"
                     fi
@@ -360,20 +399,74 @@ segment_cmd() {
                     ;;
                 esac
             done
+            cmdpos=0
             ;;
         \\)
             seg="$seg$c"; i=$((i + 1))
             [ "$i" -lt "$n" ] && { seg="$seg${s:i:1}"; i=$((i + 1)); }
+            cmdpos=0
             ;;
-        \;|\&|\||\(|\)|\`)
-            printf '%s\n' "$seg"; seg=''; i=$((i + 1))
+        \{)
+            seg="$seg$c"; i=$((i + 1)); cmdpos=1
+            ;;
+        \()
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
+            if [ "$confused" = "0" ]; then
+                kind='O'
+                if [ "$no_scope" = "1" ]; then
+                    kind='O'
+                elif [ "$ptop" -gt 0 ] && [ "${pkind[$((ptop - 1))]}" = "O" ]; then
+                    kind='O'
+                elif [ "$cmdpos" = "1" ]; then
+                    lb=''
+                    [ "$i" -gt 0 ] && lb="${s:$((i - 1)):1}"
+                    nx="${s:$((i + 1)):1}"
+                    case "$lb" in
+                    '$' | '<' | '>' | '=') kind='O' ;;
+                    *)
+                        if [ "$nx" = "(" ]; then
+                            kind='O'
+                        else
+                            kind='S'
+                        fi
+                        ;;
+                    esac
+                fi
+                pkind[ptop]="$kind"; ptop=$((ptop + 1))
+                if [ "$kind" = "S" ]; then
+                    pdepth=$((pdepth + 1))
+                    cmdpos=1
+                fi
+            fi
+            i=$((i + 1))
+            ;;
+        \))
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
+            if [ "$confused" = "0" ]; then
+                if [ "$ptop" -gt 0 ]; then
+                    ptop=$((ptop - 1))
+                    if [ "${pkind[$ptop]}" = "S" ]; then
+                        pdepth=$((pdepth - 1))
+                        cmdpos=1
+                    fi
+                else
+                    confused=1
+                fi
+            fi
+            i=$((i + 1))
+            ;;
+        \;|\&|\||\`|$'\n')
+            printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
+            ;;
+        ' ' | $'\t')
+            seg="$seg$c"; i=$((i + 1))
             ;;
         * )
-            seg="$seg$c"; i=$((i + 1))
+            seg="$seg$c"; i=$((i + 1)); cmdpos=0
             ;;
         esac
     done
-    printf '%s\n' "$seg"
+    printf '%s\t%s\n' "$pdepth" "$seg"
 }
 
 # tokenize_seg <segment> -- the segment's shell WORDS, one per line, with
@@ -1237,17 +1330,34 @@ scan_segment() {
 # scan_text <command text> <inherited assignment names> <depth> -- segment
 # and scan; the recursion target for eval / -c strings (depth-capped:
 # deeper reconstruction is the documented determined-bypass residual).
+# HIMMEL-2929: a clear learned at paren-depth >=1 must not outlive its
+# subshell -- snapshot UNSET_NAMES on the way down each depth, restore it
+# on the way back up, so it folds back to what stood outside the `(...)`.
+# depth > 0 means this text IS an eval/`-c` string's re-parsed operand (the
+# only caller passing depth+1) -- force segment_cmd's no_scope regardless
+# of what that string itself contains (CodeRabbit, PR #643 @ 5ce5bbed).
 scan_text() {
-    local text="$1" inames="$2" depth="$3" seg
+    local text="$1" inames="$2" depth="$3" line pdepth seg cur=0 force=0
+    local -a PSNAP
     [ "$depth" -le 5 ] || return 0
-    while IFS= read -r seg; do
+    [ "$depth" -gt 0 ] && force=1
+    while IFS= read -r line; do
+        pdepth=${line%%$'\t'*}
+        seg=${line#*$'\t'}
+        if [ "$pdepth" -gt "$cur" ]; then
+            PSNAP[pdepth]="$UNSET_NAMES"
+            cur=$pdepth
+        elif [ "$pdepth" -lt "$cur" ]; then
+            UNSET_NAMES="${PSNAP[$((pdepth + 1))]}"
+            cur=$pdepth
+        fi
         [[ $seg =~ [^[:space:]] ]] || continue
         # HIMMEL-2927: an in-shell `unset`/`export -n` or an `env -u`/
         # `--unset` in an EARLIER segment clears a name for every LATER
         # segment in this same payload -- fold the accumulator in fresh
         # each iteration so it reflects only what ran before this segment.
         scan_segment "$seg" "$inames $UNSET_NAMES" "$depth"
-    done <<<"$(segment_cmd "$text")"
+    done <<<"$(segment_cmd "$text" "$force")"
     return 0
 }
 
