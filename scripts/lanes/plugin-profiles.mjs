@@ -170,6 +170,15 @@ function validateProfileSpec(errors, name, spec, catalogSet, floorSet) {
     const toolsOk = Array.isArray(spec.disallowedTools) && spec.disallowedTools.every((t) => typeof t === 'string' && t.length > 0);
     if (!toolsOk) errors.push(`profile "${name}" disallowedTools must be an array of non-empty strings`);
   }
+  // mcpServers (HIMMEL-2935 / HIMMEL-2928 lever 1, second half) — a per-leg MCP
+  // server ALLOWLIST, orthogonal to mcpCatalog (T3.1, still schema-only): this
+  // field names servers to COPY from an external source (~/.claude.json, a repo
+  // .mcp.json, a plugin manifest — see collectMcpServerDefs), never a definition
+  // stored in the registry. SCHEMA-ONLY here; mcpServersForProfile reads it.
+  if (spec.mcpServers !== undefined) {
+    const mcpOk = Array.isArray(spec.mcpServers) && spec.mcpServers.every((s) => typeof s === 'string' && s.length > 0);
+    if (!mcpOk) errors.push(`profile "${name}" mcpServers must be an array of non-empty strings`);
+  }
   // contextBudget (HIMMEL-2189) — the first-turn token ceiling the measured
   // probe asserts against, so it is REQUIRED on every non-operator profile
   // (a missing budget would let a lane's context footprint grow unnoticed).
@@ -365,6 +374,49 @@ export function resolveProfileByName(name, opts = {}, path = REGISTRY) {
   return resolveProfile(registry, name, opts);
 }
 
+// mcpServersForProfile: the allowlist a profile declares, or undefined when it
+// declares none (the operator sentinel, or a profile with no mcpServers field —
+// distinct from an explicit [], which means "strip everything"). Mirrors
+// resolveProfile's own-property fail-closed check on an unknown name.
+export function mcpServersForProfile(registry, name) {
+  const profiles = registry.profiles ?? {};
+  if (!Object.hasOwn(profiles, name)) {
+    throw new Error(`plugin-profiles: unknown profile "${name}" (known: ${Object.keys(profiles).join(', ')})`);
+  }
+  const spec = profiles[name];
+  if (spec === null) return undefined; // operator: no allowlist to apply
+  return spec.mcpServers;
+}
+
+// collectMcpServerDefs: resolve an allowlist of server NAMES into their real
+// definitions, copied byte-for-byte (never hand-written) from, in order: the
+// user's ~/.claude.json, a repo-root .mcp.json, then the server's own
+// marketplace plugin manifest (<marketplaceDir>/<name>/.mcp.json). An
+// unresolved name is a hard refusal (fail-closed) rather than a synthesized
+// or skipped entry — a leg silently missing its one allowed server is worse
+// than a leg that never launches. Returns the ready-to-write --mcp-config
+// object shape: {"mcpServers": {...}}.
+export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marketplaceDir }) {
+  if (names.length === 0) return { mcpServers: {} };
+  const readDefs = (path) => {
+    if (!existsSync(path)) return {};
+    try { return JSON.parse(readFileSync(path, 'utf8'))?.mcpServers ?? {}; }
+    catch (e) { throw new Error(`plugin-profiles: cannot read MCP server definitions from ${path}: ${e?.message ?? e}`); }
+  };
+  const home = readDefs(homeConfigPath);
+  const repo = readDefs(repoMcpPath);
+  const mcpServers = {};
+  for (const name of names) {
+    if (Object.hasOwn(home, name)) { mcpServers[name] = home[name]; continue; }
+    if (Object.hasOwn(repo, name)) { mcpServers[name] = repo[name]; continue; }
+    const manifestPath = join(marketplaceDir, name, '.mcp.json');
+    const manifest = readDefs(manifestPath);
+    if (Object.hasOwn(manifest, name)) { mcpServers[name] = manifest[name]; continue; }
+    throw new Error(`plugin-profiles: mcpServers entry "${name}" is not defined in ${homeConfigPath}, ${repoMcpPath}, or ${manifestPath}`);
+  }
+  return { mcpServers };
+}
+
 // ── CLI (measurement / launcher use) ────────────────────────────────────────
 // node plugin-profiles.mjs <profile> [--add-plugins a@m,b@m]  -> prints the
 //   `--settings` JSON ({"enabledPlugins":{…}}) to stdout, or nothing for operator.
@@ -385,7 +437,27 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
       process.exit(0);
     }
     const name = argv[0];
-    if (!name) die(2, 'usage: plugin-profiles.mjs <profile> [--add-plugins a@m,b@m] | --list | --validate');
+    if (!name) die(2, 'usage: plugin-profiles.mjs <profile> [--add-plugins a@m,b@m] | --mcp-servers | --mcp-config | --list | --validate');
+    if (argv[1] === '--mcp-servers') {
+      const registry = loadRegistry();
+      const errs = validateRegistry(registry);
+      if (errs.length) die(2, 'plugin-profiles: registry invalid:\n  - ' + errs.join('\n  - '));
+      process.stdout.write(JSON.stringify(mcpServersForProfile(registry, name) ?? null) + '\n');
+      process.exit(0);
+    }
+    if (argv[1] === '--mcp-config') {
+      const registry = loadRegistry();
+      const errs = validateRegistry(registry);
+      if (errs.length) die(2, 'plugin-profiles: registry invalid:\n  - ' + errs.join('\n  - '));
+      const names = mcpServersForProfile(registry, name) ?? [];
+      const cfg = collectMcpServerDefs(names, {
+        homeConfigPath: join(homedir(), '.claude.json'),
+        repoMcpPath: join(process.cwd(), '.mcp.json'),
+        marketplaceDir: join(SCRIPT_DIR, '..', '..', 'marketplace', 'plugins'),
+      });
+      process.stdout.write(JSON.stringify(cfg) + '\n');
+      process.exit(0);
+    }
     // Consume EVERY remaining argument and die on anything unexpected (CR): the
     // old indexOf-based parse silently ignored unknown options and trailing
     // values, so a typo'd flag looked like it applied while doing nothing — the

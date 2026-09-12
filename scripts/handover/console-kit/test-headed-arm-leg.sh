@@ -37,7 +37,7 @@ SCRIPT="$HERE/headed-arm-leg.sh"
 HEADED_ARM="$HERE/../headed-arm.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG 2>/dev/null || true
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
@@ -70,7 +70,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -487,6 +487,133 @@ contains "--profile with --lane claudex: the refusal says why in one line" "$out
   "--profile is not available on --lane claudex"
 rc=0; out="$(LEG_LANE=claudex LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "the same conflict via the env equivalents: exit 2" "$rc" "2"
+
+# --- 18 (HIMMEL-2935). --profile's mcpServers allowlist: --mcp-config +
+# --strict-mcp-config narrow the leg's MCP surface to exactly the named
+# servers, copied (never hand-written) from ~/.claude.json / a repo .mcp.json
+# / the server's own marketplace plugin manifest. Two layers, same split as
+# case 17 above: the SHIM (leg-claude-launcher.sh) is the only place the
+# child cmdline is observable, so flag-propagation is proven there directly;
+# headed-arm-leg.sh's own full-launch path is where the file gets resolved
+# and written (or refused), proven via the written artifact, not the argv.
+
+# 18-shim. The shim, driven directly: LEG_PROFILE_MCP_CONFIG set + file
+# present -> both flags prepended, ahead of the rest of argv; unset -> no
+# change; set but missing -> fail closed (the same shape as the settings/
+# preface cases in 17a, now pinned for the third env var).
+mcpfile="$tmp/leg-mcp.json"
+printf '{"mcpServers":{"qmd":{"type":"http","url":"http://localhost:8181/mcp"}}}' > "$mcpfile"
+rm -f "$tmp/shim-record"
+rc=0
+LEG_CLAUDE_BIN="$shim_rec" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG="$mcpfile" \
+  bash "$SHIM" --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-9999-leg "load doc" || rc=$?
+check "shim: mcp-config exit 0" "$rc" "0"
+check "shim: prepends --mcp-config + --strict-mcp-config, rest of argv preserved" \
+  "$(cat "$tmp/shim-record" 2>/dev/null || true)" \
+  "--mcp-config $mcpfile --strict-mcp-config --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-9999-leg load doc"
+
+rm -f "$tmp/shim-record"
+rc=0
+LEG_CLAUDE_BIN="$shim_rec" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' \
+  bash "$SHIM" --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-9999-leg "load doc" || rc=$?
+check "shim: no LEG_PROFILE_MCP_CONFIG -> argv byte-identical (no mcp flags)" \
+  "$(cat "$tmp/shim-record" 2>/dev/null || true)" \
+  "--model claude-sonnet-5 --autocompact 200000 -n HIMMEL-9999-leg load doc"
+
+rc=0
+out="$(LEG_CLAUDE_BIN="$shim_rec" LEG_PROFILE_MCP_CONFIG="$tmp/no-such-mcp.json" bash "$SHIM" --model x 2>&1)" || rc=$?
+check "shim: a missing mcp-config file refuses with exit 2" "$rc" "2"
+contains "shim: refusal names the missing mcp file" "$out" "$tmp/no-such-mcp.json"
+
+# 18-resolve. A tiny fixture registry exercises all four allowlist shapes
+# (empty/named/unknown/absent) without touching the shipped leg-impl entry.
+# floor+catalog carry one dummy id purely to satisfy validateRegistry's
+# non-empty-array checks; none of these profiles enable it.
+mcpreg="$tmp/mcp-registry.json"
+cat > "$mcpreg" <<'MCPREG_EOF'
+{
+  "floor": ["dummy@marketplace"],
+  "catalog": ["dummy@marketplace"],
+  "profiles": {
+    "operator": null,
+    "mcp-empty": { "enable": [], "mcpServers": [], "contextBudget": 1000 },
+    "mcp-qmd": { "enable": [], "mcpServers": ["qmd"], "contextBudget": 1000 },
+    "mcp-missing": { "enable": [], "mcpServers": ["no-such-server"], "contextBudget": 1000 },
+    "mcp-none": { "enable": [], "contextBudget": 1000 }
+  }
+}
+MCPREG_EOF
+mcphome="$tmp/mcp-home"; mkdir -p "$mcphome"
+cat > "$mcphome/.claude.json" <<'HOME_EOF'
+{"mcpServers": {"qmd": {"type": "http", "url": "http://localhost:8181/mcp"}, "graphify": {"type": "stdio", "command": "graphify-mcp"}, "context7": {"type": "http", "url": "http://context7.example/mcp"}}}
+HOME_EOF
+
+full_launch_mcp() {
+  # full_launch_mcp <dir-suffix> <name> <profile> [homedir, default: ambient $HOME]
+  local suf="$1" name="$2" prof="$3" homedir="${4:-$HOME}"
+  local d="$tmp/c18$suf"; mk_launch_stubs "$d" "$name"; mkdir -p "$tmp/repo18$suf"
+  rc=0
+  PLUGIN_PROFILES_REGISTRY="$mcpreg" HOME="$homedir" \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d/konsole" PGREP_CMD="$d/pgrep" \
+  LEG_REPO="$tmp/repo18$suf" HEADED_ARM_LOCK_DIR="$d/locks" HEADED_ARM_PROC="$d/proc" \
+    bash "$SCRIPT" --profile "$prof" "$name" "some/doc.md" "$d/signal-never" "$PAST" "$d/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+  wait_record "$d" || true
+}
+
+# (a) mcpServers: [] -> the written file is exactly {"mcpServers":{}} - "strip
+# everything" is a real, distinct allowlist value from "field absent".
+full_launch_mcp a "HIMMEL-4441-leg" mcp-empty
+check "mcpServers=[]: full launch exit 0" "$rc" "0"
+check "mcpServers=[]: mcp config file is exactly {\"mcpServers\":{}}" \
+  "$(cat "$tmp/c18a/HIMMEL-4441-leg.leg-mcp.json" 2>/dev/null || true)" '{"mcpServers":{}}'
+env18a="$(cat "$tmp/c18a/env-record" 2>/dev/null || true)"
+contains "mcpServers=[]: LEG_PROFILE_MCP_CONFIG reaches the launched environment" "$env18a" "LEG_PROFILE_MCP_CONFIG=$tmp/c18a/HIMMEL-4441-leg.leg-mcp.json"
+
+# (b) mcpServers: ["qmd"] against a fixture home carrying qmd+graphify+
+# context7 -> the written file holds ONLY qmd's definition, byte-copied
+# (deny-by-default: graphify/context7 never appear despite being right there
+# in the source file).
+full_launch_mcp b "HIMMEL-4442-leg" mcp-qmd "$mcphome"
+check "mcpServers=[qmd]: full launch exit 0" "$rc" "0"
+mcpout_b="$(cat "$tmp/c18b/HIMMEL-4442-leg.leg-mcp.json" 2>/dev/null || true)"
+contains "mcpServers=[qmd]: file carries qmd's definition byte-copied" "$mcpout_b" '"qmd":{"type":"http","url":"http://localhost:8181/mcp"}'
+not_contains "mcpServers=[qmd]: graphify is NOT copied despite being in the source file" "$mcpout_b" "graphify"
+not_contains "mcpServers=[qmd]: context7 is NOT copied despite being in the source file" "$mcpout_b" "context7"
+
+# (c) an allowlisted name absent from every source -> exit 2, no file
+# written at all (not an empty one - the refusal must precede the write).
+full_launch_mcp c "HIMMEL-4443-leg" mcp-missing "$mcphome"
+check "mcpServers=[no-such-server]: refused with exit 2" "$rc" "2"
+if [ -e "$tmp/c18c/HIMMEL-4443-leg.leg-mcp.json" ]; then
+  echo "FAIL - mcpServers=[no-such-server]: a config file must not exist"; fails=$((fails+1))
+else
+  echo "ok - mcpServers=[no-such-server]: no config file written"
+fi
+
+# (d) no mcpServers field -> byte-identical to pre-HIMMEL-2935: no file, no
+# LEG_PROFILE_MCP_CONFIG in the launched environment.
+full_launch_mcp d "HIMMEL-4444-leg" mcp-none
+check "no mcpServers field: full launch exit 0" "$rc" "0"
+if [ -e "$tmp/c18d/HIMMEL-4444-leg.leg-mcp.json" ]; then
+  echo "FAIL - no mcpServers field: a config file must not exist"; fails=$((fails+1))
+else
+  echo "ok - no mcpServers field: no config file written"
+fi
+env18d="$(cat "$tmp/c18d/env-record" 2>/dev/null || true)"
+not_contains "no mcpServers field: no LEG_PROFILE_MCP_CONFIG in the launched environment" "$env18d" "LEG_PROFILE_MCP_CONFIG="
+
+# dry-run mirrors the same four shapes without writing anything, and an
+# unresolvable name is refused the same way under --dry-run too (typo'd
+# names must fail identically whether or not the launch is real).
+rc=0; out="$(PLUGIN_PROFILES_REGISTRY="$mcpreg" HOME="$mcphome" bash "$SCRIPT" --dry-run --profile mcp-missing HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run: an unresolvable mcpServers name is refused with exit 2" "$rc" "2"
+
+dryempty="$(PLUGIN_PROFILES_REGISTRY="$mcpreg" HOME="$mcphome" bash "$SCRIPT" --dry-run --profile mcp-empty HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
+contains "dry-run mcpServers=[]: reports mcp=[] and the would-be mcp-config path" "$dryempty" "mcp=[] mcp-config=$tmp/HIMMEL-9999-leg.leg-mcp.json"
+
+drynone="$(PLUGIN_PROFILES_REGISTRY="$mcpreg" bash "$SCRIPT" --dry-run --profile mcp-none HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
+contains "dry-run: no mcpServers field reports mcp=null mcp-config=<none>" "$drynone" "mcp=null mcp-config=<none>"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

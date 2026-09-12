@@ -27,14 +27,27 @@
 #  3. NO PROFILE, NO CHANGE. With neither variable set this is a transparent
 #     `exec claude "$@"` - byte-identical argv to today.
 #  4. It never widens anything. `--settings` here can only DISABLE plugins
-#     (the resolver emits a complete enabledPlugins map, deny-by-default);
-#     no tool, permission or MCP server is added.
+#     (the resolver emits a complete enabledPlugins map, deny-by-default), and
+#     `--mcp-config`/`--strict-mcp-config` (HIMMEL-2935) can only NARROW the
+#     MCP servers available to the leg (the config file is a copy of real
+#     definitions the resolver read elsewhere, never a hand-written one) -
+#     neither ever adds a tool, permission or MCP server beyond what the
+#     leg's own plugin set already carries.
 #
 # Env (set by headed-arm-leg.sh --profile, exported so it survives konsole's
 # `-e env -u ...` line, which only unsets the three HIMMEL-2545 vars):
-#   LEG_PROFILE_SETTINGS  path to the resolved settings JSON  -> --settings
-#   LEG_PROFILE_PREFACE   path to docs/handover/leg-preface.md
-#                                                  -> --append-system-prompt-file
+#   LEG_PROFILE_SETTINGS   path to the resolved settings JSON  -> --settings
+#   LEG_PROFILE_PREFACE    path to docs/handover/leg-preface.md
+#                                                   -> --append-system-prompt-file
+#   LEG_PROFILE_MCP_CONFIG (HIMMEL-2935) path to the resolved MCP-server
+#                           allowlist JSON, set only when the profile declares
+#                           one -> --mcp-config <file> --strict-mcp-config.
+#                           --strict-mcp-config makes that file the ONLY
+#                           source of MCP servers for this launch - it strips
+#                           plugin-bundled servers too, not just the
+#                           ~/.claude.json user-level ones this exists to cut,
+#                           which is exactly why the file is never hand-typed
+#                           (see plugin-profiles.mjs's collectMcpServerDefs).
 # Seam: LEG_CLAUDE_BIN overrides the `claude` binary this execs (default:
 # `claude` from PATH) so a suite can point it at a recording stub.
 #
@@ -65,6 +78,15 @@ if [ -n "${LEG_PROFILE_PREFACE:-}" ]; then
         exit 2
     fi
     PRE+=(--append-system-prompt-file "$LEG_PROFILE_PREFACE")
+fi
+
+if [ -n "${LEG_PROFILE_MCP_CONFIG:-}" ]; then
+    if [ ! -f "$LEG_PROFILE_MCP_CONFIG" ]; then
+        echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_MCP_CONFIG is set but missing: $LEG_PROFILE_MCP_CONFIG" >&2
+        echo "leg-claude-launcher: launching without it under --strict-mcp-config would start the leg with NO MCP servers at all, silently breaking whatever this profile's allowlist promised it." >&2
+        exit 2
+    fi
+    PRE+=(--mcp-config "$LEG_PROFILE_MCP_CONFIG" --strict-mcp-config)
 fi
 
 exec "$CLAUDE_BIN" ${PRE[@]+"${PRE[@]}"} "$@"

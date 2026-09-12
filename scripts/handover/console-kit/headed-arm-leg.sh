@@ -90,6 +90,16 @@
 #   3. HIMMEL_LEAN_LEG=1 is exported, which silences the three advisory
 #      SessionStart hooks (where-are-we, qmd staleness, graphify freshness) a
 #      leg never acts on. inject-initiative.sh deliberately still speaks.
+#   4. (HIMMEL-2935) When the profile declares an mcpServers allowlist,
+#      plugin-profiles.mjs's definitions are written as a second JSON next to
+#      the settings file, and the shim additionally prepends `--mcp-config
+#      <that file> --strict-mcp-config` — stripping every MCP server NOT
+#      named there, including the user-level ones (graphify, obsidian-vault,
+#      context7 in ~/.claude.json) that were the bulk of the un-measured
+#      first-turn floor and that a plugin profile alone cannot touch. A
+#      profile with no mcpServers field changes nothing here (no file, no
+#      flags); an unresolvable name refuses (exit 2) rather than launching
+#      without it.
 # WHY only leg-impl exists: the measured floor is schema-shaped, not
 # roster-shaped (~40k of a 74.3k first-turn floor is tool + MCP schemas), so a
 # second or third "profile by skill set" would resolve to the same manifest -
@@ -255,6 +265,23 @@ if [ -n "$PROFILE" ]; then
     # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
     # the exact value 1 leans - the hooks are fail-open by construction.
     export HIMMEL_LEAN_LEG=1
+    # mcpServers allowlist (HIMMEL-2935): resolved (and, on an unknown name,
+    # REFUSED) here so a typo'd server name fails the same way under --dry-run
+    # and for real, same reasoning as the settings JSON above. "null" (the
+    # field is absent) is a deliberate no-op: no file, no LEG_PROFILE_MCP_CONFIG,
+    # the shim adds nothing.
+    if ! MCP_NAMES_JSON="$(cd "$_leg_resolve_cwd" && node "$PROFILES_MJS" "$PROFILE" --mcp-servers 2>&1)"; then
+        echo "headed-arm-leg: --profile $PROFILE: mcp-servers resolution failed: $MCP_NAMES_JSON" >&2
+        exit 2
+    fi
+    if [ "$MCP_NAMES_JSON" != "null" ]; then
+        if ! MCP_CONFIG_JSON="$(cd "$_leg_resolve_cwd" && node "$PROFILES_MJS" "$PROFILE" --mcp-config 2>&1)"; then
+            echo "headed-arm-leg: --profile $PROFILE: mcp-config resolution failed: $MCP_CONFIG_JSON" >&2
+            exit 2
+        fi
+        PROFILE_MCP_CONFIG="$(dirname "$LOG")/$NAME.leg-mcp.json"
+        export LEG_PROFILE_MCP_CONFIG="$PROFILE_MCP_CONFIG"
+    fi
 fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -268,8 +295,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # absent and the dry-run report is byte-identical to the pre-HIMMEL-2830
     # one, matching the argv guarantee it describes.
     if [ -n "$PROFILE" ]; then
-        printf 'headed-arm-leg: profile=%s settings=%s preface=%s lean=%s\n' \
-            "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$HIMMEL_LEAN_LEG"
+        printf 'headed-arm-leg: profile=%s settings=%s preface=%s lean=%s mcp=%s mcp-config=%s\n' \
+            "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$HIMMEL_LEAN_LEG" \
+            "$MCP_NAMES_JSON" "${LEG_PROFILE_MCP_CONFIG:-<none>}"
     fi
     exit 0
 fi
@@ -281,6 +309,13 @@ if [ -n "$PROFILE" ]; then
         exit 2
     fi
     chmod 600 "$PROFILE_SETTINGS" 2>/dev/null || true
+    if [ -n "${LEG_PROFILE_MCP_CONFIG:-}" ]; then
+        if ! printf '%s\n' "$MCP_CONFIG_JSON" > "$LEG_PROFILE_MCP_CONFIG"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot write mcp config to $LEG_PROFILE_MCP_CONFIG" >&2
+            exit 2
+        fi
+        chmod 600 "$LEG_PROFILE_MCP_CONFIG" 2>/dev/null || true
+    fi
 fi
 
 # HIMMEL-2765: fleet-size cap. Checked at ARM time, before headed-arm.sh's own
