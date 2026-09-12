@@ -14,6 +14,7 @@ const {
   MIN_MEMBER_TIMEOUT_MS,
   MUST_RUN_CHAIN_MEMBERS,
   isKnownBadWindowsBash,
+  isRecoverableEpipe,
   isUsable,
   mergeHookOutputs,
   resolveBash,
@@ -499,6 +500,64 @@ test('a member that overflows the output buffer is skipped, not turned into a de
     assert.equal(ran(dir, 'allow.sh'), true, 'the chain must continue past an overflowing member');
     assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, 'allow');
   });
+});
+
+// -------------------------------------------------- HIMMEL-2557: EPIPE-with-status is not a launcher failure
+//
+// spawnSync surfaces EPIPE on the parent's stdin WRITE when the child exits
+// before draining it (a guard that returns on its first line, or the write
+// racing the child's exit under load — 2d687f9c, main red 2026-09-12). The
+// child still ran to completion, so its own status/stdout/stderr are the real
+// verdict. A payload well past the 64 KiB pipe buffer makes the write land
+// after the fixture has already closed its stdin and exited, reproducing the
+// race deterministically instead of relying on scheduler timing.
+const EPIPE_PAYLOAD = JSON.stringify({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'Bash',
+  tool_input: { command: 'a'.repeat(300 * 1024) },
+});
+
+function epipeFixture(name, body) {
+  const dir = makeTmpDir('hook-bash-epipe-');
+  const script = join(dir, name);
+  writeFileSync(script, `#!/usr/bin/env bash\n${body}\n`);
+  chmodSync(script, 0o755);
+  return script;
+}
+
+test('a chain member that exits without reading stdin still ALLOWS on an EPIPE write', () => {
+  const script = epipeFixture('exit-without-reading-allow.sh', 'exec 0<&-\nexit 0');
+  const result = runChain(dirname(script), [script], EPIPE_PAYLOAD);
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /failed to start/);
+});
+
+test('a chain member that exits without reading stdin still DENIES on an EPIPE write', () => {
+  const script = epipeFixture('exit-without-reading-deny.sh', "exec 0<&-\necho '⛔ fixture deny' >&2\nexit 2");
+  const result = runChain(dirname(script), [script], EPIPE_PAYLOAD);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /⛔ fixture deny/);
+  assert.doesNotMatch(result.stderr, /failed to start/);
+});
+
+test('a lone (non-chain) hook that exits without reading stdin still ALLOWS on an EPIPE write', () => {
+  const script = epipeFixture('exit-without-reading-allow.sh', 'exec 0<&-\nexit 0');
+  const result = spawnSync(process.execPath, [LAUNCHER, script], { encoding: 'utf8', input: EPIPE_PAYLOAD });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /failed to start/);
+});
+
+// CONTROL: only EPIPE with a NUMERIC status (proof the child actually exited)
+// may fall through. Every other spawn error, and EPIPE with a null status (the
+// child never exited — e.g. it was itself killed), stays fail-closed. Exercised
+// as a unit test on the extracted predicate rather than end-to-end: system bash
+// always resolves on this box, so there is no way to force a genuine non-EPIPE
+// `result.error` out of the real launcher without corrupting the system's own
+// /bin/bash — the boundary the predicate encodes is the actual thing at risk.
+test('isRecoverableEpipe only accepts EPIPE paired with a numeric status', () => {
+  assert.equal(isRecoverableEpipe({ error: { code: 'EPIPE' }, status: null }), false);
+  assert.equal(isRecoverableEpipe({ error: { code: 'ENOENT' }, status: 0 }), false);
+  assert.equal(isRecoverableEpipe({ error: { code: 'EPIPE' }, status: 2 }), true);
 });
 
 // -------------------------------------------------- must-run vs skippable (HIMMEL-2060)
