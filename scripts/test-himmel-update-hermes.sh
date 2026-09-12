@@ -74,6 +74,26 @@ EOF
   chmod +x "$dir/systemctl"
 }
 
+# mk_systemctl_liststub_fail <dir> — writes a fake `systemctl` whose
+# `--user list-units` branch prints a diagnostic to stderr and exits 1
+# (a broken --user D-Bus session), logging every invocation's argv like
+# mk_systemctl_stub. `restart` is never expected to be reached from this
+# stub (HIMMEL-2950: list-units failure must not read as "no units").
+mk_systemctl_liststub_fail() {
+  local dir="$1"
+  mkdir -p "$dir"
+  cat > "$dir/systemctl" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$dir/systemctl.log"
+if [ "\$1" = "--user" ] && [ "\$2" = "list-units" ]; then
+  echo "Failed to connect to bus: fixture no-session" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "$dir/systemctl"
+}
+
 # HERMES_HOME is the install ROOT; the git checkout is its hermes-agent/ subdir.
 
 # Case 1: install root with no hermes-agent checkout → "not installed" skip.
@@ -494,6 +514,56 @@ out=$(PATH="$stub17:$PATH" HERMES_HOME="$tmp/failrestart17" SYSTEMCTL_STUB_FAIL_
 if [ "$rc" -eq 0 ]; then echo "ok: one restart failing -> exit 0 (chain not aborted)"; else echo "FAIL: one restart failing -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
 check "failed restart names the by-hand command for $GW1" "systemctl --user restart $GW1" "$out"
 check "other unit still restarted" "restarted $GW2" "$out"
+
+# Case 18 (HIMMEL-2950): apply path, checkout moves, list-units ITSELF fails
+# (broken --user bus) → must not read as "no units running": a loud warn:
+# line names the failure + the by-hand fallback, restart is never attempted,
+# and the update chain is NOT aborted (rc 0).
+bare18="$tmp/bare18/NousResearch/hermes-agent.git"
+mkdir -p "$bare18"; git init -q --bare "$bare18"
+seed18="$tmp/seed18"
+git clone -q "$bare18" "$seed18"
+git -C "$seed18" config user.email "test@test.test"; git -C "$seed18" config user.name "Test"
+printf 'v1\n' > "$seed18/f.txt"; git -C "$seed18" add f.txt; git -C "$seed18" commit --quiet -m v1
+defbranch18=$(git -C "$seed18" rev-parse --abbrev-ref HEAD)
+git -C "$seed18" push --quiet origin "HEAD:$defbranch18"
+git clone -q "$bare18" "$tmp/listfail18/hermes-agent"
+printf 'v2\n' > "$seed18/f.txt"; git -C "$seed18" add f.txt; git -C "$seed18" commit --quiet -m v2
+git -C "$seed18" push --quiet origin "HEAD:$defbranch18"
+stub18="$tmp/stub18"
+mk_systemctl_liststub_fail "$stub18"
+rc=0
+out=$(PATH="$stub18:$PATH" HERMES_HOME="$tmp/listfail18" update_hermes apply 2>&1) || rc=$?
+if [ "$rc" -eq 0 ]; then echo "ok: list-units failure -> exit 0 (chain not aborted)"; else echo "FAIL: list-units failure -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
+check "list-units failure: loud warn: names the failure" "warn: could not list hermes-gateway units" "$out"
+restarts18=$(grep -c -- '--user restart' "$stub18/systemctl.log" 2>/dev/null) || true
+restarts18=${restarts18:-0}
+if [ "$restarts18" -eq 0 ]; then echo "ok: list-units failure -> zero restart calls"; else echo "FAIL: expected 0 restart calls, stub log shows $restarts18"; cat "$stub18/systemctl.log" 2>/dev/null; fail=1; fi
+
+# Case 19 (control, HIMMEL-2950): list-units SUCCEEDS with EMPTY output (no
+# gateways currently running) → no warn: line, zero restart calls — today's
+# silent no-op behaviour is preserved for the genuinely-empty case.
+bare19="$tmp/bare19/NousResearch/hermes-agent.git"
+mkdir -p "$bare19"; git init -q --bare "$bare19"
+seed19="$tmp/seed19"
+git clone -q "$bare19" "$seed19"
+git -C "$seed19" config user.email "test@test.test"; git -C "$seed19" config user.name "Test"
+printf 'v1\n' > "$seed19/f.txt"; git -C "$seed19" add f.txt; git -C "$seed19" commit --quiet -m v1
+defbranch19=$(git -C "$seed19" rev-parse --abbrev-ref HEAD)
+git -C "$seed19" push --quiet origin "HEAD:$defbranch19"
+git clone -q "$bare19" "$tmp/emptylist19/hermes-agent"
+printf 'v2\n' > "$seed19/f.txt"; git -C "$seed19" add f.txt; git -C "$seed19" commit --quiet -m v2
+git -C "$seed19" push --quiet origin "HEAD:$defbranch19"
+stub19="$tmp/stub19"
+mk_systemctl_stub "$stub19"
+apply_rc19=0
+out=$(PATH="$stub19:$PATH" HERMES_HOME="$tmp/emptylist19" update_hermes apply 2>&1) || apply_rc19=$?
+if [ "$apply_rc19" -eq 0 ]; then echo "ok: empty list-units output -> update_hermes apply exits 0"; else echo "FAIL: update_hermes apply exited $apply_rc19"; printf '%s\n' "$out"; fail=1; fi
+if grep -q -- '--user list-units' "$stub19/systemctl.log" 2>/dev/null; then echo "ok: empty list-units output -> list-units was actually invoked"; else echo "FAIL: list-units was never invoked — case 19 proves nothing"; cat "$stub19/systemctl.log" 2>/dev/null; fail=1; fi
+if grepq "$out" -E 'warn: could not list hermes-gateway units'; then echo "FAIL: empty list-units output produced a warn: line"; fail=1; else echo "ok: empty list-units output -> no warn: line"; fi
+restarts19=$(grep -c -- '--user restart' "$stub19/systemctl.log" 2>/dev/null) || true
+restarts19=${restarts19:-0}
+if [ "$restarts19" -eq 0 ]; then echo "ok: empty list-units output -> zero restart calls"; else echo "FAIL: expected 0 restart calls, stub log shows $restarts19"; cat "$stub19/systemctl.log" 2>/dev/null; fail=1; fi
 
 # ── report_cadence_stale() — stale cadence runner nudge (HIMMEL-588/969) ─────
 # Same lib seams; *_BAT_DIR point at fixture runner dirs.
