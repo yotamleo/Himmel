@@ -383,7 +383,15 @@ segment_cmd() {
                 # folds forward instead of being scoped away at the `))`.
                 if { [ "$i" -gt 0 ] && [ "${s:$((i - 1)):1}" = '$' ]; } ||
                    { [ "$i" -gt 0 ] && [ "${s:$((i - 1)):1}" = '(' ]; } ||
-                   [ "${s:$((i + 1)):1}" = "(" ]; then
+                   [ "${s:$((i + 1)):1}" = "(" ] ||
+                   { [ "$pk" -gt 0 ] && [ "${PKIND[$((pk - 1))]}" = "n" ]; }; then
+                    # HIMMEL-2929 codex-1 (round 2): a paren opened while still
+                    # inside an already-neutral span -- `$( ... )` or `(( ... ))`
+                    # -- is grouping/nesting WITHIN that same-shell or opaque
+                    # construct, never a fresh real subshell, so it inherits
+                    # neutrality: `(( (HIMMEL_CONSOLE_LEG=0) ))` keeps every
+                    # paren neutral instead of the inner grouping paren being
+                    # misread as a real subshell that scopes the assignment away.
                     PKIND[pk]='n'
                 else
                     PKIND[pk]='r'; pdepth=$((pdepth + 1))
