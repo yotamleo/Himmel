@@ -72,6 +72,18 @@ run() { (cd "$WT" && TMPDIR="$BACKUPS" bash "$SUT" "$@"); }
 
 reset_wt() { (cd "$WT" && git checkout -q main -- . 2>/dev/null; git clean -qfd 2>/dev/null); }
 
+recover_staged() {
+    local path="$1" run_dir="${2%/*}" recipe
+    # Literal Markdown fences, not shell command substitutions.
+    # shellcheck disable=SC2016
+    recipe=$(bash "$SUT" --help | sed -n '/^```bash$/,/^```$/p' | sed '1d;$d')
+    [ -n "$recipe" ] || return 1
+    recipe=${recipe//<RUN_DIR>/$run_dir}
+    recipe=${recipe//<n>/1}
+    recipe=${recipe//<path>/$path}
+    (cd "$WT" && bash -c "$recipe")
+}
+
 # --- (a) dirty one tracked file -> restored, recoverable via saved copy
 printf 'dirty\n' > "$WT/tracked.txt"
 out=$(run tracked.txt); rc=$?
@@ -373,14 +385,8 @@ printf 'recover-staged\n' > "$WT/link"
 printf 'different-worktree\n' > "$WT/link"
 out=$(run link 2>&1); rc=$?
 idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
-run_dir="${idx_path%/*}"
-help=$(bash "$SUT" --help)
-index_cmd=$(printf '%s\n' "$help" | sed -n "s/^Staged content: \`\(.*\)\` then \`\(.*\)\`\.$/\1 \&\& \2/p")
-index_cmd=${index_cmd//<RUN_DIR>/\"$run_dir\"}
-index_cmd=${index_cmd//<n>/1}
-index_cmd=${index_cmd//<path>/\"$WT\/link\"}
-if [ "$rc" -eq 0 ] && [ -L "$WT/link" ] && [ -n "$index_cmd" ] &&
-    (cd "$WT" && bash -c "$index_cmd") && [ ! -L "$WT/link" ] &&
+if [ "$rc" -eq 0 ] && [ -L "$WT/link" ] &&
+    recover_staged link "$idx_path" && [ ! -L "$WT/link" ] &&
     [ "$(cat "$WT/link")" = recover-staged ] && [ "$(cat "$WT/tracked.txt")" = base ] &&
     [ "$(git -C "$WT" show :link)" = recover-staged ]; then
     pass "(u3) documented staged recovery replaces the HEAD symlink and stages saved bytes without changing its target"
@@ -389,6 +395,42 @@ else
 fi
 reset_wt
 (cd "$WT" && git reset -q --hard main)
+
+# --- (u4) staged executable mode and bytes must survive the documented recovery.
+printf 'recover-executable\n' > "$WT/sub/a.sh"
+(cd "$WT" && git add sub/a.sh && git update-index --chmod=+x sub/a.sh)
+out=$(run sub/a.sh 2>&1); rc=$?
+idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
+recover_staged sub/a.sh "$idx_path"; recovery_rc=$?
+mode_line=$(git -C "$WT" ls-files -s -- sub/a.sh)
+if [ "$rc" -eq 0 ] && [ "$recovery_rc" -eq 0 ] &&
+    printf '%s\n' "$mode_line" | grep -q '^100755 ' &&
+    cmp -s <(git -C "$WT" show :sub/a.sh) <(printf 'recover-executable\n') &&
+    [ -x "$WT/sub/a.sh" ] && cmp -s "$WT/sub/a.sh" <(printf 'recover-executable\n'); then
+    pass "(u4) documented staged recovery restores executable index mode 100755 and saved bytes"
+else
+    fail "(u4) rc=$rc recovery_rc=$recovery_rc index='$mode_line' bytes='$(git -C "$WT" show :sub/a.sh)' (expected 100755 and recover-executable)"
+fi
+reset_wt
+
+# --- (u5) a staged symlink must not become a regular file of target-text bytes.
+rm "$WT/tracked2.txt"
+ln -s tracked3.txt "$WT/tracked2.txt"
+(cd "$WT" && git add tracked2.txt)
+out=$(run tracked2.txt 2>&1); rc=$?
+idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
+recover_staged tracked2.txt "$idx_path"; recovery_rc=$?
+mode_line=$(git -C "$WT" ls-files -s -- tracked2.txt)
+if [ "$rc" -eq 0 ] && [ "$recovery_rc" -eq 0 ] &&
+    printf '%s\n' "$mode_line" | grep -q '^120000 ' &&
+    cmp -s <(git -C "$WT" show :tracked2.txt) <(printf 'tracked3.txt') &&
+    [ ! -L "$WT/tracked2.txt" ] && [ "$(cat "$WT/tracked2.txt")" = base2 ] &&
+    [ "$(cat "$WT/tracked3.txt")" = base3 ]; then
+    pass "(u5) documented staged recovery restores symlink index type 120000 and saved target bytes"
+else
+    fail "(u5) rc=$rc recovery_rc=$recovery_rc index='$mode_line' bytes='$(git -C "$WT" show :tracked2.txt)' (expected 120000 and tracked3.txt)"
+fi
+reset_wt
 
 # --- (v) an unstaged deletion is recorded, then the file is restored from HEAD.
 DELETED_BACKUPS="$TMP/deleted-backups"

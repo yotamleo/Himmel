@@ -66,7 +66,29 @@ restoring. To recover, use the run directory and file number recorded in MANIFES
 
 Regular file: `rm -f <path> && cp -p <RUN_DIR>/<n>.worktree <path>`
 Symlink: `cp -RPp <RUN_DIR>/<n>.worktree <path>`
-Staged content: `rm -f <path> && cp -p <RUN_DIR>/<n>.index <path>` then `git add <path>`.
+Staged content: run from the repository root, replacing the three placeholders
+below (path is root-relative). Read the saved mode and blob ID, recreating the
+blob from the backup if it is no longer in the object database:
+
+```bash
+path='<path>'
+run_dir='<RUN_DIR>'
+n=<n>
+read -r mode sha stage saved_path < "$run_dir/$n.index-mode" &&
+{ git cat-file -e "$sha" 2>/dev/null || sha=$(git hash-object -w --no-filters "$run_dir/$n.index"); } &&
+case "$mode" in
+    100644|100755)
+        rm -f -- "$path" && cp -p -- "$run_dir/$n.index" "$path" &&
+        chmod -- "${mode#100}" "$path" ;;
+    120000) : ;;
+esac &&
+git update-index --add --cacheinfo "$mode,$sha,$path"
+```
+
+Regular entries (100644/100755) recover worktree bytes and permissions too.
+Symlink entries (120000) recover only the index; the worktree stays unchanged.
+Do not copy a symlink's target-text blob into the worktree or run git add after
+this recipe: that would replace the recovered index type with the worktree type.
 
 Never try bare `git checkout -- <path>` or `git restore` yourself to work around this.
 
