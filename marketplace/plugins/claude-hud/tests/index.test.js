@@ -174,6 +174,7 @@ test("index entrypoint runs when executed directly", async (t) => {
     if (skipIfSpawnBlocked(result, t)) return;
 
     assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, result.stderr || "non-zero exit");
     assert.ok(
       result.stdout.includes("[claude-hud] Initializing..."),
       result.stderr || result.stdout,

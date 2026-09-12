@@ -1,5 +1,4 @@
 import { test } from 'node:test';
-import { spyOn } from 'bun:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,6 +13,11 @@ import { getContextPercent, getBufferedPercent, getModelName, getProviderLabel, 
 import { estimateSessionCost, resolveSessionCost, formatUsd } from '../dist/cost.js';
 import * as fs from 'node:fs';
 
+// bun:test is only importable under bun; a static import breaks `node --test`
+// (npm test) with ERR_UNSUPPORTED_ESM_URL_SCHEME, so it's loaded dynamically
+// and only when actually running under bun.
+const bunSpyOn = typeof Bun !== 'undefined' ? (await import('bun:test')).spyOn : null;
+
 function restoreEnvVar(name, value) {
   if (value === undefined) {
     delete process.env[name];
@@ -24,15 +28,16 @@ function restoreEnvVar(name, value) {
 
 // bun's os.homedir() caches process.env.HOME at process startup and ignores
 // later mutations (unlike Node's, which reads it fresh every call), so
-// countConfigs()'s internal os.homedir() calls need a real spy, not just an
-// env var mutation, to pick up a fixture's temp home dir under bun test.
+// countConfigs()'s internal os.homedir() calls need a real spy under bun
+// test; under Node, os.homedir() re-reads HOME on every call, so the env
+// mutation alone is enough there.
 function withHome(homeDir) {
   const originalHome = process.env.HOME;
-  const homedirSpy = spyOn(os, 'homedir').mockReturnValue(homeDir);
+  const homedirSpy = bunSpyOn ? bunSpyOn(os, 'homedir').mockReturnValue(homeDir) : null;
   process.env.HOME = homeDir;
   return {
     restore() {
-      homedirSpy.mockRestore();
+      homedirSpy?.mockRestore();
       restoreEnvVar('HOME', originalHome);
     },
   };

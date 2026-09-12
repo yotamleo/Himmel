@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   7293cd093d8d29d8d016e613a0d80f8eeec284adb639cf87404cbc6f8b5dbdf0  # sha256 over VENDORED.manifest
+vendored_tree_hash:   fdc1f10bf6ada8051cb67498590fd7782dff76b4e29a151895bf7398d9f8f458  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -82,6 +82,16 @@ protected: editing it without bumping the pin trips the guard.
   treats each query as a distinct module) — fixed by spawning a real
   `node dist/index.js` child process, matching the plugin's other CLI
   tests. No `src/`/`dist/` change; pin bump is test-file-only.
+  **CR round 1 follow-up:** the `spyOn` fix's static `import { spyOn } from
+  'bun:test'` broke `npm test` (`node --test`) with
+  `ERR_UNSUPPORTED_ESM_URL_SCHEME`, since `bun:test` isn't resolvable under
+  plain Node — fixed by loading it dynamically and only when
+  `typeof Bun !== 'undefined'`, falling back to plain `process.env.HOME`
+  mutation under Node (safe there, since Node's `os.homedir()` re-reads
+  `HOME` on every call). Also added the missing `result.status === 0`
+  assertion to the spawned-child test, matching every other `spawnSync`
+  test in `tests/integration.test.js`. Verified green under both
+  `node --test` and `bun test`.
 
 - **Landed (Phase 3.3, HIMMEL-718, `extra-cmd`=B — see the plan §Decisions):** a
   generic `customLineCommand` capability. When `display.customLineCommand` is set
