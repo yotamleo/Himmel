@@ -422,6 +422,16 @@ function readAllStdin() {
   }
 }
 
+// HIMMEL-2557: spawnSync surfaces EPIPE on the parent's stdin WRITE when the
+// child exits before draining it (a guard that returns on its first line, or
+// the write racing the child's exit under load — 2d687f9c, main red
+// 2026-09-12). The child still ran to completion, so its own status/stdout/
+// stderr are the real verdict; only a numeric status proves it actually
+// exited — EPIPE with a null status stays fail-closed like any other error.
+function isRecoverableEpipe(result) {
+  return Boolean(result.error) && result.error.code === 'EPIPE' && typeof result.status === 'number';
+}
+
 // Returns the exit code rather than calling process.exit(): on Windows a pipe
 // stdout is ASYNC, so exiting immediately after a write can truncate the very
 // JSON decision this exists to deliver. The caller sets process.exitCode and
@@ -576,7 +586,7 @@ function runChain(members, lifecycle = false) {
       maxBuffer: MEMBER_MAX_BUFFER,
       windowsHide: true,   // HIMMEL-2043: no console flash per hook call
     });
-    if (result.error) {
+    if (result.error && !isRecoverableEpipe(result)) {
       // A member that outran a LIMIT of ours is not a launcher failure. Two
       // limits reach here: the per-member timeout, and the output buffer (a
       // single hook keeps `stdio: 'inherit'` and has no buffer at all, so
@@ -701,7 +711,7 @@ function main() {
     process.exit(2);
   }
   const result = spawnSync(bash, hookArgs, { input, stdio: ['pipe', 'inherit', 'inherit'], env: process.env, windowsHide: true });   // HIMMEL-2043
-  if (result.error) {
+  if (result.error && !isRecoverableEpipe(result)) {
     process.stderr.write(`run-hook-with-bash: failed to start ${bash}: ${result.error.message}\n`);
     process.exit(2);
   }
@@ -713,6 +723,7 @@ module.exports = {
   MIN_MEMBER_TIMEOUT_MS,
   MUST_RUN_CHAIN_MEMBERS,
   isKnownBadWindowsBash,
+  isRecoverableEpipe,
   isUsable,
   mergeHookOutputs,
   resolveBash,
