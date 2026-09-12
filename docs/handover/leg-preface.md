@@ -81,6 +81,9 @@ tool-permission envelope.
 
 RED first, always — one assertion that fails *before* the implementation
 exists, pasted, then green. A control that cannot fail is not evidence.
+To restore a tracked file to HEAD use `bash scripts/git/restore-to-head.sh
+<path>` — `git checkout -- <path>` is a settings deny and `git restore`
+prompts; the script saves the outgoing diff first.
 
 **Impacted suites = every suite that references a file you touched**
 (`git grep -l` from the worktree), not the suites in the directory you edited.

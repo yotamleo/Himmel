@@ -48,6 +48,24 @@ operator, don't reshape to dodge it.
 
 ---
 
+## Symptom: a leg needs a tracked file back at HEAD and `git checkout -- <path>` is denied (HIMMEL-2934)
+
+Every TDD RED control needs a way to restore a dirtied tracked file to HEAD
+before implementing, but `Bash(git checkout -- *)` is a `deny` entry in
+`.claude/settings.json` (a deny beats any allow, so an allow rule cannot fix
+this) and `git restore` matches no rule at all, so it falls to the classifier
+and resolves as a silent headless DENY (HIMMEL-203). N158 and N159 each lost
+several turns to this on 2026-09-12.
+
+**What to do:** `bash scripts/git/restore-to-head.sh <path> [<path>...]` —
+one literal command, no `cd`/`$()`/compound operators. It refuses globs,
+untracked paths, directories, and paths outside the current worktree, and it
+saves the outgoing diff for every dirty path to `${TMPDIR:-/tmp}/restore-to-head/`
+before restoring, so the discard is recoverable via `git apply`. Never try
+bare `git checkout -- <path>` or `git restore` yourself to work around this.
+
+---
+
 ## Symptom: a Jira write fell through to the classifier and was DENIED (HIMMEL-205 / 203)
 
 In auto-mode the `auto-approve-safe-bash` hook grants the Jira CLI wholesale —
