@@ -130,9 +130,38 @@ distinguishes from self-verification).
   create it (`gh repo fork <upstream> --clone=false`) before cloning.
 - Toolchain preconditions first: verify the repo's build/test tools exist
   (`bun`/`node`/`make`/python — read its CI + CONTRIBUTING) before cloning.
-- Fresh clone; branch cut from **current upstream default branch** — never from
-  the fork's own drifted main. Two PRs → two independent clones (no
-  shared-worktree resets; each branch provably cut from clean main).
+- Fresh clone, **full depth** (never `--depth 1` — a shallow clone breaks the
+  CR pre-push gate later, see below); branch cut from **current upstream
+  default branch** — never from the fork's own drifted main. Two PRs → two
+  independent clones (no shared-worktree resets; each branch provably cut
+  from clean main).
+- **Build in a linked worktree of the clone, never in the clone itself**
+  (HIMMEL-2926): the clone is a primary checkout, so the first edit inside it
+  is refused by `block-edit-on-main` (worktree-isolation shape). Cut a linked
+  worktree and edit there instead: `git -C <clone-path> checkout --detach
+  origin/<default>` (a fresh clone starts on a local `<default>` branch, not
+  detached — do this first so the claim below holds), then `git -C
+  <clone-path> worktree add <clone-path>-wt-<slug> -b <branch>
+  origin/<default>`. The clone itself now sits detached at
+  `origin/<default>`; the worktree
+  (`<clone-path>-wt-<slug>`) is the cwd for every edit and for the separate
+  `/pr-check` session below. The clone's own `.single-writer` opt-out does
+  **not** fix this — `block-write-into-main-checkout` refuses to create that
+  file in the clone too (HIMMEL-2946, filed, unresolved); don't try it.
+- **Depth rule:** if you're starting from an existing `--depth 1` clone,
+  `git remote add fork <fork-url>` (step 6's remote, added here early — a
+  bare `git fetch fork` with no `fork` remote configured fails before the
+  gate even runs), then `git fetch --unshallow origin`, then `git fetch fork`
+  BEFORE step 6's push. A shallow clone shares no history with the fork, so
+  the CR pre-push gate refuses twice: first `no tracking ref
+  refs/remotes/fork/main for pushed remote 'fork'` (its own remedy: `git
+  fetch fork`), then `cannot compute diff vs refs/remotes/fork/main (<sha>)
+  … no merge base` (remedy: unshallow origin, re-fetch fork, retry the push
+  once — no `SKIP_CR`, no `--no-verify`). Recognise both texts verbatim.
+  Cloning full depth up front avoids the merge-base failure, but not the
+  missing-tracking-ref one — that one only goes away once `fork` is added
+  and fetched, which step 6 does before its first push regardless of clone
+  depth.
 - **Never cherry-pick a fork/vendored commit** — not even `-n`. Hand-apply the
   hunks and author a fresh commit message in the upstream repo's own style.
   Fork commits carry internal ticket IDs and internal diff context; a
@@ -147,7 +176,9 @@ distinguishes from self-verification).
   to our own repos.
 - **Baseline before change:** run the repo's OWN gates (its lint + test
   scripts, from its `package.json`/`Makefile`/CI — not assumed equivalents) on
-  the clean clone first, redirected (never piped through `tee` — that makes
+  the clean clone first (a read-only run — no edits — so this is the one
+  explicit exception to "never build in the clone itself" above; it needs no
+  worktree), redirected (never piped through `tee` — that makes
   `$?` tee's exit code and can mask a failing gate): `<gate-cmd> >
   <scratchpad>/<name>.log 2>&1; rc=$?`, writing the log to the scratchpad,
   NEVER into the clone (release tooling and CI reject dirty trees). A non-zero
@@ -165,8 +196,11 @@ distinguishes from self-verification).
   (HIMMEL-2226, operator ruling 2026-08-31) — cwd alone selects the repo
   under review, and no `cd` can stand in for that, so the review is NOT a
   continuation of the session that just built and armed the clone. Start a
-  **separate session whose cwd IS `<clone-path>`** and run a bare
-  `/pr-check` there; its 0a-adopter step resolves the himmel scripts from
+  **separate session whose cwd IS `<clone-path>-wt-<slug>`** (the linked
+  worktree, never the detached clone — `/pr-check` selects the repo, branch
+  and `HEAD` from its own session cwd, and the clone itself has no branch
+  checked out) and run a bare `/pr-check` there; its 0a-adopter step
+  resolves the himmel scripts from
   the gate just armed above. This is in addition to the adversarial review
   on security fixes (step 3), not instead of it.
 
@@ -258,8 +292,10 @@ after publication as redundant defense only.
 
 ## 6. File
 
-- Push to the EXISTING fork (`git remote add fork <fork-url>`; `git push -u
-  fork <branch>`); open cross-fork PRs: `gh pr create --repo <upstream> --head
+- Push to the EXISTING fork (`git remote add fork <fork-url>` — skip this if
+  the depth-rule recovery above already added it, or `git remote add fork`
+  errors "remote fork already exists"; `git fetch fork`; `git push -u fork
+  <branch>`); open cross-fork PRs: `gh pr create --repo <upstream> --head
   <fork-owner>:<branch> --title "<title>" --body-file <path>` (body via file,
   never inline; `--title` is required — `gh pr create` errors non-interactively
   without it). `--head <user>:<branch>` takes the fork's OWNER login, not an
@@ -315,3 +351,5 @@ after publication as redundant defense only.
 | Testing only after the change | Without a clean-main baseline you can't attribute failures. Baseline → change → parity. |
 | Dupe-checking only open PRs | Closed PRs, issues, and dependabot PRs are where the dupes live. `--state all`, issues AND PRs. |
 | Auto-picking the security channel | Disclosure under the operator's identity is not retractable. Draft; operator submits. |
+| Editing straight in the throwaway clone | It's a primary checkout on main; `block-edit-on-main` refuses the first edit. Build in a linked worktree instead. |
+| Cloning `--depth 1` and pushing to the fork later | No merge base with the fork means the CR pre-push gate refuses twice. Clone full depth, or unshallow before step 6. |
