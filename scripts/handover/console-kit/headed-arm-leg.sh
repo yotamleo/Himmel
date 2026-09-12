@@ -245,8 +245,15 @@ if [ -n "$PROFILE" ]; then
     PROFILE_SETTINGS="$(dirname "$LOG")/$NAME.leg-settings.json"
     # (HIMMEL-2990) Native lane only: the brief's own contract, re-injected by
     # the compact-matcher SessionStart hook below instead of ridden in the
-    # preface on every call.
-    PROFILE_CONTRACT="$(dirname "$LOG")/$NAME.leg-contract.md"
+    # preface on every call. Resolved to an absolute path (CR round 2,
+    # codex-1): the hook command re-parses this path in the leg's OWN process
+    # at fire time, whose cwd need not match this launcher's cwd, so a
+    # relative path would silently miss.
+    _leg_log_dir="$(cd "$(dirname "$LOG")" && pwd)" || {
+        echo "headed-arm-leg: --profile $PROFILE: cannot resolve log directory for $LOG" >&2
+        exit 2
+    }
+    PROFILE_CONTRACT="$_leg_log_dir/$NAME.leg-contract.md"
     for _leg_need in "$PROFILES_MJS" "$LEG_SHIM" "$LEG_PREFACE"; do
         if [ ! -f "$_leg_need" ]; then
             echo "headed-arm-leg: --profile $PROFILE: required file missing: $_leg_need" >&2
