@@ -2889,8 +2889,15 @@ function posixCandidateIsThisCheckout(cmdline, pid, thisCheckoutAnchor, checkout
   } catch (e) {
     return { counted: false, excludedNote: `pid ${pid} bare-token cwd unreadable (${e.code || e.message})` };
   }
-  const normCwd = normalizeForPollerAnchorMatch(cwd);
-  const normRoot = normalizeForPollerAnchorMatch(checkoutRoot);
+  // Case-SENSITIVE on purpose, unlike the pathed-token branch above: this
+  // compares two POSIX filesystem paths (a live cwd readlink, this
+  // checkout's own root), where Linux paths are case-sensitive by design —
+  // normalizeForPollerAnchorMatch's lowercasing exists for the pathed-token
+  // anchor, which also has to match a case-insensitive Windows CommandLine.
+  // Lowercasing here would fold e.g. /work/Himmel and /work/himmel together
+  // and could count a foreign checkout as this one (CR gap, HIMMEL-2936).
+  const normCwd = cwd.replace(/\\/g, '/');
+  const normRoot = checkoutRoot.replace(/\\/g, '/');
   if (normCwd === normRoot) return { counted: true };
   if (normCwd.startsWith(`${normRoot}/`)) {
     // A worktree's own directory lives nested under its primary checkout

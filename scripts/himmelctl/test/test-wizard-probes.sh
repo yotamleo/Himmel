@@ -5038,6 +5038,29 @@ else
 fi
 rm -f "$bh_posix_state/no-unit"
 
+# ── control (e) HIMMEL-2936 (CodeRabbit CR fix): a bare-token candidate whose
+# cwd matches this checkout's root ONLY case-insensitively must NOT be counted
+# -- POSIX paths are case-sensitive, so lowercasing the comparison (as the
+# pathed-token branch's anchor helper does, for Windows' benefit) would fold
+# a same-named-different-case DIFFERENT directory into this checkout ────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+ln -sf "${repo_root^^}" "$bh_proc_root/9201/cwd"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxS=$(BH_PGREP_N=1 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxS" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): a bare-token sweep match whose cwd differs from this checkout's root only by case must not be counted (got: $outBHlinuxS)"
+  echo "$outBHlinuxS" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (Linux): case-mismatch exclusion should read count 0 (got: $outBHlinuxS)"
+  echo "$outBHlinuxS" | jq -e '.detail | contains("9201")' >/dev/null \
+    || fail "bridge-health (Linux): detail should name the excluded case-mismatched pid 9201 (got: $outBHlinuxS)"
+  echo "ok: bridge-health (Linux) — sweep bare-token match whose cwd differs only by case is excluded, count 0, detail names 9201 (HIMMEL-2936 CodeRabbit)"
+else
+  echo "SKIP: bridge-health (Linux) control (e) HIMMEL-2936: no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
+
 # ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
 # Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)
 # present when bridge.enabled; warn when enabled but persistence is absent.
