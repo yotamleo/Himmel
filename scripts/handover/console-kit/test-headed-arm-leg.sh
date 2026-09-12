@@ -469,6 +469,36 @@ else
   echo "ok - --profile: --dry-run writes nothing"
 fi
 
+# HIMMEL-2959: inspect the real seeded settings and the same resolver used by
+# --dry-run; checking only the profile= line would miss dropped permissions.
+rc=0
+node --input-type=module - "$d17/HIMMEL-3333-leg.leg-settings.json" <<'NODE' || rc=$?
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const settings = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+assert.ok(settings.permissions?.allow.includes('Bash(bash scripts/handover/merge-on-green.sh:*)'));
+NODE
+check "full launch --profile: seeded settings carry gate permissions" "$rc" "0"
+
+rc=0
+node "$HERE/../../lanes/plugin-profiles.mjs" leg-impl > "$tmp/resolved-leg.json" || rc=$?
+check "--dry-run leg-impl: resolver succeeds" "$rc" "0"
+rc=0
+node -e 'const j=require(process.argv[1]); if (!j.permissions?.allow.includes("Bash(bash scripts/cr/ledger-append.sh:*)")) process.exit(1)' "$tmp/resolved-leg.json" || rc=$?
+check "--dry-run leg-impl: resolved settings carry permissions.allow" "$rc" "0"
+
+rc=0
+bareprof="$(bash "$SCRIPT" --dry-run --profile bare HIMMEL-9999-bare some/doc.md /tmp/nosig 99999999999 "$tmp/bare.log" claude-sonnet-5 2>&1)" || rc=$?
+check "--dry-run bare: exit 0" "$rc" "0"
+contains "--dry-run bare: names profile and settings" "$bareprof" \
+  "profile=bare settings=$tmp/HIMMEL-9999-bare.leg-settings.json"
+rc=0
+node "$HERE/../../lanes/plugin-profiles.mjs" bare > "$tmp/resolved-bare.json" || rc=$?
+check "--dry-run bare: resolver succeeds" "$rc" "0"
+rc=0
+node -e 'const j=require(process.argv[1]); if (Object.hasOwn(j,"permissions")) process.exit(1)' "$tmp/resolved-bare.json" || rc=$?
+check "--dry-run bare: resolved settings have no permissions" "$rc" "0"
+
 # LEG_PROFILE is the env equivalent, and the flag wins over it.
 envprof="$(LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
 contains "LEG_PROFILE=leg-impl is honoured like the flag" "$envprof" "profile=leg-impl"

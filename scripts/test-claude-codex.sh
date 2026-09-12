@@ -68,6 +68,19 @@ run_launcher_expect() {
   echo "ok: $name"
 }
 
+# HIMMEL-2959: sanitize_settings must preserve operator-owned allow rules.
+setup
+printf '%s\n' '{"model":"discard-me","permissions":{"allow":["Bash(bash scripts/check-ci.sh:*)"],"deny":["Bash(git push --force:*)"]}}' > "$FAKEHOME/.claude/settings.json"
+run_launcher "sanitize_settings preserves permissions.allow unchanged"
+node - "$FAKEHOME/.claude/settings.json" "$FAKEHOME/.claude-codex/settings.json" <<'NODE' || FAILS=$((FAILS + 1))
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const source = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const seeded = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+assert.deepStrictEqual(seeded.permissions, source.permissions);
+assert.ok(!Object.hasOwn(seeded, 'model'));
+NODE
+
 # A named model reaches the load-bearing seeded CLAUDE.md stanza at the file end.
 setup
 MODEL="gpt-5.6-terra"

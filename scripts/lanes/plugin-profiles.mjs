@@ -21,6 +21,29 @@ const REGISTRY = process.env.PLUGIN_PROFILES_REGISTRY || join(SCRIPT_DIR, 'plugi
 // plugin id (see catalog) matches this.
 const ID_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+$/;
 
+// HIMMEL-2959: positive rule shapes, not a generic Bash allowlist. In a
+// quiet-run rule the label AND directory are literal; a wildcard before the
+// suite basename can absorb a different executed program plus a fake tail.
+const GATE_SCRIPT_RE = /^Bash\(bash scripts\/(?:handover\/(?:merge-on-green|queue-lock)|handover\/console-kit\/inbox-send|cr\/(?:write-verdicts|clear-cr-marker|panel-first-pass|ledger-append)|check-ci)\.sh:\*\)$/;
+const GATE_PUSH_RE = /^Bash\(git push -u origin (?:feat|fix|chore|docs|refactor|test)\/\*\)$/;
+const GATE_SUITE_RE = /^Bash\((?:SUITE_LOCK_WAIT=60 )?bash scripts\/quiet-run\.sh suite -- bash (?:scripts\/(?:handover\/console-kit\/|(?:handover|cr|git|hooks|guardrails|lib|luna|ci)\/)?|templates\/luna-second-brain\/scripts\/)test-\*\.sh\)$/;
+const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content']);
+
+function validateGateAllow(errors, rules) {
+  if (rules === undefined) return; // older custom registries do not opt in
+  if (!Array.isArray(rules) || rules.length === 0) {
+    errors.push('gateAllow must be a non-empty array of Bash rules');
+    return;
+  }
+  for (const rule of rules) {
+    if (typeof rule !== 'string' || /[\r\n]/.test(rule)
+      || ['--force', '--no-verify', '--amend', 'reset --hard', 'origin main', '..', '$'].some((s) => rule.includes(s))
+      || ![GATE_SCRIPT_RE, GATE_PUSH_RE, GATE_SUITE_RE].some((re) => re.test(rule))) {
+      errors.push(`gateAllow rule ${JSON.stringify(rule)} must name a guarded himmel gate, a literal-directory test-* suite, or a type/slug push`);
+    }
+  }
+}
+
 // mcpCatalog url/command/args credential-literal guard (glm-3): unlike env/
 // headers (which must be a BARE $VAR reference, nothing else — see
 // validateRegistry), these fields are ordinary invocation literals, so a
@@ -148,6 +171,12 @@ function validateProfileSpec(errors, name, spec, catalogSet, floorSet) {
     if (spec.drop !== undefined) errors.push('profile "bare" must not declare drop — bare already resolves to floor-only, a drop list is meaningless there');
     if (spec.disallowedTools !== undefined) errors.push('profile "bare" must not declare disallowedTools — bare has no base capability to restrict');
   }
+  if (spec.gateAllow !== undefined && typeof spec.gateAllow !== 'boolean') {
+    errors.push(`profile "${name}" gateAllow must be a boolean`);
+  }
+  if (spec.gateAllow === true && !LEG_PROFILES.has(name)) {
+    errors.push(`profile "${name}" gateAllow is restricted to leg-shaped profiles`);
+  }
   validateIdList(errors, spec.enable, catalogSet, `profile "${name}" enable`);
   if (spec.drop !== undefined) {
     if (!Array.isArray(spec.drop)) {
@@ -192,6 +221,7 @@ function validateProfileSpec(errors, name, spec, catalogSet, floorSet) {
 // resolveProfile so a resolve stays cheap and a validator can gate the JSON.
 export function validateRegistry(registry) {
   const errors = [];
+  validateGateAllow(errors, registry?.gateAllow);
   const floor = registry?.floor;
   const catalog = registry?.catalog;
   const profiles = registry?.profiles;
@@ -277,6 +307,9 @@ export function validateRegistry(registry) {
     // below, unconditionally, whenever "bare" IS present.
     for (const [name, spec] of Object.entries(profiles)) {
       validateProfileSpec(errors, name, spec, catalogSet, floorSet);
+      if (spec?.gateAllow === true && registry.gateAllow === undefined) {
+        errors.push(`profile "${name}" gateAllow requires the registry gateAllow list`);
+      }
     }
   }
   return errors;
@@ -355,6 +388,9 @@ export function resolveProfile(registry, name, opts = {}) {
   for (const id of (Array.isArray(spec?.enable) ? spec.enable : [])) enabledPlugins[id] = true; // 3. profile.enable on
   for (const id of addPlugins) enabledPlugins[id] = true;                 // 4. per-dispatch overlay on
   for (const id of (registry.floor ?? [])) enabledPlugins[id] = true;     // 5. floor forced on, LAST (inviolable)
+  if (spec?.gateAllow === true) {
+    return { enabledPlugins, permissions: { allow: [...registry.gateAllow] } };
+  }
   return { enabledPlugins };
 }
 
