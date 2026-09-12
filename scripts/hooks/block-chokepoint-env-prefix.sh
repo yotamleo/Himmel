@@ -147,6 +147,25 @@
 # inspection -- `export SEAM=1` denies too, a documented arming-direction
 # over-deny).
 #
+# HIMMEL-2939 (the fourth clearing shape): `let`/`declare`/`typeset`/
+# `readonly` all assign in the CURRENT shell exactly like a plain assignment
+# word (HIMMEL-2933) does, `printf -v NAME` and `read NAME` write a shell
+# variable the same way, and the legacy `$[NAME=0]` arithmetic construct
+# assigns too, all with no `unset`/`export -n`/`env -u`/plain assignment in
+# sight. Same fail-closed posture, resolved against the SAME registered-name
+# set: for `let`/`declare`/`typeset`/`readonly`/`read`, every remaining word
+# that does not start with `-`, `=`-suffix stripped, is a candidate name
+# (declare -p NAME denies too -- documented over-deny, no option-validity
+# model); for `printf`, only `-v`'s operand (attached `-vNAME` or the next
+# word) is a candidate -- printf's other arguments are format/data, not
+# names. All fold into UNSET_NAMES for later segments exactly like `unset`
+# does. `$[...]` is not a segmentation boundary (unlike `$(`/backtick) --
+# a segment containing the literal `$[` anywhere has every `NAME=` word in
+# it folded into UNSET_NAMES too, no bracket-depth tracking, same fail-closed
+# direction. `local` is function-scoped and cannot precede a top-level
+# chokepoint, so it is not modelled; `mapfile`/`readarray` target arrays,
+# never a scalar seam, so they are not modelled either.
+#
 # The round-2 '(' carve-out is CLOSED: an unquoted '(' / ')' / backtick
 # (and `$(` / backtick inside double quotes) opens a fresh command
 # position via segmentation, so subshell, $(...), and backtick-wrapped
@@ -803,7 +822,33 @@ scan_segment() {
     local phase="${4:-start}"
     local env_endopts=0 lo_out lo_verdict lo_operand
     local cluster_out cluster_verdict cluster_operand
+    local n
     names="$inames"
+    # HIMMEL-2939 (collapse, CR round 4 -- console ruling on the pattern
+    # that parked HIMMEL-2929 and ended #635 at round 5): `$[NAME=0]`
+    # (legacy arithmetic expansion) is not a segmentation boundary the way
+    # `$(`/backtick are, so it never opens a fresh command position of its
+    # own. Three straight rounds each found the next arithmetic-operator
+    # shape a validity model missed (bare `=`, compound `*=`/`+=`, prefix
+    # AND postfix `++`/`--`) -- there is always one more operator. STOP
+    # parsing `$[...]`'s grammar: any registered seam var (across every
+    # chokepoint, not just the one this payload happens to target --
+    # ALL_SEAM_VARS, computed once from the registry) occurring anywhere
+    # in a segment carrying the literal `$[`, WORD-BOUNDED (the char
+    # before/after is not `[A-Za-z0-9_]`, so a longer name sharing the
+    # registered name's PREFIX does not match), folds forward -- no
+    # bracket-depth tracking, no operator inspection at all. Documented
+    # over-deny: `$[HIMMEL_CONSOLE_LEG+1]` (reads the seam, does not clear
+    # it) denies too -- costs nothing; a false ALLOW is the defect class
+    # this ticket exists for.
+    if [[ $seg == *'$['* ]]; then
+        for n in $ALL_SEAM_VARS; do
+            [ -n "$n" ] || continue
+            if [[ $seg =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
+                UNSET_NAMES="$UNSET_NAMES $n"
+            fi
+        done
+    fi
     # ':'-sentinel stream (r6): a blank line is a stream artifact (no
     # word); the line ':' is a zero-length word and MUST take its slot in
     # W -- real getopt consumes it as an operand (env -a '' SEAM=1 cmd
@@ -1038,6 +1083,109 @@ scan_segment() {
                 done
                 return 0
                 ;;
+            let|declare|typeset|readonly)
+                # HIMMEL-2939 (collapse, CR round 4 -- console ruling, same
+                # shape as #635 round 5 and the HIMMEL-2929 park): three
+                # straight rounds each found the next `let` operator shape a
+                # validity model missed (bare `=`, compound `*=`/`+=`,
+                # comma-joined `,NAME=`, prefix `++`, postfix AFTER a comma)
+                # -- modelling this grammar never terminates, there is
+                # always one more operator. STOP: do not parse `=`, commas,
+                # `++`/`--` or leading identifiers at all. Any registered
+                # seam var (across every chokepoint -- ALL_SEAM_VARS,
+                # computed once from the registry) occurring anywhere in a
+                # remaining word, WORD-BOUNDED (the char before/after is not
+                # `[A-Za-z0-9_]`, so a longer name sharing the registered
+                # name's PREFIX does not match), folds forward regardless of
+                # assignment shape (`declare -p NAME` denies too, a
+                # documented over-deny). Documented over-deny: `let
+                # x=HIMMEL_CONSOLE_LEG+1` (reads the seam, does not clear
+                # it) denies too -- costs nothing; a false ALLOW is the
+                # defect class this ticket exists for.
+                #
+                # CR round 5 (console ruling): round 4 still skipped every
+                # dash-prefixed word (`-*) ;;`) as if it were an option --
+                # that skip IS grammar modelling in disguise. `let`
+                # evaluates each operand as arithmetic, where a LEADING `--`
+                # after the `--` option-terminator is the prefix-decrement
+                # operator, not a flag: `let -- '--HIMMEL_CONSOLE_LEG'`
+                # genuinely decrements the seam (verified live) and the
+                # dash-skip hid it from the scan. Deleted: every remaining
+                # word, dash-prefixed or not, goes through the word-bounded
+                # scan unconditionally -- `-` is outside `[A-Za-z0-9_]`, so
+                # the word-boundary match already handles it correctly.
+                k=$((j + 1))
+                while [ "$k" -lt "$nw" ]; do
+                    for n in $ALL_SEAM_VARS; do
+                        [ -n "$n" ] || continue
+                        if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
+                            UNSET_NAMES="$UNSET_NAMES $n"
+                        fi
+                    done
+                    k=$((k + 1))
+                done
+                return 0 ;;
+            read)
+                # HIMMEL-2939 (collapse, CR round 4 continued -- console
+                # ruling): `read NAME [NAME2 ...]` assigns every operand
+                # name, but an operand can also be an ARRAY-ELEMENT form
+                # (`NAME[0]`) -- whole-word capture folded the literal
+                # "NAME[0]" text, which never exact-matched the registered
+                # "NAME" in check_invocation. Same fix as `let`/`declare`/
+                # `$[...]`: word-bounded substring match against
+                # ALL_SEAM_VARS instead of capturing the whole word (a
+                # `-p`/`-d` option's OWN operand is scanned too, documented
+                # over-deny, no option-argument modelling).
+                #
+                # CR round 5 (console ruling): same `-*) ;;` deletion as the
+                # `let` arm above, for consistency -- no option-shape
+                # modelling anywhere in this collapse, every remaining word
+                # goes through the scan unconditionally.
+                k=$((j + 1))
+                while [ "$k" -lt "$nw" ]; do
+                    for n in $ALL_SEAM_VARS; do
+                        [ -n "$n" ] || continue
+                        if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
+                            UNSET_NAMES="$UNSET_NAMES $n"
+                        fi
+                    done
+                    k=$((k + 1))
+                done
+                return 0 ;;
+            printf)
+                # HIMMEL-2939 (collapse, CR round 4 continued -- console
+                # ruling): unlike unset/export/read, printf's other words are
+                # a format string and data, not names -- only `-v`'s operand
+                # (attached or the next word) is a candidate, but that
+                # operand can also be an array-element form (`NAME[0]`) --
+                # same word-bounded substring match against ALL_SEAM_VARS as
+                # the `read` arm, instead of capturing the whole word.
+                k=$((j + 1))
+                while [ "$k" -lt "$nw" ]; do
+                    case "${W[$k]}" in
+                    -v)
+                        if [ $((k + 1)) -lt "$nw" ]; then
+                            for n in $ALL_SEAM_VARS; do
+                                [ -n "$n" ] || continue
+                                if [[ "${W[$((k + 1))]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
+                                    UNSET_NAMES="$UNSET_NAMES $n"
+                                fi
+                            done
+                        fi
+                        k=$((k + 2)); continue ;;
+                    -v?*)
+                        for n in $ALL_SEAM_VARS; do
+                            [ -n "$n" ] || continue
+                            if [[ "${W[$k]#-v}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
+                                UNSET_NAMES="$UNSET_NAMES $n"
+                            fi
+                        done
+                        k=$((k + 1)); continue ;;
+                    -*) k=$((k + 1)); continue ;;
+                    *) break ;;
+                    esac
+                done
+                return 0 ;;
             esac
             # The invoked-program token of this segment. Words beyond it
             # are arguments and never match (the finding-4 direction).
@@ -1082,6 +1230,17 @@ scan_text() {
 # its only consumer. An empty/unreadable registry allows (fail-open).
 REG_LINES=$(jq -r 'to_entries[] | "\(.key)\t\((.value.seam_env_vars // []) | join(" "))"' "$REGISTRY" 2>/dev/null) || REG_LINES=''
 [ -n "$REG_LINES" ] || exit 0
+
+# HIMMEL-2939 (collapse, CR round 4): every seam var name across every
+# chokepoint, flattened once -- scan_segment's `let`/`declare`/`$[...]`
+# folds check membership against THIS (the registry's own var set), never
+# against `$names` (the per-segment accumulator check_invocation reads,
+# not a source of truth for "is this name registered anywhere").
+ALL_SEAM_VARS=''
+while IFS=$'\t' read -r _reg_path _reg_vars; do
+    _reg_vars=${_reg_vars%"$CR"}
+    ALL_SEAM_VARS="$ALL_SEAM_VARS $_reg_vars"
+done <<<"$REG_LINES"
 
 scan_text "$cmd_flat" "" 0
 

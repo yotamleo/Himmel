@@ -200,6 +200,90 @@ assert_deny "unset NAME -f (both readings still clear the seam)"    "$(j "unset 
 assert_deny "unset -x NAME (documented over-deny -- bash refuses, touches nothing)" "$(j "unset -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 assert_deny "export -n -x NAME (documented over-deny -- bash refuses, touches nothing)" "$(j "export -n -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 
+# --- HIMMEL-2939 (the fourth clearing shape): six MORE ways an earlier
+# segment clears a registered seam with no `unset`/`export -n`/`env -u`/plain
+# assignment in sight -- `let`/`declare`/`typeset`/`printf -v`/`read` all
+# assign in the CURRENT shell, and the legacy `$[NAME=0]` arithmetic
+# construct assigns too. Same fail-closed posture as HIMMEL-2927/2933: no
+# option-validity model, every non-option word (after any `-v` for `printf`)
+# is a candidate name, folded into UNSET_NAMES for later segments. The
+# `$((SEAM=0))` control (already denied via the existing `$(` carve-out,
+# unrelated to this change) stays DENY. ---
+assert_deny "legacy \$[NAME=0] arithmetic assigns the seam"      "$(j "echo \$[HIMMEL_CONSOLE_LEG=0]; bash $MERGE_ON_GREEN 1")"
+assert_deny "let NAME=0 assigns the seam"                        "$(j "let HIMMEL_CONSOLE_LEG=0; bash $MERGE_ON_GREEN 1")"
+assert_deny "declare NAME=0 assigns the seam"                    "$(j "declare HIMMEL_CONSOLE_LEG=0; bash $MERGE_ON_GREEN 1")"
+assert_deny "typeset NAME= assigns the seam to empty"            "$(j "typeset HIMMEL_CONSOLE_LEG=; bash $MERGE_ON_GREEN 1")"
+assert_deny "printf -v NAME writes the seam"                     "$(j "printf -v HIMMEL_CONSOLE_LEG 0; bash $MERGE_ON_GREEN 1")"
+assert_deny "read NAME <<< 0 writes the seam"                    "$(j "read HIMMEL_CONSOLE_LEG <<< 0; bash $MERGE_ON_GREEN 1")"
+assert_deny "read -r a NAME b (name anywhere in read's word list)" "$(j "read -r a HIMMEL_CONSOLE_LEG b <<< '1 2 3'; bash $MERGE_ON_GREEN 1")"
+assert_deny "declare -p NAME (documented over-deny -- no -p inspection)" "$(j "declare -p HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "\$((NAME=0)) control (pre-existing, via the \$( carve-out)" "$(j "\$((HIMMEL_CONSOLE_LEG=0)); bash $MERGE_ON_GREEN 1")"
+# Over-match control: unaffected.
+assert_allow "let x=1 (no seam) stays allowed"                   "$(j "let x=1; bash $MERGE_ON_GREEN 1")"
+
+# --- HIMMEL-2939 CR round (codex-1): compound arithmetic-assignment
+# operators glued onto the name (`let NAME*=0`) escaped both the `%%=*`
+# suffix-strip (left `NAME*` as the folded name, which never matches the
+# registered `NAME`) and the `$[...]` bracket regex's bare `NAME=` match
+# (no `=` immediately follows the identifier). Fixed by matching the
+# LEADING identifier instead of stripping from the first `=`. ---
+assert_deny "let NAME*=0 (compound arithmetic op) assigns the seam"        "$(j "let HIMMEL_CONSOLE_LEG*=0; bash $MERGE_ON_GREEN 1")"
+assert_deny "legacy \$[NAME*=0] (compound arithmetic op) assigns the seam" "$(j "echo \$[HIMMEL_CONSOLE_LEG*=0]; bash $MERGE_ON_GREEN 1")"
+
+# --- HIMMEL-2939 CR round 2 (codex-1): a single `let` operand can comma-join
+# multiple arithmetic assignments -- everything after the first comma was
+# invisible to the leading-identifier-only match (codex-1). (codex-2):
+# `++`/`--` prefix or postfix WRITES the operand without ever producing a
+# bare `=`, so the `=`-anchored `let`/`declare` leading match and the
+# `$[...]` bracket-fold both missed it. Fixed by adding comma-joined and
+# prefix/postfix inc/dec fold passes at both sites. ---
+assert_deny "let comma-joined assignment (NAME after comma) assigns the seam" "$(j "let 'x=0,HIMMEL_CONSOLE_LEG=0'; bash $MERGE_ON_GREEN 1")"
+assert_deny "let prefix ++NAME assigns the seam"                    "$(j "let '++HIMMEL_CONSOLE_LEG'; bash $MERGE_ON_GREEN 1")"
+assert_deny "let postfix NAME-- assigns the seam"                   "$(j "let 'HIMMEL_CONSOLE_LEG--'; bash $MERGE_ON_GREEN 1")"
+assert_deny "legacy \$[--NAME] (prefix decrement) assigns the seam" "$(j "echo \$[--HIMMEL_CONSOLE_LEG]; bash $MERGE_ON_GREEN 1")"
+assert_deny "legacy \$[NAME++] (postfix increment) assigns the seam" "$(j "echo \$[HIMMEL_CONSOLE_LEG++]; bash $MERGE_ON_GREEN 1")"
+
+# --- HIMMEL-2939 CR round 4 (collapse, console ruling): three straight
+# rounds each found the next `let` arithmetic-operator shape (bare `=`,
+# compound `*=`, comma-join, prefix `++`, now postfix AFTER a comma) a
+# validity model missed -- codex-1 this round: `let 'x=0,NAME--'` still
+# escaped because the comma-joined scan only matched `=` or prefix
+# `++`/`--`, not postfix after a comma. Ruling: stop parsing `let`
+# grammar entirely -- any registered seam name occurring anywhere in a
+# remaining word, WORD-BOUNDED (the char before/after is not
+# [A-Za-z0-9_]), folds forward regardless of assignment shape. Documented
+# over-deny: reading the seam without clearing it denies too -- costs
+# nothing, and a false ALLOW is the defect class this ticket exists for.
+# The word-boundary control (a longer name sharing the registered name's
+# PREFIX) stays ALLOW. ---
+assert_deny "let comma-joined THEN postfix (NAME-- after comma) assigns the seam" "$(j "let 'x=0,HIMMEL_CONSOLE_LEG--'; bash $MERGE_ON_GREEN 1")"
+assert_deny "let x=NAME+1 (reads, does not clear -- documented over-deny)" "$(j "let 'x=HIMMEL_CONSOLE_LEG+1'; bash $MERGE_ON_GREEN 1")"
+assert_allow "let NAME_LONGER=0 (word boundary -- shares the registered name's PREFIX, not equal)" "$(j "let HIMMEL_CONSOLE_LEGACY=0; bash $MERGE_ON_GREEN 1")"
+
+# --- HIMMEL-2939 (collapse, round 4 continued -- console ruling named
+# `printf -v` and `read` for the SAME treatment as `let`/`declare`/`$[...]`):
+# both builtins also accept an ARRAY-ELEMENT operand (`NAME[0]`), which bash
+# assigns into NAME exactly like a bare `NAME` operand -- but the pre-collapse
+# code captured the whole word (`${W[$k]%%=*}`) as the candidate, so
+# `HIMMEL_CONSOLE_LEG[0]` was folded as the literal 8-byte-longer name
+# "HIMMEL_CONSOLE_LEG[0]", which never exact-matches the registered
+# "HIMMEL_CONSOLE_LEG" in check_invocation. Same fix: word-bounded substring
+# match against ALL_SEAM_VARS instead of whole-word capture. ---
+assert_deny "read NAME[0] (array-element assignment) assigns the seam"        "$(j "read HIMMEL_CONSOLE_LEG[0] <<< 0; bash $MERGE_ON_GREEN 1")"
+assert_deny "printf -v NAME[0] (array-element assignment) writes the seam"    "$(j "printf -v HIMMEL_CONSOLE_LEG[0] 0; bash $MERGE_ON_GREEN 1")"
+assert_allow "read NAME_LONGER (word boundary -- shares the PREFIX, not equal)" "$(j "read HIMMEL_CONSOLE_LEGACY <<< 0; bash $MERGE_ON_GREEN 1")"
+
+# --- HIMMEL-2939 CR round 5 (console ruling): the round-4 collapse still
+# skipped every dash-prefixed word (`-*) ;;`) in the let/declare/typeset/
+# readonly and read arms before scanning, reasoning it was an option/flag.
+# That skip is itself an unwanted grammar model: bash's `let` treats a
+# LEADING `--` on an operand, after the `--` option-terminator word, as the
+# prefix-decrement operator, not a flag -- `let -- '--HIMMEL_CONSOLE_LEG'`
+# genuinely decrements the seam (verified live). Fix: delete the skip: every
+# remaining word, dash-prefixed or not, goes through the word-bounded scan. ---
+assert_deny "let -- '--NAME' (arithmetic prefix-decrement operand; dash-skip hid it)" "$(j "let -- '--HIMMEL_CONSOLE_LEG'; bash $MERGE_ON_GREEN 1")"
+assert_allow "let -- x=1 (control -- no seam name present)" "$(j "let -- x=1; bash $MERGE_ON_GREEN 1")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied
