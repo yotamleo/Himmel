@@ -2966,7 +2966,10 @@ function probeBridgePollerCountPosix(ctx) {
           if (sweep.error) {
             return { actual: 'degraded', detail: `could not run the system-wide pgrep sweep for telegram-bridge.service: ${sweep.error.message} — process identity is UNVERIFIED, not assumed healthy` };
           }
-          if (sweep.pids) sweep.pids.forEach((pid) => verifiedPids.add(pid));
+          if (sweep.pids === null) {
+            return { actual: 'degraded', detail: 'no pgrep on PATH to run the system-wide sweep for telegram-bridge.service (HIMMEL-1555 class) — process identity is UNVERIFIED, not assumed healthy' };
+          }
+          sweep.pids.forEach((pid) => verifiedPids.add(pid));
         }
 
         return posixPollerVerdict(verifiedPids.size, 'via systemd MainPID process tree + system-wide sweep');

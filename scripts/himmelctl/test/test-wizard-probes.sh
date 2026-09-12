@@ -4912,6 +4912,34 @@ else
   fi
 fi
 
+# ── case (n): systemd unit active + in-tree count verified, but pgrep is NOT
+# on PATH for the system-wide sweep -> degraded, never silently falling back
+# to the tree-only count as if the sweep had found nothing (CR gap,
+# HIMMEL-2932 round-2 finding) ───────────────────────────────────────────────
+bh_posix_stub_nopgrep="$work/bh-posix-stub-nopgrep"
+rm -rf "$bh_posix_stub_nopgrep"
+build_hermetic_bin "$bh_posix_stub_nopgrep" cat
+cp "$bh_posix_stub/systemctl" "$bh_posix_stub_nopgrep/systemctl"
+cp "$bh_posix_stub/bun" "$bh_posix_stub_nopgrep/bun"
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002"
+printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxN=$(PATH="$bh_posix_stub_nopgrep:$(scrub_path "$PATH" systemctl pgrep)" BH_STUB_LOG="$(winpath "$bh_posix_log")" BH_STUB_STATE="$(winpath "$bh_posix_state")" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'bridge-health');
+const ctx = { repoRoot: '$(winpath "$repo_root_w")', targetPath: '$(winpath "$bh_dir")', scope: 'project', platform: 'linux', procRoot: '$(winpath "$bh_proc_root")', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxN" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-health (Linux): pgrep missing from PATH during the system-wide sweep must read degraded, never silently fall back to the tree-only count (got: $outBHlinuxN)"
+  echo "ok: bridge-health (Linux) — pgrep missing from PATH during the system-wide sweep reads degraded, not silently tree-only"
+else
+  echo "SKIP: bridge-health (Linux) case (n): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
 # ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
 # Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)
 # present when bridge.enabled; warn when enabled but persistence is absent.
