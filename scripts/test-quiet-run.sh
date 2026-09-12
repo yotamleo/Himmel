@@ -21,11 +21,12 @@ FAILED=0
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/test-quiet-run.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 UNTRACKED_ABS=""
 GLOB_UNTRACKED_ABS=""
+GLOB_CREATED=0
 # shellcheck disable=SC2329,SC2317
 cleanup() {
     rm -rf "$SCRATCH"
     [ -n "$UNTRACKED_ABS" ] && rm -f "$UNTRACKED_ABS"
-    [ -n "$GLOB_UNTRACKED_ABS" ] && rm -f "$GLOB_UNTRACKED_ABS"
+    [ "$GLOB_CREATED" -eq 1 ] && rm -f "$GLOB_UNTRACKED_ABS"
 }
 trap cleanup EXIT
 
@@ -123,17 +124,23 @@ chmod +x "$GLOB_VULN"
 
 GLOB_UNTRACKED_REL="scripts/hooks/test-*.sh"
 GLOB_UNTRACKED_ABS="$REPO_ROOT/$GLOB_UNTRACKED_REL"
-printf '#!/usr/bin/env bash\necho hi\n' > "$GLOB_UNTRACKED_ABS"
-chmod +x "$GLOB_UNTRACKED_ABS"
+if [ -e "$GLOB_UNTRACKED_ABS" ]; then
+    echo "FAIL: $GLOB_UNTRACKED_ABS already exists - refusing to clobber a pre-existing file for this test" >&2
+    FAILED=$((FAILED + 1))
+else
+    printf '#!/usr/bin/env bash\necho hi\n' > "$GLOB_UNTRACKED_ABS"
+    chmod +x "$GLOB_UNTRACKED_ABS"
+    GLOB_CREATED=1
 
-OUT=$(cd "$REPO_ROOT" && bash "$GLOB_VULN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
-RC=$?
-assert_rc "RED: glob-pathspec bypass executes against pre-fix guard" 0 "$RC"
+    OUT=$(cd "$REPO_ROOT" && bash "$GLOB_VULN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
+    RC=$?
+    assert_rc "RED: glob-pathspec bypass executes against pre-fix guard" 0 "$RC"
 
-OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
-RC=$?
-assert_rc "GREEN: glob-pathspec bypass refused by --literal-pathspecs fix" 2 "$RC"
-assert_contains "GREEN: glob-pathspec refusal message" "requires a tracked test-*.sh" "$OUT"
+    OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
+    RC=$?
+    assert_rc "GREEN: glob-pathspec bypass refused by --literal-pathspecs fix" 2 "$RC"
+    assert_contains "GREEN: glob-pathspec refusal message" "requires a tracked test-*.sh" "$OUT"
+fi
 
 # 7. label "suite" with `node --test <tracked file>` is unaffected - the
 # tracked-file check applies only when argv is `bash <path> ...`; node
