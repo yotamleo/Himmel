@@ -417,6 +417,17 @@ check_both "23b-ix git --git-dir=primary/.git -C \$FIX commit (relative --git-di
 check_both "23b-x git --work-tree=wt commit (cwd=primary, standalone --work-tree, no --git-dir/-C) still denies — HEAD moves in cwd's repo" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree=$FIX/wt commit -m x\",\"cwd\":\"$FIX/primary\"}}"
 
+# 23b-xi: codex CR round 3 (HIMMEL-2884) — an UNRESOLVABLE -C value must fail
+# CLOSED outright, not fall back to checking the command's cwd. 23b-vii's cwd
+# is already primary, so its "falls back to cwd" outcome (deny) is identical
+# whether the fallback denies-via-cwd or denies-outright, masking the gap:
+# here cwd is the ALLOWED worktree, so an unresolvable -C that fell back to
+# checking cwd would false-ALLOW a commit whose actual git target is unknown
+# (real git could resolve it to primary). Must deny and name the failure.
+check_both_reason "23b-xi git -C \"\$(pwd)\" commit (unresolvable -C, cwd=wt) fails CLOSED outright, not via cwd" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C \\\"\$(pwd)\\\" commit -m x\",\"cwd\":\"$FIX/wt\"}}" \
+    "could not be resolved"
+
 # 24. handovers/ carve-out (main_checkout_verdict's own exemption).
 check_both "24 cat > primary/handovers/x.md (handovers carve-out)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat > $FIX/primary/handovers/x.md\",\"cwd\":\"$FIX/primary\"}}"

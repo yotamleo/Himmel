@@ -823,6 +823,7 @@ _bwimc_deny() {
         primary-feature) why="its repo is the PRIMARY checkout on a feature branch" ;;
         unreadable) why="its repo's branch state could not be read (failing closed)" ;;
         cannot-canonicalise) why="the target path could not be canonicalised (failing closed)" ;;
+        unresolved-git-target) why="a git -C/--git-dir/--work-tree value could not be resolved (failing closed)" ;;
     esac
     {
         echo "⛔ block-write-into-main-checkout: refusing a write-shaped command — $why."
@@ -1911,7 +1912,12 @@ while IFS= read -r _bwimc_clause; do
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*git(\.exe)?([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([[:space:]]|$)') && [ -n "$_bwimc_m" ]; then
         _bwimc_git_commit_target "$_bwimc_clause_sp" "$_bwimc_cwd"
         if [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ]; then
-            echo "    (note: a git -C/--git-dir/--work-tree value could not be resolved; checking the command's cwd instead)" >&2
+            # HIMMEL-2884 codex-2: an unresolved -C/--git-dir/--work-tree value
+            # must deny outright, not fall back to checking the command's cwd
+            # — the cwd's own permission says nothing about where the
+            # unresolved value actually points, so falling back false-ALLOWed
+            # from any allowed cwd regardless of the real (unverifiable) target.
+            _bwimc_deny "unresolved-git-target" "$_bwimc_clause_sp" "$_BWIMC_GIT_TARGET_DIR" ""
         fi
         if [ "$_bwimc_sourced" = 1 ]; then
             _bwimc_cwd_check_sourced "$_BWIMC_GIT_TARGET_DIR"
