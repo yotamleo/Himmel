@@ -4827,7 +4827,7 @@ if _sec_selected "T1287"; then
 HOSTILE_DIR="$TMP/hostile-cwd-$RANDOM/some&dir^100%"
 mkdir -p "$HOSTILE_DIR"
 HO=$(make_handover "$WORK_REPO")
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(win_env "$SCHED_STUB_T17" \
     bash "$ARM" --time "$(future_time)" --handover "$HO" --cwd "$HOSTILE_DIR" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T1287a hostile --cwd dry-run exits 0" 0 "$rc"
@@ -4840,7 +4840,7 @@ assert_not_contains "T1287a no caret doubled for literal ^" '^^100' "$out"
 # carrying the same Windows-legal hostile subset exercises the prompt escape.
 HOSTILE_HO="$HANDOVER_DIR/note&caret^100%.md"
 printf -- '---\nsession_kind: test\n---\n# hostile prompt handover\n' > "$HOSTILE_HO"
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(win_env "$SCHED_STUB_T17" \
     bash "$ARM" --time "$(future_time)" --handover "$HOSTILE_HO" --cwd "$WORK_REPO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "T1287b hostile prompt dry-run exits 0" 0 "$rc"
@@ -4854,7 +4854,7 @@ assert_not_contains "T1287b no caret doubled for literal ^" '^^100' "$out"
 # ARM_BRIDGE_LIVE=0 is the existing test seam that keeps the unrelated
 # live-Telegram-bridge refusal (HIMMEL-225) out of the way.
 HO=$(make_handover "$WORK_REPO")
-out=$(ARM_BRIDGE_LIVE=0 SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(ARM_BRIDGE_LIVE=0 win_env "$SCHED_STUB_T17" \
     bash "$ARM" --time "$(future_time)" --handover "$HO" --channels 'a%b&c^d<e>f|g' --force --dry-run 2>&1)
 rc=$?
 assert_rc "T1287c hostile --channels dry-run exits 0" 0 "$rc"
@@ -4907,7 +4907,7 @@ fi
 
 # The built artifact: a Windows dry-run .bat must carry the full prompt —
 # trigger phrase AND pointer clause — as ONE line.
-out=$(SCHTASKS_CMD="$SCHED_STUB_T17/schtasks" PATH="$SCHED_STUB_T17:$PATH" \
+out=$(win_env "$SCHED_STUB_T17" \
     bash "$ARM" --time "$(future_time)" --handover "$HO" --cwd "$WORK_REPO" --force --dry-run 2>&1)
 rc=$?
 assert_rc "1719d pointer-clause dry-run exits 0" 0 "$rc"
@@ -5897,7 +5897,7 @@ HO_2199_PCT="$HANDOVER_DIR/handover-100%.md"
     printf '# Test handover\n'
 } > "$HO_2199_PCT"
 
-out=$(env PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_PCT" --channels 'a%b' --long-gap --dry-run 2>&1)
+out=$(env ARM_BRIDGE_LIVE=0 PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_PCT" --channels 'a%b' --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "2199 crontab %-in-prompt/channels dry-run exits 0" 0 "$rc"
 # Content AFTER the escaped % in each field proves the entry was not
