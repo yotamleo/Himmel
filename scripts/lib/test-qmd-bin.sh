@@ -733,14 +733,35 @@ STUB_NODE_PROBE_OK=1 qmd_install_env "$prebuild_home" bash "$SCRIPT_DIR/qmd-bin.
 assert "prebuild verify: fork-served accepts healthy prebuild" test "$rc" -eq 0
 
 # A packaged but unloadable binary must survive and retain its real diagnostic.
-out=$(STUB_NODE_PROBE_RC=1 qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+out=$(STUB_NODE_PLATFORM_ARCH="$platform_arch" STUB_NODE_PROBE_RC=1 qmd_install_env "$prebuild_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
 assert "prebuild failure: returns nonzero" grep -q '^RC=1$' <<<"$out"
 assert "prebuild failure: preserves probe error" grep -q 'stub binding load failed: wrong ABI' <<<"$out"
 assert "prebuild failure: names packaged binary" grep -Fq "$prebuild" <<<"$out"
+assert "prebuild failure: names matched node platform" grep -Fq "under node ($platform_arch)" <<<"$out"
 assert "prebuild failure: preserves packaged binary" test -f "$prebuild"
 assert "prebuild failure: no prebuild-install fetch" test "$(grep -c 'prebuild-install/bin.js' "$node_log")" -eq 0
 assert "prebuild failure: no node-gyp rebuild" test ! -s "$node_gyp_log"
 assert "prebuild failure: no success stamp" test ! -f "$prebuild_home/.himmel/qmd-fork/.himmel-build-ok"
+
+echo "[test-qmd-bin] foreign-only prebuild repair (HIMMEL-2955)"
+# Rejecting every packaged .node must not suppress repair for a different host.
+foreign_home="$id2/foreign-prebuild-only"
+foreign_sqlite="$foreign_home/.himmel/qmd-fork/node_modules/better-sqlite3"
+mkdir -p "$foreign_home/.himmel/qmd-fork/.git" "$foreign_sqlite/prebuilds"
+foreign_prebuild="$foreign_sqlite/prebuilds/darwin-arm64.node"
+: > "$foreign_prebuild"
+out=$(STUB_NODE_PLATFORM_ARCH=linux-x64 qmd_install_env "$foreign_home" bash -ec '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "foreign prebuild: repair fetch attempted" grep -q 'prebuild-install/bin.js' "$node_log"
+assert "foreign prebuild: repaired install succeeds under set -e" grep -q '^RC=0$' <<<"$out"
+assert "foreign prebuild: repaired binding exists" test -f "$foreign_sqlite/build/Release/better_sqlite3.node"
+assert "foreign prebuild: preserves foreign binary" test -f "$foreign_prebuild"
+assert "foreign prebuild: no node-gyp rebuild" test ! -s "$node_gyp_log"
+# A successful fetch must not bypass the final load probe.
+out=$(STUB_NODE_PLATFORM_ARCH=linux-x64 STUB_NODE_PROBE_RC=1 qmd_install_env "$foreign_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+assert "foreign prebuild bad ABI: repair fetch attempted" grep -q 'prebuild-install/bin.js' "$node_log"
+assert "foreign prebuild bad ABI: final probe refuses install" grep -q '^RC=1$' <<<"$out"
+assert "foreign prebuild bad ABI: retains final load warning" grep -q 'native binding still not loadable under node' <<<"$out"
+assert "foreign prebuild bad ABI: no success stamp" test ! -f "$foreign_home/.himmel/qmd-fork/.himmel-build-ok"
 
 # Darwin suffix spelling, and legacy build/Release takes precedence if present.
 rm -f "$prebuild"

@@ -383,7 +383,7 @@ qmd_fork_served() {
 # falls through to update+rebuild+re-link on a stale/older/pin-drifted or
 # unstamped (failed/interrupted prior build) clone.
 qmd_install() {
-  local fork_dir ref repo global_dir origin_url prebuild
+  local fork_dir ref repo global_dir origin_url prebuild platform_arch
 
   fork_dir="$(_qmd_fork_dir)"
   ref="$(_qmd_fork_ref)"
@@ -504,13 +504,17 @@ qmd_install() {
   # load-check is the real gate, and every external command here must stay
   # set-e-safe for callers.
   if command -v node >/dev/null 2>&1 && ! _qmd_sqlite_binding_ok; then
-    # 13.x bundles prebuilds; node-gyp is a no-op when they exist (HIMMEL-2506).
-    for prebuild in "$fork_dir/node_modules/better-sqlite3/prebuilds/"*.node; do
-      [ -f "$prebuild" ] || continue
-      echo "  WARNING: better-sqlite3 packaged binding not loadable under node: $prebuild" >&2
-      printf '    %s\n' "$_QMD_BINDING_PROBE_ERR" >&2
-      return 1
-    done
+    # Preserve packaged candidates for this node platform (HIMMEL-2506/2955).
+    # Match _qmd_sqlite_binding; foreign-only prebuilds must not block repair.
+    platform_arch="$(node -p "process.platform + '-' + process.arch" 2>/dev/null)" || true
+    if [ -n "$platform_arch" ]; then
+      for prebuild in "$fork_dir/node_modules/better-sqlite3/prebuilds/$platform_arch"*.node; do
+        [ -f "$prebuild" ] || continue
+        echo "  WARNING: better-sqlite3 packaged binding not loadable under node ($platform_arch): $prebuild" >&2
+        printf '    %s\n' "$_QMD_BINDING_PROBE_ERR" >&2
+        return 1
+      done
+    fi
     echo "  Fetching better-sqlite3 native binding for node (bun blocks its postinstall)..."
     rm -f -- "$fork_dir/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
     ( cd "$fork_dir/node_modules/better-sqlite3" && node ../prebuild-install/bin.js ) || true
