@@ -138,6 +138,12 @@ threat model and the verbatim block:
 `READY <pr> <head> GREEN` → the console verifies independently (all check-runs
 green at that exact head, zero unresolved review threads, attestation trailers
 in the first commit) → `GO` → the leg merges and reports `MERGED #<n> → <sha>`.
+
+A PR on HIMMEL-2973/2976/2928/2974/2975 is READY only if its body cites
+`HIMMEL-2977 "GATE <previous lever> PASS <date>"` (for 2973:
+`P0 EXIT <date>`). Open HIMMEL-2977's comments and find that first line
+verbatim: a missing citation, a line not found, or a line whose status is not
+PASS = not READY.
 The console pulls the primary and the leg closes out its ticket.
 The console sends GO by first running `bash scripts/handover/console-kit/go.sh
 <pr> <full head sha>` — the file IS the GO, the SendMessage is the

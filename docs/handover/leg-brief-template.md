@@ -58,8 +58,12 @@ template_version: 3
 > 3. **Tests:** <the suite to write and the specific RED assertion to show
 >    first; the impacted suites you already know about, by name.>
 > 4. **Ship:** `<type>(<scope>): [<TICKET>] <subject>`, then the standing ship
->    sequence. <Anything unusual: a PR body that must carry specific numbers, a
->    public-CI wait, a second ticket to comment on but leave open.>
+>    sequence. The PR body carries one line
+>    `leg-burn: calls= avg-ctx= first-turn= compactions=` from
+>    `bash scripts/lanes/leg-burn.sh <your session name>`, run just before
+>    opening the PR. <Anything else unusual: a PR body that must carry other
+>    specific numbers, a public-CI wait, a second ticket to comment on but
+>    leave open.>
 
 > **Do not:** <the specific things THIS leg must not touch — adjacent files
 > another leg owns, protocols that are out of scope, a script another leg

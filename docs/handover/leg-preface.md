@@ -91,6 +91,9 @@ Run those and name them with their counts.
 
 ## Shipping
 
+- Every PR body carries one line `leg-burn: calls= avg-ctx= first-turn=
+  compactions=` from `bash scripts/lanes/leg-burn.sh <your session name>`, run
+  just before opening the PR.
 - Conventional commit carrying the ticket ID. **Attestation trailers go in the
   FIRST commit** (`Platforms tested: <os>`; `Security reviewed: <token>`),
   written after genuinely testing and reviewing. Never recover with a reactive
