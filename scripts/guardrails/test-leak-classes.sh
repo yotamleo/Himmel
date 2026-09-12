@@ -440,6 +440,40 @@ else
     fail "T1s home-path punctuation-adjacent leak control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1p: home-path, Windows file:// URI with a drive letter (HIMMEL-2856) --
+# file:///C:/users/<name>/... (lowercase "users") was missed: after the
+# file:// boundary's extra leading slash, the path continues /C:/users/...
+# and neither existing alternative matches it (the case-insensitive
+# [A-Za-z]:/[Uu]sers/ alternative needs no leading slash before the drive
+# letter, and the bare, case-SENSITIVE /Users/ alternative requires a
+# capital U -- lowercase falls through both). A capitalized
+# file:///C:/Users/... already happened to match via that bare /Users/
+# alternative (preceded by the ":" boundary char) even pre-fix, which is why
+# the RED case here uses lowercase to prove the real gap.
+r=$(new_repo)
+printf 'see file:///C:/users/alexphantom/x for details\n' > "$r/filedrive.txt"  # leak-allow: home-path test fixture
+git -C "$r" add filedrive.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "filedrive.txt:1"; then
+    pass "T1p home-path: file:///C:/users/... URI (lowercase) flagged"
+else
+    fail "T1p home-path file:// drive-letter URI (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1q: control for T1p -- a leading-slash drive-letter segment NOT followed
+# by "Users" must stay clean, proving the new alternative is scoped to the
+# literal "Users" segment and doesn't start matching any "/<drive>:/.../ "
+# shape.
+r=$(new_repo)
+printf 'see /C:/other/path here\n' > "$r/notusers.txt"  # leak-allow: home-path test fixture
+git -C "$r" add notusers.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1q home-path: /C:/other/... control (not a Users segment) stays clean"
+else
+    fail "T1q home-path non-Users drive-letter control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== redaction =="
 
 # T6: the reported line carries only the first 4 chars of the match + an

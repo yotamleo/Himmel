@@ -440,7 +440,17 @@ check_home_path() {
     # the punctuation into the next occurrence's own "/" as if it were a
     # multi-word terminator). Non-ASCII bytes stay admitted -- only this
     # fixed ASCII punctuation set is excluded.
-    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^]/\\[:space:]`"'\'',;:)]+( [^]/\\[:space:]`"'\'',;:)]+)*)([/\\]|\\\\)|([^]/\\[:space:]`"'\'',;:)]+)($|[]/\\[:space:]`"'\'',;:)]))'
+    # HIMMEL-2856: a Windows file:// URI's drive letter carries file://'s
+    # own extra slash too (file:///C:/Users/... -> leading-context consumes
+    # "file://", leaving "/C:/Users/..."), so the drive-prefixed forms also
+    # need a leading-slash variant, "/[A-Za-z]:/Users/". Lowercase
+    # file:///C:/users/... used to fall through every alternative (the
+    # colon prefix form has no leading slash; the bare /Users/ form is
+    # case-sensitive), while a capitalized file:///C:/Users/... happened to
+    # match anyway -- but only because the leading-context group can also
+    # consume just the ":" as its own non-word boundary char, landing on the
+    # bare case-sensitive /Users/ alternative by coincidence, not by design.
+    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^]/\\[:space:]`"'\'',;:)]+( [^]/\\[:space:]`"'\'',;:)]+)*)([/\\]|\\\\)|([^]/\\[:space:]`"'\'',;:)]+)($|[]/\\[:space:]`"'\'',;:)]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.
