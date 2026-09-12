@@ -345,7 +345,7 @@ restart_hermes_gateways() {
         return 0
     fi
     local units unit
-    units=$(systemctl --user list-units 'hermes-gateway-*' --plain --no-legend 2>/dev/null | awk '{print $1}')
+    units=$(systemctl --user list-units 'hermes-gateway-*' --state=running --plain --no-legend 2>/dev/null | awk '{print $1}')
     [ -z "$units" ] && return 0
     echo "    hermes checkout moved — restarting running hermes-gateway units..."
     while IFS= read -r unit; do
