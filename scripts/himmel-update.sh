@@ -344,8 +344,14 @@ restart_hermes_gateways() {
         echo "    note: hermes-gateway units may be running pre-pull code — systemctl not found; restart by hand: systemctl --user restart hermes-gateway-<profile>.service"
         return 0
     fi
-    local units unit
-    units=$(systemctl --user list-units 'hermes-gateway-*' --state=running --plain --no-legend 2>/dev/null | awk '{print $1}')
+    local units unit raw
+    if ! raw=$(systemctl --user list-units 'hermes-gateway-*' --state=running --plain --no-legend 2>&1); then
+        local errline
+        errline=$(printf '%s\n' "$raw" | head -n1)
+        echo "    warn: could not list hermes-gateway units (systemctl --user list-units failed: ${errline:-no error output}) — if a gateway is running it still has pre-pull code; restart by hand: systemctl --user restart hermes-gateway-<profile>.service" >&2
+        return 0
+    fi
+    units=$(printf '%s\n' "$raw" | awk '{print $1}')
     [ -z "$units" ] && return 0
     echo "    hermes checkout moved — restarting running hermes-gateway units..."
     while IFS= read -r unit; do
