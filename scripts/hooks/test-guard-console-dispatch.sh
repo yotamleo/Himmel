@@ -99,7 +99,7 @@ BARE_FILENAME_TRANSCRIPT="$TMP/bare-filename.jsonl"
 printf '%s\n' '{"type":"user","message":{"content":"See notes-console.md for context."}}' > "$BARE_FILENAME_TRANSCRIPT"
 
 REAL_HANDOVER_TRANSCRIPT="$TMP/real-handover.jsonl"
-printf '%s\n' '{"type":"user","message":{"content":"Loaded handover: /home/yotamleo/state/handovers/yotamleo/himmel/HIMMEL-2323-console.md — resume from there."}}' > "$REAL_HANDOVER_TRANSCRIPT"
+printf '%s\n' '{"type":"user","message":{"content":"Loaded handover: /home/yotamleo/state/handovers/yotamleo/himmel/HIMMEL-2323-console.md — resume from there."}}' > "$REAL_HANDOVER_TRANSCRIPT"  # leak-allow: home-path operator username in a dispatch fixture
 
 # HIMMEL-2323 CR round 2 [w1-2323-b7d2] [codex-2]: the scan must be scoped to
 # the FIRST USER TURN, not any early line — a system prompt, tool result, or

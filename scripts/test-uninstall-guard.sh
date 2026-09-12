@@ -99,7 +99,7 @@ fi
 # Without these a guard that refused everything would pass every row above.
 allowed "$TMP/deep/cache"
 allowed "$HOME/.claude/himmel"
-allowed 'C:/Users/somebody/.claude/himmel'   # a drive SUBPATH, not a root
+allowed 'C:/Users/somebody/.claude/himmel'   # a drive SUBPATH, not a root  # leak-allow: home-path fixture username, not a real path
 allowed "$TMP/does-not-exist"               # absent target: nothing to refuse
 
 # ── protected_path (HIMMEL-2505): the fixed hard-refuse allowlist ───────────
