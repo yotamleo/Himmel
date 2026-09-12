@@ -8,7 +8,7 @@
 # and paths outside the current worktree — everything bare checkout would
 # silently accept.
 #
-# Backups are PLAIN COPIES, not diffs: a per-file worktree copy (`cp -p`,
+# Backups are PLAIN COPIES, not diffs: a per-file worktree copy (`cp -RPp`,
 # mode preserved) and, when the index differs from HEAD, the staged blob
 # (`git show`) plus its `git ls-files -s` mode line. A diff/patch-based
 # backup depends on git actually being able to reproduce and re-apply a
@@ -88,15 +88,24 @@ for rel in "${RELS[@]}"; do
         continue
     fi
 
-    echo "$n $rel" >> "$MANIFEST"
-
     saved_wt=""
+    wt_deleted=0
     if [ "$wt_differs" -eq 1 ]; then
-        saved_wt="$RUN_DIR/$n.worktree"
-        if ! cp -p "$TOPLEVEL/$rel" "$saved_wt"; then
-            echo "restore-to-head: could not back up worktree content for '$rel' to '$saved_wt' -- aborting without discarding it" >&2
-            exit 2
+        if [ ! -L "$TOPLEVEL/$rel" ] && [ ! -e "$TOPLEVEL/$rel" ]; then
+            wt_deleted=1
+        else
+            saved_wt="$RUN_DIR/$n.worktree"
+            # Preserve the link itself, including dangling links; never use -L/-H.
+            if ! cp -RPp "$TOPLEVEL/$rel" "$saved_wt"; then
+                echo "restore-to-head: could not back up worktree content for '$rel' to '$saved_wt' -- aborting without discarding it" >&2
+                exit 2
+            fi
         fi
+    fi
+    if [ "$wt_deleted" -eq 1 ]; then
+        echo "$n $rel deleted" >> "$MANIFEST"
+    else
+        echo "$n $rel" >> "$MANIFEST"
     fi
 
     saved_idx=""
@@ -114,7 +123,9 @@ for rel in "${RELS[@]}"; do
     fi
 
     git -C "$TOPLEVEL" checkout HEAD -- ":(literal)$rel"
-    if [ -n "$saved_wt" ]; then
+    if [ "$wt_deleted" -eq 1 ]; then
+        echo "restored $rel (worktree deletion recorded: $MANIFEST)"
+    elif [ -n "$saved_wt" ]; then
         echo "restored $rel (saved worktree copy: $saved_wt)"
     else
         echo "restored $rel (staged-only change; saved separately: $saved_idx)"

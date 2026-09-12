@@ -336,6 +336,34 @@ fi
 reset_wt
 (cd "$WT" && git reset -q --hard main)
 
+# --- (u) a retargeted tracked symlink is backed up as the link, not its referent.
+(cd "$WT" && ln -s tracked.txt link && git add link && git commit -qm 'tracked symlink fixture')
+ln -sfn tracked2.txt "$WT/link"
+out=$(run link 2>&1); rc=$?
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+if [ "$rc" -eq 0 ] && [ "$(readlink "$WT/link")" = "tracked.txt" ] && [ -L "$wt_path" ] && [ "$(readlink "$wt_path")" = "tracked2.txt" ]; then
+    pass "(u) retargeted symlink restored with the outgoing link preserved in backup"
+else
+    fail "(u) rc=$rc wt_path='$wt_path' (expected HEAD link restored and backup symlink targeting tracked2.txt)"
+fi
+reset_wt
+(cd "$WT" && git reset -q --hard main)
+
+# --- (v) an unstaged deletion is recorded, then the file is restored from HEAD.
+DELETED_BACKUPS="$TMP/deleted-backups"
+mkdir -p "$DELETED_BACKUPS"
+rm "$WT/tracked.txt"
+out=$(cd "$WT" && TMPDIR="$DELETED_BACKUPS" bash "$SUT" tracked.txt 2>&1); rc=$?
+manifest=$(find "$DELETED_BACKUPS" -name MANIFEST)
+content=$(cat "$WT/tracked.txt" 2>/dev/null)
+n_copies=$(find "$DELETED_BACKUPS" -name '*.worktree' | wc -l | tr -d ' ')
+if [ "$rc" -eq 0 ] && [ "$content" = "base" ] && [ "$n_copies" -eq 0 ] && grep -qx '1 tracked.txt deleted' "$manifest"; then
+    pass "(v) unstaged deletion restored and recorded as deleted without a worktree copy"
+else
+    fail "(v) rc=$rc content='$content' n_copies=$n_copies out='$out' (expected HEAD file restored and deleted manifest row)"
+fi
+reset_wt
+
 echo "---"
 if [ "$FAILED" -gt 0 ]; then
     echo "test-restore-to-head: $FAILED FAILURE(S)"
