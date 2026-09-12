@@ -29,10 +29,14 @@ case "$1" in -h|--help) usage; exit 0 ;; esac
 TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null) || {
     echo "restore-to-head: not inside a git repository" >&2; exit 2; }
 
+git -C "$TOPLEVEL" rev-parse --verify -q HEAD >/dev/null 2>&1 || {
+    echo "restore-to-head: HEAD does not exist yet (unborn repository) -- nothing to restore to" >&2; exit 2; }
+
 for arg in "$@"; do
     case "$arg" in
         *'*'*|*'?'*|*'['*) echo "restore-to-head: refusing glob argument '$arg'" >&2; exit 2 ;;
         .|..|*/) echo "restore-to-head: refusing '$arg'" >&2; exit 2 ;;
+        :*) echo "restore-to-head: refusing magic-pathspec argument '$arg'" >&2; exit 2 ;;
     esac
 done
 
@@ -48,29 +52,41 @@ for arg in "$@"; do
     esac
     [ -d "$abs" ] && { echo "restore-to-head: '$arg' is a directory" >&2; exit 2; }
     rel="${abs#"$TOPLEVEL"/}"
-    git -C "$TOPLEVEL" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || {
+    git -C "$TOPLEVEL" ls-files --error-unmatch -- ":(literal)$rel" >/dev/null 2>&1 || {
         echo "restore-to-head: '$arg' is untracked -- refusing (never rm)" >&2; exit 2; }
     RELS+=("$rel")
 done
 
 SAVE_DIR="${TMPDIR:-/tmp}/restore-to-head"
-mkdir -p "$SAVE_DIR"
-STAMP=$(date +%s)
+RUN_DIR="$SAVE_DIR/$(date +%s)-$$"
+mkdir -p "$RUN_DIR"
 
 for rel in "${RELS[@]}"; do
-    if [ -n "$(git -C "$TOPLEVEL" diff --binary HEAD -- "$rel")" ]; then
-        safe_name=$(printf '%s' "$rel" | tr '/' '_')
-        patch="$SAVE_DIR/${STAMP}-${safe_name}.patch"
-        if ! git -C "$TOPLEVEL" diff --binary HEAD -- "$rel" > "$patch" || [ ! -s "$patch" ]; then
+    if [ -n "$(git -C "$TOPLEVEL" diff --binary HEAD -- ":(literal)$rel")" ]; then
+        patch="$RUN_DIR/$rel.patch"
+        mkdir -p "$(dirname "$patch")"
+        if ! git -C "$TOPLEVEL" diff --binary HEAD -- ":(literal)$rel" > "$patch" || [ ! -s "$patch" ]; then
             echo "restore-to-head: could not write backup for '$rel' to '$patch' -- aborting without discarding it" >&2
             exit 2
         fi
-        git -C "$TOPLEVEL" checkout HEAD -- "$rel"
+        if [ -n "$(git -C "$TOPLEVEL" diff --binary -- ":(literal)$rel")" ] \
+            && [ -n "$(git -C "$TOPLEVEL" diff --binary --cached HEAD -- ":(literal)$rel")" ]; then
+            staged_blob="$RUN_DIR/$rel.staged-blob"
+            if ! git -C "$TOPLEVEL" show ":$rel" > "$staged_blob" 2>/dev/null || [ ! -s "$staged_blob" ]; then
+                echo "restore-to-head: could not back up staged index content for '$rel' -- aborting without discarding it" >&2
+                exit 2
+            fi
+            echo "restore-to-head: '$rel' also has staged content that differs from the worktree (saved separately: $staged_blob)" >&2
+        fi
+        git -C "$TOPLEVEL" checkout HEAD -- ":(literal)$rel"
         echo "restored $rel (saved diff: $patch)"
     else
         echo "restore-to-head: '$rel' already matches HEAD -- no-op"
     fi
 done
 
-remaining=$(git -C "$TOPLEVEL" diff --stat HEAD -- "${RELS[@]}")
-[ -z "$remaining" ]
+for rel in "${RELS[@]}"; do
+    remaining=$(git -C "$TOPLEVEL" diff --stat HEAD -- ":(literal)$rel") || {
+        echo "restore-to-head: could not verify '$rel' is clean after restore" >&2; exit 2; }
+    [ -z "$remaining" ] || { echo "restore-to-head: '$rel' still differs from HEAD after restore" >&2; exit 2; }
+done

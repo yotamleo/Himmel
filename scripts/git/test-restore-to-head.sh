@@ -29,7 +29,8 @@ fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 
 PRIMARY="$TMP/primary"
 WT="$TMP/wt"
-mkdir -p "$PRIMARY"
+BACKUPS="$TMP/backups"
+mkdir -p "$PRIMARY" "$BACKUPS"
 (
     cd "$PRIMARY" || exit 2
     git init -q -b main .
@@ -49,19 +50,20 @@ mkdir -p "$PRIMARY"
 )
 
 # --- (h) documented RED control: the deny pattern matches a LEG's command
-# line, not this script's own internal call. Assert the script's internal
-# invocation is present as source text (not something a caller types).
+# line, not this script's own internal call. Assert the actual checkout
+# invocation is present as EXECUTABLE code (not merely mentioned in a
+# comment, which the header itself does for documentation purposes).
 if [ -f "$SUT" ]; then
-    if grep -q 'git checkout -- ' "$SUT"; then
-        pass "(h) script carries the internal checkout call (deny matches the LEG's line, not this child process)"
+    if grep -v '^[[:space:]]*#' "$SUT" | grep -q 'checkout HEAD -- '; then
+        pass "(h) script carries the internal checkout call as executable code, not just a comment"
     else
-        fail "(h) script does not contain the expected internal 'git checkout -- ' call"
+        fail "(h) script does not contain the expected internal checkout call outside of comments"
     fi
 else
     fail "(h) $SUT does not exist yet"
 fi
 
-run() { (cd "$WT" && bash "$SUT" "$@"); }
+run() { (cd "$WT" && TMPDIR="$BACKUPS" bash "$SUT" "$@"); }
 
 reset_wt() { (cd "$WT" && git checkout -q main -- . 2>/dev/null; git clean -qfd 2>/dev/null); }
 
@@ -143,9 +145,9 @@ fi
 rm -f "$WT/untracked.txt"
 
 # --- (f) a clean tracked file is a no-op, says so, no saved-diff written
-before_count=$(find "${TMPDIR:-/tmp}/restore-to-head" -name '*.patch' 2>/dev/null | wc -l | tr -d ' ')
+before_count=$(find "$BACKUPS/restore-to-head" -name '*.patch' 2>/dev/null | wc -l | tr -d ' ')
 out=$(run tracked.txt); rc=$?
-after_count=$(find "${TMPDIR:-/tmp}/restore-to-head" -name '*.patch' 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(find "$BACKUPS/restore-to-head" -name '*.patch' 2>/dev/null | wc -l | tr -d ' ')
 if [ "$rc" -eq 0 ] && [ "$before_count" -eq "$after_count" ]; then
     pass "(f) clean tracked file is a no-op, no saved-diff written"
 else
@@ -222,7 +224,7 @@ reset_wt
 
 # --- (m) invocation from a subdirectory resolves paths correctly (codex-5)
 printf 'dirty-from-sub\n' > "$WT/sub/a.sh"
-out=$(cd "$WT/sub" && bash "$SUT" a.sh 2>&1); rc=$?
+out=$(cd "$WT/sub" && TMPDIR="$BACKUPS" bash "$SUT" a.sh 2>&1); rc=$?
 content=$(cat "$WT/sub/a.sh")
 if [ "$rc" -eq 0 ] && [ "$content" != "dirty-from-sub" ]; then
     pass "(m) invocation from a subdirectory correctly restores the file"
@@ -230,6 +232,43 @@ else
     fail "(m) rc=$rc content='$content' (expected restore to succeed when invoked from inside a subdirectory)"
 fi
 reset_wt
+
+# --- (n) a magic pathspec argument cannot bypass the directory refusal (round-2 codex-3)
+printf 'dirty-sub-a\n' > "$WT/sub/a.sh"
+printf 'dirty-sub-b\n' > "$WT/sub/b.sh"
+run ':(top)sub' >/dev/null 2>&1; rc=$?
+content_a=$(cat "$WT/sub/a.sh")
+content_b=$(cat "$WT/sub/b.sh")
+if [ "$rc" -ne 0 ] && [ "$content_a" = "dirty-sub-a" ] && [ "$content_b" = "dirty-sub-b" ]; then
+    pass "(n) magic-pathspec argument refused, directory contents untouched"
+else
+    fail "(n) rc=$rc content_a='$content_a' content_b='$content_b' (expected refusal, both files still dirty)"
+fi
+reset_wt
+
+# --- (o) an unborn repository (no HEAD yet) is refused, not silently a no-op (round-2 codex-4)
+UNBORN="$TMP/unborn"
+mkdir -p "$UNBORN"
+(cd "$UNBORN" && git init -q -b main . && git config user.email t@t.t && git config user.name t && git config commit.gpgsign false && printf 'x\n' > f.txt && git add f.txt)
+out=$(cd "$UNBORN" && TMPDIR="$BACKUPS" bash "$SUT" f.txt 2>&1); rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'HEAD'; then
+    pass "(o) unborn repository is refused with a clear error, not a silent no-op"
+else
+    fail "(o) rc=$rc out='$out' (expected refusal naming the missing HEAD)"
+fi
+
+# --- (p) staged content that differs from the worktree is backed up too, not silently discarded (round-2 codex-2)
+(cd "$WT" && printf 'staged-mid\n' > tracked.txt && git add tracked.txt && printf 'worktree-final\n' > tracked.txt)
+out=$(run tracked.txt 2>&1); rc=$?
+content=$(cat "$WT/tracked.txt")
+staged_blob_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.staged-blob' | head -1)
+if [ "$rc" -eq 0 ] && [ "$content" = "base" ] && [ -n "$staged_blob_path" ] && [ -f "$staged_blob_path" ] && [ "$(cat "$staged_blob_path")" = "staged-mid" ]; then
+    pass "(p) staged content differing from the worktree is separately backed up before the discard"
+else
+    fail "(p) rc=$rc content='$content' staged_blob_path='$staged_blob_path' (expected the staged 'staged-mid' content recoverable, not silently lost)"
+fi
+reset_wt
+(cd "$WT" && git reset -q --hard main)
 
 echo "---"
 if [ "$FAILED" -gt 0 ]; then
