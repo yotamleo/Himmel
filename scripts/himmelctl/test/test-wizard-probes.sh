@@ -4579,7 +4579,25 @@ chmod +x "$bh_posix_stub/pgrep"
 
 bh_posix_log_has() { [ -f "$bh_posix_log" ] && grep -qF "$1" "$bh_posix_log"; }
 
+# Independent (bash-native, not a reuse of the JS implementation under test)
+# ERE-metacharacter escaper -- used only to compute the EXPECTED escaped
+# literal for case (i) below, so that test isn't just re-asserting the same
+# regex against itself.
+escape_ere() {
+  local s="$1" out="" c i
+  for (( i=0; i<${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      '.'|'['|']'|'('|')'|'*'|'+'|'?'|'{'|'}'|'|'|'^'|'$'|\\) out+="\\$c" ;;
+      *) out+="$c" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 run_bh_posix() {
+  local repoRootOverride="${1:-$repo_root_w}"
+  local platformOverride="${2:-linux}"
   local pathVal
   pathVal="$bh_posix_stub:$(scrub_path "$PATH" systemctl pgrep)"
   PATH="$pathVal" BH_STUB_LOG="$(winpath "$bh_posix_log")" BH_STUB_STATE="$(winpath "$bh_posix_state")" \
@@ -4587,7 +4605,7 @@ run_bh_posix() {
 const { runProbe } = require('$probes_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const item = manifest.items.find((i) => i.id === 'bridge-health');
-const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$bh_dir")', scope: 'project', platform: 'linux', procRoot: '$(winpath "$bh_proc_root")', env: process.env };
+const ctx = { repoRoot: '$(winpath "$repoRootOverride")', targetPath: '$(winpath "$bh_dir")', scope: 'project', platform: '$platformOverride', procRoot: '$(winpath "$bh_proc_root")', env: process.env };
 console.log(JSON.stringify(runProbe(item, ctx)));
 "
 }
@@ -4680,8 +4698,11 @@ else
 fi
 
 # ── case (e): no systemd unit at all -> pgrep -f fallback over the resolved
-# poller path, same 0/1/>1 mapping ──────────────────────────────────────────
-rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+# poller path, same 0/1/>1 mapping. Since the pgrep -f fallback now verifies
+# each matched pid's cmdline (CR gap 3b) rather than trusting the raw match
+# count, a cmdline fixture matching THIS checkout is required at each
+# synthetic pid the pgrep stub returns (9200+i for i in 1..BH_PGREP_N) ──────
+rm -rf "$bh_proc_root"; rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
 outBHlinuxE0=$(BH_PGREP_N=0 run_bh_posix)
 if bh_posix_log_has "pgrep -f"; then
   echo "$outBHlinuxE0" | jq -e '.actual == "absent"' >/dev/null \
@@ -4691,6 +4712,8 @@ else
   echo "SKIP: bridge-health (Linux) case (e/0): no evidence in the stub log that pgrep actually spawned on this host"
 fi
 
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
 rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
 outBHlinuxE1=$(BH_PGREP_N=1 run_bh_posix)
 if bh_posix_log_has "pgrep -f"; then
@@ -4701,6 +4724,9 @@ else
   echo "SKIP: bridge-health (Linux) case (e/1): no evidence in the stub log that pgrep actually spawned on this host"
 fi
 
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201" "$bh_proc_root/9202"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9202/cmdline"
 rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
 outBHlinuxE2=$(BH_PGREP_N=2 run_bh_posix)
 if bh_posix_log_has "pgrep -f"; then
@@ -4713,6 +4739,149 @@ else
   echo "SKIP: bridge-health (Linux) case (e/2): no evidence in the stub log that pgrep actually spawned on this host"
 fi
 rm -f "$bh_posix_state/no-unit"
+
+# ── case (f): MainPID itself IS the poller.ts process (no wrapper) -> present,
+# count 1 (CR gap 1, HIMMEL-2932: previously only MainPID's CHILDREN were
+# tested, never MainPID's own cmdline) ──────────────────────────────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001"
+printf '\n' > "$bh_proc_root/9001/task/9001/children"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9001/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxF=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxF" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): a poller.ts running directly AS MainPID (no wrapper child) must be counted (got: $outBHlinuxF)"
+  echo "$outBHlinuxF" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): MainPID-is-the-poller detail should name the count 1 (got: $outBHlinuxF)"
+  echo "ok: bridge-health (Linux) — MainPID itself running poller.ts (no wrapper) reads present, count 1"
+else
+  echo "SKIP: bridge-health (Linux) case (f): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case (g): poller.ts nested under a wrapper GRANDCHILD (MainPID -> wrapper
+# -> poller.ts), two levels deep -> present, count 1 (CR gap 1: previously
+# only one level of children was walked) ────────────────────────────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002/task/9002" "$bh_proc_root/9003"
+printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+printf '9003\n' > "$bh_proc_root/9002/task/9002/children"
+printf '%s\0' bash wrapper.sh > "$bh_proc_root/9002/cmdline"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9003/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxG=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxG" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): a poller.ts nested under a wrapper GRANDCHILD of MainPID must be counted, not just direct children (got: $outBHlinuxG)"
+  echo "$outBHlinuxG" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): grandchild-nested poller detail should name the count 1 (got: $outBHlinuxG)"
+  echo "ok: bridge-health (Linux) — poller.ts nested under a wrapper grandchild of MainPID reads present, count 1"
+else
+  echo "SKIP: bridge-health (Linux) case (g): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case (l): poller.ts nested exactly at hop-4 from MainPID (the configured
+# depth bound) via a chain of wrapper processes -> present, count 1 (CR gap
+# 1: proves the recursive walk genuinely goes deeper than 2 levels, not just
+# one extra hop) ─────────────────────────────────────────────────────────────
+rm -rf "$bh_proc_root"
+mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002/task/9002" "$bh_proc_root/9003/task/9003" "$bh_proc_root/9004/task/9004" "$bh_proc_root/9005"
+printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+printf '9003\n' > "$bh_proc_root/9002/task/9002/children"
+printf '9004\n' > "$bh_proc_root/9003/task/9003/children"
+printf '9005\n' > "$bh_proc_root/9004/task/9004/children"
+printf '%s\0' bash wrapper.sh > "$bh_proc_root/9002/cmdline"
+printf '%s\0' bash wrapper.sh > "$bh_proc_root/9003/cmdline"
+printf '%s\0' bash wrapper.sh > "$bh_proc_root/9004/cmdline"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9005/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxL=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxL" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): a poller.ts nested 4 hops below MainPID (the depth bound) must still be counted (got: $outBHlinuxL)"
+  echo "$outBHlinuxL" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): depth-4-nested poller detail should name the count 1 (got: $outBHlinuxL)"
+  echo "ok: bridge-health (Linux) — poller.ts nested 4 hops below MainPID (depth bound) reads present, count 1"
+else
+  echo "SKIP: bridge-health (Linux) case (l): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case (h): unit active with exactly 1 IN-TREE matching child, PLUS a
+# manually-launched duplicate poller running OUTSIDE the systemd unit's tree
+# (the HIMMEL-1555 class this check exists for) -> degraded, count 2 (CR gap
+# 2: system-wide pgrep sweep unioned with the tree-scoped count, mirroring
+# the Windows CIM branch's system-wide scope) ───────────────────────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002" "$bh_proc_root/9201"
+printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxH=$(BH_PGREP_N=1 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxH" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-health (Linux): a duplicate poller running OUTSIDE the systemd unit's process tree must be found by the system-wide sweep and unioned in, not missed (got: $outBHlinuxH)"
+  echo "$outBHlinuxH" | jq -e '.detail | contains("2 poller")' >/dev/null \
+    || fail "bridge-health (Linux): tree+sweep degraded detail should name the count 2 (got: $outBHlinuxH)"
+  echo "ok: bridge-health (Linux) — an out-of-tree duplicate poller found via the system-wide pgrep sweep is unioned with the tree-scoped count, reading degraded, count 2 (HIMMEL-1555 class)"
+else
+  echo "SKIP: bridge-health (Linux) case (h): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case (i): pgrep -f fallback ERE-escapes metacharacters in the resolved
+# poller path before use (CR gap 3a, HIMMEL-2932) -- an unescaped repoRoot
+# containing '.', '+', '(' would otherwise be interpreted as regex syntax by
+# pgrep -f rather than literal path characters ──────────────────────────────
+erepath_dir="$work/erepath+dot.paren(1)"
+poller_path_i="$erepath_dir/scripts/telegram/poller.ts"
+escaped_poller_path_i="$(escape_ere "$poller_path_i")"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+BH_PGREP_N=0 run_bh_posix "$erepath_dir" >/dev/null
+if bh_posix_log_has "pgrep -f"; then
+  bh_posix_log_has "pgrep -f $escaped_poller_path_i" \
+    || fail "bridge-health (Linux): pgrep -f fallback must ERE-escape metacharacters in the resolved poller path (expected escaped '$escaped_poller_path_i' in log: $(cat "$bh_posix_log" 2>/dev/null))"
+  echo "ok: bridge-health (Linux) — pgrep -f fallback ERE-escapes metacharacters ('.', '+', '(', ')') in the resolved poller path"
+else
+  echo "SKIP: bridge-health (Linux) case (i): no evidence in the stub log that pgrep actually spawned on this host"
+fi
+
+# ── case (j): pgrep -f fallback verifies EACH matched pid's cmdline through
+# the existing checkout-anchor helper instead of trusting pgrep's raw match
+# count (CR gap 3b) -- 2 raw pgrep matches, but only 1 actually belongs to
+# this checkout, must read present/1, not degraded/2 ────────────────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9201" "$bh_proc_root/9202"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9201/cmdline"
+printf '%s\0' bun "${other_checkout_posix}/scripts/telegram/poller.ts" > "$bh_proc_root/9202/cmdline"
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxJ=$(BH_PGREP_N=2 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxJ" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): pgrep -f fallback must verify each matched pid's cmdline rather than trusting the raw match count -- 2 raw matches but only 1 belongs to this checkout must read present (got: $outBHlinuxJ)"
+  echo "$outBHlinuxJ" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): cmdline-verified fallback detail should name the count 1, not the raw pgrep count 2 (got: $outBHlinuxJ)"
+  echo "ok: bridge-health (Linux) — pgrep -f fallback verifies matched pids' cmdlines, excluding a foreign-checkout match from the count"
+else
+  echo "SKIP: bridge-health (Linux) case (j): no evidence in the stub log that pgrep actually spawned on this host"
+fi
+
+# ── case (k): a NON-ENOENT failure (EACCES) reading a thread's children file
+# reads degraded, never silently folded into "thread exited" (GH #639) ──────
+if [ "$(id -u)" -eq 0 ]; then
+  echo "SKIP: bridge-health (Linux) case (k): running as root, chmod 000 does not deny root reads"
+else
+  rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9001/task/9004" "$bh_proc_root/9002"
+  printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+  printf '9003\n' > "$bh_proc_root/9001/task/9004/children"
+  chmod 000 "$bh_proc_root/9001/task/9004/children"
+  printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
+  rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+  outBHlinuxK=$(BH_PGREP_N=0 run_bh_posix)
+  chmod 644 "$bh_proc_root/9001/task/9004/children"
+  if bh_posix_log_has "show telegram-bridge.service"; then
+    echo "$outBHlinuxK" | jq -e '.actual == "degraded"' >/dev/null \
+      || fail "bridge-health (Linux): an EACCES reading a thread's children file must read degraded, never be silently folded into 'thread exited' (GH #639) (got: $outBHlinuxK)"
+    echo "ok: bridge-health (Linux) — an EACCES reading a thread's children file reads degraded (GH #639), not silently treated as an exited thread"
+  else
+    echo "SKIP: bridge-health (Linux) case (k): no evidence in the stub log that systemctl actually spawned on this host"
+  fi
+fi
 
 # ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
 # Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)

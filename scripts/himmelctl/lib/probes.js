@@ -2743,29 +2743,72 @@ function posixProcRoot(ctx) {
   return (ctx && ctx.procRoot) || '/proc';
 }
 
-function posixChildPids(pid, procRoot, env) {
+// Direct (one-level) children of `pid`. Returns:
+//   { pids: [...] }  on success
+//   { pids: null }   child enumeration is genuinely unavailable (no /proc,
+//                    no pgrep on PATH) — the caller reads this as UNVERIFIED
+//   { error }        a thread's children file exists but failed to read for
+//                     a reason OTHER than the thread having exited between
+//                     readdir and read (GH #639) — e.g. EACCES must not be
+//                     silently folded into "no children"; a persistent read
+//                     failure would otherwise mask an undercount as healthy.
+function posixDirectChildPids(pid, procRoot, env) {
   if (fs.existsSync(procRoot)) {
     const taskDir = path.join(procRoot, String(pid), 'task');
     let tids;
     try {
       tids = fs.readdirSync(taskDir);
     } catch (_e) {
-      return null;
+      return { pids: [] };
     }
     const pids = new Set();
     for (const tid of tids) {
       try {
         const raw = fs.readFileSync(path.join(taskDir, tid, 'children'), 'utf8');
         raw.split(/\s+/).filter(Boolean).forEach((p) => pids.add(p));
-      } catch (_e) { /* thread exited between readdir and read — skip */ }
+      } catch (e) {
+        if (e && e.code === 'ENOENT') continue; // thread exited between readdir and read
+        return { error: e };
+      }
     }
-    return Array.from(pids);
+    return { pids: Array.from(pids) };
   }
   const pgrepBin = which('pgrep', env);
-  if (!pgrepBin) return null;
+  if (!pgrepBin) return { pids: null };
   const r = spawnProbeSync(pgrepBin, ['-P', String(pid)], { env, encoding: 'utf8' });
-  if (r.error || (r.status !== 0 && r.status !== 1)) return null; // pgrep rc=1 == no matches, not a failure
-  return (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (r.error || (r.status !== 0 && r.status !== 1)) return { pids: null }; // pgrep rc=1 == no matches, not a failure
+  return { pids: (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean) };
+}
+
+// Depth-bounded BFS over the descendant tree rooted at `pid` (NOT including
+// pid itself) — a poller can run directly as MainPID, or nested under a
+// wrapper/supervisor grandchild-or-deeper, so walking only one level of
+// children (the prior behaviour) misses both shapes (CR gap, HIMMEL-2932).
+// The depth bound keeps this finite against a pathological/cyclic fixture
+// while comfortably covering any realistic supervisor nesting.
+const POLLER_DESCENDANT_MAX_DEPTH = 4;
+
+function posixDescendantPids(rootPid, procRoot, env) {
+  const seen = new Set([String(rootPid)]);
+  const descendants = [];
+  let frontier = [String(rootPid)];
+  for (let depth = 0; depth < POLLER_DESCENDANT_MAX_DEPTH && frontier.length > 0; depth++) {
+    const next = [];
+    for (const pid of frontier) {
+      const r = posixDirectChildPids(pid, procRoot, env);
+      if (r.error) return { error: r.error };
+      if (r.pids === null) return { pids: null };
+      for (const child of r.pids) {
+        if (!seen.has(child)) {
+          seen.add(child);
+          descendants.push(child);
+          next.push(child);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return { pids: descendants };
 }
 
 function posixCmdline(pid, procRoot, env) {
@@ -2782,6 +2825,59 @@ function posixCmdline(pid, procRoot, env) {
   return (r.stdout || '').trim();
 }
 
+// Like posixCmdline, but distinguishes "no such file" (ENOENT — the pid has
+// genuinely exited, or simply carries no cmdline of its own) from any other
+// read failure. Used ONLY for MainPID's own cmdline: unlike a descendant
+// pid (where any unreadable cmdline makes process identity UNVERIFIED —
+// case d2), MainPID is already independently confirmed alive via
+// ActiveState=active, so a missing cmdline just means "not itself the
+// poller"; a genuine error (e.g. EACCES) still degrades.
+function posixOptionalCmdline(pid, procRoot, env) {
+  if (fs.existsSync(procRoot)) {
+    try {
+      const raw = fs.readFileSync(path.join(procRoot, String(pid), 'cmdline'));
+      return { cmdline: raw.toString('utf8').split('\0').filter(Boolean).join(' ') };
+    } catch (e) {
+      if (e && e.code === 'ENOENT') return { cmdline: null };
+      return { error: e };
+    }
+  }
+  const r = spawnProbeSync('ps', ['-o', 'args=', '-p', String(pid)], { env, encoding: 'utf8' });
+  if (r.error) return { error: r.error };
+  if (r.status !== 0) return { cmdline: null }; // no such pid — not an error, just not this
+  return { cmdline: (r.stdout || '').trim() };
+}
+
+// Escapes POSIX ERE metacharacters so a resolved filesystem path (which may
+// contain '.', '+', '(', etc.) is matched by `pgrep -f` as literal text
+// rather than being reinterpreted as regex syntax (CR gap, HIMMEL-2932).
+function escapeEreMetachars(s) {
+  return s.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&');
+}
+
+// Runs `pgrep -f <escaped pollerPath>` and verifies EACH matched pid's
+// cmdline through the existing checkout-anchor helper rather than trusting
+// pgrep's raw match count (CR gap, HIMMEL-2932) — pgrep -f matches on any
+// substring, so a raw count can both over-count (a foreign checkout whose
+// path happens to contain this one's, or an unrelated process that mentions
+// the path in an argument) in principle, and gives no anchor verification
+// at all otherwise. Returns { pids: [...verified] } or { error }.
+function posixVerifiedPgrepMatches(pollerPath, procRoot, env, anchor) {
+  const pgrepBin = which('pgrep', env);
+  if (!pgrepBin) return { pids: null };
+  const r = spawnProbeSync(pgrepBin, ['-f', escapeEreMetachars(pollerPath)], { env, encoding: 'utf8' });
+  if (r.error) return { error: r.error };
+  if (r.status !== 0 && r.status !== 1) return { error: new Error(`pgrep exited rc=${r.status}`) };
+  const candidates = (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const verified = [];
+  for (const pid of candidates) {
+    const cmdline = posixCmdline(pid, procRoot, env);
+    if (cmdline === null) return { error: new Error(`could not read cmdline for pgrep-matched pid ${pid}`) };
+    if (pollerLineIsThisCheckout(cmdline, anchor)) verified.push(pid);
+  }
+  return { pids: verified };
+}
+
 function posixPollerVerdict(n, source) {
   if (n === 1) return { actual: 'present', detail: `1 poller.ts process running for this checkout (${source}; a supervisor parent, if any, is not counted)` };
   if (n === 0) return { actual: 'absent', detail: `0 poller.ts process(es) running for this checkout (${source}; expected exactly 1)` };
@@ -2794,6 +2890,7 @@ function probeBridgePollerCountPosix(ctx) {
   const thisCheckoutAnchor = ctx.repoRoot
     ? normalizeForPollerAnchorMatch(path.join(ctx.repoRoot, 'scripts', 'telegram', 'poller.ts'))
     : null;
+  const pollerPath = ctx.repoRoot ? path.join(ctx.repoRoot, 'scripts', 'telegram', 'poller.ts') : null;
 
   const systemctlBin = which('systemctl', env);
   if (systemctlBin) {
@@ -2810,39 +2907,69 @@ function probeBridgePollerCountPosix(ctx) {
         if (props.ActiveState !== 'active' || !props.MainPID || props.MainPID === '0') {
           return { actual: 'absent', detail: `telegram-bridge.service is not active (ActiveState=${props.ActiveState || 'unknown'}) — 0 poller.ts processes running for this checkout` };
         }
-        const childPids = posixChildPids(props.MainPID, procRoot, env);
-        if (childPids === null) {
-          return { actual: 'degraded', detail: `could not enumerate child processes of telegram-bridge.service MainPID ${props.MainPID} — process identity is UNVERIFIED, not assumed healthy` };
+        const mainPid = props.MainPID;
+        const descendants = posixDescendantPids(mainPid, procRoot, env);
+        if (descendants.error) {
+          return { actual: 'degraded', detail: `could not enumerate the process tree of telegram-bridge.service MainPID ${mainPid}: ${descendants.error.message} — process identity is UNVERIFIED, not assumed healthy` };
         }
-        const cmdlines = childPids.map((pid) => ({ pid, cmdline: posixCmdline(pid, procRoot, env) }));
+        if (descendants.pids === null) {
+          return { actual: 'degraded', detail: `could not enumerate the process tree of telegram-bridge.service MainPID ${mainPid} — process identity is UNVERIFIED, not assumed healthy` };
+        }
+        const cmdlines = descendants.pids.map((pid) => ({ pid, cmdline: posixCmdline(pid, procRoot, env) }));
         const unreadable = cmdlines.filter((c) => c.cmdline === null);
         if (unreadable.length > 0) {
-          return { actual: 'degraded', detail: `could not read cmdline for child pid(s) ${unreadable.map((c) => c.pid).join(', ')} of telegram-bridge.service MainPID ${props.MainPID} — process identity is UNVERIFIED, not assumed healthy` };
+          return { actual: 'degraded', detail: `could not read cmdline for pid(s) ${unreadable.map((c) => c.pid).join(', ')} in telegram-bridge.service MainPID ${mainPid}'s process tree — process identity is UNVERIFIED, not assumed healthy` };
         }
-        const n = cmdlines.filter((c) => pollerLineIsThisCheckout(c.cmdline, thisCheckoutAnchor)).length;
-        return posixPollerVerdict(n, 'via systemd MainPID children');
+        const verifiedPids = new Set(
+          cmdlines.filter((c) => pollerLineIsThisCheckout(c.cmdline, thisCheckoutAnchor)).map((c) => c.pid),
+        );
+
+        // MainPID can itself BE the poller (no wrapper) — a genuine
+        // read failure here degrades, but a missing cmdline (MainPID has
+        // already been confirmed alive via ActiveState=active) just means
+        // it isn't itself the poller.
+        const mainCmdline = posixOptionalCmdline(mainPid, procRoot, env);
+        if (mainCmdline.error) {
+          return { actual: 'degraded', detail: `could not read cmdline for telegram-bridge.service MainPID ${mainPid}: ${mainCmdline.error.message} — process identity is UNVERIFIED, not assumed healthy` };
+        }
+        if (mainCmdline.cmdline !== null && pollerLineIsThisCheckout(mainCmdline.cmdline, thisCheckoutAnchor)) {
+          verifiedPids.add(mainPid);
+        }
+
+        // HIMMEL-1555 duplicate-poller class: a manually-launched poller
+        // running OUTSIDE this systemd unit's tree is invisible to a
+        // tree-scoped count by construction — sweep system-wide via
+        // pgrep -f (same anchor verification as the no-unit fallback
+        // below) and union by verified pid, mirroring the Windows CIM
+        // branch's system-wide scope.
+        if (pollerPath) {
+          const sweep = posixVerifiedPgrepMatches(pollerPath, procRoot, env, thisCheckoutAnchor);
+          if (sweep.error) {
+            return { actual: 'degraded', detail: `could not run the system-wide pgrep sweep for telegram-bridge.service: ${sweep.error.message} — process identity is UNVERIFIED, not assumed healthy` };
+          }
+          if (sweep.pids) sweep.pids.forEach((pid) => verifiedPids.add(pid));
+        }
+
+        return posixPollerVerdict(verifiedPids.size, 'via systemd MainPID process tree + system-wide sweep');
       }
       // LoadState absent/not-found -- systemd genuinely doesn't know this unit; fall through to the pgrep -f fallback below.
     }
   }
 
-  const pgrepBin = which('pgrep', env);
-  if (!pgrepBin) {
+  if (!which('pgrep', env)) {
     return {
       actual: 'degraded',
       detail: 'poller-count check unavailable — no telegram-bridge.service systemd unit and no pgrep on PATH; process identity is UNVERIFIED, not assumed healthy',
     };
   }
-  if (!ctx.repoRoot) {
+  if (!pollerPath) {
     return { actual: 'degraded', detail: 'poller-count check needs ctx.repoRoot to anchor pgrep -f, none provided' };
   }
-  const pollerPath = path.join(ctx.repoRoot, 'scripts', 'telegram', 'poller.ts');
-  const r = spawnProbeSync(pgrepBin, ['-f', pollerPath], { env, encoding: 'utf8' });
-  if (r.timedOut) return { actual: 'degraded', detail: `poller-count probe timed out after ${probeTimeoutSecs(r)}s` };
-  if (r.error) return { actual: 'degraded', detail: `spawn error: ${r.error.message}` };
-  if (r.status !== 0 && r.status !== 1) return { actual: 'degraded', detail: `pgrep poller-count query exited rc=${r.status}` };
-  const n = (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).length;
-  return posixPollerVerdict(n, 'via pgrep -f, no systemd unit found');
+  const fallback = posixVerifiedPgrepMatches(pollerPath, procRoot, env, thisCheckoutAnchor);
+  if (fallback.error) {
+    return { actual: 'degraded', detail: `pgrep poller-count query failed: ${fallback.error.message}` };
+  }
+  return posixPollerVerdict(fallback.pids.length, 'via pgrep -f, no systemd unit found');
 }
 
 function probeBridgePollerCount(ctx) {
