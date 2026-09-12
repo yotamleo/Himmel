@@ -2,6 +2,7 @@ import type { RenderContext } from "../../types.js";
 import {
   getContextPercent,
   getBufferedPercent,
+  isClaudexLane,
 } from "../../stdin.js";
 import { coloredBar, label, getContextColor, RESET } from "../colors.js";
 import { getAdaptiveBarWidth } from "../../utils/terminal.js";
@@ -59,6 +60,10 @@ export function renderIdentityLine(
         colors,
       );
     }
+  }
+
+  if (isClaudexLane()) {
+    line += label(` (${t("format.configured")})`, colors);
   }
 
   return line;

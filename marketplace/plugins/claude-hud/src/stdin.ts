@@ -262,6 +262,10 @@ function isClaudeModel(model?: string): boolean {
   return lower.startsWith('claude-') || lower.startsWith('anthropic.');
 }
 
+export function isClaudexLane(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.CLAUDEX_LANE_OK === '1';
+}
+
 /**
  * Resolves the model name to display, respecting `display.modelSource` config.
  *
@@ -278,6 +282,14 @@ export function resolveModelName(
   modelSource: 'auto' | 'stdin' | 'transcript' = 'stdin',
 ): string {
   const stdinModel = getModelName(stdin);
+
+  // The claudex lane drives Codex, not Claude — stdin's model fields describe
+  // the harness, not the model actually serving the session.
+  if (isClaudexLane()) {
+    const env = process.env;
+    return env.CODEX_MODEL?.trim() || env.ANTHROPIC_MODEL?.trim() || `${stdinModel}?`;
+  }
+
   // Treat TranscriptData as untrusted at the render boundary too. Callers and
   // poisoned cache objects can bypass parse-time normalization.
   const transcriptModel = sanitizeTranscriptModel(transcript?.lastAssistantModel);

@@ -1,4 +1,4 @@
-import { isBedrockModelId, isVertexModelId } from './stdin.js';
+import { isBedrockModelId, isClaudexLane, isVertexModelId } from './stdin.js';
 const TOKENS_PER_MILLION = 1_000_000;
 const CACHE_WRITE_MULTIPLIER = 1.25;
 const CACHE_READ_MULTIPLIER = 0.1;
@@ -65,6 +65,10 @@ export function estimateSessionCost(stdin, sessionTokens, options) {
     if (!sessionTokens) {
         return null;
     }
+    // No pricing table exists for the codex model actually serving this lane.
+    if (isClaudexLane()) {
+        return null;
+    }
     if (!options?.allowRoutedCost && (isBedrockModelId(stdin.model?.id) || isVertexModelId(stdin.model?.id))) {
         return null;
     }
@@ -98,6 +102,9 @@ export function estimateSessionCost(stdin, sessionTokens, options) {
 export function getNativeCostUsd(stdin, options) {
     const nativeCost = stdin.cost?.total_cost_usd;
     if (typeof nativeCost !== 'number' || !Number.isFinite(nativeCost)) {
+        return null;
+    }
+    if (isClaudexLane()) {
         return null;
     }
     if (isBedrockModelId(stdin.model?.id) || isVertexModelId(stdin.model?.id)) {

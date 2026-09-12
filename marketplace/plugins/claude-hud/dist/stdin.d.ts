@@ -13,6 +13,7 @@ export declare function getTotalTokens(stdin: StdinData): number;
 export declare function getContextPercent(stdin: StdinData, autoCompactWindow?: number | null): number;
 export declare function getBufferedPercent(stdin: StdinData, autoCompactWindow?: number | null): number;
 export declare function getModelName(stdin: StdinData): string;
+export declare function isClaudexLane(env?: NodeJS.ProcessEnv): boolean;
 /**
  * Resolves the model name to display, respecting `display.modelSource` config.
  *

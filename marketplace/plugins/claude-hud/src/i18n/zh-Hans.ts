@@ -22,6 +22,7 @@ export const zhHans: Messages = {
   "status.limitReached": "已达上限",
   "status.allTodosComplete": "全部完成",
   "status.expired": "已过期",
+  "status.unmeasured": "未计量",
 
   // Format
   "format.resets": "重置于",
@@ -29,6 +30,7 @@ export const zhHans: Messages = {
   "format.absoluteTime": "{time}",
   "format.untilTime": "至 {time}",
   "format.in": "输入",
+  "format.configured": "已配置",
   "format.cache": "缓存",
   "format.cacheWrite": "缓存写",
   "format.cacheRead": "缓存读",
