@@ -7,15 +7,24 @@
 # Platform guard: no .ps1 twin, by design. POSIX bash 3.2+; it runs under
 # git bash unchanged.
 #
-# The fix-forward/revert (g) section calls `gh pr list` against a real repo,
-# so this suite is network-dependent by construction (like extra-metrics.sh
-# itself) - it points --repo at himmel's own upstream, which the local `gh`
-# is already authenticated against.
+# The fix-forward/revert (g) section calls `gh pr list`; extra-metrics.sh
+# exits 1 if that call fails, which starves the operator-window assertions
+# below of any output at all (HIMMEL-2977 CI fix: a CI runner has no `gh
+# auth`). A PATH-prepended stub makes this hermetic - no CI-env skip, no
+# `gh auth status` gate.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/extra-metrics.sh"
 fails=0
+
+STUB_BIN="$HERE/fixtures/stub-gh"
+export PATH="$STUB_BIN:$PATH"
+RESOLVED_GH=$(command -v gh)
+if [ "$RESOLVED_GH" != "$STUB_BIN/gh" ]; then
+    echo "FAIL - precondition: gh stub not first on PATH (resolved: ${RESOLVED_GH:-none})"
+    exit 1
+fi
 
 check_contains() {
     name="$1"; haystack="$2"; needle="$3"
