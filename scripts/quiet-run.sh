@@ -25,6 +25,35 @@ if [ "$1" != "--" ]; then
 fi
 shift
 
+for arg in "$@"; do
+    case "$arg" in
+        ..|../*|*/..|*/../*)
+            echo "ERR quiet-run: refusing '..' path component in argv: $arg" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
+    SUITE_PATH="${2:-}"
+    BASENAME="${SUITE_PATH##*/}"
+    case "$BASENAME" in
+        test-*.sh) : ;;
+        *)
+            echo "ERR quiet-run: label 'suite' requires a tracked test-*.sh, got: $SUITE_PATH" >&2
+            exit 2
+            ;;
+    esac
+    if git rev-parse --show-toplevel >/dev/null 2>&1; then
+        if ! git ls-files --error-unmatch -- "$SUITE_PATH" >/dev/null 2>&1; then
+            echo "ERR quiet-run: label 'suite' requires a tracked test-*.sh, got: $SUITE_PATH" >&2
+            exit 2
+        fi
+    else
+        echo "quiet-run: not a git repo — skipping tracked-file check for label 'suite'" >&2
+    fi
+fi
+
 LOG="${TMPDIR:-/tmp}/quiet-run-${LABEL}-$(date +%Y%m%d-%H%M%S)-$$.log"
 
 {

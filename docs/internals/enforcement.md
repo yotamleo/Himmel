@@ -1800,6 +1800,12 @@ Fails OPEN on anything this
 hook cannot evaluate (missing `jq`, unparseable JSON, non-Bash tool) — a
 workflow nudge, not a security fence. Bypass: `QUIET_RUN_BYPASS=1`
 (launching shell, session-sticky). Spec: `scripts/hooks/test-require-quiet-run.sh`.
+`scripts/quiet-run.sh` itself (HIMMEL-2967) fails closed on any argv element
+with a `..` path component and, for the label `suite` when argv is
+`bash <path> …`, requires `<path>` to be a git-tracked `test-*.sh` — closing the
+gap where a `permissions.allow` tail-glob rule (HIMMEL-2959) admits the literal
+label + directory but quiet-run itself performed no path validation before
+exec.
 
 ### `block-docker-privesc.sh` — root-equivalent container guard (HIMMEL-441)
 
