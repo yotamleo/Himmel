@@ -71,7 +71,12 @@ test('dispatch-luna.sh resolves transcript_path to the codex project transcript'
     stubLauncher,
     '#!/usr/bin/env bash\n' +
       'set -u\n' +
-      'enc="$(pwd | sed \'s/[^a-zA-Z0-9]/-/g\')"\n' +
+      'win_path="$(pwd)"\n' +
+      'if command -v cygpath >/dev/null 2>&1; then\n' +
+      '    cp="$(cygpath -w "$win_path" 2>/dev/null)"\n' +
+      '    [ -n "$cp" ] && win_path="$cp"\n' +
+      'fi\n' +
+      'enc="$(printf \'%s\' "$win_path" | sed \'s/[^a-zA-Z0-9]/-/g\')"\n' +
       'mkdir -p "$HOME/.claude-codex/projects/$enc"\n' +
       ': > "$HOME/.claude-codex/projects/$enc/fake.jsonl"\n' +
       'exit 0\n',
