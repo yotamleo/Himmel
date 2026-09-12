@@ -217,11 +217,29 @@ fi
 
 # 5. Fail-open path, deterministically (hide gh from PATH). The script's headline
 #    safety property: gh absent -> exit 0 + skip, so CI / fresh clones never break.
-fo_out="$(PATH=/usr/bin:/bin bash "$SCRIPT" 2>&1)"; fo_rc=$?
-if [ "$fo_rc" -eq 0 ] && grepq "$fo_out" "fail-open"; then
-  ok "fail-open: gh absent -> exit 0 + skip message"
+#    A system-directory PATH (e.g. /usr/bin:/bin) does NOT hide gh — gh, jq, git,
+#    sha256sum etc. all live in /usr/bin on this station (HIMMEL-2524's inverse
+#    mistake: hiding by directory re-admits the very tool named). Build a minimal
+#    stub dir instead, naming only what this fail-open path itself needs (bash to
+#    run the script, dirname for its `$(dirname "$0")` ROOT resolution) and
+#    deliberately excluding gh, then assert the precondition that gh really is
+#    unreachable under that PATH before trusting the run.
+if NOGH_BIN="$(mktemp -d "${TMPDIR:-/tmp}/nogh-bin.XXXXXX")"; then
+  ln -s "$(command -v bash)" "$NOGH_BIN/bash"
+  ln -s "$(command -v dirname)" "$NOGH_BIN/dirname"
+  if PATH="$NOGH_BIN" command -v gh >/dev/null 2>&1; then
+    bad "fail-open fixture precondition failed: gh still reachable under stub PATH"
+  else
+    fo_out="$(PATH="$NOGH_BIN" bash "$SCRIPT" 2>&1)"; fo_rc=$?
+    if [ "$fo_rc" -eq 0 ] && grepq "$fo_out" "fail-open"; then
+      ok "fail-open: gh absent -> exit 0 + skip message"
+    else
+      bad "fail-open broken: rc=$fo_rc out=$fo_out"
+    fi
+  fi
+  rm -rf "$NOGH_BIN"
 else
-  bad "fail-open broken: rc=$fo_rc out=$fo_out"
+  bad "fail-open fixture: mktemp -d failed"
 fi
 
 # 5b. Malformed vendored-fork UPSTREAM_PIN: a fork pin missing the generic
