@@ -35,6 +35,13 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# HIMMEL-2902: scope the profile lookup to this suite's own tmp dir and clear
+# any inherited channel so a station's real install profile (e.g. channel:
+# stable) cannot steer these plain --check scenarios.
+export HIMMELCTL_CACHE_DIR="$TMP/himmelctl-cache"
+mkdir -p "$HIMMELCTL_CACHE_DIR"
+unset HIMMEL_UPDATE_CHANNEL
+
 pass=0
 fail=0
 assert_pass() { pass=$((pass + 1)); echo "  PASS: $1"; }
@@ -112,6 +119,31 @@ make_repo_behind() {
     cp "$src_scripts/lib/load-dotenv.sh"       "$clone/scripts/lib/load-dotenv.sh"
     CHECKOUT_DIR="$clone"
 }
+
+# --selftest-hermetic builds one behind=2 mock clone and replays --check on
+# it, printing its output — used only by the guard case below, recursing into
+# THIS file once with a controlled ambient env, never the full suite.
+if [ "${1:-}" = "--selftest-hermetic" ]; then
+    make_repo_behind 2
+    bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1
+    exit $?
+fi
+
+echo "== suite hermeticity (HIMMEL-2902) =="
+# A station's real install-profile.json (channel: stable) must not leak into
+# these plain --check scenarios via an inherited HIMMELCTL_CACHE_DIR — this
+# recurses with a station-like profile ambient exactly the way a caller's
+# shell would carry it, before this file's own preamble override (above) runs.
+STATION_DIR="$TMP/station-profile"
+mkdir -p "$STATION_DIR"
+printf '{"channel":"stable"}\n' > "$STATION_DIR/install-profile.json"
+station="$(HIMMELCTL_CACHE_DIR="$STATION_DIR" bash "$0" --selftest-hermetic)"; station_rc=$?
+clean="$(bash "$0" --selftest-hermetic)"; clean_rc=$?
+if [ "$station_rc" -eq 0 ] && [ "$clean_rc" -eq 0 ] && grepq "$station" 'behind:   2' && grepq "$clean" 'behind:   2'; then
+    assert_pass "suite is hermetic to a station install profile"
+else
+    assert_fail "suite is hermetic to a station install profile (station_rc=$station_rc clean_rc=$clean_rc station='$station' clean='$clean')"
+fi
 
 # ─── Test 1: --check, behind=2 ───────────────────────────────────────────────
 echo "Test 1: --check behind=2 → reports count + /himmel-update"
