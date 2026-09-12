@@ -148,14 +148,17 @@ own end-of-session hook still writing — it prunes on the next sweep.
 
 At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
 
-1. `/console next --arm --doc "{{STATE_DIR}}/{{SESSION_NAME}}.md" --bucket {{BUCKET}} --prefix {{PREFIX}}`
+1. `/console next --arm --doc "{{STATE_DIR}}/{{SESSION_NAME}}.md" --bucket {{BUCKET}} --prefix {{PREFIX}} --model {{MODEL}}`
    — writes the successor stub, writes this console's `-HANDOFF.md` skeleton,
-   and arms the successor. **Name your own document bucket and prefix explicitly.**
-   Without `--doc`, `next` hands over from the highest-lettered doc it finds,
-   which is the wrong one the moment another `new` has run or a successor
-   already exists; without `--bucket` and `--prefix` it resolves those from the
-   environment and writes the successor into the wrong bucket, or under the
-   wrong key, rather than continuing this chain. It prints
+   and arms the successor. **Name your own document, bucket, prefix and model
+   explicitly.** Without `--doc`, `next` hands over from the highest-lettered
+   doc it finds, which is the wrong one the moment another `new` has run or a
+   successor already exists; without `--bucket` and `--prefix` it resolves
+   those from the environment and writes the successor into the wrong bucket,
+   or under the wrong key, rather than continuing this chain; without
+   `--model` it re-resolves the model from `CONSOLE_MODEL` or the built-in
+   default instead of continuing on **{{MODEL}}**, the model this console
+   itself runs on. It prints
    the successor's signal path on its `armed:` line — **that** is the path
    step 3 touches, not this console's own `{{FILL_SIGNAL}}` (which fired when
    *this* session launched and nothing waits on it any more).

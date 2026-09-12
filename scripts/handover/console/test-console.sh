@@ -992,4 +992,34 @@ check "42 ancestor raced in between the outer walk and the create scan: refuses 
 check "42 ancestor raced in between the outer walk and the create scan: stderr names the cause" "$([ "$(printf '%s\n' "$out42" | grep -ci ancestor)" -ge 1 ] && echo yes || echo no)" "yes"
 check "42 ancestor raced in between the outer walk and the create scan: never created the work dir beneath the raced ancestor" "$([ -e "$target42" ] && echo yes || echo no)" "no"
 
+# --- 43: the rendered "Handing over" line must carry --model <resolved> --
+# same class as HIMMEL-2873 rounds 3-4 (--bucket, then --prefix): the doc
+# tells its own console what to literally run at handover, so any flag
+# missing from that line is a flag the next `console next` invocation never
+# receives, and re-resolves from CONSOLE_MODEL / the built-in default
+# instead of inheriting (HIMMEL-2888). CONSOLE_MODEL is deliberately set to
+# a DIFFERENT value than --model on every invocation below, so a fallback
+# to the environment shows up as the wrong string landing in the doc.
+doc43A="$root/tester/modelbucket/DEMO-nextleg-${today}A-console.md"
+out43a="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_MODEL=envdefault-model \
+    bash "$C" new --bucket modelbucket --model custom-model-x ) )"
+token43a="$(token_of "$out43a")"
+check "43 new's own rendered handover line carries --model <given>" "$(grep -c -- '--model custom-model-x' "$doc43A")" "1"
+check "43 new's rendered handover line does not carry CONSOLE_MODEL instead" "$(grep -c -- '--model envdefault-model' "$doc43A")" "0"
+
+# next, invoked the way the line above actually instructs (no --model of its
+# own is available to a copy-pasting operator/console unless THIS fix put
+# one there) but run here with an explicit --model so the successor's own
+# resolved model is known -- under a CONSOLE_MODEL that again differs, to
+# prove the successor's rendered doc carries the given --model forward
+# rather than re-deriving it from the environment.
+doc43B="$root/tester/modelbucket/DEMO-nextleg-${today}B-console.md"
+( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_MODEL=envdefault-model \
+    bash "$C" next --bucket modelbucket --model custom-model-x ) >/dev/null
+check "43 next's rendered successor doc carries --model <given>" "$(grep -c -- '--model custom-model-x' "$doc43B")" "1"
+check "43 next's rendered successor doc does not carry CONSOLE_MODEL instead" "$(grep -c -- '--model envdefault-model' "$doc43B")" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc43A" "$token43a" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

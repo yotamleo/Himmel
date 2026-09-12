@@ -146,15 +146,18 @@ back when it lands.
 Consoles hand over at **45 % context fill, or 90 k input tokens in one turn**.
 
 ```bash
-/console next --arm --doc <this console's own doc> --bucket <its bucket> --prefix <its prefix>
+/console next --arm --doc <this console's own doc> --bucket <its bucket> --prefix <its prefix> --model <its model>
 ```
 
-**Name your own document, bucket and prefix explicitly.** Without `--doc`,
-`next` hands over from the highest-lettered doc it can find — the wrong one as
-soon as another `new` has run or a successor already exists; without
-`--bucket` and `--prefix` it re-resolves those from the environment and writes
-the successor into the wrong bucket, or under the wrong key. The rendered
-console doc carries the exact command with all three already filled in.
+**Name your own document, bucket, prefix and model explicitly.** Without
+`--doc`, `next` hands over from the highest-lettered doc it can find — the
+wrong one as soon as another `new` has run or a successor already exists;
+without `--bucket` and `--prefix` it re-resolves those from the environment
+and writes the successor into the wrong bucket, or under the wrong key;
+without `--model` it re-resolves the model from `CONSOLE_MODEL` or the
+built-in default instead of continuing on the model this console itself runs
+on. The rendered console doc carries the exact command with all four already
+filled in.
 
 `next` writes the successor stub (letter bumped, pointed at this console and
 its HANDOFF) and the predecessor's `-HANDOFF.md` skeleton, and arms the
