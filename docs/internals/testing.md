@@ -174,9 +174,12 @@ Three suites ship under HIMMEL-2931:
   two separate calls) — the original `scoped-query` grader's `min: 1` only
   proved one of the two was in scope and never checked the other. A
   `graders/no-out-of-scope-query.md` grader now asserts `min: 0, max: 0` on
-  any call whose `collections` value is *not* exactly `["himmel"]`
-  (`"collections":\s*(?!\[\s*"himmel"\s*\])\[`), so a genuinely out-of-scope
-  call fails the run regardless of how many in-scope calls also happened. A
+  any call whose full input does *not* contain `collections` scoped to
+  exactly `["himmel"]`
+  (`^(?!.*"collections":\s*\[\s*"himmel"\s*\]).*$`), so a genuinely
+  out-of-scope call — including one that omits `collections` entirely, which
+  an earlier `"collections":`-substring form of this regex missed (CR round 1)
+  — fails the run regardless of how many in-scope calls also happened. A
   `max: 1` on `scoped-query` itself was tried and reverted — re-verified
   (2026-09-12) against the real 2-calls-per-run behavior, it produced a false
   failure (`called 2x, expected 1..1`) even though both calls were correctly
