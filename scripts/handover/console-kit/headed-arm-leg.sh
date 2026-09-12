@@ -86,14 +86,21 @@
 #      file>` to headed-arm.sh's fixed argv. headed-arm.sh itself is untouched.
 #   2. The same shim prepends `--append-system-prompt-file <leg-preface>`, so
 #      the invariant leg rules ride the system prompt instead of being retyped
-#      into every brief. (HIMMEL-2985) On the native lane this leg-preface is
-#      itself a per-leg concatenation of docs/handover/leg-preface.md and the
+#      into every brief. On the claudex lane this leg-preface is a per-leg
+#      concatenation of docs/handover/leg-preface.md and the claudex
+#      coordination preface, written next to the launch log at real-launch
+#      time. (HIMMEL-2990, superseding 2985's Ask 1) On the native lane the
 #      brief's own contract (the brief up to but excluding its `## Results`
-#      tail, or the whole file if it has none) - written next to the launch
-#      log at real-launch time, same as the claudex lane already did with its
-#      own coordination preface. Because it rides the system prompt, this
-#      contract survives every compaction; only the `load <brief> and
-#      continue` first turn is still compactable.
+#      tail, or the whole file if it has none) does NOT ride this preface -
+#      measured, riding it re-pays the contract on EVERY API call
+#      (contract x calls), 25-30x costlier over a typical leg than
+#      re-injecting it only after a compaction (contract x (compactions+1)).
+#      Instead it is written to its own per-leg <name>.leg-contract.md, and a
+#      SessionStart hook with `"matcher": "compact"` is added to the
+#      generated <name>.leg-settings.json to `cat` it back in whenever a
+#      compaction fires - the `load <brief> and continue` first turn is the
+#      only thing still compactable, and this hook re-supplies the contract
+#      the moment it would otherwise be lost.
 #   3. HIMMEL_LEAN_LEG=1 is exported, which silences the three advisory
 #      SessionStart hooks (where-are-we, qmd staleness, graphify freshness) a
 #      leg never acts on. inject-initiative.sh deliberately still speaks.
@@ -236,6 +243,10 @@ if [ -n "$PROFILE" ]; then
     # console already owns and cleans - never /tmp world-readable, never the
     # repo (it is generated, per-leg state).
     PROFILE_SETTINGS="$(dirname "$LOG")/$NAME.leg-settings.json"
+    # (HIMMEL-2990) Native lane only: the brief's own contract, re-injected by
+    # the compact-matcher SessionStart hook below instead of ridden in the
+    # preface on every call.
+    PROFILE_CONTRACT="$(dirname "$LOG")/$NAME.leg-contract.md"
     for _leg_need in "$PROFILES_MJS" "$LEG_SHIM" "$LEG_PREFACE"; do
         if [ ! -f "$_leg_need" ]; then
             echo "headed-arm-leg: --profile $PROFILE: required file missing: $_leg_need" >&2
@@ -254,6 +265,18 @@ if [ -n "$PROFILE" ]; then
     if [ -z "$PROFILE_JSON" ]; then
         echo "headed-arm-leg: --profile $PROFILE: resolver produced no settings JSON" >&2
         exit 2
+    fi
+    # (HIMMEL-2990) Native lane only - the claudex lane keeps its own
+    # coordination preface untouched. Resolved even under --dry-run, same
+    # reasoning as the profile/mcp resolution above: a jq failure here must
+    # fail the same way either way.
+    if [ "$LANE" != "claudex" ]; then
+        _leg_contract_cmd="cat \"$PROFILE_CONTRACT\""
+        if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg cmd "$_leg_contract_cmd" \
+            '.hooks.SessionStart = [{matcher:"compact", hooks:[{type:"command", command:$cmd, timeout:10}]}]')"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot add compact-hook to settings JSON" >&2
+            exit 2
+        fi
     fi
     # The shim reads these; export so they survive konsole's `-e env -u ...`.
     export LEG_PROFILE_SETTINGS="$PROFILE_SETTINGS"
@@ -321,8 +344,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # absent and the dry-run report is byte-identical to the pre-HIMMEL-2830
     # one, matching the argv guarantee it describes.
     if [ -n "$PROFILE" ]; then
-        printf 'headed-arm-leg: profile=%s settings=%s preface=%s lean=%s mcp=%s mcp-config=%s\n' \
-            "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$HIMMEL_LEAN_LEG" \
+        printf 'headed-arm-leg: profile=%s settings=%s preface=%s contract=%s lean=%s mcp=%s mcp-config=%s\n' \
+            "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$PROFILE_CONTRACT" "$HIMMEL_LEAN_LEG" \
             "$MCP_NAMES_JSON" "${LEG_PROFILE_MCP_CONFIG:-<none>}"
     fi
     exit 0
@@ -342,17 +365,23 @@ if [ -n "$PROFILE" ]; then
         fi
         chmod 600 "$LEG_PROFILE_PREFACE" 2>/dev/null || true
     else
-        # (HIMMEL-2985) Native lane: the leg preface plus the brief's own
-        # contract, so the brief's rules ride the system prompt and survive
-        # compaction by construction - the brief's first USER turn does not.
-        # awk stops at the Results tail (or never, printing the whole file)
-        # rather than mapfile, for bash 3.2 (macOS ships 3.2; see the
-        # Platform guard above).
-        if ! { cat "$LEG_PREFACE" && printf '\n---\n\n' && awk '/^## Results/{exit} {print}' "$DOC"; } > "$LEG_PROFILE_PREFACE"; then
+        # (HIMMEL-2985/2990) Native lane: the leg preface stays the standing
+        # rule set only. The brief's own contract (up to the Results tail) is
+        # written to its own file and re-injected by a SessionStart compact
+        # hook (added to PROFILE_JSON above) instead of riding every API call
+        # in the preface. awk stops at the Results tail (or never, printing
+        # the whole file) rather than mapfile, for bash 3.2 (macOS ships 3.2;
+        # see the Platform guard above).
+        if ! cat "$LEG_PREFACE" > "$LEG_PROFILE_PREFACE"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot write preface to $LEG_PROFILE_PREFACE" >&2
             exit 2
         fi
         chmod 600 "$LEG_PROFILE_PREFACE" 2>/dev/null || true
+        if ! awk '/^## Results/{exit} {print}' "$DOC" > "$PROFILE_CONTRACT"; then
+            echo "headed-arm-leg: --profile $PROFILE: cannot write contract to $PROFILE_CONTRACT" >&2
+            exit 2
+        fi
+        chmod 600 "$PROFILE_CONTRACT" 2>/dev/null || true
     fi
     if [ -n "${LEG_PROFILE_MCP_CONFIG:-}" ]; then
         if ! printf '%s\n' "$MCP_CONFIG_JSON" > "$LEG_PROFILE_MCP_CONFIG"; then

@@ -454,12 +454,12 @@ fi
 contains "full launch --profile: the settings JSON is a real enabledPlugins map" \
   "$(cat "$d17/HIMMEL-3333-leg.leg-settings.json" 2>/dev/null || true)" "enabledPlugins"
 
-# 17b-2 (HIMMEL-2985). The brief's own contract must ride the system-prompt
-# preface, not only the compactable first user turn: a native-lane --profile
-# launch's per-leg <name>.leg-preface.md is docs/handover/leg-preface.md +
-# the fixture brief up to (excluding) its `## Results` tail. Real (non-dry)
-# launch, same stub shape as 17b - this is the writer of the file, not the
-# shim (the shim only fails closed if it is missing).
+# 17b-2 (HIMMEL-2985, superseded by HIMMEL-2990). A native-lane --profile
+# launch's per-leg <name>.leg-preface.md is docs/handover/leg-preface.md
+# only - the brief's own contract no longer rides it (2990 moved that to
+# <name>.leg-contract.md, re-injected by the compact hook; see 17b-3 below).
+# Real (non-dry) launch, same stub shape as 17b - this is the writer of the
+# file, not the shim (the shim only fails closed if it is missing).
 d17b="$tmp/c17b"; mk_launch_stubs "$d17b" "HIMMEL-9999-red"; mkdir -p "$tmp/repo17b"
 fixture17b="$tmp/fixture-brief.md"
 cat > "$fixture17b" <<'FIXTURE_EOF'
@@ -489,9 +489,54 @@ fi
 prefacecontent17b="$(cat "$preface17b" 2>/dev/null || true)"
 contains "brief-preface: carries the standing leg-preface heading" "$prefacecontent17b" \
   "$(head -1 "$HERE/../../../docs/handover/leg-preface.md")"
-contains "brief-preface: carries the fixture's Contract line" "$prefacecontent17b" "**Contract:**"
+not_contains "brief-preface: does NOT carry the fixture's Contract line (HIMMEL-2990)" \
+  "$prefacecontent17b" "**Contract:**"
 not_contains "brief-preface: does NOT carry the Results tail" "$prefacecontent17b" \
   "this bullet must never reach the system-prompt preface"
+
+# --- 17b-3 (HIMMEL-2990). 2985's per-call preface concatenation is replaced:
+# the brief's own contract now goes to its own per-leg <name>.leg-contract.md,
+# re-injected only after a compaction via a SessionStart `compact`-matcher
+# hook wired into the generated <name>.leg-settings.json - not ridden on every
+# API call inside the system-prompt preface. Same fixture brief and stub shape
+# as 17b.
+d17b3="$tmp/c17b3"; mk_launch_stubs "$d17b3" "HIMMEL-9999-hook"; mkdir -p "$tmp/repo17b3"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17b3/konsole" PGREP_CMD="$d17b3/pgrep" \
+LEG_REPO="$tmp/repo17b3" HEADED_ARM_LOCK_DIR="$d17b3/locks" HEADED_ARM_PROC="$d17b3/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-hook" "$fixture17b" "$d17b3/signal-never" "$PAST" "$d17b3/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b3" || true
+check "compact-hook: full launch exit 0" "$rc" "0"
+
+contract17b3="$d17b3/HIMMEL-9999-hook.leg-contract.md"
+if [ -s "$contract17b3" ]; then
+  echo "ok - compact-hook: <name>.leg-contract.md written next to the launch log"
+else
+  echo "FAIL - compact-hook: no leg-contract.md next to the launch log"; fails=$((fails+1))
+fi
+contractcontent17b3="$(cat "$contract17b3" 2>/dev/null || true)"
+contains "compact-hook: contract carries the fixture's Contract line" "$contractcontent17b3" "**Contract:**"
+not_contains "compact-hook: contract does NOT carry the Results tail" "$contractcontent17b3" \
+  "this bullet must never reach the system-prompt preface"
+
+prefacecontent17b3="$(cat "$d17b3/HIMMEL-9999-hook.leg-preface.md" 2>/dev/null || true)"
+not_contains "compact-hook: the preface does NOT carry the contract" "$prefacecontent17b3" "**Contract:**"
+
+rc=0
+node --input-type=module - "$d17b3/HIMMEL-9999-hook.leg-settings.json" "$contract17b3" <<'NODE' || rc=$?
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const settings = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const contractPath = process.argv[3];
+const starts = settings.hooks?.SessionStart ?? [];
+const hit = starts.find((e) => e.matcher === 'compact');
+assert.ok(hit, 'no SessionStart entry with matcher "compact"');
+const cmd = hit.hooks?.[0]?.command ?? '';
+assert.ok(cmd.includes(contractPath), `command does not name the contract file: ${cmd}`);
+NODE
+check "compact-hook: settings JSON carries a SessionStart compact hook naming the contract file" "$rc" "0"
 
 # 17c. Omitting --profile changes nothing: no shim, no lean flag, and a
 # dry-run report byte-identical to the pre-HIMMEL-2830 three-line form. This
