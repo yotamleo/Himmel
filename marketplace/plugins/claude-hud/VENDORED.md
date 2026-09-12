@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   c8f103ce089d7b14a23075be81842bf7c1a497aed79da23f4541d8f5f2768e52  # sha256 over VENDORED.manifest
+vendored_tree_hash:   fdc1f10bf6ada8051cb67498590fd7782dff76b4e29a151895bf7398d9f8f458  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -63,6 +63,35 @@ protected: editing it without bumping the pin trips the guard.
 > makes the drift guard protect *more* upstream files, not fewer.
 
 ## Fork delta
+
+- **Test-only station isolation fixes (HIMMEL-2944, 2026-09-12):** two bugs in
+  `tests/core.test.js` / `tests/index.test.js` made `bun test` fail on any
+  station with a populated `~/.claude.json` (19 cases), even though the
+  suite is green in CI (it never runs there — network-bound, excluded by
+  `scripts/ci/run-shell-tests.sh`). (1) 18 `countConfigs` fixtures mutated
+  `process.env.HOME` to redirect the counter at a fixture temp dir, but
+  bun's `os.homedir()` reads `HOME` once at process startup and never
+  re-reads it (Node's does) — fixed with a shared `withHome(homeDir)`
+  helper that `spyOn(os, 'homedir')` (`bun:test`) instead, which works
+  because `config-reader.ts` already does a namespace import
+  (`import * as os from 'node:os'`) that `spyOn` can intercept. (2) the
+  entrypoint test relied on re-importing `dist/index.js` with a
+  cache-busting query string to force a second module evaluation, but
+  bun's dynamic `import()` resolves distinct query strings to the same
+  cached module and evaluates it only once per process (Node's ESM loader
+  treats each query as a distinct module) — fixed by spawning a real
+  `node dist/index.js` child process, matching the plugin's other CLI
+  tests. No `src/`/`dist/` change; pin bump is test-file-only.
+  **CR round 1 follow-up:** the `spyOn` fix's static `import { spyOn } from
+  'bun:test'` broke `npm test` (`node --test`) with
+  `ERR_UNSUPPORTED_ESM_URL_SCHEME`, since `bun:test` isn't resolvable under
+  plain Node — fixed by loading it dynamically and only when
+  `typeof Bun !== 'undefined'`, falling back to plain `process.env.HOME`
+  mutation under Node (safe there, since Node's `os.homedir()` re-reads
+  `HOME` on every call). Also added the missing `result.status === 0`
+  assertion to the spawned-child test, matching every other `spawnSync`
+  test in `tests/integration.test.js`. Verified green under both
+  `node --test` and `bun test`.
 
 - **Landed (Phase 3.3, HIMMEL-718, `extra-cmd`=B — see the plan §Decisions):** a
   generic `customLineCommand` capability. When `display.customLineCommand` is set
