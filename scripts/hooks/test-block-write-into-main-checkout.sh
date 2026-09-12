@@ -404,6 +404,19 @@ check_both_reason "23b-viii git --work-tree=wt --git-dir=primary/.git commit (bo
 check_both "23b-ix git --git-dir=primary/.git -C \$FIX commit (relative --git-dir precedes -C) resolves against the FINAL -C dir, denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --git-dir=primary/.git -C $FIX commit -m x\",\"cwd\":\"$FIX/swrepo\"}}"
 
+# 23b-x: codex CR round 2 (HIMMEL-2884) — a STANDALONE --work-tree (no
+# --git-dir, no -C) does not change repository discovery at all: git still
+# discovers .git by searching from the session's cwd, so HEAD moves in the
+# cwd's repo while only the working-tree file content comes from the
+# --work-tree path (confirmed against real git: `git --work-tree=<other>
+# commit` from a repo cwd commits into the cwd's repo, not <other>'s). The
+# unfixed code redirected the target to the --work-tree value itself, so
+# `git --work-tree=$FIX/wt commit` from cwd=primary (main, denied) resolved
+# to $FIX/wt (an allowed worktree) and false-ALLOWed a commit that actually
+# lands on primary's HEAD.
+check_both "23b-x git --work-tree=wt commit (cwd=primary, standalone --work-tree, no --git-dir/-C) still denies — HEAD moves in cwd's repo" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree=$FIX/wt commit -m x\",\"cwd\":\"$FIX/primary\"}}"
+
 # 24. handovers/ carve-out (main_checkout_verdict's own exemption).
 check_both "24 cat > primary/handovers/x.md (handovers carve-out)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat > $FIX/primary/handovers/x.md\",\"cwd\":\"$FIX/primary\"}}"

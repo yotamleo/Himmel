@@ -955,20 +955,25 @@ _bwimc_check_target() {
 # _bwimc_git_commit_target CLAUSE_SP CWD — HIMMEL-2884: `git … commit` is a
 # CWD predicate (see CODEX-LANE PARITY below), but `-C <path>` (repeatable —
 # each relative value resolves against the PREVIOUS one, git's own
-# semantics), `--git-dir=<p>`/`--git-dir <p>` and `--work-tree=<p>`/
-# `--work-tree <p>` redirect the commit at a DIFFERENT directory than the
-# session cwd. Walks the tokens between `git` and `commit` collecting those
-# three and echoes the effective directory the commit actually addresses.
-# An unresolvable value (dynamic/glob/empty) fails CLOSED to CWD and sets
-# _BWIMC_GIT_TARGET_UNRESOLVED=1 so the caller can note it in the deny text.
+# semantics) and `--git-dir=<p>`/`--git-dir <p>` redirect the commit at a
+# DIFFERENT directory than the session cwd. Walks the tokens between `git`
+# and `commit` collecting those and echoes the effective directory the
+# commit actually addresses. An unresolvable value (dynamic/glob/empty)
+# fails CLOSED to CWD and sets _BWIMC_GIT_TARGET_UNRESOLVED=1 so the caller
+# can note it in the deny text.
 # Two passes, per git's own semantics (git(1) / codex CR round 1, HIMMEL-2884):
 # pass 1 resolves every `-C` cumulatively to a single final base directory;
-# pass 2 resolves the LAST `--git-dir`/`--work-tree` against that FINAL base,
-# regardless of where either appears relative to a `-C` on the command line
-# (`git --git-dir=a.git --work-tree=b -C c status` == `--git-dir=c/a.git
-# --work-tree=c/b status`). When both are given, `--git-dir` alone determines
-# the repository the commit updates — `--work-tree` only supplies file
-# content — so it always wins over a `--work-tree` value.
+# pass 2 resolves the LAST `--git-dir` against that FINAL base, regardless of
+# where it appears relative to a `-C` on the command line (`git
+# --git-dir=a.git -C c status` == `--git-dir=c/a.git status`).
+# A standalone `--work-tree=<p>`/`--work-tree <p>` (no `--git-dir`) is
+# deliberately NOT modelled as redirecting the target: real git still
+# discovers the repository by walking up from cwd in that case — HEAD moves
+# in whatever repo cwd resolves to, and `--work-tree` only supplies
+# working-tree file content there (verified against real git, codex CR
+# round 2, HIMMEL-2884). Only when `--git-dir` is ALSO given does
+# `--work-tree` matter at all, and even then `--git-dir` alone determines the
+# repository the commit updates, so it always wins.
 # Not modelled (deliberately, per the ticket): GIT_DIR/GIT_WORK_TREE env,
 # `git -c key=val` (an inert option-with-value the outer regex already
 # tolerates), any verb but `commit`.
@@ -977,7 +982,7 @@ _bwimc_check_target() {
 # a command-substitution subshell would discard both globals on exit.
 _bwimc_git_commit_target() {
     local clause_sp="$1" cwd="$2"
-    local toks=() t tl v r i n dir="$cwd" gitdir_raw="" worktree_raw=""
+    local toks=() t tl v r i n dir="$cwd" gitdir_raw=""
     _BWIMC_GIT_TARGET_UNRESOLVED=0
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$clause_sp")
     n=${#toks[@]}
@@ -1002,8 +1007,6 @@ _bwimc_git_commit_target() {
         case "$t" in
             --git-dir=*) gitdir_raw="${t#--git-dir=}" ;;
             --git-dir) i=$((i+1)); gitdir_raw="${toks[$i]:-}" ;;
-            --work-tree=*) worktree_raw="${t#--work-tree=}" ;;
-            --work-tree) i=$((i+1)); worktree_raw="${toks[$i]:-}" ;;
         esac
         i=$((i+1))
     done
@@ -1012,8 +1015,6 @@ _bwimc_git_commit_target() {
             */.git) dir="${r%/.git}" ;;
             *) dir="$r" ;;
         esac || _BWIMC_GIT_TARGET_UNRESOLVED=1
-    elif [ -n "$worktree_raw" ]; then
-        r=$(_bwimc_resolve_abs "$worktree_raw" "$dir") && dir="$r" || _BWIMC_GIT_TARGET_UNRESOLVED=1
     fi
     [ "$_BWIMC_GIT_TARGET_UNRESOLVED" = 1 ] && dir="$cwd"
     _BWIMC_GIT_TARGET_DIR="$dir"
