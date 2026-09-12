@@ -271,9 +271,13 @@ if [ -n "$PROFILE" ]; then
     # reasoning as the profile/mcp resolution above: a jq failure here must
     # fail the same way either way.
     if [ "$LANE" != "claudex" ]; then
-        _leg_contract_cmd="cat \"$PROFILE_CONTRACT\""
+        # %q shell-quotes PROFILE_CONTRACT (log dir + leg name are caller
+        # args, HIMMEL-2990 CR round 1): the generated command is re-parsed
+        # by a DIFFERENT shell when the hook fires, so an unescaped quote or
+        # $(...) in the path would break out of it.
+        _leg_contract_cmd="$(printf 'cat %q' "$PROFILE_CONTRACT")"
         if ! PROFILE_JSON="$(printf '%s' "$PROFILE_JSON" | jq --arg cmd "$_leg_contract_cmd" \
-            '.hooks.SessionStart = [{matcher:"compact", hooks:[{type:"command", command:$cmd, timeout:10}]}]')"; then
+            '.hooks.SessionStart = ((.hooks.SessionStart // []) + [{matcher:"compact", hooks:[{type:"command", command:$cmd, timeout:10}]}])')"; then
             echo "headed-arm-leg: --profile $PROFILE: cannot add compact-hook to settings JSON" >&2
             exit 2
         fi

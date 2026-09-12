@@ -538,6 +538,38 @@ assert.ok(cmd.includes(contractPath), `command does not name the contract file: 
 NODE
 check "compact-hook: settings JSON carries a SessionStart compact hook naming the contract file" "$rc" "0"
 
+# --- 17b-4 (HIMMEL-2990 CR round 1, codex-3). 17b-3 only checks that the
+# generated command STRING names the contract path as a substring; it never
+# actually runs the command, so it would not have caught an unescaped path
+# breaking out of the re-parsed shell at hook-fire time. Log dir here carries
+# a literal double quote - the exact character that breaks out of the OLD
+# `cat "$PROFILE_CONTRACT"` double-quoting (a single quote does NOT: double
+# quotes tolerate an embedded single quote) - so executing the generated
+# command with an unescaped path would misparse rather than `cat` the file.
+d17b4="$tmp/c17b4\"q"; mk_launch_stubs "$d17b4" "HIMMEL-9999-hookq"; mkdir -p "$tmp/repo17b4"
+rc=0
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
+HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+KONSOLE_CMD="$d17b4/konsole" PGREP_CMD="$d17b4/pgrep" \
+LEG_REPO="$tmp/repo17b4" HEADED_ARM_LOCK_DIR="$d17b4/locks" HEADED_ARM_PROC="$d17b4/proc" \
+  bash "$SCRIPT" --profile leg-impl "HIMMEL-9999-hookq" "$fixture17b" "$d17b4/signal-never" "$PAST" "$d17b4/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d17b4" || true
+check "compact-hook exec: full launch exit 0 (log dir has a shell-special quote)" "$rc" "0"
+
+contract17b4="$d17b4/HIMMEL-9999-hookq.leg-contract.md"
+settings17b4="$d17b4/HIMMEL-9999-hookq.leg-settings.json"
+contractcontent17b4="$(cat "$contract17b4" 2>/dev/null || true)"
+contains "compact-hook exec: contract carries the fixture's Contract line" "$contractcontent17b4" "**Contract:**"
+
+cmd17b4="$(node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const settings = JSON.parse(readFileSync(process.argv[1], "utf8"));
+const hit = (settings.hooks?.SessionStart ?? []).find((e) => e.matcher === "compact");
+process.stdout.write(hit?.hooks?.[0]?.command ?? "");
+' "$settings17b4")"
+exec17b4="$(bash -c "$cmd17b4" 2>/dev/null || true)"
+check "compact-hook exec: executing the generated command outputs the real contract content" "$exec17b4" "$contractcontent17b4"
+
 # 17c. Omitting --profile changes nothing: no shim, no lean flag, and a
 # dry-run report byte-identical to the pre-HIMMEL-2830 three-line form. This
 # is the case that keeps every console that never passes --profile working.
