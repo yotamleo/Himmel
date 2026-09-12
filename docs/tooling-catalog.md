@@ -599,7 +599,9 @@ changing which config dir loads, so hooks are unaffected).
 - `profiles` — `operator` (`null` sentinel: full `~/.claude`, never injected),
   `user` (adopter set, HIMMEL-1044), `lane-impl` (impl workers: floor +
   `pr-review-toolkit-himmel`), `lane-review` (CR-only, same lean set),
-  `lane-content` (impl + `claude-obsidian` + `obsidian-triage`).
+  `lane-content` (impl + `claude-obsidian` + `obsidian-triage`), `telegram`
+  (HIMMEL-2961: the Telegram bridge's lean set + `mcpServers: ["qmd"]`
+  allowlist — see [lane-calibration.md](internals/lane-calibration.md#plugin-profiles-lane-impl-is-not-the-operator-console)).
 
 **Resolver (`plugin-profiles.mjs`):** `resolveProfile(registry, name, {addPlugins,
 installed})` → `null` for `operator`, else `{enabledPlugins:{…}}`; the floor is
