@@ -57,36 +57,54 @@ for arg in "$@"; do
     RELS+=("$rel")
 done
 
-SAVE_DIR="${TMPDIR:-/tmp}/restore-to-head"
-RUN_DIR="$SAVE_DIR/$(date +%s)-$$"
-mkdir -p "$RUN_DIR"
+RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/restore-to-head.XXXXXX") || {
+    echo "restore-to-head: could not create a private backup directory under ${TMPDIR:-/tmp}" >&2
+    exit 2
+}
 
 for rel in "${RELS[@]}"; do
-    if [ -n "$(git -C "$TOPLEVEL" diff --binary HEAD -- ":(literal)$rel")" ]; then
+    wt_diff=$(git -C "$TOPLEVEL" diff --binary HEAD -- ":(literal)$rel")
+    idx_diff=$(git -C "$TOPLEVEL" diff --binary --cached HEAD -- ":(literal)$rel")
+    if [ -z "$wt_diff" ] && [ -z "$idx_diff" ]; then
+        echo "restore-to-head: '$rel' already matches HEAD -- no-op"
+        continue
+    fi
+
+    patch=""
+    if [ -n "$wt_diff" ]; then
         patch="$RUN_DIR/$rel.patch"
         mkdir -p "$(dirname "$patch")"
         if ! git -C "$TOPLEVEL" diff --binary HEAD -- ":(literal)$rel" > "$patch" || [ ! -s "$patch" ]; then
             echo "restore-to-head: could not write backup for '$rel' to '$patch' -- aborting without discarding it" >&2
             exit 2
         fi
-        if [ -n "$(git -C "$TOPLEVEL" diff --binary -- ":(literal)$rel")" ] \
-            && [ -n "$(git -C "$TOPLEVEL" diff --binary --cached HEAD -- ":(literal)$rel")" ]; then
-            staged_blob="$RUN_DIR/$rel.staged-blob"
-            if ! git -C "$TOPLEVEL" show ":$rel" > "$staged_blob" 2>/dev/null || [ ! -s "$staged_blob" ]; then
-                echo "restore-to-head: could not back up staged index content for '$rel' -- aborting without discarding it" >&2
-                exit 2
-            fi
-            echo "restore-to-head: '$rel' also has staged content that differs from the worktree (saved separately: $staged_blob)" >&2
+    fi
+
+    staged_blob=""
+    if [ -n "$idx_diff" ]; then
+        staged_blob="$RUN_DIR/$rel.staged-blob"
+        mkdir -p "$(dirname "$staged_blob")"
+        if ! git -C "$TOPLEVEL" show ":$rel" > "$staged_blob" 2>/dev/null; then
+            echo "restore-to-head: could not back up staged index content for '$rel' -- aborting without discarding it" >&2
+            exit 2
         fi
-        git -C "$TOPLEVEL" checkout HEAD -- ":(literal)$rel"
+        echo "restore-to-head: '$rel' has staged content that differs from HEAD (saved separately: $staged_blob)" >&2
+    fi
+
+    git -C "$TOPLEVEL" checkout HEAD -- ":(literal)$rel"
+    if [ -n "$patch" ]; then
         echo "restored $rel (saved diff: $patch)"
     else
-        echo "restore-to-head: '$rel' already matches HEAD -- no-op"
+        echo "restored $rel (staged-only change; saved separately: $staged_blob)"
     fi
 done
 
 for rel in "${RELS[@]}"; do
-    remaining=$(git -C "$TOPLEVEL" diff --stat HEAD -- ":(literal)$rel") || {
+    remaining_wt=$(git -C "$TOPLEVEL" diff --stat HEAD -- ":(literal)$rel") || {
         echo "restore-to-head: could not verify '$rel' is clean after restore" >&2; exit 2; }
-    [ -z "$remaining" ] || { echo "restore-to-head: '$rel' still differs from HEAD after restore" >&2; exit 2; }
+    remaining_idx=$(git -C "$TOPLEVEL" diff --cached --stat HEAD -- ":(literal)$rel") || {
+        echo "restore-to-head: could not verify '$rel' index is clean after restore" >&2; exit 2; }
+    if [ -n "$remaining_wt" ] || [ -n "$remaining_idx" ]; then
+        echo "restore-to-head: '$rel' still differs from HEAD after restore" >&2; exit 2
+    fi
 done

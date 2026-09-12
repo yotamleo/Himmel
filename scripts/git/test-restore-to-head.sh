@@ -20,7 +20,11 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SUT="$HERE/restore-to-head.sh"
-TMP="$(mktemp -d -t restore-to-head-test.XXXXXX)"
+TMP="$(mktemp -d -t restore-to-head-test.XXXXXX)" || { echo "test-restore-to-head: mktemp failed" >&2; exit 2; }
+if [ -z "$TMP" ] || [ ! -d "$TMP" ]; then
+    echo "test-restore-to-head: mktemp produced no usable directory" >&2
+    exit 2
+fi
 trap 'rm -rf "$TMP" 2>/dev/null || true' EXIT
 
 FAILED=0
@@ -47,7 +51,7 @@ mkdir -p "$PRIMARY" "$BACKUPS"
     git add tracked.txt tracked2.txt tracked3.txt sub/a.sh sub/b.sh other/a.sh bin.dat
     git commit -qm base
     git worktree add -q -b work "$WT" main
-)
+) || { echo "test-restore-to-head: repo setup failed" >&2; exit 2; }
 
 # --- (h) documented RED control: the deny pattern matches a LEG's command
 # line, not this script's own internal call. Assert the actual checkout
@@ -162,14 +166,16 @@ else
     fail "(g) rc=$rc out='$out' (expected usage + non-zero)"
 fi
 
-# --- (i) backup write failure must NOT be followed by a discard (codex-1)
-RO="$TMP/ro"
-mkdir -p "$RO"
-chmod 555 "$RO"
+# --- (i) backup write failure must NOT be followed by a discard (codex-1).
+# TMPDIR points at a plain FILE, not a directory, so creating the backup dir
+# under it fails deterministically (ENOTDIR) regardless of user or platform
+# permission semantics (chmod 555 is unreliable as root / under Git Bash --
+# round-3 codex-5).
+RO="$TMP/ro-file"
+: > "$RO"
 printf 'dirty\n' > "$WT/tracked.txt"
 out=$(cd "$WT" && TMPDIR="$RO" bash "$SUT" tracked.txt 2>&1); rc=$?
 content=$(cat "$WT/tracked.txt")
-chmod 755 "$RO"
 if [ "$rc" -ne 0 ] && [ "$content" = "dirty" ]; then
     pass "(i) unwritable backup dir aborts before discarding the dirty file"
 else
@@ -269,6 +275,34 @@ else
 fi
 reset_wt
 (cd "$WT" && git reset -q --hard main)
+
+# --- (q) index differs from HEAD even though the worktree already matches HEAD
+# is still detected and restored, not silently skipped as a no-op (round-3 codex-1)
+(cd "$WT" && printf 'staged-then-reverted\n' > tracked.txt && git add tracked.txt && printf 'base\n' > tracked.txt)
+out=$(run tracked.txt 2>&1); rc=$?
+final_idx_diff=$(cd "$WT" && git diff --cached --stat HEAD -- tracked.txt)
+content=$(cat "$WT/tracked.txt")
+if [ "$rc" -eq 0 ] && [ -z "$final_idx_diff" ] && [ "$content" = "base" ]; then
+    pass "(q) staged content is restored to HEAD even when the worktree already matched HEAD"
+else
+    fail "(q) rc=$rc final_idx_diff='$final_idx_diff' content='$content' (expected the index restored to HEAD, not left dirty)"
+fi
+reset_wt
+(cd "$WT" && git reset -q --hard main)
+
+# --- (r) backup run directory is private (mktemp, not a predictable shared
+# /tmp path another local user could pre-create or symlink) (round-3 codex-2)
+printf 'dirty\n' > "$WT/tracked.txt"
+out=$(run tracked.txt); rc=$?
+patch_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.patch' | head -1)
+run_dir=$(dirname "$patch_path")
+mode=$(stat -c '%a' "$run_dir" 2>/dev/null || stat -f '%Lp' "$run_dir" 2>/dev/null)
+if [ "$rc" -eq 0 ] && [ "$mode" = "700" ]; then
+    pass "(r) backup run directory is a private mktemp directory (mode 700)"
+else
+    fail "(r) rc=$rc run_dir='$run_dir' mode='$mode' (expected a private mktemp-created directory, mode 700)"
+fi
+reset_wt
 
 echo "---"
 if [ "$FAILED" -gt 0 ]; then
