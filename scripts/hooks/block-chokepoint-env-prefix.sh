@@ -121,6 +121,21 @@
 #     not a registered seam of anything changes nothing (over-match stays
 #     closed the same way the assignment form closes it).
 #
+# `unset`/`export -n`'s OWN option scanning (scan_segment's `unset)` and
+# `export)` arms) went through three CR rounds each finding the next edge
+# a bash-option-VALIDITY model missed (-fn, the -f leading/trailing
+# boundary, `--`, `-x`) -- round 5's ruling stopped modelling validity at
+# all: for `unset`, or an `export` carrying `-n` anywhere in its leading
+# run of option-shaped words (`--` and combined forms included), every
+# remaining word that does not start with `-` is a candidate name, full
+# stop -- no charset check, no leading-vs-trailing distinction, no
+# invalid-option branch. This is DELIBERATELY fail-closed rather than
+# fail-open: an invalid invocation (`unset -x NAME`) is denied too
+# (documented over-deny -- real bash would refuse it and touch nothing
+# anyway, so denying it here costs nothing and removes a parser this
+# guard has no business re-implementing). Over-deny is the safe direction
+# for a guard; a false ALLOW is the defect class this ticket exists for.
+#
 # The round-2 '(' carve-out is CLOSED: an unquoted '(' / ')' / backtick
 # (and `$(` / backtick inside double quotes) opens a fresh command
 # position via segmentation, so subshell, $(...), and backtick-wrapped
@@ -962,105 +977,57 @@ scan_segment() {
                 # assignments after them DO lead it.
                 asg_ok=1; j=$((j + 1)); continue ;;
             unset)
-                # HIMMEL-2927: `unset NAME [NAME...]` clears NAME for every
-                # LATER segment of this payload (scan_text folds
-                # UNSET_NAMES back in before each scan_segment call) --
-                # `unset` is a shell builtin, never itself a chokepoint.
-                #
-                # codex-1 (pr-check round 2/3): `-f` targets a FUNCTION,
-                # never a variable -- alone, `unset -f NAME` leaves NAME's
-                # variable/environment state untouched; combined with -v (or
-                # given as a separate word alongside -v) bash refuses
-                # ("cannot simultaneously unset...") and touches nothing
-                # either (verified on real bash). Only a LEADING `-f`
-                # counts, though: bash's own option parsing stops at the
-                # first non-option word or at `--`, so a trailing `-f` is
-                # just a literal NAME to (fail to) unset, not a flag --
-                # `unset -- HIMMEL_CONSOLE_LEG -f` and
-                # `unset HIMMEL_CONSOLE_LEG -f` both still clear
-                # HIMMEL_CONSOLE_LEG (verified). Scanning the WHOLE word
-                # list for `f` (an earlier fix did this) wrongly skipped
-                # exactly that clear.
-                #
-                # coderabbitai (real review, PR #635): bash validates ALL
-                # options before acting on any of them -- an invalid option
-                # (anything outside -f/-v/-n, e.g. `unset -x NAME`) makes
-                # bash refuse the WHOLE invocation and touch nothing
-                # (verified: NAME stays set). The option-scan loop already
-                # `break`s on that word, but the operand loop below used to
-                # run anyway from that same `k`, still recording later bare
-                # words into UNSET_NAMES -- an over-denial. `invalid_opt`
-                # tracks that case so the operand loop is skipped entirely.
+                # HIMMEL-2927 (ruling, pr-check round 5): FAIL-CLOSED by
+                # construction, not by modelling unset's option grammar --
+                # three rounds each found the next edge a validity model
+                # missed (-fn, -f -n boundary, `--`, `-x`), so this stops
+                # re-implementing bash's option parser. Every remaining word
+                # that does NOT start with `-` is a candidate name; a word
+                # that starts with `-` (a bare `--` included) is skipped as
+                # option-shaped and nothing else about it is inspected --
+                # no charset check, no leading-vs-trailing boundary, no
+                # invalid-option branch. This also denies an INVALID
+                # invocation (`unset -x NAME`) -- a documented over-deny:
+                # real bash would refuse that invocation and touch nothing,
+                # so denying it here costs nothing and removes a whole class
+                # of parser edge to get wrong (over-deny is the safe
+                # direction for a guard; a false ALLOW is the defect class
+                # this ticket exists for).
                 k=$((j + 1))
-                saw_f=0
-                invalid_opt=0
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
-                    --) k=$((k + 1)); break ;;
-                    -*)
-                        opt="${W[$k]#-}"
-                        case "$opt" in
-                        *[!fvn]*) invalid_opt=1; break ;;
-                        esac
-                        case "$opt" in *f*) saw_f=1 ;; esac
-                        k=$((k + 1)) ;;
-                    *) break ;;
+                    -*) ;;
+                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]}" ;;
                     esac
+                    k=$((k + 1))
                 done
-                if [ "$invalid_opt" = 0 ] && [ "$saw_f" = 0 ]; then
-                    while [ "$k" -lt "$nw" ]; do
-                        case "${W[$k]}" in
-                        -*) ;;
-                        *) UNSET_NAMES="$UNSET_NAMES ${W[$k]}" ;;
-                        esac
-                        k=$((k + 1))
-                    done
-                fi
                 return 0 ;;
             export)
-                # HIMMEL-2927: `export -n NAME` strips NAME's export
-                # attribute -- it no longer reaches a later chokepoint's
-                # environment. Plain `export NAME[=val]` (no -n) still
-                # exports; leave that shape alone. bash's export flags are
-                # exactly -f/-n/-p, combinable and order-independent
-                # (`-np`, `-pn` genuinely strip -n's effect -- verified on
-                # bash), so a cluster is recognized by its CHARACTER SET,
-                # not by an exact "-n" match; a word outside that set is an
-                # unrecognized/invalid option and is left alone per this
-                # guard's fail-open posture (real bash errors on it rather
-                # than stripping anything).
-                #
-                # codex-1 (pr-check round 2): `-f` requires the target to be
-                # a FUNCTION -- combined with `-n` (same word, e.g. `-fn`,
-                # or a separate word, e.g. `-f -n`) real bash errors
-                # ("not a function") on a plain variable and strips
-                # nothing, same as `-f` alone (verified). So `-n` only
-                # strips when NO word in this invocation's options carried
-                # an `f`.
-                #
-                # coderabbitai (real review, PR #635): same validate-then-
-                # execute rule as `unset` above -- `export -n -x NAME`
-                # errors on the invalid `-x` and never strips NAME's export
-                # attribute (verified). `invalid_opt` skips the operand
-                # loop in that case instead of still recording NAME.
+                # HIMMEL-2927 (ruling, pr-check round 5): same fail-closed
+                # simplification as `unset` above. If this export segment
+                # carries `-n` ANYWHERE in its leading run of option-shaped
+                # words (every word starting with `-`, `--` included,
+                # combined forms included, up to the first word that does
+                # NOT start with `-`), then every remaining word that does
+                # not start with `-` is a candidate name -- full stop, no
+                # charset check, no invalid-option branch. An invalid
+                # cluster (`export -n -x NAME`) is denied too, same
+                # documented over-deny posture. Plain `export NAME[=val]`
+                # (no `-n` anywhere in the leading cluster) is left alone --
+                # that shape still exports; falls through to the unchanged
+                # assignment path below.
                 k=$((j + 1))
                 saw_n=0
-                saw_f=0
-                invalid_opt=0
-                while [ "$k" -lt "$nw" ]; do
-                    case "${W[$k]}" in
+                m=$k
+                while [ "$m" -lt "$nw" ]; do
+                    case "${W[$m]}" in
                     -*)
-                        opt="${W[$k]#-}"
-                        case "$opt" in
-                        *[!fnp]*) invalid_opt=1; break ;;
-                        esac
-                        case "$opt" in *f*) saw_f=1 ;; esac
-                        case "$opt" in *n*) saw_n=1 ;; esac
-                        k=$((k + 1)) ;;
+                        case "${W[$m]#-}" in *n*) saw_n=1 ;; esac
+                        m=$((m + 1)) ;;
                     *) break ;;
                     esac
                 done
-                if [ "$invalid_opt" = 0 ] && [ "$saw_n" = 1 ] && [ "$saw_f" = 0 ]; then
+                if [ "$saw_n" = 1 ]; then
                     while [ "$k" -lt "$nw" ]; do
                         case "${W[$k]}" in
                         -*) ;;

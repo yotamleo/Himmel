@@ -146,36 +146,40 @@ assert_deny "export -pn (reordered cluster); then the chokepoint" "$(j "export -
 assert_allow "env -u UNREGISTERED name stays allowed"             "$(j "env -u SOME_OTHER_VAR bash $MERGE_ON_GREEN 1")"
 assert_allow "unset with no chokepoint in the payload"            "$(j "unset HIMMEL_CONSOLE_LEG; echo hi")"
 assert_allow "env -u registered name, non-chokepoint program"     "$(j "env -u HIMMEL_CONSOLE_LEG bash scripts/some/unregistered-script.sh")"
-# codex-1 control: an invalid export flag (real bash errors, strips
-# nothing) must NOT be treated as -n -- fail-open on the unrecognized
-# shape, per this guard's documented posture.
-assert_allow "export -nx (invalid flag) stays allowed"            "$(j "export -nx HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
-# codex-1 (pr-check round 2): `-f` requires the target to be a FUNCTION --
-# `unset -f NAME` on a variable-only NAME touches nothing, and `export -fn`/
-# `-nf`/`-f -n` errors ("not a function") on a plain variable and strips
-# nothing either (verified on real bash), same as `-f` alone. Both must stay
-# allowed: the guard must not treat a function-only op as clearing a
-# variable's environment state.
-assert_allow "unset -f (function-only) stays allowed"             "$(j "unset -f HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
-assert_allow "export -fn (combined with -f) stays allowed"        "$(j "export -fn HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
-assert_allow "export -nf (reordered, combined with -f) allowed"   "$(j "export -nf HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
-assert_allow "export -f -n (separate words) stays allowed"        "$(j "export -f -n HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
-# codex-1 (pr-check round 3): bash's option parsing for `unset` stops at the
-# first non-option word or at `--` -- a `-f` AFTER that boundary is a
-# literal NAME, not a flag, so the seam still gets cleared and must still
-# be denied. An earlier fix scanned the whole payload for `f` and wrongly
-# allowed these (verified on real bash: both still unset the name).
-assert_deny "unset -- NAME -f (trailing -f is a name, not a flag)" "$(j "unset -- HIMMEL_CONSOLE_LEG -f; bash $MERGE_ON_GREEN 1")"
-assert_deny "unset NAME -f (no --, trailing -f is still a name)"  "$(j "unset HIMMEL_CONSOLE_LEG -f; bash $MERGE_ON_GREEN 1")"
+assert_allow "export NAME=1 (no -n): unchanged assignment path"  "$(j "export HIMMEL_CONSOLE_LEG=1; bash $MERGE_ON_GREEN 1")"
 
-# coderabbitai (real review, PR #635): bash validates ALL options before
-# acting on any -- an invalid option (outside -f/-v/-n for unset, -f/-n/-p
-# for export) makes bash refuse the WHOLE invocation and touch nothing
-# (verified on real bash: NAME stays set/exported). The option-scan loop
-# breaks on the invalid word, but the operand loop used to run anyway from
-# that same position and still record a later bare NAME -- an over-denial.
-assert_allow "unset -x NAME (invalid option aborts, NAME untouched)"      "$(j "unset -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
-assert_allow "export -n -x NAME (invalid option aborts, export intact)"  "$(j "export -n -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+# HIMMEL-2927 ruling (pr-check round 5): unset/export option-VALIDITY
+# modelling is GONE. Three CR rounds each found the next edge a validity
+# model missed (-fn, the -f leading/trailing boundary, `--`, `-x`), and
+# round 5 surfaced a genuine BYPASS in the validity model itself
+# (`export -n -- NAME` -- real bash treats `--` as ending option parsing
+# and still strips NAME's export attribute, but a validity-charset model
+# read the bare `--` as an invalid option and skipped recording the
+# clear). The ruling: stop re-implementing bash's option parser. For
+# `unset`, or an `export` carrying `-n` anywhere in its leading run of
+# option-shaped words (`--` and combined forms included), EVERY remaining
+# word that does not start with `-` is a candidate name, full stop -- no
+# charset check, no leading-vs-trailing distinction, no invalid-option
+# branch. Consequence, deliberate: several shapes previously modelled
+# (correctly, at the time) as ALLOWED now DENY too -- documented
+# over-deny, since real bash would refuse or no-op these invocations
+# anyway, so denying them here costs nothing and removes a parser this
+# guard has no business re-implementing. Over-deny is the safe direction
+# for a guard; a false ALLOW (codex-1's `export -n -- NAME` finding) is
+# the defect class this ticket exists for.
+assert_deny "export -n -- NAME (-- ends options; the leading -n still carries -- codex-1's bypass)" "$(j "export -n -- HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "export -nx (unrecognized flag; the leading -n still carries)" "$(j "export -nx HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "unset -f (documented over-deny -- bash would touch nothing)" "$(j "unset -f HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "export -fn (documented over-deny -- bash errors, strips nothing)" "$(j "export -fn HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "export -nf (documented over-deny, reordered)"        "$(j "export -nf HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "export -f -n (documented over-deny, separate words)" "$(j "export -f -n HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+# The simplified scanner does not track any leading-vs-trailing boundary
+# either -- every non-option word anywhere after `unset` is a candidate,
+# so both readings of these already denied (unaffected by the ruling).
+assert_deny "unset -- NAME -f (both readings still clear the seam)" "$(j "unset -- HIMMEL_CONSOLE_LEG -f; bash $MERGE_ON_GREEN 1")"
+assert_deny "unset NAME -f (both readings still clear the seam)"    "$(j "unset HIMMEL_CONSOLE_LEG -f; bash $MERGE_ON_GREEN 1")"
+assert_deny "unset -x NAME (documented over-deny -- bash refuses, touches nothing)" "$(j "unset -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
+assert_deny "export -n -x NAME (documented over-deny -- bash refuses, touches nothing)" "$(j "export -n -x HIMMEL_CONSOLE_LEG; bash $MERGE_ON_GREEN 1")"
 
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
