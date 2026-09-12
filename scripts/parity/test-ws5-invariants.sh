@@ -166,7 +166,10 @@ trap 'rm -f "$SHIPPED"' EXIT
 while IFS= read -r f; do
     [ -n "$f" ] || continue
     base="${f##*/}"
-    case "$base" in test-*) continue ;; esac
+    # data ledgers (HIMMEL-2894 suite-durations.tsv) list suite basenames,
+    # which legitimately contain the marker words; T13 is about runtime
+    # surface, and a TSV has none.
+    case "$base" in test-* | *.tsv) continue ;; esac
     git diff "$BASE...HEAD" -- "$f" | grep '^+' | grep -v '^+++'
 done < <(git diff "$BASE...HEAD" --name-only) > "$SHIPPED"
 
