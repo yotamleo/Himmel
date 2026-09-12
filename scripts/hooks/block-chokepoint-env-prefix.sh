@@ -831,7 +831,11 @@ scan_segment() {
     # tracking (fail-closed, same direction as the assignment fold above).
     if [[ $seg == *'$['* ]]; then
         bracket_rest="$seg"
-        while [[ $bracket_rest =~ ([A-Za-z_][A-Za-z0-9_]*)= ]]; do
+        # HIMMEL-2939 CR round (codex-1): a bare `NAME=` regex missed legacy
+        # arithmetic's compound-assignment operators (`$[NAME*=0]`,
+        # `$[NAME+=0]`, ...) -- the char run between the identifier and `=`
+        # is now optional, not absent, matching every `let` operator form.
+        while [[ $bracket_rest =~ ([A-Za-z_][A-Za-z0-9_]*)[-+*/%^\<\>\&|]{0,2}= ]]; do
             UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[1]}"
             bracket_rest="${bracket_rest#*"${BASH_REMATCH[0]}"}"
         done
@@ -1073,13 +1077,24 @@ scan_segment() {
             let|declare|typeset|readonly)
                 # HIMMEL-2939: same fail-closed simplification as `unset`/
                 # `export` above -- every remaining word that does not start
-                # with `-`, `=`-suffix stripped, is a candidate name, full
-                # stop (declare -p NAME denies too, a documented over-deny).
+                # with `-` names a candidate: take the LEADING identifier only
+                # (declare -p NAME denies too, a documented over-deny). A
+                # trailing `%%=*` strip is not enough here -- `let` accepts
+                # compound arithmetic assignment (`NAME*=0`, `NAME+=0`, ...),
+                # none of which contain a bare `=` right after the name, so
+                # stripping from the first `=` left the operator glued onto
+                # the name and missed the registered var (CR round on
+                # HIMMEL-2939: codex-1). Matching the identifier PREFIX
+                # instead is correct for every remaining shape too.
                 k=$((j + 1))
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
                     -*) ;;
-                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]%%=*}" ;;
+                    *)
+                        if [[ "${W[$k]}" =~ ^([A-Za-z_][A-Za-z0-9_]*) ]]; then
+                            UNSET_NAMES="$UNSET_NAMES ${BASH_REMATCH[1]}"
+                        fi
+                        ;;
                     esac
                     k=$((k + 1))
                 done

@@ -221,6 +221,15 @@ assert_deny "\$((NAME=0)) control (pre-existing, via the \$( carve-out)" "$(j "\
 # Over-match control: unaffected.
 assert_allow "let x=1 (no seam) stays allowed"                   "$(j "let x=1; bash $MERGE_ON_GREEN 1")"
 
+# --- HIMMEL-2939 CR round (codex-1): compound arithmetic-assignment
+# operators glued onto the name (`let NAME*=0`) escaped both the `%%=*`
+# suffix-strip (left `NAME*` as the folded name, which never matches the
+# registered `NAME`) and the `$[...]` bracket regex's bare `NAME=` match
+# (no `=` immediately follows the identifier). Fixed by matching the
+# LEADING identifier instead of stripping from the first `=`. ---
+assert_deny "let NAME*=0 (compound arithmetic op) assigns the seam"        "$(j "let HIMMEL_CONSOLE_LEG*=0; bash $MERGE_ON_GREEN 1")"
+assert_deny "legacy \$[NAME*=0] (compound arithmetic op) assigns the seam" "$(j "echo \$[HIMMEL_CONSOLE_LEG*=0]; bash $MERGE_ON_GREEN 1")"
+
 # --- CR ROUND 1 (HIMMEL-1746): the env-prefix must bind to the chokepoint's
 # OWN command segment. The pre-fix predicate tested "path found anywhere"
 # AND "assignment found anywhere" over the whole compound, which false-denied
