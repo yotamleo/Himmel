@@ -126,7 +126,7 @@ make_repo_behind() {
 if [ "${1:-}" = "--selftest-hermetic" ]; then
     make_repo_behind 2
     bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1
-    exit 0
+    exit $?
 fi
 
 echo "== suite hermeticity (HIMMEL-2902) =="
