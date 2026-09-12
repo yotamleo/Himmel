@@ -16,6 +16,12 @@
 # Exit codes: 0 all pass; 1 at least one fail.
 set -uo pipefail
 
+# The suite owns every case's env; an ambient leg shell (HIMMEL_LEAN_LEG=1
+# under --profile leg-impl, HIMMEL-2940) must not silently turn every
+# unmarked case into a lean-leg case. Only the two explicit lean cases below
+# set it themselves.
+unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG 2>/dev/null || true
+
 HOOK="$(cd "$(dirname "$0")" && pwd)/qmd-staleness-notice.sh"
 
 FAILED=0
@@ -112,6 +118,27 @@ run() {
     env FAKE_RC="$rc" FAKE_SAY="$say" FAKE_ARGV_FILE="$ARGV_FILE" QMD_STALENESS_CACHE_TTL=0 "$@" \
         bash "$SANDBOX/hooks/qmd-staleness-notice.sh" </dev/null 2>/dev/null
 }
+
+# --selftest-hermetic replays exactly one benign, non-silent run() case and
+# exits — used only by the guard case below, recursing into THIS file once
+# with a controlled ambient env, never the full ~50-case suite.
+if [ "${1:-}" = "--selftest-hermetic" ]; then
+    run 3 'GUARD-BANNER-SELFTEST'
+    exit $?
+fi
+
+echo "== suite hermeticity (HIMMEL-2940) =="
+# A leg's ambient HIMMEL_LEAN_LEG=1 must not reach run()'s env call before the
+# preamble unset above has a chance to clear it — so this recurses with that
+# var set exactly the way a lean-leg caller sets it (before this file's own
+# preamble runs), not via a case override.
+leaked="$(HIMMEL_LEAN_LEG=1 bash "$0" --selftest-hermetic)"; leaked_rc=$?
+clean="$(bash "$0" --selftest-hermetic)"; clean_rc=$?
+if [ "$leaked_rc" -eq 0 ] && [ "$clean_rc" -eq 0 ] && [ "$leaked" = "$clean" ] && [ -n "$leaked" ]; then
+    pass "suite is hermetic to a lean-leg caller"
+else
+    fail "suite is hermetic to a lean-leg caller (leaked_rc=$leaked_rc clean_rc=$clean_rc leaked='$leaked' clean='$clean')"
+fi
 
 echo "== silent paths (only these two) =="
 # A healthy index prints NOTHING: every line a SessionStart hook emits is paid
