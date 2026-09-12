@@ -33,6 +33,8 @@ LEG_BURN="$HERE/../../leg-burn.sh"
 PROJECTS="${SCORECARD_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/-home-overlord-Documents-github-himmel}"
 [ -d "$PROJECTS" ] || { echo "leg-over-by-day: transcript root not found: $PROJECTS" >&2; exit 2; }
 
+# GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
+# leg-burn.sh's backdate()/transcript_mtime GNU-first/BSD-fallback comment).
 to_epoch() {
     date -d "$1" +%s 2>/dev/null && return 0
     date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$(printf '%s' "$1" | sed 's/\.[0-9]*Z$/Z/')" +%s 2>/dev/null
