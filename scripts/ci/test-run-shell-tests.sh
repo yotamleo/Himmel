@@ -1911,4 +1911,66 @@ fi
 rm -rf "$sb22t"
 fi
 
+# 22u (codex-2) — a ledger whose LAST line has no trailing newline is still a
+# complete, whole file; the join's own +1-per-record byte accounting must not
+# charge that missing byte to the record it never had and refuse a clean read.
+sb22u=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22u.XXXXXX") || { fail "22u: mktemp failed"; sb22u=""; }
+if [ -n "$sb22u" ]; then
+mk_shard_sandbox "$sb22u" 3
+led22u="$sb22u/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22u"
+  printf '%s/test-s2.sh\t1\n'   "$sb22u"
+  printf '%s/test-s3.sh\t1' "$sb22u"; } > "$led22u"
+if [ -n "$(tail -c 1 "$led22u")" ]; then
+  o22u=$(SUITE_DURATIONS="$led22u" bash "$RUNNER" --list --shard 1/2 "$sb22u" 2>&1); rc22u=$?
+  if [ "$rc22u" -eq 0 ] \
+     && [ -n "$(run_lines "$o22u")" ] \
+     && ! grepq "$o22u" -F 'refusing to report green'; then
+    pass "22u: a ledger without a final trailing newline is not spuriously refused"
+  else
+    fail "22u: no-trailing-newline ledger wrongly refused; rc=$rc22u out: $o22u"
+  fi
+else
+  fail "22u: sandbox setup did not produce a no-trailing-newline ledger"
+fi
+rm -rf "$sb22u"
+fi
+
+# 22v (codex-1) — BSD/macOS wc right-pads a single -c count with leading
+# spaces; GNU coreutils never does. A stub standing in for that padding must
+# not desync the bytes-consumed comparison from a whole, matching read.
+sb22v=$(mktemp -d "${TMPDIR:-/tmp}/rst-case22v.XXXXXX") || { fail "22v: mktemp failed"; sb22v=""; }
+real_wc_22v=$(command -v wc)
+if [ -n "$sb22v" ] && [ -n "$real_wc_22v" ]; then
+mk_shard_sandbox "$sb22v" 3
+led22v="$sb22v/durations.tsv"
+{ printf '# suite\tseconds\n'
+  printf '%s/test-s1.sh\t100\n' "$sb22v"
+  printf '%s/test-s2.sh\t1\n'   "$sb22v"
+  printf '%s/test-s3.sh\t1\n'   "$sb22v"; } > "$led22v"
+
+mkdir -p "$sb22v/stub-v"
+# shellcheck disable=SC2016
+{ printf '#!/usr/bin/env bash\n'
+  printf 'if [ "$1" = "-c" ] && [ "$#" -eq 1 ]; then\n'
+  printf '  n=$(%s -c)\n' "$real_wc_22v"
+  printf '  printf "%%8s\\n" "$n"\n'
+  printf '  exit 0\n'
+  printf 'fi\n'
+  printf 'exec %s "$@"\n' "$real_wc_22v"; } > "$sb22v/stub-v/wc"
+chmod +x "$sb22v/stub-v/wc"
+
+o22v=$(PATH="$sb22v/stub-v:$PATH" SUITE_DURATIONS="$led22v" \
+  bash "$RUNNER" --list --shard 1/2 "$sb22v" 2>&1); rc22v=$?
+if [ "$rc22v" -eq 0 ] \
+   && [ -n "$(run_lines "$o22v")" ] \
+   && ! grepq "$o22v" -F 'refusing to report green'; then
+  pass "22v: a padded wc -c count (BSD/macOS-style) does not desync the bytes check"
+else
+  fail "22v: padded wc -c wrongly refused; rc=$rc22v out: $o22v"
+fi
+rm -rf "$sb22v"
+fi
+
 rst_tally

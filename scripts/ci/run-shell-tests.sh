@@ -3134,9 +3134,18 @@ if [ "$shard_total" -gt 0 ]; then
     # The %012d key is zero-padded so a plain reverse string sort on field 1
     # is a descending NUMERIC sort, which lets field 2 break ties ascending by
     # path in the same pass.
+    # A ledger whose last line has no trailing newline is still a complete
+    # file — length($0)+1 below charges every record, including the last,
+    # for a newline byte, which overcounts by 1 when the file itself doesn't
+    # end in one. Plain awk can't see that from inside; tell it from here.
+    _shard_ledger_final_nl=1
+    if [ -s "$_shard_ledger" ] && [ -n "$(tail -c 1 "$_shard_ledger" 2>/dev/null)" ]; then
+      _shard_ledger_final_nl=0
+    fi
     _shard_bytes_file=$(mktemp "${TMPDIR:-/tmp}/rst-shard-bytes.XXXXXX")
     _shard_plan=$(_SHARD_ELIGIBLE="$_shard_eligible" _SHARD_LEDGER="$_shard_ledger" \
-      _SHARD_BYTES_FILE="$_shard_bytes_file" LC_ALL=C awk '
+      _SHARD_BYTES_FILE="$_shard_bytes_file" _SHARD_FINAL_NL="$_shard_ledger_final_nl" \
+      LC_ALL=C awk '
           # LC_ALL=C: a UTF-8 locale makes length() count CHARACTERS, so a
           # multi-byte comment line (the ledger header uses em dashes) would
           # undercount its own byte total against the byte-oriented wc -c
@@ -3177,6 +3186,7 @@ if [ "$shard_total" -gt 0 ]; then
             # the median. That plan passes check 2 below untouched, so the
             # only thing that can catch it is comparing what this pass
             # actually consumed against the real ledger size.
+            if (ENVIRON["_SHARD_FINAL_NL"] == "0") _bytes -= 1
             print _bytes > ENVIRON["_SHARD_BYTES_FILE"]
             close(ENVIRON["_SHARD_BYTES_FILE"])
           }
@@ -3196,9 +3206,15 @@ if [ "$shard_total" -gt 0 ]; then
     # has already printed a plan, surfaces here instead of only reaching
     # check 2 as a plan that happens to still look complete.
     _shard_plan_rc=$?
+    # $(( )) re-parses each count as an integer, which discards the leading
+    # spaces BSD/macOS wc -c pads a single count with (GNU coreutils never
+    # does) — a check 3 comparing the raw strings would false-refuse a
+    # perfectly complete read on those platforms.
     _shard_ledger_bytes=$(wc -c < "$_shard_ledger")
+    _shard_ledger_bytes=$(( _shard_ledger_bytes ))
     _shard_read_bytes=$(cat "$_shard_bytes_file" 2>/dev/null)
     _shard_read_bytes="${_shard_read_bytes:-0}"
+    _shard_read_bytes=$(( _shard_read_bytes ))
     rm -f "$_shard_bytes_file"
 
     # This shard's slice, taken out of the plan by builtins alone. There is no
@@ -3248,7 +3264,7 @@ if [ "$shard_total" -gt 0 ]; then
     _shard_fail_clause=""
     if [ "$_shard_plan_rc" -ne 0 ]; then
       _shard_fail_clause=" (the join|sort|pack pipeline exited $_shard_plan_rc)"
-    elif [ "$_shard_read_bytes" != "$_shard_ledger_bytes" ]; then
+    elif [ "$_shard_read_bytes" -ne "$_shard_ledger_bytes" ]; then
       _shard_fail_clause=" (the join read $_shard_read_bytes of $_shard_ledger_bytes ledger bytes)"
     fi
     if [ -n "$_shard_fail_clause" ] || [ "$_shard_verdict" != "OK $_shard_eligible_n $_shard_mine_n" ]; then
