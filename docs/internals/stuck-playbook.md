@@ -60,9 +60,11 @@ several turns to this on 2026-09-12.
 **What to do:** `bash scripts/git/restore-to-head.sh <path> [<path>...]` —
 one literal command, no `cd`/`$()`/compound operators. It refuses globs,
 untracked paths, directories, and paths outside the current worktree, and it
-saves the outgoing diff for every dirty path to `${TMPDIR:-/tmp}/restore-to-head/`
-before restoring, so the discard is recoverable via `git apply`. Never try
-bare `git checkout -- <path>` or `git restore` yourself to work around this.
+saves the outgoing content for every dirty path — a plain copy, not a diff —
+to a fresh `${TMPDIR:-/tmp}/restore-to-head.XXXXXX/` directory before
+restoring, so the discard is recoverable via `cp` (staged content that
+differs from HEAD is saved separately via `git show`). Never try bare
+`git checkout -- <path>` or `git restore` yourself to work around this.
 
 ---
 

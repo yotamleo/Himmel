@@ -7,9 +7,10 @@
 # is a sanctioned way for a leg to run the RED half of a TDD control (restore
 # a tracked file to HEAD, run the suite, expect the predicted failure).
 # restore-to-head.sh is the sanctioned shape: it does the same restore but
-# saves the outgoing diff first, so the discard is recoverable, and it
-# refuses everything bare checkout would silently accept (globs, untracked
-# paths, paths outside the current worktree).
+# saves the outgoing content first (a plain copy, not a diff — round 5,
+# codex-1/codex-4), so the discard is recoverable, and it refuses everything
+# bare checkout would silently accept (globs, untracked paths, paths outside
+# the current worktree).
 #
 # Runs in a throwaway PRIMARY repo plus a linked WORKTREE built under
 # mktemp -d, never the real repo, so it never touches real history.
@@ -71,7 +72,7 @@ run() { (cd "$WT" && TMPDIR="$BACKUPS" bash "$SUT" "$@"); }
 
 reset_wt() { (cd "$WT" && git checkout -q main -- . 2>/dev/null; git clean -qfd 2>/dev/null); }
 
-# --- (a) dirty one tracked file -> restored, recoverable via saved diff
+# --- (a) dirty one tracked file -> restored, recoverable via saved copy
 printf 'dirty\n' > "$WT/tracked.txt"
 out=$(run tracked.txt); rc=$?
 stat_out=$(cd "$WT" && git diff --stat -- tracked.txt)
@@ -80,28 +81,24 @@ if [ "$rc" -eq 0 ] && [ -z "$stat_out" ]; then
 else
     fail "(a) rc=$rc stat='$stat_out'"
 fi
-patch_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.patch' | head -1)
-if [ -n "$patch_path" ] && [ -f "$patch_path" ]; then
-    if (cd "$WT" && git apply --check "$patch_path" 2>/dev/null); then
-        pass "(a) saved diff applies cleanly (discard is recoverable)"
-    else
-        fail "(a) saved diff at $patch_path does not apply cleanly"
-    fi
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+if [ -n "$wt_path" ] && [ -f "$wt_path" ] && [ "$(cat "$wt_path")" = "dirty" ]; then
+    pass "(a) saved worktree copy reproduces the discarded content exactly (discard is recoverable)"
 else
-    fail "(a) no saved-diff path found in output: $out"
+    fail "(a) no usable saved copy at '$wt_path' in output: $out"
 fi
 reset_wt
 
-# --- (b) two paths in one call -> both restored, one saved-diff each
+# --- (b) two paths in one call -> both restored, one saved copy each
 printf 'dirty1\n' > "$WT/tracked.txt"
 printf 'dirty2\n' > "$WT/tracked2.txt"
 out=$(run tracked.txt tracked2.txt); rc=$?
 stat_out=$(cd "$WT" && git diff --stat -- tracked.txt tracked2.txt)
-n_patches=$(printf '%s\n' "$out" | grep -c '\.patch')
-if [ "$rc" -eq 0 ] && [ -z "$stat_out" ] && [ "$n_patches" -eq 2 ]; then
-    pass "(b) two paths both restored, one saved-diff each"
+n_copies=$(printf '%s\n' "$out" | grep -c '\.worktree')
+if [ "$rc" -eq 0 ] && [ -z "$stat_out" ] && [ "$n_copies" -eq 2 ]; then
+    pass "(b) two paths both restored, one saved copy each"
 else
-    fail "(b) rc=$rc stat='$stat_out' n_patches=$n_patches"
+    fail "(b) rc=$rc stat='$stat_out' n_copies=$n_copies"
 fi
 reset_wt
 
@@ -148,12 +145,12 @@ else
 fi
 rm -f "$WT/untracked.txt"
 
-# --- (f) a clean tracked file is a no-op, says so, no saved-diff written
-before_count=$(find "$BACKUPS/restore-to-head" -name '*.patch' 2>/dev/null | wc -l | tr -d ' ')
+# --- (f) a clean tracked file is a no-op, says so, no saved copy written
+before_count=$(find "$BACKUPS" -name '*.worktree' 2>/dev/null | wc -l | tr -d ' ')
 out=$(run tracked.txt); rc=$?
-after_count=$(find "$BACKUPS/restore-to-head" -name '*.patch' 2>/dev/null | wc -l | tr -d ' ')
+after_count=$(find "$BACKUPS" -name '*.worktree' 2>/dev/null | wc -l | tr -d ' ')
 if [ "$rc" -eq 0 ] && [ "$before_count" -eq "$after_count" ]; then
-    pass "(f) clean tracked file is a no-op, no saved-diff written"
+    pass "(f) clean tracked file is a no-op, no saved copy written"
 else
     fail "(f) rc=$rc before=$before_count after=$after_count out='$out'"
 fi
@@ -183,14 +180,16 @@ else
 fi
 reset_wt
 
-# --- (j) same basename in different directories -> distinct, non-colliding backups (codex-2)
+# --- (j) same basename in different directories -> distinct, non-colliding
+# backups (codex-2). Numeric per-run backup names make collision structurally
+# impossible regardless of the paths' basenames.
 printf 'dirty-sub\n' > "$WT/sub/a.sh"
 printf 'dirty-other\n' > "$WT/other/a.sh"
 out=$(run sub/a.sh other/a.sh); rc=$?
-patches=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.patch')
-n_unique=$(printf '%s\n' "$patches" | sort -u | wc -l | tr -d ' ')
+copies=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree')
+n_unique=$(printf '%s\n' "$copies" | sort -u | wc -l | tr -d ' ')
 ok_sub=0; ok_other=0
-for p in $patches; do
+for p in $copies; do
     grep -q 'dirty-sub' "$p" 2>/dev/null && ok_sub=1
     grep -q 'dirty-other' "$p" 2>/dev/null && ok_other=1
 done
@@ -201,18 +200,15 @@ else
 fi
 reset_wt
 
-# --- (k) binary file diff is actually recoverable via the saved patch (codex-3)
+# --- (k) binary file content is recoverable byte-for-byte via the saved copy
+# (codex-3). A plain copy needs no reconstruction step at all -- the point.
 printf '\000\001\002bindirty\n' > "$WT/bin.dat"
 out=$(run bin.dat); rc=$?
-patch_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.patch' | head -1)
-recon="$TMP/recon"
-rm -rf "$recon"; mkdir -p "$recon"
-(cd "$recon" && git init -q -b main . && git config user.email t@t.t && git config user.name t && git config commit.gpgsign false && cp "$PRIMARY/bin.dat" . && git add bin.dat && git commit -qm base && git apply "$patch_path" && cmp -s bin.dat <(printf '\000\001\002bindirty\n'))
-recon_rc=$?
-if [ "$rc" -eq 0 ] && [ -n "$patch_path" ] && [ "$recon_rc" -eq 0 ]; then
-    pass "(k) binary file's saved patch reconstructs the dirty content exactly"
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+if [ "$rc" -eq 0 ] && [ -n "$wt_path" ] && cmp -s "$wt_path" <(printf '\000\001\002bindirty\n'); then
+    pass "(k) binary file's saved copy reconstructs the dirty content exactly"
 else
-    fail "(k) rc=$rc patch_path='$patch_path' recon_rc=$recon_rc (binary diff not recoverable)"
+    fail "(k) rc=$rc wt_path='$wt_path' (binary content not recoverable)"
 fi
 reset_wt
 
@@ -267,11 +263,11 @@ fi
 (cd "$WT" && printf 'staged-mid\n' > tracked.txt && git add tracked.txt && printf 'worktree-final\n' > tracked.txt)
 out=$(run tracked.txt 2>&1); rc=$?
 content=$(cat "$WT/tracked.txt")
-staged_blob_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.staged-blob' | head -1)
-if [ "$rc" -eq 0 ] && [ "$content" = "base" ] && [ -n "$staged_blob_path" ] && [ -f "$staged_blob_path" ] && [ "$(cat "$staged_blob_path")" = "staged-mid" ]; then
+idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
+if [ "$rc" -eq 0 ] && [ "$content" = "base" ] && [ -n "$idx_path" ] && [ -f "$idx_path" ] && [ "$(cat "$idx_path")" = "staged-mid" ]; then
     pass "(p) staged content differing from the worktree is separately backed up before the discard"
 else
-    fail "(p) rc=$rc content='$content' staged_blob_path='$staged_blob_path' (expected the staged 'staged-mid' content recoverable, not silently lost)"
+    fail "(p) rc=$rc content='$content' idx_path='$idx_path' (expected the staged 'staged-mid' content recoverable, not silently lost)"
 fi
 reset_wt
 (cd "$WT" && git reset -q --hard main)
@@ -294,8 +290,8 @@ reset_wt
 # /tmp path another local user could pre-create or symlink) (round-3 codex-2)
 printf 'dirty\n' > "$WT/tracked.txt"
 out=$(run tracked.txt); rc=$?
-patch_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.patch' | head -1)
-run_dir=$(dirname "$patch_path")
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+run_dir=$(dirname "$wt_path")
 mode=$(stat -c '%a' "$run_dir" 2>/dev/null || stat -f '%Lp' "$run_dir" 2>/dev/null)
 if [ "$rc" -eq 0 ] && [ "$mode" = "700" ]; then
     pass "(r) backup run directory is a private mktemp directory (mode 700)"
@@ -303,6 +299,42 @@ else
     fail "(r) rc=$rc run_dir='$run_dir' mode='$mode' (expected a private mktemp-created directory, mode 700)"
 fi
 reset_wt
+
+# --- (s) a configured external diff driver's arbitrary human-readable output
+# must never leak into the saved backup (round-4 codex-1). The backup is now
+# a plain `cp -p` of the worktree file, which never invokes a diff driver at
+# all, so the saved copy must be the raw discarded content, byte for byte --
+# never the driver's stand-in text.
+(cd "$WT" && git config diff.faketool.command 'echo NOT-A-REAL-PATCH >&2; echo NOT-A-REAL-PATCH')
+printf 'tracked.txt diff=faketool\n' > "$WT/.gitattributes"
+printf 'dirty-ext-diff\n' > "$WT/tracked.txt"
+out=$(run tracked.txt 2>&1); rc=$?
+wt_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.worktree' | head -1)
+if [ "$rc" -eq 0 ] && [ -n "$wt_path" ] && [ -f "$wt_path" ] && [ "$(cat "$wt_path")" = "dirty-ext-diff" ]; then
+    pass "(s) saved backup bypasses a configured external diff driver and stays the raw discarded content"
+else
+    fail "(s) rc=$rc wt_path='$wt_path' content='$(cat "$wt_path" 2>/dev/null)' (external diff driver leaked into the saved backup, or content was wrong)"
+fi
+(cd "$WT" && git config --unset diff.faketool.command) 2>/dev/null
+rm -f "$WT/.gitattributes"
+reset_wt
+
+# --- (t) an index-only mode change (e.g. a staged chmod +x with no content
+# change) is captured via its `git ls-files -s` mode line, not silently lost
+# by a content-only backup -- a unified diff cannot carry a mode bit at all
+# (round-5 codex-4).
+(cd "$WT" && chmod +x sub/a.sh && git add sub/a.sh)
+out=$(run sub/a.sh 2>&1); rc=$?
+idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
+idx_mode_path="${idx_path%.index}.index-mode"
+mode_line=$(cat "$idx_mode_path" 2>/dev/null)
+if [ "$rc" -eq 0 ] && printf '%s' "$mode_line" | grep -q '^100755 '; then
+    pass "(t) index-only mode change is captured via its ls-files mode line"
+else
+    fail "(t) rc=$rc mode_line='$mode_line' idx_mode_path='$idx_mode_path' (expected a 100755 ls-files -s line preserving the staged mode)"
+fi
+reset_wt
+(cd "$WT" && git reset -q --hard main)
 
 echo "---"
 if [ "$FAILED" -gt 0 ]; then

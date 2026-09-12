@@ -3,10 +3,20 @@
 # more tracked files to HEAD in a leg (HIMMEL-2934). `git checkout -- <path>`
 # is a `deny` entry in .claude/settings.json and `git restore` falls through
 # unmatched to the classifier, resolving as a silent headless DENY. This
-# script does the same restore but saves the outgoing diff first, so the
+# script does the same restore but saves the outgoing content first, so the
 # discard is recoverable, and refuses globs, untracked paths, directories,
 # and paths outside the current worktree — everything bare checkout would
 # silently accept.
+#
+# Backups are PLAIN COPIES, not diffs: a per-file worktree copy (`cp -p`,
+# mode preserved) and, when the index differs from HEAD, the staged blob
+# (`git show`) plus its `git ls-files -s` mode line. A diff/patch-based
+# backup depends on git actually being able to reproduce and re-apply a
+# patch — a configured external-diff/textconv driver can make `git diff`
+# emit nonempty, non-applicable output, and a unified diff cannot carry an
+# index-only mode or type change at all. A plain copy has neither failure
+# mode: recovery is `cp` back, which no diff driver, binary content or mode
+# bit can defeat (HIMMEL-2934 round 5, codex-1/codex-4).
 #
 # Platform guard (gitbash-only): Git Bash on Windows / any POSIX bash 3.2+.
 # Pure git + POSIX shell; no .ps1 twin needed.
@@ -16,10 +26,10 @@ usage() {
     cat <<'EOF'
 usage: restore-to-head.sh <path> [<path>...]
 
-Restores one or more tracked files to HEAD, saving the outgoing diff for
-each dirty path first (recoverable via `git apply`). Refuses glob
-arguments, untracked paths, directories, and paths outside the current
-worktree.
+Restores one or more tracked files to HEAD, saving a plain copy of each
+dirty path's worktree content and staged index content first (recoverable
+via `cp` / `git show`). Refuses glob arguments, untracked paths,
+directories, and paths outside the current worktree.
 EOF
 }
 
@@ -61,48 +71,60 @@ RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/restore-to-head.XXXXXX") || {
     echo "restore-to-head: could not create a private backup directory under ${TMPDIR:-/tmp}" >&2
     exit 2
 }
+MANIFEST="$RUN_DIR/MANIFEST"
+: > "$MANIFEST"
 
+n=0
 for rel in "${RELS[@]}"; do
-    wt_diff=$(git -C "$TOPLEVEL" diff --binary HEAD -- ":(literal)$rel")
-    idx_diff=$(git -C "$TOPLEVEL" diff --binary --cached HEAD -- ":(literal)$rel")
-    if [ -z "$wt_diff" ] && [ -z "$idx_diff" ]; then
+    n=$((n + 1))
+
+    wt_differs=1
+    git -C "$TOPLEVEL" diff --no-ext-diff --no-textconv --quiet HEAD -- ":(literal)$rel" && wt_differs=0
+    idx_differs=1
+    git -C "$TOPLEVEL" diff --no-ext-diff --no-textconv --quiet --cached HEAD -- ":(literal)$rel" && idx_differs=0
+
+    if [ "$wt_differs" -eq 0 ] && [ "$idx_differs" -eq 0 ]; then
         echo "restore-to-head: '$rel' already matches HEAD -- no-op"
         continue
     fi
 
-    patch=""
-    if [ -n "$wt_diff" ]; then
-        patch="$RUN_DIR/$rel.patch"
-        mkdir -p "$(dirname "$patch")"
-        if ! git -C "$TOPLEVEL" diff --binary HEAD -- ":(literal)$rel" > "$patch" || [ ! -s "$patch" ]; then
-            echo "restore-to-head: could not write backup for '$rel' to '$patch' -- aborting without discarding it" >&2
+    echo "$n $rel" >> "$MANIFEST"
+
+    saved_wt=""
+    if [ "$wt_differs" -eq 1 ]; then
+        saved_wt="$RUN_DIR/$n.worktree"
+        if ! cp -p "$TOPLEVEL/$rel" "$saved_wt"; then
+            echo "restore-to-head: could not back up worktree content for '$rel' to '$saved_wt' -- aborting without discarding it" >&2
             exit 2
         fi
     fi
 
-    staged_blob=""
-    if [ -n "$idx_diff" ]; then
-        staged_blob="$RUN_DIR/$rel.staged-blob"
-        mkdir -p "$(dirname "$staged_blob")"
-        if ! git -C "$TOPLEVEL" show ":$rel" > "$staged_blob" 2>/dev/null; then
+    saved_idx=""
+    if [ "$idx_differs" -eq 1 ]; then
+        saved_idx="$RUN_DIR/$n.index"
+        if ! git -C "$TOPLEVEL" show ":$rel" > "$saved_idx" 2>/dev/null; then
             echo "restore-to-head: could not back up staged index content for '$rel' -- aborting without discarding it" >&2
             exit 2
         fi
-        echo "restore-to-head: '$rel' has staged content that differs from HEAD (saved separately: $staged_blob)" >&2
+        if ! git -C "$TOPLEVEL" ls-files -s -- ":(literal)$rel" > "$RUN_DIR/$n.index-mode"; then
+            echo "restore-to-head: could not back up staged index mode for '$rel' -- aborting without discarding it" >&2
+            exit 2
+        fi
+        echo "restore-to-head: '$rel' has staged content that differs from HEAD (saved separately: $saved_idx)" >&2
     fi
 
     git -C "$TOPLEVEL" checkout HEAD -- ":(literal)$rel"
-    if [ -n "$patch" ]; then
-        echo "restored $rel (saved diff: $patch)"
+    if [ -n "$saved_wt" ]; then
+        echo "restored $rel (saved worktree copy: $saved_wt)"
     else
-        echo "restored $rel (staged-only change; saved separately: $staged_blob)"
+        echo "restored $rel (staged-only change; saved separately: $saved_idx)"
     fi
 done
 
 for rel in "${RELS[@]}"; do
-    remaining_wt=$(git -C "$TOPLEVEL" diff --stat HEAD -- ":(literal)$rel") || {
+    remaining_wt=$(git -C "$TOPLEVEL" diff --no-ext-diff --no-textconv --stat HEAD -- ":(literal)$rel") || {
         echo "restore-to-head: could not verify '$rel' is clean after restore" >&2; exit 2; }
-    remaining_idx=$(git -C "$TOPLEVEL" diff --cached --stat HEAD -- ":(literal)$rel") || {
+    remaining_idx=$(git -C "$TOPLEVEL" diff --no-ext-diff --no-textconv --cached --stat HEAD -- ":(literal)$rel") || {
         echo "restore-to-head: could not verify '$rel' index is clean after restore" >&2; exit 2; }
     if [ -n "$remaining_wt" ] || [ -n "$remaining_idx" ]; then
         echo "restore-to-head: '$rel' still differs from HEAD after restore" >&2; exit 2
