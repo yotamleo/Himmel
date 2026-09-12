@@ -28,9 +28,11 @@
 #                         Windows profile name, e.g. "Jane Smith") but never
 #                         a leading/trailing one; the match still stops at
 #                         the next '/' or '\', so a space only ever extends
-#                         within the same path segment. ASCII-only by design
-#                         (character classes are [A-Za-z0-9...]): a non-ASCII
-#                         username, e.g. /home/élodie/, is not matched. # leak-allow: home-path doc example
+#                         within the same path segment. The name-char class is
+#                         negated ([^/\space]-style, not an ASCII whitelist —
+#                         HIMMEL-2828), so a non-ASCII username like
+#                         /home/élodie/ is matched too. # leak-allow: home-path doc example
+#                         Only '/', '\' and whitespace end a segment/word.
 #   mac-address           six hex pairs joined by a SINGLE consistent
 #                         separator (all ':' or all '-' — never mixed). The
 #                         mixed-separator form used to false-positive on
@@ -390,8 +392,8 @@ check_home_path() {
     # shellcheck disable=SC2016 # single-quoted on purpose: this is a regex
     # literal for [[ =~ ]], not a string meant to expand.
     # Username segment allows an embedded space (not a leading/trailing one --
-    # `[A-Za-z0-9...]` anchors both ends) so a real Windows profile path like
-    # "C:\Users\Jane Smith\Documents" is still caught. # leak-allow: home-path doc example
+    # the negated `[^/\space]`-style name-char class anchors both ends) so a
+    # real Windows profile path like "C:\Users\Jane Smith\Documents" is still caught. # leak-allow: home-path doc example
     # The two forms are two separate alternatives, not one greedy class: a
     # multi-word name (embedded space) may ONLY terminate at a real '/' or
     # '\' -- so it can never swallow trailing prose that isn't itself a path
@@ -399,8 +401,10 @@ check_home_path() {
     # accepted end-of-line/non-name-char for the space-carrying form, let an
     # unterminated /home/... or C:\Users\... reference run to end-of-line and
     # capture every following word as part of the "name"). A single-word name
-    # keeps the permissive terminator (end-of-line or any non-word char,
-    # SPACE included -- a space simply ends the word, it does not extend it).
+    # keeps the permissive terminator (end-of-line, '/', '\', or whitespace --
+    # a space simply ends the word, it does not extend it; HIMMEL-2828 widened
+    # the name-char class itself from an ASCII whitelist to this negated form
+    # so a non-ASCII username, e.g. élodie, is part of the word too).
     # Both the leading "C:\Users\" and trailing separator also match a
     # doubled backslash, so a JSON/log-escaped path like
     # "C:\\Users\\Jane Smith\\Documents" is still caught (a literal double # leak-allow: home-path doc example
@@ -426,7 +430,7 @@ check_home_path() {
     # without loosening the negated class for anything else (so a bare
     # "http://home/..." -- "home" as an ordinary hostname label, not a
     # /home/ path -- still does not match).
-    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([A-Za-z0-9_.${}%<>-]+( [A-Za-z0-9_.${}%<>-]+)*)([/\\]|\\\\)|([A-Za-z0-9_.${}%<>-]+)($|[^A-Za-z0-9_.${}%<>-]))'
+    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^/\\[:space:]]+( [^/\\[:space:]]+)*)([/\\]|\\\\)|([^/\\[:space:]]+)($|[/\\[:space:]]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.

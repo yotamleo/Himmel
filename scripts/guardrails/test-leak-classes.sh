@@ -392,6 +392,24 @@ else
     fail "T1n home-path http control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1o: home-path, non-ASCII username (HIMMEL-2828) -- the username segment
+# character class used to be ASCII-only, so a real username that STARTS with
+# an accented character (e.g. "élodie") never matched at all: the name-chars
+# `+` quantifier requires at least one ASCII whitelist char right after the
+# prefix, and the very first character here isn't one. Forced to the C
+# locale: under this station's own en_US.UTF-8 default, glibc's
+# collation-based bracket-range matching lets [A-Za-z] incidentally match
+# some accented letters anyway, which would mask the bug (and any fix) here.
+r=$(new_repo)
+printf 'See /home/\xc3\xa9lodie/Documents/notes.txt for details.\n' > "$r/nonascii.txt"  # leak-allow: home-path test fixture
+git -C "$r" add nonascii.txt
+LC_ALL=C LANG=C scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "nonascii.txt:1"; then
+    pass "T1o home-path: non-ASCII username /home/élodie/ flagged"  # leak-allow: home-path test fixture
+else
+    fail "T1o home-path non-ASCII username (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== redaction =="
 
 # T6: the reported line carries only the first 4 chars of the match + an
