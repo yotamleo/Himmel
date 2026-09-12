@@ -2758,8 +2758,9 @@ function posixDirectChildPids(pid, procRoot, env) {
     let tids;
     try {
       tids = fs.readdirSync(taskDir);
-    } catch (_e) {
-      return { pids: [] };
+    } catch (e) {
+      if (e && e.code === 'ENOENT') return { pids: [] }; // pid has no task dir (exited or never existed)
+      return { error: e }; // e.g. EACCES -- must not be silently folded into "no children" (GH #639)
     }
     const pids = new Set();
     for (const tid of tids) {
@@ -2855,17 +2856,21 @@ function escapeEreMetachars(s) {
   return s.replace(/[.[\]()*+?{}|^$\\]/g, '\\$&');
 }
 
-// Runs `pgrep -f <escaped pollerPath>` and verifies EACH matched pid's
+// Runs `pgrep -f <escaped matchPattern>` and verifies EACH matched pid's
 // cmdline through the existing checkout-anchor helper rather than trusting
 // pgrep's raw match count (CR gap, HIMMEL-2932) — pgrep -f matches on any
 // substring, so a raw count can both over-count (a foreign checkout whose
 // path happens to contain this one's, or an unrelated process that mentions
 // the path in an argument) in principle, and gives no anchor verification
-// at all otherwise. Returns { pids: [...verified] } or { error }.
-function posixVerifiedPgrepMatches(pollerPath, procRoot, env, anchor) {
+// at all otherwise. `matchPattern` may be the resolved absolute poller path
+// (anchored fallback) or a broad basename-only substring (system-wide
+// sweep, see its call site) — either way, identity is decided below by
+// pollerLineIsThisCheckout, never by the breadth of this pattern. Returns
+// { pids: [...verified] } or { error }.
+function posixVerifiedPgrepMatches(matchPattern, procRoot, env, anchor) {
   const pgrepBin = which('pgrep', env);
   if (!pgrepBin) return { pids: null };
-  const r = spawnProbeSync(pgrepBin, ['-f', escapeEreMetachars(pollerPath)], { env, encoding: 'utf8' });
+  const r = spawnProbeSync(pgrepBin, ['-f', escapeEreMetachars(matchPattern)], { env, encoding: 'utf8' });
   if (r.error) return { error: r.error };
   if (r.status !== 0 && r.status !== 1) return { error: new Error(`pgrep exited rc=${r.status}`) };
   const candidates = (r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -2877,6 +2882,17 @@ function posixVerifiedPgrepMatches(pollerPath, procRoot, env, anchor) {
   }
   return { pids: verified };
 }
+
+// The system-wide sweep matches on this broad basename-only substring,
+// NOT the resolved absolute poller path, so a manually-launched duplicate
+// with no path in its own argv -- e.g. `bun poller.ts` run from its own
+// script directory, which is how a genuine poller is actually invoked (see
+// the Windows CIM branch's identical `-match 'poller\.ts'` query) -- is
+// still a pgrep -f candidate (CR gap, HIMMEL-2932). Anchoring the sweep on
+// the absolute path instead would make it blind to exactly the realistic
+// duplicate-poller shape it exists to catch. Identity is still decided by
+// pollerLineIsThisCheckout below, not by this pattern's breadth.
+const POLLER_SWEEP_PATTERN = 'poller.ts';
 
 function posixPollerVerdict(n, source) {
   if (n === 1) return { actual: 'present', detail: `1 poller.ts process running for this checkout (${source}; a supervisor parent, if any, is not counted)` };
@@ -2941,9 +2957,12 @@ function probeBridgePollerCountPosix(ctx) {
         // tree-scoped count by construction — sweep system-wide via
         // pgrep -f (same anchor verification as the no-unit fallback
         // below) and union by verified pid, mirroring the Windows CIM
-        // branch's system-wide scope.
+        // branch's system-wide scope. Matched on POLLER_SWEEP_PATTERN, NOT
+        // the resolved pollerPath used by the no-unit fallback below — see
+        // that constant's comment for why the sweep needs the broader,
+        // unanchored pattern.
         if (pollerPath) {
-          const sweep = posixVerifiedPgrepMatches(pollerPath, procRoot, env, thisCheckoutAnchor);
+          const sweep = posixVerifiedPgrepMatches(POLLER_SWEEP_PATTERN, procRoot, env, thisCheckoutAnchor);
           if (sweep.error) {
             return { actual: 'degraded', detail: `could not run the system-wide pgrep sweep for telegram-bridge.service: ${sweep.error.message} — process identity is UNVERIFIED, not assumed healthy` };
           }

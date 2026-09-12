@@ -4821,6 +4821,13 @@ if bh_posix_log_has "show telegram-bridge.service"; then
   echo "$outBHlinuxH" | jq -e '.detail | contains("2 poller")' >/dev/null \
     || fail "bridge-health (Linux): tree+sweep degraded detail should name the count 2 (got: $outBHlinuxH)"
   echo "ok: bridge-health (Linux) — an out-of-tree duplicate poller found via the system-wide pgrep sweep is unioned with the tree-scoped count, reading degraded, count 2 (HIMMEL-1555 class)"
+  # the sweep must match on a broad basename-only pattern, NOT the resolved
+  # absolute poller path -- the realistic out-of-tree duplicate (fixture
+  # cmdline above is a bare `bun poller.ts`, no path) has no path substring
+  # for an absolute-path pgrep -f to match against (CR gap, HIMMEL-2932).
+  bh_posix_log_has 'pgrep -f poller\.ts' \
+    || fail "bridge-health (Linux): the system-wide sweep must pgrep -f on a broad 'poller.ts' pattern, not the resolved absolute path, so a bare (pathless) duplicate invocation is still a candidate (log: $(cat "$bh_posix_log" 2>/dev/null))"
+  echo "ok: bridge-health (Linux) — the system-wide sweep matches on a broad basename-only pattern, catching a pathless duplicate invocation"
 else
   echo "SKIP: bridge-health (Linux) case (h): no evidence in the stub log that systemctl actually spawned on this host"
 fi
@@ -4880,6 +4887,28 @@ else
     echo "ok: bridge-health (Linux) — an EACCES reading a thread's children file reads degraded (GH #639), not silently treated as an exited thread"
   else
     echo "SKIP: bridge-health (Linux) case (k): no evidence in the stub log that systemctl actually spawned on this host"
+  fi
+fi
+
+# ── case (m): a NON-ENOENT failure (EACCES) LISTING a descendant's task/
+# directory itself (not reading a children file inside it, that's case (k))
+# reads degraded, never silently folded into "no children" (GH #639, one
+# level up from case (k) in the same function) ──────────────────────────────
+if [ "$(id -u)" -eq 0 ]; then
+  echo "SKIP: bridge-health (Linux) case (m): running as root, chmod 000 does not deny root reads"
+else
+  rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002/task/9002"
+  printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+  chmod 000 "$bh_proc_root/9002/task"
+  rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+  outBHlinuxM=$(BH_PGREP_N=0 run_bh_posix)
+  chmod 755 "$bh_proc_root/9002/task"
+  if bh_posix_log_has "show telegram-bridge.service"; then
+    echo "$outBHlinuxM" | jq -e '.actual == "degraded"' >/dev/null \
+      || fail "bridge-health (Linux): an EACCES listing a descendant's task/ directory must read degraded, never be silently folded into 'no children' (GH #639) (got: $outBHlinuxM)"
+    echo "ok: bridge-health (Linux) — an EACCES listing a descendant's task/ directory reads degraded (GH #639), not silently treated as no children"
+  else
+    echo "SKIP: bridge-health (Linux) case (m): no evidence in the stub log that systemctl actually spawned on this host"
   fi
 fi
 
