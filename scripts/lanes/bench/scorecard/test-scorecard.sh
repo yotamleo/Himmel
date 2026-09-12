@@ -22,6 +22,16 @@ check() {
     fi
 }
 
+check_exit() {
+    name="$1"; actual="$2"; expected="$3"
+    if [ "$actual" = "$expected" ]; then
+        echo "ok - $name"
+    else
+        echo "FAIL - $name: expected exit [$expected] got [$actual]"
+        fails=$((fails + 1))
+    fi
+}
+
 session_count() {
     # the role's "ALL"-model row already carries the total session count
     # in the sessions column (field 3) - read it directly.
@@ -79,6 +89,24 @@ unset SCORECARD_LAUNCH_LOG_DIR
 SHIFT_UNDER_OUT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role console 2>/dev/null)
 COUNTED_UNDER=$(printf '%s\n' "$SHIFT_UNDER_OUT" | awk -F'\t' '$1=="console" && $2=="ALL" {print $NF}')
 check "shift: <100 console-role calls -> counted_shifts=0" "$COUNTED_UNDER" "0"
+
+# --- (e0) role-relay: a title matching both *legN* and *-relay* must be
+# classified as relay, not leg (HIMMEL-2977 /pr-check round-3 codex-6 fix:
+# role_of() here lacked the *-relay* branch agg-burn.sh's role_of() has, so
+# this file - restricted to role in {leg, console} - would have counted a
+# relay session into the leg cohort).
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/role-relay"
+unset SCORECARD_LAUNCH_LOG_DIR
+
+ROLE_RELAY_OUT=$("$POSTPIN" --since 2026-01-01T00:00:00Z --role leg 2>/dev/null)
+check "role-relay: a legN+relay title is not counted into the leg cohort" \
+    "$(session_count "$ROLE_RELAY_OUT" leg)" "0"
+
+# --- (e) exit-contract: a successful run (zero leg-burn failures) must exit 0
+# (HIMMEL-2977 /pr-check round-3 codex-1/codex-4 fix: `[ cond ] && echo` as the
+# last statement made a clean run's own exit code depend on the warning firing).
+"$POSTPIN" --since 2026-01-01T00:00:00Z --role console >/dev/null 2>&1
+check_exit "exit-contract: a run with zero leg-burn failures exits 0" "$?" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

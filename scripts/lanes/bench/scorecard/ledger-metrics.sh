@@ -57,9 +57,11 @@ jq --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG"
     '[.[] | select((.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $since_epoch and (.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $until_epoch)]' \
     "$RUN/merged-all.json" > "$RUN/merged.json" || { echo "ledger-metrics: window filter failed" >&2; exit 1; }
 
-jq -r '.[].headRefName' "$RUN/merged.json" | sort -u > "$RUN/merged-branches.txt"
+jq -r '.[].headRefName' "$RUN/merged.json" > "$RUN/merged-branches-raw.txt" || { echo "ledger-metrics: could not extract headRefName from merged.json" >&2; exit 1; }
+sort -u "$RUN/merged-branches-raw.txt" > "$RUN/merged-branches.txt"
 jq -r 'select((.artifact // "diff")=="diff") | select(.kind=="finding" or .kind=="attempt") |
-  [.kind, .branch, .head, (.severity // "-"), (.model // "-")] | @tsv' "$LEDGER" > "$RUN/ledger-rows.tsv"
+  [.kind, .branch, .head, (.severity // "-"), (.model // "-")] | @tsv' "$LEDGER" > "$RUN/ledger-rows.tsv" \
+    || { echo "ledger-metrics: could not extract rows from ledger" >&2; exit 1; }
 
 awk -F'\t' -v OFS='\t' '
 NR==FNR { m[$1]=1; next }

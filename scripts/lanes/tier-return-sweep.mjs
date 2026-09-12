@@ -17,11 +17,16 @@ import { join } from 'node:path';
 
 function parseArgs(argv) {
   const args = { since: null, projectsDir: null };
+  let bad = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--since') args.since = argv[++i];
     else if (argv[i] === '--projects-dir') args.projectsDir = argv[++i];
+    else {
+      console.error(`tier-return-sweep: unknown argument: ${argv[i]}`);
+      bad = true;
+    }
   }
-  if (!args.since) {
+  if (!args.since || args.projectsDir === undefined || bad) {
     console.error('usage: tier-return-sweep.mjs --since <ISO8601> [--projects-dir <dir>]');
     process.exit(2);
   }

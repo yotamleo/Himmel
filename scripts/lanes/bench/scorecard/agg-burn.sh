@@ -103,4 +103,6 @@ END{
 }' "$ROWS" | sort
 
 n_fail=$(wc -l < "$FAILS")
-[ "$n_fail" -gt 0 ] && echo "agg-burn: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2
+if [ "$n_fail" -gt 0 ]; then
+    echo "agg-burn: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2
+fi

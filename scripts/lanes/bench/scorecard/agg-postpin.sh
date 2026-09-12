@@ -83,6 +83,7 @@ title_of() { grep -o '"customTitle":"[^"]*"' "$1" 2>/dev/null | tail -1 | sed 's
 role_of() {
     case "$1" in
         *-console*) echo console ;;
+        *-relay*) echo relay ;;
         *legN*) echo leg ;;
         *) echo other ;;
     esac
@@ -140,4 +141,6 @@ END{
 }' "$ROWS" | sort
 
 n_fail=$(wc -l < "$FAILS")
-[ "$n_fail" -gt 0 ] && echo "agg-postpin: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2
+if [ "$n_fail" -gt 0 ]; then
+    echo "agg-postpin: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2
+fi

@@ -25,3 +25,9 @@ test('with no --projects-dir, falls back to $CLAUDE_CONFIG_DIR/projects rather t
   });
   assert.match(out, /^sonnet 4\/7$/m);
 });
+test('an unknown flag is rejected rather than silently ignored (HIMMEL-2977 /pr-check codex-7)', () => {
+  assert.throws(() => execFileSync('node', ['scripts/lanes/tier-return-sweep.mjs', '--since', '2026-09-01T00:00:00Z', '--bogus-flag'], { encoding: 'utf8' }));
+});
+test('--projects-dir with no following value is rejected rather than falling back to the real transcript root (HIMMEL-2977 /pr-check codex-7)', () => {
+  assert.throws(() => execFileSync('node', ['scripts/lanes/tier-return-sweep.mjs', '--since', '2026-09-01T00:00:00Z', '--projects-dir'], { encoding: 'utf8' }));
+});

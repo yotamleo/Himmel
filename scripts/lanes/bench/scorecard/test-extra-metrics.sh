@@ -43,6 +43,20 @@ OUT=$("$SCRIPT" --since 2026-01-15T00:00:00Z --repo yotamleo/Himmel 2>/dev/null)
 check_contains "operator-window-fractional: fractional-second timestamp still counted" \
     "$OUT" "console_sessions=1 operator_msgs=1 per_session=1.0"
 
+# --- operator-window-malformed: a transcript whose operator-intervention jq
+# filter hits a parse error must be excluded and WARNED about, not silently
+# mismeasured (HIMMEL-2977 /pr-check round-3 codex-2 fix: the old
+# `jq ... 2>/dev/null | wc -l` pipeline reported wc -l's own exit status,
+# masking a jq failure).
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/operator-window-malformed"
+ERR_OUT=$(mktemp "${TMPDIR:-/tmp}/test-extra-metrics-stderr.XXXXXX")
+OUT=$("$SCRIPT" --since 2026-01-15T00:00:00Z --repo yotamleo/Himmel 2>"$ERR_OUT")
+check_contains "operator-window-malformed: malformed transcript excluded rather than silently mismeasured" \
+    "$OUT" "console_sessions=0 operator_msgs=0 per_session=0.0"
+check_contains "operator-window-malformed: jq failure is warned rather than swallowed" \
+    "$(cat "$ERR_OUT")" "WARNING: 1 transcript(s) skipped due to jq failure"
+rm -f "$ERR_OUT"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "PASS - test-extra-metrics.sh: 0 failures"

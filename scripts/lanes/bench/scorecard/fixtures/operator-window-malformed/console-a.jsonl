@@ -1,0 +1,3 @@
+{"type":"assistant","customTitle":"HIMMEL-9102-fixture-legN2-console-2026-02-01","timestamp":"2026-02-01T00:00:00Z","message":{"content":[{"type":"text","text":"hi"}]}}
+{"type":"user","isMeta":false,"isSidechain":false,"timestamp":"2026-02-01T00:00:01Z","message":{"content":"in-window message"}}
+{this line is not valid json at all}

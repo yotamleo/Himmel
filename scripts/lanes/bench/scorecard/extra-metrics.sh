@@ -80,6 +80,9 @@ echo "--- operator interventions (console transcripts, window)"
 title_of() { grep -o '"customTitle":"[^"]*"' "$1" 2>/dev/null | tail -1 | sed 's/.*:"//; s/"$//'; }
 ts_of() { grep -o '"timestamp":"[0-9TZ:.-]*"' "$1" 2>/dev/null | "$2" -1 | cut -d'"' -f4; }
 
+OP_FAILS="$RUN/op-fails.txt"
+: > "$OP_FAILS"
+
 find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     case "$f" in */subagents/*) continue ;; esac
     name=$(title_of "$f")
@@ -93,11 +96,17 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     [ "$last_epoch" -ge "$SINCE_EPOCH" ] || continue
     if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
 
-    jq -r --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG" \
+    op_out=$(jq -r --argjson since_epoch "$SINCE_EPOCH" --argjson until_epoch "$UNTIL_EPOCH_ARG" \
       'select(.type=="user" and (.isMeta|not) and (.isSidechain|not))
       | select(.timestamp != null)
       | select((.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $since_epoch and (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $until_epoch)
       | .message.content | select(type=="string")
       | select(test("^\\s*<(task-notification|cross-session|system-reminder|local-command|command-name|bash-|user-memory)")|not)
-      | select(test("^This session is being continued")|not) | "1"' "$f" 2>/dev/null | wc -l
+      | select(test("^This session is being continued")|not) | "1"' "$f" 2>/dev/null) || { echo "$f" >> "$OP_FAILS"; continue; }
+    printf '%s\n' "$op_out" | grep -c .
 done | awk '{s+=$1; n++} END{printf "console_sessions=%d operator_msgs=%d per_session=%.1f\n", n, s, (n?s/n:0)}'
+
+n_op_fail=$(wc -l < "$OP_FAILS")
+if [ "$n_op_fail" -gt 0 ]; then
+    echo "extra-metrics: WARNING: $n_op_fail transcript(s) skipped due to jq failure in operator-intervention count" >&2
+fi

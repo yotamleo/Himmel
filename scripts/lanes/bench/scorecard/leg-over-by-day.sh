@@ -89,4 +89,6 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
 done | sort | uniq -c
 
 n_fail=$(wc -l < "$FAILS")
-[ "$n_fail" -gt 0 ] && echo "leg-over-by-day: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2
+if [ "$n_fail" -gt 0 ]; then
+    echo "leg-over-by-day: WARNING: $n_fail transcript(s) skipped due to leg-burn.sh failure" >&2
+fi
