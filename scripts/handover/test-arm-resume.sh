@@ -483,13 +483,30 @@ case "\$cmd" in
     *) exit 0 ;;
 esac
 EOF
-cat > "$SCHED_STUB_T17/atq" <<'EOF'
+# HIMMEL-2968: the POSIX backend must also report the jobs it accepted.
+# Match ARMED_STUB's stateful at pair; an empty atq after create correctly
+# refuses at arm-resume.sh's post-arm existence verify (W5/W8 on Linux).
+cat > "$SCHED_STUB_T17/atq" <<EOF
 #!/usr/bin/env bash
+d="$TMP/sched-stub-t17.atdir"; [ -d "\$d" ] || exit 0
+for f in "\$d"/job-*; do
+    [ -f "\$f" ] || continue
+    printf '%s\\tThu Jun 11 09:00:00 2026 a user\\n' "\${f##*/job-}"
+done
 exit 0
 EOF
-cat > "$SCHED_STUB_T17/at" <<'EOF'
+cat > "$SCHED_STUB_T17/at" <<EOF
 #!/usr/bin/env bash
-exit 0
+d="$TMP/sched-stub-t17.atdir"; mkdir -p "\$d"
+case "\${1:-}" in
+    -c) cat "\$d/job-\${2:-}" 2>/dev/null; exit 0 ;;
+    -t)
+        n=\$(cat "\$d/.counter" 2>/dev/null || echo 0); n=\$((n + 1))
+        printf '%s' "\$n" > "\$d/.counter"
+        cat > "\$d/job-\$n"
+        exit 0 ;;
+    *) cat > /dev/null 2>&1 || true; exit 0 ;;
+esac
 EOF
 # HIMMEL-938: schtasks /create above is a stateless "always succeeds" fake —
 # it never actually registers anything with the real OS scheduler. On an
@@ -2841,7 +2858,16 @@ cat > "$WINBIN/schtasks" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$WINBIN/claude" "$WINBIN/cygpath" "$WINBIN/schtasks"
+# HIMMEL-2968: a deliberately unavailable verify probe only fail-opens when
+# locale detection works (V5). Model that default here; V8/V8b override reg
+# to keep exercising the dual-safeguard refusal explicitly.
+cat > "$WINBIN/reg" <<'EOF'
+#!/usr/bin/env bash
+echo "HKEY_CURRENT_USER\\Control Panel\\International"
+echo "    sShortDate    REG_SZ    M/d/yyyy"
+exit 0
+EOF
+chmod +x "$WINBIN/claude" "$WINBIN/cygpath" "$WINBIN/schtasks" "$WINBIN/reg"
 win_env() {
     local _dir="$1"; shift
     # schtasks via the SCHTASKS_CMD seam (HIMMEL-1610): pin the stub by absolute
@@ -4459,6 +4485,8 @@ assert_rc "1330 ARM_VAULT_CWD_OK=1 overrides the vault refusal" 0 "$rc"
 # scheduler, which is what "a fresh box" meant back when /create registered
 # nothing.
 : > "$TMP/armed-stub.tasks"
+# The Linux scheduler stores jobs separately from the Windows task list.
+rm -f "$TMP/armed-stub.atdir"/job-*
 out=$(GH_CMD=/nonexistent/gh TMPDIR="$TMP" SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
     bash "$ARM" --time "$(future_time)" --handover "$HO_1330" --cwd "$WORK_REPO" 2>&1)
 rc=$?
@@ -4567,7 +4595,7 @@ EOF
 chmod +x "$FAST1337/schtasks" "$FAST1337/powershell"
 
 HO_1337=$(make_handover "$WORK_REPO")
-out=$(env -u SCHTASKS_CMD PATH="$FAST1337:$PATH" OSTYPE=msys \
+out=$(env -u SCHTASKS_CMD PATH="$FAST1337:$WINBIN:$PATH" OSTYPE=msys \
     bash "$ARM" --time "$(future_time)" --handover "$HO_1337" --dedup-any --dry-run 2>&1)
 rc=$?
 assert_rc "1337 dedup-any dry-run sees the powershell-sourced job (rc=3)" 3 "$rc"
@@ -4582,7 +4610,7 @@ fi
 # Regression: with SCHTASKS_CMD explicitly pinned (the pattern every OTHER
 # test in this suite uses), the fast path must NOT intercept — the schtasks
 # stub's own CSV is what gets read, byte-identical to pre-1337 behavior.
-out=$(SCHTASKS_CMD="$FAST1337/schtasks" PATH="$FAST1337:$PATH" OSTYPE=msys \
+out=$(SCHTASKS_CMD="$FAST1337/schtasks" PATH="$FAST1337:$WINBIN:$PATH" OSTYPE=msys \
     bash "$ARM" --time "$(future_time)" --handover "$(make_handover "$WORK_REPO")" --dedup-any --dry-run 2>&1)
 rc=$?
 assert_rc "1337 pinned SCHTASKS_CMD arms cleanly (its stub CSV is empty)" 0 "$rc"
