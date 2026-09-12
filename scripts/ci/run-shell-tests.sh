@@ -3134,7 +3134,7 @@ if [ "$shard_total" -gt 0 ]; then
     # The %012d key is zero-padded so a plain reverse string sort on field 1
     # is a descending NUMERIC sort, which lets field 2 break ties ascending by
     # path in the same pass.
-    _shard_bytes_file=$(mktemp)
+    _shard_bytes_file=$(mktemp "${TMPDIR:-/tmp}/rst-shard-bytes.XXXXXX")
     _shard_plan=$(_SHARD_ELIGIBLE="$_shard_eligible" _SHARD_LEDGER="$_shard_ledger" \
       _SHARD_BYTES_FILE="$_shard_bytes_file" LC_ALL=C awk '
           # LC_ALL=C: a UTF-8 locale makes length() count CHARACTERS, so a

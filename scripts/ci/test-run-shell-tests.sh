@@ -1773,9 +1773,9 @@ mkdir -p "$sb22q/stub-q"
 # shellcheck disable=SC2016
 { printf '#!/usr/bin/env bash\n'
   printf 'for _a in "$@"; do\n'
-  printf '  if printf %s "$_a" | grep -qF -- %s; then\n' "'%s'" "'%012d'"
+  printf '  if grep -qF -- %s <<< "$_a"; then\n' "'%012d'"
   printf '    _ledger="${@: -1}"\n'
-  printf '    _short=$(mktemp)\n'
+  printf '    _short=$(mktemp "${TMPDIR:-/tmp}/rst-case22q-short.XXXXXX")\n'
   printf '    head -n 2 "$_ledger" > "$_short"\n'
   printf '    set -- "${@:1:$(($#-1))}" "$_short"\n'
   printf '    exec %s "$@"\n' "$real_awk_22q"
@@ -1818,7 +1818,7 @@ mkdir -p "$sb22r/stub-r"
 # shellcheck disable=SC2016
 { printf '#!/usr/bin/env bash\n'
   printf 'for _a in "$@"; do\n'
-  printf '  if printf %s "$_a" | grep -qF -- %s; then\n' "'%s'" "'%012d'"
+  printf '  if grep -qF -- %s <<< "$_a"; then\n' "'%012d'"
   printf '    %s "$@"\n' "$real_awk_22r"
   printf '    exit 7\n'
   printf '  fi\n'
