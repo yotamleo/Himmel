@@ -648,7 +648,16 @@ run_staged() {
     # stops git from octal-escaping non-ASCII path bytes, leaving the rarer
     # ", \, and control-character case (which git quotes regardless of this
     # setting) as the only one unquote_diff_path() still has to reverse.
-    if ! diff_output="$(git -c core.quotePath=false -c diff.outputIndicatorNew=+ -c diff.outputIndicatorOld=- -c diff.outputIndicatorContext=' ' diff --no-color --no-ext-diff --no-textconv --no-renames --cached --text -U0 --)"; then
+    # diff.mnemonicPrefix=false / diff.noprefix=false: the "+++ " parsing
+    # below strips a literal "b/" prefix to recover the real path. A
+    # station with diff.mnemonicPrefix=true swaps that to "i/" (index) for
+    # --cached; the parser's fallback then keeps "i/<realpath>" verbatim,
+    # which can spuriously match an unrelated directory-style
+    # .leak-classes-ignore entry (e.g. a repo directory literally named
+    # "i/") and exempt every staged file (HIMMEL-2826). Pinning both off
+    # forces the plain "b/" prefix this parser is written against,
+    # regardless of the running station's git config.
+    if ! diff_output="$(git -c core.quotePath=false -c diff.mnemonicPrefix=false -c diff.noprefix=false -c diff.outputIndicatorNew=+ -c diff.outputIndicatorOld=- -c diff.outputIndicatorContext=' ' diff --no-color --no-ext-diff --no-textconv --no-renames --cached --text -U0 --)"; then
         echo "leak-classes: git diff --cached failed" >&2
         exit 2
     fi

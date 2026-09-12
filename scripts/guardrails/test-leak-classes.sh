@@ -807,6 +807,34 @@ else
 fi
 fi
 
+echo "== diff-prefix config independence (HIMMEL-2826) =="
+
+# T11: run_staged()'s parser keys on the literal "+++ b/" prefix `git diff
+# --cached` normally emits. A station with diff.mnemonicPrefix=true swaps
+# that to "+++ i/" (index) for the new side; the parser's fallback branch
+# then takes current_file verbatim AS "i/<realpath>" instead of stripping a
+# recognised prefix. If the repo also carries a directory-style
+# .leak-classes-ignore entry that happens to match that mnemonic letter
+# (here "i/" -- a perfectly ordinary directory name, unrelated to git's
+# scheme), EVERY staged file's corrupted "i/..." path now matches that
+# exemption and the leak goes completely unreported, regardless of where it
+# actually lives in the repo. Pinning diff.mnemonicPrefix=false (and
+# diff.noprefix=false, its sibling) on the invocation removes the
+# station-config dependency entirely.
+r=$(new_repo)
+mkdir -p "$r/i"
+printf 'unrelated\n' > "$r/i/placeholder.txt"
+printf 'i/\n' > "$r/.leak-classes-ignore"
+printf 'See /home/alexphantom/secret.txt\n' > "$r/leak.txt"  # leak-allow: home-path test fixture
+git -C "$r" config diff.mnemonicPrefix true
+git -C "$r" add i/placeholder.txt .leak-classes-ignore leak.txt
+scan "$r" --staged
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "leak.txt:1"; then
+    pass "T11 --staged: a diff.mnemonicPrefix=true station config can't corrupt the parsed file path into a spurious ignore-directory match"
+else
+    fail "T11 --staged diff.mnemonicPrefix independence (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== the real pre-commit hook fires (not just the script directly) =="
 
 # T10: drives the ACTUAL `leak-classes` entry from this repo's own
