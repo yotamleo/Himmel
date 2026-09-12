@@ -1,5 +1,6 @@
 import { resolveSessionCost, formatUsd } from '../../cost.js';
 import { getDailyCostUsd } from '../../daily-cost.js';
+import { isClaudexLane } from '../../stdin.js';
 import { t } from '../../i18n/index.js';
 import { label } from '../colors.js';
 export function renderCostEstimate(ctx) {
@@ -7,12 +8,17 @@ export function renderCostEstimate(ctx) {
     const allowRoutedCost = display?.showRoutedCost === true;
     const parts = [];
     if (display?.showCost === true) {
-        const cost = resolveSessionCost(ctx.stdin, ctx.transcript.sessionTokens, {
-            allowRoutedCost,
-        });
-        if (cost) {
-            const labelKey = cost.source === 'native' ? 'label.cost' : 'label.estimatedCost';
-            parts.push(`${t(labelKey)} ${formatUsd(cost.totalUsd)}`);
+        if (isClaudexLane()) {
+            parts.push(`${t('label.cost')} ${t('status.unmeasured')}`);
+        }
+        else {
+            const cost = resolveSessionCost(ctx.stdin, ctx.transcript.sessionTokens, {
+                allowRoutedCost,
+            });
+            if (cost) {
+                const labelKey = cost.source === 'native' ? 'label.cost' : 'label.estimatedCost';
+                parts.push(`${t(labelKey)} ${formatUsd(cost.totalUsd)}`);
+            }
         }
     }
     if (display?.showDailyCost === true) {

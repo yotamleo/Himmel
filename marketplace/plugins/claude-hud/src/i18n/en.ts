@@ -22,6 +22,7 @@ export const en: Messages = {
   "status.limitReached": "Limit reached",
   "status.allTodosComplete": "All todos complete",
   "status.expired": "expired",
+  "status.unmeasured": "unmeasured",
 
   // Format
   "format.resets": "resets",
@@ -29,6 +30,7 @@ export const en: Messages = {
   "format.absoluteTime": "at {time}",
   "format.untilTime": "until {time}",
   "format.in": "in",
+  "format.configured": "configured",
   "format.cache": "cache",
   "format.cacheWrite": "cache-w",
   "format.cacheRead": "cache-r",

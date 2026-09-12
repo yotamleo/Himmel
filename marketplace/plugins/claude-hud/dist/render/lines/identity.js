@@ -1,4 +1,4 @@
-import { getContextPercent, getBufferedPercent, } from "../../stdin.js";
+import { getContextPercent, getBufferedPercent, isClaudexLane, } from "../../stdin.js";
 import { coloredBar, label, getContextColor, RESET } from "../colors.js";
 import { getAdaptiveBarWidth } from "../../utils/terminal.js";
 import { t } from "../../i18n/index.js";
@@ -35,6 +35,9 @@ export function renderIdentityLine(ctx, labelOptions = {}) {
                 (usage.cache_read_input_tokens ?? 0));
             line += label(` (${t("format.in")}: ${input}, ${t("format.cache")}: ${cache})`, colors);
         }
+    }
+    if (isClaudexLane()) {
+        line += label(` (${t("format.configured")})`, colors);
     }
     return line;
 }

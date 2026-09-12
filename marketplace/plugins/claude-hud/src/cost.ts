@@ -1,5 +1,5 @@
 import type { SessionTokenUsage, StdinData } from './types.js';
-import { isBedrockModelId, isVertexModelId } from './stdin.js';
+import { isBedrockModelId, isClaudexLane, isVertexModelId } from './stdin.js';
 
 type ModelPricing = {
   inputUsdPerMillion: number;
@@ -103,6 +103,11 @@ export function estimateSessionCost(
     return null;
   }
 
+  // No pricing table exists for the codex model actually serving this lane.
+  if (isClaudexLane()) {
+    return null;
+  }
+
   if (!options?.allowRoutedCost && (isBedrockModelId(stdin.model?.id) || isVertexModelId(stdin.model?.id))) {
     return null;
   }
@@ -141,6 +146,10 @@ export function estimateSessionCost(
 export function getNativeCostUsd(stdin: StdinData, options?: { allowRoutedCost?: boolean }): number | null {
   const nativeCost = stdin.cost?.total_cost_usd;
   if (typeof nativeCost !== 'number' || !Number.isFinite(nativeCost)) {
+    return null;
+  }
+
+  if (isClaudexLane()) {
     return null;
   }
 

@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   5022c63626fdee27fce41163424804f05c8b9063d9007fbbd6f839e7ba44e2e5  # sha256 over VENDORED.manifest
+vendored_tree_hash:   094e4c3ecb1aedf76c08fc0a929d853c6edc1f20ff18583478880799c5c5db91  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -78,6 +78,18 @@ protected: editing it without bumping the pin trips the guard.
   ONLY himmel `src/` delta** (see the re-vendor notes below) — `CLAUDE.md` is
   additionally trimmed (next bullet) and the lockfile carries automated
   dependency bumps; see the dependabot bullet.
+
+- **Claudex-lane labels (HIMMEL-2900, 2026-09-12):** under `CLAUDEX_LANE_OK=1`
+  (a Claude Code harness driving Codex, not Claude) the renderer no longer
+  shows Claude-specific stdin fields that don't apply: `resolveModelName`
+  (`src/stdin.ts`) reads `CODEX_MODEL`/`ANTHROPIC_MODEL` instead of the stdin
+  model label; cost estimation/native-cost lookup (`src/cost.ts`) is gated off
+  the same way as the existing Bedrock/Vertex gates, and the cost slot
+  (`src/render/lines/cost.ts`) renders the literal `status.unmeasured` instead
+  of disappearing; the context bar (`src/render/lines/identity.ts`) gains a
+  `format.configured` suffix since the denominator is a config value, not a
+  measured window. Two new i18n keys across all locales. `dist/` rebuilt from
+  source.
 
   > **Coexists with upstream's own `extra-cmd` (since v0.6.0):** upstream grew
   > `src/extra-cmd.ts`, gated by the SAME env `CLAUDE_HUD_ALLOW_EXTRA_CMD` but a

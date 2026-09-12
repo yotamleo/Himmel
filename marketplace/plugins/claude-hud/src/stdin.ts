@@ -272,12 +272,24 @@ function isClaudeModel(model?: string): boolean {
  *                      Detects proxy redirects (cc-switch, LiteLLM, etc.) that
  *                      serve a different model than what Claude Code requested.
  */
+export function isClaudexLane(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.CLAUDEX_LANE_OK === '1';
+}
+
 export function resolveModelName(
   stdin: StdinData,
   transcript: TranscriptData | undefined,
   modelSource: 'auto' | 'stdin' | 'transcript' = 'stdin',
 ): string {
   const stdinModel = getModelName(stdin);
+
+  // The claudex lane drives Codex, not Claude — stdin's model fields describe
+  // the harness, not the model actually serving the session.
+  if (isClaudexLane()) {
+    const env = process.env;
+    return env.CODEX_MODEL?.trim() || env.ANTHROPIC_MODEL?.trim() || `${stdinModel}?`;
+  }
+
   // Treat TranscriptData as untrusted at the render boundary too. Callers and
   // poisoned cache objects can bypass parse-time normalization.
   const transcriptModel = sanitizeTranscriptModel(transcript?.lastAssistantModel);

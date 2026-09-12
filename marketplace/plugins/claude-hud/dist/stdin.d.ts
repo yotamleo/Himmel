@@ -23,6 +23,7 @@ export declare function getModelName(stdin: StdinData): string;
  *                      Detects proxy redirects (cc-switch, LiteLLM, etc.) that
  *                      serve a different model than what Claude Code requested.
  */
+export declare function isClaudexLane(env?: NodeJS.ProcessEnv): boolean;
 export declare function resolveModelName(stdin: StdinData, transcript: TranscriptData | undefined, modelSource?: 'auto' | 'stdin' | 'transcript'): string;
 export declare function isBedrockModelId(modelId?: string): boolean;
 export declare function isVertexModelId(modelId?: string): boolean;
