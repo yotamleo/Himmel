@@ -4431,12 +4431,16 @@ echo "$outBH2" | jq -e '.actual == "absent"' >/dev/null \
   || fail "bridge-health: 2 poller.ts processes (a supervisor+2 pollers or a duplicate) should read absent (fail) (got: $outBH2)"
 echo "ok: bridge-health — 2 poller.ts processes (never exactly 1) reads absent (fail), never a false present"
 
-outBHposix=$(run_bh 'bun.exe poller.ts' linux)
+# HIMMEL-2890: linux/darwin now have a real implementation (see the
+# dedicated Linux poller-count block below) — this case now covers a
+# platform NEITHER Windows-CIM NOR the new POSIX path supports at all, so
+# the generic "not implemented" degraded fallback still has live coverage.
+outBHposix=$(run_bh 'bun.exe poller.ts' freebsd)
 echo "$outBHposix" | jq -e '.actual == "degraded"' >/dev/null \
-  || fail "bridge-health: a non-win32 platform must read a LOUD degraded (HIMMEL-1128), never a silent present just because the token/access checks pass (got: $outBHposix)"
+  || fail "bridge-health: a platform with no poller-count implementation at all must read a LOUD degraded (HIMMEL-1128), never a silent present just because the token/access checks pass (got: $outBHposix)"
 echo "$outBHposix" | jq -e '.detail | test("not implemented"; "i")' >/dev/null \
-  || fail "bridge-health: the POSIX-degraded detail should name the limitation explicitly (got: $outBHposix)"
-echo "ok: bridge-health — a non-Windows platform reads a LOUD degraded naming the poller-count limitation, never a silent pass"
+  || fail "bridge-health: the not-implemented-platform degraded detail should name the limitation explicitly (got: $outBHposix)"
+echo "ok: bridge-health — a platform with no poller-count implementation at all reads a LOUD degraded naming the limitation, never a silent pass"
 
 # CR fix (codex-4, retask stage1-build-6d2e): a poller.ts token explicitly
 # PATHED to THIS checkout's own root (mixed-slash form, matching winpath's
@@ -4506,6 +4510,174 @@ outBHsupervisorPlusChild=$(run_bh "$(printf 'bun.exe supervisor.ts\nbun.exe poll
 echo "$outBHsupervisorPlusChild" | jq -e '.actual == "present"' >/dev/null \
   || fail "bridge-health: a supervisor.ts line alongside its poller.ts child must still read exactly 1 consumer (got: $outBHsupervisorPlusChild)"
 echo "ok: bridge-health — a supervisor-plus-child pair still reads as exactly one poller.ts consumer"
+
+# ── bridge-health poller-count — Linux/macOS (HIMMEL-2890) ──────────────────
+# Unlike Windows' binary present/absent, the Linux/macOS contract is a
+# genuine 3-way split: 1 = present, 0 = absent, >1 = degraded (duplicate
+# pollers, HIMMEL-1555 class). Prefers `systemctl --user show
+# telegram-bridge.service -p MainPID -p ActiveState -p LoadState` when
+# systemd knows the unit, walking MainPID's children via a fixture
+# `/proc`-shaped tree (ctx.procRoot, a test-only seam — a real hermetic test
+# cannot fabricate genuine PIDs); LoadState=not-found (systemd genuinely
+# doesn't know this unit) falls back to `pgrep -f <resolved poller path>`.
+# Same stub-log SKIP-gate convention as the bridge-persistence Linux block
+# above (bp_stub_log_has) — a real Linux/macOS host runs every assertion for
+# real; a host where an extensionless bash-shebang stub can't spawn SKIPs
+# rather than faking a pass.
+bh_posix_stub="$work/bh-posix-stub"
+build_hermetic_bin "$bh_posix_stub" bun cat
+bh_posix_log="$work/bh-posix-stub.log"
+bh_posix_state="$work/bh-posix-stub-state"; mkdir -p "$bh_posix_state"
+bh_proc_root="$work/bh-proc-root"
+
+cat > "$bh_posix_stub/systemctl" <<'STUB'
+#!/usr/bin/env bash
+: "${BH_STUB_LOG:?}"
+echo "systemctl $*" >> "$BH_STUB_LOG"
+case "$*" in
+  "--user show telegram-bridge.service -p MainPID -p ActiveState -p LoadState")
+    if [ -f "${BH_STUB_STATE:?}/no-unit" ]; then
+      echo "LoadState=not-found"
+      exit 0
+    fi
+    echo "MainPID=$(cat "${BH_STUB_STATE:?}/mainpid" 2>/dev/null || echo 0)"
+    echo "ActiveState=$(cat "${BH_STUB_STATE:?}/activestate" 2>/dev/null || echo inactive)"
+    echo "LoadState=loaded"
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$bh_posix_stub/systemctl"
+
+cat > "$bh_posix_stub/pgrep" <<'STUB'
+#!/usr/bin/env bash
+: "${BH_STUB_LOG:?}"
+echo "pgrep $*" >> "$BH_STUB_LOG"
+n="${BH_PGREP_N:-0}"
+if [ "$n" -le 0 ]; then exit 1; fi
+i=1
+while [ "$i" -le "$n" ]; do echo "$((9200 + i))"; i=$((i + 1)); done
+exit 0
+STUB
+chmod +x "$bh_posix_stub/pgrep"
+
+bh_posix_log_has() { [ -f "$bh_posix_log" ] && grep -qF "$1" "$bh_posix_log"; }
+
+run_bh_posix() {
+  local pathVal
+  pathVal="$bh_posix_stub:$(scrub_path "$PATH" systemctl pgrep)"
+  PATH="$pathVal" BH_STUB_LOG="$(winpath "$bh_posix_log")" BH_STUB_STATE="$(winpath "$bh_posix_state")" \
+    BH_PGREP_N="${BH_PGREP_N:-0}" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'bridge-health');
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$(winpath "$bh_dir")', scope: 'project', platform: 'linux', procRoot: '$(winpath "$bh_proc_root")', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+"
+}
+
+other_checkout_posix="/home/testuser/github/himmel/.claude/worktrees/feat-some-other-checkout"
+
+# ── case (a): unit active, one matching child -> present, count 1 ─────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002"
+printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxA=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxA" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): unit active + exactly 1 matching child should read present (got: $outBHlinuxA)"
+  echo "$outBHlinuxA" | jq -e '.detail | contains("1 poller")' >/dev/null \
+    || fail "bridge-health (Linux): present detail should name the count 1 (got: $outBHlinuxA)"
+  echo "ok: bridge-health (Linux) — unit active, one matching child reads present, count 1"
+else
+  echo "SKIP: bridge-health (Linux) case (a): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case (b): unit active, no matching child -> absent, count 0 ───────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001"
+printf '\n' > "$bh_proc_root/9001/task/9001/children"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxB=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxB" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): unit active + no matching child should read absent (got: $outBHlinuxB)"
+  echo "$outBHlinuxB" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (Linux): absent detail should name the count 0 (got: $outBHlinuxB)"
+  echo "ok: bridge-health (Linux) — unit active, no matching child reads absent, count 0"
+else
+  echo "SKIP: bridge-health (Linux) case (b): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case (c): two matching children -> degraded, count 2 (HIMMEL-1555) ────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002" "$bh_proc_root/9003"
+printf '9002 9003\n' > "$bh_proc_root/9001/task/9001/children"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9002/cmdline"
+printf '%s\0' bun poller.ts > "$bh_proc_root/9003/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxC=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxC" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-health (Linux): 2 matching children should read degraded, never present/absent (got: $outBHlinuxC)"
+  echo "$outBHlinuxC" | jq -e '.detail | contains("2 poller")' >/dev/null \
+    || fail "bridge-health (Linux): degraded detail should name the count 2 (got: $outBHlinuxC)"
+  echo "ok: bridge-health (Linux) — two matching children reads degraded, count 2 (duplicate pollers, HIMMEL-1555 class)"
+else
+  echo "SKIP: bridge-health (Linux) case (c): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case (d): a child running a poller from a DIFFERENT checkout -> not
+# counted (HIMMEL-1532 control) ─────────────────────────────────────────────
+rm -rf "$bh_proc_root"; mkdir -p "$bh_proc_root/9001/task/9001" "$bh_proc_root/9002"
+printf '9002\n' > "$bh_proc_root/9001/task/9001/children"
+printf '%s\0' bun "${other_checkout_posix}/scripts/telegram/poller.ts" > "$bh_proc_root/9002/cmdline"
+rm -f "$bh_posix_log" "$bh_posix_state/no-unit"; echo 9001 > "$bh_posix_state/mainpid"; echo active > "$bh_posix_state/activestate"
+outBHlinuxD=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "show telegram-bridge.service"; then
+  echo "$outBHlinuxD" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): a child poller pathed to a DIFFERENT checkout must not be counted as this one's (got: $outBHlinuxD)"
+  echo "$outBHlinuxD" | jq -e '.detail | contains("0 poller")' >/dev/null \
+    || fail "bridge-health (Linux): a foreign-checkout child should read as 0 for THIS checkout (got: $outBHlinuxD)"
+  echo "ok: bridge-health (Linux) — a child poller pathed to a DIFFERENT checkout is excluded, never counted as this checkout's"
+else
+  echo "SKIP: bridge-health (Linux) case (d): no evidence in the stub log that systemctl actually spawned on this host"
+fi
+
+# ── case (e): no systemd unit at all -> pgrep -f fallback over the resolved
+# poller path, same 0/1/>1 mapping ──────────────────────────────────────────
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxE0=$(BH_PGREP_N=0 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxE0" | jq -e '.actual == "absent"' >/dev/null \
+    || fail "bridge-health (Linux): no systemd unit + 0 pgrep matches should read absent (got: $outBHlinuxE0)"
+  echo "ok: bridge-health (Linux) — no systemd unit, pgrep -f fallback with 0 matches reads absent"
+else
+  echo "SKIP: bridge-health (Linux) case (e/0): no evidence in the stub log that pgrep actually spawned on this host"
+fi
+
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxE1=$(BH_PGREP_N=1 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxE1" | jq -e '.actual == "present"' >/dev/null \
+    || fail "bridge-health (Linux): no systemd unit + 1 pgrep match should read present (got: $outBHlinuxE1)"
+  echo "ok: bridge-health (Linux) — no systemd unit, pgrep -f fallback with 1 match reads present"
+else
+  echo "SKIP: bridge-health (Linux) case (e/1): no evidence in the stub log that pgrep actually spawned on this host"
+fi
+
+rm -f "$bh_posix_log"; : > "$bh_posix_state/no-unit"
+outBHlinuxE2=$(BH_PGREP_N=2 run_bh_posix)
+if bh_posix_log_has "pgrep -f"; then
+  echo "$outBHlinuxE2" | jq -e '.actual == "degraded"' >/dev/null \
+    || fail "bridge-health (Linux): no systemd unit + 2 pgrep matches should read degraded (got: $outBHlinuxE2)"
+  echo "$outBHlinuxE2" | jq -e '.detail | contains("2 poller")' >/dev/null \
+    || fail "bridge-health (Linux): pgrep-fallback degraded detail should name the count 2, not just a generic not-implemented degraded (got: $outBHlinuxE2)"
+  echo "ok: bridge-health (Linux) — no systemd unit, pgrep -f fallback with 2 matches reads degraded, count 2"
+else
+  echo "SKIP: bridge-health (Linux) case (e/2): no evidence in the stub log that pgrep actually spawned on this host"
+fi
+rm -f "$bh_posix_state/no-unit"
 
 # ── bridge-persistence — HIMMEL-2176 Stage-1 PR-C, status item S6 ───────────
 # Contract (spec §3.5): logon task (win) / systemd unit + linger (linux)

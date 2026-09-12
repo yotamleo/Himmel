@@ -853,7 +853,7 @@ for something never turned on:
 | `luna-sources` | each configured fetch-health source, via `fetch-health.py --probe <source>` |
 | `phi-coherence` | a `.salus` marker under the vault vs. its listing in `phi-roots` — reports `degraded` on a mismatch, **never red** |
 | `engine-allowlist` | armed cadence legs' required engines against `cadence-approve-engines.sh --print-engine-list` |
-| `bridge-health` | `access.json` + a live `getMe` call + exactly one `getUpdates` consumer (it counts `poller.ts` command lines anchored to THIS checkout, so a supervisor plus its poller child is one consumer, not two). The consumer count is Windows-CIM-only today: elsewhere it reports `degraded` naming process identity as unverified, never a silent pass |
+| `bridge-health` | `access.json` + a live `getMe` call + exactly one `getUpdates` consumer (it counts `poller.ts` command lines anchored to THIS checkout, so a supervisor plus its poller child is one consumer, not two). Windows uses CIM; Linux/macOS prefer `systemctl --user show telegram-bridge.service` and walk its MainPID's children (`pgrep -f <poller path>` when no unit exists). Any other platform reports `degraded` naming process identity as unverified, never a silent pass |
 | `bridge-persistence` | whether bridge persistence will actually survive a restart |
 
 `bridge-persistence` is pass/warn/opt-in — it never reports a hard red once
