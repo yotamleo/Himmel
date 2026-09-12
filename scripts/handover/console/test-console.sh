@@ -946,4 +946,50 @@ check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: refuses with a distin
 check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: stderr names the cause" "$([ "$(printf '%s\n' "$out41" | grep -ci ancestor)" -ge 1 ] && echo yes || echo no)" "yes"
 check "41 raced intermediate ancestor of CONSOLE_WORK_DIR: never created the work dir beneath the raced ancestor" "$([ -e "$target41" ] && echo yes || echo no)" "no"
 
+# --- 42: an ancestor an attacker races into existence AFTER the outer
+# ancestor-unsafe walk concludes "safe" but BEFORE _console_mkdir_chain_safe's
+# own missing-component scan runs is silently trusted as that scan's stopping
+# point, with no validation of its own (HIMMEL-2881 round 8, codex-1 panel
+# finding on the round-7 fix): the scan's `while [ ! -e "$prefix" ]` loop
+# just stops at the first EXISTING directory it meets and hands it to the
+# create loop as a trusted base -- but "existing" only means existing NOW,
+# at scan time, not at the time the outer walk last looked. A real race
+# cannot be scheduled deterministically, so (mirroring cases 30/34/37's
+# technique) a PATH stub for `stat` simulates the race winner: the instant
+# the outer ancestor-unsafe walk examines the LAST existing ancestor it will
+# see before concluding "safe", the stub plants the next-level-down ancestor
+# at an insecure, self-owned mode (0777, no sticky bit) as a side effect,
+# then returns the real `stat` output for the path it was actually asked
+# about -- exactly what a raced attacker directory materializing in that
+# exact window would look like.
+tmp42="$tmp/c42"
+mkdir -p "$tmp42/bin"
+chmod 0700 "$tmp42"
+mid42="$tmp42/mid"
+target42="$tmp42/mid/workdir"
+real_stat42="$(command -v stat)"
+cat > "$tmp42/bin/stat" <<STUB_EOF
+#!/usr/bin/env bash
+if [ ! -e "$tmp42/.raced42" ]; then
+    for a in "\$@"; do
+        if [ "\$a" = "$tmp42" ]; then
+            : > "$tmp42/.raced42"
+            mkdir -m 0777 "$mid42" 2>/dev/null
+            break
+        fi
+    done
+fi
+exec "$real_stat42" "\$@"
+STUB_EOF
+chmod +x "$tmp42/bin/stat"
+rc42=0
+out42="$( ( cd "$fixture_repo" && env -u XDG_RUNTIME_DIR \
+    HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_WORK_DIR="$target42" \
+    PATH="$tmp42/bin:$PATH" \
+    bash "$C" new --bucket wdancestor42 --dry-run ) 2>&1 )"; rc42=$?
+check "42 ancestor raced in between the outer walk and the create scan: refuses with a distinct exit code" "$rc42" "3"
+check "42 ancestor raced in between the outer walk and the create scan: stderr names the cause" "$([ "$(printf '%s\n' "$out42" | grep -ci ancestor)" -ge 1 ] && echo yes || echo no)" "yes"
+check "42 ancestor raced in between the outer walk and the create scan: never created the work dir beneath the raced ancestor" "$([ -e "$target42" ] && echo yes || echo no)" "no"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

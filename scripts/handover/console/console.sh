@@ -486,6 +486,19 @@ _console_mkdir_chain_safe() {
         prefix="$(dirname "$prefix")"
         [ "$prefix" = "/" ] && break
     done
+    # HIMMEL-2881 round 8 (codex-1 panel finding on the round-7 fix): the
+    # scan above just stops at the first EXISTING directory and hands it to
+    # the create loop below as a trusted base -- but "existing" only means
+    # existing NOW, at scan time, not at the time the OUTER ancestor-unsafe
+    # walk (which ran before this function was ever called) last looked. An
+    # attacker who races a brand-new ancestor into existence in that window
+    # becomes this scan's stopping point and would otherwise never be
+    # checked at all. Re-running the same ancestor walk against it here --
+    # right before it is trusted -- closes that window.
+    if _console_ancestor_unsafe "$prefix"; then
+        err "refusing to use work dir '$target' — its ancestor '$prefix' (or one above it) is unsafe, and appeared after the initial check ran (HIMMEL-2881)"
+        exit 3
+    fi
     for p in "${missing[@]}"; do
         # shellcheck disable=SC2174
         if ! mkdir -m 0700 "$p" 2>/dev/null; then
