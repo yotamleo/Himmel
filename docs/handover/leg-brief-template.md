@@ -32,7 +32,11 @@ template_version: 3
 > `<branch>`, cut from `<base sha>`.** Your RETASK token is
 > `<console letter>-N<n>-<hex>`; your console is **`<console session name>`**;
 > your handover root is `<HANDOVER_DIR>` and the queue lock you must hold is on
-> THIS document. <Any per-leg deviation from the standing leg preface — a
+> THIS document. Write its release token into your LIVE bullet exactly as
+> `queue-lock.sh` prints it — in backticks, never bare in prose and never
+> followed by punctuation — a bare token defeats the vault's anchored gitleaks
+> allowlist and stalls the handover auto-commit (HIMMEL-2910, HIMMEL-2937).
+> <Any per-leg deviation from the standing leg preface — a
 > required bypass env var already set in your launching shell, a lane that is
 > not native, a suite that must be run a particular way — goes here, in this
 > paragraph, and nowhere else.>
