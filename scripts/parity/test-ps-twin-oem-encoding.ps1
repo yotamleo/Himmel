@@ -37,7 +37,7 @@ $FIXLINE = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8'
 # Non-ASCII spanning three UTF-8 byte-lengths' worth of trouble: Latin-1
 # accents (2-byte) and an em dash (3-byte). All three mis-decode differently
 # under cp437, so a partial fix cannot squeak through.
-$PAYLOAD = 'C:/Users/jose/Documents/naive/vault'
+$PAYLOAD = 'C:/Users/jose/Documents/naive/vault'  # leak-allow: home-path test fixture
 $PAYLOAD = $PAYLOAD -replace 'jose', "jos$([char]0xE9)" -replace 'naive', "na$([char]0xEF)ve" -replace 'vault', "vault $([char]0x2014) donn$([char]0xE9)es"
 
 $failures = 0

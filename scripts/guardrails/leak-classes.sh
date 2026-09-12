@@ -78,12 +78,19 @@
 # `/Users/<name>/` survey actually found in tracked test fixtures (confirmed
 # NOT the real operator identity — a separate grep for the live station's
 # actual $HOME basename came back clean):
-#   ada, jarrod, alice, bob, diane, jose, somebody, claude, yotamleo
-#                        - human-shaped placeholder names used across
-#                         fixture/example data (marketplace/plugins test
-#                         suites, propagate-public.sh's own leak-detection
-#                         tests, a console-dispatch fixture). None resolves
-#                         to this station's real identity.
+#   HIMMEL-2825 removed 7 of the human-shaped names formerly enumerated here
+#   (alice, bob, diane, jose, claude, jane, john) -- a real adopter whose
+#   actual username matches one of these is common enough that a global
+#   exemption was a genuine false-negative risk. The fixture files that
+#   relied on them now carry their own same-line `# leak-allow: home-path
+#   <reason>` marker instead (scripts/telegram/spawn-glm.test.ts, scripts/
+#   trust/shadow-ledger.mjs + its test, scripts/himmelctl/lib/install-engine.js,
+#   scripts/parity/test-ps-twin-oem-encoding.ps1, docs/internals/
+#   environment-gotchas.md, and this file's own doc comments). jarrod, ada,
+#   somebody and yotamleo stay in this list for now -- their only fixture
+#   dependents sit under directories this batch may not touch (a vendored
+#   tree, and hook-integrity/lanes fences); tracked in a HIMMEL-2825
+#   follow-up ticket.
 #   leaktestuser, leaker, testop, testuser, test, osboxes, nulleak, name,
 #   yourname, wineonlyuser, shouldnotleak, realop, quarantoken, priorleak,
 #   posixuser, profileonlyuser, unixonlyuser, fakeuser, myvault, op, ops,
@@ -105,8 +112,8 @@
 #   ...                  - a literal ellipsis used in docs as an elided
 #                         placeholder (docs/setup/new-machine.md,
 #                         scripts/codex/reap-mcp-fleet.ps1).
-#   parity, mismatched, plainhome, whoever, msysuser, fixture, jane, john,
-#   runner, other, current-user
+#   parity, mismatched, plainhome, whoever, msysuser, fixture, runner, other,
+#   current-user
 #                        - added post-HIMMEL-2835 (the first real --tree run
 #                         against this tree's content, HIMMEL-2705's public
 #                         CI job): fixture/placeholder names in
@@ -169,7 +176,7 @@ HOSTNAME_HITS=()
 # ---- home-path allowlist (see header for rationale) ----
 # shellcheck disable=SC2016 # single-quoted on purpose: $user/${user}/$env:username
 # are literal placeholder tokens this list matches against, not expansions.
-ALLOW_HOME_NAMES=' you user <user> $user ${user} me <me> example <you> %username% $env:username %s ada jarrod alice bob diane jose somebody claude yotamleo leaktestuser leaker testop testuser test osboxes nulleak name <name> yourname wineonlyuser shouldnotleak realop quarantoken priorleak posixuser profileonlyuser unixonlyuser fakeuser myvault op ops otheruser fakeop runneradmin fake-sensitive-scriptpath-marker ... parity mismatched plainhome whoever msysuser fixture jane john runner other current-user '
+ALLOW_HOME_NAMES=' you user <user> $user ${user} me <me> example <you> %username% $env:username %s leaktestuser leaker testop testuser test osboxes nulleak name <name> yourname wineonlyuser shouldnotleak realop quarantoken priorleak posixuser profileonlyuser unixonlyuser fakeuser myvault op ops otheruser fakeop jarrod ada somebody yotamleo runneradmin fake-sensitive-scriptpath-marker ... parity mismatched plainhome whoever msysuser fixture runner other current-user '
 
 home_name_allowed() {
     local name="$1"
@@ -434,8 +441,8 @@ check_home_path() {
     # excludes a small set of trailing prose/doc-markup punctuation --
     # backtick, quote, comma, semicolon, colon, or a closing paren/bracket --
     # and the single-word terminator accepts that same set, so a quoted or
-    # doc-formatted name (e.g. "/home/ada", `/home/ada`) is captured as
-    # exactly "ada" instead of swallowing the punctuation (and, on a line
+    # doc-formatted name (e.g. "/home/testuser", `/home/testuser`) is captured
+    # as exactly "testuser" instead of swallowing the punctuation (and, on a line
     # with more than one occurrence, instead of the name run spilling across
     # the punctuation into the next occurrence's own "/" as if it were a
     # multi-word terminator). Non-ASCII bytes stay admitted -- only this

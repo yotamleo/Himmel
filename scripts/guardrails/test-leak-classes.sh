@@ -197,8 +197,8 @@ else
 fi
 
 # T1c: home-path, JSON/log-escaped Windows profile path -- a literal DOUBLE
-# backslash in the file (as a JSON string like "C:\\Users\\Jane
-# Smith\\Documents" serializes it), not the single-backslash form T1b covers
+# backslash in the file (as a JSON string like "C:\\Users\\NAME
+# HERE\\Documents" serializes it), not the single-backslash form T1b covers
 # (CR round-5 codex-2 finding).
 r=$(new_repo)
 printf 'path is C:\\\\Users\\\\Jane Smith\\\\Documents\\\\file.txt\n' > "$r/winjson.txt"  # leak-allow: home-path test fixture
@@ -226,19 +226,35 @@ else
 fi
 fi
 
-# T1e: every name ALLOW_HOME_NAMES's header comment documents as a known
-# fixture placeholder must actually be in the list -- a name present in the
-# comment but dropped from the value silently starts flagging real,
-# pre-existing tracked fixtures that use it, e.g. scripts/lanes/tests/
-# bench-aggregate-tokens.test.mjs's own /home/ada/ and /Users/ada/ fixtures.
+# T1e (HIMMEL-2825): ALLOW_HOME_NAMES no longer globally exempts real-looking
+# human names (alice, bob, diane, jose, claude, jane, john) -- a real
+# adopter's own username commonly collides with one of these, which used to
+# make their genuine home-path leak a false negative. The fixture files that
+# used to rely on the global exemption now carry their own same-line
+# `# leak-allow: home-path <reason>` marker instead. Confirm the removal
+# actually took effect: an unmarked use of a formerly-allowlisted name is
+# flagged like any other real name.
 r=$(new_repo)
-printf 'tmpdir at /home/ada/project and /Users/ada/AppData\n' > "$r/allowlisted.txt"  # leak-allow: home-path test fixture
-git -C "$r" add allowlisted.txt
+printf 'HOME=/home/bob\n' > "$r/removed-allowlist.txt"  # leak-allow: home-path test fixture
+git -C "$r" add removed-allowlist.txt
 scan "$r" --tree
-if [ "$SCAN_RC" -eq 0 ] && ! grepq "$SCAN_OUT" -F "home-path"; then
-    pass "T1e home-path: documented placeholder name (ada) stays allowlisted"
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "removed-allowlist.txt:1"; then
+    pass "T1e home-path: formerly-allowlisted human name (bob) is now flagged unless marked"
 else
-    fail "T1e home-path allowlisted placeholder (rc=$SCAN_RC) out=$SCAN_OUT"
+    fail "T1e home-path removed-allowlist-name control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1e2: ...and the same formerly-allowlisted name stays clean when its own
+# fixture line carries the leak-allow marker -- proving the per-line
+# convention is a working replacement, not just a removal.
+r=$(new_repo)
+printf 'HOME=/home/bob  # leak-allow: home-path test fixture\n' > "$r/marked.txt"
+git -C "$r" add marked.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1e2 home-path: same formerly-allowlisted name stays clean with its own leak-allow marker"
+else
+    fail "T1e2 home-path marked-fixture control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
 # T1f: same drift as T1e, for the two placeholders a repo-wide --tree run
@@ -295,11 +311,11 @@ fi
 # must stay clean, proving the fix didn't just start flagging every
 # single-word home-path unconditionally.
 r=$(new_repo)
-printf 'HOME=/home/ada foo bar baz\n' > "$r/swallow-allowed.txt"  # leak-allow: home-path test fixture
+printf 'HOME=/home/testuser foo bar baz\n' > "$r/swallow-allowed.txt"  # leak-allow: home-path test fixture
 git -C "$r" add swallow-allowed.txt
 scan "$r" --tree
 if [ "$SCAN_RC" -eq 0 ] && ! grepq "$SCAN_OUT" -F "home-path"; then
-    pass "T1i home-path: allowlisted /home/ada followed by prose stays clean"
+    pass "T1i home-path: allowlisted /home/testuser followed by prose stays clean"
 else
     fail "T1i home-path allowlisted-with-trailing-prose (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
