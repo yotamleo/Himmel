@@ -58,7 +58,7 @@ fi
 command -v jq >/dev/null 2>&1 || { echo "leg-burn: jq is required" >&2; exit 2; }
 
 ARG="$1"
-PROJECTS="${LEG_BURN_PROJECTS_DIR:-$HOME/.claude/projects}"
+PROJECTS="${LEG_BURN_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
 
 if [ -f "$ARG" ]; then
     TRANSCRIPT="$ARG"
