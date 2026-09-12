@@ -224,20 +224,23 @@ fi
 #    run the script, dirname for its `$(dirname "$0")` ROOT resolution) and
 #    deliberately excluding gh, then assert the precondition that gh really is
 #    unreachable under that PATH before trusting the run.
-NOGH_BIN="$(mktemp -d "${TMPDIR:-/tmp}/nogh-bin.XXXXXX")"
-ln -s "$(command -v bash)" "$NOGH_BIN/bash"
-ln -s "$(command -v dirname)" "$NOGH_BIN/dirname"
-if PATH="$NOGH_BIN" command -v gh >/dev/null 2>&1; then
-  bad "fail-open fixture precondition failed: gh still reachable under stub PATH"
-else
-  fo_out="$(PATH="$NOGH_BIN" bash "$SCRIPT" 2>&1)"; fo_rc=$?
-  if [ "$fo_rc" -eq 0 ] && grepq "$fo_out" "fail-open"; then
-    ok "fail-open: gh absent -> exit 0 + skip message"
+if NOGH_BIN="$(mktemp -d "${TMPDIR:-/tmp}/nogh-bin.XXXXXX")"; then
+  ln -s "$(command -v bash)" "$NOGH_BIN/bash"
+  ln -s "$(command -v dirname)" "$NOGH_BIN/dirname"
+  if PATH="$NOGH_BIN" command -v gh >/dev/null 2>&1; then
+    bad "fail-open fixture precondition failed: gh still reachable under stub PATH"
   else
-    bad "fail-open broken: rc=$fo_rc out=$fo_out"
+    fo_out="$(PATH="$NOGH_BIN" bash "$SCRIPT" 2>&1)"; fo_rc=$?
+    if [ "$fo_rc" -eq 0 ] && grepq "$fo_out" "fail-open"; then
+      ok "fail-open: gh absent -> exit 0 + skip message"
+    else
+      bad "fail-open broken: rc=$fo_rc out=$fo_out"
+    fi
   fi
+  rm -rf "$NOGH_BIN"
+else
+  bad "fail-open fixture: mktemp -d failed"
 fi
-rm -rf "$NOGH_BIN"
 
 # 5b. Malformed vendored-fork UPSTREAM_PIN: a fork pin missing the generic
 #     fields must mark the run incomplete, never skip into a false all-current.
