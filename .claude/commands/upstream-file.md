@@ -292,8 +292,10 @@ after publication as redundant defense only.
 
 ## 6. File
 
-- Push to the EXISTING fork (`git remote add fork <fork-url>`; `git fetch
-  fork`; `git push -u fork <branch>`); open cross-fork PRs: `gh pr create --repo <upstream> --head
+- Push to the EXISTING fork (`git remote add fork <fork-url>` — skip this if
+  the depth-rule recovery above already added it, or `git remote add fork`
+  errors "remote fork already exists"; `git fetch fork`; `git push -u fork
+  <branch>`); open cross-fork PRs: `gh pr create --repo <upstream> --head
   <fork-owner>:<branch> --title "<title>" --body-file <path>` (body via file,
   never inline; `--title` is required — `gh pr create` errors non-interactively
   without it). `--head <user>:<branch>` takes the fork's OWNER login, not an
