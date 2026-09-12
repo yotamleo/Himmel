@@ -388,6 +388,22 @@ check_both_reason "23b-vii git -C \"\$(pwd)\" commit (unresolvable -C value) fai
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git -C \\\"\$(pwd)\\\" commit -m x\",\"cwd\":\"$FIX/primary\"}}" \
     "could not be resolved"
 
+# 23b-viii: codex CR round 1 (HIMMEL-2884) — when BOTH --git-dir and
+# --work-tree are given, --git-dir determines the repository the commit
+# actually updates (git's own semantics: --work-tree only supplies file
+# content; HEAD moves in --git-dir's repo), so it must win over --work-tree
+# regardless of which option is given first.
+check_both_reason "23b-viii git --work-tree=wt --git-dir=primary/.git commit (both given) checks --git-dir's repo, not --work-tree's" \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --work-tree=$FIX/wt --git-dir=$FIX/primary/.git commit -m x\",\"cwd\":\"$FIX/wt\"}}" \
+    "$FIX/primary"
+
+# 23b-ix: codex CR round 1 (HIMMEL-2884) — a relative --git-dir/--work-tree
+# value resolves against the FINAL cumulative -C directory, exactly like real
+# git (`git --git-dir=a.git -C c status` == `git --git-dir=c/a.git status` per
+# git(1)), regardless of whether -C appears before or after it on the line.
+check_both "23b-ix git --git-dir=primary/.git -C \$FIX commit (relative --git-dir precedes -C) resolves against the FINAL -C dir, denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git --git-dir=primary/.git -C $FIX commit -m x\",\"cwd\":\"$FIX/swrepo\"}}"
+
 # 24. handovers/ carve-out (main_checkout_verdict's own exemption).
 check_both "24 cat > primary/handovers/x.md (handovers carve-out)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat > $FIX/primary/handovers/x.md\",\"cwd\":\"$FIX/primary\"}}"
