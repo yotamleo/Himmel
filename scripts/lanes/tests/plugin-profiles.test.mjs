@@ -23,6 +23,179 @@ const MINI = {
   },
 };
 
+// HIMMEL-2959: removing an opt-in/rule loses a deterministic gate permission;
+// widening a rule must fail registry load before any settings reach a child.
+const LEG_PROFILES = ['lane-impl', 'leg-impl', 'lane-review', 'lane-content'];
+const GATE_RULES = [
+  'Bash(bash scripts/handover/merge-on-green.sh:*)',
+  'Bash(bash scripts/handover/queue-lock.sh:*)',
+  'Bash(bash scripts/handover/console-kit/inbox-send.sh:*)',
+  'Bash(bash scripts/cr/write-verdicts.sh:*)',
+  'Bash(bash scripts/cr/clear-cr-marker.sh:*)',
+  'Bash(bash scripts/cr/panel-first-pass.sh:*)',
+  'Bash(bash scripts/cr/ledger-append.sh:*)',
+  'Bash(bash scripts/check-ci.sh:*)',
+];
+const SUITE_TAILS = [
+  'bash scripts/test-*.sh',
+  'bash scripts/git/test-*.sh',
+  'bash scripts/cr/test-*.sh',
+  'bash scripts/handover/test-*.sh',
+  'bash scripts/handover/console-kit/test-*.sh',
+  'bash scripts/hooks/test-*.sh',
+  'bash scripts/guardrails/test-*.sh',
+  'bash scripts/lib/test-*.sh',
+  'bash scripts/luna/test-*.sh',
+  'bash scripts/ci/test-*.sh',
+  'bash templates/luna-second-brain/scripts/test-*.sh',
+];
+const SUITE_RULES = ['', 'SUITE_LOCK_WAIT=60 '].flatMap((prefix) =>
+  SUITE_TAILS.map((tail) => `Bash(${prefix}bash scripts/quiet-run.sh suite -- ${tail})`));
+
+for (const tail of SUITE_TAILS) {
+  test(`suite allowance names a directory with tracked suites: ${tail}`, () => {
+    const files = spawnSync('git', ['ls-files', tail.slice('bash '.length)], { encoding: 'utf8' });
+    assert.equal(files.status, 0, files.stderr);
+    assert.ok(files.stdout.trim(), 'do not preapprove an empty suite directory');
+  });
+}
+
+for (const name of LEG_PROFILES) {
+  test(`${name} emits every registry gateAllow rule`, () => {
+    const settings = resolveProfile(REG, name);
+    assert.ok(Array.isArray(settings.permissions?.allow), 'missing permissions.allow');
+    assert.ok(settings.permissions.allow.length > 0);
+    assert.deepEqual(settings.permissions, { allow: REG.gateAllow });
+    assert.notEqual(settings.permissions.allow, REG.gateAllow, 'callers must not mutate the registry');
+  });
+}
+for (const rule of [...GATE_RULES, ...SUITE_RULES]) {
+  test(`each leg emits the literal gate rule: ${rule}`, () => {
+    for (const name of LEG_PROFILES) {
+      assert.ok(resolveProfile(REG, name).permissions?.allow.includes(rule), `${name}: missing ${rule}`);
+    }
+  });
+}
+
+for (const name of ['operator', 'user', 'bare']) {
+  test(`${name} output stays byte-identical to its pre-gateAllow shape`, () => {
+    // Baseline captured before implementation: user = four base ids + three
+    // authoring ids; bare = three floor ids; catalog order stays unchanged.
+    const on = name === 'bare' ? ['handover@himmel', 'himmel-ops@himmel', 'qmd@himmel'] : [
+      'handover@himmel', 'himmel-ops@himmel', 'qmd@himmel', 'pr-review-toolkit-himmel@himmel',
+      'superpowers@claude-plugins-official', 'mattpocock-skills@claude-plugins-official', 'plannotator-effective-html@himmel',
+    ];
+    const expected = name === 'operator' ? null : {
+      enabledPlugins: Object.fromEntries(REG.catalog.map((id) => [id, on.includes(id)])),
+    };
+    const settings = resolveProfile(REG, name);
+    assert.equal(JSON.stringify(settings), JSON.stringify(expected));
+    assert.ok(settings === null || !Object.hasOwn(settings, 'permissions'));
+  });
+}
+
+test('leg settings leave pushes on the classifier path', () => {
+  // A trailing wildcard also covers options such as --no-verify; rejecting
+  // that token in a rule string does not constrain the matched command.
+  for (const name of LEG_PROFILES) {
+    assert.ok(!resolveProfile(REG, name).permissions.allow.some((rule) => rule.startsWith('Bash(git push')));
+  }
+});
+
+test('absent/false gateAllow does not inject permissions into a leg', () => {
+  for (const value of [undefined, false]) {
+    const registry = structuredClone(REG);
+    registry.profiles['leg-impl'].gateAllow = value;
+    assert.ok(!Object.hasOwn(resolveProfile(registry, 'leg-impl'), 'permissions'));
+  }
+});
+
+const BAD_GATE_RULES = [
+  ['non-Bash', 'Read(scripts/*)'],
+  ['--force', 'Bash(git push -u origin feat/* --force)'],
+  ['--no-verify', 'Bash(git push -u origin feat/* --no-verify)'],
+  ['--amend', 'Bash(bash scripts/cr/ledger-append.sh --amend)'],
+  ['reset --hard', 'Bash(git reset --hard)'],
+  ['origin main', 'Bash(git push -u origin main)'],
+  ['absolute path', 'Bash(bash /tmp/test-suite.sh:*)'],
+  ['dollar', 'Bash(bash scripts/check-ci.sh $PR)'],
+  ['bare push', 'Bash(git push:*)'],
+  ['feat push wildcard absorbs hook-skipping options', 'Bash(git push -u origin feat/*)'],
+  ['fix push wildcard absorbs hook-skipping options', 'Bash(git push -u origin fix/*)'],
+  ['chore push wildcard absorbs hook-skipping options', 'Bash(git push -u origin chore/*)'],
+  ['docs push wildcard absorbs hook-skipping options', 'Bash(git push -u origin docs/*)'],
+  ['refactor push wildcard absorbs hook-skipping options', 'Bash(git push -u origin refactor/*)'],
+  ['test push wildcard absorbs hook-skipping options', 'Bash(git push -u origin test/*)'],
+  ['leg-written GO', 'Bash(bash scripts/handover/console-kit/go.sh:*)'],
+  ['unlisted script', 'Bash(bash scripts/uninstall.sh:*)'],
+  ['blanket quiet-run', 'Bash(bash scripts/quiet-run.sh:*)'],
+  ['wildcard before --', 'Bash(bash scripts/quiet-run.sh * -- bash scripts/test-*.sh)'],
+  ['other label', 'Bash(bash scripts/quiet-run.sh other -- bash scripts/test-*.sh)'],
+  ['missing separator', 'Bash(bash scripts/quiet-run.sh suite bash scripts/test-*.sh)'],
+  ['non-suite command', 'Bash(bash scripts/quiet-run.sh suite -- printf:*)'],
+  ['non-suite shell file', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/check-ci.sh)'],
+  ['non-suite node file', 'Bash(bash scripts/quiet-run.sh suite -- node scripts/check-ci.mjs)'],
+  ['broad node files', 'Bash(bash scripts/quiet-run.sh suite -- node --test scripts/*)'],
+  ['node suites remain classifier-only', 'Bash(bash scripts/quiet-run.sh suite -- node --test scripts/lanes/tests/*.test.mjs)'],
+  ['double dot anywhere', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/test-..*.sh)'],
+  ['directory wildcard', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/*/test-*.sh)'],
+  ['nested directory wildcard', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/*/*/test-*.sh)'],
+  ['template wildcard', 'Bash(bash scripts/quiet-run.sh suite -- bash templates/*/scripts/test-*.sh)'],
+  ['path traversal', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/../test-*.sh)'],
+  ['env override', 'Bash(SUITE_LOCK_WAIT=0 bash scripts/quiet-run.sh suite -- bash scripts/test-*.sh)'],
+  ['semicolon', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/test-*.sh; printf bad)'],
+  ['and segment', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/test-*.sh && printf bad)'],
+  ['pipe', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/test-*.sh | bash)'],
+  ['substitution', 'Bash(bash scripts/quiet-run.sh suite -- bash scripts/test-$(printf bad).sh)'],
+];
+for (const [shape, rule] of BAD_GATE_RULES) {
+  test(`gateAllow rejects ${shape}`, () => {
+    const registry = structuredClone(REG);
+    registry.gateAllow = [rule];
+    assert.ok(validateRegistry(registry).some((e) => e.includes('gateAllow')), rule);
+  });
+}
+
+test('wildcard-before-separator RED control retains the non-suite execution repro', () => {
+  // A wildcard model, NOT proof of Claude Code matcher semantics. The old
+  // label wildcard absorbed the non-suite command before a second separator.
+  const command = 'bash scripts/quiet-run.sh n195-rule-shape -- printf NON_SUITE_EXECUTED -- bash scripts/test-permission-shape.sh';
+  assert.match(command, /^bash scripts\/quiet-run\.sh .* -- bash scripts\/test-.*\.sh$/);
+  const registry = structuredClone(REG);
+  registry.gateAllow = ['Bash(bash scripts/quiet-run.sh * -- bash scripts/test-*.sh)'];
+  assert.ok(validateRegistry(registry).some((e) => e.includes('gateAllow')));
+});
+
+test('directory-wildcard RED control rejects a different program before the suite suffix', () => {
+  const command = 'bash scripts/quiet-run.sh suite -- bash scripts/check-ci.sh placeholder/test-x.sh';
+  assert.match(command, /^bash scripts\/quiet-run\.sh suite -- bash scripts\/.*\/test-.*\.sh$/);
+  const registry = structuredClone(REG);
+  registry.gateAllow = ['Bash(bash scripts/quiet-run.sh suite -- bash scripts/*/test-*.sh)'];
+  assert.ok(validateRegistry(registry).some((e) => e.includes('gateAllow')));
+});
+
+for (const bad of [null, 'Bash(bash scripts/check-ci.sh:*)', [null], [42], []]) {
+  test(`gateAllow rejects malformed list ${JSON.stringify(bad)}`, () => {
+    const registry = structuredClone(REG);
+    registry.gateAllow = bad;
+    assert.ok(validateRegistry(registry).some((e) => e.includes('gateAllow')));
+  });
+}
+for (const [name, value] of [['leg-impl', 'true'], ['user', true], ['bare', true]]) {
+  test(`gateAllow rejects invalid opt-in ${name}=${JSON.stringify(value)}`, () => {
+    const registry = structuredClone(REG);
+    registry.profiles[name].gateAllow = value;
+    assert.ok(validateRegistry(registry).some((e) => e.includes('gateAllow')));
+  });
+}
+
+test('an opted-in profile requires the registry gateAllow list', () => {
+  const registry = structuredClone(REG);
+  registry.profiles['leg-impl'].gateAllow = true;
+  delete registry.gateAllow;
+  assert.ok(validateRegistry(registry).some((e) => e.includes('gateAllow')));
+});
+
 test('operator profile resolves to null (never injected)', () => {
   assert.equal(resolveProfile(REG, 'operator'), null);
   assert.equal(resolveProfile(MINI, 'operator'), null);
@@ -713,7 +886,16 @@ test('golden baseline — resolveProfile output for shipped profiles is pinned (
   // live plugin universe and the fixture would go red on every other clone.
   const registry = loadRegistry(REGISTRY_PATH);
   const actual = {};
-  for (const name of GOLDEN_PROFILES) actual[name] = resolveProfile(registry, name, { installed: [] });
+  for (const name of GOLDEN_PROFILES) {
+    actual[name] = resolveProfile(registry, name, { installed: [] });
+    if (LEG_PROFILES.includes(name)) {
+      // HIMMEL-2959 deliberately adds this field. Pin its exact rule set
+      // separately, keeping the historical plugin/output fixture unchanged.
+      assert.deepEqual(actual[name].permissions, { allow: actual[name].permissions.allow });
+      assert.deepEqual([...actual[name].permissions.allow].sort(), [...GATE_RULES, ...SUITE_RULES].sort());
+      delete actual[name].permissions;
+    }
+  }
 
   // Regenerate with: PLUGIN_PROFILES_UPDATE_GOLDEN=1 node --test scripts/lanes/tests/plugin-profiles.test.mjs
   if (process.env.PLUGIN_PROFILES_UPDATE_GOLDEN) {

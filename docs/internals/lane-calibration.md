@@ -43,6 +43,31 @@ break `/pr-check` — whose CR gate dispatches
 distinguishes it is `contextBudget: 35000`, the number a leg is expected to
 start under; measure a real leg against it with `scripts/lanes/leg-burn.sh`.
 
+`gateAllow` (HIMMEL-2959) is one registry-level list of validated Bash rules;
+`lane-impl`, `leg-impl`, `lane-review`, and `lane-content` opt in with
+`gateAllow: true`, adding `permissions.allow` to their resolved settings.
+Matching allow rules are evaluated before the narrative-sensitive auto-mode
+classifier, giving deterministic routing; the deny list still wins and is
+untouched. `operator`, `user`, and `bare` keep byte-identical resolver output.
+The list covers guarded merge/lock/inbox/CR/CI scripts. Push rules are omitted:
+a branch-suffix wildcard also admits trailing `--no-verify`, which skips the
+git hooks those rules would rely on. Pushes stay on the classifier path until
+a proven deny pair exists (HIMMEL-2962).
+`quiet-run.sh` itself can execute arbitrary argv, so its rules pin the label,
+separator, interpreter and suite directory: only the basename suffix after
+`test-` is a wildcard, and
+both plain and `SUITE_LOCK_WAIT=60` forms are listed. This supersedes the
+unsafe label/directory-glob proposal; each listed directory has tracked shell
+suites, while the empty direct `scripts/lanes/` set is omitted. Node suite
+rules are omitted entirely and remain on the classifier path. A suite run
+that wants the deterministic rule uses the label `suite`; any other label
+simply falls back to today's classifier path — no regression. Unlisted suite
+directories also retain that path. The matcher's handling of the env prefix
+and of a tail glob is unproven until the console's first native
+`--profile leg-impl` dispatch. These profile rules serve native legs only;
+until HIMMEL-2962 composes the launchers, claudex legs receive only
+operator-managed user-scope rules preserved by `sanitize_settings`.
+
 `leg-impl`'s `mcpServers: ["qmd"]` (HIMMEL-2935) layers `--mcp-config` +
 `--strict-mcp-config` onto the same profile, stripping USER-level MCP servers
 (`graphify`, `obsidian-vault`, `context7`) a leg never calls. `qmd` is kept
