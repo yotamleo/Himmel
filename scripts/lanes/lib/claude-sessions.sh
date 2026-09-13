@@ -33,8 +33,8 @@
 _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <pid>
     # Reads NUL-delimited argv elements directly (`read -d ''`) rather than
     # via `tr '\0' '\n'` + newline-`read` -- HIMMEL-2999 CR round 1 (codex-1,
-    # Critical): the tr conversion is itself lossy when an argv element (a
-    # -p/--append-system-prompt value) contains a literal embedded newline
+    # Critical): the tr conversion is itself lossy when an argv element (an
+    # --append-system-prompt value) contains a literal embedded newline
     # byte -- that byte becomes indistinguishable from a real argv-element
     # boundary once translated, letting one prompt element split into fake
     # tokens. Reading the NUL delimiter directly has no such collision.
@@ -48,9 +48,14 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
     # exactly "-n" (or "--model"/"--autocompact") then poisoned the very
     # next argv element -- a positional prompt, or another flag -- into
     # being misread as that flag's value. `expect=skip` consumes and
-    # discards the value of every other known value-bearing flag so its
+    # discards the value of every OTHER known value-bearing flag so its
     # value token is never re-examined; `--` ends flag parsing entirely
-    # (everything after belongs to the trailing prompt).
+    # (everything after belongs to the trailing prompt). `-p`/`--print` is
+    # deliberately NOT in that list -- CR round 2 (codex-1, Important): it
+    # is a bare boolean flag in this repo's real invocations (see
+    # scripts/probes/claude-p/*.sh -- `-p` always sits right after the
+    # binary name with no value of its own), and treating it as
+    # value-bearing swallowed the very next real flag's value.
     local proc="$1" pid="$2" cmdline
     cmdline="$proc/$pid/cmdline"
     [ -r "$cmdline" ] || return 0
@@ -70,10 +75,20 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
             -n) expect=name ;;
             --model) expect=model ;;
             --autocompact) expect=autocompact ;;
-            -p|--append-system-prompt|--append-system-prompt-file) expect=skip ;;
+            --append-system-prompt|--append-system-prompt-file) expect=skip ;;
         esac
     done < "$cmdline"
-    printf '%s\t%s\t%s\t%s\n' "$pid" "$name" "$model" "$autocompact"
+    printf '%s\t%s\t%s\t%s\n' "$pid" "$(_tsv_field "$name")" "$(_tsv_field "$model")" "$(_tsv_field "$autocompact")"
+}
+
+_tsv_field() { # _tsv_field <value> - CR round 2 (codex-2, Suggestion): a
+               # field value carrying a literal TAB or newline would widen
+               # or split the emitted row for every downstream awk -F'\t'
+               # reader; a leg/model/ceiling value never legitimately needs
+               # either byte, so both are replaced with a space.
+    local v="$1"
+    v="${v//$'\t'/ }"
+    printf '%s' "${v//$'\n'/ }"
 }
 
 _claude_sessions_lossy() { # _claude_sessions_lossy <pgrep-bin> - the old

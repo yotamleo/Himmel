@@ -171,6 +171,30 @@ out_l="$(run_primary)"
 contains 'a flag value that looks like -n does not hijack the following token as the real name' "$out_l" 'HIMMEL-999-legN90-2026-09-13 auto'
 contains 'the hijack-attempt leg still reports its real DRIFT' "$out_l" 'ceiling=DRIFT:HIMMEL-999-legN90-2026-09-13'
 
+# (m) HIMMEL-2999 CR round 2 (codex-1, Important): `-p`/`--print` is a bare
+# boolean flag (see scripts/probes/claude-p/*.sh -- it never itself takes a
+# value) -- treating it as value-bearing swallowed the NEXT real flag's
+# value. A real `-n` immediately after a bare `-p` must survive.
+mkcmdline 111 claude --model claude-sonnet-5 -p -n HIMMEL-100-legN95-2026-09-13 --autocompact 200000
+pgrep_x_stub 111
+sess_out_m="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+contains 'a bare -p boolean flag does not swallow the following --model value' "$sess_out_m" $'111\tHIMMEL-100-legN95-2026-09-13\tclaude-sonnet-5\t200000'
+
+# (n) HIMMEL-2999 CR round 2 (codex-2, Suggestion): a field value carrying a
+# literal embedded TAB must not widen the emitted TSV row -- the row must
+# always print exactly 4 tab-separated fields.
+mkcmdline 112 claude --model claude-sonnet-5 --autocompact 200000 -n $'HIMMEL-300-legN97\t2026-09-13'
+pgrep_x_stub 112
+sess_out_n="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+nf_n="$(printf '%s' "$sess_out_n" | awk -F'\t' '{print NF; exit}')"
+if [ "$nf_n" -eq 4 ]; then pass 'an embedded TAB in a name value does not widen the TSV row'; else fail "an embedded TAB in a name value does not widen the TSV row (NF=$nf_n)"; fi
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-ceiling-conformance.sh'
     exit 0
