@@ -73,7 +73,7 @@
 set -u
 
 usage() {
-    echo "usage: leg-burn.sh <transcript.jsonl|session-name>" >&2
+    echo "usage: leg-burn.sh [--raw] <transcript.jsonl|session-name>" >&2
 }
 
 RAW=0
