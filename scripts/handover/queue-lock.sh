@@ -633,19 +633,46 @@ _ql_token_dir_ensure() {
     return 0
 }
 
-# _ql_token_file <handover-path> -- the token file for this queue, or rc 1
-# when no digest tool exists. Backslashes fold to "/" first so a Git-Bash
-# spelling and a POSIX spelling of the same document key alike -- the same
-# normalisation _ql_slug_for_root applies.
-_ql_token_file() {
-    local p="${1//\\//}" dir scope h
-    dir=$(_ql_token_dir)
-    # No resolvable session scope -> no token file at all (see the SCOPED TO
-    # THE SESSION note above): persist and recall both become no-ops.
+# _ql_token_digest <handover-path> -- the scope|path digest shared by every
+# acquisition of this queue, or rc 1 when no scope or no digest tool exists.
+# Backslashes fold to "/" first so a Git-Bash spelling and a POSIX spelling
+# of the same document key alike -- the same normalisation _ql_slug_for_root
+# applies.
+_ql_token_digest() {
+    local p="${1//\\//}" scope
+    # No resolvable session scope -> no digest at all (see the SCOPED TO THE
+    # SESSION note above): persist, recall and forget all become no-ops.
     scope=$(_ql_session_scope) || return 1
-    h=$(_ql_digest_of "$scope|$p") || return 1
+    _ql_digest_of "$scope|$p"
+}
+
+# _ql_token_suffix <token> -- the filename-safe suffix for one acquisition's
+# token file. Tokens are `[A-Za-z0-9_-]+` by construction; the digest
+# fallback exists only so a token that somehow fails that shape still gets
+# its own per-acquisition file instead of colliding on a bare, unsuffixed
+# path shared with every other acquisition (HIMMEL-2870 exists to get rid of
+# exactly that shared path).
+_ql_token_suffix() {
+    case "$1" in
+        *[!A-Za-z0-9_-]*|'') _ql_digest_of "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# _ql_token_file <handover-path> <token> -- the file for ONE acquisition of
+# this queue's lock: "<h>.<suffix>", `<h>` the scope|path digest
+# (_ql_token_digest) and `<suffix>` derived from `<token>`
+# (_ql_token_suffix). Two different acquisitions of the same queue -- even
+# by the same session across a release/reacquire -- always resolve to two
+# different files, so forgetting one can never address the other's.
+_ql_token_file() {
+    local dir h suf
+    dir=$(_ql_token_dir)
+    h=$(_ql_token_digest "$1") || return 1
     [ -n "$h" ] || return 1
-    printf '%s/%s' "$dir" "$h"
+    suf=$(_ql_token_suffix "$2") || return 1
+    [ -n "$suf" ] || return 1
+    printf '%s/%s.%s' "$dir" "$h" "$suf"
 }
 
 # _ql_token_persist <handover-path> <token> -- best-effort ON PURPOSE: a
@@ -655,37 +682,46 @@ _ql_token_file() {
 _ql_token_persist() {
     local f
     _ql_token_dir_ensure "$(_ql_token_dir)" || return 0
-    f=$(_ql_token_file "$1") || return 0
+    f=$(_ql_token_file "$1" "$2") || return 0
     ( umask 077; printf '%s\n' "$2" > "$f" ) 2>/dev/null || true
     return 0
 }
 
 # _ql_token_recall <handover-path> -- print the persisted token (rc 0) or
-# nothing (rc 1). Names the file it came from on stderr, so a release that
-# succeeded on a RECALLED token is never mistaken for a token-less one.
+# nothing (rc 1). Globs every acquisition's file for this queue and picks
+# the newest by mtime when more than one exists (a stale leftover from a
+# lost race; recalling the wrong token is safe -- the owner check downstream
+# simply refuses it). Names the file it came from on stderr, so a release
+# that succeeded on a RECALLED token is never mistaken for a token-less one.
 _ql_token_recall() {
-    local f t
-    _ql_token_dir_ensure "$(_ql_token_dir)" || return 1
-    f=$(_ql_token_file "$1") || return 1
-    [ -f "$f" ] || return 1
-    t=$(cat "$f" 2>/dev/null) || return 1
+    local dir h f newest t
+    dir=$(_ql_token_dir)
+    _ql_token_dir_ensure "$dir" || return 1
+    h=$(_ql_token_digest "$1") || return 1
+    [ -n "$h" ] || return 1
+    newest=""
+    for f in "$dir/$h".*; do
+        [ -f "$f" ] || continue
+        if [ -z "$newest" ] || [ "$f" -nt "$newest" ]; then
+            newest="$f"
+        fi
+    done
+    [ -n "$newest" ] || return 1
+    t=$(cat "$newest" 2>/dev/null) || return 1
     [ -n "$t" ] || return 1
-    echo "queue-lock: token read from $f" >&2
+    echo "queue-lock: token read from $newest" >&2
     printf '%s' "$t"
 }
 
-# _ql_token_forget <handover-path> <token> -- drop the token file once the
-# lock it releases is gone, but ONLY while it still holds OUR token (CR round
-# 1, codex-2). This runs AFTER the lock dir is removed, so a fresh acquire
-# can land in between and persist its own token to the same path; an
-# unconditional delete would then throw away the NEW holder's recovery file.
-# Comparing the content first means the worst case is leaving our own stale
-# file behind, never destroying somebody else's.
+# _ql_token_forget <handover-path> <token> -- drop OUR OWN acquisition's
+# token file once the lock it releases is gone. One file per acquisition
+# (HIMMEL-2870) means the file this removes is named for <token> itself, so
+# there is nothing to read or compare first: a fresh acquire landing in the
+# same window (CR round 1, codex-2 -- this runs AFTER the lock dir is
+# removed) persists to ITS OWN file under ITS OWN token, never this one.
 _ql_token_forget() {
     local f
-    f=$(_ql_token_file "$1") || return 0
-    [ -f "$f" ] || return 0
-    [ "$(cat "$f" 2>/dev/null)" = "$2" ] || return 0
+    f=$(_ql_token_file "$1" "$2") || return 0
     rm -f "$f" 2>/dev/null || true
     return 0
 }
