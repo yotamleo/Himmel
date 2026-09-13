@@ -95,11 +95,19 @@ if [ "$head_sha" != "$upstream_sha" ]; then
 fi
 
 existing_pr=""
-if ! existing_pr=$(forge_pr_find_open "$branch" 2>&1); then
+# Same separation as the create path below: a `gh`/`bb` warning on stdin's
+# stderr (even on a SUCCESSFUL lookup, rc=0) must never leak into the value
+# parsed as the PR number — it could make an empty lookup look non-empty, or
+# corrupt a real number, driving an update against the wrong PR.
+find_open_err=$(mktemp "${TMPDIR:-/tmp}/leg-pr-open-find-err.XXXXXX") || { echo "ERR leg-pr-open: mktemp failed" >&2; exit 1; }
+if ! existing_pr=$(forge_pr_find_open "$branch" 2>"$find_open_err"); then
     echo "ERR leg-pr-open: could not check for an existing PR:" >&2
-    printf '%s\n' "$existing_pr" >&2
+    cat "$find_open_err" >&2
+    rm -f "$find_open_err"
     exit 1
 fi
+rm -f "$find_open_err"
+existing_pr=$(printf '%s\n' "$existing_pr" | head -n 1)
 
 if [ -z "$existing_pr" ]; then
     # Capture stdout (the PR URL) and stderr (diagnostics, plus the

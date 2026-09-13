@@ -69,6 +69,9 @@ cat >"$GH_STUB" <<'STUB'
 printf '%s\n' "$*" >> "$ARGV_LOG"
 case "$* " in
     *"pr list"*"--state open"*)
+        if [ -n "${STUB_FIND_OPEN_STDERR:-}" ]; then
+            echo "$STUB_FIND_OPEN_STDERR" >&2
+        fi
         if [ -n "${STUB_OPEN_PR:-}" ]; then
             printf '%s\n' "$STUB_OPEN_PR"
         fi
@@ -176,6 +179,23 @@ err_g=$(run_sut "$TITLE_FILE" "$BODY_FILE" 2>&1 >/dev/null); rc_g=$?
 if [ "$rc_g" -ne 0 ]; then pass "refuses when HEAD unpushed (rc!=0)"; else fail "refuses when HEAD unpushed (rc!=0)" "got rc=$rc_g"; fi
 contains "refusal names push" "$err_g" "push"
 git -C "$REPO" push -q origin feat/x
+
+# ── (h) find-open lookup survives a stderr warning on a CLEAN success (codex-1 round 2) ──
+echo "TEST: find-open lookup survives a stderr warning on success (no open PR)"
+: > "$ARGV_LOG"
+unset STUB_OPEN_PR 2>/dev/null || true
+export STUB_FIND_OPEN_STDERR="warn: rate limit at 4999/5000"
+out_h=$(run_sut "$TITLE_FILE" "$BODY_FILE"); rc_h=$?
+unset STUB_FIND_OPEN_STDERR
+assert_eq "find-open-stderr path exits 0" "0" "$rc_h"
+# HEAD_SHA was captured before test (g) advanced the branch with a further
+# commit — re-derive the CURRENT head rather than reuse the stale constant.
+head_sha_h=$(git -C "$REPO" rev-parse HEAD)
+assert_eq "find-open-stderr path prints exactly the success line (creates, not a bogus update)" \
+    "PR 9 https://github.com/owner/repo/pull/9 $head_sha_h" "$out_h"
+argv_h=$(cat "$ARGV_LOG")
+contains "find-open-stderr path still creates (stderr warning did not fake an existing PR)" "$argv_h" "pr create"
+not_contains "find-open-stderr path never edits" "$argv_h" "pr edit"
 
 echo
 echo "===================================="
