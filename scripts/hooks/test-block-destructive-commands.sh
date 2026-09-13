@@ -385,6 +385,13 @@ heredoc_herestring_then_real="echo <<< 'EOF' && cat <<'REAL' > /tmp/y
 rm -rf /tmp/x
 REAL"
 assert_rc "3029d <<< here-string does not shadow a later real heredoc" 0 "$(run_case "$(j_bash "$heredoc_herestring_then_real")")"
+# HIMMEL-3030: no-heredoc path now sets rm_scrub="$cmd_lc" directly instead of
+# re-deriving it via the printf|tr|tr pipeline. cmd_lc folds CR and LF to ';'
+# independently in one `tr` pass; the old pipeline folded CR->LF first, then
+# LF->';' after lowering. A real CR (e.g. Windows jq.exe CRLF output) must
+# still deny identically either way.
+crlf_rm=$'echo hi\r\nrm -rf /tmp/x'
+assert_rc "3030a real CR before rm -rf still denies" 2 "$(run_case "$(j_bash "$crlf_rm")")"
 # (f) HIMMEL-851 bypasses must still deny post-anchor (already covered above,
 # cited here for the ticket's control list): quoted-flag L104, \${IFS} L106,
 # backslash-continuation L110-112.

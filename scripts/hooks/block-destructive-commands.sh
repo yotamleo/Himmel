@@ -279,6 +279,22 @@ guard_cmdpos_grammar
 # the true newline that begins the body, never right after the opener token,
 # or a real command on the OPENER's own line (`cat <<EOF; rm -rf x`) gets
 # swallowed into the discarded span (same panel round).
+#
+# HIMMEL-3030: the header above already documented this as gated behind a
+# cheap `*<<*` test, but only the STRIPPING LOOP was actually gated - the
+# `printf | tr | tr` pipeline that builds rm_scrub_raw ran unconditionally,
+# paying 3 forks on every zero-heredoc call (the common case). `<<` survives
+# both the case fold and the CR/LF fold, so testing for it on cmd_lc (already
+# computed, zero extra cost) is equivalent to testing cmd. When absent, skip
+# the pipeline entirely: cmd_lc already IS what rm_scrub_raw's newline-fold
+# would produce here - cmd_lc's single `tr` maps upper->lower and `\n`/`\r`
+# each independently to `;` in one pass, while rm_scrub_raw's two `tr` calls
+# map `\r`->`\n` then upper->lower before rm_scrub folds the (now all-`\n`)
+# newlines to `;` - lowering and separator-folding commute, so both paths
+# produce the same byte string when there is no heredoc to strip.
+if [[ $cmd_lc != *'<<'* ]]; then
+    rm_scrub="$cmd_lc"
+else
 rm_scrub_raw=$(printf '%s' "$cmd" | LC_ALL=C tr '\r' '\n' | LC_ALL=C tr '[:upper:]' '[:lower:]')
 if [[ $rm_scrub_raw == *'<<'* ]]; then
     _hd_budget=8
@@ -369,6 +385,7 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
     done
 fi
 rm_scrub="${rm_scrub_raw//$'\n'/;}"
+fi
 # Separator before the flag tolerates a real space OR a lowercased ${IFS}
 # token (a common word-split bypass), and the flag itself tolerates one
 # leading quote char - both `-rf` and `"-rf"`/`'-rf'` trip it (HIMMEL-851 U2/U3).
