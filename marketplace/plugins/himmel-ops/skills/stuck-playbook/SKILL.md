@@ -57,7 +57,8 @@ a CLI flag) over a cleverer command.
 - **An outward-facing command (`gh pr create` / `gh pr comment` / `git push`)
   is denied with `Stage 2 classifier error`** → do not retry verbatim
   back-to-back; end the turn or do one unrelated read, then retry ONCE with
-  the body via `--body-file` and the same head. A second denial (including
+  the body via `--body-file` (or the equivalent invocation for `git push`,
+  which carries no body flag) and the same head. A second denial (including
   the escalated `[Out-of-Place Publication]` form) → stop, `BLOCKED` to the
   console with the exact text; the console never runs it (laundering).
   (HIMMEL-3020)
