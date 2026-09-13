@@ -228,6 +228,21 @@ FIXTURE
 bash "$GUARD" "$tmp/case-o.sh" >/dev/null; rc=$?
 if [ "$rc" -eq 1 ]; then pass "case-o -> exit 1"; else fail "case-o -> expected 1 got $rc"; fi
 
+# Case P (CR round 4, codex-1): a here-string (`cat <<<EOF`) is a single
+# self-contained expression, not a multi-line heredoc redirect -- its
+# third `<` must not let the heredoc-open check match starting one
+# character in and wrongly open heredoc-skip state with no closing
+# terminator, silently swallowing the real scrub + assertion below it.
+echo "== Case P: here-string does not open bogus heredoc-skip state -> 1 finding =="
+cat > "$tmp/case-p.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+cat <<<EOF
+PATH=$(scrub_path "$PATH" tool)
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-p.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-p -> exit 1"; else fail "case-p -> expected 1 got $rc"; fi
+
 # Case H: no-args tree walk over the real repo exits 0 or 1, never 2.
 echo "== Case H: no-args tree walk exits 0/1, not 2 =="
 ( cd "$REPO_ROOT" && bash "$GUARD" ) >/dev/null 2>&1; rc=$?

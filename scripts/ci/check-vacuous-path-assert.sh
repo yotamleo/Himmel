@@ -33,6 +33,19 @@
 # codex-1 gap where a single-quoted `PATH='$PATH'` literal was misread as
 # preserving: the `'` immediately before the reference is not a boundary.
 #
+# Known limitations (deferred, HIMMEL-2957 — both rare and either
+# under-flagging in a way a reviewer would still catch, or an explicit
+# ticket-design tradeoff, not a detector defect to fix here):
+#   - A single-quoted value that STILL has a colon on both sides of a
+#     literal `$PATH` (`PATH='/stub:$PATH:/other'`) passes the boundary
+#     check and is read as preserving, even though single quotes suppress
+#     expansion entirely and the assignment does not preserve anything
+#     (CR round 4, codex-2).
+#   - Pattern B matches both `-z` and `-n`; a `-n` (non-emptiness)
+#     assertion after a real PATH break fails loudly rather than passing
+#     vacuously, so flagging it is noise, not a missed vacuous pass — kept
+#     symmetric with `-z` per the ticket's own design (CR round 4, codex-3).
+#
 # Usage:
 #   check-vacuous-path-assert.sh              # tree-walk: every git-tracked
 #                                              # scripts/**/test-*.sh
@@ -178,9 +191,16 @@ for f in "${files[@]}"; do
             # falsely open heredoc state and silently skip every real line
             # after it, including the assertion this detector exists to
             # catch (CR round 2 codex-2: whole-line; CR round 3 codex-1:
-            # trailing).
+            # trailing). A here-string (`cat <<<EOF`) is a single self-
+            # contained expression, never a multi-line redirect -- its
+            # third `<` would otherwise let the `<<` half of the pattern
+            # match starting one character in, wrongly opening heredoc-skip
+            # state with no real terminator to ever close it (CR round 4,
+            # codex-1). Strip any `<<<` run before the heredoc-open check so
+            # only a genuine `<<`/`<<-` survives.
             hd_line = line
             sub(/(^[ \t]*|[ \t])#.*$/, "", hd_line)
+            gsub(/<<</, "", hd_line)
             if (match(hd_line, /<<-?[ \t]*["'"'"'][A-Za-z_][A-Za-z0-9_]*["'"'"'][ \t]*$/) || match(hd_line, /<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/)) {
                 seg = substr(hd_line, RSTART, RLENGTH)
                 heredoc_dash = (seg ~ /^<<-/)
