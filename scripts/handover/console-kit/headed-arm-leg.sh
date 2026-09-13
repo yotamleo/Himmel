@@ -199,6 +199,24 @@ if [ "$RESOLVED_AUTOCOMPACT" != "200000" ]; then
     exit 2
 fi
 
+# HIMMEL-2976: an Opus or Fable leg costs materially more per turn than the
+# Sonnet default implementor, so it launches only when its brief names one of
+# the three sanctioned reasons on a Tier line (CLAUDE.md: "raise effort
+# before tier"). Matched by MODEL PREFIX, same reasoning as the [1m] suffix
+# guard above - a suffix (e.g. claude-opus-5[1m]) must not dodge the gate.
+TIER_GATE=""
+case "$MODEL" in
+    claude-opus-*) TIER_GATE="opus" ;;
+    claude-fable-*) TIER_GATE="fable" ;;
+esac
+if [ -n "$TIER_GATE" ]; then
+    TIER_REASON="$(grep -m1 -E "^> \*\*Tier:\*\* $TIER_GATE — " "$DOC" 2>/dev/null | sed -E "s/^> \*\*Tier:\*\* $TIER_GATE — //")"
+    if [ -z "$TIER_REASON" ]; then
+        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier." >&2
+        exit 2
+    fi
+fi
+
 # LEG_REPO folds onto headed-arm.sh's own HEADED_ARM_REPO override seam -
 # the one thing the two prior kit-local copies differed on.
 if [ -n "${LEG_REPO:-}" ]; then
@@ -359,6 +377,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
             "$PROFILE" "$PROFILE_SETTINGS" "$LEG_PROFILE_PREFACE" "$PROFILE_CONTRACT" "$HIMMEL_LEAN_LEG" \
             "$MCP_NAMES_JSON" "${LEG_PROFILE_MCP_CONFIG:-<none>}"
     fi
+    # Printed ONLY for an Opus/Fable model that cleared the tier gate above;
+    # absent for Sonnet/Haiku, matching the argv-report guarantee pattern above.
+    if [ -n "$TIER_GATE" ]; then
+        printf 'headed-arm-leg: tier=%s tier-reason=%s\n' "$TIER_GATE" "$TIER_REASON"
+    fi
     exit 0
 fi
 
@@ -427,6 +450,13 @@ if [ -f "$BANK_PREFLIGHT" ]; then
         echo "$(date +%F_%T) headed-arm-leg: refusing to launch $NAME - $LANE lane bank exhausted (park and retry later; see bank-preflight.sh for the parked lane's own bank status)" >> "$LOG"
         exit 11
     fi
+fi
+
+# HIMMEL-2976: this wrapper execs into headed-arm.sh below, so its own
+# "armed:" line (headed-arm.sh) never sees TIER_GATE - log the reason
+# ourselves, same append style as the SKIPPED-FLEET/SKIPPED-BANK lines above.
+if [ -n "$TIER_GATE" ]; then
+    echo "$(date +%F_%T) headed-arm-leg: tier=$TIER_GATE tier-reason=$TIER_REASON" >> "$LOG"
 fi
 
 exec "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"

@@ -136,6 +136,36 @@ done
 proc_out="$(pgrep -af 'claude' 2>/dev/null)" || proc_out=""
 procs="$(printf '%s\n' "$proc_out" | awk '/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/-console/ { n++ } END { print n+0 }')"
 
+# HIMMEL-2976: same ps table and leg filter as procs= above, bucketed by the
+# tier its --model argv names (opus/fable cost materially more per turn than
+# the sonnet default - CLAUDE.md "raise effort before tier"). Any non-Claude
+# id (e.g. a claudex gpt-* model) buckets under "other" rather than one
+# unbounded per-model list.
+models_summary="$(printf '%s\n' "$proc_out" | awk '
+/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/-console/ {
+    for (i = 1; i <= NF; i++) {
+        if ($i == "--model" && (i + 1) <= NF) {
+            m = $(i + 1)
+            if (m ~ /^claude-opus-/) c_opus++
+            else if (m ~ /^claude-fable-/) c_fable++
+            else if (m ~ /^claude-sonnet-/) c_sonnet++
+            else if (m ~ /^claude-haiku-/) c_haiku++
+            else c_other++
+            break
+        }
+    }
+}
+END {
+    out = ""
+    if (c_sonnet > 0) out = out (out == "" ? "" : ",") "sonnet:" c_sonnet
+    if (c_opus > 0)   out = out (out == "" ? "" : ",") "opus:" c_opus
+    if (c_fable > 0)  out = out (out == "" ? "" : ",") "fable:" c_fable
+    if (c_haiku > 0)  out = out (out == "" ? "" : ",") "haiku:" c_haiku
+    if (c_other > 0)  out = out (out == "" ? "" : ",") "other:" c_other
+    print out
+}')"
+[ -n "$models_summary" ] || models_summary=none
+
 at_out="$(atq 2>/dev/null)" || at_out=""
 at_count="$(printf '%s\n' "$at_out" | awk 'NF { n++ } END { print n+0 }')"
 
@@ -231,6 +261,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'heartbeat: %s\n' "$hb"
     printf 'leg locks: %s\n' "$legs_summary"
     printf 'leg processes: %s\n' "$procs"
+    printf 'leg models: %s\n' "$models_summary"
     printf 'scheduled jobs: %s\n' "$at_count"
     printf 'suite locks: %s\n' "$suites"
     printf 'open PRs: %s\n' "$prs"
@@ -248,10 +279,10 @@ else
     # The burn field is APPENDED only under --burn: a default tick line stays
     # byte-identical to what every console already parses.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s procs=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
+        printf 'TICK %s hb=%s legs=%s procs=%s models=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
     else
-        printf 'TICK %s hb=%s legs=%s procs=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
+        printf 'TICK %s hb=%s legs=%s procs=%s models=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
     fi
 fi

@@ -43,6 +43,12 @@ template_version: 3
 > not native, a suite that must be run a particular way — goes here, in this
 > paragraph, and nowhere else.>
 
+> **Tier:** <opus|fable> — <one of the three sanctioned reasons: multi-step
+> design; a FINDING the console could not verify at Sonnet; a Sonnet leg
+> returned the work as above its tier.> <Omit this line entirely for a
+> Sonnet or Haiku leg — `headed-arm-leg.sh` (HIMMEL-2976) refuses to launch
+> an Opus or Fable model without it.>
+
 > **Why (read the ticket first: `<the exact command that fetches it>`):**
 > <two or three sentences: what the operator actually asked for, and what is
 > deliberately NOT in scope. A leg that has to infer the why will widen the
@@ -86,6 +92,7 @@ template_version: 3
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND the flag is a leg running on vibes. |
+| Tier line (Opus/Fable only) | Without a named sanctioned reason, `headed-arm-leg.sh` refuses the launch (HIMMEL-2976, CLAUDE.md: "raise effort before tier") — the tier choice is enforced structurally, not left to the console's judgement call each time. |
 
 ## What the console must also do (2026-09-13)
 

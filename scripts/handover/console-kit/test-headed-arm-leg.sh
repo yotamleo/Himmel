@@ -836,6 +836,48 @@ contains "dry-run mcpServers=[]: reports mcp=[] and the would-be mcp-config path
 drynone="$(PLUGIN_PROFILES_REGISTRY="$mcpreg" bash "$SCRIPT" --dry-run --profile mcp-none HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 "$tmp/leg.log" claude-sonnet-5 2>&1)"
 contains "dry-run: no mcpServers field reports mcp=null mcp-config=<none>" "$drynone" "mcp=null mcp-config=<none>"
 
+# --- 19-23 (HIMMEL-2976): Opus/Fable legs need a named Tier reason ----------
+# CLAUDE.md: "raise effort before tier" - an Opus or Fable leg costs
+# materially more per turn than the Sonnet default, so it launches only when
+# its brief names one of the three sanctioned reasons on a Tier line. Matched
+# by MODEL PREFIX so a [1m] suffix cannot dodge it (codex-2 pattern above).
+doc_no_tier="$tmp/tier-doc-none.md"
+printf '%s\n' '# fixture brief' '> no tier line here' > "$doc_no_tier"
+doc_tier_opus="$tmp/tier-doc-opus.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — multi-step design' > "$doc_tier_opus"
+doc_tier_fable="$tmp/tier-doc-fable.md"
+printf '%s\n' '# fixture brief' '> **Tier:** fable — a Sonnet leg returned the work as above its tier' > "$doc_tier_fable"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate: opus without a Tier line is refused with exit 2" "$rc" "2"
+contains "tier gate: refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
+contains "tier gate: refusal names reason 1 (multi-step design)" "$out" "multi-step design"
+contains "tier gate: refusal names reason 2 (unverifiable FINDING)" "$out" "a FINDING the console could not verify at Sonnet"
+contains "tier gate: refusal names reason 3 (above-tier return)" "$out" "a Sonnet leg returned the work as above its tier"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log "claude-opus-5[1m]" 2>&1)" || rc=$?
+check "tier gate: a [1m] suffix does not dodge the opus match" "$rc" "2"
+contains "tier gate: [1m]-suffixed refusal still names the sentence" "$out" "raise effort before tier"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
+check "tier gate: fable without a Tier line is refused with exit 2" "$rc" "2"
+contains "tier gate: fable refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate: opus with a Tier line proceeds (dry-run exit 0)" "$rc" "0"
+contains "tier gate: dry-run report carries tier-reason= for opus" "$out" "tier-reason=multi-step design"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_fable" /tmp/nosig 99999999999 /tmp/leg.log claude-fable-5-1 2>&1)" || rc=$?
+check "tier gate: fable with a Tier line proceeds (dry-run exit 0)" "$rc" "0"
+contains "tier gate: dry-run report carries tier-reason= for fable" "$out" "tier-reason=a Sonnet leg returned the work as above its tier"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "tier gate: sonnet without a Tier line is unaffected (dry-run exit 0)" "$rc" "0"
+not_contains "tier gate: sonnet dry-run report carries no tier-reason=" "$out" "tier-reason="
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "tier gate: --lane claudex is unaffected (dry-run exit 0)" "$rc" "0"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-headed-arm-leg.sh"
