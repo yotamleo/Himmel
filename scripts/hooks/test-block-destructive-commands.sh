@@ -281,6 +281,39 @@ assert_rc "R3- rm backslash-continuation -f" 0 "$(run_case "$(j_bash "$cont_allo
 # R4 recursive Windows delete.
 assert_rc "R4+ rmdir /S /Q c:\\tmp"         2 "$(run_case "$(j_bash 'rmdir /S /Q c:\tmp')")"
 assert_rc "R4- del /q file.txt (no /s)"     0 "$(run_case "$(j_bash 'del /q file.txt')")"
+# HIMMEL-2834: R1 (recursive rm) must anchor on COMMAND POSITION, not match the
+# literal anywhere in the command string — reproduced by a grep PATTERN
+# argument (03B console, 2026-09-08) and a heredoc BODY being written (N84,
+# same day). Control (a) is R1+ above (bare command, already denies). The rm
+# literal used below (`rm -rf /tmp/x`) is chosen because it trips the existing
+# R1 alternation exactly — same flag shape as the real repros.
+# (b) grep PATTERN argument containing the literal — must ALLOW.
+assert_rc "2834b grep -E '<rm literal>' pattern" 0 "$(run_case "$(j_bash "grep -E 'rm -rf /tmp/x' scripts/hooks/block-destructive-commands.sh")")"
+# (c) heredoc BODY containing the literal, written by `cat`, not executed —
+# must ALLOW. Real shape: N84's proposal file heredoc quoted the literal as
+# prose while `cat` (not `rm`) was the command actually run. The literal sits
+# on its OWN line so the body's real newline (folded to ';' same as every
+# other newline, line ~110) lands immediately in front of it — the exact
+# shape that needs heredoc-body stripping, not just the ${CMDPOS} anchor: a
+# folded ';' right before the literal reads as a real separator otherwise.
+heredoc_cmd='cat <<'"'"'EOF'"'"' > /tmp/proposal.md
+do not run:
+rm -rf /tmp/x
+EOF'
+assert_rc "2834c heredoc body contains literal" 0 "$(run_case "$(j_bash "$heredoc_cmd")")"
+# (d) the literal AFTER a real `&&` command-position separator — must DENY.
+assert_rc "2834d echo x && <rm literal>"    2 "$(run_case "$(j_bash 'echo x && rm -rf /tmp/x')")"
+# (e) the literal inside a double-quoted STRING ARGUMENT of echo/printf — must
+# ALLOW (quoted text, not an invocation).
+assert_rc "2834e echo quoted rm literal"    0 "$(run_case "$(j_bash 'echo "example: rm -rf /tmp/x is dangerous"')")"
+# (f) wrapper/subshell command-position forms — must still DENY.
+assert_rc "2834f sudo <rm literal>"         2 "$(run_case "$(j_bash 'sudo rm -rf /tmp/x')")"
+assert_rc "2834f env FOO=1 <rm literal>"    2 "$(run_case "$(j_bash 'env FOO=1 rm -rf /tmp/x')")"
+# shellcheck disable=SC2016  # literal $(...) payload is the point of this case
+assert_rc "2834f \$( <rm literal> )"        2 "$(run_case "$(j_bash 'echo $(rm -rf /tmp/x)')")"
+# (f) HIMMEL-851 bypasses must still deny post-anchor (already covered above,
+# cited here for the ticket's control list): quoted-flag L104, \${IFS} L106,
+# backslash-continuation L110-112.
 # R5 disk/boot mutation (CMDPOS-anchored).
 assert_rc "R5+ sudo diskpart"               2 "$(run_case "$(j_bash 'sudo diskpart')")"
 assert_rc "R5+ bcdedit /set testsigning on" 2 "$(run_case "$(j_bash 'bcdedit /set testsigning on')")"

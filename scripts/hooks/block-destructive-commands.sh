@@ -234,13 +234,72 @@ if ! . "$SCRIPT_DIR/../guardrails/lib.sh" 2>/dev/null; then
     exit 2
 fi
 guard_cmdpos_grammar
+# HIMMEL-2834: the three rm checks below run against rm_scrub, not cmd_lc.
+# The old anchor was a bare word boundary `(^|[^[:alnum:]_.-])`, which matches
+# the literal ANYWHERE in the command string, not just where a command is
+# actually invoked - reproduced by a grep/sed PATTERN argument that happens to
+# contain the literal (03B console, 2026-09-08) and by a heredoc BODY being
+# WRITTEN, not executed (N84, same day). Swapping to ${CMDPOS} (the same
+# command-position grammar every other atom in this file already uses) closes
+# the pattern-argument case for free: a bare pattern/string argument has no
+# `|;&(` (or backtick) char sitting in front of the literal, so ${CMDPOS}
+# simply never matches inside one - no scrubbing needed there.
+# A heredoc body needs one more step: cmd_lc's own newline-fold (line ~110,
+# real newlines -> ';') turns an ordinary line break INSIDE the body into what
+# looks exactly like a real command separator right in front of the literal
+# (e.g. a body of "note:\nrm -rf x" folds to ";note:;rm -rf x", and the ';'
+# before "rm" now satisfies ${CMDPOS} even though nothing was ever run). So
+# rm_scrub additionally has heredoc bodies (`<<[-]?['"]?WORD['"]?` up to a
+# standalone `;WORD(;|$)` terminator) removed on a COPY before the ${CMDPOS}
+# checks run - in-process string ops only, no forks (HIMMEL-1741), gated
+# behind a cheap `*<<*` substring test so the zero-heredoc common case pays
+# nothing extra. FAIL-CLOSED: an unterminated heredoc (no matching `;WORD`
+# found) stops stripping and rm_scrub falls back to the UNSTRIPPED cmd_lc for
+# that command - a determined bypass gets a false DENY here, never a false
+# ALLOW. Budget-capped (8 heredocs) for the same reason.
+# RESIDUAL (measured, not chased - HIMMEL-912, same no-general-parser rule as
+# the rest of this file): a heredoc fed to an INTERPRETER whose body is
+# actually executed (`bash <<'EOF'` / `python3 <<'EOF'` containing a real
+# `rm -rf` line) is now allowed exactly like a `cat <<'EOF' > file` body is -
+# this rule cannot tell "body becomes a file" from "body becomes a script"
+# without knowing the target command, and the ticket asks for heredoc bodies
+# excluded unconditionally. A quoted STRING containing a literal separator
+# char (`;`/`&`/`|`/`(`/backtick) immediately before the literal, e.g.
+# `echo "a; rm -rf x"`, is likewise not scrubbed - out of the ticket's
+# reproduced cases, and the earlier attempt to strip quoted spans generically
+# broke the HIMMEL-851 `rm "-rf" file` quoted-flag DENY case below, which must
+# keep denying (quoting a flag doesn't change what runs).
+rm_scrub="$cmd_lc"
+if [[ $rm_scrub == *'<<'* ]]; then
+    _hd_budget=8
+    while [ "$_hd_budget" -gt 0 ] && [[ $rm_scrub == *'<<'* ]]; do
+        _hd_budget=$((_hd_budget - 1))
+        if [[ $rm_scrub =~ \<\<-?[[:space:]]*[\'\"]?([[:alnum:]_]+)[\'\"]? ]]; then
+            _hd_word="${BASH_REMATCH[1]}"
+            _hd_opener="${BASH_REMATCH[0]}"
+            _hd_prefix="${rm_scrub%%"$_hd_opener"*}"
+            _hd_tail="${rm_scrub#"$_hd_prefix""$_hd_opener"}"
+            _hd_termpat=';'"$_hd_word"'(;|$)'
+            if [[ $_hd_tail =~ $_hd_termpat ]]; then
+                _hd_after="${_hd_tail#*"${BASH_REMATCH[0]}"}"
+                rm_scrub="${_hd_prefix} ${_hd_after}"
+            else
+                break
+            fi
+        else
+            break
+        fi
+    done
+fi
 # Separator before the flag tolerates a real space OR a lowercased ${IFS}
 # token (a common word-split bypass), and the flag itself tolerates one
 # leading quote char - both `-rf` and `"-rf"`/`'-rf'` trip it (HIMMEL-851 U2/U3).
-if contains '(^|[^[:alnum:]_.-])rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})['\''"]?-[[:alnum:]_]*r'; then
+RM_R_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})['\''"]?-[[:alnum:]_]*r'
+if [[ $rm_scrub =~ $RM_R_PAT ]]; then
     deny "recursive rm"
 fi
-if contains '(^|[^[:alnum:]_.-])rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*--recursive([^[:alnum:]_-]|$)'; then
+RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*--recursive([^[:alnum:]_-]|$)'
+if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
     deny "recursive rm"
 fi
 # Backslash-newline continuation: newlines are already folded to ';' above, so
@@ -248,7 +307,8 @@ fi
 # folded separator is the tell (HIMMEL-851 U3). `;+` (not a single `;`): on
 # Windows, jq's text-mode stdout turns the JSON-decoded `\n` into `\r\n`, so
 # ONE real newline folds to TWO semicolons here - tolerate either.
-if contains '(^|[^[:alnum:]_.-])rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'; then
+RM_CONT_PAT="${CMDPOS}"'rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'
+if [[ $rm_scrub =~ $RM_CONT_PAT ]]; then
     deny "recursive rm (line continuation)"
 fi
 # /s is bound to the switch (space/another switch/end), not a path prefix -
