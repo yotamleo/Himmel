@@ -21,7 +21,12 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="${FLEET_SUT:-$REPO/scripts/lib/bank-preflight.sh}"
 PASS=0; FAIL=0
-W="$(mktemp -d -t bank-preflight-fleet.XXXXXX)"; trap 'rm -rf "$W"' EXIT
+# codex-7 (this round): an unchecked mktemp failure leaves $W empty under
+# `set -u`-adjacent `-o pipefail` (no `-e` here) — every later fixture path
+# would then target the filesystem root instead of failing loudly.
+W="$(mktemp -d -t bank-preflight-fleet.XXXXXX)" || { echo "FAIL - could not create scratch dir via mktemp" >&2; exit 1; }
+if [ -z "$W" ] || [ ! -d "$W" ]; then echo "FAIL - mktemp returned an empty/invalid scratch dir" >&2; exit 1; fi
+trap 'rm -rf "$W"' EXIT
 NOW="$(date +%s)"
 HEALTHY_CACHE="{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20},\"primaries_refreshed_at\":$NOW}"
 printf '%s' "$HEALTHY_CACHE" > "$W/c.json"

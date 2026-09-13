@@ -209,8 +209,16 @@ _fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-ac
   stolen_at="$(cat "$victim/acquired" 2>/dev/null)" || stolen_at=""
   if [ "$stolen_at" != "$expected_at" ]; then
     # Wrong victim: a fresh, legitimate claim made after we read the stale
-    # stamp but before our mv landed. Put it back rather than clobber it.
-    mv "$victim" "$admit" 2>/dev/null
+    # stamp but before our mv landed. Put it back rather than clobber it —
+    # but only if the slot is still empty. codex-1 (this round): if a THIRD
+    # party has since claimed "$admit" (because our own mv vacated it for the
+    # instant between here and the check), `mv victim admit` onto an
+    # existing directory nests the displaced fresh claim inside it (POSIX
+    # mv-into-directory semantics) instead of restoring it — corrupting both.
+    # Leaving the victim as an orphaned `.stale.` dir is safe: it has no
+    # `expires` file, so the next admission's reservation-prune pass removes
+    # it same as any other corrupt reservation.
+    [ -e "$admit" ] || mv "$victim" "$admit" 2>/dev/null
     return 1
   fi
   rm -rf "$victim" 2>/dev/null
@@ -223,14 +231,26 @@ _fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-ac
 _fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
   local admit="$1" held_at age
   if mkdir "$admit" 2>/dev/null; then
-    _fleet_admit_stamp_or_fail "$admit"
-    return 0
+    if _fleet_admit_stamp_or_fail "$admit"; then
+      return 0
+    fi
+    # codex-2 (this round): the stamp write itself failed (disk full,
+    # permissions) — don't return success over an unstamped claim nobody can
+    # ever age out; the dir is still empty, so rmdir is safe.
+    rmdir "$admit" 2>/dev/null
+    return 1
   fi
   held_at="$(cat "$admit/acquired" 2>/dev/null)" || held_at=""
   case "$held_at" in
     # No readable stamp yet: a fresh claim racing the stamp write, or a crash
-    # between mkdir and the stamp write — either way, not stale by definition.
-    ''|*[!0-9]*) return 1 ;;
+    # between mkdir and the stamp write. codex-2 (this round): the crash case
+    # used to `return 1` forever with no time reference to ever age out —
+    # wedging admission permanently for anyone who has to fall through this
+    # branch. Stamp it now instead: idempotent against a genuine concurrent
+    # owner (who has already written, or is about to, the same "now"), and it
+    # turns an unreclaimable orphan into one reclaimable
+    # FLEET_ADMIT_STALE_SECS from THIS observation.
+    ''|*[!0-9]*) _fleet_admit_stamp_or_fail "$admit"; return 1 ;;
   esac
   age=$(( $(date +%s) - held_at ))
   [ "$age" -ge "${FLEET_ADMIT_STALE_SECS:-60}" ] || return 1
@@ -310,7 +330,13 @@ if [ "$_fleet_admitted" -eq 1 ]; then
     fi
     # A live session with this name already counted in fleet_n above
     # CONSUMES the reservation — do not double-count the same slot.
+    # codex-4 (this round): consuming must DELETE the reservation, not just
+    # skip it in the count — left on disk, it keeps refusing a same-name
+    # relaunch as a duplicate (line ~356) for up to the full TTL after the
+    # session that consumed it has already exited, with no live session left
+    # to justify the refusal.
     if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; then
+      rm -rf "$_fleet_resv" 2>/dev/null
       continue
     fi
     fleet_reserved=$((fleet_reserved + 1))
@@ -350,8 +376,23 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
       ;;
     *)
       if mkdir "$SLOTS/$LEG" 2>/dev/null; then
-        printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$SLOTS/$LEG/expires" 2>/dev/null
-        printf '%s\n' "$$" > "$SLOTS/$LEG/pid" 2>/dev/null
+        # codex-6 (this round): a failed `expires` write left a reservation
+        # with no readable expiry, which the very next admission's prune pass
+        # (line ~305, unreadable/corrupt metadata) removes immediately —
+        # silently reusing the capacity this reservation existed to hold.
+        # Refuse and clean up instead of proceeding on an unprotected slot.
+        # `pid` (HIMMEL-2774 codex-3, this round: the CALLER's pid, passed
+        # through by launchers that set CADENCE_BANK_CALLER_PID, not this
+        # subshell's own $$ — so a release can verify it owns the slot before
+        # deleting it) is advisory only, so its write is not gated the same way.
+        if printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$SLOTS/$LEG/expires" 2>/dev/null; then
+          printf '%s\n' "${CADENCE_BANK_CALLER_PID:-$$}" > "$SLOTS/$LEG/pid" 2>/dev/null
+        else
+          echo "bank-preflight: failed to write reservation metadata (expires) for leg=$LEG — refusing admission rather than proceed with an unprotected slot" >&2
+          rm -rf "${SLOTS:?}/$LEG" 2>/dev/null
+          rm -rf "$SLOTS/.admit" 2>/dev/null
+          emit SKIPPED-FLEET
+        fi
       else
         echo "bank-preflight: a fleet reservation for leg=$LEG already exists — refusing as a duplicate declared launch" >&2
         rm -rf "$SLOTS/.admit" 2>/dev/null

@@ -470,17 +470,22 @@ fi
 # bank. Any other verdict (PROCEED, BANK-STALE, BANK-UNKNOWN) falls through.
 BANK_PREFLIGHT="${HEADED_ARM_LEG_PREFLIGHT:-$HERE/../../lib/bank-preflight.sh}"
 if [ -f "$BANK_PREFLIGHT" ]; then
-    # HIMMEL-2774: TTL from OUR OWN deadline, floored at 60s — a reservation
-    # must not outlive the arm attempt it belongs to, but must also survive
-    # long enough to matter (a near-past DEADLINE, or clock skew, must not
-    # produce a near-zero/negative TTL that expires the reservation before
-    # the launched session even goes live).
-    _arm_fleet_ttl=$(( DEADLINE - $(date +%s) ))
+    # HIMMEL-2774: TTL from OUR OWN deadline plus a fixed grace period,
+    # floored at 60s — a reservation must not outlive the arm attempt it
+    # belongs to, but must also survive long enough to matter. codex-5 (this
+    # round): for a FUTURE deadline, expiring the reservation exactly AT the
+    # deadline leaves zero grace for the actual process spawn (scheduling
+    # jitter, OS overhead) to complete and register in the live census —
+    # another admission racing that gap sees the slot freed and can over-
+    # admit the fleet right as this leg is coming up. The same +60s grace
+    # also covers a near-past DEADLINE or clock skew, so the separate floor
+    # below is now a belt-and-braces minimum rather than the only guard.
+    _arm_fleet_ttl=$(( DEADLINE - $(date +%s) + 60 ))
     [ "$_arm_fleet_ttl" -ge 60 ] || _arm_fleet_ttl=60
     # HIMMEL-2789: this call launches a leg, so it declares launch intent —
     # the fleet cap must be able to actually refuse it, unlike a plain
     # bank-status READ.
-    preflight_token="$(CADENCE_BANK_LEG="$NAME" CADENCE_BANK_LANE="$LANE" CADENCE_BANK_LAUNCH=1 FLEET_RESERVE_TTL="$_arm_fleet_ttl" bash "$BANK_PREFLIGHT" 2>>"$LOG")"
+    preflight_token="$(CADENCE_BANK_LEG="$NAME" CADENCE_BANK_LANE="$LANE" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_CALLER_PID="$$" FLEET_RESERVE_TTL="$_arm_fleet_ttl" bash "$BANK_PREFLIGHT" 2>>"$LOG")"
     if [ "$preflight_token" = SKIPPED-FLEET ]; then
         # HIMMEL-2774: NOT a reservation release here — bank-preflight.sh
         # only ever returns SKIPPED-FLEET from its admission block itself
@@ -498,7 +503,14 @@ if [ -f "$BANK_PREFLIGHT" ]; then
         # before any bank check) — release it now since this attempt is not
         # going to launch after all, rather than leaving it to expire by TTL.
         _arm_fleet_slots="${HIMMEL_FLEET_SLOTS:-${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u)}"
-        rm -rf "${_arm_fleet_slots:?}/$NAME" 2>/dev/null
+        # codex-3 (this round): the same admission-lock-failure bypass that
+        # can reach here without ever creating OUR reservation (see the
+        # comment above SKIPPED-FLEET) means a reservation already present
+        # for $NAME may belong to an unrelated concurrent arm attempt —
+        # verify pid ownership before deleting it out from under them.
+        if [ "$(cat "${_arm_fleet_slots:?}/$NAME/pid" 2>/dev/null)" = "$$" ]; then
+            rm -rf "${_arm_fleet_slots:?}/$NAME" 2>/dev/null
+        fi
         echo "$(date +%F_%T) headed-arm-leg: refusing to launch $NAME - $LANE lane bank exhausted (park and retry later; see bank-preflight.sh for the parked lane's own bank status)" >> "$LOG"
         exit 11
     fi

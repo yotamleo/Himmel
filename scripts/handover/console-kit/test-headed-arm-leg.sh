@@ -144,8 +144,17 @@ chmod 755 "$SKIPPED_FLEET_PREFLIGHT"
 # verdict so case 13b can assert headed-arm-leg.sh actually consults the
 # SKIPPED-BANK token it computes (CADENCE_BANK_LANE="$LANE") instead of
 # discarding it, same rationale as SKIPPED_FLEET_PREFLIGHT above.
+# HIMMEL-2774 codex-3 (this round): also write a `pid` file into the
+# reservation it is standing in for, matching CADENCE_BANK_CALLER_PID - the
+# real bank-preflight.sh now does the same, and headed-arm-leg.sh's release
+# path on this refusal only deletes a reservation it can verify it owns.
 SKIPPED_BANK_PREFLIGHT="$tmp/skipped-bank-preflight.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'echo SKIPPED-BANK' > "$SKIPPED_BANK_PREFLIGHT"
+# shellcheck disable=SC2016  # deliberately unexpanded: written literally, evaluated when the stub runs.
+printf '%s\n' '#!/usr/bin/env bash' \
+  'slots="${HIMMEL_FLEET_SLOTS:-${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u)}"' \
+  'mkdir -p "$slots/$CADENCE_BANK_LEG" 2>/dev/null' \
+  'printf "%s\n" "$CADENCE_BANK_CALLER_PID" > "$slots/$CADENCE_BANK_LEG/pid" 2>/dev/null' \
+  'echo SKIPPED-BANK' > "$SKIPPED_BANK_PREFLIGHT"
 chmod 755 "$SKIPPED_BANK_PREFLIGHT"
 
 run_leg() {
@@ -309,7 +318,7 @@ contains "SKIPPED-FLEET: log names the fleet cap and the bypass" \
 # fall through and launch anyway.
 d13b="$tmp/c13b"; mk_launch_stubs "$d13b" "HIMMEL-5555-leg"; mkdir -p "$tmp/repo13b"
 rc=0
-run_leg "$d13b" "$tmp/repo13b" "HIMMEL-5555-leg" "claude-sonnet-5" "$SKIPPED_BANK_PREFLIGHT" >/dev/null 2>&1 || rc=$?
+HIMMEL_FLEET_SLOTS="$d13b/fleet-slots" run_leg "$d13b" "$tmp/repo13b" "HIMMEL-5555-leg" "claude-sonnet-5" "$SKIPPED_BANK_PREFLIGHT" >/dev/null 2>&1 || rc=$?
 n=0; while [ "$n" -lt 10 ]; do sleep 0.05; n=$((n+1)); done
 if [ "$rc" -ne 0 ]; then
   echo "ok - SKIPPED-BANK: refuses the launch (exit $rc <> 0)"
@@ -973,13 +982,15 @@ LEG_REPO="$tmp/repo24a" HEADED_ARM_LOCK_DIR="$d24a/locks" HEADED_ARM_PROC="$d24a
 wait_record "$d24a" || true
 ttl_seen24a="$(cat "$ttl_out24a" 2>/dev/null || echo NONE)"
 check "TTL export: full launch, future deadline: exit 0" "$rc" "0"
-# a few seconds of scheduling slop around (deadline - now) is expected; the
-# exact value depends on how long the test harness itself took to reach the
-# preflight call, not on anything this suite controls.
-if [ "$ttl_seen24a" != NONE ] && [ "$ttl_seen24a" -ge 490 ] 2>/dev/null && [ "$ttl_seen24a" -le 500 ] 2>/dev/null; then
-  echo "ok - TTL export: future deadline -> FLEET_RESERVE_TTL ~= deadline - now ($ttl_seen24a)"
+# a few seconds of scheduling slop around (deadline - now + 60) is expected;
+# the exact value depends on how long the test harness itself took to reach
+# the preflight call, not on anything this suite controls. codex-5 (HIMMEL-2774,
+# CR round 1): the TTL now carries a fixed +60s grace past (deadline - now) so
+# a reservation outlives the actual process spawn - see headed-arm-leg.sh.
+if [ "$ttl_seen24a" != NONE ] && [ "$ttl_seen24a" -ge 550 ] 2>/dev/null && [ "$ttl_seen24a" -le 560 ] 2>/dev/null; then
+  echo "ok - TTL export: future deadline -> FLEET_RESERVE_TTL ~= deadline - now + 60 ($ttl_seen24a)"
 else
-  echo "FAIL - TTL export: future deadline -> expected 490-500, got [$ttl_seen24a]"
+  echo "FAIL - TTL export: future deadline -> expected 550-560, got [$ttl_seen24a]"
   fails=$((fails+1))
 fi
 

@@ -1060,7 +1060,18 @@ _arm_fleet_release_pending() {
     # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
     [ -n "${_ARM_FLEET_RESERVED_LEG:-}" ] || return 0
     # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
-    rm -rf "${_ARM_FLEET_SLOTS:?}/$_ARM_FLEET_RESERVED_LEG" 2>/dev/null
+    _arm_fleet_resv="${_ARM_FLEET_SLOTS:?}/$_ARM_FLEET_RESERVED_LEG"
+    # codex-3 (this round): bank-preflight.sh returning non-SKIPPED-FLEET
+    # does not guarantee IT created this reservation (the admission-lock-
+    # failure bypass under FLEET_CAP_OK=1 proceeds without creating one) —
+    # if a reservation for this same name already existed from an unrelated
+    # concurrent arm, deleting it unconditionally on our own refusal would
+    # release THEIR still-needed slot out from under them. Only release a
+    # reservation this process itself is recorded as the owner of.
+    # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+    [ "$(cat "$_arm_fleet_resv/pid" 2>/dev/null)" = "$$" ] || return 0
+    # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
+    rm -rf "$_arm_fleet_resv" 2>/dev/null
 }
 # On an EXIT trap so a REFUSAL (rc=7/9/11/13/19/...) still emits the timings --
 # those are exactly the paths where "which phase burned the time" matters most,
@@ -1125,7 +1136,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
         # bank-status READ.
         _arm_fleet_leg="${HANDOVER_PATH:-arm-resume}"
         _arm_fleet_leg="${_arm_fleet_leg//\//-}"
-        _arm_fleet_token="$(CADENCE_BANK_LEG="$_arm_fleet_leg" CADENCE_BANK_LAUNCH=1 bash "$_ARM_BANK_PREFLIGHT" </dev/null)"
+        _arm_fleet_token="$(CADENCE_BANK_LEG="$_arm_fleet_leg" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_CALLER_PID="$$" bash "$_ARM_BANK_PREFLIGHT" </dev/null)"
         if [ "$_arm_fleet_token" = SKIPPED-FLEET ]; then
             echo "ERR arm-resume: fleet-size cap reached (bank-preflight: SKIPPED-FLEET) — refusing to arm another leg. Override with FLEET_CAP_OK=1 in the LAUNCHING shell." >&2
             exit 22
