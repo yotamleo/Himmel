@@ -1045,16 +1045,21 @@ _arm_profile_report() {
     # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
     echo "PROFILE arm-resume: ${_ARM_PROFILE_LOG[*]}" >&2
 }
-# HIMMEL-2774: releases this arm's own fleet reservation on every exit that is
-# NOT the "RESUME ARMED" success headline. The fleet-preflight block below
-# holds a reservation open from the moment it is created; most of
-# arm-resume.sh's own later refusals (worker-census guard, mktemp failures,
-# queue-lock/dedup refusals, schedule_arm failures...) run AFTER that point,
-# and none of them are a live session that could consume the reservation --
-# left alone it would block any RETRY of the same handover for up to
-# FLEET_RESERVE_TTL (default 1800s) for no reason. _ARM_FLEET_RESERVED_LEG is
-# cleared right before the success headline so a genuinely-armed future
-# launch keeps its held slot.
+# HIMMEL-2774: releases this arm's own fleet reservation on EVERY exit,
+# success included. codex-4 (4th panel round): this reservation is keyed by
+# the flattened handover path (below), which cannot match the `-n` name the
+# scheduled task will eventually launch under -- so it can never be consumed
+# by a live-session census entry, only expire by TTL. Earlier this was left
+# held on success on the theory that it "reserves the slot" for that future
+# launch, but the reservation exists only to cover the immediate race right
+# here in arm-resume.sh's own admission decision (its default 1800s TTL
+# cannot meaningfully reserve a slot for a launch that may fire hours later
+# anyway -- the scheduled task runs its OWN bank-preflight, under its OWN
+# name, at ITS time). Held past this process's own exit it only
+# double-counts against the cap for up to 30 minutes AND wrongly refuses a
+# legitimate retry of the same handover in that window as a "duplicate".
+# Releasing here unconditionally removes both false positives; nothing else
+# in the fleet count relies on it staying reserved after arm-resume.sh exits.
 # shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap below.
 _arm_fleet_release_pending() {
     # shellcheck disable=SC2317  # Invoked indirectly by the EXIT trap.
@@ -5852,11 +5857,6 @@ if [ -n "${HIMMEL_856_HR_ROOT:-}" ]; then
     fi
     unset _arm_host _arm_post_hits _arm_registry_key _arm_registry_root
 fi
-
-# HIMMEL-2774: this run is genuinely armed for a future launch -- keep its
-# fleet reservation held (do not let the EXIT trap release it) rather than
-# releasing on process exit like every earlier refusal path does.
-_ARM_FLEET_RESERVED_LEG=""
 
 # The headline is the ticket's whole claim, so it states exactly what was
 # established: plain RESUME ARMED only after the entry was queried back and

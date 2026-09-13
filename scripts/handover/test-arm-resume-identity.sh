@@ -852,7 +852,7 @@ fi
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
 echo
-echo "== Group 6: HIMMEL-2774 fleet reservation sanitization + abort-release =="
+echo "== Group 6: HIMMEL-2774 fleet reservation sanitization + release-on-every-exit =="
 # The leg name bank-preflight.sh reserves under is arm-resume's raw
 # HANDOVER_PATH with every '/' collapsed to '-' (arm-resume.sh ~1126-1127).
 # Every real arm above already exercises the sanitizer implicitly (every
@@ -864,8 +864,19 @@ echo "== Group 6: HIMMEL-2774 fleet reservation sanitization + abort-release =="
 # shared, never-consumed slot dir (the default FLEET_CAP=4 would otherwise
 # already be exhausted by here, routing these calls into the at/over-cap
 # bypass branch instead of the one under test).
+#
+# codex-4 (HIMMEL-2774, 4th panel round): this reservation is keyed by the
+# flattened handover path, which can never match the `-n` name the scheduled
+# task eventually launches under, so it can never be consumed by a live
+# session's census entry -- holding it open past arm-resume's own exit only
+# double-counts against the cap and wrongly refuses a legitimate retry of the
+# same handover as a "duplicate" for up to FLEET_RESERVE_TTL. arm-resume.sh
+# now releases its own reservation on EVERY exit, success included, so G6.1
+# below asserts the reservation is GONE after a successful arm too -- not
+# just after the G6.2 abort case.
 
-# --- G6.1: a HANDOVER_PATH containing '/' reserves a SANITIZED (no-'/') name -
+# --- G6.1: a HANDOVER_PATH containing '/' reserves a SANITIZED (no-'/') name,
+# then releases it immediately even on SUCCESS (codex-4).
 G6_SLOTS="$TMP/g6-fleet-slots"; mkdir -p "$G6_SLOTS"
 G6_HO="$HANDOVER_DIR/g6/slash.md"; mk_ho "$G6_HO"
 EXPECT_LEG="${G6_HO//\//-}"
@@ -874,10 +885,10 @@ out=$(HIMMEL_FLEET_SLOTS="$G6_SLOTS" SCHED_DB="$DB14" SCHED_DB_DIR="${DB14}.atdi
 rc=$?
 assert_rc "G6.1a arm with a slash-bearing handover path succeeds" 0 "$rc" "$out"
 if [ -d "$G6_SLOTS/$EXPECT_LEG" ]; then
-    echo "PASS G6.1b reservation dir uses the sanitized (no-'/') leg name"
-else
-    echo "FAIL G6.1b expected reservation dir not found: $G6_SLOTS/$EXPECT_LEG"
+    echo "FAIL G6.1b reservation SURVIVED a successful arm (should release immediately -- codex-4)"
     FAILED=$((FAILED + 1))
+else
+    echo "PASS G6.1b reservation released immediately on success (never consumable, codex-4)"
 fi
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 

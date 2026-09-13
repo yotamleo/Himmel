@@ -223,9 +223,19 @@ _fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-ac
     # an unstamped claim that can never age out. Fail the reclaim and give
     # up the empty dir instead of proceeding on an unprotected slot.
     if _fleet_admit_stamp_or_fail "$admit"; then
+      # codex-1 (HIMMEL-2774, 4th panel round): this steal DID claim
+      # ownership, so record OUR OWN pid here too — same as the fresh-claim
+      # path in _fleet_claim_admit below — so a subsequent staleness check
+      # against a holder that is still genuinely inside the critical section
+      # can find a live pid to protect. codex-5 (same round): `rm -rf`, not
+      # `rmdir`, on the fallback below — redirection into "$admit/acquired"
+      # creates that file before `date` runs, so a `date` failure can leave
+      # a non-empty (if zero-byte) directory that a bare `rmdir` cannot remove,
+      # wedging this reclaim attempt's own cleanup.
+      printf '%s\n' "$$" > "$admit/pid" 2>/dev/null
       return 0
     fi
-    rmdir "$admit" 2>/dev/null
+    rm -rf "$admit" 2>/dev/null
   fi
   return 1
 }
@@ -233,12 +243,27 @@ _fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
   local admit="$1" held_at age
   if mkdir "$admit" 2>/dev/null; then
     if _fleet_admit_stamp_or_fail "$admit"; then
+      # codex-1 (HIMMEL-2774, 4th panel round): a fresh claim never wrote a
+      # `pid` file, so the live-owner check below (kill -0 on $admit/pid)
+      # always read empty/missing and could never protect an actively held
+      # lock — a census lasting beyond FLEET_ADMIT_STALE_SECS let a
+      # concurrent caller reclaim it and admit alongside the real holder.
+      # $$ is this preflight subshell's own pid: the critical section is
+      # this subshell's body, so that is the pid whose liveness actually
+      # answers "is the holder still in here" (a slow filesystem, a GC
+      # pause) -- not the launcher's pid, which is what the RESERVATION's
+      # own pid file (below) tracks for a different purpose (whether the
+      # launcher that created it is still around to own a release).
+      printf '%s\n' "$$" > "$admit/pid" 2>/dev/null
       return 0
     fi
     # codex-2 (this round): the stamp write itself failed (disk full,
     # permissions) — don't return success over an unstamped claim nobody can
-    # ever age out; the dir is still empty, so rmdir is safe.
-    rmdir "$admit" 2>/dev/null
+    # ever age out. codex-5 (4th panel round): NOT still empty — `>` opens
+    # and creates "$admit/acquired" before `date` runs, so a `date` failure
+    # leaves that zero-byte file behind; `rmdir` refuses a non-empty
+    # directory, so `rm -rf` is required to actually remove the failed claim.
+    rm -rf "$admit" 2>/dev/null
     return 1
   fi
   held_at="$(cat "$admit/acquired" 2>/dev/null)" || held_at=""
@@ -388,6 +413,14 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   if ! _fleet_census; then
     echo "bank-preflight: in-lock fleet census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than admit on a stale pre-lock snapshot" >&2
     rm -rf "$SLOTS/.admit" 2>/dev/null
+    # codex-2 (HIMMEL-2774, 4th panel round): the lock is already gone above,
+    # but _fleet_admitted stayed 1 — on the bypass/informational branches
+    # below (the LAUNCH_INTENT=1 refusal branch `emit`s and exits, so it
+    # never reaches this), execution falls through to the final
+    # `[ "$_fleet_admitted" -eq 1 ] && rm -rf "$SLOTS/.admit"` cleanup, which
+    # would then delete whatever a DIFFERENT caller has legitimately claimed
+    # in the meantime. This process no longer holds anything to clean up.
+    _fleet_admitted=0
     if [ "${FLEET_CAP_OK:-}" = "1" ]; then
       echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the failed in-lock census" >&2
     elif [ "$LAUNCH_INTENT" = "1" ]; then
@@ -453,53 +486,69 @@ elif [ "$fleet_n" -ge "$FLEET_CAP" ]; then
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — not a declared launch (CADENCE_BANK_LAUNCH unset), reporting only" >&2
   fi
 elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
+  # codex-3 (HIMMEL-2774, 4th panel round): '/', a leading '.', and
+  # ENAMETOOLONG used to all "proceed without a reservation" — restoring,
+  # for exactly those names, the concurrent over-admission race this whole
+  # mechanism exists to close. A deterministic, bounded hash of $LEG is
+  # always a valid mkdir target: two callers with the identical (unusable)
+  # $LEG hash to the identical key, so mkdir's own EEXIST still catches a
+  # genuine duplicate declared launch. Such a reservation is never
+  # name-matched by a live session's census entry (its directory name isn't
+  # the leg name) — it just counts against the cap and expires by TTL, the
+  # same fallback arm-resume.sh's own flattened-path reservation already
+  # relies on.
+  _fleet_hash_key() { printf '%s' "$1" | cksum | awk '{print $1}'; }
+  # codex-6 (this round, kept): a failed `expires` write left a reservation
+  # with no readable expiry, which the very next admission's prune pass
+  # (unreadable/corrupt metadata) removes immediately — silently reusing the
+  # capacity this reservation existed to hold. Refuse and clean up instead
+  # of proceeding on an unprotected slot. `pid` (the CALLER's pid, passed
+  # through by launchers that set CADENCE_BANK_CALLER_PID, not this
+  # subshell's own $$ — so a release can verify it owns the slot before
+  # deleting it) is advisory only, so its write is not gated the same way.
+  _fleet_reserve() { # _fleet_reserve <reservation-dir> -- 0 created, 1 mkdir
+    local dir="$1"   # failed (not a dup — e.g. ENAMETOOLONG), 2 duplicate,
+    if mkdir "$dir" 2>/dev/null; then    # 3 metadata write failed
+      if printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$dir/expires" 2>/dev/null; then
+        printf '%s\n' "${CADENCE_BANK_CALLER_PID:-$$}" > "$dir/pid" 2>/dev/null
+        return 0
+      fi
+      rm -rf "$dir" 2>/dev/null
+      return 3
+    fi
+    [ -e "$dir" ] && return 2
+    return 1
+  }
   case "$LEG" in
-    */*)
-      echo "bank-preflight: CADENCE_BANK_LEG='$LEG' contains '/' — cannot create a fleet reservation directory for it; proceeding without a reservation (fix the caller to pass a bare name)" >&2
+    */*|.*) _fleet_resv_key="$(_fleet_hash_key "$LEG")" ;;
+    *) _fleet_resv_key="$LEG" ;;
+  esac
+  _fleet_reserve "$SLOTS/$_fleet_resv_key"
+  _fleet_reserve_rc=$?
+  if [ "$_fleet_reserve_rc" -eq 1 ]; then
+    # codex-5 (HIMMEL-2774, 2nd panel round): `mkdir` failing does NOT mean
+    # "already exists" — a LEG name flattened from a long path can exceed
+    # the filesystem's per-component name limit (ENAMETOOLONG), which reads
+    # here identically to EEXIST unless distinguished. Retry once with the
+    # hashed key, which is always short and always a valid mkdir target.
+    _fleet_resv_key="$(_fleet_hash_key "$LEG")"
+    _fleet_reserve "$SLOTS/$_fleet_resv_key"
+    _fleet_reserve_rc=$?
+  fi
+  case "$_fleet_reserve_rc" in
+    0) : ;;
+    2)
+      echo "bank-preflight: a fleet reservation for leg=$LEG already exists — refusing as a duplicate declared launch" >&2
+      rm -rf "$SLOTS/.admit" 2>/dev/null
+      emit SKIPPED-FLEET
       ;;
-    .*)
-      # codex-7 (HIMMEL-2774, 3rd panel round): a dot-leading name is a valid
-      # `mkdir` target but invisible to the reservation census glob
-      # (`"$SLOTS"/*/`, no dotglob) — such a reservation would exist on disk
-      # yet never count against the cap, undercounting exactly like the '/'
-      # and ENAMETOOLONG cases above. Refuse the same way: proceed without a
-      # reservation rather than create one the census can never see.
-      echo "bank-preflight: CADENCE_BANK_LEG='$LEG' starts with '.' — cannot create a fleet reservation directory for it (dot-prefixed names are invisible to the reservation census); proceeding without a reservation (fix the caller to pass a name that does not start with '.')" >&2
+    3)
+      echo "bank-preflight: failed to write reservation metadata (expires) for leg=$LEG — refusing admission rather than proceed with an unprotected slot" >&2
+      rm -rf "$SLOTS/.admit" 2>/dev/null
+      emit SKIPPED-FLEET
       ;;
     *)
-      if mkdir "$SLOTS/$LEG" 2>/dev/null; then
-        # codex-6 (this round): a failed `expires` write left a reservation
-        # with no readable expiry, which the very next admission's prune pass
-        # (line ~305, unreadable/corrupt metadata) removes immediately —
-        # silently reusing the capacity this reservation existed to hold.
-        # Refuse and clean up instead of proceeding on an unprotected slot.
-        # `pid` (HIMMEL-2774 codex-3, this round: the CALLER's pid, passed
-        # through by launchers that set CADENCE_BANK_CALLER_PID, not this
-        # subshell's own $$ — so a release can verify it owns the slot before
-        # deleting it) is advisory only, so its write is not gated the same way.
-        if printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$SLOTS/$LEG/expires" 2>/dev/null; then
-          printf '%s\n' "${CADENCE_BANK_CALLER_PID:-$$}" > "$SLOTS/$LEG/pid" 2>/dev/null
-        else
-          echo "bank-preflight: failed to write reservation metadata (expires) for leg=$LEG — refusing admission rather than proceed with an unprotected slot" >&2
-          rm -rf "${SLOTS:?}/$LEG" 2>/dev/null
-          rm -rf "$SLOTS/.admit" 2>/dev/null
-          emit SKIPPED-FLEET
-        fi
-      elif [ -e "$SLOTS/$LEG" ]; then
-        echo "bank-preflight: a fleet reservation for leg=$LEG already exists — refusing as a duplicate declared launch" >&2
-        rm -rf "$SLOTS/.admit" 2>/dev/null
-        emit SKIPPED-FLEET
-      else
-        # codex-5 (HIMMEL-2774, 2nd panel round): `mkdir` failing does NOT
-        # mean "already exists" — a LEG name flattened from a long path can
-        # exceed the filesystem's per-component name limit (ENAMETOOLONG),
-        # which reads here identically to EEXIST unless distinguished. That
-        # was misreporting a legitimate, unique launch as a refused
-        # duplicate. Proceed without a reservation instead (same fallback
-        # already used for a name containing '/', above) rather than refuse
-        # admission for a caller that never collided with anything.
-        echo "bank-preflight: could not create a fleet reservation directory for leg=$LEG (mkdir failed for a reason other than an existing reservation — e.g. name too long) — proceeding without a reservation" >&2
-      fi
+      echo "bank-preflight: could not create a fleet reservation directory for leg=$LEG even under a hashed key — proceeding without a reservation" >&2
       ;;
   esac
 fi

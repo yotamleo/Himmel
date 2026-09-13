@@ -59,7 +59,14 @@ mk_ps_stub() {
 # masked by an unrelated BANK-* verdict) and prints its stdout verdict.
 run_pf() {
   local slots="$1" dir="$2"; shift 2
-  env "$@" HIMMEL_FLEET_SLOTS="$slots" FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
+  # codex-6 (HIMMEL-2774, 4th panel round): FLEET_CAP_OK/CADENCE_BANK_LAUNCH
+  # default to empty here, BEFORE "$@" — an ambient export of either in the
+  # invoking shell/CI would otherwise leak through `env`'s inherited
+  # environment and silently invalidate a refusal case or turn an
+  # informational case into a launch. "$@" comes after, so a case's own
+  # explicit assignment still overrides these defaults (env: later
+  # duplicate assignments win).
+  env FLEET_CAP_OK= CADENCE_BANK_LAUNCH= "$@" HIMMEL_FLEET_SLOTS="$slots" FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
     CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" \
     bash "$SUT" </dev/null 2>>"$W/err.log"
 }
@@ -191,7 +198,10 @@ fi
 # distinguished, and misclassified a legitimate, unique launch as a refused
 # duplicate. On the pre-fix script this is genuine RED: mkdir fails, the
 # lone `else` branch assumes duplication and emits SKIPPED-FLEET with the
-# "already exists" message even though `$SLOTS/$LEG` never existed.
+# "already exists" message even though `$SLOTS/$LEG` never existed. codex-3
+# (4th panel round): the fix now retries under a bounded hashed key rather
+# than proceeding with no reservation at all — still not misread as a
+# duplicate, but now actually counted against the cap.
 slots_g="$(mktemp -d "$W/slots-g.XXXXXX")" || { echo "FAIL - could not create slots-g scratch dir" >&2; exit 1; }
 g_longleg="$(printf 'x%.0s' $(seq 1 300))"
 : > "$W/err.log"
@@ -202,15 +212,19 @@ if grep -q 'already exists — refusing as a duplicate declared launch' "$W/err.
 else
   PASS=$((PASS+1)); echo "ok - (g) ENAMETOOLONG not misreported as a duplicate reservation"
 fi
-if grep -q 'could not create a fleet reservation directory' "$W/err.log" 2>/dev/null; then
-  PASS=$((PASS+1)); echo "ok - (g) reports the genuine mkdir-failed-for-another-reason diagnosis"
-else
-  FAIL=$((FAIL+1)); echo "FAIL - (g) missing the mkdir-failed-for-another-reason diagnosis"
-fi
 if [ -e "$slots_g/$g_longleg" ]; then
   FAIL=$((FAIL+1)); echo "FAIL - (g) an over-length reservation dir should never exist on disk"
 else
   PASS=$((PASS+1)); echo "ok - (g) no reservation directory left behind for the over-length name"
+fi
+# codex-3 (HIMMEL-2774, 4th panel round): ENAMETOOLONG no longer means
+# "proceed without a reservation" — a bounded hash of the leg name is always
+# a valid mkdir target, so this launch still gets counted against the cap.
+g_hashkey="$(printf '%s' "$g_longleg" | cksum | awk '{print $1}')"
+if [ -f "$slots_g/$g_hashkey/expires" ]; then
+  PASS=$((PASS+1)); echo "ok - (g) reserves under a bounded hashed key instead of proceeding uncounted"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - (g) no hashed-key reservation created for the over-length name"
 fi
 
 # --- (h) codex-1/codex-2 (HIMMEL-2774, 3rd panel round): a stale .admit
@@ -285,21 +299,28 @@ check "(i2) in-lock census failure with FLEET_CAP_OK=1 -> PROCEED (bypass still 
 # --- (j) codex-7 (HIMMEL-2774, 3rd panel round): a leg name beginning with
 # '.' is a valid `mkdir` target but invisible to the reservation census glob
 # ("$SLOTS"/*/, no dotglob) — such a reservation would exist on disk yet
-# never count against the cap. Must be refused the same way as a '/' name:
-# proceed without a reservation, and leave no directory behind.
+# never count against the cap. codex-3 (4th panel round): rather than
+# proceeding with NO reservation (which reopened the over-admission race this
+# mechanism exists to close), it is now reserved under a bounded hashed key —
+# never the raw dot-prefixed name, so it stays invisible to the same glob
+# for the right reason (it isn't stored there at all), while still counting
+# against the cap and expiring by TTL.
 slots_j="$(mktemp -d "$W/slots-j.XXXXXX")" || { echo "FAIL - could not create slots-j scratch dir" >&2; exit 1; }
 : > "$W/err.log"
 j_out="$(run_pf "$slots_j" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=.hidden-leg HIMMEL_FLEET_CAP=4)"
 check "(j) dot-prefixed CADENCE_BANK_LEG, 0 live, cap 4 -> PROCEED (rejected, not reserved)" PROCEED "$j_out"
-if grep -q "starts with '.'" "$W/err.log" 2>/dev/null; then
-  PASS=$((PASS+1)); echo "ok - (j) reports the dot-prefix rejection diagnosis"
-else
-  FAIL=$((FAIL+1)); echo "FAIL - (j) missing the dot-prefix rejection diagnosis"; grep 'bank-preflight' "$W/err.log" || true
-fi
 if [ -e "$slots_j/.hidden-leg" ]; then
   FAIL=$((FAIL+1)); echo "FAIL - (j) a dot-prefixed reservation dir should never exist on disk"
 else
   PASS=$((PASS+1)); echo "ok - (j) no reservation directory left behind for the dot-prefixed name"
+fi
+# codex-3 (HIMMEL-2774, 4th panel round): a dot-prefixed name is likewise
+# reserved under its bounded hash now, rather than proceeding uncounted.
+j_hashkey="$(printf '%s' .hidden-leg | cksum | awk '{print $1}')"
+if [ -f "$slots_j/$j_hashkey/expires" ]; then
+  PASS=$((PASS+1)); echo "ok - (j) reserves under a bounded hashed key instead of proceeding uncounted"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - (j) no hashed-key reservation created for the dot-prefixed name"
 fi
 
 echo "--- $PASS passed, $FAIL failed ---"
