@@ -3,8 +3,8 @@
 #
 # HIMMEL-135 (core) + HIMMEL-574 (morning-report schema). Templates live
 # git/gh/jira/worktree state into the curated "🌅 Morning Report" schema and
-# writes a dated report to the handover bucket — at ~zero Claude tokens by
-# default. Sections:
+# writes a dated report to the handover root (`$HANDOVER_DIR`, Mode B) or
+# `<repo>/handovers/` (Mode A) — at ~zero Claude tokens by default. Sections:
 #
 #   ## TL;DR             — derived counts (heuristic; --llm enriches)
 #   ## ✅ Completed       — merged PRs (gh) + commits + Done cross-ref
@@ -68,7 +68,8 @@ Optional:
   --since SHA              Marker commit. Default: last tag (`git
                            describe --tags --abbrev=0`) or `HEAD~50`.
   --since-date YYYY-MM-DD  Date filter for `gh pr list --search
-                           'merged:>DATE'`. Default: today LOCAL (date +%F).
+                           'merged:>=DATE'`. Default: today LOCAL (date +%F),
+                           inclusive.
   --out PATH               Output path. Default:
                            $HANDOVER_DIR/morning-report-$(date +%F).md
                            (Mode B) or $repo/handovers/... (Mode A).
@@ -201,7 +202,7 @@ while IFS= read -r _line; do ticket_keys+=("$_line"); done < <(printf '%s\n' "$c
 pr_table=""
 pr_count=0
 if [ "$briefing_forge" = "github" ] && command -v "${GH_CMD%% *}" >/dev/null 2>&1; then
-    if pr_json=$($GH_CMD pr list --state merged --search "merged:>$SINCE_DATE" --limit 100 --json number,title,mergedAt 2>/dev/null); then
+    if pr_json=$($GH_CMD pr list --state merged --search "merged:>=$SINCE_DATE" --limit 100 --json number,title,mergedAt 2>/dev/null); then
         if command -v jq >/dev/null 2>&1; then
             pr_table=$(printf '%s' "$pr_json" | jq -r '
                 .[] | "| #\(.number) | \(.title | capture("(?<key>[A-Z][A-Z0-9]+-[0-9]+)").key // "—") | \(.title | sub("^[a-z]+(\\([^)]+\\))?:[[:space:]]*"; "")) |"' 2>/dev/null || true)

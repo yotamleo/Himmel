@@ -4,8 +4,9 @@ argument-hint: "[--llm] [--llm-model M] [--since SHA] [--since-date YYYY-MM-DD] 
 ---
 
 Generate the daily 🌅 Morning Report by templating live `git`/`gh`/`jira`/`worktree`
-state into the curated schema and writing it to the handover bucket
-(`morning-report-<local-date>.md`). The default run costs ~no Claude tokens — it
+state into the curated schema and writing it to the handover root
+(`$HANDOVER_DIR`, Mode B) or `<repo>/handovers/` (Mode A) as
+`morning-report-<local-date>.md`. The default run costs ~no Claude tokens — it
 emits deterministic sections (✅ Completed PRs, 🔴 In-flight WIP, 🧹 Stale
 worktrees, 📋 Backlog, Done cross-ref) plus heuristic TL;DR + Suggested order.
 
