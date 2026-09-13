@@ -851,6 +851,61 @@ else
 fi
 rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
 
+echo
+echo "== Group 6: HIMMEL-2774 fleet reservation sanitization + abort-release =="
+# The leg name bank-preflight.sh reserves under is arm-resume's raw
+# HANDOVER_PATH with every '/' collapsed to '-' (arm-resume.sh ~1126-1127).
+# Every real arm above already exercises the sanitizer implicitly (every
+# HANDOVER_PATH here contains '/'), and G3.1/G3.2/G3.3 already exercise an
+# abort-after-preflight exit indirectly. These two cases assert both
+# directly against the on-disk reservation, each in its OWN fresh
+# HIMMEL_FLEET_SLOTS so neither depends on -- or is broken by -- how many
+# reservations every prior group above has left sitting in the suite's
+# shared, never-consumed slot dir (the default FLEET_CAP=4 would otherwise
+# already be exhausted by here, routing these calls into the at/over-cap
+# bypass branch instead of the one under test).
+
+# --- G6.1: a HANDOVER_PATH containing '/' reserves a SANITIZED (no-'/') name -
+G6_SLOTS="$TMP/g6-fleet-slots"; mkdir -p "$G6_SLOTS"
+G6_HO="$HANDOVER_DIR/g6/slash.md"; mk_ho "$G6_HO"
+EXPECT_LEG="${G6_HO//\//-}"
+DB14=$(new_db "$TMP/db14.tasks")
+out=$(HIMMEL_FLEET_SLOTS="$G6_SLOTS" SCHED_DB="$DB14" SCHED_DB_DIR="${DB14}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G6_HO" 2>&1)
+rc=$?
+assert_rc "G6.1a arm with a slash-bearing handover path succeeds" 0 "$rc" "$out"
+if [ -d "$G6_SLOTS/$EXPECT_LEG" ]; then
+    echo "PASS G6.1b reservation dir uses the sanitized (no-'/') leg name"
+else
+    echo "FAIL G6.1b expected reservation dir not found: $G6_SLOTS/$EXPECT_LEG"
+    FAILED=$((FAILED + 1))
+fi
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
+# --- G6.2: a refusal AFTER fleet-preflight releases the reservation right
+# away instead of sitting out the full FLEET_RESERVE_TTL -- reuse G3.1's rc=7
+# induction (a FRESH queue lock on the same handover) as the abort trigger.
+G6B_SLOTS="$TMP/g6b-fleet-slots"; mkdir -p "$G6B_SLOTS"
+G6B_HO="$HANDOVER_DIR/g6b/abort.md"; mk_ho "$G6B_HO"
+EXPECT_LEG_B="${G6B_HO//\//-}"
+DB15=$(new_db "$TMP/db15.tasks")
+SEED_OUT=$(HIMMEL_FLEET_SLOTS="$G6B_SLOTS" SCHED_DB="$DB15" SCHED_DB_DIR="${DB15}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G6B_HO" 2>&1)
+assert_seeded "G6.2 seed: pre-existing slot armed" "$DB15" "${DB15}.atdir"
+# The seed's OWN reservation is not what is under test here -- clear it so
+# the force-arm below creates a fresh reservation to watch get released.
+rm -rf "${G6B_SLOTS:?}/$EXPECT_LEG_B" 2>/dev/null
+bash "$QL" acquire "$G6B_HO" "live-session-6b" >/dev/null 2>&1
+out=$(HIMMEL_FLEET_SLOTS="$G6B_SLOTS" SCHED_DB="$DB15" SCHED_DB_DIR="${DB15}.atdir" PATH="$STUB:$PATH" bash "$ARM" --time "$FUTURE_TIME" --long-gap --handover "$G6B_HO" --force 2>&1)
+rc=$?
+assert_rc "G6.2a failing arm exits rc=7 (FRESH queue lock)" 7 "$rc" "$out"
+if [ -d "$G6B_SLOTS/$EXPECT_LEG_B" ]; then
+    echo "FAIL G6.2b reservation SURVIVED an abort-after-preflight (should release immediately)"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS G6.2b reservation released immediately on rc=7 abort"
+fi
+bash "$QL" release "$G6B_HO" "live-session-6b" >/dev/null 2>&1 || true
+rm -f "$HANDOVER_DIR/.locks/arms.jsonl"
+
 echo "---"
 echo "FAILED=$FAILED"
 [ "$FAILED" -eq 0 ]

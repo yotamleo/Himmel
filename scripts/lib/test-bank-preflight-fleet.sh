@@ -154,7 +154,14 @@ fi
 slots_e="$(mktemp -d "$W/slots-e.XXXXXX")"
 e_out="$(run_pf "$slots_e" "$p3" CADENCE_BANK_LEG=HIMMEL-9005-infoleg HIMMEL_FLEET_CAP=4)"
 check "(e) informational read (no CADENCE_BANK_LAUNCH), 3 live, cap 4 -> PROCEED" PROCEED "$e_out"
-e_entries="$(find "$slots_e" -mindepth 1 -maxdepth 1 -type d ! -name .admit 2>/dev/null | wc -l | tr -d ' ')"
+# Portable count of reservation dirs (no find -mindepth/-maxdepth): the
+# glob's default no-dotglob behaviour already excludes .admit, matching
+# bank-preflight.sh's own `for … in "$SLOTS"/*/` census idiom (~line 299).
+e_entries=0
+for _e_dir in "$slots_e"/*/; do
+  [ -d "$_e_dir" ] || continue
+  e_entries=$((e_entries + 1))
+done
 check "(e) informational read creates no reservation directory" 0 "$e_entries"
 
 # --- (f) a second declared launch of the SAME name is refused as a
