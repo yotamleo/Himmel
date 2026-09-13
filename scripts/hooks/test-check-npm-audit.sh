@@ -248,6 +248,184 @@ rm -rf "$repo_fail"; rm -f "$log_fail"
 
 rm -rf "$NPM_STUB"
 
+# --- registry/transport-error classification (HIMMEL-2972) -----------------
+# A registry/transport error (audit endpoint returned an error, Bad Request,
+# ENOAUDIT, ENOTFOUND, etc.) must never be reported as "vulnerabilities
+# found" — it gets ONE bounded retry, and only a real findings payload (or an
+# unrecognised failure, fail-closed) uses the original vulnerabilities text.
+
+# Stub npm whose `audit` subcommand: fails with a TRANSPORT-shaped error the
+# first $AUDIT_FAIL_TIMES calls, then succeeds. `config get registry` answers
+# with a fixed registry URL so the INDETERMINATE message can name one.
+# Anything else (e.g. `ci`) is a no-op success, logged to $NPM_LOG.
+make_transport_stub() {
+    local dir
+    dir=$(fixture_mktemp_dir) || return 1
+    cat > "$dir/npm" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "audit" ]; then
+    count=0
+    [ -f "$AUDIT_COUNT_FILE" ] && count=$(cat "$AUDIT_COUNT_FILE")
+    count=$((count + 1))
+    echo "$count" > "$AUDIT_COUNT_FILE"
+    if [ "$count" -le "${AUDIT_FAIL_TIMES:-1}" ]; then
+        echo "npm error audit endpoint returned an error" >&2
+        echo "npm error Bad Request - GET https://registry.npmjs.org/-/npm/v1/security/audits/quick - Bad Request" >&2
+        exit 1
+    fi
+    exit 0
+elif [ "$1" = "config" ]; then
+    echo "https://registry.npmjs.org/"
+    exit 0
+else
+    echo "$1" >> "${NPM_LOG:-/dev/null}"
+    exit 0
+fi
+STUB
+    chmod +x "$dir/npm"
+    echo "$dir"
+}
+
+# Stub npm whose `audit` always fails with a REAL FINDINGS payload (not a
+# transport shape) — the invariant path that must stay byte-identical.
+make_findings_stub() {
+    local dir
+    dir=$(fixture_mktemp_dir) || return 1
+    cat > "$dir/npm" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "audit" ]; then
+    echo "found 3 high severity vulnerabilities in 200 scanned packages"
+    exit 1
+elif [ "$1" = "config" ]; then
+    echo "https://registry.npmjs.org/"
+    exit 0
+else
+    echo "$1" >> "${NPM_LOG:-/dev/null}"
+    exit 0
+fi
+STUB
+    chmod +x "$dir/npm"
+    echo "$dir"
+}
+
+# Stub npm whose `audit` always fails with an UNRECOGNISED error shape — must
+# stay on the original fail-closed (vulnerabilities) path, never guessed as
+# transport.
+make_unrecognised_stub() {
+    local dir
+    dir=$(fixture_mktemp_dir) || return 1
+    cat > "$dir/npm" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "audit" ]; then
+    echo "npm error some unrelated internal error xyz" >&2
+    exit 1
+elif [ "$1" = "config" ]; then
+    echo "https://registry.npmjs.org/"
+    exit 0
+else
+    echo "$1" >> "${NPM_LOG:-/dev/null}"
+    exit 0
+fi
+STUB
+    chmod +x "$dir/npm"
+    echo "$dir"
+}
+
+# Case 13: transport error ONCE → retry succeeds → gate GREEN, with a retry
+# note naming the dir; no vulnerabilities/INDETERMINATE text.
+STUB13=$(make_transport_stub) || exit 1
+repo13=$(make_install_repo lock) || exit 1
+count13=$(mktemp -u)
+rc=0
+out13=$( cd "$repo13" && PATH="$STUB13:$PATH" AUDIT_COUNT_FILE="$count13" AUDIT_FAIL_TIMES=1 NPM_AUDIT_RETRY_SLEEP=0 NPM_LOG=/dev/null bash "$AUDIT_SH" 2>&1 ) || rc=$?
+assert_eq "transport error once, retry succeeds → gate green (exit 0)" "0" "$rc"
+if grepq "$out13" 'retry succeeded'; then
+    echo "PASS transport error once → retry-succeeded note printed"
+else
+    echo "FAIL transport error once → retry-succeeded note printed"
+    echo "     output: $out13"
+    FAILED=$((FAILED + 1))
+fi
+if grepq "$out13" 'found.*high.*sever\|INDETERMINATE'; then
+    echo "FAIL transport error once → vulnerabilities/INDETERMINATE text must be ABSENT"
+    echo "     output: $out13"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS transport error once → vulnerabilities/INDETERMINATE text absent"
+fi
+rm -rf "$repo13" "$STUB13"; rm -f "$count13"
+
+# Case 14: transport error TWICE (initial + retry both fail) → gate blocks
+# (non-zero), INDETERMINATE text present, vulnerabilities text ABSENT.
+STUB14=$(make_transport_stub) || exit 1
+repo14=$(make_install_repo lock) || exit 1
+count14=$(mktemp -u)
+rc=0
+out14=$( cd "$repo14" && PATH="$STUB14:$PATH" AUDIT_COUNT_FILE="$count14" AUDIT_FAIL_TIMES=99 NPM_AUDIT_RETRY_SLEEP=0 NPM_LOG=/dev/null bash "$AUDIT_SH" 2>&1 ) || rc=$?
+assert_eq "transport error twice → gate blocks (non-zero)" "1" "$rc"
+if grepq "$out14" 'INDETERMINATE'; then
+    echo "PASS transport error twice → INDETERMINATE text present"
+else
+    echo "FAIL transport error twice → INDETERMINATE text present"
+    echo "     output: $out14"
+    FAILED=$((FAILED + 1))
+fi
+if grepq "$out14" 'found.*high.*sever\|vulnerabilities found'; then
+    echo "FAIL transport error twice → vulnerabilities-found text must be ABSENT"
+    echo "     output: $out14"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS transport error twice → vulnerabilities-found text absent"
+fi
+rm -rf "$repo14" "$STUB14"; rm -f "$count14"
+
+# Case 15: real findings (RED control) — must stay on the ORIGINAL
+# vulnerabilities path, byte-identical, before AND after this change; no
+# retry, no INDETERMINATE text.
+STUB15=$(make_findings_stub) || exit 1
+repo15=$(make_install_repo lock) || exit 1
+rc=0
+out15=$( cd "$repo15" && PATH="$STUB15:$PATH" NPM_AUDIT_RETRY_SLEEP=0 NPM_LOG=/dev/null bash "$AUDIT_SH" 2>&1 ) || rc=$?
+assert_eq "real findings → gate blocks (non-zero)" "1" "$rc"
+if grepq "$out15" 'npm audit found high/critical vulnerabilities. Push blocked.'; then
+    echo "PASS real findings → original vulnerabilities message present"
+else
+    echo "FAIL real findings → original vulnerabilities message present"
+    echo "     output: $out15"
+    FAILED=$((FAILED + 1))
+fi
+if grepq "$out15" 'INDETERMINATE'; then
+    echo "FAIL real findings → INDETERMINATE text must be ABSENT"
+    echo "     output: $out15"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS real findings → INDETERMINATE text absent"
+fi
+rm -rf "$repo15" "$STUB15"
+
+# Case 16: unrecognised failure shape → stays fail-closed on the ORIGINAL
+# vulnerabilities path (never guessed as transport).
+STUB16=$(make_unrecognised_stub) || exit 1
+repo16=$(make_install_repo lock) || exit 1
+rc=0
+out16=$( cd "$repo16" && PATH="$STUB16:$PATH" NPM_AUDIT_RETRY_SLEEP=0 NPM_LOG=/dev/null bash "$AUDIT_SH" 2>&1 ) || rc=$?
+assert_eq "unrecognised failure → gate blocks (non-zero)" "1" "$rc"
+if grepq "$out16" 'npm audit found high/critical vulnerabilities. Push blocked.'; then
+    echo "PASS unrecognised failure → original vulnerabilities message present"
+else
+    echo "FAIL unrecognised failure → original vulnerabilities message present"
+    echo "     output: $out16"
+    FAILED=$((FAILED + 1))
+fi
+if grepq "$out16" 'INDETERMINATE'; then
+    echo "FAIL unrecognised failure → INDETERMINATE text must be ABSENT (not guessed as transport)"
+    echo "     output: $out16"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS unrecognised failure → INDETERMINATE text absent"
+fi
+rm -rf "$repo16" "$STUB16"
+
 # --- bun-package skip (HIMMEL-296) ------------------------------------------
 # Build a one-package repo where the package is a bun package. Two variants:
 # (a) bun.lock present (runtime bun.lock signal); (b) no bun.lock but

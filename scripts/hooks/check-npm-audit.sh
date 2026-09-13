@@ -26,7 +26,18 @@ if [ ${#pkgs[@]} -eq 0 ]; then
     exit 0
 fi
 
+# Matches the registry/transport-error shapes seen in practice (HIMMEL-2972):
+# npm's own "audit endpoint returned an error", a raw 'Bad Request', the
+# ENOAUDIT/ENOTFOUND/ECONNREFUSED/ECONNRESET/ETIMEDOUT error codes, or an
+# npm error-code line naming a 4xx/5xx registry status. Anything else stays
+# on the original fail-closed (vulnerabilities) path — never guessed.
+is_transport_error() {
+    printf '%s' "$1" | grep -Eqi \
+        'audit endpoint returned an error|ENOAUDIT|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|Bad Request|code E[45][0-9]{2}'
+}
+
 fail=0
+indeterminate=0
 for pkg in "${pkgs[@]}"; do
     dir=$(dirname "$pkg")
 
@@ -62,7 +73,37 @@ for pkg in "${pkgs[@]}"; do
         fi
     fi
     echo "→ npm audit in $dir"
-    if ! (cd "$dir" && npm audit --omit=dev --audit-level=high); then
+    # `if var=$(...)` guards the assignment from `set -e` — a bare
+    # `var=$(failing_cmd)` statement would abort the whole script under -e.
+    audit_rc=0
+    if audit_out=$(cd "$dir" && npm audit --omit=dev --audit-level=high 2>&1); then
+        :
+    else
+        audit_rc=$?
+    fi
+    echo "$audit_out"
+    if [ $audit_rc -ne 0 ] && is_transport_error "$audit_out"; then
+        echo "→ npm audit: registry error in $dir, retrying..."
+        # if-guarded, not `&& sleep`, so a 0 override still runs (test seam).
+        if [ "${NPM_AUDIT_RETRY_SLEEP:-3}" -gt 0 ]; then
+            sleep "${NPM_AUDIT_RETRY_SLEEP:-3}"
+        fi
+        audit_rc=0
+        if retry_out=$(cd "$dir" && npm audit --omit=dev --audit-level=high 2>&1); then
+            :
+        else
+            audit_rc=$?
+        fi
+        echo "$retry_out"
+        if [ $audit_rc -eq 0 ]; then
+            echo "→ npm audit: registry error in $dir, retry succeeded"
+        else
+            indeterminate=1
+            registry=$(cd "$dir" && npm config get registry 2>/dev/null) || registry="(unknown — npm config get registry failed)"
+            echo "ERROR: npm audit could not reach the registry for $dir (retry) — audit is INDETERMINATE, not a vulnerability finding" >&2
+            echo "       registry: $registry" >&2
+        fi
+    elif [ $audit_rc -ne 0 ]; then
         fail=1
     fi
 done
@@ -73,4 +114,7 @@ if [ $fail -ne 0 ]; then
     echo "       Run \`npm audit fix\` or \`npm audit --omit=dev\` in the affected package."
 fi
 
-exit $fail
+if [ $fail -ne 0 ] || [ $indeterminate -ne 0 ]; then
+    exit 1
+fi
+exit 0
