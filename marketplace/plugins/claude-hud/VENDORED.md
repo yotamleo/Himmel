@@ -68,7 +68,7 @@ protected: editing it without bumping the pin trips the guard.
   2026-09-13):** himmel's `scripts/guardrails/leak-classes.sh` dropped
   `jarrod` from its `ALLOW_HOME_NAMES` global exemption (the last of the
   human-shaped placeholder names removed there — see HIMMEL-2825/2951). Its
-  only dependents are the 13 `/Users/jarrod/...` / `C:\Users\jarrod\...`
+  only dependents are the 13 `/Users/jarrod/...` / `C:\Users\jarrod\...` <!-- leak-allow: home-path fork-delta prose names the fixture placeholder, HIMMEL-2954 -->
   fixture lines in `tests/render.test.js` (lines 360, 363, 368, 384, 386,
   392, 394, 608, 610, 617, 618, 1538, 1548), each of which now carries a
   trailing `// leak-allow: home-path upstream fixture name, HIMMEL-2958`
