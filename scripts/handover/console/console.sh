@@ -13,7 +13,10 @@
 #                     HANDOFF skeleton, print the launch line.
 #
 # Env seams: HANDOVER_DIR / USER_SLUG / JIRA_PROJECT_KEY (via .env, see
-# load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL,
+# load-dotenv.sh); CONSOLE_BUCKET, CONSOLE_DOC, CONSOLE_MODEL, CONSOLE_ROLE
+# (HIMMEL-2975: judge|relay, forwarded to headed-arm.sh as --role on --arm;
+# headed-arm.sh itself refuses relay -- a relay is a leg, armed via
+# headed-arm-leg.sh --relay, never through this console path),
 # CONSOLE_FILL_PERCENT, CONSOLE_TEMPLATE_DIR, CONSOLE_WORK_DIR (default:
 # $XDG_RUNTIME_DIR/himmel-console when set and owned by this uid, else
 # ${TMPDIR:-/tmp}/himmel-console-<uid>; an override is validated the same as
@@ -182,15 +185,25 @@ find_free_letter() {
 # lines. deadline_epoch/model/workdir are read from the outer resolution
 # (constant for the whole invocation), not passed positionally.
 do_arm() {
-    local session="$1" doc="$2" fill_signal="$3" log="$4" arm
+    local session="$1" doc="$2" fill_signal="$3" log="$4" arm role_args
     mkdir -p "$(dirname "$log")"
     arm="${CONSOLE_HEADED_ARM:-$HERE/../headed-arm.sh}"
+    # HIMMEL-2975: CONSOLE_ROLE (judge|relay) is forwarded to headed-arm.sh
+    # as a leading --role, ONLY when set -- unquoted on purpose (a single
+    # word), same word-split contract headed-arm.sh's own LAUNCHER_ENV seam
+    # documents; headed-arm.sh itself refuses --role relay (a relay is a
+    # leg, never armed through this console path).
+    role_args=""
+    [ -n "${CONSOLE_ROLE:-}" ] && role_args="--role $CONSOLE_ROLE"
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
-        bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
+        # shellcheck disable=SC2086  # role_args: see the CONSOLE_ROLE note above.
+        bash "$arm" $role_args "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
-        setsid nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        # shellcheck disable=SC2086  # role_args: see the CONSOLE_ROLE note above.
+        setsid nohup bash "$arm" $role_args "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     else
-        nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        # shellcheck disable=SC2086  # role_args: see the CONSOLE_ROLE note above.
+        nohup bash "$arm" $role_args "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     fi
     echo "armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
     echo "arm-log: $log"

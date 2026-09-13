@@ -307,10 +307,46 @@
 # existing test asserts its exact form) since it has never shown this
 # failure mode; only a caller that sets HEADED_ARM_RECORDER=1 pays for the
 # extra tty layer.
+#
+# --role (HIMMEL-2975): an optional leading `--role relay|judge` flag, ahead
+# of the positionals, for the console arm path only. `judge` clears
+# HIMMEL_CONSOLE_RELAY from the child env (so a judge console never inherits
+# a relay marker from whatever armed it) and stamps `role=judge` on the
+# `armed:` log line. `relay` refuses outright (exit 2): a relay is a LEG,
+# armed via headed-arm-leg.sh --relay (Task 25, #752), never through this
+# console-oriented launcher. Omitting --role keeps today's behaviour byte-
+# identical (`role=unsplit` on the log line, no env change).
 set -u
 
+ROLE=""
+while :; do
+    case "${1:-}" in
+        --role)
+            if [ "$#" -lt 2 ]; then
+                echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+                exit 2
+            fi
+            ROLE="$2"
+            case "$ROLE" in
+                judge) : ;;
+                relay)
+                    echo "headed-arm.sh: a relay is a leg: launch it with headed-arm-leg.sh --relay" >&2
+                    exit 2
+                    ;;
+                *)
+                    echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+                    echo "headed-arm.sh: --role must be relay or judge, got: $ROLE" >&2
+                    exit 2
+                    ;;
+            esac
+            shift 2
+            ;;
+        *) break ;;
+    esac
+done
+
 if [ "$#" -lt 5 ]; then
-    echo "usage: headed-arm.sh <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
     exit 2
 fi
 
@@ -337,7 +373,7 @@ fi
 case "$CONTEXT" in
     1m|standard) ;;
     *)
-        echo "usage: headed-arm.sh <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+        echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
         echo "headed-arm: context must be 1m or standard, got: $CONTEXT" >&2
         exit 2
         ;;
@@ -349,7 +385,7 @@ esac
 # check already passed (the `elif` above only reaches 1m when it did), so
 # this only ever fires for an explicit positional `1m` without the env.
 if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
-    echo "usage: headed-arm.sh <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    echo "usage: headed-arm.sh [--role relay|judge] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
     echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
     exit 2
 fi
@@ -390,6 +426,15 @@ LAUNCHER_ENV="${HEADED_ARM_LAUNCHER_ENV:-}"
 RECORDER="${HEADED_ARM_RECORDER:-0}"
 REQUIRED_AUTOCOMPACT="${HEADED_ARM_REQUIRED_AUTOCOMPACT:-}"
 unset HEADED_ARM_REQUIRED_AUTOCOMPACT
+# HIMMEL-2975: a judge console must never inherit a relay marker from
+# whatever armed it -- ROLE_ENV_UNSET is an extra `-u` token added to BOTH
+# konsole launch branches' env -u list below, unconditional (not merely "if
+# set"), so a HIMMEL_CONSOLE_RELAY already present in the arming shell's own
+# env is cleared the same way CLAUDE_CODE_CHILD_SESSION etc already are.
+ROLE_ENV_UNSET=""
+if [ "$ROLE" = "judge" ]; then
+    ROLE_ENV_UNSET="-u HIMMEL_CONSOLE_RELAY"
+fi
 LAUNCH_ARGV=("$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
 
 # HIMMEL-2779: headed-arm-leg.sh sets this required value. Validate the same
@@ -474,7 +519,7 @@ if ! command -v "$PGREP" >/dev/null 2>&1; then
     exit 4
 fi
 
-echo "$(date +%F_%T) armed: name=$NAME doc=$DOC signal=$SIGNAL deadline=$DEADLINE" >> "$LOG"
+echo "$(date +%F_%T) armed: name=$NAME doc=$DOC signal=$SIGNAL deadline=$DEADLINE role=${ROLE:-unsplit}" >> "$LOG"
 # r5-codex-3: the header calls $DEADLINE a hard deadline, but a flat `sleep
 # 30` let the loop overshoot it by up to nearly 30s before the launch even
 # started - the wait loop woke on its own schedule, not the deadline's.
@@ -939,16 +984,21 @@ if [ "$RECORDER" = "1" ]; then
     # the same file. -a is load-bearing (codex CR fix): without it, `script
     # -f` TRUNCATES $LOG on open, discarding whatever the outer >> already
     # wrote there.
+    # shellcheck disable=SC2086  # ROLE_ENV_UNSET is either empty or the
+    # single literal token pair "-u HIMMEL_CONSOLE_RELAY" (HIMMEL-2975) --
+    # deliberately unquoted, same word-split contract as LAUNCHER_ENV above.
     "$KONSOLE" --separate --workdir "$REPO" -p "tabtitle=$NAME" \
-        -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
+        -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID $ROLE_ENV_UNSET \
             CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 SHELL="$BASH_BIN" $LAUNCHER_ENV \
             script -q -a -f "$LOG" -c "$LAUNCH_CMD" \
         >> "$LOG" 2>&1 &
 else
     # shellcheck disable=SC2086  # LAUNCHER_ENV word-split, same contract as
     # the recorder branch above (codex CR fix: this branch dropped it).
+    # shellcheck disable=SC2086  # ROLE_ENV_UNSET, same contract as the
+    # recorder branch above (HIMMEL-2975).
     "$KONSOLE" --separate --workdir "$REPO" -p "tabtitle=$NAME" \
-        -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
+        -e env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID $ROLE_ENV_UNSET \
             CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_INITIATIVE="$INIT" ARMAUTOMERGE=1 $LAUNCHER_ENV \
             "${LAUNCH_ARGV[@]}" \
         >> "$LOG" 2>&1 &

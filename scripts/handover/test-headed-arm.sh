@@ -1321,4 +1321,60 @@ else
   fails=$((fails+1))
 fi
 
+# --- 38 (HIMMEL-2975). --role relay|judge on the console arm path ---------
+# 38a. --role judge unsets HIMMEL_CONSOLE_RELAY in the child env and stamps
+# role=judge on the armed: log line.
+d38a="$tmp/c38a"; mk_stub "$d38a" 1 alive "HIMMEL-role38a"
+rc38a=0
+KONSOLE_CMD="$d38a/konsole" PGREP_CMD="$d38a/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38a/locks" HEADED_ARM_PROC="$d38a/proc" \
+  bash "$SCRIPT" --role judge "HIMMEL-role38a" "doc38a.md" "$d38a/signal-never" "$PAST" "$d38a/log" >/dev/null 2>&1 || rc38a=$?
+wait_record "$d38a" || true
+rec38a="$(cat "$d38a/record" 2>/dev/null || true)"
+log38a="$(cat "$d38a/log" 2>/dev/null || true)"
+check "38a --role judge: exit 0" "$rc38a" "0"
+contains "38a --role judge: armed log line stamps role=judge" "$log38a" "role=judge"
+contains "38a --role judge: konsole record clears HIMMEL_CONSOLE_RELAY" "$rec38a" "-u HIMMEL_CONSOLE_RELAY"
+
+# 38b. the judge clear is UNCONDITIONAL: an inherited HIMMEL_CONSOLE_RELAY=1
+# in the arming shell's own env never reaches the child.
+d38b="$tmp/c38b"; mk_stub "$d38b" 1 alive "HIMMEL-role38b"
+rc38b=0
+HIMMEL_CONSOLE_RELAY=1 \
+  KONSOLE_CMD="$d38b/konsole" PGREP_CMD="$d38b/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d38b/locks" HEADED_ARM_PROC="$d38b/proc" \
+  bash "$SCRIPT" --role judge "HIMMEL-role38b" "doc38b.md" "$d38b/signal-never" "$PAST" "$d38b/log" >/dev/null 2>&1 || rc38b=$?
+wait_record "$d38b" || true
+rec38b="$(cat "$d38b/record" 2>/dev/null || true)"
+check "38b --role judge with inherited HIMMEL_CONSOLE_RELAY=1: exit 0" "$rc38b" "0"
+contains "38b --role judge with inherited HIMMEL_CONSOLE_RELAY=1: still cleared in the child argv" "$rec38b" "-u HIMMEL_CONSOLE_RELAY"
+
+# 38c. --role relay refuses outright: a relay is a leg, not a console arm.
+outc38c=$(bash "$SCRIPT" --role relay "HIMMEL-role38c" "doc38c.md" "$tmp/signal-never-38c" "$PAST" "$tmp/log38c" 2>&1)
+rc38c=$?
+check "38c --role relay: exit 2" "$rc38c" "2"
+contains "38c --role relay: refuses with headed-arm-leg.sh --relay" "$outc38c" "headed-arm-leg.sh --relay"
+
+# 38d. --role bogus: exit 2 + usage.
+outd38d=$(bash "$SCRIPT" --role bogus "HIMMEL-role38d" "doc38d.md" "$tmp/signal-never-38d" "$PAST" "$tmp/log38d" 2>&1)
+rc38d=$?
+check "38d --role bogus: exit 2" "$rc38d" "2"
+contains "38d --role bogus: usage text" "$outd38d" "usage: headed-arm.sh"
+
+# 38e. --role with no value: exit 2.
+oute38e=$(bash "$SCRIPT" --role 2>&1)
+rc38e=$?
+check "38e --role with no value: exit 2" "$rc38e" "2"
+contains "38e --role with no value: usage text" "$oute38e" "usage: headed-arm.sh"
+
+# 38f. no --role: today's shape stays byte-identical -- role=unsplit on the
+# armed: line, and the konsole record carries no HIMMEL_CONSOLE_RELAY clear.
+d38f="$tmp/c38f"; mk_stub "$d38f" 1 alive "HIMMEL-role38f"
+rc38f=0
+run_headed_arm "$d38f" "$REPO" "HIMMEL-role38f" "doc38f.md" "$d38f/signal-never" "$PAST" >/dev/null 2>&1 || rc38f=$?
+wait_record "$d38f" || true
+rec38f="$(cat "$d38f/record" 2>/dev/null || true)"
+log38f="$(cat "$d38f/log" 2>/dev/null || true)"
+check "38f no --role: exit 0" "$rc38f" "0"
+contains "38f no --role: armed log line stamps role=unsplit" "$log38f" "role=unsplit"
+not_contains "38f no --role: konsole record carries no HIMMEL_CONSOLE_RELAY clear" "$rec38f" "HIMMEL_CONSOLE_RELAY"
+
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

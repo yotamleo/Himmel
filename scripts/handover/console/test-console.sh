@@ -1144,4 +1144,46 @@ check "54 --date= prints a usage line" "$(printf '%s\n' "$out54" | grep -c '^usa
 out55="$(console next --bucket dateval --dry-run --date "2026-09-14" --doc "$docZval")"
 check "55 a real --date still mints the successor" "$(printf '%s\n' "$out55" | grep -c '^would-doc: .*2026-09-14A-console.md$')" "1"
 
+# --- 56/57 (HIMMEL-2975): CONSOLE_ROLE pass-through to headed-arm.sh's
+# --role, ahead of the positionals, only when set. Each stub records its
+# FULL "$*" to a fixed path baked into the stub itself (never a positional
+# like $5) -- --role judge shifts every downstream position by two, so a
+# positional-indexed record would silently read the wrong field.
+doc56A="$root/tester/rolerepo/DEMO-nextleg-${today}A-console.md"
+record56="$tmp/role-record-56"
+cat > "$tmp/stub-arm-role-56.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record56"
+STUB
+chmod +x "$tmp/stub-arm-role-56.sh"
+
+out56a="$(console new --bucket rolerepo)"
+token56a="$(token_of "$out56a")"
+out56b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-56.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    CONSOLE_ROLE=judge \
+    bash "$C" next --bucket rolerepo --arm --deadline-min 0 ) )"
+check "56 next --arm reports armed" "$(printf '%s\n' "$out56b" | grep -c '^armed: ')" "1"
+check "56 CONSOLE_ROLE=judge: stub record starts with --role judge" \
+    "$(grep -c '^--role judge ' "$record56" 2>/dev/null)" "1"
+HANDOVER_DIR="$root" bash "$QL" release "$doc56A" "$token56a" >/dev/null 2>&1
+
+doc57A="$root/tester/rolerepo2/DEMO-nextleg-${today}A-console.md"
+record57="$tmp/role-record-57"
+cat > "$tmp/stub-arm-role-57.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record57"
+STUB
+chmod +x "$tmp/stub-arm-role-57.sh"
+
+out57a="$(console new --bucket rolerepo2)"
+token57a="$(token_of "$out57a")"
+out57b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-57.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    bash "$C" next --bucket rolerepo2 --arm --deadline-min 0 ) )"
+check "57 next --arm reports armed" "$(printf '%s\n' "$out57b" | grep -c '^armed: ')" "1"
+check "57 no CONSOLE_ROLE: stub record has no --role" \
+    "$(grep -c -- '--role' "$record57" 2>/dev/null)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc57A" "$token57a" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

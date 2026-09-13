@@ -143,6 +143,11 @@ own end-of-session hook still writing — it prunes on the next sweep.
   non-consent.
 - **Never assume a lane is down.** A failing lane is nearly always a local
   credential or config fault — diagnose before rerouting.
+- **Judge consoles only: ack every relay escalation with `ack <escalation
+  id>`.** Keep the shift's acked ids on one line `acked: <id>[,…]` in this
+  console doc (moves into `## Live state` once HIMMEL-2973 Task 9 lands). An
+  id already on that line is a duplicate — reply `duplicate <id>` and take no
+  action.
 
 ## Handing over
 
