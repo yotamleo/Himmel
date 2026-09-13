@@ -8,9 +8,14 @@
 #
 # Matching rule (never guessed): a doc node's label must be EXACTLY a code-file
 # token optionally followed by " script"/" file"/" router"/" module" -- full
-# path match against an AST file node's source_file first, then a basename
-# match ONLY if it is unique across AST file nodes; an ambiguous basename
-# (two+ files sharing it) is skipped and counted, never resolved by guessing.
+# path match against an AST file node's source_file first; if the token has a
+# directory component, it must then match by PATH SUFFIX (never fall through
+# to a bare-basename guess -- a token naming a directory that contradicts the
+# only same-named file must not fabricate a confidence-1.0 edge, HIMMEL-3005);
+# only a token with no directory component falls back to a basename match, and
+# only if it is unique across AST file nodes. An ambiguous match (two+ files)
+# is skipped and counted; a directory-qualified token matching zero files is
+# skipped and counted separately -- never resolved by guessing.
 import argparse
 import json
 import os
@@ -56,21 +61,34 @@ def strip_leading_dot_slash(path):
 
 
 def resolve_code_file(token, by_path, by_base):
-    """(node_id, ambiguous) for a code-file token: full path -> unique basename -> ambiguous (skip, counted)."""
+    """(node_id, ambiguous, path_mismatch) for a code-file token: full path ->
+    (if the token has a directory component) unique path-suffix match, never a
+    basename fallback -> (bare token only) unique basename -> ambiguous (skip,
+    counted) or, for a directory-qualified token matching nothing, a
+    path-mismatch (skip, counted separately)."""
     token = strip_leading_dot_slash(token)
     if token in by_path:
-        return by_path[token], False
+        return by_path[token], False, False
+    if "/" in token:
+        suffix = "/" + token
+        candidates = [node_id for sf, node_id in by_path.items() if sf == token or sf.endswith(suffix)]
+        if len(candidates) == 1:
+            return candidates[0], False, False
+        if len(candidates) > 1:
+            return None, True, False
+        return None, False, True
     candidates = by_base.get(os.path.basename(token), [])
     if len(candidates) == 1:
-        return candidates[0], False
+        return candidates[0], False, False
     if len(candidates) > 1:
-        return None, True
-    return None, False
+        return None, True, False
+    return None, False, False
 
 
 def find_ghost_bridges(nodes, by_path, by_base):
     bridges = []
     skipped_ambiguous = 0
+    skipped_path_mismatch = 0
     for doc_id, node in nodes.items():
         sf = node.get("source_file") or ""
         if not sf.endswith(DOC_SUFFIXES):
@@ -78,9 +96,12 @@ def find_ghost_bridges(nodes, by_path, by_base):
         m = GHOST_LABEL_RE.fullmatch(node.get("label") or "")
         if not m:
             continue
-        target_id, ambiguous = resolve_code_file(m.group(1), by_path, by_base)
+        target_id, ambiguous, path_mismatch = resolve_code_file(m.group(1), by_path, by_base)
         if ambiguous:
             skipped_ambiguous += 1
+            continue
+        if path_mismatch:
+            skipped_path_mismatch += 1
             continue
         if target_id is None or target_id == doc_id:
             continue
@@ -97,7 +118,7 @@ def find_ghost_bridges(nodes, by_path, by_base):
                 "hardened": "doc-label-names-code-file",
             }
         )
-    return bridges, skipped_ambiguous
+    return bridges, skipped_ambiguous, skipped_path_mismatch
 
 
 def load_allowlist(path):
@@ -176,7 +197,7 @@ def main(argv):
     edges = graph.get(ekey, [])
 
     by_path, by_base = build_ast_index(nodes)
-    bridges, skipped_ambiguous = find_ghost_bridges(nodes, by_path, by_base)
+    bridges, skipped_ambiguous, skipped_path_mismatch = find_ghost_bridges(nodes, by_path, by_base)
 
     # An explicitly-supplied --allowlist that doesn't exist is a typo, not the
     # normal "no allowlist for this corpus yet" case (only the DEFAULT path is
@@ -212,7 +233,8 @@ def main(argv):
     unchanged = 0 if new_edges else 1
     summary = (
         f"harden-graph: bridges={bridge_count} code-facts={fact_count} "
-        f"skipped-ambiguous={skipped_ambiguous} unchanged={unchanged}"
+        f"skipped-ambiguous={skipped_ambiguous} skipped-path-mismatch={skipped_path_mismatch} "
+        f"unchanged={unchanged}"
     )
     print(summary)
 
