@@ -172,6 +172,13 @@ END {
 }')"
 [ -n "$models_summary" ] || models_summary=none
 
+# HIMMEL-2974: the same ps table, scanned for --autocompact drift against the
+# leg invariant headed-arm.sh:391 refuses to launch without. The script's own
+# last line is already "ceiling=ok" / "ceiling=DRIFT:<name,...>" so it drops
+# into the tick line unprefixed.
+ceiling_summary="$(bash "$REPO/scripts/lanes/ceiling-conformance.sh" 2>/dev/null | tail -n 1)" || ceiling_summary=""
+[ -n "$ceiling_summary" ] || ceiling_summary="ceiling=?"
+
 at_out="$(atq 2>/dev/null)" || at_out=""
 at_count="$(printf '%s\n' "$at_out" | awk 'NF { n++ } END { print n+0 }')"
 
@@ -285,10 +292,10 @@ else
     # The burn field is APPENDED only under --burn: a default tick line stays
     # byte-identical to what every console already parses.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s procs=%s models=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
+        printf 'TICK %s hb=%s legs=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s burn=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$burn_summary"
     else
-        printf 'TICK %s hb=%s legs=%s procs=%s models=%s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
+        printf 'TICK %s hb=%s legs=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary"
     fi
 fi

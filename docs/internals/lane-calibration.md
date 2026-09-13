@@ -383,6 +383,10 @@ measured** — do not assume a `standard` leg makes its children compact early.
 | leg / worker arm | `standard` | none — the resolved argv must carry `--autocompact 200000` |
 | subagent of either | inherits the parent | none — set it on the parent's arm |
 
+Given that, the console-side mitigation is a lean parent (HIMMEL-2975's
+relay/judge split), not a scan: `scripts/lanes/ceiling-conformance.sh`
+(HIMMEL-2974) does not reach subagents, since they carry no `-n` name.
+
 ### The leg launcher pins the default, it does not just document it (HIMMEL-2766)
 
 Legs were already pinned to the standard (200k-autocompact) context mode by

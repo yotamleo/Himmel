@@ -53,8 +53,8 @@ STUB
 cat > "$W/bin/pgrep" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' \
-  '101 claude --model claude-sonnet-5 -n HIMMEL-111-legN61 work' \
-  '102 claude --model claude-opus-5 -n LUNA-222-legN9 work' \
+  '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work' \
+  '102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work' \
   '103 claude --model claude-sonnet-5 -n HIMMEL-next-console work'
 STUB
 cat > "$W/bin/atq" <<'STUB'
@@ -73,7 +73,12 @@ cat > "$W/bin/bun" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' 'claudex funded measured 5h used=12% free=88%; weekly used=34% free=66%'
 STUB
-chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/repo/scripts/lanes/leg-burn.sh" "$W/bin/"*
+# HIMMEL-2974: the real ceiling-conformance.sh, not a re-implemented stub --
+# it reads the same PATH-stubbed pgrep table this suite already builds, so a
+# leg row here is one source of truth for procs=/models=/ceiling= alike.
+cp "$HERE/../../lanes/ceiling-conformance.sh" "$W/repo/scripts/lanes/ceiling-conformance.sh"
+
+chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/repo/scripts/lanes/leg-burn.sh" "$W/repo/scripts/lanes/ceiling-conformance.sh" "$W/bin/"*
 
 printf '%s\n' '{"five_hour":{"utilization":30},"seven_day":{"utilization":28}}' > "$W/bank.json"
 printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-111-legN61.md"
@@ -94,7 +99,7 @@ export TICK_TMPDIR="$W"
 export TICK_BANK_CACHE_FILE="$W/bank.json"
 
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE procs=2 models=sonnet:1,opus:1 atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE procs=2 models=sonnet:1,opus:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -144,6 +149,18 @@ chmod +x "$W/bin-profile/pgrep"
 profile_out="$(PATH="$W/bin-profile:$PATH" bash "$SUT" --legs 'HIMMEL-333-foo-legN7-2026-01-01')"
 contains 'a --profile leg is counted in procs= (HIMMEL-2998)' "$profile_out" 'procs=1'
 contains 'a --profile leg is bucketed in models= (HIMMEL-2998)' "$profile_out" 'models=sonnet:1'
+
+# HIMMEL-2974: a leg whose --autocompact drifted from 200000 surfaces in
+# ceiling= without disturbing procs=/models=.
+mkdir -p "$W/bin-drift"
+cat > "$W/bin-drift/pgrep" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '101 claude --model claude-sonnet-5 --autocompact auto -n HIMMEL-111-legN61 work'
+STUB
+chmod +x "$W/bin-drift/pgrep"
+drift_out="$(PATH="$W/bin-drift:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61')"
+contains 'a drifted leg surfaces in ceiling= (HIMMEL-2974)' "$drift_out" 'ceiling=DRIFT:HIMMEL-111-legN61'
 
 rm -f "$W/handover/HIMMEL-222-legN65.md"
 out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66')"; rc=$?
