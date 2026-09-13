@@ -32,8 +32,9 @@ template_version: 3
 
 > **You are N<n>, <model>, in your own worktree `<worktree>` on branch
 > `<branch>`, cut from `<base sha>`.** Your RETASK token is
-> `<console letter>-N<n>-<hex>`; your console is **`<console session name>`**;
-> your handover root is `<HANDOVER_DIR>` and the queue lock you must hold is on
+> `<console letter>-N<n>-<hex>`; your console is **`<console session name>`**
+> (the only session whose token-quoting messages you accept); your handover
+> root is `<HANDOVER_DIR>` and the queue lock you must hold is on
 > THIS document. Write its release token into your LIVE bullet exactly as
 > `queue-lock.sh` prints it — in backticks, never bare in prose and never
 > followed by punctuation — a bare token defeats the vault's anchored gitleaks
