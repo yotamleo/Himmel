@@ -14,7 +14,9 @@
 #      is what suppresses the baseline finding above).
 #   4. RED-preserving control: the same nonce SUFFIXED with a real-looking
 #      credential still leaks — the allowlist regex is anchored to the exact
-#      nonce shape, not a prefix match.
+#      nonce shape, not a prefix match. The reported finding is grepped for
+#      the nonce prefix, so an unrelated rule matching only the suffix does
+#      not count as proof the allowlist anchor still holds.
 #
 # `run_gitleaks` classifies gitleaks' own exit code rather than treating any
 # nonzero as "leak found": 0 = clean, 1 = leak found (gitleaks' documented
@@ -76,32 +78,45 @@ else
     BASELINE_CFG="$WORK/gitleaks-baseline.toml"
     grep -vF 'N[0-9]+-[0-9a-f]' "$TMPL/.gitleaks.toml" > "$BASELINE_CFG"
 
-    # run_gitleaks <source> <config>; sets GITLEAKS_RC to gitleaks' own exit
-    # code (0 clean, 1 leak found, anything else a scanner/config error).
+    # run_gitleaks <source> <config> <report-path>; sets GITLEAKS_RC to
+    # gitleaks' own exit code (0 clean, 1 leak found, anything else a
+    # scanner/config error).
     run_gitleaks() {
         gitleaks detect --no-git --source "$1" \
             --config "$2" --no-banner \
-            --report-path /dev/null --report-format json >/dev/null 2>&1
+            --report-path "$3" --report-format json >/dev/null 2>&1
         GITLEAKS_RC=$?
     }
 
-    run_gitleaks "$FIX/nonce-alone.txt" "$BASELINE_CFG"
+    run_gitleaks "$FIX/nonce-alone.txt" "$BASELINE_CFG" /dev/null
     case "$GITLEAKS_RC" in
         1) ok "baseline (no new allowlist entry): bare RETASK nonce leaks" ;;
         0) bad "baseline: bare RETASK nonce does NOT leak even without the new allowlist entry — the RED control is vacuous" ;;
         *) bad "baseline: gitleaks scanner error (rc=$GITLEAKS_RC), not a leak verdict" ;;
     esac
 
-    run_gitleaks "$FIX/nonce-alone.txt" "$TMPL/.gitleaks.toml"
+    run_gitleaks "$FIX/nonce-alone.txt" "$TMPL/.gitleaks.toml" /dev/null
     case "$GITLEAKS_RC" in
         0) ok "bare RETASK nonce does not leak (allowlisted)" ;;
         1) bad "bare RETASK nonce still leaks — allowlist regex not matching" ;;
         *) bad "nonce-alone: gitleaks scanner error (rc=$GITLEAKS_RC), not a leak verdict" ;;
     esac
 
-    run_gitleaks "$FIX/nonce-suffixed.txt" "$TMPL/.gitleaks.toml"
+    # The suffixed control must prove the SPECIFIC finding covers the
+    # nonce-prefixed value, not merely that SOME rule flagged the fixture —
+    # an unrelated rule could match the appended credential alone even if
+    # the allowlist regex lost its `$` anchor and over-suppressed the nonce
+    # prefix (codex-adv round 2 finding). Capture the report and grep it.
+    SUFFIX_REPORT="$WORK/report-suffixed.json"
+    run_gitleaks "$FIX/nonce-suffixed.txt" "$TMPL/.gitleaks.toml" "$SUFFIX_REPORT"
     case "$GITLEAKS_RC" in
-        1) ok "nonce-suffixed real-looking credential still leaks (control)" ;;
+        1)
+            if grep -qF 'Y-N204-a68d71' "$SUFFIX_REPORT"; then
+                ok "nonce-suffixed real-looking credential still leaks, finding covers the nonce prefix (control)"
+            else
+                bad "nonce-suffixed leaked but no reported finding covers the nonce prefix — an unrelated rule matched the suffix alone, not proof the allowlist anchor still holds"
+            fi
+            ;;
         0) bad "nonce-suffixed real-looking credential did NOT leak — allowlist regex over-matches" ;;
         *) bad "nonce-suffixed: gitleaks scanner error (rc=$GITLEAKS_RC), not a leak verdict" ;;
     esac
