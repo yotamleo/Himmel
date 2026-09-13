@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Deterministic gh stub for test-ledger-metrics.sh's 1000-PR-cap warning check
+# (HIMMEL-2981): returns exactly 1000 merged PRs, the --limit 1000 boundary.
+set -u
+case "$*" in
+    "pr list "*)
+        jq -n '[range(0;1000) | {number: (.+1), title: "PR", mergedAt: "2026-08-02T00:00:00Z", headRefName: ("branch-" + ((.+1)|tostring))}]'
+        exit 0 ;;
+    *) echo "gh: stub does not implement: $*" >&2; exit 1 ;;
+esac

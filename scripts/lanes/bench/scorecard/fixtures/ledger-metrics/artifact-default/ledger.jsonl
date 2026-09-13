@@ -1,0 +1,1 @@
+{"kind":"finding","ts":"2026-08-02T01:00:00Z","branch":"only/branch","head":"h1","model":"sonnet","finding_id":"o1","severity":"crit","file":"x.sh","line":1,"verdict":"CONFIRMED","perspective":"correctness"}

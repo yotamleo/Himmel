@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Deterministic gh stub for test-ledger-metrics.sh's main fixture: a fixed
+# 4-PR merged list spanning the --since/--until boundary under test (HIMMEL-2981).
+set -u
+case "$*" in
+    "pr list "*)
+        cat <<'JSON'
+[
+  {"number":101,"title":"pre-window","mergedAt":"2026-08-01T10:00:00Z","headRefName":"feat/alpha"},
+  {"number":102,"title":"at-since","mergedAt":"2026-08-02T00:00:00Z","headRefName":"feat/alpha"},
+  {"number":103,"title":"fractional-seconds","mergedAt":"2026-08-03T12:00:00.123Z","headRefName":"fix/beta"},
+  {"number":104,"title":"at-until","mergedAt":"2026-08-05T00:00:00Z","headRefName":"fix/beta"}
+]
+JSON
+        exit 0 ;;
+    *) echo "gh: stub does not implement: $*" >&2; exit 1 ;;
+esac
