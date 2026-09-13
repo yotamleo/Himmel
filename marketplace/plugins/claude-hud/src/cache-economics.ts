@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { getClaudeConfigDir, getHudPluginDir } from './claude-config-dir.js';
 import { parseTranscript } from './transcript.js';
@@ -17,29 +18,57 @@ export interface CacheEconomicsTotals {
 const ALL_SESSIONS_CACHE_TTL_MS = 30_000;
 const ALL_SESSIONS_CACHE_FILENAME = 'cache-economics-all.json';
 const REFRESH_LOCK_DIRNAME = 'refresh.lock';
+const REFRESH_LOCK_OWNER_FILENAME = 'owner';
 const REFRESH_LOCK_STALE_MS = 120_000;
 
 // Flag the detached refresh child is spawned with; index.ts checks argv for
-// this to dispatch to runCacheEconomicsRefresh() instead of rendering.
+// this to dispatch to runCacheEconomicsRefresh() instead of rendering. The
+// token that follows it is the owner token acquireRefreshLock minted for
+// this refresh cycle (see releaseRefreshLock).
 export const REFRESH_CACHE_ECONOMICS_FLAG = '--refresh-cache-economics';
 
-function defaultSpawnRefresh(): void {
-  const entry = process.argv[1];
-  if (!entry) return;
-  try {
-    spawn(process.execPath, [entry, REFRESH_CACHE_ECONOMICS_FLAG], {
-      detached: true,
-      stdio: 'ignore',
-    }).unref();
-  } catch (err) {
-    debug('Failed to spawn cache-economics refresh child:', err instanceof Error ? err.message : err);
-  }
+export function getRefreshLockTokenFromArgv(argv: string[] = process.argv): string | null {
+  const idx = argv.indexOf(REFRESH_CACHE_ECONOMICS_FLAG);
+  if (idx === -1) return null;
+  return argv[idx + 1] ?? null;
 }
+
+// Factory so tests can inject a fake `spawn` (an EventEmitter-like stub)
+// instead of forking a real process, to drive the 'error' handling below.
+export function createSpawnRefresh(spawnFn: typeof spawn): CacheEconomicsDeps['spawnRefresh'] {
+  return (homeDir: string, lockToken: string): void => {
+    const entry = process.argv[1];
+    if (!entry) {
+      releaseRefreshLock(homeDir, lockToken);
+      return;
+    }
+    try {
+      const child = spawnFn(process.execPath, [entry, REFRESH_CACHE_ECONOMICS_FLAG, lockToken], {
+        detached: true,
+        stdio: 'ignore',
+      });
+      // spawn() can fail asynchronously (e.g. EAGAIN) after returning
+      // successfully; an unhandled 'error' event would crash this process,
+      // and the child never started, so the lock this call was handed must
+      // be released here rather than left for a child that will never run.
+      child.once('error', (err: Error) => {
+        debug('Failed to spawn cache-economics refresh child:', err.message);
+        releaseRefreshLock(homeDir, lockToken);
+      });
+      child.unref();
+    } catch (err) {
+      debug('Failed to spawn cache-economics refresh child:', err instanceof Error ? err.message : err);
+      releaseRefreshLock(homeDir, lockToken);
+    }
+  };
+}
+
+const defaultSpawnRefresh = createSpawnRefresh(spawn);
 
 export type CacheEconomicsDeps = {
   homeDir: () => string;
   now: () => number;
-  spawnRefresh: (homeDir: string) => void;
+  spawnRefresh: (homeDir: string, lockToken: string) => void;
   rename: (oldPath: string, newPath: string) => void;
 };
 
@@ -62,46 +91,75 @@ function getRefreshLockPath(homeDir: string): string {
   return path.join(getHudPluginDir(homeDir), REFRESH_LOCK_DIRNAME);
 }
 
+function getRefreshLockOwnerPath(homeDir: string): string {
+  return path.join(getRefreshLockPath(homeDir), REFRESH_LOCK_OWNER_FILENAME);
+}
+
 // mkdir is atomic: EEXIST means another process is already refreshing.
 // Ownership transfers to the detached child spawned right after a successful
-// acquire here; the child releases the lock in the finally of its refresh
-// body (runCacheEconomicsRefresh) once the scan + write are done.
-function acquireRefreshLock(homeDir: string, now: number): boolean {
+// acquire here (via the returned token, threaded through spawnRefresh and
+// the child's argv); the child releases the lock in the finally of its
+// refresh body (runCacheEconomicsRefresh) once the scan + write are done.
+// A stale (>120s) lock is reclaimed by minting a FRESH token: the original
+// owner's eventual release call carries its now-superseded token, so
+// releaseRefreshLock can tell the two apart and refuses to remove a lock it
+// no longer owns (otherwise a slow-but-alive refresh's release could delete
+// a different, newer refresh's lock out from under it).
+function acquireRefreshLock(homeDir: string, now: number): string | null {
   try {
     fs.mkdirSync(getHudPluginDir(homeDir), { recursive: true, mode: 0o700 });
   } catch (err) {
     debug('Failed to create hud plugin dir for refresh lock:', err instanceof Error ? err.message : err);
-    return false;
+    return null;
   }
   const lockPath = getRefreshLockPath(homeDir);
-  const tryMkdir = (): boolean => {
+  const tryAcquire = (): string | null => {
     try {
       fs.mkdirSync(lockPath);
-      return true;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
         debug('Failed to create cache-economics refresh lock:', err instanceof Error ? err.message : err);
       }
-      return false;
+      return null;
     }
+    const token = randomUUID();
+    try {
+      fs.writeFileSync(getRefreshLockOwnerPath(homeDir), token, 'utf8');
+    } catch (err) {
+      debug('Failed to record cache-economics refresh lock owner:', err instanceof Error ? err.message : err);
+    }
+    return token;
   };
-  if (tryMkdir()) return true;
+
+  const acquired = tryAcquire();
+  if (acquired) return acquired;
 
   try {
     const age = now - fs.statSync(lockPath).mtimeMs;
     if (age > REFRESH_LOCK_STALE_MS) {
-      fs.rmdirSync(lockPath);
-      return tryMkdir();
+      fs.rmSync(lockPath, { recursive: true, force: true });
+      return tryAcquire();
     }
   } catch (err) {
     debug('Failed to reclaim stale cache-economics refresh lock:', err instanceof Error ? err.message : err);
   }
-  return false;
+  return null;
 }
 
-function releaseRefreshLock(homeDir: string): void {
+// Removes the lock only if `lockToken` still matches the owner recorded at
+// acquisition time — a mismatch (or missing owner file) means this lock was
+// already reclaimed by a newer refresh, which this call must leave alone.
+function releaseRefreshLock(homeDir: string, lockToken: string): void {
+  const lockPath = getRefreshLockPath(homeDir);
   try {
-    fs.rmdirSync(getRefreshLockPath(homeDir));
+    const owner = fs.readFileSync(getRefreshLockOwnerPath(homeDir), 'utf8');
+    if (owner !== lockToken) return;
+  } catch (err) {
+    debug('Failed to read cache-economics refresh lock owner:', err instanceof Error ? err.message : err);
+    return;
+  }
+  try {
+    fs.rmSync(lockPath, { recursive: true, force: true });
   } catch (err) {
     debug('Failed to release cache-economics refresh lock:', err instanceof Error ? err.message : err);
   }
@@ -128,13 +186,15 @@ function readCache(homeDir: string): AllSessionsCache | null {
 }
 
 function writeCache(homeDir: string, cache: AllSessionsCache, rename: CacheEconomicsDeps['rename']): void {
+  const cachePath = getCachePath(homeDir);
+  // Write to a pid-suffixed tmp file then rename onto the real path so a
+  // concurrent reader never observes partial JSON (rename is atomic).
+  const tmpPath = `${cachePath}.tmp.${process.pid}`;
+  let tmpWritten = false;
   try {
-    const cachePath = getCachePath(homeDir);
     fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
-    // Write to a pid-suffixed tmp file then rename onto the real path so a
-    // concurrent reader never observes partial JSON (rename is atomic).
-    const tmpPath = `${cachePath}.tmp.${process.pid}`;
     fs.writeFileSync(tmpPath, JSON.stringify(cache), { encoding: 'utf8', mode: 0o600 });
+    tmpWritten = true;
     try {
       fs.chmodSync(tmpPath, 0o600);
     } catch {
@@ -143,6 +203,13 @@ function writeCache(homeDir: string, cache: AllSessionsCache, rename: CacheEcono
     rename(tmpPath, cachePath);
   } catch (err) {
     debug('Failed to write cache-economics cache:', err instanceof Error ? err.message : err);
+    if (tmpWritten) {
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {
+        // Best-effort: rename may have already moved or removed it.
+      }
+    }
   }
 }
 
@@ -208,8 +275,11 @@ export async function getAllSessionsCacheEconomics(
     cached && cached.computedAt <= now && now - cached.computedAt < ALL_SESSIONS_CACHE_TTL_MS,
   );
 
-  if (!isFresh && acquireRefreshLock(homeDir, now)) {
-    deps.spawnRefresh(homeDir);
+  if (!isFresh) {
+    const lockToken = acquireRefreshLock(homeDir, now);
+    if (lockToken) {
+      deps.spawnRefresh(homeDir, lockToken);
+    }
   }
 
   if (cached) {
@@ -220,9 +290,11 @@ export async function getAllSessionsCacheEconomics(
 
 // Runs in the detached child spawned by getAllSessionsCacheEconomics (or
 // in-process in tests): scans every transcript, writes the cache atomically,
-// then releases the refresh lock the render path already acquired.
+// then releases the refresh lock the render path handed it via `lockToken`
+// (null when driven without a lock, e.g. a bare unit test of the write path).
 export async function runCacheEconomicsRefresh(
   overrides: Partial<CacheEconomicsDeps> = {},
+  lockToken: string | null = null,
 ): Promise<void> {
   const deps = { ...defaultDeps, ...overrides };
   const homeDir = deps.homeDir();
@@ -230,7 +302,7 @@ export async function runCacheEconomicsRefresh(
     const totals = await computeAllSessionsTotals(homeDir);
     writeCache(homeDir, { ...totals, computedAt: deps.now() }, deps.rename);
   } finally {
-    releaseRefreshLock(homeDir);
+    if (lockToken) releaseRefreshLock(homeDir, lockToken);
   }
 }
 

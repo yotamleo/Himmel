@@ -9,7 +9,7 @@ import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand, shouldRunCustomLine } from "./custom-line-cmd.js";
 import { getClaudeCodeVersion } from "./version.js";
 import { getMemoryUsage } from "./memory.js";
-import { getAllSessionsCacheEconomics, runCacheEconomicsRefresh, REFRESH_CACHE_ECONOMICS_FLAG, } from "./cache-economics.js";
+import { getAllSessionsCacheEconomics, runCacheEconomicsRefresh, REFRESH_CACHE_ECONOMICS_FLAG, getRefreshLockTokenFromArgv, } from "./cache-economics.js";
 import { readAuthInfo } from "./auth.js";
 import { resolveEffortLevel } from "./effort.js";
 import { applyContextWindowFallback } from "./context-cache.js";
@@ -223,7 +223,7 @@ const isSamePath = (a, b) => {
 };
 if (argvPath && isSamePath(argvPath, scriptPath)) {
     if (shouldRunCacheEconomicsRefresh()) {
-        void runCacheEconomicsRefresh();
+        void runCacheEconomicsRefresh({}, getRefreshLockTokenFromArgv());
     }
     else {
         void main();

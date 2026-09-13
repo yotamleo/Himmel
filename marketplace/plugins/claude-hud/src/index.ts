@@ -13,6 +13,7 @@ import {
   getAllSessionsCacheEconomics,
   runCacheEconomicsRefresh,
   REFRESH_CACHE_ECONOMICS_FLAG,
+  getRefreshLockTokenFromArgv,
 } from "./cache-economics.js";
 import { readAuthInfo } from "./auth.js";
 import { resolveEffortLevel } from "./effort.js";
@@ -287,7 +288,7 @@ const isSamePath = (a: string, b: string): boolean => {
 };
 if (argvPath && isSamePath(argvPath, scriptPath)) {
   if (shouldRunCacheEconomicsRefresh()) {
-    void runCacheEconomicsRefresh();
+    void runCacheEconomicsRefresh({}, getRefreshLockTokenFromArgv());
   } else {
     void main();
   }

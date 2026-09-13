@@ -3,11 +3,14 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { EventEmitter } from 'node:events';
 import { renderPromptCacheEconomicsLine } from '../dist/render/lines/prompt-cache-economics.js';
 import {
   formatCacheTokens,
   getAllSessionsCacheEconomics,
   runCacheEconomicsRefresh,
+  createSpawnRefresh,
+  getRefreshLockTokenFromArgv,
 } from '../dist/cache-economics.js';
 import { shouldRunCacheEconomicsRefresh } from '../dist/index.js';
 
@@ -253,8 +256,8 @@ test('a refresh lock older than 120s is reclaimed and a refresh is kicked', asyn
 // (f) the writer never leaves a partial cache file behind: it writes to a
 // pid-suffixed tmp path and only the final `fs.renameSync` makes the new
 // content visible at the real cache path. The refresh also releases the
-// lock the render path acquired before spawning it.
-test('runCacheEconomicsRefresh writes the cache atomically via rename and releases the lock', async () => {
+// lock it was handed (by owner token) before spawning it.
+test('runCacheEconomicsRefresh writes the cache atomically via rename and releases the lock it was handed', async () => {
   const home = mkTmpDir();
   const proj1 = path.join(home, '.claude', 'projects', 'proj1');
   fs.mkdirSync(proj1, { recursive: true });
@@ -262,7 +265,15 @@ test('runCacheEconomicsRefresh writes the cache atomically via rename and releas
     input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 50, cache_read_input_tokens: 100,
   }));
   const cacheDir = cacheDirFor(home);
-  fs.mkdirSync(path.join(cacheDir, 'refresh.lock'), { recursive: true });
+
+  let capturedToken = null;
+  await getAllSessionsCacheEconomics({
+    homeDir: () => home,
+    now: () => 1_000_000,
+    spawnRefresh: (_homeDir, token) => { capturedToken = token; },
+  });
+  assert.equal(typeof capturedToken, 'string');
+  assert.ok(capturedToken.length > 0);
 
   const renameCalls = [];
   await runCacheEconomicsRefresh({
@@ -272,7 +283,7 @@ test('runCacheEconomicsRefresh writes the cache atomically via rename and releas
       renameCalls.push([oldPath, newPath]);
       fs.renameSync(oldPath, newPath);
     },
-  });
+  }, capturedToken);
 
   assert.equal(renameCalls.length, 1, 'the cache must be published via exactly one rename');
   const [tmpArg, finalArg] = renameCalls[0];
@@ -286,7 +297,85 @@ test('runCacheEconomicsRefresh writes the cache atomically via rename and releas
   assert.equal(written.reads, 100);
   assert.equal(written.writes, 50);
   assert.equal(written.inputs, 10);
-  assert.equal(fs.existsSync(path.join(cacheDir, 'refresh.lock')), false, 'the refresh releases the lock in its finally');
+  assert.equal(fs.existsSync(path.join(cacheDir, 'refresh.lock')), false, 'the refresh releases the lock it was handed, in its finally');
+});
+
+// (codex-2 regression, HIMMEL-2948 CR round 1) reclaiming a stale lock mints
+// a NEW owner token; a refresh still holding the OLD (superseded) token must
+// not delete the reclaiming refresh's lock out from under it.
+test('a stale-lock reclaim mints a new owner token; releasing a superseded token leaves the reclaimed lock intact', async () => {
+  const home = mkTmpDir();
+  const lockPath = path.join(cacheDirFor(home), 'refresh.lock');
+  fs.mkdirSync(lockPath, { recursive: true });
+  const now = 1_000_000;
+  const staleMtime = new Date(now - 130_000);
+  fs.utimesSync(lockPath, staleMtime, staleMtime);
+
+  let newToken = null;
+  await getAllSessionsCacheEconomics({
+    homeDir: () => home,
+    now: () => now,
+    spawnRefresh: (_homeDir, token) => { newToken = token; },
+  });
+  assert.equal(typeof newToken, 'string');
+
+  // The original (now-superseded) refresh finally runs and releases with a
+  // stale owner token that no longer matches the reclaimed lock -> no-op.
+  await runCacheEconomicsRefresh({ homeDir: () => home, now: () => now }, 'stale-owner-token-from-before-reclaim');
+  assert.equal(fs.existsSync(lockPath), true, 'releasing a superseded token must not remove the reclaimed lock');
+
+  // The reclaiming refresh finishes and releases with the CURRENT token.
+  await runCacheEconomicsRefresh({ homeDir: () => home, now: () => now }, newToken);
+  assert.equal(fs.existsSync(lockPath), false, 'releasing the current token does remove the lock');
+});
+
+// (codex-1 regression, HIMMEL-2948 CR round 1) spawn() can fail
+// asynchronously (e.g. EAGAIN) after returning; that 'error' event must not
+// crash the process, and must release the lock the render path handed to
+// the child that never actually started.
+test('createSpawnRefresh releases the lock on an asynchronous spawn error', async () => {
+  const home = mkTmpDir();
+  const lockPath = path.join(cacheDirFor(home), 'refresh.lock');
+
+  let capturedToken = null;
+  await getAllSessionsCacheEconomics({
+    homeDir: () => home,
+    now: () => 1_000_000,
+    spawnRefresh: (_homeDir, token) => { capturedToken = token; },
+  });
+  assert.equal(fs.existsSync(lockPath), true);
+  assert.equal(typeof capturedToken, 'string');
+
+  const fakeChild = new EventEmitter();
+  fakeChild.unref = () => {};
+  const spawnRefresh = createSpawnRefresh(() => fakeChild);
+  spawnRefresh(home, capturedToken);
+  fakeChild.emit('error', new Error('EAGAIN'));
+
+  assert.equal(fs.existsSync(lockPath), false, 'an asynchronous spawn error must release the lock the render path handed over');
+});
+
+// (codex-3, HIMMEL-2948 CR round 1) a failed publish (rename throws) must
+// not leave the pid-suffixed tmp file behind.
+test('writeCache cleans up the tmp file when the publish step fails', async () => {
+  const home = mkTmpDir();
+  const cacheDir = cacheDirFor(home);
+  await runCacheEconomicsRefresh({
+    homeDir: () => home,
+    now: () => 1_000_000,
+    rename: () => { throw new Error('boom'); },
+  });
+  const entries = fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir) : [];
+  const leftoverTmp = entries.filter((name) => name.includes('.tmp.'));
+  assert.deepEqual(leftoverTmp, [], 'a failed rename must not leave a pid-suffixed tmp file behind');
+});
+
+test('getRefreshLockTokenFromArgv extracts the token that follows the refresh flag', () => {
+  assert.equal(
+    getRefreshLockTokenFromArgv(['node', 'index.js', '--refresh-cache-economics', 'tok-123']),
+    'tok-123',
+  );
+  assert.equal(getRefreshLockTokenFromArgv(['node', 'index.js']), null);
 });
 
 // (g) the detached child is dispatched by re-invoking the same entry with
