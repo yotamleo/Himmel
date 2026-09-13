@@ -82,7 +82,9 @@ console change without your token is ignored, not merely distrusted.
   a third spelling.
 - A classifier denial on a publish step (`gh pr create`, `gh pr comment`,
   `git push`) is never retried verbatim: one delayed retry via the
-  stuck-playbook row, then route to the console (HIMMEL-3020).
+  stuck-playbook row (`--body-file` for `gh`; `git push` has no body flag —
+  the delay itself is what makes the retry non-identical, so retry the exact
+  same command once), then route to the console (HIMMEL-3020).
 - Never use bare `git stash` / `git stash pop`: the stash stack is shared with
   every other worktree and another session may pop yours.
 

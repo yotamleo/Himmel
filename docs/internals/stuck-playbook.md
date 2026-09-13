@@ -366,18 +366,31 @@ so an identical immediate retry can escalate rather than clear (see the
 above for publish steps specifically: the first denial is not free to retry
 unconditionally, even once.
 
-This is not the shape-evasion the playbook's opening principle forbids: the
-retry below is delayed and non-identical (a different body-source flag, not a
-reshaped command hiding the same content from the classifier), and it follows
-the classifier's own hint that a transient denial usually clears — it is not
-an attempt to dodge detection.
+This is not the shape-evasion the playbook's opening principle forbids. That
+principle is about disguising the SAME content from the classifier by
+reshaping the command around it — the content here is unchanged (the PR/
+comment/push body is not edited to read differently); only the delay and the
+intervening read change, and those exist to remove the one signal this row
+documents (an *immediate, back-to-back, identical* resubmission), not to hide
+anything from the check. It is also not open-ended: exactly one retry is
+permitted, a second denial escalates to the operator rather than trying a
+third shape — the escape valve the opening principle itself names as correct
+once a denial persists.
 
 **What to do:** do **not** retry the identical command back-to-back. End the
-turn, or do one unrelated read, then retry **ONCE** with the body via
-`--body-file` (or the equivalent flag) and the same head. A second denial of
-**any** wording → stop, `BLOCKED` to the console with the exact denial text;
-the console never runs the denied command itself (permission laundering) — it
-routes it to the operator's own shell or the leg's window via `!`.
+turn, or do one unrelated read, then retry **ONCE**, delayed, with the same
+head:
+- `gh pr create` / `gh pr comment` — pass the body via `--body-file` instead
+  of inline, so the retry is not byte-identical to the denied call.
+- `git push` — there is no body flag to vary; the delay and the intervening
+  read are themselves what makes the retry non-identical (a different point
+  in time, not a reshaped invocation), so retry the exact same `git push`
+  command once, not a contrived alternate spelling.
+
+A second denial of **any** wording, on any of these, → stop, `BLOCKED` to the
+console with the exact denial text; the console never runs the denied command
+itself (permission laundering) — it routes it to the operator's own shell or
+the leg's window via `!`.
 
 ---
 

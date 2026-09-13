@@ -56,12 +56,14 @@ a CLI flag) over a cleverer command.
   (HIMMEL-2739)
 - **An outward-facing command (`gh pr create` / `gh pr comment` / `git push`)
   is denied with `Stage 2 classifier error`** → do not retry verbatim
-  back-to-back; end the turn or do one unrelated read, then retry ONCE with
-  the body via `--body-file` (or the equivalent invocation for `git push`,
-  which carries no body flag) and the same head. A second denial (including
-  the escalated `[Out-of-Place Publication]` form) → stop, `BLOCKED` to the
-  console with the exact text; the console never runs it (laundering).
-  (HIMMEL-3020)
+  back-to-back; end the turn or do one unrelated read, then retry ONCE,
+  delayed, with the same head: `gh pr create`/`gh pr comment` via
+  `--body-file` instead of inline; `git push` has no body flag, so retry the
+  exact same command once — the delay and intervening read are themselves
+  what make it non-identical, not a contrived alternate spelling. A second
+  denial (including the escalated `[Out-of-Place Publication]` form) → stop,
+  `BLOCKED` to the console with the exact text; the console never runs it
+  (laundering). (HIMMEL-3020)
 
 Why these are a load-on-trigger playbook and not CLAUDE.md rules:
 `docs/internals/stuck-playbook.md` § Why this is a playbook, and memory
