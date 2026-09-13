@@ -335,7 +335,7 @@ STUB
 # note naming the dir; no vulnerabilities/INDETERMINATE text.
 STUB13=$(make_transport_stub) || exit 1
 repo13=$(make_install_repo lock) || exit 1
-count13=$(mktemp -u)
+count13=$(mktemp -u "${TMPDIR:-/tmp}/npm-audit-count13.XXXXXX")
 rc=0
 out13=$( cd "$repo13" && PATH="$STUB13:$PATH" AUDIT_COUNT_FILE="$count13" AUDIT_FAIL_TIMES=1 NPM_AUDIT_RETRY_SLEEP=0 NPM_LOG=/dev/null bash "$AUDIT_SH" 2>&1 ) || rc=$?
 assert_eq "transport error once, retry succeeds → gate green (exit 0)" "0" "$rc"
@@ -359,7 +359,7 @@ rm -rf "$repo13" "$STUB13"; rm -f "$count13"
 # (non-zero), INDETERMINATE text present, vulnerabilities text ABSENT.
 STUB14=$(make_transport_stub) || exit 1
 repo14=$(make_install_repo lock) || exit 1
-count14=$(mktemp -u)
+count14=$(mktemp -u "${TMPDIR:-/tmp}/npm-audit-count14.XXXXXX")
 rc=0
 out14=$( cd "$repo14" && PATH="$STUB14:$PATH" AUDIT_COUNT_FILE="$count14" AUDIT_FAIL_TIMES=99 NPM_AUDIT_RETRY_SLEEP=0 NPM_LOG=/dev/null bash "$AUDIT_SH" 2>&1 ) || rc=$?
 assert_eq "transport error twice → gate blocks (non-zero)" "1" "$rc"

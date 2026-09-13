@@ -32,8 +32,13 @@ fi
 # npm error-code line naming a 4xx/5xx registry status. Anything else stays
 # on the original fail-closed (vulnerabilities) path — never guessed.
 is_transport_error() {
-    printf '%s' "$1" | grep -Eqi \
-        'audit endpoint returned an error|ENOAUDIT|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|Bad Request|code E[45][0-9]{2}'
+    # here-string, not `printf | grep -q` — under `set -o pipefail`, grep -q
+    # exiting on first match SIGPIPEs a piped producer, and pipefail can then
+    # report the pipeline as failed even though the match succeeded
+    # (HIMMEL-1430). A here-string has no producer process to SIGPIPE.
+    grep -Eqi \
+        'audit endpoint returned an error|ENOAUDIT|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|Bad Request|code E[45][0-9]{2}' \
+        <<< "$1"
 }
 
 fail=0
