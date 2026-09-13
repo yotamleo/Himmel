@@ -1099,4 +1099,36 @@ printf 'stub\n' > "$root/tester/rollorder/DEMO-nextleg-${today}AA-console.md"
 out50="$(console next --bucket rollorder --dry-run)"
 check "50 auto-discovery treats AA as newer than B (numeric, not lexical)" "$(printf '%s\n' "$out50" | grep -c "^would-doc: .*${today}AB-console.md$")" "1"
 
+# --- 51-55: --date validates a real calendar date, and an explicitly ------
+# empty value is an ERROR, not a silent reset to today's own chain (console
+# ruling on HIMMEL-3000). An explicit --doc bypasses predecessor auto-
+# discovery so these exercise the date-validation branch alone, not "no
+# predecessor found".
+mkdir -p "$root/tester/dateval"
+docZval="$root/tester/dateval/DEMO-nextleg-${today}Z-console.md"
+printf 'stub\n' > "$docZval"
+
+rc51=0
+out51="$(console next --bucket dateval --dry-run --date 2026-99-99 --doc "$docZval" 2>&1)" || rc51=$?
+check "51 --date 2026-99-99 exits 2" "$rc51" "2"
+check "51 --date 2026-99-99 prints no would-doc line" "$(printf '%s\n' "$out51" | grep -c '^would-doc:')" "0"
+
+rc52=0
+out52="$(console next --bucket dateval --dry-run --date 2026-02-30 --doc "$docZval" 2>&1)" || rc52=$?
+check "52 --date 2026-02-30 exits 2" "$rc52" "2"
+check "52 --date 2026-02-30 prints no would-doc line" "$(printf '%s\n' "$out52" | grep -c '^would-doc:')" "0"
+
+rc53=0
+out53="$(console next --bucket dateval --dry-run --date "" --doc "$docZval" 2>&1)" || rc53=$?
+check "53 --date '' exits 2" "$rc53" "2"
+check "53 --date '' prints a usage line" "$(printf '%s\n' "$out53" | grep -c '^usage: console.sh')" "1"
+
+rc54=0
+out54="$(console next --bucket dateval --dry-run --date= --doc "$docZval" 2>&1)" || rc54=$?
+check "54 --date= exits 2" "$rc54" "2"
+check "54 --date= prints a usage line" "$(printf '%s\n' "$out54" | grep -c '^usage: console.sh')" "1"
+
+out55="$(console next --bucket dateval --dry-run --date "2026-09-14" --doc "$docZval")"
+check "55 a real --date still mints the successor" "$(printf '%s\n' "$out55" | grep -c '^would-doc: .*2026-09-14A-console.md$')" "1"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -214,6 +214,7 @@ PREFIX=""
 DEADLINE_MIN=480
 DOC_ARG=""
 DATE_ARG=""
+DATE_GIVEN=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -232,10 +233,10 @@ while [ "$#" -gt 0 ]; do
         --date)
             [ "$CMD" = next ] || { err "--date is only valid for 'next'"; usage >&2; exit 1; }
             [ "$#" -ge 2 ] || { usage >&2; exit 1; }
-            DATE_ARG="$2"; shift 2 ;;
+            DATE_ARG="$2"; DATE_GIVEN=1; shift 2 ;;
         --date=*)
             [ "$CMD" = next ] || { err "--date is only valid for 'next'"; usage >&2; exit 1; }
-            DATE_ARG="${1#--date=}"; shift ;;
+            DATE_ARG="${1#--date=}"; DATE_GIVEN=1; shift ;;
         --arm) ARM=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --model) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; MODEL="$2"; shift 2 ;;
@@ -334,9 +335,17 @@ date="$(date +%F)"
 # TOMORROW's console without waiting for midnight. Nothing else (predecessor
 # resolution, `new`) reads this — they keep using $date.
 successor_date="$date"
-if [ -n "$DATE_ARG" ]; then
+if [ "$DATE_GIVEN" -eq 1 ]; then
     case "$DATE_ARG" in
-        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) successor_date="$DATE_ARG" ;;
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+            # Shape alone isn't enough ('2026-99-99' matches it): round-trip
+            # through the platform date(1) and require the output to equal
+            # the input, so a shape-valid but nonexistent calendar date
+            # (also '2026-02-30') is rejected too (HIMMEL-3000).
+            _date_round_trip="$(date -d "$DATE_ARG" +%F 2>/dev/null)" || _date_round_trip="$(date -j -f %Y-%m-%d "$DATE_ARG" +%F 2>/dev/null)" || _date_round_trip=""
+            [ "$_date_round_trip" = "$DATE_ARG" ] || { err "--date must be a real calendar date, got '$DATE_ARG'"; usage >&2; exit 2; }
+            successor_date="$DATE_ARG"
+            ;;
         *) err "--date must be YYYY-MM-DD, got '$DATE_ARG'"; usage >&2; exit 2 ;;
     esac
 fi
