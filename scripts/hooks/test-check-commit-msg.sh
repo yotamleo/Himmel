@@ -220,6 +220,32 @@ expect_warn "non-empty Platforms tested value is silent" 0 0 \
 
 Platforms tested: linux" TICKET_ID_REQUIRED=0
 
+# CodeRabbit (PR #735): the gate exits 0 on a `[skip …]` marker BEFORE it
+# ever checks ATTEST_RE, and its own ATTEST_RE match is "does any trailer
+# line conform", not "does the first one conform" — so a skip marker or a
+# later conforming duplicate must silence the warning even though the FIRST
+# (or only) trailer line on its own would not conform.
+expect_warn "skip security-review marker silences a non-conforming token" 0 0 \
+  "chore: add feature
+
+Security reviewed: yes
+[skip security-review]" TICKET_ID_REQUIRED=0
+expect_warn "skip platforms-check marker silences an empty value" 0 0 \
+  "chore: add feature
+
+Platforms tested:
+[skip platforms-check]" TICKET_ID_REQUIRED=0
+expect_warn "a later conforming Security reviewed line silences an earlier bad one" 0 0 \
+  "chore: add feature
+
+Security reviewed: yes
+Security reviewed: manual — checked the diff" TICKET_ID_REQUIRED=0
+expect_warn "a later non-empty Platforms tested line silences an earlier empty one" 0 0 \
+  "chore: add feature
+
+Platforms tested:
+Platforms tested: linux" TICKET_ID_REQUIRED=0
+
 # HIMMEL-2461: an unreadable message file used to be asserted as a SILENT
 # rc=0 pass here — that fail-open assertion is exactly what let the vacuous
 # gate (pass_filenames: false, empty $1) look tested for months. It must now

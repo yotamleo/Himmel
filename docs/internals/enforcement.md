@@ -150,11 +150,15 @@ Stages currently wired:
   commit-msg stage's filename argument IS the message file. Handed none, the
   hook falls back to `.git/COMMIT_EDITMSG`; only when that fallback does not
   resolve to a readable file does it fail CLOSED (reject) rather than pass
-  (HIMMEL-2461). It also WARNS (never blocks, HIMMEL-3022) at commit time on a
-  `Security reviewed:` trailer whose token will not satisfy
-  `check-security-reviewed.sh`'s pre-push TOKEN_RE, or an empty
-  `Platforms tested:` value, so the author sees it before the pre-push gate
-  refuses the push.
+  (HIMMEL-2461). It also WARNS (never blocks, HIMMEL-3022) at commit time when
+  no `Security reviewed:`/`Platforms tested:` line in the message conforms —
+  honoring a `[skip security-review]`/`[skip platforms-check]` marker, or a
+  token that will satisfy `check-security-reviewed.sh`'s pre-push TOKEN_RE,
+  or a non-empty `Platforms tested:` value, exactly as those gates would —
+  so the author usually sees the problem before the pre-push gate refuses the
+  push. It cannot see a PR-body attestation (the gate's third path, since no
+  PR exists yet at commit time), so a message the warning still flags may in
+  that one case still pass the gate.
 - **Doc-guard (pre-commit + pre-push, himmel-dev only):** check-doc-guard
   (blocks ADDING a command/skill file without a matching update to
   `docs/commands-catalog.md`; gated behind `.himmel-dev` marker so adopters

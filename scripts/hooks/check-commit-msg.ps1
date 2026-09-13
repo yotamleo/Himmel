@@ -147,20 +147,40 @@ Test-NegativeExistenceClaims $msg
 # (check-security-reviewed.sh TOKEN_RE, HIMMEL-1681), or `Platforms tested:`
 # with an empty value (check-platforms-tested.sh). Never blocks and fails
 # open on any error, same contract as Test-NegativeExistenceClaims above.
+#
+# Mirrors the two gate escape hatches that would otherwise make this warning
+# a false positive (CodeRabbit, PR #735): a `[skip security-review]` /
+# `[skip platforms-check]` marker anywhere in the message makes the gate
+# pass unconditionally (checked before ATTEST_RE), so this warns only when no
+# such marker is present; and the gate's own ATTEST_RE match is a "does any
+# line conform" test over the whole message, not "does the first matching
+# line conform" — so this checks all matching trailer lines, not just the
+# first. It still cannot see a PR-body attestation (the gate's third path):
+# no PR exists yet at commit-msg time, so that path is out of reach for a
+# commit-time warning by construction, not an oversight.
 function Test-NonconformingAttestationTrailers {
     param([string]$Msg)
     try {
+        $lines = $Msg -split "`r?`n"
+
+        $secSkipRe = '(?im)^[ \t]*\[skip security-review\]'
         $secTrailerRe = '(?im)^[ \t]*Security reviewed:'
         $secAttestRe = '(?im)^[ \t]*Security reviewed:[ \t]*(manual|claude-code-security-review|pr-review-toolkit|ad-hoc)([ \t]|$|[.,;])'
-        $secLine = ($Msg -split "`r?`n") | Where-Object { $_ -match $secTrailerRe } | Select-Object -First 1
-        if ($secLine -and ($secLine -notmatch $secAttestRe)) {
+        $secHasTrailer = ($lines | Where-Object { $_ -match $secTrailerRe }).Count -gt 0
+        $secHasSkip = ($lines | Where-Object { $_ -match $secSkipRe }).Count -gt 0
+        $secHasConforming = ($lines | Where-Object { $_ -match $secAttestRe }).Count -gt 0
+        if ($secHasTrailer -and -not $secHasSkip -and -not $secHasConforming) {
             [Console]::Error.WriteLine("WARN check-commit-msg: 'Security reviewed:' trailer present but its token is not one of the four accepted (manual, claude-code-security-review, pr-review-toolkit, ad-hoc) — the pre-push gate will refuse this push.")
             [Console]::Error.WriteLine("  Fix: Security reviewed: manual — <what you checked>")
         }
 
+        $platSkipRe = '(?im)^[ \t]*\[skip platforms-check\]'
         $platEmptyRe = '(?im)^[ \t]*Platforms tested:[ \t]*$'
-        $platLine = ($Msg -split "`r?`n") | Where-Object { $_ -match $platEmptyRe } | Select-Object -First 1
-        if ($platLine) {
+        $platNonemptyRe = '(?im)^[ \t]*Platforms tested:[ \t]*[^ \t]'
+        $platHasEmpty = ($lines | Where-Object { $_ -match $platEmptyRe }).Count -gt 0
+        $platHasSkip = ($lines | Where-Object { $_ -match $platSkipRe }).Count -gt 0
+        $platHasNonempty = ($lines | Where-Object { $_ -match $platNonemptyRe }).Count -gt 0
+        if ($platHasEmpty -and -not $platHasSkip -and -not $platHasNonempty) {
             [Console]::Error.WriteLine("WARN check-commit-msg: 'Platforms tested:' trailer present with an empty value — the pre-push gate will refuse this push.")
             [Console]::Error.WriteLine("  Fix: Platforms tested: linux, windows")
         }

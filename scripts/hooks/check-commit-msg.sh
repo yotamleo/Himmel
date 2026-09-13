@@ -89,8 +89,22 @@ warn_negative_existence_claims "${COMMIT_MSG}" || true
 # follow-up commit each on 2026-09-12 discovering this at push time instead.
 # Never blocks (exit code untouched) and fails open on any error, same
 # contract as warn_negative_existence_claims above.
+#
+# Mirrors the two gate escape hatches that would otherwise make this warning
+# a false positive (CodeRabbit, PR #735): a `[skip security-review]` /
+# `[skip platforms-check]` marker anywhere in the message makes the gate
+# pass unconditionally (check-security-reviewed.sh / check-platforms-tested.sh,
+# checked before ATTEST_RE), so this warns only when no such marker is
+# present; and the gate's own ATTEST_RE match is a "does any line conform"
+# test over the whole message, not "does the first matching line conform" —
+# so this checks all matching trailer lines, not just the first. What it
+# still cannot see is a PR-body attestation (the gate's third path): no PR
+# exists yet at commit-msg time, so that path is out of reach for a
+# commit-time warning by construction, not an oversight.
 warn_nonconforming_attestation_trailers() {
   local msg="$1"
+
+  local sec_skip_re='^[[:space:]]*\[skip security-review\]'
   # Same token vocabulary as check-security-reviewed.sh's TOKEN_RE — kept as
   # separate literal text (not sourced) since that script is pre-push-only
   # and out of scope for this hook to depend on; HIMMEL-1681 is the anchor
@@ -98,17 +112,19 @@ warn_nonconforming_attestation_trailers() {
   local sec_token_re='(manual|claude-code-security-review|pr-review-toolkit|ad-hoc)([[:space:]]|$|[.,;])'
   local sec_trailer_re='^[[:space:]]*Security reviewed:'
   local sec_attest_re="${sec_trailer_re}[[:space:]]*${sec_token_re}"
-  local sec_line
-  sec_line=$(printf '%s\n' "$msg" | grep -iE "$sec_trailer_re" | head -1)
-  if [ -n "$sec_line" ] && ! printf '%s\n' "$sec_line" | grep -qiE "$sec_attest_re"; then
+  if printf '%s\n' "$msg" | grep -qiE "$sec_trailer_re" \
+      && ! printf '%s\n' "$msg" | grep -qiE "$sec_skip_re" \
+      && ! printf '%s\n' "$msg" | grep -qiE "$sec_attest_re"; then
     echo "WARN check-commit-msg: 'Security reviewed:' trailer present but its token is not one of the four accepted (manual, claude-code-security-review, pr-review-toolkit, ad-hoc) — the pre-push gate will refuse this push." >&2
     echo "  Fix: Security reviewed: manual — <what you checked>" >&2
   fi
 
+  local plat_skip_re='^[[:space:]]*\[skip platforms-check\]'
   local plat_empty_re='^[[:space:]]*Platforms tested:[[:space:]]*$'
-  local plat_line
-  plat_line=$(printf '%s\n' "$msg" | grep -iE "$plat_empty_re" | head -1)
-  if [ -n "$plat_line" ]; then
+  local plat_nonempty_re='^[[:space:]]*Platforms tested:[[:space:]]*[^[:space:]]'
+  if printf '%s\n' "$msg" | grep -qiE "$plat_empty_re" \
+      && ! printf '%s\n' "$msg" | grep -qiE "$plat_skip_re" \
+      && ! printf '%s\n' "$msg" | grep -qiE "$plat_nonempty_re"; then
     echo "WARN check-commit-msg: 'Platforms tested:' trailer present with an empty value — the pre-push gate will refuse this push." >&2
     echo "  Fix: Platforms tested: linux, windows" >&2
   fi
