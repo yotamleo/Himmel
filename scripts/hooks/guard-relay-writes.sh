@@ -14,28 +14,37 @@
 # TRIP CONDITION: HIMMEL_CONSOLE_RELAY=1 in this process's environment AND
 # one of:
 #   Write|Edit|MultiEdit|NotebookEdit — the resolved file_path (notebook_path
-#     for NotebookEdit) is under <handover_root>/inbox/, under a
-#     .../himmel-console/... rundir, under ${TMPDIR:-/tmp}/himmel-console-*,
-#     or its basename matches *-legN*-RESUME.md.
+#     for NotebookEdit) contains an unresolved ".." path segment (denied
+#     outright, fail-closed, before any guarded-path match); or
+#     <handover_root> fails to resolve (denied fail-closed rather than
+#     silently skipping the inbox check); or the path is under
+#     <handover_root>/inbox/, under a .../himmel-console/... rundir, under
+#     ${TMPDIR:-/tmp}/himmel-console-*, or its basename matches
+#     *-legN*-RESUME.md.
 #   Bash — the command text contains HIMMEL_CONSOLE_RELAY, HIMMEL_CONSOLE_LEG,
 #     CLAUDE_PID=, SESSION_NAME_CMDLINE_FILE or CONSOLE_SESSION_NAME= (an
 #     env-prefix override of an identity/marker variable); or contains
-#     "inbox-send" AND "--token"; or contains a redirection/tee (">", "tee")
-#     AND text naming "/inbox/", "himmel-console", or both "-legN" and
-#     "-RESUME.md".
+#     "inbox-send" AND "--token"; or contains a write-shaped verb (">", "tee",
+#     "cp", "mv", "rm", "rsync", "dd", "truncate", "sed", "install", "chmod",
+#     "chown") AND text naming "/inbox/", "himmel-console", or both "-legN"
+#     and "-RESUME.md".
 #
 # DEFAULT ACTION: with the marker unset this hook is a silent no-op — the
 # marker check is the FIRST statement, before stdin is even read, so it costs
 # nothing on every non-relay session. With the marker set, this is a SECURITY
-# FENCE and fails CLOSED: an unparseable payload, missing jq, or a field of
-# the wrong type all DENY (opposite of a workflow-nudge hook's fail-open
-# default — see scripts/hooks/CLAUDE.md's fail-open-vs-closed rule).
+# FENCE and fails CLOSED: an unparseable payload, missing jq, a field of the
+# wrong type, an unresolved ".." path segment, or a handover_root resolution
+# failure all DENY (opposite of a workflow-nudge hook's fail-open default —
+# see scripts/hooks/CLAUDE.md's fail-open-vs-closed rule).
 #
 # RESIDUAL (spec R2, deliberately not closed here): these are textual checks
 # over the tool_input fields, not a shell parser — a command built through
 # `eval`, a wrapper script file that itself performs the write, or a
 # heredoc-assembled command string can still reach a guarded path without
-# ever containing the literal substrings this hook matches on.
+# ever containing the literal substrings this hook matches on. The Bash
+# write-verb list is a fixed vocabulary, not a shell grammar — a write
+# performed through an uncommon utility not on that list (e.g. `tar`,
+# `ln`, `cat >>` masked some other way) is not caught either.
 #
 # Bash 3.2-compatible. Exit codes: 0 allow (no output); 2 deny (JSON
 # hookSpecificOutput with permissionDecision "deny" on stdout,
@@ -89,13 +98,15 @@ case "$tool" in
         fi
         [ -n "$path" ] || deny "unparseable-payload" "no file_path resolved for $tool"
 
-        root=""
-        root="$(handover_root 2>/dev/null)" || root=""
-        if [ -n "$root" ]; then
-            case "$path" in
-                "$root"/inbox/*) deny "inbox-write" "$path" ;;
-            esac
-        fi
+        case "$path" in
+            */../* | ../* | */.. | ..) deny "unresolved-path" "$path" ;;
+        esac
+
+        root="$(handover_root 2>/dev/null)" || deny "handover-root-unresolved" "handover_root failed"
+        [ -n "$root" ] || deny "handover-root-unresolved" "handover_root returned empty"
+        case "$path" in
+            "$root"/inbox/*) deny "inbox-write" "$path" ;;
+        esac
 
         case "$path" in
             /run/user/*/himmel-console/*) deny "console-rundir-write" "$path" ;;
@@ -133,7 +144,7 @@ case "$tool" in
         esac
 
         case "$cmd" in
-            *'>'* | *tee*)
+            *'>'* | *tee* | *cp* | *mv* | *rm* | *rsync* | *dd* | *truncate* | *sed* | *install* | *chmod* | *chown*)
                 case "$cmd" in
                     *"/inbox/"* | *himmel-console*) deny "redirect-into-console-state" "$cmd" ;;
                 esac

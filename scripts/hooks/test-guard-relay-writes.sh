@@ -103,8 +103,10 @@ RUNDIR_LOG="/run/user/1000/himmel-console/s/inbox-sent.log"
 OWN_DOC="$ROOT/yotamleo/himmel/HIMMEL-1-relay-2026-09-12-RESUME.md"
 EXTERNAL_LEG_DOC="/home/u/luna/handovers/a-legN3-2026-09-12-RESUME.md"
 
+TRAVERSAL_INBOX="$ROOT/other/../inbox/X.md"
+
 # name|json|expect_rc_relay|expect_rc_norelay
-ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11)
+ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11 row12 row13 row14)
 ROWS_JSON=(
     "$(write_payload Write "$INBOX_X")"
     "$(write_payload Edit "$LEG_DOC")"
@@ -120,8 +122,11 @@ ROWS_JSON=(
     "$(bash_payload "SESSION_NAME_CMDLINE_FILE=f bash x.sh")"
     "$(bash_payload "env -u HIMMEL_CONSOLE_LEG bash x.sh")"
     "$(bash_payload "cat $ROOT/inbox/X.md")"
+    "$(write_payload Write "$TRAVERSAL_INBOX")"
+    "$(bash_payload "cp x $ROOT/inbox/X.md")"
+    "$(bash_payload "rm $RUNDIR_LOG")"
 )
-ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0)
+ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0 2 2 2)
 
 echo "=== marker set (HIMMEL_CONSOLE_RELAY=1) ==="
 i=0
@@ -162,6 +167,14 @@ assert_contains "malformed stdin deny reason" "relay write-deny:" "$(cat "$TMP/o
 RC_READ=$(run_relay read-tool "$(read_payload "$INBOX_X")")
 assert_rc "Read tool on inbox path allows (rc=0)" 0 "$RC_READ"
 assert_empty "Read tool: no output" "$(combined_output read-tool)"
+
+NO_HANDOVER_DIR="$TMP/does-not-exist"
+printf '%s' "$(write_payload Write "$ROOT/some-file.md")" \
+    | env HANDOVER_DIR="$NO_HANDOVER_DIR" HIMMEL_CONSOLE_RELAY=1 "$BASH_ABS" "$HOOK" \
+    >"$TMP/out-root-fail" 2>"$TMP/err-root-fail"
+RC_ROOT_FAIL="$?"
+assert_rc "handover_root failure denies fail-closed (rc=2)" 2 "$RC_ROOT_FAIL"
+assert_contains "handover_root failure deny reason" "handover-root-unresolved" "$(cat "$TMP/out-root-fail")"
 
 echo ""
 echo "Results: $pass passed, $fail failed"
