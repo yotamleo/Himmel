@@ -5,7 +5,7 @@
 # wrong-repo query.
 set -u
 case "$*" in
-    *"-R custom/repo "*) echo '[]'; exit 0 ;;
+    "pr list "*"-R custom/repo "*) echo '[]'; exit 0 ;;
     "pr list "*) echo "gh: unexpected repo in call: $*" >&2; exit 1 ;;
     *) echo "gh: stub does not implement: $*" >&2; exit 1 ;;
 esac
