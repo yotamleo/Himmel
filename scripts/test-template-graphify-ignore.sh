@@ -26,7 +26,10 @@ ok() { echo "ok - $1"; }
 bad() { echo "FAIL - $1" >&2; fails=$((fails + 1)); }
 skip() { echo "SKIP - $1"; }
 
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/template-graphify-ignore.XXXXXX")" || {
+    echo "FAIL - mktemp -d failed" >&2
+    exit 1
+}
 trap 'rm -rf "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
