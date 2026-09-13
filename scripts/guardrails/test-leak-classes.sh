@@ -579,6 +579,37 @@ else
     fail "T1v2 home-path marked-fixture control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1w (HIMMEL-2958): finishes HIMMEL-2951's ALLOW_HOME_NAMES drift for the
+# last residual name, jarrod -- its only fixture dependents sat in the
+# vendored marketplace/plugins/claude-hud/tests/render.test.js, which now
+# carry their own same-line leak-allow markers. Same proof as T1e/T1v: an
+# unmarked home path under the formerly-allowlisted name is now flagged.
+# (Named T1w, not T1j as the ticket's design doc assumed, to avoid colliding
+# with the existing T1j/T1j2 WSL-path test IDs landed since the ticket was
+# filed.)
+r=$(new_repo)
+printf 'HOME=/home/jarrod\n' > "$r/removed-allowlist3.txt"  # leak-allow: home-path test fixture
+git -C "$r" add removed-allowlist3.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "removed-allowlist3.txt:1"; then
+    pass "T1w home-path: formerly-allowlisted name (jarrod) is now flagged unless marked"
+else
+    fail "T1w home-path removed-allowlist-name control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1w2: ...and the same name stays clean when its own fixture line carries
+# the leak-allow marker -- proving the per-line convention is a working
+# replacement for jarrod too, matching the 13 vendored fixture lines.
+r=$(new_repo)
+printf 'HOME=/home/jarrod  # leak-allow: home-path test fixture\n' > "$r/marked3.txt"
+git -C "$r" add marked3.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1w2 home-path: same formerly-allowlisted name (jarrod) stays clean with its own leak-allow marker"
+else
+    fail "T1w2 home-path marked-fixture control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 echo "== redaction =="
 
 # T6: the reported line carries only the first 4 chars of the match + an

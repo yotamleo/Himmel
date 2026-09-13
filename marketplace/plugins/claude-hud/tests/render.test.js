@@ -357,15 +357,15 @@ test('renderSessionLine includes config counts when present', () => {
 
 test('renderSessionLine displays project name from POSIX cwd', () => {
   const ctx = baseContext();
-  ctx.stdin.cwd = '/Users/jarrod/my-project';
+  ctx.stdin.cwd = '/Users/jarrod/my-project'; // leak-allow: home-path upstream fixture name, HIMMEL-2958
   const line = renderSessionLine(ctx);
   assert.ok(line.includes('my-project'));
-  assert.ok(!line.includes('/Users/jarrod'));
+  assert.ok(!line.includes('/Users/jarrod')); // leak-allow: home-path upstream fixture name, HIMMEL-2958
 });
 
 test('renderSessionLine displays project name from Windows cwd on every host', () => {
   const ctx = baseContext();
-  ctx.stdin.cwd = 'C:\\Users\\jarrod\\my-project';
+  ctx.stdin.cwd = 'C:\\Users\\jarrod\\my-project'; // leak-allow: home-path upstream fixture name, HIMMEL-2958
   const line = renderSessionLine(ctx);
   assert.ok(line.includes('my-project'));
   assert.ok(!line.includes('C:\\'));
@@ -381,17 +381,17 @@ test('renderSessionLine handles root path gracefully', () => {
 test('renderSessionLine displays full absolute path when pathLevels is "full"', () => {
   const ctx = baseContext();
   ctx.config.pathLevels = 'full';
-  ctx.stdin.cwd = '/Users/jarrod/dev/my-project';
+  ctx.stdin.cwd = '/Users/jarrod/dev/my-project'; // leak-allow: home-path upstream fixture name, HIMMEL-2958
   const line = stripAnsi(renderSessionLine(ctx));
-  assert.ok(line.includes('/Users/jarrod/dev/my-project'));
+  assert.ok(line.includes('/Users/jarrod/dev/my-project')); // leak-allow: home-path upstream fixture name, HIMMEL-2958
 });
 
 test('renderSessionLine normalizes a full Windows path on every host', () => {
   const ctx = baseContext();
   ctx.config.pathLevels = 'full';
-  ctx.stdin.cwd = 'C:\\Users\\jarrod\\my-project';
+  ctx.stdin.cwd = 'C:\\Users\\jarrod\\my-project'; // leak-allow: home-path upstream fixture name, HIMMEL-2958
   const line = stripAnsi(renderSessionLine(ctx));
-  assert.ok(line.includes('C:/Users/jarrod/my-project'));
+  assert.ok(line.includes('C:/Users/jarrod/my-project')); // leak-allow: home-path upstream fixture name, HIMMEL-2958
 });
 
 test('renderSessionLine preserves numeric pathLevels behavior for shallow roots', () => {
@@ -605,17 +605,17 @@ test('renderSessionLine renders a sanitized opt-in transcript model', () => {
 test('renderProjectLine displays full absolute path when pathLevels is "full"', () => {
   const ctx = baseContext();
   ctx.config.pathLevels = 'full';
-  ctx.stdin.cwd = '/Users/jarrod/dev/my-project';
+  ctx.stdin.cwd = '/Users/jarrod/dev/my-project'; // leak-allow: home-path upstream fixture name, HIMMEL-2958
   const line = stripAnsi(renderProjectLine(ctx) ?? '');
-  assert.ok(line.includes('/Users/jarrod/dev/my-project'));
+  assert.ok(line.includes('/Users/jarrod/dev/my-project')); // leak-allow: home-path upstream fixture name, HIMMEL-2958
 });
 
 test('renderProjectLine normalizes Windows and UNC full paths on every host', () => {
   const ctx = baseContext();
   ctx.config.pathLevels = 'full';
 
-  ctx.stdin.cwd = 'C:\\Users\\jarrod\\my-project';
-  assert.ok(stripAnsi(renderProjectLine(ctx) ?? '').includes('C:/Users/jarrod/my-project'));
+  ctx.stdin.cwd = 'C:\\Users\\jarrod\\my-project'; // leak-allow: home-path upstream fixture name, HIMMEL-2958
+  assert.ok(stripAnsi(renderProjectLine(ctx) ?? '').includes('C:/Users/jarrod/my-project')); // leak-allow: home-path upstream fixture name, HIMMEL-2958
 
   ctx.stdin.cwd = '\\\\server\\share\\project';
   assert.ok(stripAnsi(renderProjectLine(ctx) ?? '').includes('//server/share/project'));
@@ -1535,7 +1535,7 @@ test('render expanded layout includes speed and duration on the project line', a
 
 test('renderSessionLine omits project name when showProject is false', () => {
   const ctx = baseContext();
-  ctx.stdin.cwd = '/Users/jarrod/my-project';
+  ctx.stdin.cwd = '/Users/jarrod/my-project'; // leak-allow: home-path upstream fixture name, HIMMEL-2958
   ctx.gitStatus = { branch: 'main', isDirty: true, ahead: 0, behind: 0 };
   ctx.config.display.showProject = false;
   const line = renderSessionLine(ctx);
@@ -1545,7 +1545,7 @@ test('renderSessionLine omits project name when showProject is false', () => {
 
 test('renderProjectLine keeps git status when showProject is false', () => {
   const ctx = baseContext();
-  ctx.stdin.cwd = '/Users/jarrod/my-project';
+  ctx.stdin.cwd = '/Users/jarrod/my-project'; // leak-allow: home-path upstream fixture name, HIMMEL-2958
   ctx.gitStatus = { branch: 'main', isDirty: true, ahead: 0, behind: 0 };
   ctx.config.display.showProject = false;
   const line = renderProjectLine(ctx);

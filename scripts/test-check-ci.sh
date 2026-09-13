@@ -1147,6 +1147,14 @@ git -C "$BROKEN_MARKER_REPO" config --local himmel.coderabbit ture
 if git -C "$BROKEN_MARKER_REPO" config --bool --local --get himmel.coderabbit >/dev/null 2>&1; then
     echo "FATAL: the broken-marker fixture is not broken — this git parses 'ture' as a boolean"; exit 1
 fi
+# HIMMEL-2769: a repo that DECLARES it expects CodeRabbit (a committed
+# .coderabbit.yaml) but whose marker was never armed on this clone — the
+# CR-UNARMED cases below. No marker at all, distinct from BROKEN_MARKER_REPO.
+CR_YAML_UNARMED_REPO=$(mktemp -d "$STUBDIR/cr-yaml-unarmed.XXXXXX") || { echo "FATAL: mktemp -d failed"; exit 1; }
+git -C "$CR_YAML_UNARMED_REPO" init --quiet
+printf 'reviews:\n  profile: chill\n' > "$CR_YAML_UNARMED_REPO/.coderabbit.yaml"
+git -C "$CR_YAML_UNARMED_REPO" add .coderabbit.yaml
+git -C "$CR_YAML_UNARMED_REPO" -c user.email=t@t -c user.name=t commit --quiet --no-verify -m seed
 DIRTY_LEDGER_REPO=$(mktemp -d "$STUBDIR/dirty-ledger.XXXXXX") || { echo "FATAL: mktemp -d failed"; exit 1; }
 git -C "$DIRTY_LEDGER_REPO" init --quiet
 git -C "$DIRTY_LEDGER_REPO" -c user.email=t@t -c user.name=t commit --allow-empty -m seed --quiet --no-verify
@@ -2348,6 +2356,42 @@ if printf '%s' "$ERR" | grep -F "himmel.coderabbit marker holds a value" >/dev/n
 else
     pass "2380-c an explicit opt-out suppresses the broken-marker warning"
 fi
+
+# ── HIMMEL-2769: CR-UNARMED — a declared-CodeRabbit repo left unarmed fails
+# loud instead of certifying a review nobody armed. `not-configured` is the
+# adopter's silent steady state (case 2380-b) ONLY when the repo never
+# declared CodeRabbit in the first place; a committed .coderabbit.yaml is
+# that declaration, so an unarmed marker alongside it is a clone nobody ran
+# `git config --local himmel.coderabbit true` on, not an adopter.
+
+# 2769-a — THE red this ticket adds: yaml present, no marker anywhere ->
+# CR-UNARMED, exit non-zero, never a silent green.
+CR_APP_OVERRIDE=""
+run_in_repo "$CR_YAML_UNARMED_REPO" cr-absent
+assert_rc 2 "2769-a a declared-CodeRabbit repo left unarmed fails loud (CR-UNARMED)"
+assert_err_has "CR-UNARMED" "2769-a the summary line names CR-UNARMED"
+assert_err_has "git config --local himmel.coderabbit true" "2769-a the line carries the fix"
+
+# 2769-b — the sole bypass (kept its existing meaning): CR_APP=0 makes
+# cr_app_state report 'disabled', never 'not-configured', so the new block
+# cannot fire — pin the precedence rather than assume it.
+CR_APP_OVERRIDE=0
+run_in_repo "$CR_YAML_UNARMED_REPO" cr-absent
+assert_rc 0 "2769-b CR_APP=0 bypasses CR-UNARMED even with .coderabbit.yaml present"
+
+# 2769-c — NEGATIVE CONTROL: no .coderabbit.yaml at all (case 2380-b's real
+# adopter) must keep today's default-disarmed green. This ticket closes a
+# vacuous-green class; it must not turn every unarmed adopter into a blocked
+# one (case 5 in test-cr-available.sh, pinned there).
+CR_APP_OVERRIDE=""
+run_in_repo "$EMPTY_LEDGER_REPO" cr-absent
+assert_rc 0 "2769-c an adopter with no .coderabbit.yaml stays default-disarmed (no CR-UNARMED)"
+if printf '%s' "$ERR" | grep -F "CR-UNARMED" >/dev/null; then
+    fail "2769-c no .coderabbit.yaml -> no CR-UNARMED line" "printed anyway: $ERR"
+else
+    pass "2769-c no .coderabbit.yaml -> no CR-UNARMED line"
+fi
+
 # --- 2704: CodeRabbit is the App, and check-ci NEVER consults a CLI ----------
 # HIMMEL-2704 retired the CodeRabbit CLI. check-ci.sh was always App-only, and
 # these two cases PIN that rather than assuming it.
@@ -2405,5 +2449,5 @@ unset CR_CLI_MARKER
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 147 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 147"; exit 1; fi
+if [ "$COUNT" -ne 150 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 150"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

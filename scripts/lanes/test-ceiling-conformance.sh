@@ -92,7 +92,13 @@ out_e="$(run_primary)"
 contains 'the console row alone is ok' "$out_e" 'ceiling=ok'
 
 # (f) pgrep itself fails (rc>1, a scan failure, not "no processes") -> ceiling=?
-# (HIMMEL-2974, codex-1 round 1: a scan failure must not read as ceiling=ok)
+# (HIMMEL-2974, codex-1 round 1: a scan failure must not read as ceiling=ok).
+# HIMMEL-3002: pgrep's own real fatal-error rc is ALSO 3 (e.g. OOM), same
+# value claude_sessions() now returns for "scan completed but degraded" --
+# this deliberately exercises that exact collision: an early pgrep failure
+# prints NOTHING before returning, so ceiling-conformance.sh must still
+# report ceiling=? here rather than misreading the empty table as a
+# (vacuously) degraded-but-empty scan.
 cat > "$W/bin/pgrep" <<'STUB'
 #!/usr/bin/env bash
 exit 3
@@ -207,6 +213,133 @@ pgrep_x_stub 113
 out_o="$(run_primary)"
 contains 'a --system-prompt value that looks like -n does not hijack the following token as the real name' "$out_o" 'HIMMEL-200-legN99-2026-09-13 auto'
 contains 'the --system-prompt hijack-attempt leg still reports its real DRIFT' "$out_o" 'ceiling=DRIFT:HIMMEL-200-legN99-2026-09-13'
+
+# (p) HIMMEL-3002: pgrep returns a pid that has already vanished from /proc
+# by the time we read it (a race, or a stale table) -- no /proc/<pid> dir at
+# all. Must print no row for it and must NOT count as scan-degraded -- this
+# pins today's behaviour for a genuinely gone process.
+pgrep_x_stub 108 999
+out_p="$(run_primary)"; rc_p=$?
+if [ "$rc_p" -eq 0 ]; then pass 'a vanished pid (no /proc dir) still exits 0'; else fail "exits 0 (rc=$rc_p)"; fi
+case "$out_p" in
+    *'999'*) fail 'a vanished pid prints no row for it' ;;
+    *) pass 'a vanished pid prints no row for it' ;;
+esac
+case "$out_p" in
+    *'scan-degraded'*) fail 'a vanished pid is not reported as scan-degraded' ;;
+    *) pass 'a vanished pid is not reported as scan-degraded' ;;
+esac
+
+# (q) HIMMEL-3002: an alive pid whose /proc/<pid> dir exists but whose
+# cmdline is unreadable (a permission boundary, e.g. hidepid) must not be
+# silently treated as vanished -- the scan is reported as degraded, naming
+# the pid, and the summary falls back to "cannot tell" (ceiling=?) rather
+# than ok/DRIFT over a partial table. The other, readable row must still
+# print.
+if [ "$(id -u)" = "0" ]; then
+    printf 'SKIP - unreadable-cmdline case cannot be simulated as root (chmod 000 is still readable to root)\n'
+else
+    mkcmdline 114 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-777-legN101-2026-09-13 work
+    chmod 000 "$W/proc/114/cmdline"
+    if [ -r "$W/proc/114/cmdline" ]; then
+        printf 'SKIP - unreadable-cmdline case: chmod 000 did not remove read access here\n'
+        chmod 700 "$W/proc/114/cmdline"
+    else
+        pgrep_x_stub 108 114
+        out_q="$(run_primary)"; rc_q=$?
+        if [ "$rc_q" -eq 0 ]; then pass 'a degraded scan still exits 0 (report, not a gate)'; else fail "exits 0 (rc=$rc_q)"; fi
+        contains 'a scan-degraded pid is named (HIMMEL-3002)' "$out_q" 'scan-degraded:114'
+        contains 'a degraded scan reports ceiling=? not ok/DRIFT' "$out_q" 'ceiling=?'
+        contains 'a degraded scan still prints the readable row' "$out_q" 'HIMMEL-555-legN70-2026-09-13 auto'
+        chmod 700 "$W/proc/114/cmdline"
+    fi
+fi
+
+# (r) HIMMEL-3008: `-r` passes but the actual read fails -- readability can
+# change between the upfront check and the read loop's own `< "$cmdline"`
+# redirection. Simplest deterministic stand-in: a directory named `cmdline`
+# in a fake /proc/<pid> -- `-r` succeeds on a directory, but reading from it
+# fails at read() time (not open() time), so the loop consumes zero tokens
+# exactly like case (q)'s permission-denied file. Must be reported the same
+# way: a degraded scan naming the pid, rc 3 -- not a phantom empty-fields row
+# for a "live" session (the exact bug this ticket closes).
+mkdir -p "$W/proc/115/cmdline"
+pgrep_x_stub 108 115
+sess_out_r="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+sess_rc_r=$?
+if [ "$sess_rc_r" -eq 3 ]; then pass 'a read-fails-after-precheck cmdline returns rc 3'; else fail "returns rc 3 (got $sess_rc_r)"; fi
+contains 'a read-fails-after-precheck pid is reported unreadable, not a phantom row' "$sess_out_r" '# unreadable 115'
+case "$sess_out_r" in
+    *$'115\t'*) fail 'a read-fails-after-precheck pid does not print a data row' ;;
+    *) pass 'a read-fails-after-precheck pid does not print a data row' ;;
+esac
+contains 'a read-fails-after-precheck scan still prints the other readable row' "$sess_out_r" $'108\tHIMMEL-555-legN70-2026-09-13\tclaude-sonnet-5\tauto'
+out_r="$(run_primary)"
+contains 'ceiling-conformance.sh surfaces the read-fails pid as scan-degraded' "$out_r" 'scan-degraded:115'
+contains 'ceiling-conformance.sh reports ceiling=? over a read-fails pid' "$out_r" 'ceiling=?'
+
+# (s) HIMMEL-3008 design: a live pid whose cmdline is empty is not the same
+# fact as a permission race -- a zombie (already exited, not yet reaped)
+# reads back a genuinely empty (0-byte) cmdline with no error at all. It must
+# not be printed as a phantom empty-fields row, but it is not a readability
+# failure either -- silent, rc 0, "not a row" for a different reason than
+# case (p)'s vanished pid (empty content, not a missing /proc/<pid> dir).
+mkdir -p "$W/proc/116"
+: > "$W/proc/116/cmdline"
+pgrep_x_stub 116
+sess_out_s="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+sess_rc_s=$?
+if [ "$sess_rc_s" -eq 0 ]; then pass 'a zero-token empty cmdline on a live pid returns rc 0'; else fail "returns rc 0 (got $sess_rc_s)"; fi
+if [ -z "$sess_out_s" ]; then pass 'a zero-token empty cmdline on a live pid prints nothing'; else fail "prints nothing (got '$sess_out_s')"; fi
+out_s="$(run_primary)"
+contains 'ceiling-conformance.sh still reports ceiling=ok over a zero-token empty cmdline' "$out_s" 'ceiling=ok'
+case "$out_s" in
+    *'scan-degraded'*) fail 'a zero-token empty cmdline on a live pid is not reported as scan-degraded' ;;
+    *) pass 'a zero-token empty cmdline on a live pid is not reported as scan-degraded' ;;
+esac
+
+# (t) HIMMEL-3009: a read that errors AFTER consuming at least one token must
+# not fall through to the normal row path with a truncated argv -- it is the
+# same fact as case (r)'s immediate read failure (a live pid we cannot fully
+# trust), not a phantom-but-partial row. A real mid-stream read error is not
+# hermetically reproducible from a plain file (open() succeeds, and any
+# partial-write-then-close on a regular file reads back as a clean EOF, not
+# an error) -- CLAUDE_SESSIONS_READ_FAULT_AFTER is a test-only seam (unset in
+# production: zero behaviour change) that makes the loop treat the Nth token
+# read as the last one before an error, exactly like a real EIO would.
+mkcmdline 117 claude --model claude-sonnet-5 -n HIMMEL-3009-legN251-2026-09-13 work
+pgrep_x_stub 108 117
+sess_out_t="$(CLAUDE_SESSIONS_PROC="$W/proc" CLAUDE_SESSIONS_READ_FAULT_AFTER=1 CLAUDE_SESSIONS_READ_FAULT_PID=117 PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+sess_rc_t=$?
+if [ "$sess_rc_t" -eq 3 ]; then pass 'a read that errors after consuming a token returns rc 3'; else fail "returns rc 3 (got $sess_rc_t)"; fi
+contains 'a partial-read pid is reported unreadable, not a phantom/partial row' "$sess_out_t" '# unreadable 117'
+case "$sess_out_t" in
+    *$'117\t'*) fail 'a partial-read pid does not print a truncated data row' ;;
+    *) pass 'a partial-read pid does not print a truncated data row' ;;
+esac
+contains 'a partial-read scan still prints the other readable row' "$sess_out_t" $'108\tHIMMEL-555-legN70-2026-09-13\tclaude-sonnet-5\tauto'
+
+# (u) the readable case (no error) stays byte-identical -- byte-compare
+# against scenario (j)'s known-good row for the same pid/fixture.
+pgrep_x_stub 108
+sess_out_u="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+if [ "$sess_out_u" = $'108\tHIMMEL-555-legN70-2026-09-13\tclaude-sonnet-5\tauto' ]; then
+    pass 'the readable case row is byte-identical to the pre-fix format'
+else
+    fail "the readable case row is byte-identical to the pre-fix format (got '$sess_out_u')"
+fi
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-ceiling-conformance.sh'

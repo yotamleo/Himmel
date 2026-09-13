@@ -89,11 +89,11 @@
 #   environment-gotchas.md, and this file's own doc comments). HIMMEL-2951
 #   removed 3 more (ada, somebody, yotamleo -- yotamleo being the operator's
 #   real username, the highest-value one) the same way, across scripts/hooks/,
-#   scripts/lanes/tests/, and scripts/test-uninstall-guard.sh. jarrod stays in
-#   this list for now -- its only fixture dependents (13 lines in the
-#   vendored marketplace/plugins/claude-hud/tests/render.test.js) need the
-#   VENDORED.manifest re-hash + fork-delta ceremony first; tracked in
-#   HIMMEL-2958.
+#   scripts/lanes/tests/, and scripts/test-uninstall-guard.sh. HIMMEL-2958
+#   removed the last one, jarrod: its only fixture dependents (13 lines in
+#   the vendored marketplace/plugins/claude-hud/tests/render.test.js) now
+#   carry their own same-line `// leak-allow: home-path <reason>` marker,
+#   after the VENDORED.manifest re-hash + fork-delta ceremony.
 #   leaktestuser, leaker, testop, testuser, test, osboxes, nulleak, name,
 #   yourname, wineonlyuser, shouldnotleak, realop, quarantoken, priorleak,
 #   posixuser, profileonlyuser, unixonlyuser, fakeuser, myvault, op, ops,
@@ -179,7 +179,7 @@ HOSTNAME_HITS=()
 # ---- home-path allowlist (see header for rationale) ----
 # shellcheck disable=SC2016 # single-quoted on purpose: $user/${user}/$env:username
 # are literal placeholder tokens this list matches against, not expansions.
-ALLOW_HOME_NAMES=' you user <user> $user ${user} me <me> example <you> %username% $env:username %s leaktestuser leaker testop testuser test osboxes nulleak name <name> yourname wineonlyuser shouldnotleak realop quarantoken priorleak posixuser profileonlyuser unixonlyuser fakeuser myvault op ops otheruser fakeop jarrod runneradmin fake-sensitive-scriptpath-marker ... parity mismatched plainhome whoever msysuser fixture runner other current-user '
+ALLOW_HOME_NAMES=' you user <user> $user ${user} me <me> example <you> %username% $env:username %s leaktestuser leaker testop testuser test osboxes nulleak name <name> yourname wineonlyuser shouldnotleak realop quarantoken priorleak posixuser profileonlyuser unixonlyuser fakeuser myvault op ops otheruser fakeop runneradmin fake-sensitive-scriptpath-marker ... parity mismatched plainhome whoever msysuser fixture runner other current-user '
 
 home_name_allowed() {
     local name="$1"

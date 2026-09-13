@@ -139,11 +139,23 @@ done
 # literal substring "-n X") can no longer spoof procs=/models=.
 # shellcheck source=../../lanes/lib/claude-sessions.sh
 . "$REPO/scripts/lanes/lib/claude-sessions.sh"
-sessions_out="$(claude_sessions)" || sessions_out=""
+sessions_out="$(claude_sessions)"
+sessions_rc=$?
+# HIMMEL-3002: rc=3 means the census itself succeeded but one or more live
+# sessions had an unreadable cmdline -- the readable rows above are still
+# trustworthy, so keep them (unlike a real scan failure, rc>1 and not 3,
+# where the whole table is suspect and gets discarded below).
+if [ "$sessions_rc" -gt 1 ] && [ "$sessions_rc" -ne 3 ]; then
+    sessions_out=""
+fi
 sessions_lossy=0
 case "$sessions_out" in
     '# lossy'|$'# lossy\n'*) sessions_lossy=1 ;;
 esac
+unreadable_n=0
+if [ "$sessions_rc" -eq 3 ]; then
+    unreadable_n="$(printf '%s\n' "$sessions_out" | grep -c '^# unreadable ')"
+fi
 
 procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
 $1 ~ /^#/ { next }
@@ -156,6 +168,10 @@ NF < 4 { next }
     n++
 }
 END { print n+0 }')"
+# HIMMEL-3002: a degraded scan (rc=3) still counted every readable row above
+# -- append how many pids it could NOT read so the console sees the table is
+# incomplete rather than reading procs= as a clean, complete count.
+[ "$unreadable_n" -gt 0 ] && procs="${procs},unreadable=${unreadable_n}"
 
 # HIMMEL-2976: same session table and leg filter as procs= above, bucketed by
 # the tier its real --model argv names (opus/fable cost materially more per

@@ -34,7 +34,15 @@ paths = [
 # a leg's bare, unbacktick-quoted `release-token=<token>.` let gitleaks capture
 # the trailing "." into the secret, missing the anchor) — a suffixed real
 # credential is still caught, only that shape.
+# RETASK-channel nonces (docs/internals/retask-channel.md), shape
+# `<console letter(s)>-N<leg>-<hex>` e.g. `Y-N204-a68d71`, are written into
+# leg briefs/handovers on purpose and land in session notes the same way the
+# queue-lock token above does (HIMMEL-3003: a nonce stalled the vault's
+# autosync commit on 2026-09-13). Anchored to that exact shape, plus one
+# optional trailing sentence-punctuation character — a suffixed real
+# credential is still caught, only that shape.
 regexes = [
   '''^himmel-local-claudex$''',
   '''^[a-z0-9]+-[a-z0-9]+-pid[0-9]+[.,;:)]?$''',
+  '''^[A-Z]{1,2}-N[0-9]+-[0-9a-f]{4,8}[.,;:)]?$''',
 ]

@@ -28,7 +28,10 @@
 # the detected name or ceiling.
 #
 # Output: one `<name> <ceiling>` line per tracked session, then a last line
-# of `ceiling=ok` or `ceiling=DRIFT:<name1>,<name2>`. Exit 0 either way --
+# of `ceiling=ok` or `ceiling=DRIFT:<name1>,<name2>`. HIMMEL-3002: if any live
+# session had an unreadable cmdline, an extra `scan-degraded:<pid1>,<pid2>`
+# line precedes a final `ceiling=?` -- an incomplete scan cannot certify
+# ok/DRIFT over the sessions it never got to read. Exit 0 in every case --
 # this is a report, not a gate.
 set -u
 
@@ -42,13 +45,23 @@ sessions_rc=$?
 # invocation, permission, OOM), not "no processes matched" (rc<=1, a
 # legitimate empty table, still ceiling=ok). Reporting ceiling=ok on top of a
 # failed scan would silently mask exactly the drift this script exists to
-# catch (HIMMEL-2974 round 1).
-if [ "$sessions_rc" -gt 1 ]; then
+# catch (HIMMEL-2974 round 1). rc=3 is ambiguous by itself (HIMMEL-3002):
+# pgrep's own documented fatal-error rc is ALSO 3, forwarded verbatim and
+# printing nothing first, whereas a genuine degraded scan (an unreadable
+# cmdline) always echoes at least one row/comment before returning 3 -- so
+# empty output at rc=3 means pgrep itself failed, not a degraded census.
+if [ "$sessions_rc" -gt 1 ] && { [ "$sessions_rc" -ne 3 ] || [ -z "$sessions_out" ]; }; then
     echo "ceiling=?"
     exit 0
 fi
 
 printf '%s\n' "$sessions_out" | awk -F'\t' '
+$1 ~ /^# unreadable / {
+    pid = $1
+    sub(/^# unreadable /, "", pid)
+    degraded = degraded (degraded == "" ? "" : ",") pid
+    next
+}
 $1 ~ /^#/ { next }
 NF < 4 { next }
 {
@@ -68,7 +81,17 @@ NF < 4 { next }
     if (drift) drifted = drifted (drifted == "" ? "" : ",") name
 }
 END {
-    if (drifted == "") print "ceiling=ok"
-    else print "ceiling=DRIFT:" drifted
+    # HIMMEL-3002: an incomplete scan cannot certify conformance -- report
+    # which pids it could not judge and fall back to the same "cannot tell"
+    # summary the pgrep-failure path above already uses, instead of ok/DRIFT
+    # over a partial table.
+    if (degraded != "") {
+        print "scan-degraded:" degraded
+        print "ceiling=?"
+    } else if (drifted == "") {
+        print "ceiling=ok"
+    } else {
+        print "ceiling=DRIFT:" drifted
+    }
 }'
 exit 0

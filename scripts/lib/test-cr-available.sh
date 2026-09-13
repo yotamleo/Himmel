@@ -33,6 +33,15 @@
 #   26. NEGATIVE CONTROL: every cr_app_configured rc unchanged by the new state
 #   27. cr_app_state writes nothing to stderr, even on the broken marker
 #
+# HIMMEL-2769 — a linked worktree must read the PRIMARY's arming flag:
+#   28. armed on the primary -> a linked worktree sees `armed` too
+#   29. same, with extensions.worktreeConfig enabled on the primary -> still
+#       `armed` (the extension only changes where NEW per-worktree writes
+#       land; reads still merge the shared config). Both cases were already
+#       green on the pre-fix resolver (a repro found `git config --local`
+#       already merges the shared file for a linked worktree); they pin that
+#       correctness against the explicit git-common-dir resolver added here.
+#
 # NOTE on structure: only the PROBE runs in a subshell (to scope the env
 # overrides); the pass/fail counters are incremented in the PARENT. Counting
 # inside the subshell would discard every increment and the suite would report
@@ -309,6 +318,27 @@ if [ -z "$noise" ]; then
 else
     fail "27. cr_app_state emits nothing on stderr (even on the broken marker)" "emitted: $noise"
 fi
+
+# ── HIMMEL-2769: a linked worktree reads the PRIMARY's flag ──────────────────
+# mk_worktree <repo> <name>  -> echoes the new linked worktree's path
+mk_worktree() {
+    local repo="$1" name="$2"
+    local wt="$TMPROOT/$name"
+    git -C "$repo" -c user.email=t@t -c user.name=t commit -q -m init --allow-empty >/dev/null 2>&1 || return 1
+    git -C "$repo" worktree add --quiet "$wt" -b "wt-$name" >/dev/null 2>&1 || return 1
+    printf '%s\n' "$wt"
+}
+
+# 28. armed on the primary -> a linked worktree sees it too.
+r=$(mk_repo wt_primary true)
+wt=$(mk_worktree "$r" wt_linked) || { echo "FATAL: mk_worktree wt_linked failed"; exit 1; }
+expect_state armed "28. a linked worktree inherits the primary's armed flag" "$wt" - -
+
+# 29. same, with extensions.worktreeConfig enabled on the primary.
+r=$(mk_repo wt_wc_primary true)
+git -C "$r" config extensions.worktreeConfig true || { echo "FATAL: enabling extensions.worktreeConfig failed"; exit 1; }
+wt=$(mk_worktree "$r" wt_wc_linked) || { echo "FATAL: mk_worktree wt_wc_linked failed"; exit 1; }
+expect_state armed "29. a linked worktree inherits the flag even under extensions.worktreeConfig" "$wt" - -
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   dd72076767f9befa5fc3972bfbb98cde7da492197a80fe9ae26ef3ba11695ee4  # sha256 over VENDORED.manifest
+vendored_tree_hash:   9eaf191c480ba9be00b921582a32476ae545142c8826dec775d68a3aade9fe7e  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -63,6 +63,18 @@ protected: editing it without bumping the pin trips the guard.
 > makes the drift guard protect *more* upstream files, not fewer.
 
 ## Fork delta
+
+- **Leak-scanner markers on the `jarrod` fixture lines (HIMMEL-2958,
+  2026-09-13):** himmel's `scripts/guardrails/leak-classes.sh` dropped
+  `jarrod` from its `ALLOW_HOME_NAMES` global exemption (the last of the
+  human-shaped placeholder names removed there — see HIMMEL-2825/2951). Its
+  only dependents are the 13 `/Users/jarrod/...` / `C:\Users\jarrod\...`
+  fixture lines in `tests/render.test.js` (lines 360, 363, 368, 384, 386,
+  392, 394, 608, 610, 617, 618, 1538, 1548), each of which now carries a
+  trailing `// leak-allow: home-path upstream fixture name, HIMMEL-2958`
+  comment so the scanner still passes without the global exemption. Comment
+  additions only — no behavior change, `bun test` stays byte-for-byte green.
+  `vendored_tree_hash` re-recorded accordingly.
 
 - **Test-only station isolation fixes (HIMMEL-2944, 2026-09-12):** two bugs in
   `tests/core.test.js` / `tests/index.test.js` made `bun test` fail on any

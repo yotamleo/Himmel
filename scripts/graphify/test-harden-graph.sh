@@ -52,7 +52,7 @@ echo "T1: first run adds bridge + code-fact, skips ambiguous"
 D1="$WS/t1"; make_fixture "$D1"
 out1=$( python3 "$SCRIPT" --out "$D1" --allowlist "$D1/allowlist.json" ); rc1=$?
 [ "$rc1" -eq 0 ] || fail "T1 exit 0 (got $rc1): $out1"
-echo "$out1" | grep -qF "bridges=1 code-facts=1 skipped-ambiguous=1 unchanged=0" \
+echo "$out1" | grep -qF "bridges=1 code-facts=1 skipped-ambiguous=1 skipped-path-mismatch=0 unchanged=0" \
   && pass "T1 summary line has the right counts" \
   || fail "T1 summary line wrong: $out1"
 
@@ -98,7 +98,7 @@ D3="$WS/t3"; make_fixture "$D3"
 cp "$D3/graph.json" "$D3/graph.json.before"
 out3=$( python3 "$SCRIPT" --out "$D3" --allowlist "$D3/allowlist.json" --dry-run ); rc3=$?
 [ "$rc3" -eq 0 ] || fail "T3 exit 0 (got $rc3): $out3"
-echo "$out3" | grep -qF "bridges=1 code-facts=1 skipped-ambiguous=1 unchanged=0" \
+echo "$out3" | grep -qF "bridges=1 code-facts=1 skipped-ambiguous=1 skipped-path-mismatch=0 unchanged=0" \
   && pass "T3 dry-run still reports the real counts" || fail "T3 dry-run counts wrong: $out3"
 cmp -s "$D3/graph.json.before" "$D3/graph.json" && pass "T3 dry-run left graph.json untouched" || fail "T3 dry-run wrote to graph.json"
 
@@ -127,7 +127,7 @@ import json, sys
 c = json.load(open(sys.argv[1]))
 note = c["runs"][-1]["note"]
 assert note.startswith("semantic pass; harden-graph:"), note
-assert "bridges=1 code-facts=1 skipped-ambiguous=1 unchanged=0" in note, note
+assert "bridges=1 code-facts=1 skipped-ambiguous=1 skipped-path-mismatch=0 unchanged=0" in note, note
 print("OK")
 PY
 then
@@ -203,7 +203,7 @@ cat > "$D9/allowlist.json" <<'JSON'
 JSON
 out9=$( python3 "$SCRIPT" --out "$D9" --allowlist "$D9/allowlist.json" ); rc9=$?
 [ "$rc9" -eq 0 ] || fail "T9 exit 0 (got $rc9): $out9"
-echo "$out9" | grep -qF "code-facts=0 skipped-ambiguous=0 unchanged=1" \
+echo "$out9" | grep -qF "code-facts=0 skipped-ambiguous=0 skipped-path-mismatch=0 unchanged=1" \
   && pass "T9 reverse-order existing edge suppresses the duplicate" \
   || fail "T9 added a duplicate reverse-direction edge: $out9"
 
@@ -257,6 +257,94 @@ echo "T11: explicit --allowlist pointing nowhere exits 1, not a silent no-op"
 D11="$WS/t11"; make_fixture "$D11"
 out11=$( python3 "$SCRIPT" --out "$D11" --allowlist "$D11/does-not-exist.json" 2>&1 ); rc11=$?
 [ "$rc11" -eq 1 ] && pass "T11 missing explicit --allowlist exits 1" || fail "T11 expected exit 1, got $rc11: $out11"
+
+# --- T12: a doc token with a directory component that CONTRADICTS the only
+# same-basename AST file must NOT fall back to a bare-basename guess -- it is
+# unresolved and counted in skipped-path-mismatch, never bridged (HIMMEL-3005;
+# this is the RED case on the pre-fix resolver, which bridges it via the
+# basename fallback) ---
+echo "T12: directory-qualified token with no matching path is unresolved, not basename-guessed"
+D12="$WS/t12"; mkdir -p "$D12"
+cat > "$D12/graph.json" <<'JSON'
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "doc_mismatch", "label": "nonexistent/foo.mjs file", "source_file": "docs/z.md", "file_type": "concept"},
+    {"id": "scripts_foo", "label": "foo.mjs", "source_file": "scripts/foo.mjs", "file_type": "code", "source_location": "L1"}
+  ],
+  "links": [],
+  "hyperedges": []
+}
+JSON
+out12=$( python3 "$SCRIPT" --out "$D12" ); rc12=$?
+[ "$rc12" -eq 0 ] || fail "T12 exit 0 (got $rc12): $out12"
+echo "$out12" | grep -qF "bridges=0 code-facts=0 skipped-ambiguous=0 skipped-path-mismatch=1 unchanged=1" \
+  && pass "T12 directory-qualified mismatch is skipped-path-mismatch, not bridged" \
+  || fail "T12 summary wrong (RED: pre-fix resolver bridges via basename fallback): $out12"
+
+# --- T13: a partial-but-correct token (directory component that matches a
+# SUFFIX of the real path, not the whole thing) resolves by path suffix --
+# this is the common real-corpus shape (docs writing "lanes/resolve.mjs" for
+# "scripts/lanes/resolve.mjs") that a strict bare-token-only rule would drop
+# (HIMMEL-3005, console ruling E1) ---
+echo "T13: directory-qualified token resolves by unique path suffix"
+D13="$WS/t13"; mkdir -p "$D13"
+cat > "$D13/graph.json" <<'JSON'
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "doc_suffix", "label": "lanes/resolve.mjs module", "source_file": "docs/w.md", "file_type": "concept"},
+    {"id": "scripts_resolve", "label": "resolve.mjs", "source_file": "scripts/lanes/resolve.mjs", "file_type": "code", "source_location": "L1"}
+  ],
+  "links": [],
+  "hyperedges": []
+}
+JSON
+out13=$( python3 "$SCRIPT" --out "$D13" ); rc13=$?
+[ "$rc13" -eq 0 ] || fail "T13 exit 0 (got $rc13): $out13"
+echo "$out13" | grep -qF "bridges=1 code-facts=0 skipped-ambiguous=0 skipped-path-mismatch=0 unchanged=0" \
+  && pass "T13 partial-but-correct token bridges via path suffix" \
+  || fail "T13 suffix match failed: $out13"
+if python3 - "$D13/graph.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1]))
+bridge = next(e for e in g["links"] if e["hardened"] == "doc-label-names-code-file")
+assert bridge["source"] == "doc_suffix" and bridge["target"] == "scripts_resolve", bridge
+print("OK")
+PY
+then
+  pass "T13 bridge targets the suffix-matched node"
+else
+  fail "T13 bridge targeted the wrong node"
+fi
+
+# --- T14: a directory-qualified token matching a suffix of TWO different AST
+# files is ambiguous, not resolved by guessing ---
+echo "T14: directory-qualified token matching two path suffixes is ambiguous"
+D14="$WS/t14"; mkdir -p "$D14"
+cat > "$D14/graph.json" <<'JSON'
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "doc_ambig", "label": "lib/x.sh script", "source_file": "docs/v.md", "file_type": "concept"},
+    {"id": "a_lib_x", "label": "x.sh", "source_file": "a/lib/x.sh", "file_type": "code", "source_location": "L1"},
+    {"id": "b_lib_x", "label": "x.sh", "source_file": "b/lib/x.sh", "file_type": "code", "source_location": "L1"}
+  ],
+  "links": [],
+  "hyperedges": []
+}
+JSON
+out14=$( python3 "$SCRIPT" --out "$D14" ); rc14=$?
+[ "$rc14" -eq 0 ] || fail "T14 exit 0 (got $rc14): $out14"
+echo "$out14" | grep -qF "bridges=0 code-facts=0 skipped-ambiguous=1 skipped-path-mismatch=0 unchanged=1" \
+  && pass "T14 two-way suffix match is skipped-ambiguous, not guessed" \
+  || fail "T14 summary wrong: $out14"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"

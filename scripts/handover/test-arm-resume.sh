@@ -5782,8 +5782,9 @@ fi
 # HIMMEL-2192 — optional --model passthrough into the relaunch payload.
 #   Present -> flows into the generated .bat as `--model "<name>"`, right
 #   after the prompt/--channels, mirroring the --channels passthrough shape
-#   (T12/T13 above). Absent -> no --model token anywhere in the output, i.e.
-#   byte-identical to the pre-2192 launch line (operator default model).
+#   (T12/T13 above). Absent -> ruling 30 (HIMMEL-2332) defaults a non-console
+#   arm to `--model "opus"`; a *-console.md handover is exempt (ruling 25,
+#   operator default) and stays free of any --model token.
 # ---------------------------------------------------------------------------
 if _sec_selected "2192" "HIMMEL-2192"; then
 HO_2192=$(make_handover "$WORK_REPO")
@@ -5795,7 +5796,15 @@ assert_contains "2192 --model flows into the .bat payload" '--model "opus"' "$ou
 out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_2192" --force --dry-run 2>&1)
 rc=$?
 assert_rc "2192 no-flag dry-run exits 0" 0 "$rc"
-assert_not_contains "2192 no --model token when the flag is omitted" "--model" "$out"
+assert_contains "2192 no --model given defaults a non-console arm to opus (ruling 30)" '--model "opus"' "$out"
+assert_contains "2192 no --model given names ruling 30 in the reason" "non-console arms default to opus -- ruling 30" "$out"
+
+HO_2192_CONSOLE="${HO_2192%.md}-console.md"
+cp -- "$HO_2192" "$HO_2192_CONSOLE"
+out=$(win_env "$SCHED_STUB_T17" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_CONSOLE" --force --dry-run 2>&1)
+rc=$?
+assert_rc "2192 no-flag console-named dry-run exits 0" 0 "$rc"
+assert_not_contains "2192 no --model token for a console-named handover (ruling 25)" "--model" "$out"
 
 # CR round 2 finding: crontab treats an unescaped % as end-of-command +
 # stdin even inside %q-quoting, so a MODEL containing % must be \%-escaped

@@ -337,6 +337,27 @@ if [ "$CR_STATE" = broken ]; then
     echo "check-ci: WARNING - this repo's himmel.coderabbit marker holds a value git cannot parse as a boolean, so the CodeRabbit gates are DISARMED and any green below certifies a CodeRabbit review that was never checked for. If this repo HAS CodeRabbit: git config --local himmel.coderabbit true. If it does not: git config --local --unset himmel.coderabbit (HIMMEL-2380)." >&2
 fi
 
+# HIMMEL-2769: `not-configured` is silently correct for the adopter with no
+# CodeRabbit at all (case 17's whole point) — but a repo that carries a
+# COMMITTED `.coderabbit.yaml`/`.yml` has declared it wants CodeRabbit, so an
+# unarmed marker here is not the adopter's steady state, it is a clone nobody
+# ever ran `git config --local himmel.coderabbit true` on. Every green below
+# would then certify a review that was never armed to run. Fail loud instead
+# of silently certifying it, same as the vacuous-green class this ticket
+# names (HIMMEL-1317/2062). CR_APP=0 is the sole bypass, and it already is
+# one: CR_APP=0 makes cr_app_state report `disabled`, never `not-configured`,
+# so this block cannot fire while it is set.
+if [ "$CR_STATE" = not-configured ]; then
+    cr_repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || cr_repo_root="$PWD"
+    # codex-1 (round 1): read the COMMITTED tree at HEAD, not the working
+    # tree — an untracked local .coderabbit.yaml must not arm this gate, and
+    # a tracked one a caller merely deleted locally must not disarm it.
+    if git -C "$cr_repo_root" cat-file -e HEAD:.coderabbit.yaml 2>/dev/null || git -C "$cr_repo_root" cat-file -e HEAD:.coderabbit.yml 2>/dev/null; then
+        echo "check-ci: CR-UNARMED - this repo carries .coderabbit.yaml/.yml (it expects CodeRabbit) but no clone has ever armed the gate, so no green here can certify a CodeRabbit review. Arm it: git config --local himmel.coderabbit true. If this repo genuinely has no CodeRabbit App, bypass for this run with CR_APP=0." >&2
+        exit 2
+    fi
+fi
+
 if [ "$CR_ARMED" -eq 1 ]; then
     if ! command -v jq >/dev/null 2>&1; then
         echo "check-ci: jq not found on PATH (required to read CodeRabbit's status)" >&2
