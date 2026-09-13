@@ -105,10 +105,21 @@ for f in "${files[@]}"; do
                 remainder = ""
                 val = ""
                 preserves_path = 0
-                if (match(rest, /^"[^"]*"/)) {
+                if (match(rest, /^"\$\(.*\)"/)) {
+                    # A quoted command substitution, e.g.
+                    # PATH="$(scrub_path "$PATH" tool)" -- the greedy .*
+                    # reaches the LAST )" on the line, so an inner quoted
+                    # $PATH argument does not truncate the match early
+                    # (CR round 1, codex-1: the plain quoted-string branch
+                    # below stops at that inner quote and silently misses
+                    # this ambient scrub).
                     val = substr(rest, RSTART, RLENGTH)
                     remainder = substr(rest, RSTART + RLENGTH)
-                    preserves_path = (val ~ /\$\{?PATH\}?/)
+                    preserves_path = 0
+                } else if (match(rest, /^"[^"]*"/)) {
+                    val = substr(rest, RSTART, RLENGTH)
+                    remainder = substr(rest, RSTART + RLENGTH)
+                    preserves_path = (val ~ /\$PATH([^A-Za-z0-9_]|$)/ || val ~ /\$\{PATH\}/)
                 } else if (match(rest, /^\$\(.*\)/)) {
                     val = substr(rest, RSTART, RLENGTH)
                     remainder = substr(rest, RSTART + RLENGTH)
@@ -119,7 +130,7 @@ for f in "${files[@]}"; do
                 } else if (match(rest, /^[^ \t]+/)) {
                     val = substr(rest, RSTART, RLENGTH)
                     remainder = substr(rest, RSTART + RLENGTH)
-                    preserves_path = (val ~ /\$\{?PATH\}?/)
+                    preserves_path = (val ~ /\$PATH([^A-Za-z0-9_]|$)/ || val ~ /\$\{PATH\}/)
                 }
                 remainder = trim(remainder)
                 if (remainder == "" || remainder ~ /^#/ || remainder ~ /^;/ || remainder ~ /^(&&|\|\|)/) {
