@@ -74,6 +74,9 @@ case "$* " in
         fi
         ;;
     *"pr create"*)
+        if [ -n "${STUB_CREATE_STDERR:-}" ]; then
+            echo "$STUB_CREATE_STDERR" >&2
+        fi
         echo "https://github.com/owner/repo/pull/9"
         # real `gh pr create` on a repo with CodeRabbit armed is followed by
         # the seam's own CR-trigger confirmation line on stdout (HIMMEL-1924)
@@ -154,6 +157,25 @@ EMPTY_BODY="$TMP_ROOT/empty-body.txt"
 err_e=$(run_sut "$TITLE_FILE" "$EMPTY_BODY" 2>&1 >/dev/null); rc_e=$?
 if [ "$rc_e" -ne 0 ]; then pass "refuses an empty body file (rc!=0)"; else fail "refuses an empty body file (rc!=0)" "got rc=$rc_e"; fi
 contains "refusal names the empty body" "$err_e" "empty"
+
+# ── (f) create path survives a stderr warning racing the stdout URL (codex-1) ──
+echo "TEST: create path survives a stderr warning during create"
+: > "$ARGV_LOG"
+unset STUB_OPEN_PR 2>/dev/null || true
+export STUB_CREATE_STDERR="warn: transient network/blip, retrying"
+out_f=$(run_sut "$TITLE_FILE" "$BODY_FILE"); rc_f=$?
+unset STUB_CREATE_STDERR
+assert_eq "stderr-warning create path exits 0" "0" "$rc_f"
+assert_eq "stderr-warning create path prints exactly the success line" \
+    "PR 9 https://github.com/owner/repo/pull/9 $HEAD_SHA" "$out_f"
+
+# ── (g) refuses when local HEAD has not been pushed to upstream (codex-2) ───
+echo "TEST: refuses when local HEAD is unpushed relative to upstream"
+echo change2 > "$REPO/f"; git -C "$REPO" add f; git -C "$REPO" commit -qm change2
+err_g=$(run_sut "$TITLE_FILE" "$BODY_FILE" 2>&1 >/dev/null); rc_g=$?
+if [ "$rc_g" -ne 0 ]; then pass "refuses when HEAD unpushed (rc!=0)"; else fail "refuses when HEAD unpushed (rc!=0)" "got rc=$rc_g"; fi
+contains "refusal names push" "$err_g" "push"
+git -C "$REPO" push -q origin feat/x
 
 echo
 echo "===================================="

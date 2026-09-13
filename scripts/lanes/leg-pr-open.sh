@@ -88,6 +88,11 @@ if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; the
 fi
 
 head_sha=$(git rev-parse HEAD)
+upstream_sha=$(git rev-parse '@{u}')
+if [ "$head_sha" != "$upstream_sha" ]; then
+    echo "ERR leg-pr-open: local HEAD ($head_sha) has not been pushed — upstream is at ($upstream_sha); push first" >&2
+    exit 1
+fi
 
 existing_pr=""
 if ! existing_pr=$(forge_pr_find_open "$branch" 2>&1); then
@@ -97,14 +102,22 @@ if ! existing_pr=$(forge_pr_find_open "$branch" 2>&1); then
 fi
 
 if [ -z "$existing_pr" ]; then
-    if ! out=$(forge_pr_create "$title" "$body" "$BASE" "$branch" 2>&1); then
+    # Capture stdout (the PR URL) and stderr (diagnostics, plus the
+    # HIMMEL-1924 CodeRabbit-trigger confirmation) into SEPARATE streams —
+    # merging them with `2>&1` let a stderr line race the URL for "first
+    # line" on some hosts/gh versions. On failure, diagnostics come from the
+    # captured stderr file; on success it is discarded.
+    create_err=$(mktemp "${TMPDIR:-/tmp}/leg-pr-open-create-err.XXXXXX") || { echo "ERR leg-pr-open: mktemp failed" >&2; exit 1; }
+    if ! out=$(forge_pr_create "$title" "$body" "$BASE" "$branch" 2>"$create_err"); then
         echo "ERR leg-pr-open: PR create failed:" >&2
-        printf '%s\n' "$out" >&2
+        cat "$create_err" >&2
+        rm -f "$create_err"
         exit 1
     fi
-    # forge_pr_create's stdout is the PR URL on its own first line, optionally
-    # followed by a CodeRabbit-trigger confirmation line (HIMMEL-1924) — take
-    # only the first line as the URL.
+    rm -f "$create_err"
+    # Take only the first line of stdout as the URL — stderr is now captured
+    # separately above and never reaches this variable, but stdout itself
+    # could still carry more than one line, so keep this defensive.
     url=$(printf '%s\n' "$out" | head -n 1)
     number=${url##*/}
 else
