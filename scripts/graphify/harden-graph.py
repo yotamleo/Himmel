@@ -100,12 +100,18 @@ def load_allowlist(path):
         return json.load(f)
 
 
-def find_code_facts(by_path, by_base, allowlist):
+def find_code_facts(by_path, allowlist):
+    # Allowlist entries carry a full path the operator curated -- unlike a doc
+    # ghost's bare-basename label, there is no ambiguity to resolve here, so
+    # this requires an EXACT source_file match and never falls back to
+    # resolve_code_file's basename heuristic (a corpus missing the allowlisted
+    # file but containing an unrelated same-named one would otherwise get a
+    # false, confidence-1.0 "calls" edge).
     facts = []
     for entry in allowlist:
-        src_id, src_amb = resolve_code_file(entry["source_file"], by_path, by_base)
-        tgt_id, tgt_amb = resolve_code_file(entry["target_file"], by_path, by_base)
-        if src_amb or tgt_amb or src_id is None or tgt_id is None:
+        src_id = by_path.get(entry["source_file"].lstrip("./"))
+        tgt_id = by_path.get(entry["target_file"].lstrip("./"))
+        if src_id is None or tgt_id is None:
             continue
         facts.append(
             {
@@ -168,13 +174,17 @@ def main(argv):
     allowlist_path = args.allowlist or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "harden-allowlist.json"
     )
-    facts = find_code_facts(by_path, by_base, load_allowlist(allowlist_path))
+    facts = find_code_facts(by_path, load_allowlist(allowlist_path))
 
-    existing_pairs = {(e.get("source"), e.get("target")) for e in edges}
+    # graph.json is "directed": false, "multigraph": false -- (u, v) and (v, u)
+    # are the SAME edge, so dedup keys must be order-independent (codex-2,
+    # HIMMEL-2983 round 1) or a pre-existing reverse-order edge between the
+    # same two nodes would not be recognized as a duplicate.
+    existing_pairs = {frozenset((e.get("source"), e.get("target"))) for e in edges}
     seen = set()
     new_edges = []
     for e in bridges + facts:
-        pair = (e["source"], e["target"])
+        pair = frozenset((e["source"], e["target"]))
         if pair in existing_pairs or pair in seen:
             continue
         if e["source"] not in nodes or e["target"] not in nodes:

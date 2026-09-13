@@ -12,7 +12,8 @@ FAILS=0
 pass() { echo "  ok: $1"; }
 fail() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 
-WS="$(mktemp -d "${TMPDIR:-/tmp}/harden-graph-test.XXXXXX")"; trap 'rm -rf "$WS"' EXIT
+WS="$(mktemp -d "${TMPDIR:-/tmp}/harden-graph-test.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }
+trap 'rm -rf "$WS"' EXIT
 
 # Fixture: one ghost pair (doc label names an existing code file's basename,
 # unique -> safe merge), one ambiguous pair (two AST files share a basename),
@@ -144,6 +145,66 @@ echo "T7: harden never creates cost.json"
 D7="$WS/t7"; make_fixture "$D7"
 python3 "$SCRIPT" --out "$D7" --allowlist "$D7/allowlist.json" >/dev/null
 [ ! -f "$D7/cost.json" ] && pass "T7 cost.json still absent" || fail "T7 harden created cost.json"
+
+# --- T8: allowlist source_file missing at its exact path must NOT fall back
+# to a same-basename file elsewhere -- that would fabricate a false,
+# confidence-1.0 "calls" edge (codex-1, HIMMEL-2983 round 1) ---
+echo "T8: allowlist entry requires an exact source_file path match, no basename fallback"
+D8="$WS/t8"; mkdir -p "$D8"
+cat > "$D8/graph.json" <<'JSON'
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "unrelated_fanout", "label": "fanout-plan.mjs", "source_file": "other/place/fanout-plan.mjs", "file_type": "code", "source_location": "L1"},
+    {"id": "scripts_resolve", "label": "resolve.mjs", "source_file": "scripts/lanes/resolve.mjs", "file_type": "code", "source_location": "L1"}
+  ],
+  "links": [],
+  "hyperedges": []
+}
+JSON
+cat > "$D8/allowlist.json" <<'JSON'
+[
+  {"source_file": "scripts/lanes/fanout-plan.mjs", "target_file": "scripts/lanes/resolve.mjs", "relation": "calls", "source_location": "L105", "note": "test fixture"}
+]
+JSON
+out8=$( python3 "$SCRIPT" --out "$D8" --allowlist "$D8/allowlist.json" ); rc8=$?
+[ "$rc8" -eq 0 ] || fail "T8 exit 0 (got $rc8): $out8"
+echo "$out8" | grep -qF "code-facts=0" \
+  && pass "T8 no code-fact edge when allowlisted source_file is absent at its exact path" \
+  || fail "T8 fabricated a code-fact edge via basename fallback: $out8"
+
+# --- T9: a pre-existing edge between the same two nodes in REVERSE order
+# must count as a duplicate too -- graph.json is undirected/non-multigraph, so
+# (u, v) and (v, u) are the same edge (codex-2, HIMMEL-2983 round 1) ---
+echo "T9: reverse-order existing edge is recognized as the same undirected edge"
+D9="$WS/t9"; mkdir -p "$D9"
+cat > "$D9/graph.json" <<'JSON'
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "scripts_fanout", "label": "fanout-plan.mjs", "source_file": "scripts/lanes/fanout-plan.mjs", "file_type": "code", "source_location": "L1"},
+    {"id": "scripts_resolve", "label": "resolve.mjs", "source_file": "scripts/lanes/resolve.mjs", "file_type": "code", "source_location": "L1"}
+  ],
+  "links": [
+    {"source": "scripts_resolve", "target": "scripts_fanout", "relation": "references"}
+  ],
+  "hyperedges": []
+}
+JSON
+cat > "$D9/allowlist.json" <<'JSON'
+[
+  {"source_file": "scripts/lanes/fanout-plan.mjs", "target_file": "scripts/lanes/resolve.mjs", "relation": "calls", "source_location": "L105", "note": "test fixture"}
+]
+JSON
+out9=$( python3 "$SCRIPT" --out "$D9" --allowlist "$D9/allowlist.json" ); rc9=$?
+[ "$rc9" -eq 0 ] || fail "T9 exit 0 (got $rc9): $out9"
+echo "$out9" | grep -qF "code-facts=0 skipped-ambiguous=0 unchanged=1" \
+  && pass "T9 reverse-order existing edge suppresses the duplicate" \
+  || fail "T9 added a duplicate reverse-direction edge: $out9"
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"
