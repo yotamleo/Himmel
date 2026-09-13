@@ -72,6 +72,24 @@ STUB
 out_e="$(PATH="$W/bin:$PATH" bash "$SUT")"
 contains 'the console row alone is ok' "$out_e" 'ceiling=ok'
 
+# (f) pgrep itself fails (rc>1, a scan failure, not "no processes") -> ceiling=?
+# (HIMMEL-2974, codex-1 round 1: a scan failure must not read as ceiling=ok)
+cat > "$W/bin/pgrep" <<'STUB'
+#!/usr/bin/env bash
+exit 3
+STUB
+out_f="$(PATH="$W/bin:$PATH" bash "$SUT")"; rc_f=$?
+if [ "$rc_f" -eq 0 ]; then pass 'a pgrep scan failure still exits 0'; else fail "exits 0 (rc=$rc_f)"; fi
+contains 'a pgrep scan failure (not "no processes") reports ceiling=?' "$out_f" 'ceiling=?'
+
+# (g) pgrep genuinely finds nothing (rc=1) -> ceiling=ok, unchanged
+cat > "$W/bin/pgrep" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+out_g="$(PATH="$W/bin:$PATH" bash "$SUT")"
+contains 'pgrep rc=1 (no processes matched) still reports ceiling=ok' "$out_g" 'ceiling=ok'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-ceiling-conformance.sh'
     exit 0

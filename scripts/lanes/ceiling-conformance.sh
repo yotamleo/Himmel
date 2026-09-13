@@ -26,7 +26,16 @@
 # this is a report, not a gate.
 set -u
 
-proc_out="$(pgrep -af 'claude' 2>/dev/null)" || proc_out=""
+proc_out="$(pgrep -af 'claude' 2>/dev/null)"
+pgrep_rc=$?
+# pgrep rc=1 means "no processes matched" -- a legitimate empty table, still
+# ceiling=ok. Any other nonzero rc (bad invocation, permission, OOM) means the
+# scan itself failed, and reporting ceiling=ok on top of that would silently
+# mask exactly the drift this script exists to catch (HIMMEL-2974 round 1).
+if [ "$pgrep_rc" -gt 1 ]; then
+    echo "ceiling=?"
+    exit 0
+fi
 
 printf '%s\n' "$proc_out" | awk '
 /claude / && / -n [^ ]+/ {
