@@ -50,6 +50,11 @@ trap 'rm -rf "$WORK"' EXIT
 # ---------------------------------------------------------------------------
 mkdir -p "$WORK/repo"
 git init -q "$WORK/repo"
+# Disable the user's own global core.excludesFile for this repo so the
+# assertion can only pass because of the copied .gitignore, never because
+# graphify-out/ happens to be ignored globally on the machine running the
+# test (codex-adv round 4 finding).
+git -C "$WORK/repo" config core.excludesFile /dev/null
 cp "$TMPL/.gitignore" "$WORK/repo/.gitignore"
 if git -C "$WORK/repo" check-ignore -q graphify-out/graph.json; then
     ok "template .gitignore matches graphify-out/graph.json"
