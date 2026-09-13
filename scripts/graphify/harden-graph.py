@@ -178,6 +178,14 @@ def main(argv):
     by_path, by_base = build_ast_index(nodes)
     bridges, skipped_ambiguous = find_ghost_bridges(nodes, by_path, by_base)
 
+    # An explicitly-supplied --allowlist that doesn't exist is a typo, not the
+    # normal "no allowlist for this corpus yet" case (only the DEFAULT path is
+    # allowed to be silently absent) -- reporting success while a typo
+    # suppresses every code-fact edge would hide the failure (codex-2,
+    # HIMMEL-2983 round 3).
+    if args.allowlist and not os.path.exists(args.allowlist):
+        print(f"harden-graph: --allowlist path not found: {args.allowlist}", file=sys.stderr)
+        return 1
     allowlist_path = args.allowlist or os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "harden-allowlist.json"
     )

@@ -249,5 +249,14 @@ else
   fail "T10 code-fact edge points at the wrong node (lstrip character-class bug)"
 fi
 
+# --- T11: an explicit --allowlist path that does not exist is a typo, not
+# the normal "no allowlist yet" case -- it must exit 1, never silently
+# suppress every code-fact edge while reporting success (codex-2,
+# HIMMEL-2983 round 3) ---
+echo "T11: explicit --allowlist pointing nowhere exits 1, not a silent no-op"
+D11="$WS/t11"; make_fixture "$D11"
+out11=$( python3 "$SCRIPT" --out "$D11" --allowlist "$D11/does-not-exist.json" 2>&1 ); rc11=$?
+[ "$rc11" -eq 1 ] && pass "T11 missing explicit --allowlist exits 1" || fail "T11 expected exit 1, got $rc11: $out11"
+
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"
