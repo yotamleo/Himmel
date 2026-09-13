@@ -394,7 +394,7 @@ function spawnPrintLockPath(scriptPath: string, env: Record<string, string | und
   if (proc.exitCode !== 0 || proc.signalCode) {
     const stderr = proc.stderr.toString().trim();
     if (proc.signalCode) {
-      throw new Error(`restart-bridge.sh --print-lock-path spawn timed out after ${elapsedMs} ms: ${stderr}`);
+      throw new Error(`restart-bridge.sh --print-lock-path spawn received signal ${proc.signalCode} after ${elapsedMs} ms (probable timeout, budget ${PRINT_LOCK_PATH_TIMEOUT_MS} ms): ${stderr}`);
     }
     throw new Error(`restart-bridge.sh --print-lock-path exited ${proc.exitCode} after ${elapsedMs} ms: ${stderr}`);
   }
