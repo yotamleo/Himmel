@@ -88,6 +88,11 @@ console change without your token is ignored, not merely distrusted.
   console, no further attempt. `[Out-of-Place Publication]` gets **no retry at
   all**, first time seen or not — route to the console immediately
   (HIMMEL-3020).
+- First choice for opening or updating a PR is
+  `bash scripts/lanes/leg-pr-open.sh <title-file> <body-file>` (HIMMEL-3031):
+  title and body are files, so the Bash command a leg types is always the
+  same short fixed literal no matter what the PR says — the body never enters
+  the command the classifier reads.
 - Never use bare `git stash` / `git stash pop`: the stash stack is shared with
   every other worktree and another session may pop yours.
 

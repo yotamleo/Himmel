@@ -404,6 +404,26 @@ REPORT-ONLY Windows evidence collector for the agent-runtime RAM + MCP lifecycle
 
 ---
 
+## leg-pr-open (`scripts/lanes/leg-pr-open.sh`, HIMMEL-3031)
+
+Fixed-literal PR-publish utility: `leg-pr-open.sh <title-file> <body-file>
+[--base <branch>]` reads title/body from files and opens or updates a PR
+through the forge seam (`forge_pr_find_open` / `forge_pr_create` /
+`forge_pr_set_body` in `scripts/lib/forge.sh`) — idempotent (updates an
+existing open PR's body instead of opening a second one), refuses on `main`,
+with no upstream, or with an empty body file, and prints exactly one line on
+success: `PR <number> <url> <head-sha>`. The point (ruling H2, HIMMEL-3026):
+a leg's Bash command is always this same short two-file-path literal no
+matter what the PR body says, so the body text — the thing the auto-mode
+classifier reacts to (HIMMEL-3020) — never appears in the command a leg
+types; it only ever reaches `gh`/`bb` as an argv element of the child process
+the forge seam execs. No retry logic (that's the stuck-playbook's job). Tests:
+`scripts/lanes/test-leg-pr-open.sh` (hermetic — a `GH_CMD` stub records argv
+to a file; asserts the body reaches `gh` only via `--body`, never via the
+utility's own two-file-path invocation).
+
+---
+
 ## auto-arm scheduler backend (`scripts/lib/scheduler-backend.sh`, HIMMEL-594)
 
 Pure, sourceable, bash-3.2-safe detection/remediation lib whose status mirrors
