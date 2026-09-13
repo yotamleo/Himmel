@@ -1149,19 +1149,36 @@ PY
 
 sync_cli_proxy() {
     local mode="${1:-apply}"   # check | apply
-    local lane="$ROOT/scripts/setup/cli-proxy-lane.ps1"
-    local pin stamp_file installed ps cmp_rc
+    local lane_ps="$ROOT/scripts/setup/cli-proxy-lane.ps1"
+    local lane_sh="$ROOT/scripts/setup/cli-proxy-lane.sh"
+    local lane pin stamp_file installed ps cmp_rc lane_native
     echo "==> cli-proxy-api host roll (HIMMEL-2134)"
+    ps="$(command -v pwsh 2>/dev/null || true)"
+    # Linux only: the shell twin ships a linux_amd64 asset + a systemd user
+    # unit, so a pwsh-less Git-Bash or macOS host keeps the old skip.
+    if [ -z "$ps" ] && [ "$(uname -s 2>/dev/null)" = "Linux" ] && [ -f "$lane_sh" ]; then
+        lane="$lane_sh"
+    else
+        lane="$lane_ps"
+    fi
     if [ ! -f "$lane" ]; then
-        echo "    skip: cli-proxy-lane.ps1 not found ($lane)."
+        echo "    skip: $(basename "$lane") not found ($lane)."
         return 0
     fi
-    # The pin literal is the SAME spot scripts/upstreams.json's version_pin
-    # template names ("$Version = '{version}'"), so this reads whatever
-    # apply-drift-bump.sh last wrote — there is no second copy to drift.
-    pin="$(grep -oE "^\\\$Version *= *'[0-9][0-9A-Za-z.+-]*'" "$lane" 2>/dev/null | head -1 | sed -E "s/.*'([^']*)'.*/\1/")"
+    # PowerShell's pin literal is the spot scripts/upstreams.json's version_pin
+    # template names ("$Version = '{version}'"). On Linux without pwsh, read the
+    # shell twin's hand-maintained VERSION instead (parity tested; HIMMEL-3038).
+    if [ "$lane" = "$lane_sh" ]; then
+        pin="$(grep -oE '^VERSION="[0-9][0-9A-Za-z.+-]*"' "$lane" 2>/dev/null | head -1 | sed -E 's/.*"([^"]*)".*/\1/')"
+    else
+        pin="$(grep -oE "^\\\$Version *= *'[0-9][0-9A-Za-z.+-]*'" "$lane" 2>/dev/null | head -1 | sed -E "s/.*'([^']*)'.*/\1/")"
+    fi
     if [ -z "$pin" ]; then
-        echo "    skip: could not read the \$Version pin from cli-proxy-lane.ps1."
+        if [ "$lane" = "$lane_sh" ]; then
+            echo "    skip: could not read the VERSION pin from cli-proxy-lane.sh."
+        else
+            echo "    skip: could not read the \$Version pin from cli-proxy-lane.ps1."
+        fi
         return 0
     fi
     # cadence_user_home (lib/cadence-format.sh, already sourced): USERPROFILE via
@@ -1171,7 +1188,11 @@ sync_cli_proxy() {
     stamp_file="$(cadence_user_home)/.cli-proxy-api/cli-proxy-api.version"
     if [ ! -f "$stamp_file" ]; then
         echo "    skip: no cli-proxy-api install on this machine (no $stamp_file)."
-        echo "          first install is deliberate operator setup: pwsh -File \"$lane\" -Install -Start"
+        if [ "$lane" = "$lane_sh" ]; then
+            echo "          first install is deliberate operator setup: bash \"$lane\" --install"
+        else
+            echo "          first install is deliberate operator setup: pwsh -File \"$lane\" -Install -Start"
+        fi
         return 0
     fi
     installed="$(head -1 "$stamp_file" 2>/dev/null | tr -d '\r')"
@@ -1199,20 +1220,35 @@ sync_cli_proxy() {
         echo "    cannot verify: host v${installed:-?} vs pin v$pin could not be compared" >&2
         echo "                   (no python3, or the version stamp is not a version) — NOT rolling." >&2
         echo "                   Roll it yourself if the pin is what you want:" >&2
-        echo "                   pwsh -NoProfile -File \"$lane\" -Install -Restart" >&2
+        if [ "$lane" = "$lane_sh" ]; then
+            echo "                   bash \"$lane\" --install && bash \"$lane\" --restart" >&2
+        else
+            echo "                   pwsh -NoProfile -File \"$lane\" -Install -Restart" >&2
+        fi
         return 0
     fi
     if [ "$mode" = "check" ]; then
         echo "    behind: host v${installed:-?} < pin v$pin — run without --check to roll it."
         return 0
     fi
-    # pwsh only — the lane script is Windows-native (HIMMEL-2126: prefer pwsh,
-    # 5.1 only as a loud named fallback). No pwsh means no roll to make.
-    ps="$(command -v pwsh 2>/dev/null || true)"
+    # Prefer the existing Windows path whenever pwsh is present. Without pwsh,
+    # the Linux twin performs the install and restart as separate calls so an
+    # install refusal cannot be masked by the dispatcher's later restart.
     if [ -z "$ps" ]; then
-        echo "    skip: pwsh not on PATH — cli-proxy-lane.ps1 is a Windows-native host script."
-        echo "          host is v${installed:-?}, pin is v$pin — roll it by hand when you are on the host."
-        return 0
+        if [ "$lane" != "$lane_sh" ]; then
+            echo "    skip: pwsh not on PATH — cli-proxy-lane.ps1 is a Windows-native host script."
+            echo "          host is v${installed:-?}, pin is v$pin — roll it by hand when you are on the host."
+            return 0
+        fi
+        echo "    rolling host v${installed:-?} -> v$pin (--install then --restart)"
+        if bash "$lane" --install && bash "$lane" --restart; then
+            echo "    cli-proxy-api rolled to v$pin."
+            return 0
+        fi
+        echo "    warn: cli-proxy roll did not complete — see the message above." >&2
+        echo "          if it refused a bounce, a codex-lane client was connected; re-run when idle:" >&2
+        echo "          bash \"$lane\" --install && bash \"$lane\" --restart" >&2
+        return 1
     fi
     # cygpath -m before handing the path to a WINDOWS pwsh — the repo's standing
     # convention (setup-hooks.sh, propagate-public.sh). $lane is built from

@@ -36,15 +36,15 @@ EXE="$DIR/cli-proxy-api"
 CFG="$DIR/config.yaml"
 VER_STAMP="$DIR/cli-proxy-api.version"
 PORT=8317
-VERSION="7.2.154"
+VERSION="7.2.158"
 RELEASE_BASE="https://github.com/router-for-me/CLIProxyAPI/releases/download/v${VERSION}"
 ASSET="CLIProxyAPI_${VERSION}_linux_amd64.tar.gz"
 RELEASE_URL="${RELEASE_BASE}/${ASSET}"
-# Pinned sha256 of the linux_amd64 asset at v7.2.154, verified against the
-# release's own checksums.txt (HIMMEL-2778, re-pinned HIMMEL-2816). Upstream DOES publish per-asset
+# Pinned sha256 of the linux_amd64 asset at v7.2.158, verified against the
+# release's own checksums.txt (HIMMEL-2778, re-pinned HIMMEL-2816/HIMMEL-3038). Upstream DOES publish per-asset
 # checksums as of this version — the .ps1's "upstream publishes no per-asset
 # checksum" comment is stale; not corrected here (out of scope, Windows file).
-ASSET_SHA256="2a2256ceff048d5fa813aa54e8daa43e870b40e698d5cd21efad46e25aa5a1f9"
+ASSET_SHA256="fe8d8a62c2464289e6fc10595bbb9595fbc4978f2abbf75854d052b91ecacb34"
 
 UNIT_NAME="cli-proxy-api.service"
 UNIT_DIR="$HOME/.config/systemd/user"
