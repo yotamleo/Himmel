@@ -1977,6 +1977,22 @@ if [ "$DO_UPDATE" -eq 1 ]; then
     fi
     exit 2
   fi
+  # HIMMEL-2983: bridge doc-extracted concept nodes whose label literally
+  # names a code file to that file's AST node (relation "references"), and
+  # add allowlisted subprocess-exec code-fact edges (relation "calls") --
+  # BETWEEN --update and cluster-only, so cluster-only re-clusters over the
+  # bridged graph for free instead of harden having to re-implement community
+  # merging. stdlib-only script (the `graphify` package is not importable
+  # from system python3 -- see the CLAUDE_CONFIG_DIR venv note above), so this
+  # never imports graphify. Idempotent: a re-run on an already-hardened graph
+  # adds 0 edges. A non-zero exit here means a well-formed but unreadable
+  # graph.json -- treated the same as an --update/cluster-only failure.
+  _rc=0
+  python3 "$HERE/harden-graph.py" --out "$SCRATCH_OUT" >&2 || _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    echo "refresh-graph-map: harden-graph failed -- graphify-out left unpromoted" >&2
+    exit 2
+  fi
   _rc=0
   _run_bounded "$GRAPHIFY_MAP" cluster-only "$SCRATCH" --backend "$BACKEND" --max-concurrency "$GRAPHIFY_MAX_CONCURRENCY" >&2 || _rc=$?
   if [ "$_rc" -ne 0 ]; then

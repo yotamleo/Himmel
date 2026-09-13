@@ -135,6 +135,59 @@ got_backend=$(awk 'prev=="--backend"{print; exit} {prev=$0}' "$BACKEND_LOG")
 [ "$got_backend" = "claude-cli" ] && pass "T1b default backend is exactly claude-cli" || fail "T1b default backend not exactly claude-cli (got: '$got_backend')"
 [ "$got_backend" != "deepseek" ] && pass "T1b default no longer deepseek" || fail "T1b default still uses deepseek"
 
+# --- T1c/T1d (HIMMEL-2983): harden-graph.py runs BETWEEN --update and
+# cluster-only, and is skipped entirely under --no-update. A CUSTOM stub is
+# required here: the shared $BIN/graphify stub above overwrites graph.json to
+# {"nodes":[],"links":[]} on BOTH --update and cluster-only, which would wipe
+# any edge harden adds before this test could observe it in the promoted
+# output. This stub's cluster-only branch touches only GRAPH_REPORT.md. ---
+T1C_BIN="$WS/bin-t1c"; mkdir -p "$T1C_BIN"
+cat > "$T1C_BIN/graphify" <<STUB
+#!/usr/bin/env bash
+target=""
+if [ "\$1" = "cluster-only" ]; then target="\$2"; else target="\$1"; fi
+mkdir -p "\$target/graphify-out"
+if [ "\$1" = "cluster-only" ]; then
+  echo "CLUSTER-ONLY-RAN" >&2
+else
+  echo "UPDATE-RAN" >&2
+  cat > "\$target/graphify-out/graph.json" <<'GJSON'
+{"nodes":[{"id":"doc_x","label":"foo.mjs router","source_file":"docs/x.md","file_type":"concept"},{"id":"scripts_foo","label":"foo.mjs","source_file":"scripts/foo.mjs","file_type":"code","source_location":"L1"}],"links":[]}
+GJSON
+fi
+cat > "\$target/graphify-out/GRAPH_REPORT.md" <<'RPT'
+$REPORT_FIXTURE
+RPT
+exit 0
+STUB
+chmod +x "$T1C_BIN/graphify"
+T1C_CORPUS="$WS/t1c-vault"; mkdir -p "$T1C_CORPUS/notes"; printf '# n\ncontent\n' > "$T1C_CORPUS/notes/a.md"
+T1C_MAPS="$WS/t1c-maps"; mkdir -p "$T1C_MAPS"
+
+echo "T1c: harden-graph runs between --update and cluster-only"
+out=$( GRAPHIFY_MAP_BIN="$T1C_BIN/graphify" bash "$SCRIPT" --name t1c --corpus-root "$T1C_CORPUS" --backend claude-cli \
+  --maps-dir "$T1C_MAPS" --title T1C --slug t1c-map --corpus-tag t1c 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T1c harden-wiring run exit 0 (got $rc): $out"
+upd_line=$(grep -n "^UPDATE-RAN$" <<<"$out" | head -1 | cut -d: -f1)
+harden_line=$(grep -n "^harden-graph:" <<<"$out" | head -1 | cut -d: -f1)
+cluster_line=$(grep -n "^CLUSTER-ONLY-RAN$" <<<"$out" | head -1 | cut -d: -f1)
+if [ -n "$upd_line" ] && [ -n "$harden_line" ] && [ -n "$cluster_line" ] \
+   && [ "$upd_line" -lt "$harden_line" ] && [ "$harden_line" -lt "$cluster_line" ]; then
+  pass "T1c harden-graph runs between --update and cluster-only"
+else
+  fail "T1c ordering wrong (update=$upd_line harden=$harden_line cluster=$cluster_line): $out"
+fi
+grep -q '"hardened": "doc-label-names-code-file"' "$T1C_CORPUS/graphify-out/graph.json" 2>/dev/null \
+  && pass "T1c promoted graph.json carries the harden bridge edge (survived cluster-only)" \
+  || fail "T1c bridge edge missing from promoted graph.json"
+
+echo "T1d: --no-update skips harden-graph entirely"
+rm -f "$T1C_MAPS/t1c-map.md"
+out=$( GRAPHIFY_MAP_BIN="$T1C_BIN/graphify" bash "$SCRIPT" --name t1c --corpus-root "$T1C_CORPUS" \
+  --maps-dir "$T1C_MAPS" --title T1C --slug t1c-map --no-update 2>&1 ); rc=$?
+[ "$rc" -eq 0 ] || fail "T1d no-update run exit 0 (got $rc): $out"
+echo "$out" | grep -q "^harden-graph:" && fail "T1d --no-update must not invoke harden-graph.py" || pass "T1d --no-update skips harden-graph.py"
+
 # --- T2: --no-update publishes from an existing repo-local report without re-extracting ---
 printf 'SENTINEL-EXISTING' > "$CORPUS/graphify-out/graph.json"   # must NOT be overwritten under --no-update
 # F4 (HIMMEL-907): a .md added AFTER T1's stamp but BEFORE this no-update run
@@ -1021,10 +1074,15 @@ out=$( GRAPHIFY_MAP_BIN="$MISSBIN/graphify" PATH="$MISSBIN:$PATH" \
   --maps-dir "$MISSMAPS" --title "Miss Map" --slug miss-map --corpus-tag miss 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T18 missing scratch graph.json fails loudly (rc=2)" \
   || fail "T18 missing scratch graph.json should fail loudly with rc=2 (got $rc): $out"
-echo "$out" | grep -q "missing required scratch artifact" \
-  && pass "T18 error names the missing-artifact failure" || fail "T18 error should mention missing required scratch artifact: $out"
-echo "$out" | grep -q "graph.json" \
-  && pass "T18 error names graph.json as the missing artifact" || fail "T18 error should name graph.json: $out"
+# HIMMEL-2983: harden-graph.py now runs immediately after --update, before the
+# staging-artifact guard below ever sees this scratch dir -- so a graph.json
+# genuinely missing after --update is now caught by harden's own "cannot read"
+# failure first, not by the later required-scratch-artifact check. Both are
+# fail-closed at rc=2 with graphify-out left unpromoted (proven below); only
+# the message text moved from the guard to harden.
+echo "$out" | grep -q "harden-graph failed -- graphify-out left unpromoted" \
+  && pass "T18 error names the harden-graph failure (graph.json unreadable pre-cluster-only)" \
+  || fail "T18 error should mention harden-graph failed: $out"
 cmp -s "$MISS_SNAPSHOT/graph.json" "$MISSCORPUS/graphify-out/graph.json" \
   && pass "T18 prior graph.json byte-identical after rejection" \
   || fail "T18 prior graph.json was mutated by a rejected refresh"
