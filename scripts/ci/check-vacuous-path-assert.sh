@@ -26,6 +26,14 @@
 # (e.g. `scrub_path "$PATH" tool`) does NOT get this pass: it may take
 # $PATH as an input and still reduce it.
 #
+# Known limitation (CR round 2, codex-1, deferred — HIMMEL-2957): the
+# preservation check matches a literal `$PATH`/`${PATH}` substring in the
+# assigned value without distinguishing quote style, so a single-quoted
+# `PATH='$PATH'` (which assigns the literal 5-character string, not an
+# expansion of the real PATH) is misread as preserving. Not fixed here:
+# no tracked file uses this shape, and it requires quote-type tracking
+# disproportionate to the risk; flag it in review if it ever appears.
+#
 # Usage:
 #   check-vacuous-path-assert.sh              # tree-walk: every git-tracked
 #                                              # scripts/**/test-*.sh
@@ -153,8 +161,13 @@ for f in "${files[@]}"; do
             }
 
             # ── Enter a heredoc: everything up to the matching terminator is
-            # DATA for the enclosing shell, not statements it runs.
-            if (match(line, /<<-?[ \t]*["'"'"'][A-Za-z_][A-Za-z0-9_]*["'"'"'][ \t]*$/) || match(line, /<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/)) {
+            # DATA for the enclosing shell, not statements it runs. A
+            # commented-out mention (`# see: cat <<EOF`) is not a live
+            # redirect -- without this guard it would falsely open heredoc
+            # state and silently skip every real line after it, including
+            # the assertion this detector exists to catch (CR round 2,
+            # codex-2).
+            if (line !~ /^[ \t]*#/ && (match(line, /<<-?[ \t]*["'"'"'][A-Za-z_][A-Za-z0-9_]*["'"'"'][ \t]*$/) || match(line, /<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/))) {
                 seg = substr(line, RSTART, RLENGTH)
                 heredoc_dash = (seg ~ /^<<-/)
                 term = seg

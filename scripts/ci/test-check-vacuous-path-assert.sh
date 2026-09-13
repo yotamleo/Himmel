@@ -185,6 +185,21 @@ FIXTURE
 bash "$GUARD" "$tmp/case-l2.sh" >/dev/null; rc=$?
 if [ "$rc" -eq 1 ]; then pass "case-l2 -> exit 1"; else fail "case-l2 -> expected 1 got $rc"; fi
 
+# Case M (CR round 2, codex-2): a COMMENTED mention of a heredoc redirect
+# must not open heredoc state -- before the fix, the unanchored regex
+# matched "<<EOF" inside the comment text, silently skipping every real
+# line after it (including the ambient scrub + assertion below), so the
+# finding would have gone undetected.
+echo "== Case M: commented heredoc mention does not suppress detection -> 1 finding =="
+cat > "$tmp/case-m.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+# example: cat <<EOF
+PATH=$(scrub_path "$PATH" tool)
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-m.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-m -> exit 1"; else fail "case-m -> expected 1 got $rc"; fi
+
 # Case H: no-args tree walk over the real repo exits 0 or 1, never 2.
 echo "== Case H: no-args tree walk exits 0/1, not 2 =="
 ( cd "$REPO_ROOT" && bash "$GUARD" ) >/dev/null 2>&1; rc=$?
