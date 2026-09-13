@@ -127,6 +127,27 @@ echo hello > "$MISSING_FILE"
 rc=$(run_case "$(j_read "$MISSING_FILE" sess-missing)" "HIMMEL_CONSOLE_LEG=1")
 assert_rc "retry after file is created still allows" 0 "$rc"
 
+# 9c. unreadable (permission-denied) file -> allow (fail-open on state), not
+# recorded, so a retry after chmod is fixed is not falsely denied (HIMMEL-2993 CR).
+if [ "$(id -u)" -ne 0 ]; then
+    UNREADABLE_FILE="$WORK/unreadable.txt"
+    seq 1 10 > "$UNREADABLE_FILE"
+    chmod 000 "$UNREADABLE_FILE"
+    rc=$(run_case "$(j_read "$UNREADABLE_FILE" sess-unreadable)" "HIMMEL_CONSOLE_LEG=1")
+    assert_rc "read of unreadable file allows" 0 "$rc"
+    chmod 644 "$UNREADABLE_FILE"
+else
+    echo "SKIP read of unreadable file allows (running as root; permission bits do not deny)"
+fi
+
+# 9d. a FIFO whole-file read -> allow, and must not block on wc reading it
+# (HIMMEL-2993 CR: file_line_count restricted to regular files).
+FIFO_PATH="$WORK/fifo"
+mkfifo "$FIFO_PATH"
+# shellcheck disable=SC2086 # intentional word-splitting: LINES_ENV carries a space-separated VAR=val assignment for env
+rc=$(printf '%s' "$(j_read "$FIFO_PATH" sess-fifo)" | timeout 5 env $LINES_ENV XDG_RUNTIME_DIR="$RUNTIME_DIR" HIMMEL_CONSOLE_LEG=1 bash "$HOOK" >"$WORK/stdout" 2>"$WORK/stderr"; echo "$?")
+assert_rc "read of a FIFO allows without blocking" 0 "$rc"
+
 # 10. escape hatch HIMMEL_READ_CLAMP_OK=1 -> allow, logged to stderr.
 rc=$(run_case "$(j_read "$BIG_FILE" sess-escape)" "HIMMEL_CONSOLE_LEG=1 HIMMEL_READ_CLAMP_OK=1")
 assert_rc "escape env allows" 0 "$rc"

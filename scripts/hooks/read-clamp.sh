@@ -71,7 +71,8 @@ IFS="$SOH" read -r tool fp offset limit cmd session_id <<<"$row"
 # file_line_count: prints a file's line count, or nothing (and fails) if the
 # file cannot be read -- callers must allow on failure, never deny on a guess.
 file_line_count() {
-    wc -l < "$1" 2>/dev/null
+    [ -f "$1" ] || return 1  # regular files only -- wc on a FIFO/device can block indefinitely (HIMMEL-2993 CR)
+    wc -l < "$1" 2>/dev/null  # fail-open-ok: an unreadable-but-regular file returns empty/rc!=0 here, and the caller's `|| exit 0` already treats that as allow -- documented fail-open (never deny on a guess)
 }
 
 # clamp_deny: the one deny message both the Read whole-file path and the Bash
@@ -120,7 +121,7 @@ record_read() {  # $1 = path, $2 = offset, $3 = limit, $4 = state file
 case "$tool" in
     Read)
         [ -n "$fp" ] || exit 0
-        [ -e "$fp" ] || exit 0  # PreToolUse runs before the Read; a nonexistent file may be created before a retry -- never record a read that didn't happen (HIMMEL-2993 CR)
+        [ -r "$fp" ] || exit 0  # PreToolUse runs before the Read; a nonexistent or unreadable file may be fixed before a retry -- never record a read that didn't happen (HIMMEL-2993 CR)
         state_dir=$(session_state_dir) || exit 0
         state_file="$state_dir/reads.tsv"
 
