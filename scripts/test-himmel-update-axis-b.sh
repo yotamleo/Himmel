@@ -481,7 +481,7 @@ assert_eq "a failed Linux install attempts restart after stop" "--stop
 assert_contains "Linux install failure reports the restore" "previous binary restored" "$OUT"
 assert_eq "Linux install failure leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
 assert_contains "Linux install failure prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
-assert_contains "Linux failure prints the platform-correct retry" "bash .*--stop && bash .*--install && bash .*--restart" "$OUT"
+assert_contains "Linux failure prints the platform-correct retry" "bash .*--stop && { bash .*--install; bash .*--restart; }" "$OUT"
 assert_not_contains "Linux failure never retries with --force" "force" "$(cat "$LINUXLOG")"
 
 echo ""
@@ -554,7 +554,7 @@ echo "Test 9i: cli-proxy roll — unverifiable Linux stamp gives the safe retry 
 printf 'custom\n' > "$LINUXHOME/.cli-proxy-api/cli-proxy-api.version"
 OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
 assert_eq "an unverifiable Linux stamp exits 0" "0" "$RC"
-assert_contains "Linux cannot-verify hint stops before installing" "bash .*--stop && bash .*--install && bash .*--restart" "$OUT"
+assert_contains "Linux cannot-verify hint stops before installing" "bash .*--stop && { bash .*--install; bash .*--restart; }" "$OUT"
 assert_eq "an unverifiable Linux stamp never invokes the lane" "" "$(cat "$LINUXLOG")"
 
 echo ""

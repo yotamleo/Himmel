@@ -1221,7 +1221,7 @@ sync_cli_proxy() {
         echo "                   (no python3, or the version stamp is not a version) — NOT rolling." >&2
         echo "                   Roll it yourself if the pin is what you want:" >&2
         if [ "$lane" = "$lane_sh" ]; then
-            echo "                   bash \"$lane\" --stop && bash \"$lane\" --install && bash \"$lane\" --restart" >&2
+            echo "                   bash \"$lane\" --stop && { bash \"$lane\" --install; bash \"$lane\" --restart; }" >&2
         else
             echo "                   pwsh -NoProfile -File \"$lane\" -Install -Restart" >&2
         fi
@@ -1257,7 +1257,7 @@ sync_cli_proxy() {
         fi
         echo "    warn: cli-proxy roll did not complete — see the message above." >&2
         echo "          if it refused a bounce, a codex-lane client was connected; re-run when idle:" >&2
-        echo "          bash \"$lane\" --stop && bash \"$lane\" --install && bash \"$lane\" --restart" >&2
+        echo "          bash \"$lane\" --stop && { bash \"$lane\" --install; bash \"$lane\" --restart; }" >&2
         return 1
     fi
     # cygpath -m before handing the path to a WINDOWS pwsh — the repo's standing
