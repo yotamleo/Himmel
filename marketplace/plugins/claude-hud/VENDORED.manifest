@@ -383,7 +383,7 @@ a33e27765ed2b3924e99f450cf5d0de6e26d6904  tests/prompt-cache-economics.test.js
 0e9a01ca4f35379ebd90affee359f1963e964417  tests/prompt-cache.test.js
 1c919a07d73578fbcb62a52004caf0c10a32dd7a  tests/readme-options.test.js
 7701155cc56661c39c8950a05ce03bf96ba63c6e  tests/render-width.test.js
-7c5dab828cf84601d53a5aaedf3779d3c389a0fb  tests/render.test.js
+c2beb26201be893e4e686f7f5b55927811c10d3e  tests/render.test.js
 10ff1c1068d5bde84c58238afe6db47d6673a6d8  tests/scoped-usage.test.js
 b2579c8bb616e6b2e30dc24cc3fccd2de76bdba0  tests/session-time.test.js
 a29bd9dbe4ea955d74ca88298e4aed3995d87f70  tests/session-tokens-coverage.test.js
