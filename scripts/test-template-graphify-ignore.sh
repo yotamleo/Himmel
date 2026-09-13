@@ -14,9 +14,10 @@
 #      is what suppresses the baseline finding above).
 #   4. RED-preserving control: the same nonce SUFFIXED with a real-looking
 #      credential still leaks — the allowlist regex is anchored to the exact
-#      nonce shape, not a prefix match. The reported finding is grepped for
-#      the nonce prefix, so an unrelated rule matching only the suffix does
-#      not count as proof the allowlist anchor still holds.
+#      nonce shape, not a prefix match. The finding's own `.Secret` field
+#      (not the whole report) is checked for the nonce prefix, so an
+#      unrelated rule matching only the suffix does not count as proof the
+#      allowlist anchor still holds.
 #
 # `run_gitleaks` classifies gitleaks' own exit code rather than treating any
 # nonzero as "leak found": 0 = clean, 1 = leak found (gitleaks' documented
@@ -102,19 +103,22 @@ else
         *) bad "nonce-alone: gitleaks scanner error (rc=$GITLEAKS_RC), not a leak verdict" ;;
     esac
 
-    # The suffixed control must prove the SPECIFIC finding covers the
-    # nonce-prefixed value, not merely that SOME rule flagged the fixture —
-    # an unrelated rule could match the appended credential alone even if
-    # the allowlist regex lost its `$` anchor and over-suppressed the nonce
-    # prefix (codex-adv round 2 finding). Capture the report and grep it.
+    # The suffixed control must prove the SPECIFIC finding's detected secret
+    # covers the nonce-prefixed value, not merely that the nonce prefix
+    # appears SOMEWHERE in the report (e.g. a Match/context field) — an
+    # unrelated rule could match the appended credential alone even if the
+    # allowlist regex lost its `$` anchor and over-suppressed the nonce
+    # prefix (codex-adv round 2/3 findings). Check the .Secret field itself.
     SUFFIX_REPORT="$WORK/report-suffixed.json"
     run_gitleaks "$FIX/nonce-suffixed.txt" "$TMPL/.gitleaks.toml" "$SUFFIX_REPORT"
     case "$GITLEAKS_RC" in
         1)
-            if grep -qF 'Y-N204-a68d71' "$SUFFIX_REPORT"; then
-                ok "nonce-suffixed real-looking credential still leaks, finding covers the nonce prefix (control)"
+            if jq -e --arg nonce 'Y-N204-a68d71' \
+                'any(.[]; (.Secret // "") | contains($nonce))' \
+                "$SUFFIX_REPORT" >/dev/null 2>&1; then
+                ok "nonce-suffixed real-looking credential still leaks, detected secret covers the nonce prefix (control)"
             else
-                bad "nonce-suffixed leaked but no reported finding covers the nonce prefix — an unrelated rule matched the suffix alone, not proof the allowlist anchor still holds"
+                bad "nonce-suffixed leaked but no finding's Secret field covers the nonce prefix — an unrelated rule matched the suffix alone, not proof the allowlist anchor still holds"
             fi
             ;;
         0) bad "nonce-suffixed real-looking credential did NOT leak — allowlist regex over-matches" ;;
