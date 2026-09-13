@@ -46,6 +46,18 @@
 # performed through an uncommon utility not on that list (e.g. `tar`,
 # `ln`, `cat >>` masked some other way) is not caught either.
 #
+# RESIDUAL (false-deny, fail-safe direction, not fixed here): the write-verb
+# glob (*cp*|*mv*|*rm*|*dd*|*sed*|...) matches as an unanchored SUBSTRING, not
+# a shell word, so a pure READ command whose text happens to contain one of
+# those letter sequences is denied too when it also names a guarded path —
+# e.g. `sed -n 1,20p <inbox-path>`, `grep -c address <inbox-path>` (matches
+# "dd" in "address"), `grep form <leg-doc-path>` (matches "rm" in "form"). A
+# relay that needs to read a guarded path should use cat/head/tail/grep with
+# wording that avoids these substrings, or accept the deny and ask the judge
+# to relay the content instead — over-denying a read is the safe direction
+# for this guard and is left uncorrected rather than widening the match logic
+# further.
+#
 # Bash 3.2-compatible. Exit codes: 0 allow (no output); 2 deny (JSON
 # hookSpecificOutput with permissionDecision "deny" on stdout,
 # permissionDecisionReason starting "relay write-deny: ").
