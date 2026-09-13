@@ -48,10 +48,20 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # A deterministic copy of the caller's executable search path with pwsh
-# omitted. This exercises the POSIX lane even on Linux CI hosts that happen to
-# have PowerShell installed.
+# omitted and uname -s stubbed. This exercises the Linux lane regardless of the
+# host OS or whether PowerShell is installed; a case can override the stub OS.
 NO_PWSH_BIN="$TMP/no-pwsh-bin"
 mkdir -p "$NO_PWSH_BIN"
+REAL_UNAME="$(command -v uname)"
+cat > "$NO_PWSH_BIN/uname" <<SH
+#!/bin/sh
+if [ "\${1:-}" = "-s" ]; then
+    printf '%s\n' "\${HIMMEL_TEST_UNAME_S:-Linux}"
+else
+    exec "$REAL_UNAME" "\$@"
+fi
+SH
+chmod +x "$NO_PWSH_BIN/uname"
 _old_ifs="$IFS"; IFS=:
 for _bindir in $PATH; do
     [ -d "$_bindir" ] || continue
@@ -445,6 +455,25 @@ assert_eq "a failed Linux install propagates rc 1" "1" "$RC"
 assert_eq "a failed Linux install does not attempt restart" "--install" "$(cat "$LINUXLOG")"
 assert_contains "Linux failure prints the platform-correct retry" "bash .*cli-proxy-lane.sh.*--install" "$OUT"
 assert_not_contains "Linux failure never retries with --force" "force" "$(cat "$LINUXLOG")"
+
+echo ""
+echo "Test 9d: cli-proxy roll — Darwin without pwsh skips the Linux lane"
+DARWINLOG="$TMP/darwin-lane-calls"; : >"$DARWINLOG"
+make_mock_clone
+DARWINCLONE="$CHECKOUT_DIR"
+write_fake_lane "$DARWINCLONE" "9.9.9"
+write_fake_linux_lane "$DARWINCLONE" "8.8.8" "$DARWINLOG"
+DARWINHOME="$TMP/darwin-home"
+mkdir -p "$DARWINHOME/.cli-proxy-api"
+printf '1.0.0\n' > "$DARWINHOME/.cli-proxy-api/cli-proxy-api.version"
+OUT="$(PATH="$NO_PWSH_BIN" HIMMEL_TEST_UNAME_S=Darwin \
+    run_update "$DARWINCLONE" "$DARWINHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "Darwin without pwsh exits 0" "0" "$RC"
+assert_contains "Darwin without pwsh reports the skip" "skip: pwsh not on PATH" "$OUT"
+assert_not_contains "Darwin without pwsh never rolls the host" "rolling host" "$OUT"
+assert_eq "Darwin never invokes the Linux lane" "" "$(cat "$DARWINLOG")"
+assert_eq "Darwin leaves the host stamp unchanged" "1.0.0" "$(cat "$DARWINHOME/.cli-proxy-api/cli-proxy-api.version")"
+assert_eq "Darwin leaves the checkout unchanged" "" "$(git -C "$DARWINCLONE" status --porcelain)"
 
 echo ""
 echo "Test 10: cli-proxy roll — a REFUSED bounce warns, never aborts the update"
