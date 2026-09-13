@@ -7,8 +7,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/machine-setup/migrate-plugin-to-himmel.sh"
 command -v jq >/dev/null || { echo 'FAIL: jq required'; exit 1; }
-TMP="$(mktemp -d "$REPO_ROOT/.test-migrate.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/test-migrate.XXXXXX")"
+trap 'chmod -R u+rwx "$TMP"; rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/bin" "$TMP/live project+wt"
 export HIMMEL_INSTALLED_PLUGINS_JSON="$TMP/installed_plugins.json"
 export MIGRATE_CALLS="$TMP/calls.jsonl" MIGRATE_SCOPE_HELP=0 MIGRATE_PROJECT_INSTALL_FAIL=0
@@ -115,6 +115,9 @@ check 'orphaned marketplace removed' has_removal
 set -- "$HIMMEL_INSTALLED_PLUGINS_JSON".bak-*
 check 'exactly one registry backup matches' test "$#" -eq 1
 check 'registry backup exists' test -f "$1"
+# shellcheck disable=SC2016 # This variable belongs to the child shell.
+check 'registry backup name has a unique suffix' bash -c \
+    '[[ "$1" =~ \.bak-[0-9]{8}-[0-9]{6}\.[[:alnum:]]+$ ]]' _ "$1"
 check 'backup preserves registry before orphan cleanup' cmp -s "$TMP/before.json" "$1"
 check 'unrelated plugin preserved' jq -e '.plugins["unrelated@elsewhere"] == [{scope:"user"}]' "$HIMMEL_INSTALLED_PLUGINS_JSON"
 
@@ -181,6 +184,32 @@ check 'scoped dry-run prints project uninstall' grep -Fq \
 check 'scoped dry-run invokes no mutations' jq -se 'all(.[]; .argv == ["plugin","uninstall","--help"])' "$MIGRATE_CALLS"
 set -- "$HIMMEL_INSTALLED_PLUGINS_JSON".bak-*
 check 'scoped dry-run creates no backup' test ! -e "$1"
+
+echo '== inaccessible project ancestor =='
+if [ "$(id -u)" -eq 0 ]; then
+    echo 'SKIP: inaccessible project ancestor — running as root'
+else
+    LOCKED="$TMP/locked parent"
+    mkdir -p "$LOCKED/proj"
+    fixture "$LOCKED/proj"
+    chmod 000 "$LOCKED"
+    run_case
+    check 'inaccessible project dry-run registry byte-identical' cmp -s "$TMP/before.json" "$HIMMEL_INSTALLED_PLUGINS_JSON"
+    check 'inaccessible project dry-run keep notice printed' grep -Fq \
+        "keep: $SPEC project-scope record kept — cannot verify $LOCKED/proj (ancestor $LOCKED not accessible)" "$TMP/output"
+    # shellcheck disable=SC2016 # This variable belongs to the child shell.
+    check 'inaccessible project dry-run does not report a drop' bash -c \
+        '! grep -Fq "DRY: drop orphaned project-scope record" "$1"' _ "$TMP/output"
+    run_case --apply
+    # shellcheck disable=SC2016 # These variables belong to jq.
+    check 'inaccessible project record preserved' jq -e --arg spec "$SPEC" --arg project "$LOCKED/proj" \
+        '.plugins[$spec] == [{scope:"project",projectPath:$project,installPath:"cached copy",version:"d95debbaef15"}]' "$HIMMEL_INSTALLED_PLUGINS_JSON"
+    check 'inaccessible project keep notice printed' grep -Fq \
+        "keep: $SPEC project-scope record kept — cannot verify $LOCKED/proj (ancestor $LOCKED not accessible)" "$TMP/output"
+    set -- "$HIMMEL_INSTALLED_PLUGINS_JSON".bak-*
+    check 'inaccessible project creates no backup' test ! -e "$1"
+    chmod 755 "$LOCKED"
+fi
 
 echo "$failures FAILURE(S)"
 [ "$failures" -eq 0 ]

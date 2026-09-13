@@ -86,12 +86,21 @@ for spec in "${SPECS[@]}"; do
         while IFS= read -r project_path; do
             [ -z "$project_path" ] && continue
             if [ ! -e "$project_path" ]; then
+                # An inaccessible ancestor can hide a live project.
+                a=$(dirname "$project_path")
+                while [ ! -e "$a" ] && [ "$a" != / ] && [ "$a" != . ]; do
+                    a=$(dirname "$a")
+                done
+                if [ ! -r "$a" ] || [ ! -x "$a" ]; then
+                    echo "keep: $spec project-scope record kept — cannot verify $project_path (ancestor $a not accessible)"
+                    continue
+                fi
                 if [ "$APPLY" -eq 0 ]; then
                     echo "DRY: drop orphaned project-scope record $spec (projectPath gone: $project_path)"
                     continue
                 fi
                 if [ -z "$REGISTRY_BACKUP" ]; then
-                    REGISTRY_BACKUP="$INSTALLED_JSON.bak-$(date +%Y%m%d-%H%M%S)"
+                    REGISTRY_BACKUP=$(mktemp "$INSTALLED_JSON.bak-$(date +%Y%m%d-%H%M%S).XXXXXX")
                     cp -p "$INSTALLED_JSON" "$REGISTRY_BACKUP"
                 fi
                 registry_tmp=$(mktemp "$INSTALLED_JSON.tmp.XXXXXX")
