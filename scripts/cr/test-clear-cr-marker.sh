@@ -2121,6 +2121,34 @@ if grepq "$LAST_CLEAR_OUT" -F 'r1-sug'; then pass; else
 if marker_exists "$tmp"; then pass; else fail "earlier-round unadjudicated: marker must REMAIN"; fi
 rm -rf "$tmp"
 
+# 8f. --dry-run must NEVER mutate the shared ledger via the branch-wide gate
+# 4c check, even when an earlier round head carries an `agreed` finding that
+# `review-round.sh promote` would otherwise flip to `verdict=fixed` as a side
+# effect of computing still-open (HIMMEL-3027 CR, coderabbitai: a real
+# `promote` call amends the ledger; --dry-run's contract is report-only).
+# Reproduces the exact shape CodeRabbit flagged: an `agreed`-disposed row at
+# an earlier round, tip fully adjudicated -- a non-dry-run run would call
+# promote and it would write; --dry-run must skip that call entirely.
+make_repo || exit 1
+_r1="${sha:0:8}"
+(cd "$tmp" && echo x >> f.txt && git commit -qam "round 2" && git push -q origin feat/x) >/dev/null 2>&1
+_tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+write_marker "$tmp" "$_tip"
+write_ledger "$tmp" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1-agreed","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}' "$_r1")" \
+    "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r2-fixed","severity":"sug","file":"a.sh","line":3,"verdict":"fixed"}' "${_tip:0:8}")" \
+    "$(avail_ok "${_tip:0:8}")"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+_ledger_before="$(cat "$tmp/.git/cr-critic-scores.jsonl")"
+run_clear "$tmp" 0 "--dry-run with a promotable earlier-round row -> exit 0, gate 4c skipped" --dry-run
+if marker_exists "$tmp"; then pass; else fail "8f dry-run: marker must REMAIN"; fi
+_ledger_after="$(cat "$tmp/.git/cr-critic-scores.jsonl")"
+if [ "$_ledger_before" = "$_ledger_after" ]; then pass; else
+    fail "8f dry-run must NEVER write to the shared ledger -- content changed: before=[$_ledger_before] after=[$_ledger_after]"; fi
+if grepq "$LAST_CLEAR_OUT" -F 'skipping the branch-wide still-open check'; then pass; else
+    fail "8f dry-run must say it skipped the mutating branch-wide check: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+
 # 5a-5e. HIMMEL-2128 — CR_FLOOR_FALLBACK=claude-only gate-3b escape. All five
 # cases require cross-model (else gate 3b never runs) and a Claude avail-ok row
 # (the floor). The fallback fires ONLY when every non-Claude lane that recorded
