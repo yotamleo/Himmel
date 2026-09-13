@@ -125,6 +125,20 @@ function acquireRefreshLock(homeDir, now) {
 // Removes the lock only if `lockToken` still matches the owner recorded at
 // acquisition time — a mismatch (or missing owner file) means this lock was
 // already reclaimed by a newer refresh, which this call must leave alone.
+// True when `lockToken` still matches the owner recorded at acquisition
+// time (or when there is no lock to check, i.e. a bare unit test of the
+// write path). Used to skip publishing a superseded refresh's totals.
+function isRefreshLockOwner(homeDir, lockToken) {
+    if (lockToken === null)
+        return true;
+    try {
+        return fs.readFileSync(getRefreshLockOwnerPath(homeDir), 'utf8') === lockToken;
+    }
+    catch (err) {
+        debug('Failed to read cache-economics refresh lock owner:', err instanceof Error ? err.message : err);
+        return false;
+    }
+}
 function releaseRefreshLock(homeDir, lockToken) {
     const lockPath = getRefreshLockPath(homeDir);
     try {
@@ -167,11 +181,9 @@ function writeCache(homeDir, cache, rename) {
     // Write to a pid-suffixed tmp file then rename onto the real path so a
     // concurrent reader never observes partial JSON (rename is atomic).
     const tmpPath = `${cachePath}.tmp.${process.pid}`;
-    let tmpWritten = false;
     try {
         fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
         fs.writeFileSync(tmpPath, JSON.stringify(cache), { encoding: 'utf8', mode: 0o600 });
-        tmpWritten = true;
         try {
             fs.chmodSync(tmpPath, 0o600);
         }
@@ -182,13 +194,14 @@ function writeCache(homeDir, cache, rename) {
     }
     catch (err) {
         debug('Failed to write cache-economics cache:', err instanceof Error ? err.message : err);
-        if (tmpWritten) {
-            try {
-                fs.unlinkSync(tmpPath);
-            }
-            catch {
-                // Best-effort: rename may have already moved or removed it.
-            }
+        // Attempt cleanup even when writeFileSync itself threw partway (e.g.
+        // ENOSPC): it may have left a partial tmp file despite tmpPath never
+        // being confirmed written.
+        try {
+            fs.unlinkSync(tmpPath);
+        }
+        catch {
+            // Best-effort: may never have been created, or rename already moved it.
         }
     }
 }
@@ -264,12 +277,17 @@ export async function getAllSessionsCacheEconomics(overrides = {}) {
 // in-process in tests): scans every transcript, writes the cache atomically,
 // then releases the refresh lock the render path handed it via `lockToken`
 // (null when driven without a lock, e.g. a bare unit test of the write path).
+// Publish is skipped if `lockToken` no longer matches the lock's current
+// owner (a stale-lock reclaim superseded this refresh while it was scanning)
+// so a slow, superseded scan cannot overwrite a newer refresh's totals.
 export async function runCacheEconomicsRefresh(overrides = {}, lockToken = null) {
     const deps = { ...defaultDeps, ...overrides };
     const homeDir = deps.homeDir();
     try {
         const totals = await computeAllSessionsTotals(homeDir);
-        writeCache(homeDir, { ...totals, computedAt: deps.now() }, deps.rename);
+        if (isRefreshLockOwner(homeDir, lockToken)) {
+            writeCache(homeDir, { ...totals, computedAt: deps.now() }, deps.rename);
+        }
     }
     finally {
         if (lockToken)

@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   95223f386aba822d4705a3a99878b1d8734c902508e97a5830c3cf5a78c2eb0c  # sha256 over VENDORED.manifest
+vendored_tree_hash:   ba1e7cb9565abd6f2dbbc6b460b8097bbebb4e8a9de82ee0cde0fd5b609195ae  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -82,6 +82,26 @@ protected: editing it without bumping the pin trips the guard.
   `CacheEconomicsDeps` injection so tests never fork a real process.
   Behavior preserved: same return type, same TTL constant, same cache
   schema. `vendored_tree_hash` re-recorded accordingly.
+
+  **CR round 1 follow-up:** the refresh lock now carries a `randomUUID()`
+  owner token (written into a file inside the lock dir), threaded through
+  `spawnRefresh`/the child argv/`runCacheEconomicsRefresh`, so a reclaimed
+  stale lock's original (superseded) holder can no longer delete the
+  reclaiming refresh's lock on release; `createSpawnRefresh` also releases
+  the lock on both a synchronous spawn failure and an asynchronous
+  `'error'` event from the child.
+
+  **CR round 2 follow-up:** `runCacheEconomicsRefresh` now checks its
+  `lockToken` still matches the lock's current owner immediately before
+  `writeCache` runs, so a refresh superseded by a stale-lock reclaim can no
+  longer publish its (stale) totals over a newer refresh's cache; `writeCache`'s
+  failure path now always attempts to unlink its pid-suffixed tmp file
+  (previously gated on the write having already succeeded, which could
+  leak a tmp file left behind by a partial `writeFileSync`, e.g. ENOSPC). A
+  third round-2 finding — a narrow TOCTOU window in the lock
+  reclaim/release sequence itself, inherent to a directory-based lock
+  without a real cross-process CAS primitive — is deferred to HIMMEL-3011.
+  `vendored_tree_hash` re-recorded accordingly.
 
 - **Leak-scanner markers on the `jarrod` fixture lines (HIMMEL-2958,
   2026-09-13):** himmel's `scripts/guardrails/leak-classes.sh` dropped

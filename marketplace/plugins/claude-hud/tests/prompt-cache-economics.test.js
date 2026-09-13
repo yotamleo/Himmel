@@ -370,6 +370,52 @@ test('writeCache cleans up the tmp file when the publish step fails', async () =
   assert.deepEqual(leftoverTmp, [], 'a failed rename must not leave a pid-suffixed tmp file behind');
 });
 
+// (codex-3, HIMMEL-2948 CR round 2) writeFileSync can throw partway through
+// (e.g. ENOSPC) after creating the tmp file; cleanup must still run even
+// though the write never reached the point that used to set `tmpWritten`.
+test('writeCache cleans up the tmp file when writeFileSync itself fails partway', async () => {
+  const home = mkTmpDir();
+  const cacheDir = cacheDirFor(home);
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const cachePath = path.join(cacheDir, 'cache-economics-all.json');
+  const tmpPath = `${cachePath}.tmp.${process.pid}`;
+  // Simulate a partial write: the tmp file exists on disk (as a real failed
+  // writeFileSync can leave behind) even though the write "failed".
+  fs.writeFileSync(tmpPath, 'partial');
+  await runCacheEconomicsRefresh({
+    homeDir: () => home,
+    now: () => 1_000_000,
+    rename: () => { throw new Error('boom'); },
+  });
+  assert.equal(fs.existsSync(tmpPath), false, 'a pre-existing partial tmp file must be cleaned up on failure');
+});
+
+// (codex-2, HIMMEL-2948 CR round 2) a refresh whose lock was reclaimed while
+// it was scanning must not publish its (now-superseded) totals.
+test('runCacheEconomicsRefresh skips publishing when its lock token was superseded', async () => {
+  const home = mkTmpDir();
+  const cacheDir = cacheDirFor(home);
+  const lockPath = path.join(cacheDir, 'refresh.lock');
+  fs.mkdirSync(lockPath, { recursive: true });
+  fs.writeFileSync(path.join(lockPath, 'owner'), 'current-owner-token', 'utf8');
+
+  const renameCalls = [];
+  await runCacheEconomicsRefresh({
+    homeDir: () => home,
+    now: () => 1_000_000,
+    rename: (oldPath, newPath) => {
+      renameCalls.push([oldPath, newPath]);
+      fs.renameSync(oldPath, newPath);
+    },
+  }, 'stale-superseded-token');
+
+  assert.equal(renameCalls.length, 0, 'a superseded refresh must not publish its totals');
+  assert.equal(fs.existsSync(path.join(cacheDir, 'cache-economics-all.json')), false);
+  // The lock is left alone: releaseRefreshLock also refuses a superseded
+  // token, so the reclaiming refresh's lock survives.
+  assert.equal(fs.existsSync(lockPath), true);
+});
+
 test('getRefreshLockTokenFromArgv extracts the token that follows the refresh flag', () => {
   assert.equal(
     getRefreshLockTokenFromArgv(['node', 'index.js', '--refresh-cache-economics', 'tok-123']),
