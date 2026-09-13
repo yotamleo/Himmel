@@ -43,7 +43,7 @@ BUNDLE="${BUNDLE_ARG:-${HIMMEL_PRIVATE_BUNDLE:-$HOME/.himmel/private-archive.bun
 # GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
 # ledger-metrics.sh's to_epoch()).
 to_epoch() {
-    date -d "$1" +%s 2>/dev/null && return 0
+    date -d "$1" +%s 2>/dev/null && return 0  # gnu-ok: BSD/macOS fallback on the next line
     date -j -u -f '%Y-%m-%dT%H:%M:%SZ' "$(printf '%s' "$1" | sed 's/\.[0-9]*Z$/Z/')" +%s 2>/dev/null
 }
 SINCE_EPOCH=$(to_epoch "$SINCE") || { echo "merged-count: bad --since: $SINCE" >&2; exit 2; }
