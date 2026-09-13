@@ -52,13 +52,15 @@ ledger_shas="$(cat "$sent_dir"/inbox-sent.log "$sent_dir"/*/inbox-sent.log 2>/de
 unmatched=0
 read_failed=0
 while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s' "$line" | grep -Eq '^- [0-9][0-9]:[0-9][0-9] \[[^]]*\] from=' || continue
+    token_bullet="$(printf '%s' "$line" | grep -E '^- [0-9][0-9]:[0-9][0-9] \[[^]]*\] from=')"
+    [ -n "$token_bullet" ] || continue
     if ! sha="$(printf '%s' "$line" | sha256sum)"; then
         printf 'inbox-audit: cannot hash line, aborting: %s\n' "$line" >&2
         exit 2
     fi
     sha="${sha%% *}"
-    if ! printf '%s\n' "$ledger_shas" | grep -qxF "$sha"; then
+    matched_sha="$(printf '%s\n' "$ledger_shas" | grep -xF "$sha")"
+    if [ -z "$matched_sha" ]; then
         printf 'AUDIT UNMATCHED %s\n' "$line"
         unmatched=1
     fi
