@@ -15,6 +15,8 @@
 #   subagent parent-role lookup via ${f%/subagents/*}.jsonl
 #   leg-burn.sh failure -> FAILS + WARNING on stderr, run still exits 0
 #   TOTAL cost-eq line: price-weighted sum across every row/session
+#   TOTAL cost-eq line: mixed sub-1000 (exact) and >=1000 (leg-burn.sh
+#     0.1k-rounded) per-session magnitudes (HIMMEL-2991)
 #
 # Platform guard: no .ps1 twin, by design. POSIX bash 3.2+; it runs under
 # git bash unchanged.
@@ -130,6 +132,27 @@ check_exit "totals: exits 0" "$?" "0"
 check "totals: cross-session TOTAL cost-eq line" \
     "$(printf '%s\n' "$TOTALS_OUT" | grep '^TOTAL cache-read=')" \
     "TOTAL cache-read=9.0k cache-create=1.0k input=3.5k output=0.7k cost-eq=9.2k"
+
+# --- (j) HIMMEL-2991: TOTAL sums mix sub-1000 (exact) and >=1000
+# (leg-burn.sh 0.1k-rounded) per-session magnitudes; regression net for the
+# TOTAL-awk column-9-12 pipeline documented in the comment above it.
+# session-small (1 call, all <1000, exact):        input=234  cache_read=567  cache_creation=89   output=345
+# session-large-exact (2 calls x 800/900/700/600):  input=1600 cache_read=1800 cache_creation=1400 output=1200
+# session-large-rounded (1 call, all >=1000):        input=2345 cache_read=3456 cache_creation=1234 output=4567
+#   leg-burn.sh's kf() rounds a >=1000 session to 0.1k: input 2.345->2.3k,
+#   cache_read 3.456->3.5k, cache_creation 1.234->1.2k, output 4.567->4.6k
+# TOTAL (k-unit sums across the three sessions, %.1f):
+#   input      = 0.234 + 1.600 + 2.3 = 4.134 -> 4.1k
+#   cache-read = 0.567 + 1.800 + 3.5 = 5.867 -> 5.9k
+#   cache-create = 0.089 + 1.400 + 1.2 = 2.689 -> 2.7k
+#   output     = 0.345 + 1.200 + 4.6 = 6.145 -> 6.1k
+#   cost-eq = 4.134*1 + 5.867*0.1 + 2.689*1.25 + 6.145*5 = 38.80695 -> 38.8k
+export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/totals-mixed"
+MIXED_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "totals-mixed: exits 0" "$?" "0"
+check "totals-mixed: TOTAL line over sub-1000 and >=1000 sessions" \
+    "$(printf '%s\n' "$MIXED_OUT" | grep '^TOTAL cache-read=')" \
+    "TOTAL cache-read=5.9k cache-create=2.7k input=4.1k output=6.1k cost-eq=38.8k"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

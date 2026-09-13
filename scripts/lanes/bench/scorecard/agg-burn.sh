@@ -110,9 +110,14 @@ END{
   for(k in n) printf "%s\t%d\t%d\t%.1f\t%.1f\t%.1f\t%d\t%d\t%.3f\t%.1f\n", k, n[k], c[k], (c[k]?ctx[k]/c[k]:0), pk[k], fsum[k]/n[k], cp[k], tx[k], (c[k]?tx[k]/c[k]:0), ctx[k]/1000
 }' "$ROWS" | sort
 
-# HIMMEL-2987: price-weighted TOTAL, over every row regardless of role/model -
-# raw sums first (columns 9-12, already in k-units via kn()), cost-eq computed
-# once at the end so per-session k-rounding never compounds.
+# HIMMEL-2987: price-weighted TOTAL, over every row regardless of role/model.
+# Columns 9-12 arrive from leg-burn.sh already rounded to 0.1k for any
+# session >=1000 tokens (sub-1000 sessions pass through exact); kn() only
+# normalises both shapes to a common k-unit before this awk sums them and
+# computes cost-eq once. That per-session 0.1k rounding is leg-burn.sh's
+# (HIMMEL-2996 follow-up), not introduced or compounded here - summing
+# already-in-k-units values and dividing by 1000 once are the same sum,
+# since division distributes over addition (verified HIMMEL-2991).
 awk -F'\t' -v wi="$LEG_BURN_W_INPUT" -v wcr="$LEG_BURN_W_CACHE_READ" -v wcc="$LEG_BURN_W_CACHE_CREATE" -v wo="$LEG_BURN_W_OUTPUT" '
 { out+=$9; cr+=$10; cc+=$11; inp+=$12 }
 END{
