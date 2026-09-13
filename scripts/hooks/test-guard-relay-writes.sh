@@ -106,8 +106,13 @@ EXTERNAL_LEG_DOC="/home/u/luna/handovers/a-legN3-2026-09-12-RESUME.md"
 TRAVERSAL_INBOX="$ROOT/other/../inbox/X.md"
 DOTSLASH_INBOX="$ROOT/./inbox/X.md"
 
+# A final-component symlink OUTSIDE every guarded dir whose target resolves
+# INTO the inbox (round-3 codex-1: a dir-only resolution missed exactly this).
+SYMLINK_INTO_INBOX="$TMP/looks-safe.md"
+ln -s "$INBOX_X" "$SYMLINK_INTO_INBOX"
+
 # name|json|expect_rc_relay|expect_rc_norelay
-ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11 row12 row13 row14 row15 row16 row17)
+ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11 row12 row13 row14 row15 row16 row17 row18 row19 row20)
 ROWS_JSON=(
     "$(write_payload Write "$INBOX_X")"
     "$(write_payload Edit "$LEG_DOC")"
@@ -129,8 +134,11 @@ ROWS_JSON=(
     "$(write_payload Write "$DOTSLASH_INBOX")"
     "$(bash_payload "unset CLAUDE_PID CONSOLE_SESSION_NAME; bash inbox-send.sh S x")"
     "$(bash_payload "env -u CLAUDE_PID bash inbox-send.sh S x")"
+    "$(write_payload Write "$SYMLINK_INTO_INBOX")"
+    "$(bash_payload "rm -rf $ROOT/inbox")"
+    "$(bash_payload "mv $ROOT/inbox /tmp/saved")"
 )
-ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0 2 2 2 2 2 2)
+ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0 2 2 2 2 2 2 2 2 2)
 
 echo "=== marker set (HIMMEL_CONSOLE_RELAY=1) ==="
 i=0

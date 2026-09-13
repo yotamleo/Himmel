@@ -16,10 +16,10 @@
 #   Write|Edit|MultiEdit|NotebookEdit — the resolved file_path (notebook_path
 #     for NotebookEdit) contains an unresolved ".." path segment (denied
 #     outright, fail-closed, before any guarded-path match); or
-#     <handover_root> fails to resolve, or the path's own containing
-#     directory fails to resolve (`cd ... && pwd -P`, symlinks included —
-#     denied fail-closed rather than silently skipping the guarded-path
-#     match); or the PHYSICALLY resolved path is under
+#     <handover_root> fails to resolve, or the path itself fails to resolve
+#     (`readlink -f`, every "./" segment and every symlink including the
+#     final component included — denied fail-closed rather than silently
+#     skipping the guarded-path match); or the PHYSICALLY resolved path is under
 #     <handover_root>/inbox/, under a .../himmel-console/... rundir, under
 #     ${TMPDIR:-/tmp}/himmel-console-*, or its basename matches
 #     *-legN*-RESUME.md.
@@ -119,16 +119,20 @@ case "$tool" in
 
         root="$(handover_root 2>/dev/null)" || deny "handover-root-unresolved" "handover_root failed"
         [ -n "$root" ] || deny "handover-root-unresolved" "handover_root returned empty"
-        root_resolved="$(cd "$root" 2>/dev/null && pwd -P)" || deny "handover-root-unresolved" "handover_root does not resolve: $root"
+        root_resolved="$(readlink -f -- "$root" 2>/dev/null)" || deny "handover-root-unresolved" "handover_root does not resolve: $root"
+        [ -n "$root_resolved" ] || deny "handover-root-unresolved" "handover_root does not resolve: $root"
 
-        # Resolve the containing directory (physically — symlinks and any
-        # "./" segment included) before matching against a guarded prefix, so
-        # an equivalent alias like "$root/./inbox/X.md" or a symlinked
-        # directory can't slip past a literal-string glob (codex-1).
-        path_dir=$(dirname -- "$path")
-        path_base=$(basename -- "$path")
-        path_dir_resolved="$(cd "$path_dir" 2>/dev/null && pwd -P)" || deny "unresolved-path" "$path"
-        path_resolved="$path_dir_resolved/$path_base"
+        # Physically resolve the WHOLE path — every "./" segment, and every
+        # symlink in every component including the final one (`readlink -f`,
+        # GNU coreutils, Linux-only per this hook's platform guard) — before
+        # matching against a guarded prefix. A dir-only resolution still lets
+        # an innocuously-named symlink whose FINAL component points into a
+        # guarded dir slip past a literal-string glob (codex-1); readlink -f
+        # only requires the path up to the last component to exist, so a
+        # brand-new file under an existing directory still resolves cleanly.
+        path_resolved="$(readlink -f -- "$path" 2>/dev/null)" || deny "unresolved-path" "$path"
+        [ -n "$path_resolved" ] || deny "unresolved-path" "$path"
+        path_base=$(basename -- "$path_resolved")
 
         case "$path_resolved" in
             "$root_resolved"/inbox/*) deny "inbox-write" "$path" ;;
@@ -171,7 +175,7 @@ case "$tool" in
         case "$cmd" in
             *'>'* | *tee* | *cp* | *mv* | *rm* | *rsync* | *dd* | *truncate* | *sed* | *install* | *chmod* | *chown*)
                 case "$cmd" in
-                    *"/inbox/"* | *himmel-console*) deny "redirect-into-console-state" "$cmd" ;;
+                    *"/inbox"* | *himmel-console*) deny "redirect-into-console-state" "$cmd" ;;
                 esac
                 case "$cmd" in
                     *-legN*)
