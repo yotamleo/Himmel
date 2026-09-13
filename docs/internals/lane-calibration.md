@@ -524,9 +524,9 @@ the doc rather than going quiet.
 (`docs/handover/leg-preface-claudex.md`) does not violate "never park" — it is
 bounded by the file inbox channel (`scripts/handover/console-kit/inbox-send.sh`
 writing, `scripts/hooks/claudex-inbox-hook.sh` delivering), observable (a READY
-bullet in the doc, held by one `until grep GO` Bash wait with a 30-minute
-timeout, re-issued rather than open-ended), and required because a merge is
-irreversible. See also `docs/internals/retask-channel.md` for the token
+bullet in the doc, held by one background Bash wait on the doc for the
+matching GO, with a 30-minute timeout, re-issued rather than open-ended), and
+required because a merge is irreversible. See also `docs/internals/retask-channel.md` for the token
 discipline governing the GO itself. No other wait qualifies.
 
 ## Cost posture
