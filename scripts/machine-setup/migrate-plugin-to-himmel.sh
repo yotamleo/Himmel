@@ -108,7 +108,13 @@ for spec in "${SPECS[@]}"; do
             else
                 uninstall_help=$(claude plugin uninstall --help 2>/dev/null | tr -d '\r' || true)
                 if grep -Eq -- '(^|[[:space:],])--scope([[:space:]=,]|$)' <<< "$uninstall_help"; then
-                    (cd "$project_path" && run claude plugin uninstall "$spec" --scope project) \
+                    # Install the project replacement before uninstalling its source.
+                    (cd "$project_path" &&
+                        if run claude plugin install "$name@$TARGET" --scope project; then
+                            run claude plugin uninstall "$spec" --scope project
+                        else
+                            echo "keep: $spec still installed at project scope in $project_path — project install failed"
+                        fi) \
                         || echo "  (project uninstall non-zero in $project_path; continuing)"
                 else
                     echo "keep: $spec still installed at project scope in $project_path — uninstall it from that project"
