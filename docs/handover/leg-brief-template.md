@@ -94,7 +94,7 @@ template_version: 3
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND the flag is a leg running on vibes. |
-| Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the three exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997, CLAUDE.md: "raise effort before tier") — the tag is validated, the free text after it never is, so a paraphrase can never be falsely rejected. |
+| Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the three exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997, CLAUDE.md: "raise effort before tier") — the tag is validated and the free text after it must be non-blank, but its content is otherwise unrestricted, so a paraphrase can never be falsely rejected. |
 
 ## What the console must also do (2026-09-13)
 
