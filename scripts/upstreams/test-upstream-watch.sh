@@ -202,11 +202,17 @@ run_watch() {
     bash "$WATCH" "$@"
 }
 
-# report_path <state> -- the report location the fixture registry (user
-# "testuser", bucket "himmel") predicts for today's date. Tests assert the
-# SCRIPT actually wrote there (not just that some file exists somewhere).
+# report_path <state> -- the report the SCRIPT actually just wrote, in the
+# location the fixture registry (user "testuser", bucket "himmel") predicts.
+# HIMMEL-2992: this used to compute today's date itself at ASSERT time, which
+# can disagree with the RUN-time date `upstream-watch.sh` named the file
+# with (a midnight boundary crossed mid-run, or a stale report left behind by
+# an earlier call in the same case) -- so instead take the newest matching
+# file by mtime; the report dir is per-case, so that is always the one this
+# run just wrote.
 report_path() {
-  printf '%s/handover/testuser/himmel/specs/reports/upstream-watch-%s.md' "$1" "$(date -u +%Y-%m-%d)"
+  # shellcheck disable=SC2012  # mtime order, not lexical -- see the note above
+  ls -t "$1/handover/testuser/himmel/specs/reports/upstream-watch-"*.md 2>/dev/null | head -n1
 }
 
 new_scratch() {
@@ -218,6 +224,30 @@ new_scratch() {
     '{repos: {himmel: {path: $path, user: "testuser", bucket_name: "himmel"}}}' \
     > "$state/registry.json"
   printf '%s' "$state"
+}
+
+# make_date_stub <dir> -- writes a PATH-shadowing `date` into <dir> that
+# counts its own calls in <dir>/.date_calls and, ONLY for the exact
+# `-u +%Y-%m-%d` form upstream-watch.sh and report_path() use, returns a
+# DIFFERENT day on the first call vs every call after (a midnight boundary
+# crossed mid-run); every other invocation shape passes through to the real
+# date (HIMMEL-2992 regression: pins the assert-time/run-time date seam).
+make_date_stub() {
+  local dir="$1" real_date
+  real_date=$(command -v date) || return 1
+  cat > "$dir/date" <<STUB
+#!/usr/bin/env bash
+counter_file="$dir/.date_calls"
+real_date="$real_date"
+count=\$(( \$(cat "\$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "\$count" > "\$counter_file"
+if [ "\$1" = "-u" ] && [ "\$2" = "+%Y-%m-%d" ]; then
+  if [ "\$count" -eq 1 ]; then echo "2026-09-12"; else echo "2026-09-13"; fi
+  exit 0
+fi
+exec "\$real_date" "\$@"
+STUB
+  chmod +x "$dir/date"
 }
 
 echo "== test: first-run delta =="
@@ -275,8 +305,24 @@ state=$(new_scratch)
 base_world > "$state/world.json"
 seed_baseline "$state"
 base_world | jq '.prs = [] | .dispositions["acme/widget#12"] = {state:"MERGED", mergedAt:"2026-08-05T00:00:00Z", closedAt:"2026-08-05T00:00:00Z"}' > "$state/world.json"
+# HIMMEL-2992 regression: force the script's date (REPORT_FILE naming, then
+# the report header) to disagree with an assert-time date, reproducing the
+# midnight-boundary flake from main CI run 34726530679 where the assert read
+# a file the script never wrote.
+date_stub_dir="$state/date-stub"
+mkdir -p "$date_stub_dir"
+make_date_stub "$date_stub_dir"
+old_path="$PATH"
+PATH="$date_stub_dir:$PATH"
 out=$(run_watch "$state" 2>&1); rc=$?
+PATH="$old_path"
 assert_eq 10 "$rc" "vanished delta: exit code"
+date_calls=$(cat "$date_stub_dir/.date_calls" 2>/dev/null || echo 0)
+if [ "${date_calls:-0}" -ge 2 ] 2>/dev/null; then
+  pass "vanished delta: date stub intercepted >=2 calls (not vacuous)"
+else
+  fail "vanished delta: date stub intercepted only ${date_calls:-0} call(s) — control is vacuous"
+fi
 report="$(report_path "$state")"
 assert_has "$(cat "$report" 2>/dev/null)" "## Closed / merged" "vanished delta: report has Closed/merged section"
 assert_has "$(cat "$report" 2>/dev/null)" "(merged)" "vanished delta: item labeled merged"
