@@ -149,6 +149,16 @@ jobs:
       # glob matches nothing: a renamed or deleted suite would go green with
       # nothing executed. `ls` on an unexpanded pattern fails, so the step does.
       - run: ls scripts/trust/tests/*.test.mjs && node --test "scripts/trust/tests/*.test.mjs"
+      # HIMMEL-3028: the scripts/hooks + scripts/lib node:test suites
+      # (HIMMEL-1578) ran ONLY in the local pre-commit hook until now — that
+      # hook deliberately skipped ci.yml because Actions was off on the
+      # private repo and the public mirror lacked .claude/settings.json (the
+      # wire-hook-bash fixture source). Both premises died 2026-09-09: origin
+      # is the public repo with Actions on every PR, and .claude/settings.json
+      # is tracked there. Pre-commit stays the fast local gate; this is the
+      # authoritative check a bypassed or skipped local hook can no longer
+      # dodge (HIMMEL-3025 is exactly the kind of leak this surfaces).
+      - run: bash scripts/hooks/check-hook-lib-suites.sh
 
   guardrail-matrices:
     # HIMMEL-1522: the egress matrix decides whether a corpus may leave the

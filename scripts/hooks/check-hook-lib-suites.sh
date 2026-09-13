@@ -7,15 +7,14 @@
 # RED on committed main for a full day and five consecutive chain legs read,
 # discussed and deferred that file while it was broken.
 #
-# WHY PRE-COMMIT AND NOT CI (HIMMEL-1578 deviates from its own ticket here):
-# the ticket asked for a ci.yml step. That surface cannot work.
-#   1. Actions is OFF on the private repo by design, so a ci.yml step does not
-#      execute here at all.
-#   2. The public mirror is the only surface that runs Actions, and
-#      .claude/settings.json is in PRIVATE_PATHS — it is a hard 404 there.
-#      wire-hook-bash.test.mjs sources its fixture from that file, so the
-#      suite is 9-of-133 RED on a mirror-shaped checkout (measured).
-# Pre-commit is the only surface that both executes and has the fixture.
+# WHY PRE-COMMIT ONLY, HISTORICALLY (HIMMEL-1578 deviated from its own ticket):
+# Actions was off on the then-private repo and the public mirror lacked
+# .claude/settings.json (the wire-hook-bash fixture source), so a ci.yml step
+# could not run this at all. Both premises died 2026-09-09 — origin is now the
+# public repo with Actions on every PR, and .claude/settings.json is tracked
+# there — so `lanes-and-trust-suites` in ci.yml now calls this script too
+# (HIMMEL-3028). Pre-commit remains the fast local gate; CI is the surface a
+# bypassed or skipped local hook can no longer dodge.
 set -uo pipefail
 
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
