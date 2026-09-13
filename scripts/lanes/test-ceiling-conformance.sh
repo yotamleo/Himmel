@@ -195,6 +195,19 @@ sess_out_n="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
 nf_n="$(printf '%s' "$sess_out_n" | awk -F'\t' '{print NF; exit}')"
 if [ "$nf_n" -eq 4 ]; then pass 'an embedded TAB in a name value does not widen the TSV row'; else fail "an embedded TAB in a name value does not widen the TSV row (NF=$nf_n)"; fi
 
+# (o) HIMMEL-2999 CR round 3 (codex-2, Suggestion): `--system-prompt` (the
+# non-append variant) is a value-bearing free-text flag just like
+# `--append-system-prompt` -- a value that happens to equal the literal
+# string "-n" must not poison the NEXT argv element into being read as -n's
+# value. The real -n (HIMMEL-200-legN99-2026-09-13), consumed earlier, must
+# survive.
+mkcmdline 113 claude --model claude-sonnet-5 --autocompact auto -n HIMMEL-200-legN99-2026-09-13 \
+    --system-prompt -n work
+pgrep_x_stub 113
+out_o="$(run_primary)"
+contains 'a --system-prompt value that looks like -n does not hijack the following token as the real name' "$out_o" 'HIMMEL-200-legN99-2026-09-13 auto'
+contains 'the --system-prompt hijack-attempt leg still reports its real DRIFT' "$out_o" 'ceiling=DRIFT:HIMMEL-200-legN99-2026-09-13'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-ceiling-conformance.sh'
     exit 0

@@ -55,7 +55,12 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
     # is a bare boolean flag in this repo's real invocations (see
     # scripts/probes/claude-p/*.sh -- `-p` always sits right after the
     # binary name with no value of its own), and treating it as
-    # value-bearing swallowed the very next real flag's value.
+    # value-bearing swallowed the very next real flag's value. CR round 3
+    # (codex-2, Suggestion): `--system-prompt`/`--system-prompt-file` (the
+    # non-append variant of the same free-text flag) was missing from this
+    # list -- its value is exactly as attacker/prompt-controlled as
+    # `--append-system-prompt`'s, so a value equal to the literal "-n" (or
+    # "--model"/"--autocompact") hijacked the next token the same way.
     local proc="$1" pid="$2" cmdline
     cmdline="$proc/$pid/cmdline"
     [ -r "$cmdline" ] || return 0
@@ -76,6 +81,7 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
             --model) expect=model ;;
             --autocompact) expect=autocompact ;;
             --append-system-prompt|--append-system-prompt-file) expect=skip ;;
+            --system-prompt|--system-prompt-file) expect=skip ;;
         esac
     done < "$cmdline"
     printf '%s\t%s\t%s\t%s\n' "$pid" "$(_tsv_field "$name")" "$(_tsv_field "$model")" "$(_tsv_field "$autocompact")"
