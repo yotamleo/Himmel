@@ -293,19 +293,25 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             break
         fi
         _hd_prefix="${rm_scrub_raw%%"$_hd_opener"*}"
-        # An opener immediately preceded by a quote char is DATA inside a
-        # quoted argument (`echo "<<'EOF'"`), not a redirect operator - a
-        # real heredoc redirect is never written with an open quote directly
-        # before the `<<` (codex panel finding, HIMMEL-2834 pr-check round 2:
-        # this exact shape let a real `rm -rf` on the next line hide as fake
-        # heredoc body between a quoted `<<'EOF'` and a coincidental `EOF`
-        # line). Mask just this occurrence's `<<` so it cannot match again,
+        # An opener sitting inside an OPEN quote on its own physical line is
+        # DATA inside a quoted argument (`echo "text <<'EOF'"`), not a
+        # redirect operator - a real heredoc redirect is never written
+        # mid-quote. Round 2's fix only checked the character immediately
+        # before `<<`, which missed a quote opened earlier on the same line
+        # with text between it and the `<<` (codex panel finding, HIMMEL-2834
+        # pr-check round 3: this let a real `rm -rf` on the next line hide the
+        # same way). Fixed by counting quote chars on the CURRENT line (since
+        # the last real newline) before the opener - an odd count of either
+        # quote char means we are still inside that quote, so the opener is
+        # data. Mask just this occurrence's `<<` so it cannot match again,
         # leaving the rest of the string - including any real command on the
         # following lines - completely UNSTRIPPED, so it still falls through
         # to the ${CMDPOS} match below (fail-closed, same direction as the
         # unterminated-heredoc case above).
-        _hd_prevchar="${_hd_prefix: -1}"
-        if [[ $_hd_prevchar == "'" || $_hd_prevchar == '"' ]]; then
+        _hd_line_prefix="${_hd_prefix##*$'\n'}"
+        _hd_sq="${_hd_line_prefix//[^\']/}"
+        _hd_dq="${_hd_line_prefix//[^\"]/}"
+        if (( ${#_hd_sq} % 2 == 1 || ${#_hd_dq} % 2 == 1 )); then
             rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
             continue
         fi

@@ -336,6 +336,14 @@ heredoc_cmd_fakeopener='echo "<<'"'"'EOF'"'"'"
 rm -rf /tmp/x
 EOF'
 assert_rc "2834i quoted-arg fake heredoc opener <rm literal>" 2 "$(run_case "$(j_bash "$heredoc_cmd_fakeopener")")"
+# (j) same as (i), but the quote opens EARLIER on the line with text between it
+# and the `<<` (`echo "text <<'EOF'"`) — the character immediately before `<<`
+# is a space, not a quote, so a check of only that one character misses it;
+# must still DENY (codex panel, pr-check round 3 on this ticket).
+heredoc_cmd_fakeopener_midline='echo "text <<'"'"'EOF'"'"'"
+rm -rf /tmp/x
+EOF'
+assert_rc "2834j mid-line quoted fake heredoc opener <rm literal>" 2 "$(run_case "$(j_bash "$heredoc_cmd_fakeopener_midline")")"
 # (f) HIMMEL-851 bypasses must still deny post-anchor (already covered above,
 # cited here for the ticket's control list): quoted-flag L104, \${IFS} L106,
 # backslash-continuation L110-112.
