@@ -39,6 +39,9 @@ done
 # for hermetic tests; production callers use the default.
 CUTOVER="${SCORECARD_CUTOVER:-2026-09-09T09:30:00Z}"
 BUNDLE="${BUNDLE_ARG:-${HIMMEL_PRIVATE_BUNDLE:-$HOME/.himmel/private-archive.bundle}}"
+# The private bundle only ever holds yotamleo/Himmel's pre-cutover history; a
+# straddling --since against any OTHER --repo must not pull it in.
+ARCHIVE_REPO="yotamleo/Himmel"
 
 # GNU `date -d` first; BSD/macOS `date -j -f` fallback (same convention as
 # ledger-metrics.sh's to_epoch()).
@@ -60,6 +63,10 @@ trap 'rm -rf "$RUN"' EXIT
 fetch_public() {
     gh pr list -R "$REPO" --state merged --limit 1000 --json number,title,mergedAt,author \
         --jq '.' > "$RUN/public.json" || { echo "merged-count: gh pr list failed" >&2; exit 1; }
+    pr_total=$(jq 'length' "$RUN/public.json" 2>/dev/null) || { echo "merged-count: could not parse gh pr list output" >&2; exit 1; }
+    if [ "${pr_total:-0}" -ge 1000 ]; then
+        echo "merged-count: WARNING: gh pr list returned $pr_total merged PRs (== --limit 1000); older history may be truncated" >&2
+    fi
     if [ "$3" -eq 1 ]; then
         jq --argjson s "$1" --argjson u "$2" '
           [.[] | select((.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) >= $s and (.mergedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) < $u)
@@ -71,14 +78,15 @@ fetch_public() {
     fi
 }
 
-if [ "$SINCE_EPOCH" -lt "$CUTOVER_EPOCH" ]; then
+if [ "$SINCE_EPOCH" -lt "$CUTOVER_EPOCH" ] && [ "$REPO" = "$ARCHIVE_REPO" ]; then
     [ -f "$BUNDLE" ] || { echo "merged-count: missing private bundle at $BUNDLE (straddling window: --since $SINCE is before the $CUTOVER cutover); set HIMMEL_PRIVATE_BUNDLE or restore the bundle" >&2; exit 2; }
     BUNDLE_UNTIL="$CUTOVER"
     [ "$UNTIL_EPOCH" -lt "$CUTOVER_EPOCH" ] && BUNDLE_UNTIL="$UNTIL"
     CLONE="$RUN/priv.git"
     git clone --bare -q "$BUNDLE" "$CLONE" 2>/dev/null || { echo "merged-count: could not clone private bundle $BUNDLE" >&2; exit 1; }
-    bundle_count=$(git -C "$CLONE" log --first-parent --since="$SINCE" --until="$BUNDLE_UNTIL" --format=%s main 2>/dev/null | grep -cE '\(#[0-9]+\)$')
-    public_count=$(fetch_public "$CUTOVER_EPOCH" "$UNTIL_EPOCH" 1)
+    bundle_log=$(git -C "$CLONE" log --first-parent --since="$SINCE" --until="$BUNDLE_UNTIL" --format=%s main 2>/dev/null) || { echo "merged-count: git log on private bundle failed" >&2; exit 1; }
+    bundle_count=$(printf '%s\n' "$bundle_log" | grep -cE '\(#[0-9]+\)$')
+    public_count=$(fetch_public "$CUTOVER_EPOCH" "$UNTIL_EPOCH" 1) || { echo "merged-count: could not fetch public PR count" >&2; exit 1; }
     echo $((bundle_count + public_count))
 else
     fetch_public "$SINCE_EPOCH" "$UNTIL_EPOCH" 0
