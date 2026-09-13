@@ -27,6 +27,25 @@ node_modules/
 __pycache__/
 *.pyc
 
+# graphify's output, ALL of it — the semantic embedding cache (7,332 of the
+# 7,344 files, ~80MB, churning ~800 files per refresh) and, since HIMMEL-1960,
+# the top-level products too (graph.json, GRAPH_REPORT.md, the per-corpus
+# graphs, manifest.json).
+#
+# WHY the products stopped being tracked (operator decision (b), 2026-08-19):
+# the graphmap cadence runs `graphify update` against this vault IN PLACE, and
+# this vault has an auto-committer. Tracked products therefore meant a commit
+# of graph churn on every structural refresh — noise in a personal vault's
+# history, generated wholly from content the same history already carries.
+#
+# COST, stated plainly: these products are what `graphify query`/`explain` and
+# the 60-Maps/graphify-*-map.md notes read. A fresh clone on ANOTHER MACHINE
+# now has no graph at all until it runs a refresh there, where before it
+# inherited the last committed one (stale, but present). The graph became a
+# per-machine local artifact rather than a synced one. Regenerate with
+# `graphify update <vault> --force`, or the himmel cadence's structural leg.
+graphify-out/
+
 # Claude worktrees
 /.claude/worktrees/
 /.worktrees/
