@@ -23,7 +23,9 @@ bash scripts/handover/console/console.sh $ARGUMENTS
   `-HANDOFF.md` skeleton. Run it at 45 % context fill or after 90 k input
   tokens in one turn.
 - `--arm` — also arm the session headed via `scripts/handover/headed-arm.sh`,
-  on a signal file plus a deadline; prints the arm log path.
+  on a signal file plus a deadline; prints the arm log path. Launches with
+  `--autocompact 200000` by default (HIMMEL-2973); set `CONSOLE_CONTEXT=1m`
+  in the launching shell to opt into `--autocompact auto` instead.
 - `--dry-run` — print what it would write, prefixed `would-`, and touch nothing.
 
 Record the printed `release-token: ` line — now backticked around the token

@@ -51,8 +51,14 @@ tried to acquire again would be refused by its own startup lock.)
 Finally it prints the launch line. Run it in a terminal of its own:
 
 ```text
-claude --model <model> --autocompact auto -n <session-name> "load <doc> and continue"
+claude --model <model> --autocompact 200000 -n <session-name> "load <doc> and continue"
 ```
+
+`--autocompact 200000` is the default (HIMMEL-2973 — the largest cache-read
+cost driver on the fleet was Fable consoles compacting only near the 1M
+window). Set `CONSOLE_CONTEXT=1m` in the launching shell before running
+`console new`/`next` to opt into the old `--autocompact auto` behavior; the
+printed launch line reflects whichever is resolved.
 
 A console wants a real TTY. A session launched without one exits at the first
 idle cross-session message.

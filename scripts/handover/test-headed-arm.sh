@@ -245,14 +245,48 @@ contains "happy path: forces session persistence"       "$rec1" "CLAUDE_CODE_FOR
 contains "happy path: carries the session name via -n"  "$rec1" "-n HIMMEL-9999-leg"
 contains "happy path: carries the default model"        "$rec1" "claude-fable-5-1"
 contains "happy path: doc reaches the prompt"            "$rec1" "load some/handover-doc.md and continue"
-# HIMMEL-2658: default [context] is 1m (a headed arm IS a console arm), but
-# the default model here IS Fable-family, so the CLI silently strips a
-# [1m] suffix there -- --autocompact auto is still passed (the actual
-# cost-driving lever) and NO [1m] suffix reaches the launch command.
-contains     "happy path: default context passes autocompact auto"   "$rec1" "--autocompact auto"
+# HIMMEL-2973: default [context] is now `standard` (--autocompact 200000) --
+# the console arm path is the biggest cache-read cost driver on the fleet
+# (2026-09-12 cost audit), and 1m context is now an explicit opt-in via
+# CONSOLE_CONTEXT=1m in the launching shell, never the bare default.
+contains     "happy path: default context passes autocompact 200000" "$rec1" "--autocompact 200000"
+not_contains "happy path: default context has no autocompact auto"   "$rec1" "--autocompact auto"
 not_contains "happy path: default Fable model carries no [1m] suffix" "$rec1" "[1m]"
 log1="$(cat "$d1/log" 2>/dev/null || true)"
-contains "happy path: log records the default context (1m)" "$log1" "context=1m"
+contains "happy path: log records the default context (standard)" "$log1" "context=standard (default)"
+
+# --- 1b (HIMMEL-2973). CONSOLE_CONTEXT=1m opts into 1m without a positional -
+d1b="$tmp/c1b"; mk_stub "$d1b" 1 alive "HIMMEL-9999b-leg"
+rc1b=0
+CONSOLE_CONTEXT=1m run_headed_arm "$d1b" "$REPO" "HIMMEL-9999b-leg" "some/handover-doc.md" "$d1b/signal-never" "$PAST" >/dev/null 2>&1 || rc1b=$?
+wait_record "$d1b" || true
+rec1b="$(cat "$d1b/record" 2>/dev/null || true)"
+check "CONSOLE_CONTEXT=1m: exit 0" "$rc1b" "0"
+contains     "CONSOLE_CONTEXT=1m: passes autocompact auto"   "$rec1b" "--autocompact auto"
+not_contains "CONSOLE_CONTEXT=1m: no autocompact 200000"     "$rec1b" "--autocompact 200000"
+log1b="$(cat "$d1b/log" 2>/dev/null || true)"
+contains "CONSOLE_CONTEXT=1m: log names the opt-in source" "$log1b" "CONSOLE_CONTEXT=1m"
+
+# --- 1c (HIMMEL-2973). positional 1m WITHOUT the env is refused up front ----
+d1c="$tmp/c1c"; mk_stub "$d1c" 1 alive "HIMMEL-9999c-leg"
+outc1c=$(env -u CONSOLE_CONTEXT KONSOLE_CMD="$d1c/konsole" PGREP_CMD="$d1c/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d1c/locks" HEADED_ARM_PROC="$d1c/proc" \
+    bash "$SCRIPT" "HIMMEL-9999c-leg" "some/handover-doc.md" "$d1c/signal-never" "$PAST" "$d1c/log" claude-opus-5 1m 2>&1)
+rcc1c=$?
+check    "positional 1m without env: exit 2" "$rcc1c" "2"
+contains "positional 1m without env: names CONSOLE_CONTEXT=1m" "$outc1c" "CONSOLE_CONTEXT=1m"
+if [ -e "$d1c/record" ]; then echo "FAIL - positional 1m without env: no konsole record"; fails=$((fails+1))
+else echo "ok - positional 1m without env: no konsole record"; fi
+if [ -e "$d1c/locks" ]; then echo "FAIL - positional 1m without env: no lock dir created"; fails=$((fails+1))
+else echo "ok - positional 1m without env: no lock dir created"; fi
+
+# --- 1d (HIMMEL-2973). positional 1m WITH the env is accepted ---------------
+d1d="$tmp/c1d"; mk_stub "$d1d" 1 alive "HIMMEL-9999d-leg"
+rc1d=0
+CONSOLE_CONTEXT=1m run_headed_arm "$d1d" "$REPO" "HIMMEL-9999d-leg" "some/handover-doc.md" "$d1d/signal-never" "$PAST" claude-opus-5 1m >/dev/null 2>&1 || rc1d=$?
+wait_record "$d1d" || true
+rec1d="$(cat "$d1d/record" 2>/dev/null || true)"
+check "positional 1m with env: exit 0" "$rc1d" "0"
+contains "positional 1m with env: passes autocompact auto" "$rec1d" "--autocompact auto"
 
 # --- 2. explicit model overrides the default -----------------------------
 d2="$tmp/c2"; mk_stub "$d2" 1 alive "HIMMEL-leg2"

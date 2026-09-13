@@ -26,13 +26,16 @@
 # Usage:
 #   headed-arm.sh <session-name> <handover-doc> <signal-file> <deadline-epoch> \
 #                 <log> [model] [context: 1m|standard]
-# [context] (HIMMEL-2658): arming-time context-window choice, same two
-# measured levers as scripts/handover/arm-resume.sh's --context (the [1m]
-# model-id suffix, silently a no-op on a Fable-family model, and the
-# actual cost-driving --autocompact auto|200000). Defaults to 1m -- a
-# headed arm IS a console arm by definition (this script only ever launches
-# the console lane), so it takes the console default rather than the
-# ordinary-arm default arm-resume.sh uses.
+# [context] (HIMMEL-2658, default flipped by HIMMEL-2973): arming-time
+# context-window choice, same two measured levers as
+# scripts/handover/arm-resume.sh's --context (the [1m] model-id suffix,
+# silently a no-op on a Fable-family model, and the actual cost-driving
+# --autocompact auto|200000). Defaults to `standard` (200000): the 2026-09-12
+# cost audit found Fable consoles launched with the old 1m default averaging
+# 241-275k tokens/turn, ~40% of a console's context per shift, so 1m context
+# now requires CONSOLE_CONTEXT=1m set in the LAUNCHING shell -- an explicit
+# operator opt-in, refused otherwise (same shape as the HIMMEL-2779 leg-side
+# REQUIRED_AUTOCOMPACT refusal below).
 # Run detached, so it outlives the session that armed it:
 #   setsid nohup bash scripts/handover/headed-arm.sh ... >/dev/null 2>&1 &
 #
@@ -312,18 +315,24 @@ if [ "$#" -lt 5 ]; then
 fi
 
 NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-fable-5-1}"
-# HIMMEL-2658: --context resolution, arming-time only (see the header
-# comment above). Defaults to 1m because a headed arm IS a console arm.
-# $#-ge 7 (not just "${7:-}" non-empty) is what distinguishes an explicit
-# empty-string 7th positional from "omitted" for the log line below --
-# nothing currently passes an empty string here, but the distinction costs
-# nothing and matches how arm-resume.sh tells explicit from default.
+# HIMMEL-2973: --context resolution, arming-time only (see the header
+# comment above). Defaults to `standard` (--autocompact 200000): the console
+# arm path is the largest cache-read cost driver on the fleet (2026-09-12
+# cost audit), so 1m is now an explicit operator opt-in via CONSOLE_CONTEXT=1m
+# in the LAUNCHING shell, never the bare default. $#-ge 7 (not just
+# "${7:-}" non-empty) is what distinguishes an explicit empty-string 7th
+# positional from "omitted" for the log line below -- nothing currently
+# passes an empty string here, but the distinction costs nothing and matches
+# how arm-resume.sh tells explicit from default.
 if [ "$#" -ge 7 ]; then
     CONTEXT="$7"
-    _headed_context_source="explicit"
-else
+    _headed_context_source="positional"
+elif [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
     CONTEXT="1m"
-    _headed_context_source="default: headed arms are always console arms"
+    _headed_context_source="CONSOLE_CONTEXT=1m"
+else
+    CONTEXT="standard"
+    _headed_context_source="default"
 fi
 case "$CONTEXT" in
     1m|standard) ;;
@@ -333,6 +342,17 @@ case "$CONTEXT" in
         exit 2
         ;;
 esac
+# HIMMEL-2973: 1m is an explicit operator opt-in -- refuse before the claim
+# lock or konsole is ever touched (same refusal shape as the HIMMEL-2779
+# leg-side REQUIRED_AUTOCOMPACT check below) unless CONSOLE_CONTEXT=1m was
+# set in the launching shell. A resolved CONTEXT of 1m always means that
+# check already passed (the `elif` above only reaches 1m when it did), so
+# this only ever fires for an explicit positional `1m` without the env.
+if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+    echo "usage: headed-arm.sh <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
+    exit 2
+fi
 # Fable-family match (matched by substring, same idiom arm-resume.sh's
 # _arm_model_is_fable uses) -- the default MODEL here IS Fable, so the
 # common path through this script hits this branch every time.

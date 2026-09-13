@@ -352,6 +352,15 @@ fi
 state_dir="$root/$slug/$bucket"
 model="${MODEL:-${CONSOLE_MODEL:-claude-fable-5-1}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
+# HIMMEL-2973: do_arm passes headed-arm.sh no [context] positional, so
+# headed-arm.sh's own default resolution decides the launch's --autocompact
+# value; mirrored here (not shared — a different script) purely for the
+# printed launch/would-launch lines below to show the value that will
+# actually be used, same CONSOLE_CONTEXT=1m opt-in headed-arm.sh honours.
+console_autocompact="200000"
+if [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
+    console_autocompact="auto"
+fi
 
 # _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small
 # per-script helper, matching the repo's own convention of duplicating this
@@ -661,7 +670,7 @@ cmd_new() {
         echo "would-doc: $doc"
         echo "would-session: $session"
         echo "would-kit: $kit"
-        echo "would-launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""
+        echo "would-launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -759,7 +768,7 @@ cmd_new() {
 
     printf '%s\n' "$lock_out"
 
-    echo "launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""
+    echo "launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"
@@ -916,7 +925,7 @@ cmd_next() {
         else
             echo "would-handoff: $predecessor_handoff"
         fi
-        echo "would-launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""
+        echo "would-launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -1009,7 +1018,7 @@ cmd_next() {
     fi
     trap - EXIT
 
-    echo "launch: claude --model $model --autocompact auto -n $session \"load $doc and continue\""
+    echo "launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"

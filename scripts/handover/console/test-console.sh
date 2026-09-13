@@ -118,6 +118,19 @@ after5="$(find "$root" -type f | sort)"
 check "5 dry-run writes nothing" "$before5" "$after5"
 check "5 dry-run prints would-doc" "$(printf '%s\n' "$out5" | grep -c '^would-doc: ')" "1"
 
+# --- 5b (HIMMEL-2973): the printed launch line defaults to --autocompact
+# 200000, and CONSOLE_CONTEXT=1m in the launching shell flips it to auto.
+out5b="$(console new --bucket dryrepo5b --dry-run)"
+check "5b default launch line carries --autocompact 200000" \
+    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact 200000')" "1"
+check "5b default launch line carries no --autocompact auto" \
+    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact auto')" "0"
+out5c="$(CONSOLE_CONTEXT=1m console new --bucket dryrepo5c --dry-run)"
+check "5c CONSOLE_CONTEXT=1m launch line carries --autocompact auto" \
+    "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact auto')" "1"
+check "5c CONSOLE_CONTEXT=1m launch line carries no --autocompact 200000" \
+    "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact 200000')" "0"
+
 # --- 6: next writes the successor stub + predecessor HANDOFF ----------
 doc6A="$root/tester/nextrepo/DEMO-nextleg-${today}A-console.md"
 doc6B="$root/tester/nextrepo/DEMO-nextleg-${today}B-console.md"
