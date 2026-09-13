@@ -81,6 +81,40 @@ ${lines[$((i+1))]}"
 }
 warn_negative_existence_claims "${COMMIT_MSG}" || true
 
+# HIMMEL-3022 (HIMMEL-2982 Ask 3): WARN-only, at commit time, when an
+# attestation trailer is present but will not satisfy its pre-push gate —
+# `Security reviewed:` with a token that is not one of the four accepted
+# (check-security-reviewed.sh TOKEN_RE, HIMMEL-1681), or `Platforms tested:`
+# with an empty value (check-platforms-tested.sh). Two legs burned a
+# follow-up commit each on 2026-09-12 discovering this at push time instead.
+# Never blocks (exit code untouched) and fails open on any error, same
+# contract as warn_negative_existence_claims above.
+warn_nonconforming_attestation_trailers() {
+  local msg="$1"
+  # Same token vocabulary as check-security-reviewed.sh's TOKEN_RE — kept as
+  # separate literal text (not sourced) since that script is pre-push-only
+  # and out of scope for this hook to depend on; HIMMEL-1681 is the anchor
+  # that keeps the two from drifting apart.
+  local sec_token_re='(manual|claude-code-security-review|pr-review-toolkit|ad-hoc)([[:space:]]|$|[.,;])'
+  local sec_trailer_re='^[[:space:]]*Security reviewed:'
+  local sec_attest_re="${sec_trailer_re}[[:space:]]*${sec_token_re}"
+  local sec_line
+  sec_line=$(printf '%s\n' "$msg" | grep -iE "$sec_trailer_re" | head -1)
+  if [ -n "$sec_line" ] && ! printf '%s\n' "$sec_line" | grep -qiE "$sec_attest_re"; then
+    echo "WARN check-commit-msg: 'Security reviewed:' trailer present but its token is not one of the four accepted (manual, claude-code-security-review, pr-review-toolkit, ad-hoc) — the pre-push gate will refuse this push." >&2
+    echo "  Fix: Security reviewed: manual — <what you checked>" >&2
+  fi
+
+  local plat_empty_re='^[[:space:]]*Platforms tested:[[:space:]]*$'
+  local plat_line
+  plat_line=$(printf '%s\n' "$msg" | grep -iE "$plat_empty_re" | head -1)
+  if [ -n "$plat_line" ]; then
+    echo "WARN check-commit-msg: 'Platforms tested:' trailer present with an empty value — the pre-push gate will refuse this push." >&2
+    echo "  Fix: Platforms tested: linux, windows" >&2
+  fi
+}
+warn_nonconforming_attestation_trailers "${COMMIT_MSG}" || true
+
 # Skip real merge commits. MERGE_HEAD exists while Git is composing the commit.
 if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
   exit 0

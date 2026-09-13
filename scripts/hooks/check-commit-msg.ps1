@@ -141,6 +141,33 @@ function Test-NegativeExistenceClaims {
 }
 Test-NegativeExistenceClaims $msg
 
+# HIMMEL-3022 (HIMMEL-2982 Ask 3): WARN-only, at commit time, when an
+# attestation trailer is present but will not satisfy its pre-push gate —
+# `Security reviewed:` with a token that is not one of the four accepted
+# (check-security-reviewed.sh TOKEN_RE, HIMMEL-1681), or `Platforms tested:`
+# with an empty value (check-platforms-tested.sh). Never blocks and fails
+# open on any error, same contract as Test-NegativeExistenceClaims above.
+function Test-NonconformingAttestationTrailers {
+    param([string]$Msg)
+    try {
+        $secTrailerRe = '(?im)^[ \t]*Security reviewed:'
+        $secAttestRe = '(?im)^[ \t]*Security reviewed:[ \t]*(manual|claude-code-security-review|pr-review-toolkit|ad-hoc)([ \t]|$|[.,;])'
+        $secLine = ($Msg -split "`r?`n") | Where-Object { $_ -match $secTrailerRe } | Select-Object -First 1
+        if ($secLine -and ($secLine -notmatch $secAttestRe)) {
+            [Console]::Error.WriteLine("WARN check-commit-msg: 'Security reviewed:' trailer present but its token is not one of the four accepted (manual, claude-code-security-review, pr-review-toolkit, ad-hoc) — the pre-push gate will refuse this push.")
+            [Console]::Error.WriteLine("  Fix: Security reviewed: manual — <what you checked>")
+        }
+
+        $platEmptyRe = '(?im)^[ \t]*Platforms tested:[ \t]*$'
+        $platLine = ($Msg -split "`r?`n") | Where-Object { $_ -match $platEmptyRe } | Select-Object -First 1
+        if ($platLine) {
+            [Console]::Error.WriteLine("WARN check-commit-msg: 'Platforms tested:' trailer present with an empty value — the pre-push gate will refuse this push.")
+            [Console]::Error.WriteLine("  Fix: Platforms tested: linux, windows")
+        }
+    } catch {}
+}
+Test-NonconformingAttestationTrailers $msg
+
 # Skip real merge commits. MERGE_HEAD exists while Git is composing the commit.
 $mergeHead = & git rev-parse -q --verify MERGE_HEAD 2>$null
 if ($LASTEXITCODE -eq 0 -and $mergeHead) { exit 0 }
