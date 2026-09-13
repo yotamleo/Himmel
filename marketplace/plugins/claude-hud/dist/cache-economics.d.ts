@@ -12,6 +12,7 @@ export type CacheEconomicsDeps = {
     now: () => number;
     spawnRefresh: (homeDir: string, lockToken: string) => void;
     rename: (oldPath: string, newPath: string) => void;
+    writeFile: (filePath: string, data: string) => void;
 };
 export declare function getAllSessionsCacheEconomics(overrides?: Partial<CacheEconomicsDeps>): Promise<CacheEconomicsTotals>;
 export declare function runCacheEconomicsRefresh(overrides?: Partial<CacheEconomicsDeps>, lockToken?: string | null): Promise<void>;

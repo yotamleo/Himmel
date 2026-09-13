@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   ba1e7cb9565abd6f2dbbc6b460b8097bbebb4e8a9de82ee0cde0fd5b609195ae  # sha256 over VENDORED.manifest
+vendored_tree_hash:   06c9eedb6344af24ae95e2747e441241ab21b3699df1ec51ab5b047a6f16f28c  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -102,6 +102,19 @@ protected: editing it without bumping the pin trips the guard.
   reclaim/release sequence itself, inherent to a directory-based lock
   without a real cross-process CAS primitive — is deferred to HIMMEL-3011.
   `vendored_tree_hash` re-recorded accordingly.
+
+  **CR round 3 follow-up:** `acquireRefreshLock` now cleans up (`rmSync` the
+  freshly-created lock dir) and gives up the acquisition rather than handing
+  back a token when writing the owner file itself fails — a token
+  `isRefreshLockOwner`/`releaseRefreshLock` could never match would both
+  block publish forever and leak the lock dir. `CacheEconomicsDeps` also
+  gained a `writeFile` seam (mirroring the existing `rename` seam) so
+  `writeCache`'s regression test can genuinely drive a partial-write-then-throw
+  failure; the prior version of that test mocked `fs.writeFileSync` directly,
+  which is not portable — `node:fs`'s exports are non-configurable under both
+  bun's and plain node's `mock`/`spyOn` ("Cannot replace module namespace
+  object's binding's value" / "Cannot redefine property"). `vendored_tree_hash`
+  re-recorded accordingly.
 
 - **Leak-scanner markers on the `jarrod` fixture lines (HIMMEL-2958,
   2026-09-13):** himmel's `scripts/guardrails/leak-classes.sh` dropped

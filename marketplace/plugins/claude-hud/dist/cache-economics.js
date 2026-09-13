@@ -59,6 +59,7 @@ const defaultDeps = {
     now: () => Date.now(),
     spawnRefresh: defaultSpawnRefresh,
     rename: (oldPath, newPath) => fs.renameSync(oldPath, newPath),
+    writeFile: (filePath, data) => fs.writeFileSync(filePath, data, { encoding: 'utf8', mode: 0o600 }),
 };
 function getCachePath(homeDir) {
     return path.join(getHudPluginDir(homeDir), ALL_SESSIONS_CACHE_FILENAME);
@@ -104,6 +105,17 @@ function acquireRefreshLock(homeDir, now) {
         }
         catch (err) {
             debug('Failed to record cache-economics refresh lock owner:', err instanceof Error ? err.message : err);
+            // Without an owner file, isRefreshLockOwner/releaseRefreshLock can
+            // never match this token, which would both block publish forever and
+            // leak the lock dir. Give up the lock rather than hand back a token
+            // that can never be honored.
+            try {
+                fs.rmSync(lockPath, { recursive: true, force: true });
+            }
+            catch (rmErr) {
+                debug('Failed to clean up cache-economics refresh lock after a failed owner write:', rmErr instanceof Error ? rmErr.message : rmErr);
+            }
+            return null;
         }
         return token;
     };
@@ -176,14 +188,14 @@ function readCache(homeDir) {
         return null;
     }
 }
-function writeCache(homeDir, cache, rename) {
+function writeCache(homeDir, cache, rename, writeFile) {
     const cachePath = getCachePath(homeDir);
     // Write to a pid-suffixed tmp file then rename onto the real path so a
     // concurrent reader never observes partial JSON (rename is atomic).
     const tmpPath = `${cachePath}.tmp.${process.pid}`;
     try {
         fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(tmpPath, JSON.stringify(cache), { encoding: 'utf8', mode: 0o600 });
+        writeFile(tmpPath, JSON.stringify(cache));
         try {
             fs.chmodSync(tmpPath, 0o600);
         }
@@ -286,7 +298,7 @@ export async function runCacheEconomicsRefresh(overrides = {}, lockToken = null)
     try {
         const totals = await computeAllSessionsTotals(homeDir);
         if (isRefreshLockOwner(homeDir, lockToken)) {
-            writeCache(homeDir, { ...totals, computedAt: deps.now() }, deps.rename);
+            writeCache(homeDir, { ...totals, computedAt: deps.now() }, deps.rename, deps.writeFile);
         }
     }
     finally {

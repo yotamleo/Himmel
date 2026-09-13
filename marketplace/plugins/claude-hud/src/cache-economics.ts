@@ -70,6 +70,7 @@ export type CacheEconomicsDeps = {
   now: () => number;
   spawnRefresh: (homeDir: string, lockToken: string) => void;
   rename: (oldPath: string, newPath: string) => void;
+  writeFile: (filePath: string, data: string) => void;
 };
 
 const defaultDeps: CacheEconomicsDeps = {
@@ -77,6 +78,7 @@ const defaultDeps: CacheEconomicsDeps = {
   now: () => Date.now(),
   spawnRefresh: defaultSpawnRefresh,
   rename: (oldPath, newPath) => fs.renameSync(oldPath, newPath),
+  writeFile: (filePath, data) => fs.writeFileSync(filePath, data, { encoding: 'utf8', mode: 0o600 }),
 };
 
 interface AllSessionsCache extends CacheEconomicsTotals {
@@ -127,6 +129,16 @@ function acquireRefreshLock(homeDir: string, now: number): string | null {
       fs.writeFileSync(getRefreshLockOwnerPath(homeDir), token, 'utf8');
     } catch (err) {
       debug('Failed to record cache-economics refresh lock owner:', err instanceof Error ? err.message : err);
+      // Without an owner file, isRefreshLockOwner/releaseRefreshLock can
+      // never match this token, which would both block publish forever and
+      // leak the lock dir. Give up the lock rather than hand back a token
+      // that can never be honored.
+      try {
+        fs.rmSync(lockPath, { recursive: true, force: true });
+      } catch (rmErr) {
+        debug('Failed to clean up cache-economics refresh lock after a failed owner write:', rmErr instanceof Error ? rmErr.message : rmErr);
+      }
+      return null;
     }
     return token;
   };
@@ -198,14 +210,19 @@ function readCache(homeDir: string): AllSessionsCache | null {
   }
 }
 
-function writeCache(homeDir: string, cache: AllSessionsCache, rename: CacheEconomicsDeps['rename']): void {
+function writeCache(
+  homeDir: string,
+  cache: AllSessionsCache,
+  rename: CacheEconomicsDeps['rename'],
+  writeFile: CacheEconomicsDeps['writeFile'],
+): void {
   const cachePath = getCachePath(homeDir);
   // Write to a pid-suffixed tmp file then rename onto the real path so a
   // concurrent reader never observes partial JSON (rename is atomic).
   const tmpPath = `${cachePath}.tmp.${process.pid}`;
   try {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
-    fs.writeFileSync(tmpPath, JSON.stringify(cache), { encoding: 'utf8', mode: 0o600 });
+    writeFile(tmpPath, JSON.stringify(cache));
     try {
       fs.chmodSync(tmpPath, 0o600);
     } catch {
@@ -316,7 +333,7 @@ export async function runCacheEconomicsRefresh(
   try {
     const totals = await computeAllSessionsTotals(homeDir);
     if (isRefreshLockOwner(homeDir, lockToken)) {
-      writeCache(homeDir, { ...totals, computedAt: deps.now() }, deps.rename);
+      writeCache(homeDir, { ...totals, computedAt: deps.now() }, deps.rename, deps.writeFile);
     }
   } finally {
     if (lockToken) releaseRefreshLock(homeDir, lockToken);

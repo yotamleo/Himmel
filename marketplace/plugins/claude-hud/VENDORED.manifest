@@ -32,10 +32,10 @@ f66a4e5c8dd00e104a8db3f04929d136840b4dae  claude-hud-preview-5-2.png
 9a8144936302b193d56764c664322bcfab1a3885  dist/auth.d.ts.map
 6ac09470fadcadcd71e1245dc6aaeb5f9ce93092  dist/auth.js
 d0119f7e3343d6aa898133fe00d4e2714d7019c9  dist/auth.js.map
-e8abd166df93cfd7b12689a19648afac150dc399  dist/cache-economics.d.ts
-8461ec86bbb6893276d5a415c5f7856d0451a7fc  dist/cache-economics.d.ts.map
-6ad99b2a90e1d57114b723cd275c03e92cb7b4c8  dist/cache-economics.js
-f564bdf461d0c1bb75ec67fcf4510c1cb85838eb  dist/cache-economics.js.map
+a59b5b88b64756d5fd27ee5a4467df5a3c5d3872  dist/cache-economics.d.ts
+87c07216e74f70017a05822765ac82510b4ece85  dist/cache-economics.d.ts.map
+d4156c1df1717aa0fc5260b48db00a420fc38837  dist/cache-economics.js
+fd0bad36c5cbbe1374c1f479a37d1cc958361d0b  dist/cache-economics.js.map
 99f7599e59a5d0e9d917d29169b92c99f8d43ce3  dist/claude-config-dir.d.ts
 a4bb1524d33c440ab658eedb900d5280a859e72b  dist/claude-config-dir.d.ts.map
 ab6e334a7ddf9d93fbaaddb71bc3a51d371a114c  dist/claude-config-dir.js
@@ -288,7 +288,7 @@ e729470612b16874f7d1e9cb5d2d27bf72f471a7  package-lock.json
 17a5abeb1fd6c11df6994b19133871f4e928d091  package.json
 ae323f37c223573fbbe914b4713a349400dfe1e5  scripts/clean-dist.mjs
 0863b2b4dca6c18cacd3405970bedc4359bd0d2f  src/auth.ts
-a0f133bf18eb4f9c7a209e104726d6fbabb520e0  src/cache-economics.ts
+199573723752f2785ed8d2e1598c52884f2cb9b9  src/cache-economics.ts
 01cc4f3dd092f61262bd424bbb931edacd4dba76  src/claude-config-dir.ts
 67a7cfbabcf1ad4233c26b3297639d42a37c3249  src/config-reader.ts
 ca1b7ac2651d6a105aac50e8bacb88e42a64c028  src/config.ts
@@ -379,7 +379,7 @@ ec57a4788527bb09049b8d3e8a57576ae8371a2d  tests/jj.test.js
 97eea31e309ace99950a6bb76baf3bf970d4da07  tests/label-align.test.js
 14bc863601019bd1ad8c1de043b08040738cc0bc  tests/memory-coverage.test.js
 d0efca32629ec29d4f5e93e8dc09eb25e0191eef  tests/memory.test.js
-7dd4e5e8849ac921b8634bb477acbb7195b0a3d3  tests/prompt-cache-economics.test.js
+a49ad0fa25704528a6cb05334a3249efb31c57f7  tests/prompt-cache-economics.test.js
 0e9a01ca4f35379ebd90affee359f1963e964417  tests/prompt-cache.test.js
 1c919a07d73578fbcb62a52004caf0c10a32dd7a  tests/readme-options.test.js
 7701155cc56661c39c8950a05ce03bf96ba63c6e  tests/render-width.test.js

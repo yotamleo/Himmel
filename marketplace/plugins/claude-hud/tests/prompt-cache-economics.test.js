@@ -355,6 +355,40 @@ test('createSpawnRefresh releases the lock on an asynchronous spawn error', asyn
   assert.equal(fs.existsSync(lockPath), false, 'an asynchronous spawn error must release the lock the render path handed over');
 });
 
+// (codex-1, HIMMEL-2948 CR round 3) if the owner-file write fails after the
+// lock dir was created, isRefreshLockOwner/releaseRefreshLock can never
+// match the returned token -- give up the lock rather than leak it and
+// spawn a refresh that could never publish or release.
+// Uses a real permission failure (umask forcing the freshly-created lock dir
+// to r-x, no write) rather than mocking fs.writeFileSync: node:fs's exports
+// are non-configurable under both bun and plain node ("Cannot replace module
+// namespace object's binding's value" / "Cannot redefine property"), so
+// intercepting a raw fs call here is not portable. The cache dir is
+// pre-created (writable) before the umask change so acquireRefreshLock's own
+// recursive mkdirSync of it is an unaffected no-op; only the lock dir it
+// mkdirSync's fresh (with no explicit mode) is subject to the umask.
+test('acquireRefreshLock cleans up and gives up when writing the owner file fails', async () => {
+  const home = mkTmpDir();
+  const cacheDir = cacheDirFor(home);
+  const lockPath = path.join(cacheDir, 'refresh.lock');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+
+  const originalUmask = process.umask(0o277);
+  let spawnCalled = false;
+  try {
+    await getAllSessionsCacheEconomics({
+      homeDir: () => home,
+      now: () => 1_000_000,
+      spawnRefresh: () => { spawnCalled = true; },
+    });
+  } finally {
+    process.umask(originalUmask);
+  }
+
+  assert.equal(spawnCalled, false, 'a refresh must not be spawned when it could never release the lock it was handed');
+  assert.equal(fs.existsSync(lockPath), false, 'a lock whose owner file could not be written must be cleaned up, not leaked');
+});
+
 // (codex-3, HIMMEL-2948 CR round 1) a failed publish (rename throws) must
 // not leave the pid-suffixed tmp file behind.
 test('writeCache cleans up the tmp file when the publish step fails', async () => {
@@ -370,24 +404,36 @@ test('writeCache cleans up the tmp file when the publish step fails', async () =
   assert.deepEqual(leftoverTmp, [], 'a failed rename must not leave a pid-suffixed tmp file behind');
 });
 
-// (codex-3, HIMMEL-2948 CR round 2) writeFileSync can throw partway through
-// (e.g. ENOSPC) after creating the tmp file; cleanup must still run even
-// though the write never reached the point that used to set `tmpWritten`.
+// (codex-3, HIMMEL-2948 CR round 2; test itself corrected per codex-2 round
+// 3, which caught that seeding the tmp file before the call let the real
+// writeFileSync silently overwrite it and succeed, never exercising the
+// intended failure path; corrected again per codex-2 round 3, which caught
+// that mocking fs.writeFileSync directly is not portable -- node:fs's
+// exports are non-configurable under both bun and plain node) writeFileSync
+// can throw partway through (e.g. ENOSPC) after already landing some bytes;
+// cleanup must still run even though the write never reached the point that
+// used to set `tmpWritten`. Driven through the injected `writeFile` seam
+// (the same CacheEconomicsDeps pattern already used for `rename`) so the
+// partial-write-then-throw is genuine, not a mock of a raw fs call.
 test('writeCache cleans up the tmp file when writeFileSync itself fails partway', async () => {
   const home = mkTmpDir();
   const cacheDir = cacheDirFor(home);
-  fs.mkdirSync(cacheDir, { recursive: true });
   const cachePath = path.join(cacheDir, 'cache-economics-all.json');
   const tmpPath = `${cachePath}.tmp.${process.pid}`;
-  // Simulate a partial write: the tmp file exists on disk (as a real failed
-  // writeFileSync can leave behind) even though the write "failed".
-  fs.writeFileSync(tmpPath, 'partial');
+
   await runCacheEconomicsRefresh({
     homeDir: () => home,
     now: () => 1_000_000,
-    rename: () => { throw new Error('boom'); },
+    writeFile: (filePath, data) => {
+      // Simulate a partial write landing on disk before the failure, exactly
+      // as a real ENOSPC mid-write would leave behind.
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, data.slice(0, 1));
+      throw new Error('ENOSPC: no space left on device');
+    },
   });
-  assert.equal(fs.existsSync(tmpPath), false, 'a pre-existing partial tmp file must be cleaned up on failure');
+
+  assert.equal(fs.existsSync(tmpPath), false, 'a tmp file left behind by a failed writeFileSync must be cleaned up');
 });
 
 // (codex-2, HIMMEL-2948 CR round 2) a refresh whose lock was reclaimed while
