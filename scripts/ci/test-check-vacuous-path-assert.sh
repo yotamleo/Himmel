@@ -29,6 +29,22 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/h2957.XXXXXX") || {
 }
 trap 'rm -rf "$tmp"' EXIT
 
+# The guard gates on `is_himmel_dev_repo` (default arg ".", i.e. the CALLER's
+# cwd) before it ever reads a fixture -- a bare `.himmel-dev` marker is
+# gitignored and lives only in a contributor's PRIMARY checkout, absent on
+# CI. Running every case from this repo's own worktree cwd would pass
+# locally (a contributor checkout has the marker) and silently no-op every
+# case on CI (rc 0 for cases expecting 1/2), which is exactly the false-green
+# this suite exists to prevent. `cd` into a hermetic fixture repo carrying
+# its own marker for the whole detector-logic run below; Case I builds its
+# OWN separate marker-absent repo to test the opposite path, and Case H's
+# `cd "$REPO_ROOT"` runs in its own subshell so it doesn't leak this `cd`.
+dev_repo="$tmp/dev-repo"
+mkdir -p "$dev_repo"
+git init -q "$dev_repo"
+: > "$dev_repo/.himmel-dev"
+cd "$dev_repo" || exit 2
+
 # Case A: ambient `PATH=$(scrub_path …)` then an emptiness assertion in the
 # same (persisted) shell scope -> the real HIMMEL-2812 shape, 1 finding.
 echo "== Case A: ambient scrub_path scope -> 1 finding =="
