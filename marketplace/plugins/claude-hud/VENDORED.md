@@ -16,7 +16,7 @@ fork_repo:            https://github.com/yotamleo/claude-hud   # public fork (HI
 upstream_repo:        https://github.com/jarrodwatts/claude-hud
 pinned_commit:        939eb66485832dead1b0a28a954f76f7aa2bdb06  # main HEAD (HIMMEL-2274, issue #518)
 pinned_upstream_tree: a9f550fa2eee50682133bc654caaa8a951cf3483  # git tree of pinned_commit (provenance)
-vendored_tree_hash:   9eaf191c480ba9be00b921582a32476ae545142c8826dec775d68a3aade9fe7e  # sha256 over VENDORED.manifest
+vendored_tree_hash:   323ae735f9b18ce4ad826a11ba70ed36ad47129f17a56c3ed0d301b62bacfc84  # sha256 over VENDORED.manifest
 vendored_at:          2026-08-30
 ```
 
@@ -63,6 +63,25 @@ protected: editing it without bumping the pin trips the guard.
 > makes the drift guard protect *more* upstream files, not fewer.
 
 ## Fork delta
+
+- **Cache-economics all-sessions scan never blocks a render (HIMMEL-2948,
+  2026-09-13):** `getAllSessionsCacheEconomics` in `src/cache-economics.ts`
+  used to `await` a full recursive scan of `~/.claude/projects/**/*.jsonl`
+  synchronously whenever its 30s cache was absent or expired, blocking that
+  statusline render; the plain `writeFileSync` also let a concurrent reader
+  observe partial JSON, and two HUD processes could race the same scan. It
+  now always returns the cached totals immediately (fresh or stale, zeros on
+  a cold start) and, when the cache is missing or expired, acquires an
+  `fs.mkdirSync`-based refresh lock (EEXIST = another refresh in flight; a
+  lock older than 120s by mtime is reclaimed once) and spawns a detached
+  child (`child_process.spawn(process.execPath, [process.argv[1],
+  '--refresh-cache-economics'], { detached: true, stdio: 'ignore' }).unref()`)
+  that runs the scan, writes the cache atomically (`<path>.tmp.<pid>` +
+  `fs.renameSync`, mode 0o600), and releases the lock in a `finally`. All new
+  effects (spawn, rename) are threaded through the existing
+  `CacheEconomicsDeps` injection so tests never fork a real process.
+  Behavior preserved: same return type, same TTL constant, same cache
+  schema. `vendored_tree_hash` re-recorded accordingly.
 
 - **Leak-scanner markers on the `jarrod` fixture lines (HIMMEL-2958,
   2026-09-13):** himmel's `scripts/guardrails/leak-classes.sh` dropped
