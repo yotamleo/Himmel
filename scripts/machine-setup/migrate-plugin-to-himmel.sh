@@ -7,6 +7,8 @@
 # from its external marketplace with autoUpdate:true, that auto-updating copy
 # shadows the pin — defeating the whole point. This re-points the install at
 # @himmel and removes the now-orphaned external marketplace.
+# Orphaned project-scope registry records are backed up and pruned; existing
+# projects use scoped uninstall when the CLI supports it (HIMMEL-3039).
 #
 # WHAT MOVES (config preservation): `claude plugin install <name>@himmel`
 # re-creates the enabledPlugins entry under the @himmel key (enabled), so the
@@ -37,6 +39,7 @@ TARGET="himmel"
 APPLY=0
 SPECS=()
 INSTALLED_JSON="${HIMMEL_INSTALLED_PLUGINS_JSON:-$HOME/.claude/plugins/installed_plugins.json}"
+REGISTRY_BACKUP=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -76,6 +79,45 @@ for spec in "${SPECS[@]}"; do
         continue
     fi
     echo "──── migrate $name: @$src → @$TARGET ────"
+    if command -v jq >/dev/null 2>&1 && [ -f "$INSTALLED_JSON" ]; then
+        project_paths=$(jq -r --arg spec "$spec" \
+            '.plugins[$spec][]? | select(.scope == "project") | .projectPath // empty' \
+            "$INSTALLED_JSON" | tr -d '\r')
+        while IFS= read -r project_path; do
+            [ -z "$project_path" ] && continue
+            if [ ! -e "$project_path" ]; then
+                if [ "$APPLY" -eq 0 ]; then
+                    echo "DRY: drop orphaned project-scope record $spec (projectPath gone: $project_path)"
+                    continue
+                fi
+                if [ -z "$REGISTRY_BACKUP" ]; then
+                    REGISTRY_BACKUP="$INSTALLED_JSON.bak-$(date +%Y%m%d-%H%M%S)"
+                    cp -p "$INSTALLED_JSON" "$REGISTRY_BACKUP"
+                fi
+                registry_tmp=$(mktemp "$INSTALLED_JSON.tmp.XXXXXX")
+                if jq --arg spec "$spec" --arg path "$project_path" '
+                    .plugins[$spec] |= map(select(.scope != "project" or .projectPath != $path))
+                    | if .plugins[$spec] == [] then del(.plugins[$spec]) else . end
+                ' "$INSTALLED_JSON" > "$registry_tmp"; then
+                    mv "$registry_tmp" "$INSTALLED_JSON"
+                else
+                    rm -f "$registry_tmp"
+                    exit 1
+                fi
+                echo "RUN: drop orphaned project-scope record $spec (projectPath gone: $project_path)"
+            else
+                uninstall_help=$(claude plugin uninstall --help 2>/dev/null | tr -d '\r' || true)
+                if grep -Eq -- '(^|[[:space:],])--scope([[:space:]=,]|$)' <<< "$uninstall_help"; then
+                    (cd "$project_path" && run claude plugin uninstall "$spec" --scope project) \
+                        || echo "  (project uninstall non-zero in $project_path; continuing)"
+                else
+                    echo "keep: $spec still installed at project scope in $project_path — uninstall it from that project"
+                fi
+            fi
+        done <<EOF_PROJECTS
+$project_paths
+EOF_PROJECTS
+    fi
     # uninstall may exit non-zero if it wasn't installed from that source — don't
     # abort the run; the install below is what matters.
     run claude plugin uninstall "$name@$src" || echo "  (uninstall non-zero — not installed from @$src? continuing)"
