@@ -188,7 +188,7 @@ kf() { awk -v n="$1" 'BEGIN { printf (n >= 1000 ? "%.1fk" : "%.0f"), (n >= 1000 
 # HIMMEL-2996: the four cost-eq inputs go through kr() instead of k()/kf()
 # directly, so --raw/LEG_BURN_RAW=1 can swap in the exact integer while the
 # default path (RAW=0) delegates to the same formatter as before.
-kr() { if [ "$RAW" -eq 1 ]; then awk -v n="$1" 'BEGIN { printf "%d", n }'; else "$2" "$1"; fi; }
+kr() { if [ "$RAW" -eq 1 ]; then awk -v n="$1" 'BEGIN { printf "%.0f", n }'; else "$2" "$1"; fi; }
 
 COST_EQ=$(awk -v i="$INP" -v cr="$CR" -v cc="$CC" -v o="$OUT" \
     -v wi="$LEG_BURN_W_INPUT" -v wcr="$LEG_BURN_W_CACHE_READ" -v wcc="$LEG_BURN_W_CACHE_CREATE" -v wo="$LEG_BURN_W_OUTPUT" \
