@@ -11,6 +11,12 @@
 # Usage:
 #   scripts/lanes/leg-burn.sh <transcript.jsonl>      # an explicit file
 #   scripts/lanes/leg-burn.sh <session-name>          # e.g. HIMMEL-2890-...-legN158-...
+#   scripts/lanes/leg-burn.sh --raw <transcript.jsonl|session-name>
+#                                                      # out=/cache-read=/
+#                                                      # cache-create=/input=
+#                                                      # as exact integers
+#                                                      # (LEG_BURN_RAW=1 is
+#                                                      # the env equivalent)
 #
 # A bare name is resolved by scanning the Claude Code project transcripts for a
 # `custom-title` row carrying that exact name; the most recently MODIFIED match
@@ -49,6 +55,11 @@
 #   compaction-rewarm compactions * the mean context of the first call after
 #                    each compact_boundary - the re-warm cost compactions add.
 #
+# HIMMEL-2996 --raw / LEG_BURN_RAW=1: out=, cache-read=, cache-create= and
+# input= print as plain integers instead of the %.1fk-rounded default, so a
+# caller that sums across sessions (agg-burn.sh) can sum exact tokens instead
+# of compounding per-session 0.1k rounding. Default stdout is unchanged.
+#
 # Exit: 0 with the line, 2 on a bad/missing/unresolvable argument, 3 if the
 # transcript holds no assistant calls at all (an arm that never ran - a real
 # and easily-missed outcome, so it gets its own code rather than 0/0/0).
@@ -64,6 +75,13 @@ set -u
 usage() {
     echo "usage: leg-burn.sh <transcript.jsonl|session-name>" >&2
 }
+
+RAW=0
+if [ "${1:-}" = "--raw" ]; then
+    RAW=1
+    shift
+fi
+[ "${LEG_BURN_RAW:-0}" = "1" ] && RAW=1
 
 if [ "$#" -ne 1 ] || [ -z "${1:-}" ]; then
     usage
@@ -167,6 +185,10 @@ AVG=$((CTX / CALLS))
 
 k() { awk -v n="$1" 'BEGIN { printf (n >= 1000 ? "%.1fk" : "%d"), (n >= 1000 ? n / 1000 : n) }'; }
 kf() { awk -v n="$1" 'BEGIN { printf (n >= 1000 ? "%.1fk" : "%.0f"), (n >= 1000 ? n / 1000 : n) }'; }
+# HIMMEL-2996: the four cost-eq inputs go through kr() instead of k()/kf()
+# directly, so --raw/LEG_BURN_RAW=1 can swap in the exact integer while the
+# default path (RAW=0) delegates to the same formatter as before.
+kr() { if [ "$RAW" -eq 1 ]; then awk -v n="$1" 'BEGIN { printf "%d", n }'; else "$2" "$1"; fi; }
 
 COST_EQ=$(awk -v i="$INP" -v cr="$CR" -v cc="$CC" -v o="$OUT" \
     -v wi="$LEG_BURN_W_INPUT" -v wcr="$LEG_BURN_W_CACHE_READ" -v wcc="$LEG_BURN_W_CACHE_CREATE" -v wo="$LEG_BURN_W_OUTPUT" \
@@ -177,5 +199,5 @@ COMPACTION_REWARM=$(awk -v n="$REWARM_N" -v s="$REWARM_SUM" -v comp="$COMP" \
     'BEGIN { printf "%.10g", (n > 0 ? comp * (s / n) : 0) }')
 
 printf 'leg-burn %s: calls=%s avg-ctx=%s first-turn=%s out=%s compactions=%s text-only=%s cache-read=%s cache-create=%s input=%s cost-eq=%s floor-share=%s%% compaction-rewarm=%s\n' \
-    "$(basename "$TRANSCRIPT")" "$CALLS" "$(k "$AVG")" "$(k "$FIRST")" "$(k "$OUT")" "$COMP" "$TEXT_ONLY" \
-    "$(kf "$CR")" "$(kf "$CC")" "$(kf "$INP")" "$(kf "$COST_EQ")" "$FLOOR_SHARE" "$(kf "$COMPACTION_REWARM")"
+    "$(basename "$TRANSCRIPT")" "$CALLS" "$(k "$AVG")" "$(k "$FIRST")" "$(kr "$OUT" k)" "$COMP" "$TEXT_ONLY" \
+    "$(kr "$CR" kf)" "$(kr "$CC" kf)" "$(kr "$INP" kf)" "$(kf "$COST_EQ")" "$FLOOR_SHARE" "$(kf "$COMPACTION_REWARM")"

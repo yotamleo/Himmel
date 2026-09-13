@@ -133,26 +133,32 @@ check "totals: cross-session TOTAL cost-eq line" \
     "$(printf '%s\n' "$TOTALS_OUT" | grep '^TOTAL cache-read=')" \
     "TOTAL cache-read=9.0k cache-create=1.0k input=3.5k output=0.7k cost-eq=9.2k"
 
-# --- (j) HIMMEL-2991: TOTAL sums mix sub-1000 (exact) and >=1000
-# (leg-burn.sh 0.1k-rounded) per-session magnitudes; regression net for the
-# TOTAL-awk column-9-12 pipeline documented in the comment above it.
+# --- (j) HIMMEL-2996: TOTAL sums mix sub-1000 (exact) and >=1000 per-session
+# magnitudes and must sum the EXACT raw counts (leg-burn.sh --raw), not
+# per-session 0.1k-rounded values - this is the RED HIMMEL-2991 could not
+# construct (its brute force over rounding boundaries found 0 mismatches;
+# this fixture is a targeted counter-example).
 # session-small (1 call, all <1000, exact):        input=234  cache_read=567  cache_creation=89   output=345
 # session-large-exact (2 calls x 800/900/700/600):  input=1600 cache_read=1800 cache_creation=1400 output=1200
 # session-large-rounded (1 call, all >=1000):        input=2345 cache_read=3456 cache_creation=1234 output=4567
-#   leg-burn.sh's kf() rounds a >=1000 session to 0.1k: input 2.345->2.3k,
-#   cache_read 3.456->3.5k, cache_creation 1.234->1.2k, output 4.567->4.6k
-# TOTAL (k-unit sums across the three sessions, %.1f):
-#   input      = 0.234 + 1.600 + 2.3 = 4.134 -> 4.1k
-#   cache-read = 0.567 + 1.800 + 3.5 = 5.867 -> 5.9k
-#   cache-create = 0.089 + 1.400 + 1.2 = 2.689 -> 2.7k
-#   output     = 0.345 + 1.200 + 4.6 = 6.145 -> 6.1k
-#   cost-eq = 4.134*1 + 5.867*0.1 + 2.689*1.25 + 6.145*5 = 38.80695 -> 38.8k
+#
+# OLD (wrong) path - leg-burn.sh's kf() rounds a >=1000 session to 0.1k before
+# agg-burn.sh ever sees it (input 2.345->2.3k, cache_read 3.456->3.5k,
+# cache_creation 1.234->1.2k, output 4.567->4.6k), then sums the k-units:
+#   input        = 0.234 + 1.600 + 2.3 = 4.134 -> 4.1k  (true: 4.179 -> 4.2k)
+#   cache-read   = 0.567 + 1.800 + 3.5 = 5.867 -> 5.9k  (true: 5.823 -> 5.8k)
+# NEW (raw) path - sum the exact raw integers once, divide by 1000 once:
+#   input      = 234 + 1600 + 2345 = 4179 -> 4.179 -> 4.2k
+#   cache-read = 567 + 1800 + 3456 = 5823 -> 5.823 -> 5.8k
+#   cache-create = 89 + 1400 + 1234 = 2723 -> 2.723 -> 2.7k
+#   output     = 345 + 1200 + 4567 = 6112 -> 6.112 -> 6.1k
+#   cost-eq = 4179*1 + 5823*0.1 + 2723*1.25 + 6112*5 = 38725.05 -> 38.7k
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/totals-mixed"
 MIXED_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null)
 check_exit "totals-mixed: exits 0" "$?" "0"
-check "totals-mixed: TOTAL line over sub-1000 and >=1000 sessions" \
+check "totals-mixed: TOTAL line sums exact raw counts, not per-session rounded" \
     "$(printf '%s\n' "$MIXED_OUT" | grep '^TOTAL cache-read=')" \
-    "TOTAL cache-read=5.9k cache-create=2.7k input=4.1k output=6.1k cost-eq=38.8k"
+    "TOTAL cache-read=5.8k cache-create=2.7k input=4.2k output=6.1k cost-eq=38.7k"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

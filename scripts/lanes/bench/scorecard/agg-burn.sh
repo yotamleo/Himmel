@@ -77,7 +77,7 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     [ "$last_epoch" -ge "$SINCE_EPOCH" ] || continue
     if [ -n "$UNTIL_EPOCH" ] && [ "$first_epoch" -ge "$UNTIL_EPOCH" ]; then continue; fi
 
-    line=$(bash "$LEG_BURN" "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; continue; }
+    line=$(bash "$LEG_BURN" --raw "$f" 2>/dev/null) || { echo "$f" >> "$FAILS"; continue; }
     calls=$(printf '%s' "$line" | grep -o 'calls=[0-9]*' | cut -d= -f2)
     avg=$(printf '%s' "$line" | grep -o 'avg-ctx=[^ ]*' | cut -d= -f2)
     first=$(printf '%s' "$line" | grep -o 'first-turn=[^ ]*' | cut -d= -f2)
@@ -99,7 +99,7 @@ find "$PROJECTS" -name '*.jsonl' -type f 2>/dev/null | while IFS= read -r f; do
     esac
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$role" "$prole" "${model:-unknown}" "$calls" "$(kn "$avg")" "$(kn "$first")" "$comp" "$txt" \
-        "$(kn "${out:-0}")" "$(kn "${cr:-0}")" "$(kn "${cc:-0}")" "$(kn "${inp:-0}")" >> "$ROWS"
+        "${out:-0}" "${cr:-0}" "${cc:-0}" "${inp:-0}" >> "$ROWS"
 done
 
 printf 'role\tmodel\tsessions\tcalls\tavg_ctx_k(call-wtd)\tmax_session_avg_k\tavg_first_k\tcompactions\ttext_only\ttext_only_ratio\tctx_x_calls_Mtok\n'
@@ -111,18 +111,15 @@ END{
 }' "$ROWS" | sort
 
 # HIMMEL-2987: price-weighted TOTAL, over every row regardless of role/model.
-# Columns 9-12 arrive from leg-burn.sh already rounded to 0.1k for any
-# session >=1000 tokens (sub-1000 sessions pass through exact); kn() only
-# normalises both shapes to a common k-unit before this awk sums them and
-# computes cost-eq once. That per-session 0.1k rounding is leg-burn.sh's
-# (HIMMEL-2996 follow-up), not introduced or compounded here - summing
-# already-in-k-units values and dividing by 1000 once are the same sum,
-# since division distributes over addition (verified HIMMEL-2991).
+# HIMMEL-2996: columns 9-12 are now the exact integer counters leg-burn.sh
+# --raw prints (no per-session 0.1k rounding to compound); this awk sums the
+# raw counts and divides by 1000 ONCE for display, replacing the HIMMEL-2991
+# per-session-kn()-then-sum path.
 awk -F'\t' -v wi="$LEG_BURN_W_INPUT" -v wcr="$LEG_BURN_W_CACHE_READ" -v wcc="$LEG_BURN_W_CACHE_CREATE" -v wo="$LEG_BURN_W_OUTPUT" '
 { out+=$9; cr+=$10; cc+=$11; inp+=$12 }
 END{
   costeq = inp*wi + cr*wcr + cc*wcc + out*wo
-  printf "TOTAL cache-read=%.1fk cache-create=%.1fk input=%.1fk output=%.1fk cost-eq=%.1fk\n", cr, cc, inp, out, costeq
+  printf "TOTAL cache-read=%.1fk cache-create=%.1fk input=%.1fk output=%.1fk cost-eq=%.1fk\n", cr/1000, cc/1000, inp/1000, out/1000, costeq/1000
 }' "$ROWS"
 
 n_fail=$(wc -l < "$FAILS")

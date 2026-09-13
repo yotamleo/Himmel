@@ -60,6 +60,19 @@ has "compaction-rewarm" "$out" "compaction-rewarm=650"
 out_override=$(LEG_BURN_W_CACHE_READ=1 bash "$BURN" "$FIXTURE")
 has "cache-read weight override changes cost-eq" "$out_override" "cost-eq=4.8k"
 
+# --- HIMMEL-2996: --raw prints exact integers, default line untouched -------
+# Only cache-read is >=1000 in this fixture (3600), so it's the one field
+# where --raw visibly differs from the default (3.6k -> 3600); out/cache-create/
+# input are already <1000 and print the same integer either way.
+out_raw=$(bash "$BURN" --raw "$FIXTURE")
+eq "--raw: same line except the four counters are exact integers" "$out_raw" \
+   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3600 cache-create=250 input=4 cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
+eq "default output is byte-identical to before --raw existed" "$out" \
+   "leg-burn leg-burn-sample.jsonl: calls=4 avg-ctx=963 first-turn=1.2k out=185 compactions=2 text-only=2 cache-read=3.6k cache-create=250 input=4 cost-eq=1.6k floor-share=133.7% compaction-rewarm=650"
+
+out_raw_env=$(LEG_BURN_RAW=1 bash "$BURN" "$FIXTURE")
+eq "LEG_BURN_RAW=1 env is equivalent to --raw" "$out_raw_env" "$out_raw"
+
 # --- the dedupe is the point ------------------------------------------------
 # 6 assistant ROWS, 4 message IDS. Counting rows would report calls=6 and
 # overstate the leg's cost; that is the error leg-burn exists to prevent.
