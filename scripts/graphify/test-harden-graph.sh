@@ -12,7 +12,7 @@ FAILS=0
 pass() { echo "  ok: $1"; }
 fail() { echo "  FAIL: $1"; FAILS=$((FAILS+1)); }
 
-WS="$(mktemp -d)"; trap 'rm -rf "$WS"' EXIT
+WS="$(mktemp -d "${TMPDIR:-/tmp}/harden-graph-test.XXXXXX")"; trap 'rm -rf "$WS"' EXIT
 
 # Fixture: one ghost pair (doc label names an existing code file's basename,
 # unique -> safe merge), one ambiguous pair (two AST files share a basename),
