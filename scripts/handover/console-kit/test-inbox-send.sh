@@ -24,6 +24,10 @@ export HANDOVER_DIR
 SESSION="HIMMEL-2788-test-leg"
 INBOX="$HANDOVER_DIR/inbox/$SESSION.md"
 
+# HIMMEL-2975: fixture cmdline for the SENDER's own session (current_session_name).
+CMDLINE_FIXTURE="$WORK/cmdline"
+printf 'claude\0-n\0HIMMEL-2788-sender\0' > "$CMDLINE_FIXTURE"
+
 # --- Case 1: append writes one bullet ---------------------------------------
 out="$(bash "$SCRIPT" "$SESSION" "first ruling")"; rc=$?
 if [ "$rc" -eq 0 ] && [ -f "$INBOX" ] && grep -qF 'first ruling' "$INBOX"; then
@@ -41,9 +45,9 @@ else
     fail "append-only: both bullets present, neither overwritten (lines=$lines)"
 fi
 
-# --- Case 3: --token is embedded in the bullet ------------------------------
-bash "$SCRIPT" "$SESSION" "toked ruling" --token abc123 >/dev/null
-if grep -qF '[abc123] toked ruling' "$INBOX"; then
+# --- Case 3: --token is embedded in the bullet, with the sender's author ---
+CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_FIXTURE" bash "$SCRIPT" "$SESSION" "toked ruling" --token abc123 >/dev/null
+if grep -qF '[abc123] from=HIMMEL-2788-sender toked ruling' "$INBOX"; then
     pass "--token embeds the RETASK token in the bullet"
 else
     fail "--token embeds the RETASK token in the bullet"
@@ -117,6 +121,68 @@ if printf '%s' "$out" | grep -qF "$SESSION "; then
     fail "--pending must not list a fully-delivered session (out='$out')"
 else
     pass "--pending does not list a fully-delivered session"
+fi
+
+# --- HIMMEL-2975: author line + relay --token refusal -----------------------
+SESSION23="HIMMEL-2975-relay-test"
+INBOX23="$HANDOVER_DIR/inbox/$SESSION23.md"
+CMDLINE_JUDGE="$WORK/cmdline-judge"
+printf 'claude\0-n\0HIMMEL-judge-console\0' > "$CMDLINE_JUDGE"
+
+# Case 8: a token bullet carries the sender's own session name as from=.
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" bash "$SCRIPT" "$SESSION23" hello --token t1 2>&1)"; rc=$?
+last="$(tail -n1 "$INBOX23" 2>/dev/null)"
+if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} \[t1\] from=HIMMEL-judge-console hello$'; then
+    pass "token bullet carries from=<sender session>"
+else
+    fail "token bullet carries from=<sender session> (rc=$rc last='$last' out='$out')"
+fi
+
+# Case 9: CONSOLE_SESSION_NAME is ignored -- author is process-derived only.
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" CONSOLE_SESSION_NAME=forged bash "$SCRIPT" "$SESSION23" hello2 --token t2 2>&1)"; rc=$?
+last="$(tail -n1 "$INBOX23" 2>/dev/null)"
+if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} \[t2\] from=HIMMEL-judge-console hello2$'; then
+    pass "CONSOLE_SESSION_NAME cannot forge the author"
+else
+    fail "CONSOLE_SESSION_NAME cannot forge the author (rc=$rc last='$last' out='$out')"
+fi
+
+# Case 10: --token with no resolvable author (no CLAUDE_PID) is refused.
+before="$(wc -c < "$INBOX23" 2>/dev/null | tr -d '[:space:]')"
+out="$(env -u CLAUDE_PID -u SESSION_NAME_CMDLINE_FILE bash "$SCRIPT" "$SESSION23" hello3 --token t3 2>&1)"; rc=$?
+after="$(wc -c < "$INBOX23" 2>/dev/null | tr -d '[:space:]')"
+if [ "$rc" -eq 3 ] && [ "$before" = "$after" ]; then
+    pass "--token with no resolvable author is refused, inbox unchanged"
+else
+    fail "--token with no resolvable author is refused, inbox unchanged (rc=$rc before=$before after=$after out='$out')"
+fi
+
+# Case 11: a relay cannot send --token, even with a resolvable author.
+before="$(wc -c < "$INBOX23" 2>/dev/null | tr -d '[:space:]')"
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION23" hello4 --token t4 2>&1)"; rc=$?
+after="$(wc -c < "$INBOX23" 2>/dev/null | tr -d '[:space:]')"
+if [ "$rc" -eq 3 ] && [ "$before" = "$after" ] && printf '%s' "$out" | grep -qi relay; then
+    pass "relay refuses --token"
+else
+    fail "relay refuses --token (rc=$rc before=$before after=$after out='$out')"
+fi
+
+# Case 12: a relay CAN send a no-token bullet, carrying its own author.
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION23" halt 2>&1)"; rc=$?
+last="$(tail -n1 "$INBOX23" 2>/dev/null)"
+if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} from=HIMMEL-judge-console halt$'; then
+    pass "relay's no-token bullet carries from=<sender session>"
+else
+    fail "relay's no-token bullet carries from=<sender session> (rc=$rc last='$last' out='$out')"
+fi
+
+# Case 13: no token, no CLAUDE_PID -> from=unknown, not refused.
+out="$(env -u CLAUDE_PID -u SESSION_NAME_CMDLINE_FILE bash "$SCRIPT" "$SESSION23" nobody 2>&1)"; rc=$?
+last="$(tail -n1 "$INBOX23" 2>/dev/null)"
+if [ "$rc" -eq 0 ] && printf '%s' "$last" | grep -Eq '^- [0-9]{2}:[0-9]{2} from=unknown nobody$'; then
+    pass "no token, no CLAUDE_PID -> from=unknown"
+else
+    fail "no token, no CLAUDE_PID -> from=unknown (rc=$rc last='$last' out='$out')"
 fi
 
 # HIMMEL-2795: force overlapping read-modify-write snapshots. Writer two

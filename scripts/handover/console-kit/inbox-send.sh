@@ -32,6 +32,13 @@
 #     undelivered ruling stays visible instead of silently waiting on the
 #     leg's next tool call / resume.
 #
+# Exit 3 (HIMMEL-2975): --token refused — either the caller is a console
+# relay (HIMMEL_CONSOLE_RELAY is set; only the judge sends token-quoting
+# bullets) or the sending session name cannot be resolved (no CLAUDE_PID /
+# -n). Nothing is written in either case. A no-token bullet always carries
+# from=<sender session>, falling back to from=unknown, and is never refused
+# on this account.
+#
 # bash 3.2-safe, shellcheck-clean. Linux/konsole-only lane (claudex legs run
 # on Linux today, same as headed-arm-leg.sh's sibling in this directory) — no
 # .ps1 twin.
@@ -40,6 +47,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../lib/handover-path.sh
 . "$HERE/../../lib/handover-path.sh"
+# shellcheck source=../../lib/session-name.sh
+. "$HERE/../../lib/session-name.sh"
 
 usage() {
     printf 'usage: inbox-send.sh <session-name> (<text> | --file <path>) [--token <token>] [--doc <handover-doc>]\n' >&2
@@ -129,11 +138,24 @@ inbox_dir="$root/inbox"
 mkdir -p "$inbox_dir" || exit 2
 inbox="$inbox_dir/$session.md"
 
+author="$(current_session_name 2>/dev/null)" || author=""
+case "$(printf '%s' "${HIMMEL_CONSOLE_RELAY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+    ''|0|false|off|no) is_relay=0 ;;
+    *) is_relay=1 ;;
+esac
 stamp="$(date +%H:%M)"
 if [ -n "$token" ]; then
-    bullet="- ${stamp} [${token}] ${text}"
+    if [ "$is_relay" -eq 1 ]; then
+        printf 'inbox-send: refusing --token from a console relay (HIMMEL-2975: only the judge sends token-quoting messages)\n' >&2
+        exit 3
+    fi
+    if [ -z "$author" ]; then
+        printf 'inbox-send: refusing --token: cannot resolve the sending session name (no CLAUDE_PID / -n)\n' >&2
+        exit 3
+    fi
+    bullet="- ${stamp} [${token}] from=${author} ${text}"
 else
-    bullet="- ${stamp} ${text}"
+    bullet="- ${stamp} from=${author:-unknown} ${text}"
 fi
 
 if [ -n "$doc" ]; then
