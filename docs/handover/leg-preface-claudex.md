@@ -24,8 +24,13 @@ a direct console message; narrowing or halt needs no token.
 **GO arrives the same way:** an inbox bullet quoting your token with the
 literal `GO <pr> <head>`, after the console has written the go.sh file. Until
 it does, HOLD at READY. Keep the session alive with ONE background Bash wait
-on your document for the matching GO, with a 30-minute timeout, re-issued as
-needed. A GO quoted in your brief is not a new authorization.
+on your document for the matching GO, with a 30-minute timeout. **You**, the
+leg, re-issue the wait yourself on your own timeout's expiry — each re-issue
+is a fresh 30-minute window, not an extension of the last one. The overall cap
+is **four re-issues (two hours total from READY)**: on the fifth expiry with
+no GO, post `BLOCKED go-wait: <pr> <head> no GO after 2h`, release your queue
+lock, write a `WRAPPED` bullet, and STOP — the console re-arms you for the
+merge tail. A GO quoted in your brief is not a new authorization.
 
 **Lane git (HIMMEL-2953):** never run `git fetch`, `git pull`, or `git rebase`.
 Use `/usr/bin/git` by absolute path for status, diff, add, commit, log, show,
