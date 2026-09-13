@@ -92,7 +92,7 @@ template_version: 3
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND the flag is a leg running on vibes. |
-| Tier line (Opus/Fable only) | Without a named sanctioned reason, `headed-arm-leg.sh` refuses the launch (HIMMEL-2976, CLAUDE.md: "raise effort before tier") — the tier choice is enforced structurally, not left to the console's judgement call each time. |
+| Tier line (Opus/Fable only) | Without a trimmed, non-blank reason, `headed-arm-leg.sh` refuses the launch (HIMMEL-2976, CLAUDE.md: "raise effort before tier") — the tier choice must be logged structurally, not left to the console's judgement call each time. The gate does not yet validate the reason against the three sanctioned categories above (tracked as HIMMEL-2997); until then, the sanctioned-reason list is policy guidance the console and reviewers still enforce by eye. |
 
 ## What the console must also do (2026-09-13)
 
