@@ -520,6 +520,15 @@ and keep going; halt only for something genuinely destructive or ambiguous
 enough that guessing wrong is worse than the wait, and say so explicitly in
 the doc rather than going quiet.
 
+**The one sanctioned park:** the READY → GO merge hold
+(`docs/handover/leg-preface-claudex.md`) does not violate "never park" — it is
+bounded by the file inbox channel (`scripts/handover/console-kit/inbox-send.sh`
+writing, `scripts/hooks/claudex-inbox-hook.sh` delivering), observable (a READY
+bullet in the doc, held by one `until grep GO` Bash wait with a 30-minute
+timeout, re-issued rather than open-ended), and required because a merge is
+irreversible. See also `docs/internals/retask-channel.md` for the token
+discipline governing the GO itself. No other wait qualifies.
+
 ## Cost posture
 
 Fable stays **conserved** (limited release) — the spread optimizes
