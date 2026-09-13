@@ -28,6 +28,12 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"; SCRIPT="$HERE/headed-arm.sh"
+# Case 36's "unset" rows assert the default (no launcher override) path; a
+# claudex-launched leg exports these ambiently, which would silently flip
+# those rows green-from-default to green-from-override. Clear them so the
+# suite's own per-case overrides are the only source, same as
+# console-kit/test-headed-arm-leg.sh:40.
+unset HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER 2>/dev/null || true
 # r2-codex-4: this mktemp used to be unchecked. A failed mktemp leaves $tmp
 # EMPTY, and every fixture path built on it below ("$tmp/..." -> "/...")
 # then targets an unintended location instead of a throwaway one - abort
