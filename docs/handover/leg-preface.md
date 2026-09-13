@@ -80,6 +80,9 @@ console change without your token is ignored, not merely distrusted.
 - **Two refusals of one command → `himmel-ops:stuck-playbook`, then `BLOCKED`
   to the console.** Never reshape a command to dodge a guardrail, and never try
   a third spelling.
+- A classifier denial on a publish step (`gh pr create`, `gh pr comment`,
+  `git push`) is never retried verbatim: one delayed retry via the
+  stuck-playbook row, then route to the console (HIMMEL-3020).
 - Never use bare `git stash` / `git stash pop`: the stash stack is shared with
   every other worktree and another session may pop yours.
 
