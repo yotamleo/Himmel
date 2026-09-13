@@ -48,9 +48,16 @@ def build_ast_index(nodes):
     return by_path, by_base
 
 
+def strip_leading_dot_slash(path):
+    # str.lstrip("./") strips a CHARACTER CLASS, not the literal prefix -- it
+    # would mangle ".config/tool.sh" into "config/tool.sh" (codex-1, HIMMEL-2983
+    # round 2). Only a literal leading "./" is ever meant to be dropped here.
+    return path[2:] if path.startswith("./") else path
+
+
 def resolve_code_file(token, by_path, by_base):
     """(node_id, ambiguous) for a code-file token: full path -> unique basename -> ambiguous (skip, counted)."""
-    token = token.lstrip("./")
+    token = strip_leading_dot_slash(token)
     if token in by_path:
         return by_path[token], False
     candidates = by_base.get(os.path.basename(token), [])
@@ -109,8 +116,8 @@ def find_code_facts(by_path, allowlist):
     # false, confidence-1.0 "calls" edge).
     facts = []
     for entry in allowlist:
-        src_id = by_path.get(entry["source_file"].lstrip("./"))
-        tgt_id = by_path.get(entry["target_file"].lstrip("./"))
+        src_id = by_path.get(strip_leading_dot_slash(entry["source_file"]))
+        tgt_id = by_path.get(strip_leading_dot_slash(entry["target_file"]))
         if src_id is None or tgt_id is None:
             continue
         facts.append(

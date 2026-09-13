@@ -82,24 +82,25 @@ else
 fi
 
 # --- T2: idempotent re-run -> unchanged=1, byte-identical graph.json ---
+# cmp -s (not sha256sum) checks byte-identity directly: an absent/failing
+# checksum tool would silently compare two empty strings and false-pass
+# (codex-2, HIMMEL-2983 round 2), whereas a missing cmp itself fails loudly.
 echo "T2: re-run is idempotent and byte-identical"
-sum_before=$(sha256sum "$D1/graph.json" | awk '{print $1}')
+cp "$D1/graph.json" "$D1/graph.json.before"
 out2=$( python3 "$SCRIPT" --out "$D1" --allowlist "$D1/allowlist.json" ); rc2=$?
 [ "$rc2" -eq 0 ] || fail "T2 exit 0 (got $rc2): $out2"
 echo "$out2" | grep -qF "unchanged=1" && pass "T2 reports unchanged=1" || fail "T2 did not report unchanged=1: $out2"
-sum_after=$(sha256sum "$D1/graph.json" | awk '{print $1}')
-[ "$sum_before" = "$sum_after" ] && pass "T2 graph.json byte-identical after re-run" || fail "T2 graph.json changed on re-run"
+cmp -s "$D1/graph.json.before" "$D1/graph.json" && pass "T2 graph.json byte-identical after re-run" || fail "T2 graph.json changed on re-run"
 
 # --- T3: --dry-run writes nothing ---
 echo "T3: --dry-run writes nothing"
 D3="$WS/t3"; make_fixture "$D3"
-sum_before3=$(sha256sum "$D3/graph.json" | awk '{print $1}')
+cp "$D3/graph.json" "$D3/graph.json.before"
 out3=$( python3 "$SCRIPT" --out "$D3" --allowlist "$D3/allowlist.json" --dry-run ); rc3=$?
 [ "$rc3" -eq 0 ] || fail "T3 exit 0 (got $rc3): $out3"
 echo "$out3" | grep -qF "bridges=1 code-facts=1 skipped-ambiguous=1 unchanged=0" \
   && pass "T3 dry-run still reports the real counts" || fail "T3 dry-run counts wrong: $out3"
-sum_after3=$(sha256sum "$D3/graph.json" | awk '{print $1}')
-[ "$sum_before3" = "$sum_after3" ] && pass "T3 dry-run left graph.json untouched" || fail "T3 dry-run wrote to graph.json"
+cmp -s "$D3/graph.json.before" "$D3/graph.json" && pass "T3 dry-run left graph.json untouched" || fail "T3 dry-run wrote to graph.json"
 
 # --- T4: malformed JSON -> exit 1 ---
 echo "T4: malformed graph.json -> exit 1"
@@ -205,6 +206,48 @@ out9=$( python3 "$SCRIPT" --out "$D9" --allowlist "$D9/allowlist.json" ); rc9=$?
 echo "$out9" | grep -qF "code-facts=0 skipped-ambiguous=0 unchanged=1" \
   && pass "T9 reverse-order existing edge suppresses the duplicate" \
   || fail "T9 added a duplicate reverse-direction edge: $out9"
+
+# --- T10: an allowlisted dotfile-style path (leading "." that is not a "./"
+# prefix) must match itself exactly, never get mangled by a character-class
+# lstrip into an unrelated same-tail path (codex-1, HIMMEL-2983 round 2) ---
+echo "T10: allowlist source_file starting with a bare dot matches exactly, no character-class stripping"
+D10="$WS/t10"; mkdir -p "$D10"
+cat > "$D10/graph.json" <<'JSON'
+{
+  "directed": false,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {"id": "dotfile_tool", "label": "tool.sh", "source_file": ".config/tool.sh", "file_type": "code", "source_location": "L1"},
+    {"id": "decoy_tool", "label": "tool.sh", "source_file": "config/tool.sh", "file_type": "code", "source_location": "L1"},
+    {"id": "scripts_resolve", "label": "resolve.mjs", "source_file": "scripts/lanes/resolve.mjs", "file_type": "code", "source_location": "L1"}
+  ],
+  "links": [],
+  "hyperedges": []
+}
+JSON
+cat > "$D10/allowlist.json" <<'JSON'
+[
+  {"source_file": ".config/tool.sh", "target_file": "scripts/lanes/resolve.mjs", "relation": "calls", "source_location": "L1", "note": "test fixture"}
+]
+JSON
+out10=$( python3 "$SCRIPT" --out "$D10" --allowlist "$D10/allowlist.json" ); rc10=$?
+[ "$rc10" -eq 0 ] || fail "T10 exit 0 (got $rc10): $out10"
+echo "$out10" | grep -qF "code-facts=1" \
+  && pass "T10 dotfile-style source_file resolves" \
+  || fail "T10 did not add the code-fact edge: $out10"
+if python3 - "$D10/graph.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1]))
+fact = next(e for e in g["links"] if e["hardened"] == "subprocess-exec")
+assert fact["source"] == "dotfile_tool", f"expected dotfile_tool, got {fact['source']} (mangled by lstrip)"
+print("OK")
+PY
+then
+  pass "T10 code-fact edge points at the exact dotfile path, not the decoy"
+else
+  fail "T10 code-fact edge points at the wrong node (lstrip character-class bug)"
+fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 echo "ALL PASS"
