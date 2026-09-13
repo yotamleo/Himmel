@@ -926,6 +926,15 @@ rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_emptytext"
 check "tier gate (f): a category tag with empty free text is refused with exit 2" "$rc" "2"
 contains "tier gate (f): refusal names the empty-text problem" "$out" "no free text after"
 
+# codex CR (round 1): a bare sanctioned tag with no ':' at all must not slip
+# through as category=<tag> reason=<tag> — the split is a no-op without a
+# literal colon present, so this must be refused explicitly.
+doc_tier_opus_notag_colon="$tmp/tier-doc-opus-notag-colon.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus — design' > "$doc_tier_opus_notag_colon"
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_notag_colon" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate (g): a bare sanctioned tag with no colon is refused with exit 2" "$rc" "2"
+contains "tier gate (g): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-headed-arm-leg.sh"

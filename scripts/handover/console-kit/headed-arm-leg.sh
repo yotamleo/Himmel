@@ -222,6 +222,17 @@ if [ -n "$TIER_GATE" ]; then
     # HIMMEL-2997: the design was left open (keyword vs enum vs LLM) - console
     # ruling: a closed category TAG followed by free text, so paraphrase in
     # the free text can never be falsely rejected. Split on the first ':'.
+    # codex-1 (HIMMEL-2997 round 1 CR): both expansions below are no-ops when
+    # no literal ':' is present, so a bare tag (e.g. "design" alone) would
+    # otherwise pass with TIER_CATEGORY=TIER_REASON=the tag itself - require
+    # the colon explicitly first.
+    case "$TIER_REASON" in
+        *:*) ;;
+        *)
+            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the three sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return." >&2
+            exit 2
+            ;;
+    esac
     TIER_CATEGORY="${TIER_REASON%%:*}"
     TIER_REASON="${TIER_REASON#*:}"
     case "$TIER_CATEGORY" in
