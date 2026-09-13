@@ -67,5 +67,13 @@
       "qmd@himmel"
     ],
     "contextBudget": 45000
+  },
+  "console-relay": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 35000
   }
 }

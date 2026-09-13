@@ -25,7 +25,7 @@ const MINI = {
 
 // HIMMEL-2959: removing an opt-in/rule loses a deterministic gate permission;
 // widening a rule must fail registry load before any settings reach a child.
-const LEG_PROFILES = ['lane-impl', 'leg-impl', 'lane-review', 'lane-content'];
+const LEG_PROFILES = ['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay'];
 const GATE_RULES = [
   'Bash(bash scripts/handover/merge-on-green.sh:*)',
   'Bash(bash scripts/handover/queue-lock.sh:*)',
@@ -906,4 +906,21 @@ test('golden baseline — resolveProfile output for shipped profiles is pinned (
   // the contract this fixture pins.
   const expected = JSON.parse(readFileSync(GOLDEN_FIXTURE, 'utf8'));
   assert.deepEqual(actual, expected);
+});
+
+// ── console-relay (HIMMEL-2975) ─────────────────────────────────────────────
+// Plugin-less profile for the Sonnet relay half of a split console. Not in
+// GOLDEN_PROFILES above (same reasoning as leg-impl, its sibling omission):
+// resolveProfileByName/mcpServersForProfile coverage lives here instead.
+test('console-relay resolves via resolveProfileByName/resolveProfile to the floor only, no mcp servers', () => {
+  const settings = resolveProfileByName('console-relay', {}, REGISTRY_PATH);
+  const enabled = Object.entries(settings.enabledPlugins).filter(([, v]) => v).map(([id]) => id);
+  assert.deepEqual(enabled.sort(), [...REG.floor].sort());
+  assert.deepEqual(resolveProfile(REG, 'console-relay').enabledPlugins, settings.enabledPlugins);
+  assert.deepEqual(REG.profiles['console-relay'].enable, []);
+  assert.deepEqual(mcpServersForProfile(REG, 'console-relay'), []);
+});
+
+test('validateRegistry: the shipped registry (console-relay included) validates clean', () => {
+  assert.deepEqual(validateRegistry(REG), []);
 });

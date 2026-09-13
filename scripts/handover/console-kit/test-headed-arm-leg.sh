@@ -198,6 +198,7 @@ not_contains "dry-run default: no [1m] suffix in the would-exec line" "$out" "[1
 contains "dry-run default: reports IMPL_GUARD_OK=1" "$out" "IMPL_GUARD_OK=1"
 contains "dry-run default: reports INLINE_IMPL_OK=1" "$out" "INLINE_IMPL_OK=1"
 contains "dry-run default: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
+not_contains "dry-run default: no HIMMEL_CONSOLE_RELAY without --relay" "$out" "HIMMEL_CONSOLE_RELAY"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
@@ -212,6 +213,34 @@ for off in "standard" "yes" "true" "1M" ""; do
   rc=0; out="$(LEG_CONTEXT="$off" bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
   ends_with "dry-run LEG_CONTEXT=[$off]: stays on standard (fail toward the cheaper default)" "$out" "standard"
 done
+
+# --- 6b (HIMMEL-2975). --relay: forces the console-relay profile + the
+# HIMMEL_CONSOLE_RELAY env marker Guard C (inbox-send.sh) and the Task 26
+# write-deny hook key off. No value; defaults MODEL to claude-sonnet-5 when
+# omitted; an explicit --profile (flag or LEG_PROFILE) other than
+# console-relay conflicts and refuses.
+rc=0; out="$(bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --relay: exit 0" "$rc" "0"
+contains "dry-run --relay: reports HIMMEL_CONSOLE_RELAY=1" "$out" "HIMMEL_CONSOLE_RELAY=1"
+contains "dry-run --relay: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
+contains "dry-run --relay: forces profile=console-relay" "$out" "profile=console-relay"
+contains "dry-run --relay: defaults the model to claude-sonnet-5" "$out" "claude-sonnet-5"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run --relay --profile leg-impl HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --relay --profile leg-impl: refused with exit 2" "$rc" "2"
+contains "dry-run --relay --profile leg-impl: refusal names console-relay" "$out" "console-relay"
+
+rc=0; out="$(LEG_PROFILE=leg-impl bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "dry-run --relay, LEG_PROFILE=leg-impl: refused with exit 2" "$rc" "2"
+contains "dry-run --relay, LEG_PROFILE=leg-impl: refusal names console-relay" "$out" "console-relay"
+
+# --relay with an explicit model: explicit wins over the sonnet default. The
+# existing Opus tier gate then applies exactly as today; some/doc.md carries
+# no Tier line, so this refuses with exit 2 - proving the model reached the
+# tier gate unchanged rather than being silently downgraded to sonnet first.
+rc=0; out="$(bash "$SCRIPT" --dry-run --relay HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "dry-run --relay, explicit opus model: tier gate still applies (exit 2)" "$rc" "2"
+contains "dry-run --relay, explicit opus model: refusal is the tier gate" "$out" "Tier"
 
 # --- 7. LEG_REPO folded into HEADED_ARM_REPO --------------------------------
 rc=0; out="$(LEG_REPO=/some/other/repo bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?

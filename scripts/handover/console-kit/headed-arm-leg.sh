@@ -125,18 +125,27 @@
 # path, HEADED_ARM_LEG_PREFACE the preface file, HEADED_ARM_LEG_SHIM the
 # launcher shim - all script-relative by default, all so the suite can drive
 # the real code against fixtures.
+#
+# --relay (HIMMEL-2975): launches the Sonnet relay half of a split console.
+# Forces --profile console-relay (a real --profile conflicts, exit 2); an
+# empty MODEL defaults to claude-sonnet-5 and LEG_EFFORT defaults low, both
+# only under this flag. Exports HIMMEL_CONSOLE_RELAY=1, the marker
+# inbox-send.sh's Guard C already refuses --token under and the Task 26
+# write-deny hook will key writes off - a distinct signal from the profile.
 set -u
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--lane native|claudex] [--profile <name>] [--relay] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 DRY_RUN=0
+RELAY=0
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
 while :; do
     case "${1:-}" in
         --dry-run) DRY_RUN=1; shift ;;
+        --relay) RELAY=1; shift ;;
         --lane)
             # codex CR fix: `--lane` as the LAST arg leaves only 1 positional,
             # so `shift 2` fails (rc=1) and shifts NOTHING under `set -u`
@@ -161,6 +170,18 @@ while :; do
     esac
 done
 
+# --relay (HIMMEL-2975): forces the console-relay plugin profile - a relay is
+# plugin-less by design, so any other --profile (flag or LEG_PROFILE) is a
+# real conflict, not a preference to silently override.
+if [ "$RELAY" -eq 1 ]; then
+    if [ -n "$PROFILE" ] && [ "$PROFILE" != "console-relay" ]; then
+        usage
+        echo "headed-arm-leg: --relay forces --profile console-relay (got: $PROFILE)" >&2
+        exit 2
+    fi
+    PROFILE="console-relay"
+fi
+
 case "$LANE" in
     native|claudex) ;;
     *)
@@ -176,6 +197,17 @@ if [ "$#" -lt 5 ]; then
 fi
 
 NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-}"
+
+# --relay defaults MODEL to the Sonnet relay's own default (an explicit model
+# still wins, same precedence as --lane/--profile above); LEG_EFFORT defaults
+# low for the same reason a relay runs plugin-less - it is not the implementor.
+# Gated on RELAY: a non-relay leg's model default is headed-arm.sh's own, and
+# must stay untouched (--dry-run's no-relay report is pinned byte-identical).
+if [ "$RELAY" -eq 1 ]; then
+    [ -z "$MODEL" ] && MODEL=claude-sonnet-5
+    : "${LEG_EFFORT:=low}"
+    export LEG_EFFORT
+fi
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 HEADED_ARM="${HEADED_ARM_LEG_TARGET:-$HERE/../headed-arm.sh}"
@@ -267,6 +299,11 @@ export INLINE_IMPL_OK=1
 # console-spawned leg, both lanes. merge-on-green.sh then merges only on the
 # console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
 export HIMMEL_CONSOLE_LEG=1
+# HIMMEL_CONSOLE_RELAY=1 (HIMMEL-2975): marks this leg as the Sonnet relay half
+# of a split console. inbox-send.sh's Guard C already refuses --token under it
+# (#733); the Task 26 write-deny hook denies writes under it. Both key off
+# this exact marker, not the console-relay profile above.
+[ "$RELAY" -eq 1 ] && export HIMMEL_CONSOLE_RELAY=1
 # headed-arm.sh builds one argv array for both native and recorder launches and
 # refuses exit 2 if this exact pair is absent. This is the final resolved-argv
 # guard; the context-value check above gives the earlier operator-facing error.
@@ -395,6 +432,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
         "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
     printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s\n' \
         "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
+    # Printed ONLY under --relay: with the flag omitted this line is absent and
+    # the dry-run report stays byte-identical to today's, same guarantee shape
+    # as the --profile line below.
+    if [ "$RELAY" -eq 1 ]; then
+        printf 'headed-arm-leg: relay=%s HIMMEL_CONSOLE_RELAY=%s LEG_EFFORT=%s\n' \
+            "$RELAY" "$HIMMEL_CONSOLE_RELAY" "$LEG_EFFORT"
+    fi
     printf 'headed-arm-leg: lane=%s launcher=%s launcher-env=%s' \
         "$LANE" "${HEADED_ARM_LAUNCHER:-claude (native default)}" "${HEADED_ARM_LAUNCHER_ENV:-<none>}"
     if [ "$LANE" = "claudex" ]; then

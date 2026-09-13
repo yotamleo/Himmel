@@ -153,6 +153,14 @@
     "bare": {
       "enable": [],
       "contextBudget": 45000
+    },
+    "console-relay": {
+      "gateAllow": true,
+      "_comment": "HIMMEL-2975: Sonnet relay of a split console. No plugins, no MCP servers. drop removes pr-review-toolkit-himmel@himmel (the one non-floor id in registry.base) so this profile resolves to floor-only, same shape as bare but with gateAllow. Its write-deny hook (guard-relay-writes.sh) keys off HIMMEL_CONSOLE_RELAY, not this profile.",
+      "enable": [],
+      "drop": ["pr-review-toolkit-himmel@himmel"],
+      "mcpServers": [],
+      "contextBudget": 35000
     }
   }
 }
