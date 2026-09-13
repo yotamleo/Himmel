@@ -189,9 +189,58 @@ _fleet_lane_of() {
   fi
 }
 
+# HIMMEL-2774: atomic admission + reservation, closing the TOCTOU race where
+# two arms (or one arm racing another) both observe the fleet under-cap and
+# both proceed. Mirrors headed-arm.sh's own claim-lock DISCIPLINE (not its
+# code): claim the admission critical section by atomic `mkdir` (this repo's
+# convention — claim by atomic mkdir, never scan-then-create); a stale
+# holder is reclaimed by mv-then-verify (rename to a private victim path,
+# then check its stamp still matches what was observed before the rename),
+# never a naive rm+mkdir — two reclaimers racing on the same stale lock must
+# never let the second one delete the first one's brand-new claim (the
+# r2-codex-1 CRITICAL in headed-arm.sh's own CR history).
+_fleet_admit_stamp_or_fail() { # _fleet_admit_stamp_or_fail <admit-dir>
+  date +%s > "$1/acquired" 2>/dev/null
+}
+_fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-acquired-stamp>
+  local admit="$1" expected_at="$2" victim stolen_at
+  victim="$admit.stale.$$.$RANDOM"
+  mv "$admit" "$victim" 2>/dev/null || return 1
+  stolen_at="$(cat "$victim/acquired" 2>/dev/null)" || stolen_at=""
+  if [ "$stolen_at" != "$expected_at" ]; then
+    # Wrong victim: a fresh, legitimate claim made after we read the stale
+    # stamp but before our mv landed. Put it back rather than clobber it.
+    mv "$victim" "$admit" 2>/dev/null
+    return 1
+  fi
+  rm -rf "$victim" 2>/dev/null
+  if mkdir "$admit" 2>/dev/null; then
+    _fleet_admit_stamp_or_fail "$admit"
+    return 0
+  fi
+  return 1
+}
+_fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
+  local admit="$1" held_at age
+  if mkdir "$admit" 2>/dev/null; then
+    _fleet_admit_stamp_or_fail "$admit"
+    return 0
+  fi
+  held_at="$(cat "$admit/acquired" 2>/dev/null)" || held_at=""
+  case "$held_at" in
+    # No readable stamp yet: a fresh claim racing the stamp write, or a crash
+    # between mkdir and the stamp write — either way, not stale by definition.
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  age=$(( $(date +%s) - held_at ))
+  [ "$age" -ge "${FLEET_ADMIT_STALE_SECS:-60}" ] || return 1
+  _fleet_steal_stale_admit "$admit" "$held_at"
+}
+
 fleet_n=0
 fleet_native=0
 fleet_claudex=0
+_fleet_live_names=""
 _fleet_procfs_warned=0
 # Plain (non-IFS=) `read` here is deliberate: a real `ps -eo pid=,args=`
 # right-justifies the PID column with LEADING spaces for every row
@@ -216,15 +265,71 @@ while read -r _fleet_pid _fleet_rest; do
   else
     fleet_native=$((fleet_native + 1))
   fi
+  # HIMMEL-2774: a live session with this name CONSUMES its reservation
+  # (below) — same match shape as the FLEET_CANDIDATES filter itself, so a
+  # session counted here is recognized consistently there.
+  _fleet_name="$(printf '%s\n' "$_fleet_rest" | grep -oE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*' | head -1 | awk '{print $2}')"
+  [ -n "$_fleet_name" ] && _fleet_live_names="$_fleet_live_names
+$_fleet_name"
 done <<FLEET_CANDIDATES
 $(printf '%s\n' "$_fleet_ps_raw" \
   | grep -E -- '-n[[:space:]]+(HIMMEL|LUNA)-' \
   | grep -vE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*-console')
 FLEET_CANDIDATES
 
-echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex total=$fleet_n/$FLEET_CAP" >&2
+# HIMMEL-2774: slot dir is per-user tmpfs, never inside the repo or the
+# handover root — reservations must not survive a reboot or leak into
+# anything git-tracked.
+SLOTS="${HIMMEL_FLEET_SLOTS:-${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u)}"
+mkdir -p "$SLOTS" 2>/dev/null
 
-if [ "$fleet_n" -ge "$FLEET_CAP" ]; then
+fleet_reserved=0
+_fleet_admitted=0
+_fleet_admit_iters=0
+while [ "$_fleet_admit_iters" -lt "${FLEET_ADMIT_RETRY_ITERS:-100}" ]; do
+  _fleet_claim_admit "$SLOTS/.admit" && { _fleet_admitted=1; break; }
+  sleep "${FLEET_ADMIT_RETRY_SLEEP:-0.05}"
+  _fleet_admit_iters=$((_fleet_admit_iters + 1))
+done
+
+if [ "$_fleet_admitted" -eq 1 ]; then
+  _fleet_now=$(date +%s)
+  for _fleet_resv in "$SLOTS"/*/; do
+    [ -d "$_fleet_resv" ] || continue
+    _fleet_resv_name="$(basename "$_fleet_resv")"
+    [ "$_fleet_resv_name" = .admit ] && continue
+    _fleet_resv_expires="$(cat "${_fleet_resv}expires" 2>/dev/null)"
+    case "$_fleet_resv_expires" in
+      # Unreadable/corrupt metadata is not a valid reservation — prune it
+      # the same as an expired one rather than counting it forever.
+      ''|*[!0-9]*) rm -rf "$_fleet_resv" 2>/dev/null; continue ;;
+    esac
+    if [ "$_fleet_now" -ge "$_fleet_resv_expires" ]; then
+      rm -rf "$_fleet_resv" 2>/dev/null
+      continue
+    fi
+    # A live session with this name already counted in fleet_n above
+    # CONSUMES the reservation — do not double-count the same slot.
+    if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; then
+      continue
+    fi
+    fleet_reserved=$((fleet_reserved + 1))
+  done
+  fleet_n=$((fleet_n + fleet_reserved))
+fi
+
+echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex reserved=$fleet_reserved total=$fleet_n/$FLEET_CAP" >&2
+
+if [ "$_fleet_admitted" -eq 0 ]; then
+  echo "bank-preflight: could not acquire the fleet admission lock ($SLOTS/.admit) after $_fleet_admit_iters retries — cannot verify the fleet is under cap" >&2
+  if [ "${FLEET_CAP_OK:-}" = "1" ]; then
+    echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the admission-lock failure" >&2
+  elif [ "$LAUNCH_INTENT" = "1" ]; then
+    emit SKIPPED-FLEET
+  else
+    echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
+  fi
+elif [ "$fleet_n" -ge "$FLEET_CAP" ]; then
   # codex-3 (CR review, 2nd panel round, Suggestion): the documented
   # contract is FLEET_CAP_OK=1 specifically; a bare `-n` (non-empty) test
   # would also treat FLEET_CAP_OK=0 or FLEET_CAP_OK=false as an enabled
@@ -233,11 +338,29 @@ if [ "$fleet_n" -ge "$FLEET_CAP" ]; then
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — FLEET_CAP_OK bypass in effect (launching shell only), proceeding" >&2
   elif [ "$LAUNCH_INTENT" = "1" ]; then
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — skipping leg=$LEG (bypass: FLEET_CAP_OK=1 in the LAUNCHING shell)" >&2
+    rm -rf "$SLOTS/.admit" 2>/dev/null
     emit SKIPPED-FLEET
   else
     echo "bank-preflight: fleet at/over cap ($fleet_n/$FLEET_CAP) — not a declared launch (CADENCE_BANK_LAUNCH unset), reporting only" >&2
   fi
+elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
+  case "$LEG" in
+    */*)
+      echo "bank-preflight: CADENCE_BANK_LEG='$LEG' contains '/' — cannot create a fleet reservation directory for it; proceeding without a reservation (fix the caller to pass a bare name)" >&2
+      ;;
+    *)
+      if mkdir "$SLOTS/$LEG" 2>/dev/null; then
+        printf '%s\n' "$(( $(date +%s) + ${FLEET_RESERVE_TTL:-1800} ))" > "$SLOTS/$LEG/expires" 2>/dev/null
+        printf '%s\n' "$$" > "$SLOTS/$LEG/pid" 2>/dev/null
+      else
+        echo "bank-preflight: a fleet reservation for leg=$LEG already exists — refusing as a duplicate declared launch" >&2
+        rm -rf "$SLOTS/.admit" 2>/dev/null
+        emit SKIPPED-FLEET
+      fi
+      ;;
+  esac
 fi
+[ "$_fleet_admitted" -eq 1 ] && rm -rf "$SLOTS/.admit" 2>/dev/null
 
 # HIMMEL-2782: claudex lane parks on the codex weekly bank instead of the
 # Claude five_hour/seven_day check below — that check governs a different

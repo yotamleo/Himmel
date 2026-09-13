@@ -27,6 +27,16 @@
 #       launch (rc<>0, headed-arm.sh never invoked) - the launcher-side half
 #       of the fleet-size cap; scripts/lib/test-bank-preflight.sh covers the
 #       preflight's own fleet-counting logic.
+#   24. HIMMEL-2774: FLEET_RESERVE_TTL is exported to the preflight call,
+#       derived from this leg's own DEADLINE (positional $4) - a future
+#       deadline reaches the preflight as (deadline - now); a past/near
+#       deadline floors to 60.
+#   25. HIMMEL-2774: on SKIPPED-BANK (reachable only AFTER bank-preflight.sh's
+#       admission already created this leg's reservation), headed-arm-leg.sh
+#       releases it. On SKIPPED-FLEET (never holds a reservation of its own -
+#       see bank-preflight.sh's own refusal sub-paths), a same-name
+#       reservation directory (belonging to a DIFFERENT still-pending arm in
+#       the duplicate-name case) is left untouched.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -934,6 +944,83 @@ printf '%s\n' '# fixture brief' '> **Tier:** opus — design' > "$doc_tier_opus_
 rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_notag_colon" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
 check "tier gate (g): a bare sanctioned tag with no colon is refused with exit 2" "$rc" "2"
 contains "tier gate (g): refusal names the three category tags" "$out" "design|unverified-finding|tier-return"
+
+# --- 24 (HIMMEL-2774). FLEET_RESERVE_TTL is exported, derived from DEADLINE -
+# TTL_RECORD_PREFLIGHT stands in for bank-preflight.sh and records the TTL it
+# was called with instead of consulting the real fleet/bank state, mirroring
+# how PROCEED_PREFLIGHT/SKIPPED_FLEET_PREFLIGHT stand in above.
+TTL_RECORD_PREFLIGHT="$tmp/ttl-record-preflight.sh"
+# shellcheck disable=SC2016  # deliberately unexpanded: written literally, evaluated when the stub runs.
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$FLEET_RESERVE_TTL" > "$TTL_RECORD_OUT"' 'echo PROCEED' > "$TTL_RECORD_PREFLIGHT"
+chmod 755 "$TTL_RECORD_PREFLIGHT"
+
+# A genuinely future deadline (500s, clearly above the 60s floor so 24b's
+# floor case is distinguishable) WITHOUT paying for headed-arm.sh's own
+# wait loop: that loop breaks immediately once its SIGNAL file exists
+# (headed-arm.sh tests `[ -e "$SIGNAL" ]` before ever comparing to DEADLINE),
+# so pre-touching a real signal file here gets an immediate launch while
+# still exercising the TTL computation against a real future DEADLINE value.
+d24a="$tmp/c24a"; mk_launch_stubs "$d24a" "HIMMEL-1111-ttl"; mkdir -p "$tmp/repo24a"
+future24=$(( $(date +%s) + 500 ))
+touch "$d24a/signal-now"
+ttl_out24a="$tmp/ttl24a-seen"
+rc=0
+TTL_RECORD_OUT="$ttl_out24a" IMPL_GUARD_OK='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$TTL_RECORD_PREFLIGHT" \
+KONSOLE_CMD="$d24a/konsole" PGREP_CMD="$d24a/pgrep" \
+LEG_REPO="$tmp/repo24a" HEADED_ARM_LOCK_DIR="$d24a/locks" HEADED_ARM_PROC="$d24a/proc" \
+  bash "$SCRIPT" "HIMMEL-1111-ttl" "some/doc.md" "$d24a/signal-now" "$future24" "$d24a/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d24a" || true
+ttl_seen24a="$(cat "$ttl_out24a" 2>/dev/null || echo NONE)"
+check "TTL export: full launch, future deadline: exit 0" "$rc" "0"
+# a few seconds of scheduling slop around (deadline - now) is expected; the
+# exact value depends on how long the test harness itself took to reach the
+# preflight call, not on anything this suite controls.
+if [ "$ttl_seen24a" != NONE ] && [ "$ttl_seen24a" -ge 490 ] 2>/dev/null && [ "$ttl_seen24a" -le 500 ] 2>/dev/null; then
+  echo "ok - TTL export: future deadline -> FLEET_RESERVE_TTL ~= deadline - now ($ttl_seen24a)"
+else
+  echo "FAIL - TTL export: future deadline -> expected 490-500, got [$ttl_seen24a]"
+  fails=$((fails+1))
+fi
+
+d24b="$tmp/c24b"; mk_launch_stubs "$d24b" "HIMMEL-2222-ttlfloor"; mkdir -p "$tmp/repo24b"
+ttl_out24b="$tmp/ttl24b-seen"
+rc=0
+TTL_RECORD_OUT="$ttl_out24b" IMPL_GUARD_OK='' \
+HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$TTL_RECORD_PREFLIGHT" \
+KONSOLE_CMD="$d24b/konsole" PGREP_CMD="$d24b/pgrep" \
+LEG_REPO="$tmp/repo24b" HEADED_ARM_LOCK_DIR="$d24b/locks" HEADED_ARM_PROC="$d24b/proc" \
+  bash "$SCRIPT" "HIMMEL-2222-ttlfloor" "some/doc.md" "$d24b/signal-never" "$PAST" "$d24b/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d24b" || true
+check "TTL export: past deadline floors to 60" "$(cat "$ttl_out24b" 2>/dev/null || echo NONE)" "60"
+
+# --- 25 (HIMMEL-2774). Reservation release on abort, SKIPPED-BANK vs
+# SKIPPED-FLEET -------------------------------------------------------------
+slots25a="$tmp/slots25a"; mkdir -p "$slots25a/HIMMEL-3333-release"
+printf '%s\n' "$(( $(date +%s) + 1800 ))" > "$slots25a/HIMMEL-3333-release/expires"
+d25a="$tmp/c25a"; mk_launch_stubs "$d25a" "HIMMEL-3333-release"; mkdir -p "$tmp/repo25a"
+rc=0
+HIMMEL_FLEET_SLOTS="$slots25a" run_leg "$d25a" "$tmp/repo25a" "HIMMEL-3333-release" "claude-sonnet-5" "$SKIPPED_BANK_PREFLIGHT" >/dev/null 2>&1 || rc=$?
+n=0; while [ "$n" -lt 10 ]; do sleep 0.05; n=$((n+1)); done
+if [ -d "$slots25a/HIMMEL-3333-release" ]; then
+  echo "FAIL - SKIPPED-BANK: reservation not released after refusal"
+  fails=$((fails+1))
+else
+  echo "ok - SKIPPED-BANK: reservation released after refusal (this call's own, created by admission before the bank check ran)"
+fi
+
+slots25b="$tmp/slots25b"; mkdir -p "$slots25b/HIMMEL-4444-noown"
+printf '%s\n' "$(( $(date +%s) + 1800 ))" > "$slots25b/HIMMEL-4444-noown/expires"
+d25b="$tmp/c25b"; mk_launch_stubs "$d25b" "HIMMEL-4444-noown"; mkdir -p "$tmp/repo25b"
+rc=0
+HIMMEL_FLEET_SLOTS="$slots25b" run_leg "$d25b" "$tmp/repo25b" "HIMMEL-4444-noown" "claude-sonnet-5" "$SKIPPED_FLEET_PREFLIGHT" >/dev/null 2>&1 || rc=$?
+n=0; while [ "$n" -lt 10 ]; do sleep 0.05; n=$((n+1)); done
+if [ -d "$slots25b/HIMMEL-4444-noown" ]; then
+  echo "ok - SKIPPED-FLEET: a same-name reservation is left untouched (never held one of its own to release)"
+else
+  echo "FAIL - SKIPPED-FLEET: a same-name reservation was removed - would delete a DIFFERENT pending arm's duplicate-refused slot"
+  fails=$((fails+1))
+fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

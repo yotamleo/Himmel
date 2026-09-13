@@ -49,6 +49,29 @@ printf '%s\n' '#!/usr/bin/env bash' 'true' > "$FLEET_PS_STUB"
 chmod +x "$FLEET_PS_STUB"
 export FLEET_PS_CMD="$FLEET_PS_STUB"
 
+# HIMMEL-2774: bank-preflight.sh now RESERVES a fleet slot per declared launch
+# (CADENCE_BANK_LAUNCH=1, set unconditionally by arm-resume.sh for every
+# non-dry-run arm) under ${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u) — a
+# real, per-user, machine-shared directory this suite never pinned. Without
+# isolating it, this suite's real arms would both accumulate reservations of
+# their own across cases AND collide with any other legs/consoles actually
+# arming on this machine right now. Both hermetic (own slot dir) and bypassed
+# (this suite doesn't test the fleet cap, only the worker-census guards).
+#
+# Separately: every real arm in this suite reuses the SAME $HANDOVER fixture,
+# so a case that reaches "RESUME ARMED" (T6, T9's override) HOLDS its
+# reservation for that name deliberately (a genuinely-armed future launch
+# keeps its slot — arm-resume.sh only releases on its OWN refusal exits).
+# The next case reusing that name would then be refused as a duplicate
+# declared launch, unrelated to what it tests — reset_fleet_slots clears
+# this suite's own isolated slot dir before every real arm so each case
+# starts clean.
+export XDG_RUNTIME_DIR="$TMP/xdg"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export FLEET_CAP_OK=1
+reset_fleet_slots() { rm -rf "${XDG_RUNTIME_DIR:?}/himmel-fleet-$(id -u)"; }
+
 export WORKER_BRIDGE_ROOT="$TMP/bridge"
 mkdir -p "$WORKER_BRIDGE_ROOT/glm-sessions" "$WORKER_BRIDGE_ROOT/claudex-sessions"
 
@@ -265,6 +288,7 @@ cat > "$LIVE_DIR/meta.json" <<'EOF'
   "task_name": "live-guard"
 }
 EOF
+reset_fleet_slots
 out=$(PATH="$SCHED_STUB:$PATH" LIVE_PIDS=111 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
 assert_rc "T1 live worker blocks arm" 10 "$rc"
@@ -300,6 +324,7 @@ if [ -z "$(ls -A "$SECURE_STDERR_TMP" 2>/dev/null)" ]; then pass "T1a secure std
 rm -f "$OLD_CENSUS_PATH"
 
 # T1b: mktemp failure is validated and refuses before either census command.
+reset_fleet_slots
 out=$(MKTEMP_FAIL_RECONCILE=1 PATH="$SCHED_STUB:$PATH" LIVE_PIDS=111 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
 assert_rc "T1b mktemp failure refuses arm" 2 "$rc"
@@ -319,6 +344,7 @@ cat > "$DEAD_DIR/meta.json" <<'EOF'
   "preserve_me": "yes"
 }
 EOF
+reset_fleet_slots
 out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS='' RECONCILE_GRACE_SECS=0 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
 assert_rc "T2 dead row is reconciled and arm proceeds" 0 "$rc"
@@ -391,6 +417,7 @@ cat > "$UNPROBEABLE_DIR/meta.json" <<EOF
 EOF
 SHARED_BRANCH_LOCK_HOLDER_PID=888 bash "$LOCK" acquire "$LOCK_REPO" "feat/unprobeable" codex >/dev/null 2>&1
 UNPROBEABLE_LOCK=$(git -C "$LOCK_REPO" rev-parse --path-format=absolute --git-common-dir)/himmel-shared-branch/feat-unprobeable.lock
+reset_fleet_slots
 out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS='' UNPROBEABLE_PIDS=888 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
 assert_rc "T4 unprobeable worker blocks arm" 10 "$rc"
@@ -423,6 +450,7 @@ mkdir -p "$BYPASS_DIR"
 cat > "$BYPASS_DIR/meta.json" <<'EOF'
 {"status":"running","pid":777,"lane":"codex","task_name":"bypass-live"}
 EOF
+reset_fleet_slots
 out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS=777 ARM_WITH_LIVE_WORKERS=1 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" --force 2>&1)
 rc=$?
 assert_rc "T6 explicit bypass still arms" 0 "$rc"
@@ -595,6 +623,7 @@ printf '{not valid json' > "$MALFORMED_DIR/meta.json"
 # NOTE: MSYS mangles a POSIX-looking argv path into its Windows spelling
 # before node ever sees it, so match the distinctive tail rather than the
 # full $MALFORMED_DIR string (windows-git-bash-traps).
+reset_fleet_slots
 out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS='' bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
 assert_rc "T9 malformed meta refuses without override" 2 "$rc"
@@ -608,6 +637,7 @@ assert_contains "T9 refusal names the offending meta path" "glm-malformed/meta.j
 rm -f "$TMP/sched-stub.tasks"
 rm -rf "$AT_DB"
 mkdir -p "$AT_DB"
+reset_fleet_slots
 out=$(TMPDIR="$TMP" PATH="$SCHED_STUB:$PATH" LIVE_PIDS='' ARM_WITH_LIVE_WORKERS=1 bash "$ARM" --time "$NEAR_HHMM" --handover "$HANDOVER" 2>&1)
 rc=$?
 assert_rc "T9 override warns and proceeds" 0 "$rc"

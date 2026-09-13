@@ -470,15 +470,35 @@ fi
 # bank. Any other verdict (PROCEED, BANK-STALE, BANK-UNKNOWN) falls through.
 BANK_PREFLIGHT="${HEADED_ARM_LEG_PREFLIGHT:-$HERE/../../lib/bank-preflight.sh}"
 if [ -f "$BANK_PREFLIGHT" ]; then
+    # HIMMEL-2774: TTL from OUR OWN deadline, floored at 60s — a reservation
+    # must not outlive the arm attempt it belongs to, but must also survive
+    # long enough to matter (a near-past DEADLINE, or clock skew, must not
+    # produce a near-zero/negative TTL that expires the reservation before
+    # the launched session even goes live).
+    _arm_fleet_ttl=$(( DEADLINE - $(date +%s) ))
+    [ "$_arm_fleet_ttl" -ge 60 ] || _arm_fleet_ttl=60
     # HIMMEL-2789: this call launches a leg, so it declares launch intent —
     # the fleet cap must be able to actually refuse it, unlike a plain
     # bank-status READ.
-    preflight_token="$(CADENCE_BANK_LEG="$NAME" CADENCE_BANK_LANE="$LANE" CADENCE_BANK_LAUNCH=1 bash "$BANK_PREFLIGHT" 2>>"$LOG")"
+    preflight_token="$(CADENCE_BANK_LEG="$NAME" CADENCE_BANK_LANE="$LANE" CADENCE_BANK_LAUNCH=1 FLEET_RESERVE_TTL="$_arm_fleet_ttl" bash "$BANK_PREFLIGHT" 2>>"$LOG")"
     if [ "$preflight_token" = SKIPPED-FLEET ]; then
+        # HIMMEL-2774: NOT a reservation release here — bank-preflight.sh
+        # only ever returns SKIPPED-FLEET from its admission block itself
+        # (lock failure, at/over-cap, or a DUPLICATE reservation name), and
+        # none of those paths ever create a reservation for OUR call. The
+        # duplicate case in particular is someone ELSE's still-pending
+        # reservation for this same name — deleting it here would release a
+        # slot out from under that other, still-live arm attempt.
         echo "$(date +%F_%T) headed-arm-leg: refusing to launch $NAME - fleet-size cap reached (bypass: FLEET_CAP_OK=1 in the LAUNCHING shell)" >> "$LOG"
         exit 10
     fi
     if [ "$preflight_token" = SKIPPED-BANK ]; then
+        # HIMMEL-2774: SKIPPED-BANK is only reachable AFTER fleet admission
+        # already succeeded and reserved a slot for $NAME (admission runs
+        # before any bank check) — release it now since this attempt is not
+        # going to launch after all, rather than leaving it to expire by TTL.
+        _arm_fleet_slots="${HIMMEL_FLEET_SLOTS:-${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u)}"
+        rm -rf "${_arm_fleet_slots:?}/$NAME" 2>/dev/null
         echo "$(date +%F_%T) headed-arm-leg: refusing to launch $NAME - $LANE lane bank exhausted (park and retry later; see bank-preflight.sh for the parked lane's own bank status)" >> "$LOG"
         exit 11
     fi

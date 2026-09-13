@@ -34,6 +34,20 @@ printf '%s\n' '#!/usr/bin/env bash' 'true' > "$FLEET_PS_STUB"
 chmod +x "$FLEET_PS_STUB"
 export FLEET_PS_CMD="$FLEET_PS_STUB"
 
+# HIMMEL-2774: bank-preflight.sh now RESERVES a fleet slot per declared launch
+# (CADENCE_BANK_LAUNCH=1, set unconditionally by arm-resume.sh for every
+# non-dry-run arm) under ${XDG_RUNTIME_DIR:-/tmp}/himmel-fleet-$(id -u) -- a
+# real, per-user, machine-shared directory this suite never pinned. LG6a's
+# reservation is never consumed (no real session ever appears with its name)
+# and sits for the default 1800s TTL, so repeated runs of this suite on the
+# same machine accumulate real reservations until the cap refuses LG6b for a
+# reason unrelated to what this suite tests. Pin an isolated slot dir and set
+# the design's own documented bypass, same as the other arm-resume twins.
+export XDG_RUNTIME_DIR="$TMP/xdg"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+export FLEET_CAP_OK=1
+
 # Hermetic shields — same set test-arm-resume.sh uses so the assertions below
 # are not skewed by the operator's shell.
 export SKILL_TELEMETRY_DIR="$TMP/telemetry-default"

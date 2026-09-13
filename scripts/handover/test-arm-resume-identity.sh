@@ -89,6 +89,21 @@ printf '%s\n' '#!/usr/bin/env bash' 'true' > "$FLEET_PS_STUB"
 chmod +x "$FLEET_PS_STUB"
 export FLEET_PS_CMD="$FLEET_PS_STUB"
 
+# HIMMEL-2774: bank-preflight.sh now RESERVES a fleet slot per declared launch
+# (CADENCE_BANK_LAUNCH=1, set unconditionally by arm-resume.sh for every
+# non-dry-run arm), not just census live processes -- so the FLEET_PS_CMD
+# stub above (which zeroes the live count) no longer zeroes the fleet count
+# by itself. This suite performs far more than HIMMEL_FLEET_CAP real arms,
+# each under a distinct handover path/name, so each leaves its own unconsumed
+# reservation (no real session ever appears to consume it) sitting under the
+# suite's own XDG_RUNTIME_DIR (pinned above) until its TTL expires -- default
+# 1800s, far longer than this suite's runtime. Left alone, the 5th+ real arm
+# in any single run would refuse (rc=22) for a reason unrelated to what this
+# suite tests. FLEET_CAP_OK=1 is the design's own documented bypass (every
+# caller's refusal message names it), so this test suite qualifies exactly
+# like a real operator override, not a new escape hatch.
+export FLEET_CAP_OK=1
+
 # Hermetic: fresh handover root, no real scheduler, no real telemetry/trust
 # writes (same shields test-arm-resume.sh / test-arm-resume-queue-lock.sh use).
 HANDOVER_DIR="$TMP/statedocs/handovers"
