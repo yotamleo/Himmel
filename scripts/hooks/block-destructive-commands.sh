@@ -269,28 +269,46 @@ guard_cmdpos_grammar
 # reproduced cases, and the earlier attempt to strip quoted spans generically
 # broke the HIMMEL-851 `rm "-rf" file` quoted-flag DENY case below, which must
 # keep denying (quoting a flag doesn't change what runs).
-rm_scrub="$cmd_lc"
-if [[ $rm_scrub == *'<<'* ]]; then
+# Only a QUOTED delimiter (`<<'EOF'`/`<<"EOF"`) guarantees the shell performs
+# no expansion while building the body - an UNQUOTED delimiter's body still
+# undergoes command substitution, so `cat <<EOF` containing `$(rm -rf x)`
+# stays unstripped and falls through to the ${CMDPOS} match below (codex
+# panel finding, HIMMEL-2834 pr-check round 1). This scrub also works off
+# `cmd` (real newlines intact), not `cmd_lc` (newlines already folded to `;`,
+# indistinguishable from a real semicolon) - stripping must start only after
+# the true newline that begins the body, never right after the opener token,
+# or a real command on the OPENER's own line (`cat <<EOF; rm -rf x`) gets
+# swallowed into the discarded span (same panel round).
+rm_scrub_raw=$(printf '%s' "$cmd" | LC_ALL=C tr '\r' '\n' | LC_ALL=C tr '[:upper:]' '[:lower:]')
+if [[ $rm_scrub_raw == *'<<'* ]]; then
     _hd_budget=8
-    while [ "$_hd_budget" -gt 0 ] && [[ $rm_scrub == *'<<'* ]]; do
+    while [ "$_hd_budget" -gt 0 ] && [[ $rm_scrub_raw == *'<<'* ]]; do
         _hd_budget=$((_hd_budget - 1))
-        if [[ $rm_scrub =~ \<\<-?[[:space:]]*[\'\"]?([[:alnum:]_]+)[\'\"]? ]]; then
+        _hd_qpat="<<-?[[:space:]]*'([[:alnum:]_]+)'"
+        _hd_dpat='<<-?[[:space:]]*"([[:alnum:]_]+)"'
+        if [[ $rm_scrub_raw =~ $_hd_qpat ]] || [[ $rm_scrub_raw =~ $_hd_dpat ]]; then
             _hd_word="${BASH_REMATCH[1]}"
             _hd_opener="${BASH_REMATCH[0]}"
-            _hd_prefix="${rm_scrub%%"$_hd_opener"*}"
-            _hd_tail="${rm_scrub#"$_hd_prefix""$_hd_opener"}"
-            _hd_termpat=';'"$_hd_word"'(;|$)'
-            if [[ $_hd_tail =~ $_hd_termpat ]]; then
-                _hd_after="${_hd_tail#*"${BASH_REMATCH[0]}"}"
-                rm_scrub="${_hd_prefix} ${_hd_after}"
-            else
-                break
-            fi
+        else
+            break
+        fi
+        _hd_prefix="${rm_scrub_raw%%"$_hd_opener"*}"
+        _hd_tail="${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+        if [[ $_hd_tail != *$'\n'* ]]; then
+            break
+        fi
+        _hd_openerline_rest="${_hd_tail%%$'\n'*}"
+        _hd_body="${_hd_tail#*$'\n'}"
+        _hd_termpat=$'(^|\n)'"$_hd_word"$'($|\n)'
+        if [[ $_hd_body =~ $_hd_termpat ]]; then
+            _hd_after="${_hd_body#*"${BASH_REMATCH[0]}"}"
+            rm_scrub_raw="${_hd_prefix} ${_hd_openerline_rest}"$'\n'"${_hd_after}"
         else
             break
         fi
     done
 fi
+rm_scrub="${rm_scrub_raw//$'\n'/;}"
 # Separator before the flag tolerates a real space OR a lowercased ${IFS}
 # token (a common word-split bypass), and the flag itself tolerates one
 # leading quote char - both `-rf` and `"-rf"`/`'-rf'` trip it (HIMMEL-851 U2/U3).

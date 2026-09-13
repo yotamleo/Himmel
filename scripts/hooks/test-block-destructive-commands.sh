@@ -311,6 +311,22 @@ assert_rc "2834f sudo <rm literal>"         2 "$(run_case "$(j_bash 'sudo rm -rf
 assert_rc "2834f env FOO=1 <rm literal>"    2 "$(run_case "$(j_bash 'env FOO=1 rm -rf /tmp/x')")"
 # shellcheck disable=SC2016  # literal $(...) payload is the point of this case
 assert_rc "2834f \$( <rm literal> )"        2 "$(run_case "$(j_bash 'echo $(rm -rf /tmp/x)')")"
+# (g) UNQUOTED heredoc delimiter — the body still undergoes command
+# substitution when the shell builds it, so an embedded $(rm -rf ...) really
+# executes; must stay DENY (codex panel, pr-check round 1 on this ticket) —
+# only a QUOTED delimiter (case c above) may have its body stripped.
+# shellcheck disable=SC2016  # literal $(...) payload is the point of this case
+heredoc_cmd_unquoted='cat <<EOF > /tmp/proposal.md
+$(rm -rf /tmp/x)
+EOF'
+assert_rc "2834g unquoted heredoc \$(<rm literal>)" 2 "$(run_case "$(j_bash "$heredoc_cmd_unquoted")")"
+# (h) a real command on the heredoc OPENER's own source line, after a literal
+# `;`, must still DENY — it runs before the heredoc body even starts and must
+# not be swallowed into the stripped span (codex panel, same round).
+heredoc_cmd_openerline='cat <<'"'"'EOF'"'"'; rm -rf /tmp/x
+safe content
+EOF'
+assert_rc "2834h heredoc opener-line <rm literal>" 2 "$(run_case "$(j_bash "$heredoc_cmd_openerline")")"
 # (f) HIMMEL-851 bypasses must still deny post-anchor (already covered above,
 # cited here for the ticket's control list): quoted-flag L104, \${IFS} L106,
 # backslash-continuation L110-112.
