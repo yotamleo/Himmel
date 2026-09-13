@@ -24,15 +24,14 @@
 # no later assertion's tool lookup can be made vacuous by a pure prepend,
 # so it is excluded from pattern A below. A `$(...)` command substitution
 # (e.g. `scrub_path "$PATH" tool`) does NOT get this pass: it may take
-# $PATH as an input and still reduce it.
-#
-# Known limitation (CR round 2, codex-1, deferred — HIMMEL-2957): the
-# preservation check matches a literal `$PATH`/`${PATH}` substring in the
-# assigned value without distinguishing quote style, so a single-quoted
-# `PATH='$PATH'` (which assigns the literal 5-character string, not an
-# expansion of the real PATH) is misread as preserving. Not fixed here:
-# no tracked file uses this shape, and it requires quote-type tracking
-# disproportionate to the risk; flag it in review if it ever appears.
+# $PATH as an input and still reduce it. The reference must also sit at a
+# complete path-component boundary (value start/end, or a colon) on both
+# sides — `PATH="/nonexistent$PATH"` and `PATH="${PATH}/suffix"` instead
+# MERGE a bogus segment onto the first/last real entry with no colon
+# between them, silently dropping it, so neither counts as preserving
+# (CR round 3, codex-2). This boundary rule also resolves the round-2
+# codex-1 gap where a single-quoted `PATH='$PATH'` literal was misread as
+# preserving: the `'` immediately before the reference is not a boundary.
 #
 # Usage:
 #   check-vacuous-path-assert.sh              # tree-walk: every git-tracked
@@ -127,7 +126,18 @@ for f in "${files[@]}"; do
                 } else if (match(rest, /^"[^"]*"/)) {
                     val = substr(rest, RSTART, RLENGTH)
                     remainder = substr(rest, RSTART + RLENGTH)
-                    preserves_path = (val ~ /\$PATH([^A-Za-z0-9_]|$)/ || val ~ /\$\{PATH\}/)
+                    # A $PATH/${PATH} reference only preserves the ORIGINAL
+                    # entries when it sits at a complete path-component
+                    # boundary (start/end of the value, or a colon) on both
+                    # sides -- `"/nonexistent$PATH"` and `"${PATH}/suffix"`
+                    # instead MERGE a bogus segment onto the first/last real
+                    # entry with no colon between them, silently dropping it
+                    # (CR round 3, codex-2). This boundary requirement also
+                    # resolves the round-2 codex-1 single-quote-literal gap:
+                    # a single-quoted PATH assignment has a quote character
+                    # immediately before the reference, which is not a
+                    # boundary char either.
+                    preserves_path = (val ~ /(^|[:"])\$\{?PATH\}?([:"]|$)/)
                 } else if (match(rest, /^\$\(.*\)/)) {
                     val = substr(rest, RSTART, RLENGTH)
                     remainder = substr(rest, RSTART + RLENGTH)
@@ -138,7 +148,7 @@ for f in "${files[@]}"; do
                 } else if (match(rest, /^[^ \t]+/)) {
                     val = substr(rest, RSTART, RLENGTH)
                     remainder = substr(rest, RSTART + RLENGTH)
-                    preserves_path = (val ~ /\$PATH([^A-Za-z0-9_]|$)/ || val ~ /\$\{PATH\}/)
+                    preserves_path = (val ~ /(^|[:"])\$\{?PATH\}?([:"]|$)/)
                 }
                 remainder = trim(remainder)
                 if (remainder == "" || remainder ~ /^#/ || remainder ~ /^;/ || remainder ~ /^(&&|\|\|)/) {
@@ -162,13 +172,17 @@ for f in "${files[@]}"; do
 
             # ── Enter a heredoc: everything up to the matching terminator is
             # DATA for the enclosing shell, not statements it runs. A
-            # commented-out mention (`# see: cat <<EOF`) is not a live
-            # redirect -- without this guard it would falsely open heredoc
-            # state and silently skip every real line after it, including
-            # the assertion this detector exists to catch (CR round 2,
-            # codex-2).
-            if (line !~ /^[ \t]*#/ && (match(line, /<<-?[ \t]*["'"'"'][A-Za-z_][A-Za-z0-9_]*["'"'"'][ \t]*$/) || match(line, /<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/))) {
-                seg = substr(line, RSTART, RLENGTH)
+            # commented mention (`# see: cat <<EOF`, or a trailing
+            # `echo ready # example: cat <<EOF`) is not a live redirect --
+            # without stripping the comment first, either shape would
+            # falsely open heredoc state and silently skip every real line
+            # after it, including the assertion this detector exists to
+            # catch (CR round 2 codex-2: whole-line; CR round 3 codex-1:
+            # trailing).
+            hd_line = line
+            sub(/(^[ \t]*|[ \t])#.*$/, "", hd_line)
+            if (match(hd_line, /<<-?[ \t]*["'"'"'][A-Za-z_][A-Za-z0-9_]*["'"'"'][ \t]*$/) || match(hd_line, /<<-?[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*$/)) {
+                seg = substr(hd_line, RSTART, RLENGTH)
                 heredoc_dash = (seg ~ /^<<-/)
                 term = seg
                 sub(/^<<-?[ \t]*/, "", term)

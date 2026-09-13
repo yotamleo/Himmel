@@ -200,6 +200,34 @@ FIXTURE
 bash "$GUARD" "$tmp/case-m.sh" >/dev/null; rc=$?
 if [ "$rc" -eq 1 ]; then pass "case-m -> exit 1"; else fail "case-m -> expected 1 got $rc"; fi
 
+# Case N (CR round 3, codex-1): a TRAILING comment mentioning a heredoc
+# redirect must not open heredoc state either -- only a whole-line comment
+# was excluded after round 2; `echo ready # example: cat <<EOF` still
+# matched the unanchored regex and silently skipped the real scrub +
+# assertion below.
+echo "== Case N: trailing-comment heredoc mention does not suppress detection -> 1 finding =="
+cat > "$tmp/case-n.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+echo ready # example: cat <<EOF
+PATH=$(scrub_path "$PATH" tool)
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-n.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-n -> exit 1"; else fail "case-n -> expected 1 got $rc"; fi
+
+# Case O (CR round 3, codex-2): a $PATH reference retained WITHOUT a colon
+# boundary merges a bogus segment onto the first real entry instead of
+# adding a new one -- `PATH="/nonexistent$PATH"` is NOT preserving and
+# must still be flagged.
+echo "== Case O: no-colon-boundary PATH concatenation IS flagged -> 1 finding =="
+cat > "$tmp/case-o.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+export PATH="/nonexistent$PATH"
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-o.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-o -> exit 1"; else fail "case-o -> expected 1 got $rc"; fi
+
 # Case H: no-args tree walk over the real repo exits 0 or 1, never 2.
 echo "== Case H: no-args tree walk exits 0/1, not 2 =="
 ( cd "$REPO_ROOT" && bash "$GUARD" ) >/dev/null 2>&1; rc=$?
