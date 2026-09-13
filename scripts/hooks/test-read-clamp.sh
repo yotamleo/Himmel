@@ -106,6 +106,11 @@ rc=$(run_case "$(j_bash "cat $BIG_FILE" sess-bash-cat)" "HIMMEL_CONSOLE_LEG=1")
 assert_rc "bash cat over limit denies" 2 "$rc"
 assert_stderr_contains "bash cat deny names line count" "10 lines"
 
+# 7b. Bash cat of a big file with a double-quoted path -> deny (quotes must
+# not defeat the clamp; HIMMEL-2993 CR).
+rc=$(run_case "$(j_bash "cat \"$BIG_FILE\"" sess-bash-cat-quoted)" "HIMMEL_CONSOLE_LEG=1")
+assert_rc "bash cat of a quoted path over limit denies" 2 "$rc"
+
 # 8. an unrecognised Bash shape -> allow (never deny on a guess).
 rc=$(run_case "$(j_bash "cat $BIG_FILE | wc -l" sess-bash-unrec)" "HIMMEL_CONSOLE_LEG=1")
 assert_rc "unrecognised bash shape allows" 0 "$rc"

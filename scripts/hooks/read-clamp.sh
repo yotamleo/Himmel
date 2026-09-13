@@ -82,6 +82,19 @@ clamp_deny() {  # $1 = path, $2 = line count
     exit 2
 }
 
+# strip_quotes: strips one matching pair of surrounding quotes from a captured
+# Bash target -- `cat "/path.txt"` otherwise checks a filename that literally
+# includes the quote characters, which never exists and silently bypasses the
+# clamp (HIMMEL-2993 CR).
+strip_quotes() {
+    local t="$1"
+    case "$t" in
+        \"*\") t="${t#\"}"; t="${t%\"}" ;;
+        \'*\') t="${t#\'}"; t="${t%\'}" ;;
+    esac
+    printf '%s\n' "$t"
+}
+
 session_state_dir() {
     [ -n "$session_id" ] || return 1
     local root="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/himmel-read-clamp"
@@ -158,6 +171,8 @@ case "$tool" in
             fi
         fi
 
+        [ -n "$target" ] || exit 0
+        target=$(strip_quotes "$target")
         [ -n "$target" ] || exit 0
         lines=$(file_line_count "$target") || exit 0
         [ -n "$lines" ] || exit 0
