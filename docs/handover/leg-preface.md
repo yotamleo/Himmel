@@ -81,12 +81,13 @@ console change without your token is ignored, not merely distrusted.
   to the console.** Never reshape a command to dodge a guardrail, and never try
   a third spelling.
 - A classifier denial on a publish step (`gh pr create`, `gh pr comment`,
-  `git push`) is never retried verbatim: **at most ONE** delayed retry total
-  per incident, whether the first denial reads `Stage 2 classifier error` or
-  the already-escalated `[Out-of-Place Publication]` (`--body-file` for `gh`;
-  `git push` has no body flag — the delay itself is what makes the retry
-  non-identical, so retry the exact same command once). Any denial after that
-  one retry → route to the console, no further attempt (HIMMEL-3020).
+  `git push`) is never retried verbatim. `Stage 2 classifier error` gets **at
+  most ONE** delayed retry (`--body-file` for `gh`; `git push` has no body
+  flag — the delay itself is what makes the retry non-identical, so retry the
+  exact same command once); any denial after that one retry → route to the
+  console, no further attempt. `[Out-of-Place Publication]` gets **no retry at
+  all**, first time seen or not — route to the console immediately
+  (HIMMEL-3020).
 - Never use bare `git stash` / `git stash pop`: the stash stack is shared with
   every other worktree and another session may pop yours.
 

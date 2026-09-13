@@ -402,8 +402,12 @@ outward-facing command. The PR/comment/push body itself may be entirely clean
 (no private paths, tokens, or session ids) — the trigger is the **retry
 pattern**, not the content.
 
-**What to do:** same recovery as the `Stage 2 classifier error` row above —
-do not retry a third time in a different shape; stop and escalate.
+**What to do:** unlike the row above, this string earns **no retry at all** —
+whether you are seeing it after your own delayed retry (the usual path) or as
+the very first denial on this attempt. Stop immediately: `BLOCKED` to the
+console with the exact denial text; the console never runs the denied command
+itself (permission laundering) — it routes it to the operator's own shell or
+the leg's window via `!`.
 
 ---
 
