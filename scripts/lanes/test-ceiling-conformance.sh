@@ -149,6 +149,28 @@ if [ "$sess_lines" -eq 2 ]; then pass 'claude_sessions prints exactly two rows';
 contains 'claude_sessions row for the pinned leg' "$sess_out" $'108\tHIMMEL-555-legN70-2026-09-13\tclaude-sonnet-5\tauto'
 contains 'claude_sessions row for the console' "$sess_out" $'HIMMEL-nextleg-2026-09-13B-console\tclaude-fable-5-1\tauto'
 
+# (k) HIMMEL-2999 CR round 1 (codex-1, Critical): a -p value containing a
+# LITERAL embedded newline byte must not split into fake argv tokens -- the
+# real --autocompact (auto) must survive, not be overwritten by the "200000"
+# that a tr '\0' '\n' conversion would expose as a fake trailing token.
+mkcmdline 109 claude --model claude-sonnet-5 --autocompact auto -n HIMMEL-666-legN80-2026-09-13 \
+    -p $'notes\n--autocompact\n200000' work
+pgrep_x_stub 109
+out_k="$(run_primary)"
+contains 'an embedded newline in a -p value does not overwrite the real autocompact value' "$out_k" 'HIMMEL-666-legN80-2026-09-13 auto'
+contains 'the embedded-newline leg still reports its real DRIFT' "$out_k" 'ceiling=DRIFT:HIMMEL-666-legN80-2026-09-13'
+
+# (l) HIMMEL-2999 CR round 1 (codex-2, Important): a value-bearing flag
+# (--append-system-prompt) whose value happens to equal the literal string
+# "-n" must not poison the NEXT argv element into being read as -n's value --
+# the real -n (HIMMEL-999-legN90-2026-09-13), consumed earlier, must survive.
+mkcmdline 110 claude --model claude-sonnet-5 --autocompact auto -n HIMMEL-999-legN90-2026-09-13 \
+    --append-system-prompt -n work
+pgrep_x_stub 110
+out_l="$(run_primary)"
+contains 'a flag value that looks like -n does not hijack the following token as the real name' "$out_l" 'HIMMEL-999-legN90-2026-09-13 auto'
+contains 'the hijack-attempt leg still reports its real DRIFT' "$out_l" 'ceiling=DRIFT:HIMMEL-999-legN90-2026-09-13'
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-ceiling-conformance.sh'
     exit 0

@@ -31,18 +31,48 @@
 # Bash 3.2-compatible: no mapfile, no associative arrays.
 
 _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <pid>
+    # Reads NUL-delimited argv elements directly (`read -d ''`) rather than
+    # via `tr '\0' '\n'` + newline-`read` -- HIMMEL-2999 CR round 1 (codex-1,
+    # Critical): the tr conversion is itself lossy when an argv element (a
+    # -p/--append-system-prompt value) contains a literal embedded newline
+    # byte -- that byte becomes indistinguishable from a real argv-element
+    # boundary once translated, letting one prompt element split into fake
+    # tokens. Reading the NUL delimiter directly has no such collision.
+    #
+    # `expect` tracks "the NEXT token is this flag's value" and is cleared
+    # the instant that one token is consumed -- HIMMEL-2999 CR round 1
+    # (codex-2, Important): the old code classified every token by whether
+    # the PREVIOUS token's literal text was "-n"/"--model"/"--autocompact",
+    # with no notion of "that previous token was itself already consumed as
+    # another flag's value." A value-bearing flag whose value happens to be
+    # exactly "-n" (or "--model"/"--autocompact") then poisoned the very
+    # next argv element -- a positional prompt, or another flag -- into
+    # being misread as that flag's value. `expect=skip` consumes and
+    # discards the value of every other known value-bearing flag so its
+    # value token is never re-examined; `--` ends flag parsing entirely
+    # (everything after belongs to the trailing prompt).
     local proc="$1" pid="$2" cmdline
     cmdline="$proc/$pid/cmdline"
     [ -r "$cmdline" ] || return 0
-    local name="" model="" autocompact="" prev="" tok
-    while IFS= read -r tok; do
-        case "$prev" in
-            -n) name="$tok" ;;
-            --model) model="$tok" ;;
-            --autocompact) autocompact="$tok" ;;
+    local name="" model="" autocompact="" expect="" tok
+    while IFS= read -r -d '' tok; do
+        if [ -n "$expect" ]; then
+            case "$expect" in
+                name) name="$tok" ;;
+                model) model="$tok" ;;
+                autocompact) autocompact="$tok" ;;
+            esac
+            expect=""
+            continue
+        fi
+        case "$tok" in
+            --) break ;;
+            -n) expect=name ;;
+            --model) expect=model ;;
+            --autocompact) expect=autocompact ;;
+            -p|--append-system-prompt|--append-system-prompt-file) expect=skip ;;
         esac
-        prev="$tok"
-    done < <(tr '\0' '\n' < "$cmdline")
+    done < "$cmdline"
     printf '%s\t%s\t%s\t%s\n' "$pid" "$name" "$model" "$autocompact"
 }
 
