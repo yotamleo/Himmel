@@ -75,7 +75,15 @@ check "leg marker: nothing written" "$(ls -A "$LEGROOT")" ""
 rc=0; HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=0 bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
 check "leg marker: a falsy marker is no marker" "$rc" "0"
 
-# --- 6. unresolvable handover root -------------------------------------------
+# --- 6. HIMMEL_CONSOLE_RELAY refuses on its own (HIMMEL-2975), nothing written.
+ROOT6="$(mktemp -d)"
+rc=0; out="$(env -u HIMMEL_CONSOLE_LEG HANDOVER_DIR="$ROOT6" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" 77 "$SHA" 2>&1)" || rc=$?
+check    "relay: exit 3" "$rc" "3"
+contains "relay: names the relay" "$out" "console relay"
+check    "relay: no GO file written" "$(find "$ROOT6" -type f | wc -l | tr -d ' ')" "0"
+rm -rf "$ROOT6"
+
+# --- 7. unresolvable handover root -------------------------------------------
 rc=0; HANDOVER_DIR="$tmp/absent" bash "$SCRIPT" 77 "$SHA" >/dev/null 2>&1 || rc=$?
 check "no root: exit 1" "$rc" "1"
 
