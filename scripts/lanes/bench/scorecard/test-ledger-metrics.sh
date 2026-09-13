@@ -60,6 +60,32 @@ use_stub() {
 }
 PATH_BASE="$PATH"
 
+# Hermeticity tripwire (HIMMEL-2994): a PATH-shadowing gh that records every
+# invocation to a file. Folded into PATH_BASE (below any per-case use_stub,
+# which always prepends in front of PATH_BASE) so it is the last resort gh
+# resolves to if a case reaches it before installing its own stub. If a
+# future change to ledger-metrics.sh's validation order let cases (a)-(d)
+# reach gh before their first use_stub, this records the call and the final
+# assertion below fails instead of a real gh silently absorbing the call.
+TRIPWIRE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-tripwire.XXXXXX") || { echo "FAIL - setup: could not create gh tripwire dir"; exit 1; }
+TRIPWIRE_LOG="$TRIPWIRE_DIR/calls.log"
+: > "$TRIPWIRE_LOG"
+cat > "$TRIPWIRE_DIR/gh" <<TRIPWIRE_EOF
+#!/usr/bin/env bash
+echo "gh \$*" >> "$TRIPWIRE_LOG"
+exit 1
+TRIPWIRE_EOF
+chmod +x "$TRIPWIRE_DIR/gh"
+PATH_BASE="$TRIPWIRE_DIR:$PATH_BASE"
+export PATH="$PATH_BASE"
+
+# Install the default gh stub before the FIRST script invocation (HIMMEL-2994):
+# cases (a)-(d) below run before case (e)'s first use_stub, so without this
+# their hermeticity depended entirely on ledger-metrics.sh validating before
+# reaching gh. Every later use_stub call (cases (e)+) overrides this with its
+# own fixture, same as before.
+use_stub stub-gh-ledger
+
 # --- (a) usage: missing --since -> exit 2
 export SCORECARD_LEDGER="$FIXTURES/empty-ledger.jsonl"
 "$SCRIPT" >/dev/null 2>&1
@@ -156,6 +182,13 @@ EXIT=$?
 check_exit "no --until: exits 0" "$EXIT" "0"
 check_contains "no --until: the at-until PR is now included in the merged window" \
     "$OUT" "merged window: 2026-08-02T00:00:00Z .. 2026-08-05T00:00:00Z count=3"
+
+if [ -s "$TRIPWIRE_LOG" ]; then
+    echo "FAIL - hermeticity: gh reached the tripwire before any use_stub ($(tr '\n' ';' < "$TRIPWIRE_LOG"))"
+    fails=$((fails + 1))
+else
+    echo "ok - hermeticity: no gh call reached the tripwire before the first use_stub"
+fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then
