@@ -163,6 +163,18 @@
 # reads that file's STAGED content (git index), not the working tree, so an
 # unstaged local edit can never suppress a leak in the commit being made.
 # --tree reads it off disk, matching what --tree itself scans.
+#
+# Path-name scanning (HIMMEL-2831 #1): the same five detectors above also run
+# against a file's PATH itself, via scan_path() (reports at line 0, so a
+# finding reads "<file>:0 <class> ..." and a reader knows the name is what
+# triggered it, not content) — a leak-shaped hostname, home path, MAC, LAN IP
+# or bot token embedded in a filename used to pass both --staged and --tree
+# untouched, since the tracked path was only ever used for skip_path()
+# exemption checks. --staged calls it once per NEWLY ADDED file (a modified
+# file's path already existed in the tree, so --tree already covers it);
+# --tree calls it once per tracked path. A same-line `leak-allow:` marker has
+# no line to live on for a path hit, so .leak-classes-ignore is the only way
+# to exempt one.
 set -euo pipefail
 
 usage() {
@@ -646,6 +658,16 @@ scan_line() {
     HITS=1
 }
 
+# scan_path <file> -- feeds the repo-relative path string itself through the
+# same scan_line dispatch (line 0, so a finding reads "<file>:0 <class> ..."
+# and a reader knows it's the name, not content) so a leak-shaped filename
+# can't slip past a clean diff or clean tree content (HIMMEL-2831 #1). Callers
+# must invoke this strictly after skip_path() so a .leak-classes-ignore
+# exemption still holds for the path itself.
+scan_path() {
+    scan_line "$1" 0 "$1"
+}
+
 # unquote_diff_path <token> -- reverses the two things git's "+++ b/<path>"
 # header can do to a path that a plain ${f#b/} strip does not undo (HIMMEL-2831
 # #2): a bare disambiguating TAB appended after an otherwise-unquoted path
@@ -702,6 +724,24 @@ unquote_diff_path() {
     # wrongly inherit a different file's exact-file ignore exemption
     # (/pr-check panel round 1, codex-1).
     printf '%s.' "$s"
+}
+
+# scan_new_staged_paths -- HIMMEL-2831 #1: a staged file's own PATH must be
+# scanned once, even for diff shapes where the -U0 hunk-based parser above
+# never represents the file with a "+++ " header at all -- most notably a
+# genuinely EMPTY newly-added file, which produces NO diff body whatsoever
+# (verified: `git diff --cached -U0` for a 0-byte new file prints only the
+# "diff --git"/"new file mode"/"index" lines, no "--- "/"+++ "/"@@" at all).
+# A dedicated `--diff-filter=A` listing, run once, is the only reliable way
+# to enumerate every newly added path regardless of its diff shape. -z
+# disables git's path quoting entirely (regardless of core.quotePath),
+# so no unquote_diff_path() call is needed here.
+scan_new_staged_paths() {
+    local f
+    while IFS= read -r -d '' f; do
+        skip_path "$f" && continue
+        scan_path "$f"
+    done < <(git diff --cached --no-renames --diff-filter=A --name-only -z --)
 }
 
 # ---- --staged: parse `git diff --cached -U0`, scan ADDED lines only ----
@@ -814,6 +854,7 @@ run_staged() {
             *) ;;
         esac
     done <<< "$diff_output"
+    scan_new_staged_paths
     scan_unignored_full
 }
 
@@ -861,6 +902,7 @@ run_tree() {
     fi
     while IFS= read -r -d '' f; do
         skip_path "$f" && continue
+        scan_path "$f"
         # A tracked symlink: git only ever commits its TARGET STRING, never
         # the content at that target, so scan that string as the one line
         # this entry contributes -- opening "$f" via shell redirection below

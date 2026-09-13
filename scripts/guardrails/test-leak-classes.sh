@@ -1094,6 +1094,108 @@ else
 fi
 fi
 
+echo "== HIMMEL-2831 #1: a leak-shaped FILE PATH itself, not just its content =="
+
+# BASE_PRE2831_1 -- the commit at which item 2 (quoted-path parsing) had
+# already landed but item 1 (path-name scanning) had not; used below to prove
+# each case was a genuine miss before this session's scan_path() /
+# scan_new_staged_paths() additions, not just a fixture artifact.
+BASE_PRE2831_1="5e8e4cca8ecafa2864e8f4aa97c06012ab33e6cc"
+PRE_SCRIPT="$WS/leak-classes-pre-2831-1.sh"
+git -C "$REPO_ROOT" show "$BASE_PRE2831_1:scripts/guardrails/leak-classes.sh" > "$PRE_SCRIPT"
+
+# T13a: a NEWLY ADDED staged file named with a denylisted hostname substring,
+# with EMPTY content -- the ticket's own repro case. `git diff --cached -U0`
+# emits no "--- "/"+++ "/"@@" lines at all for a genuinely empty new file (see
+# scan_new_staged_paths()'s header comment in leak-classes.sh), so a detector
+# that only walks diff hunks can never see this file; only a dedicated
+# path-listing pass can.
+r=$(new_repo)
+dl="$WS/denylist-t13a.txt"
+printf 'leaktest-host-xyz123\n' > "$dl"
+: > "$r/leaktest-host-xyz123-notes.txt"
+git -C "$r" add leaktest-host-xyz123-notes.txt
+pre_out=$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$PRE_SCRIPT" --staged 2>&1); pre_rc=$?
+SCAN_OUT="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --staged 2>&1)"; SCAN_RC=$?
+if [ "$pre_rc" -eq 0 ] && ! grepq "$pre_out" -F "leaktest-host-xyz123-notes.txt" \
+   && [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "leaktest-host-xyz123-notes.txt:0:"; then
+    pass "T13a --staged: a newly added EMPTY file whose PATH embeds a denylisted hostname is flagged at :0 (RED pre-fix: the pre-#1 script misses it entirely)"
+else
+    fail "T13a --staged new-file path-name scan (pre_rc=$pre_rc pre_out=$pre_out rc=$SCAN_RC out=$SCAN_OUT)"
+fi
+
+# T13b: the SAME leak-shaped new path, but exact-file listed in
+# .leak-classes-ignore -- a path hit can't carry a same-line leak-allow
+# marker (there's no "line" to attach one to), so exemption is
+# .leak-classes-ignore only, per the header comment added for this ticket.
+# The ignore entry is committed FIRST (like T9d/T9e above) so this
+# changeset's own staged diff is just the new file -- otherwise the ignore
+# file's own content (which must literally spell the leak-shaped filename to
+# exempt it) would itself trip the hostname class as a staged content hit,
+# unrelated to the path-exemption behaviour under test.
+r=$(new_repo)
+dl="$WS/denylist-t13b.txt"
+printf 'leaktest-host-xyz123\n' > "$dl"
+printf 'leaktest-host-xyz123-notes.txt\n' > "$r/.leak-classes-ignore"
+git -C "$r" config user.email t@t
+git -C "$r" config user.name t
+git -C "$r" add .leak-classes-ignore
+git -C "$r" commit -q -m init
+: > "$r/leaktest-host-xyz123-notes.txt"
+git -C "$r" add leaktest-host-xyz123-notes.txt
+SCAN_OUT="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --staged 2>&1)"; SCAN_RC=$?
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$SCAN_OUT" ]; then
+    pass "T13b --staged: a .leak-classes-ignore exact-file entry exempts a leak-shaped new path"
+else
+    fail "T13b --staged path exemption via .leak-classes-ignore (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T13c: --tree over a TRACKED file whose path embeds a leak-shaped class
+# (already committed, no staged change at all) must also be flagged at :0 --
+# run_tree()'s own scan_path() call site, exercised independently of
+# scan_new_staged_paths() above.
+r=$(new_repo)
+dl="$WS/denylist-t13c.txt"
+printf 'leaktest-host-xyz123\n' > "$dl"
+: > "$r/leaktest-host-xyz123-old.txt"
+git -C "$r" config user.email t@t
+git -C "$r" config user.name t
+git -C "$r" add leaktest-host-xyz123-old.txt
+git -C "$r" commit -q -m init
+pre_out=$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$PRE_SCRIPT" --tree 2>&1); pre_rc=$?
+SCAN_OUT="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --tree 2>&1)"; SCAN_RC=$?
+if [ "$pre_rc" -eq 0 ] && ! grepq "$pre_out" -F "leaktest-host-xyz123-old.txt" \
+   && [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "leaktest-host-xyz123-old.txt:0:"; then
+    pass "T13c --tree: a tracked file whose PATH embeds a denylisted hostname is flagged at :0 (RED pre-fix: the pre-#1 script misses it entirely)"
+else
+    fail "T13c --tree path-name scan (pre_rc=$pre_rc pre_out=$pre_out rc=$SCAN_RC out=$SCAN_OUT)"
+fi
+
+# T13d: a MODIFIED (not newly added) file with a leak-shaped name and clean
+# added content -- design point (2): scan_new_staged_paths() only enumerates
+# --diff-filter=A (newly added) paths, so a pre-existing leak-shaped filename
+# must NOT be re-flagged by every subsequent --staged commit that merely
+# edits its clean content. --tree, which has no "new vs modified" concept,
+# still flags it every time via run_tree()'s own scan_path() call site.
+r=$(new_repo)
+dl="$WS/denylist-t13d.txt"
+printf 'leaktest-host-xyz123\n' > "$dl"
+printf 'line one\n' > "$r/leaktest-host-xyz123-old.txt"
+git -C "$r" config user.email t@t
+git -C "$r" config user.name t
+git -C "$r" add leaktest-host-xyz123-old.txt
+git -C "$r" commit -q -m init
+printf 'line one\nline two, still clean\n' > "$r/leaktest-host-xyz123-old.txt"
+git -C "$r" add leaktest-host-xyz123-old.txt
+staged_out="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --staged 2>&1)"; staged_rc=$?
+tree_out="$(cd "$r" && HIMMEL_LEAK_DENYLIST="$dl" bash "$SCRIPT" --tree 2>&1)"; tree_rc=$?
+if [ "$staged_rc" -eq 0 ] && ! grepq "$staged_out" -F "leaktest-host-xyz123-old.txt" \
+   && [ "$tree_rc" -eq 1 ] && grepq "$tree_out" -F "leaktest-host-xyz123-old.txt:0:"; then
+    pass "T13d --staged stays clean on a MODIFIED (not newly added) leak-shaped path with clean content; --tree still flags the path"
+else
+    fail "T13d --staged modified-file path scan scope (staged_rc=$staged_rc staged_out=$staged_out tree_rc=$tree_rc tree_out=$tree_out)"
+fi
+
 echo "== diff-prefix config independence (HIMMEL-2826) =="
 
 # T11: run_staged()'s parser keys on the literal "+++ b/" prefix `git diff
