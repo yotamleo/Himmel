@@ -21,10 +21,22 @@
 # autocompact" line per live claude session (a field is empty when the flag
 # is absent from that session's argv), pids from `pgrep -x claude` (comm-
 # exact, no -a/-f: argv is read separately per pid, so it is never flattened
-# in the first place). Returns 0 on a successful scan (0 or more sessions);
-# returns pgrep's own rc when pgrep's scan itself failed (rc>1) so a caller
-# can tell "found nothing" from "the scan broke" (mirrors ceiling-
-# conformance.sh's existing pgrep-rc contract).
+# in the first place). Returns 0 on a successful, complete scan (0 or more
+# sessions); returns 3 if the scan completed but one or more matched pids had
+# an unreadable (not missing) /proc/<pid>/cmdline -- HIMMEL-3002: a hidepid
+# mount or a permission boundary must not read the same as "the process
+# already exited," which is the ONLY case that stays silent (no row, rc 0).
+# A degraded scan still prints every readable row, plus one `# unreadable
+# <pid>` comment line per pid it could not read, so callers keep the rows
+# they can trust while knowing the table is incomplete. Returns pgrep's own
+# rc verbatim when pgrep's scan itself failed (rc>1) so a caller can tell
+# "found nothing" from "the census broke" from "the census is incomplete"
+# (mirrors ceiling-conformance.sh's existing pgrep-rc contract). CAVEAT:
+# pgrep's own documented fatal-error rc is also 3 (e.g. OOM), forwarded
+# verbatim with NO output printed first -- a caller distinguishes that from a
+# genuine degraded scan (which always prints at least one row/comment before
+# returning 3) by checking whether the captured output is empty, not by rc
+# alone (see ceiling-conformance.sh).
 #
 # Platform guard: no .ps1 twin, by design -- Linux-only when /proc exists;
 # the lossy fallback keeps the previous cross-platform pgrep -af behavior.
@@ -63,7 +75,16 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
     # "--model"/"--autocompact") hijacked the next token the same way.
     local proc="$1" pid="$2" cmdline
     cmdline="$proc/$pid/cmdline"
-    [ -r "$cmdline" ] || return 0
+    # HIMMEL-3002: a missing /proc/<pid> dir means the process has already
+    # exited (the ordinary pgrep-then-read race) -- silently skip it, rc 0,
+    # today's behaviour. A PRESENT dir whose cmdline we cannot read (hidepid,
+    # a permission boundary) is a different fact -- the session is alive but
+    # opaque to us -- and must not collapse into the same silent no-row case.
+    [ -d "$proc/$pid" ] || return 0
+    if [ ! -r "$cmdline" ]; then
+        printf '# unreadable %s\n' "$pid"
+        return 3
+    fi
     local name="" model="" autocompact="" expect="" tok
     while IFS= read -r -d '' tok; do
         if [ -n "$expect" ]; then
@@ -99,7 +120,12 @@ _tsv_field() { # _tsv_field <value> - CR round 2 (codex-2, Suggestion): a
 
 _claude_sessions_lossy() { # _claude_sessions_lossy <pgrep-bin> - the old
                             # pre-HIMMEL-2999 flattened-line scan, kept
-                            # verbatim as the no-/proc fallback.
+                            # verbatim as the no-/proc fallback. NOT in scope
+                            # for HIMMEL-3002: `pgrep -af` itself can't tell a
+                            # permission-denied process from a vanished one
+                            # either (a line it can't read just isn't in its
+                            # output), so this path has the same blind spot
+                            # the /proc reader used to have -- undetected here.
     local pgrep_bin="$1" proc_out pg_rc
     proc_out="$("$pgrep_bin" -af 'claude' 2>/dev/null)"
     pg_rc=$?
@@ -127,13 +153,16 @@ claude_sessions() {
         return $?
     fi
 
-    local pids pg_rc pid
+    local pids pg_rc pid degraded=0 child_rc
     pids="$("$pgrep_bin" -x claude 2>/dev/null)"
     pg_rc=$?
     [ "$pg_rc" -gt 1 ] && return "$pg_rc"
     for pid in $pids; do
         [ -n "$pid" ] || continue
         _claude_sessions_from_cmdline "$proc" "$pid"
+        child_rc=$?
+        [ "$child_rc" -eq 3 ] && degraded=1
     done
+    [ "$degraded" -eq 1 ] && return 3
     return 0
 }

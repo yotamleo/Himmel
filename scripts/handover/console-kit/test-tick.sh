@@ -220,6 +220,38 @@ spoof_out="$(PATH="$W/bin-spoof:$PATH" bash "$SUT" --legs 'HIMMEL-999-fake-legN1
 contains 'a spoofed -n inside free-text argv is not counted (HIMMEL-2999)' "$spoof_out" 'procs=0'
 contains 'a spoofed -n inside free-text argv does not bucket a model (HIMMEL-2999)' "$spoof_out" 'models=none'
 
+# HIMMEL-3002: a pid pgrep reports that has already vanished by the time
+# claude_sessions() reads it (no /proc/<pid> dir at all) is "not a tracked
+# session" -- no row, no effect on procs=/ceiling= -- pinning the pre-fix
+# behaviour for a genuinely gone process.
+mk_pgrep_x "$W/bin-vanished" 101 999
+vanished_out="$(PATH="$W/bin-vanished:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61')"
+contains 'a vanished pid (no /proc dir) does not affect procs=' "$vanished_out" 'procs=1'
+case "$vanished_out" in
+    *unreadable*) fail 'a vanished pid does not report unreadable=' ;;
+    *) pass 'a vanished pid does not report unreadable=' ;;
+esac
+
+# HIMMEL-3002: an alive pid whose /proc/<pid> dir exists but whose cmdline is
+# unreadable (a permission boundary, e.g. hidepid) must not be silently
+# treated as vanished -- tick.sh surfaces it as unreadable=<n> appended to
+# procs= so the console sees the scan is degraded, not a clean complete count.
+if [ "$(id -u)" = "0" ]; then
+    printf 'SKIP - unreadable-cmdline case cannot be simulated as root (chmod 000 is still readable to root)\n'
+else
+    mkcmdline 199 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-888-legN102 work
+    chmod 000 "$W/proc/199/cmdline"
+    if [ -r "$W/proc/199/cmdline" ]; then
+        printf 'SKIP - unreadable-cmdline case: chmod 000 did not remove read access here\n'
+        chmod 700 "$W/proc/199/cmdline"
+    else
+        mk_pgrep_x "$W/bin-unreadable" 101 199
+        unreadable_out="$(PATH="$W/bin-unreadable:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61')"
+        contains 'an unreadable cmdline is surfaced as unreadable= in procs= (HIMMEL-3002)' "$unreadable_out" 'procs=1,unreadable=1'
+        chmod 700 "$W/proc/199/cmdline"
+    fi
+fi
+
 rm -f "$W/handover/HIMMEL-222-legN65.md"
 out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66')"; rc=$?
 if [ "$rc" -eq 0 ]; then
