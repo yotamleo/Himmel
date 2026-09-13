@@ -125,9 +125,10 @@ check "malformed: TOTAL line is all-zero with no surviving rows" \
 # -> input=3.5k cache-read=9.0k cache-create=1.0k output=0.7k
 #    cost-eq = 3500*1 + 9000*0.1 + 1000*1.25 + 700*5 = 9150 -> "9.2k"
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/totals"
-TOTALS_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null | grep '^TOTAL cache-read=')
-check_exit "totals: exits 0" "${PIPESTATUS[0]}" "0"
-check "totals: cross-session TOTAL cost-eq line" "$TOTALS_OUT" \
+TOTALS_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "totals: exits 0" "$?" "0"
+check "totals: cross-session TOTAL cost-eq line" \
+    "$(printf '%s\n' "$TOTALS_OUT" | grep '^TOTAL cache-read=')" \
     "TOTAL cache-read=9.0k cache-create=1.0k input=3.5k output=0.7k cost-eq=9.2k"
 
 echo "---"
