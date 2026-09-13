@@ -104,9 +104,24 @@ else
         GITLEAKS_RC=$?
     }
 
-    run_gitleaks "$FIX/nonce-alone.txt" "$BASELINE_CFG" /dev/null
+    # Exit 1 alone does not prove a LEAK was found — gitleaks can also exit 1
+    # on some scanner/config errors, so a broken baseline config could satisfy
+    # this branch without ever matching the nonce (codex-adv round 6 finding).
+    # Require a JSON finding whose Secret is the nonce and whose RuleID is
+    # generic-api-key (confirmed the rule this fixture trips under the
+    # template's ruleset).
+    BASELINE_REPORT="$WORK/report-baseline.json"
+    run_gitleaks "$FIX/nonce-alone.txt" "$BASELINE_CFG" "$BASELINE_REPORT"
     case "$GITLEAKS_RC" in
-        1) ok "baseline (no new allowlist entry): bare RETASK nonce leaks" ;;
+        1)
+            if jq -e --arg nonce 'Y-N204-a68d71' \
+                'any(.[]; .RuleID == "generic-api-key" and (.Secret // "") == $nonce)' \
+                "$BASELINE_REPORT" >/dev/null 2>&1; then
+                ok "baseline (no new allowlist entry): bare RETASK nonce leaks"
+            else
+                bad "baseline leaked but no generic-api-key finding's Secret is the bare nonce — not proof the RED control is real, not a scanner/config error"
+            fi
+            ;;
         0) bad "baseline: bare RETASK nonce does NOT leak even without the new allowlist entry — the RED control is vacuous" ;;
         *) bad "baseline: gitleaks scanner error (rc=$GITLEAKS_RC), not a leak verdict" ;;
     esac
