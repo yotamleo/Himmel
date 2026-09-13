@@ -361,15 +361,23 @@ sum_racetestA_after="$(cksum < "$racetest_docA")"
 check "16 the already-claimed doc is left untouched" "$sum_racetestA_before" "$sum_racetestA_after"
 HANDOVER_DIR="$root" bash "$QL" release "$racetest_docB" "$token16" >/dev/null 2>&1
 
-# --- 16b: exhaustion requires 26 real collisions, not arbitrary I/O errors.
+# --- 16b: exhaustion requires ALL 702 letters (A-Z, AA-ZZ) as real
+# collisions, not arbitrary I/O errors. HIMMEL-2984 moved the boundary from
+# 26 (single letters) to 702 (single + bijective base-26 double letters) now
+# that `new` rolls past Z instead of refusing there.
 mkdir -p "$root/tester/exhausted"
 for letter16 in {A..Z}; do
     printf 'claimed\n' > "$root/tester/exhausted/DEMO-nextleg-${today}${letter16}-console.md"
 done
+for letter16a in {A..Z}; do
+    for letter16b in {A..Z}; do
+        printf 'claimed\n' > "$root/tester/exhausted/DEMO-nextleg-${today}${letter16a}${letter16b}-console.md"
+    done
+done
 rc16b=0
 out16b="$(console new --bucket exhausted 2>&1)" || rc16b=$?
-check "16b all 26 claimed letters: exits 1" "$rc16b" "1"
-check "16b all 26 claimed letters: reports exhaustion" "$(printf '%s\n' "$out16b" | grep -c 'all 26 letters')" "1"
+check "16b all 702 letters (A-Z, AA-ZZ) claimed: exits 1" "$rc16b" "1"
+check "16b all 702 letters claimed: reports past-ZZ exhaustion" "$(printf '%s\n' "$out16b" | grep -c 'past ZZ')" "1"
 
 # A directory at candidate A is EISDIR, not an existing console document.
 blocked16A="$root/tester/createerror/DEMO-nextleg-${today}A-console.md"
@@ -1021,5 +1029,73 @@ doc43B="$root/tester/modelbucket/DEMO-nextleg-${today}B-console.md"
 check "43 next's rendered successor doc carries --model <given>" "$(grep -c -- '--model custom-model-x' "$doc43B")" "1"
 check "43 next's rendered successor doc does not carry CONSOLE_MODEL instead" "$(grep -c -- '--model envdefault-model' "$doc43B")" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc43A" "$token43a" >/dev/null 2>&1
+
+# --- 44: same-day rollover past Z (HIMMEL-2984) --------------------------
+# 26 consoles on 2026-09-12 hit a hard refusal at letter Z with a live leg
+# in flight. Same-day continuation (no --date, or --date matching the
+# predecessor's own date) must roll bijective base-26: Z -> AA.
+mkdir -p "$root/tester/rollz"
+docZ44="$root/tester/rollz/DEMO-nextleg-${today}Z-console.md"
+printf 'stub\n' > "$docZ44"
+out44="$(console next --bucket rollz --dry-run --doc "$docZ44")"
+check "44 next --dry-run rolls Z to AA" "$(printf '%s\n' "$out44" | grep -c "^would-doc: .*${today}AA-console.md$")" "1"
+
+# --- 45: same-day rollover AZ -> BA ---------------------------------------
+mkdir -p "$root/tester/rollaz"
+docAZ45="$root/tester/rollaz/DEMO-nextleg-${today}AZ-console.md"
+printf 'stub\n' > "$docAZ45"
+out45="$(console next --bucket rollaz --dry-run --doc "$docAZ45")"
+check "45 next --dry-run rolls AZ to BA" "$(printf '%s\n' "$out45" | grep -c "^would-doc: .*${today}BA-console.md$")" "1"
+
+# --- 46: the recovery regex accepts a two-letter doc name -----------------
+# --doc alone (no --name) must derive the chain name from a TWO-letter
+# basename just as it already does for a one-letter one (line ~262's regex
+# was [A-Z] only), and bump AA -> AB.
+mkdir -p "$root/tester/rollname"
+docAA46="$root/tester/rollname/DEMO-nextleg-${today}AA-mychain.md"
+printf 'stub\n' > "$docAA46"
+console next --bucket rollname --doc "$docAA46" >/dev/null
+docAB46="$root/tester/rollname/DEMO-nextleg-${today}AB-mychain.md"
+check "46 next --doc <two-letter> derives name and bumps to AB" "$([ -f "$docAB46" ] && echo yes)" "yes"
+
+# --- 47: new with 26 docs present picks AA instead of refusing -----------
+mkdir -p "$root/tester/rollnew"
+for letter47 in {A..Z}; do
+    printf 'claimed\n' > "$root/tester/rollnew/DEMO-nextleg-${today}${letter47}-console.md"
+done
+out47="$(console new --bucket rollnew)"
+token47="$(token_of "$out47")"
+docAA47="$root/tester/rollnew/DEMO-nextleg-${today}AA-console.md"
+check "47 new with all 26 single letters claimed picks AA" "$([ -f "$docAA47" ] && echo yes)" "yes"
+HANDOVER_DIR="$root" bash "$QL" release "$docAA47" "$token47" >/dev/null 2>&1
+
+# --- 48: --date mints tomorrow's A, HANDOFF still pairs with the Z doc ---
+# The whole point of --date: a 23:5x console at letter Z can pre-mint
+# TOMORROW's first console (A) without waiting for midnight to roll the
+# date over naturally. The predecessor pointer (HANDOFF location + the
+# successor stub's own back-reference) still names the Z doc, even though
+# the letter resets rather than continuing the bijective sequence.
+mkdir -p "$root/tester/rolldate"
+docZ48="$root/tester/rolldate/DEMO-nextleg-${today}Z-console.md"
+printf 'stub\n' > "$docZ48"
+tomorrow48="2026-09-14"
+out48="$(console next --bucket rolldate --dry-run --date "$tomorrow48" --doc "$docZ48")"
+check "48 --date mints tomorrow's A, not a same-day AA rollover" "$(printf '%s\n' "$out48" | grep -c "^would-doc: .*${tomorrow48}A-console.md$")" "1"
+check "48 --date dry-run still names the Z predecessor's HANDOFF" "$(printf '%s\n' "$out48" | grep -c "would-handoff: .*${today}Z-console-HANDOFF.md")" "1"
+
+# --- 49: --date malformed exits 2 with a usage line -----------------------
+rc49=0
+out49="$(console next --bucket rolldate --dry-run --date notadate --doc "$docZ48" 2>&1)" || rc49=$?
+check "49 --date malformed exits 2" "$rc49" "2"
+check "49 --date malformed prints a usage line" "$(printf '%s\n' "$out49" | grep -c '^usage: console.sh')" "1"
+
+# --- 50: highest-doc discovery compares letters NUMERICALLY, not lexically
+# "AA" < "B" as strings even though AA (27) is the LATER letter. Auto
+# discovery (no --doc) must pick AA over B as today's predecessor.
+mkdir -p "$root/tester/rollorder"
+printf 'stub\n' > "$root/tester/rollorder/DEMO-nextleg-${today}B-console.md"
+printf 'stub\n' > "$root/tester/rollorder/DEMO-nextleg-${today}AA-console.md"
+out50="$(console next --bucket rollorder --dry-run)"
+check "50 auto-discovery treats AA as newer than B (numeric, not lexical)" "$(printf '%s\n' "$out50" | grep -c "^would-doc: .*${today}AB-console.md$")" "1"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -187,10 +187,13 @@ filled in.
 
 `next` writes the successor stub (letter bumped, pointed at this console and
 its HANDOFF) and the predecessor's `-HANDOFF.md` skeleton, and arms the
-successor on a signal file. Fill in the HANDOFF — head, what is in flight leg
-by leg with nonces and lock tokens, rulings made, the held queue in launch
-order, what wrapped — then `touch` the signal path that `next --arm` printed
-and hand your live legs over by name.
+successor on a signal file. The letter rolls past Z in bijective base-26 (Z →
+AA → AB → … → ZZ, then refuses) instead of ever refusing at Z; pass `--date
+<YYYY-MM-DD>` to pre-mint tomorrow's first console (`A`) immediately, near
+midnight, instead of waiting for the date to roll over. Fill in the HANDOFF —
+head, what is in flight leg by leg with nonces and lock tokens, rulings made,
+the held queue in launch order, what wrapped — then `touch` the signal path
+that `next --arm` printed and hand your live legs over by name.
 
 **Release your lock only after the successor reports `LIVE`.** That message is
 the only evidence the arm actually fired and the successor completed ACTION

@@ -22,12 +22,18 @@
 # detaching it).
 # Flag seams: --name (both commands; on next it selects which chain to
 # continue) --arm --dry-run --model --bucket --prefix --deadline-min --doc
-# (next only). See `-h`/`--help` for the full surface.
+# --date (next only; overrides the day used for the SUCCESSOR's own name --
+# HIMMEL-2984 -- letting a 23:5x console pre-mint tomorrow's A without
+# waiting for midnight; passing --date always starts that day's chain at A,
+# while omitting it continues the predecessor's own bijective sequence (Z ->
+# AA -> ... -> ZZ) regardless of whether the calendar day rolled over since).
+# See `-h`/`--help` for the full surface.
 #
-# Exit codes: 0 ok; 1 usage/state error (letters A-Z exhausted, no
-# predecessor found, an unresolved {{PLACEHOLDER}} survived a render); 2
-# unresolved handover root / user slug / a missing template file / no
-# sha256 hasher available to derive the per-chain digest (HIMMEL-2889); 3
+# Exit codes: 0 ok; 1 usage/state error (letters A-Z, AA-ZZ exhausted (past
+# ZZ), no predecessor found, an unresolved {{PLACEHOLDER}} survived a
+# render); 2 unresolved handover root / user slug / a missing template file
+# / no sha256 hasher available to derive the per-chain digest (HIMMEL-2889)
+# / a malformed --date value; 3
 # the work dir (default or CONSOLE_WORK_DIR) exists but is a symlink, is not
 # owned by this user, is group/other-writable, or could not be created
 # (HIMMEL-2881).
@@ -55,14 +61,19 @@ usage() {
     cat <<'USAGE'
 usage: console.sh new  [--name <slug>] [--arm] [--dry-run] [--model <m>]
                        [--bucket <b>] [--prefix <P>] [--deadline-min <n>]
-       console.sh next [--doc <path>] [--name <slug>] [--arm] [--dry-run]
-                       [--model <m>] [--bucket <b>] [--prefix <P>]
-                       [--deadline-min <n>]
+       console.sh next [--doc <path>] [--date <YYYY-MM-DD>] [--name <slug>]
+                       [--arm] [--dry-run] [--model <m>] [--bucket <b>]
+                       [--prefix <P>] [--deadline-min <n>]
        console.sh -h|--help
 
 --name on next selects which chain to continue; defaults to the name
 implied by --doc's own basename when --doc is given and --name is not,
 else "console".
+--date on next overrides the day used for the successor's own name and
+starts that day's chain at letter A; without --date the successor
+continues the predecessor's own bijective letter sequence (rolling past Z
+into AA, AB, ... as needed) regardless of whether the calendar day has
+rolled over since.
 USAGE
 }
 
@@ -85,11 +96,47 @@ resolve_repo() {
     (cd "$HERE/../../.." && pwd)
 }
 
-# next_letter <A-Y> -- the following letter in the alphabet.
+# next_letter <A-Z or AA-ZZ> -- bijective base-26 successor: A..Y -> next
+# letter, Z -> AA (same-day rollover past Z, HIMMEL-2984), AA..AY -> next
+# second letter, AZ -> BA, ..., YZ -> ZA. Fails (rc=1, no stdout) at ZZ, the
+# cap -- a third letter is out of scope.
 next_letter() {
-    local cur="$1" before
-    before="${ALPHABET%%"$cur"*}"
-    printf '%s' "${ALPHABET:$((${#before} + 1)):1}"
+    local cur="$1"
+    [ "$cur" = "ZZ" ] && return 1
+    if [ "${#cur}" -eq 1 ]; then
+        if [ "$cur" = "Z" ]; then
+            printf '%s' "AA"
+            return 0
+        fi
+        local before="${ALPHABET%%"$cur"*}"
+        printf '%s' "${ALPHABET:$((${#before} + 1)):1}"
+        return 0
+    fi
+    local first="${cur:0:1}" second="${cur:1:1}" before
+    if [ "$second" = "Z" ]; then
+        before="${ALPHABET%%"$first"*}"
+        printf '%s' "${ALPHABET:$((${#before} + 1)):1}A"
+    else
+        before="${ALPHABET%%"$second"*}"
+        printf '%s' "$first${ALPHABET:$((${#before} + 1)):1}"
+    fi
+}
+
+# letter_value <A-Z or AA-ZZ> -- numeric rank (A=1 .. Z=26, AA=27 .. ZZ=702).
+# Lexical string comparison puts "AA" before "B" even though AA is the
+# LATER letter -- anywhere the code needs the "highest" letter, compare
+# this value, never the raw string.
+letter_value() {
+    local s="$1" p
+    if [ "${#s}" -eq 1 ]; then
+        p="${ALPHABET%%"$s"*}"
+        printf '%s' $(( ${#p} + 1 ))
+        return 0
+    fi
+    local a="${s:0:1}" b="${s:1:1}" pa pb
+    pa="${ALPHABET%%"$a"*}"
+    pb="${ALPHABET%%"$b"*}"
+    printf '%s' $(( 26 + ${#pa} * 26 + ${#pb} + 1 ))
 }
 
 # render_template <template> <out> KEY VALUE [KEY VALUE ...] -- literal
@@ -120,13 +167,14 @@ render_template() {
     fi
 }
 
-# find_free_letter -- first letter A-Z with no existing doc for today+name.
+# find_free_letter -- first free letter (bijective base-26: A..Z, AA..ZZ)
+# with no existing doc for today+name. Fails (rc=1) past ZZ, the cap.
 find_free_letter() {
-    local l
-    for l in {A..Z}; do
+    local l="A"
+    while :; do
         [ -e "$state_dir/${prefix}-nextleg-${date}${l}-${name}.md" ] || { printf '%s' "$l"; return 0; }
+        l="$(next_letter "$l")" || return 1
     done
-    return 1
 }
 
 # do_arm <session> <doc> <fill-signal> <log> -- launch (or foreground-run,
@@ -165,6 +213,7 @@ BUCKET=""
 PREFIX=""
 DEADLINE_MIN=480
 DOC_ARG=""
+DATE_ARG=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -180,6 +229,13 @@ while [ "$#" -gt 0 ]; do
         --doc=*)
             [ "$CMD" = next ] || { err "--doc is only valid for 'next'"; usage >&2; exit 1; }
             DOC_ARG="${1#--doc=}"; shift ;;
+        --date)
+            [ "$CMD" = next ] || { err "--date is only valid for 'next'"; usage >&2; exit 1; }
+            [ "$#" -ge 2 ] || { usage >&2; exit 1; }
+            DATE_ARG="$2"; shift 2 ;;
+        --date=*)
+            [ "$CMD" = next ] || { err "--date is only valid for 'next'"; usage >&2; exit 1; }
+            DATE_ARG="${1#--date=}"; shift ;;
         --arm) ARM=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --model) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; MODEL="$2"; shift 2 ;;
@@ -259,7 +315,7 @@ if [ "$CMD" = next ] && [ "$NAME_GIVEN" -ne 1 ]; then
     if [ -n "$_doc_for_name" ]; then
         _stem_for_name="$(basename "$_doc_for_name")"
         _stem_for_name="${_stem_for_name%.md}"
-        if [[ "$_stem_for_name" =~ ^"$prefix"-nextleg-[0-9]{4}-[0-9]{2}-[0-9]{2}[A-Z]-(.+)$ ]]; then
+        if [[ "$_stem_for_name" =~ ^"$prefix"-nextleg-[0-9]{4}-[0-9]{2}-[0-9]{2}[A-Z]{1,2}-(.+)$ ]]; then
             NAME="${BASH_REMATCH[1]}"
         fi
     fi
@@ -273,6 +329,17 @@ if [ -z "$name" ]; then
     exit 1
 fi
 date="$(date +%F)"
+# successor_date: the day used for `next`'s SUCCESSOR name only (HIMMEL-2984).
+# Defaults to today; --date overrides it so a 23:5x console can pre-mint
+# TOMORROW's console without waiting for midnight. Nothing else (predecessor
+# resolution, `new`) reads this — they keep using $date.
+successor_date="$date"
+if [ -n "$DATE_ARG" ]; then
+    case "$DATE_ARG" in
+        [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) successor_date="$DATE_ARG" ;;
+        *) err "--date must be YYYY-MM-DD, got '$DATE_ARG'"; usage >&2; exit 2 ;;
+    esac
+fi
 state_dir="$root/$slug/$bucket"
 model="${MODEL:-${CONSOLE_MODEL:-claude-fable-5-1}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
@@ -577,7 +644,7 @@ cmd_new() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         local letter
-        letter="$(find_free_letter)" || { err "all 26 letters (A-Z) are taken for today's '$name' console in $state_dir"; exit 1; }
+        letter="$(find_free_letter)" || { err "all letters A-Z, AA-ZZ (past ZZ) are taken for today's '$name' console in $state_dir"; exit 1; }
         local doc="$state_dir/${prefix}-nextleg-${date}${letter}-${name}.md"
         local session="${prefix}-nextleg-${date}${letter}-${name}"
         local fill_signal="$chain_dir/sig-$session"
@@ -602,9 +669,9 @@ cmd_new() {
     # refuse an existing target instead of overwriting it; on a collision
     # (either a real pre-existing doc or a losing race) this advances to the
     # next letter rather than failing.
-    local letter doc create_error claimed=0
+    local letter="A" doc create_error claimed=0
     set -C
-    for letter in {A..Z}; do
+    while :; do
         doc="$state_dir/${prefix}-nextleg-${date}${letter}-${name}.md"
         if create_error="$( { : > "$doc"; } 2>&1 )"; then
             claimed=1
@@ -617,9 +684,10 @@ cmd_new() {
             err "could not create console doc $doc: $create_error"
             exit 1
         fi
+        letter="$(next_letter "$letter")" || break
     done
     set +C
-    [ "$claimed" -eq 1 ] || { err "all 26 letters (A-Z) are taken for today's '$name' console in $state_dir"; exit 1; }
+    [ "$claimed" -eq 1 ] || { err "all letters A-Z, AA-ZZ (past ZZ) are taken for today's '$name' console in $state_dir"; exit 1; }
     local session="${prefix}-nextleg-${date}${letter}-${name}"
     local fill_signal="$chain_dir/sig-$session"
     local log="$chain_dir/launch-$session.log"
@@ -703,22 +771,56 @@ resolve_predecessor() {
         printf '%s' "$CONSOLE_DOC"
         return 0
     fi
-    local l cand
-    for l in Z Y X W V U T S R Q P O N M L K J I H G F E D C B A; do
-        cand="$state_dir/${prefix}-nextleg-${date}${l}-${name}.md"
-        [ -f "$cand" ] && { printf '%s' "$cand"; return 0; }
+    # Bijective base-26 letters ("AA" < "B" lexically, even though AA is the
+    # LATER letter) break a plain name sort: rank candidates by letter_value,
+    # never by string comparison.
+    local cand best_cand="" best_val=0 base stem letter_part val
+    for cand in "$state_dir/${prefix}-nextleg-${date}"*"-${name}.md"; do
+        [ -f "$cand" ] || continue
+        base="$(basename "$cand")"
+        stem="${base%.md}"
+        letter_part="${stem%-"$name"}"
+        [ "$letter_part" = "$stem" ] && continue
+        letter_part="${letter_part#"${prefix}-nextleg-${date}"}"
+        case "$letter_part" in
+            [A-Z]|[A-Z][A-Z]) ;;
+            *) continue ;;
+        esac
+        val="$(letter_value "$letter_part")"
+        if [ "$val" -gt "$best_val" ]; then
+            best_val="$val"
+            best_cand="$cand"
+        fi
     done
-    # Glob instead of `find -maxdepth` (GNU-only): bash pathname expansion
-    # already returns matches in sorted order, so the last one iterated is
-    # the same "newest by name" `find | sort | tail -n 1` picked. An
-    # unmatched glob expands to the literal pattern (no nullglob here), so
-    # each candidate is existence-checked before it can win. The directory
-    # and name stay QUOTED and only the wildcard is bare: building the whole
-    # pattern into one variable and leaving `$pattern` unquoted word-splits
-    # on IFS (a space in the handover root, say) before globbing ever runs.
-    local newest="" cand
+    [ -n "$best_cand" ] && { printf '%s' "$best_cand"; return 0; }
+    # Glob instead of `find -maxdepth` (GNU-only). Unlike the same-day scan
+    # above, this crosses dates, so a plain name sort would still be right
+    # for the date part (ISO sorts lexically) but wrong for the letter part
+    # for the same AA-vs-B reason — build a composite date+numeric-letter key
+    # and compare THAT, never the raw filename. An unmatched glob expands to
+    # the literal pattern (no nullglob here), so each candidate is
+    # existence-checked before it can win. The directory and name stay
+    # QUOTED and only the wildcard is bare: building the whole pattern into
+    # one variable and leaving `$pattern` unquoted word-splits on IFS (a
+    # space in the handover root, say) before globbing ever runs.
+    local newest="" newest_key="" prefix_part cdate cletter key
     for cand in "$state_dir/${prefix}-nextleg-"*"-${name}.md"; do
-        [ -f "$cand" ] && newest="$cand"
+        [ -f "$cand" ] || continue
+        base="$(basename "$cand")"
+        stem="${base%.md}"
+        prefix_part="${stem%-"$name"}"
+        [ "$prefix_part" = "$stem" ] && continue
+        if [[ "$prefix_part" =~ ^.*-nextleg-([0-9]{4}-[0-9]{2}-[0-9]{2})([A-Z]{1,2})$ ]]; then
+            cdate="${BASH_REMATCH[1]}"
+            cletter="${BASH_REMATCH[2]}"
+        else
+            continue
+        fi
+        key="${cdate}-$(printf '%03d' "$(letter_value "$cletter")")"
+        if [ -z "$newest_key" ] || [[ "$key" > "$newest_key" ]]; then
+            newest_key="$key"
+            newest="$cand"
+        fi
     done
     [ -n "$newest" ] || return 1
     printf '%s' "$newest"
@@ -746,17 +848,27 @@ cmd_next() {
         err "cannot parse predecessor doc name '$predecessor_base' (expected suffix '-$name.md')"
         exit 1
     fi
-    predecessor_letter="${predecessor_prefix_part: -1}"
-    case "$predecessor_letter" in
-        Z) err "predecessor '$predecessor_base' is already at letter Z — no successor letter available"; exit 1 ;;
-        [A-Y]) ;;
-        *) err "cannot parse a letter from predecessor doc name '$predecessor_base'"; exit 1 ;;
-    esac
+    if [[ "$predecessor_prefix_part" =~ ^.*-nextleg-[0-9]{4}-[0-9]{2}-[0-9]{2}([A-Z]{1,2})$ ]]; then
+        predecessor_letter="${BASH_REMATCH[1]}"
+    else
+        err "cannot parse a letter from predecessor doc name '$predecessor_base'"
+        exit 1
+    fi
+    # An explicit --date pre-mints a NEW day's chain (the whole point: a
+    # 23:5x console at letter Z mints tomorrow's console immediately) and
+    # starts that chain at "A". With no --date, the successor continues the
+    # predecessor's own bijective sequence (Z -> AA -> ... -> ZZ) regardless
+    # of whether the calendar day has actually rolled over since (case 15:
+    # a predecessor dated yesterday still continues to today's next letter).
     local successor_letter
-    successor_letter="$(next_letter "$predecessor_letter")"
+    if [ -n "$DATE_ARG" ]; then
+        successor_letter="A"
+    else
+        successor_letter="$(next_letter "$predecessor_letter")" || { err "predecessor '$predecessor_base' is already at letter ZZ — no successor letter available (past ZZ)"; exit 1; }
+    fi
 
-    local doc="$state_dir/${prefix}-nextleg-${date}${successor_letter}-${name}.md"
-    local session="${prefix}-nextleg-${date}${successor_letter}-${name}"
+    local doc="$state_dir/${prefix}-nextleg-${successor_date}${successor_letter}-${name}.md"
+    local session="${prefix}-nextleg-${successor_date}${successor_letter}-${name}"
     # HANDOFF sits beside the predecessor's OWN doc, not in $state_dir — a
     # --doc pointing outside $state_dir (a different bucket, a different
     # root entirely) must still get its HANDOFF written next to it.
