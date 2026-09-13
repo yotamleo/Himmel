@@ -52,8 +52,13 @@ ledger_shas="$(cat "$sent_dir"/inbox-sent.log "$sent_dir"/*/inbox-sent.log 2>/de
 unmatched=0
 read_failed=0
 while IFS= read -r line || [ -n "$line" ]; do
-    token_bullet="$(printf '%s' "$line" | grep -E '^- [0-9][0-9]:[0-9][0-9] \[[^]]*\] from=')"
-    [ -n "$token_bullet" ] || continue
+    printf '%s' "$line" | grep -E '^- [0-9][0-9]:[0-9][0-9] \[[^]]*\] from=' >/dev/null
+    classify_rc=$?
+    if [ "$classify_rc" -gt 1 ]; then
+        printf 'inbox-audit: cannot classify line, aborting: %s\n' "$line" >&2
+        exit 2
+    fi
+    [ "$classify_rc" -eq 0 ] || continue
     if ! sha="$(printf '%s' "$line" | sha256sum)"; then
         printf 'inbox-audit: cannot hash line, aborting: %s\n' "$line" >&2
         exit 2

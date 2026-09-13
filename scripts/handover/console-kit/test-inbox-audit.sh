@@ -119,5 +119,28 @@ else
     fail "a sha256sum failure aborts the audit (rc=$rc out='$out')"
 fi
 
+# --- HIMMEL-2980 CR round 2 (codex-1): fail-closed when the classifying grep
+# itself errors, instead of silently treating the line as a non-token bullet
+# (which would let a forged token bullet pass as AUDIT ok) -------------------
+
+REAL_GREP="$(command -v grep)"
+BADGREP="$WORK/badgrep"
+mkdir -p "$BADGREP"
+{
+    printf '#!/usr/bin/env bash\n'
+    printf 'for a in "$@"; do\n'
+    # shellcheck disable=SC2016  # deliberately unexpanded: written literally, evaluated when the stub runs.
+    printf '    if [ "$a" = "-E" ]; then exit 2; fi\n'
+    printf 'done\n'
+    printf 'exec %q "$@"\n' "$REAL_GREP"
+} > "$BADGREP/grep"
+chmod +x "$BADGREP/grep"
+out="$(PATH="$BADGREP:$PATH" bash "$AUDIT" "$INBOX" "$RUNDIR" 2>&1)"; rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "a grep classification failure aborts the audit"
+else
+    fail "a grep classification failure aborts the audit (rc=$rc out='$out')"
+fi
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "SOME FAILED"; exit 1

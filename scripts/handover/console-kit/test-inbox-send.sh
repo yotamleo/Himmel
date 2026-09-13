@@ -282,22 +282,24 @@ fi
 
 # Case 15: a no-token send from the same sender does not touch the ledger.
 before_lines="$ledger_lines"
-bash "$SCRIPT" "$SESSION28" untoked-followup >/dev/null 2>&1
+send_rc15=0
+bash "$SCRIPT" "$SESSION28" untoked-followup >/dev/null 2>&1 || send_rc15=$?
 after_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
-if [ "$after_lines" = "$before_lines" ]; then
+if [ "$send_rc15" -eq 0 ] && [ "$after_lines" = "$before_lines" ]; then
     pass "a no-token send writes no ledger line"
 else
-    fail "a no-token send writes no ledger line (before=$before_lines after=$after_lines)"
+    fail "a no-token send writes no ledger line (rc=$send_rc15 before=$before_lines after=$after_lines)"
 fi
 
 # Case 15b: a session that never sends --token gets no ledger file/dir.
 CMDLINE_NEVER="$WORK/cmdline-never-toked"
 printf 'claude\0-n\0HIMMEL-2980-never-toked-sender\0' > "$CMDLINE_NEVER"
-CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_NEVER" bash "$SCRIPT" "$SESSION28" untoked-new-sender >/dev/null 2>&1
-if [ ! -e "$RUNDIR/HIMMEL-2980-never-toked-sender" ]; then
+send_rc15b=0
+CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_NEVER" bash "$SCRIPT" "$SESSION28" untoked-new-sender >/dev/null 2>&1 || send_rc15b=$?
+if [ "$send_rc15b" -eq 0 ] && [ ! -e "$RUNDIR/HIMMEL-2980-never-toked-sender" ]; then
     pass "a no-token send creates no ledger file/dir for its sender"
 else
-    fail "a no-token send creates no ledger file/dir for its sender"
+    fail "a no-token send creates no ledger file/dir for its sender (rc=$send_rc15b)"
 fi
 
 # Case 16: a relay-refused --token send (rc 3) writes no ledger line.
