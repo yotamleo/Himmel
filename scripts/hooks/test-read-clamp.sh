@@ -9,7 +9,7 @@ HOOK="$HERE/read-clamp.sh"
 
 FAILED=0
 
-WORK=$(mktemp -d)
+WORK=$(mktemp -d) || exit 1
 trap 'rm -rf "$WORK"' EXIT
 
 RUNTIME_DIR="$WORK/xdg-runtime"
@@ -110,9 +110,22 @@ assert_stderr_contains "bash cat deny names line count" "10 lines"
 rc=$(run_case "$(j_bash "cat $BIG_FILE | wc -l" sess-bash-unrec)" "HIMMEL_CONSOLE_LEG=1")
 assert_rc "unrecognised bash shape allows" 0 "$rc"
 
-# 9. missing/uncreatable runtime dir -> allow (fail-open on state).
-rc=$(run_case "$(j_read "$BIG_FILE" sess-noruntime)" "HIMMEL_CONSOLE_LEG=1" "/nonexistent-root-xyz-himmel-2993")
-assert_rc "missing runtime dir allows" 0 "$rc"
+# 9. uncreatable runtime dir -> allow (fail-open on state). A path nested
+# under a plain FILE guarantees mkdir fails regardless of privilege --
+# unlike a path under /, which root can create (HIMMEL-2993 CR).
+BLOCKER_FILE="$WORK/blocker"
+: > "$BLOCKER_FILE"
+rc=$(run_case "$(j_read "$BIG_FILE" sess-noruntime)" "HIMMEL_CONSOLE_LEG=1" "$BLOCKER_FILE/nested")
+assert_rc "uncreatable runtime dir allows" 0 "$rc"
+
+# 9b. Read of a nonexistent file -> allow, and not recorded, so a retry after
+# the file is created is not falsely denied as "already read" (HIMMEL-2993 CR).
+MISSING_FILE="$WORK/not-yet-created.txt"
+rc=$(run_case "$(j_read "$MISSING_FILE" sess-missing)" "HIMMEL_CONSOLE_LEG=1")
+assert_rc "read of nonexistent file allows" 0 "$rc"
+echo hello > "$MISSING_FILE"
+rc=$(run_case "$(j_read "$MISSING_FILE" sess-missing)" "HIMMEL_CONSOLE_LEG=1")
+assert_rc "retry after file is created still allows" 0 "$rc"
 
 # 10. escape hatch HIMMEL_READ_CLAMP_OK=1 -> allow, logged to stderr.
 rc=$(run_case "$(j_read "$BIG_FILE" sess-escape)" "HIMMEL_CONSOLE_LEG=1 HIMMEL_READ_CLAMP_OK=1")

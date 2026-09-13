@@ -120,6 +120,7 @@ record_read() {  # $1 = path, $2 = offset, $3 = limit, $4 = state file
 case "$tool" in
     Read)
         [ -n "$fp" ] || exit 0
+        [ -e "$fp" ] || exit 0  # PreToolUse runs before the Read; a nonexistent file may be created before a retry -- never record a read that didn't happen (HIMMEL-2993 CR)
         state_dir=$(session_state_dir) || exit 0
         state_file="$state_dir/reads.tsv"
 
