@@ -255,6 +255,55 @@ else
     fi
 fi
 
+# (r) HIMMEL-3008: `-r` passes but the actual read fails -- readability can
+# change between the upfront check and the read loop's own `< "$cmdline"`
+# redirection. Simplest deterministic stand-in: a directory named `cmdline`
+# in a fake /proc/<pid> -- `-r` succeeds on a directory, but reading from it
+# fails at read() time (not open() time), so the loop consumes zero tokens
+# exactly like case (q)'s permission-denied file. Must be reported the same
+# way: a degraded scan naming the pid, rc 3 -- not a phantom empty-fields row
+# for a "live" session (the exact bug this ticket closes).
+mkdir -p "$W/proc/115/cmdline"
+pgrep_x_stub 108 115
+sess_out_r="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+sess_rc_r=$?
+if [ "$sess_rc_r" -eq 3 ]; then pass 'a read-fails-after-precheck cmdline returns rc 3'; else fail "returns rc 3 (got $sess_rc_r)"; fi
+contains 'a read-fails-after-precheck pid is reported unreadable, not a phantom row' "$sess_out_r" '# unreadable 115'
+case "$sess_out_r" in
+    *$'115\t'*) fail 'a read-fails-after-precheck pid does not print a data row' ;;
+    *) pass 'a read-fails-after-precheck pid does not print a data row' ;;
+esac
+contains 'a read-fails-after-precheck scan still prints the other readable row' "$sess_out_r" $'108\tHIMMEL-555-legN70-2026-09-13\tclaude-sonnet-5\tauto'
+out_r="$(run_primary)"
+contains 'ceiling-conformance.sh surfaces the read-fails pid as scan-degraded' "$out_r" 'scan-degraded:115'
+contains 'ceiling-conformance.sh reports ceiling=? over a read-fails pid' "$out_r" 'ceiling=?'
+
+# (s) HIMMEL-3008 design: a live pid whose cmdline is empty is not the same
+# fact as a permission race -- a zombie (already exited, not yet reaped)
+# reads back a genuinely empty (0-byte) cmdline with no error at all. It must
+# not be printed as a phantom empty-fields row, but it is not a readability
+# failure either -- silent, rc 0, "not a row" for a different reason than
+# case (p)'s vanished pid (empty content, not a missing /proc/<pid> dir).
+mkdir -p "$W/proc/116"
+: > "$W/proc/116/cmdline"
+pgrep_x_stub 116
+sess_out_s="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+sess_rc_s=$?
+if [ "$sess_rc_s" -eq 0 ]; then pass 'a zero-token empty cmdline on a live pid returns rc 0'; else fail "returns rc 0 (got $sess_rc_s)"; fi
+if [ -z "$sess_out_s" ]; then pass 'a zero-token empty cmdline on a live pid prints nothing'; else fail "prints nothing (got '$sess_out_s')"; fi
+out_s="$(run_primary)"
+contains 'ceiling-conformance.sh still reports ceiling=ok over a zero-token empty cmdline' "$out_s" 'ceiling=ok'
+case "$out_s" in
+    *'scan-degraded'*) fail 'a zero-token empty cmdline on a live pid is not reported as scan-degraded' ;;
+    *) pass 'a zero-token empty cmdline on a live pid is not reported as scan-degraded' ;;
+esac
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-ceiling-conformance.sh'
     exit 0

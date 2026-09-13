@@ -85,8 +85,20 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
         printf '# unreadable %s\n' "$pid"
         return 3
     fi
-    local name="" model="" autocompact="" expect="" tok
+    # HIMMEL-3008: `-r` above is a precheck, not a guarantee -- readability
+    # can change before the loop's own `< "$cmdline"` redirection opens/reads
+    # the file (a hidepid mount, or any race), and an open/read that fails at
+    # that point (e.g. EISDIR from a path replaced by a directory) leaves the
+    # loop reading nothing, indistinguishable by token count alone from a
+    # zombie's genuinely-empty cmdline. Bash's `read` builtin tells the two
+    # apart: a real read error prints a diagnostic to stderr; a clean EOF on
+    # an empty file does not. Capture the loop's stderr to a scratch file and
+    # check afterward whether anything landed there.
+    local name="" model="" autocompact="" expect="" tok got_tok=0
+    local errfile="" read_err=0
+    errfile="$(mktemp "${TMPDIR:-/tmp}/claude-sessions-cmdline-err.XXXXXX" 2>/dev/null)" || errfile=""
     while IFS= read -r -d '' tok; do
+        got_tok=1
         if [ -n "$expect" ]; then
             case "$expect" in
                 name) name="$tok" ;;
@@ -104,7 +116,27 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
             --append-system-prompt|--append-system-prompt-file) expect=skip ;;
             --system-prompt|--system-prompt-file) expect=skip ;;
         esac
-    done < "$cmdline"
+    done < "$cmdline" 2>"${errfile:-/dev/null}"
+    if [ -n "$errfile" ]; then
+        [ -s "$errfile" ] && read_err=1
+        rm -f "$errfile"
+    fi
+    if [ "$got_tok" -eq 0 ]; then
+        # Zero tokens is ambiguous by itself: a genuinely empty cmdline (a
+        # zombie -- the process still has a live /proc/<pid> entry but no
+        # more argv to read) must not become a phantom empty-fields row, but
+        # it is also not a readability failure -- stay silent, rc 0. A pid
+        # that vanished entirely mid-read (dir gone by the time we check)
+        # keeps today's silent/rc-0 vanished behaviour even if the read
+        # happened to log an error on the way out. Only a live pid whose
+        # read actually errored is the HIMMEL-3008 race -- report it exactly
+        # like the upfront `-r` failure above.
+        if [ -d "$proc/$pid" ] && [ "$read_err" -eq 1 ]; then
+            printf '# unreadable %s\n' "$pid"
+            return 3
+        fi
+        return 0
+    fi
     printf '%s\t%s\t%s\t%s\n' "$pid" "$(_tsv_field "$name")" "$(_tsv_field "$model")" "$(_tsv_field "$autocompact")"
 }
 
