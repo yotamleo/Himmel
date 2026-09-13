@@ -1102,7 +1102,11 @@ echo "== HIMMEL-2831 #1: a leak-shaped FILE PATH itself, not just its content ==
 # scan_new_staged_paths() additions, not just a fixture artifact.
 BASE_PRE2831_1="5e8e4cca8ecafa2864e8f4aa97c06012ab33e6cc"
 PRE_SCRIPT="$WS/leak-classes-pre-2831-1.sh"
-git -C "$REPO_ROOT" show "$BASE_PRE2831_1:scripts/guardrails/leak-classes.sh" > "$PRE_SCRIPT"
+if ! git -C "$REPO_ROOT" show "$BASE_PRE2831_1:scripts/guardrails/leak-classes.sh" > "$PRE_SCRIPT" \
+        || [ ! -s "$PRE_SCRIPT" ]; then
+    echo "FATAL: could not extract pre-#1 leak-classes.sh from $BASE_PRE2831_1 (empty or failed 'git show') -- RED controls T13a/T13c would silently pass against an empty script" >&2
+    exit 1
+fi
 
 # T13a: a NEWLY ADDED staged file named with a denylisted hostname substring,
 # with EMPTY content -- the ticket's own repro case. `git diff --cached -U0`
