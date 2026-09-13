@@ -1032,8 +1032,9 @@ HANDOVER_DIR="$root" bash "$QL" release "$doc43A" "$token43a" >/dev/null 2>&1
 
 # --- 44: same-day rollover past Z (HIMMEL-2984) --------------------------
 # 26 consoles on 2026-09-12 hit a hard refusal at letter Z with a live leg
-# in flight. Same-day continuation (no --date, or --date matching the
-# predecessor's own date) must roll bijective base-26: Z -> AA.
+# in flight. Continuation with no --date flag at all must roll bijective
+# base-26: Z -> AA (an explicit --date, even one matching the predecessor's
+# own date, always resets the chain to A instead -- see case 48).
 mkdir -p "$root/tester/rollz"
 docZ44="$root/tester/rollz/DEMO-nextleg-${today}Z-console.md"
 printf 'stub\n' > "$docZ44"
