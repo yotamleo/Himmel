@@ -49,6 +49,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'block-jira-compound-write.sh',
   'block-tail-pipe-on-gates.sh',
   'block-read-secrets.sh',
+  // HIMMEL-2993: token-saving nudge, deliberately after the secrets fence
+  // (so a denied secret read never gets clamp-recorded) and before the
+  // destructive-command fence.
+  'read-clamp.sh',
   'block-destructive-commands.sh',
   'block-git-stash.sh',
   'block-rogue-claude-schedule.sh',
@@ -73,6 +77,7 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'block-chokepoint-env-prefix.sh',
   // PreToolUse `Read|Grep`.
   'block-read-secrets.sh',
+  'read-clamp.sh',
   // PreToolUse `Edit|Write|MultiEdit|NotebookEdit` chain.
   'block-edit-on-main.sh',
   // HIMMEL-2360: denies writes to a LIVE settings.json/settings.local.json

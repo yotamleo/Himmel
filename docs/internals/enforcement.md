@@ -2562,6 +2562,36 @@ to the console as the replacement. Workflow nudge, not a security fence: fails
 open on missing `jq`, malformed, or empty stdin so it never locks an operator
 session out of the tool. Inert until HIMMEL-2919's launcher export lands.
 
+### `read-clamp.sh` — read-clamp PreToolUse hook (HIMMEL-2993)
+
+Fires on `Read`/`Grep` and `Bash`, keyed on `HIMMEL_CONSOLE_LEG=1` (same gate as
+`block-leg-askuserquestion.sh` — never a console or an interactive session).
+Measured over 12 merged-PR leg sessions, repeated Reads of the same file
+(≈4.5%) and whole-file reads (≈2.2%) were the #2/#3 cost levers on a PR's
+token bill after HIMMEL-2990; the instructional layer already existed (the
+preface's read-range sentence, #692) — this is the structural escalation on
+second drift.
+
+Denies (a) a `Read` without `offset`/`limit` of a file over
+`HIMMEL_READ_CLAMP_LINES` (default 400) lines, naming the file's line count
+and the `offset=<n> limit=<m>` shape to use instead; (b) a `Read` whose exact
+`(path, offset, limit)` triple was already read this session, naming the
+recorded timestamp — a *different* range of the same file is allowed and
+recorded; (c) the equivalent `Bash` shapes (`cat <file>`, `sed -n '1,$p'
+<file>`, `head -n <huge> <file>`) against an over-limit file. An unrecognised
+Bash shape is always allowed — this hook never denies on a guess.
+
+Per-session state: one line per allowed read under
+`${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/himmel-read-clamp/<session_id>/reads.tsv`.
+Workflow nudge, not a security fence: fails open on a missing `jq`, unparsed
+stdin, or an uncreatable runtime dir (state stays unwritten, the call is
+allowed) — this hook saves tokens, it does not protect anything. Escape hatch:
+`HIMMEL_READ_CLAMP_OK=1` in the launching shell allows one session past the
+clamp (e.g. re-reading a file after an external edit invalidated a recorded
+range), logged to stderr each time it fires. Joins the existing
+`block-read-secrets.sh` chain on both the `Read|Grep` and `Bash` PreToolUse
+matchers — right after it, so a denied secret read never gets clamp-recorded.
+
 ### `block-backend-tier.sh` — service-agnostic backend-routing guard (HIMMEL-400)
 
 Fires on `mcp__plugin_atlassian_atlassian__*` tool calls (and any other

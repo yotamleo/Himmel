@@ -727,6 +727,25 @@ check_verdict _decide_posted_push trigger-cr-on-push 1 "$CONT_PUSH" \
 check_verdict _decide_posted_push trigger-cr-on-push 0 "gi""t status" \
     "an unrelated command posts nothing"
 
+# ── read-clamp.sh — whole-file cat clamp (HIMMEL-2993) ──────────────────────
+# Bash-matcher branch only (the Read-matcher branch has its own coverage in
+# test-read-clamp.sh). The hook's `trimmed` construction strips leading AND
+# TRAILING [[:space:]] — which POSIX/GNU sed treats as including CR — before
+# the `^cat ... $`-anchored match, so a terminal CR should strip at the
+# capture boundary same as every other hook in this suite, not survive into
+# the match and silently break the "cat <file>" shape recognition.
+RC_BIG="$TMP/read-clamp-big.txt"
+RC_SMALL="$TMP/read-clamp-small.txt"
+printf '1\n2\n3\n4\n5\n' > "$RC_BIG"
+printf '1\n' > "$RC_SMALL"
+
+check read-clamp Bash 2 "ca""t $RC_BIG" "deny whole-file cat over the limit" \
+    HIMMEL_CONSOLE_LEG=1 HIMMEL_READ_CLAMP_LINES=1
+check read-clamp Bash 0 "ca""t $RC_SMALL" "allow a file at/under the limit" \
+    HIMMEL_CONSOLE_LEG=1 HIMMEL_READ_CLAMP_LINES=1
+check read-clamp Bash 0 "ca""t $RC_BIG" "gate off (HIMMEL_CONSOLE_LEG unset) allows" \
+    -u HIMMEL_CONSOLE_LEG HIMMEL_READ_CLAMP_LINES=1
+
 # ── Completeness guard ──────────────────────────────────────────────────────
 # The audit's real deliverable. Enumerate the command-text hooks FROM THE
 # SOURCE — this directory's listing, never a list typed from memory — and
