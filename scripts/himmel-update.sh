@@ -1221,7 +1221,7 @@ sync_cli_proxy() {
         echo "                   (no python3, or the version stamp is not a version) — NOT rolling." >&2
         echo "                   Roll it yourself if the pin is what you want:" >&2
         if [ "$lane" = "$lane_sh" ]; then
-            echo "                   bash \"$lane\" --install && bash \"$lane\" --restart" >&2
+            echo "                   bash \"$lane\" --stop && bash \"$lane\" --install && bash \"$lane\" --restart" >&2
         else
             echo "                   pwsh -NoProfile -File \"$lane\" -Install -Restart" >&2
         fi
@@ -1232,22 +1232,32 @@ sync_cli_proxy() {
         return 0
     fi
     # Prefer the existing Windows path whenever pwsh is present. Without pwsh,
-    # the Linux twin performs the install and restart as separate calls so an
-    # install refusal cannot be masked by the dispatcher's later restart.
+    # the Linux twin must stop first: install refuses while the unit is running.
+    # Use separate calls because the lane dispatcher always installs first.
     if [ -z "$ps" ]; then
         if [ "$lane" != "$lane_sh" ]; then
             echo "    skip: pwsh not on PATH — cli-proxy-lane.ps1 is a Windows-native host script."
             echo "          host is v${installed:-?}, pin is v$pin — roll it by hand when you are on the host."
             return 0
         fi
-        echo "    rolling host v${installed:-?} -> v$pin (--install then --restart)"
-        if bash "$lane" --install && bash "$lane" --restart; then
-            echo "    cli-proxy-api rolled to v$pin."
-            return 0
+        echo "    rolling host v${installed:-?} -> v$pin (--stop, --install, then --restart)"
+        if bash "$lane" --stop; then
+            if bash "$lane" --install; then
+                if bash "$lane" --restart; then
+                    echo "    cli-proxy-api rolled to v$pin."
+                    return 0
+                fi
+            else
+                if bash "$lane" --restart; then
+                    echo "    cli-proxy-api previous binary restored after install failure." >&2
+                else
+                    echo "    cli-proxy-api restore failed too after install failure." >&2
+                fi
+            fi
         fi
         echo "    warn: cli-proxy roll did not complete — see the message above." >&2
         echo "          if it refused a bounce, a codex-lane client was connected; re-run when idle:" >&2
-        echo "          bash \"$lane\" --install && bash \"$lane\" --restart" >&2
+        echo "          bash \"$lane\" --stop && bash \"$lane\" --install && bash \"$lane\" --restart" >&2
         return 1
     fi
     # cygpath -m before handing the path to a WINDOWS pwsh — the repo's standing

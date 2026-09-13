@@ -29,8 +29,8 @@
 #   7. cli-proxy roll (HIMMEL-2152): APPLY mode (--only cli_proxy) completes
 #      instead of errexiting on an ahead host or an uncomparable stamp, and
 #      later steps still run.
-#   8. Linux without pwsh reads the shell twin's pin, installs then restarts,
-#      and propagates an install failure without forcing or attempting restart.
+#   8. Linux without pwsh stops before installing, then restarts; failures
+#      propagate without forcing, with a restore attempted if install fails.
 #
 # Bash 3.2 compatible.
 
@@ -150,10 +150,32 @@ write_fake_lane() {   # <clone> <version>
     git -C "$1" commit --quiet -m "fake lane"
 }
 
-write_fake_linux_lane() {   # <clone> <version> <call-log> [exit-code]
+write_fake_linux_lane() {   # <clone> <version> <call-log> [install-rc] [stop-rc] [restart-rc]
     mkdir -p "$1/scripts/setup"
-    printf '#!/bin/sh\nVERSION="%s"\nprintf "%%s\\n" "$*" >> "%s"\nexit %s\n' \
-        "$2" "$3" "${4:-0}" > "$1/scripts/setup/cli-proxy-lane.sh"
+    printf 'running\n' > "$3.state"
+    cat > "$1/scripts/setup/cli-proxy-lane.sh" <<SH
+#!/bin/sh
+VERSION="$2"
+printf '%s\n' "\$*" >> "$3"
+case "\${1:-}" in
+    --stop)
+        [ "${5:-0}" -eq 0 ] || exit "${5:-0}"
+        printf 'stopped\n' > "$3.state"
+        ;;
+    --install)
+        if [ "\$(cat "$3.state")" = running ]; then
+            echo 'proxy unit is RUNNING — stop first' >&2
+            exit 1
+        fi
+        exit "${4:-0}"
+        ;;
+    --restart)
+        [ "${6:-0}" -eq 0 ] || exit "${6:-0}"
+        printf 'running\n' > "$3.state"
+        ;;
+    *) exit 2 ;;
+esac
+SH
     chmod +x "$1/scripts/setup/cli-proxy-lane.sh"
     git -C "$1" add -A
     git -C "$1" commit --quiet -m "fake linux lane"
@@ -430,7 +452,7 @@ assert_contains "invoked the lane with -Install -Restart" "Install -Restart" "$(
 assert_contains "invoked the lane script itself" "cli-proxy-lane.ps1" "$(cat "$PSLOG")"
 
 echo ""
-echo "Test 9b: cli-proxy roll — Linux fallback installs then restarts"
+echo "Test 9b: cli-proxy roll — Linux fallback stops, installs, then restarts"
 : >"$LINUXLOG"
 OUT="$(PATH="$NO_PWSH_BIN" USERPROFILE='' HOME="$LINUXHOME" \
     HIMMEL_UPDATE_CLAUDE_BIN="$STUB1" HERMES_HOME="$TMP/no-hermes" \
@@ -439,12 +461,13 @@ OUT="$(PATH="$NO_PWSH_BIN" USERPROFILE='' HOME="$LINUXHOME" \
 assert_eq "a successful Linux roll exits 0" "0" "$RC"
 assert_contains "Linux roll names the shell lane pin" "rolling host v1.0.0 -> v8.8.8" "$OUT"
 assert_contains "Linux roll reports the completed version" "cli-proxy-api rolled to v8.8.8" "$OUT"
-assert_eq "Linux lane is invoked with install then restart" "--install
+assert_eq "Linux lane is invoked with stop, install, then restart" "--stop
+--install
 --restart" "$(cat "$LINUXLOG")"
 assert_not_contains "Linux roll never passes --force" "force" "$(cat "$LINUXLOG")"
 
 echo ""
-echo "Test 9c: cli-proxy roll — Linux install failure stops before restart"
+echo "Test 9c: cli-proxy roll — Linux install failure restores the previous binary"
 : >"$LINUXLOG"
 write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 1
 OUT="$(PATH="$NO_PWSH_BIN" USERPROFILE='' HOME="$LINUXHOME" \
@@ -452,8 +475,13 @@ OUT="$(PATH="$NO_PWSH_BIN" USERPROFILE='' HOME="$LINUXHOME" \
     HIMMEL_UPDATE_AUTOSTASH='' CLAUDE_USER_SETTINGS="$LINUXHOME/.claude/settings.json" \
     bash "$LINUXCLONE/scripts/himmel-update.sh" --only cli_proxy 2>&1)"; RC=$?
 assert_eq "a failed Linux install propagates rc 1" "1" "$RC"
-assert_eq "a failed Linux install does not attempt restart" "--install" "$(cat "$LINUXLOG")"
-assert_contains "Linux failure prints the platform-correct retry" "bash .*cli-proxy-lane.sh.*--install" "$OUT"
+assert_eq "a failed Linux install attempts restart after stop" "--stop
+--install
+--restart" "$(cat "$LINUXLOG")"
+assert_contains "Linux install failure reports the restore" "previous binary restored" "$OUT"
+assert_eq "Linux install failure leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
+assert_contains "Linux install failure prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
+assert_contains "Linux failure prints the platform-correct retry" "bash .*--stop && bash .*--install && bash .*--restart" "$OUT"
 assert_not_contains "Linux failure never retries with --force" "force" "$(cat "$LINUXLOG")"
 
 echo ""
@@ -474,6 +502,60 @@ assert_not_contains "Darwin without pwsh never rolls the host" "rolling host" "$
 assert_eq "Darwin never invokes the Linux lane" "" "$(cat "$DARWINLOG")"
 assert_eq "Darwin leaves the host stamp unchanged" "1.0.0" "$(cat "$DARWINHOME/.cli-proxy-api/cli-proxy-api.version")"
 assert_eq "Darwin leaves the checkout unchanged" "" "$(git -C "$DARWINCLONE" status --porcelain)"
+
+echo ""
+echo "Test 9e: cli-proxy roll — a running Linux proxy cannot trigger install refusal"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG"
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "rolling a running Linux proxy exits 0" "0" "$RC"
+assert_not_contains "Linux roll avoids the running-unit install refusal" "RUNNING" "$OUT"
+assert_contains "running Linux proxy reports the completed roll" "cli-proxy-api rolled to v8.8.8" "$OUT"
+assert_eq "successful Linux roll leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
+
+echo ""
+echo "Test 9f: cli-proxy roll — a refused Linux stop never attempts install"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 0 1
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "a refused Linux stop propagates rc 1" "1" "$RC"
+assert_eq "a refused Linux stop invokes only stop" "--stop" "$(cat "$LINUXLOG")"
+assert_contains "a refused Linux stop prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
+assert_contains "a refused Linux stop asks to retry when idle" "re-run when idle" "$OUT"
+assert_eq "a refused Linux stop leaves the proxy running" "running" "$(cat "$LINUXLOG.state")"
+
+echo ""
+echo "Test 9g: cli-proxy roll — Linux restart failure after successful install"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 0 0 1
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "a failed Linux restart propagates rc 1" "1" "$RC"
+assert_eq "a failed Linux restart is attempted once after install" "--stop
+--install
+--restart" "$(cat "$LINUXLOG")"
+assert_contains "a failed Linux restart prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
+assert_not_contains "a failed Linux restart never reports a completed roll" "cli-proxy-api rolled to" "$OUT"
+
+echo ""
+echo "Test 9h: cli-proxy roll — Linux install failure and restore failure"
+: >"$LINUXLOG"
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG" 1 0 1
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "a failed Linux restore propagates rc 1" "1" "$RC"
+assert_eq "a failed Linux restore is attempted once" "--stop
+--install
+--restart" "$(cat "$LINUXLOG")"
+assert_contains "Linux restore failure is reported" "restore failed" "$OUT"
+assert_contains "Linux restore failure prints the warn block" "warn: cli-proxy roll did not complete" "$OUT"
+
+echo ""
+echo "Test 9i: cli-proxy roll — unverifiable Linux stamp gives the safe retry sequence"
+: >"$LINUXLOG"
+printf 'custom\n' > "$LINUXHOME/.cli-proxy-api/cli-proxy-api.version"
+OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "an unverifiable Linux stamp exits 0" "0" "$RC"
+assert_contains "Linux cannot-verify hint stops before installing" "bash .*--stop && bash .*--install && bash .*--restart" "$OUT"
+assert_eq "an unverifiable Linux stamp never invokes the lane" "" "$(cat "$LINUXLOG")"
 
 echo ""
 echo "Test 10: cli-proxy roll — a REFUSED bounce warns, never aborts the update"
