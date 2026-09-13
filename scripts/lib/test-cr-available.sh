@@ -336,7 +336,7 @@ expect_state armed "28. a linked worktree inherits the primary's armed flag" "$w
 
 # 29. same, with extensions.worktreeConfig enabled on the primary.
 r=$(mk_repo wt_wc_primary true)
-git -C "$r" config extensions.worktreeConfig true
+git -C "$r" config extensions.worktreeConfig true || { echo "FATAL: enabling extensions.worktreeConfig failed"; exit 1; }
 wt=$(mk_worktree "$r" wt_wc_linked) || { echo "FATAL: mk_worktree wt_wc_linked failed"; exit 1; }
 expect_state armed "29. a linked worktree inherits the flag even under extensions.worktreeConfig" "$wt" - -
 echo
