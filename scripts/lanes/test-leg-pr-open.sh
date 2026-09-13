@@ -35,7 +35,7 @@ not_contains() {
     case "$2" in *"$3"*) fail "$1" "unexpectedly found '$3' in: $2" ;; *) pass "$1" ;; esac
 }
 
-TMP_ROOT=$(mktemp -d)
+TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/leg-pr-open-test.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
 
 # ── fixture: a real bare "origin" + a pushed feature branch (no network) ────
