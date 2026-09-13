@@ -15,6 +15,8 @@
 # Usage: ledger-metrics.sh --since <ISO8601> [--until <ISO8601>] [--repo <owner/repo>]
 set -u
 
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
 usage() { echo "usage: ledger-metrics.sh --since <ISO8601> [--until <ISO8601>] [--repo <owner/repo>]" >&2; }
 
 SINCE=""; UNTIL=""; REPO="yotamleo/Himmel"
@@ -83,4 +85,18 @@ printf 'imp:  '; stat 3
 printf 'sug:  '; stat 4
 printf 'rounds: '; stat 5
 awk -F'\t' '{print $2+$3}' "$RUN/ledger-per-branch.tsv" | sort -n | awk '{a[NR]=$1; s+=$1} END{if(NR==0){print "crit+imp: n=0"; exit} med=(NR%2)?a[(NR+1)/2]:(a[NR/2]+a[NR/2+1])/2; printf "crit+imp: n=%d mean=%.2f median=%.1f\n", NR, s/NR, med}'
-jq -r 'if length==0 then "merged window: (empty) count=0" else [.[].mergedAt] | "merged window: \(min) .. \(max) count=\(length)" end' "$RUN/merged.json"
+
+# HIMMEL-3021: the plain public gh pr list count above undercounts any window
+# straddling the 2026-09-09 private->public cutover (pre-cutover work PRs live
+# only in the private archive bundle); merged-count.sh unions the two. The
+# per-branch ledger stats above stay on the public-only merged.json join —
+# only the C7 denominator (this final count) is corrected.
+if [ -n "$UNTIL" ]; then
+    TOTAL_COUNT=$("$HERE/merged-count.sh" --since "$SINCE" --until "$UNTIL" --repo "$REPO")
+else
+    TOTAL_COUNT=$("$HERE/merged-count.sh" --since "$SINCE" --repo "$REPO")
+fi
+RC=$?
+[ "$RC" -eq 0 ] || { echo "ledger-metrics: merged-count.sh failed" >&2; exit "$RC"; }
+
+jq -r --argjson total "$TOTAL_COUNT" 'if length==0 then "merged window: (empty) count=\($total)" else [.[].mergedAt] | "merged window: \(min) .. \(max) count=\($total)" end' "$RUN/merged.json"

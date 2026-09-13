@@ -32,6 +32,14 @@ SCRIPT="$HERE/ledger-metrics.sh"
 FIXTURES="$HERE/fixtures/ledger-metrics"
 fails=0
 
+# HIMMEL-3021: every fixture window below predates the real 2026-09-09
+# cutover, which would make ALL of them "straddling" (requiring a private
+# bundle) under merged-count.sh's default. None of these cases are testing
+# the straddling/bundle path (that's test-merged-count.sh) — they're testing
+# ledger-metrics.sh's own behaviour, unchanged since HIMMEL-2977. Pin the
+# cutover to the epoch so every fixture window here stays non-straddling.
+export SCORECARD_CUTOVER="1970-01-01T00:00:00Z"
+
 check_exit() {
     name="$1"; actual="$2"; expected="$3"
     if [ "$actual" = "$expected" ]; then
