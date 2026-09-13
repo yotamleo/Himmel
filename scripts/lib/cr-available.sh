@@ -128,8 +128,30 @@ cr_app_state() {
         0) printf 'disabled\n'; return 0 ;;
     esac
 
-    local dir="${1:-$PWD}" val
-    val=$(cd "$dir" 2>/dev/null && git config --bool --local --get himmel.coderabbit 2>/dev/null) || val=""
+    local dir="${1:-$PWD}" val common cfg
+    # HIMMEL-2769: resolve the PRIMARY scope explicitly rather than trusting
+    # plain `--local` to keep merging it. `git rev-parse --git-common-dir`
+    # names the one config file every linked worktree of a repo shares (the
+    # primary's `.git/config`, even under `extensions.worktreeConfig`, which
+    # only changes where NEW per-worktree writes land — reads still merge the
+    # shared file). It prints a path relative to `$dir` from the primary/a
+    # plain clone (".git") and an absolute one from a linked worktree; both
+    # shapes are handled below. A read that can't resolve a common dir at all
+    # (not a repo) falls back to the plain `--local` read, which already fails
+    # the same way case 12/25 pin.
+    common=$(cd "$dir" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null) || common=""
+    if [ -n "$common" ]; then
+        case "$common" in
+            /*) cfg="$common/config" ;;
+            *)  cfg="$dir/$common/config" ;;
+        esac
+        val=$(git config --file "$cfg" --bool --get himmel.coderabbit 2>/dev/null) || val=""
+    else
+        val=""
+    fi
+    if [ -z "$val" ]; then
+        val=$(cd "$dir" 2>/dev/null && git config --bool --local --get himmel.coderabbit 2>/dev/null) || val=""
+    fi
     case "$val" in
         true)  printf 'armed\n'; return 0 ;;
         false) printf 'disabled\n'; return 0 ;;
@@ -139,7 +161,12 @@ cr_app_state() {
     # second, non---bool read tells them apart. stdout is discarded — its
     # SUCCESS is the whole signal — and stderr with it, so a caller capturing
     # our stdout never also catches git's "bad boolean config value" complaint.
-    if ( cd "$dir" 2>/dev/null && git config --local --get himmel.coderabbit ) >/dev/null 2>&1; then
+    # Same common-dir-first resolution as the --bool read above, for the same
+    # reason (a broken marker set on the primary must read as `broken` from a
+    # linked worktree too, not silently fall through to `not-configured`).
+    if [ -n "$common" ] && ( git config --file "$cfg" --get himmel.coderabbit ) >/dev/null 2>&1; then
+        printf 'broken\n'
+    elif ( cd "$dir" 2>/dev/null && git config --local --get himmel.coderabbit ) >/dev/null 2>&1; then
         printf 'broken\n'
     else
         printf 'not-configured\n'
