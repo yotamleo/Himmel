@@ -303,15 +303,27 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         # same way). Fixed by counting quote chars on the CURRENT line (since
         # the last real newline) before the opener - an odd count of either
         # quote char means we are still inside that quote, so the opener is
-        # data. Mask just this occurrence's `<<` so it cannot match again,
-        # leaving the rest of the string - including any real command on the
-        # following lines - completely UNSTRIPPED, so it still falls through
-        # to the ${CMDPOS} match below (fail-closed, same direction as the
-        # unterminated-heredoc case above).
+        # data.
+        # Same direction for a `#` earlier on the line (codex panel finding,
+        # HIMMEL-2834 pr-check round 4): once a shell comment starts, the rest
+        # of the physical line - opener syntax included - is comment text, not
+        # a real redirect, and every line after it runs as ORDINARY commands,
+        # not heredoc body, so stripping them would hide whatever real command
+        # is actually there. Not attempting to tell whether the `#` is itself
+        # quoted (that is the general-tokenizer line this file refuses to
+        # cross) - any `#` on the opener's line is treated as disqualifying,
+        # which only ever makes this MORE conservative (leaves more text
+        # unstripped, never less).
+        # Either way, mask just this occurrence's `<<` so it cannot match
+        # again, leaving the rest of the string - including any real command
+        # on the following lines - completely UNSTRIPPED, so it still falls
+        # through to the ${CMDPOS} match below (fail-closed, same direction as
+        # the unterminated-heredoc case above).
         _hd_line_prefix="${_hd_prefix##*$'\n'}"
         _hd_sq="${_hd_line_prefix//[^\']/}"
         _hd_dq="${_hd_line_prefix//[^\"]/}"
-        if (( ${#_hd_sq} % 2 == 1 || ${#_hd_dq} % 2 == 1 )); then
+        _hd_hash="${_hd_line_prefix//[^#]/}"
+        if (( ${#_hd_sq} % 2 == 1 || ${#_hd_dq} % 2 == 1 )) || [[ -n $_hd_hash ]]; then
             rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
             continue
         fi

@@ -344,6 +344,14 @@ heredoc_cmd_fakeopener_midline='echo "text <<'"'"'EOF'"'"'"
 rm -rf /tmp/x
 EOF'
 assert_rc "2834j mid-line quoted fake heredoc opener <rm literal>" 2 "$(run_case "$(j_bash "$heredoc_cmd_fakeopener_midline")")"
+# (k) a heredoc-shaped opener inside a shell COMMENT is not a redirect at all
+# - the whole physical line is comment text, and every following line runs as
+# ordinary commands, never heredoc body; must still DENY (codex panel,
+# pr-check round 4 on this ticket).
+heredoc_cmd_fakeopener_comment='# <<'"'"'EOF'"'"'
+rm -rf /tmp/x
+EOF'
+assert_rc "2834k commented fake heredoc opener <rm literal>" 2 "$(run_case "$(j_bash "$heredoc_cmd_fakeopener_comment")")"
 # (f) HIMMEL-851 bypasses must still deny post-anchor (already covered above,
 # cited here for the ticket's control list): quoted-flag L104, \${IFS} L106,
 # backslash-continuation L110-112.
