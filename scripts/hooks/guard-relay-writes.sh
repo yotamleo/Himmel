@@ -11,6 +11,11 @@
 # session-name resolution and inbox-send.sh's relay check read) and Guard C
 # (inbox-send.sh --token, reserved for the judge).
 #
+# Platform guard (gitbash-only): Git Bash on Windows / any POSIX bash 3.2+.
+# Not ported to native PowerShell — the console relay lane
+# (headed-arm-leg.sh --relay, scripts/handover/console-kit/) is Linux-only,
+# same as inbox-send.sh's own platform guard.
+#
 # TRIP CONDITION: HIMMEL_CONSOLE_RELAY=1 in this process's environment AND
 # one of:
 #   Write|Edit|MultiEdit|NotebookEdit — the resolved file_path (notebook_path
@@ -76,11 +81,6 @@
 # Bash 3.2-compatible. Exit codes: 0 allow (no output); 2 deny (JSON
 # hookSpecificOutput with permissionDecision "deny" on stdout,
 # permissionDecisionReason starting "relay write-deny: ").
-#
-# Platform guard (gitbash-only): Git Bash on Windows / any POSIX bash 3.2+.
-# Not ported to native PowerShell — the console relay lane
-# (headed-arm-leg.sh --relay, scripts/handover/console-kit/) is Linux-only,
-# same as inbox-send.sh's own platform guard.
 set -uo pipefail
 
 # Zero-cost no-op for every non-relay session: no stdin read, no jq, no
