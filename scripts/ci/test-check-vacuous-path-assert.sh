@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Platform guard (gitbash-only): Git Bash on Windows / any POSIX bash 3.2+.
+#
+# Smoke test for scripts/ci/check-vacuous-path-assert.sh (HIMMEL-2957).
+#
+# RED-first note: before this detector existed, a deliberately naive first
+# cut ("flag every PATH= line followed anywhere later by an emptiness
+# assertion", no per-command-prefix exclusion, no marker, no subshell
+# exclusion) was run against cases B, C, E and G below and wrongly flagged
+# all four safe idioms — that false-positive spread is the RED this suite's
+# refinement fixes. The shipped detector narrows to exactly the ambient-scope
+# shape; this suite pins that narrowing.
+#
+# Usage: bash scripts/ci/test-check-vacuous-path-assert.sh
+#
+# Exit codes: 0 — all cases passed; 1 — at least one failed.
+set -uo pipefail
+
+GUARD="$(cd "$(dirname "$0")" && pwd)/check-vacuous-path-assert.sh"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+
+failures=0
+pass() { printf '  PASS  %s\n' "$1"; }
+fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/h2957.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+# Case A: ambient `PATH=$(scrub_path …)` then an emptiness assertion in the
+# same (persisted) shell scope -> the real HIMMEL-2812 shape, 1 finding.
+echo "== Case A: ambient scrub_path scope -> 1 finding =="
+cat > "$tmp/case-a.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+PATH=$(scrub_path "$PATH" tool)
+[ -z "$(tool foo)" ]
+FIXTURE
+out_a=$(bash "$GUARD" "$tmp/case-a.sh"); rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-a -> exit 1"; else fail "case-a -> expected 1 got $rc"; fi
+if grep -q 'vacuous-path-assert: emptiness assertion after ambient PATH scrub at line 2' <<< "$out_a"; then
+    pass "case-a -> message names the scrub line"
+else
+    fail "case-a -> message wrong: $out_a"
+fi
+
+# Case B: per-command prefix (the codebase's normal SAFE idiom) -> 0 findings.
+echo "== Case B: per-command prefix is not ambient -> 0 findings =="
+cat > "$tmp/case-b.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+PATH=/stub bash "$S"
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-b.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-b -> exit 0"; else fail "case-b -> expected 0 got $rc"; fi
+
+# Case C: `env PATH=... cmd` -> 0 findings.
+echo "== Case C: env-prefixed invocation -> 0 findings =="
+cat > "$tmp/case-c.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+env PATH=/stub cmd
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-c.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-c -> exit 0"; else fail "case-c -> expected 0 got $rc"; fi
+
+# Case D: the assertion runs BEFORE the scrub -> 0 findings.
+echo "== Case D: assertion precedes the scrub -> 0 findings =="
+cat > "$tmp/case-d.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+[ -z "$(tool foo)" ]
+export PATH="$STUB:$PATH"
+FIXTURE
+bash "$GUARD" "$tmp/case-d.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-d -> exit 0"; else fail "case-d -> expected 0 got $rc"; fi
+
+# Case E: a same-line `# vacuous-path-ok:` marker suppresses the finding.
+echo "== Case E: marker suppresses the finding -> 0 findings =="
+cat > "$tmp/case-e.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+export PATH="$STUB:$PATH"
+[ -z "$(tool foo)" ] # vacuous-path-ok: intentional, tool absence is under test
+FIXTURE
+bash "$GUARD" "$tmp/case-e.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-e -> exit 0"; else fail "case-e -> expected 0 got $rc"; fi
+
+# Case F: `export PATH=…` whole-line ambient scrub -> 1 finding.
+echo "== Case F: export PATH= whole-line -> 1 finding =="
+cat > "$tmp/case-f.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+export PATH=$(scrub_path "$PATH" tool)
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-f.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 1 ]; then pass "case-f -> exit 1"; else fail "case-f -> expected 1 got $rc"; fi
+
+# Case G: a one-line ( … ) subshell scopes the scrub to itself -> 0 findings.
+echo "== Case G: one-line subshell -> 0 findings =="
+cat > "$tmp/case-g.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+( PATH="$STUB:$PATH"; cmd )
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-g.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-g -> exit 0"; else fail "case-g -> expected 0 got $rc"; fi
+
+# Case G2 (HIMMEL-2957 tree-run false positive): a pure additive prepend that
+# verbatim retains $PATH can only ADD entries, never remove one, so no later
+# assertion can be made vacuous by it -> 0 findings. This is the real shape
+# the whole-tree run found across 4 suites (export PATH="$stub:$PATH").
+echo "== Case G2: preserving PATH prepend -> 0 findings =="
+cat > "$tmp/case-g2.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+export PATH="$STUB:$PATH"
+[ -z "$(tool foo)" ]
+FIXTURE
+bash "$GUARD" "$tmp/case-g2.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-g2 -> exit 0"; else fail "case-g2 -> expected 0 got $rc"; fi
+
+# Case G3 (HIMMEL-2957 self-scan false positive): the vacuous shape appearing
+# inside a quoted heredoc BODY is data the enclosing shell writes out, not a
+# statement it runs -> 0 findings. This is the real shape this detector's own
+# test suite hits when pre-commit scans it (fixtures like case A/F above).
+echo "== Case G3: vacuous shape inside a heredoc body -> 0 findings =="
+cat > "$tmp/case-g3.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+cat > "$out" <<'INNER'
+PATH=$(scrub_path "$PATH" tool)
+[ -z "$(tool foo)" ]
+INNER
+FIXTURE
+bash "$GUARD" "$tmp/case-g3.sh" >/dev/null; rc=$?
+if [ "$rc" -eq 0 ]; then pass "case-g3 -> exit 0"; else fail "case-g3 -> expected 0 got $rc"; fi
+
+# Case H: no-args tree walk over the real repo exits 0 or 1, never 2.
+echo "== Case H: no-args tree walk exits 0/1, not 2 =="
+( cd "$REPO_ROOT" && bash "$GUARD" ) >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
+    pass "no-args tree walk -> exit $rc (0 or 1)"
+else
+    fail "no-args tree walk -> expected 0 or 1 got $rc"
+fi
+
+# Case I: `.himmel-dev` absent in the invoking repo -> rc 0, gate skipped
+# (exactly as check-claude-md-budget.sh does) -- even though the tracked
+# fixture WOULD be flagged if the gate actually scanned it.
+echo "== Case I: .himmel-dev absent -> gate skip (rc 0) =="
+skip_repo="$tmp/skip-repo"
+mkdir -p "$skip_repo/scripts"
+git init -q "$skip_repo"
+cat > "$skip_repo/scripts/test-would-flag.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+export PATH=$(scrub_path "$PATH" tool)
+[ -z "$(tool foo)" ]
+FIXTURE
+git -C "$skip_repo" add -A
+git -C "$skip_repo" -c user.email=test@test -c user.name=test commit -q -m "fixture"
+( cd "$skip_repo" && bash "$GUARD" ) >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ]; then
+    pass "no .himmel-dev marker -> exit 0 (skip)"
+else
+    fail "no .himmel-dev marker -> expected 0 got $rc"
+fi
+
+# Case J: a missing file passed directly fails closed rather than passing
+# vacuously.
+echo "== Case J: missing file fails closed =="
+bash "$GUARD" "$tmp/nope.sh" >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 2 ]; then pass "missing file -> exit 2"; else fail "missing file -> expected 2 got $rc"; fi
+
+echo
+if [ "$failures" -eq 0 ]; then echo "ALL PASS"; else echo "$failures FAILURE(S)"; fi
+exit $(( failures > 0 ? 1 : 0 ))

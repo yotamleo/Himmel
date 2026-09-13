@@ -110,6 +110,14 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: vacuous-path-assert
+        name: no emptiness assertion runs under an ambient hermetic-PATH scrub (himmel-dev only)
+        # HIMMEL-2957
+        entry: bash scripts/ci/check-vacuous-path-assert.sh
+        language: system
+        files: test-.*\.sh$
+        pass_filenames: true
+
       - id: no-ticket-id-in-user-strings
         name: adopter-facing strings stay free of raw ticket IDs (himmel-dev only)
         # HIMMEL-2371
