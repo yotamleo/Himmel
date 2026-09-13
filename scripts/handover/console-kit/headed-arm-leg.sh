@@ -211,6 +211,10 @@ case "$MODEL" in
 esac
 if [ -n "$TIER_GATE" ]; then
     TIER_REASON="$(grep -m1 -E "^> \*\*Tier:\*\* $TIER_GATE — " "$DOC" 2>/dev/null | sed -E "s/^> \*\*Tier:\*\* $TIER_GATE — //")"
+    # codex-1 (HIMMEL-2976 round 1 CR): `-z` alone treats a whitespace-only
+    # reason (e.g. a Tier line with nothing but trailing spaces after the
+    # dash) as non-empty, so strip surrounding whitespace before the check.
+    TIER_REASON="$(printf '%s' "$TIER_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$TIER_REASON" ]; then
         echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier." >&2
         exit 2

@@ -140,9 +140,12 @@ procs="$(printf '%s\n' "$proc_out" | awk '/claude / && / -n (HIMMEL|LUNA)-/ && /
 # tier its --model argv names (opus/fable cost materially more per turn than
 # the sonnet default - CLAUDE.md "raise effort before tier"). Any non-Claude
 # id (e.g. a claudex gpt-* model) buckets under "other" rather than one
-# unbounded per-model list.
+# unbounded per-model list. A leg matched by the same filter but carrying no
+# --model token at all buckets under "unknown" (codex-2, HIMMEL-2976 round 1
+# CR) rather than falling out of every bucket while still counted in procs=.
 models_summary="$(printf '%s\n' "$proc_out" | awk '
 /claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/-console/ {
+    found = 0
     for (i = 1; i <= NF; i++) {
         if ($i == "--model" && (i + 1) <= NF) {
             m = $(i + 1)
@@ -151,17 +154,20 @@ models_summary="$(printf '%s\n' "$proc_out" | awk '
             else if (m ~ /^claude-sonnet-/) c_sonnet++
             else if (m ~ /^claude-haiku-/) c_haiku++
             else c_other++
+            found = 1
             break
         }
     }
+    if (!found) c_unknown++
 }
 END {
     out = ""
-    if (c_sonnet > 0) out = out (out == "" ? "" : ",") "sonnet:" c_sonnet
-    if (c_opus > 0)   out = out (out == "" ? "" : ",") "opus:" c_opus
-    if (c_fable > 0)  out = out (out == "" ? "" : ",") "fable:" c_fable
-    if (c_haiku > 0)  out = out (out == "" ? "" : ",") "haiku:" c_haiku
-    if (c_other > 0)  out = out (out == "" ? "" : ",") "other:" c_other
+    if (c_sonnet > 0)  out = out (out == "" ? "" : ",") "sonnet:" c_sonnet
+    if (c_opus > 0)    out = out (out == "" ? "" : ",") "opus:" c_opus
+    if (c_fable > 0)   out = out (out == "" ? "" : ",") "fable:" c_fable
+    if (c_haiku > 0)   out = out (out == "" ? "" : ",") "haiku:" c_haiku
+    if (c_other > 0)   out = out (out == "" ? "" : ",") "other:" c_other
+    if (c_unknown > 0) out = out (out == "" ? "" : ",") "unknown:" c_unknown
     print out
 }')"
 [ -n "$models_summary" ] || models_summary=none

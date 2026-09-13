@@ -113,6 +113,20 @@ contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
 contains '--verbose labels leg models (HIMMEL-2976)' "$verbose" 'leg models: sonnet:1,opus:1'
 
+# codex-2 (HIMMEL-2976 round 1 CR): a leg process matched by the leg filter
+# but with no --model token at all must still show up (an "unknown" bucket),
+# never silently fall out of every bucket while still counted in procs=.
+mkdir -p "$W/bin-nomodel"
+cat > "$W/bin-nomodel/pgrep" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '101 claude --model claude-sonnet-5 -n HIMMEL-111-legN61 work' \
+  '104 claude -n HIMMEL-444-legN70 work'
+STUB
+chmod +x "$W/bin-nomodel/pgrep"
+nomodel_out="$(PATH="$W/bin-nomodel:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-444-legN70')"
+contains 'a leg with no --model token buckets as unknown, not dropped' "$nomodel_out" 'models=sonnet:1,unknown:1'
+
 rm -f "$W/handover/HIMMEL-222-legN65.md"
 out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66')"; rc=$?
 if [ "$rc" -eq 0 ]; then

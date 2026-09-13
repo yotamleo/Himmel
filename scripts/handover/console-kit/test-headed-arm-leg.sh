@@ -878,6 +878,17 @@ not_contains "tier gate: sonnet dry-run report carries no tier-reason=" "$out" "
 rc=0; out="$(bash "$SCRIPT" --dry-run --lane claudex HIMMEL-9999-leg "$doc_no_tier" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "tier gate: --lane claudex is unaffected (dry-run exit 0)" "$rc" "0"
 
+# codex-1 (HIMMEL-2976 round 1 CR): a Tier line whose reason is whitespace-only
+# must be refused exactly like a missing line - `-z` alone treats a
+# whitespace-only string as non-empty and would incorrectly let the launch
+# proceed.
+doc_tier_opus_blank="$tmp/tier-doc-opus-blank.md"
+printf '%s\n' '# fixture brief' '> **Tier:** opus —    ' > "$doc_tier_opus_blank"
+
+rc=0; out="$(bash "$SCRIPT" --dry-run HIMMEL-9999-leg "$doc_tier_opus_blank" /tmp/nosig 99999999999 /tmp/leg.log claude-opus-5 2>&1)" || rc=$?
+check "tier gate: a whitespace-only Tier reason is refused with exit 2" "$rc" "2"
+contains "tier gate: whitespace-only refusal names the CLAUDE.md sentence" "$out" "raise effort before tier"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-headed-arm-leg.sh"
