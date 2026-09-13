@@ -76,7 +76,7 @@ rc=0; HANDOVER_DIR="$LEGROOT" HIMMEL_CONSOLE_LEG=0 bash "$SCRIPT" 77 "$SHA" >/de
 check "leg marker: a falsy marker is no marker" "$rc" "0"
 
 # --- 6. HIMMEL_CONSOLE_RELAY refuses on its own (HIMMEL-2975), nothing written.
-ROOT6="$(mktemp -d)"
+ROOT6="$(mktemp -d)" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 rc=0; out="$(env -u HIMMEL_CONSOLE_LEG HANDOVER_DIR="$ROOT6" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" 77 "$SHA" 2>&1)" || rc=$?
 check    "relay: exit 3" "$rc" "3"
 contains "relay: names the relay" "$out" "console relay"
