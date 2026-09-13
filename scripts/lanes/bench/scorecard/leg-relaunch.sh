@@ -82,4 +82,4 @@ for path in "$H"/*legN[0-9]*-*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*; do
     b=$(grep -cE '^- ([0-9]{2}:[0-9]{2} )?BLOCKED' "$H/$f")
     w=$(grep -cE '^- ([0-9]{2}:[0-9]{2} )?WRAPPED .*BLOCKED' "$H/$f")
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$leg" "$runs" "$((runs-1))" "$b" "$w" "$f"
-done | sort -V | awk -F'\t' -v OFS='\t' '{print} NR>0{r+=$3; b+=$4; w+=$5; n++} END{if(n>0) printf "TOTAL(n=%d)\t-\t%d (mean %.2f)\t%d (mean %.2f)\t%d\t-\n", n, r, r/n, b, b/n, w}'
+done | sort -t "$(printf '\t')" -k1.5,1n | awk -F'\t' -v OFS='\t' '{print} NR>0{r+=$3; b+=$4; w+=$5; n++} END{if(n>0) printf "TOTAL(n=%d)\t-\t%d (mean %.2f)\t%d (mean %.2f)\t%d\t-\n", n, r, r/n, b, b/n, w}'

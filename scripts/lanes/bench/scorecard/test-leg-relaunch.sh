@@ -113,6 +113,20 @@ check_exit "ignore-nonmatching: exits 0" "$?" "0"
 check "ignore-nonmatching: a filename with no legN token/date is not picked up" \
     "$(printf '%s\n' "$IGNORE_OUT" | grep -c '^legN')" "1"
 
+# --- (m) leg numbers of differing digit counts sort numerically, not
+# lexicographically (legN9 < legN10 < legN207 < legN1000)
+export SCORECARD_HANDOVER_DIR="$HERE/fixtures/leg-relaunch/sort-order"
+SORT_OUT=$("$RELAUNCH" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "sort-order: exits 0" "$?" "0"
+LEG_ORDER=$(printf '%s\n' "$SORT_OUT" | grep -oE '^legN[0-9]+' | tr '\n' ',')
+check "sort-order: legs are ordered numerically by leg number, not lexicographically" \
+    "$LEG_ORDER" "legN9,legN10,legN207,legN1000,"
+
+# --- (n) portability guard: GNU-only `sort -V` must not appear in a script
+# whose header declares POSIX bash 3.2+
+SORT_V_COUNT=$(grep -c 'sort -V' "$RELAUNCH")
+check "portability: leg-relaunch.sh does not use GNU-only sort -V" "$SORT_V_COUNT" "0"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
     echo "PASS - test-leg-relaunch.sh: 0 failures"
