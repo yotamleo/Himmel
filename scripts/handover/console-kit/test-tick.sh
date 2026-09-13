@@ -127,6 +127,24 @@ chmod +x "$W/bin-nomodel/pgrep"
 nomodel_out="$(PATH="$W/bin-nomodel:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-444-legN70')"
 contains 'a leg with no --model token buckets as unknown, not dropped' "$nomodel_out" 'models=sonnet:1,unknown:1'
 
+# HIMMEL-2998: a --profile leg's argv carries `--settings
+# /run/user/1000/himmel-console/<slug>/<name>.leg-settings.json` — the path
+# segment "himmel-console" contains the substring "-console", which the old
+# `!/-console/` exclusion matched against the WHOLE line rather than just the
+# console's own `-n <name>` token, silently dropping every --profile leg from
+# both procs= and models=.
+mkdir -p "$W/bin-profile"
+cat > "$W/bin-profile/pgrep" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '103 claude --model claude-sonnet-5 -n HIMMEL-next-console work' \
+  '104 claude --settings /run/user/1000/himmel-console/x/y.leg-settings.json --append-system-prompt-file /run/user/1000/himmel-console/x/leg-preface.md --model claude-sonnet-5 -n HIMMEL-333-foo-legN7-2026-01-01 work'
+STUB
+chmod +x "$W/bin-profile/pgrep"
+profile_out="$(PATH="$W/bin-profile:$PATH" bash "$SUT" --legs 'HIMMEL-333-foo-legN7-2026-01-01')"
+contains 'a --profile leg is counted in procs= (HIMMEL-2998)' "$profile_out" 'procs=1'
+contains 'a --profile leg is bucketed in models= (HIMMEL-2998)' "$profile_out" 'models=sonnet:1'
+
 rm -f "$W/handover/HIMMEL-222-legN65.md"
 out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66')"; rc=$?
 if [ "$rc" -eq 0 ]; then

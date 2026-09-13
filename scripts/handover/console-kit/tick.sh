@@ -134,7 +134,7 @@ done
 [ -n "$tails_summary" ] || tails_summary=none
 
 proc_out="$(pgrep -af 'claude' 2>/dev/null)" || proc_out=""
-procs="$(printf '%s\n' "$proc_out" | awk '/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/-console/ { n++ } END { print n+0 }')"
+procs="$(printf '%s\n' "$proc_out" | awk '/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/ -n [^ ]*-console/ { n++ } END { print n+0 }')"
 
 # HIMMEL-2976: same ps table and leg filter as procs= above, bucketed by the
 # tier its --model argv names (opus/fable cost materially more per turn than
@@ -144,7 +144,7 @@ procs="$(printf '%s\n' "$proc_out" | awk '/claude / && / -n (HIMMEL|LUNA)-/ && /
 # --model token at all buckets under "unknown" (codex-2, HIMMEL-2976 round 1
 # CR) rather than falling out of every bucket while still counted in procs=.
 models_summary="$(printf '%s\n' "$proc_out" | awk '
-/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/-console/ {
+/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/ -n [^ ]*-console/ {
     found = 0
     for (i = 1; i <= NF; i++) {
         if ($i == "--model" && (i + 1) <= NF) {
