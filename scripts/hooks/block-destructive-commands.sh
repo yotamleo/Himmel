@@ -293,6 +293,22 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             break
         fi
         _hd_prefix="${rm_scrub_raw%%"$_hd_opener"*}"
+        # An opener immediately preceded by a quote char is DATA inside a
+        # quoted argument (`echo "<<'EOF'"`), not a redirect operator - a
+        # real heredoc redirect is never written with an open quote directly
+        # before the `<<` (codex panel finding, HIMMEL-2834 pr-check round 2:
+        # this exact shape let a real `rm -rf` on the next line hide as fake
+        # heredoc body between a quoted `<<'EOF'` and a coincidental `EOF`
+        # line). Mask just this occurrence's `<<` so it cannot match again,
+        # leaving the rest of the string - including any real command on the
+        # following lines - completely UNSTRIPPED, so it still falls through
+        # to the ${CMDPOS} match below (fail-closed, same direction as the
+        # unterminated-heredoc case above).
+        _hd_prevchar="${_hd_prefix: -1}"
+        if [[ $_hd_prevchar == "'" || $_hd_prevchar == '"' ]]; then
+            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+            continue
+        fi
         _hd_tail="${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
         if [[ $_hd_tail != *$'\n'* ]]; then
             break

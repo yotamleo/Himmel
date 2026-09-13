@@ -327,6 +327,15 @@ heredoc_cmd_openerline='cat <<'"'"'EOF'"'"'; rm -rf /tmp/x
 safe content
 EOF'
 assert_rc "2834h heredoc opener-line <rm literal>" 2 "$(run_case "$(j_bash "$heredoc_cmd_openerline")")"
+# (i) a heredoc OPENER token that is itself DATA inside a quoted argument
+# (`echo "<<'EOF'"`) is not a redirect at all — a real `rm -rf` on the next
+# line, followed by a coincidental standalone `EOF` line, must not be mistaken
+# for stripped heredoc body and must still DENY (codex panel, pr-check round 2
+# on this ticket).
+heredoc_cmd_fakeopener='echo "<<'"'"'EOF'"'"'"
+rm -rf /tmp/x
+EOF'
+assert_rc "2834i quoted-arg fake heredoc opener <rm literal>" 2 "$(run_case "$(j_bash "$heredoc_cmd_fakeopener")")"
 # (f) HIMMEL-851 bypasses must still deny post-anchor (already covered above,
 # cited here for the ticket's control list): quoted-flag L104, \${IFS} L106,
 # backslash-continuation L110-112.
