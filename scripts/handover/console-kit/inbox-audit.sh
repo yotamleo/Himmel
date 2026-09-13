@@ -22,7 +22,10 @@
 # whitespace-separated field of some ledger line. Prints "AUDIT ok" and
 # exits 0 when every token bullet is matched; otherwise prints one
 # "AUDIT UNMATCHED <line>" per miss and exits 1. A missing inbox file or
-# sent-log dir is a usage error, exit 2.
+# sent-log dir, an inbox that cannot be read (e.g. a permission change), or a
+# sha256sum failure is a usage error, exit 2 — this audit exists to catch
+# forgery, so it fails closed rather than reporting a false "AUDIT ok". A
+# final inbox line with no trailing newline is still audited.
 #
 # bash 3.2-safe, shellcheck-clean, no arrays — matches inbox-send.sh's
 # shell dialect (see its own header for why).
@@ -47,15 +50,24 @@ sent_dir="$2"
 ledger_shas="$(cat "$sent_dir"/inbox-sent.log "$sent_dir"/*/inbox-sent.log 2>/dev/null | awk '{ print $4 }')"
 
 unmatched=0
-while IFS= read -r line; do
+read_failed=0
+while IFS= read -r line || [ -n "$line" ]; do
     printf '%s' "$line" | grep -Eq '^- [0-9][0-9]:[0-9][0-9] \[[^]]*\] from=' || continue
-    sha="$(printf '%s' "$line" | sha256sum)" || continue
+    if ! sha="$(printf '%s' "$line" | sha256sum)"; then
+        printf 'inbox-audit: cannot hash line, aborting: %s\n' "$line" >&2
+        exit 2
+    fi
     sha="${sha%% *}"
     if ! printf '%s\n' "$ledger_shas" | grep -qxF "$sha"; then
         printf 'AUDIT UNMATCHED %s\n' "$line"
         unmatched=1
     fi
-done < "$inbox"
+done < "$inbox" || read_failed=1
+
+if [ "$read_failed" -eq 1 ]; then
+    printf 'inbox-audit: cannot read %s\n' "$inbox" >&2
+    exit 2
+fi
 
 if [ "$unmatched" -eq 0 ]; then
     printf 'AUDIT ok\n'

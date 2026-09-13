@@ -76,5 +76,48 @@ else
     fail "missing sent-log dir is a usage error (rc=$rc out='$out')"
 fi
 
+# --- HIMMEL-2980 CR round 1 (codex-1/2/3): fail-closed on hash/read errors -
+# and a final line with no trailing newline is still audited -----------------
+
+# Case 6: a token bullet as the inbox's final line with NO trailing newline
+# must still be matched/audited, not silently dropped by the read loop.
+INBOX_NOEOL="$WORK/inbox-noeol.md"
+printf -- '- 12:00 [tX] from=someone forged-no-nl' > "$INBOX_NOEOL"
+out="$(bash "$AUDIT" "$INBOX_NOEOL" "$RUNDIR")"; rc=$?
+if [ "$rc" -eq 1 ] && [ "$out" = "AUDIT UNMATCHED - 12:00 [tX] from=someone forged-no-nl" ]; then
+    pass "a final line with no trailing newline is still audited"
+else
+    fail "a final line with no trailing newline is still audited (rc=$rc out='$out')"
+fi
+
+# Case 7: an unreadable inbox file must abort (exit 2), never report ok.
+INBOX_UNREADABLE="$WORK/inbox-unreadable.md"
+printf -- '- 13:00 [tY] from=someone forged-unreadable\n' > "$INBOX_UNREADABLE"
+chmod 000 "$INBOX_UNREADABLE"
+if [ "$(id -u)" -eq 0 ]; then
+    fail "an unreadable inbox file aborts the audit (skipped: running as root, chmod 000 has no effect)"
+else
+    out="$(bash "$AUDIT" "$INBOX_UNREADABLE" "$RUNDIR" 2>&1)"; rc=$?
+    if [ "$rc" -eq 2 ]; then
+        pass "an unreadable inbox file aborts the audit"
+    else
+        fail "an unreadable inbox file aborts the audit (rc=$rc out='$out')"
+    fi
+fi
+chmod 644 "$INBOX_UNREADABLE"
+
+# Case 8: a sha256sum failure must abort (exit 2), never silently skip the
+# line (which would let a forged bullet pass as AUDIT ok).
+BADBIN="$WORK/badbin"
+mkdir -p "$BADBIN"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$BADBIN/sha256sum"
+chmod +x "$BADBIN/sha256sum"
+out="$(PATH="$BADBIN:$PATH" bash "$AUDIT" "$INBOX" "$RUNDIR" 2>&1)"; rc=$?
+if [ "$rc" -eq 2 ]; then
+    pass "a sha256sum failure aborts the audit"
+else
+    fail "a sha256sum failure aborts the audit (rc=$rc out='$out')"
+fi
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "SOME FAILED"; exit 1
