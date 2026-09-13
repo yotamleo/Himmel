@@ -216,7 +216,24 @@ if [ -n "$TIER_GATE" ]; then
     # dash) as non-empty, so strip surrounding whitespace before the check.
     TIER_REASON="$(printf '%s' "$TIER_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     if [ -z "$TIER_REASON" ]; then
-        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier." >&2
+        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC has no '> **Tier:** $TIER_GATE — <category>: <reason>' line (CLAUDE.md: raise effort before tier). Sanctioned reasons: multi-step design; a FINDING the console could not verify at Sonnet; a Sonnet leg returned the work as above its tier. Category tags (exact lowercase): design|unverified-finding|tier-return." >&2
+        exit 2
+    fi
+    # HIMMEL-2997: the design was left open (keyword vs enum vs LLM) - console
+    # ruling: a closed category TAG followed by free text, so paraphrase in
+    # the free text can never be falsely rejected. Split on the first ':'.
+    TIER_CATEGORY="${TIER_REASON%%:*}"
+    TIER_REASON="${TIER_REASON#*:}"
+    case "$TIER_CATEGORY" in
+        design|unverified-finding|tier-return) ;;
+        *)
+            echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason must open with one of the three sanctioned category tags (exact lowercase) followed by ': ' and non-blank free text: design|unverified-finding|tier-return." >&2
+            exit 2
+            ;;
+    esac
+    TIER_REASON="$(printf '%s' "$TIER_REASON" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    if [ -z "$TIER_REASON" ]; then
+        echo "headed-arm-leg: refusing $TIER_GATE launch: $DOC's Tier reason has category '$TIER_CATEGORY' but no free text after the colon." >&2
         exit 2
     fi
 fi
@@ -384,7 +401,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # Printed ONLY for an Opus/Fable model that cleared the tier gate above;
     # absent for Sonnet/Haiku, matching the argv-report guarantee pattern above.
     if [ -n "$TIER_GATE" ]; then
-        printf 'headed-arm-leg: tier=%s tier-reason=%s\n' "$TIER_GATE" "$TIER_REASON"
+        printf 'headed-arm-leg: tier=%s tier-category=%s tier-reason=%s\n' "$TIER_GATE" "$TIER_CATEGORY" "$TIER_REASON"
     fi
     exit 0
 fi
@@ -460,7 +477,7 @@ fi
 # "armed:" line (headed-arm.sh) never sees TIER_GATE - log the reason
 # ourselves, same append style as the SKIPPED-FLEET/SKIPPED-BANK lines above.
 if [ -n "$TIER_GATE" ]; then
-    echo "$(date +%F_%T) headed-arm-leg: tier=$TIER_GATE tier-reason=$TIER_REASON" >> "$LOG"
+    echo "$(date +%F_%T) headed-arm-leg: tier=$TIER_GATE tier-category=$TIER_CATEGORY tier-reason=$TIER_REASON" >> "$LOG"
 fi
 
 exec "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"

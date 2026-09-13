@@ -43,11 +43,13 @@ template_version: 3
 > not native, a suite that must be run a particular way — goes here, in this
 > paragraph, and nowhere else.>
 
-> **Tier:** <opus|fable> — <one of the three sanctioned reasons: multi-step
-> design; a FINDING the console could not verify at Sonnet; a Sonnet leg
-> returned the work as above its tier.> <Omit this line entirely for a
-> Sonnet or Haiku leg — `headed-arm-leg.sh` (HIMMEL-2976) refuses to launch
-> an Opus or Fable model without it.>
+> **Tier:** <opus|fable> — <category>: <free text>, where `<category>` is
+> exactly one of `design` (multi-step design), `unverified-finding` (a
+> FINDING the console could not verify at Sonnet), or `tier-return` (a
+> Sonnet leg returned the work as above its tier), e.g. `design: two
+> interacting hooks`. <Omit this line entirely for a Sonnet or Haiku leg —
+> `headed-arm-leg.sh` (HIMMEL-2976/HIMMEL-2997) refuses to launch an Opus or
+> Fable model without it.>
 
 > **Why (read the ticket first: `<the exact command that fetches it>`):**
 > <two or three sentences: what the operator actually asked for, and what is
@@ -92,7 +94,7 @@ template_version: 3
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND the flag is a leg running on vibes. |
-| Tier line (Opus/Fable only) | Without a trimmed, non-blank reason, `headed-arm-leg.sh` refuses the launch (HIMMEL-2976, CLAUDE.md: "raise effort before tier") — the tier choice must be logged structurally, not left to the console's judgement call each time. The gate does not yet validate the reason against the three sanctioned categories above (tracked as HIMMEL-2997); until then, the sanctioned-reason list is policy guidance the console and reviewers still enforce by eye. |
+| Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the three exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997, CLAUDE.md: "raise effort before tier") — the tag is validated, the free text after it never is, so a paraphrase can never be falsely rejected. |
 
 ## What the console must also do (2026-09-13)
 
