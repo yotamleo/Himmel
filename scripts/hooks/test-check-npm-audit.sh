@@ -286,6 +286,39 @@ STUB
     echo "$dir"
 }
 
+# Stub npm whose `audit`: TRANSPORT error on the first call (retried), then a
+# REAL FINDINGS payload on the retry — covers the registry recovering but
+# reporting genuine vulnerabilities (CR round 1, codex-1): the retry failure
+# must NOT be blanket-classified as transport/INDETERMINATE.
+make_transport_then_findings_stub() {
+    local dir
+    dir=$(fixture_mktemp_dir) || return 1
+    cat > "$dir/npm" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "audit" ]; then
+    count=0
+    [ -f "$AUDIT_COUNT_FILE" ] && count=$(cat "$AUDIT_COUNT_FILE")
+    count=$((count + 1))
+    echo "$count" > "$AUDIT_COUNT_FILE"
+    if [ "$count" -le 1 ]; then
+        echo "npm error audit endpoint returned an error" >&2
+        echo "npm error Bad Request - GET https://registry.npmjs.org/-/npm/v1/security/audits/quick - Bad Request" >&2
+        exit 1
+    fi
+    echo "found 3 high severity vulnerabilities in 200 scanned packages"
+    exit 1
+elif [ "$1" = "config" ]; then
+    echo "https://registry.npmjs.org/"
+    exit 0
+else
+    echo "$1" >> "${NPM_LOG:-/dev/null}"
+    exit 0
+fi
+STUB
+    chmod +x "$dir/npm"
+    echo "$dir"
+}
+
 # Stub npm whose `audit` always fails with a REAL FINDINGS payload (not a
 # transport shape) — the invariant path that must stay byte-identical.
 make_findings_stub() {
@@ -425,6 +458,31 @@ else
     echo "PASS unrecognised failure → INDETERMINATE text absent"
 fi
 rm -rf "$repo16" "$STUB16"
+
+# Case 17: transport error on the FIRST attempt, but the retry surfaces REAL
+# findings (registry recovered) — must land on the original vulnerabilities
+# path, not INDETERMINATE (CR round 1, codex-1).
+STUB17=$(make_transport_then_findings_stub) || exit 1
+repo17=$(make_install_repo lock) || exit 1
+count17=$(mktemp -u "${TMPDIR:-/tmp}/npm-audit-count17.XXXXXX")
+rc=0
+out17=$( cd "$repo17" && PATH="$STUB17:$PATH" AUDIT_COUNT_FILE="$count17" NPM_AUDIT_RETRY_SLEEP=0 NPM_LOG=/dev/null bash "$AUDIT_SH" 2>&1 ) || rc=$?
+assert_eq "transport once, retry finds real vulnerabilities → gate blocks (non-zero)" "1" "$rc"
+if grepq "$out17" 'npm audit found high/critical vulnerabilities. Push blocked.'; then
+    echo "PASS transport-then-findings → original vulnerabilities message present"
+else
+    echo "FAIL transport-then-findings → original vulnerabilities message present"
+    echo "     output: $out17"
+    FAILED=$((FAILED + 1))
+fi
+if grepq "$out17" 'INDETERMINATE'; then
+    echo "FAIL transport-then-findings → INDETERMINATE text must be ABSENT"
+    echo "     output: $out17"
+    FAILED=$((FAILED + 1))
+else
+    echo "PASS transport-then-findings → INDETERMINATE text absent"
+fi
+rm -rf "$repo17" "$STUB17"; rm -f "$count17"
 
 # --- bun-package skip (HIMMEL-296) ------------------------------------------
 # Build a one-package repo where the package is a bun package. Two variants:

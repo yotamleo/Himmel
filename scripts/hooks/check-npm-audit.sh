@@ -102,11 +102,16 @@ for pkg in "${pkgs[@]}"; do
         echo "$retry_out"
         if [ $audit_rc -eq 0 ]; then
             echo "→ npm audit: registry error in $dir, retry succeeded"
-        else
+        elif is_transport_error "$retry_out"; then
             indeterminate=1
             registry=$(cd "$dir" && npm config get registry 2>/dev/null) || registry="(unknown — npm config get registry failed)"
             echo "ERROR: npm audit could not reach the registry for $dir (retry) — audit is INDETERMINATE, not a vulnerability finding" >&2
             echo "       registry: $registry" >&2
+        else
+            # Retry no longer errors as transport (e.g. now reports real
+            # vulnerabilities, or an unrelated failure) — the original
+            # findings path, not INDETERMINATE (HIMMEL-2972 CR round 1).
+            fail=1
         fi
     elif [ $audit_rc -ne 0 ]; then
         fail=1
