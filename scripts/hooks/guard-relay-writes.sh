@@ -49,6 +49,18 @@
 # performed through an uncommon utility not on that list (e.g. `tar`,
 # `ln`, `cat >>` masked some other way) is not caught either.
 #
+# RESIDUAL (guarded-prefix canonicalization, deliberately not closed this
+# round — HIMMEL-2975 follow-up): the DESTINATION path is fully resolved
+# (readlink -f, symlinks included), but the guarded PREFIXES it is compared
+# against are not independently re-resolved — <handover_root> is, but
+# "$root_resolved/inbox" itself, ${TMPDIR:-/tmp}, and /run are taken as
+# literal strings after that. If any of those three is ITSELF a symlink
+# (e.g. handover_root/inbox aliased elsewhere, or /run -> /var/run on a
+# host where that isn't already canonical), a write through the symlinked
+# alias resolves to a physical path outside the literal guarded prefix and
+# is not denied. Left open deliberately this round rather than widening the
+# hook a further time on the same seam; track under HIMMEL-2975.
+#
 # RESIDUAL (false-deny, fail-safe direction, not fixed here): the write-verb
 # glob (*cp*|*mv*|*rm*|*dd*|*sed*|...) matches as an unanchored SUBSTRING, not
 # a shell word, so a pure READ command whose text happens to contain one of
