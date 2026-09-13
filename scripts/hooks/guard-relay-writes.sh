@@ -16,15 +16,18 @@
 #   Write|Edit|MultiEdit|NotebookEdit — the resolved file_path (notebook_path
 #     for NotebookEdit) contains an unresolved ".." path segment (denied
 #     outright, fail-closed, before any guarded-path match); or
-#     <handover_root> fails to resolve (denied fail-closed rather than
-#     silently skipping the inbox check); or the path is under
+#     <handover_root> fails to resolve, or the path's own containing
+#     directory fails to resolve (`cd ... && pwd -P`, symlinks included —
+#     denied fail-closed rather than silently skipping the guarded-path
+#     match); or the PHYSICALLY resolved path is under
 #     <handover_root>/inbox/, under a .../himmel-console/... rundir, under
 #     ${TMPDIR:-/tmp}/himmel-console-*, or its basename matches
 #     *-legN*-RESUME.md.
 #   Bash — the command text contains HIMMEL_CONSOLE_RELAY, HIMMEL_CONSOLE_LEG,
-#     CLAUDE_PID=, SESSION_NAME_CMDLINE_FILE or CONSOLE_SESSION_NAME= (an
-#     env-prefix override of an identity/marker variable); or contains
-#     "inbox-send" AND "--token"; or contains a write-shaped verb (">", "tee",
+#     SESSION_NAME_CMDLINE_FILE, CLAUDE_PID or CONSOLE_SESSION_NAME (an
+#     env-prefix override, `unset`, or `env -u` of an identity/marker
+#     variable); or contains "inbox-send" AND "--token"; or contains a
+#     write-shaped verb (">", "tee",
 #     "cp", "mv", "rm", "rsync", "dd", "truncate", "sed", "install", "chmod",
 #     "chown") AND text naming "/inbox/", "himmel-console", or both "-legN"
 #     and "-RESUME.md".
@@ -116,20 +119,30 @@ case "$tool" in
 
         root="$(handover_root 2>/dev/null)" || deny "handover-root-unresolved" "handover_root failed"
         [ -n "$root" ] || deny "handover-root-unresolved" "handover_root returned empty"
-        case "$path" in
-            "$root"/inbox/*) deny "inbox-write" "$path" ;;
+        root_resolved="$(cd "$root" 2>/dev/null && pwd -P)" || deny "handover-root-unresolved" "handover_root does not resolve: $root"
+
+        # Resolve the containing directory (physically — symlinks and any
+        # "./" segment included) before matching against a guarded prefix, so
+        # an equivalent alias like "$root/./inbox/X.md" or a symlinked
+        # directory can't slip past a literal-string glob (codex-1).
+        path_dir=$(dirname -- "$path")
+        path_base=$(basename -- "$path")
+        path_dir_resolved="$(cd "$path_dir" 2>/dev/null && pwd -P)" || deny "unresolved-path" "$path"
+        path_resolved="$path_dir_resolved/$path_base"
+
+        case "$path_resolved" in
+            "$root_resolved"/inbox/*) deny "inbox-write" "$path" ;;
         esac
 
-        case "$path" in
+        case "$path_resolved" in
             /run/user/*/himmel-console/*) deny "console-rundir-write" "$path" ;;
         esac
 
-        case "$path" in
+        case "$path_resolved" in
             "${TMPDIR:-/tmp}/himmel-console-"*) deny "console-rundir-write" "$path" ;;
         esac
 
-        base=$(basename -- "$path")
-        case "$base" in
+        case "$path_base" in
             *-legN*-RESUME.md) deny "leg-doc-write" "$path" ;;
         esac
 
@@ -141,7 +154,7 @@ case "$tool" in
             || deny "unparseable-payload" "cannot read command"
         [ -n "$cmd" ] || exit 0
 
-        for needle in HIMMEL_CONSOLE_RELAY HIMMEL_CONSOLE_LEG SESSION_NAME_CMDLINE_FILE "CLAUDE_PID=" "CONSOLE_SESSION_NAME="; do
+        for needle in HIMMEL_CONSOLE_RELAY HIMMEL_CONSOLE_LEG SESSION_NAME_CMDLINE_FILE CLAUDE_PID CONSOLE_SESSION_NAME; do
             case "$cmd" in
                 *"$needle"*) deny "env-override" "$needle" ;;
             esac

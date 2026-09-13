@@ -106,6 +106,7 @@ D_CODEX="cod""ex exec --sandbox workspace-write do-the-thing"
 D_WSL="ws""l -d Ubuntu -- bash -lc \"cod""ex exec -s workspace-write do-it\""
 D_TAIL="bash scripts/cr/clear-cr-mar""ker.sh | tai""l -5"
 D_QUIET="bash scripts/test-check-c""i.sh"
+D_RELAY="CLAUDE_PID=1 bash x.sh"
 A_OK="git status"
 
 printf '\nSingle-line command text\n'
@@ -128,6 +129,10 @@ check block-tail-pipe-on-gates    Bash 2 "$D_TAIL"   "deny gate piped to tail"
 check block-tail-pipe-on-gates    Bash 0 "$A_OK"     "allow git status"
 check require-quiet-run           Bash 2 "$D_QUIET"  "deny bare suite run"
 check require-quiet-run           Bash 0 "$A_OK"     "allow git status"
+check guard-relay-writes          Bash 2 "$D_RELAY"  "deny env-override under the relay marker" \
+    HIMMEL_CONSOLE_RELAY=1
+check guard-relay-writes          Bash 0 "$D_RELAY"  "marker unset allows the same text" \
+    -u HIMMEL_CONSOLE_RELAY
 
 # A multi-line command is where the class actually bites: with CRLF endings the
 # LAST character of every record is a CR, so any check anchored at end-of-record

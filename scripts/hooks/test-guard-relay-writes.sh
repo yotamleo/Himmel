@@ -104,9 +104,10 @@ OWN_DOC="$ROOT/yotamleo/himmel/HIMMEL-1-relay-2026-09-12-RESUME.md"
 EXTERNAL_LEG_DOC="/home/u/luna/handovers/a-legN3-2026-09-12-RESUME.md"
 
 TRAVERSAL_INBOX="$ROOT/other/../inbox/X.md"
+DOTSLASH_INBOX="$ROOT/./inbox/X.md"
 
 # name|json|expect_rc_relay|expect_rc_norelay
-ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11 row12 row13 row14)
+ROWS_NAME=(row1 row2 row3 row4 row5 row6 row7 row8 row9 row10a row10b row10c row10d row11 row12 row13 row14 row15 row16 row17)
 ROWS_JSON=(
     "$(write_payload Write "$INBOX_X")"
     "$(write_payload Edit "$LEG_DOC")"
@@ -125,8 +126,11 @@ ROWS_JSON=(
     "$(write_payload Write "$TRAVERSAL_INBOX")"
     "$(bash_payload "cp x $ROOT/inbox/X.md")"
     "$(bash_payload "rm $RUNDIR_LOG")"
+    "$(write_payload Write "$DOTSLASH_INBOX")"
+    "$(bash_payload "unset CLAUDE_PID CONSOLE_SESSION_NAME; bash inbox-send.sh S x")"
+    "$(bash_payload "env -u CLAUDE_PID bash inbox-send.sh S x")"
 )
-ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0 2 2 2)
+ROWS_EXPECT=(2 2 2 0 2 2 0 2 2 2 2 2 2 0 2 2 2 2 2 2)
 
 echo "=== marker set (HIMMEL_CONSOLE_RELAY=1) ==="
 i=0
