@@ -81,6 +81,11 @@
 #       be reminted before lane selection.
 #       Also (4b, HIMMEL-2067): a finding at that SHA has no recorded verdict
 #       (agree/disprove/defer it, then re-run).
+#       Also (4c, HIMMEL-3027): review-round.sh promote found a still-open
+#       (unadjudicated or un-re-raised) finding at an EARLIER round head on
+#       this branch — adjudicate it, then re-run. A promote exit other than
+#       0/3 (malformed ledger, bad head, missing ledger) also refuses here,
+#       fail-closed, as reason=promote-error.
 #   15  blocking finding(s) recorded at that SHA — address them, re-run /pr-check
 #   16  the marker is unbound (no endpoint/base recorded — pre-HIMMEL-1540
 #       format), the marker-bound endpoint head is unreadable/different, a PR
@@ -765,6 +770,47 @@ if [ "${unadjudicated_count:-0}" -gt 0 ]; then
     audit "REFUSED reason=unadjudicated-findings branch=$branch sha=$tip count=$unadjudicated_count"
     exit 14
 fi
+
+# 4c. Branch-wide still-open gate (HIMMEL-3027). Gate 4b above only sees the
+# TIP; a finding left unadjudicated (or un-re-raised after an `agreed`) at an
+# EARLIER round head on this branch is still unresolved CR business. Run the
+# SAME check the console runs before promote/merge so the two verdicts can
+# never drift apart (HIMMEL-2917, HIMMEL-2780).
+_promote_out="$(mktemp 2>/dev/null || true)"
+if [ -n "$_promote_out" ]; then
+    bash "$SCRIPT_DIR/review-round.sh" promote --branch "$branch" --head "$tip" >"$_promote_out" 2>&1
+    _promote_rc=$?
+else
+    _promote_rc=1
+fi
+if [ "$_promote_rc" -eq 3 ]; then
+    echo "clear-cr-marker: review-round.sh promote found still-open finding(s) at an earlier round head on $branch — refusing. Every round's ledger rows must carry a decision before the branch can clear, not just the tip's." >&2
+    _stillopen_count=0
+    if [ -n "$_promote_out" ] && [ -f "$_promote_out" ]; then
+        while IFS= read -r _pline; do
+            case "$_pline" in
+                "still-open "*)
+                    echo "  $_pline" >&2
+                    _stillopen_count=$((_stillopen_count + 1))
+                    ;;
+            esac
+        done < "$_promote_out"
+    fi
+    echo "  Record a decision for each row above at its OWN head with the amend verb:" >&2
+    echo "    scripts/cr/ledger-append.sh amend --head <head-from-above> --id <finding-id> --artifact <artifact> --perspective <perspective> --set verdict=<agreed-or-disproved> --reason \"<one line>\"" >&2
+    rm -f "$_promote_out"
+    audit "REFUSED reason=unadjudicated-earlier-round branch=$branch sha=$tip count=$_stillopen_count"
+    exit 14
+elif [ "$_promote_rc" -ne 0 ]; then
+    echo "clear-cr-marker: review-round.sh promote exited $_promote_rc (malformed ledger, bad head, or missing ledger) for $branch@${tip_short:-$tip} — refusing closed rather than clearing on a broken ledger." >&2
+    if [ -n "$_promote_out" ] && [ -f "$_promote_out" ]; then
+        cat "$_promote_out" >&2
+    fi
+    rm -f "$_promote_out"
+    audit "REFUSED reason=promote-error branch=$branch sha=$tip code=$_promote_rc"
+    exit 14
+fi
+rm -f "$_promote_out"
 
 # 5. Post-PR / pre-merge gate — when a PR already exists, the review threads and
 # CI are evaluable, so they MUST also be green (operator, HIMMEL-1064). Pre-PR
