@@ -271,6 +271,15 @@ OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$ABS_TRACKED" 2>&1)
 RC=$?
 assert_rc "suite with tracked test-*.sh via absolute path" 0 "$RC"
 
+# 13. label "suite" with an absolute path, invoked from a repo SUBDIRECTORY
+# cwd, must also pass - stripping REPO_TOPLEVEL leaves a root-relative
+# pathspec, and `git ls-files` resolves a pathspec relative to the current
+# directory, not the repo root, so the lookup must be pinned to
+# REPO_TOPLEVEL for this case (HIMMEL-2989).
+OUT=$(cd "$REPO_ROOT/scripts/lanes" && bash "$QUIET_RUN" suite -- bash "$ABS_TRACKED" 2>&1)
+RC=$?
+assert_rc "suite with tracked test-*.sh via absolute path from a subdirectory cwd" 0 "$RC"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All quiet-run.sh guard cases passed."

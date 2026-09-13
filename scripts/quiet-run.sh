@@ -52,9 +52,12 @@ if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
         case "$SUITE_PATH" in
             "$REPO_TOPLEVEL"/*)
                 SUITE_PATH="${SUITE_PATH#"$REPO_TOPLEVEL"/}"
+                TRACKED_MATCH=$(git -C "$REPO_TOPLEVEL" --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null)
+                ;;
+            *)
+                TRACKED_MATCH=$(git --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null)
                 ;;
         esac
-        TRACKED_MATCH=$(git --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null)
         if [ "$TRACKED_MATCH" != "$SUITE_PATH" ]; then
             echo "ERR quiet-run: label 'suite' requires a tracked test-*.sh, got: $SUITE_PATH" >&2
             exit 2
