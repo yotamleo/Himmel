@@ -95,6 +95,8 @@ check_contains "gh failure: error names gh pr list" "$ERR" "gh pr list failed"
 export SCORECARD_LEDGER="$FIXTURES/empty-ledger.jsonl"
 use_stub stub-gh-ledger-repo
 OUT=$("$SCRIPT" --since 2026-08-01T00:00:00Z --repo custom/repo 2>/dev/null)
+EXIT=$?
+check_exit "repo passthrough: exits 0" "$EXIT" "0"
 check_contains "repo passthrough: -R custom/repo reaches gh, no merged PRs" \
     "$OUT" "merged_branches=0 with_ledger_rows=0"
 check_contains "repo passthrough: empty merged-PR list -> empty window summary" \
@@ -114,6 +116,8 @@ check_exit "1000-PR cap: warning is non-fatal" "$EXIT" "0"
 export SCORECARD_LEDGER="$FIXTURES/artifact-default/ledger.jsonl"
 use_stub stub-gh-ledger-only
 OUT=$("$SCRIPT" --since 2026-08-01T00:00:00Z --until 2026-08-03T00:00:00Z 2>/dev/null)
+EXIT=$?
+check_exit "artifact-default: exits 0" "$EXIT" "0"
 check_contains "artifact-default: merged branch with one counted finding" \
     "$OUT" "merged_branches=1 with_ledger_rows=1"
 check_contains "artifact-default: crit stat reflects the one default-artifact row" \
@@ -128,6 +132,8 @@ check_contains "artifact-default: crit stat reflects the one default-artifact ro
 export SCORECARD_LEDGER="$FIXTURES/main/ledger.jsonl"
 use_stub stub-gh-ledger
 OUT=$("$SCRIPT" --since 2026-08-02T00:00:00Z --until 2026-08-05T00:00:00Z 2>/dev/null)
+EXIT=$?
+check_exit "main: exits 0" "$EXIT" "0"
 check_contains "main: two merged branches, both with ledger rows" \
     "$OUT" "merged_branches=2 with_ledger_rows=2"
 check_contains "main: crit stat excludes the artifact=code row (feat/alpha=1, fix/beta=2)" \
@@ -146,6 +152,8 @@ check_contains "main: merged window excludes the at-until PR, strips fractional 
 export SCORECARD_LEDGER="$FIXTURES/main/ledger.jsonl"
 use_stub stub-gh-ledger
 OUT=$("$SCRIPT" --since 2026-08-02T00:00:00Z 2>/dev/null)
+EXIT=$?
+check_exit "no --until: exits 0" "$EXIT" "0"
 check_contains "no --until: the at-until PR is now included in the merged window" \
     "$OUT" "merged window: 2026-08-02T00:00:00Z .. 2026-08-05T00:00:00Z count=3"
 

@@ -73,18 +73,21 @@ check_exit "usage: missing SCORECARD_PROJECTS_DIR exits 2" "$?" "2"
 # --- (d) since-edge: last_epoch >= SINCE_EPOCH is inclusive
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/since-edge"
 SINCE_OUT=$("$AGG_BURN" --since 2026-09-05T00:00:00Z 2>/dev/null)
+check_exit "since-edge: exits 0" "$?" "0"
 check "since-edge: only the session whose last activity is exactly at --since is included" \
     "$(session_count "$SINCE_OUT" leg)" "1"
 
 # --- (e) until-edge: first_epoch >= UNTIL_EPOCH is exclusive
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/until-edge"
 UNTIL_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z --until 2026-09-06T00:00:00Z 2>/dev/null)
+check_exit "until-edge: exits 0" "$?" "0"
 check "until-edge: a session whose first activity is exactly at --until is excluded" \
     "$(session_count "$UNTIL_OUT" leg)" "1"
 
 # --- (f) role classification, incl. subagent parent-role lookup
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/roles"
 ROLES_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "roles: exits 0" "$?" "0"
 check "roles: a -console- title is classified console" \
     "$(session_count "$ROLES_OUT" console)" "1"
 check "roles: a title matching none of console/relay/legN is classified other" \
@@ -98,6 +101,7 @@ check "roles: a subagent transcript is tagged with its parent's leg role" \
 # classified relay, never leg (reuses test-scorecard.sh's role-relay fixture)
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/role-relay"
 RELAY_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "role-relay: exits 0" "$?" "0"
 check "role-relay: a legN+relay title is classified relay" \
     "$(session_count "$RELAY_OUT" relay)" "1"
 check "role-relay: a legN+relay title is not also counted into leg" \
@@ -122,6 +126,7 @@ check "malformed: TOTAL line is all-zero with no surviving rows" \
 #    cost-eq = 3500*1 + 9000*0.1 + 1000*1.25 + 700*5 = 9150 -> "9.2k"
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/agg-burn/totals"
 TOTALS_OUT=$("$AGG_BURN" --since 2026-01-01T00:00:00Z 2>/dev/null | grep '^TOTAL cache-read=')
+check_exit "totals: exits 0" "${PIPESTATUS[0]}" "0"
 check "totals: cross-session TOTAL cost-eq line" "$TOTALS_OUT" \
     "TOTAL cache-read=9.0k cache-create=1.0k input=3.5k output=0.7k cost-eq=9.2k"
 

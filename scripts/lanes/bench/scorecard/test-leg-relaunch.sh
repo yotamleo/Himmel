@@ -72,6 +72,7 @@ check_exit "handover dir: nonexistent SCORECARD_HANDOVER_DIR exits 2" "$?" "2"
 # "b"-successor (RUN 2 NOTE, one WRAPPED...BLOCKED bullet)
 export SCORECARD_HANDOVER_DIR="$HERE/fixtures/leg-relaunch/main"
 MAIN_OUT=$("$RELAUNCH" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "main: exits 0" "$?" "0"
 check_contains "main: no RUN block defaults to runs=1, relaunches=0" \
     "$MAIN_OUT" "$(printf 'legN9200\t1\t0\t1\t0\t')"
 check_contains "main: a RUN 2 NOTE block yields runs=2, relaunches=1" \
@@ -84,6 +85,7 @@ check_contains "main: TOTAL row aggregates n/relaunches/blocked/wrapped across b
 # date only includes the doc if the last date is what's actually used
 export SCORECARD_HANDOVER_DIR="$HERE/fixtures/leg-relaunch/two-dates"
 TWO_DATES_OUT=$("$RELAUNCH" --since 2026-08-01T00:00:00Z 2>/dev/null)
+check_exit "two-dates: exits 0" "$?" "0"
 check_contains "two-dates: doc_date uses the LAST date in the filename" \
     "$TWO_DATES_OUT" "legN9210"
 
@@ -91,6 +93,7 @@ check_contains "two-dates: doc_date uses the LAST date in the filename" \
 # (day-truncated)
 export SCORECARD_HANDOVER_DIR="$HERE/fixtures/leg-relaunch/since-edge"
 SINCE_OUT=$("$RELAUNCH" --since 2026-08-03T00:00:00Z 2>/dev/null)
+check_exit "since-edge: exits 0" "$?" "0"
 check "since-edge: only the doc dated exactly at --since's day is included" \
     "$(printf '%s\n' "$SINCE_OUT" | grep -c '^legN')" "1"
 check_contains "since-edge: the surviving doc is the one at the boundary" "$SINCE_OUT" "legN9221"
@@ -98,6 +101,7 @@ check_contains "since-edge: the surviving doc is the one at the boundary" "$SINC
 # --- (k) until-edge: doc_epoch >= UNTIL_EPOCH is the exclusive upper edge
 export SCORECARD_HANDOVER_DIR="$HERE/fixtures/leg-relaunch/until-edge"
 UNTIL_OUT=$("$RELAUNCH" --since 2026-01-01T00:00:00Z --until 2026-08-06T00:00:00Z 2>/dev/null)
+check_exit "until-edge: exits 0" "$?" "0"
 check "until-edge: a doc dated exactly at --until's day is excluded" \
     "$(printf '%s\n' "$UNTIL_OUT" | grep -c '^legN')" "1"
 check_contains "until-edge: the surviving doc is the one before the boundary" "$UNTIL_OUT" "legN9230"
@@ -105,6 +109,7 @@ check_contains "until-edge: the surviving doc is the one before the boundary" "$
 # --- (l) the handover-doc glob ignores filenames with no legN token/no date
 export SCORECARD_HANDOVER_DIR="$HERE/fixtures/leg-relaunch/ignore-nonmatching"
 IGNORE_OUT=$("$RELAUNCH" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "ignore-nonmatching: exits 0" "$?" "0"
 check "ignore-nonmatching: a filename with no legN token/date is not picked up" \
     "$(printf '%s\n' "$IGNORE_OUT" | grep -c '^legN')" "1"
 

@@ -79,6 +79,7 @@ check_exit "threshold-k: leading-zero value exits 2" "$?" "2"
 # --- (f) boundary: exactly at threshold is under, strictly above is over
 # (avg-ctx=200.0k -> avg_n=200000, default threshold-k=200 -> THRESHOLD=200000)
 BOUNDARY_OUT=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "boundary: exits 0" "$?" "0"
 check_contains "boundary: avg exactly at threshold classifies under" \
     "$BOUNDARY_OUT" "2026-08-01 under"
 check_contains "boundary: avg strictly above threshold classifies over" \
@@ -90,6 +91,7 @@ check_contains "boundary: avg strictly above threshold classifies over" \
 # also pass with --threshold-k silently ignored, since the fixture's other
 # session is already over at the default threshold-k=200.
 CUSTOM_LOW=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z --threshold-k 199 2>/dev/null)
+check_exit "threshold-k custom: exits 0" "$?" "0"
 check "threshold-k custom: both sessions now over, none under" \
     "$(printf '%s\n' "$CUSTOM_LOW" | awk '{$1=$1; print}' | sort)" "2 2026-08-01 over"
 
@@ -97,6 +99,7 @@ check "threshold-k custom: both sessions now over, none under" \
 # never bucketed; only the one leg-titled transcript survives
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/leg-over-by-day/exclusion"
 EXCLUSION_OUT=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z 2>/dev/null)
+check_exit "exclusion: exits 0" "$?" "0"
 check "exclusion: only the leg-titled, non-subagent transcript is bucketed" \
     "$(printf '%s\n' "$EXCLUSION_OUT" | awk '{s+=$1} END{print s+0}')" "1"
 check_contains "exclusion: the surviving row is the leg session's day/class" \
@@ -105,12 +108,14 @@ check_contains "exclusion: the surviving row is the leg session's day/class" \
 # --- (i) since-edge: last_epoch >= SINCE_EPOCH is inclusive
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/leg-over-by-day/since-edge"
 SINCE_OUT=$("$OVER_BY_DAY" --since 2026-08-05T00:00:00Z 2>/dev/null)
+check_exit "since-edge: exits 0" "$?" "0"
 check "since-edge: only the session whose last activity is exactly at --since is included" \
     "$(printf '%s\n' "$SINCE_OUT" | awk '{s+=$1} END{print s+0}')" "1"
 
 # --- (j) until-edge: first_epoch >= UNTIL_EPOCH is exclusive
 export SCORECARD_PROJECTS_DIR="$HERE/fixtures/leg-over-by-day/until-edge"
 UNTIL_OUT=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z --until 2026-08-06T00:00:00Z 2>/dev/null)
+check_exit "until-edge: exits 0" "$?" "0"
 check "until-edge: a session whose first activity is exactly at --until is excluded" \
     "$(printf '%s\n' "$UNTIL_OUT" | awk '{s+=$1} END{print s+0}')" "1"
 
