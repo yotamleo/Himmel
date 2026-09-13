@@ -195,6 +195,9 @@ Security reviewed: yes" TICKET_ID_REQUIRED=0
 NONCONFORMING_OUT=$(run_gate "chore: add feature
 
 Security reviewed: yes" TICKET_ID_REQUIRED=0 2>&1)
+# pipefail-ok: $NONCONFORMING_OUT is already a captured, bounded string (not a
+# live pipe to a producer process), so pipefail's SIGPIPE-on-early-exit
+# concern does not apply to these `printf | grep -qi` pairs.
 if printf '%s' "$NONCONFORMING_OUT" | grep -qi 'manual' \
    && printf '%s' "$NONCONFORMING_OUT" | grep -qi 'claude-code-security-review' \
    && printf '%s' "$NONCONFORMING_OUT" | grep -qi 'pr-review-toolkit' \

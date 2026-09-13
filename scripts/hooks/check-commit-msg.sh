@@ -112,6 +112,9 @@ warn_nonconforming_attestation_trailers() {
   local sec_token_re='(manual|claude-code-security-review|pr-review-toolkit|ad-hoc)([[:space:]]|$|[.,;])'
   local sec_trailer_re='^[[:space:]]*Security reviewed:'
   local sec_attest_re="${sec_trailer_re}[[:space:]]*${sec_token_re}"
+  # pipefail-ok: this script never sets `set -o pipefail` (only the unrelated
+  # `set -f`/`set +f` glob toggle below); grep's own exit status is what these
+  # conditionals branch on either way.
   if printf '%s\n' "$msg" | grep -qiE "$sec_trailer_re" \
       && ! printf '%s\n' "$msg" | grep -qiE "$sec_skip_re" \
       && ! printf '%s\n' "$msg" | grep -qiE "$sec_attest_re"; then
@@ -122,6 +125,8 @@ warn_nonconforming_attestation_trailers() {
   local plat_skip_re='^[[:space:]]*\[skip platforms-check\]'
   local plat_empty_re='^[[:space:]]*Platforms tested:[[:space:]]*$'
   local plat_nonempty_re='^[[:space:]]*Platforms tested:[[:space:]]*[^[:space:]]'
+  # pipefail-ok: same reasoning as the Security-reviewed check above — no
+  # pipefail is active in this script.
   if printf '%s\n' "$msg" | grep -qiE "$plat_empty_re" \
       && ! printf '%s\n' "$msg" | grep -qiE "$plat_skip_re" \
       && ! printf '%s\n' "$msg" | grep -qiE "$plat_nonempty_re"; then
