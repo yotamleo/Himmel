@@ -134,15 +134,17 @@ def is_tool_result($row):
 
 def classify($s):
   if ($s | startswith("Another Claude session sent a message:")) or ($s | startswith("<cross-session-message")) then "cs"
-  elif ($s | startswith("<task-notification>")) or ($s | startswith("[SYSTEM NOTIFICATION")) then "mon"
+  elif ($s | startswith("<task-notification>")) or ($s | startswith("[SYSTEM NOTIFICATION")) or ($s | startswith("[Cross-session idle notice]")) then "mon"
   else null end;
 
-# A skill/slash-command body: a `type:"user"` row inserted as a side effect of
-# a Skill tool_use (real shape: isMeta:true, content is the loaded skills own
-# instruction text -- verified against a live transcript, HIMMEL-2781) or one
-# carrying the CLI own `<command-name>`/`<command-message>` wrapper. Neither
-# is a real wake -- it must not overwrite the wake classification set by the
-# actual triggering row, or the classifier miscounts it as "op" (HIMMEL-2781).
+# A skill/slash-command body carrying the CLI own
+# `<command-name>`/`<command-message>` wrapper. A genuine operator-typed slash
+# command (e.g. /plugin, /exit) produces this exact text prefix with isMeta
+# ABSENT and entrypoint:cli -- only an injected command/skill body carries
+# isMeta:true on the same prefix (verified against real transcripts,
+# HIMMEL-3006). The caller therefore gates this on isMeta:true as well, so a
+# bare prefix with isMeta absent falls through to the real-wake op branch
+# instead of being swallowed.
 def is_command_body($s):
   ($s | startswith("<command-name>")) or ($s | startswith("<command-message>"));
 
@@ -187,7 +189,7 @@ reduce inputs as $row (
     | (classify($txt)) as $c
     | if $c != null then
         (.wake = $c | .afterSkill = false | .pendingEvent = true)
-      elif (($row.isMeta == true) and .afterSkill) or is_command_body($txt) then
+      elif ($row.isMeta == true) and (.afterSkill or is_command_body($txt)) then
         (if is_command_body($txt) then .afterSkill = false else . end)
       else
         (.wake = "op" | .afterSkill = false | .pendingEvent = true)
