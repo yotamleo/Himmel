@@ -529,6 +529,75 @@ else
     fail "T1t2 home-path ellipsis-placeholder control (rc=$SCAN_RC) out=$SCAN_OUT"
 fi
 
+# T1x (HIMMEL-2954 finding 1): a real dotted username (a common corporate
+# first.last shape) is captured whole instead of stopping at the first dot --
+# before this fix, "user" alone would satisfy the allowlist and the rest of
+# the identity ("smith") never got rescanned.
+r=$(new_repo)
+printf 'HOME=/home/user.smith/Documents/x\n' > "$r/dotted.txt"  # leak-allow: home-path test fixture
+git -C "$r" add dotted.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "dotted.txt:1"; then
+    pass "T1x home-path: dotted username (user.smith) captured whole and flagged"
+else
+    fail "T1x home-path dotted-username control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1x2: RED-preserving control for T1x -- a regex literal using '.' as a
+# wildcard right after the /home/ prefix must still stay clean, proving the
+# dotted-username join doesn't reintroduce the #664 wildcard false positive
+# (a '.' NOT followed by another name character still ends the capture).
+r=$(new_repo)
+printf "grep -qE '/home/user.*/Documents' \"\$f\"\n" > "$r/wildcard.txt"  # leak-allow: home-path test fixture
+git -C "$r" add wildcard.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1x2 home-path: /home/user.*/ wildcard-dot regex literal stays clean"
+else
+    fail "T1x2 home-path wildcard-dot control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1x3: a trailing dot with no following name character (/home/user./x) still
+# captures just "user" -- the allowlisted leading segment on its own stays
+# clean, same as before this fix (the join only fires when a name character
+# follows the dot).
+r=$(new_repo)
+printf 'HOME=/home/user./x\n' > "$r/trailing-dot.txt"  # leak-allow: home-path test fixture
+git -C "$r" add trailing-dot.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1x3 home-path: /home/user./x stops at the trailing dot (captures 'user' only, allowlisted)"
+else
+    fail "T1x3 home-path trailing-dot control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1y (HIMMEL-2954 finding 2): a genuine, non-allowlisted home path truncated
+# by a literal "..." in tool output (not a Windows 8.3 short name) must still
+# be reported -- before this fix, ANY name followed by "..." was suppressed.
+r=$(new_repo)
+printf 'See /home/alice/...\n' > "$r/truncated.txt"  # leak-allow: home-path test fixture
+git -C "$r" add truncated.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 1 ] && grepq "$SCAN_OUT" -F "home-path" && grepq "$SCAN_OUT" -F "truncated.txt:1"; then
+    pass "T1y home-path: genuine leak truncated by ... is still flagged (not an 8.3 short name)"
+else
+    fail "T1y home-path truncated-real-leak control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
+# T1y2: RED-preserving control for T1y -- the documented "<prefix>/<name>/..."
+# doc-elision shape stays clean when <name> is itself allowlisted (e.g.
+# "example"), same as any other allowlisted name -- home_name_allowed
+# suppresses it independent of the narrowed ellipsis check.
+r=$(new_repo)
+printf 'See /home/example/...\n' > "$r/doc-elision.txt"  # leak-allow: home-path test fixture
+git -C "$r" add doc-elision.txt
+scan "$r" --tree
+if [ "$SCAN_RC" -eq 0 ] && [ -z "$(strip_hostname_skip "$SCAN_OUT")" ]; then
+    pass "T1y2 home-path: allowlisted-name doc-elision (/home/example/...) stays clean"
+else
+    fail "T1y2 home-path doc-elision control (rc=$SCAN_RC) out=$SCAN_OUT"
+fi
+
 # T1u: RED-preserving control for T1t/T1t2 -- a genuine, non-allowlisted home
 # path sitting on its own line in the same file as the regex-literal shapes
 # must still be flagged, proving the metachar exclusion doesn't blind the
@@ -1286,20 +1355,22 @@ fi
 # positive rather than adding a detection, so the polarity is reversed: the
 # REAL (fixed) script must stay CLEAN on this fixture, and the MUTANT
 # (reverted to pre-fix) must misreport it as a leak. The exclusion appears
-# four times in one regex line (three negated-class copies, one positive
-# terminator copy); mutate_call_site's own single-occurrence contract can't
-# express that, so this control does its own occurrence-counted, index()-based
-# substring removal (same literal-substring technique mutate_call_site uses
-# internally, just applied per-line instead of first-match-only) rather than
-# reuse that helper.
+# five times in one regex line (four negated-class copies, one positive
+# terminator copy -- HIMMEL-2954 added a fourth negated-class copy for the
+# `(\.<seg>)*` dotted-username join on the single-word alternative);
+# mutate_call_site's own single-occurrence contract can't express that, so
+# this control does its own occurrence-counted, index()-based substring
+# removal (same literal-substring technique mutate_call_site uses internally,
+# just applied per-line instead of first-match-only) rather than reuse that
+# helper.
 r=$(new_repo)
 printf '%s\n' "ABS_PATTERN='([A-Za-z]:[/\\]+Users[/\\]|/Users/|/root/|/home/[A-Za-z0-9._-]+/)'" > "$r/f.txt"  # leak-allow: home-path test fixture
 git -C "$r" add f.txt
 mutant="$WS/mutant-home-path-metachars.sh"
 old_frag='(.*+?{}|^$['
 before=$(grep -o -F "$old_frag" "$SCRIPT" | wc -l | tr -d ' ')
-if [ "$before" != "4" ]; then
-    fail "RED-home-path-metachars anchor '$old_frag' did not appear exactly 4 times (before=$before) -- a stale anchor would leave the mutant unmutated and this control would pass vacuously"
+if [ "$before" != "5" ]; then
+    fail "RED-home-path-metachars anchor '$old_frag' did not appear exactly 5 times (before=$before) -- a stale anchor would leave the mutant unmutated and this control would pass vacuously"
 else
     MUT_O="$old_frag" awk '
         { line = $0

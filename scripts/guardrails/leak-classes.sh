@@ -131,6 +131,31 @@
 # A name exactly one character long, or starting with '.', is excluded
 # structurally (see above) rather than enumerated — bash 3.2-safe, no
 # associative arrays.
+# HIMMEL-2954 (two narrower refinements to the 0cbd3f6/#664 heuristic,
+# both filed as follow-on panel findings against that fix rather than
+# widening it further):
+#   dotted usernames    the name class is `<seg>(\.<seg>)*`, where <seg> is
+#                        the existing name-char class -- a '.' joins the
+#                        capture ONLY when followed by another name
+#                        character, so a real corporate first.last shape
+#                        (/home/user.smith/) is captured whole instead of # leak-allow: home-path doc example
+#                        stopping at the first dot (which used to let the
+#                        leading segment alone satisfy the allowlist and
+#                        hide the rest of the identity). A '.' NOT followed
+#                        by another name character still ends the capture,
+#                        so the regex-wildcard false-positive class #664
+#                        fixed stays fixed: /home/.*/, /home/user.*/ and
+#                        /home/user./ all still stop before the dot.
+#   ellipsis skip        narrowed to fire only when the captured name itself
+#                        looks like a Windows 8.3 short name (ends "~<digits>",
+#                        the RUNNER~1 shape) -- any other name immediately
+#                        followed by a doc-style "..."/"…" is reported like
+#                        any other leak, so a genuine leaked path truncated in
+#                        tool output is no longer silently dropped. The
+#                        documented "<prefix>/<name>/..." doc-elision shape
+#                        (e.g. C:/Users/example/...) stays clean the same way
+#                        any other allowlisted name does -- home_name_allowed
+#                        suppresses it independent of the ellipsis check.
 #
 # Skips: binary files (grep -I), graphify-out/, and any path prefix listed in
 # .leak-classes-ignore at the repo root (absent/empty by default — an escape
@@ -478,25 +503,36 @@ check_home_path() {
     # match anyway -- but only because the leading-context group can also
     # consume just the ":" as its own non-word boundary char, landing on the
     # bare case-sensitive /Users/ alternative by coincidence, not by design.
-    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+( [^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+)*)([/\\]|\\\\)|([^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+)($|[]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]))'
+    local re='(^file://|^|[^A-Za-z0-9_.$/\\-]file://|[^A-Za-z0-9_.$/\\-])(/home/|/Users/|/mnt/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]/[Uu][Ss][Ee][Rr][Ss]/|/[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:/[Uu][Ss][Ee][Rr][Ss]/|[A-Za-z]:\\\\[Uu][Ss][Ee][Rr][Ss]\\\\|[A-Za-z]:\\[Uu][Ss][Ee][Rr][Ss]\\)(([^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+( [^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+)*)([/\\]|\\\\)|([^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+(\.[^]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]+)*)($|[]/\\[:space:]`"'\'',;:)(.*+?{}|^$[]))'
     MATCHES=()
     # Loop past EVERY match, allowlisted or not, so a second (or third)
     # non-allowlisted home path later on the same line is still caught.
     while [[ "$remaining" =~ $re ]]; do
         whole="${BASH_REMATCH[0]}"
+        local prefix="${BASH_REMATCH[2]}"
         if [ -n "${BASH_REMATCH[4]}" ]; then
             name="${BASH_REMATCH[4]}"
             term="${BASH_REMATCH[6]}"
         else
             name="${BASH_REMATCH[7]}"
-            term="${BASH_REMATCH[8]}"
+            term="${BASH_REMATCH[9]}"
         fi
         local rest="${remaining#*"$whole"}"
-        # A captured name immediately followed by a doc-style ellipsis is a
-        # truncated/placeholder example (e.g. "C:\Users\RUNNER~1\..."), not
-        # a real path -- don't report it, but still advance past it.
-        if [[ "$rest" != $'...'* && "$rest" != $'\xe2\x80\xa6'* ]] && ! home_name_allowed "$name"; then
-            MATCHES+=("${BASH_REMATCH[2]}${name}${term}")
+        # A captured name immediately followed by a doc-style ellipsis is only
+        # skipped when the name itself looks like a Windows 8.3 short name
+        # (ends "~<digits>", e.g. "RUNNER~1") -- a genuine leaked path that
+        # happens to sit before a literal "..." in truncated tool output is
+        # NOT a placeholder and must still be reported (HIMMEL-2954 finding 2;
+        # an allowlisted name, e.g. the documented "<prefix>/<name>/..." doc-
+        # elision shape, is already suppressed below by home_name_allowed
+        # regardless of the ellipsis). name/term/prefix are captured above,
+        # before this [[ =~ ]] check, because it overwrites BASH_REMATCH.
+        local is_8dot3=0
+        [[ "$name" =~ ~[0-9]+$ ]] && is_8dot3=1
+        local ellipsis_next=0
+        [[ "$rest" == $'...'* || "$rest" == $'\xe2\x80\xa6'* ]] && ellipsis_next=1
+        if { [ "$ellipsis_next" -eq 0 ] || [ "$is_8dot3" -eq 0 ]; } && ! home_name_allowed "$name"; then
+            MATCHES+=("${prefix}${name}${term}")
         fi
         remaining="$rest"
     done

@@ -9,7 +9,12 @@ import { parseExtraCmdArg, runExtraCmd } from "./extra-cmd.js";
 import { runCustomLineCommand, shouldRunCustomLine } from "./custom-line-cmd.js";
 import { getClaudeCodeVersion } from "./version.js";
 import { getMemoryUsage } from "./memory.js";
-import { getAllSessionsCacheEconomics } from "./cache-economics.js";
+import {
+  getAllSessionsCacheEconomics,
+  runCacheEconomicsRefresh,
+  REFRESH_CACHE_ECONOMICS_FLAG,
+  getRefreshLockTokenFromArgv,
+} from "./cache-economics.js";
 import { readAuthInfo } from "./auth.js";
 import { resolveEffortLevel } from "./effort.js";
 import { applyContextWindowFallback } from "./context-cache.js";
@@ -265,6 +270,13 @@ export function formatSessionDuration(
   return `${hours}h ${remainingMins}m`;
 }
 
+// True when this process was launched as the detached cache-economics
+// refresh child (spawned by getAllSessionsCacheEconomics), which should scan
+// + write the cache and exit rather than render a statusline.
+export function shouldRunCacheEconomicsRefresh(argv: string[] = process.argv): boolean {
+  return argv.includes(REFRESH_CACHE_ECONOMICS_FLAG);
+}
+
 const scriptPath = fileURLToPath(import.meta.url);
 const argvPath = process.argv[1];
 const isSamePath = (a: string, b: string): boolean => {
@@ -275,5 +287,9 @@ const isSamePath = (a: string, b: string): boolean => {
   }
 };
 if (argvPath && isSamePath(argvPath, scriptPath)) {
-  void main();
+  if (shouldRunCacheEconomicsRefresh()) {
+    void runCacheEconomicsRefresh({}, getRefreshLockTokenFromArgv());
+  } else {
+    void main();
+  }
 }

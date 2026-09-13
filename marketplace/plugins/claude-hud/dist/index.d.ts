@@ -54,4 +54,5 @@ export declare function isHudDisabled(env?: NodeJS.ProcessEnv): boolean;
 export declare function resolveVcsStatus(deps: Pick<MainDeps, "getGitStatus" | "getJjStatus" | "isJjRepo">, config: HudConfig, cwd?: string): Promise<GitStatus | null>;
 export declare function main(overrides?: Partial<MainDeps>): Promise<void>;
 export declare function formatSessionDuration(sessionStart?: Date, now?: () => number): string;
+export declare function shouldRunCacheEconomicsRefresh(argv?: string[]): boolean;
 //# sourceMappingURL=index.d.ts.map

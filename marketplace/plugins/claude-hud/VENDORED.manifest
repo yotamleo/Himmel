@@ -32,10 +32,10 @@ f66a4e5c8dd00e104a8db3f04929d136840b4dae  claude-hud-preview-5-2.png
 9a8144936302b193d56764c664322bcfab1a3885  dist/auth.d.ts.map
 6ac09470fadcadcd71e1245dc6aaeb5f9ce93092  dist/auth.js
 d0119f7e3343d6aa898133fe00d4e2714d7019c9  dist/auth.js.map
-92c0de02c457b0e3ceeb63f6672ae89f105d555e  dist/cache-economics.d.ts
-f047f2e824ef12e894fcaf84fa8551483d89818c  dist/cache-economics.d.ts.map
-80847e781f77ed2f960f7cc19edfb0b5f10418fb  dist/cache-economics.js
-9fe15f32181d754c807cdcbf60a2562931ee3a38  dist/cache-economics.js.map
+a59b5b88b64756d5fd27ee5a4467df5a3c5d3872  dist/cache-economics.d.ts
+87c07216e74f70017a05822765ac82510b4ece85  dist/cache-economics.d.ts.map
+d4156c1df1717aa0fc5260b48db00a420fc38837  dist/cache-economics.js
+fd0bad36c5cbbe1374c1f479a37d1cc958361d0b  dist/cache-economics.js.map
 99f7599e59a5d0e9d917d29169b92c99f8d43ce3  dist/claude-config-dir.d.ts
 a4bb1524d33c440ab658eedb900d5280a859e72b  dist/claude-config-dir.d.ts.map
 ab6e334a7ddf9d93fbaaddb71bc3a51d371a114c  dist/claude-config-dir.js
@@ -112,10 +112,10 @@ c16f99f6828b8879fabda53c5beea443ff22e8c2  dist/i18n/zh-Hant.d.ts
 92c0c94d51b488fb1e42a3aed247dd24b3b25a77  dist/i18n/zh-Hant.d.ts.map
 cf03782b1c0c1fbb542879784db906ff3c105a12  dist/i18n/zh-Hant.js
 19899658120f3d29443524fa3211c10629bfa2fe  dist/i18n/zh-Hant.js.map
-e9f42787d5cf78b51475987be541ed8283fdc9ce  dist/index.d.ts
-7a4172e5ac8fd2276c6eaa468c832c5e34e5a759  dist/index.d.ts.map
-56bd140a2fe35bf07d22c3e6dbc118e818bf37f1  dist/index.js
-e13ba6360992c9b64ea94e7bc1c015b359547f18  dist/index.js.map
+289bf667e7c0259b3b62ab6e787b31e76e16aca6  dist/index.d.ts
+5192035f37293ba9c70237b32f5064a73939b382  dist/index.d.ts.map
+c48964bbbb43dceb2a64dea170eb6677fa2a9a25  dist/index.js
+fba3990987090da996d706cb3d54bf2cf37d1a17  dist/index.js.map
 332988b117231ca0996f0323a0f0e443a68829c2  dist/jj.d.ts
 f870502154873972587c916abe2730f7ca47b2ae  dist/jj.d.ts.map
 38281fdeb7ce49dbcd49de1c962e8653f759eeaf  dist/jj.js
@@ -288,7 +288,7 @@ e729470612b16874f7d1e9cb5d2d27bf72f471a7  package-lock.json
 17a5abeb1fd6c11df6994b19133871f4e928d091  package.json
 ae323f37c223573fbbe914b4713a349400dfe1e5  scripts/clean-dist.mjs
 0863b2b4dca6c18cacd3405970bedc4359bd0d2f  src/auth.ts
-bf332439326ebb8c06e09d08879530feb0134d96  src/cache-economics.ts
+199573723752f2785ed8d2e1598c52884f2cb9b9  src/cache-economics.ts
 01cc4f3dd092f61262bd424bbb931edacd4dba76  src/claude-config-dir.ts
 67a7cfbabcf1ad4233c26b3297639d42a37c3249  src/config-reader.ts
 ca1b7ac2651d6a105aac50e8bacb88e42a64c028  src/config.ts
@@ -308,7 +308,7 @@ f1b51400f5398f8821e2093ce0298602f11509b3  src/i18n/index.ts
 963205b99eff2ae44b407c336567b017ea8e674b  src/i18n/types.ts
 49c0e710de94124386ef69b0284b1c6e31565632  src/i18n/zh-Hans.ts
 a5f22c2411d3f707c0c250385b5ada2afa7da29c  src/i18n/zh-Hant.ts
-847d6c03b13c4febc3f67097370f2bedddd84002  src/index.ts
+1b106b48baf421dffa8dabaabee3f78d834d660b  src/index.ts
 1b4d7310586a7e7c226801bd8aa9661ea73bb4c8  src/jj.ts
 cd5f82a9f7df4712d1dae0dec9d6c5e144a54180  src/memory.ts
 4e5436644df0579d525eada0fcd57c4dae804db8  src/model-source.ts
@@ -379,7 +379,7 @@ ec57a4788527bb09049b8d3e8a57576ae8371a2d  tests/jj.test.js
 97eea31e309ace99950a6bb76baf3bf970d4da07  tests/label-align.test.js
 14bc863601019bd1ad8c1de043b08040738cc0bc  tests/memory-coverage.test.js
 d0efca32629ec29d4f5e93e8dc09eb25e0191eef  tests/memory.test.js
-a33e27765ed2b3924e99f450cf5d0de6e26d6904  tests/prompt-cache-economics.test.js
+a49ad0fa25704528a6cb05334a3249efb31c57f7  tests/prompt-cache-economics.test.js
 0e9a01ca4f35379ebd90affee359f1963e964417  tests/prompt-cache.test.js
 1c919a07d73578fbcb62a52004caf0c10a32dd7a  tests/readme-options.test.js
 7701155cc56661c39c8950a05ce03bf96ba63c6e  tests/render-width.test.js
