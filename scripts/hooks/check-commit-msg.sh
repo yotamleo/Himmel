@@ -112,12 +112,11 @@ warn_nonconforming_attestation_trailers() {
   local sec_token_re='(manual|claude-code-security-review|pr-review-toolkit|ad-hoc)([[:space:]]|$|[.,;])'
   local sec_trailer_re='^[[:space:]]*Security reviewed:'
   local sec_attest_re="${sec_trailer_re}[[:space:]]*${sec_token_re}"
-  # pipefail-ok: this script never sets `set -o pipefail` (only the unrelated
-  # `set -f`/`set +f` glob toggle below); grep's own exit status is what these
-  # conditionals branch on either way.
-  if printf '%s\n' "$msg" | grep -qiE "$sec_trailer_re" \
-      && ! printf '%s\n' "$msg" | grep -qiE "$sec_skip_re" \
-      && ! printf '%s\n' "$msg" | grep -qiE "$sec_attest_re"; then
+  local sec_trailer_hit sec_skip_hit sec_attest_hit
+  sec_trailer_hit=$(printf '%s\n' "$msg" | grep -iE "$sec_trailer_re")
+  sec_skip_hit=$(printf '%s\n' "$msg" | grep -iE "$sec_skip_re")
+  sec_attest_hit=$(printf '%s\n' "$msg" | grep -iE "$sec_attest_re")
+  if [ -n "$sec_trailer_hit" ] && [ -z "$sec_skip_hit" ] && [ -z "$sec_attest_hit" ]; then
     echo "WARN check-commit-msg: 'Security reviewed:' trailer present but its token is not one of the four accepted (manual, claude-code-security-review, pr-review-toolkit, ad-hoc) — the pre-push gate will refuse this push." >&2
     echo "  Fix: Security reviewed: manual — <what you checked>" >&2
   fi
@@ -125,11 +124,11 @@ warn_nonconforming_attestation_trailers() {
   local plat_skip_re='^[[:space:]]*\[skip platforms-check\]'
   local plat_empty_re='^[[:space:]]*Platforms tested:[[:space:]]*$'
   local plat_nonempty_re='^[[:space:]]*Platforms tested:[[:space:]]*[^[:space:]]'
-  # pipefail-ok: same reasoning as the Security-reviewed check above — no
-  # pipefail is active in this script.
-  if printf '%s\n' "$msg" | grep -qiE "$plat_empty_re" \
-      && ! printf '%s\n' "$msg" | grep -qiE "$plat_skip_re" \
-      && ! printf '%s\n' "$msg" | grep -qiE "$plat_nonempty_re"; then
+  local plat_empty_hit plat_skip_hit plat_nonempty_hit
+  plat_empty_hit=$(printf '%s\n' "$msg" | grep -iE "$plat_empty_re")
+  plat_skip_hit=$(printf '%s\n' "$msg" | grep -iE "$plat_skip_re")
+  plat_nonempty_hit=$(printf '%s\n' "$msg" | grep -iE "$plat_nonempty_re")
+  if [ -n "$plat_empty_hit" ] && [ -z "$plat_skip_hit" ] && [ -z "$plat_nonempty_hit" ]; then
     echo "WARN check-commit-msg: 'Platforms tested:' trailer present with an empty value — the pre-push gate will refuse this push." >&2
     echo "  Fix: Platforms tested: linux, windows" >&2
   fi
