@@ -1186,4 +1186,49 @@ check "57 no CONSOLE_ROLE: stub record has no --role" \
     "$(grep -c -- '--role' "$record57" 2>/dev/null)" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc57A" "$token57a" >/dev/null 2>&1
 
+# --- 58/59 (HIMMEL-2975 CR round 1, PR #754): do_arm must reject relay and
+# any invalid CONSOLE_ROLE BEFORE the detached launch, not rely on
+# headed-arm.sh's own refusal -- that refusal runs in a background process
+# the caller cannot see, so without this check console.sh printed "armed:"
+# and exited 0 even though nothing started.
+doc58A="$root/tester/rolerepo3/DEMO-nextleg-${today}A-console.md"
+record58="$tmp/role-record-58"
+cat > "$tmp/stub-arm-role-58.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record58"
+STUB
+chmod +x "$tmp/stub-arm-role-58.sh"
+
+out58a="$(console new --bucket rolerepo3)"
+token58a="$(token_of "$out58a")"
+rc58b=0
+out58b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-58.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    CONSOLE_ROLE=relay \
+    bash "$C" next --bucket rolerepo3 --arm --deadline-min 0 ) 2>&1 )" || rc58b=$?
+check "58 CONSOLE_ROLE=relay: exits 2" "$rc58b" "2"
+check "58 CONSOLE_ROLE=relay: no armed line" "$(printf '%s\n' "$out58b" | grep -c '^armed: ')" "0"
+check "58 CONSOLE_ROLE=relay: stub never invoked" "$([ -e "$record58" ] && echo 1 || echo 0)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc58A" "$token58a" >/dev/null 2>&1
+
+doc59A="$root/tester/rolerepo4/DEMO-nextleg-${today}A-console.md"
+record59="$tmp/role-record-59"
+cat > "$tmp/stub-arm-role-59.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record59"
+STUB
+chmod +x "$tmp/stub-arm-role-59.sh"
+
+out59a="$(console new --bucket rolerepo4)"
+token59a="$(token_of "$out59a")"
+rc59b=0
+out59b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    CONSOLE_HEADED_ARM="$tmp/stub-arm-role-59.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    CONSOLE_ROLE=bogus \
+    bash "$C" next --bucket rolerepo4 --arm --deadline-min 0 ) 2>&1 )" || rc59b=$?
+check "59 CONSOLE_ROLE=bogus: exits 2" "$rc59b" "2"
+check "59 CONSOLE_ROLE=bogus: no armed line" "$(printf '%s\n' "$out59b" | grep -c '^armed: ')" "0"
+check "59 CONSOLE_ROLE=bogus: stub never invoked" "$([ -e "$record59" ] && echo 1 || echo 0)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc59A" "$token59a" >/dev/null 2>&1
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

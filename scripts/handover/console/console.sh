@@ -185,25 +185,34 @@ find_free_letter() {
 # lines. deadline_epoch/model/workdir are read from the outer resolution
 # (constant for the whole invocation), not passed positionally.
 do_arm() {
-    local session="$1" doc="$2" fill_signal="$3" log="$4" arm role_args
+    local session="$1" doc="$2" fill_signal="$3" log="$4" arm
+    local -a role_args=()
+    # HIMMEL-2975: CONSOLE_ROLE (judge) is forwarded to headed-arm.sh as a
+    # leading --role, ONLY when set. `relay` and any other value are refused
+    # HERE, before the detached launch -- headed-arm.sh itself also refuses
+    # --role relay (a relay is a leg, never armed through this console path),
+    # but that refusal happens in a background process the caller cannot see,
+    # so validating up front is what keeps a bad role from printing armed:.
+    case "${CONSOLE_ROLE:-}" in
+        "") ;;
+        judge) role_args=(--role judge) ;;
+        relay)
+            err "relay consoles must use headed-arm-leg.sh --relay"
+            return 2
+            ;;
+        *)
+            err "CONSOLE_ROLE must be judge, got: $CONSOLE_ROLE"
+            return 2
+            ;;
+    esac
     mkdir -p "$(dirname "$log")"
     arm="${CONSOLE_HEADED_ARM:-$HERE/../headed-arm.sh}"
-    # HIMMEL-2975: CONSOLE_ROLE (judge|relay) is forwarded to headed-arm.sh
-    # as a leading --role, ONLY when set -- unquoted on purpose (a single
-    # word), same word-split contract headed-arm.sh's own LAUNCHER_ENV seam
-    # documents; headed-arm.sh itself refuses --role relay (a relay is a
-    # leg, never armed through this console path).
-    role_args=""
-    [ -n "${CONSOLE_ROLE:-}" ] && role_args="--role $CONSOLE_ROLE"
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
-        # shellcheck disable=SC2086  # role_args: see the CONSOLE_ROLE note above.
-        bash "$arm" $role_args "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
+        bash "$arm" "${role_args[@]}" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
-        # shellcheck disable=SC2086  # role_args: see the CONSOLE_ROLE note above.
-        setsid nohup bash "$arm" $role_args "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        setsid nohup bash "$arm" "${role_args[@]}" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     else
-        # shellcheck disable=SC2086  # role_args: see the CONSOLE_ROLE note above.
-        nohup bash "$arm" $role_args "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        nohup bash "$arm" "${role_args[@]}" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     fi
     echo "armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
     echo "arm-log: $log"
