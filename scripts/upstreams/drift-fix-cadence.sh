@@ -15,28 +15,38 @@
 # an INTERACTIVE claude session each (HIMMEL-128 — never `-p`/`--print`): one on
 # the `/drift-fix` runbook (bump what is mechanically bumpable), one on the
 # `/fork-resync` runbook (rebase the carried fork against upstream). The drift
-# leg lands on private main and leaves a PUBLIC PR for the operator to merge;
-# the resync leg's unattended run stops at the audit and opens nothing — an
-# operator-run resync may go further, per its own runbook. The public
-# squash-merge stays human-authorized, unchanged.
+# leg opens an ordinary PR against origin and stops; the resync leg's
+# unattended run stops at the audit and opens nothing — an operator-run
+# resync may go further, per its own runbook. The origin squash-merge stays
+# human-authorized, unchanged.
 #
 # WHY a claude session and not a plain shell script: the repair has to pass the
 # same rails a human PR passes — a clean /pr-check before `gh pr create` (the
 # CR-marker hook HARD-blocks otherwise), attestation trailers in the FIRST
-# commit, and `scripts/propagate-public.sh ship` for the public hop. A headless
-# shell runner would have to bypass all three. The MECHANICAL half is still
+# commit, and the ordinary origin PR + review gate. A headless shell runner
+# would have to bypass all three. The MECHANICAL half is still
 # structural, not left to prose: scripts/upstreams/apply-drift-bump.sh owns the
 # actual pin edit, so the session cannot fat-finger a version or move
 # `synced_base` without moving the in-repo pin with it.
 #
 # TWO tasks, daily, default 05:00 (drift) / 05:30 (resync) local — after
 # pipeline-cadence's 02:00/03:00/04:00 legs (no overlap on the same machine)
-# and before the workday, so the drift leg's public PR is already waiting
-# when the operator checks (the resync leg's unattended run opens nothing —
-# see above). StartWhenAvailable=true: a fire missed because the machine
-# was off/asleep catches up when it is next on. See the LEG_DRIFT/LEG_RESYNC
+# and before the workday, so the drift leg's PR is already waiting when the
+# operator checks (the resync leg's unattended run opens nothing — see
+# above). StartWhenAvailable=true: a fire missed because the machine was
+# off/asleep catches up when it is next on. See the LEG_DRIFT/LEG_RESYNC
 # block below for why this is two tasks in one script rather than one task or
 # two scripts.
+#
+# STOP-point derivation (HIMMEL-2866, re-derived after HIMMEL-2865 retired the
+# public-repo propagation tail): fork-resync's STOP at the end of its step 3
+# protects `resync-fork.sh --push` — moving a fork branch on a remote the
+# operator owns — a hazard unchanged by origin being public, so it stays.
+# drift-fix's old STOP protected a SECOND review loop on a second (public)
+# remote; that surface is gone now that origin IS the public repo, and what
+# remains is the ordinary >=1-approval PR merge gate, which
+# `merge-on-green.sh` already enforces structurally (refuses without a
+# satisfied review, exit 12/17) — no separate STOP is needed for it.
 #
 # Usage:
 #   bash scripts/upstreams/drift-fix-cadence.sh arm [--time HH:MM] [--resync-time HH:MM] [--model M] [--force] [--dry-run]
@@ -143,7 +153,7 @@ LEG_RESYNC="HIMMEL-ForkResync"
 # the OEM codepage, where UTF-8 punctuation mojibakes. One line each, same
 # reason. The real runbooks live in .claude/commands/{drift-fix,fork-resync}.md
 # — these are only the invocations.
-PROMPT_DRIFT="Run /drift-fix to completion. This is the scheduled nightly upstream-drift repair cadence (HIMMEL-1323) - fully autonomous, no user prompts; follow the runbook exactly, STOP at the public PR, and report what landed."
+PROMPT_DRIFT="Run /drift-fix to completion. This is the scheduled nightly upstream-drift repair cadence (HIMMEL-1323) - fully autonomous, no user prompts; follow the runbook exactly, STOP at the open PR, and report what landed."
 PROMPT_RESYNC="Run /fork-resync to completion. This is the scheduled nightly carried-fork re-sync cadence (HIMMEL-1323/HIMMEL-1435) - fully autonomous, no user prompts; audit every BEHIND scripts/upstreams.json entry with a fork block (each entry's own note says whether a non-additive result is a regression to report or an expected known gap), then STOP at the end of step 3; NEVER run resync-fork.sh --push and do not open a branch or PR; report every result."
 
 # leg_prompt / leg_log / leg_runner <task-name> — the per-leg lookups, kept as
@@ -164,8 +174,8 @@ Usage: drift-fix-cadence.sh <arm|status|disarm> [flags]
 
 Arm the OS scheduler with the nightly upstream-drift REPAIR cadence
 (HIMMEL-1323): TWO daily tasks. HIMMEL-DriftFix fires an interactive claude
-session on the /drift-fix runbook -- bump what is mechanically bumpable, land
-it on private main, and leave a PUBLIC PR for the operator to merge.
+session on the /drift-fix runbook -- bump what is mechanically bumpable, open
+an ordinary PR against origin, and stop.
 HIMMEL-ForkResync fires one on the /fork-resync runbook -- rebase the carried
 fork against upstream; its unattended run stops at the audit and opens
 nothing (an operator-run resync may go further, per its own runbook).
@@ -182,7 +192,7 @@ Flags (arm only, except --dry-run):
   --time <HH:MM>         Daily fire time for HIMMEL-DriftFix, 24h local
                          (default 05:00 -- clear of pipeline-cadence's
                          02:00/03:00/04:00 legs, and early enough that the
-                         public PR is waiting by the workday).
+                         PR is waiting by the workday).
   --resync-time <HH:MM>  Daily fire time for HIMMEL-ForkResync, 24h local
                          (default 05:30 -- right after the drift leg).
   --model <name>  claude --model pin for BOTH sessions (default sonnet --
@@ -1154,15 +1164,15 @@ drift-fix-cadence ARMED (HIMMEL-1323)
   Each night:
     - $LEG_DRIFT runs /drift-fix: upgrade the installed vendor CLIs whose
       registry entry is marked upgrade.unattended:true, bump every repo
-      pin apply-drift-bump.sh can bump, land it on PRIVATE main, then
-      open a PUBLIC PR and STOP.
+      pin apply-drift-bump.sh can bump, then open an ordinary PR against
+      origin and STOP.
     - $LEG_RESYNC runs /fork-resync: rebase every BEHIND registry fork
       against upstream and audit it — a no-op most nights. The unattended
       run ALWAYS stops after each audit (clean, conflicted, or deliberately
       non-additive alike): it never pushes or opens anything, leaving that
       for a human instead.
 
-  The public squash-merge stays yours — neither leg ever merges it.
+  The squash-merge stays yours — neither leg ever merges it.
 
   Status / disarm anytime:
       bash scripts/upstreams/drift-fix-cadence.sh status
