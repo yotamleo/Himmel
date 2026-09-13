@@ -146,31 +146,6 @@ is_int "$FLEET_CAP" || FLEET_CAP=4
 # command plus flags); an override is a single executable path and must
 # be quoted. Branch on which one this run has instead of disabling
 # SC2086 for both.
-if [ -n "${FLEET_PS_CMD:-}" ]; then
-  _fleet_ps_cmd="$FLEET_PS_CMD"
-  _fleet_ps_raw="$("$FLEET_PS_CMD" 2>&1)"
-else
-  _fleet_ps_cmd="ps -eo pid=,args="
-  _fleet_ps_raw="$(ps -eo pid=,args= 2>&1)"
-fi
-_fleet_ps_rc=$?
-if [ "$_fleet_ps_rc" -ne 0 ]; then
-  echo "bank-preflight: fleet process census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than silently permitting an unbounded launch" >&2
-  echo "bank-preflight: FLEET ?/$FLEET_CAP" >&2
-  # codex-2 (CR review, 4th panel round, Suggestion): the documented
-  # FLEET_CAP_OK=1 override must apply here too - a broken/unsupported
-  # census is exactly the situation where the operator most needs the
-  # bypass to recover a launch, and it must not be reachable only on the
-  # ordinary at/over-cap path below.
-  if [ "${FLEET_CAP_OK:-}" = "1" ]; then
-    echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the failed census" >&2
-  elif [ "$LAUNCH_INTENT" = "1" ]; then
-    emit SKIPPED-FLEET
-  else
-    echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
-  fi
-fi
-
 # _fleet_lane_of <pid> (HIMMEL-2782): names the lane a fleet candidate
 # belongs to, for the FLEET line only — never gates the cap itself (that
 # stays total-count, below). Reads the candidate's own /proc/<pid>/environ
@@ -218,13 +193,39 @@ _fleet_steal_stale_admit() { # _fleet_steal_stale_admit <admit-dir> <expected-ac
     # Leaving the victim as an orphaned `.stale.` dir is safe: it has no
     # `expires` file, so the next admission's reservation-prune pass removes
     # it same as any other corrupt reservation.
-    [ -e "$admit" ] || mv "$victim" "$admit" 2>/dev/null
+    # codex-2 (HIMMEL-2774, 2nd panel round): a plain `[ -e ] || mv` here is
+    # itself a check-then-act race — a FOURTH party's `mkdir "$admit"` can
+    # land in the instant between the `[ -e ]` test and the `mv`, and `mv`
+    # onto an existing directory would then silently NEST the fourth party's
+    # fresh claim inside the restored victim (POSIX mv-into-directory
+    # semantics) rather than fail, corrupting both. `mkdir` itself is the
+    # only atomic "claim iff absent" primitive available here, so restore by
+    # attempting to atomically CLAIM `$admit` fresh, and only copy the
+    # displaced claim's own metadata IN once that succeeds — a plain `mkdir`
+    # can never nest or clobber; it either wins the empty slot outright or
+    # fails closed, leaving the fourth party's claim exactly as it was.
+    # Reproducing the displaced claim's exact original stamp is best-effort
+    # only (advisory, like the `pid` write in _fleet_claim_admit below): the
+    # atomic mkdir above is what protects exclusion, not the stamp contents —
+    # a failed copy here just makes the restored claim look freshly taken,
+    # which is safe (it only delays, never breaks, a future staleness check).
+    if mkdir "$admit" 2>/dev/null; then
+      cp -p "$victim/acquired" "$admit/acquired" 2>/dev/null
+      cp -p "$victim/pid" "$admit/pid" 2>/dev/null
+    fi
     return 1
   fi
   rm -rf "$victim" 2>/dev/null
   if mkdir "$admit" 2>/dev/null; then
-    _fleet_admit_stamp_or_fail "$admit"
-    return 0
+    # codex-4 (HIMMEL-2774, 2nd panel round): same bug class as codex-2's
+    # fix in _fleet_claim_admit below — an unchecked stamp write here can
+    # fail (disk full, permissions) and still `return 0`, handing the caller
+    # an unstamped claim that can never age out. Fail the reclaim and give
+    # up the empty dir instead of proceeding on an unprotected slot.
+    if _fleet_admit_stamp_or_fail "$admit"; then
+      return 0
+    fi
+    rmdir "$admit" 2>/dev/null
   fi
   return 1
 }
@@ -262,40 +263,86 @@ fleet_native=0
 fleet_claudex=0
 _fleet_live_names=""
 _fleet_procfs_warned=0
-# Plain (non-IFS=) `read` here is deliberate: a real `ps -eo pid=,args=`
-# right-justifies the PID column with LEADING spaces for every row
-# narrower than the widest pid in the table, and default `read` field
-# splitting trims that leading whitespace before assigning $_fleet_pid —
-# an explicit `IFS= read -r` whole-line capture followed by `${line%% *}`
-# does NOT, and silently produces an EMPTY pid (failing is_int, and so
-# silently dropping the row) for every line except the one with the
-# widest pid in the table.
-while read -r _fleet_pid _fleet_rest; do
-  is_int "$_fleet_pid" || continue
-  _fleet_comm="$(cat "${FLEET_PROC:-/proc}/$_fleet_pid/comm" 2>/dev/null)"
-  if [ -n "$_fleet_comm" ]; then
-    [ "$_fleet_comm" = claude ] || continue
-  elif [ "$_fleet_procfs_warned" -eq 0 ]; then
-    echo "bank-preflight: comm unreadable for at least one fleet candidate (pid $_fleet_pid) — falling back to argv-only matching for it (less precise: may double-count a launcher/child pair)" >&2
-    _fleet_procfs_warned=1
-  fi
-  fleet_n=$((fleet_n + 1))
-  if [ "$(_fleet_lane_of "$_fleet_pid")" = claudex ]; then
-    fleet_claudex=$((fleet_claudex + 1))
+
+# _fleet_census (HIMMEL-2774 codex-1, 2nd panel round): captures the process
+# table fresh and (re)sets fleet_n/fleet_native/fleet_claudex/_fleet_live_names
+# from it. Factored into a function so it can be called a SECOND time, while
+# holding the admission lock below, instead of once up front — a snapshot
+# taken before the lock is stale by the time the cap decision runs inside the
+# critical section (a session can start or exit in that gap under real
+# contention), so the pre-lock call below is only a fail-fast sanity check;
+# the decision that actually gates admission uses the in-lock re-census.
+# Sets _fleet_ps_cmd/_fleet_ps_rc as a side effect so callers can report a
+# failed census; returns 1 without touching the counters on failure so a
+# caller can fall back to the last-known-good snapshot instead of zeroing it.
+_fleet_census() {
+  local _fc_n=0 _fc_native=0 _fc_claudex=0 _fc_names="" _fc_raw
+  # Plain (non-IFS=) `read` here is deliberate: a real `ps -eo pid=,args=`
+  # right-justifies the PID column with LEADING spaces for every row
+  # narrower than the widest pid in the table, and default `read` field
+  # splitting trims that leading whitespace before assigning $_fleet_pid —
+  # an explicit `IFS= read -r` whole-line capture followed by `${line%% *}`
+  # does NOT, and silently produces an EMPTY pid (failing is_int, and so
+  # silently dropping the row) for every line except the one with the
+  # widest pid in the table.
+  if [ -n "${FLEET_PS_CMD:-}" ]; then
+    _fleet_ps_cmd="$FLEET_PS_CMD"
+    _fc_raw="$("$FLEET_PS_CMD" 2>&1)"
   else
-    fleet_native=$((fleet_native + 1))
+    _fleet_ps_cmd="ps -eo pid=,args="
+    _fc_raw="$(ps -eo pid=,args= 2>&1)"
   fi
-  # HIMMEL-2774: a live session with this name CONSUMES its reservation
-  # (below) — same match shape as the FLEET_CANDIDATES filter itself, so a
-  # session counted here is recognized consistently there.
-  _fleet_name="$(printf '%s\n' "$_fleet_rest" | grep -oE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*' | head -1 | awk '{print $2}')"
-  [ -n "$_fleet_name" ] && _fleet_live_names="$_fleet_live_names
+  _fleet_ps_rc=$?
+  [ "$_fleet_ps_rc" -eq 0 ] || return 1
+  while read -r _fleet_pid _fleet_rest; do
+    is_int "$_fleet_pid" || continue
+    _fleet_comm="$(cat "${FLEET_PROC:-/proc}/$_fleet_pid/comm" 2>/dev/null)"
+    if [ -n "$_fleet_comm" ]; then
+      [ "$_fleet_comm" = claude ] || continue
+    elif [ "$_fleet_procfs_warned" -eq 0 ]; then
+      echo "bank-preflight: comm unreadable for at least one fleet candidate (pid $_fleet_pid) — falling back to argv-only matching for it (less precise: may double-count a launcher/child pair)" >&2
+      _fleet_procfs_warned=1
+    fi
+    _fc_n=$((_fc_n + 1))
+    if [ "$(_fleet_lane_of "$_fleet_pid")" = claudex ]; then
+      _fc_claudex=$((_fc_claudex + 1))
+    else
+      _fc_native=$((_fc_native + 1))
+    fi
+    # HIMMEL-2774: a live session with this name CONSUMES its reservation
+    # (below) — same match shape as the FLEET_CANDIDATES filter itself, so a
+    # session counted here is recognized consistently there.
+    _fleet_name="$(printf '%s\n' "$_fleet_rest" | grep -oE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*' | head -1 | awk '{print $2}')"
+    [ -n "$_fleet_name" ] && _fc_names="$_fc_names
 $_fleet_name"
-done <<FLEET_CANDIDATES
-$(printf '%s\n' "$_fleet_ps_raw" \
+  done <<FLEET_CANDIDATES
+$(printf '%s\n' "$_fc_raw" \
   | grep -E -- '-n[[:space:]]+(HIMMEL|LUNA)-' \
   | grep -vE -- '-n[[:space:]]+(HIMMEL|LUNA)-[^[:space:]]*-console')
 FLEET_CANDIDATES
+  fleet_n=$_fc_n
+  fleet_native=$_fc_native
+  fleet_claudex=$_fc_claudex
+  _fleet_live_names=$_fc_names
+  return 0
+}
+
+if ! _fleet_census; then
+  echo "bank-preflight: fleet process census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than silently permitting an unbounded launch" >&2
+  echo "bank-preflight: FLEET ?/$FLEET_CAP" >&2
+  # codex-2 (CR review, 4th panel round, Suggestion): the documented
+  # FLEET_CAP_OK=1 override must apply here too - a broken/unsupported
+  # census is exactly the situation where the operator most needs the
+  # bypass to recover a launch, and it must not be reachable only on the
+  # ordinary at/over-cap path below.
+  if [ "${FLEET_CAP_OK:-}" = "1" ]; then
+    echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the failed census" >&2
+  elif [ "$LAUNCH_INTENT" = "1" ]; then
+    emit SKIPPED-FLEET
+  else
+    echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
+  fi
+fi
 
 # HIMMEL-2774: slot dir is per-user tmpfs, never inside the repo or the
 # handover root — reservations must not survive a reboot or leak into
@@ -313,6 +360,14 @@ while [ "$_fleet_admit_iters" -lt "${FLEET_ADMIT_RETRY_ITERS:-100}" ]; do
 done
 
 if [ "$_fleet_admitted" -eq 1 ]; then
+  # codex-1 (HIMMEL-2774, 2nd panel round): re-census now, while holding
+  # the admission lock, so the count feeding the cap decision below cannot
+  # go stale between the pre-lock snapshot above and here — a session can
+  # start or exit in that gap under real contention. `|| true`: a transient
+  # failure of this second census falls back to the pre-lock snapshot
+  # (_fleet_census leaves the counters untouched on failure) rather than
+  # aborting an already-in-progress admission.
+  _fleet_census || true
   _fleet_now=$(date +%s)
   for _fleet_resv in "$SLOTS"/*/; do
     [ -d "$_fleet_resv" ] || continue
@@ -393,10 +448,20 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
           rm -rf "$SLOTS/.admit" 2>/dev/null
           emit SKIPPED-FLEET
         fi
-      else
+      elif [ -e "$SLOTS/$LEG" ]; then
         echo "bank-preflight: a fleet reservation for leg=$LEG already exists — refusing as a duplicate declared launch" >&2
         rm -rf "$SLOTS/.admit" 2>/dev/null
         emit SKIPPED-FLEET
+      else
+        # codex-5 (HIMMEL-2774, 2nd panel round): `mkdir` failing does NOT
+        # mean "already exists" — a LEG name flattened from a long path can
+        # exceed the filesystem's per-component name limit (ENAMETOOLONG),
+        # which reads here identically to EEXIST unless distinguished. That
+        # was misreporting a legitimate, unique launch as a refused
+        # duplicate. Proceed without a reservation instead (same fallback
+        # already used for a name containing '/', above) rather than refuse
+        # admission for a caller that never collided with anything.
+        echo "bank-preflight: could not create a fleet reservation directory for leg=$LEG (mkdir failed for a reason other than an existing reservation — e.g. name too long) — proceeding without a reservation" >&2
       fi
       ;;
   esac

@@ -204,11 +204,19 @@ fleet_verdict() {
   # repeatedly; a shared/real slot dir would carry a reservation from one
   # call into the next call's "duplicate" refusal, and would pollute this
   # machine's real fleet slots besides.
+  # codex-6 (HIMMEL-2774, 2nd panel round): an unchecked mktemp failure here
+  # left HIMMEL_FLEET_SLOTS empty, and bank-preflight.sh's own
+  # `${HIMMEL_FLEET_SLOTS:-default}` treats a set-but-empty var the same as
+  # unset — silently falling BACK to this machine's real fleet slot dir,
+  # exactly the pollution this fresh-per-call dir exists to avoid. Fail loud
+  # instead.
+  local _slots
+  _slots="$(mktemp -d "$W/slots.XXXXXX")" || { echo "fleet_verdict: mktemp -d failed" >&2; return 1; }
   env -u FLEET_CAP_OK "$@" CADENCE_BANK_LAUNCH="${FLEET_VERDICT_LAUNCH-1}" \
     CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
     CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
     FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
-    HIMMEL_FLEET_SLOTS="$(mktemp -d "$W/slots.XXXXXX")" \
+    HIMMEL_FLEET_SLOTS="$_slots" \
     bash "$SUT" </dev/null 2>"$W/err.log"
 }
 
@@ -334,11 +342,13 @@ fleet_verdict_no_procfs() {
   # launching shell that already has it set would silently make this
   # helper's own refusal cases pass through the bypass branch instead of
   # exercising the fallback logic they are meant to test.
+  local _slots
+  _slots="$(mktemp -d "$W/slots.XXXXXX")" || { echo "fleet_verdict_no_procfs: mktemp -d failed" >&2; return 1; }
   env -u FLEET_CAP_OK "$@" CADENCE_BANK_LAUNCH="${FLEET_VERDICT_LAUNCH-1}" \
     CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 \
     CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg \
     FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/no-such-proc-dir" \
-    HIMMEL_FLEET_SLOTS="$(mktemp -d "$W/slots.XXXXXX")" \
+    HIMMEL_FLEET_SLOTS="$_slots" \
     bash "$SUT" </dev/null 2>"$W/err.log"
 }
 check "no procfs at FLEET_PROC, cap=3 -> SKIPPED-FLEET (argv-only fallback, codex-2)" SKIPPED-FLEET \

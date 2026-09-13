@@ -185,5 +185,33 @@ else
   FAIL=$((FAIL+1)); echo "FAIL - (f) duplicate refusal did not name the duplicate-reservation reason"
 fi
 
+# --- (g) codex-5 (HIMMEL-2774, 2nd panel round): `mkdir "$SLOTS/$LEG"`
+# failing does NOT mean "already exists" — a name exceeding the filesystem's
+# per-component NAME_MAX (ENAMETOOLONG) reads identically to EEXIST unless
+# distinguished, and misclassified a legitimate, unique launch as a refused
+# duplicate. On the pre-fix script this is genuine RED: mkdir fails, the
+# lone `else` branch assumes duplication and emits SKIPPED-FLEET with the
+# "already exists" message even though `$SLOTS/$LEG` never existed.
+slots_g="$(mktemp -d "$W/slots-g.XXXXXX")"
+g_longleg="$(printf 'x%.0s' $(seq 1 300))"
+: > "$W/err.log"
+g_out="$(run_pf "$slots_g" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG="$g_longleg" HIMMEL_FLEET_CAP=4)"
+check "(g) mkdir fails on an over-length leg name (ENAMETOOLONG), 0 live, cap 4 -> PROCEED (not misread as a duplicate)" PROCEED "$g_out"
+if grep -q 'already exists — refusing as a duplicate declared launch' "$W/err.log" 2>/dev/null; then
+  FAIL=$((FAIL+1)); echo "FAIL - (g) ENAMETOOLONG was misreported as a duplicate reservation"
+else
+  PASS=$((PASS+1)); echo "ok - (g) ENAMETOOLONG not misreported as a duplicate reservation"
+fi
+if grep -q 'could not create a fleet reservation directory' "$W/err.log" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "ok - (g) reports the genuine mkdir-failed-for-another-reason diagnosis"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - (g) missing the mkdir-failed-for-another-reason diagnosis"
+fi
+if [ -e "$slots_g/$g_longleg" ]; then
+  FAIL=$((FAIL+1)); echo "FAIL - (g) an over-length reservation dir should never exist on disk"
+else
+  PASS=$((PASS+1)); echo "ok - (g) no reservation directory left behind for the over-length name"
+fi
+
 echo "--- $PASS passed, $FAIL failed ---"
 [ "$FAIL" -eq 0 ]
