@@ -349,7 +349,10 @@ fi
 # so this block cannot fire while it is set.
 if [ "$CR_STATE" = not-configured ]; then
     cr_repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || cr_repo_root="$PWD"
-    if [ -f "$cr_repo_root/.coderabbit.yaml" ] || [ -f "$cr_repo_root/.coderabbit.yml" ]; then
+    # codex-1 (round 1): read the COMMITTED tree at HEAD, not the working
+    # tree — an untracked local .coderabbit.yaml must not arm this gate, and
+    # a tracked one a caller merely deleted locally must not disarm it.
+    if git -C "$cr_repo_root" cat-file -e HEAD:.coderabbit.yaml 2>/dev/null || git -C "$cr_repo_root" cat-file -e HEAD:.coderabbit.yml 2>/dev/null; then
         echo "check-ci: CR-UNARMED - this repo carries .coderabbit.yaml/.yml (it expects CodeRabbit) but no clone has ever armed the gate, so no green here can certify a CodeRabbit review. Arm it: git config --local himmel.coderabbit true. If this repo genuinely has no CodeRabbit App, bypass for this run with CR_APP=0." >&2
         exit 2
     fi

@@ -331,13 +331,13 @@ mk_worktree() {
 
 # 28. armed on the primary -> a linked worktree sees it too.
 r=$(mk_repo wt_primary true)
-wt=$(mk_worktree "$r" wt_linked)
+wt=$(mk_worktree "$r" wt_linked) || { echo "FATAL: mk_worktree wt_linked failed"; exit 1; }
 expect_state armed "28. a linked worktree inherits the primary's armed flag" "$wt" - -
 
 # 29. same, with extensions.worktreeConfig enabled on the primary.
 r=$(mk_repo wt_wc_primary true)
 git -C "$r" config extensions.worktreeConfig true
-wt=$(mk_worktree "$r" wt_wc_linked)
+wt=$(mk_worktree "$r" wt_wc_linked) || { echo "FATAL: mk_worktree wt_wc_linked failed"; exit 1; }
 expect_state armed "29. a linked worktree inherits the flag even under extensions.worktreeConfig" "$wt" - -
 echo
 echo "  $PASS passed, $FAIL failed"
