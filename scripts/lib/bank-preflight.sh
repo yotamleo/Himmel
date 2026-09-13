@@ -429,35 +429,47 @@ if [ "$_fleet_admitted" -eq 1 ]; then
       echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
     fi
   fi
-  _fleet_now=$(date +%s)
-  for _fleet_resv in "$SLOTS"/*/; do
-    [ -d "$_fleet_resv" ] || continue
-    _fleet_resv_name="$(basename "$_fleet_resv")"
-    [ "$_fleet_resv_name" = .admit ] && continue
-    _fleet_resv_expires="$(cat "${_fleet_resv}expires" 2>/dev/null)"
-    case "$_fleet_resv_expires" in
-      # Unreadable/corrupt metadata is not a valid reservation — prune it
-      # the same as an expired one rather than counting it forever.
-      ''|*[!0-9]*) rm -rf "$_fleet_resv" 2>/dev/null; continue ;;
-    esac
-    if [ "$_fleet_now" -ge "$_fleet_resv_expires" ]; then
-      rm -rf "$_fleet_resv" 2>/dev/null
-      continue
-    fi
-    # A live session with this name already counted in fleet_n above
-    # CONSUMES the reservation — do not double-count the same slot.
-    # codex-4 (this round): consuming must DELETE the reservation, not just
-    # skip it in the count — left on disk, it keeps refusing a same-name
-    # relaunch as a duplicate (line ~356) for up to the full TTL after the
-    # session that consumed it has already exited, with no live session left
-    # to justify the refusal.
-    if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; then
-      rm -rf "$_fleet_resv" 2>/dev/null
-      continue
-    fi
-    fleet_reserved=$((fleet_reserved + 1))
-  done
-  fleet_n=$((fleet_n + fleet_reserved))
+  # codex-2 (HIMMEL-2774, 5th panel round): this whole prune pass must stay
+  # gated on STILL holding the lock — the in-lock-census-failure branch above
+  # can reset _fleet_admitted to 0 and `rm -rf` .admit early (the bypass and
+  # informational sub-branches there don't exit), and this `if` only tested
+  # the ORIGINAL claim result once, at the top: without re-checking here, the
+  # loop below ran UNLOCKED. An unlocked prune reading another caller's
+  # `expires` file in the gap between ITS `mkdir` and its `expires` write
+  # (both above, in `_fleet_reserve`) sees the case-statement's
+  # unreadable/corrupt branch and deletes that brand-new reservation before
+  # its owner ever finishes creating it.
+  if [ "$_fleet_admitted" -eq 1 ]; then
+    _fleet_now=$(date +%s)
+    for _fleet_resv in "$SLOTS"/*/; do
+      [ -d "$_fleet_resv" ] || continue
+      _fleet_resv_name="$(basename "$_fleet_resv")"
+      [ "$_fleet_resv_name" = .admit ] && continue
+      _fleet_resv_expires="$(cat "${_fleet_resv}expires" 2>/dev/null)"
+      case "$_fleet_resv_expires" in
+        # Unreadable/corrupt metadata is not a valid reservation — prune it
+        # the same as an expired one rather than counting it forever.
+        ''|*[!0-9]*) rm -rf "$_fleet_resv" 2>/dev/null; continue ;;
+      esac
+      if [ "$_fleet_now" -ge "$_fleet_resv_expires" ]; then
+        rm -rf "$_fleet_resv" 2>/dev/null
+        continue
+      fi
+      # A live session with this name already counted in fleet_n above
+      # CONSUMES the reservation — do not double-count the same slot.
+      # codex-4 (round 4): consuming must DELETE the reservation, not just
+      # skip it in the count — left on disk, it keeps refusing a same-name
+      # relaunch as a duplicate (line ~356) for up to the full TTL after the
+      # session that consumed it has already exited, with no live session left
+      # to justify the refusal.
+      if printf '%s\n' "$_fleet_live_names" | grep -qxF "$_fleet_resv_name"; then
+        rm -rf "$_fleet_resv" 2>/dev/null
+        continue
+      fi
+      fleet_reserved=$((fleet_reserved + 1))
+    done
+    fleet_n=$((fleet_n + fleet_reserved))
+  fi
 fi
 
 echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex reserved=$fleet_reserved total=$fleet_n/$FLEET_CAP" >&2
@@ -548,11 +560,39 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
       emit SKIPPED-FLEET
       ;;
     *)
-      echo "bank-preflight: could not create a fleet reservation directory for leg=$LEG even under a hashed key — proceeding without a reservation" >&2
+      # codex-3 (HIMMEL-2774, 5th panel round): proceeding here left the
+      # launch unprotected exactly the same way a duplicate (case 2) or a
+      # failed metadata write (case 3) would — this process's own reservation
+      # never lands, so it cannot count against a concurrent caller's cap
+      # decision until its live process shows up in the census, reopening
+      # the over-admission race this mechanism exists to close. Refuse like
+      # its siblings instead of silently proceeding on filesystem/permission
+      # failures that mkdir cannot otherwise distinguish from "already taken".
+      echo "bank-preflight: could not create a fleet reservation directory for leg=$LEG even under a hashed key — refusing rather than proceed without a reservation" >&2
+      rm -rf "$SLOTS/.admit" 2>/dev/null
+      emit SKIPPED-FLEET
       ;;
   esac
 fi
-[ "$_fleet_admitted" -eq 1 ] && rm -rf "$SLOTS/.admit" 2>/dev/null
+# codex-1 (HIMMEL-2774, 5th panel round): unconditional release here can
+# delete a DIFFERENT owner's lock. _fleet_steal_stale_admit's mv-then-verify
+# genuinely frees .admit for the instant between its mv and its restore/
+# reclaim mkdir; if the original holder is only PRESUMED dead (its pid file
+# was unreadable/corrupt, so the liveness check above could not confirm
+# either way) and is in fact still alive and working, it reaches this same
+# release line later never knowing it was stolen from — and a bare
+# unconditional rm -rf would then delete whatever a THIRD party has since
+# legitimately claimed. Every claim path ($$-stamped at
+# _fleet_claim_admit/_fleet_steal_stale_admit, both above) writes ITS OWN pid
+# into "$admit/pid" the moment it wins the slot, so verifying that pid still
+# reads back as $$ before deleting is the same ownership check
+# arm-resume.sh's own _arm_fleet_release_pending already uses for its
+# reservation release, applied here to the admission lock itself: a mismatch
+# means someone else now legitimately owns .admit, and this process has
+# nothing left to release.
+if [ "$_fleet_admitted" -eq 1 ]; then
+  [ "$(cat "$SLOTS/.admit/pid" 2>/dev/null)" = "$$" ] && rm -rf "$SLOTS/.admit" 2>/dev/null
+fi
 
 # HIMMEL-2782: claudex lane parks on the codex weekly bank instead of the
 # Claude five_hour/seven_day check below — that check governs a different
