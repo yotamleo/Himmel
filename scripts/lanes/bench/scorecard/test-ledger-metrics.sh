@@ -54,8 +54,8 @@ use_stub() {
     export PATH="$HERE/fixtures/$1:$PATH_BASE"
     RESOLVED_GH=$(command -v gh)
     if [ "$RESOLVED_GH" != "$HERE/fixtures/$1/gh" ]; then
-        echo "FAIL - precondition: gh stub $1 not first on PATH (resolved: ${RESOLVED_GH:-none})"
-        fails=$((fails + 1))
+        echo "FAIL - precondition: gh stub $1 not first on PATH (resolved: ${RESOLVED_GH:-none}) — aborting before any real gh call"
+        exit 1
     fi
 }
 PATH_BASE="$PATH"

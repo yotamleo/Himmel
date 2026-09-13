@@ -85,10 +85,13 @@ check_contains "boundary: avg strictly above threshold classifies over" \
     "$BOUNDARY_OUT" "2026-08-01 over"
 
 # --- (g) --threshold-k custom: the same 200.0k session flips class when the
-# threshold moves across it
+# threshold moves across it. Assert BOTH sessions land in "over" and no
+# "under" bucket remains — asserting only "2026-08-01 over" is present would
+# also pass with --threshold-k silently ignored, since the fixture's other
+# session is already over at the default threshold-k=200.
 CUSTOM_LOW=$("$OVER_BY_DAY" --since 2026-01-01T00:00:00Z --threshold-k 199 2>/dev/null)
-check_contains "threshold-k custom: lowering threshold below avg makes it over" \
-    "$CUSTOM_LOW" "2026-08-01 over"
+check "threshold-k custom: both sessions now over, none under" \
+    "$(printf '%s\n' "$CUSTOM_LOW" | awk '{$1=$1; print}' | sort)" "2 2026-08-01 over"
 
 # --- (h) exclusion: console/relay/other-titled and subagent transcripts are
 # never bucketed; only the one leg-titled transcript survives
