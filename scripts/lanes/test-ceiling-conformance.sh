@@ -304,6 +304,43 @@ case "$out_s" in
     *) pass 'a zero-token empty cmdline on a live pid is not reported as scan-degraded' ;;
 esac
 
+# (t) HIMMEL-3009: a read that errors AFTER consuming at least one token must
+# not fall through to the normal row path with a truncated argv -- it is the
+# same fact as case (r)'s immediate read failure (a live pid we cannot fully
+# trust), not a phantom-but-partial row. A real mid-stream read error is not
+# hermetically reproducible from a plain file (open() succeeds, and any
+# partial-write-then-close on a regular file reads back as a clean EOF, not
+# an error) -- CLAUDE_SESSIONS_READ_FAULT_AFTER is a test-only seam (unset in
+# production: zero behaviour change) that makes the loop treat the Nth token
+# read as the last one before an error, exactly like a real EIO would.
+mkcmdline 117 claude --model claude-sonnet-5 -n HIMMEL-3009-legN251-2026-09-13 work
+pgrep_x_stub 108 117
+sess_out_t="$(CLAUDE_SESSIONS_PROC="$W/proc" CLAUDE_SESSIONS_READ_FAULT_AFTER=1 CLAUDE_SESSIONS_READ_FAULT_PID=117 PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+sess_rc_t=$?
+if [ "$sess_rc_t" -eq 3 ]; then pass 'a read that errors after consuming a token returns rc 3'; else fail "returns rc 3 (got $sess_rc_t)"; fi
+contains 'a partial-read pid is reported unreadable, not a phantom/partial row' "$sess_out_t" '# unreadable 117'
+case "$sess_out_t" in
+    *$'117\t'*) fail 'a partial-read pid does not print a truncated data row' ;;
+    *) pass 'a partial-read pid does not print a truncated data row' ;;
+esac
+contains 'a partial-read scan still prints the other readable row' "$sess_out_t" $'108\tHIMMEL-555-legN70-2026-09-13\tclaude-sonnet-5\tauto'
+
+# (u) the readable case (no error) stays byte-identical -- byte-compare
+# against scenario (j)'s known-good row for the same pid/fixture.
+pgrep_x_stub 108
+sess_out_u="$(CLAUDE_SESSIONS_PROC="$W/proc" PATH="$W/bin:$PATH" bash -c '
+    . "'"$HERE"'/lib/claude-sessions.sh"
+    claude_sessions
+')"
+if [ "$sess_out_u" = $'108\tHIMMEL-555-legN70-2026-09-13\tclaude-sonnet-5\tauto' ]; then
+    pass 'the readable case row is byte-identical to the pre-fix format'
+else
+    fail "the readable case row is byte-identical to the pre-fix format (got '$sess_out_u')"
+fi
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-ceiling-conformance.sh'
     exit 0

@@ -94,7 +94,7 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
     # apart: a real read error prints a diagnostic to stderr; a clean EOF on
     # an empty file does not. Capture the loop's stderr to a scratch file and
     # check afterward whether anything landed there.
-    local name="" model="" autocompact="" expect="" tok got_tok=0
+    local name="" model="" autocompact="" expect="" tok got_tok=0 tok_count=0
     local errfile="" read_err=0 mktemp_failed=0
     errfile="$(mktemp "${TMPDIR:-/tmp}/claude-sessions-cmdline-err.XXXXXX" 2>/dev/null)" || errfile=""
     # HIMMEL-3008 CR round 1 (codex-2, Important): a failed mktemp leaves
@@ -116,6 +116,19 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
     # errfile; under the old order it escaped to real stderr).
     while IFS= read -r -d '' tok; do
         got_tok=1
+        tok_count=$((tok_count + 1))
+        # HIMMEL-3009 test seam: a real mid-read error (EIO after N tokens)
+        # needs a block/char-special device to reproduce hermetically -- a
+        # plain file's read either fully succeeds or fails at open time.
+        # CLAUDE_SESSIONS_READ_FAULT_AFTER, honoured only when set, lets the
+        # test suite force exactly that shape (unset in production: no
+        # behaviour change). CLAUDE_SESSIONS_READ_FAULT_PID optionally scopes
+        # the fault to one pid so a multi-pid scan's other rows stay real.
+        if [ -n "${CLAUDE_SESSIONS_READ_FAULT_AFTER:-}" ] && [ "$tok_count" -eq "$CLAUDE_SESSIONS_READ_FAULT_AFTER" ] \
+            && { [ -z "${CLAUDE_SESSIONS_READ_FAULT_PID:-}" ] || [ "$pid" = "$CLAUDE_SESSIONS_READ_FAULT_PID" ]; }; then
+            echo 'read fault (test seam)' >&2
+            break
+        fi
         if [ -n "$expect" ]; then
             case "$expect" in
                 name) name="$tok" ;;
@@ -150,6 +163,20 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
         # mktemp_failed) is the HIMMEL-3008 race -- report it exactly like
         # the upfront `-r` failure above.
         if [ -d "$proc/$pid" ] && { [ "$read_err" -eq 1 ] || [ "$mktemp_failed" -eq 1 ]; }; then
+            printf '# unreadable %s\n' "$pid"
+            return 3
+        fi
+        return 0
+    fi
+    # HIMMEL-3009: at least one token was read, but the loop also errored (or
+    # never got the chance to detect an error at all -- mktemp_failed) before
+    # reaching a clean EOF. Falling through to the row print below would emit
+    # a row built from a TRUNCATED argv -- a partial read masquerading as a
+    # complete one. Mirror the zero-token branch above: a still-live pid is a
+    # readability failure (unreadable, rc 3); a pid that vanished mid-read is
+    # the ordinary race (silent, rc 0), not a readability failure.
+    if [ "$read_err" -eq 1 ] || [ "$mktemp_failed" -eq 1 ]; then
+        if [ -d "$proc/$pid" ]; then
             printf '# unreadable %s\n' "$pid"
             return 3
         fi
