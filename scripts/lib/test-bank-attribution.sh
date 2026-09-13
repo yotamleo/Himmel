@@ -20,7 +20,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT="$HERE/bank-attribution.sh"
+# BANK_ATTRIBUTION_SCRIPT lets a caller point the fixture at a different copy
+# of the script (e.g. a pre-fix revision extracted via `git show`) to prove a
+# RED-before-GREEN transition without touching the working tree (HIMMEL-2781).
+SCRIPT="${BANK_ATTRIBUTION_SCRIPT:-$HERE/bank-attribution.sh}"
 
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/test-bank-attribution.XXXXXX")"
 trap 'rm -rf "$ROOT"' EXIT
@@ -240,6 +243,44 @@ fi
 assert_contains "$OUT_G" "| Session-G | test-slug | n/a | 1 | 5 | 6 | 7 | 8 | 1/0/0 | 0 |" "the good session's row still prints alongside a malformed file"
 assert_contains "$(cat "$BAD_ERR")" "skipped unreadable transcript" "a malformed transcript is reported on stderr, not silently dropped"
 rm -f "$BAD_ERR"
+
+# --- Session H (separate root): the three real wake shapes the pre-fix
+#     classifier misses (HIMMEL-2781) -- a cross-session message rendered as
+#     plain text ("Another Claude session sent a message:...", not the old
+#     literal "<cross-session-message" prefix), a monitor/task wake delivered
+#     as a `type:"attachment"` row (`attachment.type:"queued_command"`, not
+#     `type:"user"` text), and a skill body / command body inserted as
+#     `type:"user"` rows that must NOT overwrite the wake classification set
+#     by the actual triggering row. Also exercises the `first-resp-input`
+#     column (ask 2): only the FIRST response to each wake event counts. -----
+ROOT5="$(mktemp -d "${TMPDIR:-/tmp}/test-bank-attribution-5.XXXXXX")"
+SLUG_DIR5="$ROOT5/test-slug"
+SID_H="aaaa1111-0000-0000-0000-000000000009"
+mkdir -p "$SLUG_DIR5"
+cat > "$SLUG_DIR5/$SID_H.jsonl" <<EOF
+{"type":"custom-title","customTitle":"Session-H","sessionId":"$SID_H"}
+{"type":"user","sessionId":"$SID_H","isSidechain":false,"timestamp":"2026-05-01T00:00:01.000Z","message":{"content":"hi"}}
+{"type":"assistant","sessionId":"$SID_H","isSidechain":false,"timestamp":"2026-05-01T00:00:02.000Z","requestId":"reqH1","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}
+{"type":"user","sessionId":"$SID_H","isSidechain":false,"timestamp":"2026-05-01T00:00:03.000Z","message":{"content":"Another Claude session sent a message:\n<cross-session-message from=\"peer\">ping</cross-session-message>"}}
+{"type":"assistant","sessionId":"$SID_H","isSidechain":false,"timestamp":"2026-05-01T00:00:04.000Z","requestId":"reqH2","message":{"content":[{"type":"tool_use","name":"Skill","input":{}}],"usage":{"input_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}
+{"type":"user","sessionId":"$SID_H","isSidechain":false,"isMeta":true,"timestamp":"2026-05-01T00:00:05.000Z","message":{"content":[{"type":"text","text":"<skill-body-instructions>do things</skill-body-instructions>"}]}}
+{"type":"assistant","sessionId":"$SID_H","isSidechain":false,"timestamp":"2026-05-01T00:00:06.000Z","requestId":"reqH3","message":{"usage":{"input_tokens":7,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}
+{"type":"attachment","sessionId":"$SID_H","timestamp":"2026-05-01T00:00:07.000Z","attachment":{"type":"queued_command","command":"echo hi"}}
+{"type":"assistant","sessionId":"$SID_H","isSidechain":false,"timestamp":"2026-05-01T00:00:08.000Z","requestId":"reqH4","message":{"usage":{"input_tokens":9,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}
+{"type":"user","sessionId":"$SID_H","isSidechain":false,"timestamp":"2026-05-01T00:00:09.000Z","message":{"content":"<command-name>foo</command-name>"}}
+{"type":"assistant","sessionId":"$SID_H","isSidechain":false,"timestamp":"2026-05-01T00:00:10.000Z","requestId":"reqH5","message":{"usage":{"input_tokens":11,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}
+EOF
+
+trap 'rm -rf "$ROOT" "$ROOT2" "$ROOT3" "$ROOT4" "$ROOT5"' EXIT
+
+OUT_H="$(bash "$SCRIPT" "$ROOT5")"
+# turns: reqH1(op) reqH2(cs, Skill tool_use) reqH3(cs, skill-body row did NOT
+# reset wake) reqH4(mon, queued_command attachment) reqH5(mon, <command-name>
+# row did NOT reset wake) -> op/cs/mon = 1/2/2, input sum 100+5+7+9+11=132.
+# first-resp-input: only the FIRST response per wake event counts ->
+# op=100 (reqH1), cs=5 (reqH2; reqH3 is the second cs response, not counted),
+# mon=9 (reqH4; reqH5 is the second mon response, not counted).
+assert_contains "$OUT_H" "| Session-H | test-slug | n/a | 5 | 132 | 0 | 0 | 0 | 1/2/2 | 0 | 100/5/9 |" "session H: rendered cross-session text, queued_command attachment, skill/command body exclusion, first-resp-input"
 
 if [ "$FAIL" -eq 0 ]; then
   echo "OK: bank-attribution.sh fixture assertions passed"
