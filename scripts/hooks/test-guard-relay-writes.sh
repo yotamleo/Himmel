@@ -180,6 +180,14 @@ RC_READ=$(run_relay read-tool "$(read_payload "$INBOX_X")")
 assert_rc "Read tool on inbox path allows (rc=0)" 0 "$RC_READ"
 assert_empty "Read tool: no output" "$(combined_output read-tool)"
 
+RC_NUM_PATH=$(run_relay num-path "$(jq -nc '{tool_name:"Write", tool_input:{file_path:5}}')")
+assert_rc "non-string file_path denies (rc=2)" 2 "$RC_NUM_PATH"
+assert_contains "non-string file_path deny reason" "relay write-deny:" "$(cat "$TMP/out-num-path")"
+
+RC_NUM_CMD=$(run_relay num-cmd "$(jq -nc '{tool_name:"Bash", tool_input:{command:5}}')")
+assert_rc "non-string command denies (rc=2)" 2 "$RC_NUM_CMD"
+assert_contains "non-string command deny reason" "relay write-deny:" "$(cat "$TMP/out-num-cmd")"
+
 NO_HANDOVER_DIR="$TMP/does-not-exist"
 printf '%s' "$(write_payload Write "$ROOT/some-file.md")" \
     | env HANDOVER_DIR="$NO_HANDOVER_DIR" HIMMEL_CONSOLE_RELAY=1 "$BASH_ABS" "$HOOK" \

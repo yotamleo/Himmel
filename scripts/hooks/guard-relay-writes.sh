@@ -117,9 +117,21 @@ case "$tool" in
         [ "$tool_input_type" = "object" ] || deny "unparseable-payload" "tool_input not an object"
 
         if [ "$tool" = "NotebookEdit" ]; then
+            path_type=$(printf '%s' "$input" | jq -r '(.tool_input.notebook_path // .tool_input.file_path) | type' 2>/dev/null) \
+                || deny "unparseable-payload" "cannot read notebook_path type"
+            case "$path_type" in
+                string | null) ;;
+                *) deny "unparseable-payload" "notebook_path/file_path not a string" ;;
+            esac
             path=$(printf '%s' "$input" | jq -r '.tool_input.notebook_path // .tool_input.file_path // empty' 2>/dev/null) \
                 || deny "unparseable-payload" "cannot read notebook_path"
         else
+            path_type=$(printf '%s' "$input" | jq -r '.tool_input.file_path | type' 2>/dev/null) \
+                || deny "unparseable-payload" "cannot read file_path type"
+            case "$path_type" in
+                string | null) ;;
+                *) deny "unparseable-payload" "file_path not a string" ;;
+            esac
             path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty' 2>/dev/null) \
                 || deny "unparseable-payload" "cannot read file_path"
         fi
@@ -166,6 +178,12 @@ case "$tool" in
         ;;
     Bash)
         [ "$tool_input_type" = "object" ] || deny "unparseable-payload" "tool_input not an object"
+        cmd_type=$(printf '%s' "$input" | jq -r '.tool_input.command | type' 2>/dev/null) \
+            || deny "unparseable-payload" "cannot read command type"
+        case "$cmd_type" in
+            string | null) ;;
+            *) deny "unparseable-payload" "command not a string" ;;
+        esac
         cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) \
             || deny "unparseable-payload" "cannot read command"
         [ -n "$cmd" ] || exit 0
