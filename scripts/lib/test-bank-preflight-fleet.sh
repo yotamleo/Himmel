@@ -77,7 +77,7 @@ p3="$W/ps3"; mk_ps_stub "$p3" \
 # both find it under cap, and both PROCEED — the fleet then actually lands
 # at 5 once both go live. The fixed script's atomic `.admit` critical section
 # makes the SECOND caller observe the FIRST caller's reservation.
-slots_a="$(mktemp -d "$W/slots-a.XXXXXX")"
+slots_a="$(mktemp -d "$W/slots-a.XXXXXX")" || { echo "FAIL - could not create slots-a scratch dir" >&2; exit 1; }
 out_a="$W/out_a"; out_b="$W/out_b"
 ( run_pf "$slots_a" "$p3" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9001-fleetA HIMMEL_FLEET_CAP=4 > "$out_a" ) &
 pid_a=$!
@@ -97,7 +97,7 @@ check "(a) cap 4, 3 live, two concurrent declared launches -> exactly one PROCEE
 # --- (b) a reservation is consumed once a live session with its name
 # appears — the count must not double (live session + its own now-stale
 # reservation both counted would silently shrink real headroom).
-slots_b="$(mktemp -d "$W/slots-b.XXXXXX")"
+slots_b="$(mktemp -d "$W/slots-b.XXXXXX")" || { echo "FAIL - could not create slots-b scratch dir" >&2; exit 1; }
 p2="$W/ps2"; mk_ps_stub "$p2" \
   '9001:claude:--model claude-opus-5 -n HIMMEL-1000-leg load doc' \
   '9002:claude:--model claude-opus-5 -n HIMMEL-1001-leg load doc'
@@ -117,7 +117,7 @@ else
 fi
 
 # --- (c) an expired reservation is pruned, not counted forever.
-slots_c="$(mktemp -d "$W/slots-c.XXXXXX")"
+slots_c="$(mktemp -d "$W/slots-c.XXXXXX")" || { echo "FAIL - could not create slots-c scratch dir" >&2; exit 1; }
 mkdir -p "$slots_c/HIMMEL-9004-expiredleg"
 printf '%s\n' "$((NOW - 10))" > "$slots_c/HIMMEL-9004-expiredleg/expires"
 printf '%s\n' "$$" > "$slots_c/HIMMEL-9004-expiredleg/pid"
@@ -137,7 +137,7 @@ fi
 
 # --- (d) a stale .admit (mtime > FLEET_ADMIT_STALE_SECS) is reclaimed via
 # rename-then-verify, not left to wedge every future call permanently.
-slots_d="$(mktemp -d "$W/slots-d.XXXXXX")"
+slots_d="$(mktemp -d "$W/slots-d.XXXXXX")" || { echo "FAIL - could not create slots-d scratch dir" >&2; exit 1; }
 mkdir -p "$slots_d/.admit"
 printf '%s\n' "$((NOW - 61))" > "$slots_d/.admit/acquired"
 : > "$W/err.log"
@@ -156,7 +156,7 @@ fi
 
 # --- (e) an informational run (no CADENCE_BANK_LAUNCH) counts reservations
 # in the FLEET line but must never CREATE one of its own.
-slots_e="$(mktemp -d "$W/slots-e.XXXXXX")"
+slots_e="$(mktemp -d "$W/slots-e.XXXXXX")" || { echo "FAIL - could not create slots-e scratch dir" >&2; exit 1; }
 e_out="$(run_pf "$slots_e" "$p3" CADENCE_BANK_LEG=HIMMEL-9005-infoleg HIMMEL_FLEET_CAP=4)"
 check "(e) informational read (no CADENCE_BANK_LAUNCH), 3 live, cap 4 -> PROCEED" PROCEED "$e_out"
 # Portable count of reservation dirs (no find -mindepth/-maxdepth): the
@@ -173,7 +173,7 @@ check "(e) informational read creates no reservation directory" 0 "$e_entries"
 # duplicate — with HEADROOM available (distinct from the at/over-cap
 # refusal in case (a)), exercising the dedicated `mkdir $SLOTS/$LEG`
 # duplicate-name branch specifically.
-slots_f="$(mktemp -d "$W/slots-f.XXXXXX")"
+slots_f="$(mktemp -d "$W/slots-f.XXXXXX")" || { echo "FAIL - could not create slots-f scratch dir" >&2; exit 1; }
 f_first="$(run_pf "$slots_f" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9006-dupleg HIMMEL_FLEET_CAP=4)"
 check "(f) setup: first declared launch, 0 live, cap 4 -> PROCEED" PROCEED "$f_first"
 : > "$W/err.log"
@@ -192,7 +192,7 @@ fi
 # duplicate. On the pre-fix script this is genuine RED: mkdir fails, the
 # lone `else` branch assumes duplication and emits SKIPPED-FLEET with the
 # "already exists" message even though `$SLOTS/$LEG` never existed.
-slots_g="$(mktemp -d "$W/slots-g.XXXXXX")"
+slots_g="$(mktemp -d "$W/slots-g.XXXXXX")" || { echo "FAIL - could not create slots-g scratch dir" >&2; exit 1; }
 g_longleg="$(printf 'x%.0s' $(seq 1 300))"
 : > "$W/err.log"
 g_out="$(run_pf "$slots_g" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG="$g_longleg" HIMMEL_FLEET_CAP=4)"
@@ -211,6 +211,95 @@ if [ -e "$slots_g/$g_longleg" ]; then
   FAIL=$((FAIL+1)); echo "FAIL - (g) an over-length reservation dir should never exist on disk"
 else
   PASS=$((PASS+1)); echo "ok - (g) no reservation directory left behind for the over-length name"
+fi
+
+# --- (h) codex-1/codex-2 (HIMMEL-2774, 3rd panel round): a stale .admit
+# (age past FLEET_ADMIT_STALE_SECS) whose recorded pid is still LIVE must
+# never be reclaimed by age alone — reclaiming out from under a still-running
+# holder loses mutual exclusion outright. Use the test's own $$ (guaranteed
+# live for the duration of this call) as the "held" pid, and shrink the retry
+# budget so the call fails fast instead of waiting out the default
+# 100 x 0.05s window.
+slots_h="$(mktemp -d "$W/slots-h.XXXXXX")" || { echo "FAIL - could not create slots-h scratch dir" >&2; exit 1; }
+mkdir -p "$slots_h/.admit"
+printf '%s\n' "$((NOW - 61))" > "$slots_h/.admit/acquired"
+printf '%s\n' "$$" > "$slots_h/.admit/pid"
+admit_before="$(cat "$slots_h/.admit/acquired") $(cat "$slots_h/.admit/pid")"
+: > "$W/err.log"
+h_out="$(run_pf "$slots_h" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9007-livepid HIMMEL_FLEET_CAP=4 FLEET_ADMIT_RETRY_ITERS=3 FLEET_ADMIT_RETRY_SLEEP=0.01)"
+check "(h) stale .admit (61s old) held by a LIVE pid -> not reclaimed, SKIPPED-FLEET after retries" SKIPPED-FLEET "$h_out"
+admit_after="$(cat "$slots_h/.admit/acquired" 2>/dev/null) $(cat "$slots_h/.admit/pid" 2>/dev/null)"
+check "(h) .admit acquired/pid files untouched (no steal attempted against a live holder)" "$admit_before" "$admit_after"
+
+# --- (i) / (i2) codex-5 (HIMMEL-2774, 3rd panel round): a transient failure
+# of the IN-LOCK re-census (the second _fleet_census call, made after the
+# pre-lock snapshot already succeeded) used to fall back to the pre-lock
+# snapshot silently and admit on it. A ps stub that succeeds on its first
+# invocation (the pre-lock census) and fails on its second (the in-lock
+# re-census) reproduces exactly that gap.
+mk_ps_fail_second_stub() {
+  local dir="$1" cnt="$2"
+  mkdir -p "$dir/proc"
+  printf '0\n' > "$cnt"
+  cat > "$dir/ps" <<STUB_EOF
+#!/usr/bin/env bash
+n=\$(cat '$cnt' 2>/dev/null || echo 0)
+n=\$((n + 1))
+printf '%s\n' "\$n" > '$cnt'
+if [ "\$n" -ge 2 ]; then
+  echo "stub: simulated ps failure on invocation \$n" >&2
+  exit 1
+fi
+exit 0
+STUB_EOF
+  chmod +x "$dir/ps"
+}
+
+slots_i="$(mktemp -d "$W/slots-i.XXXXXX")" || { echo "FAIL - could not create slots-i scratch dir" >&2; exit 1; }
+cnt_i="$W/ps-count-i"
+pi="$W/ps-i"; mk_ps_fail_second_stub "$pi" "$cnt_i"
+: > "$W/err.log"
+i_out="$(run_pf "$slots_i" "$pi" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9008-censusfail HIMMEL_FLEET_CAP=4)"
+check "(i) in-lock census failure, 0 live, cap 4 -> SKIPPED-FLEET (refuses rather than admit on the stale pre-lock snapshot)" SKIPPED-FLEET "$i_out"
+if grep -q 'in-lock fleet census failed' "$W/err.log" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "ok - (i) reports the in-lock-census-failed diagnosis"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - (i) missing the in-lock-census-failed diagnosis"; grep 'bank-preflight' "$W/err.log" || true
+fi
+i_entries=0
+for _i_dir in "$slots_i"/*/; do
+  [ -d "$_i_dir" ] || continue
+  [ "$(basename "$_i_dir")" = .admit ] && continue
+  i_entries=$((i_entries + 1))
+done
+check "(i) no reservation created when the in-lock census fails" 0 "$i_entries"
+
+# --- (i2) the same in-lock census failure, but with the documented
+# FLEET_CAP_OK=1 bypass in effect -> must still PROCEED.
+slots_i2="$(mktemp -d "$W/slots-i2.XXXXXX")" || { echo "FAIL - could not create slots-i2 scratch dir" >&2; exit 1; }
+cnt_i2="$W/ps-count-i2"
+pi2="$W/ps-i2"; mk_ps_fail_second_stub "$pi2" "$cnt_i2"
+i2_out="$(run_pf "$slots_i2" "$pi2" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9009-censusfailbypass HIMMEL_FLEET_CAP=4 FLEET_CAP_OK=1)"
+check "(i2) in-lock census failure with FLEET_CAP_OK=1 -> PROCEED (bypass still applies)" PROCEED "$i2_out"
+
+# --- (j) codex-7 (HIMMEL-2774, 3rd panel round): a leg name beginning with
+# '.' is a valid `mkdir` target but invisible to the reservation census glob
+# ("$SLOTS"/*/, no dotglob) — such a reservation would exist on disk yet
+# never count against the cap. Must be refused the same way as a '/' name:
+# proceed without a reservation, and leave no directory behind.
+slots_j="$(mktemp -d "$W/slots-j.XXXXXX")" || { echo "FAIL - could not create slots-j scratch dir" >&2; exit 1; }
+: > "$W/err.log"
+j_out="$(run_pf "$slots_j" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=.hidden-leg HIMMEL_FLEET_CAP=4)"
+check "(j) dot-prefixed CADENCE_BANK_LEG, 0 live, cap 4 -> PROCEED (rejected, not reserved)" PROCEED "$j_out"
+if grep -q "starts with '.'" "$W/err.log" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "ok - (j) reports the dot-prefix rejection diagnosis"
+else
+  FAIL=$((FAIL+1)); echo "FAIL - (j) missing the dot-prefix rejection diagnosis"; grep 'bank-preflight' "$W/err.log" || true
+fi
+if [ -e "$slots_j/.hidden-leg" ]; then
+  FAIL=$((FAIL+1)); echo "FAIL - (j) a dot-prefixed reservation dir should never exist on disk"
+else
+  PASS=$((PASS+1)); echo "ok - (j) no reservation directory left behind for the dot-prefixed name"
 fi
 
 echo "--- $PASS passed, $FAIL failed ---"

@@ -255,6 +255,21 @@ _fleet_claim_admit() { # _fleet_claim_admit <admit-dir>
   esac
   age=$(( $(date +%s) - held_at ))
   [ "$age" -ge "${FLEET_ADMIT_STALE_SECS:-60}" ] || return 1
+  # codex-1/codex-2 (HIMMEL-2774, 3rd panel round): age alone cannot tell a
+  # crashed holder from one still legitimately inside the critical section
+  # (a slow filesystem, a GC pause) — reclaiming out from under a still-live
+  # holder loses mutual exclusion outright, and restoring its metadata on a
+  # lost race above cannot undo that. The recorded pid is always same-host
+  # (this slot dir is per-user tmpfs), so a live pid we own is authoritative:
+  # refuse to reclaim while it is still running, no matter how stale the
+  # timestamp looks. An unreadable/corrupt pid (crash before the pid write)
+  # cannot be verified either way, so it falls through to the existing
+  # age-only reclaim rather than wedging forever on an unverifiable holder.
+  _fleet_held_pid="$(cat "$admit/pid" 2>/dev/null)"
+  case "$_fleet_held_pid" in
+    ''|*[!0-9]*) : ;;
+    *) kill -0 "$_fleet_held_pid" 2>/dev/null && return 1 ;;
+  esac
   _fleet_steal_stale_admit "$admit" "$held_at"
 }
 
@@ -363,11 +378,24 @@ if [ "$_fleet_admitted" -eq 1 ]; then
   # codex-1 (HIMMEL-2774, 2nd panel round): re-census now, while holding
   # the admission lock, so the count feeding the cap decision below cannot
   # go stale between the pre-lock snapshot above and here — a session can
-  # start or exit in that gap under real contention. `|| true`: a transient
-  # failure of this second census falls back to the pre-lock snapshot
-  # (_fleet_census leaves the counters untouched on failure) rather than
-  # aborting an already-in-progress admission.
-  _fleet_census || true
+  # start or exit in that gap under real contention. codex-5 (HIMMEL-2774,
+  # 3rd panel round): a transient failure of this second census used to fall
+  # back to the pre-lock snapshot silently (_fleet_census leaves the counters
+  # untouched on failure) and admit on it — the same "cannot verify the
+  # fleet is under cap" situation as the pre-lock census failure above, just
+  # reached from inside the lock instead of before it, so it gets the same
+  # refuse-unless-bypassed treatment rather than a silent pass-through.
+  if ! _fleet_census; then
+    echo "bank-preflight: in-lock fleet census failed ('$_fleet_ps_cmd' exited $_fleet_ps_rc) — cannot verify the fleet is under cap; refusing rather than admit on a stale pre-lock snapshot" >&2
+    rm -rf "$SLOTS/.admit" 2>/dev/null
+    if [ "${FLEET_CAP_OK:-}" = "1" ]; then
+      echo "bank-preflight: FLEET_CAP_OK bypass in effect (launching shell only) — proceeding despite the failed in-lock census" >&2
+    elif [ "$LAUNCH_INTENT" = "1" ]; then
+      emit SKIPPED-FLEET
+    else
+      echo "bank-preflight: not a declared launch (CADENCE_BANK_LAUNCH unset) — reporting only, not refusing" >&2
+    fi
+  fi
   _fleet_now=$(date +%s)
   for _fleet_resv in "$SLOTS"/*/; do
     [ -d "$_fleet_resv" ] || continue
@@ -428,6 +456,15 @@ elif [ "$LAUNCH_INTENT" = "1" ] && [ -n "$LEG" ] && [ "$LEG" != unknown ]; then
   case "$LEG" in
     */*)
       echo "bank-preflight: CADENCE_BANK_LEG='$LEG' contains '/' — cannot create a fleet reservation directory for it; proceeding without a reservation (fix the caller to pass a bare name)" >&2
+      ;;
+    .*)
+      # codex-7 (HIMMEL-2774, 3rd panel round): a dot-leading name is a valid
+      # `mkdir` target but invisible to the reservation census glob
+      # (`"$SLOTS"/*/`, no dotglob) — such a reservation would exist on disk
+      # yet never count against the cap, undercounting exactly like the '/'
+      # and ENAMETOOLONG cases above. Refuse the same way: proceed without a
+      # reservation rather than create one the census can never see.
+      echo "bank-preflight: CADENCE_BANK_LEG='$LEG' starts with '.' — cannot create a fleet reservation directory for it (dot-prefixed names are invisible to the reservation census); proceeding without a reservation (fix the caller to pass a name that does not start with '.')" >&2
       ;;
     *)
       if mkdir "$SLOTS/$LEG" 2>/dev/null; then
