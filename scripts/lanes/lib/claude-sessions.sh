@@ -95,8 +95,25 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
     # an empty file does not. Capture the loop's stderr to a scratch file and
     # check afterward whether anything landed there.
     local name="" model="" autocompact="" expect="" tok got_tok=0
-    local errfile="" read_err=0
+    local errfile="" read_err=0 mktemp_failed=0
     errfile="$(mktemp "${TMPDIR:-/tmp}/claude-sessions-cmdline-err.XXXXXX" 2>/dev/null)" || errfile=""
+    # HIMMEL-3008 CR round 1 (codex-2, Important): a failed mktemp leaves
+    # errfile empty, so the loop's stderr below falls through to /dev/null and
+    # read_err can never become 1 -- an unreadable live pid would silently
+    # collapse into the same "clean empty read" case this whole scratch-file
+    # scheme exists to distinguish. Track the failure so it forces the same
+    # unreadable/rc-3 outcome as a genuine read error, never a silent return 0.
+    [ -z "$errfile" ] && mktemp_failed=1
+    # HIMMEL-3008 CR round 1 (codex-1, Important): redirections apply left to
+    # right, so `< "$cmdline" 2>errfile` (the prior order) let an open-time
+    # failure on the `<` side (e.g. EACCES/ENOENT from a race right after the
+    # `-r` precheck) print its diagnostic to the REAL stderr, before errfile
+    # was even attached -- read_err stayed 0 and the pid silently vanished
+    # instead of being reported. Redirecting stderr FIRST means it is already
+    # pointed at errfile by the time the `<` redirection is attempted, so an
+    # open-time failure is captured exactly like a read-time one (verified:
+    # a nonexistent-file open under this order lands its diagnostic in
+    # errfile; under the old order it escaped to real stderr).
     while IFS= read -r -d '' tok; do
         got_tok=1
         if [ -n "$expect" ]; then
@@ -116,7 +133,7 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
             --append-system-prompt|--append-system-prompt-file) expect=skip ;;
             --system-prompt|--system-prompt-file) expect=skip ;;
         esac
-    done < "$cmdline" 2>"${errfile:-/dev/null}"
+    done 2>"${errfile:-/dev/null}" < "$cmdline"
     if [ -n "$errfile" ]; then
         [ -s "$errfile" ] && read_err=1
         rm -f "$errfile"
@@ -129,9 +146,10 @@ _claude_sessions_from_cmdline() { # _claude_sessions_from_cmdline <proc-root> <p
         # that vanished entirely mid-read (dir gone by the time we check)
         # keeps today's silent/rc-0 vanished behaviour even if the read
         # happened to log an error on the way out. Only a live pid whose
-        # read actually errored is the HIMMEL-3008 race -- report it exactly
-        # like the upfront `-r` failure above.
-        if [ -d "$proc/$pid" ] && [ "$read_err" -eq 1 ]; then
+        # read actually errored (or whose error we could not even capture --
+        # mktemp_failed) is the HIMMEL-3008 race -- report it exactly like
+        # the upfront `-r` failure above.
+        if [ -d "$proc/$pid" ] && { [ "$read_err" -eq 1 ] || [ "$mktemp_failed" -eq 1 ]; }; then
             printf '# unreadable %s\n' "$pid"
             return 3
         fi
