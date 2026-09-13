@@ -284,15 +284,28 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
     _hd_budget=8
     while [ "$_hd_budget" -gt 0 ] && [[ $rm_scrub_raw == *'<<'* ]]; do
         _hd_budget=$((_hd_budget - 1))
-        _hd_qpat="<<-?[[:space:]]*'([[:alnum:]_]+)'"
-        _hd_dpat='<<-?[[:space:]]*"([[:alnum:]_]+)"'
+        _hd_qpat="<<(-)?[[:space:]]*'([[:alnum:]_]+)'"
+        _hd_dpat='<<(-)?[[:space:]]*"([[:alnum:]_]+)"'
         if [[ $rm_scrub_raw =~ $_hd_qpat ]] || [[ $rm_scrub_raw =~ $_hd_dpat ]]; then
-            _hd_word="${BASH_REMATCH[1]}"
+            _hd_dash="${BASH_REMATCH[1]}"
+            _hd_word="${BASH_REMATCH[2]}"
             _hd_opener="${BASH_REMATCH[0]}"
         else
             break
         fi
         _hd_prefix="${rm_scrub_raw%%"$_hd_opener"*}"
+        # A third `<` right before this match means the "<<" matched here is
+        # actually the tail of a `<<<` here-string operator, not a heredoc
+        # redirect. Bash never reads a body for `<<<` - its whole "value" is
+        # the word/string on the SAME line - so treating what follows as a
+        # scannable heredoc body can splice a real, sequentially-executed
+        # command out of the string entirely whenever a later line happens to
+        # equal the here-string's word (HIMMEL-3029). Disqualify with the same
+        # mask-and-continue mechanism as the mid-quote/comment cases below.
+        if [[ $_hd_prefix == *'<' ]]; then
+            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+            continue
+        fi
         # An opener sitting inside an OPEN quote on its own physical line is
         # DATA inside a quoted argument (`echo "text <<'EOF'"`), not a
         # redirect operator - a real heredoc redirect is never written
@@ -333,7 +346,20 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         fi
         _hd_openerline_rest="${_hd_tail%%$'\n'*}"
         _hd_body="${_hd_tail#*$'\n'}"
-        _hd_termpat=$'(^|\n)'"$_hd_word"$'($|\n)'
+        # `<<-` also lets bash accept a terminator line indented with leading
+        # TAB characters (stripped before the delimiter-word comparison, per
+        # `<<-` semantics) - without this, a legitimately tab-indented
+        # terminator on a `<<-` heredoc is never found, and a benign body gets
+        # a false DENY via the fail-closed unstripped-string fallback below
+        # (HIMMEL-3029). A plain `<<` delimiter gets no such tolerance: bash
+        # itself requires the terminator flush-left there, so a tab-indented
+        # terminator leaves the heredoc genuinely unterminated and the
+        # fail-closed path is correct.
+        if [[ -n $_hd_dash ]]; then
+            _hd_termpat=$'(^|\n)\t*'"$_hd_word"$'($|\n)'
+        else
+            _hd_termpat=$'(^|\n)'"$_hd_word"$'($|\n)'
+        fi
         if [[ $_hd_body =~ $_hd_termpat ]]; then
             _hd_after="${_hd_body#*"${BASH_REMATCH[0]}"}"
             rm_scrub_raw="${_hd_prefix} ${_hd_openerline_rest}"$'\n'"${_hd_after}"

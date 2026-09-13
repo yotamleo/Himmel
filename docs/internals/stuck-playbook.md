@@ -320,13 +320,20 @@ the re-run.
 
 ## Symptom: a new test suite's one-line invocation is refused as a recursive-delete deny (HIMMEL-2898)
 
-A one-line `bash <suite> … | grep … | tail` can get refused by the
-destructive-command classifier even though the line names no delete flag of
-its own: many suites' standard cleanup trap (`rm -rf "$TMPDIR"` or similar)
-lives in the suite's own source, and the classifier reads that trap text when
-the suite is unfamiliar and the invocation is compound (piped/redirected).
-Confirmed once (HIMMEL-2898 item 4, N125's `test-finding-reraise.sh`); the
-same suite ran clean when invoked through `quiet-run.sh`.
+A one-line `bash <suite> … | grep … | tail` can get refused even though the
+line names no delete flag of its own: many suites' standard cleanup trap
+(`rm -rf "$TMPDIR"` or similar) lives in the suite's own source, and something
+reads that trap text when the suite is unfamiliar and the invocation is
+compound (piped/redirected). Confirmed once (HIMMEL-2898 item 4, N125's
+`test-finding-reraise.sh`); the same suite ran clean when invoked through
+`quiet-run.sh`. **Since HIMMEL-2834 (#744) this can no longer be
+`block-destructive-commands.sh` itself** — that hook anchors its recursive-rm
+checks on command position over the actual command string and never reads a
+grep pattern or a heredoc BODY, so it cannot see into a suite's own source at
+all; this symptom now names the auto-mode classifier (HIMMEL-2798 class), not
+this hook. Tell them apart by the deny text: `recursive rm` (or another
+short, self-named reason) is this hook, deterministic; text quoting script
+content, or the literal `Stage 2 classifier error`, is the classifier.
 
 **What to do:** run every suite — new or old — only through `bash
 scripts/quiet-run.sh <name> -- bash <suite>` as **one literal command**, never

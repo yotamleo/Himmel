@@ -352,6 +352,39 @@ heredoc_cmd_fakeopener_comment='# <<'"'"'EOF'"'"'
 rm -rf /tmp/x
 EOF'
 assert_rc "2834k commented fake heredoc opener <rm literal>" 2 "$(run_case "$(j_bash "$heredoc_cmd_fakeopener_comment")")"
+# HIMMEL-3029: two opener-heuristic residuals deferred out of HIMMEL-2834.
+# (a) `<<-` lets bash accept a terminator line indented with leading TABS -
+# the scrubber must tolerate that, not fail closed on a benign body.
+heredoc_tab_dash="cat <<-'EOF' > /tmp/proposal.md
+do not run:
+rm -rf /tmp/x
+$(printf '\t')EOF"
+assert_rc "3029a <<- tab-indented terminator" 0 "$(run_case "$(j_bash "$heredoc_tab_dash")")"
+# (b) control: a plain `<<` (no dash) does NOT get tab tolerance - bash itself
+# requires the terminator flush-left, so this heredoc is genuinely
+# unterminated and must stay DENY via the fail-closed fallback.
+heredoc_tab_nodash="cat <<'EOF' > /tmp/proposal.md
+do not run:
+rm -rf /tmp/x
+$(printf '\t')EOF"
+assert_rc "3029b <<no-dash tab-indented terminator stays DENY" 2 "$(run_case "$(j_bash "$heredoc_tab_nodash")")"
+# (c) a `<<<` here-string must never be treated as a heredoc opener - here the
+# here-string's word ('EOF') coincidentally matches a later standalone line,
+# but the `rm -rf` between them is a REAL, separate command that actually
+# runs (a here-string has no body to strip); must still DENY.
+heredoc_herestring_coincidence="cat foo <<< 'EOF'
+rm -rf /tmp/x
+EOF"
+assert_rc "3029c <<< here-string coincidental terminator still executes" 2 "$(run_case "$(j_bash "$heredoc_herestring_coincidence")")"
+# (d) the same `<<<` misdetection, unguarded, can also swallow a LEGITIMATE
+# later heredoc: without disqualifying the here-string opener, the scrubber
+# breaks (fail-closed) before ever reaching the real `cat <<'REAL'` heredoc
+# below, false-DENYing a benign body. Guarding the here-string lets the loop
+# continue on to correctly strip the real one; must ALLOW.
+heredoc_herestring_then_real="echo <<< 'EOF' && cat <<'REAL' > /tmp/y
+rm -rf /tmp/x
+REAL"
+assert_rc "3029d <<< here-string does not shadow a later real heredoc" 0 "$(run_case "$(j_bash "$heredoc_herestring_then_real")")"
 # (f) HIMMEL-851 bypasses must still deny post-anchor (already covered above,
 # cited here for the ticket's control list): quoted-flag L104, \${IFS} L106,
 # backslash-continuation L110-112.

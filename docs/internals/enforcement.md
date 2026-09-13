@@ -1624,7 +1624,11 @@ hook plus the auto-mode classifier are the outer defense layers, not an
 arms race against every wrapper permutation. Fails CLOSED on missing `jq`
 or malformed/truncated JSON (a security floor, not a convenience hook — the
 EXIT trap also converts any unexpected top-level failure to a block rather
-than a fail-open rc=1). Bypass: `DESTRUCTIVE_OK=1` (launching shell,
+than a fail-open rc=1). Deny text is the tell that separates this
+deterministic hook from an auto-mode classifier denial (HIMMEL-2798/
+HIMMEL-3020 class): this hook's message always names its own short reason
+(e.g. `recursive rm`), never quoted script content or `Stage 2 classifier
+error`. Bypass: `DESTRUCTIVE_OK=1` (launching shell,
 session-sticky). Spec: `scripts/hooks/test-block-destructive-commands.sh`.
 
 ### `check-hook-file-parse.sh` — write-time hook-file parse guard (HIMMEL-2230)
