@@ -73,7 +73,13 @@ case "$* " in
             printf '%s\n' "$STUB_OPEN_PR"
         fi
         ;;
-    *"pr create"*) echo "https://github.com/owner/repo/pull/9" ;;
+    *"pr create"*)
+        echo "https://github.com/owner/repo/pull/9"
+        # real `gh pr create` on a repo with CodeRabbit armed is followed by
+        # the seam's own CR-trigger confirmation line on stdout (HIMMEL-1924)
+        # — reproduce that here, not just the bare URL.
+        echo "posted @coderabbitai review on PR #9 (owner/repo) for head $HEAD_SHA_STUB"
+        ;;
     *"pr edit"*)   exit 0 ;;
     *"repo view"*) echo "owner/repo" ;;
     *) echo "stub: unhandled gh args: $*" >&2; exit 99 ;;
@@ -85,6 +91,7 @@ run_sut() {  # args passed straight through to the SUT
     (
         cd "$REPO" || exit 99
         FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
+            HEAD_SHA_STUB="$HEAD_SHA" \
             bash "$SUT" "$@"
     )
 }

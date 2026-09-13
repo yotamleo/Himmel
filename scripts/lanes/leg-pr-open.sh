@@ -97,11 +97,15 @@ if ! existing_pr=$(forge_pr_find_open "$branch" 2>&1); then
 fi
 
 if [ -z "$existing_pr" ]; then
-    if ! url=$(forge_pr_create "$title" "$body" "$BASE" "$branch" 2>&1); then
+    if ! out=$(forge_pr_create "$title" "$body" "$BASE" "$branch" 2>&1); then
         echo "ERR leg-pr-open: PR create failed:" >&2
-        printf '%s\n' "$url" >&2
+        printf '%s\n' "$out" >&2
         exit 1
     fi
+    # forge_pr_create's stdout is the PR URL on its own first line, optionally
+    # followed by a CodeRabbit-trigger confirmation line (HIMMEL-1924) — take
+    # only the first line as the URL.
+    url=$(printf '%s\n' "$out" | head -n 1)
     number=${url##*/}
 else
     number="$existing_pr"
