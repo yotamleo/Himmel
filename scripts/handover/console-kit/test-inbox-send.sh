@@ -259,5 +259,64 @@ else
     fail "pre-existing lock directory left at $lock_mode instead of 700"
 fi
 
+# --- HIMMEL-2980: judge-side inbox sent-record -----------------------------
+RUNDIR="$WORK/rundir"
+export HIMMEL_CONSOLE_RUNDIR="$RUNDIR"
+LEDGER="$RUNDIR/HIMMEL-judge-console/inbox-sent.log"
+
+SESSION28="HIMMEL-2980-ledger-test"
+INBOX28="$HANDOVER_DIR/inbox/$SESSION28.md"
+
+# Case 14: a --token send writes exactly one ledger line whose 4th field is
+# the sha256 of the bullet as appended.
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" bash "$SCRIPT" "$SESSION28" ledgered --token lt1 2>&1)"; rc=$?
+bullet_line="$(tail -n1 "$INBOX28" 2>/dev/null)"
+expected_sha="$(printf '%s' "$bullet_line" | sha256sum | cut -d' ' -f1)"
+ledger_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
+ledger_sha="$(tail -n1 "$LEDGER" 2>/dev/null | awk '{print $4}')"
+if [ "$rc" -eq 0 ] && [ "$ledger_lines" = "1" ] && [ -n "$expected_sha" ] && [ "$ledger_sha" = "$expected_sha" ]; then
+    pass "--token send writes exactly one ledger line matching the bullet's sha256"
+else
+    fail "--token send writes exactly one ledger line matching the bullet's sha256 (rc=$rc lines=$ledger_lines sha=$ledger_sha expected=$expected_sha out='$out')"
+fi
+
+# Case 15: a no-token send from the same sender does not touch the ledger.
+before_lines="$ledger_lines"
+bash "$SCRIPT" "$SESSION28" untoked-followup >/dev/null 2>&1
+after_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
+if [ "$after_lines" = "$before_lines" ]; then
+    pass "a no-token send writes no ledger line"
+else
+    fail "a no-token send writes no ledger line (before=$before_lines after=$after_lines)"
+fi
+
+# Case 15b: a session that never sends --token gets no ledger file/dir.
+CMDLINE_NEVER="$WORK/cmdline-never-toked"
+printf 'claude\0-n\0HIMMEL-2980-never-toked-sender\0' > "$CMDLINE_NEVER"
+CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_NEVER" bash "$SCRIPT" "$SESSION28" untoked-new-sender >/dev/null 2>&1
+if [ ! -e "$RUNDIR/HIMMEL-2980-never-toked-sender" ]; then
+    pass "a no-token send creates no ledger file/dir for its sender"
+else
+    fail "a no-token send creates no ledger file/dir for its sender"
+fi
+
+# Case 16: a relay-refused --token send (rc 3) writes no ledger line.
+before_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
+out="$(CLAUDE_PID=1 SESSION_NAME_CMDLINE_FILE="$CMDLINE_JUDGE" HIMMEL_CONSOLE_RELAY=1 bash "$SCRIPT" "$SESSION28" relay-toked --token lt2 2>&1)"; rc=$?
+after_lines="$(wc -l < "$LEDGER" 2>/dev/null | tr -d '[:space:]')"
+if [ "$rc" -eq 3 ] && [ "$after_lines" = "$before_lines" ]; then
+    pass "a relay-refused --token send writes no ledger line"
+else
+    fail "a relay-refused --token send writes no ledger line (rc=$rc before=$before_lines after=$after_lines out='$out')"
+fi
+
+# Case 17: the ledger directory is created at mode 700.
+ledger_mode="$(stat -c '%a' "$RUNDIR/HIMMEL-judge-console" 2>/dev/null || stat -f '%Lp' "$RUNDIR/HIMMEL-judge-console" 2>/dev/null)"
+if [ "$ledger_mode" = "700" ]; then
+    pass "ledger directory is created at mode 700"
+else
+    fail "ledger directory is created at mode 700 (mode=$ledger_mode)"
+fi
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "SOME FAILED"; exit 1
