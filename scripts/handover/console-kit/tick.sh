@@ -133,32 +133,52 @@ done
 [ -n "$legs_summary" ] || legs_summary=none
 [ -n "$tails_summary" ] || tails_summary=none
 
-proc_out="$(pgrep -af 'claude' 2>/dev/null)" || proc_out=""
-procs="$(printf '%s\n' "$proc_out" | awk '/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/ -n [^ ]*-console/ { n++ } END { print n+0 }')"
+# HIMMEL-2999: name/model come from claude_sessions() (real
+# /proc/<pid>/cmdline argv, NUL-delimited), never a flattened `pgrep -af`
+# line -- free-text argv (a -p/--append-system-prompt value containing the
+# literal substring "-n X") can no longer spoof procs=/models=.
+# shellcheck source=../../lanes/lib/claude-sessions.sh
+. "$REPO/scripts/lanes/lib/claude-sessions.sh"
+sessions_out="$(claude_sessions)" || sessions_out=""
+sessions_lossy=0
+case "$sessions_out" in
+    '# lossy'|$'# lossy\n'*) sessions_lossy=1 ;;
+esac
 
-# HIMMEL-2976: same ps table and leg filter as procs= above, bucketed by the
-# tier its --model argv names (opus/fable cost materially more per turn than
-# the sonnet default - CLAUDE.md "raise effort before tier"). Any non-Claude
-# id (e.g. a claudex gpt-* model) buckets under "other" rather than one
-# unbounded per-model list. A leg matched by the same filter but carrying no
-# --model token at all buckets under "unknown" (codex-2, HIMMEL-2976 round 1
-# CR) rather than falling out of every bucket while still counted in procs=.
-models_summary="$(printf '%s\n' "$proc_out" | awk '
-/claude / && / -n (HIMMEL|LUNA)-/ && /-leg/ && !/ -n [^ ]*-console/ {
-    found = 0
-    for (i = 1; i <= NF; i++) {
-        if ($i == "--model" && (i + 1) <= NF) {
-            m = $(i + 1)
-            if (m ~ /^claude-opus-/) c_opus++
-            else if (m ~ /^claude-fable-/) c_fable++
-            else if (m ~ /^claude-sonnet-/) c_sonnet++
-            else if (m ~ /^claude-haiku-/) c_haiku++
-            else c_other++
-            found = 1
-            break
-        }
-    }
-    if (!found) c_unknown++
+procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
+$1 ~ /^#/ { next }
+NF < 4 { next }
+{
+    name = $2
+    if (name !~ /^(HIMMEL|LUNA)-/) next
+    if (name !~ /-leg/) next
+    if (name ~ /-console$/) next
+    n++
+}
+END { print n+0 }')"
+
+# HIMMEL-2976: same session table and leg filter as procs= above, bucketed by
+# the tier its real --model argv names (opus/fable cost materially more per
+# turn than the sonnet default - CLAUDE.md "raise effort before tier"). Any
+# non-Claude id (e.g. a claudex gpt-* model) buckets under "other" rather than
+# one unbounded per-model list. A leg matched by the same filter but carrying
+# no --model token at all buckets under "unknown" (codex-2, HIMMEL-2976 round
+# 1 CR) rather than falling out of every bucket while still counted in
+# procs=.
+models_summary="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
+$1 ~ /^#/ { next }
+NF < 4 { next }
+{
+    name = $2; model = $3
+    if (name !~ /^(HIMMEL|LUNA)-/) next
+    if (name !~ /-leg/) next
+    if (name ~ /-console$/) next
+    if (model == "")             { c_unknown++ }
+    else if (model ~ /^claude-opus-/)   c_opus++
+    else if (model ~ /^claude-fable-/)  c_fable++
+    else if (model ~ /^claude-sonnet-/) c_sonnet++
+    else if (model ~ /^claude-haiku-/)  c_haiku++
+    else                                c_other++
 }
 END {
     out = ""
@@ -171,6 +191,11 @@ END {
     print out
 }')"
 [ -n "$models_summary" ] || models_summary=none
+# HIMMEL-2999: /proc absent (macOS, git-bash) degrades claude_sessions() to
+# the old flattened-line parse -- flag it inline (no space, so the tick line
+# stays space-delimited) rather than silently reporting a scan that could
+# again be spoofed by free-text argv.
+[ "$sessions_lossy" -eq 0 ] || models_summary="${models_summary}(lossy)"
 
 # HIMMEL-2974: the same ps table, scanned for --autocompact drift against the
 # leg invariant headed-arm.sh:391 refuses to launch without. The script's own

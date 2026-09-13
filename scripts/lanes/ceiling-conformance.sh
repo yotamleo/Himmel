@@ -9,46 +9,56 @@
 # drifted from it). A console is exempt by design (HIMMEL-2658: 1m/auto is
 # the console's own context tier, not a leak).
 #
-# PLATFORM GUARD: no .ps1 twin, by design -- Linux-only, reads pgrep the
+# PLATFORM GUARD: no .ps1 twin, by design -- Linux-only, reads real argv the
 # same way tick.sh does. Bash 3.2-compatible; no associative arrays or
 # mapfile.
 #
 # Verdict rule, per live `-n <name>` claude session:
-#   - a leg (the process line contains -leg and the -n name does not end
-#     -console) must carry --autocompact 200000; anything else is DRIFT.
+#   - a leg (the real -n name contains -leg and does not end -console) must
+#     carry --autocompact 200000; anything else is DRIFT.
 #   - a console (-n name ends -console) is exempt -- 1m/auto is its design.
 #   - anything else (an operator relaunch, any other -n name) is DRIFT if
 #     its ceiling is auto or unset.
 # A process with no -n token is not a tracked session and is skipped.
+#
+# HIMMEL-2999: name/model/ceiling come from claude_sessions() (real
+# /proc/<pid>/cmdline argv, NUL-delimited), never a flattened `pgrep -af`
+# line -- free-text argv (a -p/--append-system-prompt value containing the
+# literal substring "-n X" or "--autocompact 200000") can no longer spoof
+# the detected name or ceiling.
 #
 # Output: one `<name> <ceiling>` line per tracked session, then a last line
 # of `ceiling=ok` or `ceiling=DRIFT:<name1>,<name2>`. Exit 0 either way --
 # this is a report, not a gate.
 set -u
 
-proc_out="$(pgrep -af 'claude' 2>/dev/null)"
-pgrep_rc=$?
-# pgrep rc=1 means "no processes matched" -- a legitimate empty table, still
-# ceiling=ok. Any other nonzero rc (bad invocation, permission, OOM) means the
-# scan itself failed, and reporting ceiling=ok on top of that would silently
-# mask exactly the drift this script exists to catch (HIMMEL-2974 round 1).
-if [ "$pgrep_rc" -gt 1 ]; then
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/claude-sessions.sh
+. "$HERE/lib/claude-sessions.sh"
+
+sessions_out="$(claude_sessions)"
+sessions_rc=$?
+# claude_sessions() rc>1 means the underlying pgrep scan itself failed (bad
+# invocation, permission, OOM), not "no processes matched" (rc<=1, a
+# legitimate empty table, still ceiling=ok). Reporting ceiling=ok on top of a
+# failed scan would silently mask exactly the drift this script exists to
+# catch (HIMMEL-2974 round 1).
+if [ "$sessions_rc" -gt 1 ]; then
     echo "ceiling=?"
     exit 0
 fi
 
-printf '%s\n' "$proc_out" | awk '
-/claude / && / -n [^ ]+/ {
-    name = ""
-    ceiling = "unset"
-    for (i = 1; i <= NF; i++) {
-        if ($i == "-n" && (i + 1) <= NF) name = $(i + 1)
-        if ($i == "--autocompact" && (i + 1) <= NF) ceiling = $(i + 1)
-    }
+printf '%s\n' "$sessions_out" | awk -F'\t' '
+$1 ~ /^#/ { next }
+NF < 4 { next }
+{
+    name = $2
     if (name == "") next
+    ceiling = $4
+    if (ceiling == "") ceiling = "unset"
 
     is_console = (name ~ /-console$/)
-    is_leg = ($0 ~ /-leg/) && !is_console
+    is_leg = (name ~ /-leg/) && !is_console
 
     if (is_leg)          { drift = (ceiling != "200000") }
     else if (is_console) { drift = 0 }

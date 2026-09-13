@@ -3,6 +3,12 @@
 # tick: exact one-line output, verbose human output, stale fill, and a missing
 # leg document. No live queue, process, scheduler, GitHub, or bank operations.
 #
+# HIMMEL-2999: the primary-path scenarios below drive claude_sessions() via a
+# fake /proc root (CLAUDE_SESSIONS_PROC) with real NUL-separated
+# <pid>/cmdline files, not a flattened `pgrep -af` line. The ORIGINAL `pgrep
+# -af` stub is kept verbatim (see "lossy fallback" below) as the dedicated
+# regression test for the no-/proc degraded path.
+#
 # PLATFORM GUARD: no .ps1 twin, by design. The console kit is Linux-only
 # (pgrep, atq, /tmp suite locks, and claudex/konsole); this Bash 3.2 suite
 # exercises that platform-specific script.
@@ -20,7 +26,32 @@ contains() {
     case "$2" in *"$3"*) pass "$1" ;; *) fail "$1 (missing '$3' in '$2')" ;; esac
 }
 
-mkdir -p "$W/repo/scripts/handover" "$W/repo/scripts/lib" "$W/repo/scripts/lanes" "$W/handover/inbox/.cursor" "$W/bin" "$W/himmel-shell-suite-test.lock"
+mkdir -p "$W/repo/scripts/handover" "$W/repo/scripts/lib" "$W/repo/scripts/lanes/lib" "$W/handover/inbox/.cursor" "$W/bin" "$W/proc" "$W/himmel-shell-suite-test.lock"
+
+# mkcmdline <pid> <argv...> - a real NUL-separated cmdline file for a fake
+# /proc/<pid>. printf writes the NULs straight to the file; a bash string
+# variable cannot hold an embedded NUL, so this must not build the payload
+# in a variable first.
+mkcmdline() {
+    local pid="$1"; shift
+    mkdir -p "$W/proc/$pid"
+    printf '%s\0' "$@" > "$W/proc/$pid/cmdline"
+}
+
+# mk_pgrep_x <dir> <pid...> - a `pgrep -x claude` stub returning these bare
+# pids, written into <dir>/pgrep.
+mk_pgrep_x() {
+    local dir="$1"; shift
+    mkdir -p "$dir"
+    {
+        printf '#!/usr/bin/env bash\n'
+        # shellcheck disable=SC2016  # single quotes are deliberate: $1 must
+        # reach the generated stub file literally, not expand here.
+        printf 'if [ "$1" = "-x" ]; then printf "%%s\\n" %s; exit 0; fi\n' "$*"
+        printf 'exit 1\n'
+    } > "$dir/pgrep"
+    chmod +x "$dir/pgrep"
+}
 
 cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
 #!/usr/bin/env bash
@@ -50,13 +81,14 @@ cat > "$W/bin/date" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in +%H:%M) printf '%s\n' 12:34 ;; *) /bin/date "$@" ;; esac
 STUB
-cat > "$W/bin/pgrep" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' \
-  '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work' \
-  '102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work' \
-  '103 claude --model claude-sonnet-5 -n HIMMEL-next-console work'
-STUB
+
+# Default primary-path table: pid 101 (a pinned sonnet leg), 102 (a pinned
+# opus leg), 103 (the console -- no --autocompact, exempt from drift).
+mkcmdline 101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work
+mkcmdline 102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work
+mkcmdline 103 claude --model claude-sonnet-5 -n HIMMEL-next-console work
+mk_pgrep_x "$W/bin" 101 102 103
+
 cat > "$W/bin/atq" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' '1 Tue job' '2 Wed job'
@@ -74,9 +106,12 @@ cat > "$W/bin/bun" <<'STUB'
 printf '%s\n' 'claudex funded measured 5h used=12% free=88%; weekly used=34% free=66%'
 STUB
 # HIMMEL-2974: the real ceiling-conformance.sh, not a re-implemented stub --
-# it reads the same PATH-stubbed pgrep table this suite already builds, so a
+# it reads the same claude_sessions() table this suite already builds, so a
 # leg row here is one source of truth for procs=/models=/ceiling= alike.
 cp "$HERE/../../lanes/ceiling-conformance.sh" "$W/repo/scripts/lanes/ceiling-conformance.sh"
+# HIMMEL-2999: the shared helper both ceiling-conformance.sh and tick.sh
+# source by $REPO-relative path.
+cp "$HERE/../../lanes/lib/claude-sessions.sh" "$W/repo/scripts/lanes/lib/claude-sessions.sh"
 
 chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/repo/scripts/lanes/leg-burn.sh" "$W/repo/scripts/lanes/ceiling-conformance.sh" "$W/bin/"*
 
@@ -97,6 +132,7 @@ export HANDOVER_DIR="$W/handover"
 export REPO="$W/repo"
 export TICK_TMPDIR="$W"
 export TICK_BANK_CACHE_FILE="$W/bank.json"
+export CLAUDE_SESSIONS_PROC="$W/proc"
 
 out="$(bash "$SUT")"; rc=$?
 expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE procs=2 models=sonnet:1,opus:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8'
@@ -118,17 +154,28 @@ contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
 contains '--verbose labels leg models (HIMMEL-2976)' "$verbose" 'leg models: sonnet:1,opus:1'
 
+# HIMMEL-2999: /proc absent (CLAUDE_SESSIONS_PROC pointing nowhere) falls back
+# to the old flattened `pgrep -af` parse, kept byte-identical, plus a
+# `(lossy)` suffix on models= flagging the degraded read.
+mkdir -p "$W/bin-lossy"
+cat > "$W/bin-lossy/pgrep" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' \
+  '101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work' \
+  '102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work' \
+  '103 claude --model claude-sonnet-5 -n HIMMEL-next-console work'
+STUB
+chmod +x "$W/bin-lossy/pgrep"
+lossy_out="$(CLAUDE_SESSIONS_PROC="$W/no-such-proc" PATH="$W/bin-lossy:$PATH" bash "$SUT")"
+contains 'the /proc-absent fallback still counts the same two legs' "$lossy_out" 'procs=2'
+contains 'the /proc-absent fallback flags the degraded read' "$lossy_out" 'models=sonnet:1,opus:1(lossy)'
+contains 'the /proc-absent fallback still reports ceiling=ok' "$lossy_out" 'ceiling=ok'
+
 # codex-2 (HIMMEL-2976 round 1 CR): a leg process matched by the leg filter
 # but with no --model token at all must still show up (an "unknown" bucket),
 # never silently fall out of every bucket while still counted in procs=.
-mkdir -p "$W/bin-nomodel"
-cat > "$W/bin-nomodel/pgrep" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' \
-  '101 claude --model claude-sonnet-5 -n HIMMEL-111-legN61 work' \
-  '104 claude -n HIMMEL-444-legN70 work'
-STUB
-chmod +x "$W/bin-nomodel/pgrep"
+mkcmdline 104 claude -n HIMMEL-444-legN70 work
+mk_pgrep_x "$W/bin-nomodel" 101 104
 nomodel_out="$(PATH="$W/bin-nomodel:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-444-legN70')"
 contains 'a leg with no --model token buckets as unknown, not dropped' "$nomodel_out" 'models=sonnet:1,unknown:1'
 
@@ -137,30 +184,41 @@ contains 'a leg with no --model token buckets as unknown, not dropped' "$nomodel
 # segment "himmel-console" contains the substring "-console", which the old
 # `!/-console/` exclusion matched against the WHOLE line rather than just the
 # console's own `-n <name>` token, silently dropping every --profile leg from
-# both procs= and models=.
-mkdir -p "$W/bin-profile"
-cat > "$W/bin-profile/pgrep" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' \
-  '103 claude --model claude-sonnet-5 -n HIMMEL-next-console work' \
-  '104 claude --settings /run/user/1000/himmel-console/x/y.leg-settings.json --append-system-prompt-file /run/user/1000/himmel-console/x/leg-preface.md --model claude-sonnet-5 -n HIMMEL-333-foo-legN7-2026-01-01 work'
-STUB
-chmod +x "$W/bin-profile/pgrep"
+# both procs= and models=. Real argv boundaries make this a non-issue by
+# construction: NAME comes only from the token immediately after "-n".
+mkcmdline 105 claude --settings /run/user/1000/himmel-console/x/y.leg-settings.json \
+    --append-system-prompt-file /run/user/1000/himmel-console/x/leg-preface.md \
+    --model claude-sonnet-5 -n HIMMEL-333-foo-legN7-2026-01-01 work
+mk_pgrep_x "$W/bin-profile" 103 105
 profile_out="$(PATH="$W/bin-profile:$PATH" bash "$SUT" --legs 'HIMMEL-333-foo-legN7-2026-01-01')"
 contains 'a --profile leg is counted in procs= (HIMMEL-2998)' "$profile_out" 'procs=1'
 contains 'a --profile leg is bucketed in models= (HIMMEL-2998)' "$profile_out" 'models=sonnet:1'
 
 # HIMMEL-2974: a leg whose --autocompact drifted from 200000 surfaces in
 # ceiling= without disturbing procs=/models=.
-mkdir -p "$W/bin-drift"
-cat > "$W/bin-drift/pgrep" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' \
-  '101 claude --model claude-sonnet-5 --autocompact auto -n HIMMEL-111-legN61 work'
-STUB
-chmod +x "$W/bin-drift/pgrep"
+mkcmdline 106 claude --model claude-sonnet-5 --autocompact auto -n HIMMEL-111-legN61 work
+mk_pgrep_x "$W/bin-drift" 106
 drift_out="$(PATH="$W/bin-drift:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61')"
 contains 'a drifted leg surfaces in ceiling= (HIMMEL-2974)' "$drift_out" 'ceiling=DRIFT:HIMMEL-111-legN61'
+
+# HIMMEL-2999 (ticket acceptance b): a single real console session whose
+# free-text -p value contains an embedded newline plus the literal word
+# "claude" and a fake "-n HIMMEL-999-fake-legN1-2026-01-01" must NOT be
+# counted. Pre-fix, `pgrep -af` prints this one process's argv across two
+# text lines (the embedded newline survives byte-for-byte); awk then
+# evaluates the four procs= conditions per LINE, so the fake fragment lands
+# in a second "record" that independently satisfies all four -- the real
+# session's own "-n ...-console" flag, sitting in the FIRST record, never
+# gets a chance to veto it. Real argv has no such record boundary: the whole
+# -p value is one NUL-delimited element, so "-n" from the free text is never
+# an isolated token equal to the literal flag.
+mkcmdline 107 claude --model claude-sonnet-5 --autocompact auto \
+    -n HIMMEL-nextleg-2026-09-13Z-console \
+    -p "$(printf 'spoof\nclaude -n HIMMEL-999-fake-legN1-2026-01-01 more work')"
+mk_pgrep_x "$W/bin-spoof" 107
+spoof_out="$(PATH="$W/bin-spoof:$PATH" bash "$SUT" --legs 'HIMMEL-999-fake-legN1-2026-01-01')"
+contains 'a spoofed -n inside free-text argv is not counted (HIMMEL-2999)' "$spoof_out" 'procs=0'
+contains 'a spoofed -n inside free-text argv does not bucket a model (HIMMEL-2999)' "$spoof_out" 'models=none'
 
 rm -f "$W/handover/HIMMEL-222-legN65.md"
 out="$(FILL_STALE=1 bash "$SUT" --legs 'HIMMEL-111-legN61 HIMMEL-333-legN66')"; rc=$?
