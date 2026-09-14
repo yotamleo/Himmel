@@ -228,7 +228,7 @@ The moved clip's body is unchanged except its path AND the self-ref remap in ste
 ### Phase 5 — (Re)generate `Clippings/_deferred.md`
 
 Overwrite `<vault>/Clippings/_deferred.md` (single living page; it is excluded from all clip scans). Sources:
-- **Fan-out refs (LUNA-14):** union the lines of `<vault>/.harvest-run-fanout-candidates-*.txt` (sort -u; strip malformed entries).
+- **Fan-out refs (LUNA-14):** union the lines of `<vault>/.harvest-run-fanout-candidates-*.txt` (sort -u; strip malformed entries), then drop any ref already ingested: derive `<repo-slug>` per the `luna-ingest` skill's Phase 4 rule (lowercase, hyphens, max 60 chars — e.g. `kepano/obsidian-skills` → `kepano-obsidian-skills`; replace any non-`[a-z0-9-]` with `-`, collapse repeats, strip leading/trailing `-`) and omit the ref when `<vault>/30-Resources/Tech/<repo-slug>.md` already exists (HIMMEL-3043 — an already-ingested repo must not keep reappearing in the backlog).
 - **Tail-skipped refs:** grep `30-Resources/Tech/*.md` for `Tail-skipped: [1-9]` audit-log rows; list `<repo-slug> — <N> refs beyond --limit`.
 - **Safety-flagged:** clips/Tech notes with non-blank `safety_flag:` and their resolution (refused vs operator-allowed).
 - **Duplicates:** the dedup-skips recorded in Phase 3.

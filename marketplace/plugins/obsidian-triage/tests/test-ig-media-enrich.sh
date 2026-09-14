@@ -2316,6 +2316,371 @@ assert "frame-recompress-fail: outcome line 1/2 slides, 0/0 transcripts" ok "$a"
 grep -qF "video-frame" "$tmp/framercfail.out" && a=present || a=absent
 assert "frame-recompress-fail: failed screenshot not counted as video-frame" absent "$a"
 
+# --- Test 45: empty transcript (rc=0, no speech heard) -> PERMANENT no_speech,
+#     ig_media_pending released the same way as "removed" (HIMMEL-3043) --------
+# Sole video, no slides, audible (non-silent) audio: extract_wav succeeds,
+# whisper decodes fine but hears nothing. This must NOT be treated as a
+# retryable failure - whisper will never hear speech that isn't there.
+echo "Test 45: empty transcript -> no_speech permanent, flag released (HIMMEL-3043)"
+emit_gallery_dl vid.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" 0:a:0 "*) echo "mean_volume: -17.4 dB" >&2; exit 0 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo mean_volume: -17.4 dB 1>&2 & exit /b 0 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk45
+if "%~1"=="" goto done45
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk45
+:done45
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+cat > "$tmp/bin/uv" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *transcribe.py*) exit 0 ;;
+  *)
+    while [ $# -gt 0 ] && [ "$1" != "python" ]; do shift; done
+    [ $# -gt 0 ] || { echo "uv-stub: no python token in: $*" >&2; exit 9; }
+    shift
+    exec python "$@" ;;
+esac
+STUB
+chmod +x "$tmp/bin/uv"
+cat > "$tmp/bin/uv.bat" <<'STUB'
+@echo off
+setlocal enabledelayedexpansion
+echo %*| findstr /C:"transcribe.py" >nul
+if not errorlevel 1 ( exit /b 0 )
+set "found="
+:shift_loop45
+if "%~1"=="" goto no_python45
+if /I "%~1"=="python" ( set "found=1" & shift & goto build_args45 )
+shift
+goto shift_loop45
+:build_args45
+set "args="
+:build_loop45
+if "%~1"=="" goto exec_py45
+set "args=!args! %1"
+shift
+goto build_loop45
+:exec_py45
+python!args!
+exit /b !errorlevel!
+:no_python45
+echo uv-stub: no python token in args 1>&2
+exit /b 9
+STUB
+VNS="$tmp/vault-no-speech"
+mkdir -p "$VNS/Clippings"
+cat > "$VNS/Clippings/clip.md" <<'EOF'
+---
+title: "no-speech reel"
+source: "https://www.instagram.com/reel/NOSP045/"
+type: instagram
+harvest_status: partial
+ig_media_pending: true
+---
+# no-speech reel
+
+## Source
+[link](https://www.instagram.com/reel/NOSP045/)
+EOF
+run_tool "$VNS" >"$tmp/nospeech.out" 2>"$tmp/nospeech.err"
+assert "no-speech run exit 0" 0 "$?"
+grep -q '^media_enrichment_status: failed$' "$VNS/Clippings/clip.md" && a=ok || a=no
+assert "no-speech: media_enrichment_status failed" ok "$a"
+grep -q '^media_last_error: no_speech$' "$VNS/Clippings/clip.md" && a=ok || a=no
+assert "no-speech: media_last_error no_speech" ok "$a"
+grep -q '^ig_media_pending:' "$VNS/Clippings/clip.md" && a=present || a=absent
+assert "no-speech: ig_media_pending released (same path as removed)" absent "$a"
+
+# --- Test 46: whisper helper itself fails (rc!=0) -> stays RETRYABLE, flag kept
+#     (HIMMEL-3043 - distinct from Test 45's rc=0/empty-output outcome) --------
+echo "Test 46: whisper rc!=0 -> still retryable, flag kept (HIMMEL-3043)"
+emit_gallery_dl vid.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" 0:a:0 "*) echo "mean_volume: -17.4 dB" >&2; exit 0 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo mean_volume: -17.4 dB 1>&2 & exit /b 0 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk46
+if "%~1"=="" goto done46
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk46
+:done46
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+cat > "$tmp/bin/uv" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *transcribe.py*) echo "whisper: decode error" >&2; exit 1 ;;
+  *)
+    while [ $# -gt 0 ] && [ "$1" != "python" ]; do shift; done
+    [ $# -gt 0 ] || { echo "uv-stub: no python token in: $*" >&2; exit 9; }
+    shift
+    exec python "$@" ;;
+esac
+STUB
+chmod +x "$tmp/bin/uv"
+cat > "$tmp/bin/uv.bat" <<'STUB'
+@echo off
+setlocal enabledelayedexpansion
+echo %*| findstr /C:"transcribe.py" >nul
+if not errorlevel 1 ( echo whisper: decode error 1>&2 & exit /b 1 )
+set "found="
+:shift_loop46
+if "%~1"=="" goto no_python46
+if /I "%~1"=="python" ( set "found=1" & shift & goto build_args46 )
+shift
+goto shift_loop46
+:build_args46
+set "args="
+:build_loop46
+if "%~1"=="" goto exec_py46
+set "args=!args! %1"
+shift
+goto build_loop46
+:exec_py46
+python!args!
+exit /b !errorlevel!
+:no_python46
+echo uv-stub: no python token in args 1>&2
+exit /b 9
+STUB
+VWE="$tmp/vault-whisper-error"
+mkdir -p "$VWE/Clippings"
+cat > "$VWE/Clippings/clip.md" <<'EOF'
+---
+title: "whisper-error reel"
+source: "https://www.instagram.com/reel/WERR046/"
+type: instagram
+harvest_status: partial
+ig_media_pending: true
+---
+# whisper-error reel
+
+## Source
+[link](https://www.instagram.com/reel/WERR046/)
+EOF
+run_tool "$VWE" >"$tmp/whispererr.out" 2>"$tmp/whispererr.err"
+assert "whisper-error run exit 0" 0 "$?"
+grep -q '^media_enrichment_status: failed$' "$VWE/Clippings/clip.md" && a=ok || a=no
+assert "whisper-error: media_enrichment_status failed" ok "$a"
+grep -q '^media_last_error: no_media_content$' "$VWE/Clippings/clip.md" && a=ok || a=no
+assert "whisper-error: media_last_error no_media_content (retryable)" ok "$a"
+grep -q '^ig_media_pending: true$' "$VWE/Clippings/clip.md" && a=ok || a=no
+assert "whisper-error: ig_media_pending KEPT (retryable, unlike Test 45)" ok "$a"
+
+# --- Test 47: silent audio (stream present, mean_volume <= -60dB) -> HIMMEL-786
+#     screenshot fallback taken instead of a doomed transcription (HIMMEL-3043) -
+echo "Test 47: silent audio -> frame fallback (HIMMEL-3043)"
+emit_gallery_dl vid.mp4
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" 0:a:0 "*) echo "[Parsed_volumedetect_0] mean_volume: -91.0 dB" >&2; exit 0 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo [Parsed_volumedetect_0] mean_volume: -91.0 dB 1>&2 & exit /b 0 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk47
+if "%~1"=="" goto done47
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk47
+:done47
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+cat > "$tmp/bin/uv" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *transcribe.py*) exit 0 ;;
+  *)
+    while [ $# -gt 0 ] && [ "$1" != "python" ]; do shift; done
+    [ $# -gt 0 ] || { echo "uv-stub: no python token in: $*" >&2; exit 9; }
+    shift
+    exec python "$@" ;;
+esac
+STUB
+chmod +x "$tmp/bin/uv"
+cat > "$tmp/bin/uv.bat" <<'STUB'
+@echo off
+setlocal enabledelayedexpansion
+echo %*| findstr /C:"transcribe.py" >nul
+if not errorlevel 1 ( exit /b 0 )
+set "found="
+:shift_loop47
+if "%~1"=="" goto no_python47
+if /I "%~1"=="python" ( set "found=1" & shift & goto build_args47 )
+shift
+goto shift_loop47
+:build_args47
+set "args="
+:build_loop47
+if "%~1"=="" goto exec_py47
+set "args=!args! %1"
+shift
+goto build_loop47
+:exec_py47
+python!args!
+exit /b !errorlevel!
+:no_python47
+echo uv-stub: no python token in args 1>&2
+exit /b 9
+STUB
+VSA="$tmp/vault-silent-audio"
+make_ig_vault "$VSA" SLNT047
+run_tool "$VSA" >"$tmp/silentaudio.out" 2>"$tmp/silentaudio.err"
+assert "silent-audio run exit 0" 0 "$?"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VSA/Clippings/clip.md")"
+assert "silent-audio: exactly 1 screenshot slide embed" 1 "$n"
+grep -q '^media_enrichment_status: ok$' "$VSA/Clippings/clip.md" && a=ok || a=no
+assert "silent-audio: enriched ok (not partial/failed)" ok "$a"
+grep -qF "1 slides (1 video-frame) + 0 transcript" "$tmp/silentaudio.out" && a=ok || a=no
+assert "silent-audio: outcome line marks 1 video-frame" ok "$a"
+
+# --- Test 48: carousel with slides + one no-speech video -> ok (no-speech video
+#     excluded from expected_videos; other media surviving is enough) (HIMMEL-3043)
+echo "Test 48: slides + one no-speech video -> ok (HIMMEL-3043)"
+emit_gallery_dl 1.jpg 2.mp4 3.jpg
+cat > "$tmp/bin/ffmpeg" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" 0:a:0 "*) echo "mean_volume: -17.4 dB" >&2; exit 0 ;;
+esac
+src=""; prev=""; last=""
+for a in "$@"; do
+  [ "$prev" = "-i" ] && src="$a"
+  prev="$a"; last="$a"
+done
+exec cp "$src" "$last"
+STUB
+chmod +x "$tmp/bin/ffmpeg"
+cat > "$tmp/bin/ffmpeg.bat" <<'STUB'
+@echo off
+echo %*| findstr /C:"0:a:0" >nul
+if not errorlevel 1 ( echo mean_volume: -17.4 dB 1>&2 & exit /b 0 )
+setlocal enabledelayedexpansion
+set "src="
+set "prev="
+set "last="
+:walk48
+if "%~1"=="" goto done48
+if "!prev!"=="-i" set "src=%~1"
+set "prev=%~1"
+set "last=%~1"
+shift
+goto walk48
+:done48
+copy /y "!src!" "!last!" >nul
+exit /b 0
+STUB
+cat > "$tmp/bin/uv" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *transcribe.py*) exit 0 ;;
+  *)
+    while [ $# -gt 0 ] && [ "$1" != "python" ]; do shift; done
+    [ $# -gt 0 ] || { echo "uv-stub: no python token in: $*" >&2; exit 9; }
+    shift
+    exec python "$@" ;;
+esac
+STUB
+chmod +x "$tmp/bin/uv"
+cat > "$tmp/bin/uv.bat" <<'STUB'
+@echo off
+setlocal enabledelayedexpansion
+echo %*| findstr /C:"transcribe.py" >nul
+if not errorlevel 1 ( exit /b 0 )
+set "found="
+:shift_loop48
+if "%~1"=="" goto no_python48
+if /I "%~1"=="python" ( set "found=1" & shift & goto build_args48 )
+shift
+goto shift_loop48
+:build_args48
+set "args="
+:build_loop48
+if "%~1"=="" goto exec_py48
+set "args=!args! %1"
+shift
+goto build_loop48
+:exec_py48
+python!args!
+exit /b !errorlevel!
+:no_python48
+echo uv-stub: no python token in args 1>&2
+exit /b 9
+STUB
+VCN="$tmp/vault-carousel-no-speech"
+make_ig_vault "$VCN" CANS048
+run_tool "$VCN" >"$tmp/carons.out" 2>"$tmp/carons.err"
+assert "carousel-no-speech run exit 0" 0 "$?"
+n="$(grep -cF '![[Clippings/_media/clip/slide-' "$VCN/Clippings/clip.md")"
+assert "carousel-no-speech: exactly 2 image slide embeds" 2 "$n"
+grep -q '^media_enrichment_status: ok$' "$VCN/Clippings/clip.md" && a=ok || a=no
+assert "carousel-no-speech: enriched ok despite the no-speech video" ok "$a"
+grep -qF "2 slides + 0 transcript" "$tmp/carons.out" && a=ok || a=no
+assert "carousel-no-speech: outcome line 2 slides + 0 transcript" ok "$a"
+
 echo ""
 echo "ig-media-enrich tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
