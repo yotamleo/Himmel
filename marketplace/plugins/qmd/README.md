@@ -66,4 +66,4 @@ points at `tobi/qmd` directly (the fork's history stays on `yotamleo/qmd` as
 archive tags). This
 plugin's **manifest + skill** stay pinned separately and are low-churn.
 Re-sync `skills/qmd/` from `tobi/qmd` if the upstream search skill changes
-materially; re-sync the CLI fork per `docs/setup/new-machine.md`.
+materially; re-sync the CLI clone per `docs/setup/new-machine.md`.
