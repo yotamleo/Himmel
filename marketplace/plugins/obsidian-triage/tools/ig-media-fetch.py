@@ -864,11 +864,13 @@ def enrich_batch(args, selected, matched_total, remaining):
                 continue
             if not transcripts and not slide_embeds:
                 # Nothing survived transcode/recompress. A no-speech video with
-                # no genuinely-failed video and no slides is a PERMANENT outcome
-                # (HIMMEL-3043): whisper heard nothing and never will, so release
-                # the clip the same way as "removed" instead of stranding it.
-                # Any genuine failure (transcode/whisper error) stays retryable.
-                permanent = bool(no_speech_videos) and not videos_failed
+                # no genuinely-failed video and no failed-but-recoverable image
+                # is a PERMANENT outcome (HIMMEL-3043): whisper heard nothing
+                # and never will, so release the clip the same way as "removed"
+                # instead of stranding it. Any genuine failure (transcode/
+                # whisper/recompress error) stays retryable.
+                permanent = (bool(no_speech_videos) and not videos_failed
+                             and not recompress_failed)
                 error = "no_speech" if permanent else "no_media_content"
                 if not write_markers(p, text, fm_raw, body, has_crlf,
                                      status="failed", error=error,
