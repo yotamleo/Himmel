@@ -88,13 +88,15 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 
 ### qmd (`tobi/qmd`)
 
-**Tier:** ALWAYS (`qmd@himmel` — the fork below, installed + enabled on every himmel machine; also one of the three harness-operational plugins `plugin-profile.sh disable` refuses).
+**Tier:** ALWAYS (`qmd@himmel` — the local clone below, installed + enabled on every himmel machine; also one of the three harness-operational plugins `plugin-profile.sh disable` refuses).
 **What:** Local search engine over markdown documents. BM25 keyword search (lex), semantic vector search (vec), and hypothetical document search (hyde).
 **MCP server:** `plugin:qmd:qmd` — exposes `query`, `get`, `multi_get`, `status` tools. The plugin tier IS the MCP tier: disabling `qmd@himmel` disables this server (HIMMEL-2733).
 **Usage:** Searching local knowledge base, notes, docs.
 
 **CLI install (HIMMEL-877, pinned HIMMEL-911):** the standalone `qmd` CLI
-installs from the **himmel qmd fork** (`yotamleo/qmd`), pinned to an
+installs from a **local clone of upstream `tobi/qmd`** (HIMMEL-3045 —
+previously a himmel-owned fork, `yotamleo/qmd`, until its carried fixes landed
+upstream), pinned to an
 immutable commit SHA (the literal lives in `_qmd_fork_ref`; read it there
 rather than copying it here) rather than a mutable branch, via `scripts/lib/qmd-bin.sh`'s `qmd_install` (clone → fetch/checkout
 the pinned SHA → `bun install && bun run build` → junction/symlink onto the

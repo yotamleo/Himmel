@@ -1225,14 +1225,16 @@ same PHI-tier refusal, but subtree-wide.
 
 > **Skip** if you don't use qmd semantic search over the himmel docs + luna vault. Optional; the harness runs without it.
 
-qmd is a local markdown search engine (BM25 + vector + rerank). himmel's fork
+qmd is a local markdown search engine (BM25 + vector + rerank). himmel's clone
 runs it as a **shared HTTP daemon** (`localhost:8181`, HIMMEL-592) auto-brought-up
 by the `qmd` plugin's SessionStart hook, so every session shares one read-only
-index. The standalone CLI installs from the **himmel qmd fork**
-(`yotamleo/qmd`), pinned to an immutable commit SHA rather than a mutable
-branch (HIMMEL-911) — never upstream `bun add -g @tobilu/qmd`, which
-EPERM-wedges on this project's machines (zombie `qmd mcp` stdio processes hold
-locks) and bun blocks its postinstall script (HIMMEL-877). `bun` itself is
+index. The standalone CLI installs from a **local clone of upstream
+`tobi/qmd`** (HIMMEL-3045 — previously a himmel-owned fork, `yotamleo/qmd`,
+until its carried fixes landed upstream), pinned to an immutable commit SHA
+rather than a mutable branch (HIMMEL-911) — never `bun add -g @tobilu/qmd`
+directly, which EPERM-wedges on this project's machines (zombie `qmd mcp`
+stdio processes hold locks) and bun blocks its postinstall script
+(HIMMEL-877). `bun` itself is
 still required to build the clone (project rule: bun, never npm — see §1
 foundational table). `bash scripts/setup.sh` step `[4/10]` + `adopt.sh`'s
 `wire_qmd_core` already run this install, register the `himmel` collection,

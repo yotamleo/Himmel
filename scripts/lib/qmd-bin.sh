@@ -17,35 +17,39 @@
 # source this lib; this resolver stays as the consumer-side path until
 # the upstream plugin fix is pulled.
 #
-# HIMMEL-877: qmd installs from the himmel FORK (yotamleo/qmd), never
-# upstream `bun add -g @tobilu/qmd` -- that command EPERM-wedges on this
-# project's machines (zombie `qmd mcp` stdio node processes hold locks) and
-# bun blocks the postinstall script. The proven recipe (done by hand on the
-# primary machine, now automated here): clone the fork to a stable dir,
-# `bun install && bun run build` in the clone, then a directory junction
-# (Windows) / symlink (POSIX) at ~/.bun/install/global/node_modules/@tobilu/qmd
-# pointing at the clone -- bun's stock global shims then transparently serve
-# the fork from the same path every other consumer (qmd_cmd, has_qmd, the
+# HIMMEL-877: qmd installs from a local clone, never upstream
+# `bun add -g @tobilu/qmd` -- that command EPERM-wedges on this project's
+# machines (zombie `qmd mcp` stdio node processes hold locks) and bun blocks
+# the postinstall script. The proven recipe (done by hand on the primary
+# machine, now automated here): clone the repo to a stable dir, `bun install
+# && bun run build` in the clone, then a directory junction (Windows) /
+# symlink (POSIX) at ~/.bun/install/global/node_modules/@tobilu/qmd pointing
+# at the clone -- bun's stock global shims then transparently serve the
+# clone from the same path every other consumer (qmd_cmd, has_qmd, the
 # fix-qmd-stub patched stub) already resolves. qmd_install() is idempotent:
-# it detects an already-fork-served install (global path already links to
-# the fork clone AND the clone's HEAD is the pinned commit AND `qmd
-# --version` reports >= QMD_FORK_MIN_VERSION) and skips.
+# it detects an already-served install (global path already links to the
+# clone AND the clone's HEAD is the pinned commit AND `qmd --version`
+# reports >= QMD_FORK_MIN_VERSION) and skips.
 #
-# PIN (HIMMEL-911): the install ref is a FULL COMMIT SHA on the fork --
-# not the himmel-main branch. himmel-main is a MUTABLE tracking branch
-# (where upstream merges land); a force-push there would silently change
-# what every future `qmd-bin.sh install` runs, with no reviewed repo change
-# -- a supply-chain trust boundary on new-machine bootstrap (mirrors the
-# HIMMEL-891 graphify precedent, scripts/lib/graphify-bin.sh). The commit
-# SHA is the only content-addressed, unmovable ref. The fork branch
-# himmel-main-upstream-2026-09-13 carries this commit as human-readable
-# release provenance (HIMMEL-2882: upstream tobi/qmd merged both of the
-# fork's carried fixes under its own SHAs, so the fork's delta collapsed
-# to empty -- the pin now points straight at upstream main; the old
-# himmel-main-v2.8.3 lineage goes stale, kept only until the HIMMEL-1323
-# decision retires it); a pin bump is a reviewed change to this file. Fork
-# repo/ref/clone-dir are overridable via QMD_FORK_REPO / QMD_FORK_REF /
-# QMD_FORK_DIR for testing or a private mirror.
+# HIMMEL-3045: consumes upstream `tobi/qmd` directly. Until HIMMEL-2882 this
+# clone tracked a himmel-owned fork (`yotamleo/qmd`) carrying two local
+# fixes; upstream merged both under its own SHAs, collapsing the fork's
+# delta to empty, so HIMMEL-3045 dropped the fork and pointed the clone at
+# tobi/qmd itself (the fork's history stays on yotamleo/qmd as archive tags).
+# An existing clone whose origin is still the retired fork migrates
+# automatically (`git remote set-url`) the next time qmd_install() runs;
+# QMD_FORK_REPO/_REF/_DIR and the on-disk `qmd-fork` dir name are unchanged
+# (renaming is out of scope -- HIMMEL-3045).
+#
+# PIN (HIMMEL-911): the install ref is a FULL COMMIT SHA -- not a branch.
+# A branch is a MUTABLE tracking ref; a force-push there would silently
+# change what every future `qmd-bin.sh install` runs, with no reviewed repo
+# change -- a supply-chain trust boundary on new-machine bootstrap (mirrors
+# the HIMMEL-891 graphify precedent, scripts/lib/graphify-bin.sh). The commit
+# SHA is the only content-addressed, unmovable ref; a pin bump is a reviewed
+# change to this file (HIMMEL-3041 owns moving it past tobi/qmd's current
+# main). Repo/ref/clone-dir are overridable via QMD_FORK_REPO / QMD_FORK_REF
+# / QMD_FORK_DIR for testing or a private mirror.
 # qmd_register_collection() is the shared idempotent collection-
 # registration helper used by setup.sh + adopt.sh. Executed directly
 # (not sourced), this file also answers `install` on argv (see the CLI
@@ -54,10 +58,21 @@
 # duplicating the clone/build/link recipe natively.
 
 # Fork config -- overridable per call (env var set before sourcing/calling).
-_qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/yotamleo/qmd.git}"; }
-# = himmel-main-upstream-2026-09-13 (== tobi/qmd main, HIMMEL-2882)
+_qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/tobi/qmd.git}"; }
 _qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-04e4dbd8245c527a88f1a8f0bda547aef9ca81fb}"; }
 _qmd_fork_dir() { printf '%s\n' "${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"; }
+# HIMMEL-3045: an owned clone's origin may still be the retired himmel qmd
+# fork (a few forms seen in the wild -- with/without .git, a trailing
+# slash from a hand-fixed remote); recognize those and migrate rather than
+# refuse. The SSH form is a genuinely different string and is intentionally
+# NOT matched here -- it falls through to the ordinary unrecognized-origin
+# refusal, same as any other unowned remote.
+_qmd_is_legacy_fork_origin() {
+  case "${1%/}" in
+    https://github.com/yotamleo/qmd.git | https://github.com/yotamleo/qmd) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 _qmd_fork_min_version() { printf '%s\n' "${QMD_FORK_MIN_VERSION:-2.6.3}"; }
 # Build-success stamp INSIDE the clone (HIMMEL-911 CR r3): one file, no
 # schema -- its content is the exact pinned SHA the artifacts were BUILT
@@ -418,9 +433,19 @@ qmd_install() {
     # overridable only via QMD_FORK_FORCE=1.
     origin_url="$(git -C "$fork_dir" remote get-url origin 2>/dev/null)"
     if [ "$origin_url" != "$repo" ]; then
-      echo "  WARNING: $fork_dir exists but its origin ('$origin_url') is not $repo - refusing to touch it." >&2
-      echo "  Point QMD_FORK_DIR at a dedicated location, or fix the clone's origin remote." >&2
-      return 1
+      if _qmd_is_legacy_fork_origin "$origin_url"; then
+        # HIMMEL-3045: this clone predates the de-fork -- migrate its origin
+        # in place instead of refusing an install this tool actually owns.
+        echo "  $fork_dir origin is the retired himmel qmd fork ('$origin_url') - migrating to $repo (HIMMEL-3045)."
+        if ! git -C "$fork_dir" remote set-url origin "$repo"; then
+          echo "  ERROR: could not update $fork_dir's origin to $repo." >&2
+          return 1
+        fi
+      else
+        echo "  WARNING: $fork_dir exists but its origin ('$origin_url') is not $repo - refusing to touch it." >&2
+        echo "  Point QMD_FORK_DIR at a dedicated location, or fix the clone's origin remote." >&2
+        return 1
+      fi
     fi
     # HIMMEL-911 CR r3: clear the build-success stamp FIRST (ownership is
     # established by the origin check above) -- from here until the

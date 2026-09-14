@@ -132,11 +132,11 @@ if grepq "$reg_probe" 'qmd|tobi/qmd|tag_release|base'; then ok "qmd entry -> tru
 
 # 3e. HIMMEL-1435 zero-gap inventory: claude-obsidian must be a plain tag-pinned
 #     resync target (no fork block — the fork was retired at v2.2.0, HIMMEL-2925)
-#     whose duplicated synced_base matches plugin-upstreams.json; qmd is the
-#     remaining fork-block entry and must still carry the fields
-#     resync-fork.sh's rebase-audit mechanism reads; every third-party plugin
-#     actually bundled in the luna template must have a registry row whose base
-#     matches its manifest; deliberate omissions stay explicit in
+#     whose duplicated synced_base matches plugin-upstreams.json; qmd is likewise
+#     a plain SHA-pinned entry with no fork block since HIMMEL-3045 de-forked it
+#     (it was the last remaining fork-block entry until then); every third-party
+#     plugin actually bundled in the luna template must have a registry row
+#     whose base matches its manifest; deliberate omissions stay explicit in
 #     coverage_audit rather than disappearing silently.
 audit_out="$(python3 - "$ROOT" "$REG" "$UPS" <<'PY' 2>&1
 import json, pathlib, sys
@@ -151,10 +151,9 @@ assert co['synced_base'] == ups['claude-obsidian']['synced_base']
 assert 'fork' not in co
 
 qmd = entries['qmd']
-assert qmd['fork']['fork_repo'] == 'https://github.com/yotamleo/qmd.git'
-assert qmd['fork']['upstream_repo'] == 'https://github.com/tobi/qmd.git'
-assert qmd['fork']['pin_file'] == 'scripts/lib/qmd-bin.sh'
-assert qmd['fork']['pin_template'].count('{sha}') == 1
+assert qmd['tracked_repo'] == 'tobi/qmd'
+assert 'fork' not in qmd
+assert 'version_pin' not in qmd
 
 plugin_root = root / 'templates/luna-second-brain/.obsidian/plugins'
 community = json.load(open(root / 'templates/luna-second-brain/.obsidian/community-plugins.json', encoding='utf-8'))
@@ -187,7 +186,7 @@ PY
 )"
 audit_rc=$?
 if [ "$audit_rc" -eq 0 ]; then
-  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd's fork block, all six bundled luna plugins, scripts/lib pins, codex dynamic discovery, and explicit skips"
+  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd (plain pin, de-forked HIMMEL-3045), all six bundled luna plugins, scripts/lib pins, codex dynamic discovery, and explicit skips"
 else
   bad "zero-gap inventory invalid: $audit_out"
 fi

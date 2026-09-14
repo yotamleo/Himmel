@@ -31,7 +31,7 @@ assert() {
 echo "[test-qmd-bin] qmd_install_hint emits the fork clone+build+link recipe (HIMMEL-877)"
 hint="$(qmd_install_hint)"
 assert "hint mentions git clone" grep -q '^git clone ' <<<"$hint"
-assert "hint mentions the himmel fork repo" grep -q 'yotamleo/qmd' <<<"$hint"
+assert "hint mentions the upstream qmd repo" grep -q 'tobi/qmd' <<<"$hint"
 assert "hint pins a full commit SHA (HIMMEL-911), not a movable ref" grep -qE 'fetch origin [0-9a-f]{40} ' <<<"$hint"
 # shellcheck disable=SC2016
 # Single quotes intentional — $1 expands inside the spawned bash -c subshell.
@@ -247,9 +247,15 @@ case "$1" in
       # `remote add origin <url>` -- nothing to simulate, just succeed.
       exit 0
     fi
+    if [ "$2" = "set-url" ]; then
+      # `remote set-url origin <url>` -- the legacy-fork-origin migration
+      # (HIMMEL-3045); nothing to simulate, just succeed and let the GIT_LOG
+      # line above record it.
+      exit 0
+    fi
     # `remote get-url origin` ownership probe: default answers the default
-    # fork repo URL so owned-clone scenarios pass the guard.
-    printf '%s\n' "${STUB_GIT_ORIGIN_URL:-https://github.com/yotamleo/qmd.git}"
+    # upstream repo URL so owned-clone scenarios pass the guard.
+    printf '%s\n' "${STUB_GIT_ORIGIN_URL:-https://github.com/tobi/qmd.git}"
     exit 0
     ;;
   fetch|reset) exit "${STUB_GIT_FETCH_RC:-0}" ;;
@@ -555,6 +561,54 @@ assert "unrelated-origin: refuses with the origin mismatch WARNING" grep -qi 're
 # shellcheck disable=SC2016
 assert "unrelated-origin: never fetch/checkout/reset" bash -c '! grep -qE "GIT (fetch|checkout|reset)" "$1"' _ "$git_log"
 assert "unrelated-origin: dir contents untouched" grep -q 'precious local work' "$unrel_home/.himmel/qmd-fork/work.txt"
+
+# -- legacy-fork-origin migration (HIMMEL-3045): an existing owned clone whose
+#    origin is still the retired himmel qmd fork (yotamleo/qmd) migrates to
+#    the new default (tobi/qmd) via `git remote set-url` instead of being
+#    refused like any other mismatched origin above. Covers the exact legacy
+#    URL, its no-.git form, and a trailing slash; the SSH form is a different
+#    string and stays refused like the unrelated-origin case above.
+legacy_home="$id2/legacyorigin"
+mkdir -p "$legacy_home/.himmel/qmd-fork/.git"
+echo '{}' > "$legacy_home/.himmel/qmd-fork/package.json"
+STUB_GIT_ORIGIN_URL="https://github.com/yotamleo/qmd.git"
+out=$(qmd_install_env "$legacy_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "legacy-origin: migrated instead of refused (remote set-url ran)" \
+  grep -q 'GIT remote set-url origin https://github.com/tobi/qmd.git' "$git_log"
+assert "legacy-origin: proceeded to fetch the pin" grep -q 'GIT fetch' "$git_log"
+assert "legacy-origin: rc 0" grep -q '^RC=0$' <<<"$out"
+
+legacy_nogit_home="$id2/legacyorigin-nogit"
+mkdir -p "$legacy_nogit_home/.himmel/qmd-fork/.git"
+echo '{}' > "$legacy_nogit_home/.himmel/qmd-fork/package.json"
+STUB_GIT_ORIGIN_URL="https://github.com/yotamleo/qmd"
+out=$(qmd_install_env "$legacy_nogit_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "legacy-origin (no .git suffix): migrated" \
+  grep -q 'GIT remote set-url origin https://github.com/tobi/qmd.git' "$git_log"
+assert "legacy-origin (no .git suffix): rc 0" grep -q '^RC=0$' <<<"$out"
+
+legacy_slash_home="$id2/legacyorigin-slash"
+mkdir -p "$legacy_slash_home/.himmel/qmd-fork/.git"
+echo '{}' > "$legacy_slash_home/.himmel/qmd-fork/package.json"
+STUB_GIT_ORIGIN_URL="https://github.com/yotamleo/qmd.git/"
+out=$(qmd_install_env "$legacy_slash_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "legacy-origin (trailing slash): migrated" \
+  grep -q 'GIT remote set-url origin https://github.com/tobi/qmd.git' "$git_log"
+assert "legacy-origin (trailing slash): rc 0" grep -q '^RC=0$' <<<"$out"
+
+legacy_ssh_home="$id2/legacyorigin-ssh"
+mkdir -p "$legacy_ssh_home/.himmel/qmd-fork/.git"
+echo "precious local work" > "$legacy_ssh_home/.himmel/qmd-fork/work.txt"
+STUB_GIT_ORIGIN_URL="git@github.com:yotamleo/qmd.git"
+out=$(qmd_install_env "$legacy_ssh_home" bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; qmd_install; echo "RC=$?"' 2>&1)
+STUB_GIT_ORIGIN_URL=""
+assert "legacy-origin (SSH form): still refused, not migrated" grep -qi 'refusing to touch' <<<"$out"
+# shellcheck disable=SC2016
+assert "legacy-origin (SSH form): never fetch/checkout/reset" bash -c '! grep -qE "GIT (fetch|checkout|reset)" "$1"' _ "$git_log"
+assert "legacy-origin (SSH form): dir contents untouched" grep -q 'precious local work' "$legacy_ssh_home/.himmel/qmd-fork/work.txt"
 
 # dirty owned clone -> refused untouched, rc nonzero.
 dirty_home="$id2/dirtyclone"

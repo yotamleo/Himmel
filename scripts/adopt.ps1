@@ -429,11 +429,12 @@ function FillEnv-Core {
 # $env:BUN_INSTALL for relocated bun roots.
 $QmdBunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
 $QmdBunJs = Join-Path $QmdBunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
-# HIMMEL-877: qmd installs from the himmel qmd fork (yotamleo/qmd, pinned to
-# an immutable commit SHA rather than a mutable branch — HIMMEL-911 — via
-# scripts/lib/qmd-bin.sh), never upstream `bun add -g @tobilu/qmd` --
-# that command EPERM-wedges on this project's machines and bun blocks its
-# postinstall script.
+# HIMMEL-877: qmd installs from a local clone of upstream tobi/qmd (HIMMEL-
+# 3045; previously a himmel-owned fork, yotamleo/qmd, until its carried fixes
+# landed upstream), pinned to an immutable commit SHA rather than a mutable
+# branch (HIMMEL-911 — via scripts/lib/qmd-bin.sh), never `bun add -g
+# @tobilu/qmd` directly -- that command EPERM-wedges on this project's
+# machines and bun blocks its postinstall script.
 $QmdInstallHint = "bash `"$HimmelRoot/scripts/lib/qmd-bin.sh`" install"
 
 function Invoke-Qmd {
@@ -468,14 +469,14 @@ function Resolve-QmdGitBash {
 }
 
 # Delegates to the ONE clone/build/junction implementation (HIMMEL-877):
-# `bash scripts/lib/qmd-bin.sh install` (git-clone the himmel qmd fork, `bun
-# install && bun run build`, then junction/symlink it onto the bun-global
+# `bash scripts/lib/qmd-bin.sh install` (git-clone the pinned tobi/qmd commit,
+# `bun install && bun run build`, then junction/symlink it onto the bun-global
 # @tobilu/qmd path -- idempotent, WARN-not-fail). Returns an honest int rc.
 function Install-Qmd {
-    Write-Host "Installing qmd fork via bash scripts/lib/qmd-bin.sh..."
+    Write-Host "Installing qmd via bash scripts/lib/qmd-bin.sh..."
     $gitBash = Resolve-QmdGitBash
     if (-not $gitBash) {
-        Write-Host "  WARNING: Git Bash not found - cannot run the qmd fork installer." -ForegroundColor Yellow
+        Write-Host "  WARNING: Git Bash not found - cannot run the qmd installer." -ForegroundColor Yellow
         Write-Host "  Manual: install Git for Windows, then run: bash `"$HimmelRoot/scripts/lib/qmd-bin.sh`" install" -ForegroundColor Yellow
         return 1
     }
@@ -484,10 +485,11 @@ function Install-Qmd {
 }
 
 # Mirror of qmd_fork_served() via the shared bash CLI verb (HIMMEL-877 CR
-# codex-adv-1): the install gate is "fork already served", NOT presence
-# (Test-Qmd) -- a machine carrying the old upstream bun-global install is
-# qmd-present but must still MIGRATE to the fork. Returns $false when no
-# usable Git Bash exists so the install path (which re-checks) is attempted.
+# codex-adv-1; function name unchanged by HIMMEL-3045): the install gate is
+# "the pinned clone already serves the global path", NOT presence (Test-Qmd)
+# -- a machine carrying the old upstream bun-global install is qmd-present but
+# must still MIGRATE to the clone. Returns $false when no usable Git Bash
+# exists so the install path (which re-checks) is attempted.
 function Test-QmdForkServed {
     $gitBash = Resolve-QmdGitBash
     if (-not $gitBash) { return $false }
