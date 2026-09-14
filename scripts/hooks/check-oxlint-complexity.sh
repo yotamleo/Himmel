@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Advisory-then-ratchet cyclomatic-complexity gate (HIMMEL-2154).
 #
-# Runs `bunx oxlint -A all -W complexity` (oxlint's eslint(complexity) rule)
+# Runs `bunx "oxlint@$OXLINT_VERSION"` (pinned, HIMMEL-3044) with
+# `-A all -W complexity` (oxlint's eslint(complexity) rule)
 # over the surface audited for HIMMEL-2154: scripts/lanes scripts/jira/src
 # scripts/telegram scripts/luna-vitals scripts/himmel-run, plus the *.mjs/*.js
 # files directly under scripts/hooks and scripts/observability. dist/,
@@ -26,6 +27,10 @@ set -uo pipefail
 
 # ---- config -----------------------------------------------------------
 OXLINT_COMPLEXITY_MAX="${OXLINT_COMPLEXITY_MAX:-81}"
+# Same literal as check-oxlint-hardening.sh's OXLINT_VERSION (HIMMEL-2802) —
+# keep the two pins in lockstep; test-check-oxlint-complexity.sh asserts
+# parity so a future bump of one without the other goes red.
+OXLINT_VERSION=1.81.0
 # -------------------------------------------------------------------------
 
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
@@ -44,7 +49,7 @@ for f in scripts/hooks/*.mjs scripts/hooks/*.js scripts/observability/*.mjs scri
 done
 
 # shellcheck disable=SC2086 # word-split on purpose: directory/file list
-out=$(bunx oxlint -A all -W complexity \
+out=$(bunx "oxlint@$OXLINT_VERSION" -A all -W complexity \
     --ignore-pattern 'dist/**' \
     --ignore-pattern 'node_modules/**' \
     --ignore-pattern '**/fixtures/**' \
