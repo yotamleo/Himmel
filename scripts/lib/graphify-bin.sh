@@ -52,10 +52,11 @@
 # fork-drift guard stays truthful.
 _graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.58}"; }
 _graphify_pypi_name() { printf '%s\n' "graphifyy"; }
-# The default `uv tool install` package spec includes the native Kimi backend's
-# runtime dependencies (openai + tiktoken). Recorded non-empty extras are still
-# preserved verbatim by graphify_update below.
-_graphify_pinned_source() { printf '%s[kimi]==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
+# No extras by default (HIMMEL-2481): himmel has no Kimi backend -- we use
+# Claude -- so the install spec carries no `[kimi]` extra (which pulled in
+# openai + tiktoken for a backend that does not exist here). Recorded
+# non-empty extras are still preserved verbatim by graphify_update below.
+_graphify_pinned_source() { printf '%s==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
 _graphify_bin_name() { printf '%s\n' "graphify"; }
 
 # Prints the manual install recipe (best-effort documentation text embedded
@@ -172,11 +173,6 @@ graphify_install() {
             echo "  NOTE: could not validate the adopted install's mcp import (unrecognized install layout) -- if graphify-mcp crashes at startup, reinstall: $(graphify_install_hint)"
             ;;
         esac
-        # The native-Kimi dep probe runs on the FRESH-install path below (:211);
-        # the much more common ADOPT path (scripts/adopt.sh -- existing resolvable
-        # install) must surface the same warning, not skip it via this early
-        # return (CR r5, finding 7).
-        _graphify_kimi_import_warn
         graphify_wsl_share_store
         return 0
       fi
@@ -213,7 +209,6 @@ graphify_install() {
         echo "  NOTE: could not validate the mcp import (unrecognized install layout) -- if graphify-mcp crashes at startup, reinstall: $(graphify_install_hint)"
         ;;
     esac
-    _graphify_kimi_import_warn
     echo "  graphify installed and verified (source=himmel-pin)."
     graphify_wsl_share_store
     return 0
@@ -257,51 +252,6 @@ _graphify_mcp_import_ok() {
   fi
   [ -n "$py" ] || return 2
   "$py" -c 'import mcp' >/dev/null 2>&1 || return 1
-  return 0
-}
-
-# Best-effort native-Kimi dependency probe (HIMMEL-1748). uv's graphify shim
-# lives in the tool BIN dir, but the interpreter that owns its imports lives in
-# the graphifyy tool venv. Resolve that real venv through `uv tool dir` across
-# Windows and POSIX layouts. An unrecognized layout silently skips validation
-# (WARN-not-fail contract); a resolved interpreter returns the import's truth.
-#
-# HIMMEL-1787 CR follow-up (PR #1680 round 4, codex-adv, previously
-# inconclusive): the interpreter this spawns lives UNDER the same tool-dir
-# path _graphify_mcp_holders() matches processes against (pat_dir, above),
-# so this subprocess's own command line satisfies that same needle while it
-# runs. It cannot race ITSELF within one graphify_update() call (this is a
-# blocking, sequential invocation that exits well before any later
-# _graphify_mcp_holders() call in the same run), but a SEPARATE, concurrent
-# himmel-update invocation's holder probe landing in the narrow window while
-# this short-lived `import` subprocess is alive would count it as a holder.
-# Accepted residual, not fixed here: the only possible effect is one extra
-# safe SKIP (the exact fail-closed outcome HIMMEL-1274 wants on ANY
-# uncertainty) — never a false "clear", never corruption — and it self-heals
-# on the very next run once the subprocess (import completes in well under a
-# second) is gone. Same accepted-residual class as the stale-but-alive
-# promote-lock window documented elsewhere in this codebase.
-_graphify_kimi_deps_ok() {
-  local tool_venv py="" c
-  tool_venv="$(_graphify_uv_tool_dir)/$(_graphify_pypi_name)"
-  for c in "$tool_venv/Scripts/python.exe" "$tool_venv/Scripts/python" "$tool_venv/bin/python"; do
-    [ -f "$c" ] && { py="$c"; break; }
-  done
-  [ -n "$py" ] || return 0
-  "$py" -c 'import openai, tiktoken' >/dev/null 2>&1
-}
-
-_graphify_kimi_import_warn() {
-  if ! _graphify_kimi_deps_ok; then
-    # NEVER print a bare copy-paste `--force` reinstall (CR codex-adv r3):
-    # a live graphify-mcp holds the tool dir on Windows and that command then
-    # removes the entry points before failing the replace, leaving graphify
-    # BROKEN (HIMMEL-1274 — the exact hazard graphify_update's holder
-    # preflight exists for). Mirror that skip message's guidance instead.
-    echo "  WARNING: graphify's native Kimi backend dependencies (openai, tiktoken) are not importable -- '--backend kimi' will fail at runtime." >&2
-    echo "  Repair: close the Claude Code sessions holding graphify-mcp (each live session spawns one), then run:" >&2
-    echo "      uv tool install --force --with mcp '$(_graphify_pinned_source)'" >&2
-  fi
   return 0
 }
 
@@ -421,6 +371,13 @@ graphify_register_mcp() {
 # absent. Used ONLY by graphify_update() to preserve the operator's chosen extras
 # when himmel-update reinstalls at a bumped pin (dropping [all] on an update would
 # be a silent regression). Best-effort — a miss just means "no extras", never an error.
+#
+# `kimi` is DROPPED unconditionally (HIMMEL-2481): himmel has no Kimi backend --
+# we use Claude -- so a `[kimi]` extra recorded on disk from before this fix
+# (installed via the old `[kimi]`-by-default spec) must not be carried forward
+# by an upgrade. A receipt recording ONLY kimi reads back as no extras; kimi
+# alongside others (e.g. `[kimi,pdf]`) reads back with kimi removed (`[pdf]`);
+# non-kimi extras are unaffected.
 _graphify_installed_extras() {
   local receipt
   receipt="$(_graphify_uv_tool_dir)/$(_graphify_pypi_name)/uv-receipt.toml"
@@ -436,7 +393,7 @@ except Exception:
 m = re.search(r'name\s*=\s*"graphifyy"[^}]*?extras\s*=\s*\[([^\]]*)\]', txt, re.S)
 if not m:
     raise SystemExit(0)
-items = re.findall(r'"([^"]+)"', m.group(1))
+items = [x for x in re.findall(r'"([^"]+)"', m.group(1)) if x != "kimi"]
 if items:
     sys.stdout.write("[" + ",".join(items) + "]")
 PY
@@ -920,7 +877,6 @@ graphify_update() {
   installed="$(_graphify_installed_version)"
   if [ -n "$installed" ] && [ "$installed" = "$pin" ]; then
     echo "  graphify already at pinned version $pin -- up to date."
-    _graphify_kimi_import_warn
     _graphify_skill_refresh
     graphify_wsl_share_store
     _graphify_pin_skip_reset
@@ -956,7 +912,7 @@ graphify_update() {
   if [ -n "$extras" ]; then
     spec="$(_graphify_pypi_name)${extras}==${pin}"
   else
-    spec="$(_graphify_pypi_name)[kimi]==${pin}"
+    spec="$(_graphify_pypi_name)==${pin}"
   fi
   # Every place this spec is PRINTED as a copy-paste repair command single-quotes
   # it (public-PR CR). With extras recorded it reads `graphifyy[all]==0.9.31`, and
@@ -1086,7 +1042,6 @@ graphify_update() {
       } >&2
       return 1
     fi
-    _graphify_kimi_import_warn
     echo "  graphify updated to $pin (source=himmel-pin)."
     _graphify_skill_refresh
     graphify_wsl_share_store

@@ -119,8 +119,8 @@ pinned_ver="$(env -u GRAPHIFY_VERSION bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.s
 echo "[test-graphify-bin] graphify_install_hint (HIMMEL-1048: PyPI version pin)"
 hint="$(graphify_install_hint)"
 assert "hint uses uv tool install" grep -q '^uv tool install ' <<<"$hint"
-assert "hint pins the graphifyy package to a specific PyPI version" \
-  grep -qE 'graphifyy\[kimi\]==[0-9]+\.[0-9]+\.[0-9]+' <<<"$hint"
+assert "hint pins the graphifyy package to a specific PyPI version (no [kimi] extra, HIMMEL-2481)" \
+  grep -qE 'graphifyy==[0-9]+\.[0-9]+\.[0-9]+' <<<"$hint"
 # shellcheck disable=SC2016
 # Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
 assert "hint does NOT install from a git source (de-forked)" \
@@ -139,7 +139,7 @@ assert "default GRAPHIFY_VERSION is a semver (X.Y.Z...)" \
 
 echo "[test-graphify-bin] GRAPHIFY_VERSION override"
 override_hint="$(GRAPHIFY_VERSION=9.9.9 graphify_install_hint)"
-assert "hint honors GRAPHIFY_VERSION override" grep -q 'graphifyy\[kimi\]==9.9.9' <<<"$override_hint"
+assert "hint honors GRAPHIFY_VERSION override" grep -q 'graphifyy==9.9.9' <<<"$override_hint"
 
 echo "[test-graphify-bin] has_graphify is presence-only"
 noreal_home="$tmpdir/noreal"; mkdir -p "$noreal_home"
@@ -213,8 +213,8 @@ out=$(HOME="$fresh_home" PATH="$fresh_path" UV_TOOL_DIR="$fresh_tools" UV_LIST_F
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_install; echo "RC=$?"' 2>&1)
 assert "missing: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "missing: exactly one uv tool install call" test "$(grep -c 'UV tool install' "$fresh_log")" -eq 1
-assert "missing: install argv carries --with mcp + the graphifyy version pin" \
-  grep -qE 'UV tool install --with mcp graphifyy\[kimi\]==[0-9]' "$fresh_log"
+assert "missing: install argv carries --with mcp + the graphifyy version pin (no [kimi] extra)" \
+  grep -qE 'UV tool install --with mcp graphifyy==[0-9]' "$fresh_log"
 assert "missing: graphify shim landed on PATH" test -x "$fresh_bin/graphify"
 assert "missing: has_graphify true post-install" \
   env PATH="$fresh_path" HOME="$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
@@ -374,76 +374,14 @@ cat > "$gup_bin/graphify" <<'EOF'
 echo x
 EOF
 chmod +x "$gup_bin/graphify"
-# uv's shim dir has no python; the actual tool interpreter is under the uv tool
-# venv. First model an at-pin install whose Kimi imports fail there.
-mkdir -p "$gup_tools/graphifyy/Scripts"
-cat > "$gup_tools/graphifyy/Scripts/python.exe" <<'EOF'
-#!/usr/bin/env bash
-exit 1
-EOF
-chmod +x "$gup_tools/graphifyy/Scripts/python.exe"
 gup_log="$tmpdir/gup-atpin-log"; : > "$gup_log"
 out=$(HOME="$gup_home" PATH="$gup_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gup_tools" UV_LIST_FILE="$gup_list" \
       UV_BIN_DIR="$gup_bin" UV_LOG="$gup_log" \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
-assert "update at-pin with missing Kimi deps: rc remains 0 (WARN-not-fail)" grep -q '^RC=0$' <<<"$out"
+assert "update at-pin: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "update at-pin: reports up to date" grep -qi 'up to date' <<<"$out"
-assert "update at-pin: probes the real uv tool venv and WARNs on missing Kimi deps" grep -q "native Kimi backend dependencies" <<<"$out"
-assert "update at-pin: WARN gives the exact force-repair command" \
-  grep -qE "uv tool install --force --with mcp 'graphifyy\[kimi\]==${pinned_ver}'" <<<"$out"
 # shellcheck disable=SC2016
 assert "update at-pin: no install call" bash -c '! grep -q "tool install" "$1"' _ "$gup_log"
-
-# The passing probe is silent: overwrite the same venv interpreter with a stub
-# that accepts the import and re-run the already-at-pin path.
-cat > "$gup_tools/graphifyy/Scripts/python.exe" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-chmod +x "$gup_tools/graphifyy/Scripts/python.exe"
-out=$(HOME="$gup_home" PATH="$gup_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gup_tools" UV_LIST_FILE="$gup_list" \
-      UV_BIN_DIR="$gup_bin" UV_LOG="$gup_log" \
-      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
-assert "update at-pin with importable Kimi deps: rc 0" grep -q '^RC=0$' <<<"$out"
-# shellcheck disable=SC2016
-assert "update at-pin with importable Kimi deps: no dependency WARN" \
-  bash -c '! grep -q "native Kimi backend dependencies" <<<"$1"' _ "$out"
-
-echo "[test-graphify-bin] graphify_install ADOPT path also WARNs on missing native Kimi deps (CR r5, finding 7)"
-# A resolvable graphify install is ADOPTED (not freshly installed) -- the much
-# more common scripts/adopt.sh path. The adopt early-return must still run the
-# native-Kimi dep probe and WARN when the adopted venv cannot import
-# openai/tiktoken, exactly as the fresh-install path does at graphify-bin.sh:211
-# (CR r5 finding 7: previously the adopt return at :176 skipped the WARN).
-adopt_k_home="$tmpdir/adopt-kimi"; mkdir -p "$adopt_k_home"
-adopt_k_tools="$tmpdir/adopt-kimi-tools"; mkdir -p "$adopt_k_tools/graphifyy"
-printf 'requirements = [{ name = "graphifyy" }]\n' > "$adopt_k_tools/graphifyy/uv-receipt.toml"
-adopt_k_list="$tmpdir/adopt-kimi-list"; printf 'graphifyy v%s\n' "$pinned_ver" > "$adopt_k_list"
-adopt_k_bin="$tmpdir/adopt-kimi-bin"; mkdir -p "$adopt_k_bin"
-cat > "$adopt_k_bin/graphify" <<'EOF'
-#!/usr/bin/env bash
-echo ADOPT GRAPHIFY $*
-EOF
-chmod +x "$adopt_k_bin/graphify"
-# Model the adopted venv interpreter: `import mcp` succeeds but
-# `import openai, tiktoken` fails, isolating the Kimi-dep WARN from the mcp one.
-mkdir -p "$adopt_k_tools/graphifyy/Scripts"
-cat > "$adopt_k_tools/graphifyy/Scripts/python.exe" <<'EOF'
-#!/usr/bin/env bash
-case "$*" in *openai*) exit 1 ;; esac
-exit 0
-EOF
-chmod +x "$adopt_k_tools/graphifyy/Scripts/python.exe"
-adopt_k_log="$tmpdir/adopt-kimi-uvlog"; : > "$adopt_k_log"
-out=$(HOME="$adopt_k_home" PATH="$adopt_k_bin:$stub_dir/bin:$base_path" \
-      UV_TOOL_DIR="$adopt_k_tools" UV_LIST_FILE="$adopt_k_list" \
-      UV_BIN_DIR="$adopt_k_bin" UV_LOG="$adopt_k_log" \
-      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_install; echo "RC=$?"' 2>&1)
-assert "adopt path: rc 0 (adopt succeeds, WARN-not-fail)" grep -q '^RC=0$' <<<"$out"
-assert "adopt path: reports the adopted himmel-pin source" grep -q 'source=himmel-pin' <<<"$out"
-assert "adopt path: WARNs on missing native Kimi deps" grep -q "native Kimi backend dependencies" <<<"$out"
-# shellcheck disable=SC2016
-assert "adopt path: no install call (adopted, never reinstalled)" bash -c '! grep -q "tool install" "$1"' _ "$adopt_k_log"
 
 # Shared fixture for the direct-copy skill refresh (HIMMEL-1750 redesign):
 # a fake uv tool venv shaped like the real Windows install. Its python stub
@@ -659,6 +597,35 @@ out=$(HOME="$gud_home" PATH="$gud_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gu
 assert "update diff-ver: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "update diff-ver: force-reinstalls at pin preserving [all] extras" \
   grep -qE 'tool install --force --with mcp graphifyy\[all\]==[0-9]' "$gud_log"
+
+echo "[test-graphify-bin] _graphify_installed_extras: a recorded [kimi]-only extra is dropped (HIMMEL-2481)"
+# Existing machines installed with the old [kimi]-by-default spec have "kimi"
+# recorded in their uv receipt; an upgrade must not carry it forward forever.
+kex_home="$tmpdir/kimi-extras-only"; mkdir -p "$kex_home"
+kex_tools="$tmpdir/kimi-extras-only-tools"; mkdir -p "$kex_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy", extras = ["kimi"] }]\n' > "$kex_tools/graphifyy/uv-receipt.toml"
+kex_log="$tmpdir/kimi-extras-only-uvlog"; : > "$kex_log"
+out=$(HOME="$kex_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$kex_tools" UV_LOG="$kex_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; printf "EXTRAS=[%s]\n" "$(_graphify_installed_extras)"' 2>&1)
+assert "recorded [kimi]-only extras read back as no extras" grep -q '^EXTRAS=\[\]$' <<<"$out"
+
+echo "[test-graphify-bin] _graphify_installed_extras: [kimi,pdf] drops only kimi, keeps pdf"
+kmix_home="$tmpdir/kimi-extras-mixed"; mkdir -p "$kmix_home"
+kmix_tools="$tmpdir/kimi-extras-mixed-tools"; mkdir -p "$kmix_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy", extras = ["kimi", "pdf"] }]\n' > "$kmix_tools/graphifyy/uv-receipt.toml"
+kmix_log="$tmpdir/kimi-extras-mixed-uvlog"; : > "$kmix_log"
+out=$(HOME="$kmix_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$kmix_tools" UV_LOG="$kmix_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; printf "EXTRAS=[%s]\n" "$(_graphify_installed_extras)"' 2>&1)
+assert "recorded [kimi,pdf] extras keep pdf, drop kimi" grep -q '^EXTRAS=\[\[pdf\]\]$' <<<"$out"
+
+echo "[test-graphify-bin] _graphify_installed_extras: non-kimi recorded extras are unaffected"
+knone_home="$tmpdir/kimi-extras-none"; mkdir -p "$knone_home"
+knone_tools="$tmpdir/kimi-extras-none-tools"; mkdir -p "$knone_tools/graphifyy"
+printf 'requirements = [{ name = "graphifyy", extras = ["all"] }]\n' > "$knone_tools/graphifyy/uv-receipt.toml"
+knone_log="$tmpdir/kimi-extras-none-uvlog"; : > "$knone_log"
+out=$(HOME="$knone_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$knone_tools" UV_LOG="$knone_log" \
+      bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; printf "EXTRAS=[%s]\n" "$(_graphify_installed_extras)"' 2>&1)
+assert "non-kimi recorded extras pass through unchanged" grep -q '^EXTRAS=\[\[all\]\]$' <<<"$out"
 
 # --- HIMMEL-1274: the pre-flight holder guard + verify-after ----------------
 echo "[test-graphify-bin] graphify_update: live graphify-mcp holders -> SKIP the reinstall, leave the install alone"
@@ -981,8 +948,8 @@ out=$(HOME="$gb_home" PATH="$gb_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gb_t
       UV_BIN_DIR="$gb_uvbin" UV_LOG="$gb_log" GRAPHIFY_MCP_HOLDERS=0 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "broken-after-install: rc 1 (presence is not proof it runs)" grep -q '^RC=1$' <<<"$out"
-assert "empty recorded extras: upgrade defaults to the managed [kimi] extra" \
-  grep -qE 'tool install --force --with mcp graphifyy\[kimi\]==[0-9]' "$gb_log"
+assert "empty recorded extras: upgrade uses the bare spec (no [kimi] extra, HIMMEL-2481)" \
+  grep -qE 'tool install --force --with mcp graphifyy==[0-9]' "$gb_log"
 assert "broken-after-install: names it BROKEN" grep -q 'BROKEN' <<<"$out"
 assert "broken-after-install: gives the repair command" grep -q "uv tool install --force --with mcp 'graphifyy" <<<"$out"
 # Assert BOTH quotes, like the held scenario above (CodeRabbit round). Matching
@@ -991,11 +958,11 @@ assert "broken-after-install: gives the repair command" grep -q "uv tool install
 # for one reason.
 #
 # Deliberately NOT the held scenario's `\[all\]` pattern: this fixture's
-# uv-receipt records no extras, so the managed default now supplies `[kimi]`.
-# The two scenarios pin quoting for both the operator-preserved [all] shape and
-# the managed empty-extras -> [kimi] shape.
+# uv-receipt records no extras, so the spec carries no extras at all
+# (HIMMEL-2481: no [kimi] default). The two scenarios pin quoting for both the
+# operator-preserved [all] shape and the bare no-extras shape.
 assert "broken-after-install: the repair command single-quotes the whole spec" \
-  grep -qE "uv tool install --force --with mcp 'graphifyy\[kimi\]==[0-9][^']*'" <<<"$out"
+  grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
 
 # The fourth corner of the state matrix (public-PR CR): install FAILED but the
 # binary SURVIVED. The other three are covered above and below; without this one
@@ -1057,7 +1024,7 @@ assert "unprobeable: NO uv install attempted (this is the whole fix)" \
 # operator is told exactly how to get unstuck. A silent decline would recreate
 # the permanent-staleness failure of the HIMMEL-1274 Windows self-match bug.
 assert "unprobeable: gives the manual install command" \
-  grep -qE "uv tool install --force --with mcp 'graphifyy\[kimi\]==[0-9][^']*'" <<<"$out"
+  grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
 assert "unprobeable: names the GRAPHIFY_UNPROBED_OK override" grep -q 'GRAPHIFY_UNPROBED_OK=1' <<<"$out"
 
 echo "[test-graphify-bin] graphify_update: unprobeable + GRAPHIFY_UNPROBED_OK=1 -> proceeds anyway"
