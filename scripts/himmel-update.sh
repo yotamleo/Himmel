@@ -331,26 +331,33 @@ update_hermes() {
     return 0
 }
 
-# restart_hermes_gateways <old_head> <new_head> — HIMMEL-2822: a running
-# hermes-gateway-*.service keeps stale modules in memory and lazily imports a
-# NEW one on the next agent turn, so a checkout move that leaves the gateway
-# running silently ImportErrors until a manual restart. No-op when the
-# checkout did not actually move; never aborts the update chain on a restart
-# failure (a stale-but-running gateway beats an aborted update).
+# restart_hermes_gateways <old_head> <new_head> — HIMMEL-2822 / HIMMEL-3052: a
+# running hermes-gateway unit keeps stale modules in memory and lazily
+# imports a NEW one on the next agent turn, so a checkout move that leaves
+# the gateway running silently ImportErrors until a manual restart. Stations
+# run either the per-profile shape (hermes-gateway-<profile>.service, one
+# per profile) or the multiplexed shape (hermes-gateway.service, one bare
+# unit serving every profile; `hermes gateway migrate --standalone` rolls
+# back to per-profile) — list BOTH patterns so neither shape is missed:
+# `hermes-gateway-*` alone does not match the bare `hermes-gateway.service`
+# (systemctl unit globs require the literal `-` that the wildcard follows),
+# and `systemctl list-units` accepts multiple PATTERN arguments (OR'd). No-op
+# when the checkout did not actually move; never aborts the update chain on
+# a restart failure (a stale-but-running gateway beats an aborted update).
 restart_hermes_gateways() {
     local old_head="$1" new_head="$2"
     [ "$old_head" = "$new_head" ] && return 0
     if ! command -v systemctl >/dev/null 2>&1; then
-        echo "    note: hermes-gateway units may be running pre-pull code — systemctl not found; restart by hand: systemctl --user restart hermes-gateway-<profile>.service"
+        echo "    note: hermes-gateway units may be running pre-pull code — systemctl not found; restart by hand: systemctl --user restart hermes-gateway.service (multiplexer) or hermes-gateway-<profile>.service"
         return 0
     fi
     local units unit errfile
     errfile=$(mktemp 2>/dev/null) || errfile=""
-    if ! units=$(systemctl --user list-units 'hermes-gateway-*' --state=running --plain --no-legend 2>"${errfile:-/dev/null}"); then
+    if ! units=$(systemctl --user list-units 'hermes-gateway.service' 'hermes-gateway-*.service' --state=running --plain --no-legend 2>"${errfile:-/dev/null}"); then
         local errline
         errline=$(head -n1 "${errfile:-/dev/null}" 2>/dev/null)
         [ -n "$errfile" ] && rm -f "$errfile"
-        echo "    warn: could not list hermes-gateway units (systemctl --user list-units failed: ${errline:-no error output}) — if a gateway is running it still has pre-pull code; restart by hand: systemctl --user restart hermes-gateway-<profile>.service" >&2
+        echo "    warn: could not list hermes-gateway units (systemctl --user list-units failed: ${errline:-no error output}) — if a gateway is running it still has pre-pull code; restart by hand: systemctl --user restart hermes-gateway.service (multiplexer) or hermes-gateway-<profile>.service" >&2
         return 0
     fi
     [ -n "$errfile" ] && rm -f "$errfile"

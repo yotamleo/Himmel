@@ -293,9 +293,49 @@ applying it. The step resolves the install root from `HERMES_HOME` (else
 cleanly and never fails the himmel update when hermes isn't installed. After an
 update, **restart the hermes gateway** (`hermes gateway restart`, when no
 session is running) to pick up changes — on Linux, `/himmel-update` now does
-this for you: it restarts any running `hermes-gateway-*.service` user units
-once the checkout actually moves, or prints the command to run by hand when
-`systemctl` isn't available.
+this for you: it restarts any running `hermes-gateway.service` (multiplexer)
+or `hermes-gateway-*.service` (per-profile) user units once the checkout
+actually moves, or prints the command to run by hand when `systemctl` isn't
+available.
+
+### Gateway topology: multiplexed vs per-profile (HIMMEL-3052)
+
+hermes runs its gateway one of two ways:
+
+- **Multiplexed (current default).** ONE systemd user unit,
+  `hermes-gateway.service`, serves `default` plus every named profile out of
+  the `default` profile's home — status, PID and process state all live
+  there. `hermes status` shows a `Serves: …` line naming the profiles it is
+  multiplexing, and `hermes -p <profile> gateway status` reports "running via
+  the default-profile multiplexer" for any profile it is serving instead of
+  duplicating the process/PID info.
+- **Per-profile (rollback shape).** One unit per profile,
+  `hermes-gateway-<profile>.service`, each its own process. Restore it with:
+
+  ```bash
+  hermes gateway migrate --standalone   # rolls back to one unit per profile
+  ```
+
+Restart commands for both shapes:
+
+```bash
+systemctl --user restart hermes-gateway.service            # multiplexer
+systemctl --user restart hermes-gateway-<profile>.service  # per-profile
+```
+
+**One Telegram poller per bot token.** Each profile owns its own
+`TELEGRAM_BOT_TOKEN` in its own `.env` — the `default` profile's `.env`
+carries none — so multiplexing the gateway process does not multiplex
+pollers; each profile's bot still polls with its own token.
+
+**Multiplexer caveat — non-secret `.env` vars don't reach terminal children
+(LUNA-208).** A profile's non-secret `.env` values (e.g. `GGS_ROLE`) are read
+by the gateway process itself but do **not** propagate to the terminal
+sessions/children it spawns under the multiplexer, because those children
+inherit the environment of the multiplexer's own (default-profile) process,
+not the served profile's. `ggs-local`'s `hactl` therefore does not read
+`GGS_ROLE` from the environment under this topology — it reads
+`$HERMES_HOME/ggs_role` instead.
 
 **Upstream force-pushes `main` (HIMMEL-2139).** So the checkout regularly stops
 being a fast-forward of upstream through no fault of ours, and the update step

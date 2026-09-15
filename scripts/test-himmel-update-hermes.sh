@@ -48,7 +48,12 @@ run_hermes_check_bounded() {
 # mk_systemctl_stub <dir> <unit>... — writes a fake `systemctl` into <dir>
 # that logs every invocation's argv (one line per call) to
 # <dir>/systemctl.log, answers `--user list-units ... --plain --no-legend`
-# with the given fixture unit lines, and answers `--user restart <unit>`
+# with the given fixture unit lines FILTERED against the PATTERN arguments
+# the caller actually passed (each fixture unit is matched with shell `case`
+# glob semantics against every pattern, same fnmatch-style rules real
+# systemctl uses — HIMMEL-3052: this is what makes a glob-only
+# `hermes-gateway-*` list call miss a bare `hermes-gateway.service` fixture,
+# same as the real multiplexer unit), and answers `--user restart <unit>`
 # with rc=1 when <unit> equals $SYSTEMCTL_STUB_FAIL_UNIT (read at RUNTIME,
 # by the generated stub — not expanded here), else rc=0. Never the real
 # systemd bus, so safe to run against this station's live hermes-gateway
@@ -65,7 +70,25 @@ mk_systemctl_stub() {
 #!/bin/sh
 printf '%s\n' "\$*" >> "$dir/systemctl.log"
 if [ "\$1" = "--user" ] && [ "\$2" = "list-units" ]; then
-  cat "$dir/units.txt"
+  shift 2
+  patterns=""
+  while [ \$# -gt 0 ]; do
+    case "\$1" in
+      --*) break ;;
+      *) patterns="\$patterns \$1" ;;
+    esac
+    shift
+  done
+  while IFS= read -r line; do
+    unit=\${line%% *}
+    matched=0
+    for p in \$patterns; do
+      case "\$unit" in
+        \$p) matched=1 ;;
+      esac
+    done
+    [ "\$matched" = 1 ] && printf '%s\n' "\$line"
+  done < "$dir/units.txt"
 elif [ "\$1" = "--user" ] && [ "\$2" = "restart" ]; then
   [ "\$3" = "\${SYSTEMCTL_STUB_FAIL_UNIT:-}" ] && exit 1
 fi
@@ -403,14 +426,16 @@ else
   echo "ok: default root resolution never falls back to \$HOME/AppData/Local on Linux/macOS"
 fi
 
-# ── restart_hermes_gateways() — HIMMEL-2822 ─────────────────────────────────
-# himmel-update fast-forwards the hermes-agent checkout but the running
-# hermes-gateway-*.service units keep old modules in memory until restarted
-# (09-08 ImportError incident). These cases drive update_hermes via a
-# systemctl STUB on PATH — never the real systemd bus (do-not: this station
-# has both units live).
+# ── restart_hermes_gateways() — HIMMEL-2822 / HIMMEL-3052 ───────────────────
+# himmel-update fast-forwards the hermes-agent checkout but a running
+# hermes-gateway unit — per-profile (hermes-gateway-<profile>.service) or the
+# multiplexer (bare hermes-gateway.service, HIMMEL-3052) — keeps old modules
+# in memory until restarted (09-08 ImportError incident). These cases drive
+# update_hermes via a systemctl STUB on PATH — never the real systemd bus
+# (do-not: this station has live units of both shapes).
 GW1=hermes-gateway-grow_agent.service
 GW2=hermes-gateway-himmel_agent.service
+GW3=hermes-gateway.service
 
 # Case 13: apply path, checkout genuinely moves → ONE restart per listed
 # unit, and the output names each restarted unit.
@@ -491,7 +516,7 @@ done
 rc=0
 out=$(PATH="$NOSYSTEMCTL" HERMES_HOME="$tmp/nosysctl16" update_hermes apply 2>&1) || rc=$?
 if [ "$rc" -eq 0 ]; then echo "ok: no-systemctl apply -> exit 0"; else echo "FAIL: no-systemctl apply -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
-check "no systemctl on PATH: loud advisory names exact restart shape" "systemctl --user restart hermes-gateway-<profile>\\.service" "$out"
+check "no systemctl on PATH: loud advisory names exact restart shape" "systemctl --user restart hermes-gateway\\.service \\(multiplexer\\) or hermes-gateway-<profile>\\.service" "$out"
 
 # Case 17: apply path, restart fails for ONE unit → reported FAILED-to-restart
 # with the by-hand command, chain NOT aborted (rc 0), and the OTHER unit
@@ -564,6 +589,57 @@ if grepq "$out" -E 'warn: could not list hermes-gateway units'; then echo "FAIL:
 restarts19=$(grep -c -- '--user restart' "$stub19/systemctl.log" 2>/dev/null) || true
 restarts19=${restarts19:-0}
 if [ "$restarts19" -eq 0 ]; then echo "ok: empty list-units output -> zero restart calls"; else echo "FAIL: expected 0 restart calls, stub log shows $restarts19"; cat "$stub19/systemctl.log" 2>/dev/null; fail=1; fi
+
+# Case 20 (HIMMEL-3052): apply path, checkout moves, ONLY the multiplexer
+# unit ($GW3, bare hermes-gateway.service — no per-profile units running) →
+# it still gets restarted. A `list-units 'hermes-gateway-*'`-only call (the
+# pre-fix glob) never matches this fixture, so this case is RED against the
+# unmodified script and GREEN once the list call also names the bare unit.
+bare20="$tmp/bare20/NousResearch/hermes-agent.git"
+mkdir -p "$bare20"; git init -q --bare "$bare20"
+seed20="$tmp/seed20"
+git clone -q "$bare20" "$seed20"
+git -C "$seed20" config user.email "test@test.test"; git -C "$seed20" config user.name "Test"
+printf 'v1\n' > "$seed20/f.txt"; git -C "$seed20" add f.txt; git -C "$seed20" commit --quiet -m v1
+defbranch20=$(git -C "$seed20" rev-parse --abbrev-ref HEAD)
+git -C "$seed20" push --quiet origin "HEAD:$defbranch20"
+git clone -q "$bare20" "$tmp/mux20/hermes-agent"
+printf 'v2\n' > "$seed20/f.txt"; git -C "$seed20" add f.txt; git -C "$seed20" commit --quiet -m v2
+git -C "$seed20" push --quiet origin "HEAD:$defbranch20"
+want20=$(git -C "$seed20" rev-parse HEAD)
+stub20="$tmp/stub20"
+mk_systemctl_stub "$stub20" "$GW3"
+out=$(PATH="$stub20:$PATH" HERMES_HOME="$tmp/mux20" update_hermes apply 2>&1)
+got20=$(git -C "$tmp/mux20/hermes-agent" rev-parse HEAD)
+if [ "$got20" = "$want20" ]; then echo "ok: multiplexer fixture: checkout genuinely moved"; else echo "FAIL: multiplexer fixture HEAD was '$got20', expected '$want20'"; fail=1; fi
+check "multiplexer-only: restarted $GW3" "restarted $GW3" "$out"
+restarts20=$(grep -c -- '--user restart' "$stub20/systemctl.log" 2>/dev/null) || true
+restarts20=${restarts20:-0}
+if [ "$restarts20" -eq 1 ]; then echo "ok: multiplexer-only -> exactly one restart call"; else echo "FAIL: expected 1 restart call, stub log shows $restarts20"; cat "$stub20/systemctl.log" 2>/dev/null; fail=1; fi
+
+# Case 21 (HIMMEL-3052): apply path, checkout moves, multiplexer unit ($GW3)
+# running ALONGSIDE a per-profile unit ($GW1) — the mixed-shape window
+# during/after a `hermes gateway migrate --standalone` rollback — BOTH get
+# restarted.
+bare21="$tmp/bare21/NousResearch/hermes-agent.git"
+mkdir -p "$bare21"; git init -q --bare "$bare21"
+seed21="$tmp/seed21"
+git clone -q "$bare21" "$seed21"
+git -C "$seed21" config user.email "test@test.test"; git -C "$seed21" config user.name "Test"
+printf 'v1\n' > "$seed21/f.txt"; git -C "$seed21" add f.txt; git -C "$seed21" commit --quiet -m v1
+defbranch21=$(git -C "$seed21" rev-parse --abbrev-ref HEAD)
+git -C "$seed21" push --quiet origin "HEAD:$defbranch21"
+git clone -q "$bare21" "$tmp/mixed21/hermes-agent"
+printf 'v2\n' > "$seed21/f.txt"; git -C "$seed21" add f.txt; git -C "$seed21" commit --quiet -m v2
+git -C "$seed21" push --quiet origin "HEAD:$defbranch21"
+stub21="$tmp/stub21"
+mk_systemctl_stub "$stub21" "$GW3" "$GW1"
+out=$(PATH="$stub21:$PATH" HERMES_HOME="$tmp/mixed21" update_hermes apply 2>&1)
+check "mixed shapes: restarted $GW3" "restarted $GW3" "$out"
+check "mixed shapes: restarted $GW1" "restarted $GW1" "$out"
+restarts21=$(grep -c -- '--user restart' "$stub21/systemctl.log" 2>/dev/null) || true
+restarts21=${restarts21:-0}
+if [ "$restarts21" -eq 2 ]; then echo "ok: mixed shapes -> exactly two restart calls"; else echo "FAIL: expected 2 restart calls, stub log shows $restarts21"; cat "$stub21/systemctl.log" 2>/dev/null; fail=1; fi
 
 # ── report_cadence_stale() — stale cadence runner nudge (HIMMEL-588/969) ─────
 # Same lib seams; *_BAT_DIR point at fixture runner dirs.
