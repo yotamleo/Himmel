@@ -111,9 +111,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/plannotator/effective-html.git",
-        "sha": "d95debbaef15af1d201fc6c10c77cf92b524a0d6"
+        "sha": "2ac1dfecb0f2474e75260cb6d3c9b9d6d9b5062e"
       },
-      "description": "[plannotator, vendor + attribution only, no carried delta] Effective HTML annotation/plugin tooling. Sourced via an explicit HTTPS git url (NOT the `github` shorthand, which clones over SSH and fails host-key verification on a fresh machine with no github.com in ~/.ssh/known_hosts — HIMMEL-2837, same class as HIMMEL-549). Pinned to an upstream commit SHA per himmel supply-chain policy. Upstream companion PR open: https://github.com/plannotator/effective-html/pull/26 (switches their own marketplace.json to the same explicit-url source).",
+      "description": "[plannotator, vendor + attribution only, no carried delta] Effective HTML annotation/plugin tooling. Sourced via an explicit HTTPS git url (NOT the `github` shorthand, which clones over SSH and fails host-key verification on a fresh machine with no github.com in ~/.ssh/known_hosts — HIMMEL-2837, same class as HIMMEL-549). Pinned to an upstream commit SHA per himmel supply-chain policy. Upstream companion PR merged: https://github.com/plannotator/effective-html/pull/26 (their own marketplace.json now uses the same explicit-url source; pin includes it, HIMMEL-3046).",
       "author": {
         "name": "plannotator",
         "url": "https://github.com/plannotator"
