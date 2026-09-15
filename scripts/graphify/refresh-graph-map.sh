@@ -54,8 +54,11 @@ REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 # auth. (The HIMMEL-128 "separate bucket" note that used to live in the dispatch
 # comment below was wrong: a 48-chunk luna refresh exhausted the bank ~2.9h in
 # and chunks 27-48 all failed.) Mitigation: the sonnet model pin below
-# (GRAPHIFY_CLAUDE_CLI_MODEL, overridable), or an API backend (kimi/glm) for
-# zero bank draw.
+# (GRAPHIFY_CLAUDE_CLI_MODEL, overridable), or an API backend (glm) for zero
+# bank draw. HIMMEL-2101: kimi/moonshot, the other former zero-bank-draw
+# option, is retired (operator ruling — there is no kimi backend); the weekly
+# graphmap-cadence.sh semantic leg accepts the bank draw and is gated by
+# bank-preflight.sh instead (see the bank guard below).
 # BILLING CAVEAT (CodeRabbit): claude-cli authenticates via the operator's
 # existing Pro/Max SUBSCRIPTION *only when no Anthropic API credential is in the
 # environment* — a set ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN takes precedence
@@ -165,8 +168,8 @@ _verify_fs_id() {
 # backslash-bearing values return no host. Never echo the raw URL — it may
 # carry userinfo/query credentials. _guard_endpoint_host (HIMMEL-1776,
 # scripts/guardrails/phi-egress-lib.sh) is the shared implementation with
-# graphify-fence.sh's _map_anthropic_endpoint/_map_kimi_endpoint — this is a
-# thin wrapper so existing call sites in this file don't all need renaming.
+# graphify-fence.sh's _map_anthropic_endpoint — this is a thin wrapper so
+# existing call sites in this file don't all need renaming.
 _endpoint_host() {
   _guard_endpoint_host "$1"
 }
@@ -220,48 +223,15 @@ case "$BACKEND" in
     # `himmel-code x * x *` is still `allow` (public code): `--backend glm` on a
     # himmel-code corpus remains a live, permitted path, and the de-listing is
     # deliberately not `hard`, so deleting the code would make the reversal
-    # harder to undo than the matrix says it is. Kimi (`--backend kimi`,
-    # moonshot, HIMMEL-1748) is the luna extraction lane now.
-    ;;
-  kimi|moonshot)
-    # Kimi (Moonshot) — a NATIVE graphify backend (>=0.9.40; default model
-    # kimi-k2.6, endpoint api.moonshot.ai), unlike the glm remap above which
-    # rides the claude backend. Only the key needs wiring: load MOONSHOT_API_KEY
-    # from the primary checkout's .env when absent (never printed). Egress:
-    # moonshot is a ratified matrix provider (luna-personal / luna-clippings
-    # extraction = allow+log, operator ratification 2026-08-12, HIMMEL-1748) —
-    # the in-script preflight below evaluates the cell and appends the ledger
-    # line the fence would have written (the fence never runs on scheduled
-    # paths, HIMMEL-1084).
-    BACKEND="kimi"
-    _endpoint_host_allowed "${KIMI_BASE_URL:-}" api.moonshot.ai api.moonshot.cn || {
-      echo "refresh-graph-map: KIMI_BASE_URL is set to an unverified endpoint (value not echoed); refusing scheduled egress (fail-closed). Use exact HTTPS api.moonshot.ai/api.moonshot.cn or unset it." >&2
-      exit 2
-    }
-    EFFECTIVE_PROVIDER="moonshot"
-    if [ -z "${MOONSHOT_API_KEY:-}" ]; then
-      # shellcheck source=../lib/load-dotenv.sh
-      # shellcheck disable=SC1091
-      if . "$(dirname "$0")/../lib/load-dotenv.sh" 2>/dev/null && load_dotenv MOONSHOT_API_KEY 2>/dev/null && [ -n "${MOONSHOT_API_KEY:-}" ]; then
-        :
-      else
-        echo "refresh-graph-map: --backend kimi needs MOONSHOT_API_KEY (in the primary checkout's .env) or set in the environment." >&2
-        exit 1
-      fi
-    fi
-    export MOONSHOT_API_KEY
-    # Moonshot enforces strict per-org RPM caps; graphify's 429 retry machinery
-    # (GRAPHIFY_MAX_RETRIES, honors Retry-After) exists for exactly this — give
-    # the unattended cadence more headroom than graphify's default (6).
-    # `-10` (unset-only): an operator override wins; graphify validates the value.
-    GRAPHIFY_MAX_RETRIES="${GRAPHIFY_MAX_RETRIES-10}"
-    export GRAPHIFY_MAX_RETRIES
-    echo "refresh-graph-map: --backend kimi (Moonshot, native graphify backend)" >&2
+    # harder to undo than the matrix says it is. claude-cli (the operating
+    # substrate) is the sanctioned luna extraction backend now (HIMMEL-2101 —
+    # kimi/moonshot, the interim CN lane, is retired; operator ruling: there is
+    # no kimi backend).
     ;;
 esac
 
-# In-script egress preflight + ledger for the scheduled claude/claude-cli/glm/
-# kimi paths (partial HIMMEL-1084). graphify-fence.sh owns matrix eval + the
+# In-script egress preflight + ledger for the scheduled claude/claude-cli/glm
+# paths (partial HIMMEL-1084). graphify-fence.sh owns matrix eval + the
 # allow+log ledger on interactive paths, but it never runs on a scheduled
 # invocation. Resolve claude/claude-cli by their EFFECTIVE ANTHROPIC_BASE_URL,
 # then run the same matrix eval. Unknown/custom endpoints use the fence's
@@ -441,7 +411,7 @@ GRAPHIFY_MAP="${GRAPHIFY_MAP_BIN:-graphify}"   # test hook: stub graphify
 # headless-claude-ok: documents why graphify keeps its intentional CLI subprocesses serial
 # parallel `claude -p` subprocesses conflict over session state), so this knob
 # and the --max-concurrency flags below are a NO-OP for claude-cli; they govern
-# the API backends only (claude, the glm remap, kimi, deepseek, ...).
+# the API backends only (claude, the glm remap, deepseek, ...).
 GRAPHIFY_MAX_CONCURRENCY="${GRAPHIFY_MAX_CONCURRENCY-6}"
 # Validate ONLY on the extraction path (DO_UPDATE=1): the knob feeds the
 # --update + cluster-only graphify calls, which a --no-update publish-only run
@@ -1792,7 +1762,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
   unset CLAUDE_CODE_USE_GATEWAY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_USE_ANTHROPIC_AWS
   # HIMMEL-1084 residual: the scheduled extraction preflight above now resolves
-  # the effective endpoint and runs the matrix for claude/claude-cli/glm/kimi,
+  # the effective endpoint and runs the matrix for claude/claude-cli/glm,
   # while deliberately preserving supported Anthropic credentials and custom
   # `--backend claude` endpoints for public himmel-code corpora. Unmapped
   # backends have no provider mapping, so the fail-closed check above refuses
@@ -1844,8 +1814,8 @@ if [ "$DO_UPDATE" -eq 1 ]; then
     [ -n "$_deadline_bin" ] || echo "refresh-graph-map: no functional timeout(1) — run deadline DISABLED, extraction is unbounded" >&2
   fi
 
-  # Bank guard: claude-backed extraction only. API backends (kimi/glm) draw no
-  # subscription bank, so gating them would be a false refusal. Branch on the
+  # Bank guard: claude-backed extraction only. API backends (glm/deepseek)
+  # draw no subscription bank, so gating them would be a false refusal. Branch on the
   # VERDICT TOKEN, never the exit code — bank-preflight always exits 0 by
   # design, so `||` here would be dead code. Only SKIPPED-BANK stops the run:
   # BANK-STALE / BANK-UNKNOWN are fail-open verdicts and must not block a
@@ -1958,7 +1928,7 @@ if [ "$DO_UPDATE" -eq 1 ]; then
   # subscription-authenticated `claude -p` draws from the SAME 5h/weekly usage
   # bank as interactive sessions. The sonnet model pin above is what keeps the
   # cadence's draw acceptable; operators who want zero bank draw use an API
-  # backend (kimi, glm) instead.
+  # backend (glm) instead.
   # Deliberately NOT a `headless-claude-ok:` marker (HIMMEL-1070, public CR
   # thread): the no-headless-claude gate matches `claude` + `-p|--print|--bg` in
   # THIS repo's shell, and these lines invoke `graphify`. The gate never fires

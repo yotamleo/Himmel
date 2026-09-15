@@ -80,21 +80,22 @@ DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
   extraction` (HIMMEL-1122), `luna-personal × zai-glm × enrichment`
   (HIMMEL-1167), `luna-clippings × zai-glm × extraction` (the narrow G2.3
   ladder exception) and `handover-state × zai-glm × inference` (the
-  brief-scoped worker cell). **Kimi (`moonshot`, HIMMEL-1748) is the
-  replacement CN extraction lane.** Resist the urge to compress what remains
-  into one provider list: the matrix is keyed by corpus x provider x
-  **purpose**, and after this reversal no provider is broadly authorized
-  across both corpora. Cell by cell, what stays open is:
-  `luna-personal` and `luna-clippings` **extraction** — `moonshot` (allow+log)
-  plus `anthropic`/`local-ollama`; **enrichment** on either corpus —
-  `anthropic`/`local-ollama` only, no CN lane at all; `handover-state`
-  **inference** — `openai-codex` (conditional, brief-scoped) and `openrouter`
-  (HIMMEL-1774) plus `anthropic`/`local-ollama`. Kimi holds NO handover-state
-  cell and no enrichment cell; Codex holds NO vault cell. This was
-  a *record-integrity* fix, not an incident: nothing routed to GLM — no GLM
-  lane appears in `scripts/lanes/resolve.mjs` and `graphmap-cadence.sh` runs
-  `BACKEND="kimi"` — but a live `allow+log` cell is exactly what a later leg
-  would cite as pre-existing authorization. As with DeepSeek/Alibaba the rows
+  brief-scoped worker cell). *(At the time, Kimi (`moonshot`, HIMMEL-1748)
+  was adopted as the replacement CN extraction lane — see the kimi/moonshot
+  retirement bullet below for why that no longer holds.)* Resist the urge to
+  compress what remains into one provider list: the matrix is keyed by corpus
+  x provider x **purpose**, and after this reversal no provider is broadly
+  authorized across both corpora. Cell by cell, what stayed open at the time
+  was: `luna-personal` and `luna-clippings` **extraction** — `moonshot`
+  (allow+log, since retired) plus `anthropic`/`local-ollama`; **enrichment**
+  on either corpus — `anthropic`/`local-ollama` only, no CN lane at all;
+  `handover-state` **inference** — `openai-codex` (conditional, brief-scoped)
+  and `openrouter` (HIMMEL-1774) plus `anthropic`/`local-ollama`. Kimi held
+  NO handover-state cell and no enrichment cell; Codex holds NO vault cell.
+  This was a *record-integrity* fix, not an incident: nothing routed to GLM —
+  no GLM lane appears in `scripts/lanes/resolve.mjs` — but a live `allow+log`
+  cell is exactly what a later leg would cite as pre-existing authorization.
+  As with DeepSeek/Alibaba the rows
   are `deny`, **not deleted** (a deleted row falls through to `default: deny`
   and loses the history), **not `hard`**, and `himmel-code × zai-glm` stays
   **allow** via the wildcard — public code, not private content, so
@@ -104,6 +105,26 @@ DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
   opened is now deny, so the flag opened nothing); `enrich-chat-notes.py`
   keeps its `glm` provider entry but its egress gate now refuses it, exactly
   as it already refuses `deepseek`.
+- **Provider policy — kimi/moonshot retired (HIMMEL-2101, operator ruling
+  2026-08-24/2026-09-15: there is no kimi backend).** Unlike the
+  DeepSeek/Alibaba/GLM de-listings above, the `moonshot` provider entry and
+  its two `allow+log` rows (`luna-personal × moonshot × extraction`,
+  `luna-clippings × moonshot × extraction`) are **DELETED outright, not
+  reversed to explicit deny** — the operator retired the backend itself, not
+  just its egress authorization, and kimi was never de-listed for bad results
+  the way DeepSeek/Alibaba/GLM were, so there is no "why a vendor was ever
+  permitted" history worth preserving as a live row. `moonshot` now falls
+  through to `default: deny` exactly like any other unclassified provider.
+  **No sanctioned CN/cloud extraction lane remains** for `luna-personal` or
+  `luna-clippings` — `anthropic` (the operating substrate) is the only live
+  allow cell either corpus has for extraction, and it is a plain `allow`, not
+  `allow+log`. `graphmap-cadence.sh`'s weekly semantic refresh reverts to
+  `BACKEND="claude-cli"` (its pre-HIMMEL-1948 default, HIMMEL-1049), drawing
+  the operator's own interactive 5h/weekly bank — gated by `bank-preflight.sh`
+  inside `refresh-graph-map.sh`, not by this matrix. `graphify-fence.sh` drops
+  `_map_kimi_endpoint` and its `kimi -> moonshot` mapping entirely;
+  `--backend kimi` now hits the same undeclared-literal-provider fail-closed
+  path any other unrecognized backend name does.
 
 ## Corpus resolution (shared primitives, not new ones)
 

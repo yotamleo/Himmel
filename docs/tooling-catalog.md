@@ -1335,11 +1335,14 @@ view into the vault — the bridge between the derived graph and the KB.
 - **Cost + cadence:** a full ecosystem sync is ~$2 (measured 2026-07-09);
   `--update` is a fraction of that, so a **daily** off-peak run is affordable.
   Schedule per corpus (example, Git Bash on Windows via schtasks or cron):
-  `bash scripts/graphify/refresh-graph-map.sh --name luna --corpus-root <vault> --backend kimi --maps-dir <vault>/60-Maps --title "Graphify Luna Vault Map" --slug graphify-luna-map --corpus-tag luna`
-  (`--backend kimi` is the ratified luna extraction provider — moonshot, allow+log on
-  luna-personal, HIMMEL-1748; a native graphify backend, it only needs `MOONSHOT_API_KEY`
-  from `.env`. `--backend glm` was the prior lane but zai-glm is de-listed as of
-  HIMMEL-2224, so on luna corpora it now fails closed at the egress preflight).
+  `bash scripts/graphify/refresh-graph-map.sh --name luna --corpus-root <vault> --backend claude-cli --maps-dir <vault>/60-Maps --title "Graphify Luna Vault Map" --slug graphify-luna-map --corpus-tag luna`
+  (`--backend claude-cli` is the default/sanctioned luna extraction provider —
+  the operating-substrate `anthropic` cell, plain `allow` on luna-personal;
+  authenticates via the operator's own Claude Code subscription, no API key.
+  `--backend glm` was a prior lane but zai-glm is de-listed as of HIMMEL-2224,
+  and `--backend kimi` (moonshot, HIMMEL-1748) is retired as of HIMMEL-2101 —
+  operator ruling, there is no kimi backend — so both now fail closed on luna
+  corpora, glm at the egress preflight and kimi as an unclassified provider).
   **Throttle knob (`GRAPHIFY_MAX_CONCURRENCY`, default 6):** concurrency 6
   overshoots Z.ai's request limit — `--backend glm` 429s (`rate_limit_error`
   1302) on most chunks and the regen fails. `GRAPHIFY_MAX_CONCURRENCY=1`
@@ -1364,8 +1367,12 @@ view into the vault — the bridge between the derived graph and the KB.
   leg's own arm/inspect/remove, ledger shape, and failure-surfacing detail —
   this entry covers the original four). The semantic pair
   (`HIMMEL-GraphMap-Luna` / `-Himmel`, default Sunday 13:00/13:20 local,
-  staggered) is now **weekly**, on the **`kimi`** backend — off the Anthropic
-  interactive bank — each firing `refresh-graph-map.sh` for its corpus. The
+  staggered) is now **weekly**, on the **`claude-cli`** backend (HIMMEL-2101 —
+  kimi/moonshot is retired, operator ruling; claude-cli is the
+  pre-HIMMEL-1948 default) — drawing the SAME interactive 5h/weekly Anthropic
+  bank as a live session, gated by `bank-preflight.sh` inside
+  `refresh-graph-map.sh` (SKIPPED-BANK stops the run) — each firing
+  `refresh-graph-map.sh` for its corpus. The
   structural/AST pair (`HIMMEL-GraphMapAst-Luna` / `-Himmel`) is **asymmetric**
   since HIMMEL-1960: **himmel hourly** (:15 past), **luna daily** (00:05). Both
   legs are free; the asymmetry is about the artifact, not cost — luna is a live
@@ -1384,15 +1391,19 @@ view into the vault — the bridge between the derived graph and the KB.
   no bank, no `bank-preflight`, never shells
   `claude` — and is **free**. schtasks (Windows, StartWhenAvailable XML) / crontab
   (POSIX); dedup-guarded; hermetic test `test-graphmap-cadence.sh`. Arming is
-  an operator flip (weekly `kimi` spend on the semantic pair only — the AST pair
-  costs nothing), not auto-armed. `arm` now REFUSES when the semantic backend's
-  credential is missing. It must be readable from the primary checkout's
-  `.env` (`kimi` -> `MOONSHOT_API_KEY`) — the source `refresh-graph-map.sh`
-  loads at fire time. A value merely exported in the arming shell is NOT
-  accepted: both schedulers start with their own environment and the generated
-  runners carry no secrets, so it cannot be shown to reach the run. Without
-  this check an arm could report ARMED while every weekly run failed
-  unattended (HIMMEL-1960):
+  an operator flip (weekly `claude-cli` bank draw on the semantic pair only —
+  the AST pair costs nothing), not auto-armed. `arm` also FAILS FAST when
+  `claude` is not resolvable on PATH at arm time (HIMMEL-2101, restoring the
+  pre-HIMMEL-1948 resolution) — the scheduler's minimal PATH carries neither
+  `graphify` nor `claude` by default, and graphify's claude-cli backend shells
+  the local `claude` CLI internally at fire time. claude-cli itself needs no
+  credential (it authenticates via the operator's own Claude Code
+  subscription) — HIMMEL-1960's original credential gate (kimi ->
+  `MOONSHOT_API_KEY`) no longer applies now that kimi is retired, though the
+  gate's machinery (`.env`-only, no bare shell-export) still covers any
+  API-key backend an operator might hand-edit `BACKEND` to. Without the
+  PATH check an arm could report ARMED while every weekly run failed
+  unattended (HIMMEL-1960/HIMMEL-2101):
   `bash scripts/luna/graphmap-cadence.sh arm` (`--luna-time` / `--himmel-time` /
   `--vault` / `--force` / `--dry-run` / `--ast-only`).
   `--ast-only` (HIMMEL-2071) arms/dedup-checks ONLY the two free structural

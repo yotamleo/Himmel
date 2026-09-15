@@ -238,7 +238,12 @@ assertExplicitDeny("luna-personal", "alibaba", "embedding",
 // HIMMEL-2224: zai-glm de-listed too — landing HIMMEL-1749's DROP branch (GLM
 // Coding Plan auto-renew cancelled 2026-08-12, plan lapsed 2026-08-17). Same
 // legible-reversal pattern: four explicit deny ROWS, not deleted rows. moonshot
-// (HIMMEL-1748) is the replacement CN extraction lane.
+// (HIMMEL-1748) was the replacement CN extraction lane at the time, but kimi/
+// moonshot is itself retired now (HIMMEL-2101, operator ruling — there is no
+// kimi backend), so unlike zai-glm its rows are DELETED, not reversed to
+// explicit deny — no sanctioned CN extraction lane remains for these
+// corpora; claude-cli (the anthropic operating-substrate cell) is the
+// sanctioned semantic backend.
 assertExplicitDeny("luna-personal", "zai-glm", "extraction",
   "luna-personal x zai-glm x extraction — GLM lane dropped (HIMMEL-2224/1749), was the reversed HIMMEL-1122 ratification");
 assertExplicitDeny("luna-personal", "zai-glm", "enrichment",
@@ -251,10 +256,17 @@ assert(evaluate("himmel-code", "zai-glm", "inference").effective === "allow",
   "himmel-code x zai-glm stays allow — de-listing is for private-content egress, not public code (wildcard)");
 assert(evaluate("handover-state", "openai-codex", "inference").rule?.verdict === "conditional",
   "handover-state x openai-codex x inference must STAY the brief-scoped conditional (the zai-glm de-listing must not touch the codex worker cell)");
-assert(evaluate("luna-personal", "moonshot", "extraction").rule?.verdict === "allow+log",
-  "luna-personal x moonshot x extraction must be allow+log (HIMMEL-1748)");
-assert(evaluate("luna-clippings", "moonshot", "extraction").rule?.verdict === "allow+log",
-  "luna-clippings x moonshot x extraction must be allow+log (HIMMEL-1748)");
+// HIMMEL-2101: kimi/moonshot is retired — its two former allow+log rows are
+// DELETED (not reversed to explicit deny), so it now falls through to
+// DEFAULT deny like any other unclassified provider (rule === null).
+assert(evaluate("luna-personal", "moonshot", "extraction").rule === null,
+  "luna-personal x moonshot x extraction must fall through to DEFAULT deny (kimi/moonshot retired, HIMMEL-2101)");
+assert(evaluate("luna-personal", "moonshot", "extraction").effective === "deny",
+  "luna-personal x moonshot x extraction must deny (kimi/moonshot retired, HIMMEL-2101)");
+assert(evaluate("luna-clippings", "moonshot", "extraction").rule === null,
+  "luna-clippings x moonshot x extraction must fall through to DEFAULT deny (kimi/moonshot retired, HIMMEL-2101)");
+assert(evaluate("luna-clippings", "moonshot", "extraction").effective === "deny",
+  "luna-clippings x moonshot x extraction must deny (kimi/moonshot retired, HIMMEL-2101)");
 assert(evaluate("luna-personal", "moonshot", "enrichment").effective === "deny",
   "luna-personal x moonshot x enrichment must stay denied (unratified purpose)");
 assert(evaluate("salus", "moonshot", "extraction").effective === "deny",
