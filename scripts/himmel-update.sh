@@ -332,18 +332,12 @@ update_hermes() {
 }
 
 # restart_hermes_gateways <old_head> <new_head> — HIMMEL-2822 / HIMMEL-3052: a
-# running hermes-gateway unit keeps stale modules in memory and lazily
-# imports a NEW one on the next agent turn, so a checkout move that leaves
-# the gateway running silently ImportErrors until a manual restart. Stations
-# run either the per-profile shape (hermes-gateway-<profile>.service, one
-# per profile) or the multiplexed shape (hermes-gateway.service, one bare
-# unit serving every profile; `hermes gateway migrate --standalone` rolls
-# back to per-profile) — list BOTH patterns so neither shape is missed:
-# `hermes-gateway-*` alone does not match the bare `hermes-gateway.service`
-# (systemctl unit globs require the literal `-` that the wildcard follows),
-# and `systemctl list-units` accepts multiple PATTERN arguments (OR'd). No-op
-# when the checkout did not actually move; never aborts the update chain on
-# a restart failure (a stale-but-running gateway beats an aborted update).
+# running hermes-gateway unit keeps stale modules in memory until restarted.
+# Stations run either the per-profile shape (hermes-gateway-<profile>.service)
+# or the multiplexed shape (bare hermes-gateway.service) — list BOTH patterns,
+# since `hermes-gateway-*` alone does not match the bare unit name. No-op when
+# the checkout did not actually move; never aborts the update chain on a
+# restart failure (a stale-but-running gateway beats an aborted update).
 restart_hermes_gateways() {
     local old_head="$1" new_head="$2"
     [ "$old_head" = "$new_head" ] && return 0
