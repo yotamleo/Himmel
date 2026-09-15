@@ -932,13 +932,18 @@ echo "== query (no path arg -> cwd classification) =="
 run_fence allow no "$HIMMEL/scripts" "query cwd-himmel no-key -> allow" \
     "graphify query \"where is the entrypoint\""
 
-# (14b) query with cwd in luna-personal + --backend claude-cli -> luna-personal
-# x anthropic x extraction -> allow (HIMMEL-2101: claude-cli is the sanctioned
-# semantic backend; the operating-substrate cell is a plain `allow`, not
-# `allow+log` — kimi/moonshot's allow+log lane is retired). Pins cwd
-# classification.
-run_fence allow no "$LUNA" "query cwd-luna claude-cli -> allow (cwd classification)" \
-    "graphify query \"what is in my journal\" --backend claude-cli"
+# (14b) query with cwd in luna-personal + --backend deepseek -> luna-personal
+# x deepseek x extraction -> deny (egress-matrix.json: an explicit deny row,
+# REVERSED 2026-07-22 HIMMEL-1257 — DeepSeek de-listed for luna-personal
+# extraction). This vehicle actually discriminates cwd classification: the
+# SAME --backend deepseek is a plain `allow` under the himmel-code wildcard
+# row (corpus "himmel-code", provider "*", purpose "*"), so if this cwd were
+# misclassified as himmel-code the verdict would flip to allow and the test
+# would catch it — claude-cli could not do this (its luna-personal cell is
+# also `allow`, so a misclassification to himmel-code's wildcard allow would
+# still read as allow and the test would pass either way).
+run_fence deny no "$LUNA" "query cwd-luna deepseek -> deny (cwd classification: luna-personal, not himmel-code)" \
+    "graphify query \"what is in my journal\" --backend deepseek"
 
 echo "== hook-level: parse + delegation + malformed-json fallback =="
 

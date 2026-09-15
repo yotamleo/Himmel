@@ -992,27 +992,35 @@ validate_arm_inputs() {
         # shape this restores). graphify shells the local `claude` CLI
         # internally under BACKEND=claude-cli, and the scheduler's minimal
         # PATH carries it no more than it carries graphify -- same
-        # rationale as the GRAPHIFY_BIN check above.
-        if ! CLAUDE_BIN=$(command -v claude 2>/dev/null); then
-            {
-                echo "ERR graphmap-cadence: 'claude' not on PATH at arm time, but the semantic pair's claude-cli backend shells it at fire time."
-                echo "    The scheduler fires with a minimal PATH, so this must resolve HERE — arming now would"
-                echo "    produce a cadence that fails on every semantic fire. Install the claude CLI (or put it on"
-                echo "    PATH), or arm with --ast-only to skip the semantic pair."
-            } >&2
-            exit 2
-        fi
-        case "$CLAUDE_BIN" in
-            /*|[A-Za-z]:[/\\]*) : ;;
-            *)
-                echo "ERR graphmap-cadence: 'claude' resolved to a non-absolute path ('$CLAUDE_BIN') — a shell function/alias or a relative PATH entry cannot be pinned into a scheduled runner. Install it on PATH as a real executable and re-arm." >&2
-                exit 2 ;;
+        # rationale as the GRAPHIFY_BIN check above. Gated on BACKEND itself
+        # (CR r1, HIMMEL-2101): the docs above tell an operator they may edit
+        # the BACKEND constant to a different backend, and a non-claude
+        # backend shells no `claude` CLI at fire time -- requiring one here
+        # would refuse an arm the fire path never needs.
+        case "$BACKEND" in
+            claude|claude-cli)
+                if ! CLAUDE_BIN=$(command -v claude 2>/dev/null); then
+                    {
+                        echo "ERR graphmap-cadence: 'claude' not on PATH at arm time, but the semantic pair's claude-cli backend shells it at fire time."
+                        echo "    The scheduler fires with a minimal PATH, so this must resolve HERE — arming now would"
+                        echo "    produce a cadence that fails on every semantic fire. Install the claude CLI (or put it on"
+                        echo "    PATH), or arm with --ast-only to skip the semantic pair."
+                    } >&2
+                    exit 2
+                fi
+                case "$CLAUDE_BIN" in
+                    /*|[A-Za-z]:[/\\]*) : ;;
+                    *)
+                        echo "ERR graphmap-cadence: 'claude' resolved to a non-absolute path ('$CLAUDE_BIN') — a shell function/alias or a relative PATH entry cannot be pinned into a scheduled runner. Install it on PATH as a real executable and re-arm." >&2
+                        exit 2 ;;
+                esac
+                if [ ! -f "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then
+                    echo "ERR graphmap-cadence: 'claude' resolved to '$CLAUDE_BIN', which is not an executable file — refusing to pin it into a scheduled runner." >&2
+                    exit 2
+                fi
+                CLAUDE_DIR=$(dirname "$CLAUDE_BIN")
+                ;;
         esac
-        if [ ! -f "$CLAUDE_BIN" ] || [ ! -x "$CLAUDE_BIN" ]; then
-            echo "ERR graphmap-cadence: 'claude' resolved to '$CLAUDE_BIN', which is not an executable file — refusing to pin it into a scheduled runner." >&2
-            exit 2
-        fi
-        CLAUDE_DIR=$(dirname "$CLAUDE_BIN")
     fi
 }
 
