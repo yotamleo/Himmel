@@ -2561,6 +2561,62 @@ out=$( GRAPHIFY_CALL_LOG="$KCALLS_RETIRED" GRAPHIFY_MAP_BIN="$BIN/graphify" \
   && pass "T40a --backend kimi (retired, HIMMEL-2101) fails closed before graphify (no provider mapping)" \
   || fail "T40a retired kimi backend should fail rc=2 before graphify (got $rc): $out calls=$(cat "$KCALLS_RETIRED")"
 
+# Arbitrary input strings in a JSONL ledger entry must be JSON-escaped completely,
+# including literal tab/newline/ESC bytes in the corpus path. One invocation still
+# produces exactly one physical line, and that line must parse as JSON.
+#
+# HIMMEL-2101 CR r2: this test (T40b2) was deleted when kimi retired because its
+# vehicle was `--backend kimi` -- the only matrix cell that ever reached
+# allow+log via this script's own corpora (see the T40f comment above). But the
+# allow+log)` ledger encoder in refresh-graph-map.sh (the printf around line 373
+# that this test exercises) still exists and still needs its escaping pinned, so
+# the test is restored here on a different vehicle: `--backend claude` (the
+# Anthropic API backend, EFFECTIVE_PROVIDER=anthropic) with the egress-matrix
+# verdict forced to allow+log via a PATH-scoped `node` shim ahead of the real
+# node, the exact seam test-refresh-graph-map-lock.sh uses to stub
+# egress-matrix-eval.mjs -- scoped to this ONE invocation only (env-prefixed on
+# the single `bash "$SCRIPT"` call below, never exported), so no other test's
+# real matrix evaluation is affected.
+KCTRL_PARENT="$WS/kctrl"; mkdir -p "$KCTRL_PARENT"
+KCTRL_CORPUS="$KCTRL_PARENT/$(printf 'corpus\tline\nbreak\033escape')"
+KCTRL_MAPS="$WS/kctrl-maps"; mkdir -p "$KCTRL_MAPS"
+# A literal tab/newline in a directory name is not a portable filesystem
+# component (Windows NTFS / Git Bash rejects it -> mkdir fails). The ledger
+# encoder must still handle such bytes as ARBITRARY INPUT, so on filesystems
+# that allow them, seed the corpus and run the escaping assertion; on
+# filesystems that reject them, skip cleanly rather than report a confusing
+# escaping failure that is really an OS path limit (CR r5, finding 2).
+if mkdir -p "$KCTRL_CORPUS/notes" 2>/dev/null; then
+  printf '# controls\n' > "$KCTRL_CORPUS/notes/a.md"
+  KCTRL_LEDGER="$WS/kctrl-ledger.jsonl"; rm -f "$KCTRL_LEDGER"
+  T40B2_REAL_NODE="$(command -v node)"
+  T40B2_SHIMBIN="$WS/t40b2-shimbin"; mkdir -p "$T40B2_SHIMBIN"
+  cat > "$T40B2_SHIMBIN/node" <<NODESTUB
+#!/usr/bin/env bash
+case "\$1" in
+  *egress-matrix-eval.mjs) printf 'allow+log\tstubbed for HIMMEL-2101 T40b2 ledger escaping test\n'; exit 0 ;;
+esac
+exec "$T40B2_REAL_NODE" "\$@"
+NODESTUB
+  chmod +x "$T40B2_SHIMBIN/node"
+  # Stop after the preflight ledger with the failing graphify stub: the ledger
+  # write happens before graphify is ever invoked, so a failing graphify run
+  # (FAILBIN, rc=2) still proves the encoder ran and wrote exactly one line.
+  out=$( PATH="$T40B2_SHIMBIN:$PATH" ANTHROPIC_API_KEY=stub GRAPHIFY_LEDGER="$KCTRL_LEDGER" GRAPHIFY_MAP_BIN="$FAILBIN/graphify" \
+    bash "$SCRIPT" --name kctrl-controls --corpus-root "$KCTRL_CORPUS" --backend claude \
+    --maps-dir "$KCTRL_MAPS" --title "Ctrl Controls" --slug kctrl-controls-map --corpus-tag kctrl 2>&1 ); rc=$?
+  kctrl_lines=$(wc -l < "$KCTRL_LEDGER" | tr -d ' ')
+  if [ "$rc" -eq 2 ] && [ "$kctrl_lines" -eq 1 ] \
+     && grep -qF "$(printf '\\u%04x' 27)" "$KCTRL_LEDGER" \
+     && node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" "$KCTRL_LEDGER"; then
+    pass "T40b2 C0 control characters are escaped into one well-formed JSONL ledger line"
+  else
+    fail "T40b2 ledger escaping failed (rc=$rc lines=$kctrl_lines): $out"
+  fi
+else
+  skip "T40b2 skipped: filesystem rejects control-char corpus paths (ledger escaping covered where allowed)"
+fi
+
 # GLM must still fail closed when the selected corpus class has no ratified
 # extraction cell (kimi's parallel arm above this loop is now HIMMEL-2101's
 # retired-backend case, T40a, not a corpus-class denial).
@@ -2600,12 +2656,13 @@ out=$( ANTHROPIC_API_KEY=stub ANTHROPIC_MODEL=glm-5.2 ANTHROPIC_BASE_URL='https:
 #       misclassified as `anthropic` would have hit luna-personal x anthropic =
 #       allow and exited 0, so rc=2-naming-zai-glm discriminates just as the
 #       ledger line used to. The allow+log LEDGER SHAPE this producer emits is
-#       no longer independently pinned here: kimi/moonshot, the only matrix
-#       cell that ever reached "allow+log" via this script's own corpora, is
-#       retired (HIMMEL-2101) — no remaining rule in egress-matrix.json
-#       produces that verdict, so the shape is exercised only by the code's
-#       own `allow+log)` case arm (graphify-fence.sh's ledger tests pin the
-#       same JSONL shape via a declared-backend `allow` line instead).
+#       no longer independently pinned by a LIVE matrix rule here: kimi/moonshot,
+#       the only matrix cell that ever reached "allow+log" via this script's own
+#       corpora, is retired (HIMMEL-2101) — no remaining rule in
+#       egress-matrix.json produces that verdict. T40b2 above restores coverage
+#       of the shape (and its C0-escaping) on a STUBBED allow+log verdict
+#       instead (a `node` shim over egress-matrix-eval.mjs, `--backend claude`
+#       vehicle) since no live cell can vehicle it anymore.
 { [ "$rc" -eq 2 ] && [ ! -s "$GLM_OK_CALLS" ] \
   && grep -qF 'egress matrix DENIES luna-personal x zai-glm x extraction' <<< "$out" \
   && grep -qF 'claude backend @ https://api.z.ai (model glm-5.2)' <<< "$out" \

@@ -993,12 +993,13 @@ validate_arm_inputs() {
         # internally under BACKEND=claude-cli, and the scheduler's minimal
         # PATH carries it no more than it carries graphify -- same
         # rationale as the GRAPHIFY_BIN check above. Gated on BACKEND itself
-        # (CR r1, HIMMEL-2101): the docs above tell an operator they may edit
-        # the BACKEND constant to a different backend, and a non-claude
-        # backend shells no `claude` CLI at fire time -- requiring one here
-        # would refuse an arm the fire path never needs.
+        # (CR r2, HIMMEL-2101): narrowed to claude-cli only -- `claude` is
+        # graphify's Anthropic API backend (ANTHROPIC_API_KEY, no local CLI
+        # shelled; see refresh-graph-map.sh's seed-claude-config gate, only
+        # entered `if [ "$BACKEND" = "claude-cli" ]`), so requiring the CLI
+        # for it would refuse an arm the fire path never needs.
         case "$BACKEND" in
-            claude|claude-cli)
+            claude-cli)
                 if ! CLAUDE_BIN=$(command -v claude 2>/dev/null); then
                     {
                         echo "ERR graphmap-cadence: 'claude' not on PATH at arm time, but the semantic pair's claude-cli backend shells it at fire time."
