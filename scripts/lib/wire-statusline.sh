@@ -26,9 +26,10 @@
 #      every project-scope install.
 #   4. Drops the hud's RUNTIME cache state in that same dir whenever the wiring
 #      actually CHANGED (HIMMEL-3065) — see _wire_statusline_purge_hud_cache.
-#      That drop happens BEFORE (1) and (2) publish anything, so a failed purge
-#      aborts the wire with the OLD wiring still on disk and the retry sees the
-#      same change it did.
+#      Both writes are STAGED and validated first, the purge runs next, and the
+#      staged files are published last — so anything that can fail aborts the
+#      wire with the OLD wiring still on disk, and the retry sees the same
+#      change this run did.
 #
 # Idempotent (re-running yields the same result), atomic (temp file + mv), and
 # non-destructive (all other keys / all other env keys preserved; file + parent
@@ -166,7 +167,21 @@ wire_statusline() {
     fi
   fi
 
-  # (2) HIMMEL-3065: the wiring CHANGED when either half differs from what was
+  # (2) Stage the transformed settings: statusLine → hud renderer, plus the
+  # extra-cmd gate merged into .env (creating .env if absent, preserving every
+  # other env key). Staged, not published — see (3). Fail LOUD on a failed
+  # transform: a bare `… && mv` swallows the failure when the caller runs us in
+  # an `if !` / errexit-exempt context and would report a wire that never
+  # happened. The transform can fail on input that PARSED fine — `{"env":"x"}`
+  # is valid JSON but `.env.KEY = …` cannot be assigned into a string — which
+  # is exactly why it has to run before the purge and not after (CR round 6).
+  printf '%s' "$base" | jq --arg cmd "$cmd" \
+    '.statusLine = { type: "command", command: $cmd }
+     | .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"' \
+    > "$settings.statusline.tmp" \
+    || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
+
+  # (3) HIMMEL-3065: the wiring CHANGED when either half differs from what was
   # already on this machine — a different hud config, or an EXISTING statusLine
   # command that pointed somewhere else (a moved or renamed clone, an older
   # himmel instance). Both are compared against values captured BEFORE anything
@@ -192,21 +207,13 @@ wire_statusline() {
   # retry still sees a changed wiring and purges again.
   if { [ -n "$prev_cmd" ] && [ "$prev_cmd" != "$cmd" ]; } || { [ -n "$hud_cfg" ] && [ "$prev_hud_cfg" != "$hud_cfg" ]; }; then
     _wire_statusline_purge_hud_cache "$hud_dir" \
-      || { rm -f "$hud_dir/.config.json.tmp"; return 1; }
+      || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
   fi
 
-  # (3) statusLine → hud renderer, (4) merge the extra-cmd gate into .env
-  # (creating .env if absent, preserving every other env key). Fail LOUD on a
-  # failed transform/write: a bare `… && mv` swallows the failure when the
-  # caller runs us in an `if !` / errexit-exempt context and would report a
-  # successful wire that never happened.
-  printf '%s' "$base" | jq --arg cmd "$cmd" \
-    '.statusLine = { type: "command", command: $cmd }
-     | .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"' \
-    > "$settings.statusline.tmp" \
-    || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
+  # (4) Publish. Everything above is staged and validated, so by this point the
+  # only way to fail is a failing rename.
   mv "$settings.statusline.tmp" "$settings" \
-    || { rm -f "$hud_dir/.config.json.tmp"; return 1; }
+    || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
 
   # (5) Publish the config THIS call staged. The test is $hud_cfg, not the temp
   # file's existence: a run that staged the config and then failed on the

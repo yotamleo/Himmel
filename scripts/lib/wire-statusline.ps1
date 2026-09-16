@@ -187,6 +187,16 @@ function Set-HimmelStatusLine {
             }
         }
 
+        # Stage the transformed settings BEFORE the purge, so anything that can
+        # fail still leaves the old wiring on disk (CR round 6 — the bash twin's
+        # (2) carries the reasoning).
+        $json = $cfg | ConvertTo-Json -Depth 20
+        if (Get-Command jq -ErrorAction SilentlyContinue) {
+            $normalized = $json | jq --indent 2 .
+            if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
+        }
+        Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
+
         # (4) HIMMEL-3065: the wiring CHANGED when either half differs from what
         # was already on this machine -- a different hud config, or an EXISTING
         # statusLine command that pointed somewhere else (a moved or renamed
@@ -210,17 +220,12 @@ function Set-HimmelStatusLine {
                 Remove-HimmelHudCacheState -HudDir $hudDir
             } catch {
                 if ($hudTmp -and (Test-Path $hudTmp)) { Remove-Item -LiteralPath $hudTmp -Force }
+                if (Test-Path "$SettingsPath.new") { Remove-Item -LiteralPath "$SettingsPath.new" -Force }
                 throw
             }
         }
 
-        # (5) Publish the settings file, then the staged hud config.
-        $json = $cfg | ConvertTo-Json -Depth 20
-        if (Get-Command jq -ErrorAction SilentlyContinue) {
-            $normalized = $json | jq --indent 2 .
-            if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
-        }
-        Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
+        # (5) Publish the staged settings file, then the staged hud config.
         Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
         if ($hudTmp -and (Test-Path $hudTmp)) {
             Move-Item -Path $hudTmp -Destination $hudConfigPath -Force

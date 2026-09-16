@@ -342,4 +342,25 @@ CLAUDE_CONFIG_DIR="$cfg25" bash "$HELPER" "$proj25/.claude/settings.json" "/synt
   || fail "25: the source-absent wire should still do its statusLine/env half"
 echo "ok 25 a source-absent wire never publishes a leftover staged config"
 
+# 26. CR round 6: a settings file that PARSES but cannot take the transform —
+# `{"env":"invalid"}` is valid JSON, yet `.env.KEY = …` cannot be assigned into
+# a string — must abort before the purge, not after it. Staging the transform
+# first is what makes the whole "purge ran, publish failed" class impossible
+# rather than fixed one instance at a time.
+cfg26="$TMP/cfg26"; hud26="$cfg26/plugins/claude-hud"
+proj26="$TMP/proj26"; mkdir -p "$proj26/.claude"
+s26="$proj26/.claude/settings.json"
+old26='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+printf '{"env":"invalid","statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old26" | sed 's/"/\\"/g')\"" > "$s26"
+mkdir -p "$hud26"
+seed_hud_cache "$hud26"
+rc26=0
+CLAUDE_CONFIG_DIR="$cfg26" bash "$HELPER" "$s26" "$REPO_ROOT" >/dev/null 2>&1 || rc26=$?
+[ "$rc26" -ne 0 ] || fail "26: an untransformable settings file must fail the wire"
+[ -f "$hud26/transcript-cache/deadbeef.json" ] \
+  || fail "26: live cache state was purged for a wire that could never publish"
+[ "$(jq -r .statusLine.command "$s26")" = "$old26" ] || fail "26: the settings file was modified"
+[ ! -e "$hud26/.config.json.tmp" ] || fail "26: the staged config was left behind"
+echo "ok 26 an untransformable settings file aborts before the purge"
+
 echo "ALL PASS"
