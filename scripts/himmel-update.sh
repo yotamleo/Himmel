@@ -34,6 +34,23 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 . "$ROOT/scripts/lib/load-dotenv.sh"
 
+# is_dirty_tracked [DIR]
+# HIMMEL-3078: like guardrails/lib.sh's is_dirty(), but untracked files don't
+# count. The three pull/switch gates below only need to know about changes
+# `git pull --ff-only` / `git switch --detach` could actually clobber or
+# refuse to move past — untracked strays are neither; git itself refuses a
+# pull or switch that would overwrite one, so the gate protects nothing by
+# also refusing on them. Deliberately NOT a change to is_dirty() itself —
+# the edit-on-main guard shares that predicate and DOES want untracked files
+# counted (HIMMEL-297's "dirty means the same thing everywhere" applies there,
+# not here).
+is_dirty_tracked() {
+    local dir="${1:-.}"
+    local out
+    out=$(git -C "$dir" status --porcelain --untracked-files=no 2>/dev/null) || return 2
+    [ -n "$out" ]
+}
+
 # ─── plugin install-state gap report (HIMMEL-434) ────────────────────────────
 # Advisory: `marketplace update` only re-syncs plugins that are ALREADY
 # installed — it never tells you a himmel-marketplace plugin is missing, or is
@@ -1605,7 +1622,7 @@ _channel_follow() {
         # `git switch --detach` isn't a `git pull`; autostash's
         # stash/pull/restore semantics don't apply to it, so channel mode
         # always refuses on a dirty tree rather than silently stashing.
-        if is_dirty "$ROOT"; then
+        if is_dirty_tracked "$ROOT"; then
             STATUS_pull="failed"
             DETAIL_pull="checkout has uncommitted changes — refusing to switch onto $tag with a dirty tree; commit or stash your changes, then re-run"
             return 1
@@ -1680,7 +1697,7 @@ if [ "${1:-}" = "--only" ]; then
     only_rc=0
     case "$only_item" in
         pull)
-            if is_dirty "$ROOT"; then
+            if is_dirty_tracked "$ROOT"; then
                 if [ "${HIMMEL_UPDATE_AUTOSTASH:-}" = "1" ]; then
                     echo "update --only pull: dirty tree — HIMMEL_UPDATE_AUTOSTASH=1, autostashing local changes around the pull." >&2
                 else
@@ -1789,12 +1806,16 @@ fi
 branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
 
 # ─── dirty-tree pre-check (HIMMEL-893) ───────────────────────────────────────
-# A `git pull` into a dirty tree is exactly the failure this guards against —
-# refuse up front rather than let `git pull --ff-only` fail confusingly (or,
-# worse, silently mix local edits into the pulled tree). is_dirty() is
-# guardrails/lib.sh's own predicate (already sourced above) — the same one the
-# edit-on-main guard uses, so "dirty" means the same thing everywhere in himmel.
-if is_dirty "$ROOT"; then
+# A `git pull` into a dirty TRACKED tree is exactly the failure this guards
+# against — refuse up front rather than let `git pull --ff-only` fail
+# confusingly (or, worse, silently mix local edits into the pulled tree).
+# HIMMEL-3078: untracked-only dirt doesn't count here — `--ff-only` never
+# touches untracked files and refuses on its own if an incoming path would
+# overwrite one, so gating on them protects nothing and just leaves the
+# checkout stuck on stale strays (a bun.lock, a plugin config). Deliberately
+# is_dirty_tracked(), NOT guardrails/lib.sh's is_dirty() — that predicate is
+# unchanged and still counts untracked files for the edit-on-main guard.
+if is_dirty_tracked "$ROOT"; then
     if [ "${HIMMEL_UPDATE_AUTOSTASH:-}" = "1" ]; then
         # Opt-in (HIMMEL-1197): autostash local changes around the pull instead of
         # refusing — update_pull adds --autostash and reports failed (stash kept)
