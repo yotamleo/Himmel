@@ -106,7 +106,7 @@ system-wide and works in any repo, with no `superpowers` fork.
 `superpowers:brainstorming` or `superpowers:writing-plans` is invoked by ANY
 path without going through `/minerva`, the hook injects a scoped directive so the
 critic loop still fires (spec-critic after brainstorming, plan-critic after
-writing-plans). It also routes `mattpocock-skills:grilling` into minerva Stage 1a
+writing-plans). It also routes `lean-skills:grilling` into minerva Stage 1a
 (HIMMEL-2039), so grill / stress-test / brainstorm all share one front door
 without forking the upstream plugin. It is advisory context, not a permission change, and is
 **fail-open** — it never blocks a Skill call. Disable it with

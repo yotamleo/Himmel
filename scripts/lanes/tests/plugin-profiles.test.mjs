@@ -82,8 +82,12 @@ for (const name of ['operator', 'user', 'bare']) {
     // Baseline captured before implementation: user = four base ids + three
     // authoring ids; bare = three floor ids; catalog order stays unchanged.
     const on = name === 'bare' ? ['handover@himmel', 'himmel-ops@himmel', 'qmd@himmel'] : [
+      // HIMMEL-3064: superpowers/mattpocock-skills dropped from catalog (replaced
+      // by lean-skills@himmel, now in base — every non-bare profile gets it);
+      // plannotator-effective-html@himmel moved out of the user always-tier into
+      // the design profile.
       'handover@himmel', 'himmel-ops@himmel', 'qmd@himmel', 'pr-review-toolkit-himmel@himmel',
-      'superpowers@claude-plugins-official', 'mattpocock-skills@claude-plugins-official', 'plannotator-effective-html@himmel',
+      'lean-skills@himmel',
     ];
     const expected = name === 'operator' ? null : {
       enabledPlugins: Object.fromEntries(REG.catalog.map((id) => [id, on.includes(id)])),
@@ -215,16 +219,20 @@ test('resolved map is COMPLETE — every catalog id is present', () => {
   assert.equal(Object.keys(r.enabledPlugins).length, new Set(REG.catalog).size);
 });
 
-test('lane-impl keeps its four-plugin surface and disables operator always-tier extras', () => {
+test('lane-impl keeps its base surface (now including lean-skills) and disables operator always-tier extras', () => {
   const { enabledPlugins: p } = resolveProfile(REG, 'lane-impl');
   assert.equal(p['pr-review-toolkit-himmel@himmel'], true);
-  assert.equal(p['superpowers@claude-plugins-official'], false);
-  assert.equal(p['mattpocock-skills@claude-plugins-official'], false);
+  // HIMMEL-3064: lean-skills@himmel is in `base`, so every non-bare profile
+  // (including a lane worker) gets it — it is not an "operator always-tier
+  // extra" the way superpowers/mattpocock-skills used to be.
+  assert.equal(p['lean-skills@himmel'], true);
   assert.equal(p['plannotator-effective-html@himmel'], false);
   assert.equal(p['claude-obsidian@himmel'], false);
   assert.equal(p['obsidian-triage@himmel'], false);
   assert.equal(p['skill-creator@claude-plugins-official'], false);
   assert.equal(p['hookify@claude-plugins-official'], false);
+  assert.ok(!('superpowers@claude-plugins-official' in p), 'HIMMEL-3064: superpowers dropped from catalog entirely');
+  assert.ok(!('mattpocock-skills@claude-plugins-official' in p), 'HIMMEL-3064: mattpocock-skills dropped from catalog entirely');
 });
 
 test('lane-content adds obsidian on top of the impl floor', () => {
@@ -449,9 +457,9 @@ test('validateRegistry collects errors (never throws) on malformed shapes', () =
 test('user profile matches the installer always tier and leaves on-demand plugins disabled', () => {
   const { enabledPlugins: p } = resolveProfile(REG, 'user');
   for (const id of [
-    'superpowers@claude-plugins-official',
-    'mattpocock-skills@claude-plugins-official',
-    'plannotator-effective-html@himmel',
+    // HIMMEL-3064: lean-skills@himmel replaces superpowers + mattpocock-skills
+    // in the always tier (vendored subset, same win at a fraction of the cost).
+    'lean-skills@himmel',
     'handover@himmel',
     'himmel-ops@himmel',
     'qmd@himmel',
@@ -466,7 +474,20 @@ test('user profile matches the installer always tier and leaves on-demand plugin
     'obsidian-triage@himmel',
     'telegram-himmel@himmel',
     'codex@openai-codex',
+    // HIMMEL-3064: moved out of the always tier into the design profile — the
+    // design/UI kit opts in per-dispatch instead of every session paying for it.
+    'plannotator-effective-html@himmel',
   ]) assert.equal(p[id], false, `${id} must stay on demand`);
+  assert.ok(!('superpowers@claude-plugins-official' in p), 'HIMMEL-3064: superpowers dropped from catalog entirely');
+  assert.ok(!('mattpocock-skills@claude-plugins-official' in p), 'HIMMEL-3064: mattpocock-skills dropped from catalog entirely');
+});
+
+test('design profile enables plannotator-effective-html on top of the base floor, and stays out of user', () => {
+  const { enabledPlugins: p } = resolveProfile(REG, 'design');
+  assert.equal(p['plannotator-effective-html@himmel'], true);
+  assert.equal(p['lean-skills@himmel'], true, 'base still applies to design');
+  assert.equal(p['pr-review-toolkit-himmel@himmel'], true, 'base still applies to design');
+  assert.equal(REG.profiles.design.contextBudget, 50000);
 });
 
 test('settings-template enabledPlugins mirrors the registry `user` profile (HIMMEL-1044 wiring)', () => {

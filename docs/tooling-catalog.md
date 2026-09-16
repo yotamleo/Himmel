@@ -42,8 +42,7 @@ everywhere), ON-DEMAND (installed, disabled — `plugin-profile.sh enable
 
 | Plugin | What it does | Tier |
 |--------|-------------|------|
-| `superpowers` | Workflow skills: planning, TDD, subagent-driven development, git worktrees | ALWAYS |
-| `mattpocock-skills` | Workflow skills: diagnosing bugs, TDD, prototyping, domain modeling, codebase design, code review, merge-conflict resolution, wizards | ALWAYS |
+| `lean-skills` | himmel's vendored subset (HIMMEL-3064) of `superpowers` + `mattpocock-skills` workflow skills — 11 of superpowers' 14 (the reference closure of the 4 himmel invokes: brainstorming, writing-plans, systematic-debugging, verification-before-completion) plus `grilling` from mattpocock/skills. Replaces both fat upstream plugins, which are no longer installed — see `marketplace/plugins/lean-skills/README.md` | ALWAYS |
 | `context7` | Fetches current library/framework docs on demand (MCP server) | ON-DEMAND |
 | `code-review` | Code review agent with severity-tagged findings | NOT INSTALLED |
 | `code-simplifier` | Simplifies recently written code for clarity/maintainability | NOT INSTALLED |
@@ -59,6 +58,7 @@ everywhere), ON-DEMAND (installed, disabled — `plugin-profile.sh enable
 | `ralph-loop` | Autonomous loop execution | NOT INSTALLED |
 | `typescript-lsp` | TypeScript language server integration | ON-DEMAND |
 | `pyright-lsp` | Python type checking via Pyright | NOT INSTALLED |
+| `plannotator-effective-html` | HTML design/UI artifact kit (design-artifact, html, html-diagram/-plan/-prototype/-wireframe) | ON-DEMAND — `design` profile only (HIMMEL-3064): measured 1 invocation in 1628 transcripts against ~630 tok/session cost, so it opts in per-dispatch instead of riding the ALWAYS tier |
 
 himmel's lean floor also carries `plugin-dev`, `agent-sdk-dev`, `hookify`,
 `playground`, and `atlassian` (all NOT INSTALLED) — see the full re-enable
@@ -323,7 +323,7 @@ Astra surfaces (`~/.codex/config.toml`, `scripts/cr/critics.json`) are already a
 **What:** Harness-meta operational skills for himmel.
 **Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (grill→brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428; the one front door for grill / stress-test / brainstorm, HIMMEL-2039), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493), `himmel-ops:memory-compound` (lean-invoke auto-memory→vault compaction with a qmd findability gate, HIMMEL-569).
 **Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass; `/fanout` — validates + confirms + dispatches N work items to the invariant-policy lane by type, refusing destructive/irreversible items below the judgement tier and any dormant lane (HIMMEL-1829).
-**Hook:** `hooks/hooks.json` wires a PreToolUse(`matcher: "Skill"`) hook `inject-minerva-critic.sh` (HIMMEL-429) — injects the minerva critic loop when `superpowers:brainstorming`/`writing-plans` fires without `/minerva`, and routes `mattpocock-skills:grilling` into minerva Stage 1a (HIMMEL-2039). Advisory, fail-open; kill switch `MINERVA_HOOK_DISABLE=1`.
+**Hook:** `hooks/hooks.json` wires a PreToolUse(`matcher: "Skill"`) hook `inject-minerva-critic.sh` (HIMMEL-429) — injects the minerva critic loop when `superpowers:brainstorming`/`writing-plans` fires without `/minerva`, and routes `lean-skills:grilling` into minerva Stage 1a (HIMMEL-2039). Advisory, fail-open; kill switch `MINERVA_HOOK_DISABLE=1`.
 **Plugin path:** `marketplace/plugins/himmel-ops/`
 
 ---

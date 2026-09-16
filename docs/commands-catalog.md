@@ -22,6 +22,15 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 > `/claude-hud:setup` / `/claude-hud:configure` commands are not invokable here. See
 > [marketplace/plugins/claude-hud/VENDORED.md](../marketplace/plugins/claude-hud/VENDORED.md).
 
+> **Not itemized: `marketplace/plugins/lean-skills/skills/`** (HIMMEL-3064).
+> 13 vendored workflow skills (11 from `obra/superpowers`, `grilling` from
+> `mattpocock/skills`, plus himmel's own `context7-mcp`) invoked the normal
+> Claude Code way — skill-name matching against the request — not via slash
+> commands, and it ships no `commands/` directory at all. Itemizing all 13
+> here would duplicate the inventory the plugin's own docs already own; see
+> [marketplace/plugins/lean-skills/README.md](../marketplace/plugins/lean-skills/README.md)
+> and its `VENDORED.md` instead.
+
 > **Keep this current.** When a ticket adds, renames, removes, or re-describes
 > a command under `.claude/commands/`, the Description column is regenerated
 > for you — run `node scripts/lib/gen-commands-catalog.mjs write` and commit

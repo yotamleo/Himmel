@@ -16,7 +16,7 @@ stage — you decide when each critic runs and when to advance.
 **One front door (HIMMEL-2039).** grill / stress-test / interrogate / brainstorm
 / "build / design / implement X" / `/minerva` all land here. The grilling
 stance is minerva's Stage 1a, not a second skill: if
-`mattpocock-skills:grilling` fires, run Stage 1a below and continue the
+`lean-skills:grilling` fires, run Stage 1a below and continue the
 pipeline rather than stopping at a shared understanding.
 
 ## Mode (gates)

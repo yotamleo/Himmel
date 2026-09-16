@@ -63,3 +63,18 @@ a `NOTICE` documenting the upstream attribution and the himmel modifications:
 
 - `marketplace/plugins/pr-review-toolkit-himmel` — see its `LICENSE` and `NOTICE`.
 - `marketplace/plugins/telegram-himmel` — see its `LICENSE` and `NOTICE`.
+
+## Vendored skill content
+
+`marketplace/plugins/lean-skills` (HIMMEL-3064) copies skill directories
+verbatim from two MIT-licensed upstreams, each under its own carried-forward
+license file:
+
+- 11 of 14 `skills/` directories from [`obra/superpowers`](https://github.com/obra/superpowers)
+  @ 6.3.0 — `LICENSE.superpowers` (MIT, © 2025 Jesse Vincent).
+- `skills/grilling` from [`mattpocock/skills`](https://github.com/mattpocock/skills)
+  @ 1.2.3 — `LICENSE.mattpocock-skills` (MIT, © 2026 Matt Pocock).
+
+`skills/context7-mcp` is himmel-authored (MIT, no upstream). See
+`marketplace/plugins/lean-skills/README.md` and `VENDORED.md` for the
+per-skill inventory and re-vendor procedure.

@@ -28,9 +28,12 @@ is data.
 `operator` is the no-override sentinel: it injects no plugin settings and
 preserves the operator console's installed configuration. `lane-impl` instead
 injects an explicit lean surface of `handover@himmel`, `himmel-ops@himmel`,
-`qmd@himmel`, and `pr-review-toolkit-himmel@himmel`; operator always-tier extras
-such as superpowers, mattpocock-skills, and plannotator-effective-html are
-explicitly disabled there.
+`qmd@himmel`, and `pr-review-toolkit-himmel@himmel`, plus `lean-skills@himmel`
+(HIMMEL-3064: in registry `base`, so every non-bare profile gets it —
+vendored workflow skills, not an "operator always-tier extra" the way
+superpowers/mattpocock-skills used to be, both of which are dropped from the
+catalog entirely); `plannotator-effective-html` stays operator-tier-only,
+explicitly disabled here (it is gated behind the separate `design` profile).
 
 `leg-impl` (HIMMEL-2830) is the profile a console leg gets from
 `headed-arm-leg.sh --profile leg-impl`. **There is exactly one leg profile, and

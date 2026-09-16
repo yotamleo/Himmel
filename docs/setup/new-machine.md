@@ -1368,9 +1368,17 @@ into three tiers — its own `_enabledPluginsComment` / `_onDemandPluginsComment
 `_onDemandConnectorsComment` are the authoritative definitions; summarized here:
 
 - **ALWAYS** (`enabledPlugins` → `true`): installed AND enabled on every himmel
-  machine — `superpowers`, `mattpocock-skills`, `plannotator-effective-html`,
-  `qmd@himmel`, `handover@himmel`, `himmel-ops@himmel`,
-  `pr-review-toolkit-himmel@himmel`.
+  machine — `lean-skills`, `qmd@himmel`, `handover@himmel`,
+  `himmel-ops@himmel`, `pr-review-toolkit-himmel@himmel`. `lean-skills`
+  replaces `superpowers` + `mattpocock-skills` (HIMMEL-3064: those two fat
+  upstream plugins carried ~2.2k tok of skill listing into every session for
+  skills almost never invoked; `lean-skills` vendors verbatim just the subset
+  himmel actually uses — see `marketplace/plugins/lean-skills/README.md`).
+  `plannotator-effective-html` (the design/UI kit) is no longer ALWAYS either
+  — it is design-profile-gated (see the `design` profile in
+  `scripts/lanes/plugin-profiles.json`): invoked once in 1628 local
+  transcripts, it now opts in per design/UI work instead of paying its ~630
+  tok cost on every session.
 - **ON-DEMAND** (a key of the top-level `onDemandPlugins` object, also `false`
   in `enabledPlugins`): INSTALLED by `install-plugins.{sh,ps1}` but left
   DISABLED — reachable in one command, costing no session-start context. Table

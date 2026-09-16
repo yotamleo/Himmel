@@ -2,8 +2,9 @@
 # inject-minerva-critic.sh — PreToolUse(Skill) hook (HIMMEL-429).
 #
 # Closes the no-/minerva bypass: when superpowers:brainstorming,
-# superpowers:writing-plans, or mattpocock-skills:grilling (HIMMEL-2039, one
-# front door for grill/stress-test/brainstorm) is invoked by ANY path
+# superpowers:writing-plans, or grilling (HIMMEL-2039, one front door for
+# grill/stress-test/brainstorm — vendored as lean-skills:grilling as of
+# HIMMEL-3064, formerly mattpocock-skills:grilling) is invoked by ANY path
 # (auto-trigger, direct /skill, or a sub-skill handoff) WITHOUT /minerva, inject a
 # scoped directive so the model still runs the matching minerva adversarial
 # critic loop (himmel-ops:minerva). This is ADVISORY context, not a permission
@@ -56,10 +57,13 @@ inject() {
 case "$skill" in
   # Namespace-agnostic ON PURPOSE (same as the two cases below): HIMMEL-2039
   # wants ONE front door for the grill trigger, so ANY plugin's `grilling`
-  # skill routes into minerva Stage 1a, not just mattpocock's. Pinning the
-  # vendor prefix would break on a rename/fork and re-open the second-front-door
-  # this ticket closed. The hook only injects advisory context, so a
-  # false-positive costs one sentence, never a block.
+  # skill routes into minerva Stage 1a, not just the vendored copy's (grilling
+  # ships from lean-skills@himmel as of HIMMEL-3064, vendored verbatim from
+  # mattpocock/skills — the matcher deliberately does not care which plugin
+  # namespace it arrives under). Pinning the vendor prefix would break on a
+  # rename/fork and re-open the second-front-door this ticket closed. The hook
+  # only injects advisory context, so a false-positive costs one sentence,
+  # never a block.
   *:grilling|grilling)
     inject "minerva (HIMMEL-2039): grilling is minerva Stage 1a, not a separate skill: run the design-tree frontier rounds from himmel-ops:minerva, then CONTINUE that pipeline (brainstorm, spec-critic, plan, plan-critic) instead of stopping at a shared understanding."
     ;;

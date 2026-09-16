@@ -24,9 +24,12 @@ repos:
     hooks:
       # Vendored statusline bar (HIMMEL-331) is third-party code (upstream
       # nilbuild/claude-statusline; the yotamleo fork is archived, HIMMEL-1233)
-      # — don't lint it.
+      # — don't lint it. marketplace/plugins/lean-skills/skills/ (HIMMEL-3064)
+      # is copied VERBATIM from obra/superpowers + mattpocock/skills — same
+      # reasoning: a shellcheck fix here would be a local edit VENDORED.md
+      # explicitly forbids, turning the next re-vendor into a merge.
       - id: shellcheck
-        exclude: '^(scripts/statusline/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(scripts/statusline/|scripts/lanes/bench/(fixtures|runs)/|marketplace/plugins/lean-skills/skills/)'
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2
@@ -439,10 +442,14 @@ repos:
 
       - id: skill-description-cap
         name: skill/command description stays within 120 chars
-        # HIMMEL-2037
+        # HIMMEL-2037. lean-skills/skills/ (HIMMEL-3064) is excluded: its
+        # SKILL.md `description:` frontmatter is copied VERBATIM from
+        # obra/superpowers + mattpocock/skills, and VENDORED.md forbids
+        # editing it locally — trimming it here would be exactly that edit.
         language: system
         entry: node scripts/lanes/skill-cost.mjs --max-desc 120
         files: '^(\.claude/commands/[^/]+\.md|\.claude/skills/[^/]+/SKILL\.md|\.agents/skills/[^/]+/SKILL\.md|marketplace/plugins/[^/]+/commands/[^/]+\.md|marketplace/plugins/[^/]+/skills/[^/]+/SKILL\.md)$'
+        exclude: '^marketplace/plugins/lean-skills/skills/'
         stages: [pre-commit]
 
       - id: command-positional-args
