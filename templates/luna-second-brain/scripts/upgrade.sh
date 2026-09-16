@@ -88,7 +88,8 @@ upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
   --with-github-sync  install the optional github-sync plugin (env twin:
                       LUNA_WITH_GITHUB_SYNC=1). Mutually exclusive with
                       vault-autosync.ps1/.sh; a vault that already has it
-                      keeps it and gets asset updates with no flag needed.
+                      ENABLED keeps it with no flag needed, but only files
+                      missing from the install get written (skip-if-present).
 
 Refreshes template-owned files (scripts, .obsidian config, plugin assets, docs)
 WITHOUT touching user content (journal, notes, clips). Version source = the
@@ -582,19 +583,35 @@ PLUGINS_SETUP_PRIOR_SHA="$(sha_of "$VAULT_DIR/$PLUGINS_SETUP_REL")"
 # vault-autosync.ps1/.sh's own commits (see vault-autosync.ps1's sanity gate,
 # AlarmClass 'plugin-resurrected'). Installed when EITHER the operator asked
 # for it (--with-github-sync/LUNA_WITH_GITHUB_SYNC) OR the vault already has
-# it — flag-alone is not the rule, so an upgrade with NO flag can never drop a
-# vault that already carries it (its data.json holds git credentials).
+# it ENABLED — flag-alone is not the rule, so an upgrade with NO flag can
+# never drop a vault that already carries it (its data.json holds git
+# credentials). Checking manifest.json alone is not enough: Obsidian disables
+# a plugin by dropping its id from community-plugins.json while leaving the
+# installed files in place, and an upgrade must not silently re-enable a
+# plugin the operator deliberately turned off.
 GH_SYNC_REL=".obsidian/plugins/github-sync"
 GH_SYNC_SRC="$TEMPLATE_DIR/optional/plugins/github-sync"
+CP_REL=".obsidian/community-plugins.json"
 gh_sync_present() { [ -f "$VAULT_DIR/$GH_SYNC_REL/manifest.json" ]; }
+gh_sync_enabled() {
+    "$PYTHON" - "$VAULT_DIR/$CP_REL" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except (ValueError, OSError):
+    sys.exit(1)
+sys.exit(0 if isinstance(data, list) and "github-sync" in data else 1)
+PY
+}
 INSTALL_GITHUB_SYNC=0
-if [ "$WITH_GITHUB_SYNC" = 1 ] || gh_sync_present; then INSTALL_GITHUB_SYNC=1; fi
+if [ "$WITH_GITHUB_SYNC" = 1 ] || { gh_sync_present && gh_sync_enabled; }; then
+    INSTALL_GITHUB_SYNC=1
+fi
 
 # The community-plugins.json add-only merge below reads its "what to add" list
 # from a file; when github-sync should be installed, merge from the template's
 # list PLUS "github-sync" (the template itself no longer lists it) instead of
 # editing the template's own file on disk.
-CP_REL=".obsidian/community-plugins.json"
 CP_MERGE_SRC="$TEMPLATE_DIR/$CP_REL"
 if [ "$INSTALL_GITHUB_SYNC" = 1 ] && [ -d "$GH_SYNC_SRC" ]; then
     GH_SYNC_CP_TMP="$(mktemp "${TMPDIR:-/tmp}/luna-upgrade-gh-sync-cp.XXXXXX")"

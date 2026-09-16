@@ -8,6 +8,18 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.34] — 2026-09-16
+
+### Fixed
+- `--with-github-sync` eligibility checked only whether `github-sync` was
+  installed (`manifest.json` present), not whether it was still enabled; a
+  vault where the operator had disabled the plugin (removed it from
+  `community-plugins.json`, files left in place) got it silently re-enabled
+  on the next no-flag upgrade. Eligibility now requires present AND enabled.
+- The `--with-github-sync` help text claimed an already-installed plugin
+  "gets asset updates" on upgrade; corrected to describe the actual
+  skip-if-present write rule.
+
 ## [0.4.33] — 2026-09-16
 
 ### Fixed

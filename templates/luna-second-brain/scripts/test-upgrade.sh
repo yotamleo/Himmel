@@ -1169,5 +1169,17 @@ out=$(run_upgrade --with-github-sync --dry-run 2>&1)
 case "$out" in *"WRITE-NEW    .obsidian/plugins/github-sync/manifest.json"*) pass "T43 dry-run plans github-sync install" ;; *) fail "T43 dry-run plans github-sync install" "got: $out" ;; esac
 if [ ! -e "$V/.obsidian/plugins/github-sync" ]; then pass "T43 dry-run makes zero changes"; else fail "T43 dry-run makes zero changes" "directory created"; fi
 
+# T44: a vault with github-sync INSTALLED but DISABLED (manifest.json present,
+# id absent from community-plugins.json — how Obsidian disables a plugin
+# without uninstalling it) upgraded with NO flag must NOT re-enable it: the
+# eligibility check is "present AND enabled", not manifest.json alone.
+T="$TMP/t44-tmpl"; V="$TMP/t44-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V/.obsidian/plugins/github-sync"; stamp_vault "$V" "0.1.0"
+printf '{"remoteURL":"git@github.com:example/real-vault.git","gitLocation":"/real/path"}\n' > "$V/.obsidian/plugins/github-sync/data.json"
+printf '{"id":"github-sync","name":"GitHub Sync","version":"1.0.7"}\n' > "$V/.obsidian/plugins/github-sync/manifest.json"
+printf '%s\n' '["dataview","calendar","new"]' > "$V/.obsidian/community-plugins.json"
+run_upgrade --yes >/dev/null 2>&1
+merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
+case ",$merged," in *,github-sync,*) fail "T44 disabled + no flag: community-plugins.json stays without github-sync" "got: $merged" ;; *) pass "T44 disabled + no flag: community-plugins.json stays without github-sync" ;; esac
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi
