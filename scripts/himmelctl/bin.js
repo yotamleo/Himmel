@@ -1263,13 +1263,22 @@ async function askLanes(ask, defaultLanes) {
 // closes — codex-sweep, `requires:'lane:codex'`, must be offerable on a
 // vault-less codex-lane machine). A 'requires:vault' row is offered only when
 // vaultMode!=='none'; a 'requires:lane:codex' row only when 'codex' is in the
-// FINAL lanes selection; neither ever asked otherwise — the answer stays
-// genuinely undefined, the same round-8 "not asked ≠ answered off"
-// discipline every other section in this file already follows.
+// FINAL lanes selection; a 'requires:env:<KEY>' row (HIMMEL-3068 — e.g.
+// pull-cadence's GOOGLE_HEALTH_REFRESH_TOKEN) only when <KEY> is non-empty in
+// the primary checkout's .env FILE (readEnvVarFile — never process.env; a
+// connector's persisted config is a distinct question from a launching
+// shell's env, same distinction that helper's own header draws). Reusing
+// readEnvVarFile rather than a new .env parser keeps this the same single
+// source config get/set already read from. None of these is ever asked
+// otherwise — the answer stays genuinely undefined, the same round-8 "not
+// asked ≠ answered off" discipline every other section in this file follows.
 function offeredCadenceRows(lanes, vaultMode) {
   return CADENCE_REGISTRY.filter((r) => {
     if (r.requires === 'lane:codex') return (lanes || []).indexOf('codex') !== -1;
     if (r.requires === 'vault') return vaultMode !== 'none';
+    if (typeof r.requires === 'string' && r.requires.indexOf('env:') === 0) {
+      return readEnvVarFile(r.requires.slice(4)) !== '';
+    }
     return true;
   });
 }

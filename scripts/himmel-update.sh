@@ -795,6 +795,15 @@ update_qmd_fork() {
     fi
     if ! command -v git >/dev/null 2>&1 || ! command -v bun >/dev/null 2>&1; then
         STATUS_qmd_fork="skipped"; DETAIL_qmd_fork="git or bun not on PATH"
+        # HIMMEL-3068: this precondition-gap skip reads identically to a clean
+        # "nothing to do" skip in the status table, but it is not one — qmd
+        # will NEVER update on this machine until the missing tool is
+        # installed ("verify the artifact, not the return code" per
+        # docs/internals/enforcement.md). QMD_FORK_BUN_MISSING flags it for
+        # report_qmd_bun_missing() to surface loudly, in both check and apply
+        # (this precondition runs before the mode branch, so it is set either
+        # way).
+        QMD_FORK_BUN_MISSING=1
         return 0
     fi
     # shellcheck source=lib/qmd-bin.sh
@@ -901,6 +910,24 @@ report_qmd_daemon_restart() {
     echo ""
     echo "    (POSIX: stop the 'qmd mcp --http --daemon' process, then re-run"
     echo "     bash marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh)"
+}
+
+# Advisory (HIMMEL-3068): the ONE update_qmd_fork skip reason that means qmd is
+# PERMANENTLY disabled on this machine until fixed, not a one-off/transient
+# miss. STATUS_qmd_fork reads "skipped" in the status table either way — the
+# same word a harmless "no update available" skip uses — so without this,
+# a missing-bun machine reads as a clean run forever. "Verify the artifact,
+# not the return code" (docs/internals/enforcement.md): a precondition that
+# silently disables an updater must never read as success.
+report_qmd_bun_missing() {
+    [ "${QMD_FORK_BUN_MISSING:-0}" = "1" ] || return 0
+    echo ""
+    echo "==> qmd fork update DISABLED (HIMMEL-3068)"
+    echo "    WARNING: git or bun is not on PATH — qmd will NEVER update on this machine"
+    echo "    until that is fixed. The status table below reports this as 'skipped',"
+    echo "    which looks like routine no-op — it is not."
+    echo "    Install bun: curl -fsSL https://bun.sh/install | bash   (see docs/setup/new-machine.md)"
+    return 0
 }
 
 # 5. hermes junior-tier update. Reuses update_hermes() (defined above) and
@@ -1319,6 +1346,114 @@ sync_marketplaces() {
     return 0
 }
 
+# ─── node/npm/bun toolchain (HIMMEL-3068) ────────────────────────────────────
+# Installers pin Node from .nvmrc ONCE, at install time (ubuntu.sh/win11.ps1/
+# macos.sh), and this script consumes node/npm/bun throughout (jira_cli,
+# qmd_fork, the pre-push npm-audit gate...) but until now never checked
+# whether the pin had since moved. Best-effort advisory, matching
+# sync_graphify/sync_cli_proxy's shape (never gates the chain).
+#
+# node is deliberately REPORT-ONLY, even on a version-manager (nvm/fnm)
+# install this function could technically re-alias programmatically: whatever
+# node is active right now is very likely serving a running lane (this very
+# script, a live Claude Code session, its hooks) the instant this runs, and
+# silently moving "default" out from under it is exactly the surprise this
+# step must never cause ("Advisory-first" per the ticket). It prints the
+# exact remediation command and stops there.
+#
+# npm and bun DO self-upgrade in apply mode — both ship a safe, in-place,
+# built-in updater (`npm install -g npm@latest`, `bun upgrade`) that replaces
+# only themselves, never the node/bun runtime a live process is currently
+# executing out of, so neither carries the node hazard above.
+#
+# A node version that is behind the pin is also the trigger for the
+# guardrail-mode block hazard report_guardrail_block documents (a
+# version-manager node upgrade can leave ~/.claude/settings.json's baked node
+# path stale) — this function is called immediately BEFORE report_guardrail_block
+# in both the --check and apply advisory blocks below specifically so that
+# check re-runs and surfaces its remedy in the SAME pass, not several
+# sections later where it is easy to miss.
+report_toolchain() {
+    local mode="$1"   # check | apply — npm/bun self-upgrade only in apply; node
+                       # is report-only in both.
+    echo ""
+    echo "==> node/npm/bun toolchain (HIMMEL-3068)"
+
+    local nvmrc="$ROOT/.nvmrc"
+    if [ ! -f "$nvmrc" ]; then
+        echo "    skip: .nvmrc not found."
+        return 0
+    fi
+    local pin pin_major
+    pin="$(tr -d '[:space:]' < "$nvmrc")"
+    pin_major="${pin#v}"; pin_major="${pin_major%%.*}"
+
+    if command -v node >/dev/null 2>&1; then
+        local node_ver node_major
+        node_ver="$(node --version 2>/dev/null)"
+        node_major="${node_ver#v}"; node_major="${node_major%%.*}"
+        if [ -n "$pin_major" ] && [ "$node_major" != "$pin_major" ]; then
+            echo "    node $node_ver is behind the .nvmrc pin ($pin) — NOT moving it automatically."
+            if [ -f "$HOME/.nvm/nvm.sh" ]; then
+                echo "    fix (nvm): . \"\$HOME/.nvm/nvm.sh\" && nvm install $pin && nvm alias default $pin"
+            elif command -v fnm >/dev/null 2>&1; then
+                echo "    fix (fnm): fnm install $pin && fnm default $pin"
+            else
+                echo "    fix: install node $pin via your version manager (or https://nodejs.org), then re-run."
+            fi
+            echo "    after moving node by hand, re-check the guardrail-mode block just below — a node move is"
+            echo "    exactly what can leave its baked path in ~/.claude/settings.json stale."
+        else
+            echo "    node $node_ver matches the .nvmrc pin ($pin)."
+        fi
+    else
+        echo "    node: not on PATH."
+    fi
+
+    if command -v npm >/dev/null 2>&1; then
+        local npm_before npm_after
+        npm_before="$(npm --version 2>/dev/null)"
+        if [ "$mode" = "apply" ]; then
+            if npm install -g npm@latest >/dev/null 2>&1; then
+                npm_after="$(npm --version 2>/dev/null)"
+                if [ "$npm_after" != "$npm_before" ]; then
+                    echo "    npm $npm_before -> $npm_after (self-upgraded)."
+                else
+                    echo "    npm $npm_before already current."
+                fi
+            else
+                echo "    npm $npm_before — self-upgrade failed (non-fatal); run: npm install -g npm@latest" >&2
+            fi
+        else
+            echo "    npm $npm_before (check mode — self-upgrade deferred to apply)."
+        fi
+    else
+        echo "    npm: not on PATH."
+    fi
+
+    if command -v bun >/dev/null 2>&1; then
+        local bun_before bun_after
+        bun_before="$(bun --version 2>/dev/null)"
+        if [ "$mode" = "apply" ]; then
+            if bun upgrade >/dev/null 2>&1; then
+                bun_after="$(bun --version 2>/dev/null)"
+                if [ "$bun_after" != "$bun_before" ]; then
+                    echo "    bun $bun_before -> $bun_after (self-upgraded)."
+                else
+                    echo "    bun $bun_before already current."
+                fi
+            else
+                echo "    bun $bun_before — self-upgrade failed (non-fatal); run: bun upgrade" >&2
+            fi
+        else
+            echo "    bun $bun_before (check mode — self-upgrade deferred to apply)."
+        fi
+    else
+        echo "    bun: not on PATH — the qmd fork update and the jira CLI's bun fallback are both disabled (see above)."
+    fi
+    return 0
+}
+
 # ─── release-channel seam (HIMMEL-2705) ──────────────────────────────────────
 # `channel: stable|pre` lets a station follow tagged releases (`vX.Y.Z`,
 # optionally `vX.Y.Z-pre.N`) instead of the current branch's tip. Unset (the
@@ -1673,7 +1808,7 @@ fi
 if [ "${1:-}" = "--only" ]; then
     only_item="${2:-}"
     if [ -z "$only_item" ]; then
-        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces" >&2
+        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain" >&2
         exit 2
     fi
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
@@ -1704,11 +1839,13 @@ if [ "${1:-}" = "--only" ]; then
         graphify)      sync_graphify ;;
         cli_proxy)     sync_cli_proxy || only_rc=1 ;;
         marketplaces)  sync_marketplaces ;;
+        toolchain)     report_toolchain apply ;;
         *)
-            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces" >&2
+            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain" >&2
             exit 2 ;;
     esac
     report_qmd_daemon_restart
+    report_qmd_bun_missing
     print_status_table
     exit "$only_rc"
 fi
@@ -1781,6 +1918,8 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     sync_cli_proxy check || true
     sync_marketplaces check || true
     report_cadence_stale
+    report_qmd_bun_missing
+    report_toolchain check
     report_guardrail_block
     print_status_table
     exit 0
@@ -1952,6 +2091,8 @@ report_plugin_gap
 reconcile_plugins apply
 offer_retired_plugin_removal apply
 report_cadence_stale
+report_qmd_bun_missing
+report_toolchain apply
 report_guardrail_block
 report_dependency_readiness
 backfill_user_claude_md

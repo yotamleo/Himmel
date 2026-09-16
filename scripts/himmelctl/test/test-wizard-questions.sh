@@ -141,8 +141,14 @@ rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case1: starter-profile run should succeed (got rc=$rc)"
 qs=$(count_questions "$out")
-[ "$qs" -eq 7 ] \
-  || fail "case1: starter profile + vault=none should ask 7 main questions (got $qs): $out"
+# HIMMEL-3068: vault=none + no codex lane no longer means zero cadence rows
+# qualify — drift-fix/upstream-watch/repo-sync are requires:'none' and always
+# offered, so the cadences question is now asked (+1), and closed stdin
+# declines all three, which triggers the disarm-consent follow-up (+1) —
+# 7 main questions + those 2 = 9. See test-wizard-cadence-per-unit.sh case e
+# for the row-level coverage of this exact scenario.
+[ "$qs" -eq 9 ] \
+  || fail "case1: starter profile + vault=none should ask 7 main questions + cadences + disarm-consent = 9 (got $qs): $out"
 grepq "$out" '"schemaVersion": 2' \
   || fail "case1: cache/summary should carry schemaVersion 2 (got: $out)"
 grepq "$out" '"profile": "starter"' \
@@ -206,8 +212,8 @@ grepq "$outOp" -F '? handover [inline|external] (default: external)' \
   || fail "case2(operator): should seed handover default=external (got: $outOp)"
 grepq "$outOp" -F '(default: yes)' \
   || fail "case2(operator): should seed alwaysOn default=yes (got: $outOp)"
-grepq "$outOp" -F '? cadences — recurring scheduled jobs to arm now [pipeline,qmd,graphmap|none] (default: pipeline,qmd,graphmap)' \
-  || fail "case2(operator): should seed cadences default=pipeline,qmd,graphmap (got: $outOp)"
+grepq "$outOp" -F '? cadences — recurring scheduled jobs to arm now [pipeline,qmd,graphmap,drift-fix,upstream-watch,repo-sync|none] (default: pipeline,qmd,graphmap)' \
+  || fail "case2(operator): should seed cadences default=pipeline,qmd,graphmap, offering the HIMMEL-3068 requires:'none' rows too (got: $outOp)"
 grepq "$outOp" -F '? configure the telegram bridge (voice/text ingestion)? [off|on] (default: on)' \
   || fail "case2(operator): should seed bridge default=on (got: $outOp)"
 # HIMMEL-2346: the operator preset seeds whisperModel=ggml-large-v3-turbo.bin
@@ -638,8 +644,13 @@ rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "case7: --contribute run should succeed (got rc=$rc): $out"
 qs=$(count_questions "$out")
-[ "$qs" -eq 7 ] \
-  || fail "case7: --contribute must not change the question count (got $qs): $out"
+# HIMMEL-3068: same +2 (cadences + disarm-consent) as case1 above — this
+# scenario is vault=none + no codex lane too, so the baseline case7 must
+# compare against is 9, not the pre-HIMMEL-3068 7 (the point of this
+# assertion — "--contribute does not change the count" — still holds; only
+# the number itself moved, for an unrelated reason).
+[ "$qs" -eq 9 ] \
+  || fail "case7: --contribute must not change the question count (baseline 9 post-HIMMEL-3068, got $qs): $out"
 grepq "$out" '"devOverlay": true' \
   || fail "case7: --contribute should record devOverlay=true (got: $out)"
 grepq "$out" -iE '\? .*contribut' \
