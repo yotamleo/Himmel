@@ -58,7 +58,7 @@ rm -rf "$t"
 # `uv`/`bun` binaries exist for the post-install `--version` assertions the
 # real script runs — this is what a macOS-shaped dry run looks like from this
 # Linux box; a REAL macOS run was not performed (no Mac available).
-t2="$(mktemp -d)"; bin2="$t2/bin"; brewlog="$t2/brew.log"; mkdir -p "$bin2"
+t2="$(mktemp -d "${TMPDIR:-/tmp}/test-macos-brew.XXXXXX")"; bin2="$t2/bin"; brewlog="$t2/brew.log"; mkdir -p "$bin2"
 printf '#!/bin/sh\nexit 0\n' > "$bin2/crontab"; chmod +x "$bin2/crontab"
 for x in jq git bash sh sed grep tr head sort uname cat mkdir dirname chmod mv rm; do
     p="$(command -v "$x" 2>/dev/null)" && ln -sf "$p" "$bin2/$x"
