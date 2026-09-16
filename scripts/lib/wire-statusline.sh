@@ -203,11 +203,18 @@ wire_statusline() {
   printf '%s' "$base" | jq --arg cmd "$cmd" \
     '.statusLine = { type: "command", command: $cmd }
      | .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"' \
-    > "$settings.statusline.tmp" || { rm -f "$settings.statusline.tmp"; return 1; }
-  mv "$settings.statusline.tmp" "$settings" || return 1
+    > "$settings.statusline.tmp" \
+    || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
+  mv "$settings.statusline.tmp" "$settings" \
+    || { rm -f "$hud_dir/.config.json.tmp"; return 1; }
 
-  # (5) Publish the staged hud config.
-  if [ -f "$hud_dir/.config.json.tmp" ]; then
+  # (5) Publish the config THIS call staged. The test is $hud_cfg, not the temp
+  # file's existence: a run that staged the config and then failed on the
+  # settings write above used to leave the temp behind, and a later
+  # source-absent call (a synthetic himmel path, e.g. tests) would publish that
+  # stale file instead of staying the pure statusLine/env op it promises to be.
+  # Both failure paths above now clear the staging file as well.
+  if [ -n "$hud_cfg" ]; then
     mv "$hud_dir/.config.json.tmp" "$hud_dir/config.json" || return 1
   fi
   echo "  wired statusLine → $settings"

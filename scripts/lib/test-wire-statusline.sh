@@ -326,4 +326,20 @@ seed_hud_cache "$hud24"
 [ ! -e "$hud24/transcript-cache" ] || fail "24: the purge itself did not run under dotglob"
 echo "ok 24 the purge skips the staged config even with dotglob set"
 
+# 25. CR round 5: publish the config THIS call staged, never one a previous
+# call left behind. A run that staged the config and then failed on the settings
+# write used to leave .config.json.tmp in place, and the next source-absent call
+# (a synthetic himmel path, which promises to be a pure statusLine/env op)
+# published that stale file as the machine's hud config.
+cfg25="$TMP/cfg25"; hud25="$cfg25/plugins/claude-hud"
+proj25="$TMP/proj25"; mkdir -p "$proj25/.claude"
+mkdir -p "$hud25"
+printf '{"display":{"showPromptCache":"STALE-STAGED"}}\n' > "$hud25/.config.json.tmp"
+CLAUDE_CONFIG_DIR="$cfg25" bash "$HELPER" "$proj25/.claude/settings.json" "/synthetic/himmel" >/dev/null
+[ ! -e "$hud25/config.json" ] \
+  || fail "25: a source-absent wire published a temp file a previous call left behind"
+[ "$(jq -r .statusLine.type "$proj25/.claude/settings.json")" = "command" ] \
+  || fail "25: the source-absent wire should still do its statusLine/env half"
+echo "ok 25 a source-absent wire never publishes a leftover staged config"
+
 echo "ALL PASS"
