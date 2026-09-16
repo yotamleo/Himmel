@@ -1,13 +1,16 @@
 # gitleaks config for the luna second-brain vault.
 # Keeps the full built-in ruleset and only adds a path allowlist for the
 # vendored third-party Obsidian plugin bundles shipped under .obsidian/plugins/
-# (and, since HIMMEL-3066, the opt-in github-sync plugin vendored under
-# optional/plugins/ instead). Those bundles are minified upstream code;
-# gitleaks' generic-api-key rule flags high-entropy minified identifiers (e.g.
-# node-forge's pki.setRsaPrivateKey in obsidian-local-rest-api) as
-# false-positive "secrets". The pre-commit `exclude:` does NOT reach gitleaks
-# (the hook scans the staged diff directly), so the allowlist has to live
-# here. Real credentials (.env, plugins' data.json) are gitignored.
+# (and, since HIMMEL-3066, the opt-in github-sync plugin's generated assets
+# under optional/plugins/github-sync/ instead). Those bundles are minified
+# upstream code; gitleaks' generic-api-key rule flags high-entropy minified
+# identifiers (e.g. node-forge's pki.setRsaPrivateKey in
+# obsidian-local-rest-api) as false-positive "secrets". The pre-commit
+# `exclude:` does NOT reach gitleaks (the hook scans the staged diff
+# directly), so the allowlist has to live here. The github-sync allowlist
+# entry is scoped to ONLY its generated main.js/styles.css — its data.json is
+# tracked (not gitignored, unlike obsidian-local-rest-api's) and must stay
+# scanned.
 [extend]
 useDefault = true
 
@@ -15,7 +18,7 @@ useDefault = true
 description = "Vendored plugin bundles + known-benign local loopback proxy token"
 paths = [
   '''\.obsidian/plugins/''',
-  '''optional/plugins/''',
+  '''optional/plugins/github-sync/(main\.js|styles\.css)$''',
 ]
 # The end-session-wiki hook captures session bash verbatim, so probes against
 # the local CLIProxyAPI gateway (127.0.0.1:8317) land in sessions/*.md as
