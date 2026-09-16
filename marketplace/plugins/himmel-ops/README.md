@@ -77,18 +77,18 @@ red-teamed before it advances:
 1. **Grill → brainstorm → spec** — Stage 1a interrogates the idea as a design
    tree, asking the whole settled frontier per round (each question with a
    recommended answer) until the frontier is empty; Stage 1b then drives
-   `superpowers:brainstorming`, halted before its auto-handoff to writing-plans.
+   `lean-skills:brainstorming`, halted before its auto-handoff to writing-plans.
    In `autonomous` mode the frontier is still written out, self-answered, and
    carried into the spec as an explicit ASSUMPTIONS section for the spec-critic.
 2. **Spec critic** — a fresh adversarial subagent red-teams the spec (hidden
    assumptions, scope creep, feasibility, contradictions, missing success
    criteria); loop fix→re-critic, cap 2 rounds.
-3. **Plan** — drives `superpowers:writing-plans` on the approved spec.
+3. **Plan** — drives `lean-skills:writing-plans` on the approved spec.
 4. **Plan critic** — adversarial subagent red-teams the plan (unordered deps,
    untestable steps, missing verification, over/under-decomposition, assumptions
    not grounded in the spec); cap 2 rounds.
 5. **Terminal** — a critic-hardened plan; offers hand-off to
-   `superpowers:subagent-driven-development` / `executing-plans`. minerva does
+   `lean-skills:subagent-driven-development` / `executing-plans`. minerva does
    not implement.
 
 **Gates are mode-driven.** `scripts/autonomy-mode.sh` reports `autonomous` when
@@ -103,7 +103,7 @@ system-wide and works in any repo, with no `superpowers` fork.
 
 **Skill-tool hook (HIMMEL-429).** A `PreToolUse` hook (`hooks/hooks.json`,
 `matcher: "Skill"`) closes the no-`/minerva` bypass: when
-`superpowers:brainstorming` or `superpowers:writing-plans` is invoked by ANY
+`lean-skills:brainstorming` or `lean-skills:writing-plans` is invoked by ANY
 path without going through `/minerva`, the hook injects a scoped directive so the
 critic loop still fires (spec-critic after brainstorming, plan-critic after
 writing-plans). It also routes `lean-skills:grilling` into minerva Stage 1a
