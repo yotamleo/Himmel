@@ -203,7 +203,11 @@ function Set-HimmelStatusLine {
             $normalized = $json | jq --indent 2 .
             if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
         }
-        Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
+        # -ErrorAction Stop for the same reason the purge and the publishes carry
+        # it: under the 'Continue' preference `pwsh -File` runs with, a failed
+        # staging write is NON-terminating, and the run would go on to purge the
+        # caches and publish the config before the settings rename finally threw.
+        Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8 -ErrorAction Stop
 
         # (4) HIMMEL-3065: the wiring CHANGED when either half differs from what
         # was already on this machine -- a different hud config, or an EXISTING
