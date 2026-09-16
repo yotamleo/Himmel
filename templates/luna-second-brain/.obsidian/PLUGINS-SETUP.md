@@ -23,8 +23,9 @@ tree — `vault-autosync.ps1`'s sanity gate refuses to run at all
   assets into `.obsidian/plugins/github-sync/` and adds it to
   `community-plugins.json`; enable it in Obsidian's Community Plugins list
   afterward and configure its remote/credentials there. A vault that already
-  has the plugin installed keeps it (and gets asset updates) on every
-  upgrade with no flag needed — the upgrader never uninstalls it.
+  has the plugin installed keeps it on every upgrade with no flag needed —
+  the upgrader never uninstalls it, and only adds files missing from the
+  install (`data.json`/`main.js` are never overwritten once present).
 
 Four further plugins the source vault also used are **not bundled** because
 their licenses are incompatible with this repository's MIT license (three are
