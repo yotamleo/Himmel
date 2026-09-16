@@ -6,6 +6,7 @@
 // but one or more paths were skipped (EACCES/EPERM/ELOOP) - the totals are
 // understated; see `skipped` in --json or the table's `skipped` column.
 import {
+  existsSync,
   readdirSync,
   readFileSync,
   statSync,
@@ -13,6 +14,7 @@ import {
 import { homedir } from 'node:os';
 import {
   basename,
+  dirname,
   extname,
   join,
   resolve,
@@ -248,13 +250,34 @@ export function scanSkillCosts(options = {}) {
   };
 }
 
+// HIMMEL-3093 — a VENDORED.md-marked directory is upstream prose this repo
+// mirrors verbatim, not himmel's own surface; walked up from the file's own
+// directory (no hardcoded plugin list) so any vendored tree is covered.
+function vendoredRoot(filePath) {
+  let dir = resolve(dirname(filePath));
+  for (;;) {
+    if (existsSync(join(dir, 'VENDORED.md'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 // HIMMEL-2037 — the listing pays for every description byte on every session
 // start, so a cap needs a gate. Takes explicit paths (pre-commit passes staged
 // filenames; CI passes the tracked globs) rather than re-scanning a whole tree.
 export function lintDescriptions(files, maxDesc) {
   return files
     .map((file) => ({ file, length: readSkillFrontmatter(readFileSync(file, 'utf8')).description.length }))
-    .filter((entry) => entry.length > maxDesc);
+    .filter((entry) => {
+      if (entry.length <= maxDesc) return false;
+      const root = vendoredRoot(entry.file);
+      if (root) {
+        process.stderr.write(`skill-cost: skipping ${entry.file}: vendored per ${join(root, 'VENDORED.md')}\n`);
+        return false;
+      }
+      return true;
+    });
 }
 
 // HIMMEL-2051 — Claude Code substitutes $ARGUMENTS/$<digit> for the caller's

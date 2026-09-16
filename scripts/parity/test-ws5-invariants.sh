@@ -15,7 +15,10 @@
 #                       .claude/settings.json or any */hooks.json, and no
 #                       unbounded-loop / background-service / JS-timer marker
 #                       in the SHIPPED source the diff adds (test fixtures are
-#                       excluded: a harness loop is not runtime surface).
+#                       excluded: a harness loop is not runtime surface; a
+#                       VENDORED.md tree is excluded too, HIMMEL-3093: it is
+#                       upstream content this repo mirrors, not himmel's own
+#                       surface -- see the corpus loop below).
 #   T14 locks        -- no per-token-lane wiring in shipped source; the
 #                       gemini/copilot/cursor index rows stay deferred.
 #                       (The former T14(a) claude-codex-launcher prohibition
@@ -173,7 +176,47 @@ trap 'rm -f "$SHIPPED"' EXIT
 # content-identical rename contributes zero +/- lines); the awk filter below
 # tracks the current file from each hunk's "+++ b/<path>" header instead, so
 # basename exclusion still applies per file.
-git diff "$BASE...HEAD" | awk '
+#
+# Vendored trees (HIMMEL-3093) get the same treatment, folded into the SAME
+# full-tree pass rather than a second per-file loop (which would reintroduce
+# the HIMMEL-3090 rename-blindness this file just fixed): a directory
+# carrying its own VENDORED.md declares its content copied verbatim from an
+# upstream project himmel did not author (see marketplace/plugins/*/VENDORED.md)
+# -- T13 audits surface HIMMEL SHIPPED BY WRITING IT, not prose or scripts an
+# upstream project wrote that this repo mirrors byte-for-byte. The vendored
+# file SET is computed once (walking UP from each changed file's own
+# directory, not a hardcoded path list, so any VENDORED.md tree is covered at
+# any nesting depth) and fed into the awk filter as a lookup table; the diff
+# itself still runs once, full-tree. Never silent: every skip is named on
+# stderr.
+VENDORED_LIST="$(mktemp)"
+trap 'rm -f "$SHIPPED" "$VENDORED_LIST"' EXIT
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    base="${f##*/}"
+    case "$base" in test-* | *.tsv) continue ;;
+    esac
+    d="$REPO/$(dirname "$f")"
+    vendored_root=""
+    while :; do
+        if [ -f "$d/VENDORED.md" ]; then
+            vendored_root="$d/VENDORED.md"
+            break
+        fi
+        [ "$d" = "$REPO" ] && break
+        d="$(dirname "$d")"
+    done
+    if [ -n "$vendored_root" ]; then
+        echo "test-ws5-invariants: skipping $f: vendored per $vendored_root" >&2
+        echo "$f" >> "$VENDORED_LIST"
+    fi
+done < <(git diff "$BASE...HEAD" --name-only)
+
+git diff "$BASE...HEAD" | awk -v vendored_file="$VENDORED_LIST" '
+    BEGIN {
+        while ((getline line < vendored_file) > 0) vendored[line] = 1
+        close(vendored_file)
+    }
     /^\+\+\+ / {
         f = $0
         sub(/^\+\+\+ [ab]\//, "", f)
@@ -182,7 +225,7 @@ git diff "$BASE...HEAD" | awk '
         # data ledgers (HIMMEL-2894 suite-durations.tsv) list suite basenames,
         # which legitimately contain the marker words; T13 is about runtime
         # surface, and a TSV has none.
-        skip = (base ~ /^test-/) || (base ~ /\.tsv$/)
+        skip = (base ~ /^test-/) || (base ~ /\.tsv$/) || (f in vendored)
         next
     }
     skip { next }
