@@ -148,6 +148,35 @@ Wire $s11 'C:\new\path\himmel' | Out-Null
 Check (-not (Test-Path (Join-Path $hud11 'transcript-cache'))) "11 a moved clone drops the hud cache state"
 $env:CLAUDE_CONFIG_DIR = $cfgDir
 
+# 12 CR round 1 [codex-1]: `"statusLine": null` is valid JSON — the property
+# EXISTS while its value is $null, so reading the previous command must not
+# dereference it. The wire must still succeed and replace the null.
+$proj12 = Join-Path $tmp 'proj12'
+New-Item -ItemType Directory -Force (Join-Path $proj12 '.claude') | Out-Null
+$s12 = Join-Path $proj12 '.claude/settings.json'
+'{"statusLine":null,"theme":"dark"}' | Set-Content $s12
+$rc12 = Wire $s12 'C:\fake\himmel'
+Check ($rc12 -eq 0) "12a a null statusLine does not break the wire"
+$c12 = Get-Content $s12 -Raw | ConvertFrom-Json
+Check ($c12.statusLine.type -eq 'command') "12b null statusLine replaced"
+Check ($c12.theme -eq 'dark') "12c other keys preserved"
+
+# 13 CR round 1 [codex-2]: the hud config is per-USER but the settings file may
+# be a PROJECT one, so wiring a machine's SECOND project on the same install is
+# not a migration and must not purge the other projects' live snapshots.
+$cfg13 = Join-Path $tmp 'cfg13'
+$hud13 = Join-Path $cfg13 'plugins/claude-hud'
+$proj13a = Join-Path $tmp 'proj13a'
+$proj13b = Join-Path $tmp 'proj13b'
+New-Item -ItemType Directory -Force (Join-Path $proj13a '.claude') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $proj13b '.claude') | Out-Null
+$env:CLAUDE_CONFIG_DIR = $cfg13
+Wire (Join-Path $proj13a '.claude/settings.json') $repoRoot | Out-Null
+Seed-HudCache $hud13
+Wire (Join-Path $proj13b '.claude/settings.json') $repoRoot | Out-Null
+Check (Test-Path (Join-Path $hud13 'transcript-cache/deadbeef.json')) "13 a second project on the same install keeps the cache state"
+$env:CLAUDE_CONFIG_DIR = $cfgDir
+
 $env:CLAUDE_CONFIG_DIR = $prevClaudeConfigDir
 Get-ChildItem $tmp -Recurse | Remove-Item -Force -Recurse
 Remove-Item $tmp -Force

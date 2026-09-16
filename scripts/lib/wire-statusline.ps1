@@ -117,7 +117,10 @@ function Set-HimmelStatusLine {
             } else {
                 try {
                     $cfg = $raw | ConvertFrom-Json
-                    if ($cfg.PSObject.Properties['statusLine'] -and $cfg.statusLine.PSObject.Properties['command']) {
+                    # `"statusLine": null` is valid JSON and makes the
+                    # property EXIST while its value is $null, so the property
+                    # test alone is not enough to dereference it (codex-1).
+                    if ($null -ne $cfg.statusLine -and $cfg.statusLine.PSObject.Properties['command']) {
                         $prevCmd = [string]$cfg.statusLine.command
                     }
                 } catch {
@@ -196,8 +199,13 @@ function Set-HimmelStatusLine {
         # the write above; a re-run that changes neither purges nothing, so a
         # live session keeps its snapshots. Trailing newlines are normalized out
         # of the config comparison, matching the bash twin's $(cat ...).
+        # The command half requires a NON-EMPTY $prevCmd — see the bash twin's
+        # header for why (codex-2: $SettingsPath may be a PROJECT file while
+        # the caches are per-USER, so a machine's second project would
+        # otherwise purge every other project's live snapshots).
         $cfgChanged = $hudCfg -and ($prevHudCfg.TrimEnd("`n") -ne $hudCfg.TrimEnd("`n"))
-        if (($prevCmd -ne $cmd) -or $cfgChanged) {
+        $cmdChanged = $prevCmd -and ($prevCmd -ne $cmd)
+        if ($cmdChanged -or $cfgChanged) {
             Remove-HimmelHudCacheState -HudDir $hudDir
         }
         Write-Host "  wired statusLine → $SettingsPath"

@@ -169,14 +169,23 @@ wire_statusline() {
   fi
 
   # (4) HIMMEL-3065: the wiring CHANGED when either half differs from what was
-  # already on this machine — a different renderer command (first wire, a moved
-  # or renamed clone, an older himmel instance) or a different hud config. Both
-  # are compared against values captured BEFORE the write above. A re-run that
-  # changes neither purges nothing, so a live session keeps its snapshots.
-  # $hud_cfg is "" when the source config is absent (synthetic-path callers,
-  # e.g. tests), which makes that half compare equal and leaves the command
-  # half deciding on its own.
-  if [ "$prev_cmd" != "$cmd" ] || { [ -n "$hud_cfg" ] && [ "$prev_hud_cfg" != "$hud_cfg" ]; }; then
+  # already on this machine — a different hud config, or an EXISTING statusLine
+  # command that pointed somewhere else (a moved or renamed clone, an older
+  # himmel instance). Both are compared against values captured BEFORE the
+  # write above. A re-run that changes neither purges nothing, so a live
+  # session keeps its snapshots.
+  #
+  # The command half requires a NON-EMPTY previous command, because the two
+  # halves have different scopes: the config is per-USER, but $settings may be
+  # a PROJECT file. Wiring a machine's second project would otherwise read an
+  # empty prev_cmd, call it a change, and purge the caches of every OTHER
+  # project's live session on an install that did not move at all (codex-2).
+  # No migration is lost to that: the dropped config embeds the clone path, so
+  # a moved clone always differs in the config half — which also covers the
+  # genuine first wire, where the previous config is absent and therefore
+  # differs. $hud_cfg is "" only when the source config is absent
+  # (synthetic-path callers, e.g. tests); the command half then decides alone.
+  if { [ -n "$prev_cmd" ] && [ "$prev_cmd" != "$cmd" ]; } || { [ -n "$hud_cfg" ] && [ "$prev_hud_cfg" != "$hud_cfg" ]; }; then
     _wire_statusline_purge_hud_cache "$hud_dir" || return 1
   fi
   echo "  wired statusLine → $settings"

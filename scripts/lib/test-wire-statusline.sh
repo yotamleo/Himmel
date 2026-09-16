@@ -230,4 +230,33 @@ CLAUDE_CONFIG_DIR="$cfg20" bash "$HELPER" "$s20" "$REPO_ROOT" >/dev/null
 [ ! -e "$hud20/transcript-cache" ] || fail "20: purge did not run for a first-time wire"
 echo "ok 20 purge stays inside the hud plugin dir"
 
+# 21. CR round 1 [codex-2]: the two halves have different SCOPES — the hud
+# config is per-USER, but the settings file may be a PROJECT one. Wiring a
+# machine's SECOND project (same clone, same hud config, a project settings
+# file with no statusLine of its own) is not a migration, and must not purge
+# the caches every other project's live session is using.
+cfg21="$TMP/cfg21"; hud21="$cfg21/plugins/claude-hud"
+proj21a="$TMP/proj21a"; mkdir -p "$proj21a/.claude"
+proj21b="$TMP/proj21b"; mkdir -p "$proj21b/.claude"
+CLAUDE_CONFIG_DIR="$cfg21" bash "$HELPER" "$proj21a/.claude/settings.json" "$REPO_ROOT" >/dev/null
+seed_hud_cache "$hud21"
+CLAUDE_CONFIG_DIR="$cfg21" bash "$HELPER" "$proj21b/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ -f "$hud21/transcript-cache/deadbeef.json" ] \
+  || fail "21: wiring a second PROJECT on the same install purged the per-user cache state"
+[ -f "$hud21/daily-cost.json" ] || fail "21: second-project wire purged the daily-cost ledger"
+echo "ok 21 a second project on the same install preserves the hud cache state"
+
+# 22. ...and the migration it must still catch on that same path: a project
+# wired against an OLD clone. The dropped config embeds the clone path, so the
+# config half differs even though this project's settings file is new.
+cfg22="$TMP/cfg22"; hud22="$cfg22/plugins/claude-hud"
+proj22="$TMP/proj22"; mkdir -p "$proj22/.claude"
+mkdir -p "$hud22"
+printf '{"display":{"showPromptCache":true},"customLineCommand":"/old/clone/x.sh"}\n' > "$hud22/config.json"
+seed_hud_cache "$hud22"
+CLAUDE_CONFIG_DIR="$cfg22" bash "$HELPER" "$proj22/.claude/settings.json" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud22/transcript-cache" ] \
+  || fail "22: a config from an OLD clone did not trigger the purge on a fresh project settings file"
+echo "ok 22 an old clone's hud config still purges on a fresh project wire"
+
 echo "ALL PASS"
