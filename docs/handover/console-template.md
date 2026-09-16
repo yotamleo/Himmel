@@ -37,6 +37,14 @@ Run these, in order, and write the result as the first bullet under
 5. **Leg processes:** `pgrep -af 'claude .*-n {{PREFIX}}-'` — cross-check
    against step 1. A process with no `ListAgents` row is a window whose session
    already exited.
+   Then `bash "{{REPO}}/scripts/himmel-doctor.sh" | grep C29` — it reads each
+   claude process's own `/proc/<pid>/environ` and WARNs on any session that
+   inherited `CLAUDE_CODE_CHILD_SESSION=1`. **If it names YOU, your own
+   transcript is not being saved**: `scripts/context-fill.sh --percent` will
+   return `UNKNOWN`, so the 45 % handover trigger below is unmeasurable and you
+   must hand over on a proxy instead, treating this document as the only
+   durable record of your state. Say so in the first bullet rather than
+   discovering it mid-shift (HIMMEL-3081).
 6. **Host load:** `uptime`, and whatever else competes for RAM on this station.
    The harness kills background tasks under memory pressure, so a vanished
    watcher is not evidence of anything — poll CI by hand when that happens.

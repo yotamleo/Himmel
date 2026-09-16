@@ -131,6 +131,25 @@ check "5c CONSOLE_CONTEXT=1m launch line carries --autocompact auto" \
 check "5c CONSOLE_CONTEXT=1m launch line carries no --autocompact 200000" \
     "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact 200000')" "0"
 
+# --- 5d (HIMMEL-3081): the printed launch line must clear the inherited
+# child-session marker. An operator pastes this line into a terminal that was
+# itself spawned from a claude session, so CLAUDE_CODE_CHILD_SESSION=1,
+# CLAUDE_PID and CLAUDE_CODE_SESSION_ID are live in that shell's environment.
+# Without an `env -u` prefix the new console adopts them, writes no transcript,
+# and cannot read its own context fill -- which is the handover trigger its
+# operating contract is built on. headed-arm.sh already does this for the leg
+# path (HIMMEL-2545); the printed line was missed.
+for v in CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID; do
+    check "5d launch line unsets $v" \
+        "$(printf '%s\n' "$out5b" | grep -c -- "-u $v")" "1"
+done
+check "5d launch line forces session persistence" \
+    "$(printf '%s\n' "$out5b" | grep -c -- 'CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1')" "1"
+# The env prefix must precede the binary, not trail it -- `claude ... env -u X`
+# would pass the flags to claude as arguments instead of scrubbing anything.
+check "5d env prefix precedes the claude binary" \
+    "$(printf '%s\n' "$out5b" | grep -c -E '^(would-)?launch: env( -u [A-Z_]+)+ CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ')" "1"
+
 # --- 6: next writes the successor stub + predecessor HANDOFF ----------
 doc6A="$root/tester/nextrepo/DEMO-nextleg-${today}A-console.md"
 doc6B="$root/tester/nextrepo/DEMO-nextleg-${today}B-console.md"

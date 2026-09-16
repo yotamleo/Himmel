@@ -48,10 +48,21 @@ the lock at wrap requires it. The console *adopts* this lock; it does not
 acquire a second one. (`new` takes the lock and then exits, so a console that
 tried to acquire again would be refused by its own startup lock.)
 
+Paste the printed `launch:` line **verbatim, including its `env -u …` prefix**.
+That prefix is load-bearing, not decoration: you are almost always pasting into
+a terminal that was itself spawned from a claude session, and it clears the
+`CLAUDE_CODE_CHILD_SESSION` / `CLAUDE_PID` / `CLAUDE_CODE_SESSION_ID` variables
+that shell inherited. A console that keeps them writes no transcript and gets
+`UNKNOWN` from `scripts/context-fill.sh --percent` — which is the signal its
+own handover contract runs on (HIMMEL-3081). Trimming the line to just
+`claude …` silently recreates that failure.
+
 Finally it prints the launch line. Run it in a terminal of its own:
 
 ```text
-claude --model <model> --autocompact 200000 -n <session-name> "load <doc> and continue"
+env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
+    CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 \
+    claude --model <model> --autocompact 200000 -n <session-name> "load <doc> and continue"
 ```
 
 `--autocompact 200000` is the default (HIMMEL-2973 — the largest cache-read

@@ -47,6 +47,16 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# HIMMEL-3081: the launch line below is PASTED by an operator, and the terminal
+# they paste it into was itself spawned from a claude session -- so
+# CLAUDE_CODE_CHILD_SESSION=1, CLAUDE_PID and CLAUDE_CODE_SESSION_ID are live in
+# that shell. A console that adopts them writes no transcript and cannot read
+# its own context fill, which is the signal its handover contract runs on.
+# headed-arm.sh scrubs these on the --arm path (HIMMEL-2545); the printed line
+# was missed, so an un-armed console silently became a throwaway child session.
+# Keep this identical to headed-arm.sh's env prefix.
+CONSOLE_LAUNCH_ENV="env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1"
 # shellcheck source=../../lib/load-dotenv.sh
 # shellcheck disable=SC1091
 . "$HERE/../../lib/load-dotenv.sh"
@@ -692,7 +702,7 @@ cmd_new() {
         echo "would-doc: $doc"
         echo "would-session: $session"
         echo "would-kit: $kit"
-        echo "would-launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+        echo "would-launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -790,7 +800,7 @@ cmd_new() {
 
     printf '%s\n' "$lock_out"
 
-    echo "launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+    echo "launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"
@@ -947,7 +957,7 @@ cmd_next() {
         else
             echo "would-handoff: $predecessor_handoff"
         fi
-        echo "would-launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+        echo "would-launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -1040,7 +1050,7 @@ cmd_next() {
     fi
     trap - EXIT
 
-    echo "launch: claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
+    echo "launch: $CONSOLE_LAUNCH_ENV claude --model $model --autocompact $console_autocompact -n $session \"load $doc and continue\""
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"
