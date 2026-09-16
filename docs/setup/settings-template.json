@@ -117,7 +117,7 @@
       "neededBy": "The codex adversarial critic lane. scripts/cr/codex-adv-kickoff.sh resolves this plugin's CACHED companion (~/.claude/plugins/cache/openai-codex/*/codex-companion.mjs) by glob and degrades the lane to 'skipped' when the cache is absent (HIMMEL-2707) — so the lane needs the plugin INSTALLED, never enabled."
     },
     "plannotator-effective-html@himmel": {
-      "neededBy": "Design/UI work via the `design` lane profile (scripts/lanes/plugin-profiles.json), which enables it for its 6 html/design skills. Not installed by default (HIMMEL-3064) — reachable via `/profile enable plannotator-effective-html@himmel`."
+      "neededBy": "Design/UI work via the `design` lane profile (scripts/lanes/plugin-profiles.json), which enables it for its 6 html/design skills. Installed but disabled by default (HIMMEL-3064) — reachable via `/profile enable plannotator-effective-html@himmel`."
     }
   },
   "_onDemandConnectorsComment": "HIMMEL-2733: on-demand capabilities himmel does NOT install and therefore cannot ship a disabled state for — they are per-machine toggles in the Chrome extension and in claude.ai's connector settings. Listed here so the tier is DISCOVERABLE and the install summary can name them; no installer reads this key to write anything.",
