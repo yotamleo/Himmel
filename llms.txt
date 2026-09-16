@@ -21,7 +21,7 @@ Four independent axes, each named exactly once here:
 - **Saved install-profile file** — a `*.install-profile.json` preset of every wizard answer, including the release channel. `--scope` loads a shipped adopter one; `--from-profile <file>` loads your own. Detail: [docs/setup/profiles/README.md](docs/setup/profiles/README.md).
 - **Release channel** — `stable` (highest `vX.Y.Z` tag) or `pre` (prereleases too), read from `HIMMEL_UPDATE_CHANNEL` or the saved install-profile file's `channel`; neither set means a plain `git pull`. Detail: [docs/setup/updating.md](docs/setup/updating.md).
 
-A fifth, unrelated axis: the **plugin profile** — `lean` vs `full` marketplace plugin sets, toggled with `/profile`, registry at `scripts/lanes/plugin-profiles.json`. The registry's always-on `base` carries `lean-skills@himmel` (HIMMEL-3064: a vendored subset of upstream workflow skills, replacing two fat always-on upstream plugins); the separate `design` profile opts in the HTML/UI design kit per-dispatch instead.
+A fifth, unrelated axis: the **plugin profile** — `lean` vs `full` marketplace plugin sets, toggled with `/profile`, registry at `scripts/lanes/plugin-profiles.json`. The registry's always-on `base` carries `lean-skills@himmel` (HIMMEL-3064: a vendored subset of upstream workflow skills, replacing two fat always-on upstream plugins); the separate `design` plugin profile opts in the HTML/UI design kit per-dispatch instead.
 
 Full walkthrough plus the adaptation checklist for a non-himmel repo: [docs/setup/install.md](docs/setup/install.md). Coming from an older himmel install: [docs/setup/migrating.md](docs/setup/migrating.md).
 
