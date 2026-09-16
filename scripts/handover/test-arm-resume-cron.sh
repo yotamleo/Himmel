@@ -439,7 +439,7 @@ assert_not_contains "c2: RED CONTROL -- no entry installed on refusal" "# HIMMEL
 : > "$CRON_STORE"
 echo "0 3 * * * /usr/bin/true # unrelated-job" > "$CRON_STORE"
 FAILREAD="$TMP/failread"; mkdir -p "$FAILREAD"
-cp "$MACBIN/at" "$MACBIN/atq" "$MACBIN/powershell" "$FAILREAD/"
+cp "$MACBIN/at" "$MACBIN/atq" "$MACBIN/powershell" "$MACBIN/claude" "$FAILREAD/"
 cat > "$FAILREAD/crontab" <<'CRONEOF'
 #!/bin/sh
 case "$1" in
