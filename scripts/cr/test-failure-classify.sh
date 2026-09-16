@@ -55,6 +55,28 @@ check "9: plan expired phrase -> quota-long" \
 check "10: standalone insufficient balance -> quota-long" \
     "$(classify 1 '' 'Insufficient balance for this request')" "quota-long"
 
+# ── HIMMEL-3110: codex's own usage-limit wording, verbatim captured body ───
+# (scripts/cr/testdata/codex-usage-limit-2026-09-16.txt). Pre-fix this
+# classified generic-rc-1 (confirmed against the pre-fix code before this
+# fix landed) — codex says "usage limit" and names an absolute reset date,
+# never "quota", "past 5 hours", or a bare 429, so it missed every existing
+# bucket.
+check "10b: codex captured usage-limit body (fixture, stderr) -> quota-long" \
+    "$(bash "$FC" 1 /dev/null "$HERE/testdata/codex-usage-limit-2026-09-16.txt")" \
+    "quota-long"
+check "10c: same codex phrasing via stdout -> quota-long" \
+    "$(classify 1 "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 19th, 2026 10:09 AM." '')" \
+    "quota-long"
+# ── HIMMEL-3110 regression: "hit your usage limit" alone (no pairing phrase)
+# must NOT reach an exhaustion bucket -- the HIMMEL-729 pairing discipline
+# extends to the new sentinel, not just the pre-existing ones.
+check "10d: usage-limit phrase WITHOUT purchase-credits/try-again pairing -> not quota-long" \
+    "$(classify 1 '' 'You have hit your usage limit today.')" "generic-rc-1"
+# ── HIMMEL-3110 regression: a bare auth fault must still classify auth, not
+# leak into quota-long because it shares no wording with the new sentinel.
+check "10e: bare 401 alongside unrelated text -> auth, NOT quota-long" \
+    "$(classify 1 '' 'HTTP 401 Unauthorized: token_expired, please re-authenticate')" "auth"
+
 # ── rate-limit: plain 429, no quota phrasing ───────────────────────────────
 check "11: bare 429 -> rate-limit" "$(classify 1 '' 'HTTP 429 Too Many Requests')" "rate-limit"
 
