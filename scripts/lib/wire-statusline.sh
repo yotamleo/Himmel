@@ -97,6 +97,15 @@ _wire_statusline_purge_hud_cache() {
   # instead of one literal `<dir>/*`. The subshell's exit status is this
   # function's, so a failed removal still propagates.
   (
+    # GLOBIGNORE is unset for its documented SIDE EFFECT, not for its filtering:
+    # a non-null GLOBIGNORE enables dotglob, which is exactly the option this
+    # subshell pins off. (A critic also read it as able to hide a cache entry
+    # from the sweep; that does not reproduce — GLOBIGNORE filters a
+    # single-component glob like `*`, not the pathname glob `"$hud_dir"/*` this
+    # loop uses. Probed on bash 5.3: `GLOBIGNORE='*transcript-cache'` and
+    # `GLOBIGNORE='*transcript*'` both leave `<dir>/transcript-cache` in the
+    # expansion, while the same pattern does filter a bare `*` after cd'ing in.)
+    unset GLOBIGNORE
     shopt -u failglob dotglob 2>/dev/null || true
     shopt -s nullglob 2>/dev/null || true
     dropped=0

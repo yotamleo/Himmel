@@ -447,6 +447,7 @@ mkdir -p "$hud28"
   export CLAUDE_CONFIG_DIR="$cfg28"
   wire_statusline "$s28" "$REPO_ROOT"
 ) >/dev/null || fail "28: sourced wire_statusline failed under failglob"
+
 [ -f "$hud28/config.json" ] || fail "28: the config was not published under failglob"
 [ "$(jq -r .statusLine.type "$s28")" = "command" ] || fail "28: the statusLine was not wired under failglob"
 echo "ok 28 the purge survives a caller's failglob on an otherwise-empty hud dir"
