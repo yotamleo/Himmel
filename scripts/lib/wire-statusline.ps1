@@ -233,13 +233,9 @@ function Set-HimmelStatusLine {
         $cfgChanged = $hudCfg -and ($prevHudCfg.TrimEnd("`n") -cne $hudCfg.TrimEnd("`n"))
         $cmdChanged = $prevCmd -and ($prevCmd -cne $cmd)
         if ($cmdChanged -or $cfgChanged) {
-            try {
-                Remove-HimmelHudCacheState -HudDir $hudDir
-            } catch {
-                if ($hudTmp -and (Test-Path $hudTmp)) { Remove-Item -LiteralPath $hudTmp -Force }
-                if (Test-Path "$SettingsPath.new") { Remove-Item -LiteralPath "$SettingsPath.new" -Force }
-                throw
-            }
+            # No local catch: the finally below clears both staging files on
+            # EVERY throw, this one included.
+            Remove-HimmelHudCacheState -HudDir $hudDir
         }
 
         # (5) Publish the staged hud config FIRST, the settings file LAST — the
@@ -253,6 +249,23 @@ function Set-HimmelStatusLine {
         Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force -ErrorAction Stop
         Write-Host "  wired statusLine → $SettingsPath"
     } finally {
+        # Clear whatever is still staged. Every failure in this function is now
+        # terminating (-ErrorAction Stop), and a throw would otherwise leave
+        # $SettingsPath.new — beside a PROJECT's own .claude/settings.json, i.e.
+        # an untracked stray inside someone's repo — or the staged hud config
+        # behind (CodeRabbit, PR #772). On the success path both have already
+        # been renamed away, so both tests are false and this is a no-op.
+        # Best-effort: a cleanup failure must not mask the original error.
+        try {
+            if (Test-Path "$SettingsPath.new") {
+                Remove-Item -LiteralPath "$SettingsPath.new" -Force -ErrorAction SilentlyContinue
+            }
+            if ($hudTmp -and (Test-Path $hudTmp)) {
+                Remove-Item -LiteralPath $hudTmp -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            # Nothing to do: the caller's own error is the one that matters.
+        }
         [Console]::OutputEncoding = $prevOutputEncoding
         $global:OutputEncoding = $prevOutEncodingPref
     }

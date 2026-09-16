@@ -229,8 +229,11 @@ wire_statusline() {
   # would publish that stale file instead of staying the pure statusLine/env op
   # it promises to be. Every failure path above clears the staging file too.
   if [ -n "$hud_cfg" ]; then
+    # A failed rename leaves the staged file behind — clear it, and the staged
+    # settings with it, so no failure path leaves either one staged (parity
+    # with the ps1 twin's finally; CodeRabbit, PR #772).
     mv "$hud_dir/.config.json.tmp" "$hud_dir/config.json" \
-      || { rm -f "$settings.statusline.tmp"; return 1; }
+      || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
   fi
 
   mv "$settings.statusline.tmp" "$settings" \
