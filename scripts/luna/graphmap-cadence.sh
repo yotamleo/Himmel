@@ -1282,19 +1282,40 @@ cmd_arm() {
             existing=$(printf '%s\n' "$existing" | grep -xE "(${TASK_AST_LUNA}|${TASK_AST_HIMMEL})" || true)
         fi
     fi
+    # --force's DELETION scope is narrower than the dedup scope above, exactly
+    # as on the cron branch: there the atomic rewrite drops only the lines
+    # matching $own_match_re (cron_arm, below), which omits the publish leg
+    # unless --with-publish asked for it this run -- so an opt-in publish entry
+    # survives a --force arm that doesn't want it, while a plain arm still
+    # dedup-blocks naming it. cmd_arm used to delete straight from $existing,
+    # which is unfiltered whenever --ast-only is absent, so a plain
+    # `arm --force` DELETED the publish task and then skipped re-creating it,
+    # silently disarming the operator's opt-in leg (HIMMEL-3075, CR round 1).
+    # Mirror cron's dedup/deletion split rather than widening the dedup scope.
+    local own_match_re="(${TASK_AST_LUNA}|${TASK_AST_HIMMEL})"
+    if [ "$WITH_PUBLISH" -eq 1 ]; then
+        own_match_re="(${own_match_re}|${TASK_PUBLISH_HIMMEL})"
+    fi
+    if [ "$AST_ONLY" -eq 0 ]; then
+        own_match_re="(${own_match_re}|${TASK_LUNA}|${TASK_HIMMEL})"
+    fi
     if [ -n "$existing" ]; then
         if [ "$FORCE" -eq 1 ]; then
-            echo "graphmap-cadence: --force set; replacing existing task(s):" >&2
-            local marker
-            while IFS= read -r marker; do
-                [ -z "$marker" ] && continue
-                echo "  $marker" >&2
-                if [ "$DRY_RUN" -eq 0 ]; then
-                    delete_task "$marker"
-                else
-                    echo "DRY graphmap-cadence: would delete $marker"
-                fi
-            done <<< "$existing"
+            local replacing
+            replacing=$(printf '%s\n' "$existing" | grep -xE "$own_match_re" || true)
+            if [ -n "$replacing" ]; then
+                echo "graphmap-cadence: --force set; replacing existing task(s):" >&2
+                local marker
+                while IFS= read -r marker; do
+                    [ -z "$marker" ] && continue
+                    echo "  $marker" >&2
+                    if [ "$DRY_RUN" -eq 0 ]; then
+                        delete_task "$marker"
+                    else
+                        echo "DRY graphmap-cadence: would delete $marker"
+                    fi
+                done <<< "$replacing"
+            fi
         else
             {
                 echo "ERR graphmap-cadence: HIMMEL-GraphMap-* task(s) already armed:"

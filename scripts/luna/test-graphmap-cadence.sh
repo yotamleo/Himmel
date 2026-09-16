@@ -777,6 +777,7 @@ T_LUNA="HIMMEL-GraphMap-Luna"
 T_HIMMEL="HIMMEL-GraphMap-Himmel"
 T_AST_LUNA="HIMMEL-GraphMapAst-Luna"
 T_AST_HIMMEL="HIMMEL-GraphMapAst-Himmel"
+T_PUBLISH="HIMMEL-GraphPublish-Himmel"
 
 echo "TEST: cron arm --ast-only --dry-run skips the semantic pair entirely"
 out=$(run_cron arm --vault "$VAULT" --ast-only --dry-run)
@@ -1795,6 +1796,49 @@ if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 5 ]; then
     pass "schtasks ast-only --force re-arm still leaves exactly five tasks total"
 else
     fail "unexpected task count after schtasks ast-only --force re-arm" "$(ls "$STATE/tasks")"
+fi
+run_gc disarm >/dev/null
+
+# Test 10d: --with-publish is opt-IN on the schtasks branch too (HIMMEL-3075,
+# CR round 1) ---------------------------------------------------------------
+#
+# The cron branch scopes --force's replacement with $own_match_re, which omits
+# the publish leg unless --with-publish is set, so a publish entry armed by an
+# earlier opt-in run survives an arm that doesn't ask for it. cmd_arm used to
+# filter $existing ONLY under --ast-only, so a plain `arm --force` deleted
+# every task list_existing returned -- publish included -- and then skipped
+# re-creating it, silently disarming the operator's opt-in leg. Assert the
+# schtasks branch now matches cron: the publish task is untouched, byte for
+# byte (a delete+recreate would also pass a mere existence check).
+
+echo "TEST: schtasks plain --force re-arm leaves an opt-in publish leg untouched"
+run_gc arm --vault "$VAULT" --with-publish >/dev/null
+publish_task_before=$(cat "$STATE/tasks/$T_PUBLISH" 2>/dev/null || echo MISSING)
+if [ "$publish_task_before" != MISSING ]; then
+    pass "precondition: --with-publish arm registered the publish task"
+else
+    fail "precondition failed: publish task not registered" "$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+rc=0; out=$(run_gc arm --vault "$VAULT" --force 2>&1) || rc=$?
+assert_rc "plain --force re-arm over an armed publish leg succeeds" 0 "$rc"
+assert_not_contains "plain --force re-arm does not delete the publish task" \
+    "deleted scheduled task: $T_PUBLISH" "$out"
+publish_task_after=$(cat "$STATE/tasks/$T_PUBLISH" 2>/dev/null || echo MISSING)
+if [ "$publish_task_after" = "$publish_task_before" ]; then
+    pass "plain --force re-arm left the opt-in publish task byte-identical"
+else
+    fail "plain --force re-arm removed or rewrote the opt-in publish task" \
+        "before=$publish_task_before after=$publish_task_after tasks=$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+if [ -f "$BAT_DIR/graphmap-publish-himmel.bat" ]; then
+    pass "plain --force re-arm left the publish .bat runner in place"
+else
+    fail "plain --force re-arm removed the publish .bat runner" "$(ls "$BAT_DIR" 2>/dev/null)"
+fi
+if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 5 ]; then
+    pass "plain --force re-arm still leaves exactly five tasks total"
+else
+    fail "unexpected task count after plain --force re-arm" "$(ls "$STATE/tasks")"
 fi
 run_gc disarm >/dev/null
 
