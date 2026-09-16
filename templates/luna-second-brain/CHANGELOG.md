@@ -8,6 +8,12 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.33] — 2026-09-16
+
+### Fixed
+- The `github-sync` `community-plugins.json` merge used a bare `mktemp` for
+  its temp file (BSD/macOS portability gap); it now uses a template.
+
 ## [0.4.32] — 2026-09-16
 
 ### Fixed

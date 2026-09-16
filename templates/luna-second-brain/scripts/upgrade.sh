@@ -597,7 +597,7 @@ if [ "$WITH_GITHUB_SYNC" = 1 ] || gh_sync_present; then INSTALL_GITHUB_SYNC=1; f
 CP_REL=".obsidian/community-plugins.json"
 CP_MERGE_SRC="$TEMPLATE_DIR/$CP_REL"
 if [ "$INSTALL_GITHUB_SYNC" = 1 ] && [ -d "$GH_SYNC_SRC" ]; then
-    GH_SYNC_CP_TMP="$(mktemp)"
+    GH_SYNC_CP_TMP="$(mktemp "${TMPDIR:-/tmp}/luna-upgrade-gh-sync-cp.XXXXXX")"
     "$PYTHON" - "$CP_MERGE_SRC" "$GH_SYNC_CP_TMP" <<'PY'
 import json, os, sys
 tmpl_p, out_p = sys.argv[1], sys.argv[2]
