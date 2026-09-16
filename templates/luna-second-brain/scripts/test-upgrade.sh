@@ -1121,6 +1121,7 @@ add_optional_github_sync() {
     printf 'GITHUB-SYNC-MAIN-JS-TEMPLATE\n' > "$d/optional/plugins/github-sync/main.js"
     printf '{"remoteURL":"","gitLocation":""}\n' > "$d/optional/plugins/github-sync/data.json"
     printf '.gh-sync {}\n' > "$d/optional/plugins/github-sync/styles.css"
+    printf 'MIT License\n\nGITHUB-SYNC-LICENSE-FIXTURE\n' > "$d/optional/plugins/github-sync/LICENSE"
 }
 
 # T39: no flag, no env, fresh vault => github-sync NOT installed at all.
@@ -1180,6 +1181,16 @@ printf '%s\n' '["dataview","calendar","new"]' > "$V/.obsidian/community-plugins.
 run_upgrade --yes >/dev/null 2>&1
 merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
 case ",$merged," in *,github-sync,*) fail "T44 disabled + no flag: community-plugins.json stays without github-sync" "got: $merged" ;; *) pass "T44 disabled + no flag: community-plugins.json stays without github-sync" ;; esac
+
+# T45 (critic panel finding, HIMMEL-3066): a fresh --with-github-sync install
+# must carry the vendored LICENSE alongside the plugin assets. Every OTHER
+# bundled plugin's LICENSE reaches a vault via the initial template checkout;
+# github-sync has no such path any more (it moved out of the git-tracked
+# .obsidian/ tree so it stops shipping by default) — this copy loop is now
+# its only distribution mechanism.
+T="$TMP/t45-tmpl"; V="$TMP/t45-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+run_upgrade --yes --with-github-sync >/dev/null 2>&1
+assert_eq "T45 --with-github-sync writes LICENSE" "$(sha_of "$T/optional/plugins/github-sync/LICENSE")" "$(sha_of "$V/.obsidian/plugins/github-sync/LICENSE")"
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

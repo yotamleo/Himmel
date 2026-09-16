@@ -30,9 +30,10 @@
 #   --with-github-sync  install the optional github-sync Obsidian plugin (env
 #                       twin: LUNA_WITH_GITHUB_SYNC=1). Mutually exclusive with
 #                       vault-autosync.ps1/.sh — see HIMMEL-3066. Only ever
-#                       ADDS the plugin: a vault that already has it installed
-#                       keeps it (and gets asset updates) with no flag needed;
-#                       the flag never removes it either.
+#                       ADDS the plugin: a vault that already has it ENABLED
+#                       keeps it with no flag needed, but only files missing
+#                       from the install get written (skip-if-present); the
+#                       flag never removes it either.
 #
 # Version source = the template's marketplace/.claude-plugin/marketplace.json
 # metadata.version. The vault records its level in .vault-template.json; a
@@ -835,7 +836,25 @@ process() {
                         PLAN+=("WRITE-NEW    $gsrel"); n_write=$((n_write+1))
                         [ "$execute" = 1 ] && { write_file "$gsrc" "$gsdst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                     fi ;;
-                *) : ;;  # e.g. LICENSE — not upgrade.sh's job, matches the other bundled plugins
+                *)
+                    case "$gsub" in
+                        LICENSE)
+                            # Every other bundled plugin's LICENSE reaches a
+                            # vault via the initial template checkout — never
+                            # via upgrade.sh. github-sync has no such path any
+                            # more (it moved OUT of the git-tracked .obsidian/
+                            # tree so it stops shipping by default), so this
+                            # loop is its only distribution mechanism and must
+                            # carry the license notice itself (skipexists: a
+                            # vendor update never silently rewrites it).
+                            if [ -f "$gsdst" ]; then
+                                n_skip_exists=$((n_skip_exists+1))
+                            else
+                                PLAN+=("WRITE-NEW    $gsrel"); n_write=$((n_write+1))
+                                [ "$execute" = 1 ] && { write_file "$gsrc" "$gsdst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
+                            fi ;;
+                        *) : ;;
+                    esac ;;
             esac
         done < <(find "$GH_SYNC_SRC" -type f 2>/dev/null)
     fi

@@ -8,6 +8,18 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.35] — 2026-09-16
+
+### Fixed
+- `--with-github-sync` copied the plugin's `main.js`/`manifest.json`/
+  `data.json`/`styles.css` but never its vendored `LICENSE`. Every other
+  bundled plugin's LICENSE reaches a vault via the initial template
+  checkout; github-sync has no such path any more since it moved out of
+  the git-tracked `.obsidian/` tree, so `upgrade.sh`'s copy loop is now its
+  only distribution mechanism and needed to carry the notice itself.
+- The top-of-file `--with-github-sync` doc comment repeated the same stale
+  "gets asset updates" claim already corrected in the `--help` text.
+
 ## [0.4.34] — 2026-09-16
 
 ### Fixed
