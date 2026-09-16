@@ -40,14 +40,17 @@ is an Apache-2.0 fork (see Vendored forks).
 ## Vendored Obsidian plugins
 
 The `templates/luna-second-brain/` template ships a working Obsidian vault that
-includes pre-built community plugins under `.obsidian/plugins/`. Each retains its
-upstream `LICENSE` file in its plugin directory; all are permissive.
+includes pre-built community plugins under `.obsidian/plugins/` (enabled by
+default), plus one opt-in plugin vendored under `optional/plugins/`
+(`github-sync` — HIMMEL-3066; not installed by default, see
+`.obsidian/PLUGINS-SETUP.md`). Each retains its upstream `LICENSE` file in its
+plugin directory; all are permissive.
 
 | Plugin | Author | License |
 |---|---|---|
 | `calendar` | Liam Cain | MIT (© 2021 Liam Cain) |
 | `dataview` | Michael Brenan | MIT (© 2021 Michael Brenan) |
-| `github-sync` | Kevin Chin | MIT (© 2024 Kevin Chin) |
+| `github-sync` (opt-in) | Kevin Chin | MIT (© 2024 Kevin Chin) |
 | `obsidian-banners` | Danny Hernandez | MIT (© 2021 Danny Hernandez) |
 | `obsidian-local-rest-api` | Adam Coddington | MIT (© 2023 Adam Coddington) |
 | `qmd-as-md-obsidian` | Daniel Borek | Unlicense (public domain) |

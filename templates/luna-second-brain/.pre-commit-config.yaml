@@ -2,7 +2,11 @@
 # every save. Excluded globally so the basic hooks don't rewrite them on
 # every operator's machine. Tracked separately if/when we move to plugin
 # installer + community-plugins.json driven setup.
-exclude: '^\.obsidian/'
+# optional/plugins/ (HIMMEL-3066): the opt-in github-sync plugin is vendored
+# here instead of under .obsidian/plugins/ — same vendored-binary rationale,
+# so it needs the same exclusion (a fixer rewriting its main.js/styles.css
+# would drift the vendored copy from upstream bytes for no reason).
+exclude: '^(\.obsidian/|optional/plugins/)'
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -51,6 +55,8 @@ repos:
         # they survive a host reboot — not shipped code. Linting them here
         # stalled the Obsidian github-sync sweep on 2026-09-07 (the sweep
         # commits with hooks on; one SC2009/SC2034 warning = no commits).
+        # github-sync itself is opt-in since HIMMEL-3066; this exclude stays
+        # correct for any vault that has it enabled.
         exclude: ^handovers/.*/specs/console-kit-[^/]+/
 
   - repo: https://github.com/gitleaks/gitleaks

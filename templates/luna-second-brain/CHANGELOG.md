@@ -8,6 +8,25 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.31] — 2026-09-16
+
+### Changed
+- **The bundled `github-sync` Obsidian plugin is now opt-in, not a template
+  default (HIMMEL-3066).** It committed the vault from inside Obsidian on its
+  own ~10-minute tick, which raced `scripts/vault-autosync.ps1`/`.sh` (the
+  sweeper) committing the same working tree — the sweeper's own sanity gate
+  refused to run at all (`AlarmClass: plugin-resurrected`) whenever it found
+  `github-sync` enabled, so a fresh vault built from this template could
+  never actually use the sweeper it ships. The plugin is now vendored under
+  `optional/plugins/github-sync/` instead of `.obsidian/plugins/github-sync/`
+  and dropped from `.obsidian/community-plugins.json`; the sweeper is the
+  template's default sync path. `scripts/upgrade.sh` gained
+  `--with-github-sync` (env twin `LUNA_WITH_GITHUB_SYNC=1`) to opt a vault
+  in. A vault that already has the plugin installed keeps it — and keeps
+  receiving asset updates — on every upgrade with no flag needed; the
+  upgrader never uninstalls it. See `.obsidian/PLUGINS-SETUP.md` for the
+  two-mechanism tradeoff.
+
 ## [0.4.29] — 2026-09-12
 
 ### Fixed

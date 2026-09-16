@@ -9,9 +9,9 @@ repos:
       # them fights graphify's own output byte-for-byte and would leave the
       # graph-generating station perpetually dirty against the committed copy.
       - id: trailing-whitespace
-        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: end-of-file-fixer
-        exclude: '^(templates/luna-second-brain/\.obsidian/plugins/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
+        exclude: '^(templates/luna-second-brain/(\.obsidian/plugins|optional/plugins)/.*\.(js|css)$|marketplace/plugins/claude-hud/|graphify-out/|scripts/lanes/bench/(fixtures|runs)/)'
       - id: check-yaml
       - id: check-json
       # HIMMEL-2508: 516 tracked scripts reached main as mode 100644 because

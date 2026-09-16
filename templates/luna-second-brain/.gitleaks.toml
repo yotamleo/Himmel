@@ -1,12 +1,13 @@
 # gitleaks config for the luna second-brain vault.
 # Keeps the full built-in ruleset and only adds a path allowlist for the
-# vendored third-party Obsidian plugin bundles shipped under .obsidian/plugins/.
-# Those bundles are minified upstream code; gitleaks' generic-api-key rule flags
-# high-entropy minified identifiers (e.g. node-forge's pki.setRsaPrivateKey in
-# obsidian-local-rest-api) as false-positive "secrets". The pre-commit
-# `exclude: '^\.obsidian/'` does NOT reach gitleaks (the hook scans the staged
-# diff directly), so the allowlist has to live here. Real credentials
-# (.env, plugins' data.json) are gitignored.
+# vendored third-party Obsidian plugin bundles shipped under .obsidian/plugins/
+# (and, since HIMMEL-3066, the opt-in github-sync plugin vendored under
+# optional/plugins/ instead). Those bundles are minified upstream code;
+# gitleaks' generic-api-key rule flags high-entropy minified identifiers (e.g.
+# node-forge's pki.setRsaPrivateKey in obsidian-local-rest-api) as
+# false-positive "secrets". The pre-commit `exclude:` does NOT reach gitleaks
+# (the hook scans the staged diff directly), so the allowlist has to live
+# here. Real credentials (.env, plugins' data.json) are gitignored.
 [extend]
 useDefault = true
 
@@ -14,6 +15,7 @@ useDefault = true
 description = "Vendored plugin bundles + known-benign local loopback proxy token"
 paths = [
   '''\.obsidian/plugins/''',
+  '''optional/plugins/''',
 ]
 # The end-session-wiki hook captures session bash verbatim, so probes against
 # the local CLIProxyAPI gateway (127.0.0.1:8317) land in sessions/*.md as
@@ -29,7 +31,9 @@ paths = [
 # `cachyos-x8664-pid199036` — a process id, not a credential — but the
 # generic-api-key rule flags the line ("release-token: `...`") on entropy, and
 # that refusal silently stalls the github-sync autosync commit (2026-09-09,
-# console 03F: staged for 40 min, three missed syncs). Anchored to that exact
+# console 03F: staged for 40 min, three missed syncs) — github-sync is opt-in
+# since HIMMEL-3066, but this allowlist keeps working unchanged for any vault
+# that has it enabled. Anchored to that exact
 # shape, plus one optional trailing sentence-punctuation character (HIMMEL-2910:
 # a leg's bare, unbacktick-quoted `release-token=<token>.` let gitleaks capture
 # the trailing "." into the secret, missing the anchor) — a suffixed real
