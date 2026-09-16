@@ -86,23 +86,33 @@ _wire_statusline_config_dir() {
 # (.config.json.tmp) precisely so the purge — which runs before either file is
 # published — cannot delete the config it is about to install.
 _wire_statusline_purge_hud_cache() {
-  local hud_dir="$1" entry dropped=0
+  local hud_dir="$1"
   [ -d "$hud_dir" ] || return 0
-  for entry in "$hud_dir"/*; do
-    # An unmatched glob stays literal in bash — skip it rather than rm it.
-    [ -e "$entry" ] || continue
-    case "${entry##*/}" in
-      # The dotfile skip is EXPLICIT, not a property of the glob: this library
-      # is sourced (himmel-update.sh does), and a caller with `shopt -s dotglob`
-      # would otherwise make `*` match the staged .config.json.tmp and delete
-      # the config this same call is about to publish.
-      config.json|.*) continue ;;
-    esac
-    rm -rf "$entry" || return 1
-    dropped=1
-  done
-  [ "$dropped" -eq 1 ] && echo "  dropped stale hud cache state → $hud_dir"
-  return 0
+  # The sweep runs in a SUBSHELL with the glob options PINNED, because this
+  # library is sourced (himmel-update.sh does) and the caller's `shopt` settings
+  # would otherwise decide what this loop sees: `dotglob` makes `*` match the
+  # staged .config.json.tmp this same call is about to publish, and `failglob`
+  # turns a directory holding nothing but that dotfile into an expansion ERROR
+  # that aborts the wire. `nullglob` gives an empty directory zero iterations
+  # instead of one literal `<dir>/*`. The subshell's exit status is this
+  # function's, so a failed removal still propagates.
+  (
+    shopt -u failglob dotglob 2>/dev/null || true
+    shopt -s nullglob 2>/dev/null || true
+    dropped=0
+    for entry in "$hud_dir"/*; do
+      # Belt and braces if shopt is unavailable: an unmatched glob stays
+      # literal, and dotfiles are skipped by name, not only by glob option.
+      [ -e "$entry" ] || continue
+      case "${entry##*/}" in
+        config.json|.*) continue ;;
+      esac
+      rm -rf "$entry" || exit 1
+      dropped=1
+    done
+    [ "$dropped" -eq 1 ] && echo "  dropped stale hud cache state → $hud_dir"
+    exit 0
+  )
 }
 
 wire_statusline() {

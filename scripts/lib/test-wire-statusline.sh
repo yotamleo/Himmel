@@ -285,6 +285,10 @@ mkdir -p "$hud23"
 printf '{"display":{"showPromptCache":false}}\n' > "$hud23/config.json"
 seed_hud_cache "$hud23"
 
+# The stub TOUCHES a marker before refusing, so the case can assert the purge
+# was actually reached rather than inferring it (CR round 11): a staging failure
+# would satisfy every other assertion below just as well.
+rm_marker23="$TMP/rm23-was-called"
 cat > "$rm_bin23/rm" <<EOF
 #!/usr/bin/env bash
 # Refuse exactly the seeded cache entries; everything else (the staged config,
@@ -292,7 +296,9 @@ cat > "$rm_bin23/rm" <<EOF
 for _a in "\$@"; do
   case "\$_a" in
     "$hud23/transcript-cache"|"$hud23/context-cache"|"$hud23/config-cache"|\\
-    "$hud23/cache-economics-all.json"|"$hud23/daily-cost.json") exit 1 ;;
+    "$hud23/cache-economics-all.json"|"$hud23/daily-cost.json")
+      : > "$rm_marker23"
+      exit 1 ;;
   esac
 done
 exec "$real_rm23" "\$@"
@@ -302,8 +308,10 @@ chmod +x "$rm_bin23/rm"
 rc23=0
 PATH="$rm_bin23:$PATH" CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null 2>&1 || rc23=$?
 [ "$rc23" -ne 0 ] || fail "23: a failed purge must fail the wire, not report success"
+[ -e "$rm_marker23" ] \
+  || fail "23: precondition — the purge was never reached; this case proves nothing about a failed purge"
 [ ! -e "$hud23/.config.json.tmp" ] \
-  || fail "23: precondition — the staged config should have been cleaned up, i.e. the PURGE is what failed, not staging"
+  || fail "23: the staged config was left behind after the failed purge"
 [ ! -e "$s23.statusline.tmp" ] || fail "23: the staged settings file was left behind"
 [ "$(jq -r .statusLine.command "$s23")" = "$old23" ] \
   || fail "23: the settings file was published despite the failed purge — the retry will see no change"
@@ -332,6 +340,8 @@ seed_hud_cache "$hud24"
   shopt -s dotglob
   # shellcheck disable=SC1090  # the helper under test, resolved at runtime
   . "$HELPER"
+  # shellcheck disable=SC2030,SC2031  # deliberately subshell-local: the sourced
+  # helper must see it, the surrounding suite must not.
   export CLAUDE_CONFIG_DIR="$cfg24"
   wire_statusline "$s24" "$REPO_ROOT"
 ) >/dev/null || fail "24: sourced wire_statusline failed under dotglob"
@@ -419,5 +429,26 @@ PATH="$mv_bin27:$PATH" CLAUDE_CONFIG_DIR="$cfg27" bash "$HELPER" "$s27" "$REPO_R
 CLAUDE_CONFIG_DIR="$cfg27" bash "$HELPER" "$s27" "$REPO_ROOT" >/dev/null
 [ "$(jq -r .statusLine.command "$s27")" != "$old27" ] || fail "27: the retry did not wire"
 echo "ok 27 a failed settings publish leaves the OLD command wired and the retry completes"
+
+# 28. CR round 11: the purge pins its own glob options, because this library is
+# sourced and the caller's shopt settings would otherwise decide what the loop
+# sees. `failglob` is the sharp one — a hud dir holding nothing but the staged
+# dotfile makes "$hud_dir"/* an expansion ERROR that aborts the wire.
+cfg28="$TMP/cfg28"; hud28="$cfg28/plugins/claude-hud"
+proj28="$TMP/proj28"; mkdir -p "$proj28/.claude"
+s28="$proj28/.claude/settings.json"
+mkdir -p "$hud28"
+(
+  shopt -s failglob
+  # shellcheck disable=SC1090  # the helper under test, resolved at runtime
+  . "$HELPER"
+  # shellcheck disable=SC2030,SC2031  # deliberately subshell-local: the sourced
+  # helper must see it, the surrounding suite must not.
+  export CLAUDE_CONFIG_DIR="$cfg28"
+  wire_statusline "$s28" "$REPO_ROOT"
+) >/dev/null || fail "28: sourced wire_statusline failed under failglob"
+[ -f "$hud28/config.json" ] || fail "28: the config was not published under failglob"
+[ "$(jq -r .statusLine.type "$s28")" = "command" ] || fail "28: the statusLine was not wired under failglob"
+echo "ok 28 the purge survives a caller's failglob on an otherwise-empty hud dir"
 
 echo "ALL PASS"
