@@ -225,8 +225,13 @@ function Set-HimmelStatusLine {
         # throws with NOTHING written (CR round 2) — publish-then-purge left a
         # failed purge unrepeatable, because the retry saw wiring that already
         # matched and took the no-change path.
-        $cfgChanged = $hudCfg -and ($prevHudCfg.TrimEnd("`n") -ne $hudCfg.TrimEnd("`n"))
-        $cmdChanged = $prevCmd -and ($prevCmd -ne $cmd)
+        # -cne, not -ne: PowerShell's -ne is case-INSENSITIVE, so a case-only
+        # difference in the clone path or a config value would compare equal
+        # here and publish without invalidating the cached state, while the bash
+        # twin's string comparison treats it as a change. The twins have to
+        # agree on what counts as a changed wiring.
+        $cfgChanged = $hudCfg -and ($prevHudCfg.TrimEnd("`n") -cne $hudCfg.TrimEnd("`n"))
+        $cmdChanged = $prevCmd -and ($prevCmd -cne $cmd)
         if ($cmdChanged -or $cfgChanged) {
             try {
                 Remove-HimmelHudCacheState -HudDir $hudDir
