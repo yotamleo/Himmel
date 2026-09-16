@@ -378,4 +378,46 @@ CLAUDE_CONFIG_DIR="$cfg26" bash "$HELPER" "$s26" "$REPO_ROOT" >/dev/null 2>&1 ||
 [ ! -e "$hud26/.config.json.tmp" ] || fail "26: the staged config was left behind"
 echo "ok 26 an untransformable settings file aborts before the purge"
 
+# 27. CodeRabbit round 2: the two publishes are two renames, not one atomic
+# operation. They are ordered config-then-settings so that a failed SECOND one
+# leaves the machine on its OLD statusLine command — the previous wiring, intact
+# — which the next run still sees as changed and re-wires AND re-purges. The
+# failure is injected with a PATH `mv` stub that refuses only the settings
+# publish and delegates everything else.
+mv_bin27="$TMP/mv27-bin"; mkdir -p "$mv_bin27"
+real_mv27="$(command -v mv)"
+cfg27="$TMP/cfg27"; hud27="$cfg27/plugins/claude-hud"
+proj27="$TMP/proj27"; mkdir -p "$proj27/.claude"
+s27="$proj27/.claude/settings.json"
+old27='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old27" | sed 's/"/\\"/g')\"" > "$s27"
+mkdir -p "$hud27"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud27/config.json"
+seed_hud_cache "$hud27"
+
+cat > "$mv_bin27/mv" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"$s27.statusline.tmp"*) exit 1 ;;
+esac
+exec "$real_mv27" "\$@"
+EOF
+chmod +x "$mv_bin27/mv"
+
+rc27=0
+PATH="$mv_bin27:$PATH" CLAUDE_CONFIG_DIR="$cfg27" bash "$HELPER" "$s27" "$REPO_ROOT" >/dev/null 2>&1 || rc27=$?
+[ "$rc27" -ne 0 ] || fail "27: a failed settings publish must fail the wire"
+[ "$(jq -r .statusLine.command "$s27")" = "$old27" ] \
+  || fail "27: precondition — the settings publish is what failed, so the OLD command must still be wired"
+[ ! -e "$s27.statusline.tmp" ] || fail "27: the staged settings file was left behind"
+[ "$(jq -r .display.showPromptCache "$hud27/config.json")" = "true" ] \
+  || fail "27: the config publish ran first, so it should have landed"
+[ ! -e "$hud27/transcript-cache" ] || fail "27: the purge runs before either publish and should have happened"
+
+# The retry, without the stub, still sees a changed wiring via the command half
+# (the config half now matches) and completes.
+CLAUDE_CONFIG_DIR="$cfg27" bash "$HELPER" "$s27" "$REPO_ROOT" >/dev/null
+[ "$(jq -r .statusLine.command "$s27")" != "$old27" ] || fail "27: the retry did not wire"
+echo "ok 27 a failed settings publish leaves the OLD command wired and the retry completes"
+
 echo "ALL PASS"

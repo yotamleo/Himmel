@@ -233,11 +233,15 @@ function Set-HimmelStatusLine {
             }
         }
 
-        # (5) Publish the staged settings file, then the staged hud config.
-        Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force -ErrorAction Stop
+        # (5) Publish the staged hud config FIRST, the settings file LAST — the
+        # two renames cannot be one atomic operation, and this order leaves a
+        # failed second rename on the OLD statusLine command with a refreshed
+        # config, which the next run still detects and re-wires. See the bash
+        # twin's (4) for the full reasoning.
         if ($hudTmp -and (Test-Path $hudTmp)) {
             Move-Item -Path $hudTmp -Destination $hudConfigPath -Force -ErrorAction Stop
         }
+        Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force -ErrorAction Stop
         Write-Host "  wired statusLine → $SettingsPath"
     } finally {
         [Console]::OutputEncoding = $prevOutputEncoding

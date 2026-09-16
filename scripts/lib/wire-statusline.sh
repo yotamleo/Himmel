@@ -212,18 +212,29 @@ wire_statusline() {
 
   # (4) Publish. Everything above is staged and validated, so by this point the
   # only way to fail is a failing rename.
-  mv "$settings.statusline.tmp" "$settings" \
-    || { rm -f "$settings.statusline.tmp" "$hud_dir/.config.json.tmp"; return 1; }
-
-  # (5) Publish the config THIS call staged. The test is $hud_cfg, not the temp
-  # file's existence: a run that staged the config and then failed on the
-  # settings write above used to leave the temp behind, and a later
-  # source-absent call (a synthetic himmel path, e.g. tests) would publish that
-  # stale file instead of staying the pure statusLine/env op it promises to be.
-  # Both failure paths above now clear the staging file as well.
+  #
+  # The hud config goes FIRST and the settings file LAST, because the two
+  # renames cannot be made one atomic operation (CodeRabbit, PR #772). In this
+  # order a failed second rename leaves the machine on its OLD statusLine
+  # command with a refreshed config — the previous wiring, intact — and the
+  # command half of the changed-wiring test still differs on the next run, so
+  # the retry re-wires AND re-purges. The other order strands the new command
+  # against the previous install's config, with nothing left to detect it. A
+  # rollback copy of the settings file would buy nothing here and add a partial
+  # state of its own.
+  #
+  # The config publish tests $hud_cfg, not the temp file's existence: a run that
+  # staged the config and then failed before this point used to leave the temp
+  # behind, and a later source-absent call (a synthetic himmel path, e.g. tests)
+  # would publish that stale file instead of staying the pure statusLine/env op
+  # it promises to be. Every failure path above clears the staging file too.
   if [ -n "$hud_cfg" ]; then
-    mv "$hud_dir/.config.json.tmp" "$hud_dir/config.json" || return 1
+    mv "$hud_dir/.config.json.tmp" "$hud_dir/config.json" \
+      || { rm -f "$settings.statusline.tmp"; return 1; }
   fi
+
+  mv "$settings.statusline.tmp" "$settings" \
+    || { rm -f "$settings.statusline.tmp"; return 1; }
   echo "  wired statusLine → $settings"
 }
 
