@@ -252,11 +252,15 @@ export function scanSkillCosts(options = {}) {
 
 // HIMMEL-3093 — a VENDORED.md-marked directory is upstream prose this repo
 // mirrors verbatim, not himmel's own surface; walked up from the file's own
-// directory (no hardcoded plugin list) so any vendored tree is covered.
-function vendoredRoot(filePath) {
+// directory (no hardcoded plugin list) so any vendored tree is covered. The
+// search stops at the repo root — an ancestor OUTSIDE the checkout is never
+// consulted, so a stray VENDORED.md above the repo can't launder an
+// over-limit himmel-owned file as vendored.
+function vendoredRoot(filePath, repoRoot = resolve(process.cwd())) {
   let dir = resolve(dirname(filePath));
   for (;;) {
     if (existsSync(join(dir, 'VENDORED.md'))) return dir;
+    if (dir === repoRoot) return null;
     const parent = dirname(dir);
     if (parent === dir) return null;
     dir = parent;

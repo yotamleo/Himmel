@@ -388,6 +388,25 @@ test('--max-desc refuses an over-cap description and names the file and length',
   assert.equal(run([withinCap]).status, 2, 'a bare path without --max-desc stays an error');
 });
 
+test('vendoredRoot does not search above the repo root (CR finding, PR #777)', () => {
+  const cli = join(dirname(fileURLToPath(import.meta.url)), '..', 'skill-cost.mjs');
+  const stray = join(CWD, 'stray', 'SKILL.md');
+  write(stray, skill([
+    'name: stray',
+    `description: ${LONG_DESCRIPTION}`,
+    'when_to_use: now',
+  ].join('\n')));
+  write(join(ROOT, 'VENDORED.md'), '# fixture: an ancestor OUTSIDE the repo root\n');
+
+  const run = (args) => spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', cwd: CWD });
+  const result = run(['--max-desc', '120', stray]);
+  assert.equal(result.status, 1, 'a VENDORED.md above the repo root must not exempt an over-cap file');
+  assert.match(result.stderr, /stray\/SKILL\.md: description is 1600 chars \(cap 120\)/);
+
+  rmSync(join(ROOT, 'VENDORED.md'));
+  rmSync(join(CWD, 'stray'), { recursive: true });
+});
+
 test('lintPositionalArgs refuses a bare $<digit> in ANY command\'s fenced code, argument-hint or not (HIMMEL-2051)', (t) => {
   const dir = makeTmpDir('skill-cost-posargs-');
   t.after(() => rmSync(dir, { recursive: true, force: true }));
