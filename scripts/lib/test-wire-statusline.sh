@@ -263,45 +263,60 @@ echo "ok 22 an old clone's hud config still purges on a fresh project wire"
 # the retry still sees a changed wiring and tries again. Publishing first left a
 # failed purge unrepeatable — the next run saw wiring that already matched, took
 # the no-change path, and the stale state survived every run after that.
-# The failure is produced by making the hud dir non-writable, so removing an
-# entry INSIDE it fails while the dir itself still reads (root ignores this, so
-# the case self-skips there rather than passing vacuously).
-if [ "$(id -u)" = "0" ]; then
-  echo "ok 23 SKIPPED (running as root: a read-only dir does not block unlink)"
-else
-  cfg23="$TMP/cfg23"; hud23="$cfg23/plugins/claude-hud"
-  proj23="$TMP/proj23"; mkdir -p "$proj23/.claude"
-  s23="$proj23/.claude/settings.json"
-  old23='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
-  # An earlier install: its command is wired, its config and snapshots are on disk.
-  printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old23" | sed 's/"/\\"/g')\"" > "$s23"
-  mkdir -p "$hud23"
-  printf '{"display":{"showPromptCache":false}}\n' > "$hud23/config.json"
-  seed_hud_cache "$hud23"
-  chmod 500 "$hud23"
+#
+# The failure is injected with a PATH `rm` stub that refuses ONLY the seeded
+# cache entries and delegates everything else to the real rm (CodeRabbit, PR
+# #772). An earlier version made the hud dir read-only instead, which stopped
+# being a control the moment round 6 moved staging ahead of the purge: staging
+# writes .config.json.tmp INTO that dir, so the wire failed before the purge was
+# ever reached and the case passed without exercising the path it names. The
+# stub also keeps the case meaningful as root and on Git Bash, where directory
+# permissions do not bind the same way. The asserted precondition is that the
+# staged config was cleaned up — that only happens on the purge-failure path.
+rm_bin23="$TMP/rm23-bin"; mkdir -p "$rm_bin23"
+real_rm23="$(command -v rm)"
+cfg23="$TMP/cfg23"; hud23="$cfg23/plugins/claude-hud"
+proj23="$TMP/proj23"; mkdir -p "$proj23/.claude"
+s23="$proj23/.claude/settings.json"
+old23='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+# An earlier install: its command is wired, its config and snapshots are on disk.
+printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old23" | sed 's/"/\\"/g')\"" > "$s23"
+mkdir -p "$hud23"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud23/config.json"
+seed_hud_cache "$hud23"
 
-  rc23=0
-  CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null 2>&1 || rc23=$?
-  chmod 700 "$hud23"
-  [ "$rc23" -ne 0 ] || fail "23: a failed purge must fail the wire, not report success"
-  [ "$(jq -r .statusLine.command "$s23")" = "$old23" ] \
-    || fail "23: the settings file was published despite the failed purge — the retry will see no change"
-  [ "$(jq -r .display.showPromptCache "$hud23/config.json")" = "false" ] \
-    || fail "23: the hud config was published despite the failed purge"
-  # Assert on the TOP-LEVEL entries, never a file nested inside one: under a
-  # non-writable parent, no top-level entry can be unlinked, but `rm -rf` on a
-  # subdirectory still deletes what is inside it before failing to remove the
-  # directory itself — so a nested file surviving depends on which entry the
-  # glob reached first (CR round 3).
-  [ -e "$hud23/transcript-cache" ] || fail "23: precondition — the seeded cache dir should still be there"
-  [ -e "$hud23/daily-cost.json" ] || fail "23: precondition — the seeded ledger should still be there"
+cat > "$rm_bin23/rm" <<EOF
+#!/usr/bin/env bash
+# Refuse exactly the seeded cache entries; everything else (the staged config,
+# the settings temp file) goes to the real rm.
+for _a in "\$@"; do
+  case "\$_a" in
+    "$hud23/transcript-cache"|"$hud23/context-cache"|"$hud23/config-cache"|\\
+    "$hud23/cache-economics-all.json"|"$hud23/daily-cost.json") exit 1 ;;
+  esac
+done
+exec "$real_rm23" "\$@"
+EOF
+chmod +x "$rm_bin23/rm"
 
-  # The retry, with the dir writable again, still sees the same changed wiring.
-  CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null
-  [ ! -e "$hud23/transcript-cache" ] || fail "23: the retry did not purge — the failure was not repeatable"
-  [ "$(jq -r .statusLine.command "$s23")" != "$old23" ] || fail "23: the retry did not wire"
-  echo "ok 23 a failed purge aborts the wire and the retry still purges"
-fi
+rc23=0
+PATH="$rm_bin23:$PATH" CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null 2>&1 || rc23=$?
+[ "$rc23" -ne 0 ] || fail "23: a failed purge must fail the wire, not report success"
+[ ! -e "$hud23/.config.json.tmp" ] \
+  || fail "23: precondition — the staged config should have been cleaned up, i.e. the PURGE is what failed, not staging"
+[ ! -e "$s23.statusline.tmp" ] || fail "23: the staged settings file was left behind"
+[ "$(jq -r .statusLine.command "$s23")" = "$old23" ] \
+  || fail "23: the settings file was published despite the failed purge — the retry will see no change"
+[ "$(jq -r .display.showPromptCache "$hud23/config.json")" = "false" ] \
+  || fail "23: the hud config was published despite the failed purge"
+[ -e "$hud23/transcript-cache" ] || fail "23: the seeded cache dir should have survived the failed purge"
+[ -e "$hud23/daily-cost.json" ] || fail "23: the seeded ledger should have survived the failed purge"
+
+# The retry, without the stub on PATH, still sees the same changed wiring.
+CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud23/transcript-cache" ] || fail "23: the retry did not purge — the failure was not repeatable"
+[ "$(jq -r .statusLine.command "$s23")" != "$old23" ] || fail "23: the retry did not wire"
+echo "ok 23 a failed purge aborts the wire and the retry still purges"
 
 # 24. CR round 3 [codex-2]: this library is SOURCED (himmel-update.sh does), so
 # the purge cannot rely on the caller's glob settings to skip the staged config.

@@ -50,17 +50,25 @@ function Get-ClaudeConfigDir {
 # plugin dir EXCEPT the config.json this script owns (HIMMEL-3065). Twin of the
 # bash lib's _wire_statusline_purge_hud_cache; see its header for why this is a
 # denylist and why only a CHANGED wiring may call it.
+#
+# Every file operation here and in the publish below carries -ErrorAction Stop.
+# `pwsh -File` runs under $ErrorActionPreference = 'Continue' (and setup.ps1
+# relaxes EAP around its own bash invocations), so without it a failed
+# Get-ChildItem or Remove-Item is NON-terminating: the caller's catch never
+# fires, the purge reports success, and the staged files publish anyway --
+# leaving the twins disagreeing on the one invariant that makes a failed purge
+# retryable, since the bash side's `rm -rf || return 1` does fail loudly.
 function Remove-HimmelHudCacheState {
     param([Parameter(Mandatory = $true)] [string]$HudDir)
 
     if (-not (Test-Path $HudDir)) { return }
     $dropped = $false
-    foreach ($entry in Get-ChildItem -LiteralPath $HudDir -Force) {
+    foreach ($entry in Get-ChildItem -LiteralPath $HudDir -Force -ErrorAction Stop) {
         # Dotfiles are skipped in both directions: the hud's own
         # interrupted-write temp files are inert, and the caller stages its new
         # config as .config.json.tmp so this purge cannot delete it.
         if ($entry.Name -eq 'config.json' -or $entry.Name.StartsWith('.')) { continue }
-        Remove-Item -LiteralPath $entry.FullName -Recurse -Force
+        Remove-Item -LiteralPath $entry.FullName -Recurse -Force -ErrorAction Stop
         $dropped = $true
     }
     if ($dropped) { Write-Host "  dropped stale hud cache state -> $HudDir" }
@@ -226,9 +234,9 @@ function Set-HimmelStatusLine {
         }
 
         # (5) Publish the staged settings file, then the staged hud config.
-        Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
+        Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force -ErrorAction Stop
         if ($hudTmp -and (Test-Path $hudTmp)) {
-            Move-Item -Path $hudTmp -Destination $hudConfigPath -Force
+            Move-Item -Path $hudTmp -Destination $hudConfigPath -Force -ErrorAction Stop
         }
         Write-Host "  wired statusLine → $SettingsPath"
     } finally {
