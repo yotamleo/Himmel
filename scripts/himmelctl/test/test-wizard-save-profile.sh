@@ -159,11 +159,16 @@ stage() {
   sleep 0.5
 }
 
-# The 7 base wizard answers (profile/scope/vault/handover/pluginSet/lanes/
-# alwaysOn) that produce a starter/project/vault=none/inline/lean/no-lanes/
-# no-alwaysOn profile — verbatim the same sequence test-wizard-questions.sh's
-# case5 uses (proven to ask exactly 7 questions, no more).
-BASE_ANSWERS=(starter project none inline lean none no)
+# The 9 base wizard answers (profile/scope/vault/handover/pluginSet/lanes/
+# alwaysOn/cadences/disarm-consent) that produce a starter/project/vault=none/
+# inline/lean/no-lanes/no-alwaysOn profile — verbatim the same sequence
+# test-wizard-questions.sh's case5 uses. HIMMEL-3068: this vault=none +
+# no-codex-lane shape now ALSO reaches the cadences question (drift-fix/
+# upstream-watch/repo-sync are requires:'none', always offered) followed by
+# the disarm-consent question (since declining all three counts as a
+# decline) — 7 became 9; see that file's case1/case7 for the exact count
+# assertion this mirrors.
+BASE_ANSWERS=(starter project none inline lean none no none no)
 
 # ── Case 1: interactive install, save accepted -> byte-identical file ───────
 c1="$work/case1"; mkdir -p "$c1"

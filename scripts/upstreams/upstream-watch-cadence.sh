@@ -373,7 +373,7 @@ win_rollback() {
     fi
 }
 
-win_arm() {
+cmd_arm() {
     command -v cygpath >/dev/null 2>&1 || {
         echo "ERR upstream-watch-cadence: cygpath not on PATH; cannot convert paths for schtasks" >&2
         exit 2
@@ -508,7 +508,7 @@ win_arm() {
     arm_summary "schtasks task" "$bat_file" "$log_win"
 }
 
-win_status() {
+cmd_status() {
     command -v "$SCHTASKS_BIN" >/dev/null 2>&1 || {
         echo "ERR upstream-watch-cadence: '$SCHTASKS_BIN' not on PATH (required on Windows)" >&2
         exit 2
@@ -529,7 +529,7 @@ win_status() {
     return "$status_rc"
 }
 
-win_disarm() {
+cmd_disarm() {
     command -v "$SCHTASKS_BIN" >/dev/null 2>&1 || {
         echo "ERR upstream-watch-cadence: '$SCHTASKS_BIN' not on PATH (required on Windows)" >&2
         exit 2
@@ -823,10 +823,15 @@ upstream-watch-cadence ARMED (HIMMEL-2367)
 EOF
 }
 
+# HIMMEL-3068: dispatch renamed to the cmd_arm/cmd_status/cmd_disarm naming
+# every OTHER registry-eligible cadence script already uses (pipeline-cadence.sh,
+# qmd-cadence.sh, graphmap-cadence.sh) — the windows-branch function IS the
+# literal name; cadence-registry.json's staleness lint (test-wizard-cadence-
+# registry.sh) requires that exact function to exist for a row to lint clean.
 case "$PLATFORM:$SUBCMD" in
-    windows:arm)    win_arm ;;
-    windows:status) win_status ;;
-    windows:disarm) win_disarm ;;
+    windows:arm)    cmd_arm ;;
+    windows:status) cmd_status ;;
+    windows:disarm) cmd_disarm ;;
     posix:arm)      cron_arm ;;
     posix:status)   cron_status ;;
     posix:disarm)   cron_disarm ;;

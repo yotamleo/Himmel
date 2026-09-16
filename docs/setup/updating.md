@@ -269,10 +269,17 @@ unconditional rather than drift-driven:
   reload the daemon already resident on :8181, and stopping that process is
   termination an agent may not perform. The step prints the operator commands;
   it never kills anything.
+- **node/npm/bun toolchain** (HIMMEL-3068) — reports node against the pinned
+  `.nvmrc` (never moves it — a live lane is very likely running on the
+  current node the instant this runs; prints the `nvm`/`fnm` fix instead) and
+  self-upgrades npm/bun in place via their own built-in updaters. If `bun` is
+  missing entirely, the qmd fork step's "skipped" status gets a loud
+  follow-up warning (`qmd fork update DISABLED`) instead of reading as a
+  routine no-op.
 
 `--only <item>` re-runs any single step (`pull`, `marketplace`, `jira_cli`,
-`qmd_fork`, `hermes`, `luna_template`, `graphify`, `cli_proxy`, `marketplaces`)
-without walking the chain — for the one thing that did not land.
+`qmd_fork`, `hermes`, `luna_template`, `graphify`, `cli_proxy`, `marketplaces`,
+`toolchain`) without walking the chain — for the one thing that did not land.
 
 The nightly `/drift-fix` cadence runs this whole engine as its step 1A, so a
 machine that is on all day catches up without anyone asking.
