@@ -288,7 +288,13 @@ else
     || fail "23: the settings file was published despite the failed purge — the retry will see no change"
   [ "$(jq -r .display.showPromptCache "$hud23/config.json")" = "false" ] \
     || fail "23: the hud config was published despite the failed purge"
-  [ -f "$hud23/transcript-cache/deadbeef.json" ] || fail "23: precondition — the seeded cache should still be there"
+  # Assert on the TOP-LEVEL entries, never a file nested inside one: under a
+  # non-writable parent, no top-level entry can be unlinked, but `rm -rf` on a
+  # subdirectory still deletes what is inside it before failing to remove the
+  # directory itself — so a nested file surviving depends on which entry the
+  # glob reached first (CR round 3).
+  [ -e "$hud23/transcript-cache" ] || fail "23: precondition — the seeded cache dir should still be there"
+  [ -e "$hud23/daily-cost.json" ] || fail "23: precondition — the seeded ledger should still be there"
 
   # The retry, with the dir writable again, still sees the same changed wiring.
   CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null
@@ -296,5 +302,28 @@ else
   [ "$(jq -r .statusLine.command "$s23")" != "$old23" ] || fail "23: the retry did not wire"
   echo "ok 23 a failed purge aborts the wire and the retry still purges"
 fi
+
+# 24. CR round 3 [codex-2]: this library is SOURCED (himmel-update.sh does), so
+# the purge cannot rely on the caller's glob settings to skip the staged config.
+# With `shopt -s dotglob`, `"$hud_dir"/*` matches .config.json.tmp — and the
+# purge runs before the publish, so eating it would leave the config unwritten.
+cfg24="$TMP/cfg24"; hud24="$cfg24/plugins/claude-hud"
+proj24="$TMP/proj24"; mkdir -p "$proj24/.claude"
+s24="$proj24/.claude/settings.json"
+mkdir -p "$hud24"
+printf '{"display":{"showPromptCache":false}}\n' > "$hud24/config.json"
+seed_hud_cache "$hud24"
+(
+  shopt -s dotglob
+  # shellcheck disable=SC1090  # the helper under test, resolved at runtime
+  . "$HELPER"
+  export CLAUDE_CONFIG_DIR="$cfg24"
+  wire_statusline "$s24" "$REPO_ROOT"
+) >/dev/null || fail "24: sourced wire_statusline failed under dotglob"
+[ -f "$hud24/config.json" ] || fail "24: the staged config was purged under dotglob — nothing published"
+[ "$(jq -r .display.showPromptCache "$hud24/config.json")" = "true" ] \
+  || fail "24: the published config under dotglob is not this clone's"
+[ ! -e "$hud24/transcript-cache" ] || fail "24: the purge itself did not run under dotglob"
+echo "ok 24 the purge skips the staged config even with dotglob set"
 
 echo "ALL PASS"

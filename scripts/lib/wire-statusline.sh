@@ -91,7 +91,11 @@ _wire_statusline_purge_hud_cache() {
     # An unmatched glob stays literal in bash — skip it rather than rm it.
     [ -e "$entry" ] || continue
     case "${entry##*/}" in
-      config.json) continue ;;
+      # The dotfile skip is EXPLICIT, not a property of the glob: this library
+      # is sourced (himmel-update.sh does), and a caller with `shopt -s dotglob`
+      # would otherwise make `*` match the staged .config.json.tmp and delete
+      # the config this same call is about to publish.
+      config.json|.*) continue ;;
     esac
     rm -rf "$entry" || return 1
     dropped=1
