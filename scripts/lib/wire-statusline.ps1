@@ -15,6 +15,8 @@
 #      to ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/claude-hud/config.json --
 #      the config dir, always, never the settings file's own directory
 #      (HIMMEL-2892: it is per-user config, not per-project).
+#   4. Drops the hud's RUNTIME cache state in that same dir whenever the wiring
+#      actually CHANGED (HIMMEL-3065) -- see Remove-HimmelHudCacheState.
 # Idempotent, atomic (temp + move), non-destructive (other keys preserved;
 # file + parent dir created if absent). Normalizes JSON through `jq --indent 2`
 # when jq is on PATH (matches win11.ps1's Write-SettingsJson), else falls back
@@ -42,6 +44,24 @@ function Get-ClaudeConfigDir {
     if ($d -eq '~') { return $homeDir }
     if ($d.StartsWith('~/')) { return (Join-Path $homeDir $d.Substring(2)) }
     return $d
+}
+
+# Drop the hud's RUNTIME cache state -- everything the hud writes under its
+# plugin dir EXCEPT the config.json this script owns (HIMMEL-3065). Twin of the
+# bash lib's _wire_statusline_purge_hud_cache; see its header for why this is a
+# denylist and why only a CHANGED wiring may call it.
+function Remove-HimmelHudCacheState {
+    param([Parameter(Mandatory = $true)] [string]$HudDir)
+
+    if (-not (Test-Path $HudDir)) { return }
+    $dropped = $false
+    foreach ($entry in Get-ChildItem -LiteralPath $HudDir -Force) {
+        # Dotfiles are the hud's own interrupted-write temp files -- inert.
+        if ($entry.Name -eq 'config.json' -or $entry.Name.StartsWith('.')) { continue }
+        Remove-Item -LiteralPath $entry.FullName -Recurse -Force
+        $dropped = $true
+    }
+    if ($dropped) { Write-Host "  dropped stale hud cache state -> $HudDir" }
 }
 
 function Set-HimmelStatusLine {
@@ -75,9 +95,19 @@ function Set-HimmelStatusLine {
         $himmelFwd = $HimmelPath.Replace('\', '/')
         $cmd = "node `"$himmelFwd/marketplace/plugins/claude-hud/dist/index.js`""
 
+        # The hud's plugin dir is per-USER (the config dir), never derived from
+        # the settings path -- see (3) below. Resolved up here because both
+        # halves of the changed-wiring test in (4) are read BEFORE the write.
+        $hudDir = Join-Path (Get-ClaudeConfigDir) 'plugins/claude-hud'
+        $hudConfigPath = Join-Path $hudDir 'config.json'
+        # [string] cast: Get-Content -Raw returns $null for a 0-byte file, and
+        # $null.TrimEnd() would throw in the comparison below.
+        $prevHudCfg = if (Test-Path $hudConfigPath) { [string](Get-Content $hudConfigPath -Raw) } else { '' }
+
         $settingsDir = Split-Path $SettingsPath -Parent
         if (-not $settingsDir) { $settingsDir = '.' }
 
+        $prevCmd = ''
         if (Test-Path $SettingsPath) {
             $raw = Get-Content $SettingsPath -Raw
             if ([string]::IsNullOrWhiteSpace($raw)) {
@@ -87,6 +117,9 @@ function Set-HimmelStatusLine {
             } else {
                 try {
                     $cfg = $raw | ConvertFrom-Json
+                    if ($cfg.PSObject.Properties['statusLine'] -and $cfg.statusLine.PSObject.Properties['command']) {
+                        $prevCmd = [string]$cfg.statusLine.command
+                    }
                 } catch {
                     # Throw (not Write-Error+return): the script entry point converts
                     # this to `exit 1` so `-File` callers see a non-zero code, matching
@@ -134,11 +167,11 @@ function Set-HimmelStatusLine {
         # config from the config dir, so a copy beside a project's
         # .claude/settings.json is inert AND an untracked file inside a repo.
         $hudSrc = "$himmelFwd/marketplace/plugins/claude-hud/config/himmel-config.json"
+        $hudCfg = ''
         if (Test-Path $hudSrc) {
-            $hudDir = Join-Path (Get-ClaudeConfigDir) 'plugins/claude-hud'
             New-Item -ItemType Directory -Force $hudDir | Out-Null
             $hudCfg = (Get-Content $hudSrc -Raw).Replace('<himmel-path>', $himmelFwd).Replace("`r`n", "`n")
-            $hudPath = Join-Path $hudDir 'config.json'
+            $hudPath = $hudConfigPath
             $hudTmp = "$hudPath.tmp"
             # UTF-8 without BOM; single trailing LF (matches the bash twin's printf).
             [System.IO.File]::WriteAllText($hudTmp, $hudCfg.TrimEnd("`n") + "`n")
@@ -154,6 +187,18 @@ function Set-HimmelStatusLine {
                 }
             }
             Move-Item -Path $hudTmp -Destination $hudPath -Force
+        }
+
+        # (4) HIMMEL-3065: the wiring CHANGED when either half differs from what
+        # was already on this machine -- a different renderer command (first
+        # wire, a moved or renamed clone, an older himmel instance) or a
+        # different hud config. Both are compared against values captured BEFORE
+        # the write above; a re-run that changes neither purges nothing, so a
+        # live session keeps its snapshots. Trailing newlines are normalized out
+        # of the config comparison, matching the bash twin's $(cat ...).
+        $cfgChanged = $hudCfg -and ($prevHudCfg.TrimEnd("`n") -ne $hudCfg.TrimEnd("`n"))
+        if (($prevCmd -ne $cmd) -or $cfgChanged) {
+            Remove-HimmelHudCacheState -HudDir $hudDir
         }
         Write-Host "  wired statusLine → $SettingsPath"
     } finally {

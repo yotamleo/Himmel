@@ -145,4 +145,89 @@ CLAUDE_CONFIG_DIR="   " HOME="$home15" bash "$HELPER" "$proj15/.claude/settings.
 [ ! -e "$proj15/.claude/plugins" ] || fail "whitespace-only CLAUDE_CONFIG_DIR leaked the hud config into the project dir"
 echo "ok 15 whitespace-only CLAUDE_CONFIG_DIR falls back to \$HOME/.claude"
 
+# ── HIMMEL-3065: the hud's RUNTIME cache state is dropped when the wiring
+# CHANGES, and only then. The dir under test is the hud's own plugin dir
+# (${CLAUDE_CONFIG_DIR}/plugins/claude-hud) — config.json is settings this
+# script owns; everything beside it is per-session snapshot state that must not
+# survive a migration onto a different install.
+
+# Seed the three cache dirs + the two ledgers the hud writes, with one file
+# under each dir, so a purge is observable per-entry rather than only per-dir.
+seed_hud_cache() {
+  local dir="$1" sub
+  for sub in transcript-cache context-cache config-cache; do
+    mkdir -p "$dir/$sub"
+    printf '{"stale":true}' > "$dir/$sub/deadbeef.json"
+  done
+  printf '{"reads":1,"writes":2,"inputs":3,"computedAt":1}' > "$dir/cache-economics-all.json"
+  printf '{"date":"20260101","sessions":{}}' > "$dir/daily-cost.json"
+}
+
+# 16. migration: an EARLIER install's statusLine command is already wired and
+# the hud plugin dir is full of that install's snapshots. Re-wiring onto this
+# clone must drop every one of them — the macOS report: an expired cache clock,
+# the previous install's counts, and no cost figure.
+cfg16="$TMP/cfg16"; hud16="$cfg16/plugins/claude-hud"
+proj16="$TMP/proj16"; mkdir -p "$proj16/.claude"
+s16="$proj16/.claude/settings.json"
+echo '{"statusLine":{"type":"command","command":"node \"/old/himmel/marketplace/plugins/claude-hud/dist/index.js\""}}' > "$s16"
+seed_hud_cache "$hud16"
+CLAUDE_CONFIG_DIR="$cfg16" bash "$HELPER" "$s16" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud16/transcript-cache" ] || fail "16: transcript-cache survived a changed wiring"
+[ ! -e "$hud16/context-cache" ]    || fail "16: context-cache survived a changed wiring"
+[ ! -e "$hud16/config-cache" ]     || fail "16: config-cache survived a changed wiring"
+[ ! -e "$hud16/cache-economics-all.json" ] || fail "16: cache-economics ledger survived a changed wiring"
+[ ! -e "$hud16/daily-cost.json" ]  || fail "16: daily-cost ledger survived a changed wiring"
+[ -f "$hud16/config.json" ] || fail "16: config.json must SURVIVE the purge — this script owns it"
+jq -e . "$hud16/config.json" >/dev/null 2>&1 || fail "16: surviving config.json is not valid JSON"
+echo "ok 16 changed wiring drops the hud cache state, keeps config.json"
+
+# 17. steady state: the SAME clone re-wired over its own wiring changes nothing,
+# so the caches stay. Without this, every himmel-update would throw away the
+# context fallback snapshot of every live session.
+seed_hud_cache "$hud16"
+CLAUDE_CONFIG_DIR="$cfg16" bash "$HELPER" "$s16" "$REPO_ROOT" >/dev/null
+[ -f "$hud16/transcript-cache/deadbeef.json" ] || fail "17: an unchanged re-wire purged the transcript cache"
+[ -f "$hud16/context-cache/deadbeef.json" ]    || fail "17: an unchanged re-wire purged the context cache"
+[ -f "$hud16/daily-cost.json" ]                || fail "17: an unchanged re-wire purged the daily-cost ledger"
+echo "ok 17 unchanged re-wire preserves the hud cache state"
+
+# 18. the CONFIG half on its own: same command, but the hud config on disk is
+# the earlier install's. An older himmel instance ships an older
+# himmel-config.json, so this is the migration case where the clone path
+# happens to be unchanged.
+printf '{"display":{"showPromptCache":false}}\n' > "$hud16/config.json"
+seed_hud_cache "$hud16"
+CLAUDE_CONFIG_DIR="$cfg16" bash "$HELPER" "$s16" "$REPO_ROOT" >/dev/null
+[ ! -e "$hud16/transcript-cache" ] || fail "18: a stale hud config did not trigger the purge"
+[ "$(jq -r .display.showPromptCache "$hud16/config.json")" = "true" ] || fail "18: hud config not refreshed"
+echo "ok 18 a changed hud config drops the cache state"
+
+# 19. a MOVED/renamed clone (the command half on its own), with the hud config
+# source absent on both sides — a synthetic himmel path never drops a config, so
+# the command comparison has to carry the decision by itself.
+cfg19="$TMP/cfg19"; hud19="$cfg19/plugins/claude-hud"
+proj19="$TMP/proj19"; mkdir -p "$proj19/.claude"
+s19="$proj19/.claude/settings.json"
+CLAUDE_CONFIG_DIR="$cfg19" bash "$HELPER" "$s19" "/old/path/himmel" >/dev/null
+seed_hud_cache "$hud19"
+CLAUDE_CONFIG_DIR="$cfg19" bash "$HELPER" "$s19" "/new/path/himmel" >/dev/null
+[ ! -e "$hud19/transcript-cache" ] || fail "19: a moved clone did not drop the hud cache state"
+[ ! -e "$hud19/daily-cost.json" ]  || fail "19: a moved clone did not drop the daily-cost ledger"
+echo "ok 19 a moved himmel clone drops the hud cache state"
+
+# 20. the purge never reaches outside the hud plugin dir: Claude Code keeps its
+# real plugin installs (installed_plugins.json, marketplaces/) as siblings.
+cfg20="$TMP/cfg20"; hud20="$cfg20/plugins/claude-hud"
+proj20="$TMP/proj20"; mkdir -p "$proj20/.claude" "$cfg20/plugins/marketplaces/m1"
+s20="$proj20/.claude/settings.json"
+printf 'keep me\n' > "$cfg20/plugins/installed_plugins.json"
+printf 'keep me\n' > "$cfg20/plugins/marketplaces/m1/plugin.json"
+seed_hud_cache "$hud20"
+CLAUDE_CONFIG_DIR="$cfg20" bash "$HELPER" "$s20" "$REPO_ROOT" >/dev/null
+[ -f "$cfg20/plugins/installed_plugins.json" ] || fail "20: purge deleted a sibling of the hud plugin dir"
+[ -f "$cfg20/plugins/marketplaces/m1/plugin.json" ] || fail "20: purge reached into another plugin's dir"
+[ ! -e "$hud20/transcript-cache" ] || fail "20: purge did not run for a first-time wire"
+echo "ok 20 purge stays inside the hud plugin dir"
+
 echo "ALL PASS"

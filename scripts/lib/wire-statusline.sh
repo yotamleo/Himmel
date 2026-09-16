@@ -24,6 +24,8 @@
 #      not per-project: deriving it relative to the settings path dropped an
 #      untracked .claude/plugins/claude-hud/config.json INSIDE the repo on
 #      every project-scope install.
+#   4. Drops the hud's RUNTIME cache state in that same dir whenever the wiring
+#      actually CHANGED (HIMMEL-3065) — see _wire_statusline_purge_hud_cache.
 #
 # Idempotent (re-running yields the same result), atomic (temp file + mv), and
 # non-destructive (all other keys / all other env keys preserved; file + parent
@@ -58,6 +60,40 @@ _wire_statusline_config_dir() {
   printf '%s\n' "$d"
 }
 
+# Drop the hud's RUNTIME cache state — everything the hud writes under its
+# plugin dir EXCEPT the config.json this script owns (HIMMEL-3065).
+#
+# That dir holds per-session snapshots, not settings: transcript-cache/ (session
+# tokens, the prompt-cache anchor + TTL, compaction state), context-cache/ (the
+# context-window fallback frame), config-cache/, plus the cache-economics and
+# daily-cost ledgers. Wiring a DIFFERENT install over an existing one — the
+# migration case: an earlier himmel instance, a moved or renamed clone — leaves
+# that state behind, and the hud then renders the PREVIOUS install's counts
+# (with an already-expired cache clock, and no cost figure once the stale
+# snapshot no longer satisfies the cost path). Only the caller decides when this
+# runs: a steady-state re-wire must NOT purge, or every himmel-update would
+# throw away the context fallback snapshot of every live session.
+#
+# Denylist, not allowlist: the hud gains state files over time (daily-cost.json
+# is itself recent), and a list enumerated here would silently stop covering
+# them — which is the bug this function exists to fix. Dotfiles are skipped:
+# the only ones are the hud's own interrupted-write temp files, which are inert.
+_wire_statusline_purge_hud_cache() {
+  local hud_dir="$1" entry dropped=0
+  [ -d "$hud_dir" ] || return 0
+  for entry in "$hud_dir"/*; do
+    # An unmatched glob stays literal in bash — skip it rather than rm it.
+    [ -e "$entry" ] || continue
+    case "${entry##*/}" in
+      config.json) continue ;;
+    esac
+    rm -rf "$entry" || return 1
+    dropped=1
+  done
+  [ "$dropped" -eq 1 ] && echo "  dropped stale hud cache state → $hud_dir"
+  return 0
+}
+
 wire_statusline() {
   local settings="$1" himmel="$2"
   command -v jq >/dev/null 2>&1 || { echo "wire-statusline: jq required" >&2; return 1; }
@@ -66,6 +102,14 @@ wire_statusline() {
   # when a caller passes a Windows backslash path (Git Bash tolerates /c/... ).
   local himmel_fwd="${himmel//\\//}"
   local cmd="node \"${himmel_fwd}/marketplace/plugins/claude-hud/dist/index.js\""
+
+  # The hud's plugin dir is per-USER (the config dir), never derived from the
+  # settings path — see (3) below. Resolved up here because the previous hud
+  # config is read from it BEFORE the write, to decide whether the wiring
+  # changed (4).
+  local hud_dir; hud_dir="$(_wire_statusline_config_dir)/plugins/claude-hud"
+  local prev_hud_cfg=""
+  [ -f "$hud_dir/config.json" ] && prev_hud_cfg="$(cat "$hud_dir/config.json")"
 
   local settings_dir; settings_dir="$(dirname "$settings")"
   mkdir -p "$settings_dir"
@@ -81,6 +125,10 @@ wire_statusline() {
       return 1
     fi
   fi
+
+  # The command currently wired, if any — one half of the changed-wiring test
+  # in (4). Read from the validated $base, so an absent/empty file yields "".
+  local prev_cmd; prev_cmd="$(printf '%s' "$base" | jq -r '.statusLine.command? // ""')"
 
   # (1) statusLine → hud renderer, (2) merge the extra-cmd gate into .env
   # (creating .env if absent, preserving every other env key). Fail LOUD on a
@@ -102,10 +150,10 @@ wire_statusline() {
   # .claude/settings.json is both inert and an untracked file dropped inside
   # someone's repo (observed on the himmel checkout itself, 2026-09-09).
   local hud_src="${himmel_fwd}/marketplace/plugins/claude-hud/config/himmel-config.json"
+  local hud_cfg=""
   if [ -f "$hud_src" ]; then
-    local hud_dir; hud_dir="$(_wire_statusline_config_dir)/plugins/claude-hud"
     mkdir -p "$hud_dir"
-    local hud_cfg; hud_cfg="$(cat "$hud_src")"
+    hud_cfg="$(cat "$hud_src")"
     hud_cfg="${hud_cfg//<himmel-path>/$himmel_fwd}"
     printf '%s\n' "$hud_cfg" > "$hud_dir/config.json.tmp" \
       || { rm -f "$hud_dir/config.json.tmp"; return 1; }
@@ -118,6 +166,18 @@ wire_statusline() {
       return 1
     fi
     mv "$hud_dir/config.json.tmp" "$hud_dir/config.json" || return 1
+  fi
+
+  # (4) HIMMEL-3065: the wiring CHANGED when either half differs from what was
+  # already on this machine — a different renderer command (first wire, a moved
+  # or renamed clone, an older himmel instance) or a different hud config. Both
+  # are compared against values captured BEFORE the write above. A re-run that
+  # changes neither purges nothing, so a live session keeps its snapshots.
+  # $hud_cfg is "" when the source config is absent (synthetic-path callers,
+  # e.g. tests), which makes that half compare equal and leaves the command
+  # half deciding on its own.
+  if [ "$prev_cmd" != "$cmd" ] || { [ -n "$hud_cfg" ] && [ "$prev_hud_cfg" != "$hud_cfg" ]; }; then
+    _wire_statusline_purge_hud_cache "$hud_dir" || return 1
   fi
   echo "  wired statusLine → $settings"
 }

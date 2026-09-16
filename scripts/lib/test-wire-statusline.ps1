@@ -87,6 +87,67 @@ Check (-not (Test-Path (Join-Path $proj7 '.claude/plugins'))) "7a nothing droppe
 Check (Test-Path (Join-Path $cfg7 'plugins/claude-hud/config.json')) "7b hud config landed under CLAUDE_CONFIG_DIR"
 $env:CLAUDE_CONFIG_DIR = $cfgDir
 
+# 8 HIMMEL-3065: the hud's RUNTIME cache state is dropped when the wiring
+# CHANGES, and only then -- parity with bash cases 16-20. config.json is
+# settings this script owns; everything beside it is per-session snapshot state
+# that must not survive a migration onto a different install.
+function Seed-HudCache([string]$dir) {
+    foreach ($sub in @('transcript-cache', 'context-cache', 'config-cache')) {
+        New-Item -ItemType Directory -Force (Join-Path $dir $sub) | Out-Null
+        '{"stale":true}' | Set-Content (Join-Path $dir "$sub/deadbeef.json")
+    }
+    '{"reads":1,"writes":2,"inputs":3,"computedAt":1}' | Set-Content (Join-Path $dir 'cache-economics-all.json')
+    '{"date":"20260101","sessions":{}}' | Set-Content (Join-Path $dir 'daily-cost.json')
+}
+
+$cfg8 = Join-Path $tmp 'cfg8'
+$hud8 = Join-Path $cfg8 'plugins/claude-hud'
+$proj8 = Join-Path $tmp 'proj8'
+New-Item -ItemType Directory -Force (Join-Path $proj8 '.claude') | Out-Null
+$s8 = Join-Path $proj8 '.claude/settings.json'
+$env:CLAUDE_CONFIG_DIR = $cfg8
+# An EARLIER install's command is already wired, and its snapshots are on disk.
+'{"statusLine":{"type":"command","command":"node \"/old/himmel/marketplace/plugins/claude-hud/dist/index.js\""}}' | Set-Content $s8
+New-Item -ItemType Directory -Force $hud8 | Out-Null
+Seed-HudCache $hud8
+Wire $s8 $repoRoot | Out-Null
+Check (-not (Test-Path (Join-Path $hud8 'transcript-cache'))) "8a changed wiring drops transcript-cache"
+Check (-not (Test-Path (Join-Path $hud8 'context-cache'))) "8b changed wiring drops context-cache"
+Check (-not (Test-Path (Join-Path $hud8 'daily-cost.json'))) "8c changed wiring drops the daily-cost ledger"
+Check (Test-Path (Join-Path $hud8 'config.json')) "8d config.json survives the purge"
+
+# 9 steady state: the SAME clone re-wired over its own wiring changes nothing,
+# so the caches stay -- otherwise every update would throw away the context
+# fallback snapshot of every live session.
+Seed-HudCache $hud8
+Wire $s8 $repoRoot | Out-Null
+Check (Test-Path (Join-Path $hud8 'transcript-cache/deadbeef.json')) "9a unchanged re-wire keeps transcript-cache"
+Check (Test-Path (Join-Path $hud8 'daily-cost.json')) "9b unchanged re-wire keeps the daily-cost ledger"
+
+# 10 the CONFIG half on its own: same command, but an earlier install's hud
+# config on disk (the migration case where the clone path is unchanged).
+'{"display":{"showPromptCache":false}}' | Set-Content (Join-Path $hud8 'config.json')
+Seed-HudCache $hud8
+Wire $s8 $repoRoot | Out-Null
+Check (-not (Test-Path (Join-Path $hud8 'transcript-cache'))) "10a a changed hud config drops the cache state"
+$c10 = Get-Content (Join-Path $hud8 'config.json') -Raw | ConvertFrom-Json
+Check ($c10.display.showPromptCache -eq $true) "10b hud config refreshed"
+
+# 11 a MOVED/renamed clone (the command half on its own): a synthetic himmel
+# path drops no config, so the command comparison decides by itself.
+$cfg11 = Join-Path $tmp 'cfg11'
+$hud11 = Join-Path $cfg11 'plugins/claude-hud'
+$proj11 = Join-Path $tmp 'proj11'
+New-Item -ItemType Directory -Force (Join-Path $proj11 '.claude') | Out-Null
+$s11 = Join-Path $proj11 '.claude/settings.json'
+$env:CLAUDE_CONFIG_DIR = $cfg11
+Wire $s11 'C:\old\path\himmel' | Out-Null
+New-Item -ItemType Directory -Force $hud11 | Out-Null
+Seed-HudCache $hud11
+Wire $s11 'C:\new\path\himmel' | Out-Null
+Check (-not (Test-Path (Join-Path $hud11 'transcript-cache'))) "11 a moved clone drops the hud cache state"
+$env:CLAUDE_CONFIG_DIR = $cfgDir
+
 $env:CLAUDE_CONFIG_DIR = $prevClaudeConfigDir
 Get-ChildItem $tmp -Recurse | Remove-Item -Force -Recurse
 Remove-Item $tmp -Force
