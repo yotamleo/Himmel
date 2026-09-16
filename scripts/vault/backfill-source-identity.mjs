@@ -228,7 +228,12 @@ async function main() {
         existingPushedAt: note.existingPushedAt,
         newPushedAtDate,
       });
-      const { content, changed } = patchFrontmatter(note.content, fields);
+      // Re-read immediately before writing rather than patching the content
+      // captured at loadNotes() time: a full run walks hundreds of repos
+      // through sequential network calls, and patching stale content would
+      // silently clobber an edit made to the note during that window.
+      const sourceContent = args.apply ? readFileSync(note.absPath, "utf8") : note.content;
+      const { content, changed } = patchFrontmatter(sourceContent, fields);
       if (note.existingPushedAt && newPushedAtDate) {
         repoComparable = true;
         if (note.existingPushedAt !== newPushedAtDate) repoMoved = true;
