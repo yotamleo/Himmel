@@ -15,7 +15,14 @@ fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures+1)); }
 # systems node LIVES in the coreutils dir (/usr/bin, HIMMEL-966), so use
 # a curated symlink dir carrying only the tools these cases need.
 UTILS_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-utils.XXXXXX")"
-trap 'rm -rf "$UTILS_ROOT"' EXIT
+# codex (CodeRabbit, this round): the path-widen and empty-PATH fixtures below
+# each mktemp their own separate directory and previously cleaned it up only
+# on their normal success path, so an interrupt or early exit could leak
+# either one. Assigned immediately after each fixture's successful mktemp,
+# then swept by this same file-scope trap alongside $UTILS_ROOT.
+PATH_WIDEN_TMP=""
+EMPTY_PATH_TMP=""
+trap 'rm -rf "$UTILS_ROOT" "${PATH_WIDEN_TMP:-}" "${EMPTY_PATH_TMP:-}"' EXIT
 UTILS_DIR="$UTILS_ROOT/utils"
 mkdir -p "$UTILS_DIR"
 for _t in bash dirname sort tail cat mkdir date; do
@@ -498,6 +505,7 @@ else
         tmp=""
     fi
     if [ -n "$tmp" ]; then
+        PATH_WIDEN_TMP="$tmp"
         hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
         gh_dir="$tmp/ghbin"; mkdir -p "$gh_dir"
         cat > "$gh_dir/gh" <<'EOF'
@@ -578,6 +586,7 @@ else
         tmp=""
     fi
     if [ -n "$tmp" ]; then
+        EMPTY_PATH_TMP="$tmp"
         hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
         cat > "$hook_dir/path-echo-hook.sh" <<'EOF'
 #!/usr/bin/env bash
