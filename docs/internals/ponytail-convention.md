@@ -53,7 +53,7 @@ Per `CLAUDE.md`'s "Adding a rule — pick the cheapest layer": escalate to a
 structural gate only on the **second** drift instance, never on the first.
 This ticket *is* the first time the convention has been examined at all —
 there is no prior documented instance to escalate from — and the 37 existing
-sites are consistent enough (module the two stragglers above, both
+sites are consistent enough (modulo the two stragglers above, both
 harmless) that the convention is evidently holding on imitation alone. The
 honest read of the evidence is: document it, do not gate it yet.
 
