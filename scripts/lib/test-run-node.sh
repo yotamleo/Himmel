@@ -474,5 +474,71 @@ for f in "$REPO_ROOT/.claude/settings.json" "$PLUGIN_HOOKS/hooks.json"; do
     fi
 done
 
+echo "== run-node: a minimal hook-shell PATH (GUI-launch-shaped) is widened before exec, so a spawned hook child can still see gh (HIMMEL-3073) =="
+# HIMMEL-3073 (adopter #773): resolve_node() finds node fine even off a
+# minimal PATH — it walks ABSOLUTE well-known locations, never PATH itself
+# (resolve-node.sh step 3). But run-node.sh used to `exec` that node with
+# PATH untouched, and run-hook-with-bash.js's spawnSync calls pass
+# `env: process.env` straight through — so a hook spawned under a minimal
+# starting PATH (the GUI-launch case this file's own header already
+# anticipates, and what a POSIX-mode `command -p sh` guarantees when the
+# caller had none) inherits that SAME minimal PATH, and anything the hook
+# shells out to via `command -v` (gh, above all) is invisible even though
+# node itself resolved. This reproduces the downstream consequence
+# hermetically: the starting PATH is a genuinely minimal stub (asserted
+# below), gh lives OUTSIDE it, and node is found only via the absolute
+# RESOLVE_NODE_PROBE_DIRS fallback — never via PATH.
+real_node="$(command -v node 2>/dev/null || true)"
+if [ -z "$real_node" ]; then
+    echo "  SKIP: no real node on PATH to resolve against"
+else
+    node_dir="$(dirname "$real_node")"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-path-widen.XXXXXX")"
+    hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
+    gh_dir="$tmp/ghbin"; mkdir -p "$gh_dir"
+    cat > "$gh_dir/gh" <<'EOF'
+#!/bin/sh
+echo FAKE_GH
+EOF
+    chmod +x "$gh_dir/gh"
+    cat > "$hook_dir/gh-probe-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+if command -v gh >/dev/null 2>&1; then
+    echo -n GH_FOUND
+else
+    echo -n GH_MISSING
+fi
+echo -n ' '
+if command -v node >/dev/null 2>&1; then
+    echo NODE_FOUND
+else
+    echo NODE_MISSING
+fi
+EOF
+    chmod +x "$hook_dir/gh-probe-hook.sh"
+
+    # Precondition: the starting PATH is genuinely PATH-poor — UTILS_DIR only
+    # (coreutils, no node, no gh) — and gh_dir is deliberately NOT on it. A
+    # fixture that fails for any other reason (unwritable TMPDIR, a blanket
+    # stub) would be vacuous; this asserts the one condition the leg actually
+    # depends on before trusting the run below.
+    if PATH="$UTILS_DIR" command -v gh >/dev/null 2>&1; then
+        fail "precondition broken: gh resolves on the minimal starting PATH before the chokepoint even runs"
+    else
+        pass "precondition: gh is NOT reachable on the minimal starting PATH"
+    fi
+
+    cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-probe-hook.sh\""
+    out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$node_dir" RUN_NODE_EXTRA_PATH_DIRS="$gh_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
+    rc=$?
+    err="$(cat "$tmp/err.txt")"
+    if [ "$rc" -eq 0 ] && [ "$out" = "GH_FOUND NODE_FOUND" ]; then
+        pass "hook spawned off a minimal starting PATH still finds gh AND node (out='$out')"
+    else
+        fail "hook spawned off a minimal starting PATH -> rc=$rc out='$out' err='$err' (want 'GH_FOUND NODE_FOUND')"
+    fi
+    rm -rf "$tmp"
+fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi
