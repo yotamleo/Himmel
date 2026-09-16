@@ -2279,6 +2279,22 @@ if marker_exists "$tmp"; then pass; else fail "5i deselected-but-available lane:
 rm -rf "$tmp"
 unset CR_FLOOR_FALLBACK
 
+# 5j (HIMMEL-3110). reason=quota-long specifically -- the exact bucket
+# failure-classify.sh now emits for codex's own usage-limit wording (a
+# multi-day-out absolute reset date). 5a only pins the literal reason
+# "quota"; this closes the loop for the actual string the fixed classifier
+# produces, so a future narrowing of EXHAUSTION_REASONS' membership away
+# from "quota-long" specifically would be caught here, not just generically.
+export CR_FLOOR_FALLBACK=claude-only
+make_repo || exit 1
+write_marker "$tmp" "$sha"
+write_ledger "$tmp" "$(avail_ok_claude "${sha:0:8}")" "$(avail_reason "${sha:0:8}" codex unavailable quota-long)"
+stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+run_clear "$tmp" 0 "5j reason=quota-long (codex usage-limit bucket, HIMMEL-3110) + claude ok -> exit 0"
+if marker_exists "$tmp"; then fail "5j floor-fallback accepted: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+unset CR_FLOOR_FALLBACK
+
 unset CR_REQUIRE_CROSS_MODEL
 
 echo

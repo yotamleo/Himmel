@@ -118,7 +118,7 @@ did not land (a cli-proxy roll that correctly refused to bounce a live render, a
 qmd step after you restarted the daemon by hand) without paying for a full pull
 + marketplace + jira-dist + luna-template cycle. Items: `pull`, `marketplace`,
 `jira_cli`, `qmd_fork`, `hermes`, `luna_template`, `graphify`, `cli_proxy`,
-`marketplaces`. It does NOT walk the chain (whose abort-on-first-failure
+`marketplaces`, `toolchain`. It does NOT walk the chain (whose abort-on-first-failure
 ordering exists because those items genuinely depend on each other); `--only
 pull` still honours the dirty-tree pre-check. An unknown item exits 2.
 

@@ -505,6 +505,25 @@ _cfp_invoke() {
     fi
 }
 
+# HIMMEL-3109: bounded, TAIL-biased excerpt of a hermes response for the
+# panel's failure-classify.sh signature match. HIMMEL-737 printed a HEAD bound
+# (%.300s) so a provider failure buried in a large response would still reach
+# stderr — but hermes' own gateway prepends a multi-line banner ("a previous
+# hermes update...", fallback-provider hints) ahead of the actual "Provider
+# said: HTTP 429: ..." line, so a head bound pushes the ONE line
+# classify_failure matches on (429/401/quota wording) past the cut and only
+# critic-first-pass.sh's own "malformed output" text survives — reproducing
+# exactly the dark-fallback bug HIMMEL-737 was written to fix, one banner
+# later. Provider diagnostics are summary lines, not full transcripts, so the
+# LAST bytes are where the decisive status text lives; 2000 bytes is generous
+# headroom for a banner+message body while staying far short of
+# ledger-append.sh's own 200-char --detail cap (HIMMEL-1176) that scrubs and
+# truncates whatever critic-panel.sh derives from this excerpt before it ever
+# reaches the ledger.
+_cfp_raw_excerpt() {
+    printf '%s' "$1" | tail -c 2000
+}
+
 _attempt=0
 raw=""
 rc=1
@@ -528,6 +547,12 @@ if [ "$rc" -ne 0 ] || [ -z "$(printf '%s' "$raw" | tr -d '[:space:]')" ]; then
     if [ -n "$log" ]; then
         printf '%s\n' "$raw" > "$log"
         echo "critic-first-pass.sh: invoke failed (rc=$rc) — fail-open, proceed claude-only. Raw output: $log" >&2
+        # HIMMEL-3109: this branch used to stop here — only the log PATH
+        # reached stderr, never the response text, so a real transport error
+        # (auth/quota/rate-limit) landing here was invisible to
+        # failure-classify.sh and fell through to generic-rc-N. See
+        # _cfp_raw_excerpt for why this is a tail, not a head.
+        printf 'critic-first-pass.sh: raw tail: %s\n' "$(_cfp_raw_excerpt "$raw")" >&2
     else
         echo "critic-first-pass.sh: invoke failed (rc=$rc) — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
         printf '%s\n' "$raw" >&2
@@ -762,12 +787,17 @@ if [ "$rc" -ne 0 ]; then
     if [ -n "$log" ]; then
         printf '%s\n' "$raw" > "$log"
         echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. Raw output: $log" >&2
-        # HIMMEL-737: surface a bounded head of the raw reply on stderr too -
+        # HIMMEL-737: surface a bounded excerpt of the raw reply on stderr too -
         # provider failures (e.g. an HTTP 403 quota message) arrive as the
         # "review" body, and the panel's quota-exhaustion fallback matches its
         # signature against THIS stderr; a path-only line kept the fallback
         # chain permanently dark (live-debugged: qwen3coder 403 never fell back).
-        printf 'critic-first-pass.sh: raw head: %.300s\n' "$raw" >&2
+        # HIMMEL-3109: switched from a 300-char HEAD to _cfp_raw_excerpt's tail
+        # bound — a hermes gateway banner ahead of the provider's own message
+        # pushed the decisive status line past a head cut, so a genuine
+        # 429/401 classified malformed-output instead (see _cfp_raw_excerpt
+        # above for the full account).
+        printf 'critic-first-pass.sh: raw tail: %s\n' "$(_cfp_raw_excerpt "$raw")" >&2
     else
         echo "critic-first-pass.sh: malformed output — fail-open, proceed claude-only. mktemp failed; raw output follows on stderr:" >&2
         printf '%s\n' "$raw" >&2

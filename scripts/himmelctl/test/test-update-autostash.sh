@@ -11,7 +11,13 @@
 # only, no network.
 #
 # Covers:
-#   T1  default (env unset) + dirty tree → refuses (exit 1) before the chain.
+#   T0  default (env unset) + UNTRACKED-only dirt → pulls clean, no refusal
+#       (HIMMEL-3078: the gate only needs to know about tracked changes —
+#       `--ff-only` never touches untracked files and refuses on its own if an
+#       incoming path would overwrite one).
+#   T1  default (env unset) + TRACKED dirty tree → refuses (exit 1) before the
+#       chain. The control T0 proves: same gate, same env, tracked vs
+#       untracked is the only variable, and only tracked still refuses.
 #   T1b HIMMEL_UPDATE_AUTOSTASH=1 + dirty tree → takes the autostash fall-through
 #       (advisory printed, no refusal).
 #   T2  autostash, non-conflicting upstream → pull succeeds, local diff restored.
@@ -175,6 +181,19 @@ if [ "$station_rc" -eq 0 ] && [ "$clean_rc" -eq 0 ] && [ "$station" = "$clean" ]
 else
     assert_fail "suite is hermetic to a station install profile (station_rc=$station_rc clean_rc=$clean_rc station='$station' clean='$clean')"
 fi
+
+# ─── T0: untracked-only dirt → pulls clean, no refusal (HIMMEL-3078) ─────────
+echo "T0: untracked-only stray, env unset → pulls clean, no refusal"
+build_scenario f.txt
+printf 'stray\n' > "$CLONE/untracked-stray.txt"
+rc=0
+out=$(cd "$CLONE" && bash "$CLONE/scripts/himmel-update.sh" 2>&1) || rc=$?
+assert_eq "T0: exit 0" "0" "$rc"
+assert_not_contains "T0: no refusal" "refusing to pull into a dirty tree" "$out"
+assert_eq "T0: HEAD advanced to upstream" \
+    "$(git -C "$CLONE" rev-parse origin/main)" "$(git -C "$CLONE" rev-parse HEAD)"
+assert_eq "T0: untracked stray survives the pull" \
+    "stray" "$(cat "$CLONE/untracked-stray.txt")"
 
 # ─── T1: default (env unset) + dirty → refuses ───────────────────────────────
 echo "T1: dirty tree, env unset → refuses to pull"

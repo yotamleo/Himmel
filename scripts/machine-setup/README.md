@@ -16,7 +16,7 @@ Invoke-WebRequest "https://raw.githubusercontent.com/yotamleo/Himmel/main/script
 pwsh -ExecutionPolicy Bypass -File "$env:TEMP\win11.ps1" -LunaRemote "https://github.com/<you>/<your-vault>.git"
 ```
 
-**What it installs:** winget packages (git, node LTS, python, jq), uv+uvx, Claude Code CLI, RTK, himmel repo + setup, claude-hud statusline (HIMMEL-718), CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (shallow top-level merge), **end-session-wiki SessionEnd hook (prompted: PowerShell / Bash / Both / Skip)**, Obsidian.
+**What it installs:** winget packages (git, node LTS, python, jq), uv+uvx, bun (HIMMEL-3068), Claude Code CLI, RTK, himmel repo + setup, claude-hud statusline (HIMMEL-718), CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (shallow top-level merge), **end-session-wiki SessionEnd hook (prompted: PowerShell / Bash / Both / Skip)**, Obsidian.
 
 **After run:** Complete the printed manual checklist (Jira token, Atlassian MCP token, qmd embed).
 
@@ -34,7 +34,7 @@ curl -fsSL "https://raw.githubusercontent.com/yotamleo/Himmel/main/scripts/machi
 bash /tmp/ubuntu.sh --luna-remote "https://github.com/<you>/<your-vault>.git"
 ```
 
-**What it installs:** apt packages (git, python3, jq, curl), node LTS via NodeSource, uv+uvx, Claude Code CLI, RTK (.deb), himmel repo + setup, claude-hud statusline (HIMMEL-718), CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (jq deep-merge), **end-session-wiki SessionEnd hook (prompted: Y/n, bash-only)**, **`at` + atd (auto-arm scheduler backend, prompted: Y/n)**, Obsidian (.deb).
+**What it installs:** apt packages (git, python3, jq, curl), node LTS via NodeSource, uv+uvx, bun (HIMMEL-3068), Claude Code CLI, RTK (.deb), himmel repo + setup, claude-hud statusline (HIMMEL-718), CLAUDE.md + RTK.md, obsidian-second-brain plugin, Luna vault + pre-commit, `~/.claude/settings.json` (jq deep-merge), **end-session-wiki SessionEnd hook (prompted: Y/n, bash-only)**, **`at` + atd (auto-arm scheduler backend, prompted: Y/n)**, Obsidian (.deb).
 
 **After run:** Complete the printed manual checklist (Jira token, Atlassian MCP token, qmd embed).
 
@@ -48,8 +48,13 @@ bash /tmp/ubuntu.sh --luna-remote "https://github.com/<you>/<your-vault>.git"
 
 **Requirements (prerequisites — NOT installed by this script):** git, node, the
 Claude CLI, and the himmel clone already present. This is **not** a full
-bootstrap (no brew/node/CLI/vault install — that is a later epic); it wires only
-the himmel-specific bits the usage-cap auto-arm chain needs.
+bootstrap (no node/CLI/vault install — that is a later epic); it wires the
+himmel-specific bits the usage-cap auto-arm chain needs, plus (HIMMEL-3068) the
+one thing macOS genuinely had no install path for at all: `uv` and `bun`, both
+hard dependencies elsewhere in the harness (graphify; the qmd fork
+updater/jira CLI fallback). Requires **Homebrew** — installs `uv`/`bun` via it
+(never a curl-pipe installer here), and fails loud naming
+[brew.sh](https://brew.sh) if it is absent.
 
 ```bash
 # 1. Download
@@ -59,11 +64,14 @@ curl -fsSL "https://raw.githubusercontent.com/yotamleo/Himmel/main/scripts/machi
 bash /tmp/macos.sh
 ```
 
-**What it wires:** the himmel statusline (the cap *trigger*), the
-auto-arm-on-cap PreToolUse hook (the cap *action*), and verifies `crontab` (the
-macOS scheduler backend — arm-resume uses crontab, **not** `at`/atrun, which is
-off-by-default / SIP-fragile). Idempotent. On modern macOS, cron may need Full
-Disk Access granted to `/usr/sbin/cron` — the script prints this caveat.
+**What it wires:** `uv`+`uvx` and `bun` via Homebrew (HIMMEL-3068), the himmel
+statusline (the cap *trigger*), the auto-arm-on-cap PreToolUse hook (the cap
+*action*), verifies `crontab` (the macOS scheduler backend — arm-resume uses
+crontab, **not** `at`/atrun, which is off-by-default / SIP-fragile), and hands
+off to the himmelctl install wizard (cadences, plugins, hooks — same
+delegation ubuntu.sh/win11.ps1 already end with). Idempotent. On modern macOS,
+cron may need Full Disk Access granted to `/usr/sbin/cron` — the script prints
+this caveat.
 
 ---
 

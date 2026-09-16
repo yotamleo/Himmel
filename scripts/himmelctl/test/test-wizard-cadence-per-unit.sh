@@ -304,10 +304,13 @@ echo "ok: case c — codex-sweep is offered in the cadences menu only when the c
 # ═══════════════════════════════════════════════════════════════════════════
 # case d (interactive, installer v1 spec-deviation fix): vault=none + the
 # codex lane selected -> the cadences question is STILL asked (per-row
-# gating, not whole-question vault gating), offering ONLY codex-sweep (the
-# one registry row that does not require a vault); arming it records
-# `cadences: {"codex-sweep":"armed"}` with pipeline/qmd/graphmap genuinely
-# absent from the object.
+# gating, not whole-question vault gating), offering codex-sweep (requires
+# lane:codex) PLUS the three `requires:'none'` rows added by HIMMEL-3068
+# (drift-fix/upstream-watch/repo-sync — never vault- or lane-gated); arming
+# codex-sweep records `cadences: {"codex-sweep":"armed", "drift-fix":"off",
+# "upstream-watch":"off", "repo-sync":"off"}` with pipeline/qmd/graphmap
+# (requires:'vault') and pull-cadence (requires:'env:...', unset here)
+# genuinely absent from the object.
 # ═══════════════════════════════════════════════════════════════════════════
 
 stubD="$work/stubD"; mkdir -p "$stubD"
@@ -325,28 +328,42 @@ lean
 codex
 no
 1
+no
 INPUT
 ); rcD=$?
 set -e
 [ "$rcD" -eq 0 ] || fail "case d: vault=none + codex lane run should succeed (got rc=$rcD): $outD"
-grepq "$outD" -F -- '? cadences — recurring scheduled jobs to arm now [codex-sweep|none] (default: none)' \
-  || fail "case d: vault=none + codex should still ask cadences, offering ONLY codex-sweep (got: $outD)"
+grepq "$outD" -F -- '? cadences — recurring scheduled jobs to arm now [codex-sweep,drift-fix,upstream-watch,repo-sync|none] (default: none)' \
+  || fail "case d: vault=none + codex should still ask cadences, offering codex-sweep + the three requires:'none' rows (got: $outD)"
 grepq "$outD" -F -- '"codex-sweep": "armed"' \
   || fail "case d: selecting codex-sweep should record it armed (got: $outD)"
+grepq "$outD" -F -- '"drift-fix": "off"' \
+  || fail "case d: drift-fix (requires:'none', declined) should record off (got: $outD)"
+grepq "$outD" -F -- '"upstream-watch": "off"' \
+  || fail "case d: upstream-watch (requires:'none', declined) should record off (got: $outD)"
+grepq "$outD" -F -- '"repo-sync": "off"' \
+  || fail "case d: repo-sync (requires:'none', declined) should record off (got: $outD)"
 grepq "$outD" -F -- '"pipeline":' \
   && fail "case d: pipeline must stay genuinely absent from cadences (requires vault, not offered) (got: $outD)"
 grepq "$outD" -F -- '"qmd":' \
   && fail "case d: qmd must stay genuinely absent from cadences (requires vault, not offered) (got: $outD)"
 grepq "$outD" -F -- '"graphmap":' \
   && fail "case d: graphmap must stay genuinely absent from cadences (requires vault, not offered) (got: $outD)"
-echo "ok: case d — vault=none + codex lane still asks cadences, offering ONLY codex-sweep; arming it records cadences:{codex-sweep:armed} with the vault-requiring rows genuinely absent"
+grepq "$outD" -F -- '"pull-cadence":' \
+  && fail "case d: pull-cadence must stay genuinely absent from cadences (requires env:GOOGLE_HEALTH_REFRESH_TOKEN, unset here) (got: $outD)"
+echo "ok: case d — vault=none + codex lane still asks cadences, offering codex-sweep + the three requires:'none' rows; arming codex-sweep records the rest off, with the vault- and env-requiring rows genuinely absent"
 
 # ═══════════════════════════════════════════════════════════════════════════
-# case e (interactive, installer v1 spec-deviation fix): vault=none + NO
-# codex lane -> zero cadence-registry rows qualify (every row requires either
-# a vault or the codex lane) -> the cadences question is NEVER asked and
-# `cadences` is genuinely absent from the answers (round-8: not-asked stays
-# undefined, never a fabricated {}).
+# case e (interactive, installer v1 spec-deviation fix -- narrowed by
+# HIMMEL-3068): vault=none + NO codex lane -> the vault- and lane:codex-
+# gated rows (pipeline/qmd/graphmap/codex-sweep) still don't qualify, but the
+# three `requires:'none'` rows this ticket added (drift-fix/upstream-watch/
+# repo-sync) qualify UNCONDITIONALLY -- so the cadences question IS now
+# asked, offering exactly those three (pull-cadence still absent: its
+# requires:'env:GOOGLE_HEALTH_REFRESH_TOKEN' is unset in this hermetic HOME).
+# Declining all three (Enter -> the starter preset's empty cadenceIds
+# default) records every offered row 'off', never a fabricated {} for an
+# UNoffered row.
 # ═══════════════════════════════════════════════════════════════════════════
 
 stubE="$work/stubE"; mkdir -p "$stubE"
@@ -363,15 +380,27 @@ inline
 lean
 
 no
+
+no
 INPUT
 ); rcE=$?
 set -e
 [ "$rcE" -eq 0 ] || fail "case e: vault=none without codex run should succeed (got rc=$rcE): $outE"
-grepq "$outE" -F -- '? cadences —' \
-  && fail "case e: vault=none with no codex lane must NEVER ask cadences (zero rows offered) (got: $outE)"
-grepq "$outE" -F -- '"cadences"' \
-  && fail "case e: cadences must be genuinely absent from the answers, not a fabricated {} (got: $outE)"
-echo "ok: case e — vault=none without the codex lane never asks cadences (zero offered rows); cadences stays absent from the answers"
+grepq "$outE" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch,repo-sync|none] (default: none)' \
+  || fail "case e: vault=none with no codex lane should still ask cadences, offering ONLY the three requires:'none' rows (got: $outE)"
+grepq "$outE" -F -- '"drift-fix": "off"' \
+  || fail "case e: declining drift-fix (Enter, no recommended default) should record off (got: $outE)"
+grepq "$outE" -F -- '"upstream-watch": "off"' \
+  || fail "case e: declining upstream-watch should record off (got: $outE)"
+grepq "$outE" -F -- '"repo-sync": "off"' \
+  || fail "case e: declining repo-sync should record off (got: $outE)"
+grepq "$outE" -F -- '"codex-sweep":' \
+  && fail "case e: codex-sweep must stay genuinely absent from cadences (requires lane:codex, not selected) (got: $outE)"
+grepq "$outE" -F -- '"pipeline":' \
+  && fail "case e: pipeline must stay genuinely absent from cadences (requires vault, vault=none) (got: $outE)"
+grepq "$outE" -F -- '"pull-cadence":' \
+  && fail "case e: pull-cadence must stay genuinely absent from cadences (requires env:GOOGLE_HEALTH_REFRESH_TOKEN, unset here) (got: $outE)"
+echo "ok: case e — vault=none without the codex lane still asks cadences (the three requires:'none' rows always qualify); declining them all records every offered row off, with the vault-/lane-/env-gated rows genuinely absent"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # case f (HIMMEL-2302 CR round 1 Fix 1, documented consent asymmetry): a

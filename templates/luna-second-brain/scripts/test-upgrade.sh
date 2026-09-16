@@ -1109,5 +1109,88 @@ case "$t38_out" in
     *) fail "T38 warns about the unrecordable digest" "got: $t38_out" ;;
 esac
 
+# ---------------------------------------------------------------------------
+# T39-T43 (HIMMEL-3066): the optional github-sync plugin. Vendored under
+# optional/plugins/github-sync/ (NOT .obsidian/plugins/), installed into the
+# vault only when --with-github-sync/LUNA_WITH_GITHUB_SYNC is set OR the
+# vault already has it — never on flag-alone, never dropped once present.
+add_optional_github_sync() {
+    local d="$1"
+    mkdir -p "$d/optional/plugins/github-sync"
+    printf '{"id":"github-sync","name":"GitHub Sync","version":"1.0.7"}\n' > "$d/optional/plugins/github-sync/manifest.json"
+    printf 'GITHUB-SYNC-MAIN-JS-TEMPLATE\n' > "$d/optional/plugins/github-sync/main.js"
+    printf '{"remoteURL":"","gitLocation":""}\n' > "$d/optional/plugins/github-sync/data.json"
+    printf '.gh-sync {}\n' > "$d/optional/plugins/github-sync/styles.css"
+    printf 'MIT License\n\nGITHUB-SYNC-LICENSE-FIXTURE\n' > "$d/optional/plugins/github-sync/LICENSE"
+}
+
+# T39: no flag, no env, fresh vault => github-sync NOT installed at all.
+T="$TMP/t39-tmpl"; V="$TMP/t39-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+run_upgrade --yes >/dev/null 2>&1
+if [ ! -e "$V/.obsidian/plugins/github-sync" ]; then pass "T39 no-flag fresh vault: github-sync directory not created"; else fail "T39 no-flag fresh vault: github-sync directory not created" "exists"; fi
+merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
+case ",$merged," in *,github-sync,*) fail "T39 no-flag fresh vault: community-plugins.json excludes github-sync" "got: $merged" ;; *) pass "T39 no-flag fresh vault: community-plugins.json excludes github-sync" ;; esac
+
+# T40: --with-github-sync on a fresh vault => plugin assets written + id merged in.
+T="$TMP/t40-tmpl"; V="$TMP/t40-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+run_upgrade --yes --with-github-sync >/dev/null 2>&1
+assert_eq "T40 --with-github-sync writes manifest.json" "$(sha_of "$T/optional/plugins/github-sync/manifest.json")" "$(sha_of "$V/.obsidian/plugins/github-sync/manifest.json")"
+assert_eq "T40 --with-github-sync writes main.js" "$(sha_of "$T/optional/plugins/github-sync/main.js")" "$(sha_of "$V/.obsidian/plugins/github-sync/main.js")"
+assert_eq "T40 --with-github-sync writes data.json" "$(sha_of "$T/optional/plugins/github-sync/data.json")" "$(sha_of "$V/.obsidian/plugins/github-sync/data.json")"
+merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
+case ",$merged," in *,github-sync,*) pass "T40 --with-github-sync adds github-sync to community-plugins.json" ;; *) fail "T40 --with-github-sync adds github-sync to community-plugins.json" "got: $merged" ;; esac
+
+# T41: env twin LUNA_WITH_GITHUB_SYNC=1 behaves the same as the flag.
+T="$TMP/t41-tmpl"; V="$TMP/t41-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+LUNA_WITH_GITHUB_SYNC=1 run_upgrade --yes >/dev/null 2>&1
+assert_eq "T41 env twin writes manifest.json" "$(sha_of "$T/optional/plugins/github-sync/manifest.json")" "$(sha_of "$V/.obsidian/plugins/github-sync/manifest.json")"
+
+# T42: a vault that ALREADY has github-sync installed, upgraded with NO flag,
+# keeps it — data.json (holds git credentials) stays byte-identical, and a
+# differing vendored main.js in the template is NOT clobbered onto it
+# (same skipexists discipline every other bundled plugin's assets already get).
+T="$TMP/t42-tmpl"; V="$TMP/t42-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V/.obsidian/plugins/github-sync"; stamp_vault "$V" "0.1.0"
+printf '{"remoteURL":"git@github.com:example/real-vault.git","gitLocation":"/real/path"}\n' > "$V/.obsidian/plugins/github-sync/data.json"
+printf 'REAL-INSTALLED-MAIN-JS-DIFFERENT-FROM-TEMPLATE\n' > "$V/.obsidian/plugins/github-sync/main.js"
+printf '{"id":"github-sync","name":"GitHub Sync","version":"1.0.7"}\n' > "$V/.obsidian/plugins/github-sync/manifest.json"
+printf '%s\n' '["dataview","calendar","new","github-sync"]' > "$V/.obsidian/community-plugins.json"
+t42_data_before=$(sha_of "$V/.obsidian/plugins/github-sync/data.json")
+t42_mainjs_before=$(sha_of "$V/.obsidian/plugins/github-sync/main.js")
+run_upgrade --yes >/dev/null 2>&1
+assert_eq "T42 already-installed, no flag: data.json stays byte-identical" "$t42_data_before" "$(sha_of "$V/.obsidian/plugins/github-sync/data.json")"
+assert_eq "T42 already-installed, no flag: main.js stays byte-identical (skipexists)" "$t42_mainjs_before" "$(sha_of "$V/.obsidian/plugins/github-sync/main.js")"
+if [ -f "$V/.obsidian/plugins/github-sync/manifest.json" ]; then pass "T42 already-installed, no flag: plugin stays installed"; else fail "T42 already-installed, no flag: plugin stays installed" "manifest.json missing"; fi
+merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
+case ",$merged," in *,github-sync,*) pass "T42 already-installed, no flag: community-plugins.json still lists github-sync" ;; *) fail "T42 already-installed, no flag: community-plugins.json still lists github-sync" "got: $merged" ;; esac
+
+# T43: --dry-run with --with-github-sync on a fresh vault plans the install
+# but makes zero filesystem changes.
+T="$TMP/t43-tmpl"; V="$TMP/t43-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+out=$(run_upgrade --with-github-sync --dry-run 2>&1)
+case "$out" in *"WRITE-NEW    .obsidian/plugins/github-sync/manifest.json"*) pass "T43 dry-run plans github-sync install" ;; *) fail "T43 dry-run plans github-sync install" "got: $out" ;; esac
+if [ ! -e "$V/.obsidian/plugins/github-sync" ]; then pass "T43 dry-run makes zero changes"; else fail "T43 dry-run makes zero changes" "directory created"; fi
+
+# T44: a vault with github-sync INSTALLED but DISABLED (manifest.json present,
+# id absent from community-plugins.json — how Obsidian disables a plugin
+# without uninstalling it) upgraded with NO flag must NOT re-enable it: the
+# eligibility check is "present AND enabled", not manifest.json alone.
+T="$TMP/t44-tmpl"; V="$TMP/t44-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V/.obsidian/plugins/github-sync"; stamp_vault "$V" "0.1.0"
+printf '{"remoteURL":"git@github.com:example/real-vault.git","gitLocation":"/real/path"}\n' > "$V/.obsidian/plugins/github-sync/data.json"
+printf '{"id":"github-sync","name":"GitHub Sync","version":"1.0.7"}\n' > "$V/.obsidian/plugins/github-sync/manifest.json"
+printf '%s\n' '["dataview","calendar","new"]' > "$V/.obsidian/community-plugins.json"
+run_upgrade --yes >/dev/null 2>&1
+merged=$("$PY" -c 'import json,sys;print(",".join(sorted(json.load(open(sys.argv[1])))))' "$V/.obsidian/community-plugins.json")
+case ",$merged," in *,github-sync,*) fail "T44 disabled + no flag: community-plugins.json stays without github-sync" "got: $merged" ;; *) pass "T44 disabled + no flag: community-plugins.json stays without github-sync" ;; esac
+
+# T45 (critic panel finding, HIMMEL-3066): a fresh --with-github-sync install
+# must carry the vendored LICENSE alongside the plugin assets. Every OTHER
+# bundled plugin's LICENSE reaches a vault via the initial template checkout;
+# github-sync has no such path any more (it moved out of the git-tracked
+# .obsidian/ tree so it stops shipping by default) — this copy loop is now
+# its only distribution mechanism.
+T="$TMP/t45-tmpl"; V="$TMP/t45-vault"; make_template "$T" "1.0.0"; add_optional_github_sync "$T"; mkdir -p "$V"; stamp_vault "$V" "0.1.0"
+run_upgrade --yes --with-github-sync >/dev/null 2>&1
+assert_eq "T45 --with-github-sync writes LICENSE" "$(sha_of "$T/optional/plugins/github-sync/LICENSE")" "$(sha_of "$V/.obsidian/plugins/github-sync/LICENSE")"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "All upgrade tests passed."; else echo "$FAILED test(s) failed."; exit 1; fi

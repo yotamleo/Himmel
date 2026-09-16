@@ -160,7 +160,6 @@ community = json.load(open(root / 'templates/luna-second-brain/.obsidian/communi
 expected = {
     'calendar': ('luna-calendar', 'liamcain/obsidian-calendar-plugin'),
     'dataview': ('luna-dataview', 'blacksmithgu/obsidian-dataview'),
-    'github-sync': ('luna-github-sync', 'kevinmkchin/Obsidian-GitHub-Sync'),
     'obsidian-banners': ('luna-obsidian-banners', 'noatpad/obsidian-banners'),
     'obsidian-local-rest-api': ('luna-obsidian-local-rest-api', 'coddingtonbear/obsidian-local-rest-api'),
     'qmd-as-md-obsidian': ('luna-qmd-as-md-obsidian', 'danieltomasz/qmd-as-md-obsidian'),
@@ -174,6 +173,17 @@ for plugin_id, (entry_name, repo) in expected.items():
     assert entry['synced_base'].lstrip('v') == manifest['version'].lstrip('v'), (entry_name, entry['synced_base'], manifest['version'])
     assert 'version_pin' not in entry
 
+# github-sync (HIMMEL-3066): opt-in, out of community-plugins.json, vendored
+# under optional/plugins/ instead of .obsidian/plugins/ — checked separately
+# since it is no longer one of the always-installed community entries above.
+assert 'github-sync' not in community
+gs_manifest = json.load(open(root / 'templates/luna-second-brain/optional/plugins/github-sync/manifest.json', encoding='utf-8'))
+gs_entry = entries['luna-github-sync']
+assert gs_entry['tracked_repo'] == 'kevinmkchin/Obsidian-GitHub-Sync'
+assert gs_entry['kind'] == 'tag_release' and gs_entry['mode'] == 'base'
+assert gs_entry['synced_base'].lstrip('v') == gs_manifest['version'].lstrip('v'), (gs_entry['synced_base'], gs_manifest['version'])
+assert 'version_pin' not in gs_entry
+
 audit = reg['coverage_audit']
 covered = {row['name'] for row in audit['covered_elsewhere']}
 skips = {row['name'] for row in audit['skips']}
@@ -186,7 +196,7 @@ PY
 )"
 audit_rc=$?
 if [ "$audit_rc" -eq 0 ]; then
-  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd (plain pin, de-forked HIMMEL-3045), all six bundled luna plugins, scripts/lib pins, codex dynamic discovery, and explicit skips"
+  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd (plain pin, de-forked HIMMEL-3045), the five default-installed luna plugins + the opt-in github-sync (HIMMEL-3066), scripts/lib pins, codex dynamic discovery, and explicit skips"
 else
   bad "zero-gap inventory invalid: $audit_out"
 fi

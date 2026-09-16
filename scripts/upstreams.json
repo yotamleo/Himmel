@@ -97,7 +97,7 @@
       "tracked_repo": "kevinmkchin/Obsidian-GitHub-Sync",
       "synced_base": "1.0.7",
       "tier": "A",
-      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/github-sync. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json stays a credential-free template fixture."
+      "note": "Bundled third-party asset at templates/luna-second-brain/optional/plugins/github-sync (HIMMEL-3066: out of the template default — it races vault-autosync.ps1/.sh's own commits, so upgrade.sh installs it only opt-in or when a vault already has it). synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json stays a credential-free template fixture."
     },
     {
       "name": "luna-obsidian-banners",

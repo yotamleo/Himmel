@@ -22,7 +22,7 @@ $HimmelPath     = "$env:USERPROFILE\Documents\github\himmel"
 $RepoRoot       = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 
 # ── Progress ────────────────────────────────────────────────────────────────
-$TotalSteps = 8
+$TotalSteps = 9
 $Script:Step = 0
 
 function Write-Step($msg) {
@@ -92,6 +92,19 @@ irm https://astral.sh/uv/install.ps1 | iex
 $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
             [System.Environment]::GetEnvironmentVariable("PATH", "User")
 Invoke-Fatal "uv --version" { uv --version }
+
+# HIMMEL-3068: bun is a hard dependency of himmel-update.sh's qmd fork
+# updater (update_qmd_fork) and the jira CLI dist rebuild's npm-absent
+# fallback -- no installer installed it before this, so on a bun-less machine
+# qmd silently never updated (a clean-looking skip; see report_qmd_bun_missing
+# in himmel-update.sh for the loud follow-up now added for that case).
+# Oven-sh.Bun is the same winget id setup.ps1's own [0/9] preflight already
+# uses to auto-install a missing bun.
+Write-Step "Install bun (qmd fork updater + jira CLI hard dependency)"
+Invoke-Fatal "winget install Oven-sh.Bun" { winget install --id Oven-sh.Bun -e --silent --accept-source-agreements --accept-package-agreements }
+$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+            [System.Environment]::GetEnvironmentVariable("PATH", "User")
+Invoke-Fatal "bun --version" { bun --version }
 
 Write-Step "Install Claude Code CLI (native installer — no npm dependency)"
 Invoke-RestMethod "https://claude.ai/install.ps1" | Invoke-Expression

@@ -1,12 +1,34 @@
 # Optional plugins — install manually
 
-This template ships six community plugins out of the box, each under a
-permissive license (see each plugin's `LICENSE`/`LICENCE` file under
-`plugins/`): Calendar, Dataview, GitHub Sync, Banners, Local REST API & MCP
-Server, and qmd-as-md.
+This template ships five community plugins enabled out of the box, each under
+a permissive license (see each plugin's `LICENSE`/`LICENCE` file under
+`plugins/`): Calendar, Dataview, Banners, Local REST API & MCP Server, and
+qmd-as-md.
 
-Four plugins the source vault also used are **not bundled** because their
-licenses are incompatible with this repository's MIT license (three are
+## GitHub Sync — opt-in, and mutually exclusive with the sweeper
+
+A sixth plugin, **GitHub Sync**, is vendored too (`optional/plugins/github-sync/`
+in the template) but **not installed by default** (HIMMEL-3066): it commits
+the vault from inside Obsidian on its own ~10-minute tick, which races
+`scripts/vault-autosync.ps1`/`.sh` (the sweeper) committing the same working
+tree — `vault-autosync.ps1`'s sanity gate refuses to run at all
+(`AlarmClass: plugin-resurrected`) if it ever finds `github-sync` enabled.
+**Pick one sync mechanism, not both:**
+
+- **Sweeper (default)** — `LUNA_VAULT_AUTOSYNC=1 bash scripts/vault-autosync.sh`
+  (or the `.ps1` twin). No plugin install needed.
+- **GitHub Sync plugin (opt-in)** — run the upgrader with
+  `--with-github-sync` (or `LUNA_WITH_GITHUB_SYNC=1`):
+  `bash scripts/upgrade.sh --with-github-sync`. This installs the plugin
+  assets into `.obsidian/plugins/github-sync/` and adds it to
+  `community-plugins.json`; enable it in Obsidian's Community Plugins list
+  afterward and configure its remote/credentials there. A vault that already
+  has the plugin installed keeps it on every upgrade with no flag needed —
+  the upgrader never uninstalls it, and only adds files missing from the
+  install (`data.json`/`main.js` are never overwritten once present).
+
+Four further plugins the source vault also used are **not bundled** because
+their licenses are incompatible with this repository's MIT license (three are
 AGPL-3.0 copyleft; one is now proprietary). Install them yourself from
 Obsidian's Community Plugins browser if you want them — they are entirely
 optional and the vault works without them.

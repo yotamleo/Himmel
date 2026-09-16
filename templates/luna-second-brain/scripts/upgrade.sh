@@ -27,6 +27,13 @@
 #   --backup-dir DIR    (optional) the pre-computed backup dest for this run,
 #                       named in the local-edit-withheld message so an operator
 #                       can recover the pre-upgrade file (HIMMEL-2886).
+#   --with-github-sync  install the optional github-sync Obsidian plugin (env
+#                       twin: LUNA_WITH_GITHUB_SYNC=1). Mutually exclusive with
+#                       vault-autosync.ps1/.sh — see HIMMEL-3066. Only ever
+#                       ADDS the plugin: a vault that already has it ENABLED
+#                       keeps it with no flag needed, but only files missing
+#                       from the install get written (skip-if-present); the
+#                       flag never removes it either.
 #
 # Version source = the template's marketplace/.claude-plugin/marketplace.json
 # metadata.version. The vault records its level in .vault-template.json; a
@@ -45,16 +52,24 @@ DRY_RUN=0
 ASSUME_YES=0
 CHECK_ONLY=0
 BACKUP_DIR=""
+# HIMMEL-3066: env twin, same on/off convention as LUNA_VAULT_AUTOSYNC — any
+# non-empty value other than "0"/"" arms it; the flag below can only turn it
+# ON (never off), matching "never silently uninstall".
+case "${LUNA_WITH_GITHUB_SYNC:-}" in
+    ""|0) WITH_GITHUB_SYNC=0 ;;
+    *)    WITH_GITHUB_SYNC=1 ;;
+esac
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --template-dir) TEMPLATE_DIR="${2:-}"; shift 2 ;;
-        --vault-dir)    VAULT_DIR="${2:-}"; shift 2 ;;
-        --backup-dir)   BACKUP_DIR="${2:-}"; shift 2 ;;
-        --dry-run)      DRY_RUN=1; shift ;;
-        --check)        CHECK_ONLY=1; shift ;;
-        --yes|-y)       ASSUME_YES=1; shift ;;
+        --template-dir)     TEMPLATE_DIR="${2:-}"; shift 2 ;;
+        --vault-dir)        VAULT_DIR="${2:-}"; shift 2 ;;
+        --backup-dir)       BACKUP_DIR="${2:-}"; shift 2 ;;
+        --dry-run)          DRY_RUN=1; shift ;;
+        --check)            CHECK_ONLY=1; shift ;;
+        --with-github-sync) WITH_GITHUB_SYNC=1; shift ;;
+        --yes|-y)           ASSUME_YES=1; shift ;;
         -h|--help)
             cat <<'USAGE'
 upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
@@ -71,6 +86,11 @@ upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
   --yes, -y           skip the confirm prompt.
   --backup-dir DIR    (optional) pre-computed backup dest, named in the
                       local-edit-withheld message.
+  --with-github-sync  install the optional github-sync plugin (env twin:
+                      LUNA_WITH_GITHUB_SYNC=1). Mutually exclusive with
+                      vault-autosync.ps1/.sh; a vault that already has it
+                      ENABLED keeps it with no flag needed, but only files
+                      missing from the install get written (skip-if-present).
 
 Refreshes template-owned files (scripts, .obsidian config, plugin assets, docs)
 WITHOUT touching user content (journal, notes, clips). Version source = the
@@ -521,7 +541,8 @@ sha_of() { if [ -f "$1" ]; then sha256sum "$1" | cut -d' ' -f1; else echo MISSIN
 # afterwards commits alongside the stamp. A file the template owns but that
 # is absent in the vault records nothing.
 SNAPSHOT_FILE=""
-trap '[ -n "${SNAPSHOT_FILE:-}" ] && rm -f "$SNAPSHOT_FILE"; true' EXIT
+GH_SYNC_CP_TMP=""
+trap '[ -n "${SNAPSHOT_FILE:-}" ] && rm -f "$SNAPSHOT_FILE"; [ -n "${GH_SYNC_CP_TMP:-}" ] && rm -f "$GH_SYNC_CP_TMP"; true' EXIT
 
 SNAPSHOT_FAILURES=0
 record_snapshot() {
@@ -557,6 +578,55 @@ record_snapshot() {
 # reprint check (step 4) can tell whether the manual-install table changed.
 PLUGINS_SETUP_REL=".obsidian/PLUGINS-SETUP.md"
 PLUGINS_SETUP_PRIOR_SHA="$(sha_of "$VAULT_DIR/$PLUGINS_SETUP_REL")"
+
+# github-sync install eligibility (HIMMEL-3066): out of the template default
+# (community-plugins.json / .obsidian/plugins/) since the bundled plugin races
+# vault-autosync.ps1/.sh's own commits (see vault-autosync.ps1's sanity gate,
+# AlarmClass 'plugin-resurrected'). Installed when EITHER the operator asked
+# for it (--with-github-sync/LUNA_WITH_GITHUB_SYNC) OR the vault already has
+# it ENABLED — flag-alone is not the rule, so an upgrade with NO flag can
+# never drop a vault that already carries it (its data.json holds git
+# credentials). Checking manifest.json alone is not enough: Obsidian disables
+# a plugin by dropping its id from community-plugins.json while leaving the
+# installed files in place, and an upgrade must not silently re-enable a
+# plugin the operator deliberately turned off.
+GH_SYNC_REL=".obsidian/plugins/github-sync"
+GH_SYNC_SRC="$TEMPLATE_DIR/optional/plugins/github-sync"
+CP_REL=".obsidian/community-plugins.json"
+gh_sync_present() { [ -f "$VAULT_DIR/$GH_SYNC_REL/manifest.json" ]; }
+gh_sync_enabled() {
+    "$PYTHON" - "$VAULT_DIR/$CP_REL" <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except (ValueError, OSError):
+    sys.exit(1)
+sys.exit(0 if isinstance(data, list) and "github-sync" in data else 1)
+PY
+}
+INSTALL_GITHUB_SYNC=0
+if [ "$WITH_GITHUB_SYNC" = 1 ] || { gh_sync_present && gh_sync_enabled; }; then
+    INSTALL_GITHUB_SYNC=1
+fi
+
+# The community-plugins.json add-only merge below reads its "what to add" list
+# from a file; when github-sync should be installed, merge from the template's
+# list PLUS "github-sync" (the template itself no longer lists it) instead of
+# editing the template's own file on disk.
+CP_MERGE_SRC="$TEMPLATE_DIR/$CP_REL"
+if [ "$INSTALL_GITHUB_SYNC" = 1 ] && [ -d "$GH_SYNC_SRC" ]; then
+    GH_SYNC_CP_TMP="$(mktemp "${TMPDIR:-/tmp}/luna-upgrade-gh-sync-cp.XXXXXX")"
+    "$PYTHON" - "$CP_MERGE_SRC" "$GH_SYNC_CP_TMP" <<'PY'
+import json, os, sys
+tmpl_p, out_p = sys.argv[1], sys.argv[2]
+tmpl = json.load(open(tmpl_p, encoding="utf-8")) if os.path.exists(tmpl_p) else []
+if "github-sync" not in tmpl:
+    tmpl = list(tmpl) + ["github-sync"]
+with open(out_p, "w", encoding="utf-8") as fh:
+    json.dump(tmpl, fh)
+PY
+    CP_MERGE_SRC="$GH_SYNC_CP_TMP"
+fi
 
 # ---------------------------------------------------------------------------
 # Build + print plan, then execute (unless --dry-run). One pass over the
@@ -730,14 +800,63 @@ process() {
         esac
     done < <(find "$TEMPLATE_DIR" -type f 2>/dev/null)
 
-    # community-plugins.json add-only merge.
-    local cp_rel=".obsidian/community-plugins.json"
-    if [ -f "$TEMPLATE_DIR/$cp_rel" ]; then
-        local added; added="$(plugins_merge "$VAULT_DIR/$cp_rel" "$TEMPLATE_DIR/$cp_rel" "0")"
+    # community-plugins.json add-only merge. CP_MERGE_SRC is the template's own
+    # list, or that list plus "github-sync" when it should be installed
+    # (HIMMEL-3066 — see the eligibility block above process()'s first call).
+    local cp_rel="$CP_REL"
+    if [ -f "$CP_MERGE_SRC" ]; then
+        local added; added="$(plugins_merge "$VAULT_DIR/$cp_rel" "$CP_MERGE_SRC" "0")"
         if [ -n "$added" ]; then
             PLAN+=("MERGE-JSON   $cp_rel (+$(echo "$added" | tr '\n' ',' | sed 's/,$//'))"); n_jsonmerge=$((n_jsonmerge+1))
-            [ "$execute" = 1 ] && plugins_merge "$VAULT_DIR/$cp_rel" "$TEMPLATE_DIR/$cp_rel" "1" >/dev/null
+            [ "$execute" = 1 ] && plugins_merge "$VAULT_DIR/$cp_rel" "$CP_MERGE_SRC" "1" >/dev/null
         fi
+    fi
+
+    # Optional github-sync plugin assets (HIMMEL-3066). Vendored under
+    # optional/plugins/github-sync/ (NOT scanned by the main loop above — it
+    # falls through classify()'s default `skip`), copied into the vault's
+    # .obsidian/plugins/github-sync/ only when INSTALL_GITHUB_SYNC is set.
+    # Reuses the SAME classify() rules every other bundled plugin gets
+    # (data.json/main.js/manifest.json/styles.css -> skipexists), so an
+    # already-installed copy — including its credential-bearing data.json —
+    # is never overwritten, and a file missing from an older install (e.g. a
+    # new asset a later template version adds) still gets written.
+    if [ "$INSTALL_GITHUB_SYNC" = 1 ] && [ -d "$GH_SYNC_SRC" ]; then
+        local gsrc gsub gsrel gsclass gsdst
+        while IFS= read -r gsrc; do
+            gsub="${gsrc#"$GH_SYNC_SRC"/}"
+            gsrel="$GH_SYNC_REL/$gsub"
+            gsclass="$(classify "$gsrel")"
+            gsdst="$VAULT_DIR/$gsrel"
+            case "$gsclass" in
+                skipexists)
+                    if [ -f "$gsdst" ]; then
+                        n_skip_exists=$((n_skip_exists+1))
+                    else
+                        PLAN+=("WRITE-NEW    $gsrel"); n_write=$((n_write+1))
+                        [ "$execute" = 1 ] && { write_file "$gsrc" "$gsdst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
+                    fi ;;
+                *)
+                    case "$gsub" in
+                        LICENSE)
+                            # Every other bundled plugin's LICENSE reaches a
+                            # vault via the initial template checkout — never
+                            # via upgrade.sh. github-sync has no such path any
+                            # more (it moved OUT of the git-tracked .obsidian/
+                            # tree so it stops shipping by default), so this
+                            # loop is its only distribution mechanism and must
+                            # carry the license notice itself (skipexists: a
+                            # vendor update never silently rewrites it).
+                            if [ -f "$gsdst" ]; then
+                                n_skip_exists=$((n_skip_exists+1))
+                            else
+                                PLAN+=("WRITE-NEW    $gsrel"); n_write=$((n_write+1))
+                                [ "$execute" = 1 ] && { write_file "$gsrc" "$gsdst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
+                            fi ;;
+                        *) : ;;
+                    esac ;;
+            esac
+        done < <(find "$GH_SYNC_SRC" -type f 2>/dev/null)
     fi
 
     # _CLAUDE.md 3-way.

@@ -500,6 +500,61 @@ check_contains "11: responded 1/1 through the real cfp path" "$out11" "(1/1 crit
 check "11: exactly 2 invoke calls (primary + one fallback)" "$(cat "$INT_CNT")" "2"
 
 # ===========================================================================
+# Case 11b (HIMMEL-3109): a codex-shaped 401/token_expired auth failure,
+# preceded by a >300-byte hermes gateway banner, must reach the ledger as
+# reason=auth end to end through the REAL critic-first-pass.sh -> invoke.sh
+# chain (seam = HERMES_PY, as in case 11) - not reduced to malformed-output.
+# Before HIMMEL-3109, this exact shape (a banner pushing the decisive "401"
+# line past critic-first-pass.sh's old 300-char HEAD excerpt) classified
+# malformed-output; the RED-control block right after this case proves that
+# on this same payload against the pre-fix file.
+# No fallback is configured (JSON_NOFB, from case 4) so the primary's own
+# unavailable/reason line is what gets asserted, mirroring case 5's
+# bare-auth shape but driven through the real cfp path instead of a canned
+# CRITIC_FIRST_PASS stub.
+# ===========================================================================
+AUTH_PY="$tmp/py-auth401.sh"
+cat > "$AUTH_PY" <<'SHEOF'
+#!/usr/bin/env bash
+printf '%s' 'A previous `hermes update` pulled new code but did not restart running gateways; if this seems wrong, restart the gateway daemon and try again. A previous `hermes update` pulled new code but did not restart running gateways; if this seems wrong, restart the gateway daemon and try again. A previous `hermes update` pulled new code but did not restart running gateways; if this seems wrong, restart the gateway daemon and try again. '
+printf '\n'
+printf '%s\n' 'JSON-RPC error: {"code":-32603,"message":"failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 401 Unauthorized; body: {\"error\": {\"code\": \"token_expired\"}}"}'
+SHEOF
+chmod +x "$AUTH_PY"
+
+printf '%s' "$DIFF" | CRITICS_JSON="$JSON_NOFB" HERMES_PY="$AUTH_PY" \
+    bash "$PANEL" >"$tmp/out11b" 2>"$tmp/err11b"
+stderr11b="$(cat "$tmp/err11b")"
+check_contains "11b: e2e real 401 payload (banner-padded past old 300c bound) -> reason=auth" \
+    "$stderr11b" "panel-availability: qwen3coder unavailable (rc=1) reason=auth"
+check_not_contains "11b: NOT reduced to malformed-output" "$stderr11b" "reason=malformed-output"
+
+# ===========================================================================
+# Case 11c (HIMMEL-3109): hermes returns rc=0 with a WHOLLY EMPTY body on all
+# 3 retry attempts. rc=0 must not be trusted as success, and an empty body
+# must not be misread as malformed-output either - failure-classify.sh's own
+# "invoke failed (rc=0)" marker (critic-first-pass.sh's fail-open text on
+# this path) classifies empty-response (see test-failure-classify.sh:95-97);
+# this case proves that classification actually lands on the ledger-facing
+# avail row end to end, not just at the classify_failure unit level.
+# ===========================================================================
+EMPTY_PY="$tmp/py-empty.sh"
+cat > "$EMPTY_PY" <<'SHEOF'
+#!/usr/bin/env bash
+exit 0
+SHEOF
+chmod +x "$EMPTY_PY"
+
+printf '%s' "$DIFF" | CRITICS_JSON="$JSON_NOFB" HERMES_PY="$EMPTY_PY" \
+    bash "$PANEL" >"$tmp/out11c" 2>"$tmp/err11c"
+stderr11c="$(cat "$tmp/err11c")"
+check_contains "11c: e2e rc=0 empty-body (3x) -> reason=empty-response" \
+    "$stderr11c" "panel-availability: qwen3coder unavailable (rc=1) reason=empty-response"
+check_not_contains "11c: NOT reason=malformed-output" "$stderr11c" "reason=malformed-output"
+check_not_contains "11c: NOT reported ok (rc=0 is not trusted as success)" "$stderr11c" \
+    "panel-availability: qwen3coder ok"
+
+# ===========================================================================
 # HIMMEL-953: fallback_trigger="any" widens the retry condition to ANY
 # non-zero rc (incl. timeout), not just a quota-exhaustion signature match —
 # opt-in per row (e.g. the qwenor seat, whose whole chain is same-tier

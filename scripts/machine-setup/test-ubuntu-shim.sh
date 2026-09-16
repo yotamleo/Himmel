@@ -51,9 +51,10 @@ expected_sorted=$(echo "$expected_apt_tools" | tr ' ' '\n' | sort | tr '\n' ' ' 
 grep -q 'NVM_DIR' "$target" || fail "caseA: nvm provisioning missing"
 grep -q 'nvm install' "$target" || fail "caseA: nvm install call missing"
 grep -q 'astral.sh/uv/install.sh' "$target" || fail "caseA: uv provisioning missing"
+grep -q 'bun.sh/install' "$target" || fail "caseA: bun provisioning missing (HIMMEL-3068)"
 grep -q 'claude.ai/install.sh' "$target" || fail "caseA: claude CLI provisioning missing"
 grep -q 'rtk-ai/rtk/releases' "$target" || fail "caseA: rtk provisioning missing"
-echo "ok: caseA every tool the old ubuntu.sh provisioned (${expected_sorted}, nvm, uv, claude, rtk) is still provisioned"
+echo "ok: caseA every tool the old ubuntu.sh provisioned (${expected_sorted}, nvm, uv, bun, claude, rtk) is still provisioned"
 
 # ── Case B: order assertion (provisioning < notice < delegated bootstrap) ──
 tmp_home="$work/home"
@@ -122,6 +123,17 @@ if [ "$1" = "--version" ]; then echo "uv-stub 1.0.0"; exit 0; fi
 exit 0
 EOF
 
+# HIMMEL-3068: bun's real install line pipes the stubbed curl (empty stdout,
+# see stub_bin/curl's default `exit 0` arm) into bash — a no-op — so `bun`
+# itself must be stubbed here the same way uv/claude/rtk already are, or the
+# unguarded `bun --version` assertion right after it hard-exits the whole
+# script under ubuntu.sh's `set -euo pipefail`.
+cat > "$stub_bin/bun" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "--version" ]; then echo "bun-stub 1.0.0"; exit 0; fi
+exit 0
+EOF
+
 cat > "$stub_bin/claude" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "--version" ]; then echo "claude-stub 1.0.0"; exit 0; fi
@@ -138,7 +150,7 @@ esac
 EOF
 
 chmod +x "$stub_bin"/sudo "$stub_bin"/apt "$stub_bin"/curl "$stub_bin"/git \
-  "$stub_bin"/node "$stub_bin"/uv "$stub_bin"/claude "$stub_bin"/rtk
+  "$stub_bin"/node "$stub_bin"/uv "$stub_bin"/bun "$stub_bin"/claude "$stub_bin"/rtk
 
 # Pre-create $NVM_DIR/nvm.sh as a shell-function stub (nvm is sourced, not
 # exec'd, so it can't be a PATH stub) — this also skips the real curl-based

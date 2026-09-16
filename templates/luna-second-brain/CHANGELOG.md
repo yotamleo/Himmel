@@ -8,6 +8,63 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.35] — 2026-09-16
+
+### Fixed
+- `--with-github-sync` copied the plugin's `main.js`/`manifest.json`/
+  `data.json`/`styles.css` but never its vendored `LICENSE`. Every other
+  bundled plugin's LICENSE reaches a vault via the initial template
+  checkout; github-sync has no such path any more since it moved out of
+  the git-tracked `.obsidian/` tree, so `upgrade.sh`'s copy loop is now its
+  only distribution mechanism and needed to carry the notice itself.
+- The top-of-file `--with-github-sync` doc comment repeated the same stale
+  "gets asset updates" claim already corrected in the `--help` text.
+
+## [0.4.34] — 2026-09-16
+
+### Fixed
+- `--with-github-sync` eligibility checked only whether `github-sync` was
+  installed (`manifest.json` present), not whether it was still enabled; a
+  vault where the operator had disabled the plugin (removed it from
+  `community-plugins.json`, files left in place) got it silently re-enabled
+  on the next no-flag upgrade. Eligibility now requires present AND enabled.
+- The `--with-github-sync` help text claimed an already-installed plugin
+  "gets asset updates" on upgrade; corrected to describe the actual
+  skip-if-present write rule.
+
+## [0.4.33] — 2026-09-16
+
+### Fixed
+- The `github-sync` `community-plugins.json` merge used a bare `mktemp` for
+  its temp file (BSD/macOS portability gap); it now uses a template.
+
+## [0.4.32] — 2026-09-16
+
+### Fixed
+- `PLUGINS-SETUP.md` and this changelog's 0.4.31 entry claimed an
+  already-installed `github-sync` plugin "gets asset updates" on every
+  upgrade; `upgrade.sh`'s skip-if-present rule never overwrites an installed
+  plugin's `data.json`/`main.js` — only files missing from the install get
+  written.
+
+## [0.4.31] — 2026-09-16
+
+### Changed
+- **The bundled `github-sync` Obsidian plugin is now opt-in, not a template
+  default (HIMMEL-3066).** It committed the vault from inside Obsidian on its
+  own ~10-minute tick, which raced `scripts/vault-autosync.ps1`/`.sh` (the
+  sweeper) committing the same working tree — the sweeper's own sanity gate
+  refused to run at all (`AlarmClass: plugin-resurrected`) whenever it found
+  `github-sync` enabled, so a fresh vault built from this template could
+  never actually use the sweeper it ships. The plugin is now vendored under
+  `optional/plugins/github-sync/` instead of `.obsidian/plugins/github-sync/`
+  and dropped from `.obsidian/community-plugins.json`; the sweeper is the
+  template's default sync path. `scripts/upgrade.sh` gained
+  `--with-github-sync` (env twin `LUNA_WITH_GITHUB_SYNC=1`) to opt a vault
+  in. A vault that already has the plugin installed keeps it on every
+  upgrade with no flag needed; the upgrader never uninstalls it. See
+  `.obsidian/PLUGINS-SETUP.md` for the two-mechanism tradeoff.
+
 ## [0.4.29] — 2026-09-12
 
 ### Fixed

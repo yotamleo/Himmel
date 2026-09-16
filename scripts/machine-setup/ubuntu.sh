@@ -35,7 +35,7 @@ mkdir -p "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 
 # ── Progress ────────────────────────────────────────────────────────────────
-TOTAL_STEPS=8
+TOTAL_STEPS=9
 STEP=0
 
 step() {
@@ -81,6 +81,18 @@ echo "Node $(node --version) active (.nvmrc=$NODE_VERSION)"
 step "Install uv + uvx"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv --version
+
+# HIMMEL-3068: bun is a hard dependency of himmel-update.sh's qmd fork
+# updater (update_qmd_fork) and the jira CLI dist rebuild's npm-absent
+# fallback — no installer installed it before this, so on a bun-less machine
+# qmd silently never updated (a clean-looking skip; see report_qmd_bun_missing
+# in himmel-update.sh for the loud follow-up now added for that case). Same
+# official installer docs/setup/new-machine.md already documents for Linux;
+# it lands the binary in ~/.bun/bin, which is NOT on the default PATH.
+step "Install bun (qmd fork updater + jira CLI hard dependency)"
+curl -fsSL https://bun.sh/install | bash
+export PATH="$HOME/.bun/bin:$PATH"
+bun --version
 
 step "Install Claude Code CLI (native installer — no npm dependency)"
 curl -fsSL https://claude.ai/install.sh | bash
