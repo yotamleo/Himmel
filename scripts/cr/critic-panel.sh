@@ -1347,6 +1347,25 @@ _run_cfp_member() {
 # never fired). Any future rc site MUST route through this helper.
 _rc_completed() { [ "$1" -eq 0 ] || [ "$1" -eq 4 ]; }
 
+# _pm_redact_detail <text> (HIMMEL-3109): shared control-char strip + secret
+# redaction + bound for any lane stderr text this file puts into the CR
+# ledger's --detail field (avail rows below, and the attempt rows a fallback
+# chain queues). ledger-append.sh applies its OWN scrub_secrets() + 200-char
+# cap downstream (HIMMEL-1176) — this is belt-and-suspenders so the stderr
+# line this file echoes to the console, and the argv it hands to
+# ledger-append.sh, are already safe and short, never multi-KB of raw
+# provider text. 160 chars leaves room for a "reason=...: " prefix a caller
+# prepends before ledger-append.sh's own cap lands.
+_pm_redact_detail() {
+    printf '%s' "$1" | tr -d '[:cntrl:]' | sed -E \
+        -e 's/[0-9]{8,10}:[A-Za-z0-9_-]{35}/[REDACTED]/g' \
+        -e 's/(Bearer|bearer) [A-Za-z0-9._-]{16,}/\1 [REDACTED]/g' \
+        -e 's/sk-[A-Za-z0-9][A-Za-z0-9_-]{15,}/[REDACTED]/g' \
+        -e 's/AKIA[0-9A-Z]{16}/[REDACTED]/g' \
+        -e 's/([Aa][Pp][Ii][_-]?[Kk]ey|[Tt]oken|[Ss]ecret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9._-]{12,}/\1=[REDACTED]/g' \
+        | cut -c1-160
+}
+
 process_member() {
     _pm_slug="$1"
     _pm_out_file="$2"
@@ -1400,7 +1419,18 @@ process_member() {
         _pm_attempt_outcome="error"
         [ "$_pm_rc" -eq 0 ] && _pm_attempt_outcome="ok"
         [ "$_pm_is_timeout" -eq 1 ] && _pm_attempt_outcome="timeout"
-        _queue_attempt "$_pm_slug" "$_pm_model" 1 "$_pm_attempt_outcome" "$_pm_duration" "rc=$_pm_rc"
+        # HIMMEL-3109: "rc=$_pm_rc" alone lost the member's real error text —
+        # the ledger's ONLY per-attempt record then read "rc=1" with no clue
+        # whether that was auth, quota, or a transport blip. TAIL the captured
+        # stderr (not head): critic-first-pass.sh's own diagnostics precede
+        # its HIMMEL-3109 raw-tail excerpt in this file, so the provider's own
+        # decisive line is what ends up last.
+        _pm_attempt_detail="rc=$_pm_rc"
+        if [ "$_pm_rc" -ne 0 ] && [ -n "$_pm_err_file" ] && [ -s "$_pm_err_file" ]; then
+            _pm_attempt_snip="$(_pm_redact_detail "$(tail -n 1 "$_pm_err_file" 2>/dev/null)")"
+            [ -n "$_pm_attempt_snip" ] && _pm_attempt_detail="rc=$_pm_rc: $_pm_attempt_snip"
+        fi
+        _queue_attempt "$_pm_slug" "$_pm_model" 1 "$_pm_attempt_outcome" "$_pm_duration" "$_pm_attempt_detail"
     fi
 
     # Decide up front whether this rc should attempt the fallback chain.
@@ -1492,7 +1522,14 @@ process_member() {
                 _fb_attempt_outcome="error"
                 _rc_completed "$_fb_rc" && _fb_attempt_outcome="ok"
                 { [ "$_fb_rc" -eq 124 ] || [ "$_fb_rc" -eq 137 ]; } && _fb_attempt_outcome="timeout"
-                _queue_attempt "$_pm_slug" "$_fb_model" "$_fb_attempt_num" "$_fb_attempt_outcome" "$_fb_last_duration" "rc=$_fb_rc"
+                # HIMMEL-3109: same real-detail fix as the primary attempt row
+                # above, applied to each fallback candidate.
+                _fb_attempt_detail="rc=$_fb_rc"
+                if ! _rc_completed "$_fb_rc" && [ -s "$_fb_err" ]; then
+                    _fb_attempt_snip="$(_pm_redact_detail "$(tail -n 1 "$_fb_err" 2>/dev/null)")"
+                    [ -n "$_fb_attempt_snip" ] && _fb_attempt_detail="rc=$_fb_rc: $_fb_attempt_snip"
+                fi
+                _queue_attempt "$_pm_slug" "$_fb_model" "$_fb_attempt_num" "$_fb_attempt_outcome" "$_fb_last_duration" "$_fb_attempt_detail"
                 # _rc_completed, not -eq 0 (round 9): a fallback returning the
                 # documented rc 4 has ANSWERED — an all-dropped review whose
                 # stdout carries the Dropped Citations evidence the citation
@@ -1512,10 +1549,11 @@ process_member() {
                     _fb_success=1
                     break
                 fi
-                # Surface a bounded head of the failed attempt's stderr before
-                # deleting it (CR round: a bare rc collapses rate-limit vs auth
-                # vs outage into the same line).
-                _fb_snip="$(head -c 200 "$_fb_err" 2>/dev/null | tr '\n' ' ')"
+                # Surface a bounded excerpt of the failed attempt's stderr
+                # before deleting it (CR round: a bare rc collapses rate-limit
+                # vs auth vs outage into the same line). HIMMEL-3109: tail, not
+                # head — same reasoning as _pm_detail above.
+                _fb_snip="$(tail -n 1 "$_fb_err" 2>/dev/null | tr -d '[:cntrl:]')"
                 echo "panel-availability: $_pm_slug fallback-failed($_fb_model) (rc=$_fb_rc)${_fb_snip:+: $_fb_snip}" >&2
                 rm -f "$_fb_out" "$_fb_err"
             done
@@ -1548,19 +1586,17 @@ process_member() {
             [ -n "$_pm_reason" ] || _pm_reason="generic-rc-$_pm_rc"
             # HIMMEL-2107: one line of the member's own stderr, turned into
             # ground truth ("reason=<class>" stops being a guess — the NOW-19
-            # phantom http-4xx hunt would have ended on sight of this). Strip
-            # control chars (codex CR, round 1): a \r, tab, or ANSI escape in
-            # a subprocess's raw stderr must not corrupt this line or the
-            # ledger row it also feeds. Redact (codex CR, round 2) with the
-            # SAME anchored patterns ledger-append.sh's --detail scrub uses
-            # (HIMMEL-1176) — this line reaches the stderr console BEFORE
-            # ledger-append.sh's own scrub would ever see it.
-            _pm_detail="$(head -n 1 "$_pm_err_file" 2>/dev/null | tr -d '[:cntrl:]' | sed -E \
-                -e 's/[0-9]{8,10}:[A-Za-z0-9_-]{35}/[REDACTED]/g' \
-                -e 's/(Bearer|bearer) [A-Za-z0-9._-]{16,}/\1 [REDACTED]/g' \
-                -e 's/sk-[A-Za-z0-9][A-Za-z0-9_-]{15,}/[REDACTED]/g' \
-                -e 's/AKIA[0-9A-Z]{16}/[REDACTED]/g' \
-                -e 's/([Aa][Pp][Ii][_-]?[Kk]ey|[Tt]oken|[Ss]ecret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9._-]{12,}/\1=[REDACTED]/g')"
+            # phantom http-4xx hunt would have ended on sight of this).
+            # HIMMEL-3109: TAIL, not head — critic-first-pass.sh writes its own
+            # diagnostic preamble first and its raw-tail excerpt (the actual
+            # provider text classify_failure matched against, above) last, so
+            # the LAST line is the informative one; a head-n-1 here used to
+            # print CFP's own preamble instead of the reason. Redaction +
+            # bound now shared via _pm_redact_detail (same anchored secret
+            # patterns ledger-append.sh's --detail scrub uses, HIMMEL-1176 —
+            # this line reaches the stderr console BEFORE that scrub would
+            # ever see it).
+            _pm_detail="$(_pm_redact_detail "$(tail -n 1 "$_pm_err_file" 2>/dev/null)")"
             echo "panel-availability: $_pm_slug unavailable (rc=$_pm_rc) reason=$_pm_reason${_pm_detail:+: $_pm_detail}" >&2
             _queue_avail "$_pm_slug" unavailable "" "$_pm_reason" "$_pm_detail"
             return

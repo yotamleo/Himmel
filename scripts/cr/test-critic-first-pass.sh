@@ -260,19 +260,23 @@ check "mixed symbol cites: report carries the drop COUNT" "$(printf '%s' "$sym_o
 check "mixed symbol cites: rejected text stays readable" "$(printf '%s' "$sym_out" | grep -cF -e '- s / Important Issues: - [CRITIC-2]: invented [ggs_config_control.py#_never_written]')" "1"
 check "mixed symbol cites exit 0 (a blocker survived)" "$sym_rc" "0"
 
-# --- HIMMEL-737: provider-failure body surfaces on stderr (raw head) ---
+# --- HIMMEL-737/HIMMEL-3109: provider-failure body surfaces on stderr (raw tail) ---
 # A quota 403 arrives as the "review" BODY (rc 0, non-empty, malformed). The
-# fail path must exit 1 AND print a bounded raw head to stderr - the panel's
+# fail path must exit 1 AND print a bounded raw excerpt to stderr - the panel's
 # quota-exhaustion fallback matches its signature against THIS stderr; a
 # path-only line kept the fallback chain permanently dark in production.
+# HIMMEL-3109 switched the bound from a HEAD cut to a TAIL cut: a gateway
+# banner prepended ahead of the real signature line was pushing it past a
+# fixed-length head bound, so the classifier only ever saw this file's own
+# "malformed output" text instead of the real cause.
 cat > "$tmp/stub.py" <<'PY'
 print("HTTP 403: The free quota has been exhausted")
 PY
 err403="$tmp/err403"
 printf '%s' "$DIFF" | HERMES_PY="$tmp/py.sh" bash "$CFP" --model x/y --slug s >/dev/null 2>"$err403"
 check "quota-shaped garbage exits 1" "$?" "1"
-check "raw head on stderr carries the quota text" \
-    "$(grep -c 'critic-first-pass.sh: raw head: HTTP 403: The free quota has been exhausted' "$err403")" "1"
+check "raw tail on stderr carries the quota text" \
+    "$(grep -c 'critic-first-pass.sh: raw tail: HTTP 403: The free quota has been exhausted' "$err403")" "1"
 
 # --- test: retry recovers on first-attempt empty response ---
 # Counter file: bash shim increments it, decides which stub.py to exec.
