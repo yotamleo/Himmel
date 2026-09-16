@@ -508,17 +508,10 @@ assert_registry "cron arm registers both weekly graphmap flows" '[.flows[] | sel
 assert_registry "cron arm registers both expected task names" '[.expected_tasks[] | select(. == "HIMMEL-GraphMap-Luna" or . == "HIMMEL-GraphMap-Himmel")] | length == 2'
 assert_registry "cron arm registers both ast graphmap flows" '[.flows[] | select(.name == "graphmap-ast-luna" or .name == "graphmap-ast-himmel")] | length == 2'
 assert_registry "cron arm registers both ast expected task names" '[.expected_tasks[] | select(. == "HIMMEL-GraphMapAst-Luna" or . == "HIMMEL-GraphMapAst-Himmel")] | length == 2'
-# PR-B panel r2, codex-7: the registered flow name must be DERIVED from the
-# SAME corpus-slug computation the runner itself uses (basename(HIMMEL_ROOT),
-# sanitized) -- not a hardcoded "graph-publish-himmel" literal. This checkout
-# is NOT named "himmel" (it's a worktree), so this assertion only passes if
-# the derivation is real: a hardcoded literal would register
-# "graph-publish-himmel" here, which would never match a flow-run row this
-# checkout's own graph-cadence.sh actually emits.
-EXPECTED_PUBLISH_SLUG="$(basename "$HIMMEL_ROOT_EXP" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//')"
-assert_registry "cron arm registers the publish flow under its DERIVED name, not a hardcoded literal" \
-    ".flows[] | select(.name == \"graph-publish-${EXPECTED_PUBLISH_SLUG}\" and .cadence_seconds == 21600)"
-assert_registry "cron arm registers the publish task name" '.expected_tasks[] | select(. == "HIMMEL-GraphPublish-Himmel")'
+# The publish leg (HIMMEL-GraphPublish-Himmel) is opt-in via --with-publish
+# (HIMMEL-3075) and is NOT part of this default arm -- its registration
+# (under its slug-DERIVED name, PR-B panel r2 codex-7) is covered in the
+# dedicated publish-leg fixture below, both with and without the flag.
 # Structural (AST) pair: marker-tagged, own runner files. luna is DAILY and
 # himmel HOURLY since HIMMEL-1960. The luna assertion is made against THAT
 # ENTRY'S OWN LINE, not the whole crontab: himmel's hourly `15 * * * *`
@@ -784,6 +777,7 @@ T_LUNA="HIMMEL-GraphMap-Luna"
 T_HIMMEL="HIMMEL-GraphMap-Himmel"
 T_AST_LUNA="HIMMEL-GraphMapAst-Luna"
 T_AST_HIMMEL="HIMMEL-GraphMapAst-Himmel"
+T_PUBLISH="HIMMEL-GraphPublish-Himmel"
 
 echo "TEST: cron arm --ast-only --dry-run skips the semantic pair entirely"
 out=$(run_cron arm --vault "$VAULT" --ast-only --dry-run)
@@ -1107,8 +1101,20 @@ run_cron3() {
         "$REAL_BASH" "$SCRIPT" "$@"
 }
 
-echo "TEST: cron arm --ast-only registers the publish leg (crontab entry + runner)"
+echo "TEST: cron arm --ast-only omits the publish leg by default (HIMMEL-3075)"
 out=$(run_cron3 arm --vault "$VAULT" --ast-only 2>&1)
+assert_not_contains "arm banner without --with-publish does not name the publish task" "HIMMEL-GraphPublish-Himmel" "$out"
+tab3=$(cat "$CSTATE3/crontab" 2>/dev/null || echo MISSING)
+assert_not_contains "no publish crontab entry without --with-publish" "HIMMEL-GraphPublish-Himmel" "$tab3"
+if [ ! -e "$CRON_DIR3/graphmap-publish-himmel.sh" ]; then
+    pass "no publish runner written without --with-publish"
+else
+    fail "publish runner written without --with-publish" "$(ls "$CRON_DIR3" 2>/dev/null)"
+fi
+run_cron3 disarm >/dev/null 2>&1
+
+echo "TEST: cron arm --ast-only --with-publish registers the publish leg (crontab entry + runner)"
+out=$(run_cron3 arm --vault "$VAULT" --ast-only --with-publish 2>&1)
 assert_contains "arm banner names the publish task" "HIMMEL-GraphPublish-Himmel" "$out"
 tab3=$(cat "$CSTATE3/crontab" 2>/dev/null || echo MISSING)
 assert_contains "publish crontab entry present" "# HIMMEL-GraphPublish-Himmel" "$tab3"
@@ -1138,6 +1144,17 @@ assert_contains "publish runner fires graph-cadence.sh" "graph-cadence.sh" "$pub
 # shape does NOT fit this script).
 assert_contains "publish runner passes --corpus-root explicitly" "--corpus-root" "$publish_sh"
 assert_contains "publish runner format stamp present" "# himmel-cadence-runner-format: $FMT" "$publish_sh"
+# PR-B panel r2, codex-7: the registered flow name must be DERIVED from the
+# SAME corpus-slug computation the runner itself uses (basename(HIMMEL_ROOT),
+# sanitized) -- not a hardcoded "graph-publish-himmel" literal. This checkout
+# is NOT named "himmel" (it's a worktree), so this assertion only passes if
+# the derivation is real: a hardcoded literal would register
+# "graph-publish-himmel" here, which would never match a flow-run row this
+# checkout's own graph-cadence.sh actually emits.
+EXPECTED_PUBLISH_SLUG="$(basename "$HIMMEL_ROOT_EXP" | tr -c 'A-Za-z0-9._-' '-' | sed -e 's/-\{2,\}/-/g' -e 's/^-//' -e 's/-$//')"
+assert_registry "cron arm --with-publish registers the publish flow under its DERIVED name, not a hardcoded literal" \
+    ".flows[] | select(.name == \"graph-publish-${EXPECTED_PUBLISH_SLUG}\" and .cadence_seconds == 21600)"
+assert_registry "cron arm --with-publish registers the publish task name" '.expected_tasks[] | select(. == "HIMMEL-GraphPublish-Himmel")'
 
 echo "TEST: cron status reports the publish leg's own schedule + summary"
 out=$(run_cron3 status)
@@ -1155,11 +1172,74 @@ else
 fi
 
 echo "TEST: cron arm --ast-only twice without --force dedup-blocks on the publish leg too"
-run_cron3 arm --vault "$VAULT" --ast-only >/dev/null 2>&1
-rc=0; out=$(run_cron3 arm --vault "$VAULT" --ast-only 2>&1) || rc=$?
+run_cron3 arm --vault "$VAULT" --ast-only --with-publish >/dev/null 2>&1
+rc=0; out=$(run_cron3 arm --vault "$VAULT" --ast-only --with-publish 2>&1) || rc=$?
 assert_rc "second --ast-only arm without --force blocked" 3 "$rc"
 assert_contains "dedup message can name the publish task" "HIMMEL-GraphPublish-Himmel" "$out"
 run_cron3 disarm >/dev/null 2>&1
+
+# ============================================================================
+# Darwin Full Disk Access arm-time warning (HIMMEL-3075, himmel#771), POSIX/
+# cron path. cron_arm is IDENTICAL on macos and linux (both take the crontab
+# branch of the platform case) except for this warning, so OSTYPE + HOME are
+# the only two hermetic seams needed to exercise the real Darwin branch
+# without a macOS machine -- this is a real control, not a stand-in for one
+# (the ticket's own caveat: TCC's actual grant behavior stays unvalidated
+# here regardless; this proves only that the branch fires on the right input).
+# ============================================================================
+
+CSTATE4="$TMP_ROOT/cron-state-darwin"
+mkdir -p "$CSTATE4"
+FAKE_CRONTAB4="$TMP_ROOT/crontab-fake-darwin.sh"
+cat >"$FAKE_CRONTAB4" <<FAKE
+#!/bin/sh
+CSTATE="$CSTATE4"
+FAKE
+cat >>"$FAKE_CRONTAB4" <<'FAKE'
+case "${1:-}" in
+    -l)
+        if [ -f "$CSTATE/crontab" ]; then
+            cat "$CSTATE/crontab"
+        else
+            echo "no crontab for fakeuser" >&2
+            exit 1
+        fi
+        ;;
+    -) cat > "$CSTATE/crontab" ;;
+    *) echo "crontab-fake: unsupported argv: $*" >&2; exit 64 ;;
+esac
+FAKE
+chmod +x "$FAKE_CRONTAB4"
+CRON_DIR4="$TMP_ROOT/cron-runners-darwin"
+FDA_HOME="$TMP_ROOT/fda-home"
+FDA_VAULT="$FDA_HOME/Documents/luna"
+mkdir -p "$FDA_VAULT"
+FDA_OUTSIDE_VAULT="$TMP_ROOT/fda-outside-vault"
+mkdir -p "$FDA_OUTSIDE_VAULT"
+run_fda() {
+    local ostype="$1"; shift
+    env OSTYPE="$ostype" HOME="$FDA_HOME" GRAPHMAP_CRONTAB="$FAKE_CRONTAB4" \
+        GRAPHMAP_BAT_DIR="$CRON_DIR4" PATH="$TMP_ROOT/bin:$GRAPHIFY_BIN_DIR_PATH:$CLAUDE_BIN_DIR_PATH:$PATH" \
+        "$REAL_BASH" "$SCRIPT" "$@"
+}
+
+echo "TEST: Darwin arm warns about Full Disk Access when the vault sits under ~/Documents"
+out=$(run_fda darwin23 arm --vault "$FDA_VAULT" --force)
+assert_contains "Darwin arm names the FDA requirement"        "Full Disk Access required" "$out"
+assert_contains "Darwin arm names cron itself as the grantee" "/usr/sbin/cron"             "$out"
+assert_contains "Darwin arm names himmel#771"                 "himmel#771"                 "$out"
+assert_contains "Darwin arm names the protected vault path"   "$FDA_VAULT"                 "$out"
+run_fda darwin23 disarm >/dev/null 2>&1
+
+echo "TEST: Darwin arm stays silent when the vault sits outside every TCC-protected folder"
+out=$(run_fda darwin23 arm --vault "$FDA_OUTSIDE_VAULT" --force)
+assert_not_contains "Darwin arm on an unprotected vault prints no FDA warning" "Full Disk Access" "$out"
+run_fda darwin23 disarm >/dev/null 2>&1
+
+echo "TEST: non-Darwin arm on the IDENTICAL protected vault path never warns (the control)"
+out=$(run_fda linux-gnu arm --vault "$FDA_VAULT" --force)
+assert_not_contains "Linux arm on the same protected path prints no FDA warning" "Full Disk Access" "$out"
+run_fda linux-gnu disarm >/dev/null 2>&1
 
 # ============================================================================
 # schtasks suite — Windows-only (cmd_arm needs cygpath; the cron suite above
@@ -1323,7 +1403,7 @@ fi
 # Test 5: arm registers both tasks with operator-decision defaults ----------
 
 echo "TEST: arm registers weekly luna Sunday 13:00 + weekly himmel Sunday 13:20 + hourly AST pair"
-out=$(run_gc arm --vault "$VAULT")
+out=$(run_gc arm --vault "$VAULT" --with-publish)
 assert_contains "arm banner" "GRAPHMAP CADENCE ARMED" "$out"
 luna_args=$(cat "$STATE/tasks/HIMMEL-GraphMap-Luna" 2>/dev/null || echo MISSING)
 himmel_args=$(cat "$STATE/tasks/HIMMEL-GraphMap-Himmel" 2>/dev/null || echo MISSING)
@@ -1643,10 +1723,27 @@ rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV
     PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
     PATH="$PATH_NOCLAUDE" "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --ast-only 2>&1) || rc=$?
 assert_rc "schtasks ast-only arm succeeds with no credential and no claude on PATH" 0 "$rc"
-if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 3 ]; then
-    pass "schtasks ast-only arm registered exactly three tasks (AST pair + publish leg, HIMMEL-2095)"
+if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 2 ]; then
+    pass "schtasks ast-only arm without --with-publish registers only the AST pair (HIMMEL-3075)"
 else
     fail "schtasks ast-only arm registered the wrong task count" "$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+if [ ! -f "$STATE/tasks/HIMMEL-GraphPublish-Himmel" ]; then
+    pass "schtasks ast-only arm without --with-publish omits the publish task"
+else
+    fail "publish task registered without --with-publish" "$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+run_gc disarm >/dev/null 2>&1
+
+echo "TEST: schtasks arm --ast-only --with-publish registers the AST pair + publish leg"
+rc=0; out=$(unset MOONSHOT_API_KEY ZAI_API_KEY DEEPSEEK_API_KEY; GRAPHMAP_DOTENV_ROOT="$DOTENV_ROOT_EMPTY" \
+    PIPELINE_UNUSED="" GRAPHMAP_SCHTASKS="$FAKE_SCHTASKS" GRAPHMAP_BAT_DIR="$BAT_DIR" \
+    PATH="$PATH_NOCLAUDE" "$REAL_BASH" "$SCRIPT" arm --vault "$VAULT" --ast-only --with-publish 2>&1) || rc=$?
+assert_rc "schtasks ast-only --with-publish arm succeeds with no credential and no claude on PATH" 0 "$rc"
+if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 3 ]; then
+    pass "schtasks ast-only --with-publish arm registered exactly three tasks (AST pair + publish leg, HIMMEL-2095)"
+else
+    fail "schtasks ast-only --with-publish arm registered the wrong task count" "$(ls "$STATE/tasks" 2>/dev/null)"
 fi
 if [ -f "$STATE/tasks/$T_AST_LUNA" ] && [ -f "$STATE/tasks/$T_AST_HIMMEL" ]; then
     pass "schtasks ast-only arm's two AST tasks are registered"
@@ -1699,6 +1796,49 @@ if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 5 ]; then
     pass "schtasks ast-only --force re-arm still leaves exactly five tasks total"
 else
     fail "unexpected task count after schtasks ast-only --force re-arm" "$(ls "$STATE/tasks")"
+fi
+run_gc disarm >/dev/null
+
+# Test 10d: --with-publish is opt-IN on the schtasks branch too (HIMMEL-3075,
+# CR round 1) ---------------------------------------------------------------
+#
+# The cron branch scopes --force's replacement with $own_match_re, which omits
+# the publish leg unless --with-publish is set, so a publish entry armed by an
+# earlier opt-in run survives an arm that doesn't ask for it. cmd_arm used to
+# filter $existing ONLY under --ast-only, so a plain `arm --force` deleted
+# every task list_existing returned -- publish included -- and then skipped
+# re-creating it, silently disarming the operator's opt-in leg. Assert the
+# schtasks branch now matches cron: the publish task is untouched, byte for
+# byte (a delete+recreate would also pass a mere existence check).
+
+echo "TEST: schtasks plain --force re-arm leaves an opt-in publish leg untouched"
+run_gc arm --vault "$VAULT" --with-publish >/dev/null
+publish_task_before=$(cat "$STATE/tasks/$T_PUBLISH" 2>/dev/null || echo MISSING)
+if [ "$publish_task_before" != MISSING ]; then
+    pass "precondition: --with-publish arm registered the publish task"
+else
+    fail "precondition failed: publish task not registered" "$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+rc=0; out=$(run_gc arm --vault "$VAULT" --force 2>&1) || rc=$?
+assert_rc "plain --force re-arm over an armed publish leg succeeds" 0 "$rc"
+assert_not_contains "plain --force re-arm does not delete the publish task" \
+    "deleted scheduled task: $T_PUBLISH" "$out"
+publish_task_after=$(cat "$STATE/tasks/$T_PUBLISH" 2>/dev/null || echo MISSING)
+if [ "$publish_task_after" = "$publish_task_before" ]; then
+    pass "plain --force re-arm left the opt-in publish task byte-identical"
+else
+    fail "plain --force re-arm removed or rewrote the opt-in publish task" \
+        "before=$publish_task_before after=$publish_task_after tasks=$(ls "$STATE/tasks" 2>/dev/null)"
+fi
+if [ -f "$BAT_DIR/graphmap-publish-himmel.bat" ]; then
+    pass "plain --force re-arm left the publish .bat runner in place"
+else
+    fail "plain --force re-arm removed the publish .bat runner" "$(ls "$BAT_DIR" 2>/dev/null)"
+fi
+if [ "$(find "$STATE/tasks" -mindepth 1 2>/dev/null | wc -l)" -eq 5 ]; then
+    pass "plain --force re-arm still leaves exactly five tasks total"
+else
+    fail "unexpected task count after plain --force re-arm" "$(ls "$STATE/tasks")"
 fi
 run_gc disarm >/dev/null
 

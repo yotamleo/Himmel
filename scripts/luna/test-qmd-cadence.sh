@@ -950,6 +950,38 @@ assert_rc "unknown platform rc 2" 2 "$rc"
 assert_contains "unknown platform message" "unsupported platform" "$out"
 
 # ============================================================================
+# Darwin Full Disk Access arm-time warning (HIMMEL-3075, himmel#771), POSIX/
+# cron path. cron_arm is IDENTICAL on macos and linux (both take the crontab
+# branch of the platform case) except for this warning, so OSTYPE is the only
+# hermetic seam needed to exercise the real Darwin branch without a macOS
+# machine -- this is a real control, not a stand-in for one (the ticket's own
+# caveat: TCC's actual grant behavior stays unvalidated here regardless; this
+# proves only that the branch fires on the right input). qmd-cadence has no
+# vault/target-path concept -- macos_fda_warn_if_needed is called with zero
+# arguments, unconditional on Darwin, so this warning does not vary by path.
+# ============================================================================
+
+CRON_DIR_FDA="$TMP_ROOT/cron-runners-darwin"
+run_fda() {
+    local ostype="$1"; shift
+    env OSTYPE="$ostype" QMD_CADENCE_CRONTAB="$FAKE_CRONTAB" \
+        QMD_CADENCE_BAT_DIR="$CRON_DIR_FDA" PATH="$TMP_ROOT/bin:$QMD_BIN_DIR_PATH:$PATH" \
+        "$REAL_BASH" "$SCRIPT" "$@"
+}
+
+echo "TEST: Darwin arm always warns about Full Disk Access (no vault/target-path concept here)"
+out=$(run_fda darwin23 arm)
+assert_contains "Darwin arm names the FDA requirement"        "Full Disk Access required" "$out"
+assert_contains "Darwin arm names cron itself as the grantee" "/usr/sbin/cron"             "$out"
+assert_contains "Darwin arm names himmel#771"                 "himmel#771"                 "$out"
+run_fda darwin23 disarm >/dev/null 2>&1
+
+echo "TEST: non-Darwin arm never warns (the control)"
+out=$(run_fda linux-gnu arm)
+assert_not_contains "Linux arm prints no FDA warning" "Full Disk Access" "$out"
+run_fda linux-gnu disarm >/dev/null 2>&1
+
+# ============================================================================
 # schtasks suite — Windows-only (cmd_arm needs cygpath; the cron suite above
 # already exercised the POSIX path on this platform).
 # ============================================================================
