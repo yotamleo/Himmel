@@ -29,7 +29,11 @@ for x in jq git bash sh sed grep tr head sort uname cat mkdir dirname chmod mv r
     p="$(command -v "$x" 2>/dev/null)" && ln -sf "$p" "$bin/$x"
 done
 
-run() { env -i HOME="$t/home" PATH="$bin:$PATH" HIMMEL_PATH="$REPO_ROOT" \
+# Isolated PATH — no inherited fallback (HIMMEL-3068 CodeRabbit review): a
+# dev box with real Homebrew on PATH would otherwise let `command -v brew`
+# find it despite the deliberately-no-brew-stub setup above, making this
+# "Homebrew absent" scenario pass or fail based on the HOST, not the stub.
+run() { env -i HOME="$t/home" PATH="$bin" HIMMEL_PATH="$REPO_ROOT" \
             CLAUDE_DIR="$t/home/.claude" MACOS_ASSUME_YES=1 bash "$M" 2>&1; }
 
 out="$(run)"; rc=$?

@@ -804,6 +804,9 @@ update_qmd_fork() {
         # (this precondition runs before the mode branch, so it is set either
         # way).
         QMD_FORK_BUN_MISSING=1
+        QMD_FORK_MISSING_TOOLS=""
+        command -v git >/dev/null 2>&1 || QMD_FORK_MISSING_TOOLS="git"
+        command -v bun >/dev/null 2>&1 || QMD_FORK_MISSING_TOOLS="${QMD_FORK_MISSING_TOOLS:+$QMD_FORK_MISSING_TOOLS, }bun"
         return 0
     fi
     # shellcheck source=lib/qmd-bin.sh
@@ -923,10 +926,15 @@ report_qmd_bun_missing() {
     [ "${QMD_FORK_BUN_MISSING:-0}" = "1" ] || return 0
     echo ""
     echo "==> qmd fork update DISABLED (HIMMEL-3068)"
-    echo "    WARNING: git or bun is not on PATH — qmd will NEVER update on this machine"
-    echo "    until that is fixed. The status table below reports this as 'skipped',"
-    echo "    which looks like routine no-op — it is not."
-    echo "    Install bun: curl -fsSL https://bun.sh/install | bash   (see docs/setup/new-machine.md)"
+    echo "    WARNING: ${QMD_FORK_MISSING_TOOLS:-git or bun} not on PATH — qmd will NEVER update"
+    echo "    on this machine until that is fixed. The status table below reports this as"
+    echo "    'skipped', which looks like routine no-op — it is not."
+    case "${QMD_FORK_MISSING_TOOLS:-}" in
+        *bun*) echo "    Install bun: curl -fsSL https://bun.sh/install | bash   (see docs/setup/new-machine.md)" ;;
+    esac
+    case "${QMD_FORK_MISSING_TOOLS:-}" in
+        *git*) echo "    Install git via your OS package manager (see docs/setup/new-machine.md)" ;;
+    esac
     return 0
 }
 

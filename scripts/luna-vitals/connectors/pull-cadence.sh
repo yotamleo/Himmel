@@ -265,7 +265,7 @@ EOF
         cadence_bat_editor_set
         printf 'if exist "%s" move /y "%s" "%s.prev" > NUL 2>&1\r\n' "$log_esc" "$log_esc" "$log_esc"
         printf 'echo [fired %%DATE%% %%TIME%%] >> "%s" 2>&1\r\n' "$log_esc"
-        printf '%s -NoProfile -File "%s" >> "%s" 2>&1\r\n' "$pwsh_win_esc" "$ps1_win_esc" "$log_esc"
+        printf '"%s" -NoProfile -File "%s" >> "%s" 2>&1\r\n' "$pwsh_win_esc" "$ps1_win_esc" "$log_esc"
         printf 'set RC=%%ERRORLEVEL%%\r\n'
         printf 'echo [exit rc=%%RC%%] >> "%s"\r\n' "$log_esc"
         printf 'exit /b %%RC%%\r\n'
