@@ -203,6 +203,10 @@ PUBLISH_FLOW_NAME="graph-publish-${PUBLISH_CORPUS_SLUG}"
 # shellcheck source=../lib/observability-registry.sh
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/observability-registry.sh"
+# HIMMEL-3075 (himmel#771): macOS cron Full Disk Access arm-time warning.
+# shellcheck source=../lib/macos-fda-warning.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/macos-fda-warning.sh"
 
 # Off-peak defaults for the WEEKLY semantic legs (see the header for the
 # Sunday 13:00 / 13:20 local rationale; HIMMEL-1948 changed daily -> weekly,
@@ -264,6 +268,14 @@ DRY_RUN=0
 # an operator ruling on the semantic pair's backend/egress. arm-only flag;
 # ignored by status/disarm (both already report/remove per-task).
 AST_ONLY=0
+
+# --with-publish (HIMMEL-3075, himmel#771): the publish leg
+# (HIMMEL-GraphPublish-Himmel) refuses every fire (exit 2) until HIMMEL-2654
+# lands — status's own line already says so (see status_one). Without this
+# flag `arm` no longer registers it at all, so the only way to get a task
+# that fires and refuses on schedule is asking for it explicitly. disarm
+# still removes it unconditionally if present (idempotent either way).
+WITH_PUBLISH=0
 
 # Fixed per-corpus map identity (titles/slugs/tags). ASCII-only: the .bat is
 # parsed by cmd.exe under the OEM codepage where UTF-8 punctuation mojibakes.
@@ -347,6 +359,10 @@ Flags (arm only, except --dry-run):
                          absent/untouched and its backend credential is not
                          required. Re-arm without --ast-only later to add the
                          semantic pair back in (--force to replace).
+  --with-publish         Also register the publish leg
+                         (HIMMEL-GraphPublish-Himmel, every 6h). Opt-in
+                         (HIMMEL-3075): this leg refuses every fire until
+                         HIMMEL-2654 lands, so arm leaves it out by default.
 
 The structural (AST) pair's offsets (luna daily 00:05, himmel hourly at :15)
 are NOT flags — see WEEKLY_DAY_*/AST_*_TIME in this script.
@@ -390,6 +406,7 @@ while [ $# -gt 0 ]; do
         --force)         FORCE=1; shift ;;
         --dry-run)       DRY_RUN=1; shift ;;
         --ast-only)      AST_ONLY=1; shift ;;
+        --with-publish)  WITH_PUBLISH=1; shift ;;
         -h|--help)       usage; exit 0 ;;
         *)
             echo "ERR graphmap-cadence: unknown arg: $1" >&2
@@ -1256,13 +1273,14 @@ cmd_arm() {
     local existing
     existing=$(list_existing)
     # --ast-only (HIMMEL-2071, extended HIMMEL-2095): scopes dedup/--force to
-    # the free legs only -- the AST pair AND the publish leg (also free, also
-    # unconditional below) -- leaving the semantic pair untouched. The
-    # publish leg is grouped with the AST pair here, not with the semantic
-    # pair, for the same reason it is created unconditionally below: no
-    # backend credential, nothing --ast-only exists to protect it from.
+    # the free legs only -- the AST pair AND, only under --with-publish
+    # (HIMMEL-3075), the publish leg -- leaving the semantic pair untouched.
     if [ "$AST_ONLY" -eq 1 ]; then
-        existing=$(printf '%s\n' "$existing" | grep -xE "(${TASK_AST_LUNA}|${TASK_AST_HIMMEL}|${TASK_PUBLISH_HIMMEL})" || true)
+        if [ "$WITH_PUBLISH" -eq 1 ]; then
+            existing=$(printf '%s\n' "$existing" | grep -xE "(${TASK_AST_LUNA}|${TASK_AST_HIMMEL}|${TASK_PUBLISH_HIMMEL})" || true)
+        else
+            existing=$(printf '%s\n' "$existing" | grep -xE "(${TASK_AST_LUNA}|${TASK_AST_HIMMEL})" || true)
+        fi
     fi
     if [ -n "$existing" ]; then
         if [ "$FORCE" -eq 1 ]; then
@@ -1447,12 +1465,16 @@ cmd_arm() {
         emit_task_xml "$bat_ast_luna_win" "$AST_LUNA_TIME" "$sched_ast" | sed 's/^/    /'
         echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_AST_HIMMEL /xml <hourly from $AST_HIMMEL_TIME, StartWhenAvailable=true> /f"
         emit_task_xml "$bat_ast_himmel_win" "$AST_HIMMEL_TIME" "$sched_ast" "$rep_ast" | sed 's/^/    /'
-        echo "DRY graphmap-cadence: would write $bat_publish_himmel:"
-        emit_bat "$himmel_win_esc" "$payload_publish_himmel" "$log_publish_himmel_esc" "$graphify_dir_win_esc" "$git_bin_esc" 0 | sed 's/^/    /'
-        echo "DRY graphmap-cadence: would write $vbs_publish_himmel:"
-        cadence_vbs_wrapper "$bat_publish_himmel_win" | sed 's/^/    /'
-        echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_PUBLISH_HIMMEL /xml <every 6h from $GRAPH_PUBLISH_TIME, StartWhenAvailable=true> /f"
-        emit_task_xml "$bat_publish_himmel_win" "$GRAPH_PUBLISH_TIME" "$sched_publish" "$rep_publish" | sed 's/^/    /'
+        if [ "$WITH_PUBLISH" -eq 1 ]; then
+            echo "DRY graphmap-cadence: would write $bat_publish_himmel:"
+            emit_bat "$himmel_win_esc" "$payload_publish_himmel" "$log_publish_himmel_esc" "$graphify_dir_win_esc" "$git_bin_esc" 0 | sed 's/^/    /'
+            echo "DRY graphmap-cadence: would write $vbs_publish_himmel:"
+            cadence_vbs_wrapper "$bat_publish_himmel_win" | sed 's/^/    /'
+            echo "DRY graphmap-cadence: would schtasks /create /tn $TASK_PUBLISH_HIMMEL /xml <every 6h from $GRAPH_PUBLISH_TIME, StartWhenAvailable=true> /f"
+            emit_task_xml "$bat_publish_himmel_win" "$GRAPH_PUBLISH_TIME" "$sched_publish" "$rep_publish" | sed 's/^/    /'
+        else
+            echo "DRY graphmap-cadence: --with-publish not set; $TASK_PUBLISH_HIMMEL is skipped entirely (HIMMEL-3075)"
+        fi
         echo "graphmap-cadence: dry-run complete (no changes made)"
         return 0
     fi
@@ -1478,17 +1500,25 @@ cmd_arm() {
     tmp_ast_himmel_bat=$(mktemp "$BAT_DIR/.graphmap-ast-himmel.bat.XXXXXX")
     tmp_ast_luna_vbs=$(mktemp "$BAT_DIR/.graphmap-ast-luna.vbs.XXXXXX")
     tmp_ast_himmel_vbs=$(mktemp "$BAT_DIR/.graphmap-ast-himmel.vbs.XXXXXX")
-    tmp_publish_himmel_bat=$(mktemp "$BAT_DIR/.graphmap-publish-himmel.bat.XXXXXX")
-    tmp_publish_himmel_vbs=$(mktemp "$BAT_DIR/.graphmap-publish-himmel.vbs.XXXXXX")
     emit_bat "$himmel_win_esc" "$payload_ast_luna" "$log_ast_luna_esc" "$graphify_dir_win_esc" "$git_bin_esc" 1 > "$tmp_ast_luna_bat"
     emit_bat "$himmel_win_esc" "$payload_ast_himmel" "$log_ast_himmel_esc" "$graphify_dir_win_esc" "$git_bin_esc" 0 > "$tmp_ast_himmel_bat"
-    emit_bat "$himmel_win_esc" "$payload_publish_himmel" "$log_publish_himmel_esc" "$graphify_dir_win_esc" "$git_bin_esc" 0 > "$tmp_publish_himmel_bat"
     cadence_vbs_wrapper "$bat_ast_luna_win" > "$tmp_ast_luna_vbs"
     cadence_vbs_wrapper "$bat_ast_himmel_win" > "$tmp_ast_himmel_vbs"
-    cadence_vbs_wrapper "$bat_publish_himmel_win" > "$tmp_publish_himmel_vbs"
     local promote_src promote_dst idx
-    promote_src=("$tmp_ast_luna_vbs" "$tmp_ast_himmel_vbs" "$tmp_publish_himmel_vbs" "$tmp_ast_luna_bat" "$tmp_ast_himmel_bat" "$tmp_publish_himmel_bat")
-    promote_dst=("$vbs_ast_luna" "$vbs_ast_himmel" "$vbs_publish_himmel" "$bat_ast_luna" "$bat_ast_himmel" "$bat_publish_himmel")
+    promote_src=("$tmp_ast_luna_vbs" "$tmp_ast_himmel_vbs" "$tmp_ast_luna_bat" "$tmp_ast_himmel_bat")
+    promote_dst=("$vbs_ast_luna" "$vbs_ast_himmel" "$bat_ast_luna" "$bat_ast_himmel")
+    # --with-publish (HIMMEL-3075): opt-in, like the semantic pair below --
+    # the publish leg's runner files are neither built nor promoted unless
+    # asked for, leaving a pre-existing one (from an earlier --with-publish
+    # arm) untouched.
+    if [ "$WITH_PUBLISH" -eq 1 ]; then
+        tmp_publish_himmel_bat=$(mktemp "$BAT_DIR/.graphmap-publish-himmel.bat.XXXXXX")
+        tmp_publish_himmel_vbs=$(mktemp "$BAT_DIR/.graphmap-publish-himmel.vbs.XXXXXX")
+        emit_bat "$himmel_win_esc" "$payload_publish_himmel" "$log_publish_himmel_esc" "$graphify_dir_win_esc" "$git_bin_esc" 0 > "$tmp_publish_himmel_bat"
+        cadence_vbs_wrapper "$bat_publish_himmel_win" > "$tmp_publish_himmel_vbs"
+        promote_src+=("$tmp_publish_himmel_vbs" "$tmp_publish_himmel_bat")
+        promote_dst+=("$vbs_publish_himmel" "$bat_publish_himmel")
+    fi
     # --ast-only (HIMMEL-2071): the semantic pair's runner files are neither
     # built nor promoted — leaving them absent (or untouched, on a re-arm that
     # left an earlier semantic pair's files on disk) is exactly "the semantic
@@ -1520,22 +1550,31 @@ cmd_arm() {
         fi
     done
 
-    # Create the AST tasks always, the semantic pair only without --ast-only.
-    # Rolls back every task that DID register if a later /create fails
-    # (generalized from the original 2-task hand-rolled rollback so
-    # status/dedup stay truthful no matter which task fails, HIMMEL-1948
-    # Task 3; --ast-only, HIMMEL-2071, just shrinks the array to two).
-    local create_names=("$TASK_AST_LUNA" "$TASK_AST_HIMMEL" "$TASK_PUBLISH_HIMMEL")
-    local create_scheds=("$sched_ast" "$sched_ast" "$sched_publish")
-    local create_times=("$AST_LUNA_TIME" "$AST_HIMMEL_TIME" "$GRAPH_PUBLISH_TIME")
-    local create_bats=("$bat_ast_luna_win" "$bat_ast_himmel_win" "$bat_publish_himmel_win")
+    # Create the AST tasks always, the semantic pair only without --ast-only,
+    # the publish leg only with --with-publish (HIMMEL-3075). Rolls back
+    # every task that DID register if a later /create fails (generalized
+    # from the original 2-task hand-rolled rollback so status/dedup stay
+    # truthful no matter which task fails, HIMMEL-1948 Task 3; --ast-only,
+    # HIMMEL-2071, just shrinks the array to two).
+    local create_names=("$TASK_AST_LUNA" "$TASK_AST_HIMMEL")
+    local create_scheds=("$sched_ast" "$sched_ast")
+    local create_times=("$AST_LUNA_TIME" "$AST_HIMMEL_TIME")
+    local create_bats=("$bat_ast_luna_win" "$bat_ast_himmel_win")
     # HIMMEL-1960 (operator decision (a)): only the HIMMEL corpus gets the
     # hourly Repetition. luna's AST leg keeps the same daily CalendarTrigger
     # with NO repetition, i.e. it fires once a day instead of 24 times. Both
     # AST legs share sched_ast (a plain ScheduleByDay) -- hourliness lives
     # entirely in rep_ast, so "lower cadence for luna" is the absence of it.
-    # The publish leg (HIMMEL-2095) always gets rep_publish (every 6h).
-    local create_reps=("" "$rep_ast" "$rep_publish")
+    # The publish leg (HIMMEL-2095), when armed, always gets rep_publish
+    # (every 6h).
+    local create_reps=("" "$rep_ast")
+    if [ "$WITH_PUBLISH" -eq 1 ]; then
+        create_names+=("$TASK_PUBLISH_HIMMEL")
+        create_scheds+=("$sched_publish")
+        create_times+=("$GRAPH_PUBLISH_TIME")
+        create_bats+=("$bat_publish_himmel_win")
+        create_reps+=("$rep_publish")
+    fi
     if [ "$AST_ONLY" -eq 0 ]; then
         create_names=("$TASK_LUNA" "$TASK_HIMMEL" "${create_names[@]}")
         create_scheds=("$sched_semantic" "$sched_semantic" "${create_scheds[@]}")
@@ -1585,15 +1624,19 @@ cmd_arm() {
     fi
     observability_register_cadence graphmap-ast-luna 86400 "$TASK_AST_LUNA"
     observability_register_cadence graphmap-ast-himmel 3600 "$TASK_AST_HIMMEL"
-    # Publish leg (HIMMEL-2095): unconditional, like the AST pair -- every 6h
-    # (21600s). $PUBLISH_FLOW_NAME ("graph-publish-<slug>"), NOT the
-    # "graphmap-*.bat/.vbs/.log" runner-file naming this file's OTHER legs use --
-    # it must match graph-cadence.sh's OWN FLOW_NAME byte-for-byte, or the
-    # observability registry's .flows[] entry can never be joined against the
-    # flow-run-ledger rows the runner actually emits (codex-4, PR-B panel r1;
-    # hardened codex-7, PR-B panel r2 -- both sides now DERIVE the name from
-    # the same corpus-slug computation instead of a hardcoded literal).
-    observability_register_cadence "$PUBLISH_FLOW_NAME" 21600 "$TASK_PUBLISH_HIMMEL"
+    if [ "$WITH_PUBLISH" -eq 1 ]; then
+        # Publish leg (HIMMEL-2095): opt-in (HIMMEL-3075), like the AST pair
+        # unconditional WHEN present -- every 6h (21600s). $PUBLISH_FLOW_NAME
+        # ("graph-publish-<slug>"), NOT the "graphmap-*.bat/.vbs/.log"
+        # runner-file naming this file's OTHER legs use -- it must match
+        # graph-cadence.sh's OWN FLOW_NAME byte-for-byte, or the observability
+        # registry's .flows[] entry can never be joined against the
+        # flow-run-ledger rows the runner actually emits (codex-4, PR-B panel
+        # r1; hardened codex-7, PR-B panel r2 -- both sides now DERIVE the
+        # name from the same corpus-slug computation instead of a hardcoded
+        # literal).
+        observability_register_cadence "$PUBLISH_FLOW_NAME" 21600 "$TASK_PUBLISH_HIMMEL"
+    fi
 
     local semantic_lines arming_note
     if [ "$AST_ONLY" -eq 1 ]; then
@@ -1631,6 +1674,16 @@ $himmel_line"
   (off the interactive Anthropic bank) + free structural refresh
   (himmel hourly, luna daily);"
     fi
+    local publish_lines=""
+    if [ "$WITH_PUBLISH" -eq 1 ]; then
+        publish_lines="  $TASK_PUBLISH_HIMMEL  every 6h from $GRAPH_PUBLISH_TIME   -> graph-cadence publish himmel (free, auto-merge)
+
+  NOT YET LIVE — $TASK_PUBLISH_HIMMEL is registered but will REFUSE every
+  fire (exit 2) until HIMMEL-2654 lands. graph-cadence.sh's pipeline lock is
+  not safe under concurrency, so it stops before anything destructive rather
+  than risk two concurrent reset --hard + clean -fdx runs on one worktree.
+  Details: docs/internals/graph-cadence.md, HIMMEL-2654."
+    fi
     cat <<EOF
 
 ================================================================
@@ -1638,15 +1691,7 @@ $himmel_line"
 $semantic_lines
   $TASK_AST_LUNA    daily $AST_LUNA_TIME   -> graphify update luna (structural, free)
   $TASK_AST_HIMMEL  hourly from $AST_HIMMEL_TIME   -> graphify update himmel (structural, free)
-  $TASK_PUBLISH_HIMMEL  every 6h from $GRAPH_PUBLISH_TIME   -> graph-cadence publish himmel (free, auto-merge)
-
-  NOT YET LIVE — $TASK_PUBLISH_HIMMEL is registered but will REFUSE every
-  fire (exit 2) until HIMMEL-2654 lands. graph-cadence.sh's pipeline lock is
-  not safe under concurrency, so it stops before anything destructive rather
-  than risk two concurrent reset --hard + clean -fdx runs on one worktree.
-  DO NOT ARM until HIMMEL-2654 lands — arming today only gets you a
-  task that fires and refuses every time.
-  Details: docs/internals/graph-cadence.md, HIMMEL-2654.
+$publish_lines
   Vault: $VAULT   (maps -> 60-Maps/)
   Himmel: $HIMMEL_ROOT
   Runner .bats: $BAT_DIR
@@ -1889,9 +1934,14 @@ cron_arm() {
     local existing
     existing=$(cron_existing)
     # --ast-only (HIMMEL-2071, extended HIMMEL-2095): see cmd_arm's identical
-    # comment -- the publish leg is grouped with the AST pair here too.
+    # comment -- the publish leg is grouped with the AST pair here too, but
+    # only when --with-publish (HIMMEL-3075) is also asking for it this run.
     if [ "$AST_ONLY" -eq 1 ]; then
-        existing=$(printf '%s\n' "$existing" | grep -E "# (${TASK_AST_LUNA}|${TASK_AST_HIMMEL}|${TASK_PUBLISH_HIMMEL})\$" || true)
+        if [ "$WITH_PUBLISH" -eq 1 ]; then
+            existing=$(printf '%s\n' "$existing" | grep -E "# (${TASK_AST_LUNA}|${TASK_AST_HIMMEL}|${TASK_PUBLISH_HIMMEL})\$" || true)
+        else
+            existing=$(printf '%s\n' "$existing" | grep -E "# (${TASK_AST_LUNA}|${TASK_AST_HIMMEL})\$" || true)
+        fi
     fi
     if [ -n "$existing" ]; then
         if [ "$FORCE" -eq 1 ]; then
@@ -1990,8 +2040,12 @@ cron_arm() {
         emit_runner "$TASK_AST_LUNA" "$payload_ast_luna" "$q_log_ast_luna" "$q_himmel" "" "$q_graphify_dir" 1 | sed 's/^/    /'
         echo "DRY graphmap-cadence: would write $CRON_RUNNER_AST_HIMMEL:"
         emit_runner "$TASK_AST_HIMMEL" "$payload_ast_himmel" "$q_log_ast_himmel" "$q_himmel" "" "$q_graphify_dir" | sed 's/^/    /'
-        echo "DRY graphmap-cadence: would write $CRON_RUNNER_PUBLISH_HIMMEL:"
-        emit_runner "$TASK_PUBLISH_HIMMEL" "$payload_publish_himmel" "$q_log_publish_himmel" "$q_himmel" "" "$q_graphify_dir" | sed 's/^/    /'
+        if [ "$WITH_PUBLISH" -eq 1 ]; then
+            echo "DRY graphmap-cadence: would write $CRON_RUNNER_PUBLISH_HIMMEL:"
+            emit_runner "$TASK_PUBLISH_HIMMEL" "$payload_publish_himmel" "$q_log_publish_himmel" "$q_himmel" "" "$q_graphify_dir" | sed 's/^/    /'
+        else
+            echo "DRY graphmap-cadence: --with-publish not set; $TASK_PUBLISH_HIMMEL is skipped entirely (HIMMEL-3075)"
+        fi
         echo "DRY graphmap-cadence: would add crontab entries:"
         if [ "$AST_ONLY" -eq 0 ]; then
             echo "    $entry_luna"
@@ -1999,7 +2053,9 @@ cron_arm() {
         fi
         echo "    $entry_ast_luna"
         echo "    $entry_ast_himmel"
-        echo "    $entry_publish_himmel"
+        if [ "$WITH_PUBLISH" -eq 1 ]; then
+            echo "    $entry_publish_himmel"
+        fi
         echo "graphmap-cadence: dry-run complete (no changes made)"
         return 0
     fi
@@ -2014,20 +2070,30 @@ cron_arm() {
     # PRE-EXISTING semantic pair's crontab lines and runner files survive an
     # --ast-only (re-)arm untouched.
     local tmp_ast_luna="$CRON_RUNNER_AST_LUNA.tmp.$$" tmp_ast_himmel="$CRON_RUNNER_AST_HIMMEL.tmp.$$"
-    local tmp_publish_himmel="$CRON_RUNNER_PUBLISH_HIMMEL.tmp.$$"
+    local tmp_publish_himmel=""
     emit_runner "$TASK_AST_LUNA" "$payload_ast_luna" "$q_log_ast_luna" "$q_himmel" "" "$q_graphify_dir" 1 > "$tmp_ast_luna"
     emit_runner "$TASK_AST_HIMMEL" "$payload_ast_himmel" "$q_log_ast_himmel" "$q_himmel" "" "$q_graphify_dir" > "$tmp_ast_himmel"
-    emit_runner "$TASK_PUBLISH_HIMMEL" "$payload_publish_himmel" "$q_log_publish_himmel" "$q_himmel" "" "$q_graphify_dir" > "$tmp_publish_himmel"
-    chmod +x "$tmp_ast_luna" "$tmp_ast_himmel" "$tmp_publish_himmel"
-    local own_match_re="(${TASK_AST_LUNA}|${TASK_AST_HIMMEL}|${TASK_PUBLISH_HIMMEL})"
-    local new_entries="$entry_ast_luna"$'\n'"$entry_ast_himmel"$'\n'"$entry_publish_himmel"
+    chmod +x "$tmp_ast_luna" "$tmp_ast_himmel"
+    local own_match_re="(${TASK_AST_LUNA}|${TASK_AST_HIMMEL})"
+    local new_entries="$entry_ast_luna"$'\n'"$entry_ast_himmel"
+    # --with-publish (HIMMEL-3075): opt-in, like the semantic pair under
+    # --ast-only -- left out of own_match_re/new_entries entirely so a
+    # pre-existing publish entry (armed by an earlier --with-publish run)
+    # survives an arm that doesn't ask for it untouched.
+    if [ "$WITH_PUBLISH" -eq 1 ]; then
+        tmp_publish_himmel="$CRON_RUNNER_PUBLISH_HIMMEL.tmp.$$"
+        emit_runner "$TASK_PUBLISH_HIMMEL" "$payload_publish_himmel" "$q_log_publish_himmel" "$q_himmel" "" "$q_graphify_dir" > "$tmp_publish_himmel"
+        chmod +x "$tmp_publish_himmel"
+        own_match_re="(${own_match_re}|${TASK_PUBLISH_HIMMEL})"
+        new_entries="$new_entries"$'\n'"$entry_publish_himmel"
+    fi
     local tmp_luna="" tmp_himmel=""
     if [ "$AST_ONLY" -eq 0 ]; then
         tmp_luna="$CRON_RUNNER_LUNA.tmp.$$"; tmp_himmel="$CRON_RUNNER_HIMMEL.tmp.$$"
         emit_runner "$TASK_LUNA" "$payload_luna" "$q_log_luna" "$q_himmel" "$q_node_dir" "$q_graphify_dir" 0 "$q_claude_dir" > "$tmp_luna"
         emit_runner "$TASK_HIMMEL" "$payload_himmel" "$q_log_himmel" "$q_himmel" "$q_node_dir" "$q_graphify_dir" 0 "$q_claude_dir" > "$tmp_himmel"
         chmod +x "$tmp_luna" "$tmp_himmel"
-        own_match_re="$TASK_MATCH_RE"
+        own_match_re="(${own_match_re}|${TASK_LUNA}|${TASK_HIMMEL})"
         new_entries="$entry_luna"$'\n'"$entry_himmel"$'\n'"$new_entries"
     fi
 
@@ -2059,18 +2125,21 @@ cron_arm() {
     fi
     mv -f "$tmp_ast_luna" "$CRON_RUNNER_AST_LUNA"
     mv -f "$tmp_ast_himmel" "$CRON_RUNNER_AST_HIMMEL"
-    mv -f "$tmp_publish_himmel" "$CRON_RUNNER_PUBLISH_HIMMEL"
     observability_register_cadence graphmap-ast-luna 86400 "$TASK_AST_LUNA"
     observability_register_cadence graphmap-ast-himmel 3600 "$TASK_AST_HIMMEL"
-    # Publish leg (HIMMEL-2095): unconditional, like the AST pair -- every 6h
-    # (21600s). $PUBLISH_FLOW_NAME ("graph-publish-<slug>"), NOT the
+    # Publish leg (HIMMEL-2095): opt-in via --with-publish (HIMMEL-3075), not
+    # unconditional -- it refuses every fire until HIMMEL-2654 lands.
+    # $PUBLISH_FLOW_NAME ("graph-publish-<slug>"), NOT the
     # "graphmap-*.bat/.vbs/.log" runner-file naming this file's OTHER legs use --
     # it must match graph-cadence.sh's OWN FLOW_NAME byte-for-byte, or the
     # observability registry's .flows[] entry can never be joined against the
     # flow-run-ledger rows the runner actually emits (codex-4, PR-B panel r1;
     # hardened codex-7, PR-B panel r2 -- both sides now DERIVE the name from
     # the same corpus-slug computation instead of a hardcoded literal).
-    observability_register_cadence "$PUBLISH_FLOW_NAME" 21600 "$TASK_PUBLISH_HIMMEL"
+    if [ "$WITH_PUBLISH" -eq 1 ]; then
+        mv -f "$tmp_publish_himmel" "$CRON_RUNNER_PUBLISH_HIMMEL"
+        observability_register_cadence "$PUBLISH_FLOW_NAME" 21600 "$TASK_PUBLISH_HIMMEL"
+    fi
 
     local semantic_lines arming_note
     if [ "$AST_ONLY" -eq 1 ]; then
@@ -2107,6 +2176,16 @@ $himmel_line"
   extraction on the $BACKEND backend (off the interactive Anthropic bank)
   + free structural refresh (himmel hourly, luna daily); disarm anytime:"
     fi
+    local publish_lines=""
+    if [ "$WITH_PUBLISH" -eq 1 ]; then
+        publish_lines="  $TASK_PUBLISH_HIMMEL  every 6h at :$publish_himmel_mm   -> graph-cadence publish himmel (free, auto-merge)
+
+  NOT YET LIVE — $TASK_PUBLISH_HIMMEL is registered but will REFUSE every
+  fire (exit 2) until HIMMEL-2654 lands. graph-cadence.sh's pipeline lock is
+  not safe under concurrency, so it stops before anything destructive rather
+  than risk two concurrent reset --hard + clean -fdx runs on one worktree.
+  Details: docs/internals/graph-cadence.md, HIMMEL-2654."
+    fi
     cat <<EOF
 
 ================================================================
@@ -2114,15 +2193,7 @@ $himmel_line"
 $semantic_lines
   $TASK_AST_LUNA    daily at $AST_LUNA_TIME   -> graphify update luna (structural, free)
   $TASK_AST_HIMMEL  hourly at :$ast_himmel_mm   -> graphify update himmel (structural, free)
-  $TASK_PUBLISH_HIMMEL  every 6h at :$publish_himmel_mm   -> graph-cadence publish himmel (free, auto-merge)
-
-  NOT YET LIVE — $TASK_PUBLISH_HIMMEL is registered but will REFUSE every
-  fire (exit 2) until HIMMEL-2654 lands. graph-cadence.sh's pipeline lock is
-  not safe under concurrency, so it stops before anything destructive rather
-  than risk two concurrent reset --hard + clean -fdx runs on one worktree.
-  DO NOT ARM until HIMMEL-2654 lands — arming today only gets you a
-  task that fires and refuses every time.
-  Details: docs/internals/graph-cadence.md, HIMMEL-2654.
+$publish_lines
   Vault: $VAULT   (maps -> 60-Maps/)
   Himmel: $HIMMEL_ROOT
   Runner .sh: $BAT_DIR
@@ -2131,6 +2202,7 @@ $arming_note
       bash scripts/luna/graphmap-cadence.sh disarm
 ================================================================
 EOF
+    macos_fda_warn_if_needed "$VAULT" "$HIMMEL_ROOT"
 }
 
 # Runtime preflight on the ARM path only (HIMMEL-1991): arming hands this

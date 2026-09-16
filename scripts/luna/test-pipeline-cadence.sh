@@ -179,6 +179,8 @@ build_hook_sandbox() {
     # both.
     cp "$real_lib/flow-run-ledger.sh" "$sb/scripts/lib/flow-run-ledger.sh"
     cp "$real_lib/flow-run-ledger-path.sh" "$sb/scripts/lib/flow-run-ledger-path.sh"
+    # Also sourced at load (HIMMEL-3075), so the sandbox needs it too.
+    cp "$real_lib/macos-fda-warning.sh" "$sb/scripts/lib/macos-fda-warning.sh"
     cp "$real_hooks/auto-approve-safe-bash.sh" "$sb/scripts/hooks/"
     cp "$real_hooks/cadence-deny-background.sh" "$sb/scripts/hooks/"
     cp "$real_hooks/cadence-approve-engines.sh" "$sb/scripts/hooks/"
@@ -1469,6 +1471,68 @@ echo "TEST: unknown platform (OSTYPE=beos) exits 2"
 rc=0; out=$(env OSTYPE=beos bash "$SCRIPT" status 2>&1) || rc=$?
 assert_rc "unknown platform rc 2" 2 "$rc"
 assert_contains "unknown platform message" "unsupported platform" "$out"
+
+# ============================================================================
+# Darwin Full Disk Access arm-time warning (HIMMEL-3075, himmel#771), POSIX/
+# cron path. cron_arm is IDENTICAL on macos and linux (both take the crontab
+# branch of the platform case) except for this warning, so OSTYPE + HOME are
+# the only two hermetic seams needed to exercise the real Darwin branch
+# without a macOS machine -- this is a real control, not a stand-in for one
+# (the ticket's own caveat: TCC's actual grant behavior stays unvalidated
+# here regardless; this proves only that the branch fires on the right input).
+# ============================================================================
+
+CSTATE_FDA="$TMP_ROOT/cron-state-darwin"
+mkdir -p "$CSTATE_FDA"
+FAKE_CRONTAB_FDA="$TMP_ROOT/crontab-fake-darwin.sh"
+cat >"$FAKE_CRONTAB_FDA" <<FAKE
+#!/bin/sh
+CSTATE="$CSTATE_FDA"
+FAKE
+cat >>"$FAKE_CRONTAB_FDA" <<'FAKE'
+case "${1:-}" in
+    -l)
+        if [ -f "$CSTATE/crontab" ]; then
+            cat "$CSTATE/crontab"
+        else
+            echo "no crontab for fakeuser" >&2
+            exit 1
+        fi
+        ;;
+    -) cat > "$CSTATE/crontab" ;;
+    *) echo "crontab-fake: unsupported argv: $*" >&2; exit 64 ;;
+esac
+FAKE
+chmod +x "$FAKE_CRONTAB_FDA"
+CRON_DIR_FDA="$TMP_ROOT/cron-runners-darwin"
+FDA_HOME="$TMP_ROOT/fda-home"
+FDA_VAULT="$FDA_HOME/Documents/luna"
+mkdir -p "$FDA_VAULT"
+FDA_OUTSIDE_VAULT="$TMP_ROOT/fda-outside-vault"
+mkdir -p "$FDA_OUTSIDE_VAULT"
+run_fda() {
+    local ostype="$1"; shift
+    env OSTYPE="$ostype" HOME="$FDA_HOME" PIPELINE_CRONTAB="$FAKE_CRONTAB_FDA" \
+        PIPELINE_BAT_DIR="$CRON_DIR_FDA" bash "$SCRIPT" "$@"
+}
+
+echo "TEST: Darwin arm warns about Full Disk Access when the vault sits under ~/Documents"
+out=$(run_fda darwin23 arm --vault "$FDA_VAULT")
+assert_contains "Darwin arm names the FDA requirement"        "Full Disk Access required" "$out"
+assert_contains "Darwin arm names cron itself as the grantee" "/usr/sbin/cron"             "$out"
+assert_contains "Darwin arm names himmel#771"                 "himmel#771"                 "$out"
+assert_contains "Darwin arm names the protected vault path"   "$FDA_VAULT"                 "$out"
+run_fda darwin23 disarm >/dev/null 2>&1
+
+echo "TEST: Darwin arm stays silent when the vault sits outside every TCC-protected folder"
+out=$(run_fda darwin23 arm --vault "$FDA_OUTSIDE_VAULT")
+assert_not_contains "Darwin arm on an unprotected vault prints no FDA warning" "Full Disk Access" "$out"
+run_fda darwin23 disarm >/dev/null 2>&1
+
+echo "TEST: non-Darwin arm on the IDENTICAL protected vault path never warns (the control)"
+out=$(run_fda linux-gnu arm --vault "$FDA_VAULT")
+assert_not_contains "Linux arm on the same protected path prints no FDA warning" "Full Disk Access" "$out"
+run_fda linux-gnu disarm >/dev/null 2>&1
 
 # ============================================================================
 # schtasks suite — Windows-only (cmd_arm needs cygpath; the cron suite

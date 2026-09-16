@@ -162,6 +162,11 @@ CADENCE_PERMISSION_MODE="acceptEdits"
 # shellcheck disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/flow-run-ledger.sh"
 
+# HIMMEL-3075 (himmel#771): macOS cron Full Disk Access arm-time warning.
+# shellcheck source=../lib/macos-fda-warning.sh
+# shellcheck disable=SC1091
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/macos-fda-warning.sh"
+
 # Operator-decision defaults (HIMMEL-255 pinned comment, 2026-06-10;
 # harvest leg added on HIMMEL-357, 2026-06-17; model pins + frequency
 # shift on HIMMEL-506, 2026-07-11: synth weekly->daily, health
@@ -2154,6 +2159,7 @@ cron_arm() {
       bash scripts/luna/pipeline-cadence.sh disarm
 ================================================================
 EOF
+    macos_fda_warn_if_needed "$VAULT"
 }
 
 case "$SUBCMD" in
