@@ -237,7 +237,27 @@ assert_contains "a: output appended to a per-arm log under the log dir" ">> $EXP
 assert_contains "a: log redirect captures stderr too" ".log 2>&1" "$out"
 assert_contains "a: dry-run names the execution shape" "headless" "$out"
 assert_contains "a: runner self-cleans via crontab -l" "crontab -l" "$out"
-assert_not_contains "a: no runner file written under --dry-run" "$ARM_RUNNER_DIR" "$(ls "$ARM_RUNNER_DIR" 2>/dev/null || true)"
+if [ -z "$(ls -A "$ARM_RUNNER_DIR" 2>/dev/null || true)" ]; then
+    echo "PASS a: no runner file written under --dry-run"
+else
+    # shellcheck disable=SC2012  # HIMMEL-Resume-*.sh/.command names are ours (alnum); ls-over-glob is fine here
+    echo "FAIL a: --dry-run wrote into $ARM_RUNNER_DIR: $(ls -A "$ARM_RUNNER_DIR" | tr '\n' ' ')"; FAILED=$((FAILED + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# (a-headed) CR round 3 (#780): the headed `.command` launch must NOT inherit
+# the headless runner's stdin/log redirect. The `.command` file owns a real
+# Terminal TTY; redirecting stdin to /dev/null gives claude immediate EOF and
+# hiding stdout in the log defeats the whole point of opening the window.
+# ---------------------------------------------------------------------------
+HO_A2=$(make_handover)
+out=$(env PATH="$MACBIN:$PATH" OSTYPE="darwin23" ARM_TERMINAL_APP=Terminal bash "$ARM" --time "$(future_time)" --handover "$HO_A2" --dry-run 2>&1)
+rc=$?
+assert_rc "a-headed: macOS headed dry-run exits 0" 0 "$rc"
+assert_contains "a-headed: previews a command file section" "DRY arm-resume: command file (" "$out"
+assert_contains "a-headed: dry-run names the headed execution shape" "headed launch via 'open -a" "$out"
+assert_contains "a-headed: headed launch still resolves claude absolutely" "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1 && $EXPECTED_CLAUDE_Q " "$out"
+assert_not_contains "a-headed: RED CONTROL — headed .command body carries no stdin/log redirect" "< /dev/null" "$out"
 
 # (a-long) empirical proof of the actual bug fix: an artificially long
 # handover PATH (~950 chars, built as nested subdirs to stay under each
