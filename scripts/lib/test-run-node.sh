@@ -493,15 +493,19 @@ if [ -z "$real_node" ]; then
     echo "  SKIP: no real node on PATH to resolve against"
 else
     node_dir="$(dirname "$real_node")"
-    tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-path-widen.XXXXXX")"
-    hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
-    gh_dir="$tmp/ghbin"; mkdir -p "$gh_dir"
-    cat > "$gh_dir/gh" <<'EOF'
+    if ! tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-path-widen.XXXXXX")" || [ -z "$tmp" ]; then
+        fail "mktemp -d failed for the path-widen fixture"
+        tmp=""
+    fi
+    if [ -n "$tmp" ]; then
+        hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
+        gh_dir="$tmp/ghbin"; mkdir -p "$gh_dir"
+        cat > "$gh_dir/gh" <<'EOF'
 #!/bin/sh
 echo FAKE_GH
 EOF
-    chmod +x "$gh_dir/gh"
-    cat > "$hook_dir/gh-probe-hook.sh" <<'EOF'
+        chmod +x "$gh_dir/gh"
+        cat > "$hook_dir/gh-probe-hook.sh" <<'EOF'
 #!/usr/bin/env bash
 if command -v gh >/dev/null 2>&1; then
     echo -n GH_FOUND
@@ -515,29 +519,30 @@ else
     echo NODE_MISSING
 fi
 EOF
-    chmod +x "$hook_dir/gh-probe-hook.sh"
+        chmod +x "$hook_dir/gh-probe-hook.sh"
 
-    # Precondition: the starting PATH is genuinely PATH-poor — UTILS_DIR only
-    # (coreutils, no node, no gh) — and gh_dir is deliberately NOT on it. A
-    # fixture that fails for any other reason (unwritable TMPDIR, a blanket
-    # stub) would be vacuous; this asserts the one condition the leg actually
-    # depends on before trusting the run below.
-    if PATH="$UTILS_DIR" command -v gh >/dev/null 2>&1; then
-        fail "precondition broken: gh resolves on the minimal starting PATH before the chokepoint even runs"
-    else
-        pass "precondition: gh is NOT reachable on the minimal starting PATH"
-    fi
+        # Precondition: the starting PATH is genuinely PATH-poor — UTILS_DIR only
+        # (coreutils, no node, no gh) — and gh_dir is deliberately NOT on it. A
+        # fixture that fails for any other reason (unwritable TMPDIR, a blanket
+        # stub) would be vacuous; this asserts the one condition the leg actually
+        # depends on before trusting the run below.
+        if PATH="$UTILS_DIR" command -v gh >/dev/null 2>&1; then
+            fail "precondition broken: gh resolves on the minimal starting PATH before the chokepoint even runs"
+        else
+            pass "precondition: gh is NOT reachable on the minimal starting PATH"
+        fi
 
-    cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-probe-hook.sh\""
-    out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$node_dir" RUN_NODE_EXTRA_PATH_DIRS="$gh_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
-    rc=$?
-    err="$(cat "$tmp/err.txt")"
-    if [ "$rc" -eq 0 ] && [ "$out" = "GH_FOUND NODE_FOUND" ]; then
-        pass "hook spawned off a minimal starting PATH still finds gh AND node (out='$out')"
-    else
-        fail "hook spawned off a minimal starting PATH -> rc=$rc out='$out' err='$err' (want 'GH_FOUND NODE_FOUND')"
+        cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/gh-probe-hook.sh\""
+        out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT PATH="$UTILS_DIR" RESOLVE_NODE_PROBE_DIRS="$node_dir" RUN_NODE_EXTRA_PATH_DIRS="$gh_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
+        rc=$?
+        err="$(cat "$tmp/err.txt")"
+        if [ "$rc" -eq 0 ] && [ "$out" = "GH_FOUND NODE_FOUND" ]; then
+            pass "hook spawned off a minimal starting PATH still finds gh AND node (out='$out')"
+        else
+            fail "hook spawned off a minimal starting PATH -> rc=$rc out='$out' err='$err' (want 'GH_FOUND NODE_FOUND')"
+        fi
+        rm -rf "$tmp"
     fi
-    rm -rf "$tmp"
 fi
 
 echo "== run-node: an EMPTY inherited PATH does not leave a trailing colon after the widen (HIMMEL-3073 codex-1) =="
@@ -552,36 +557,54 @@ echo "== run-node: an EMPTY inherited PATH does not leave a trailing colon after
 # PATH a spawned hook actually inherits has no trailing colon and no empty
 # `::` segment when the starting PATH was genuinely empty (unset, not merely
 # PATH-poor).
+#
+# codex-1 (critic panel, round 2): plain `env -u PATH bash --posix -c ...`
+# does NOT establish an empty PATH here — bash initializes its own
+# compiled-in default PATH whenever none is found in the inherited
+# environment (confirmed: `env -u PATH bash --posix -c 'echo "[$PATH]"'`
+# prints a non-empty default, not `[]`), so the old unconditional
+# `:${PATH:-}` suffix would never have produced a trailing colon in THIS
+# fixture even before the fix. PATH must be explicitly set to the empty
+# string and exported INSIDE the launching shell, before `command -p sh`
+# runs, and the precondition below proves that landed before trusting the
+# chokepoint's own behavior.
 real_node="$(command -v node 2>/dev/null || true)"
 if [ -z "$real_node" ]; then
     echo "  SKIP: no real node on PATH to resolve against"
 else
     node_dir="$(dirname "$real_node")"
-    tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-empty-path.XXXXXX")"
-    hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
-    cat > "$hook_dir/path-echo-hook.sh" <<'EOF'
+    if ! tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-empty-path.XXXXXX")" || [ -z "$tmp" ]; then
+        fail "mktemp -d failed for the empty-path fixture"
+        tmp=""
+    fi
+    if [ -n "$tmp" ]; then
+        hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
+        cat > "$hook_dir/path-echo-hook.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s' "$PATH"
 EOF
-    chmod +x "$hook_dir/path-echo-hook.sh"
+        chmod +x "$hook_dir/path-echo-hook.sh"
 
-    cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/path-echo-hook.sh\""
-    out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT -u PATH RESOLVE_NODE_PROBE_DIRS="$node_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
-    rc=$?
-    err="$(cat "$tmp/err.txt")"
-    if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
-        fail "hook did not run cleanly under an EMPTY starting PATH -> rc=$rc out='$out' err='$err'"
-    else
-        case "$out" in
-            *::*|*:)
-                fail "widened PATH has a trailing/empty segment under an EMPTY starting PATH -> PATH='$out'"
-                ;;
-            *)
-                pass "widened PATH has no trailing colon under an EMPTY starting PATH (PATH='$out')"
-                ;;
-        esac
+        cmd="if [ -n \"\$PATH\" ]; then echo PRECONDITION_BROKEN_NONEMPTY_PATH >&2; exit 3; fi; command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/path-echo-hook.sh\""
+        out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT RESOLVE_NODE_PROBE_DIRS="$node_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "PATH=''; export PATH; $cmd" 2>"$tmp/err.txt")"
+        rc=$?
+        err="$(cat "$tmp/err.txt")"
+        if [ "$rc" -eq 3 ]; then
+            fail "precondition broken: PATH was non-empty inside the launching shell before the chokepoint even ran"
+        elif [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+            fail "hook did not run cleanly under an EMPTY starting PATH -> rc=$rc out='$out' err='$err'"
+        else
+            case "$out" in
+                *::*|*:)
+                    fail "widened PATH has a trailing/empty segment under an EMPTY starting PATH -> PATH='$out'"
+                    ;;
+                *)
+                    pass "widened PATH has no trailing colon under an EMPTY starting PATH (PATH='$out')"
+                    ;;
+            esac
+        fi
+        rm -rf "$tmp"
     fi
-    rm -rf "$tmp"
 fi
 
 echo
