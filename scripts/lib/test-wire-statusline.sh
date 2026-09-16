@@ -259,4 +259,42 @@ CLAUDE_CONFIG_DIR="$cfg22" bash "$HELPER" "$proj22/.claude/settings.json" "$REPO
   || fail "22: a config from an OLD clone did not trigger the purge on a fresh project settings file"
 echo "ok 22 an old clone's hud config still purges on a fresh project wire"
 
+# 23. CR round 2: a FAILED purge must abort the wire with nothing published, so
+# the retry still sees a changed wiring and tries again. Publishing first left a
+# failed purge unrepeatable — the next run saw wiring that already matched, took
+# the no-change path, and the stale state survived every run after that.
+# The failure is produced by making the hud dir non-writable, so removing an
+# entry INSIDE it fails while the dir itself still reads (root ignores this, so
+# the case self-skips there rather than passing vacuously).
+if [ "$(id -u)" = "0" ]; then
+  echo "ok 23 SKIPPED (running as root: a read-only dir does not block unlink)"
+else
+  cfg23="$TMP/cfg23"; hud23="$cfg23/plugins/claude-hud"
+  proj23="$TMP/proj23"; mkdir -p "$proj23/.claude"
+  s23="$proj23/.claude/settings.json"
+  old23='node "/old/himmel/marketplace/plugins/claude-hud/dist/index.js"'
+  # An earlier install: its command is wired, its config and snapshots are on disk.
+  printf '{"statusLine":{"type":"command","command":%s}}\n' "\"$(printf '%s' "$old23" | sed 's/"/\\"/g')\"" > "$s23"
+  mkdir -p "$hud23"
+  printf '{"display":{"showPromptCache":false}}\n' > "$hud23/config.json"
+  seed_hud_cache "$hud23"
+  chmod 500 "$hud23"
+
+  rc23=0
+  CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null 2>&1 || rc23=$?
+  chmod 700 "$hud23"
+  [ "$rc23" -ne 0 ] || fail "23: a failed purge must fail the wire, not report success"
+  [ "$(jq -r .statusLine.command "$s23")" = "$old23" ] \
+    || fail "23: the settings file was published despite the failed purge — the retry will see no change"
+  [ "$(jq -r .display.showPromptCache "$hud23/config.json")" = "false" ] \
+    || fail "23: the hud config was published despite the failed purge"
+  [ -f "$hud23/transcript-cache/deadbeef.json" ] || fail "23: precondition — the seeded cache should still be there"
+
+  # The retry, with the dir writable again, still sees the same changed wiring.
+  CLAUDE_CONFIG_DIR="$cfg23" bash "$HELPER" "$s23" "$REPO_ROOT" >/dev/null
+  [ ! -e "$hud23/transcript-cache" ] || fail "23: the retry did not purge — the failure was not repeatable"
+  [ "$(jq -r .statusLine.command "$s23")" != "$old23" ] || fail "23: the retry did not wire"
+  echo "ok 23 a failed purge aborts the wire and the retry still purges"
+fi
+
 echo "ALL PASS"

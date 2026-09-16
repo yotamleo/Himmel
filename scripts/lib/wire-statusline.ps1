@@ -56,7 +56,9 @@ function Remove-HimmelHudCacheState {
     if (-not (Test-Path $HudDir)) { return }
     $dropped = $false
     foreach ($entry in Get-ChildItem -LiteralPath $HudDir -Force) {
-        # Dotfiles are the hud's own interrupted-write temp files -- inert.
+        # Dotfiles are skipped in both directions: the hud's own
+        # interrupted-write temp files are inert, and the caller stages its new
+        # config as .config.json.tmp so this purge cannot delete it.
         if ($entry.Name -eq 'config.json' -or $entry.Name.StartsWith('.')) { continue }
         Remove-Item -LiteralPath $entry.FullName -Recurse -Force
         $dropped = $true
@@ -154,15 +156,7 @@ function Set-HimmelStatusLine {
             $cfg.env | Add-Member -NotePropertyName CLAUDE_HUD_ALLOW_EXTRA_CMD -NotePropertyValue '1' -Force
         }
 
-        $json = $cfg | ConvertTo-Json -Depth 20
-        if (Get-Command jq -ErrorAction SilentlyContinue) {
-            $normalized = $json | jq --indent 2 .
-            if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
-        }
-        Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
-        Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
-
-        # (3) Drop the hud config under the CONFIG DIR, substituting this clone's
+        # (3) Stage the hud config under the CONFIG DIR, substituting this clone's
         # path for the <himmel-path> placeholder. Guarded on the source existing so
         # tests wiring against a synthetic himmel path stay a pure statusLine/env op.
         # HIMMEL-2892: the destination is ${CLAUDE_CONFIG_DIR:-~/.claude}, never
@@ -171,17 +165,19 @@ function Set-HimmelStatusLine {
         # .claude/settings.json is inert AND an untracked file inside a repo.
         $hudSrc = "$himmelFwd/marketplace/plugins/claude-hud/config/himmel-config.json"
         $hudCfg = ''
+        $hudTmp = ''
         if (Test-Path $hudSrc) {
             New-Item -ItemType Directory -Force $hudDir | Out-Null
             $hudCfg = (Get-Content $hudSrc -Raw).Replace('<himmel-path>', $himmelFwd).Replace("`r`n", "`n")
-            $hudPath = $hudConfigPath
-            $hudTmp = "$hudPath.tmp"
+            # Staged as a DOTFILE so the purge below (which runs before
+            # anything is published) skips it — see the bash twin's comment.
+            $hudTmp = Join-Path $hudDir '.config.json.tmp'
             # UTF-8 without BOM; single trailing LF (matches the bash twin's printf).
             [System.IO.File]::WriteAllText($hudTmp, $hudCfg.TrimEnd("`n") + "`n")
             # Validate the substituted config is still JSON before publishing it — a
             # JSON-breaking himmel path would otherwise yield a config.json the
             # renderer fails on silently at render time. jq is optional here (matches
-            # the ConvertTo-Json fallback above); skip the check when it is absent.
+            # the ConvertTo-Json fallback below); skip the check when it is absent.
             if (Get-Command jq -ErrorAction SilentlyContinue) {
                 & jq -e . $hudTmp *> $null
                 if ($LASTEXITCODE -ne 0) {
@@ -189,24 +185,45 @@ function Set-HimmelStatusLine {
                     throw "wire-statusline: substituted hud config is not valid JSON — refusing to write"
                 }
             }
-            Move-Item -Path $hudTmp -Destination $hudPath -Force
         }
 
         # (4) HIMMEL-3065: the wiring CHANGED when either half differs from what
-        # was already on this machine -- a different renderer command (first
-        # wire, a moved or renamed clone, an older himmel instance) or a
-        # different hud config. Both are compared against values captured BEFORE
-        # the write above; a re-run that changes neither purges nothing, so a
-        # live session keeps its snapshots. Trailing newlines are normalized out
-        # of the config comparison, matching the bash twin's $(cat ...).
+        # was already on this machine -- a different hud config, or an EXISTING
+        # statusLine command that pointed somewhere else (a moved or renamed
+        # clone, an older himmel instance). Both are compared against values
+        # captured BEFORE anything is published; a re-run that changes neither
+        # purges nothing, so a live session keeps its snapshots. Trailing
+        # newlines are normalized out of the config comparison, matching the
+        # bash twin's $(cat ...).
         # The command half requires a NON-EMPTY $prevCmd — see the bash twin's
         # header for why (codex-2: $SettingsPath may be a PROJECT file while
         # the caches are per-USER, so a machine's second project would
         # otherwise purge every other project's live snapshots).
+        # The purge runs BEFORE either file is published, and a failed purge
+        # throws with NOTHING written (CR round 2) — publish-then-purge left a
+        # failed purge unrepeatable, because the retry saw wiring that already
+        # matched and took the no-change path.
         $cfgChanged = $hudCfg -and ($prevHudCfg.TrimEnd("`n") -ne $hudCfg.TrimEnd("`n"))
         $cmdChanged = $prevCmd -and ($prevCmd -ne $cmd)
         if ($cmdChanged -or $cfgChanged) {
-            Remove-HimmelHudCacheState -HudDir $hudDir
+            try {
+                Remove-HimmelHudCacheState -HudDir $hudDir
+            } catch {
+                if ($hudTmp -and (Test-Path $hudTmp)) { Remove-Item -LiteralPath $hudTmp -Force }
+                throw
+            }
+        }
+
+        # (5) Publish the settings file, then the staged hud config.
+        $json = $cfg | ConvertTo-Json -Depth 20
+        if (Get-Command jq -ErrorAction SilentlyContinue) {
+            $normalized = $json | jq --indent 2 .
+            if ($LASTEXITCODE -eq 0 -and $normalized) { $json = $normalized -join "`n" }
+        }
+        Set-Content -Path "$SettingsPath.new" -Value $json -Encoding utf8
+        Move-Item -Path "$SettingsPath.new" -Destination $SettingsPath -Force
+        if ($hudTmp -and (Test-Path $hudTmp)) {
+            Move-Item -Path $hudTmp -Destination $hudConfigPath -Force
         }
         Write-Host "  wired statusLine → $SettingsPath"
     } finally {

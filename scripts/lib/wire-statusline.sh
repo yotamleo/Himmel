@@ -26,6 +26,9 @@
 #      every project-scope install.
 #   4. Drops the hud's RUNTIME cache state in that same dir whenever the wiring
 #      actually CHANGED (HIMMEL-3065) — see _wire_statusline_purge_hud_cache.
+#      That drop happens BEFORE (1) and (2) publish anything, so a failed purge
+#      aborts the wire with the OLD wiring still on disk and the retry sees the
+#      same change it did.
 #
 # Idempotent (re-running yields the same result), atomic (temp file + mv), and
 # non-destructive (all other keys / all other env keys preserved; file + parent
@@ -76,8 +79,11 @@ _wire_statusline_config_dir() {
 #
 # Denylist, not allowlist: the hud gains state files over time (daily-cost.json
 # is itself recent), and a list enumerated here would silently stop covering
-# them — which is the bug this function exists to fix. Dotfiles are skipped:
-# the only ones are the hud's own interrupted-write temp files, which are inert.
+# them — which is the bug this function exists to fix. Dotfiles are skipped,
+# and that is load-bearing in BOTH directions: the hud's own interrupted-write
+# temp files are inert, and the caller stages its new config.json as a DOTFILE
+# (.config.json.tmp) precisely so the purge — which runs before either file is
+# published — cannot delete the config it is about to install.
 _wire_statusline_purge_hud_cache() {
   local hud_dir="$1" entry dropped=0
   [ -d "$hud_dir" ] || return 0
@@ -130,18 +136,7 @@ wire_statusline() {
   # in (4). Read from the validated $base, so an absent/empty file yields "".
   local prev_cmd; prev_cmd="$(printf '%s' "$base" | jq -r '.statusLine.command? // ""')"
 
-  # (1) statusLine → hud renderer, (2) merge the extra-cmd gate into .env
-  # (creating .env if absent, preserving every other env key). Fail LOUD on a
-  # failed transform/write: a bare `… && mv` swallows the failure when the
-  # caller runs us in an `if !` / errexit-exempt context and would report a
-  # successful wire that never happened.
-  printf '%s' "$base" | jq --arg cmd "$cmd" \
-    '.statusLine = { type: "command", command: $cmd }
-     | .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"' \
-    > "$settings.statusline.tmp" || { rm -f "$settings.statusline.tmp"; return 1; }
-  mv "$settings.statusline.tmp" "$settings" || return 1
-
-  # (3) Drop the hud config under the CONFIG DIR, substituting this clone's
+  # (1) Stage the hud config under the CONFIG DIR, substituting this clone's
   # path for the <himmel-path> placeholder. Guarded on the source existing so
   # tests wiring against a synthetic himmel path stay a pure statusLine/env op.
   # HIMMEL-2892: the destination is ${CLAUDE_CONFIG_DIR:-~/.claude}, never
@@ -155,24 +150,23 @@ wire_statusline() {
     mkdir -p "$hud_dir"
     hud_cfg="$(cat "$hud_src")"
     hud_cfg="${hud_cfg//<himmel-path>/$himmel_fwd}"
-    printf '%s\n' "$hud_cfg" > "$hud_dir/config.json.tmp" \
-      || { rm -f "$hud_dir/config.json.tmp"; return 1; }
+    printf '%s\n' "$hud_cfg" > "$hud_dir/.config.json.tmp" \
+      || { rm -f "$hud_dir/.config.json.tmp"; return 1; }
     # Validate the substituted config is still JSON before publishing it — a
     # JSON-breaking himmel path (e.g. an embedded quote) would otherwise yield a
     # config.json the renderer fails on silently at render time.
-    if ! jq -e . "$hud_dir/config.json.tmp" >/dev/null 2>&1; then
-      rm -f "$hud_dir/config.json.tmp"
+    if ! jq -e . "$hud_dir/.config.json.tmp" >/dev/null 2>&1; then
+      rm -f "$hud_dir/.config.json.tmp"
       echo "wire-statusline: substituted hud config is not valid JSON — refusing to write" >&2
       return 1
     fi
-    mv "$hud_dir/config.json.tmp" "$hud_dir/config.json" || return 1
   fi
 
-  # (4) HIMMEL-3065: the wiring CHANGED when either half differs from what was
+  # (2) HIMMEL-3065: the wiring CHANGED when either half differs from what was
   # already on this machine — a different hud config, or an EXISTING statusLine
   # command that pointed somewhere else (a moved or renamed clone, an older
-  # himmel instance). Both are compared against values captured BEFORE the
-  # write above. A re-run that changes neither purges nothing, so a live
+  # himmel instance). Both are compared against values captured BEFORE anything
+  # is published. A re-run that changes neither purges nothing, so a live
   # session keeps its snapshots.
   #
   # The command half requires a NON-EMPTY previous command, because the two
@@ -185,8 +179,32 @@ wire_statusline() {
   # genuine first wire, where the previous config is absent and therefore
   # differs. $hud_cfg is "" only when the source config is absent
   # (synthetic-path callers, e.g. tests); the command half then decides alone.
+  #
+  # The purge runs BEFORE either file is published, and a failed purge aborts
+  # the wire with NOTHING written (CR round 2): publish-then-purge left a
+  # failed purge unrepeatable — the retry saw wiring that already matched,
+  # took the no-change path, and the stale state it was meant to drop survived
+  # every subsequent run. Aborting first keeps the old wiring on disk, so the
+  # retry still sees a changed wiring and purges again.
   if { [ -n "$prev_cmd" ] && [ "$prev_cmd" != "$cmd" ]; } || { [ -n "$hud_cfg" ] && [ "$prev_hud_cfg" != "$hud_cfg" ]; }; then
-    _wire_statusline_purge_hud_cache "$hud_dir" || return 1
+    _wire_statusline_purge_hud_cache "$hud_dir" \
+      || { rm -f "$hud_dir/.config.json.tmp"; return 1; }
+  fi
+
+  # (3) statusLine → hud renderer, (4) merge the extra-cmd gate into .env
+  # (creating .env if absent, preserving every other env key). Fail LOUD on a
+  # failed transform/write: a bare `… && mv` swallows the failure when the
+  # caller runs us in an `if !` / errexit-exempt context and would report a
+  # successful wire that never happened.
+  printf '%s' "$base" | jq --arg cmd "$cmd" \
+    '.statusLine = { type: "command", command: $cmd }
+     | .env.CLAUDE_HUD_ALLOW_EXTRA_CMD = "1"' \
+    > "$settings.statusline.tmp" || { rm -f "$settings.statusline.tmp"; return 1; }
+  mv "$settings.statusline.tmp" "$settings" || return 1
+
+  # (5) Publish the staged hud config.
+  if [ -f "$hud_dir/.config.json.tmp" ]; then
+    mv "$hud_dir/.config.json.tmp" "$hud_dir/config.json" || return 1
   fi
   echo "  wired statusLine → $settings"
 }
