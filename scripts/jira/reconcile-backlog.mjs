@@ -115,9 +115,19 @@ export function loadCommits(commitsFile) {
     'reconcile-backlog: no --commits-file given; falling back to `git log` on this repo only ' +
       '(archived private history, if any, will not be searched).\n',
   );
+  // A shallow, single-ref checkout (e.g. CI's PR-merge-ref checkout) has no
+  // local `main` branch at all; fall back to HEAD, which is `main` in the
+  // normal case (invoked from the primary checkout) and the reviewed merge
+  // ref in that CI case.
+  let ref = 'main';
+  try {
+    execFileSync('git', ['-C', HERE, 'rev-parse', '-q', '--verify', 'main'], { stdio: 'ignore' });
+  } catch {
+    ref = 'HEAD';
+  }
   const out = execFileSync(
     'git',
-    ['-C', HERE, 'log', '--first-parent', 'main', '--format=%H%x09%ad%x09%s', '--date=short'],
+    ['-C', HERE, 'log', '--first-parent', ref, '--format=%H%x09%ad%x09%s', '--date=short'],
     { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
   return out
