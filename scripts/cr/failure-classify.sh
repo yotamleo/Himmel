@@ -85,10 +85,26 @@ $(cat "$_cf_err" 2>/dev/null)"
         echo quota-5h; return 0
     fi
 
-    # quota-long: weekly/balance/plan-expired sentinels. No CLI-tail fixture
-    # exists yet for the weekly window (only the glm-cap monitor-0c.json
-    # schema shows a second, weekly TOKENS_LIMIT entry) — this phrasing is a
-    # best-effort inference pending a captured weekly-cap error body.
+    # quota-long: weekly/balance/plan-expired sentinels, plus codex's own
+    # usage-limit wording (HIMMEL-3110, captured body:
+    # scripts/cr/testdata/codex-usage-limit-2026-09-16.txt). Codex says
+    # "hit your usage limit" / "purchase more credits" and names an absolute
+    # reset DATE ("try again at Sep 19th, 2026 10:09 AM") rather than a
+    # relative window — no "past 5 hours", no bare 429, so it falls through
+    # every earlier bucket to here. The captured fixture is a multi-day-out
+    # reset, which reads as the same class as a weekly/plan-expired cap;
+    # no same-day codex fixture exists yet, so a genuinely same-day codex
+    # reset (if ever observed) would need its own quota-5h sentinel rather
+    # than being inferred here.
+    #
+    # HIMMEL-729 pairing discipline: "hit your usage limit" alone never
+    # satisfies the auth check below (401/403/invalid-api-key/unauthorized/
+    # access-denied), so a bare auth failure cannot leak into this bucket by
+    # sharing a generic word — both distinguishing phrases below are specific
+    # to codex's commercial-cap message, not generic retry language.
+    if _cf_has 'hit your usage limit' && _cf_has 'purchase more credits|try again at'; then
+        echo quota-long; return 0
+    fi
     if _cf_has 'weekly|per[- ]week|7[- ]day|plan (has )?expired|subscription (has )?expired|insufficient balance|balance depleted'; then
         echo quota-long; return 0
     fi
