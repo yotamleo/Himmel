@@ -540,5 +540,49 @@ EOF
     rm -rf "$tmp"
 fi
 
+echo "== run-node: an EMPTY inherited PATH does not leave a trailing colon after the widen (HIMMEL-3073 codex-1) =="
+# codex-1 (critic panel, round 1): the widening line used to append
+# `:${PATH:-}` unconditionally, so when the inherited PATH was empty (exactly
+# what a POSIX-mode `command -p sh` hands a hook whose own launching shell had
+# none — the same starting condition the leg above already establishes is
+# realistic) the result ended in a bare trailing colon. POSIX PATH search
+# treats a trailing (or any empty) colon segment as "also search the current
+# directory" — for a hook that cwd is the repo UNDER REVIEW, so a
+# repo-controlled file named e.g. `gh` could shadow the real one. Assert the
+# PATH a spawned hook actually inherits has no trailing colon and no empty
+# `::` segment when the starting PATH was genuinely empty (unset, not merely
+# PATH-poor).
+real_node="$(command -v node 2>/dev/null || true)"
+if [ -z "$real_node" ]; then
+    echo "  SKIP: no real node on PATH to resolve against"
+else
+    node_dir="$(dirname "$real_node")"
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/test-run-node-empty-path.XXXXXX")"
+    hook_dir="$tmp/hooks"; mkdir -p "$hook_dir"
+    cat > "$hook_dir/path-echo-hook.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s' "$PATH"
+EOF
+    chmod +x "$hook_dir/path-echo-hook.sh"
+
+    cmd="command -p sh \"$REPO_ROOT/scripts/lib/run-node.sh\" \"$REPO_ROOT/scripts/hooks/run-hook-with-bash.js\" \"$hook_dir/path-echo-hook.sh\""
+    out="$(cd "$tmp" && env -u CLAUDE_PLUGIN_ROOT -u PATH RESOLVE_NODE_PROBE_DIRS="$node_dir" NVM_SYMLINK="" RESOLVE_NODE_NVM4W_DIR="" RESOLVE_NODE_NVM_ROOT="$tmp/none" FNM_DIR="$tmp/none" HOME="${HOME:-}" CLAUDE_PROJECT_DIR="$REPO_ROOT" bash --posix -c "$cmd" 2>"$tmp/err.txt")"
+    rc=$?
+    err="$(cat "$tmp/err.txt")"
+    if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+        fail "hook did not run cleanly under an EMPTY starting PATH -> rc=$rc out='$out' err='$err'"
+    else
+        case "$out" in
+            *::*|*:)
+                fail "widened PATH has a trailing/empty segment under an EMPTY starting PATH -> PATH='$out'"
+                ;;
+            *)
+                pass "widened PATH has no trailing colon under an EMPTY starting PATH (PATH='$out')"
+                ;;
+        esac
+    fi
+    rm -rf "$tmp"
+fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

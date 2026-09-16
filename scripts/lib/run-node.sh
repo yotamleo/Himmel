@@ -150,7 +150,7 @@ if [ -n "$_node" ]; then
     # live in.
     _node_dir="${_node%/*}"
     _extra_dirs="${RUN_NODE_EXTRA_PATH_DIRS-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${HOME:-}/.local/bin}"
-    PATH="$_node_dir${_extra_dirs:+:}$_extra_dirs:${PATH:-}"
+    PATH="$_node_dir${_extra_dirs:+:}$_extra_dirs${PATH:+:}${PATH:-}"
     export PATH
     exec "$_node" "$@"
 fi
