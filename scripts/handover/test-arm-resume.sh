@@ -217,6 +217,13 @@ ARM="$(cd "$(dirname "$0")" && pwd)/arm-resume.sh"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# HIMMEL-3074: real crontab arms create the arm log dir and probe the log
+# FILE for append; keep that under the suite's TMP, not the operator's
+# real ~/.himmel/arm-resume. Real crontab/macOS arms also now write a
+# generated runner file (fold of Goomal's fix/arm-resume-macos-cron) under
+# ARM_RUNNER_DIR -- default that under $TMP too, for the same reason.
+export ARM_RESUME_LOG_DIR="$TMP/arm-logs"
+export ARM_RUNNER_DIR="$TMP/arm-runners"
 
 # Fleet-census shield (HIMMEL-2968): all real arms use scheduler stubs, so
 # the host's live session count must not refuse them at the fleet preflight.
@@ -2683,6 +2690,10 @@ if _sec_selected "macOS" "S1-S5" "S4"; then
 # (atrun is off-by-default / SIP-fragile). Shim at/atq present so the
 # at-vs-crontab mismatch is actually exercised, plus a file-backed crontab.
 MACBIN="$TMP/macbin"; mkdir -p "$MACBIN"
+# HIMMEL-3074: the crontab renderer resolves claude ABSOLUTELY at arm time and
+# refuses (rc 2) when it cannot -- CI has no claude, so every cron stub dir in
+# this suite carries one (same line below for each sibling dir).
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN/claude"; chmod +x "$MACBIN/claude"
 CRON_STORE="$TMP/cron.store"; : > "$CRON_STORE"
 printf '#!/bin/sh\necho "at MUST NOT be called on macOS" >&2; exit 1\n' > "$MACBIN/at";  chmod +x "$MACBIN/at"
 printf '#!/bin/sh\nexit 0\n' > "$MACBIN/atq"; chmod +x "$MACBIN/atq"
@@ -2780,6 +2791,7 @@ exec "$AWKFAIL_REAL_AWK" "\$@"
 AWKEOF
 chmod +x "$AWKFAIL_DIR/awk"
 AWKFAIL_MACBIN="$TMP/awkfail-macbin"; mkdir -p "$AWKFAIL_MACBIN"
+printf '#!/bin/sh\nexit 0\n' > "$AWKFAIL_MACBIN/claude"; chmod +x "$AWKFAIL_MACBIN/claude"   # HIMMEL-3074
 AWKFAIL_CRON_STORE="$TMP/awkfail-cron.store"; : > "$AWKFAIL_CRON_STORE"
 printf '#!/bin/sh\nexit 1\n' > "$AWKFAIL_MACBIN/at"; chmod +x "$AWKFAIL_MACBIN/at"
 printf '#!/bin/sh\nexit 0\n' > "$AWKFAIL_MACBIN/atq"; chmod +x "$AWKFAIL_MACBIN/atq"
@@ -5663,6 +5675,7 @@ assert_contains "812 win: the .bat CLEARS an ambient mark first" 'set "AUTO_ARM_
 
 # macOS/crontab: one line, so the mark is an export ahead of the launch body.
 MACBIN_812="$TMP/macbin-812"; mkdir -p "$MACBIN_812"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN_812/claude"; chmod +x "$MACBIN_812/claude"   # HIMMEL-3074
 CRON_STORE_812="$TMP/cron-812.store"; : > "$CRON_STORE_812"
 printf '#!/bin/sh\nexit 1\n' > "$MACBIN_812/at"; chmod +x "$MACBIN_812/at"
 printf '#!/bin/sh\nexit 0\n' > "$MACBIN_812/atq"; chmod +x "$MACBIN_812/atq"
@@ -5748,6 +5761,7 @@ assert_contains "1636 at: that refusal is the ticket mutex" "$_1636_WARN" "$out"
 
 # --- crontab backend (macOS): list_existing returns the whole LINE ----------
 MACBIN_1636="$TMP/macbin-1636"; mkdir -p "$MACBIN_1636"
+printf '#!/bin/sh\nexit 0\n' > "$MACBIN_1636/claude"; chmod +x "$MACBIN_1636/claude"   # HIMMEL-3074
 CRON_STORE_1636="$TMP/cron-1636.store"; : > "$CRON_STORE_1636"
 # at/atq must never be reached on macOS (arm-resume picks crontab there); a
 # loud-failing `at` proves it, exactly as the macOS section's stub does.
@@ -5807,12 +5821,18 @@ assert_rc "2192 no-flag console-named dry-run exits 0" 0 "$rc"
 assert_not_contains "2192 no --model token for a console-named handover (ruling 25)" "--model" "$out"
 
 # CR round 2 finding: crontab treats an unescaped % as end-of-command +
-# stdin even inside %q-quoting, so a MODEL containing % must be \%-escaped
-# in the emitted crontab entry. Forced through the crontab backend the same
-# way the "macOS backend" section above does (OSTYPE=darwin23 + a stub
-# crontab binary) -- a proven pattern in this suite for deterministic
+# stdin even inside %q-quoting, so a MODEL containing % needed \%-escaping
+# in the (pre-HIMMEL-3074) inline crontab entry. Since the runner-file
+# redesign (fold of Goomal's fix/arm-resume-macos-cron), --model lives in the
+# generated runner FILE body, parsed by /bin/sh (not crontab) -- so it is now
+# left BARE, and the \%-escape scope narrows to q_runner alone (the runner
+# PATH, the one value still on the crontab line itself; see the
+# ARM_RUNNER_DIR case at the end of this section). Forced through the crontab
+# backend the same way the "macOS backend" section above does (OSTYPE=darwin23
+# + a stub crontab binary) -- a proven pattern in this suite for deterministic
 # crontab coverage.
 CRONBIN2192="$TMP/cronbin2192"; mkdir -p "$CRONBIN2192"
+printf '#!/bin/sh\nexit 0\n' > "$CRONBIN2192/claude"; chmod +x "$CRONBIN2192/claude"   # HIMMEL-3074
 CRON_STORE_2192="$TMP/cron2192.store"; : > "$CRON_STORE_2192"
 cat > "$CRONBIN2192/crontab" <<CRONEOF
 #!/bin/sh
@@ -5824,10 +5844,17 @@ esac
 CRONEOF
 chmod +x "$CRONBIN2192/crontab"
 HO_2192_PCT=$(make_handover "$WORK_REPO")
-out=$(env PATH="$CRONBIN2192:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_PCT" --model 'a%b' --dry-run 2>&1)
+out=$(env PATH="$CRONBIN2192:$PATH" OSTYPE="darwin23" ARM_RUNNER_DIR="$TMP/runners2192" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_PCT" --model 'a%b' --dry-run 2>&1)
 rc=$?
 assert_rc "2192 crontab --model with percent dry-run exits 0" 0 "$rc"
-assert_contains "2192 crontab entry escapes percent in --model" '--model a\%b' "$out"
+assert_contains "2192 runner preview leaves percent BARE in --model (parsed by /bin/sh, not crontab)" '--model a%b' "$out"
+assert_not_contains "2192 RED CONTROL -- --model is not \\%-escaped (that scope narrowed to q_runner)" '--model a\%b' "$out"
+# ARM_RUNNER_DIR is the ONE value left on the crontab line itself (the
+# runner's own path) -- it still needs the \%-escape crontab requires.
+out=$(env PATH="$CRONBIN2192:$PATH" OSTYPE="darwin23" ARM_RUNNER_DIR="$TMP/run%ners2192" bash "$ARM" --time "$(future_time)" --handover "$HO_2192_PCT" --dry-run 2>&1)
+rc=$?
+assert_rc "2192 crontab entry with a %-bearing ARM_RUNNER_DIR dry-run exits 0" 0 "$rc"
+assert_contains "2192 crontab entry escapes percent in the runner path (still crontab-parsed)" 'run\%ners2192/HIMMEL-Resume-' "$out"
 
 # Value-less --model must ERROR, not consume the next option as the model
 # name (CR finding codex-1: `--model --dry-run` would otherwise swallow
@@ -5883,9 +5910,14 @@ fi
 # + a stub crontab); RESUME_PROMPT always embeds the handover PATH verbatim
 # ("load $HANDOVER_PATH overnight mode. ..."), so a %-bearing handover path is
 # the natural vector for q_prompt specifically.
+# Since the runner-file redesign (fold of Goomal's fix/arm-resume-macos-cron),
+# q_prompt/q_channels/q_cwd all moved into the runner FILE body (/bin/sh
+# parsed, not crontab), so these assertions now check for BARE % there --
+# same \%-escape-scope-narrowing rationale as 2192 above.
 # ---------------------------------------------------------------------------
 if _sec_selected "2199" "HIMMEL-2199"; then
 CRONBIN2199="$TMP/cronbin2199"; mkdir -p "$CRONBIN2199"
+printf '#!/bin/sh\nexit 0\n' > "$CRONBIN2199/claude"; chmod +x "$CRONBIN2199/claude"   # HIMMEL-3074
 CRON_STORE_2199="$TMP/cron2199.store"; : > "$CRON_STORE_2199"
 cat > "$CRONBIN2199/crontab" <<CRONEOF
 #!/bin/sh
@@ -5906,15 +5938,17 @@ HO_2199_PCT="$HANDOVER_DIR/handover-100%.md"
     printf '# Test handover\n'
 } > "$HO_2199_PCT"
 
-out=$(env ARM_BRIDGE_LIVE=0 PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_PCT" --channels 'a%b' --long-gap --dry-run 2>&1)
+out=$(env ARM_BRIDGE_LIVE=0 PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" ARM_RUNNER_DIR="$TMP/runners2199" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_PCT" --channels 'a%b' --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "2199 crontab %-in-prompt/channels dry-run exits 0" 0 "$rc"
-# Content AFTER the escaped % in each field proves the entry was not
-# truncated there -- a bare (unescaped) % would have dropped everything
-# past it when crontab actually parsed the real entry.
-assert_contains "2199 crontab entry escapes percent in the prompt (from the %-bearing handover path)" 'handover-100\%.md\ overnight\ mode' "$out"
-assert_contains "2199 crontab entry escapes percent in --channels" '--channels a\%b' "$out"
-assert_contains "2199 crontab entry's trailing marker survives past both escapes (nothing truncated)" '# HIMMEL-Resume-handover-100' "$out"
+# Content AFTER the % in each field proves nothing truncated there -- these
+# fields are /bin/sh-parsed runner-file content now (not the crontab line),
+# so % is correctly left BARE; a truncation would still drop the tail.
+assert_contains "2199 runner preview leaves percent BARE in the prompt (from the %-bearing handover path)" 'handover-100%.md\ overnight\ mode' "$out"
+assert_contains "2199 runner preview leaves percent BARE in --channels" '--channels a%b' "$out"
+assert_not_contains "2199 RED CONTROL -- prompt/channels are not \\%-escaped (that scope narrowed to q_runner)" 'handover-100\%.md\ overnight\ mode' "$out"
+assert_not_contains "2199 RED CONTROL -- --channels is not \\%-escaped" '--channels a\%b' "$out"
+assert_contains "2199 crontab entry's trailing marker survives past both (nothing truncated)" '# HIMMEL-Resume-handover-100' "$out"
 
 # CR round on this ticket (critic-panel [codex-1]): q_cwd sits in the SAME
 # crontab entry (`cd $q_cwd && ...`) as q_prompt/q_channels but was missed by
@@ -5922,10 +5956,11 @@ assert_contains "2199 crontab entry's trailing marker survives past both escapes
 # directory) truncates the entry exactly the same way.
 CWD_PCT="$TMP/work%repo"; mkdir -p "$CWD_PCT"
 HO_2199_CWD=$(make_handover "$CWD_PCT")
-out=$(env PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_CWD" --long-gap --dry-run 2>&1)
+out=$(env PATH="$CRONBIN2199:$PATH" OSTYPE="darwin23" ARM_RUNNER_DIR="$TMP/runners2199cwd" bash "$ARM" --time "$(future_time)" --handover "$HO_2199_CWD" --long-gap --dry-run 2>&1)
 rc=$?
 assert_rc "2199 crontab %-in-cwd dry-run exits 0" 0 "$rc"
-assert_contains "2199 crontab entry escapes percent in cwd" 'work\%repo && unset' "$out"
+assert_contains "2199 runner preview leaves percent BARE in cwd" 'work%repo && unset' "$out"
+assert_not_contains "2199 RED CONTROL -- cwd is not \\%-escaped" 'work\%repo && unset' "$out"
 fi
 
 # ---------------------------------------------------------------------------
@@ -6046,6 +6081,7 @@ assert_not_contains "2545a body never grants CLAUDE_CODE_CHILD_SESSION=1" "CLAUD
 # binary), because a one-line entry could easily have been patched only on
 # the multi-line POSIX twin.
 CRONBIN2545="$TMP/cronbin2545"; mkdir -p "$CRONBIN2545"
+printf '#!/bin/sh\nexit 0\n' > "$CRONBIN2545/claude"; chmod +x "$CRONBIN2545/claude"   # HIMMEL-3074
 CRON_STORE_2545="$TMP/cron2545.store"; : > "$CRON_STORE_2545"
 cat > "$CRONBIN2545/crontab" <<CRONEOF
 #!/bin/sh
