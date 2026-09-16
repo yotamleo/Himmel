@@ -80,6 +80,24 @@ hook or a CLAUDE.md rule that layers on top (see `inject-minerva-critic.sh`'s
 namespace-agnostic `grilling` routing for a worked example), not an edit to
 the copied file.
 
+### Known limitation: vendored prose still cites `superpowers:<name>`
+
+Several vendored `SKILL.md` files hand off to sibling skills using the
+upstream plugin's own qualified name, e.g. `superpowers:test-driven-development`
+(`executing-plans/SKILL.md`, `subagent-driven-development/SKILL.md`,
+`systematic-debugging/SKILL.md`, `writing-skills/SKILL.md`). Those
+`superpowers:` references cannot resolve in a `lean-skills`-only install —
+`superpowers@claude-plugins-official` is exactly what this plugin replaces.
+
+This is a **namespace-prefix mismatch, not a missing capability**: every
+skill any of those references cites is vendored here, under the same
+directory name, just as `lean-skills:<name>` instead of
+`superpowers:<name>`. Resolve the prefix accordingly when following one of
+these handoffs. Per the VERBATIM rule above, the cited files are not
+locally edited to fix this — the durable fix (an upstream rename + re-vendor,
+or a himmel-owned adaptation outside the vendored tree) is tracked in
+HIMMEL-3100.
+
 ## Re-vendor procedure
 
 1. Check upstream for a new release: `obra/superpowers` or `mattpocock/skills`
