@@ -163,15 +163,31 @@ trap 'rm -f "$SHIPPED"' EXIT
 # legitimately describe the very concepts they assert; the always-on and
 # per-token-lane invariants are about production runtime + docs, not harness
 # comments. (This also keeps the test from flagging its own assertion text.)
-while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    base="${f##*/}"
-    # data ledgers (HIMMEL-2894 suite-durations.tsv) list suite basenames,
-    # which legitimately contain the marker words; T13 is about runtime
-    # surface, and a TSV has none.
-    case "$base" in test-* | *.tsv) continue ;; esac
-    git diff "$BASE...HEAD" -- "$f" | grep '^+' | grep -v '^+++'
-done < <(git diff "$BASE...HEAD" --name-only) > "$SHIPPED"
+#
+# ONE full-tree diff, not a per-file `-- "$f"` loop (HIMMEL-3090): restricting
+# the diff to a single new-side pathspec drops git's rename pairing, so an
+# unchanged file moved to a new path (100%-similarity rename) reads as its
+# ENTIRE content being freshly added -- a vendored dependency's own
+# setInterval/daemon usage then false-positives T13(b) for a file nobody
+# authored in this diff. A full-tree diff resolves renames correctly (a
+# content-identical rename contributes zero +/- lines); the awk filter below
+# tracks the current file from each hunk's "+++ b/<path>" header instead, so
+# basename exclusion still applies per file.
+git diff "$BASE...HEAD" | awk '
+    /^\+\+\+ / {
+        f = $0
+        sub(/^\+\+\+ [ab]\//, "", f)
+        n = split(f, parts, "/")
+        base = parts[n]
+        # data ledgers (HIMMEL-2894 suite-durations.tsv) list suite basenames,
+        # which legitimately contain the marker words; T13 is about runtime
+        # surface, and a TSV has none.
+        skip = (base ~ /^test-/) || (base ~ /\.tsv$/)
+        next
+    }
+    skip { next }
+    /^\+/ { print }
+' > "$SHIPPED"
 
 # ----------------------------------------------------------------------------
 # T12 -- no-bloat (AC6): root CLAUDE.md does not grow on net (add-del <=1).
