@@ -1553,7 +1553,7 @@ process_member() {
                 # before deleting it (CR round: a bare rc collapses rate-limit
                 # vs auth vs outage into the same line). HIMMEL-3109: tail, not
                 # head — same reasoning as _pm_detail above.
-                _fb_snip="$(tail -n 1 "$_fb_err" 2>/dev/null | tr -d '[:cntrl:]')"
+                _fb_snip="$(_pm_redact_detail "$(tail -n 1 "$_fb_err" 2>/dev/null)")"
                 echo "panel-availability: $_pm_slug fallback-failed($_fb_model) (rc=$_fb_rc)${_fb_snip:+: $_fb_snip}" >&2
                 rm -f "$_fb_out" "$_fb_err"
             done
