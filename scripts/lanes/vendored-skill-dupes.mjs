@@ -31,6 +31,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const LOCAL = 'lean-skills@himmel';
 
@@ -109,7 +110,8 @@ export function findOverlap({ home, cwd, configDir, repoRoot }) {
   return out;
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const thisFile = fileURLToPath(import.meta.url);
+const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === thisFile;
 if (isMain) {
   // `!== undefined` (not `||`) on every seam: an explicit empty string must
   // mean "skip this layer" (a test's deliberate no-cwd-walk hermetic seam),
@@ -120,7 +122,7 @@ if (isMain) {
   const cwd = process.env.VENDORED_DUPES_CWD !== undefined ? process.env.VENDORED_DUPES_CWD : process.cwd();
   const configDir = process.env.VENDORED_DUPES_CONFIG_DIR !== undefined ? process.env.VENDORED_DUPES_CONFIG_DIR
     : (process.env.CLAUDE_CONFIG_DIR || '');
-  const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), '..', '..');
+  const repoRoot = resolve(dirname(thisFile), '..', '..');
   let overlap;
   try {
     overlap = findOverlap({ home, cwd, configDir, repoRoot });

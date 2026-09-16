@@ -98,6 +98,16 @@ locally edited to fix this — the durable fix (an upstream rename + re-vendor,
 or a himmel-owned adaptation outside the vendored tree) is tracked in
 HIMMEL-3100.
 
+### Known limitation: `brainstorming`'s server reports its own version as `unknown`
+
+`brainstorming/scripts/server.cjs`'s `readSuperpowersVersion()` looks for a
+manifest at `package.json` or `.codex-plugin/plugin.json` relative to the
+skill root. Neither exists here — this plugin ships
+`.claude-plugin/plugin.json` instead — so the function always returns
+`'unknown'`, and a telemetry-enabled session shows "Superpowers vunknown".
+Cosmetic only (no functional impact). Per the VERBATIM rule above, the
+vendored script is not locally edited to fix this — tracked in HIMMEL-3106.
+
 ## Re-vendor procedure
 
 1. Check upstream for a new release: `obra/superpowers` or `mattpocock/skills`
@@ -130,7 +140,7 @@ pin would need ~36 `gh api` calls per drift check and would still silently
 miss a companion file nobody had enumerated. Instead, `scripts/upstreams.json`
 carries two `tag_release`/`mode: base` rows:
 
-```
+```text
 superpowers-skills   obra/superpowers      synced_base 6.3.0
 mattpocock-skills     mattpocock/skills     synced_base 1.2.3
 ```
