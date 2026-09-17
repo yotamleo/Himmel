@@ -82,7 +82,10 @@ if [ "$RC" != 0 ]; then
   mut=0
   run gh label create "$LABEL" --color FBCA04 \
       --description "Nightly/dispatch Windows CI tracking (alpha tier)" --force || mut=1
-  body_file="$(mktemp)"
+  body_file="$(mktemp "${TMPDIR:-/tmp}/windows-nightly-issue.XXXXXX")" || {
+    echo "windows-nightly-issue: mktemp failed" >&2
+    exit 1
+  }
   build_body "$body_file"
   if [ -n "$num" ]; then
     echo "windows-nightly-issue: refreshing existing issue #$num"
