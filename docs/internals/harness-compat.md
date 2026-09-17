@@ -5,7 +5,9 @@
 > effort, not CI-gated. Linux and macOS are the **Supported** tier. See the
 > [README support matrix](../../README.md#support-matrix). New scripts target
 > bash (still bash 3.2-safe, for macOS); a `.ps1` twin is optional, added only
-> when someone is actually working the Windows path.
+> when someone is actually working the Windows path — except hooks that run in
+> a PowerShell-dispatched context (e.g. `SessionEnd`), which still need a twin
+> in lockstep with the `.sh`.
 
 himmel is built end-to-end around **Claude Code's** contract: PreToolUse
 guardrail hooks, a plugin/marketplace system, skills, slash commands, and

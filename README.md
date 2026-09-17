@@ -146,12 +146,14 @@ as verified.
 
 | Tier | Platforms | What it promises |
 |---|---|---|
-| **Supported** | Linux, macOS | CI-gated on every PR ([green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338)); adopter round trip verified. |
-| **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — a nightly/dispatch run only (see [`ci.yml`](.github/workflows/ci.yml)). Bug reports welcome; no round-trip guarantee. |
+| **Supported** | Linux, macOS | Linux is CI-gated on every PR (required check) — [green `bun-suites` run on `main`](https://github.com/yotamleo/Himmel/actions/runs/35175771338); adopter round trip verified on both. macOS CI runs nightly/dispatch only (same trigger as Alpha below, see [`ci.yml`](.github/workflows/ci.yml)) — not yet a per-PR required check. |
+| **Alpha** | Windows (Git Bash), WSL | Code paths present, best effort, not CI-gated per-PR — a nightly `schedule` run, or a manual `workflow_dispatch` with `force_all_os=true` (a plain dispatch alone stays `ubuntu-latest`-only). Bug reports welcome; no round-trip guarantee. |
 
 New shell scripts target bash (still bash 3.2-safe, for macOS); a `.ps1`
 Windows twin is now optional, added only when someone is actually working the
-Windows path — see [`docs/internals/harness-compat.md`](docs/internals/harness-compat.md).
+Windows path — except hooks that run in a PowerShell-dispatched context (e.g.
+`SessionEnd`), which still need a twin in lockstep with the `.sh`. See
+[`docs/internals/harness-compat.md`](docs/internals/harness-compat.md).
 
 ## Usage — the core loop
 
