@@ -391,11 +391,19 @@ assert "update at-pin: no install call" bash -c '! grep -q "tool install" "$1"' 
 make_fake_graphify_venv() { # <tooldir> <version> -> echoes the fake package dir
   local tooldir="$1" ver="$2" pkg
   pkg="$tooldir/graphifyy/fake-site/graphify"
-  mkdir -p "$tooldir/graphifyy/Scripts" "$pkg/skills/claude/references" "$pkg/skills/windows/references"
+  mkdir -p "$tooldir/graphifyy/Scripts" "$pkg/skills/claude/references" "$pkg/skills/windows/references" \
+    "$pkg/skills/codex/references" "$pkg/skills/claw/references"
   printf 'FAKE POSIX SKILL BODY v%s\n' "$ver" > "$pkg/skill.md"
   printf 'FAKE WINDOWS SKILL BODY v%s\n' "$ver" > "$pkg/skill-windows.md"
+  # Distinct per-platform bundles (HIMMEL-3050): codex and hermes package their
+  # own skill body, never claude's -- a fixture that reused claude's content
+  # here would let a cross-platform mixup pass silently (it did, before the fix).
+  printf 'FAKE CODEX SKILL BODY v%s\n' "$ver" > "$pkg/skill-codex.md"
+  printf 'FAKE CLAW SKILL BODY v%s\n' "$ver" > "$pkg/skill-claw.md"
   printf 'posix ref content v%s\n' "$ver" > "$pkg/skills/claude/references/quickstart.md"
   printf 'windows ref content v%s\n' "$ver" > "$pkg/skills/windows/references/quickstart.md"
+  printf 'codex ref content v%s\n' "$ver" > "$pkg/skills/codex/references/quickstart.md"
+  printf 'claw ref content v%s\n' "$ver" > "$pkg/skills/claw/references/quickstart.md"
   cat > "$tooldir/graphifyy/Scripts/python" <<EOF
 #!/usr/bin/env bash
 case "\$2" in
@@ -465,6 +473,10 @@ case "$(uname -s 2>/dev/null || echo)" in
     expected_refs="$srr_pkg/skills/claude/references/quickstart.md"
     ;;
 esac
+# codex/hermes package their OWN bundle (never claude's -- HIMMEL-3050); the
+# host-uname branch above is claude/windows-only and does not apply here.
+expected_codex_skill="$srr_pkg/skill-codex.md"
+expected_codex_refs="$srr_pkg/skills/codex/references/quickstart.md"
 out=$(HOME="$srr_home" CLAUDE_CONFIG_DIR="$srr_cfg" PATH="$stub_dir/bin:$base_path" \
       UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-redir-list" UV_LOG="$tmpdir/sr-redir-uvlog" \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
@@ -547,8 +559,8 @@ assert "other-platforms: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "other-platforms: refresh performed" grep -qi 'skill refreshed' <<<"$out"
 assert "other-platforms: claude marker advanced" test "$(cat "$srm_home/.claude/skills/graphify/.graphify_version")" = "$pinned_ver"
 assert "(a) present codex marker advanced" test "$(cat "$srm_home/.codex/skills/graphify/.graphify_version")" = "$pinned_ver"
-assert "(a) present codex SKILL.md refreshed" cmp -s "$srm_home/.codex/skills/graphify/SKILL.md" "$expected_skill"
-assert "(a) present codex references refreshed" cmp -s "$srm_home/.codex/skills/graphify/references/quickstart.md" "$expected_refs"
+assert "(a) present codex SKILL.md refreshed" cmp -s "$srm_home/.codex/skills/graphify/SKILL.md" "$expected_codex_skill"
+assert "(a) present codex references refreshed" cmp -s "$srm_home/.codex/skills/graphify/references/quickstart.md" "$expected_codex_refs"
 assert "(b) absent hermes dir NOT created" test ! -d "$srm_home/.hermes/skills/graphify"
 assert "(b) absent hermes parent NOT created either" test ! -d "$srm_home/.hermes"
 assert "still-untouched platform: agents marker untouched" test "$(cat "$srm_home/.agents/skills/graphify/.graphify_version")" = "0.0.2"
@@ -565,8 +577,8 @@ out=$(HOME="$src2_home" PATH="$stub_dir/bin:$base_path" \
       UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-platform-repair-list" UV_LOG="$tmpdir/sr-platform-repair-uvlog" \
       bash -c 'unset CLAUDE_CONFIG_DIR CODEXHOME HERMESHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
 assert "(c) platform repair: rc 0" grep -q '^RC=0$' <<<"$out"
-assert "(c) platform repair: codex SKILL.md repaired" cmp -s "$src2_home/.codex/skills/graphify/SKILL.md" "$expected_skill"
-assert "(c) platform repair: codex references repaired" cmp -s "$src2_home/.codex/skills/graphify/references/quickstart.md" "$expected_refs"
+assert "(c) platform repair: codex SKILL.md repaired" cmp -s "$src2_home/.codex/skills/graphify/SKILL.md" "$expected_codex_skill"
+assert "(c) platform repair: codex references repaired" cmp -s "$src2_home/.codex/skills/graphify/references/quickstart.md" "$expected_codex_refs"
 assert "(c) platform repair: codex marker advanced" test "$(cat "$src2_home/.codex/skills/graphify/.graphify_version")" = "$pinned_ver"
 
 echo "[test-graphify-bin] _graphify_skill_refresh: CODEXHOME / HERMESHOME overrides are honoured, not just the default ~/.codex ~/.hermes"
@@ -577,7 +589,7 @@ out=$(HOME="$srov_home" CODEXHOME="$srov_codex" PATH="$stub_dir/bin:$base_path" 
       UV_TOOL_DIR="$srr_tools" UV_LIST_FILE="$tmpdir/sr-override-list" UV_LOG="$tmpdir/sr-override-uvlog" \
       bash -c 'unset CLAUDE_CONFIG_DIR HERMESHOME; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; _graphify_skill_refresh; echo "RC=$?"' 2>&1)
 assert "CODEXHOME override: rc 0" grep -q '^RC=0$' <<<"$out"
-assert "CODEXHOME override: the ROUTED codex dir was refreshed" cmp -s "$srov_codex/skills/graphify/SKILL.md" "$expected_skill"
+assert "CODEXHOME override: the ROUTED codex dir was refreshed" cmp -s "$srov_codex/skills/graphify/SKILL.md" "$expected_codex_skill"
 assert "CODEXHOME override: the default ~/.codex was NOT created" test ! -d "$srov_home/.codex"
 
 echo "[test-graphify-bin] _graphify_skill_refresh: no uv venv python -> silent no-op (foreign installs untouched)"

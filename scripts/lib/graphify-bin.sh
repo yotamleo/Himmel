@@ -756,6 +756,20 @@ _graphify_platform_root() {
   esac
 }
 
+# _graphify_platform_skill_bundle -- $1 = codex|hermes -> "skill_file:refs_bundle"
+# for the packaged content graphify's own installer maps that platform to
+# (graphify's install.py _PLATFORM_CONFIG: codex -> skill-codex.md / codex
+# references; hermes reuses claw's bundle -- skill-claw.md / claw
+# references). Codex and hermes do NOT ship claude's skill.md content; the
+# direct-copy refresh must resolve each platform's own bundle rather than
+# reusing claude's, or it would overwrite their skill with the wrong body.
+_graphify_platform_skill_bundle() {
+  case "$1" in
+    codex)  printf '%s\n' "skill-codex.md:codex" ;;
+    hermes) printf '%s\n' "skill-claw.md:claw" ;;
+  esac
+}
+
 # _graphify_present_platforms -- one platform name per line, for every
 # platform whose skill dir ALREADY exists. Used both to decide which
 # non-Claude platforms _graphify_skill_refresh widens to (HIMMEL-3050) and to
@@ -866,6 +880,7 @@ _graphify_skill_refresh_one() {
 # widens the refresh without ever inventing a platform that wasn't there.
 _graphify_skill_refresh() {
   local root py pkg inst dst tool_dir skill_src refs_src _cand plat plat_root
+  local bundle plat_skill_file plat_refs_bundle
   root="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   dst="$root/skills/graphify"
   tool_dir="$(_graphify_uv_tool_dir)"
@@ -904,7 +919,11 @@ _graphify_skill_refresh() {
 
   for plat in codex hermes; do
     plat_root="$(_graphify_platform_root "$plat")"
-    _graphify_skill_refresh_one "$plat_root/skills/graphify" "$plat" "$inst" "$skill_src" "$refs_src" 1
+    bundle="$(_graphify_platform_skill_bundle "$plat")"
+    plat_skill_file="${bundle%%:*}"
+    plat_refs_bundle="${bundle##*:}"
+    _graphify_skill_refresh_one "$plat_root/skills/graphify" "$plat" "$inst" \
+      "$pkg/$plat_skill_file" "$pkg/skills/$plat_refs_bundle/references" 1
   done
   return 0
 }
