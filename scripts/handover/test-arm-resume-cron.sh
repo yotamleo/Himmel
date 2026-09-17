@@ -299,6 +299,24 @@ assert_contains "a-long: the long path DOES appear, just in the runner preview, 
 assert_not_contains "a-long: the long path is NOT on the crontab entry line itself" "$HO_LONG" "$entry_line_long"
 
 # ---------------------------------------------------------------------------
+# (a-percent) CR round on #780: ARM_RUNNER_DIR is a test seam / operator
+# override, and cron reads a bare `%` as end-of-command + stdin -- `%q`
+# quoting (shell metacharacters) does not cover that, so arm-resume.sh applies
+# a SECOND, cron-specific escape: `q_runner=${q_runner//%/\\%}`. Assert the
+# escape on the crontab ENTRY itself: executing the generated runner FILE
+# would not exercise cron's percent parsing, since only the crontab line goes
+# through cron's own parser.
+# ---------------------------------------------------------------------------
+PCTDIR="$TMP/arm%runners"; mkdir -p "$PCTDIR"
+HO_PCT=$(make_handover)
+out=$(ARM_RUNNER_DIR="$PCTDIR" mac_env bash "$ARM" --time "$(future_time)" --handover "$HO_PCT" --dry-run 2>&1)
+rc=$?
+assert_rc "a-percent: dry-run with a %-bearing ARM_RUNNER_DIR still exits 0" 0 "$rc"
+entry_line_pct=$(printf '%s\n' "$out" | sed -n 's/^    \(.*\/bin\/sh .*# HIMMEL-Resume-.*\)$/\1/p' | head -1)
+assert_contains "a-percent: crontab entry escapes the literal % as \\%" "arm\\%runners" "$entry_line_pct"
+assert_not_contains "a-percent: RED CONTROL -- entry never carries an unescaped %" "arm%runners" "$entry_line_pct"
+
+# ---------------------------------------------------------------------------
 # (b) fail LOUD: no resolvable claude → rc 2, no entry rendered.
 #     PATH = the stub bin WITHOUT claude + every arm-time PATH dir that carries
 #     no claude executable, so the tools arm-resume.sh needs stay reachable
