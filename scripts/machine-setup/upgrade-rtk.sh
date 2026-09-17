@@ -418,6 +418,11 @@ else
   command -v tar >/dev/null 2>&1 || { echo "upgrade-rtk: tar required to install the rtk release tarball" >&2; exit 2; }
   command -v sha256sum >/dev/null 2>&1 || { echo "upgrade-rtk: sha256sum required to verify the rtk release tarball" >&2; exit 2; }
 
+  # ponytail: checksums.txt is fetched from the same GitHub releases host as
+  # the tarball itself, so this proves the download matches the manifest
+  # (integrity), not that the manifest is who it claims to be (authenticity).
+  # A host compromise or an MITM able to substitute the release asset could
+  # substitute checksums.txt too. No signature/attestation check exists here.
   CHECKSUMS_FILE="$INSTALL_DIR/checksums.txt"
   TARBALL_FILE="$INSTALL_DIR/$TARBALL_ASSET"
   if ! curl -fL --max-time 60 "https://github.com/rtk-ai/rtk/releases/download/${TARGET_TAG}/checksums.txt" -o "$CHECKSUMS_FILE"; then
