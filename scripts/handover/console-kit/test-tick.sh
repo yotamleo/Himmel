@@ -58,7 +58,7 @@ cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
 case "$1" in
   heartbeat) exit 0 ;;
   status)
-    case "$2" in *N61*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
+    case "$2" in *N61*|*-N1-*|*-N2-*) printf '%s\n' 'status: FRESH'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
 esac
 exit 2
 STUB
@@ -82,8 +82,12 @@ cat > "$W/bin/date" <<'STUB'
 case "$1" in +%H:%M) printf '%s\n' 12:34 ;; *) /bin/date "$@" ;; esac
 STUB
 
-# Default primary-path table: pid 101 (a pinned sonnet leg), 102 (a pinned
-# opus leg), 103 (the console -- no --autocompact, exempt from drift).
+# Default primary-path table: pid 101 (a pinned sonnet leg, named in $LEGS
+# below), 102 (a pinned opus leg belonging to a DIFFERENT console's --legs --
+# HIMMEL-3145: procs=/models= now count only the sessions THIS console
+# dispatched, so 102 is live but must not appear in procs=/models=, only in
+# ceiling= which scans every session regardless of --legs), 103 (the console
+# -- no --autocompact, exempt from drift).
 mkcmdline 101 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-111-legN61 work
 mkcmdline 102 claude --model claude-opus-5 --autocompact 200000 -n LUNA-222-legN9 work
 mkcmdline 103 claude --model claude-sonnet-5 -n HIMMEL-next-console work
@@ -135,7 +139,7 @@ export TICK_BANK_CACHE_FILE="$W/bank.json"
 export CLAUDE_SESSIONS_PROC="$W/proc"
 
 out="$(bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=2 models=sonnet:1,opus:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -152,7 +156,7 @@ else
 fi
 contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
-contains '--verbose labels leg models (HIMMEL-2976)' "$verbose" 'leg models: sonnet:1,opus:1'
+contains '--verbose labels leg models (HIMMEL-2976, HIMMEL-3145)' "$verbose" 'leg models: sonnet:1'
 
 # --- HIMMEL-3130: a comma-separated --legs is equivalent to space-separated -
 # `for leg in $LEGS` word-splits on IFS whitespace only, so a comma-joined
@@ -237,8 +241,8 @@ printf '%s\n' \
 STUB
 chmod +x "$W/bin-lossy/pgrep"
 lossy_out="$(CLAUDE_SESSIONS_PROC="$W/no-such-proc" PATH="$W/bin-lossy:$PATH" bash "$SUT")"
-contains 'the /proc-absent fallback still counts the same two legs' "$lossy_out" 'procs=2'
-contains 'the /proc-absent fallback flags the degraded read' "$lossy_out" 'models=sonnet:1,opus:1(lossy)'
+contains 'the /proc-absent fallback still counts the dispatched leg (HIMMEL-3145)' "$lossy_out" 'procs=1'
+contains 'the /proc-absent fallback flags the degraded read' "$lossy_out" 'models=sonnet:1(lossy)'
 contains 'the /proc-absent fallback still reports ceiling=ok' "$lossy_out" 'ceiling=ok'
 
 # codex-2 (HIMMEL-2976 round 1 CR): a leg process matched by the leg filter
@@ -361,6 +365,58 @@ case "$burn_out" in *'no transcript found'*) fail '--burn leaks leg-burn stderr 
 noburn_out="$(bash "$SUT" --legs 'HIMMEL-111-legN61')"
 case "$noburn_out" in *burn=*) fail 'burn= appears without --burn' ;; *) pass 'burn= is absent without --burn' ;; esac
 contains '--verbose --burn labels the burn line' "$(bash "$SUT" --verbose --burn --legs 'HIMMEL-111-legN61')" 'leg burn (first-turn/avg-ctx): N61:74.3k/128.1k'
+
+# --- HIMMEL-3145: current-convention leg names (<TICKET>-N<k>-<slug>, no
+# "-leg" substring at all -- docs/handover/console-template.md:104 is the
+# contract every console since HIMMEL-2975 writes) must resolve/count/compare
+# identically to the legacy -legN<k> spelling. This fixture is the ticket's
+# own RED control (console G, 2026-09-17, HIMMEL-3145 evidence): two live
+# legs named this way used to report procs=0 models=none and an
+# unconditional livestate=DRIFT naming every leg twice -- confirmed against
+# scripts/handover/console-kit/tick.sh@6ac483e4 before this fix.
+mkcmdline 110 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3144-N1-console-idle-guard work
+mkcmdline 111 claude --model claude-sonnet-5 --autocompact 200000 -n HIMMEL-3143-N2-merge-jira-optin work
+mk_pgrep_x "$W/bin-conv" 110 111
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-3144-N1-console-idle-guard.md"
+printf '%s\n' '# leg' '- LIVE — working' > "$W/handover/HIMMEL-3143-N2-merge-jira-optin.md"
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' '# console' '' '## Live state' '' \
+    'legs: `N1:nonce1:tok1:110`, `N2:nonce2:tok2:111`' 'queue: none' 'last GO: none' 'acked: none' \
+    > "$W/handover/console.md"
+conv_out="$(PATH="$W/bin-conv:$PATH" bash "$SUT" --legs 'HIMMEL-3144-N1-console-idle-guard HIMMEL-3143-N2-merge-jira-optin')"
+contains 'a current-convention leg label resolves to N<k> (HIMMEL-3145)' "$conv_out" 'legs=N1:FRESH,N2:FRESH'
+contains 'current-convention legs are counted in procs= (HIMMEL-3145)' "$conv_out" 'procs=2'
+contains 'current-convention legs are bucketed in models= (HIMMEL-3145)' "$conv_out" 'models=sonnet:2'
+contains 'current-convention legs compare like-with-like in livestate= (HIMMEL-3145)' "$conv_out" 'livestate=ok'
+case "$conv_out" in
+    *DRIFT*) fail 'a current-convention leg must not report livestate=DRIFT (HIMMEL-3145)' ;;
+    *) pass 'a current-convention leg must not report livestate=DRIFT (HIMMEL-3145)' ;;
+esac
+
+# Legacy regression (ticket acceptance): an archived console doc named in the
+# OLD -legN<k>- spelling still resolves to N<k> -- leg_label() must recognise
+# both spellings in the same namespace, not just the new one.
+legacy_out="$(bash "$SUT" --legs 'HIMMEL-3064-legN12-old-console-format' 2>/dev/null)"
+contains 'a legacy -legN<k>- doc still resolves to N<k> (HIMMEL-3145 regression)' "$legacy_out" 'legs=N12:NOTFOUND'
+
+# --- HIMMEL-3145 (ticket root cause 3 / acceptance): a field that cannot be
+# computed must say so. A fatal census scan (pgrep itself failing, rc>1 and
+# not the HIMMEL-3002 degraded-scan rc=3) discards the whole session table --
+# procs=/models= must report "unknown", never a clean "0"/"none" that reads
+# as "no legs are running" when the truth is "the scan itself broke".
+mkdir -p "$W/bin-census-fail"
+cat > "$W/bin-census-fail/pgrep" <<'STUB'
+#!/usr/bin/env bash
+exit 2
+STUB
+chmod +x "$W/bin-census-fail/pgrep"
+census_fail_out="$(PATH="$W/bin-census-fail:$PATH" bash "$SUT" --legs 'HIMMEL-111-legN61')"
+contains 'a fatal census scan reports procs=unknown, not a false procs=0 (HIMMEL-3145)' "$census_fail_out" 'procs=unknown'
+contains 'a fatal census scan reports models=unknown, not a false models=none (HIMMEL-3145)' "$census_fail_out" 'models=unknown'
+case "$census_fail_out" in
+    *'procs=0'*) fail 'a fatal census scan must not render procs=0' ;;
+    *) pass 'a fatal census scan must not render procs=0' ;;
+esac
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

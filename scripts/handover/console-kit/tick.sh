@@ -86,10 +86,20 @@ resolve_doc() {
 }
 
 leg_label() {
+    # HIMMEL-3145: two label spellings share this one namespace. Legacy
+    # consoles (archived docs) named a leg <TICKET>-legN<k>-<slug>; every
+    # console since HIMMEL-2975 names one <TICKET>-N<k>-<slug> (no "-leg"
+    # substring at all -- docs/handover/console-template.md:104 is the
+    # contract, and this must extract the same N<k> token the template
+    # tells a console to write in its `## Live state` legs: line, or
+    # livestate= below compares two namespaces that never intersect.
     local stem="$1" label
     stem="${stem##*/}"
     stem="${stem%.md}"
     label="$(printf '%s\n' "$stem" | sed -n 's/.*-leg\(N[0-9][0-9]*\).*/\1/p')"
+    if [ -z "$label" ]; then
+        label="$(printf '%s\n' "$stem" | sed -n 's/^[A-Za-z][A-Za-z]*-[0-9][0-9]*-\(N[0-9][0-9]*\).*/\1/p')"
+    fi
     [ -n "$label" ] || label="$stem"
     printf '%s' "$label" | tr -c 'A-Za-z0-9_.-' '_'
 }
@@ -124,9 +134,17 @@ LEGS_SPLIT="${LEGS//,/ }"
 
 legs_summary=""
 tails_summary=""
+# HIMMEL-3145: the census names the -n session the console actually passed
+# to `claude`, which is the leg doc's stem minus a -RESUME suffix (the same
+# string the --burn loop below matches on) -- collect it here so procs=/
+# models= can count against what THIS console dispatched instead of
+# guessing from a "-leg" spelling.
+leg_names=""
 for leg in $LEGS_SPLIT; do
     leg_doc="$(resolve_doc "$leg")"
     label="$(leg_label "$leg")"
+    leg_stem="${leg##*/}"; leg_stem="${leg_stem%.md}"; leg_stem="${leg_stem%-RESUME}"
+    leg_names="$(csv_add "$leg_names" "$leg_stem")"
     # HIMMEL-3130: NOTFOUND (file does not resolve) is a distinct status from
     # MISSING. MISSING means "the lock is gone" -- exactly the signal a
     # console reads as "reclaim this leg's lock" -- and must never be used for
@@ -216,9 +234,15 @@ sessions_rc=$?
 # HIMMEL-3002: rc=3 means the census itself succeeded but one or more live
 # sessions had an unreadable cmdline -- the readable rows above are still
 # trustworthy, so keep them (unlike a real scan failure, rc>1 and not 3,
-# where the whole table is suspect and gets discarded below).
-if [ "$sessions_rc" -gt 1 ] && [ "$sessions_rc" -ne 3 ]; then
+# where the whole table is suspect and gets discarded below). CAVEAT
+# (claude-sessions.sh, same ticket): pgrep's own fatal-error rc is ALSO 3,
+# forwarded with no output printed first -- ceiling-conformance.sh already
+# tells the two apart by whether sessions_out is empty at rc=3; mirror that
+# here so census_failed below (HIMMEL-3145) is not blind to it.
+census_failed=0
+if [ "$sessions_rc" -gt 1 ] && { [ "$sessions_rc" -ne 3 ] || [ -z "$sessions_out" ]; }; then
     sessions_out=""
+    census_failed=1
 fi
 sessions_lossy=0
 case "$sessions_out" in
@@ -229,21 +253,32 @@ if [ "$sessions_rc" -eq 3 ]; then
     unreadable_n="$(printf '%s\n' "$sessions_out" | grep -c '^# unreadable ')"
 fi
 
-procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
+# HIMMEL-3145: count sessions the console actually dispatched (leg_names,
+# built from --legs above) against the census name, not a "-leg" spelling
+# guess -- a filter that silently matches nothing must never render as 0.
+leg_names_wrapped=",${leg_names},"
+if [ "$census_failed" -eq 1 ]; then
+    # A field that cannot be computed must say so (HIMMEL-3130 NOTFOUND-vs-
+    # MISSING, HIMMEL-3002 unreadable=): procs=0 and procs=unknown must be
+    # distinguishable, or a real scan failure reads as "no legs running".
+    procs=unknown
+else
+    procs="$(printf '%s\n' "$sessions_out" | awk -F'\t' -v names="$leg_names_wrapped" '
 $1 ~ /^#/ { next }
 NF < 4 { next }
 {
     name = $2
-    if (name !~ /^(HIMMEL|LUNA)-/) next
-    if (name !~ /-leg/) next
-    if (name ~ /-console$/) next
+    if (name == "") next
+    if (index(names, "," name ",") == 0) next
     n++
 }
 END { print n+0 }')"
-# HIMMEL-3002: a degraded scan (rc=3) still counted every readable row above
-# -- append how many pids it could NOT read so the console sees the table is
-# incomplete rather than reading procs= as a clean, complete count.
-[ "$unreadable_n" -gt 0 ] && procs="${procs},unreadable=${unreadable_n}"
+    # HIMMEL-3002: a degraded scan (rc=3) still counted every readable row
+    # above -- append how many pids it could NOT read so the console sees
+    # the table is incomplete rather than reading procs= as a clean, complete
+    # count.
+    [ "$unreadable_n" -gt 0 ] && procs="${procs},unreadable=${unreadable_n}"
+fi
 
 # HIMMEL-2976: same session table and leg filter as procs= above, bucketed by
 # the tier its real --model argv names (opus/fable cost materially more per
@@ -253,14 +288,18 @@ END { print n+0 }')"
 # no --model token at all buckets under "unknown" (codex-2, HIMMEL-2976 round
 # 1 CR) rather than falling out of every bucket while still counted in
 # procs=.
-models_summary="$(printf '%s\n' "$sessions_out" | awk -F'\t' '
+# HIMMEL-3145: same dispatched-name filter as procs= above, same
+# unknown-vs-empty distinction on a real census failure.
+if [ "$census_failed" -eq 1 ]; then
+    models_summary=unknown
+else
+    models_summary="$(printf '%s\n' "$sessions_out" | awk -F'\t' -v names="$leg_names_wrapped" '
 $1 ~ /^#/ { next }
 NF < 4 { next }
 {
     name = $2; model = $3
-    if (name !~ /^(HIMMEL|LUNA)-/) next
-    if (name !~ /-leg/) next
-    if (name ~ /-console$/) next
+    if (name == "") next
+    if (index(names, "," name ",") == 0) next
     if (model == "")             { c_unknown++ }
     else if (model ~ /^claude-opus-/)   c_opus++
     else if (model ~ /^claude-fable-/)  c_fable++
@@ -278,12 +317,13 @@ END {
     if (c_unknown > 0) out = out (out == "" ? "" : ",") "unknown:" c_unknown
     print out
 }')"
-[ -n "$models_summary" ] || models_summary=none
-# HIMMEL-2999: /proc absent (macOS, git-bash) degrades claude_sessions() to
-# the old flattened-line parse -- flag it inline (no space, so the tick line
-# stays space-delimited) rather than silently reporting a scan that could
-# again be spoofed by free-text argv.
-[ "$sessions_lossy" -eq 0 ] || models_summary="${models_summary}(lossy)"
+    [ -n "$models_summary" ] || models_summary=none
+    # HIMMEL-2999: /proc absent (macOS, git-bash) degrades claude_sessions()
+    # to the old flattened-line parse -- flag it inline (no space, so the
+    # tick line stays space-delimited) rather than silently reporting a scan
+    # that could again be spoofed by free-text argv.
+    [ "$sessions_lossy" -eq 0 ] || models_summary="${models_summary}(lossy)"
+fi
 
 # HIMMEL-2974: the same ps table, scanned for --autocompact drift against the
 # leg invariant headed-arm.sh:391 refuses to launch without. The script's own
