@@ -474,6 +474,18 @@ echo "[test-upgrade-rtk] HIMMEL-3049: dpkg-owned RTK_BIN_PATH still takes the de
 reset_fixture
 TARBALL_DIR="$TMP_ROOT/tarball-assets"
 rm -rf "$TARBALL_DIR"; mkdir -p "$TARBALL_DIR"
+cat > "$BIN_DIR/curl" <<'EOF'
+#!/usr/bin/env bash
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+echo "fake deb payload" > "$out"
+EOF
+chmod +x "$BIN_DIR/curl"
 cat > "$BIN_DIR/sudo" <<'EOF'
 #!/usr/bin/env bash
 touch "$(dirname "$0")/../sudo-invoked"
@@ -505,7 +517,7 @@ if [ -e "$TMP_ROOT/sudo-invoked" ]; then
 else
   fail "dpkg branch never invoked sudo -- deb+apt flow was NOT taken" "$out"
 fi
-rm -f "$BIN_DIR/sudo" "$TMP_ROOT/sudo-invoked"
+rm -f "$BIN_DIR/sudo" "$BIN_DIR/curl" "$TMP_ROOT/sudo-invoked"
 
 echo "[test-upgrade-rtk] HIMMEL-3049: non-dpkg tarball happy path -- replaced, version bumped, no sudo"
 reset_fixture
