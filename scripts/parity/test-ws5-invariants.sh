@@ -393,7 +393,7 @@ else
             fi
             continue
         fi
-        echo "FAIL T15: $sh_path has neither a .ps1 twin nor a platform-guard marker." >&2
+        echo "WARN T15: $sh_path has neither a .ps1 twin nor a platform-guard marker (advisory only, HIMMEL-3125 -- Windows is alpha)." >&2
         t15_fail=1
     done < <(git diff "$BASE...HEAD" --diff-filter=A --name-only -- 'scripts/' \
         | grep -E '\.sh$' || true)
@@ -403,7 +403,7 @@ else
     elif [ "$t15_fail" -eq 0 ]; then
         echo "PASS T15 x-platform: all ${t15_n} new scripts/**/*.sh have a twin or guard."
     else
-        FAIL=$((FAIL + 1))
+        echo "PASS T15 x-platform (advisory, HIMMEL-3125): ${t15_n} new scripts/**/*.sh, some without a twin or guard -- no longer CI-gated now that Windows is alpha; see docs/internals/harness-compat.md."
     fi
 fi
 

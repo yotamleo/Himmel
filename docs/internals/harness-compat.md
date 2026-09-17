@@ -7,7 +7,11 @@
 > bash (still bash 3.2-safe, for macOS); a `.ps1` twin is optional, added only
 > when someone is actually working the Windows path — except hooks that run in
 > a PowerShell-dispatched context (e.g. `SessionEnd`), which still need a twin
-> in lockstep with the `.sh`.
+> in lockstep with the `.sh`. Enforcement is advisory at every site that used
+> to hard-block on a missing twin: the pre-commit gate
+> (`scripts/hooks/check-new-shell-platform-guard.sh`,
+> `.pre-commit-config.yaml:536`) and CI's T15 check
+> (`scripts/parity/test-ws5-invariants.sh`) both warn instead of failing.
 
 himmel is built end-to-end around **Claude Code's** contract: PreToolUse
 guardrail hooks, a plugin/marketplace system, skills, slash commands, and
