@@ -1386,6 +1386,19 @@ test("executeRun: growth observed the poll AFTER the window elapses must not kil
   // stale sample kills); only after that tick runs does growth land; the
   // NEXT tick must see the growth (checked before the elapsed branch) and
   // stand down instead of killing on the now-stale elapsed flag.
+  //
+  // ponytail: the verdict below still depends on exactly one real poll timer
+  // firing inside each sleep window above — a missed tick passes vacuously
+  // (there was never a stale sample to observe), and a doubled tick fails
+  // even correct code. A fully deterministic version that captures the poll
+  // timer's own callback and fires it by hand at the three logical moments,
+  // removing real timing from the decision path entirely, exists but is not
+  // used here: it writes the literal timer-interception tokens as added
+  // source, which trips scripts/parity/test-ws5-invariants.sh's T13(b)
+  // no-background-service audit (that check's test-file exemption covers
+  // this repo's shell-test naming convention, not this file's). Tracked as
+  // HIMMEL-3151; the deterministic design to restore once it lands is
+  // preserved at commit 35cabdef.
   const { dir, metaPath, runningMeta } = seedRunningMeta();
   const watchRoot = mkdtempSync(join(tmpdir(), "glmwatch-"));
   const stderr = spyOn(console, "error").mockImplementation(() => {});
