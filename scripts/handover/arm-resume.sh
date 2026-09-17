@@ -359,10 +359,12 @@ Optional:
                      Fable-family model — the CLI strips it there) and
                      passes --autocompact auto; standard strips any
                      [1m] suffix and passes --autocompact 200000.
-                     Default: 1m on a *-console.md handover, standard on
-                     every other arm. The resolved mode, its source
-                     (explicit vs. default) and the effective autocompact
-                     value are always echoed to the arm log.
+                     Default: standard on every arm, console or not
+                     (HIMMEL-2975); a console-class arm can still opt into
+                     1m via CONSOLE_CONTEXT=1m in the launching shell. The
+                     resolved mode, its source (explicit vs. default) and
+                     the effective autocompact value are always echoed to
+                     the arm log.
   --tier leg         Mark this as a worker-leg arm. The resolved launch argv
                      must carry the exact --autocompact 200000 ceiling;
                      --context 1m is refused with exit 2. Omit for existing
