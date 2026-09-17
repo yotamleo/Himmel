@@ -21,6 +21,12 @@
 #       own process environment (the leg-only env headed-arm.sh's child-env
 #       block does not set).
 #   11. LEG_REPO reaches headed-arm.sh's --workdir.
+#   3b/10b (HIMMEL-3139): CONSOLE_CONTEXT is a console-only knob (the
+#       CONSOLE_CONTEXT=1m 1M-context opt-in, console.sh:382) that must never
+#       reach a leg - --dry-run reports the enumerated scrub set and the
+#       resolved value as <unset> even with CONSOLE_CONTEXT=1m ambient in the
+#       launching shell (3b); the real (non-dry) path proves it never reaches
+#       the konsole child's own process environment either (10b).
 #   12. RED control: a mutant headed-arm renderer with --autocompact removed is
 #       refused on the full non-dry launch path before konsole runs.
 #   13. HIMMEL-2765: bank-preflight.sh reporting SKIPPED-FLEET refuses the
@@ -87,7 +93,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|CONSOLE_CONTEXT)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -199,6 +205,21 @@ contains "dry-run default: reports IMPL_GUARD_OK=1" "$out" "IMPL_GUARD_OK=1"
 contains "dry-run default: reports INLINE_IMPL_OK=1" "$out" "INLINE_IMPL_OK=1"
 contains "dry-run default: reports HIMMEL_CONSOLE_LEG=1" "$out" "HIMMEL_CONSOLE_LEG=1"
 not_contains "dry-run default: no HIMMEL_CONSOLE_RELAY without --relay" "$out" "HIMMEL_CONSOLE_RELAY"
+contains "dry-run default: scrub list names CONSOLE_CONTEXT" "$out" "scrub=CONSOLE_CONTEXT"
+
+# HIMMEL-3139: a console armed with CONSOLE_CONTEXT=1m in its own environ (the
+# mandatory opt-in for a 1M successor, console.sh:382) must not forward that
+# console-only knob into a leg it arms. Ambient CONSOLE_CONTEXT=1m in THIS
+# suite's own launching shell must not silently satisfy the assertion either -
+# not_contains on a value the wrapper never receives proves nothing - so this
+# sets it explicitly on the invocation, same shape as the LEG_CONTEXT=1m case
+# below. Enumerates the expected scrub set explicitly (not merely "non-empty")
+# so a future console-only knob added without a matching scrub here fails
+# this exact assertion, not a vaguer one.
+rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
+contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT CONSOLE_CONTEXT=<unset>"
+not_contains "dry-run, ambient CONSOLE_CONTEXT=1m: never reported as still set" "$out" "CONSOLE_CONTEXT=1m"
 
 rc=0; out="$(LEG_CONTEXT=1m bash "$SCRIPT" --dry-run HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run LEG_CONTEXT=1m: refused with exit 2" "$rc" "2"
@@ -295,6 +316,21 @@ contains "full launch: IMPL_GUARD_OK=1 in the konsole invocation's env" "$env8" 
 contains "full launch: INLINE_IMPL_OK=1 in the konsole invocation's env" "$env8" "INLINE_IMPL_OK=1"
 contains "full launch: HIMMEL_CONSOLE_LEG=1 in the konsole invocation's env" "$env8" "HIMMEL_CONSOLE_LEG=1"
 not_contains "full launch: internal autocompact requirement does not leak into the launched leg" "$env8" "HEADED_ARM_REQUIRED_AUTOCOMPACT="
+
+# --- 10b (HIMMEL-3139). Asserted absence on the REAL (non-dry) path: a
+# console armed with CONSOLE_CONTEXT=1m in its own environ must not forward
+# it into the konsole child's own process environment when it arms a leg -
+# the live symptom this ticket fixes. Mirrors case 10's shape (env-record,
+# not argv - CONSOLE_CONTEXT never appears in argv either way, only in
+# inherited env) so the control is on the same deterministic seam headed-arm's
+# own suite already trusts, not a live /proc read.
+d10b="$tmp/c10b"; mk_launch_stubs "$d10b" "HIMMEL-3139-leg"; mkdir -p "$tmp/repo10b"
+rc=0
+CONSOLE_CONTEXT=1m LEG_CONTEXT='' run_leg "$d10b" "$tmp/repo10b" "HIMMEL-3139-leg" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d10b" || true
+env10b="$(cat "$d10b/env-record" 2>/dev/null || true)"
+check "full launch, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
+not_contains "full launch, ambient CONSOLE_CONTEXT=1m: absent from the konsole invocation's own env" "$env10b" "CONSOLE_CONTEXT="
 
 # --- 12. RED control: mutate the ACTUAL headed-arm launch renderer to drop
 # --autocompact, then drive the wrapper's full non-dry path. The shared argv

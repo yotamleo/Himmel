@@ -223,6 +223,23 @@ else
     RESOLVED_AUTOCOMPACT="200000"
 fi
 
+# HIMMEL-3139: console-only knobs that must never reach a leg's own process,
+# and therefore never reach the konsole child this wrapper execs into via
+# headed-arm.sh (whose env -u list only clears the three HIMMEL-2545
+# session-identity vars, not this one). CONSOLE_CONTEXT is read by
+# headed-arm.sh to pick a CONSOLE's --autocompact ceiling; a leg's ceiling is
+# already pinned above via LEG_CONTEXT/RESOLVED_AUTOCOMPACT, which never
+# consults CONSOLE_CONTEXT, so unsetting it here loses nothing. A console
+# armed with CONSOLE_CONTEXT=1m in its own environ (the same leak, one hop
+# earlier - out of scope here, see the ticket) would otherwise forward it to
+# every leg it arms. Kept as a list, not a bare `unset`, so --dry-run can
+# print it and test-headed-arm-leg.sh can assert the exact set and fail on
+# drift if a future console-only knob needs the same treatment.
+LEG_ENV_SCRUB="CONSOLE_CONTEXT"
+for _leg_env_scrub in $LEG_ENV_SCRUB; do
+    unset "$_leg_env_scrub"
+done
+
 # HIMMEL-2779: a leg's ceiling is the resolved CLI pair, not the absence of a
 # model suffix. Fail before dry-run reporting or preflight when context already
 # resolves wrong; headed-arm.sh separately validates the exact argv it launches.
@@ -430,8 +447,15 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm-leg: would exec: %s %s %s %s %s %s %s %s\n' \
         "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s\n' \
-        "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}"
+    # HIMMEL-3139: scrub= and the resolved CONSOLE_CONTEXT are folded into this
+    # existing unconditional line (rather than a new line) so the no-flag dry-run
+    # report keeps its established line count - a caller can still set
+    # CONSOLE_CONTEXT=1m and see it reported <unset> here, proving the scrub
+    # above ran in THIS wrapper's own process before it ever execs into
+    # headed-arm.sh.
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s\n' \
+        "$IMPL_GUARD_OK" "$INLINE_IMPL_OK" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
+        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
     # as the --profile line below.
