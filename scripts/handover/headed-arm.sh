@@ -351,34 +351,41 @@ if [ "$#" -lt 5 ]; then
     exit 2
 fi
 
+# HIMMEL-2975 T6: resolved from $0, NOT $HEADED_ARM_REPO -- tests point that
+# override at a synthetic tmp repo with no scripts/lib of its own, and this
+# script's own source location never moves with it.
+. "$(cd "$(dirname "$0")" && pwd)/../lib/console-context.sh"
+
 NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-fable-5-1}"
-# HIMMEL-2973: --context resolution, arming-time only (see the header
-# comment above). Defaults to `standard` (--autocompact 200000): the console
-# arm path is the largest cache-read cost driver on the fleet (2026-09-12
-# cost audit), so 1m is now an explicit operator opt-in via CONSOLE_CONTEXT=1m
-# in the LAUNCHING shell, never the bare default. $#-ge 7 (not just
-# "${7:-}" non-empty) is what distinguishes an explicit empty-string 7th
-# positional from "omitted" for the log line below -- nothing currently
-# passes an empty string here, but the distinction costs nothing and matches
-# how arm-resume.sh tells explicit from default.
+# HIMMEL-2973 (default re-pinned by HIMMEL-2975 T6, resolution now shared
+# via scripts/lib/console-context.sh): --context resolution, arming-time
+# only (see the header comment above). Defaults to `standard`
+# (--autocompact 200000): the console arm path is the largest cache-read
+# cost driver on the fleet (2026-09-12 cost audit), so 1m is now an explicit
+# operator opt-in via CONSOLE_CONTEXT=1m in the LAUNCHING shell, never the
+# bare default. $#-ge 7 (not just "${7:-}" non-empty) is what distinguishes
+# an explicit empty-string 7th positional from "omitted" for the log line
+# below -- nothing currently passes an empty string here, but the
+# distinction costs nothing and matches how arm-resume.sh tells explicit
+# from default. This launcher is always console-class (is_console=1) --
+# it has no non-console callers, unlike arm-resume.sh's handover-name test.
 if [ "$#" -ge 7 ]; then
     CONTEXT="$7"
     _headed_context_source="positional"
-elif [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
-    CONTEXT="1m"
-    _headed_context_source="CONSOLE_CONTEXT=1m"
 else
-    CONTEXT="standard"
-    _headed_context_source="default"
+    console_context_default 1 "${CONSOLE_CONTEXT:-}"
+    CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    if [ "$CONSOLE_CONTEXT_RESOLVED_SOURCE" = "console-context-env" ]; then
+        _headed_context_source="CONSOLE_CONTEXT=1m"
+    else
+        _headed_context_source="default"
+    fi
 fi
-case "$CONTEXT" in
-    1m|standard) ;;
-    *)
-        echo "usage: headed-arm.sh [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
-        echo "headed-arm: context must be 1m or standard, got: $CONTEXT" >&2
-        exit 2
-        ;;
-esac
+if ! console_context_valid "$CONTEXT"; then
+    echo "usage: headed-arm.sh [--role relay|console] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model] [context: 1m|standard]" >&2
+    echo "headed-arm: context must be 1m or standard, got: $CONTEXT" >&2
+    exit 2
+fi
 # HIMMEL-2973: 1m is an explicit operator opt-in -- refuse before the claim
 # lock or konsole is ever touched (same refusal shape as the HIMMEL-2779
 # leg-side REQUIRED_AUTOCOMPACT check below) unless CONSOLE_CONTEXT=1m was
@@ -390,21 +397,18 @@ if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
     echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
     exit 2
 fi
-# Fable-family match (matched by substring, same idiom arm-resume.sh's
-# _arm_model_is_fable uses) -- the default MODEL here IS Fable, so the
-# common path through this script hits this branch every time.
+# Fable-family match (shared with arm-resume.sh via console_context_model_is_fable)
+# -- the default MODEL here IS Fable, so the common path through this
+# script hits this branch every time.
 _headed_model_is_fable=0
-case "$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')" in
-    *fable*) _headed_model_is_fable=1 ;;
-esac
+if console_context_model_is_fable "$MODEL"; then
+    _headed_model_is_fable=1
+fi
 # Strip any [1m] suffix the caller may have typed into MODEL directly, so
-# `standard` can guarantee its absence and `1m` never doubles it. `[`/`]`
-# escaped so this is a literal-suffix match, not a `[1m]` character class.
-case "$MODEL" in
-    *\[1m\]) MODEL="${MODEL%\[1m\]}" ;;
-esac
+# `standard` can guarantee its absence and `1m` never doubles it.
+MODEL="$(console_context_strip_1m_suffix "$MODEL")"
+AUTOCOMPACT="$(console_context_autocompact "$CONTEXT")"
 if [ "$CONTEXT" = "1m" ]; then
-    AUTOCOMPACT="auto"
     if [ "$_headed_model_is_fable" -eq 1 ]; then
         # Measured fact: the CLI silently strips [1m] for Fable-family
         # models -- never claim to have set 1m context on one.
@@ -414,7 +418,6 @@ if [ "$CONTEXT" = "1m" ]; then
         CONTEXT_REASON="context=1m ($_headed_context_source); model=$MODEL"
     fi
 else
-    AUTOCOMPACT="200000"
     CONTEXT_REASON="context=standard ($_headed_context_source); model=$MODEL"
 fi
 KONSOLE="${KONSOLE_CMD:-konsole}"

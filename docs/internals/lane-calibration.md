@@ -307,7 +307,9 @@ HIMMEL-2586). Same audit's safeguard-false-positive mitigations:
 Context mode used to be set once, station-wide, by a `[1m]` suffix on the
 user-level `model` key in `~/.claude/settings.json`. It is now chosen **per arm**
 via `--context 1m|standard` (`arm-resume.sh`, and the 7th positional of
-`headed-arm.sh`). Defaults: **console arms → `1m`; every other arm → `standard`.**
+`headed-arm.sh`). Defaults (HIMMEL-2975 T6): **every arm → `standard`.** A
+console arm can still opt into `1m` via `CONSOLE_CONTEXT=1m` in the
+launching shell, or an explicit `--context 1m`.
 
 `--context` drives two independent levers, because measurement showed one of
 them alone is a no-op on this account:
@@ -384,7 +386,7 @@ measured** — do not assume a `standard` leg makes its children compact early.
 
 | lane | default mode | override |
 |---|---|---|
-| console arm (`*-console.md`) | `1m` | `--context standard` |
+| console arm (`*-console.md`) | `standard` | `CONSOLE_CONTEXT=1m` or `--context 1m` |
 | leg / worker arm | `standard` | none — the resolved argv must carry `--autocompact 200000` |
 | subagent of either | inherits the parent | none — set it on the parent's arm |
 

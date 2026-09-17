@@ -67,6 +67,7 @@ CONSOLE_LAUNCH_ENV="env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_COD
 # shellcheck source=../../lib/handover-path.sh
 # shellcheck disable=SC1091
 . "$HERE/../../lib/handover-path.sh"
+. "$HERE/../../lib/console-context.sh"
 load_dotenv HANDOVER_DIR USER_SLUG JIRA_PROJECT_KEY
 
 ALPHABET="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -386,15 +387,15 @@ fi
 state_dir="$root/$slug/$bucket"
 model="${MODEL:-${CONSOLE_MODEL:-claude-fable-5-1}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
-# HIMMEL-2973: do_arm passes headed-arm.sh no [context] positional, so
-# headed-arm.sh's own default resolution decides the launch's --autocompact
-# value; mirrored here (not shared — a different script) purely for the
+# HIMMEL-2973 (genuinely shared as of HIMMEL-2975 T6): do_arm passes
+# headed-arm.sh no [context] positional, so headed-arm.sh's own default
+# resolution decides the launch's --autocompact value; this calls the same
+# scripts/lib/console-context.sh resolver headed-arm.sh does, purely for the
 # printed launch/would-launch lines below to show the value that will
-# actually be used, same CONSOLE_CONTEXT=1m opt-in headed-arm.sh honours.
-console_autocompact="200000"
-if [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
-    console_autocompact="auto"
-fi
+# actually be used -- the printed line and the launched value can no longer
+# drift apart, same CONSOLE_CONTEXT=1m opt-in headed-arm.sh honours.
+console_context_default 1 "${CONSOLE_CONTEXT:-}"
+console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MODE")"
 
 # _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small
 # per-script helper, matching the repo's own convention of duplicating this

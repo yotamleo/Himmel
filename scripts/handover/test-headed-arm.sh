@@ -1303,9 +1303,16 @@ contains "resolved launcher: SHELL forced to bash ahead of script(1), independen
 # --- 37. RED control: a mutant that always takes the RECORDER=1 branch
 # must fail case 36's "no script(1) wrapper" assertion for the DEFAULT
 # (unset) launcher - proves that assertion is not vacuous. -----------------
-mutant36="$tmp/mutant-headed-arm-recorder.sh"
+# HIMMEL-2975 T6: the mutant must keep the same scripts/handover + ../lib
+# layout as the real tree -- headed-arm.sh now sources
+# scripts/lib/console-context.sh relative to its OWN path ($0), and a bare
+# copy dropped straight into $tmp has no sibling ../lib to find.
+mutant36dir="$tmp/mutant-headed-arm-recorder"
+mkdir -p "$mutant36dir/scripts/handover" "$mutant36dir/scripts/lib"
+mutant36="$mutant36dir/scripts/handover/headed-arm.sh"
 # shellcheck disable=SC2016 # single-quoted sed script; $RECORDER must stay literal
 sed 's/if \[ "\$RECORDER" = "1" \]; then/if true; then/' "$SCRIPT" > "$mutant36"
+cp "$HERE/../lib/console-context.sh" "$mutant36dir/scripts/lib/console-context.sh"
 chmod 755 "$mutant36"
 d37="$tmp/c37"; mk_stub "$d37" 1 alive "HIMMEL-red36"
 mrc36=0

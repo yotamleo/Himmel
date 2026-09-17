@@ -286,15 +286,19 @@ assert_not_contains "d: RED CONTROL — model not suffixed (unescaped)" 'claude-
 assert_not_contains "d: RED CONTROL — model not suffixed (escaped)" 'claude-fable-5-1\[1m\]' "$out"
 
 # ---------------------------------------------------------------------------
-# (e) defaults by handover name: a *-console.md handover with no --context
-#     defaults to 1m; any other name defaults to standard.
+# (e) HIMMEL-2975 T6: every arm defaults to standard now, console handovers
+#     included -- console arms used to default to 1m unconditionally (the
+#     largest single measured saving in the cost program going unrealized
+#     on every unpinned console arm). RED before this ticket's fix: e1
+#     resolved 1m/auto on the pre-fix code.
 # ---------------------------------------------------------------------------
 HO_E1=$(make_handover "arm-context-console.md")
 out=$(run_arm --time "$(future_time)" --handover "$HO_E1" --dry-run 2>&1)
 rc=$?
 assert_rc "e1: console handover, no --context, exits 0" 0 "$rc"
-assert_contains "e1: guard line defaults console to 1m" 'context=1m (no --context given; console arms default to 1m -- HIMMEL-2658)' "$out"
-assert_contains "e1: relaunch command carries --autocompact auto" '--autocompact auto' "$out"
+assert_contains "e1: guard line defaults console to standard (HIMMEL-2975)" 'context=standard (no --context given; console arms default to standard -- HIMMEL-2975)' "$out"
+assert_contains "e1: relaunch command carries --autocompact 200000" '--autocompact 200000' "$out"
+assert_not_contains "e1: no [1m] suffix anywhere in output" '[1m]' "$out"
 
 HO_E2=$(make_handover)
 out=$(run_arm --time "$(future_time)" --handover "$HO_E2" --dry-run 2>&1)
@@ -302,6 +306,29 @@ rc=$?
 assert_rc "e2: non-console handover, no --context, exits 0" 0 "$rc"
 assert_contains "e2: guard line defaults non-console to standard" 'context=standard (no --context given; non-console arms default to standard -- HIMMEL-2658)' "$out"
 assert_contains "e2: relaunch command carries --autocompact 200000" '--autocompact 200000' "$out"
+
+# ---------------------------------------------------------------------------
+# (e3) HIMMEL-2975: CONSOLE_CONTEXT=1m keeps the 1M opt-in reachable now
+#      that the console default flips to standard (contract requirement 4 —
+#      the explicit opt-in must keep working). GREEN BEFORE AND AFTER this
+#      ticket's fix, on purpose — say so here because a reviewer seeing a
+#      test that never changes colour will otherwise read it as dead
+#      weight: before the fix, arm-resume.sh had NO CONSOLE_CONTEXT support
+#      at all, but every console arm defaulted to 1m unconditionally, so
+#      this scenario passed by coincidence of the (buggy) default; after,
+#      the default is standard and this scenario passes because the shared
+#      resolver (scripts/lib/console-context.sh) explicitly consults
+#      CONSOLE_CONTEXT for a console-class arm. Same PASS, different
+#      mechanism underneath — that is the point, and it is why the
+#      assertions below anchor on the resolved MODE/AUTOCOMPACT rather than
+#      the full reason wording, which legitimately changes between the two.
+# ---------------------------------------------------------------------------
+HO_E3=$(make_handover "arm-context-console.md")
+out=$(CONSOLE_CONTEXT=1m run_arm --time "$(future_time)" --handover "$HO_E3" --dry-run 2>&1)
+rc=$?
+assert_rc "e3: console handover, CONSOLE_CONTEXT=1m, no --context, exits 0" 0 "$rc"
+assert_contains "e3: guard line resolves 1m" 'context=1m (' "$out"
+assert_contains "e3: relaunch command carries --autocompact auto" '--autocompact auto' "$out"
 
 # ---------------------------------------------------------------------------
 # (f) --context standard strips an operator-typed [1m] suffix from --model.

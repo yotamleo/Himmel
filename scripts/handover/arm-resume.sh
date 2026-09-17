@@ -492,6 +492,12 @@ Env:
 EOF
 }
 
+# HIMMEL-2975 T6: sourced here (ahead of SCRIPT_DIR at the bottom of the
+# file) because --context validation below needs console_context_valid
+# during arg parsing, well before SCRIPT_DIR/py-armor sourcing normally
+# happens.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/console-context.sh"
+
 # Arg parsing — accept --flag <value> or --flag=<value>, any order,
 # unknown flags are rejected loudly. Avoids the v1 "$3 == --force"
 # positional trap.
@@ -556,13 +562,10 @@ while [ $# -gt 0 ]; do
                 echo "ERR arm-resume: --context requires a non-empty, non-option value" >&2
                 exit 2
             fi
-            case "$2" in
-                1m|standard) ;;
-                *)
-                    echo "ERR arm-resume: --context must be 1m or standard, got: $2" >&2
-                    exit 2
-                    ;;
-            esac
+            if ! console_context_valid "$2"; then
+                echo "ERR arm-resume: --context must be 1m or standard, got: $2" >&2
+                exit 2
+            fi
             CONTEXT_MODE="$2"; shift 2
             ;;
         --context=*)
@@ -571,13 +574,10 @@ while [ $# -gt 0 ]; do
                 echo "ERR arm-resume: --context requires a non-empty, non-option value" >&2
                 exit 2
             fi
-            case "$CONTEXT_MODE" in
-                1m|standard) ;;
-                *)
-                    echo "ERR arm-resume: --context must be 1m or standard, got: $CONTEXT_MODE" >&2
-                    exit 2
-                    ;;
-            esac
+            if ! console_context_valid "$CONTEXT_MODE"; then
+                echo "ERR arm-resume: --context must be 1m or standard, got: $CONTEXT_MODE" >&2
+                exit 2
+            fi
             shift
             ;;
         --tier)
@@ -917,10 +917,8 @@ esac
 # Claude-Fable-5 all match. A plain `case` glob on a lowercased form, same
 # idiom the rest of this script uses (no `[[ ... ]]` regex).
 _arm_model_is_fable=0
-if [ -n "$MODEL" ]; then
-    case "$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')" in
-        *fable*) _arm_model_is_fable=1 ;;
-    esac
+if [ -n "$MODEL" ] && console_context_model_is_fable "$MODEL"; then
+    _arm_model_is_fable=1
 fi
 
 MODEL_REASON=""
@@ -948,24 +946,36 @@ fi
 # not stderr -- this is a report, not an error.
 echo "arm-resume: $MODEL_REASON"
 
-# --context resolution (HIMMEL-2658): the ONLY structural fix for a station
-# silently running a 1M window on every session -- a stray [1m] suffix on
-# the operator's user-level `model` setting drove ~25-35% of the weekly
-# token bank, and dropping the suffix from settings alone did NOT move the
-# station off 1M (measured; see docs/internals/lane-calibration.md "Context
-# mode -- an arming-time choice"). Context mode is now an ARMING-TIME
-# choice per console/leg, never inherited. Runs right here -- before
-# SCRIPT_DIR/py-armor sourcing below -- so --dry-run exercises it and all
-# four downstream --model emission sites inherit CONTEXT_MODE/MODEL/
-# AUTOCOMPACT for free without themselves changing. Reuses _arm_is_console
-# and _arm_model_is_fable, already computed above for the MODEL_REASON
-# block -- do not recompute either.
+# --context resolution (HIMMEL-2658, default re-pinned by HIMMEL-2975 T6):
+# the ONLY structural fix for a station silently running a 1M window on
+# every session -- a stray [1m] suffix on the operator's user-level `model`
+# setting drove ~25-35% of the weekly token bank, and dropping the suffix
+# from settings alone did NOT move the station off 1M (measured; see
+# docs/internals/lane-calibration.md "Context mode -- an arming-time
+# choice"). Context mode is now an ARMING-TIME choice per console/leg, never
+# inherited. Runs right here -- before SCRIPT_DIR/py-armor sourcing below --
+# so --dry-run exercises it and all four downstream --model emission sites
+# inherit CONTEXT_MODE/MODEL/AUTOCOMPACT for free without themselves
+# changing. Reuses _arm_is_console and _arm_model_is_fable, already computed
+# above for the MODEL_REASON block -- do not recompute either.
+#
+# HIMMEL-2975: every arm defaults to `standard` now -- a console-class arm
+# used to default to `1m` unconditionally, the largest single measured
+# saving in the cost program going unrealized every time one armed with no
+# --context. console_context_default() (scripts/lib/console-context.sh)
+# also gives CONSOLE_CONTEXT=1m in the launching shell a way to opt a
+# console arm back into 1m without an explicit --context -- arm-resume.sh
+# had no CONSOLE_CONTEXT support at all before this ticket; adding it here
+# is what keeps the opt-in reachable now that the bare default no longer
+# gets you there by accident.
 if [ -z "$CONTEXT_MODE" ]; then
-    if [ "$_arm_is_console" -eq 1 ]; then
-        CONTEXT_MODE="1m"
-        CONTEXT_REASON="context=1m (no --context given; console arms default to 1m -- HIMMEL-2658)"
+    console_context_default "$_arm_is_console" "${CONSOLE_CONTEXT:-}"
+    CONTEXT_MODE="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    if [ "$_arm_is_console" -eq 1 ] && [ "$CONSOLE_CONTEXT_RESOLVED_SOURCE" = "console-context-env" ]; then
+        CONTEXT_REASON="context=1m (CONSOLE_CONTEXT=1m; console arm -- HIMMEL-2975)"
+    elif [ "$_arm_is_console" -eq 1 ]; then
+        CONTEXT_REASON="context=standard (no --context given; console arms default to standard -- HIMMEL-2975)"
     else
-        CONTEXT_MODE="standard"
         CONTEXT_REASON="context=standard (no --context given; non-console arms default to standard -- HIMMEL-2658)"
     fi
 else
@@ -977,19 +987,16 @@ fi
 # never doubled, and `standard` can guarantee its absence. `[` and `]` are
 # escaped so this is a literal-suffix match, not a `[1m]` character class.
 _arm_model_had_suffix=0
-case "$MODEL" in
-    *\[1m\])
-        MODEL="${MODEL%\[1m\]}"
-        _arm_model_had_suffix=1
-        ;;
-esac
+if console_context_has_1m_suffix "$MODEL"; then
+    _arm_model_had_suffix=1
+fi
+MODEL="$(console_context_strip_1m_suffix "$MODEL")"
 
+# autocompact is the lever that actually moves the cost driver (measured
+# fact 3) -- passed regardless of whether --model is even present in the
+# launch command, so a console arm with no explicit --model still gets it.
+AUTOCOMPACT="$(console_context_autocompact "$CONTEXT_MODE")"
 if [ "$CONTEXT_MODE" = "1m" ]; then
-    # autocompact is the lever that actually moves the cost driver
-    # (measured fact 3) -- passed regardless of whether --model is even
-    # present in the launch command, so a console arm with no explicit
-    # --model still gets it.
-    AUTOCOMPACT="auto"
     if [ -z "$MODEL" ]; then
         CONTEXT_REASON="$CONTEXT_REASON; model unset (operator default) -- no [1m] suffix to apply here, autocompact=auto still passed"
     elif [ "$_arm_model_is_fable" -eq 1 ]; then
@@ -1002,7 +1009,6 @@ if [ "$CONTEXT_MODE" = "1m" ]; then
         CONTEXT_REASON="$CONTEXT_REASON; model=$MODEL"
     fi
 else
-    AUTOCOMPACT="200000"
     if [ "$_arm_model_had_suffix" -eq 1 ]; then
         CONTEXT_REASON="$CONTEXT_REASON; stripped an operator-typed [1m] suffix from --model"
     fi
