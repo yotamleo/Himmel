@@ -54,19 +54,36 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-GUARD_TIMEOUT_SECS="${HIMMEL_STOP_GUARD_TIMEOUT:-6}"   # sub-budget under the 10s harness Stop timeout
+# TOTAL budget shared across every subprocess this hook calls (root
+# resolution, bank-preflight.sh, queue-lock.sh status --sweep), not a
+# per-call allowance -- three sequential 6s-per-call timeouts could sum past
+# the harness's own 10s Stop timeout, killing the hook before it ever
+# printed a decision (CodeRabbit round 1, PR #803). Left with ~2s margin
+# under that 10s ceiling for the cheap work (payload parse, JSON build) on
+# either side of the bounded calls.
+GUARD_TIMEOUT_SECS="${HIMMEL_STOP_GUARD_TIMEOUT:-8}"
+GUARD_DEADLINE_EPOCH=$(( $(date +%s) + GUARD_TIMEOUT_SECS ))
 # Test seams (default: the real scripts) -- so the fault-injection tests can
 # point these at a stub without PATH tricks, the same convention as tick.sh's
 # TICK_BANK_CACHE_FILE / FLEET_PS_CMD.
 BANK_PREFLIGHT_SH="${HIMMEL_STOP_GUARD_BANK_PREFLIGHT:-$REPO/scripts/lib/bank-preflight.sh}"
 QUEUE_LOCK_SH="${HIMMEL_STOP_GUARD_QUEUE_LOCK:-$REPO/scripts/handover/queue-lock.sh}"
 
-# _bounded <cmd...> -- run under a hard timeout when `timeout` exists;
-# best-effort (unbounded) when it does not, same degrade-gracefully posture
-# as the rest of this fail-open hook.
+# _bounded <cmd...> -- run under whatever remains of the SHARED
+# GUARD_DEADLINE_EPOCH budget when `timeout` exists; best-effort (unbounded)
+# when it does not -- same degrade-gracefully posture as the rest of this
+# fail-open hook (a host with no `timeout` binary was already unbounded
+# before this change; it stays that way rather than failing closed on a
+# missing tool).
 _bounded() {
     if command -v timeout >/dev/null 2>&1; then
-        timeout "$GUARD_TIMEOUT_SECS" "$@"
+        local remaining
+        remaining=$(( GUARD_DEADLINE_EPOCH - $(date +%s) ))
+        # `timeout 0` means NO limit (GNU coreutils), so a spent or negative
+        # budget must floor at 1s, never pass through as 0 -- the one shape
+        # that would turn "out of time" into "unbounded".
+        [ "$remaining" -ge 1 ] || remaining=1
+        timeout "$remaining" "$@"
     else
         "$@"
     fi

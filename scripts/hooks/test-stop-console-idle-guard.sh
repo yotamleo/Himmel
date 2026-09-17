@@ -40,8 +40,9 @@ if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1
 fi
 
 pass=0; fail=0
-ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
-bad() { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
+ok()   { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
+bad()  { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
+skip() { printf '  SKIP %s\n' "$1"; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/stop-console-idle-guard-test.XXXXXX")" || { echo "setup: mktemp -d failed" >&2; exit 1; }
 HANDOVER_DIR="$TMP/handover"
@@ -126,7 +127,7 @@ done
 out="$(run_guard "$CONSOLE_PAYLOAD")"
 chmod 644 "$HANDOVER_DIR"/.locks/queue/*-console.lock/owner.json 2>/dev/null
 if [ "$readable" -eq 0 ]; then
-    bad "(d-i) setup: owner.json is still readable (running as root?) — precondition not engaged, skipping this case's verdict"
+    skip "(d-i) owner.json is still readable after chmod 000 (running as root?) — precondition not engaged"
 else
     if is_block "$out"; then bad "(d-i) unreadable owner.json -> expected allow, got: $out"; else ok "(d-i) unreadable owner.json -> allow"; fi
 fi
