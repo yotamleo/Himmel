@@ -266,6 +266,7 @@ assert_contains "activating stop issues systemctl stop" "stop cli-proxy-api.serv
 
 echo "TEST 10: --status flags a reachable-but-unauthenticated proxy (HTTP 401) as not fully OK"
 F10="$(fixture status-401 --with-exe-config --with-oauth)"
+printf '7.3.3\n' > "$F10/.cli-proxy-api/cli-proxy-api.version"
 HOME="$F10" STUB_HTTP_CODE="401" STUB_SYSTEMCTL_ENABLED="0" run --status
 assert_rc "401 status exit code (not fully OK)" 1 "$RC"
 assert_contains "401 status names the mismatch" "UNAUTHENTICATED" "$OUT"
@@ -378,6 +379,28 @@ assert_rc "roll no-op exit code" 0 "$RC"
 assert_contains "roll no-op message names the pin" "already at pinned v7.3.3" "$OUT"
 assert_contains "roll no-op names itself" "--roll is a no-op" "$OUT"
 if [ -f "$SYSTEMCTL_LOG21" ]; then fail "roll no-op never touches systemctl" "log: $(cat "$SYSTEMCTL_LOG21")"; else pass "roll no-op never touches systemctl"; fi
+
+echo "TEST 22 (RED control): a failed --roll restores the previous binary+stamp (CR finding, HIMMEL-3051)"
+F22="$(fixture roll-recover --with-exe-config)"
+printf '7.2.158\n' > "$F22/.cli-proxy-api/cli-proxy-api.version"
+HOME="$F22" STUB_SHA256="$STUB_SHA256" STUB_HTTP_CODE="200" STUB_SYSTEMCTL_ENABLED="0" STUB_SS_LISTEN_PID="9999" run --roll
+assert_rc "roll-recover exit code (ownership mismatch after install)" 1 "$RC"
+assert_contains "roll-recover names the ownership mismatch" "isn't the one listening there" "$OUT"
+STAMP22="$(cat "$F22/.cli-proxy-api/cli-proxy-api.version" 2>/dev/null)"
+if [ "$STAMP22" = "7.2.158" ]; then pass "roll-recover restored the previous version stamp"; else fail "roll-recover restored the previous version stamp" "got: '$STAMP22'"; fi
+if [ -f "$F22/.cli-proxy-api/cli-proxy-api.version.prev" ] || [ -f "$F22/.cli-proxy-api/cli-proxy-api.prev" ]; then
+    fail "roll-recover cleans up its backup files" "leftover .prev file(s) remain"
+else
+    pass "roll-recover cleans up its backup files"
+fi
+
+echo "TEST 23 (RED control): --status reports staleness independently of an HTTP 401 auth failure (CR finding, HIMMEL-3051)"
+F23="$(fixture status-401-stale --with-exe-config --with-oauth)"
+printf '7.2.158\n' > "$F23/.cli-proxy-api/cli-proxy-api.version"
+HOME="$F23" STUB_HTTP_CODE="401" STUB_SYSTEMCTL_ENABLED="0" run --status
+assert_rc "401-and-stale status exit code (not fully OK)" 1 "$RC"
+assert_contains "401-and-stale status still names the stale version" "WARNING" "$OUT"
+assert_contains "401-and-stale status still names --roll" "--roll" "$OUT"
 
 echo
 echo "===================================="
