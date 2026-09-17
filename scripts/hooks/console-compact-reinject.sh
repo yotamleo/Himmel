@@ -77,11 +77,14 @@ resolve_console_doc() {
 
 extract_section() {
     # $1 = heading (e.g. "## Live state"), $2 = doc path. Prints the
-    # heading's body verbatim up to (not including) the next "## " heading,
-    # or nothing if the heading is absent.
+    # heading's body verbatim up to (not including) the next heading of
+    # level >= 2 ("## ", "### ", ...), or nothing if the heading is absent.
+    # A subheading appended AFTER the target section (e.g. a "### MILESTONE"
+    # entry appended past "## Live state" under the last-section convention)
+    # must still end it, not leak into the re-injection.
     awk -v want="$1" '
         $0 == want { f = 1; print; next }
-        f && /^## / { exit }
+        f && /^##+ / { exit }
         f { print }
     ' "$2"
 }

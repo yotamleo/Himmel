@@ -70,6 +70,20 @@ case "$out" in
     *) ok "output does not leak the doc's ## Results section" ;;
 esac
 
+echo "== a ### subheading appended after ## Live state is NOT re-injected (only ## boundaries end a section) =="
+DOC1B="$TMP/some-console-with-milestone.md"
+# shellcheck disable=SC2016  # backtick leg span, literal fixture text
+printf '%s\n' "# Some Console" "" "## Live state" "" \
+    'legs: `N1:nonce-abc:lock-tok-1:1234`' "" \
+    "### MILESTONE 1 -- appended after Live state, must not leak" "" \
+    "## Results" "" "- LIVE 09:00" > "$DOC1B"
+out="$(env HIMMEL_CONSOLE_DOC="$DOC1B" bash "$HOOK")"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "milestone-after-Live-state doc still exits 0"; else bad "expected rc 0, got $rc"; fi
+case "$out" in
+    *'MILESTONE 1'*) bad "output leaked a ### subheading appended after ## Live state - got: $out" ;;
+    *) ok "output does not leak a ### subheading appended after ## Live state" ;;
+esac
+
 echo "== doc has no ## Live state section -> one-line warning, still rc 0, no COMPACTED promise =="
 DOC2="$TMP/bare-console.md"
 printf '# Bare Console\n\n## Results\n\n- LIVE 09:00\n' > "$DOC2"
